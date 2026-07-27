@@ -26,11 +26,12 @@ or public Mix task argument/dispatch behavior, including `mix favn.runs cancel`,
 The public deployment surface is deliberately small:
 `mix favn.init --target deployment` copies the documented customer-owned
 Compose and runner-image example,
-`mix favn.build.manifest --runner-release-id ID` binds a manifest to the
-operator's image identity, and `mix favn.publish` plus `mix favn.activate` stage
-and select immutable manifest releases. Favn publishes the control-plane image;
-consumer projects build the runner from their own repository. The operator
-contract starts at `docs/production/deployment_topology.md`.
+repeated `mix favn.build.manifest --runner-release POOL=ID` options bind every
+effective logical pool to the operator's image identity, and `mix favn.publish`
+plus `mix favn.activate` stage and select immutable manifest releases. Favn
+publishes the control-plane image; consumer projects build runners from their
+own repository. The operator contract starts at
+`docs/production/deployment_topology.md`.
 
 For source development, `mix favn.dev` starts no containers and builds no
 images. The developer supplies PostgreSQL and environment variables.

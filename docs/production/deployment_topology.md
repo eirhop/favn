@@ -1,100 +1,74 @@
 # Production deployment topology
 
-The first supported Favn deployment has exactly three durable/runtime roles:
+The supported platform-neutral topology has:
 
 1. one external PostgreSQL 18 database;
-2. one Favn-published control-plane container running View and Orchestrator in
+2. one always-on Favn control-plane container running View and Orchestrator in
    the same BEAM; and
-3. one customer-built runner container running the customer's Elixir code and
-   runner plugins in a separate BEAM.
+3. zero to many customer-built runner processes, grouped by arbitrary logical
+   pool and immutable release.
 
-This is a platform-neutral application contract. Favn does not provision a
-virtual network, firewall, VPN, reverse proxy, load balancer, container service,
-database service, or customer registry. The operator supplies those resources
-and deploys immutable OCI digests.
+The control plane can be small because runners execute customer and data-plane
+work. Elastic runners may scale to zero while idle. Resident runners are
+appropriate only for continuous work or when cold-start latency is
+unacceptable.
+
+Favn does not provision a virtual network, container service, Kubernetes
+cluster, VM, runner Job, database, registry, or scaler. The operator deploys
+immutable OCI digests and maps the provider-neutral demand contract to their
+infrastructure.
 
 ## Artifact ownership
 
 | Artifact | Owner | Deployment identity |
 | --- | --- | --- |
-| Control-plane image | Favn | `ghcr.io/eirhop/favn-control-plane@sha256:<digest>` |
-| Runner image | Customer | Customer registry image selected by immutable digest |
-| Manifest release | Customer project | `manifest_version_id` plus `required_runner_release_id` |
-| PostgreSQL database | Operator | PostgreSQL 18 service and Favn schema version |
+| Control-plane image | Favn | Immutable OCI digest |
+| Runner image | Customer | Immutable OCI digest plus baked runner release |
+| Manifest version | Customer project | Manifest ID, content hash, and pool-to-release map |
+| PostgreSQL database | Operator | PostgreSQL 18 service and exact Favn schema |
+| Scaler/Job definition | Operator | Pool and release partition |
 
-Favn publishes no runner image. `mix favn.init --target deployment` copies an
-editable runner Dockerfile and single-host example; the customer owns the
-Dockerfile, build inputs, native dependencies, registry, and CI pipeline.
-`mix favn.build.manifest --runner-release-id ID` binds a manifest to the release
-ID chosen for that image.
+Favn publishes no customer runner image. A project may build different images
+for `duckdb`, `pure_elixir`, `gpu`, or any other user-defined pool. Each
+manifest maps the pools it uses to exact runner releases.
 
-The copied `deploy/favn/compose.yml` is a non-secret starting template for this
-topology. The operator owns the resulting file and
-must adapt its external PostgreSQL, secret injection, registry, ingress,
-durability, and monitoring configuration. Its example network permits outbound
-connections because PostgreSQL is external;
-the operator must restrict that egress with the host or platform firewall.
+The copied Compose file is a resident single-host example. It exercises the
+same registration and durable claim protocol, but it is not an autoscaling
+platform. Container Apps Jobs, Kubernetes/KEDA, ECS, Nomad, and VM supervisors
+implement the same demand/start/self-exit contract.
 
 ## Required infrastructure
 
-Before deployment, provide:
+Provide:
 
-- a trusted private network segment containing only the control plane, runner,
-  and PostgreSQL service;
-- private DNS names that match the configured long BEAM node names;
-- firewall rules allowing PostgreSQL only from the control plane and allowing
-  EPMD plus the fixed BEAM distribution port only between the two BEAM nodes;
-- an HTTPS reverse proxy or VPN entry point for operators;
-- no public route to PostgreSQL, EPMD, BEAM distribution, the runner, or the
-  private Orchestrator API;
-- a PostgreSQL migrator identity separate from the runtime identity;
-- environment-variable injection for every deployment value and secret; and
-- a termination grace period longer than Favn's configured drain budget.
-
-A private IP address by itself is not a sufficient security boundary. The v1
-runner transport is unencrypted distributed Erlang and grants the connected
-runner node-level trust. Use it only inside the isolated trust zone described in
-[`network_and_proxy.md`](network_and_proxy.md).
+- a trusted private network for the control plane, runners, and PostgreSQL;
+- a stable private DNS name and fixed distribution port for the control plane;
+- mutual-TLS distributed BEAM and a high-entropy cookie;
+- runner outbound access to the control-plane EPMD/distribution listeners;
+- an HTTPS reverse proxy or VPN for operators;
+- no public route to PostgreSQL, the private API, EPMD, or BEAM distribution;
+- separate PostgreSQL migrator and least-privilege runtime identities;
+- secret injection and certificate rotation; and
+- termination grace longer than Favn's configured drain budget.
 
 ## Deployment order
 
 1. Select the control-plane image by immutable digest.
-2. Build the customer runner with an operator-chosen release ID, build the
-   manifest with the same ID as described in
-   [`runner_releases.md`](runner_releases.md), then select the runner image by
-   immutable digest.
-3. Back up PostgreSQL and run the candidate control-plane image's release-safe
-   `preflight-upgrade`, `migrate`, `grant-runtime`, `verify-schema`, and
-   workspace-provisioning operations as applicable. Runtime startup never
-   migrates automatically.
-4. Start the runner with its private node name, fixed distribution port, EPMD
-   port, shared distribution cookie, and bounded shutdown configuration.
-5. Start the control plane with the same network identity values and the
-   complete environment contract from
-   [`control_plane_environment.md`](control_plane_environment.md).
-6. Require liveness and readiness before routing operator traffic. Readiness
-   proves PostgreSQL schema/grants, lifecycle admission, scheduler health,
-   runner connectivity, the operator-supplied runner identity, protocol
-   compatibility, and every active manifest's exact runner alignment.
-7. Publish a manifest release, then activate its exact version for the intended
-   workspace. Publication may occur while the runner is unavailable; activation
-   cannot.
-8. Execute one SQL asset and one Elixir asset as the deployment smoke test.
+2. Build each runner image with its immutable release ID.
+3. Build and publish the manifest with the exact pool-to-release map.
+4. Back up PostgreSQL, migrate with the candidate image, grant the runtime
+   role, and verify the exact schema. Runtime startup never migrates.
+5. Start the control plane and verify readiness. Zero runners is valid.
+6. Deploy one scaler/Job or resident definition for each pool/release
+   partition.
+7. Activate the manifest. Activation does not require a live runner.
+8. Submit a smoke run and verify demand, runner registration, claim, result,
+   downstream DAG progress, idle self-exit, logs, and operator visibility.
 
-## Runtime and shutdown
+During a runner-image or manifest rollback, restore the matching prior
+pool-to-release map and image definition. Keep old and new partitions available
+until the exact old partition reports durably drained.
 
-The reverse proxy routes the public View listener only. The private Orchestrator
-API is for trusted operator tooling on the private network. Container port
-metadata does not publish a port; the platform's network rules remain
-authoritative.
-
-On termination, readiness becomes false before new work is rejected. The node
-drains already admitted work for the configured bounded interval, uses ordinary
-durable cancellation/result paths at the deadline, and preserves unknown
-outcomes rather than inventing success. Do not send traffic again until the
-replacement reports full readiness.
-
-Upgrade and rollback are scheduled, drain-first operations for this one-node
-topology. Zero-downtime rolling replacement and multi-node failover are not
-supported. See [`upgrade_and_rollback.md`](upgrade_and_rollback.md) and deferred
-issue [#529](https://github.com/eirhop/favn/issues/529).
+See [elastic runners](elastic_runners.md),
+[runner releases](runner_releases.md), and
+[network contract](network_and_proxy.md).

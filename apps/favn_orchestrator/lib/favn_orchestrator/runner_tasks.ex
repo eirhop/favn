@@ -166,6 +166,7 @@ defmodule FavnOrchestrator.RunnerTasks do
              occurred_at: message.occurred_at
            }) do
       maybe_mark_busy(message, task)
+      emit_started(task)
 
       {:ok, task}
     end
@@ -605,7 +606,7 @@ defmodule FavnOrchestrator.RunnerTasks do
 
   defp cancellation_outcome(task, status, runner_status) do
     %CancellationOutcome{
-      execution_id: task.task_id,
+      task_id: task.task_id,
       status: status,
       runner_status: runner_status
     }
@@ -640,6 +641,21 @@ defmodule FavnOrchestrator.RunnerTasks do
     else
       :ok
     end
+  end
+
+  defp emit_started(task) do
+    :telemetry.execute(
+      [:favn, :runner_task, :started],
+      %{count: 1},
+      %{
+        workspace_id: task.workspace_id,
+        task_id: task.task_id,
+        runner_pool: task.runner_pool,
+        required_runner_release_id: task.required_runner_release_id,
+        runner_instance_id: task.assigned_runner_instance_id,
+        assignment_generation: task.assignment_generation
+      }
+    )
   end
 
   defp runner_session(runner_id) do

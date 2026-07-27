@@ -10,7 +10,7 @@ current limits live in [`FEATURES.md`](FEATURES.md); release gates live in
 1. [#522 — runnable release artifacts and supported deployment topology](https://github.com/eirhop/favn/issues/522)
    - Ship one reusable Favn control-plane image, an editable customer-owned
      runner template, and the explicit release-ID manifest interface.
-   - Qualify the one-control-plane/one-runner topology, runtime-only
+   - Qualify the one-control-plane/elastic-runner topology, runtime-only
      configuration, environment-only secrets, health, packaging, upgrades, and
      clean-container acceptance.
    - Validate the manifest, runner, and public package boundary through the clean
@@ -20,13 +20,14 @@ current limits live in [`FEATURES.md`](FEATURES.md); release gates live in
      boundary are implemented; remaining #522 work is target deployment
      qualification and publishing evidence.
 2. [#525 — durable scheduling and asynchronous orchestration](https://github.com/eirhop/favn/issues/525)
-   - Persist submission intent, move work outside scheduler/RunManager critical
-     paths, and add bounded workers, recovery, fairness, cancellation, and visibility.
-   - Deliver this as the first slice of the single implementation PR for the
+   - Durable run submissions and durable runner tasks are implemented as
+     distinct queue contracts: control-plane workers consume the first and
+     compatible runners consume the second.
+   - The same implementation adds bounded workers, recovery, fairness,
+     cancellation, visibility, arbitrary user-defined runner pools, numeric
+     capacity demand, release coexistence, and elastic self-exit. Final
+     production qualification remains part of the
      [one-control-plane elastic-runner program](architecture/elastic-runners.md).
-     Keep durable run submissions and durable runner tasks as distinct queue
-     contracts: control-plane workers consume the first; compatible runners
-     consume the second.
 3. [#526 — DuckDB/DuckLake data-plane production hardening](https://github.com/eirhop/favn/issues/526)
    - Define data-plane durability and recovery, add failure injection and honest
      cancellation, and finish safe operator resource controls.

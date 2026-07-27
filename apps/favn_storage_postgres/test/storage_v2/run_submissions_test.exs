@@ -293,7 +293,7 @@ defmodule FavnStoragePostgres.StorageV2.RunSubmissionsTest do
 
   test "an active run keeps its release alive between runnable asset tasks", fixture do
     now = DateTime.utc_now()
-    release_id = fixture.version.required_runner_release_id
+    release_id = fixture.version.runner_releases["default"]
 
     assert {:ok, _demand} =
              RunnerTaskStore.ensure_demand(%EnsureRunnerCapacityDemand{
@@ -1669,7 +1669,7 @@ defmodule FavnStoragePostgres.StorageV2.RunSubmissionsTest do
         deployment_id: fixture.deployment_id,
         manifest_version_id: fixture.version.manifest_version_id,
         manifest_content_hash: fixture.version.content_hash,
-        required_runner_release_id: fixture.version.required_runner_release_id,
+        runner_releases: fixture.version.runner_releases,
         asset_ref: {MyApp.RunSubmissionAsset, :asset},
         target_refs: [{MyApp.RunSubmissionAsset, :asset}]
       )

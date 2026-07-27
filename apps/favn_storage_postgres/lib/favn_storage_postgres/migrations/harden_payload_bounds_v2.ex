@@ -20,7 +20,6 @@ defmodule FavnStoragePostgres.Migrations.HardenPayloadBoundsV2 do
     run_submission_commands: [result: 65_536],
     run_events: [event: 512 * 1_024],
     runtime_input_pins: [payload: 262_256],
-    runner_executions: [dispatch_payload: 262_144, result: 262_144, error: 65_536],
     schedule_cursors: [cursor: 65_536],
     schedule_occurrences: [payload: 65_536, last_error: 65_536],
     admission_waiters: [requested_scopes: 16_384],

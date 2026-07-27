@@ -37,6 +37,15 @@ defmodule FavnRunner.RunnerAgent do
     end
   end
 
+  @doc "Stops claiming new work and exits after the current assignment is durably reported."
+  @spec drain(GenServer.server()) :: :ok
+  def drain(server \\ __MODULE__), do: GenServer.cast(server, :drain)
+
+  @doc "Cancels the active executor, reports its outcome, and then exits."
+  @spec cancel_and_drain(GenServer.server()) :: :ok
+  def cancel_and_drain(server \\ __MODULE__),
+    do: GenServer.call(server, :cancel_and_drain, 15_000)
+
   @impl true
   def init(opts) do
     {:ok, release} = ReleaseVerifier.verified_release()
@@ -81,6 +90,25 @@ defmodule FavnRunner.RunnerAgent do
     send(self(), :connect)
     {:ok, state}
   end
+
+  @impl true
+  def handle_cast(:drain, %{assignment: nil} = state),
+    do: {:stop, :normal, %{state | draining?: true, phase: :draining}}
+
+  def handle_cast(:drain, state), do: {:noreply, %{state | draining?: true}}
+
+  @impl true
+  def handle_call(:cancel_and_drain, _from, %{assignment: nil} = state),
+    do: {:stop, :normal, :ok, %{state | draining?: true, phase: :draining}}
+
+  def handle_call(:cancel_and_drain, _from, %{executor: executor} = state)
+      when is_pid(executor) do
+    _ = safe_cancel_executor(executor, :runner_shutdown_deadline)
+    {:reply, :ok, %{state | draining?: true}}
+  end
+
+  def handle_call(:cancel_and_drain, _from, state),
+    do: {:reply, :ok, %{state | draining?: true}}
 
   @impl true
   def handle_info(:connect, state) do
@@ -724,7 +752,7 @@ defmodule FavnRunner.RunnerAgent do
     end
 
     if state.manifest_lease_id, do: ManifestStore.release(state.manifest_lease_id)
-    state.exit_fun.(0)
+    state.exit_fun.(1)
     {:stop, :normal, %{state | draining?: true, phase: :draining}}
   end
 

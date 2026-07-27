@@ -85,9 +85,6 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
              mutual_tls?: true,
              cookie_configured?: true
            }
-
-    assert config.runner_client == nil
-    assert config.runner_client_opts == []
   end
 
   test "validate/1 accepts explicit supported production values", %{ca_file: ca_file} do
@@ -148,8 +145,6 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
            }
 
     assert config.runner.epmd_port == 44_369
-    assert config.runner_client == nil
-    assert config.runner_client_opts == []
   end
 
   test "runner pool env rejects infrastructure fields and does not create atoms", %{
@@ -386,8 +381,6 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
       :active_run_plan_max_bytes,
       :scheduler,
       :runner_pools,
-      :runner_client,
-      :runner_client_opts,
       :production_runtime_diagnostics,
       :auth_bootstrap_username,
       :auth_bootstrap_password,
@@ -461,9 +454,6 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
 
     assert Application.get_env(:favn_orchestrator, :active_run_plan_max_bytes) ==
              512 * 1_024 * 1_024
-
-    assert Application.get_env(:favn_orchestrator, :runner_client) == nil
-    assert Application.get_env(:favn_orchestrator, :runner_client_opts) == []
 
     diagnostics = Application.get_env(:favn_orchestrator, :production_runtime_diagnostics)
     refute inspect(diagnostics) =~ "secret"

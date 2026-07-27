@@ -52,6 +52,7 @@ defmodule FavnStoragePostgres.Migrations.CreateStorageV2 do
       add(:content_hash, :binary, null: false)
       add(:schema_version, :integer, null: false)
       add(:runner_contract_version, :integer, null: false)
+      add(:runner_releases, :map, null: false)
       add(:payload_version, :smallint, null: false)
       add(:manifest, :map, null: false)
       add(:inserted_at, :timestamptz, null: false)
@@ -77,6 +78,13 @@ defmodule FavnStoragePostgres.Migrations.CreateStorageV2 do
       constraint(:manifest_versions, :manifest_versions_versions_valid,
         prefix: @prefix,
         check: "schema_version > 0 AND runner_contract_version > 0 AND payload_version > 0"
+      )
+    )
+
+    create(
+      constraint(:manifest_versions, :manifest_versions_runner_releases_valid,
+        prefix: @prefix,
+        check: "jsonb_typeof(runner_releases) = 'object' AND runner_releases <> '{}'::jsonb"
       )
     )
 
@@ -976,57 +984,6 @@ defmodule FavnStoragePostgres.Migrations.CreateStorageV2 do
       constraint(:run_ownerships, :run_ownerships_fence_valid,
         prefix: @prefix,
         check: "fencing_token >= 0"
-      )
-    )
-
-    create table(:runner_executions, prefix: @prefix, primary_key: false) do
-      add(:workspace_id, :text, null: false, primary_key: true)
-      add(:runner_execution_id, :text, null: false, primary_key: true)
-      add(:run_id, :text, null: false)
-      add(:dispatch_id, :text, null: false)
-      add(:last_command_id, :text, null: false)
-      add(:owner_id, :text, null: false)
-      add(:run_fencing_token, :bigint, null: false)
-      add(:status, :text, null: false)
-      add(:version, :bigint, null: false, default: 1)
-      add(:dispatch_payload, :map, null: false)
-      add(:result, :map)
-      add(:error, :map)
-      add(:dispatched_at, :timestamptz)
-      add(:terminal_at, :timestamptz)
-      timestamps(type: :timestamptz)
-    end
-
-    create(unique_index(:runner_executions, [:workspace_id, :dispatch_id], prefix: @prefix))
-
-    execute("""
-    ALTER TABLE #{@prefix}.runner_executions
-    ADD CONSTRAINT runner_executions_run_fk
-    FOREIGN KEY (workspace_id, run_id)
-    REFERENCES #{@prefix}.runs(workspace_id, run_id)
-    ON DELETE RESTRICT
-    """)
-
-    create(
-      index(:runner_executions, [:workspace_id, :run_id, {:desc, :inserted_at}],
-        prefix: @prefix,
-        name: :runner_executions_run_idx
-      )
-    )
-
-    create(
-      index(:runner_executions, [:owner_id, :status, :workspace_id, :runner_execution_id],
-        prefix: @prefix,
-        name: :runner_executions_owner_active_idx,
-        where: "terminal_at IS NULL"
-      )
-    )
-
-    create(
-      constraint(:runner_executions, :runner_executions_values_valid,
-        prefix: @prefix,
-        check:
-          "run_fencing_token > 0 AND version > 0 AND status IN ('dispatching', 'running', 'cancelling', 'ok', 'error', 'cancelled', 'timed_out')"
       )
     )
   end

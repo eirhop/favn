@@ -2,15 +2,10 @@ defmodule FavnRunner do
   @moduledoc """
   Runtime runner boundary facade for manifest-pinned execution.
 
-  `FavnRunner` implements the runner client contract used by the orchestrator
-  and plugin/runtime integrations. Packaged releases install the operator-owned
-  `FAVN_RUNNER_RELEASE_ID` before the server starts. Manifest, work, and inspection
-  operations fail before cache or worker activity unless their required release
-  id exactly matches that configured identity. It is not an ordinary stable
-  authoring API.
+  Packaged releases install the operator-owned `FAVN_RUNNER_RELEASE_ID`.
+  Runner-task preparation and execution reject work unless its required release
+  exactly matches that verified identity. This is not an authoring API.
   """
-
-  @behaviour Favn.Contracts.RunnerClient
 
   alias Favn.Contracts.RelationInspectionRequest
   alias Favn.Contracts.RelationInspectionResult
@@ -23,9 +18,7 @@ defmodule FavnRunner do
   alias Favn.Contracts.GenerationMarkerInitializationResult
   alias Favn.Contracts.GenerationReconciliationRequest
   alias Favn.Contracts.GenerationReconciliationResult
-  alias Favn.Contracts.RunnerCancellation
   alias Favn.Contracts.RunnerError
-  alias Favn.Contracts.RunnerResult
   alias Favn.Contracts.RunnerWork
   alias Favn.Manifest
   alias Favn.Manifest.ExecutionPackage
@@ -41,11 +34,8 @@ defmodule FavnRunner do
   alias FavnRunner.ManifestStore
   alias FavnRunner.ReleaseVerifier
   alias FavnRunner.RuntimeInputResolver
-  alias FavnRunner.Server
   alias FavnRunner.SQLRuntimePreflight
-  alias FavnRunner.Shutdown
-
-  @type execution_id :: String.t()
+  alias FavnRunner.Drain
 
   @doc """
   Reports whether the verified runner runtime and bounded dependencies are ready.
@@ -60,7 +50,6 @@ defmodule FavnRunner do
     with {:ok, %{ready?: true, status: :ready}} <- diagnostics() do
       :ok
     else
-      {:error, :runner_not_available} = error -> error
       {:error, :runner_release_not_verified} = error -> error
       _not_ready -> {:error, :runner_not_ready}
     end
@@ -73,42 +62,47 @@ defmodule FavnRunner do
   @doc """
   Returns redacted runner availability diagnostics.
   """
-  @impl true
   @spec diagnostics(keyword()) :: {:ok, map()} | {:error, term()}
   def diagnostics(opts \\ []) when is_list(opts) do
-    Server.diagnostics(opts)
+    lifecycle = Keyword.get(opts, :lifecycle, Lifecycle)
+    manifest_store = Keyword.get(opts, :manifest_store, ManifestStore)
+
+    with {:ok, release} <- ReleaseVerifier.release_info() do
+      ready? = Process.whereis(manifest_store) != nil
+
+      {:ok,
+       %{
+         ready?: ready?,
+         status: if(ready?, do: :ready, else: :not_ready),
+         release: release,
+         lifecycle: Lifecycle.diagnostics(lifecycle),
+         manifest_cache: ManifestStore.diagnostics(server: manifest_store)
+       }}
+    end
   end
 
   @doc "Begins the irreversible bounded runner drain used before shutdown."
   @spec drain(keyword()) :: {:ok, map()}
-  def drain(opts \\ []) when is_list(opts), do: Shutdown.drain(opts)
+  def drain(opts \\ []) when is_list(opts), do: Drain.drain(opts)
 
   @doc """
   Registers one pinned manifest version in the runner.
   """
-  @impl true
   @spec register_manifest(Version.t(), keyword()) :: :ok | {:error, term()}
   def register_manifest(version, opts \\ [])
 
   def register_manifest(%Version{} = version, opts) when is_list(opts) do
     with_admission(opts, fn ->
-      with :ok <-
-             ReleaseVerifier.verify_required_release(
-               Version.transitional_default_release!(version)
-             ) do
-        Server.register_manifest(version, opts)
-      end
+      ManifestStore.register(version, opts)
     end)
   end
 
   @doc "Checks whether an exact release-bound manifest is already compiled by the runner."
-  @impl true
   @spec ensure_manifest(Version.t(), keyword()) :: :ok | :missing | {:error, term()}
   def ensure_manifest(version, opts \\ [])
 
   def ensure_manifest(%Version{} = version, opts) when is_list(opts) do
-    with :ok <-
-           ReleaseVerifier.verify_required_release(Version.transitional_default_release!(version)) do
+    with {:ok, _release_id} <- current_manifest_release(version) do
       ManifestStore.ensure(version.manifest_version_id, version.content_hash,
         server: Keyword.get(opts, :manifest_store, FavnRunner.ManifestStore)
       )
@@ -116,7 +110,6 @@ defmodule FavnRunner do
   end
 
   @doc "Atomically registers and leases one manifest identity for an active run."
-  @impl true
   @spec acquire_manifest(Version.t(), String.t(), DateTime.t(), [Favn.Ref.t()], keyword()) ::
           :ok | {:error, term()}
   def acquire_manifest(
@@ -130,12 +123,9 @@ defmodule FavnRunner do
     with_admission(opts, fn ->
       manifest_store = Keyword.get(opts, :manifest_store, FavnRunner.ManifestStore)
 
-      with :ok <-
-             ReleaseVerifier.verify_required_release(
-               Version.transitional_default_release!(version)
-             ),
+      with {:ok, release_id} <- current_manifest_release(version),
            :ok <-
-             ManifestStore.acquire(version, lease_id, expires_at,
+             ManifestStore.acquire_for_release(version, release_id, lease_id, expires_at,
                server: manifest_store,
                timeout: Keyword.get(opts, :timeout, 30_000)
              ) do
@@ -152,7 +142,6 @@ defmodule FavnRunner do
   end
 
   @doc "Releases an active-run manifest lease."
-  @impl true
   @spec release_manifest(String.t(), keyword()) :: :ok
   def release_manifest(lease_id, opts \\ []) when is_binary(lease_id) and is_list(opts) do
     ManifestStore.release(lease_id,
@@ -161,7 +150,6 @@ defmodule FavnRunner do
   end
 
   @doc "Renews an active-run manifest lease."
-  @impl true
   @spec renew_manifest(String.t(), DateTime.t(), keyword()) :: :ok | {:error, term()}
   def renew_manifest(lease_id, %DateTime{} = expires_at, opts \\ [])
       when is_binary(lease_id) and is_list(opts) do
@@ -170,17 +158,7 @@ defmodule FavnRunner do
     )
   end
 
-  @doc """
-  Submits one manifest-pinned work request for asynchronous execution.
-  """
-  @impl true
-  @spec submit_work(RunnerWork.t(), keyword()) :: {:ok, execution_id()} | {:error, term()}
-  def submit_work(%RunnerWork{} = work, opts \\ []) when is_list(opts) do
-    with_admission(opts, fn -> Server.submit_work(work, opts) end)
-  end
-
   @doc "Resolves dynamic SQL inputs before work is submitted or SQL is rendered."
-  @impl true
   @spec resolve_runtime_inputs(RunnerWork.t(), keyword()) ::
           {:ok, Resolution.t() | nil} | {:error, term()}
   def resolve_runtime_inputs(%RunnerWork{} = work, opts \\ []) when is_list(opts) do
@@ -317,111 +295,20 @@ defmodule FavnRunner do
   defp resolver_retry_after(_error), do: nil
 
   @doc """
-  Waits for one execution result.
-  """
-  @impl true
-  @spec await_result(execution_id(), timeout(), keyword()) ::
-          {:ok, RunnerResult.t()} | {:error, term()}
-  def await_result(execution_id, timeout \\ 5_000, opts \\ [])
-
-  def await_result(execution_id, timeout, opts)
-      when is_binary(execution_id) and is_integer(timeout) and timeout > 0 and is_list(opts) do
-    Server.await_result(execution_id, timeout, opts)
-  end
-
-  def await_result(_execution_id, _timeout, _opts), do: {:error, :invalid_await_args}
-
-  @doc """
-  Cancels one in-flight execution.
-  """
-  @impl true
-  @spec cancel_work(execution_id(), RunnerCancellation.t(), keyword()) ::
-          {:ok, RunnerCancellation.outcome()} | {:error, RunnerError.t()}
-  def cancel_work(execution_id, reason \\ %{}, opts \\ [])
-
-  def cancel_work(execution_id, reason, opts)
-      when is_binary(execution_id) and is_map(reason) and is_list(opts) do
-    Server.cancel_work(execution_id, RunnerCancellation.from_map(reason), opts)
-  end
-
-  def cancel_work(_execution_id, _reason, _opts) do
-    {:error,
-     RunnerError.normalize(:invalid_cancel_args,
-       kind: :boundary,
-       type: :invalid_cancel_args,
-       retryable?: false
-     )}
-  end
-
-  @doc """
-  Subscribes a process to live logs for one runner execution.
-  """
-  @impl true
-  @spec subscribe_execution_logs(execution_id(), pid(), keyword()) :: :ok | {:error, term()}
-  def subscribe_execution_logs(execution_id, subscriber, opts \\ [])
-
-  def subscribe_execution_logs(execution_id, subscriber, opts)
-      when is_binary(execution_id) and is_pid(subscriber) and is_list(opts) do
-    Server.subscribe_execution_logs(execution_id, subscriber, opts)
-  end
-
-  def subscribe_execution_logs(_execution_id, _subscriber, _opts),
-    do: {:error, :invalid_log_subscription_args}
-
-  @doc """
-  Unsubscribes a process from live logs for one runner execution.
-  """
-  @impl true
-  @spec unsubscribe_execution_logs(execution_id(), pid(), keyword()) :: :ok
-  def unsubscribe_execution_logs(execution_id, subscriber, opts \\ [])
-
-  def unsubscribe_execution_logs(execution_id, subscriber, opts)
-      when is_binary(execution_id) and is_pid(subscriber) and is_list(opts) do
-    Server.unsubscribe_execution_logs(execution_id, subscriber, opts)
-  end
-
-  def unsubscribe_execution_logs(_execution_id, _subscriber, _opts), do: :ok
-
-  @doc """
   Runs one safe read-only relation inspection request through the runner boundary.
   """
-  @impl true
   @spec inspect_relation(RelationInspectionRequest.t(), keyword()) ::
           {:ok, RelationInspectionResult.t()} | {:error, term()}
   def inspect_relation(%RelationInspectionRequest{} = request, opts \\ []) when is_list(opts) do
     with_admission(opts, fn ->
-      with :ok <- ReleaseVerifier.verify_required_release(request.required_runner_release_id) do
-        Server.inspect_relation(request, opts)
+      with :ok <- ReleaseVerifier.verify_required_release(request.required_runner_release_id),
+           {:ok, version} <- generation_version(request, opts) do
+        Inspection.inspect_relation(request, version, request.required_runner_release_id)
       end
     end)
   end
-
-  @doc """
-  Runs up to 500 safe read-only relation inspections through one runner call.
-
-  Results preserve request order and keep individual failures explicit.
-  """
-  @impl true
-  @spec inspect_relations([RelationInspectionRequest.t()], keyword()) ::
-          {:ok, [{:ok, RelationInspectionResult.t()} | {:error, term()}]}
-          | {:error, term()}
-  def inspect_relations(requests, opts \\ [])
-
-  def inspect_relations(requests, opts)
-      when is_list(requests) and length(requests) <= 500 and is_list(opts) do
-    with_admission(opts, fn ->
-      with :ok <- verify_inspection_releases(requests) do
-        requests
-        |> inspection_items(opts)
-        |> Inspection.inspect_relations()
-      end
-    end)
-  end
-
-  def inspect_relations(_requests, _opts), do: {:error, :invalid_relation_inspection_batch}
 
   @doc "Returns explicit target-generation capabilities for one manifest asset."
-  @impl true
   @spec generation_capabilities(Version.t(), Favn.Ref.t(), keyword()) ::
           {:ok, map()} | {:error, term()}
   def generation_capabilities(%Version{} = version, asset_ref, opts \\ [])
@@ -441,7 +328,6 @@ defmodule FavnRunner do
   rebuild and discard paths; recovery and unknown-outcome reconciliation must
   keep the strict default.
   """
-  @impl true
   @spec generation_marker(Version.t(), Favn.Ref.t(), keyword()) ::
           {:ok, GenerationMarker.t() | nil} | {:error, term()}
   def generation_marker(%Version{} = version, asset_ref, opts \\ [])
@@ -456,7 +342,6 @@ defmodule FavnRunner do
   end
 
   @doc "Initializes the sidecar marker for one successfully materialized initial generation."
-  @impl true
   @spec initialize_generation_marker(GenerationMarkerInitializationRequest.t(), keyword()) ::
           {:ok, GenerationMarkerInitializationResult.t()} | {:error, term()}
   def initialize_generation_marker(%GenerationMarkerInitializationRequest{} = request, opts \\ [])
@@ -470,7 +355,6 @@ defmodule FavnRunner do
   end
 
   @doc "Atomically activates one validated target-generation candidate."
-  @impl true
   @spec activate_generation(GenerationActivationRequest.t(), keyword()) ::
           {:ok, GenerationActivationResult.t()} | {:error, term()}
   def activate_generation(%GenerationActivationRequest{} = request, opts \\ [])
@@ -484,7 +368,6 @@ defmodule FavnRunner do
   end
 
   @doc "Reconciles the marker and relations for a possibly committed activation."
-  @impl true
   @spec reconcile_generation(GenerationReconciliationRequest.t(), keyword()) ::
           {:ok, GenerationReconciliationResult.t()} | {:error, term()}
   def reconcile_generation(
@@ -501,7 +384,6 @@ defmodule FavnRunner do
   end
 
   @doc "Discards one non-active candidate generation idempotently."
-  @impl true
   @spec discard_generation(GenerationDiscardRequest.t(), keyword()) ::
           {:ok, GenerationDiscardResult.t()} | {:error, term()}
   def discard_generation(%GenerationDiscardRequest{} = request, opts \\ [])
@@ -518,61 +400,8 @@ defmodule FavnRunner do
     Lifecycle.with_admission(fun, Keyword.get(opts, :lifecycle, Lifecycle))
   end
 
-  defp verify_inspection_releases(requests) do
-    Enum.reduce_while(requests, :ok, fn
-      %RelationInspectionRequest{} = request, :ok ->
-        case ReleaseVerifier.verify_required_release(request.required_runner_release_id) do
-          :ok -> {:cont, :ok}
-          {:error, _reason} = error -> {:halt, error}
-        end
-
-      _invalid, :ok ->
-        {:halt, {:error, :invalid_relation_inspection_batch}}
-    end)
-  end
-
-  defp inspection_items(requests, opts) do
-    manifest_store = Keyword.get(opts, :manifest_store, FavnRunner.ManifestStore)
-
-    {items, _versions} =
-      Enum.map_reduce(requests, %{}, fn request, versions ->
-        identity = {request.manifest_version_id, request.manifest_content_hash}
-
-        {version_result, versions} =
-          case Map.fetch(versions, identity) do
-            {:ok, result} ->
-              {result, versions}
-
-            :error ->
-              result = load_inspection_version(request, manifest_store)
-              {result, Map.put(versions, identity, result)}
-          end
-
-        item =
-          case version_result do
-            {:ok, version} -> {:ok, request, version}
-            {:error, _reason} = error -> error
-          end
-
-        {item, versions}
-      end)
-
-    items
-  end
-
-  defp load_inspection_version(request, manifest_store) do
-    with {:ok, version} <-
-           ManifestStore.fetch(request.manifest_version_id, request.manifest_content_hash,
-             server: manifest_store
-           ),
-         :ok <- ReleaseVerifier.verify_required_release(version.required_runner_release_id) do
-      {:ok, version}
-    end
-  end
-
   defp generation_asset(%Version{manifest: %Manifest{}} = version, asset_ref, _opts) do
-    with :ok <-
-           ReleaseVerifier.verify_required_release(Version.transitional_default_release!(version)) do
+    with {:ok, _release_id} <- current_manifest_release(version) do
       ManifestResolver.resolve_asset(version, asset_ref)
     end
   end
@@ -580,8 +409,7 @@ defmodule FavnRunner do
   defp generation_asset(%Version{manifest: nil} = version, asset_ref, opts) do
     manifest_store = Keyword.get(opts, :manifest_store, FavnRunner.ManifestStore)
 
-    with :ok <-
-           ReleaseVerifier.verify_required_release(Version.transitional_default_release!(version)),
+    with {:ok, _release_id} <- current_manifest_release(version),
          {:ok, handle} <-
            ManifestStore.fetch_handle(version.manifest_version_id, version.content_hash,
              server: manifest_store
@@ -596,57 +424,19 @@ defmodule FavnRunner do
            ManifestStore.fetch(request.manifest_version_id, request.manifest_content_hash,
              server: Keyword.get(opts, :manifest_store, FavnRunner.ManifestStore)
            ),
-         :ok <-
-           ReleaseVerifier.verify_required_release(Version.transitional_default_release!(version)),
          true <-
-           Version.transitional_default_release!(version) == request.required_runner_release_id or
+           request.required_runner_release_id in Map.values(version.runner_releases) or
              {:error, :runner_release_mismatch} do
       {:ok, version}
     end
   end
 
-  @doc """
-  Runs one work request synchronously through the same runner server boundary.
-  """
-  @spec run(RunnerWork.t(), keyword()) :: {:ok, RunnerResult.t()} | {:error, term()}
-  def run(%RunnerWork{} = work, opts \\ []) when is_list(opts) do
-    with_admission(opts, fn ->
-      with :ok <- ReleaseVerifier.verify_required_release(work.required_runner_release_id) do
-        with_scoped_manifest_lease(work, opts, fn leased_work ->
-          timeout = Keyword.get(opts, :timeout, 5_000)
-
-          case preflight_work_scope(leased_work, opts) do
-            :ok ->
-              with {:ok, execution_id} <- submit_work(leased_work, opts) do
-                await_result(execution_id, timeout, opts)
-              end
-
-            {:error, {%FavnRunner.ManifestHandle{} = handle, diagnostic}} ->
-              {:ok, Server.preflight_failed_result(leased_work, handle, diagnostic)}
-
-            {:error, reason} ->
-              {:error, reason}
-          end
-        end)
-      end
-    end)
-  end
-
-  defp preflight_work_scope(%RunnerWork{} = work, opts) do
-    manifest_store = Keyword.get(opts, :manifest_store, FavnRunner.ManifestStore)
-
-    with {:ok, handle} <-
-           ManifestStore.fetch_handle(
-             work.manifest_version_id,
-             work.manifest_content_hash,
-             server: manifest_store
-           ) do
-      case SQLRuntimePreflight.run(handle, RunnerWork.planned_asset_refs(work),
-             server: manifest_store
-           ) do
-        :ok -> :ok
-        {:error, diagnostic} -> {:error, {handle, diagnostic}}
-      end
+  defp current_manifest_release(%Version{runner_releases: runner_releases}) do
+    with {:ok, release} <- ReleaseVerifier.verified_release(),
+         true <-
+           release.runner_release_id in Map.values(runner_releases) or
+             {:error, :manifest_runner_release_mismatch} do
+      {:ok, release.runner_release_id}
     end
   end
 
@@ -655,9 +445,11 @@ defmodule FavnRunner do
        do: fun.(work)
 
   defp with_scoped_manifest_lease(%RunnerWork{} = work, opts, fun) do
-    lease_id = "direct:" <> Base.url_encode64(:crypto.strong_rand_bytes(18), padding: false)
+    lease_id =
+      "runtime-input:" <> Base.url_encode64(:crypto.strong_rand_bytes(18), padding: false)
+
     expires_at = DateTime.add(DateTime.utc_now(), 60, :second)
-    manifest_store = Keyword.get(opts, :manifest_store, FavnRunner.ManifestStore)
+    manifest_store = Keyword.get(opts, :manifest_store, ManifestStore)
 
     with :ok <-
            ManifestStore.acquire_registered(

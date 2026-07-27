@@ -142,8 +142,6 @@ defmodule FavnLocal.Config do
     Application.put_env(:favn_orchestrator, :workspace_ids, [config.workspace_id])
     Application.put_env(:favn_orchestrator, :api_service_tokens, service_tokens)
     Application.delete_env(:favn_orchestrator, :api_service_tokens_env)
-    Application.delete_env(:favn_orchestrator, :runner_client)
-    Application.delete_env(:favn_orchestrator, :runner_client_opts)
     Application.put_env(:favn_orchestrator, :runner_pools, default: [mode: :resident])
 
     Application.put_env(

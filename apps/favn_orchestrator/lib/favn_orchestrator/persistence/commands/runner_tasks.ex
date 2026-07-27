@@ -246,8 +246,7 @@ defmodule FavnOrchestrator.Persistence.Results.RunnerTask do
     :result,
     :error,
     :terminal_at,
-    :inserted_at,
-    :updated_at
+    :inserted_at
   ]
 
   @type t :: %__MODULE__{}

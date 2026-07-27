@@ -9,7 +9,7 @@ defmodule FavnOrchestrator.Storage.ManifestCodec do
           required(:content_hash) => String.t(),
           required(:schema_version) => pos_integer(),
           required(:runner_contract_version) => pos_integer(),
-          required(:required_runner_release_id) => String.t() | nil,
+          required(:runner_releases) => Favn.RunnerPool.releases(),
           required(:serialization_format) => String.t(),
           required(:manifest_index_json) => String.t(),
           optional(:inserted_at) => DateTime.t() | nil
@@ -24,7 +24,7 @@ defmodule FavnOrchestrator.Storage.ManifestCodec do
          content_hash: version.content_hash,
          schema_version: version.schema_version,
          runner_contract_version: version.runner_contract_version,
-         required_runner_release_id: Map.get(version.runner_releases, "default"),
+         runner_releases: version.runner_releases,
          serialization_format: version.serialization_format,
          manifest_index_json: manifest_index_json,
          inserted_at: version.inserted_at

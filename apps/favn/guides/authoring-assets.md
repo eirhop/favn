@@ -139,6 +139,7 @@ Common declarations:
 | `coverage` | Historical windows expected from a windowed asset. |
 | `freshness` | When Favn may skip work because output is fresh. |
 | `execution_pool` | Shared execution pool name for runtime admission. |
+| `runner_pool` | Logical runner image/capability pool for this asset. |
 | `relation` | Relation owned by the asset. Use `true` to infer it from namespace. |
 
 `depends` accepts a single-asset module or a multi-asset ref:
@@ -603,6 +604,7 @@ Pipeline clauses:
 | `window ...` | Runtime window policy. |
 | `max_concurrency N` | Limit parallel asset steps in one run. |
 | `execution_pool :name` | Default execution pool for selected assets. |
+| `runner_pool :name` | Default logical runner pool for selected assets. |
 | `source :name` | Source label for the pipeline. |
 | `outputs [:name]` | Output labels for tooling. |
 
@@ -619,6 +621,11 @@ end
 Pipeline metadata is JSON-like descriptive data, not runtime configuration.
 Repeated `meta` declarations shallow-merge, and their keys normalize to strings
 so the values remain identical after manifest and run-snapshot persistence.
+
+`runner_pool` selects an exact infrastructure/image compatibility boundary such
+as `:duckdb`, `:gpu`, or `:private_network`; omitted values use `:default`.
+`execution_pool` is separate: it limits shared runtime concurrency and does not
+choose runner compute.
 
 ## Schedules
 

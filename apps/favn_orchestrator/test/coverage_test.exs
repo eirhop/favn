@@ -322,7 +322,6 @@ defmodule FavnOrchestrator.CoverageTest do
       schema_version: 14,
       runner_contract_version: 13,
       runner_releases: %{"default" => FavnTestSupport.runner_release_id()},
-      required_runner_release_id: FavnTestSupport.runner_release_id(),
       manifest: %Manifest{
         runner_releases: %{"default" => FavnTestSupport.runner_release_id()},
         assets: [asset]

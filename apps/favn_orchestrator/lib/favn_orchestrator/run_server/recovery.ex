@@ -3,12 +3,11 @@ defmodule FavnOrchestrator.RunServer.Recovery do
   Decides whether a persisted run has enough durable position to resume safely.
 
   Recovery is deliberately fail-closed. A retry checkpoint is resumable, as is a
-  fresh run that has not created any runner-execution ledger row. Other histories
-  may contain an accepted external effect or completed work whose continuation
-  position is not durable, so they must be terminalized instead of resubmitted.
+  fresh run that has not submitted a runner task. Other histories may contain a
+  completed effect whose continuation position is not durable, so they must be
+  terminalized instead of resubmitted.
   """
 
-  alias FavnOrchestrator.RunExecutionOwnership
   alias FavnOrchestrator.RunnerTasks
   alias FavnOrchestrator.RunServer.Execution.ActiveTaskSet
   alias FavnOrchestrator.RunServer.RetryCheckpoint
@@ -19,11 +18,9 @@ defmodule FavnOrchestrator.RunServer.Recovery do
   @doc "Loads bounded durable runner-execution evidence and assesses recovery safety."
   @spec disposition(RunState.t()) :: {:ok, disposition()} | {:error, term()}
   def disposition(%RunState{} = run) do
-    case ActiveTaskSet.inflight_task_ids(run) do
+    case ActiveTaskSet.active_runner_task_ids(run) do
       [] ->
-        with {:ok, evidence} <- RunExecutionOwnership.recovery_evidence(run) do
-          {:ok, assess(run, evidence)}
-        end
+        {:ok, assess_checkpoint(run)}
 
       task_ids ->
         validate_durable_tasks(run.workspace_id, task_ids)
@@ -56,29 +53,12 @@ defmodule FavnOrchestrator.RunServer.Recovery do
     end
   end
 
-  @doc "Assesses recovery safety from bounded runner-execution ledger evidence."
-  @spec assess(RunState.t(), %{
-          active: [RunExecutionOwnership.t()],
-          active_truncated?: boolean(),
-          any?: boolean()
-        }) :: disposition()
-  def assess(
-        %RunState{} = run,
-        %{active: active, active_truncated?: active_truncated?, any?: any?}
-      ) do
-    if active != [] do
-      uncertain(:runner_execution_may_have_been_accepted, active, active_truncated?)
-    else
-      assess_checkpoint(run, any?)
-    end
-  end
-
-  defp assess_checkpoint(%RunState{} = run, any?) do
+  defp assess_checkpoint(%RunState{} = run) do
     case RetryCheckpoint.validate(run.metadata, RunState.execution_mode(run)) do
       {:ok, {kind, _state}} when kind in [:sequential, :pipeline] ->
         :resume
 
-      {:ok, :none} when not any? and run.event_seq <= 2 ->
+      {:ok, :none} when run.event_seq <= 2 ->
         :resume
 
       {:ok, :none} ->
@@ -89,23 +69,12 @@ defmodule FavnOrchestrator.RunServer.Recovery do
     end
   end
 
-  defp uncertain(reason, active, truncated?) do
-    summaries =
-      active
-      |> Enum.map(fn execution ->
-        %{
-          execution_id: execution.runner_execution_id || execution.dispatch_id,
-          status: execution.status,
-          attempt: execution.attempt,
-          stage: execution.stage
-        }
-      end)
-
+  defp uncertain(reason, _active, truncated?) do
     {:uncertain,
      %{
        reason: reason,
-       active_execution_count: length(active),
-       executions: summaries,
+       active_runner_task_count: 0,
+       runner_tasks: [],
        truncated?: truncated?
      }}
   end

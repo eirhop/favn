@@ -1,4 +1,4 @@
-defmodule FavnLocal.Lifecycle do
+defmodule FavnLocal.DevelopmentRuntime do
   @moduledoc """
   Owns source-development runner processes using the production registration,
   pull, result, and drain protocol.
@@ -13,7 +13,7 @@ defmodule FavnLocal.Lifecycle do
   alias FavnLocal.Config
   alias FavnLocal.Locator
   alias FavnLocal.Publication, as: LocalPublication
-  alias FavnLocal.RunnerChild
+  alias FavnLocal.RunnerProcessLauncher
   alias FavnOrchestrator.Persistence.Queries, as: Q
   alias FavnOrchestrator.Persistence.Commands, as: C
   alias FavnOrchestrator.Persistence
@@ -50,7 +50,7 @@ defmodule FavnLocal.Lifecycle do
 
     with :ok <- ensure_local_capacity_partition(config.runner_release_id),
          :ok <- Locator.write(config, config.runner_release_id),
-         {:ok, runner} <- RunnerChild.start(config, config.runner_release_id) do
+         {:ok, runner} <- RunnerProcessLauncher.start(config, config.runner_release_id) do
       schedule(:probe_runner, @probe_interval_ms)
 
       {:ok,
@@ -89,7 +89,7 @@ defmodule FavnLocal.Lifecycle do
 
   def handle_call({:reload, publication, release_id}, from, %{status: :ready} = state) do
     with :ok <- ensure_local_capacity_partition(release_id),
-         {:ok, candidate} <- RunnerChild.start(state.config, release_id) do
+         {:ok, candidate} <- RunnerProcessLauncher.start(state.config, release_id) do
       schedule(:probe_runner, @probe_interval_ms)
 
       {:noreply,
@@ -129,7 +129,7 @@ defmodule FavnLocal.Lifecycle do
 
   @impl true
   def handle_info(:probe_runner, %{status: :starting} = state) do
-    case RunnerChild.refresh_registration(state.runner) do
+    case RunnerProcessLauncher.refresh_registration(state.runner) do
       {:ok, runner} when state.startup_action == :deploy ->
         start_deployment(%{state | runner: runner})
 
@@ -148,7 +148,7 @@ defmodule FavnLocal.Lifecycle do
 
   def handle_info(:probe_runner, %{status: :reloading, candidate: candidate} = state)
       when not is_nil(candidate) do
-    case RunnerChild.refresh_registration(candidate) do
+    case RunnerProcessLauncher.refresh_registration(candidate) do
       {:ok, candidate} ->
         start_deployment(%{state | candidate: candidate})
 
@@ -238,7 +238,7 @@ defmodule FavnLocal.Lifecycle do
   def terminate(_reason, state) do
     [state.runner, state.candidate, state.retiring]
     |> Enum.reject(&is_nil/1)
-    |> Enum.each(&RunnerChild.stop/1)
+    |> Enum.each(&RunnerProcessLauncher.stop/1)
 
     Config.clear_source_development_auth()
     Locator.delete(state.config.root_dir)
@@ -343,7 +343,7 @@ defmodule FavnLocal.Lifecycle do
     do: abort_candidate(%{state | candidate: nil}, :candidate_runner_exited)
 
   defp runner_exited_managed(%{runner: %{port: port}, status: :ready} = state, port, _status) do
-    case RunnerChild.start(state.config, state.runner.release_id) do
+    case RunnerProcessLauncher.start(state.config, state.runner.release_id) do
       {:ok, runner} ->
         schedule(:probe_runner, @probe_interval_ms)
 
@@ -364,7 +364,7 @@ defmodule FavnLocal.Lifecycle do
   defp runner_exited_managed(state, _port, _status), do: fail(state, :runner_exited)
 
   defp restart_retiring(state, retiring, exit_status) do
-    case RunnerChild.start(state.config, retiring.release_id) do
+    case RunnerProcessLauncher.start(state.config, retiring.release_id) do
       {:ok, restarted} ->
         schedule(:probe_retiring, @probe_interval_ms)
         {:noreply, %{state | retiring: restarted}}
@@ -493,12 +493,12 @@ defmodule FavnLocal.Lifecycle do
 
   defp stop_runner(runner) do
     runner =
-      case RunnerChild.refresh_registration(runner) do
+      case RunnerProcessLauncher.refresh_registration(runner) do
         {:ok, registered} -> registered
         :not_ready -> runner
       end
 
-    :ok = RunnerChild.stop(runner)
+    :ok = RunnerProcessLauncher.stop(runner)
     schedule({:runner_stop_timeout, runner.port}, @runner_stop_timeout_ms)
   end
 

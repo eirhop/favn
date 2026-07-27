@@ -173,7 +173,7 @@ defmodule FavnOrchestrator.RebuildsTest do
     end
   end
 
-  defmodule RunnerClient do
+  defmodule RunnerExecutor do
     alias Favn.RuntimeInput.Resolution
 
     def generation_capabilities(_version, _asset_ref, _opts) do
@@ -215,10 +215,10 @@ defmodule FavnOrchestrator.RebuildsTest do
   end
 
   setup do
-    previous_client = Application.get_env(:favn_orchestrator, :runner_client)
-    previous_opts = Application.get_env(:favn_orchestrator, :runner_client_opts)
-    Application.put_env(:favn_orchestrator, :runner_client, RunnerClient)
-    Application.put_env(:favn_orchestrator, :runner_client_opts, [])
+    previous_client = Application.get_env(:favn_orchestrator, :test_runner_executor)
+    previous_opts = Application.get_env(:favn_orchestrator, :test_runner_executor_opts)
+    Application.put_env(:favn_orchestrator, :test_runner_executor, RunnerExecutor)
+    Application.put_env(:favn_orchestrator, :test_runner_executor_opts, [])
     Application.put_env(:favn_orchestrator, :rebuild_planning_worker, InlinePlanningWorker)
 
     stores = %Stores{
@@ -283,8 +283,8 @@ defmodule FavnOrchestrator.RebuildsTest do
     ])
 
     on_exit(fn ->
-      restore_env(:runner_client, previous_client)
-      restore_env(:runner_client_opts, previous_opts)
+      restore_env(:test_runner_executor, previous_client)
+      restore_env(:test_runner_executor_opts, previous_opts)
       Application.delete_env(:favn_orchestrator, :rebuild_planning_worker)
     end)
 
@@ -360,10 +360,10 @@ defmodule FavnOrchestrator.RebuildsTest do
     assert downstream_action.runner_pool == "duckdb_image"
 
     assert root_action.required_runner_release_id ==
-             fixture.version.required_runner_release_id
+             fixture.version.runner_releases["default"]
 
     assert downstream_action.required_runner_release_id ==
-             fixture.version.required_runner_release_id
+             fixture.version.runner_releases["default"]
 
     assert Ecto.UUID.cast(root_action.candidate_generation.target_generation_id) != :error
     assert Ecto.UUID.cast(downstream_action.candidate_generation.target_generation_id) != :error
@@ -665,7 +665,7 @@ defmodule FavnOrchestrator.RebuildsTest do
   defp inspection(asset, version) do
     %RelationInspectionResult{
       asset_ref: asset.ref,
-      required_runner_release_id: version.required_runner_release_id,
+      required_runner_release_id: version.runner_releases["default"],
       relation_ref: asset.relation,
       relation: %{
         catalog: asset.relation.catalog,

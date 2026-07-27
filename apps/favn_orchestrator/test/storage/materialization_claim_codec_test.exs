@@ -141,7 +141,7 @@ defmodule FavnOrchestrator.Storage.MaterializationClaimCodecTest do
         run_id: "run_codec",
         asset_step_id: "step_codec",
         node_key: "node:claim_codec",
-        runner_execution_id: "runner_codec",
+        runner_task_id: "runner_codec",
         manifest_version_id: "manifest_codec",
         manifest_content_hash: "hash_codec",
         target_generation_id: "018f47a0-7b0d-4b1a-8d8b-e18a9a987654",

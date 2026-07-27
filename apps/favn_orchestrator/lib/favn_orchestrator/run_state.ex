@@ -2,9 +2,8 @@ defmodule FavnOrchestrator.RunState do
   @moduledoc """
   Persisted run snapshot owned by the orchestrator control plane.
 
-  New runs require the exact runner release selected by their immutable
-  deployment manifest. A nil release id exists only when decoding a historical
-  terminal snapshot for read-only audit display.
+  New runs pin the complete logical runner-pool release map selected by their
+  immutable deployment manifest.
   """
 
   @default_timeout_ms 30 * 60 * 1000
@@ -22,7 +21,6 @@ defmodule FavnOrchestrator.RunState do
           manifest_version_id: String.t(),
           manifest_content_hash: String.t(),
           runner_releases: Favn.RunnerPool.releases(),
-          required_runner_release_id: String.t() | nil,
           asset_ref: Favn.Ref.t(),
           target_refs: [Favn.Ref.t()],
           plan: Favn.Plan.t() | nil,
@@ -41,7 +39,7 @@ defmodule FavnOrchestrator.RunState do
           max_attempts: pos_integer(),
           retry_backoff_ms: non_neg_integer(),
           timeout_ms: pos_integer(),
-          runner_execution_id: String.t() | nil,
+          runner_task_id: String.t() | nil,
           result: map() | nil,
           error: term() | nil,
           inserted_at: DateTime.t() | nil,
@@ -57,7 +55,6 @@ defmodule FavnOrchestrator.RunState do
     :manifest_version_id,
     :manifest_content_hash,
     :runner_releases,
-    :required_runner_release_id,
     :asset_ref,
     :plan,
     :plan_hash,
@@ -80,7 +77,7 @@ defmodule FavnOrchestrator.RunState do
     max_attempts: 1,
     retry_backoff_ms: 0,
     timeout_ms: @default_timeout_ms,
-    runner_execution_id: nil,
+    runner_task_id: nil,
     result: nil,
     error: nil
   ]
@@ -99,10 +96,6 @@ defmodule FavnOrchestrator.RunState do
       manifest_version_id: Keyword.fetch!(opts, :manifest_version_id),
       manifest_content_hash: Keyword.fetch!(opts, :manifest_content_hash),
       runner_releases: runner_releases,
-      required_runner_release_id:
-        Keyword.get_lazy(opts, :required_runner_release_id, fn ->
-          Map.get(runner_releases, "default")
-        end),
       asset_ref: Keyword.fetch!(opts, :asset_ref),
       target_refs: normalize_refs(Keyword.get(opts, :target_refs, [])),
       plan: plan,
@@ -129,13 +122,7 @@ defmodule FavnOrchestrator.RunState do
   end
 
   defp runner_releases_from_opts!(opts) do
-    case Keyword.fetch(opts, :runner_releases) do
-      {:ok, releases} ->
-        releases
-
-      :error ->
-        %{"default" => Keyword.fetch!(opts, :required_runner_release_id)}
-    end
+    Keyword.fetch!(opts, :runner_releases)
   end
 
   @doc false
@@ -315,8 +302,7 @@ defmodule FavnOrchestrator.RunState do
       :deployment_id,
       :manifest_version_id,
       :manifest_content_hash,
-      :runner_releases,
-      :required_runner_release_id
+      :runner_releases
     ]
 
     if Enum.any?(immutable_identity, fn field ->

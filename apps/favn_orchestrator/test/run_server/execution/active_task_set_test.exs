@@ -17,8 +17,8 @@ defmodule FavnOrchestrator.RunServer.Execution.ActiveTaskSetTest do
 
     synced = ActiveTaskSet.sync_run_metadata(run, work_set)
 
-    assert synced.runner_execution_id == nil
-    assert synced.metadata.in_flight_task_ids == ["task_a", "task_b"]
+    assert synced.runner_task_id == nil
+    assert synced.metadata.active_runner_task_ids == ["task_a", "task_b"]
   end
 
   test "complete_entry removes work idempotently" do
@@ -40,9 +40,9 @@ defmodule FavnOrchestrator.RunServer.Execution.ActiveTaskSetTest do
   end
 
   test "reads string-keyed in-flight ids from persisted metadata" do
-    run = %{run_state() | metadata: %{"in_flight_task_ids" => ["task_a", nil, 7]}}
+    run = %{run_state() | metadata: %{"active_runner_task_ids" => ["task_a", nil, 7]}}
 
-    assert ActiveTaskSet.inflight_task_ids(run) == ["task_a"]
+    assert ActiveTaskSet.active_runner_task_ids(run) == ["task_a"]
     assert ActiveTaskSet.task_ids(ActiveTaskSet.from_run_metadata(run)) == ["task_a"]
   end
 
@@ -51,7 +51,7 @@ defmodule FavnOrchestrator.RunServer.Execution.ActiveTaskSetTest do
       id: "run_work_set_test",
       manifest_version_id: "mv_work_set_test",
       manifest_content_hash: "hash_work_set_test",
-      required_runner_release_id: FavnTestSupport.runner_release_id(),
+      runner_releases: %{"default" => FavnTestSupport.runner_release_id()},
       asset_ref: {MyApp.Assets.WorkSet, :asset}
     )
   end

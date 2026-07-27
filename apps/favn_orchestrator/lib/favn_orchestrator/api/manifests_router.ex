@@ -216,15 +216,6 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
       {:error, :invalid_sample_limit} ->
         validation_error(conn, "Invalid sample limit")
 
-      {:error, reason}
-      when reason in [
-             :runner_client_not_available,
-             :runner_release_info_unavailable,
-             :runner_not_ready,
-             :runner_unavailable
-           ] ->
-        Response.error(conn, 503, "service_unavailable", "Runner inspection is not available")
-
       {:error, {:runner_release_mismatch, required, actual}} ->
         Response.error(conn, 409, "runner_release_mismatch", "Runner release does not match", %{
           required_runner_release_id: required,
@@ -277,7 +268,7 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
           resource_id: manifest_version_id,
           outcome: "accepted",
           workspace_id: runtime.workspace_id,
-          required_runner_release_id: runtime.required_runner_release_id,
+          runner_releases: runtime.runner_releases,
           service_identity: Authentication.service_identity(conn)
         }
         |> Map.merge(IdempotentCommand.audit_metadata(idempotency, "accepted"))
@@ -289,7 +280,6 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
            manifest_version_id: manifest_version_id,
            deployment_id: runtime.deployment_id,
            runner_releases: runtime.runner_releases,
-           required_runner_release_id: runtime.required_runner_release_id,
            revision: runtime.revision
          }, "manifest", manifest_version_id}
 
@@ -365,40 +355,6 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
             required_runner_release_id: required,
             runner_release_id: actual
           }
-        )
-
-      {:error, :runner_manifest_conflict} ->
-        activation_rejected(
-          conn,
-          context,
-          session,
-          actor,
-          manifest_version_id,
-          idempotency,
-          409,
-          "runner_manifest_conflict",
-          "Runner has conflicting manifest content",
-          %{}
-        )
-
-      {:error, reason}
-      when reason in [
-             :runner_client_not_available,
-             :runner_release_info_unavailable,
-             :runner_not_ready,
-             :runner_unavailable
-           ] ->
-        activation_rejected(
-          conn,
-          context,
-          session,
-          actor,
-          manifest_version_id,
-          idempotency,
-          503,
-          "runner_unavailable",
-          "Runner is not ready for activation",
-          %{}
         )
 
       {:error, reason} ->

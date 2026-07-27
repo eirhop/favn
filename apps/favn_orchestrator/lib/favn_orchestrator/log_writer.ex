@@ -68,7 +68,7 @@ defmodule FavnOrchestrator.LogWriter do
             :asset_step_id,
             :node_key,
             :asset_ref,
-            :runner_execution_id,
+            :runner_task_id,
             :attempt,
             :producer_id,
             :producer_sequence,

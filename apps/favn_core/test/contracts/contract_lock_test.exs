@@ -31,7 +31,6 @@ defmodule Favn.Contracts.ContractLockTest do
         :active_relation,
         :deadline_at,
         :execution_package,
-        :execution_id,
         :manifest_content_hash,
         :manifest_lease_id,
         :manifest_version_id,

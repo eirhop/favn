@@ -37,22 +37,3 @@ defmodule Mix.Tasks.Favn.Postgres.RuntimeInputKeyInventory do
 
   def run(_args), do: Mix.raise("usage: mix favn.postgres.runtime_input_key_inventory")
 end
-
-defmodule Mix.Tasks.Favn.Postgres.PreflightUpgrade do
-  @moduledoc "Checks for active historical manifests before a control-plane upgrade."
-
-  use Mix.Task
-
-  alias FavnStoragePostgres.Release
-  alias Mix.Tasks.Favn.Postgres.ReleaseHelpers
-
-  @shortdoc "Checks PostgreSQL upgrade blockers"
-
-  @impl true
-  def run([]) do
-    Mix.Task.run("app.config")
-    Release.preflight_upgrade() |> ReleaseHelpers.report("PostgreSQL upgrade preflight passed")
-  end
-
-  def run(_args), do: Mix.raise("usage: mix favn.postgres.preflight_upgrade")
-end

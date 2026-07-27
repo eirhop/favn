@@ -55,8 +55,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
     "fixed",
     "freshness_key",
     "id",
-    "in_flight_execution_ids",
-    "in_flight_task_ids",
+    "active_runner_task_ids",
     "initial_ms",
     "input_versions",
     "input_generations",
@@ -101,7 +100,6 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
     "retry_policy",
     "retry_policy_source",
     "retrying",
-    "required_runner_release_id",
     "retry_state",
     "reason",
     "replay_mode",
@@ -113,7 +111,6 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
     "run",
     "run_finished",
     "run_kind",
-    "runner_execution_id",
     "runner_task_id",
     "runner_releases",
     "rows_written",
@@ -157,7 +154,6 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
   @type manifest_record :: %{
           required(:manifest_version_id) => String.t(),
           required(:content_hash) => String.t(),
-          optional(:required_runner_release_id) => String.t() | nil,
           required(:manifest_index_json) => String.t()
         }
 
@@ -226,7 +222,6 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
       "manifest_version_id" => run.manifest_version_id,
       "manifest_content_hash" => run.manifest_content_hash,
       "runner_releases" => run.runner_releases,
-      "required_runner_release_id" => run.required_runner_release_id,
       "asset_ref" => JsonSafe.ref(run.asset_ref),
       "target_refs" => Enum.map(run.target_refs, &JsonSafe.ref/1),
       "plan" => plan_to_dto(run.plan),
@@ -245,7 +240,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
       "max_attempts" => run.max_attempts,
       "retry_backoff_ms" => run.retry_backoff_ms,
       "timeout_ms" => run.timeout_ms,
-      "runner_execution_id" => run.runner_execution_id,
+      "runner_task_id" => run.runner_task_id,
       "result" => result_to_dto(run.result),
       "error" => JsonSafe.error(run.error),
       "inserted_at" => datetime_to_dto(run.inserted_at),
@@ -327,7 +322,6 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
          manifest_version_id: Map.get(dto, "manifest_version_id"),
          manifest_content_hash: Map.get(dto, "manifest_content_hash"),
          runner_releases: runner_releases,
-         required_runner_release_id: Map.get(runner_releases, "default"),
          asset_ref: asset_ref,
          target_refs: decoded_target_refs(encoded_target_refs, plan),
          plan: plan,
@@ -346,7 +340,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
          max_attempts: Map.get(dto, "max_attempts", 1),
          retry_backoff_ms: Map.get(dto, "retry_backoff_ms", 0),
          timeout_ms: Map.get(dto, "timeout_ms", RunState.default_timeout_ms()),
-         runner_execution_id: empty_to_nil(Map.get(dto, "runner_execution_id")),
+         runner_task_id: empty_to_nil(Map.get(dto, "runner_task_id")),
          result: result,
          error: Map.get(dto, "error"),
          inserted_at: inserted_at,
@@ -470,7 +464,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
       "input_versions" => JsonSafe.data(result.input_versions),
       "attempt_count" => result.attempt_count,
       "max_attempts" => result.max_attempts,
-      "runner_execution_id" => JsonSafe.data(result.runner_execution_id),
+      "runner_task_id" => JsonSafe.data(result.runner_task_id),
       "asset_step_id" => result.asset_step_id,
       "meta" => JsonSafe.output_metadata(result.meta),
       "error" => JsonSafe.error(result.error),
@@ -1152,8 +1146,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
          input_versions: data_from_dto(input_versions, allowed_atom_strings),
          attempt_count: attempt_count,
          max_attempts: max_attempts,
-         runner_execution_id:
-           data_from_dto(field(result, :runner_execution_id), allowed_atom_strings),
+         runner_task_id: data_from_dto(field(result, :runner_task_id), allowed_atom_strings),
          asset_step_id: asset_step_id,
          meta: data_from_dto(meta, allowed_atom_strings),
          error: field(result, :error),
@@ -1344,8 +1337,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
     |> promote_key("pipeline_dependencies", :pipeline_dependencies)
     |> promote_key("asset_dependencies", :asset_dependencies)
     |> promote_key("refresh_policy", :refresh_policy)
-    |> promote_key("in_flight_execution_ids", :in_flight_execution_ids)
-    |> promote_key("in_flight_task_ids", :in_flight_task_ids)
+    |> promote_key("active_runner_task_ids", :active_runner_task_ids)
     |> promote_key("replay_submit_kind", :replay_submit_kind)
     |> promote_key("replay_mode", :replay_mode)
     |> promote_key("retry_state", :retry_state)

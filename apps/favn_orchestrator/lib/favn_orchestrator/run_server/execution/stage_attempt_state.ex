@@ -65,7 +65,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAttemptState do
     %__MODULE__{
       run: run,
       results: results |> Enum.reverse() |> ResultBuilder.retain_asset_results(),
-      pending_ids: pending_execution_ids(entries),
+      pending_ids: pending_task_ids(entries),
       deferred_node_keys: deferred_node_keys,
       queued_steps: queued_steps,
       attempted_node_keys: Enum.reverse(node_keys),
@@ -102,7 +102,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAttemptState do
     %{
       state
       | run: run,
-        pending_ids: MapSet.union(state.pending_ids, pending_execution_ids(entries)),
+        pending_ids: MapSet.union(state.pending_ids, pending_task_ids(entries)),
         deferred_node_keys: deferred_node_keys,
         queued_steps: queued_steps
     }
@@ -182,9 +182,9 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAttemptState do
   @spec retry_delays(t()) :: %{optional(node_key()) => non_neg_integer()}
   def retry_delays(%__MODULE__{retry_delays: retry_delays}), do: retry_delays
 
-  defp pending_execution_ids(entries) when is_list(entries) do
+  defp pending_task_ids(entries) when is_list(entries) do
     entries
-    |> Enum.map(&Map.get(&1, :execution_id))
+    |> Enum.map(&Map.get(&1, :task_id))
     |> Enum.filter(&is_binary/1)
     |> MapSet.new()
   end

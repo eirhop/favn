@@ -52,9 +52,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
           run_submissions: keyword(),
           runner_pools: FavnOrchestrator.RunnerPools.t(),
           shutdown_drain_timeout_ms: pos_integer(),
-          runner: map(),
-          runner_client: module(),
-          runner_client_opts: keyword()
+          runner: map()
         }
 
   @postgres_backend Module.concat([FavnStoragePostgres, Backend])
@@ -165,8 +163,6 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
     Application.put_env(:favn_orchestrator, :scheduler, config.scheduler)
     Application.put_env(:favn_orchestrator, :run_submissions, config.run_submissions)
     Application.put_env(:favn_orchestrator, :runner_pools, config.runner_pools)
-    Application.put_env(:favn_orchestrator, :runner_client, config.runner_client)
-    Application.put_env(:favn_orchestrator, :runner_client_opts, config.runner_client_opts)
 
     Application.put_env(
       :favn_orchestrator,
@@ -183,7 +179,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
   @spec validate(map()) :: {:ok, config()} | {:error, map()}
   def validate(env) when is_map(env) do
     with {:ok, deployment_mode} <- DeploymentMode.from_env(env),
-         {:ok, {runner, runner_client_opts}} <- runner(env),
+         {:ok, runner} <- runner(env),
          {:ok, instance_id} <- instance_id(env, runner.control_plane_node),
          {:ok, {postgres, runtime_input_pin}} <- postgres(env, deployment_mode),
          {:ok, api_server} <- api_server(env),
@@ -216,9 +212,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
          run_submissions: run_submissions,
          runner_pools: runner_pools,
          shutdown_drain_timeout_ms: shutdown_drain_timeout_ms,
-         runner: runner,
-         runner_client: nil,
-         runner_client_opts: runner_client_opts
+         runner: runner
        }}
     else
       {:error, reason} -> {:error, %{status: :invalid, error: redact(reason)}}
@@ -560,17 +554,14 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
          {:ok, epmd_port} <- int(env, "ERL_EPMD_PORT", "4369", 1, 65_535),
          {:ok, tls} <- Favn.DistributionTLS.validate(env) do
       {:ok,
-       {
-         %{
-           topology: :beam_node,
-           control_plane_node: control_plane_node,
-           distribution_port: distribution_port,
-           epmd_port: epmd_port,
-           transport: tls.transport,
-           mutual_tls?: tls.mutual_tls?,
-           cookie_configured?: true
-         },
-         []
+       %{
+         topology: :beam_node,
+         control_plane_node: control_plane_node,
+         distribution_port: distribution_port,
+         epmd_port: epmd_port,
+         transport: tls.transport,
+         mutual_tls?: tls.mutual_tls?,
+         cookie_configured?: true
        }}
     end
   end
@@ -692,7 +683,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
   defp int(env, name, default, min, max) do
     with {:ok, value} <- required_or_default(env, name, default) do
       case Integer.parse(value) do
-        {int, ""} when int >= min and (is_nil(max) or int <= max) ->
+        {int, ""} when int >= min and int <= max ->
           {:ok, int}
 
         _other ->
@@ -701,7 +692,6 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
     end
   end
 
-  defp range(min, nil), do: ">= #{min}"
   defp range(min, max), do: "#{min}..#{max}"
 
   defp absolute_regular_file(name, path) do

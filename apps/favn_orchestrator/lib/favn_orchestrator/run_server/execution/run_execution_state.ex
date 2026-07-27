@@ -42,8 +42,6 @@ defmodule FavnOrchestrator.RunServer.Execution.RunExecutionState do
           manifest_index: Index.t(),
           mode: mode(),
           status: status(),
-          runner_client: module() | nil,
-          runner_opts: keyword(),
           manifest_lease_id: String.t() | nil,
           work_set: ActiveTaskSet.t(),
           awaits: %{optional(String.t()) => await()},
@@ -72,8 +70,6 @@ defmodule FavnOrchestrator.RunServer.Execution.RunExecutionState do
             manifest_index: nil,
             mode: :sequential,
             status: :starting,
-            runner_client: nil,
-            runner_opts: [],
             manifest_lease_id: nil,
             work_set: nil,
             awaits: %{},
@@ -106,8 +102,6 @@ defmodule FavnOrchestrator.RunServer.Execution.RunExecutionState do
       version: version,
       manifest_index: manifest_index,
       mode: Keyword.fetch!(opts, :mode),
-      runner_client: Keyword.get(opts, :runner_client),
-      runner_opts: Keyword.get(opts, :runner_opts, []),
       manifest_lease_id: Keyword.fetch!(opts, :manifest_lease_id),
       work_set: ActiveTaskSet.new(run),
       sequential_refs: Keyword.get(opts, :sequential_refs, []),
@@ -125,8 +119,8 @@ defmodule FavnOrchestrator.RunServer.Execution.RunExecutionState do
 
   @doc "Removes completed runner work and syncs run in-flight metadata."
   @spec complete_work(t(), String.t()) :: {map() | nil, t()}
-  def complete_work(%__MODULE__{} = state, execution_id) when is_binary(execution_id) do
-    {entry, work_set} = ActiveTaskSet.complete_entry(state.work_set, execution_id)
+  def complete_work(%__MODULE__{} = state, task_id) when is_binary(task_id) do
+    {entry, work_set} = ActiveTaskSet.complete_entry(state.work_set, task_id)
 
     {entry,
      %{state | work_set: work_set, run: ActiveTaskSet.sync_run_metadata(state.run, work_set)}}
@@ -134,24 +128,24 @@ defmodule FavnOrchestrator.RunServer.Execution.RunExecutionState do
 
   @doc "Stores metadata for an await worker."
   @spec put_await(t(), String.t(), await()) :: t()
-  def put_await(%__MODULE__{} = state, execution_id, await) when is_binary(execution_id) do
+  def put_await(%__MODULE__{} = state, task_id, await) when is_binary(task_id) do
     await_monitors =
       if is_reference(await.monitor_ref),
-        do: Map.put(state.await_monitors, await.monitor_ref, execution_id),
+        do: Map.put(state.await_monitors, await.monitor_ref, task_id),
         else: state.await_monitors
 
     %{
       state
-      | awaits: Map.put(state.awaits, execution_id, await),
+      | awaits: Map.put(state.awaits, task_id, await),
         await_monitors: await_monitors,
-        await_timers: Map.put(state.await_timers, await.timeout_token, execution_id)
+        await_timers: Map.put(state.await_timers, await.timeout_token, task_id)
     }
   end
 
-  @doc "Removes await metadata by execution id."
+  @doc "Removes await metadata by durable task id."
   @spec pop_await(t(), String.t()) :: {await() | nil, t()}
-  def pop_await(%__MODULE__{} = state, execution_id) when is_binary(execution_id) do
-    {await, awaits} = Map.pop(state.awaits, execution_id)
+  def pop_await(%__MODULE__{} = state, task_id) when is_binary(task_id) do
+    {await, awaits} = Map.pop(state.awaits, task_id)
 
     state =
       if await do

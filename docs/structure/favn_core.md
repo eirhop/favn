@@ -65,10 +65,10 @@ Integration boundaries opt in explicitly; DuckDB session-script parameters are
 the first consumer. Providers return bounded errors, refs have redacted Inspect
 output, and secret refs are tracked by connection redaction.
 
-Manifest schema 12 and runner contract 12 are the only supported versions.
-Every current manifest includes a canonical `required_runner_release_id` derived
-from a verified `%Favn.RunnerRelease{}` descriptor; that field participates in
-the manifest content hash. Static
+Manifest schema 14 and runner contract 13 are the only supported versions.
+Every current manifest includes a canonical `runner_releases` map from
+operator-defined logical pool names to verified immutable runner releases; the
+complete map participates in the manifest content hash. Static
 asset and pipeline settings use `Favn.Settings`; top-level atom keys are retained
 for runtime access while nested maps normalize to JSON-safe string keys.
 `Favn.Run.Context`, `Favn.Run.AssetContext`, and `Favn.Run.PipelineContext`

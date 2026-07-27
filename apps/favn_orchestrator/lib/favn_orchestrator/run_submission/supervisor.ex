@@ -11,7 +11,7 @@ defmodule FavnOrchestrator.RunSubmission.Supervisor do
   alias FavnOrchestrator.Persistence
   alias FavnOrchestrator.RunSubmission.Coordinator
 
-  @defaults [
+  @default_options [
     global_concurrency: 8,
     per_workspace_concurrency: 2,
     workspace_page_size: 100,
@@ -30,7 +30,7 @@ defmodule FavnOrchestrator.RunSubmission.Supervisor do
   @impl true
   def init(opts) do
     config =
-      @defaults
+      @default_options
       |> Keyword.merge(Keyword.get(opts, :config, []))
       |> validate!()
 
@@ -82,10 +82,10 @@ defmodule FavnOrchestrator.RunSubmission.Supervisor do
 
   @doc false
   @spec defaults() :: keyword()
-  def defaults, do: @defaults
+  def defaults, do: @default_options
 
   defp validate!(config) do
-    expected = Keyword.keys(@defaults)
+    expected = Keyword.keys(@default_options)
 
     valid? =
       Keyword.keyword?(config) and Keyword.keys(config) -- expected == [] and

@@ -4,7 +4,7 @@ defmodule FavnOrchestrator.ApplicationTest do
   alias FavnOrchestrator.Lifecycle
   alias FavnOrchestrator.RunManager
 
-  defmodule TestRuntimeStarter do
+  defmodule TestRuntimeBootstrap do
     use GenServer
 
     def start_link(opts) do
@@ -29,8 +29,9 @@ defmodule FavnOrchestrator.ApplicationTest do
     assert {FavnOrchestrator.Lifecycle, lifecycle, :worker, [FavnOrchestrator.Lifecycle]} =
              List.keyfind(children, FavnOrchestrator.Lifecycle, 0)
 
-    assert {FavnOrchestrator.RuntimeStarter, starter, :worker, [FavnOrchestrator.RuntimeStarter]} =
-             List.keyfind(children, FavnOrchestrator.RuntimeStarter, 0)
+    assert {FavnOrchestrator.RuntimeBootstrap, starter, :worker,
+            [FavnOrchestrator.RuntimeBootstrap]} =
+             List.keyfind(children, FavnOrchestrator.RuntimeBootstrap, 0)
 
     assert is_pid(lifecycle)
     assert is_pid(starter)
@@ -41,13 +42,13 @@ defmodule FavnOrchestrator.ApplicationTest do
 
   test "a lifecycle crash restarts the dependent runtime and restores admission" do
     lifecycle = Process.whereis(FavnOrchestrator.Lifecycle)
-    starter = Process.whereis(FavnOrchestrator.RuntimeStarter)
+    starter = Process.whereis(FavnOrchestrator.RuntimeBootstrap)
 
     Process.exit(lifecycle, :kill)
 
     assert_eventually(fn ->
       restarted_lifecycle = Process.whereis(FavnOrchestrator.Lifecycle)
-      restarted_starter = Process.whereis(FavnOrchestrator.RuntimeStarter)
+      restarted_starter = Process.whereis(FavnOrchestrator.RuntimeBootstrap)
 
       is_pid(restarted_lifecycle) and restarted_lifecycle != lifecycle and
         is_pid(restarted_starter) and restarted_starter != starter and
@@ -73,7 +74,7 @@ defmodule FavnOrchestrator.ApplicationTest do
       ),
       Supervisor.child_spec({RunManager, name: manager_name}, id: :run_manager),
       Supervisor.child_spec(
-        {TestRuntimeStarter, name: starter_name, lifecycle: lifecycle_name},
+        {TestRuntimeBootstrap, name: starter_name, lifecycle: lifecycle_name},
         id: :starter
       )
     ]

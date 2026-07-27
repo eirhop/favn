@@ -31,9 +31,9 @@ defmodule FavnOrchestrator.TestRunnerTaskStore do
     end
 
     with runner when is_atom(runner) and not is_nil(runner) <-
-           Application.get_env(:favn_orchestrator, :runner_client),
+           Application.get_env(:favn_orchestrator, :test_runner_executor),
          {:ok, payload} <- PersistenceCodec.decode_payload(command.task_kind, command.payload) do
-      opts = Application.get_env(:favn_orchestrator, :runner_client_opts, [])
+      opts = Application.get_env(:favn_orchestrator, :test_runner_executor_opts, [])
       task = execute(command, runner, opts, payload)
       Process.put({__MODULE__, command.task_id}, task)
       {:ok, task}
@@ -217,8 +217,7 @@ defmodule FavnOrchestrator.TestRunnerTaskStore do
       payload_hash: command.payload_hash,
       orchestration_context: command.orchestration_context,
       assignment_generation: 0,
-      inserted_at: command.occurred_at,
-      updated_at: command.occurred_at
+      inserted_at: command.occurred_at
     }
 
     case result do

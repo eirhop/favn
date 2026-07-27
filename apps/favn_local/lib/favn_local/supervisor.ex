@@ -14,8 +14,9 @@ defmodule FavnLocal.Supervisor do
     publication = Keyword.fetch!(opts, :publication)
 
     lifecycle = %{
-      id: FavnLocal.Lifecycle,
-      start: {FavnLocal.Lifecycle, :start_link, [[config: config, publication: publication]]},
+      id: FavnLocal.DevelopmentRuntime,
+      start:
+        {FavnLocal.DevelopmentRuntime, :start_link, [[config: config, publication: publication]]},
       restart: :temporary,
       significant: true
     }

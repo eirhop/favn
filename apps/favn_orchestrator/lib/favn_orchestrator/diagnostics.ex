@@ -11,9 +11,8 @@ defmodule FavnOrchestrator.Diagnostics do
   alias FavnOrchestrator.Persistence.SystemContext
   alias FavnOrchestrator.ProjectionDiagnostics
   alias FavnOrchestrator.Redaction
-  alias FavnOrchestrator.RunnerClientValidator
-  alias FavnOrchestrator.RunnerDiagnostics
   alias FavnOrchestrator.RunManager
+  alias FavnOrchestrator.RunnerRegistry
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Runs
   alias FavnOrchestrator.RuntimeConfig
@@ -147,8 +146,7 @@ defmodule FavnOrchestrator.Diagnostics do
             workspace_id: workspace_id,
             manifest_version_id: version.manifest_version_id,
             content_hash: version.content_hash,
-            required_runner_release_id:
-              Favn.Manifest.Version.transitional_default_release!(version),
+            runner_releases: version.runner_releases,
             asset_count: length(version.manifest.assets),
             pipeline_count: length(version.manifest.pipelines),
             schedule_count: length(version.manifest.schedules)
@@ -196,43 +194,12 @@ defmodule FavnOrchestrator.Diagnostics do
   end
 
   defp runner_check do
-    runtime_config = RuntimeConfig.current()
-    module = runtime_config.runner_client
-    opts = runtime_config.runner_client_opts
+    case Process.whereis(RunnerRegistry) do
+      nil ->
+        error(:runner, "Runner registry is unavailable", %{}, :not_running)
 
-    case RunnerClientValidator.validate(module) do
-      :ok ->
-        details = %{client: module_name(module)}
-
-        if function_exported?(module, :diagnostics, 1) do
-          case module.diagnostics(opts) do
-            {:ok, runner_details} when is_map(runner_details) ->
-              case RunnerDiagnostics.validate_ready(runner_details, opts) do
-                {:ok, _release_id} ->
-                  ok(:runner, "Runner is available", Map.merge(details, runner_details))
-
-                {:error, reason} ->
-                  error(
-                    :runner,
-                    "Runner is unavailable",
-                    Map.merge(details, runner_details),
-                    reason
-                  )
-              end
-
-            {:error, reason} ->
-              error(:runner, "Runner is unavailable", details, normalize_error(reason))
-          end
-        else
-          ok(
-            :runner,
-            "Runner client is configured",
-            Map.put(details, :availability_probe, :not_supported)
-          )
-        end
-
-      {:error, reason} ->
-        error(:runner, "Runner client is unavailable", %{}, reason)
+      _pid ->
+        ok(:runner, "Runner registry is available", RunnerRegistry.snapshot())
     end
   end
 
@@ -316,10 +283,10 @@ defmodule FavnOrchestrator.Diagnostics do
       run_id: run.run_id,
       status: run.status,
       manifest_version_id: run.manifest_version_id,
-      required_runner_release_id: run.required_runner_release_id,
+      runner_releases: run.runner_releases,
       submit_kind: run.submit_kind,
       updated_at: run.updated_at,
-      runner_execution_id: nil
+      runner_task_id: nil
     }
   end
 
@@ -328,10 +295,10 @@ defmodule FavnOrchestrator.Diagnostics do
       run_id: run.id,
       status: run.status,
       manifest_version_id: run.manifest_version_id,
-      required_runner_release_id: run.required_runner_release_id,
+      runner_releases: run.runner_releases,
       submit_kind: run.submit_kind,
       updated_at: run.updated_at,
-      runner_execution_id: run.runner_execution_id
+      runner_task_id: run.runner_task_id
     }
   end
 

@@ -96,7 +96,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
       }
       |> generation_work(version, ref)
 
-    assert {:ok, result} = FavnRunner.run(work)
+    assert {:ok, result} = FavnRunner.TestExecution.run(work)
     assert result.status == :ok
 
     assert [
@@ -132,7 +132,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
       }
       |> generation_work(version, ref)
 
-    assert {:ok, %{status: :ok}} = FavnRunner.run(work)
+    assert {:ok, %{status: :ok}} = FavnRunner.TestExecution.run(work)
     assert_received {:connect_opts, :runner_sql_runtime, opts}
     assert Keyword.fetch!(opts, :required_catalogs) == []
     assert Keyword.fetch!(opts, :required_resources) == ["azure_extension", "landing_storage"]
@@ -179,7 +179,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
       }
       |> generation_work(version, ref)
 
-    assert {:ok, result} = FavnRunner.run(work)
+    assert {:ok, result} = FavnRunner.TestExecution.run(work)
     assert result.status == :ok
     assert_received {:connect_opts, :runner_sql_runtime, opts}
     assert Keyword.fetch!(opts, :required_catalogs) == ["int", "raw"]
@@ -215,7 +215,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
       }
       |> generation_work(version, ref)
 
-    assert {:ok, result} = FavnRunner.run(work)
+    assert {:ok, result} = FavnRunner.TestExecution.run(work)
     if result.status != :ok, do: flunk(inspect(result, pretty: true))
     assert [%{status: :ok}] = result.asset_results
   end
@@ -240,7 +240,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
       }
       |> generation_work(version, ref)
 
-    assert {:ok, %{status: :ok}} = FavnRunner.run(work)
+    assert {:ok, %{status: :ok}} = FavnRunner.TestExecution.run(work)
     assert_received {:materialize_params, ["run_sql_favn_runtime_inputs", ^run_started_at]}
   end
 
@@ -284,7 +284,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     refute_received {:connect_after_runtime_inputs, _resolved?}
 
     pinned = %{work | runtime_input_pin: Pin.new(work.run_id, {ref, nil}, resolution)}
-    assert {:ok, result} = FavnRunner.run(pinned)
+    assert {:ok, result} = FavnRunner.TestExecution.run(pinned)
     assert result.status == :ok
 
     assert_received {:connect_after_runtime_inputs, true}
@@ -335,7 +335,9 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     ref = {FavnRunner.ExecutionSQLAssetTest.SQLAsset, :asset}
     version = register_sql_manifest!(ref)
 
-    assert {:ok, result} = FavnRunner.run(work_for(version, ref, "run_sql_safe_connect_failure"))
+    assert {:ok, result} =
+             FavnRunner.TestExecution.run(work_for(version, ref, "run_sql_safe_connect_failure"))
+
     assert result.status == :error
 
     assert %RunnerError{retryable?: true, outcome: :safe_failure} = result.error
@@ -363,7 +365,9 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
       )
 
     assert {:ok, result} =
-             FavnRunner.run(work_for(version, ref, "run_sql_runtime_inputs_unpinned"))
+             FavnRunner.TestExecution.run(
+               work_for(version, ref, "run_sql_runtime_inputs_unpinned")
+             )
 
     assert result.status == :error
     assert [%{error: %{type: :runtime_inputs_invalid_result}}] = result.asset_results
@@ -401,7 +405,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
       |> Map.put(:trigger, %{window: requested_window})
 
     work = resolve_and_pin!(work)
-    assert {:ok, %{status: :ok}} = FavnRunner.run(work)
+    assert {:ok, %{status: :ok}} = FavnRunner.TestExecution.run(work)
     assert_received {:runtime_inputs_context, context}
     assert context.window.start_at == requested_start
     assert context.window.end_at == requested_end
@@ -646,7 +650,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
       |> Map.put(:params, %{submitted: 7})
       |> resolve_and_pin!()
 
-    assert {:ok, result} = FavnRunner.run(work)
+    assert {:ok, result} = FavnRunner.TestExecution.run(work)
     assert result.status == :error
     refute inspect(result, limit: :infinity) =~ "runtime-value"
     assert inspect(result, limit: :infinity) =~ "[REDACTED]"
@@ -682,7 +686,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
       |> work_for(ref, "run_checked_runtime_inputs")
       |> resolve_and_pin!()
 
-    assert {:ok, %{status: :ok}} = FavnRunner.run(work)
+    assert {:ok, %{status: :ok}} = FavnRunner.TestExecution.run(work)
 
     assert_received {:checked_query_params, ["runtime-value", "runtime-value"]}
   end
@@ -710,7 +714,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
       asset_ref: ref
     }
 
-    assert {:ok, result} = FavnRunner.run(work)
+    assert {:ok, result} = FavnRunner.TestExecution.run(work)
     if result.status != :ok, do: flunk(inspect(result, pretty: true))
     assert_received {:connect_opts, :runner_sql_runtime, opts}
     assert Keyword.fetch!(opts, :required_catalogs) == ["raw"]
@@ -731,7 +735,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
       }
       |> generation_work(version, ref)
 
-    assert {:ok, result} = FavnRunner.run(work)
+    assert {:ok, result} = FavnRunner.TestExecution.run(work)
     assert result.status == :error
 
     assert [asset_result] = result.asset_results
@@ -753,7 +757,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
       }
       |> generation_work(version, ref)
 
-    assert {:error, :execution_package_required} = FavnRunner.run(work)
+    assert {:error, :execution_package_required} = FavnRunner.TestExecution.run(work)
   end
 
   test "manifest sql execution preflights missing runtime connection before execution" do
@@ -773,7 +777,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
       }
       |> generation_work(version, ref)
 
-    assert {:ok, result} = FavnRunner.run(work)
+    assert {:ok, result} = FavnRunner.TestExecution.run(work)
     assert result.status == :error
 
     assert result.asset_results == []
@@ -801,7 +805,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
       }
       |> generation_work(version, ref)
 
-    assert {:ok, result} = FavnRunner.run(work)
+    assert {:ok, result} = FavnRunner.TestExecution.run(work)
     assert result.status == :error
     assert [asset_result] = result.asset_results
 
@@ -841,7 +845,9 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     ref = {FavnRunner.ExecutionSQLAssetTest.CheckedSQLAsset, :asset}
     version = register_checked_sql_manifest!(ref, checks)
 
-    assert {:ok, result} = FavnRunner.run(work_for(version, ref, "run_checked_warning"))
+    assert {:ok, result} =
+             FavnRunner.TestExecution.run(work_for(version, ref, "run_checked_warning"))
+
     assert result.status == :ok
     assert [asset_result] = result.asset_results
     assert asset_result.meta.quality_status == :warning
@@ -929,7 +935,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
         |> work_for(ref, "run_checked_incremental_#{name}")
         |> Map.put(:trigger, %{window: runtime_window})
 
-      assert {:ok, result} = FavnRunner.run(work)
+      assert {:ok, result} = FavnRunner.TestExecution.run(work)
       assert result.status == :ok
       assert [%{meta: %{write_outcome: :written}}] = result.asset_results
 
@@ -988,7 +994,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
       |> work_for(ref, "run_checked_incremental_missing_scope")
       |> Map.put(:trigger, %{window: runtime_window})
 
-    assert {:ok, result} = FavnRunner.run(work)
+    assert {:ok, result} = FavnRunner.TestExecution.run(work)
     assert result.status == :error
 
     assert [
@@ -1022,7 +1028,9 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     ref = {FavnRunner.ExecutionSQLAssetTest.CheckedFailureSQLAsset, :asset}
     version = register_checked_sql_manifest!(ref, checks)
 
-    assert {:ok, result} = FavnRunner.run(work_for(version, ref, "run_checked_failure"))
+    assert {:ok, result} =
+             FavnRunner.TestExecution.run(work_for(version, ref, "run_checked_failure"))
+
     assert result.status == :error
     assert [asset_result] = result.asset_results
     assert asset_result.meta.quality_status == :failed
@@ -1057,7 +1065,9 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     ref = {FavnRunner.ExecutionSQLAssetTest.CheckedRollbackFailureSQLAsset, :asset}
     version = register_checked_sql_manifest!(ref, checks)
 
-    assert {:ok, result} = FavnRunner.run(work_for(version, ref, "run_checked_rollback_failure"))
+    assert {:ok, result} =
+             FavnRunner.TestExecution.run(work_for(version, ref, "run_checked_rollback_failure"))
+
     assert result.status == :error
     assert [%{meta: meta}] = result.asset_results
     assert meta.transaction_outcome == :unknown
@@ -1086,7 +1096,9 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     ref = {FavnRunner.ExecutionSQLAssetTest.CheckedBeginFailureSQLAsset, :asset}
     version = register_checked_sql_manifest!(ref, checks)
 
-    assert {:ok, result} = FavnRunner.run(work_for(version, ref, "run_checked_begin_failure"))
+    assert {:ok, result} =
+             FavnRunner.TestExecution.run(work_for(version, ref, "run_checked_begin_failure"))
+
     assert result.status == :error
     assert [%{meta: meta}] = result.asset_results
     assert meta.transaction_outcome == :not_started
@@ -1126,7 +1138,9 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     ref = {FavnRunner.ExecutionSQLAssetTest.CheckedSkipSQLAsset, :asset}
     version = register_checked_sql_manifest!(ref, checks)
 
-    assert {:ok, result} = FavnRunner.run(work_for(version, ref, "run_checked_skip"))
+    assert {:ok, result} =
+             FavnRunner.TestExecution.run(work_for(version, ref, "run_checked_skip"))
+
     assert result.status == :ok
     assert [asset_result] = result.asset_results
     assert asset_result.meta.write_outcome == :no_op
@@ -1149,7 +1163,9 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     ref = {FavnRunner.ExecutionSQLAssetTest.CheckedSQLAsset, :asset}
     version = register_checked_sql_manifest!(ref, [], nil, contract)
 
-    assert {:ok, result} = FavnRunner.run(work_for(version, ref, "run_contract_schema"))
+    assert {:ok, result} =
+             FavnRunner.TestExecution.run(work_for(version, ref, "run_contract_schema"))
+
     assert [%{status: :ok, meta: meta}] = result.asset_results
     assert meta.contract_validation.status == :passed
     assert [%{name: "id", type: :integer}] = meta.contract_validation.expected_columns
@@ -1171,7 +1187,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     version = register_checked_sql_manifest!(ref, [], nil, contract)
 
     assert {:ok, missing_result} =
-             FavnRunner.run(work_for(version, ref, "run_contract_param_missing"))
+             FavnRunner.TestExecution.run(work_for(version, ref, "run_contract_param_missing"))
 
     assert missing_result.status == :error
     assert [%{error: %{type: :missing_query_param}}] = missing_result.asset_results
@@ -1183,7 +1199,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
       |> work_for(ref, "run_contract_param_valid")
       |> Map.put(:params, %{expected_rows: 1})
 
-    assert {:ok, valid_result} = FavnRunner.run(work)
+    assert {:ok, valid_result} = FavnRunner.TestExecution.run(work)
     assert valid_result.status == :ok
     assert_received :checked_connect
     assert_received {:checked_query_params, [1, 1]}
@@ -1202,7 +1218,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
       |> work_for(ref, "run_ordered_row_count_failure")
       |> Map.put(:params, %{expected_rows: 100})
 
-    assert {:ok, result} = FavnRunner.run(work)
+    assert {:ok, result} = FavnRunner.TestExecution.run(work)
     assert result.status == :error
     assert [%{meta: meta}] = result.asset_results
     assert meta.write_outcome == :rolled_back
@@ -1230,7 +1246,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
       |> work_for(ref, "run_ordered_row_count_no_op")
       |> Map.put(:params, %{expected_rows: 0})
 
-    assert {:ok, result} = FavnRunner.run(work)
+    assert {:ok, result} = FavnRunner.TestExecution.run(work)
     assert result.status == :ok
     assert [%{meta: meta}] = result.asset_results
     assert meta.write_outcome == :no_op
@@ -1257,7 +1273,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
       |> work_for(ref, "run_ordered_row_count_bootstrap")
       |> Map.put(:params, %{expected_rows: 0})
 
-    assert {:ok, result} = FavnRunner.run(work)
+    assert {:ok, result} = FavnRunner.TestExecution.run(work)
     assert result.status == :ok
     assert [%{meta: meta}] = result.asset_results
     assert meta.write_outcome == :written
@@ -1281,7 +1297,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
       |> work_for(ref, "run_reserved_runtime_param")
       |> Map.put(:params, %{"favn_run_id" => "spoofed-run"})
 
-    assert {:ok, result} = FavnRunner.run(work)
+    assert {:ok, result} = FavnRunner.TestExecution.run(work)
     assert result.status == :error
     assert [%{error: %{type: :binding_failure, details: details}}] = result.asset_results
     assert details.details == %{name: :favn_run_id, source: :params}
@@ -1310,7 +1326,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
       |> work_for(ref, "run_contract_param_resolved")
       |> resolve_and_pin!()
 
-    assert {:ok, result} = FavnRunner.run(work)
+    assert {:ok, result} = FavnRunner.TestExecution.run(work)
     assert result.status == :ok
     assert_received {:checked_query_params, [1, 1]}
   end
@@ -1326,7 +1342,9 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     ref = {FavnRunner.ExecutionSQLAssetTest.CheckedFailureSQLAsset, :asset}
     version = register_checked_sql_manifest!(ref, [], nil, contract)
 
-    assert {:ok, result} = FavnRunner.run(work_for(version, ref, "run_contract_mismatch"))
+    assert {:ok, result} =
+             FavnRunner.TestExecution.run(work_for(version, ref, "run_contract_mismatch"))
+
     assert result.status == :error
     assert [%{error: %{type: :contract_violation}, meta: meta}] = result.asset_results
     assert meta.contract_validation.status == :failed
@@ -1357,7 +1375,9 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     ref = {FavnRunner.ExecutionSQLAssetTest.CheckedBootstrapSQLAsset, :asset}
     version = register_checked_sql_manifest!(ref, checks)
 
-    assert {:ok, result} = FavnRunner.run(work_for(version, ref, "run_checked_bootstrap"))
+    assert {:ok, result} =
+             FavnRunner.TestExecution.run(work_for(version, ref, "run_checked_bootstrap"))
+
     assert result.status == :ok
     assert [%{meta: meta}] = result.asset_results
     assert [%{name: :existing_target_valid, outcome: :condition_skipped}] = meta.check_results
@@ -1386,7 +1406,9 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
       version = register_checked_sql_manifest!(ref, checks)
 
       assert {:ok, result} =
-               FavnRunner.run(work_for(version, ref, "run_checked_#{expected_reason}"))
+               FavnRunner.TestExecution.run(
+                 work_for(version, ref, "run_checked_#{expected_reason}")
+               )
 
       assert result.status == :error
       assert [%{meta: meta, error: error}] = result.asset_results
@@ -1413,7 +1435,9 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     ref = {FavnRunner.ExecutionSQLAssetTest.CheckedCleanupSQLAsset, :asset}
     version = register_checked_sql_manifest!(ref, checks)
 
-    assert {:ok, result} = FavnRunner.run(work_for(version, ref, "run_checked_cleanup"))
+    assert {:ok, result} =
+             FavnRunner.TestExecution.run(work_for(version, ref, "run_checked_cleanup"))
+
     assert result.status == :error
     assert [%{meta: %{write_outcome: :rolled_back}}] = result.asset_results
     assert_received {:checked_materialize, _write_plan}
@@ -1436,7 +1460,9 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     ref = {FavnRunner.ExecutionSQLAssetTest.CheckedCommitFailureSQLAsset, :asset}
     version = register_checked_sql_manifest!(ref, checks)
 
-    assert {:ok, result} = FavnRunner.run(work_for(version, ref, "run_checked_commit_failure"))
+    assert {:ok, result} =
+             FavnRunner.TestExecution.run(work_for(version, ref, "run_checked_commit_failure"))
+
     assert result.status == :error
     assert [%{error: error, meta: meta}] = result.asset_results
     assert [%{name: :candidate_valid, outcome: :passed}] = meta.check_results
@@ -1453,13 +1479,14 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
 
     request = %RelationInspectionRequest{
       manifest_version_id: version.manifest_version_id,
+      required_runner_release_id: FavnTestSupport.runner_release_id(),
       asset_ref: ref,
       include: nil
     }
 
     assert {:ok, result} = FavnRunner.Inspection.inspect_relation(request, version)
     assert result.asset_ref == ref
-    assert result.required_runner_release_id == version.required_runner_release_id
+    assert result.required_runner_release_id == Map.fetch!(version.runner_releases, "default")
     assert result.relation_ref.name == "manifest_sql_asset"
     assert result.relation == nil
     assert result.columns == []
@@ -1475,6 +1502,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
 
     request = %RelationInspectionRequest{
       manifest_version_id: version.manifest_version_id,
+      required_runner_release_id: FavnTestSupport.runner_release_id(),
       asset_ref: ref,
       include: [:sample],
       sample_limit: -1
@@ -1505,6 +1533,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
 
     request = %RelationInspectionRequest{
       manifest_version_id: version.manifest_version_id,
+      required_runner_release_id: FavnTestSupport.runner_release_id(),
       asset_ref: ref,
       include: [:row_count]
     }

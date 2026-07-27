@@ -19,7 +19,7 @@ defmodule FavnOrchestrator.TargetCompatibilityPlannerTest do
 
   @now ~U[2026-07-22 12:00:00Z]
 
-  defmodule RunnerClient do
+  defmodule RunnerExecutor do
     def ensure_manifest(version, opts) do
       send(Keyword.fetch!(opts, :test_pid), {:ensure_manifest, version.manifest_version_id})
       Application.get_env(:favn_orchestrator, :compatibility_test_ensure_result, :ok)
@@ -87,8 +87,8 @@ defmodule FavnOrchestrator.TargetCompatibilityPlannerTest do
   setup do
     previous =
       for key <- [
-            :runner_client,
-            :runner_client_opts,
+            :test_runner_executor,
+            :test_runner_executor_opts,
             :compatibility_test_inspection,
             :compatibility_test_bindings,
             :compatibility_test_versions,
@@ -99,8 +99,8 @@ defmodule FavnOrchestrator.TargetCompatibilityPlannerTest do
           into: %{},
           do: {key, Application.get_env(:favn_orchestrator, key, :missing)}
 
-    Application.put_env(:favn_orchestrator, :runner_client, RunnerClient)
-    Application.put_env(:favn_orchestrator, :runner_client_opts, test_pid: self())
+    Application.put_env(:favn_orchestrator, :test_runner_executor, RunnerExecutor)
+    Application.put_env(:favn_orchestrator, :test_runner_executor_opts, test_pid: self())
 
     stores =
       struct(Stores,
@@ -361,7 +361,7 @@ defmodule FavnOrchestrator.TargetCompatibilityPlannerTest do
     refute_received {:ensure_manifest, _active_manifest_id}
     assert_received {:inspect_relation, request}
     assert request.manifest_version_id == desired_version.manifest_version_id
-    assert request.required_runner_release_id == desired_version.required_runner_release_id
+    assert request.required_runner_release_id == release_id(desired_version)
     assert request.asset_ref == nil
     assert request.relation == active_asset.relation
   end
@@ -743,7 +743,7 @@ defmodule FavnOrchestrator.TargetCompatibilityPlannerTest do
   defp inspection(version, opts \\ []) do
     %RelationInspectionResult{
       asset_ref: {MyApp.SalesSummary, :asset},
-      required_runner_release_id: version.required_runner_release_id,
+      required_runner_release_id: release_id(version),
       relation_ref:
         RelationRef.new!(connection: :warehouse, schema: "gold", name: "sales_summary"),
       relation: Keyword.get(opts, :relation),
@@ -752,6 +752,11 @@ defmodule FavnOrchestrator.TargetCompatibilityPlannerTest do
       adapter: FavnTestSupport.TargetAdapter,
       inspected_at: @now
     }
+  end
+
+  defp release_id(version) do
+    {:ok, release_id} = Version.release_for_pool(version, :default)
+    release_id
   end
 
   defp put_versions(versions) do

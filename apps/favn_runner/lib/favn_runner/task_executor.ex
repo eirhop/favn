@@ -14,6 +14,7 @@ defmodule FavnRunner.TaskExecutor do
   alias Favn.Contracts.RunnerResult
   alias Favn.Contracts.RunnerTask.Assignment
   alias Favn.Contracts.RunnerWork
+  alias Favn.Manifest.ExecutionPackage
   alias Favn.Manifest.Version
   alias FavnRunner.GenerationOperations
   alias FavnRunner.Inspection
@@ -96,6 +97,8 @@ defmodule FavnRunner.TaskExecutor do
                asset_ref,
                work.execution_package
              ),
+           {:ok, package} <- ExecutionPackage.verify_for_asset(work.execution_package, asset),
+           work = %{work | execution_package: package},
            {:ok, worker} <- start_worker(assignment, work, manifest, asset, relations) do
         {:ok,
          %{

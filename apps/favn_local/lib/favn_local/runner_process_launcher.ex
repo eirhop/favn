@@ -1,4 +1,4 @@
-defmodule FavnLocal.RunnerChild do
+defmodule FavnLocal.RunnerProcessLauncher do
   @moduledoc false
 
   alias FavnLocal.Config
@@ -26,7 +26,7 @@ defmodule FavnLocal.RunnerChild do
           code_path_args() ++
           [
             "-e",
-            "FavnLocal.RunnerMain.run(#{inspect(config.root_dir)})"
+            "FavnLocal.RunnerProcess.run(#{inspect(config.root_dir)})"
           ]
 
       port =
@@ -71,13 +71,13 @@ defmodule FavnLocal.RunnerChild do
   @spec stop(child()) :: :ok
   def stop(%{node: runner_node}) when is_atom(runner_node) and not is_nil(runner_node) do
     if Node.ping(runner_node) == :pong do
-      :erpc.cast(runner_node, FavnLocal.RunnerMain, :stop, [])
+      :erpc.cast(runner_node, FavnLocal.RunnerProcess, :stop, [])
     end
 
     :ok
   end
 
-  def stop(%{node: nil}), do: :ok
+  def stop(%{node: nil, port: port}), do: close_port(port)
 
   @doc """
   Resolves the bounded OTP-assigned node atom from the registered runner PID.
@@ -123,5 +123,12 @@ defmodule FavnLocal.RunnerChild do
     |> Enum.map(&List.to_string/1)
     |> Enum.filter(&File.dir?/1)
     |> Enum.flat_map(&["-pa", &1])
+  end
+
+  defp close_port(port) when is_port(port) do
+    _ = Port.close(port)
+    :ok
+  catch
+    :error, :badarg -> :ok
   end
 end

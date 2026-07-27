@@ -59,6 +59,31 @@ defmodule FavnRunner.RunnerAgentTest do
     end
   end
 
+  defmodule RejectedControlPlane do
+    use GenServer
+
+    def start_link(owner), do: GenServer.start_link(__MODULE__, owner)
+
+    @impl true
+    def init(owner), do: {:ok, owner}
+
+    @impl true
+    def handle_call(:gateway, _from, owner), do: {:reply, {:ok, self()}, owner}
+
+    def handle_call({:register, registration, agent}, _from, owner) do
+      send(owner, {:rejected_registration, registration, agent})
+
+      {:reply,
+       {:ok,
+        %RunnerTask.RegistrationAck{
+          runner_instance_id: registration.runner_instance_id,
+          runner_session_generation: registration.runner_session_generation,
+          status: :rejected,
+          reason: :runner_lifecycle_mode_mismatch
+        }}, owner}
+    end
+  end
+
   defmodule FakeExecutor do
     use GenServer
 
@@ -368,7 +393,7 @@ defmodule FavnRunner.RunnerAgentTest do
         status: :persisted
       }
 
-      {:reply, {:ok, ack}, state}
+      {:reply, {:ok, ack}, %{state | assignment: nil}}
     end
   end
 
@@ -389,6 +414,24 @@ defmodule FavnRunner.RunnerAgentTest do
     assert_receive {:claimed, %RunnerTask.ClaimRequest{}}
     assert_receive {:claimed, %RunnerTask.ClaimRequest{}}, 500
     assert_receive {:runner_exit, 0}, 500
+    assert_eventually(fn -> not Process.alive?(agent) end)
+  end
+
+  test "a rejected boot registration exits non-zero" do
+    owner = self()
+    {:ok, control_plane} = start_supervised({RejectedControlPlane, owner})
+
+    agent =
+      start_supervised!(
+        {RunnerAgent,
+         name: nil,
+         connection: control_plane,
+         runner_pool: :duckdb,
+         exit_fun: fn status -> send(owner, {:runner_exit, status}) end}
+      )
+
+    assert_receive {:rejected_registration, %RunnerTask.Registration{}, ^agent}
+    assert_receive {:runner_exit, 1}, 500
     assert_eventually(fn -> not Process.alive?(agent) end)
   end
 
@@ -605,7 +648,7 @@ defmodule FavnRunner.RunnerAgentTest do
     owner = self()
     {:ok, control_plane} = start_supervised({FakeControlPlane, owner})
     {:ok, executor} = start_supervised({FakeExecutor, owner})
-    start_supervised!({FavnRunner.TaskResultBuffer, []})
+    :ok = FavnRunner.TaskResultBuffer.reset()
 
     agent =
       start_supervised!(
@@ -690,7 +733,7 @@ defmodule FavnRunner.RunnerAgentTest do
   test "a stale result fence is abandoned instead of retrying forever" do
     owner = self()
     {:ok, control_plane} = start_supervised({FakeControlPlane, self()})
-    start_supervised!({FavnRunner.TaskResultBuffer, []})
+    :ok = FavnRunner.TaskResultBuffer.reset()
 
     agent =
       start_supervised!(
@@ -743,7 +786,7 @@ defmodule FavnRunner.RunnerAgentTest do
 
   test "an active assignment re-registers before result delivery resumes" do
     {:ok, control_plane} = start_supervised({RestartingControlPlane, self()})
-    start_supervised!({FavnRunner.TaskResultBuffer, []})
+    :ok = FavnRunner.TaskResultBuffer.reset()
 
     agent =
       start_supervised!(
@@ -801,7 +844,7 @@ defmodule FavnRunner.RunnerAgentTest do
   test "an executing assignment re-registers before lease renewal resumes" do
     {:ok, control_plane} = start_supervised({RestartingControlPlane, self()})
     {:ok, executor} = start_supervised({FakeExecutor, self()})
-    start_supervised!({FavnRunner.TaskResultBuffer, []})
+    :ok = FavnRunner.TaskResultBuffer.reset()
 
     agent =
       start_supervised!(
@@ -841,7 +884,7 @@ defmodule FavnRunner.RunnerAgentTest do
   end
 
   test "runtime input resolution replays the exact committed payload after a lost acknowledgement" do
-    start_supervised!({FavnRunner.TaskResultBuffer, []})
+    :ok = FavnRunner.TaskResultBuffer.reset()
     {version, work} = runtime_input_version_and_work()
     {:ok, resolver_calls} = Agent.start_link(fn -> 0 end)
 
@@ -890,11 +933,7 @@ defmodule FavnRunner.RunnerAgentTest do
   end
 
   test "real task executor cancellation reaches a valid persisted acknowledgement" do
-    start_supervised!({FavnRunner.TaskResultBuffer, []})
-
-    start_supervised!(
-      {DynamicSupervisor, strategy: :one_for_one, name: FavnRunner.TaskExecutorSupervisor}
-    )
+    :ok = FavnRunner.TaskResultBuffer.reset()
 
     asset = %Favn.Manifest.Asset{
       ref: {__MODULE__.SlowAsset, :asset},
@@ -1000,11 +1039,7 @@ defmodule FavnRunner.RunnerAgentTest do
   end
 
   test "killing an asset executor also terminates its owned customer-code worker" do
-    start_supervised!({FavnRunner.TaskResultBuffer, []})
-
-    start_supervised!(
-      {DynamicSupervisor, strategy: :one_for_one, name: FavnRunner.TaskExecutorSupervisor}
-    )
+    :ok = FavnRunner.TaskResultBuffer.reset()
 
     asset = %Favn.Manifest.Asset{
       ref: {__MODULE__.SlowAsset, :asset},

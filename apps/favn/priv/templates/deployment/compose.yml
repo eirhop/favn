@@ -12,7 +12,7 @@ services:
       FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD: ${FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD}
       FAVN_WORKSPACE_IDS: ${FAVN_WORKSPACE_IDS}
       FAVN_CONTROL_PLANE_NODE: favn_control_plane@control-plane
-      FAVN_RUNNER_NODE: favn_runner@runner
+      FAVN_RUNNER_POOLS: '{"default":{"mode":"resident"}}'
       FAVN_DISTRIBUTION_COOKIE: ${FAVN_DISTRIBUTION_COOKIE}
       FAVN_BEAM_DISTRIBUTION_PORT: "9100"
       FAVN_VIEW_SECRET_KEY_BASE: ${FAVN_VIEW_SECRET_KEY_BASE}
@@ -24,15 +24,13 @@ services:
       - "4173:4173"
     networks:
       - favn-private
-    depends_on:
-      runner:
-        condition: service_healthy
     restart: unless-stopped
 
   runner:
     image: ${FAVN_RUNNER_IMAGE:?set FAVN_RUNNER_IMAGE to an immutable digest}
     environment:
-      FAVN_RUNNER_NODE: favn_runner@runner
+      FAVN_RUNNER_NODE_HOST_ALIAS: runner
+      FAVN_RUNNER_POOL: default
       FAVN_CONTROL_PLANE_NODE: favn_control_plane@control-plane
       FAVN_DISTRIBUTION_COOKIE: ${FAVN_DISTRIBUTION_COOKIE}
       FAVN_BEAM_DISTRIBUTION_PORT: "9100"

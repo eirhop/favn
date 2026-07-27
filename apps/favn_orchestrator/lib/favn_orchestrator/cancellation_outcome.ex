@@ -1,6 +1,6 @@
 defmodule FavnOrchestrator.CancellationOutcome do
   @moduledoc """
-  Orchestrator-facing cancellation outcome for one runner execution.
+  Orchestrator-facing cancellation outcome for one durable runner task.
 
   The runner reports execution facts; the orchestrator normalizes those facts into
   this DTO before persisting cleanup state or deciding whether a run can be safely
@@ -18,7 +18,7 @@ defmodule FavnOrchestrator.CancellationOutcome do
           | :unknown_runner_outcome
 
   @type t :: %__MODULE__{
-          execution_id: String.t(),
+          task_id: String.t(),
           status: status(),
           runner_status: atom() | nil,
           native_status: atom() | nil,
@@ -27,9 +27,9 @@ defmodule FavnOrchestrator.CancellationOutcome do
           error: term()
         }
 
-  @enforce_keys [:execution_id, :status]
+  @enforce_keys [:task_id, :status]
   defstruct [
-    :execution_id,
+    :task_id,
     :status,
     :runner_status,
     :native_status,
@@ -40,10 +40,10 @@ defmodule FavnOrchestrator.CancellationOutcome do
 
   @doc "Builds a cancellation outcome from a runner cancel response."
   @spec from_runner_result(String.t(), term()) :: t()
-  def from_runner_result(execution_id, {:ok, %{status: status} = outcome})
-      when is_binary(execution_id) and is_atom(status) do
+  def from_runner_result(task_id, {:ok, %{status: status} = outcome})
+      when is_binary(task_id) and is_atom(status) do
     %__MODULE__{
-      execution_id: execution_id,
+      task_id: task_id,
       status: normalize_status(status),
       runner_status: status,
       native_status: optional_atom(Map.get(outcome, :native_status)),
@@ -53,13 +53,13 @@ defmodule FavnOrchestrator.CancellationOutcome do
     }
   end
 
-  def from_runner_result(execution_id, :ok) when is_binary(execution_id) do
-    %__MODULE__{execution_id: execution_id, status: :acknowledged, runner_status: :acknowledged}
+  def from_runner_result(task_id, :ok) when is_binary(task_id) do
+    %__MODULE__{task_id: task_id, status: :acknowledged, runner_status: :acknowledged}
   end
 
-  def from_runner_result(execution_id, {:error, error}) when is_binary(execution_id) do
+  def from_runner_result(task_id, {:error, error}) when is_binary(task_id) do
     %__MODULE__{
-      execution_id: execution_id,
+      task_id: task_id,
       status: :best_effort_failed,
       runner_status: :error,
       reason_class: classify_reason(error),
@@ -67,9 +67,9 @@ defmodule FavnOrchestrator.CancellationOutcome do
     }
   end
 
-  def from_runner_result(execution_id, other) when is_binary(execution_id) do
+  def from_runner_result(task_id, other) when is_binary(task_id) do
     %__MODULE__{
-      execution_id: execution_id,
+      task_id: task_id,
       status: :unknown_runner_outcome,
       runner_status: :unknown,
       reason_class: classify_reason(other),
@@ -100,7 +100,7 @@ defmodule FavnOrchestrator.CancellationOutcome do
   @spec to_map(t()) :: map()
   def to_map(%__MODULE__{} = outcome) do
     %{
-      execution_id: outcome.execution_id,
+      task_id: outcome.task_id,
       status: outcome.status,
       runner_status: outcome.runner_status,
       native_status: outcome.native_status,

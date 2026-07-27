@@ -109,29 +109,9 @@ Runtime nodes never migrate at boot.
 Use this database procedure together with the immutable runtime sequence in
 [`upgrade_and_rollback.md`](upgrade_and_rollback.md).
 
-1. Record the current image and active manifest IDs, then run candidate-image
-   preflight with a read-capable database role:
-
-   Run the fixed operation wrapper from the candidate image. The env file must
-   contain the normal production release environment plus a read-capable
-   database URL; pin the image by digest:
-
-   ```bash
-   docker run --rm \
-     --env-file /secure/favn-preflight.env \
-     --entrypoint /app/bin/favn_control_plane_ops \
-     ghcr.io/eirhop/favn-control-plane@sha256:<digest> \
-     preflight-upgrade
-   ```
-
-   An error has code `:runner_identity_upgrade_blocked`. Its
-   `:active_legacy_manifests` sample field identifies active deployments that
-   still point at pre-runner-identity manifests; `:nonterminal_legacy_runs`
-   identifies unfinished runs still bound to them. Republish and activate an
-   aligned current manifest, then explicitly finish or terminate every listed
-   legacy run during the maintenance window before completing the upgrade. The
-   result reports total and per-category blocker counts and at most 100 samples
-   from each category, with `truncated?: true` when more remain.
+1. Record the current image digest, active manifest IDs, and runner release map
+   for every workspace. Favn is pre-v1 and the storage schema is reset-only:
+   upgrades do not upconvert manifests or runs written by an older schema.
 2. Confirm a current backup/PITR recovery point and recent successful restore drill.
 3. Prevent rollout of runtime code that requires the new schema.
 4. Run the candidate image with the migrator identity to apply migrations and
@@ -203,42 +183,31 @@ events contain a bounded duration measurement and metadata limited to operation,
 status, and a stable error code; logs must never contain database URLs,
 credentials, TLS material, or key values.
 
-## Manifest activation and runner alignment
+## Manifest activation and runner release overlap
 
-Manifest publication is safe while the runner is offline: it validates and stores
-an immutable staged release without changing any workspace deployment. Activation
-is the compatibility gate. For the exact staged manifest, the control plane:
+Publication validates and stores an immutable manifest carrying the complete
+logical pool-to-release map. Activation validates the workspace target
+selection and commits that exact manifest; it does not require a runner to be
+online. This allows a control plane with elastic pools at zero and avoids
+coupling deployment changes to runner cold start.
 
-1. validates the requested workspace target selection;
-2. requires runner diagnostics to report both explicit readiness and a canonical
-   runner release id;
-3. requires that id to equal the manifest's `required_runner_release_id`;
-4. verifies or registers the manifest in the runner cache; and
-5. commits the immutable deployment and active pointer.
+Each admitted run pins the deployment ID, manifest ID, content hash, and
+pool-to-release map. Each durable task then pins one exact pool/release
+partition. Runners claim only a matching partition and stale assignment
+generations are fenced.
 
-A runner outage or incomplete diagnostics returns `runner_unavailable` and leaves
-the active deployment unchanged. A release mismatch returns
-`runner_release_mismatch` with only the required and actual release ids. A cache
-collision returns `runner_manifest_conflict`. Both are conflicts and also leave the
-active deployment unchanged. Audit records and operator responses include release
-ids, never runner paths, environment values, or secrets.
+During rollout or rollback:
 
-Monitor `manifest_publication_succeeded`, `manifest_publication_rejected`,
-`manifest_activation_succeeded`, `manifest_activation_rejected`, and
-`runner_release_diagnostics_checked` on the orchestrator telemetry prefix. The
-diagnostic event reports bounded latency and readiness status. A mismatch reports
-only the required and actual release ids. Activation rejection audit records use a
-stable `rejection_reason`; they deliberately omit selection, deployment
-configuration, environment values, and raw runner errors.
+1. publish the new manifest and deploy its matching runner Job definitions;
+2. keep old and new pool/release partitions available concurrently;
+3. activate the intended manifest;
+4. monitor exact demand, queue age, assignment expiry, and result delivery;
+5. require the old partition's release-drain endpoint to report `drained`;
+6. remove the old Job/image definition.
 
-Every admitted run pins the deployment id, manifest id, manifest content hash, and
-runner release id. Recovery rechecks this tuple before starting a run server. After
-an upgrade, historical terminal snapshots without a release binding remain visible
-for audit; a pending or running legacy snapshot fails closed with
-`legacy_runner_release_unbound`. Do not edit those rows. Republish an aligned
-manifest for new work and resolve or terminate legacy work through an explicit
-maintenance decision before reopening admission.
-7. Roll out remaining nodes gradually.
+Activation audit records include the bounded `runner_releases` map and stable
+reason codes, never image registry credentials, environment values, or runner
+process addresses.
 
 Readiness rejects PostgreSQL majors other than 18, a mismatched catalog-definition
 fingerprint (column types/nullability/defaults plus every constraint and index on

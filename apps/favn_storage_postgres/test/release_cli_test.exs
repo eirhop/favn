@@ -11,7 +11,6 @@ defmodule FavnStoragePostgres.ReleaseCLITest do
     def verify_restore, do: ok(:verify_restore)
     def grant_runtime, do: ok(:grant_runtime)
     def runtime_input_key_inventory, do: ok(:runtime_input_key_inventory)
-    def preflight_upgrade, do: ok(:preflight_upgrade)
 
     def provision_workspace(workspace),
       do: {:ok, Map.merge(%{operation: :provision_workspace, status: :ok}, workspace)}

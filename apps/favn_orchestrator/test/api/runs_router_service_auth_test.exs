@@ -214,6 +214,32 @@ defmodule FavnOrchestrator.API.RunsRouterServiceAuthTest do
     assert get_in(Jason.decode!(response.resp_body), ["error", "code"]) == "validation_failed"
   end
 
+  test "run storage failures are reported as unavailable rather than bad requests" do
+    Process.put(
+      :runs_router_list_error,
+      FavnOrchestrator.Persistence.Error.new(:internal, "internal persistence failure")
+    )
+
+    response = list_request()
+
+    assert response.status == 500
+    assert get_in(Jason.decode!(response.resp_body), ["error", "code"]) == "runs_unavailable"
+  end
+
+  test "run event storage failures are reported as unavailable rather than bad requests" do
+    Process.put(
+      :runs_router_events_error,
+      FavnOrchestrator.Persistence.Error.new(:internal, "internal persistence failure")
+    )
+
+    response = events_request("run-1")
+
+    assert response.status == 500
+
+    assert get_in(Jason.decode!(response.resp_body), ["error", "code"]) ==
+             "run_events_unavailable"
+  end
+
   test "platform operator service token reaches run submission without actor headers" do
     response = submit_request()
 

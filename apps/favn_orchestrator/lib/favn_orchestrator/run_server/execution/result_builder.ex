@@ -49,7 +49,7 @@ defmodule FavnOrchestrator.RunServer.Execution.ResultBuilder do
         %{
           asset_ref: asset_ref,
           node_key: node_key,
-          execution_id: execution_id,
+          task_id: task_id,
           execution_pool: execution_pool,
           freshness_key: freshness_key
         },
@@ -80,7 +80,7 @@ defmodule FavnOrchestrator.RunServer.Execution.ResultBuilder do
       attempt_count: asset_result_field(asset_result, :attempt_count) || attempt,
       max_attempts:
         asset_result_field(asset_result, :max_attempts) || node.retry_policy.max_attempts,
-      runner_execution_id: execution_id,
+      runner_task_id: task_id,
       meta: map_field(asset_result, :meta),
       error: asset_result_field(asset_result, :error),
       attempts: list_field(asset_result, :attempts),

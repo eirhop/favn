@@ -16,8 +16,6 @@ defmodule FavnOrchestrator.RuntimeConfig do
   @max_auth_session_ttl_seconds 2_592_000
 
   @type t :: %__MODULE__{
-          runner_client: module() | nil,
-          runner_client_opts: keyword(),
           workspace_ids: [String.t()],
           api_server: keyword(),
           scheduler: keyword(),
@@ -32,9 +30,7 @@ defmodule FavnOrchestrator.RuntimeConfig do
         }
   @type error :: {:invalid_runtime_config, {atom(), term()}}
 
-  defstruct runner_client: nil,
-            runner_client_opts: [],
-            workspace_ids: [],
+  defstruct workspace_ids: [],
             api_server: [],
             scheduler: [],
             run_submissions: [],
@@ -98,8 +94,6 @@ defmodule FavnOrchestrator.RuntimeConfig do
   @spec from_app_env() :: t()
   def from_app_env do
     normalize!(
-      runner_client: Application.get_env(:favn_orchestrator, :runner_client, nil),
-      runner_client_opts: Application.get_env(:favn_orchestrator, :runner_client_opts, []),
       workspace_ids: Application.get_env(:favn_orchestrator, :workspace_ids, []),
       api_server: Application.get_env(:favn_orchestrator, :api_server, []),
       scheduler: Application.get_env(:favn_orchestrator, :scheduler, []),
@@ -138,8 +132,6 @@ defmodule FavnOrchestrator.RuntimeConfig do
   end
 
   def normalize(attrs) when is_list(attrs) do
-    runner_client = Keyword.get(attrs, :runner_client, nil)
-    runner_client_opts = Keyword.get(attrs, :runner_client_opts, [])
     workspace_ids = Keyword.get(attrs, :workspace_ids, [])
     api_server = Keyword.get(attrs, :api_server, [])
     scheduler = Keyword.get(attrs, :scheduler, [])
@@ -153,9 +145,7 @@ defmodule FavnOrchestrator.RuntimeConfig do
     auth_session_ttl_seconds =
       Keyword.get(attrs, :auth_session_ttl_seconds, @default_auth_session_ttl_seconds)
 
-    with :ok <- validate_module_or_nil(:runner_client, runner_client),
-         {:ok, runner_client_opts} <- validate_keyword(:runner_client_opts, runner_client_opts),
-         :ok <- validate_workspace_ids(workspace_ids),
+    with :ok <- validate_workspace_ids(workspace_ids),
          {:ok, api_server} <- validate_keyword(:api_server, api_server),
          {:ok, scheduler} <- validate_keyword(:scheduler, scheduler),
          {:ok, run_submissions} <- validate_keyword(:run_submissions, run_submissions),
@@ -167,8 +157,6 @@ defmodule FavnOrchestrator.RuntimeConfig do
          :ok <- validate_auth_session_ttl(auth_session_ttl_seconds) do
       {:ok,
        %__MODULE__{
-         runner_client: runner_client,
-         runner_client_opts: runner_client_opts,
          workspace_ids: workspace_ids,
          api_server: api_server,
          scheduler: scheduler,
@@ -260,12 +248,6 @@ defmodule FavnOrchestrator.RuntimeConfig do
   defp dynamic_env_override?(_name), do: false
 
   defp persistent_key(name), do: {__MODULE__, name}
-
-  defp validate_module_or_nil(_field, nil), do: :ok
-  defp validate_module_or_nil(field, module), do: validate_module(field, module)
-
-  defp validate_module(_field, module) when is_atom(module), do: :ok
-  defp validate_module(field, value), do: {:error, {:invalid_runtime_config, {field, value}}}
 
   defp validate_keyword(field, opts) when is_list(opts) do
     if Keyword.keyword?(opts) do

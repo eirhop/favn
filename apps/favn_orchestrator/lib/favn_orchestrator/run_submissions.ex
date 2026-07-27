@@ -377,8 +377,6 @@ defmodule FavnOrchestrator.RunSubmissions do
     Map.get(metadata, :pipeline_identity_ref) || Map.get(metadata, "pipeline_identity_ref")
   end
 
-  defp pipeline_identity_ref(_metadata), do: nil
-
   defp semantic_options(opts), do: Keyword.drop(opts, @control_options)
 
   defp cancellable_submission?(%RunSubmission{status: status})

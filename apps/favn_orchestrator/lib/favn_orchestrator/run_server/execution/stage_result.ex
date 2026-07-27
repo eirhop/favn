@@ -27,9 +27,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageResult do
 
   @type settlement_context :: %{
           required(:stage) => non_neg_integer(),
-          required(:attempt) => pos_integer(),
-          required(:runner_client) => module(),
-          required(:runner_opts) => keyword()
+          required(:attempt) => pos_integer()
         }
 
   @type settlement_result ::
@@ -47,7 +45,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageResult do
       Snapshots.snapshot_update(run_state,
         status: :timed_out,
         error: :timeout,
-        runner_execution_id: nil
+        runner_task_id: nil
       )
 
     {:error, timed_out, results, StageAttemptState.attempted_node_keys(state)}
@@ -62,16 +60,14 @@ defmodule FavnOrchestrator.RunServer.Execution.StageResult do
         } = state,
         entry,
         await_result,
-        %{stage: stage, attempt: attempt, runner_client: runner_client, runner_opts: runner_opts}
+        %{stage: stage, attempt: attempt}
       ) do
     if Persistence.externally_cancelled?(current_run) do
       cancelled =
-        cancel_execution_ids(
+        cancel_task_ids(
           current_run,
-          ActiveTaskSet.inflight_task_ids(current_run),
-          %{kind: :external_cancel},
-          runner_client,
-          runner_opts
+          ActiveTaskSet.active_runner_task_ids(current_run),
+          %{kind: :external_cancel}
         )
 
       :ok = ActiveTaskSet.fail_entry_claim(entry, :external_cancel)
@@ -84,9 +80,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageResult do
     else
       case process_one_result(current_run, entry, await_result, %{
              stage: stage,
-             attempt: attempt,
-             runner_client: runner_client,
-             runner_opts: runner_opts
+             attempt: attempt
            }) do
         {:settled, next_run, outcome, step_results} ->
           settle_processed_result(
@@ -142,7 +136,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageResult do
         retry_refs: state.retry_refs,
         retry_delays: state.retry_delays,
         terminal_failure: state.terminal_failure,
-        pending_ids: MapSet.delete(state.pending_ids, entry.execution_id)
+        pending_ids: MapSet.delete(state.pending_ids, entry.task_id)
       },
       %{entry: entry, stage: stage, attempt: attempt}
     )
@@ -206,7 +200,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageResult do
         status: step_status,
         error: result.error,
         metadata: ResultSanitizer.merge_metadata(run_state.metadata, result.metadata),
-        runner_execution_id: nil
+        runner_task_id: nil
       )
 
     data = %{
@@ -246,17 +240,15 @@ defmodule FavnOrchestrator.RunServer.Execution.StageResult do
 
   defp process_one_result(
          %RunState{} = run_state,
-         %{asset_ref: asset_ref, execution_id: execution_id} = entry,
+         %{asset_ref: asset_ref, task_id: task_id} = entry,
          {:error, :timeout},
-         %{stage: stage, attempt: attempt, runner_client: runner_client, runner_opts: runner_opts}
+         %{stage: stage, attempt: attempt}
        ) do
     cleared =
-      cancel_execution_ids(
+      cancel_task_ids(
         run_state,
-        [execution_id],
-        %{kind: :await_timeout, asset_ref: asset_ref, stage: stage, attempt: attempt},
-        runner_client,
-        runner_opts
+        [task_id],
+        %{kind: :await_timeout, asset_ref: asset_ref, stage: stage, attempt: attempt}
       )
 
     node_result =
@@ -266,7 +258,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageResult do
       RunState.transition(cleared,
         status: :timed_out,
         error: :timeout,
-        runner_execution_id: nil
+        runner_task_id: nil
       )
 
     data = %{
@@ -301,23 +293,21 @@ defmodule FavnOrchestrator.RunServer.Execution.StageResult do
 
   defp process_one_result(
          %RunState{} = run_state,
-         %{asset_ref: asset_ref, execution_id: execution_id} = entry,
+         %{asset_ref: asset_ref, task_id: task_id} = entry,
          {:error, reason},
-         %{stage: stage, attempt: attempt, runner_client: runner_client, runner_opts: runner_opts}
+         %{stage: stage, attempt: attempt}
        ) do
     cleared =
-      cancel_execution_ids(
+      cancel_task_ids(
         run_state,
-        [execution_id],
+        [task_id],
         %{
           kind: :await_error,
           asset_ref: asset_ref,
           stage: stage,
           attempt: attempt,
           error: reason
-        },
-        runner_client,
-        runner_opts
+        }
       )
 
     node_result = ResultBuilder.execution_result(cleared, entry, stage, attempt, :error, [])
@@ -326,7 +316,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageResult do
       RunState.transition(cleared,
         status: :error,
         error: reason,
-        runner_execution_id: nil
+        runner_task_id: nil
       )
 
     data = %{
@@ -577,20 +567,20 @@ defmodule FavnOrchestrator.RunServer.Execution.StageResult do
     if MapSet.size(pending_ids) == 0 do
       {:ok, run_state, terminal_failure}
     else
-      pending_execution_ids = MapSet.to_list(pending_ids)
+      pending_task_ids = MapSet.to_list(pending_ids)
 
       metadata =
         Map.put(run_state.metadata, :stage_draining_after_failure, %{
           stage: stage,
           attempt: attempt,
           failed_asset_ref: entry.asset_ref,
-          pending_execution_ids: pending_execution_ids
+          pending_task_ids: pending_task_ids
         })
 
       draining =
         RunState.transition(run_state,
           status: :running,
-          runner_execution_id: List.first(pending_execution_ids),
+          runner_task_id: List.first(pending_task_ids),
           metadata: metadata
         )
 
@@ -598,7 +588,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageResult do
         stage: stage,
         attempt: attempt,
         failed_asset_ref: entry.asset_ref,
-        pending_execution_ids: pending_execution_ids
+        pending_task_ids: pending_task_ids
       }
 
       retry = PersistenceRetry.new(draining, :stage_draining_after_failure, data, nil)
@@ -618,7 +608,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageResult do
     Snapshots.snapshot_update(run_state,
       status: status,
       error: error,
-      runner_execution_id: nil
+      runner_task_id: nil
     )
   end
 
@@ -626,26 +616,22 @@ defmodule FavnOrchestrator.RunServer.Execution.StageResult do
     Snapshots.snapshot_update(step_state,
       status: :error,
       error: %{type: :post_step_persistence_failed, reason: reason},
-      runner_execution_id: nil
+      runner_task_id: nil
     )
   end
 
-  defp cancel_execution_ids(
+  defp cancel_task_ids(
          %RunState{} = run_state,
-         execution_ids,
-         reason,
-         runner_client,
-         runner_opts
+         task_ids,
+         reason
        )
-       when is_list(execution_ids) do
-    _ = runner_client
-    _ = runner_opts
-    cancel_results = Cancellation.dispatch_runner_tasks(run_state, execution_ids, reason)
+       when is_list(task_ids) do
+    cancel_results = Cancellation.dispatch_runner_tasks(run_state, task_ids, reason)
 
     confirmed_ids =
       cancel_results
       |> Enum.filter(&CancellationOutcome.confirmed?/1)
-      |> Enum.map(& &1.execution_id)
+      |> Enum.map(& &1.task_id)
 
     run_state
     |> put_cancel_outcomes(cancel_results)
@@ -657,16 +643,16 @@ defmodule FavnOrchestrator.RunServer.Execution.StageResult do
 
     ids =
       run_state
-      |> ActiveTaskSet.inflight_task_ids()
+      |> ActiveTaskSet.active_runner_task_ids()
       |> Enum.reject(&MapSet.member?(rejected, &1))
 
     Snapshots.snapshot_update(run_state,
       metadata:
         run_state.metadata
-        |> Map.delete(:in_flight_execution_ids)
-        |> Map.delete("in_flight_execution_ids")
-        |> Map.put(:in_flight_task_ids, ids),
-      runner_execution_id: nil
+        |> Map.delete(:active_runner_task_ids)
+        |> Map.delete("active_runner_task_ids")
+        |> Map.put(:active_runner_task_ids, ids),
+      runner_task_id: nil
     )
   end
 

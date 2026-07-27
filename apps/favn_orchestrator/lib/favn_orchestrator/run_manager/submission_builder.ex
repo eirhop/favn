@@ -349,7 +349,6 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
       manifest_version_id: version.manifest_version_id,
       manifest_content_hash: version.content_hash,
       runner_releases: version.runner_releases,
-      required_runner_release_id: Map.get(version.runner_releases, "default"),
       asset_ref: asset_ref,
       target_refs: plan.target_refs,
       plan: plan,
@@ -371,7 +370,7 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
   end
 
   defp release_metadata(%RunState{} = run, metadata) when is_map(metadata) do
-    Map.put(metadata, :required_runner_release_id, run.required_runner_release_id)
+    Map.put(metadata, :runner_releases, run.runner_releases)
   end
 
   defp build_rerun_submission(%RunState{} = source_run, opts) when is_list(opts) do
@@ -663,8 +662,8 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
       "cancel_requested_at",
       :cancel_forward_error,
       "cancel_forward_error",
-      :in_flight_execution_ids,
-      "in_flight_execution_ids"
+      :active_runner_task_ids,
+      "active_runner_task_ids"
     ])
   end
 

@@ -9,10 +9,11 @@ during development or publish it for the customer.
 | Identity | Meaning |
 | --- | --- |
 | Runner contract version | Control-plane/runner protocol compatibility |
+| Runner pool | User-defined image, capability, network, or compute boundary |
 | Runner release ID | Immutable ID assigned to one customer runner build |
 | Runner image digest | Exact OCI image deployed by the customer |
 | Manifest version ID | Immutable authored manifest and package identity |
-| Required runner release ID | Exact runner release permitted to execute a manifest |
+| Runner release map | Exact release permitted for each effective runner pool |
 
 A production runner identity always has build profile `prod` and target
 `linux/amd64`. Docker-free local development uses build profile `source` and
@@ -61,7 +62,7 @@ Build in the consumer project with the same ID:
 
 ```bash
 MIX_ENV=prod mix favn.build.manifest \
-  --runner-release-id "$FAVN_RUNNER_RELEASE_ID"
+  --runner-release "default=$FAVN_RUNNER_RELEASE_ID"
 ```
 
 The immutable bundle is written below
@@ -83,9 +84,10 @@ mix favn.activate \
   --manifest-version <manifest_version_id>
 ```
 
-The runner advertises its release ID at boot. Activation and dispatch fail
-closed unless it exactly matches the manifest.
+Each runner advertises its pool and release ID at boot. Activation is allowed
+with zero runners; durable work waits until a runner with the exact pool/release
+pair claims it. An incompatible runner cannot claim the task.
 
-Keep the current and previous control-plane digest, runner digest, runner
-release ID, manifest version, database schema version, and environment revision
-as rollback tuples.
+Keep the current and previous control-plane digest, runner digests, runner
+pool/release map, manifest version, database schema version, and environment
+revision as rollback tuples.

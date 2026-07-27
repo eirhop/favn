@@ -232,7 +232,7 @@ defmodule FavnOrchestrator.API.DTOTest do
       duration_ms: 100,
       window: %{key: "window:day", label: "Jan 2"},
       input_versions: [%{upstream_ref: {SampleAsset, :raw_orders}, freshness_version: "raw:v1"}],
-      runner_execution_id: "runner-1",
+      runner_task_id: "runner-1",
       meta: %{
         rows_written: 0,
         relation: "gold.orders",
@@ -257,7 +257,7 @@ defmodule FavnOrchestrator.API.DTOTest do
       submit_kind: :manual,
       manifest_version_id: "manifest_1",
       manifest_content_hash: "hash_1",
-      required_runner_release_id: FavnTestSupport.runner_release_id(),
+      runner_releases: %{"default" => FavnTestSupport.runner_release_id()},
       event_seq: 3,
       started_at: @now,
       finished_at: @later,
@@ -292,7 +292,7 @@ defmodule FavnOrchestrator.API.DTOTest do
              target_label: "Elixir.SamplePipeline:daily",
              target_refs: ["Elixir.SampleAsset:orders"],
              manifest_version_id: "manifest_1",
-             required_runner_release_id: FavnTestSupport.runner_release_id(),
+             runner_releases: %{"default" => FavnTestSupport.runner_release_id()},
              event_seq: 3,
              started_at: DateTime.to_iso8601(@now),
              finished_at: DateTime.to_iso8601(@later)
@@ -301,7 +301,7 @@ defmodule FavnOrchestrator.API.DTOTest do
     refute Map.has_key?(summary, :asset_results)
     refute Map.has_key?(summary, :error)
     assert detail.params == %{"api_token" => "[REDACTED]", "limit" => 5}
-    assert detail.required_runner_release_id == FavnTestSupport.runner_release_id()
+    assert detail.runner_releases == %{"default" => FavnTestSupport.runner_release_id()}
     assert detail.window_selection["intent"] == "manual"
     assert detail.window_selection["expansion"] == "none"
     assert length(detail.window_selection["requested_anchors"]) == 1
@@ -350,7 +350,7 @@ defmodule FavnOrchestrator.API.DTOTest do
              }
            ]
 
-    assert node.result["runner_execution_id"] == "runner-1"
+    assert node.result["runner_task_id"] == "runner-1"
   end
 
   test "asset results sort plain normalized maps with string keys" do

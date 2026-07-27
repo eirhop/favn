@@ -17,7 +17,7 @@ defmodule FavnOrchestrator.RunServer.Snapshots do
   def cancelled_terminal(%RunState{} = run_state, acc_results) do
     snapshot_update(run_state,
       status: :cancelled,
-      runner_execution_id: nil,
+      runner_task_id: nil,
       error: cancelled_error(run_state),
       result: %{
         status: :cancelled,
@@ -31,7 +31,7 @@ defmodule FavnOrchestrator.RunServer.Snapshots do
   @spec terminalize_failed_run(RunState.t(), [term()]) :: RunState.t()
   def terminalize_failed_run(%RunState{} = failed_run, all_results) do
     snapshot_update(failed_run,
-      runner_execution_id: nil,
+      runner_task_id: nil,
       result: %{
         status: failed_run.status,
         asset_results: Enum.take(all_results, @max_terminal_results),
@@ -55,19 +55,19 @@ defmodule FavnOrchestrator.RunServer.Snapshots do
   def cancelled_snapshot(%RunState{} = run_state), do: cancelled_terminal(run_state, [])
 
   @doc "Removes completed in-flight execution IDs without advancing the durable event sequence."
-  @spec clear_inflight_executions(RunState.t(), [String.t()]) :: RunState.t()
-  def clear_inflight_executions(%RunState{} = run_state, execution_ids)
-      when is_list(execution_ids) do
-    removed = Enum.filter(execution_ids, &is_binary/1)
+  @spec clear_inflight_tasks(RunState.t(), [String.t()]) :: RunState.t()
+  def clear_inflight_tasks(%RunState{} = run_state, task_ids)
+      when is_list(task_ids) do
+    removed = Enum.filter(task_ids, &is_binary/1)
 
     ids =
       run_state.metadata
-      |> Map.get(:in_flight_execution_ids, [])
-      |> normalize_execution_ids()
+      |> Map.get(:active_runner_task_ids, [])
+      |> normalize_task_ids()
       |> Kernel.--(removed)
 
     snapshot_update(run_state,
-      metadata: Map.put(run_state.metadata, :in_flight_execution_ids, ids)
+      metadata: Map.put(run_state.metadata, :active_runner_task_ids, ids)
     )
   end
 
@@ -95,6 +95,6 @@ defmodule FavnOrchestrator.RunServer.Snapshots do
 
   defp cancelled_error(%RunState{}), do: {:cancelled, %{reason: :external_cancel_request}}
 
-  defp normalize_execution_ids(ids) when is_list(ids), do: Enum.filter(ids, &is_binary/1)
-  defp normalize_execution_ids(_ids), do: []
+  defp normalize_task_ids(ids) when is_list(ids), do: Enum.filter(ids, &is_binary/1)
+  defp normalize_task_ids(_ids), do: []
 end

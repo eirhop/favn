@@ -1,4 +1,4 @@
-defmodule FavnRunner.ResultRetention do
+defmodule FavnRunner.ResultCompactor do
   @moduledoc false
 
   alias Favn.Contracts.RunnerAssetResult

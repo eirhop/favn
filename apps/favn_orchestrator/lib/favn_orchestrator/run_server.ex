@@ -10,12 +10,10 @@ defmodule FavnOrchestrator.RunServer do
   use GenServer
 
   alias Favn.Manifest.Version
-  alias FavnOrchestrator.CancellationOutcome
   alias FavnOrchestrator.OperationalEvents
   alias FavnOrchestrator.Persistence.SystemContext
   alias FavnOrchestrator.Persistence.Results.RunOwnership, as: Ownership
   alias FavnOrchestrator.RunExecutionCleanup
-  alias FavnOrchestrator.RunExecutionOwnership
   alias FavnOrchestrator.RunOwnership
   alias FavnOrchestrator.RunServer.Execution
   alias FavnOrchestrator.RunServer.Execution.RunExecutionState
@@ -93,7 +91,7 @@ defmodule FavnOrchestrator.RunServer do
     terminal =
       Snapshots.snapshot_update(run_state,
         status: :error,
-        runner_execution_id: nil,
+        runner_task_id: nil,
         error: %{
           "kind" => "uncertain_runner_recovery",
           "type" => "uncertain_runner_recovery",
@@ -362,7 +360,6 @@ defmodule FavnOrchestrator.RunServer do
 
     case Persistence.persist_run_step(finalized, terminal_event_type, data) do
       :ok ->
-        maybe_complete_active_ownerships(finalized)
         :ok = RunExecutionCleanup.release_admission(finalized)
 
         stop_normally(state, finalized)
@@ -383,7 +380,6 @@ defmodule FavnOrchestrator.RunServer do
 
     case Persistence.persist_run_step(finalized, pending.event_type, pending.data) do
       :ok ->
-        maybe_complete_active_ownerships(finalized)
         :ok = RunExecutionCleanup.release_admission(finalized)
 
         state
@@ -409,47 +405,6 @@ defmodule FavnOrchestrator.RunServer do
         )
     end
   end
-
-  defp maybe_complete_active_ownerships(%RunState{} = run) do
-    if ownership_completion_safe?(run) do
-      complete_active_ownerships(run)
-    else
-      :ok
-    end
-  end
-
-  defp complete_active_ownerships(%RunState{} = run) do
-    case RunExecutionOwnership.complete_active(run) do
-      :ok ->
-        :ok
-
-      {:error, reason} ->
-        OperationalEvents.emit(
-          :run_execution_ownership_completion_failed,
-          %{},
-          %{run_id: run.id, reason: reason},
-          level: :warning
-        )
-
-        :ok
-    end
-  end
-
-  defp ownership_completion_safe?(%RunState{metadata: metadata}) when is_map(metadata) do
-    outcomes = Map.get(metadata, :cancel_outcomes, Map.get(metadata, "cancel_outcomes", []))
-
-    ledger_error =
-      Map.get(
-        metadata,
-        :cancellation_ledger_persist_error,
-        Map.get(metadata, "cancellation_ledger_persist_error")
-      )
-
-    is_nil(ledger_error) and
-      (outcomes == [] or Enum.all?(outcomes, &CancellationOutcome.confirmed?/1))
-  end
-
-  defp ownership_completion_safe?(%RunState{}), do: true
 
   defp schedule_terminal_persist_retry(
          state,

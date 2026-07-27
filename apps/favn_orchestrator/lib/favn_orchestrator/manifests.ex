@@ -153,7 +153,6 @@ defmodule FavnOrchestrator.Manifests do
       schema_version: version.schema_version,
       runner_contract_version: version.runner_contract_version,
       runner_releases: version.runner_releases,
-      required_runner_release_id: transitional_default_release(version),
       asset_count: length(List.wrap(version.manifest.assets)),
       pipeline_count: length(List.wrap(version.manifest.pipelines)),
       schedule_count: length(List.wrap(version.manifest.schedules))
@@ -167,7 +166,6 @@ defmodule FavnOrchestrator.Manifests do
       schema_version: runtime.schema_version,
       runner_contract_version: runtime.runner_contract_version,
       runner_releases: runtime.runner_releases,
-      required_runner_release_id: runtime.required_runner_release_id,
       asset_count: runtime.asset_count,
       pipeline_count: runtime.pipeline_count,
       schedule_count: runtime.schedule_count
@@ -286,7 +284,6 @@ defmodule FavnOrchestrator.Manifests do
         status: :rejected,
         manifest_version_id: version.manifest_version_id,
         runner_releases: version.runner_releases,
-        required_runner_release_id: transitional_default_release(version),
         reason: bounded_reason(reason)
       },
       level: :warning
@@ -295,20 +292,13 @@ defmodule FavnOrchestrator.Manifests do
     version
   end
 
-  defp transitional_default_release(version) do
-    case Version.transitional_default_release(version) do
-      {:ok, release_id} -> release_id
-      {:error, _reason} -> nil
-    end
-  end
-
   defp emit_activation_result(context, manifest_version_id, {:ok, runtime}) do
     OperationalEvents.emit(:manifest_activation_succeeded, %{count: 1}, %{
       status: :activated,
       workspace_id: context.workspace_id,
       deployment_id: runtime.deployment_id,
       manifest_version_id: manifest_version_id,
-      required_runner_release_id: runtime.required_runner_release_id,
+      runner_releases: runtime.runner_releases,
       revision: runtime.revision
     })
   end

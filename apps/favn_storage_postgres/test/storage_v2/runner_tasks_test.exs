@@ -2,6 +2,8 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
   use ExUnit.Case, async: false
 
   alias Ecto.Adapters.SQL
+  alias Favn.Manifest
+  alias Favn.Manifest.Version
   alias Favn.Contracts.RelationInspectionRequest
   alias Favn.Contracts.RelationInspectionResult
   alias Favn.Contracts.RunnerTask.LeaseRenewal
@@ -11,6 +13,7 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
   alias FavnOrchestrator.Persistence.Queries, as: Q
   alias FavnOrchestrator.Persistence.WorkspaceContext
   alias FavnOrchestrator.RunnerTasks
+  alias FavnOrchestrator.RunnerGateway
   alias FavnOrchestrator.RunnerRegistry
   alias FavnOrchestrator.RunnerQueueSupervisor
   alias FavnOrchestrator.RunServer.Execution.ActiveTaskSet
@@ -22,6 +25,7 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
   alias FavnStoragePostgres.RunnerTasks.Store
   alias FavnStoragePostgres.Schemas.RunnerCapacityDemand, as: Demand
   alias FavnStoragePostgres.StorageV2.Migrations
+  alias FavnStoragePostgres.TestSupport.DistributedRunnerAgent
 
   @release "rr_" <> String.duplicate("a", 64)
   @other_release "rr_" <> String.duplicate("b", 64)
@@ -1172,6 +1176,208 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
     assert projected.healthy?
   end
 
+  @tag :slow
+  @tag timeout: 360_000
+  test "a cold distributed BEAM runner reaches Started within five minutes", fixture do
+    start_runner_control_plane()
+    version = manifest_version("mv-cold-runner-#{random_id()}", fixture.runner_pool)
+
+    assert {:ok, ^version} =
+             RegistryStore.register_manifest(%C.RegisterManifest{
+               platform_context: fixture.platform_context,
+               version: version
+             })
+
+    payload = %RelationInspectionRequest{
+      manifest_version_id: version.manifest_version_id,
+      manifest_content_hash: version.content_hash,
+      required_runner_release_id: @release,
+      include: [:columns],
+      sample_limit: 0
+    }
+
+    assert {:ok, queued} =
+             Store.enqueue(enqueue_command(fixture, "cold-work", payload: payload))
+
+    telemetry_handler = {__MODULE__, :cold_runner_started, make_ref()}
+
+    :ok =
+      :telemetry.attach(
+        telemetry_handler,
+        [:favn, :runner_task, :started],
+        fn _event, measurements, metadata, owner ->
+          send(owner, {:runner_task_started, measurements, metadata})
+        end,
+        self()
+      )
+
+    on_exit(fn -> :telemetry.detach(telemetry_handler) end)
+    runnable_at = System.monotonic_time(:millisecond)
+
+    with_distributed_peer(fn peer ->
+      runner_id = "actual-cold-runner-#{random_id()}"
+      assert {:ok, _started} = start_actual_runner(peer, node(), runner_id, fixture.runner_pool)
+
+      assert_receive {:runner_task_started, %{count: 1},
+                      %{
+                        task_id: task_id,
+                        runner_instance_id: ^runner_id,
+                        runner_pool: runner_pool
+                      }},
+                     300_000
+
+      latency_ms = System.monotonic_time(:millisecond) - runnable_at
+
+      assert task_id == queued.task_id
+      assert runner_pool == fixture.runner_pool
+      assert RunnerRegistry.count(fixture.runner_pool, @release) == 1
+      assert latency_ms < 300_000
+      assert_eventually(fn -> :sys.get_state(RunnerGateway) == %{} end)
+
+      agent = :peer.call(peer, Process, :whereis, [FavnRunner.RunnerAgent], 30_000)
+      assert is_pid(agent)
+
+      assert {:message_queue_len, agent_mailbox} =
+               :peer.call(peer, Process, :info, [
+                 agent,
+                 :message_queue_len
+               ])
+
+      assert agent_mailbox <= 16
+
+      assert %{count: buffered_logs, dropped: dropped_logs} =
+               :peer.call(peer, FavnRunner.TaskResultBuffer, :stats, [], 30_000)
+
+      assert buffered_logs <= 50
+      assert dropped_logs == 0
+
+      IO.puts(
+        "elastic runner actual cold-start latency_ms=#{latency_ms} " <>
+          "agent_mailbox=#{agent_mailbox} buffered_logs=#{buffered_logs}"
+      )
+    end)
+  end
+
+  @tag :slow
+  @tag timeout: 360_000
+  test "three pools preserve exact demand through 0, 1, 10, and 100 distributed runners",
+       fixture do
+    tasks_per_pool = 1_000
+    runner_counts = [0, 1, 10, 100]
+
+    pool_fixtures =
+      ~w(pure_elixir duckdb private_network)
+      |> Enum.with_index(1)
+      |> Enum.map(fn {pool, index} ->
+        %{fixture | runner_pool: "#{pool}_#{index}_#{random_id()}"}
+      end)
+
+    Application.put_env(
+      :favn_orchestrator,
+      :runner_pools,
+      Map.new(pool_fixtures, &{&1.runner_pool, %{mode: :elastic}})
+    )
+
+    Enum.each(pool_fixtures, fn pool_fixture ->
+      1..tasks_per_pool
+      |> Task.async_stream(
+        fn index ->
+          Store.enqueue(
+            enqueue_command(pool_fixture, "scale-#{pool_fixture.runner_pool}-#{index}")
+          )
+        end,
+        max_concurrency: 16,
+        ordered: false,
+        timeout: 30_000
+      )
+      |> Enum.each(fn result -> assert {:ok, {:ok, _task}} = result end)
+    end)
+
+    start_runner_control_plane()
+
+    Enum.each(pool_fixtures, fn pool_fixture ->
+      assert RunnerRegistry.count(pool_fixture.runner_pool, @release) == 0
+      assert {:ok, %{queued_count: ^tasks_per_pool, active_count: 0}} = demand(pool_fixture)
+    end)
+
+    with_distributed_peer(fn peer ->
+      gateway = {RunnerGateway, node()}
+
+      {_claimed, agents, samples} =
+        Enum.reduce(runner_counts, {0, [], []}, fn
+          0, accumulator ->
+            accumulator
+
+          runner_count, {previously_claimed, agents, samples} ->
+            cohort_ref = make_ref()
+            runnable_at = System.monotonic_time(:millisecond)
+
+            cohort_agents =
+              Enum.flat_map(pool_fixtures, fn pool_fixture ->
+                spawn_distributed_agents(
+                  peer,
+                  runner_count,
+                  self(),
+                  cohort_ref,
+                  gateway,
+                  pool_fixture.runner_pool,
+                  "#{runner_count}"
+                )
+              end)
+
+            cohort_samples =
+              await_started(cohort_ref, runner_count * length(pool_fixtures), runnable_at)
+
+            assert length(Enum.uniq_by(cohort_samples, & &1.task_id)) ==
+                     length(cohort_samples)
+
+            assert Enum.all?(cohort_samples, &(&1.mailbox_len <= 4))
+            assert_eventually(fn -> :sys.get_state(RunnerGateway) == %{} end)
+
+            claimed_count = previously_claimed + runner_count
+
+            Enum.each(pool_fixtures, fn pool_fixture ->
+              assert RunnerRegistry.count(pool_fixture.runner_pool, @release) == claimed_count
+
+              assert {:ok,
+                      %{
+                        outstanding_count: ^tasks_per_pool,
+                        queued_count: queued_count,
+                        active_count: ^claimed_count,
+                        healthy?: true
+                      }} = demand(pool_fixture)
+
+              assert queued_count == tasks_per_pool - claimed_count
+            end)
+
+            {claimed_count, agents ++ cohort_agents, samples ++ cohort_samples}
+        end)
+
+      p95_ms =
+        samples
+        |> Enum.map(& &1.latency_ms)
+        |> Enum.sort()
+        |> Enum.at(floor(length(samples) * 0.95) - 1)
+
+      assert p95_ms < 300_000
+
+      assert {:message_queue_len, gateway_mailbox} =
+               Process.info(Process.whereis(RunnerGateway), :message_queue_len)
+
+      assert {:message_queue_len, registry_mailbox} =
+               Process.info(Process.whereis(RunnerRegistry), :message_queue_len)
+
+      assert gateway_mailbox <= 16
+      assert registry_mailbox <= 16
+      Enum.each(agents, &send(&1, :stop))
+
+      IO.puts(
+        "elastic runner distributed scale runners=#{length(samples)} p95_ms=#{p95_ms} " <>
+          "gateway_mailbox=#{gateway_mailbox} registry_mailbox=#{registry_mailbox}"
+      )
+    end)
+  end
+
   test "claim query uses the pool release FIFO index", fixture do
     assert {:ok, _task} = Store.enqueue(enqueue_command(fixture, "explain"))
 
@@ -1257,15 +1463,162 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
     end
   end
 
+  defp start_runner_control_plane do
+    start_runner_registry()
+
+    case Process.whereis(FavnOrchestrator.RunnerClaimSupervisor) do
+      nil ->
+        start_supervised!({Task.Supervisor, name: FavnOrchestrator.RunnerClaimSupervisor})
+
+      _pid ->
+        :ok
+    end
+
+    case Process.whereis(RunnerGateway) do
+      nil -> start_supervised!({RunnerGateway, []})
+      _pid -> :ok
+    end
+  end
+
+  defp with_distributed_peer(fun) do
+    with_distribution(fn ->
+      peer_name =
+        "favn_storage_runner_#{System.unique_integer([:positive])}"
+        |> String.to_charlist()
+
+      assert {:ok, peer, _peer_node} =
+               :peer.start_link(%{
+                 name: peer_name,
+                 host: ~c"127.0.0.1",
+                 longnames: true,
+                 connection: :standard_io,
+                 wait_boot: 30_000
+               })
+
+      try do
+        assert :ok = :peer.call(peer, :code, :add_paths, [:code.get_path()], 30_000)
+        load_remote_module(peer, DistributedRunnerAgent)
+        fun.(peer)
+      after
+        if Process.alive?(peer), do: :peer.stop(peer)
+      end
+    end)
+  end
+
+  defp load_remote_module(peer, module) do
+    assert {^module, binary, filename} = :code.get_object_code(module)
+    assert {:module, ^module} = :peer.call(peer, :code, :load_binary, [module, filename, binary])
+  end
+
+  defp start_actual_runner(peer, control_plane_node, runner_id, runner_pool) do
+    environment = %{
+      "FAVN_CONTROL_PLANE_NODE" => Atom.to_string(control_plane_node),
+      "FAVN_RUNNER_RELEASE_ID" => @release,
+      "FAVN_RUNNER_BUILD_PROFILE" => "source",
+      "FAVN_RUNNER_POOL" => runner_pool,
+      "FAVN_RUNNER_INSTANCE_ID" => runner_id,
+      "FAVN_RUNNER_LIFECYCLE_MODE" => "elastic"
+    }
+
+    assert :ok = :peer.call(peer, System, :put_env, [environment], 30_000)
+    :peer.call(peer, Application, :ensure_all_started, [:favn_runner], 120_000)
+  end
+
+  defp with_distribution(fun) do
+    started_distribution? = not Node.alive?()
+
+    if started_distribution? do
+      assert {_, 0} = System.cmd("epmd", ["-daemon"], stderr_to_stdout: true)
+
+      client_name =
+        String.to_atom("favn_storage_runner_test_#{System.unique_integer([:positive])}@127.0.0.1")
+
+      assert {:ok, _pid} = Node.start(client_name, name_domain: :longnames)
+    end
+
+    try do
+      fun.()
+    after
+      if started_distribution?, do: Node.stop()
+    end
+  end
+
+  defp spawn_distributed_agents(
+         peer,
+         count,
+         owner,
+         cohort_ref,
+         gateway,
+         runner_pool,
+         cohort
+       ) do
+    Enum.map(1..count, fn index ->
+      runner_id =
+        "runner-#{cohort}-#{index}-#{random_id()}"
+
+      :peer.call(
+        peer,
+        :erlang,
+        :spawn,
+        [
+          DistributedRunnerAgent,
+          :claim_and_start,
+          [owner, cohort_ref, gateway, runner_id, runner_pool, @release]
+        ],
+        30_000
+      )
+    end)
+  end
+
+  defp await_started(cohort_ref, count, runnable_at),
+    do: await_started(cohort_ref, count, runnable_at, [])
+
+  defp await_started(_cohort_ref, 0, _runnable_at, samples), do: Enum.reverse(samples)
+
+  defp await_started(cohort_ref, remaining, runnable_at, samples) do
+    receive do
+      {:distributed_runner_started, ^cohort_ref, agent, runner_id, task_id, runner_pool,
+       mailbox_len} ->
+        sample = %{
+          agent: agent,
+          runner_id: runner_id,
+          task_id: task_id,
+          runner_pool: runner_pool,
+          mailbox_len: mailbox_len,
+          latency_ms: System.monotonic_time(:millisecond) - runnable_at
+        }
+
+        await_started(cohort_ref, remaining - 1, runnable_at, [sample | samples])
+
+      {:distributed_runner_failed, ^cohort_ref, runner_id, failure} ->
+        flunk("distributed runner #{runner_id} failed: #{inspect(failure)}")
+    after
+      300_000 ->
+        flunk("timed out waiting for #{remaining} distributed runners to reach Started")
+    end
+  end
+
+  defp assert_eventually(fun, attempts \\ 200)
+  defp assert_eventually(_fun, 0), do: flunk("condition did not become true")
+
+  defp assert_eventually(fun, attempts) do
+    if fun.() do
+      :ok
+    else
+      Process.sleep(10)
+      assert_eventually(fun, attempts - 1)
+    end
+  end
+
   defp cancellation_run(fixture, task_id) do
     RunState.new(
       id: "run-cancel:" <> task_id,
       workspace_id: fixture.workspace_id,
       manifest_version_id: "mv_runner_task",
       manifest_content_hash: String.duplicate("a", 64),
-      required_runner_release_id: @release,
+      runner_releases: %{"default" => @release},
       asset_ref: {MyApp.RunnerTaskCancellation, :asset},
-      metadata: %{in_flight_task_ids: [task_id]}
+      metadata: %{active_runner_task_ids: [task_id]}
     )
   end
 
@@ -1400,6 +1753,31 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
       include: [:columns],
       sample_limit: 0
     }
+  end
+
+  defp manifest_version(manifest_version_id, runner_pool) do
+    manifest = %Manifest{
+      metadata: %{"fixture_id" => manifest_version_id},
+      assets: [
+        %Favn.Manifest.Asset{
+          ref: {MyApp.DistributedRunnerAsset, :asset},
+          module: MyApp.DistributedRunnerAsset,
+          name: :asset,
+          runner_pool: runner_pool
+        }
+      ],
+      pipelines: []
+    }
+
+    {:ok, version} =
+      Version.new(
+        manifest
+        |> FavnTestSupport.with_manifest_contract(%{runner_pool => @release})
+        |> FavnTestSupport.with_manifest_graph(),
+        manifest_version_id: manifest_version_id
+      )
+
+    version
   end
 
   defp random_id,

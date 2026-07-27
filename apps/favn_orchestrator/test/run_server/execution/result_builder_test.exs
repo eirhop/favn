@@ -18,7 +18,7 @@ defmodule FavnOrchestrator.RunServer.Execution.ResultBuilderTest do
     entry = %{
       asset_ref: @second_ref,
       node_key: node_key,
-      execution_id: "exec_1",
+      task_id: "rt_1",
       execution_pool: :fallback,
       freshness_key: "latest"
     }
@@ -50,7 +50,7 @@ defmodule FavnOrchestrator.RunServer.Execution.ResultBuilderTest do
                duration_ms: 25,
                attempt_count: 2,
                max_attempts: 3,
-               runner_execution_id: "exec_1",
+               runner_task_id: "rt_1",
                meta: %{worker: "runner@node"},
                attempts: [%{attempt: 1}],
                asset_step_id: "step_1"
@@ -146,7 +146,7 @@ defmodule FavnOrchestrator.RunServer.Execution.ResultBuilderTest do
       id: "run_result_builder",
       manifest_version_id: "mv_1",
       manifest_content_hash: "hash_1",
-      required_runner_release_id: FavnTestSupport.runner_release_id(),
+      runner_releases: %{"default" => FavnTestSupport.runner_release_id()},
       asset_ref: @second_ref,
       target_refs: [@second_ref],
       plan: plan,

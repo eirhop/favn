@@ -9,9 +9,8 @@ case "${1:-}" in
   provision-workspace) operation=provision_workspace ;;
   runtime-input-key-inventory) operation=runtime_input_key_inventory ;;
   compact-runtime-input-keys) operation=compact_runtime_input_keys ;;
-  preflight-upgrade) operation=preflight_upgrade ;;
   *)
-    echo "usage: favn_control_plane_ops {migrate|verify-schema|verify-restore|grant-runtime|provision-workspace|runtime-input-key-inventory|compact-runtime-input-keys|preflight-upgrade}" >&2
+    echo "usage: favn_control_plane_ops {migrate|verify-schema|verify-restore|grant-runtime|provision-workspace|runtime-input-key-inventory|compact-runtime-input-keys}" >&2
     exit 64
     ;;
 esac

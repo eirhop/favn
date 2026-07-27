@@ -55,7 +55,7 @@ are described in
 
 - [`report/`](report/) contains point-in-time audits. Findings may already be
   resolved; use Git history and current technical docs before acting on them.
-- [`refactor/`](refactor/) contains historical migration plans and completed phase
+- [`archive/refactor/`](archive/refactor/) contains historical migration plans and completed phase
   notes; it is not an active backlog.
 - [`archive/`](archive/) contains explicitly retired material.
 - `DOCUMENTATION_PLAN.md` records the original documentation initiative and is

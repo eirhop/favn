@@ -26,7 +26,7 @@ defmodule FavnOrchestrator.RunStateTest do
     assert RunState.for_step_persistence(finalized) == finalized
   end
 
-  test "new runs require an immutable runner release identity" do
+  test "new runs require an immutable runner release map" do
     opts = [
       id: "run-release-required",
       manifest_version_id: "manifest-version",
@@ -36,11 +36,12 @@ defmodule FavnOrchestrator.RunStateTest do
 
     assert_raise KeyError, fn -> RunState.new(opts) end
 
-    run = RunState.new(Keyword.put(opts, :required_runner_release_id, release_id()))
+    releases = %{"default" => release_id()}
+    run = RunState.new(Keyword.put(opts, :runner_releases, releases))
 
     assert_raise ArgumentError, ~r/release identity is immutable/, fn ->
       RunState.transition(run,
-        required_runner_release_id: FavnTestSupport.runner_release_id(:alternate)
+        runner_releases: %{"default" => FavnTestSupport.runner_release_id(:alternate)}
       )
     end
   end
@@ -65,7 +66,7 @@ defmodule FavnOrchestrator.RunStateTest do
       workspace_id: "workspace-step-persistence",
       manifest_version_id: "manifest-version",
       manifest_content_hash: String.duplicate("a", 64),
-      required_runner_release_id: release_id(),
+      runner_releases: %{"default" => release_id()},
       asset_ref: {__MODULE__, :asset}
     )
   end

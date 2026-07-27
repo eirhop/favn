@@ -39,8 +39,7 @@ defmodule FavnOrchestrator.OperationRunnerTasksTest do
               orchestration_context: command.orchestration_context,
               assignment_generation: 0,
               enqueued_at: command.occurred_at,
-              inserted_at: command.occurred_at,
-              updated_at: command.occurred_at
+              inserted_at: command.occurred_at
             }
 
             next = %{

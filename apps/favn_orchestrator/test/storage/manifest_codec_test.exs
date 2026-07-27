@@ -17,7 +17,7 @@ defmodule FavnOrchestrator.Storage.ManifestCodecTest do
 
     assert {:ok, record} = ManifestCodec.to_record(version)
     assert record.manifest_version_id == "mv_codec"
-    assert record.required_runner_release_id == FavnTestSupport.runner_release_id()
+    assert record.runner_releases == %{"default" => FavnTestSupport.runner_release_id()}
 
     assert {:ok, decoded} = ManifestCodec.from_record(record)
     assert decoded.manifest_version_id == version.manifest_version_id
@@ -38,24 +38,11 @@ defmodule FavnOrchestrator.Storage.ManifestCodecTest do
     assert expected == String.duplicate("0", 64)
   end
 
-  test "uses the canonical manifest release map rather than the transitional column" do
+  test "round-trips the canonical manifest release map" do
     version = manifest_version("mv_codec_release_binding")
     assert {:ok, record} = ManifestCodec.to_record(version)
 
-    assert {:ok, decoded} =
-             record
-             |> Map.delete(:required_runner_release_id)
-             |> ManifestCodec.from_record()
-
-    assert decoded.runner_releases == version.runner_releases
-
-    assert {:ok, decoded} =
-             record
-             |> Map.put(
-               :required_runner_release_id,
-               FavnTestSupport.runner_release_id(:alternate)
-             )
-             |> ManifestCodec.from_record()
+    assert {:ok, decoded} = ManifestCodec.from_record(record)
 
     assert decoded.runner_releases == version.runner_releases
   end

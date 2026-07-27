@@ -39,7 +39,7 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
        Snapshots.snapshot_update(state.run,
          status: :ok,
          error: nil,
-         runner_execution_id: nil,
+         runner_task_id: nil,
          result:
            ResultBuilder.pipeline_result(
              state.run,
@@ -66,7 +66,7 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
     step_finished =
       RunState.transition(state.run,
         status: step_status,
-        runner_execution_id: nil,
+        runner_task_id: nil,
         error: result.error,
         metadata: metadata
       )
@@ -103,7 +103,7 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
 
   def handle_result(%RunExecutionState{} = state, entry, {:error, :timeout}) do
     state =
-      cancel_work(state, [entry.execution_id], %{
+      cancel_work(state, [entry.task_id], %{
         kind: :await_timeout,
         asset_ref: entry.asset_ref,
         stage: entry.stage,
@@ -113,7 +113,7 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
     timeout_state =
       RunState.transition(state.run,
         status: :timed_out,
-        runner_execution_id: nil,
+        runner_task_id: nil,
         error: :timeout
       )
 
@@ -144,7 +144,7 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
 
   def handle_result(%RunExecutionState{} = state, entry, {:error, reason}) do
     state =
-      cancel_work(state, [entry.execution_id], %{
+      cancel_work(state, [entry.task_id], %{
         kind: :await_error,
         asset_ref: entry.asset_ref,
         stage: entry.stage,
@@ -155,7 +155,7 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
     failed =
       RunState.transition(state.run,
         status: :error,
-        runner_execution_id: nil,
+        runner_task_id: nil,
         error: reason
       )
 
@@ -317,11 +317,11 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
 
     running =
       RunState.transition(state.run,
-        runner_execution_id: nil,
+        runner_task_id: nil,
         metadata:
           state.run.metadata
           |> Map.merge(RunnerWork.lifecycle_metadata(work))
-          |> Map.update(:in_flight_task_ids, [task_id], fn ids ->
+          |> Map.update(:active_runner_task_ids, [task_id], fn ids ->
             Enum.uniq(ids ++ [task_id])
           end)
       )
@@ -379,7 +379,7 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
          asset_step_id \\ nil
        ) do
     failed =
-      RunState.transition(state.run, status: :error, runner_execution_id: nil, error: reason)
+      RunState.transition(state.run, status: :error, runner_task_id: nil, error: reason)
 
     data = %{
       asset_ref: asset_ref,
@@ -416,9 +416,6 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
       window: RunnerWork.window(work),
       task_id: task.task_id,
       assignment_generation: task.assignment_generation,
-      execution_id: task.task_id,
-      runner_execution_id: nil,
-      ownership: nil,
       stage: lifecycle.stage,
       attempt: lifecycle.attempt,
       execution_pool: RunnerWork.execution_pool(work)
@@ -452,7 +449,7 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
       RunState.transition(state.run,
         status: :running,
         error: nil,
-        runner_execution_id: nil,
+        runner_task_id: nil,
         metadata:
           Map.merge(state.run.metadata, %{
             retrying: true,
@@ -527,17 +524,17 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
 
     {:terminal,
      Snapshots.snapshot_update(state.run,
-       runner_execution_id: nil,
+       runner_task_id: nil,
        result: ResultBuilder.pipeline_result(state.run, state.run.status, all_results)
      )}
   end
 
-  defp cancel_work(%RunExecutionState{} = state, execution_ids, reason) do
+  defp cancel_work(%RunExecutionState{} = state, task_ids, reason) do
     work_set =
-      Enum.reduce(execution_ids, state.work_set, fn execution_id, acc ->
-        case Map.get(acc.entries, execution_id) do
+      Enum.reduce(task_ids, state.work_set, fn task_id, acc ->
+        case Map.get(acc.entries, task_id) do
           nil ->
-            ActiveTaskSet.add_entry(acc, %{task_id: execution_id})
+            ActiveTaskSet.add_entry(acc, %{task_id: task_id})
 
           _entry ->
             acc

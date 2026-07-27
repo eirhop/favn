@@ -139,7 +139,7 @@ defmodule FavnOrchestrator.TargetAdmissionTest do
       }
     }
 
-    version = %Version{manifest_version_id: "manifest", required_runner_release_id: "runner"}
+    version = %Version{manifest_version_id: "manifest", runner_releases: %{"default" => "runner"}}
 
     Process.put(:target_admission_bindings, [
       binding(blocked, :rebuild_required),

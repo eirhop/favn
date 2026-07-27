@@ -10,8 +10,8 @@ defmodule FavnRunner.Application do
   alias FavnRunner.Lifecycle
   alias FavnRunner.ProductionRuntimeConfig
   alias FavnRunner.ReleaseVerifier
-  alias FavnRunner.RuntimeStarter
-  alias FavnRunner.Shutdown
+  alias FavnRunner.Drain
+  alias FavnRunner.RuntimeBootstrap
 
   @impl true
   def start(_type, _args) do
@@ -32,20 +32,18 @@ defmodule FavnRunner.Application do
         {ConnectionRegistry, name: FavnRunner.ConnectionRegistry, connections: connections},
         {Registry, keys: :unique, name: FavnRunner.ExecutionRegistry},
         {DynamicSupervisor, strategy: :one_for_one, name: FavnRunner.WorkerSupervisor},
+        {FavnRunner.TaskResultBuffer, []},
+        {DynamicSupervisor, strategy: :one_for_one, name: FavnRunner.TaskExecutorSupervisor},
         {FavnRunner.ManifestStore,
          Keyword.put(
            Application.get_env(:favn_runner, :manifest_cache, []),
            :name,
            FavnRunner.ManifestStore
-         )},
-        {FavnRunner.Server,
-         name: FavnRunner.Server,
-         admission: Application.get_env(:favn_runner, :admission, []),
-         retention: Application.get_env(:favn_runner, :execution_retention, [])}
+         )}
       ] ++
         runner_agent_children(environment) ++
         [
-          {RuntimeStarter, []}
+          {RuntimeBootstrap, []}
         ]
 
     opts = [strategy: :one_for_all, name: FavnRunner.Supervisor]
@@ -57,7 +55,7 @@ defmodule FavnRunner.Application do
 
   @impl true
   def prep_stop(%{runtime?: true} = state) do
-    _ = Shutdown.drain()
+    _ = Drain.drain()
     state
   end
 
@@ -140,8 +138,6 @@ defmodule FavnRunner.Application do
           )
 
         [
-          {FavnRunner.TaskResultBuffer, []},
-          {DynamicSupervisor, strategy: :one_for_one, name: FavnRunner.TaskExecutorSupervisor},
           {FavnRunner.ControlPlaneConnection, node: control_plane_node},
           Supervisor.child_spec(
             {FavnRunner.RunnerAgent,

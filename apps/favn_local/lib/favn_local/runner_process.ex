@@ -1,4 +1,4 @@
-defmodule FavnLocal.RunnerMain do
+defmodule FavnLocal.RunnerProcess do
   @moduledoc false
 
   @spec run(Path.t()) :: no_return()

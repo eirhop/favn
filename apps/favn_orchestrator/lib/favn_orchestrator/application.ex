@@ -18,9 +18,8 @@ defmodule FavnOrchestrator.Application do
   alias FavnOrchestrator.RunManager
   alias FavnOrchestrator.RunRecovery
   alias FavnOrchestrator.RunSubmission.Supervisor, as: RunSubmissionSupervisor
-  alias FavnOrchestrator.RunnerHealth
   alias FavnOrchestrator.RuntimeConfig
-  alias FavnOrchestrator.RuntimeStarter
+  alias FavnOrchestrator.RuntimeBootstrap
   alias FavnOrchestrator.Shutdown
   alias FavnOrchestrator.Scheduler.PersistenceRuntime, as: PersistenceSchedulerRuntime
 
@@ -38,7 +37,7 @@ defmodule FavnOrchestrator.Application do
              Supervisor.start_link(
                [
                  {Lifecycle, shutdown_drain_timeout_ms: timeout_ms},
-                 {RuntimeStarter, runtime?: false}
+                 {RuntimeBootstrap, runtime?: false}
                ],
                strategy: :one_for_all,
                name: FavnOrchestrator.Supervisor
@@ -99,11 +98,10 @@ defmodule FavnOrchestrator.Application do
           [{BackfillDispatcher, []}, {RebuildDispatcher, []}] ++
           [
             {RunRecovery, []},
-            {RunnerHealth, []},
             {BoundedDispatcher, []}
           ] ++
           scheduler_children(runtime_config) ++
-          api_children(runtime_config) ++ [{RuntimeStarter, runtime?: true}]
+          api_children(runtime_config) ++ [{RuntimeBootstrap, runtime?: true}]
 
       with {:ok, supervisor} <-
              Supervisor.start_link(children,

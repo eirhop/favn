@@ -29,7 +29,7 @@ defmodule FavnOrchestrator.RunServer.Execution.CompactExecutionIndexTest do
         id: "run-compact-index",
         manifest_version_id: "manifest-compact-index",
         manifest_content_hash: String.duplicate("b", 64),
-        required_runner_release_id: FavnTestSupport.runner_release_id(),
+        runner_releases: %{"default" => FavnTestSupport.runner_release_id()},
         asset_ref: target.ref,
         plan: %Plan{
           nodes: %{{target.ref, nil} => target_node},
@@ -79,7 +79,7 @@ defmodule FavnOrchestrator.RunServer.Execution.CompactExecutionIndexTest do
         id: "run-compact-semantic-index",
         manifest_version_id: "manifest-compact-semantic-index",
         manifest_content_hash: String.duplicate("b", 64),
-        required_runner_release_id: FavnTestSupport.runner_release_id(),
+        runner_releases: %{"default" => FavnTestSupport.runner_release_id()},
         asset_ref: target.ref,
         plan: %Plan{
           nodes: %{{target.ref, nil} => target_node},

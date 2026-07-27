@@ -42,6 +42,22 @@ defmodule Favn.Manifest.VersionTest do
     assert byte_size(version.content_hash) == 64
   end
 
+  test "retains immutable identity when dropping the manifest payload" do
+    assert {:ok, %Version{} = version} =
+             Version.new(current_manifest(),
+               manifest_version_id: "mv_identity_001",
+               inserted_at: ~U[2026-01-01 00:00:00Z]
+             )
+
+    identity = Version.identity(version)
+
+    assert identity == %{version | manifest: nil}
+    assert Version.identity(identity) == identity
+    assert identity.manifest_version_id == version.manifest_version_id
+    assert identity.content_hash == version.content_hash
+    assert identity.runner_releases == version.runner_releases
+  end
+
   test "fails when schema version is unsupported" do
     manifest = current_manifest(%{schema_version: 0})
 

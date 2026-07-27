@@ -298,7 +298,7 @@ defmodule FavnRunner.GenerationOperationsTest do
     retired_discard = %GenerationDiscardRequest{
       manifest_version_id: version.manifest_version_id,
       manifest_content_hash: version.content_hash,
-      required_runner_release_id: version.required_runner_release_id,
+      required_runner_release_id: Map.fetch!(version.runner_releases, "default"),
       rebuild_operation_id: request.rebuild_operation_id,
       rebuild_action_id: request.rebuild_action_id,
       target_id: request.target_id,
@@ -318,7 +318,7 @@ defmodule FavnRunner.GenerationOperationsTest do
     discard = %GenerationDiscardRequest{
       manifest_version_id: version.manifest_version_id,
       manifest_content_hash: version.content_hash,
-      required_runner_release_id: version.required_runner_release_id,
+      required_runner_release_id: Map.fetch!(version.runner_releases, "default"),
       rebuild_operation_id: request.rebuild_operation_id,
       rebuild_action_id: request.rebuild_action_id,
       target_id: request.target_id,
@@ -378,7 +378,7 @@ defmodule FavnRunner.GenerationOperationsTest do
       runner_session_generation: 1,
       assignment_generation: 1,
       runner_pool: "default",
-      required_runner_release_id: version.required_runner_release_id,
+      required_runner_release_id: Map.fetch!(version.runner_releases, "default"),
       lease_expires_at: DateTime.add(DateTime.utc_now(), 30, :second),
       retry_class: :safe_to_retry,
       payload: payload
@@ -769,7 +769,7 @@ defmodule FavnRunner.GenerationOperationsTest do
       runner_session_generation: 1,
       assignment_generation: 1,
       runner_pool: "default",
-      required_runner_release_id: version.required_runner_release_id,
+      required_runner_release_id: Map.fetch!(version.runner_releases, "default"),
       lease_expires_at: DateTime.add(DateTime.utc_now(), 30, :second),
       retry_class: :safe_to_retry,
       payload: payload
@@ -780,7 +780,7 @@ defmodule FavnRunner.GenerationOperationsTest do
     %GenerationMarkerInitializationRequest{
       manifest_version_id: version.manifest_version_id,
       manifest_content_hash: version.content_hash,
-      required_runner_release_id: version.required_runner_release_id,
+      required_runner_release_id: Map.fetch!(version.runner_releases, "default"),
       target_id: asset.target_descriptor.target_id,
       target_generation_id: @previous_generation_id,
       active_relation: asset.relation,
@@ -796,7 +796,7 @@ defmodule FavnRunner.GenerationOperationsTest do
     %GenerationActivationRequest{
       manifest_version_id: version.manifest_version_id,
       manifest_content_hash: version.content_hash,
-      required_runner_release_id: version.required_runner_release_id,
+      required_runner_release_id: Map.fetch!(version.runner_releases, "default"),
       rebuild_operation_id: "rebuild-generation-operations",
       rebuild_action_id: "action-generation-operations",
       target_id: asset.target_descriptor.target_id,

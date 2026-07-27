@@ -12,7 +12,7 @@ defmodule Favn.Run.NodeResultTest do
         status: :ok,
         freshness_key: "my_app.asset:2026-04-15",
         input_versions: %{{MyApp.Upstream, :asset} => "v1"},
-        runner_execution_id: "exec_1",
+        runner_task_id: "exec_1",
         meta: %{rows_affected: 10}
       )
 
@@ -21,7 +21,7 @@ defmodule Favn.Run.NodeResultTest do
     assert result.status == :ok
     assert result.freshness_key == "my_app.asset:2026-04-15"
     assert result.input_versions == %{{MyApp.Upstream, :asset} => "v1"}
-    assert result.runner_execution_id == "exec_1"
+    assert result.runner_task_id == "exec_1"
   end
 
   test "constructor accepts skipped_fresh and blocked statuses" do

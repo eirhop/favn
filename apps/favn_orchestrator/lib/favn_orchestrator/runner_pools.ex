@@ -81,9 +81,9 @@ defmodule FavnOrchestrator.RunnerPools do
   defp runtime_name(name), do: {:error, {:invalid_runner_pool, name}}
 
   defp normalize_policy(options) when is_map(options) do
-    allowed = MapSet.new(["mode", "idle_grace_ms", :mode, :idle_grace_ms])
+    allowed = ["mode", "idle_grace_ms", :mode, :idle_grace_ms]
 
-    if Map.keys(options) |> Enum.all?(&MapSet.member?(allowed, &1)) do
+    if Map.keys(options) |> Enum.all?(&(&1 in allowed)) do
       mode = Map.get(options, :mode, Map.get(options, "mode", "elastic"))
 
       idle_grace_ms =

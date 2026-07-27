@@ -223,7 +223,7 @@ defmodule FavnOrchestrator.Storage.PayloadCodecTest do
         id: "run_payload_restart",
         manifest_version_id: "mv_payload_restart",
         manifest_content_hash: String.duplicate("a", 64),
-        required_runner_release_id: FavnTestSupport.runner_release_id(),
+        runner_releases: %{"default" => FavnTestSupport.runner_release_id()},
         asset_ref: {existing_module, :asset},
         target_refs: [{existing_module, :asset}]
       )

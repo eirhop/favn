@@ -24,8 +24,6 @@ defmodule FavnStoragePostgres.Migrations.HardenIdentifierBoundsV2 do
       ~w(workspace_id run_id deployment_id manifest_version_id target_id target_module target_name),
     runtime_input_pins: ~w(workspace_id run_id resolver_module),
     run_ownerships: ~w(workspace_id run_id owner_id claim_command_id last_renewal_id),
-    runner_executions:
-      ~w(workspace_id runner_execution_id run_id dispatch_id last_command_id owner_id),
     schedule_cursors:
       ~w(workspace_id deployment_id pipeline_target_id schedule_id claim_command_id last_command_id),
     schedule_occurrences:

@@ -1,6 +1,10 @@
 defmodule Favn.Manifest.Version do
   @moduledoc """
   Immutable pinned manifest version envelope.
+
+  Runtime work may retain only the version identity after compiling the
+  manifest into a bounded execution index. In that form `manifest` is `nil`;
+  all immutable version and runner-release fields remain available.
   """
 
   alias Favn.Manifest
@@ -15,9 +19,8 @@ defmodule Favn.Manifest.Version do
           schema_version: pos_integer(),
           runner_contract_version: pos_integer(),
           runner_releases: Favn.RunnerPool.releases(),
-          required_runner_release_id: String.t() | nil,
           serialization_format: String.t(),
-          manifest: Manifest.t(),
+          manifest: Manifest.t() | nil,
           inserted_at: DateTime.t() | nil
         }
 
@@ -27,11 +30,14 @@ defmodule Favn.Manifest.Version do
     :schema_version,
     :runner_contract_version,
     :runner_releases,
-    :required_runner_release_id,
     :manifest,
     inserted_at: nil,
     serialization_format: "json-v1"
   ]
+
+  @doc "Drops the manifest payload while retaining its immutable identity."
+  @spec identity(t()) :: t()
+  def identity(%__MODULE__{} = version), do: %{version | manifest: nil}
 
   @doc "Returns the exact immutable release bound to a logical runner pool."
   @spec release_for_pool(t(), atom() | String.t()) :: {:ok, String.t()} | {:error, term()}
@@ -43,33 +49,6 @@ defmodule Favn.Manifest.Version do
 
   def release_for_pool(%__MODULE__{runner_releases: releases}, pool) when is_binary(pool),
     do: Favn.RunnerPool.fetch_release(releases, pool)
-
-  @doc false
-  @spec transitional_default_release(t()) :: {:ok, String.t()} | {:error, term()}
-  def transitional_default_release(%__MODULE__{} = version) do
-    case release_for_pool(version, Favn.RunnerPool.default()) do
-      {:ok, release_id} ->
-        {:ok, release_id}
-
-      {:error, _reason} when is_binary(version.required_runner_release_id) ->
-        {:ok, version.required_runner_release_id}
-
-      {:error, _reason} = error ->
-        error
-    end
-  end
-
-  @doc false
-  @spec transitional_default_release!(t()) :: String.t()
-  def transitional_default_release!(%__MODULE__{} = version) do
-    case transitional_default_release(version) do
-      {:ok, release_id} ->
-        release_id
-
-      {:error, reason} ->
-        raise ArgumentError, "legacy runner requires default pool: #{inspect(reason)}"
-    end
-  end
 
   @type opt ::
           {:manifest_version_id, String.t()}
@@ -127,7 +106,6 @@ defmodule Favn.Manifest.Version do
          schema_version: schema_version,
          runner_contract_version: runner_contract_version,
          runner_releases: runner_releases,
-         required_runner_release_id: Map.get(runner_releases, "default"),
          serialization_format: serialization_format,
          manifest: stable_manifest,
          inserted_at: Keyword.get(opts, :inserted_at)
@@ -197,7 +175,6 @@ defmodule Favn.Manifest.Version do
            ),
          {:ok, runner_releases} <- read_field(stable_manifest, :runner_releases),
          :ok <- match_runner_releases(runner_releases, version.runner_releases),
-         :ok <- match_transitional_default_release(version, runner_releases),
          {:ok, computed_hash} <- Identity.hash_manifest(stable_manifest),
          :ok <- match_content_hash(computed_hash, version.content_hash) do
       {:ok, %{version | manifest: stable_manifest}}
@@ -330,26 +307,6 @@ defmodule Favn.Manifest.Version do
 
   defp match_runner_releases(actual, expected),
     do: {:error, {:manifest_runner_releases_mismatch, expected, actual}}
-
-  defp match_transitional_default_release(
-         %__MODULE__{required_runner_release_id: nil},
-         _runner_releases
-       ),
-       do: :ok
-
-  defp match_transitional_default_release(
-         %__MODULE__{required_runner_release_id: release_id},
-         %{"default" => release_id}
-       ),
-       do: :ok
-
-  defp match_transitional_default_release(
-         %__MODULE__{required_runner_release_id: release_id},
-         runner_releases
-       ),
-       do:
-         {:error,
-          {:manifest_runner_releases_mismatch, runner_releases, %{"default" => release_id}}}
 
   defp default_manifest_version_id do
     "mv_" <> Base.encode16(:crypto.strong_rand_bytes(16), case: :lower)

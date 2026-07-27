@@ -4,9 +4,10 @@ Purpose: internal implementation for authoring DSLs and manifest-facing public
 facade delegation.
 
 Canonical manifest generation requires an explicit validated
-`runner_release_id` and records it as `required_runner_release_id`.
+`runner_releases` map. Pool names are user-defined and each asset selects a
+logical pool with `runner_pool`; omitted selection uses the configured default.
 Planning-only APIs build a planning index without pretending to create a
-publishable manifest and therefore do not require a runner release ID.
+publishable manifest and therefore do not require release bindings.
 
 Code:
 - `apps/favn_authoring/lib/favn.ex`

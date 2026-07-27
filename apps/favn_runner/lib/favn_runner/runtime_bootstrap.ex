@@ -1,4 +1,4 @@
-defmodule FavnRunner.RuntimeStarter do
+defmodule FavnRunner.RuntimeBootstrap do
   @moduledoc false
 
   use GenServer

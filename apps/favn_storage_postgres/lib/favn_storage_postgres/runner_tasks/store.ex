@@ -298,7 +298,6 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
     case RunsStore.pin_runtime_inputs(pin_command) do
       {:ok, [_persisted]} -> :ok
       {:error, %Error{} = error} -> Repo.rollback(error)
-      {:error, reason} -> Repo.rollback(ErrorMapper.map(reason))
     end
   end
 
@@ -1229,15 +1228,10 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
       run.status in ["pending", "running"] and
         fragment(
           """
-          COALESCE(
-            ?->'runner_releases'->>?,
-            CASE WHEN ? = 'default' THEN ?->>'required_runner_release_id' END
-          ) = ?
+          ?->'runner_releases'->>? = ?
           """,
           run.snapshot,
           ^runner_pool,
-          ^runner_pool,
-          run.snapshot,
           ^release_id
         )
     )
@@ -1261,16 +1255,8 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
     sql = """
     SELECT binding.runner_pool, binding.required_runner_release_id, count(*)::bigint
     FROM favn_control.runs AS run
-    CROSS JOIN LATERAL jsonb_each_text(
-      COALESCE(
-        run.snapshot->'runner_releases',
-        CASE
-          WHEN run.snapshot ? 'required_runner_release_id'
-          THEN jsonb_build_object('default', run.snapshot->>'required_runner_release_id')
-          ELSE '{}'::jsonb
-        END
-      )
-    ) AS binding(runner_pool, required_runner_release_id)
+    CROSS JOIN LATERAL jsonb_each_text(run.snapshot->'runner_releases')
+      AS binding(runner_pool, required_runner_release_id)
     WHERE run.status IN ('pending', 'running')
     GROUP BY binding.runner_pool, binding.required_runner_release_id
     """

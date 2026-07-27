@@ -41,7 +41,9 @@ defmodule FavnRunner.ManifestStore do
 
   @spec register(Version.t(), keyword()) :: :ok | {:error, term()}
   def register(%Version{} = version, opts \\ []) do
-    register_for_release(version, Version.transitional_default_release!(version), opts)
+    with {:ok, release} <- ReleaseVerifier.verified_release() do
+      register_for_release(version, release.runner_release_id, opts)
+    end
   end
 
   @doc false
@@ -91,13 +93,9 @@ defmodule FavnRunner.ManifestStore do
 
   def acquire(%Version{} = version, lease_id, %DateTime{} = expires_at, opts)
       when is_binary(lease_id) and byte_size(lease_id) in 1..512 and is_list(opts) do
-    acquire_for_release(
-      version,
-      Version.transitional_default_release!(version),
-      lease_id,
-      expires_at,
-      opts
-    )
+    with {:ok, release} <- ReleaseVerifier.verified_release() do
+      acquire_for_release(version, release.runner_release_id, lease_id, expires_at, opts)
+    end
   end
 
   def acquire(%Version{}, _lease_id, %DateTime{}, _opts), do: {:error, :invalid_manifest_lease}

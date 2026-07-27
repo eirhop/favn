@@ -62,6 +62,9 @@ jobs:
       - name: Check removed asset DSL forms
         run: elixir scripts/check_no_legacy_asset_dsl.exs
 
+      - name: Check removed runner architecture
+        run: elixir scripts/check_no_legacy_runner_architecture.exs
+
       - name: Install Hex and Rebar
         run: |
           mix local.hex 2.5.1 --force

@@ -40,16 +40,20 @@ defmodule FavnStoragePostgres.StorageV2.RestoreDrillTest do
       """
       INSERT INTO favn_control.manifest_versions
         (manifest_version_id, content_hash, schema_version,
-         runner_contract_version, required_runner_release_id,
+         runner_contract_version, runner_releases,
          payload_version, asset_count, pipeline_count, schedule_count,
          atom_strings, manifest, inserted_at)
-      VALUES ($1, $2, 10, 10, $3, 1, 0, 0, 0, ARRAY[]::text[],
+      VALUES ($1, $2, 14, 13, $3::jsonb, 1, 0, 0, 0, ARRAY[]::text[],
               jsonb_build_object('assets', jsonb_build_array(),
                                  'pipelines', jsonb_build_array(),
                                  'schedules', jsonb_build_array()),
               clock_timestamp())
       """,
-      [manifest_version_id, :crypto.hash(:sha256, manifest_version_id), runner_release_id]
+      [
+        manifest_version_id,
+        :crypto.hash(:sha256, manifest_version_id),
+        %{"default" => runner_release_id}
+      ]
     )
 
     on_exit(fn ->
@@ -116,11 +120,11 @@ defmodule FavnStoragePostgres.StorageV2.RestoreDrillTest do
 
       assert table_counts(Repo) == table_counts(RestoreRepo)
 
-      assert %{rows: [[^runner_release_id]]} =
+      assert %{rows: [[%{"default" => ^runner_release_id}]]} =
                SQL.query!(
                  RestoreRepo,
                  """
-                 SELECT required_runner_release_id
+                 SELECT runner_releases
                  FROM favn_control.manifest_versions
                  WHERE manifest_version_id = $1
                  """,

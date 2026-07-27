@@ -1,6 +1,6 @@
 defmodule FavnOrchestrator.RunServer.Execution do
   @moduledoc """
-  Executes manifest-pinned runs against the configured runner client.
+  Executes manifest-pinned runs through durable runner tasks.
 
   Pipeline runs execute one topological stage at a time. Entries in the same
   stage are independent siblings, so a failed sibling must not cancel the rest
@@ -17,17 +17,14 @@ defmodule FavnOrchestrator.RunServer.Execution do
   alias Favn.Contracts.RunnerResult
   alias Favn.Contracts.RunnerWork
   alias Favn.TargetIdentity
-  alias FavnOrchestrator.AssetStepIdentity
   alias FavnOrchestrator.CancellationOutcome
   alias FavnOrchestrator.ExecutionAdmission
   alias FavnOrchestrator.ManifestIndexCache
   alias FavnOrchestrator.Persistence.SystemContext
   alias FavnOrchestrator.RunExecutionCleanup
-  alias FavnOrchestrator.RunExecutionOwnership
   alias FavnOrchestrator.RunOwnership
-  alias FavnOrchestrator.RunnerReleaseCompatibility
+  alias FavnOrchestrator.RunnerIdentityVerifier
   alias FavnOrchestrator.RunnerTasks
-  alias FavnOrchestrator.RunnerLogBridge
   alias FavnOrchestrator.RunServer.Execution.FreshnessContext
   alias FavnOrchestrator.RunServer.Execution.PipelineRetryCheckpoint
   alias FavnOrchestrator.RunServer.Execution.ResultBuilder
@@ -45,7 +42,6 @@ defmodule FavnOrchestrator.RunServer.Execution do
   alias FavnOrchestrator.RunServer.Snapshots
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Runs
-  alias FavnOrchestrator.RuntimeConfig
 
   @stage_admission_timeout_buffer_ms 2_000
   @stage_admission_backstop_retry_ms 1_000
@@ -77,28 +73,22 @@ defmodule FavnOrchestrator.RunServer.Execution do
      Snapshots.snapshot_update(run_state,
        status: :error,
        error: {:unsupported_submit_kind, submit_kind},
-       runner_execution_id: nil,
+       runner_task_id: nil,
        result: %{status: :error, asset_results: [], metadata: run_state.metadata}
      )}
   end
 
   def start_state(%RunState{} = run_state, %Version{} = version) do
-    runner_client = configured_runner_client()
-    runner_opts = configured_runner_opts()
-
     case RunState.execution_mode(run_state) do
       :pipeline ->
-        with :ok <- RunnerReleaseCompatibility.verify_run_manifest(run_state, version),
-             :ok <- preflight_execution_identities(run_state),
+        with :ok <- RunnerIdentityVerifier.verify_run_manifest(run_state, version),
              {:ok, manifest_index} <- ManifestIndexCache.fetch(version),
              execution_index <- compact_execution_index(run_state, manifest_index),
              {:ok, freshness_context} <- FreshnessContext.initialize(run_state, execution_index) do
           state =
-            RunExecutionState.new(run_state, manifest_identity(version),
+            RunExecutionState.new(run_state, Version.identity(version),
               mode: :pipeline,
               manifest_index: execution_index,
-              runner_client: runner_client,
-              runner_opts: runner_opts,
               manifest_lease_id: nil,
               stage_groups: pipeline_stage_groups(run_state),
               freshness_context: freshness_context
@@ -113,15 +103,12 @@ defmodule FavnOrchestrator.RunServer.Execution do
         end
 
       :sequential ->
-        with :ok <- RunnerReleaseCompatibility.verify_run_manifest(run_state, version),
-             :ok <- preflight_execution_identities(run_state),
+        with :ok <- RunnerIdentityVerifier.verify_run_manifest(run_state, version),
              {:ok, manifest_index} <- ManifestIndexCache.fetch(version) do
           state =
-            RunExecutionState.new(run_state, manifest_identity(version),
+            RunExecutionState.new(run_state, Version.identity(version),
               mode: :sequential,
               manifest_index: compact_execution_index(run_state, manifest_index),
-              runner_client: runner_client,
-              runner_opts: runner_opts,
               manifest_lease_id: nil,
               sequential_refs: Sequential.refs(run_state)
             )
@@ -146,8 +133,8 @@ defmodule FavnOrchestrator.RunServer.Execution do
     handle_event(state, {:runner_result, task_id, durable_task_result(task)})
   end
 
-  def handle_event(%RunExecutionState{} = state, {:runner_result, execution_id, result}) do
-    case RunExecutionState.pop_await(state, execution_id) do
+  def handle_event(%RunExecutionState{} = state, {:runner_result, task_id, result}) do
+    case RunExecutionState.pop_await(state, task_id) do
       {nil, state} ->
         {:cont, state}
 
@@ -160,11 +147,11 @@ defmodule FavnOrchestrator.RunServer.Execution do
 
   def handle_event(
         %RunExecutionState{} = state,
-        {:runner_await_down, execution_id, monitor_ref, reason}
+        {:runner_await_down, task_id, monitor_ref, reason}
       ) do
-    case Map.get(state.awaits, execution_id) do
+    case Map.get(state.awaits, task_id) do
       %{monitor_ref: ^monitor_ref} ->
-        {await, state} = RunExecutionState.pop_await(state, execution_id)
+        {await, state} = RunExecutionState.pop_await(state, task_id)
         Process.cancel_timer(await.timeout_ref)
 
         handle_await_result(
@@ -179,10 +166,10 @@ defmodule FavnOrchestrator.RunServer.Execution do
     end
   end
 
-  def handle_event(%RunExecutionState{} = state, {:attempt_timeout, execution_id, timer_ref}) do
-    case Map.get(state.awaits, execution_id) do
+  def handle_event(%RunExecutionState{} = state, {:attempt_timeout, task_id, timer_ref}) do
+    case Map.get(state.awaits, task_id) do
       %{timeout_token: ^timer_ref} ->
-        {await, state} = RunExecutionState.pop_await(state, execution_id)
+        {await, state} = RunExecutionState.pop_await(state, task_id)
         if is_pid(await.pid), do: Process.exit(await.pid, :kill)
         if is_reference(await.monitor_ref), do: Process.demonitor(await.monitor_ref, [:flush])
         handle_await_result(state, await.entry, {:error, :timeout}, await.kind)
@@ -284,7 +271,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
         failed =
           Snapshots.snapshot_update(run_state,
             status: :error,
-            runner_execution_id: nil,
+            runner_task_id: nil,
             error: %{type: :runner_cancel_unconfirmed, outcomes: outcomes}
           )
 
@@ -297,37 +284,14 @@ defmodule FavnOrchestrator.RunServer.Execution do
      Snapshots.snapshot_update(run_state,
        status: :error,
        error: reason,
-       runner_execution_id: nil,
+       runner_task_id: nil,
        result: ResultBuilder.pipeline_result(run_state, :error, [])
      )}
   end
 
-  defp manifest_identity(%Version{} = version), do: %{version | manifest: nil}
-
   @doc false
   @spec release_manifest_lease(RunState.t()) :: :ok
   def release_manifest_lease(%RunState{}), do: :ok
-
-  defp preflight_execution_identities(%RunState{} = run) do
-    run
-    |> planned_execution_nodes()
-    |> Enum.reduce_while(:ok, fn {node_key, asset_ref}, :ok ->
-      asset_step_id = AssetStepIdentity.asset_step_id(run.id, node_key, asset_ref)
-
-      case RunExecutionOwnership.validate_identity(run.id, asset_step_id, 1) do
-        :ok -> {:cont, :ok}
-        {:error, reason} -> {:halt, {:error, reason}}
-      end
-    end)
-  end
-
-  defp planned_execution_nodes(%RunState{plan: %Favn.Plan{nodes: nodes}}) do
-    Enum.map(nodes, fn {node_key, node} -> {node_key, node.ref} end)
-  end
-
-  defp planned_execution_nodes(%RunState{} = run) do
-    Enum.map(Sequential.refs(run), fn {asset_ref, node_key, _stage} -> {node_key, asset_ref} end)
-  end
 
   @doc false
   @spec manifest_lease_expires_at(RunState.t()) :: DateTime.t()
@@ -450,42 +414,28 @@ defmodule FavnOrchestrator.RunServer.Execution do
 
   defp start_await(%RunExecutionState{} = state, entry, kind) do
     parent = self()
-    execution_id = entry.execution_id
+    task_id = entry.task_id
     timeout_ms = state.run.timeout_ms
 
     {pid, monitor_ref} =
-      if is_binary(Map.get(entry, :task_id)) do
-        spawn_monitor(fn ->
-          FavnOrchestrator.RunnerTaskResultRouter.await(
-            state.run.workspace_id,
-            entry.task_id,
-            parent
-          )
-        end)
-      else
-        workspace_id = state.run.workspace_id
-        runner_client = state.runner_client
-        runner_opts = state.runner_opts
-
-        spawn_monitor(fn ->
-          send(
-            parent,
-            {:runner_result, execution_id,
-             await_runner_result(entry, workspace_id, timeout_ms, runner_client, runner_opts)}
-          )
-        end)
-      end
+      spawn_monitor(fn ->
+        FavnOrchestrator.RunnerTaskResultRouter.await(
+          state.run.workspace_id,
+          entry.task_id,
+          parent
+        )
+      end)
 
     timeout_token = make_ref()
 
     timeout_ref =
       Process.send_after(
         parent,
-        {:attempt_timeout, execution_id, timeout_token},
+        {:attempt_timeout, task_id, timeout_token},
         timeout_ms + @await_task_timeout_buffer_ms
       )
 
-    RunExecutionState.put_await(state, execution_id, %{
+    RunExecutionState.put_await(state, task_id, %{
       pid: pid,
       monitor_ref: monitor_ref,
       timeout_token: timeout_token,
@@ -496,7 +446,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
   end
 
   defp restore_active_tasks(%RunExecutionState{} = state) do
-    task_ids = ActiveTaskSet.inflight_task_ids(state.run)
+    task_ids = ActiveTaskSet.active_runner_task_ids(state.run)
 
     with {:ok, tasks} <- fetch_active_tasks(state.run.workspace_id, task_ids) do
       case tasks do
@@ -599,9 +549,6 @@ defmodule FavnOrchestrator.RunServer.Execution do
       window: RunnerWork.window(work),
       task_id: task.task_id,
       assignment_generation: task.assignment_generation,
-      execution_id: task.task_id,
-      runner_execution_id: nil,
-      ownership: nil,
       decision: Map.get(context, :decision, %{}),
       attempt: work.attempt,
       stage: work.stage,
@@ -623,8 +570,8 @@ defmodule FavnOrchestrator.RunServer.Execution do
   end
 
   defp process_await_result(%RunExecutionState{} = state, entry, result, :sequential) do
-    result = validate_await_result(state.run, result)
-    state = elem(RunExecutionState.complete_work(state, entry.execution_id), 1)
+    result = validate_await_result(entry, result)
+    state = elem(RunExecutionState.complete_work(state, entry.task_id), 1)
 
     state
     |> Sequential.handle_result(entry, result)
@@ -632,22 +579,23 @@ defmodule FavnOrchestrator.RunServer.Execution do
   end
 
   defp process_await_result(%RunExecutionState{} = state, entry, result, :pipeline) do
-    handle_pipeline_await_result(state, entry, validate_await_result(state.run, result))
+    handle_pipeline_await_result(state, entry, validate_await_result(entry, result))
   end
 
   defp validate_await_result(
-         %RunState{required_runner_release_id: required},
+         %{version: %Version{} = version, execution_pool: runner_pool},
          {:ok, %RunnerResult{} = result}
        ) do
-    case RunnerReleaseCompatibility.verify_result(required, result) do
-      :ok ->
-        {:ok, result}
-
+    with {:ok, required} <-
+           Version.release_for_pool(version, runner_pool || Favn.RunnerPool.default()),
+         :ok <- RunnerIdentityVerifier.verify_result(required, result) do
+      {:ok, result}
+    else
       {:error, reason} ->
         {:error,
          RunnerError.new(
            type: :runner_release_mismatch,
-           message: "Runner result release identity does not match the run",
+           message: "Runner result release identity does not match the runner task",
            reason: reason,
            retryable?: false,
            outcome: :unknown
@@ -655,7 +603,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
     end
   end
 
-  defp validate_await_result(%RunState{}, result), do: result
+  defp validate_await_result(_entry, result), do: result
 
   defp resume_retry(%RunExecutionState{mode: :sequential} = state, retry) do
     state
@@ -822,37 +770,6 @@ defmodule FavnOrchestrator.RunServer.Execution do
       {:error, failed_run, step_results, _attempted_node_keys} ->
         terminalize_stage_admission_failure(state, failed_run, step_results)
 
-      {:retry, retry_run, retry_node_keys, attempted_node_keys} ->
-        attempted_node_key_set = MapSet.new(attempted_node_keys)
-
-        retry_delays =
-          Map.new(retry_node_keys, fn node_key ->
-            failure =
-              if MapSet.member?(attempted_node_key_set, node_key),
-                do: retry_run.error,
-                else: nil
-
-            {node_key, StepAttemptLifecycle.retry_delay_ms(retry_run, node_key, attempt, failure)}
-          end)
-
-        stage_state = %StageAttemptState{
-          run: retry_run,
-          results: Enum.reverse(state.accumulated_results),
-          retry_refs: Enum.reverse(retry_node_keys),
-          retry_ref_set: MapSet.new(retry_node_keys),
-          retry_delays: retry_delays,
-          attempted_node_keys: Enum.reverse(attempted_node_keys),
-          attempted_node_key_set: attempted_node_key_set,
-          node_statuses: completed_node_statuses
-        }
-
-        schedule_pipeline_retry(%{
-          state
-          | run: retry_run,
-            stage_state: stage_state,
-            stage_attempt: attempt
-        })
-
       {:persist_retry, %PersistenceRetry{} = retry, reason} ->
         {:persist_retry, state, retry, reason}
     end
@@ -901,15 +818,13 @@ defmodule FavnOrchestrator.RunServer.Execution do
   end
 
   defp handle_pipeline_await_result(%RunExecutionState{} = state, entry, result) do
-    state = elem(RunExecutionState.complete_work(state, entry.execution_id), 1)
+    state = elem(RunExecutionState.complete_work(state, entry.task_id), 1)
 
     state.stage_state
     |> Map.put(:run, state.run)
     |> StageResult.process(entry, result, %{
       stage: entry.stage,
-      attempt: entry.attempt,
-      runner_client: state.runner_client,
-      runner_opts: state.runner_opts
+      attempt: entry.attempt
     })
     |> handle_pipeline_settlement(state)
   end
@@ -1050,27 +965,6 @@ defmodule FavnOrchestrator.RunServer.Execution do
           {:partial_retry, retry_run, entries, next_deferred_node_keys, retry_node_key, failure,
            next_queued_steps, waiters, admission_failure}
         )
-
-      {:retry, retry_run, retry_node_keys, attempted_node_keys} ->
-        attempted_node_keys = MapSet.new(attempted_node_keys)
-
-        stage_state =
-          Enum.reduce(retry_node_keys, state.stage_state, fn node_key, stage_state ->
-            failure =
-              if MapSet.member?(attempted_node_keys, node_key), do: retry_run.error, else: nil
-
-            add_admission_retry(
-              stage_state,
-              retry_run,
-              node_key,
-              state.stage_attempt,
-              failure
-            )
-          end)
-          |> StageAttemptState.defer_only(retry_run, [], state.stage_state.queued_steps)
-
-        %{state | run: retry_run, stage_state: stage_state}
-        |> after_pipeline_progress()
 
       {:error, failed_run, step_results, _attempted_node_keys} ->
         terminalize_stage_admission_failure(state, failed_run, step_results)
@@ -1361,7 +1255,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
      Snapshots.snapshot_update(state.run,
        status: :ok,
        error: nil,
-       runner_execution_id: nil,
+       runner_task_id: nil,
        result: ResultBuilder.pipeline_result(state.run, :ok, all_results)
      )}
   end
@@ -1373,8 +1267,8 @@ defmodule FavnOrchestrator.RunServer.Execution do
   end
 
   defp stop_all_awaits(%RunExecutionState{} = state, reason) do
-    Enum.reduce(Map.keys(state.awaits), state, fn execution_id, acc ->
-      case RunExecutionState.pop_await(acc, execution_id) do
+    Enum.reduce(Map.keys(state.awaits), state, fn task_id, acc ->
+      case RunExecutionState.pop_await(acc, task_id) do
         {nil, next} ->
           next
 
@@ -1391,7 +1285,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
           if CancellationOutcome.confirmed?(outcome) do
             :ok = ActiveTaskSet.release_entry(await.entry)
             :ok = ActiveTaskSet.fail_entry_claim(await.entry, reason)
-            elem(RunExecutionState.complete_work(next, execution_id), 1)
+            elem(RunExecutionState.complete_work(next, task_id), 1)
           else
             put_cancel_outcome(next, outcome)
           end
@@ -1400,8 +1294,8 @@ defmodule FavnOrchestrator.RunServer.Execution do
   end
 
   defp stop_await_processes(%RunExecutionState{} = state) do
-    Enum.reduce(Map.keys(state.awaits), state, fn execution_id, acc ->
-      case RunExecutionState.pop_await(acc, execution_id) do
+    Enum.reduce(Map.keys(state.awaits), state, fn task_id, acc ->
+      case RunExecutionState.pop_await(acc, task_id) do
         {nil, next} ->
           next
 
@@ -1415,7 +1309,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
   defp stop_await_process(await) do
     if is_pid(await.pid) and Process.alive?(await.pid), do: Process.exit(await.pid, :kill)
     if is_reference(await.monitor_ref), do: Process.demonitor(await.monitor_ref, [:flush])
-    if is_reference(await.timeout_ref), do: Process.cancel_timer(await.timeout_ref)
+    Process.cancel_timer(await.timeout_ref)
     :ok
   end
 
@@ -1456,7 +1350,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
       RunState.transition(run_state,
         status: :running,
         error: nil,
-        runner_execution_id: nil,
+        runner_task_id: nil,
         metadata:
           Map.merge(run_state.metadata, %{
             retrying: true,
@@ -1616,34 +1510,9 @@ defmodule FavnOrchestrator.RunServer.Execution do
       decisions: state.stage_decisions,
       freshness_context: state.stage_freshness_context,
       attempt: attempt,
-      runner_client: state.runner_client,
-      runner_opts: state.runner_opts,
       manifest_lease_id: state.manifest_lease_id,
       queued_steps: queued_steps
     })
-  end
-
-  defp await_runner_result(entry, workspace_id, timeout_ms, runner_client, runner_opts) do
-    log_context = Map.put(entry, :workspace_id, workspace_id)
-    bridge = start_runner_log_bridge(runner_client, entry.execution_id, runner_opts, log_context)
-
-    try do
-      runner_client.await_result(entry.execution_id, timeout_ms, runner_opts)
-    after
-      stop_runner_log_bridge(bridge, runner_client, entry.execution_id, runner_opts)
-    end
-  rescue
-    exception ->
-      {:error,
-       %{
-         type: :await_task_failed,
-         kind: :error,
-         exception: inspect(exception.__struct__),
-         reason: Exception.message(exception)
-       }}
-  catch
-    kind, reason ->
-      {:error, %{type: :await_task_failed, kind: kind, reason: inspect(reason)}}
   end
 
   defp durable_task_result(%{result: %RunnerResult{} = result}), do: {:ok, result}
@@ -1698,7 +1567,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
 
   defp terminalize_pipeline_failed_run(%RunState{} = failed_run, all_results) do
     Snapshots.snapshot_update(failed_run,
-      runner_execution_id: nil,
+      runner_task_id: nil,
       result: ResultBuilder.pipeline_result(failed_run, failed_run.status, all_results)
     )
   end
@@ -1709,32 +1578,11 @@ defmodule FavnOrchestrator.RunServer.Execution do
          %{status: status, error: error}
        ) do
     failed_run
-    |> Snapshots.snapshot_update(status: status, error: error, runner_execution_id: nil)
+    |> Snapshots.snapshot_update(status: status, error: error, runner_task_id: nil)
     |> then(
       &Snapshots.snapshot_update(&1,
         result: ResultBuilder.pipeline_result(&1, status, all_results)
       )
     )
-  end
-
-  defp start_runner_log_bridge(runner_client, execution_id, runner_opts, context) do
-    case RunnerLogBridge.start(runner_client, execution_id, runner_opts, context) do
-      {:ok, pid} -> pid
-      {:error, _reason} -> nil
-    end
-  end
-
-  defp stop_runner_log_bridge(nil, _runner_client, _execution_id, _runner_opts), do: :ok
-
-  defp stop_runner_log_bridge(pid, runner_client, execution_id, runner_opts) when is_pid(pid) do
-    RunnerLogBridge.stop(pid, runner_client, execution_id, runner_opts)
-  end
-
-  defp configured_runner_client do
-    RuntimeConfig.current().runner_client
-  end
-
-  defp configured_runner_opts do
-    RuntimeConfig.current().runner_client_opts
   end
 end

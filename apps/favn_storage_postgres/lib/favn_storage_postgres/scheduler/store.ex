@@ -1227,7 +1227,6 @@ defmodule FavnStoragePostgres.Scheduler.Store do
     case RunSubmissionStore.enqueue(submission) do
       {:ok, %RunSubmissionResult{} = result} -> result
       {:error, %Error{} = error} -> Repo.rollback(error)
-      {:error, reason} -> Repo.rollback(ErrorMapper.map(reason))
     end
   end
 

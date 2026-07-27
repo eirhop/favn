@@ -936,7 +936,7 @@ Refactor these modules:
 - `RunCancellation`;
 - `RunManager`.
 
-Replace `execution_id`/`runner_execution_id` in orchestration state with
+Replace `execution_id`/`runner_task_id` in orchestration state with
 `task_id` and `assignment_generation`. A task ID identifies logical work; an
 assignment generation identifies one attempt to run it on one process.
 
@@ -1588,8 +1588,10 @@ Verify:
 
 #### Scale and performance tests
 
-Exercise three pools at 0, 1, 10, and 100 simulated runners and thousands of
-tasks. Measure:
+Exercise three pools at 0, 1, 10, and 100 real distributed runner processes
+against the production gateway and PostgreSQL queue. A local peer node may host
+the scale processes; separately boot a fresh peer with the production
+`RunnerAgent` for cold-start qualification. Measure:
 
 - capacity endpoint latency and database reads;
 - claim throughput and queue-age distribution by workspace;
@@ -2094,8 +2096,10 @@ focused affected suites pass.
   uncommitted and include it in the final Phase 7 verification and review.
 - Run section 19's focused PostgreSQL, distributed-BEAM, recovery, security,
   artifact-conformance, and performance matrix.
-- Run 0/1/10/100 runner scale in simulation. Live-cloud scale is bounded by
-  explicit cost authorization and is never started implicitly.
+- Run 0/1/10/100 distributed runner-process scale against the real gateway and
+  PostgreSQL queue. The infrastructure autoscaler remains locally simulated;
+  live-cloud scale is bounded by explicit cost authorization and is never
+  started implicitly.
 - Verify query plans, mailboxes, buffers, atom/node state, and cold-work P95.
 
 Exit gate: the exact merged tree has recorded qualification evidence and no
@@ -2156,7 +2160,7 @@ The program is complete only when:
   authorized live acceptance suite also passes;
 - old and new runner releases drain concurrently;
 - PostgreSQL recovery, query-plan, and load tests pass;
-- simulated/local qualification meets its recorded service level, and any
+- distributed local qualification meets its recorded service level, and any
   claimed live reference deployment meets the documented P95 under-five-minute
   cold-work service level under normal available capacity;
 - all singleton-runner code, storage, names, config, and documentation are

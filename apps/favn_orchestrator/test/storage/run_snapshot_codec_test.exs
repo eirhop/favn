@@ -265,7 +265,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
         id: "run_snapshot_free_form",
         manifest_version_id: version.manifest_version_id,
         manifest_content_hash: version.content_hash,
-        required_runner_release_id: version.required_runner_release_id,
+        runner_releases: version.runner_releases,
         asset_ref: {__MODULE__.Asset, :asset},
         params: %{"payload" => free_form_ref},
         trigger: %{"payload" => free_form_ref}
@@ -335,7 +335,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
         id: "run_snapshot_pipeline_metadata",
         manifest_version_id: version.manifest_version_id,
         manifest_content_hash: version.content_hash,
-        required_runner_release_id: version.required_runner_release_id,
+        runner_releases: version.runner_releases,
         asset_ref: {__MODULE__.Asset, :asset},
         metadata: %{
           replay_submit_kind: :pipeline,
@@ -405,7 +405,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
         id: "run_snapshot_asset_named_tag",
         manifest_version_id: version.manifest_version_id,
         manifest_content_hash: version.content_hash,
-        required_runner_release_id: version.required_runner_release_id,
+        runner_releases: version.runner_releases,
         asset_ref: {__MODULE__.TaggedAsset, :tag},
         target_refs: [{__MODULE__.TaggedAsset, :tag}],
         metadata: %{
@@ -440,11 +440,10 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
         id: "run_snapshot_in_flight",
         manifest_version_id: version.manifest_version_id,
         manifest_content_hash: version.content_hash,
-        required_runner_release_id: version.required_runner_release_id,
+        runner_releases: version.runner_releases,
         asset_ref: {__MODULE__.Asset, :asset},
         metadata: %{
-          in_flight_execution_ids: ["exec_1", "exec_2"],
-          in_flight_task_ids: ["task_1", "task_2"]
+          active_runner_task_ids: ["task_1", "task_2"]
         }
       )
 
@@ -457,10 +456,10 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
                manifest_record
              )
 
-    assert restored.metadata.in_flight_execution_ids == ["exec_1", "exec_2"]
-    assert restored.metadata.in_flight_task_ids == ["task_1", "task_2"]
-    refute Map.has_key?(restored.metadata, "in_flight_execution_ids")
-    refute Map.has_key?(restored.metadata, "in_flight_task_ids")
+    assert restored.metadata.active_runner_task_ids == ["task_1", "task_2"]
+    assert restored.metadata.active_runner_task_ids == ["task_1", "task_2"]
+    refute Map.has_key?(restored.metadata, "active_runner_task_ids")
+    refute Map.has_key?(restored.metadata, "active_runner_task_ids")
   end
 
   test "restores multi-ref plans from DTO snapshots" do
@@ -497,7 +496,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
         id: "run_snapshot_multi_ref_plan",
         manifest_version_id: version.manifest_version_id,
         manifest_content_hash: version.content_hash,
-        required_runner_release_id: version.required_runner_release_id,
+        runner_releases: version.runner_releases,
         asset_ref: {__MODULE__.AssetA, :asset},
         target_refs: refs,
         plan: plan
@@ -587,7 +586,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
         id: "run_snapshot_windowed_plan",
         manifest_version_id: version.manifest_version_id,
         manifest_content_hash: version.content_hash,
-        required_runner_release_id: version.required_runner_release_id,
+        runner_releases: version.runner_releases,
         asset_ref: ref,
         target_refs: [ref],
         plan: plan
@@ -722,7 +721,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
         id: "run_snapshot_generation_pins",
         manifest_version_id: version.manifest_version_id,
         manifest_content_hash: version.content_hash,
-        required_runner_release_id: version.required_runner_release_id,
+        runner_releases: version.runner_releases,
         asset_ref: target_ref,
         target_refs: [target_ref],
         plan: plan
@@ -936,7 +935,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
       input_versions: %{upstream: "v1"},
       attempt_count: 0,
       max_attempts: 1,
-      runner_execution_id: "runner-1",
+      runner_task_id: "runner-1",
       meta: %{cache: "hit"},
       attempts: []
     }

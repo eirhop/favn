@@ -10,10 +10,11 @@ Favn is private pre-v1 software. PostgreSQL 18 is the only control-plane databas
 
 - The `favn` package provides manifest-first asset, SQL-asset, pipeline, schedule,
   window, coverage, freshness, retry, settings, and runtime-input DSLs.
-- Compilation produces a deterministic schema-12 manifest bound to the exact
-  verified runner release, with graph metadata, compact catalogue/planning indexes,
-  content-addressed SQL execution packages, environment-resolved timezones and
-  coverage, provenance, and desired SQL target descriptors.
+- Compilation produces a deterministic schema-14 manifest whose user-defined
+  runner pools are bound to exact verified runner releases, with graph metadata,
+  compact catalogue/planning indexes, content-addressed SQL execution packages,
+  environment-resolved timezones and coverage, provenance, and desired SQL
+  target descriptors.
 - SQL output contracts validate ordered columns/types, lineage, grain, uniqueness,
   nullability, and up to 16 ordered conditional row-count claims.
 - Planning supports asset and pipeline targets, dependency selection, refresh
@@ -22,18 +23,17 @@ Favn is private pre-v1 software. PostgreSQL 18 is the only control-plane databas
   one latest complete availability-aware window; explicit manual and backfill
   selections stay exact; and runs persist requested, expansion, and effective
   anchors.
-- Customer-built runners validate and advertise an operator-supplied immutable
-  release ID together with the running Favn version, runner contract, Elixir,
-  OTP, and target. Favn validates compatibility and exact manifest alignment but
-  does not inspect customer source or dependency provenance. Runner work,
-  inspection, results, and events carry the exact release ID in addition to the
-  manifest and execution-package identity. The server discards
-  events that do not exactly match stored work and replaces mismatched results
-  with bounded errors. Ownership leases and fencing prevent stale executors
-  from committing.
-- The control plane reaches the runner only through a statically configured
-  distributed-BEAM node. Connection, diagnostics, and RPC calls are bounded;
-  readiness requires connected, ready diagnostics with a valid release ID.
+- Customer-built runners validate and advertise an operator-supplied logical
+  pool and immutable release ID together with the running Favn version, runner
+  protocol, Elixir, OTP, and target. Favn validates exact task alignment but
+  does not inspect customer source or dependency provenance. Runner tasks,
+  inspection, results, and events carry the exact pool/release and assignment
+  identity. Atomic claims, leases, and fencing reject stale executors.
+- Runners initiate distributed-BEAM connections to the control plane, register,
+  and pull one compatible durable task at a time. Zero runners is a ready
+  control-plane state. An authenticated numeric demand endpoint lets external
+  infrastructure scale each exact pool/release partition from zero to N;
+  elastic runners exit after their configured idle grace.
 - DuckDB and DuckDB ADBC support bounded queries, typed configuration, catalog
   requirements, session scripts, and runner-local exclusive sessions.
 - DuckLake SQL tables support structured declarative physical partitioning with
@@ -98,8 +98,8 @@ runtime inputs, and SQL integrations remain pre-v1 and may change.
   runs as non-root, supports a read-only root filesystem, and has fixed health and
   release-operation entrypoints.
 
-These capabilities are implemented and tested, but several operator workflows and
-the distributed runner-task path remain unfinished.
+These capabilities are implemented and tested, but several operator workflows
+and production-provider qualification gates remain unfinished.
 
 ## PostgreSQL Storage V2
 
@@ -135,10 +135,10 @@ operator contract is [`production/postgresql_operator_runbook.md`](production/po
 - Repository maintainers build `rel/control_plane/Dockerfile` directly from the
   repository root. CI validates and scans that image and publishes immutable
   commit digests with provenance and SBOM data.
-- `build.manifest --runner-release-id ID` binds content-addressed manifests to
-  an explicit operator-owned runner identity. `publish` stages artifacts and
-  `activate` selects one exact version for one workspace using a service token
-  read only from the environment.
+- Repeated `build.manifest --runner-release POOL=ID` options bind every effective
+  logical pool to an explicit operator-owned runner identity. `publish` stages
+  artifacts and `activate` selects one exact version for one workspace using a
+  service token read only from the environment.
 - Images remain deployment artifacts: the reusable control plane is Favn-owned,
   while each runner image and its native dependencies are customer-owned.
 
@@ -162,8 +162,9 @@ operator contract is [`production/postgresql_operator_runbook.md`](production/po
 
 ## Production limits
 
-- The first supported topology is one control-plane node and one runner node on
-  a trusted private network. Multi-node control-plane/runner scaling is deferred.
+- The first supported topology is one control-plane node, PostgreSQL, and zero
+  to N runners across arbitrary user-defined pools on a trusted private network.
+  Multi-control-plane availability is deferred.
 - Secrets are environment-only and rotate through an operator-controlled restart.
 - PostgreSQL production-size restore, provider PITR, failover/load evidence,
   dashboards, and alert wiring remain release gates.
@@ -173,9 +174,9 @@ operator contract is [`production/postgresql_operator_runbook.md`](production/po
   use one durable asynchronous submission queue. Planning is bounded outside
   producer and scheduler processes; accepted intent survives a control-plane
   restart and scheduler occurrence completion is atomic with enqueue.
-- Distributed runner-task queues and elastic multi-runner execution remain
-  unfinished. Run admission still hands work to the current singleton runner
-  path after asynchronous preparation.
+- Durable runner-task queues and elastic multi-runner execution are implemented.
+  Live managed-platform scale, restore/load, and cold-start evidence remain
+  production release gates.
 - SQL adapter-native cancellation and broader DuckDB/DuckLake failure-injection
   coverage remain incomplete.
 

@@ -16,8 +16,7 @@ defmodule FavnStoragePostgres.ReleaseCLI do
     :grant_runtime,
     :provision_workspace,
     :runtime_input_key_inventory,
-    :compact_runtime_input_keys,
-    :preflight_upgrade
+    :compact_runtime_input_keys
   ]
   @max_key_versions 100
 
@@ -29,7 +28,6 @@ defmodule FavnStoragePostgres.ReleaseCLI do
           | :provision_workspace
           | :runtime_input_key_inventory
           | :compact_runtime_input_keys
-          | :preflight_upgrade
 
   @doc "Runs one fixed release operation and raises only its stable error code on failure."
   @spec run!(operation()) :: :ok
@@ -75,8 +73,6 @@ defmodule FavnStoragePostgres.ReleaseCLI do
       release.compact_runtime_input_keys(versions)
     end
   end
-
-  defp dispatch(:preflight_upgrade, _env, release), do: release.preflight_upgrade()
 
   defp workspace(env) do
     with {:ok, workspace_id} <- required(env, "FAVN_WORKSPACE_ID"),

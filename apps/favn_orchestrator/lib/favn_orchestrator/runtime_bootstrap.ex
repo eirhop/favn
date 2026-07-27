@@ -1,4 +1,4 @@
-defmodule FavnOrchestrator.RuntimeStarter do
+defmodule FavnOrchestrator.RuntimeBootstrap do
   @moduledoc false
 
   use GenServer
@@ -6,7 +6,6 @@ defmodule FavnOrchestrator.RuntimeStarter do
   alias FavnOrchestrator.Auth
   alias FavnOrchestrator.Lifecycle
   alias FavnOrchestrator.OperationalEvents
-  alias FavnOrchestrator.RunnerHealth
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) when is_list(opts) do
@@ -18,8 +17,7 @@ defmodule FavnOrchestrator.RuntimeStarter do
     runtime? = Keyword.get(opts, :runtime?, true)
 
     with :ok <- maybe_bootstrap(runtime?),
-         :ok <- Lifecycle.mark_accepting(),
-         :ok <- maybe_refresh(runtime?) do
+         :ok <- Lifecycle.mark_accepting() do
       if runtime?, do: OperationalEvents.emit(:orchestrator_started, %{}, %{})
       {:ok, %{runtime?: runtime?}}
     else
@@ -29,10 +27,4 @@ defmodule FavnOrchestrator.RuntimeStarter do
 
   defp maybe_bootstrap(true), do: Auth.bootstrap_configured_actor()
   defp maybe_bootstrap(false), do: :ok
-
-  defp maybe_refresh(true) do
-    :ok = RunnerHealth.refresh()
-  end
-
-  defp maybe_refresh(false), do: :ok
 end

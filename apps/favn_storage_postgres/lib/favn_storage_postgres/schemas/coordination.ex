@@ -1,28 +1,3 @@
-defmodule FavnStoragePostgres.Schemas.RunnerExecution do
-  @moduledoc false
-  use Ecto.Schema
-
-  @primary_key false
-  @schema_prefix "favn_control"
-  schema "runner_executions" do
-    field(:workspace_id, :string, primary_key: true)
-    field(:runner_execution_id, :string, primary_key: true)
-    field(:run_id, :string)
-    field(:dispatch_id, :string)
-    field(:last_command_id, :string)
-    field(:owner_id, :string)
-    field(:run_fencing_token, :integer)
-    field(:status, :string)
-    field(:version, :integer)
-    field(:dispatch_payload, :map)
-    field(:result, :map)
-    field(:error, :map)
-    field(:dispatched_at, :utc_datetime_usec)
-    field(:terminal_at, :utc_datetime_usec)
-    timestamps(type: :utc_datetime_usec)
-  end
-end
-
 defmodule FavnStoragePostgres.Schemas.ScheduleCursor do
   @moduledoc false
   use Ecto.Schema

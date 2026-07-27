@@ -90,9 +90,8 @@ database-enforced invariants.
   Verified TLS uses an explicit CA bundle when configured and otherwise uses the
   Erlang system trust store; plaintext is rejected in production.
 - Runtime nodes never migrate at boot.
-- `manifest_versions.required_runner_release_id` is non-null and format-checked
-  for current manifest schemas. It is null only on historical pre-contract rows,
-  which remain available to bounded audit reads but cannot be activated.
+- `manifest_versions.runner_releases` is a non-null, format-checked JSON object
+  whose keys are logical pool names and values are immutable runner releases.
 - Tenant access requires explicit workspace/platform context.
 - The storage-owned node-local manifest cache contains only decoded compact immutable
   releases and is bounded by entry and byte budgets. The orchestrator and runner own

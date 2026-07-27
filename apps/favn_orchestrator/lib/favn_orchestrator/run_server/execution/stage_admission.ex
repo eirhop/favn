@@ -38,7 +38,6 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
   @type entry :: StageEntry.t()
   @type result ::
           {:ok, RunState.t(), [entry()], [node_key()], MapSet.t(term()), [map()], map() | nil}
-          | {:retry, RunState.t(), [node_key()], [node_key()]}
           | {:partial_retry, RunState.t(), [entry()], [node_key()], node_key(), term(),
              MapSet.t(term()), [map()], map() | nil}
           | {:error, RunState.t(), [term()], [node_key()]}
@@ -60,8 +59,6 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
          decisions: decisions,
          freshness_context: freshness_context,
          attempt: attempt,
-         runner_client: runner_client,
-         runner_opts: runner_opts,
          manifest_lease_id: manifest_lease_id,
          queued_steps: %MapSet{} = queued_steps
        })
@@ -74,8 +71,6 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
       decisions: decisions,
       freshness_context: freshness_context,
       attempt: attempt,
-      runner_client: runner_client,
-      runner_opts: runner_opts,
       manifest_lease_id: manifest_lease_id,
       entries_rev: [],
       queued_steps: queued_steps,
@@ -355,7 +350,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
 
   defp entries(%{entries_rev: entries_rev}), do: Enum.reverse(entries_rev)
   defp attempted_node_keys(ctx), do: Enum.map(entries(ctx), & &1.node_key)
-  defp execution_ids(ctx), do: Enum.map(entries(ctx), & &1.execution_id)
+  defp task_ids(ctx), do: Enum.map(entries(ctx), & &1.task_id)
 
   defp submit_admitted_entry(ctx) do
     package_context =
@@ -439,9 +434,6 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
             window: RunnerWork.window(work),
             task_id: task.task_id,
             assignment_generation: task.assignment_generation,
-            execution_id: task.task_id,
-            runner_execution_id: nil,
-            ownership: nil,
             decision: Map.get(ctx.decisions, ctx.node_key, %{}),
             attempt: ctx.attempt,
             stage: ctx.stage,
@@ -520,16 +512,14 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
     :ok = cleanup_entries(ctx.current_run, entries(ctx), reason)
 
     cancelled =
-      cancel_execution_ids(
+      cancel_task_ids(
         ctx.current_run,
-        execution_ids(ctx),
-        %{kind: :submit_failure, asset_ref: asset_ref, error: reason},
-        ctx.runner_client,
-        ctx.runner_opts
+        task_ids(ctx),
+        %{kind: :submit_failure, asset_ref: asset_ref, error: reason}
       )
 
     failed =
-      RunState.transition(cancelled, status: :error, error: reason, runner_execution_id: nil)
+      RunState.transition(cancelled, status: :error, error: reason, runner_task_id: nil)
 
     persist_stage_submit_failure(ctx, failed, asset_ref, reason, safe_retryable?(reason))
   end
@@ -670,26 +660,26 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
   defp with_inflight_task(%RunState{} = run_state, task_id, metadata) do
     ids =
       run_state.metadata
-      |> Map.get(:in_flight_task_ids, [])
+      |> Map.get(:active_runner_task_ids, [])
       |> Kernel.++([task_id])
       |> Enum.filter(&is_binary/1)
       |> Enum.uniq()
 
     RunState.transition(run_state,
-      runner_execution_id: nil,
-      metadata: run_state.metadata |> Map.merge(metadata) |> Map.put(:in_flight_task_ids, ids)
+      runner_task_id: nil,
+      metadata: run_state.metadata |> Map.merge(metadata) |> Map.put(:active_runner_task_ids, ids)
     )
   end
 
   defp without_inflight_task(%RunState{} = run_state, task_id) do
     ids =
       run_state.metadata
-      |> Map.get(:in_flight_task_ids, [])
+      |> Map.get(:active_runner_task_ids, [])
       |> Enum.reject(&(&1 == task_id))
 
     RunState.transition(run_state,
-      runner_execution_id: nil,
-      metadata: Map.put(run_state.metadata, :in_flight_task_ids, ids)
+      runner_task_id: nil,
+      metadata: Map.put(run_state.metadata, :active_runner_task_ids, ids)
     )
   end
 
@@ -736,54 +726,42 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
   defp attempt_start_event(attempt) when attempt > 1, do: :step_retry_started
   defp attempt_start_event(_attempt), do: :step_started
 
-  defp cancel_execution_ids(
+  defp cancel_task_ids(
          %RunState{} = run_state,
-         execution_ids,
-         reason,
-         runner_client,
-         runner_opts
+         task_ids,
+         reason
        ) do
     {run_state, _cancel_results} =
-      cancel_execution_ids_with_results(
-        run_state,
-        execution_ids,
-        reason,
-        runner_client,
-        runner_opts
-      )
+      cancel_task_ids_with_results(run_state, task_ids, reason)
 
     run_state
   end
 
-  defp cancel_execution_ids_with_results(
+  defp cancel_task_ids_with_results(
          %RunState{} = run_state,
-         execution_ids,
-         reason,
-         runner_client,
-         runner_opts
+         task_ids,
+         reason
        ) do
-    _ = runner_client
-    _ = runner_opts
-    cancel_results = Cancellation.dispatch_runner_tasks(run_state, execution_ids, reason)
+    cancel_results = Cancellation.dispatch_runner_tasks(run_state, task_ids, reason)
 
     confirmed_ids =
       cancel_results
       |> Enum.filter(&CancellationOutcome.confirmed?/1)
-      |> Enum.map(& &1.execution_id)
+      |> Enum.map(& &1.task_id)
 
     remaining_ids =
       run_state
-      |> ActiveTaskSet.inflight_task_ids()
+      |> ActiveTaskSet.active_runner_task_ids()
       |> Enum.reject(&(&1 in confirmed_ids))
 
     metadata =
       run_state.metadata
-      |> Map.delete(:in_flight_execution_ids)
-      |> Map.delete("in_flight_execution_ids")
-      |> Map.put(:in_flight_task_ids, remaining_ids)
+      |> Map.delete(:active_runner_task_ids)
+      |> Map.delete("active_runner_task_ids")
+      |> Map.put(:active_runner_task_ids, remaining_ids)
       |> Map.put(:cancel_outcomes, Enum.map(cancel_results, &CancellationOutcome.to_map/1))
 
-    {Snapshots.snapshot_update(run_state, metadata: metadata, runner_execution_id: nil),
+    {Snapshots.snapshot_update(run_state, metadata: metadata, runner_task_id: nil),
      cancel_results}
   end
 

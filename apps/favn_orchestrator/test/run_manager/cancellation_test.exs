@@ -181,7 +181,7 @@ defmodule FavnOrchestrator.RunManager.CancellationTest do
     current =
       run(:running)
       |> Map.put(:event_seq, 2)
-      |> put_in([Access.key(:metadata), :in_flight_task_ids], [task.task_id])
+      |> put_in([Access.key(:metadata), :active_runner_task_ids], [task.task_id])
 
     put_replayed_commit(run(:pending))
     Process.put(:run_manager_cancellation_current_run, current)
@@ -246,7 +246,7 @@ defmodule FavnOrchestrator.RunManager.CancellationTest do
     current =
       run(:running)
       |> Map.put(:event_seq, 2)
-      |> put_in([Access.key(:metadata), :in_flight_task_ids], [task.task_id])
+      |> put_in([Access.key(:metadata), :active_runner_task_ids], [task.task_id])
 
     put_replayed_commit(run(:pending))
     Process.put(:run_manager_cancellation_current_run, current)

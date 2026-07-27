@@ -90,7 +90,7 @@ defmodule FavnOrchestrator.RunServer.Execution.SequentialTest do
         deployment_id: "deployment-pre-submit-window",
         manifest_version_id: "manifest-pre-submit-window",
         manifest_content_hash: "sha256:pre-submit-window",
-        required_runner_release_id: FavnTestSupport.runner_release_id(),
+        runner_releases: %{"default" => FavnTestSupport.runner_release_id()},
         asset_ref: ref,
         target_refs: [ref],
         plan: plan
@@ -105,7 +105,6 @@ defmodule FavnOrchestrator.RunServer.Execution.SequentialTest do
       run: run,
       version: version,
       manifest_index: %Index{},
-      runner_client: nil,
       sequential_refs: [{ref, node_key, 0}]
     }
 

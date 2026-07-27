@@ -4,7 +4,7 @@ defmodule FavnLocal.DockerFreeLocalLifecycleAcceptanceTest do
   alias Favn.Contracts.GenerationCapabilitiesRequest
   alias Favn.Manifest.Publication
   alias FavnLocal.Config
-  alias FavnLocal.Lifecycle, as: LocalLifecycle
+  alias FavnLocal.DevelopmentRuntime
   alias FavnLocal.Locator
   alias FavnLocal.Publication, as: LocalPublication
   alias FavnOrchestrator.ManifestStore
@@ -49,6 +49,8 @@ defmodule FavnLocal.DockerFreeLocalLifecycleAcceptanceTest do
     previous_trusted_local =
       Application.get_env(:favn_orchestrator, :trusted_local_development_auth)
 
+    previous_dev = Application.get_env(:favn, :dev)
+
     Application.delete_env(:favn_view, FavnView.Endpoint)
     Application.delete_env(:favn_view, :session_cookie_options)
 
@@ -59,6 +61,7 @@ defmodule FavnLocal.DockerFreeLocalLifecycleAcceptanceTest do
       restore_env(:source_development_passwordless_login, previous_passwordless)
       restore_orchestrator_env(:trusted_local_development_auth, previous_trusted_local)
       restore_favn_env(:asset_modules, previous_asset_modules)
+      restore_favn_env(:dev, previous_dev)
       Logger.configure(level: previous_primary_level)
       restore_handler_level(previous_handler_level)
     end)
@@ -81,6 +84,11 @@ defmodule FavnLocal.DockerFreeLocalLifecycleAcceptanceTest do
     dev_env =
       System.get_env()
       |> Map.delete("FAVN_LOG_LEVEL")
+      |> Map.drop([
+        "FAVN_LOG_LEVEL",
+        "FAVN_VIEW_PORT",
+        "FAVN_ORCHESTRATOR_API_PORT"
+      ])
       |> Map.put_new("FAVN_RUNTIME_INPUT_PIN_KEY", Base.encode64(String.duplicate("k", 32)))
 
     assert {:ok, started} =
@@ -139,7 +147,7 @@ defmodule FavnLocal.DockerFreeLocalLifecycleAcceptanceTest do
       end)
 
     assert_eventually(fn ->
-      status = LocalLifecycle.status()
+      status = DevelopmentRuntime.status()
 
       status.status == :reloading and
         status.runner_release_id != started.runner_release_id
@@ -191,12 +199,12 @@ defmodule FavnLocal.DockerFreeLocalLifecycleAcceptanceTest do
 
     invalid_reload =
       Task.async(fn ->
-        LocalLifecycle.reload(invalid_publication, failed_release_id, 60_000)
+        DevelopmentRuntime.reload(invalid_publication, failed_release_id, 60_000)
       end)
 
     failed_candidate_port =
       await_value(fn ->
-        case :sys.get_state(LocalLifecycle) do
+        case :sys.get_state(DevelopmentRuntime) do
           %{status: :reloading, candidate: %{port: port}} -> {:ok, port}
           _state -> :retry
         end
@@ -205,35 +213,35 @@ defmodule FavnLocal.DockerFreeLocalLifecycleAcceptanceTest do
     assert {:error, _reason} = Task.await(invalid_reload, 60_000)
 
     assert_eventually(fn ->
-      state = :sys.get_state(LocalLifecycle)
+      state = :sys.get_state(DevelopmentRuntime)
 
       is_nil(state.candidate) and
         not MapSet.member?(state.ignored_ports, failed_candidate_port)
     end)
 
-    send(LocalLifecycle, {:runner_stop_timeout, failed_candidate_port})
+    send(DevelopmentRuntime, {:runner_stop_timeout, failed_candidate_port})
 
-    :sys.replace_state(LocalLifecycle, fn state ->
+    :sys.replace_state(DevelopmentRuntime, fn state ->
       %{state | ignored_ports: MapSet.put(state.ignored_ports, failed_candidate_port)}
     end)
 
-    send(LocalLifecycle, {:runner_stop_timeout, failed_candidate_port})
+    send(DevelopmentRuntime, {:runner_stop_timeout, failed_candidate_port})
 
     assert_eventually(fn ->
-      state = :sys.get_state(LocalLifecycle)
+      state = :sys.get_state(DevelopmentRuntime)
       MapSet.member?(state.ignored_ports, failed_candidate_port) and state.status == :ready
     end)
 
-    send(LocalLifecycle, {failed_candidate_port, {:exit_status, 0}})
+    send(DevelopmentRuntime, {failed_candidate_port, {:exit_status, 0}})
 
     assert_eventually(fn ->
-      state = :sys.get_state(LocalLifecycle)
+      state = :sys.get_state(DevelopmentRuntime)
       not MapSet.member?(state.ignored_ports, failed_candidate_port) and state.status == :ready
     end)
 
     assert Process.alive?(started.supervisor)
-    assert LocalLifecycle.status().status == :ready
-    assert LocalLifecycle.status().runner_release_id == reloaded.runner_release_id
+    assert DevelopmentRuntime.status().status == :ready
+    assert DevelopmentRuntime.status().runner_release_id == reloaded.runner_release_id
     assert Node.ping(reloaded.runner_node) == :pong
     assert {:ok, locator} = Locator.read(root_dir)
     assert locator.runner_release_id == reloaded.runner_release_id

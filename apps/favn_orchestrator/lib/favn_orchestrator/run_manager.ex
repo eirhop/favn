@@ -17,19 +17,16 @@ defmodule FavnOrchestrator.RunManager do
   alias FavnOrchestrator.Persistence.WorkspaceContext
   alias FavnOrchestrator.Redaction
   alias FavnOrchestrator.RunExecutionCleanup
-  alias FavnOrchestrator.RunExecutionOwnership
   alias FavnOrchestrator.RunCancellation
   alias FavnOrchestrator.RunManager.Submission
   alias FavnOrchestrator.RunManager.PlanCapacity
   alias FavnOrchestrator.RunOwnership
-  alias FavnOrchestrator.RunnerClientValidator
-  alias FavnOrchestrator.RunnerReleaseCompatibility
+  alias FavnOrchestrator.RunnerIdentityVerifier
   alias FavnOrchestrator.RunServer
   alias FavnOrchestrator.RunServer.Cancellation
   alias FavnOrchestrator.RunServer.Execution.ActiveTaskSet
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Runs
-  alias FavnOrchestrator.RuntimeConfig
   alias FavnOrchestrator.Storage.JsonSafe
   alias FavnOrchestrator.TransitionWriter
 
@@ -429,7 +426,7 @@ defmodule FavnOrchestrator.RunManager do
              run.deployment_id,
              run.manifest_version_id
            ),
-         :ok <- RunnerReleaseCompatibility.verify_run_manifest(run, version) do
+         :ok <- RunnerIdentityVerifier.verify_run_manifest(run, version) do
       {:ok, version}
     end
   end
@@ -622,7 +619,7 @@ defmodule FavnOrchestrator.RunManager do
       RunState.transition(run,
         status: :error,
         error: Map.put(error, :runner_cleanup, cleanup_statuses),
-        runner_execution_id: nil,
+        runner_task_id: nil,
         metadata: Map.put(run.metadata, :terminal_event_type, :run_failed)
       )
 
@@ -722,42 +719,14 @@ defmodule FavnOrchestrator.RunManager do
   end
 
   defp forward_cancel_result(%RunState{} = run, reason) do
-    case ActiveTaskSet.inflight_task_ids(run) do
+    case ActiveTaskSet.active_runner_task_ids(run) do
       [_ | _] = task_ids ->
         run
         |> Cancellation.dispatch_runner_tasks(task_ids, reason)
         |> classify_cancel_results()
 
       [] ->
-        forward_legacy_cancel_result(run, reason)
-    end
-  end
-
-  defp forward_legacy_cancel_result(%RunState{} = run, reason) do
-    runtime_config = RuntimeConfig.current()
-    runner_client = runtime_config.runner_client
-    runner_opts = runtime_config.runner_client_opts
-
-    with {:ok, execution_ids} <- inflight_execution_ids(run) do
-      if execution_ids == [] do
         :ok
-      else
-        with :ok <- RunnerClientValidator.validate(runner_client) do
-          results =
-            Cancellation.dispatch_legacy_runner_work(
-              run,
-              execution_ids,
-              reason,
-              runner_client,
-              runner_opts
-            )
-
-          case RunExecutionOwnership.persist_cancel_outcomes(run, results, reason) do
-            :ok -> classify_cancel_results(results)
-            {:error, error} -> {:error, %{type: :cancel_outcome_persist_failed, reason: error}}
-          end
-        end
-      end
     end
   end
 
@@ -792,33 +761,9 @@ defmodule FavnOrchestrator.RunManager do
 
   defp cancel_failure_reason(result) when is_map(result) do
     %{
-      execution_id: Map.get(result, :execution_id),
+      task_id: Map.get(result, :task_id),
       status: Map.get(result, :status),
       reason: inspect(Map.get(result, :error))
     }
-  end
-
-  defp inflight_execution_ids(%RunState{} = run) do
-    metadata_ids =
-      case Map.get(run.metadata, :in_flight_execution_ids, []) do
-        ids when is_list(ids) -> ids
-        _other -> []
-      end
-
-    case RunExecutionOwnership.fetch_active(run) do
-      {:ok, ownerships} ->
-        ledger_ids =
-          ownerships
-          |> Enum.map(& &1.runner_execution_id)
-          |> Enum.filter(&is_binary/1)
-
-        {:ok,
-         [run.runner_execution_id | metadata_ids ++ ledger_ids]
-         |> Enum.filter(&is_binary/1)
-         |> Enum.uniq()}
-
-      {:error, reason} ->
-        {:error, {:execution_ownership_read_failed, reason}}
-    end
   end
 end

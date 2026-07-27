@@ -95,19 +95,19 @@ defmodule FavnOrchestrator.RunServer.Execution.ActiveTaskSet do
     ids = task_ids(work_set)
 
     Snapshots.snapshot_update(run_state,
-      runner_execution_id: nil,
+      runner_task_id: nil,
       metadata:
         run_state.metadata
-        |> Map.delete(:in_flight_execution_ids)
-        |> Map.delete("in_flight_execution_ids")
-        |> Map.put(:in_flight_task_ids, ids)
+        |> Map.delete(:active_runner_task_ids)
+        |> Map.delete("active_runner_task_ids")
+        |> Map.put(:active_runner_task_ids, ids)
     )
   end
 
   @doc "Requests cancellation and retains work whose cancellation is not yet proven."
   @spec cancel_all(RunState.t(), t(), term()) :: {RunState.t(), t()}
   def cancel_all(%RunState{} = run_state, %__MODULE__{} = work_set, reason) do
-    active_ids = Enum.uniq(task_ids(work_set) ++ inflight_task_ids(run_state))
+    active_ids = Enum.uniq(task_ids(work_set) ++ active_runner_task_ids(run_state))
 
     cancel_results =
       Enum.map(active_ids, &RunnerTasks.request_cancellation(run_state.workspace_id, &1, reason))
@@ -115,7 +115,7 @@ defmodule FavnOrchestrator.RunServer.Execution.ActiveTaskSet do
     cancelled_ids =
       cancel_results
       |> Enum.filter(&CancellationOutcome.confirmed?/1)
-      |> Enum.map(& &1.execution_id)
+      |> Enum.map(& &1.task_id)
 
     next_work_set =
       Enum.reduce(cancelled_ids, work_set, fn id, acc -> elem(complete_entry(acc, id), 1) end)
@@ -165,12 +165,12 @@ defmodule FavnOrchestrator.RunServer.Execution.ActiveTaskSet do
   end
 
   @doc "Reads in-flight task ids from run metadata."
-  @spec inflight_task_ids(RunState.t()) :: [task_id()]
-  def inflight_task_ids(%RunState{} = run_state) do
+  @spec active_runner_task_ids(RunState.t()) :: [task_id()]
+  def active_runner_task_ids(%RunState{} = run_state) do
     case Map.get(
            run_state.metadata,
-           :in_flight_task_ids,
-           Map.get(run_state.metadata, "in_flight_task_ids", [])
+           :active_runner_task_ids,
+           Map.get(run_state.metadata, "active_runner_task_ids", [])
          ) do
       ids when is_list(ids) -> Enum.filter(ids, &is_binary/1)
       _other -> []
@@ -180,7 +180,7 @@ defmodule FavnOrchestrator.RunServer.Execution.ActiveTaskSet do
   @doc "Builds a work set from run metadata when entry details are unavailable."
   @spec from_run_metadata(RunState.t()) :: t()
   def from_run_metadata(%RunState{} = run_state) do
-    Enum.reduce(inflight_task_ids(run_state), new(run_state), fn task_id, acc ->
+    Enum.reduce(active_runner_task_ids(run_state), new(run_state), fn task_id, acc ->
       add_entry(acc, %{task_id: task_id})
     end)
   end

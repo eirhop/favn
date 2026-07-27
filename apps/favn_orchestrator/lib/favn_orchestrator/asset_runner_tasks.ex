@@ -60,8 +60,7 @@ defmodule FavnOrchestrator.AssetRunnerTasks do
 
     %{
       work
-      | execution_id: task_id,
-        manifest_lease_id: nil,
+      | manifest_lease_id: nil,
         runtime_input_pin: nil,
         metadata: metadata
     }

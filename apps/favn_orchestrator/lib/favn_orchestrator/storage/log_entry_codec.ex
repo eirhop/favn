@@ -7,7 +7,7 @@ defmodule FavnOrchestrator.Storage.LogEntryCodec do
 
   @format "favn.log_entry.storage.v1"
   @dto_fields ~w(format schema_version id global_sequence run_id asset_step_id node_key
-                 node_key_payload asset_ref asset_ref_payload runner_execution_id attempt
+                 node_key_payload asset_ref asset_ref_payload runner_task_id attempt
                  producer_id producer_sequence occurred_at level source stream message metadata
                  truncated)
   @fields [
@@ -18,7 +18,7 @@ defmodule FavnOrchestrator.Storage.LogEntryCodec do
     :asset_step_id,
     :node_key,
     :asset_ref,
-    :runner_execution_id,
+    :runner_task_id,
     :attempt,
     :producer_id,
     :producer_sequence,
@@ -42,7 +42,7 @@ defmodule FavnOrchestrator.Storage.LogEntryCodec do
          {:ok, global_sequence} <- optional_positive(:global_sequence, attrs),
          {:ok, run_id} <- optional_binary(:run_id, attrs),
          {:ok, asset_step_id} <- optional_binary(:asset_step_id, attrs),
-         {:ok, runner_execution_id} <- optional_binary(:runner_execution_id, attrs),
+         {:ok, runner_task_id} <- optional_binary(:runner_task_id, attrs),
          {:ok, attempt} <- optional_positive(:attempt, attrs),
          {:ok, producer_id} <- optional_binary(:producer_id, attrs),
          {:ok, producer_sequence} <- optional_non_negative(:producer_sequence, attrs),
@@ -55,7 +55,7 @@ defmodule FavnOrchestrator.Storage.LogEntryCodec do
         |> Map.put(:global_sequence, global_sequence)
         |> Map.put(:run_id, run_id)
         |> Map.put(:asset_step_id, asset_step_id)
-        |> Map.put(:runner_execution_id, runner_execution_id)
+        |> Map.put(:runner_task_id, runner_task_id)
         |> Map.put(:attempt, attempt)
         |> Map.put(:producer_id, producer_id)
         |> Map.put(:producer_sequence, producer_sequence)
@@ -109,7 +109,7 @@ defmodule FavnOrchestrator.Storage.LogEntryCodec do
         asset_step_id: Map.get(dto, "asset_step_id"),
         node_key: node_key,
         asset_ref: asset_ref,
-        runner_execution_id: Map.get(dto, "runner_execution_id"),
+        runner_task_id: Map.get(dto, "runner_task_id"),
         attempt: Map.get(dto, "attempt"),
         producer_id: Map.get(dto, "producer_id"),
         producer_sequence: Map.get(dto, "producer_sequence"),
@@ -164,7 +164,7 @@ defmodule FavnOrchestrator.Storage.LogEntryCodec do
       "node_key_payload" => payload_to_dto(Map.get(attrs, :node_key)),
       "asset_ref" => JsonSafe.data(Map.get(attrs, :asset_ref)),
       "asset_ref_payload" => payload_to_dto(Map.get(attrs, :asset_ref)),
-      "runner_execution_id" => Map.get(attrs, :runner_execution_id),
+      "runner_task_id" => Map.get(attrs, :runner_task_id),
       "attempt" => Map.get(attrs, :attempt),
       "producer_id" => Map.get(attrs, :producer_id),
       "producer_sequence" => Map.get(attrs, :producer_sequence),
