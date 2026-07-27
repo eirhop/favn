@@ -42,6 +42,16 @@ precedence over descriptor differences. Once inspection proves the recorded
 active generation is intact, immutable active-versus-desired descriptor
 differences determine whether a rebuild is required.
 
+The same rule applies when the active generation points to an immutable
+manifest whose full runtime schema is no longer activatable. Compatibility
+planning reads only the selected standalone target descriptors, in bounded
+batches, and requires the persisted descriptor hash to match the active
+binding. It never registers or executes the historical manifest. A complete
+descriptor hash may differ because of non-semantic envelope metadata; the named
+compatibility fields still decide `ready`, `rebuild_available`, or
+`rebuild_required`. Missing, malformed, or mismatched historical descriptor
+evidence remains `operator_decision`.
+
 ## Immutable planning and approval
 
 Planning is read-only from the operator's perspective. It freezes:

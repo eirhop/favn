@@ -87,7 +87,7 @@ defmodule FavnOrchestrator.Storage.JsonSafe do
   def error(%{type: :missing_runtime_config} = value), do: runtime_config_diagnostic(value)
   def error(%{"type" => "missing_runtime_config"} = value), do: runtime_config_diagnostic(value)
 
-  def error(%{"kind" => kind, "message" => message, "reason" => reason, "type" => type}) do
+  def error(%{"kind" => kind, "message" => message, "reason" => reason, "type" => type} = value) do
     %{
       "kind" => scalar_string(kind, "error"),
       "type" => scalar_string(type, "term"),
@@ -96,6 +96,7 @@ defmodule FavnOrchestrator.Storage.JsonSafe do
       "redacted" => true,
       "truncated" => false
     }
+    |> maybe_put_error_details(Map.get(value, "details"))
   end
 
   def error(%{kind: kind} = value) do
@@ -110,6 +111,7 @@ defmodule FavnOrchestrator.Storage.JsonSafe do
       "redacted" => true,
       "truncated" => false
     }
+    |> maybe_put_error_details(Map.get(value, :details) || Map.get(value, "details"))
   end
 
   def error(%{__exception__: true, __struct__: module} = exception) when is_atom(module) do
@@ -388,6 +390,11 @@ defmodule FavnOrchestrator.Storage.JsonSafe do
 
   defp safe_existing_error_reason(value) when is_binary(value), do: safe_error_message(value)
   defp safe_existing_error_reason(value), do: safe_error_reason(value)
+
+  defp maybe_put_error_details(error, details) when is_map(details),
+    do: Map.put(error, "details", data(details, "details", @max_depth - 1))
+
+  defp maybe_put_error_details(error, _details), do: error
 
   defp exception_message(%{__exception__: true} = exception) do
     Exception.message(exception)

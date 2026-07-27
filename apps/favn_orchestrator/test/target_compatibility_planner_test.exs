@@ -4,6 +4,7 @@ defmodule FavnOrchestrator.TargetCompatibilityPlannerTest do
   alias Favn.Contracts.RelationInspectionResult
   alias Favn.Manifest
   alias Favn.Manifest.Asset
+  alias Favn.Manifest.TargetDescriptor
   alias Favn.Manifest.Version
   alias Favn.RelationRef
   alias Favn.TargetCompatibility.PhysicalFingerprint
@@ -50,6 +51,17 @@ defmodule FavnOrchestrator.TargetCompatibilityPlannerTest do
         {:error, :error} -> {:error, :manifest_not_found}
       end
     end
+
+    def get_manifest_target_descriptors(query) do
+      descriptors =
+        Application.get_env(
+          :favn_orchestrator,
+          :compatibility_test_historical_descriptors,
+          %{}
+        )
+
+      {:ok, Map.get(descriptors, query.manifest_version_id, [])}
+    end
   end
 
   setup do
@@ -61,6 +73,7 @@ defmodule FavnOrchestrator.TargetCompatibilityPlannerTest do
             :compatibility_test_bindings,
             :compatibility_test_versions,
             :compatibility_test_manifest_errors,
+            :compatibility_test_historical_descriptors,
             :compatibility_test_ensure_result
           ],
           into: %{},
@@ -285,10 +298,120 @@ defmodule FavnOrchestrator.TargetCompatibilityPlannerTest do
     assert request.relation == active_asset.relation
   end
 
-  test "current deployment replaces a historical manifest when its descriptor is unchanged",
+  test "unavailable full manifests use persisted descriptor semantics instead of hash equality",
        contexts do
     {historical_version, historical_asset} = persisted_version("historical-manifest")
     {desired_version, desired_asset} = persisted_version("current-manifest")
+
+    historical_descriptor =
+      descriptor_with_manifest_schema(
+        historical_asset,
+        historical_asset.target_descriptor.manifest_schema_version + 1
+      )
+
+    refute historical_descriptor.descriptor_hash ==
+             desired_asset.target_descriptor.descriptor_hash
+
+    observed =
+      inspection(desired_version,
+        relation: %{catalog: nil, schema: "gold", name: "sales_summary", type: :table}
+      )
+
+    {:ok, recorded} = PhysicalFingerprint.from_inspection(observed)
+
+    binding = %TargetBinding{
+      workspace_id: contexts.workspace_context.workspace_id,
+      target_id: historical_asset.target_descriptor.target_id,
+      active_generation_id: Ecto.UUID.generate(),
+      active_manifest_id: historical_version.manifest_version_id,
+      active_descriptor_hash: historical_descriptor.descriptor_hash,
+      desired_manifest_id: historical_version.manifest_version_id,
+      desired_descriptor_hash: historical_descriptor.descriptor_hash,
+      compatibility_status: :ready,
+      reason_code: "compatible",
+      compatibility_diff: %{},
+      active_physical_relation: Map.from_struct(historical_asset.relation),
+      active_physical_fingerprint: recorded.fingerprint,
+      version: 8,
+      updated_at: @now
+    }
+
+    put_versions([desired_version])
+
+    Application.put_env(:favn_orchestrator, :compatibility_test_manifest_errors, %{
+      historical_version.manifest_version_id => historical_manifest_error()
+    })
+
+    put_historical_descriptors(historical_version, [historical_descriptor])
+    Application.put_env(:favn_orchestrator, :compatibility_test_bindings, [binding])
+    Application.put_env(:favn_orchestrator, :compatibility_test_inspection, observed)
+
+    assert {:ok, [decision]} = plan(desired_version, desired_asset, contexts)
+    assert decision.compatibility_status == :ready
+    assert decision.reason_code == "compatible"
+    refute_received {:ensure_manifest, _historical_manifest_id}
+    assert_received {:inspect_relation, request}
+    assert request.manifest_version_id == desired_version.manifest_version_id
+    assert request.asset_ref == nil
+    assert request.relation == historical_asset.relation
+  end
+
+  test "unavailable full manifests still classify structural descriptor changes", contexts do
+    {historical_version, historical_asset} =
+      persisted_version("historical-structural-manifest", "sales_summary")
+
+    {desired_version, desired_asset} =
+      persisted_version("current-structural-manifest", "sales_summary_v2")
+
+    historical_descriptor = historical_asset.target_descriptor
+
+    observed =
+      inspection(desired_version,
+        relation: %{catalog: nil, schema: "gold", name: "sales_summary", type: :table}
+      )
+
+    {:ok, recorded} = PhysicalFingerprint.from_inspection(observed)
+
+    binding = %TargetBinding{
+      workspace_id: contexts.workspace_context.workspace_id,
+      target_id: historical_descriptor.target_id,
+      active_generation_id: Ecto.UUID.generate(),
+      active_manifest_id: historical_version.manifest_version_id,
+      active_descriptor_hash: historical_descriptor.descriptor_hash,
+      desired_manifest_id: historical_version.manifest_version_id,
+      desired_descriptor_hash: historical_descriptor.descriptor_hash,
+      compatibility_status: :ready,
+      reason_code: "compatible",
+      compatibility_diff: %{},
+      active_physical_relation: Map.from_struct(historical_asset.relation),
+      active_physical_fingerprint: recorded.fingerprint,
+      version: 10,
+      updated_at: @now
+    }
+
+    put_versions([desired_version])
+
+    Application.put_env(:favn_orchestrator, :compatibility_test_manifest_errors, %{
+      historical_version.manifest_version_id => historical_manifest_error()
+    })
+
+    put_historical_descriptors(historical_version, [historical_descriptor])
+    Application.put_env(:favn_orchestrator, :compatibility_test_bindings, [binding])
+    Application.put_env(:favn_orchestrator, :compatibility_test_inspection, observed)
+
+    assert {:ok, [decision]} = plan(desired_version, desired_asset, contexts)
+    assert decision.compatibility_status == :rebuild_required
+    assert decision.reason_code == "incompatible_descriptor"
+    assert Enum.any?(decision.compatibility_diff.descriptor, &(&1.field == :relation))
+    refute_received {:ensure_manifest, _historical_manifest_id}
+    assert_received {:inspect_relation, request}
+    assert request.asset_ref == nil
+    assert request.relation == historical_asset.relation
+  end
+
+  test "missing historical descriptor evidence remains an operator decision", contexts do
+    {historical_version, historical_asset} = persisted_version("historical-missing-descriptor")
+    {desired_version, desired_asset} = persisted_version("current-missing-descriptor")
 
     observed =
       inspection(desired_version,
@@ -310,32 +433,24 @@ defmodule FavnOrchestrator.TargetCompatibilityPlannerTest do
       compatibility_diff: %{},
       active_physical_relation: Map.from_struct(historical_asset.relation),
       active_physical_fingerprint: recorded.fingerprint,
-      version: 8,
+      version: 11,
       updated_at: @now
-    }
-
-    historical_error = %FavnOrchestrator.Persistence.Error{
-      kind: :invalid,
-      message: "historical manifest cannot be used as a current release",
-      retryable?: false,
-      details: %{reason: :historical_manifest_not_activatable}
     }
 
     put_versions([desired_version])
 
     Application.put_env(:favn_orchestrator, :compatibility_test_manifest_errors, %{
-      historical_version.manifest_version_id => historical_error
+      historical_version.manifest_version_id => historical_manifest_error()
     })
 
+    put_historical_descriptors(historical_version, [])
     Application.put_env(:favn_orchestrator, :compatibility_test_bindings, [binding])
     Application.put_env(:favn_orchestrator, :compatibility_test_inspection, observed)
 
     assert {:ok, [decision]} = plan(desired_version, desired_asset, contexts)
-    assert decision.compatibility_status == :ready
-    assert decision.reason_code == "compatible"
-    refute_received {:ensure_manifest, _historical_manifest_id}
+    assert decision.compatibility_status == :operator_decision
+    assert decision.reason_code == "inconsistent_generation_state"
     assert_received {:inspect_relation, request}
-    assert request.manifest_version_id == desired_version.manifest_version_id
     assert request.asset_ref == desired_asset.ref
   end
 
@@ -543,5 +658,31 @@ defmodule FavnOrchestrator.TargetCompatibilityPlannerTest do
       :compatibility_test_versions,
       Map.new(versions, &{&1.manifest_version_id, &1})
     )
+  end
+
+  defp put_historical_descriptors(version, descriptors) do
+    Application.put_env(:favn_orchestrator, :compatibility_test_historical_descriptors, %{
+      version.manifest_version_id => descriptors
+    })
+  end
+
+  defp descriptor_with_manifest_schema(asset, manifest_schema_version) do
+    TargetDescriptor.from_asset(
+      asset,
+      connection_definitions: %{
+        asset.relation.connection => %{adapter: FavnTestSupport.TargetAdapter, module: nil}
+      },
+      manifest_schema_version: manifest_schema_version,
+      runner_contract_version: asset.target_descriptor.runner_contract_version
+    )
+  end
+
+  defp historical_manifest_error do
+    %FavnOrchestrator.Persistence.Error{
+      kind: :invalid,
+      message: "historical manifest cannot be used as a current release",
+      retryable?: false,
+      details: %{reason: :historical_manifest_not_activatable}
+    }
   end
 end

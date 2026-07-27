@@ -154,7 +154,7 @@ defmodule FavnOrchestrator.MaterializationClaims do
              "manifest_version_id" => field(claim, :manifest_version_id),
              "manifest_content_hash" => field(claim, :manifest_content_hash),
              "execution_package_hash" => field(claim, :execution_package_hash),
-             "runtime_input_lineage" => field(claim, :runtime_input_lineage),
+             "runtime_input_lineage" => claim |> field(:runtime_input_lineage) |> JsonSafe.data(),
              "check_results" => result_check_results(result),
              "contract_validation" => result_contract_validation(result),
              "rows_affected" => result_rows_affected(result),

@@ -156,6 +156,7 @@ Orchestrator, set `FAVN_ORCHESTRATOR_URL`,
 ```bash
 mix favn.run MyApp.Pipelines.Daily
 mix favn.run MyApp.Pipelines.Daily --window day:2026-07-23
+mix favn.backfill status BACKFILL_ID
 mix favn.runs list
 mix favn.runs show RUN_ID
 mix favn.runs cancel RUN_ID
@@ -170,6 +171,13 @@ mix favn.diagnostics
 
 `mix favn.backfill` and `mix favn.rebuild` use the same connection boundary.
 Run `mix help TASK` for their exact options.
+
+When a backfill fails, `mix favn.backfill submit` prints its bounded failure
+summary and the copyable `mix favn.backfill status BACKFILL_ID` inspection
+command. Status output includes the root run, aggregate counts, and at most 20
+failed windows by default. Use `--limit` up to 200; when more failures exist,
+the command prints the paginated `windows` command for the next page. Admission
+failures remain inspectable even when no child run was created.
 
 Newly published schedules are inactive in every workspace. Preview and
 explicitly activate each schedule that should submit future work.

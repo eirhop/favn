@@ -40,7 +40,7 @@ defmodule FavnOrchestrator.TargetCompatibilityPlanner do
     with {:ok, deployment_targets} <- DeploymentPlanner.plan(version, selection),
          {:ok, persisted} <- persisted_targets(version, deployment_targets),
          {:ok, bindings} <- fetch_bindings(workspace_context, persisted),
-         {:ok, {active_versions, historical_manifest_ids}} <-
+         {:ok, {active_versions, historical_descriptors}} <-
            active_versions(platform_context, bindings),
          :ok <- ensure_inspection_versions(active_versions, version) do
       decisions =
@@ -49,7 +49,7 @@ defmodule FavnOrchestrator.TargetCompatibilityPlanner do
             target,
             bindings,
             active_versions,
-            historical_manifest_ids,
+            historical_descriptors,
             version
           )
         end)
@@ -100,6 +100,19 @@ defmodule FavnOrchestrator.TargetCompatibilityPlanner do
   end
 
   defp active_versions(platform_context, bindings) do
+    with {:ok, {versions, historical_manifest_ids}} <-
+           load_active_versions(platform_context, bindings),
+         {:ok, historical_descriptors} <-
+           historical_target_descriptors(
+             platform_context,
+             bindings,
+             historical_manifest_ids
+           ) do
+      {:ok, {versions, historical_descriptors}}
+    end
+  end
+
+  defp load_active_versions(platform_context, bindings) do
     bindings
     |> Map.values()
     |> Enum.map(& &1.active_manifest_id)
@@ -117,6 +130,42 @@ defmodule FavnOrchestrator.TargetCompatibilityPlanner do
           {:error, _reason} = error ->
             {:halt, error}
         end
+    end)
+  end
+
+  defp historical_target_descriptors(platform_context, bindings, historical_manifest_ids) do
+    bindings
+    |> Map.values()
+    |> Enum.filter(&MapSet.member?(historical_manifest_ids, &1.active_manifest_id))
+    |> Enum.group_by(& &1.active_manifest_id, & &1.target_id)
+    |> Enum.sort_by(&elem(&1, 0))
+    |> Enum.reduce_while({:ok, %{}}, fn {manifest_id, target_ids}, {:ok, acc} ->
+      target_ids
+      |> Enum.uniq()
+      |> Enum.sort()
+      |> Enum.chunk_every(@binding_batch)
+      |> Enum.reduce_while({:ok, acc}, fn batch, {:ok, descriptors} ->
+        case ManifestStore.get_manifest_target_descriptors(
+               platform_context,
+               manifest_id,
+               batch
+             ) do
+          {:ok, fetched} ->
+            descriptors =
+              Enum.reduce(fetched, descriptors, fn descriptor, descriptors ->
+                Map.put(descriptors, {manifest_id, descriptor.target_id}, descriptor)
+              end)
+
+            {:cont, {:ok, descriptors}}
+
+          {:error, _reason} = error ->
+            {:halt, error}
+        end
+      end)
+      |> case do
+        {:ok, descriptors} -> {:cont, {:ok, descriptors}}
+        {:error, _reason} = error -> {:halt, error}
+      end
     end)
   end
 
@@ -146,7 +195,7 @@ defmodule FavnOrchestrator.TargetCompatibilityPlanner do
          target,
          bindings,
          active_versions,
-         historical_manifest_ids,
+         historical_descriptors,
          desired_version
        ) do
     binding = Map.get(bindings, target.target_id)
@@ -156,8 +205,7 @@ defmodule FavnOrchestrator.TargetCompatibilityPlanner do
         binding,
         target,
         active_versions,
-        historical_manifest_ids,
-        desired_version
+        historical_descriptors
       )
 
     active_descriptor = active_target && active_target.descriptor
@@ -202,7 +250,7 @@ defmodule FavnOrchestrator.TargetCompatibilityPlanner do
   end
 
   defp inspection_target(
-         %{version: active_version} = active_target,
+         %{inspection: :asset, version: active_version} = active_target,
          binding,
          _desired_asset,
          desired_version
@@ -210,81 +258,100 @@ defmodule FavnOrchestrator.TargetCompatibilityPlanner do
     if active_version.required_runner_release_id == desired_version.required_runner_release_id do
       {:ok, {:asset, active_target.asset}, active_version}
     else
-      with {:ok, relation} <- active_physical_relation(binding, active_target) do
+      with {:ok, relation} <- active_physical_relation(binding, active_target.connection) do
         {:ok, {:relation, relation}, desired_version}
       end
+    end
+  end
+
+  defp inspection_target(
+         %{inspection: :persisted_relation, connection: connection},
+         binding,
+         _desired_asset,
+         desired_version
+       ) do
+    with {:ok, relation} <- active_physical_relation(binding, connection) do
+      {:ok, {:relation, relation}, desired_version}
     end
   end
 
   defp inspection_target(nil, _binding, desired_asset, desired_version),
     do: {:ok, {:asset, desired_asset}, desired_version}
 
-  defp active_physical_relation(%{active_physical_relation: relation}, active_target)
+  defp active_physical_relation(%{active_physical_relation: relation}, connection)
        when is_map(relation) do
-    connection = active_target.asset.relation.connection
+    if persisted_connection(relation) in persisted_connection_values(connection) do
+      relation =
+        relation
+        |> Map.drop([:connection, "connection"])
+        |> Map.put(:connection, connection)
+        |> RelationRef.new!()
 
-    relation =
-      relation
-      |> Map.drop([:connection, "connection"])
-      |> Map.put(:connection, connection)
-      |> RelationRef.new!()
-
-    {:ok, relation}
+      {:ok, relation}
+    else
+      {:error, :active_physical_relation_connection_changed}
+    end
   rescue
     ArgumentError -> {:error, :invalid_active_physical_relation}
   end
 
-  defp active_physical_relation(_binding, _active_target),
+  defp active_physical_relation(_binding, _connection),
     do: {:error, :active_physical_relation_missing}
 
-  defp active_target(nil, _target, _versions, _historical_manifest_ids, _desired_version), do: nil
+  defp persisted_connection(relation),
+    do: Map.get(relation, :connection, Map.get(relation, "connection"))
+
+  defp persisted_connection_values(nil), do: [nil]
+
+  defp persisted_connection_values(connection) when is_atom(connection),
+    do: [connection, Atom.to_string(connection)]
+
+  defp active_target(nil, _target, _versions, _historical_descriptors), do: nil
 
   defp active_target(
          %{active_generation_id: nil},
          _target,
          _versions,
-         _historical_manifest_ids,
-         _desired_version
+         _historical_descriptors
        ),
        do: nil
 
-  defp active_target(binding, target, versions, historical_manifest_ids, desired_version) do
+  defp active_target(binding, target, versions, historical_descriptors) do
     with manifest_id when is_binary(manifest_id) <- binding.active_manifest_id,
          %Version{} = version <- Map.get(versions, manifest_id),
          {:ok, %Asset{target_descriptor: %TargetDescriptor{} = descriptor} = asset} <-
            ManifestTarget.resolve_asset(version, target.target_id),
          true <- descriptor.descriptor_hash == binding.active_descriptor_hash do
-      %{descriptor: descriptor, asset: asset, version: version}
+      %{
+        descriptor: descriptor,
+        asset: asset,
+        connection: asset.relation.connection,
+        inspection: :asset,
+        version: version
+      }
     else
       _missing_or_mismatched ->
-        unchanged_historical_target(
-          binding,
-          target,
-          historical_manifest_ids,
-          desired_version
-        )
+        historical_target(binding, target, historical_descriptors)
     end
   end
 
-  defp unchanged_historical_target(
+  defp historical_target(
          %{active_manifest_id: manifest_id, active_descriptor_hash: descriptor_hash},
-         %{asset: %Asset{target_descriptor: %TargetDescriptor{} = descriptor} = asset},
-         historical_manifest_ids,
-         %Version{} = desired_version
-       )
-       when descriptor_hash == descriptor.descriptor_hash do
-    if MapSet.member?(historical_manifest_ids, manifest_id) do
-      %{descriptor: descriptor, asset: asset, version: desired_version}
+         %{target_id: target_id, asset: %Asset{} = asset},
+         historical_descriptors
+       ) do
+    case Map.get(historical_descriptors, {manifest_id, target_id}) do
+      %TargetDescriptor{descriptor_hash: ^descriptor_hash} = descriptor ->
+        %{
+          descriptor: descriptor,
+          connection: asset.relation.connection,
+          inspection: :persisted_relation
+        }
+
+      _missing_or_mismatched ->
+        nil
     end
   end
-
-  defp unchanged_historical_target(
-         _binding,
-         _target,
-         _historical_manifest_ids,
-         _desired_version
-       ),
-       do: nil
 
   defp inspect_physical(target, version) do
     runtime = RuntimeConfig.current()

@@ -36,6 +36,7 @@ defmodule Favn.CLI do
   def submit_missing_asset_backfill(asset, plan, opts),
     do: Backfill.submit_missing_asset(asset, plan, opts)
 
+  def get_backfill(backfill_id, opts), do: Backfill.get(backfill_id, opts)
   def list_backfill_windows(run_id, opts), do: Backfill.list_windows(run_id, opts)
 
   def plan_rebuild(asset, reason, opts), do: Rebuild.plan(asset, reason, opts)

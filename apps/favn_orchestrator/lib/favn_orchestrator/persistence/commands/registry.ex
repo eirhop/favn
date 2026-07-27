@@ -244,6 +244,25 @@ defmodule FavnOrchestrator.Persistence.Queries.GetDeploymentManifest do
         }
 end
 
+defmodule FavnOrchestrator.Persistence.Queries.GetManifestTargetDescriptors do
+  @moduledoc """
+  Fetches selected standalone target descriptors from one immutable manifest.
+
+  This bounded projection does not make a historical manifest activatable.
+  """
+
+  alias FavnOrchestrator.Persistence.PlatformContext
+
+  @enforce_keys [:platform_context, :manifest_version_id, :target_ids]
+  defstruct [:platform_context, :manifest_version_id, target_ids: []]
+
+  @type t :: %__MODULE__{
+          platform_context: PlatformContext.t(),
+          manifest_version_id: String.t(),
+          target_ids: [String.t()]
+        }
+end
+
 defmodule FavnOrchestrator.Persistence.Queries.PageWorkspaces do
   @moduledoc "Pages active workspace identities for platform-owned control-plane services."
 

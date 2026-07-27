@@ -4,6 +4,7 @@ defmodule FavnOrchestrator.ManifestStore do
   """
 
   alias Favn.Manifest.Version
+  alias Favn.Manifest.TargetDescriptor
   alias FavnOrchestrator.Persistence
   alias FavnOrchestrator.Persistence.Commands.DeployManifest
   alias FavnOrchestrator.Persistence.Commands.ProvisionWorkspace
@@ -14,6 +15,7 @@ defmodule FavnOrchestrator.ManifestStore do
   alias FavnOrchestrator.Persistence.Error
   alias FavnOrchestrator.Persistence.PlatformContext
   alias FavnOrchestrator.Persistence.Queries.GetRuntimeState
+  alias FavnOrchestrator.Persistence.Queries.GetManifestTargetDescriptors
   alias FavnOrchestrator.Persistence.Queries.GetDeploymentTargets
   alias FavnOrchestrator.Persistence.Queries.GetDeploymentManifest
   alias FavnOrchestrator.Persistence.Queries.ManifestSelector.ByContentHash
@@ -106,6 +108,30 @@ defmodule FavnOrchestrator.ManifestStore do
       false -> {:error, Error.new(:not_found, "manifest is not active in workspace")}
       {:error, _reason} = error -> error
     end
+  end
+
+  @doc """
+  Fetches selected validated target descriptors without activating the manifest.
+
+  This is the bounded compatibility-planning path for immutable historical
+  manifests whose full runtime contract is no longer activatable.
+  """
+  @spec get_manifest_target_descriptors(
+          PlatformContext.t(),
+          String.t(),
+          [String.t()]
+        ) :: {:ok, [TargetDescriptor.t()]} | {:error, Error.t()}
+  def get_manifest_target_descriptors(
+        %PlatformContext{} = context,
+        manifest_version_id,
+        target_ids
+      )
+      when is_binary(manifest_version_id) and is_list(target_ids) do
+    Persistence.stores().registry.get_manifest_target_descriptors(%GetManifestTargetDescriptors{
+      platform_context: context,
+      manifest_version_id: manifest_version_id,
+      target_ids: target_ids
+    })
   end
 
   @doc "Fetches a manifest through one exact historical or active workspace deployment."

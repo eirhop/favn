@@ -124,6 +124,27 @@ defmodule FavnOrchestrator.Storage.JsonSafeTest do
     assert_json_compatible!(normalized)
   end
 
+  test "preserves bounded redacted details from explicit string-keyed errors" do
+    normalized =
+      JsonSafe.error(%{
+        "kind" => "admission",
+        "type" => "backfill_admission",
+        "message" => "operator_decision_required",
+        "reason" => "operator_decision_required",
+        "details" => %{
+          "target_id" => "asset:orders",
+          "reason_code" => "unmanaged_physical_relation",
+          "password" => "hidden"
+        }
+      })
+
+    assert normalized["details"] == %{
+             "target_id" => "asset:orders",
+             "reason_code" => "unmanaged_physical_relation",
+             "password" => "[REDACTED]"
+           }
+  end
+
   test "normalizes DateTimes to ISO 8601 strings" do
     {:ok, datetime, 0} = DateTime.from_iso8601("2026-05-05T10:11:12Z")
 
