@@ -580,3 +580,81 @@ push (`gh run list --branch codex/elastic-runners` returned no runs).
 
 Evidence commit: this field is intentionally not self-recorded; see the
 checkpoint workflow in the implementation plan.
+
+## Phase 5: Remaining execution-path migration
+
+Status: approved and checkpointed
+
+Date: 2026-07-27
+
+### Implemented runtime
+
+- Moved relation inspection, initial target-generation operations, and rebuild
+  create/copy/validate/activate/reconcile continuations onto durable runner
+  tasks pinned to each operation's frozen pool and exact runner release.
+- Persisted restart-safe operation continuations and safe retry decisions under
+  deterministic task identities. Adapter-proven pre-commit failures can be
+  retried, while uncertain external writes require reconciliation.
+- Added unique supervised rebuild planning and execution workers. Long runner
+  cold-start waits no longer block the dispatcher; the worker renews both the
+  rebuild operation lease and every target-operation lock without changing the
+  rebuild aggregate version.
+- Made rebuild cancellation and runner-task cancellation one PostgreSQL
+  transaction, so queued work cannot survive a committed operation
+  cancellation after control-plane loss.
+- Made each task executor own its customer-code worker through a process link,
+  so executor loss cannot leave an untracked asset or generation operation
+  running.
+- Removed the legacy active-manifest reconciler and the remaining direct
+  inspection/generation/rebuild runner RPC paths.
+
+### Review history
+
+The first phase review rejected four correctness issues: rebuild continuations
+could outlive their 30-second operation and target-lock leases; killing an asset
+task executor could leave its customer-code worker alive; adapter-reported safe
+generation failures were persisted as successful task results; and planning
+cancellation reached runner work only through a live waiter. All four were
+fixed with supervised continuation ownership, lease renewal, explicit domain
+outcome mapping, and atomic durable task cancellation.
+
+The final review inspected the complete plan and exact staged Phase 5 tree,
+rechecked all four findings, and found no remaining actionable issue.
+
+Final reviewer verdict: approved; Phase 5 is ready to checkpoint.
+
+### Phase 5 verification
+
+```text
+mix compile --warnings-as-errors
+  # passed
+
+cd apps/favn_orchestrator
+mix test
+  # 609 passed
+
+cd apps/favn_runner
+mix test --seed 78344
+  # 242 passed
+
+cd apps/favn_storage_postgres
+mix test test/storage_v2/runner_tasks_test.exs \
+  test/storage_v2/core_authority_test.exs
+  # 103 passed against a fresh disposable database
+```
+
+The focused PostgreSQL gate used a newly created disposable database and
+verified the rewritten Storage V2 definition fingerprint. No full umbrella
+suite was run because the accepted plan reserves that gate for Phase 7.
+
+Reviewed tree SHA: `f836ada9483449149e67358cb06ab2404ac45df7`
+
+Reviewed content commit SHA:
+`1a902fc48607a1b50e45f035268a5d3c895e814c`
+
+Pushed branch CI: no GitHub Actions workflow run was triggered by the branch
+push (`gh run list --branch codex/elastic-runners` returned no runs); the
+repository workflows target pull requests and pushes to `main`.
+
+Evidence commit: this field is intentionally not self-recorded; see the
+checkpoint workflow in the implementation plan.
