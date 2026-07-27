@@ -9,6 +9,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias Favn.Manifest
   alias Favn.Manifest.ExecutionPackage
   alias Favn.Manifest.Graph
+  alias Favn.Manifest.Serializer
   alias Favn.Manifest.SQLExecution
   alias Favn.Manifest.TargetDescriptor
   alias Favn.Manifest.Version
@@ -86,6 +87,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnOrchestrator.Persistence.Queries.GetExecutionGroup
   alias FavnOrchestrator.Persistence.Queries.GetOperatorRunOverview
   alias FavnOrchestrator.Persistence.Queries.GetExecutionPackage
+  alias FavnOrchestrator.Persistence.Queries.GetManifestTargetDescriptors
   alias FavnOrchestrator.Persistence.Queries.GetActor
   alias FavnOrchestrator.Persistence.Queries.GetSession
   alias FavnOrchestrator.Persistence.Queries.GetRun
@@ -1641,6 +1643,59 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
 
     assert response.status == 422
     assert %{"error" => %{"code" => "validation_failed"}} = JSON.decode!(response.resp_body)
+  end
+
+  test "projects bounded target descriptors without activating the full manifest", fixture do
+    historical_schema_version = Favn.Manifest.Compatibility.current_schema_version() - 1
+    descriptor = target_descriptor(fixture, historical_schema_version)
+
+    descriptor_value =
+      descriptor
+      |> Map.from_struct()
+      |> Serializer.encode_canonical!()
+      |> Jason.decode!()
+
+    historical_manifest = %{
+      "assets" => [%{"target_descriptor" => descriptor_value}],
+      "pipelines" => [],
+      "schedules" => []
+    }
+
+    {1, nil} =
+      Repo.update_all(
+        from(manifest in ManifestVersionRow,
+          where: manifest.manifest_version_id == ^fixture.version.manifest_version_id
+        ),
+        set: [
+          schema_version: historical_schema_version,
+          manifest: historical_manifest
+        ]
+      )
+
+    {:ok, platform_context} =
+      PlatformContext.new("descriptor-auditor", "descriptor-audit-grant", [:platform_reader])
+
+    query = %GetManifestTargetDescriptors{
+      platform_context: platform_context,
+      manifest_version_id: fixture.version.manifest_version_id,
+      target_ids: [fixture.target_id, "asset:Elixir.MyApp.Missing:asset"]
+    }
+
+    assert {:ok, [persisted]} = RegistryStore.get_manifest_target_descriptors(query)
+    assert persisted == descriptor
+
+    assert {:error, %{details: %{reason: :historical_manifest_not_activatable}}} =
+             RegistryStore.get_manifest(
+               %FavnOrchestrator.Persistence.Queries.ManifestSelector.ById{
+                 manifest_version_id: fixture.version.manifest_version_id
+               }
+             )
+
+    assert {:error, %{kind: :invalid}} =
+             RegistryStore.get_manifest_target_descriptors(%{
+               query
+               | target_ids: Enum.map(1..501, &"asset:Elixir.MyApp.Bounded#{&1}:asset")
+             })
   end
 
   test "release-safe operations return redacted stable results and report upgrade blockers",
@@ -6244,8 +6299,9 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     {version, [package, private_package]}
   end
 
-  defp target_descriptor(fixture) do
+  defp target_descriptor(fixture, manifest_schema_version \\ nil) do
     asset = Enum.find(fixture.version.manifest.assets, &(&1.ref == {MyApp.Asset, :asset}))
+    manifest_schema_version = manifest_schema_version || fixture.version.schema_version
 
     asset
     |> Map.from_struct()
@@ -6262,7 +6318,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
       connection_definitions: %{
         warehouse: %{adapter: FavnTestSupport.TargetAdapter, module: nil}
       },
-      manifest_schema_version: fixture.version.schema_version,
+      manifest_schema_version: manifest_schema_version,
       runner_contract_version: fixture.version.runner_contract_version
     )
   end

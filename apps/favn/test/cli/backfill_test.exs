@@ -264,6 +264,72 @@ defmodule Favn.CLI.BackfillTest do
                     }}
   end
 
+  test "get/2 returns a bounded admission-rejected window without a child run", %{
+    root_dir: root_dir
+  } do
+    parent = self()
+
+    backfill = %{
+      "backfill_id" => "bf_admission",
+      "root_run_id" => "run_backfill_admission",
+      "status" => "failed",
+      "target_id" => "asset:Elixir.Example.Core.Output:asset",
+      "expected_window_count" => 1,
+      "progress" => %{"total_count" => 1, "succeeded_count" => 0, "failed_count" => 1}
+    }
+
+    failed_window = %{
+      "window_key" => "month:Etc/UTC:2026-07-01T00:00:00Z",
+      "status" => "failed",
+      "run_id" => nil,
+      "last_error" => %{
+        "kind" => "admission",
+        "type" => "backfill_admission",
+        "message" => "operator_decision_required",
+        "reason" => "operator_decision_required",
+        "details" => %{
+          "target_id" => "asset:Elixir.Example.Core.Output:asset",
+          "compatibility_status" => "operator_decision",
+          "reason_code" => "unmanaged_physical_relation"
+        },
+        "redacted" => true,
+        "truncated" => false
+      }
+    }
+
+    {:ok, base_url, _server} =
+      start_server(
+        [
+          {200, JSON.encode!(%{data: %{backfill: backfill}})},
+          {200,
+           JSON.encode!(%{
+             data: %{
+               items: [failed_window],
+               pagination: %{limit: 5, has_more: false, next_cursor: nil}
+             }
+           })}
+        ],
+        parent: parent
+      )
+
+    write_running_state(root_dir, base_url)
+
+    assert {:ok,
+            %{
+              "backfill" => ^backfill,
+              "failed_windows" => [^failed_window],
+              "failed_windows_pagination" => %{"has_more" => false}
+            }} = Backfill.get("bf_admission", root_dir: root_dir, limit: 5)
+
+    assert_receive {:request, %{path: "/api/orchestrator/v1/backfills/bf_admission"}}
+
+    assert_receive {:request,
+                    %{
+                      path:
+                        "/api/orchestrator/v1/backfills/bf_admission/windows?status=failed&limit=5"
+                    }}
+  end
+
   defp write_running_state(root_dir, base_url) do
     state_dir = Path.join([root_dir, ".favn", "local"])
     File.mkdir_p!(state_dir)

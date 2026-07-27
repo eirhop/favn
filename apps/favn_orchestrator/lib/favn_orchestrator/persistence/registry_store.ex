@@ -1,6 +1,7 @@
 defmodule FavnOrchestrator.Persistence.RegistryStore do
   @moduledoc "Persistence contract for global manifests and immutable workspace deployments."
 
+  alias Favn.Manifest.TargetDescriptor
   alias Favn.Manifest.Version
   alias FavnOrchestrator.Persistence.Commands.DeployManifest
   alias FavnOrchestrator.Persistence.Commands.ProvisionWorkspace
@@ -11,6 +12,7 @@ defmodule FavnOrchestrator.Persistence.RegistryStore do
   alias FavnOrchestrator.Persistence.Queries.GetDeploymentManifest
   alias FavnOrchestrator.Persistence.Queries.GetRuntimeState
   alias FavnOrchestrator.Persistence.Queries.GetExecutionPackage
+  alias FavnOrchestrator.Persistence.Queries.GetManifestTargetDescriptors
   alias FavnOrchestrator.Persistence.Queries.MissingExecutionPackageHashes
   alias FavnOrchestrator.Persistence.Queries.PageWorkspaces
   alias FavnOrchestrator.Persistence.Queries.ManifestSelector
@@ -26,6 +28,8 @@ defmodule FavnOrchestrator.Persistence.RegistryStore do
   @callback get_execution_package(GetExecutionPackage.t()) ::
               {:ok, Favn.Manifest.ExecutionPackage.t()} | {:error, Error.t()}
   @callback get_manifest(ManifestSelector.t()) :: {:ok, Version.t()} | {:error, Error.t()}
+  @callback get_manifest_target_descriptors(GetManifestTargetDescriptors.t()) ::
+              {:ok, [TargetDescriptor.t()]} | {:error, Error.t()}
   @callback get_deployment_manifest(GetDeploymentManifest.t()) ::
               {:ok, Version.t()} | {:error, Error.t()}
   @callback page_workspaces(PageWorkspaces.t()) ::

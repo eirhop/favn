@@ -340,9 +340,30 @@ defmodule FavnOrchestrator.BackfillDispatcher do
   defp child_run_id(window),
     do: command_id("run-bfw", window.backfill_id <> ":" <> window.window_id)
 
+  defp error_payload({reason, details})
+       when reason in [:operator_decision_required, :rebuild_required, :target_drift] and
+              is_map(details) do
+    %{
+      "kind" => "admission",
+      "type" => "backfill_admission",
+      "message" => Atom.to_string(reason),
+      "reason" => Atom.to_string(reason),
+      "details" =>
+        details
+        |> Map.take([:target_id, :compatibility_status, :reason_code])
+        |> Map.new(fn {key, value} -> {Atom.to_string(key), bounded_scalar(value)} end)
+    }
+  end
+
   defp error_payload(reason) do
     %{"reason" => reason |> inspect(limit: 20, printable_limit: 1_000) |> String.slice(0, 2_000)}
   end
+
+  defp bounded_scalar(value) when is_atom(value),
+    do: value |> Atom.to_string() |> bounded_scalar()
+
+  defp bounded_scalar(value) when is_binary(value), do: String.slice(value, 0, 1_024)
+  defp bounded_scalar(_value), do: "unknown"
 
   defp emit_error(workspace_id, operation, reason) do
     :telemetry.execute(
