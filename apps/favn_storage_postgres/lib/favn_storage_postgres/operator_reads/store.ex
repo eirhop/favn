@@ -21,6 +21,7 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
   alias FavnOrchestrator.Persistence.Queries.PageGroupWindows
   alias FavnOrchestrator.Persistence.Queries.PageManifests
   alias FavnOrchestrator.Persistence.Queries.PageTargetRuns
+  alias FavnOrchestrator.Persistence.RunEnum
   alias FavnOrchestrator.Persistence.Results.BackfillWindow, as: BackfillWindowResult
   alias FavnOrchestrator.Persistence.Results.AssetWindowState, as: AssetWindowResult
   alias FavnOrchestrator.Persistence.Results.AssetAttemptOverview, as: AssetAttemptResult
@@ -514,9 +515,9 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
       deployment_id: row.deployment_id,
       manifest_version_id: row.manifest_version_id,
       required_runner_release_id: row.required_runner_release_id,
-      status: String.to_existing_atom(row.status),
-      submit_kind: String.to_existing_atom(row.submit_kind),
-      trigger_type: String.to_existing_atom(row.trigger_type),
+      status: RunEnum.decode!(:status, row.status),
+      submit_kind: RunEnum.decode!(:submit_kind, row.submit_kind),
+      trigger_type: RunEnum.decode!(:trigger_type, row.trigger_type),
       submitted_event_id: row.submitted_event_id,
       latest_event_id: row.latest_event_id,
       event_sequence: row.event_sequence,

@@ -116,6 +116,9 @@ operator contract is [`production/postgresql_operator_runbook.md`](production/po
 - `mix favn.dev`, `reload`, `stop`, and `doctor` provide a Docker-free source
   loop. View and Orchestrator run in the current BEAM and one child runner BEAM
   uses the consumer's compiled code.
+- A second `iex -S mix` session can use the public `Favn` facade to submit,
+  list, inspect, cancel, and diagnose runs through the same authenticated
+  Orchestrator HTTP boundary without starting another runner.
 - Developers supply PostgreSQL and load environment variables themselves.
   Startup verifies the schema and workspace but never starts, migrates,
   provisions, resets, or deletes PostgreSQL.

@@ -147,6 +147,22 @@ defmodule Favn.ConsumerDependencyInstallTest do
 
     assert {_, 0} = System.cmd("mix", ["compile"], cd: consumer_dir, stderr_to_stdout: true)
 
+    inspection_boot = """
+    started = Application.started_applications() |> Enum.map(&elem(&1, 0))
+
+    if :favn_runner in started do
+      raise "ordinary consumer startup unexpectedly started favn_runner"
+    end
+    """
+
+    assert {_, 0} =
+             System.cmd(
+               "mix",
+               ["run", "--no-compile", "--eval", inspection_boot],
+               cd: consumer_dir,
+               stderr_to_stdout: true
+             )
+
     runner_boot = """
     Application.put_env(:favn, :runner_plugins, [Favn.Azure.RunnerPlugin])
     {:ok, _started} = Application.ensure_all_started(:favn_runner)

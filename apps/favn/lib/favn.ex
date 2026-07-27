@@ -21,6 +21,9 @@ defmodule Favn do
     immutable execution packages
   - `resolve_pipeline/2`: resolve one pipeline to concrete targets and context
   - `plan_asset_run/2`: build a deterministic execution plan
+  - `run/2`, `list_runs/1`, `get_run/2`, `run_events/2`,
+    `cancel_run/2`, and `diagnostics/1`: operate and inspect a running local or
+    deployed Orchestrator from Elixir
 
   Compiled assets include normalized freshness policies when authored with
   `freshness`; read `Favn.Freshness` and `Favn.Freshness.Policy` for the
@@ -43,6 +46,11 @@ defmodule Favn do
   DuckLake metadata backed by Azure Database for PostgreSQL.
 
   ## Runtime-dependent helpers
+
+  Start `mix favn.dev` in one terminal, then open `iex -S mix` in another
+  terminal to submit and inspect runs through the supported `Favn` facade. Read
+  the [IEx Session Cheatsheet](iex-cheatsheet.html) for the complete interactive
+  workflow and option reference.
 
   This module also keeps callable helpers for local SQL runtime operations:
   `render/2`, `preview/2`, `explain/2`, and `materialize/2`.
@@ -166,11 +174,55 @@ defmodule Favn do
   @type asset :: Favn.Asset.t()
   @type asset_error :: :not_asset_module | :asset_not_found
   @type dependencies_mode :: :all | :none
+  @type operator_context_opts :: [
+          root_dir: Path.t(),
+          orchestrator_url: String.t(),
+          service_token: String.t(),
+          workspace_id: String.t()
+        ]
+  @type run_opts :: [
+          root_dir: Path.t(),
+          orchestrator_url: String.t(),
+          service_token: String.t(),
+          workspace_id: String.t(),
+          wait: boolean(),
+          window: String.t(),
+          timezone: String.t(),
+          dependencies: dependencies_mode(),
+          refresh: :auto | :missing | :force_selected | :force_selected_upstream | :force_all,
+          idempotency_key: String.t(),
+          timeout_ms: pos_integer(),
+          wait_timeout_ms: pos_integer(),
+          run_timeout_ms: pos_integer(),
+          retry_max_attempts: pos_integer(),
+          retry_backoff_ms: non_neg_integer(),
+          poll_interval_ms: pos_integer()
+        ]
   @type list_runs_opts :: [
-          status: :running | :ok | :error | :cancelled | :timed_out,
-          manifest_version_id: String.t(),
-          pipeline_module: module(),
+          root_dir: Path.t(),
+          orchestrator_url: String.t(),
+          service_token: String.t(),
+          workspace_id: String.t(),
+          status: :pending | :running | :ok | :partial | :error | :cancelled | :timed_out,
           limit: pos_integer()
+        ]
+  @type run_events_opts :: [
+          root_dir: Path.t(),
+          orchestrator_url: String.t(),
+          service_token: String.t(),
+          workspace_id: String.t(),
+          limit: pos_integer(),
+          after_sequence: non_neg_integer()
+        ]
+  @type cancel_run_opts :: [
+          root_dir: Path.t(),
+          orchestrator_url: String.t(),
+          service_token: String.t(),
+          workspace_id: String.t(),
+          wait: boolean(),
+          timeout_ms: pos_integer(),
+          wait_timeout_ms: pos_integer(),
+          poll_interval_ms: pos_integer()
         ]
 
   @type backfill_anchor_range :: %{
@@ -188,7 +240,7 @@ defmodule Favn do
           runner_release_id: String.t()
         ]
 
-  @type run_id :: term()
+  @type run_id :: String.t()
 
   @doc """
   Returns `true` when the module compiles as a Favn asset module.
@@ -376,6 +428,85 @@ defmodule Favn do
     FavnAuthoring.resolve_pipeline(pipeline_module, opts)
   end
 
+  @doc """
+  Submits an asset or pipeline to a running Orchestrator.
+
+  Local calls discover the Orchestrator started by `mix favn.dev` from the
+  current project's `.favn/local` state. By default this function waits for a
+  terminal run and returns an error when execution does not succeed. Pass
+  `wait: false` to return after the run is accepted.
+
+  Asset runs accept `dependencies: :all | :none` and all refresh modes.
+  Pipeline runs do not accept `dependencies` and accept `:auto`, `:missing`, or
+  `:force_all` refresh.
+
+  ## Examples
+
+      Favn.run(MyApp.Pipelines.Daily)
+      Favn.run(MyApp.Source.Events, window: "month:2026-07", wait: false)
+      Favn.run(MyApp.Mart.Orders, dependencies: :none, refresh: :force_selected)
+  """
+  @spec run(module() | String.t(), run_opts()) :: {:ok, map()} | {:error, term()}
+  def run(target, opts \\ []) when is_list(opts) do
+    Favn.CLI.run(target, normalize_operator_opts(opts))
+  end
+
+  @doc """
+  Lists persisted runs through the running Orchestrator.
+
+  The result is bounded by `limit`, which defaults to the Orchestrator's page
+  size. Use `status` to select one persisted run status.
+
+  ## Example
+
+      {:ok, runs} = Favn.list_runs(status: :error, limit: 20)
+  """
+  @spec list_runs(list_runs_opts()) :: {:ok, [map()]} | {:error, term()}
+  def list_runs(opts \\ []) when is_list(opts) do
+    Favn.CLI.list_runs(normalize_operator_opts(opts))
+  end
+
+  @doc """
+  Fetches one persisted run by id through the running Orchestrator.
+  """
+  @spec get_run(run_id(), operator_context_opts()) :: {:ok, map()} | {:error, term()}
+  def get_run(run_id, opts \\ []) when is_binary(run_id) and is_list(opts) do
+    Favn.CLI.get_run(run_id, opts)
+  end
+
+  @doc """
+  Lists persisted events for one run.
+
+  Use `limit` to bound the response and `after_sequence` to continue after an
+  event sequence already inspected.
+  """
+  @spec run_events(run_id(), run_events_opts()) :: {:ok, [map()]} | {:error, term()}
+  def run_events(run_id, opts \\ []) when is_binary(run_id) and is_list(opts) do
+    Favn.CLI.run_events(run_id, opts)
+  end
+
+  @doc """
+  Requests cancellation for one run.
+
+  Pass `wait: true` to poll only that run until it reaches a terminal status or
+  the bounded wait timeout expires.
+  """
+  @spec cancel_run(run_id(), cancel_run_opts()) :: {:ok, map()} | {:error, term()}
+  def cancel_run(run_id, opts \\ []) when is_binary(run_id) and is_list(opts) do
+    Favn.CLI.cancel_run(run_id, opts)
+  end
+
+  @doc """
+  Returns the running Orchestrator's bounded diagnostic report.
+
+  The report contains operational status and allowlisted diagnostic fields. It
+  does not expose arbitrary storage state or secrets.
+  """
+  @spec diagnostics(operator_context_opts()) :: {:ok, map()} | {:error, term()}
+  def diagnostics(opts \\ []) when is_list(opts) do
+    Favn.CLI.diagnostics(opts)
+  end
+
   @doc false
   @spec render(module() | Favn.Ref.t() | Favn.Asset.t(), keyword()) ::
           {:ok, term()} | {:error, term()}
@@ -429,5 +560,15 @@ defmodule Favn do
       {:module, ^runtime_module} -> function_exported?(runtime_module, runtime_function, arity)
       _other -> false
     end
+  end
+
+  defp normalize_operator_opts(opts) do
+    Enum.map(opts, fn
+      {key, value} when key in [:dependencies, :refresh, :status] and is_atom(value) ->
+        {key, Atom.to_string(value)}
+
+      option ->
+        option
+    end)
   end
 end

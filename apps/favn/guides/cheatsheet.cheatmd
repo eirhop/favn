@@ -213,6 +213,9 @@ Sessions are process-owned. Do not share one session across concurrent tasks.
 
 ## `mix favn.*` Commands
 
+For a second-terminal IEx workflow, see the
+[IEx Session Cheatsheet](iex-cheatsheet.html).
+
 Local setup:
 
 | Command | Use it for |

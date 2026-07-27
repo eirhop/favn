@@ -52,6 +52,7 @@ defmodule Favn.MixProject do
         "guides/sql-output-contracts.md",
         "guides/sql-asset-checks.md",
         "guides/local-development.md",
+        "guides/iex-cheatsheet.cheatmd",
         "guides/configuration.md",
         "guides/sql-client.md",
         "guides/ai-agents.md",
