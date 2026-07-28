@@ -29,7 +29,7 @@ defmodule FavnUmbrella.MixProject do
       listeners: listeners(Mix.env()),
       dialyzer: [
         plt_add_apps: [:mix],
-        ignore_warnings: ".dialyzer_ignore.exs",
+        ignore_warnings: dialyzer_ignore_warnings(Mix.env()),
         list_unused_filters: true
       ]
     ]
@@ -60,6 +60,10 @@ defmodule FavnUmbrella.MixProject do
 
   defp listeners(:dev), do: [Phoenix.CodeReloader]
   defp listeners(_env), do: []
+
+  defp dialyzer_ignore_warnings(:dev), do: ".dialyzer_ignore.dev.exs"
+  defp dialyzer_ignore_warnings(:test), do: ".dialyzer_ignore.test.exs"
+  defp dialyzer_ignore_warnings(_env), do: ".dialyzer_ignore.exs"
 
   defp aliases do
     [

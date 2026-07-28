@@ -189,8 +189,47 @@ defmodule FavnLocal.DockerFreeLocalLifecycleAcceptanceTest do
     assert {:ok, %Publication{} = publication} = LocalPublication.build(failed_release_id)
     invalid_publication = %{publication | execution_packages: [%{}]}
 
-    assert {:error, _reason} =
-             LocalLifecycle.reload(invalid_publication, failed_release_id, 60_000)
+    invalid_reload =
+      Task.async(fn ->
+        LocalLifecycle.reload(invalid_publication, failed_release_id, 60_000)
+      end)
+
+    failed_candidate_port =
+      await_value(fn ->
+        case :sys.get_state(LocalLifecycle) do
+          %{status: :reloading, candidate: %{port: port}} -> {:ok, port}
+          _state -> :retry
+        end
+      end)
+
+    assert {:error, _reason} = Task.await(invalid_reload, 60_000)
+
+    assert_eventually(fn ->
+      state = :sys.get_state(LocalLifecycle)
+
+      is_nil(state.candidate) and
+        not MapSet.member?(state.ignored_ports, failed_candidate_port)
+    end)
+
+    send(LocalLifecycle, {:runner_stop_timeout, failed_candidate_port})
+
+    :sys.replace_state(LocalLifecycle, fn state ->
+      %{state | ignored_ports: MapSet.put(state.ignored_ports, failed_candidate_port)}
+    end)
+
+    send(LocalLifecycle, {:runner_stop_timeout, failed_candidate_port})
+
+    assert_eventually(fn ->
+      state = :sys.get_state(LocalLifecycle)
+      MapSet.member?(state.ignored_ports, failed_candidate_port) and state.status == :ready
+    end)
+
+    send(LocalLifecycle, {failed_candidate_port, {:exit_status, 0}})
+
+    assert_eventually(fn ->
+      state = :sys.get_state(LocalLifecycle)
+      not MapSet.member?(state.ignored_ports, failed_candidate_port) and state.status == :ready
+    end)
 
     assert Process.alive?(started.supervisor)
     assert LocalLifecycle.status().status == :ready
@@ -353,6 +392,21 @@ defmodule FavnLocal.DockerFreeLocalLifecycleAcceptanceTest do
   end
 
   defp assert_eventually(_fun, 0), do: flunk("condition did not become true")
+
+  defp await_value(fun, attempts \\ 300)
+
+  defp await_value(fun, attempts) when attempts > 0 do
+    case fun.() do
+      {:ok, value} ->
+        value
+
+      :retry ->
+        Process.sleep(100)
+        await_value(fun, attempts - 1)
+    end
+  end
+
+  defp await_value(_fun, 0), do: flunk("value did not become available")
 
   defp progress_stages(acc \\ []) do
     receive do

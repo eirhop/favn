@@ -197,9 +197,31 @@ defmodule FavnLocal.Lifecycle do
   def handle_info({port, {:exit_status, status}}, state) when is_port(port),
     do: runner_exited(state, port, status)
 
+  def handle_info({:runner_stop_timeout, port}, %{status: :stopping} = state) do
+    if MapSet.member?(state.stopping_ports, port) do
+      close_port(port)
+      runner_exited(state, port, :timeout)
+    else
+      {:noreply, state}
+    end
+  end
+
   def handle_info({:runner_stop_timeout, port}, state) do
-    if managed_port?(state, port), do: close_port(port)
-    runner_exited(state, port, :timeout)
+    cond do
+      MapSet.member?(state.ignored_ports, port) ->
+        close_port(port)
+        {:noreply, state}
+
+      managed_port?(state, port) ->
+        close_port(port)
+
+        state
+        |> runner_exited(port, :timeout)
+        |> ignore_late_exit(port)
+
+      true ->
+        {:noreply, state}
+    end
   end
 
   def handle_info({ref, result}, %{task: %{ref: ref}} = state) do
@@ -268,11 +290,15 @@ defmodule FavnLocal.Lifecycle do
   defp deployment_finished(state, {:error, reason}), do: fail(state, reason)
 
   defp runner_exited(%{status: :stopping} = state, port, _status) do
-    ports = MapSet.delete(state.stopping_ports, port)
+    if MapSet.member?(state.stopping_ports, port) do
+      ports = MapSet.delete(state.stopping_ports, port)
 
-    if MapSet.size(ports) == 0,
-      do: start_shutdown(%{state | stopping_ports: ports}),
-      else: {:noreply, %{state | stopping_ports: ports}}
+      if MapSet.size(ports) == 0,
+        do: start_shutdown(%{state | stopping_ports: ports}),
+        else: {:noreply, %{state | stopping_ports: ports}}
+    else
+      {:noreply, state}
+    end
   end
 
   defp runner_exited(state, port, status) when is_port(port) do
@@ -520,6 +546,9 @@ defmodule FavnLocal.Lifecycle do
   catch
     :error, :badarg -> :ok
   end
+
+  defp ignore_late_exit({:noreply, state}, port),
+    do: {:noreply, %{state | ignored_ports: MapSet.put(state.ignored_ports, port)}}
 
   defp reply_waiters(waiters, reply), do: Enum.each(waiters, &GenServer.reply(&1, reply))
   defp schedule(message, delay), do: Process.send_after(self(), message, delay)
