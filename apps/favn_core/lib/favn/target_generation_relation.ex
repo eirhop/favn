@@ -28,6 +28,19 @@ defmodule Favn.TargetGenerationRelation do
   @spec marker(RelationRef.t()) :: RelationRef.t()
   def marker(%RelationRef{} = logical), do: %{logical | name: @marker_name}
 
+  @doc """
+  Derives the opaque physical-relation identity bound to one activation token.
+
+  The token itself is not exposed in relation metadata. The derived identity is
+  stable for exact replays and changes for every new activation.
+  """
+  @spec instance_id(String.t()) :: String.t()
+  def instance_id(activation_token) when is_binary(activation_token) and activation_token != "" do
+    activation_token
+    |> then(&:crypto.hash(:sha256, &1))
+    |> Base.encode16(case: :lower)
+  end
+
   defp with_generation_name(logical, generation_id, kind, max_identifier_bytes)
        when is_integer(max_identifier_bytes) and max_identifier_bytes >= 48 do
     generation_fragment = String.replace(generation_id, "-", "")

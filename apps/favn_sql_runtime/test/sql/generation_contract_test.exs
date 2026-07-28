@@ -29,6 +29,7 @@ defmodule Favn.SQL.GenerationContractTest do
     end
 
     def inspect_generation(_conn, _relation, _opts), do: {:ok, :not_found}
+    def bind_relation_instance(_conn, _relation, _instance_id, _opts), do: :ok
 
     def initialize_generation_marker(_conn, _request, _opts) do
       {:error,
@@ -50,6 +51,15 @@ defmodule Favn.SQL.GenerationContractTest do
        }}
     end
 
+    def reconcile_generation(_conn, _request, _opts), do: {:ok, nil}
+    def discard_generation(_conn, _request, _opts), do: :ok
+  end
+
+  defmodule AdapterWithoutRelationBinding do
+    def generation_capabilities(_resolved, _opts), do: {:ok, %GenerationCapabilities{}}
+    def inspect_generation(_conn, _relation, _opts), do: {:ok, :not_found}
+    def initialize_generation_marker(_conn, _request, _opts), do: {:ok, :initialized}
+    def activate_generation(_conn, _request, _opts), do: {:ok, :activated}
     def reconcile_generation(_conn, _request, _opts), do: {:ok, nil}
     def discard_generation(_conn, _request, _opts), do: :ok
   end
@@ -185,5 +195,25 @@ defmodule Favn.SQL.GenerationContractTest do
 
     assert {:ok, nil} = Client.reconcile_generation(session, reconciliation)
     assert {:ok, :discarded} = Client.discard_generation(session, discard)
+  end
+
+  test "SQL client rejects generation adapters without physical relation binding" do
+    session = %Session{
+      adapter: AdapterWithoutRelationBinding,
+      resolved: %Resolved{
+        name: :warehouse,
+        adapter: AdapterWithoutRelationBinding,
+        module: __MODULE__,
+        config: %{}
+      },
+      conn: :owned_conn,
+      capabilities: %Favn.SQL.Capabilities{}
+    }
+
+    assert {:error,
+            %Error{
+              type: :unsupported_capability,
+              details: %{capability: :target_generations}
+            }} = Client.generation_capabilities(session)
   end
 end

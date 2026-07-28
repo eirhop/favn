@@ -72,6 +72,9 @@ defmodule FavnRunner.GenerationOperationsTest do
     end
 
     @impl Favn.SQL.GenerationAdapter
+    def bind_relation_instance(:generation_conn, _relation, _instance_id, _opts), do: :ok
+
+    @impl Favn.SQL.GenerationAdapter
     def initialize_generation_marker(:generation_conn, request, _opts) do
       marker = %GenerationMarker{
         logical_target_id: request.logical_target_id,
@@ -115,8 +118,15 @@ defmodule FavnRunner.GenerationOperationsTest do
     end
 
     @impl Favn.SQL.GenerationAdapter
-    def reconcile_generation(:generation_conn, _request, _opts),
-      do: {:ok, Application.get_env(:favn_runner, :generation_operations_test_marker)}
+    def reconcile_generation(:generation_conn, request, _opts) do
+      Application.put_env(
+        :favn_runner,
+        :generation_operations_test_reconciliation_request,
+        request
+      )
+
+      {:ok, Application.get_env(:favn_runner, :generation_operations_test_marker)}
+    end
 
     @impl Favn.SQL.GenerationAdapter
     def inspect_generation(:generation_conn, relation, _opts) do
@@ -164,6 +174,7 @@ defmodule FavnRunner.GenerationOperationsTest do
     previous = Registry.list(registry_name: FavnRunner.ConnectionRegistry)
     Application.delete_env(:favn_runner, :generation_operations_test_marker)
     Application.delete_env(:favn_runner, :generation_operations_test_discard_error)
+    Application.delete_env(:favn_runner, :generation_operations_test_reconciliation_request)
 
     Registry.reload(
       %{
@@ -180,6 +191,7 @@ defmodule FavnRunner.GenerationOperationsTest do
     on_exit(fn ->
       Application.delete_env(:favn_runner, :generation_operations_test_marker)
       Application.delete_env(:favn_runner, :generation_operations_test_discard_error)
+      Application.delete_env(:favn_runner, :generation_operations_test_reconciliation_request)
 
       Registry.reload(Map.new(previous, &{&1.name, &1}),
         registry_name: FavnRunner.ConnectionRegistry
@@ -209,6 +221,21 @@ defmodule FavnRunner.GenerationOperationsTest do
     assert {:ok, initialized.observed_marker} ==
              FavnRunner.generation_marker(manifest_identity, asset.ref)
 
+    assert Application.fetch_env!(
+             :favn_runner,
+             :generation_operations_test_reconciliation_request
+           ).require_relation_instance?
+
+    assert {:ok, initialized.observed_marker} ==
+             FavnRunner.generation_marker(manifest_identity, asset.ref,
+               require_relation_instance?: false
+             )
+
+    refute Application.fetch_env!(
+             :favn_runner,
+             :generation_operations_test_reconciliation_request
+           ).require_relation_instance?
+
     request = activation_request(version, asset, initialized.observed_marker)
 
     assert {:ok, %GenerationActivationResult{outcome: :succeeded} = result} =
@@ -223,6 +250,11 @@ defmodule FavnRunner.GenerationOperationsTest do
 
     assert {:ok, %GenerationReconciliationResult{disposition: :candidate_active} = observed} =
              FavnRunner.reconcile_generation(reconciliation)
+
+    assert Application.fetch_env!(
+             :favn_runner,
+             :generation_operations_test_reconciliation_request
+           ).require_relation_instance?
 
     assert observed.physical_fingerprint == @active_fingerprint
     assert :ok = GenerationReconciliationResult.validate(observed, reconciliation)

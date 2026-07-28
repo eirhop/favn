@@ -33,6 +33,9 @@ defmodule Favn.SQL.GenerationAdapter do
   @callback inspect_generation(conn(), RelationRef.t(), opts()) ::
               {:ok, GenerationInspection.t() | :not_found} | {:error, Error.t()}
 
+  @callback bind_relation_instance(conn(), RelationRef.t(), String.t(), opts()) ::
+              :ok | {:error, Error.t()}
+
   @callback initialize_generation_marker(conn(), GenerationMarkerInitialization.t(), opts()) ::
               {:ok, GenerationMarkerInitializationResult.t()} | {:error, Error.t()}
 

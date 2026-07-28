@@ -61,14 +61,21 @@ defmodule FavnRunner.GenerationOperations do
     end
   end
 
-  @spec marker(Asset.t()) :: {:ok, ContractMarker.t() | nil} | {:error, term()}
-  def marker(%Asset{target_descriptor: %TargetDescriptor{target_id: target_id}} = asset) do
+  @spec marker(Asset.t(), keyword()) :: {:ok, ContractMarker.t() | nil} | {:error, term()}
+  def marker(asset, opts \\ [])
+
+  def marker(
+        %Asset{target_descriptor: %TargetDescriptor{target_id: target_id}} = asset,
+        opts
+      )
+      when is_list(opts) do
     with {:ok, relation} <- persisted_relation(asset),
          {:ok, session} <- connect(asset, relation) do
       try do
         case Client.reconcile_generation(session, %GenerationReconciliation{
                logical_target_id: target_id,
-               stable_relation: relation
+               stable_relation: relation,
+               require_relation_instance?: Keyword.get(opts, :require_relation_instance?, true)
              }) do
           {:ok, nil} -> {:ok, nil}
           {:ok, %SQLMarker{} = marker} -> {:ok, contract_marker(marker)}
@@ -80,7 +87,7 @@ defmodule FavnRunner.GenerationOperations do
     end
   end
 
-  def marker(%Asset{}), do: {:error, :generation_target_not_supported}
+  def marker(%Asset{}, _opts), do: {:error, :generation_target_not_supported}
 
   @spec activate(GenerationActivationRequest.t(), Version.t()) ::
           {:ok, GenerationActivationResult.t()} | {:error, term()}
@@ -166,7 +173,8 @@ defmodule FavnRunner.GenerationOperations do
 
     sql_request = %GenerationReconciliation{
       logical_target_id: activation.target_id,
-      stable_relation: activation.active_relation
+      stable_relation: activation.active_relation,
+      require_relation_instance?: true
     }
 
     case Client.reconcile_generation(session, sql_request) do
@@ -239,7 +247,8 @@ defmodule FavnRunner.GenerationOperations do
   defp do_discard(session, request, stable_relation) do
     reconciliation = %GenerationReconciliation{
       logical_target_id: request.target_id,
-      stable_relation: stable_relation
+      stable_relation: stable_relation,
+      require_relation_instance?: false
     }
 
     with {:ok, marker} <- Client.reconcile_generation(session, reconciliation),

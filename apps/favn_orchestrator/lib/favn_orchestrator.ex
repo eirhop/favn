@@ -28,6 +28,7 @@ defmodule FavnOrchestrator do
   alias FavnOrchestrator.Operator.Audit, as: OperatorAudit
   alias FavnOrchestrator.Operator.Lineage
   alias FavnOrchestrator.Operator.Rebuilds, as: OperatorRebuilds
+  alias FavnOrchestrator.Operator.TargetRecovery, as: OperatorTargetRecovery
   alias FavnOrchestrator.Operator.Commands, as: OperatorCommands
   alias FavnOrchestrator.OperatorContext
   alias FavnOrchestrator.Operator.Schedules
@@ -51,6 +52,7 @@ defmodule FavnOrchestrator do
   alias FavnOrchestrator.RunnerReplacement
   alias FavnOrchestrator.RunReadModel
   alias FavnOrchestrator.Rebuilds
+  alias FavnOrchestrator.TargetRecovery
   alias FavnOrchestrator.RunRetryPlanner
   alias FavnOrchestrator.RunSubmission.AssetOptions
   alias FavnOrchestrator.Runs
@@ -641,6 +643,166 @@ defmodule FavnOrchestrator do
 
   defp rebuild_error_code(reason) when is_atom(reason), do: Atom.to_string(reason)
   defp rebuild_error_code(_reason), do: "rebuild_failed"
+
+  @doc "Creates an immutable evidence-backed target-recovery plan after reauthorization."
+  @spec plan_operator_target_recovery(
+          OperatorContext.t(),
+          String.t(),
+          String.t(),
+          keyword()
+        ) :: {:ok, map()} | {:error, term()}
+  def plan_operator_target_recovery(
+        %OperatorContext{} = operator_context,
+        target_id,
+        reason,
+        opts \\ []
+      )
+      when is_binary(target_id) and is_binary(reason) and is_list(opts) do
+    with {:ok, context, actor} <- authorize_operator_context(operator_context, :operator) do
+      case TargetRecovery.plan(context, target_id, reason, opts) do
+        {:ok, plan} ->
+          OperatorAudit.put_best_effort(context, %{
+            action: "target_recovery.plan",
+            actor_id: actor.id,
+            session_id: operator_context.session_id,
+            resource_type: "target_recovery",
+            resource_id: plan.plan_id,
+            service_identity: "same_beam_operator_ui",
+            outcome: "accepted",
+            detail: %{target_id: target_id, reason: reason, plan_hash: plan.plan_hash},
+            idempotency: %{replayed: plan.idempotency_replay?}
+          })
+
+          {:ok, OperatorTargetRecovery.plan(plan, admin?(context))}
+
+        {:error, failure} = error ->
+          OperatorAudit.put_best_effort(context, %{
+            action: "target_recovery.plan",
+            actor_id: actor.id,
+            session_id: operator_context.session_id,
+            resource_type: "target_recovery",
+            resource_id: target_id,
+            service_identity: "same_beam_operator_ui",
+            outcome: "rejected",
+            detail: %{
+              target_id: target_id,
+              reason: reason,
+              error_code: OperatorTargetRecovery.error_code(failure)
+            },
+            idempotency: %{replayed: false}
+          })
+
+          error
+      end
+    end
+  end
+
+  @doc "Starts one exact target-recovery plan after administrator reauthorization."
+  @spec start_operator_target_recovery(
+          OperatorContext.t(),
+          String.t(),
+          String.t(),
+          keyword()
+        ) :: {:ok, map()} | {:error, term()}
+  def start_operator_target_recovery(
+        %OperatorContext{} = operator_context,
+        operation_id,
+        plan_hash,
+        opts \\ []
+      )
+      when is_binary(operation_id) and is_binary(plan_hash) and is_list(opts) do
+    with {:ok, context, actor} <- authorize_operator_context(operator_context, :admin) do
+      case TargetRecovery.start(context, operation_id, plan_hash, opts) do
+        {:ok, operation} ->
+          OperatorAudit.put_best_effort(context, %{
+            action: "target_recovery.start",
+            actor_id: actor.id,
+            session_id: operator_context.session_id,
+            resource_type: "target_recovery",
+            resource_id: operation_id,
+            service_identity: "same_beam_operator_ui",
+            outcome: "accepted",
+            detail: %{plan_hash: plan_hash, state: operation.state},
+            idempotency: %{replayed: operation.idempotency_replay? == true}
+          })
+
+          {:ok, OperatorTargetRecovery.operation(operation, true)}
+
+        {:error, failure} = error ->
+          OperatorAudit.put_best_effort(context, %{
+            action: "target_recovery.start",
+            actor_id: actor.id,
+            session_id: operator_context.session_id,
+            resource_type: "target_recovery",
+            resource_id: operation_id,
+            service_identity: "same_beam_operator_ui",
+            outcome: "rejected",
+            detail: %{
+              plan_hash: plan_hash,
+              error_code: OperatorTargetRecovery.error_code(failure)
+            },
+            idempotency: %{replayed: false}
+          })
+
+          error
+      end
+    end
+  end
+
+  @doc "Returns one bounded target-recovery operation after viewer reauthorization."
+  @spec get_operator_target_recovery(OperatorContext.t(), String.t()) ::
+          {:ok, map()} | {:error, term()}
+  def get_operator_target_recovery(%OperatorContext{} = operator_context, operation_id)
+      when is_binary(operation_id) do
+    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer),
+         {:ok, operation} <- TargetRecovery.get(context, operation_id) do
+      {:ok, OperatorTargetRecovery.operation(operation, admin?(context))}
+    end
+  end
+
+  @doc "Reconciles an inconclusive target recovery without retrying its marker write."
+  @spec reconcile_operator_target_recovery(OperatorContext.t(), String.t(), keyword()) ::
+          {:ok, map()} | {:error, term()}
+  def reconcile_operator_target_recovery(
+        %OperatorContext{} = operator_context,
+        operation_id,
+        opts \\ []
+      )
+      when is_binary(operation_id) and is_list(opts) do
+    with {:ok, context, actor} <- authorize_operator_context(operator_context, :admin) do
+      case TargetRecovery.reconcile(context, operation_id, opts) do
+        {:ok, operation} ->
+          OperatorAudit.put_best_effort(context, %{
+            action: "target_recovery.reconcile",
+            actor_id: actor.id,
+            session_id: operator_context.session_id,
+            resource_type: "target_recovery",
+            resource_id: operation_id,
+            service_identity: "same_beam_operator_ui",
+            outcome: "accepted",
+            detail: %{state: operation.state},
+            idempotency: %{replayed: operation.idempotency_replay? == true}
+          })
+
+          {:ok, OperatorTargetRecovery.operation(operation, true)}
+
+        {:error, failure} = error ->
+          OperatorAudit.put_best_effort(context, %{
+            action: "target_recovery.reconcile",
+            actor_id: actor.id,
+            session_id: operator_context.session_id,
+            resource_type: "target_recovery",
+            resource_id: operation_id,
+            service_identity: "same_beam_operator_ui",
+            outcome: "rejected",
+            detail: %{error_code: OperatorTargetRecovery.error_code(failure)},
+            idempotency: %{replayed: false}
+          })
+
+          error
+      end
+    end
+  end
 
   @doc "Lists workspace-isolated logs after reauthorizing an operator context."
   @spec list_logs(OperatorContext.t(), term(), keyword()) :: {:ok, map()} | {:error, term()}

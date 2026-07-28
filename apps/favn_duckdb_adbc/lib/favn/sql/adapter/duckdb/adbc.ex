@@ -154,6 +154,8 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
   @storage_key :duckdb_storage
   @local_file_storage :local_file
   @non_local_storage [:external, :ephemeral, :ducklake]
+  @relation_instance_prefix "favn:relation-instance:v1:"
+  @relation_instance_pattern ~r/\A[0-9a-f]{64}\z/
 
   @impl true
   @spec connect(Resolved.t(), opts()) :: {:ok, Conn.t()} | {:error, Error.t()}
@@ -320,6 +322,24 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
   @impl Favn.SQL.GenerationAdapter
   def inspect_generation(%Conn{} = conn, %RelationRef{} = ref, opts),
     do: GenerationTransaction.inspect(__MODULE__, conn, __MODULE__, ref, opts)
+
+  @impl Favn.SQL.GenerationAdapter
+  def bind_relation_instance(
+        %Conn{} = conn,
+        %RelationRef{} = ref,
+        instance_id,
+        opts
+      )
+      when is_binary(instance_id) do
+    with :ok <- validate_relation_instance_id(instance_id),
+         {:ok, relation} <- relation(conn, ref, opts),
+         :ok <- require_relation_table(relation, conn, ref),
+         {:ok, comment} <- relation_comment(conn, relation),
+         :ok <- ensure_relation_instance_available(comment, instance_id, conn, ref),
+         :ok <- maybe_write_relation_instance(conn, ref, comment, instance_id, opts) do
+      :ok
+    end
+  end
 
   @impl Favn.SQL.GenerationAdapter
   def initialize_generation_marker(
@@ -833,8 +853,9 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
 
   @impl true
   @spec table_metadata(Conn.t(), RelationRef.t(), opts()) :: {:ok, map()} | {:error, Error.t()}
-  def table_metadata(%Conn{} = conn, %RelationRef{} = ref, _opts) do
-    with {:ok, relation} <- relation(conn, ref, []) do
+  def table_metadata(%Conn{} = conn, %RelationRef{} = ref, opts) do
+    with {:ok, relation} <- relation(conn, ref, opts),
+         {:ok, relation_instance_id} <- table_relation_instance_id(conn, relation) do
       metadata =
         case relation do
           %Relation{} = relation ->
@@ -842,7 +863,8 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
               type: relation.type,
               catalog: relation.catalog,
               schema: relation.schema,
-              name: relation.name
+              name: relation.name,
+              relation_instance_id: relation_instance_id
             }
 
           nil ->
@@ -851,6 +873,117 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
 
       {:ok, metadata}
     end
+  end
+
+  defp table_relation_instance_id(_conn, nil), do: {:ok, nil}
+
+  defp table_relation_instance_id(conn, %Relation{type: :table} = relation) do
+    with {:ok, comment} <- relation_comment(conn, relation) do
+      {:ok, relation_instance_id(comment)}
+    end
+  end
+
+  defp table_relation_instance_id(_conn, %Relation{}), do: {:ok, nil}
+
+  defp relation_comment(conn, %Relation{} = relation) do
+    sql = [
+      "SELECT comment FROM duckdb_tables() WHERE database_name = ",
+      quote_literal(relation.catalog),
+      " AND schema_name = ",
+      quote_literal(relation.schema || "main"),
+      " AND table_name = ",
+      quote_literal(relation.name),
+      " LIMIT 2"
+    ]
+
+    with {:ok, %Result{rows: rows}} <- query(conn, sql, []) do
+      case rows do
+        [%{"comment" => comment}] when is_binary(comment) or is_nil(comment) -> {:ok, comment}
+        [] -> {:ok, nil}
+        _rows -> {:error, relation_instance_error(conn, :ambiguous_relation, relation)}
+      end
+    end
+  end
+
+  defp require_relation_table(%Relation{type: :table}, _conn, _ref), do: :ok
+
+  defp require_relation_table(relation, conn, ref),
+    do: {:error, relation_instance_error(conn, :relation_not_table, relation || ref)}
+
+  defp validate_relation_instance_id(instance_id) do
+    if Regex.match?(@relation_instance_pattern, instance_id),
+      do: :ok,
+      else: {:error, relation_instance_error(nil, :invalid_instance_id, instance_id)}
+  end
+
+  defp ensure_relation_instance_available(comment, instance_id, conn, ref) do
+    case relation_instance_state(comment) do
+      :absent -> :ok
+      {:ok, ^instance_id} -> :ok
+      {:ok, _other} -> {:error, relation_instance_error(conn, :instance_id_conflict, ref)}
+      :invalid -> {:error, relation_instance_error(conn, :invalid_instance_metadata, ref)}
+    end
+  end
+
+  defp maybe_write_relation_instance(conn, ref, comment, instance_id, opts) do
+    if relation_instance_id(comment) == instance_id,
+      do: :ok,
+      else: write_relation_instance(conn, ref, comment, instance_id, opts)
+  end
+
+  defp write_relation_instance(conn, ref, comment, instance_id, opts) do
+    value =
+      case comment do
+        value when is_binary(value) and value != "" ->
+          @relation_instance_prefix <> instance_id <> "\n" <> value
+
+        _empty ->
+          @relation_instance_prefix <> instance_id
+      end
+
+    case execute(
+           conn,
+           ["COMMENT ON TABLE ", qualified_relation_ref(ref), " IS ", quote_literal(value)],
+           opts
+         ) do
+      {:ok, %Result{}} -> :ok
+      {:error, %Error{} = error} -> {:error, error}
+    end
+  end
+
+  defp relation_instance_id(comment) when is_binary(comment) do
+    case relation_instance_state(comment) do
+      {:ok, instance_id} -> instance_id
+      _other -> nil
+    end
+  end
+
+  defp relation_instance_id(_comment), do: nil
+
+  defp relation_instance_state(comment) when is_binary(comment) do
+    case String.split(comment, "\n", parts: 2) do
+      [@relation_instance_prefix <> instance_id | _rest] ->
+        if Regex.match?(@relation_instance_pattern, instance_id),
+          do: {:ok, instance_id},
+          else: :invalid
+
+      _other ->
+        :absent
+    end
+  end
+
+  defp relation_instance_state(_comment), do: :absent
+
+  defp relation_instance_error(conn, reason, detail) do
+    %Error{
+      type: :introspection_mismatch,
+      message: "physical relation instance identity could not be established",
+      retryable?: false,
+      adapter: __MODULE__,
+      operation: :bind_relation_instance,
+      connection: if(match?(%Conn{}, conn), do: conn.connection),
+      details: %{classification: :relation_instance_identity, reason: reason, detail: detail}
+    }
   end
 
   @impl true

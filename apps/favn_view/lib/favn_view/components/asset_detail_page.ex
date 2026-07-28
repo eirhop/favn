@@ -310,14 +310,23 @@ defmodule FavnView.Components.AssetDetailPage do
         <p class="text-sm font-medium text-error">
           Runs and backfills are blocked until this target is resolved.
         </p>
-        <.link
-          :if={@rebuild_target_id}
-          navigate={~p"/rebuilds?#{[target_id: @rebuild_target_id]}"}
-          class="btn btn-warning btn-sm"
-          data-testid="plan-asset-rebuild"
-        >
-          Plan rebuild
-        </.link>
+        <div :if={@rebuild_target_id} class="flex flex-wrap gap-2">
+          <.link
+            :if={field(@compatibility, :reason_code) == "unmanaged_physical_relation"}
+            navigate={~p"/recoveries?#{[target_id: @rebuild_target_id]}"}
+            class="btn btn-warning btn-sm"
+            data-testid="recover-asset-ownership"
+          >
+            Recover ownership
+          </.link>
+          <.link
+            navigate={~p"/rebuilds?#{[target_id: @rebuild_target_id]}"}
+            class="btn btn-outline btn-sm"
+            data-testid="plan-asset-rebuild"
+          >
+            Plan rebuild
+          </.link>
+        </div>
       </div>
     </GlassPanel.glass_panel>
     """

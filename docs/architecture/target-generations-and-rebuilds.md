@@ -55,6 +55,28 @@ compatibility fields still decide `ready`, `rebuild_available`, or
 `rebuild_required`. Missing, malformed, or mismatched historical descriptor
 evidence remains `operator_decision`.
 
+## Interrupted initial-generation recovery
+
+An initial materialization can commit in the data system while its control-plane
+binding remains incomplete. Recovery is a separate ownership-restoration
+workflow, not a rebuild and not general table adoption.
+
+An immutable recovery plan pins the current binding version, original building
+generation, successful materialization, source and desired descriptors,
+physical relation, fresh fingerprint, and the exact pre-existing Favn
+generation marker. Each new marker is transactionally bound to an opaque
+identity stored on that physical table. The identity survives rename and
+restart but disappears when the table is dropped and recreated. Start
+revalidates that evidence and
+acquires the same fenced target-operation lock used to exclude normal writes
+and rebuild activation. Binding activation then rechecks the fence, evidence, fingerprint, and
+exact marker in one PostgreSQL transaction.
+
+Recovery never initializes a marker. Reconciliation only reads the
+authoritative marker. Missing evidence, a changed relation or contract, or a
+missing, unbound, or mismatched marker keeps the target blocked, including a
+manually recreated table with an identical schema.
+
 ## Immutable planning and approval
 
 Planning is read-only from the operator's perspective. It freezes:

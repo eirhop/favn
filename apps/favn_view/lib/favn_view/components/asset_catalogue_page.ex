@@ -389,6 +389,12 @@ defmodule FavnView.Components.AssetCataloguePage do
         active: active == :rebuilds
       },
       %{
+        label: "Recovery",
+        icon: "hero-shield-check",
+        href: "/recoveries",
+        active: active == :recoveries
+      },
+      %{
         label: "Schedules",
         icon: "hero-calendar-days",
         href: "/schedules",

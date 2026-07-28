@@ -179,3 +179,43 @@ defmodule FavnStoragePostgres.Schemas.TargetOperationLock do
     timestamps(type: :utc_datetime_usec)
   end
 end
+
+defmodule FavnStoragePostgres.Schemas.TargetRecoveryOperation do
+  @moduledoc false
+  use Ecto.Schema
+
+  @primary_key false
+  @schema_prefix "favn_control"
+  schema "target_recovery_operations" do
+    field(:workspace_id, :string, primary_key: true)
+    field(:operation_id, :string, primary_key: true)
+    field(:target_id, :string)
+    field(:recovery_kind, :string)
+    field(:desired_manifest_id, :string)
+    field(:source_manifest_id, :string)
+    field(:target_generation_id, Ecto.UUID)
+    field(:materialization_id, :string)
+    field(:plan_hash, :string)
+    field(:plan_version, :integer)
+    field(:plan_payload, :map)
+    field(:state, :string)
+    field(:phase, :string)
+    field(:actor_id, :string)
+    field(:session_id, :string)
+    field(:reason, :string)
+    field(:idempotency_key, :string)
+    field(:expected_binding_version, :integer)
+    field(:expected_physical_fingerprint, :string)
+    field(:evaluated_at, :utc_datetime_usec)
+    field(:recovery_token, :string)
+    field(:result_marker, :map)
+    field(:compatibility_result, :map)
+    field(:unknown_outcome, :map)
+    field(:terminal_error, :map)
+    field(:last_command_id, :string)
+    field(:version, :integer)
+    field(:started_at, :utc_datetime_usec)
+    field(:completed_at, :utc_datetime_usec)
+    timestamps(type: :utc_datetime_usec)
+  end
+end
