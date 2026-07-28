@@ -12,8 +12,9 @@ defmodule FavnView.Components.AssetCataloguePage do
   narrowed to a phone is unscannable.
 
   Health, coverage, and target compatibility are three independent
-  orchestrator-owned statuses, rendered as three separate badges. The view maps
-  each to a tone and a label; it never derives one from another.
+  orchestrator-owned statuses, rendered as three separate glyphs by
+  `asset_state_icons/1`. The view maps each to a tone, an icon, and a label; it
+  never derives one from another.
   """
 
   use FavnView, :html
@@ -181,14 +182,8 @@ defmodule FavnView.Components.AssetCataloguePage do
       </:col>
       <:col :let={asset} label="Catalogue" class="favn-text-muted">{asset.catalogue}</:col>
       <:col :let={asset} label="Type" class="favn-text-muted">{asset.type}</:col>
-      <:col :let={asset} label="Status">
-        <.status_badge tone={asset.status} label={status_label(asset.status)} />
-      </:col>
-      <:col :let={asset} label="Coverage">
-        <.coverage_badge status={coverage_status(asset)} />
-      </:col>
-      <:col :let={asset} label="Compatibility">
-        <.compatibility_badge status={compatibility_status(asset)} />
+      <:col :let={asset} label="State">
+        <.asset_state_icons asset={asset} />
       </:col>
       <:col :let={asset} label="Last run" class="favn-text-muted">{asset.last_run_label}</:col>
     </.data_table>
@@ -227,16 +222,38 @@ defmodule FavnView.Components.AssetCataloguePage do
               <.meta>{@asset.connection} · {@asset.catalogue} · {@asset.type}</.meta>
             </div>
           </div>
-          <.inline gap={:xs} class="text-xs favn-text-muted">
-            <.status_badge tone={@asset.status} label={status_label(@asset.status)} />
-            <.coverage_badge status={coverage_status(@asset)} />
-            <.compatibility_badge status={compatibility_status(@asset)} />
+          <.inline gap={:sm} class="text-xs favn-text-muted">
+            <.asset_state_icons asset={@asset} />
             <span>{@asset.last_run_label}</span>
           </.inline>
         </div>
         <.icon name="hero-chevron-right" size={:md} class="mt-2 shrink-0 favn-text-muted" />
       </div>
     </.list_card>
+    """
+  end
+
+  @doc """
+  Health, data coverage, and target compatibility as three glyphs.
+
+  These are three independent orchestrator-owned statuses, and the view never
+  derives one from another. As words they were the widest thing in the row —
+  three badges taking more space than the asset name they described, which is
+  what pushed the row past a phone viewport. As glyphs they read at a glance and
+  keep their meaning on hover and to a screen reader.
+
+  Each state has its own icon rather than sharing one per tone, so the three
+  dimensions stay distinguishable without relying on colour.
+  """
+  attr :asset, :map, required: true
+
+  def asset_state_icons(assigns) do
+    ~H"""
+    <.inline gap={:xs} data-testid="asset-states">
+      <.status_icon {health_glyph(Map.get(@asset, :status))} />
+      <.status_icon {coverage_glyph(coverage_status(@asset))} />
+      <.status_icon {compatibility_glyph(compatibility_status(@asset))} />
+    </.inline>
     """
   end
 
@@ -426,15 +443,97 @@ defmodule FavnView.Components.AssetCataloguePage do
     ]
   end
 
-  defp status_label(:healthy), do: "Healthy"
-  defp status_label(:fresh), do: "Fresh"
-  defp status_label(:running), do: "Running"
-  defp status_label(:failed), do: "Failed"
-  defp status_label(:missed), do: "Missed"
-  defp status_label(_status), do: "Unknown"
-
   defp coverage_status(asset), do: Map.get(asset, :coverage_status, :unknown)
   defp compatibility_status(asset), do: Map.get(asset, :compatibility_status, :ready)
+
+  # One glyph per state, not per tone. A reader who cannot separate green from
+  # amber still sees a tick, a clock, and a cross as different shapes, and the
+  # three dimensions do not borrow each other's icons.
+  defp health_glyph(status) do
+    case status do
+      :healthy ->
+        %{tone: :success, icon: "hero-check-circle", label: "Healthy"}
+
+      :fresh ->
+        %{tone: :success, icon: "hero-check-circle", label: "Fresh"}
+
+      :running ->
+        %{tone: :info, icon: "hero-arrow-path", label: "Running now"}
+
+      :failed ->
+        %{tone: :error, icon: "hero-x-circle", label: "The last run failed"}
+
+      :missed ->
+        %{tone: :warning, icon: "hero-clock", label: "Missed its window"}
+
+      :stale ->
+        %{tone: :warning, icon: "hero-clock", label: "Later than its freshness policy allows"}
+
+      :degraded ->
+        %{tone: :warning, icon: "hero-exclamation-triangle", label: "Running with reduced health"}
+
+      _other ->
+        %{
+          tone: :neutral,
+          icon: "hero-question-mark-circle",
+          label: "Health unknown: it has not run yet"
+        }
+    end
+  end
+
+  defp coverage_glyph(status) do
+    case status do
+      :complete ->
+        %{
+          tone: :success,
+          icon: "hero-squares-2x2",
+          label: "Coverage complete: every declared window is materialised"
+        }
+
+      :incomplete ->
+        %{
+          tone: :warning,
+          icon: "hero-exclamation-circle",
+          label: "Coverage incomplete: declared windows are missing"
+        }
+
+      _other ->
+        %{tone: :neutral, icon: "hero-question-mark-circle", label: "Coverage unknown"}
+    end
+  end
+
+  defp compatibility_glyph(status) do
+    case status do
+      :ready ->
+        %{tone: :success, icon: "hero-shield-check", label: "Target compatible with the contract"}
+
+      :rebuild_available ->
+        %{tone: :info, icon: "hero-arrow-path-rounded-square", label: "A rebuild is available"}
+
+      :rebuild_required ->
+        %{
+          tone: :error,
+          icon: "hero-arrow-path-rounded-square",
+          label: "Rebuild required before writes"
+        }
+
+      :uninitialized ->
+        %{tone: :neutral, icon: "hero-minus-circle", label: "Target not initialised yet"}
+
+      :unexpected_drift ->
+        %{
+          tone: :error,
+          icon: "hero-exclamation-triangle",
+          label: "Target drift: it no longer matches the contract"
+        }
+
+      :operator_decision ->
+        %{tone: :warning, icon: "hero-hand-raised", label: "Waiting on an operator decision"}
+
+      _other ->
+        %{tone: :neutral, icon: "hero-question-mark-circle", label: "Compatibility unknown"}
+    end
+  end
 
   defp coverage_status_label(:complete), do: "complete"
   defp coverage_status_label(:incomplete), do: "incomplete"

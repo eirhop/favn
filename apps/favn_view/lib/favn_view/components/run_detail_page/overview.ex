@@ -8,8 +8,7 @@ defmodule FavnView.Components.RunDetailPage.Overview do
   def overview_panel(assigns) do
     ~H"""
     <div>
-      <span class="sr-only">Run status</span>
-      <.asset_window_matrix run={@run} />
+      <span class="sr-only">Run status</span> <.asset_window_matrix run={@run} />
       <.current_activity_state run={@run} />
     </div>
     """
@@ -23,16 +22,19 @@ defmodule FavnView.Components.RunDetailPage.Overview do
       <div class="mb-3 flex flex-wrap items-end justify-between gap-2">
         <div>
           <h2 class="text-sm font-medium">Effective asset windows</h2>
+          
           <p class="text-xs favn-text-subtle">
             Concrete runtime windows mapped from the pipeline's effective selection.
           </p>
         </div>
-        <span class="badge badge-ghost">{@run.effective_window_count} windows</span>
+         <span class="badge badge-ghost">{@run.effective_window_count} windows</span>
       </div>
+      
       <div data-testid="run-asset-results" class="sr-only">
         <span :if={@run.attempts == []} data-testid="run-asset-results-empty">
           Run failed before asset results were persisted. Run accepted. Waiting for asset execution results...
         </span>
+        
         <.link
           :for={attempt <- @run.attempts}
           navigate={attempt.logs_href || "#"}
@@ -41,6 +43,7 @@ defmodule FavnView.Components.RunDetailPage.Overview do
         >
           {attempt.short_asset_name} {attempt.asset_key} {attempt.status} {attempt.stage_label} {attempt.window_label} {attempt.error_summary} {@run.legacy_asset_text}
         </.link>
+        
         <.link
           :for={asset <- if(@run.attempts == [], do: @run.legacy_asset_results || [], else: [])}
           navigate="#"
@@ -50,7 +53,7 @@ defmodule FavnView.Components.RunDetailPage.Overview do
           {asset.display_name} {asset.asset_ref} {asset.status} {asset.stage} {asset.window} {asset.error} {asset.explanation}
         </.link>
       </div>
-
+      
       <div
         :if={
           @run.failed_asset_attempts > 0 or @run.failed_windows > 0 or
@@ -64,13 +67,15 @@ defmodule FavnView.Components.RunDetailPage.Overview do
         <% else %>
           {@run.failed_asset_attempts} of {@run.total_asset_attempts} assets failed.
         <% end %>
+        
         <span :for={attempt <- @run.failures}>
           {attempt.short_asset_name} {attempt.error_summary}
         </span>
+        
         <span :for={failure <- @run.backfill_failures}>
           {failure.short_asset_name} {failure.window_label} {failure.error_summary}
         </span>
-        <span>{@run.latest_event_summary}</span>
+         <span>{@run.latest_event_summary}</span>
         <button
           :if={@run.failures != [] or @run.backfill_failures != []}
           type="button"
@@ -80,7 +85,7 @@ defmodule FavnView.Components.RunDetailPage.Overview do
           Copy error
         </button>
       </div>
-
+      
       <div
         :if={@run.failed_windows > 0 and @run.backfill_failures != []}
         class="sr-only"
@@ -97,7 +102,7 @@ defmodule FavnView.Components.RunDetailPage.Overview do
           </.link>
         </div>
       </div>
-
+      
       <div class="overflow-auto rounded-box border border-base-content/10 bg-base-300/10">
         <div
           class="grid min-w-[56rem]"
@@ -106,33 +111,36 @@ defmodule FavnView.Components.RunDetailPage.Overview do
           <div class="sticky left-0 z-10 border-b border-r border-base-content/10 bg-base-300/70 p-3 text-xs favn-text-muted backdrop-blur">
             Assets ({length(@run.assets)})
           </div>
+          
           <div
             :for={window <- @run.windows}
             class="border-b border-r border-base-content/10 p-3 text-center"
           >
             <p class="font-medium">{window.label}</p>
+            
             <p :if={window.range_label} class="text-xs favn-text-subtle">{window.range_label}</p>
           </div>
-
+          
           <%= for row <- @run.matrix.rows do %>
             <div class="sticky left-0 z-10 flex items-center gap-2 border-b border-r border-base-content/10 bg-base-300/70 p-3 backdrop-blur">
               <span class="flex size-8 shrink-0 items-center justify-center rounded-box bg-success/15 text-success">
                 <.icon name="hero-table-cells" class="size-4" />
               </span>
+              
               <div class="min-w-0">
                 <p class="truncate text-sm font-medium">{row.name}</p>
+                
                 <p class="text-xs favn-text-subtle">{row.stage || "Stage unknown"}</p>
               </div>
             </div>
-            <.matrix_cell :for={cell <- row.cells} cell={cell} />
+             <.matrix_cell :for={cell <- row.cells} cell={cell} />
           <% end %>
         </div>
       </div>
-
+      
       <div class="mt-3 flex flex-wrap items-center gap-2 text-xs" data-testid="matrix-legend">
         <.legend_item label="Succeeded" tone={:success} />
-        <.legend_item label="Failed" tone={:error} />
-        <.legend_item label="Running" tone={:info} />
+        <.legend_item label="Failed" tone={:error} /> <.legend_item label="Running" tone={:info} />
         <.legend_item label="Queued" tone={:warning} />
         <.legend_item label="Skipped" tone={:neutral} />
         <span class="ml-auto favn-text-subtle">Click any cell to open attempt details.</span>
@@ -157,9 +165,9 @@ defmodule FavnView.Components.RunDetailPage.Overview do
       data-status={@cell.raw_status}
     >
       <span class="flex items-center justify-center gap-1.5 font-medium">
-        <.icon name={status_icon(@cell.status_tone)} class="size-4" /> {@cell.status}
+        <.icon name={status_icon_name(@cell.status_tone)} class="size-4" /> {@cell.status}
       </span>
-      <span class="mt-1 block text-xs favn-text-muted">{@cell.duration}</span>
+       <span class="mt-1 block text-xs favn-text-muted">{@cell.duration}</span>
       <span :if={Map.get(@cell, :other_attempt_count, 0) > 0} class="mt-1 block text-xs">
         +{Map.get(@cell, :other_attempt_count)} earlier {if(
           Map.get(@cell, :other_attempt_count) == 1,
@@ -167,7 +175,7 @@ defmodule FavnView.Components.RunDetailPage.Overview do
           else: "attempts"
         )}
       </span>
-      <span class="sr-only">{@cell.window_label}</span>
+       <span class="sr-only">{@cell.window_label}</span>
     </button>
     """
   end
@@ -203,6 +211,7 @@ defmodule FavnView.Components.RunDetailPage.Overview do
     ~H"""
     <div>
       <p class="text-xs favn-text-subtle">{@label}</p>
+      
       <p class="mt-1 text-base font-medium text-base-content">{@value || "-"}</p>
     </div>
     """

@@ -10,16 +10,20 @@ defmodule FavnView.UI.Badge do
   | `status_badge/1` | lifecycle state of the thing the row or panel is about |
   | `badge/1` | any other single-word qualifier: kind, mode, compatibility |
   | `count_badge/1` | a number attached to a label or tab |
+  | `status_icon/1` | a state in a dense row, where a word costs too much width |
 
   Never place two `status_badge/1` next to each other. If a row needs several
   independent states, the primary lifecycle state is a `status_badge/1` and the
-  rest are `badge/1` with `variant={:outline}` so scanning stays possible.
+  rest are `badge/1` with `variant={:outline}` so scanning stays possible. In a
+  table, where three word-badges take more width than the asset name they
+  describe, use `status_icon/1` for all three instead.
 
   ## Examples
 
       <.status_badge tone={:success} label="Healthy" />
       <.badge tone={:warning} variant={:outline}>Coverage incomplete</.badge>
       <.count_badge count={12} label="failures" />
+      <.status_icon tone={:success} icon="hero-check-circle" label="Healthy" />
   """
 
   use Phoenix.Component
@@ -104,6 +108,46 @@ defmodule FavnView.UI.Badge do
     <span class={["badge badge-xs badge-soft", Tokens.badge_class(@tone), @class]}>
       {@count}
       <span :if={@label} class="sr-only">{@label}</span>
+    </span>
+    """
+  end
+
+  @doc """
+  A state as a coloured glyph, for rows where a word costs too much width.
+
+  ## Why a glyph and not a dot
+
+  The glyph carries the meaning and the colour only reinforces it, which is the
+  requirement: colour alone is not an accessible signal, and a row of
+  same-shaped dots in different colours is unreadable to anyone who cannot
+  separate the hues. So every state gets its own icon — a tick is not a cross is
+  not a clock — and the tone is redundant information.
+
+  The label is both the accessible name and the tooltip, so the meaning is one
+  hover away for a sighted reader and always present for a screen reader. Passing
+  a state with no label is not possible.
+
+  ## Examples
+
+      <.status_icon tone={:success} icon="hero-check-circle" label="Healthy" />
+      <.status_icon tone={:warning} icon="hero-clock" label="Stale: later than its freshness policy allows" />
+  """
+  attr :tone, :atom, required: true, doc: "see `FavnView.UI.Tokens`"
+  attr :icon, :string, required: true, doc: "distinct per state, not per tone"
+  attr :label, :string, required: true, doc: "accessible name and tooltip text"
+  attr :tooltip, :atom, default: :top, values: [:top, :bottom, :left, :right]
+  attr :class, :any, default: nil
+
+  def status_icon(assigns) do
+    assigns = assign(assigns, :tone, Tokens.tone(assigns.tone))
+
+    ~H"""
+    <span
+      class={["tooltip inline-flex items-center", "tooltip-#{@tooltip}", @class]}
+      data-tip={@label}
+    >
+      <.icon name={@icon} size={:sm} class={Tokens.text_class(@tone)} />
+      <span class="sr-only">{@label}</span>
     </span>
     """
   end

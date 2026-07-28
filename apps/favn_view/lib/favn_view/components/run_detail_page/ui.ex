@@ -34,11 +34,13 @@ defmodule FavnView.Components.RunDetailPage.Ui do
   def icon_shell_class(:warning), do: "bg-warning/15 text-warning"
   def icon_shell_class(:error), do: "bg-error/15 text-error"
   def icon_shell_class(_tone), do: "bg-base-content/10 favn-text-muted"
-  def status_icon(:success), do: "hero-check-circle"
-  def status_icon(:info), do: "hero-arrow-path"
-  def status_icon(:warning), do: "hero-clock"
-  def status_icon(:error), do: "hero-x-circle"
-  def status_icon(_tone), do: "hero-minus-circle"
+  # Returns an icon *name*, not a component, and is named for that: the element
+  # library's `FavnView.UI.Badge.status_icon/1` is the component.
+  def status_icon_name(:success), do: "hero-check-circle"
+  def status_icon_name(:info), do: "hero-arrow-path"
+  def status_icon_name(:warning), do: "hero-clock"
+  def status_icon_name(:error), do: "hero-x-circle"
+  def status_icon_name(_tone), do: "hero-minus-circle"
 
   def matrix_cell_class(:success),
     do:
