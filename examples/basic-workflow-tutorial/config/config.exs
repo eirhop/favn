@@ -1,44 +1,35 @@
 import Config
 
-workspace_id = System.get_env("CRM_EXAMPLE_WORKSPACE_ID", "local-dev")
+# Every value below has a working default so the tutorial runs with no setup.
+# Override an environment variable when you want a second isolated stack.
 
-duckdb_path =
-  case config_env() do
-    :test -> System.get_env("CRM_EXAMPLE_TEST_DUCKDB_PATH", "generic_crm_test.duckdb")
-    _other -> System.get_env("CRM_EXAMPLE_DUCKDB_PATH", "generic_crm.duckdb")
-  end
+if driver = System.get_env("DUCKDB_ADBC_DRIVER") do
+  config :favn, :duckdb_adbc, driver: driver, entrypoint: "duckdb_adbc_init"
+end
 
-case System.get_env("DUCKDB_ADBC_DRIVER") do
-  driver when is_binary(driver) and driver != "" ->
-    config :favn, :duckdb_adbc,
-      driver: driver,
-      entrypoint: "duckdb_adbc_init"
+case config_env() do
+  :test ->
+    config :logger, level: :warning
+    config :crm_demo, landing_dir: ".data/test/landing"
+    config :favn, connections: [warehouse: [open: [database: "crm_demo_test.duckdb"]]]
 
-  _missing ->
-    :ok
+  _other ->
+    config :crm_demo, landing_dir: ".data/landing"
+    config :favn, connections: [warehouse: [open: [database: "crm_demo.duckdb"]]]
 end
 
 config :favn,
   discovery: [
-    apps: [:basic_workflow_tutorial],
+    apps: [:crm_demo],
     assets: :all,
     pipelines: :all,
     schedules: :all,
     connections: :all
   ],
-  connections: [
-    warehouse: [
-      open: [database: duckdb_path],
-      pool: [enabled: true, max_idle_per_key: 1]
-    ]
-  ],
-  execution_pools: [
-    local_duckdb: [max_concurrency: 1]
-  ],
-  dev: [workspace_id: workspace_id],
-  runner_plugins: [
-    {FavnDuckdbADBC, execution_mode: :in_process}
-  ]
+  # One slot serializes every write to the single file-backed DuckDB catalog.
+  execution_pools: [duckdb: [max_concurrency: 1]],
+  dev: [workspace_id: System.get_env("CRM_DEMO_WORKSPACE_ID", "local-dev")],
+  runner_plugins: [{FavnDuckdbADBC, execution_mode: :in_process}]
 
 config :favn_runner, build_profile: "source"
 

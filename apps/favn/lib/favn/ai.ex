@@ -545,11 +545,10 @@ defmodule Favn.AI do
     runtime input authoring, result/error contracts, limits, and retry boundary
   - `apps/favn/guides/duckdb-session-scripts.md`: native DuckDB session setup,
     resources DSL, file locators, pooling lifecycle, and safety rules
-  - `examples/basic-workflow-tutorial`: standalone consumer-style tutorial with
-    the canonical source-system raw landing example in
-    `FavnReferenceWorkload.Warehouse.Raw.Orders`
+  - `examples/basic-workflow-tutorial`: standalone consumer-style tutorial
+    covering the canonical landing/Source/Core/Mart layout, with the
+    source-system landing example in `CrmDemo.Landing.Crm` and the matching
+    runtime-input resolver in `CrmDemo.Warehouse.Source.Crm.Inputs`
   - `docs/structure/README.md`: ownership and folder map
-  - `examples/basic-workflow-tutorial`: larger consumer-style example with its
-    own layer convention
   """
 end
