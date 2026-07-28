@@ -775,7 +775,7 @@ defmodule Favn.Manifest.VersionTest do
     }
 
     assert {:ok, package} = ExecutionPackage.new(ref, execution)
-    assert package.schema_version == 2
+    assert package.schema_version == 3
     assert {:ok, encoded} = Serializer.encode_manifest(package)
     assert {:ok, decoded} = Serializer.decode_manifest(encoded)
     assert length(get_in(decoded, ["sql_execution", "contract", "row_counts"])) == 2

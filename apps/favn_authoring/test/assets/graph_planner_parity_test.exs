@@ -39,6 +39,8 @@ defmodule FavnAuthoring.Assets.GraphPlannerParityTest do
   defmodule RelationGold.Customer360 do
     use Favn.SQLAsset
 
+    depends(RelationRaw.Orders)
+    depends(RelationRaw.Customers)
     relation(true)
     materialized(:view)
 
@@ -224,7 +226,7 @@ defmodule FavnAuthoring.Assets.GraphPlannerParityTest do
     assert length(plan.target_node_keys) == 2
   end
 
-  test "graph index and planner include relation-inferred SQL dependencies" do
+  test "graph index and planner include explicit SQL dependencies" do
     assert {:ok, index} =
              GraphIndex.index_for_modules([
                RelationRaw.Orders,

@@ -44,6 +44,8 @@ defmodule FavnAuthoringTest do
   defmodule DiscoveredGold.Customer360 do
     use Favn.SQLAsset
 
+    depends(DiscoveredRaw.Orders)
+    depends(DiscoveredRaw.Customers)
     relation(true)
     materialized(:view)
 
@@ -78,7 +80,7 @@ defmodule FavnAuthoringTest do
              FavnAuthoring.list_assets(DirectAsset)
   end
 
-  test "list_assets/1 uses discovered catalog dependency inference" do
+  test "list_assets/1 keeps explicit dependencies from the discovered catalog" do
     app =
       load_test_app!([
         DiscoveredRaw.Orders,

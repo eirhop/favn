@@ -220,8 +220,6 @@
    "The pattern variable _result@1 can never match the type, because it is covered by previous clauses."},
   {"lib/favn_orchestrator/transition_writer.ex",
    "The pattern pattern <\#{'__struct__':='Elixir.FavnOrchestrator.RunEvent'}, __key@1> can never match the type, because it is covered by previous clauses."},
-  {"lib/favn_runner.ex",
-   "The pattern variable __error@1 can never match the type, because it is covered by previous clauses."},
   {"lib/favn_runner.ex", "Function cancel_work/1 has no local return."},
   {"lib/favn_runner.ex", "The function call cancel_work will not succeed."},
   {"lib/favn_runner/execution_lifecycle.ex",

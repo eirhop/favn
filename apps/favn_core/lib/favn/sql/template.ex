@@ -26,6 +26,23 @@ defmodule Favn.SQL.Template do
     "right outer",
     "full outer"
   ]
+  @from_list_terminators [
+    "where",
+    "group",
+    "having",
+    "qualify",
+    "window",
+    "order",
+    "limit",
+    "offset",
+    "fetch",
+    "union",
+    "except",
+    "intersect",
+    "returning",
+    "on",
+    "using"
+  ]
 
   @type root_kind :: :query | :expression
   @type placeholder_source :: :runtime | :query_param | {:local_arg, non_neg_integer()}
@@ -246,6 +263,9 @@ defmodule Favn.SQL.Template do
       relation_entry?: false,
       join_prefix: nil,
       paren_depth: 0,
+      query_depths: initial_query_depths(root_kind),
+      from_list_depths: MapSet.new(),
+      recent_words: [],
       statement_kind: top_level_statement_kind(root_kind),
       scope: scope,
       root_kind: root_kind,
@@ -492,6 +512,7 @@ defmodule Favn.SQL.Template do
       state
       |> advance_state(~c",")
       |> maybe_continue_cte_sequence_after_comma()
+      |> maybe_continue_from_list_after_comma()
 
     parse_nodes(rest, next_state, [text_node(",", state.position, next_state.position) | acc])
   end
@@ -523,6 +544,7 @@ defmodule Favn.SQL.Template do
       |> Map.put(:join_prefix, nil)
       |> maybe_exit_cte_query(state)
       |> pop_expired_cte_scopes()
+      |> pop_expired_sql_scopes()
 
     parse_nodes(rest, next_state, [text_node(")", state.position, next_state.position) | acc])
   end
@@ -535,6 +557,9 @@ defmodule Favn.SQL.Template do
       |> Map.put(:join_prefix, nil)
       |> Map.put(:statement_kind, top_level_statement_kind(state.root_kind))
       |> Map.put(:cte_scopes, [])
+      |> Map.put(:query_depths, MapSet.new())
+      |> Map.put(:from_list_depths, MapSet.new())
+      |> Map.put(:recent_words, [])
 
     parse_nodes(rest, next_state, [text_node(";", state.position, next_state.position) | acc])
   end
@@ -1349,55 +1374,97 @@ defmodule Favn.SQL.Template do
   defp uppercase_alias_segments?(segments),
     do: Enum.all?(segments, &String.match?(&1, ~r/^[A-Z][A-Za-z0-9_]*$/))
 
-  defp update_relation_context(state, "from"),
-    do: %{
+  defp update_relation_context(state, "from") do
+    if relation_clause_from?(state) do
       state
-      | relation_entry?: true,
-        join_prefix: nil,
-        statement_kind: update_statement_kind(state.statement_kind, "from", state.paren_depth)
-    }
+      |> Map.put(:relation_entry?, true)
+      |> Map.put(:join_prefix, nil)
+      |> Map.update!(:from_list_depths, &MapSet.put(&1, state.paren_depth))
+      |> update_statement_kind_and_remember("from")
+    else
+      state
+      |> Map.put(:relation_entry?, false)
+      |> Map.put(:join_prefix, nil)
+      |> update_statement_kind_and_remember("from")
+    end
+  end
 
   defp update_relation_context(state, "join"),
-    do: %{
+    do:
       state
-      | relation_entry?: true,
-        join_prefix: nil,
-        statement_kind: update_statement_kind(state.statement_kind, "join", state.paren_depth)
-    }
+      |> close_from_list()
+      |> Map.put(:relation_entry?, true)
+      |> Map.put(:join_prefix, nil)
+      |> update_statement_kind_and_remember("join")
 
   defp update_relation_context(state, word) when word in @join_prefixes,
-    do: %{
+    do:
       state
-      | relation_entry?: false,
-        join_prefix: word,
-        statement_kind: update_statement_kind(state.statement_kind, word, state.paren_depth)
-    }
+      |> close_from_list()
+      |> Map.put(:relation_entry?, false)
+      |> Map.put(:join_prefix, word)
+      |> update_statement_kind_and_remember(word)
 
   defp update_relation_context(%{join_prefix: prefix} = state, "outer")
        when prefix in @outer_join_prefixes,
-       do: %{
+       do:
          state
-         | relation_entry?: false,
-           join_prefix: "#{prefix} outer",
-           statement_kind: update_statement_kind(state.statement_kind, "outer", state.paren_depth)
-       }
+         |> Map.put(:relation_entry?, false)
+         |> Map.put(:join_prefix, "#{prefix} outer")
+         |> update_statement_kind_and_remember("outer")
 
   defp update_relation_context(%{join_prefix: prefix} = state, "join")
        when prefix in @join_entry_prefixes,
-       do: %{
+       do:
          state
-         | relation_entry?: true,
-           join_prefix: nil,
-           statement_kind: update_statement_kind(state.statement_kind, "join", state.paren_depth)
-       }
+         |> Map.put(:relation_entry?, true)
+         |> Map.put(:join_prefix, nil)
+         |> update_statement_kind_and_remember("join")
+
+  defp update_relation_context(state, word) when word in ["select", "with"] do
+    state
+    |> Map.put(:relation_entry?, false)
+    |> Map.put(:join_prefix, nil)
+    |> Map.update!(:query_depths, &MapSet.put(&1, state.paren_depth))
+    |> close_from_list()
+    |> update_statement_kind_and_remember(word)
+  end
+
+  defp update_relation_context(state, word) when word in @from_list_terminators do
+    state
+    |> close_from_list()
+    |> Map.put(:relation_entry?, false)
+    |> Map.put(:join_prefix, nil)
+    |> update_statement_kind_and_remember(word)
+  end
 
   defp update_relation_context(state, word),
-    do: %{
+    do:
       state
-      | relation_entry?: false,
-        join_prefix: nil,
-        statement_kind: update_statement_kind(state.statement_kind, word, state.paren_depth)
+      |> Map.put(:relation_entry?, false)
+      |> Map.put(:join_prefix, nil)
+      |> update_statement_kind_and_remember(word)
+
+  defp relation_clause_from?(state) do
+    MapSet.member?(state.query_depths, state.paren_depth) and
+      not distinct_from_operator?(state.recent_words)
+  end
+
+  defp distinct_from_operator?(["distinct", "is" | _rest]), do: true
+  defp distinct_from_operator?(["distinct", "not", "is" | _rest]), do: true
+  defp distinct_from_operator?(_recent_words), do: false
+
+  defp update_statement_kind_and_remember(state, word) do
+    %{
+      state
+      | statement_kind: update_statement_kind(state.statement_kind, word, state.paren_depth),
+        recent_words: [word | Enum.take(state.recent_words, 2)]
     }
+  end
+
+  defp close_from_list(state) do
+    %{state | from_list_depths: MapSet.delete(state.from_list_depths, state.paren_depth)}
+  end
 
   defp update_cte_state_for_identifier(state, word) do
     lower_word = String.downcase(word)
@@ -1478,6 +1545,14 @@ defmodule Favn.SQL.Template do
     end)
   end
 
+  defp maybe_continue_from_list_after_comma(state) do
+    if MapSet.member?(state.from_list_depths, state.paren_depth) do
+      %{state | relation_entry?: true, join_prefix: nil}
+    else
+      state
+    end
+  end
+
   defp maybe_close_cte_sequence(state, char) do
     update_top_cte_scope(state, fn scope ->
       if scope.active? and scope.ready_for_next? and state.paren_depth == scope.boundary_depth and
@@ -1520,8 +1595,25 @@ defmodule Favn.SQL.Template do
     %{state | cte_scopes: Enum.reject(state.cte_scopes, &(&1.boundary_depth > state.paren_depth))}
   end
 
+  defp pop_expired_sql_scopes(state) do
+    %{
+      state
+      | query_depths: keep_depths_through(state.query_depths, state.paren_depth),
+        from_list_depths: keep_depths_through(state.from_list_depths, state.paren_depth)
+    }
+  end
+
+  defp keep_depths_through(depths, max_depth) do
+    depths
+    |> Enum.filter(&(&1 <= max_depth))
+    |> MapSet.new()
+  end
+
   defp top_level_statement_kind(:query), do: :query
   defp top_level_statement_kind(:expression), do: :expression
+
+  defp initial_query_depths(:query), do: MapSet.new([0])
+  defp initial_query_depths(:expression), do: MapSet.new()
 
   defp update_statement_kind(kind, word, depth) do
     if depth > 0 do

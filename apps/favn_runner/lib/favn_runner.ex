@@ -302,7 +302,6 @@ defmodule FavnRunner do
   defp maybe_put_timeout(opts, _timeout_ms), do: opts
 
   defp error_phase(error) when is_map(error), do: Map.get(error, :phase, :runtime_inputs)
-  defp error_phase(_error), do: :runtime_inputs
 
   defp resolver_retry_after(%{details: details}) when is_map(details),
     do: Map.get(details, :retry_after_ms, Map.get(details, "retry_after_ms"))

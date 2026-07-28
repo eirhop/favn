@@ -3,7 +3,7 @@ defmodule Favn.SQL.TemplateTest do
 
   alias Favn.SQL.Definition
   alias Favn.SQL.Template
-  alias Favn.SQL.Template.Call
+  alias Favn.SQL.Template.{Call, Relation}
 
   test "reserves only window and Favn-owned execution runtime inputs" do
     assert Template.reserved_runtime_inputs() == [
@@ -101,6 +101,49 @@ defmodule Favn.SQL.TemplateTest do
         enforce_query_root: true
       )
     end
+  end
+
+  test "recognizes FROM only in relation clauses" do
+    template =
+      Template.compile!(
+        """
+        SELECT
+          extract(day FROM orders),
+          unit.id IS DISTINCT FROM orders
+        FROM orders
+        """,
+        file: "test/fixtures/template_test.sql",
+        line: 1,
+        enforce_query_root: true
+      )
+
+    assert [%Relation{raw: "orders"}] = Template.relation_refs(template)
+  end
+
+  test "recognizes comma-separated relations in a FROM list" do
+    template =
+      Template.compile!(
+        "SELECT * FROM local_table, raw.sales.orders WHERE local_table.id = orders.id",
+        file: "test/fixtures/template_test.sql",
+        line: 1,
+        enforce_query_root: true
+      )
+
+    assert Enum.map(Template.relation_refs(template), & &1.raw) == [
+             "local_table",
+             "raw.sales.orders"
+           ]
+  end
+
+  test "recognizes relations in nested query scopes" do
+    template =
+      Template.compile!("SELECT * FROM (SELECT * FROM orders) AS nested_orders",
+        file: "test/fixtures/template_test.sql",
+        line: 1,
+        enforce_query_root: true
+      )
+
+    assert [%Relation{raw: "orders"}] = Template.relation_refs(template)
   end
 
   test "rejects undefined defsql placeholders without returning non-name values" do
