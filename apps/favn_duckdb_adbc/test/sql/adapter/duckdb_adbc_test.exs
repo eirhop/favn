@@ -161,6 +161,15 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCTest do
         is_binary(sql) and String.contains?(sql, "duckdb_databases()") ->
           %{type: TestSupport.mode(:database_type, "ducklake")}
 
+        is_binary(sql) and String.contains?(sql, "information_schema.columns") ->
+          %{
+            column_name: "id",
+            ordinal_position: 1,
+            data_type: "BIGINT",
+            is_nullable: "YES",
+            column_default: nil
+          }
+
         true ->
           %{value: 1}
       end
@@ -695,6 +704,17 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCTest do
 
     assert list_sql =~ "table_schema = 'sales'"
     assert list_sql =~ "table_catalog = 'raw'"
+  end
+
+  test "marks DuckDB column nullability as unreliable contract metadata" do
+    {:ok, conn} = ADBC.connect(resolved(), duckdb_adbc_client: FakeClient)
+    ref = %RelationRef{schema: "main", name: "measurement_method"}
+
+    assert {:ok, [column]} = ADBC.columns(conn, ref, [])
+    assert column.name == "id"
+    assert column.data_type == "BIGINT"
+    assert column.nullable?
+    assert column.metadata.contract_nullability == :unreliable
   end
 
   test "catalog-qualified introspection rejects missing schema" do

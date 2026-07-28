@@ -2,8 +2,13 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCIntegrationTest do
   use ExUnit.Case, async: false
 
   alias Favn.Connection.Resolved
+  alias Favn.Manifest.Compatibility
+  alias Favn.Manifest.TargetDescriptor
   alias Favn.RelationRef
   alias Favn.SQL.Adapter.DuckDB.ADBC
+  alias Favn.SQL.Contract
+  alias Favn.SQL.ContractValidation
+  alias Favn.TargetCompatibility.PhysicalFingerprint
 
   alias Favn.SQL.{
     Error,
@@ -99,6 +104,93 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCIntegrationTest do
       assert result.rows == [
                %{"resolver_at" => DateTime.to_unix(resolver_at, :microsecond)}
              ]
+    after
+      ADBC.disconnect(conn, [])
+    end
+  end
+
+  test "validates a strict contract for a DuckDB CTAS table with uncertain nullability" do
+    resolved = %Resolved{
+      name: :warehouse,
+      adapter: ADBC,
+      module: __MODULE__,
+      config: %{open: [database: ":memory:"]}
+    }
+
+    assert {:ok, conn} = ADBC.connect(resolved, connect_opts())
+
+    try do
+      assert {:ok, _result} =
+               ADBC.execute(
+                 conn,
+                 """
+                 CREATE TABLE measurement_method AS
+                 SELECT *
+                 FROM (
+                   VALUES
+                     (1::BIGINT, 'manual'::VARCHAR),
+                     (2::BIGINT, 'sensor'::VARCHAR),
+                     (3::BIGINT, 'calculated'::VARCHAR)
+                 ) AS methods(id, name)
+                 """,
+                 []
+               )
+
+      assert {:ok, columns} =
+               ADBC.columns(
+                 conn,
+                 %RelationRef{connection: :warehouse, schema: "main", name: "measurement_method"},
+                 []
+               )
+
+      assert Enum.all?(columns, &(&1.metadata.contract_nullability == :unreliable))
+
+      contract =
+        Contract.new!(%{
+          columns: [
+            %{name: :id, type: :integer, null: false},
+            %{name: :name, type: :string, null: false}
+          ]
+        })
+
+      assert %ContractValidation{status: :passed, differences: []} =
+               ContractValidation.compare(contract, columns)
+
+      assert {:ok, relation} =
+               ADBC.relation(
+                 conn,
+                 %RelationRef{connection: :warehouse, schema: "main", name: "measurement_method"},
+                 []
+               )
+
+      assert {:ok, physical} =
+               PhysicalFingerprint.new(adapter: ADBC, relation: relation, columns: columns)
+
+      descriptor =
+        TargetDescriptor.from_asset(
+          %{
+            ref: {__MODULE__, :measurement_method},
+            type: :sql,
+            relation:
+              RelationRef.new!(
+                connection: :warehouse,
+                schema: "main",
+                name: "measurement_method"
+              ),
+            materialization: :table,
+            execution_package_hash: String.duplicate("a", 64),
+            assurance: %{contract: contract},
+            window: nil,
+            coverage: nil
+          },
+          connection_definitions: %{
+            warehouse: %{adapter: ADBC, module: __MODULE__}
+          },
+          manifest_schema_version: Compatibility.current_schema_version(),
+          runner_contract_version: Compatibility.current_runner_contract_version()
+        )
+
+      assert PhysicalFingerprint.identity_diff(descriptor, physical, contract) == []
     after
       ADBC.disconnect(conn, [])
     end

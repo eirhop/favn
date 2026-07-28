@@ -3,13 +3,14 @@ defmodule Favn.TargetCompatibility.PhysicalFingerprintTest do
 
   alias Favn.Contracts.RelationInspectionResult
   alias Favn.Manifest.TargetDescriptor
+  alias Favn.SQL.Contract
   alias Favn.TargetCompatibility.PhysicalFingerprint
 
   test "canonicalizes the physical relation and ordered columns" do
     result =
       inspection([
-        %{name: "id", data_type: " bigint ", nullable?: false},
-        %{name: "amount", data_type: "decimal(18, 2)", nullable?: true}
+        reliable_column("id", " bigint ", false),
+        reliable_column("amount", "decimal(18, 2)", true)
       ])
 
     assert {:ok, fingerprint} = PhysicalFingerprint.from_inspection(result)
@@ -23,12 +24,19 @@ defmodule Favn.TargetCompatibility.PhysicalFingerprintTest do
            }
 
     assert fingerprint.columns == [
-             %{name: "id", native_type: "BIGINT", logical_type: "integer", nullable: false},
+             %{
+               name: "id",
+               native_type: "BIGINT",
+               logical_type: "integer",
+               nullable: false,
+               nullability_reliable: true
+             },
              %{
                name: "amount",
                native_type: "DECIMAL(18, 2)",
                logical_type: "decimal",
-               nullable: true
+               nullable: true,
+               nullability_reliable: true
              }
            ]
 
@@ -43,7 +51,8 @@ defmodule Favn.TargetCompatibility.PhysicalFingerprintTest do
           data_type: "BIGINT",
           nullable?: false,
           default: "nextval('secret')",
-          comment: "first"
+          comment: "first",
+          metadata: %{contract_nullability: :reliable}
         }
       ])
 
@@ -54,7 +63,8 @@ defmodule Favn.TargetCompatibility.PhysicalFingerprintTest do
           data_type: "bigint",
           nullable?: false,
           default: nil,
-          comment: "second"
+          comment: "second",
+          metadata: %{contract_nullability: :reliable}
         }
       ])
 
@@ -67,23 +77,23 @@ defmodule Favn.TargetCompatibility.PhysicalFingerprintTest do
     assert {:ok, original} =
              PhysicalFingerprint.from_inspection(
                inspection([
-                 %{name: "id", data_type: "BIGINT", nullable?: false},
-                 %{name: "label", data_type: "VARCHAR", nullable?: true}
+                 reliable_column("id", "BIGINT", false),
+                 reliable_column("label", "VARCHAR", true)
                ])
              )
 
     variants = [
       inspection([
-        %{name: "label", data_type: "VARCHAR", nullable?: true},
-        %{name: "id", data_type: "BIGINT", nullable?: false}
+        reliable_column("label", "VARCHAR", true),
+        reliable_column("id", "BIGINT", false)
       ]),
       inspection([
-        %{name: "id", data_type: "VARCHAR", nullable?: false},
-        %{name: "label", data_type: "VARCHAR", nullable?: true}
+        reliable_column("id", "VARCHAR", false),
+        reliable_column("label", "VARCHAR", true)
       ]),
       inspection([
-        %{name: "id", data_type: "BIGINT", nullable?: true},
-        %{name: "label", data_type: "VARCHAR", nullable?: true}
+        reliable_column("id", "BIGINT", true),
+        reliable_column("label", "VARCHAR", true)
       ])
     ]
 
@@ -91,6 +101,54 @@ defmodule Favn.TargetCompatibility.PhysicalFingerprintTest do
       assert {:ok, changed} = PhysicalFingerprint.from_inspection(result)
       refute changed.fingerprint == original.fingerprint
     end
+  end
+
+  test "keeps reliability metadata outside the exact physical fingerprint" do
+    assert {:ok, unreliable} =
+             PhysicalFingerprint.from_inspection(
+               inspection([%{name: "id", data_type: "BIGINT", nullable?: true}])
+             )
+
+    assert {:ok, reliable} =
+             PhysicalFingerprint.from_inspection(
+               inspection([reliable_column("id", "BIGINT", true)])
+             )
+
+    refute hd(unreliable.columns).nullability_reliable
+    assert hd(reliable.columns).nullability_reliable
+    assert unreliable.fingerprint == reliable.fingerprint
+  end
+
+  test "compares contract nullability only when the adapter marks it reliable" do
+    contract = Contract.new!(%{columns: [%{name: :id, type: :integer, null: false}]})
+
+    desired = %{
+      descriptor(%{catalog: "warehouse", schema: "mart", name: "orders"})
+      | contract_fingerprint: String.duplicate("c", 64)
+    }
+
+    assert {:ok, uncertain} =
+             PhysicalFingerprint.new(
+               adapter: MyApp.Adapter,
+               relation: relation(),
+               columns: [%{name: "id", data_type: "BIGINT", nullable?: true}]
+             )
+
+    assert PhysicalFingerprint.identity_diff(desired, uncertain, contract) == []
+
+    assert {:ok, reliable} =
+             PhysicalFingerprint.new(
+               adapter: MyApp.Adapter,
+               relation: relation(),
+               columns: [reliable_column("id", "BIGINT", true)]
+             )
+
+    assert [
+             %{
+               field: :contract_fingerprint,
+               observed: %{differences: [%{kind: :nullability, column: "id"}]}
+             }
+           ] = PhysicalFingerprint.identity_diff(desired, reliable, contract)
   end
 
   test "distinguishes an absent relation from incomplete inspection" do
@@ -128,7 +186,7 @@ defmodule Favn.TargetCompatibility.PhysicalFingerprintTest do
                columns: []
              )
 
-    assert PhysicalFingerprint.identity_diff(desired, observed) == []
+    assert PhysicalFingerprint.identity_diff(desired, observed, nil) == []
   end
 
   test "requires explicit logical namespaces to match exactly" do
@@ -146,7 +204,7 @@ defmodule Favn.TargetCompatibility.PhysicalFingerprintTest do
                columns: []
              )
 
-    assert [%{field: :relation}] = PhysicalFingerprint.identity_diff(desired, observed)
+    assert [%{field: :relation}] = PhysicalFingerprint.identity_diff(desired, observed, nil)
   end
 
   defp inspection(columns) do
@@ -161,6 +219,15 @@ defmodule Favn.TargetCompatibility.PhysicalFingerprintTest do
 
   defp relation do
     %{catalog: "warehouse", schema: "mart", name: "orders", type: :table}
+  end
+
+  defp reliable_column(name, data_type, nullable?) do
+    %{
+      name: name,
+      data_type: data_type,
+      nullable?: nullable?,
+      metadata: %{contract_nullability: :reliable}
+    }
   end
 
   defp descriptor(relation) do

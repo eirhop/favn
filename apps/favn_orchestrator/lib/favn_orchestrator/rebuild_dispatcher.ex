@@ -13,6 +13,7 @@ defmodule FavnOrchestrator.RebuildDispatcher do
   alias Favn.Contracts.RelationInspectionRequest
   alias Favn.Manifest.Asset
   alias Favn.RelationRef
+  alias Favn.SQL.Contract
   alias Favn.TargetCompatibility.PhysicalFingerprint
   alias Favn.TargetGenerationRelation
   alias Favn.Freshness.Key, as: FreshnessKey
@@ -1172,7 +1173,12 @@ defmodule FavnOrchestrator.RebuildDispatcher do
   end
 
   defp validate_candidate_identity(asset, candidate_relation, fingerprint) do
-    diffs = PhysicalFingerprint.identity_diff(asset.target_descriptor, fingerprint)
+    diffs =
+      PhysicalFingerprint.identity_diff(
+        asset.target_descriptor,
+        fingerprint,
+        asset_contract(asset)
+      )
 
     non_relation_diffs = Enum.reject(diffs, &(Map.get(&1, :field) == :relation))
     observed = fingerprint.relation
@@ -1183,6 +1189,9 @@ defmodule FavnOrchestrator.RebuildDispatcher do
       do: :ok,
       else: {:error, {:candidate_validation_failed, non_relation_diffs}}
   end
+
+  defp asset_contract(%Asset{assurance: %{contract: %Contract{} = contract}}), do: contract
+  defp asset_contract(%Asset{}), do: nil
 
   @doc false
   def table_relation_kind?(kind), do: kind in [:table, "table"]

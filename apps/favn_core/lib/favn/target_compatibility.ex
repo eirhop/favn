@@ -3,12 +3,13 @@ defmodule Favn.TargetCompatibility do
   Pure desired/active/physical compatibility classification for SQL targets.
 
   The classifier does not inspect databases or persist decisions. Callers pass
-  validated manifest descriptors plus the current and recorded physical
-  fingerprints, then persist the returned bounded decision at the orchestrator
-  boundary.
+  validated manifest descriptors, the desired SQL contract, and the current and
+  recorded physical fingerprints, then persist the returned bounded decision at
+  the orchestrator boundary.
   """
 
   alias Favn.Manifest.TargetDescriptor
+  alias Favn.SQL.Contract
   alias Favn.TargetCompatibility.PhysicalFingerprint
   alias Favn.TargetCompatibility.Result
 
@@ -29,18 +30,21 @@ defmodule Favn.TargetCompatibility do
   Passing `nil` as the active descriptor means there is no bound active
   generation. `:not_found` means physical inspection authoritatively found no
   relation; inspection failures must be handled before calling this function.
+  The contract is nil only for targets without a declared SQL contract.
   """
   @spec classify(
           TargetDescriptor.t(),
           TargetDescriptor.t() | nil,
           String.t() | nil,
-          PhysicalFingerprint.t() | :not_found
+          PhysicalFingerprint.t() | :not_found,
+          Contract.t() | nil
         ) :: Result.t()
   def classify(
         %TargetDescriptor{} = _desired,
         nil,
         nil,
-        :not_found
+        :not_found,
+        _contract
       ) do
     result(:uninitialized, :no_active_generation)
   end
@@ -49,14 +53,15 @@ defmodule Favn.TargetCompatibility do
         %TargetDescriptor{} = _desired,
         nil,
         nil,
-        %PhysicalFingerprint{} = observed
+        %PhysicalFingerprint{} = observed,
+        _contract
       ) do
     result(:operator_decision, :unmanaged_physical_relation, %{
       physical: physical_diff(nil, observed)
     })
   end
 
-  def classify(%TargetDescriptor{} = _desired, nil, recorded, observed) do
+  def classify(%TargetDescriptor{} = _desired, nil, recorded, observed, _contract) do
     result(:operator_decision, :inconsistent_generation_state, %{
       physical: physical_diff(recorded, observed)
     })
@@ -66,7 +71,8 @@ defmodule Favn.TargetCompatibility do
         %TargetDescriptor{} = _desired,
         %TargetDescriptor{} = _active,
         recorded,
-        :not_found
+        :not_found,
+        _contract
       ) do
     result(:unexpected_drift, :physical_relation_missing, %{
       physical: physical_diff(recorded, :not_found)
@@ -77,7 +83,8 @@ defmodule Favn.TargetCompatibility do
         %TargetDescriptor{} = _desired,
         %TargetDescriptor{} = _active,
         nil,
-        %PhysicalFingerprint{} = observed
+        %PhysicalFingerprint{} = observed,
+        _contract
       ) do
     result(:operator_decision, :active_physical_fingerprint_missing, %{
       physical: physical_diff(nil, observed)
@@ -85,10 +92,25 @@ defmodule Favn.TargetCompatibility do
   end
 
   def classify(
+        %TargetDescriptor{} = desired,
+        %TargetDescriptor{} = active,
+        fingerprint,
+        %PhysicalFingerprint{fingerprint: fingerprint} = physical,
+        contract
+      ) do
+    classify_matching_physical(
+      desired,
+      active,
+      PhysicalFingerprint.identity_diff(desired, physical, contract)
+    )
+  end
+
+  def classify(
         %TargetDescriptor{} = _desired,
         %TargetDescriptor{} = _active,
         recorded,
-        %PhysicalFingerprint{fingerprint: observed}
+        %PhysicalFingerprint{fingerprint: observed},
+        _contract
       )
       when is_binary(recorded) and recorded != observed do
     result(:unexpected_drift, :physical_fingerprint_mismatch, %{
@@ -96,26 +118,18 @@ defmodule Favn.TargetCompatibility do
     })
   end
 
-  def classify(
-        %TargetDescriptor{} = desired,
-        %TargetDescriptor{} = active,
-        fingerprint,
-        %PhysicalFingerprint{fingerprint: fingerprint} = physical
-      ) do
+  defp classify_matching_physical(desired, active, identity_diff) do
     case classify_descriptors(desired, active) do
       %Result{status: :rebuild_required} = result ->
         result
 
-      %Result{} = result ->
-        case PhysicalFingerprint.identity_diff(desired, physical) do
-          [] ->
-            result
+      %Result{} = result when identity_diff == [] ->
+        result
 
-          diff ->
-            result(:unexpected_drift, :physical_identity_mismatch, %{
-              physical_identity: diff
-            })
-        end
+      %Result{} ->
+        result(:unexpected_drift, :physical_identity_mismatch, %{
+          physical_identity: identity_diff
+        })
     end
   end
 

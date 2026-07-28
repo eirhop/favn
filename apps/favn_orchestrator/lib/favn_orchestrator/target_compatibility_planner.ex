@@ -12,6 +12,7 @@ defmodule FavnOrchestrator.TargetCompatibilityPlanner do
   alias Favn.Manifest.TargetDescriptor
   alias Favn.Manifest.Version
   alias Favn.RelationRef
+  alias Favn.SQL.Contract
   alias Favn.TargetCompatibility
   alias Favn.TargetCompatibility.PhysicalFingerprint
   alias FavnOrchestrator.ManifestStore
@@ -239,7 +240,8 @@ defmodule FavnOrchestrator.TargetCompatibilityPlanner do
             target.asset.target_descriptor,
             active_descriptor,
             binding && binding.active_physical_fingerprint,
-            observed
+            observed,
+            target_contract(target.asset)
           )
 
         decision(target, binding, result.status, result.reason_code, result.diff)
@@ -277,6 +279,9 @@ defmodule FavnOrchestrator.TargetCompatibilityPlanner do
 
   defp inspection_target(nil, _binding, desired_asset, desired_version),
     do: {:ok, {:asset, desired_asset}, desired_version}
+
+  defp target_contract(%Asset{assurance: %{contract: %Contract{} = contract}}), do: contract
+  defp target_contract(%Asset{}), do: nil
 
   defp active_physical_relation(%{active_physical_relation: relation}, connection)
        when is_map(relation) do
