@@ -211,7 +211,7 @@ defmodule Favn.Manifest.GeneratorTest do
                  RelationRaw.Customers,
                  RelationGold.Customer360
                ],
-               runner_release_id: runner_release_id()
+               runner_releases: runner_releases()
              )
 
     package =
