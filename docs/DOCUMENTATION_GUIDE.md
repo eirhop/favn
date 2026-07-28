@@ -106,8 +106,8 @@ git diff --check
 
 Run `mix format` when Elixir source or doctest-bearing code changes. Run focused
 doctests or `mix docs --warnings-as-errors` when public executable examples or
-ExDoc configuration changes. Use Storybook or Playwright only when the documented
-browser behavior changed. Documentation-only edits do not require the umbrella
+ExDoc configuration changes. Use the design-system browser only when the
+documented browser behavior changed. Documentation-only edits do not require the umbrella
 test suite.
 
 ## Review checklist

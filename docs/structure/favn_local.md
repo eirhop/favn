@@ -48,9 +48,9 @@ artifact construction is owned by `FavnAuthoring.Deployment`.
 - source development explicitly enables passwordless loopback View login;
 - source startup resolves Heroicons and JavaScript packages from the consumer's
   active Mix dependency directory, builds CSS and JavaScript from the selected
-  Favn checkout, and ensures Storybook is recompiled with a valid stylesheet
-  hash after those generated assets exist; it never serves stale ignored files
-  left in `favn_view/priv/static`;
+  Favn checkout, and verifies the generated stylesheet exists and is non-empty
+  before starting; it never serves stale ignored files left in
+  `favn_view/priv/static`;
   other View boot paths retain normal authentication;
 - stop is idempotent and never deletes durable data;
 - obsolete Docker-era `.favn/` state is rejected instead of silently reused.
