@@ -3,15 +3,18 @@ defmodule Favn.TargetCompatibility.PhysicalFingerprint do
   Canonical physical-schema fingerprint produced from runner relation inspection.
 
   Only physical compatibility inputs are retained: adapter identity, discovered
-  relation identity and kind, and ordered column name/type/nullability. Row
-  counts, samples, defaults, comments, and adapter metadata do not affect the
-  fingerprint.
+  relation identity and kind, and ordered column name/type/nullability.
+  Exact observation fingerprints retain reported nullability for continuity.
+  Desired-contract identity comparison uses nullability only when the adapter
+  marks it reliable. Row counts, samples, defaults, comments, and other adapter
+  metadata do not affect the fingerprint.
   """
 
   alias Favn.Contracts.RelationInspectionResult
   alias Favn.Manifest.Serializer
   alias Favn.Manifest.TargetDescriptor
   alias Favn.SQL.Contract
+  alias Favn.SQL.ContractValidation
 
   @schema_version 1
 
@@ -26,7 +29,8 @@ defmodule Favn.TargetCompatibility.PhysicalFingerprint do
           required(:name) => String.t(),
           required(:native_type) => String.t() | nil,
           required(:logical_type) => String.t(),
-          required(:nullable) => boolean() | nil
+          required(:nullable) => boolean() | nil,
+          required(:nullability_reliable) => boolean()
         }
 
   @type t :: %__MODULE__{
@@ -93,10 +97,15 @@ defmodule Favn.TargetCompatibility.PhysicalFingerprint do
 
   An omitted catalog or schema in the logical target accepts the concrete
   default namespace reported by the adapter. Explicit namespaces still match
-  exactly.
+  exactly. Contract names, order, and types are always compared. Nullability is
+  compared only for columns whose adapter metadata marks it reliable.
   """
-  @spec identity_diff(TargetDescriptor.t(), t()) :: [map()]
-  def identity_diff(%TargetDescriptor{} = desired, %__MODULE__{} = observed) do
+  @spec identity_diff(TargetDescriptor.t(), t(), Contract.t() | nil) :: [map()]
+  def identity_diff(
+        %TargetDescriptor{} = desired,
+        %__MODULE__{} = observed,
+        %Contract{} = contract
+      ) do
     desired_relation = Map.take(desired.relation, [:catalog, :schema, :name])
     observed_relation = Map.take(observed.relation, [:catalog, :schema, :name])
 
@@ -104,11 +113,20 @@ defmodule Favn.TargetCompatibility.PhysicalFingerprint do
       identity_difference(:adapter, desired.adapter, observed.adapter),
       relation_identity_difference(desired_relation, observed_relation),
       identity_difference(:relation_kind, "table", observed.relation.kind),
-      identity_difference(
-        :contract_fingerprint,
-        desired.contract_fingerprint,
-        observed_contract_fingerprint(desired.contract_fingerprint, observed.columns)
-      )
+      contract_difference(desired, contract, observed.columns)
+    ]
+    |> List.flatten()
+  end
+
+  def identity_diff(%TargetDescriptor{} = desired, %__MODULE__{} = observed, nil) do
+    desired_relation = Map.take(desired.relation, [:catalog, :schema, :name])
+    observed_relation = Map.take(observed.relation, [:catalog, :schema, :name])
+
+    [
+      identity_difference(:adapter, desired.adapter, observed.adapter),
+      relation_identity_difference(desired_relation, observed_relation),
+      identity_difference(:relation_kind, "table", observed.relation.kind),
+      missing_contract_difference(desired)
     ]
     |> List.flatten()
   end
@@ -130,20 +148,49 @@ defmodule Favn.TargetCompatibility.PhysicalFingerprint do
   defp identity_difference(field, desired, observed),
     do: [%{field: field, desired: desired, observed: observed}]
 
-  defp observed_contract_fingerprint(nil, _columns), do: nil
+  defp contract_difference(desired, contract, columns) do
+    validation =
+      ContractValidation.compare(
+        contract,
+        Enum.map(columns, &contract_validation_column/1)
+      )
 
-  defp observed_contract_fingerprint(_desired_fingerprint, columns) do
-    columns
-    |> Enum.map(fn column ->
+    case validation do
+      %ContractValidation{status: :passed} ->
+        []
+
+      %ContractValidation{differences: differences} ->
+        [
+          %{
+            field: :contract_fingerprint,
+            desired: desired.contract_fingerprint,
+            observed: %{differences: differences}
+          }
+        ]
+    end
+  end
+
+  defp missing_contract_difference(%TargetDescriptor{contract_fingerprint: nil}), do: []
+
+  defp missing_contract_difference(%TargetDescriptor{contract_fingerprint: fingerprint}) do
+    [
       %{
-        name: column.name,
-        type: column.logical_type,
-        nullable: column.nullable
+        field: :contract_fingerprint,
+        desired: fingerprint,
+        observed: :contract_unavailable
       }
-    end)
-    |> Serializer.encode_canonical!()
-    |> then(&:crypto.hash(:sha256, &1))
-    |> Base.encode16(case: :lower)
+    ]
+  end
+
+  defp contract_validation_column(column) do
+    %{
+      name: column.name,
+      data_type: column.native_type,
+      nullable?: column.nullable,
+      metadata: %{
+        contract_nullability: if(column.nullability_reliable, do: :reliable, else: :unreliable)
+      }
+    }
   end
 
   defp normalize_adapter(adapter) when is_atom(adapter) and not is_nil(adapter),
@@ -196,6 +243,8 @@ defmodule Favn.TargetCompatibility.PhysicalFingerprint do
     name = field(column, :name)
     data_type = field(column, :data_type)
     nullable = field(column, :nullable?)
+    metadata = field(column, :metadata) || %{}
+    nullability_reliable = nullability_reliable?(metadata)
 
     if valid_identifier?(name) and optional_data_type?(data_type) and
          (is_boolean(nullable) or is_nil(nullable)) do
@@ -206,7 +255,8 @@ defmodule Favn.TargetCompatibility.PhysicalFingerprint do
          name: to_string(name),
          native_type: native_type,
          logical_type: native_type |> Contract.normalize_observed_type() |> Atom.to_string(),
-         nullable: nullable
+         nullable: nullable,
+         nullability_reliable: nullability_reliable
        }}
     else
       {:error, :invalid_physical_column}
@@ -217,12 +267,30 @@ defmodule Favn.TargetCompatibility.PhysicalFingerprint do
 
   defp fingerprint(value) do
     value
-    |> Map.from_struct()
-    |> Map.delete(:fingerprint)
+    |> fingerprint_payload()
     |> Serializer.encode_manifest!()
     |> then(&:crypto.hash(:sha256, &1))
     |> Base.encode16(case: :lower)
   end
+
+  defp fingerprint_payload(value) do
+    %{
+      schema_version: value.schema_version,
+      adapter: value.adapter,
+      relation: value.relation,
+      columns:
+        Enum.map(
+          value.columns,
+          &Map.take(&1, [:name, :native_type, :logical_type, :nullable])
+        )
+    }
+  end
+
+  defp nullability_reliable?(metadata) when is_map(metadata) do
+    field(metadata, :contract_nullability) in [:reliable, "reliable"]
+  end
+
+  defp nullability_reliable?(_metadata), do: false
 
   defp warning?(result, code) do
     Enum.any?(result.warnings, fn warning ->

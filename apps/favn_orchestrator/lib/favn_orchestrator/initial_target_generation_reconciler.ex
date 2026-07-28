@@ -15,6 +15,7 @@ defmodule FavnOrchestrator.InitialTargetGenerationReconciler do
   alias Favn.Contracts.GenerationMarkerInitializationResult
   alias Favn.Manifest.Index
   alias Favn.Manifest.Version
+  alias Favn.SQL.Contract
   alias Favn.TargetCompatibility.PhysicalFingerprint
   alias FavnOrchestrator.MaterializationClaims
   alias FavnOrchestrator.Persistence
@@ -261,7 +262,12 @@ defmodule FavnOrchestrator.InitialTargetGenerationReconciler do
          {:ok, %PhysicalFingerprint{} = fingerprint} <-
            PhysicalFingerprint.from_inspection(result),
          {:ok, asset} <- Index.fetch_asset(manifest_index, asset_ref),
-         [] <- PhysicalFingerprint.identity_diff(asset.target_descriptor, fingerprint) do
+         [] <-
+           PhysicalFingerprint.identity_diff(
+             asset.target_descriptor,
+             fingerprint,
+             asset_contract(asset)
+           ) do
       {:ok, fingerprint}
     else
       nil -> {:error, :runner_client_unavailable}
@@ -272,6 +278,9 @@ defmodule FavnOrchestrator.InitialTargetGenerationReconciler do
       _invalid -> {:error, :invalid_runner_inspection_result}
     end
   end
+
+  defp asset_contract(%{assurance: %{contract: %Contract{} = contract}}), do: contract
+  defp asset_contract(_asset), do: nil
 
   defp reconciliation_command(
          claim,

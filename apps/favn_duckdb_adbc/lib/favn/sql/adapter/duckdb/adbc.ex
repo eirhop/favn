@@ -1421,7 +1421,8 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
       position: normalize_integer(Map.get(row, "ordinal_position")),
       data_type: Map.get(row, "data_type"),
       nullable?: nullable?,
-      default: Map.get(row, "column_default")
+      default: Map.get(row, "column_default"),
+      metadata: %{contract_nullability: :unreliable}
     }
   end
 

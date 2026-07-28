@@ -269,6 +269,10 @@ mutation:
 - compatible logical types; and
 - nullability metadata when the adapter explicitly marks it reliable.
 
+A DuckDB `CREATE TABLE AS SELECT` description does not provide authoritative
+nullability. Favn therefore still compares its column names and types, but does
+not treat DuckDB's descriptive nullable value as a contract mismatch.
+
 A structural mismatch always fails and rolls back. It is not controlled by
 `on_violation`, because publishing a structurally incompatible target would
 break the contract itself.

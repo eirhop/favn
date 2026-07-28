@@ -33,6 +33,9 @@ available for diagnosis.
 
 Admission rechecks compatibility immediately before a persisted write. A
 deployment-time result is operator evidence, not permission to write forever.
+Physical inspection always compares ordered column names and types. It compares
+contract nullability only when the adapter marks that metadata reliable.
+Recorded physical fingerprints remain exact observation signatures.
 
 Runner replacement does not reject the whole manifest because the active
 generation was created by an older runner release. The new runner inspects the
