@@ -32,7 +32,7 @@ defmodule FavnStoragePostgres.Logs.Store do
   @levels [:debug, :info, :warning, :error]
   @sources [:orchestrator, :runner, :sql_runtime, :adapter, :user_code, :system]
   @streams [:stdout, :stderr, :system]
-  @filter_keys ~w(run_id asset_step_id runner_execution_id node_key asset_ref stream levels sources since until)a
+  @filter_keys ~w(run_id asset_step_id runner_task_id node_key asset_ref stream levels sources since until)a
 
   @impl true
   def append_batch(%AppendLogBatch{} = command) do
@@ -278,7 +278,7 @@ defmodule FavnStoragePostgres.Logs.Store do
        %{
          run_id: entry.run_id,
          asset_step_id: optional_string(Map.get(metadata, "asset_step_id")),
-         runner_execution_id: optional_string(Map.get(metadata, "runner_execution_id")),
+         runner_task_id: optional_string(Map.get(metadata, "runner_task_id")),
          node_key_hash: node_key_hash,
          asset_ref_hash: asset_ref_hash,
          stream: optional_string(Map.get(metadata, "stream")),
@@ -325,7 +325,7 @@ defmodule FavnStoragePostgres.Logs.Store do
     query
     |> maybe_equal(:run_id, filter.run_id)
     |> maybe_equal(:asset_step_id, filter.asset_step_id)
-    |> maybe_equal(:runner_execution_id, filter.runner_execution_id)
+    |> maybe_equal(:runner_task_id, filter.runner_task_id)
     |> maybe_equal(:node_key_hash, filter.node_key_hash)
     |> maybe_equal(:asset_ref_hash, filter.asset_ref_hash)
     |> maybe_equal(:stream, atom_string(filter.stream))
@@ -419,7 +419,7 @@ defmodule FavnStoragePostgres.Logs.Store do
     with [] <- Map.keys(filter) -- @filter_keys,
          true <- optional_id?(filter.run_id),
          true <- optional_id?(filter.asset_step_id),
-         true <- optional_id?(filter.runner_execution_id),
+         true <- optional_id?(filter.runner_task_id),
          true <- is_nil(filter.node_key) or is_binary(filter.node_key),
          true <- is_nil(filter.asset_ref) or is_binary(filter.asset_ref),
          true <- is_nil(filter.stream) or filter.stream in @streams,

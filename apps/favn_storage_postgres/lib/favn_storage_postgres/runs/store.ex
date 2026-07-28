@@ -916,11 +916,10 @@ defmodule FavnStoragePostgres.Runs.Store do
               )
             )
 
-          not is_binary(command.run.required_runner_release_id) or
-              command.run.required_runner_release_id != manifest.required_runner_release_id ->
+          command.run.runner_releases != manifest.runner_releases ->
             Repo.rollback(
-              Error.new(:constraint, "run runner release identity does not match its deployment",
-                details: %{reason: :run_manifest_runner_release_mismatch}
+              Error.new(:constraint, "run runner releases do not match its deployment",
+                details: %{reason: :run_manifest_runner_releases_mismatch}
               )
             )
 
@@ -1376,9 +1375,8 @@ defmodule FavnStoragePostgres.Runs.Store do
       Map.get(existing.snapshot, "manifest_content_hash") != run.manifest_content_hash ->
         Repo.rollback(Error.new(:conflict, "run manifest content identity cannot change"))
 
-      Map.get(existing.snapshot, "required_runner_release_id") !=
-          run.required_runner_release_id ->
-        Repo.rollback(Error.new(:conflict, "run runner release identity cannot change"))
+      Map.get(existing.snapshot, "runner_releases") != run.runner_releases ->
+        Repo.rollback(Error.new(:conflict, "run runner releases cannot change"))
 
       true ->
         :ok
@@ -1604,7 +1602,7 @@ defmodule FavnStoragePostgres.Runs.Store do
       workspace_id: row.workspace_id,
       run_id: row.run_id,
       manifest_version_id: row.manifest_version_id,
-      required_runner_release_id: Map.get(runner_releases, row.manifest_version_id),
+      runner_releases: Map.get(runner_releases, row.manifest_version_id),
       submit_kind: RunEnum.decode!(:submit_kind, row.submit_kind),
       status: RunEnum.decode!(:status, row.status),
       event_sequence: row.event_sequence,
@@ -1677,7 +1675,7 @@ defmodule FavnStoragePostgres.Runs.Store do
 
     from(manifest in ManifestVersion,
       where: manifest.manifest_version_id in ^manifest_version_ids,
-      select: {manifest.manifest_version_id, manifest.required_runner_release_id}
+      select: {manifest.manifest_version_id, manifest.runner_releases}
     )
     |> Repo.all()
     |> Map.new()

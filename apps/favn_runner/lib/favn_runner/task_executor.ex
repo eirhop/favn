@@ -390,11 +390,18 @@ defmodule FavnRunner.TaskExecutor do
 
   defp execute_operation(
          %Assignment{task_kind: :generation_marker_read} = assignment,
-         %GenerationMarkerReadRequest{manifest: version, asset_ref: asset_ref}
+         %GenerationMarkerReadRequest{
+           manifest: version,
+           asset_ref: asset_ref,
+           require_relation_instance?: require_relation_instance?
+         }
        ) do
     with_operation_version(assignment, version, fn installed_version ->
       with {:ok, asset} <- ManifestResolver.resolve_asset(installed_version, asset_ref),
-           {:ok, marker} <- GenerationOperations.marker(asset) do
+           {:ok, marker} <-
+             GenerationOperations.marker(asset,
+               require_relation_instance?: require_relation_instance?
+             ) do
         operation_result(
           :generation_marker_read,
           {:ok, %GenerationMarkerReadResult{marker: marker}}
