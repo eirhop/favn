@@ -39,6 +39,28 @@ defmodule FavnOrchestrator.RunnerDispatch do
     )
   end
 
+  @doc """
+  Runs a bounded batch of read-only relation inspections under one admission.
+
+  Clients without the optional batch callback retain ordered single-inspection
+  behavior.
+  """
+  @spec inspect_relations(module(), [term()], keyword(), GenServer.server()) ::
+          {:ok, [{:ok, term()} | {:error, term()}]} | {:error, term()}
+  def inspect_relations(runner_client, requests, runner_opts, lifecycle \\ Lifecycle)
+      when is_atom(runner_client) and is_list(requests) and is_list(runner_opts) do
+    Lifecycle.with_admission(
+      fn ->
+        if function_exported?(runner_client, :inspect_relations, 2) do
+          runner_client.inspect_relations(requests, runner_opts)
+        else
+          {:ok, Enum.map(requests, &runner_client.inspect_relation(&1, runner_opts))}
+        end
+      end,
+      lifecycle
+    )
+  end
+
   @doc "Reads generation capabilities under a control-plane admission permit."
   @spec generation_capabilities(module(), term(), Favn.Ref.t(), keyword(), GenServer.server()) ::
           term()

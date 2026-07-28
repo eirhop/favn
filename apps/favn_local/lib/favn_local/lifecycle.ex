@@ -90,19 +90,35 @@ defmodule FavnLocal.Lifecycle do
     do: {:reply, {:error, state.failure || :not_ready}, state}
 
   def handle_call({:reload, publication, runner_release_id}, from, %{status: :ready} = state) do
-    token = random_token()
+    cond do
+      unchanged_publication?(state, publication, runner_release_id) ->
+        {:reply, {:ok, unchanged_result(state)}, state}
 
-    with {:ok, ^token} <- FavnOrchestrator.begin_runner_replacement(token) do
-      continue_runner_replacement(%{
+      state.runner.release_id == runner_release_id ->
         state
-        | status: :reloading,
+        |> Map.merge(%{
+          status: :reloading,
+          publication: publication,
           request: {from, publication, runner_release_id},
-          maintenance_token: token,
-          deadline: now_ms() + @runner_drain_timeout_ms
-      })
-    else
-      {:error, reason} ->
-        {:reply, {:error, reason}, state}
+          maintenance_token: nil
+        })
+        |> start_deployment()
+
+      true ->
+        token = random_token()
+
+        with {:ok, ^token} <- FavnOrchestrator.begin_runner_replacement(token) do
+          continue_runner_replacement(%{
+            state
+            | status: :reloading,
+              request: {from, publication, runner_release_id},
+              maintenance_token: token,
+              deadline: now_ms() + @runner_drain_timeout_ms
+          })
+        else
+          {:error, reason} ->
+            {:reply, {:error, reason}, state}
+        end
     end
   end
 
@@ -296,7 +312,14 @@ defmodule FavnLocal.Lifecycle do
          {:ok, deployment}
        ) do
     :ok = Locator.write(state.config, state.runner.release_id)
-    :ok = FavnOrchestrator.finish_runner_replacement(state.maintenance_token)
+    :ok = finish_runner_replacement(state.maintenance_token)
+    deployment =
+      Map.put(
+        deployment,
+        :reload_status,
+        if(is_nil(state.maintenance_token), do: :manifest_deployed, else: :runner_replaced)
+      )
+
     GenServer.reply(from, {:ok, deployment})
     reply_waiters(state.ready_waiters, {:ok, Map.merge(summary(state), deployment)})
 
@@ -391,5 +414,32 @@ defmodule FavnLocal.Lifecycle do
   end
 
   defp random_token, do: 32 |> :crypto.strong_rand_bytes() |> Base.url_encode64(padding: false)
+
+  defp unchanged_publication?(state, publication, runner_release_id) do
+    state.runner.release_id == runner_release_id and
+      state.publication.version.manifest_version_id == publication.version.manifest_version_id
+  end
+
+  defp unchanged_result(state) do
+    manifest_version_id = state.publication.version.manifest_version_id
+
+    %{
+      reload_status: :unchanged,
+      manifest_version_id: manifest_version_id,
+      runner_release_id: state.runner.release_id,
+      deployment_id: "deployment:local:" <> manifest_version_id,
+      execution_packages: %{
+        provided: length(state.publication.execution_packages),
+        registered: 0
+      },
+      phases: %{
+        execution_packages_ms: 0,
+        manifest_publication_ms: 0,
+        manifest_activation_ms: 0,
+        deployment_ms: 0
+      }
+    }
+  end
+
   defp now_ms, do: System.monotonic_time(:millisecond)
 end

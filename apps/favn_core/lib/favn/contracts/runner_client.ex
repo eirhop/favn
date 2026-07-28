@@ -69,6 +69,10 @@ defmodule Favn.Contracts.RunnerClient do
   @callback inspect_relation(RelationInspectionRequest.t(), keyword()) ::
               {:ok, RelationInspectionResult.t()} | {:error, term()}
 
+  @callback inspect_relations([RelationInspectionRequest.t()], keyword()) ::
+              {:ok, [{:ok, RelationInspectionResult.t()} | {:error, term()}]}
+              | {:error, term()}
+
   @callback generation_capabilities(Version.t(), Favn.Ref.t(), keyword()) ::
               {:ok, map()} | {:error, term()}
 
@@ -93,6 +97,7 @@ defmodule Favn.Contracts.RunnerClient do
                       resolve_runtime_inputs: 2,
                       subscribe_execution_logs: 3,
                       unsubscribe_execution_logs: 3,
+                      inspect_relations: 2,
                       generation_capabilities: 3,
                       initialize_generation_marker: 2,
                       generation_marker: 3,

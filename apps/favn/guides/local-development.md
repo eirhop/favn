@@ -106,9 +106,12 @@ After changing assets, pipelines, SQL, or ordinary Elixir runner code:
 mix favn.reload
 ```
 
-Reload compiles the project, starts a fresh runner BEAM under a new runner
-release ID, and publishes and deploys the aligned manifest. It does not build a
-container image.
+Reload compiles the project and derives the runner release ID from the compiled
+BEAM closure. Changed compiled code replaces the runner. A manifest-only change
+keeps the runner and deploys the new manifest, while an unchanged source and
+manifest is a no-op. Reload registers only execution packages that are absent
+from PostgreSQL and prints build, package, publication, activation, and total
+timings. It does not build a container image.
 
 Restart the full development process after changing:
 

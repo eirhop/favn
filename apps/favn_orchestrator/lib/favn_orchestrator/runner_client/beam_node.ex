@@ -32,6 +32,7 @@ defmodule FavnOrchestrator.RunnerClient.BeamNode do
   alias Favn.RuntimeInput.Resolution
 
   @default_rpc_timeout_ms 15_000
+  @default_inspection_batch_timeout_ms 60_000
   @default_diagnostics_timeout_ms 5_000
   @default_await_timeout_buffer_ms 2_000
   @runner_module Module.concat(["FavnRunner"])
@@ -41,6 +42,7 @@ defmodule FavnOrchestrator.RunnerClient.BeamNode do
     :runner_rpc_timeout_ms,
     :runner_dispatch_timeout_ms,
     :runner_diagnostics_timeout_ms,
+    :runner_inspection_batch_timeout_ms,
     :runner_await_timeout_buffer_ms,
     :runner_identity_source
   ]
@@ -50,6 +52,7 @@ defmodule FavnOrchestrator.RunnerClient.BeamNode do
     :await_result,
     :resolve_runtime_inputs,
     :inspect_relation,
+    :inspect_relations,
     :generation_capabilities,
     :generation_marker,
     :reconcile_generation
@@ -59,6 +62,7 @@ defmodule FavnOrchestrator.RunnerClient.BeamNode do
           {:runner_node, node()}
           | {:runner_module, module()}
           | {:runner_rpc_timeout_ms, pos_integer()}
+          | {:runner_inspection_batch_timeout_ms, pos_integer()}
           | {:runner_diagnostics_timeout_ms, pos_integer()}
           | {:runner_await_timeout_buffer_ms, non_neg_integer()}
           | {:runner_identity_source, :operator | :source}
@@ -154,6 +158,13 @@ defmodule FavnOrchestrator.RunnerClient.BeamNode do
           {:ok, RelationInspectionResult.t()} | {:error, term()}
   def inspect_relation(%RelationInspectionRequest{} = request, opts \\ []) when is_list(opts),
     do: dispatch(opts, :inspect_relation, [request, opts])
+
+  @impl true
+  @spec inspect_relations([RelationInspectionRequest.t()], [opt()]) ::
+          {:ok, [{:ok, RelationInspectionResult.t()} | {:error, term()}]}
+          | {:error, term()}
+  def inspect_relations(requests, opts \\ []) when is_list(requests) and is_list(opts),
+    do: dispatch(opts, :inspect_relations, [requests, opts])
 
   @impl true
   @spec generation_capabilities(Version.t(), Favn.Ref.t(), [opt()]) ::
@@ -508,6 +519,12 @@ defmodule FavnOrchestrator.RunnerClient.BeamNode do
       non_neg_int_opt(opts, :runner_await_timeout_buffer_ms, @default_await_timeout_buffer_ms)
 
     max(rpc_timeout_opt(opts), timeout + buffer)
+  end
+
+  defp rpc_timeout(:inspect_relations, [_requests, _remote_opts], opts) do
+    opts
+    |> Keyword.get(:runner_inspection_batch_timeout_ms)
+    |> positive_or_default(@default_inspection_batch_timeout_ms)
   end
 
   defp rpc_timeout(_function, _args, opts), do: rpc_timeout_opt(opts)
