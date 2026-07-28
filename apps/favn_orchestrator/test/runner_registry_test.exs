@@ -25,7 +25,7 @@ defmodule FavnOrchestrator.RunnerRegistryTest do
     :ok
   end
 
-  test "duplicate boot registration is stable and replacement sessions are fenced" do
+  test "duplicate boot registration is stable and a live identity cannot be replaced" do
     agent = spawn_agent()
     registration = registration("runner-one", "boot-one")
 
@@ -40,15 +40,24 @@ defmodule FavnOrchestrator.RunnerRegistryTest do
     assert {:ok, second} =
              RunnerRegistry.register(%{registration | boot_id: "boot-two"}, replacement)
 
-    assert second.runner_session_generation > 0
-    refute second.runner_session_generation == first.runner_session_generation
-
-    Process.exit(agent, :kill)
-    Process.sleep(10)
+    assert second.status == :rejected
+    assert second.reason == :runner_instance_id_already_registered
 
     assert {:ok, session} = RunnerRegistry.fetch("runner-one")
-    assert session.agent_pid == replacement
-    assert session.session_generation == second.runner_session_generation
+    assert session.agent_pid == agent
+    assert session.session_generation == first.runner_session_generation
+
+    Process.exit(agent, :kill)
+
+    assert_eventually(fn ->
+      RunnerRegistry.fetch("runner-one") == {:error, :runner_session_not_found}
+    end)
+
+    assert {:ok, admitted} =
+             RunnerRegistry.register(%{registration | boot_id: "boot-two"}, replacement)
+
+    assert admitted.status == :accepted
+    refute admitted.runner_session_generation == first.runner_session_generation
   end
 
   test "an exact active assignment resumes its durable session generation after registry loss" do

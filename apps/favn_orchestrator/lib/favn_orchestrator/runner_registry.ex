@@ -259,8 +259,16 @@ defmodule FavnOrchestrator.RunnerRegistry do
       when boot_id == registration.boot_id ->
         {{:ok, acknowledgement(session)}, state}
 
-      previous ->
-        state = drop_monitor(state, previous)
+      %Session{} ->
+        acknowledgement = %RegistrationAck{
+          runner_instance_id: registration.runner_instance_id,
+          status: :rejected,
+          reason: :runner_instance_id_already_registered
+        }
+
+        {{:ok, acknowledgement}, state}
+
+      nil ->
         generation = registration_generation(registration)
         monitor_ref = Process.monitor(agent_pid)
 
@@ -350,11 +358,4 @@ defmodule FavnOrchestrator.RunnerRegistry do
 
   defp put_session(state, session),
     do: %{state | sessions: Map.put(state.sessions, session.runner_instance_id, session)}
-
-  defp drop_monitor(state, nil), do: state
-
-  defp drop_monitor(state, %Session{monitor_ref: monitor_ref}) do
-    Process.demonitor(monitor_ref, [:flush])
-    %{state | monitors: Map.delete(state.monitors, monitor_ref)}
-  end
 end

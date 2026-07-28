@@ -149,6 +149,7 @@ defmodule FavnOrchestrator.OperationRunnerTasksTest do
 
     stores = struct(Stores, runner_tasks: Store, rebuilds: RebuildStore)
     start_supervised!({Runtime, %Runtime{backend: __MODULE__, options: [], stores: stores}})
+    start_supervised!({Task.Supervisor, name: FavnOrchestrator.RunnerClaimSupervisor})
     start_supervised!({Task.Supervisor, name: FavnOrchestrator.RunnerTaskWaitSupervisor})
     start_supervised!({RunnerTaskResultRouter, []})
 

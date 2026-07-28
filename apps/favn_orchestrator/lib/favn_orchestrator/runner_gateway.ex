@@ -2,18 +2,64 @@ defmodule FavnOrchestrator.RunnerGateway do
   @moduledoc """
   Stable distributed-BEAM endpoint for protocol-13 runner messages.
 
-  Calls that may touch PostgreSQL execute under a bounded task supervisor so a
-  slow claim or result write cannot block registration and presence handling.
+  Calls that may touch PostgreSQL pass an explicit concurrency ceiling before
+  executing under a task supervisor, so a slow claim or result write cannot
+  block registration and presence handling or create an unbounded worker queue.
   """
 
   use GenServer
 
-  alias Favn.Contracts.RunnerTask
-  alias FavnOrchestrator.RunnerRegistry
-  alias FavnOrchestrator.RunnerTasks
+  @default_max_concurrency 64
 
-  def start_link(opts),
-    do: GenServer.start_link(__MODULE__, %{}, name: Keyword.get(opts, :name, __MODULE__))
+  defmodule Worker do
+    @moduledoc false
+
+    alias Favn.Contracts.RunnerTask
+    alias FavnOrchestrator.RunnerRegistry
+    alias FavnOrchestrator.RunnerTasks
+
+    def register(registration, agent_pid) do
+      case RunnerTasks.verify_registration_resume(registration) do
+        :ok ->
+          RunnerRegistry.register_verified(registration, agent_pid)
+
+        {:error, :stale_runner_task_resume = reason} ->
+          {:ok,
+           %RunnerTask.RegistrationAck{
+             runner_instance_id: registration.runner_instance_id,
+             runner_session_generation: registration.runner_session_generation,
+             status: :rejected,
+             reason: reason
+           }}
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    end
+
+    def request(%RunnerTask.ClaimRequest{} = message), do: RunnerTasks.claim(message)
+    def request(%RunnerTask.Started{} = message), do: RunnerTasks.started(message)
+    def request(%RunnerTask.LeaseRenewal{} = message), do: RunnerTasks.renew(message)
+
+    def request(%RunnerTask.RuntimeInputsResolved{} = message),
+      do: RunnerTasks.runtime_inputs_resolved(message)
+
+    def request(%RunnerTask.LogBatch{} = message), do: RunnerTasks.append_logs(message)
+
+    def request(%RunnerTask.CancellationAck{} = message),
+      do: RunnerTasks.acknowledge_cancellation(message)
+
+    def request(%RunnerTask.Result{} = message), do: RunnerTasks.complete(message)
+
+    def request(message),
+      do: {:error, {:unsupported_runner_task_message, message.__struct__}}
+
+    def fetch_manifest(assignment), do: RunnerTasks.fetch_manifest(assignment)
+  end
+
+  def start_link(opts) do
+    GenServer.start_link(__MODULE__, opts, name: Keyword.get(opts, :name, __MODULE__))
+  end
 
   def register(server \\ __MODULE__, registration, agent_pid \\ self()),
     do: GenServer.call(server, {:register, registration, agent_pid}, 15_000)
@@ -25,88 +71,67 @@ defmodule FavnOrchestrator.RunnerGateway do
     do: GenServer.call(server, {:fetch_manifest, assignment}, 60_000)
 
   @impl true
-  def init(state), do: {:ok, state}
+  def init(opts) do
+    max_concurrency = Keyword.get(opts, :max_concurrency, @default_max_concurrency)
+
+    if is_integer(max_concurrency) and max_concurrency > 0 do
+      {:ok,
+       %{
+         max_concurrency: max_concurrency,
+         pending: %{},
+         task_supervisor:
+           Keyword.get(opts, :task_supervisor, FavnOrchestrator.RunnerClaimSupervisor),
+         worker: Keyword.get(opts, :worker, Worker)
+       }}
+    else
+      {:stop, {:invalid_runner_gateway_max_concurrency, max_concurrency}}
+    end
+  end
 
   @impl true
   def handle_call({:register, registration, agent_pid}, from, state) do
-    task =
-      Task.Supervisor.async_nolink(FavnOrchestrator.RunnerClaimSupervisor, fn ->
-        case RunnerTasks.verify_registration_resume(registration) do
-          :ok ->
-            RunnerRegistry.register_verified(registration, agent_pid)
-
-          {:error, :stale_runner_task_resume = reason} ->
-            {:ok,
-             %RunnerTask.RegistrationAck{
-               runner_instance_id: registration.runner_instance_id,
-               runner_session_generation: registration.runner_session_generation,
-               status: :rejected,
-               reason: reason
-             }}
-
-          {:error, reason} ->
-            {:error, reason}
-        end
-      end)
-
-    {:noreply, Map.put(state, task.ref, from)}
+    admit(state, from, fn -> state.worker.register(registration, agent_pid) end)
   end
 
   def handle_call({:request, message}, from, state) do
-    task =
-      Task.Supervisor.async_nolink(FavnOrchestrator.RunnerClaimSupervisor, fn ->
-        dispatch(message)
-      end)
-
-    {:noreply, Map.put(state, task.ref, from)}
+    admit(state, from, fn -> state.worker.request(message) end)
   end
 
   def handle_call({:fetch_manifest, assignment}, from, state) do
-    task =
-      Task.Supervisor.async_nolink(FavnOrchestrator.RunnerClaimSupervisor, fn ->
-        RunnerTasks.fetch_manifest(assignment)
-      end)
-
-    {:noreply, Map.put(state, task.ref, from)}
+    admit(state, from, fn -> state.worker.fetch_manifest(assignment) end)
   end
 
   @impl true
   def handle_info({ref, result}, state) when is_reference(ref) do
     Process.demonitor(ref, [:flush])
 
-    case Map.pop(state, ref) do
-      {nil, state} ->
+    case Map.pop(state.pending, ref) do
+      {nil, _pending} ->
         {:noreply, state}
 
-      {from, state} ->
+      {from, pending} ->
         GenServer.reply(from, result)
-        {:noreply, state}
+        {:noreply, %{state | pending: pending}}
     end
   end
 
   def handle_info({:DOWN, ref, :process, _pid, reason}, state) do
-    case Map.pop(state, ref) do
-      {nil, state} ->
+    case Map.pop(state.pending, ref) do
+      {nil, _pending} ->
         {:noreply, state}
 
-      {from, state} ->
+      {from, pending} ->
         GenServer.reply(from, {:error, {:runner_gateway_worker_down, reason}})
-        {:noreply, state}
+        {:noreply, %{state | pending: pending}}
     end
   end
 
-  defp dispatch(%RunnerTask.ClaimRequest{} = message), do: RunnerTasks.claim(message)
-  defp dispatch(%RunnerTask.Started{} = message), do: RunnerTasks.started(message)
-  defp dispatch(%RunnerTask.LeaseRenewal{} = message), do: RunnerTasks.renew(message)
-
-  defp dispatch(%RunnerTask.RuntimeInputsResolved{} = message),
-    do: RunnerTasks.runtime_inputs_resolved(message)
-
-  defp dispatch(%RunnerTask.LogBatch{} = message), do: RunnerTasks.append_logs(message)
-
-  defp dispatch(%RunnerTask.CancellationAck{} = message),
-    do: RunnerTasks.acknowledge_cancellation(message)
-
-  defp dispatch(%RunnerTask.Result{} = message), do: RunnerTasks.complete(message)
-  defp dispatch(message), do: {:error, {:unsupported_runner_task_message, message.__struct__}}
+  defp admit(state, from, fun) do
+    if map_size(state.pending) < state.max_concurrency do
+      task = Task.Supervisor.async_nolink(state.task_supervisor, fun)
+      {:noreply, %{state | pending: Map.put(state.pending, task.ref, from)}}
+    else
+      {:reply, {:error, :runner_gateway_overloaded}, state}
+    end
+  end
 end
