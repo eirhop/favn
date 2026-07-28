@@ -71,7 +71,8 @@ runtime inputs, and SQL integrations remain pre-v1 and may change.
   Operators can list, preview, activate, and deactivate them explicitly; enabling
   starts at the next due occurrence and disabling does not cancel accepted runs.
 - Asset coverage is evaluated against bounded canonical expected windows and
-  successful evidence from only the active semantic or physical generation.
+  successful evidence from the durable non-persisted binding or only the active
+  physical generation.
   Catalogue/API reads distinguish complete, incomplete, and explicit unknown
   states; operators can review and manually submit an immutable exact-gap
   backfill plan, with stale selections rejected before mutation.

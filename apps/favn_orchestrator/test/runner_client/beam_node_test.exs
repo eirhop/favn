@@ -4,6 +4,7 @@ defmodule FavnOrchestrator.RunnerClient.BeamNodeTest do
   alias Favn.Contracts.GenerationActivationRequest
   alias Favn.Contracts.GenerationMarker
   alias Favn.Contracts.GenerationReconciliationRequest
+  alias Favn.Contracts.RelationInspectionRequest
   alias Favn.Contracts.RunnerError
   alias Favn.Contracts.RunnerResult
   alias Favn.Contracts.RunnerWork
@@ -22,6 +23,11 @@ defmodule FavnOrchestrator.RunnerClient.BeamNodeTest do
     def await_result(_execution_id, _timeout, _opts), do: {:ok, %RunnerResult{status: :ok}}
     def cancel_work(_execution_id, _reason, _opts), do: :ok
     def inspect_relation(_request, _opts), do: {:error, :not_supported}
+
+    def inspect_relations(requests, opts) do
+      if test_pid = Keyword.get(opts, :test_pid), do: send(test_pid, {:batch_remote_opts, opts})
+      {:ok, Enum.map(requests, fn _request -> {:error, :not_supported} end)}
+    end
 
     def diagnostics(_opts) do
       {:ok,
@@ -82,7 +88,15 @@ defmodule FavnOrchestrator.RunnerClient.BeamNodeTest do
     assert :ok = BeamNode.cancel_work("exec_1", %{}, opts)
 
     assert {:error, :not_supported} =
-             BeamNode.inspect_relation(%Favn.Contracts.RelationInspectionRequest{}, opts)
+             BeamNode.inspect_relation(%RelationInspectionRequest{}, opts)
+
+    batch_opts = Keyword.put(opts, :runner_inspection_batch_timeout_ms, 1_000)
+
+    assert {:ok, [{:error, :not_supported}]} =
+             BeamNode.inspect_relations([%RelationInspectionRequest{}], batch_opts)
+
+    assert_received {:batch_remote_opts, batch_remote_opts}
+    refute Keyword.has_key?(batch_remote_opts, :runner_inspection_batch_timeout_ms)
 
     assert {:ok, %{status: :ready}} = BeamNode.diagnostics(opts)
   end

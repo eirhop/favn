@@ -147,9 +147,11 @@ generation in the run plan, claim, and immutable materialization ledger.
 
 Asset-window and freshness projections use `evidence_generation_id` in their
 identity. Persisted targets use the physical generation UUID; non-persisted
-targets use their deterministic semantic-generation identity. Reads resolve the
+targets use their durable workspace evidence binding. Reads resolve the
 current binding first, so evidence from a retired physical generation cannot be
-presented as current evidence.
+presented as current evidence. Claim insertion locks and verifies a
+non-persisted asset's exact durable binding, preventing stale or corrupted plan
+pins from publishing evidence under an unbound identity.
 
 Manual rebuilds persist one immutable operation, topologically ordered actions,
 frozen logical items, candidate generations, and sorted target locks. Operator

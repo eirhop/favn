@@ -14,6 +14,8 @@ defmodule FavnStoragePostgres.TargetGenerations.Store do
   alias FavnOrchestrator.Persistence.Error
   alias FavnOrchestrator.Persistence.Queries.GetTargetBinding
   alias FavnOrchestrator.Persistence.Queries.GetTargetBindings
+  alias FavnOrchestrator.Persistence.Queries.GetEvidenceBindings
+  alias FavnOrchestrator.Persistence.Results.EvidenceBinding
   alias FavnOrchestrator.Persistence.Results.TargetBinding
   alias FavnOrchestrator.Persistence.Results.InitialTargetGenerationReconciliation
   alias FavnOrchestrator.Persistence.Results.WritableTargetGeneration
@@ -22,6 +24,7 @@ defmodule FavnStoragePostgres.TargetGenerations.Store do
   alias FavnStoragePostgres.Repo
   alias FavnStoragePostgres.Schemas.AssetTargetBinding
   alias FavnStoragePostgres.Schemas.AssetTargetGeneration
+  alias FavnStoragePostgres.Schemas.AssetEvidenceBinding
   alias FavnStoragePostgres.Schemas.Materialization
   alias FavnStoragePostgres.Schemas.WorkspaceDeployment
 
@@ -89,6 +92,25 @@ defmodule FavnStoragePostgres.TargetGenerations.Store do
         )
         |> Repo.all()
         |> Enum.map(&binding_result/1)
+
+      {:ok, bindings}
+    end
+  rescue
+    error -> {:error, ErrorMapper.map(error)}
+  end
+
+  @impl true
+  def get_evidence_bindings(%GetEvidenceBindings{} = query) do
+    with :ok <- validate_get(query.workspace_context, query.target_ids) do
+      bindings =
+        from(binding in AssetEvidenceBinding,
+          where:
+            binding.workspace_id == ^query.workspace_context.workspace_id and
+              binding.target_id in ^query.target_ids,
+          order_by: [asc: binding.target_id]
+        )
+        |> Repo.all()
+        |> Enum.map(&evidence_binding_result/1)
 
       {:ok, bindings}
     end
@@ -455,6 +477,16 @@ defmodule FavnStoragePostgres.TargetGenerations.Store do
       active_physical_fingerprint: binding.active_physical_fingerprint,
       version: binding.version,
       updated_at: binding.updated_at
+    }
+  end
+
+  defp evidence_binding_result(binding) do
+    %EvidenceBinding{
+      workspace_id: binding.workspace_id,
+      target_id: binding.target_id,
+      evidence_generation_id: binding.evidence_generation_id,
+      initial_manifest_id: binding.initial_manifest_id,
+      created_at: binding.created_at
     }
   end
 

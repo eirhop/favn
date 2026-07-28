@@ -74,10 +74,18 @@ defmodule FavnOrchestrator.Lifecycle do
     GenServer.call(server, {:complete_shutdown, result})
   end
 
-  @doc "Returns `:ok` only while new work may be admitted."
+  @doc "Returns `:ok` while the lifecycle status accepts work."
   @spec ensure_accepting(GenServer.server()) :: :ok | {:error, admission_error()}
   def ensure_accepting(server \\ __MODULE__) do
     GenServer.call(server, :ensure_accepting)
+  catch
+    :exit, _reason -> {:error, :runtime_not_accepting}
+  end
+
+  @doc "Returns `:ok` while non-maintenance background work may start."
+  @spec ensure_ready(GenServer.server()) :: :ok | {:error, admission_error()}
+  def ensure_ready(server \\ __MODULE__) do
+    GenServer.call(server, :ensure_ready)
   catch
     :exit, _reason -> {:error, :runtime_not_accepting}
   end
@@ -250,6 +258,15 @@ defmodule FavnOrchestrator.Lifecycle do
     do: {:reply, :ok, state}
 
   def handle_call(:ensure_accepting, _from, state),
+    do: {:reply, admission_error(state.status), state}
+
+  def handle_call(:ensure_ready, _from, %{status: :accepting, maintenance: nil} = state),
+    do: {:reply, :ok, state}
+
+  def handle_call(:ensure_ready, _from, %{status: :accepting} = state),
+    do: {:reply, {:error, :runtime_maintenance}, state}
+
+  def handle_call(:ensure_ready, _from, state),
     do: {:reply, admission_error(state.status), state}
 
   def handle_call(

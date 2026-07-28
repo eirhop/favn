@@ -169,6 +169,105 @@ defmodule FavnOrchestrator.ActiveManifestReconcilerTest do
     refute log =~ "favn.operator.active_manifest_reconciliation_completed"
   end
 
+  test "pauses without warning during runner maintenance and resumes afterward" do
+    lifecycle = unique_name(:lifecycle)
+    supervisor = unique_name(:tasks)
+    reconciler = unique_name(:reconciler)
+    token = String.duplicate("a", 43)
+    test_pid = self()
+
+    log =
+      capture_log([level: :debug], fn ->
+        start_supervised!({Lifecycle, name: lifecycle, shutdown_drain_timeout_ms: 1_000})
+        start_supervised!({Task.Supervisor, name: supervisor})
+        :ok = Lifecycle.mark_accepting(lifecycle)
+        assert {:ok, ^token} = Lifecycle.begin_maintenance(:runner_replacement, token, lifecycle)
+
+        start_supervised!(
+          {ActiveManifestReconciler,
+           name: reconciler,
+           lifecycle: lifecycle,
+           task_supervisor: supervisor,
+           workspace_ids: ["workspace"],
+           runner_client: RunnerClient,
+           runner_opts: [cache: self(), test_pid: self()],
+           load_manifest: fn workspace_id ->
+             send(test_pid, {:reconciled, workspace_id})
+             {:error, Error.new(:not_found, "workspace has no active deployment")}
+           end,
+           interval_ms: 20,
+           timeout_ms: 500}
+        )
+
+        refute_receive {:reconciled, "workspace"}, 75
+
+        assert {:error, :active_manifest_reconciliation_pending} =
+                 ActiveManifestReconciler.snapshot(reconciler)
+
+        assert :ok = Lifecycle.end_maintenance(token, lifecycle)
+        assert_receive {:reconciled, "workspace"}, 250
+      end)
+
+    refute log =~ "[warning] favn.operator.active_manifest_reconciliation_completed"
+  end
+
+  test "an admission race with runner maintenance pauses without warning" do
+    lifecycle = unique_name(:lifecycle)
+    supervisor = unique_name(:tasks)
+    reconciler = unique_name(:reconciler)
+    token = String.duplicate("a", 43)
+    test_pid = self()
+
+    log =
+      capture_log([level: :debug], fn ->
+        start_supervised!({Lifecycle, name: lifecycle, shutdown_drain_timeout_ms: 1_000})
+        start_supervised!({Task.Supervisor, name: supervisor})
+        :ok = Lifecycle.mark_accepting(lifecycle)
+        :ok = :sys.suspend(supervisor)
+
+        on_exit(fn ->
+          if pid = Process.whereis(supervisor), do: :sys.resume(pid)
+        end)
+
+        start_supervised!(
+          {ActiveManifestReconciler,
+           name: reconciler,
+           lifecycle: lifecycle,
+           task_supervisor: supervisor,
+           workspace_ids: ["workspace"],
+           runner_client: RunnerClient,
+           runner_opts: [cache: self(), test_pid: self()],
+           load_manifest: fn workspace_id ->
+             send(test_pid, {:reconciled, workspace_id})
+             {:error, Error.new(:not_found, "workspace has no active deployment")}
+           end,
+           interval_ms: 20,
+           timeout_ms: 500}
+        )
+
+        assert_eventually(fn ->
+          match?(
+            {:messages, [_call | _rest]},
+            Process.info(Process.whereis(supervisor), :messages)
+          )
+        end)
+
+        assert {:ok, ^token} = Lifecycle.begin_maintenance(:runner_replacement, token, lifecycle)
+        :ok = :sys.resume(supervisor)
+
+        assert_eventually(fn ->
+          ActiveManifestReconciler.snapshot(reconciler) ==
+            {:error, :active_manifest_reconciliation_pending}
+        end)
+
+        refute_receive {:reconciled, "workspace"}, 75
+        assert :ok = Lifecycle.end_maintenance(token, lifecycle)
+        assert_receive {:reconciled, "workspace"}, 250
+      end)
+
+    refute log =~ "[warning] favn.operator.active_manifest_reconciliation_completed"
+  end
+
   defp capture_reconciliation_log(load_manifest) do
     lifecycle = unique_name(:lifecycle)
     supervisor = unique_name(:tasks)

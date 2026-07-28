@@ -15,6 +15,15 @@ defmodule FavnOrchestrator.RunServer.Execution.PlanPreflightTest do
 
   defmodule FakeStore do
     def get_freshness_many(_command), do: {:ok, []}
+
+    def get_evidence_bindings(query) do
+      {:ok, Enum.map(query.target_ids, &evidence_binding/1)}
+    end
+
+    defp evidence_binding(target_id) do
+      digest = target_id |> then(&:crypto.hash(:sha256, &1)) |> Base.encode16(case: :lower)
+      %{target_id: target_id, evidence_generation_id: "ag_" <> digest}
+    end
   end
 
   defmodule RunnerClient do

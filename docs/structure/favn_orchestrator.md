@@ -49,10 +49,12 @@ freshness, and execution coordination.
 - `RunOwnership`, `ExecutionAdmission`, `MaterializationClaims`, and scheduler
   runtime modules own fenced distributed coordination.
 - `TargetGenerations` resolves persisted asset writes to one durable physical
-  generation and non-persisted assets to a deterministic semantic generation.
+  generation and non-persisted assets to a durable workspace evidence binding.
   Materialization claims pin that identity before execution; freshness and window
-  reads first resolve the active binding so retired-generation evidence is not
-  presented as current. `TargetCompatibilityPlanner` inspects persisted relations
+  reads first resolve the relevant binding so retired physical-generation evidence
+  is not presented as current. Manifest and runner changes retain non-persisted
+  evidence; explicit runs and backfills publish newer evidence under the same
+  binding. `TargetCompatibilityPlanner` inspects persisted relations
   through the runner during deployment, classifies desired/active/physical state,
   and freezes the result into the target binding. `TargetAdmission` rejects only
   selected dependency paths containing a rebuild-required, drifted, or

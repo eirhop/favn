@@ -29,33 +29,113 @@ defmodule FavnLocal.Publication do
     end
   end
 
-  defp deploy_with_permit(platform, workspace, publication) do
-    version = publication.version
-
-    with :ok <- ExecutionPackages.register(platform, publication.execution_packages),
-         {:ok, _status, canonical} <- Manifests.publish(platform, version),
-         {:ok, runtime} <-
-           Manifests.deploy(
-             platform,
-             workspace,
-             canonical.manifest_version_id,
-             %{
-               common_assets: "all",
-               common_pipelines: "all",
-               workspace_assets: [],
-               workspace_pipelines: []
-             },
-             deployment_id: "deployment:local:" <> canonical.manifest_version_id,
-             configuration: %{}
-           ) do
-      {:ok,
-       %{
-         manifest_version_id: runtime.manifest_version_id,
-         runner_release_id: runtime.required_runner_release_id,
-         deployment_id: runtime.deployment_id
-       }}
+  @spec active_deployment?(
+          String.t(),
+          String.t(),
+          String.t(),
+          String.t()
+        ) :: boolean()
+  def active_deployment?(
+        workspace_id,
+        deployment_id,
+        manifest_version_id,
+        runner_release_id
+      )
+      when is_binary(workspace_id) and is_binary(deployment_id) and
+             is_binary(manifest_version_id) and is_binary(runner_release_id) do
+    with {:ok, workspace} <-
+           WorkspaceContext.new(workspace_id, "favn-local", [:platform_operator]),
+         {:ok, runtime} <- Manifests.active_runtime(workspace) do
+      runtime.deployment_id == deployment_id and
+        runtime.manifest_version_id == manifest_version_id and
+        runtime.required_runner_release_id == runner_release_id
+    else
+      _error -> false
     end
   end
+
+  def active_deployment?(_workspace_id, _deployment_id, _manifest_version_id, _runner_release_id),
+    do: false
+
+  defp deploy_with_permit(platform, workspace, publication) do
+    version = publication.version
+    started_at = now_ms()
+
+    {execution_packages_ms, package_result} =
+      timed(fn -> register_missing_packages(platform, publication.execution_packages) end)
+
+    with {:ok, package_counts} <- package_result do
+      {manifest_publication_ms, publication_result} =
+        timed(fn -> Manifests.publish(platform, version) end)
+
+      with {:ok, _status, canonical} <- publication_result do
+        {manifest_activation_ms, activation_result} =
+          timed(fn ->
+            Manifests.deploy(
+              platform,
+              workspace,
+              canonical.manifest_version_id,
+              %{
+                common_assets: "all",
+                common_pipelines: "all",
+                workspace_assets: [],
+                workspace_pipelines: []
+              },
+              deployment_id: deployment_attempt_id(canonical.manifest_version_id),
+              configuration: %{}
+            )
+          end)
+
+        deployment_result(
+          activation_result,
+          package_counts,
+          %{
+            execution_packages_ms: execution_packages_ms,
+            manifest_publication_ms: manifest_publication_ms,
+            manifest_activation_ms: manifest_activation_ms,
+            deployment_ms: max(now_ms() - started_at, 0)
+          }
+        )
+      end
+    end
+  end
+
+  defp deployment_result({:ok, runtime}, package_counts, phases) do
+    {:ok,
+     %{
+       manifest_version_id: runtime.manifest_version_id,
+       runner_release_id: runtime.required_runner_release_id,
+       deployment_id: runtime.deployment_id,
+       execution_packages: package_counts,
+       phases: phases
+     }}
+  end
+
+  defp deployment_result({:error, _reason} = error, _package_counts, _phases), do: error
+
+  defp register_missing_packages(platform, packages) do
+    hashes = Enum.map(packages, & &1.content_hash)
+
+    with {:ok, missing_hashes} <- ExecutionPackages.missing_hashes(platform, hashes) do
+      missing = MapSet.new(missing_hashes)
+      packages_to_register = Enum.filter(packages, &MapSet.member?(missing, &1.content_hash))
+
+      with :ok <- register_packages(platform, packages_to_register) do
+        {:ok, %{provided: length(packages), registered: length(packages_to_register)}}
+      end
+    end
+  end
+
+  defp register_packages(_platform, []), do: :ok
+  defp register_packages(platform, packages), do: ExecutionPackages.register(platform, packages)
+
+  defp timed(fun) do
+    started_at = now_ms()
+    result = fun.()
+    {max(now_ms() - started_at, 0), result}
+  end
+
+  defp now_ms, do: System.monotonic_time(:millisecond)
 
   defp acquire_admission(nil), do: {:ok, nil}
 
@@ -65,4 +145,9 @@ defmodule FavnLocal.Publication do
 
   defp release_admission(nil), do: :ok
   defp release_admission(permit), do: FavnOrchestrator.Lifecycle.release_admission(permit)
+
+  defp deployment_attempt_id(manifest_version_id) do
+    suffix = 12 |> :crypto.strong_rand_bytes() |> Base.url_encode64(padding: false)
+    "deployment:local:#{manifest_version_id}:#{suffix}"
+  end
 end

@@ -10,6 +10,7 @@ defmodule FavnOrchestrator.CoverageTest do
   alias FavnOrchestrator.Coverage
   alias FavnOrchestrator.ManifestTarget
   alias FavnOrchestrator.Persistence.Commands.DeploymentTarget
+  alias FavnOrchestrator.Persistence.Results.EvidenceBinding
   alias FavnOrchestrator.Persistence.Results.RuntimeState
   alias FavnOrchestrator.Persistence.Runtime, as: PersistenceRuntime
   alias FavnOrchestrator.Persistence.Stores
@@ -22,6 +23,23 @@ defmodule FavnOrchestrator.CoverageTest do
     def get_runtime_state(_query), do: {:ok, Process.get(:coverage_runtime)}
     def get_deployment_targets(_query), do: {:ok, Process.get(:coverage_targets)}
     def get_deployment_manifest(_query), do: {:ok, Process.get(:coverage_version)}
+
+    def get_evidence_bindings(query) do
+      generation_id =
+        Process.get(:coverage_evidence_generation) ||
+          raise "coverage evidence generation was not configured"
+
+      {:ok,
+       Enum.map(query.target_ids, fn target_id ->
+         %EvidenceBinding{
+           workspace_id: query.workspace_context.workspace_id,
+           target_id: target_id,
+           evidence_generation_id: generation_id,
+           initial_manifest_id: "coverage-manifest",
+           created_at: ~U[2026-07-01 00:00:00Z]
+         }
+       end)}
+    end
 
     def count_successful_asset_windows(_query) do
       case Process.get(:coverage_count_result, {:ok, 0}) do
@@ -47,6 +65,7 @@ defmodule FavnOrchestrator.CoverageTest do
     version = version("semantic-a", coverage())
 
     Process.put(:coverage_version, version)
+    Process.put(:coverage_evidence_generation, "semantic-a")
 
     Process.put(:coverage_runtime, %RuntimeState{
       workspace_id: "coverage-workspace",
@@ -127,7 +146,23 @@ defmodule FavnOrchestrator.CoverageTest do
     refute second.pagination.has_more
   end
 
-  test "rejects a cursor after the evidence generation changes", fixture do
+  test "rejects a cursor after the durable evidence binding changes", fixture do
+    assert {:ok, page} =
+             Coverage.missing_windows(fixture.context, fixture.target_id,
+               evaluated_at: @evaluated_at,
+               limit: 1
+             )
+
+    Process.put(:coverage_evidence_generation, "semantic-b")
+
+    assert {:error, :coverage_cursor_stale} =
+             Coverage.missing_windows(fixture.context, fixture.target_id,
+               cursor: page.pagination.next_cursor,
+               limit: 1
+             )
+  end
+
+  test "retains a cursor when only the manifest semantic generation changes", fixture do
     assert {:ok, page} =
              Coverage.missing_windows(fixture.context, fixture.target_id,
                evaluated_at: @evaluated_at,
@@ -136,11 +171,13 @@ defmodule FavnOrchestrator.CoverageTest do
 
     Process.put(:coverage_version, version("semantic-b", coverage()))
 
-    assert {:error, :coverage_cursor_stale} =
+    assert {:ok, next_page} =
              Coverage.missing_windows(fixture.context, fixture.target_id,
                cursor: page.pagination.next_cursor,
                limit: 1
              )
+
+    assert next_page.summary.evidence_generation_id == "semantic-a"
   end
 
   test "returns explicit unknown states", fixture do

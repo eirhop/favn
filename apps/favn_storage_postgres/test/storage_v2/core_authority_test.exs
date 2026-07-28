@@ -98,6 +98,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnOrchestrator.Persistence.Queries.GetTargetStatuses
   alias FavnOrchestrator.Persistence.Queries.GetMaterializations
   alias FavnOrchestrator.Persistence.Queries.GetAssetWindowStates
+  alias FavnOrchestrator.Persistence.Queries.GetEvidenceBindings
   alias FavnOrchestrator.Persistence.Queries.GetTargetBinding
   alias FavnOrchestrator.Persistence.Queries.GetInitialTargetRecoveryCandidate
   alias FavnOrchestrator.Persistence.Queries.GetTargetRecovery
@@ -266,7 +267,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
       deployment_id: fixture.deployment_id,
       target_kind: :asset,
       target_id: fixture.target_id,
-      evidence_generation_id: "ag_" <> String.duplicate("a", 64),
+      evidence_generation_id: evidence_generation_id(fixture),
       partition_key: Favn.Freshness.Key.latest(),
       run_id: run.id,
       owner_id: "materialization-worker",
@@ -1584,76 +1585,99 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert unchanged_binding == blocked_binding
   end
 
-  test "keeps projected window evidence isolated by generation", fixture do
+  test "rejects unbound evidence and projects only the durable generation", fixture do
     {run_command, run} = create_run_command(fixture)
     assert {:ok, _created} = RunStore.create_run(run_command)
+    evidence_generation_id = evidence_generation_id(fixture)
+    unbound_generation_id = "ag_" <> String.duplicate("b", 64)
 
     window_key =
       Favn.Window.Key.new!(:day, ~U[2026-07-20 00:00:00Z], "Etc/UTC")
       |> Favn.Freshness.Key.window!()
 
-    materializations =
-      for generation_id <- ["ag_active", "ag_candidate"] do
-        claim_key = "generation-window:#{generation_id}:#{run.id}"
+    claim_key = "generation-window:#{run.id}"
 
-        assert {:ok, %{status: :claimed, claim: claimed}} =
-                 MaterializationStore.claim(%ClaimMaterialization{
-                   workspace_context: fixture.workspace_context,
-                   command_id: "claim:" <> claim_key,
-                   claim_key: claim_key,
-                   deployment_id: fixture.deployment_id,
-                   target_kind: :asset,
-                   target_id: fixture.target_id,
-                   target_generation_id: nil,
-                   evidence_generation_id: generation_id,
-                   partition_key: window_key,
-                   run_id: run.id,
-                   owner_id: "generation-window-worker",
-                   lease_duration_ms: 30_000,
-                   occurred_at: DateTime.utc_now()
-                 })
+    claim = %ClaimMaterialization{
+      workspace_context: fixture.workspace_context,
+      command_id: "claim:" <> claim_key,
+      claim_key: claim_key,
+      deployment_id: fixture.deployment_id,
+      target_kind: :asset,
+      target_id: fixture.target_id,
+      target_generation_id: nil,
+      evidence_generation_id: unbound_generation_id,
+      partition_key: window_key,
+      run_id: run.id,
+      owner_id: "generation-window-worker",
+      lease_duration_ms: 30_000,
+      occurred_at: DateTime.utc_now()
+    }
 
-        materialization_id = "materialization:" <> claim_key
+    assert {:error, %{kind: :conflict, details: %{reason_code: "evidence_binding_mismatch"}}} =
+             MaterializationStore.claim(claim)
 
-        assert {:ok, %{status: :materialized}} =
-                 MaterializationStore.finish(%FinishMaterialization{
-                   workspace_context: fixture.workspace_context,
-                   command_id: "finish:" <> claim_key,
-                   claim_key: claim_key,
-                   owner_id: claimed.owner_id,
-                   fencing_token: claimed.fencing_token,
-                   expected_version: claimed.version,
-                   status: :succeeded,
-                   materialization_id: materialization_id,
-                   payload: %{
-                     "freshness_version" => generation_id <> ":v1",
-                     "run_id" => run.id,
-                     "manifest_version_id" => fixture.version.manifest_version_id,
-                     "manifest_content_hash" => fixture.version.content_hash,
-                     "target_generation_id" => nil,
-                     "evidence_generation_id" => generation_id
-                   },
-                   occurred_at: DateTime.utc_now()
-                 })
+    assert %{rows: [[0]]} =
+             SQL.query!(
+               Repo,
+               """
+               SELECT count(*)
+               FROM favn_control.materialization_claims
+               WHERE workspace_id = $1 AND claim_key = $2
+               """,
+               [fixture.workspace_id, claim_key]
+             )
 
-        {generation_id, materialization_id}
-      end
+    assert {:ok, %{status: :claimed, claim: claimed}} =
+             MaterializationStore.claim(%{
+               claim
+               | command_id: claim.command_id <> ":bound",
+                 evidence_generation_id: evidence_generation_id
+             })
+
+    materialization_id = "materialization:" <> claim_key
+
+    assert {:ok, %{status: :materialized}} =
+             MaterializationStore.finish(%FinishMaterialization{
+               workspace_context: fixture.workspace_context,
+               command_id: "finish:" <> claim_key,
+               claim_key: claim_key,
+               owner_id: claimed.owner_id,
+               fencing_token: claimed.fencing_token,
+               expected_version: claimed.version,
+               status: :succeeded,
+               materialization_id: materialization_id,
+               payload: %{
+                 "freshness_version" => evidence_generation_id <> ":v1",
+                 "run_id" => run.id,
+                 "manifest_version_id" => fixture.version.manifest_version_id,
+                 "manifest_content_hash" => fixture.version.content_hash,
+                 "target_generation_id" => nil,
+                 "evidence_generation_id" => evidence_generation_id
+               },
+               occurred_at: DateTime.utc_now()
+             })
 
     assert {:ok, _publications} = Sequencer.sequence_batch()
     assert drain_projector("generation-window-projector:" <> run.id) > 0
 
-    for {generation_id, materialization_id} <- materializations do
-      assert {:ok, [state]} =
-               OperatorReadStore.get_asset_window_states(%GetAssetWindowStates{
-                 workspace_context: fixture.workspace_context,
-                 evidence_generation_id: generation_id,
-                 target_id: fixture.target_id,
-                 limit: 10
-               })
+    assert {:ok, [state]} =
+             OperatorReadStore.get_asset_window_states(%GetAssetWindowStates{
+               workspace_context: fixture.workspace_context,
+               evidence_generation_id: evidence_generation_id,
+               target_id: fixture.target_id,
+               limit: 10
+             })
 
-      assert state.evidence_generation_id == generation_id
-      assert state.materialization_id == materialization_id
-    end
+    assert state.evidence_generation_id == evidence_generation_id
+    assert state.materialization_id == materialization_id
+
+    assert {:ok, []} =
+             OperatorReadStore.get_asset_window_states(%GetAssetWindowStates{
+               workspace_context: fixture.workspace_context,
+               evidence_generation_id: unbound_generation_id,
+               target_id: fixture.target_id,
+               limit: 10
+             })
   end
 
   test "registers and deploys an immutable exact manifest catalog", fixture do
@@ -1705,6 +1729,57 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
                    | remaining_targets
                  ]
              })
+  end
+
+  test "retains non-persisted evidence bindings across runner releases", fixture do
+    initial_asset =
+      Enum.find(fixture.version.manifest.assets, &(&1.ref == {MyApp.Asset, :asset}))
+
+    assert {:ok, [initial_binding]} =
+             TargetGenerationStore.get_evidence_bindings(%GetEvidenceBindings{
+               workspace_context: fixture.workspace_context,
+               target_ids: [fixture.target_id]
+             })
+
+    assert initial_binding.evidence_generation_id == initial_asset.semantic_generation_id
+    assert initial_binding.initial_manifest_id == fixture.version.manifest_version_id
+
+    alternate_manifest =
+      fixture.version.manifest
+      |> FavnTestSupport.with_manifest_contract(FavnTestSupport.runner_release_id(:alternate))
+      |> FavnTestSupport.with_manifest_graph()
+
+    assert {:ok, alternate_version} =
+             Version.new(alternate_manifest,
+               manifest_version_id: fixture.version.manifest_version_id <> "-alternate"
+             )
+
+    alternate_asset =
+      Enum.find(alternate_version.manifest.assets, &(&1.ref == {MyApp.Asset, :asset}))
+
+    refute alternate_asset.semantic_generation_id == initial_asset.semantic_generation_id
+
+    assert {:ok, ^alternate_version} =
+             RegistryStore.register_manifest(%RegisterManifest{
+               platform_context: fixture.platform_context,
+               version: alternate_version
+             })
+
+    assert {:ok, _runtime} =
+             RegistryStore.deploy_manifest(%{
+               fixture.deploy_command
+               | deployment_id: fixture.deployment_id <> "-alternate",
+                 manifest_version_id: alternate_version.manifest_version_id,
+                 occurred_at: DateTime.utc_now()
+             })
+
+    assert {:ok, [retained_binding]} =
+             TargetGenerationStore.get_evidence_bindings(%GetEvidenceBindings{
+               workspace_context: fixture.workspace_context,
+               target_ids: [fixture.target_id]
+             })
+
+    assert retained_binding == initial_binding
   end
 
   test "reactivates deduplicated deployment content after another deployment becomes active",
@@ -6487,6 +6562,16 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
       requests: [%CapacityRequest{scope_id: fixture.capacity_scope_id}],
       occurred_at: DateTime.utc_now()
     }
+  end
+
+  defp evidence_generation_id(fixture) do
+    assert {:ok, [binding]} =
+             TargetGenerationStore.get_evidence_bindings(%GetEvidenceBindings{
+               workspace_context: fixture.workspace_context,
+               target_ids: [fixture.target_id]
+             })
+
+    binding.evidence_generation_id
   end
 
   defp create_run_command(fixture, run_id \\ nil) do

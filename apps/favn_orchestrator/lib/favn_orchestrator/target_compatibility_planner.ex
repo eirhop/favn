@@ -29,6 +29,7 @@ defmodule FavnOrchestrator.TargetCompatibilityPlanner do
   alias FavnOrchestrator.RuntimeConfig
 
   @binding_batch 500
+  @inspection_batch 500
   @doc "Returns one frozen decision for every selected persisted SQL asset."
   @spec plan(PlatformContext.t(), WorkspaceContext.t(), Version.t(), DeploymentPlanner.t()) ::
           {:ok, [DeploymentTargetCompatibility.t()]} | {:error, term()}
@@ -44,9 +45,9 @@ defmodule FavnOrchestrator.TargetCompatibilityPlanner do
          {:ok, {active_versions, historical_descriptors}} <-
            active_versions(platform_context, bindings),
          :ok <- ensure_inspection_versions(active_versions, version) do
-      decisions =
+      inputs =
         Enum.map(persisted, fn target ->
-          classify_target(
+          classification_input(
             target,
             bindings,
             active_versions,
@@ -55,7 +56,7 @@ defmodule FavnOrchestrator.TargetCompatibilityPlanner do
           )
         end)
 
-      {:ok, decisions}
+      {:ok, classify_targets(inputs)}
     end
   end
 
@@ -192,7 +193,7 @@ defmodule FavnOrchestrator.TargetCompatibilityPlanner do
     end)
   end
 
-  defp classify_target(
+  defp classification_input(
          target,
          bindings,
          active_versions,
@@ -213,27 +214,50 @@ defmodule FavnOrchestrator.TargetCompatibilityPlanner do
 
     case inspection_target(active_target, binding, target.asset, desired_version) do
       {:ok, inspection_target, inspection_version} ->
-        classify_inspected_target(
-          target,
-          binding,
-          active_descriptor,
-          inspection_target,
-          inspection_version
-        )
+        {:inspect,
+         %{
+           target: target,
+           binding: binding,
+           active_descriptor: active_descriptor,
+           inspection_target: inspection_target,
+           inspection_version: inspection_version
+         }}
 
       {:error, _reason} ->
-        inspection_unavailable_decision(target, binding)
+        {:decision, inspection_unavailable_decision(target, binding)}
     end
   end
 
+  defp classify_targets(inputs) do
+    inspections =
+      inputs
+      |> Enum.flat_map(fn
+        {:inspect, input} -> [input]
+        {:decision, _decision} -> []
+      end)
+      |> inspect_physical_batch()
+
+    {decisions, []} =
+      Enum.map_reduce(inputs, inspections, fn
+        {:decision, decision}, inspections ->
+          {decision, inspections}
+
+        {:inspect, input}, [inspection | inspections] ->
+          {classify_inspected_target(input, inspection), inspections}
+      end)
+
+    decisions
+  end
+
   defp classify_inspected_target(
-         target,
-         binding,
-         active_descriptor,
-         inspection_target,
-         inspection_version
+         %{
+           target: target,
+           binding: binding,
+           active_descriptor: active_descriptor
+         },
+         inspection
        ) do
-    case inspect_physical(inspection_target, inspection_version) do
+    case inspection do
       {:ok, observed} ->
         result =
           TargetCompatibility.classify(
@@ -358,30 +382,57 @@ defmodule FavnOrchestrator.TargetCompatibilityPlanner do
     end
   end
 
-  defp inspect_physical(target, version) do
+  defp inspect_physical_batch([]), do: []
+
+  defp inspect_physical_batch(inputs) do
+    inputs
+    |> Enum.chunk_every(@inspection_batch)
+    |> Enum.flat_map(&inspect_physical_chunk/1)
+  end
+
+  defp inspect_physical_chunk(inputs) do
     runtime = RuntimeConfig.current()
 
-    request = inspection_request(target, version)
+    requests =
+      Enum.map(inputs, fn input ->
+        inspection_request(input.inspection_target, input.inspection_version)
+      end)
 
-    with {:ok, %RelationInspectionResult{} = result} <-
-           RunnerDispatch.inspect_relation(
-             runtime.runner_client,
-             request,
-             runtime.runner_client_opts
-           ),
-         :ok <-
+    case RunnerDispatch.inspect_relations(
+           runtime.runner_client,
+           requests,
+           runtime.runner_client_opts
+         ) do
+      {:ok, results} when length(results) == length(inputs) ->
+        inputs
+        |> Enum.zip(results)
+        |> Enum.map(fn {input, result} ->
+          normalize_inspection_result(result, input.inspection_version)
+        end)
+
+      {:ok, _invalid} ->
+        List.duplicate({:error, :invalid_runner_inspection_batch}, length(inputs))
+
+      {:error, reason} ->
+        List.duplicate({:error, reason}, length(inputs))
+    end
+  end
+
+  defp normalize_inspection_result({:ok, %RelationInspectionResult{} = result}, version) do
+    with :ok <-
            RunnerReleaseCompatibility.verify_inspection_result(
              version.required_runner_release_id,
              result
            ),
          {:ok, physical} <- PhysicalFingerprint.from_inspection(result) do
       {:ok, physical}
-    else
-      {:ok, _invalid} -> {:error, :invalid_runner_inspection_result}
-      {:error, _reason} = error -> error
-      _invalid -> {:error, :invalid_runner_inspection_result}
     end
   end
+
+  defp normalize_inspection_result({:error, _reason} = error, _version), do: error
+
+  defp normalize_inspection_result(_invalid, _version),
+    do: {:error, :invalid_runner_inspection_result}
 
   defp inspection_request({:asset, asset}, version) do
     %RelationInspectionRequest{

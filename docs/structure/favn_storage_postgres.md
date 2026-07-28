@@ -29,6 +29,9 @@ Favn's PostgreSQL 18 control-plane persistence.
   `asset_target_bindings` selects the active generation for ordinary writes and
   current-evidence reads. Initial writes remain `building` until authoritative
   physical reconciliation records an activation and fingerprint.
+  `asset_evidence_bindings` retains one immutable freshness and coverage identity
+  per workspace and non-persisted logical asset. Deployment initializes missing
+  rows in bounded batches and never rotates an existing row during reload.
   `rebuild_operations`, `rebuild_plan_actions`, and `rebuild_windows` persist the
   immutable plan hash, dispatcher and item fences, candidate generations,
   per-item runtime-input expectations and authoritative materialization ids,
