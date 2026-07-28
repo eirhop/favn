@@ -895,3 +895,40 @@ Reviewed synchronization tree SHA:
 
 Reviewed synchronization commit SHA:
 `c66556eb1452a3fa852d5e389919e1ea7e3f7d6e`
+
+### Final linear rebase onto main
+
+The completed branch was linearly rebased onto
+`2e7925531f3b84bed1b03bb136801423ba70b0f3`. A standard rebase cannot preserve
+the manual tree resolution stored only in the original feature merge, so that
+resolution was replayed explicitly as `034fad4e`. The legacy guard then caught
+and prevented reintroduction of the deleted singleton runner architecture.
+
+The final integration also preserves main's durable asset-evidence binding
+migration and orchestrator contract. The reviewed reconciliation commit is
+`e1647e91`.
+
+Post-rebase integration checks:
+
+```text
+mix compile --warnings-as-errors
+  # passed
+
+elixir scripts/check_no_legacy_runner_architecture.exs
+  # legacy runner architecture is absent
+
+mix favn.postgres.migrate
+mix favn.postgres.verify_schema
+  # passed against a fresh disposable database
+  # definition fingerprint:
+  # 1ed24239d3ad81bec4b96e8afbd6bfdf82d150b1e1dc25d1fbf342fb927f36fd
+
+git diff --check
+  # passed
+```
+
+Per operator direction, the already-passing behavior suite was not repeated
+after this code-neutral rebase. The conflict integration received compile,
+fresh-schema, static legacy, and diff checks. A focused subagent reviewed the
+complete integration, requested one missing current-main documentation
+contract, and approved the corrected checkpoint with no remaining findings.
