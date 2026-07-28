@@ -112,7 +112,7 @@ defmodule FavnOrchestrator.ReleaseHealth do
   defp request(socket, host) do
     case :gen_tcp.send(
            socket,
-           "GET /health/ready HTTP/1.1\r\nHost: #{host}\r\nConnection: close\r\n\r\n"
+           "GET /api/web/v1/health/ready HTTP/1.1\r\nHost: #{host}\r\nConnection: close\r\n\r\n"
          ) do
       :ok -> :ok
       {:error, _reason} -> close(socket, :request_failed)

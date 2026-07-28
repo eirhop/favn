@@ -102,6 +102,67 @@ defmodule Favn.DeploymentReferenceConformanceTest do
     assert trigger["metadata"]["url"] =~ "/internal/runner-demand/POOL/RELEASE"
   end
 
+  test "Compose qualification uses production TLS and one-shot elastic runners" do
+    source = read("deployment/docker-compose/compose.yml")
+    compose = YamlElixir.read_from_string!(source)
+    services = compose["services"]
+
+    postgres = services["postgres"]
+    control_plane = services["control-plane"]
+    runner = services["runner"]
+    scaler_service = services["scaler"]
+
+    assert "ssl=on" in postgres["command"]
+    assert postgres["healthcheck"]["test"] |> List.last() =~ "sslmode=verify-full"
+    assert get_in(services, ["database-migrate", "command"]) == ["migrate"]
+    assert get_in(services, ["database-grant", "command"]) == ["grant-runtime"]
+    assert get_in(services, ["database-verify", "command"]) == ["verify-schema"]
+
+    assert control_plane["environment"]["FAVN_DEPLOYMENT_MODE"] == "production"
+    assert control_plane["environment"]["FAVN_DATABASE_SSL_MODE"] == "verify-full"
+
+    assert control_plane["environment"]["FAVN_DISTRIBUTION_TLS_OPTIONS_FILE"] ==
+             "/etc/favn/tls/control-plane-ssl-dist.config"
+
+    assert control_plane["environment"]["ERL_AFLAGS"] =~ "-proto_dist inet_tls"
+    assert control_plane["environment"]["FAVN_CONTROL_PLANE_NODE"] =~ ".favn.local"
+    assert control_plane["environment"]["FAVN_RUNNER_POOLS"] =~ ~s("mode":"elastic")
+    assert control_plane["environment"]["FAVN_RUNNER_POOLS"] =~ ~s("idle_grace_ms":5000)
+    assert "control-plane-certificates:/etc/favn/tls:ro" in control_plane["volumes"]
+    refute Enum.any?(control_plane["volumes"], &String.starts_with?(&1, "runner-certificates:"))
+
+    assert runner["profiles"] == ["runner"]
+    assert runner["restart"] == "no"
+    assert runner["environment"]["FAVN_RUNNER_LIFECYCLE_MODE"] == "elastic"
+    assert runner["environment"]["FAVN_RUNNER_POOL"] == "default"
+    assert runner["environment"]["FAVN_RUNNER_RELEASE_ID"] == "${FAVN_RUNNER_RELEASE_ID}"
+    assert runner["environment"]["ERL_AFLAGS"] =~ "-proto_dist inet_tls"
+    assert runner["hostname"] == "${FAVN_RUNNER_NODE_HOST_ALIAS:-runner.favn.local}"
+    assert runner["volumes"] == ["runner-certificates:/etc/favn/tls:ro"]
+
+    assert scaler_service["profiles"] == ["scaler"]
+    assert "/var/run/docker.sock:/var/run/docker.sock" in scaler_service["volumes"]
+
+    scaler = read("deployment/docker-compose/scale-runners.sh")
+    assert scaler =~ "outstanding - running"
+    assert scaler =~ "compose run"
+    assert scaler =~ "--detach"
+    assert scaler =~ "--no-deps"
+    assert scaler =~ "FAVN_RUNNER_NODE_HOST_ALIAS=$container_name"
+    assert scaler =~ "FAVN_SCALER_MAX_LAUNCHES"
+    assert scaler =~ "exited with code"
+    assert scaler =~ "0 -> 3 -> 2 -> 1 -> 0"
+    assert scaler =~ "unexpected runner transition"
+    refute scaler =~ "compose up --scale"
+    refute scaler =~ "docker stop"
+
+    simulation = read("deployment/docker-compose/run-simulation.sh")
+    assert simulation =~ "for workload in fast medium slow"
+    assert simulation =~ "operator \"run-$workload\""
+    assert simulation =~ "FAVN_MANIFEST_VERSION_ID=$manifest_version_id"
+    assert simulation =~ "scaler did not exit within 120 seconds"
+  end
+
   test "provider names and SDKs stay outside Favn core" do
     core =
       @root

@@ -26,3 +26,9 @@ the removal authority for a partition omitted from that overview.
 The Azure and Kubernetes files are reviewed reference templates, not a claim of
 managed-platform qualification. Substitute secrets through the platform secret
 store; never commit them.
+
+[`docker-compose/`](docker-compose/README.md) is a local production-shaped
+qualification harness. It runs PostgreSQL, the control plane, and zero-to-three
+one-shot customer runners with verified TLS and records the observable
+`0 -> 3 -> 2 -> 1 -> 0` lifecycle. It simulates the ScaledJob calculation; it is
+not a production autoscaler or a managed-platform qualification.

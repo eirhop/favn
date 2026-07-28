@@ -70,6 +70,19 @@ defmodule Favn.DistributionTLSTest do
     assert {:ok, [[~c"inet_tls"]]} =
              :peer.call(runner, :init, :get_argument, [:proto_dist], 10_000)
 
+    assert :ok =
+             :peer.call(
+               runner,
+               Favn.DistributionTLS,
+               :validate_running_transport,
+               [
+                 %{
+                   "FAVN_DISTRIBUTION_TLS_OPTIONS_FILE" => runner_options
+                 }
+               ],
+               10_000
+             )
+
     assert true = :peer.call(runner, :net_kernel, :connect_node, [control_node], 10_000)
 
     dynamic_runner_node = :peer.call(runner, :erlang, :node, [], 10_000)
@@ -185,6 +198,9 @@ defmodule Favn.DistributionTLSTest do
   defp start_peer(name, host, cookie, tls_options) do
     args =
       [
+        ~c"-pa",
+        :elixir |> Application.app_dir("ebin") |> String.to_charlist(),
+        :favn_core |> Application.app_dir("ebin") |> String.to_charlist(),
         ~c"-setcookie",
         cookie |> Atom.to_string() |> String.to_charlist()
       ] ++

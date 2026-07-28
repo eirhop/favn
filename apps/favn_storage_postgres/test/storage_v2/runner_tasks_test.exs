@@ -26,6 +26,7 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
   alias FavnStoragePostgres.RunnerTasks.Store
   alias FavnStoragePostgres.Schemas.RunnerCapacityDemand, as: Demand
   alias FavnStoragePostgres.Schemas.RunnerTaskCommand
+  alias FavnStoragePostgres.Schemas.RunnerTaskLogBatch
   alias FavnStoragePostgres.StorageV2.Migrations
   alias FavnStoragePostgres.TestSupport.DistributedRunnerAgent
 
@@ -897,6 +898,77 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
                  sequence: 1,
                  payload_hash: :crypto.strong_rand_bytes(32)
              })
+  end
+
+  test "log batches persist runner terms through the JSON-safe boundary", fixture do
+    assert {:ok, _task} = Store.enqueue(enqueue_command(fixture, "json-safe-logs"))
+
+    assert {:ok, claimed} =
+             Store.claim(claim_command(fixture, "claim-json-safe-logs", "runner-json-safe-logs"))
+
+    entries =
+      [
+        %{
+          type: :runner_event,
+          event: %{
+            event_type: :asset_started,
+            occurred_at: fixture.now,
+            payload: %{
+              asset_ref: {__MODULE__, :asset},
+              authorization_token: "must not persist"
+            }
+          }
+        }
+      ] ++
+        Enum.map(1..60, fn index ->
+          %{type: :runner_event, event: %{event_type: :asset_log, index: index}}
+        end)
+
+    {:ok, payload_hash} = Favn.Contracts.RunnerTask.PersistenceCodec.hash_term(entries)
+
+    command = %C.AppendRunnerTaskLogBatch{
+      workspace_context: fixture.workspace_context,
+      command_id: "log-json-safe",
+      task_id: claimed.task_id,
+      runner_instance_id: claimed.assigned_runner_instance_id,
+      runner_session_generation: claimed.assigned_runner_session_generation,
+      assignment_generation: claimed.assignment_generation,
+      batch_id: "batch-json-safe",
+      sequence: 0,
+      entries: entries,
+      payload_hash: payload_hash,
+      issued_at: fixture.now,
+      occurred_at: fixture.now
+    }
+
+    assert {:ok, :persisted} = Store.append_log_batch(command)
+
+    persisted =
+      Repo.get_by!(RunnerTaskLogBatch,
+        workspace_id: fixture.workspace_context.workspace_id,
+        task_id: claimed.task_id,
+        batch_id: command.batch_id
+      )
+
+    assert [first | remaining] = persisted.entries
+
+    assert %{
+             "type" => "runner_event",
+             "event" => %{
+               "event_type" => "asset_started",
+               "occurred_at" => occurred_at,
+               "payload" => %{
+                 "asset_ref" => %{
+                   "module" => "Elixir.FavnStoragePostgres.StorageV2.RunnerTasksTest",
+                   "name" => "asset"
+                 },
+                 "authorization_token" => "[REDACTED]"
+               }
+             }
+           } = first
+
+    assert Enum.map(remaining, &get_in(&1, ["event", "index"])) == Enum.to_list(1..60)
+    assert occurred_at == DateTime.to_iso8601(fixture.now)
   end
 
   test "runtime-input acknowledgements persist only bounded metadata and cannot be replaced",

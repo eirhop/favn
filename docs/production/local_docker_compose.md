@@ -47,3 +47,14 @@ Compose's `--env-file` belongs to Compose. It does not restore an application
 
 For ordinary source development, use `mix favn.dev`; it does not invoke these
 files or require Docker.
+
+## Repository qualification harness
+
+Maintainers who need to exercise the complete production release boundary on
+one Docker host should use
+[`deployment/docker-compose/`](../../deployment/docker-compose/README.md).
+Unlike the copied customer starting point, that disposable harness supplies a
+TLS PostgreSQL container, mutual-TLS distribution, explicit release operations,
+manifest publication, and a bounded zero-to-three elastic-runner simulation.
+It is intentionally separate so `mix favn.init` does not pretend to provision
+customer infrastructure or generate production secrets.

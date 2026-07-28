@@ -94,12 +94,20 @@ defmodule Favn.DistributionTLS do
   defp init_argument(name, expected) do
     values =
       case :init.get_argument(name) do
-        {:ok, groups} -> groups |> List.flatten() |> Enum.map(&List.to_string/1)
-        :error -> []
+        {:ok, groups} ->
+          for group when is_list(group) <- groups,
+              value when is_list(value) <- group,
+              do: normalize_init_value(name, List.to_string(value))
+
+        :error ->
+          []
       end
 
-    if expected in values,
+    if normalize_init_value(name, expected) in values,
       do: :ok,
       else: {:error, {:invalid_env, "ERL_FLAGS", "-#{name} #{expected}"}}
   end
+
+  defp normalize_init_value(:ssl_dist_optfile, value), do: Path.expand(value)
+  defp normalize_init_value(_name, value), do: value
 end

@@ -160,26 +160,19 @@ defmodule FavnRunner.ProductionRuntimeConfig do
   end
 
   defp validate_running_dynamic_node(host_alias) do
-    expected = "undefined@" <> host_alias
-
-    with :ok <- init_argument(:name, expected),
-         [_local_name, ^host_alias] <- node() |> Atom.to_string() |> String.split("@", parts: 2) do
-      :ok
-    else
-      {:error, _reason} = error ->
-        error
-
-      _invalid ->
-        {:error,
-         {:invalid_env, "FAVN_RUNNER_NODE_HOST_ALIAS", "host alias of the running dynamic node"}}
-    end
+    init_argument(:name, "undefined@" <> host_alias)
   end
 
   defp init_argument(name, expected) do
     values =
       case :init.get_argument(name) do
-        {:ok, groups} -> groups |> List.flatten() |> Enum.map(&List.to_string/1)
-        :error -> []
+        {:ok, groups} ->
+          for group when is_list(group) <- groups,
+              value when is_list(value) <- group,
+              do: List.to_string(value)
+
+        :error ->
+          []
       end
 
     if expected in values,

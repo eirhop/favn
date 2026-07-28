@@ -13,6 +13,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
   alias FavnOrchestrator.Persistence.Results.RunnerCapacityHealth
   alias FavnOrchestrator.Persistence.Results.RunnerReleaseDrain
   alias FavnOrchestrator.Persistence.Results.RunnerTask, as: RunnerTaskResult
+  alias FavnOrchestrator.Storage.JsonSafe
   alias Favn.Contracts.RunnerError
   alias FavnStoragePostgres.CanonicalJSON
   alias FavnStoragePostgres.ErrorMapper
@@ -355,7 +356,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
         batch_id: command.batch_id,
         assignment_generation: command.assignment_generation,
         sequence: command.sequence,
-        entries: command.entries,
+        entries: Enum.map(command.entries, &JsonSafe.data/1),
         payload_hash: command.payload_hash,
         inserted_at: command.occurred_at
       }

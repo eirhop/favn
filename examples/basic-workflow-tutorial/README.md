@@ -21,6 +21,7 @@ plane, and every setting has a working default.
 | Full refresh, daily windows, incremental writes, and views | the Source, Core, and Mart assets |
 | Custom transactional checks | `lib/crm_demo/warehouse/mart/sales/account_health.ex` |
 | Retry, cancellation, and schedule behavior | `lib/crm_demo/lifecycle/` |
+| Elastic runner scale-up and self-exit | `CrmDemo.Lifecycle.ElasticScaleProbe.{Fast, Medium, Slow}` |
 
 ## Project layout
 
@@ -140,3 +141,10 @@ Stays active long enough to cancel with `mix favn.runs cancel`.
 `CrmDemo.Pipelines.ScheduleProbe` fires every ten seconds. New schedules are
 inactive until activated with `mix favn.schedules activate`, and the scheduler
 only runs when the stack was started with `mix favn.dev --scheduler`.
+
+`CrmDemo.Lifecycle.ElasticScaleProbe.{Fast, Medium, Slow}` are independent,
+side-effect-free assets that run for 20, 40, and 60 seconds. The
+[production-shaped Compose qualification](../../deployment/docker-compose/README.md),
+submits them as three runs before starting its scaler. Those staggered durations
+make `0 -> 3 -> 2 -> 1 -> 0` elastic runner capacity observable. They are not a
+benchmark and should not be copied into a customer asset graph.
