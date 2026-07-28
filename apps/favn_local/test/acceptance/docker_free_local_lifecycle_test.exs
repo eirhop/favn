@@ -31,6 +31,8 @@ defmodule FavnLocal.DockerFreeLocalLifecycleAcceptanceTest do
     previous_trusted_local =
       Application.get_env(:favn_orchestrator, :trusted_local_development_auth)
 
+    previous_dev = Application.get_env(:favn, :dev)
+
     Application.delete_env(:favn_view, FavnView.Endpoint)
     Application.delete_env(:favn_view, :session_cookie_options)
 
@@ -40,6 +42,7 @@ defmodule FavnLocal.DockerFreeLocalLifecycleAcceptanceTest do
       restore_env(:session_cookie_options, previous_session)
       restore_env(:source_development_passwordless_login, previous_passwordless)
       restore_orchestrator_env(:trusted_local_development_auth, previous_trusted_local)
+      restore_favn_env(:dev, previous_dev)
       Logger.configure(level: previous_primary_level)
       restore_handler_level(previous_handler_level)
     end)
@@ -58,7 +61,13 @@ defmodule FavnLocal.DockerFreeLocalLifecycleAcceptanceTest do
     )
 
     test_process = self()
-    dev_env = Map.delete(System.get_env(), "FAVN_LOG_LEVEL")
+
+    dev_env =
+      Map.drop(System.get_env(), [
+        "FAVN_LOG_LEVEL",
+        "FAVN_VIEW_PORT",
+        "FAVN_ORCHESTRATOR_API_PORT"
+      ])
 
     assert {:ok, started} =
              FavnLocal.dev(
@@ -214,6 +223,9 @@ defmodule FavnLocal.DockerFreeLocalLifecycleAcceptanceTest do
 
   defp restore_orchestrator_env(key, value),
     do: Application.put_env(:favn_orchestrator, key, value)
+
+  defp restore_favn_env(key, nil), do: Application.delete_env(:favn, key)
+  defp restore_favn_env(key, value), do: Application.put_env(:favn, key, value)
 
   defp handler_level do
     case :logger.get_handler_config(:default) do

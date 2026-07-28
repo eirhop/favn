@@ -51,6 +51,48 @@ defmodule FavnLocal.ConfigTest do
              Config.load(env: valid_env(%{"FAVN_LOG_LEVEL" => "verbose"}))
   end
 
+  test "resolves listener ports from the environment so isolated stacks can coexist" do
+    env = valid_env(%{"FAVN_VIEW_PORT" => "4273", "FAVN_ORCHESTRATOR_API_PORT" => "4201"})
+
+    assert {:ok, config} = Config.load(env: env)
+    assert config.view_port == 4273
+    assert config.orchestrator_port == 4201
+  end
+
+  test "prefers an explicit port option over the environment, and the environment over project config" do
+    previous_env = %{favn: Application.get_all_env(:favn)}
+    on_exit(fn -> restore_application_env(previous_env) end)
+    Application.put_env(:favn, :dev, orchestrator_port: 4101, view_port: 4173)
+
+    env = valid_env(%{"FAVN_VIEW_PORT" => "4273", "FAVN_ORCHESTRATOR_API_PORT" => "4201"})
+
+    assert {:ok, from_env} = Config.load(env: env)
+    assert from_env.view_port == 4273
+    assert from_env.orchestrator_port == 4201
+
+    assert {:ok, from_opts} = Config.load(env: env, view_port: 4373, orchestrator_port: 4301)
+    assert from_opts.view_port == 4373
+    assert from_opts.orchestrator_port == 4301
+
+    assert {:ok, from_project} = Config.load(env: valid_env())
+    assert from_project.view_port == 4173
+    assert from_project.orchestrator_port == 4101
+  end
+
+  test "rejects a port environment variable that is not a valid port number" do
+    assert {:error, {:invalid_env, "FAVN_VIEW_PORT", "1..65535"}} =
+             Config.load(env: valid_env(%{"FAVN_VIEW_PORT" => "not-a-port"}))
+
+    assert {:error, {:invalid_env, "FAVN_VIEW_PORT", "1..65535"}} =
+             Config.load(env: valid_env(%{"FAVN_VIEW_PORT" => "0"}))
+
+    assert {:error, {:invalid_env, "FAVN_VIEW_PORT", "1..65535"}} =
+             Config.load(env: valid_env(%{"FAVN_VIEW_PORT" => "4173x"}))
+
+    assert {:error, {:invalid_env, "FAVN_ORCHESTRATOR_API_PORT", "1..65535"}} =
+             Config.load(env: valid_env(%{"FAVN_ORCHESTRATOR_API_PORT" => "70000"}))
+  end
+
   test "rejects an invalid runtime input pin key" do
     assert {:error, {:invalid_secret_env, "FAVN_RUNTIME_INPUT_PIN_KEY", :invalid_key}} =
              Config.load(
