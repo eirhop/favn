@@ -12,7 +12,6 @@ defmodule FavnView.RunsListLive do
   @refresh_interval_ms 1_500
   @coalesce_refresh_ms 100
   @active_statuses [:queued, :running, :incomplete]
-  @valid_modes ~w(list)
   @default_filters %{
     "search" => "",
     "status" => "all",
@@ -40,7 +39,6 @@ defmodule FavnView.RunsListLive do
         filters: filters,
         filter_options: filter_options(groups),
         summary: overview_summary(groups),
-        active_mode: :list,
         loading: false,
         error: error,
         run_events_live?: false,
@@ -101,12 +99,6 @@ defmodule FavnView.RunsListLive do
   end
 
   @impl true
-  def handle_event("set_mode", %{"mode" => mode}, socket) when mode in @valid_modes do
-    {:noreply, assign(socket, :active_mode, String.to_existing_atom(mode))}
-  end
-
-  def handle_event("set_mode", _params, socket), do: {:noreply, socket}
-
   def handle_event("filter_groups", %{"filters" => params}, socket) do
     filters = normalize_filters(socket.assigns.filters, params)
 
@@ -157,7 +149,6 @@ defmodule FavnView.RunsListLive do
       filters={@filters}
       filter_options={@filter_options}
       summary={@summary}
-      active_mode={@active_mode}
       loading={@loading}
       error={@error}
       nav_items={@nav_items}

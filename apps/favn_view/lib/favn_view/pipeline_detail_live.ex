@@ -6,14 +6,11 @@ defmodule FavnView.PipelineDetailLive do
   require Logger
 
   alias FavnView.AssetRoute
-  alias FavnView.Components.AppShell
-  alias FavnView.Components.GlassPanel
+  alias FavnView.Components.ErrorPage
   alias FavnView.Components.PipelineDetailPage
   alias FavnView.Components.PipelinesPage
   alias FavnView.LogsViewModel
   alias FavnView.Auth.Scope
-
-  @valid_modes ~w(runs assets more)
   @refresh_choices ~w(missing force auto force_all)
   @window_kind_choices ~w(hour day month year)
   @timezone_pattern ~r/\A[A-Za-z0-9_+\-\/]{1,64}\z/
@@ -28,7 +25,6 @@ defmodule FavnView.PipelineDetailLive do
         pipeline_id: pipeline_id,
         pipeline_state: pipeline_state,
         pipeline: pipeline,
-        active_mode: :runs,
         run_error: nil,
         backfill_error: nil,
         backfill_config: default_backfill_config(pipeline),
@@ -39,12 +35,6 @@ defmodule FavnView.PipelineDetailLive do
   end
 
   @impl true
-  def handle_event("set_mode", %{"mode" => mode}, socket) when mode in @valid_modes do
-    {:noreply, assign(socket, :active_mode, String.to_existing_atom(mode))}
-  end
-
-  def handle_event("set_mode", _params, socket), do: {:noreply, socket}
-
   def handle_event("run_pipeline", _params, %{assigns: %{pipeline: nil}} = socket) do
     {:noreply, assign(socket, :run_error, "Pipeline not found.")}
   end
@@ -138,50 +128,35 @@ defmodule FavnView.PipelineDetailLive do
       :if={@pipeline}
       pipeline={@pipeline}
       nav_items={@nav_items}
-      active_mode={@active_mode}
       run_error={@run_error}
       backfill_error={@backfill_error}
       backfill_config={@backfill_config}
       can_submit_runs?={@can_submit_runs?}
+      flash={@flash}
     />
-
-    <AppShell.app_shell
+    <ErrorPage.error_page
       :if={match?({:error, _reason}, @pipeline_state)}
       title={pipeline_error_title(@pipeline_state)}
       subtitle={@pipeline_id}
+      description={pipeline_error_message(@pipeline_state)}
       nav_items={@nav_items}
-    >
-      <div class="mx-auto w-full max-w-4xl">
-        <GlassPanel.glass_panel class="p-8 text-center" data-testid="pipeline-backend-error-state">
-          <h2 class="text-xl font-medium">{pipeline_error_title(@pipeline_state)}</h2>
-          <p class="mt-2 text-base-content/60">
-            {pipeline_error_message(@pipeline_state)}
-          </p>
-          <.link navigate={~p"/pipelines"} class="btn btn-primary btn-soft mt-6">
-            Back to pipelines
-          </.link>
-        </GlassPanel.glass_panel>
-      </div>
-    </AppShell.app_shell>
-
-    <AppShell.app_shell
+      flash={@flash}
+      back_navigate={~p"/pipelines"}
+      back_label="Back to pipelines"
+      data-testid="pipeline-backend-error-state"
+    />
+    <ErrorPage.error_page
       :if={match?({:not_found, _id}, @pipeline_state)}
       title="Pipeline not found"
       subtitle={@pipeline_id}
+      description="No active manifest pipeline matches this pipeline id."
+      tone={:neutral}
       nav_items={@nav_items}
-    >
-      <div class="mx-auto w-full max-w-4xl">
-        <GlassPanel.glass_panel class="p-8 text-center" data-testid="pipeline-not-found-state">
-          <h2 class="text-xl font-medium">Pipeline not found</h2>
-          <p class="mt-2 text-base-content/60">
-            No active manifest pipeline matches this pipeline id.
-          </p>
-          <.link navigate={~p"/pipelines"} class="btn btn-primary btn-soft mt-6">
-            Back to pipelines
-          </.link>
-        </GlassPanel.glass_panel>
-      </div>
-    </AppShell.app_shell>
+      flash={@flash}
+      back_navigate={~p"/pipelines"}
+      back_label="Back to pipelines"
+      data-testid="pipeline-not-found-state"
+    />
     """
   end
 

@@ -6,7 +6,6 @@ defmodule FavnView.Components.RunDetailPage do
   use FavnView, :html
 
   alias FavnView.Components.AppShell
-  alias FavnView.Components.GlassPanel
   alias FavnView.Components.ModeRail
   alias FavnView.Components.RunDetailPage.AttemptDrawer
   alias FavnView.Components.RunDetailPage.Events
@@ -26,6 +25,7 @@ defmodule FavnView.Components.RunDetailPage do
   attr :timeline_hook?, :boolean, default: false
   attr :selected_child_run_id, :string, default: nil
   attr :selected_attempt_id, :string, default: nil
+  attr :flash, :map, default: %{}
 
   def run_detail_page(assigns) do
     run = normalize_run(assigns.run)
@@ -45,8 +45,9 @@ defmodule FavnView.Components.RunDetailPage do
       back_href={@run[:back_asset_href]}
       back_label={if(@run[:back_asset_href], do: "Back to asset", else: nil)}
       facts={run_facts(@run)}
+      flash={@flash}
     >
-      <:compact_header_action :if={@run[:cancellable?]}>
+      <:actions :if={@run[:cancellable?]}>
         <button
           type="button"
           class="btn btn-error btn-soft btn-sm gap-2 rounded-box border-error/30"
@@ -57,8 +58,9 @@ defmodule FavnView.Components.RunDetailPage do
         >
           <.icon name="hero-no-symbol" class="size-4" /> {@run[:cancel_label] || "Cancel run"}
         </button>
-      </:compact_header_action>
-      <:compact_header_action :if={@run[:retry_remaining?]}>
+      </:actions>
+
+      <:actions :if={@run[:retry_remaining?]}>
         <button
           type="button"
           class="btn btn-primary btn-soft btn-sm gap-2 rounded-box border-primary/30"
@@ -70,9 +72,8 @@ defmodule FavnView.Components.RunDetailPage do
           <.icon name="hero-arrow-path" class="size-4" /> {@run[:retry_remaining_label] ||
             "Retry remaining"}
         </button>
-      </:compact_header_action>
-
-      <NotFound.not_found_panel :if={!@run[:found?]} run={@run} />
+      </:actions>
+       <NotFound.not_found_panel :if={!@run[:found?]} run={@run} />
       <.execution_group_page
         :if={@run[:found?]}
         run={@run}
@@ -82,7 +83,6 @@ defmodule FavnView.Components.RunDetailPage do
         selected_child_run_id={@selected_child_run_id}
         selected_attempt={@selected_attempt}
       />
-
       <:mode_rail>
         <ModeRail.mode_rail active={@active_mode} modes={run_modes(@run)} on_select="set_mode" />
       </:mode_rail>
@@ -101,7 +101,6 @@ defmodule FavnView.Components.RunDetailPage do
     ~H"""
     <div class="mx-auto flex w-full max-w-[120rem] flex-col gap-3" data-testid="run-detail-page">
       <Stats.execution_group_stats run={@run} />
-
       <div
         :if={
           @run.asset_attempts_truncated? or @run.requested_windows_truncated? or
@@ -113,7 +112,8 @@ defmodule FavnView.Components.RunDetailPage do
         Showing the first bounded detail slice. Header totals are exact; some detail rows are omitted.
       </div>
 
-      <GlassPanel.glass_panel
+      <.panel
+        padding={:none}
         class="p-0"
         data-testid={if(@active_mode == :overview, do: "run-overview-panel", else: "run-mode-panel")}
         data-run-active={to_string(@run.active?)}
@@ -125,18 +125,15 @@ defmodule FavnView.Components.RunDetailPage do
             run={@run}
             timeline_state={@timeline_state}
             timeline_hook?={@timeline_hook?}
-          />
-          <Failures.failures_panel :if={@active_mode == :failures} run={@run} />
+          /> <Failures.failures_panel :if={@active_mode == :failures} run={@run} />
           <WindowRuns.window_runs_panel
             :if={@active_mode == :windows}
             run={@run}
             selected_child_run_id={@selected_child_run_id}
-          />
-          <Events.events_panel :if={@active_mode == :events} run={@run} />
+          /> <Events.events_panel :if={@active_mode == :events} run={@run} />
         </div>
-      </GlassPanel.glass_panel>
-
-      <AttemptDrawer.attempt_drawer :if={@selected_attempt} attempt={@selected_attempt} />
+      </.panel>
+       <AttemptDrawer.attempt_drawer :if={@selected_attempt} attempt={@selected_attempt} />
     </div>
     """
   end

@@ -8,7 +8,6 @@ defmodule FavnView.PipelinesLive do
   alias FavnView.OperatorErrorLabels
 
   @default_filters %{search: "", status: "all"}
-  @valid_modes ~w(list)
 
   @impl true
   def mount(_params, _session, socket) do
@@ -19,7 +18,6 @@ defmodule FavnView.PipelinesLive do
         all_pipelines: pipelines,
         pipelines: pipelines,
         filters: @default_filters,
-        active_mode: :list,
         loading: false,
         error: error,
         nav_items: PipelinesPage.nav_items(:pipelines),
@@ -40,19 +38,12 @@ defmodule FavnView.PipelinesLive do
      )}
   end
 
-  def handle_event("set_mode", %{"mode" => mode}, socket) when mode in @valid_modes do
-    {:noreply, assign(socket, :active_mode, String.to_existing_atom(mode))}
-  end
-
-  def handle_event("set_mode", _params, socket), do: {:noreply, socket}
-
   @impl true
   def render(assigns) do
     ~H"""
     <PipelinesPage.pipelines_page
       pipelines={@pipelines}
       filters={@filters}
-      active_mode={@active_mode}
       loading={@loading}
       error={@error}
       nav_items={@nav_items}

@@ -6,9 +6,7 @@ defmodule FavnView.Components.SchedulesPage do
   use FavnView, :html
 
   alias FavnView.Components.AppShell
-  alias FavnView.Components.AssetCataloguePage
-  alias FavnView.Components.GlassPanel
-  alias FavnView.Components.ModeRail
+  alias FavnView.Components.Navigation
   alias FavnView.Components.ScheduleUi
 
   attr :schedules, :list, required: true
@@ -16,7 +14,6 @@ defmodule FavnView.Components.SchedulesPage do
   attr :filters, :map, required: true
   attr :filter_options, :map, required: true
   attr :summary, :map, required: true
-  attr :active_mode, :atom, required: true
   attr :loading, :boolean, default: false
   attr :error, :string, default: nil
   attr :nav_items, :list, required: true
@@ -27,7 +24,6 @@ defmodule FavnView.Components.SchedulesPage do
       title="Schedules"
       subtitle="Manage and monitor pipeline schedules."
       nav_items={@nav_items}
-      show_header?={false}
       content_scroll?={false}
     >
       <div
@@ -35,14 +31,17 @@ defmodule FavnView.Components.SchedulesPage do
         class="mx-auto flex min-h-0 w-full max-w-[120rem] flex-1 flex-col pb-24 lg:pb-0"
         data-testid="schedules-page"
       >
-        <.loading_state :if={@loading} />
-        <.error_state :if={!@loading && @error} error={@error} />
-
+        <.loading_state :if={@loading} label="Loading schedules" />
+        <.error_state
+          :if={!@loading && @error}
+          title="Could not load schedules"
+          description={@error}
+          data-testid="schedules-error-state"
+        />
         <div :if={!@loading && !@error} class="flex min-h-0 flex-1 flex-col gap-2.5 lg:gap-3">
-          <.helper_text />
-          <.summary_band summary={@summary} />
-
-          <GlassPanel.glass_panel
+          <.helper_text /> <.summary_band summary={@summary} />
+          <.panel
+            padding={:none}
             class="flex min-h-0 flex-1 flex-col overflow-hidden p-3 sm:p-4"
             data-testid="schedules-panel"
           >
@@ -51,18 +50,24 @@ defmodule FavnView.Components.SchedulesPage do
               filter_options={@filter_options}
               result_count={length(@schedules)}
             />
-
-            <.empty_state :if={@all_schedules == []} />
-            <.filtered_empty_state :if={@all_schedules != [] && @schedules == []} />
-            <.schedules_table :if={@schedules != []} schedules={@schedules} />
+            <.empty_state
+              :if={@all_schedules == []}
+              title="No schedules found"
+              description="Deploy a manifest with scheduled pipelines to see them here."
+              icon="hero-calendar-days"
+              data-testid="schedules-empty-state"
+            />
+            <.empty_state
+              :if={@all_schedules != [] && @schedules == []}
+              title="No schedules match these filters"
+              description="Clear filters or try a broader search."
+              icon="hero-funnel"
+              data-testid="schedules-filtered-empty-state"
+            /> <.schedules_table :if={@schedules != []} schedules={@schedules} />
             <.schedule_cards :if={@schedules != []} schedules={@schedules} />
-          </GlassPanel.glass_panel>
+          </.panel>
         </div>
       </div>
-
-      <:mode_rail>
-        <ModeRail.mode_rail active={@active_mode} modes={schedules_modes()} on_select="set_mode" />
-      </:mode_rail>
     </AppShell.app_shell>
     """
   end
@@ -90,8 +95,7 @@ defmodule FavnView.Components.SchedulesPage do
           label="Pending activation"
           value={@summary.pending_activation}
           caption="Awaiting review"
-        />
-        <.summary_metric label="Disabled" value={@summary.disabled} caption="Operator disabled" />
+        /> <.summary_metric label="Disabled" value={@summary.disabled} caption="Operator disabled" />
         <.summary_metric label="Running" value={@summary.running} caption="In flight" />
         <.summary_metric label="Queued" value={@summary.queued} caption="Waiting" />
       </div>
@@ -109,7 +113,9 @@ defmodule FavnView.Components.SchedulesPage do
       <p class="text-[0.68rem] font-semibold uppercase tracking-[0.2em] text-base-content/50">
         {@label}
       </p>
+
       <p class="text-xl font-semibold leading-none text-base-content">{@value}</p>
+
       <p class="text-xs text-base-content/55">{@caption}</p>
     </div>
     """
@@ -166,7 +172,6 @@ defmodule FavnView.Components.SchedulesPage do
           value={@filters["window"]}
           options={window_options(@filter_options.windows)}
         />
-
         <button
           type="button"
           phx-click="clear_filters"
@@ -175,6 +180,7 @@ defmodule FavnView.Components.SchedulesPage do
         >
           Clear
         </button>
+
         <span class="ml-auto text-xs text-base-content/45" data-testid="schedule-result-count">
           {@result_count} results
         </span>
@@ -214,20 +220,33 @@ defmodule FavnView.Components.SchedulesPage do
         <thead>
           <tr class="border-base-content/10 text-xs text-base-content/55">
             <th class="w-64 font-medium">Schedule</th>
+
             <th class="font-medium">Pipeline</th>
+
             <th class="font-medium">Cadence</th>
+
             <th class="font-medium">Window</th>
+
             <th class="font-medium">Policies</th>
+
             <th class="font-medium">Activation</th>
+
             <th class="font-medium">Runtime</th>
+
             <th class="font-medium">Issue</th>
+
             <th class="font-medium">Next due</th>
+
             <th class="font-medium">Last submitted</th>
+
             <th class="font-medium">Current run</th>
+
             <th class="font-medium">Updated</th>
+
             <th class="font-medium">Actions</th>
           </tr>
         </thead>
+
         <tbody>
           <.schedule_row :for={schedule <- @schedules} schedule={schedule} />
         </tbody>
@@ -252,34 +271,46 @@ defmodule FavnView.Components.SchedulesPage do
           >
             {@schedule.schedule_label}
           </.link>
+
           <p class="truncate font-mono text-xs text-base-content/50" title={@schedule.id}>
             {@schedule.id}
           </p>
         </div>
       </td>
+
       <td class="max-w-52 truncate text-xs text-base-content/75" title={@schedule.pipeline_label}>
         {@schedule.pipeline_label}
       </td>
+
       <td class="whitespace-nowrap text-xs text-base-content/70">
         <p class="font-mono">{@schedule.cron}</p>
+
         <p class="text-base-content/45">{@schedule.timezone}</p>
       </td>
+
       <td class="whitespace-nowrap text-xs text-base-content/70">{@schedule.window_label}</td>
+
       <td><.policy_chips schedule={@schedule} /></td>
+
       <td>
         <ScheduleUi.activation_badge
           state={@schedule.activation_state}
           label={@schedule.activation_label}
         />
       </td>
+
       <td>
         <ScheduleUi.runtime_badge state={@schedule.runtime_state} label={@schedule.runtime_label} />
       </td>
+
       <td class="whitespace-nowrap text-xs text-base-content/70">
         <ScheduleUi.scheduler_error_badge error={@schedule.last_scheduler_error} />
       </td>
+
       <td class="whitespace-nowrap text-xs text-base-content/70">{@schedule.next_due_label}</td>
+
       <td class="whitespace-nowrap text-xs text-base-content/70">{@schedule.last_submitted_label}</td>
+
       <td class="whitespace-nowrap text-xs text-base-content/70">
         <.link
           :if={@schedule.in_flight_run_id}
@@ -288,9 +319,11 @@ defmodule FavnView.Components.SchedulesPage do
         >
           {@schedule.current_run_label}
         </.link>
-        <span :if={!@schedule.in_flight_run_id}>-</span>
+         <span :if={!@schedule.in_flight_run_id}>-</span>
       </td>
+
       <td class="whitespace-nowrap text-xs text-base-content/70">{@schedule.updated_label}</td>
+
       <td>
         <button
           type="button"
@@ -330,6 +363,7 @@ defmodule FavnView.Components.SchedulesPage do
             <span class="favn-density-list-card-icon flex shrink-0 items-center justify-center rounded-field border border-primary/30 bg-primary/10 text-primary">
               <.icon name="hero-calendar-days" class="size-4" />
             </span>
+
             <div class="min-w-0">
               <.link
                 navigate={~p"/schedules/#{@schedule.route_id}"}
@@ -337,9 +371,11 @@ defmodule FavnView.Components.SchedulesPage do
               >
                 {@schedule.schedule_label}
               </.link>
+
               <p class="mt-0.5 truncate text-xs text-base-content/60">{@schedule.pipeline_label}</p>
             </div>
           </div>
+
           <div class="flex flex-wrap items-center gap-2 text-xs text-base-content/65">
             <ScheduleUi.activation_badge
               state={@schedule.activation_state}
@@ -347,13 +383,14 @@ defmodule FavnView.Components.SchedulesPage do
             />
             <ScheduleUi.runtime_badge state={@schedule.runtime_state} label={@schedule.runtime_label} />
             <ScheduleUi.scheduler_error_badge error={@schedule.last_scheduler_error} />
-            <span>{@schedule.cron}</span>
-            <span>{@schedule.window_label}</span>
+            <span>{@schedule.cron}</span> <span>{@schedule.window_label}</span>
           </div>
+
           <p class="truncate font-mono text-xs text-base-content/45" title={@schedule.id}>
             {@schedule.id}
           </p>
         </div>
+
         <button
           type="button"
           class="btn btn-ghost btn-xs favn-icon-button"
@@ -378,66 +415,7 @@ defmodule FavnView.Components.SchedulesPage do
     """
   end
 
-  def loading_state(assigns) do
-    ~H"""
-    <GlassPanel.glass_panel class="mx-auto flex min-h-64 max-w-2xl items-center justify-center p-10">
-      <div class="text-center">
-        <span class="loading loading-ring loading-lg text-primary"></span>
-        <p class="mt-4 text-base-content/60">Loading schedules</p>
-      </div>
-    </GlassPanel.glass_panel>
-    """
-  end
-
-  def empty_state(assigns) do
-    ~H"""
-    <GlassPanel.glass_panel
-      class="mx-auto max-w-2xl p-10 text-center"
-      data-testid="schedules-empty-state"
-    >
-      <h2 class="text-xl font-medium">No schedules found</h2>
-      <p class="mt-2 text-base-content/60">
-        Deploy a manifest with scheduled pipelines to see them here.
-      </p>
-    </GlassPanel.glass_panel>
-    """
-  end
-
-  def filtered_empty_state(assigns) do
-    ~H"""
-    <GlassPanel.glass_panel
-      class="mx-auto max-w-2xl p-10 text-center"
-      data-testid="schedules-filtered-empty-state"
-    >
-      <h2 class="text-xl font-medium">No schedules match these filters</h2>
-      <p class="mt-2 text-base-content/60">Clear filters or try a broader search.</p>
-    </GlassPanel.glass_panel>
-    """
-  end
-
-  attr :error, :string, required: true
-
-  def error_state(assigns) do
-    ~H"""
-    <GlassPanel.glass_panel
-      class="mx-auto max-w-2xl p-10 text-center"
-      data-testid="schedules-error-state"
-    >
-      <h2 class="text-xl font-medium">Could not load schedules</h2>
-      <p class="mt-2 text-base-content/60">{@error}</p>
-    </GlassPanel.glass_panel>
-    """
-  end
-
-  def schedules_modes do
-    [
-      %{id: :list, label: "List", icon: "hero-list-bullet"},
-      %{id: :filters, label: "Filters", icon: "hero-funnel", disabled: true},
-      %{id: :more, label: "More", icon: "hero-ellipsis-vertical", disabled: true}
-    ]
-  end
-
-  def nav_items(active \\ :schedules), do: AssetCataloguePage.nav_items(active)
+  def nav_items(active \\ :schedules), do: Navigation.items(active)
 
   def activation_options do
     [

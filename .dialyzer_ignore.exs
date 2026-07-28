@@ -232,10 +232,10 @@
   {"lib/favn_view/runs_list_live.ex", "Function display_run_status/1 will never be called."},
   {"lib/favn_view/runs_list_live.ex", "Function progress_label/2 will never be called."},
   {"lib/favn_view/runs_list_live.ex", "Function progress_title/1 will never be called."},
-  {"lib/favn_view/storybook.ex",
-   "Callback info about the PhoenixStorybook.BackendBehaviour behaviour is not available."},
-  {"lib/favn_view/storybook.ex",
-   "Function PhoenixStorybook.Entries.story_file_suffix/0 does not exist."},
   {"lib/mix/tasks/favn.postgres.maintenance.ex", "Function usage!/0 has no local return."},
-  {"lib/mix/tasks/favn.postgres.provision_workspace.ex", "Function usage!/0 has no local return."}
+  {"lib/mix/tasks/favn.postgres.provision_workspace.ex",
+   "Function usage!/0 has no local return."},
+  {"test/support/conn_case.ex", "Function ExUnit.Callbacks.__merge__/4 does not exist."},
+  {"test/support/conn_case.ex", "Function ExUnit.Callbacks.__noop__/0 does not exist."},
+  {"test/support/conn_case.ex", "Function ExUnit.CaseTemplate.__proxy__/2 does not exist."}
 ]

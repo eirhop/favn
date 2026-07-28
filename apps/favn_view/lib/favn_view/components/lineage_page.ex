@@ -16,7 +16,6 @@ defmodule FavnView.Components.LineagePage do
   alias FavnOrchestrator.Operator.Lineage.Summary
   alias FavnView.Components.AppShell
   alias FavnView.Components.AssetCataloguePage
-  alias FavnView.Components.GlassPanel
 
   @canvas_width 1_560
   @canvas_height 820
@@ -75,13 +74,30 @@ defmodule FavnView.Components.LineagePage do
   def lineage_explorer(assigns) do
     ~H"""
     <div class="flex min-h-0 flex-1 flex-col gap-3" data-testid="lineage-page">
-      <.loading_state :if={@loading} />
-      <.error_state :if={!@loading && @error} error={@error} />
-      <.empty_state :if={!@loading && !@error && is_nil(@graph)} />
-
+      <.loading_state
+        :if={@loading}
+        label="Loading asset lineage"
+        class="min-h-96"
+        data-testid="lineage-loading-state"
+      />
+      <.error_state
+        :if={!@loading && @error}
+        tone={:warning}
+        title="Could not load lineage"
+        description={safe_error_message(@error)}
+        class="min-h-96"
+        data-testid="lineage-error-state"
+      />
+      <.empty_state
+        :if={!@loading && !@error && is_nil(@graph)}
+        title="No lineage graph"
+        description="Register and activate a manifest to inspect asset lineage."
+        icon="hero-share"
+        class="min-h-96"
+        data-testid="lineage-empty-state"
+      />
       <div :if={!@loading && !@error && @graph} class="flex min-h-0 flex-1 flex-col gap-3">
         <.lineage_toolbar view_mode={@view_mode} search={@search} zoom={@zoom} />
-
         <div class={[
           "grid min-h-0 flex-1 gap-3",
           @inspector_open? && "xl:grid-cols-[minmax(0,1fr)_22rem] 2xl:grid-cols-[minmax(0,1fr)_24rem]"
@@ -164,9 +180,11 @@ defmodule FavnView.Components.LineagePage do
           >
             <.icon name="hero-minus" class="size-4" />
           </button>
+
           <span class="join-item flex h-8 min-w-14 items-center justify-center border-x border-base-content/10 px-3 text-xs text-base-content/70">
             {@zoom}%
           </span>
+
           <button
             type="button"
             class="join-item btn btn-ghost btn-xs h-8 px-3"
@@ -201,6 +219,7 @@ defmodule FavnView.Components.LineagePage do
       data-testid="lineage-canvas-shell"
     >
       <div class="absolute inset-0 bg-base-100/20"></div>
+
       <div
         class="absolute inset-0 opacity-80"
         style="background-image: radial-gradient(color-mix(in oklab, var(--color-primary) 24%, transparent) 1px, transparent 1px); background-size: 18px 18px; mask-image: radial-gradient(circle at 46% 46%, black, transparent 78%);"
@@ -220,7 +239,6 @@ defmodule FavnView.Components.LineagePage do
           data-testid="lineage-canvas-content"
         >
           <.layer_headers graph={@graph} />
-
           <svg
             class="pointer-events-none absolute inset-0 size-full overflow-visible"
             viewBox={"0 0 #{@canvas_width} #{@canvas_height}"}
@@ -239,6 +257,7 @@ defmodule FavnView.Components.LineagePage do
                 <path d="M 0 0 L 8 4 L 0 8 z" class="fill-primary/80" />
               </marker>
             </defs>
+
             <path
               :for={edge <- @graph.edges}
               d={edge_path(edge, @positions)}
@@ -273,9 +292,7 @@ defmodule FavnView.Components.LineagePage do
           />
         </div>
       </div>
-
-      <.lineage_hint_strip />
-      <.lineage_minimap graph={@graph} positions={@positions} />
+       <.lineage_hint_strip /> <.lineage_minimap graph={@graph} positions={@positions} />
     </section>
     """
   end
@@ -295,6 +312,7 @@ defmodule FavnView.Components.LineagePage do
         <.icon name={layer_icon(layer)} class="size-4 text-primary/80" />
         <span class="font-medium">{layer_label(layer)}</span>
       </div>
+
       <p class="mt-1 text-[0.65rem] text-base-content/45">{layer_caption(@graph, layer)}</p>
     </div>
     """
@@ -325,13 +343,16 @@ defmodule FavnView.Components.LineagePage do
           <span class="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-field border border-primary/25 bg-primary/10 text-primary">
             <.icon name={node_icon(@node)} class="size-5" />
           </span>
+
           <div class="min-w-0">
             <h2 class="truncate text-sm font-semibold text-base-content">{@node.label}</h2>
+
             <p class="mt-0.5 truncate text-[0.68rem] text-base-content/55">
               {asset_count_label(@node)}
             </p>
           </div>
         </div>
+
         <span class="rounded-field border border-base-content/10 p-1 text-base-content/55">
           <.icon name="hero-chevron-down" class="size-4" />
         </span>
@@ -353,6 +374,7 @@ defmodule FavnView.Components.LineagePage do
           <span class="min-w-0 flex-1 truncate">{asset.label}</span>
           <span class={status_dot_class(asset.freshness_status)}></span>
         </div>
+
         <div
           :if={@node.hidden_asset_count > 0}
           class="rounded-field border border-base-content/10 bg-base-100/20 px-2.5 py-1.5 text-xs text-base-content/55"
@@ -384,13 +406,15 @@ defmodule FavnView.Components.LineagePage do
       <span class="flex size-8 shrink-0 items-center justify-center rounded-field border border-primary/25 bg-primary/10 text-primary">
         <.icon name="hero-cube-transparent" class="size-5" />
       </span>
+
       <div class="min-w-0 flex-1">
         <h2 class="truncate text-sm font-semibold text-base-content">{@node.label}</h2>
+
         <p class="truncate text-[0.68rem] text-base-content/50">
           {@node.schema || @node.layer} · {@node.kind}
         </p>
       </div>
-      <span class={status_dot_class(@node.freshness_status)}></span>
+       <span class={status_dot_class(@node.freshness_status)}></span>
     </button>
     """
   end
@@ -401,8 +425,7 @@ defmodule FavnView.Components.LineagePage do
   def status_count(assigns) do
     ~H"""
     <span class={status_text_class(@status)}>
-      <span class={status_dot_class(@status)}></span>
-      {@count} {status_label(@status)}
+      <span class={status_dot_class(@status)}></span> {@count} {status_label(@status)}
     </span>
     """
   end
@@ -443,8 +466,7 @@ defmodule FavnView.Components.LineagePage do
           <.definition
             label="Type"
             value={@inspector.about.type |> to_string() |> String.replace("_", " ")}
-          />
-          <.definition label="Assets" value={Integer.to_string(@inspector.about.asset_count)} />
+          /> <.definition label="Assets" value={Integer.to_string(@inspector.about.asset_count)} />
         </.inspector_section>
 
         <.inspector_section title="Health summary">
@@ -478,6 +500,7 @@ defmodule FavnView.Components.LineagePage do
           <div :if={@inspector.top_issues == []} class="text-sm text-base-content/55">
             No active issues.
           </div>
+
           <div
             :for={issue <- @inspector.top_issues}
             class="flex items-center justify-between rounded-field border border-base-content/10 bg-base-100/20 px-3 py-2 text-sm"
@@ -485,14 +508,13 @@ defmodule FavnView.Components.LineagePage do
             <span class="flex items-center gap-2">
               <.icon name="hero-exclamation-triangle" class="size-4 text-warning" /> {issue.label}
             </span>
-            <span class="text-base-content/55">{issue.count}</span>
+             <span class="text-base-content/55">{issue.count}</span>
           </div>
         </.inspector_section>
-
-        <.dependency_list title="Downstream" items={@inspector.downstream} />
+         <.dependency_list title="Downstream" items={@inspector.downstream} />
         <.dependency_list title="Upstream" items={@inspector.upstream} />
       </div>
-      <.inspector_actions actions={@inspector.actions} />
+       <.inspector_actions actions={@inspector.actions} />
     </div>
     """
   end
@@ -516,21 +538,22 @@ defmodule FavnView.Components.LineagePage do
           <.definition label="Kind" value={to_string(@inspector.asset.kind)} />
           <.definition label="Freshness" value={status_label(@inspector.asset.freshness_status)} />
         </.inspector_section>
+
         <.inspector_section title="Latest run">
           <div :if={is_nil(@inspector.latest_run)} class="text-sm text-base-content/55">
             No run evidence yet.
           </div>
-          <.definition :if={@inspector.latest_run} label="Run" value={@inspector.latest_run.id} />
+           <.definition :if={@inspector.latest_run} label="Run" value={@inspector.latest_run.id} />
           <.definition
             :if={@inspector.latest_run}
             label="Status"
             value={to_string(@inspector.latest_run.status)}
           />
         </.inspector_section>
-        <.dependency_list title="Downstream" items={@inspector.downstream} />
+         <.dependency_list title="Downstream" items={@inspector.downstream} />
         <.dependency_list title="Upstream" items={@inspector.upstream} />
       </div>
-      <.inspector_actions actions={@inspector.actions} />
+       <.inspector_actions actions={@inspector.actions} />
     </div>
     """
   end
@@ -556,6 +579,7 @@ defmodule FavnView.Components.LineagePage do
             value={Integer.to_string(@inspector.edge.dependency_count)}
           />
         </.inspector_section>
+
         <.inspector_section title="Preview dependencies">
           <div
             :for={dependency <- @inspector.dependencies}
@@ -565,7 +589,7 @@ defmodule FavnView.Components.LineagePage do
           </div>
         </.inspector_section>
       </div>
-      <.inspector_actions actions={@inspector.actions} />
+       <.inspector_actions actions={@inspector.actions} />
     </div>
     """
   end
@@ -584,16 +608,19 @@ defmodule FavnView.Components.LineagePage do
           <span class="flex size-9 shrink-0 items-center justify-center rounded-field border border-primary/25 bg-primary/10 text-primary">
             <.icon name={@icon} class="size-5" />
           </span>
+
           <div class="min-w-0">
             <h2 class="truncate text-base font-semibold">{@title}</h2>
+
             <p :if={@subtitle} class="truncate text-xs text-base-content/55">{@subtitle}</p>
           </div>
         </div>
+
         <div class="flex items-center gap-2">
           <span class={status_pill_class(@status)}>
-            <span class={status_dot_class(@status)}></span>
-            {status_label(@status)}
+            <span class={status_dot_class(@status)}></span> {status_label(@status)}
           </span>
+
           <button
             :if={@close_event}
             type="button"
@@ -624,13 +651,17 @@ defmodule FavnView.Components.LineagePage do
       >
         <.icon name="hero-x-mark" class="size-4" />
       </button>
+
       <span class="flex size-12 items-center justify-center rounded-box border border-primary/25 bg-primary/10 text-primary">
         <.icon name="hero-share" class="size-6" />
       </span>
+
       <h2 class="mt-4 text-base font-semibold">Select lineage context</h2>
+
       <p class="mt-2 max-w-xs text-sm text-base-content/55">
         Select a group, asset, or dependency edge to inspect health, impact, and downstream relationships.
       </p>
+
       <p class="mt-4 text-xs text-base-content/45">
         {@graph.summary.visible_groups} groups · {@graph.summary.visible_edges} dependencies visible
       </p>
@@ -645,7 +676,7 @@ defmodule FavnView.Components.LineagePage do
     ~H"""
     <section class="space-y-2.5 border-b border-base-content/10 pb-5 last:border-b-0">
       <h3 class="text-sm font-medium text-base-content/90">{@title}</h3>
-      {render_slot(@inner_block)}
+       {render_slot(@inner_block)}
     </section>
     """
   end
@@ -657,6 +688,7 @@ defmodule FavnView.Components.LineagePage do
     ~H"""
     <div class="grid grid-cols-[6rem_minmax(0,1fr)] gap-3 text-sm">
       <dt class="text-base-content/50">{@label}</dt>
+
       <dd class="truncate text-base-content/85" title={@value}>{@value}</dd>
     </div>
     """
@@ -676,8 +708,9 @@ defmodule FavnView.Components.LineagePage do
         <span class={status_text_class(@status)}>
           <span class={status_dot_class(@status)}></span> {@count} {@label}
         </span>
-        <span class="text-base-content/45">{@percent}%</span>
+         <span class="text-base-content/45">{@percent}%</span>
       </div>
+
       <div class="h-1.5 overflow-hidden rounded-full bg-base-content/10">
         <div class={health_bar_class(@status)} style={"width: #{@percent}%;"}></div>
       </div>
@@ -692,6 +725,7 @@ defmodule FavnView.Components.LineagePage do
     ~H"""
     <.inspector_section title={@title}>
       <div :if={@items == []} class="text-sm text-base-content/55">No visible dependencies.</div>
+
       <div
         :for={item <- @items}
         class="flex items-center justify-between rounded-field border border-base-content/10 bg-base-100/20 px-3 py-2 text-sm"
@@ -725,14 +759,17 @@ defmodule FavnView.Components.LineagePage do
         <.icon name="hero-hand-raised" class="size-4" /> Pan
         <span class="text-base-content/40">Click and drag</span>
       </span>
+
       <span class="flex items-center gap-2">
         <.icon name="hero-magnifying-glass-plus" class="size-4" /> Zoom
         <span class="text-base-content/40">Scroll or pinch</span>
       </span>
+
       <span class="flex items-center gap-2">
         <.icon name="hero-cursor-arrow-rays" class="size-4" /> Select
         <span class="text-base-content/40">Click a node</span>
       </span>
+
       <span class="flex items-center gap-2">
         <.icon name="hero-plus-circle" class="size-4" /> Expand
         <span class="text-base-content/40">Click group chevron</span>
@@ -755,6 +792,7 @@ defmodule FavnView.Components.LineagePage do
         <.icon name="hero-arrows-pointing-in" class="size-4" />
         <.icon name="hero-square-3-stack-3d" class="size-4" />
       </div>
+
       <div class="relative h-24 overflow-hidden rounded-field border border-primary/35 bg-primary/5">
         <div
           :for={node <- @graph.nodes}
@@ -762,6 +800,7 @@ defmodule FavnView.Components.LineagePage do
           style={minimap_node_style(Map.fetch!(@positions, node.id))}
         >
         </div>
+
         <div
           class="absolute inset-3 border border-primary bg-primary/5 shadow-[0_0_18px_color-mix(in_oklab,var(--color-primary)_32%,transparent)]"
           data-testid="lineage-minimap-viewport"
@@ -769,54 +808,6 @@ defmodule FavnView.Components.LineagePage do
         </div>
       </div>
     </div>
-    """
-  end
-
-  def loading_state(assigns) do
-    ~H"""
-    <GlassPanel.glass_panel
-      class="flex min-h-96 items-center justify-center p-10"
-      data-testid="lineage-loading-state"
-    >
-      <div class="text-center">
-        <span class="loading loading-ring loading-lg text-primary"></span>
-        <p class="mt-4 text-base-content/60">Loading asset lineage</p>
-      </div>
-    </GlassPanel.glass_panel>
-    """
-  end
-
-  attr :error, :any, required: true
-
-  def error_state(assigns) do
-    ~H"""
-    <GlassPanel.glass_panel
-      class="mx-auto flex min-h-96 max-w-2xl items-center justify-center p-10 text-center"
-      data-testid="lineage-error-state"
-    >
-      <div>
-        <.icon name="hero-exclamation-triangle" class="mx-auto size-10 text-warning" />
-        <h2 class="mt-4 text-xl font-medium">Could not load lineage</h2>
-        <p class="mt-2 text-base-content/60">{safe_error_message(@error)}</p>
-      </div>
-    </GlassPanel.glass_panel>
-    """
-  end
-
-  def empty_state(assigns) do
-    ~H"""
-    <GlassPanel.glass_panel
-      class="mx-auto flex min-h-96 max-w-2xl items-center justify-center p-10 text-center"
-      data-testid="lineage-empty-state"
-    >
-      <div>
-        <.icon name="hero-share" class="mx-auto size-10 text-primary" />
-        <h2 class="mt-4 text-xl font-medium">No lineage graph</h2>
-        <p class="mt-2 text-base-content/60">
-          Register and activate a manifest to inspect asset lineage.
-        </p>
-      </div>
-    </GlassPanel.glass_panel>
     """
   end
 

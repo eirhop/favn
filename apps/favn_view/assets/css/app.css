@@ -5,6 +5,15 @@
 @source "../css";
 @source "../js";
 @source "../../lib/favn_view";
+@source "../../dev";
+
+/* `FavnView.UI.Tokens` builds these class names at runtime, so the scanner above
+   cannot see them and Tailwind would omit them. Keep this list in sync with that
+   module: every tone must render in every family it exposes. */
+@source inline("{badge,status,alert,btn}-{neutral,primary,info,success,warning,error}");
+@source inline("text-{primary,info,success,warning,error}");
+@source inline("bg-{primary,info,success,warning,error}/10");
+@source inline("border-{primary,info,success,warning,error}/35");
 
 /* A Tailwind plugin that makes "hero-#{ICON}" classes available.
    The heroicons installation itself is managed by your mix.exs */
@@ -105,16 +114,26 @@
 [data-phx-session], [data-phx-teleported-src] { display: contents }
 
 @layer components {
-  .favn-shell-bg {
+  /* `favn-shell-bg` is the full page shell and claims the viewport. The
+     design-system browser wants the same atmosphere without claiming it, so it
+     uses `favn-shell-backdrop`, which stays as tall as its content and lets the
+     document scroll normally. */
+  .favn-shell-bg,
+  .favn-shell-backdrop {
     position: relative;
-    min-height: 100vh;
-    overflow: hidden;
     font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     background:
       radial-gradient(circle at 16% 58%, color-mix(in oklab, var(--color-primary) 32%, transparent), transparent 22rem),
       radial-gradient(circle at 90% 92%, color-mix(in oklab, var(--color-secondary) 42%, transparent), transparent 24rem),
       radial-gradient(circle at 62% 20%, color-mix(in oklab, var(--color-base-300) 72%, transparent), transparent 34rem),
       var(--color-base-100);
+  }
+
+  /* `overflow: hidden` must not reach `favn-shell-backdrop`: on a scrolling
+     document it would disable wheel scrolling for the whole page. */
+  .favn-shell-bg {
+    min-height: 100vh;
+    overflow: hidden;
   }
 
   .favn-surface-panel,
@@ -335,6 +354,56 @@
       width: 2.5rem;
       height: 2.5rem;
     }
+  }
+
+  /* DaisyUI's `btn-soft` mixes its colour into `base-100`, which is near-black in
+     favn-dark, so a soft button loses its surface entirely. These drive DaisyUI's
+     own button variables instead, so secondary and danger keep a readable
+     container in both themes. */
+  /* DaisyUI's `neutral` colour is a dark slate, so `badge-neutral` and
+     `status-neutral` render dark-on-dark in favn-dark. The neutral tone is
+     "no judgement", which reads better as plain base-content anyway. */
+  .badge.favn-badge-neutral {
+    --badge-color: color-mix(in oklab, var(--color-base-content) 72%, transparent);
+    --badge-fg: var(--color-base-100);
+  }
+
+  /* DaisyUI ships no `alert-neutral`; `alert-soft` already falls back to
+     base-content, so this only softens it to match the other tones. */
+  .alert.favn-alert-neutral {
+    --alert-color: color-mix(in oklab, var(--color-base-content) 70%, transparent);
+  }
+
+  .status.favn-status-neutral {
+    background-color: color-mix(in oklab, var(--color-base-content) 45%, transparent);
+    color: color-mix(in oklab, var(--color-base-content) 45%, transparent);
+  }
+
+  /* `.btn` declares `--btn-fg` itself, so these need the extra class to win. */
+  .btn.favn-btn-supporting {
+    --btn-color: color-mix(in oklab, var(--color-primary) 17%, var(--color-base-100));
+    --btn-fg: color-mix(in oklab, var(--color-primary) 78%, var(--color-base-content));
+    --btn-border: color-mix(in oklab, var(--color-primary) 42%, var(--color-base-100));
+  }
+
+  .btn.favn-btn-supporting:hover,
+  .btn.favn-btn-supporting:focus-visible {
+    --btn-color: color-mix(in oklab, var(--color-primary) 27%, var(--color-base-100));
+    --btn-fg: var(--color-primary);
+    --btn-border: color-mix(in oklab, var(--color-primary) 64%, var(--color-base-100));
+  }
+
+  .btn.favn-btn-destructive {
+    --btn-color: color-mix(in oklab, var(--color-error) 18%, var(--color-base-100));
+    --btn-fg: color-mix(in oklab, var(--color-error) 78%, var(--color-base-content));
+    --btn-border: color-mix(in oklab, var(--color-error) 46%, var(--color-base-100));
+  }
+
+  .btn.favn-btn-destructive:hover,
+  .btn.favn-btn-destructive:focus-visible {
+    --btn-color: color-mix(in oklab, var(--color-error) 28%, var(--color-base-100));
+    --btn-fg: var(--color-error);
+    --btn-border: color-mix(in oklab, var(--color-error) 68%, var(--color-base-100));
   }
 
   .favn-icon-button {

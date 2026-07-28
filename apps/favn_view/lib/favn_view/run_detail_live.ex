@@ -246,6 +246,7 @@ defmodule FavnView.RunDetailLive do
       timeline_hook?={true}
       selected_child_run_id={@selected_child_run_id}
       selected_attempt_id={@selected_attempt_id}
+      flash={@flash}
     />
     """
   end

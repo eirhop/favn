@@ -7,7 +7,6 @@ defmodule FavnView.Components.LogPages do
 
   alias FavnView.Components.AppShell
   alias FavnView.Components.LogViewer
-  alias FavnView.Components.ModeRail
   alias FavnView.Components.OutputMetadata
 
   attr :nav_items, :list, default: []
@@ -42,7 +41,6 @@ defmodule FavnView.Components.LogPages do
       title={@title}
       subtitle={@subtitle}
       nav_items={@nav_items}
-      show_header?={false}
     >
       <.viewer assigns={assigns} viewer_title="Logs" viewer_subtitle={@subtitle} />
     </AppShell.app_shell>
@@ -85,16 +83,11 @@ defmodule FavnView.Components.LogPages do
         metadata={@output_metadata}
         status={@output_status}
       />
-
       <.viewer
         assigns={assigns}
         viewer_title="Logs"
         viewer_subtitle="Asset-step scoped backend logs"
       />
-
-      <:mode_rail>
-        <ModeRail.mode_rail active={:logs} modes={asset_log_modes()} on_select="set_mode" />
-      </:mode_rail>
     </AppShell.app_shell>
     """
   end
@@ -127,16 +120,5 @@ defmodule FavnView.Components.LogPages do
       facts={@facts}
     />
     """
-  end
-
-  def asset_log_modes do
-    [
-      %{id: :logs, label: "Logs", icon: "hero-calendar-days"},
-      %{id: :inputs, label: "Inputs", icon: "hero-rocket-launch", disabled: true},
-      %{id: :outputs, label: "Outputs", icon: "hero-share-nodes", disabled: true},
-      %{id: :error, label: "Error", icon: "hero-book-open", disabled: true},
-      %{id: :context, label: "Context", icon: "hero-code-bracket", disabled: true},
-      %{id: :debug, label: "Debug", icon: "hero-document-text", disabled: true}
-    ]
   end
 end

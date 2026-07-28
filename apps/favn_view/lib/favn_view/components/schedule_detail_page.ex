@@ -6,9 +6,8 @@ defmodule FavnView.Components.ScheduleDetailPage do
   use FavnView, :html
 
   alias FavnView.Components.AppShell
-  alias FavnView.Components.AssetCataloguePage
-  alias FavnView.Components.GlassPanel
   alias FavnView.Components.ModeRail
+  alias FavnView.Components.Navigation
   alias FavnView.Components.ScheduleUi
 
   attr :schedule, :map, default: nil
@@ -34,27 +33,37 @@ defmodule FavnView.Components.ScheduleDetailPage do
       facts={@facts}
       content_scroll?={true}
     >
-      <:compact_header_action :if={@schedule}>
+      <:actions :if={@schedule}>
         <.schedule_actions schedule={@schedule} />
-      </:compact_header_action>
+      </:actions>
 
       <div
         id="schedule-detail-page"
         class="mx-auto w-full max-w-[120rem] overflow-x-hidden pb-24 lg:pb-0"
         data-testid="schedule-detail-page"
       >
-        <.loading_state :if={@loading} />
-        <.not_found_state :if={!@loading && @error == :not_found} />
-        <.error_state :if={!@loading && @error && @error != :not_found} error={@error} />
-
+        <.loading_state :if={@loading} label="Loading schedule" />
+        <.empty_state
+          :if={!@loading && @error == :not_found}
+          title="Schedule not found"
+          description="The schedule is not present in the active manifest."
+          icon="hero-calendar-days"
+          data-testid="schedule-not-found-state"
+        />
+        <.error_state
+          :if={!@loading && @error && @error != :not_found}
+          title="Could not load schedule"
+          description={to_string(@error)}
+          data-testid="schedule-detail-error-state"
+        />
         <div :if={!@loading && !@error && @schedule}>
           <main
             class="min-w-0 overflow-x-hidden space-y-4"
             data-testid={"schedule-detail-#{@active_view}"}
           >
             <.status_cards schedule={@schedule} />
-
-            <GlassPanel.glass_panel
+            <.panel
+              padding={:none}
               class="p-0"
               data-testid={
                 if(@active_view == :overview,
@@ -70,7 +79,6 @@ defmodule FavnView.Components.ScheduleDetailPage do
                   occurrence_preview={@occurrence_preview}
                   occurrence_error={@occurrence_error}
                 />
-
                 <.occurrences_panel
                   :if={@active_view == :occurrences}
                   schedule={@schedule}
@@ -78,7 +86,7 @@ defmodule FavnView.Components.ScheduleDetailPage do
                   error={@occurrence_error}
                 />
               </div>
-            </GlassPanel.glass_panel>
+            </.panel>
           </main>
         </div>
       </div>
@@ -103,6 +111,7 @@ defmodule FavnView.Components.ScheduleDetailPage do
       >
         <.icon name="hero-clipboard-document" class="size-4" /> Copy id
       </button>
+
       <span class="badge badge-sm favn-surface-control gap-2" data-testid="schedule-manifest-control">
         <.icon name="hero-code-bracket" class="size-4" /> Managed by manifest
       </span>
@@ -166,9 +175,12 @@ defmodule FavnView.Components.ScheduleDetailPage do
         ]}>
           <.icon name={@icon} class="size-5" />
         </span>
+
         <div class="min-w-0">
           <p class="text-xs text-base-content/55">{@label}</p>
+
           <p class="truncate text-2xl font-light tracking-tight text-base-content">{@value}</p>
+
           <p :if={@detail} class="truncate text-xs text-base-content/45">{@detail}</p>
         </div>
       </div>
@@ -184,7 +196,6 @@ defmodule FavnView.Components.ScheduleDetailPage do
     ~H"""
     <div class="space-y-5" data-testid="schedule-overview-content">
       <.scheduler_error_notice :if={@schedule.last_scheduler_error} schedule={@schedule} />
-
       <div class="grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(22rem,0.85fr)]">
         <.configuration_panel schedule={@schedule} />
         <div class="space-y-5">
@@ -239,6 +250,7 @@ defmodule FavnView.Components.ScheduleDetailPage do
     <div class="grid grid-cols-[1.2rem_9rem_minmax(0,1fr)] items-center gap-3 py-3">
       <.icon name={@icon} class="size-4 text-primary" />
       <dt class="text-base-content/60">{@label}</dt>
+
       <dd class="min-w-0 truncate font-medium text-base-content">{@value}</dd>
     </div>
     """
@@ -256,11 +268,14 @@ defmodule FavnView.Components.ScheduleDetailPage do
       <.panel_header title="Occurrence preview" />
       <div class="p-5 text-sm text-base-content/65">
         <p :if={@error} class="font-medium text-warning">Preview unavailable</p>
+
         <p :if={@error} class="mt-2">The orchestrator could not compute occurrences right now.</p>
 
         <div :if={!@error && @occurrence_preview != []}>
           <p class="font-medium text-base-content">Next previewed occurrence</p>
+
           <p class="mt-2">{hd(@occurrence_preview).due_label}</p>
+
           <p class="mt-1 text-xs text-base-content/50">{hd(@occurrence_preview).window_label}</p>
         </div>
 
@@ -284,9 +299,11 @@ defmodule FavnView.Components.ScheduleDetailPage do
         <.icon name="hero-exclamation-triangle" class="mt-0.5 size-5 shrink-0 text-warning" />
         <div class="min-w-0">
           <p class="font-medium text-base-content">Scheduler warning</p>
+
           <p class="mt-1 text-base-content/70">
             {@schedule.last_scheduler_error.phase_label}: {@schedule.last_scheduler_error.message}
           </p>
+
           <p class="mt-1 text-xs text-base-content/50">
             {@schedule.last_scheduler_error.occurred_label} · {@schedule.last_scheduler_error.code_label}
           </p>
@@ -317,6 +334,7 @@ defmodule FavnView.Components.ScheduleDetailPage do
         <div class="grid grid-cols-[1.2rem_9rem_minmax(0,1fr)] items-center gap-3 py-3">
           <.icon name="hero-play" class="size-4 text-primary" />
           <dt class="text-base-content/60">In-flight run</dt>
+
           <dd class="min-w-0 truncate font-medium text-base-content">
             <.link
               :if={@schedule.in_flight_run_id}
@@ -325,10 +343,10 @@ defmodule FavnView.Components.ScheduleDetailPage do
             >
               {@schedule.current_run_label}
             </.link>
-            <span :if={!@schedule.in_flight_run_id}>-</span>
+             <span :if={!@schedule.in_flight_run_id}>-</span>
           </dd>
         </div>
-        <.config_row label="Updated" value={@schedule.updated_label} icon="hero-arrow-path" />
+         <.config_row label="Updated" value={@schedule.updated_label} icon="hero-arrow-path" />
       </dl>
     </section>
     """
@@ -345,10 +363,12 @@ defmodule FavnView.Components.ScheduleDetailPage do
         <div class="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
           <div>
             <h2 class="text-lg font-semibold text-base-content">Occurrences</h2>
+
             <p class="mt-1 text-sm text-base-content/60">
               Upcoming occurrences are computed by the orchestrator from this schedule's cron, timezone, and window policy.
             </p>
           </div>
+
           <div class="flex flex-wrap gap-2 text-xs">
             <span class="badge badge-soft badge-neutral">Next due {@schedule.next_due_label}</span>
             <span class="badge badge-soft badge-neutral">{@schedule.timezone}</span>
@@ -368,6 +388,7 @@ defmodule FavnView.Components.ScheduleDetailPage do
       <div :if={@error} class="p-6" data-testid="schedule-occurrences-error">
         <div class="rounded-box border border-warning/25 bg-warning/10 p-4">
           <p class="font-medium text-base-content">Occurrence preview unavailable</p>
+
           <p class="mt-1 text-sm text-base-content/60">
             The orchestrator returned {@error}. Try again after the scheduler state refreshes.
           </p>
@@ -380,6 +401,7 @@ defmodule FavnView.Components.ScheduleDetailPage do
         data-testid="schedule-occurrences-empty"
       >
         <p class="font-medium text-base-content">No upcoming occurrences</p>
+
         <p class="mt-1 text-sm text-base-content/60">The orchestrator did not return preview rows.</p>
       </div>
 
@@ -401,52 +423,12 @@ defmodule FavnView.Components.ScheduleDetailPage do
     """
   end
 
-  def loading_state(assigns) do
-    ~H"""
-    <GlassPanel.glass_panel class="mx-auto flex min-h-64 max-w-2xl items-center justify-center p-10">
-      <div class="text-center">
-        <span class="loading loading-ring loading-lg text-primary"></span>
-        <p class="mt-4 text-base-content/60">Loading schedule</p>
-      </div>
-    </GlassPanel.glass_panel>
-    """
-  end
-
-  def not_found_state(assigns) do
-    ~H"""
-    <GlassPanel.glass_panel
-      class="mx-auto max-w-2xl p-10 text-center"
-      data-testid="schedule-not-found-state"
-    >
-      <h2 class="text-xl font-medium">Schedule not found</h2>
-      <p class="mt-2 text-base-content/60">The schedule is not present in the active manifest.</p>
-    </GlassPanel.glass_panel>
-    """
-  end
-
-  attr :error, :string, required: true
-
-  def error_state(assigns) do
-    ~H"""
-    <GlassPanel.glass_panel
-      class="mx-auto max-w-2xl p-10 text-center"
-      data-testid="schedule-detail-error-state"
-    >
-      <h2 class="text-xl font-medium">Could not load schedule</h2>
-      <p class="mt-2 text-base-content/60">{@error}</p>
-    </GlassPanel.glass_panel>
-    """
-  end
-
-  def nav_items(active \\ :schedules), do: AssetCataloguePage.nav_items(active)
+  def nav_items(active \\ :schedules), do: Navigation.items(active)
 
   def detail_modes do
     [
       %{id: :overview, label: "Overview", icon: "hero-home"},
-      %{id: :occurrences, label: "Occurrences", icon: "hero-calendar-days"},
-      %{id: :runs, label: "Runs", icon: "hero-play-circle", disabled: true},
-      %{id: :timeline, label: "Timeline", icon: "hero-queue-list", disabled: true},
-      %{id: :diagnostics, label: "Diagnostics", icon: "hero-code-bracket", disabled: true}
+      %{id: :occurrences, label: "Occurrences", icon: "hero-calendar-days"}
     ]
   end
 

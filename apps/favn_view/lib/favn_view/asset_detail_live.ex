@@ -8,11 +8,10 @@ defmodule FavnView.AssetDetailLive do
   alias FavnView.AssetRoute
   alias FavnView.Components.AssetCataloguePage
   alias FavnView.Components.AssetDetailPage
-  alias FavnView.Components.AppShell
-  alias FavnView.Components.GlassPanel
+  alias FavnView.Components.ErrorPage
   alias FavnView.Auth.Scope
 
-  @valid_modes ~w(timeline runs lineage docs code details)
+  @valid_modes ~w(timeline details)
   @dependency_choices ~w(all none)
   @refresh_choices ~w(auto missing force_selected force_selected_upstream force_all)
   @source_choices ~w(refresh_timeline data_coverage_timeline)
@@ -485,45 +484,31 @@ defmodule FavnView.AssetDetailLive do
       selected_window_error={@selected_window_error}
       submitted_run_id={@submitted_run_id}
       can_submit_runs?={@can_submit_runs?}
+      flash={@flash}
     />
-
-    <AppShell.app_shell
+    <ErrorPage.error_page
       :if={match?({:error, _reason}, @asset_state)}
       title={asset_error_title(@asset_state)}
       subtitle={@asset_id}
+      description={asset_error_message(@asset_state)}
       nav_items={@nav_items}
-    >
-      <div class="mx-auto w-full max-w-4xl">
-        <GlassPanel.glass_panel class="p-8 text-center" data-testid="asset-backend-error-state">
-          <h2 class="text-xl font-medium">{asset_error_title(@asset_state)}</h2>
-          <p class="mt-2 text-base-content/60">
-            {asset_error_message(@asset_state)}
-          </p>
-          <.link navigate={~p"/assets"} class="btn btn-primary btn-soft mt-6">
-            Back to catalogue
-          </.link>
-        </GlassPanel.glass_panel>
-      </div>
-    </AppShell.app_shell>
-
-    <AppShell.app_shell
+      flash={@flash}
+      back_navigate={~p"/assets"}
+      back_label="Back to catalogue"
+      data-testid="asset-backend-error-state"
+    />
+    <ErrorPage.error_page
       :if={match?({:not_found, _id}, @asset_state)}
       title="Asset not found"
       subtitle={@asset_id}
+      description="No active catalogue entry matches this asset id."
+      tone={:neutral}
       nav_items={@nav_items}
-    >
-      <div class="mx-auto w-full max-w-4xl">
-        <GlassPanel.glass_panel class="p-8 text-center" data-testid="asset-not-found-state">
-          <h2 class="text-xl font-medium">Asset not found</h2>
-          <p class="mt-2 text-base-content/60">
-            No active catalogue entry matches this asset id.
-          </p>
-          <.link navigate={~p"/assets"} class="btn btn-primary btn-soft mt-6">
-            Back to catalogue
-          </.link>
-        </GlassPanel.glass_panel>
-      </div>
-    </AppShell.app_shell>
+      flash={@flash}
+      back_navigate={~p"/assets"}
+      back_label="Back to catalogue"
+      data-testid="asset-not-found-state"
+    />
     """
   end
 

@@ -5,13 +5,12 @@ defmodule FavnView.Components.RunOverviewHud do
 
   use FavnView, :html
 
-  alias FavnView.Components.GlassPanel
-
   attr :run, :map, required: true
 
   def run_overview_hud(assigns) do
     ~H"""
-    <GlassPanel.glass_panel
+    <.panel
+      padding={:none}
       id="run-overview-panel"
       phx-hook="FavnClipboard"
       class="mx-auto w-full max-w-[120rem] p-4 sm:p-5 lg:p-6"
@@ -22,11 +21,13 @@ defmodule FavnView.Components.RunOverviewHud do
         <div class="flex flex-col gap-4 lg:flex-row lg:items-center">
           <div class="min-w-[10rem]">
             <p class="text-xs font-semibold text-base-content">Run status</p>
+
             <div class={["mt-2 flex items-center gap-2.5", status_text_class(@run.status_tone)]}>
               <.icon name={status_icon(@run.status_tone)} class="size-6" />
               <p class="text-xl font-medium tracking-tight">{@run.status}</p>
             </div>
           </div>
+
           <p class="text-xs text-base-content/65 sm:text-sm">{status_sentence(@run.status)}</p>
         </div>
 
@@ -37,6 +38,7 @@ defmodule FavnView.Components.RunOverviewHud do
         >
           <div class="flex items-start justify-between gap-3">
             <p class="font-medium text-error">Failure details</p>
+
             <button
               :if={@run.failure_summary.error}
               type="button"
@@ -47,6 +49,7 @@ defmodule FavnView.Components.RunOverviewHud do
               <.icon name="hero-clipboard-document" class="size-4" /> Copy
             </button>
           </div>
+
           <p
             :if={@run.failure_summary.kind == :backfill && @run.failure_summary.count > 0}
             class="mt-2 font-medium text-error"
@@ -56,6 +59,7 @@ defmodule FavnView.Components.RunOverviewHud do
               else: "windows"
             )} failed.
           </p>
+
           <p
             :if={
               @run.failure_summary.kind != :backfill && @run.failure_summary.count > 0 &&
@@ -65,9 +69,11 @@ defmodule FavnView.Components.RunOverviewHud do
           >
             {@run.failure_summary.count} of {@run.failure_summary.total} assets failed.
           </p>
+
           <p :if={@run.failure_summary.asset} class="mt-1">
             <span class="text-base-content/55">Failed asset:</span> {@run.failure_summary.asset}
           </p>
+
           <p :if={@run.failure_summary.error} class="mt-1">
             <span class="text-base-content/55">Error:</span> {@run.failure_summary.error}
           </p>
@@ -81,6 +87,7 @@ defmodule FavnView.Components.RunOverviewHud do
           <div class="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
             <div>
               <p class="font-medium text-error">Failed backfill window</p>
+
               <p class="mt-1 text-base-content/60">
                 Showing {length(@run.backfill_failures)} of {@run.backfill_failure_count} failed {if(
                   @run.backfill_failure_count == 1,
@@ -102,9 +109,11 @@ defmodule FavnView.Components.RunOverviewHud do
                   <p class="font-mono text-xs font-medium text-base-content">
                     {failure.asset_ref || "Failed window run"}
                   </p>
+
                   <p class="text-base-content/60">
                     <span class="text-base-content/45">Window:</span> {failure.window}
                   </p>
+
                   <p :if={failure.error} class="text-error">
                     {failure.error}
                   </p>
@@ -138,10 +147,7 @@ defmodule FavnView.Components.RunOverviewHud do
 
         <div class="border-t border-base-content/10 pt-4" data-testid="run-asset-results">
           <div class="grid grid-cols-[minmax(0,1fr)_8rem_6rem_9rem_1.5rem] gap-3 px-3 pb-2 text-xs text-base-content/60 max-lg:hidden">
-            <span>Asset</span>
-            <span>Status</span>
-            <span>Duration</span>
-            <span>Started</span>
+            <span>Asset</span> <span>Status</span> <span>Duration</span> <span>Started</span>
             <span class="sr-only">Inspect</span>
           </div>
 
@@ -158,7 +164,7 @@ defmodule FavnView.Components.RunOverviewHud do
           </div>
         </div>
       </div>
-    </GlassPanel.glass_panel>
+    </.panel>
     """
   end
 
@@ -195,6 +201,7 @@ defmodule FavnView.Components.RunOverviewHud do
         >
           <.icon name="hero-clipboard-document" class="size-4" /> Copy error
         </button>
+
         <.link
           navigate={~p"/runs/#{@run_id}/assets/#{@asset.id}/logs"}
           class="btn btn-ghost btn-xs rounded-box"
@@ -228,11 +235,16 @@ defmodule FavnView.Components.RunOverviewHud do
       ]}>
         <.icon name="hero-table-cells" class="size-4" />
       </span>
+
       <div class="min-w-0">
         <p class="truncate text-xs font-medium text-base-content">{@asset.display_name}</p>
+
         <p class="truncate font-mono text-xs text-base-content/45">{@asset.asset_ref}</p>
+
         <p :if={@asset.secondary} class="text-xs text-base-content/50">{@asset.secondary}</p>
+
         <p :if={@asset.explanation} class="mt-1 text-xs text-base-content/60">{@asset.explanation}</p>
+
         <p :if={@asset.error} class="mt-1 text-xs text-error">{@asset.error}</p>
       </div>
     </div>
@@ -241,12 +253,13 @@ defmodule FavnView.Components.RunOverviewHud do
       <.icon
         name={status_icon(@asset.status_tone)}
         class={["size-4", status_text_class(@asset.status_tone)]}
-      />
-      <span class={status_text_class(@asset.status_tone)}>{@asset.status}</span>
+      /> <span class={status_text_class(@asset.status_tone)}>{@asset.status}</span>
     </div>
 
     <p class="text-xs text-base-content/85">{@asset.duration}</p>
+
     <p class="text-xs text-base-content/70">{@asset.started_at}</p>
+
     <.icon
       :if={@asset.inspectable?}
       name="hero-chevron-right"

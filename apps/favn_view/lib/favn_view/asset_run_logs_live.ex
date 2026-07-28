@@ -50,8 +50,6 @@ defmodule FavnView.AssetRunLogsLive do
   def handle_event("toggle_live_tail", _params, socket),
     do: {:noreply, LogsLiveSupport.toggle(socket, :live_tail?)}
 
-  def handle_event("set_mode", _params, socket), do: {:noreply, socket}
-
   @impl true
   def terminate(_reason, socket), do: LogsLiveSupport.unsubscribe(socket)
 

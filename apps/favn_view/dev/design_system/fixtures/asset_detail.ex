@@ -1,0 +1,341 @@
+defmodule FavnView.Dev.DesignSystem.Fixtures.AssetDetail do
+  @moduledoc """
+  View models for the asset detail page and its timeline panel.
+
+  The asset detail screen is the densest surface Favn has: a refresh timeline, a
+  freshness timeline, a data-coverage timeline, coverage evidence, target
+  compatibility, a contract, and a run-config form, each with its own states. The
+  states are the point — `:rebuild_required` and `:unexpected_drift` must not
+  look alike, and `:unknown` coverage must not look like complete coverage — so
+  every one of them is a fixture rather than a variation of prose.
+
+  `base_attrs/0` is the healthy screen. Every other fixture is that map with the
+  one thing under test changed, so a diff between two examples is the difference
+  being demonstrated.
+  """
+
+  alias FavnView.Components.AssetDetailPage
+  alias FavnView.Dev.DesignSystem.Fixtures.Timeline
+
+  @hash_a String.duplicate("a", 64)
+  @hash_b String.duplicate("b", 64)
+  @hash_c String.duplicate("c", 64)
+  @hash_d String.duplicate("d", 64)
+  @hash_e String.duplicate("e", 64)
+
+  @doc """
+  The healthy asset detail screen.
+  """
+  @spec base_attrs() :: map()
+  def base_attrs do
+    %{
+      title: "customer_orders_daily",
+      status: "Healthy",
+      status_tone: :success,
+      window_range: "May 14 - Jun 12",
+      refresh_window_range: "May 14 - Jun 12",
+      freshness_window_range: "May 14 - Jun 12",
+      data_coverage_window_range: "May 14 - Jun 12",
+      refresh_timeline_label: "Monthly run anchors",
+      refresh_cadence_label: "Monthly run anchors Europe/Oslo",
+      freshness_timeline_label: "Daily freshness periods",
+      freshness_cadence_label: "Daily freshness Europe/Oslo",
+      data_coverage_timeline_label: "Daily data windows",
+      active_timeline: :refresh,
+      has_freshness_timeline?: true,
+      has_data_windows?: true,
+      can_run_asset?: true,
+      run_contexts: [List.last(run_contexts())],
+      selected_run_context: List.last(run_contexts()),
+      run_context_status: :selected,
+      nav_items: AssetDetailPage.sample_nav_items(),
+      refresh_timeline: Timeline.refresh_timeline(),
+      freshness_timeline: Timeline.freshness_timeline(),
+      data_coverage_timeline: Timeline.data_coverage_timeline(),
+      freshness: AssetDetailPage.sample_freshness(:fresh),
+      coverage: coverage(:complete),
+      coverage_policy: coverage_policy(),
+      coverage_gaps: [],
+      coverage_pagination: coverage_pagination(false),
+      compatibility: compatibility(:ready),
+      active_mode: :timeline,
+      selected_window: nil,
+      run_config_open?: false,
+      run_config: Timeline.default_run_config()
+    }
+  end
+
+  @doc """
+  `base_attrs/0` with the given keys replaced.
+  """
+  @spec attrs(map()) :: map()
+  def attrs(overrides) when is_map(overrides), do: Map.merge(base_attrs(), overrides)
+
+  @doc """
+  The details mode showing one freshness state.
+  """
+  @spec freshness_attrs(atom()) :: map()
+  def freshness_attrs(state) do
+    attrs(%{
+      active_mode: :details,
+      selected_window: List.last(Timeline.refresh_timeline()),
+      freshness: AssetDetailPage.sample_freshness(state)
+    })
+  end
+
+  @doc """
+  The window timeline panel on its own, with both timelines available.
+  """
+  @spec window_timeline_panel_attrs() :: map()
+  def window_timeline_panel_attrs do
+    base_attrs()
+    |> Map.take([
+      :window_range,
+      :refresh_window_range,
+      :freshness_window_range,
+      :data_coverage_window_range,
+      :refresh_timeline_label,
+      :refresh_cadence_label,
+      :freshness_timeline_label,
+      :freshness_cadence_label,
+      :data_coverage_timeline_label,
+      :active_timeline,
+      :has_freshness_timeline?,
+      :has_data_windows?,
+      :can_run_asset?,
+      :refresh_timeline,
+      :freshness_timeline,
+      :data_coverage_timeline,
+      :freshness,
+      :selected_window,
+      :run_config_open?,
+      :run_config
+    ])
+  end
+
+  @doc """
+  Coverage evidence.
+
+  `:unknown` is deliberately a different shape: coverage that was never declared
+  has no counts, and a fixture that invented zeroes would let the page render a
+  reassuring "0 missing".
+  """
+  @spec coverage(:complete | :incomplete | :unknown) :: map()
+  def coverage(:complete) do
+    %{
+      status: :complete,
+      evaluated_at: ~U[2026-07-22 12:00:00Z],
+      expected_count: 22,
+      covered_count: 22,
+      missing_count: 0,
+      last_expected_window: %{start_at: ~U[2026-07-21 00:00:00Z]}
+    }
+  end
+
+  def coverage(:incomplete) do
+    %{
+      status: :incomplete,
+      evaluated_at: ~U[2026-07-22 12:00:00Z],
+      expected_count: 22,
+      covered_count: 20,
+      missing_count: 2,
+      last_expected_window: %{start_at: ~U[2026-07-21 00:00:00Z]}
+    }
+  end
+
+  def coverage(:unknown), do: %{status: :unknown, unknown_reason: :coverage_not_declared}
+
+  @doc """
+  The declared coverage policy.
+  """
+  @spec coverage_policy() :: map()
+  def coverage_policy do
+    %{
+      timezone: "Europe/Oslo",
+      timezone_source: :application_default,
+      declared_from: ~U[2026-07-01 00:00:00Z],
+      effective_from: ~U[2026-07-01 00:00:00Z],
+      availability_delay_seconds: 21_600
+    }
+  end
+
+  @doc """
+  Two missing windows.
+  """
+  @spec coverage_gaps() :: [map()]
+  def coverage_gaps do
+    [
+      %{window_key: "day:Europe/Oslo:2026-07-08"},
+      %{window_key: "day:Europe/Oslo:2026-07-15"}
+    ]
+  end
+
+  @doc """
+  Coverage-gap pagination, with or without a further page.
+  """
+  @spec coverage_pagination(boolean()) :: map()
+  def coverage_pagination(has_more) do
+    %{
+      limit: 100,
+      has_more: has_more,
+      next_cursor: if(has_more, do: "opaque-next-page-cursor")
+    }
+  end
+
+  @doc """
+  A backfill plan awaiting review.
+  """
+  @spec coverage_plan() :: map()
+  def coverage_plan do
+    %{plan_hash: @hash_a, window_count: 2, windows: coverage_gaps()}
+  end
+
+  @doc """
+  Target compatibility, in each state the operator has to tell apart.
+
+  `blocks_writes?` is the one that changes what the operator may do, so it is
+  set per state rather than inferred from the status name.
+  """
+  @spec compatibility(atom()) :: map()
+  def compatibility(:ready) do
+    %{
+      status: :ready,
+      reason_code: "compatible",
+      diff: %{},
+      active_generation_id: "generation-orders-v1",
+      desired_descriptor_hash: @hash_a,
+      physical_fingerprint: @hash_b,
+      persisted?: true,
+      blocks_writes?: false
+    }
+  end
+
+  def compatibility(:rebuild_available) do
+    Map.merge(compatibility(:ready), %{
+      status: :rebuild_available,
+      reason_code: "execution_package_changed",
+      diff: %{execution_package_hash: %{active: @hash_c, desired: @hash_d}}
+    })
+  end
+
+  def compatibility(:rebuild_required) do
+    Map.merge(compatibility(:ready), %{
+      status: :rebuild_required,
+      reason_code: "incompatible_descriptor",
+      diff: %{
+        window_identity: %{
+          active: %{kind: :day, timezone: "Europe/Oslo"},
+          desired: %{kind: :month, timezone: "Europe/Oslo"}
+        }
+      },
+      blocks_writes?: true
+    })
+  end
+
+  def compatibility(:unexpected_drift) do
+    Map.merge(compatibility(:ready), %{
+      status: :unexpected_drift,
+      reason_code: "physical_fingerprint_mismatch",
+      diff: %{physical_fingerprint: %{active: @hash_b, observed: @hash_e}},
+      blocks_writes?: true
+    })
+  end
+
+  def compatibility(:operator_decision) do
+    Map.merge(compatibility(:ready), %{
+      status: :operator_decision,
+      reason_code: "unmanaged_physical_target",
+      active_generation_id: nil,
+      physical_fingerprint: nil,
+      diff: %{},
+      blocks_writes?: true
+    })
+  end
+
+  @doc """
+  Two pipeline run contexts, which is what makes the run context ambiguous.
+  """
+  @spec run_contexts() :: [map()]
+  def run_contexts do
+    [
+      %{
+        id: "pipeline:manual",
+        label: "MyApp.Pipelines.Manual / monthly",
+        href: "/assets/orders?run_context=pipeline%3Amanual",
+        timezone: "Etc/UTC",
+        policy: %{kind: :month, anchor: :previous_complete_period}
+      },
+      %{
+        id: "pipeline:scheduled",
+        label: "MyApp.Pipelines.Scheduled / monthly",
+        href: "/assets/orders?run_context=pipeline%3Ascheduled",
+        timezone: "Europe/Oslo",
+        policy: %{kind: :month, anchor: :current_period}
+      }
+    ]
+  end
+
+  @doc """
+  The details mode showing a contract with a parameterised row-count claim.
+  """
+  @spec assurance_attrs() :: map()
+  def assurance_attrs do
+    fragment = MyApp.Contracts.AuditMetadata
+
+    attrs(%{
+      active_mode: :details,
+      assurance: %{
+        quality_status: :passed,
+        write_outcome: :written,
+        latest_run_id: "run_customer_orders_daily",
+        contract_validation: nil,
+        checks: [],
+        contract: %{
+          grain: %{by: [:order_id], description: "one customer order"},
+          unique_keys: [[:order_id]],
+          row_counts: [
+            %{
+              claim_id: "row_count.equals.param.expected_rows",
+              equals: %{source: :param, name: :expected_rows},
+              min: nil,
+              max: nil,
+              when: nil,
+              on_violation: :fail,
+              latest_result: %{outcome: :passed}
+            },
+            %{
+              claim_id: "row_count.min.1",
+              equals: nil,
+              min: 1,
+              max: nil,
+              when: :target_exists,
+              on_violation: :skip_materialization,
+              latest_result: %{outcome: :condition_skipped}
+            }
+          ],
+          compositions: [
+            %{module: fragment, start_index: 1, columns: [:processed_at, :favn_run_id]}
+          ],
+          columns: [
+            contract_column(:order_id, :integer, %{kind: :local}),
+            contract_column(:processed_at, :datetime, %{kind: :fragment, module: fragment}),
+            contract_column(:favn_run_id, :string, %{kind: :fragment, module: fragment})
+          ]
+        }
+      }
+    })
+  end
+
+  defp contract_column(name, type, origin) do
+    %{
+      name: name,
+      type: type,
+      nullable?: false,
+      description: nil,
+      tags: [],
+      via: nil,
+      sources: [],
+      origin: origin
+    }
+  end
+end

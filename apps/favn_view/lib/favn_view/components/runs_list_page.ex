@@ -6,9 +6,7 @@ defmodule FavnView.Components.RunsListPage do
   use FavnView, :html
 
   alias FavnView.Components.AppShell
-  alias FavnView.Components.AssetCataloguePage
-  alias FavnView.Components.GlassPanel
-  alias FavnView.Components.ModeRail
+  alias FavnView.Components.Navigation
 
   attr :groups, :list, required: true
   attr :all_groups, :list, default: []
@@ -17,7 +15,6 @@ defmodule FavnView.Components.RunsListPage do
   attr :filters, :map, required: true
   attr :filter_options, :map, required: true
   attr :summary, :map, required: true
-  attr :active_mode, :atom, required: true
   attr :loading, :boolean, default: false
   attr :error, :string, default: nil
   attr :nav_items, :list, required: true
@@ -28,20 +25,23 @@ defmodule FavnView.Components.RunsListPage do
       title="Runs"
       subtitle="Backfills and runs"
       nav_items={@nav_items}
-      show_header?={false}
       content_scroll?={false}
     >
       <div
         class="mx-auto flex min-h-0 w-full max-w-[120rem] flex-1 flex-col pb-24 lg:pb-0"
         data-testid="runs-list-page"
       >
-        <.loading_state :if={@loading} />
-        <.error_state :if={!@loading && @error} />
-
+        <.loading_state :if={@loading} label="Loading runs" />
+        <.error_state
+          :if={!@loading && @error}
+          title="Could not load runs"
+          description={@error}
+          data-testid="runs-error-state"
+        />
         <div :if={!@loading && !@error} class="flex min-h-0 flex-1 flex-col gap-2.5 lg:gap-3">
           <.summary_band summary={@summary} />
-
-          <GlassPanel.glass_panel
+          <.panel
+            padding={:none}
             class="flex min-h-0 flex-1 flex-col overflow-hidden p-3 sm:p-4"
             data-testid="execution-groups-panel"
           >
@@ -50,30 +50,35 @@ defmodule FavnView.Components.RunsListPage do
               filter_options={@filter_options}
               result_count={length(@groups)}
             />
-
-            <.empty_state :if={@all_groups == []} />
-            <.filtered_empty_state :if={@all_groups != [] && @groups == []} />
-
+            <.empty_state
+              :if={@all_groups == []}
+              title="No runs yet"
+              description="Submit an asset, pipeline, or backfill to see run activity here."
+              icon="hero-rocket-launch"
+              data-testid="runs-empty-state"
+            />
+            <.empty_state
+              :if={@all_groups != [] && @groups == []}
+              title="No runs found"
+              description="Adjust search or filters to widen the overview."
+              icon="hero-funnel"
+              data-testid="runs-filtered-empty-state"
+            />
             <.execution_groups_table
               :if={@groups != []}
               groups={@groups}
               group_details={@group_details}
               expanded_group_ids={@expanded_group_ids}
             />
-
             <.execution_group_cards
               :if={@groups != []}
               groups={@groups}
               group_details={@group_details}
               expanded_group_ids={@expanded_group_ids}
             />
-          </GlassPanel.glass_panel>
+          </.panel>
         </div>
       </div>
-
-      <:mode_rail>
-        <ModeRail.mode_rail active={@active_mode} modes={runs_modes()} on_select="set_mode" />
-      </:mode_rail>
     </AppShell.app_shell>
     """
   end
@@ -93,25 +98,29 @@ defmodule FavnView.Components.RunsListPage do
           <p class="text-[0.68rem] font-semibold uppercase tracking-[0.2em] text-base-content/50">
             Asset attempts
           </p>
+
           <p class="text-xl font-semibold leading-none text-base-content">
             {@summary.completed_asset_attempts}
             <span class="text-base-content/45">/ {@summary.total_asset_attempts}</span>
           </p>
+
           <progress
             class="progress progress-info h-1.5 w-full bg-base-content/10"
             value={@summary.completed_asset_attempts}
             max={max(@summary.total_asset_attempts, 1)}
           ></progress>
         </div>
+
         <div class="space-y-2 border-base-content/10 sm:border-l sm:pl-5 xl:col-span-2">
           <p class="text-[0.68rem] font-semibold uppercase tracking-[0.2em] text-base-content/50">
             Health summary
           </p>
+
           <div class="grid grid-cols-2 gap-2 text-sm sm:grid-cols-4">
-            <.health_count tone="success" label="Succeeded" value={@summary.health.succeeded} />
-            <.health_count tone="error" label="Failed" value={@summary.health.failed} />
-            <.health_count tone="info" label="Running" value={@summary.health.running} />
-            <.health_count tone="warning" label="Queued" value={@summary.health.queued} />
+            <.health_count tone={:success} label="Succeeded" value={@summary.health.succeeded} />
+            <.health_count tone={:error} label="Failed" value={@summary.health.failed} />
+            <.health_count tone={:info} label="Running" value={@summary.health.running} />
+            <.health_count tone={:warning} label="Queued" value={@summary.health.queued} />
           </div>
         </div>
       </div>
@@ -129,23 +138,26 @@ defmodule FavnView.Components.RunsListPage do
       <p class="text-[0.68rem] font-semibold uppercase tracking-[0.2em] text-base-content/50">
         {@label}
       </p>
+
       <p class="text-xl font-semibold leading-none text-base-content">{@value}</p>
+
       <p class="text-xs text-base-content/55">{@caption}</p>
     </div>
     """
   end
 
-  attr :tone, :string, required: true
+  attr :tone, :atom, required: true
   attr :label, :string, required: true
   attr :value, :integer, required: true
 
   def health_count(assigns) do
     ~H"""
     <div class="min-w-0">
-      <p class={["font-semibold", health_text_class(@tone)]}>
-        <span class={["status status-xs align-middle", health_status_class(@tone)]}></span>
+      <p class={["font-semibold", Tokens.text_class(@tone)]}>
+        <span class={["status status-xs align-middle", Tokens.dot_class(@tone)]}></span>
         <span class="ml-1">{@value}</span>
       </p>
+
       <p class="truncate text-xs text-base-content/55">{@label}</p>
     </div>
     """
@@ -177,8 +189,7 @@ defmodule FavnView.Components.RunsListPage do
             data-testid="execution-group-search"
           />
         </label>
-
-        <input id="runs-filter-toggle" type="checkbox" class="peer sr-only" />
+         <input id="runs-filter-toggle" type="checkbox" class="peer sr-only" />
         <label
           for="runs-filter-toggle"
           class="btn btn-sm favn-surface-control rounded-field xl:hidden"
@@ -219,7 +230,6 @@ defmodule FavnView.Components.RunsListPage do
             options={window_options()}
           />
           <.select_control label="Sort" name="sort" value={@filters["sort"]} options={sort_options()} />
-
           <div class="ml-auto flex flex-wrap items-center justify-end gap-x-3 gap-y-2">
             <.toggle_control
               label="Only failed"
@@ -244,6 +254,7 @@ defmodule FavnView.Components.RunsListPage do
             >
               Clear
             </button>
+
             <span
               class="hidden text-xs text-base-content/45 xl:inline"
               data-testid="execution-group-result-count"
@@ -293,8 +304,7 @@ defmodule FavnView.Components.RunsListPage do
         value="true"
         checked={@checked}
         class="toggle toggle-info toggle-xs"
-      />
-      <span class="whitespace-nowrap leading-none">{@label}</span>
+      /> <span class="whitespace-nowrap leading-none">{@label}</span>
     </label>
     """
   end
@@ -310,16 +320,25 @@ defmodule FavnView.Components.RunsListPage do
         <thead>
           <tr class="border-base-content/10 text-xs text-base-content/55">
             <th class="w-64 font-medium">Backfill / run</th>
+
             <th class="font-medium">Trigger</th>
+
             <th class="font-medium">Target</th>
+
             <th class="font-medium">Window range</th>
+
             <th class="font-medium">Progress</th>
+
             <th class="font-medium">Health</th>
+
             <th class="font-medium">Current activity</th>
+
             <th class="font-medium">Started</th>
+
             <th class="font-medium">Duration</th>
           </tr>
         </thead>
+
         <tbody>
           <%= for group <- @groups do %>
             <.execution_group_row
@@ -334,6 +353,7 @@ defmodule FavnView.Components.RunsListPage do
           <% end %>
         </tbody>
       </table>
+
       <div class="sticky bottom-0 border-t border-base-content/10 bg-base-100/80 px-2 py-3 text-xs text-base-content/55 backdrop-blur">
         Showing 1-{length(@groups)} of {length(@groups)} runs
       </div>
@@ -366,11 +386,12 @@ defmodule FavnView.Components.RunsListPage do
               class="size-4"
             />
           </button>
+
           <div class="min-w-0">
             <div class="flex flex-wrap items-center gap-1.5">
-              <.status_badge status={@group.status} />
-              <.trigger_badge trigger={@group.trigger} />
+              <.run_status_badge status={@group.status} /> <.trigger_badge trigger={@group.trigger} />
             </div>
+
             <.link
               navigate={~p"/runs/#{@group.id}"}
               class="mt-1 block max-w-44 truncate font-mono text-xs text-base-content/65 hover:text-primary"
@@ -382,16 +403,25 @@ defmodule FavnView.Components.RunsListPage do
           </div>
         </div>
       </td>
+
       <td class="text-xs text-base-content/75">{@group.trigger}</td>
+
       <td class="min-w-44 max-w-56"><.target_cell group={@group} /></td>
+
       <td class="min-w-36 text-xs text-base-content/75">
         <p>{@group.window}</p>
+
         <p class="text-xs text-base-content/45">{@group.window_count_label}</p>
       </td>
+
       <td class="min-w-40"><.progress_cell progress={@group.progress} /></td>
+
       <td class="min-w-36"><.health_counts health={@group.health} /></td>
+
       <td class="min-w-40"><.activity_cell activity={@group.current_activity} /></td>
+
       <td class="whitespace-nowrap text-xs text-base-content/70">{@group.started_at}</td>
+
       <td class="whitespace-nowrap text-xs text-base-content/70">{@group.duration}</td>
     </tr>
     """
@@ -406,6 +436,7 @@ defmodule FavnView.Components.RunsListPage do
       <td colspan="9" class="p-0">
         <div class="mx-3 mb-3 rounded-box border border-base-content/10 bg-base-100/25 p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]">
           <p :if={is_nil(@detail)} class="p-4 text-sm text-base-content/55">Loading window runs...</p>
+
           <p :if={match?(%{error: _}, @detail)} class="p-4 text-sm text-error">
             Could not load window runs.
           </p>
@@ -422,13 +453,19 @@ defmodule FavnView.Components.RunsListPage do
             <thead>
               <tr class="border-base-content/10 text-base-content/55">
                 <th>Window / run</th>
+
                 <th>Status</th>
+
                 <th>Progress</th>
+
                 <th>Started</th>
+
                 <th>Duration</th>
+
                 <th></th>
               </tr>
             </thead>
+
             <tbody>
               <tr
                 :for={child <- @detail.child_runs}
@@ -438,12 +475,18 @@ defmodule FavnView.Components.RunsListPage do
               >
                 <td>
                   <p class="font-medium text-base-content">{child.window}</p>
+
                   <p class="font-mono text-xs text-base-content/55">{child.short_id}</p>
                 </td>
-                <td><.status_badge status={child.status} /></td>
+
+                <td><.run_status_badge status={child.status} /></td>
+
                 <td><.progress_label progress={child.progress} /></td>
+
                 <td class="whitespace-nowrap text-base-content/65">{child.started_at}</td>
+
                 <td class="whitespace-nowrap text-base-content/65">{child.duration}</td>
+
                 <td class="text-right">
                   <.link
                     navigate={~p"/runs/#{@group.id}?view=windows&child_run_id=#{child.id}"}
@@ -492,19 +535,21 @@ defmodule FavnView.Components.RunsListPage do
       <div class="flex items-start justify-between gap-3">
         <div class="min-w-0 space-y-2">
           <div class="flex flex-wrap items-center gap-1.5">
-            <.status_badge status={@group.status} />
-            <.trigger_badge trigger={@group.trigger} />
+            <.run_status_badge status={@group.status} /> <.trigger_badge trigger={@group.trigger} />
           </div>
+
           <.link
             navigate={~p"/runs/#{@group.id}"}
             class="block truncate font-mono text-sm font-medium text-base-content hover:text-primary"
           >
             {@group.short_id}
           </.link>
+
           <p class="line-clamp-2 text-sm text-base-content/80" title={@group.target_title}>
             {@group.target}
           </p>
         </div>
+
         <button
           type="button"
           class="btn btn-ghost btn-sm"
@@ -518,14 +563,20 @@ defmodule FavnView.Components.RunsListPage do
           />
         </button>
       </div>
+
       <div class="mt-3 grid grid-cols-2 gap-3 text-xs text-base-content/65">
         <div><span class="block text-base-content/40">Window</span>{@group.window}</div>
+
         <div><span class="block text-base-content/40">Started</span>{@group.started_at}</div>
+
         <div class="col-span-2"><.progress_cell progress={@group.progress} /></div>
+
         <div class="col-span-2"><.health_counts health={@group.health} /></div>
       </div>
+
       <div :if={@expanded} class="mt-3 border-t border-base-content/10 pt-3">
         <p :if={is_nil(@detail)} class="text-xs text-base-content/55">Loading window runs...</p>
+
         <div :if={match?(%{child_runs: [_ | _]}, @detail)} class="space-y-2">
           <.link
             :for={child <- @detail.child_runs}
@@ -563,15 +614,18 @@ defmodule FavnView.Components.RunsListPage do
           >
             {@group.target}
           </span>
+
           <span class="badge badge-xs badge-soft badge-info shrink-0">
             +{length(@group.targets) - 1}
           </span>
         </span>
       </summary>
+
       <div class="dropdown-content z-20 mt-2 w-80 rounded-box border border-base-content/10 bg-base-100 p-3 shadow-xl">
         <p class="mb-2 text-xs font-medium uppercase tracking-[0.2em] text-base-content/45">
           Targets
         </p>
+
         <ul class="space-y-1 text-xs text-base-content/75">
           <li :for={target <- @group.targets} class="truncate" title={target}>{target}</li>
         </ul>
@@ -582,12 +636,9 @@ defmodule FavnView.Components.RunsListPage do
 
   attr :status, :atom, required: true
 
-  def status_badge(assigns) do
+  def run_status_badge(assigns) do
     ~H"""
-    <span class={["badge badge-sm badge-soft gap-2", status_badge_class(@status)]}>
-      <span class={["status", status_dot_class(@status)]}></span>
-      {status_label(@status)}
-    </span>
+    <.status_badge tone={status_tone(@status)} label={status_label(@status)} />
     """
   end
 
@@ -605,7 +656,9 @@ defmodule FavnView.Components.RunsListPage do
     ~H"""
     <div class="space-y-1" title={@progress.title}>
       <p class="text-sm text-base-content/80">{@progress.window_label}</p>
+
       <p class="text-xs text-base-content/55">{@progress.attempt_label}</p>
+
       <progress
         class={["progress h-1.5 w-full bg-base-content/10", progress_class(@progress.tone)]}
         value={@progress.percent}
@@ -630,10 +683,10 @@ defmodule FavnView.Components.RunsListPage do
   def health_counts(assigns) do
     ~H"""
     <div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
-      <.health_count tone="success" label="ok" value={@health.succeeded} />
-      <.health_count tone="error" label="fail" value={@health.failed} />
-      <.health_count tone="info" label="run" value={@health.running} />
-      <.health_count tone="warning" label="queue" value={@health.queued} />
+      <.health_count tone={:success} label="ok" value={@health.succeeded} />
+      <.health_count tone={:error} label="fail" value={@health.failed} />
+      <.health_count tone={:info} label="run" value={@health.running} />
+      <.health_count tone={:warning} label="queue" value={@health.queued} />
     </div>
     """
   end
@@ -652,57 +705,10 @@ defmodule FavnView.Components.RunsListPage do
       <p class="max-w-40 truncate font-medium text-base-content" title={@activity.asset}>
         {@activity.asset}
       </p>
+
       <p class="text-xs text-base-content/55">{@activity.window}</p>
     </div>
     """
-  end
-
-  def loading_state(assigns) do
-    ~H"""
-    <GlassPanel.glass_panel class="mx-auto flex min-h-64 max-w-2xl items-center justify-center p-10">
-      <div class="text-center">
-        <span class="loading loading-ring loading-lg text-primary"></span>
-        <p class="mt-4 text-base-content/60">Loading runs</p>
-      </div>
-    </GlassPanel.glass_panel>
-    """
-  end
-
-  def empty_state(assigns) do
-    ~H"""
-    <div class="p-10 text-center" data-testid="runs-empty-state">
-      <h2 class="text-xl font-medium">No runs yet</h2>
-      <p class="mt-2 text-base-content/60">
-        Submit an asset, pipeline, or backfill to see run activity here.
-      </p>
-    </div>
-    """
-  end
-
-  def filtered_empty_state(assigns) do
-    ~H"""
-    <div class="p-10 text-center" data-testid="runs-filtered-empty-state">
-      <h2 class="text-xl font-medium">No runs found</h2>
-      <p class="mt-2 text-base-content/60">Adjust search or filters to widen the overview.</p>
-    </div>
-    """
-  end
-
-  def error_state(assigns) do
-    ~H"""
-    <GlassPanel.glass_panel class="mx-auto max-w-2xl p-10 text-center" data-testid="runs-error-state">
-      <h2 class="text-xl font-medium">Could not load runs</h2>
-      <p class="mt-2 text-base-content/60">Retry</p>
-    </GlassPanel.glass_panel>
-    """
-  end
-
-  def runs_modes do
-    [
-      %{id: :list, label: "Runs", icon: "hero-list-bullet"},
-      %{id: :filters, label: "Filters", icon: "hero-funnel", disabled: true},
-      %{id: :more, label: "More", icon: "hero-ellipsis-vertical", disabled: true}
-    ]
   end
 
   def sample_groups do
@@ -852,7 +858,7 @@ defmodule FavnView.Components.RunsListPage do
     }
   end
 
-  def nav_items(active \\ :runs), do: AssetCataloguePage.nav_items(active)
+  def nav_items(active \\ :runs), do: Navigation.items(active)
 
   defp status_options do
     [
@@ -892,33 +898,12 @@ defmodule FavnView.Components.RunsListPage do
   defp progress_class(:info), do: "progress-info"
   defp progress_class(_tone), do: "progress-success"
 
-  defp status_badge_class(:succeeded), do: "badge-success"
-  defp status_badge_class(:ok), do: "badge-success"
-  defp status_badge_class(:running), do: "badge-info"
-  defp status_badge_class(:queued), do: "badge-warning"
-  defp status_badge_class(:pending), do: "badge-warning"
-  defp status_badge_class(:incomplete), do: "badge-warning"
-  defp status_badge_class(:partial), do: "badge-warning"
-  defp status_badge_class(:failed), do: "badge-error"
-  defp status_badge_class(:error), do: "badge-error"
-  defp status_badge_class(:blocked), do: "badge-error"
-  defp status_badge_class(:timed_out), do: "badge-error"
-  defp status_badge_class(:cancelled), do: "badge-neutral"
-  defp status_badge_class(:skipped_fresh), do: "badge-neutral"
-  defp status_badge_class(_status), do: "badge-neutral"
-
-  defp status_dot_class(:succeeded), do: "status-success"
-  defp status_dot_class(:ok), do: "status-success"
-  defp status_dot_class(:running), do: "status-info"
-  defp status_dot_class(:queued), do: "status-warning"
-  defp status_dot_class(:pending), do: "status-warning"
-  defp status_dot_class(:incomplete), do: "status-warning"
-  defp status_dot_class(:partial), do: "status-warning"
-  defp status_dot_class(:failed), do: "status-error"
-  defp status_dot_class(:error), do: "status-error"
-  defp status_dot_class(:blocked), do: "status-error"
-  defp status_dot_class(:timed_out), do: "status-error"
-  defp status_dot_class(_status), do: "status-neutral"
+  defp status_tone(:succeeded), do: :success
+  defp status_tone(:ok), do: :success
+  defp status_tone(:running), do: :info
+  defp status_tone(status) when status in [:queued, :pending, :incomplete, :partial], do: :warning
+  defp status_tone(status) when status in [:failed, :error, :blocked, :timed_out], do: :error
+  defp status_tone(_status), do: :neutral
 
   defp status_label(:succeeded), do: "Succeeded"
   defp status_label(:ok), do: "Succeeded"
@@ -934,18 +919,6 @@ defmodule FavnView.Components.RunsListPage do
   defp status_label(:skipped_fresh), do: "Skipped"
   defp status_label(:timed_out), do: "Timed out"
   defp status_label(_status), do: "Unknown"
-
-  defp health_text_class("success"), do: "text-success"
-  defp health_text_class("error"), do: "text-error"
-  defp health_text_class("info"), do: "text-info"
-  defp health_text_class("warning"), do: "text-warning"
-  defp health_text_class(_tone), do: "text-base-content/70"
-
-  defp health_status_class("success"), do: "status-success"
-  defp health_status_class("error"), do: "status-error"
-  defp health_status_class("info"), do: "status-info"
-  defp health_status_class("warning"), do: "status-warning"
-  defp health_status_class(_tone), do: "status-neutral"
 
   defp label(nil), do: "Unknown"
 
