@@ -957,3 +957,45 @@ after this code-neutral rebase. The conflict integration received compile,
 fresh-schema, static legacy, and diff checks. A focused subagent reviewed the
 complete integration, requested one missing current-main documentation
 contract, and approved the corrected checkpoint with no remaining findings.
+
+### Final integration qualification
+
+The final Windows qualification exposed a real distributed-startup race:
+`RunnerAgent` built its registration while the VM was still
+`nonode@nohost`. It now connects to the orchestrator gateway before constructing
+the registration, so the advertised node name is the assigned distributed BEAM
+node. The registry still validates the exact node identity and monitors the
+registered process, but no longer performs a redundant remote liveness RPC
+during registration.
+
+The same correction checkpoint fixed Windows-safe source discovery and
+cold-BEAM test invocation, brought test stores in line with the production
+preparation contract, and removed invalid fixture reuse of a single durable
+task identity. These are captured by `264b69f6`.
+
+Final verification:
+
+```text
+mix format --check-formatted
+mix compile --warnings-as-errors
+elixir scripts/check_test_tag_tiers.exs
+elixir scripts/check_no_legacy_runner_architecture.exs
+git diff --check
+  # passed
+
+mix test --no-compile --timeout 1200000
+  # every umbrella fast-test slice passed against a fresh disposable database
+
+mix test.acceptance
+  # all acceptance and browser slices passed
+
+mix test.slow
+  # all runnable slow tests passed
+  # distributed scale: 333 runners, 1,419 ms claim-to-Started P95
+  # cold start: 344 ms
+```
+
+Two PostgreSQL backup/migration drill tests could not run in the native Windows
+shell because `createdb`, `pg_dump`, and `pg_restore` were not installed. This
+is an environment limitation rather than an application failure; the same
+provider-neutral tests remain part of the Linux CI gate.
