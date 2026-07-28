@@ -2,7 +2,9 @@
 
 This document is the canonical code contract for UI work in `apps/favn_view`.
 The visual rules live in [`style-guide.md`](style-guide.md); the app's ownership
-boundaries live in [`../structure/favn_view.md`](../structure/favn_view.md).
+boundaries live in [`../structure/favn_view.md`](../structure/favn_view.md). What
+the current UI gets wrong against this contract, and the order in which it is
+being fixed, is in [`operator-ux-review.md`](operator-ux-review.md).
 
 ## The four layers
 
