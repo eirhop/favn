@@ -1,6 +1,10 @@
 defmodule Favn.Asset.RelationInput do
   @moduledoc """
-  Typed SQL relation input discovered from normalized SQL IR.
+  Typed SQL relation input bound from normalized SQL IR.
+
+  Plain SQL identifiers become runtime relation inputs only when they match a
+  declared dependency relation. Unbound identifier candidates remain ordinary
+  SQL text.
   """
 
   alias Favn.RelationRef

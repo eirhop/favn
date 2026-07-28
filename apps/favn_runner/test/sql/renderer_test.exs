@@ -1,6 +1,7 @@
 defmodule FavnRunner.SQLRendererTest do
   use ExUnit.Case, async: true
 
+  alias Favn.Asset.RelationInput
   alias Favn.RelationRef
   alias Favn.SQL.Definition, as: SQLDefinition
   alias Favn.SQL.Contract
@@ -229,7 +230,7 @@ defmodule FavnRunner.SQLRendererTest do
     assert error.message =~ "name \"order_summary\""
   end
 
-  test "renders plain relation refs with inherited catalog and schema" do
+  test "renders declared plain relation refs with inherited catalog and schema" do
     definition =
       definition(
         %{
@@ -240,6 +241,11 @@ defmodule FavnRunner.SQLRendererTest do
         },
         "SELECT * FROM orders JOIN finance.invoices USING (order_id) JOIN raw.finance.payments USING (invoice_id)"
       )
+      |> bind_plain_relations([
+        {{__MODULE__.Orders, :asset}, relation("mart", "sales", "orders")},
+        {{__MODULE__.Invoices, :asset}, relation("mart", "finance", "invoices")},
+        {{__MODULE__.Payments, :asset}, relation("raw", "finance", "payments")}
+      ])
 
     assert {:ok, rendered} = Renderer.render(definition)
 
@@ -247,7 +253,7 @@ defmodule FavnRunner.SQLRendererTest do
              "SELECT * FROM mart.sales.orders JOIN mart.finance.invoices USING (order_id) JOIN raw.finance.payments USING (invoice_id)"
   end
 
-  test "renders defsql plain relation refs with definition namespace defaults" do
+  test "renders declared defsql relation refs with definition namespace defaults" do
     sql_definition =
       reusable_sql_definition(
         :orders,
@@ -267,9 +273,57 @@ defmodule FavnRunner.SQLRendererTest do
         "SELECT * FROM orders(@country)",
         [sql_definition]
       )
+      |> bind_plain_relations([
+        {{__MODULE__.Orders, :asset}, relation("raw", "sales", "orders")}
+      ])
 
     assert {:ok, rendered} = Renderer.render(definition, params: %{country: "NO"})
     assert rendered.sql == "SELECT * FROM (SELECT * FROM raw.sales.orders) AS scoped_orders"
+  end
+
+  test "preserves unbound identifier candidates in SQL expressions" do
+    sql = """
+    SELECT
+      unit.production_site_id IS DISTINCT FROM cluster.production_site_id AS site_changed,
+      extract(day FROM unit.created_at) AS created_day
+    FROM core.farming.production_unit AS unit
+    JOIN core.farming.production_cluster AS cluster USING (production_cluster_id)
+    """
+
+    definition =
+      definition(
+        %{
+          connection: :warehouse,
+          catalog: "core",
+          schema: "farming",
+          name: "membership"
+        },
+        sql
+      )
+      |> bind_plain_relations([
+        {{__MODULE__.ProductionUnit, :asset}, relation("core", "farming", "production_unit")},
+        {{__MODULE__.ProductionCluster, :asset},
+         relation("core", "farming", "production_cluster")}
+      ])
+
+    assert {:ok, rendered} = Renderer.render(definition)
+    assert rendered.sql == sql
+  end
+
+  test "preserves undeclared external relations as authored" do
+    definition =
+      definition(
+        %{
+          connection: :warehouse,
+          catalog: "core",
+          schema: "farming",
+          name: "membership"
+        },
+        "SELECT * FROM external.analytics.events"
+      )
+
+    assert {:ok, rendered} = Renderer.render(definition)
+    assert rendered.sql == "SELECT * FROM external.analytics.events"
   end
 
   defp definition(
@@ -332,6 +386,29 @@ defmodule FavnRunner.SQLRendererTest do
       declared_line: 1,
       relation_defaults: relation_defaults
     }
+  end
+
+  defp bind_plain_relations(%Definition{} = definition, bindings) do
+    relation_inputs =
+      Enum.map(bindings, fn {asset_ref, %RelationRef{} = relation_ref} ->
+        %RelationInput{
+          kind: :plain_relation,
+          asset_ref: asset_ref,
+          relation_ref: relation_ref,
+          resolution: :resolved
+        }
+      end)
+
+    %{definition | relation_inputs: relation_inputs}
+  end
+
+  defp relation(catalog, schema, name) do
+    RelationRef.new!(%{
+      connection: :warehouse,
+      catalog: catalog,
+      schema: schema,
+      name: name
+    })
   end
 
   defp asset_ref_definition(sql, relation_by_module)

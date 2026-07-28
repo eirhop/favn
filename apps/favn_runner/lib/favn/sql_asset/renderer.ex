@@ -1,6 +1,7 @@
 defmodule Favn.SQLAsset.Renderer do
   @moduledoc false
 
+  alias Favn.Asset.RelationInput
   alias Favn.Assets.Compiler
   alias Favn.RelationRef
   alias Favn.SQL.Definition, as: SQLDefinition
@@ -345,6 +346,7 @@ defmodule Favn.SQLAsset.Renderer do
       cache: %{},
       current_file: Map.get(definition.raw_asset || %{}, :sql_file, definition.asset.file),
       runtime_relations: Keyword.get(opts, :runtime_relations, %{}),
+      plain_relation_bindings: plain_relation_bindings(definition),
       manifest_relation_by_module:
         Map.get(definition.raw_asset || %{}, :manifest_relation_by_module, %{}),
       deferred_resolution:
@@ -819,19 +821,54 @@ defmodule Favn.SQLAsset.Renderer do
     }
   end
 
-  defp plain_relation_to_sql(%Relation{segments: [name]}, env) do
-    %RelationRef{catalog: env.current_catalog, schema: env.current_schema, name: name}
-    |> relation_ref_to_sql(env)
+  defp plain_relation_to_sql(%Relation{raw: raw, segments: segments}, env) do
+    candidate = relation_candidate(segments, env)
+
+    case Enum.find(env.plain_relation_bindings, &(&1 == candidate)) do
+      %RelationRef{} = relation_ref -> relation_ref_to_sql(relation_ref, env)
+      nil -> {:ok, raw}
+    end
   end
 
-  defp plain_relation_to_sql(%Relation{segments: [schema, name]}, env) do
-    %RelationRef{catalog: env.current_catalog, schema: schema, name: name}
-    |> relation_ref_to_sql(env)
-  end
+  defp relation_candidate([name], env),
+    do: %RelationRef{
+      connection: env.root_connection,
+      catalog: env.current_catalog,
+      schema: env.current_schema,
+      name: name
+    }
 
-  defp plain_relation_to_sql(%Relation{segments: [catalog, schema, name]}, env) do
-    %RelationRef{catalog: catalog, schema: schema, name: name}
-    |> relation_ref_to_sql(env)
+  defp relation_candidate([schema, name], env),
+    do: %RelationRef{
+      connection: env.root_connection,
+      catalog: env.current_catalog,
+      schema: schema,
+      name: name
+    }
+
+  defp relation_candidate([catalog, schema, name], env),
+    do: %RelationRef{
+      connection: env.root_connection,
+      catalog: catalog,
+      schema: schema,
+      name: name
+    }
+
+  defp plain_relation_bindings(%Definition{relation_inputs: inputs}) when is_list(inputs) do
+    inputs
+    |> Enum.flat_map(fn
+      %RelationInput{
+        kind: :plain_relation,
+        asset_ref: {_module, _name},
+        relation_ref: %RelationRef{} = relation_ref,
+        resolution: :resolved
+      } ->
+        [relation_ref]
+
+      _other ->
+        []
+    end)
+    |> Enum.uniq()
   end
 
   defp relation_ref_to_sql(%RelationRef{catalog: nil, schema: nil, name: name}, _env),

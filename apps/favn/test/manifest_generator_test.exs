@@ -99,6 +99,8 @@ defmodule Favn.Manifest.GeneratorTest do
   defmodule RelationGold.Customer360 do
     use Favn.SQLAsset
 
+    depends(RelationRaw.Orders)
+    depends(RelationRaw.Customers)
     materialized(:view)
     relation(true)
 
@@ -107,6 +109,7 @@ defmodule Favn.Manifest.GeneratorTest do
       select o.id, c.id as customer_id
       from raw.commerce.orders o
       join raw.commerce.customers c on c.id = o.customer_id
+      where o.site_id is distinct from c.site_id
       """
     end
   end
@@ -176,7 +179,7 @@ defmodule Favn.Manifest.GeneratorTest do
     assert fetched.ref == {TestAsset, :asset}
   end
 
-  test "generates manifest dependencies from relation-style SQL references" do
+  test "generates manifest dependencies from explicit SQL asset dependencies" do
     assert {:ok, %Manifest{} = manifest} =
              Favn.generate_manifest(
                asset_modules: [
@@ -192,6 +195,13 @@ defmodule Favn.Manifest.GeneratorTest do
     assert downstream.depends_on == [
              {RelationRaw.Customers, :asset},
              {RelationRaw.Orders, :asset}
+           ]
+
+    assert downstream.relation_inputs
+           |> Enum.map(&{&1.asset_ref, &1.resolution})
+           |> Enum.sort() == [
+             {{RelationRaw.Customers, :asset}, :resolved},
+             {{RelationRaw.Orders, :asset}, :resolved}
            ]
   end
 
@@ -245,7 +255,7 @@ defmodule Favn.Manifest.GeneratorTest do
     assert manifest_asset.relation.name == "executive_overview"
   end
 
-  test "lists assets with inferred dependencies when given a module list" do
+  test "lists assets with explicit dependencies when given a module list" do
     assert {:ok, assets} =
              Favn.list_assets([
                RelationRaw.Orders,

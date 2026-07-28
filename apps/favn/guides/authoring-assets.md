@@ -287,6 +287,33 @@ end
 query file: "order_summary.sql"
 ```
 
+### Declare SQL Relation Dependencies
+
+Declare every Favn-owned upstream relation with `depends`. The declared
+dependency graph is authoritative; Favn does not infer dependencies by parsing
+arbitrary SQL:
+
+```elixir
+depends MyApp.Lakehouse.Raw.Sales.Orders
+
+query do
+  ~SQL"select * from raw.sales.orders"
+end
+```
+
+The dependency's owned relation and the SQL asset's namespace provide the
+allowed relation bindings. Favn qualifies a plain SQL relation only when it
+matches one of those declared dependencies. Aliases, qualified columns,
+expressions, comments, strings, and unknown external relations stay exactly as
+authored. External relations do not add graph edges or catalog admission; select
+their required session resources explicitly.
+
+Use a fully qualified `catalog.schema.name` when clarity matters.
+Namespace-relative `schema.name` or `name` forms are supported when they resolve
+exactly to one declared dependency. Declare dependencies even when the SQL uses
+a fully qualified name; `depends` controls planning and authorizes relation
+binding, while the SQL text controls the query.
+
 Referenced scalar SQL settings automatically become bound parameters. A name
 cannot exist in both `settings` and `ctx.params`; Favn reports the collision
 instead of choosing hidden precedence. Settings cannot supply relation or
