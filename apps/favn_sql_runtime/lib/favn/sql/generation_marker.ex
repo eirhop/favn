@@ -4,6 +4,7 @@ defmodule Favn.SQL.GenerationMarker do
 
   The marker contains no credentials. It is the data-plane authority used to
   reconcile an activation whose commit result was not observed by the runner.
+  Its activation token is also bound to the physical table instance.
   """
 
   alias Favn.RelationRef

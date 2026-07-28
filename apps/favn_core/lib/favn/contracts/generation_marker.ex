@@ -3,8 +3,9 @@ defmodule Favn.Contracts.GenerationMarker do
   Generation marker stored beside a target in its data system.
 
   The marker is the data-plane authority used to reconcile an activation whose
-  outcome was not observed by the orchestrator. It contains no credentials or
-  control-plane connection data.
+  outcome was not observed by the orchestrator. Generation-capable adapters
+  bind its activation token to the physical table instance. It contains no
+  credentials or control-plane connection data.
   """
 
   alias Favn.RelationRef

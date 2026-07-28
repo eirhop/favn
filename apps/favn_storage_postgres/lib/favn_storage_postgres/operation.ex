@@ -158,6 +158,14 @@ defmodule FavnStoragePostgres.Instrumented.TargetGenerations do
     store: :target_generations
 end
 
+defmodule FavnStoragePostgres.Instrumented.TargetRecovery do
+  @moduledoc false
+  use FavnStoragePostgres.InstrumentedStore,
+    behaviour: FavnOrchestrator.Persistence.TargetRecoveryStore,
+    implementation: FavnStoragePostgres.TargetRecoveries.Store,
+    store: :target_recovery
+end
+
 defmodule FavnStoragePostgres.Instrumented.Rebuilds do
   @moduledoc false
   use FavnStoragePostgres.InstrumentedStore,

@@ -21,6 +21,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
   alias FavnStoragePostgres.Migrations.AddScheduleOperatorReadsV2
   alias FavnStoragePostgres.Migrations.AddScheduleActivationsV2
   alias FavnStoragePostgres.Migrations.AddTargetGenerationFoundationV2
+  alias FavnStoragePostgres.Migrations.AddTargetRecoveryV2
   alias FavnStoragePostgres.Migrations.CreateStorageV2
   alias FavnStoragePostgres.Migrations.CompleteRebuildOrchestrationV2
   alias FavnStoragePostgres.Migrations.EnforceRunPlanManifestIdentityV2
@@ -64,7 +65,8 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     {20_260_722_000_000, AddTargetGenerationFoundationV2},
     {20_260_722_010_000, CompleteRebuildOrchestrationV2},
     {20_260_722_020_000, AddRebuildOperatorReadsV2},
-    {20_260_725_000_000, AddScheduleActivationsV2}
+    {20_260_725_000_000, AddScheduleActivationsV2},
+    {20_260_728_000_000, AddTargetRecoveryV2}
   ]
   @required_tables ~w(
     schema_migrations
@@ -104,6 +106,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     rebuild_plan_actions
     rebuild_windows
     target_operation_locks
+    target_recovery_operations
     coverage_baselines
     backfills
     backfill_plan_batches
@@ -196,6 +199,8 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     rebuild_windows_key_uidx
     rebuild_windows_claim_idx
     target_operation_locks_expiry_idx
+    target_recovery_operations_idempotency_uidx
+    target_recovery_operations_recovery_idx
     coverage_baselines_target_idx
     backfills_target_idx
     backfill_windows_page_idx
@@ -328,6 +333,8 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
       ~w(workspace_id deployment_id target_kind target_id status run_id event_id source_publication_id updated_at),
     "target_operation_locks" =>
       ~w(workspace_id target_id operation_id operation_type fencing_token lease_owner lease_expires_at version inserted_at updated_at),
+    "target_recovery_operations" =>
+      ~w(workspace_id operation_id target_id recovery_kind desired_manifest_id source_manifest_id target_generation_id materialization_id plan_hash plan_version plan_payload state phase actor_id session_id reason idempotency_key expected_binding_version expected_physical_fingerprint evaluated_at recovery_token result_marker compatibility_result unknown_outcome terminal_error last_command_id version started_at completed_at inserted_at updated_at),
     "workspace_deployment_targets" =>
       ~w(workspace_id deployment_id target_kind target_id selection_source customer_visible descriptor inserted_at),
     "workspace_deployments" =>
@@ -384,6 +391,11 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     rebuild_plan_actions_saga_valid rebuild_windows_values_valid
     materialization_claims_operation_id_valid
     target_operation_locks_values_valid asset_window_states_evidence_generation_valid
+    target_recovery_operations_values_valid target_recovery_operations_identifiers_bounded
+    target_recovery_operations_payload_bounded target_recovery_operations_state_shape
+    target_recovery_operations_workspace_fk target_recovery_operations_desired_manifest_fk
+    target_recovery_operations_source_manifest_fk target_recovery_operations_generation_fk
+    target_recovery_operations_materialization_fk
     asset_freshness_states_evidence_generation_valid
     resource_circuits_values_valid resource_circuits_probe_shape_valid
     resource_circuit_outcomes_values_valid resource_recovery_candidates_values_valid
@@ -427,7 +439,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
                           Enum.map(@identifier_constraint_tables, &"#{&1}_identifier_lengths_v2") ++
                           Enum.map(@payload_constraint_tables, &"#{&1}_payload_bounds_v2")
   @expected_versions Enum.map(@migrations, fn {version, _module} -> version end)
-  @expected_definition_fingerprint "77d98c565b2b72d6b3c34f120a5df350cc804d5159a3367282b86209b6f1df51"
+  @expected_definition_fingerprint "f7165dd2501cc3fdb626d8d747c0bf34d93633d2f2b287f536151f7e948f824d"
 
   @doc "Creates the V2 namespace and applies every known migration."
   @spec migrate!(module()) :: :ok

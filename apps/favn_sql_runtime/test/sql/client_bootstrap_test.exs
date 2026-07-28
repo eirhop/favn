@@ -263,6 +263,7 @@ defmodule FavnSQLRuntime.SQLClientBootstrapTest do
 
     def generation_capabilities(_resolved, _opts), do: {:ok, %GenerationCapabilities{}}
     def inspect_generation(_conn, _relation, _opts), do: {:ok, :not_found}
+    def bind_relation_instance(_conn, _relation, _instance_id, _opts), do: :ok
 
     def initialize_generation_marker(conn, _request, _opts) do
       record({:initialize_generation_marker, conn})

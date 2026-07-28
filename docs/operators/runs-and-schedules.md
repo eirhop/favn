@@ -184,6 +184,56 @@ the recorded generation and investigate out-of-band DDL. For
 unmanaged relation automatically. Repeated ordinary runs cannot clear any of
 these blocking states.
 
+### Recover An Interrupted Initial Materialization
+
+Use target recovery only when Favn successfully materialized its initial
+generation but lost the control-plane activation step. Open the blocked asset
+and choose **Recover ownership**, or open `/recoveries`.
+
+Planning is read-only and requires the original Favn-created `building`
+generation, its successful materialization and historical descriptor, the
+current logical relation and contract, a fresh physical fingerprint, and
+the exact pre-existing Favn generation marker bound to that physical table
+instance. An unmarked or unbound table cannot be recovered even when its schema
+looks identical. Tables whose markers predate relation-instance binding are
+deliberately refused. An interrupted initial generation has no active generation,
+so it is not eligible for a normal managed rebuild. The supported non-destructive
+fallback is to restore a coordinated, verified control-plane and data-plane
+backup that contains the matching active binding and bound marker. If no such
+checkpoint exists, preserve the relation and escalate for an audited remediation;
+Favn has no generic in-place command that can prove ownership of that legacy
+table. Never reset only the control-plane database or assert ownership from
+schema alone.
+
+An administrator starts the exact plan id and hash. Favn persists intent, then
+atomically rechecks the operation
+fence, binding version, materialization, generation, fingerprint, and exact
+table-bound marker before activating the binding. **Reconcile marker** only
+rereads that existing marker and never creates or replaces one.
+
+This workflow cannot adopt a manually created or otherwise unproven table. A
+mismatch stops recovery and leaves ordinary writes blocked.
+
+```text
+mix favn.recover plan ASSET --reason REASON
+mix favn.recover start PLAN_ID --plan-hash HASH
+mix favn.recover status OPERATION_ID
+mix favn.recover reconcile OPERATION_ID
+```
+
+The private service API exposes the same contract:
+
+```text
+POST /api/orchestrator/v1/target-recoveries/plan
+POST /api/orchestrator/v1/target-recoveries
+GET  /api/orchestrator/v1/target-recoveries/:operation_id
+POST /api/orchestrator/v1/target-recoveries/:operation_id/reconcile
+```
+
+Planning requires operator authority. Start and reconcile require administrator
+authority. Every accepted or rejected mutation records bounded actor/session
+audit evidence.
+
 ### Rebuild A Managed Target
 
 Use a rebuild only for a managed persisted SQL target whose active generation

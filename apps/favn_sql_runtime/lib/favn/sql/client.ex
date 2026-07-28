@@ -1724,6 +1724,7 @@ defmodule Favn.SQL.Client do
   defp generation_adapter?(adapter) do
     function_exported?(adapter, :generation_capabilities, 2) and
       function_exported?(adapter, :inspect_generation, 3) and
+      function_exported?(adapter, :bind_relation_instance, 4) and
       function_exported?(adapter, :initialize_generation_marker, 3) and
       function_exported?(adapter, :activate_generation, 3) and
       function_exported?(adapter, :reconcile_generation, 3) and

@@ -70,7 +70,10 @@ defmodule FavnOrchestrator.InitialTargetGenerationReconcilerTest do
     end
 
     def generation_marker(_version, asset_ref, opts) do
-      send(Keyword.fetch!(opts, :test_pid), {:generation_marker, asset_ref})
+      send(
+        Keyword.fetch!(opts, :test_pid),
+        {:generation_marker, asset_ref, Keyword.fetch!(opts, :require_relation_instance?)}
+      )
 
       case Process.get(:last_initialization_request) do
         nil -> {:ok, nil}
@@ -118,6 +121,7 @@ defmodule FavnOrchestrator.InitialTargetGenerationReconcilerTest do
       admission: FakeStore,
       resource_circuits: FakeStore,
       target_generations: FakeStore,
+      target_recovery: FakeStore,
       rebuilds: FakeStore,
       target_operation_locks: FakeStore,
       materialization: FakeStore,
@@ -222,7 +226,7 @@ defmodule FavnOrchestrator.InitialTargetGenerationReconcilerTest do
 
     assert :ok = InitialTargetGenerationReconciler.reconcile(entry)
     assert_receive {:initialize_generation_marker, _request}
-    assert_receive {:generation_marker, @ref}
+    assert_receive {:generation_marker, @ref, true}
     assert_receive {:reconcile_initial, command}
     assert command.data_plane_marker.active_generation_id == @generation_id
   end

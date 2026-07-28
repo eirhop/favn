@@ -1046,7 +1046,11 @@ defmodule FavnOrchestrator.Rebuilds do
                  runtime.runner_client,
                  version,
                  asset.ref,
-                 runtime.runner_client_opts
+                 Keyword.put(
+                   runtime.runner_client_opts,
+                   :require_relation_instance?,
+                   false
+                 )
                ),
              :ok <- validate_live_marker(marker, binding),
              {:ok, fingerprint} <- inspect_active_fingerprint(runtime, version, asset, binding),

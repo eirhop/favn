@@ -172,6 +172,11 @@ defmodule Favn.AI do
     [Local Development Commands](local-development.html). Planning is read-only
     and start requires the exact reviewed plan id and hash. An unknown activation
     outcome must be reconciled; it is never permission for a blind retry.
+  - To restore ownership after an interrupted initial materialization, read
+    `Mix.Tasks.Favn.Recover`, `Favn.CLI.TargetRecovery`, and
+    `FavnOrchestrator.TargetRecovery`. Recovery requires exact stored and physical
+    evidence plus a pre-existing Favn generation marker and is not an arbitrary
+    relation-adoption mechanism.
   - To operate authored schedules, read `Mix.Tasks.Favn.Schedules`,
     `Favn.CLI.Schedules`, and the schedules section of
     [Runtime Model](runtime-model.html). Newly published schedules are inactive
@@ -526,7 +531,7 @@ defmodule Favn.AI do
     local pipeline submission, run investigation or cancellation, structured
     relation inspection, or deployment examples rather than asset authoring.
     Use `mix help favn.init`, `mix help favn.backfill`,
-    `mix help favn.rebuild`, `mix help favn.run`, `mix help favn.runs`,
+    `mix help favn.rebuild`, `mix help favn.recover`, `mix help favn.run`, `mix help favn.runs`,
     `mix help favn.schedules`,
     or `mix help favn.inspect` for exact command contracts. The caller loads
     environment variables before invoking Mix.

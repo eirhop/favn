@@ -138,8 +138,15 @@ defmodule FavnOrchestrator.RebuildsTest do
        }}
     end
 
-    def generation_marker(_version, asset_ref, _opts),
-      do: {:ok, Process.get(:rebuild_markers) |> Map.fetch!(asset_ref)}
+    def generation_marker(_version, asset_ref, opts) do
+      send(
+        Process.get(:rebuild_test_pid),
+        {:read_rebuild_generation_marker, asset_ref,
+         Keyword.get(opts, :require_relation_instance?, false)}
+      )
+
+      {:ok, Process.get(:rebuild_markers) |> Map.fetch!(asset_ref)}
+    end
 
     def inspect_relation(request, _opts),
       do: {:ok, Process.get(:rebuild_inspections) |> Map.fetch!(request.asset_ref)}
@@ -169,6 +176,7 @@ defmodule FavnOrchestrator.RebuildsTest do
       admission: Store,
       resource_circuits: Store,
       target_generations: Store,
+      target_recovery: Store,
       rebuilds: Store,
       target_operation_locks: Store,
       materialization: Store,
@@ -241,6 +249,7 @@ defmodule FavnOrchestrator.RebuildsTest do
              )
 
     assert_received {:create_rebuild_plan, command}
+    assert_received {:read_rebuild_generation_marker, _, false}
     assert Enum.map(command.actions, & &1.action) == [:rebuild, :rebuild]
     assert command.plan_payload.item_count == 2
     assert byte_size(command.plan_payload.items_digest) == 64

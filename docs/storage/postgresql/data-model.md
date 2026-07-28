@@ -390,6 +390,15 @@ erDiagram
         text operation_type
         bigint fencing_token
     }
+    TARGET_RECOVERY_OPERATIONS {
+        text workspace_id PK, FK
+        text operation_id PK
+        text target_id FK
+        uuid target_generation_id FK
+        text materialization_id FK
+        text state
+        bigint version
+    }
     COVERAGE_BASELINES {
         text workspace_id PK, FK
         text baseline_id PK
@@ -442,6 +451,7 @@ erDiagram
     ASSET_TARGET_GENERATIONS ||--o{ MATERIALIZATION_CLAIMS : pins
     ASSET_TARGET_GENERATIONS ||--o{ MATERIALIZATIONS : proves
     ASSET_TARGET_GENERATIONS ||--o| ASSET_TARGET_BINDINGS : activates
+    ASSET_TARGET_GENERATIONS ||--o{ TARGET_RECOVERY_OPERATIONS : recovers
     REBUILD_OPERATIONS ||--|{ REBUILD_PLAN_ACTIONS : plans
     REBUILD_PLAN_ACTIONS ||--o{ REBUILD_WINDOWS : expands
     OUTBOX_EVENTS ||--o| MATERIALIZATIONS : publishes
@@ -468,6 +478,12 @@ creating operation. `target_operation_locks` excludes concurrent normal writes
 and other rebuilds with expiring, fenced ownership. Operator histories page on
 workspace plus descending insertion/operation identity, with a separate state
 prefix index.
+
+`target_recovery_operations` stores immutable plans and the durable
+`planned` → `applying` → `succeeded | failed | outcome_unknown` lifecycle for
+interrupted initial-generation recovery. Each operation references its exact
+generation and successful materialization. It shares `target_operation_locks`
+with rebuilds so activation is fenced against concurrent writes.
 
 ## Identity, audit, maintenance, and projections
 
@@ -617,7 +633,7 @@ repaired from authoritative publications.
 | Scheduling | `schedule_cursors`, `schedule_occurrences` | Authoritative |
 | Admission | `capacity_scopes`, `execution_leases`, `execution_lease_scopes`, `admission_waiters` | Authoritative coordination |
 | Resource circuits | `resource_circuits`, `resource_circuit_outcomes`, `resource_recovery_candidates` | Authoritative coordination |
-| Target generations and rebuilds | `asset_target_generations`, `asset_target_bindings`, `rebuild_operations`, `rebuild_plan_actions`, `rebuild_windows`, `target_operation_locks` | Authoritative state and coordination |
+| Target generations and rebuilds | `asset_target_generations`, `asset_target_bindings`, `target_recovery_operations`, `rebuild_operations`, `rebuild_plan_actions`, `rebuild_windows`, `target_operation_locks` | Authoritative state and coordination |
 | Materialization | `materialization_claims`, `materializations`, `coverage_baselines` | Authoritative |
 | Backfills | `backfills`, `backfill_plan_batches`, `backfill_windows` | Authoritative |
 | Logs | `log_batches`, `log_entries` | Authoritative operational history subject to retention |

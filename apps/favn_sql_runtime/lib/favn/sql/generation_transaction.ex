@@ -2,6 +2,7 @@ defmodule Favn.SQL.GenerationTransaction do
   @moduledoc false
 
   alias Favn.RelationRef
+  alias Favn.TargetGenerationRelation
 
   alias Favn.SQL.{
     Error,
@@ -81,9 +82,25 @@ defmodule Favn.SQL.GenerationTransaction do
 
     with {:ok, relation} <- adapter.relation(conn, marker_ref, opts) do
       case relation do
-        nil -> {:ok, nil}
-        %Relation{type: :table} -> read_marker(adapter, conn, request, marker_ref, opts)
-        %Relation{} -> {:error, marker_relation_error(adapter_identity, marker_ref)}
+        nil ->
+          {:ok, nil}
+
+        %Relation{type: :table} ->
+          with {:ok, marker} <- read_marker(adapter, conn, request, marker_ref, opts),
+               :ok <-
+                 maybe_validate_reconciled_relation_instance(
+                   adapter,
+                   conn,
+                   request.stable_relation,
+                   marker,
+                   request.require_relation_instance?,
+                   opts
+                 ) do
+            {:ok, marker}
+          end
+
+        %Relation{} ->
+          {:error, marker_relation_error(adapter_identity, marker_ref)}
       end
     end
   end
@@ -93,7 +110,8 @@ defmodule Favn.SQL.GenerationTransaction do
   def discard(adapter, conn, adapter_identity, %GenerationDiscard{} = request, opts) do
     reconciliation = %GenerationReconciliation{
       logical_target_id: request.logical_target_id,
-      stable_relation: request.stable_relation
+      stable_relation: request.stable_relation,
+      require_relation_instance?: false
     }
 
     case adapter.transaction(
@@ -165,6 +183,15 @@ defmodule Favn.SQL.GenerationTransaction do
            ),
          marker <- observed_marker || marker_from_request(request),
          :ok <-
+           ensure_initial_relation_instance(
+             adapter,
+             conn,
+             request.stable_relation,
+             observed_marker,
+             marker,
+             opts
+           ),
+         :ok <-
            maybe_write_initial_marker(adapter, conn, marker_ref, observed_marker, marker, opts) do
       {:ok,
        %GenerationMarkerInitializationResult{
@@ -228,7 +255,15 @@ defmodule Favn.SQL.GenerationTransaction do
          _marker_ref,
          opts
        ) do
-    with {:ok, %GenerationInspection{} = inspection} <-
+    with :ok <-
+           validate_relation_instance(
+             adapter,
+             conn,
+             request.stable_relation,
+             observed_marker,
+             opts
+           ),
+         {:ok, %GenerationInspection{} = inspection} <-
            inspect(adapter, conn, adapter_identity, request.stable_relation, opts) do
       {:ok,
        %GenerationActivationResult{
@@ -264,14 +299,22 @@ defmodule Favn.SQL.GenerationTransaction do
              rename_statement(request.candidate_relation, request.stable_relation),
              opts
            ),
+         marker <- marker_from_request(request),
+         :ok <-
+           adapter.bind_relation_instance(
+             conn,
+             request.stable_relation,
+             relation_instance_id(marker),
+             opts
+           ),
          {:ok, _result} <- adapter.execute(conn, delete_marker(marker_ref, request), opts),
          {:ok, _result} <-
-           adapter.execute(conn, insert_marker(marker_ref, marker_from_request(request)), opts),
+           adapter.execute(conn, insert_marker(marker_ref, marker), opts),
          {:ok, %GenerationInspection{} = inspection} <-
            inspect(adapter, conn, adapter_identity, request.stable_relation, opts) do
       {:ok,
        %GenerationActivationResult{
-         marker: marker_from_request(request),
+         marker: marker,
          candidate_fingerprint: candidate_inspection.physical_fingerprint.fingerprint,
          physical_fingerprint: inspection.physical_fingerprint.fingerprint,
          inspection: inspection
@@ -625,6 +668,102 @@ defmodule Favn.SQL.GenerationTransaction do
       {:error, %Error{} = error} -> {:error, error}
     end
   end
+
+  defp ensure_initial_relation_instance(
+         adapter,
+         conn,
+         stable_relation,
+         nil,
+         marker,
+         opts
+       ) do
+    adapter.bind_relation_instance(
+      conn,
+      stable_relation,
+      relation_instance_id(marker),
+      opts
+    )
+  end
+
+  defp ensure_initial_relation_instance(
+         adapter,
+         conn,
+         stable_relation,
+         %GenerationMarker{},
+         marker,
+         opts
+       ),
+       do: validate_relation_instance(adapter, conn, stable_relation, marker, opts)
+
+  defp validate_relation_instance(adapter, conn, stable_relation, marker, opts) do
+    expected = relation_instance_id(marker)
+
+    case adapter.table_metadata(conn, stable_relation, opts) do
+      {:ok, %{relation_instance_id: ^expected}} ->
+        :ok
+
+      {:ok, metadata} ->
+        {:error,
+         relation_instance_error(
+           adapter,
+           :relation_instance_mismatch,
+           expected,
+           Map.get(metadata, :relation_instance_id)
+         )}
+
+      {:error, %Error{} = error} ->
+        {:error, error}
+    end
+  end
+
+  defp relation_instance_id(%GenerationMarker{activation_token: activation_token}),
+    do: TargetGenerationRelation.instance_id(activation_token)
+
+  defp relation_instance_error(adapter, reason, expected, observed) do
+    %Error{
+      type: :introspection_mismatch,
+      message: "target generation marker is not bound to the physical relation instance",
+      retryable?: false,
+      adapter: adapter,
+      operation: :reconcile_generation,
+      details: %{
+        classification: :relation_instance_identity,
+        reason: reason,
+        expected: expected,
+        observed: observed
+      }
+    }
+  end
+
+  defp maybe_validate_reconciled_relation_instance(
+         _adapter,
+         _conn,
+         _relation,
+         _marker,
+         false,
+         _opts
+       ),
+    do: :ok
+
+  defp maybe_validate_reconciled_relation_instance(
+         _adapter,
+         _conn,
+         _relation,
+         nil,
+         true,
+         _opts
+       ),
+       do: :ok
+
+  defp maybe_validate_reconciled_relation_instance(
+         adapter,
+         conn,
+         relation,
+         marker,
+         true,
+         opts
+       ),
+    do: validate_relation_instance(adapter, conn, relation, marker, opts)
 
   defp ensure_not_active(
          %GenerationMarker{active_generation_id: generation_id},

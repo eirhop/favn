@@ -11,6 +11,7 @@ defmodule Favn.CLI do
   alias Favn.CLI.Run
   alias Favn.CLI.Runs
   alias Favn.CLI.Schedules
+  alias Favn.CLI.TargetRecovery
 
   def activate(opts), do: Activate.run(opts)
   def publish(opts), do: Publish.run(opts)
@@ -46,6 +47,16 @@ defmodule Favn.CLI do
   def cancel_rebuild(operation_id, reason, opts), do: Rebuild.cancel(operation_id, reason, opts)
   def retry_rebuild(operation_id, opts), do: Rebuild.retry(operation_id, opts)
   def reconcile_rebuild(operation_id, opts), do: Rebuild.reconcile(operation_id, opts)
+
+  def plan_target_recovery(asset, reason, opts), do: TargetRecovery.plan(asset, reason, opts)
+
+  def start_target_recovery(plan_id, plan_hash, opts),
+    do: TargetRecovery.start(plan_id, plan_hash, opts)
+
+  def get_target_recovery(operation_id, opts), do: TargetRecovery.status(operation_id, opts)
+
+  def reconcile_target_recovery(operation_id, opts),
+    do: TargetRecovery.reconcile(operation_id, opts)
 
   def diagnostics(opts) do
     with {:ok, url, %{service_token: token}, context} <- Context.resolve(opts) do
