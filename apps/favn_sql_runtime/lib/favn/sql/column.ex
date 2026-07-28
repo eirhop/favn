@@ -1,6 +1,10 @@
 defmodule Favn.SQL.Column do
   @moduledoc """
   Normalized column metadata.
+
+  Adapters set `metadata.contract_nullability` to `:reliable` only when
+  `nullable?` is authoritative for contract comparison. Missing or
+  `:unreliable` metadata means the value is descriptive only.
   """
 
   @enforce_keys [:name]

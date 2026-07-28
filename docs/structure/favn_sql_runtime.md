@@ -121,6 +121,12 @@ system, including its diagnostic timestamp. Reconciliation reads that marker.
 Discard reads the marker in its transaction and refuses to drop a candidate
 that is already active.
 
+Column adapters use `metadata.contract_nullability` to distinguish authoritative
+nullability from descriptive introspection. Names and types always participate
+in contract and physical-identity checks. Nullability participates only when
+the metadata value is `:reliable`; missing or `:unreliable` values are
+excluded from contract identity comparison.
+
 Connection runtime config reserves `circuit_breaker` and normalizes it into
 `%Favn.CircuitBreaker.Policy{}` on `%Favn.Connection.Resolved{}` rather than
 passing it to adapters. The SQL runtime reports typed failure details; runner
