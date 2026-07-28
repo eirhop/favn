@@ -1,106 +1,142 @@
-# Generic CRM example
+# Basic workflow tutorial
 
-This standalone project is a small, runnable Favn workload for exercising the
-CLI and inspecting the resulting DuckDB data. It uses four medallion layers:
+A complete, runnable Favn project you can read in one sitting and copy as a
+starting point. It lands data from a stand-in CRM API and publishes it through
+three warehouse layers into a DuckDB file.
 
-1. **Landing** - compact deterministic JSON in `.data/generic_crm/landing/`.
-2. **Source** - DuckDB tables loaded from the landing files.
-3. **Core** - CRM-vendor-neutral customer, opportunity, and activity models.
-4. **Mart** - account health, daily pipeline, and executive reporting tables.
+Everything runs locally with no external services beyond the PostgreSQL control
+plane, and every setting has a working default.
 
-The workload demonstrates full refreshes, exact daily windows, lookback,
-freshness, checks, output contracts, retry policy, cancellation, schedules,
-backfills, additive source changes, and managed-target rebuilds. The temporary
-manual test record is in
-`docs/refactor/generic-crm-cli-lifecycle-qa.md`.
+## What it demonstrates
+
+| Concept | Where to look |
+| --- | --- |
+| Source-system transport, isolated from everything else | `lib/crm_demo/integrations/crm/client.ex` |
+| Imperative extraction with immutable parts and a completion manifest | `lib/crm_demo/landing/crm/` |
+| One `asset/1` runtime shared by several datasets | `lib/crm_demo/landing/crm/snapshots.ex` |
+| Runtime inputs: binding a file list chosen at run time | `lib/crm_demo/warehouse/source/crm/inputs.ex` |
+| SQL output contracts, grain, and row-count reconciliation | `lib/crm_demo/warehouse/source/crm/events/deal.ex` |
+| Reusable contract fragments and matching SQL projection helpers | `lib/crm_demo/contracts/`, `lib/crm_demo/sql/` |
+| Namespace inheritance for connection, schema, window, and coverage | `lib/crm_demo/warehouse/` |
+| Full refresh, daily windows, incremental writes, and views | the Source, Core, and Mart assets |
+| Custom transactional checks | `lib/crm_demo/warehouse/mart/sales/account_health.ex` |
+| Retry, cancellation, and schedule behavior | `lib/crm_demo/lifecycle/` |
+
+## Project layout
+
+Folder paths mirror module namespaces, and each folder has one job.
+
+```text
+lib/crm_demo/
+├── connections/warehouse.ex        the DuckDB connection
+├── integrations/crm/client.ex      HTTP-shaped transport, nothing else
+├── landing/crm/                    Elixir assets that extract and preserve
+├── support/landing/                landing manifest and file storage
+├── warehouse/source/crm/           typed relations mirroring the source
+├── warehouse/core/sales/           reusable, source-independent models
+├── warehouse/mart/sales/           analytics-facing models
+├── contracts/                      shared output-contract columns
+├── sql/                            shared SQL projection helpers
+├── lifecycle/                      probes for run lifecycle behavior
+└── pipelines/                      runnable entrypoints
+```
+
+Each SQL asset is one `.ex` module declaring identity, dependencies, contract,
+and materialization, plus one adjacent `.sql` file holding the query. The
+contract's column order and the query's projection order are the same.
+
+## The data flow
+
+```text
+CRM API  ──►  landing/crm       ──►  warehouse/source/crm  ──►  warehouse/core/sales  ──►  warehouse/mart/sales
+             .jsonl parts +          source.account             core.customer              mart.account_health
+             _manifest.json          source.contact             core.opportunity           mart.pipeline_daily
+                                     source.deal                core.engagement            mart.executive_overview
+                                     source.activity
+```
+
+Landing is the only layer that talks to the source system. Source reads only the
+files one completed manifest listed. Core reads only persisted relations. A
+failed extraction writes no manifest, so nothing downstream can pick it up, and
+a retry lands a new run rather than modifying the failed one.
 
 ## Compile and test
 
-From this directory:
-
-```powershell
-mix deps.get
-mix compile
-mix test
+```bash
+mix deps.get && mix compile && mix test
 ```
 
-Every DuckDB-writing asset uses the one-slot `local_duckdb` execution pool.
-This serializes direct, pipeline, and rebuild writes to the file-backed catalog.
-The connection pool may retain one idle session for reuse; that idle limit is
-not the concurrency control.
+The tests cover the client, the landing contract, the runtime-input resolver,
+the compiled manifest, and a full materialization against a real DuckDB file.
 
-## Run locally
+## Run it
 
-Provide the normal local PostgreSQL control plane, provision a workspace, then
-start the Favn stack:
+Provide a local PostgreSQL control plane, provision a workspace, then start the
+stack:
 
-```powershell
-$env:FAVN_RUNTIME_INPUT_PIN_KEY = '01234567890123456789012345678901'
-$env:FAVN_DATABASE_URL = 'ecto://favn_migrator:favn_migrator_local@127.0.0.1:5432/favn_dev'
+```bash
 mix favn.postgres.migrate
-mix favn.postgres.grant_runtime --role favn_runtime
-mix favn.postgres.provision_workspace --id local-dev --slug local-dev --name 'Local Development'
-
-$env:FAVN_DATABASE_URL = 'ecto://favn_runtime:favn_runtime_local@127.0.0.1:5432/favn_dev'
-mix favn.dev
-mix favn.reload
-mix favn.run FavnReferenceWorkload.Pipelines.BootstrapCrmDemo --refresh force_all
-mix favn.run FavnReferenceWorkload.Pipelines.DailyCrmAnalytics --window day:2026-07-23 --refresh force_all
 ```
 
-With no `--window`, the daily pipeline selects the latest complete daily
-window. The fixture contains facts only through 2026-07-23, so the quick start
-uses that exact day to produce meaningful mart rows. A default run on a later
-date is valid but produces an empty daily mart. Use `mix favn.backfill` for a
-range.
+```bash
+mix favn.postgres.provision_workspace --id local-dev --slug local-dev --name 'Local Development'
+```
 
-The data plane defaults to `generic_crm.duckdb`. Set `DUCKDB_ADBC_DRIVER` to a
-compatible DuckDB library before starting Favn; on Windows this is normally the
-absolute path to `duckdb.dll`.
+```bash
+mix favn.dev
+```
 
-Stop the local stack before opening the same database with another DuckDB
-client, because the running example owns its single file-backed session.
+Load the reference data, then one day of events:
+
+```bash
+mix favn.run CrmDemo.Pipelines.CrmReference --refresh force_all
+```
+
+```bash
+mix favn.run CrmDemo.Pipelines.CrmDaily --window day:2026-07-23 --refresh force_all
+```
+
+The fixture contains events on 2026-07-22 and 2026-07-23 only. Without
+`--window`, the daily pipeline selects the latest complete day, which is valid
+but produces empty marts. Use `mix favn.backfill` for a range.
+
+Inspect the result with any DuckDB client, after stopping the stack - the
+running example owns its single file-backed session:
+
+```sql
+select * from mart.executive_overview;
+```
+
+## Configuration
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `DUCKDB_ADBC_DRIVER` | unset | Absolute path to a DuckDB library. Required before starting Favn. |
+| `CRM_DEMO_WORKSPACE_ID` | `local-dev` | Control-plane workspace this project runs in. |
+| `CRM_API_BASE_URL` | unset | Declared as optional runtime config; the stand-in client records it. |
+| `CRM_API_TOKEN` | unset | Declared as an optional secret so redaction is visible in the UI. |
+
+The warehouse file is `crm_demo.duckdb`, tests use `crm_demo_test.duckdb`, and
+landed files go under `.data/landing/`. All three are configured in
+`config/config.exs`.
+
+Every DuckDB-writing asset uses the one-slot `duckdb` execution pool, which
+serializes writes to the single file-backed catalog.
 
 ## Lifecycle probes
 
-The example contains three intentionally small probes:
-
-- `Lifecycle.RetryProbe` fails safely twice and succeeds on attempt three.
-- `Lifecycle.CancellationProbe` stays active long enough to cancel with
-  `mix favn.runs cancel`.
-- `Pipelines.LifecycleScheduleProbe` fires every ten seconds, but new schedules
-  are inactive until explicitly activated with `mix favn.schedules activate`.
-
-Start with `mix favn.dev --scheduler` only when testing schedule submission.
-Starting without that flag leaves scheduler execution disabled.
-
-## Schema change and rebuild
-
-`CRM_EXAMPLE_SCHEMA_VERSION` selects the compile-time account contract:
-
-- `v1` has `account_id`, `name`, and `segment`.
-- `v2` adds the non-null `industry` field.
-
-After changing the value, always force recompilation before reloading:
-
-```powershell
-$env:CRM_EXAMPLE_SCHEMA_VERSION = 'v2'
-mix compile --force
-mix favn.reload
+```bash
+mix favn.run CrmDemo.Lifecycle.RetryProbe
 ```
 
-Run the V2 landing account asset before planning the rebuild so the new
-`industry` input exists:
+Fails safely twice and succeeds on attempt three.
 
-```powershell
-mix favn.run FavnReferenceWorkload.Warehouse.Landing.WriteExtracts:accounts_snapshot --dependencies all --refresh force_all
-mix favn.rebuild plan FavnReferenceWorkload.Warehouse.Source.Accounts --reason "exercise additive CRM account contract"
+```bash
+mix favn.run CrmDemo.Lifecycle.CancellationProbe --no-wait
 ```
 
-Approve the returned immutable plan and hash with `mix favn.rebuild start`,
-then follow it with `mix favn.rebuild status`.
+Stays active long enough to cancel with `mix favn.runs cancel`.
 
-For isolated manual testing, give each run a newly provisioned
-`CRM_EXAMPLE_WORKSPACE_ID` and unused `CRM_EXAMPLE_DUCKDB_PATH`. Tests use
-`generic_crm_test.duckdb` by default; override it with
-`CRM_EXAMPLE_TEST_DUCKDB_PATH` when needed.
+`CrmDemo.Pipelines.ScheduleProbe` fires every ten seconds. New schedules are
+inactive until activated with `mix favn.schedules activate`, and the scheduler
+only runs when the stack was started with `mix favn.dev --scheduler`.

@@ -20,11 +20,11 @@ erl_crash.dump
 *.ez
 
 # Ignore package tarball (built via "mix hex.build").
-basic_workflow_tutorial-*.tar
+crm_demo-*.tar
 
 /.favn/
 
-# Local CRM landing files and DuckDB data, including isolated test paths.
+# Landed files and DuckDB data, including isolated test paths.
 /.data/
 /*.duckdb*
 
