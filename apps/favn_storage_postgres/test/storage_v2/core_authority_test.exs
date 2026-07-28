@@ -4871,6 +4871,92 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert purged.deleted_count == 2
   end
 
+  test "normalizes runner metadata before validating the persisted payload", fixture do
+    now = DateTime.utc_now()
+    asset_ref = {__MODULE__.PipelineAsset, :asset}
+
+    command = %AppendLogBatch{
+      workspace_context: fixture.workspace_context,
+      command_id: "runner-log-normalized:" <> fixture.workspace_id,
+      batch_id: "runner-log-normalized-batch:" <> fixture.workspace_id,
+      occurred_at: now,
+      entries: [
+        %LogEntry{
+          source: "runner",
+          level: :info,
+          message: "asset execution started",
+          metadata: %{
+            pipeline_identity_ref: {__MODULE__.Pipeline, :pipeline},
+            pipeline_target_refs: [asset_ref]
+          },
+          occurred_at: now
+        }
+      ]
+    }
+
+    assert {:ok, [entry]} = LogStore.append_batch(command)
+
+    assert entry.metadata["pipeline_identity_ref"] == %{
+             "module" => Atom.to_string(__MODULE__.Pipeline),
+             "name" => "pipeline"
+           }
+
+    assert entry.metadata["pipeline_target_refs"] == [
+             %{"module" => Atom.to_string(elem(asset_ref, 0)), "name" => "asset"}
+           ]
+  end
+
+  test "rejects runner metadata that remains oversized after normalization", fixture do
+    now = DateTime.utc_now()
+
+    metadata =
+      Map.new(1..5, fn index ->
+        {"detail_#{index}", String.duplicate(Integer.to_string(index), 8_192)}
+      end)
+
+    command = %AppendLogBatch{
+      workspace_context: fixture.workspace_context,
+      command_id: "runner-log-oversized:" <> fixture.workspace_id,
+      batch_id: "runner-log-oversized-batch:" <> fixture.workspace_id,
+      occurred_at: now,
+      entries: [
+        %LogEntry{
+          source: "runner",
+          level: :info,
+          message: "asset execution started",
+          metadata: metadata,
+          occurred_at: now
+        }
+      ]
+    }
+
+    assert {:error, %Error{kind: :invalid, message: "invalid persistence command"}} =
+             LogStore.append_batch(command)
+  end
+
+  test "rejects malformed runner metadata as an invalid command", fixture do
+    now = DateTime.utc_now()
+
+    command = %AppendLogBatch{
+      workspace_context: fixture.workspace_context,
+      command_id: "runner-log-malformed:" <> fixture.workspace_id,
+      batch_id: "runner-log-malformed-batch:" <> fixture.workspace_id,
+      occurred_at: now,
+      entries: [
+        %LogEntry{
+          source: "runner",
+          level: :info,
+          message: "asset execution started",
+          metadata: %{"malformed" => [1 | 2]},
+          occurred_at: now
+        }
+      ]
+    }
+
+    assert {:error, %Error{kind: :invalid, message: "invalid persistence command"}} =
+             LogStore.append_batch(command)
+  end
+
   test "persists normalized actors, hashed sessions, access audit, and revocation", fixture do
     now = DateTime.utc_now()
     actor_id = "actor:" <> fixture.workspace_id

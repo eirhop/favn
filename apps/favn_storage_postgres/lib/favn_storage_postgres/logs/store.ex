@@ -28,6 +28,7 @@ defmodule FavnStoragePostgres.Logs.Store do
   alias FavnStoragePostgres.Schemas.OutboxEvent
 
   @max_entries 1_000
+  @max_metadata_bytes 32 * 1_024
   @levels [:debug, :info, :warning, :error]
   @sources [:orchestrator, :runner, :sql_runtime, :adapter, :user_code, :system]
   @streams [:stdout, :stderr, :system]
@@ -36,7 +37,8 @@ defmodule FavnStoragePostgres.Logs.Store do
   @impl true
   def append_batch(%AppendLogBatch{} = command) do
     with :ok <- validate_append(command),
-         normalized <- Enum.map(command.entries, &normalize_entry/1),
+         {:ok, normalized} <- normalize_entries(command.entries),
+         :ok <- validate_normalized_entries(normalized),
          {:ok, batch_hash} <- CanonicalJSON.hash(Enum.map(normalized, &hashable_entry/1)),
          {:ok, rows} <-
            Repo.transaction(fn -> append_or_replay!(command, normalized, batch_hash) end) do
@@ -237,35 +239,56 @@ defmodule FavnStoragePostgres.Logs.Store do
     :ok
   end
 
-  defp normalize_entry(entry) do
-    redacted =
-      Redaction.redact_operational_bounded(%{
-        message: entry.message,
-        metadata: entry.metadata
-      })
+  defp normalize_entries(entries) do
+    Enum.reduce_while(entries, {:ok, []}, fn entry, {:ok, normalized} ->
+      case normalize_entry(entry) do
+        {:ok, normalized_entry} -> {:cont, {:ok, [normalized_entry | normalized]}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+    |> then(fn
+      {:ok, normalized} -> {:ok, Enum.reverse(normalized)}
+      error -> error
+    end)
+  end
 
+  defp normalize_entry(entry) do
+    case Redaction.redact_operational_bounded(%{
+           message: entry.message,
+           metadata: entry.metadata
+         }) do
+      %{message: message, metadata: metadata} when is_map(metadata) ->
+        normalize_entry(entry, message, metadata)
+
+      _invalid ->
+        {:error, :invalid}
+    end
+  end
+
+  defp normalize_entry(entry, message, metadata) do
     metadata =
-      redacted.metadata
+      metadata
       |> normalize_log_identity(:node_key, &Identity.node_key/1)
       |> normalize_log_identity(:asset_ref, &Identity.asset_ref/1)
       |> JsonSafe.data()
 
-    {:ok, node_key_hash} = optional_filter_hash(Map.get(metadata, "node_key"))
-    {:ok, asset_ref_hash} = optional_filter_hash(Map.get(metadata, "asset_ref"))
-
-    %{
-      run_id: entry.run_id,
-      asset_step_id: optional_string(Map.get(metadata, "asset_step_id")),
-      runner_execution_id: optional_string(Map.get(metadata, "runner_execution_id")),
-      node_key_hash: node_key_hash,
-      asset_ref_hash: asset_ref_hash,
-      stream: optional_string(Map.get(metadata, "stream")),
-      source: String.slice(entry.source, 0, 100),
-      level: Atom.to_string(entry.level),
-      message: redacted.message |> to_string() |> String.slice(0, 8_192),
-      metadata: metadata,
-      occurred_at: entry.occurred_at
-    }
+    with {:ok, node_key_hash} <- optional_filter_hash(Map.get(metadata, "node_key")),
+         {:ok, asset_ref_hash} <- optional_filter_hash(Map.get(metadata, "asset_ref")) do
+      {:ok,
+       %{
+         run_id: entry.run_id,
+         asset_step_id: optional_string(Map.get(metadata, "asset_step_id")),
+         runner_execution_id: optional_string(Map.get(metadata, "runner_execution_id")),
+         node_key_hash: node_key_hash,
+         asset_ref_hash: asset_ref_hash,
+         stream: optional_string(Map.get(metadata, "stream")),
+         source: String.slice(entry.source, 0, 100),
+         level: Atom.to_string(entry.level),
+         message: message |> to_string() |> String.slice(0, 8_192),
+         metadata: metadata,
+         occurred_at: entry.occurred_at
+       }}
+    end
   end
 
   defp hashable_entry(entry) do
@@ -467,11 +490,19 @@ defmodule FavnStoragePostgres.Logs.Store do
   defp valid_entry?(%LogEntryCommand{} = entry) do
     valid_id?(entry.source) and entry.level in @levels and is_binary(entry.message) and
       byte_size(entry.message) in 1..8_192 and match?(%DateTime{}, entry.occurred_at) and
-      (is_nil(entry.run_id) or valid_id?(entry.run_id)) and is_map(entry.metadata) and
-      Payload.validate(entry.metadata, 32 * 1_024) == :ok
+      (is_nil(entry.run_id) or valid_id?(entry.run_id)) and is_map(entry.metadata)
   end
 
   defp valid_entry?(_other), do: false
+
+  defp validate_normalized_entries(entries) do
+    if Enum.all?(entries, &valid_normalized_entry?/1),
+      do: :ok,
+      else: {:error, ErrorMapper.map(:invalid)}
+  end
+
+  defp valid_normalized_entry?(entry),
+    do: Payload.validate(entry.metadata, @max_metadata_bytes) == :ok
 
   defp workspace_context?(context), do: WorkspaceContext.valid?(context)
 
