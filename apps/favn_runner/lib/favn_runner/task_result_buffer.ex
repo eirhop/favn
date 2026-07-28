@@ -15,6 +15,12 @@ defmodule FavnRunner.TaskResultBuffer do
   def reset(server \\ __MODULE__), do: GenServer.call(server, :reset)
   def append(server \\ __MODULE__, entry), do: GenServer.call(server, {:append, entry})
   def drain_logs(server \\ __MODULE__), do: GenServer.call(server, :drain_logs)
+
+  @doc false
+  @spec restore_logs(GenServer.server(), [term()]) :: :ok
+  def restore_logs(server \\ __MODULE__, entries),
+    do: GenServer.call(server, {:restore_logs, entries})
+
   def put_result(server \\ __MODULE__, result), do: GenServer.call(server, {:put_result, result})
   def pending_result(server \\ __MODULE__), do: GenServer.call(server, :pending_result)
   def acknowledge_result(server \\ __MODULE__), do: GenServer.call(server, :acknowledge_result)
@@ -68,6 +74,21 @@ defmodule FavnRunner.TaskResultBuffer do
         else: entries
 
     {:reply, entries, %{state | entries: [], count: 0, dropped: 0, flush_requested?: false}}
+  end
+
+  def handle_call({:restore_logs, entries}, _from, state) when is_list(entries) do
+    combined = entries ++ Enum.reverse(state.entries)
+    {kept, dropped} = Enum.split(combined, state.max_entries)
+    dropped_count = length(dropped)
+
+    {:reply, :ok,
+     %{
+       state
+       | entries: Enum.reverse(kept),
+         count: length(kept),
+         dropped: state.dropped + dropped_count,
+         flush_requested?: state.flush_requested? or kept != []
+     }}
   end
 
   def handle_call({:put_result, result}, _from, %{result: nil} = state),

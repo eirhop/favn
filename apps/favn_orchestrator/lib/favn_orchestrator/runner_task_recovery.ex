@@ -47,6 +47,7 @@ defmodule FavnOrchestrator.RunnerTaskRecovery do
         SystemContext.platform(:runner_task_recovery, roles: [:platform_operator]),
       command_id: "recover:#{suffix}",
       owner_id: state.owner_id,
+      issued_at: now,
       occurred_at: now,
       limit: 50,
       lease_duration_ms: state.lease_ms
@@ -83,6 +84,7 @@ defmodule FavnOrchestrator.RunnerTaskRecovery do
       assignment_generation: task.assignment_generation,
       disposition: disposition,
       reason: reason,
+      issued_at: now,
       occurred_at: now
     }
 
@@ -103,13 +105,16 @@ defmodule FavnOrchestrator.RunnerTaskRecovery do
     end
   end
 
-  defp recovery_disposition(%{
-         status: :cancelling,
-         cancellation_acknowledged_at: %DateTime{}
-       }),
-       do: :cancelled
+  @doc false
+  @spec recovery_disposition(map()) :: :cancelled | :requeue | :unknown
+  def recovery_disposition(%{
+        status: :cancelling,
+        cancellation_acknowledged_at: %DateTime{},
+        retry_class: :safe_to_retry
+      }),
+      do: :cancelled
 
-  defp recovery_disposition(task) do
+  def recovery_disposition(task) do
     if safe_to_requeue?(task), do: :requeue, else: :unknown
   end
 

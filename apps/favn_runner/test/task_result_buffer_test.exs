@@ -57,4 +57,26 @@ defmodule FavnRunner.TaskResultBufferTest do
     assert :ok = TaskResultBuffer.acknowledge_result(buffer)
     assert nil == TaskResultBuffer.pending_result(buffer)
   end
+
+  test "restoring an unacknowledged prefix preserves ordering and the configured bound" do
+    buffer = start_supervised!({TaskResultBuffer, name: nil, max_entries: 3, flush_entries: 2})
+
+    assert :ok = TaskResultBuffer.append(buffer, %{message: "new-one"})
+    assert :flush = TaskResultBuffer.append(buffer, %{message: "new-two"})
+
+    assert :ok =
+             TaskResultBuffer.restore_logs(buffer, [
+               %{message: "old-one"},
+               %{message: "old-two"}
+             ])
+
+    assert %{count: 3, dropped: 1, max_entries: 3} = TaskResultBuffer.stats(buffer)
+
+    assert [
+             %{message: "old-one"},
+             %{message: "old-two"},
+             %{message: "new-one"},
+             %{type: :truncated, dropped_count: 1}
+           ] = TaskResultBuffer.drain_logs(buffer)
+  end
 end

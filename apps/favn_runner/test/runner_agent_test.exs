@@ -153,6 +153,22 @@ defmodule FavnRunner.RunnerAgentTest do
       {:reply, {:ok, ack}, %{state | assignment: assignment, agent: agent}}
     end
 
+    def handle_call(
+          {:request, %RunnerTask.ClaimRequest{} = request},
+          _from,
+          %{assignment: nil} = state
+        ) do
+      no_work = %RunnerTask.NoWork{
+        command_id: request.command_id,
+        runner_instance_id: request.runner_instance_id,
+        runner_session_generation: request.runner_session_generation,
+        action: :wait,
+        wait_ms: 60_000
+      }
+
+      {:reply, {:ok, no_work}, state}
+    end
+
     def handle_call({:request, %RunnerTask.ClaimRequest{}}, _from, state),
       do: {:reply, {:ok, state.assignment}, state}
 
@@ -304,6 +320,75 @@ defmodule FavnRunner.RunnerAgentTest do
     def handle_cast(:connect, state), do: {:noreply, state}
   end
 
+  defmodule BlockingReregistrationControlPlane do
+    use GenServer
+
+    def start_link(owner), do: GenServer.start_link(__MODULE__, owner)
+    def block_next_registration(server), do: GenServer.call(server, :block_next_registration)
+    def release_registration(server), do: GenServer.cast(server, :release_registration)
+
+    @impl true
+    def init(owner),
+      do: {:ok, %{owner: owner, block_registration?: false, pending_registration: nil}}
+
+    @impl true
+    def handle_call(:gateway, _from, state), do: {:reply, {:ok, self()}, state}
+
+    def handle_call(:block_next_registration, _from, state),
+      do: {:reply, :ok, %{state | block_registration?: true}}
+
+    def handle_call(
+          {:register, registration, agent},
+          from,
+          %{block_registration?: true} = state
+        ) do
+      send(state.owner, {:reregistration_blocked, registration, agent})
+
+      {:noreply,
+       %{state | block_registration?: false, pending_registration: {from, registration}}}
+    end
+
+    def handle_call({:register, registration, agent}, _from, state) do
+      send(state.owner, {:blocking_registration_accepted, registration, agent})
+      {:reply, registration_ack(registration), state}
+    end
+
+    def handle_call({:request, %RunnerTask.ClaimRequest{} = request}, _from, state) do
+      no_work = %RunnerTask.NoWork{
+        command_id: request.command_id,
+        runner_instance_id: request.runner_instance_id,
+        runner_session_generation: request.runner_session_generation,
+        action: :wait,
+        wait_ms: 60_000
+      }
+
+      {:reply, {:ok, no_work}, state}
+    end
+
+    def handle_call({:request, %RunnerTask.LeaseRenewal{} = renewal}, _from, state) do
+      send(state.owner, {:renewal_during_reregistration, renewal})
+      {:reply, {:ok, %{lease_expires_at: renewal.lease_expires_at}}, state}
+    end
+
+    @impl true
+    def handle_cast(
+          :release_registration,
+          %{pending_registration: {from, registration}} = state
+        ) do
+      GenServer.reply(from, registration_ack(registration))
+      {:noreply, %{state | pending_registration: nil}}
+    end
+
+    defp registration_ack(registration) do
+      {:ok,
+       %RunnerTask.RegistrationAck{
+         runner_instance_id: registration.runner_instance_id,
+         runner_session_generation: max(registration.runner_session_generation, 1),
+         status: :accepted
+       }}
+    end
+  end
+
   defmodule ExecutingControlPlane do
     use GenServer
 
@@ -344,6 +429,22 @@ defmodule FavnRunner.RunnerAgentTest do
       {:reply, {:ok, ack}, Map.merge(state, %{assignment: assignment, agent: agent})}
     end
 
+    def handle_call(
+          {:request, %RunnerTask.ClaimRequest{} = request},
+          _from,
+          %{assignment: nil} = state
+        ) do
+      no_work = %RunnerTask.NoWork{
+        command_id: request.command_id,
+        runner_instance_id: request.runner_instance_id,
+        runner_session_generation: request.runner_session_generation,
+        action: :wait,
+        wait_ms: 60_000
+      }
+
+      {:reply, {:ok, no_work}, state}
+    end
+
     def handle_call({:request, %RunnerTask.ClaimRequest{}}, _from, state),
       do: {:reply, {:ok, state.assignment}, state}
 
@@ -359,6 +460,8 @@ defmodule FavnRunner.RunnerAgentTest do
       do: {:reply, {:ok, ack}, state}
 
     def handle_call({:request, %RunnerTask.LogBatch{} = batch}, _from, state) do
+      send(state.owner, {:log_batch_persisted, batch})
+
       if Map.get(state, :block_logs?, false) do
         send(state.owner, :log_delivery_blocked)
 
@@ -397,6 +500,67 @@ defmodule FavnRunner.RunnerAgentTest do
     end
   end
 
+  defmodule BlockingPreparationControlPlane do
+    use GenServer
+
+    def start_link(opts), do: GenServer.start_link(__MODULE__, Map.new(opts))
+
+    @impl true
+    def init(state), do: {:ok, Map.put(state, :assignment, nil)}
+
+    @impl true
+    def handle_call(:gateway, _from, state), do: {:reply, {:ok, self()}, state}
+
+    def handle_call({:register, registration, agent}, _from, state) do
+      assignment = %RunnerTask.Assignment{
+        command_id: "blocked-preparation-claim",
+        workspace_id: "workspace-blocked-preparation",
+        task_id: "rt_blocked_preparation",
+        task_kind: :asset_attempt,
+        runner_instance_id: registration.runner_instance_id,
+        runner_session_generation: 1,
+        assignment_generation: 1,
+        runner_pool: "duckdb",
+        required_runner_release_id: FavnTestSupport.runner_release_id(),
+        lease_expires_at: DateTime.add(DateTime.utc_now(), 150, :millisecond),
+        retry_class: :unknown_do_not_retry,
+        payload: state.work
+      }
+
+      ack = %RunnerTask.RegistrationAck{
+        runner_instance_id: registration.runner_instance_id,
+        runner_session_generation: 1,
+        status: :accepted
+      }
+
+      {:reply, {:ok, ack}, Map.merge(state, %{assignment: assignment, agent: agent})}
+    end
+
+    def handle_call({:request, %RunnerTask.ClaimRequest{}}, _from, state),
+      do: {:reply, {:ok, state.assignment}, state}
+
+    def handle_call({:fetch_manifest, _assignment}, from, state) do
+      send(state.owner, :preparation_blocked)
+      {:noreply, Map.put(state, :fetch_from, from)}
+    end
+
+    def handle_call({:request, %RunnerTask.LeaseRenewal{} = renewal}, _from, state) do
+      send(state.owner, {:renewed_during_preparation, renewal})
+      {:reply, {:ok, %{lease_expires_at: renewal.lease_expires_at}}, state}
+    end
+
+    def handle_call({:request, %RunnerTask.Started{} = started}, _from, state) do
+      send(state.owner, {:started_after_preparation, started})
+      {:reply, {:ok, %{status: :running}}, state}
+    end
+
+    @impl true
+    def handle_info(:release_preparation, %{fetch_from: from} = state) do
+      GenServer.reply(from, {:ok, state.version})
+      {:noreply, Map.delete(state, :fetch_from)}
+    end
+  end
+
   test "an elastic runner honors the control-plane wait and exits after a final empty claim" do
     owner = self()
     {:ok, control_plane} = start_supervised({FakeControlPlane, self()})
@@ -415,6 +579,31 @@ defmodule FavnRunner.RunnerAgentTest do
     assert_receive {:claimed, %RunnerTask.ClaimRequest{}}, 500
     assert_receive {:runner_exit, 0}, 500
     assert_eventually(fn -> not Process.alive?(agent) end)
+  end
+
+  test "blocked assignment preparation cannot block lease renewal" do
+    {version, work} = executable_work("blocked_preparation")
+
+    {:ok, control_plane} =
+      start_supervised(
+        {BlockingPreparationControlPlane, owner: self(), version: version, work: work}
+      )
+
+    agent =
+      start_supervised!({
+        RunnerAgent,
+        name: nil,
+        connection: control_plane,
+        runner_pool: :duckdb,
+        lifecycle_mode: :resident,
+        exit_fun: fn _status -> :ok end
+      })
+
+    assert_receive :preparation_blocked, 1_000
+    assert_receive {:renewed_during_preparation, %RunnerTask.LeaseRenewal{}}, 1_000
+    send(control_plane, :release_preparation)
+    assert_receive {:started_after_preparation, %RunnerTask.Started{}}, 1_000
+    assert Process.alive?(agent)
   end
 
   test "a rejected boot registration exits non-zero" do
@@ -883,6 +1072,109 @@ defmodule FavnRunner.RunnerAgentTest do
     assert_receive {:renewal_resumed, %RunnerTask.LeaseRenewal{}}, 2_000
   end
 
+  test "a blocked active-assignment registration does not block lease renewal" do
+    {:ok, control_plane} = start_supervised({BlockingReregistrationControlPlane, self()})
+    {:ok, executor} = start_supervised({FakeExecutor, self()})
+
+    agent =
+      start_supervised!(
+        {RunnerAgent,
+         name: nil,
+         connection: control_plane,
+         runner_pool: :duckdb,
+         lifecycle_mode: :resident,
+         exit_fun: fn _status -> :ok end}
+      )
+
+    assert_receive {:blocking_registration_accepted, registration, ^agent}
+    assignment = assignment(registration.runner_instance_id)
+    :ok = BlockingReregistrationControlPlane.block_next_registration(control_plane)
+
+    :sys.replace_state(agent, fn state ->
+      %{
+        state
+        | assignment: assignment,
+          executor: executor,
+          session_generation: assignment.runner_session_generation,
+          phase: :connecting,
+          resume_phase: :running
+      }
+    end)
+
+    send(agent, :connect)
+
+    assert_receive {:reregistration_blocked,
+                    %RunnerTask.Registration{active_assignment: active_assignment}, ^agent}
+
+    assert active_assignment.task_id == assignment.task_id
+
+    send(agent, :renew_lease)
+    assert_receive {:renewal_during_reregistration, %RunnerTask.LeaseRenewal{}}, 1_000
+
+    BlockingReregistrationControlPlane.release_registration(control_plane)
+    assert_eventually(fn -> :sys.get_state(agent).phase == :running end)
+  end
+
+  test "lease deadline wins a late active-assignment registration acknowledgement" do
+    {:ok, control_plane} = start_supervised({BlockingReregistrationControlPlane, self()})
+    {:ok, executor} = start_supervised({FakeExecutor, self()})
+
+    agent =
+      start_supervised!(
+        {RunnerAgent,
+         name: nil,
+         connection: control_plane,
+         runner_pool: :duckdb,
+         lifecycle_mode: :resident,
+         exit_fun: fn _status -> :ok end}
+      )
+
+    assert_receive {:blocking_registration_accepted, registration, ^agent}
+
+    assignment = %{
+      assignment(registration.runner_instance_id)
+      | lease_expires_at: DateTime.add(DateTime.utc_now(), -1, :second)
+    }
+
+    :ok = BlockingReregistrationControlPlane.block_next_registration(control_plane)
+
+    :sys.replace_state(agent, fn state ->
+      %{
+        state
+        | assignment: assignment,
+          executor: executor,
+          session_generation: assignment.runner_session_generation,
+          phase: :connecting,
+          resume_phase: :running
+      }
+    end)
+
+    send(agent, :connect)
+
+    assert_receive {:reregistration_blocked,
+                    %RunnerTask.Registration{active_assignment: active_assignment}, ^agent}
+
+    assert active_assignment.task_id == assignment.task_id
+
+    send(
+      agent,
+      {:lease_deadline, assignment.task_id, assignment.assignment_generation,
+       assignment.lease_expires_at}
+    )
+
+    assert_receive {:executor_cancelled, :runner_task_lease_lost}
+    assert :sys.get_state(agent).phase == :lease_lost
+
+    BlockingReregistrationControlPlane.release_registration(control_plane)
+
+    assert_eventually(fn ->
+      state = :sys.get_state(agent)
+      state.phase == :lease_lost and is_nil(state.resume_phase)
+    end)
+
+    refute :sys.get_state(agent).phase == :running
+  end
+
   test "runtime input resolution replays the exact committed payload after a lost acknowledgement" do
     :ok = FavnRunner.TaskResultBuffer.reset()
     {version, work} = runtime_input_version_and_work()
@@ -992,7 +1284,8 @@ defmodule FavnRunner.RunnerAgentTest do
       assert :ok =
                GenServer.call(
                  executor,
-                 {:runner_log_entry, started.task_id, %{message: "initial-#{index}"}}
+                 {:runner_log_entry, started.task_id,
+                  %{message: "#{index}:" <> String.duplicate("x", 8_192)}}
                )
     end)
 
@@ -1032,10 +1325,18 @@ defmodule FavnRunner.RunnerAgentTest do
     )
 
     assert_receive {:cancelled_result_persisted, %RunnerTask.Result{} = result}, 2_000
-    assert result.outcome == :cancelled, inspect(result)
-    assert result.retry_class == :terminal
-    assert result.error.outcome == :cancelled
+    assert result.outcome == :unknown, inspect(result)
+    assert result.retry_class == :unknown_do_not_retry
+    assert result.error.type == :native_cancel_unknown
+    assert result.error.outcome == :unknown
     assert :ok = RunnerTask.Result.validate(result)
+
+    assert_receive {:log_batch_persisted, first_batch}
+    assert_receive {:log_batch_persisted, second_batch}
+    assert :ok = RunnerTask.LogBatch.validate(first_batch)
+    assert :ok = RunnerTask.LogBatch.validate(second_batch)
+    assert first_batch.sequence == 0
+    assert second_batch.sequence == 1
   end
 
   test "killing an asset executor also terminates its owned customer-code worker" do
@@ -1104,6 +1405,44 @@ defmodule FavnRunner.RunnerAgentTest do
     refute Process.alive?(worker)
     assert_receive {:cancelled_result_persisted, %RunnerTask.Result{}}, 2_000
     assert_eventually(fn -> is_nil(:sys.get_state(agent).assignment) end)
+  end
+
+  defp executable_work(suffix) do
+    asset = %Favn.Manifest.Asset{
+      ref: {__MODULE__.SlowAsset, :asset},
+      module: __MODULE__.SlowAsset,
+      name: :asset,
+      type: :elixir,
+      execution: %{entrypoint: :asset, arity: 1}
+    }
+
+    manifest =
+      %Favn.Manifest{
+        assets: [asset],
+        pipelines: [],
+        schedules: [],
+        graph: %Favn.Manifest.Graph{nodes: [asset.ref], edges: [], topo_order: [asset.ref]}
+      }
+      |> FavnTestSupport.with_manifest_contract()
+
+    {:ok, version} =
+      Favn.Manifest.Version.new(manifest,
+        manifest_version_id: "mv_#{suffix}_#{System.unique_integer([:positive])}"
+      )
+
+    work = %Favn.Contracts.RunnerWork{
+      run_id: "run_#{suffix}",
+      manifest_version_id: version.manifest_version_id,
+      manifest_content_hash: version.content_hash,
+      required_runner_release_id: FavnTestSupport.runner_release_id(),
+      runner_pool: :duckdb,
+      asset_ref: asset.ref,
+      asset_step_id: "step_#{suffix}",
+      attempt: 1,
+      metadata: %{}
+    }
+
+    {version, work}
   end
 
   defp assignment(runner_instance_id) do

@@ -83,7 +83,7 @@ defmodule FavnRunner.Drain do
 
     signal_drain(agent)
     deadline = started_at + timeout_ms
-    first_outcome = await_idle(supervisor, deadline, poll_interval_ms)
+    first_outcome = await_idle(agent, supervisor, deadline, poll_interval_ms)
 
     {outcome, cancellation} =
       case first_outcome do
@@ -97,7 +97,7 @@ defmodule FavnRunner.Drain do
             System.monotonic_time(:millisecond) +
               Keyword.get(opts, :cancellation_timeout_ms, 5_000)
 
-          {await_idle(supervisor, cancellation_deadline, poll_interval_ms),
+          {await_idle(agent, supervisor, cancellation_deadline, poll_interval_ms),
            %{status: :recorded, cancelled_executions: cancel_count}}
       end
 
@@ -143,8 +143,8 @@ defmodule FavnRunner.Drain do
     end
   end
 
-  defp await_idle(supervisor, deadline, poll_interval_ms) do
-    if active_count(supervisor) == 0 do
+  defp await_idle(agent, supervisor, deadline, poll_interval_ms) do
+    if active_count(supervisor) == 0 and agent_drained?(agent) do
       :idle
     else
       remaining_ms = deadline - System.monotonic_time(:millisecond)
@@ -153,7 +153,7 @@ defmodule FavnRunner.Drain do
         :deadline
       else
         Process.sleep(min(poll_interval_ms, remaining_ms))
-        await_idle(supervisor, deadline, poll_interval_ms)
+        await_idle(agent, supervisor, deadline, poll_interval_ms)
       end
     end
   end
@@ -182,6 +182,12 @@ defmodule FavnRunner.Drain do
   defp process_alive?(name) when is_atom(name), do: is_pid(Process.whereis(name))
   defp process_alive?(pid) when is_pid(pid), do: Process.alive?(pid)
   defp process_alive?(_other), do: false
+
+  defp agent_drained?(agent) do
+    not process_alive?(agent) or RunnerAgent.drained?(agent)
+  catch
+    :exit, _reason -> false
+  end
 
   defp shutdown_status(:deadline, _outcome, 0), do: :cancelled_at_deadline
   defp shutdown_status(_first, :idle, 0), do: :drained

@@ -149,7 +149,11 @@ defmodule FavnRunner.TaskExecutor do
       when is_pid(worker) do
     case DynamicSupervisor.terminate_child(FavnRunner.WorkerSupervisor, state.worker) do
       :ok ->
-        send(state.owner, {:runner_task_finished, self(), cancelled_result(state.work, reason)})
+        send(
+          state.owner,
+          {:runner_task_finished, self(), interrupted_asset_result(state.work, reason)}
+        )
+
         {:stop, :normal, :ok, %{state | result_sent?: true}}
 
       {:error, :not_found} ->
@@ -310,15 +314,23 @@ defmodule FavnRunner.TaskExecutor do
     }
   end
 
-  defp cancelled_result(work, reason) do
+  defp interrupted_asset_result(work, reason) do
     %RunnerResult{
       run_id: work.run_id,
       manifest_version_id: work.manifest_version_id,
       manifest_content_hash: work.manifest_content_hash,
       required_runner_release_id: work.required_runner_release_id,
-      status: :cancelled,
+      status: :error,
       asset_results: [],
-      error: RunnerError.cancelled(reason),
+      error:
+        RunnerError.new(
+          type: :native_cancel_unknown,
+          phase: :runner_task_cancellation,
+          message: "Runner process stopped before the native operation outcome was proven",
+          details: %{reason: inspect(reason)},
+          retryable?: false,
+          outcome: :unknown
+        ),
       metadata: RunnerWork.lifecycle_metadata(work)
     }
   end
