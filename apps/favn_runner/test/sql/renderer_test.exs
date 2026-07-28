@@ -310,6 +310,59 @@ defmodule FavnRunner.SQLRendererTest do
     assert rendered.sql == sql
   end
 
+  test "binds a relation only at its relation-clause occurrence" do
+    sql = """
+    SELECT
+      extract(day FROM orders.created_at) AS created_day,
+      current_order.id IS DISTINCT FROM orders AS changed
+    FROM orders
+    """
+
+    definition =
+      definition(
+        %{
+          connection: :warehouse,
+          catalog: "mart",
+          schema: "sales",
+          name: "order_summary"
+        },
+        sql
+      )
+      |> bind_plain_relations([
+        {{__MODULE__.Orders, :asset}, relation("mart", "sales", "orders")}
+      ])
+
+    assert {:ok, rendered} = Renderer.render(definition)
+
+    assert rendered.sql == """
+           SELECT
+             extract(day FROM orders.created_at) AS created_day,
+             current_order.id IS DISTINCT FROM orders AS changed
+           FROM mart.sales.orders
+           """
+  end
+
+  test "binds every declared relation in a comma-separated FROM list" do
+    definition =
+      definition(
+        %{
+          connection: :warehouse,
+          catalog: "mart",
+          schema: "sales",
+          name: "order_summary"
+        },
+        "SELECT * FROM local_orders, raw.sales.customers"
+      )
+      |> bind_plain_relations([
+        {{__MODULE__.Orders, :asset}, relation("mart", "sales", "local_orders")},
+        {{__MODULE__.Customers, :asset}, relation("raw", "sales", "customers")}
+      ])
+
+    assert {:ok, rendered} = Renderer.render(definition)
+
+    assert rendered.sql == "SELECT * FROM mart.sales.local_orders, raw.sales.customers"
+  end
+
   test "preserves undeclared external relations as authored" do
     definition =
       definition(

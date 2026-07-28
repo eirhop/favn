@@ -404,6 +404,7 @@ defmodule Favn.Manifest.Rehydrate do
       template: value |> field_value(:template) |> build_template(),
       runtime_inputs: value |> field_value(:runtime_inputs) |> build_runtime_input_ref(),
       contract: contract,
+      relation_inputs: value |> field_value(:relation_inputs, []) |> build_relation_inputs(),
       sql_definitions: value |> field_value(:sql_definitions, []) |> build_sql_definitions(),
       checks: checks
     }

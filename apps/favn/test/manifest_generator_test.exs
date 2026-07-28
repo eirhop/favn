@@ -107,9 +107,9 @@ defmodule Favn.Manifest.GeneratorTest do
     query do
       ~SQL"""
       select o.id, c.id as customer_id
-      from raw.commerce.orders o
-      join raw.commerce.customers c on c.id = o.customer_id
-      where o.site_id is distinct from c.site_id
+      from raw.commerce.orders o, raw.commerce.customers c
+      where c.id = o.customer_id
+        and o.site_id is distinct from c.site_id
       """
     end
   end
@@ -198,6 +198,29 @@ defmodule Favn.Manifest.GeneratorTest do
            ]
 
     assert downstream.relation_inputs
+           |> Enum.map(&{&1.asset_ref, &1.resolution})
+           |> Enum.sort() == [
+             {{RelationRaw.Customers, :asset}, :resolved},
+             {{RelationRaw.Orders, :asset}, :resolved}
+           ]
+
+    assert {:ok, build} =
+             Favn.build_manifest(
+               asset_modules: [
+                 RelationRaw.Orders,
+                 RelationRaw.Customers,
+                 RelationGold.Customer360
+               ],
+               runner_release_id: runner_release_id()
+             )
+
+    package =
+      Enum.find(
+        build.execution_packages,
+        &(&1.asset_ref == {RelationGold.Customer360, :asset})
+      )
+
+    assert package.sql_execution.relation_inputs
            |> Enum.map(&{&1.asset_ref, &1.resolution})
            |> Enum.sort() == [
              {{RelationRaw.Customers, :asset}, :resolved},

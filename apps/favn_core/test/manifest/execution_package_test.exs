@@ -1,6 +1,7 @@
 defmodule Favn.Manifest.ExecutionPackageTest do
   use ExUnit.Case, async: true
 
+  alias Favn.Asset.RelationInput
   alias Favn.Manifest
   alias Favn.Manifest.Asset
   alias Favn.Manifest.ExecutionPackage
@@ -8,6 +9,7 @@ defmodule Favn.Manifest.ExecutionPackageTest do
   alias Favn.Manifest.Publication
   alias Favn.Manifest.SQLExecution
   alias Favn.Manifest.Version
+  alias Favn.RelationRef
   alias Favn.SQL.Definition
   alias Favn.SQL.Template
   alias Favn.SQL.Template.{Call, DefinitionRef, Placeholder, Relation}
@@ -39,11 +41,72 @@ defmodule Favn.Manifest.ExecutionPackageTest do
     assert computed != expected
   end
 
+  test "content hash covers resolved relation bindings" do
+    ref = {MyApp.OrderSummary, :asset}
+    sql = "SELECT * FROM orders"
+
+    raw_orders =
+      relation_input(
+        {MyApp.RawOrders, :asset},
+        RelationRef.new!(%{
+          connection: :warehouse,
+          catalog: "raw",
+          schema: "sales",
+          name: "orders"
+        })
+      )
+
+    curated_orders =
+      relation_input(
+        {MyApp.CuratedOrders, :asset},
+        RelationRef.new!(%{
+          connection: :warehouse,
+          catalog: "curated",
+          schema: "sales",
+          name: "orders"
+        })
+      )
+
+    raw_package = execution_package(ref, sql, [raw_orders])
+    curated_package = execution_package(ref, sql, [curated_orders])
+
+    assert raw_package.content_hash != curated_package.content_hash
+  end
+
   test "rejects non-current execution-package schemas" do
     package = execution_package({MyApp.Orders, :asset}, "SELECT 1 AS id")
 
-    assert {:error, {:unsupported_execution_package_schema, 1, 2}} =
+    assert {:error, {:unsupported_execution_package_schema, 1, 3}} =
              ExecutionPackage.verify(%{package | schema_version: 1})
+  end
+
+  test "verification rejects relation bindings that differ from the indexed asset" do
+    ref = {MyApp.OrderSummary, :asset}
+
+    relation_input =
+      relation_input(
+        {MyApp.RawOrders, :asset},
+        RelationRef.new!(%{
+          connection: :warehouse,
+          catalog: "raw",
+          schema: "sales",
+          name: "orders"
+        })
+      )
+
+    package = execution_package(ref, "SELECT * FROM orders", [relation_input])
+
+    asset = %Asset{
+      ref: ref,
+      module: elem(ref, 0),
+      name: elem(ref, 1),
+      type: :sql,
+      execution_package_hash: package.content_hash,
+      relation_inputs: []
+    }
+
+    assert {:error, {:execution_package_relation_inputs_mismatch, ^ref}} =
+             ExecutionPackage.verify_for_asset(package, asset)
   end
 
   test "publication requires exact package coverage" do
@@ -83,7 +146,7 @@ defmodule Favn.Manifest.ExecutionPackageTest do
     package = execution_package({MyApp.Orders, :asset}, "SELECT 1 AS id")
 
     invalid = %{package | sql_execution: nil}
-    payload = %{schema_version: 2, asset_ref: invalid.asset_ref, sql_execution: nil}
+    payload = %{schema_version: 3, asset_ref: invalid.asset_ref, sql_execution: nil}
     {:ok, encoded} = Favn.Manifest.Serializer.encode_manifest(payload)
     hash = :crypto.hash(:sha256, encoded) |> Base.encode16(case: :lower)
 
@@ -107,12 +170,12 @@ defmodule Favn.Manifest.ExecutionPackageTest do
     assert {:error, {:invalid_manifest_payload, %ArgumentError{}}} =
              ExecutionPackage.new(ref, execution)
 
-    payload = %{schema_version: 2, asset_ref: ref, sql_execution: execution}
+    payload = %{schema_version: 3, asset_ref: ref, sql_execution: execution}
     {:ok, encoded} = Favn.Manifest.Serializer.encode_manifest(payload)
     hash = :crypto.hash(:sha256, encoded) |> Base.encode16(case: :lower)
 
     package = %ExecutionPackage{
-      schema_version: 2,
+      schema_version: 3,
       content_hash: hash,
       asset_ref: ref,
       sql_execution: execution
@@ -350,7 +413,7 @@ defmodule Favn.Manifest.ExecutionPackageTest do
     assert hash == package.content_hash
   end
 
-  defp execution_package(ref, sql) do
+  defp execution_package(ref, sql, relation_inputs \\ []) do
     template =
       Template.compile!(sql,
         file: "test/execution_package_test.sql",
@@ -360,8 +423,24 @@ defmodule Favn.Manifest.ExecutionPackageTest do
         enforce_query_root: true
       )
 
-    {:ok, package} = ExecutionPackage.new(ref, %SQLExecution{sql: sql, template: template})
+    {:ok, package} =
+      ExecutionPackage.new(ref, %SQLExecution{
+        sql: sql,
+        template: template,
+        relation_inputs: relation_inputs
+      })
+
     package
+  end
+
+  defp relation_input(asset_ref, relation_ref) do
+    %RelationInput{
+      kind: :plain_relation,
+      raw: relation_ref.name,
+      asset_ref: asset_ref,
+      relation_ref: relation_ref,
+      resolution: :resolved
+    }
   end
 
   defp version(ref, package_hash) do

@@ -7,8 +7,9 @@ defmodule Favn.Manifest.ExecutionPackage do
   compact asset metadata rather than generated SQL template size.
   """
 
-  alias Favn.Manifest.Rehydrate
+  alias Favn.Asset.RelationInput
   alias Favn.Manifest.Asset
+  alias Favn.Manifest.Rehydrate
   alias Favn.Manifest.SQLExecution
   alias Favn.Manifest.Serializer
   alias Favn.RelationRef
@@ -30,7 +31,7 @@ defmodule Favn.Manifest.ExecutionPackage do
     Text
   }
 
-  @schema_version 2
+  @schema_version 3
 
   @enforce_keys [:content_hash, :asset_ref, :sql_execution]
   defstruct schema_version: @schema_version,
@@ -50,6 +51,7 @@ defmodule Favn.Manifest.ExecutionPackage do
           | {:invalid_execution_package_hash, term()}
           | {:execution_package_hash_mismatch, String.t(), String.t()}
           | {:execution_package_asset_mismatch, Favn.Ref.t(), Favn.Ref.t()}
+          | {:execution_package_relation_inputs_mismatch, Favn.Ref.t()}
           | {:execution_package_not_required, Favn.Ref.t() | nil}
           | {:unsupported_execution_package_schema, term(), pos_integer()}
           | Rehydrate.error()
@@ -69,10 +71,13 @@ defmodule Favn.Manifest.ExecutionPackage do
 
   @doc "Builds the execution package for a compiled SQL asset descriptor."
   @spec from_asset(map()) :: {:ok, t() | nil} | {:error, term()}
-  def from_asset(%{type: :sql, ref: {module, name} = ref, module: module})
+  def from_asset(%{type: :sql, ref: {module, name} = ref, module: module} = asset)
       when is_atom(module) and is_atom(name) do
     with {:ok, definition} <- Compiler.fetch_definition(module) do
-      new(ref, SQLExecution.from_definition(definition))
+      new(
+        ref,
+        SQLExecution.from_definition(definition, Map.get(asset, :relation_inputs, []))
+      )
     end
   end
 
@@ -120,7 +125,13 @@ defmodule Favn.Manifest.ExecutionPackage do
   def verify_for_asset(package, %Asset{type: :sql} = asset) do
     with {:ok, canonical} <- from_published(package),
          :ok <- match_asset_ref(canonical.asset_ref, asset.ref),
-         :ok <- match_hash(canonical.content_hash, asset.execution_package_hash) do
+         :ok <- match_hash(canonical.content_hash, asset.execution_package_hash),
+         :ok <-
+           match_relation_inputs(
+             canonical.sql_execution.relation_inputs,
+             asset.relation_inputs,
+             asset.ref
+           ) do
       {:ok, canonical}
     end
   end
@@ -201,11 +212,14 @@ defmodule Favn.Manifest.ExecutionPackage do
   defp validate_sql_execution!(%SQLExecution{
          sql: sql,
          template: template,
+         relation_inputs: relation_inputs,
          sql_definitions: definitions,
          checks: checks
        }) do
     ensure!(is_binary(sql))
     validate_template!(template, sql, :query)
+    ensure!(is_list(relation_inputs))
+    Enum.each(relation_inputs, &validate_relation_input!/1)
     ensure!(is_list(definitions))
     Enum.each(definitions, &validate_definition!/1)
     validate_unique_definitions!(definitions)
@@ -219,6 +233,23 @@ defmodule Favn.Manifest.ExecutionPackage do
       definitions
     )
   end
+
+  defp validate_relation_input!(%RelationInput{
+         kind: kind,
+         relation_ref: %RelationRef{} = relation_ref,
+         raw: raw,
+         asset_ref: {module, name},
+         resolution: :resolved,
+         span: span
+       }) do
+    ensure!(kind in [:plain_relation, :direct_asset_ref])
+    RelationRef.validate!(relation_ref)
+    ensure!(is_nil(raw) or is_binary(raw))
+    ensure!(valid_atom?(module) and valid_atom?(name))
+    ensure!(is_nil(span) or is_map(span))
+  end
+
+  defp validate_relation_input!(_relation_input), do: invalid!()
 
   defp validate_definition!(%Definition{} = definition) do
     ensure!(valid_atom?(definition.module))
@@ -568,4 +599,13 @@ defmodule Favn.Manifest.ExecutionPackage do
 
   defp match_asset_ref(actual, expected),
     do: {:error, {:execution_package_asset_mismatch, expected, actual}}
+
+  defp match_relation_inputs(package_inputs, asset_inputs, asset_ref) do
+    with {:ok, package_encoded} <- Serializer.encode_manifest(package_inputs),
+         {:ok, asset_encoded} <- Serializer.encode_manifest(asset_inputs) do
+      if package_encoded == asset_encoded,
+        do: :ok,
+        else: {:error, {:execution_package_relation_inputs_mismatch, asset_ref}}
+    end
+  end
 end

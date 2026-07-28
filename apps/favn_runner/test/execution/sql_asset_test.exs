@@ -162,7 +162,9 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
         %RelationInput{
           kind: :plain_relation,
           relation_ref: raw_relation,
-          raw: "raw.crm.customers"
+          raw: "raw.crm.customers",
+          asset_ref: {FavnRunner.ExecutionSQLAssetTest.RawCustomers, :asset},
+          resolution: :resolved
         }
       ])
 
@@ -1530,7 +1532,13 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
         enforce_query_root: true
       )
 
-    execution = %SQLExecution{sql: sql, template: template, sql_definitions: []}
+    execution = %SQLExecution{
+      sql: sql,
+      template: template,
+      relation_inputs: relation_inputs,
+      sql_definitions: []
+    }
+
     package = execution_package!(ref, execution)
 
     manifest =
