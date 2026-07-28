@@ -16,7 +16,7 @@ defmodule Favn.TargetCompatibilityTest do
     physical = physical_fingerprint()
 
     assert %Result{status: :ready, reason_code: :compatible, diff: %{}} =
-             TargetCompatibility.classify(
+             classify(
                descriptor(description: "metadata changed"),
                active,
                physical.fingerprint,
@@ -34,7 +34,7 @@ defmodule Favn.TargetCompatibilityTest do
              reason_code: :transformation_changed,
              diff: %{descriptor: [%{field: :execution_package_hash}]}
            } =
-             TargetCompatibility.classify(
+             classify(
                desired,
                active,
                physical.fingerprint,
@@ -77,7 +77,7 @@ defmodule Favn.TargetCompatibilityTest do
 
     for {category, desired, changed_field} <- cases do
       result =
-        TargetCompatibility.classify(desired, active, physical.fingerprint, physical)
+        classify(desired, active, physical.fingerprint, physical)
 
       message = Atom.to_string(category)
 
@@ -99,14 +99,14 @@ defmodule Favn.TargetCompatibilityTest do
              status: :unexpected_drift,
              reason_code: :physical_fingerprint_mismatch
            } =
-             TargetCompatibility.classify(descriptor, descriptor, recorded.fingerprint, observed)
+             classify(descriptor, descriptor, recorded.fingerprint, observed)
 
     assert %Result{
              status: :unexpected_drift,
              reason_code: :physical_relation_missing,
              diff: %{physical: %{recorded_fingerprint: recorded_fingerprint}}
            } =
-             TargetCompatibility.classify(
+             classify(
                descriptor,
                descriptor,
                recorded.fingerprint,
@@ -125,7 +125,7 @@ defmodule Favn.TargetCompatibilityTest do
              reason_code: :physical_identity_mismatch,
              diff: %{physical_identity: [%{field: :relation}]}
            } =
-             TargetCompatibility.classify(
+             classify(
                descriptor,
                descriptor,
                observed.fingerprint,
@@ -149,7 +149,7 @@ defmodule Favn.TargetCompatibilityTest do
              reason_code: :physical_identity_mismatch,
              diff: %{physical_identity: [%{field: :contract_fingerprint}]}
            } =
-             TargetCompatibility.classify(
+             classify(
                descriptor,
                descriptor,
                observed.fingerprint,
@@ -166,7 +166,7 @@ defmodule Favn.TargetCompatibilityTest do
              reason_code: :physical_identity_mismatch,
              diff: %{physical_identity: [%{field: :relation_kind}]}
            } =
-             TargetCompatibility.classify(
+             classify(
                descriptor,
                descriptor,
                observed.fingerprint,
@@ -180,7 +180,7 @@ defmodule Favn.TargetCompatibilityTest do
 
     assert %Result{status: :uninitialized, reason_code: :no_active_generation} =
              result =
-             TargetCompatibility.classify(desired, nil, nil, :not_found)
+             classify(desired, nil, nil, :not_found)
 
     assert Result.writable?(result)
 
@@ -188,7 +188,7 @@ defmodule Favn.TargetCompatibilityTest do
              status: :operator_decision,
              reason_code: :unmanaged_physical_relation,
              diff: %{physical: %{observed_fingerprint: fingerprint}}
-           } = TargetCompatibility.classify(desired, nil, nil, physical)
+           } = classify(desired, nil, nil, physical)
 
     assert fingerprint == physical.fingerprint
   end
@@ -200,7 +200,7 @@ defmodule Favn.TargetCompatibilityTest do
     assert %Result{
              status: :operator_decision,
              reason_code: :active_physical_fingerprint_missing
-           } = TargetCompatibility.classify(descriptor, descriptor, nil, physical)
+           } = classify(descriptor, descriptor, nil, physical)
   end
 
   defp descriptor(opts \\ []) do
@@ -245,6 +245,19 @@ defmodule Favn.TargetCompatibilityTest do
       manifest_schema_version: 13,
       runner_contract_version: 12
     )
+  end
+
+  defp classify(desired, active, recorded, physical) do
+    TargetCompatibility.classify(desired, active, recorded, physical, contract())
+  end
+
+  defp contract do
+    Favn.SQL.Contract.new!(%{
+      columns: [
+        %{name: :id, type: :integer, null: false},
+        %{name: :label, type: :string, null: true}
+      ]
+    })
   end
 
   defp physical_fingerprint(opts \\ []) do

@@ -92,7 +92,10 @@ defmodule Favn.AI do
     parameters, including Favn-owned `@favn_run_id` and
     `@favn_run_started_at` and through reusable `defsql`. Referenced scalar
     SQLAsset settings also become bound parameters; settings cannot provide
-    relation identifiers, and a settings/params collision is an error.
+    relation identifiers, and a settings/params collision is an error. Declare
+    every Favn-owned SQL upstream with `depends`; Favn binds plain relation
+    names only when they match those declared dependency relations and leaves
+    other SQL identifiers unchanged.
     Contract-generated
     and authored checks use the normal check engine; `query()` is the exact
     staged candidate and `target()` is the transaction-visible owned relation.

@@ -10,7 +10,6 @@ defmodule Favn.Assets.DependencyInference do
   @type catalog :: %{
           required(:assets) => [map()],
           required(:assets_by_ref) => %{Favn.Ref.t() => map()},
-          required(:relation_owners) => %{RelationRef.t() => Favn.Ref.t()},
           optional(:diagnostics) => [Diagnostic.t()]
         }
 
@@ -19,7 +18,6 @@ defmodule Favn.Assets.DependencyInference do
     infer(%{
       assets: assets,
       assets_by_ref: Map.new(assets, &{Map.get(&1, :ref), &1}),
-      relation_owners: relation_owner_index(assets),
       diagnostics: []
     })
   end
@@ -28,12 +26,10 @@ defmodule Favn.Assets.DependencyInference do
 
   @spec infer(catalog()) :: {:ok, catalog()} | {:error, error()}
   def infer(catalog) do
-    relation_owner_entries = Map.to_list(catalog.relation_owners)
-
     catalog.assets
     |> Enum.reduce_while({:ok, [], %{}, []}, fn asset,
                                                 {:ok, assets_acc, by_ref_acc, diagnostics_acc} ->
-      case infer_asset(asset, catalog, relation_owner_entries) do
+      case infer_asset(asset, catalog) do
         {:ok, inferred_asset} ->
           merged_diagnostics = diagnostics_acc ++ Map.get(inferred_asset, :diagnostics, [])
           inferred_ref = Map.get(inferred_asset, :ref)
@@ -59,29 +55,31 @@ defmodule Favn.Assets.DependencyInference do
     end
   end
 
-  defp infer_asset(asset, catalog, relation_owner_entries) when is_map(asset) do
+  defp infer_asset(asset, catalog) when is_map(asset) do
     initial_dependencies = explicit_dependency_map(asset)
 
     asset
     |> Map.get(:relation_inputs, [])
-    |> Enum.reduce_while({:ok, initial_dependencies, []}, fn input,
-                                                             {:ok, dependency_map, diagnostics} ->
-      case infer_input_dependency(asset, input, catalog, relation_owner_entries) do
+    |> Enum.reduce_while({:ok, initial_dependencies, [], []}, fn input,
+                                                                 {:ok, dependency_map,
+                                                                  relation_inputs, diagnostics} ->
+      case infer_input_dependency(asset, input, catalog) do
         {:ok, :no_dependency, new_diagnostics} ->
-          {:cont, {:ok, dependency_map, diagnostics ++ new_diagnostics}}
+          {:cont, {:ok, dependency_map, relation_inputs, diagnostics ++ new_diagnostics}}
 
-        {:ok, dependency_ref, dependency_provenance, new_diagnostics} ->
+        {:ok, dependency_ref, dependency_provenance, bound_input, new_diagnostics} ->
           updated_map =
-            add_dependency(dependency_map, dependency_ref, dependency_provenance, input)
+            add_dependency(dependency_map, dependency_ref, dependency_provenance, bound_input)
 
-          {:cont, {:ok, updated_map, diagnostics ++ new_diagnostics}}
+          {:cont,
+           {:ok, updated_map, [bound_input | relation_inputs], diagnostics ++ new_diagnostics}}
 
         {:error, %Diagnostic{} = diagnostic} ->
           {:halt, {:error, diagnostic}}
       end
     end)
     |> case do
-      {:ok, dependency_map, diagnostics} ->
+      {:ok, dependency_map, relation_inputs, diagnostics} ->
         dependencies =
           dependency_map
           |> Map.values()
@@ -93,6 +91,7 @@ defmodule Favn.Assets.DependencyInference do
          asset
          |> Map.put(:dependencies, dependencies)
          |> Map.put(:depends_on, depends_on)
+         |> Map.put(:relation_inputs, Enum.reverse(relation_inputs))
          |> Map.put(:diagnostics, diagnostics)}
 
       {:error, %Diagnostic{} = diagnostic} ->
@@ -106,42 +105,34 @@ defmodule Favn.Assets.DependencyInference do
     end)
   end
 
-  defp relation_owner_index(assets) when is_list(assets) do
-    Enum.reduce(assets, %{}, fn asset, acc ->
-      case Map.get(asset, :relation) do
-        %RelationRef{} = relation_ref -> Map.put(acc, relation_ref, Map.get(asset, :ref))
-        _other -> acc
-      end
-    end)
-  end
-
   defp infer_input_dependency(
          asset,
          %RelationInput{kind: :plain_relation, relation_ref: relation_ref} = input,
-         _catalog,
-         relation_owner_entries
+         catalog
        ) do
-    case matching_owners(relation_ref, relation_owner_entries) do
+    case matching_explicit_dependencies(asset, relation_ref, catalog) do
       [] ->
-        {:ok, :no_dependency, [unmanaged_relation_warning(asset, input)]}
+        {:ok, :no_dependency, []}
 
-      [{_owner_relation, dependency_ref}] ->
-        if dependency_ref == Map.get(asset, :ref) do
-          {:ok, :no_dependency, []}
-        else
-          {:ok, dependency_ref, :inferred_sql_relation, []}
-        end
+      [{dependency_ref, %RelationRef{} = dependency_relation}] ->
+        bound_input = %{
+          input
+          | asset_ref: dependency_ref,
+            relation_ref: dependency_relation,
+            resolution: :resolved
+        }
 
-      owners ->
-        {:error, ambiguous_relation_error(asset, input, owners)}
+        {:ok, dependency_ref, :explicit, bound_input, []}
+
+      dependencies ->
+        {:error, ambiguous_explicit_relation_error(asset, input, dependencies)}
     end
   end
 
   defp infer_input_dependency(
          asset,
          %RelationInput{kind: :direct_asset_ref} = input,
-         catalog,
-         _relation_owner_entries
+         catalog
        ) do
     with {:ok, dependency_ref, relation_ref} <- resolve_direct_asset_ref(asset, input),
          :ok <- ensure_same_connection(asset, input, relation_ref) do
@@ -149,7 +140,8 @@ defmodule Favn.Assets.DependencyInference do
         {:ok, :no_dependency, []}
       else
         if Map.has_key?(catalog.assets_by_ref, dependency_ref) do
-          {:ok, dependency_ref, :inferred_sql_asset_ref, []}
+          bound_input = %{input | relation_ref: relation_ref, resolution: :resolved}
+          {:ok, dependency_ref, :inferred_sql_asset_ref, bound_input, []}
         else
           {:ok, :no_dependency, []}
         end
@@ -181,45 +173,33 @@ defmodule Favn.Assets.DependencyInference do
     )
   end
 
-  defp matching_owners(%RelationRef{} = relation_ref, relation_owner_entries) do
-    Enum.filter(relation_owner_entries, fn {owner_relation, _owner_ref} ->
-      relation_matches?(relation_ref, owner_relation)
+  defp matching_explicit_dependencies(asset, %RelationRef{} = relation_ref, catalog) do
+    asset
+    |> Map.get(:depends_on, [])
+    |> Enum.flat_map(fn dependency_ref ->
+      case Map.get(catalog.assets_by_ref, dependency_ref) do
+        %{relation: %RelationRef{} = dependency_relation} ->
+          [{dependency_ref, dependency_relation}]
+
+        _other ->
+          []
+      end
+    end)
+    |> Enum.filter(fn {_dependency_ref, dependency_relation} ->
+      relation_ref == dependency_relation
     end)
   end
 
-  defp relation_matches?(%RelationRef{} = input, %RelationRef{} = owner) do
-    owner.connection == input.connection and
-      owner.name == input.name and
-      field_matches?(input.catalog, owner.catalog) and
-      field_matches?(input.schema, owner.schema)
-  end
-
-  defp field_matches?(nil, _value), do: true
-  defp field_matches?(left, right), do: left == right
-
-  defp unmanaged_relation_warning(asset, %RelationInput{} = input) do
-    %Diagnostic{
-      severity: :warning,
-      stage: :registry,
-      code: :unmanaged_relation_reference,
-      message:
-        "SQL relation #{inspect(input.raw || input.relation_ref)} used by #{inspect(Map.get(asset, :ref))} is not owned by a registered asset",
-      asset_ref: Map.get(asset, :ref),
-      span: input.span,
-      details: %{relation_ref: input.relation_ref}
-    }
-  end
-
-  defp ambiguous_relation_error(asset, %RelationInput{} = input, owners) do
+  defp ambiguous_explicit_relation_error(asset, %RelationInput{} = input, dependencies) do
     %Diagnostic{
       severity: :error,
       stage: :registry,
-      code: :ambiguous_relation_owner,
+      code: :ambiguous_explicit_relation,
       message:
-        "SQL relation #{inspect(input.raw || input.relation_ref)} used by #{inspect(Map.get(asset, :ref))} resolves to multiple owned relations",
+        "SQL relation #{inspect(input.raw || input.relation_ref)} used by #{inspect(Map.get(asset, :ref))} matches multiple declared dependencies",
       asset_ref: Map.get(asset, :ref),
       span: input.span,
-      details: %{relation_ref: input.relation_ref, owners: owners}
+      details: %{relation_ref: input.relation_ref, dependencies: dependencies}
     }
   end
 

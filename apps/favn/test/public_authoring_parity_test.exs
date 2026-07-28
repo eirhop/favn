@@ -36,6 +36,8 @@ defmodule Favn.PublicAuthoringParityTest do
   defmodule RelationGold.Customer360 do
     use Favn.SQLAsset
 
+    depends(RelationRaw.Orders)
+    depends(RelationRaw.Customers)
     materialized(:view)
     relation(true)
 
@@ -100,7 +102,7 @@ defmodule Favn.PublicAuthoringParityTest do
     assert cross_module_asset.depends_on == [{SampleAssets, :normalize_orders}]
   end
 
-  test "configured single-module lookups keep inferred relation dependencies" do
+  test "configured single-module lookups keep explicit relation dependencies" do
     Application.put_env(:favn, :asset_modules, [
       RelationRaw.Orders,
       RelationRaw.Customers,

@@ -75,8 +75,9 @@ for runtime access while nested maps normalize to JSON-safe string keys.
 separate asset settings, pipeline settings, submitted params, runtime config,
 relation identity, and deadline data. The manifest is one compact index; SQL
 assets reference immutable `%Favn.Manifest.ExecutionPackage{}` values by
-content hash. Packages carry `%Favn.Manifest.SQLExecution{}` with an optional
-typed `%Favn.SQL.Contract{}` plus typed
+content hash. Packages carry `%Favn.Manifest.SQLExecution{}` with the resolved
+relation bindings that determine rendered SQL, an optional typed
+`%Favn.SQL.Contract{}`, plus typed
 `%Favn.SQL.Check{}` declarations. Contract-generated checks and authored checks
 share the same policy/result types and are distinguished by origin and stable
 claim identity. `%Favn.SQL.ContractValidation{}` owns candidate schema

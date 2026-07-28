@@ -8,7 +8,7 @@ defmodule Favn.Asset.Dependency do
   @enforce_keys [:asset_ref, :provenance]
   defstruct [:asset_ref, provenance: [], relation_inputs: []]
 
-  @type provenance :: :explicit | :inferred_sql_relation | :inferred_sql_asset_ref
+  @type provenance :: :explicit | :inferred_sql_asset_ref
 
   @type t :: %__MODULE__{
           asset_ref: Favn.Ref.t(),

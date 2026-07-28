@@ -5658,6 +5658,44 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     refute compact.runs_truncated?
     refute compact.requested_windows_truncated?
 
+    blocked_progress =
+      RunState.transition(progressed,
+        metadata: Map.put(progressed.metadata, :projected_blocked_step, true)
+      )
+
+    assert {:ok, _committed} =
+             RunStore.commit_transition(%CommitRunTransition{
+               workspace_context: fixture.workspace_context,
+               command_id: "project-step-blocked:" <> run.id,
+               expected_sequence: 3,
+               run: blocked_progress,
+               event: %{
+                 run_id: run.id,
+                 sequence: 4,
+                 event_type: :step_blocked,
+                 status: :running,
+                 data: %{
+                   asset_step_id: "step:" <> run.id,
+                   asset_ref: {MyApp.Asset, :asset},
+                   node_result: %{error: :upstream_blocked}
+                 },
+                 occurred_at: DateTime.utc_now()
+               }
+             })
+
+    assert {:ok, [_publication]} = Sequencer.sequence_batch()
+    assert drain_projector("node-a") >= 1
+
+    assert {:ok, blocked_compact} =
+             OperatorReadStore.get_operator_run_overview(%GetOperatorRunOverview{
+               workspace_context: fixture.workspace_context,
+               run_id: run.id,
+               limit: 10
+             })
+
+    assert [%{status: :blocked, error: "upstream_blocked"}] = blocked_compact.attempts
+    assert blocked_compact.attempt_counts.failed == 1
+
     assert compact.root_run.required_runner_release_id ==
              fixture.version.required_runner_release_id
 
@@ -5677,17 +5715,17 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
         [fixture.workspace_id, fixture.deployment_id, fixture.target_id]
       )
 
-    completed = RunState.transition(progressed, status: :ok)
+    completed = RunState.transition(blocked_progress, status: :ok)
 
     assert {:ok, _committed} =
              RunStore.commit_transition(%CommitRunTransition{
                workspace_context: fixture.workspace_context,
                command_id: "project-step-finished:" <> run.id,
-               expected_sequence: 3,
+               expected_sequence: 4,
                run: completed,
                event: %{
                  run_id: run.id,
-                 sequence: 4,
+                 sequence: 5,
                  event_type: :step_finished,
                  status: :ok,
                  data: %{

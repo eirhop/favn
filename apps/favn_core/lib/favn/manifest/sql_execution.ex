@@ -11,6 +11,7 @@ defmodule Favn.Manifest.SQLExecution do
   """
 
   alias Favn.SQL.Definition, as: SQLDefinition
+  alias Favn.Asset.RelationInput
   alias Favn.SQL.Check
   alias Favn.SQL.Contract
   alias Favn.SQL.Template
@@ -18,24 +19,40 @@ defmodule Favn.Manifest.SQLExecution do
   alias Favn.SQLAsset.Definition
 
   @enforce_keys [:sql, :template]
-  defstruct [:sql, :template, :runtime_inputs, :contract, sql_definitions: [], checks: []]
+  defstruct [
+    :sql,
+    :template,
+    :runtime_inputs,
+    :contract,
+    relation_inputs: [],
+    sql_definitions: [],
+    checks: []
+  ]
 
   @type t :: %__MODULE__{
           sql: String.t(),
           template: Template.t(),
           runtime_inputs: RuntimeInputResolverRef.t() | nil,
           contract: Contract.t() | nil,
+          relation_inputs: [RelationInput.t()],
           sql_definitions: [SQLDefinition.t()],
           checks: [Check.t()]
         }
 
   @spec from_definition(Definition.t()) :: t()
   def from_definition(%Definition{} = definition) do
+    from_definition(definition, definition.relation_inputs)
+  end
+
+  @spec from_definition(Definition.t(), [RelationInput.t()]) :: t()
+  def from_definition(%Definition{} = definition, relation_inputs)
+      when is_list(relation_inputs) do
     %__MODULE__{
       sql: definition.sql,
       template: definition.template,
       runtime_inputs: definition.runtime_inputs,
       contract: definition.contract,
+      relation_inputs: relation_inputs,
       sql_definitions: definition.sql_definitions,
       checks: definition.checks
     }

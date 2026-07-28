@@ -317,18 +317,20 @@ defmodule Favn.SQLAsset do
   guide `guides/sql-asset-checks.md` provides the complete authoring workflow,
   examples, metric limits, and failure modes.
 
-  ## Dependency Inference
+  ## SQL Relation Dependencies
 
-  Relation-style references are the preferred way to reference upstream SQL
-  inputs when the SQL name unambiguously matches the owned relation convention.
+  Declare every Favn-owned upstream with `depends`. Declared dependencies are
+  the source of truth for planning, relation binding, and SQL catalog admission;
+  Favn does not infer graph edges from arbitrary SQL text.
 
-  When a relation reference resolves to an owned asset relation in the same
-  connection, Favn infers the dependency automatically. Use `depends` when the
-  dependency is not visible in the SQL body, when you need a non-SQL upstream,
-  when the relation cannot be resolved from owned asset metadata. New lakehouse
-  projects should use catalog for the database/phase and schema for the
-  segment/domain; catalog-qualified SQL references require a schema so
-  `raw.sales.orders` is unambiguous.
+  SQL remains ordinary SQL. When a plain relation identifier resolves exactly
+  to a declared dependency's owned relation, Favn may apply the current
+  namespace defaults while rendering it. Other identifier chains remain
+  byte-for-byte authored SQL, including aliases, qualified columns,
+  expressions, and unmanaged external relations. New lakehouse projects should
+  use catalog for the database/phase and schema for the segment/domain;
+  catalog-qualified SQL references require a schema so `raw.sales.orders` is
+  unambiguous.
 
   ## Compiles To
 
