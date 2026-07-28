@@ -1,9 +1,9 @@
 defmodule Favn.CheckNoLegacyRunnerArchitecture do
   @moduledoc false
 
-  @roots ["apps", "config", "docs", "examples", "rel"]
+  @roots [".github", "apps", "config", "deployment", "docs", "examples", "rel", "security"]
 
-  @removed ~r/Favn\.Contracts\.RunnerClient|RunnerClient\.BeamNode|RunnerClientValidator|RunnerDispatch|RunnerHealth|RunnerDiagnostics|RunnerManifestRegistration|ActiveManifestReconciler|RunnerLogBridge|RunnerReplacement|RunExecutionOwnership|RunnerExecutionIdentity|ExecutionOwnershipCodec|RunnerReleaseCompatibility|RuntimeStarter|FavnRunner\.Server|FavnRunner\.ResultRetention|FavnRunner\.ExecutionLifecycle|FavnRunner\.Shutdown|FavnLocal\.(RunnerMain|RunnerChild|Lifecycle)|\brunner_executions\b|\brunner_execution_id\b|\binflight_execution_ids\b|\brunner_ref\b|\bFAVN_RUNNER_NODE\b/
+  @removed ~r/Favn\.Contracts\.RunnerClient|RunnerClient\.BeamNode|RunnerClientValidator|RunnerDispatch|RunnerHealth|RunnerDiagnostics|RunnerManifestRegistration|ActiveManifestReconciler|RunnerLogBridge|RunnerReplacement|RunExecutionOwnership|RunnerExecutionIdentity|ExecutionOwnershipCodec|RunnerReleaseCompatibility|RuntimeStarter|FavnRunner\.Server|FavnRunner\.ResultRetention|FavnRunner\.ExecutionLifecycle|FavnRunner\.Shutdown|FavnLocal\.(RunnerMain|RunnerChild|Lifecycle)|\brunner_executions\b|\brunner_execution_id\b|\binflight_execution_ids\b|\brunner_ref\b|\brunner_replacement\b|runner-replacement|runner replacement|\bFAVN_RUNNER_NODE\b/
 
   def run do
     violations =
@@ -28,7 +28,11 @@ defmodule Favn.CheckNoLegacyRunnerArchitecture do
     normalized = String.replace(path, "\\", "/")
 
     String.starts_with?(normalized, "docs/archive/") or
-      String.starts_with?(normalized, "docs/architecture/elastic-runners")
+      normalized in [
+        "docs/architecture/elastic-runners.md",
+        "docs/architecture/elastic-runners-implementation-log.md",
+        "docs/architecture/elastic-runners-legacy-inventory.md"
+      ]
   end
 
   defp violations(path) do

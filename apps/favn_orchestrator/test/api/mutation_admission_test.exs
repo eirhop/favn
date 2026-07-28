@@ -40,7 +40,7 @@ defmodule FavnOrchestrator.API.MutationAdmissionTest do
     start_supervised!({Lifecycle, name: name, shutdown_drain_timeout_ms: 1_000})
     :ok = Lifecycle.mark_accepting(name)
     token = String.duplicate("a", 43)
-    {:ok, ^token} = Lifecycle.begin_maintenance(:runner_replacement, token, name)
+    {:ok, ^token} = Lifecycle.begin_maintenance(:operator_maintenance, token, name)
 
     rejected = MutationAdmission.call(conn(:post, "/manifests"), lifecycle: name)
     assert rejected.halted

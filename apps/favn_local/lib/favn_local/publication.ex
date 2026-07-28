@@ -9,8 +9,18 @@ defmodule FavnLocal.Publication do
 
   @spec build(String.t()) :: {:ok, Publication.t()} | {:error, term()}
   def build(runner_release_id) when is_binary(runner_release_id) do
-    with {:ok, build} <- FavnAuthoring.build_manifest(runner_release_id: runner_release_id) do
+    with {:ok, pools} <- effective_runner_pools(),
+         releases = Map.new(pools, &{&1, runner_release_id}),
+         {:ok, build} <- FavnAuthoring.build_manifest(runner_releases: releases) do
       FavnAuthoring.prepare_manifest_publication(build)
+    end
+  end
+
+  defp effective_runner_pools do
+    case FavnAuthoring.build_manifest(runner_releases: %{}) do
+      {:ok, _build} -> {:ok, []}
+      {:error, {:runner_release_pool_mismatch, expected, []}} -> {:ok, expected}
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -28,34 +38,6 @@ defmodule FavnLocal.Publication do
       result
     end
   end
-
-  @spec active_deployment?(
-          String.t(),
-          String.t(),
-          String.t(),
-          String.t()
-        ) :: boolean()
-  def active_deployment?(
-        workspace_id,
-        deployment_id,
-        manifest_version_id,
-        runner_release_id
-      )
-      when is_binary(workspace_id) and is_binary(deployment_id) and
-             is_binary(manifest_version_id) and is_binary(runner_release_id) do
-    with {:ok, workspace} <-
-           WorkspaceContext.new(workspace_id, "favn-local", [:platform_operator]),
-         {:ok, runtime} <- Manifests.active_runtime(workspace) do
-      runtime.deployment_id == deployment_id and
-        runtime.manifest_version_id == manifest_version_id and
-        runtime.required_runner_release_id == runner_release_id
-    else
-      _error -> false
-    end
-  end
-
-  def active_deployment?(_workspace_id, _deployment_id, _manifest_version_id, _runner_release_id),
-    do: false
 
   defp deploy_with_permit(platform, workspace, publication) do
     version = publication.version
@@ -104,7 +86,7 @@ defmodule FavnLocal.Publication do
     {:ok,
      %{
        manifest_version_id: runtime.manifest_version_id,
-       runner_release_id: runtime.required_runner_release_id,
+       runner_releases: runtime.runner_releases,
        deployment_id: runtime.deployment_id,
        execution_packages: package_counts,
        phases: phases

@@ -4,17 +4,18 @@ Reader: Favn contributors implementing or reviewing runner distribution.
 
 Documentation type: accepted architecture and implementation plan.
 
-Status: accepted for implementation; not yet implemented
+Status: implemented; qualification evidence is recorded in
+`elastic-runners-implementation-log.md`
 
 Last researched: 2026-07-26
 
 ## Purpose
 
-Plan the breaking-change migration from one statically addressed runner to one
-control-plane node coordinating zero to many resident or self-terminating runner
-nodes. The design must preserve PostgreSQL as the durable correctness authority,
-use distributed BEAM communication after a runner starts, and leave
-infrastructure provisioning outside Favn.
+Document the completed breaking-change migration from one statically addressed
+runner to one control-plane node coordinating zero to many resident or
+self-terminating runner nodes. The design must preserve PostgreSQL as the
+durable correctness authority, use distributed BEAM communication after a
+runner starts, and leave infrastructure provisioning outside Favn.
 
 This plan covers runner elasticity and dynamic runner membership for one control
 plane. Multi-control-plane availability and rolling mixed-version clusters remain

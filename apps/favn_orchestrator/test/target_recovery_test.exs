@@ -207,7 +207,7 @@ defmodule FavnOrchestrator.TargetRecoveryTest do
     end
   end
 
-  defmodule RunnerClient do
+  defmodule RunnerExecutor do
     def generation_capabilities(_version, _asset_ref, _opts) do
       {:ok,
        %{
@@ -243,14 +243,16 @@ defmodule FavnOrchestrator.TargetRecoveryTest do
   end
 
   setup do
-    previous_client = Application.get_env(:favn_orchestrator, :runner_client)
-    previous_opts = Application.get_env(:favn_orchestrator, :runner_client_opts)
-    Application.put_env(:favn_orchestrator, :runner_client, RunnerClient)
-    Application.put_env(:favn_orchestrator, :runner_client_opts, [])
+    previous_executor = Application.get_env(:favn_orchestrator, :test_runner_executor)
+    previous_opts = Application.get_env(:favn_orchestrator, :test_runner_executor_opts)
+    Application.put_env(:favn_orchestrator, :test_runner_executor, RunnerExecutor)
+    Application.put_env(:favn_orchestrator, :test_runner_executor_opts, [])
 
     stores = %Stores{
       registry: Store,
       runs: Store,
+      run_submissions: Store,
+      runner_tasks: FavnOrchestrator.TestRunnerTaskStore,
       run_ownership: Store,
       scheduler: Store,
       admission: Store,
@@ -346,8 +348,8 @@ defmodule FavnOrchestrator.TargetRecoveryTest do
     })
 
     on_exit(fn ->
-      restore_env(:runner_client, previous_client)
-      restore_env(:runner_client_opts, previous_opts)
+      restore_env(:test_runner_executor, previous_executor)
+      restore_env(:test_runner_executor_opts, previous_opts)
     end)
 
     context = %WorkspaceContext{
@@ -748,7 +750,7 @@ defmodule FavnOrchestrator.TargetRecoveryTest do
   defp inspection(version, asset) do
     %RelationInspectionResult{
       asset_ref: asset.ref,
-      required_runner_release_id: version.required_runner_release_id,
+      required_runner_release_id: Map.fetch!(version.runner_releases, "default"),
       relation: %{catalog: nil, schema: "analytics", name: "orders", type: :table},
       columns: [%{name: "id", data_type: "BIGINT", nullable?: false}],
       table_metadata: %{

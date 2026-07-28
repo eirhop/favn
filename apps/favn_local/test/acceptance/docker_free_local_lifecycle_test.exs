@@ -141,9 +141,15 @@ defmodule FavnLocal.DockerFreeLocalLifecycleAcceptanceTest do
     {workspace_context, pinned_run, pinned_version, pinned_ref} =
       create_release_pinned_run(workspace_id)
 
+    reload_release_id = FavnTestSupport.runner_release_id(:reload)
+
     reload =
       Task.async(fn ->
-        FavnLocal.reload(root_dir: root_dir, reload_timeout_ms: 60_000)
+        FavnLocal.reload(
+          root_dir: root_dir,
+          runner_release_id: reload_release_id,
+          reload_timeout_ms: 60_000
+        )
       end)
 
     assert_eventually(fn ->

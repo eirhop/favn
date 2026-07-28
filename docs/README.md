@@ -24,8 +24,8 @@ must not be presented as public API.
 For the current path to a supported release, start with
 [`production/README.md`](production/README.md).
 
-The accepted, not-yet-implemented plan for durable run submissions and one
-control plane coordinating zero to N user-defined runner pools is
+The implemented architecture for durable run submissions and one control plane
+coordinating zero to N user-defined runner pools is
 [`architecture/elastic-runners.md`](architecture/elastic-runners.md). It
 records the implementation sequence, queue boundaries, distributed-BEAM
 protocol, scale-to-zero contract, and infrastructure-neutral deployment model.

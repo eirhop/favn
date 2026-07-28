@@ -19,7 +19,7 @@ defmodule FavnOrchestrator.Scheduler.PersistenceRuntimeTest do
 
   test "automatic ticks pause without crashing during runtime maintenance" do
     token = Base.url_encode64(:crypto.strong_rand_bytes(32), padding: false)
-    assert {:ok, ^token} = Lifecycle.begin_maintenance(:runner_replacement, token)
+    assert {:ok, ^token} = Lifecycle.begin_maintenance(:operator_maintenance, token)
 
     on_exit(fn ->
       Lifecycle.end_maintenance(token)

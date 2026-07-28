@@ -10,7 +10,7 @@ Purpose: Docker-free source-development lifecycle behind the public
 - validation of developer-supplied PostgreSQL and environment configuration;
 - Orchestrator and View startup in the current BEAM;
 - one child runner BEAM using the consumer's compiled code;
-- reload sequencing, runner replacement admission, and manifest deployment;
+- reload sequencing, maintenance admission, and manifest deployment;
 - building the current dependency-owned View assets before source startup;
 - a small `.favn/local/` locator and owner-only local credentials, including
   the stable local View key needed to preserve browser sessions across restart.

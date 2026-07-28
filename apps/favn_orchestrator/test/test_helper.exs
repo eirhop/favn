@@ -182,8 +182,15 @@ defmodule FavnOrchestrator.TestRunnerTaskStore do
           end
 
         {:generation_marker_read,
-         %GenerationMarkerReadRequest{manifest: version, asset_ref: asset_ref}} ->
-          case runner.generation_marker(version, asset_ref, opts) do
+         %GenerationMarkerReadRequest{
+           manifest: version,
+           asset_ref: asset_ref,
+           require_relation_instance?: require_relation_instance?
+         }} ->
+          marker_opts =
+            Keyword.put(opts, :require_relation_instance?, require_relation_instance?)
+
+          case runner.generation_marker(version, asset_ref, marker_opts) do
             {:ok, marker} -> {:ok, %GenerationMarkerReadResult{marker: marker}}
             error -> error
           end

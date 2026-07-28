@@ -20,39 +20,9 @@ defmodule FavnOrchestrator.TargetCompatibilityPlannerTest do
   @now ~U[2026-07-22 12:00:00Z]
 
   defmodule RunnerExecutor do
-    def ensure_manifest(version, opts) do
-      send(Keyword.fetch!(opts, :test_pid), {:ensure_manifest, version.manifest_version_id})
-      Application.get_env(:favn_orchestrator, :compatibility_test_ensure_result, :ok)
-    end
-
-    def register_manifest(version, opts) do
-      send(Keyword.fetch!(opts, :test_pid), {:register_manifest, version.manifest_version_id})
-      :ok
-    end
-
     def inspect_relation(request, opts) do
       send(Keyword.fetch!(opts, :test_pid), {:inspect_relation, request})
       {:ok, Application.fetch_env!(:favn_orchestrator, :compatibility_test_inspection)}
-    end
-  end
-
-  defmodule BatchRunnerClient do
-    def ensure_manifest(version, opts), do: RunnerClient.ensure_manifest(version, opts)
-    def register_manifest(version, opts), do: RunnerClient.register_manifest(version, opts)
-
-    def inspect_relations(requests, opts) do
-      send(Keyword.fetch!(opts, :test_pid), {:inspect_relations, requests})
-      inspection = Application.fetch_env!(:favn_orchestrator, :compatibility_test_inspection)
-
-      {:ok,
-       Enum.map(requests, fn request ->
-         {:ok,
-          %{
-            inspection
-            | asset_ref: request.asset_ref,
-              required_runner_release_id: request.required_runner_release_id
-          }}
-       end)}
     end
   end
 
@@ -93,8 +63,7 @@ defmodule FavnOrchestrator.TargetCompatibilityPlannerTest do
             :compatibility_test_bindings,
             :compatibility_test_versions,
             :compatibility_test_manifest_errors,
-            :compatibility_test_historical_descriptors,
-            :compatibility_test_ensure_result
+            :compatibility_test_historical_descriptors
           ],
           into: %{},
           do: {key, Application.get_env(:favn_orchestrator, key, :missing)}
@@ -139,54 +108,6 @@ defmodule FavnOrchestrator.TargetCompatibilityPlannerTest do
     {:ok, platform_context: platform_context, workspace_context: workspace_context}
   end
 
-  test "uses one ordered runner batch when the client supports it", contexts do
-    {version, asset} = persisted_version("manifest-batch-inspection")
-    put_versions([version])
-    Application.put_env(:favn_orchestrator, :runner_client, BatchRunnerClient)
-    Application.put_env(:favn_orchestrator, :compatibility_test_inspection, inspection(version))
-
-    assert {:ok, [_decision]} = plan(version, asset, contexts)
-    assert_received {:inspect_relations, [request]}
-    assert request.asset_ref == asset.ref
-    refute_received {:inspect_relation, _request}
-  end
-
-  test "chunks more than 500 inspections without changing decision order", contexts do
-    {version, assets} = persisted_batch_version("manifest-chunked-inspection", 501)
-    put_versions([version])
-    Application.put_env(:favn_orchestrator, :runner_client, BatchRunnerClient)
-    Application.put_env(:favn_orchestrator, :compatibility_test_inspection, inspection(version))
-
-    selection = %DeploymentPlanner{
-      common_assets: Enum.map(assets, & &1.ref),
-      common_pipelines: [],
-      workspace_assets: [],
-      workspace_pipelines: []
-    }
-
-    assert {:ok, decisions} =
-             TargetCompatibilityPlanner.plan(
-               contexts.platform_context,
-               contexts.workspace_context,
-               version,
-               selection
-             )
-
-    assert length(decisions) == 501
-    assert_received {:inspect_relations, first_batch}
-    assert_received {:inspect_relations, second_batch}
-    assert length(first_batch) == 500
-    assert length(second_batch) == 1
-
-    expected_assets = Enum.sort_by(assets, & &1.target_descriptor.target_id)
-
-    assert Enum.map(first_batch ++ second_batch, & &1.asset_ref) ==
-             Enum.map(expected_assets, & &1.ref)
-
-    assert Enum.map(decisions, & &1.target_id) ==
-             Enum.map(expected_assets, & &1.target_descriptor.target_id)
-  end
-
   test "classifies a missing unbound relation as uninitialized", contexts do
     {version, asset} = persisted_version("manifest-uninitialized")
     put_versions([version])
@@ -211,7 +132,7 @@ defmodule FavnOrchestrator.TargetCompatibilityPlannerTest do
     Application.put_env(:favn_orchestrator, :compatibility_test_inspection, inspection(version))
 
     token = :crypto.strong_rand_bytes(32) |> Base.url_encode64(padding: false)
-    assert {:ok, ^token} = Lifecycle.begin_maintenance(:runner_replacement, token)
+    assert {:ok, ^token} = Lifecycle.begin_maintenance(:deployment_maintenance, token)
     assert {:ok, permit} = Lifecycle.acquire_maintenance_admission(token)
 
     try do
@@ -303,14 +224,11 @@ defmodule FavnOrchestrator.TargetCompatibilityPlannerTest do
     put_versions([active_version, desired_version])
     Application.put_env(:favn_orchestrator, :compatibility_test_bindings, [binding])
     Application.put_env(:favn_orchestrator, :compatibility_test_inspection, observed)
-    Application.put_env(:favn_orchestrator, :compatibility_test_ensure_result, :missing)
 
     assert {:ok, [decision]} = plan(desired_version, desired_asset, contexts)
     assert decision.compatibility_status == :rebuild_required
     assert decision.reason_code == "incompatible_descriptor"
 
-    refute_received {:ensure_manifest, _active_manifest_id}
-    refute_received {:register_manifest, _active_manifest_id}
     assert_received {:inspect_relation, request}
     assert request.manifest_version_id == active_version.manifest_version_id
     assert request.asset_ref == active_asset.ref
@@ -704,40 +622,6 @@ defmodule FavnOrchestrator.TargetCompatibilityPlannerTest do
 
     {:ok, version} = Version.new(manifest, manifest_version_id: manifest_id)
     {version, hd(version.manifest.assets)}
-  end
-
-  defp persisted_batch_version(manifest_id, count) do
-    assets =
-      Enum.map(1..count, fn index ->
-        name = :"asset_#{index}"
-
-        FavnTestSupport.with_target_descriptor(%Asset{
-          ref: {MyApp.BatchAssets, name},
-          module: MyApp.BatchAssets,
-          name: name,
-          type: :sql,
-          relation:
-            RelationRef.new!(
-              connection: :warehouse,
-              schema: "gold",
-              name: "batch_asset_#{index}"
-            ),
-          materialization: :table,
-          execution_package_hash:
-            index
-            |> Integer.to_string()
-            |> then(&:crypto.hash(:sha256, &1))
-            |> Base.encode16(case: :lower)
-        })
-      end)
-
-    manifest =
-      %Manifest{assets: assets}
-      |> FavnTestSupport.with_manifest_graph()
-      |> FavnTestSupport.with_manifest_contract(FavnTestSupport.runner_release_id())
-
-    {:ok, version} = Version.new(manifest, manifest_version_id: manifest_id)
-    {version, version.manifest.assets}
   end
 
   defp inspection(version, opts \\ []) do

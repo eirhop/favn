@@ -22,7 +22,7 @@ make its evidence look current.
 Every non-persisted logical asset has a separate workspace-scoped evidence
 binding. Deployment initializes the binding once from the active manifest's
 semantic generation and never replaces it during ordinary manifest activation
-or runner replacement. Freshness and coverage therefore survive definition
+or runner release changes. Freshness and coverage therefore survive definition
 changes until an operator explicitly recomputes the asset. The manifest's
 semantic generation remains immutable definition provenance, not the active
 freshness identity.
@@ -55,7 +55,7 @@ Physical inspection always compares ordered column names and types. It compares
 contract nullability only when the adapter marks that metadata reliable.
 Recorded physical fingerprints remain exact observation signatures.
 
-Runner replacement does not reject the whole manifest because the active
+Runner release changes do not reject the whole manifest because the active
 generation was created by an older runner release. The new runner inspects the
 persisted active physical relation directly through the desired manifest; it
 does not load old executable code. Missing or drifted physical state takes

@@ -69,23 +69,23 @@ defmodule FavnOrchestrator.LifecycleTest do
     :ok = Lifecycle.mark_accepting(name)
     token = String.duplicate("a", 43)
 
-    assert {:ok, ^token} = Lifecycle.begin_maintenance(:runner_replacement, token, name)
+    assert {:ok, ^token} = Lifecycle.begin_maintenance(:operator_maintenance, token, name)
 
     assert {:ok, ^token} =
-             Lifecycle.begin_maintenance(:runner_replacement, token, name)
+             Lifecycle.begin_maintenance(:operator_maintenance, token, name)
 
     assert {:error, :maintenance_active} =
-             Lifecycle.begin_maintenance(:runner_replacement, String.duplicate("b", 43), name)
+             Lifecycle.begin_maintenance(:operator_maintenance, String.duplicate("b", 43), name)
 
     assert {:error, :invalid_maintenance_token} =
-             Lifecycle.begin_maintenance(:runner_replacement, "short", name)
+             Lifecycle.begin_maintenance(:operator_maintenance, "short", name)
 
     assert %{
              status: :accepting,
              ready?: false,
              accepting?: false,
              maintenance?: true,
-             maintenance_kind: :runner_replacement,
+             maintenance_kind: :operator_maintenance,
              active_admissions: 0
            } = Lifecycle.diagnostics(name)
 

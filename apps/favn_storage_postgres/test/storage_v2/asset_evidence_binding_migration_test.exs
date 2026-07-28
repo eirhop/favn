@@ -107,10 +107,11 @@ defmodule FavnStoragePostgres.StorageV2.AssetEvidenceBindingMigrationTest do
       """
       INSERT INTO favn_control.manifest_versions
         (manifest_version_id, content_hash, schema_version, runner_contract_version,
-         required_runner_release_id, payload_version, asset_count, pipeline_count,
+         runner_releases, payload_version, asset_count, pipeline_count,
          schedule_count, atom_strings, manifest, inserted_at)
       VALUES (
-        $1, $2, 13, 12, $3::text, 1, 1, 0, 0, ARRAY[]::text[],
+        $1, $2, 14, 13, jsonb_build_object('default', $3::text),
+        1, 1, 0, 0, ARRAY[]::text[],
         jsonb_build_object(
           'assets', jsonb_build_array(
             jsonb_build_object(
@@ -121,7 +122,7 @@ defmodule FavnStoragePostgres.StorageV2.AssetEvidenceBindingMigrationTest do
           ),
           'pipelines', jsonb_build_array(),
           'schedules', jsonb_build_array(),
-          'required_runner_release_id', $3::text
+          'runner_releases', jsonb_build_object('default', $3::text)
         ),
         clock_timestamp()
       )
