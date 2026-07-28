@@ -361,7 +361,8 @@ defmodule FavnLocal.DevelopmentRuntime do
     end
   end
 
-  defp runner_exited_managed(state, _port, _status), do: fail(state, :runner_exited)
+  defp runner_exited_managed(state, _port, status),
+    do: fail(state, {:runner_exited, status})
 
   defp restart_retiring(state, retiring, exit_status) do
     case RunnerProcessLauncher.start(state.config, retiring.release_id) do

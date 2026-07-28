@@ -211,8 +211,7 @@ defmodule FavnOrchestrator.RunnerRegistry do
              registration.runner_pool
            ),
          true <- policy.mode == registration.lifecycle_mode,
-         true <- agent_alive?(agent_pid),
-         true <- registration.beam_node == Atom.to_string(node(agent_pid)),
+         :ok <- validate_agent_pid(registration, agent_pid),
          true <- is_nil(registration.active_assignment) or resume_verified? do
       :ok
     else
@@ -233,6 +232,17 @@ defmodule FavnOrchestrator.RunnerRegistry do
     end
   end
 
+  defp validate_agent_pid(_registration, agent_pid) when not is_pid(agent_pid),
+    do: {:error, :invalid_runner_agent}
+
+  defp validate_agent_pid(registration, agent_pid) do
+    actual_node = Atom.to_string(node(agent_pid))
+
+    if registration.beam_node == actual_node,
+      do: :ok,
+      else: {:error, {:runner_agent_node_mismatch, registration.beam_node, actual_node}}
+  end
+
   defp policy_mode_mismatch?(registration) do
     case FavnOrchestrator.RunnerPools.fetch(
            FavnOrchestrator.RuntimeConfig.runner_pools(),
@@ -242,16 +252,6 @@ defmodule FavnOrchestrator.RunnerRegistry do
       {:error, _reason} -> false
     end
   end
-
-  defp agent_alive?(agent_pid) when is_pid(agent_pid) and node(agent_pid) == node(),
-    do: Process.alive?(agent_pid)
-
-  defp agent_alive?(agent_pid) when is_pid(agent_pid) do
-    Node.connect(node(agent_pid)) and
-      :rpc.call(node(agent_pid), Process, :alive?, [agent_pid], 5_000) == true
-  end
-
-  defp agent_alive?(_agent_pid), do: false
 
   defp put_registration(state, registration, agent_pid) do
     case Map.get(state.sessions, registration.runner_instance_id) do

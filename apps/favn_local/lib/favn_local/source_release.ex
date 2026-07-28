@@ -15,6 +15,7 @@ defmodule FavnLocal.SourceRelease do
     files =
       build_path
       |> Path.join("lib/*/ebin/*.beam")
+      |> String.replace("\\", "/")
       |> Path.wildcard()
       |> Enum.sort()
 

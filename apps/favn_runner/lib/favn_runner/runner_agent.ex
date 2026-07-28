@@ -2,6 +2,8 @@ defmodule FavnRunner.RunnerAgent do
   @moduledoc "One-slot pull/execute/report loop for durable protocol-13 runner tasks."
   use GenServer
 
+  require Logger
+
   alias Favn.Contracts.RunnerError
   alias Favn.Contracts.RunnerResult
   alias Favn.Contracts.RunnerTask
@@ -133,11 +135,10 @@ defmodule FavnRunner.RunnerAgent do
   @impl true
   def handle_info(:connect, state) do
     agent_pid = self()
-    registration = registration(state)
 
     {:noreply,
      start_control_operation(state, :registration, fn ->
-       register_with_control_plane(state.connection, registration, agent_pid)
+       register_with_control_plane(state, agent_pid)
      end)}
   end
 
@@ -744,10 +745,10 @@ defmodule FavnRunner.RunnerAgent do
 
   defp handle_control_operation_result(
          :registration,
-         {:ok, _gateway, %RunnerTask.RegistrationAck{status: :rejected}},
+         {:ok, _gateway, %RunnerTask.RegistrationAck{status: :rejected, reason: reason}},
          state
        ),
-       do: stop_rejected_registration(state)
+       do: stop_rejected_registration(state, reason)
 
   defp handle_control_operation_result(:registration, _error, state), do: reconnect(state)
 
@@ -938,9 +939,10 @@ defmodule FavnRunner.RunnerAgent do
     }
   end
 
-  defp register_with_control_plane(connection, registration, agent_pid) do
+  defp register_with_control_plane(state, agent_pid) do
     with {:ok, gateway} <-
-           safe_gateway_call(fn -> ControlPlaneConnection.gateway(connection) end),
+           safe_gateway_call(fn -> ControlPlaneConnection.gateway(state.connection) end),
+         registration = registration(state),
          {:ok, %RunnerTask.RegistrationAck{} = acknowledgement} <-
            safe_gateway_call(fn ->
              ControlPlaneConnection.register(gateway, registration, agent_pid)
@@ -1000,7 +1002,9 @@ defmodule FavnRunner.RunnerAgent do
     max(1, div(ceiling, 2) + :rand.uniform(max(div(ceiling, 2), 1)))
   end
 
-  defp stop_rejected_registration(state) do
+  defp stop_rejected_registration(state, reason) do
+    Logger.error("runner registration rejected: #{inspect(reason)}", reason: reason)
+
     if is_pid(state.executor) do
       _ = safe_cancel_executor(state.executor, :stale_runner_task_resume)
     end

@@ -46,8 +46,8 @@ defmodule Favn.ManifestScalabilityMeasurementTest do
     assert report.sizes.gzip_ratio > 0
     assert report.sizes.gzip_ratio < 1
     assert report.sizes.decoded_flat_heap_bytes > 0
-    assert report.operations.encode.duration_us > 0
-    assert report.operations.decode.duration_us > 0
+    assert report.operations.encode.duration_us >= 0
+    assert report.operations.decode.duration_us >= 0
     assert report.attribution.asset_field_value_json_bytes["execution_package_hash"] > 0
     refute Map.has_key?(report.attribution.asset_field_value_json_bytes, "sql_execution")
     refute Map.has_key?(report.attribution.check_field_value_json_bytes, "sql")

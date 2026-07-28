@@ -535,7 +535,7 @@ defmodule FavnRunner.RunnerAgentTest do
           %RunnerTask.Assignment{
             command_id: "blocked-preparation-claim",
             workspace_id: "workspace-blocked-preparation",
-            task_id: "rt_blocked_preparation",
+            task_id: "rt_blocked_preparation_#{System.unique_integer([:positive, :monotonic])}",
             task_kind: :asset_attempt,
             runner_instance_id: registration.runner_instance_id,
             runner_session_generation: 1,
@@ -675,6 +675,7 @@ defmodule FavnRunner.RunnerAgentTest do
       })
 
     assert_receive :preparation_blocked, 1_000
+
     assert_receive {:renewed_during_preparation, %RunnerTask.LeaseRenewal{}}, 1_000
     send(control_plane, :release_preparation)
     assert_receive {:started_after_preparation, %RunnerTask.Started{}}, 1_000

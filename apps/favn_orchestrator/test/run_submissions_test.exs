@@ -7,6 +7,7 @@ defmodule FavnOrchestrator.RunSubmissionsTest do
   alias FavnOrchestrator.Persistence.Commands.EnqueueRunSubmission
   alias FavnOrchestrator.Persistence.Commands.RequestRunSubmissionCancellation
   alias FavnOrchestrator.Persistence.Queries.GetDeploymentManifest
+  alias FavnOrchestrator.Persistence.Queries.GetEvidenceBindings
   alias FavnOrchestrator.Persistence.Queries.GetRuntimeState
   alias FavnOrchestrator.Persistence.Results.RunSubmission
   alias FavnOrchestrator.Persistence.Results.RuntimeState
@@ -36,6 +37,13 @@ defmodule FavnOrchestrator.RunSubmissionsTest do
 
     def get_deployment_manifest(%GetDeploymentManifest{}),
       do: {:ok, Process.get(:run_submissions_version)}
+
+    def get_evidence_bindings(%GetEvidenceBindings{target_ids: target_ids}) do
+      {:ok,
+       Enum.map(target_ids, fn target_id ->
+         %{target_id: target_id, evidence_generation_id: "ag_run_submissions"}
+       end)}
+    end
 
     def enqueue(%EnqueueRunSubmission{} = command) do
       now = DateTime.utc_now()

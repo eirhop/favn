@@ -7,8 +7,8 @@ defmodule FavnTestSupport do
   """
 
   @doc "Returns a canonical deterministic runner release ID for tests."
-  @spec runner_release_id(:primary | :alternate) :: String.t()
-  def runner_release_id(name \\ :primary) when name in [:primary, :alternate] do
+  @spec runner_release_id(:primary | :alternate | :reload) :: String.t()
+  def runner_release_id(name \\ :primary) when name in [:primary, :alternate, :reload] do
     digest =
       :crypto.hash(:sha256, "favn-test-runner-" <> Atom.to_string(name))
       |> Base.encode16(case: :lower)
