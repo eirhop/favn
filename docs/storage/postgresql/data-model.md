@@ -531,8 +531,9 @@ and other rebuilds with expiring, fenced ownership. Operator histories page on
 workspace plus descending insertion/operation identity, with a separate state
 prefix index.
 
-`target_recovery_operations` stores immutable plans and the durable
-`planned` → `applying` → `succeeded | failed | outcome_unknown` lifecycle for
+`target_recovery_operations` stores planning intent before runner evidence is
+requested, then immutable plans and the durable `planning` → `planned` →
+`applying` → `succeeded | failed | outcome_unknown` lifecycle for
 interrupted initial-generation recovery. Each operation references its exact
 generation and successful materialization. It shares `target_operation_locks`
 with rebuilds so activation is fenced against concurrent writes.

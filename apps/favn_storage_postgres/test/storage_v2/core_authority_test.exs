@@ -37,7 +37,9 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnOrchestrator.Persistence.Commands.ClaimBackfillWindows
   alias FavnOrchestrator.Persistence.Commands.CreateRun
   alias FavnOrchestrator.Persistence.Commands.CreateRebuildPlan
-  alias FavnOrchestrator.Persistence.Commands.CreateTargetRecoveryPlan
+  alias FavnOrchestrator.Persistence.Commands.CreateTargetRecoveryIntent
+  alias FavnOrchestrator.Persistence.Commands.FailTargetRecovery
+  alias FavnOrchestrator.Persistence.Commands.FinalizeTargetRecoveryPlan
   alias FavnOrchestrator.Persistence.Commands.CreateActor
   alias FavnOrchestrator.Persistence.Commands.CreateSession
   alias FavnOrchestrator.Persistence.Commands.DeployManifest
@@ -1438,8 +1440,22 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     operation_id = "target-recovery:" <> run.id
     plan_hash = String.duplicate("b", 64)
 
-    assert {:ok, planned} =
-             TargetRecoveryStore.create_plan(%CreateTargetRecoveryPlan{
+    plan_payload = %{
+      "expires_at" => "2099-01-01T00:00:00Z",
+      "physical_relation_instance_id" =>
+        Favn.TargetGenerationRelation.instance_id("recovery-token:" <> run.id),
+      "data_plane_marker" => %{
+        "target_id" => fixture.target_id,
+        "active_relation" => candidate.generation.physical_relation,
+        "active_generation_id" => candidate.generation.target_generation_id,
+        "activation_operation_id" => "target-recovery-marker:" <> run.id,
+        "activation_token" => "recovery-token:" <> run.id,
+        "activated_at" => DateTime.to_iso8601(occurred_at)
+      }
+    }
+
+    assert {:ok, intent} =
+             TargetRecoveryStore.create_intent(%CreateTargetRecoveryIntent{
                workspace_context: fixture.workspace_context,
                command_id: "recovery:plan:" <> run.id,
                operation_id: operation_id,
@@ -1449,33 +1465,85 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
                source_manifest_id: fixture.version.manifest_version_id,
                target_generation_id: candidate.generation.target_generation_id,
                materialization_id: materialization_id,
-               plan_hash: plan_hash,
-               plan_payload: %{
-                 "expires_at" => "2099-01-01T00:00:00Z",
-                 "physical_relation_instance_id" =>
-                   Favn.TargetGenerationRelation.instance_id("recovery-token:" <> run.id),
-                 "data_plane_marker" => %{
-                   "target_id" => fixture.target_id,
-                   "active_relation" => candidate.generation.physical_relation,
-                   "active_generation_id" => candidate.generation.target_generation_id,
-                   "activation_operation_id" => "target-recovery-marker:" <> run.id,
-                   "activation_token" => "recovery-token:" <> run.id,
-                   "activated_at" => DateTime.to_iso8601(occurred_at)
-                 }
-               },
                actor_id: "recovery-admin",
                reason: "recover interrupted initial materialization",
                idempotency_key: operation_id,
                expected_binding_version: candidate.binding.version,
-               expected_physical_fingerprint: fingerprint,
                evaluated_at: occurred_at,
+               occurred_at: occurred_at
+             })
+
+    assert intent.state == :planning
+
+    assert_raise Postgrex.Error, fn ->
+      SQL.query!(
+        Repo,
+        """
+        UPDATE favn_control.target_recovery_operations
+        SET state = 'applying',
+            phase = 'marker_intent',
+            recovery_token = 'invalid-without-frozen-plan',
+            started_at = $3
+        WHERE workspace_id = $1 AND operation_id = $2
+        """,
+        [fixture.workspace_id, operation_id, occurred_at]
+      )
+    end
+
+    failed_planning_operation_id = operation_id <> ":planning-failure"
+
+    assert {:ok, failed_intent} =
+             TargetRecoveryStore.create_intent(%CreateTargetRecoveryIntent{
+               workspace_context: fixture.workspace_context,
+               command_id: "recovery:failed-plan:" <> run.id,
+               operation_id: failed_planning_operation_id,
+               target_id: fixture.target_id,
+               recovery_kind: :reconcile_initial_generation,
+               desired_manifest_id: fixture.version.manifest_version_id,
+               source_manifest_id: fixture.version.manifest_version_id,
+               target_generation_id: candidate.generation.target_generation_id,
+               materialization_id: materialization_id,
+               actor_id: "recovery-admin",
+               reason: "record deterministic planning failure",
+               idempotency_key: failed_planning_operation_id,
+               expected_binding_version: candidate.binding.version,
+               evaluated_at: occurred_at,
+               occurred_at: occurred_at
+             })
+
+    assert {:ok, failed_planning} =
+             TargetRecoveryStore.fail_recovery(%FailTargetRecovery{
+               workspace_context: fixture.workspace_context,
+               command_id: "recovery:fail-plan:" <> run.id,
+               operation_id: failed_planning_operation_id,
+               expected_version: failed_intent.version,
+               terminal_error: %{
+                 "kind" => "conflict",
+                 "reason_code" => "target_recovery_marker_missing"
+               },
+               occurred_at: DateTime.add(occurred_at, 1, :second)
+             })
+
+    assert failed_planning.state == :failed
+    assert is_nil(failed_planning.plan_hash)
+    assert is_nil(failed_planning.expected_physical_fingerprint)
+
+    assert {:ok, planned} =
+             TargetRecoveryStore.finalize_plan(%FinalizeTargetRecoveryPlan{
+               workspace_context: fixture.workspace_context,
+               command_id: "recovery:finalize-plan:" <> run.id,
+               operation_id: operation_id,
+               expected_version: intent.version,
+               plan_hash: plan_hash,
+               plan_payload: plan_payload,
+               expected_physical_fingerprint: fingerprint,
                occurred_at: occurred_at
              })
 
     assert planned.state == :planned
 
     assert {:ok, replayed_plan} =
-             TargetRecoveryStore.create_plan(%CreateTargetRecoveryPlan{
+             TargetRecoveryStore.create_intent(%CreateTargetRecoveryIntent{
                workspace_context: fixture.workspace_context,
                command_id: "recovery:plan-replay:" <> run.id,
                operation_id: operation_id <> ":new",
@@ -1485,13 +1553,10 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
                source_manifest_id: fixture.version.manifest_version_id,
                target_generation_id: candidate.generation.target_generation_id,
                materialization_id: materialization_id,
-               plan_hash: String.duplicate("c", 64),
-               plan_payload: %{"expires_at" => "2099-01-02T00:00:00Z"},
                actor_id: "recovery-admin",
                reason: "recover interrupted initial materialization",
                idempotency_key: operation_id,
-               expected_binding_version: candidate.binding.version,
-               expected_physical_fingerprint: fingerprint,
+               expected_binding_version: candidate.binding.version + 1,
                evaluated_at: DateTime.add(occurred_at, 1, :second),
                occurred_at: DateTime.add(occurred_at, 1, :second)
              })
@@ -6487,9 +6552,6 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
 
     assert [%{status: :blocked, error: "upstream_blocked"}] = blocked_compact.attempts
     assert blocked_compact.attempt_counts.failed == 1
-
-    assert compact.root_run.required_runner_release_id ==
-             fixture.version.required_runner_release_id
 
     assert Enum.all?(compact.runs, fn summary ->
              summary.required_runner_release_id == fixture.version.required_runner_release_id

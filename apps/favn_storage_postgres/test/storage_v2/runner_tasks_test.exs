@@ -185,12 +185,15 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
     assert length(bounded) == 256
   end
 
-  test "enqueue is idempotent, validates payload hashes, and updates exact demand", fixture do
+  test "enqueue replays across wall-clock time, validates payload hashes, and updates exact demand",
+       fixture do
     command = enqueue_command(fixture, "enqueue")
+    later_replay = %{command | occurred_at: DateTime.add(command.occurred_at, 5, :second)}
 
     assert {:ok, first} = Store.enqueue(command)
-    assert {:ok, second} = Store.enqueue(command)
+    assert {:ok, second} = Store.enqueue(later_replay)
     assert first == second
+    assert second.enqueued_at == command.occurred_at
     assert first.status == :queued
     assert first.task_kind == :relation_inspection
     assert first.retry_class == :safe_to_retry

@@ -3,6 +3,7 @@ defmodule Favn.Contracts.RunnerTaskTest do
 
   alias Favn.Contracts.GenerationCapabilitiesRequest
   alias Favn.Contracts.GenerationCapabilitiesResult
+  alias Favn.Contracts.GenerationMarkerReadRequest
   alias Favn.Contracts.RunnerError
   alias Favn.Contracts.RunnerTask.Assignment
   alias Favn.Contracts.RunnerTask.NoWork
@@ -48,6 +49,31 @@ defmodule Favn.Contracts.RunnerTaskTest do
              assignment
              |> Map.put(:payload, %{})
              |> Assignment.validate()
+  end
+
+  test "generation marker read policy survives durable payload round trips" do
+    request = %GenerationMarkerReadRequest{
+      manifest: %Version{},
+      asset_ref: {MyApp.Asset, :asset},
+      require_relation_instance?: false
+    }
+
+    assert {:ok, encoded, _hash} =
+             Favn.Contracts.RunnerTask.PersistenceCodec.encode_payload(
+               :generation_marker_read,
+               request
+             )
+
+    assert {:ok, ^request} =
+             Favn.Contracts.RunnerTask.PersistenceCodec.decode_payload(
+               :generation_marker_read,
+               encoded
+             )
+
+    assert {:error, {:invalid_generation_marker_read_request, _invalid}} =
+             request
+             |> Map.put(:require_relation_instance?, nil)
+             |> GenerationMarkerReadRequest.validate()
   end
 
   test "control-plane wait instructions are bounded" do

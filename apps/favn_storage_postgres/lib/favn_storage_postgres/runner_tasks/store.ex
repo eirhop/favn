@@ -1395,7 +1395,6 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
       task.required_runner_release_id == command.required_runner_release_id and
       task.required_capability == command.required_capability and
       task.retry_class == Atom.to_string(command.retry_class) and
-      task.enqueued_at == command.occurred_at and
       task.deadline_at == command.deadline_at and
       task.payload_version == 13 and
       task.payload_hash == command.payload_hash and
@@ -1670,6 +1669,13 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
           end
       end
     end)
+  end
+
+  defp command_hash(%C.EnqueueRunnerTask{} = command) do
+    command
+    |> Map.put(:occurred_at, nil)
+    |> :erlang.term_to_binary([:deterministic])
+    |> then(&:crypto.hash(:sha256, &1))
   end
 
   defp command_hash(command),

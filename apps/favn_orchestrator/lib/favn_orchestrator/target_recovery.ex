@@ -7,11 +7,16 @@ defmodule FavnOrchestrator.TargetRecovery do
   exact generation marker before restoring the active binding.
   """
 
+  alias Favn.Contracts.GenerationCapabilitiesRequest
+  alias Favn.Contracts.GenerationCapabilitiesResult
   alias Favn.Contracts.GenerationMarker
+  alias Favn.Contracts.GenerationMarkerReadRequest
+  alias Favn.Contracts.GenerationMarkerReadResult
   alias Favn.Contracts.RelationInspectionRequest
   alias Favn.Contracts.RelationInspectionResult
   alias Favn.Manifest.Asset
   alias Favn.Manifest.TargetDescriptor
+  alias Favn.Manifest.Version
   alias Favn.RelationRef
   alias Favn.SQL.Contract
   alias Favn.TargetCompatibility
@@ -23,7 +28,9 @@ defmodule FavnOrchestrator.TargetRecovery do
   alias FavnOrchestrator.Persistence.Commands.AcquireTargetOperationLocks
   alias FavnOrchestrator.Persistence.Commands.ActivateRecoveredTargetGeneration
   alias FavnOrchestrator.Persistence.Commands.BeginTargetRecovery
-  alias FavnOrchestrator.Persistence.Commands.CreateTargetRecoveryPlan
+  alias FavnOrchestrator.Persistence.Commands.CreateTargetRecoveryIntent
+  alias FavnOrchestrator.Persistence.Commands.FailTargetRecovery
+  alias FavnOrchestrator.Persistence.Commands.FinalizeTargetRecoveryPlan
   alias FavnOrchestrator.Persistence.Commands.MarkTargetRecoveryUnknown
   alias FavnOrchestrator.Persistence.Commands.ReleaseTargetOperationLocks
   alias FavnOrchestrator.Persistence.Error
@@ -34,9 +41,9 @@ defmodule FavnOrchestrator.TargetRecovery do
   alias FavnOrchestrator.Persistence.Results.TargetRecoveryOperation
   alias FavnOrchestrator.Persistence.SystemContext
   alias FavnOrchestrator.Persistence.WorkspaceContext
-  alias FavnOrchestrator.RunnerDispatch
-  alias FavnOrchestrator.RunnerReleaseCompatibility
-  alias FavnOrchestrator.RuntimeConfig
+  alias FavnOrchestrator.OperationRunnerTasks
+  alias FavnOrchestrator.RunnerIdentityVerifier
+  alias FavnOrchestrator.Storage.JsonSafe
   alias FavnOrchestrator.TargetRecovery.Plan
 
   @plan_ttl_seconds 3_600
@@ -53,33 +60,30 @@ defmodule FavnOrchestrator.TargetRecovery do
          :ok <- validate_plan_options(opts),
          evaluated_at <- Keyword.get(opts, :evaluated_at, DateTime.utc_now()),
          :ok <- validate_datetime(evaluated_at),
-         {:ok, evidence} <- recovery_evidence(context, target_id),
          operation_id <- Keyword.get(opts, :operation_id, recovery_id()),
-         expires_at <- DateTime.add(evaluated_at, @plan_ttl_seconds, :second),
-         plan <- build_plan(operation_id, expires_at, evaluated_at, evidence),
-         {:ok, operation} <-
-           store().create_plan(%CreateTargetRecoveryPlan{
+         {:ok, durable} <- recovery_context(context, target_id),
+         {:ok, intent} <-
+           store().create_intent(%CreateTargetRecoveryIntent{
              workspace_context: context,
              command_id: command_id("plan", operation_id),
              operation_id: operation_id,
              target_id: target_id,
              recovery_kind: :reconcile_initial_generation,
-             desired_manifest_id: evidence.version.manifest_version_id,
-             source_manifest_id: evidence.candidate.generation.creating_manifest_id,
-             target_generation_id: evidence.candidate.generation.target_generation_id,
-             materialization_id: evidence.candidate.materialization_id,
-             plan_hash: plan.plan_hash,
-             plan_payload: plan.payload,
+             desired_manifest_id: durable.version.manifest_version_id,
+             source_manifest_id: durable.candidate.generation.creating_manifest_id,
+             target_generation_id: durable.candidate.generation.target_generation_id,
+             materialization_id: durable.candidate.materialization_id,
              actor_id: context.principal_id,
              session_id: Keyword.get(opts, :session_id),
              reason: reason,
              idempotency_key: Keyword.get(opts, :idempotency_key, operation_id),
-             expected_binding_version: evidence.candidate.binding.version,
-             expected_physical_fingerprint: evidence.physical.fingerprint,
+             expected_binding_version: durable.candidate.binding.version,
              evaluated_at: evaluated_at,
              occurred_at: Keyword.get(opts, :occurred_at, evaluated_at)
-           }) do
-      {:ok, persisted_plan(plan, operation)}
+           }),
+         {:ok, plan} <-
+           resume_planning(context, intent, durable, opts) do
+      {:ok, plan}
     end
   end
 
@@ -97,7 +101,12 @@ defmodule FavnOrchestrator.TargetRecovery do
 
   defp start_operation(context, operation, plan_hash, opts) do
     with :ok <- ensure_startable(operation, plan_hash),
-         {:ok, evidence} <- recovery_evidence(context, operation.target_id),
+         {:ok, evidence} <-
+           current_recovery_evidence(
+             context,
+             operation.target_id,
+             {:start, operation.operation_id, operation.version}
+           ),
          :ok <- revalidate_operation(operation, evidence),
          {:ok, [lock]} <- acquire_lock(context, operation, opts),
          {:ok, begun} <- begin_recovery_with_release(context, operation, lock, opts) do
@@ -128,8 +137,15 @@ defmodule FavnOrchestrator.TargetRecovery do
        do: {:ok, %{operation | idempotency_replay?: true}}
 
   defp reconcile_operation(context, operation, opts) do
+    occurred_at = Keyword.get(opts, :occurred_at, DateTime.utc_now())
+
     with :ok <- ensure_reconcilable(operation),
-         {:ok, evidence} <- recovery_evidence(context, operation.target_id),
+         {:ok, evidence} <-
+           current_recovery_evidence(
+             context,
+             operation.target_id,
+             {:reconcile, operation.operation_id, operation.version, occurred_at}
+           ),
          :ok <- revalidate_operation(operation, evidence),
          {:ok, [lock]} <- acquire_lock(context, operation, opts) do
       reconcile_marker(context, operation, evidence, lock, opts)
@@ -148,7 +164,7 @@ defmodule FavnOrchestrator.TargetRecovery do
     end
   end
 
-  defp recovery_evidence(context, target_id) do
+  defp recovery_context(context, target_id) do
     with {:ok, candidate} <-
            store().get_initial_candidate(%GetInitialTargetRecoveryCandidate{
              workspace_context: context,
@@ -159,23 +175,182 @@ defmodule FavnOrchestrator.TargetRecovery do
          {:ok, source_descriptor} <- source_descriptor(candidate),
          :ok <- source_generation_matches(candidate, source_descriptor),
          :ok <- recoverable_contract(asset, source_descriptor),
-         :ok <- same_physical_relation(asset, candidate),
-         :ok <- required_capabilities(version, asset),
-         {:ok, physical, relation_instance_id} <- inspect_physical(version, asset.relation),
-         :ok <- source_physical_identity(source_descriptor, target_contract(asset), physical),
-         {:ok, marker} <-
-           existing_marker(version, asset, candidate.generation, relation_instance_id) do
+         :ok <- same_physical_relation(asset, candidate) do
       {:ok,
        %{
          runtime: runtime,
          version: version,
          asset: asset,
          candidate: candidate,
-         source_descriptor: source_descriptor,
+         source_descriptor: source_descriptor
+       }}
+    end
+  end
+
+  defp current_recovery_evidence(context, target_id, task_scope) do
+    with {:ok, durable} <- recovery_context(context, target_id) do
+      case collect_runner_evidence(context, durable, task_scope) do
+        {:error, {:terminal_target_recovery_evidence, reason}} -> {:error, reason}
+        result -> result
+      end
+    end
+  end
+
+  defp collect_runner_evidence(context, durable, task_scope) do
+    with :ok <- required_capabilities(context, durable.version, durable.asset, task_scope),
+         {:ok, physical, relation_instance_id} <-
+           inspect_physical(
+             context,
+             durable.version,
+             durable.asset,
+             durable.asset.relation,
+             task_scope
+           ),
+         :ok <-
+           source_physical_identity(
+             durable.source_descriptor,
+             target_contract(durable.asset),
+             physical
+           ),
+         {:ok, marker} <-
+           existing_marker(
+             context,
+             durable.version,
+             durable.asset,
+             durable.candidate.generation,
+             relation_instance_id,
+             task_scope
+           ) do
+      {:ok,
+       Map.merge(durable, %{
          physical: physical,
          relation_instance_id: relation_instance_id,
-         marker: marker
-       }}
+         marker: marker,
+         task_scope: task_scope
+       })}
+    end
+  end
+
+  defp resume_planning(
+         context,
+         %TargetRecoveryOperation{state: :planning} = intent,
+         durable,
+         opts
+       ) do
+    case revalidate_intent(intent, durable) do
+      :ok -> complete_plan(context, intent, durable, opts)
+      {:error, reason} -> persist_terminal_planning_failure(context, intent, reason, opts)
+    end
+  end
+
+  defp resume_planning(context, operation, durable, opts),
+    do: complete_plan(context, operation, durable, opts)
+
+  defp complete_plan(context, %TargetRecoveryOperation{state: :planning} = intent, durable, opts) do
+    task_scope = {:plan, intent.operation_id, intent.evaluated_at}
+
+    case collect_runner_evidence(context, durable, task_scope) do
+      {:ok, evidence} ->
+        expires_at = DateTime.add(intent.evaluated_at, @plan_ttl_seconds, :second)
+        plan = build_plan(intent.operation_id, expires_at, intent.evaluated_at, evidence)
+
+        with {:ok, operation} <-
+               store().finalize_plan(%FinalizeTargetRecoveryPlan{
+                 workspace_context: context,
+                 command_id: command_id("finalize-plan", intent.operation_id),
+                 operation_id: intent.operation_id,
+                 expected_version: intent.version,
+                 plan_hash: plan.plan_hash,
+                 plan_payload: plan.payload,
+                 expected_physical_fingerprint: evidence.physical.fingerprint,
+                 occurred_at: Keyword.get(opts, :occurred_at, intent.evaluated_at)
+               }) do
+          {:ok, persisted_plan(plan, operation)}
+        end
+
+      {:error, {:terminal_target_recovery_evidence, reason}} ->
+        persist_planning_failure(context, intent, reason, opts)
+
+      {:error, reason} ->
+        persist_terminal_planning_failure(context, intent, reason, opts)
+    end
+  end
+
+  defp complete_plan(
+         _context,
+         %TargetRecoveryOperation{plan_hash: plan_hash} = operation,
+         _durable,
+         _opts
+       )
+       when is_binary(plan_hash),
+       do: {:ok, persisted_plan(operation)}
+
+  defp complete_plan(_context, _operation, _durable, _opts),
+    do: {:error, Error.new(:conflict, "target recovery plan cannot be resumed")}
+
+  defp persist_terminal_planning_failure(
+         context,
+         %TargetRecoveryOperation{state: :planning} = intent,
+         reason,
+         opts
+       ) do
+    if terminal_planning_failure?(reason) do
+      persist_planning_failure(context, intent, reason, opts)
+    else
+      {:error, reason}
+    end
+  end
+
+  defp persist_planning_failure(
+         context,
+         %TargetRecoveryOperation{state: :planning} = intent,
+         reason,
+         opts
+       ) do
+    command = %FailTargetRecovery{
+      workspace_context: context,
+      command_id: command_id("fail-plan", intent.operation_id),
+      operation_id: intent.operation_id,
+      expected_version: intent.version,
+      terminal_error: JsonSafe.error(reason),
+      occurred_at: Keyword.get(opts, :occurred_at, intent.evaluated_at)
+    }
+
+    case store().fail_recovery(command) do
+      {:ok, _failed} ->
+        {:error, reason}
+
+      {:error, persist_reason} ->
+        {:error,
+         Error.new(:internal, "failed to persist terminal target recovery planning error",
+           retryable?: true,
+           details: %{
+             reason_code: "target_recovery_planning_failure_not_persisted",
+             persistence_error: inspect_reason(persist_reason)
+           }
+         )}
+    end
+  end
+
+  defp terminal_planning_failure?(%Error{retryable?: false}), do: true
+
+  defp terminal_planning_failure?({:unsupported_runner_task_kind, _task_kind}), do: true
+  defp terminal_planning_failure?({:runner_task_release_mismatch, _expected, _actual}), do: true
+  defp terminal_planning_failure?({:invalid_runner_task_binding, _binding}), do: true
+  defp terminal_planning_failure?(_reason), do: false
+
+  defp revalidate_intent(operation, durable) do
+    candidate = durable.candidate
+
+    if operation.target_id == candidate.binding.target_id and
+         operation.desired_manifest_id == durable.version.manifest_version_id and
+         operation.source_manifest_id == candidate.generation.creating_manifest_id and
+         operation.target_generation_id == candidate.generation.target_generation_id and
+         operation.materialization_id == candidate.materialization_id and
+         operation.expected_binding_version == candidate.binding.version do
+      :ok
+    else
+      {:error, stale_error()}
     end
   end
 
@@ -273,60 +448,78 @@ defmodule FavnOrchestrator.TargetRecovery do
     end
   end
 
-  defp required_capabilities(version, asset) do
-    runtime = RuntimeConfig.current()
+  defp required_capabilities(context, version, asset, task_scope) do
+    request = %GenerationCapabilitiesRequest{
+      manifest: Version.identity(version),
+      asset_ref: asset.ref
+    }
 
-    case RunnerDispatch.generation_capabilities(
-           runtime.runner_client,
+    case OperationRunnerTasks.ensure_and_await(
+           context,
            version,
            asset.ref,
-           runtime.runner_client_opts
+           :generation_capabilities,
+           request,
+           {:target_recovery_capabilities, task_scope}
          ) do
-      {:ok, capabilities} when is_map(capabilities) ->
+      {:ok, %GenerationCapabilitiesResult{capabilities: capabilities}} ->
         missing =
           Enum.reject(@required_capabilities, &(Map.get(capabilities, &1) == :supported))
 
         if missing == [] do
           :ok
         else
-          {:error,
-           Error.new(:conflict, "target adapter cannot safely reconcile ownership",
-             details: %{
-               reason_code: "target_recovery_not_supported",
-               missing_capabilities: missing
-             }
-           )}
+          terminal_evidence_error(
+            Error.new(:conflict, "target adapter cannot safely reconcile ownership",
+              details: %{
+                reason_code: "target_recovery_not_supported",
+                missing_capabilities: missing
+              }
+            )
+          )
         end
 
       {:error, _reason} = error ->
         error
 
       _invalid ->
-        {:error, :invalid_generation_capabilities}
+        terminal_evidence_error(:invalid_generation_capabilities)
     end
   end
 
-  defp inspect_physical(version, relation) do
-    runtime = RuntimeConfig.current()
+  defp inspect_physical(context, version, asset, relation, task_scope) do
+    {:ok, binding} = OperationRunnerTasks.binding(version, asset)
 
     request = %RelationInspectionRequest{
       manifest_version_id: version.manifest_version_id,
       manifest_content_hash: version.content_hash,
-      required_runner_release_id: version.required_runner_release_id,
+      required_runner_release_id: binding.required_runner_release_id,
       relation: RelationRef.new!(relation),
       include: [:relation, :columns, :table_metadata],
       sample_limit: 0
     }
 
-    with {:ok, %RelationInspectionResult{} = result} <-
-           RunnerDispatch.inspect_relation(
-             runtime.runner_client,
-             request,
-             runtime.runner_client_opts
-           ),
-         :ok <-
-           RunnerReleaseCompatibility.verify_inspection_result(
-             version.required_runner_release_id,
+    case OperationRunnerTasks.ensure_and_await(
+           context,
+           version,
+           asset.ref,
+           :relation_inspection,
+           request,
+           {:target_recovery_inspection, task_scope},
+           runner_binding: binding
+         ) do
+      {:ok, result} -> validate_physical_inspection(binding, result)
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp validate_physical_inspection(
+         binding,
+         %RelationInspectionResult{} = result
+       ) do
+    with :ok <-
+           RunnerIdentityVerifier.verify_inspection_result(
+             binding.required_runner_release_id,
              result
            ),
          {:ok, %PhysicalFingerprint{} = physical} <-
@@ -335,28 +528,31 @@ defmodule FavnOrchestrator.TargetRecovery do
            field(result.table_metadata, :relation_instance_id) do
       {:ok, physical, relation_instance_id}
     else
-      {:ok, :not_found} ->
-        {:error,
-         Error.new(:conflict, "interrupted target relation no longer exists",
-           details: %{reason_code: "target_recovery_relation_missing"}
-         )}
-
       nil ->
-        {:error,
-         Error.new(:conflict, "physical relation has no durable Favn instance identity",
-           details: %{reason_code: "target_recovery_relation_identity_missing"}
-         )}
+        terminal_evidence_error(
+          Error.new(:conflict, "physical relation has no durable Favn instance identity",
+            details: %{reason_code: "target_recovery_relation_identity_missing"}
+          )
+        )
 
-      {:ok, _invalid} ->
-        {:error, :invalid_runner_inspection_result}
-
-      {:error, _reason} = error ->
-        error
+      {:error, reason} ->
+        terminal_evidence_error(reason)
 
       _invalid ->
-        {:error, :invalid_runner_inspection_result}
+        terminal_evidence_error(:invalid_runner_inspection_result)
     end
   end
+
+  defp validate_physical_inspection(_binding, :not_found) do
+    terminal_evidence_error(
+      Error.new(:conflict, "interrupted target relation no longer exists",
+        details: %{reason_code: "target_recovery_relation_missing"}
+      )
+    )
+  end
+
+  defp validate_physical_inspection(_binding, _invalid),
+    do: terminal_evidence_error(:invalid_runner_inspection_result)
 
   defp source_physical_identity(descriptor, contract, physical) do
     case PhysicalFingerprint.identity_diff(descriptor, physical, contract) do
@@ -492,7 +688,7 @@ defmodule FavnOrchestrator.TargetRecovery do
   end
 
   defp reconcile_marker(context, operation, evidence, lock, opts) do
-    case read_marker(evidence) do
+    case read_marker(context, evidence) do
       {:ok, %GenerationMarker{} = marker} ->
         if marker_identity(marker) == marker_identity(evidence.marker) do
           activate(context, operation, evidence, lock, marker, opts)
@@ -543,27 +739,43 @@ defmodule FavnOrchestrator.TargetRecovery do
     {:ok, operation}
   end
 
-  defp read_marker(evidence) do
-    runtime = RuntimeConfig.current()
+  defp read_marker(context, evidence) do
+    request = %GenerationMarkerReadRequest{
+      manifest: Version.identity(evidence.version),
+      asset_ref: evidence.asset.ref,
+      require_relation_instance?: true
+    }
 
-    RunnerDispatch.generation_marker(
-      runtime.runner_client,
-      evidence.version,
-      evidence.asset.ref,
-      Keyword.put(runtime.runner_client_opts, :require_relation_instance?, true)
-    )
+    case OperationRunnerTasks.ensure_and_await(
+           context,
+           evidence.version,
+           evidence.asset.ref,
+           :generation_marker_read,
+           request,
+           {:target_recovery_reconcile_marker, evidence.task_scope}
+         ) do
+      {:ok, %GenerationMarkerReadResult{marker: marker}} -> {:ok, marker}
+      {:ok, _invalid} -> {:error, :invalid_generation_marker_read_result}
+      {:error, _reason} = error -> error
+    end
   end
 
-  defp existing_marker(version, asset, generation, relation_instance_id) do
-    runtime = RuntimeConfig.current()
+  defp existing_marker(context, version, asset, generation, relation_instance_id, task_scope) do
+    request = %GenerationMarkerReadRequest{
+      manifest: Version.identity(version),
+      asset_ref: asset.ref,
+      require_relation_instance?: true
+    }
 
-    case RunnerDispatch.generation_marker(
-           runtime.runner_client,
+    case OperationRunnerTasks.ensure_and_await(
+           context,
            version,
            asset.ref,
-           Keyword.put(runtime.runner_client_opts, :require_relation_instance?, true)
+           :generation_marker_read,
+           request,
+           {:target_recovery_evidence_marker, task_scope}
          ) do
-      {:ok, %GenerationMarker{} = marker} ->
+      {:ok, %GenerationMarkerReadResult{marker: %GenerationMarker{} = marker}} ->
         expected = {
           generation.target_id,
           RelationRef.new!(asset.relation),
@@ -579,17 +791,26 @@ defmodule FavnOrchestrator.TargetRecovery do
                  TargetGenerationRelation.instance_id(marker.activation_token) do
           {:ok, marker}
         else
-          _invalid -> marker_conflict("target_recovery_marker_mismatch")
+          _invalid -> terminal_marker_conflict("target_recovery_marker_mismatch")
         end
 
-      {:ok, nil} ->
-        marker_conflict("target_recovery_marker_missing")
+      {:ok, %GenerationMarkerReadResult{marker: nil}} ->
+        terminal_marker_conflict("target_recovery_marker_missing")
+
+      {:ok, %GenerationMarkerReadResult{}} ->
+        terminal_marker_conflict("target_recovery_marker_invalid")
 
       {:ok, _invalid} ->
-        marker_conflict("target_recovery_marker_invalid")
+        terminal_marker_conflict("target_recovery_marker_invalid")
 
       {:error, _reason} = error ->
         error
+    end
+  end
+
+  defp terminal_marker_conflict(reason_code) do
+    case marker_conflict(reason_code) do
+      {:error, reason} -> terminal_evidence_error(reason)
     end
   end
 
@@ -599,6 +820,9 @@ defmodule FavnOrchestrator.TargetRecovery do
        details: %{reason_code: reason_code}
      )}
   end
+
+  defp terminal_evidence_error(reason),
+    do: {:error, {:terminal_target_recovery_evidence, reason}}
 
   defp activate(context, operation, evidence, lock, marker, opts) do
     physical = evidence.physical
@@ -736,6 +960,10 @@ defmodule FavnOrchestrator.TargetRecovery do
   defp persisted_plan(plan, %{idempotency_replay?: false}), do: plan
 
   defp persisted_plan(_plan, %TargetRecoveryOperation{} = operation) do
+    persisted_plan(operation)
+  end
+
+  defp persisted_plan(%TargetRecoveryOperation{} = operation) do
     %Plan{
       plan_id: operation.operation_id,
       plan_hash: operation.plan_hash,

@@ -12,8 +12,8 @@ defmodule FavnOrchestrator.Persistence.Queries.GetInitialTargetRecoveryCandidate
         }
 end
 
-defmodule FavnOrchestrator.Persistence.Commands.CreateTargetRecoveryPlan do
-  @moduledoc "Persists one immutable evidence-backed target-recovery plan."
+defmodule FavnOrchestrator.Persistence.Commands.CreateTargetRecoveryIntent do
+  @moduledoc "Persists recovery planning intent before any runner evidence task is created."
 
   alias FavnOrchestrator.Persistence.WorkspaceContext
 
@@ -27,13 +27,10 @@ defmodule FavnOrchestrator.Persistence.Commands.CreateTargetRecoveryPlan do
     :source_manifest_id,
     :target_generation_id,
     :materialization_id,
-    :plan_hash,
-    :plan_payload,
     :actor_id,
     :reason,
     :idempotency_key,
     :expected_binding_version,
-    :expected_physical_fingerprint,
     :evaluated_at,
     :occurred_at
   ]
@@ -49,15 +46,41 @@ defmodule FavnOrchestrator.Persistence.Commands.CreateTargetRecoveryPlan do
           source_manifest_id: String.t(),
           target_generation_id: String.t(),
           materialization_id: String.t(),
-          plan_hash: String.t(),
-          plan_payload: map(),
           actor_id: String.t(),
           session_id: String.t() | nil,
           reason: String.t(),
           idempotency_key: String.t(),
           expected_binding_version: pos_integer(),
-          expected_physical_fingerprint: String.t(),
           evaluated_at: DateTime.t(),
+          occurred_at: DateTime.t()
+        }
+end
+
+defmodule FavnOrchestrator.Persistence.Commands.FinalizeTargetRecoveryPlan do
+  @moduledoc "Finalizes one planning intent with immutable runner-backed evidence."
+
+  alias FavnOrchestrator.Persistence.WorkspaceContext
+
+  @enforce_keys [
+    :workspace_context,
+    :command_id,
+    :operation_id,
+    :expected_version,
+    :plan_hash,
+    :plan_payload,
+    :expected_physical_fingerprint,
+    :occurred_at
+  ]
+  defstruct @enforce_keys
+
+  @type t :: %__MODULE__{
+          workspace_context: WorkspaceContext.t(),
+          command_id: String.t(),
+          operation_id: String.t(),
+          expected_version: pos_integer(),
+          plan_hash: String.t(),
+          plan_payload: map(),
+          expected_physical_fingerprint: String.t(),
           occurred_at: DateTime.t()
         }
 end
@@ -173,7 +196,7 @@ defmodule FavnOrchestrator.Persistence.Commands.MarkTargetRecoveryUnknown do
 end
 
 defmodule FavnOrchestrator.Persistence.Commands.FailTargetRecovery do
-  @moduledoc "Persists a conclusive target-recovery failure."
+  @moduledoc "Persists a conclusive target-recovery planning or application failure."
 
   alias FavnOrchestrator.Persistence.WorkspaceContext
 
@@ -267,8 +290,8 @@ defmodule FavnOrchestrator.Persistence.Results.TargetRecoveryOperation do
                 idempotency_replay?: false
               ]
 
-  @type state :: :planned | :applying | :outcome_unknown | :succeeded | :failed
-  @type phase :: :planned | :marker_intent | :reconciling | :terminal
+  @type state :: :planning | :planned | :applying | :outcome_unknown | :succeeded | :failed
+  @type phase :: :collecting_evidence | :planned | :marker_intent | :reconciling | :terminal
 
   @type t :: %__MODULE__{
           workspace_id: String.t(),
@@ -279,7 +302,7 @@ defmodule FavnOrchestrator.Persistence.Results.TargetRecoveryOperation do
           source_manifest_id: String.t(),
           target_generation_id: String.t(),
           materialization_id: String.t(),
-          plan_hash: String.t(),
+          plan_hash: String.t() | nil,
           plan_version: pos_integer(),
           plan_payload: map(),
           state: state(),
@@ -289,7 +312,7 @@ defmodule FavnOrchestrator.Persistence.Results.TargetRecoveryOperation do
           reason: String.t(),
           idempotency_key: String.t(),
           expected_binding_version: pos_integer(),
-          expected_physical_fingerprint: String.t(),
+          expected_physical_fingerprint: String.t() | nil,
           evaluated_at: DateTime.t(),
           recovery_token: String.t() | nil,
           result_marker: map() | nil,

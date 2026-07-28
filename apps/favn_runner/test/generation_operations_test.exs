@@ -9,6 +9,8 @@ defmodule FavnRunner.GenerationOperationsTest do
   alias Favn.Contracts.GenerationActivationResult
   alias Favn.Contracts.GenerationDiscardRequest
   alias Favn.Contracts.GenerationDiscardResult
+  alias Favn.Contracts.GenerationMarkerReadRequest
+  alias Favn.Contracts.GenerationMarkerReadResult
   alias Favn.Contracts.GenerationMarkerInitializationRequest
   alias Favn.Contracts.GenerationMarkerInitializationResult
   alias Favn.Contracts.GenerationReconciliationRequest
@@ -393,6 +395,39 @@ defmodule FavnRunner.GenerationOperationsTest do
                     }}
 
     assert capabilities.atomic_swap == :supported
+  end
+
+  test "durable marker reads preserve the managed-rebuild relation policy" do
+    {version, asset} = registered_target()
+    initialization = initialization_request(version, asset)
+    assert {:ok, _initialized} = FavnRunner.initialize_generation_marker(initialization)
+
+    payload = %GenerationMarkerReadRequest{
+      manifest: %{version | manifest: nil},
+      asset_ref: asset.ref,
+      require_relation_instance?: false
+    }
+
+    assignment = %{
+      generation_assignment(version, payload)
+      | task_id: "rt_generation_marker_read",
+        task_kind: :generation_marker_read,
+        payload: payload
+    }
+
+    assert {:ok, executor} =
+             TaskExecutor.start_link(assignment: assignment, payload: payload, owner: self())
+
+    assert_receive {:runner_task_finished, ^executor,
+                    %Result{
+                      outcome: :succeeded,
+                      result: %GenerationMarkerReadResult{}
+                    }}
+
+    refute Application.fetch_env!(
+             :favn_runner,
+             :generation_operations_test_reconciliation_request
+           ).require_relation_instance?
   end
 
   test "a temporary executor child performs one external operation and is not restarted" do

@@ -202,20 +202,25 @@ Use target recovery only when Favn successfully materialized its initial
 generation but lost the control-plane activation step. Open the blocked asset
 and choose **Recover ownership**, or open `/recoveries`.
 
-Planning is read-only and requires the original Favn-created `building`
-generation, its successful materialization and historical descriptor, the
-current logical relation and contract, a fresh physical fingerprint, and
-the exact pre-existing Favn generation marker bound to that physical table
-instance. An unmarked or unbound table cannot be recovered even when its schema
-looks identical. Tables whose markers predate relation-instance binding are
-deliberately refused. An interrupted initial generation has no active generation,
-so it is not eligible for a normal managed rebuild. The supported non-destructive
-fallback is to restore a coordinated, verified control-plane and data-plane
-backup that contains the matching active binding and bound marker. If no such
-checkpoint exists, preserve the relation and escalate for an audited remediation;
-Favn has no generic in-place command that can prove ownership of that legacy
-table. Never reset only the control-plane database or assert ownership from
-schema alone.
+Planning first persists its control-plane intent, then queues read-only runner
+tasks for the fresh physical fingerprint and exact pre-existing Favn generation
+marker. It also requires the original Favn-created `building` generation, its
+successful materialization and historical descriptor, and the current logical
+relation and contract. An unmarked or unbound table cannot be recovered even
+when its schema looks identical. Tables whose markers predate relation-instance
+binding are deliberately refused. An interrupted initial generation has no
+active generation, so it is not eligible for a normal managed rebuild. The
+planning intent remains resumable across temporary runner unavailability;
+conclusive invalid or stale evidence closes it as a durable failed operation.
+The operator UI retains an opaque attempt identity in the recovery URL so a
+refresh or LiveView restart resumes the same durable intent; the operator reason
+is restored from the operation and is not copied into the URL.
+The supported non-destructive fallback is to restore a coordinated, verified
+control-plane and data-plane backup that contains the matching active binding
+and bound marker. If no such checkpoint exists, preserve the relation and
+escalate for an audited remediation; Favn has no generic in-place command that
+can prove ownership of that legacy table. Never reset only the control-plane
+database or assert ownership from schema alone.
 
 An administrator starts the exact plan id and hash. Favn persists intent, then
 atomically rechecks the operation

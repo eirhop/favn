@@ -32,37 +32,89 @@ defmodule FavnOrchestrator.TargetRecoveryTest do
     def get_deployment_manifest(_query), do: {:ok, Process.get(:recovery_version)}
     def get_manifest(_query), do: {:ok, Process.get(:recovery_version)}
 
-    def create_plan(command) do
-      send(Process.get(:recovery_test_pid), {:create_recovery_plan, command})
+    def create_intent(command) do
+      send(Process.get(:recovery_test_pid), {:create_recovery_intent, command})
 
-      operation =
-        %TargetRecoveryOperation{
-          workspace_id: command.workspace_context.workspace_id,
-          operation_id: command.operation_id,
-          target_id: command.target_id,
-          recovery_kind: command.recovery_kind,
-          desired_manifest_id: command.desired_manifest_id,
-          source_manifest_id: command.source_manifest_id,
-          target_generation_id: command.target_generation_id,
-          materialization_id: command.materialization_id,
-          plan_hash: command.plan_hash,
-          plan_version: 1,
+      case Process.get({:target_recovery_idempotency, command.idempotency_key}) do
+        nil ->
+          operation =
+            %TargetRecoveryOperation{
+              workspace_id: command.workspace_context.workspace_id,
+              operation_id: command.operation_id,
+              target_id: command.target_id,
+              recovery_kind: command.recovery_kind,
+              desired_manifest_id: command.desired_manifest_id,
+              source_manifest_id: command.source_manifest_id,
+              target_generation_id: command.target_generation_id,
+              materialization_id: command.materialization_id,
+              plan_hash: nil,
+              plan_version: 1,
+              plan_payload: %{},
+              state: :planning,
+              phase: :collecting_evidence,
+              actor_id: command.actor_id,
+              reason: command.reason,
+              idempotency_key: command.idempotency_key,
+              expected_binding_version: command.expected_binding_version,
+              expected_physical_fingerprint: nil,
+              evaluated_at: command.evaluated_at,
+              version: 1,
+              inserted_at: command.occurred_at,
+              updated_at: command.occurred_at
+            }
+
+          Process.put({:target_recovery, command.operation_id}, operation)
+
+          Process.put(
+            {:target_recovery_idempotency, command.idempotency_key},
+            command.operation_id
+          )
+
+          Process.put(:latest_recovery_intent, operation)
+          {:ok, operation}
+
+        operation_id ->
+          operation = Process.get({:target_recovery, operation_id})
+          {:ok, %{operation | idempotency_replay?: true}}
+      end
+    end
+
+    def finalize_plan(command) do
+      send(Process.get(:recovery_test_pid), {:finalize_recovery_plan, command})
+      operation = Process.get({:target_recovery, command.operation_id})
+
+      planned = %{
+        operation
+        | plan_hash: command.plan_hash,
           plan_payload: command.plan_payload,
           state: :planned,
           phase: :planned,
-          actor_id: command.actor_id,
-          reason: command.reason,
-          idempotency_key: command.idempotency_key,
-          expected_binding_version: command.expected_binding_version,
           expected_physical_fingerprint: command.expected_physical_fingerprint,
-          evaluated_at: command.evaluated_at,
-          version: 1,
-          inserted_at: command.occurred_at,
+          version: operation.version + 1,
           updated_at: command.occurred_at
-        }
+      }
 
-      Process.put({:target_recovery, command.operation_id}, operation)
-      {:ok, operation}
+      Process.put({:target_recovery, command.operation_id}, planned)
+      {:ok, planned}
+    end
+
+    def fail_recovery(command) do
+      send(Process.get(:recovery_test_pid), {:fail_recovery_plan, command})
+      operation = Process.get({:target_recovery, command.operation_id})
+
+      failed = %{
+        operation
+        | state: :failed,
+          phase: :terminal,
+          terminal_error: command.terminal_error,
+          version: operation.version + 1,
+          completed_at: command.occurred_at,
+          updated_at: command.occurred_at
+      }
+
+      Process.put({:target_recovery, command.operation_id}, failed)
+      Process.put(:latest_recovery_intent, failed)
+      {:ok, failed}
     end
 
     def get(query) do
@@ -166,8 +218,18 @@ defmodule FavnOrchestrator.TargetRecoveryTest do
     end
 
     def inspect_relation(request, _opts) do
-      send(Process.get(:recovery_test_pid), {:inspect_recovery_relation, request})
-      {:ok, Process.get(:recovery_inspection)}
+      case Process.get(:latest_recovery_intent) do
+        %{state: :planning, phase: :collecting_evidence} ->
+          send(Process.get(:recovery_test_pid), {:inspect_recovery_relation, request})
+
+          case Process.get(:recovery_inspection_error) do
+            nil -> {:ok, Process.get(:recovery_inspection)}
+            reason -> {:error, reason}
+          end
+
+        _missing_intent ->
+          {:error, :target_recovery_intent_not_persisted}
+      end
     end
 
     def generation_marker(_version, asset_ref, opts) do
@@ -272,6 +334,7 @@ defmodule FavnOrchestrator.TargetRecoveryTest do
     })
 
     Process.put(:recovery_inspection, inspection(version, asset))
+    Process.put(:recovery_inspection_error, nil)
 
     Process.put(:recovery_marker, %GenerationMarker{
       target_id: target_id,
@@ -316,13 +379,15 @@ defmodule FavnOrchestrator.TargetRecoveryTest do
     assert plan.payload.physical_relation_instance_id ==
              TargetGenerationRelation.instance_id("initial-materialization-token")
 
+    assert_receive {:create_recovery_intent, intent}
+    assert intent.expected_binding_version == 2
     assert_receive {:inspect_recovery_relation, request}
     assert request.relation == fixture.asset.relation
     assert request.sample_limit == 0
     assert_receive {:read_recovery_marker, @ref, true}
 
-    assert_receive {:create_recovery_plan, command}
-    assert command.expected_binding_version == 2
+    assert_receive {:finalize_recovery_plan, command}
+    assert command.expected_version == 1
     assert command.expected_physical_fingerprint == plan.payload.physical_fingerprint
   end
 
@@ -353,7 +418,7 @@ defmodule FavnOrchestrator.TargetRecoveryTest do
              )
 
     refute_receive {:inspect_recovery_relation, _request}
-    refute_receive {:create_recovery_plan, _command}
+    refute_receive {:create_recovery_intent, _command}
   end
 
   test "activates only the exact pre-existing Favn marker", fixture do
@@ -380,7 +445,7 @@ defmodule FavnOrchestrator.TargetRecoveryTest do
     assert operation.state == :succeeded
     assert_receive {:acquire_recovery_lock, %{operation_type: :target_recovery}}
     assert_receive {:activate_recovered_generation, activation}
-    assert activation.expected_operation_version == 2
+    assert activation.expected_operation_version == 3
     assert activation.fencing_token == 4
     assert activation.expected_marker_operation_id == "initial-materialization"
     assert activation.data_plane_marker.activation_token == "initial-materialization-token"
@@ -448,7 +513,11 @@ defmodule FavnOrchestrator.TargetRecoveryTest do
              )
 
     assert_receive {:read_recovery_marker, @ref, true}
-    refute_receive {:create_recovery_plan, _command}
+    assert_receive {:create_recovery_intent, _command}
+    assert_receive {:fail_recovery_plan, failed}
+    assert failed.terminal_error["details"]["reason_code"] == "target_recovery_marker_missing"
+    assert Process.get({:target_recovery, failed.operation_id}).state == :failed
+    refute_receive {:finalize_recovery_plan, _command}
     refute_receive {:initialize_recovery_marker, _request}
   end
 
@@ -468,7 +537,191 @@ defmodule FavnOrchestrator.TargetRecoveryTest do
              )
 
     assert_receive {:inspect_recovery_relation, _request}
-    refute_receive {:create_recovery_plan, _command}
+    assert_receive {:create_recovery_intent, _command}
+    assert_receive {:fail_recovery_plan, failed}
+
+    assert failed.terminal_error["details"]["reason_code"] ==
+             "target_recovery_relation_identity_missing"
+
+    assert Process.get({:target_recovery, failed.operation_id}).state == :failed
+    refute_receive {:finalize_recovery_plan, _command}
+  end
+
+  test "keeps transient runner evidence failures resumable", fixture do
+    Process.put(:recovery_inspection_error, :runner_task_timeout)
+    operation_id = "target-recovery-transient-runner"
+
+    assert {:error, _reason} =
+             TargetRecovery.plan(
+               fixture.context,
+               fixture.target_id,
+               "recover after transient runner failure",
+               operation_id: operation_id,
+               idempotency_key: operation_id
+             )
+
+    assert_receive {:create_recovery_intent, _command}
+    refute_receive {:fail_recovery_plan, _command}
+    assert Process.get({:target_recovery, operation_id}).state == :planning
+  end
+
+  test "terminally fails a resumed planning intent when durable evidence drifts", fixture do
+    operation_id = "target-recovery-stale-resume"
+    Process.put(:recovery_inspection_error, :runner_task_timeout)
+
+    assert {:error, _reason} =
+             TargetRecovery.plan(
+               fixture.context,
+               fixture.target_id,
+               "resume stale planning intent",
+               operation_id: operation_id,
+               idempotency_key: operation_id
+             )
+
+    candidate = Process.get(:recovery_candidate)
+
+    Process.put(:recovery_candidate, %{
+      candidate
+      | binding: %{candidate.binding | version: candidate.binding.version + 1}
+    })
+
+    Process.put(:recovery_inspection_error, nil)
+
+    assert {:error, %{kind: :conflict, details: %{reason_code: "target_recovery_plan_stale"}}} =
+             TargetRecovery.plan(
+               fixture.context,
+               fixture.target_id,
+               "resume stale planning intent",
+               operation_id: operation_id <> ":ignored",
+               idempotency_key: operation_id
+             )
+
+    assert_receive {:fail_recovery_plan, failed}
+    assert Process.get({:target_recovery, failed.operation_id}).state == :failed
+  end
+
+  test "fails planning when succeeded inspection evidence has the wrong release", fixture do
+    actual_release_id = "rr_" <> String.duplicate("b", 64)
+    inspection = Process.get(:recovery_inspection)
+
+    Process.put(
+      :recovery_inspection,
+      %{inspection | required_runner_release_id: actual_release_id}
+    )
+
+    assert {:error, {:runner_release_mismatch, _expected, ^actual_release_id}} =
+             TargetRecovery.plan(
+               fixture.context,
+               fixture.target_id,
+               "reject mismatched runner evidence",
+               operation_id: "target-recovery-release-mismatch"
+             )
+
+    assert_receive {:fail_recovery_plan, failed}
+    assert Process.get({:target_recovery, failed.operation_id}).state == :failed
+    refute_receive {:finalize_recovery_plan, _command}
+  end
+
+  test "start preserves the public semantic evidence error shape", fixture do
+    operation_id = "target-recovery-start-evidence-error"
+
+    assert {:ok, plan} =
+             TargetRecovery.plan(
+               fixture.context,
+               fixture.target_id,
+               "plan before evidence changes",
+               operation_id: operation_id
+             )
+
+    actual_release_id = "rr_" <> String.duplicate("b", 64)
+    inspection = Process.get(:recovery_inspection)
+
+    Process.put(
+      :recovery_inspection,
+      %{inspection | required_runner_release_id: actual_release_id}
+    )
+
+    assert {:error, {:runner_release_mismatch, _expected, ^actual_release_id}} =
+             TargetRecovery.start(
+               fixture.context,
+               operation_id,
+               plan.plan_hash
+             )
+
+    refute_receive {:acquire_recovery_lock, _command}
+    assert Process.get({:target_recovery, operation_id}).state == :planned
+  end
+
+  test "reconcile preserves the public semantic evidence error shape", fixture do
+    operation_id = "target-recovery-reconcile-evidence-error"
+
+    assert {:ok, _plan} =
+             TargetRecovery.plan(
+               fixture.context,
+               fixture.target_id,
+               "plan before reconciliation evidence changes",
+               operation_id: operation_id
+             )
+
+    operation = Process.get({:target_recovery, operation_id})
+
+    Process.put(
+      {:target_recovery, operation_id},
+      %{
+        operation
+        | state: :outcome_unknown,
+          phase: :reconciling,
+          recovery_token: "persisted-recovery-token",
+          version: operation.version + 1
+      }
+    )
+
+    inspection = Process.get(:recovery_inspection)
+    Process.put(:recovery_inspection, %{inspection | table_metadata: %{}})
+
+    assert {:error,
+            %{
+              kind: :conflict,
+              details: %{reason_code: "target_recovery_relation_identity_missing"}
+            }} =
+             TargetRecovery.reconcile(fixture.context, operation_id)
+
+    refute_receive {:acquire_recovery_lock, _command}
+    assert Process.get({:target_recovery, operation_id}).state == :outcome_unknown
+  end
+
+  test "replays an immutable plan without failing it after later binding drift", fixture do
+    operation_id = "target-recovery-frozen-plan-replay"
+
+    assert {:ok, plan} =
+             TargetRecovery.plan(
+               fixture.context,
+               fixture.target_id,
+               "freeze recovery evidence",
+               operation_id: operation_id,
+               idempotency_key: operation_id
+             )
+
+    candidate = Process.get(:recovery_candidate)
+
+    Process.put(:recovery_candidate, %{
+      candidate
+      | binding: %{candidate.binding | version: candidate.binding.version + 1}
+    })
+
+    assert {:ok, replayed} =
+             TargetRecovery.plan(
+               fixture.context,
+               fixture.target_id,
+               "freeze recovery evidence",
+               operation_id: operation_id <> ":ignored",
+               idempotency_key: operation_id
+             )
+
+    assert replayed.plan_hash == plan.plan_hash
+    assert replayed.idempotency_replay?
+    refute_receive {:fail_recovery_plan, _command}
+    assert Process.get({:target_recovery, operation_id}).state == :planned
   end
 
   defp version do

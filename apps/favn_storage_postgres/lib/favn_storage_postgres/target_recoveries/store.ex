@@ -10,8 +10,9 @@ defmodule FavnStoragePostgres.TargetRecoveries.Store do
   alias Favn.TargetGenerationRelation
   alias FavnOrchestrator.Persistence.Commands.ActivateRecoveredTargetGeneration
   alias FavnOrchestrator.Persistence.Commands.BeginTargetRecovery
-  alias FavnOrchestrator.Persistence.Commands.CreateTargetRecoveryPlan
+  alias FavnOrchestrator.Persistence.Commands.CreateTargetRecoveryIntent
   alias FavnOrchestrator.Persistence.Commands.FailTargetRecovery
+  alias FavnOrchestrator.Persistence.Commands.FinalizeTargetRecoveryPlan
   alias FavnOrchestrator.Persistence.Commands.MarkTargetRecoveryUnknown
   alias FavnOrchestrator.Persistence.Error
   alias FavnOrchestrator.Persistence.Queries.GetInitialTargetRecoveryCandidate
@@ -37,9 +38,16 @@ defmodule FavnStoragePostgres.TargetRecoveries.Store do
   end
 
   @impl true
-  def create_plan(%CreateTargetRecoveryPlan{} = command) do
-    with :ok <- validate_create(command) do
-      transaction(fn -> create_plan!(command) end)
+  def create_intent(%CreateTargetRecoveryIntent{} = command) do
+    with :ok <- validate_intent(command) do
+      transaction(fn -> create_intent!(command) end)
+    end
+  end
+
+  @impl true
+  def finalize_plan(%FinalizeTargetRecoveryPlan{} = command) do
+    with :ok <- validate_finalize(command) do
+      transaction(fn -> finalize_plan!(command) end)
     end
   end
 
@@ -143,7 +151,7 @@ defmodule FavnStoragePostgres.TargetRecoveries.Store do
     end
   end
 
-  defp create_plan!(command) do
+  defp create_intent!(command) do
     workspace_id = command.workspace_context.workspace_id
 
     existing =
@@ -178,17 +186,17 @@ defmodule FavnStoragePostgres.TargetRecoveries.Store do
           source_manifest_id: command.source_manifest_id,
           target_generation_id: command.target_generation_id,
           materialization_id: command.materialization_id,
-          plan_hash: command.plan_hash,
+          plan_hash: nil,
           plan_version: 1,
-          plan_payload: command.plan_payload,
-          state: "planned",
-          phase: "planned",
+          plan_payload: %{},
+          state: "planning",
+          phase: "collecting_evidence",
           actor_id: command.actor_id,
           session_id: command.session_id,
           reason: command.reason,
           idempotency_key: command.idempotency_key,
           expected_binding_version: command.expected_binding_version,
-          expected_physical_fingerprint: command.expected_physical_fingerprint,
+          expected_physical_fingerprint: nil,
           evaluated_at: command.evaluated_at,
           last_command_id: command.command_id,
           version: 1,
@@ -196,6 +204,34 @@ defmodule FavnStoragePostgres.TargetRecoveries.Store do
           updated_at: command.occurred_at
         }
         |> Repo.insert!()
+        |> operation_result()
+    end
+  end
+
+  defp finalize_plan!(command) do
+    operation = lock_operation!(command.workspace_context.workspace_id, command.operation_id)
+
+    cond do
+      operation.state == "planned" and operation.plan_hash == command.plan_hash and
+          operation.expected_physical_fingerprint == command.expected_physical_fingerprint ->
+        operation_result(operation)
+
+      operation.state != "planning" or operation.version != command.expected_version ->
+        stale_recovery!()
+
+      true ->
+        operation
+        |> Ecto.Changeset.change(%{
+          plan_hash: command.plan_hash,
+          plan_payload: command.plan_payload,
+          state: "planned",
+          phase: "planned",
+          expected_physical_fingerprint: command.expected_physical_fingerprint,
+          last_command_id: command.command_id,
+          version: operation.version + 1,
+          updated_at: command.occurred_at
+        })
+        |> Repo.update!()
         |> operation_result()
     end
   end
@@ -262,7 +298,7 @@ defmodule FavnStoragePostgres.TargetRecoveries.Store do
       operation.state == "failed" and operation.terminal_error == command.terminal_error ->
         operation_result(operation)
 
-      operation.state not in ["planned", "applying"] or
+      operation.state not in ["planning", "planned", "applying"] or
           operation.version != command.expected_version ->
         stale_recovery!()
 
@@ -544,7 +580,7 @@ defmodule FavnStoragePostgres.TargetRecoveries.Store do
     }
   end
 
-  defp validate_create(command) do
+  defp validate_intent(command) do
     values = [
       command.command_id,
       command.operation_id,
@@ -560,13 +596,23 @@ defmodule FavnStoragePostgres.TargetRecoveries.Store do
     if WorkspaceContext.valid?(command.workspace_context) and
          Enum.all?(values, &valid_id?/1) and
          command.recovery_kind == :reconcile_initial_generation and
-         valid_hash?(command.plan_hash) and valid_hash?(command.expected_physical_fingerprint) and
-         is_map(command.plan_payload) and command.expected_binding_version > 0 and
+         command.expected_binding_version > 0 and
          is_binary(command.reason) and byte_size(command.reason) in 1..4096 and
          match?(%DateTime{}, command.evaluated_at) and match?(%DateTime{}, command.occurred_at) do
       :ok
     else
-      {:error, Error.new(:invalid, "invalid target recovery plan")}
+      {:error, Error.new(:invalid, "invalid target recovery intent")}
+    end
+  end
+
+  defp validate_finalize(command) do
+    if WorkspaceContext.valid?(command.workspace_context) and valid_id?(command.command_id) and
+         valid_id?(command.operation_id) and command.expected_version > 0 and
+         valid_hash?(command.plan_hash) and valid_hash?(command.expected_physical_fingerprint) and
+         is_map(command.plan_payload) and match?(%DateTime{}, command.occurred_at) do
+      :ok
+    else
+      {:error, Error.new(:invalid, "invalid target recovery plan finalization")}
     end
   end
 
@@ -649,11 +695,13 @@ defmodule FavnStoragePostgres.TargetRecoveries.Store do
   defp valid_id?(value), do: is_binary(value) and byte_size(value) in 1..255
   defp valid_hash?(value), do: is_binary(value) and Regex.match?(~r/\A[0-9a-f]{64}\z/, value)
   defp recovery_kind("reconcile_initial_generation"), do: :reconcile_initial_generation
+  defp operation_state("planning"), do: :planning
   defp operation_state("planned"), do: :planned
   defp operation_state("applying"), do: :applying
   defp operation_state("outcome_unknown"), do: :outcome_unknown
   defp operation_state("succeeded"), do: :succeeded
   defp operation_state("failed"), do: :failed
+  defp operation_phase("collecting_evidence"), do: :collecting_evidence
   defp operation_phase("planned"), do: :planned
   defp operation_phase("marker_intent"), do: :marker_intent
   defp operation_phase("reconciling"), do: :reconciling
