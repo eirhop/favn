@@ -142,6 +142,10 @@ config :favn, :dev,
   database_pool_size: 10
 ```
 
+Set `FAVN_VIEW_PORT` or `FAVN_ORCHESTRATOR_API_PORT` to run more than one local
+stack on the same machine; the environment overrides those two keys. See the
+[Configuration guide](configuration.html).
+
 PostgreSQL and secrets remain environment variables. Set
 `FAVN_DATABASE_SSL_MODE=verify-full` and
 `FAVN_DATABASE_SSL_CA_FILE=/absolute/path/to/ca.pem` when the database requires

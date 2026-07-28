@@ -58,7 +58,13 @@ defmodule FavnLocal.DockerFreeLocalLifecycleAcceptanceTest do
     )
 
     test_process = self()
-    dev_env = Map.delete(System.get_env(), "FAVN_LOG_LEVEL")
+
+    dev_env =
+      Map.drop(System.get_env(), [
+        "FAVN_LOG_LEVEL",
+        "FAVN_VIEW_PORT",
+        "FAVN_ORCHESTRATOR_API_PORT"
+      ])
 
     assert {:ok, started} =
              FavnLocal.dev(

@@ -50,8 +50,8 @@ defmodule Mix.Tasks.Favn.Dev do
   defp error_message({:workspace_not_found, workspace_id, command}),
     do: "workspace #{workspace_id} is not provisioned; run #{command}"
 
-  defp error_message({:invalid_env, "FAVN_LOG_LEVEL", expected}),
-    do: "invalid FAVN_LOG_LEVEL; expected #{expected}"
+  defp error_message({:invalid_env, name, expected}),
+    do: "invalid #{name}; expected #{expected}"
 
   defp error_message({:legacy_local_state, path}),
     do: "obsolete Docker-era local state exists at #{path}; remove that generated directory once"

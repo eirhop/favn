@@ -53,6 +53,7 @@ defmodule FavnLocal.Config do
     env = Keyword.get(opts, :env, System.get_env())
     root_dir = opts |> Keyword.get(:root_dir, File.cwd!()) |> Path.expand()
     dev = Application.get_env(:favn, :dev, [])
+    sources = %{opts: opts, env: env, dev: dev}
 
     with {:ok, database_url} <- required_env(env, "FAVN_DATABASE_URL"),
          {:ok, pin_key} <- runtime_input_pin_key(env),
@@ -75,15 +76,14 @@ defmodule FavnLocal.Config do
            ),
          view_credentials <- view_credentials(root_dir, workspace_id),
          {:ok, orchestrator_port} <-
-           port(
-             Keyword.get(
-               opts,
-               :orchestrator_port,
-               Keyword.get(dev, :orchestrator_port, @default_orchestrator_port)
-             )
+           port_setting(
+             sources,
+             :orchestrator_port,
+             "FAVN_ORCHESTRATOR_API_PORT",
+             @default_orchestrator_port
            ),
          {:ok, view_port} <-
-           port(Keyword.get(opts, :view_port, Keyword.get(dev, :view_port, @default_view_port))),
+           port_setting(sources, :view_port, "FAVN_VIEW_PORT", @default_view_port),
          {:ok, runner_release_id} <- runner_release_id(opts) do
       suffix = random_hex(8)
 
@@ -290,6 +290,30 @@ defmodule FavnLocal.Config do
 
   defp port(value) when is_integer(value) and value in 1..65_535, do: {:ok, value}
   defp port(_value), do: {:error, {:invalid_dev_config, :port}}
+
+  # An explicit option beats the environment, which beats project configuration.
+  # The environment has to win over `config :favn, :dev` so that several isolated
+  # stacks can run on one machine without editing committed configuration.
+  defp port_setting(sources, key, env_name, default) do
+    case Keyword.fetch(sources.opts, key) do
+      {:ok, value} -> port(value)
+      :error -> configured_port(sources, key, env_name, default)
+    end
+  end
+
+  defp configured_port(sources, key, env_name, default) do
+    case optional_env(sources.env, env_name) do
+      nil -> port(Keyword.get(sources.dev, key, default))
+      value -> parsed_port(env_name, value)
+    end
+  end
+
+  defp parsed_port(env_name, value) do
+    case Integer.parse(value) do
+      {port, ""} when port in 1..65_535 -> {:ok, port}
+      _invalid -> {:error, {:invalid_env, env_name, "1..65535"}}
+    end
+  end
 
   defp runner_release_id(opts) do
     value = Keyword.get(opts, :runner_release_id, "rr_" <> random_hex(32))

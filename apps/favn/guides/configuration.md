@@ -99,10 +99,17 @@ Common local options:
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `:workspace_id` | `"local-dev"` | Workspace selected by local CLI/UI requests. |
-| `:orchestrator_port` | `4101` | Local API port. |
-| `:view_port` | `4173` | Local UI port. |
+| `:orchestrator_port` | `4101` | Local API port; override with `FAVN_ORCHESTRATOR_API_PORT`. |
+| `:view_port` | `4173` | Local UI port; override with `FAVN_VIEW_PORT`. |
 | `:scheduler_enabled` | `false` | Enable with config or `mix favn.dev --scheduler`. |
 | `:database_pool_size` | `10` | PostgreSQL pool size for the local Orchestrator. |
+
+`FAVN_VIEW_PORT` and `FAVN_ORCHESTRATOR_API_PORT` override the two port keys from
+the process environment. The environment wins over `config :favn, :dev`, so
+several checkouts, worktrees, or containers can each run a local stack on one
+machine without editing committed configuration. Both accept `1..65535`; any
+other value stops startup before the runtime applications start. `mix favn.dev`
+prints the ports it actually used.
 
 Set `FAVN_DATABASE_URL` and `FAVN_RUNTIME_INPUT_PIN_KEY` in the process
 environment. Local tooling generates short-lived process credentials and
