@@ -211,7 +211,9 @@ defmodule FavnOrchestrator.InitialTargetGenerationReconciler do
   end
 
   defp reconcile_initialized_marker(runner, runner_opts, version, asset_ref, request) do
-    case RunnerDispatch.generation_marker(runner, version, asset_ref, runner_opts) do
+    strict_runner_opts = Keyword.put(runner_opts, :require_relation_instance?, true)
+
+    case RunnerDispatch.generation_marker(runner, version, asset_ref, strict_runner_opts) do
       {:ok, %GenerationMarker{} = marker} ->
         if marker_identity(marker) == request_marker_identity(request),
           do: {:ok, marker_map(marker)},

@@ -535,7 +535,7 @@ defmodule FavnOrchestrator.Persistence.Commands.AcquireTargetOperationLocks do
           command_id: String.t(),
           target_ids: [String.t()],
           operation_id: String.t(),
-          operation_type: :rebuild,
+          operation_type: :rebuild | :target_recovery,
           lease_owner: String.t(),
           lease_duration_ms: pos_integer(),
           occurred_at: DateTime.t()

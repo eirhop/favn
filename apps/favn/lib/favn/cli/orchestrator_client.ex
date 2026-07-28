@@ -439,6 +439,100 @@ defmodule Favn.CLI.OrchestratorClient do
     end
   end
 
+  @spec plan_target_recovery(String.t(), String.t(), session_context(), String.t(), String.t()) ::
+          {:ok, map()} | {:error, term()}
+  def plan_target_recovery(base_url, service_token, session_context, target_id, reason)
+      when is_binary(base_url) and is_binary(service_token) and is_map(session_context) and
+             is_binary(target_id) and is_binary(reason) do
+    url = base_url <> "/api/orchestrator/v1/target-recoveries/plan"
+
+    case request_post(
+           :plan_target_recovery,
+           url,
+           service_token,
+           %{target_id: target_id, reason: reason},
+           session_context,
+           fresh_idempotency_key()
+         ) do
+      {:ok, %{"data" => %{"plan" => plan}}} when is_map(plan) -> {:ok, plan}
+      {:error, _reason} = error -> error
+      _other -> {:error, operation_error(:plan_target_recovery, :post, url, :invalid_response)}
+    end
+  end
+
+  @spec start_target_recovery(
+          String.t(),
+          String.t(),
+          session_context(),
+          String.t(),
+          String.t()
+        ) :: {:ok, map()} | {:error, term()}
+  def start_target_recovery(base_url, service_token, session_context, plan_id, plan_hash)
+      when is_binary(base_url) and is_binary(service_token) and is_map(session_context) and
+             is_binary(plan_id) and is_binary(plan_hash) do
+    target_recovery_mutation(
+      :start_target_recovery,
+      base_url <> "/api/orchestrator/v1/target-recoveries",
+      service_token,
+      session_context,
+      %{plan_id: plan_id, plan_hash: plan_hash, approved: true}
+    )
+  end
+
+  @spec get_target_recovery(String.t(), String.t(), session_context(), String.t()) ::
+          {:ok, map()} | {:error, term()}
+  def get_target_recovery(base_url, service_token, session_context, operation_id)
+      when is_binary(base_url) and is_binary(service_token) and is_map(session_context) and
+             is_binary(operation_id) do
+    url = base_url <> "/api/orchestrator/v1/target-recoveries/#{URI.encode(operation_id)}"
+
+    case request_get(:get_target_recovery, url, service_token, session_context) do
+      {:ok, %{"data" => %{"target_recovery" => recovery}}} when is_map(recovery) ->
+        {:ok, recovery}
+
+      {:error, _reason} = error ->
+        error
+
+      _other ->
+        {:error, operation_error(:get_target_recovery, :get, url, :invalid_response)}
+    end
+  end
+
+  @spec reconcile_target_recovery(String.t(), String.t(), session_context(), String.t()) ::
+          {:ok, map()} | {:error, term()}
+  def reconcile_target_recovery(base_url, service_token, session_context, operation_id)
+      when is_binary(base_url) and is_binary(service_token) and is_map(session_context) and
+             is_binary(operation_id) do
+    target_recovery_mutation(
+      :reconcile_target_recovery,
+      base_url <>
+        "/api/orchestrator/v1/target-recoveries/#{URI.encode(operation_id)}/reconcile",
+      service_token,
+      session_context,
+      %{}
+    )
+  end
+
+  defp target_recovery_mutation(operation, url, service_token, session_context, payload) do
+    case request_post(
+           operation,
+           url,
+           service_token,
+           payload,
+           session_context,
+           fresh_idempotency_key()
+         ) do
+      {:ok, %{"data" => %{"target_recovery" => recovery}}} when is_map(recovery) ->
+        {:ok, recovery}
+
+      {:error, _reason} = error ->
+        error
+
+      _other ->
+        {:error, operation_error(operation, :post, url, :invalid_response)}
+    end
+  end
+
   @spec submit_run(String.t(), String.t(), session_context(), map(), keyword()) ::
           {:ok, map()} | {:error, term()}
   def submit_run(base_url, service_token, session_context, payload, opts \\ [])

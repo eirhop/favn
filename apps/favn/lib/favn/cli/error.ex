@@ -182,6 +182,10 @@ defmodule Favn.CLI.Error do
   defp operation_label("cancel_rebuild"), do: "rebuild cancel"
   defp operation_label("retry_rebuild"), do: "rebuild retry"
   defp operation_label("reconcile_rebuild"), do: "rebuild reconcile"
+  defp operation_label("plan_target_recovery"), do: "target recovery plan"
+  defp operation_label("start_target_recovery"), do: "target recovery start"
+  defp operation_label("get_target_recovery"), do: "target recovery status"
+  defp operation_label("reconcile_target_recovery"), do: "target recovery reconcile"
   defp operation_label("submit_run"), do: "run submission"
   defp operation_label("cancel_run"), do: "run cancellation"
 

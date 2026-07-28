@@ -401,7 +401,14 @@ defmodule FavnRunner do
     end)
   end
 
-  @doc "Returns the current sidecar marker for one manifest target."
+  @doc """
+  Returns the current sidecar marker for one manifest target.
+
+  Marker reads require a matching physical-relation instance by default.
+  `require_relation_instance?: false` is reserved for Favn's authorized managed
+  rebuild and discard paths; recovery and unknown-outcome reconciliation must
+  keep the strict default.
+  """
   @impl true
   @spec generation_marker(Version.t(), Favn.Ref.t(), keyword()) ::
           {:ok, GenerationMarker.t() | nil} | {:error, term()}
@@ -409,7 +416,9 @@ defmodule FavnRunner do
       when is_tuple(asset_ref) and is_list(opts) do
     with_admission(opts, fn ->
       with {:ok, asset} <- generation_asset(version, asset_ref, opts) do
-        GenerationOperations.marker(asset)
+        GenerationOperations.marker(asset,
+          require_relation_instance?: Keyword.get(opts, :require_relation_instance?, true)
+        )
       end
     end)
   end

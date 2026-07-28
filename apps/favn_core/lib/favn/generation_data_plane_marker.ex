@@ -4,7 +4,8 @@ defmodule Favn.GenerationDataPlaneMarker do
 
   SQL adapters exchange typed generation-marker structs with the runner. The
   orchestrator persists the same identity as this canonical map so later
-  activation requests can perform an exact compare-and-swap.
+  activation requests can perform an exact compare-and-swap. The SQL adapter
+  also binds the activation token to the physical table instance.
   """
 
   @type t :: %{
