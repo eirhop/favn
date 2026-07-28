@@ -601,8 +601,10 @@ defmodule Favn.Manifest.ExecutionPackage do
     do: {:error, {:execution_package_asset_mismatch, expected, actual}}
 
   defp match_relation_inputs(package_inputs, asset_inputs, asset_ref) do
-    with {:ok, package_encoded} <- Serializer.encode_manifest(package_inputs),
-         {:ok, asset_encoded} <- Serializer.encode_manifest(asset_inputs) do
+    with {:ok, package_encoded} <-
+           Serializer.encode_manifest(%{relation_inputs: package_inputs}),
+         {:ok, asset_encoded} <-
+           Serializer.encode_manifest(%{relation_inputs: asset_inputs}) do
       if package_encoded == asset_encoded,
         do: :ok,
         else: {:error, {:execution_package_relation_inputs_mismatch, asset_ref}}
