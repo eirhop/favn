@@ -912,6 +912,7 @@ defmodule FavnRunner.RunnerAgent do
       runner_instance_id: state.runner_instance_id,
       runner_session_generation: state.session_generation,
       assignment_generation: assignment.assignment_generation,
+      issued_at: assignment.assigned_at,
       occurred_at: DateTime.utc_now()
     }
   end
@@ -1251,6 +1252,7 @@ defmodule FavnRunner.RunnerAgent do
       assignment_generation: assignment.assignment_generation,
       command_id: cancellation.command_id,
       status: status,
+      issued_at: cancellation.requested_at,
       acknowledged_at: DateTime.utc_now()
     }
   end

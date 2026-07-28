@@ -24,10 +24,52 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
   alias FavnStoragePostgres.Schemas.Run
   alias FavnStoragePostgres.Schemas.RunnerTask
   alias FavnStoragePostgres.Schemas.RunnerTaskCommand
+  alias FavnStoragePostgres.Schemas.RunnerTaskCommandTask
   alias FavnStoragePostgres.Schemas.RunnerTaskLogBatch
+  alias FavnStoragePostgres.Schemas.RunnerTaskOutcome
+  alias FavnStoragePostgres.Schemas.RunnerTaskRuntimeInputError
 
   @active_statuses ~w(assigned preparing running cancelling)
   @terminal_statuses ~w(succeeded failed cancelled unknown)
+  @terminal_result_statuses [:succeeded, :failed, :cancelled, :unknown]
+  @receipt_retention_ms :timer.hours(24) * 7
+  @maximum_future_clock_skew_ms :timer.minutes(5)
+  @receipt_prune_limit 100
+  @immutable_task_result_fields [
+    :workspace_id,
+    :task_id,
+    :domain_identity,
+    :task_kind,
+    :run_id,
+    :operation_id,
+    :asset_step_id,
+    :runner_pool,
+    :required_runner_release_id,
+    :required_capability,
+    :enqueued_at,
+    :deadline_at,
+    :payload_version,
+    :payload,
+    :payload_hash,
+    :orchestration_context,
+    :inserted_at
+  ]
+  @mutable_task_result_fields [
+    :retry_class,
+    :status,
+    :assigned_runner_instance_id,
+    :assigned_runner_session_generation,
+    :assignment_generation,
+    :assignment_expires_at,
+    :cancellation_requested_at,
+    :cancellation_acknowledged_at,
+    :runtime_input_resolution_id,
+    :runtime_input_resolution_status,
+    :runtime_input_payload_fingerprint,
+    :runtime_inputs_resolved_at,
+    :result_version,
+    :terminal_at
+  ]
   @task_kind_by_string Map.new(Favn.Contracts.RunnerTask.task_kinds(), &{Atom.to_string(&1), &1})
   @retry_class_by_string Map.new(
                            Favn.Contracts.RunnerTask.retry_classes(),
@@ -1372,7 +1414,8 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
   end
 
   defp same_enqueued_task?(task, command) do
-    task.domain_identity == command.domain_identity and
+    task.task_id == command.task_id and
+      task.domain_identity == command.domain_identity and
       task.task_kind == Atom.to_string(command.task_kind) and
       task.run_id == command.run_id and
       task.operation_id == command.operation_id and
@@ -1611,6 +1654,11 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
         Repo.rollback(Error.new(:invalid, "invalid runner task command identity"))
       end
 
+      now = database_now!()
+      validate_command_window!(command.issued_at, now)
+      command = canonicalize_enqueue_issued_at!(command, operation, scope_id)
+      prune_command_receipts!(now)
+      validate_command_window!(command.issued_at, now)
       request_hash = command_hash(command)
 
       case Repo.insert_all(
@@ -1622,14 +1670,17 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
                  operation: operation,
                  request_hash: request_hash,
                  result: %{"kind" => "pending"},
-                 inserted_at: command.occurred_at
+                 issued_at: command.issued_at,
+                 inserted_at: now
                }
              ],
              on_conflict: :nothing
            ) do
         {1, _} ->
           result = fun.()
-          receipt = encode_command_result(result)
+
+          receipt =
+            encode_command_result(result, operation, scope_id, command.command_id, now)
 
           {1, _} =
             Repo.update_all(
@@ -1649,7 +1700,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
             )
 
           if receipt.operation == operation and receipt.request_hash == request_hash do
-            decode_command_result!(receipt.result)
+            decode_command_result!(receipt, operation)
           else
             Repo.rollback(Error.new(:conflict, "runner task command identity was reused"))
           end
@@ -1657,82 +1708,513 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
     end)
   end
 
-  defp command_hash(%C.EnqueueRunnerTask{} = command) do
+  defp command_hash(command) do
     command
     |> Map.put(:occurred_at, nil)
     |> :erlang.term_to_binary([:deterministic])
     |> then(&:crypto.hash(:sha256, &1))
   end
 
-  defp command_hash(command),
-    do: :crypto.hash(:sha256, :erlang.term_to_binary(command, [:deterministic]))
-
   defp command_scope(%{workspace_context: %{workspace_id: workspace_id}}),
     do: "workspace:" <> workspace_id
 
   defp command_scope(%{platform_context: _context}), do: "platform:runner_tasks"
 
-  defp encode_command_result(%RunnerTask{workspace_id: workspace_id, task_id: task_id}),
-    do: %{"kind" => "task", "workspace_id" => workspace_id, "task_id" => task_id}
+  defp canonicalize_enqueue_issued_at!(
+         %C.EnqueueRunnerTask{} = command,
+         "enqueue",
+         scope_id
+       ) do
+    workspace_id = command.workspace_context.workspace_id
+    lock_enqueue_identity!(workspace_id, command.task_id)
 
-  defp encode_command_result(%Demand{} = demand),
-    do: %{
-      "kind" => "demand",
-      "runner_pool" => demand.runner_pool,
-      "required_runner_release_id" => demand.required_runner_release_id
-    }
+    issued_at =
+      case Repo.get_by(RunnerTaskCommand,
+             scope_id: scope_id,
+             command_id: command.command_id
+           ) do
+        %RunnerTaskCommand{issued_at: issued_at} ->
+          issued_at
 
-  defp encode_command_result(tasks) when is_list(tasks),
-    do: %{
-      "kind" => "tasks",
-      "task_keys" =>
-        Enum.map(tasks, &%{"workspace_id" => &1.workspace_id, "task_id" => &1.task_id})
-    }
+        nil ->
+          case Repo.get_by(RunnerTask,
+                 workspace_id: workspace_id,
+                 task_id: command.task_id
+               ) do
+            %RunnerTask{enqueued_at: enqueued_at} -> enqueued_at
+            nil -> command.issued_at
+          end
+      end
 
-  defp encode_command_result(nil), do: %{"kind" => "none"}
-  defp encode_command_result(:persisted), do: %{"kind" => "atom", "value" => "persisted"}
+    %{command | issued_at: issued_at}
+  end
 
-  defp encode_command_result(:already_persisted),
-    do: %{"kind" => "atom", "value" => "already_persisted"}
+  defp canonicalize_enqueue_issued_at!(command, _operation, _scope_id), do: command
 
-  defp decode_command_result!(%{
-         "kind" => "task",
-         "workspace_id" => workspace_id,
-         "task_id" => task_id
-       }),
-       do: fetch_task!(workspace_id, task_id)
+  defp lock_enqueue_identity!(workspace_id, task_id) do
+    lock_key = "runner-task-enqueue|#{byte_size(workspace_id)}:#{workspace_id}|#{task_id}"
+    SQL.query!(Repo, "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [lock_key])
+    :ok
+  end
 
-  defp decode_command_result!(%{
-         "kind" => "demand",
-         "runner_pool" => runner_pool,
-         "required_runner_release_id" => release_id
-       }),
-       do:
-         Repo.get_by!(Demand,
-           runner_pool: runner_pool,
-           required_runner_release_id: release_id
-         )
+  defp encode_command_result(result, operation, scope_id, command_id, now) do
+    result = normalize_command_result(result)
 
-  defp decode_command_result!(%{"kind" => "tasks", "task_keys" => task_keys}),
-    do:
-      Enum.map(
-        task_keys,
-        &(fetch_task!(&1["workspace_id"], &1["task_id"]) |> to_result())
-      )
+    unless valid_command_result?(operation, result) do
+      Repo.rollback(Error.new(:internal, "runner task command returned an invalid result"))
+    end
 
-  defp decode_command_result!(%{"kind" => "none"}), do: nil
+    case result do
+      %RunnerTaskResult{} = task ->
+        persist_task_snapshots!([task], scope_id, command_id, now)
+        %{"kind" => "task_snapshots_v1", "count" => 1}
 
-  defp decode_command_result!(%{"kind" => "atom", "value" => "persisted"}),
-    do: :persisted
+      tasks when is_list(tasks) ->
+        persist_task_snapshots!(tasks, scope_id, command_id, now)
+        %{"kind" => "task_snapshots_v1", "count" => length(tasks)}
 
-  defp decode_command_result!(%{
-         "kind" => "atom",
-         "value" => "already_persisted"
-       }),
+      %RunnerCapacityDemand{} = demand ->
+        encode_demand_receipt(demand)
+
+      nil ->
+        %{"kind" => "none"}
+
+      atom when atom in [:persisted, :already_persisted] ->
+        %{"kind" => "atom", "value" => Atom.to_string(atom)}
+    end
+  end
+
+  defp decode_command_result!(
+         %RunnerTaskCommand{
+           scope_id: scope_id,
+           command_id: command_id,
+           result: %{"kind" => "task_snapshots_v1", "count" => count}
+         },
+         operation
+       )
+       when is_integer(count) and count >= 0 do
+    results = load_task_snapshots!(scope_id, command_id, count)
+
+    case {operation, results} do
+      {"recover_expired", results} -> results
+      {_single, [task]} -> task
+      _invalid -> Repo.rollback(Error.new(:internal, "runner task command receipt is invalid"))
+    end
+  end
+
+  defp decode_command_result!(
+         %RunnerTaskCommand{result: %{"kind" => "demand_v1"} = receipt},
+         "reconcile_demand"
+       ),
+       do: decode_demand_receipt!(receipt)
+
+  defp decode_command_result!(%RunnerTaskCommand{result: %{"kind" => "none"}}, "claim"),
+    do: nil
+
+  defp decode_command_result!(
+         %RunnerTaskCommand{result: %{"kind" => "atom", "value" => "persisted"}},
+         "append_log_batch"
+       ),
+       do: :persisted
+
+  defp decode_command_result!(
+         %RunnerTaskCommand{result: %{"kind" => "atom", "value" => "already_persisted"}},
+         "append_log_batch"
+       ),
        do: :already_persisted
 
-  defp decode_command_result!(_receipt),
+  defp decode_command_result!(_receipt, _operation),
     do: Repo.rollback(Error.new(:internal, "runner task command receipt is invalid"))
+
+  defp persist_task_snapshots!(tasks, scope_id, command_id, now) do
+    rows =
+      tasks
+      |> Enum.with_index()
+      |> Enum.map(fn {%RunnerTaskResult{} = task, ordinal} ->
+        row = fetch_task!(task.workspace_id, task.task_id)
+        persisted = to_result(row)
+
+        unless persisted == task do
+          Repo.rollback(Error.new(:internal, "runner task receipt source changed in transaction"))
+        end
+
+        {snapshot, runtime_input_resolution_id} = task_snapshot(task, row, now)
+
+        %{
+          scope_id: scope_id,
+          command_id: command_id,
+          ordinal: ordinal,
+          workspace_id: task.workspace_id,
+          task_id: task.task_id,
+          outcome_assignment_generation:
+            if(is_nil(snapshot.outcome_hash), do: nil, else: task.assignment_generation),
+          runtime_input_resolution_id: runtime_input_resolution_id,
+          snapshot: :erlang.term_to_binary(snapshot, [:deterministic])
+        }
+      end)
+
+    case Repo.insert_all(RunnerTaskCommandTask, rows) do
+      {count, _} when count == length(rows) ->
+        :ok
+
+      _invalid ->
+        Repo.rollback(Error.new(:internal, "runner task receipt snapshots were not stored"))
+    end
+  end
+
+  defp task_snapshot(task, row, now) do
+    outcome_hash =
+      if task.status in @terminal_result_statuses do
+        persist_task_outcome!(task, row, now)
+      end
+
+    {runtime_input_resolution_id, runtime_input_error_hash} =
+      persist_runtime_input_error!(task, row, now)
+
+    {%{
+       version: 1,
+       immutable_hash: result_hash(Map.take(task, @immutable_task_result_fields)),
+       mutable: Map.take(task, @mutable_task_result_fields),
+       outcome_hash: outcome_hash,
+       runtime_input_error_hash: runtime_input_error_hash
+     }, runtime_input_resolution_id}
+  end
+
+  defp persist_task_outcome!(task, row, now) do
+    hash = result_hash({task.result_version, row.result, row.error})
+
+    Repo.insert_all(
+      RunnerTaskOutcome,
+      [
+        %{
+          workspace_id: task.workspace_id,
+          task_id: task.task_id,
+          assignment_generation: task.assignment_generation,
+          result_version: task.result_version,
+          result: row.result,
+          error: row.error,
+          result_hash: hash,
+          inserted_at: now
+        }
+      ],
+      on_conflict: :nothing
+    )
+
+    outcome =
+      Repo.get_by!(RunnerTaskOutcome,
+        workspace_id: task.workspace_id,
+        task_id: task.task_id,
+        assignment_generation: task.assignment_generation
+      )
+
+    if outcome.result_hash == hash do
+      hash
+    else
+      Repo.rollback(Error.new(:conflict, "runner task terminal outcome history conflict"))
+    end
+  end
+
+  defp persist_runtime_input_error!(_task, %{runtime_input_error: nil}, _now),
+    do: {nil, nil}
+
+  defp persist_runtime_input_error!(task, row, now) do
+    resolution_id = task.runtime_input_resolution_id
+
+    unless is_binary(resolution_id) do
+      Repo.rollback(Error.new(:internal, "runner task runtime-input error has no resolution"))
+    end
+
+    hash = result_hash(row.runtime_input_error)
+
+    Repo.insert_all(
+      RunnerTaskRuntimeInputError,
+      [
+        %{
+          workspace_id: task.workspace_id,
+          task_id: task.task_id,
+          resolution_id: resolution_id,
+          error: row.runtime_input_error,
+          error_hash: hash,
+          inserted_at: now
+        }
+      ],
+      on_conflict: :nothing
+    )
+
+    outcome =
+      Repo.get_by!(RunnerTaskRuntimeInputError,
+        workspace_id: task.workspace_id,
+        task_id: task.task_id,
+        resolution_id: resolution_id
+      )
+
+    if outcome.error_hash == hash do
+      {resolution_id, hash}
+    else
+      Repo.rollback(Error.new(:conflict, "runner task runtime-input error history conflict"))
+    end
+  end
+
+  defp load_task_snapshots!(scope_id, command_id, expected_count) do
+    rows =
+      Repo.all(
+        from(snapshot in RunnerTaskCommandTask,
+          where: snapshot.scope_id == ^scope_id and snapshot.command_id == ^command_id,
+          order_by: [asc: snapshot.ordinal]
+        )
+      )
+
+    expected_ordinals =
+      if expected_count == 0, do: [], else: Enum.to_list(0..(expected_count - 1))
+
+    unless length(rows) == expected_count and
+             Enum.map(rows, & &1.ordinal) == expected_ordinals do
+      Repo.rollback(Error.new(:internal, "runner task command snapshot count is invalid"))
+    end
+
+    Enum.map(rows, &rehydrate_task_snapshot!/1)
+  end
+
+  defp rehydrate_task_snapshot!(row) do
+    snapshot = decode_task_snapshot!(row.snapshot)
+    current_row = fetch_task!(row.workspace_id, row.task_id)
+    current = to_result(current_row)
+    immutable = Map.take(current, @immutable_task_result_fields)
+
+    unless result_hash(immutable) == snapshot.immutable_hash do
+      Repo.rollback(Error.new(:conflict, "runner task immutable receipt fields changed"))
+    end
+
+    runtime_input_error = load_runtime_input_error!(row, snapshot)
+
+    {result, error} =
+      load_task_outcome!(row, snapshot, current.task_kind, snapshot.mutable.status)
+
+    immutable
+    |> Map.merge(snapshot.mutable)
+    |> Map.put(:runtime_input_error, runtime_input_error)
+    |> Map.put(:result, result)
+    |> Map.put(:error, error)
+    |> then(&struct!(RunnerTaskResult, &1))
+  end
+
+  defp decode_task_snapshot!(binary) do
+    case :erlang.binary_to_term(binary, [:safe]) do
+      %{
+        version: 1,
+        immutable_hash: immutable_hash,
+        mutable: mutable,
+        outcome_hash: outcome_hash,
+        runtime_input_error_hash: runtime_input_error_hash
+      } = snapshot
+      when is_binary(immutable_hash) and is_map(mutable) and
+             (is_nil(outcome_hash) or is_binary(outcome_hash)) and
+             (is_nil(runtime_input_error_hash) or is_binary(runtime_input_error_hash)) ->
+        snapshot
+
+      _invalid ->
+        Repo.rollback(Error.new(:internal, "runner task command snapshot is invalid"))
+    end
+  rescue
+    _error -> Repo.rollback(Error.new(:internal, "runner task command snapshot is invalid"))
+  end
+
+  defp load_task_outcome!(_row, %{outcome_hash: nil}, _task_kind, _status), do: {nil, nil}
+
+  defp load_task_outcome!(row, snapshot, task_kind, status) do
+    outcome =
+      Repo.get_by!(RunnerTaskOutcome,
+        workspace_id: row.workspace_id,
+        task_id: row.task_id,
+        assignment_generation: snapshot.mutable.assignment_generation
+      )
+
+    unless outcome.result_hash == snapshot.outcome_hash and
+             result_hash({outcome.result_version, outcome.result, outcome.error}) ==
+               snapshot.outcome_hash do
+      Repo.rollback(Error.new(:conflict, "runner task terminal receipt outcome changed"))
+    end
+
+    {decode_result!(task_kind, status, outcome.result), outcome.error}
+  end
+
+  defp load_runtime_input_error!(_row, %{runtime_input_error_hash: nil}), do: nil
+
+  defp load_runtime_input_error!(row, snapshot) do
+    outcome =
+      Repo.get_by!(RunnerTaskRuntimeInputError,
+        workspace_id: row.workspace_id,
+        task_id: row.task_id,
+        resolution_id: row.runtime_input_resolution_id
+      )
+
+    unless outcome.error_hash == snapshot.runtime_input_error_hash and
+             result_hash(outcome.error) == snapshot.runtime_input_error_hash do
+      Repo.rollback(Error.new(:conflict, "runner task runtime-input receipt changed"))
+    end
+
+    outcome.error
+  end
+
+  defp result_hash(value),
+    do: :crypto.hash(:sha256, :erlang.term_to_binary(value, [:deterministic]))
+
+  defp encode_demand_receipt(demand) do
+    %{
+      "kind" => "demand_v1",
+      "runner_pool" => demand.runner_pool,
+      "required_runner_release_id" => demand.required_runner_release_id,
+      "outstanding_count" => demand.outstanding_count,
+      "queued_count" => demand.queued_count,
+      "active_count" => demand.active_count,
+      "oldest_queued_at" => encode_optional_datetime(demand.oldest_queued_at),
+      "version" => demand.version,
+      "updated_at" => DateTime.to_iso8601(demand.updated_at),
+      "healthy" => demand.healthy?
+    }
+  end
+
+  defp decode_demand_receipt!(receipt) do
+    struct!(RunnerCapacityDemand,
+      runner_pool: receipt["runner_pool"],
+      required_runner_release_id: receipt["required_runner_release_id"],
+      outstanding_count: receipt["outstanding_count"],
+      queued_count: receipt["queued_count"],
+      active_count: receipt["active_count"],
+      oldest_queued_at: decode_optional_datetime!(receipt["oldest_queued_at"]),
+      version: receipt["version"],
+      updated_at: decode_datetime!(receipt["updated_at"]),
+      healthy?: receipt["healthy"]
+    )
+  rescue
+    _error -> Repo.rollback(Error.new(:internal, "runner task demand receipt is invalid"))
+  end
+
+  defp encode_optional_datetime(nil), do: nil
+  defp encode_optional_datetime(%DateTime{} = datetime), do: DateTime.to_iso8601(datetime)
+
+  defp decode_optional_datetime!(nil), do: nil
+  defp decode_optional_datetime!(value), do: decode_datetime!(value)
+
+  defp decode_datetime!(value) when is_binary(value) do
+    case DateTime.from_iso8601(value) do
+      {:ok, datetime, 0} -> datetime
+      _invalid -> raise ArgumentError, "invalid receipt datetime"
+    end
+  end
+
+  defp normalize_command_result(%RunnerTask{} = task), do: to_result(task)
+  defp normalize_command_result(%Demand{} = demand), do: to_demand(demand)
+  defp normalize_command_result(result), do: result
+
+  defp valid_command_result?("enqueue", %RunnerTaskResult{}), do: true
+  defp valid_command_result?("claim", result), do: is_nil(result) or task_result?(result)
+  defp valid_command_result?("transition", result), do: task_result?(result)
+  defp valid_command_result?("runtime_inputs", result), do: task_result?(result)
+
+  defp valid_command_result?("append_log_batch", result),
+    do: result in [:persisted, :already_persisted]
+
+  defp valid_command_result?("complete", result), do: task_result?(result)
+  defp valid_command_result?("request_cancellation", result), do: task_result?(result)
+  defp valid_command_result?("acknowledge_cancellation", result), do: task_result?(result)
+  defp valid_command_result?("release", result), do: task_result?(result)
+  defp valid_command_result?("retry", result), do: task_result?(result)
+
+  defp valid_command_result?("recover_expired", results) when is_list(results),
+    do: Enum.all?(results, &task_result?/1)
+
+  defp valid_command_result?("reconcile_demand", %RunnerCapacityDemand{}), do: true
+  defp valid_command_result?(_operation, _result), do: false
+
+  defp task_result?(%RunnerTaskResult{}), do: true
+  defp task_result?(_result), do: false
+
+  defp validate_command_window!(%DateTime{} = issued_at, now) do
+    oldest = DateTime.add(now, -@receipt_retention_ms, :millisecond)
+    newest = DateTime.add(now, @maximum_future_clock_skew_ms, :millisecond)
+
+    if DateTime.compare(issued_at, oldest) == :lt or
+         DateTime.compare(issued_at, newest) == :gt do
+      Repo.rollback(Error.new(:invalid, "runner task command is outside the idempotency window"))
+    end
+  end
+
+  defp validate_command_window!(_issued_at, _now),
+    do: Repo.rollback(Error.new(:invalid, "invalid runner task command issued-at timestamp"))
+
+  defp prune_command_receipts!(now) do
+    cutoff = DateTime.add(now, -@receipt_retention_ms, :millisecond)
+
+    SQL.query!(
+      Repo,
+      """
+      DELETE FROM favn_control.runner_task_commands
+      WHERE ctid IN (
+        SELECT ctid
+        FROM favn_control.runner_task_commands
+        WHERE inserted_at < $1
+        ORDER BY inserted_at
+        LIMIT $2
+        FOR UPDATE SKIP LOCKED
+      )
+      """,
+      [cutoff, @receipt_prune_limit]
+    )
+
+    SQL.query!(
+      Repo,
+      """
+      DELETE FROM favn_control.runner_task_outcomes
+      WHERE ctid IN (
+        SELECT outcome.ctid
+        FROM favn_control.runner_task_outcomes AS outcome
+        WHERE outcome.inserted_at < $1
+          AND NOT EXISTS (
+            SELECT 1
+            FROM favn_control.runner_task_command_tasks AS snapshot
+            WHERE snapshot.outcome_assignment_generation IS NOT NULL
+              AND snapshot.workspace_id = outcome.workspace_id
+              AND snapshot.task_id = outcome.task_id
+              AND snapshot.outcome_assignment_generation = outcome.assignment_generation
+          )
+        ORDER BY outcome.inserted_at
+        LIMIT $2
+        FOR UPDATE SKIP LOCKED
+      )
+      """,
+      [cutoff, @receipt_prune_limit]
+    )
+
+    SQL.query!(
+      Repo,
+      """
+      DELETE FROM favn_control.runner_task_runtime_input_errors
+      WHERE ctid IN (
+        SELECT outcome.ctid
+        FROM favn_control.runner_task_runtime_input_errors AS outcome
+        WHERE outcome.inserted_at < $1
+          AND NOT EXISTS (
+            SELECT 1
+            FROM favn_control.runner_task_command_tasks AS snapshot
+            WHERE snapshot.runtime_input_resolution_id IS NOT NULL
+              AND snapshot.workspace_id = outcome.workspace_id
+              AND snapshot.task_id = outcome.task_id
+              AND snapshot.runtime_input_resolution_id = outcome.resolution_id
+          )
+        ORDER BY outcome.inserted_at
+        LIMIT $2
+        FOR UPDATE SKIP LOCKED
+      )
+      """,
+      [cutoff, @receipt_prune_limit]
+    )
+  end
+
+  defp database_now! do
+    %{rows: [[now]]} = SQL.query!(Repo, "SELECT clock_timestamp()", [])
+    now
+  end
 
   defp transact(fun) do
     case Repo.transaction(fun) do

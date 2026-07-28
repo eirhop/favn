@@ -54,6 +54,8 @@ defmodule FavnOrchestrator.OperationRunnerTasks do
       )
       when is_tuple(asset_ref) and is_atom(task_kind) and is_list(opts) do
     task_id = task_id(context.workspace_id, task_kind, domain_identity, version)
+    occurred_at = Keyword.get(opts, :occurred_at, DateTime.utc_now())
+    issued_at = Keyword.get(opts, :issued_at, occurred_at)
 
     with :ok <- operation_allows_task(context, Keyword.get(opts, :rebuild_operation_id)),
          {:ok, runner_pool, release_id} <- task_binding(version, asset_ref, opts),
@@ -81,7 +83,8 @@ defmodule FavnOrchestrator.OperationRunnerTasks do
                operation_id: Keyword.get(opts, :operation_id),
                required_capability: required_capability,
                deadline_at: Keyword.get(opts, :deadline_at),
-               occurred_at: Keyword.get(opts, :occurred_at, DateTime.utc_now())
+               issued_at: issued_at,
+               occurred_at: occurred_at
              }) do
         maybe_retry_safe(context, task)
       end

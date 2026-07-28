@@ -537,7 +537,32 @@ violation: the already frozen `LeaseRenewal` wire schema had acquired an
 now derived from the existing absolute lease expiry, preserving the frozen wire
 contract while keeping exact replay idempotent and later renewals distinct.
 
-Final reviewer verdict: approved; Phase 4 is ready to checkpoint.
+A later whole-PR review found that runner command age was still derived from
+refreshable `occurred_at`, `Started` could derive a new issuance after lease
+renewal, and command receipts copied complete task payloads and results. The
+correction makes `issued_at` the stable command-age field while allowing
+`occurred_at` to refresh, serializes deterministic first enqueues before
+canonicalizing their first issuance, and carries stable `assigned_at` on each
+assignment. Receipts now store bounded fencing snapshots and reference
+immutable terminal-result and runtime-input-error history instead of
+duplicating large values. Exact replay is covered after later task transitions,
+lease renewal, acknowledgement loss, concurrent first enqueue, maximum
+recovery batches, and near-limit payload/result values.
+
+The narrowed frozen-diff follow-up added the missing child indexes for task,
+outcome, and runtime-input-error foreign-key/prune lookups and verifies both
+history anti-joins with forced-generic PostgreSQL plans. Enqueue now acquires
+its identity advisory lock before bounded receipt/history pruning, and exact
+enqueue equality includes `task_id` as well as domain identity and work.
+Terminal completion replay is verified after a safe retry, reassignment, and a
+newer terminal outcome. Version one deliberately retains terminal runner-task
+rows; terminal-task deletion and its coordinated identity/history retirement
+contract are not implemented in this change.
+
+The final scoped reviewer approved the current-v1 correction with no remaining
+finding. The review explicitly rejected speculative tombstone and idle
+maintenance machinery because version one has no terminal runner-task deletion
+path and creates no new rows while idle.
 
 ### Phase 4 verification
 

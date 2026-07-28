@@ -137,6 +137,7 @@ defmodule FavnRunner.RunnerAgentTest do
             assignment_generation: 1,
             runner_pool: "duckdb",
             required_runner_release_id: FavnTestSupport.runner_release_id(),
+            assigned_at: DateTime.utc_now(),
             lease_expires_at: DateTime.add(DateTime.utc_now(), 30, :second),
             retry_class: :unknown_do_not_retry,
             payload: state.work
@@ -415,6 +416,7 @@ defmodule FavnRunner.RunnerAgentTest do
         assignment_generation: 1,
         runner_pool: "duckdb",
         required_runner_release_id: FavnTestSupport.runner_release_id(),
+        assigned_at: DateTime.utc_now(),
         lease_expires_at: DateTime.add(DateTime.utc_now(), 30, :second),
         retry_class: :unknown_do_not_retry,
         payload: state.work
@@ -450,6 +452,16 @@ defmodule FavnRunner.RunnerAgentTest do
 
     def handle_call({:fetch_manifest, _assignment}, _from, state),
       do: {:reply, {:ok, state.version}, state}
+
+    def handle_call(
+          {:request, %RunnerTask.Started{} = started},
+          from,
+          %{block_second_started_ack?: true, started_count: count} = state
+        )
+        when count > 0 do
+      send(state.owner, {:started_after_preparation, started})
+      {:noreply, %{state | started_count: count + 1, started_from: from}}
+    end
 
     def handle_call({:request, %RunnerTask.Started{} = started}, _from, state) do
       send(state.owner, {:task_started, started, state.agent})
@@ -506,26 +518,35 @@ defmodule FavnRunner.RunnerAgentTest do
     def start_link(opts), do: GenServer.start_link(__MODULE__, Map.new(opts))
 
     @impl true
-    def init(state), do: {:ok, Map.put(state, :assignment, nil)}
+    def init(state) do
+      {:ok,
+       state
+       |> Map.put(:assignment, nil)
+       |> Map.put(:preparation_released?, false)
+       |> Map.put(:started_count, 0)}
+    end
 
     @impl true
     def handle_call(:gateway, _from, state), do: {:reply, {:ok, self()}, state}
 
     def handle_call({:register, registration, agent}, _from, state) do
-      assignment = %RunnerTask.Assignment{
-        command_id: "blocked-preparation-claim",
-        workspace_id: "workspace-blocked-preparation",
-        task_id: "rt_blocked_preparation",
-        task_kind: :asset_attempt,
-        runner_instance_id: registration.runner_instance_id,
-        runner_session_generation: 1,
-        assignment_generation: 1,
-        runner_pool: "duckdb",
-        required_runner_release_id: FavnTestSupport.runner_release_id(),
-        lease_expires_at: DateTime.add(DateTime.utc_now(), 150, :millisecond),
-        retry_class: :unknown_do_not_retry,
-        payload: state.work
-      }
+      assignment =
+        state.assignment ||
+          %RunnerTask.Assignment{
+            command_id: "blocked-preparation-claim",
+            workspace_id: "workspace-blocked-preparation",
+            task_id: "rt_blocked_preparation",
+            task_kind: :asset_attempt,
+            runner_instance_id: registration.runner_instance_id,
+            runner_session_generation: 1,
+            assignment_generation: 1,
+            runner_pool: "duckdb",
+            required_runner_release_id: FavnTestSupport.runner_release_id(),
+            assigned_at: DateTime.utc_now(),
+            lease_expires_at: DateTime.add(DateTime.utc_now(), 150, :millisecond),
+            retry_class: :unknown_do_not_retry,
+            payload: state.work
+          }
 
       ack = %RunnerTask.RegistrationAck{
         runner_instance_id: registration.runner_instance_id,
@@ -536,8 +557,31 @@ defmodule FavnRunner.RunnerAgentTest do
       {:reply, {:ok, ack}, Map.merge(state, %{assignment: assignment, agent: agent})}
     end
 
+    def handle_call(
+          {:request, %RunnerTask.ClaimRequest{} = request},
+          _from,
+          %{assignment: nil} = state
+        ) do
+      no_work = %RunnerTask.NoWork{
+        command_id: request.command_id,
+        runner_instance_id: request.runner_instance_id,
+        runner_session_generation: request.runner_session_generation,
+        action: :wait,
+        wait_ms: 60_000
+      }
+
+      {:reply, {:ok, no_work}, state}
+    end
+
     def handle_call({:request, %RunnerTask.ClaimRequest{}}, _from, state),
       do: {:reply, {:ok, state.assignment}, state}
+
+    def handle_call(
+          {:fetch_manifest, _assignment},
+          _from,
+          %{preparation_released?: true} = state
+        ),
+        do: {:reply, {:ok, state.version}, state}
 
     def handle_call({:fetch_manifest, _assignment}, from, state) do
       send(state.owner, :preparation_blocked)
@@ -551,13 +595,44 @@ defmodule FavnRunner.RunnerAgentTest do
 
     def handle_call({:request, %RunnerTask.Started{} = started}, _from, state) do
       send(state.owner, {:started_after_preparation, started})
-      {:reply, {:ok, %{status: :running}}, state}
+
+      if state[:lose_first_started_ack?] and state.started_count == 0 do
+        {:reply, {:error, :control_plane_unavailable}, %{state | started_count: 1}}
+      else
+        {:reply, {:ok, %{status: :running}}, %{state | started_count: state.started_count + 1}}
+      end
     end
+
+    def handle_call({:request, %RunnerTask.Result{} = result}, _from, state) do
+      ack = %RunnerTask.ResultAck{
+        workspace_id: result.workspace_id,
+        task_id: result.task_id,
+        runner_instance_id: result.runner_instance_id,
+        runner_session_generation: result.runner_session_generation,
+        assignment_generation: result.assignment_generation,
+        result_version: result.result_version,
+        status: :persisted
+      }
+
+      {:reply, {:ok, ack}, %{state | assignment: nil}}
+    end
+
+    @impl true
+    def handle_cast(:connect, state), do: {:noreply, state}
 
     @impl true
     def handle_info(:release_preparation, %{fetch_from: from} = state) do
       GenServer.reply(from, {:ok, state.version})
-      {:noreply, Map.delete(state, :fetch_from)}
+
+      {:noreply,
+       state
+       |> Map.delete(:fetch_from)
+       |> Map.put(:preparation_released?, true)}
+    end
+
+    def handle_info(:release_second_started, %{started_from: from} = state) do
+      GenServer.reply(from, {:ok, %{status: :running}})
+      {:noreply, Map.delete(state, :started_from)}
     end
   end
 
@@ -603,6 +678,41 @@ defmodule FavnRunner.RunnerAgentTest do
     assert_receive {:renewed_during_preparation, %RunnerTask.LeaseRenewal{}}, 1_000
     send(control_plane, :release_preparation)
     assert_receive {:started_after_preparation, %RunnerTask.Started{}}, 1_000
+    assert Process.alive?(agent)
+  end
+
+  test "Started preserves its issued-at timestamp after renewal and an acknowledgement loss" do
+    {version, work} = executable_work("started_ack_loss")
+
+    {:ok, control_plane} =
+      start_supervised(
+        {BlockingPreparationControlPlane,
+         owner: self(),
+         version: version,
+         work: work,
+         lose_first_started_ack?: true,
+         block_second_started_ack?: true}
+      )
+
+    agent =
+      start_supervised!({
+        RunnerAgent,
+        name: nil,
+        connection: control_plane,
+        runner_pool: :duckdb,
+        lifecycle_mode: :resident,
+        exit_fun: fn _status -> :ok end
+      })
+
+    assert_receive :preparation_blocked, 1_000
+    assert_receive {:renewed_during_preparation, %RunnerTask.LeaseRenewal{}}, 1_000
+    send(control_plane, :release_preparation)
+
+    assert_receive {:started_after_preparation, %RunnerTask.Started{} = first}, 1_000
+    assert_receive {:started_after_preparation, %RunnerTask.Started{} = replay}, 2_000
+    assert replay.issued_at == first.issued_at
+    assert DateTime.compare(replay.occurred_at, first.occurred_at) in [:eq, :gt]
+    send(control_plane, :release_second_started)
     assert Process.alive?(agent)
   end
 
@@ -1456,6 +1566,7 @@ defmodule FavnRunner.RunnerAgentTest do
       assignment_generation: 2,
       runner_pool: "duckdb",
       required_runner_release_id: FavnTestSupport.runner_release_id(),
+      assigned_at: DateTime.utc_now(),
       lease_expires_at: DateTime.add(DateTime.utc_now(), 30, :second),
       retry_class: :unknown_do_not_retry,
       payload: %Favn.Contracts.RunnerWork{

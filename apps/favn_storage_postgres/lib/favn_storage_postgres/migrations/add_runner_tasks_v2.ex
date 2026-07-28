@@ -73,18 +73,9 @@ defmodule FavnStoragePostgres.Migrations.AddRunnerTasksV2 do
     )
 
     create(
-      index(:runner_tasks, [:workspace_id, :assignment_expires_at, :task_id],
+      index(:runner_tasks, [:assignment_expires_at, :workspace_id, :task_id],
         name: :runner_tasks_expired_idx,
-        prefix: @prefix,
-        where: "status IN ('assigned','preparing','running','cancelling')"
-      )
-    )
-
-    create(
-      index(:runner_tasks, [:workspace_id, :terminal_at, :task_id],
-        name: :runner_tasks_terminal_retention_idx,
-        prefix: @prefix,
-        where: "terminal_at IS NOT NULL"
+        prefix: @prefix
       )
     )
 
@@ -246,8 +237,16 @@ defmodule FavnStoragePostgres.Migrations.AddRunnerTasksV2 do
       add(:operation, :text, null: false)
       add(:request_hash, :binary, null: false)
       add(:result, :map, null: false)
+      add(:issued_at, :utc_datetime_usec, null: false)
       add(:inserted_at, :utc_datetime_usec, null: false)
     end
+
+    create(
+      index(:runner_task_commands, [:inserted_at],
+        name: :runner_task_commands_retention_idx,
+        prefix: @prefix
+      )
+    )
 
     create(
       constraint(:runner_task_commands, :runner_task_commands_values_valid,
@@ -256,9 +255,158 @@ defmodule FavnStoragePostgres.Migrations.AddRunnerTasksV2 do
           "octet_length(scope_id) BETWEEN 1 AND 255 AND octet_length(command_id) BETWEEN 1 AND 255 AND operation IN ('enqueue','claim','transition','runtime_inputs','append_log_batch','complete','request_cancellation','acknowledge_cancellation','release','retry','recover_expired','reconcile_demand') AND octet_length(request_hash) = 32 AND pg_column_size(result) <= 262144"
       )
     )
+
+    create table(:runner_task_outcomes, primary_key: false, prefix: @prefix) do
+      add(:workspace_id, :text, null: false, primary_key: true)
+      add(:task_id, :text, null: false, primary_key: true)
+      add(:assignment_generation, :bigint, null: false, primary_key: true)
+      add(:result_version, :integer)
+      add(:result, :map)
+      add(:error, :map)
+      add(:result_hash, :binary, null: false)
+      add(:inserted_at, :utc_datetime_usec, null: false)
+    end
+
+    execute("""
+    ALTER TABLE #{@prefix}.runner_task_outcomes
+    ADD CONSTRAINT runner_task_outcomes_task_fkey
+    FOREIGN KEY (workspace_id, task_id)
+    REFERENCES #{@prefix}.runner_tasks(workspace_id, task_id)
+    ON DELETE CASCADE
+    """)
+
+    create(
+      constraint(:runner_task_outcomes, :runner_task_outcomes_values_valid,
+        prefix: @prefix,
+        check:
+          "assignment_generation >= 0 AND (result_version IS NULL OR result_version >= 0) AND octet_length(result_hash) = 32 AND (result IS NULL OR pg_column_size(result) <= 2097152) AND (error IS NULL OR pg_column_size(error) <= 262144)"
+      )
+    )
+
+    create(
+      index(:runner_task_outcomes, [:inserted_at],
+        name: :runner_task_outcomes_retention_idx,
+        prefix: @prefix
+      )
+    )
+
+    create table(:runner_task_runtime_input_errors, primary_key: false, prefix: @prefix) do
+      add(:workspace_id, :text, null: false, primary_key: true)
+      add(:task_id, :text, null: false, primary_key: true)
+      add(:resolution_id, :text, null: false, primary_key: true)
+      add(:error, :map, null: false)
+      add(:error_hash, :binary, null: false)
+      add(:inserted_at, :utc_datetime_usec, null: false)
+    end
+
+    execute("""
+    ALTER TABLE #{@prefix}.runner_task_runtime_input_errors
+    ADD CONSTRAINT runner_task_runtime_input_errors_task_fkey
+    FOREIGN KEY (workspace_id, task_id)
+    REFERENCES #{@prefix}.runner_tasks(workspace_id, task_id)
+    ON DELETE CASCADE
+    """)
+
+    create(
+      constraint(
+        :runner_task_runtime_input_errors,
+        :runner_task_runtime_input_errors_values_valid,
+        prefix: @prefix,
+        check:
+          "octet_length(resolution_id) BETWEEN 1 AND 255 AND octet_length(error_hash) = 32 AND pg_column_size(error) <= 262144"
+      )
+    )
+
+    create(
+      index(:runner_task_runtime_input_errors, [:inserted_at],
+        name: :runner_task_runtime_input_errors_retention_idx,
+        prefix: @prefix
+      )
+    )
+
+    create table(:runner_task_command_tasks, primary_key: false, prefix: @prefix) do
+      add(:scope_id, :text, null: false, primary_key: true)
+      add(:command_id, :text, null: false, primary_key: true)
+      add(:ordinal, :integer, null: false, primary_key: true)
+      add(:workspace_id, :text, null: false)
+      add(:task_id, :text, null: false)
+      add(:outcome_assignment_generation, :bigint)
+      add(:runtime_input_resolution_id, :text)
+      add(:snapshot, :binary, null: false)
+    end
+
+    execute("""
+    ALTER TABLE #{@prefix}.runner_task_command_tasks
+    ADD CONSTRAINT runner_task_command_tasks_command_fkey
+    FOREIGN KEY (scope_id, command_id)
+    REFERENCES #{@prefix}.runner_task_commands(scope_id, command_id)
+    ON DELETE CASCADE
+    """)
+
+    execute("""
+    ALTER TABLE #{@prefix}.runner_task_command_tasks
+    ADD CONSTRAINT runner_task_command_tasks_outcome_fkey
+    FOREIGN KEY (workspace_id, task_id, outcome_assignment_generation)
+    REFERENCES #{@prefix}.runner_task_outcomes(workspace_id, task_id, assignment_generation)
+    ON DELETE RESTRICT
+    """)
+
+    execute("""
+    ALTER TABLE #{@prefix}.runner_task_command_tasks
+    ADD CONSTRAINT runner_task_command_tasks_runtime_input_error_fkey
+    FOREIGN KEY (workspace_id, task_id, runtime_input_resolution_id)
+    REFERENCES #{@prefix}.runner_task_runtime_input_errors(workspace_id, task_id, resolution_id)
+    ON DELETE RESTRICT
+    """)
+
+    execute("""
+    ALTER TABLE #{@prefix}.runner_task_command_tasks
+    ADD CONSTRAINT runner_task_command_tasks_task_fkey
+    FOREIGN KEY (workspace_id, task_id)
+    REFERENCES #{@prefix}.runner_tasks(workspace_id, task_id)
+    ON DELETE RESTRICT
+    """)
+
+    create(
+      constraint(:runner_task_command_tasks, :runner_task_command_tasks_values_valid,
+        prefix: @prefix,
+        check:
+          "ordinal >= 0 AND (outcome_assignment_generation IS NULL OR outcome_assignment_generation >= 0) AND (runtime_input_resolution_id IS NULL OR octet_length(runtime_input_resolution_id) BETWEEN 1 AND 255) AND octet_length(scope_id) BETWEEN 1 AND 255 AND octet_length(command_id) BETWEEN 1 AND 255 AND octet_length(snapshot) BETWEEN 1 AND 262144"
+      )
+    )
+
+    create(
+      index(:runner_task_command_tasks, [:workspace_id, :task_id],
+        name: :runner_task_command_tasks_task_idx,
+        prefix: @prefix
+      )
+    )
+
+    create(
+      index(
+        :runner_task_command_tasks,
+        [:workspace_id, :task_id, :outcome_assignment_generation],
+        name: :runner_task_command_tasks_outcome_idx,
+        prefix: @prefix,
+        where: "outcome_assignment_generation IS NOT NULL"
+      )
+    )
+
+    create(
+      index(
+        :runner_task_command_tasks,
+        [:workspace_id, :task_id, :runtime_input_resolution_id],
+        name: :runner_task_command_tasks_runtime_input_error_idx,
+        prefix: @prefix,
+        where: "runtime_input_resolution_id IS NOT NULL"
+      )
+    )
   end
 
   def down do
+    drop(table(:runner_task_command_tasks, prefix: @prefix))
+    drop(table(:runner_task_runtime_input_errors, prefix: @prefix))
+    drop(table(:runner_task_outcomes, prefix: @prefix))
     drop(table(:runner_task_commands, prefix: @prefix))
     drop(table(:runner_capacity_demands, prefix: @prefix))
     drop(table(:runner_task_log_batches, prefix: @prefix))

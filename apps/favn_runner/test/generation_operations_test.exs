@@ -379,6 +379,7 @@ defmodule FavnRunner.GenerationOperationsTest do
       assignment_generation: 1,
       runner_pool: "default",
       required_runner_release_id: Map.fetch!(version.runner_releases, "default"),
+      assigned_at: DateTime.utc_now(),
       lease_expires_at: DateTime.add(DateTime.utc_now(), 30, :second),
       retry_class: :safe_to_retry,
       payload: payload
@@ -770,6 +771,7 @@ defmodule FavnRunner.GenerationOperationsTest do
       assignment_generation: 1,
       runner_pool: "default",
       required_runner_release_id: Map.fetch!(version.runner_releases, "default"),
+      assigned_at: DateTime.utc_now(),
       lease_expires_at: DateTime.add(DateTime.utc_now(), 30, :second),
       retry_class: :safe_to_retry,
       payload: payload

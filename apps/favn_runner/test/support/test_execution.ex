@@ -51,6 +51,7 @@ defmodule FavnRunner.TestExecution do
       runner_instance_id: "runner-test",
       runner_pool: Atom.to_string(RunnerWork.runner_pool(work)),
       required_runner_release_id: work.required_runner_release_id,
+      assigned_at: DateTime.utc_now(),
       lease_expires_at: DateTime.add(DateTime.utc_now(), 60, :second),
       retry_class: :safe_to_retry,
       payload: work

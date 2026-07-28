@@ -58,6 +58,7 @@ defmodule FavnOrchestrator.RunnerTasks do
              task_id: task.task_id,
              expected_assignment_generation: task.assignment_generation,
              expected_result_version: task.result_version,
+             issued_at: task.terminal_at,
              occurred_at: DateTime.utc_now()
            }) do
       RunnerQueueCoordinator.notify(
@@ -163,6 +164,7 @@ defmodule FavnOrchestrator.RunnerTasks do
              runner_session_generation: message.runner_session_generation,
              assignment_generation: message.assignment_generation,
              transition: :running,
+             issued_at: message.issued_at,
              occurred_at: message.occurred_at
            }) do
       maybe_mark_busy(message, task)
@@ -186,6 +188,7 @@ defmodule FavnOrchestrator.RunnerTasks do
         assignment_generation: message.assignment_generation,
         transition: :renew,
         lease_duration_ms: duration,
+        issued_at: occurred_at,
         occurred_at: occurred_at
       })
     end
@@ -208,6 +211,7 @@ defmodule FavnOrchestrator.RunnerTasks do
              payload_fingerprint: fingerprint,
              runtime_input_pin: pin,
              error: message.error,
+             issued_at: message.issued_at,
              occurred_at: DateTime.utc_now()
            }) do
       {:ok,
@@ -240,6 +244,7 @@ defmodule FavnOrchestrator.RunnerTasks do
              sequence: message.sequence,
              entries: message.entries,
              payload_hash: hash,
+             issued_at: message.issued_at,
              occurred_at: DateTime.utc_now()
            }) do
       {:ok,
@@ -273,6 +278,7 @@ defmodule FavnOrchestrator.RunnerTasks do
              retry_class: message.retry_class,
              result: encoded_result,
              error: message.error,
+             issued_at: message.finished_at,
              occurred_at: message.finished_at
            }) do
       maybe_mark_idle(message)
@@ -298,9 +304,10 @@ defmodule FavnOrchestrator.RunnerTasks do
     with {:ok, task} <-
            store().request_cancellation(%C.RequestRunnerTaskCancellation{
              workspace_context: workspace_context(workspace_id, :runner_task_cancellation),
-             command_id: "cancel:#{task_id}",
+             command_id: "cancel:#{task_id}:#{System.unique_integer([:positive, :monotonic])}",
              task_id: task_id,
              reason: reason,
+             issued_at: now,
              occurred_at: now
            }) do
       delivery = maybe_send_cancellation(task, reason, now)
@@ -324,6 +331,7 @@ defmodule FavnOrchestrator.RunnerTasks do
              runner_instance_id: message.runner_instance_id,
              runner_session_generation: message.runner_session_generation,
              assignment_generation: message.assignment_generation,
+             issued_at: message.issued_at,
              occurred_at: message.acknowledged_at
            }) do
       {:ok, message}
@@ -353,6 +361,7 @@ defmodule FavnOrchestrator.RunnerTasks do
       supported_task_kinds: request.supported_task_kinds,
       capabilities: request.capabilities,
       lease_duration_ms: lease_ms(),
+      issued_at: request.issued_at,
       occurred_at: DateTime.utc_now()
     }
 
@@ -413,6 +422,7 @@ defmodule FavnOrchestrator.RunnerTasks do
       assignment_generation: task.assignment_generation,
       runner_pool: task.runner_pool,
       required_runner_release_id: task.required_runner_release_id,
+      assigned_at: DateTime.add(task.assignment_expires_at, -lease_ms(), :millisecond),
       lease_expires_at: task.assignment_expires_at,
       retry_class: task.retry_class,
       payload: task.payload

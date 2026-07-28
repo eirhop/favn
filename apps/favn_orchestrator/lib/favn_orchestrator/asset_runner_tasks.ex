@@ -46,6 +46,7 @@ defmodule FavnOrchestrator.AssetRunnerTasks do
              asset_step_id: work.asset_step_id,
              required_capability: "asset_execution",
              deadline_at: work.deadline_at,
+             issued_at: occurred_at,
              occurred_at: occurred_at
            }) do
       {:ok, task, work}

@@ -212,6 +212,7 @@ defmodule FavnOrchestrator.RunManager.CancellationTest do
               assignment_generation: cancellation.assignment_generation,
               command_id: cancellation.command_id,
               status: :observed,
+              issued_at: cancellation.requested_at,
               acknowledged_at: DateTime.utc_now()
             }
 

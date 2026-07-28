@@ -175,6 +175,7 @@ defmodule Favn.Contracts.RunnerTaskTest do
       runner_session_generation: 1,
       assignment_generation: 1,
       resolution_id: "resolution-1",
+      issued_at: ~U[2026-07-28 00:00:00Z],
       status: :resolved,
       runtime_inputs: resolution
     }
@@ -282,6 +283,7 @@ defmodule Favn.Contracts.RunnerTaskTest do
       },
       %Favn.Contracts.RunnerTask.ClaimRequest{
         command_id: "claim-1",
+        issued_at: now,
         runner_instance_id: "runner-1",
         runner_session_generation: 1,
         runner_pool: "duckdb",
@@ -315,6 +317,7 @@ defmodule Favn.Contracts.RunnerTaskTest do
         runner_instance_id: "runner-1",
         runner_session_generation: 1,
         assignment_generation: 1,
+        issued_at: now,
         occurred_at: now
       },
       %Favn.Contracts.RunnerTask.LeaseRenewal{
@@ -332,6 +335,7 @@ defmodule Favn.Contracts.RunnerTaskTest do
         runner_session_generation: 1,
         assignment_generation: 1,
         resolution_id: "resolution-1",
+        issued_at: now,
         status: :resolved,
         runtime_inputs: runtime_inputs
       },
@@ -352,6 +356,7 @@ defmodule Favn.Contracts.RunnerTaskTest do
         runner_session_generation: 1,
         assignment_generation: 1,
         batch_id: "batch-1",
+        issued_at: now,
         sequence: 0,
         entries: [%{"message" => "hello"}]
       },
@@ -402,6 +407,7 @@ defmodule Favn.Contracts.RunnerTaskTest do
         assignment_generation: 1,
         command_id: "cancel-1",
         status: :observed,
+        issued_at: now,
         acknowledged_at: now
       },
       %Favn.Contracts.RunnerTask.Shutdown{
@@ -427,6 +433,7 @@ defmodule Favn.Contracts.RunnerTaskTest do
       runner_instance_id: "runner-1",
       runner_session_generation: 1,
       assignment_generation: 0,
+      issued_at: DateTime.utc_now(),
       occurred_at: DateTime.utc_now()
     }
 
@@ -443,6 +450,7 @@ defmodule Favn.Contracts.RunnerTaskTest do
       },
       %Favn.Contracts.RunnerTask.ClaimRequest{
         command_id: "claim-zero",
+        issued_at: ~U[2026-07-28 00:00:00Z],
         runner_instance_id: "runner-1",
         runner_session_generation: 0,
         runner_pool: "duckdb",
@@ -505,6 +513,7 @@ defmodule Favn.Contracts.RunnerTaskTest do
       assignment_generation: 1,
       runner_pool: "duckdb",
       required_runner_release_id: @release,
+      assigned_at: DateTime.utc_now(),
       lease_expires_at: DateTime.utc_now(),
       retry_class: :safe_to_retry,
       payload: payload

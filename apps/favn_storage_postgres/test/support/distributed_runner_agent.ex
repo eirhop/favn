@@ -23,6 +23,7 @@ defmodule FavnStoragePostgres.TestSupport.DistributedRunnerAgent do
              gateway,
              %RunnerTask.ClaimRequest{
                command_id: "claim-#{runner_id}",
+               issued_at: DateTime.utc_now(),
                runner_instance_id: runner_id,
                runner_session_generation: ack.runner_session_generation,
                runner_pool: runner_pool,
@@ -40,6 +41,7 @@ defmodule FavnStoragePostgres.TestSupport.DistributedRunnerAgent do
                runner_instance_id: runner_id,
                runner_session_generation: ack.runner_session_generation,
                assignment_generation: assignment.assignment_generation,
+               issued_at: DateTime.utc_now(),
                occurred_at: DateTime.utc_now()
              }
            ) do

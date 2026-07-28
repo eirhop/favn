@@ -417,10 +417,13 @@ defmodule Favn.Contracts.RunnerTask.Contract do
 
   defp datetimes(fields) do
     [
+      :issued_at,
+      :assigned_at,
       :lease_expires_at,
       :occurred_at,
       :finished_at,
-      :requested_at
+      :requested_at,
+      :acknowledged_at
     ]
     |> Enum.reduce_while(:ok, fn field, :ok ->
       case Map.fetch(fields, field) do
@@ -654,6 +657,7 @@ defmodule Favn.Contracts.RunnerTask.ClaimRequest do
     session_fenced: true,
     fields: [
       command_id: nil,
+      issued_at: nil,
       runner_instance_id: nil,
       runner_session_generation: 0,
       runner_pool: nil,
@@ -663,6 +667,7 @@ defmodule Favn.Contracts.RunnerTask.ClaimRequest do
     ],
     required: [
       :command_id,
+      :issued_at,
       :runner_instance_id,
       :runner_pool,
       :required_runner_release_id,
@@ -684,6 +689,7 @@ defmodule Favn.Contracts.RunnerTask.Assignment do
       assignment_generation: 0,
       runner_pool: nil,
       required_runner_release_id: nil,
+      assigned_at: nil,
       lease_expires_at: nil,
       retry_class: nil,
       payload: nil
@@ -696,6 +702,7 @@ defmodule Favn.Contracts.RunnerTask.Assignment do
       :runner_instance_id,
       :runner_pool,
       :required_runner_release_id,
+      :assigned_at,
       :lease_expires_at,
       :retry_class,
       :payload
@@ -800,9 +807,10 @@ defmodule Favn.Contracts.RunnerTask.Started do
       runner_instance_id: nil,
       runner_session_generation: 0,
       assignment_generation: 0,
+      issued_at: nil,
       occurred_at: nil
     ],
-    required: [:workspace_id, :task_id, :runner_instance_id, :occurred_at]
+    required: [:workspace_id, :task_id, :runner_instance_id, :issued_at, :occurred_at]
 end
 
 defmodule Favn.Contracts.RunnerTask.LeaseRenewal do
@@ -831,11 +839,12 @@ defmodule Favn.Contracts.RunnerTask.RuntimeInputsResolved do
       runner_session_generation: 0,
       assignment_generation: 0,
       resolution_id: nil,
+      issued_at: nil,
       status: :resolved,
       runtime_inputs: nil,
       error: nil
     ],
-    required: [:workspace_id, :task_id, :runner_instance_id, :resolution_id],
+    required: [:workspace_id, :task_id, :runner_instance_id, :resolution_id, :issued_at],
     enums: [status: [:resolved, :failed]]
 
   def validate(%__MODULE__{status: :resolved} = message) do
@@ -899,11 +908,12 @@ defmodule Favn.Contracts.RunnerTask.LogBatch do
       runner_session_generation: 0,
       assignment_generation: 0,
       batch_id: nil,
+      issued_at: nil,
       sequence: 0,
       entries: [],
       truncated?: false
     ],
-    required: [:workspace_id, :task_id, :runner_instance_id, :batch_id],
+    required: [:workspace_id, :task_id, :runner_instance_id, :batch_id, :issued_at],
     limit: 262_144
 end
 
@@ -1035,6 +1045,7 @@ defmodule Favn.Contracts.RunnerTask.CancellationAck do
       assignment_generation: 0,
       command_id: nil,
       status: :observed,
+      issued_at: nil,
       acknowledged_at: nil
     ],
     required: [
@@ -1042,6 +1053,7 @@ defmodule Favn.Contracts.RunnerTask.CancellationAck do
       :task_id,
       :runner_instance_id,
       :command_id,
+      :issued_at,
       :acknowledged_at
     ],
     enums: [status: [:observed, :stale, :rejected]]

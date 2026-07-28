@@ -56,6 +56,59 @@ defmodule FavnStoragePostgres.Schemas.RunnerTaskCommand do
     field(:operation, :string)
     field(:request_hash, :binary)
     field(:result, :map)
+    field(:issued_at, :utc_datetime_usec)
+    field(:inserted_at, :utc_datetime_usec)
+  end
+end
+
+defmodule FavnStoragePostgres.Schemas.RunnerTaskCommandTask do
+  @moduledoc false
+  use Ecto.Schema
+
+  @primary_key false
+  @schema_prefix "favn_control"
+  schema "runner_task_command_tasks" do
+    field(:scope_id, :string, primary_key: true)
+    field(:command_id, :string, primary_key: true)
+    field(:ordinal, :integer, primary_key: true)
+    field(:workspace_id, :string)
+    field(:task_id, :string)
+    field(:outcome_assignment_generation, :integer)
+    field(:runtime_input_resolution_id, :string)
+    field(:snapshot, :binary)
+  end
+end
+
+defmodule FavnStoragePostgres.Schemas.RunnerTaskOutcome do
+  @moduledoc false
+  use Ecto.Schema
+
+  @primary_key false
+  @schema_prefix "favn_control"
+  schema "runner_task_outcomes" do
+    field(:workspace_id, :string, primary_key: true)
+    field(:task_id, :string, primary_key: true)
+    field(:assignment_generation, :integer, primary_key: true)
+    field(:result_version, :integer)
+    field(:result, :map)
+    field(:error, :map)
+    field(:result_hash, :binary)
+    field(:inserted_at, :utc_datetime_usec)
+  end
+end
+
+defmodule FavnStoragePostgres.Schemas.RunnerTaskRuntimeInputError do
+  @moduledoc false
+  use Ecto.Schema
+
+  @primary_key false
+  @schema_prefix "favn_control"
+  schema "runner_task_runtime_input_errors" do
+    field(:workspace_id, :string, primary_key: true)
+    field(:task_id, :string, primary_key: true)
+    field(:resolution_id, :string, primary_key: true)
+    field(:error, :map)
+    field(:error_hash, :binary)
     field(:inserted_at, :utc_datetime_usec)
   end
 end

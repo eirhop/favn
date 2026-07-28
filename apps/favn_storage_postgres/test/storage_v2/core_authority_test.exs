@@ -491,6 +491,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
                orchestration_context: planning_task_context,
                operation_id: planning_cancel_operation_id,
                required_capability: "generation_capabilities",
+               issued_at: occurred_at,
                occurred_at: occurred_at
              })
 
@@ -4083,6 +4084,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
       supported_task_kinds: [:asset_attempt],
       capabilities: ["asset_execution"],
       lease_duration_ms: 30_000,
+      issued_at: DateTime.utc_now(),
       occurred_at: DateTime.utc_now()
     }
 
@@ -4100,6 +4102,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
                  assignment_generation: old_assignment.assignment_generation,
                  disposition: :requeue,
                  reason: :test_reassignment,
+                 issued_at: DateTime.utc_now(),
                  occurred_at: DateTime.utc_now()
                }
              )
@@ -4109,6 +4112,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
       | command_id: "runtime-input-current-claim:" <> run.id,
         runner_instance_id: "runtime-input-current-runner:" <> run.id,
         runner_session_generation: 22,
+        issued_at: DateTime.utc_now(),
         occurred_at: DateTime.utc_now()
     }
 
@@ -4147,6 +4151,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
         payload_fingerprint: Base.decode16!(pin.payload_fingerprint, case: :mixed),
         runtime_input_pin: pin,
         error: nil,
+        issued_at: DateTime.utc_now(),
         occurred_at: DateTime.utc_now()
       }
     end
@@ -4501,6 +4506,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
 
     share_repo_sandbox!()
     start_supervised!({FavnOrchestrator.ExecutionAdmission.Coordinator, []})
+    start_supervised!({Task.Supervisor, name: FavnOrchestrator.RunnerClaimSupervisor})
     start_supervised!({RunnerTaskResultRouter, []})
 
     runner = spawn_link(fn -> durable_pipeline_runner(runner_state, fixture, keys.b) end)
@@ -4570,6 +4576,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
       supported_task_kinds: [:asset_attempt],
       capabilities: ["asset_execution"],
       lease_duration_ms: 30_000,
+      issued_at: DateTime.utc_now(),
       occurred_at: DateTime.utc_now()
     })
   end

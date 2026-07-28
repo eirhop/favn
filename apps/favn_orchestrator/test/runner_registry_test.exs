@@ -252,6 +252,7 @@ defmodule FavnOrchestrator.RunnerRegistryTest do
   defp claim_request(runner_id, generation, command_id) do
     %ClaimRequest{
       command_id: command_id,
+      issued_at: DateTime.utc_now(),
       runner_instance_id: runner_id,
       runner_session_generation: generation,
       runner_pool: "duckdb",

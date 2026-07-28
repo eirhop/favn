@@ -12,6 +12,7 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
   alias FavnOrchestrator.Persistence.PlatformContext
   alias FavnOrchestrator.Persistence.Queries, as: Q
   alias FavnOrchestrator.Persistence.WorkspaceContext
+  alias FavnOrchestrator.OperationRunnerTasks
   alias FavnOrchestrator.RunnerTasks
   alias FavnOrchestrator.RunnerGateway
   alias FavnOrchestrator.RunnerRegistry
@@ -24,6 +25,7 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
   alias FavnStoragePostgres.RunnerTasks.Codec
   alias FavnStoragePostgres.RunnerTasks.Store
   alias FavnStoragePostgres.Schemas.RunnerCapacityDemand, as: Demand
+  alias FavnStoragePostgres.Schemas.RunnerTaskCommand
   alias FavnStoragePostgres.StorageV2.Migrations
   alias FavnStoragePostgres.TestSupport.DistributedRunnerAgent
 
@@ -216,6 +218,11 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
                required_runner_release_id: @release
              })
 
+    assert {:ok, _claimed} =
+             Store.claim(claim_command(fixture, "claim-enqueue-replay", "enqueue-replay-runner"))
+
+    assert {:ok, ^first} = Store.enqueue(later_replay)
+
     assert {:error, %{kind: :conflict}} =
              Store.enqueue(%{command | payload_hash: :crypto.strong_rand_bytes(32)})
 
@@ -233,6 +240,267 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
                | command_id: "enqueue-changed-retry-class",
                  retry_class: :unknown_do_not_retry
              })
+  end
+
+  test "concurrent task ids cannot share one durable domain identity", fixture do
+    first = enqueue_command(fixture, "domain-race-first")
+
+    second =
+      fixture
+      |> enqueue_command("domain-race-second")
+      |> Map.put(:domain_identity, first.domain_identity)
+
+    results =
+      [first, second]
+      |> Task.async_stream(&Store.enqueue/1,
+        max_concurrency: 2,
+        ordered: false,
+        timeout: 30_000
+      )
+      |> Enum.map(fn {:ok, result} -> result end)
+
+    assert 1 == Enum.count(results, &match?({:ok, _task}, &1))
+    assert 1 == Enum.count(results, &match?({:error, %{kind: :conflict}}, &1))
+
+    assert %{rows: [[1]]} =
+             SQL.query!(
+               Repo,
+               """
+               SELECT count(*)
+               FROM favn_control.runner_tasks
+               WHERE workspace_id = $1 AND domain_identity = $2
+               """,
+               [fixture.workspace_id, first.domain_identity]
+             )
+  end
+
+  test "command receipts have a bounded replay window and prune through indexed time", fixture do
+    scope_id = "workspace:" <> fixture.workspace_id
+    expired_command_id = "expired-receipt-#{random_id()}"
+
+    assert {1, nil} =
+             Repo.insert_all(RunnerTaskCommand, [
+               %{
+                 scope_id: scope_id,
+                 command_id: expired_command_id,
+                 operation: "claim",
+                 request_hash: :crypto.strong_rand_bytes(32),
+                 result: %{"kind" => "none"},
+                 issued_at: DateTime.add(fixture.now, -8 * 24 * 60 * 60, :second),
+                 inserted_at: DateTime.add(fixture.now, -8 * 24 * 60 * 60, :second)
+               }
+             ])
+
+    stale_issued_at = DateTime.add(fixture.now, -8 * 24 * 60 * 60, :second)
+
+    stale_command =
+      fixture
+      |> claim_command("outside-replay-window", "expired-runner",
+        issued_at: stale_issued_at,
+        occurred_at: stale_issued_at
+      )
+      |> Map.put(:command_id, expired_command_id)
+
+    assert {:error, %{kind: :invalid}} = Store.claim(stale_command)
+
+    assert {:ok, nil} =
+             Store.claim(claim_command(fixture, "prune-expired-receipt", "current-runner"))
+
+    refute Repo.get_by(RunnerTaskCommand,
+             scope_id: scope_id,
+             command_id: expired_command_id
+           )
+
+    assert {:ok, queued} = Store.enqueue(enqueue_command(fixture, "after-pruned-command"))
+
+    assert {:error, %{kind: :invalid}} =
+             Store.claim(%{stale_command | occurred_at: fixture.now})
+
+    assert {:ok, claimed} =
+             Store.claim(claim_command(fixture, "fresh-after-prune", "fresh-runner"))
+
+    assert claimed.task_id == queued.task_id
+
+    plan =
+      Repo.transaction(fn ->
+        SQL.query!(Repo, "SET LOCAL enable_seqscan = off", [])
+        SQL.query!(Repo, "SET LOCAL enable_sort = off", [])
+
+        SQL.query!(
+          Repo,
+          """
+          EXPLAIN (FORMAT TEXT)
+          SELECT scope_id, command_id
+          FROM favn_control.runner_task_commands
+          WHERE inserted_at < $1
+          ORDER BY inserted_at
+          LIMIT 100
+          FOR UPDATE SKIP LOCKED
+          """,
+          [fixture.now]
+        )
+      end)
+      |> then(fn {:ok, %{rows: rows}} -> rows |> List.flatten() |> Enum.join("\n") end)
+
+    assert plan =~ "runner_task_commands_retention_idx"
+  end
+
+  test "enqueue identity locking precedes bounded receipt pruning under contention", fixture do
+    expired_at = DateTime.add(fixture.now, -8 * 24 * 60 * 60, :second)
+    scope_id = "workspace:" <> fixture.workspace_id
+
+    rows =
+      Enum.map(1..100, fn index ->
+        %{
+          scope_id: scope_id,
+          command_id: "expired-lock-order-#{index}-#{random_id()}",
+          operation: "claim",
+          request_hash: :crypto.strong_rand_bytes(32),
+          result: %{"kind" => "none"},
+          issued_at: expired_at,
+          inserted_at: expired_at
+        }
+      end)
+
+    assert {100, nil} = Repo.insert_all(RunnerTaskCommand, rows)
+    command = enqueue_command(fixture, "lock-order")
+
+    results =
+      1..12
+      |> Task.async_stream(
+        fn index ->
+          Store.enqueue(%{
+            command
+            | occurred_at: DateTime.add(command.occurred_at, index, :microsecond)
+          })
+        end,
+        max_concurrency: 12,
+        ordered: false,
+        timeout: 30_000
+      )
+      |> Enum.map(fn {:ok, result} -> result end)
+
+    assert Enum.all?(results, &match?({:ok, _task}, &1))
+    assert 1 == results |> Enum.map(fn {:ok, task} -> task.task_id end) |> Enum.uniq() |> length()
+
+    assert %{rows: [[0]]} =
+             SQL.query!(
+               Repo,
+               """
+               SELECT count(*)
+               FROM favn_control.runner_task_commands
+               WHERE scope_id = $1 AND inserted_at = $2
+               """,
+               [scope_id, expired_at]
+             )
+  end
+
+  test "history prune anti-joins and task deletion use their child indexes", fixture do
+    plans =
+      Repo.transaction(fn ->
+        SQL.query!(Repo, "SET LOCAL plan_cache_mode = force_generic_plan", [])
+        SQL.query!(Repo, "SET LOCAL enable_seqscan = off", [])
+
+        outcome =
+          SQL.query!(
+            Repo,
+            """
+            EXPLAIN (FORMAT TEXT)
+            SELECT outcome.workspace_id, outcome.task_id, outcome.assignment_generation
+            FROM favn_control.runner_task_outcomes AS outcome
+            WHERE outcome.inserted_at < $1
+              AND NOT EXISTS (
+                SELECT 1
+                FROM favn_control.runner_task_command_tasks AS snapshot
+                WHERE snapshot.outcome_assignment_generation IS NOT NULL
+                  AND snapshot.workspace_id = outcome.workspace_id
+                  AND snapshot.task_id = outcome.task_id
+                  AND snapshot.outcome_assignment_generation = outcome.assignment_generation
+              )
+            ORDER BY outcome.inserted_at
+            LIMIT $2
+            FOR UPDATE SKIP LOCKED
+            """,
+            [fixture.now, 100]
+          )
+
+        runtime_error =
+          SQL.query!(
+            Repo,
+            """
+            EXPLAIN (FORMAT TEXT)
+            SELECT history.workspace_id, history.task_id, history.resolution_id
+            FROM favn_control.runner_task_runtime_input_errors AS history
+            WHERE history.inserted_at < $1
+              AND NOT EXISTS (
+                SELECT 1
+                FROM favn_control.runner_task_command_tasks AS snapshot
+                WHERE snapshot.runtime_input_resolution_id IS NOT NULL
+                  AND snapshot.workspace_id = history.workspace_id
+                  AND snapshot.task_id = history.task_id
+                  AND snapshot.runtime_input_resolution_id = history.resolution_id
+              )
+            ORDER BY history.inserted_at
+            LIMIT $2
+            FOR UPDATE SKIP LOCKED
+            """,
+            [fixture.now, 100]
+          )
+
+        task_reference =
+          SQL.query!(
+            Repo,
+            """
+            EXPLAIN (FORMAT TEXT)
+            SELECT 1
+            FROM favn_control.runner_task_command_tasks
+            WHERE workspace_id = $1 AND task_id = $2
+            """,
+            [fixture.workspace_id, "rt_index_probe"]
+          )
+
+        {explain_text(outcome), explain_text(runtime_error), explain_text(task_reference)}
+      end)
+
+    assert {:ok, {outcome_plan, runtime_error_plan, task_reference_plan}} = plans
+    assert outcome_plan =~ "runner_task_command_tasks_outcome_idx"
+    assert runtime_error_plan =~ "runner_task_command_tasks_runtime_input_error_idx"
+    assert task_reference_plan =~ "runner_task_command_tasks_task_idx"
+
+    command = enqueue_command(fixture, "task-fk-lifecycle")
+    assert {:ok, task} = Store.enqueue(command)
+
+    assert_raise Postgrex.Error, fn ->
+      SQL.query!(
+        Repo,
+        "DELETE FROM favn_control.runner_tasks WHERE workspace_id = $1 AND task_id = $2",
+        [fixture.workspace_id, task.task_id]
+      )
+    end
+
+    assert %{num_rows: 1} =
+             SQL.query!(
+               Repo,
+               "DELETE FROM favn_control.runner_task_commands WHERE scope_id = $1 AND command_id = $2",
+               ["workspace:" <> fixture.workspace_id, command.command_id]
+             )
+
+    assert %{num_rows: 1} =
+             SQL.query!(
+               Repo,
+               "DELETE FROM favn_control.runner_tasks WHERE workspace_id = $1 AND task_id = $2",
+               [fixture.workspace_id, task.task_id]
+             )
+
+    assert %{num_rows: 1} =
+             SQL.query!(
+               Repo,
+               """
+               DELETE FROM favn_control.runner_capacity_demands
+               WHERE runner_pool = $1 AND required_runner_release_id = $2
+               """,
+               [fixture.runner_pool, @release]
+             )
   end
 
   test "concurrent FIFO claims never double-claim and exact empty polls are replayable",
@@ -273,9 +541,161 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
     assert {:ok, nil} = Store.claim(empty_command)
 
     assert {:ok, newly_queued} = Store.enqueue(enqueue_command(fixture, "after-empty"))
+
     assert {:ok, nil} = Store.claim(empty_command)
+
     assert {:ok, claimed_new} = Store.claim(claim_command(fixture, "new-poll", "new-runner"))
     assert claimed_new.task_id == newly_queued.task_id
+  end
+
+  test "concurrent first operation ensures share one durable issuance", fixture do
+    version = manifest_version("mv-concurrent-ensure-#{random_id()}", fixture.runner_pool)
+    asset_ref = {MyApp.DistributedRunnerAsset, :asset}
+    request = inspection_payload()
+    identity = {:concurrent_ensure, random_id()}
+    issued_candidates = [fixture.now, DateTime.add(fixture.now, 1, :second)]
+
+    results =
+      issued_candidates
+      |> Task.async_stream(
+        fn occurred_at ->
+          OperationRunnerTasks.ensure(
+            fixture.workspace_context,
+            version,
+            asset_ref,
+            :relation_inspection,
+            request,
+            identity,
+            occurred_at: occurred_at
+          )
+        end,
+        max_concurrency: 2,
+        ordered: false,
+        timeout: 30_000
+      )
+      |> Enum.map(fn result ->
+        assert {:ok, {:ok, task}} = result
+        task
+      end)
+
+    assert [first, second] = results
+    assert first == second
+    assert first.enqueued_at in issued_candidates
+
+    scope_id = "workspace:" <> fixture.workspace_id
+    command_id = "enqueue:" <> first.task_id
+
+    assert %{rows: [[1, issued_at]]} =
+             SQL.query!(
+               Repo,
+               """
+               SELECT count(*), min(issued_at)
+               FROM favn_control.runner_task_commands
+               WHERE scope_id = $1 AND command_id = $2
+               """,
+               [scope_id, command_id]
+             )
+
+    assert issued_at == DateTime.to_naive(first.enqueued_at)
+  end
+
+  test "large task fields are stored once while command receipts remain bounded", fixture do
+    blob_bytes = 950_000
+
+    payload = %Favn.Contracts.RunnerWork{
+      run_id: "large-receipt-run",
+      runner_pool: :duckdb,
+      required_runner_release_id: @release,
+      metadata: %{blob: incompressible_text(blob_bytes)}
+    }
+
+    enqueue =
+      enqueue_command(fixture, "large-receipt",
+        task_kind: :asset_attempt,
+        payload: payload,
+        orchestration_context: %{blob: incompressible_text(blob_bytes)}
+      )
+
+    assert {:ok, queued} = Store.enqueue(enqueue)
+
+    claim =
+      claim_command(fixture, "large-receipt", "large-receipt-runner",
+        supported_task_kinds: [:asset_attempt],
+        capabilities: ["asset_execution"]
+      )
+
+    assert {:ok, assigned} = Store.claim(claim)
+    assert {:ok, ^queued} = Store.enqueue(%{enqueue | occurred_at: DateTime.utc_now()})
+    assert {:ok, ^assigned} = Store.claim(%{claim | occurred_at: DateTime.utc_now()})
+
+    assert {:ok, running} =
+             Store.transition(
+               transition_command(fixture, assigned, "large-receipt-start", :running)
+             )
+
+    result = %Favn.Contracts.RunnerResult{
+      run_id: payload.run_id,
+      manifest_version_id: "mv-large-receipt",
+      manifest_content_hash: String.duplicate("a", 64),
+      required_runner_release_id: @release,
+      metadata: %{blob: incompressible_text(blob_bytes)}
+    }
+
+    assert {:ok, encoded_result} =
+             Codec.encode_result(:asset_attempt, :succeeded, result)
+
+    complete = complete_command(fixture, running, "large-receipt-complete", encoded_result)
+    assert {:ok, completed} = Store.complete(complete)
+    assert completed.result == result
+    assert {:ok, ^completed} = Store.complete(%{complete | occurred_at: DateTime.utc_now()})
+
+    assert %{rows: [[payload_size, context_size, result_size]]} =
+             SQL.query!(
+               Repo,
+               """
+               SELECT pg_column_size(payload),
+                      pg_column_size(orchestration_context),
+                      pg_column_size(result)
+               FROM favn_control.runner_tasks
+               WHERE workspace_id = $1 AND task_id = $2
+               """,
+               [fixture.workspace_id, queued.task_id]
+             )
+
+    assert payload_size > 262_144
+    assert context_size > 262_144
+    assert result_size > 262_144
+
+    assert %{rows: [[max_receipt_size, max_snapshot_size]]} =
+             SQL.query!(
+               Repo,
+               """
+               SELECT
+                 (SELECT max(pg_column_size(result))
+                  FROM favn_control.runner_task_commands
+                  WHERE scope_id IN ($1, 'platform:runner_tasks')),
+                 (SELECT max(octet_length(snapshot))
+                  FROM favn_control.runner_task_command_tasks
+                  WHERE workspace_id = $2 AND task_id = $3)
+               """,
+               ["workspace:" <> fixture.workspace_id, fixture.workspace_id, queued.task_id]
+             )
+
+    assert max_receipt_size <= 262_144
+    assert max_snapshot_size <= 262_144
+
+    assert %{rows: [[1, outcome_size]]} =
+             SQL.query!(
+               Repo,
+               """
+               SELECT count(*), max(pg_column_size(result))
+               FROM favn_control.runner_task_outcomes
+               WHERE workspace_id = $1 AND task_id = $2
+               """,
+               [fixture.workspace_id, queued.task_id]
+             )
+
+    assert outcome_size > 262_144
   end
 
   test "claims and demand are global across workspace-scoped task ownership", fixture do
@@ -407,7 +827,10 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
 
   test "assignment generations fence stale runners across safe requeue", fixture do
     assert {:ok, _task} = Store.enqueue(enqueue_command(fixture, "fence"))
-    assert {:ok, first} = Store.claim(claim_command(fixture, "claim-first", "runner-first"))
+    first_command = claim_command(fixture, "claim-first", "runner-first")
+    assert {:ok, first} = Store.claim(first_command)
+
+    assert {:ok, ^first} = Store.claim(first_command)
 
     assert {:ok, requeued} =
              Store.release(
@@ -420,6 +843,8 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
              Store.claim(claim_command(fixture, "claim-second", "runner-second"))
 
     assert second.assignment_generation == first.assignment_generation + 1
+
+    assert {:ok, ^first} = Store.claim(first_command)
 
     assert {:error, %{kind: :conflict}} =
              Store.transition(transition_command(fixture, first, "stale-start", :running))
@@ -447,6 +872,7 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
       sequence: 0,
       entries: entries,
       payload_hash: payload_hash,
+      issued_at: fixture.now,
       occurred_at: fixture.now
     }
 
@@ -477,12 +903,13 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
        fixture do
     assert {:ok, _task} = Store.enqueue(enqueue_command(fixture, "runtime-inputs"))
 
-    assert {:ok, assigned} =
-             Store.claim(claim_command(fixture, "claim-runtime-inputs", "runner-runtime-inputs"))
+    claim = claim_command(fixture, "claim-runtime-inputs", "runner-runtime-inputs")
+    assert {:ok, assigned} = Store.claim(claim)
 
     error =
       Favn.Contracts.RunnerError.new(
         type: :runtime_input_resolution_failed,
+        message: String.duplicate("e", 200_000),
         outcome: :safe_failure,
         retryable?: true
       )
@@ -499,6 +926,7 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
       payload_fingerprint: nil,
       runtime_input_pin: nil,
       error: error,
+      issued_at: DateTime.add(fixture.now, 2, :second),
       occurred_at: DateTime.add(fixture.now, 2, :second)
     }
 
@@ -507,6 +935,7 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
     assert resolved.runtime_input_resolution_status == :failed
     assert resolved.runtime_input_payload_fingerprint == nil
     assert resolved.runtime_input_error
+    assert {:ok, ^assigned} = Store.claim(%{claim | occurred_at: DateTime.utc_now()})
     assert {:ok, ^resolved} = Store.persist_runtime_inputs(command)
 
     assert {:ok, exact_retry} =
@@ -543,6 +972,28 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
     assert status == "failed"
     assert persisted_fingerprint == nil
     assert persisted_error
+
+    assert %{rows: [[1, error_size, max_snapshot_size]]} =
+             SQL.query!(
+               Repo,
+               """
+               SELECT
+                 (SELECT count(*)
+                  FROM favn_control.runner_task_runtime_input_errors
+                  WHERE workspace_id = $1 AND task_id = $2),
+                 (SELECT max(pg_column_size(error))
+                  FROM favn_control.runner_task_runtime_input_errors
+                  WHERE workspace_id = $1 AND task_id = $2),
+                 (SELECT max(octet_length(snapshot))
+                  FROM favn_control.runner_task_command_tasks
+                  WHERE workspace_id = $1 AND task_id = $2)
+               """,
+               [fixture.workspace_id, assigned.task_id]
+             )
+
+    assert error_size > 0
+    assert error_size <= 262_144
+    assert max_snapshot_size <= 262_144
   end
 
   test "terminal results are typed and persisted once with exact demand removal", fixture do
@@ -591,6 +1042,7 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
                command_id: "cancel-queued",
                task_id: queued.task_id,
                reason: :operator_request,
+               issued_at: fixture.now,
                occurred_at: fixture.now
              })
 
@@ -608,6 +1060,7 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
                command_id: "request-active-cancel",
                task_id: assigned.task_id,
                reason: :operator_request,
+               issued_at: DateTime.add(fixture.now, 2, :second),
                occurred_at: DateTime.add(fixture.now, 2, :second)
              })
 
@@ -621,6 +1074,7 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
                runner_instance_id: assigned.assigned_runner_instance_id,
                runner_session_generation: assigned.assigned_runner_session_generation,
                assignment_generation: assigned.assignment_generation,
+               issued_at: DateTime.add(fixture.now, 3, :second),
                occurred_at: DateTime.add(fixture.now, 3, :second)
              })
 
@@ -726,6 +1180,7 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
 
     claim = %Favn.Contracts.RunnerTask.ClaimRequest{
       command_id: fixture.workspace_id <> ":claim-dynamic-cancel",
+      issued_at: fixture.now,
       runner_instance_id: runner_id,
       runner_session_generation: registration_ack.runner_session_generation,
       runner_pool: fixture.runner_pool,
@@ -821,6 +1276,7 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
 
     claim = %Favn.Contracts.RunnerTask.ClaimRequest{
       command_id: fixture.workspace_id <> ":claim-renewal",
+      issued_at: fixture.now,
       runner_instance_id: runner_id,
       runner_session_generation: registration_ack.runner_session_generation,
       runner_pool: fixture.runner_pool,
@@ -895,6 +1351,7 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
       retry_class: :safe_to_retry,
       result: nil,
       error: Favn.Contracts.RunnerError.new(outcome: :unknown, retryable?: true),
+      issued_at: DateTime.add(fixture.now, 3, :second),
       occurred_at: DateTime.add(fixture.now, 3, :second)
     }
 
@@ -922,25 +1379,27 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
                transition_command(fixture, assigned, "start-safe-operation", :running)
              )
 
-    assert {:ok, failed} =
-             Store.complete(%C.CompleteRunnerTask{
-               workspace_context: fixture.workspace_context,
-               command_id: "complete-safe-operation-failure",
-               task_id: running.task_id,
-               runner_instance_id: running.assigned_runner_instance_id,
-               runner_session_generation: running.assigned_runner_session_generation,
-               assignment_generation: running.assignment_generation,
-               result_version: 1,
-               outcome: :failed,
-               retry_class: :safe_to_retry,
-               result: nil,
-               error:
-                 Favn.Contracts.RunnerError.new(
-                   outcome: :safe_failure,
-                   retryable?: true
-                 ),
-               occurred_at: DateTime.add(fixture.now, 3, :second)
-             })
+    first_completion = %C.CompleteRunnerTask{
+      workspace_context: fixture.workspace_context,
+      command_id: "complete-safe-operation-failure",
+      task_id: running.task_id,
+      runner_instance_id: running.assigned_runner_instance_id,
+      runner_session_generation: running.assigned_runner_session_generation,
+      assignment_generation: running.assignment_generation,
+      result_version: 1,
+      outcome: :failed,
+      retry_class: :safe_to_retry,
+      result: nil,
+      error:
+        Favn.Contracts.RunnerError.new(
+          outcome: :safe_failure,
+          retryable?: true
+        ),
+      issued_at: DateTime.add(fixture.now, 3, :second),
+      occurred_at: DateTime.add(fixture.now, 3, :second)
+    }
+
+    assert {:ok, failed} = Store.complete(first_completion)
 
     retry = %C.RetryRunnerTask{
       workspace_context: fixture.workspace_context,
@@ -948,6 +1407,7 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
       task_id: failed.task_id,
       expected_assignment_generation: failed.assignment_generation,
       expected_result_version: failed.result_version,
+      issued_at: DateTime.add(fixture.now, 4, :second),
       occurred_at: DateTime.add(fixture.now, 4, :second)
     }
 
@@ -968,6 +1428,54 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
              )
 
     assert reassigned.assignment_generation == assigned.assignment_generation + 1
+
+    assert {:ok, rerunning} =
+             Store.transition(
+               fixture
+               |> transition_command(reassigned, "restart-safe-operation", :running)
+               |> Map.merge(%{
+                 issued_at: DateTime.add(fixture.now, 6, :second),
+                 occurred_at: DateTime.add(fixture.now, 6, :second)
+               })
+             )
+
+    second_result = %RelationInspectionResult{
+      required_runner_release_id: @release,
+      row_count: 2,
+      inspected_at: DateTime.add(fixture.now, 6, :second)
+    }
+
+    assert {:ok, encoded_second_result} =
+             Codec.encode_result(:relation_inspection, :succeeded, second_result)
+
+    assert {:ok, succeeded} =
+             fixture
+             |> complete_command(
+               rerunning,
+               "complete-safe-operation-success",
+               encoded_second_result
+             )
+             |> Map.merge(%{
+               issued_at: DateTime.add(fixture.now, 7, :second),
+               occurred_at: DateTime.add(fixture.now, 7, :second)
+             })
+             |> Store.complete()
+
+    assert succeeded.status == :succeeded
+    assert succeeded.assignment_generation == failed.assignment_generation + 1
+    assert succeeded.result == second_result
+
+    assert {:ok, replayed_failure} =
+             Store.complete(%{
+               first_completion
+               | occurred_at: DateTime.add(fixture.now, 10, :second)
+             })
+
+    assert replayed_failure == failed
+    assert replayed_failure.assignment_generation == assigned.assignment_generation
+    assert replayed_failure.status == :failed
+    assert replayed_failure.result == nil
+    assert replayed_failure.error == failed.error
   end
 
   test "expired assignments are claimed once for fenced recovery", fixture do
@@ -984,6 +1492,7 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
       platform_context: fixture.platform_context,
       command_id: platform_command_id(fixture, "recover-expired"),
       owner_id: "recovery-owner",
+      issued_at: recovery_time,
       occurred_at: recovery_time,
       limit: 10,
       lease_duration_ms: 30_000
@@ -1001,6 +1510,77 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
                | command_id: platform_command_id(fixture, "recover-empty"),
                  occurred_at: recovery_time
              })
+  end
+
+  @tag timeout: 120_000
+  test "maximum recovery batches use bounded per-task snapshots", fixture do
+    count = 500
+
+    1..count
+    |> Task.async_stream(
+      fn index -> Store.enqueue(enqueue_command(fixture, "recover-max-#{index}")) end,
+      max_concurrency: 16,
+      ordered: false,
+      timeout: 30_000
+    )
+    |> Enum.each(fn result -> assert {:ok, {:ok, _task}} = result end)
+
+    1..count
+    |> Task.async_stream(
+      fn index ->
+        Store.claim(
+          claim_command(fixture, "recover-max-#{index}", "recover-max-runner-#{index}",
+            lease_duration_ms: 1
+          )
+        )
+      end,
+      max_concurrency: 16,
+      ordered: false,
+      timeout: 30_000
+    )
+    |> Enum.each(fn result -> assert {:ok, {:ok, _task}} = result end)
+
+    recovery_time = DateTime.add(fixture.now, 2, :second)
+
+    command = %C.RecoverRunnerTasks{
+      platform_context: fixture.platform_context,
+      command_id: platform_command_id(fixture, "recover-max"),
+      owner_id: "recovery-max-owner",
+      issued_at: recovery_time,
+      occurred_at: recovery_time,
+      limit: count,
+      lease_duration_ms: 30_000
+    }
+
+    assert {:ok, recovered} = Store.recover_expired(command)
+    assert length(recovered) == count
+    assert {:ok, ^recovered} = Store.recover_expired(%{command | occurred_at: DateTime.utc_now()})
+
+    assert %{rows: [[receipt_size, snapshot_count, max_snapshot_size]]} =
+             SQL.query!(
+               Repo,
+               """
+               SELECT command_size,
+                      snapshot_count,
+                      max_snapshot_size
+               FROM (
+                 SELECT pg_column_size(result) AS command_size
+                 FROM favn_control.runner_task_commands
+                 WHERE scope_id = 'platform:runner_tasks' AND command_id = $1
+               ) AS command
+               CROSS JOIN (
+                 SELECT count(*) AS snapshot_count,
+                        max(octet_length(snapshot)) AS max_snapshot_size
+                 FROM favn_control.runner_task_command_tasks
+                 WHERE scope_id = 'platform:runner_tasks' AND command_id = $1
+               ) AS snapshots
+               """,
+               [command.command_id]
+             )
+
+    assert receipt_size <= 262_144
+    assert snapshot_count == count
+    assert max_snapshot_size <= 262_144
   end
 
   test "runner session resume requires an exact durable active assignment", fixture do
@@ -1065,21 +1645,28 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
                [fixture.workspace_id, blocked.task_id]
              )
 
-    assert {:ok, repaired} =
-             Store.reconcile_demand(%C.ReconcileRunnerCapacityDemand{
-               platform_context: fixture.platform_context,
-               command_id: platform_command_id(fixture, "reconcile-demand"),
-               runner_pool: fixture.runner_pool,
-               required_runner_release_id: @release,
-               mode: :repair,
-               occurred_at: fixture.now
-             })
+    repair_command = %C.ReconcileRunnerCapacityDemand{
+      platform_context: fixture.platform_context,
+      command_id: platform_command_id(fixture, "reconcile-demand"),
+      runner_pool: fixture.runner_pool,
+      required_runner_release_id: @release,
+      mode: :repair,
+      issued_at: fixture.now,
+      occurred_at: fixture.now
+    }
+
+    assert {:ok, repaired} = Store.reconcile_demand(repair_command)
 
     assert repaired.healthy?
     assert repaired.outstanding_count == 1
     assert repaired.queued_count == 1
     assert repaired.oldest_queued_at == queued.enqueued_at
     assert {:ok, ^repaired} = demand(fixture)
+
+    assert {:ok, _claimed} =
+             Store.claim(claim_command(fixture, "claim-after-reconcile", "reconcile-runner"))
+
+    assert {:ok, ^repaired} = Store.reconcile_demand(repair_command)
   end
 
   test "demand audit detects drift and requires an explicit repair", fixture do
@@ -1101,6 +1688,7 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
       runner_pool: fixture.runner_pool,
       required_runner_release_id: @release,
       mode: :audit,
+      issued_at: fixture.now,
       occurred_at: fixture.now
     }
 
@@ -1136,6 +1724,7 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
             command_id: platform_command_id(fixture, "reconcile-race-#{index}"),
             runner_pool: fixture.runner_pool,
             required_runner_release_id: @release,
+            issued_at: DateTime.add(fixture.now, index, :microsecond),
             occurred_at: DateTime.add(fixture.now, index, :microsecond)
           })
         end
@@ -1232,7 +1821,7 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
       assert runner_pool == fixture.runner_pool
       assert RunnerRegistry.count(fixture.runner_pool, @release) == 1
       assert latency_ms < 300_000
-      assert_eventually(fn -> :sys.get_state(RunnerGateway) == %{} end)
+      assert_eventually(fn -> :sys.get_state(RunnerGateway).pending == %{} end)
 
       agent = :peer.call(peer, Process, :whereis, [FavnRunner.RunnerAgent], 30_000)
       assert is_pid(agent)
@@ -1293,7 +1882,7 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
       |> Enum.each(fn result -> assert {:ok, {:ok, _task}} = result end)
     end)
 
-    start_runner_control_plane()
+    start_runner_control_plane(max_concurrency: 384)
 
     Enum.each(pool_fixtures, fn pool_fixture ->
       assert RunnerRegistry.count(pool_fixture.runner_pool, @release) == 0
@@ -1332,7 +1921,7 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
                      length(cohort_samples)
 
             assert Enum.all?(cohort_samples, &(&1.mailbox_len <= 4))
-            assert_eventually(fn -> :sys.get_state(RunnerGateway) == %{} end)
+            assert_eventually(fn -> :sys.get_state(RunnerGateway).pending == %{} end)
 
             claimed_count = previously_claimed + runner_count
 
@@ -1414,13 +2003,79 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
     assert plan =~ "runner_tasks_claim_idx"
   end
 
+  test "expired assignment recovery uses its global lease-order index", fixture do
+    assert {:ok, _task} = Store.enqueue(enqueue_command(fixture, "explain-recovery"))
+
+    assert {:ok, assigned} =
+             Store.claim(
+               claim_command(fixture, "explain-recovery", "recovery-index-runner",
+                 lease_duration_ms: 1
+               )
+             )
+
+    plan =
+      Repo.transaction(fn ->
+        SQL.query!(Repo, "SET LOCAL plan_cache_mode = force_generic_plan", [])
+        SQL.query!(Repo, "SET LOCAL enable_seqscan = off", [])
+        SQL.query!(Repo, "SET LOCAL enable_sort = off", [])
+
+        SQL.query!(
+          Repo,
+          """
+          EXPLAIN (FORMAT TEXT)
+          SELECT *
+          FROM favn_control.runner_tasks
+          WHERE status = ANY($2::text[])
+            AND assignment_expires_at <= $1
+          ORDER BY assignment_expires_at, workspace_id, task_id
+          LIMIT 50
+          FOR UPDATE SKIP LOCKED
+          """,
+          [
+            DateTime.add(fixture.now, 1, :second),
+            ["assigned", "preparing", "running", "cancelling"]
+          ]
+        )
+      end)
+      |> then(fn {:ok, %{rows: rows}} -> rows |> List.flatten() |> Enum.join("\n") end)
+
+    assert plan =~ "runner_tasks_expired_idx"
+
+    assert %{rows: [[index_definition]]} =
+             SQL.query!(
+               Repo,
+               """
+               SELECT indexdef
+               FROM pg_indexes
+               WHERE schemaname = 'favn_control'
+                 AND indexname = 'runner_tasks_expired_idx'
+               """,
+               []
+             )
+
+    refute index_definition =~ " WHERE "
+
+    assert {:ok, %{status: :queued}} =
+             Store.release(
+               release_command(
+                 fixture,
+                 assigned,
+                 "release-explain-recovery",
+                 :requeue,
+                 :index_test_cleanup
+               )
+             )
+  end
+
   defp enqueue_command(fixture, suffix, opts \\ []) do
     task_kind = Keyword.get(opts, :task_kind, :relation_inspection)
     payload = Keyword.get(opts, :payload, inspection_payload())
     {:ok, encoded_payload, payload_hash} = Codec.encode_payload(task_kind, payload)
 
     {:ok, orchestration_context} =
-      Codec.encode_orchestration_context(%{kind: :test})
+      Codec.encode_orchestration_context(
+        Keyword.get(opts, :orchestration_context, %{kind: :test})
+      )
 
     occurred_at = Keyword.get(opts, :occurred_at, fixture.now)
 
@@ -1447,6 +2102,7 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
           if(task_kind == :asset_attempt, do: "asset_execution", else: "relation_inspection")
         ),
       deadline_at: DateTime.add(occurred_at, 60, :second),
+      issued_at: occurred_at,
       occurred_at: occurred_at
     }
   end
@@ -1463,7 +2119,7 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
     end
   end
 
-  defp start_runner_control_plane do
+  defp start_runner_control_plane(opts \\ []) do
     start_runner_registry()
 
     case Process.whereis(FavnOrchestrator.RunnerClaimSupervisor) do
@@ -1475,7 +2131,7 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
     end
 
     case Process.whereis(RunnerGateway) do
-      nil -> start_supervised!({RunnerGateway, []})
+      nil -> start_supervised!({RunnerGateway, opts})
       _pid -> :ok
     end
   end
@@ -1641,6 +2297,7 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
               assignment_generation: cancellation.assignment_generation,
               command_id: cancellation.command_id,
               status: :observed,
+              issued_at: cancellation.requested_at,
               acknowledged_at: DateTime.utc_now()
             }
 
@@ -1686,6 +2343,12 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
       supported_task_kinds: Keyword.get(opts, :supported_task_kinds, [:relation_inspection]),
       capabilities: Keyword.get(opts, :capabilities, ["relation_inspection"]),
       lease_duration_ms: Keyword.get(opts, :lease_duration_ms, 30_000),
+      issued_at:
+        Keyword.get(
+          opts,
+          :issued_at,
+          Keyword.get(opts, :occurred_at, DateTime.add(fixture.now, 1, :second))
+        ),
       occurred_at: Keyword.get(opts, :occurred_at, DateTime.add(fixture.now, 1, :second))
     }
   end
@@ -1700,6 +2363,7 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
       assignment_generation: task.assignment_generation,
       transition: transition,
       lease_duration_ms: if(transition == :renew, do: 30_000),
+      issued_at: DateTime.add(fixture.now, 2, :second),
       occurred_at: DateTime.add(fixture.now, 2, :second)
     }
   end
@@ -1714,6 +2378,7 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
       assignment_generation: task.assignment_generation,
       disposition: disposition,
       reason: reason,
+      issued_at: DateTime.add(fixture.now, 2, :second),
       occurred_at: DateTime.add(fixture.now, 2, :second)
     }
   end
@@ -1731,6 +2396,7 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
       retry_class: :terminal,
       result: result,
       error: nil,
+      issued_at: DateTime.add(fixture.now, 3, :second),
       occurred_at: DateTime.add(fixture.now, 3, :second)
     }
   end
@@ -1742,6 +2408,8 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
       required_runner_release_id: @release
     })
   end
+
+  defp explain_text(%{rows: rows}), do: rows |> List.flatten() |> Enum.join("\n")
 
   defp platform_command_id(fixture, suffix),
     do: "#{fixture.workspace_id}:#{suffix}"
@@ -1782,4 +2450,13 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
 
   defp random_id,
     do: :crypto.strong_rand_bytes(8) |> Base.encode16(case: :lower)
+
+  defp incompressible_text(bytes) do
+    bytes
+    |> Kernel.*(3)
+    |> div(4)
+    |> :crypto.strong_rand_bytes()
+    |> Base.encode64()
+    |> binary_part(0, bytes)
+  end
 end

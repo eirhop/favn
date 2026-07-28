@@ -11,6 +11,7 @@ defmodule FavnOrchestrator.Persistence.Commands.EnqueueRunnerTask do
     :retry_class,
     :payload,
     :payload_hash,
+    :issued_at,
     :occurred_at
   ]
   defstruct @enforce_keys ++
@@ -38,6 +39,7 @@ defmodule FavnOrchestrator.Persistence.Commands.ClaimRunnerTask do
     :supported_task_kinds,
     :capabilities,
     :lease_duration_ms,
+    :issued_at,
     :occurred_at
   ]
   defstruct @enforce_keys
@@ -54,6 +56,7 @@ defmodule FavnOrchestrator.Persistence.Commands.TransitionRunnerTask do
     :runner_session_generation,
     :assignment_generation,
     :transition,
+    :issued_at,
     :occurred_at
   ]
   defstruct @enforce_keys ++ [:lease_duration_ms]
@@ -78,6 +81,7 @@ defmodule FavnOrchestrator.Persistence.Commands.PersistRunnerTaskRuntimeInputs d
     :assignment_generation,
     :resolution_id,
     :status,
+    :issued_at,
     :occurred_at
   ]
   defstruct @enforce_keys ++ [:payload_fingerprint, :runtime_input_pin, :error]
@@ -98,6 +102,7 @@ defmodule FavnOrchestrator.Persistence.Commands.AppendRunnerTaskLogBatch do
     :sequence,
     :entries,
     :payload_hash,
+    :issued_at,
     :occurred_at
   ]
   defstruct @enforce_keys
@@ -117,6 +122,7 @@ defmodule FavnOrchestrator.Persistence.Commands.CompleteRunnerTask do
     :outcome,
     :retry_class,
     :result,
+    :issued_at,
     :occurred_at
   ]
   defstruct @enforce_keys ++ [:error]
@@ -125,7 +131,7 @@ end
 
 defmodule FavnOrchestrator.Persistence.Commands.RequestRunnerTaskCancellation do
   @moduledoc "Durably requests cancellation of one runner task."
-  @enforce_keys [:workspace_context, :command_id, :task_id, :reason, :occurred_at]
+  @enforce_keys [:workspace_context, :command_id, :task_id, :reason, :issued_at, :occurred_at]
   defstruct @enforce_keys
   @type t :: %__MODULE__{}
 end
@@ -139,6 +145,7 @@ defmodule FavnOrchestrator.Persistence.Commands.AcknowledgeRunnerTaskCancellatio
     :runner_instance_id,
     :runner_session_generation,
     :assignment_generation,
+    :issued_at,
     :occurred_at
   ]
   defstruct @enforce_keys
@@ -156,6 +163,7 @@ defmodule FavnOrchestrator.Persistence.Commands.ReleaseRunnerTask do
     :assignment_generation,
     :disposition,
     :reason,
+    :issued_at,
     :occurred_at
   ]
   defstruct @enforce_keys
@@ -171,6 +179,7 @@ defmodule FavnOrchestrator.Persistence.Commands.RetryRunnerTask do
     :task_id,
     :expected_assignment_generation,
     :expected_result_version,
+    :issued_at,
     :occurred_at
   ]
   defstruct @enforce_keys
@@ -179,7 +188,7 @@ end
 
 defmodule FavnOrchestrator.Persistence.Commands.RecoverRunnerTasks do
   @moduledoc "Claims a bounded platform-global batch of expired assignments for recovery."
-  @enforce_keys [:platform_context, :command_id, :owner_id, :occurred_at]
+  @enforce_keys [:platform_context, :command_id, :owner_id, :issued_at, :occurred_at]
   defstruct @enforce_keys ++ [limit: 50, lease_duration_ms: 30_000]
   @type t :: %__MODULE__{}
 end
@@ -191,6 +200,7 @@ defmodule FavnOrchestrator.Persistence.Commands.ReconcileRunnerCapacityDemand do
     :command_id,
     :runner_pool,
     :required_runner_release_id,
+    :issued_at,
     :occurred_at
   ]
   defstruct @enforce_keys ++ [mode: :audit]

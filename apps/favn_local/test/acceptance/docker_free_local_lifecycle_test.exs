@@ -347,6 +347,7 @@ defmodule FavnLocal.DockerFreeLocalLifecycleAcceptanceTest do
       operation_id: nil,
       asset_step_id: nil,
       deadline_at: DateTime.add(now, 60, :second),
+      issued_at: now,
       occurred_at: now
     }
 

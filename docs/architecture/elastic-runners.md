@@ -525,11 +525,19 @@ generation, and expected status atomically.
 
 Command receipts retain the original status/owner/generation result fence for
 every nonterminal fenced command, so replay can never return a newer fence.
-Version one accepts command replay for seven days from `occurred_at`, permits
-at most five minutes of future clock skew, rejects commands outside that
-window, and incrementally prunes older receipts through an indexed bounded
-delete. This keeps empty polls and lease renewals from growing receipt history
-without bound while ensuring a pruned old command cannot mutate later work.
+`issued_at` is the immutable command-age timestamp; `occurred_at` describes the
+current transport attempt and may advance on replay without changing command
+identity. Version one accepts command replay for seven days from `issued_at`,
+permits at most five minutes of future clock skew, rejects commands outside
+that window, and incrementally prunes older receipts through an indexed
+bounded delete. This keeps empty polls and lease renewals from growing receipt
+history without bound while ensuring a pruned old command cannot mutate later
+work because its active or terminal task identity remains durable. Receipt and
+unreferenced outcome-history pruning is command-driven in version one: every
+active runner command deletes up to 100 expired rows per receipt/history
+category while adding at most its own bounded receipt/history. An idle control
+plane creates no runner-command rows, so version one does not add a timer or
+infrastructure-specific maintenance process for this bounded cleanup.
 Unfiltered and status-filtered operator pages each have an index matching their
 workspace, order, and cursor predicates.
 
@@ -780,6 +788,20 @@ lifecycle and creates a new asset-attempt task only when due. Assignment
 recovery may immediately requeue the same task; the runner queue has no second
 delayed-retry scheduler in version one.
 
+Every replayable runner command carries an immutable `issued_at`. A retry may
+refresh `occurred_at`, but it must not refresh command age. Concurrent first
+enqueues for the same deterministic task serialize on task identity and reuse
+the first durable issuance. Each assignment also carries a stable
+`assigned_at`; `Started.issued_at` comes from it and therefore does not change
+after lease renewal or reconnect.
+
+Command receipts keep only bounded scalar/fencing snapshots. Immutable task
+payload and orchestration context remain in `runner_tasks`; terminal results
+and runtime-input failures are stored once in bounded immutable outcome rows.
+Receipt snapshots reference and hash those values, so replay returns the exact
+historical fence without copying multi-megabyte fields or consulting a newer
+mutable value.
+
 ### 5. Replace the execution ledger with queue persistence
 
 The schema below is the required final state. To keep every reviewed checkpoint
@@ -854,8 +876,13 @@ Required indexes include:
 - claim index on
   `(runner_pool, required_runner_release_id, status, enqueued_at, task_id)`;
 - active tasks by run;
-- expired assignments;
-- terminal retention.
+- expired assignments.
+
+Version one retains terminal `runner_tasks` rows. It does not expose or run
+terminal-task deletion. Removing those rows later requires one coordinated
+retention design for task identity, command receipts, immutable outcome
+history, and domain-owner lifecycle; a standalone task-retention index would
+incorrectly imply that deletion is already safe.
 
 Use `SELECT ... FOR UPDATE SKIP LOCKED` only inside the store implementation.
 No orchestrator module should know PostgreSQL claim syntax.
