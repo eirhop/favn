@@ -99,11 +99,36 @@ defmodule FavnView.Dev.DesignSystem.Catalogue do
   end
 
   defp component_modules do
-    {:ok, modules} = :application.get_key(:favn_view, :modules)
-
-    modules
+    (loaded_modules() ++ available_modules())
+    |> Enum.uniq()
     |> Enum.filter(&component_module?/1)
     |> Enum.sort()
+  end
+
+  defp loaded_modules do
+    case :application.get_key(:favn_view, :modules) do
+      {:ok, modules} -> modules
+      :undefined -> []
+    end
+  end
+
+  # `:application.get_key/2` reads the app spec as it was loaded at boot, so a
+  # component written during a development session is invisible until the server
+  # restarts — which breaks the promise above that a component appears as soon as
+  # it compiles. Scanning the code path finds the beam files that exist *now*.
+  # The prefix filter runs on the charlist so this creates no atoms for the
+  # hundreds of modules belonging to dependencies.
+  defp available_modules do
+    :code.all_available()
+    |> Enum.filter(fn {name, _path, _loaded} -> favn_component_name?(name) end)
+    |> Enum.map(fn {name, _path, _loaded} -> List.to_atom(name) end)
+  end
+
+  defp favn_component_name?(name) do
+    string = List.to_string(name)
+
+    String.starts_with?(string, @element_prefix) or
+      String.starts_with?(string, @component_prefix)
   end
 
   defp component_module?(module) do

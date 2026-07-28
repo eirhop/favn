@@ -85,6 +85,10 @@ defmodule FavnView.Components.NavRail do
 
   @doc """
   One icon-only destination in the rail.
+
+  There is no border on purpose. An icon rail reads as a column of glyphs, and a
+  hairline box around each one measured 1.2:1 — visible to the audit and to
+  nobody else. The active item is marked by background, colour, and the glow.
   """
   attr :item, :map, required: true
 
@@ -94,7 +98,7 @@ defmodule FavnView.Components.NavRail do
       navigate={@item.href}
       class={[
         "tooltip tooltip-right btn btn-ghost btn-square favn-icon-button rounded-box",
-        "border border-base-content/10 favn-text-muted",
+        "favn-text-muted",
         @item.active && "bg-primary/15 text-primary favn-status-glow"
       ]}
       data-tip={@item.label}

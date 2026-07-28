@@ -6,7 +6,8 @@ defmodule FavnView.Components.Navigation do
   navigation entry that points nowhere is not a roadmap hint, it is a dead
   control: add the entry in the same change that adds the route.
 
-  The order follows the operator's workflow: define assets, group them into
+  Status comes first because it is the only destination that answers "what needs
+  me". The rest follow the operator's workflow: define assets, group them into
   pipelines, schedule them, watch runs, repair, and inspect.
 
   ## Examples
@@ -23,6 +24,7 @@ defmodule FavnView.Components.Navigation do
         }
 
   @destinations [
+    {:status, "Status", "hero-signal", "/"},
     {:assets, "Assets", "hero-sparkles", "/assets"},
     {:pipelines, "Pipelines", "hero-queue-list", "/pipelines"},
     {:schedules, "Schedules", "hero-calendar-days", "/schedules"},

@@ -41,7 +41,7 @@ defmodule FavnView.Router do
 
     live_session :operator,
       on_mount: [{FavnView.Auth, :require_authenticated_operator}] do
-      live "/", PageLive, :home
+      live "/", StatusLive, :home
       live "/assets", AssetCatalogueLive, :index
       live "/assets/:asset_id", AssetDetailLive, :show
       live "/pipelines", PipelinesLive, :index

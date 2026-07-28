@@ -331,9 +331,14 @@
     return !ownBackground || ownBackground[3] < 0.08;
   }
 
+  // `aria-current` is not a boolean: "page", "step", "location" and friends all
+  // mean current, and only "false" means not. Checking for "true" alone would
+  // miss the navigation case, which is where it is most often used.
   function stateful(element) {
+    var current = element.getAttribute("aria-current");
+
     return (
-      element.getAttribute("aria-current") === "true" ||
+      (current !== null && current !== "false") ||
       element.getAttribute("aria-selected") === "true" ||
       element.getAttribute("aria-pressed") === "true"
     );

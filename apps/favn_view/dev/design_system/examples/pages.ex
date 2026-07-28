@@ -33,6 +33,7 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
   @spec all() :: %{String.t() => [Example.t()]}
   def all do
     %{}
+    |> Map.merge(status())
     |> Map.merge(asset_catalogue())
     |> Map.merge(asset_detail())
     |> Map.merge(timelines())
@@ -44,6 +45,41 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
     |> Map.merge(rebuilds())
     |> Map.merge(recovery())
     |> Map.merge(errors())
+  end
+
+  defp status do
+    nav_items = Navigation.items(:status)
+
+    %{
+      "status_page/status_page" => [
+        Example.attrs(
+          :needs_attention,
+          %{groups: Fixtures.Status.groups(), unavailable: [], nav_items: nav_items},
+          "The page an operator actually arrives at: failures first, then staleness, then pending work."
+        ),
+        Example.attrs(
+          :one_concern,
+          %{groups: Fixtures.Status.single_group(), unavailable: [], nav_items: nav_items},
+          "A group renders the same whether it holds one row or eight."
+        ),
+        Example.attrs(
+          :all_clear,
+          %{groups: [], unavailable: [], nav_items: nav_items},
+          "Nothing wrong is a real state, not an empty one."
+        ),
+        Example.attrs(
+          :degraded,
+          %{
+            groups: Fixtures.Status.single_group(),
+            unavailable: ["Schedules", "Rebuilds"],
+            nav_items: nav_items
+          },
+          "Two sources unreachable. The sources that answered still render."
+        ),
+        Example.attrs(:loading, %{groups: [], loading: true, nav_items: nav_items}),
+        Example.attrs(:error, %{groups: [], error: "load_failed", nav_items: nav_items})
+      ]
+    }
   end
 
   defp asset_catalogue do

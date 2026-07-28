@@ -96,13 +96,17 @@ commands through the CLI are.
 
 ### 4. Dead code to delete before it gets refactored
 
-`run_overview_hud.ex` (270 lines) has no caller anywhere — no LiveView, no
-example, no test — and is superseded by `run_detail_page/overview.ex`.
+`run_overview_hud.ex` (270 lines) had no caller anywhere — no LiveView, no
+example, no test — and was superseded by `run_detail_page/overview.ex`. Deleted.
 `run_detail_page/samples.ex` (781 lines of fake data) is compiled into `lib/`
 and re-exported through 14 `defdelegate sample_*` lines on a public page module;
 it belongs in the design-system fixtures. `lineage_page/1` is an orphan page
-component with no route. `Telemetry.metrics/0` is dead behind a commented-out
-reporter. Deleting these first avoids migrating markup nobody renders.
+component with no route. Deleting these first avoids migrating markup nobody
+renders.
+
+`Telemetry.metrics/0` is *not* dead, despite the commented-out `ConsoleReporter`
+next to it: `live_dashboard "/dashboard", metrics: FavnView.Telemetry` calls it.
+Left alone.
 
 ### 5. Facade functions the UI needs and does not have
 
