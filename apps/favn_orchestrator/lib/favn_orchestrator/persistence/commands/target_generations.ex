@@ -110,6 +110,20 @@ defmodule FavnOrchestrator.Persistence.Queries.GetTargetBindings do
         }
 end
 
+defmodule FavnOrchestrator.Persistence.Queries.GetEvidenceBindings do
+  @moduledoc "Batch-fetches durable non-persisted evidence bindings for exact target ids."
+
+  alias FavnOrchestrator.Persistence.WorkspaceContext
+
+  @enforce_keys [:workspace_context, :target_ids]
+  defstruct [:workspace_context, :target_ids]
+
+  @type t :: %__MODULE__{
+          workspace_context: WorkspaceContext.t(),
+          target_ids: [String.t()]
+        }
+end
+
 defmodule FavnOrchestrator.Persistence.Results.TargetBinding do
   @moduledoc "Current desired and active generation binding for one logical SQL target."
 
@@ -166,6 +180,39 @@ defmodule FavnOrchestrator.Persistence.Results.TargetBinding do
           active_physical_fingerprint: String.t() | nil,
           version: pos_integer(),
           updated_at: DateTime.t()
+        }
+end
+
+defmodule FavnOrchestrator.Persistence.Results.EvidenceBinding do
+  @moduledoc """
+  Durable freshness and coverage identity for one non-persisted logical asset.
+
+  The binding is initialized once per workspace and target. Manifest and runner
+  changes do not replace it; explicit execution publishes newer evidence under
+  the retained identity.
+  """
+
+  @enforce_keys [
+    :workspace_id,
+    :target_id,
+    :evidence_generation_id,
+    :initial_manifest_id,
+    :created_at
+  ]
+  defstruct [
+    :workspace_id,
+    :target_id,
+    :evidence_generation_id,
+    :initial_manifest_id,
+    :created_at
+  ]
+
+  @type t :: %__MODULE__{
+          workspace_id: String.t(),
+          target_id: String.t(),
+          evidence_generation_id: String.t(),
+          initial_manifest_id: String.t(),
+          created_at: DateTime.t()
         }
 end
 

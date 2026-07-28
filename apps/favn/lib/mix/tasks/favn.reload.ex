@@ -26,6 +26,7 @@ defmodule Mix.Tasks.Favn.Reload do
     case FavnLocal.reload(opts) do
       {:ok, result} ->
         IO.puts(status_message(result.reload_status))
+        IO.puts(freshness_message(result.reload_status))
         IO.puts("Runner release: #{result.runner_release_id}")
         IO.puts("Manifest: #{result.manifest_version_id}")
         IO.puts(phase_message(result.phases))
@@ -46,6 +47,13 @@ defmodule Mix.Tasks.Favn.Reload do
   defp status_message(:unchanged), do: "Favn source unchanged"
   defp status_message(:manifest_deployed), do: "Favn manifest reloaded"
   defp status_message(:runner_replaced), do: "Favn runner reloaded"
+
+  defp freshness_message(:unchanged), do: "Freshness unchanged"
+
+  defp freshness_message(_reload_status) do
+    "Freshness retained; reload does not rerun assets. " <>
+      "Use mix favn.run ASSET --refresh force_selected to recompute one asset."
+  end
 
   defp phase_message(phases) do
     "Phases: build #{phases.manifest_build_ms}ms, packages " <>

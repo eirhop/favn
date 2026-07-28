@@ -48,6 +48,21 @@ defmodule FavnStoragePostgres.Schemas.AssetTargetBinding do
   end
 end
 
+defmodule FavnStoragePostgres.Schemas.AssetEvidenceBinding do
+  @moduledoc false
+  use Ecto.Schema
+
+  @primary_key false
+  @schema_prefix "favn_control"
+  schema "asset_evidence_bindings" do
+    field(:workspace_id, :string, primary_key: true)
+    field(:target_id, :string, primary_key: true)
+    field(:evidence_generation_id, :string)
+    field(:initial_manifest_id, :string)
+    field(:created_at, :utc_datetime_usec)
+  end
+end
+
 defmodule FavnStoragePostgres.Schemas.RebuildOperation do
   @moduledoc false
   use Ecto.Schema

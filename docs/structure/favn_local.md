@@ -36,8 +36,9 @@ artifact construction is owned by `FavnAuthoring.Deployment`.
 - exactly one child runner OS process is owned at a time;
 - reload compiles first and derives the runner release ID from the compiled BEAM
   closure;
-- an unchanged compiled closure and manifest is a no-op; manifest-only changes
-  deploy without replacing the runner; changed compiled code replaces the runner;
+- an unchanged compiled closure and manifest is a no-op only while the expected
+  deployment remains durably active; manifest-only changes deploy without
+  replacing the runner; changed compiled code replaces the runner;
 - reload registers only execution packages absent from durable storage and emits
   build, package, publication, activation, and total phase timings;
 - environment, dependency, plugin, port, and database changes require a full

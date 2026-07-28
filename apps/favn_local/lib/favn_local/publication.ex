@@ -29,6 +29,34 @@ defmodule FavnLocal.Publication do
     end
   end
 
+  @spec active_deployment?(
+          String.t(),
+          String.t(),
+          String.t(),
+          String.t()
+        ) :: boolean()
+  def active_deployment?(
+        workspace_id,
+        deployment_id,
+        manifest_version_id,
+        runner_release_id
+      )
+      when is_binary(workspace_id) and is_binary(deployment_id) and
+             is_binary(manifest_version_id) and is_binary(runner_release_id) do
+    with {:ok, workspace} <-
+           WorkspaceContext.new(workspace_id, "favn-local", [:platform_operator]),
+         {:ok, runtime} <- Manifests.active_runtime(workspace) do
+      runtime.deployment_id == deployment_id and
+        runtime.manifest_version_id == manifest_version_id and
+        runtime.required_runner_release_id == runner_release_id
+    else
+      _error -> false
+    end
+  end
+
+  def active_deployment?(_workspace_id, _deployment_id, _manifest_version_id, _runner_release_id),
+    do: false
+
   defp deploy_with_permit(platform, workspace, publication) do
     version = publication.version
     started_at = now_ms()
@@ -53,7 +81,7 @@ defmodule FavnLocal.Publication do
                 workspace_assets: [],
                 workspace_pipelines: []
               },
-              deployment_id: "deployment:local:" <> canonical.manifest_version_id,
+              deployment_id: deployment_attempt_id(canonical.manifest_version_id),
               configuration: %{}
             )
           end)
@@ -117,4 +145,9 @@ defmodule FavnLocal.Publication do
 
   defp release_admission(nil), do: :ok
   defp release_admission(permit), do: FavnOrchestrator.Lifecycle.release_admission(permit)
+
+  defp deployment_attempt_id(manifest_version_id) do
+    suffix = 12 |> :crypto.strong_rand_bytes() |> Base.url_encode64(padding: false)
+    "deployment:local:#{manifest_version_id}:#{suffix}"
+  end
 end

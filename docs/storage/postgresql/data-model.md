@@ -62,6 +62,13 @@ erDiagram
         text active_deployment_id FK
         bigint revision
     }
+    ASSET_EVIDENCE_BINDINGS {
+        text workspace_id PK, FK
+        text target_id PK
+        text evidence_generation_id
+        text initial_manifest_id FK
+        timestamptz created_at
+    }
 
     MANIFEST_VERSIONS ||--o{ MANIFEST_EXECUTION_PACKAGES : links
     EXECUTION_PACKAGES ||--o{ MANIFEST_EXECUTION_PACKAGES : supplies
@@ -70,6 +77,8 @@ erDiagram
     WORKSPACE_DEPLOYMENTS ||--|{ WORKSPACE_DEPLOYMENT_TARGETS : whitelists
     WORKSPACES ||--|| WORKSPACE_RUNTIME_STATE : activates
     WORKSPACE_DEPLOYMENTS o|--|| WORKSPACE_RUNTIME_STATE : active_deployment
+    WORKSPACES ||--o{ ASSET_EVIDENCE_BINDINGS : retains
+    MANIFEST_VERSIONS ||--o{ ASSET_EVIDENCE_BINDINGS : initializes
 ```
 
 Manifests and execution packages are global, immutable, content-addressed data.
@@ -633,7 +642,7 @@ repaired from authoritative publications.
 | Scheduling | `schedule_cursors`, `schedule_occurrences` | Authoritative |
 | Admission | `capacity_scopes`, `execution_leases`, `execution_lease_scopes`, `admission_waiters` | Authoritative coordination |
 | Resource circuits | `resource_circuits`, `resource_circuit_outcomes`, `resource_recovery_candidates` | Authoritative coordination |
-| Target generations and rebuilds | `asset_target_generations`, `asset_target_bindings`, `target_recovery_operations`, `rebuild_operations`, `rebuild_plan_actions`, `rebuild_windows`, `target_operation_locks` | Authoritative state and coordination |
+| Target generations and rebuilds | `asset_evidence_bindings`, `asset_target_generations`, `asset_target_bindings`, `target_recovery_operations`, `rebuild_operations`, `rebuild_plan_actions`, `rebuild_windows`, `target_operation_locks` | Authoritative state and coordination |
 | Materialization | `materialization_claims`, `materializations`, `coverage_baselines` | Authoritative |
 | Backfills | `backfills`, `backfill_plan_batches`, `backfill_windows` | Authoritative |
 | Logs | `log_batches`, `log_entries` | Authoritative operational history subject to retention |
@@ -643,7 +652,7 @@ repaired from authoritative publications.
 | Read projections | `execution_group_overviews`, `backfill_overviews`, `target_statuses`, `asset_window_states`, `asset_freshness_states`, `asset_attempt_overviews` | Derived and repairable |
 | Ecto | `schema_migrations` | Migration bookkeeping |
 
-There are 58 application/schema tables including `schema_migrations`. Tables
+There are 60 application/schema tables including `schema_migrations`. Tables
 without direct foreign keys still require workspace-scoped application contracts;
 their lack of an FK is not permission to perform unscoped reads.
 
@@ -659,6 +668,9 @@ their lack of an FK is not permission to perform unscoped reads.
   workspace, active evidence generation, target, successful status, and bounded
   range/key predicates. A zero-row successful materialization remains a
   successful window state.
+- Non-persisted assets keep one immutable workspace-scoped evidence binding.
+  Manifest activation initializes missing bindings but never rotates existing
+  freshness or coverage identities.
 - Derived projections retain a source publication cursor and are repairable.
 - Deletion is conservative: most operational relationships use `RESTRICT` and
   retention runs through explicit maintenance operations.

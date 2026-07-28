@@ -63,6 +63,8 @@ defmodule FavnLocal.Lifecycle do
          config: config,
          runner: runner,
          publication: publication,
+         deployment_id: nil,
+         manifest_version_id: nil,
          status: :starting,
          deadline: deadline,
          ready_waiters: [],
@@ -298,6 +300,8 @@ defmodule FavnLocal.Lifecycle do
     ready_state = %{
       state
       | status: :ready,
+        deployment_id: deployment.deployment_id,
+        manifest_version_id: deployment.manifest_version_id,
         task: nil,
         ready_waiters: [],
         failure: nil
@@ -327,6 +331,8 @@ defmodule FavnLocal.Lifecycle do
      %{
        state
        | status: :ready,
+         deployment_id: deployment.deployment_id,
+         manifest_version_id: deployment.manifest_version_id,
          request: nil,
          maintenance_token: nil,
          task: nil,
@@ -417,17 +423,21 @@ defmodule FavnLocal.Lifecycle do
 
   defp unchanged_publication?(state, publication, runner_release_id) do
     state.runner.release_id == runner_release_id and
-      state.publication.version.manifest_version_id == publication.version.manifest_version_id
+      state.publication.version.content_hash == publication.version.content_hash and
+      LocalPublication.active_deployment?(
+        state.config.workspace_id,
+        state.deployment_id,
+        state.manifest_version_id,
+        state.runner.release_id
+      )
   end
 
   defp unchanged_result(state) do
-    manifest_version_id = state.publication.version.manifest_version_id
-
     %{
       reload_status: :unchanged,
-      manifest_version_id: manifest_version_id,
+      manifest_version_id: state.manifest_version_id,
       runner_release_id: state.runner.release_id,
-      deployment_id: "deployment:local:" <> manifest_version_id,
+      deployment_id: state.deployment_id,
       execution_packages: %{
         provided: length(state.publication.execution_packages),
         registered: 0

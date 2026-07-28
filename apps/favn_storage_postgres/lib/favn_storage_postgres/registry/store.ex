@@ -44,6 +44,7 @@ defmodule FavnStoragePostgres.Registry.Store do
   alias FavnStoragePostgres.Registry.ManifestCache
   alias FavnStoragePostgres.Repo
   alias FavnStoragePostgres.Schemas.AuthPlatformAuditEntry
+  alias FavnStoragePostgres.Schemas.AssetEvidenceBinding
   alias FavnStoragePostgres.Schemas.AssetTargetBinding
   alias FavnStoragePostgres.Schemas.ExecutionPackage, as: ExecutionPackageRecord
   alias FavnStoragePostgres.Schemas.ManifestExecutionPackage
@@ -619,6 +620,7 @@ defmodule FavnStoragePostgres.Registry.Store do
              command.targets,
              manifest
            ),
+         {:ok, evidence_bindings} <- evidence_bindings(command.targets, manifest),
          schedules <- normalize_schedules(command.schedules),
          capacities <- normalize_capacities(command.capacity_scopes),
          {:ok, configuration_fingerprint} <-
@@ -649,6 +651,7 @@ defmodule FavnStoragePostgres.Registry.Store do
                    target_fingerprint,
                    targets,
                    target_compatibilities,
+                   evidence_bindings,
                    manifest_summary(manifest)
                  )
                end,
@@ -713,6 +716,7 @@ defmodule FavnStoragePostgres.Registry.Store do
          target_fingerprint,
          targets,
          target_compatibilities,
+         evidence_bindings,
          manifest_summary
        ) do
     locked_runtime_state = lock_runtime_state!(command.workspace_context.workspace_id)
@@ -741,6 +745,7 @@ defmodule FavnStoragePostgres.Registry.Store do
       )
     end
 
+    persist_evidence_bindings!(command, evidence_bindings)
     persist_target_compatibilities!(command, target_compatibilities)
 
     runtime_state = activate_deployment!(command, deployment)
@@ -1052,6 +1057,39 @@ defmodule FavnStoragePostgres.Registry.Store do
     |> Enum.sort_by(&{&1["target_kind"], &1["target_id"]})
   end
 
+  defp evidence_bindings(targets, %Version{} = version) do
+    selected_asset_ids =
+      targets
+      |> Enum.filter(&(&1.target_kind == :asset))
+      |> MapSet.new(& &1.target_id)
+
+    bindings =
+      version.manifest.assets
+      |> Enum.filter(fn asset ->
+        is_nil(asset.target_descriptor) and
+          MapSet.member?(selected_asset_ids, TargetIdentity.for_asset(asset.ref))
+      end)
+      |> Enum.map(fn asset ->
+        %{
+          target_id: TargetIdentity.for_asset(asset.ref),
+          evidence_generation_id: asset.semantic_generation_id
+        }
+      end)
+      |> Enum.sort_by(& &1.target_id)
+
+    if Enum.all?(bindings, &valid_evidence_binding?/1) do
+      {:ok, bindings}
+    else
+      {:error, Error.new(:invalid, "manifest asset evidence bindings are invalid")}
+    end
+  end
+
+  defp valid_evidence_binding?(binding) do
+    valid_id?(binding.target_id) and
+      is_binary(binding.evidence_generation_id) and
+      Regex.match?(~r/\Aag_[0-9a-f]{64}\z/, binding.evidence_generation_id)
+  end
+
   defp validate_target_compatibilities(decisions, targets, manifest) when is_list(decisions) do
     asset_target_ids =
       targets
@@ -1311,6 +1349,50 @@ defmodule FavnStoragePostgres.Registry.Store do
       Repo.rollback(
         Error.new(:conflict, "deployment target catalog conflicts with committed state")
       )
+    end
+  end
+
+  defp persist_evidence_bindings!(_command, []), do: :ok
+
+  defp persist_evidence_bindings!(command, bindings) do
+    rows =
+      Enum.map(bindings, fn binding ->
+        %{
+          workspace_id: command.workspace_context.workspace_id,
+          target_id: binding.target_id,
+          evidence_generation_id: binding.evidence_generation_id,
+          initial_manifest_id: command.manifest_version_id,
+          created_at: command.occurred_at
+        }
+      end)
+
+    Enum.each(Enum.chunk_every(rows, @bulk_insert_size), fn chunk ->
+      {_count, _rows} =
+        Repo.insert_all(AssetEvidenceBinding, chunk,
+          on_conflict: :nothing,
+          conflict_target: [:workspace_id, :target_id]
+        )
+    end)
+
+    stored_count =
+      bindings
+      |> Enum.map(& &1.target_id)
+      |> Enum.chunk_every(@bulk_insert_size)
+      |> Enum.reduce(0, fn target_ids, count ->
+        batch_count =
+          from(binding in AssetEvidenceBinding,
+            where:
+              binding.workspace_id == ^command.workspace_context.workspace_id and
+                binding.target_id in ^target_ids,
+            select: count()
+          )
+          |> Repo.one()
+
+        count + batch_count
+      end)
+
+    if stored_count != length(bindings) do
+      Repo.rollback(Error.new(:conflict, "asset evidence bindings conflict with committed state"))
     end
   end
 

@@ -19,8 +19,26 @@ Ordinary run plans and materialization claims pin that generation. Coverage and
 freshness evidence are also generation-scoped, so retiring a generation cannot
 make its evidence look current.
 
-Non-persisted assets use deterministic semantic-generation identity. They do not
-participate in physical candidate activation.
+Every non-persisted logical asset has a separate workspace-scoped evidence
+binding. Deployment initializes the binding once from the active manifest's
+semantic generation and never replaces it during ordinary manifest activation
+or runner replacement. Freshness and coverage therefore survive definition
+changes until an operator explicitly recomputes the asset. The manifest's
+semantic generation remains immutable definition provenance, not the active
+freshness identity.
+
+The migration that introduces these bindings seeds currently active
+non-persisted assets from their existing manifest generation. Existing
+freshness, coverage, materialization, and window rows remain untouched.
+Deployment initializes bindings for newly selected assets in bounded batches.
+Bindings remain when an asset is temporarily removed so re-adding the same
+logical target does not discard its evidence. The materialization store verifies
+the exact workspace, target, and evidence identity transactionally before
+creating a non-persisted claim.
+
+Non-persisted assets do not participate in physical candidate activation.
+Persisted target bindings and rebuild generation isolation remain separate:
+retiring a physical generation can never make its evidence current.
 
 ## Compatibility and admission
 

@@ -109,9 +109,26 @@ mix favn.reload
 Reload compiles the project and derives the runner release ID from the compiled
 BEAM closure. Changed compiled code replaces the runner. A manifest-only change
 keeps the runner and deploys the new manifest, while an unchanged source and
-manifest is a no-op. Reload registers only execution packages that are absent
-from PostgreSQL and prints build, package, publication, activation, and total
-timings. It does not build a container image.
+manifest is a no-op when the expected deployment is still durably active. If
+another action changed the active deployment, reload restores the expected local
+manifest. Reload registers only execution packages that are absent from
+PostgreSQL and prints build, package, publication, activation, and total timings.
+It does not build a container image.
+
+Reload also retains existing asset freshness. A runner release, manifest, asset
+implementation, metadata, or dependency declaration change does not by itself
+make previously successful assets stale or schedule them to run. To execute one
+changed asset explicitly:
+
+```bash
+mix favn.run MyApp.Assets.Example:asset --refresh force_selected
+```
+
+Add `--dependencies none` to plan only that asset. Use
+`force_selected_upstream`, `force_all`, a forced backfill, or a target rebuild
+when the intended repair scope is broader. A new window or freshness key still
+requires matching evidence for that exact key, and a successfully refreshed
+upstream still propagates its new result version to planned downstream assets.
 
 Restart the full development process after changing:
 

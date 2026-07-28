@@ -83,6 +83,10 @@ defmodule FavnOrchestrator.Manifests do
     end
   end
 
+  @doc "Returns one workspace's durable active deployment runtime identity."
+  @spec active_runtime(WorkspaceContext.t()) :: {:ok, RuntimeState.t()} | {:error, term()}
+  def active_runtime(%WorkspaceContext{} = context), do: ManifestStore.get_runtime_state(context)
+
   @doc "Returns a release only when it is the workspace's active deployment release."
   @spec get_active_release(WorkspaceContext.t(), String.t()) ::
           {:ok, details()} | {:error, term()}

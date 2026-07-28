@@ -84,6 +84,13 @@ defmodule FavnOrchestrator.Freshness.StalenessTest do
               ]}
   end
 
+  test "newly authored upstream does not invalidate an existing downstream success" do
+    states = %{@raw_key => freshness_state(@raw_ref, @raw_key, "raw:v1", "run_raw")}
+    downstream = %{input_versions: []}
+
+    assert Staleness.freshness(downstream, [@raw_key], states) == :fresh
+  end
+
   test "accepts JSON-safe list-shaped input_versions with string keys" do
     downstream = %{
       input_versions: [

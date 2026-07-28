@@ -361,17 +361,12 @@ defmodule FavnOrchestrator.MaterializationClaims do
          %{target_descriptor: nil} = asset
        )
        when is_binary(target_id) and is_binary(generation_id) do
-    if target_id == TargetIdentity.for_asset(asset.ref) and
-         generation_id == asset.semantic_generation_id do
+    if target_id == TargetIdentity.for_asset(asset.ref) do
       {:ok, %{target_generation_id: nil, evidence_generation_id: generation_id}}
     else
       {:error, {:target_generation_pin_mismatch, asset.ref}}
     end
   end
-
-  defp pinned_generation(_node, %{target_descriptor: nil, semantic_generation_id: generation_id})
-       when is_binary(generation_id),
-       do: {:ok, %{target_generation_id: nil, evidence_generation_id: generation_id}}
 
   defp pinned_generation(_node, asset),
     do: {:error, {:target_generation_not_pinned, asset.ref}}
