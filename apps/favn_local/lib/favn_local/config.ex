@@ -2,6 +2,7 @@ defmodule FavnLocal.Config do
   @moduledoc false
 
   alias Favn.RunnerRelease
+  alias FavnLocal.SourceRelease
   alias FavnOrchestrator.Auth.ServiceTokens
   alias FavnOrchestrator.RunnerClient.BeamNode
   alias FavnStoragePostgres.Config, as: PostgresConfig
@@ -316,11 +317,18 @@ defmodule FavnLocal.Config do
   end
 
   defp runner_release_id(opts) do
-    value = Keyword.get(opts, :runner_release_id, "rr_" <> random_hex(32))
+    with {:ok, value} <- configured_runner_release_id(opts) do
+      case RunnerRelease.validate_id(value) do
+        :ok -> {:ok, value}
+        {:error, _reason} -> {:error, {:invalid_runner_release_id, value}}
+      end
+    end
+  end
 
-    case RunnerRelease.validate_id(value) do
-      :ok -> {:ok, value}
-      {:error, _reason} -> {:error, {:invalid_runner_release_id, value}}
+  defp configured_runner_release_id(opts) do
+    case Keyword.fetch(opts, :runner_release_id) do
+      {:ok, value} -> {:ok, value}
+      :error -> SourceRelease.current()
     end
   end
 

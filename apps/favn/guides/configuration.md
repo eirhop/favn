@@ -377,11 +377,10 @@ resolve when a physical-session plan is built; a refresh changes the pool
 fingerprint so a session initialized with the old token is not selected for the
 new plan. Superseded idle sessions for the same connection requirements are
 closed so their admission leases cannot block refreshed session bootstrap.
-Idle-pool timeout is not a maximum session age. In local development, changing
-an environment value and running `mix favn.reload` recreates the runner
-container with its existing image when required. A `config/runtime.exs` code change is part of the immutable
-customer image: rebuild it with a new runner release ID, then select that image
-with `mix favn.reload --runner-image IMAGE`.
+Idle-pool timeout is not a maximum session age. In source development, changing
+an environment value or `config/runtime.exs` requires `mix favn.stop` followed
+by `mix favn.dev`. For a deployed customer image, rebuild with a new runner
+release ID and deploy that image through the deployment platform.
 
 ## DuckDB ADBC Config
 

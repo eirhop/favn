@@ -1513,6 +1513,44 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     assert [%{code: :row_count_failed, message: "safe row count failure"}] = result.warnings
   end
 
+  test "batched inspection reuses one owner-exclusive SQL session per connection" do
+    ref = {FavnRunner.ExecutionSQLAssetTest.SQLAsset, :asset}
+    relation = RelationRef.new!(%{connection: :inspection_fake, catalog: "raw", name: "orders"})
+
+    :ok =
+      Registry.reload(
+        %{
+          inspection_fake: %Resolved{
+            name: :inspection_fake,
+            adapter: FavnRunner.ExecutionSQLAssetTest.FakeInspectionAdapter,
+            module: __MODULE__,
+            config: %{}
+          }
+        },
+        registry_name: FavnRunner.ConnectionRegistry
+      )
+
+    version = register_sql_manifest!(ref, relation)
+
+    request = %RelationInspectionRequest{
+      manifest_version_id: version.manifest_version_id,
+      manifest_content_hash: version.content_hash,
+      required_runner_release_id: version.required_runner_release_id,
+      asset_ref: ref,
+      include: [:row_count]
+    }
+
+    assert {:ok, [{:ok, first}, {:ok, second}]} =
+             FavnRunner.inspect_relations([request, request])
+
+    assert first.asset_ref == ref
+    assert second.asset_ref == ref
+    assert_receive {:connect_opts, :inspection_fake, connect_opts}
+    assert connect_opts[:required_catalogs] == ["raw"]
+    refute_receive {:connect_opts, :inspection_fake, _opts}
+    assert_receive :inspection_disconnected
+  end
+
   defp register_sql_manifest!(
          ref,
          relation \\ nil,
@@ -2152,7 +2190,14 @@ defmodule FavnRunner.ExecutionSQLAssetTest.FakeInspectionAdapter do
     {:ok, :conn}
   end
 
-  def disconnect(:conn, _opts), do: :ok
+  def disconnect(:conn, _opts) do
+    if pid = Application.get_env(:favn_runner, :execution_sql_asset_test_pid) do
+      send(pid, :inspection_disconnected)
+    end
+
+    :ok
+  end
+
   def capabilities(%Resolved{}, _opts), do: {:ok, %Capabilities{}}
 
   def row_count(:conn, _ref, _opts) do

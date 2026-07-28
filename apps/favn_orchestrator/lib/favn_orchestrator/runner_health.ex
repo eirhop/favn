@@ -99,7 +99,7 @@ defmodule FavnOrchestrator.RunnerHealth do
 
   @impl true
   def handle_info(:probe, %{task: nil} = state) do
-    if Lifecycle.ensure_accepting(state.lifecycle) == :ok do
+    if Lifecycle.ensure_ready(state.lifecycle) == :ok do
       start_probe(state)
     else
       {:noreply, schedule(state)}

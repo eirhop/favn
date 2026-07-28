@@ -91,6 +91,40 @@ defmodule FavnOrchestrator.RunnerHealthTest do
     assert {:ok, %{available?: true}} = RunnerHealth.snapshot(health)
   end
 
+  test "pauses without warning during runner maintenance and resumes afterward" do
+    lifecycle = unique_name(:lifecycle)
+    supervisor = unique_name(:tasks)
+    health = unique_name(:health)
+    token = String.duplicate("a", 43)
+
+    log =
+      capture_log([level: :debug], fn ->
+        start_supervised!({Lifecycle, name: lifecycle, shutdown_drain_timeout_ms: 1_000})
+        start_supervised!({Task.Supervisor, name: supervisor})
+        :ok = Lifecycle.mark_accepting(lifecycle)
+        assert {:ok, ^token} = Lifecycle.begin_maintenance(:runner_replacement, token, lifecycle)
+
+        start_supervised!(
+          {RunnerHealth,
+           name: health,
+           lifecycle: lifecycle,
+           task_supervisor: supervisor,
+           runner_client: RunnerClient,
+           runner_opts: [test_pid: self()],
+           timeout_ms: 200,
+           interval_ms: 20}
+        )
+
+        refute_receive :probed, 75
+        assert {:error, :runner_diagnostics_pending} = RunnerHealth.snapshot(health)
+
+        assert :ok = Lifecycle.end_maintenance(token, lifecycle)
+        assert_receive :probed, 250
+      end)
+
+    refute log =~ "[warning] favn.operator.runner_diagnostic_completed"
+  end
+
   test "successful probes log at debug and continue emitting telemetry" do
     lifecycle = unique_name(:lifecycle)
     supervisor = unique_name(:tasks)

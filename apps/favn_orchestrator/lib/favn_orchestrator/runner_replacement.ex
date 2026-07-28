@@ -9,20 +9,30 @@ defmodule FavnOrchestrator.RunnerReplacement do
   """
 
   alias Favn.RunnerRelease
+  alias FavnOrchestrator.ActiveManifestReconciler
   alias FavnOrchestrator.Lifecycle
   alias FavnOrchestrator.RunnerClientValidator
   alias FavnOrchestrator.RunnerDiagnostics
+  alias FavnOrchestrator.RunnerHealth
   alias FavnOrchestrator.RuntimeConfig
 
   @doc "Begins or resumes runner replacement with its opaque admission token."
   @spec begin(String.t()) :: {:ok, String.t()} | {:error, term()}
-  def begin(token) when is_binary(token),
-    do: Lifecycle.begin_maintenance(:runner_replacement, token)
+  def begin(token) when is_binary(token) do
+    with {:ok, ^token} <- Lifecycle.begin_maintenance(:runner_replacement, token) do
+      :ok = RunnerHealth.refresh()
+      {:ok, token}
+    end
+  end
 
   @doc "Ends runner replacement when the opaque admission token matches."
   @spec finish(String.t()) :: :ok | {:error, term()}
-  def finish(token) when is_binary(token) and token != "",
-    do: Lifecycle.end_maintenance(token)
+  def finish(token) when is_binary(token) and token != "" do
+    with :ok <- Lifecycle.end_maintenance(token) do
+      :ok = RunnerHealth.refresh()
+      :ok = ActiveManifestReconciler.refresh()
+    end
+  end
 
   @doc "Returns bounded runner-replacement drain state without its token."
   @spec status() :: map()

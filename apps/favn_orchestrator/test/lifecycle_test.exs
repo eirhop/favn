@@ -90,6 +90,8 @@ defmodule FavnOrchestrator.LifecycleTest do
            } = Lifecycle.diagnostics(name)
 
     assert {:error, :runtime_maintenance} = Lifecycle.acquire_admission(name)
+    assert :ok = Lifecycle.ensure_accepting(name)
+    assert {:error, :runtime_maintenance} = Lifecycle.ensure_ready(name)
 
     assert {:error, :runtime_maintenance} =
              Task.async(fn -> Lifecycle.acquire_admission(name) end) |> Task.await()

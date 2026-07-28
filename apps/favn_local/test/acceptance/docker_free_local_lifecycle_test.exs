@@ -2,6 +2,7 @@ defmodule FavnLocal.DockerFreeLocalLifecycleAcceptanceTest do
   use ExUnit.Case, async: false
 
   alias Favn.Manifest.Publication
+  alias Favn.Manifest.Version
   alias FavnLocal.Config
   alias FavnLocal.Lifecycle, as: LocalLifecycle
   alias FavnLocal.Locator
@@ -130,9 +131,15 @@ defmodule FavnLocal.DockerFreeLocalLifecycleAcceptanceTest do
 
     assert_receive :admission_held
 
+    forced_release_id = FavnTestSupport.runner_release_id(:alternate)
+
     reload =
       Task.async(fn ->
-        FavnLocal.reload(root_dir: root_dir, reload_timeout_ms: 60_000)
+        FavnLocal.reload(
+          root_dir: root_dir,
+          runner_release_id: forced_release_id,
+          reload_timeout_ms: 60_000
+        )
       end)
 
     assert_eventually(fn -> LocalLifecycle.status().status == :reloading end)
@@ -142,8 +149,71 @@ defmodule FavnLocal.DockerFreeLocalLifecycleAcceptanceTest do
     assert :ok = Task.await(admission_holder)
     assert {:ok, reloaded} = Task.await(reload, 60_000)
     assert reloaded.runner_release_id != started.runner_release_id
+    assert reloaded.reload_status == :runner_replaced
 
-    failed_release_id = FavnTestSupport.runner_release_id(:alternate)
+    assert {:ok, manifest_only_publication} = LocalPublication.build(forced_release_id)
+
+    changed_manifest = %{
+      manifest_only_publication.version.manifest
+      | metadata:
+          Map.put(
+            manifest_only_publication.version.manifest.metadata,
+            :reload_acceptance_marker,
+            true
+          )
+    }
+
+    assert {:ok, manifest_only_version} = Version.new(changed_manifest)
+    changed_publication = %{manifest_only_publication | version: manifest_only_version}
+
+    assert {:ok, manifest_reloaded} =
+             LocalLifecycle.reload(
+               changed_publication,
+               forced_release_id,
+               60_000
+             )
+
+    assert manifest_reloaded.reload_status == :manifest_deployed
+    assert manifest_reloaded.runner_release_id == forced_release_id
+
+    assert {:ok, restored_manifest} =
+             FavnLocal.reload(
+               root_dir: root_dir,
+               runner_release_id: forced_release_id,
+               reload_timeout_ms: 60_000
+             )
+
+    assert restored_manifest.reload_status == :manifest_deployed
+
+    assert {:ok, unchanged} =
+             FavnLocal.reload(
+               root_dir: root_dir,
+               runner_release_id: forced_release_id,
+               reload_timeout_ms: 60_000
+             )
+
+    assert unchanged.reload_status == :unchanged
+    assert unchanged.runner_release_id == reloaded.runner_release_id
+    assert unchanged.manifest_version_id == reloaded.manifest_version_id
+    assert unchanged.deployment_id == restored_manifest.deployment_id
+    assert unchanged.execution_packages.registered == 0
+
+    assert {:ok, externally_deployed} =
+             LocalPublication.deploy(changed_publication, workspace_id)
+
+    assert externally_deployed.manifest_version_id == manifest_reloaded.manifest_version_id
+
+    assert {:ok, reconciled} =
+             FavnLocal.reload(
+               root_dir: root_dir,
+               runner_release_id: forced_release_id,
+               reload_timeout_ms: 60_000
+             )
+
+    assert reconciled.reload_status == :manifest_deployed
+    assert reconciled.manifest_version_id == restored_manifest.manifest_version_id
+
+    failed_release_id = FavnTestSupport.runner_release_id()
     assert {:ok, %Publication{} = publication} = LocalPublication.build(failed_release_id)
     invalid_publication = %{publication | execution_packages: [%{}]}
 

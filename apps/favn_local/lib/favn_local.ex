@@ -12,6 +12,7 @@ defmodule FavnLocal do
   alias FavnLocal.Locator
   alias FavnLocal.Preflight
   alias FavnLocal.Publication
+  alias FavnLocal.SourceRelease
 
   @type progress_event ::
           {:configuration_loaded,
@@ -74,17 +75,20 @@ defmodule FavnLocal do
   @spec reload(keyword()) :: {:ok, map()} | {:error, term()}
   def reload(opts \\ []) when is_list(opts) do
     root_dir = opts |> Keyword.get(:root_dir, File.cwd!()) |> Path.expand()
-    release_id = "rr_" <> random_hex(32)
+    started_at = now_ms()
 
-    with {:ok, publication} <- Publication.build(release_id),
-         {:ok, locator} <- Locator.connect(root_dir) do
-      :erpc.call(
-        locator.node,
-        Lifecycle,
-        :reload,
-        [publication, release_id, Keyword.get(opts, :reload_timeout_ms, 60_000)],
-        Keyword.get(opts, :reload_timeout_ms, 60_000) + 1_000
-      )
+    with {:ok, release_id} <- reload_release_id(opts),
+         {:ok, publication, build_ms} <- timed_result(fn -> Publication.build(release_id) end),
+         {:ok, locator} <- Locator.connect(root_dir),
+         result <-
+           :erpc.call(
+             locator.node,
+             Lifecycle,
+             :reload,
+             [publication, release_id, Keyword.get(opts, :reload_timeout_ms, 60_000)],
+             Keyword.get(opts, :reload_timeout_ms, 60_000) + 1_000
+           ) do
+      decorate_reload_result(result, build_ms, started_at)
     end
   catch
     :error, reason -> {:error, {:reload_rpc_failed, reason}}
@@ -166,5 +170,32 @@ defmodule FavnLocal do
   defp view_url(config), do: "http://127.0.0.1:#{config.view_port}"
   defp orchestrator_url(config), do: "http://127.0.0.1:#{config.orchestrator_port}"
 
-  defp random_hex(bytes), do: bytes |> :crypto.strong_rand_bytes() |> Base.encode16(case: :lower)
+  defp reload_release_id(opts) do
+    case Keyword.fetch(opts, :runner_release_id) do
+      {:ok, release_id} -> {:ok, release_id}
+      :error -> SourceRelease.current()
+    end
+  end
+
+  defp decorate_reload_result({:ok, result}, build_ms, started_at) do
+    phases = result |> Map.get(:phases, %{}) |> Map.put(:manifest_build_ms, build_ms)
+
+    {:ok,
+     result
+     |> Map.put(:phases, phases)
+     |> Map.put(:duration_ms, max(now_ms() - started_at, 0))}
+  end
+
+  defp decorate_reload_result({:error, _reason} = error, _build_ms, _started_at), do: error
+
+  defp timed_result(fun) do
+    started_at = now_ms()
+
+    case fun.() do
+      {:ok, result} -> {:ok, result, max(now_ms() - started_at, 0)}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp now_ms, do: System.monotonic_time(:millisecond)
 end

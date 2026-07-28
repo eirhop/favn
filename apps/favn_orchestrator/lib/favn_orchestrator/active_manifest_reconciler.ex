@@ -107,7 +107,7 @@ defmodule FavnOrchestrator.ActiveManifestReconciler do
         {:reconcile, token},
         %{task: nil, schedule: %{token: token}} = state
       ) do
-    if Lifecycle.ensure_accepting(state.lifecycle) == :ok do
+    if Lifecycle.ensure_ready(state.lifecycle) == :ok do
       start_reconciliation(state)
     else
       {:noreply, state |> Map.put(:schedule, nil) |> schedule(state.interval_ms)}
@@ -115,6 +115,23 @@ defmodule FavnOrchestrator.ActiveManifestReconciler do
   end
 
   def handle_info({:reconcile, _stale_token}, state), do: {:noreply, state}
+
+  def handle_info(
+        {:reconcile_result, token, {:error, :runtime_maintenance}},
+        %{task: %{token: token} = task} = state
+      ) do
+    _ = Process.cancel_timer(task.timeout)
+    Process.demonitor(task.monitor, [:flush])
+
+    {:noreply,
+     state
+     |> Map.merge(%{
+       task: nil,
+       result: {:error, :active_manifest_reconciliation_pending},
+       checked_at_ms: nil
+     })
+     |> schedule(state.interval_ms)}
+  end
 
   def handle_info(
         {:reconcile_result, token, result},
@@ -297,11 +314,20 @@ defmodule FavnOrchestrator.ActiveManifestReconciler do
       failed: Map.get(summary, :failed, 0)
     }
 
+    metadata =
+      %{status: status, timeout_ms: timeout_ms}
+      |> maybe_put_reason(result)
+
     OperationalEvents.emit(
       :active_manifest_reconciliation_completed,
       measurements,
-      %{status: status, timeout_ms: timeout_ms},
+      metadata,
       level: if(status == :ok, do: :debug, else: :warning)
     )
   end
+
+  defp maybe_put_reason(metadata, {:error, reason}) when is_atom(reason),
+    do: Map.put(metadata, :reason, reason)
+
+  defp maybe_put_reason(metadata, _result), do: metadata
 end

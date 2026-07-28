@@ -53,6 +53,10 @@ defmodule FavnOrchestrator.RebuildsTest do
       {:ok, Enum.filter(bindings, &(&1.target_id in query.target_ids))}
     end
 
+    def get_evidence_bindings(query) do
+      {:ok, Enum.map(query.target_ids, &evidence_binding/1)}
+    end
+
     def create_plan(command) do
       send(Process.get(:rebuild_test_pid), {:create_rebuild_plan, command})
 
@@ -93,6 +97,11 @@ defmodule FavnOrchestrator.RebuildsTest do
       Process.put({:rebuild_operation, command.operation_id}, operation)
       Process.put({:rebuild_items, command.operation_id}, command.items)
       {:ok, operation}
+    end
+
+    defp evidence_binding(target_id) do
+      digest = target_id |> then(&:crypto.hash(:sha256, &1)) |> Base.encode16(case: :lower)
+      %{target_id: target_id, evidence_generation_id: "ag_" <> digest}
     end
 
     def acquire_many(command) do

@@ -2,9 +2,11 @@ defmodule FavnOrchestrator.Freshness.Staleness do
   @moduledoc """
   Pure helpers for deriving consumed input versions and stale reasons.
 
-  The helpers compare upstream freshness versions, not timestamps. They do not
-  read storage or decide execution policy; callers provide the planned upstream
-  node keys and the current upstream freshness states.
+  The helpers compare versions that the downstream success actually consumed,
+  not timestamps or newly authored dependencies. A manifest reload therefore
+  cannot invalidate existing evidence by itself. Once a downstream asset is
+  explicitly recomputed, its next success records the complete current input
+  set.
   """
 
   alias FavnOrchestrator.AssetFreshnessState
@@ -55,9 +57,11 @@ defmodule FavnOrchestrator.Freshness.Staleness do
   @doc """
   Compares a downstream state's stored input versions to current upstream states.
 
-  Returns `:fresh` when every planned upstream has a current state and the stored
-  consumed version matches the current upstream freshness version. Otherwise it
-  returns explicit stale reasons in upstream node order.
+  Only upstreams recorded by the downstream success participate. Newly authored
+  dependencies do not invalidate existing evidence until the downstream asset is
+  explicitly recomputed. For every recorded upstream, the current state must
+  exist and its freshness version must still match. Otherwise this returns
+  explicit stale reasons in upstream node order.
   """
   @spec freshness(
           AssetFreshnessState.t() | map(),
@@ -125,26 +129,31 @@ defmodule FavnOrchestrator.Freshness.Staleness do
   defp normalize_input_versions(_input_versions), do: %{}
 
   defp stale_reason(upstream_node_key, consumed_versions, current_upstream_states) do
-    consumed = Map.get(consumed_versions, upstream_node_key)
-    consumed_version = version_from_input_version(consumed)
-
-    case Map.fetch(current_upstream_states, upstream_node_key) do
+    case Map.fetch(consumed_versions, upstream_node_key) do
       :error ->
-        reason(:missing_upstream_version, upstream_node_key, consumed_version, nil, nil)
+        nil
 
-      {:ok, current_state} ->
-        current_version = freshness_version(current_state)
+      {:ok, consumed} ->
+        consumed_version = version_from_input_version(consumed)
 
-        if consumed_version == current_version do
-          nil
-        else
-          reason(
-            :upstream_version_changed,
-            upstream_node_key,
-            consumed_version,
-            current_version,
-            success_run_id(current_state)
-          )
+        case Map.fetch(current_upstream_states, upstream_node_key) do
+          :error ->
+            reason(:missing_upstream_version, upstream_node_key, consumed_version, nil, nil)
+
+          {:ok, current_state} ->
+            current_version = freshness_version(current_state)
+
+            if consumed_version == current_version do
+              nil
+            else
+              reason(
+                :upstream_version_changed,
+                upstream_node_key,
+                consumed_version,
+                current_version,
+                success_run_id(current_state)
+              )
+            end
         end
     end
   end

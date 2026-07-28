@@ -2,9 +2,9 @@ defmodule FavnOrchestrator.TargetGenerations do
   @moduledoc """
   Resolves manifest assets to the evidence generation used by planning and writes.
 
-  Non-persisted assets use their deterministic semantic generation. Persisted
-  SQL targets read or establish a durable target generation through the
-  generation store.
+  Non-persisted assets use a durable workspace evidence binding initialized by
+  manifest deployment. Persisted SQL targets read or establish a durable target
+  generation through the generation store.
   """
 
   alias Favn.Manifest.Asset
@@ -14,6 +14,7 @@ defmodule FavnOrchestrator.TargetGenerations do
   alias Favn.Plan
   alias FavnOrchestrator.Persistence
   alias FavnOrchestrator.Persistence.Commands.EnsureWritableTargetGeneration
+  alias FavnOrchestrator.Persistence.Queries.GetEvidenceBindings
   alias FavnOrchestrator.Persistence.Queries.GetTargetBindings
   alias FavnOrchestrator.Persistence.TargetIdentity
   alias FavnOrchestrator.Persistence.WorkspaceContext
@@ -162,63 +163,32 @@ defmodule FavnOrchestrator.TargetGenerations do
       |> Map.values()
       |> Enum.filter(&match?(%Asset{target_descriptor: %TargetDescriptor{}}, &1))
 
-    bindings_by_target =
-      case persisted do
-        [] ->
-          {:ok, %{}}
+    non_persisted =
+      assets_by_ref
+      |> Map.values()
+      |> Enum.filter(&match?(%Asset{target_descriptor: nil}, &1))
 
-        assets ->
-          assets
-          |> Enum.map(&TargetIdentity.for_asset(&1.ref))
-          |> Enum.uniq()
-          |> Enum.chunk_every(@binding_batch)
-          |> Enum.reduce_while({:ok, %{}}, fn target_ids, {:ok, acc} ->
-            case Persistence.stores().target_generations.get_bindings(%GetTargetBindings{
-                   workspace_context: context,
-                   target_ids: target_ids
-                 }) do
-              {:ok, bindings} ->
-                {:cont, {:ok, Enum.reduce(bindings, acc, &Map.put(&2, &1.target_id, &1))}}
-
-              {:error, _reason} = error ->
-                {:halt, error}
-            end
-          end)
-      end
-
-    with {:ok, bindings_by_target} <- bindings_by_target do
-      identities =
-        Enum.reduce(assets_by_ref, %{}, fn {ref, asset}, acc ->
-          case read_identity(asset, bindings_by_target) do
-            nil -> acc
-            identity -> Map.put(acc, ref, identity)
-          end
-        end)
-
-      {:ok, identities}
+    with {:ok, target_bindings} <- target_bindings(context, persisted),
+         {:ok, evidence_bindings} <- evidence_bindings(context, non_persisted) do
+      Enum.reduce_while(assets_by_ref, {:ok, %{}}, fn {ref, asset}, {:ok, acc} ->
+        case read_identity(asset, target_bindings, evidence_bindings) do
+          {:ok, identity} -> {:cont, {:ok, Map.put(acc, ref, identity)}}
+          :missing -> {:cont, {:ok, acc}}
+          {:error, _reason} = error -> {:halt, error}
+        end
+      end)
     end
   end
 
   defp writable_identity(
-         _context,
-         %Version{} = version,
+         context,
+         %Version{},
          %Asset{target_descriptor: nil} = asset,
          _at
        ) do
-    generation_id =
-      asset.semantic_generation_id ||
-        TargetDescriptor.semantic_generation_id(
-          Map.from_struct(asset),
-          version.required_runner_release_id
-        )
-
-    {:ok,
-     %{
-       target_id: TargetIdentity.for_asset(asset.ref),
-       evidence_generation_id: generation_id,
-       target_generation_id: nil,
-       physical_relation: nil
-     }}
+    with {:ok, bindings} <- evidence_bindings(context, [asset]) do
+      bound_identity(asset, bindings)
+    end
   end
 
   defp writable_identity(context, version, %Asset{} = asset, occurred_at) do
@@ -256,40 +226,122 @@ defmodule FavnOrchestrator.TargetGenerations do
     end
   end
 
-  defp read_identity(%Asset{target_descriptor: nil} = asset, _bindings) do
-    if is_binary(asset.semantic_generation_id) do
-      %{
-        target_id: TargetIdentity.for_asset(asset.ref),
-        evidence_generation_id: asset.semantic_generation_id,
-        target_generation_id: nil
-      }
-    end
+  defp read_identity(
+         %Asset{target_descriptor: nil} = asset,
+         _target_bindings,
+         evidence_bindings
+       ) do
+    bound_identity(asset, evidence_bindings)
   end
 
-  defp read_identity(%Asset{} = asset, bindings) do
+  defp read_identity(%Asset{} = asset, target_bindings, _evidence_bindings) do
     target_id = TargetIdentity.for_asset(asset.ref)
 
-    case Map.get(bindings, target_id) do
+    case Map.get(target_bindings, target_id) do
       %{active_generation_id: generation_id} = binding when is_binary(generation_id) ->
-        %{
-          target_id: target_id,
-          evidence_generation_id: generation_id,
-          target_generation_id: generation_id,
-          physical_relation: Map.get(binding, :active_physical_relation)
-        }
+        {:ok,
+         %{
+           target_id: target_id,
+           evidence_generation_id: generation_id,
+           target_generation_id: generation_id,
+           physical_relation: Map.get(binding, :active_physical_relation)
+         }}
 
       _other ->
-        nil
+        :missing
     end
   end
 
   defp pin_identities(refs, context, version, index, occurred_at) do
-    Enum.reduce_while(refs, {:ok, %{}}, fn ref, {:ok, identities} ->
-      with {:ok, asset} <- Index.fetch_asset(index, ref),
-           {:ok, identity} <- for_write(context, version, asset, occurred_at) do
-        {:cont, {:ok, Map.put(identities, ref, identity)}}
-      else
+    with {:ok, assets} <- fetch_assets(refs, index),
+         {:ok, bindings} <-
+           assets
+           |> Map.values()
+           |> Enum.filter(&match?(%Asset{target_descriptor: nil}, &1))
+           |> then(&evidence_bindings(context, &1)) do
+      Enum.reduce_while(assets, {:ok, %{}}, fn {ref, asset}, {:ok, identities} ->
+        case pin_identity(context, version, asset, occurred_at, bindings) do
+          {:ok, identity} -> {:cont, {:ok, Map.put(identities, ref, identity)}}
+          {:error, _reason} = error -> {:halt, error}
+        end
+      end)
+    end
+  end
+
+  defp fetch_assets(refs, index) do
+    Enum.reduce_while(refs, {:ok, %{}}, fn ref, {:ok, assets} ->
+      case Index.fetch_asset(index, ref) do
+        {:ok, asset} -> {:cont, {:ok, Map.put(assets, ref, asset)}}
         {:error, _reason} = error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp pin_identity(
+         _context,
+         %Version{},
+         %Asset{target_descriptor: nil} = asset,
+         _occurred_at,
+         bindings
+       ),
+       do: bound_identity(asset, bindings)
+
+  defp pin_identity(context, version, %Asset{} = asset, occurred_at, _bindings),
+    do: writable_identity(context, version, asset, occurred_at)
+
+  defp bound_identity(asset, bindings) do
+    target_id = TargetIdentity.for_asset(asset.ref)
+
+    case Map.get(bindings, target_id) do
+      %{evidence_generation_id: generation_id} when is_binary(generation_id) ->
+        {:ok,
+         %{
+           target_id: target_id,
+           evidence_generation_id: generation_id,
+           target_generation_id: nil,
+           physical_relation: nil
+         }}
+
+      _other ->
+        {:error, {:evidence_binding_not_found, target_id}}
+    end
+  end
+
+  defp target_bindings(_context, []), do: {:ok, %{}}
+
+  defp target_bindings(context, assets) do
+    fetch_bindings(assets, fn target_ids ->
+      Persistence.stores().target_generations.get_bindings(%GetTargetBindings{
+        workspace_context: context,
+        target_ids: target_ids
+      })
+    end)
+  end
+
+  defp evidence_bindings(_context, []), do: {:ok, %{}}
+
+  defp evidence_bindings(context, assets) do
+    fetch_bindings(assets, fn target_ids ->
+      Persistence.stores().target_generations.get_evidence_bindings(%GetEvidenceBindings{
+        workspace_context: context,
+        target_ids: target_ids
+      })
+    end)
+  end
+
+  defp fetch_bindings(assets, fetch) do
+    assets
+    |> Enum.map(&TargetIdentity.for_asset(&1.ref))
+    |> Enum.uniq()
+    |> Enum.sort()
+    |> Enum.chunk_every(@binding_batch)
+    |> Enum.reduce_while({:ok, %{}}, fn target_ids, {:ok, acc} ->
+      case fetch.(target_ids) do
+        {:ok, bindings} ->
+          {:cont, {:ok, Enum.reduce(bindings, acc, &Map.put(&2, &1.target_id, &1))}}
+
+        {:error, _reason} = error ->
+          {:halt, error}
       end
     end)
   end

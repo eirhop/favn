@@ -13,6 +13,10 @@ defmodule Favn.Manifest.Asset do
   Metadata `:category` and `:tags` values are selector labels. They are
   normalized to strings at manifest boundaries so persisted manifests do not need
   to create atoms for user-facing labels.
+
+  `:semantic_generation_id` identifies the asset definition in this immutable
+  manifest. The orchestrator uses a separate durable workspace binding as the
+  active freshness and coverage identity for non-persisted assets.
   """
 
   alias Favn.Coverage.Effective, as: EffectiveCoverage

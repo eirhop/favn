@@ -102,7 +102,7 @@ defmodule Favn.Manifest.TargetDescriptor do
     end
   end
 
-  @doc "Returns a deterministic semantic evidence generation id for a manifest asset."
+  @doc "Returns a deterministic semantic definition generation id for a manifest asset."
   @spec semantic_generation_id(map(), term()) :: String.t()
   def semantic_generation_id(asset, execution_identity \\ nil) when is_map(asset) do
     payload = %{

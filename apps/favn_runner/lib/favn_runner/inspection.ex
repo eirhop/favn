@@ -10,34 +10,119 @@ defmodule FavnRunner.Inspection do
   alias Favn.SQL.Result
 
   @include_items [:relation, :columns, :row_count, :sample, :table_metadata]
+  @max_batch_size 500
   @runner_registry FavnRunner.ConnectionRegistry
 
   @spec inspect_relation(RelationInspectionRequest.t(), Favn.Manifest.Version.t()) ::
           {:ok, RelationInspectionResult.t()} | {:error, term()}
   def inspect_relation(%RelationInspectionRequest{} = request, version) do
-    include = normalize_include(request.include)
-
-    with {:ok, sample_limit} <- normalize_sample_limit(request.sample_limit, include),
-         {:ok, asset, relation_ref} <- resolve_relation(request, version),
+    with {:ok, prepared} <- prepare(request, version),
          {:ok, session} <-
            Client.connect(
-             relation_ref.connection,
-             connect_opts(relation_ref)
+             prepared.relation_ref.connection,
+             connect_opts([prepared.relation_ref])
            ) do
       try do
-        {:ok,
-         inspect_with_session(
-           asset,
-           relation_ref,
-           session,
-           include,
-           sample_limit,
-           version.required_runner_release_id
-         )}
+        {:ok, inspect_prepared(prepared, session)}
       after
         Client.disconnect(session)
       end
     end
+  end
+
+  @spec inspect_relations([
+          {:ok, RelationInspectionRequest.t(), Favn.Manifest.Version.t()} | {:error, term()}
+        ]) ::
+          {:ok, [{:ok, RelationInspectionResult.t()} | {:error, term()}]}
+          | {:error, :invalid_relation_inspection_batch}
+  def inspect_relations([]), do: {:ok, []}
+
+  def inspect_relations(items) when is_list(items) and length(items) <= @max_batch_size do
+    prepared =
+      items
+      |> Enum.with_index()
+      |> Enum.map(fn
+        {{:ok, %RelationInspectionRequest{} = request, version}, index} ->
+          case prepare(request, version) do
+            {:ok, value} -> {:ok, Map.put(value, :index, index)}
+            {:error, reason} -> {:error, index, reason}
+          end
+
+        {{:error, reason}, index} ->
+          {:error, index, reason}
+
+        {_invalid, index} ->
+          {:error, index, :invalid_relation_inspection_request}
+      end)
+
+    results =
+      Enum.reduce(prepared, %{}, fn
+        {:error, index, reason}, results -> Map.put(results, index, {:error, reason})
+        {:ok, _prepared}, results -> results
+      end)
+
+    results =
+      prepared
+      |> Enum.flat_map(fn
+        {:ok, value} -> [value]
+        {:error, _index, _reason} -> []
+      end)
+      |> Enum.group_by(&{&1.relation_ref.connection, &1.relation_ref.catalog})
+      |> Enum.reduce(results, fn {_session_key, group}, results ->
+        inspect_group(group, results)
+      end)
+
+    {:ok, Enum.map(0..(length(items) - 1), &Map.fetch!(results, &1))}
+  end
+
+  def inspect_relations(_items), do: {:error, :invalid_relation_inspection_batch}
+
+  defp prepare(request, version) do
+    include = normalize_include(request.include)
+
+    with {:ok, sample_limit} <- normalize_sample_limit(request.sample_limit, include),
+         {:ok, asset, relation_ref} <- resolve_relation(request, version) do
+      {:ok,
+       %{
+         asset: asset,
+         relation_ref: relation_ref,
+         include: include,
+         sample_limit: sample_limit,
+         required_runner_release_id: version.required_runner_release_id
+       }}
+    end
+  end
+
+  defp inspect_group(group, results) do
+    relation_refs = Enum.map(group, & &1.relation_ref)
+    connection = hd(relation_refs).connection
+
+    case Client.connect(connection, connect_opts(relation_refs)) do
+      {:ok, session} ->
+        try do
+          Enum.reduce(group, results, fn prepared, results ->
+            Map.put(results, prepared.index, {:ok, inspect_prepared(prepared, session)})
+          end)
+        after
+          Client.disconnect(session)
+        end
+
+      {:error, reason} ->
+        Enum.reduce(group, results, fn prepared, results ->
+          Map.put(results, prepared.index, {:error, reason})
+        end)
+    end
+  end
+
+  defp inspect_prepared(prepared, session) do
+    inspect_with_session(
+      prepared.asset,
+      prepared.relation_ref,
+      session,
+      prepared.include,
+      prepared.sample_limit,
+      prepared.required_runner_release_id
+    )
   end
 
   defp resolve_relation(%RelationInspectionRequest{asset_ref: asset_ref}, version)
@@ -69,11 +154,16 @@ defmodule FavnRunner.Inspection do
     ArgumentError -> {:error, :invalid_relation}
   end
 
-  defp connect_opts(%RelationRef{catalog: catalog}) when is_binary(catalog) and catalog != "" do
-    [registry_name: @runner_registry, required_catalogs: [catalog]]
-  end
+  defp connect_opts(relations) when is_list(relations) do
+    catalogs =
+      relations
+      |> Enum.map(& &1.catalog)
+      |> Enum.filter(&(is_binary(&1) and &1 != ""))
+      |> Enum.uniq()
+      |> Enum.sort()
 
-  defp connect_opts(%RelationRef{}), do: [registry_name: @runner_registry]
+    [registry_name: @runner_registry, required_catalogs: catalogs]
+  end
 
   defp inspect_with_session(
          asset,

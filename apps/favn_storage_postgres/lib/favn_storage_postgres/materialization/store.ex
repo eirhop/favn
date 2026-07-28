@@ -21,6 +21,7 @@ defmodule FavnStoragePostgres.Materialization.Store do
   alias FavnStoragePostgres.Outbox.Writer, as: OutboxWriter
   alias FavnStoragePostgres.Payload
   alias FavnStoragePostgres.Repo
+  alias FavnStoragePostgres.Schemas.AssetEvidenceBinding
   alias FavnStoragePostgres.Schemas.Materialization
   alias FavnStoragePostgres.Schemas.MaterializationClaim
   alias FavnStoragePostgres.Schemas.TargetOperationLock
@@ -127,6 +128,7 @@ defmodule FavnStoragePostgres.Materialization.Store do
 
       nil ->
         ensure_target_operation_admission!(command)
+        ensure_evidence_binding!(command)
         request_hash = claim_request_hash!(command)
 
         case lock_claim(workspace_id, command.claim_key) do
@@ -166,6 +168,37 @@ defmodule FavnStoragePostgres.Materialization.Store do
             reason_code: "target_operation_in_progress",
             target_id: command.target_id,
             operation_id: operation_lock.operation_id
+          }
+        )
+      )
+    end
+  end
+
+  defp ensure_evidence_binding!(%{target_generation_id: generation_id})
+       when is_binary(generation_id),
+       do: :ok
+
+  defp ensure_evidence_binding!(%{target_kind: :pipeline}), do: :ok
+
+  defp ensure_evidence_binding!(command) do
+    binding =
+      from(binding in AssetEvidenceBinding,
+        where:
+          binding.workspace_id == ^command.workspace_context.workspace_id and
+            binding.target_id == ^command.target_id,
+        lock: "FOR KEY SHARE"
+      )
+      |> Repo.one()
+
+    if match?(%AssetEvidenceBinding{}, binding) and
+         binding.evidence_generation_id == command.evidence_generation_id do
+      :ok
+    else
+      Repo.rollback(
+        Error.new(:conflict, "asset evidence binding does not match the materialization claim",
+          details: %{
+            reason_code: "evidence_binding_mismatch",
+            target_id: command.target_id
           }
         )
       )

@@ -34,8 +34,13 @@ artifact construction is owned by `FavnAuthoring.Deployment`.
 - development startup never invokes Docker;
 - startup verifies but never mutates PostgreSQL schema/workspace setup;
 - exactly one child runner OS process is owned at a time;
-- reload compiles before replacement and binds a fresh release ID to the new
-  manifest;
+- reload compiles first and derives the runner release ID from the compiled BEAM
+  closure;
+- an unchanged compiled closure and manifest is a no-op only while the expected
+  deployment remains durably active; manifest-only changes deploy without
+  replacing the runner; changed compiled code replaces the runner;
+- reload registers only execution packages absent from durable storage and emits
+  build, package, publication, activation, and total phase timings;
 - environment, dependency, plugin, port, and database changes require a full
   stop/start;
 - normal stop/start preserves the local View password and browser-session key;

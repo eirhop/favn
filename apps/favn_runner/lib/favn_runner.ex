@@ -35,6 +35,7 @@ defmodule FavnRunner do
   alias FavnRunner.ContextBuilder
   alias FavnRunner.GenerationWork
   alias FavnRunner.GenerationOperations
+  alias FavnRunner.Inspection
   alias FavnRunner.Lifecycle
   alias FavnRunner.ManifestResolver
   alias FavnRunner.ManifestStore
@@ -388,6 +389,30 @@ defmodule FavnRunner do
     end)
   end
 
+  @doc """
+  Runs up to 500 safe read-only relation inspections through one runner call.
+
+  Results preserve request order and keep individual failures explicit.
+  """
+  @impl true
+  @spec inspect_relations([RelationInspectionRequest.t()], keyword()) ::
+          {:ok, [{:ok, RelationInspectionResult.t()} | {:error, term()}]}
+          | {:error, term()}
+  def inspect_relations(requests, opts \\ [])
+
+  def inspect_relations(requests, opts)
+      when is_list(requests) and length(requests) <= 500 and is_list(opts) do
+    with_admission(opts, fn ->
+      with :ok <- verify_inspection_releases(requests) do
+        requests
+        |> inspection_items(opts)
+        |> Inspection.inspect_relations()
+      end
+    end)
+  end
+
+  def inspect_relations(_requests, _opts), do: {:error, :invalid_relation_inspection_batch}
+
   @doc "Returns explicit target-generation capabilities for one manifest asset."
   @impl true
   @spec generation_capabilities(Version.t(), Favn.Ref.t(), keyword()) ::
@@ -484,6 +509,58 @@ defmodule FavnRunner do
 
   defp with_admission(opts, fun) do
     Lifecycle.with_admission(fun, Keyword.get(opts, :lifecycle, Lifecycle))
+  end
+
+  defp verify_inspection_releases(requests) do
+    Enum.reduce_while(requests, :ok, fn
+      %RelationInspectionRequest{} = request, :ok ->
+        case ReleaseVerifier.verify_required_release(request.required_runner_release_id) do
+          :ok -> {:cont, :ok}
+          {:error, _reason} = error -> {:halt, error}
+        end
+
+      _invalid, :ok ->
+        {:halt, {:error, :invalid_relation_inspection_batch}}
+    end)
+  end
+
+  defp inspection_items(requests, opts) do
+    manifest_store = Keyword.get(opts, :manifest_store, FavnRunner.ManifestStore)
+
+    {items, _versions} =
+      Enum.map_reduce(requests, %{}, fn request, versions ->
+        identity = {request.manifest_version_id, request.manifest_content_hash}
+
+        {version_result, versions} =
+          case Map.fetch(versions, identity) do
+            {:ok, result} ->
+              {result, versions}
+
+            :error ->
+              result = load_inspection_version(request, manifest_store)
+              {result, Map.put(versions, identity, result)}
+          end
+
+        item =
+          case version_result do
+            {:ok, version} -> {:ok, request, version}
+            {:error, _reason} = error -> error
+          end
+
+        {item, versions}
+      end)
+
+    items
+  end
+
+  defp load_inspection_version(request, manifest_store) do
+    with {:ok, version} <-
+           ManifestStore.fetch(request.manifest_version_id, request.manifest_content_hash,
+             server: manifest_store
+           ),
+         :ok <- ReleaseVerifier.verify_required_release(version.required_runner_release_id) do
+      {:ok, version}
+    end
   end
 
   defp generation_asset(%Version{manifest: %Manifest{}} = version, asset_ref, _opts) do

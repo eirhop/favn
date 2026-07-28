@@ -78,7 +78,9 @@ After changing runner code or authored definitions:
 mix favn.reload
 ```
 
-Reload compiles and replaces the runner BEAM. It does not rebuild an image.
+Reload compiles the project. It replaces the runner only when compiled code
+changed, deploys manifest-only changes without replacement, and skips an
+unchanged deployment. It does not rebuild an image.
 
 After changing dependencies, plugins, environment, or runtime configuration:
 
