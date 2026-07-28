@@ -68,7 +68,7 @@ defmodule FavnView.Components.NavRail do
             <.link
               navigate={item.href}
               class={[
-                "favn-icon-button rounded-field border border-transparent text-base-content/75",
+                "favn-icon-button rounded-field border border-transparent favn-text-muted",
                 item.active && "border-primary/40 bg-primary/15 text-primary"
               ]}
               aria-current={item.active && "page"}
@@ -94,7 +94,7 @@ defmodule FavnView.Components.NavRail do
       navigate={@item.href}
       class={[
         "tooltip tooltip-right btn btn-ghost btn-square favn-icon-button rounded-box",
-        "border border-base-content/10 text-base-content/70",
+        "border border-base-content/10 favn-text-muted",
         @item.active && "bg-primary/15 text-primary favn-status-glow"
       ]}
       data-tip={@item.label}

@@ -56,7 +56,7 @@ defmodule FavnView.Components.ScheduleUi do
     <div class="overflow-auto">
       <table class="table table-sm" data-testid="schedule-occurrence-table">
         <thead>
-          <tr class="border-base-content/10 text-xs text-base-content/55">
+          <tr class="border-base-content/10 text-xs favn-text-muted">
             <th class="font-medium">Due at</th>
             <th class="font-medium">Window</th>
             <th class="font-medium">Status</th>
@@ -71,13 +71,13 @@ defmodule FavnView.Components.ScheduleUi do
           >
             <td class="whitespace-nowrap">
               <p class="font-medium text-base-content">{occurrence.due_label}</p>
-              <p class="text-xs text-base-content/45">{occurrence.timezone}</p>
+              <p class="text-xs favn-text-subtle">{occurrence.timezone}</p>
             </td>
-            <td class="min-w-48 text-xs text-base-content/70">{occurrence.window_label}</td>
+            <td class="min-w-48 text-xs favn-text-muted">{occurrence.window_label}</td>
             <td>
               <.occurrence_status_badge status={occurrence.status} label={occurrence.status_label} />
             </td>
-            <td class="min-w-48 text-xs text-base-content/65">
+            <td class="min-w-48 text-xs favn-text-muted">
               <span :if={occurrence.notes == []}>-</span>
               <span :for={note <- occurrence.notes} class="mr-2 inline-block">{note}</span>
             </td>

@@ -135,14 +135,27 @@
    Hue 130 is deliberate. `success` sits at 155 and means "healthy"; an
    electric lime at 130, far more saturated than any status tone, does not
    read as a status. */
+/* Secondary text is a colour, not an opacity.
+   The UI had twelve `text-base-content/NN` levels, and on the light theme the
+   faint end measured 2.94:1 against a 4.5:1 limit. That is not tunable: a 45%
+   alpha of dark-on-light caps near 3:1 whatever the base is. Opacity also lies
+   about layering — the same class renders differently on every surface it lands
+   on, so no single measurement covers it.
+   Two tiers replace the twelve. Both are required to pass AA on the most raised
+   surface, so hierarchy comes from size and weight, which do not trade against
+   legibility. */
 [data-theme="favn-dark"] {
   --favn-action: oklch(87% 0.23 130);
   --favn-action-content: oklch(18% 0.05 130);
+  --favn-text-muted: oklch(80% 0.022 245);
+  --favn-text-subtle: oklch(70% 0.022 245);
 }
 
 [data-theme="favn-light"] {
   --favn-action: oklch(47% 0.15 130);
   --favn-action-content: oklch(98% 0.02 130);
+  --favn-text-muted: oklch(38% 0.03 255);
+  --favn-text-subtle: oklch(43% 0.03 255);
 }
 
 /* Button label colours are deliberately unlayered.
@@ -175,7 +188,28 @@
   color: var(--color-error);
 }
 
+/* A checkbox has no surface of its own, so its border is the only thing saying
+   it exists. DaisyUI ships it at 20px with a border measuring 1.59:1 — under
+   both the 3:1 boundary limit and the 24px target minimum. Unlayered for the
+   same reason as the button colours above. */
+.checkbox {
+  width: 1.5rem;
+  height: 1.5rem;
+  border-color: color-mix(in oklab, var(--color-base-content) 62%, transparent);
+}
+
 @layer components {
+  /* The two secondary text tiers. `muted` is metadata and labels a reader is
+     expected to read; `subtle` is the faintest tier the contract allows. There
+     is no third: a tier nobody can read is not information. */
+  .favn-text-muted {
+    color: var(--favn-text-muted);
+  }
+
+  .favn-text-subtle {
+    color: var(--favn-text-subtle);
+  }
+
   /* `favn-shell-bg` is the full page shell and claims the viewport. The
      design-system browser wants the same atmosphere without claiming it, so it
      uses `favn-shell-backdrop`, which stays as tall as its content and lets the
@@ -232,6 +266,15 @@
       0 1px 0 color-mix(in oklab, var(--color-base-content) 12%, transparent) inset,
       0 20px 70px color-mix(in oklab, var(--color-primary) 12%, transparent),
       0 14px 40px color-mix(in oklab, var(--color-base-100) 54%, transparent) !important;
+  }
+
+  /* Selection is a state, so it has to be identifiable: an opaque border plus a
+     lit edge, rather than a tinted hairline that measured 2.47:1. */
+  .favn-list-card-selected {
+    border-color: var(--color-primary) !important;
+    box-shadow:
+      inset 3px 0 0 0 var(--color-primary),
+      0 0 24px color-mix(in oklab, var(--color-primary) 22%, transparent) !important;
   }
 
   .glass.favn-surface-list {

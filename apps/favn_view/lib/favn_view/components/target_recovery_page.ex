@@ -69,7 +69,7 @@ defmodule FavnView.Components.TargetRecoveryPage do
     ~H"""
     <.panel>
       <:header title="Plan recovery" />
-      <p class="text-sm text-base-content/65">
+      <p class="text-sm favn-text-muted">
         Planning is read-only. Favn will require its original generation, successful
         materialization, physical fingerprint, and marker identity.
       </p>
@@ -185,7 +185,7 @@ defmodule FavnView.Components.TargetRecoveryPage do
   defp item(assigns) do
     ~H"""
     <div :if={not is_nil(@value)}>
-      <dt class="text-xs text-base-content/45">{@label}</dt>
+      <dt class="text-xs favn-text-subtle">{@label}</dt>
       <dd class="mt-1"><.mono value={format_value(@value)} /></dd>
     </div>
     """

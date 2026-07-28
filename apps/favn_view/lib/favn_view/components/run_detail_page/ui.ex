@@ -33,7 +33,7 @@ defmodule FavnView.Components.RunDetailPage.Ui do
   def icon_shell_class(:primary), do: "bg-primary/15 text-primary"
   def icon_shell_class(:warning), do: "bg-warning/15 text-warning"
   def icon_shell_class(:error), do: "bg-error/15 text-error"
-  def icon_shell_class(_tone), do: "bg-base-content/10 text-base-content/60"
+  def icon_shell_class(_tone), do: "bg-base-content/10 favn-text-muted"
   def status_icon(:success), do: "hero-check-circle"
   def status_icon(:info), do: "hero-arrow-path"
   def status_icon(:warning), do: "hero-clock"
@@ -58,11 +58,11 @@ defmodule FavnView.Components.RunDetailPage.Ui do
 
   def matrix_cell_class(_tone),
     do:
-      "border-b border-r border-base-content/10 bg-base-content/[0.03] p-3 text-center text-base-content/50 transition disabled:cursor-not-allowed"
+      "border-b border-r border-base-content/10 bg-base-content/[0.03] p-3 text-center favn-text-subtle transition disabled:cursor-not-allowed"
 
   def legend_class(:success), do: "bg-success/15 text-success"
   def legend_class(:error), do: "bg-error/15 text-error"
   def legend_class(:info), do: "bg-info/15 text-info"
   def legend_class(:warning), do: "bg-warning/15 text-warning"
-  def legend_class(_tone), do: "bg-base-content/10 text-base-content/60"
+  def legend_class(_tone), do: "bg-base-content/10 favn-text-muted"
 end

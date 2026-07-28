@@ -10,14 +10,14 @@ defmodule FavnView.Components.RunDetailPage.Events do
       <div class="mb-4 flex items-center justify-between gap-3">
         <div>
           <h2 class="text-lg font-medium tracking-tight">Events/logs</h2>
-          <p class="text-sm text-base-content/55">Persisted run events for diagnostics.</p>
+          <p class="text-sm favn-text-muted">Persisted run events for diagnostics.</p>
         </div>
         <span class="badge badge-ghost">{length(@run.events)} events</span>
       </div>
 
       <div
         :if={@run.events == []}
-        class="rounded-box border border-dashed border-base-content/15 p-5 text-sm text-base-content/55"
+        class="rounded-box border border-dashed border-base-content/15 p-5 text-sm favn-text-muted"
       >
         No events persisted for this run yet.
       </div>
@@ -35,10 +35,10 @@ defmodule FavnView.Components.RunDetailPage.Events do
     ~H"""
     <li class="grid gap-2 rounded-box border border-base-content/10 bg-base-content/[0.03] p-3 sm:grid-cols-[5rem_11rem_12rem_1fr] sm:items-start">
       <span class="badge badge-ghost badge-sm">#{@event.sequence}</span>
-      <time class="text-xs text-base-content/50">{@event.timestamp}</time>
+      <time class="text-xs favn-text-subtle">{@event.timestamp}</time>
       <span class="text-sm font-medium text-base-content">{@event.event_type}</span>
-      <p class="text-sm text-base-content/65">
-        <span :if={@event.asset} class="mr-2 font-mono text-xs text-base-content/45">
+      <p class="text-sm favn-text-muted">
+        <span :if={@event.asset} class="mr-2 font-mono text-xs favn-text-subtle">
           {@event.asset}
         </span>
         {@event.summary}

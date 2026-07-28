@@ -18,7 +18,7 @@ defmodule FavnView.Components.RunDetailPage.AttemptDrawer do
           <span class="flex size-7 shrink-0 items-center justify-center rounded-full bg-primary/15 text-primary">
             <.icon name="hero-chart-pie" class="size-4" />
           </span>
-          <p class="truncate text-sm font-medium text-base-content/75">Asset attempt</p>
+          <p class="truncate text-sm font-medium favn-text-muted">Asset attempt</p>
         </div>
         <button
           type="button"
@@ -38,7 +38,7 @@ defmodule FavnView.Components.RunDetailPage.AttemptDrawer do
             </h2>
             <span class={status_badge_class(@attempt.status_tone)}>{@attempt.status}</span>
           </div>
-          <p class="mt-1 text-sm text-base-content/65">
+          <p class="mt-1 text-sm favn-text-muted">
             {@attempt.stage_label || "Stage unknown"} · Attempt {@attempt.attempt_number || "-"}
           </p>
         </div>
@@ -71,7 +71,7 @@ defmodule FavnView.Components.RunDetailPage.AttemptDrawer do
 
         <div
           :if={skipped_attempt?(@attempt)}
-          class="mt-3 rounded-box border border-base-content/10 bg-base-content/[0.035] p-3 text-sm text-base-content/75"
+          class="mt-3 rounded-box border border-base-content/10 bg-base-content/[0.035] p-3 text-sm favn-text-muted"
         >
           <p class="font-medium text-base-content">Skipped asset</p>
           <p class="mt-1">
@@ -115,7 +115,7 @@ defmodule FavnView.Components.RunDetailPage.AttemptDrawer do
   def drawer_fact(assigns) do
     ~H"""
     <div>
-      <dt class="text-xs text-base-content/45">{@label}</dt>
+      <dt class="text-xs favn-text-subtle">{@label}</dt>
       <dd class={["mt-1 break-words font-medium", @mono && "font-mono text-xs"]}>{@value || "-"}</dd>
     </div>
     """

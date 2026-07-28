@@ -92,7 +92,7 @@ defmodule FavnView.UI.Tokens do
   Text colour class for a tone.
   """
   @spec text_class(tone()) :: String.t()
-  def text_class(:neutral), do: "text-base-content/60"
+  def text_class(:neutral), do: "favn-text-muted"
   def text_class(tone), do: "text-" <> color(tone)
 
   @doc """

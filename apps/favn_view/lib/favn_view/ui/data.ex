@@ -47,7 +47,7 @@ defmodule FavnView.UI.Data do
     ~H"""
     <dl class={["grid gap-3 text-xs sm:gap-4", @grid_class, @class]} {@rest}>
       <div :for={fact <- @facts} class="min-w-0">
-        <dt class="text-base-content/45">{fact.label}</dt>
+        <dt class="favn-text-subtle">{fact.label}</dt>
         <dd
           class={[
             "mt-0.5 truncate font-medium",
@@ -83,7 +83,7 @@ defmodule FavnView.UI.Data do
     <div class={["overflow-x-auto", @class]}>
       <table class="table table-lg" id={@id}>
         <thead>
-          <tr class="border-base-content/10 text-base-content/65">
+          <tr class="border-base-content/10 favn-text-muted">
             <th :for={col <- @col} class={["font-medium", align_class(col[:align]), col[:class]]}>
               {col.label}
             </th>
@@ -135,14 +135,14 @@ defmodule FavnView.UI.Data do
 
     ~H"""
     <div class={["min-w-0", @class]} {@rest}>
-      <div class="flex items-center gap-2 text-xs text-base-content/45">
+      <div class="flex items-center gap-2 text-xs favn-text-subtle">
         <.icon :if={@icon} name={@icon} size={:xs} />
         {@label}
       </div>
       <div class={["mt-1 truncate text-2xl font-light tracking-tight", Tokens.text_class(@tone)]}>
         {@value}
       </div>
-      <p :if={@hint} class="mt-0.5 truncate text-xs text-base-content/50">{@hint}</p>
+      <p :if={@hint} class="mt-0.5 truncate text-xs favn-text-subtle">{@hint}</p>
     </div>
     """
   end
@@ -177,8 +177,8 @@ defmodule FavnView.UI.Data do
   def field_row(assigns) do
     ~H"""
     <div class={["flex flex-col gap-0.5 py-1.5 sm:flex-row sm:items-baseline sm:gap-4", @class]}>
-      <span class="shrink-0 text-xs text-base-content/45 sm:w-44">{@label}</span>
-      <span class="min-w-0 text-sm text-base-content/80">{render_slot(@inner_block)}</span>
+      <span class="shrink-0 text-xs favn-text-subtle sm:w-44">{@label}</span>
+      <span class="min-w-0 text-sm favn-text-muted">{render_slot(@inner_block)}</span>
     </div>
     """
   end

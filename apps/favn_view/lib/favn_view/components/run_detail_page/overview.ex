@@ -23,7 +23,7 @@ defmodule FavnView.Components.RunDetailPage.Overview do
       <div class="mb-3 flex flex-wrap items-end justify-between gap-2">
         <div>
           <h2 class="text-sm font-medium">Effective asset windows</h2>
-          <p class="text-xs text-base-content/50">
+          <p class="text-xs favn-text-subtle">
             Concrete runtime windows mapped from the pipeline's effective selection.
           </p>
         </div>
@@ -103,7 +103,7 @@ defmodule FavnView.Components.RunDetailPage.Overview do
           class="grid min-w-[56rem]"
           style={"grid-template-columns: 14rem repeat(#{max(length(@run.windows), 1)}, minmax(9rem, 1fr));"}
         >
-          <div class="sticky left-0 z-10 border-b border-r border-base-content/10 bg-base-300/70 p-3 text-xs text-base-content/60 backdrop-blur">
+          <div class="sticky left-0 z-10 border-b border-r border-base-content/10 bg-base-300/70 p-3 text-xs favn-text-muted backdrop-blur">
             Assets ({length(@run.assets)})
           </div>
           <div
@@ -111,7 +111,7 @@ defmodule FavnView.Components.RunDetailPage.Overview do
             class="border-b border-r border-base-content/10 p-3 text-center"
           >
             <p class="font-medium">{window.label}</p>
-            <p :if={window.range_label} class="text-xs text-base-content/45">{window.range_label}</p>
+            <p :if={window.range_label} class="text-xs favn-text-subtle">{window.range_label}</p>
           </div>
 
           <%= for row <- @run.matrix.rows do %>
@@ -121,7 +121,7 @@ defmodule FavnView.Components.RunDetailPage.Overview do
               </span>
               <div class="min-w-0">
                 <p class="truncate text-sm font-medium">{row.name}</p>
-                <p class="text-xs text-base-content/45">{row.stage || "Stage unknown"}</p>
+                <p class="text-xs favn-text-subtle">{row.stage || "Stage unknown"}</p>
               </div>
             </div>
             <.matrix_cell :for={cell <- row.cells} cell={cell} />
@@ -135,7 +135,7 @@ defmodule FavnView.Components.RunDetailPage.Overview do
         <.legend_item label="Running" tone={:info} />
         <.legend_item label="Queued" tone={:warning} />
         <.legend_item label="Skipped" tone={:neutral} />
-        <span class="ml-auto text-base-content/50">Click any cell to open attempt details.</span>
+        <span class="ml-auto favn-text-subtle">Click any cell to open attempt details.</span>
       </div>
     </section>
     """
@@ -159,7 +159,7 @@ defmodule FavnView.Components.RunDetailPage.Overview do
       <span class="flex items-center justify-center gap-1.5 font-medium">
         <.icon name={status_icon(@cell.status_tone)} class="size-4" /> {@cell.status}
       </span>
-      <span class="mt-1 block text-xs text-base-content/65">{@cell.duration}</span>
+      <span class="mt-1 block text-xs favn-text-muted">{@cell.duration}</span>
       <span :if={Map.get(@cell, :other_attempt_count, 0) > 0} class="mt-1 block text-xs">
         +{Map.get(@cell, :other_attempt_count)} earlier {if(
           Map.get(@cell, :other_attempt_count) == 1,
@@ -202,7 +202,7 @@ defmodule FavnView.Components.RunDetailPage.Overview do
   def fact(assigns) do
     ~H"""
     <div>
-      <p class="text-xs text-base-content/45">{@label}</p>
+      <p class="text-xs favn-text-subtle">{@label}</p>
       <p class="mt-1 text-base font-medium text-base-content">{@value || "-"}</p>
     </div>
     """

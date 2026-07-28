@@ -95,13 +95,13 @@ defmodule FavnView.Components.RunsListPage do
         <.summary_metric label="Runs" value={@summary.total_groups} caption="Total" />
         <.summary_metric label="Windows" value={@summary.total_windows} caption="Across backfills" />
         <div class="space-y-1.5 border-base-content/10 sm:border-l sm:pl-5">
-          <p class="text-[0.68rem] font-semibold uppercase tracking-[0.2em] text-base-content/50">
+          <p class="text-[0.68rem] font-semibold uppercase tracking-[0.2em] favn-text-subtle">
             Asset attempts
           </p>
 
           <p class="text-xl font-semibold leading-none text-base-content">
             {@summary.completed_asset_attempts}
-            <span class="text-base-content/45">/ {@summary.total_asset_attempts}</span>
+            <span class="favn-text-subtle">/ {@summary.total_asset_attempts}</span>
           </p>
 
           <progress
@@ -112,7 +112,7 @@ defmodule FavnView.Components.RunsListPage do
         </div>
 
         <div class="space-y-2 border-base-content/10 sm:border-l sm:pl-5 xl:col-span-2">
-          <p class="text-[0.68rem] font-semibold uppercase tracking-[0.2em] text-base-content/50">
+          <p class="text-[0.68rem] font-semibold uppercase tracking-[0.2em] favn-text-subtle">
             Health summary
           </p>
 
@@ -135,13 +135,13 @@ defmodule FavnView.Components.RunsListPage do
   def summary_metric(assigns) do
     ~H"""
     <div class="space-y-1 border-base-content/10 sm:border-l sm:pl-5 first:border-l-0 first:pl-0">
-      <p class="text-[0.68rem] font-semibold uppercase tracking-[0.2em] text-base-content/50">
+      <p class="text-[0.68rem] font-semibold uppercase tracking-[0.2em] favn-text-subtle">
         {@label}
       </p>
 
       <p class="text-xl font-semibold leading-none text-base-content">{@value}</p>
 
-      <p class="text-xs text-base-content/55">{@caption}</p>
+      <p class="text-xs favn-text-muted">{@caption}</p>
     </div>
     """
   end
@@ -158,7 +158,7 @@ defmodule FavnView.Components.RunsListPage do
         <span class="ml-1">{@value}</span>
       </p>
 
-      <p class="truncate text-xs text-base-content/55">{@label}</p>
+      <p class="truncate text-xs favn-text-muted">{@label}</p>
     </div>
     """
   end
@@ -178,7 +178,7 @@ defmodule FavnView.Components.RunsListPage do
     >
       <div class="flex flex-wrap items-center gap-2">
         <label class="favn-surface-control input input-sm h-9 min-h-9 min-w-0 flex-1 items-center gap-2 rounded-field sm:min-w-72 lg:max-w-80">
-          <.icon name="hero-magnifying-glass" class="size-4 text-base-content/45" />
+          <.icon name="hero-magnifying-glass" class="size-4 favn-text-subtle" />
           <input
             type="search"
             name="filters[search]"
@@ -198,7 +198,7 @@ defmodule FavnView.Components.RunsListPage do
         </label>
 
         <span
-          class="ml-auto text-xs text-base-content/45 xl:hidden"
+          class="ml-auto text-xs favn-text-subtle xl:hidden"
           data-testid="execution-group-result-count"
         >
           {@result_count} results
@@ -249,14 +249,14 @@ defmodule FavnView.Components.RunsListPage do
             <button
               type="button"
               phx-click="clear_filters"
-              class="text-xs font-semibold text-base-content/70 transition hover:text-primary"
+              class="text-xs font-semibold favn-text-muted transition hover:text-primary"
               data-testid="clear-run-filters"
             >
               Clear
             </button>
 
             <span
-              class="hidden text-xs text-base-content/45 xl:inline"
+              class="hidden text-xs favn-text-subtle xl:inline"
               data-testid="execution-group-result-count"
             >
               {@result_count} results
@@ -276,7 +276,7 @@ defmodule FavnView.Components.RunsListPage do
   def select_control(assigns) do
     ~H"""
     <label class="favn-surface-control flex h-9 min-h-9 min-w-32 items-center overflow-hidden rounded-field border border-base-content/10 bg-base-100/20 text-sm shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
-      <span class="border-r border-base-content/10 px-3 text-xs text-base-content/45">{@label}</span>
+      <span class="border-r border-base-content/10 px-3 text-xs favn-text-subtle">{@label}</span>
       <select
         name={"filters[#{@name}]"}
         value={@value}
@@ -296,7 +296,7 @@ defmodule FavnView.Components.RunsListPage do
 
   def toggle_control(assigns) do
     ~H"""
-    <label class="flex items-center gap-2 text-xs text-base-content/75">
+    <label class="flex items-center gap-2 text-xs favn-text-muted">
       <input type="hidden" name={"filters[#{@name}]"} value="false" />
       <input
         type="checkbox"
@@ -318,7 +318,7 @@ defmodule FavnView.Components.RunsListPage do
     <div class="hidden min-h-0 flex-1 overflow-auto border-t border-base-content/10 lg:block">
       <table class="table table-sm" data-testid="execution-groups-table">
         <thead>
-          <tr class="border-base-content/10 text-xs text-base-content/55">
+          <tr class="border-base-content/10 text-xs favn-text-muted">
             <th class="w-64 font-medium">Backfill / run</th>
 
             <th class="font-medium">Trigger</th>
@@ -354,7 +354,7 @@ defmodule FavnView.Components.RunsListPage do
         </tbody>
       </table>
 
-      <div class="sticky bottom-0 border-t border-base-content/10 bg-base-100/80 px-2 py-3 text-xs text-base-content/55 backdrop-blur">
+      <div class="sticky bottom-0 border-t border-base-content/10 bg-base-100/80 px-2 py-3 text-xs favn-text-muted backdrop-blur">
         Showing 1-{length(@groups)} of {length(@groups)} runs
       </div>
     </div>
@@ -394,7 +394,7 @@ defmodule FavnView.Components.RunsListPage do
 
             <.link
               navigate={~p"/runs/#{@group.id}"}
-              class="mt-1 block max-w-44 truncate font-mono text-xs text-base-content/65 hover:text-primary"
+              class="mt-1 block max-w-44 truncate font-mono text-xs favn-text-muted hover:text-primary"
               title={@group.id}
               data-testid="execution-group-link"
             >
@@ -404,14 +404,14 @@ defmodule FavnView.Components.RunsListPage do
         </div>
       </td>
 
-      <td class="text-xs text-base-content/75">{@group.trigger}</td>
+      <td class="text-xs favn-text-muted">{@group.trigger}</td>
 
       <td class="min-w-44 max-w-56"><.target_cell group={@group} /></td>
 
-      <td class="min-w-36 text-xs text-base-content/75">
+      <td class="min-w-36 text-xs favn-text-muted">
         <p>{@group.window}</p>
 
-        <p class="text-xs text-base-content/45">{@group.window_count_label}</p>
+        <p class="text-xs favn-text-subtle">{@group.window_count_label}</p>
       </td>
 
       <td class="min-w-40"><.progress_cell progress={@group.progress} /></td>
@@ -420,9 +420,9 @@ defmodule FavnView.Components.RunsListPage do
 
       <td class="min-w-40"><.activity_cell activity={@group.current_activity} /></td>
 
-      <td class="whitespace-nowrap text-xs text-base-content/70">{@group.started_at}</td>
+      <td class="whitespace-nowrap text-xs favn-text-muted">{@group.started_at}</td>
 
-      <td class="whitespace-nowrap text-xs text-base-content/70">{@group.duration}</td>
+      <td class="whitespace-nowrap text-xs favn-text-muted">{@group.duration}</td>
     </tr>
     """
   end
@@ -435,13 +435,13 @@ defmodule FavnView.Components.RunsListPage do
     <tr class="border-base-content/10 bg-base-100/20" data-testid="execution-group-children-row">
       <td colspan="9" class="p-0">
         <div class="mx-3 mb-3 rounded-box border border-base-content/10 bg-base-100/25 p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]">
-          <p :if={is_nil(@detail)} class="p-4 text-sm text-base-content/55">Loading window runs...</p>
+          <p :if={is_nil(@detail)} class="p-4 text-sm favn-text-muted">Loading window runs...</p>
 
           <p :if={match?(%{error: _}, @detail)} class="p-4 text-sm text-error">
             Could not load window runs.
           </p>
 
-          <div :if={match?(%{child_runs: []}, @detail)} class="p-4 text-sm text-base-content/55">
+          <div :if={match?(%{child_runs: []}, @detail)} class="p-4 text-sm favn-text-muted">
             No window runs for this backfill.
           </div>
 
@@ -451,7 +451,7 @@ defmodule FavnView.Components.RunsListPage do
             data-testid="child-runs-table"
           >
             <thead>
-              <tr class="border-base-content/10 text-base-content/55">
+              <tr class="border-base-content/10 favn-text-muted">
                 <th>Window / run</th>
 
                 <th>Status</th>
@@ -476,16 +476,16 @@ defmodule FavnView.Components.RunsListPage do
                 <td>
                   <p class="font-medium text-base-content">{child.window}</p>
 
-                  <p class="font-mono text-xs text-base-content/55">{child.short_id}</p>
+                  <p class="font-mono text-xs favn-text-muted">{child.short_id}</p>
                 </td>
 
                 <td><.run_status_badge status={child.status} /></td>
 
                 <td><.progress_label progress={child.progress} /></td>
 
-                <td class="whitespace-nowrap text-base-content/65">{child.started_at}</td>
+                <td class="whitespace-nowrap favn-text-muted">{child.started_at}</td>
 
-                <td class="whitespace-nowrap text-base-content/65">{child.duration}</td>
+                <td class="whitespace-nowrap favn-text-muted">{child.duration}</td>
 
                 <td class="text-right">
                   <.link
@@ -545,7 +545,7 @@ defmodule FavnView.Components.RunsListPage do
             {@group.short_id}
           </.link>
 
-          <p class="line-clamp-2 text-sm text-base-content/80" title={@group.target_title}>
+          <p class="line-clamp-2 text-sm favn-text-muted" title={@group.target_title}>
             {@group.target}
           </p>
         </div>
@@ -564,10 +564,10 @@ defmodule FavnView.Components.RunsListPage do
         </button>
       </div>
 
-      <div class="mt-3 grid grid-cols-2 gap-3 text-xs text-base-content/65">
-        <div><span class="block text-base-content/40">Window</span>{@group.window}</div>
+      <div class="mt-3 grid grid-cols-2 gap-3 text-xs favn-text-muted">
+        <div><span class="block favn-text-subtle">Window</span>{@group.window}</div>
 
-        <div><span class="block text-base-content/40">Started</span>{@group.started_at}</div>
+        <div><span class="block favn-text-subtle">Started</span>{@group.started_at}</div>
 
         <div class="col-span-2"><.progress_cell progress={@group.progress} /></div>
 
@@ -575,7 +575,7 @@ defmodule FavnView.Components.RunsListPage do
       </div>
 
       <div :if={@expanded} class="mt-3 border-t border-base-content/10 pt-3">
-        <p :if={is_nil(@detail)} class="text-xs text-base-content/55">Loading window runs...</p>
+        <p :if={is_nil(@detail)} class="text-xs favn-text-muted">Loading window runs...</p>
 
         <div :if={match?(%{child_runs: [_ | _]}, @detail)} class="space-y-2">
           <.link
@@ -585,7 +585,7 @@ defmodule FavnView.Components.RunsListPage do
             data-testid="child-run-card"
           >
             <span class="font-medium">{child.window}</span>
-            <span class="ml-2 text-base-content/55">{child.short_id}</span>
+            <span class="ml-2 favn-text-muted">{child.short_id}</span>
           </.link>
         </div>
       </div>
@@ -622,11 +622,11 @@ defmodule FavnView.Components.RunsListPage do
       </summary>
 
       <div class="dropdown-content z-20 mt-2 w-80 rounded-box border border-base-content/10 bg-base-100 p-3 shadow-xl">
-        <p class="mb-2 text-xs font-medium uppercase tracking-[0.2em] text-base-content/45">
+        <p class="mb-2 text-xs font-medium uppercase tracking-[0.2em] favn-text-subtle">
           Targets
         </p>
 
-        <ul class="space-y-1 text-xs text-base-content/75">
+        <ul class="space-y-1 text-xs favn-text-muted">
           <li :for={target <- @group.targets} class="truncate" title={target}>{target}</li>
         </ul>
       </div>
@@ -655,9 +655,9 @@ defmodule FavnView.Components.RunsListPage do
   def progress_cell(assigns) do
     ~H"""
     <div class="space-y-1" title={@progress.title}>
-      <p class="text-sm text-base-content/80">{@progress.window_label}</p>
+      <p class="text-sm favn-text-muted">{@progress.window_label}</p>
 
-      <p class="text-xs text-base-content/55">{@progress.attempt_label}</p>
+      <p class="text-xs favn-text-muted">{@progress.attempt_label}</p>
 
       <progress
         class={["progress h-1.5 w-full bg-base-content/10", progress_class(@progress.tone)]}
@@ -672,7 +672,7 @@ defmodule FavnView.Components.RunsListPage do
 
   def progress_label(assigns) do
     ~H"""
-    <span class="whitespace-nowrap text-sm text-base-content/70" title={@progress.title}>
+    <span class="whitespace-nowrap text-sm favn-text-muted" title={@progress.title}>
       {@progress.label}
     </span>
     """
@@ -695,7 +695,7 @@ defmodule FavnView.Components.RunsListPage do
 
   def activity_cell(%{activity: nil} = assigns) do
     ~H"""
-    <span class="text-sm text-base-content/40">-</span>
+    <span class="text-sm favn-text-subtle">-</span>
     """
   end
 
@@ -706,7 +706,7 @@ defmodule FavnView.Components.RunsListPage do
         {@activity.asset}
       </p>
 
-      <p class="text-xs text-base-content/55">{@activity.window}</p>
+      <p class="text-xs favn-text-muted">{@activity.window}</p>
     </div>
     """
   end

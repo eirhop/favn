@@ -49,11 +49,11 @@ defmodule FavnView.Components.PipelineDetailPage do
     <.panel padding={:none} class="p-6 sm:p-8" data-testid="pipeline-summary-panel">
       <div class="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
         <div class="min-w-0">
-          <p class="text-xs uppercase tracking-[0.2em] text-base-content/45">Pipeline</p>
+          <p class="text-xs uppercase tracking-[0.2em] favn-text-subtle">Pipeline</p>
 
           <h2 class="mt-2 text-2xl font-medium tracking-tight">{@pipeline.name}</h2>
 
-          <p class="mt-2 break-words font-mono text-xs text-base-content/55">{@pipeline.label}</p>
+          <p class="mt-2 break-words font-mono text-xs favn-text-muted">{@pipeline.label}</p>
         </div>
 
         <div class="flex flex-wrap gap-2">
@@ -70,14 +70,14 @@ defmodule FavnView.Components.PipelineDetailPage do
       </div>
 
       <div class="mt-6">
-        <p class="text-xs uppercase tracking-[0.18em] text-base-content/45">Selected assets</p>
+        <p class="text-xs uppercase tracking-[0.18em] favn-text-subtle">Selected assets</p>
 
         <div class="mt-3 flex flex-wrap gap-2">
           <span :for={asset <- @pipeline.selected_assets} class="badge badge-soft badge-info">
             {asset}
           </span>
 
-          <span :if={@pipeline.selected_assets == []} class="text-sm text-base-content/55">
+          <span :if={@pipeline.selected_assets == []} class="text-sm favn-text-muted">
             No resolved assets
           </span>
         </div>
@@ -92,7 +92,7 @@ defmodule FavnView.Components.PipelineDetailPage do
   def summary_stat(assigns) do
     ~H"""
     <div class="rounded-box border border-base-content/10 bg-base-content/[0.03] p-4">
-      <p class="text-xs uppercase tracking-[0.16em] text-base-content/45">{@label}</p>
+      <p class="text-xs uppercase tracking-[0.16em] favn-text-subtle">{@label}</p>
 
       <p class="mt-1 text-sm font-medium text-base-content">{@value}</p>
     </div>
@@ -110,9 +110,9 @@ defmodule FavnView.Components.PipelineDetailPage do
     <.panel padding={:none} class="p-6 sm:p-8" data-testid="pipeline-actions-panel">
       <div class="grid gap-6 lg:grid-cols-[1fr_1.4fr]">
         <div>
-          <p class="text-xs uppercase tracking-[0.2em] text-base-content/45">Run pipeline</p>
+          <p class="text-xs uppercase tracking-[0.2em] favn-text-subtle">Run pipeline</p>
 
-          <p class="mt-2 text-sm text-base-content/65">
+          <p class="mt-2 text-sm favn-text-muted">
             Submit the active manifest pipeline, equivalent to <code class="font-mono">mix favn.run</code>.
           </p>
 
@@ -129,7 +129,7 @@ defmodule FavnView.Components.PipelineDetailPage do
 
           <p
             :if={!@can_submit_runs?}
-            class="mt-3 text-sm text-base-content/60"
+            class="mt-3 text-sm favn-text-muted"
             data-testid="pipeline-operator-required-help"
           >
             Operator role required to submit runs.
@@ -137,7 +137,7 @@ defmodule FavnView.Components.PipelineDetailPage do
 
           <p
             :if={!@pipeline.can_run_without_window?}
-            class="mt-3 text-sm text-base-content/60"
+            class="mt-3 text-sm favn-text-muted"
             data-testid="pipeline-run-disabled-help"
           >
             This pipeline requires an explicit window. Use backfill or choose a specific window.
@@ -149,9 +149,9 @@ defmodule FavnView.Components.PipelineDetailPage do
         </div>
 
         <div>
-          <p class="text-xs uppercase tracking-[0.2em] text-base-content/45">Backfill</p>
+          <p class="text-xs uppercase tracking-[0.2em] favn-text-subtle">Backfill</p>
 
-          <p class="mt-2 text-sm text-base-content/65">
+          <p class="mt-2 text-sm favn-text-muted">
             Submit an explicit range, equivalent to <code class="font-mono">mix favn.backfill submit</code>.
           </p>
 
@@ -230,7 +230,7 @@ defmodule FavnView.Components.PipelineDetailPage do
 
           <p
             :if={@pipeline.can_backfill?}
-            class="mt-2 text-xs text-base-content/55"
+            class="mt-2 text-xs favn-text-muted"
             data-testid="pipeline-backfill-defaults"
           >
             Defaults to {@backfill_config.kind} windows in {@backfill_config.timezone} with {@backfill_config.refresh} refresh.
@@ -238,7 +238,7 @@ defmodule FavnView.Components.PipelineDetailPage do
 
           <p
             :if={!@pipeline.can_backfill?}
-            class="mt-2 text-xs text-base-content/55"
+            class="mt-2 text-xs favn-text-muted"
             data-testid="pipeline-backfill-disabled-help"
           >
             Backfill requires a windowed pipeline.
@@ -265,19 +265,19 @@ defmodule FavnView.Components.PipelineDetailPage do
       <div class="border-b border-base-content/10 p-5 sm:p-6">
         <h2 class="text-lg font-medium">Run history</h2>
 
-        <p class="mt-1 text-sm text-base-content/60">
+        <p class="mt-1 text-sm favn-text-muted">
           Pipeline and backfill runs matched to this pipeline.
         </p>
       </div>
 
-      <div :if={@pipeline.runs == []} class="p-8 text-center text-sm text-base-content/60">
+      <div :if={@pipeline.runs == []} class="p-8 text-center text-sm favn-text-muted">
         No runs have been recorded for this pipeline yet.
       </div>
 
       <div :if={@pipeline.runs != []} class="overflow-x-auto">
         <table class="table" data-testid="pipeline-runs-table">
           <thead>
-            <tr class="border-base-content/10 text-base-content/65">
+            <tr class="border-base-content/10 favn-text-muted">
               <th>Run</th>
 
               <th>Status</th>

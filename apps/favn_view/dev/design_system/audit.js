@@ -251,10 +251,35 @@
     return false;
   }
 
+  // Content that overflows a *scrollable* container is reachable, so it is not
+  // clipped: a wide table inside `overflow-x: auto` is a design decision, not a
+  // layout failure. Only `hidden` and `clip` actually remove content, and an
+  // ellipsis is truncation the reader can see.
   function clippedPixels(element, style) {
     if (style.textOverflow === "ellipsis") return 0;
-    if (style.overflowX === "visible" && style.overflowY === "visible") return 0;
-    return Math.max(0, element.scrollWidth - element.clientWidth);
+    if (visuallyHidden(element, style)) return 0;
+
+    var horizontal = clips(style.overflowX) ? element.scrollWidth - element.clientWidth : 0;
+    var vertical = clips(style.overflowY) ? element.scrollHeight - element.clientHeight : 0;
+
+    return Math.max(0, horizontal, vertical);
+  }
+
+  // `sr-only` is a 1x1 box with `overflow: hidden` holding a full label, so by
+  // the numbers it looks like the worst clipping on the page. It is the opposite:
+  // content deliberately given to assistive technology only. Anything collapsed
+  // to a hairline, or clipped away outright, is excluded from the clipping metric
+  // — the accessible-name rule is what judges those.
+  function visuallyHidden(element, style) {
+    var box = element.getBoundingClientRect();
+    if (box.width <= 4 || box.height <= 4) return true;
+    if (style.clipPath && style.clipPath.indexOf("inset(50%") !== -1) return true;
+
+    return style.clip === "rect(0px, 0px, 0px, 0px)";
+  }
+
+  function clips(overflow) {
+    return overflow === "hidden" || overflow === "clip";
   }
 
   function kindsOf(element, style, isControl, name, zoom) {
@@ -277,13 +302,21 @@
   }
 
   // WCAG non-text contrast applies to a boundary that is *required to identify*
-  // the component. A soft badge is identified by its background wash; its
-  // hairline border is decoration, and judging it at 3:1 would flag the whole
-  // palette. So a border only counts as the identifying boundary on a control
-  // whose own background is (near-)transparent — an outline input, an outline
-  // button — where the border genuinely is all there is to see. A border whose
-  // colour is fully transparent is layout reservation (a ghost button keeping
-  // its footprint), not a boundary at all: the control is identified by its
+  // the component or its state. Two cases qualify, and nothing else does.
+  //
+  // A control with no surface of its own — an outline input, a checkbox, a ghost
+  // button — is identified by its border alone, so that border must be visible.
+  // The threshold is deliberately near-zero rather than "translucent": Favn's
+  // whole language is translucent glass, so treating every wash under 50% alpha
+  // as absent flagged every list row in the product and said nothing useful.
+  //
+  // A control that carries a *state* must make that state identifiable, whatever
+  // surface it has. A selected row whose only cue is a hairline is exactly the
+  // failure this rule should catch, so an element marking itself current,
+  // selected, or pressed is judged on its boundary regardless of background.
+  //
+  // A fully transparent border colour is layout reservation — a ghost button
+  // keeping its footprint — not a boundary; the control is identified by its
   // text, which the text rules already judge.
   function identifyingBoundary(element, style, isControl) {
     if (!isControl) return false;
@@ -292,8 +325,18 @@
     var borderColor = normalize(style.borderTopColor);
     if (borderColor && borderColor[3] === 0) return false;
 
+    if (stateful(element)) return true;
+
     var ownBackground = normalize(style.backgroundColor);
-    return !ownBackground || ownBackground[3] < 0.5;
+    return !ownBackground || ownBackground[3] < 0.08;
+  }
+
+  function stateful(element) {
+    return (
+      element.getAttribute("aria-current") === "true" ||
+      element.getAttribute("aria-selected") === "true" ||
+      element.getAttribute("aria-pressed") === "true"
+    );
   }
 
   function rectOf(element) {

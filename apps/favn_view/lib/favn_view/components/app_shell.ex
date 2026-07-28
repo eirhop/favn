@@ -68,7 +68,7 @@ defmodule FavnView.Components.AppShell do
               variant={:ghost}
               navigate={@back_href}
               icon="hero-arrow-left"
-              class="min-w-0 px-2 text-base-content/70 hover:text-primary md:px-3"
+              class="min-w-0 px-2 favn-text-muted hover:text-primary md:px-3"
             >
               <span class="truncate">{@back_label}</span>
             </.button>

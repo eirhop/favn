@@ -35,12 +35,12 @@ defmodule FavnView.Components.SelectedWindowActions do
       data-testid="selected-window-actions"
     >
       <div class="min-w-0">
-        <p class="text-xs uppercase tracking-[0.18em] text-base-content/45">Run asset</p>
+        <p class="text-xs uppercase tracking-[0.18em] favn-text-subtle">Run asset</p>
         <p class="mt-1 text-sm font-medium text-base-content">{selection_label(@selected_window)}</p>
-        <p class="mt-0.5 text-xs text-base-content/55">{status_label(@selected_window)}</p>
+        <p class="mt-0.5 text-xs favn-text-muted">{status_label(@selected_window)}</p>
         <p
           :if={@selected_window && !@selected_window.run_enabled?}
-          class="mt-1 text-xs text-base-content/45"
+          class="mt-1 text-xs favn-text-subtle"
         >
           {run_disabled_reason_label(@selected_window.run_disabled_reason)}
         </p>
@@ -113,7 +113,7 @@ defmodule FavnView.Components.SelectedWindowActions do
         <div class="flex items-start justify-between gap-3">
           <div>
             <h3 class="text-sm font-medium text-base-content">Run plan</h3>
-            <p class="mt-1 text-xs text-base-content/55">
+            <p class="mt-1 text-xs favn-text-muted">
               {run_plan_description(@selected_window)}
             </p>
           </div>
@@ -204,10 +204,10 @@ defmodule FavnView.Components.SelectedWindowActions do
               />
             </label>
           </div>
-          <p class="mt-2 text-xs text-base-content/55">
+          <p class="mt-2 text-xs favn-text-muted">
             {window_context_description(@selected_window, @active_timeline)}
           </p>
-          <p :if={is_nil(@selected_window)} class="mt-1 text-xs text-base-content/55">
+          <p :if={is_nil(@selected_window)} class="mt-1 text-xs favn-text-muted">
             Range backfills default to missing refresh; choose force explicitly to recompute existing successful windows.
           </p>
         </fieldset>
@@ -251,7 +251,7 @@ defmodule FavnView.Components.SelectedWindowActions do
           />
         </fieldset>
 
-        <div class="rounded-box border border-warning/20 bg-warning/10 p-3 text-xs text-base-content/70">
+        <div class="rounded-box border border-warning/20 bg-warning/10 p-3 text-xs favn-text-muted">
           Forcing upstream assets can change inputs and cause downstream assets to rerun. Forcing only the selected asset does not automatically rerun upstream assets unless upstream dependencies are included.
         </div>
 
@@ -298,7 +298,7 @@ defmodule FavnView.Components.SelectedWindowActions do
       />
       <span>
         <span class="block font-medium text-base-content">{@title}</span>
-        <span class="mt-0.5 block text-xs leading-5 text-base-content/55">{@description}</span>
+        <span class="mt-0.5 block text-xs leading-5 favn-text-muted">{@description}</span>
       </span>
     </label>
     """

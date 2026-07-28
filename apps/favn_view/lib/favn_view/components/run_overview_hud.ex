@@ -28,12 +28,12 @@ defmodule FavnView.Components.RunOverviewHud do
             </div>
           </div>
 
-          <p class="text-xs text-base-content/65 sm:text-sm">{status_sentence(@run.status)}</p>
+          <p class="text-xs favn-text-muted sm:text-sm">{status_sentence(@run.status)}</p>
         </div>
 
         <div
           :if={@run.failure_summary}
-          class="rounded-box border border-error/25 bg-error/10 p-4 text-xs text-base-content/80"
+          class="rounded-box border border-error/25 bg-error/10 p-4 text-xs favn-text-muted"
           data-testid="run-failure-summary"
         >
           <div class="flex items-start justify-between gap-3">
@@ -71,24 +71,24 @@ defmodule FavnView.Components.RunOverviewHud do
           </p>
 
           <p :if={@run.failure_summary.asset} class="mt-1">
-            <span class="text-base-content/55">Failed asset:</span> {@run.failure_summary.asset}
+            <span class="favn-text-muted">Failed asset:</span> {@run.failure_summary.asset}
           </p>
 
           <p :if={@run.failure_summary.error} class="mt-1">
-            <span class="text-base-content/55">Error:</span> {@run.failure_summary.error}
+            <span class="favn-text-muted">Error:</span> {@run.failure_summary.error}
           </p>
         </div>
 
         <div
           :if={@run.backfill_failures != []}
-          class="rounded-box border border-error/30 bg-error/10 p-4 text-xs text-base-content/85 shadow-lg shadow-error/10"
+          class="rounded-box border border-error/30 bg-error/10 p-4 text-xs favn-text-muted shadow-lg shadow-error/10"
           data-testid="backfill-failure-list"
         >
           <div class="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
             <div>
               <p class="font-medium text-error">Failed backfill window</p>
 
-              <p class="mt-1 text-base-content/60">
+              <p class="mt-1 favn-text-muted">
                 Showing {length(@run.backfill_failures)} of {@run.backfill_failure_count} failed {if(
                   @run.backfill_failure_count == 1,
                   do: "window",
@@ -110,8 +110,8 @@ defmodule FavnView.Components.RunOverviewHud do
                     {failure.asset_ref || "Failed window run"}
                   </p>
 
-                  <p class="text-base-content/60">
-                    <span class="text-base-content/45">Window:</span> {failure.window}
+                  <p class="favn-text-muted">
+                    <span class="favn-text-subtle">Window:</span> {failure.window}
                   </p>
 
                   <p :if={failure.error} class="text-error">
@@ -119,7 +119,7 @@ defmodule FavnView.Components.RunOverviewHud do
                   </p>
                 </div>
 
-                <div class="flex shrink-0 flex-wrap items-center gap-2 text-base-content/60">
+                <div class="flex shrink-0 flex-wrap items-center gap-2 favn-text-muted">
                   <span class="badge badge-error badge-soft badge-sm">{failure.status}</span>
                   <span :if={failure.attempt_count}>Attempt {failure.attempt_count}</span>
                   <span :if={failure.duration != "-"}>{failure.duration}</span>
@@ -139,21 +139,21 @@ defmodule FavnView.Components.RunOverviewHud do
 
         <div
           :if={@run.current_activity}
-          class="rounded-box border border-info/35 bg-info/15 p-3 text-xs text-base-content/85 shadow-sm shadow-info/10"
+          class="rounded-box border border-info/35 bg-info/15 p-3 text-xs favn-text-muted shadow-sm shadow-info/10"
           data-testid="run-current-activity"
         >
           {@run.current_activity}
         </div>
 
         <div class="border-t border-base-content/10 pt-4" data-testid="run-asset-results">
-          <div class="grid grid-cols-[minmax(0,1fr)_8rem_6rem_9rem_1.5rem] gap-3 px-3 pb-2 text-xs text-base-content/60 max-lg:hidden">
+          <div class="grid grid-cols-[minmax(0,1fr)_8rem_6rem_9rem_1.5rem] gap-3 px-3 pb-2 text-xs favn-text-muted max-lg:hidden">
             <span>Asset</span> <span>Status</span> <span>Duration</span> <span>Started</span>
             <span class="sr-only">Inspect</span>
           </div>
 
           <div
             :if={@run.asset_results == []}
-            class="rounded-box border border-dashed border-base-content/15 p-4 text-xs text-base-content/55"
+            class="rounded-box border border-dashed border-base-content/15 p-4 text-xs favn-text-muted"
             data-testid="run-asset-results-empty"
           >
             {@run.asset_empty_message}
@@ -239,11 +239,11 @@ defmodule FavnView.Components.RunOverviewHud do
       <div class="min-w-0">
         <p class="truncate text-xs font-medium text-base-content">{@asset.display_name}</p>
 
-        <p class="truncate font-mono text-xs text-base-content/45">{@asset.asset_ref}</p>
+        <p class="truncate font-mono text-xs favn-text-subtle">{@asset.asset_ref}</p>
 
-        <p :if={@asset.secondary} class="text-xs text-base-content/50">{@asset.secondary}</p>
+        <p :if={@asset.secondary} class="text-xs favn-text-subtle">{@asset.secondary}</p>
 
-        <p :if={@asset.explanation} class="mt-1 text-xs text-base-content/60">{@asset.explanation}</p>
+        <p :if={@asset.explanation} class="mt-1 text-xs favn-text-muted">{@asset.explanation}</p>
 
         <p :if={@asset.error} class="mt-1 text-xs text-error">{@asset.error}</p>
       </div>
@@ -256,14 +256,14 @@ defmodule FavnView.Components.RunOverviewHud do
       /> <span class={status_text_class(@asset.status_tone)}>{@asset.status}</span>
     </div>
 
-    <p class="text-xs text-base-content/85">{@asset.duration}</p>
+    <p class="text-xs favn-text-muted">{@asset.duration}</p>
 
-    <p class="text-xs text-base-content/70">{@asset.started_at}</p>
+    <p class="text-xs favn-text-muted">{@asset.started_at}</p>
 
     <.icon
       :if={@asset.inspectable?}
       name="hero-chevron-right"
-      class="size-4 text-base-content/60 transition group-hover:text-primary"
+      class="size-4 favn-text-muted transition group-hover:text-primary"
     />
     """
   end
@@ -287,13 +287,13 @@ defmodule FavnView.Components.RunOverviewHud do
   defp status_text_class(:info), do: "text-info"
   defp status_text_class(:warning), do: "text-warning"
   defp status_text_class(:error), do: "text-error"
-  defp status_text_class(_tone), do: "text-base-content/60"
+  defp status_text_class(_tone), do: "favn-text-muted"
 
   defp icon_shell_class(:success), do: "bg-success/15 text-success"
   defp icon_shell_class(:info), do: "bg-info/15 text-info"
   defp icon_shell_class(:warning), do: "bg-warning/15 text-warning"
   defp icon_shell_class(:error), do: "bg-error/15 text-error"
-  defp icon_shell_class(_tone), do: "bg-base-content/10 text-base-content/60"
+  defp icon_shell_class(_tone), do: "bg-base-content/10 favn-text-muted"
 
   defp row_border_class(:error), do: "border-error/40 shadow-error/10 shadow-lg"
   defp row_border_class(_tone), do: "border-base-content/10"

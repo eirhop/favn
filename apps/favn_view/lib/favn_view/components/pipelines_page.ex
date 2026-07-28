@@ -88,7 +88,7 @@ defmodule FavnView.Components.PipelinesPage do
     <div class="overflow-x-auto overflow-y-visible p-5 sm:p-6">
       <table class="table table-lg" data-testid="pipelines-table">
         <thead>
-          <tr class="border-base-content/10 text-base-content/65">
+          <tr class="border-base-content/10 favn-text-muted">
             <th class="font-medium">Pipeline</th>
 
             <th class="font-medium">Deps</th>
@@ -130,16 +130,16 @@ defmodule FavnView.Components.PipelinesPage do
           <div class="min-w-0">
             <p class="truncate">{@pipeline.name}</p>
 
-            <p class="truncate text-xs font-normal text-base-content/50" title={@pipeline.label}>
+            <p class="truncate text-xs font-normal favn-text-subtle" title={@pipeline.label}>
               {@pipeline.label}
             </p>
           </div>
         </.link>
       </td>
 
-      <td class="whitespace-nowrap text-base-content/70">{@pipeline.dependencies_label}</td>
+      <td class="whitespace-nowrap favn-text-muted">{@pipeline.dependencies_label}</td>
 
-      <td class="whitespace-nowrap text-base-content/70">{@pipeline.window_label}</td>
+      <td class="whitespace-nowrap favn-text-muted">{@pipeline.window_label}</td>
 
       <td class="min-w-56 max-w-80">
         <.selected_assets pipeline={@pipeline} />
@@ -147,9 +147,9 @@ defmodule FavnView.Components.PipelinesPage do
 
       <td><.status_badge tone={@pipeline.status} label={status_label(@pipeline.status)} /></td>
 
-      <td class="whitespace-nowrap text-base-content/70">{@pipeline.last_run_label}</td>
+      <td class="whitespace-nowrap favn-text-muted">{@pipeline.last_run_label}</td>
 
-      <td class="whitespace-nowrap text-base-content/70">{@pipeline.runtime_label}</td>
+      <td class="whitespace-nowrap favn-text-muted">{@pipeline.runtime_label}</td>
     </tr>
     """
   end
@@ -190,13 +190,13 @@ defmodule FavnView.Components.PipelinesPage do
             </div>
           </div>
 
-          <div class="flex flex-wrap items-center gap-3 text-xs text-base-content/65">
+          <div class="flex flex-wrap items-center gap-3 text-xs favn-text-muted">
             <.status_badge tone={@pipeline.status} label={status_label(@pipeline.status)} />
             <span>{@pipeline.last_run_label}</span> <span>{@pipeline.runtime_label}</span>
           </div>
 
           <p
-            class="truncate text-xs text-base-content/55"
+            class="truncate text-xs favn-text-muted"
             title={Enum.join(@pipeline.selected_assets, ", ")}
           >
             {selected_assets_preview(@pipeline)}
@@ -211,7 +211,7 @@ defmodule FavnView.Components.PipelinesPage do
 
   def selected_assets(%{pipeline: %{selected_assets: []}} = assigns) do
     ~H"""
-    <span class="text-sm text-base-content/55">No resolved assets</span>
+    <span class="text-sm favn-text-muted">No resolved assets</span>
     """
   end
 
@@ -245,11 +245,11 @@ defmodule FavnView.Components.PipelinesPage do
       </summary>
 
       <div class="dropdown-content z-20 mt-2 w-80 rounded-box border border-base-content/10 bg-base-100 p-3 shadow-xl">
-        <p class="mb-2 text-xs font-medium uppercase tracking-[0.2em] text-base-content/45">
+        <p class="mb-2 text-xs font-medium uppercase tracking-[0.2em] favn-text-subtle">
           Selected assets
         </p>
 
-        <ul class="space-y-1 text-xs text-base-content/75">
+        <ul class="space-y-1 text-xs favn-text-muted">
           <li :for={asset <- @pipeline.selected_assets} class="truncate" title={asset}>{asset}</li>
         </ul>
       </div>

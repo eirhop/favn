@@ -72,7 +72,7 @@ defmodule FavnView.UI.Field do
       "focus-within:outline focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-primary lg:col-span-1",
       @class
     ]}>
-      <.icon name="hero-magnifying-glass" size={:md} class="shrink-0 text-base-content/60" />
+      <.icon name="hero-magnifying-glass" size={:md} class="shrink-0 favn-text-muted" />
       <span class="sr-only">{@label}</span>
       <input
         id={@id}
@@ -102,14 +102,14 @@ defmodule FavnView.UI.Field do
       "focus-within:outline focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-primary",
       @class
     ]}>
-      <.icon :if={@icon} name={@icon} size={:md} class="shrink-0 text-base-content/65" />
+      <.icon :if={@icon} name={@icon} size={:md} class="shrink-0 favn-text-muted" />
       <span class="sr-only">{@label}</span>
       <select id={@id} name={@name} aria-label={@label} class="appearance-none">
         <option :for={{label, value} <- @options} value={value} selected={@value == value}>
           {label}
         </option>
       </select>
-      <.icon name="hero-chevron-down" size={:md} class="shrink-0 text-base-content/65" />
+      <.icon name="hero-chevron-down" size={:md} class="shrink-0 favn-text-muted" />
     </label>
     """
   end

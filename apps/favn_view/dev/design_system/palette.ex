@@ -140,6 +140,34 @@ defmodule FavnView.Dev.DesignSystem.Palette do
         background: "--color-base-100",
         limit: 4.5,
         why: "the action colour is also used for inline emphasis"
+      },
+      %{
+        id: :muted_text,
+        foreground: "--favn-text-muted",
+        background: "--color-base-100",
+        limit: 4.5,
+        why: "metadata and labels on the page background"
+      },
+      %{
+        id: :muted_text_on_raised,
+        foreground: "--favn-text-muted",
+        background: "--color-base-300",
+        limit: 4.5,
+        why: "the same text on the most raised surface, which is the worst case"
+      },
+      %{
+        id: :subtle_text,
+        foreground: "--favn-text-subtle",
+        background: "--color-base-100",
+        limit: 4.5,
+        why: "the faintest tier still has to be readable"
+      },
+      %{
+        id: :subtle_text_on_raised,
+        foreground: "--favn-text-subtle",
+        background: "--color-base-300",
+        limit: 4.5,
+        why: "the faintest tier on the most raised surface"
       }
     ] ++ Enum.map(@tones, &wash_check/1) ++ Enum.map(@solid_surfaces, &solid_check/1)
   end

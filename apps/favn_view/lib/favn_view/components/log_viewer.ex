@@ -48,7 +48,7 @@ defmodule FavnView.Components.LogViewer do
                 {if @live?, do: "Live streaming", else: "Loaded"}
               </span>
             </div>
-            <p :if={@subtitle} class="mt-1 text-xs text-base-content/55 sm:mt-2 sm:text-sm">
+            <p :if={@subtitle} class="mt-1 text-xs favn-text-muted sm:mt-2 sm:text-sm">
               {@subtitle}
             </p>
             <p
@@ -75,7 +75,7 @@ defmodule FavnView.Components.LogViewer do
               :for={fact <- @facts}
               class="min-w-0 border-base-content/10 px-2 first:pl-0 sm:border-l sm:border-base-content/20 sm:pl-5 sm:first:border-l-0 sm:first:pl-0"
             >
-              <dt class="truncate text-base-content/55">{fact.label}</dt>
+              <dt class="truncate favn-text-muted">{fact.label}</dt>
               <dd class="mt-0.5 truncate font-medium text-base-content sm:mt-1">{fact.value}</dd>
             </div>
           </dl>
@@ -99,7 +99,7 @@ defmodule FavnView.Components.LogViewer do
         >
           <div
             :if={@status == :loading}
-            class="flex min-h-[16rem] flex-1 items-center justify-center rounded-box border border-dashed border-base-content/15 p-8 text-center text-sm text-base-content/55"
+            class="flex min-h-[16rem] flex-1 items-center justify-center rounded-box border border-dashed border-base-content/15 p-8 text-center text-sm favn-text-muted"
             data-testid="log-loading-state"
           >
             Loading logs...
@@ -115,11 +115,11 @@ defmodule FavnView.Components.LogViewer do
 
           <div
             :if={@status != :loading and @status != :error and @visible_logs == []}
-            class="flex min-h-[16rem] flex-1 flex-col items-center justify-center rounded-box border border-dashed border-base-content/15 p-8 text-center text-sm text-base-content/55"
+            class="flex min-h-[16rem] flex-1 flex-col items-center justify-center rounded-box border border-dashed border-base-content/15 p-8 text-center text-sm favn-text-muted"
             data-testid="log-empty-state"
           >
             {@empty_state}
-            <span :if={@live?} class="mt-2 block text-xs text-base-content/45">
+            <span :if={@live?} class="mt-2 block text-xs favn-text-subtle">
               Listening for logs...
             </span>
           </div>
@@ -158,7 +158,7 @@ defmodule FavnView.Components.LogViewer do
     >
       <div class="flex items-center gap-2 sm:contents">
         <label class="input favn-control-glass min-w-0 flex-1 items-center gap-2 rounded-box sm:flex">
-          <.icon name="hero-magnifying-glass" class="size-5 text-base-content/55" />
+          <.icon name="hero-magnifying-glass" class="size-5 favn-text-muted" />
           <input
             type="search"
             name="filters[search]"

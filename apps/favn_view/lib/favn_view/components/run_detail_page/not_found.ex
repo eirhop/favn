@@ -10,7 +10,7 @@ defmodule FavnView.Components.RunDetailPage.NotFound do
         <h2 class="text-xl font-medium">
           {if(@run[:initializing?], do: "Loading run", else: @run.error || "Run not found")}
         </h2>
-        <p class="mt-2 text-sm text-base-content/60">
+        <p class="mt-2 text-sm favn-text-muted">
           <%= if @run[:initializing?] do %>
             The run was committed and its operator view is becoming available.
           <% else %>

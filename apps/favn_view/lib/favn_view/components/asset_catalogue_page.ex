@@ -174,13 +174,13 @@ defmodule FavnView.Components.AssetCataloguePage do
         </.link>
       </:col>
       <:col :let={asset} label="Connection">
-        <span class="flex items-center gap-2 text-base-content/75">
+        <span class="flex items-center gap-2 favn-text-muted">
           <.connection_icon connection={asset.connection} />
           {asset.connection}
         </span>
       </:col>
-      <:col :let={asset} label="Catalogue" class="text-base-content/70">{asset.catalogue}</:col>
-      <:col :let={asset} label="Type" class="text-base-content/70">{asset.type}</:col>
+      <:col :let={asset} label="Catalogue" class="favn-text-muted">{asset.catalogue}</:col>
+      <:col :let={asset} label="Type" class="favn-text-muted">{asset.type}</:col>
       <:col :let={asset} label="Status">
         <.status_badge tone={asset.status} label={status_label(asset.status)} />
       </:col>
@@ -190,7 +190,7 @@ defmodule FavnView.Components.AssetCataloguePage do
       <:col :let={asset} label="Compatibility">
         <.compatibility_badge status={compatibility_status(asset)} />
       </:col>
-      <:col :let={asset} label="Last run" class="text-base-content/70">{asset.last_run_label}</:col>
+      <:col :let={asset} label="Last run" class="favn-text-muted">{asset.last_run_label}</:col>
     </.data_table>
     """
   end
@@ -227,14 +227,14 @@ defmodule FavnView.Components.AssetCataloguePage do
               <.meta>{@asset.connection} · {@asset.catalogue} · {@asset.type}</.meta>
             </div>
           </div>
-          <.inline gap={:xs} class="text-xs text-base-content/65">
+          <.inline gap={:xs} class="text-xs favn-text-muted">
             <.status_badge tone={@asset.status} label={status_label(@asset.status)} />
             <.coverage_badge status={coverage_status(@asset)} />
             <.compatibility_badge status={compatibility_status(@asset)} />
             <span>{@asset.last_run_label}</span>
           </.inline>
         </div>
-        <.icon name="hero-chevron-right" size={:md} class="mt-2 shrink-0 text-base-content/55" />
+        <.icon name="hero-chevron-right" size={:md} class="mt-2 shrink-0 favn-text-muted" />
       </div>
     </.list_card>
     """
@@ -462,7 +462,7 @@ defmodule FavnView.Components.AssetCataloguePage do
   defp connection_icon_class("s3"), do: "text-success"
   defp connection_icon_class("postgres"), do: "text-info"
   defp connection_icon_class("duckdb"), do: "text-warning"
-  defp connection_icon_class(_connection), do: "text-base-content/60"
+  defp connection_icon_class(_connection), do: "favn-text-muted"
 
   defp asset_type_icon("metric"), do: "hero-chart-bar"
   defp asset_type_icon("file"), do: "hero-document"

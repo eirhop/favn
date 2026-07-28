@@ -74,7 +74,7 @@ defmodule FavnView.Components.SchedulesPage do
 
   def helper_text(assigns) do
     ~H"""
-    <p class="text-xs text-base-content/55">
+    <p class="text-xs favn-text-muted">
       New schedules are disabled by default until activated.
     </p>
     """
@@ -110,13 +110,13 @@ defmodule FavnView.Components.SchedulesPage do
   def summary_metric(assigns) do
     ~H"""
     <div class="space-y-1 border-base-content/10 sm:border-l sm:pl-5 first:border-l-0 first:pl-0">
-      <p class="text-[0.68rem] font-semibold uppercase tracking-[0.2em] text-base-content/50">
+      <p class="text-[0.68rem] font-semibold uppercase tracking-[0.2em] favn-text-subtle">
         {@label}
       </p>
 
       <p class="text-xl font-semibold leading-none text-base-content">{@value}</p>
 
-      <p class="text-xs text-base-content/55">{@caption}</p>
+      <p class="text-xs favn-text-muted">{@caption}</p>
     </div>
     """
   end
@@ -136,7 +136,7 @@ defmodule FavnView.Components.SchedulesPage do
     >
       <div class="flex flex-wrap items-center gap-2">
         <label class="favn-surface-control input input-sm h-9 min-h-9 min-w-0 flex-1 items-center gap-2 rounded-field sm:min-w-72 lg:max-w-96">
-          <.icon name="hero-magnifying-glass" class="size-4 text-base-content/45" />
+          <.icon name="hero-magnifying-glass" class="size-4 favn-text-subtle" />
           <input
             type="search"
             name="filters[search]"
@@ -181,7 +181,7 @@ defmodule FavnView.Components.SchedulesPage do
           Clear
         </button>
 
-        <span class="ml-auto text-xs text-base-content/45" data-testid="schedule-result-count">
+        <span class="ml-auto text-xs favn-text-subtle" data-testid="schedule-result-count">
           {@result_count} results
         </span>
       </div>
@@ -197,7 +197,7 @@ defmodule FavnView.Components.SchedulesPage do
   def select_control(assigns) do
     ~H"""
     <label class="favn-surface-control flex h-9 min-h-9 min-w-36 items-center overflow-hidden rounded-field border border-base-content/10 bg-base-100/20 text-sm shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
-      <span class="border-r border-base-content/10 px-3 text-xs text-base-content/45">{@label}</span>
+      <span class="border-r border-base-content/10 px-3 text-xs favn-text-subtle">{@label}</span>
       <select
         name={"filters[#{@name}]"}
         value={@value}
@@ -218,7 +218,7 @@ defmodule FavnView.Components.SchedulesPage do
     <div class="hidden min-h-0 flex-1 overflow-auto border-t border-base-content/10 xl:block">
       <table class="table table-sm" data-testid="schedules-table">
         <thead>
-          <tr class="border-base-content/10 text-xs text-base-content/55">
+          <tr class="border-base-content/10 text-xs favn-text-muted">
             <th class="w-64 font-medium">Schedule</th>
 
             <th class="font-medium">Pipeline</th>
@@ -272,23 +272,23 @@ defmodule FavnView.Components.SchedulesPage do
             {@schedule.schedule_label}
           </.link>
 
-          <p class="truncate font-mono text-xs text-base-content/50" title={@schedule.id}>
+          <p class="truncate font-mono text-xs favn-text-subtle" title={@schedule.id}>
             {@schedule.id}
           </p>
         </div>
       </td>
 
-      <td class="max-w-52 truncate text-xs text-base-content/75" title={@schedule.pipeline_label}>
+      <td class="max-w-52 truncate text-xs favn-text-muted" title={@schedule.pipeline_label}>
         {@schedule.pipeline_label}
       </td>
 
-      <td class="whitespace-nowrap text-xs text-base-content/70">
+      <td class="whitespace-nowrap text-xs favn-text-muted">
         <p class="font-mono">{@schedule.cron}</p>
 
-        <p class="text-base-content/45">{@schedule.timezone}</p>
+        <p class="favn-text-subtle">{@schedule.timezone}</p>
       </td>
 
-      <td class="whitespace-nowrap text-xs text-base-content/70">{@schedule.window_label}</td>
+      <td class="whitespace-nowrap text-xs favn-text-muted">{@schedule.window_label}</td>
 
       <td><.policy_chips schedule={@schedule} /></td>
 
@@ -303,15 +303,15 @@ defmodule FavnView.Components.SchedulesPage do
         <ScheduleUi.runtime_badge state={@schedule.runtime_state} label={@schedule.runtime_label} />
       </td>
 
-      <td class="whitespace-nowrap text-xs text-base-content/70">
+      <td class="whitespace-nowrap text-xs favn-text-muted">
         <ScheduleUi.scheduler_error_badge error={@schedule.last_scheduler_error} />
       </td>
 
-      <td class="whitespace-nowrap text-xs text-base-content/70">{@schedule.next_due_label}</td>
+      <td class="whitespace-nowrap text-xs favn-text-muted">{@schedule.next_due_label}</td>
 
-      <td class="whitespace-nowrap text-xs text-base-content/70">{@schedule.last_submitted_label}</td>
+      <td class="whitespace-nowrap text-xs favn-text-muted">{@schedule.last_submitted_label}</td>
 
-      <td class="whitespace-nowrap text-xs text-base-content/70">
+      <td class="whitespace-nowrap text-xs favn-text-muted">
         <.link
           :if={@schedule.in_flight_run_id}
           navigate={~p"/runs/#{@schedule.in_flight_run_id}"}
@@ -322,7 +322,7 @@ defmodule FavnView.Components.SchedulesPage do
          <span :if={!@schedule.in_flight_run_id}>-</span>
       </td>
 
-      <td class="whitespace-nowrap text-xs text-base-content/70">{@schedule.updated_label}</td>
+      <td class="whitespace-nowrap text-xs favn-text-muted">{@schedule.updated_label}</td>
 
       <td>
         <button
@@ -372,11 +372,11 @@ defmodule FavnView.Components.SchedulesPage do
                 {@schedule.schedule_label}
               </.link>
 
-              <p class="mt-0.5 truncate text-xs text-base-content/60">{@schedule.pipeline_label}</p>
+              <p class="mt-0.5 truncate text-xs favn-text-muted">{@schedule.pipeline_label}</p>
             </div>
           </div>
 
-          <div class="flex flex-wrap items-center gap-2 text-xs text-base-content/65">
+          <div class="flex flex-wrap items-center gap-2 text-xs favn-text-muted">
             <ScheduleUi.activation_badge
               state={@schedule.activation_state}
               label={@schedule.activation_label}
@@ -386,7 +386,7 @@ defmodule FavnView.Components.SchedulesPage do
             <span>{@schedule.cron}</span> <span>{@schedule.window_label}</span>
           </div>
 
-          <p class="truncate font-mono text-xs text-base-content/45" title={@schedule.id}>
+          <p class="truncate font-mono text-xs favn-text-subtle" title={@schedule.id}>
             {@schedule.id}
           </p>
         </div>

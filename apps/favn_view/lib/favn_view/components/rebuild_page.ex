@@ -25,17 +25,17 @@ defmodule FavnView.Components.RebuildPage do
         data-testid="rebuilds-page"
       >
         <.panel padding={:none} class="p-5 sm:p-6">
-          <p class="text-xs font-semibold uppercase tracking-[0.18em] text-base-content/50">
+          <p class="text-xs font-semibold uppercase tracking-[0.18em] favn-text-subtle">
             Plan a rebuild
           </p>
 
-          <p class="mt-2 text-sm text-base-content/65">
+          <p class="mt-2 text-sm favn-text-muted">
             Planning is read-only. Review the immutable plan before starting it.
           </p>
 
           <.form for={%{}} as={:rebuild} phx-submit="plan_rebuild" class="mt-5 space-y-4">
             <label class="form-control block">
-              <span class="label-text text-xs text-base-content/60">Target id</span>
+              <span class="label-text text-xs favn-text-muted">Target id</span>
               <input
                 name="rebuild[target_id]"
                 value={@target_id}
@@ -46,7 +46,7 @@ defmodule FavnView.Components.RebuildPage do
             </label>
 
             <label class="form-control block">
-              <span class="label-text text-xs text-base-content/60">Reason</span> <textarea
+              <span class="label-text text-xs favn-text-muted">Reason</span> <textarea
                 name="rebuild[reason]"
                 required
                 maxlength="4096"
@@ -118,7 +118,7 @@ defmodule FavnView.Components.RebuildPage do
             </dl>
 
             <div :if={plan_capabilities(@plan) != []} class="mt-4 space-y-2 text-xs">
-              <p class="font-medium text-base-content/60">Adapter capabilities</p>
+              <p class="font-medium favn-text-muted">Adapter capabilities</p>
 
               <div
                 :for={{target_id, capabilities} <- plan_capabilities(@plan)}
@@ -126,7 +126,7 @@ defmodule FavnView.Components.RebuildPage do
               >
                 <p class="truncate font-mono">{target_id}</p>
 
-                <p class="mt-1 break-all font-mono text-base-content/55">{json_text(capabilities)}</p>
+                <p class="mt-1 break-all font-mono favn-text-muted">{json_text(capabilities)}</p>
               </div>
             </div>
 
@@ -146,9 +146,9 @@ defmodule FavnView.Components.RebuildPage do
                   </span>
                 </div>
 
-                <p class="mt-1 text-base-content/55">{action_reason(action)}</p>
+                <p class="mt-1 favn-text-muted">{action_reason(action)}</p>
 
-                <dl class="mt-2 grid gap-1 text-base-content/50">
+                <dl class="mt-2 grid gap-1 favn-text-subtle">
                   <.action_detail label="Mapping proof" value={field(action, :mapping_proof)} />
                   <.action_detail
                     label="Pinned inputs"
@@ -182,15 +182,15 @@ defmodule FavnView.Components.RebuildPage do
         <.panel padding={:none} class="min-w-0 p-5 sm:p-6">
           <div class="flex items-center justify-between gap-3">
             <div>
-              <p class="text-xs font-semibold uppercase tracking-[0.18em] text-base-content/50">
+              <p class="text-xs font-semibold uppercase tracking-[0.18em] favn-text-subtle">
                 Operations
               </p>
 
-              <p class="mt-1 text-sm text-base-content/60">Newest first</p>
+              <p class="mt-1 text-sm favn-text-muted">Newest first</p>
             </div>
           </div>
 
-          <div :if={@operations == []} class="py-16 text-center text-sm text-base-content/55">
+          <div :if={@operations == []} class="py-16 text-center text-sm favn-text-muted">
             No rebuild operations yet.
           </div>
 
@@ -210,14 +210,14 @@ defmodule FavnView.Components.RebuildPage do
                   )}</span>
                 </div>
 
-                <p class="mt-1 truncate font-mono text-xs text-base-content/45">
+                <p class="mt-1 truncate font-mono text-xs favn-text-subtle">
                   {field(operation, :operation_id)}
                 </p>
 
-                <p class="mt-1 truncate text-xs text-base-content/55">{field(operation, :reason)}</p>
+                <p class="mt-1 truncate text-xs favn-text-muted">{field(operation, :reason)}</p>
               </div>
 
-              <div class="text-left text-xs text-base-content/55 sm:text-right">
+              <div class="text-left text-xs favn-text-muted sm:text-right">
                 <p>{progress_label(field(operation, :progress, %{}))}</p>
 
                 <p class="mt-1">{format_time(field(operation, :updated_at))}</p>
@@ -339,7 +339,7 @@ defmodule FavnView.Components.RebuildPage do
         >
           <p class="font-medium text-error">Terminal error</p>
 
-          <p class="mt-2 text-base-content/70">{error_label(field(@operation, :terminal_error))}</p>
+          <p class="mt-2 favn-text-muted">{error_label(field(@operation, :terminal_error))}</p>
         </.panel>
 
         <.panel
@@ -349,7 +349,7 @@ defmodule FavnView.Components.RebuildPage do
         >
           <p class="font-medium text-warning">Outcome needs reconciliation</p>
 
-          <p class="mt-2 break-all font-mono text-xs text-base-content/65">
+          <p class="mt-2 break-all font-mono text-xs favn-text-muted">
             {json_text(field(@operation, :unknown_outcome))}
           </p>
         </.panel>
@@ -361,7 +361,7 @@ defmodule FavnView.Components.RebuildPage do
         >
           <p class="font-medium">Candidate validation</p>
 
-          <p class="mt-2 break-all font-mono text-xs text-base-content/65">
+          <p class="mt-2 break-all font-mono text-xs favn-text-muted">
             {json_text(field(@operation, :validation_result))}
           </p>
         </.panel>
@@ -371,7 +371,7 @@ defmodule FavnView.Components.RebuildPage do
           padding={:none}
           class="min-w-0 p-5 sm:p-6"
         >
-          <p class="text-xs font-semibold uppercase tracking-[0.18em] text-base-content/50">
+          <p class="text-xs font-semibold uppercase tracking-[0.18em] favn-text-subtle">
             Downstream actions
           </p>
 
@@ -385,7 +385,7 @@ defmodule FavnView.Components.RebuildPage do
                 </span>
               </div>
 
-              <dl class="mt-2 grid gap-1 text-base-content/55 sm:grid-cols-2">
+              <dl class="mt-2 grid gap-1 favn-text-muted sm:grid-cols-2">
                 <.action_detail label="Progress" value={field(action, :progress, %{})} />
                 <.action_detail label="Validation" value={field(action, :validation_result)} />
                 <.action_detail label="Failure" value={field(action, :terminal_error)} />
@@ -396,11 +396,11 @@ defmodule FavnView.Components.RebuildPage do
         </.panel>
 
         <.panel padding={:none} class="min-w-0 p-5 sm:p-6">
-          <p class="text-xs font-semibold uppercase tracking-[0.18em] text-base-content/50">
+          <p class="text-xs font-semibold uppercase tracking-[0.18em] favn-text-subtle">
             Logical work items
           </p>
 
-          <div :if={@items == []} class="py-12 text-center text-sm text-base-content/55">
+          <div :if={@items == []} class="py-12 text-center text-sm favn-text-muted">
             No logical work items.
           </div>
 
@@ -449,9 +449,9 @@ defmodule FavnView.Components.RebuildPage do
   defp fact(assigns) do
     ~H"""
     <div class="min-w-0">
-      <dt class="text-base-content/45">{@label}</dt>
+      <dt class="favn-text-subtle">{@label}</dt>
 
-      <dd class={["mt-1 break-all text-base-content/80", @mono? && "font-mono"]}>{@value || "-"}</dd>
+      <dd class={["mt-1 break-all favn-text-muted", @mono? && "font-mono"]}>{@value || "-"}</dd>
     </div>
     """
   end

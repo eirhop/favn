@@ -177,11 +177,11 @@ defmodule FavnView.Components.ScheduleDetailPage do
         </span>
 
         <div class="min-w-0">
-          <p class="text-xs text-base-content/55">{@label}</p>
+          <p class="text-xs favn-text-muted">{@label}</p>
 
           <p class="truncate text-2xl font-light tracking-tight text-base-content">{@value}</p>
 
-          <p :if={@detail} class="truncate text-xs text-base-content/45">{@detail}</p>
+          <p :if={@detail} class="truncate text-xs favn-text-subtle">{@detail}</p>
         </div>
       </div>
     </div>
@@ -249,7 +249,7 @@ defmodule FavnView.Components.ScheduleDetailPage do
     ~H"""
     <div class="grid grid-cols-[1.2rem_9rem_minmax(0,1fr)] items-center gap-3 py-3">
       <.icon name={@icon} class="size-4 text-primary" />
-      <dt class="text-base-content/60">{@label}</dt>
+      <dt class="favn-text-muted">{@label}</dt>
 
       <dd class="min-w-0 truncate font-medium text-base-content">{@value}</dd>
     </div>
@@ -266,7 +266,7 @@ defmodule FavnView.Components.ScheduleDetailPage do
       data-testid="schedule-occurrence-preview-panel"
     >
       <.panel_header title="Occurrence preview" />
-      <div class="p-5 text-sm text-base-content/65">
+      <div class="p-5 text-sm favn-text-muted">
         <p :if={@error} class="font-medium text-warning">Preview unavailable</p>
 
         <p :if={@error} class="mt-2">The orchestrator could not compute occurrences right now.</p>
@@ -276,7 +276,7 @@ defmodule FavnView.Components.ScheduleDetailPage do
 
           <p class="mt-2">{hd(@occurrence_preview).due_label}</p>
 
-          <p class="mt-1 text-xs text-base-content/50">{hd(@occurrence_preview).window_label}</p>
+          <p class="mt-1 text-xs favn-text-subtle">{hd(@occurrence_preview).window_label}</p>
         </div>
 
         <p :if={!@error && @occurrence_preview == []} class="font-medium text-base-content">
@@ -300,11 +300,11 @@ defmodule FavnView.Components.ScheduleDetailPage do
         <div class="min-w-0">
           <p class="font-medium text-base-content">Scheduler warning</p>
 
-          <p class="mt-1 text-base-content/70">
+          <p class="mt-1 favn-text-muted">
             {@schedule.last_scheduler_error.phase_label}: {@schedule.last_scheduler_error.message}
           </p>
 
-          <p class="mt-1 text-xs text-base-content/50">
+          <p class="mt-1 text-xs favn-text-subtle">
             {@schedule.last_scheduler_error.occurred_label} · {@schedule.last_scheduler_error.code_label}
           </p>
         </div>
@@ -333,7 +333,7 @@ defmodule FavnView.Components.ScheduleDetailPage do
         <.config_row label="Queued due" value={@schedule.queued_due_label} icon="hero-inbox-stack" />
         <div class="grid grid-cols-[1.2rem_9rem_minmax(0,1fr)] items-center gap-3 py-3">
           <.icon name="hero-play" class="size-4 text-primary" />
-          <dt class="text-base-content/60">In-flight run</dt>
+          <dt class="favn-text-muted">In-flight run</dt>
 
           <dd class="min-w-0 truncate font-medium text-base-content">
             <.link
@@ -364,7 +364,7 @@ defmodule FavnView.Components.ScheduleDetailPage do
           <div>
             <h2 class="text-lg font-semibold text-base-content">Occurrences</h2>
 
-            <p class="mt-1 text-sm text-base-content/60">
+            <p class="mt-1 text-sm favn-text-muted">
               Upcoming occurrences are computed by the orchestrator from this schedule's cron, timezone, and window policy.
             </p>
           </div>
@@ -378,7 +378,7 @@ defmodule FavnView.Components.ScheduleDetailPage do
 
         <p
           :if={!@schedule.effective_enabled?}
-          class="mt-3 rounded-field border border-warning/25 bg-warning/10 px-3 py-2 text-sm text-base-content/70"
+          class="mt-3 rounded-field border border-warning/25 bg-warning/10 px-3 py-2 text-sm favn-text-muted"
           data-testid="schedule-occurrences-disabled-note"
         >
           Occurrences are previewed, but this schedule will not submit until it is enabled.
@@ -389,7 +389,7 @@ defmodule FavnView.Components.ScheduleDetailPage do
         <div class="rounded-box border border-warning/25 bg-warning/10 p-4">
           <p class="font-medium text-base-content">Occurrence preview unavailable</p>
 
-          <p class="mt-1 text-sm text-base-content/60">
+          <p class="mt-1 text-sm favn-text-muted">
             The orchestrator returned {@error}. Try again after the scheduler state refreshes.
           </p>
         </div>
@@ -402,7 +402,7 @@ defmodule FavnView.Components.ScheduleDetailPage do
       >
         <p class="font-medium text-base-content">No upcoming occurrences</p>
 
-        <p class="mt-1 text-sm text-base-content/60">The orchestrator did not return preview rows.</p>
+        <p class="mt-1 text-sm favn-text-muted">The orchestrator did not return preview rows.</p>
       </div>
 
       <ScheduleUi.occurrence_preview_table
@@ -514,7 +514,7 @@ defmodule FavnView.Components.ScheduleDetailPage do
   defp icon_tone_class(:needs_review), do: "border-warning/25 bg-warning/10 text-warning"
   defp icon_tone_class(:disabled), do: "border-error/25 bg-error/10 text-error"
   defp icon_tone_class(:info), do: "border-info/25 bg-info/10 text-info"
-  defp icon_tone_class(_tone), do: "border-base-content/15 bg-base-200/40 text-base-content/65"
+  defp icon_tone_class(_tone), do: "border-base-content/15 bg-base-200/40 favn-text-muted"
 
   defp policy_label(nil), do: "-"
 

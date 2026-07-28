@@ -10,7 +10,7 @@ defmodule FavnView.Components.RunDetailPage.WindowRuns do
     ~H"""
     <section data-testid="window-runs-view">
       <h2 class="text-lg font-medium">Window runs</h2>
-      <p class="text-sm text-base-content/55">
+      <p class="text-sm favn-text-muted">
         Child runs created for requested backfill anchors. Effective asset windows are shown on Overview.
       </p>
 
@@ -32,7 +32,7 @@ defmodule FavnView.Components.RunDetailPage.WindowRuns do
             <span class={status_badge_class(child.status_tone)}>{child.status}</span>
             <p class="text-sm">{child.progress}</p>
             <p class="text-sm">{child.duration}</p>
-            <p class="text-xs text-base-content/55">
+            <p class="text-xs favn-text-muted">
               {child.succeeded_count} succeeded · {child.failed_count} failed · {child.running_count} running
             </p>
           </div>

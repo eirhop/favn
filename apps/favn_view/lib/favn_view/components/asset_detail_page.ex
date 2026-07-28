@@ -242,7 +242,7 @@ defmodule FavnView.Components.AssetDetailPage do
       <div class="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
         <div class="min-w-0">
           <div class="flex flex-wrap items-center gap-2">
-            <p class="text-xs uppercase tracking-[0.18em] text-base-content/45">
+            <p class="text-xs uppercase tracking-[0.18em] favn-text-subtle">
               Target compatibility
             </p>
 
@@ -251,14 +251,14 @@ defmodule FavnView.Components.AssetDetailPage do
             </span>
           </div>
 
-          <p class="mt-2 text-sm text-base-content/70">
+          <p class="mt-2 text-sm favn-text-muted">
             {compatibility_explanation(@compatibility)}
           </p>
         </div>
 
-        <dl class="grid min-w-0 gap-x-6 gap-y-2 text-xs text-base-content/65 sm:grid-cols-2 xl:max-w-3xl">
+        <dl class="grid min-w-0 gap-x-6 gap-y-2 text-xs favn-text-muted sm:grid-cols-2 xl:max-w-3xl">
           <div>
-            <dt class="text-base-content/40">Active generation</dt>
+            <dt class="favn-text-subtle">Active generation</dt>
 
             <dd class="break-all font-mono">
               {coverage_generation_label(field(@compatibility, :active_generation_id))}
@@ -266,13 +266,13 @@ defmodule FavnView.Components.AssetDetailPage do
           </div>
 
           <div>
-            <dt class="text-base-content/40">Reason</dt>
+            <dt class="favn-text-subtle">Reason</dt>
 
             <dd>{humanize(field(@compatibility, :reason_code))}</dd>
           </div>
 
           <div>
-            <dt class="text-base-content/40">Desired descriptor</dt>
+            <dt class="favn-text-subtle">Desired descriptor</dt>
 
             <dd class="break-all font-mono">
               {field(@compatibility, :desired_descriptor_hash) || "-"}
@@ -280,7 +280,7 @@ defmodule FavnView.Components.AssetDetailPage do
           </div>
 
           <div>
-            <dt class="text-base-content/40">Physical fingerprint</dt>
+            <dt class="favn-text-subtle">Physical fingerprint</dt>
 
             <dd class="break-all font-mono">
               {field(@compatibility, :physical_fingerprint) || "-"}
@@ -293,15 +293,15 @@ defmodule FavnView.Components.AssetDetailPage do
         :if={compatibility_diff_entries(field(@compatibility, :diff, %{})) != []}
         class="mt-4 rounded-box border border-base-content/10 bg-base-content/[0.03] p-4"
       >
-        <p class="text-xs font-medium uppercase tracking-[0.14em] text-base-content/50">
+        <p class="text-xs font-medium uppercase tracking-[0.14em] favn-text-subtle">
           Compatibility differences
         </p>
 
         <dl class="mt-2 grid gap-2 text-xs sm:grid-cols-2">
           <div :for={{name, change} <- compatibility_diff_entries(field(@compatibility, :diff, %{}))}>
-            <dt class="text-base-content/45">{humanize(name)}</dt>
+            <dt class="favn-text-subtle">{humanize(name)}</dt>
 
-            <dd class="break-all font-mono text-base-content/75">
+            <dd class="break-all font-mono favn-text-muted">
               {compatibility_change_label(change)}
             </dd>
           </div>
@@ -361,14 +361,14 @@ defmodule FavnView.Components.AssetDetailPage do
       <div class="flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
         <div class="min-w-0 space-y-3">
           <div class="flex flex-wrap items-center gap-2">
-            <p class="text-xs uppercase tracking-[0.18em] text-base-content/45">Coverage</p>
+            <p class="text-xs uppercase tracking-[0.18em] favn-text-subtle">Coverage</p>
 
             <span class={coverage_badge_class(field(@coverage, :status))}>
               {coverage_status_label(field(@coverage, :status))}
             </span>
           </div>
 
-          <p class="text-sm text-base-content/70">
+          <p class="text-sm favn-text-muted">
             {coverage_explanation(@coverage)}
           </p>
 
@@ -378,15 +378,15 @@ defmodule FavnView.Components.AssetDetailPage do
             <.coverage_metric label="Missing" value={field(@coverage, :missing_count, 0)} />
           </dl>
 
-          <dl class="grid gap-x-6 gap-y-2 text-xs text-base-content/65 sm:grid-cols-2">
+          <dl class="grid gap-x-6 gap-y-2 text-xs favn-text-muted sm:grid-cols-2">
             <div>
-              <dt class="text-base-content/40">Evaluated at</dt>
+              <dt class="favn-text-subtle">Evaluated at</dt>
 
               <dd>{coverage_time(field(@coverage, :evaluated_at))}</dd>
             </div>
 
             <div>
-              <dt class="text-base-content/40">Active target generation</dt>
+              <dt class="favn-text-subtle">Active target generation</dt>
 
               <dd class="break-all font-mono">
                 {coverage_generation_label(field(@coverage, :active_target_generation_id))}
@@ -394,9 +394,9 @@ defmodule FavnView.Components.AssetDetailPage do
             </div>
           </dl>
 
-          <dl :if={@policy} class="grid gap-x-6 gap-y-2 text-xs text-base-content/65 sm:grid-cols-2">
+          <dl :if={@policy} class="grid gap-x-6 gap-y-2 text-xs favn-text-muted sm:grid-cols-2">
             <div>
-              <dt class="text-base-content/40">Timezone</dt>
+              <dt class="favn-text-subtle">Timezone</dt>
 
               <dd class="font-mono">
                 {field(@policy, :timezone)} ({humanize(field(@policy, :timezone_source))})
@@ -404,7 +404,7 @@ defmodule FavnView.Components.AssetDetailPage do
             </div>
 
             <div>
-              <dt class="text-base-content/40">Coverage starts</dt>
+              <dt class="favn-text-subtle">Coverage starts</dt>
 
               <dd>
                 {coverage_time(field(@policy, :declared_from))} declared · {coverage_time(
@@ -414,13 +414,13 @@ defmodule FavnView.Components.AssetDetailPage do
             </div>
 
             <div>
-              <dt class="text-base-content/40">Expected through</dt>
+              <dt class="favn-text-subtle">Expected through</dt>
 
               <dd>{coverage_window_label(field(@coverage, :last_expected_window))}</dd>
             </div>
 
             <div>
-              <dt class="text-base-content/40">Availability</dt>
+              <dt class="favn-text-subtle">Availability</dt>
 
               <dd>{availability_label(field(@policy, :availability_delay_seconds, 0))}</dd>
             </div>
@@ -434,10 +434,10 @@ defmodule FavnView.Components.AssetDetailPage do
           >
             <p class="text-xs font-medium uppercase tracking-[0.16em] text-warning">Exact gaps</p>
 
-            <div class="mt-2 max-h-32 space-y-1 overflow-y-auto font-mono text-xs text-base-content/70">
+            <div class="mt-2 max-h-32 space-y-1 overflow-y-auto font-mono text-xs favn-text-muted">
               <p :for={gap <- @gaps}>{field(gap, :window_key)}</p>
 
-              <p :if={@gaps == []} class="font-sans text-base-content/50">
+              <p :if={@gaps == []} class="font-sans favn-text-subtle">
                 No missing windows in this page.
               </p>
             </div>
@@ -458,7 +458,7 @@ defmodule FavnView.Components.AssetDetailPage do
                 Previous
               </button>
 
-              <span class="text-center font-sans text-xs text-base-content/45">
+              <span class="text-center font-sans text-xs favn-text-subtle">
                 {length(@gaps)} gaps on this page
               </span>
 
@@ -494,11 +494,11 @@ defmodule FavnView.Components.AssetDetailPage do
           >
             <p class="text-sm font-medium">Review immutable plan</p>
 
-            <p class="mt-1 break-all font-mono text-xs text-base-content/55">
+            <p class="mt-1 break-all font-mono text-xs favn-text-muted">
               {field(@plan, :plan_hash)}
             </p>
 
-            <div class="mt-3 max-h-36 space-y-1 overflow-y-auto font-mono text-xs text-base-content/70">
+            <div class="mt-3 max-h-36 space-y-1 overflow-y-auto font-mono text-xs favn-text-muted">
               <p :for={window <- field(@plan, :windows, [])}>{field(window, :window_key)}</p>
             </div>
 
@@ -536,7 +536,7 @@ defmodule FavnView.Components.AssetDetailPage do
   defp coverage_metric(assigns) do
     ~H"""
     <div class="rounded-box border border-base-content/10 bg-base-content/[0.03] p-3">
-      <dt class="text-xs uppercase tracking-[0.14em] text-base-content/40">{@label}</dt>
+      <dt class="text-xs uppercase tracking-[0.14em] favn-text-subtle">{@label}</dt>
 
       <dd class="mt-1 text-xl font-medium">{@value}</dd>
     </div>
@@ -597,10 +597,10 @@ defmodule FavnView.Components.AssetDetailPage do
           <div>
             <h2 class="text-xl font-medium tracking-tight">{@timeline_label}</h2>
 
-            <p class="mt-2 text-sm text-base-content/60">{@timeline_kind_label}</p>
+            <p class="mt-2 text-sm favn-text-muted">{@timeline_kind_label}</p>
           </div>
 
-          <div class="join self-start text-sm text-base-content/70">
+          <div class="join self-start text-sm favn-text-muted">
             <button
               :if={@has_data_windows? or @has_freshness_timeline?}
               type="button"
@@ -718,9 +718,9 @@ defmodule FavnView.Components.AssetDetailPage do
     >
       <div class="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <div>
-          <p class="text-xs uppercase tracking-[0.18em] text-base-content/45">Run context</p>
+          <p class="text-xs uppercase tracking-[0.18em] favn-text-subtle">Run context</p>
 
-          <p class="mt-1 text-sm text-base-content/70">
+          <p class="mt-1 text-sm favn-text-muted">
             Choose the pipeline policy used for run anchors and freshness evaluation.
           </p>
         </div>
@@ -767,16 +767,16 @@ defmodule FavnView.Components.AssetDetailPage do
     >
       <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div class="min-w-0">
-          <p class="text-xs uppercase tracking-[0.18em] text-base-content/45">Freshness</p>
+          <p class="text-xs uppercase tracking-[0.18em] favn-text-subtle">Freshness</p>
 
           <div class="mt-1 flex flex-wrap items-center gap-2">
             <span class={freshness_badge_class(@freshness[:state])}>
               {freshness_state_label(@freshness[:state])}
             </span>
-             <span class="text-xs text-base-content/55">{freshness_policy_label(@freshness)}</span>
+             <span class="text-xs favn-text-muted">{freshness_policy_label(@freshness)}</span>
           </div>
 
-          <p class="mt-2 text-sm text-base-content/70">{@freshness[:explanation]}</p>
+          <p class="mt-2 text-sm favn-text-muted">{@freshness[:explanation]}</p>
         </div>
       </div>
     </div>
@@ -792,13 +792,13 @@ defmodule FavnView.Components.AssetDetailPage do
       class="mx-auto w-full max-w-4xl p-6 sm:p-8"
       data-testid="asset-freshness-detail-panel"
     >
-      <div :if={!@freshness} class="text-sm text-base-content/60">
+      <div :if={!@freshness} class="text-sm favn-text-muted">
         Freshness detail is not available from the backend.
       </div>
 
       <div :if={@freshness} class="space-y-6">
         <div>
-          <p class="text-xs uppercase tracking-[0.18em] text-base-content/45">Freshness detail</p>
+          <p class="text-xs uppercase tracking-[0.18em] favn-text-subtle">Freshness detail</p>
 
           <div class="mt-2 flex flex-wrap items-center gap-2">
             <span class={freshness_badge_class(@freshness[:state])}>
@@ -807,30 +807,30 @@ defmodule FavnView.Components.AssetDetailPage do
              <span class="badge badge-ghost badge-sm">{freshness_policy_label(@freshness)}</span>
           </div>
 
-          <p class="mt-3 text-sm text-base-content/70">{@freshness[:explanation]}</p>
+          <p class="mt-3 text-sm favn-text-muted">{@freshness[:explanation]}</p>
         </div>
 
         <dl :if={freshness_latest_success(@freshness)} class="grid gap-3 sm:grid-cols-3">
           <div class="rounded-box border border-base-content/10 bg-base-content/[0.03] p-3">
-            <dt class="text-xs uppercase tracking-[0.16em] text-base-content/45">Latest success</dt>
+            <dt class="text-xs uppercase tracking-[0.16em] favn-text-subtle">Latest success</dt>
 
-            <dd class="mt-1 break-words font-mono text-xs text-base-content/75">
+            <dd class="mt-1 break-words font-mono text-xs favn-text-muted">
               {freshness_latest_success(@freshness)[:run_id]}
             </dd>
           </div>
 
           <div class="rounded-box border border-base-content/10 bg-base-content/[0.03] p-3">
-            <dt class="text-xs uppercase tracking-[0.16em] text-base-content/45">Freshness key</dt>
+            <dt class="text-xs uppercase tracking-[0.16em] favn-text-subtle">Freshness key</dt>
 
-            <dd class="mt-1 break-words font-mono text-xs text-base-content/75">
+            <dd class="mt-1 break-words font-mono text-xs favn-text-muted">
               {freshness_latest_success(@freshness)[:freshness_key]}
             </dd>
           </div>
 
           <div class="rounded-box border border-base-content/10 bg-base-content/[0.03] p-3">
-            <dt class="text-xs uppercase tracking-[0.16em] text-base-content/45">At</dt>
+            <dt class="text-xs uppercase tracking-[0.16em] favn-text-subtle">At</dt>
 
-            <dd class="mt-1 text-xs text-base-content/75">
+            <dd class="mt-1 text-xs favn-text-muted">
               {freshness_time(freshness_latest_success(@freshness)[:at])}
             </dd>
           </div>
@@ -846,28 +846,28 @@ defmodule FavnView.Components.AssetDetailPage do
             >
               <div class="flex flex-wrap items-center gap-2">
                 <span class="badge badge-ghost badge-sm">{reason[:kind]}</span>
-                <span :if={reason[:upstream_ref]} class="font-mono text-xs text-base-content/45">
+                <span :if={reason[:upstream_ref]} class="font-mono text-xs favn-text-subtle">
                   {reason[:upstream_ref]}
                 </span>
               </div>
 
-              <p class="mt-2 text-sm text-base-content/75">{reason[:message]}</p>
+              <p class="mt-2 text-sm favn-text-muted">{reason[:message]}</p>
 
-              <dl class="mt-3 grid gap-2 text-xs text-base-content/60 sm:grid-cols-3">
+              <dl class="mt-3 grid gap-2 text-xs favn-text-muted sm:grid-cols-3">
                 <div :if={reason[:previous_version]}>
-                  <dt class="uppercase tracking-[0.14em] text-base-content/40">Previous</dt>
+                  <dt class="uppercase tracking-[0.14em] favn-text-subtle">Previous</dt>
 
                   <dd class="mt-0.5 break-words font-mono">{reason[:previous_version]}</dd>
                 </div>
 
                 <div :if={reason[:current_version]}>
-                  <dt class="uppercase tracking-[0.14em] text-base-content/40">Current</dt>
+                  <dt class="uppercase tracking-[0.14em] favn-text-subtle">Current</dt>
 
                   <dd class="mt-0.5 break-words font-mono">{reason[:current_version]}</dd>
                 </div>
 
                 <div :if={reason[:run_id]}>
-                  <dt class="uppercase tracking-[0.14em] text-base-content/40">Run</dt>
+                  <dt class="uppercase tracking-[0.14em] favn-text-subtle">Run</dt>
 
                   <dd class="mt-0.5 break-words font-mono">{reason[:run_id]}</dd>
                 </div>
@@ -894,11 +894,11 @@ defmodule FavnView.Components.AssetDetailPage do
     <.panel padding={:none} class="p-6 sm:p-8" data-testid="asset-assurance-panel">
       <div class="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          <p class="text-xs uppercase tracking-[0.18em] text-base-content/45">Data assurance</p>
+          <p class="text-xs uppercase tracking-[0.18em] favn-text-subtle">Data assurance</p>
 
           <h2 class="mt-1 text-xl font-medium tracking-tight">Contract and quality checks</h2>
 
-          <p class="mt-2 max-w-3xl text-sm text-base-content/60">
+          <p class="mt-2 max-w-3xl text-sm favn-text-muted">
             Authored expectations, observed candidate evidence, and the latest generated and custom check outcomes.
           </p>
         </div>
@@ -940,13 +940,13 @@ defmodule FavnView.Components.AssetDetailPage do
           >
             <div class="flex flex-wrap items-start justify-between gap-2">
               <div>
-                <p class="text-xs uppercase tracking-[0.14em] text-base-content/40">
+                <p class="text-xs uppercase tracking-[0.14em] favn-text-subtle">
                   Row count claim {index}
                 </p>
 
                 <p class="mt-1 text-sm font-medium">{row_count_constraint_label(row_count)}</p>
 
-                <p class="mt-1 font-mono text-[0.7rem] text-base-content/45">
+                <p class="mt-1 font-mono text-[0.7rem] favn-text-subtle">
                   {row_count[:claim_id]}
                 </p>
               </div>
@@ -956,7 +956,7 @@ defmodule FavnView.Components.AssetDetailPage do
               </span>
             </div>
 
-            <p class="mt-2 text-xs text-base-content/60">
+            <p class="mt-2 text-xs favn-text-muted">
               On violation {humanize(row_count[:on_violation])}
               <span :if={row_count[:when]}> · when {humanize(row_count[:when])}</span>
             </p>
@@ -968,7 +968,7 @@ defmodule FavnView.Components.AssetDetailPage do
           class="flex flex-wrap items-center gap-2 text-xs"
           data-testid="contract-compositions"
         >
-          <span class="text-base-content/45">Composed fragments</span>
+          <span class="favn-text-subtle">Composed fragments</span>
           <span
             :for={composition <- List.wrap(@contract[:compositions])}
             class="badge badge-outline badge-sm font-mono"
@@ -998,14 +998,14 @@ defmodule FavnView.Components.AssetDetailPage do
 
                   <span
                     :if={column[:origin]}
-                    class="mt-1 inline-flex max-w-xs break-all rounded border border-base-content/10 px-1.5 py-0.5 font-mono text-[0.65rem] text-base-content/50"
+                    class="mt-1 inline-flex max-w-xs break-all rounded border border-base-content/10 px-1.5 py-0.5 font-mono text-[0.65rem] favn-text-subtle"
                     data-testid="contract-column-origin"
                     data-origin={column[:origin][:kind]}
                   >
                     {column_origin_label(column[:origin])}
                   </span>
 
-                  <p :if={column[:description]} class="mt-1 max-w-xs text-xs text-base-content/55">
+                  <p :if={column[:description]} class="mt-1 max-w-xs text-xs favn-text-muted">
                     {column[:description]}
                   </p>
 
@@ -1016,7 +1016,7 @@ defmodule FavnView.Components.AssetDetailPage do
 
                 <td class="text-xs">
                   <span class="font-mono">{column[:type]}</span>
-                  <span class="text-base-content/45"> · {nullability_label(column[:nullable?])}</span>
+                  <span class="favn-text-subtle"> · {nullability_label(column[:nullable?])}</span>
                 </td>
 
                 <td class="text-xs">
@@ -1025,14 +1025,14 @@ defmodule FavnView.Components.AssetDetailPage do
                       {observed_type(@observed_by_name[to_string(column[:name])])}
                     </span>
 
-                    <span class="text-base-content/45">
+                    <span class="favn-text-subtle">
                       · {observed_nullability(@observed_by_name[to_string(column[:name])])}
                     </span>
                   </span>
 
                   <span
                     :if={!@observed_by_name[to_string(column[:name])]}
-                    class="text-base-content/40"
+                    class="favn-text-subtle"
                   >
                     Not observed
                   </span>
@@ -1048,7 +1048,7 @@ defmodule FavnView.Components.AssetDetailPage do
                       {column[:via]}
                     </span>
                   </div>
-                   <span :if={column[:sources] == []} class="text-base-content/40">Not declared</span>
+                   <span :if={column[:sources] == []} class="favn-text-subtle">Not declared</span>
                 </td>
               </tr>
             </tbody>
@@ -1062,7 +1062,7 @@ defmodule FavnView.Components.AssetDetailPage do
         >
           <h3 class="text-sm font-medium text-error">Schema differences</h3>
 
-          <ul class="mt-2 space-y-1 text-xs text-base-content/70">
+          <ul class="mt-2 space-y-1 text-xs favn-text-muted">
             <li :for={difference <- @validation[:differences]}>{difference_label(difference)}</li>
           </ul>
         </div>
@@ -1081,7 +1081,7 @@ defmodule FavnView.Components.AssetDetailPage do
         <div class="flex items-center justify-between gap-3">
           <h3 class="text-sm font-medium">Checks</h3>
 
-          <span :if={@assurance[:latest_run_id]} class="font-mono text-xs text-base-content/45">
+          <span :if={@assurance[:latest_run_id]} class="font-mono text-xs favn-text-subtle">
             {@assurance[:latest_run_id]}
           </span>
         </div>
@@ -1100,7 +1100,7 @@ defmodule FavnView.Components.AssetDetailPage do
                   <p class="font-mono text-xs font-semibold">{check[:name]}</p>
                 </div>
 
-                <p :if={check[:claim_id]} class="mt-1 font-mono text-[0.7rem] text-base-content/45">
+                <p :if={check[:claim_id]} class="mt-1 font-mono text-[0.7rem] favn-text-subtle">
                   {check[:claim_id]}
                 </p>
               </div>
@@ -1110,16 +1110,16 @@ defmodule FavnView.Components.AssetDetailPage do
               </span>
             </div>
 
-            <p class="mt-2 text-xs text-base-content/60">
+            <p class="mt-2 text-xs favn-text-muted">
               {humanize(check[:phase])} · on violation {humanize(check[:on_violation])}
               <span :if={check[:when]}> · when {humanize(check[:when])}</span>
             </p>
 
-            <p :if={check[:message]} class="mt-2 text-xs text-base-content/75">{check[:message]}</p>
+            <p :if={check[:message]} class="mt-2 text-xs favn-text-muted">{check[:message]}</p>
 
             <dl :if={check_metrics(check) != []} class="mt-3 grid gap-1 text-xs">
               <div :for={{key, value} <- check_metrics(check)} class="flex justify-between gap-3">
-                <dt class="text-base-content/50">{key}</dt>
+                <dt class="favn-text-subtle">{key}</dt>
 
                 <dd class="font-mono">{value}</dd>
               </div>
@@ -1137,9 +1137,9 @@ defmodule FavnView.Components.AssetDetailPage do
   defp assurance_fact(assigns) do
     ~H"""
     <div class="rounded-box border border-base-content/10 bg-base-content/[0.03] p-3">
-      <p class="text-xs uppercase tracking-[0.14em] text-base-content/40">{@label}</p>
+      <p class="text-xs uppercase tracking-[0.14em] favn-text-subtle">{@label}</p>
 
-      <p class="mt-1 text-sm text-base-content/75">{@value}</p>
+      <p class="mt-1 text-sm favn-text-muted">{@value}</p>
     </div>
     """
   end
@@ -1169,7 +1169,7 @@ defmodule FavnView.Components.AssetDetailPage do
       </button>
 
       <div class={[
-        "text-center text-xs leading-tight text-base-content/60",
+        "text-center text-xs leading-tight favn-text-muted",
         @selected && "text-primary"
       ]}>
         <div class="max-w-16 text-balance">{@window.label}</div>
@@ -1676,7 +1676,7 @@ defmodule FavnView.Components.AssetDetailPage do
   end
 
   defp timeline_window_class(%{status: :muted}) do
-    "border-base-content/15 bg-base-content/10 text-base-content/45"
+    "border-base-content/15 bg-base-content/10 favn-text-subtle"
   end
 
   defp timeline_icon(:success), do: "hero-check-circle"

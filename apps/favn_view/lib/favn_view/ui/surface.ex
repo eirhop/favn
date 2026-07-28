@@ -68,7 +68,7 @@ defmodule FavnView.UI.Surface do
             <h2 class="truncate text-base font-medium tracking-tight text-base-content">
               {header.title}
             </h2>
-            <p :if={header[:subtitle]} class="mt-0.5 truncate text-xs text-base-content/55">
+            <p :if={header[:subtitle]} class="mt-0.5 truncate text-xs favn-text-muted">
               {header[:subtitle]}
             </p>
           </div>
@@ -102,15 +102,22 @@ defmodule FavnView.UI.Surface do
   slot :inner_block, required: true
 
   def list_card(assigns) do
-    assigns = assign(assigns, :card_class, list_card_class(assigns))
+    assigns =
+      assigns
+      |> assign(:card_class, list_card_class(assigns))
+      |> assign(:current, assigns.selected && "true")
 
     if link?(assigns.rest) do
       ~H"""
-      <.link id={@id} class={@card_class} {@rest}>{render_slot(@inner_block)}</.link>
+      <.link id={@id} class={@card_class} aria-current={@current} {@rest}>
+        {render_slot(@inner_block)}
+      </.link>
       """
     else
       ~H"""
-      <div id={@id} class={@card_class} {@rest}>{render_slot(@inner_block)}</div>
+      <div id={@id} class={@card_class} aria-current={@current} {@rest}>
+        {render_slot(@inner_block)}
+      </div>
       """
     end
   end
@@ -171,7 +178,7 @@ defmodule FavnView.UI.Surface do
   def surface_divider(assigns) do
     ~H"""
     <div class={["flex items-center gap-3 py-3", @class]}>
-      <span class="text-xs uppercase tracking-[0.18em] text-base-content/45">{@label}</span>
+      <span class="text-xs uppercase tracking-[0.18em] favn-text-subtle">{@label}</span>
       <span class="h-px flex-1 bg-base-content/10"></span>
     </div>
     """
@@ -179,12 +186,15 @@ defmodule FavnView.UI.Surface do
 
   defp link?(rest), do: Enum.any?([:href, :navigate, :patch], &Map.has_key?(rest, &1))
 
+  # The selected border is opaque, not a tint. At 50% alpha over a translucent
+  # card it measured 2.47:1 against the 3:1 a state cue has to reach, which in
+  # practice meant an operator could not tell which row was selected.
   defp list_card_class(assigns) do
     [
       "favn-surface-list favn-density-list-card block rounded-box transition",
       link?(assigns.rest) &&
         "hover:border-primary/40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-primary",
-      assigns.selected && "border-primary/50",
+      assigns.selected && "favn-list-card-selected",
       assigns.class
     ]
   end

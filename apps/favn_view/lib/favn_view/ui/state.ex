@@ -41,7 +41,7 @@ defmodule FavnView.UI.State do
     ~H"""
     <.panel padding={:lg} class={["mx-auto max-w-2xl text-center", @class]} {@rest}>
       <span class="loading loading-ring loading-lg text-primary" aria-hidden="true"></span>
-      <p class="mt-4 text-base-content/60" role="status">{@label}</p>
+      <p class="mt-4 favn-text-muted" role="status">{@label}</p>
     </.panel>
     """
   end
@@ -57,11 +57,11 @@ defmodule FavnView.UI.State do
   def empty_state(assigns) do
     ~H"""
     <.panel padding={:lg} class={["mx-auto max-w-2xl text-center", @class]} {@rest}>
-      <span class="inline-flex size-14 items-center justify-center rounded-box bg-base-content/5 text-base-content/45">
+      <span class="inline-flex size-14 items-center justify-center rounded-box bg-base-content/5 favn-text-subtle">
         <.icon name={@icon} size={:lg} />
       </span>
       <h2 class="mt-4 text-lg font-medium tracking-tight">{@title}</h2>
-      <p :if={@description} class="mt-2 text-sm text-base-content/60">{@description}</p>
+      <p :if={@description} class="mt-2 text-sm favn-text-muted">{@description}</p>
       <div :if={@action != []} class="mt-5 flex justify-center">{render_slot(@action)}</div>
     </.panel>
     """
@@ -86,7 +86,7 @@ defmodule FavnView.UI.State do
         <.icon name="hero-exclamation-triangle" size={:lg} />
       </span>
       <h2 class="mt-4 text-lg font-medium tracking-tight" role="alert">{@title}</h2>
-      <p :if={@description} class="mt-2 text-sm text-base-content/60">{@description}</p>
+      <p :if={@description} class="mt-2 text-sm favn-text-muted">{@description}</p>
       <div :if={@action != []} class="mt-5 flex justify-center">{render_slot(@action)}</div>
     </.panel>
     """
@@ -104,7 +104,7 @@ defmodule FavnView.UI.State do
   def inline_loading(assigns) do
     ~H"""
     <span
-      class={["inline-flex items-center gap-2 text-xs text-base-content/60", @class]}
+      class={["inline-flex items-center gap-2 text-xs favn-text-muted", @class]}
       role="status"
     >
       <span class="loading loading-spinner loading-xs" aria-hidden="true"></span>

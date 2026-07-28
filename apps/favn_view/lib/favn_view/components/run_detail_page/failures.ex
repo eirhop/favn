@@ -17,7 +17,7 @@ defmodule FavnView.Components.RunDetailPage.Failures do
       <div class="mb-4 flex items-center justify-between gap-3">
         <div>
           <h2 class="text-lg font-medium">Failures</h2>
-          <p class="text-sm text-base-content/55">
+          <p class="text-sm favn-text-muted">
             Failed asset attempts with retry-relevant context.
           </p>
         </div>
@@ -26,7 +26,7 @@ defmodule FavnView.Components.RunDetailPage.Failures do
 
       <div
         :if={@failure_count == 0}
-        class="rounded-box border border-dashed border-base-content/15 p-5 text-sm text-base-content/55"
+        class="rounded-box border border-dashed border-base-content/15 p-5 text-sm favn-text-muted"
       >
         No failed asset attempts or window runs in this run.
       </div>
@@ -38,7 +38,7 @@ defmodule FavnView.Components.RunDetailPage.Failures do
       <div :if={@run.backfill_failures != []} class="space-y-2">
         <p
           :if={@backfill_failure_count > length(@run.backfill_failures)}
-          class="text-xs text-base-content/55"
+          class="text-xs favn-text-muted"
         >
           Showing {length(@run.backfill_failures)} of {@backfill_failure_count} failed window runs.
         </p>
@@ -61,12 +61,12 @@ defmodule FavnView.Components.RunDetailPage.Failures do
     >
       <div class="min-w-0">
         <p class="truncate font-medium text-error">{@attempt.short_asset_name}</p>
-        <p class="truncate text-xs text-base-content/55">
+        <p class="truncate text-xs favn-text-muted">
           {@attempt.error_summary || "No error summary"}
         </p>
       </div>
       <p class="text-sm">{@attempt.window_label}</p>
-      <p class="font-mono text-xs text-base-content/60">{@attempt.child_run_id || @attempt.run_id}</p>
+      <p class="font-mono text-xs favn-text-muted">{@attempt.child_run_id || @attempt.run_id}</p>
       <p class="text-sm">Attempt {@attempt.attempt_number || "-"}</p>
       <p class="text-sm">{@attempt.duration}</p>
     </button>
@@ -101,12 +101,12 @@ defmodule FavnView.Components.RunDetailPage.Failures do
     ~H"""
     <div class="min-w-0">
       <p class="truncate font-medium text-error">{@failure.short_asset_name}</p>
-      <p class="truncate text-xs text-base-content/55">
+      <p class="truncate text-xs favn-text-muted">
         {@failure.error_summary || "No error summary"}
       </p>
     </div>
     <p class="text-sm">{@failure.window_label}</p>
-    <p class="font-mono text-xs text-base-content/60">{@failure.child_run_id || "-"}</p>
+    <p class="font-mono text-xs favn-text-muted">{@failure.child_run_id || "-"}</p>
     <p class="text-sm">Attempt {@failure.attempt_count || "-"}</p>
     <p class="text-sm">{@failure.duration}</p>
     """

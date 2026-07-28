@@ -15,7 +15,7 @@ defmodule FavnView.Components.RunDetailPage.Timeline do
       <div class="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <h2 class="text-lg font-medium tracking-tight">Timeline</h2>
-          <p class="text-sm text-base-content/55">
+          <p class="text-sm favn-text-muted">
             Asset attempts grouped by operational state on execution wall-clock time.
           </p>
         </div>
@@ -54,7 +54,7 @@ defmodule FavnView.Components.RunDetailPage.Timeline do
           phx-hook={if(@timeline_hook?, do: "FavnTimeline")}
         >
           <div class="relative" style={"width: #{@timeline.chart_width}; min-width: 76rem;"}>
-            <div class="grid grid-cols-[40rem_minmax(38rem,1fr)] border-b border-base-content/10 bg-base-300/35 text-xs text-base-content/60 backdrop-blur">
+            <div class="grid grid-cols-[40rem_minmax(38rem,1fr)] border-b border-base-content/10 bg-base-300/35 text-xs favn-text-muted backdrop-blur">
               <div class="sticky left-0 z-30 grid grid-cols-[minmax(0,1.4fr)_8rem_7rem_8rem_7rem] border-r border-base-content/10 bg-base-300/95 backdrop-blur">
                 <div class="p-3">Asset</div>
                 <div class="p-3">Window</div>
@@ -104,7 +104,7 @@ defmodule FavnView.Components.RunDetailPage.Timeline do
       phx-change="timeline_filter"
     >
       <label class="input input-sm favn-surface-control min-w-56 flex-1 items-center gap-2 rounded-field xl:max-w-80">
-        <.icon name="hero-magnifying-glass" class="size-4 text-base-content/45" />
+        <.icon name="hero-magnifying-glass" class="size-4 favn-text-subtle" />
         <input
           type="search"
           name="timeline[search]"
@@ -148,7 +148,7 @@ defmodule FavnView.Components.RunDetailPage.Timeline do
       >
         <option>Group by Status</option>
       </select>
-      <label class="flex items-center gap-2 text-xs leading-tight text-base-content/65">
+      <label class="flex items-center gap-2 text-xs leading-tight favn-text-muted">
         <input
           type="checkbox"
           name="timeline[failed_only]"
@@ -156,7 +156,7 @@ defmodule FavnView.Components.RunDetailPage.Timeline do
           class="toggle toggle-error toggle-xs"
         /> <span class="max-w-16">Show failed only</span>
       </label>
-      <label class="flex items-center gap-2 text-xs leading-tight text-base-content/65">
+      <label class="flex items-center gap-2 text-xs leading-tight favn-text-muted">
         <input
           type="checkbox"
           name="timeline[running_only]"
@@ -272,12 +272,12 @@ defmodule FavnView.Components.RunDetailPage.Timeline do
           <span>{@section.label}</span>
           <span class="badge badge-sm badge-ghost">{length(@section.rows)}</span>
         </div>
-        <div class="px-4 py-2 text-xs text-base-content/45">{@section.hint}</div>
+        <div class="px-4 py-2 text-xs favn-text-subtle">{@section.hint}</div>
       </div>
 
       <div
         :if={@section.rows == []}
-        class="grid grid-cols-[40rem_minmax(38rem,1fr)] border-b border-base-content/10 text-sm text-base-content/45"
+        class="grid grid-cols-[40rem_minmax(38rem,1fr)] border-b border-base-content/10 text-sm favn-text-subtle"
       >
         <div class="sticky left-0 z-20 border-r border-base-content/10 bg-base-300/80 px-3 py-3 backdrop-blur">
           {@empty_label}
@@ -311,15 +311,15 @@ defmodule FavnView.Components.RunDetailPage.Timeline do
       <div class="sticky left-0 z-20 grid grid-cols-[minmax(0,1.4fr)_8rem_7rem_8rem_7rem] items-center border-r border-base-content/10 bg-base-300/80 text-sm backdrop-blur group-hover:bg-base-300/95">
         <div class="min-w-0 px-3 py-2.5">
           <p class="truncate font-medium text-base-content">{@row.asset_name}</p>
-          <p class="truncate font-mono text-[0.68rem] text-base-content/35">{@row.asset_key}</p>
+          <p class="truncate font-mono text-[0.68rem] favn-text-subtle">{@row.asset_key}</p>
           <p :if={@row.error_summary} class="sr-only">{@row.error_summary}</p>
         </div>
-        <div class="truncate px-3 py-2.5 text-xs text-base-content/65">{@row.window_label}</div>
+        <div class="truncate px-3 py-2.5 text-xs favn-text-muted">{@row.window_label}</div>
         <div class="px-3 py-2.5">
           <span class={status_badge_class(@row.status_tone)}>{@row.status}</span>
         </div>
-        <div class="truncate px-3 py-2.5 text-xs text-base-content/65">{@row.started_at}</div>
-        <div class="truncate px-3 py-2.5 text-xs text-base-content/65">{@row.duration}</div>
+        <div class="truncate px-3 py-2.5 text-xs favn-text-muted">{@row.started_at}</div>
+        <div class="truncate px-3 py-2.5 text-xs favn-text-muted">{@row.duration}</div>
       </div>
       <div class="relative min-h-12 px-4 py-3">
         <%= if @row.has_real_bar? do %>
@@ -335,7 +335,7 @@ defmodule FavnView.Components.RunDetailPage.Timeline do
             class="absolute left-4 right-4 top-1/2 border-t border-dashed border-base-content/20"
             data-testid="timeline-queued-placeholder"
           />
-          <span class="relative z-10 rounded-full bg-base-300/80 px-2 py-0.5 text-xs text-base-content/45">
+          <span class="relative z-10 rounded-full bg-base-300/80 px-2 py-0.5 text-xs favn-text-subtle">
             No scheduled start
           </span>
         <% end %>
@@ -735,7 +735,7 @@ defmodule FavnView.Components.RunDetailPage.Timeline do
   defp timeline_section_icon_class("running"), do: "size-4 text-info"
   defp timeline_section_icon_class("ran"), do: "size-4 text-success"
   defp timeline_section_icon_class("queued"), do: "size-4 text-warning"
-  defp timeline_section_icon_class("skipped"), do: "size-4 text-base-content/50"
+  defp timeline_section_icon_class("skipped"), do: "size-4 favn-text-subtle"
 
   defp timeline_bar_class(:success),
     do:

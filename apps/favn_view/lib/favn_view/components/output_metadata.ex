@@ -146,21 +146,21 @@ defmodule FavnView.Components.OutputMetadata do
 
       <p
         :if={@empty? && @failed?}
-        class="mt-3 text-sm text-base-content/55"
+        class="mt-3 text-sm favn-text-muted"
         data-testid="output-metadata-empty"
       >
         No output metadata available because the attempt failed before completion.
       </p>
       <p
         :if={@empty? && @active?}
-        class="mt-3 text-sm text-base-content/55"
+        class="mt-3 text-sm favn-text-muted"
         data-testid="output-metadata-empty"
       >
         No output metadata yet.
       </p>
       <p
         :if={@empty? && !@failed? && !@active?}
-        class="mt-3 text-sm text-base-content/55"
+        class="mt-3 text-sm favn-text-muted"
         data-testid="output-metadata-empty"
       >
         No output metadata returned.
@@ -171,7 +171,7 @@ defmodule FavnView.Components.OutputMetadata do
       </dl>
 
       <details :if={@hidden_rows != []} class="mt-3 rounded-box border border-base-content/10 p-3">
-        <summary class="cursor-pointer text-xs font-medium text-base-content/65">
+        <summary class="cursor-pointer text-xs font-medium favn-text-muted">
           Show {length(@hidden_rows)} more metadata {if(length(@hidden_rows) == 1,
             do: "field",
             else: "fields"
@@ -183,8 +183,8 @@ defmodule FavnView.Components.OutputMetadata do
       </details>
 
       <details :if={!@empty?} class="mt-3 rounded-box border border-base-content/10 p-3">
-        <summary class="cursor-pointer text-xs font-medium text-base-content/65">Raw JSON</summary>
-        <pre class="mt-3 max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-box bg-base-300/35 p-3 text-xs text-base-content/80"><code>{@raw_json}</code></pre>
+        <summary class="cursor-pointer text-xs font-medium favn-text-muted">Raw JSON</summary>
+        <pre class="mt-3 max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-box bg-base-300/35 p-3 text-xs favn-text-muted"><code>{@raw_json}</code></pre>
       </details>
     </section>
     """
@@ -195,7 +195,7 @@ defmodule FavnView.Components.OutputMetadata do
   defp metadata_row(assigns) do
     ~H"""
     <div class="grid gap-1 py-2 first:pt-0 last:pb-0 sm:grid-cols-[11rem_minmax(0,1fr)] sm:gap-4">
-      <dt class="text-xs text-base-content/45">{@row.label}</dt>
+      <dt class="text-xs favn-text-subtle">{@row.label}</dt>
       <dd class={["break-words font-medium", @row.mono? && "font-mono text-xs"]}>{@row.value}</dd>
     </div>
     """
