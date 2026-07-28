@@ -41,10 +41,15 @@
   --color-base-200: oklch(17% 0.04 258);
   --color-base-300: oklch(23% 0.045 254);
   --color-base-content: oklch(92% 0.025 245);
+  /* The `-content` tokens are dark on purpose. These surfaces sit at 66-68%
+     lightness because they must also work as *text* on the dark base, and a
+     near-white label on a surface that light cannot reach 4.5:1 — primary
+     measured 2.78:1, secondary 2.62:1. Dark labels on bright fills is what
+     info, success, warning, and accent already do here. */
   --color-primary: oklch(68% 0.19 250);
-  --color-primary-content: oklch(98% 0.015 250);
+  --color-primary-content: oklch(16% 0.04 250);
   --color-secondary: oklch(66% 0.16 210);
-  --color-secondary-content: oklch(98% 0.015 210);
+  --color-secondary-content: oklch(15% 0.035 210);
   --color-accent: oklch(74% 0.16 165);
   --color-accent-content: oklch(14% 0.035 165);
   --color-neutral: oklch(29% 0.04 258);
@@ -56,7 +61,7 @@
   --color-warning: oklch(78% 0.16 78);
   --color-warning-content: oklch(18% 0.04 78);
   --color-error: oklch(66% 0.2 25);
-  --color-error-content: oklch(98% 0.015 25);
+  --color-error-content: oklch(16% 0.05 25);
   --radius-selector: 999rem;
   --radius-field: 1rem;
   --radius-box: 1.5rem;
@@ -82,7 +87,8 @@
   --color-primary-content: oklch(98% 0.015 248);
   --color-secondary: oklch(52% 0.12 210);
   --color-secondary-content: oklch(98% 0.015 210);
-  --color-accent: oklch(58% 0.13 165);
+  /* 49%, not 58%: a near-white label on the lighter mint measured 3.76:1. */
+  --color-accent: oklch(49% 0.13 165);
   --color-accent-content: oklch(98% 0.015 165);
   --color-neutral: oklch(36% 0.04 255);
   --color-neutral-content: oklch(98% 0.01 250);
