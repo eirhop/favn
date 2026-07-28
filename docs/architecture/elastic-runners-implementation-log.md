@@ -999,3 +999,10 @@ Two PostgreSQL backup/migration drill tests could not run in the native Windows
 shell because `createdb`, `pg_dump`, and `pg_restore` were not installed. This
 is an environment limitation rather than an application failure; the same
 provider-neutral tests remain part of the Linux CI gate.
+
+The first Linux CI run then found one stress-fixture mismatch under concurrent
+database checkout pressure. The production `RunnerAgent` reconnects after a
+retryable control-plane failure, but the distributed scale helper treated the
+same response as terminal. The helper now retries only explicitly retryable
+storage-unavailable and gateway-overload responses, with a fixed bound. Four
+consecutive 333-runner focused runs passed after that correction.
