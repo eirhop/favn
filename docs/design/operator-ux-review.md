@@ -208,16 +208,42 @@ examples first means writing them twice.
 
 ## Order of work
 
-1. Delete the dead code; add the missing facade functions; fix idempotency and
-   the schedule commands.
-2. Semantic text tokens and boundary contrast, swept through the library, with
-   the audit as the gate.
-3. The status home page.
-4. Asset catalogue and asset detail, including the run dialog.
-5. Runs list and run detail, including the timeline migration.
-6. Logs.
-7. Pipelines, schedules, rebuilds, recovery.
-8. Design-system examples and coverage; then lineage.
+1. **Done in part.** Dead code: `run_overview_hud.ex` and `page_live.ex` deleted;
+   `samples.ex` and the `lineage_page/1` orphan remain. The facade functions and
+   the idempotency fix are **not started** — they change `favn_orchestrator`, so
+   they need a decision about scope beyond `favn_view`.
+2. **Done.** Semantic text tokens replaced 348 opacity classes, boundary contrast
+   fixed, and the element library measures 295 pass / 0 fail in both themes. A
+   second gate, `FavnView.Dev.DesignSystem.Palette`, now checks every token pair
+   in `mix test` without a browser.
+3. **Done.** `/` is the status home.
+4. **Part done.** Asset state is three glyphs instead of three word badges.
+   Namespace grouping and the run dialog are not started.
+5. Runs list and run detail, including the timeline migration. Not started.
+6. Logs. Not started.
+7. Pipelines, schedules, rebuilds, recovery. Not started.
+8. Design-system examples and coverage; then lineage. Not started.
 
 Each step ends with `window.favn.audit()` clean for the components it touched,
 and the flow exercised against the example project rather than fixtures alone.
+
+## Open questions
+
+Decisions that need a human, recorded rather than guessed:
+
+1. **Do the four missing facade functions get added?** Backfill status, backfill
+   windows, pipeline-backfill planning, and the manifest-release trio all require
+   new `favn_orchestrator` functions, because the API reaches them through
+   internals that `favn_view` may not call. Without them those gaps cannot close.
+2. **Is a solid primary button variant wanted?** The primary action is outlined
+   now. A filled variant reserved for confirm-in-a-modal was deferred rather than
+   built speculatively; the run dialog is the first real caller.
+3. **How far does "namespace hierarchy" go for the catalogue?** Assets carry
+   connection and catalogue, which gives a natural two-level tree
+   (connection → catalogue → asset). If the intent was the *module* hierarchy of
+   the defining pipeline instead, that is a different tree and a different query.
+4. **Dark labels on bright fills.** Solid `primary`, `secondary`, and `error`
+   surfaces now carry dark labels, matching what `info`, `success`, and `warning`
+   already did, because near-white on those fills measured 2.6–3.2:1. It is the
+   accessible choice but it does read differently from a conventional filled
+   button; worth a look before it spreads further.
