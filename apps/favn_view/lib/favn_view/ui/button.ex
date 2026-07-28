@@ -12,6 +12,11 @@ defmodule FavnView.UI.Button do
   | `:danger` | destructive or irreversible actions | always confirm server-side |
   | `:link` | inline navigation inside prose or table cells | no surface, no padding |
 
+  `:primary` is the only variant that uses `--favn-action`, the electric lime
+  that appears nowhere else in the interface. Two buttons competing for it in
+  one view state defeats the point: the operator should find the next step by
+  colour, without reading.
+
   Every mutating button must be authorised on the server. Rendering a button
   conditionally is presentation, never authorisation.
 
@@ -39,7 +44,7 @@ defmodule FavnView.UI.Button do
   alias FavnView.UI.Tokens
 
   @variants %{
-    primary: "btn-primary",
+    primary: "favn-btn-action",
     secondary: "favn-btn-supporting",
     ghost: "btn-ghost",
     danger: "favn-btn-destructive",

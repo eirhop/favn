@@ -76,7 +76,9 @@
   --color-base-200: oklch(94% 0.015 250);
   --color-base-300: oklch(88% 0.02 250);
   --color-base-content: oklch(20% 0.035 255);
-  --color-primary: oklch(56% 0.17 248);
+  /* 51%, not 56%: primary is also link text, and on the light base 56% measured
+     4.34:1 — just under AA. */
+  --color-primary: oklch(51% 0.18 248);
   --color-primary-content: oklch(98% 0.015 248);
   --color-secondary: oklch(52% 0.12 210);
   --color-secondary-content: oklch(98% 0.015 210);
@@ -84,13 +86,18 @@
   --color-accent-content: oklch(98% 0.015 165);
   --color-neutral: oklch(36% 0.04 255);
   --color-neutral-content: oklch(98% 0.01 250);
-  --color-info: oklch(58% 0.16 235);
+  /* The status tones are read as *text* in soft badges and notices, not only as
+     fills. At the dark theme's lightness they measured 2.58:1 to 4.05:1 on the
+     light base, so every one of them failed AA. These are the same hues, dropped
+     to a lightness that is legible on a light surface — which is why the light
+     theme's warning is a deep amber rather than the dark theme's yellow. */
+  --color-info: oklch(46% 0.16 235);
   --color-info-content: oklch(98% 0.015 235);
-  --color-success: oklch(58% 0.15 155);
+  --color-success: oklch(44% 0.14 155);
   --color-success-content: oklch(98% 0.015 155);
-  --color-warning: oklch(68% 0.15 78);
-  --color-warning-content: oklch(19% 0.04 78);
-  --color-error: oklch(58% 0.19 25);
+  --color-warning: oklch(46% 0.12 78);
+  --color-warning-content: oklch(98% 0.02 78);
+  --color-error: oklch(47% 0.19 25);
   --color-error-content: oklch(98% 0.015 25);
   --radius-selector: 999rem;
   --radius-field: 1rem;
@@ -112,6 +119,55 @@
 
 /* Make LiveView wrapper divs transparent for layout */
 [data-phx-session], [data-phx-teleported-src] { display: contents }
+
+/* The one colour that is not part of the calm blue field.
+   `--color-primary` is the atmosphere token: every panel border, glow, and
+   backdrop gradient is mixed from it, so it cannot also be the action colour
+   without turning the whole shell that hue. `--favn-action` exists only for
+   the primary action, which is why an operator can find the thing to do next
+   by colour alone.
+   Hue 130 is deliberate. `success` sits at 155 and means "healthy"; an
+   electric lime at 130, far more saturated than any status tone, does not
+   read as a status. */
+[data-theme="favn-dark"] {
+  --favn-action: oklch(87% 0.23 130);
+  --favn-action-content: oklch(18% 0.05 130);
+}
+
+[data-theme="favn-light"] {
+  --favn-action: oklch(47% 0.15 130);
+  --favn-action-content: oklch(98% 0.02 130);
+}
+
+/* Button label colours are deliberately unlayered.
+   DaisyUI emits its own `color` for buttons in `@layer utilities`, and a later
+   layer beats an earlier one no matter how specific the earlier selector is.
+   So `--btn-fg` set from `@layer components` never reached the label, and every
+   Favn button variant rendered plain base-content text: the tint only ever
+   showed in the background and border. Unlayered rules outrank every layer,
+   which is the one place these belong.
+   `:disabled` is excluded so an inactive control keeps its muted label. */
+.btn.favn-btn-action:not(:disabled):not(.btn-disabled) {
+  color: var(--favn-action);
+}
+
+.btn.favn-btn-supporting:not(:disabled):not(.btn-disabled) {
+  color: color-mix(in oklab, var(--color-primary) 78%, var(--color-base-content));
+}
+
+.btn.favn-btn-supporting:not(:disabled):not(.btn-disabled):hover,
+.btn.favn-btn-supporting:not(:disabled):not(.btn-disabled):focus-visible {
+  color: var(--color-primary);
+}
+
+.btn.favn-btn-destructive:not(:disabled):not(.btn-disabled) {
+  color: color-mix(in oklab, var(--color-error) 78%, var(--color-base-content));
+}
+
+.btn.favn-btn-destructive:not(:disabled):not(.btn-disabled):hover,
+.btn.favn-btn-destructive:not(:disabled):not(.btn-disabled):focus-visible {
+  color: var(--color-error);
+}
 
 @layer components {
   /* `favn-shell-bg` is the full page shell and claims the viewport. The
@@ -377,6 +433,33 @@
   .status.favn-status-neutral {
     background-color: color-mix(in oklab, var(--color-base-content) 45%, transparent);
     color: color-mix(in oklab, var(--color-base-content) 45%, transparent);
+  }
+
+  /* The primary action: outlined and lit, never filled. A solid block of
+     colour reads as a banner on these glass surfaces, and it forced a pale
+     label onto a mid-tone fill — which measured 2.78:1 and failed AA. Drawing
+     the action colour as the *label* instead puts a near-white-bright lime on
+     the dark field, so the contrast comes from the design rather than from
+     tuning a fill. */
+  .btn.favn-btn-action {
+    --btn-color: color-mix(in oklab, var(--favn-action) 12%, var(--color-base-100));
+    --btn-fg: var(--favn-action);
+    --btn-border: color-mix(in oklab, var(--favn-action) 52%, var(--color-base-100));
+    box-shadow: 0 0 0 1px color-mix(in oklab, var(--favn-action) 12%, transparent) inset;
+    transition:
+      color 160ms ease,
+      background-color 160ms ease,
+      border-color 160ms ease,
+      box-shadow 160ms ease;
+  }
+
+  .btn.favn-btn-action:hover,
+  .btn.favn-btn-action:focus-visible {
+    --btn-color: color-mix(in oklab, var(--favn-action) 20%, var(--color-base-100));
+    --btn-border: color-mix(in oklab, var(--favn-action) 76%, var(--color-base-100));
+    box-shadow:
+      0 0 0 1px color-mix(in oklab, var(--favn-action) 22%, transparent) inset,
+      0 0 22px color-mix(in oklab, var(--favn-action) 26%, transparent);
   }
 
   /* `.btn` declares `--btn-fg` itself, so these need the extra class to win. */
