@@ -41,6 +41,7 @@ defmodule FavnOrchestrator do
   alias FavnOrchestrator.Persistence
   alias FavnOrchestrator.Persistence.Queries.GetExecutionGroup
   alias FavnOrchestrator.Persistence.Queries.PageExecutionGroups
+  alias FavnOrchestrator.Persistence.Results.Backfill, as: PersistedBackfill
   alias FavnOrchestrator.Persistence.WorkspaceContext
   alias FavnOrchestrator.Projector
   alias FavnOrchestrator.RunEvent
@@ -781,43 +782,6 @@ defmodule FavnOrchestrator do
   def unsubscribe_logs(subscription), do: Logs.unsubscribe_logs(subscription)
 
   @doc """
-  Submits one asset run command for an authenticated operator actor context.
-
-  This is the same-BEAM boundary for browser, API, and CLI operator actions.
-  Callers pass operator intent, such as dependency mode, refresh mode, and
-  selected timeline window. The orchestrator validates that intent and translates
-  it into runtime submit options after resolving the manifest target.
-
-  Missing or incomplete actor/session context returns `{:error,
-  :unauthenticated}`; authenticated actors without the operator role return
-  `{:error, :forbidden}`.
-
-  TODO: add a narrow audit event for accepted LiveView operator commands once the
-  audit shape for same-BEAM browser actions is finalized.
-  """
-  @spec submit_operator_asset_run(
-          operator_actor_context(),
-          String.t(),
-          String.t()
-        ) :: {:ok, run_id()} | {:error, term()}
-  @spec submit_operator_asset_run(
-          operator_actor_context(),
-          String.t(),
-          String.t(),
-          AssetRunRequest.t() | map() | keyword() | nil
-        ) :: {:ok, run_id()} | {:error, term()}
-  def submit_operator_asset_run(
-        %OperatorContext{} = operator_context,
-        manifest_version_id,
-        target_id,
-        command_input \\ %{}
-      ) do
-    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :operator) do
-      OperatorCommands.submit_asset_run(context, manifest_version_id, target_id, command_input)
-    end
-  end
-
-  @doc """
   Submits one manifest target run for an authenticated operator actor context.
 
   This is the shared command boundary for browser, API, and CLI callers. The
@@ -917,42 +881,6 @@ defmodule FavnOrchestrator do
              opts
            ) do
       {:ok, backfill.root_run_id}
-    end
-  end
-
-  @doc """
-  Submits one pipeline run command for an authenticated operator actor context.
-
-  This is the same-BEAM boundary for browser, API, and CLI operator actions.
-  Callers pass operator intent and the orchestrator translates it into runtime
-  submit options after resolving the manifest pipeline target.
-
-  Missing or incomplete actor/session context returns `{:error,
-  :unauthenticated}`; authenticated actors without the operator role return
-  `{:error, :forbidden}`.
-
-  TODO: add a narrow audit event for accepted LiveView operator commands once the
-  audit shape for same-BEAM browser actions is finalized.
-  """
-  @spec submit_operator_pipeline_run(
-          operator_actor_context(),
-          String.t(),
-          String.t()
-        ) :: {:ok, run_id()} | {:error, term()}
-  @spec submit_operator_pipeline_run(
-          operator_actor_context(),
-          String.t(),
-          String.t(),
-          PipelineRunRequest.t() | map() | keyword() | nil
-        ) :: {:ok, run_id()} | {:error, term()}
-  def submit_operator_pipeline_run(
-        %OperatorContext{} = operator_context,
-        manifest_version_id,
-        target_id,
-        command_input \\ %{}
-      ) do
-    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :operator) do
-      OperatorCommands.submit_pipeline_run(context, manifest_version_id, target_id, command_input)
     end
   end
 
@@ -1082,6 +1010,100 @@ defmodule FavnOrchestrator do
     else
       false -> {:error, {:unsupported_backfill_option, :coverage_baseline_id}}
       {:error, _reason} = error -> error
+    end
+  end
+
+  @doc """
+  Plans one pipeline backfill without writing control-plane state.
+
+  The browser shows the plan — window count, range, and keys — before the
+  operator confirms the submit, so a mistyped range is caught while it is
+  still only a preview.
+  """
+  @spec plan_operator_pipeline_backfill(
+          operator_actor_context(),
+          String.t(),
+          String.t(),
+          PipelineBackfillRequest.t() | map() | keyword()
+        ) :: {:ok, FavnOrchestrator.Backfills.plan()} | {:error, term()}
+  def plan_operator_pipeline_backfill(
+        %OperatorContext{} = operator_context,
+        manifest_version_id,
+        target_id,
+        command_input \\ %{}
+      ) do
+    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :operator),
+         {:ok, request} <- PipelineBackfillRequest.from_input(command_input) do
+      FavnOrchestrator.Backfills.plan_pipeline(
+        context,
+        manifest_version_id,
+        target_id,
+        request.range,
+        []
+      )
+    end
+  end
+
+  @doc """
+  Fetches one backfill for an authenticated operator actor context.
+
+  Expected, succeeded, and failed window counts live on the backfill, not on
+  its root run, so this is how the browser shows how a backfill is going.
+  """
+  @spec get_operator_backfill(operator_actor_context(), String.t()) ::
+          {:ok, PersistedBackfill.t()} | {:error, term()}
+  def get_operator_backfill(%OperatorContext{} = operator_context, backfill_id)
+      when is_binary(backfill_id) do
+    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer) do
+      FavnOrchestrator.Backfills.get(context, backfill_id)
+    end
+  end
+
+  @doc """
+  Returns one bounded keyset page of a backfill's windows for an operator.
+
+  Options are `:limit`, `:status` (a window status atom to narrow to, such as
+  `:failed`), and `:after` (the cursor from the previous page). A failed
+  window carries its error, which is what an operator drills in for.
+  """
+  @spec page_operator_backfill_windows(operator_actor_context(), String.t(), keyword()) ::
+          {:ok, map()} | {:error, term()}
+  def page_operator_backfill_windows(
+        %OperatorContext{} = operator_context,
+        backfill_id,
+        opts \\ []
+      )
+      when is_binary(backfill_id) and is_list(opts) do
+    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer) do
+      FavnOrchestrator.Backfills.page_windows(context, backfill_id, opts)
+    end
+  end
+
+  @doc """
+  Lists the manifest releases visible to an operator.
+
+  Today that is the active release alone — the same set the API's manifest
+  list returns — so the browser and the CLI cannot disagree about what is
+  deployed.
+  """
+  @spec list_operator_manifests(operator_actor_context()) ::
+          {:ok, [manifest_summary()]} | {:error, term()}
+  def list_operator_manifests(%OperatorContext{} = operator_context) do
+    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer),
+         {:ok, %{manifest: manifest}} <- Manifests.active(context) do
+      {:ok, [manifest]}
+    end
+  end
+
+  @doc """
+  Fetches one manifest release's details for an operator.
+  """
+  @spec get_operator_manifest(operator_actor_context(), String.t()) ::
+          {:ok, map()} | {:error, term()}
+  def get_operator_manifest(%OperatorContext{} = operator_context, manifest_version_id)
+      when is_binary(manifest_version_id) do
+    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer) do
+      Manifests.get_active_release(context, manifest_version_id)
     end
   end
 

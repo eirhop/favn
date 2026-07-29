@@ -237,10 +237,15 @@ and the flow exercised against the example project rather than fixtures alone.
 
 Decisions that need a human, recorded rather than guessed:
 
-1. **Do the four missing facade functions get added?** Backfill status, backfill
-   windows, pipeline-backfill planning, and the manifest-release trio all require
-   new `favn_orchestrator` functions, because the API reaches them through
-   internals that `favn_view` may not call. Without them those gaps cannot close.
+1. **Resolved: the missing facade functions are added.**
+   `get_operator_backfill/2`, `page_operator_backfill_windows/3`,
+   `plan_operator_pipeline_backfill/4`, `list_operator_manifests/1`, and
+   `get_operator_manifest/2` now exist on `FavnOrchestrator`, and the dead
+   `submit_operator_asset_run`/`submit_operator_pipeline_run` are deleted.
+   Manifest *activation* from the browser is still open: the API's activation
+   path requires a platform service context and idempotent-command plumbing
+   that a same-BEAM operator session cannot currently express. The backfill
+   status/windows UI that consumes the new reads is the next piece of work.
 2. **Is a solid primary button variant wanted?** The primary action is outlined
    now. A filled variant reserved for confirm-in-a-modal was deferred rather than
    built speculatively; the run dialog is the first real caller.
