@@ -52,6 +52,68 @@ defmodule FavnOrchestrator.API.RunsRouter do
     end
   end
 
+  get "/submissions/stats" do
+    with :ok <- Authentication.ensure_service(conn),
+         {:ok, _session, _actor, context} <- actor_context(conn, :viewer),
+         {:ok, stats} <- FavnOrchestrator.run_submission_stats(context) do
+      Response.data(conn, 200, %{stats: DTO.run_submission_stats(stats)})
+    else
+      {:error, reason} when reason in [:forbidden, :service_unauthorized, :unauthenticated] ->
+        authentication_error(conn, reason)
+
+      {:error, _reason} ->
+        Response.error(
+          conn,
+          503,
+          "run_submissions_unavailable",
+          "Queue statistics are unavailable"
+        )
+    end
+  end
+
+  get "/submissions" do
+    with :ok <- Authentication.ensure_service(conn),
+         {:ok, _session, _actor, context} <- actor_context(conn, :viewer),
+         {:ok, opts} <- submission_page_options(conn.params),
+         {:ok, page} <- FavnOrchestrator.page_run_submissions(context, opts) do
+      Response.data(conn, 200, %{
+        items: Enum.map(page.items, &DTO.run_submission/1),
+        next: DTO.normalize(page.next)
+      })
+    else
+      {:error, :invalid_submission_filters} ->
+        validation_error(conn, "Invalid run submission query filters")
+
+      {:error, reason} when reason in [:forbidden, :service_unauthorized, :unauthenticated] ->
+        authentication_error(conn, reason)
+
+      {:error, _reason} ->
+        Response.error(
+          conn,
+          503,
+          "run_submissions_unavailable",
+          "Run submissions are unavailable"
+        )
+    end
+  end
+
+  get "/submissions/:run_id" do
+    with :ok <- Authentication.ensure_service(conn),
+         {:ok, _session, _actor, context} <- actor_context(conn, :viewer),
+         {:ok, submission} <- FavnOrchestrator.get_run_submission(context, run_id) do
+      Response.data(conn, 200, %{submission: DTO.run_submission(submission)})
+    else
+      {:error, %{kind: :not_found}} ->
+        Response.error(conn, 404, "not_found", "Run submission was not found")
+
+      {:error, reason} when reason in [:forbidden, :service_unauthorized, :unauthenticated] ->
+        authentication_error(conn, reason)
+
+      {:error, _reason} ->
+        Response.error(conn, 503, "run_submissions_unavailable", "Run submission is unavailable")
+    end
+  end
+
   get "/:run_id/events" do
     with :ok <- Authentication.ensure_service(conn),
          {:ok, _session, _actor, context} <- actor_context(conn, :viewer),
@@ -73,13 +135,9 @@ defmodule FavnOrchestrator.API.RunsRouter do
 
   get "/:run_id" do
     with :ok <- Authentication.ensure_service(conn),
-         {:ok, _session, _actor, context} <- actor_context(conn, :viewer),
-         {:ok, run} <- get_run(context, run_id) do
-      Response.data(conn, 200, %{run: DTO.run_detail(run)})
+         {:ok, _session, _actor, context} <- actor_context(conn, :viewer) do
+      run_detail_response(conn, context, run_id)
     else
-      {:error, :not_found} ->
-        Response.error(conn, 404, "not_found", "Run was not found")
-
       {:error, reason} when reason in [:forbidden, :service_unauthorized, :unauthenticated] ->
         authentication_error(conn, reason)
 
@@ -158,7 +216,7 @@ defmodule FavnOrchestrator.API.RunsRouter do
     case OperatorCommands.submit_run(params, command_context, opts) do
       {:ok, run_id} ->
         audit(conn, context, "run.submit", run_id, session, actor, idempotency)
-        {:ok, 201, %{run: run_summary(context, run_id)}, "run", run_id}
+        {:ok, 202, %{run: run_summary(context, run_id)}, "run", run_id}
 
       {:error, reason} ->
         submit_error(reason)
@@ -274,7 +332,7 @@ defmodule FavnOrchestrator.API.RunsRouter do
          {:ok, rerun_id} <-
            rerun(context, run_id, opts ++ rerun_command_options(context, idempotency)) do
       audit(conn, context, "run.rerun", rerun_id, session, actor, idempotency)
-      {:ok, 201, %{run: run_summary(context, rerun_id)}, "run", rerun_id}
+      {:ok, 202, %{run: run_summary(context, rerun_id)}, "run", rerun_id}
     else
       {:error, :invalid_input_mode} ->
         validation_command_error("Invalid input_mode")
@@ -335,8 +393,48 @@ defmodule FavnOrchestrator.API.RunsRouter do
 
   defp run_summary(context, run_id) do
     case get_run(context, run_id) do
-      {:ok, run} -> DTO.run_summary(run)
-      {:error, reason} -> fallback_run_summary(run_id, reason)
+      {:ok, run} ->
+        DTO.run_summary(run)
+
+      {:error, :not_found} ->
+        case FavnOrchestrator.get_run_submission(context, run_id) do
+          {:ok, submission} -> accepted_run_summary(submission)
+          {:error, reason} -> fallback_run_summary(run_id, reason)
+        end
+
+      {:error, reason} ->
+        fallback_run_summary(run_id, reason)
+    end
+  end
+
+  defp run_detail_response(conn, context, run_id) do
+    case get_run(context, run_id) do
+      {:ok, run} ->
+        Response.data(conn, 200, %{run: DTO.run_detail(run)})
+
+      {:error, :not_found} ->
+        case FavnOrchestrator.get_run_submission(context, run_id) do
+          {:ok, submission} ->
+            Response.data(conn, 200, %{
+              run: accepted_run_summary(submission),
+              submission: DTO.run_submission(submission)
+            })
+
+          {:error, %{kind: :not_found}} ->
+            Response.error(conn, 404, "not_found", "Run was not found")
+
+          {:error, _reason} ->
+            Response.error(
+              conn,
+              503,
+              "run_submissions_unavailable",
+              "Run submission is unavailable"
+            )
+        end
+
+      {:error, _reason} ->
+        Logger.error("persisted run detail is unavailable", run_id: run_id)
+        Response.error(conn, 500, "run_unavailable", "Run could not be loaded")
     end
   end
 
@@ -395,7 +493,8 @@ defmodule FavnOrchestrator.API.RunsRouter do
   defp rerun_command_options(_context, idempotency) do
     [
       run_id: idempotency.run_id,
-      _idempotency: idempotency.command_idempotency
+      _idempotency: idempotency.command_idempotency,
+      submission_source: :api
     ]
   end
 
@@ -415,6 +514,80 @@ defmodule FavnOrchestrator.API.RunsRouter do
       error: nil
     }
   end
+
+  defp accepted_run_summary(submission) do
+    %{
+      id: submission.run_id,
+      status: "accepted",
+      submit_kind: submission.target_kind,
+      manifest_version_id: submission.manifest_version_id,
+      event_seq: nil,
+      started_at: nil,
+      finished_at: nil,
+      target_refs: [submission.target_id],
+      asset_results: [],
+      error: submission.error
+    }
+  end
+
+  defp submission_page_options(params) when is_map(params) do
+    with {:ok, status} <- submission_status(Map.get(params, "status")),
+         {:ok, limit} <- submission_limit(Map.get(params, "limit")),
+         {:ok, after_cursor} <-
+           submission_cursor(
+             Map.get(params, "after_inserted_at"),
+             Map.get(params, "after_submission_id")
+           ) do
+      {:ok,
+       []
+       |> put_optional(:status, status)
+       |> put_optional(:limit, limit)
+       |> put_optional(:after, after_cursor)}
+    else
+      _invalid -> {:error, :invalid_submission_filters}
+    end
+  end
+
+  defp submission_status(nil), do: {:ok, nil}
+
+  defp submission_status(status) when is_binary(status) do
+    case status do
+      "queued" -> {:ok, :queued}
+      "preparing" -> {:ok, :preparing}
+      "admitting" -> {:ok, :admitting}
+      "submitted" -> {:ok, :submitted}
+      "failed" -> {:ok, :failed}
+      "cancelled" -> {:ok, :cancelled}
+      "superseded" -> {:ok, :superseded}
+      _invalid -> {:error, :invalid}
+    end
+  end
+
+  defp submission_status(_invalid), do: {:error, :invalid}
+
+  defp submission_limit(nil), do: {:ok, nil}
+
+  defp submission_limit(value) when is_binary(value) do
+    case Integer.parse(value) do
+      {limit, ""} when limit in 1..200 -> {:ok, limit}
+      _invalid -> {:error, :invalid}
+    end
+  end
+
+  defp submission_limit(_invalid), do: {:error, :invalid}
+
+  defp submission_cursor(nil, nil), do: {:ok, nil}
+
+  defp submission_cursor(inserted_at, submission_id)
+       when is_binary(inserted_at) and is_binary(submission_id) and
+              byte_size(submission_id) in 1..255 do
+    case DateTime.from_iso8601(inserted_at) do
+      {:ok, datetime, 0} -> {:ok, %{inserted_at: datetime, submission_id: submission_id}}
+      _invalid -> {:error, :invalid}
+    end
+  end
+
+  defp submission_cursor(_inserted_at, _submission_id), do: {:error, :invalid}
 
   defp validation_command_error(message),
     do: {:error, 422, "validation_failed", message, %{}}

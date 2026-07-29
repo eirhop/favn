@@ -11,7 +11,6 @@ defmodule FavnStoragePostgres.Release do
   require Logger
 
   alias Ecto.Adapters.SQL
-  alias Favn.Manifest.Compatibility
   alias Favn.RuntimeInput.KeyringConfig
   alias FavnOrchestrator.Persistence.Commands.ProvisionWorkspace
   alias FavnOrchestrator.Persistence.Error, as: PersistenceError
@@ -25,10 +24,8 @@ defmodule FavnStoragePostgres.Release do
   alias FavnStoragePostgres.Schemas.Workspace
   alias FavnStoragePostgres.StorageV2.Migrations
 
-  @current_manifest_schema Compatibility.current_schema_version()
   @default_runtime_role "favn_runtime"
   @max_compaction_versions 100
-  @preflight_blocker_sample_limit 100
   @restore_timeout_ms 600_000
 
   @type operation ::
@@ -40,7 +37,6 @@ defmodule FavnStoragePostgres.Release do
           | :provision_workspace
           | :runtime_input_key_inventory
           | :compact_runtime_input_keys
-          | :preflight_upgrade
 
   @type success :: %{
           required(:operation) => operation(),
@@ -261,147 +257,6 @@ defmodule FavnStoragePostgres.Release do
         end)
       end
     end)
-  end
-
-  @doc "Reports active manifests or non-terminal runs that predate runner release identity."
-  @spec preflight_upgrade() :: result()
-  def preflight_upgrade do
-    database_operation(:preflight_upgrade, fn ->
-      with {:ok, active_manifests} <- active_legacy_manifest_blockers(),
-           {:ok, nonterminal_runs} <- nonterminal_legacy_run_blockers() do
-        preflight_result(active_manifests, nonterminal_runs)
-      else
-        {:error, reason} -> database_error(:preflight_upgrade, reason)
-      end
-    end)
-  end
-
-  defp active_legacy_manifest_blockers do
-    case SQL.query(
-           Repo,
-           """
-           WITH blockers AS (
-             SELECT runtime.workspace_id, deployment.deployment_id,
-                    manifest.manifest_version_id, manifest.schema_version
-             FROM favn_control.workspace_runtime_state AS runtime
-             JOIN favn_control.workspace_deployments AS deployment
-               ON deployment.workspace_id = runtime.workspace_id
-              AND deployment.deployment_id = runtime.active_deployment_id
-             JOIN favn_control.manifest_versions AS manifest
-               ON manifest.manifest_version_id = deployment.manifest_version_id
-             WHERE runtime.active_deployment_id IS NOT NULL
-               AND manifest.schema_version < $1
-           )
-           SELECT workspace_id, deployment_id, manifest_version_id, schema_version,
-                  count(*) OVER () AS blocker_count
-           FROM blockers
-           ORDER BY workspace_id
-           LIMIT $2
-           """,
-           [@current_manifest_schema, @preflight_blocker_sample_limit]
-         ) do
-      {:ok, %{rows: rows}} ->
-        {:ok,
-         blocker_summary(rows, fn [
-                                    workspace_id,
-                                    deployment_id,
-                                    manifest_version_id,
-                                    schema_version,
-                                    _blocker_count
-                                  ] ->
-           %{
-             workspace_id: workspace_id,
-             deployment_id: deployment_id,
-             manifest_version_id: manifest_version_id,
-             schema_version: schema_version
-           }
-         end)}
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
-
-  defp nonterminal_legacy_run_blockers do
-    case SQL.query(
-           Repo,
-           """
-           WITH blockers AS (
-             SELECT run.workspace_id, run.run_id, run.deployment_id,
-                    run.manifest_version_id, manifest.schema_version
-             FROM favn_control.runs AS run
-             JOIN favn_control.manifest_versions AS manifest
-               ON manifest.manifest_version_id = run.manifest_version_id
-             WHERE run.terminal_at IS NULL
-               AND manifest.schema_version < $1
-           )
-           SELECT workspace_id, run_id, deployment_id, manifest_version_id, schema_version,
-                  count(*) OVER () AS blocker_count
-           FROM blockers
-           ORDER BY workspace_id, run_id
-           LIMIT $2
-           """,
-           [@current_manifest_schema, @preflight_blocker_sample_limit]
-         ) do
-      {:ok, %{rows: rows}} ->
-        {:ok,
-         blocker_summary(rows, fn [
-                                    workspace_id,
-                                    run_id,
-                                    deployment_id,
-                                    manifest_version_id,
-                                    schema_version,
-                                    _blocker_count
-                                  ] ->
-           %{
-             workspace_id: workspace_id,
-             run_id: run_id,
-             deployment_id: deployment_id,
-             manifest_version_id: manifest_version_id,
-             schema_version: schema_version
-           }
-         end)}
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
-
-  defp blocker_summary([], _mapper), do: %{count: 0, sample: []}
-
-  defp blocker_summary(rows, mapper) do
-    %{count: rows |> hd() |> List.last(), sample: Enum.map(rows, mapper)}
-  end
-
-  defp preflight_result(
-         %{count: 0, sample: []},
-         %{count: 0, sample: []}
-       ) do
-    ok(:preflight_upgrade,
-      current_manifest_schema: @current_manifest_schema,
-      blocker_count: 0,
-      active_manifest_blocker_count: 0,
-      nonterminal_legacy_run_count: 0,
-      blocker_sample_limit: @preflight_blocker_sample_limit,
-      truncated?: false,
-      active_legacy_manifests: [],
-      nonterminal_legacy_runs: []
-    )
-  end
-
-  defp preflight_result(active_manifests, nonterminal_runs) do
-    error(:preflight_upgrade, :runner_identity_upgrade_blocked,
-      current_manifest_schema: @current_manifest_schema,
-      blocker_count: active_manifests.count + nonterminal_runs.count,
-      active_manifest_blocker_count: active_manifests.count,
-      nonterminal_legacy_run_count: nonterminal_runs.count,
-      blocker_sample_limit: @preflight_blocker_sample_limit,
-      truncated?:
-        active_manifests.count > length(active_manifests.sample) or
-          nonterminal_runs.count > length(nonterminal_runs.sample),
-      active_legacy_manifests: active_manifests.sample,
-      nonterminal_legacy_runs: nonterminal_runs.sample
-    )
   end
 
   defp database_operation(operation, function) do

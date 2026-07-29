@@ -9,7 +9,7 @@ defmodule FavnOrchestrator.RunServer.Execution.RunExecutionState do
 
   alias Favn.Manifest.Index
   alias Favn.Manifest.Version
-  alias FavnOrchestrator.RunServer.Execution.RunWorkSet
+  alias FavnOrchestrator.RunServer.Execution.ActiveTaskSet
   alias FavnOrchestrator.RunServer.Execution.StageAttemptState
   alias FavnOrchestrator.RunState
 
@@ -23,8 +23,8 @@ defmodule FavnOrchestrator.RunServer.Execution.RunExecutionState do
           | :admission_wait
 
   @type await :: %{
-          required(:pid) => pid(),
-          required(:monitor_ref) => reference(),
+          required(:pid) => pid() | nil,
+          required(:monitor_ref) => reference() | nil,
           required(:timeout_token) => reference(),
           required(:timeout_ref) => reference(),
           required(:entry) => map(),
@@ -42,10 +42,8 @@ defmodule FavnOrchestrator.RunServer.Execution.RunExecutionState do
           manifest_index: Index.t(),
           mode: mode(),
           status: status(),
-          runner_client: module() | nil,
-          runner_opts: keyword(),
           manifest_lease_id: String.t() | nil,
-          work_set: RunWorkSet.t(),
+          work_set: ActiveTaskSet.t(),
           awaits: %{optional(String.t()) => await()},
           await_monitors: %{optional(reference()) => String.t()},
           await_timers: %{optional(reference()) => String.t()},
@@ -72,8 +70,6 @@ defmodule FavnOrchestrator.RunServer.Execution.RunExecutionState do
             manifest_index: nil,
             mode: :sequential,
             status: :starting,
-            runner_client: nil,
-            runner_opts: [],
             manifest_lease_id: nil,
             work_set: nil,
             awaits: %{},
@@ -106,10 +102,8 @@ defmodule FavnOrchestrator.RunServer.Execution.RunExecutionState do
       version: version,
       manifest_index: manifest_index,
       mode: Keyword.fetch!(opts, :mode),
-      runner_client: Keyword.get(opts, :runner_client),
-      runner_opts: Keyword.get(opts, :runner_opts, []),
       manifest_lease_id: Keyword.fetch!(opts, :manifest_lease_id),
-      work_set: RunWorkSet.new(run),
+      work_set: ActiveTaskSet.new(run),
       sequential_refs: Keyword.get(opts, :sequential_refs, []),
       stage_groups: Keyword.get(opts, :stage_groups, []),
       freshness_context: Keyword.get(opts, :freshness_context)
@@ -119,39 +113,51 @@ defmodule FavnOrchestrator.RunServer.Execution.RunExecutionState do
   @doc "Stores active runner work and syncs run in-flight metadata."
   @spec add_work(t(), map()) :: t()
   def add_work(%__MODULE__{} = state, entry) when is_map(entry) do
-    work_set = RunWorkSet.add_entry(state.work_set, entry)
-    %{state | work_set: work_set, run: RunWorkSet.sync_run_metadata(state.run, work_set)}
+    work_set = ActiveTaskSet.add_entry(state.work_set, entry)
+    %{state | work_set: work_set, run: ActiveTaskSet.sync_run_metadata(state.run, work_set)}
   end
 
   @doc "Removes completed runner work and syncs run in-flight metadata."
   @spec complete_work(t(), String.t()) :: {map() | nil, t()}
-  def complete_work(%__MODULE__{} = state, execution_id) when is_binary(execution_id) do
-    {entry, work_set} = RunWorkSet.complete_entry(state.work_set, execution_id)
-    {entry, %{state | work_set: work_set, run: RunWorkSet.sync_run_metadata(state.run, work_set)}}
+  def complete_work(%__MODULE__{} = state, task_id) when is_binary(task_id) do
+    {entry, work_set} = ActiveTaskSet.complete_entry(state.work_set, task_id)
+
+    {entry,
+     %{state | work_set: work_set, run: ActiveTaskSet.sync_run_metadata(state.run, work_set)}}
   end
 
   @doc "Stores metadata for an await worker."
   @spec put_await(t(), String.t(), await()) :: t()
-  def put_await(%__MODULE__{} = state, execution_id, await) when is_binary(execution_id) do
+  def put_await(%__MODULE__{} = state, task_id, await) when is_binary(task_id) do
+    await_monitors =
+      if is_reference(await.monitor_ref),
+        do: Map.put(state.await_monitors, await.monitor_ref, task_id),
+        else: state.await_monitors
+
     %{
       state
-      | awaits: Map.put(state.awaits, execution_id, await),
-        await_monitors: Map.put(state.await_monitors, await.monitor_ref, execution_id),
-        await_timers: Map.put(state.await_timers, await.timeout_token, execution_id)
+      | awaits: Map.put(state.awaits, task_id, await),
+        await_monitors: await_monitors,
+        await_timers: Map.put(state.await_timers, await.timeout_token, task_id)
     }
   end
 
-  @doc "Removes await metadata by execution id."
+  @doc "Removes await metadata by durable task id."
   @spec pop_await(t(), String.t()) :: {await() | nil, t()}
-  def pop_await(%__MODULE__{} = state, execution_id) when is_binary(execution_id) do
-    {await, awaits} = Map.pop(state.awaits, execution_id)
+  def pop_await(%__MODULE__{} = state, task_id) when is_binary(task_id) do
+    {await, awaits} = Map.pop(state.awaits, task_id)
 
     state =
       if await do
+        await_monitors =
+          if is_reference(await.monitor_ref),
+            do: Map.delete(state.await_monitors, await.monitor_ref),
+            else: state.await_monitors
+
         %{
           state
           | awaits: awaits,
-            await_monitors: Map.delete(state.await_monitors, await.monitor_ref),
+            await_monitors: await_monitors,
             await_timers: Map.delete(state.await_timers, await.timeout_token)
         }
       else

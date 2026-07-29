@@ -24,6 +24,12 @@ must not be presented as public API.
 For the current path to a supported release, start with
 [`production/README.md`](production/README.md).
 
+The implemented architecture for durable run submissions and one control plane
+coordinating zero to N user-defined runner pools is
+[`architecture/elastic-runners.md`](architecture/elastic-runners.md). It
+records the implementation sequence, queue boundaries, distributed-BEAM
+protocol, scale-to-zero contract, and infrastructure-neutral deployment model.
+
 ## PostgreSQL storage
 
 PostgreSQL 18 is Favn's production, development, and integration-test
@@ -49,7 +55,7 @@ are described in
 
 - [`report/`](report/) contains point-in-time audits. Findings may already be
   resolved; use Git history and current technical docs before acting on them.
-- [`refactor/`](refactor/) contains historical migration plans and completed phase
+- [`archive/refactor/`](archive/refactor/) contains historical migration plans and completed phase
   notes; it is not an active backlog.
 - [`archive/`](archive/) contains explicitly retired material.
 - `DOCUMENTATION_PLAN.md` records the original documentation initiative and is

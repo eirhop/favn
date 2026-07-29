@@ -16,11 +16,11 @@ defmodule FavnOrchestrator.RuntimeConfig do
   @max_auth_session_ttl_seconds 2_592_000
 
   @type t :: %__MODULE__{
-          runner_client: module() | nil,
-          runner_client_opts: keyword(),
           workspace_ids: [String.t()],
           api_server: keyword(),
           scheduler: keyword(),
+          run_submissions: keyword(),
+          runner_pools: FavnOrchestrator.RunnerPools.t(),
           log_redaction_policy: term(),
           instance_id: String.t(),
           http_server: map(),
@@ -30,11 +30,11 @@ defmodule FavnOrchestrator.RuntimeConfig do
         }
   @type error :: {:invalid_runtime_config, {atom(), term()}}
 
-  defstruct runner_client: nil,
-            runner_client_opts: [],
-            workspace_ids: [],
+  defstruct workspace_ids: [],
             api_server: [],
             scheduler: [],
+            run_submissions: [],
+            runner_pools: %{"default" => %{mode: :elastic, idle_grace_ms: 15_000}},
             log_redaction_policy: nil,
             instance_id: "local",
             http_server: %{
@@ -94,11 +94,16 @@ defmodule FavnOrchestrator.RuntimeConfig do
   @spec from_app_env() :: t()
   def from_app_env do
     normalize!(
-      runner_client: Application.get_env(:favn_orchestrator, :runner_client, nil),
-      runner_client_opts: Application.get_env(:favn_orchestrator, :runner_client_opts, []),
       workspace_ids: Application.get_env(:favn_orchestrator, :workspace_ids, []),
       api_server: Application.get_env(:favn_orchestrator, :api_server, []),
       scheduler: Application.get_env(:favn_orchestrator, :scheduler, []),
+      run_submissions: Application.get_env(:favn_orchestrator, :run_submissions, []),
+      runner_pools:
+        Application.get_env(
+          :favn_orchestrator,
+          :runner_pools,
+          FavnOrchestrator.RunnerPools.default()
+        ),
       log_redaction_policy: Application.get_env(:favn_orchestrator, :log_redaction_policy),
       instance_id: Application.get_env(:favn_orchestrator, :instance_id, "local"),
       http_server: Application.get_env(:favn_orchestrator, :http_server, %{}),
@@ -127,11 +132,11 @@ defmodule FavnOrchestrator.RuntimeConfig do
   end
 
   def normalize(attrs) when is_list(attrs) do
-    runner_client = Keyword.get(attrs, :runner_client, nil)
-    runner_client_opts = Keyword.get(attrs, :runner_client_opts, [])
     workspace_ids = Keyword.get(attrs, :workspace_ids, [])
     api_server = Keyword.get(attrs, :api_server, [])
     scheduler = Keyword.get(attrs, :scheduler, [])
+    run_submissions = Keyword.get(attrs, :run_submissions, [])
+    runner_pools = Keyword.get(attrs, :runner_pools, FavnOrchestrator.RunnerPools.default())
     instance_id = Keyword.get(attrs, :instance_id, "local")
     http_server = normalize_http_server(Keyword.get(attrs, :http_server, %{}))
     shutdown_drain_timeout_ms = Keyword.get(attrs, :shutdown_drain_timeout_ms, 120_000)
@@ -140,11 +145,11 @@ defmodule FavnOrchestrator.RuntimeConfig do
     auth_session_ttl_seconds =
       Keyword.get(attrs, :auth_session_ttl_seconds, @default_auth_session_ttl_seconds)
 
-    with :ok <- validate_module_or_nil(:runner_client, runner_client),
-         {:ok, runner_client_opts} <- validate_keyword(:runner_client_opts, runner_client_opts),
-         :ok <- validate_workspace_ids(workspace_ids),
+    with :ok <- validate_workspace_ids(workspace_ids),
          {:ok, api_server} <- validate_keyword(:api_server, api_server),
          {:ok, scheduler} <- validate_keyword(:scheduler, scheduler),
+         {:ok, run_submissions} <- validate_keyword(:run_submissions, run_submissions),
+         {:ok, runner_pools} <- FavnOrchestrator.RunnerPools.normalize(runner_pools),
          :ok <- validate_instance_id(instance_id),
          :ok <- validate_http_server(http_server),
          :ok <- validate_positive_integer(:shutdown_drain_timeout_ms, shutdown_drain_timeout_ms),
@@ -152,11 +157,11 @@ defmodule FavnOrchestrator.RuntimeConfig do
          :ok <- validate_auth_session_ttl(auth_session_ttl_seconds) do
       {:ok,
        %__MODULE__{
-         runner_client: runner_client,
-         runner_client_opts: runner_client_opts,
          workspace_ids: workspace_ids,
          api_server: api_server,
          scheduler: scheduler,
+         run_submissions: run_submissions,
+         runner_pools: runner_pools,
          log_redaction_policy: Keyword.get(attrs, :log_redaction_policy),
          instance_id: instance_id,
          http_server: http_server,
@@ -213,6 +218,14 @@ defmodule FavnOrchestrator.RuntimeConfig do
   @spec scheduler() :: keyword()
   def scheduler, do: current().scheduler
 
+  @doc "Returns the boot-frozen durable run-submission worker options."
+  @spec run_submissions() :: keyword()
+  def run_submissions, do: current().run_submissions
+
+  @doc "Returns boot-frozen provider-neutral runner-pool policy."
+  @spec runner_pools() :: FavnOrchestrator.RunnerPools.t()
+  def runner_pools, do: current().runner_pools
+
   @impl true
   def init({%__MODULE__{} = config, name}) do
     :persistent_term.put(persistent_key(name), config)
@@ -235,12 +248,6 @@ defmodule FavnOrchestrator.RuntimeConfig do
   defp dynamic_env_override?(_name), do: false
 
   defp persistent_key(name), do: {__MODULE__, name}
-
-  defp validate_module_or_nil(_field, nil), do: :ok
-  defp validate_module_or_nil(field, module), do: validate_module(field, module)
-
-  defp validate_module(_field, module) when is_atom(module), do: :ok
-  defp validate_module(field, value), do: {:error, {:invalid_runtime_config, {field, value}}}
 
   defp validate_keyword(field, opts) when is_list(opts) do
     if Keyword.keyword?(opts) do

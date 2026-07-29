@@ -8,7 +8,7 @@ defmodule FavnLocal do
 
   alias FavnLocal.Config
   alias FavnLocal.Distribution
-  alias FavnLocal.Lifecycle
+  alias FavnLocal.DevelopmentRuntime
   alias FavnLocal.Locator
   alias FavnLocal.Preflight
   alias FavnLocal.Publication
@@ -83,7 +83,7 @@ defmodule FavnLocal do
          result <-
            :erpc.call(
              locator.node,
-             Lifecycle,
+             DevelopmentRuntime,
              :reload,
              [publication, release_id, Keyword.get(opts, :reload_timeout_ms, 60_000)],
              Keyword.get(opts, :reload_timeout_ms, 60_000) + 1_000
@@ -102,7 +102,7 @@ defmodule FavnLocal do
     case Locator.connect(root_dir) do
       {:ok, locator} ->
         timeout = Keyword.get(opts, :stop_timeout_ms, 60_000)
-        :erpc.call(locator.node, Lifecycle, :stop, [timeout], timeout + 1_000)
+        :erpc.call(locator.node, DevelopmentRuntime, :stop, [timeout], timeout + 1_000)
 
       {:error, reason} when reason in [:not_running, :stale_locator] ->
         Locator.delete(root_dir)
@@ -126,12 +126,12 @@ defmodule FavnLocal do
   end
 
   defp await_startup(supervisor, timeout_ms) do
-    case Lifecycle.await_ready(timeout_ms) do
+    case DevelopmentRuntime.await_ready(timeout_ms) do
       {:ok, summary} ->
         {:ok, Map.put(summary, :supervisor, supervisor)}
 
       {:error, reason} ->
-        _ = Lifecycle.stop()
+        _ = DevelopmentRuntime.stop()
         {:error, reason}
     end
   end

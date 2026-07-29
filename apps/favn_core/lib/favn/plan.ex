@@ -44,6 +44,7 @@ defmodule Favn.Plan do
           downstream: [node_key()],
           stage: non_neg_integer(),
           execution_pool: atom() | nil,
+          runner_pool: atom() | nil,
           action: action(),
           retry_policy: Favn.Retry.Policy.t(),
           retry_policy_source: retry_policy_source()

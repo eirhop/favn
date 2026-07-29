@@ -8,19 +8,19 @@ defmodule FavnOrchestrator.Auth.ServiceTokens do
   @max_identity_bytes 128
   @weak_fragments ~w(replace change placeholder example secret password test token todo)
   @identity_pattern ~r/\A[A-Za-z0-9][A-Za-z0-9_.-]*\z/
-  @platform_roles [:platform_reader, :platform_operator, :platform_admin]
+  @service_roles [:capacity_reader, :platform_reader, :platform_operator, :platform_admin]
   @config_keys [:enabled, :platform_roles, :service_identity, :token, :token_hash]
 
   @type token_config :: %{
           required(:service_identity) => String.t(),
           required(:token_hash) => String.t(),
           required(:enabled) => boolean(),
-          required(:platform_roles) => [FavnOrchestrator.Persistence.PlatformContext.role()]
+          required(:platform_roles) => [atom()]
         }
 
   @type authenticated_principal :: %{
           required(:service_identity) => String.t(),
-          required(:platform_roles) => [FavnOrchestrator.Persistence.PlatformContext.role()]
+          required(:platform_roles) => [atom()]
         }
 
   @spec min_token_bytes() :: pos_integer()
@@ -301,13 +301,13 @@ defmodule FavnOrchestrator.Auth.ServiceTokens do
   defp normalize_platform_roles(roles) when is_list(roles) do
     normalized =
       Enum.map(roles, fn
-        role when role in @platform_roles -> role
-        role when is_binary(role) -> Enum.find(@platform_roles, &(Atom.to_string(&1) == role))
+        role when role in @service_roles -> role
+        role when is_binary(role) -> Enum.find(@service_roles, &(Atom.to_string(&1) == role))
         _role -> nil
       end)
 
     if length(normalized) == length(Enum.uniq(normalized)) and
-         Enum.all?(normalized, &(&1 in @platform_roles)),
+         Enum.all?(normalized, &(&1 in @service_roles)),
        do: {:ok, normalized},
        else: invalid_platform_roles()
   end

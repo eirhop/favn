@@ -2,13 +2,6 @@ defmodule Favn.Contracts.RunnerWork do
   @moduledoc """
   Runner work request contract pinned to an immutable manifest version.
 
-  `execution_id` may be allocated by the orchestrator before submission. This
-  lets a durable dispatch intent name the external work before the runner call
-  is attempted. Runners idempotently return an existing queued, running, or retained
-  completed execution when both the supplied identity and normalized work are exact;
-  reusing an identity for different work is rejected. A runner must never silently
-  replace the supplied identity.
-
   `node_identity` carries the manifest/planning identity for the current planned
   node. Attempt, retry, admission, and cancellation fields are explicit runner
   lifecycle fields and are not encoded in `metadata`.
@@ -32,11 +25,11 @@ defmodule Favn.Contracts.RunnerWork do
   @type target_operation :: :normal_materialization | :rebuild_candidate
 
   @type t :: %__MODULE__{
-          execution_id: String.t() | nil,
           run_id: String.t() | nil,
           run_started_at: DateTime.t() | nil,
           manifest_version_id: String.t(),
           manifest_content_hash: String.t(),
+          runner_pool: atom(),
           required_runner_release_id: String.t(),
           manifest_lease_id: String.t() | nil,
           node_identity: NodeIdentity.t() | nil,
@@ -68,11 +61,11 @@ defmodule Favn.Contracts.RunnerWork do
           metadata: map()
         }
 
-  defstruct execution_id: nil,
-            run_id: nil,
+  defstruct run_id: nil,
             run_started_at: nil,
             manifest_version_id: nil,
             manifest_content_hash: nil,
+            runner_pool: :default,
             required_runner_release_id: nil,
             manifest_lease_id: nil,
             node_identity: nil,
@@ -159,6 +152,10 @@ defmodule Favn.Contracts.RunnerWork do
   def execution_pool(%__MODULE__{metadata: %{execution_pool: pool}}), do: pool
   def execution_pool(%__MODULE__{}), do: nil
 
+  @doc "Returns the exact logical runner pool frozen for this work request."
+  @spec runner_pool(t()) :: atom()
+  def runner_pool(%__MODULE__{runner_pool: pool}), do: pool
+
   @doc """
   Derives orchestrator lifecycle metadata from explicit work fields.
   """
@@ -172,6 +169,7 @@ defmodule Favn.Contracts.RunnerWork do
     |> Map.put(:node_key, node_key(work))
     |> Map.put(:window, window(work))
     |> Map.put(:execution_pool, execution_pool(work))
+    |> Map.put(:runner_pool, runner_pool(work))
     |> Map.put(:deadline_at, work.deadline_at)
     |> Map.put(:required_runner_release_id, work.required_runner_release_id)
     |> Map.put(:target_operation, work.target_operation)

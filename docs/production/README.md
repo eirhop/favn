@@ -41,11 +41,14 @@ never manages containers or durable database data.
    load, failover, observability, and tenant-isolation evidence.
 
 Build #523's telemetry and drill tooling early, then use it to qualify the first
-supported one-control-plane/one-runner deployment on the target managed service.
-Multi-node application failover is a later topology claim.
+supported one-control-plane/elastic-runner deployment on the target managed
+service. Multi-control-plane application failover is a later topology claim.
 
 ## Canonical documents
 
+- [`elastic_runners.md`](elastic_runners.md) defines arbitrary runner pools,
+  durable demand, elastic self-exit, mutual-TLS distribution, and
+  infrastructure-neutral scaling.
 - [`control_plane_environment.md`](control_plane_environment.md) defines the
   implemented same-BEAM environment, proxy, HTTP, lifecycle, shutdown, and secret
   contract.

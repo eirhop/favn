@@ -32,7 +32,7 @@ defmodule Favn.Manifest.Generator do
   alias Favn.Manifest.Pipeline, as: ManifestPipeline
   alias Favn.Manifest.PlanningIndex
   alias Favn.Manifest.Schedule, as: ManifestSchedule
-  alias Favn.RunnerRelease
+  alias Favn.RunnerPool
 
   @type catalog_opts :: [
           asset_modules: [module()],
@@ -47,7 +47,7 @@ defmodule Favn.Manifest.Generator do
           schedule_modules: [module()],
           connection_modules: [module()],
           environment: Environment.t(),
-          runner_release_id: String.t()
+          runner_releases: RunnerPool.releases()
         ]
 
   @doc """
@@ -57,11 +57,13 @@ defmodule Favn.Manifest.Generator do
   """
   @spec generate(opts()) :: {:ok, Manifest.t()} | {:error, term()}
   def generate(opts \\ []) when is_list(opts) do
-    with {:ok, runner_release_id} <- fetch_runner_release_id(opts),
-         {:ok, environment} <- fetch_environment(opts),
+    with {:ok, environment} <- fetch_environment(opts),
          {:ok, catalog} <-
-           opts |> Keyword.drop([:runner_release_id, :environment]) |> build_catalog() do
-      manifest_from_catalog(catalog, runner_release_id, environment)
+           opts
+           |> Keyword.drop([:runner_releases, :environment])
+           |> build_catalog(),
+         {:ok, runner_releases} <- fetch_runner_releases(opts, catalog) do
+      manifest_from_catalog(catalog, runner_releases, environment)
     end
   end
 
@@ -72,14 +74,16 @@ defmodule Favn.Manifest.Generator do
   """
   @spec build(opts()) :: {:ok, Build.t()} | {:error, term()}
   def build(opts \\ []) when is_list(opts) do
-    with {:ok, runner_release_id} <- fetch_runner_release_id(opts),
-         {:ok, environment} <- fetch_environment(opts),
+    with {:ok, environment} <- fetch_environment(opts),
          {:ok, catalog} <-
-           opts |> Keyword.drop([:runner_release_id, :environment]) |> build_catalog(),
+           opts
+           |> Keyword.drop([:runner_releases, :environment])
+           |> build_catalog(),
+         {:ok, runner_releases} <- fetch_runner_releases(opts, catalog),
          {:ok, manifest, execution_packages} <-
            manifest_and_packages_from_catalog(
              catalog,
-             runner_release_id,
+             runner_releases,
              environment
            ) do
       {:ok,
@@ -136,16 +140,16 @@ defmodule Favn.Manifest.Generator do
     end
   end
 
-  defp manifest_from_catalog(%Catalog{} = catalog, required_runner_release_id, environment) do
+  defp manifest_from_catalog(%Catalog{} = catalog, runner_releases, environment) do
     with {:ok, manifest, _packages} <-
-           manifest_and_packages_from_catalog(catalog, required_runner_release_id, environment) do
+           manifest_and_packages_from_catalog(catalog, runner_releases, environment) do
       {:ok, manifest}
     end
   end
 
   defp manifest_and_packages_from_catalog(
          %Catalog{} = catalog,
-         required_runner_release_id,
+         runner_releases,
          %Environment{} = environment
        ) do
     with {:ok, packages_by_ref} <- execution_packages_from_catalog(catalog) do
@@ -154,7 +158,7 @@ defmodule Favn.Manifest.Generator do
           catalog,
           packages_by_ref,
           environment,
-          required_runner_release_id
+          runner_releases
         )
 
       pipelines = manifest_pipelines_from_catalog(catalog, environment)
@@ -165,7 +169,7 @@ defmodule Favn.Manifest.Generator do
          %Manifest{
            schema_version: Compatibility.current_schema_version(),
            runner_contract_version: Compatibility.current_runner_contract_version(),
-           required_runner_release_id: required_runner_release_id,
+           runner_releases: runner_releases,
            assets: assets,
            pipelines: pipelines,
            schedules: schedules,
@@ -195,14 +199,14 @@ defmodule Favn.Manifest.Generator do
          %Catalog{} = catalog,
          packages_by_ref,
          environment,
-         runner_release_id \\ nil
+         runner_releases \\ %{"default" => nil}
        ) do
     catalog.assets
     |> Enum.map(fn asset ->
       ManifestAsset.from_asset(asset,
         execution_package: Map.get(packages_by_ref, asset.ref),
         environment: environment,
-        runner_release_id: runner_release_id,
+        runner_release_id: release_for_asset(asset, runner_releases),
         connection_definitions: catalog.connection_definitions,
         manifest_schema_version: Compatibility.current_schema_version(),
         runner_contract_version: Compatibility.current_runner_contract_version()
@@ -238,17 +242,45 @@ defmodule Favn.Manifest.Generator do
     end
   end
 
-  defp fetch_runner_release_id(opts) do
-    case Keyword.fetch(opts, :runner_release_id) do
-      {:ok, runner_release_id} ->
-        case RunnerRelease.validate_id(runner_release_id) do
-          :ok -> {:ok, runner_release_id}
-          {:error, _reason} -> {:error, {:invalid_runner_release_id, runner_release_id}}
-        end
+  defp fetch_runner_releases(opts, catalog) do
+    value = Keyword.get(opts, :runner_releases)
 
-      :error ->
-        {:error, :runner_release_id_required}
+    with :ok <- RunnerPool.validate_releases(value),
+         :ok <- validate_release_pool_keys(value, catalog) do
+      {:ok, value}
     end
+  end
+
+  defp validate_release_pool_keys(releases, catalog) do
+    expected =
+      catalog
+      |> effective_runner_pools()
+      |> Enum.map(fn pool ->
+        {:ok, name} = RunnerPool.encode(pool)
+        name
+      end)
+      |> Enum.sort()
+
+    actual = releases |> Map.keys() |> Enum.sort()
+
+    if expected == actual,
+      do: :ok,
+      else: {:error, {:runner_release_pool_mismatch, expected, actual}}
+  end
+
+  defp effective_runner_pools(catalog) do
+    asset_pools = Enum.map(catalog.assets, &(Map.get(&1, :runner_pool) || RunnerPool.default()))
+
+    pipeline_pools =
+      catalog.pipelines |> Enum.map(&Map.get(&1, :runner_pool)) |> Enum.reject(&is_nil/1)
+
+    Enum.uniq(asset_pools ++ pipeline_pools)
+  end
+
+  defp release_for_asset(asset, releases) do
+    pool = Map.get(asset, :runner_pool) || RunnerPool.default()
+    {:ok, pool_name} = RunnerPool.encode(pool)
+    Map.fetch!(releases, pool_name)
   end
 
   defp fetch_environment(opts) do

@@ -12,7 +12,7 @@ The migration established these sources of truth:
 - `docs/architecture/` and `docs/storage/` for internal technical contracts;
 - `docs/operators/` and `docs/production/` for operational contracts;
 - `docs/FEATURES.md` for shipped capability and `docs/ROADMAP.md` for future work;
-- `docs/report/`, `docs/refactor/`, and `docs/archive/` for historical evidence.
+- `docs/report/` and `docs/archive/` for historical evidence.
 
 Current navigation is [`README.md`](README.md). Documentation changes follow
 [`DOCUMENTATION_GUIDE.md`](DOCUMENTATION_GUIDE.md). New work should update those

@@ -16,13 +16,14 @@ defmodule FavnStoragePostgres.Migrations.HardenIdentifierBoundsV2 do
     outbox_events: ~w(workspace_id command_id),
     runs:
       ~w(workspace_id run_id deployment_id manifest_version_id root_execution_group_id parent_run_id rerun_of_run_id),
+    run_submissions:
+      ~w(workspace_id submission_id idempotency_key deployment_id manifest_version_id target_kind target_id run_id claim_owner retry_root_id retry_of_submission_id retry_command_id superseded_by_submission_id),
+    run_submission_commands: ~w(workspace_id command_id submission_id command_kind),
     run_events: ~w(workspace_id run_id asset_step_id),
     run_targets:
       ~w(workspace_id run_id deployment_id manifest_version_id target_id target_module target_name),
     runtime_input_pins: ~w(workspace_id run_id resolver_module),
     run_ownerships: ~w(workspace_id run_id owner_id claim_command_id last_renewal_id),
-    runner_executions:
-      ~w(workspace_id runner_execution_id run_id dispatch_id last_command_id owner_id),
     schedule_cursors:
       ~w(workspace_id deployment_id pipeline_target_id schedule_id claim_command_id last_command_id),
     schedule_occurrences:

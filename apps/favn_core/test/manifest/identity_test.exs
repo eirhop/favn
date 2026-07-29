@@ -8,7 +8,7 @@ defmodule Favn.Manifest.IdentityTest do
 
     manifest_b = %{
       assets: [%{name: "a"}],
-      required_runner_release_id: manifest_a.required_runner_release_id,
+      runner_releases: manifest_a.runner_releases,
       runner_contract_version: manifest_a.runner_contract_version,
       schema_version: manifest_a.schema_version
     }
@@ -38,7 +38,7 @@ defmodule Favn.Manifest.IdentityTest do
 
     alternate = %{
       primary
-      | required_runner_release_id: FavnTestSupport.runner_release_id(:alternate)
+      | runner_releases: %{"default" => FavnTestSupport.runner_release_id(:alternate)}
     }
 
     assert {:ok, primary_hash} = Identity.hash_manifest(primary)

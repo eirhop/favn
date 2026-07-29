@@ -130,11 +130,11 @@ defmodule FavnRunner.ManifestStoreTest do
              ManifestStore.acquire(
                first,
                lease_id,
-               DateTime.add(DateTime.utc_now(), 1, :millisecond),
+               DateTime.add(DateTime.utc_now(), 100, :millisecond),
                server: store
              )
 
-    Process.sleep(5)
+    Process.sleep(150)
     assert :ok = ManifestStore.register(second, server: store)
     assert %{active_leases: 0, count: 1} = ManifestStore.diagnostics(server: store)
   end
@@ -209,18 +209,28 @@ defmodule FavnRunner.ManifestStoreTest do
              ManifestStore.diagnostics(server: store)
   end
 
-  defp build_manifest(metadata \\ %{}, assets \\ []) do
+  defp build_manifest(metadata \\ %{}, assets \\ default_assets()) do
     {:ok, graph} = Graph.build(assets)
 
     %Manifest{
-      schema_version: 13,
-      runner_contract_version: 12,
-      required_runner_release_id: FavnTestSupport.runner_release_id(),
+      schema_version: 14,
+      runner_contract_version: 13,
+      runner_releases: %{"default" => FavnTestSupport.runner_release_id()},
       assets: assets,
       pipelines: [],
       schedules: [],
       graph: graph,
       metadata: metadata
     }
+  end
+
+  defp default_assets do
+    [
+      %Asset{
+        ref: {FavnRunner.ManifestStoreTest.CacheAsset, :asset},
+        module: FavnRunner.ManifestStoreTest.CacheAsset,
+        name: :asset
+      }
+    ]
   end
 end

@@ -9,7 +9,7 @@ Favn's PostgreSQL 18 control-plane persistence.
   `FavnOrchestrator.Persistence.Backend`.
 - `FavnStoragePostgres.BackendSupervisor` owns the repo, notification listener,
   publisher, projectors, and bounded maintenance workers.
-- Capability stores live under `registry/`, `runs/`, `run_ownership/`,
+- Capability stores live under `registry/`, `runs/`, `run_submissions/`, `run_ownership/`,
   `scheduler/`, `admission/`, `target_generations/`, `materialization/`,
   `backfills/`, `rebuilds/`, `target_operation_locks/`, `identity/`,
   `resource_circuits/`, `logs/`, `operator_reads/`, and `maintenance/`.
@@ -25,6 +25,19 @@ Favn's PostgreSQL 18 control-plane persistence.
 - `run_plans` stores one bounded immutable plan per planned run. `runs.snapshot`
   stores only mutable state plus the plan hash, keeping every transition below its
   independent 4 MiB boundary.
+- `run_submissions` durably owns accepted, normalized run intent before a run
+  exists. Available submissions are claimed in bounded FIFO batches with
+  `SKIP LOCKED`, database-time leases, and monotonically increasing fencing
+  generations. `run_submission_commands` records exact command replay by
+  reference to the current authoritative submission rows, including empty
+  claim results without copying intent payloads. Every nonterminal fenced
+  command receipt retains a small status/owner/generation result fence and
+  rejects replay after ownership or state has moved. A seven-day command
+  window and indexed bounded pruning prevent empty polls and renewals from
+  growing the table forever; expired commands are rejected and cannot act on
+  later work. `RunIdentity` provides the shared transaction advisory lock used
+  by submission insertion/retry and every durable run creator, preventing a
+  run ID from being claimed independently in the two tables.
 - `asset_target_generations` owns immutable physical-generation identity and
   `asset_target_bindings` selects the active generation for ordinary writes and
   current-evidence reads. Initial writes remain `building` until authoritative
@@ -77,9 +90,8 @@ database-enforced invariants.
   Verified TLS uses an explicit CA bundle when configured and otherwise uses the
   Erlang system trust store; plaintext is rejected in production.
 - Runtime nodes never migrate at boot.
-- `manifest_versions.required_runner_release_id` is non-null and format-checked
-  for current manifest schemas. It is null only on historical pre-contract rows,
-  which remain available to bounded audit reads but cannot be activated.
+- `manifest_versions.runner_releases` is a non-null, format-checked JSON object
+  whose keys are logical pool names and values are immutable runner releases.
 - Tenant access requires explicit workspace/platform context.
 - The storage-owned node-local manifest cache contains only decoded compact immutable
   releases and is bounded by entry and byte budgets. The orchestrator and runner own
@@ -89,6 +101,10 @@ database-enforced invariants.
   state.
 - Runtime-input pins carry the exact execution-package hash and resolver identity,
   preventing a pin from replaying against changed SQL execution content.
+- Failed run submissions are immutable. Only a failure explicitly classified as
+  safe can create one linked retry submission; unknown outcomes require
+  reconciliation. A submitted terminal state is accepted only after the exact
+  intended run is durable.
 - PostgreSQL `NOTIFY` and local PubSub are wake-up optimizations only; durable
   publications and cursors provide replay correctness.
 - `resource_circuits` stores workspace-scoped closed/open/half-open state and an

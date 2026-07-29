@@ -5,7 +5,7 @@ defmodule FavnLocal.SourceRelease do
   Source development requires a full stop/start for dependency, plugin, native
   library, and configuration changes. Within one running source-development
   session, the compiled BEAM closure is therefore the exact input that decides
-  whether a runner replacement is necessary.
+  whether a new runner process is necessary.
   """
 
   @spec current(keyword()) :: {:ok, String.t()} | {:error, term()}
@@ -15,6 +15,7 @@ defmodule FavnLocal.SourceRelease do
     files =
       build_path
       |> Path.join("lib/*/ebin/*.beam")
+      |> String.replace("\\", "/")
       |> Path.wildcard()
       |> Enum.sort()
 

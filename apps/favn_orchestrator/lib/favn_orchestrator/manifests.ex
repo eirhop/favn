@@ -8,17 +8,16 @@ defmodule FavnOrchestrator.Manifests do
 
   alias Favn.Manifest.Version
   alias FavnOrchestrator.ManifestStore
-  alias FavnOrchestrator.ActiveManifestReconciler
   alias FavnOrchestrator.Lifecycle
   alias FavnOrchestrator.OperationalEvents
   alias FavnOrchestrator.Operator.Catalogue.Targets
   alias FavnOrchestrator.Persistence.DeploymentPlanner
+  alias FavnOrchestrator.Persistence
+  alias FavnOrchestrator.Persistence.Commands, as: C
   alias FavnOrchestrator.Persistence.PlatformContext
   alias FavnOrchestrator.Persistence.Results.RuntimeState
   alias FavnOrchestrator.Persistence.TargetIdentity
   alias FavnOrchestrator.Persistence.WorkspaceContext
-  alias FavnOrchestrator.RunnerManifestRegistration
-  alias FavnOrchestrator.RunnerReleaseCompatibility
   alias FavnOrchestrator.RuntimeConfig
   alias FavnOrchestrator.TargetCompatibilityPlanner
 
@@ -29,7 +28,12 @@ defmodule FavnOrchestrator.Manifests do
           {:ok, :published | :already_published, Version.t()} | {:error, term()}
   def publish(%PlatformContext{} = context, %Version{} = version) do
     Lifecycle.with_admission(fn ->
-      result = ManifestStore.publish_manifest(context, version)
+      result =
+        with {:ok, status, published} <- ManifestStore.publish_manifest(context, version),
+             :ok <- ensure_runner_capacity_partitions(context, published) do
+          {:ok, status, published}
+        end
+
       emit_publication_result(version, result)
       result
     end)
@@ -50,8 +54,8 @@ defmodule FavnOrchestrator.Manifests do
       result =
         with true <- platform_deployer?(platform_context),
              {:ok, version} <- ManifestStore.get_manifest(platform_context, manifest_version_id),
+             :ok <- validate_configured_pools(version),
              {:ok, planner} <- deployment_selection(version, selection),
-             :ok <- prepare_runner(version),
              {:ok, target_compatibilities} <-
                TargetCompatibilityPlanner.plan(platform_context, context, version, planner) do
           ManifestStore.deploy_manifest(
@@ -69,8 +73,26 @@ defmodule FavnOrchestrator.Manifests do
         end
 
       emit_activation_result(context, manifest_version_id, result)
-      if match?({:ok, %RuntimeState{}}, result), do: ActiveManifestReconciler.refresh()
       result
+    end)
+  end
+
+  defp ensure_runner_capacity_partitions(context, version) do
+    now = DateTime.utc_now()
+
+    version.runner_releases
+    |> Enum.reduce_while(:ok, fn {pool, release_id}, :ok ->
+      command = %C.EnsureRunnerCapacityDemand{
+        platform_context: context,
+        runner_pool: pool,
+        required_runner_release_id: release_id,
+        occurred_at: now
+      }
+
+      case Persistence.stores().runner_tasks.ensure_demand(command) do
+        {:ok, _demand} -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
     end)
   end
 
@@ -130,7 +152,7 @@ defmodule FavnOrchestrator.Manifests do
       content_hash: version.content_hash,
       schema_version: version.schema_version,
       runner_contract_version: version.runner_contract_version,
-      required_runner_release_id: version.required_runner_release_id,
+      runner_releases: version.runner_releases,
       asset_count: length(List.wrap(version.manifest.assets)),
       pipeline_count: length(List.wrap(version.manifest.pipelines)),
       schedule_count: length(List.wrap(version.manifest.schedules))
@@ -143,7 +165,7 @@ defmodule FavnOrchestrator.Manifests do
       content_hash: runtime.manifest_content_hash,
       schema_version: runtime.schema_version,
       runner_contract_version: runtime.runner_contract_version,
-      required_runner_release_id: runtime.required_runner_release_id,
+      runner_releases: runtime.runner_releases,
       asset_count: runtime.asset_count,
       pipeline_count: runtime.pipeline_count,
       schedule_count: runtime.schedule_count
@@ -232,39 +254,14 @@ defmodule FavnOrchestrator.Manifests do
       Enum.any?(context.roles, &(&1 in [:platform_operator, :platform_admin]))
   end
 
-  defp prepare_runner(%Version{} = version) do
-    runtime = RuntimeConfig.current()
+  defp validate_configured_pools(%Version{runner_releases: releases}) do
+    configured = RuntimeConfig.runner_pools()
 
-    with :ok <-
-           RunnerReleaseCompatibility.verify_runner(
-             runtime.runner_client,
-             version,
-             runtime.runner_client_opts
-           ),
-         :ok <-
-           RunnerManifestRegistration.ensure(
-             runtime.runner_client,
-             version,
-             runtime.runner_client_opts
-           ) do
-      :ok
-    else
-      {:error, {:manifest_version_conflict, _id, _existing, _incoming}} ->
-        {:error, :runner_manifest_conflict}
-
-      {:error, {:runner_release_mismatch, _required, _actual}} = error ->
-        error
-
-      {:error, reason} = error
-      when reason in [
-             :runner_client_not_available,
-             :runner_release_info_unavailable,
-             :runner_not_ready
-           ] ->
-        error
-
-      {:error, _reason} ->
-        {:error, :runner_unavailable}
+    case Enum.find(Map.keys(releases), fn pool_name ->
+           not Map.has_key?(configured, pool_name)
+         end) do
+      nil -> :ok
+      pool_name -> {:error, {:runner_pool_not_configured, pool_name}}
     end
   end
 
@@ -273,7 +270,7 @@ defmodule FavnOrchestrator.Manifests do
       status: status,
       manifest_version_id: canonical.manifest_version_id,
       manifest_content_hash: canonical.content_hash,
-      required_runner_release_id: canonical.required_runner_release_id
+      runner_releases: canonical.runner_releases
     })
 
     version
@@ -286,7 +283,7 @@ defmodule FavnOrchestrator.Manifests do
       %{
         status: :rejected,
         manifest_version_id: version.manifest_version_id,
-        required_runner_release_id: version.required_runner_release_id,
+        runner_releases: version.runner_releases,
         reason: bounded_reason(reason)
       },
       level: :warning
@@ -301,7 +298,7 @@ defmodule FavnOrchestrator.Manifests do
       workspace_id: context.workspace_id,
       deployment_id: runtime.deployment_id,
       manifest_version_id: manifest_version_id,
-      required_runner_release_id: runtime.required_runner_release_id,
+      runner_releases: runtime.runner_releases,
       revision: runtime.revision
     })
   end

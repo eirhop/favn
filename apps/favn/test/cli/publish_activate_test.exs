@@ -13,7 +13,7 @@ defmodule Favn.CLI.PublishActivateTest do
        %{
          "data" => %{
            "manifest" => %{
-             "required_runner_release_id" => publication.version.required_runner_release_id
+             "runner_releases" => publication.version.runner_releases
            },
            "registration" => %{
              "status" => "published",
@@ -33,7 +33,7 @@ defmodule Favn.CLI.PublishActivateTest do
            "activated" => true,
            "manifest_version_id" => manifest_version_id,
            "deployment_id" => "deployment:test",
-           "required_runner_release_id" => FavnTestSupport.runner_release_id()
+           "runner_releases" => %{"default" => FavnTestSupport.runner_release_id()}
          }
        }}
     end
@@ -52,7 +52,7 @@ defmodule Favn.CLI.PublishActivateTest do
        %{
          "data" => %{
            "manifest" => %{
-             "required_runner_release_id" => publication.version.required_runner_release_id
+             "runner_releases" => publication.version.runner_releases
            },
            "registration" => %{
              "status" => "already_published",
@@ -70,7 +70,7 @@ defmodule Favn.CLI.PublishActivateTest do
        %{
          "data" => %{
            "manifest" => %{
-             "required_runner_release_id" => publication.version.required_runner_release_id
+             "runner_releases" => publication.version.runner_releases
            },
            "registration" => %{
              "status" => "published",
@@ -88,7 +88,7 @@ defmodule Favn.CLI.PublishActivateTest do
            "activated" => true,
            "manifest_version_id" => "mv_wrong",
            "deployment_id" => "deployment:wrong",
-           "required_runner_release_id" => FavnTestSupport.runner_release_id()
+           "runner_releases" => %{"default" => FavnTestSupport.runner_release_id()}
          }
        }}
     end

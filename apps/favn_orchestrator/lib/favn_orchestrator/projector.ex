@@ -16,7 +16,7 @@ defmodule FavnOrchestrator.Projector do
     normalized_data =
       data
       |> normalize_data()
-      |> Map.put(:required_runner_release_id, run_state.required_runner_release_id)
+      |> Map.put(:runner_releases, run_state.runner_releases)
       |> put_event_asset_step_id(run_state, event_type)
 
     RunEvent.from_map(%{
@@ -44,7 +44,7 @@ defmodule FavnOrchestrator.Projector do
       id: run_state.id,
       manifest_version_id: run_state.manifest_version_id,
       manifest_content_hash: run_state.manifest_content_hash,
-      required_runner_release_id: run_state.required_runner_release_id,
+      runner_releases: run_state.runner_releases,
       asset_ref: run_state.asset_ref,
       target_refs: run_state.target_refs,
       plan: run_state.plan,
@@ -62,7 +62,7 @@ defmodule FavnOrchestrator.Projector do
       trigger: run_state.trigger,
       metadata: run_state.metadata,
       result: run_state.result,
-      runner_execution_id: run_state.runner_execution_id,
+      runner_task_id: run_state.runner_task_id,
       retry_policy: projected_retry_policy(run_state),
       replay_mode: project_replay_mode(run_state),
       backfill: nil,
@@ -87,7 +87,7 @@ defmodule FavnOrchestrator.Projector do
     %{
       id: summary.run_id,
       manifest_version_id: summary.manifest_version_id,
-      required_runner_release_id: summary.required_runner_release_id,
+      runner_releases: summary.runner_releases,
       submit_kind: summary.submit_kind,
       status: summary.status,
       event_seq: summary.event_sequence,
@@ -339,6 +339,8 @@ defmodule FavnOrchestrator.Projector do
       ref: ref,
       window: Map.get(result, :window),
       stage: Map.get(result, :stage, 0),
+      execution_pool: Map.get(result, :execution_pool),
+      runner_pool: Map.get(result, :runner_pool, :default),
       status: Map.get(result, :status, :running),
       started_at: Map.get(result, :started_at),
       finished_at: Map.get(result, :finished_at),
@@ -348,7 +350,7 @@ defmodule FavnOrchestrator.Projector do
       input_versions: Map.get(result, :input_versions, %{}),
       attempt_count: Map.get(result, :attempt_count, 0),
       max_attempts: Map.get(result, :max_attempts, 1),
-      runner_execution_id: Map.get(result, :runner_execution_id),
+      runner_task_id: Map.get(result, :runner_task_id),
       meta: Map.get(result, :meta, %{}),
       error: Map.get(result, :error),
       attempts: Map.get(result, :attempts, []),

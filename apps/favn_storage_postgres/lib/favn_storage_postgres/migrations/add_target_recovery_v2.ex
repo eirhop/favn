@@ -29,7 +29,7 @@ defmodule FavnStoragePostgres.Migrations.AddTargetRecoveryV2 do
       add(:source_manifest_id, :text, null: false)
       add(:target_generation_id, :uuid, null: false)
       add(:materialization_id, :text, null: false)
-      add(:plan_hash, :text, null: false)
+      add(:plan_hash, :text)
       add(:plan_version, :integer, null: false, default: 1)
       add(:plan_payload, :map, null: false)
       add(:state, :text, null: false)
@@ -39,7 +39,7 @@ defmodule FavnStoragePostgres.Migrations.AddTargetRecoveryV2 do
       add(:reason, :text, null: false)
       add(:idempotency_key, :text, null: false)
       add(:expected_binding_version, :bigint, null: false)
-      add(:expected_physical_fingerprint, :text, null: false)
+      add(:expected_physical_fingerprint, :text)
       add(:evaluated_at, :timestamptz, null: false)
       add(:recovery_token, :text)
       add(:result_marker, :map)
@@ -113,11 +113,12 @@ defmodule FavnStoragePostgres.Migrations.AddTargetRecoveryV2 do
         prefix: @prefix,
         check:
           "recovery_kind = 'reconcile_initial_generation' " <>
-            "AND plan_hash ~ '^[0-9a-f]{64}$' AND plan_version > 0 " <>
+            "AND (plan_hash IS NULL OR plan_hash ~ '^[0-9a-f]{64}$') AND plan_version > 0 " <>
             "AND expected_binding_version > 0 " <>
-            "AND expected_physical_fingerprint ~ '^[0-9a-f]{64}$' " <>
-            "AND state IN ('planned', 'applying', 'outcome_unknown', 'succeeded', 'failed') " <>
-            "AND phase IN ('planned', 'marker_intent', 'reconciling', 'terminal') " <>
+            "AND (expected_physical_fingerprint IS NULL " <>
+            "OR expected_physical_fingerprint ~ '^[0-9a-f]{64}$') " <>
+            "AND state IN ('planning', 'planned', 'applying', 'outcome_unknown', 'succeeded', 'failed') " <>
+            "AND phase IN ('collecting_evidence', 'planned', 'marker_intent', 'reconciling', 'terminal') " <>
             "AND octet_length(reason) BETWEEN 1 AND 4096 AND version > 0"
       )
     )
@@ -156,22 +157,56 @@ defmodule FavnStoragePostgres.Migrations.AddTargetRecoveryV2 do
     ALTER TABLE #{@prefix}.target_recovery_operations
     ADD CONSTRAINT target_recovery_operations_state_shape
     CHECK (
-      (state = 'planned' AND phase = 'planned' AND recovery_token IS NULL
+      (state = 'planning' AND phase = 'collecting_evidence'
+       AND plan_hash IS NULL AND expected_physical_fingerprint IS NULL
+       AND plan_payload = '{}'::jsonb AND recovery_token IS NULL
+       AND result_marker IS NULL AND compatibility_result IS NULL
+       AND unknown_outcome IS NULL AND terminal_error IS NULL
+       AND started_at IS NULL AND completed_at IS NULL)
+      OR
+      (state = 'planned' AND phase = 'planned'
+       AND plan_hash IS NOT NULL AND expected_physical_fingerprint IS NOT NULL
+       AND recovery_token IS NULL
+       AND result_marker IS NULL AND compatibility_result IS NULL
+       AND unknown_outcome IS NULL AND terminal_error IS NULL
        AND started_at IS NULL AND completed_at IS NULL)
       OR
       (state = 'applying' AND phase IN ('marker_intent', 'reconciling')
-       AND recovery_token IS NOT NULL AND started_at IS NOT NULL AND completed_at IS NULL)
+       AND plan_hash IS NOT NULL AND expected_physical_fingerprint IS NOT NULL
+       AND recovery_token IS NOT NULL
+       AND result_marker IS NULL AND compatibility_result IS NULL
+       AND unknown_outcome IS NULL AND terminal_error IS NULL
+       AND started_at IS NOT NULL AND completed_at IS NULL)
       OR
       (state = 'outcome_unknown' AND phase = 'reconciling'
+       AND plan_hash IS NOT NULL AND expected_physical_fingerprint IS NOT NULL
        AND recovery_token IS NOT NULL AND unknown_outcome IS NOT NULL
+       AND result_marker IS NULL AND compatibility_result IS NULL
+       AND terminal_error IS NULL
        AND started_at IS NOT NULL AND completed_at IS NULL)
       OR
       (state = 'succeeded' AND phase = 'terminal'
+       AND plan_hash IS NOT NULL AND expected_physical_fingerprint IS NOT NULL
+       AND recovery_token IS NOT NULL
        AND result_marker IS NOT NULL AND compatibility_result IS NOT NULL
+       AND unknown_outcome IS NULL AND terminal_error IS NULL
        AND started_at IS NOT NULL AND completed_at IS NOT NULL)
       OR
       (state = 'failed' AND phase = 'terminal' AND terminal_error IS NOT NULL
-       AND completed_at IS NOT NULL)
+       AND result_marker IS NULL AND compatibility_result IS NULL
+       AND unknown_outcome IS NULL AND completed_at IS NOT NULL
+       AND (
+         (plan_hash IS NULL AND expected_physical_fingerprint IS NULL
+          AND plan_payload = '{}'::jsonb AND recovery_token IS NULL
+          AND started_at IS NULL)
+         OR
+         (plan_hash IS NOT NULL AND expected_physical_fingerprint IS NOT NULL
+          AND (
+            (recovery_token IS NULL AND started_at IS NULL)
+            OR
+            (recovery_token IS NOT NULL AND started_at IS NOT NULL)
+          ))
+       ))
     )
     """)
   end

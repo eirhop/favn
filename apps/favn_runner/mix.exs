@@ -11,10 +11,14 @@ defmodule FavnRunner.MixProject do
       deps_path: "../../deps",
       lockfile: "../../mix.lock",
       elixir: "~> 1.20",
+      elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,
       deps: deps()
     ]
   end
+
+  defp elixirc_paths(:test), do: ["lib", "test/support"]
+  defp elixirc_paths(_env), do: ["lib"]
 
   def application do
     [
@@ -27,8 +31,8 @@ defmodule FavnRunner.MixProject do
     [
       internal_dep(:favn_core, "../favn_core"),
       internal_dep(:favn_sql_runtime, "../favn_sql_runtime"),
-      internal_dep(:favn_authoring, "../favn_authoring", only: :test),
-      internal_dep(:favn_test_support, "../favn_test_support", only: :test),
+      internal_dep(:favn_authoring, "../favn_authoring", only: :test, runtime: false),
+      internal_dep(:favn_test_support, "../favn_test_support", only: :test, runtime: false),
       {:decimal, "~> 3.0"},
       {:jason, "~> 1.4"},
       {:telemetry, "~> 1.0"}

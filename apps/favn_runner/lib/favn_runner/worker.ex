@@ -24,10 +24,10 @@ defmodule FavnRunner.Worker do
   alias FavnRunner.ManifestHandle
   alias FavnRunner.ReleaseVerifier
   alias FavnRunner.RuntimeConfigDiagnostic
-  alias FavnRunner.ResultRetention
+  alias FavnRunner.ResultCompactor
 
   @type init_arg :: %{
-          required(:server) => pid(),
+          required(:server) => pid() | {:bounded, pid()},
           required(:execution_id) => String.t(),
           required(:work) => RunnerWork.t(),
           optional(:version) => Version.t(),
@@ -46,11 +46,39 @@ defmodule FavnRunner.Worker do
     manifest = Map.get(args, :manifest) || Map.fetch!(args, :version)
 
     with :ok <- ReleaseVerifier.verify_required_release(work.required_runner_release_id),
-         :ok <- ReleaseVerifier.verify_required_release(manifest.required_runner_release_id) do
+         :ok <- verify_manifest_release(manifest, work.required_runner_release_id) do
       {:ok, args, {:continue, :execute}}
     else
       {:error, %RunnerError{} = error} -> {:stop, error}
     end
+  end
+
+  defp verify_manifest_release(
+         %ManifestHandle{required_runner_release_id: release_id},
+         required_release_id
+       )
+       when release_id == required_release_id,
+       do: :ok
+
+  defp verify_manifest_release(%Version{runner_releases: releases}, required_release_id)
+       when is_map(releases) do
+    if required_release_id in Map.values(releases),
+      do: :ok,
+      else: {:error, manifest_release_mismatch(required_release_id)}
+  end
+
+  defp verify_manifest_release(_manifest, required_release_id),
+    do: {:error, manifest_release_mismatch(required_release_id)}
+
+  defp manifest_release_mismatch(required_release_id) do
+    RunnerError.new(
+      kind: :boundary,
+      type: :runner_release_mismatch,
+      message: "Manifest does not permit the assigned runner release",
+      details: %{required_runner_release_id: required_release_id},
+      retryable?: false,
+      outcome: :safe_failure
+    )
   end
 
   @impl true
@@ -58,9 +86,9 @@ defmodule FavnRunner.Worker do
     result = execute(state)
 
     {result, _bytes, _truncated?} =
-      ResultRetention.compact(result, Map.get(state, :result_max_bytes, 768 * 1_024))
+      ResultCompactor.compact(result, Map.get(state, :result_max_bytes, 768 * 1_024))
 
-    send(server, {:runner_result, execution_id, result})
+    emit_result(server, execution_id, result)
     {:stop, :normal, state}
   end
 
@@ -488,6 +516,14 @@ defmodule FavnRunner.Worker do
     EventSink.emit(server, execution_id, event)
   end
 
+  defp emit_result({:bounded, server}, execution_id, result),
+    do: GenServer.call(server, {:runner_result, execution_id, result}, :infinity)
+
+  defp emit_result(server, execution_id, result) do
+    send(server, {:runner_result, execution_id, result})
+    :ok
+  end
+
   defp emit_log(
          server,
          execution_id,
@@ -503,7 +539,7 @@ defmodule FavnRunner.Worker do
     metadata =
       work
       |> RunnerWork.lifecycle_metadata()
-      |> Map.put(:runner_execution_id, execution_id)
+      |> Map.put(:runner_task_id, execution_id)
       |> Map.merge(extra_metadata)
 
     LogSink.emit(server, execution_id, %{
@@ -514,7 +550,7 @@ defmodule FavnRunner.Worker do
       manifest_version_id: work.manifest_version_id,
       manifest_content_hash: work.manifest_content_hash,
       asset_ref: asset.ref,
-      runner_execution_id: execution_id,
+      runner_task_id: execution_id,
       attempt: work.attempt,
       metadata: metadata,
       occurred_at: DateTime.utc_now(),

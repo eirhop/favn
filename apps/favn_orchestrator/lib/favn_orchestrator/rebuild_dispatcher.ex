@@ -22,6 +22,7 @@ defmodule FavnOrchestrator.RebuildDispatcher do
   alias FavnOrchestrator.Lifecycle
   alias FavnOrchestrator.ManifestStore
   alias FavnOrchestrator.ManifestTarget
+  alias FavnOrchestrator.OperationRunnerTasks
   alias FavnOrchestrator.Persistence
   alias FavnOrchestrator.Persistence.Commands.AcquireTargetOperationLocks
   alias FavnOrchestrator.Persistence.Commands.ActivateRebuildGeneration
@@ -39,15 +40,17 @@ defmodule FavnOrchestrator.RebuildDispatcher do
   alias FavnOrchestrator.Persistence.Results.RebuildAction
   alias FavnOrchestrator.Persistence.Results.RebuildItem
   alias FavnOrchestrator.Persistence.Results.RebuildOperation
+  alias FavnOrchestrator.Persistence.Results.RunSubmission
   alias FavnOrchestrator.Persistence.SystemContext
-  alias FavnOrchestrator.RunManager
-  alias FavnOrchestrator.RunnerDispatch
+  alias FavnOrchestrator.RunSubmissions
   alias FavnOrchestrator.Runs
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.RuntimeConfig
   alias FavnOrchestrator.Rebuild.ItemPager
   alias FavnOrchestrator.Rebuild.Reconciliation
   alias FavnOrchestrator.Rebuild.Telemetry
+  alias FavnOrchestrator.RebuildExecutionWorker
+  alias FavnOrchestrator.RebuildPlanningWorker
 
   @default_interval_ms 1_000
   @default_lease_ms 30_000
@@ -127,14 +130,24 @@ defmodule FavnOrchestrator.RebuildDispatcher do
            workspace_context: context,
            command_id: command_id("claim-operation", workspace_id <> ":" <> unique_identity()),
            owner_id: state.owner_id,
-           lease_duration_ms: state.lease_ms
+           lease_duration_ms: state.lease_ms,
+           exclude_operation_ids:
+             RebuildPlanningWorker.active_operation_ids(workspace_id) ++
+               RebuildExecutionWorker.active_operation_ids(workspace_id)
          }) do
       {:ok, nil} ->
         :ok
 
+      {:ok, %RebuildOperation{state: :planning} = operation} ->
+        ensure_planning_worker(context, operation, state)
+
       {:ok, operation} ->
         with {:ok, locks} <- ensure_target_locks(context, operation, state),
-             :ok <- process_operation(context, operation, locks, state) do
+             {:ok, _pid} <-
+               RebuildExecutionWorker.ensure(context, operation, locks,
+                 owner_id: state.owner_id,
+                 lease_duration_ms: state.lease_ms
+               ) do
           :ok
         else
           {:error, %Error{kind: kind}} when kind in [:conflict, :fenced] ->
@@ -163,6 +176,28 @@ defmodule FavnOrchestrator.RebuildDispatcher do
         emit_error(workspace_id, nil, :claim, reason)
     end
   end
+
+  defp ensure_planning_worker(context, operation, state) do
+    case RebuildPlanningWorker.ensure(context, operation,
+           owner_id: state.owner_id,
+           lease_duration_ms: state.lease_ms
+         ) do
+      {:ok, _pid} ->
+        :ok
+
+      {:error, reason} ->
+        emit_error(
+          context.workspace_id,
+          operation.operation_id,
+          :planning_recovery_start,
+          reason
+        )
+    end
+  end
+
+  @doc false
+  def process_claimed_operation(context, operation, locks, state),
+    do: process_operation(context, operation, locks, state)
 
   defp process_operation(context, %RebuildOperation{state: :queued} = operation, _locks, state) do
     with {:ok, _building} <- transition_operation(operation, context, state, :building, :building) do
@@ -318,7 +353,8 @@ defmodule FavnOrchestrator.RebuildDispatcher do
          :ok <- validate_candidate_materializations(context, operation, action),
          {:ok, version, asset} <- version_asset(context, operation, action),
          {:ok, relation} <- candidate_relation(operation, action, asset),
-         {:ok, fingerprint} <- inspect_candidate(version, asset, relation),
+         {:ok, fingerprint} <-
+           inspect_candidate(context, operation, action, version, asset, relation),
          :ok <- validate_candidate_identity(asset, relation, fingerprint),
          {:ok, checked_action} <-
            transition_action(operation, action, context, state, :running,
@@ -354,12 +390,18 @@ defmodule FavnOrchestrator.RebuildDispatcher do
 
     with %RebuildAction{} <- action,
          {:ok, version, asset} <- version_asset(context, operation, action),
-         {:ok, request} <- activation_request(operation, action, version, asset),
-         runtime <- RuntimeConfig.current() do
-      case RunnerDispatch.activate_generation(
-             runtime.runner_client,
+         {:ok, request} <- activation_request(operation, action, version, asset) do
+      case OperationRunnerTasks.ensure_and_await(
+             context,
+             version,
+             asset.ref,
+             :generation_activate,
              request,
-             runtime.runner_client_opts
+             {:rebuild_activate, operation.operation_id, action.target_id,
+              request.activation_token},
+             runner_binding: runner_binding(action),
+             operation_id: operation.operation_id,
+             rebuild_operation_id: operation.operation_id
            ) do
         {:ok, %GenerationActivationResult{outcome: :succeeded} = result} ->
           with :ok <- GenerationActivationResult.validate(result, request),
@@ -376,6 +418,13 @@ defmodule FavnOrchestrator.RebuildDispatcher do
 
         {:ok, %GenerationActivationResult{outcome: :outcome_unknown} = result} ->
           unknown_activation(context, operation, action, state, error_payload(result.error))
+
+        {:error, {:failed, error} = reason} ->
+          if contains_safe_failure?(error) do
+            fail_action(context, operation, action, locks, state, error_payload(error))
+          else
+            unknown_activation(context, operation, action, state, reason)
+          end
 
         {:error, reason} ->
           unknown_activation(context, operation, action, state, reason)
@@ -426,12 +475,17 @@ defmodule FavnOrchestrator.RebuildDispatcher do
   defp reconcile_activation_action(context, operation, action, locks, state) do
     with {:ok, version, asset} <- version_asset(context, operation, action),
          {:ok, activation} <- activation_request(operation, action, version, asset),
-         request <- %GenerationReconciliationRequest{activation: activation},
-         runtime <- RuntimeConfig.current() do
-      case RunnerDispatch.reconcile_generation(
-             runtime.runner_client,
+         request <- %GenerationReconciliationRequest{activation: activation} do
+      case OperationRunnerTasks.ensure_and_await(
+             context,
+             version,
+             asset.ref,
+             :generation_reconcile,
              request,
-             runtime.runner_client_opts
+             {:rebuild_reconcile, operation.operation_id, action.target_id, action.version},
+             runner_binding: runner_binding(action),
+             operation_id: operation.operation_id,
+             rebuild_operation_id: operation.operation_id
            ) do
         {:ok, %GenerationReconciliationResult{disposition: :candidate_active} = result} ->
           with :ok <- GenerationReconciliationResult.validate(result, request),
@@ -478,10 +532,23 @@ defmodule FavnOrchestrator.RebuildDispatcher do
           })
 
         {:ok, %GenerationReconciliationResult{disposition: :unknown}} ->
-          :ok
+          transition_action(operation, action, context, state, :outcome_unknown,
+            terminal_error: %{
+              reason: "generation_reconciliation_inconclusive",
+              observed_at: DateTime.utc_now()
+            }
+          )
+          |> ok_only()
 
-        {:error, _reason} ->
-          :ok
+        {:error, reason} ->
+          transition_action(operation, action, context, state, :outcome_unknown,
+            terminal_error: %{
+              reason: "generation_reconciliation_unavailable",
+              detail: error_payload(reason),
+              observed_at: DateTime.utc_now()
+            }
+          )
+          |> ok_only()
 
         _invalid ->
           :ok
@@ -631,7 +698,7 @@ defmodule FavnOrchestrator.RebuildDispatcher do
   defp cancel_item(context, operation, item, state) do
     case item.child_run_id do
       run_id when is_binary(run_id) ->
-        _ = RunManager.cancel_run(context, run_id, %{reason: "rebuild_cancelled"})
+        _ = FavnOrchestrator.cancel_run(context, run_id, %{reason: "rebuild_cancelled"})
         reconcile_run(context, operation, item, state)
 
       _missing ->
@@ -664,7 +731,7 @@ defmodule FavnOrchestrator.RebuildDispatcher do
          request <- %GenerationDiscardRequest{
            manifest_version_id: version.manifest_version_id,
            manifest_content_hash: version.content_hash,
-           required_runner_release_id: version.required_runner_release_id,
+           required_runner_release_id: action.required_runner_release_id,
            rebuild_operation_id: operation.operation_id,
            rebuild_action_id: action.target_id,
            target_id: action.target_id,
@@ -673,12 +740,18 @@ defmodule FavnOrchestrator.RebuildDispatcher do
            candidate_relation: candidate,
            discard_token: command_id("discard", operation.operation_id <> ":" <> action.target_id)
          },
-         runtime <- RuntimeConfig.current(),
          {:ok, %GenerationDiscardResult{} = result} <-
-           RunnerDispatch.discard_generation(
-             runtime.runner_client,
+           OperationRunnerTasks.ensure_and_await(
+             context,
+             version,
+             asset.ref,
+             :generation_discard,
              request,
-             runtime.runner_client_opts
+             {:rebuild_discard_candidate, operation.operation_id, action.target_id,
+              action.candidate_generation_id},
+             runner_binding: runner_binding(action),
+             operation_id: operation.operation_id,
+             rebuild_operation_id: operation.operation_id
            ),
          :ok <- GenerationDiscardResult.validate(result, request),
          true <- result.outcome in [:discarded, :already_absent] do
@@ -877,21 +950,7 @@ defmodule FavnOrchestrator.RebuildDispatcher do
         :ok
 
       {:error, %Error{kind: :not_found}} ->
-        case reconcile_materialization(context, operation, item, state, :run_not_found) do
-          :pending ->
-            transition_item(
-              context,
-              operation,
-              item,
-              state,
-              :outcome_unknown,
-              run_id,
-              unknown_failure(:run_not_found)
-            )
-
-          result ->
-            result
-        end
+        reconcile_missing_run(context, operation, item, state, run_id)
 
       {:error, reason} ->
         {:error, reason}
@@ -899,6 +958,66 @@ defmodule FavnOrchestrator.RebuildDispatcher do
   end
 
   defp reconcile_run(_context, _operation, _item, _state), do: :ok
+
+  defp reconcile_missing_run(context, operation, item, state, run_id) do
+    case RunSubmissions.get(context, run_id) do
+      {:ok, %RunSubmission{status: status}}
+      when status in [:queued, :preparing, :admitting] ->
+        :ok
+
+      {:ok, %RunSubmission{status: :cancelled}} ->
+        transition_item(context, operation, item, state, :cancelled, run_id, nil)
+
+      {:ok, %RunSubmission{status: :failed, failure_kind: :unknown, error: error}} ->
+        transition_item(
+          context,
+          operation,
+          item,
+          state,
+          :outcome_unknown,
+          run_id,
+          error || unknown_failure(:submission_failed_unknown)
+        )
+
+      {:ok, %RunSubmission{status: :failed, error: error}} ->
+        transition_item(
+          context,
+          operation,
+          item,
+          state,
+          :failed,
+          run_id,
+          error || safe_failure(:submission_failed)
+        )
+
+      {:ok, %RunSubmission{}} ->
+        reconcile_missing_submission_result(context, operation, item, state, run_id)
+
+      {:error, %Error{kind: :not_found}} ->
+        reconcile_missing_submission_result(context, operation, item, state, run_id)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp reconcile_missing_submission_result(context, operation, item, state, run_id) do
+    case reconcile_materialization(context, operation, item, state, :run_not_found) do
+      :pending ->
+        transition_item(
+          context,
+          operation,
+          item,
+          state,
+          :outcome_unknown,
+          run_id,
+          unknown_failure(:run_not_found)
+        )
+
+      result ->
+        result
+    end
+  end
 
   defp reconcile_materialization(context, operation, item, state, _run_status) do
     generation_id =
@@ -1058,7 +1177,7 @@ defmodule FavnOrchestrator.RebuildDispatcher do
   defp submit_item(context, operation, action, item, run_id) do
     with {:ok, version, asset} <- version_asset(context, operation, action),
          {:ok, options} <- submission_options(operation, action, item, version, asset, run_id) do
-      RunManager.submit_pipeline_run(context, [asset.ref], options)
+      RunSubmissions.enqueue_pipeline_assets(context, [asset.ref], options)
     end
   end
 
@@ -1067,6 +1186,7 @@ defmodule FavnOrchestrator.RebuildDispatcher do
          {:ok, rebuild} <- rebuild_submission(operation, action, item, asset) do
       options = [
         run_id: run_id,
+        submission_source: :rebuild,
         manifest_version_id: version.manifest_version_id,
         dependencies: :none,
         rebuild: rebuild,
@@ -1147,27 +1267,39 @@ defmodule FavnOrchestrator.RebuildDispatcher do
     end)
   end
 
-  defp inspect_candidate(version, asset, candidate_relation) do
-    runtime = RuntimeConfig.current()
+  defp runner_binding(%RebuildAction{} = action) do
+    %{
+      runner_pool: action.runner_pool,
+      required_runner_release_id: action.required_runner_release_id
+    }
+  end
 
+  defp inspect_candidate(context, operation, action, version, asset, candidate_relation) do
     request = %RelationInspectionRequest{
       manifest_version_id: version.manifest_version_id,
       manifest_content_hash: version.content_hash,
-      required_runner_release_id: version.required_runner_release_id,
+      required_runner_release_id: action.required_runner_release_id,
+      asset_ref: asset.ref,
       relation: candidate_relation,
       include: [:relation, :columns, :table_metadata],
       sample_limit: 0
     }
 
     with {:ok, result} <-
-           RunnerDispatch.inspect_relation(
-             runtime.runner_client,
+           OperationRunnerTasks.ensure_and_await(
+             context,
+             version,
+             asset.ref,
+             :relation_inspection,
              request,
-             runtime.runner_client_opts
+             {:rebuild_candidate_inspection, operation.operation_id, action.target_id,
+              action.version},
+             runner_binding: runner_binding(action),
+             operation_id: operation.operation_id,
+             rebuild_operation_id: operation.operation_id
            ),
          {:ok, %PhysicalFingerprint{} = fingerprint} <-
            PhysicalFingerprint.from_inspection(result) do
-      _ = asset
       {:ok, fingerprint}
     end
   end
@@ -1235,7 +1367,7 @@ defmodule FavnOrchestrator.RebuildDispatcher do
        %GenerationActivationRequest{
          manifest_version_id: version.manifest_version_id,
          manifest_content_hash: version.content_hash,
-         required_runner_release_id: version.required_runner_release_id,
+         required_runner_release_id: action.required_runner_release_id,
          rebuild_operation_id: operation.operation_id,
          rebuild_action_id: action.target_id,
          target_id: action.target_id,
@@ -1524,7 +1656,7 @@ defmodule FavnOrchestrator.RebuildDispatcher do
          request <- %GenerationDiscardRequest{
            manifest_version_id: version.manifest_version_id,
            manifest_content_hash: version.content_hash,
-           required_runner_release_id: version.required_runner_release_id,
+           required_runner_release_id: action.required_runner_release_id,
            rebuild_operation_id: operation.operation_id,
            rebuild_action_id: action.target_id,
            target_id: action.target_id,
@@ -1535,12 +1667,18 @@ defmodule FavnOrchestrator.RebuildDispatcher do
            discard_token:
              command_id("cleanup-retired", operation.operation_id <> ":" <> action.target_id)
          },
-         runtime <- RuntimeConfig.current(),
          {:ok, %GenerationDiscardResult{} = result} <-
-           RunnerDispatch.discard_generation(
-             runtime.runner_client,
+           OperationRunnerTasks.ensure_and_await(
+             context,
+             version,
+             asset.ref,
+             :generation_discard,
              request,
-             runtime.runner_client_opts
+             {:rebuild_discard_retired, operation.operation_id, action.target_id,
+              previous_generation_id},
+             runner_binding: runner_binding(action),
+             operation_id: operation.operation_id,
+             rebuild_operation_id: operation.operation_id
            ),
          :ok <- GenerationDiscardResult.validate(result, request),
          true <- result.outcome in [:discarded, :already_absent] do
@@ -1760,8 +1898,13 @@ defmodule FavnOrchestrator.RebuildDispatcher do
 
   defp version_asset(context, operation, action) do
     with {:ok, version} <- ManifestStore.get_manifest(context, operation.manifest_version_id),
-         {:ok, asset} <- ManifestTarget.resolve_asset(version, action.target_id) do
+         {:ok, asset} <- ManifestTarget.resolve_asset(version, action.target_id),
+         {:ok, binding} <- OperationRunnerTasks.binding(version, asset.ref),
+         true <- binding == runner_binding(action) do
       {:ok, version, asset}
+    else
+      false -> {:error, :rebuild_runner_binding_mismatch}
+      {:error, _reason} = error -> error
     end
   end
 
@@ -1799,7 +1942,11 @@ defmodule FavnOrchestrator.RebuildDispatcher do
     do: command_id("activation", operation.operation_id <> ":" <> action.target_id)
 
   defp child_run_id(operation, item),
-    do: command_id("run-rebuild", operation.operation_id <> ":" <> item.item_id)
+    do:
+      command_id(
+        "run-rebuild",
+        operation.operation_id <> ":" <> item.target_id <> ":" <> item.item_id
+      )
 
   defp classified_failure(error) do
     cond do

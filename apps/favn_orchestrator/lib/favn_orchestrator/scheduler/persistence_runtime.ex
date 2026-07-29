@@ -12,7 +12,6 @@ defmodule FavnOrchestrator.Scheduler.PersistenceRuntime do
   require Logger
 
   alias Favn.Window.Policy
-  alias FavnOrchestrator.BoundedDispatcher
   alias FavnOrchestrator.Lifecycle
   alias FavnOrchestrator.ManifestStore
   alias FavnOrchestrator.ManifestIndexCache
@@ -23,11 +22,12 @@ defmodule FavnOrchestrator.Scheduler.PersistenceRuntime do
   alias FavnOrchestrator.Persistence.Commands.CommitScheduleEvaluation
   alias FavnOrchestrator.Persistence.Commands.CompleteScheduleOccurrence
   alias FavnOrchestrator.Persistence.Commands.ScheduleOccurrenceIntent
+  alias FavnOrchestrator.Persistence.Error
   alias FavnOrchestrator.Persistence.Results.ScheduleClaim
   alias FavnOrchestrator.Persistence.Results.ScheduleOccurrence
   alias FavnOrchestrator.Persistence.SystemContext
   alias FavnOrchestrator.Persistence.TargetIdentity
-  alias FavnOrchestrator.RunManager
+  alias FavnOrchestrator.RunSubmissions
   alias FavnOrchestrator.Runs
   alias FavnOrchestrator.Scheduler.Cron
   alias FavnOrchestrator.Scheduler.ManifestEntries
@@ -242,7 +242,8 @@ defmodule FavnOrchestrator.Scheduler.PersistenceRuntime do
     })
   end
 
-  defp evaluation(entry, claim, cursor, now) do
+  @doc false
+  def evaluation(entry, claim, cursor, now) do
     latest_due = Cron.latest_due(entry.schedule.cron, entry.schedule.timezone, now)
     active_run_id = cursor["in_flight_run_id"]
     queued_due = parse_datetime(cursor["queued_due_at"])
@@ -331,17 +332,54 @@ defmodule FavnOrchestrator.Scheduler.PersistenceRuntime do
       DateTime.add(after_due, state_tick_floor_ms(), :millisecond)
   end
 
-  defp reconcile_in_flight(context, %{"in_flight_run_id" => run_id} = cursor)
-       when is_binary(run_id) do
-    case Runs.get(context, run_id) do
-      {:ok, %{status: status}} when status in [:pending, :running] -> cursor
-      {:ok, _terminal} -> Map.put(cursor, "in_flight_run_id", nil)
-      {:error, %{kind: :not_found}} -> Map.put(cursor, "in_flight_run_id", nil)
-      {:error, _unavailable} -> cursor
+  @doc false
+  @spec reconcile_in_flight(
+          FavnOrchestrator.Persistence.WorkspaceContext.t(),
+          map(),
+          module(),
+          module()
+        ) :: map()
+  def reconcile_in_flight(context, cursor, runs \\ Runs, run_submissions \\ RunSubmissions)
+
+  def reconcile_in_flight(
+        context,
+        %{"in_flight_run_id" => run_id} = cursor,
+        runs,
+        run_submissions
+      )
+      when is_binary(run_id) do
+    case runs.get(context, run_id) do
+      {:ok, %{status: status}} when status in [:pending, :running] ->
+        cursor
+
+      {:ok, _terminal} ->
+        Map.put(cursor, "in_flight_run_id", nil)
+
+      {:error, %{kind: :not_found}} ->
+        reconcile_queued_submission(context, cursor, run_submissions)
+
+      {:error, _unavailable} ->
+        cursor
     end
   end
 
-  defp reconcile_in_flight(_context, cursor), do: cursor
+  def reconcile_in_flight(_context, cursor, _runs, _run_submissions), do: cursor
+
+  defp reconcile_queued_submission(context, %{"in_flight_run_id" => run_id} = cursor, submissions) do
+    case submissions.get(context, run_id) do
+      {:ok, %{status: status}} when status in [:failed, :cancelled, :superseded] ->
+        Map.put(cursor, "in_flight_run_id", nil)
+
+      {:ok, _pending_or_inconsistent} ->
+        cursor
+
+      {:error, %{kind: :not_found}} ->
+        Map.put(cursor, "in_flight_run_id", nil)
+
+      {:error, _unavailable} ->
+        cursor
+    end
+  end
 
   defp claim_occurrences(context, owner_id) do
     Persistence.stores().scheduler.claim_occurrences(%ClaimScheduleOccurrences{
@@ -363,13 +401,7 @@ defmodule FavnOrchestrator.Scheduler.PersistenceRuntime do
   end
 
   defp dispatch_occurrence(context, entries, %ScheduleOccurrence{} = occurrence) do
-    with {:ok, entry} <-
-           Map.fetch(entries, {occurrence.pipeline_target_id, occurrence.schedule_id}),
-         {:ok, %{status: :dispatching}} <-
-           authorize_occurrence_dispatch(context, entry, occurrence),
-         {:ok, run_id} <- submit_occurrence(context, entry, occurrence) do
-      complete_occurrence(context, occurrence, run_id, nil)
-    else
+    case Map.fetch(entries, {occurrence.pipeline_target_id, occurrence.schedule_id}) do
       :error ->
         complete_occurrence(
           context,
@@ -378,20 +410,34 @@ defmodule FavnOrchestrator.Scheduler.PersistenceRuntime do
           JsonSafe.error(:deployed_schedule_not_in_manifest)
         )
 
-      {:ok, %{status: :suppressed}} ->
-        :ok
+      {:ok, entry} ->
+        dispatch_known_occurrence(context, entry, occurrence)
+    end
+  end
+
+  defp dispatch_known_occurrence(context, entry, occurrence) do
+    with {:ok, submission} <- occurrence_submission(context, entry, occurrence),
+         {:ok, result} <- authorize_occurrence_dispatch(context, entry, occurrence, submission) do
+      case result.status do
+        status when status in [:completed, :suppressed] -> :ok
+        unexpected -> {:error, {:unexpected_schedule_occurrence_status, unexpected}}
+      end
+    else
+      {:error, %Error{retryable?: true} = error} ->
+        {:error, error}
 
       {:error, reason} ->
         complete_occurrence(context, occurrence, nil, JsonSafe.error(reason))
     end
   end
 
-  defp authorize_occurrence_dispatch(context, entry, occurrence) do
+  defp authorize_occurrence_dispatch(context, entry, occurrence, submission) do
     Persistence.stores().scheduler.authorize_occurrence_dispatch(
       %AuthorizeScheduleOccurrenceDispatch{
         workspace_context: context,
         command_id:
           command_id("occurrence-dispatch", occurrence.occurrence_id, occurrence.claim_generation),
+        submission: submission,
         occurrence_id: occurrence.occurrence_id,
         pipeline_target_id: occurrence.pipeline_target_id,
         schedule_id: occurrence.schedule_id,
@@ -403,31 +449,25 @@ defmodule FavnOrchestrator.Scheduler.PersistenceRuntime do
     )
   end
 
-  defp submit_occurrence(context, entry, occurrence) do
+  defp occurrence_submission(context, entry, occurrence) do
     occurrence_key = occurrence.payload["occurrence_key"]
     run_id = occurrence.payload["run_id"] || scheduled_run_id(occurrence_key)
 
-    case Runs.get(context, run_id) do
-      {:ok, run} ->
-        if persisted_occurrence_key(run) == occurrence_key,
-          do: {:ok, run_id},
-          else: {:error, {:scheduled_run_id_conflict, run_id}}
-
-      {:error, %{kind: :not_found}} ->
-        with {:ok, window_selection} <-
-               maybe_window_selection(entry.window, occurrence.due_at, entry.schedule.timezone) do
-          BoundedDispatcher.run(fn ->
-            RunManager.submit_pipeline_module_run(context, entry.module,
-              run_id: run_id,
-              manifest_version_id: entry.manifest_version_id,
-              trigger: trigger(entry, occurrence),
-              window_selection: window_selection
-            )
-          end)
-        end
-
-      {:error, reason} ->
-        {:error, reason}
+    with {:ok, window_selection} <-
+           maybe_window_selection(entry.window, occurrence.due_at, entry.schedule.timezone) do
+      RunSubmissions.build_target_command(
+        context,
+        :scheduler,
+        occurrence.deployment_id,
+        entry.manifest_version_id,
+        "pipeline",
+        occurrence.pipeline_target_id,
+        :pipeline,
+        occurrence.pipeline_target_id,
+        run_id: run_id,
+        trigger: trigger(entry, occurrence),
+        window_selection: window_selection
+      )
     end
   end
 
@@ -496,13 +536,6 @@ defmodule FavnOrchestrator.Scheduler.PersistenceRuntime do
     do: "occurrence:" <> digest({workspace_id, key})
 
   defp scheduled_run_id(key), do: "run_schedule_" <> digest(key)
-
-  defp persisted_occurrence_key(%{trigger: trigger}) when is_map(trigger) do
-    occurrence = Map.get(trigger, :occurrence) || Map.get(trigger, "occurrence") || %{}
-    Map.get(occurrence, :occurrence_key) || Map.get(occurrence, "occurrence_key")
-  end
-
-  defp persisted_occurrence_key(_run), do: nil
 
   defp clear_tracking(cursor),
     do: cursor |> Map.put("in_flight_run_id", nil) |> Map.put("queued_due_at", nil)

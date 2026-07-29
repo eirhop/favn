@@ -40,7 +40,7 @@ defmodule FavnOrchestrator.API.OperatorCommands do
       manifest_version_id,
       target,
       command_input,
-      opts
+      Keyword.put(opts, :submission_source, :api)
     )
   end
 

@@ -150,7 +150,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StepAttemptLifecycleTest do
 
     assert {:ok, %{work: work}} = StepAttemptLifecycle.build_work(lifecycle, index)
     assert work.run_started_at == run.inserted_at
-    assert work.required_runner_release_id == run.required_runner_release_id
+    assert work.required_runner_release_id == run.runner_releases["default"]
   end
 
   test "runner work returns an explicit error when the compact index lacks the planned asset" do
@@ -181,7 +181,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StepAttemptLifecycleTest do
         id: "run_missing_compact_asset",
         manifest_version_id: "mv_missing_compact_asset",
         manifest_content_hash: "hash_missing_compact_asset",
-        required_runner_release_id: FavnTestSupport.runner_release_id(),
+        runner_releases: %{"default" => FavnTestSupport.runner_release_id()},
         asset_ref: ref,
         target_refs: [ref],
         plan: plan
@@ -210,7 +210,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StepAttemptLifecycleTest do
     version = %Version{
       manifest_version_id: "mv_generation_work",
       content_hash: String.duplicate("c", 64),
-      required_runner_release_id: FavnTestSupport.runner_release_id(),
+      runner_releases: %{"default" => FavnTestSupport.runner_release_id()},
       manifest: %Manifest{assets: [upstream, target], graph: graph}
     }
 
@@ -241,7 +241,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StepAttemptLifecycleTest do
         id: "run_generation_work",
         manifest_version_id: version.manifest_version_id,
         manifest_content_hash: version.content_hash,
-        required_runner_release_id: version.required_runner_release_id,
+        runner_releases: version.runner_releases,
         asset_ref: target_ref,
         target_refs: [target_ref],
         plan: plan
@@ -287,7 +287,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StepAttemptLifecycleTest do
     version = %Version{
       manifest_version_id: "mv_generation_read_work",
       content_hash: String.duplicate("d", 64),
-      required_runner_release_id: FavnTestSupport.runner_release_id(),
+      runner_releases: %{"default" => FavnTestSupport.runner_release_id()},
       manifest: %Manifest{assets: [upstream, target], graph: graph}
     }
 
@@ -325,7 +325,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StepAttemptLifecycleTest do
         id: "run_generation_read_work",
         manifest_version_id: version.manifest_version_id,
         manifest_content_hash: version.content_hash,
-        required_runner_release_id: version.required_runner_release_id,
+        runner_releases: version.runner_releases,
         asset_ref: target_ref,
         target_refs: [target_ref],
         plan: plan
@@ -362,7 +362,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StepAttemptLifecycleTest do
     version = %Version{
       manifest_version_id: "mv_non_persisted_generation_read_work",
       content_hash: String.duplicate("e", 64),
-      required_runner_release_id: FavnTestSupport.runner_release_id(),
+      runner_releases: %{"default" => FavnTestSupport.runner_release_id()},
       manifest: %Manifest{assets: [upstream, target], graph: graph}
     }
 
@@ -409,7 +409,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StepAttemptLifecycleTest do
         id: "run_non_persisted_generation_read_work",
         manifest_version_id: version.manifest_version_id,
         manifest_content_hash: version.content_hash,
-        required_runner_release_id: version.required_runner_release_id,
+        runner_releases: version.runner_releases,
         asset_ref: target_ref,
         target_refs: [target_ref],
         plan: plan
@@ -430,7 +430,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StepAttemptLifecycleTest do
       id: "run_lifecycle_test",
       manifest_version_id: "mv_lifecycle_test",
       manifest_content_hash: "hash_lifecycle_test",
-      required_runner_release_id: FavnTestSupport.runner_release_id(),
+      runner_releases: %{"default" => FavnTestSupport.runner_release_id()},
       asset_ref: {MyApp.Assets.Lifecycle, :asset},
       max_attempts: Keyword.get(opts, :max_attempts, 1),
       retry_backoff_ms: Keyword.get(opts, :retry_backoff_ms, 0)

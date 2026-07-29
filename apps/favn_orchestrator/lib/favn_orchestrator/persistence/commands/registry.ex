@@ -340,7 +340,7 @@ defmodule FavnOrchestrator.Persistence.Results.RuntimeState do
     :manifest_content_hash,
     :schema_version,
     :runner_contract_version,
-    :required_runner_release_id,
+    :runner_releases,
     :asset_count,
     :pipeline_count,
     :schedule_count
@@ -355,7 +355,7 @@ defmodule FavnOrchestrator.Persistence.Results.RuntimeState do
           manifest_content_hash: String.t() | nil,
           schema_version: pos_integer() | nil,
           runner_contract_version: pos_integer() | nil,
-          required_runner_release_id: String.t() | nil,
+          runner_releases: Favn.RunnerPool.releases() | nil,
           asset_count: non_neg_integer() | nil,
           pipeline_count: non_neg_integer() | nil,
           schedule_count: non_neg_integer() | nil

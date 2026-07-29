@@ -51,8 +51,8 @@ Copy the deployment example into a consumer project:
 mix favn.init --target deployment
 ```
 
-Choose one immutable runner release ID and use it for both the image and
-manifest:
+Choose an immutable release ID for each runner image and bind its logical pool
+to the same ID in the manifest:
 
 ```bash
 export RUNNER_RELEASE_ID="rr_<64-lowercase-hex-characters>"
@@ -65,7 +65,7 @@ docker build \
   .
 
 MIX_ENV=prod mix favn.build.manifest \
-  --runner-release-id "$RUNNER_RELEASE_ID"
+  --runner-release "default=$RUNNER_RELEASE_ID"
 ```
 
 The runner image is customer-owned because it contains customer code,
@@ -77,9 +77,9 @@ be built or published.
 The supported first topology is:
 
 - one control-plane container;
-- one customer runner container;
+- zero to N customer runner processes across user-defined logical pools;
 - one externally supplied PostgreSQL database;
-- a private network path between control plane and runner;
+- a private network path from runners to the control plane;
 - ingress only to the View, and only the required private management paths.
 
 The control-plane, runner, manifest, and PostgreSQL schema must come from one

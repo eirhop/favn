@@ -127,6 +127,27 @@ defmodule FavnOrchestrator.API.Authentication do
     end
   end
 
+  @doc "Builds read-only capacity authority from a separately scoped service token."
+  @spec capacity_context(Plug.Conn.t()) ::
+          {:ok, PlatformContext.t(), String.t()} | {:error, :service_unauthorized | :forbidden}
+  def capacity_context(conn) do
+    with {:ok, principal} <- authenticate_platform_service(conn),
+         true <- :capacity_reader in principal.platform_roles,
+         identity <- principal.service_identity,
+         {:ok, context} <-
+           PlatformContext.new(
+             "capacity:" <> identity,
+             "capacity-api:" <> identity,
+             [:platform_reader]
+           ) do
+      {:ok, context, identity}
+    else
+      false -> {:error, :forbidden}
+      {:error, :invalid_context} -> {:error, :forbidden}
+      {:error, _reason} = error -> error
+    end
+  end
+
   defp persisted_actor_context(conn, context) do
     case header(conn, "x-favn-session-token") do
       token when is_binary(token) and token != "" ->

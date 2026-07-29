@@ -72,6 +72,7 @@ defmodule FavnOrchestrator.Persistence.Commands.AuthorizeScheduleOccurrenceDispa
   @enforce_keys [
     :workspace_context,
     :command_id,
+    :submission,
     :occurrence_id,
     :pipeline_target_id,
     :schedule_id,
@@ -83,6 +84,7 @@ defmodule FavnOrchestrator.Persistence.Commands.AuthorizeScheduleOccurrenceDispa
   defstruct [
     :workspace_context,
     :command_id,
+    :submission,
     :occurrence_id,
     :pipeline_target_id,
     :schedule_id,
@@ -95,6 +97,7 @@ defmodule FavnOrchestrator.Persistence.Commands.AuthorizeScheduleOccurrenceDispa
   @type t :: %__MODULE__{
           workspace_context: WorkspaceContext.t(),
           command_id: String.t(),
+          submission: FavnOrchestrator.Persistence.Commands.EnqueueRunSubmission.t(),
           occurrence_id: String.t(),
           pipeline_target_id: String.t(),
           schedule_id: String.t(),

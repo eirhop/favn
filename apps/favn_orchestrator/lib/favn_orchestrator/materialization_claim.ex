@@ -29,7 +29,7 @@ defmodule FavnOrchestrator.MaterializationClaim do
     :run_id,
     :asset_step_id,
     :node_key,
-    :runner_execution_id,
+    :runner_task_id,
     :manifest_version_id,
     :manifest_content_hash,
     :target_generation_id,
@@ -55,7 +55,7 @@ defmodule FavnOrchestrator.MaterializationClaim do
           run_id: String.t() | nil,
           asset_step_id: String.t() | nil,
           node_key: term() | nil,
-          runner_execution_id: String.t() | nil,
+          runner_task_id: String.t() | nil,
           manifest_version_id: String.t() | nil,
           manifest_content_hash: String.t() | nil,
           target_generation_id: String.t() | nil,
@@ -75,7 +75,7 @@ defmodule FavnOrchestrator.MaterializationClaim do
   @optional_binary_fields [
     :run_id,
     :asset_step_id,
-    :runner_execution_id,
+    :runner_task_id,
     :manifest_version_id,
     :manifest_content_hash,
     :freshness_version

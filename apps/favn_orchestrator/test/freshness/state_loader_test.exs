@@ -27,6 +27,8 @@ defmodule FavnOrchestrator.Freshness.StateLoaderTest do
     stores = %Stores{
       registry: FakeStore,
       runs: FakeStore,
+      run_submissions: FakeStore,
+      runner_tasks: FavnOrchestrator.TestRunnerTaskStore,
       run_ownership: FakeStore,
       scheduler: FakeStore,
       admission: FakeStore,

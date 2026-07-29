@@ -231,7 +231,7 @@ defmodule FavnOrchestrator.Logs do
 
     with :ok <- validate_optional_binary(normalized, :run_id),
          :ok <- validate_optional_binary(normalized, :asset_step_id),
-         :ok <- validate_optional_binary(normalized, :runner_execution_id),
+         :ok <- validate_optional_binary(normalized, :runner_task_id),
          :ok <- validate_optional_binary(normalized, :node_key),
          :ok <- validate_optional_binary(normalized, :asset_ref),
          :ok <- validate_optional_datetime(normalized, :since),
@@ -324,7 +324,7 @@ defmodule FavnOrchestrator.Logs do
       asset_step_id: metadata_value(metadata, :asset_step_id),
       node_key: metadata_value(metadata, :node_key),
       asset_ref: metadata_value(metadata, :asset_ref),
-      runner_execution_id: metadata_value(metadata, :runner_execution_id),
+      runner_task_id: metadata_value(metadata, :runner_task_id),
       attempt: metadata_value(metadata, :attempt),
       producer_id: metadata_value(metadata, :producer_id),
       producer_sequence: metadata_value(metadata, :producer_sequence),

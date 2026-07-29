@@ -2,9 +2,8 @@ defmodule FavnOrchestrator.RunState do
   @moduledoc """
   Persisted run snapshot owned by the orchestrator control plane.
 
-  New runs require the exact runner release selected by their immutable
-  deployment manifest. A nil release id exists only when decoding a historical
-  terminal snapshot for read-only audit display.
+  New runs pin the complete logical runner-pool release map selected by their
+  immutable deployment manifest.
   """
 
   @default_timeout_ms 30 * 60 * 1000
@@ -21,7 +20,7 @@ defmodule FavnOrchestrator.RunState do
           deployment_id: String.t() | nil,
           manifest_version_id: String.t(),
           manifest_content_hash: String.t(),
-          required_runner_release_id: String.t() | nil,
+          runner_releases: Favn.RunnerPool.releases(),
           asset_ref: Favn.Ref.t(),
           target_refs: [Favn.Ref.t()],
           plan: Favn.Plan.t() | nil,
@@ -40,7 +39,7 @@ defmodule FavnOrchestrator.RunState do
           max_attempts: pos_integer(),
           retry_backoff_ms: non_neg_integer(),
           timeout_ms: pos_integer(),
-          runner_execution_id: String.t() | nil,
+          runner_task_id: String.t() | nil,
           result: map() | nil,
           error: term() | nil,
           inserted_at: DateTime.t() | nil,
@@ -55,7 +54,7 @@ defmodule FavnOrchestrator.RunState do
     :deployment_id,
     :manifest_version_id,
     :manifest_content_hash,
-    :required_runner_release_id,
+    :runner_releases,
     :asset_ref,
     :plan,
     :plan_hash,
@@ -78,7 +77,7 @@ defmodule FavnOrchestrator.RunState do
     max_attempts: 1,
     retry_backoff_ms: 0,
     timeout_ms: @default_timeout_ms,
-    runner_execution_id: nil,
+    runner_task_id: nil,
     result: nil,
     error: nil
   ]
@@ -88,6 +87,7 @@ defmodule FavnOrchestrator.RunState do
   def new(opts) when is_list(opts) do
     now = DateTime.utc_now()
     plan = Keyword.get(opts, :plan)
+    runner_releases = runner_releases_from_opts!(opts)
 
     %__MODULE__{
       id: Keyword.fetch!(opts, :id),
@@ -95,7 +95,7 @@ defmodule FavnOrchestrator.RunState do
       deployment_id: Keyword.get(opts, :deployment_id),
       manifest_version_id: Keyword.fetch!(opts, :manifest_version_id),
       manifest_content_hash: Keyword.fetch!(opts, :manifest_content_hash),
-      required_runner_release_id: Keyword.fetch!(opts, :required_runner_release_id),
+      runner_releases: runner_releases,
       asset_ref: Keyword.fetch!(opts, :asset_ref),
       target_refs: normalize_refs(Keyword.get(opts, :target_refs, [])),
       plan: plan,
@@ -119,6 +119,10 @@ defmodule FavnOrchestrator.RunState do
       updated_at: now
     }
     |> with_snapshot_hash()
+  end
+
+  defp runner_releases_from_opts!(opts) do
+    Keyword.fetch!(opts, :runner_releases)
   end
 
   @doc false
@@ -260,10 +264,22 @@ defmodule FavnOrchestrator.RunState do
   @spec plan_hash(Favn.Plan.t() | nil) :: String.t()
   def plan_hash(plan) do
     plan
+    |> normalize_plan_for_hash()
     |> :erlang.term_to_binary([:deterministic])
     |> then(&:crypto.hash(:sha256, &1))
     |> Base.encode16(case: :lower)
   end
+
+  defp normalize_plan_for_hash(%Favn.Plan{nodes: nodes} = plan) do
+    nodes =
+      Map.new(nodes, fn {node_key, node} ->
+        {node_key, Map.put_new(node, :runner_pool, nil)}
+      end)
+
+    %{plan | nodes: nodes}
+  end
+
+  defp normalize_plan_for_hash(plan), do: plan
 
   defp ensure_plan_hash(%__MODULE__{plan_hash: hash} = run)
        when is_binary(hash) and byte_size(hash) == 64,
@@ -286,7 +302,7 @@ defmodule FavnOrchestrator.RunState do
       :deployment_id,
       :manifest_version_id,
       :manifest_content_hash,
-      :required_runner_release_id
+      :runner_releases
     ]
 
     if Enum.any?(immutable_identity, fn field ->

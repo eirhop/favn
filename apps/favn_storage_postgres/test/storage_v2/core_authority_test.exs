@@ -6,6 +6,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
 
   alias Ecto.Adapters.SQL
   alias Ecto.Adapters.SQL.Sandbox
+  alias Favn.Contracts.GenerationCapabilitiesRequest
   alias Favn.Manifest
   alias Favn.Manifest.ExecutionPackage
   alias Favn.Manifest.Graph
@@ -26,8 +27,8 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnOrchestrator.Persistence.Commands.BackfillMissingProjection
   alias FavnOrchestrator.Persistence.Commands.AppendBackfillPlanBatch
   alias FavnOrchestrator.Persistence.Commands.BackfillPlanWindow
+  alias FavnOrchestrator.Persistence.Commands.BeginRebuildPlan
   alias FavnOrchestrator.Persistence.Commands.CommitRunTransition
-  alias FavnOrchestrator.Persistence.Commands.AdvanceRunnerExecution
   alias FavnOrchestrator.Persistence.Commands.ClaimRun
   alias FavnOrchestrator.Persistence.Commands.ClaimRebuildItems
   alias FavnOrchestrator.Persistence.Commands.ClaimRebuildOperation
@@ -35,7 +36,9 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnOrchestrator.Persistence.Commands.ClaimBackfillWindows
   alias FavnOrchestrator.Persistence.Commands.CreateRun
   alias FavnOrchestrator.Persistence.Commands.CreateRebuildPlan
-  alias FavnOrchestrator.Persistence.Commands.CreateTargetRecoveryPlan
+  alias FavnOrchestrator.Persistence.Commands.CreateTargetRecoveryIntent
+  alias FavnOrchestrator.Persistence.Commands.FailTargetRecovery
+  alias FavnOrchestrator.Persistence.Commands.FinalizeTargetRecoveryPlan
   alias FavnOrchestrator.Persistence.Commands.CreateActor
   alias FavnOrchestrator.Persistence.Commands.CreateSession
   alias FavnOrchestrator.Persistence.Commands.DeployManifest
@@ -48,12 +51,13 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnOrchestrator.Persistence.Commands.PurgePersistence
   alias FavnOrchestrator.Persistence.Commands.RegisterManifest
   alias FavnOrchestrator.Persistence.Commands.RegisterExecutionPackages
-  alias FavnOrchestrator.Persistence.Commands.RecordRunnerDispatch
   alias FavnOrchestrator.Persistence.Commands.RequestRunCancellation
   alias FavnOrchestrator.Persistence.Commands.ReleaseRunOwnership
   alias FavnOrchestrator.Persistence.Commands.ReleaseTargetOperationLocks
   alias FavnOrchestrator.Persistence.Commands.FinishMaterialization
   alias FavnOrchestrator.Persistence.Commands.EnsureWritableTargetGeneration
+  alias FavnOrchestrator.Persistence.Commands.EnqueueRunSubmission
+  alias FavnOrchestrator.Persistence.Commands.EnqueueRunnerTask
   alias FavnOrchestrator.Persistence.Commands.BeginTargetRecovery
   alias FavnOrchestrator.Persistence.Commands.ReconcileInitialTargetGeneration
   alias FavnOrchestrator.Persistence.Commands.AppendLogBatch
@@ -62,11 +66,11 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnOrchestrator.Persistence.Commands.PurgeLogs
   alias FavnOrchestrator.Persistence.Commands.RevokeSessions
   alias FavnOrchestrator.Persistence.Commands.RenewMaterializationClaim
+  alias FavnOrchestrator.Persistence.Commands.RenewRebuildOperationLease
   alias FavnOrchestrator.Persistence.Commands.RenewRunOwnership
   alias FavnOrchestrator.Persistence.Commands.ClaimDueSchedules
   alias FavnOrchestrator.Persistence.Commands.ClaimScheduleOccurrences
   alias FavnOrchestrator.Persistence.Commands.CommitScheduleEvaluation
-  alias FavnOrchestrator.Persistence.Commands.CompleteScheduleOccurrence
   alias FavnOrchestrator.Persistence.Commands.ScheduleOccurrenceIntent
   alias FavnOrchestrator.Persistence.Commands.SetScheduleActivation
   alias FavnOrchestrator.Persistence.Commands.StartBackfillPlan
@@ -95,6 +99,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnOrchestrator.Persistence.Queries.GetSession
   alias FavnOrchestrator.Persistence.Queries.GetRun
   alias FavnOrchestrator.Persistence.Queries.GetRuntimeInputs
+  alias FavnOrchestrator.Persistence.Queries.GetRunnerTask
   alias FavnOrchestrator.Persistence.Queries.GetTargetStatuses
   alias FavnOrchestrator.Persistence.Queries.GetMaterializations
   alias FavnOrchestrator.Persistence.Queries.GetAssetWindowStates
@@ -112,7 +117,6 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnOrchestrator.Persistence.Queries.PageLogs
   alias FavnOrchestrator.Persistence.Queries.PageRunEvents
   alias FavnOrchestrator.Persistence.Queries.PagePublishedRunEvents
-  alias FavnOrchestrator.Persistence.Queries.PageRunnerExecutions
   alias FavnOrchestrator.Persistence.Queries.PageTargetRuns
   alias FavnOrchestrator.Persistence.Queries.PageBackfillWindows
   alias FavnOrchestrator.Persistence.Queries.PageRuns
@@ -138,11 +142,14 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnOrchestrator.Lifecycle
   alias FavnOrchestrator.Manifests
   alias FavnOrchestrator.Operator.Catalogue
-  alias FavnOrchestrator.RunExecutionOwnership
   alias FavnOrchestrator.RunManager.SubmissionBuilder
   alias FavnOrchestrator.RunOwnership
   alias FavnOrchestrator.RunReadModel
   alias FavnOrchestrator.RunServer
+  alias FavnOrchestrator.RunnerTaskResultRouter
+  alias FavnOrchestrator.RunnerTasks
+  alias FavnOrchestrator.Persistence.Commands.ClaimRunnerTask
+  alias FavnOrchestrator.Persistence.SystemContext
   alias FavnOrchestrator.RunServer.Execution.PipelineRetryCheckpoint
   alias FavnOrchestrator.TargetStatus
   alias FavnOrchestrator.TransitionWriter
@@ -163,8 +170,12 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnStoragePostgres.Repo
   alias FavnStoragePostgres.RuntimeInputKeyInventory
   alias FavnStoragePostgres.RunOwnership.Store, as: RunOwnershipStore
+  alias FavnStoragePostgres.RunSubmissions.Store, as: RunSubmissionStore
+  alias FavnStoragePostgres.RunnerTasks.Codec, as: RunnerTaskCodec
+  alias FavnStoragePostgres.RunnerTasks.Store, as: RunnerTaskStore
   alias FavnStoragePostgres.Runs.Store, as: RunStore
   alias FavnStoragePostgres.Schemas.ManifestVersion, as: ManifestVersionRow
+  alias FavnStoragePostgres.Schemas.RebuildOperation, as: RebuildOperationRow
   alias FavnStoragePostgres.Schemas.RuntimeInputPin, as: RuntimeInputPinRow
   alias FavnStoragePostgres.Scheduler.Store, as: SchedulerStore
   alias FavnStoragePostgres.TargetGenerations.Store, as: TargetGenerationStore
@@ -330,6 +341,8 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
       target_id: fixture.target_id,
       ordinal: 0,
       action: :rebuild,
+      runner_pool: "default",
+      required_runner_release_id: fixture.version.runner_releases["default"],
       reason: %{reason_code: "test_rebuild"},
       upstream_impact: %{},
       pinned_input_generation_ids: [],
@@ -400,17 +413,122 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
       actions: [action],
       items: [item],
       occurred_at: occurred_at,
+      idempotency: nil
+    }
+
+    planning_payload = %{
+      schema_version: 1,
+      status: :planning,
+      operation_id: operation_id,
+      manifest_version_id: fixture.version.manifest_version_id,
+      manifest_content_hash: fixture.version.content_hash,
+      deployment_id: fixture.deployment_id
+    }
+
+    begin = %BeginRebuildPlan{
+      workspace_context: fixture.workspace_context,
+      command_id: "rebuild:begin:" <> fixture.workspace_id,
+      operation_id: operation_id,
+      root_target_id: fixture.target_id,
+      manifest_version_id: fixture.version.manifest_version_id,
+      planning_hash: RebuildPlan.hash(planning_payload),
+      planning_payload: planning_payload,
+      actor_id: fixture.workspace_context.principal_id,
+      reason: "test immutable rebuild",
+      idempotency_key: operation_id,
+      evaluated_at: occurred_at,
+      occurred_at: occurred_at,
       idempotency: plan_idempotency
     }
+
+    assert {:ok, planning} = RebuildStore.begin_plan(begin)
+    assert planning.state == :planning
+    assert planning.action_count == 0
+    assert planning.window_count == 0
+
+    planning_cancel_operation_id = "rebuild-planning-cancel:" <> fixture.workspace_id
+
+    planning_cancel_payload = %{
+      planning_payload
+      | operation_id: planning_cancel_operation_id
+    }
+
+    assert {:ok, %{state: :planning}} =
+             RebuildStore.begin_plan(%{
+               begin
+               | command_id: "rebuild:begin-planning-cancel:" <> fixture.workspace_id,
+                 operation_id: planning_cancel_operation_id,
+                 planning_hash: RebuildPlan.hash(planning_cancel_payload),
+                 planning_payload: planning_cancel_payload,
+                 idempotency_key: planning_cancel_operation_id,
+                 idempotency: nil
+             })
+
+    planning_task_id = "rt_planning_cancel_" <> fixture.workspace_id
+
+    planning_request = %GenerationCapabilitiesRequest{
+      manifest: %{fixture.version | manifest: nil},
+      asset_ref: {MyApp.Asset, :asset}
+    }
+
+    {:ok, planning_task_payload, planning_task_hash} =
+      RunnerTaskCodec.encode_payload(:generation_capabilities, planning_request)
+
+    {:ok, planning_task_context} = RunnerTaskCodec.encode_orchestration_context(%{})
+
+    assert {:ok, %{status: :queued}} =
+             RunnerTaskStore.enqueue(%EnqueueRunnerTask{
+               workspace_context: fixture.workspace_context,
+               command_id: "enqueue:planning-cancel:" <> fixture.workspace_id,
+               task_id: planning_task_id,
+               domain_identity: "planning-cancel:" <> fixture.workspace_id,
+               task_kind: :generation_capabilities,
+               runner_pool: "default",
+               required_runner_release_id: fixture.version.runner_releases["default"],
+               retry_class: :safe_to_retry,
+               payload: planning_task_payload,
+               payload_hash: planning_task_hash,
+               orchestration_context: planning_task_context,
+               operation_id: planning_cancel_operation_id,
+               required_capability: "generation_capabilities",
+               issued_at: occurred_at,
+               occurred_at: occurred_at
+             })
+
+    assert {:ok, planning_cancelled} =
+             RebuildStore.request_cancellation(%RequestRebuildCancellation{
+               workspace_context: fixture.workspace_context,
+               command_id: "rebuild:cancel-planning:" <> fixture.workspace_id,
+               operation_id: planning_cancel_operation_id,
+               reason: "operator cancelled during planning",
+               occurred_at: occurred_at
+             })
+
+    assert planning_cancelled.state == :cancelled
+    assert planning_cancelled.phase == :terminal
+    assert planning_cancelled.candidate_generation_id == nil
+    assert planning_cancelled.action_count == 0
+    assert planning_cancelled.window_count == 0
+
+    assert {:ok, planning_task} =
+             RunnerTaskStore.get(%GetRunnerTask{
+               workspace_context: fixture.workspace_context,
+               task_id: planning_task_id
+             })
+
+    assert planning_task.status == :cancelled
+    assert planning_task.cancellation_requested_at == occurred_at
+    assert planning_task.terminal_at == occurred_at
 
     assert {:ok, planned} = RebuildStore.create_plan(create)
     assert planned.state == :planned
     assert planned.plan_hash == plan_hash
     refute planned.idempotency_replay?
     assert planned.actions |> hd() |> Map.fetch!(:progress) == %{planned: 1, total: 1}
-    assert {:ok, replayed_plan} = RebuildStore.create_plan(create)
+    assert {:ok, replayed_plan} = RebuildStore.begin_plan(begin)
     assert replayed_plan.idempotency_replay?
     assert %{replayed_plan | idempotency_replay?: false} == planned
+    assert {:ok, ^planned} = RebuildStore.create_plan(create)
 
     changed_payload = Map.put(payload, :target_id, fixture.target_id <> ":changed")
 
@@ -492,6 +610,43 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
              })
 
     assert claimed_operation.dispatcher.fencing_token == 1
+
+    claimed_row =
+      Repo.get_by!(RebuildOperationRow,
+        workspace_id: fixture.workspace_id,
+        operation_id: operation_id
+      )
+
+    assert :ok =
+             RebuildStore.renew_operation_lease(%RenewRebuildOperationLease{
+               workspace_context: fixture.workspace_context,
+               command_id: "rebuild:renew-operation:" <> fixture.workspace_id,
+               operation_id: operation_id,
+               owner_id: "rebuild-dispatcher",
+               fencing_token: claimed_operation.dispatcher.fencing_token,
+               lease_duration_ms: 60_000,
+               occurred_at: occurred_at
+             })
+
+    renewed_row =
+      Repo.get_by!(RebuildOperationRow,
+        workspace_id: fixture.workspace_id,
+        operation_id: operation_id
+      )
+
+    assert renewed_row.version == claimed_row.version
+    assert DateTime.after?(renewed_row.dispatcher_expires_at, claimed_row.dispatcher_expires_at)
+
+    assert {:error, %{kind: :fenced}} =
+             RebuildStore.renew_operation_lease(%RenewRebuildOperationLease{
+               workspace_context: fixture.workspace_context,
+               command_id: "rebuild:renew-operation-stale:" <> fixture.workspace_id,
+               operation_id: operation_id,
+               owner_id: "rebuild-dispatcher",
+               fencing_token: claimed_operation.dispatcher.fencing_token + 1,
+               lease_duration_ms: 60_000,
+               occurred_at: occurred_at
+             })
 
     assert {:ok, building} =
              RebuildStore.transition_operation(%TransitionRebuildOperation{
@@ -590,6 +745,10 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
              })
 
     planned_action = hd(building.actions)
+    assert planned_action.runner_pool == "default"
+
+    assert planned_action.required_runner_release_id ==
+             fixture.version.runner_releases["default"]
 
     assert {:ok, running_action} =
              RebuildStore.transition_action(%TransitionRebuildAction{
@@ -763,19 +922,37 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
         items_digest: RebuildPlan.hash(%{items: [Map.from_struct(cancel_item)]})
     }
 
-    assert {:ok, cancel_planned} =
-             RebuildStore.create_plan(%{
-               create
-               | command_id: "rebuild:create-cancel:" <> fixture.workspace_id,
+    cancel_create = %{
+      create
+      | command_id: "rebuild:create-cancel:" <> fixture.workspace_id,
+        operation_id: cancel_operation_id,
+        candidate_generation_id: cancel_candidate_id,
+        plan_hash: RebuildPlan.hash(cancel_payload),
+        plan_payload: cancel_payload,
+        idempotency_key: cancel_operation_id,
+        actions: [cancel_action],
+        items: [cancel_item],
+        idempotency: nil
+    }
+
+    cancel_planning_payload = %{
+      planning_payload
+      | operation_id: cancel_operation_id
+    }
+
+    assert {:ok, %{state: :planning}} =
+             RebuildStore.begin_plan(%{
+               begin
+               | command_id: "rebuild:begin-cancel:" <> fixture.workspace_id,
                  operation_id: cancel_operation_id,
-                 candidate_generation_id: cancel_candidate_id,
-                 plan_hash: RebuildPlan.hash(cancel_payload),
-                 plan_payload: cancel_payload,
+                 planning_hash: RebuildPlan.hash(cancel_planning_payload),
+                 planning_payload: cancel_planning_payload,
                  idempotency_key: cancel_operation_id,
-                 actions: [cancel_action],
-                 items: [cancel_item],
                  idempotency: nil
              })
+
+    assert {:ok, cancel_planned} =
+             RebuildStore.create_plan(cancel_create)
 
     assert {:ok, cancel_queued} =
              RebuildStore.start_operation(%StartRebuildOperation{
@@ -1260,8 +1437,22 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     operation_id = "target-recovery:" <> run.id
     plan_hash = String.duplicate("b", 64)
 
-    assert {:ok, planned} =
-             TargetRecoveryStore.create_plan(%CreateTargetRecoveryPlan{
+    plan_payload = %{
+      "expires_at" => "2099-01-01T00:00:00Z",
+      "physical_relation_instance_id" =>
+        Favn.TargetGenerationRelation.instance_id("recovery-token:" <> run.id),
+      "data_plane_marker" => %{
+        "target_id" => fixture.target_id,
+        "active_relation" => candidate.generation.physical_relation,
+        "active_generation_id" => candidate.generation.target_generation_id,
+        "activation_operation_id" => "target-recovery-marker:" <> run.id,
+        "activation_token" => "recovery-token:" <> run.id,
+        "activated_at" => DateTime.to_iso8601(occurred_at)
+      }
+    }
+
+    assert {:ok, intent} =
+             TargetRecoveryStore.create_intent(%CreateTargetRecoveryIntent{
                workspace_context: fixture.workspace_context,
                command_id: "recovery:plan:" <> run.id,
                operation_id: operation_id,
@@ -1271,33 +1462,85 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
                source_manifest_id: fixture.version.manifest_version_id,
                target_generation_id: candidate.generation.target_generation_id,
                materialization_id: materialization_id,
-               plan_hash: plan_hash,
-               plan_payload: %{
-                 "expires_at" => "2099-01-01T00:00:00Z",
-                 "physical_relation_instance_id" =>
-                   Favn.TargetGenerationRelation.instance_id("recovery-token:" <> run.id),
-                 "data_plane_marker" => %{
-                   "target_id" => fixture.target_id,
-                   "active_relation" => candidate.generation.physical_relation,
-                   "active_generation_id" => candidate.generation.target_generation_id,
-                   "activation_operation_id" => "target-recovery-marker:" <> run.id,
-                   "activation_token" => "recovery-token:" <> run.id,
-                   "activated_at" => DateTime.to_iso8601(occurred_at)
-                 }
-               },
                actor_id: "recovery-admin",
                reason: "recover interrupted initial materialization",
                idempotency_key: operation_id,
                expected_binding_version: candidate.binding.version,
-               expected_physical_fingerprint: fingerprint,
                evaluated_at: occurred_at,
+               occurred_at: occurred_at
+             })
+
+    assert intent.state == :planning
+
+    assert_raise Postgrex.Error, fn ->
+      SQL.query!(
+        Repo,
+        """
+        UPDATE favn_control.target_recovery_operations
+        SET state = 'applying',
+            phase = 'marker_intent',
+            recovery_token = 'invalid-without-frozen-plan',
+            started_at = $3
+        WHERE workspace_id = $1 AND operation_id = $2
+        """,
+        [fixture.workspace_id, operation_id, occurred_at]
+      )
+    end
+
+    failed_planning_operation_id = operation_id <> ":planning-failure"
+
+    assert {:ok, failed_intent} =
+             TargetRecoveryStore.create_intent(%CreateTargetRecoveryIntent{
+               workspace_context: fixture.workspace_context,
+               command_id: "recovery:failed-plan:" <> run.id,
+               operation_id: failed_planning_operation_id,
+               target_id: fixture.target_id,
+               recovery_kind: :reconcile_initial_generation,
+               desired_manifest_id: fixture.version.manifest_version_id,
+               source_manifest_id: fixture.version.manifest_version_id,
+               target_generation_id: candidate.generation.target_generation_id,
+               materialization_id: materialization_id,
+               actor_id: "recovery-admin",
+               reason: "record deterministic planning failure",
+               idempotency_key: failed_planning_operation_id,
+               expected_binding_version: candidate.binding.version,
+               evaluated_at: occurred_at,
+               occurred_at: occurred_at
+             })
+
+    assert {:ok, failed_planning} =
+             TargetRecoveryStore.fail_recovery(%FailTargetRecovery{
+               workspace_context: fixture.workspace_context,
+               command_id: "recovery:fail-plan:" <> run.id,
+               operation_id: failed_planning_operation_id,
+               expected_version: failed_intent.version,
+               terminal_error: %{
+                 "kind" => "conflict",
+                 "reason_code" => "target_recovery_marker_missing"
+               },
+               occurred_at: DateTime.add(occurred_at, 1, :second)
+             })
+
+    assert failed_planning.state == :failed
+    assert is_nil(failed_planning.plan_hash)
+    assert is_nil(failed_planning.expected_physical_fingerprint)
+
+    assert {:ok, planned} =
+             TargetRecoveryStore.finalize_plan(%FinalizeTargetRecoveryPlan{
+               workspace_context: fixture.workspace_context,
+               command_id: "recovery:finalize-plan:" <> run.id,
+               operation_id: operation_id,
+               expected_version: intent.version,
+               plan_hash: plan_hash,
+               plan_payload: plan_payload,
+               expected_physical_fingerprint: fingerprint,
                occurred_at: occurred_at
              })
 
     assert planned.state == :planned
 
     assert {:ok, replayed_plan} =
-             TargetRecoveryStore.create_plan(%CreateTargetRecoveryPlan{
+             TargetRecoveryStore.create_intent(%CreateTargetRecoveryIntent{
                workspace_context: fixture.workspace_context,
                command_id: "recovery:plan-replay:" <> run.id,
                operation_id: operation_id <> ":new",
@@ -1307,13 +1550,10 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
                source_manifest_id: fixture.version.manifest_version_id,
                target_generation_id: candidate.generation.target_generation_id,
                materialization_id: materialization_id,
-               plan_hash: String.duplicate("c", 64),
-               plan_payload: %{"expires_at" => "2099-01-02T00:00:00Z"},
                actor_id: "recovery-admin",
                reason: "recover interrupted initial materialization",
                idempotency_key: operation_id,
-               expected_binding_version: candidate.binding.version,
-               expected_physical_fingerprint: fingerprint,
+               expected_binding_version: candidate.binding.version + 1,
                evaluated_at: DateTime.add(occurred_at, 1, :second),
                occurred_at: DateTime.add(occurred_at, 1, :second)
              })
@@ -1689,7 +1929,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert runtime.workspace_id == fixture.workspace_id
     assert runtime.deployment_id == fixture.deployment_id
     assert runtime.manifest_version_id == fixture.version.manifest_version_id
-    assert runtime.required_runner_release_id == fixture.version.required_runner_release_id
+    assert runtime.runner_releases == fixture.version.runner_releases
     assert runtime.revision == 1
 
     assert {:ok, targets} =
@@ -1846,10 +2086,81 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert payload_deployment_id == fixture.deployment_id
   end
 
-  test "persists runner release identity and exposes it through manifest audit reads", fixture do
+  test "rollback routes new runs to the old release without changing in-flight run pins",
+       fixture do
+    release_a = fixture.version.runner_releases["default"]
+    release_b = FavnTestSupport.runner_release_id(:alternate)
+
+    manifest_b =
+      FavnTestSupport.with_manifest_contract(
+        fixture.version.manifest,
+        %{"default" => release_b}
+      )
+
+    assert {:ok, version_b} =
+             Version.new(manifest_b,
+               manifest_version_id: "mv-rollback-b-#{System.unique_integer([:positive])}"
+             )
+
+    assert {:ok, ^version_b} =
+             RegistryStore.register_manifest(%RegisterManifest{
+               platform_context: fixture.platform_context,
+               version: version_b
+             })
+
+    deployment_b = fixture.deployment_id <> "-release-b"
+
+    assert {:ok, runtime_b} =
+             RegistryStore.deploy_manifest(%{
+               fixture.deploy_command
+               | deployment_id: deployment_b,
+                 manifest_version_id: version_b.manifest_version_id,
+                 occurred_at: DateTime.add(fixture.deploy_command.occurred_at, 1, :second)
+             })
+
+    assert runtime_b.runner_releases == %{"default" => release_b}
+
+    fixture_b = %{fixture | deployment_id: deployment_b, version: version_b}
+
+    {run_b_command, run_b} =
+      create_run_command(fixture_b, "run-release-b-#{fixture.workspace_id}")
+
+    assert {:ok, _created} = RunStore.create_run(run_b_command)
+
+    assert {:ok, rollback_runtime} =
+             RegistryStore.deploy_manifest(%{
+               fixture.deploy_command
+               | deployment_id: fixture.deployment_id <> "-rollback-intent",
+                 occurred_at: DateTime.add(fixture.deploy_command.occurred_at, 2, :second)
+             })
+
+    assert rollback_runtime.manifest_version_id == fixture.version.manifest_version_id
+    assert rollback_runtime.runner_releases == %{"default" => release_a}
+
+    {run_a_command, run_a} = create_run_command(fixture, "run-release-a-#{fixture.workspace_id}")
+    assert {:ok, _created} = RunStore.create_run(run_a_command)
+
+    assert {:ok, persisted_b} =
+             RunStore.get_run(%GetRun{
+               workspace_context: fixture.workspace_context,
+               run_id: run_b.id
+             })
+
+    assert {:ok, persisted_a} =
+             RunStore.get_run(%GetRun{
+               workspace_context: fixture.workspace_context,
+               run_id: run_a.id
+             })
+
+    assert persisted_b.runner_releases == %{"default" => release_b}
+    assert persisted_a.runner_releases == %{"default" => release_a}
+  end
+
+  test "persists runner release bindings and exposes them through manifest audit reads",
+       fixture do
     row = Repo.get!(ManifestVersionRow, fixture.version.manifest_version_id)
 
-    assert row.required_runner_release_id == fixture.version.required_runner_release_id
+    assert row.runner_releases == fixture.version.runner_releases
 
     {:ok, platform_context} =
       PlatformContext.new("release-auditor", "release-audit-grant", [:platform_reader])
@@ -1863,7 +2174,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     summary =
       Enum.find(page.items, &(&1.manifest_version_id == fixture.version.manifest_version_id))
 
-    assert summary.required_runner_release_id == fixture.version.required_runner_release_id
+    assert summary.runner_releases == fixture.version.runner_releases
   end
 
   test "keeps historical manifest audit rows readable but rejects their activation", fixture do
@@ -1876,16 +2187,16 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
                """
                INSERT INTO favn_control.manifest_versions
                  (manifest_version_id, content_hash, schema_version,
-                  runner_contract_version, required_runner_release_id,
+                  runner_contract_version, runner_releases,
                   payload_version, asset_count, pipeline_count, schedule_count,
                   atom_strings, manifest, inserted_at)
-               VALUES ($1, $2, 9, 9, NULL, 1, 0, 0, 0, ARRAY[]::text[],
+               VALUES ($1, $2, 9, 9, $3::jsonb, 1, 0, 0, 0, ARRAY[]::text[],
                        jsonb_build_object('assets', jsonb_build_array(),
                                           'pipelines', jsonb_build_array(),
                                           'schedules', jsonb_build_array()),
                        clock_timestamp())
                """,
-               [manifest_version_id, content_hash]
+               [manifest_version_id, content_hash, fixture.version.runner_releases]
              )
 
     {:ok, platform_context} =
@@ -1899,7 +2210,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
 
     summary = Enum.find(page.items, &(&1.manifest_version_id == manifest_version_id))
     assert summary.schema_version == 9
-    assert summary.required_runner_release_id == nil
+    assert summary.runner_releases == fixture.version.runner_releases
 
     assert {:error,
             %{
@@ -1907,7 +2218,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
               details: %{
                 reason: :historical_manifest_not_activatable,
                 schema_version: 9,
-                current_schema_version: 13
+                current_schema_version: 14
               }
             }} =
              RegistryStore.deploy_manifest(%{
@@ -1993,8 +2304,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
              })
   end
 
-  test "release-safe operations return redacted stable results and report upgrade blockers",
-       fixture do
+  test "release-safe operations return redacted stable results", _fixture do
     telemetry_handler = "release-operation-#{System.unique_integer([:positive])}"
     parent = self()
 
@@ -2179,60 +2489,6 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
 
     assert is_integer(failed_duration_ms) and failed_duration_ms >= 0
     :ok = :telemetry.detach(telemetry_handler)
-
-    baseline = preflight_blockers()
-    {run_command, legacy_run} = create_run_command(fixture)
-    assert {:ok, _created} = RunStore.create_run(run_command)
-
-    SQL.query!(
-      Repo,
-      """
-      UPDATE favn_control.manifest_versions
-      SET schema_version = 9, runner_contract_version = 9,
-          required_runner_release_id = NULL
-      WHERE manifest_version_id = $1
-      """,
-      [fixture.version.manifest_version_id]
-    )
-
-    assert {:error,
-            %{
-              operation: :preflight_upgrade,
-              status: :error,
-              code: :runner_identity_upgrade_blocked,
-              blocker_count: blocker_count,
-              active_manifest_blocker_count: active_manifest_blocker_count,
-              nonterminal_legacy_run_count: nonterminal_legacy_run_count,
-              blocker_sample_limit: 100,
-              truncated?: truncated?,
-              active_legacy_manifests: manifest_blockers,
-              nonterminal_legacy_runs: run_blockers
-            }} = Release.preflight_upgrade()
-
-    assert blocker_count == baseline.blocker_count + 2
-    assert active_manifest_blocker_count == baseline.active_manifest_blocker_count + 1
-    assert nonterminal_legacy_run_count == baseline.nonterminal_legacy_run_count + 1
-    assert length(manifest_blockers) <= 100
-    assert length(run_blockers) <= 100
-
-    assert truncated? ==
-             (active_manifest_blocker_count > length(manifest_blockers) or
-                nonterminal_legacy_run_count > length(run_blockers))
-
-    if not truncated? do
-      assert Enum.any?(manifest_blockers, fn blocker ->
-               blocker.workspace_id == fixture.workspace_id and
-                 blocker.deployment_id == fixture.deployment_id and
-                 blocker.manifest_version_id == fixture.version.manifest_version_id and
-                 blocker.schema_version == 9
-             end)
-
-      assert Enum.any?(run_blockers, fn blocker ->
-               blocker.workspace_id == fixture.workspace_id and blocker.run_id == legacy_run.id and
-                 blocker.manifest_version_id == fixture.version.manifest_version_id and
-                 blocker.schema_version == 9
-             end)
-    end
   end
 
   test "rejects malformed workspace authority before every sensitive read", fixture do
@@ -2577,7 +2833,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
 
     assert published_metadata.status == :published
     assert published_metadata.manifest_version_id == version.manifest_version_id
-    assert published_metadata.required_runner_release_id == version.required_runner_release_id
+    assert published_metadata.runner_releases == version.runner_releases
   end
 
   test "HTTP execution-package boundary rejects oversized and non-canonical batches", fixture do
@@ -3092,17 +3348,17 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert {:ok, created} = RunStore.create_run(command)
     refute created.replayed?
     assert created.run.id == run.id
-    assert created.run.required_runner_release_id == fixture.version.required_runner_release_id
+    assert created.run.runner_releases == fixture.version.runner_releases
     assert created.event.sequence == 1
 
-    assert %{rows: [[2, persisted_release_id]]} =
+    assert %{rows: [[2, persisted_releases]]} =
              SQL.query!(
                Repo,
-               "SELECT snapshot_version, snapshot->>'required_runner_release_id' FROM favn_control.runs WHERE workspace_id = $1 AND run_id = $2",
+               "SELECT snapshot_version, snapshot->'runner_releases' FROM favn_control.runs WHERE workspace_id = $1 AND run_id = $2",
                [fixture.workspace_id, run.id]
              )
 
-    assert persisted_release_id == fixture.version.required_runner_release_id
+    assert persisted_releases == fixture.version.runner_releases
 
     assert {:ok, replayed} = RunStore.create_run(command)
     assert replayed.replayed?
@@ -3203,16 +3459,20 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     refute response.resp_body =~ other_run.id
   end
 
-  test "rejects a run whose runner release differs from its deployment manifest", fixture do
+  test "rejects a run whose runner release bindings differ from its deployment manifest",
+       fixture do
     {command, run} = create_run_command(fixture)
     alternate = FavnTestSupport.runner_release_id(:alternate)
 
     assert {:error,
             %{
               kind: :constraint,
-              details: %{reason: :run_manifest_runner_release_mismatch}
+              details: %{reason: :run_manifest_runner_releases_mismatch}
             }} =
-             RunStore.create_run(%{command | run: %{run | required_runner_release_id: alternate}})
+             RunStore.create_run(%{
+               command
+               | run: %{run | runner_releases: %{"default" => alternate}}
+             })
   end
 
   test "rejects forged manifest content on run creation and transition", fixture do
@@ -3250,49 +3510,19 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
              })
   end
 
-  test "submission derives runner release identity only from the active manifest", fixture do
-    caller_value = FavnTestSupport.runner_release_id(:alternate)
-
+  test "submission pins runner release bindings from the active manifest", fixture do
     assert {:ok, submission} =
-             SubmissionBuilder.asset(fixture.workspace_context, {MyApp.Asset, :asset},
-               required_runner_release_id: caller_value
+             SubmissionBuilder.persisted_target(
+               fixture.workspace_context,
+               :asset,
+               {MyApp.Asset, :asset},
+               fixture.deployment_id,
+               fixture.version.manifest_version_id,
+               "runner-release-submission-#{fixture.workspace_id}"
              )
 
-    assert submission.run_state.required_runner_release_id ==
-             fixture.version.required_runner_release_id
-
-    refute submission.run_state.required_runner_release_id == caller_value
-
-    assert submission.event_metadata.required_runner_release_id ==
-             fixture.version.required_runner_release_id
-  end
-
-  test "refuses persisted non-terminal legacy runs without a runner release binding", fixture do
-    {command, run} = create_run_command(fixture)
-    assert {:ok, _created} = RunStore.create_run(command)
-
-    SQL.query!(
-      Repo,
-      """
-      UPDATE favn_control.runs
-      SET snapshot_version = 1,
-          snapshot = (snapshot - 'required_runner_release_id') ||
-                     jsonb_build_object('format', 'favn.run_snapshot.storage.v2',
-                                        'schema_version', 2)
-      WHERE workspace_id = $1 AND run_id = $2
-      """,
-      [fixture.workspace_id, run.id]
-    )
-
-    assert {:error,
-            %{
-              kind: :conflict,
-              details: %{reason: :legacy_runner_release_unbound}
-            }} =
-             RunStore.get_run(%GetRun{
-               workspace_context: fixture.workspace_context,
-               run_id: run.id
-             })
+    assert submission.run_state.runner_releases == fixture.version.runner_releases
+    assert submission.event_metadata.runner_releases == fixture.version.runner_releases
   end
 
   test "operator run pages return compact relational summaries", fixture do
@@ -3322,7 +3552,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert summary.run_id == run.id
     assert summary.status == :pending
     assert summary.event_sequence == 1
-    assert summary.required_runner_release_id == fixture.version.required_runner_release_id
+    assert summary.runner_releases == fixture.version.runner_releases
     refute Map.has_key?(summary, :run)
   end
 
@@ -3812,6 +4042,167 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
              RunStore.pin_runtime_inputs(%{pin_command | pins: [conflicting]})
   end
 
+  test "runtime input pin creation is atomic with the current task assignment fence", fixture do
+    {create_command, run} = create_run_command(fixture)
+    assert {:ok, _created} = RunStore.create_run(create_command)
+
+    ref = {MyApp.Asset, :asset}
+    node_key = {ref, nil}
+    package = runtime_input_execution_package(ref)
+
+    work = %Favn.Contracts.RunnerWork{
+      run_id: run.id,
+      manifest_version_id: fixture.version.manifest_version_id,
+      manifest_content_hash: fixture.version.content_hash,
+      required_runner_release_id: fixture.version.runner_releases["default"],
+      runner_pool: :default,
+      asset_ref: ref,
+      asset_step_id: "runtime-input-step:" <> run.id,
+      attempt: 1,
+      execution_package: package,
+      metadata: %{}
+    }
+
+    assert {:ok, queued, _work} =
+             FavnOrchestrator.AssetRunnerTasks.enqueue(
+               run,
+               work,
+               node_key,
+               0,
+               1,
+               %{continuation: :runtime_input_fence_test}
+             )
+
+    old_claim = %ClaimRunnerTask{
+      platform_context:
+        SystemContext.platform(:runtime_input_fence_test, roles: [:platform_operator]),
+      command_id: "runtime-input-old-claim:" <> run.id,
+      runner_instance_id: "runtime-input-old-runner:" <> run.id,
+      runner_session_generation: 11,
+      runner_pool: "default",
+      required_runner_release_id: fixture.version.runner_releases["default"],
+      supported_task_kinds: [:asset_attempt],
+      capabilities: ["asset_execution"],
+      lease_duration_ms: 30_000,
+      issued_at: DateTime.utc_now(),
+      occurred_at: DateTime.utc_now()
+    }
+
+    assert {:ok, old_assignment} =
+             FavnStoragePostgres.RunnerTasks.Store.claim(old_claim)
+
+    assert {:ok, _requeued} =
+             FavnStoragePostgres.RunnerTasks.Store.release(
+               %FavnOrchestrator.Persistence.Commands.ReleaseRunnerTask{
+                 workspace_context: fixture.workspace_context,
+                 command_id: "runtime-input-release:" <> run.id,
+                 task_id: queued.task_id,
+                 runner_instance_id: old_assignment.assigned_runner_instance_id,
+                 runner_session_generation: old_assignment.assigned_runner_session_generation,
+                 assignment_generation: old_assignment.assignment_generation,
+                 disposition: :requeue,
+                 reason: :test_reassignment,
+                 issued_at: DateTime.utc_now(),
+                 occurred_at: DateTime.utc_now()
+               }
+             )
+
+    current_claim = %{
+      old_claim
+      | command_id: "runtime-input-current-claim:" <> run.id,
+        runner_instance_id: "runtime-input-current-runner:" <> run.id,
+        runner_session_generation: 22,
+        issued_at: DateTime.utc_now(),
+        occurred_at: DateTime.utc_now()
+    }
+
+    assert {:ok, current_assignment} =
+             FavnStoragePostgres.RunnerTasks.Store.claim(current_claim)
+
+    {:ok, stale_resolution} =
+      Resolution.new(
+        resolver: MyApp.RuntimeInputResolver,
+        params: %{account_id: 1, token: "stale-secret"},
+        input_identity: "stale-input",
+        sensitive_params: [:token]
+      )
+
+    {:ok, current_resolution} =
+      Resolution.new(
+        resolver: MyApp.RuntimeInputResolver,
+        params: %{account_id: 2, token: "current-secret"},
+        input_identity: "current-input",
+        sensitive_params: [:token]
+      )
+
+    stale_pin = Pin.new(run.id, node_key, stale_resolution)
+    current_pin = Pin.new(run.id, node_key, current_resolution)
+
+    command = fn assignment, suffix, pin ->
+      %FavnOrchestrator.Persistence.Commands.PersistRunnerTaskRuntimeInputs{
+        workspace_context: fixture.workspace_context,
+        command_id: "runtime-input-persist:#{suffix}:" <> run.id,
+        task_id: queued.task_id,
+        runner_instance_id: assignment.assigned_runner_instance_id,
+        runner_session_generation: assignment.assigned_runner_session_generation,
+        assignment_generation: assignment.assignment_generation,
+        resolution_id: "resolution:#{suffix}:" <> run.id,
+        status: :resolved,
+        payload_fingerprint: Base.decode16!(pin.payload_fingerprint, case: :mixed),
+        runtime_input_pin: pin,
+        error: nil,
+        issued_at: DateTime.utc_now(),
+        occurred_at: DateTime.utc_now()
+      }
+    end
+
+    parent = self()
+
+    stale =
+      Task.async(fn ->
+        receive do
+          :go -> :ok
+        end
+
+        send(parent, :stale_started)
+
+        FavnStoragePostgres.RunnerTasks.Store.persist_runtime_inputs(
+          command.(old_assignment, "stale", stale_pin)
+        )
+      end)
+
+    current =
+      Task.async(fn ->
+        receive do
+          :go -> :ok
+        end
+
+        send(parent, :current_started)
+
+        FavnStoragePostgres.RunnerTasks.Store.persist_runtime_inputs(
+          command.(current_assignment, "current", current_pin)
+        )
+      end)
+
+    send(stale.pid, :go)
+    send(current.pid, :go)
+    assert_receive :stale_started
+    assert_receive :current_started
+
+    assert {:error, %{kind: :conflict}} = Task.await(stale)
+    assert {:ok, persisted_task} = Task.await(current)
+
+    assert persisted_task.runtime_input_payload_fingerprint ==
+             Base.decode16!(current_pin.payload_fingerprint, case: :mixed)
+
+    assert {:ok, [^current_pin]} =
+             RunStore.get_runtime_inputs(%GetRuntimeInputs{
+               workspace_context: fixture.workspace_context,
+               run_id: run.id,
+               node_keys: [node_key]
+             })
+  end
+
   test "runtime input package lookup matches exact asset pairs", fixture do
     requested_refs = [{MyApp.Asset, :asset}, {MyApp.PrivateAsset, :private}]
 
@@ -3931,7 +4322,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert Enum.sort_by(persisted, & &1.node_key) == Enum.sort_by(pins, & &1.node_key)
   end
 
-  test "fences run ownership and durable runner execution", fixture do
+  test "fences run ownership", fixture do
     {command, run} = create_run_command(fixture)
     assert {:ok, _created} = RunStore.create_run(command)
 
@@ -3959,45 +4350,6 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert {:ok, renewed} = RunOwnershipStore.renew_run(renewal)
     assert {:ok, ^renewed} = RunOwnershipStore.renew_run(renewal)
 
-    dispatch = %RecordRunnerDispatch{
-      workspace_context: fixture.workspace_context,
-      command_id: "dispatch:" <> run.id,
-      run_id: run.id,
-      runner_execution_id: "execution:" <> run.id,
-      dispatch_id: "dispatch-id:" <> run.id,
-      owner_id: "node-a",
-      fencing_token: ownership.fencing_token,
-      payload: %{"plan_id" => "plan-one"},
-      occurred_at: DateTime.utc_now()
-    }
-
-    assert {:ok, execution} = RunOwnershipStore.record_dispatch(dispatch)
-    assert execution.status == :dispatching
-    assert {:ok, ^execution} = RunOwnershipStore.record_dispatch(dispatch)
-
-    assert {:error, %{kind: :conflict}} =
-             RunOwnershipStore.record_dispatch(%{
-               dispatch
-               | occurred_at: DateTime.add(dispatch.occurred_at, 1, :microsecond)
-             })
-
-    advance = %AdvanceRunnerExecution{
-      workspace_context: fixture.workspace_context,
-      command_id: "execution-running:" <> run.id,
-      run_id: run.id,
-      runner_execution_id: dispatch.runner_execution_id,
-      owner_id: "node-a",
-      fencing_token: ownership.fencing_token,
-      expected_version: 1,
-      status: :running,
-      occurred_at: DateTime.utc_now()
-    }
-
-    assert {:ok, running} = RunOwnershipStore.advance_execution(advance)
-    assert running.status == :running
-    assert running.version == 2
-    assert {:ok, ^running} = RunOwnershipStore.advance_execution(advance)
-
     assert :ok =
              RunOwnershipStore.release_run(%ReleaseRunOwnership{
                workspace_context: fixture.workspace_context,
@@ -4007,273 +4359,12 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
              })
 
     assert {:error, %{kind: :fenced}} =
-             RunOwnershipStore.advance_execution(%{
-               advance
-               | command_id: "execution-finished:" <> run.id,
-                 expected_version: 2,
-                 status: :ok,
-                 result: %{}
+             RunOwnershipStore.renew_run(%{
+               renewal
+               | renewal_id: "renew-after-release:" <> run.id
              })
   end
 
-  test "historical runner execution pages require an exact run id", fixture do
-    assert {:error, %{kind: :invalid}} =
-             RunOwnershipStore.page_executions(%PageRunnerExecutions{
-               workspace_context: fixture.workspace_context,
-               active_only?: false
-             })
-  end
-
-  test "orchestrator runner ledger uses preallocated ids and the current run fence", fixture do
-    {command, run} = create_run_command(fixture)
-    assert {:ok, _created} = RunStore.create_run(command)
-
-    owner_id = "orchestrator:" <> run.id
-
-    assert {:ok, authority} =
-             RunOwnership.claim(fixture.workspace_context, run.id, owner_id,
-               command_id: "claim-orchestrator-ledger:" <> run.id
-             )
-
-    run = RunState.with_storage_fence(run, authority.owner_id, authority.fencing_token)
-
-    ledger =
-      RunExecutionOwnership.new(run,
-        asset_step_id: "step:" <> run.id,
-        asset_ref: run.asset_ref,
-        attempt: 1,
-        stage: 0
-      )
-
-    assert :ok = RunExecutionOwnership.persist(ledger)
-
-    submitted = RunExecutionOwnership.submitted(ledger, ledger.dispatch_id)
-    assert :ok = RunExecutionOwnership.persist(submitted)
-    assert :ok = submitted |> RunExecutionOwnership.started() |> RunExecutionOwnership.persist()
-
-    assert {:ok, [active]} = RunExecutionOwnership.fetch_active(run)
-    assert active.runner_execution_id == ledger.dispatch_id
-    assert active.status == :started
-    assert active.persistence_version == 2
-
-    assert :ok = RunExecutionOwnership.complete_execution(active)
-    assert {:ok, []} = RunExecutionOwnership.fetch_active(run)
-  end
-
-  test "recovery after runner restart terminalizes uncertain work without resubmitting",
-       fixture do
-    {command, run} = create_run_command(fixture)
-    assert {:ok, _created} = RunStore.create_run(command)
-
-    assert {:ok, authority} =
-             RunOwnership.claim(fixture.workspace_context, run.id, "recovery:" <> run.id,
-               command_id: "claim-recovery:" <> run.id
-             )
-
-    owned_run = RunState.with_storage_fence(run, authority.owner_id, authority.fencing_token)
-
-    ledger =
-      RunExecutionOwnership.new(owned_run,
-        asset_step_id: "step:" <> run.id,
-        asset_ref: run.asset_ref,
-        attempt: 1,
-        stage: 0
-      )
-
-    assert :ok = RunExecutionOwnership.persist(ledger)
-    assert :ok = ledger |> RunExecutionOwnership.started() |> RunExecutionOwnership.persist()
-
-    assert {:ok, %{active: [persisted_execution]}} =
-             RunExecutionOwnership.recovery_evidence(owned_run)
-
-    assert persisted_execution.status == :started
-
-    configure_restarted_runner_client!()
-
-    assert {:ok, pid} =
-             RunServer.start_link(%{
-               run_state: run,
-               version: fixture.version,
-               recovering?: true,
-               storage_ownership: authority
-             })
-
-    monitor = Process.monitor(pid)
-    assert_receive {:runner_cancelled_after_restart, execution_id}, 2_000
-    assert execution_id == ledger.dispatch_id
-    assert_receive {:DOWN, ^monitor, :process, ^pid, :normal}, 2_000
-    refute_receive {:runner_work_resubmitted, _work}, 100
-
-    assert {:ok, failed} =
-             RunStore.get_run(%GetRun{
-               workspace_context: fixture.workspace_context,
-               run_id: run.id
-             })
-
-    assert failed.status == :error
-    assert failed.error["type"] == "uncertain_runner_recovery"
-
-    assert %{rows: [["error"]]} =
-             SQL.query!(
-               Repo,
-               """
-               SELECT status
-               FROM favn_control.runner_executions
-               WHERE workspace_id = $1 AND runner_execution_id = $2
-               """,
-               [fixture.workspace_id, ledger.dispatch_id]
-             )
-  end
-
-  test "corrupt pipeline retry checkpoints fail closed and release the runner manifest lease",
-       fixture do
-    {command, run} = pipeline_run_command(fixture)
-    assert {:ok, _created} = RunStore.create_run(command)
-
-    assert {:ok, authority} =
-             RunOwnership.claim(fixture.workspace_context, run.id, "recovery:" <> run.id,
-               command_id: "claim-corrupt-retry:" <> run.id
-             )
-
-    owned = RunState.with_storage_fence(run, authority.owner_id, authority.fencing_token)
-    running = RunState.transition(owned, status: :running)
-
-    assert :ok =
-             TransitionWriter.persist_transition(
-               fixture.workspace_context,
-               running,
-               :run_started,
-               %{status: :running}
-             )
-
-    checkpoint_sequence = running.event_seq + 1
-
-    retrying =
-      RunState.transition(running,
-        metadata:
-          Map.merge(running.metadata, %{
-            retrying: true,
-            next_attempt: 2,
-            next_retry_at: System.system_time(:millisecond),
-            retry_state: %{
-              kind: :pipeline,
-              checkpoint_sequence: checkpoint_sequence,
-              stage_index: 0,
-              next_attempt: 2,
-              stage: 0,
-              next_retry_at: System.system_time(:millisecond)
-            }
-          })
-      )
-
-    assert :ok =
-             TransitionWriter.persist_transition(
-               fixture.workspace_context,
-               retrying,
-               :pipeline_retry_checkpointed,
-               %{
-                 stage: 0,
-                 attempt: 1,
-                 retry_selection: %{
-                   encoding: "stage_bitset_v1",
-                   stage_size: 1,
-                   retry_count: 1,
-                   bits: ""
-                 }
-               }
-             )
-
-    configure_restarted_runner_client!()
-
-    assert {:ok, pid} =
-             RunServer.start_link(%{
-               run_state: retrying,
-               version: fixture.version,
-               recovering?: true,
-               storage_ownership: authority
-             })
-
-    monitor = Process.monitor(pid)
-    assert_receive {:runner_manifest_acquired, lease_id}, 2_000
-    assert_receive {:runner_manifest_released, ^lease_id}, 2_000
-    assert_receive {:DOWN, ^monitor, :process, ^pid, :normal}, 2_000
-
-    assert {:ok, failed} =
-             RunStore.get_run(%GetRun{
-               workspace_context: fixture.workspace_context,
-               run_id: run.id
-             })
-
-    assert failed.status == :error
-  end
-
-  test "cross-mode retry checkpoints terminalize recovery and release the manifest lease",
-       fixture do
-    configure_restarted_runner_client!()
-
-    cases = [
-      {:pipeline, &pipeline_run_command/1, &sequential_retry_checkpoint/1},
-      {:sequential, &create_run_command/1, &pipeline_retry_checkpoint/1}
-    ]
-
-    for {mode, build_run, build_checkpoint} <- cases do
-      {command, run} = build_run.(fixture)
-      assert {:ok, _created} = RunStore.create_run(command)
-
-      assert {:ok, authority} =
-               RunOwnership.claim(fixture.workspace_context, run.id, "recovery:" <> run.id,
-                 command_id: "claim-cross-mode-retry:" <> run.id
-               )
-
-      owned = RunState.with_storage_fence(run, authority.owner_id, authority.fencing_token)
-
-      retrying =
-        RunState.transition(owned,
-          status: :running,
-          metadata:
-            Map.merge(owned.metadata, %{
-              retrying: true,
-              next_attempt: 2,
-              retry_state: build_checkpoint.(owned)
-            })
-        )
-
-      assert :ok =
-               TransitionWriter.persist_transition(
-                 fixture.workspace_context,
-                 retrying,
-                 :run_started,
-                 %{status: :running}
-               )
-
-      assert {:ok, pid} =
-               RunServer.start_link(%{
-                 run_state: retrying,
-                 version: fixture.version,
-                 recovering?: true,
-                 storage_ownership: authority
-               })
-
-      monitor = Process.monitor(pid)
-      assert_receive {:runner_manifest_released, lease_id}, 2_000
-      assert is_binary(lease_id) and lease_id != ""
-      refute_receive {:runner_manifest_acquired, _lease_id}, 100
-      assert_receive {:DOWN, ^monitor, :process, ^pid, :normal}, 2_000
-
-      assert {:ok, failed} =
-               RunStore.get_run(%GetRun{
-                 workspace_context: fixture.workspace_context,
-                 run_id: run.id
-               })
-
-      assert failed.status == :error
-      assert failed.error["type"] == "uncertain_runner_recovery"
-      assert failed.error["reason"] =~ "invalid_retry_checkpoint"
-      assert RunState.execution_mode(retrying) == mode
-    end
-  end
-
-  @tag :slow
   test "run detail fetches an active retry checkpoint beyond the first event page", fixture do
     {command, run} = pipeline_run_command(fixture)
     assert {:ok, _created} = RunStore.create_run(command)
@@ -4399,7 +4490,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
         deployment_id: fixture.deployment_id,
         manifest_version_id: fixture.version.manifest_version_id,
         manifest_content_hash: fixture.version.content_hash,
-        required_runner_release_id: fixture.version.required_runner_release_id,
+        runner_releases: fixture.version.runner_releases,
         asset_ref: original.asset_ref,
         target_refs: original.target_refs,
         submit_kind: :pipeline,
@@ -4413,12 +4504,16 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     {:ok, runner_state} =
       Agent.start_link(fn -> %{work: %{}, submitted: [], fail_key: keys.b} end)
 
-    configure_pipeline_runner_client!(runner_state)
+    share_repo_sandbox!()
     start_supervised!({FavnOrchestrator.ExecutionAdmission.Coordinator, []})
+    start_supervised!({Task.Supervisor, name: FavnOrchestrator.RunnerClaimSupervisor})
+    start_supervised!({RunnerTaskResultRouter, []})
 
+    runner = spawn_link(fn -> durable_pipeline_runner(runner_state, fixture, keys.b) end)
     assert {:ok, pid} = RunServer.start_link(%{run_state: run, version: fixture.version})
     monitor = Process.monitor(pid)
     assert_receive {:DOWN, ^monitor, :process, ^pid, :normal}, 5_000
+    send(runner, :stop)
 
     assert {:ok, finished} =
              RunStore.get_run(%GetRun{
@@ -4443,6 +4538,94 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert keys.c in submitted
     assert keys.e in submitted
     refute keys.d in submitted
+  end
+
+  defp durable_pipeline_runner(state, fixture, fail_key) do
+    receive do
+      :stop ->
+        :ok
+    after
+      0 ->
+        case claim_asset_task(fixture) do
+          {:ok, nil} ->
+            Process.sleep(5)
+
+          {:ok, task} ->
+            work = task.payload
+            node_key = Favn.Contracts.RunnerWork.node_key(work)
+            Agent.update(state, &%{&1 | submitted: [node_key | &1.submitted]})
+            :ok = complete_asset_task(task, work, node_key == fail_key)
+
+          {:error, _reason} ->
+            Process.sleep(5)
+        end
+
+        durable_pipeline_runner(state, fixture, fail_key)
+    end
+  end
+
+  defp claim_asset_task(fixture) do
+    FavnStoragePostgres.RunnerTasks.Store.claim(%ClaimRunnerTask{
+      platform_context:
+        SystemContext.platform(:pipeline_runner_test, roles: [:platform_operator]),
+      command_id: "pipeline-claim:#{System.unique_integer([:positive, :monotonic])}",
+      runner_instance_id: "pipeline-runner:#{fixture.workspace_id}",
+      runner_session_generation: 1,
+      runner_pool: "default",
+      required_runner_release_id: fixture.version.runner_releases["default"],
+      supported_task_kinds: [:asset_attempt],
+      capabilities: ["asset_execution"],
+      lease_duration_ms: 30_000,
+      issued_at: DateTime.utc_now(),
+      occurred_at: DateTime.utc_now()
+    })
+  end
+
+  defp complete_asset_task(task, work, fail?) do
+    {outcome, retry_class, status, error} =
+      if fail? do
+        retryable? = work.attempt == 1
+
+        error =
+          Favn.Contracts.RunnerError.new(
+            type: :fixture_failure,
+            message: "fixture failure",
+            retryable?: retryable?,
+            outcome: if(retryable?, do: :safe_failure, else: :unknown)
+          )
+
+        {:failed, if(retryable?, do: :safe_to_retry, else: :terminal), :error, error}
+      else
+        {:succeeded, :terminal, :ok, nil}
+      end
+
+    result = %Favn.Contracts.RunnerResult{
+      run_id: work.run_id,
+      manifest_version_id: work.manifest_version_id,
+      manifest_content_hash: work.manifest_content_hash,
+      required_runner_release_id: work.required_runner_release_id,
+      status: status,
+      asset_results: [],
+      error: error,
+      metadata: %{}
+    }
+
+    case RunnerTasks.complete(%Favn.Contracts.RunnerTask.Result{
+           workspace_id: task.workspace_id,
+           task_id: task.task_id,
+           task_kind: task.task_kind,
+           runner_instance_id: task.assigned_runner_instance_id,
+           runner_session_generation: task.assigned_runner_session_generation,
+           assignment_generation: task.assignment_generation,
+           outcome: outcome,
+           retry_class: retry_class,
+           result: if(outcome == :succeeded, do: result, else: nil),
+           error: error,
+           finished_at: DateTime.utc_now()
+         }) do
+      {:ok, _ack} -> :ok
+      {:error, reason} -> raise "failed to complete durable test task: #{inspect(reason)}"
+    end
   end
 
   test "schedule activation replays return the immutable original receipt", fixture do
@@ -4737,6 +4920,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     authorization = %AuthorizeScheduleOccurrenceDispatch{
       workspace_context: fixture.workspace_context,
       command_id: "occurrence-dispatch:" <> fixture.workspace_id,
+      submission: schedule_submission(fixture, "primary"),
       occurrence_id: claimed.occurrence_id,
       pipeline_target_id: fixture.pipeline_target_id,
       schedule_id: "daily",
@@ -4754,7 +4938,18 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
              })
 
     assert {:ok, authorized} = SchedulerStore.authorize_occurrence_dispatch(authorization)
-    assert authorized.status == :dispatching
+    assert authorized.status == :completed
+    assert authorized.run_id == authorization.submission.run_id
+    assert {:ok, ^authorized} = SchedulerStore.authorize_occurrence_dispatch(authorization)
+
+    assert {:ok, queued_submission} =
+             RunSubmissionStore.get(%FavnOrchestrator.Persistence.Queries.GetRunSubmission{
+               workspace_context: fixture.workspace_context,
+               submission_id: authorization.submission.submission_id
+             })
+
+    assert queued_submission.status == :queued
+    assert queued_submission.run_id == authorization.submission.run_id
 
     deactivation = %SetScheduleActivation{
       activation
@@ -4784,58 +4979,8 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
                limit: 10
              })
 
-    assert [%{status: :dispatching}] = occurrence_after_deactivation.items
-
-    SQL.query!(
-      Repo,
-      """
-      UPDATE favn_control.schedule_occurrences
-      SET claim_expires_at = clock_timestamp() - interval '1 second'
-      WHERE workspace_id = $1 AND occurrence_id = $2
-      """,
-      [fixture.workspace_id, occurrence_id]
-    )
-
-    assert {:ok, [recovered]} =
-             SchedulerStore.claim_occurrences(%ClaimScheduleOccurrences{
-               workspace_context: fixture.workspace_context,
-               batch_id: "occurrence-recovery-claim:" <> fixture.workspace_id,
-               owner_id: "scheduler-recovered",
-               lease_duration_ms: 30_000,
-               limit: 10
-             })
-
-    assert recovered.status == :dispatching
-    assert recovered.claim_generation == claimed.claim_generation + 1
-
-    assert {:ok, recovered_authorization} =
-             SchedulerStore.authorize_occurrence_dispatch(%{
-               authorization
-               | command_id: "occurrence-recovered-dispatch:" <> fixture.workspace_id,
-                 owner_id: recovered.claim_owner,
-                 claim_generation: recovered.claim_generation,
-                 occurred_at: DateTime.utc_now()
-             })
-
-    assert recovered_authorization.status == :dispatching
-
-    {run_command, run} = create_run_command(fixture)
-    assert {:ok, _created} = RunStore.create_run(run_command)
-
-    completion = %CompleteScheduleOccurrence{
-      workspace_context: fixture.workspace_context,
-      command_id: "occurrence-complete:" <> fixture.workspace_id,
-      occurrence_id: occurrence_id,
-      owner_id: recovered.claim_owner,
-      claim_generation: recovered.claim_generation,
-      run_id: run.id,
-      occurred_at: DateTime.utc_now()
-    }
-
-    assert {:ok, completed} = SchedulerStore.complete_occurrence(completion)
-    assert completed.status == :completed
-    assert completed.run_id == run.id
-    assert {:ok, ^completed} = SchedulerStore.complete_occurrence(completion)
+    assert [%{status: :completed, run_id: run_id}] = occurrence_after_deactivation.items
+    assert run_id == authorization.submission.run_id
 
     %{rows: replay_rows} =
       SQL.query!(
@@ -4847,12 +4992,16 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert replay_rows == [
              [
                "completed",
-               recovered.claim_owner,
-               "occurrence-recovery-claim:" <> fixture.workspace_id
+               claimed.claim_owner,
+               "occurrence-claim:" <> fixture.workspace_id
              ]
            ]
 
-    assert {:ok, []} = SchedulerStore.claim_occurrences(occurrence_claim)
+    assert {:ok, []} =
+             SchedulerStore.claim_occurrences(%{
+               occurrence_claim
+               | batch_id: "occurrence-empty-claim:" <> fixture.workspace_id
+             })
   end
 
   test "deactivation suppresses claimed work before dispatch authorization", fixture do
@@ -4945,6 +5094,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
              SchedulerStore.authorize_occurrence_dispatch(%AuthorizeScheduleOccurrenceDispatch{
                workspace_context: fixture.workspace_context,
                command_id: "occurrence-race-dispatch:" <> fixture.workspace_id,
+               submission: schedule_submission(fixture, "suppressed"),
                occurrence_id: claimed.occurrence_id,
                pipeline_target_id: fixture.pipeline_target_id,
                schedule_id: "daily",
@@ -5442,8 +5592,6 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   end
 
   test "service-token manifest activation is idempotent and durably audited", fixture do
-    configure_release_runner_client!(fixture.version.required_runner_release_id)
-
     Application.put_env(:favn_orchestrator, :api_service_tokens, [
       %{
         service_identity: "http-boundary",
@@ -5487,11 +5635,11 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
 
     assert %{
              "data" => %{
-               "required_runner_release_id" => required_runner_release_id
+               "runner_releases" => runner_releases
              }
            } = JSON.decode!(first.resp_body)
 
-    assert required_runner_release_id == fixture.version.required_runner_release_id
+    assert runner_releases == fixture.version.runner_releases
 
     assert {:ok, %{targets: targets}} = Manifests.active(fixture.workspace_context)
 
@@ -5510,8 +5658,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
 
     assert length(matching_audits) == 1
 
-    assert hd(matching_audits).detail["required_runner_release_id"] ==
-             fixture.version.required_runner_release_id
+    assert hd(matching_audits).detail["runner_releases"] == fixture.version.runner_releases
 
     assert %{rows: [[1]]} =
              SQL.query!(
@@ -5545,11 +5692,8 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert %{"error" => %{"code" => "not_found"}} = JSON.decode!(response.resp_body)
   end
 
-  test "HTTP manifest activation rejects a different runner release without changing deployment",
+  test "HTTP manifest activation is independent of live runner availability",
        fixture do
-    alternate = FavnTestSupport.runner_release_id(:alternate)
-    configure_release_runner_client!(alternate)
-
     handler_id = {__MODULE__, self(), make_ref()}
 
     :ok =
@@ -5583,50 +5727,15 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
         idempotency_key: "activate-wrong-runner"
       )
 
-    assert response.status == 409
-
-    assert %{
-             "error" => %{
-               "code" => "runner_release_mismatch",
-               "details" => %{
-                 "required_runner_release_id" => required,
-                 "runner_release_id" => ^alternate
-               }
-             }
-           } = JSON.decode!(response.resp_body)
-
-    assert required == fixture.version.required_runner_release_id
-
-    assert_receive {:manifest_activation_rejected, %{count: 1}, activation_metadata}
-    assert activation_metadata.status == :rejected
-    assert activation_metadata.reason == :runner_release_mismatch
-    assert activation_metadata.required_runner_release_id == required
-    assert activation_metadata.runner_release_id == alternate
-
-    assert {:ok, audit_page} = Identity.page_audit(fixture.workspace_context, limit: 20)
-
-    rejected_audits =
-      Enum.filter(
-        audit_page.items,
-        &(&1.action == "manifest.activate" and
-            &1.subject_id == fixture.version.manifest_version_id and
-            &1.detail["outcome"] == "rejected")
-      )
-
-    assert [rejected_audit] = rejected_audits
-    assert rejected_audit.detail["rejection_reason"] == "runner_release_mismatch"
-    assert rejected_audit.detail["required_runner_release_id"] == required
-    assert rejected_audit.detail["runner_release_id"] == alternate
-    refute Map.has_key?(rejected_audit.detail, "configuration")
+    assert response.status == 200
+    refute_receive {:manifest_activation_rejected, _measurements, _metadata}
 
     assert {:ok, %{manifest: active}} = Manifests.active(fixture.workspace_context)
     assert active.manifest_version_id == fixture.version.manifest_version_id
-    assert active.required_runner_release_id == fixture.version.required_runner_release_id
+    assert active.runner_releases == fixture.version.runner_releases
   end
 
-  test "HTTP manifest activation refuses an unavailable runner", fixture do
-    configure_release_runner_client!(fixture.version.required_runner_release_id, ready?: false)
-
+  test "HTTP manifest activation succeeds with zero live runners", fixture do
     Application.put_env(:favn_orchestrator, :api_service_tokens, [
       %{
         service_identity: "http-boundary",
@@ -5646,8 +5755,12 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
         idempotency_key: "activate-runner-offline"
       )
 
-    assert response.status == 503
-    assert %{"error" => %{"code" => "runner_unavailable"}} = JSON.decode!(response.resp_body)
+    assert response.status == 200
+
+    assert %{"data" => %{"manifest_version_id" => manifest_version_id}} =
+             JSON.decode!(response.resp_body)
+
+    assert manifest_version_id == fixture.version.manifest_version_id
   end
 
   test "HTTP boundaries reject cross-workspace access and isolate SSE replay", fixture do
@@ -5696,11 +5809,11 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
 
     assert %{
              "data" => %{
-               "run" => %{"required_runner_release_id" => required_runner_release_id}
+               "run" => %{"runner_releases" => runner_releases}
              }
            } = JSON.decode!(available.resp_body)
 
-    assert required_runner_release_id == fixture.version.required_runner_release_id
+    assert runner_releases == fixture.version.runner_releases
 
     missing =
       api_request(:get, "/api/orchestrator/v1/runs/run_missing", nil,
@@ -5779,7 +5892,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
         "content_hash" => fixture.version.content_hash,
         "schema_version" => fixture.version.schema_version,
         "runner_contract_version" => fixture.version.runner_contract_version,
-        "required_runner_release_id" => fixture.version.required_runner_release_id,
+        "runner_releases" => fixture.version.runner_releases,
         "serialization_format" => fixture.version.serialization_format
       })
 
@@ -6039,6 +6152,8 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     refute compact.runs_truncated?
     refute compact.requested_windows_truncated?
 
+    assert compact.root_run.runner_releases == fixture.version.runner_releases
+
     blocked_progress =
       RunState.transition(progressed,
         metadata: Map.put(progressed.metadata, :projected_blocked_step, true)
@@ -6077,11 +6192,8 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert [%{status: :blocked, error: "upstream_blocked"}] = blocked_compact.attempts
     assert blocked_compact.attempt_counts.failed == 1
 
-    assert compact.root_run.required_runner_release_id ==
-             fixture.version.required_runner_release_id
-
     assert Enum.all?(compact.runs, fn summary ->
-             summary.required_runner_release_id == fixture.version.required_runner_release_id
+             summary.runner_releases == fixture.version.runner_releases
            end)
 
     %{rows: [[^status_publication_id]]} =
@@ -6151,7 +6263,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
 
     assert [target_run] = target_runs.items
     assert target_run.run_id == run.id
-    assert target_run.required_runner_release_id == fixture.version.required_runner_release_id
+    assert target_run.runner_releases == fixture.version.runner_releases
 
     {:ok, platform_context} =
       PlatformContext.new("consultant", "read-grant:" <> run.id, [:platform_reader])
@@ -6584,7 +6696,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
         deployment_id: fixture.deployment_id,
         manifest_version_id: fixture.version.manifest_version_id,
         manifest_content_hash: fixture.version.content_hash,
-        required_runner_release_id: fixture.version.required_runner_release_id,
+        runner_releases: fixture.version.runner_releases,
         asset_ref: {MyApp.Asset, :asset},
         target_refs: [{MyApp.Asset, :asset}]
       )
@@ -6613,6 +6725,26 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     }
 
     {command, run}
+  end
+
+  defp schedule_submission(fixture, suffix) do
+    run_id = "run-schedule-#{suffix}-#{fixture.workspace_id}"
+
+    %EnqueueRunSubmission{
+      workspace_context: fixture.workspace_context,
+      command_id: "enqueue-schedule-#{suffix}-#{fixture.workspace_id}",
+      submission_id: "submission-schedule-#{suffix}-#{fixture.workspace_id}",
+      source: :scheduler,
+      idempotency_key: "schedule-#{suffix}-#{fixture.workspace_id}",
+      request_hash: :crypto.hash(:sha256, "schedule-#{suffix}-#{fixture.workspace_id}"),
+      deployment_id: fixture.deployment_id,
+      manifest_version_id: fixture.version.manifest_version_id,
+      target_kind: "pipeline",
+      target_id: fixture.pipeline_target_id,
+      run_id: run_id,
+      intent: %{"format" => "test", "payload" => "schedule"},
+      occurred_at: DateTime.utc_now()
+    }
   end
 
   defp pipeline_run_command(fixture) do
@@ -6650,7 +6782,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
         deployment_id: fixture.deployment_id,
         manifest_version_id: fixture.version.manifest_version_id,
         manifest_content_hash: fixture.version.content_hash,
-        required_runner_release_id: fixture.version.required_runner_release_id,
+        runner_releases: fixture.version.runner_releases,
         asset_ref: ref,
         target_refs: [ref],
         submit_kind: :pipeline,
@@ -6890,7 +7022,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
       "content_hash" => version.content_hash,
       "schema_version" => version.schema_version,
       "runner_contract_version" => version.runner_contract_version,
-      "required_runner_release_id" => version.required_runner_release_id,
+      "runner_releases" => version.runner_releases,
       "serialization_format" => version.serialization_format,
       "manifest" => canonical_json(version.manifest)
     })
@@ -6994,68 +7126,9 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     end
   end
 
-  defp configure_restarted_runner_client! do
-    env_keys = [:runtime_config_dynamic_env?, :runner_client, :runner_client_opts]
-    previous = Map.new(env_keys, &{&1, Application.get_env(:favn_orchestrator, &1)})
-    on_exit(fn -> Enum.each(previous, fn {key, value} -> restore_app_env(key, value) end) end)
-
-    Application.put_env(:favn_orchestrator, :runtime_config_dynamic_env?, true)
-
-    Application.put_env(
-      :favn_orchestrator,
-      :runner_client,
-      FavnStoragePostgres.TestRestartedRunnerClient
-    )
-
-    Application.put_env(:favn_orchestrator, :runner_client_opts,
-      test_pid: self(),
-      runner_release_id: FavnTestSupport.runner_release_id()
-    )
-
+  defp share_repo_sandbox! do
     Sandbox.mode(Repo, {:shared, self()})
     on_exit(fn -> Sandbox.mode(Repo, :manual) end)
-  end
-
-  defp configure_pipeline_runner_client!(runner_state) do
-    env_keys = [:runtime_config_dynamic_env?, :runner_client, :runner_client_opts]
-    previous = Map.new(env_keys, &{&1, Application.get_env(:favn_orchestrator, &1)})
-    on_exit(fn -> Enum.each(previous, fn {key, value} -> restore_app_env(key, value) end) end)
-
-    Application.put_env(:favn_orchestrator, :runtime_config_dynamic_env?, true)
-
-    Application.put_env(
-      :favn_orchestrator,
-      :runner_client,
-      FavnStoragePostgres.TestPipelineRunnerClient
-    )
-
-    Application.put_env(:favn_orchestrator, :runner_client_opts,
-      state: runner_state,
-      runner_release_id: FavnTestSupport.runner_release_id()
-    )
-
-    Sandbox.mode(Repo, {:shared, self()})
-    on_exit(fn -> Sandbox.mode(Repo, :manual) end)
-  end
-
-  defp configure_release_runner_client!(runner_release_id, runner_opts \\ []) do
-    env_keys = [:runtime_config_dynamic_env?, :runner_client, :runner_client_opts]
-    previous = Map.new(env_keys, &{&1, Application.get_env(:favn_orchestrator, &1)})
-    on_exit(fn -> Enum.each(previous, fn {key, value} -> restore_app_env(key, value) end) end)
-
-    Application.put_env(:favn_orchestrator, :runtime_config_dynamic_env?, true)
-
-    Application.put_env(
-      :favn_orchestrator,
-      :runner_client,
-      FavnStoragePostgres.TestReleaseRunnerClient
-    )
-
-    Application.put_env(
-      :favn_orchestrator,
-      :runner_client_opts,
-      Keyword.put(runner_opts, :runner_release_id, runner_release_id)
-    )
   end
 
   defp activation_body do
@@ -7145,262 +7218,9 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     {plan, keys}
   end
 
-  defp sequential_retry_checkpoint(%RunState{} = run) do
-    %{
-      kind: :sequential,
-      sequential_index: 0,
-      next_retry_at: System.system_time(:millisecond),
-      retry: %{
-        asset_ref: run.asset_ref,
-        node_key: {run.asset_ref, nil},
-        asset_step_id: "cross-mode-step:" <> run.id,
-        stage: 0,
-        next_attempt: 2,
-        retry_after_ms: 0
-      }
-    }
-  end
-
-  defp pipeline_retry_checkpoint(%RunState{} = run) do
-    %{
-      kind: :pipeline,
-      checkpoint_sequence: run.event_seq + 1,
-      stage_index: 0,
-      next_attempt: 2,
-      stage: 0,
-      next_retry_at: System.system_time(:millisecond)
-    }
-  end
-
   defp restore_app_env(key, nil), do: Application.delete_env(:favn_orchestrator, key)
   defp restore_app_env(key, value), do: Application.put_env(:favn_orchestrator, key, value)
 
-  defp preflight_blockers do
-    case Release.preflight_upgrade() do
-      {:ok, blockers} -> blockers
-      {:error, blockers} -> blockers
-    end
-  end
-
   defp restore_system_env(key, nil), do: System.delete_env(key)
   defp restore_system_env(key, value), do: System.put_env(key, value)
-end
-
-defmodule FavnStoragePostgres.TestReleaseRunnerClient do
-  @behaviour Favn.Contracts.RunnerClient
-
-  @impl true
-  def register_manifest(_version, _opts), do: :ok
-
-  @impl true
-  def ensure_manifest(_version, _opts), do: :ok
-
-  @impl true
-  def acquire_manifest(_version, _lease_id, _expires_at, _planned_asset_refs, _opts), do: :ok
-
-  @impl true
-  def renew_manifest(_lease_id, _expires_at, _opts), do: :ok
-
-  @impl true
-  def release_manifest(_lease_id, _opts), do: :ok
-
-  @impl true
-  def submit_work(_work, _opts), do: {:error, :unsupported}
-
-  @impl true
-  def await_result(_execution_id, _timeout, _opts), do: {:error, :unsupported}
-
-  @impl true
-  def cancel_work(_execution_id, _reason, _opts), do: {:error, :unsupported}
-
-  @impl true
-  def inspect_relation(_request, _opts), do: {:error, :unsupported}
-
-  @impl true
-  def diagnostics(opts) do
-    {:ok,
-     %{
-       available?: true,
-       ready?: Keyword.get(opts, :ready?, true),
-       status: if(Keyword.get(opts, :ready?, true), do: :ready, else: :not_ready),
-       identity_source: :operator,
-       runner_release_id: Keyword.fetch!(opts, :runner_release_id),
-       favn_version: Favn.RunnerRelease.current_favn_version(),
-       runner_contract_version: Favn.Manifest.Compatibility.current_runner_contract_version(),
-       node_name: "runner@runner.internal"
-     }}
-  end
-end
-
-defmodule FavnStoragePostgres.TestRestartedRunnerClient do
-  @behaviour Favn.Contracts.RunnerClient
-
-  alias Favn.Contracts.RunnerCancellation
-
-  @impl true
-  def register_manifest(_version, _opts), do: :ok
-
-  @impl true
-  def ensure_manifest(_version, _opts), do: :ok
-
-  @impl true
-  def acquire_manifest(_version, lease_id, _expires_at, _planned_asset_refs, opts) do
-    send(Keyword.fetch!(opts, :test_pid), {:runner_manifest_acquired, lease_id})
-    :ok
-  end
-
-  @impl true
-  def renew_manifest(_lease_id, _expires_at, _opts), do: :ok
-
-  @impl true
-  def release_manifest(lease_id, opts) do
-    send(Keyword.fetch!(opts, :test_pid), {:runner_manifest_released, lease_id})
-    :ok
-  end
-
-  @impl true
-  def submit_work(work, opts) do
-    send(Keyword.fetch!(opts, :test_pid), {:runner_work_resubmitted, work})
-    {:error, :unexpected_resubmission}
-  end
-
-  @impl true
-  def await_result(_execution_id, _timeout, _opts), do: {:error, :execution_not_found}
-
-  @impl true
-  def cancel_work(execution_id, _reason, opts) do
-    send(Keyword.fetch!(opts, :test_pid), {:runner_cancelled_after_restart, execution_id})
-
-    {:ok,
-     RunnerCancellation.outcome(:not_found,
-       execution_id: execution_id,
-       runner_status: :not_found,
-       native_status: :native_cancel_unknown
-     )}
-  end
-
-  @impl true
-  def inspect_relation(_request, _opts), do: {:error, :unsupported}
-
-  @impl true
-  def diagnostics(opts) do
-    {:ok,
-     %{
-       available?: true,
-       ready?: true,
-       status: :ready,
-       identity_source: :operator,
-       runner_release_id: Keyword.fetch!(opts, :runner_release_id),
-       favn_version: Favn.RunnerRelease.current_favn_version(),
-       runner_contract_version: Favn.Manifest.Compatibility.current_runner_contract_version(),
-       node_name: "runner@runner.internal"
-     }}
-  end
-end
-
-defmodule FavnStoragePostgres.TestPipelineRunnerClient do
-  @behaviour Favn.Contracts.RunnerClient
-
-  alias Favn.Contracts.RunnerCancellation
-  alias Favn.Contracts.RunnerError
-  alias Favn.Contracts.RunnerResult
-  alias Favn.Contracts.RunnerWork
-
-  @impl true
-  def register_manifest(_version, _opts), do: :ok
-
-  @impl true
-  def ensure_manifest(_version, _opts), do: :ok
-
-  @impl true
-  def acquire_manifest(_version, _lease_id, _expires_at, _planned_asset_refs, _opts), do: :ok
-
-  @impl true
-  def renew_manifest(_lease_id, _expires_at, _opts), do: :ok
-
-  @impl true
-  def release_manifest(_lease_id, _opts), do: :ok
-
-  @impl true
-  def resolve_runtime_inputs(_work, _opts), do: {:ok, nil}
-
-  @impl true
-  def submit_work(%RunnerWork{} = work, opts) do
-    state = Keyword.fetch!(opts, :state)
-    node_key = RunnerWork.node_key(work)
-
-    Agent.update(state, fn current ->
-      %{
-        current
-        | work: Map.put(current.work, work.execution_id, work),
-          submitted: [node_key | current.submitted]
-      }
-    end)
-
-    {:ok, work.execution_id}
-  end
-
-  @impl true
-  def await_result(execution_id, _timeout, opts) do
-    state = Keyword.fetch!(opts, :state)
-    %{work: work, fail_key: fail_key} = Agent.get(state, &%{work: &1.work, fail_key: &1.fail_key})
-    work = Map.fetch!(work, execution_id)
-
-    if RunnerWork.node_key(work) == fail_key do
-      retryable? = work.attempt == 1
-
-      error =
-        RunnerError.new(
-          type: :fixture_failure,
-          message: "fixture failure",
-          retryable?: retryable?,
-          outcome: if(retryable?, do: :safe_failure, else: :unknown)
-        )
-
-      {:ok, result(work, :error, error)}
-    else
-      {:ok, result(work, :ok, nil)}
-    end
-  end
-
-  @impl true
-  def cancel_work(execution_id, _reason, _opts) do
-    {:ok,
-     RunnerCancellation.outcome(:acknowledged,
-       execution_id: execution_id,
-       runner_status: :cancelled,
-       native_status: :native_cancel_unknown
-     )}
-  end
-
-  @impl true
-  def inspect_relation(_request, _opts), do: {:error, :unsupported}
-
-  @impl true
-  def diagnostics(opts) do
-    {:ok,
-     %{
-       available?: true,
-       ready?: true,
-       status: :ready,
-       identity_source: :operator,
-       runner_release_id: Keyword.fetch!(opts, :runner_release_id),
-       favn_version: Favn.RunnerRelease.current_favn_version(),
-       runner_contract_version: Favn.Manifest.Compatibility.current_runner_contract_version(),
-       node_name: "runner@runner.internal"
-     }}
-  end
-
-  defp result(work, status, error) do
-    %RunnerResult{
-      run_id: work.run_id,
-      manifest_version_id: work.manifest_version_id,
-      manifest_content_hash: work.manifest_content_hash,
-      required_runner_release_id: work.required_runner_release_id,
-      status: status,
-      asset_results: [],
-      error: error,
-      metadata: %{}
-    }
-  end
 end

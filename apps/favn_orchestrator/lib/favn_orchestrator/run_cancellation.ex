@@ -43,11 +43,11 @@ defmodule FavnOrchestrator.RunCancellation do
         [
           status: :cancelled,
           error: {:cancelled, reason},
-          runner_execution_id: nil,
+          runner_task_id: nil,
           metadata:
             Map.merge(requested.metadata, %{
               cancelled: true,
-              in_flight_execution_ids: []
+              active_runner_task_ids: []
             })
         ],
         occurred_at

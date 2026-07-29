@@ -31,7 +31,7 @@ operate or call the documented feature.
 | Deployment and operations | `docs/production/`, `docs/operators/` |
 | Implemented product capability | `docs/FEATURES.md` |
 | Forward work | `docs/ROADMAP.md` and linked GitHub issues |
-| Point-in-time findings or completed plans | `docs/report/`, `docs/refactor/`, `docs/archive/` |
+| Point-in-time findings or completed plans | `docs/report/`, `docs/archive/` |
 
 Overview pages summarize and link; they do not copy reference material. The root
 `README.md` is only a public introduction. Historical plans and reports must be

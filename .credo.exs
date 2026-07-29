@@ -146,7 +146,15 @@
           {Credo.Check.Warning.IExPry, []},
           {Credo.Check.Warning.IoInspect, []},
           {Credo.Check.Warning.MissedMetadataKeyInLoggerConfig,
-           metadata_keys: [:run_id, :ref, :stage, :attempt, :operation_id, :reason]},
+           metadata_keys: [
+             :run_id,
+             :ref,
+             :stage,
+             :attempt,
+             :workspace_id,
+             :operation_id,
+             :reason
+           ]},
           {Credo.Check.Warning.OperationOnSameValues, []},
           {Credo.Check.Warning.OperationWithConstantResult, []},
           {Credo.Check.Warning.RaiseInsideRescue, []},

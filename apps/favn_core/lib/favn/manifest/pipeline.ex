@@ -21,6 +21,7 @@ defmodule Favn.Manifest.Pipeline do
           retry_policy: Favn.Retry.Policy.t() | nil,
           max_concurrency: pos_integer() | nil,
           execution_pool: atom() | nil,
+          runner_pool: atom() | nil,
           resource_recovery: Favn.ResourceRecovery.Policy.t() | nil,
           source: atom() | nil,
           outputs: [atom()],
@@ -37,6 +38,7 @@ defmodule Favn.Manifest.Pipeline do
             retry_policy: nil,
             max_concurrency: nil,
             execution_pool: nil,
+            runner_pool: nil,
             resource_recovery: nil,
             source: nil,
             outputs: [],
@@ -61,6 +63,7 @@ defmodule Favn.Manifest.Pipeline do
       retry_policy: normalize_retry_policy(Map.get(definition, :retry_policy)),
       max_concurrency: normalize_max_concurrency(Map.get(definition, :max_concurrency)),
       execution_pool: normalize_execution_pool(Map.get(definition, :execution_pool)),
+      runner_pool: normalize_runner_pool(Map.get(definition, :runner_pool)),
       resource_recovery:
         Favn.ResourceRecovery.Policy.from_value!(Map.get(definition, :resource_recovery)),
       source: Map.get(definition, :source),
@@ -117,6 +120,9 @@ defmodule Favn.Manifest.Pipeline do
 
   defp normalize_execution_pool(value) when is_atom(value), do: value
   defp normalize_execution_pool(_other), do: nil
+
+  defp normalize_runner_pool(value) when is_atom(value) and not is_nil(value), do: value
+  defp normalize_runner_pool(_other), do: nil
 
   defp normalize_atom_list(list) when is_list(list) do
     list

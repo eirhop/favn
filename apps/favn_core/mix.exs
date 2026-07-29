@@ -19,7 +19,7 @@ defmodule FavnCore.MixProject do
 
   def application do
     [
-      extra_applications: [:logger, :tz]
+      extra_applications: [:logger, :ssl, :tz]
     ]
   end
 

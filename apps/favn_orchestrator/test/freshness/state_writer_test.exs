@@ -31,7 +31,8 @@ defmodule FavnOrchestrator.Freshness.StateWriterTest do
 
     version = %Version{
       manifest_version_id: "manifest-orders",
-      content_hash: String.duplicate("a", 64)
+      content_hash: String.duplicate("a", 64),
+      runner_releases: %{"default" => FavnTestSupport.runner_release_id()}
     }
 
     run =
@@ -39,7 +40,7 @@ defmodule FavnOrchestrator.Freshness.StateWriterTest do
         id: "run-orders",
         manifest_version_id: version.manifest_version_id,
         manifest_content_hash: version.content_hash,
-        required_runner_release_id: FavnTestSupport.runner_release_id(),
+        runner_releases: version.runner_releases,
         asset_ref: ref,
         target_refs: [ref],
         plan: plan

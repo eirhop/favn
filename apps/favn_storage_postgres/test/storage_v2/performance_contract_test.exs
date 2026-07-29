@@ -19,7 +19,6 @@ defmodule FavnStoragePostgres.StorageV2.PerformanceContractTest do
   alias FavnOrchestrator.Persistence.PlatformContext
   alias FavnOrchestrator.Persistence.Queries.ManifestSelector.ByContentHash
   alias FavnOrchestrator.Persistence.Queries.PageBackfillWindows
-  alias FavnOrchestrator.Persistence.Queries.PageRunnerExecutions
   alias FavnOrchestrator.Persistence.Queries.PageRuns
   alias FavnOrchestrator.Persistence.Queries.GetRun
   alias FavnOrchestrator.Persistence.WorkspaceContext
@@ -29,7 +28,6 @@ defmodule FavnStoragePostgres.StorageV2.PerformanceContractTest do
   alias FavnStoragePostgres.Config
   alias FavnStoragePostgres.Registry.Store, as: RegistryStore
   alias FavnStoragePostgres.Repo
-  alias FavnStoragePostgres.RunOwnership.Store, as: RunOwnershipStore
   alias FavnStoragePostgres.Runs.Store, as: RunStore
   alias FavnStoragePostgres.StorageV2.Migrations
 
@@ -202,92 +200,6 @@ defmodule FavnStoragePostgres.StorageV2.PerformanceContractTest do
     assert "runs_group_children_idx" in index_names(plan)
   end
 
-  test "runner execution recovery pages stay index-backed at large run cardinality", fixture do
-    run = create_run!(fixture)
-    owner_id = "performance-runner-owner"
-    insert_sibling_runs!(fixture, run, 9)
-
-    SQL.query!(
-      Repo,
-      """
-      WITH execution_runs AS (
-        SELECT run_id, row_number() OVER (ORDER BY run_id) - 1 AS run_ordinal
-        FROM favn_control.runs
-        WHERE workspace_id = $1 AND root_execution_group_id = $2
-      )
-      INSERT INTO favn_control.runner_executions
-        (workspace_id, runner_execution_id, run_id, dispatch_id, last_command_id,
-         owner_id, run_fencing_token, status, version, dispatch_payload,
-         dispatched_at, terminal_at, inserted_at, updated_at)
-      SELECT $1,
-             'execution-' || lpad(series::text, 8, '0') || '-' ||
-               lpad(execution_runs.run_ordinal::text, 2, '0'),
-             execution_runs.run_id,
-             'dispatch-' || lpad(series::text, 8, '0') || '-' ||
-               lpad(execution_runs.run_ordinal::text, 2, '0'),
-             'command-' || lpad(series::text, 8, '0') || '-' ||
-               lpad(execution_runs.run_ordinal::text, 2, '0'),
-             CASE WHEN execution_runs.run_ordinal = 0
-                  THEN $3
-                  ELSE $3 || '-' || execution_runs.run_ordinal::text END,
-             1, CASE WHEN series % 100 = 0 THEN 'running' ELSE 'ok' END,
-             1, '{}'::jsonb,
-             clock_timestamp(),
-             CASE WHEN series % 100 = 0 THEN NULL ELSE clock_timestamp() END,
-             clock_timestamp(), clock_timestamp()
-      FROM execution_runs
-      CROSS JOIN generate_series(1, 2000) AS series
-      """,
-      [fixture.workspace_id, run.id, owner_id]
-    )
-
-    SQL.query!(Repo, "ANALYZE favn_control.runner_executions", [])
-
-    {active_result, active_queries} =
-      capture_queries(fn ->
-        RunOwnershipStore.page_executions(%PageRunnerExecutions{
-          workspace_context: fixture.workspace_context,
-          run_id: run.id,
-          after: %{runner_execution_id: "execution-00001000"},
-          limit: 100
-        })
-      end)
-
-    assert {:ok, _page} = active_result
-    run_active_page = active_queries |> runner_execution_query!() |> explain_captured()
-
-    {history_result, history_queries} =
-      capture_queries(fn ->
-        RunOwnershipStore.page_executions(%PageRunnerExecutions{
-          workspace_context: fixture.workspace_context,
-          run_id: run.id,
-          after: %{runner_execution_id: "execution-00001000"},
-          active_only?: false,
-          limit: 100
-        })
-      end)
-
-    assert {:ok, _page} = history_result
-    run_history_page = history_queries |> runner_execution_query!() |> explain_captured()
-
-    owner_page =
-      explain(
-        """
-        SELECT runner_execution_id
-        FROM favn_control.runner_executions
-        WHERE workspace_id = $1 AND owner_id = $2 AND terminal_at IS NULL
-          AND runner_execution_id > $3
-        ORDER BY runner_execution_id
-        LIMIT 101
-        """,
-        [fixture.workspace_id, owner_id, "execution-00001000"]
-      )
-
-    assert "runner_executions_run_active_page_idx" in index_names(run_active_page)
-    assert "runner_executions_run_page_idx" in index_names(run_history_page)
-    assert "runner_executions_owner_active_idx" in index_names(owner_page)
-  end
-
   test "status-filtered run history uses its keyset indexes for workspace and platform pages",
        fixture do
     root = create_run!(fixture)
@@ -360,7 +272,7 @@ defmodule FavnStoragePostgres.StorageV2.PerformanceContractTest do
         deployment_id: fixture.deployment_id,
         manifest_version_id: fixture.version.manifest_version_id,
         manifest_content_hash: fixture.version.content_hash,
-        required_runner_release_id: FavnTestSupport.runner_release_id(),
+        runner_releases: %{"default" => FavnTestSupport.runner_release_id()},
         asset_ref: ref,
         target_refs: [ref],
         plan: plan
@@ -523,7 +435,7 @@ defmodule FavnStoragePostgres.StorageV2.PerformanceContractTest do
         deployment_id: fixture.deployment_id,
         manifest_version_id: fixture.version.manifest_version_id,
         manifest_content_hash: fixture.version.content_hash,
-        required_runner_release_id: FavnTestSupport.runner_release_id(),
+        runner_releases: %{"default" => FavnTestSupport.runner_release_id()},
         asset_ref: {MyApp.PerformanceAsset, :asset},
         target_refs: [{MyApp.PerformanceAsset, :asset}]
       )
@@ -624,7 +536,7 @@ defmodule FavnStoragePostgres.StorageV2.PerformanceContractTest do
         deployment_id: fixture.deployment_id,
         manifest_version_id: fixture.version.manifest_version_id,
         manifest_content_hash: fixture.version.content_hash,
-        required_runner_release_id: FavnTestSupport.runner_release_id(),
+        runner_releases: %{"default" => FavnTestSupport.runner_release_id()},
         asset_ref: {MyApp.PerformanceAsset, :asset},
         target_refs: [{MyApp.PerformanceAsset, :asset}]
       )
@@ -851,9 +763,6 @@ defmodule FavnStoragePostgres.StorageV2.PerformanceContractTest do
       10 -> Enum.reverse(queries)
     end
   end
-
-  defp runner_execution_query!(queries),
-    do: query_containing!(queries, ~s(FROM "favn_control"."runner_executions"))
 
   defp runs_page_query!(queries),
     do: query_containing!(queries, ~s(FROM "favn_control"."runs"))

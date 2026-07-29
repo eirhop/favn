@@ -5,21 +5,40 @@ defmodule FavnRunner.ProductionRuntimeConfigTest do
 
   @cookie "bN7!tQ2#vL9@xR4$kM8%pC6&zH3*eW5?"
 
+  setup do
+    credential =
+      Path.join(System.tmp_dir!(), "favn-runner-tls-#{System.unique_integer()}.pem")
+
+    options_file = credential <> ".config"
+    File.write!(credential, "test credential")
+    write_tls_options(options_file, credential)
+    Process.put(:runner_tls_options_file, options_file)
+
+    on_exit(fn ->
+      File.rm(credential)
+      File.rm(options_file)
+    end)
+
+    :ok
+  end
+
   test "validate/1 requires and accepts the distributed runner contract" do
     assert {:ok, config} = ProductionRuntimeConfig.validate(base_env())
 
     assert config == %{
              topology: :beam_node,
-             runner_node: "runner@runner.internal",
+             runner_node: "undefined@runner.internal",
+             runner_node_host_alias: "runner.internal",
              expected_control_plane_node: "control@control-plane.internal",
-             distribution_port: 9_100,
              epmd_port: 4_369,
+             transport: :tls,
+             mutual_tls?: true,
              shutdown_drain_timeout_ms: 120_000,
              cookie_configured?: true
            }
 
     diagnostics = ProductionRuntimeConfig.diagnostics(config)
-    assert diagnostics.runner.runner_node == "runner@runner.internal"
+    assert diagnostics.runner.runner_node == "undefined@runner.internal"
     assert diagnostics.runner.cookie_configured?
     refute inspect(diagnostics) =~ @cookie
   end
@@ -29,34 +48,42 @@ defmodule FavnRunner.ProductionRuntimeConfigTest do
 
     assert {:error, %{status: :invalid, error: {:missing_env, "FAVN_CONTROL_PLANE_NODE"}}} =
              ProductionRuntimeConfig.apply_from_env_if_configured(%{
-               "FAVN_RUNNER_NODE" => "runner@runner.internal"
+               "FAVN_RUNNER_NODE_HOST_ALIAS" => "runner.internal"
              })
   end
 
-  test "rejects loopback, short, and equal node names" do
-    assert {:error, %{status: :invalid, error: {:invalid_env, "FAVN_RUNNER_NODE", expected}}} =
+  test "rejects invalid or loopback runner aliases and invalid control-plane names" do
+    assert {:error,
+            %{
+              status: :invalid,
+              error: {:invalid_env, "FAVN_RUNNER_NODE_HOST_ALIAS", expected}
+            }} =
              base_env()
-             |> Map.put("FAVN_RUNNER_NODE", "runner")
+             |> Map.put("FAVN_RUNNER_NODE_HOST_ALIAS", "runner@internal")
              |> ProductionRuntimeConfig.validate()
 
-    assert expected == "long name@private-dns-name"
+    assert expected == "stable private DNS host alias"
 
-    assert {:error, %{status: :invalid, error: {:invalid_env, "FAVN_RUNNER_NODE", ^expected}}} =
+    assert {:error,
+            %{
+              status: :invalid,
+              error: {:invalid_env, "FAVN_RUNNER_NODE_HOST_ALIAS", ^expected}
+            }} =
              base_env()
-             |> Map.put("FAVN_RUNNER_NODE", "runner@localhost")
+             |> Map.put("FAVN_RUNNER_NODE_HOST_ALIAS", "localhost")
              |> ProductionRuntimeConfig.validate()
 
     assert {:error,
             %{
               status: :invalid,
-              error: {:invalid_env, "FAVN_CONTROL_PLANE_NODE", "different from runner node"}
+              error: {:invalid_env, "FAVN_CONTROL_PLANE_NODE", "long name@private-dns-name"}
             }} =
              base_env()
-             |> Map.put("FAVN_CONTROL_PLANE_NODE", "runner@runner.internal")
+             |> Map.put("FAVN_CONTROL_PLANE_NODE", "control@localhost")
              |> ProductionRuntimeConfig.validate()
   end
 
-  test "rejects weak cookies and invalid fixed ports without echoing values" do
+  test "rejects weak cookies and invalid EPMD ports without echoing values" do
     assert {:error,
             %{
               status: :invalid,
@@ -69,10 +96,10 @@ defmodule FavnRunner.ProductionRuntimeConfigTest do
     assert {:error,
             %{
               status: :invalid,
-              error: {:invalid_env, "FAVN_BEAM_DISTRIBUTION_PORT", "1..65535"}
+              error: {:invalid_env, "ERL_EPMD_PORT", "1..65535"}
             }} =
              base_env()
-             |> Map.put("FAVN_BEAM_DISTRIBUTION_PORT", "0")
+             |> Map.put("ERL_EPMD_PORT", "0")
              |> ProductionRuntimeConfig.validate()
   end
 
@@ -103,10 +130,30 @@ defmodule FavnRunner.ProductionRuntimeConfigTest do
 
   defp base_env do
     %{
-      "FAVN_RUNNER_NODE" => "runner@runner.internal",
+      "FAVN_RUNNER_NODE_HOST_ALIAS" => "runner.internal",
       "FAVN_CONTROL_PLANE_NODE" => "control@control-plane.internal",
       "FAVN_DISTRIBUTION_COOKIE" => @cookie,
-      "FAVN_BEAM_DISTRIBUTION_PORT" => "9100"
+      "FAVN_DISTRIBUTION_TLS_OPTIONS_FILE" => Process.get(:runner_tls_options_file)
     }
+  end
+
+  defp write_tls_options(path, credential) do
+    options = [
+      server: [
+        certfile: String.to_charlist(credential),
+        keyfile: String.to_charlist(credential),
+        cacertfile: String.to_charlist(credential),
+        verify: :verify_peer,
+        fail_if_no_peer_cert: true
+      ],
+      client: [
+        certfile: String.to_charlist(credential),
+        keyfile: String.to_charlist(credential),
+        cacertfile: String.to_charlist(credential),
+        verify: :verify_peer
+      ]
+    ]
+
+    File.write!(path, IO.iodata_to_binary(:io_lib.format("~p.~n", [options])))
   end
 end

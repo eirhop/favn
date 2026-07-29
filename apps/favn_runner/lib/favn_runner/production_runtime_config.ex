@@ -2,27 +2,22 @@ defmodule FavnRunner.ProductionRuntimeConfig do
   @moduledoc """
   Production distributed-node configuration for the separate runner release.
 
-  Packaged releases require validated long node names, one fixed distribution
-  port, and a high-entropy cookie supplied by the environment. Mix development
-  and tests may omit the production contract entirely; supplying any production
-  node variable opts into full validation.
+  Packaged runners use OTP dynamic node names on a stable host alias. This makes
+  every runner a hidden, non-listening client that can only establish its
+  configured outbound control-plane connection. A high-entropy cookie and
+  mutual TLS are both mandatory in production.
   """
-
-  @required_names [
-    "FAVN_RUNNER_NODE",
-    "FAVN_CONTROL_PLANE_NODE",
-    "FAVN_DISTRIBUTION_COOKIE",
-    "FAVN_BEAM_DISTRIBUTION_PORT"
-  ]
 
   @default_shutdown_drain_timeout_ms 120_000
 
   @type config :: %{
           topology: :beam_node,
           runner_node: String.t(),
+          runner_node_host_alias: String.t(),
           expected_control_plane_node: String.t(),
-          distribution_port: pos_integer(),
           epmd_port: pos_integer(),
+          transport: :tls,
+          mutual_tls?: true,
           shutdown_drain_timeout_ms: pos_integer(),
           cookie_configured?: true
         }
@@ -30,7 +25,7 @@ defmodule FavnRunner.ProductionRuntimeConfig do
   @doc "Applies production config only for a release or an explicitly configured node."
   @spec apply_from_env_if_configured(map()) :: :ok | {:error, map()}
   def apply_from_env_if_configured(env) when is_map(env) do
-    if production_release?(env) or Enum.any?(@required_names, &Map.has_key?(env, &1)) do
+    if production_release?(env) or Map.has_key?(env, "FAVN_RUNNER_NODE_HOST_ALIAS") do
       apply_from_env(env)
     else
       :ok
@@ -41,30 +36,35 @@ defmodule FavnRunner.ProductionRuntimeConfig do
   @spec apply_from_env(map()) :: :ok | {:error, map()}
   def apply_from_env(env) when is_map(env) do
     with {:ok, config} <- validate(env) do
-      Application.put_env(:favn_runner, :production_runtime_config, config)
-      Application.put_env(:favn_runner, :production_runtime_diagnostics, diagnostics(config))
+      with :ok <- Favn.DistributionTLS.validate_running_transport(env),
+           :ok <- validate_running_dynamic_node(config.runner_node_host_alias) do
+        Application.put_env(:favn_runner, :production_runtime_config, config)
+        Application.put_env(:favn_runner, :production_runtime_diagnostics, diagnostics(config))
 
-      Application.put_env(
-        :favn_runner,
-        :shutdown_drain_timeout_ms,
-        config.shutdown_drain_timeout_ms
-      )
+        Application.put_env(
+          :favn_runner,
+          :shutdown_drain_timeout_ms,
+          config.shutdown_drain_timeout_ms
+        )
 
-      :ok
+        :ok
+      else
+        {:error, reason} -> {:error, %{status: :invalid, error: redact(reason)}}
+      end
     end
   end
 
   @doc "Validates the runner distributed-node contract without mutating application state."
   @spec validate(map()) :: {:ok, config()} | {:error, map()}
   def validate(env) when is_map(env) do
-    with {:ok, runner_node} <- node_name(env, "FAVN_RUNNER_NODE"),
+    with {:ok, runner_node_host_alias} <-
+           node_host_alias(env, "FAVN_RUNNER_NODE_HOST_ALIAS"),
          {:ok, control_plane_node} <- node_name(env, "FAVN_CONTROL_PLANE_NODE"),
-         :ok <- distinct_nodes(runner_node, control_plane_node),
          {:ok, cookie} <- required(env, "FAVN_DISTRIBUTION_COOKIE"),
          :ok <- distribution_cookie(cookie),
          :ok <- current_distribution_cookie(cookie),
-         {:ok, distribution_port} <- required_port(env, "FAVN_BEAM_DISTRIBUTION_PORT"),
          {:ok, epmd_port} <- optional_port(env, "ERL_EPMD_PORT", 4_369),
+         {:ok, tls} <- Favn.DistributionTLS.validate(env),
          {:ok, shutdown_drain_timeout_ms} <-
            optional_integer(
              env,
@@ -72,15 +72,16 @@ defmodule FavnRunner.ProductionRuntimeConfig do
              @default_shutdown_drain_timeout_ms,
              1_000,
              3_600_000
-           ),
-         :ok <- current_node_matches(runner_node) do
+           ) do
       {:ok,
        %{
          topology: :beam_node,
-         runner_node: runner_node,
+         runner_node: "undefined@" <> runner_node_host_alias,
+         runner_node_host_alias: runner_node_host_alias,
          expected_control_plane_node: control_plane_node,
-         distribution_port: distribution_port,
          epmd_port: epmd_port,
+         transport: tls.transport,
+         mutual_tls?: tls.mutual_tls?,
          shutdown_drain_timeout_ms: shutdown_drain_timeout_ms,
          cookie_configured?: true
        }}
@@ -97,9 +98,11 @@ defmodule FavnRunner.ProductionRuntimeConfig do
       runner: %{
         topology: Map.fetch!(config, :topology),
         runner_node: Map.fetch!(config, :runner_node),
+        runner_node_host_alias: Map.fetch!(config, :runner_node_host_alias),
         expected_control_plane_node: Map.fetch!(config, :expected_control_plane_node),
-        distribution_port: Map.fetch!(config, :distribution_port),
         epmd_port: Map.fetch!(config, :epmd_port),
+        transport: Map.fetch!(config, :transport),
+        mutual_tls?: Map.fetch!(config, :mutual_tls?),
         shutdown_drain_timeout_ms: Map.fetch!(config, :shutdown_drain_timeout_ms),
         cookie_configured?: true
       }
@@ -125,6 +128,16 @@ defmodule FavnRunner.ProductionRuntimeConfig do
     end
   end
 
+  defp node_host_alias(env, name) do
+    with {:ok, host} <- required(env, name),
+         true <- valid_node_host?(host) do
+      {:ok, host}
+    else
+      {:error, _reason} = error -> error
+      _invalid -> {:error, {:invalid_env, name, "stable private DNS host alias"}}
+    end
+  end
+
   defp valid_node_part?(value) do
     byte_size(value) in 1..255 and Regex.match?(~r/^[A-Za-z0-9_.-]+$/, value)
   end
@@ -146,17 +159,25 @@ defmodule FavnRunner.ProductionRuntimeConfig do
     end
   end
 
-  defp distinct_nodes(node, node),
-    do: {:error, {:invalid_env, "FAVN_CONTROL_PLANE_NODE", "different from runner node"}}
+  defp validate_running_dynamic_node(host_alias) do
+    init_argument(:name, "undefined@" <> host_alias)
+  end
 
-  defp distinct_nodes(_runner_node, _control_plane_node), do: :ok
+  defp init_argument(name, expected) do
+    values =
+      case :init.get_argument(name) do
+        {:ok, groups} ->
+          for group when is_list(group) <- groups,
+              value when is_list(value) <- group,
+              do: List.to_string(value)
 
-  defp current_node_matches(runner_node) do
-    if Node.alive?() and Atom.to_string(node()) != runner_node do
-      {:error, {:invalid_env, "FAVN_RUNNER_NODE", "equal to the running release node"}}
-    else
-      :ok
-    end
+        :error ->
+          []
+      end
+
+    if expected in values,
+      do: :ok,
+      else: {:error, {:invalid_env, "ERL_FLAGS", "-#{name} #{expected}"}}
   end
 
   defp distribution_cookie(cookie) do
@@ -176,10 +197,6 @@ defmodule FavnRunner.ProductionRuntimeConfig do
     else
       :ok
     end
-  end
-
-  defp required_port(env, name) do
-    with {:ok, value} <- required(env, name), do: parse_port(name, value)
   end
 
   defp optional_port(env, name, default) do

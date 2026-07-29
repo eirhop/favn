@@ -44,7 +44,7 @@ defmodule FavnRunner.SQLRuntimePreflightTest do
     version = register_manifest!([elixir_asset(elixir_ref)])
     work = work(version, elixir_ref, [elixir_ref])
 
-    assert {:ok, result} = FavnRunner.run(work)
+    assert {:ok, result} = FavnRunner.TestExecution.run(work)
     assert result.status == :ok
     assert [%{ref: ^elixir_ref, status: :ok}] = result.asset_results
     assert_receive :preflight_elixir_executed, 500
@@ -56,7 +56,7 @@ defmodule FavnRunner.SQLRuntimePreflightTest do
     sql_ref = {__MODULE__.SQLAsset, :asset}
     version = register_manifest!([sql_asset(sql_ref, :preflight_sql)])
 
-    assert {:ok, result} = FavnRunner.run(work(version, sql_ref, [sql_ref]))
+    assert {:ok, result} = FavnRunner.TestExecution.run(work(version, sql_ref, [sql_ref]))
     assert result.status == :ok
     assert [%{ref: ^sql_ref, status: :ok}] = result.asset_results
   end
@@ -67,7 +67,7 @@ defmodule FavnRunner.SQLRuntimePreflightTest do
     sql_ref = {__MODULE__.SQLAsset, :asset}
     version = register_manifest!([sql_asset(sql_ref, :preflight_sql)])
 
-    assert {:ok, result} = FavnRunner.run(work(version, sql_ref, [sql_ref]))
+    assert {:ok, result} = FavnRunner.TestExecution.run(work(version, sql_ref, [sql_ref]))
     assert result.status == :error
     assert result.asset_results == []
     assert result.error.type == :missing_runtime_config
@@ -88,7 +88,9 @@ defmodule FavnRunner.SQLRuntimePreflightTest do
     sql_ref = {__MODULE__.SQLAsset, :asset}
     version = register_manifest!([elixir_asset(elixir_ref), sql_asset(sql_ref, :preflight_sql)])
 
-    assert {:ok, result} = FavnRunner.run(work(version, elixir_ref, [elixir_ref, sql_ref]))
+    assert {:ok, result} =
+             FavnRunner.TestExecution.run(work(version, elixir_ref, [elixir_ref, sql_ref]))
+
     assert result.status == :error
     assert result.asset_results == []
     assert result.error.type == :missing_runtime_config
@@ -103,7 +105,7 @@ defmodule FavnRunner.SQLRuntimePreflightTest do
     sql_ref = {__MODULE__.SQLAsset, :asset}
     version = register_manifest!([elixir_asset(elixir_ref), sql_asset(sql_ref, :preflight_sql)])
 
-    assert {:ok, result} = FavnRunner.run(work(version, elixir_ref, [elixir_ref]))
+    assert {:ok, result} = FavnRunner.TestExecution.run(work(version, elixir_ref, [elixir_ref]))
     assert result.status == :ok
     assert [%{ref: ^elixir_ref, status: :ok}] = result.asset_results
     assert_receive :preflight_elixir_executed, 500
@@ -121,7 +123,9 @@ defmodule FavnRunner.SQLRuntimePreflightTest do
         sql_asset(right_ref, :preflight_sql)
       ])
 
-    assert {:ok, result} = FavnRunner.run(work(version, left_ref, [left_ref, right_ref]))
+    assert {:ok, result} =
+             FavnRunner.TestExecution.run(work(version, left_ref, [left_ref, right_ref]))
+
     assert result.status == :error
     assert result.error.details.connections == [:preflight_sql]
     assert result.error.details.sql_asset_refs == [left_ref, right_ref]
@@ -143,7 +147,7 @@ defmodule FavnRunner.SQLRuntimePreflightTest do
     sql_ref = {__MODULE__.SQLAsset, :asset}
     version = register_manifest!([sql_asset(sql_ref, :preflight_sql)])
 
-    assert {:ok, result} = FavnRunner.run(work(version, sql_ref, [sql_ref]))
+    assert {:ok, result} = FavnRunner.TestExecution.run(work(version, sql_ref, [sql_ref]))
     assert result.status == :ok
   end
 
@@ -154,7 +158,7 @@ defmodule FavnRunner.SQLRuntimePreflightTest do
     sql_ref = {__MODULE__.SQLAsset, :asset}
     version = register_manifest!([sql_asset(sql_ref, :preflight_sql)])
 
-    assert {:ok, result} = FavnRunner.run(work(version, sql_ref, [sql_ref]))
+    assert {:ok, result} = FavnRunner.TestExecution.run(work(version, sql_ref, [sql_ref]))
     assert result.status == :error
     assert result.error.type == :missing_runtime_config
     refute inspect(result.error) =~ "raw-secret-like-value"
@@ -195,8 +199,7 @@ defmodule FavnRunner.SQLRuntimePreflightTest do
         |> work(selected_ref, [selected_ref])
         |> Map.put(:manifest_lease_id, lease_id)
 
-      assert {:ok, execution_id} = FavnRunner.submit_work(leased_work)
-      assert {:ok, result} = FavnRunner.await_result(execution_id, 1_000)
+      assert {:ok, result} = FavnRunner.TestExecution.run(leased_work)
       assert result.status == :ok
 
       assert [
@@ -272,9 +275,9 @@ defmodule FavnRunner.SQLRuntimePreflightTest do
     refs = Enum.map(assets, & &1.ref)
 
     manifest = %Manifest{
-      schema_version: 13,
-      runner_contract_version: 12,
-      required_runner_release_id: FavnTestSupport.runner_release_id(),
+      schema_version: 14,
+      runner_contract_version: 13,
+      runner_releases: %{"default" => FavnTestSupport.runner_release_id()},
       assets: assets,
       pipelines: [],
       schedules: [],

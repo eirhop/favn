@@ -11,7 +11,6 @@ defmodule FavnOrchestrator do
 
   alias Favn.Contracts.RelationInspectionRequest
   alias Favn.Contracts.RelationInspectionResult
-  alias Favn.Contracts.RunnerClient
   alias Favn.Manifest.Version
   alias Favn.RuntimeInput.Pin
   alias FavnOrchestrator.Auth
@@ -37,6 +36,7 @@ defmodule FavnOrchestrator do
   alias FavnOrchestrator.OperatorCommands.PipelineBackfillRequest
   alias FavnOrchestrator.OperatorCommands.PipelineRunRequest
   alias FavnOrchestrator.OperatorErrorDTO
+  alias FavnOrchestrator.OperationRunnerTasks
   alias FavnOrchestrator.Persistence.Error, as: PersistenceError
   alias FavnOrchestrator.Persistence
   alias FavnOrchestrator.Persistence.Queries.GetExecutionGroup
@@ -46,17 +46,14 @@ defmodule FavnOrchestrator do
   alias FavnOrchestrator.RunEvent
   alias FavnOrchestrator.RunEvents.Query, as: RunEventQuery
   alias FavnOrchestrator.RunManager
-  alias FavnOrchestrator.RunnerManifestRegistration
-  alias FavnOrchestrator.RunnerDispatch
-  alias FavnOrchestrator.RunnerReleaseCompatibility
-  alias FavnOrchestrator.RunnerReplacement
+  alias FavnOrchestrator.RunnerIdentityVerifier
   alias FavnOrchestrator.RunReadModel
   alias FavnOrchestrator.Rebuilds
   alias FavnOrchestrator.TargetRecovery
   alias FavnOrchestrator.RunRetryPlanner
   alias FavnOrchestrator.RunSubmission.AssetOptions
+  alias FavnOrchestrator.RunSubmissions
   alias FavnOrchestrator.Runs
-  alias FavnOrchestrator.RuntimeConfig
   alias FavnOrchestrator.Shutdown
   alias FavnOrchestrator.ScheduleListEntry
   alias FavnOrchestrator.ScheduleOccurrencePreview
@@ -169,23 +166,6 @@ defmodule FavnOrchestrator do
   @spec lifecycle() :: map()
   def lifecycle, do: Lifecycle.diagnostics()
 
-  @doc "Begins or resumes an authenticated runner-replacement boundary."
-  @spec begin_runner_replacement(String.t()) :: {:ok, String.t()} | {:error, term()}
-  def begin_runner_replacement(token), do: RunnerReplacement.begin(token)
-
-  @doc "Returns bounded runner-replacement drain state."
-  @spec runner_replacement_status() :: map()
-  def runner_replacement_status, do: RunnerReplacement.status()
-
-  @doc "Verifies that the connected runner advertises one exact release ID."
-  @spec verify_replacement_runner(String.t()) :: {:ok, map()} | {:error, term()}
-  def verify_replacement_runner(runner_release_id),
-    do: RunnerReplacement.verify_runner(runner_release_id)
-
-  @doc "Ends a runner-replacement boundary owned by the opaque token."
-  @spec finish_runner_replacement(String.t()) :: :ok | {:error, term()}
-  def finish_runner_replacement(token), do: RunnerReplacement.finish(token)
-
   @doc "Begins the irreversible bounded drain used before a controlled shutdown."
   @spec drain(keyword()) :: {:ok, map()}
   def drain(opts \\ []) when is_list(opts), do: Shutdown.drain(opts)
@@ -249,45 +229,6 @@ defmodule FavnOrchestrator do
   def get_manifest(%WorkspaceContext{} = context, manifest_version_id)
       when is_binary(manifest_version_id) do
     ManifestStore.get_manifest(context, manifest_version_id)
-  end
-
-  @doc "Registers the workspace's active manifest release with the runner."
-  @spec register_manifest_with_runner(WorkspaceContext.t(), String.t()) ::
-          {:ok, map()} | {:error, term()}
-  def register_manifest_with_runner(%WorkspaceContext{} = context, manifest_version_id)
-      when is_binary(manifest_version_id) do
-    with {:ok, version} <- ManifestStore.get_active_manifest(context),
-         true <- version.manifest_version_id == manifest_version_id do
-      register_version_with_runner(version)
-    else
-      false -> {:error, :manifest_not_active_in_workspace}
-      {:error, _reason} = error -> error
-    end
-  end
-
-  defp register_version_with_runner(%Version{} = version) do
-    runner_client = configured_runner_client()
-    runner_opts = configured_runner_opts()
-    manifest_version_id = version.manifest_version_id
-
-    with :ok <- validate_runner_client(runner_client),
-         :ok <- RunnerReleaseCompatibility.verify_runner(runner_client, version, runner_opts) do
-      content_hash = version.content_hash
-
-      case RunnerManifestRegistration.ensure(runner_client, version, runner_opts) do
-        :ok ->
-          {:ok, runner_manifest_registration(version, runner_client, :accepted)}
-
-        {:error, {:manifest_version_conflict, ^manifest_version_id, ^content_hash, ^content_hash}} ->
-          {:ok, runner_manifest_registration(version, runner_client, :already_registered)}
-
-        {:error, {:manifest_version_conflict, ^manifest_version_id, _existing, _incoming}} ->
-          {:error, :runner_manifest_conflict}
-
-        {:error, reason} ->
-          {:error, runner_registration_error(reason)}
-      end
-    end
   end
 
   @doc "Returns customer-visible asset catalogue entries for an operator workspace."
@@ -1035,44 +976,45 @@ defmodule FavnOrchestrator do
              :asset,
              target_id
            ),
-         {:ok, result} <- inspect_manifest_asset_version(version, target_id, opts) do
+         {:ok, result} <- inspect_manifest_asset_version(context, version, target_id, opts) do
       {:ok, result}
     end
   end
 
-  defp inspect_manifest_asset_version(%Version{} = version, target_id, opts) do
+  defp inspect_manifest_asset_version(
+         %WorkspaceContext{} = context,
+         %Version{} = version,
+         target_id,
+         opts
+       ) do
     with manifest_version_id <- version.manifest_version_id,
          {:ok, asset_ref} <- ManifestTarget.resolve_asset_ref(version, target_id),
-         :ok <- validate_runner_client(configured_runner_client()),
-         :ok <-
-           RunnerReleaseCompatibility.verify_runner(
-             configured_runner_client(),
-             version,
-             configured_runner_opts()
-           ),
-         :ok <-
-           RunnerManifestRegistration.ensure(
-             configured_runner_client(),
-             version,
-             configured_runner_opts()
-           ) do
+         {:ok, binding} <- OperationRunnerTasks.binding(version, asset_ref) do
       request = %RelationInspectionRequest{
         manifest_version_id: manifest_version_id,
         manifest_content_hash: version.content_hash,
-        required_runner_release_id: version.required_runner_release_id,
+        required_runner_release_id: binding.required_runner_release_id,
         asset_ref: asset_ref,
         sample_limit: Keyword.get(opts, :sample_limit, 20)
       }
 
-      case RunnerDispatch.inspect_relation(
-             configured_runner_client(),
+      identity =
+        {:operator_inspection, target_id,
+         context.request_id || Keyword.get(opts, :request_id) || unique_runner_task_identity()}
+
+      case OperationRunnerTasks.ensure_and_await(
+             context,
+             version,
+             asset_ref,
+             :relation_inspection,
              request,
-             configured_runner_opts()
+             identity,
+             timeout: Keyword.get(opts, :timeout, 300_000)
            ) do
         {:ok, %RelationInspectionResult{} = result} ->
           with :ok <-
-                 RunnerReleaseCompatibility.verify_inspection_result(
-                   version.required_runner_release_id,
+                 RunnerIdentityVerifier.verify_inspection_result(
+                   binding.required_runner_release_id,
                    result
                  ) do
             {:ok, result}
@@ -1083,9 +1025,6 @@ defmodule FavnOrchestrator do
 
         {:error, _reason} = error ->
           error
-
-        _invalid_response ->
-          {:error, :invalid_runner_inspection_result}
       end
     end
   end
@@ -1150,7 +1089,7 @@ defmodule FavnOrchestrator do
   @spec cancel_run(WorkspaceContext.t(), run_id(), map()) :: :ok | {:error, term()}
   def cancel_run(%WorkspaceContext{} = context, run_id, reason)
       when is_binary(run_id) and is_map(reason) do
-    RunManager.cancel_run(context, run_id, reason)
+    cancel_run(context, run_id, reason, [])
   end
 
   @doc false
@@ -1158,7 +1097,19 @@ defmodule FavnOrchestrator do
           :ok | {:error, term()}
   def cancel_run(%WorkspaceContext{} = context, run_id, reason, opts)
       when is_binary(run_id) and is_map(reason) and is_list(opts) do
-    RunManager.cancel_run(context, run_id, reason, opts)
+    case RunSubmissions.cancel_pending(context, run_id, reason, opts) do
+      :ok ->
+        :ok
+
+      {:error, %PersistenceError{kind: :not_found}} ->
+        RunManager.cancel_run(context, run_id, reason, opts)
+
+      {:error, :run_already_submitted} ->
+        RunManager.cancel_run(context, run_id, reason, opts)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
   end
 
   @doc """
@@ -1221,41 +1172,41 @@ defmodule FavnOrchestrator do
           {:ok, run_id()} | {:error, term()}
   def rerun(%WorkspaceContext{} = context, source_run_id, opts)
       when is_binary(source_run_id) and is_list(opts) do
-    RunManager.rerun(context, source_run_id, opts)
+    RunSubmissions.enqueue_rerun(context, source_run_id, opts)
   end
+
+  @doc "Loads the durable submission lifecycle for one reserved run identity."
+  @spec get_run_submission(WorkspaceContext.t(), run_id()) :: {:ok, map()} | {:error, term()}
+  def get_run_submission(%WorkspaceContext{} = context, run_id) when is_binary(run_id),
+    do: RunSubmissions.get(context, run_id)
+
+  @doc "Returns one bounded page of durable run submissions."
+  @spec page_run_submissions(WorkspaceContext.t(), keyword()) :: {:ok, map()} | {:error, term()}
+  def page_run_submissions(%WorkspaceContext{} = context, opts) when is_list(opts),
+    do: RunSubmissions.page(context, opts)
+
+  @doc "Returns aggregate durable run-submission queue diagnostics."
+  @spec run_submission_stats(WorkspaceContext.t()) :: {:ok, map()} | {:error, term()}
+  def run_submission_stats(%WorkspaceContext{} = context),
+    do: RunSubmissions.stats(context)
 
   defp submit_remaining_retry_plan(
          %WorkspaceContext{} = context,
          %{children: children, asset_count: asset_count} = plan,
          opts
        ) do
-    with {:ok, submissions} <-
-           prepare_remaining_retry_submissions(context, plan, children, opts) do
-      admit_remaining_retry_submissions(plan, submissions, asset_count)
-    end
-  end
-
-  defp prepare_remaining_retry_submissions(context, plan, children, opts) do
     children
     |> Enum.reduce_while({:ok, []}, fn child, {:ok, acc} ->
-      submit_opts = remaining_retry_opts(plan, child, opts)
+      run_id = new_run_id()
 
-      case RunManager.prepare_rerun(context, child.source_run_id, submit_opts) do
-        {:ok, submission} -> {:cont, {:ok, [submission | acc]}}
-        {:error, reason} -> {:halt, {:error, reason}}
-      end
-    end)
-    |> case do
-      {:ok, submissions} -> {:ok, Enum.reverse(submissions)}
-      {:error, reason} -> {:error, reason}
-    end
-  end
+      submit_opts =
+        plan
+        |> remaining_retry_opts(child, opts)
+        |> Keyword.put(:run_id, run_id)
+        |> Keyword.put(:submission_source, :child_run)
 
-  defp admit_remaining_retry_submissions(plan, submissions, asset_count) do
-    submissions
-    |> Enum.reduce_while({:ok, []}, fn submission, {:ok, acc} ->
-      case RunManager.admit_prepared_submission(submission) do
-        {:ok, run_id} ->
+      case RunSubmissions.enqueue_rerun(context, child.source_run_id, submit_opts) do
+        {:ok, ^run_id} ->
           {:cont, {:ok, [run_id | acc]}}
 
         {:error, reason} when acc == [] ->
@@ -1267,7 +1218,7 @@ defmodule FavnOrchestrator do
             %{
               source_run_id: plan.source_run_id,
               run_ids: Enum.reverse(acc),
-              failed_run_id: submission.run_state.id,
+              failed_run_id: run_id,
               reason: reason,
               asset_count: asset_count
             }}}
@@ -1288,6 +1239,15 @@ defmodule FavnOrchestrator do
       {:partial, result} ->
         {:partial, result}
     end
+  end
+
+  defp new_run_id do
+    suffix = 16 |> :crypto.strong_rand_bytes() |> Base.encode16(case: :lower)
+    "run_#{suffix}"
+  end
+
+  defp unique_runner_task_identity do
+    16 |> :crypto.strong_rand_bytes() |> Base.url_encode64(padding: false)
   end
 
   defp remaining_retry_opts(plan, child, opts) do
@@ -1666,58 +1626,8 @@ defmodule FavnOrchestrator do
     }
   end
 
-  defp configured_runner_client do
-    RuntimeConfig.current().runner_client
-  end
-
-  defp configured_runner_opts do
-    RuntimeConfig.current().runner_client_opts
-  end
-
   defp maybe_put_runtime_input_lineage(metadata, []), do: metadata
 
   defp maybe_put_runtime_input_lineage(metadata, pins),
     do: Map.put(metadata, :runtime_input_lineage, Enum.map(pins, &Pin.lineage/1))
-
-  defp validate_runner_client(module) when is_atom(module) do
-    callbacks =
-      RunnerClient.behaviour_info(:callbacks) -- RunnerClient.behaviour_info(:optional_callbacks)
-
-    with {:module, ^module} <- Code.ensure_loaded(module),
-         true <-
-           Enum.all?(callbacks, fn {name, arity} -> function_exported?(module, name, arity) end) do
-      :ok
-    else
-      _ -> {:error, :runner_client_not_available}
-    end
-  end
-
-  defp validate_runner_client(_module), do: {:error, :runner_client_not_available}
-
-  defp runner_manifest_registration(%Version{} = version, runner_client, status) do
-    %{
-      manifest_version_id: version.manifest_version_id,
-      content_hash: version.content_hash,
-      runner_client: atom_name(runner_client),
-      status: atom_name(status)
-    }
-  end
-
-  defp runner_registration_error(:runner_client_not_available), do: :runner_client_not_available
-  defp runner_registration_error({:runner_node_unreachable, _node}), do: :runner_unavailable
-  defp runner_registration_error({:runner_node_ignored, _node}), do: :runner_unavailable
-
-  defp runner_registration_error({:runner_function_undefined, _module, _function, _arity}),
-    do: :runner_client_not_available
-
-  defp runner_registration_error({:runner_dispatch_failed, _details}), do: :runner_unavailable
-
-  defp runner_registration_error({:manifest_version_conflict, _id, _existing, _incoming}),
-    do: :runner_manifest_conflict
-
-  defp runner_registration_error(_reason), do: :runner_unavailable
-
-  defp atom_name(nil), do: nil
-  defp atom_name(value) when is_atom(value), do: Atom.to_string(value)
-  defp atom_name(value), do: to_string(value)
 end

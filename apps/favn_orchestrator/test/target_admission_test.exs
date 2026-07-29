@@ -32,6 +32,8 @@ defmodule FavnOrchestrator.TargetAdmissionTest do
     stores = %Stores{
       registry: FakeStore,
       runs: FakeStore,
+      run_submissions: FakeStore,
+      runner_tasks: FavnOrchestrator.TestRunnerTaskStore,
       run_ownership: FakeStore,
       scheduler: FakeStore,
       admission: FakeStore,
@@ -137,7 +139,7 @@ defmodule FavnOrchestrator.TargetAdmissionTest do
       }
     }
 
-    version = %Version{manifest_version_id: "manifest", required_runner_release_id: "runner"}
+    version = %Version{manifest_version_id: "manifest", runner_releases: %{"default" => "runner"}}
 
     Process.put(:target_admission_bindings, [
       binding(blocked, :rebuild_required),

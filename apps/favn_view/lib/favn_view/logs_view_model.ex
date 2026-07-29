@@ -22,7 +22,7 @@ defmodule FavnView.LogsViewModel do
       run_id: Map.get(entry, :run_id),
       asset_step_id: Map.get(entry, :asset_step_id),
       asset_ref: ref_label(Map.get(entry, :asset_ref)),
-      runner_execution_id: Map.get(entry, :runner_execution_id),
+      runner_task_id: Map.get(entry, :runner_task_id),
       attempt: Map.get(entry, :attempt),
       message: Map.get(entry, :message, "") || "",
       metadata: Map.get(entry, :metadata, %{}) || %{},
@@ -203,8 +203,7 @@ defmodule FavnView.LogsViewModel do
       {"asset", ref_label(Map.get(entry, :asset_ref)), ref_label(Map.get(entry, :asset_ref))},
       {"step", Map.get(entry, :asset_step_id), Map.get(entry, :asset_step_id)},
       {"attempt", attempt_label(Map.get(entry, :attempt)), Map.get(entry, :attempt)},
-      {"runner", short_id(Map.get(entry, :runner_execution_id)),
-       Map.get(entry, :runner_execution_id)},
+      {"runner", short_id(Map.get(entry, :runner_task_id)), Map.get(entry, :runner_task_id)},
       {"producer", producer_label(entry), producer_label(entry)}
     ]
     |> Enum.reject(fn {_label, _display, value} -> value in [nil, ""] end)

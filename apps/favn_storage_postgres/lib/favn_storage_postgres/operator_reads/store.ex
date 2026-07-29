@@ -82,7 +82,7 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
           content_hash: manifest.content_hash,
           schema_version: manifest.schema_version,
           runner_contract_version: manifest.runner_contract_version,
-          required_runner_release_id: manifest.required_runner_release_id,
+          runner_releases: manifest.runner_releases,
           inserted_at: manifest.inserted_at
         })
 
@@ -310,7 +310,7 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
           limit: ^(page.limit + 1),
           select:
             merge(map(run, ^@run_summary_fields), %{
-              required_runner_release_id: manifest.required_runner_release_id
+              runner_releases: manifest.runner_releases
             })
         )
         |> after_target_run(page.after)
@@ -485,7 +485,7 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
       content_hash: Base.encode16(manifest.content_hash, case: :lower),
       schema_version: manifest.schema_version,
       runner_contract_version: manifest.runner_contract_version,
-      required_runner_release_id: manifest.required_runner_release_id,
+      runner_releases: manifest.runner_releases,
       inserted_at: manifest.inserted_at
     }
   end
@@ -514,7 +514,7 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
       parent_run_id: row.parent_run_id,
       deployment_id: row.deployment_id,
       manifest_version_id: row.manifest_version_id,
-      required_runner_release_id: row.required_runner_release_id,
+      runner_releases: row.runner_releases,
       status: RunEnum.decode!(:status, row.status),
       submit_kind: RunEnum.decode!(:submit_kind, row.submit_kind),
       trigger_type: RunEnum.decode!(:trigger_type, row.trigger_type),
@@ -543,7 +543,7 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
     |> select(
       [run, manifest],
       merge(map(run, ^@run_summary_fields), %{
-        required_runner_release_id: manifest.required_runner_release_id
+        runner_releases: manifest.runner_releases
       })
     )
   end

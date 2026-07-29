@@ -74,8 +74,8 @@ defmodule FavnAuthoring.Deployment.ManifestPublication do
       |> put_metadata_opt(:manifest_version_id, manifest_metadata["manifest_version_id"])
       |> put_metadata_opt(:content_hash, manifest_metadata["content_hash"])
       |> put_metadata_opt(
-        :required_runner_release_id,
-        manifest_metadata["required_runner_release_id"]
+        :runner_releases,
+        manifest_metadata["runner_releases"]
       )
     else
       _other -> []
@@ -84,6 +84,9 @@ defmodule FavnAuthoring.Deployment.ManifestPublication do
 
   defp put_metadata_opt(opts, key, value) when is_binary(value) and value != "",
     do: Keyword.put(opts, key, value)
+
+  defp put_metadata_opt(opts, :runner_releases, value) when is_map(value),
+    do: Keyword.put(opts, :runner_releases, value)
 
   defp put_metadata_opt(opts, _key, _value), do: opts
 
@@ -104,7 +107,7 @@ defmodule FavnAuthoring.Deployment.ManifestPublication do
       content_hash: Keyword.get(metadata_opts, :content_hash) || envelope["content_hash"],
       schema_version: envelope["schema_version"],
       runner_contract_version: envelope["runner_contract_version"],
-      required_runner_release_id: envelope["required_runner_release_id"],
+      runner_releases: envelope["runner_releases"],
       serialization_format: Map.get(envelope, "serialization_format", "json-v1")
     )
   end

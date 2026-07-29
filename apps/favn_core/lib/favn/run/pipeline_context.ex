@@ -24,6 +24,7 @@ defmodule Favn.Run.PipelineContext do
           window: Favn.Window.Policy.t() | nil,
           max_concurrency: pos_integer() | nil,
           execution_pool: atom() | nil,
+          runner_pool: atom(),
           resource_recovery: Favn.ResourceRecovery.Policy.t() | nil,
           schedule: Favn.Manifest.Schedule.t() | nil,
           source: atom() | nil,
@@ -41,6 +42,7 @@ defmodule Favn.Run.PipelineContext do
             window: nil,
             max_concurrency: nil,
             execution_pool: nil,
+            runner_pool: :default,
             resource_recovery: nil,
             schedule: nil,
             source: nil,
@@ -66,6 +68,7 @@ defmodule Favn.Run.PipelineContext do
       window: Favn.Window.Policy.from_value!(field(value, :window)),
       max_concurrency: field(value, :max_concurrency),
       execution_pool: field(value, :execution_pool),
+      runner_pool: field(value, :runner_pool, Favn.RunnerPool.default()),
       resource_recovery:
         Favn.ResourceRecovery.Policy.from_value!(field(value, :resource_recovery)),
       schedule: normalize_schedule(field(value, :schedule), module, name),

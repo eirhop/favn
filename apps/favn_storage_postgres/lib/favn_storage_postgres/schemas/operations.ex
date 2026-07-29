@@ -27,7 +27,7 @@ defmodule FavnStoragePostgres.Schemas.LogEntry do
     field(:position, :integer)
     field(:run_id, :string)
     field(:asset_step_id, :string)
-    field(:runner_execution_id, :string)
+    field(:runner_task_id, :string)
     field(:node_key_hash, :binary)
     field(:asset_ref_hash, :binary)
     field(:stream, :string)

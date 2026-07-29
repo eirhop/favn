@@ -1,6 +1,9 @@
 defmodule FavnOrchestrator.RunManager do
   @moduledoc """
-  Orchestrator run admission, rerun, cancellation, and per-run server startup.
+  Final durable run admission, cancellation, and per-run server startup.
+
+  Run producers enqueue through `FavnOrchestrator.RunSubmissions`; only its
+  fenced preparation workers call the internal admission entrypoint here.
   """
 
   use GenServer
@@ -14,19 +17,16 @@ defmodule FavnOrchestrator.RunManager do
   alias FavnOrchestrator.Persistence.WorkspaceContext
   alias FavnOrchestrator.Redaction
   alias FavnOrchestrator.RunExecutionCleanup
-  alias FavnOrchestrator.RunExecutionOwnership
   alias FavnOrchestrator.RunCancellation
   alias FavnOrchestrator.RunManager.Submission
-  alias FavnOrchestrator.RunManager.SubmissionBuilder
   alias FavnOrchestrator.RunManager.PlanCapacity
   alias FavnOrchestrator.RunOwnership
-  alias FavnOrchestrator.RunnerClientValidator
-  alias FavnOrchestrator.RunnerReleaseCompatibility
+  alias FavnOrchestrator.RunnerIdentityVerifier
   alias FavnOrchestrator.RunServer
   alias FavnOrchestrator.RunServer.Cancellation
+  alias FavnOrchestrator.RunServer.Execution.ActiveTaskSet
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Runs
-  alias FavnOrchestrator.RuntimeConfig
   alias FavnOrchestrator.Storage.JsonSafe
   alias FavnOrchestrator.TransitionWriter
 
@@ -46,56 +46,10 @@ defmodule FavnOrchestrator.RunManager do
     GenServer.start_link(__MODULE__, opts, name: name)
   end
 
-  @spec admit_prepared_submission(Submission.t()) :: {:ok, String.t()} | {:error, term()}
-  def admit_prepared_submission(%Submission{} = submission) do
-    Lifecycle.with_admission(fn -> persist_and_admit(submission) end)
-  end
-
-  @spec submit_asset_run(WorkspaceContext.t(), Favn.Ref.t(), keyword()) ::
-          {:ok, String.t()} | {:error, term()}
-  def submit_asset_run(%WorkspaceContext{} = context, {module, name} = asset_ref, opts)
-      when is_atom(module) and is_atom(name) and is_list(opts) do
-    prepare_and_admit(:manual, fn -> SubmissionBuilder.asset(context, asset_ref, opts) end)
-  end
-
-  @spec submit_pipeline_run(WorkspaceContext.t(), [Favn.Ref.t()], keyword()) ::
-          {:ok, String.t()} | {:error, term()}
-  def submit_pipeline_run(%WorkspaceContext{} = context, target_refs, opts)
-      when is_list(target_refs) and is_list(opts) do
-    prepare_and_admit(:pipeline, fn -> SubmissionBuilder.pipeline(context, target_refs, opts) end)
-  end
-
-  @spec submit_pipeline_module_run(WorkspaceContext.t(), module(), keyword()) ::
-          {:ok, String.t()} | {:error, term()}
-  def submit_pipeline_module_run(%WorkspaceContext{} = context, pipeline_module, opts)
-      when is_atom(pipeline_module) and is_list(opts) do
-    prepare_and_admit(:pipeline, fn ->
-      SubmissionBuilder.pipeline_module(context, pipeline_module, opts)
-    end)
-  end
-
-  @doc "Submits one exact named manifest pipeline in an authorized workspace."
-  @spec submit_pipeline_ref_run(WorkspaceContext.t(), {module(), atom()}, keyword()) ::
-          {:ok, String.t()} | {:error, term()}
-  def submit_pipeline_ref_run(%WorkspaceContext{} = context, {module, name} = pipeline_ref, opts)
-      when is_atom(module) and is_atom(name) and is_list(opts) do
-    prepare_and_admit(:pipeline, fn ->
-      SubmissionBuilder.pipeline_ref(context, pipeline_ref, opts)
-    end)
-  end
-
-  @spec rerun(WorkspaceContext.t(), String.t(), keyword()) ::
-          {:ok, String.t()} | {:error, term()}
-  def rerun(%WorkspaceContext{} = context, source_run_id, opts)
-      when is_binary(source_run_id) and is_list(opts) do
-    prepare_and_admit(:rerun, fn -> SubmissionBuilder.rerun(context, source_run_id, opts) end)
-  end
-
-  @spec prepare_rerun(WorkspaceContext.t(), String.t(), keyword()) ::
-          {:ok, Submission.t()} | {:error, term()}
-  def prepare_rerun(%WorkspaceContext{} = context, source_run_id, opts)
-      when is_binary(source_run_id) and is_list(opts) do
-    SubmissionBuilder.rerun(context, source_run_id, opts)
+  @doc false
+  @spec admit_claimed_submission(Submission.t()) :: {:ok, String.t()} | {:error, term()}
+  def admit_claimed_submission(%Submission{} = submission) do
+    persist_and_admit(submission)
   end
 
   @spec cancel_run(WorkspaceContext.t(), String.t(), map()) :: :ok | {:error, term()}
@@ -315,25 +269,6 @@ defmodule FavnOrchestrator.RunManager do
       run_manager_timeout_error()
   end
 
-  defp prepare_and_admit(submit_kind, prepare) when is_function(prepare, 0) do
-    Lifecycle.with_admission(fn ->
-      case prepare.() do
-        {:ok, %Submission{} = submission} ->
-          persist_and_admit(submission)
-
-        {:error, reason} = error ->
-          OperationalEvents.emit(
-            :run_submission_failed,
-            %{},
-            %{submit_kind: submit_kind, reason: reason},
-            level: :warning
-          )
-
-          error
-      end
-    end)
-  end
-
   defp run_manager_timeout_error do
     {:error, {:run_manager_timeout, :admission_state_unknown}}
   end
@@ -491,7 +426,7 @@ defmodule FavnOrchestrator.RunManager do
              run.deployment_id,
              run.manifest_version_id
            ),
-         :ok <- RunnerReleaseCompatibility.verify_run_manifest(run, version) do
+         :ok <- RunnerIdentityVerifier.verify_run_manifest(run, version) do
       {:ok, version}
     end
   end
@@ -684,7 +619,7 @@ defmodule FavnOrchestrator.RunManager do
       RunState.transition(run,
         status: :error,
         error: Map.put(error, :runner_cleanup, cleanup_statuses),
-        runner_execution_id: nil,
+        runner_task_id: nil,
         metadata: Map.put(run.metadata, :terminal_event_type, :run_failed)
       )
 
@@ -784,30 +719,14 @@ defmodule FavnOrchestrator.RunManager do
   end
 
   defp forward_cancel_result(%RunState{} = run, reason) do
-    runtime_config = RuntimeConfig.current()
-    runner_client = runtime_config.runner_client
-    runner_opts = runtime_config.runner_client_opts
+    case ActiveTaskSet.active_runner_task_ids(run) do
+      [_ | _] = task_ids ->
+        run
+        |> Cancellation.dispatch_runner_tasks(task_ids, reason)
+        |> classify_cancel_results()
 
-    with {:ok, execution_ids} <- inflight_execution_ids(run) do
-      if execution_ids == [] do
+      [] ->
         :ok
-      else
-        with :ok <- RunnerClientValidator.validate(runner_client) do
-          results =
-            Cancellation.dispatch_runner_work(
-              run,
-              execution_ids,
-              reason,
-              runner_client,
-              runner_opts
-            )
-
-          case RunExecutionOwnership.persist_cancel_outcomes(run, results, reason) do
-            :ok -> classify_cancel_results(results)
-            {:error, error} -> {:error, %{type: :cancel_outcome_persist_failed, reason: error}}
-          end
-        end
-      end
     end
   end
 
@@ -842,33 +761,9 @@ defmodule FavnOrchestrator.RunManager do
 
   defp cancel_failure_reason(result) when is_map(result) do
     %{
-      execution_id: Map.get(result, :execution_id),
+      task_id: Map.get(result, :task_id),
       status: Map.get(result, :status),
       reason: inspect(Map.get(result, :error))
     }
-  end
-
-  defp inflight_execution_ids(%RunState{} = run) do
-    metadata_ids =
-      case Map.get(run.metadata, :in_flight_execution_ids, []) do
-        ids when is_list(ids) -> ids
-        _other -> []
-      end
-
-    case RunExecutionOwnership.fetch_active(run) do
-      {:ok, ownerships} ->
-        ledger_ids =
-          ownerships
-          |> Enum.map(& &1.runner_execution_id)
-          |> Enum.filter(&is_binary/1)
-
-        {:ok,
-         [run.runner_execution_id | metadata_ids ++ ledger_ids]
-         |> Enum.filter(&is_binary/1)
-         |> Enum.uniq()}
-
-      {:error, reason} ->
-        {:error, {:execution_ownership_read_failed, reason}}
-    end
   end
 end

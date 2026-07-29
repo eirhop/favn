@@ -28,8 +28,17 @@ defmodule FavnOrchestrator.Persistence.RunEnumTest do
     executable = System.find_executable("elixir")
     erl_libs = Path.join(Mix.Project.build_path(), "lib")
 
+    script_path =
+      Path.join(
+        System.tmp_dir!(),
+        "favn_run_enum_#{System.unique_integer([:positive, :monotonic])}.exs"
+      )
+
+    File.write!(script_path, code)
+    on_exit(fn -> File.rm(script_path) end)
+
     assert {"missing|backfill_pipeline", 0} =
-             System.cmd(executable, ["-e", code], env: [{"ERL_LIBS", erl_libs}])
+             System.cmd(executable, [script_path], env: [{"ERL_LIBS", erl_libs}])
   end
 
   test "rejects unknown persisted values without creating atoms" do

@@ -13,14 +13,19 @@ customer blob storage, or secrets. Those remain runner/plugin/data-plane concern
 
 ## Contract shape
 
-The old 97-callback mega-adapter has been removed. The orchestrator defines eleven
+The old 97-callback mega-adapter has been removed. The orchestrator defines seventeen
 small capability contracts under `FavnOrchestrator.Persistence`:
 
 - registry and immutable manifest/deployment catalog;
 - runs, authoritative snapshots, events, and publication outbox;
+- durable run submissions;
+- durable runner tasks and capacity demand;
 - run ownership and fencing;
 - scheduler claims and cursors;
 - execution admission;
+- resource circuits;
+- target generations and operation locks;
+- rebuild operations;
 - materialization claims;
 - backfills;
 - identity, sessions, membership, and audit;

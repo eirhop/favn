@@ -1,14 +1,15 @@
 # Upgrade and rollback
 
-The first production topology has one control plane and one runner. Upgrades are
-scheduled, drain-first maintenance operations; this release does not claim a
-zero-downtime rolling upgrade.
+The first production topology has one control plane and zero or more resident
+or elastic runners. Control-plane upgrades are scheduled, drain-first
+maintenance operations; this release does not claim a zero-downtime rolling
+control-plane upgrade.
 
 Before every change, record this rollback tuple:
 
 - control-plane image digest and source revision;
 - runner image digest, runner release ID, and runner contract version;
-- active manifest version and required runner release ID for each workspace;
+- active manifest version and runner release map for each workspace;
 - PostgreSQL schema version and a tested recovery point; and
 - the environment revision without secret values.
 
@@ -31,10 +32,9 @@ databases and does not delete them.
 
 ## Control-plane upgrade
 
-1. Select a qualified control-plane digest and run its release-safe
-   `preflight-upgrade` operation against the existing database.
+1. Select a qualified control-plane digest.
 2. Confirm a current PostgreSQL backup/PITR point and that every active manifest
-   has a current runner release binding.
+   has a complete runner pool-to-release map.
 3. Stop admission and terminate the current control plane, allowing its bounded
    drain to finish before the platform kills the container.
 4. From the candidate image, run the required external `migrate`,
@@ -63,26 +63,32 @@ compatibility checks are in
 2. Build the manifest with that same ID, then push, scan, and select the runner
    image by digest.
 3. Publish the aligned manifest as staged; leave the current manifest active.
-4. Stop admission, allow current work to drain, and replace the runner with the
-   new digest.
-5. Require the runner to report its configured release ID and compatible
-   runtime contract.
-6. Activate the staged manifest version and resume admission.
-7. Execute SQL and Elixir smoke runs.
+4. Start capacity for the new pool/release beside the old capacity. Require at
+   least one new runner to register with its exact release ID and compatible
+   runtime contract before activation.
+5. Activate the staged manifest version. New runs freeze its pool-to-release
+   map; already-submitted and in-flight work remains pinned to the old map.
+6. Execute SQL and Elixir smoke runs through the new release.
+7. Query the exact old pool/release drain projection. Remove old capacity only
+   after `durable_drained` is true and every reported blocker is zero.
 
-If replacement or activation fails, keep admission stopped, restore the previous
-runner digest, require its previous release ID, reactivate the previous manifest
-version, verify the pair, and only then resume admission. Never combine an old
-runner with a manifest that requires the new release, or vice versa.
+Rollback reactivates the previous immutable manifest version and ensures its
+exact runner capacity is available. New work then returns to the previous
+pool/release map while work already pinned to the new release drains unchanged.
+Remove the new capacity only after its exact drain projection is clear. A
+runner-only or manifest-only rollback never requires globally stopping
+admission; reserve a control-plane drain for control-plane or database changes
+that explicitly require it. Never combine a task with a runner release other
+than the immutable release frozen into that task.
 
 ## Manifest-only upgrade
 
-Reuse the existing runner release ID only after the operator has established
-that no executable runner input changed. Build with
-`mix favn.build.manifest --runner-release-id ID`, publish the new release as
+Reuse each existing pool/release mapping only after the operator has established
+that no executable runner input changed. Build with one
+`--runner-release POOL=ID` option per effective pool, publish the new release as
 staged, activate its exact version, and execute a smoke run. Favn validates the
-ID binding but does not inspect the customer build inputs. No container restart
-is required.
+bindings but does not inspect the customer build inputs. No runner restart is
+required.
 
 Rollback activates the previous immutable manifest version after the same
 runner-alignment check. Publication and activation remain separate so a staged

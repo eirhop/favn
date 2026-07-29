@@ -19,6 +19,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageClassifier do
   alias FavnOrchestrator.RunServer.Persistence
   alias FavnOrchestrator.RunServer.Snapshots
   alias FavnOrchestrator.RunState
+  alias FavnOrchestrator.RunnerPoolSelection
 
   @type terminal_failure :: %{required(:status) => RunState.status(), required(:error) => term()}
 
@@ -199,6 +200,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageClassifier do
         window: node.window,
         stage: stage,
         execution_pool: execution_pool,
+        runner_pool: RunnerPoolSelection.for_node(run_state, node_key),
         status: status,
         started_at: now,
         finished_at: now,

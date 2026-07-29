@@ -13,13 +13,14 @@ compiling them into a deterministic execution contract, and running them through
 a PostgreSQL-backed control plane. Asset logic stays in ordinary Elixir modules;
 DuckDB and other data systems remain runner-owned integrations.
 
-Canonical manifests are bound to the exact verified customer runner release;
-changing executable user code therefore cannot be deployed as a manifest-only update.
+Canonical manifests bind each user-defined logical runner pool to an exact
+verified customer runner release; changing executable user code therefore
+cannot be deployed as a manifest-only update.
 
-Favn is private pre-v1 software. APIs may change. The first release topology is
-implemented and container-qualified: one Favn-published control plane, one
-customer-built runner, and external PostgreSQL 18 on a trusted private network.
-The remaining production epics are tracked separately in the roadmap.
+Favn is private pre-v1 software. APIs may change. The initial topology is one
+Favn-published control plane, external PostgreSQL 18, and zero to N
+customer-built runners across user-defined pools on a trusted private network.
+The remaining production qualification gates are tracked in the roadmap.
 
 ## Start here
 

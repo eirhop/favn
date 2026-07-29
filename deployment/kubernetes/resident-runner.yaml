@@ -1,0 +1,55 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: favn-runner-POOL-RELEASE
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: favn-runner-resident
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: favn-runner-resident
+        favn.dev/runner-pool: POOL
+        favn.dev/runner-release: RELEASE
+    spec:
+      terminationGracePeriodSeconds: 120
+      containers:
+        - name: runner
+          image: REPLACE_RUNNER_IMAGE
+          env:
+            - name: FAVN_CONTROL_PLANE_NODE
+              value: favn-control@control-plane.favn.svc.cluster.local
+            - name: FAVN_RUNNER_POOL
+              value: POOL
+            - name: FAVN_RUNNER_RELEASE_ID
+              value: RELEASE
+            - name: FAVN_RUNNER_LIFECYCLE_MODE
+              value: resident
+            - name: FAVN_RUNNER_NODE_HOST_ALIAS
+              value: runner.favn.svc.cluster.local
+            - name: RELEASE_COOKIE
+              valueFrom:
+                secretKeyRef:
+                  name: favn-distribution
+                  key: cookie
+            - name: FAVN_DISTRIBUTION_COOKIE
+              valueFrom:
+                secretKeyRef:
+                  name: favn-distribution
+                  key: cookie
+            - name: FAVN_DISTRIBUTION_TLS_OPTIONS_FILE
+              value: /etc/favn/ssl_dist.config
+            - name: ERL_AFLAGS
+              value: >-
+                -proto_dist inet_tls
+                -ssl_dist_optfile /etc/favn/ssl_dist.config
+          volumeMounts:
+            - name: distribution-tls
+              mountPath: /etc/favn
+              readOnly: true
+      volumes:
+        - name: distribution-tls
+          secret:
+            secretName: favn-distribution-tls

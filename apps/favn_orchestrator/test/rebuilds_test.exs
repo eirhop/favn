@@ -26,6 +26,11 @@ defmodule FavnOrchestrator.RebuildsTest do
   defmodule Inputs do
   end
 
+  defmodule InlinePlanningWorker do
+    def ensure_and_await(context, operation),
+      do: FavnOrchestrator.Rebuilds.resume_planning(context, operation)
+  end
+
   defmodule Store do
     alias Favn.Manifest.Serializer
     alias FavnOrchestrator.Persistence.Error
@@ -57,11 +62,13 @@ defmodule FavnOrchestrator.RebuildsTest do
       {:ok, Enum.map(query.target_ids, &evidence_binding/1)}
     end
 
-    def create_plan(command) do
-      send(Process.get(:rebuild_test_pid), {:create_rebuild_plan, command})
+    def get_runtime_inputs(query) do
+      {:ok, FavnOrchestrator.TestRunnerTaskStore.runtime_inputs(query.run_id, query.node_keys)}
+    end
 
+    def begin_plan(command) do
       payload =
-        command.plan_payload
+        command.planning_payload
         |> Serializer.encode_canonical!()
         |> Jason.decode!()
 
@@ -71,20 +78,20 @@ defmodule FavnOrchestrator.RebuildsTest do
         root_target_id: command.root_target_id,
         manifest_version_id: command.manifest_version_id,
         active_generation_id: command.active_generation_id,
-        candidate_generation_id: command.candidate_generation_id,
-        plan_hash: command.plan_hash,
-        plan_version: command.plan_version,
+        candidate_generation_id: nil,
+        plan_hash: command.planning_hash,
+        plan_version: 1,
         plan_payload: payload,
         actor_id: command.actor_id,
         session_id: command.session_id,
         reason: command.reason,
         idempotency_key: command.idempotency_key,
         evaluated_at: command.evaluated_at,
-        action_count: length(command.actions),
-        window_count: length(command.items),
-        actions: command.actions,
-        state: :planned,
-        phase: :planned,
+        action_count: 0,
+        window_count: 0,
+        actions: [],
+        state: :planning,
+        phase: :planning,
         cleanup_state: :not_started,
         cancel_requested: false,
         version: 1,
@@ -92,6 +99,42 @@ defmodule FavnOrchestrator.RebuildsTest do
           inserted_at: command.occurred_at,
           updated_at: command.occurred_at
         }
+      }
+
+      Process.put({:rebuild_operation, command.operation_id}, operation)
+      send(Process.get(:rebuild_test_pid), {:begin_rebuild_plan, command})
+
+      if Process.get(:rebuild_halt_after_begin) do
+        throw(:simulated_control_plane_stop_after_rebuild_planning_persist)
+      else
+        {:ok, operation}
+      end
+    end
+
+    def create_plan(command) do
+      send(Process.get(:rebuild_test_pid), {:create_rebuild_plan, command})
+
+      payload =
+        command.plan_payload
+        |> Serializer.encode_canonical!()
+        |> Jason.decode!()
+
+      %RebuildOperation{} =
+        planning =
+        Process.get({:rebuild_operation, command.operation_id})
+
+      operation = %RebuildOperation{
+        planning
+        | candidate_generation_id: command.candidate_generation_id,
+          plan_hash: command.plan_hash,
+          plan_version: command.plan_version,
+          plan_payload: payload,
+          action_count: length(command.actions),
+          window_count: length(command.items),
+          actions: command.actions,
+          state: :planned,
+          phase: :planned,
+          version: planning.version + 1
       }
 
       Process.put({:rebuild_operation, command.operation_id}, operation)
@@ -130,7 +173,7 @@ defmodule FavnOrchestrator.RebuildsTest do
     end
   end
 
-  defmodule RunnerClient do
+  defmodule RunnerExecutor do
     alias Favn.RuntimeInput.Resolution
 
     def generation_capabilities(_version, _asset_ref, _opts) do
@@ -172,14 +215,17 @@ defmodule FavnOrchestrator.RebuildsTest do
   end
 
   setup do
-    previous_client = Application.get_env(:favn_orchestrator, :runner_client)
-    previous_opts = Application.get_env(:favn_orchestrator, :runner_client_opts)
-    Application.put_env(:favn_orchestrator, :runner_client, RunnerClient)
-    Application.put_env(:favn_orchestrator, :runner_client_opts, [])
+    previous_client = Application.get_env(:favn_orchestrator, :test_runner_executor)
+    previous_opts = Application.get_env(:favn_orchestrator, :test_runner_executor_opts)
+    Application.put_env(:favn_orchestrator, :test_runner_executor, RunnerExecutor)
+    Application.put_env(:favn_orchestrator, :test_runner_executor_opts, [])
+    Application.put_env(:favn_orchestrator, :rebuild_planning_worker, InlinePlanningWorker)
 
     stores = %Stores{
       registry: Store,
       runs: Store,
+      run_submissions: Store,
+      runner_tasks: FavnOrchestrator.TestRunnerTaskStore,
       run_ownership: Store,
       scheduler: Store,
       admission: Store,
@@ -237,8 +283,9 @@ defmodule FavnOrchestrator.RebuildsTest do
     ])
 
     on_exit(fn ->
-      restore_env(:runner_client, previous_client)
-      restore_env(:runner_client_opts, previous_opts)
+      restore_env(:test_runner_executor, previous_client)
+      restore_env(:test_runner_executor_opts, previous_opts)
+      Application.delete_env(:favn_orchestrator, :rebuild_planning_worker)
     end)
 
     {:ok, version: version, root: root, downstream: downstream, bindings: bindings}
@@ -257,6 +304,20 @@ defmodule FavnOrchestrator.RebuildsTest do
                occurred_at: now
              )
 
+    assert_received {:begin_rebuild_plan, begin_command}
+    assert begin_command.operation_id == first.plan_id
+    assert begin_command.planning_payload.status == :planning
+    assert_received {:runner_task_enqueued, runner_task}
+    assert runner_task.task_kind == :generation_capabilities
+
+    assert {:ok, %Favn.Contracts.GenerationCapabilitiesRequest{manifest: identity}} =
+             Favn.Contracts.RunnerTask.PersistenceCodec.decode_payload(
+               runner_task.task_kind,
+               runner_task.payload
+             )
+
+    assert identity.manifest == nil
+    assert :erlang.external_size(runner_task.payload) < 64_000
     assert_received {:create_rebuild_plan, command}
     assert_received {:read_rebuild_generation_marker, _, false}
     assert Enum.map(command.actions, & &1.action) == [:rebuild, :rebuild]
@@ -287,7 +348,7 @@ defmodule FavnOrchestrator.RebuildsTest do
       expected_run_id =
         deterministic_command_id(
           "run-rebuild",
-          command.operation_id <> ":" <> item.item_id
+          command.operation_id <> ":" <> item.target_id <> ":" <> item.item_id
         )
 
       assert item.runtime_input_expectation.input_identity == expected_run_id
@@ -295,6 +356,15 @@ defmodule FavnOrchestrator.RebuildsTest do
     end)
 
     [root_action, downstream_action] = command.actions
+    assert root_action.runner_pool == "default"
+    assert downstream_action.runner_pool == "duckdb_image"
+
+    assert root_action.required_runner_release_id ==
+             fixture.version.runner_releases["default"]
+
+    assert downstream_action.required_runner_release_id ==
+             fixture.version.runner_releases["default"]
+
     assert Ecto.UUID.cast(root_action.candidate_generation.target_generation_id) != :error
     assert Ecto.UUID.cast(downstream_action.candidate_generation.target_generation_id) != :error
 
@@ -349,6 +419,43 @@ defmodule FavnOrchestrator.RebuildsTest do
              )
 
     assert plan.plan_id == "rebuild-persisted-relation"
+  end
+
+  test "resumes a durable planning continuation after the original process stops", fixture do
+    {:ok, context} =
+      WorkspaceContext.new("workspace-rebuild", "operator", [:customer_operator])
+
+    now = DateTime.utc_now()
+    Process.put(:rebuild_halt_after_begin, true)
+
+    assert catch_throw(
+             Rebuilds.plan(context, fixture.root.target_descriptor.target_id, "schema changed",
+               operation_id: "rebuild-planning-recovery",
+               evaluated_at: now,
+               occurred_at: now
+             )
+           ) == :simulated_control_plane_stop_after_rebuild_planning_persist
+
+    assert_received {:begin_rebuild_plan, _command}
+    refute_received {:runner_task_enqueued, _task}
+    assert %{state: :planning} = Process.get({:rebuild_operation, "rebuild-planning-recovery"})
+
+    Process.put(:rebuild_halt_after_begin, false)
+
+    Process.put(
+      :rebuild_runtime,
+      %{Process.get(:rebuild_runtime) | manifest_version_id: "newer-active-manifest"}
+    )
+
+    assert {:ok, plan} =
+             Rebuilds.plan(context, fixture.root.target_descriptor.target_id, "schema changed",
+               operation_id: "rebuild-planning-recovery"
+             )
+
+    assert plan.plan_id == "rebuild-planning-recovery"
+    assert_received {:runner_task_enqueued, _task}
+    assert_received {:create_rebuild_plan, _command}
+    assert %{state: :planned} = Process.get({:rebuild_operation, "rebuild-planning-recovery"})
   end
 
   test "starts when an unaffected upstream binding is still uninitialized", fixture do
@@ -452,7 +559,7 @@ defmodule FavnOrchestrator.RebuildsTest do
     {root, root_package} = persisted_asset(root_ref, "root", [landing_ref])
 
     {downstream, downstream_package} =
-      persisted_asset(downstream_ref, "downstream", [root_ref])
+      persisted_asset(downstream_ref, "downstream", [root_ref], runner_pool: :duckdb_image)
 
     {inactive_upstream, inactive_upstream_package} =
       persisted_asset(inactive_upstream_ref, "inactive_upstream", [])
@@ -477,7 +584,7 @@ defmodule FavnOrchestrator.RebuildsTest do
      [root_package, downstream_package, inactive_upstream_package]}
   end
 
-  defp persisted_asset(ref, relation_name, depends_on) do
+  defp persisted_asset(ref, relation_name, depends_on, opts \\ []) do
     {:ok, package} =
       ExecutionPackage.new(ref, %SQLExecution{
         sql: "SELECT 1 AS id",
@@ -491,6 +598,7 @@ defmodule FavnOrchestrator.RebuildsTest do
         module: elem(ref, 0),
         name: elem(ref, 1),
         type: :sql,
+        runner_pool: Keyword.get(opts, :runner_pool),
         relation:
           RelationRef.new!(connection: :warehouse, schema: "analytics", name: relation_name),
         materialization: :table,
@@ -557,7 +665,7 @@ defmodule FavnOrchestrator.RebuildsTest do
   defp inspection(asset, version) do
     %RelationInspectionResult{
       asset_ref: asset.ref,
-      required_runner_release_id: version.required_runner_release_id,
+      required_runner_release_id: version.runner_releases["default"],
       relation_ref: asset.relation,
       relation: %{
         catalog: asset.relation.catalog,

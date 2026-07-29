@@ -10,6 +10,7 @@ defmodule FavnOrchestrator.RunServer.Execution.ResultBuilder do
   alias FavnOrchestrator.AssetStepIdentity
   alias FavnOrchestrator.RunServer.Snapshots
   alias FavnOrchestrator.RunState
+  alias FavnOrchestrator.RunnerPoolSelection
 
   @max_retained_results 128
 
@@ -48,7 +49,7 @@ defmodule FavnOrchestrator.RunServer.Execution.ResultBuilder do
         %{
           asset_ref: asset_ref,
           node_key: node_key,
-          execution_id: execution_id,
+          task_id: task_id,
           execution_pool: execution_pool,
           freshness_key: freshness_key
         },
@@ -68,6 +69,7 @@ defmodule FavnOrchestrator.RunServer.Execution.ResultBuilder do
       window: node.window,
       stage: stage,
       execution_pool: Map.get(node, :execution_pool) || execution_pool,
+      runner_pool: RunnerPoolSelection.for_node(run_state, node_key),
       status: status,
       started_at: asset_result_field(asset_result, :started_at) || now,
       finished_at: asset_result_field(asset_result, :finished_at) || now,
@@ -78,7 +80,7 @@ defmodule FavnOrchestrator.RunServer.Execution.ResultBuilder do
       attempt_count: asset_result_field(asset_result, :attempt_count) || attempt,
       max_attempts:
         asset_result_field(asset_result, :max_attempts) || node.retry_policy.max_attempts,
-      runner_execution_id: execution_id,
+      runner_task_id: task_id,
       meta: map_field(asset_result, :meta),
       error: asset_result_field(asset_result, :error),
       attempts: list_field(asset_result, :attempts),

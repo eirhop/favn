@@ -12,6 +12,7 @@ defmodule Favn.DSL.AssetDeclarations do
     :depends,
     :description,
     :execution_pool,
+    :runner_pool,
     :extra,
     :freshness,
     :materialized,
@@ -37,6 +38,7 @@ defmodule Favn.DSL.AssetDeclarations do
     :freshness,
     :retry,
     :execution_pool,
+    :runner_pool,
     :relation,
     :runtime_config
   ]
@@ -141,6 +143,10 @@ defmodule Favn.DSL.AssetDeclarations do
 
   defmacro execution_pool(value) do
     put_declaration(:execution_pool, value)
+  end
+
+  defmacro runner_pool(value) do
+    put_declaration(:runner_pool, value)
   end
 
   defmacro relation(value) do

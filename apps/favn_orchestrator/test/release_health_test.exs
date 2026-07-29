@@ -21,6 +21,8 @@ defmodule FavnOrchestrator.ReleaseHealthTest do
     {port, server} = serve_once("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
 
     assert :ok = ReleaseHealth.run(%{bind_host: "0.0.0.0", port: port})
+    assert_receive {:request, ^server, request}
+    assert request =~ "GET /api/web/v1/health/ready HTTP/1.1"
     assert_receive {:served, ^server}
   end
 
@@ -71,7 +73,8 @@ defmodule FavnOrchestrator.ReleaseHealthTest do
     server =
       spawn_link(fn ->
         {:ok, socket} = :gen_tcp.accept(listener)
-        {:ok, _request} = :gen_tcp.recv(socket, 0, 3_000)
+        {:ok, request} = :gen_tcp.recv(socket, 0, 3_000)
+        send(parent, {:request, self(), request})
         :ok = :gen_tcp.send(socket, response)
         :ok = :gen_tcp.close(socket)
         :ok = :gen_tcp.close(listener)

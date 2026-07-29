@@ -20,7 +20,8 @@ defmodule Favn.Plan.NodeIdentity do
           target_refs: [Ref.t()],
           planned_asset_refs: [Ref.t()],
           window: Runtime.t() | nil,
-          execution_pool: atom() | nil
+          execution_pool: atom() | nil,
+          runner_pool: atom()
         }
 
   defstruct [
@@ -29,7 +30,8 @@ defmodule Favn.Plan.NodeIdentity do
     target_refs: [],
     planned_asset_refs: [],
     window: nil,
-    execution_pool: nil
+    execution_pool: nil,
+    runner_pool: :default
   ]
 
   @doc """
@@ -43,7 +45,8 @@ defmodule Favn.Plan.NodeIdentity do
          :ok <- validate_node_key(Map.get(fields, :node_key)),
          :ok <- validate_refs(:target_refs, Map.get(fields, :target_refs, [])),
          :ok <- validate_refs(:planned_asset_refs, Map.get(fields, :planned_asset_refs, [])),
-         :ok <- validate_execution_pool(Map.get(fields, :execution_pool)) do
+         :ok <- validate_execution_pool(Map.get(fields, :execution_pool)),
+         :ok <- Favn.RunnerPool.validate_source(Map.get(fields, :runner_pool, :default)) do
       {:ok, struct!(__MODULE__, fields)}
     end
   end
@@ -73,7 +76,8 @@ defmodule Favn.Plan.NodeIdentity do
           target_refs: [node.ref],
           planned_asset_refs: [node.ref],
           window: Map.get(node, :window),
-          execution_pool: Map.get(node, :execution_pool)
+          execution_pool: Map.get(node, :execution_pool),
+          runner_pool: Map.get(node, :runner_pool) || :default
         })
 
       :error ->

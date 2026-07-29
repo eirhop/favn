@@ -10,8 +10,8 @@ defmodule FavnRunner.Application do
   alias FavnRunner.Lifecycle
   alias FavnRunner.ProductionRuntimeConfig
   alias FavnRunner.ReleaseVerifier
-  alias FavnRunner.RuntimeStarter
-  alias FavnRunner.Shutdown
+  alias FavnRunner.Drain
+  alias FavnRunner.RuntimeBootstrap
 
   @impl true
   def start(_type, _args) do
@@ -32,18 +32,19 @@ defmodule FavnRunner.Application do
         {ConnectionRegistry, name: FavnRunner.ConnectionRegistry, connections: connections},
         {Registry, keys: :unique, name: FavnRunner.ExecutionRegistry},
         {DynamicSupervisor, strategy: :one_for_one, name: FavnRunner.WorkerSupervisor},
+        {FavnRunner.TaskResultBuffer, []},
+        {DynamicSupervisor, strategy: :one_for_one, name: FavnRunner.TaskExecutorSupervisor},
         {FavnRunner.ManifestStore,
          Keyword.put(
            Application.get_env(:favn_runner, :manifest_cache, []),
            :name,
            FavnRunner.ManifestStore
-         )},
-        {FavnRunner.Server,
-         name: FavnRunner.Server,
-         admission: Application.get_env(:favn_runner, :admission, []),
-         retention: Application.get_env(:favn_runner, :execution_retention, [])},
-        {RuntimeStarter, []}
-      ]
+         )}
+      ] ++
+        runner_agent_children(environment) ++
+        [
+          {RuntimeBootstrap, []}
+        ]
 
     opts = [strategy: :one_for_all, name: FavnRunner.Supervisor]
 
@@ -54,7 +55,7 @@ defmodule FavnRunner.Application do
 
   @impl true
   def prep_stop(%{runtime?: true} = state) do
-    _ = Shutdown.drain()
+    _ = Drain.drain()
     state
   end
 
@@ -106,6 +107,54 @@ defmodule FavnRunner.Application do
     case result do
       {:ok, children} -> children
       {:error, reason} -> raise ArgumentError, PluginLoader.format_error(reason)
+    end
+  end
+
+  defp runner_agent_children(environment) do
+    case Map.get(environment, "FAVN_CONTROL_PLANE_NODE") do
+      nil ->
+        []
+
+      "" ->
+        []
+
+      control_plane_node ->
+        runner_pool =
+          Map.get(environment, "FAVN_RUNNER_POOL") ||
+            raise ArgumentError,
+                  "FAVN_RUNNER_POOL is required when FAVN_CONTROL_PLANE_NODE is configured"
+
+        lifecycle_mode =
+          case Map.get(environment, "FAVN_RUNNER_LIFECYCLE_MODE", "elastic") do
+            "elastic" -> :elastic
+            "resident" -> :resident
+            value -> raise ArgumentError, "invalid FAVN_RUNNER_LIFECYCLE_MODE: #{inspect(value)}"
+          end
+
+        max_uptime_ms =
+          positive_integer(
+            Map.get(environment, "FAVN_RUNNER_MAX_UPTIME_MS", "3600000"),
+            "FAVN_RUNNER_MAX_UPTIME_MS"
+          )
+
+        [
+          {FavnRunner.ControlPlaneConnection, node: control_plane_node},
+          Supervisor.child_spec(
+            {FavnRunner.RunnerAgent,
+             runner_pool: runner_pool,
+             runner_instance_id: Map.get(environment, "FAVN_RUNNER_INSTANCE_ID"),
+             lifecycle_mode: lifecycle_mode,
+             max_uptime_ms: max_uptime_ms},
+            restart: :transient
+          )
+        ]
+    end
+  end
+
+  defp positive_integer(value, name) do
+    case Integer.parse(value) do
+      {integer, ""} when integer > 0 -> integer
+      _other -> raise ArgumentError, "invalid #{name}: #{inspect(value)}"
     end
   end
 end

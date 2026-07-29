@@ -10,88 +10,6 @@ defmodule Favn.CLI.OrchestratorClient do
 
   @type session_context :: %{required(String.t()) => String.t()}
 
-  @spec begin_runner_replacement(String.t(), String.t(), String.t()) ::
-          {:ok, String.t()} | {:error, term()}
-  def begin_runner_replacement(base_url, service_token, maintenance_token)
-      when is_binary(base_url) and is_binary(service_token) and is_binary(maintenance_token) do
-    url = base_url <> "/api/orchestrator/v1/maintenance/runner-replacement"
-    context = %{"maintenance_token" => maintenance_token}
-
-    case request_post(:begin_runner_replacement, url, service_token, %{}, context) do
-      {:ok, %{"data" => %{"maintenance_token" => ^maintenance_token}}} ->
-        {:ok, maintenance_token}
-
-      {:error, _reason} = error ->
-        error
-
-      _invalid ->
-        {:error, operation_error(:begin_runner_replacement, :post, url, :invalid_response)}
-    end
-  end
-
-  @spec runner_replacement_status(String.t(), String.t()) ::
-          {:ok, map()} | {:error, term()}
-  def runner_replacement_status(base_url, service_token)
-      when is_binary(base_url) and is_binary(service_token) do
-    url = base_url <> "/api/orchestrator/v1/maintenance/runner-replacement"
-
-    case request_get(:runner_replacement_status, url, service_token) do
-      {:ok, %{"data" => status}} when is_map(status) ->
-        {:ok, status}
-
-      {:error, _reason} = error ->
-        error
-
-      _invalid ->
-        {:error, operation_error(:runner_replacement_status, :get, url, :invalid_response)}
-    end
-  end
-
-  @spec verify_replacement_runner(String.t(), String.t(), String.t(), String.t()) ::
-          {:ok, map()} | {:error, term()}
-  def verify_replacement_runner(base_url, service_token, maintenance_token, runner_release_id)
-      when is_binary(base_url) and is_binary(service_token) and is_binary(maintenance_token) and
-             is_binary(runner_release_id) do
-    url = base_url <> "/api/orchestrator/v1/maintenance/runner-replacement/verify-runner"
-    context = %{"maintenance_token" => maintenance_token}
-
-    case request_post(
-           :verify_replacement_runner,
-           url,
-           service_token,
-           %{runner_release_id: runner_release_id},
-           context
-         ) do
-      {:ok, %{"data" => %{"runner_release_id" => ^runner_release_id} = verified}} ->
-        {:ok, verified}
-
-      {:error, _reason} = error ->
-        error
-
-      _invalid ->
-        {:error, operation_error(:verify_replacement_runner, :post, url, :invalid_response)}
-    end
-  end
-
-  @spec finish_runner_replacement(String.t(), String.t(), String.t()) ::
-          :ok | {:error, term()}
-  def finish_runner_replacement(base_url, service_token, maintenance_token)
-      when is_binary(base_url) and is_binary(service_token) and is_binary(maintenance_token) do
-    url = base_url <> "/api/orchestrator/v1/maintenance/runner-replacement"
-    context = %{"maintenance_token" => maintenance_token}
-
-    case request(:finish_runner_replacement, :delete, url, service_token, nil, context, nil) do
-      {:ok, %{"data" => %{"status" => "accepting"}}} ->
-        :ok
-
-      {:error, _reason} = error ->
-        error
-
-      _invalid ->
-        {:error, operation_error(:finish_runner_replacement, :delete, url, :invalid_response)}
-    end
-  end
-
   @spec publish_manifest(String.t(), String.t(), Publication.t(), session_context() | nil) ::
           {:ok, map()} | {:error, term()}
   def publish_manifest(
@@ -200,28 +118,6 @@ defmodule Favn.CLI.OrchestratorClient do
       context,
       activation_idempotency_key(context, input, opts)
     )
-  end
-
-  @spec register_runner(String.t(), String.t(), session_context(), map()) ::
-          {:ok, map()} | {:error, term()}
-  def register_runner(base_url, service_token, session_context, payload)
-      when is_binary(base_url) and is_binary(service_token) and is_map(session_context) and
-             is_map(payload) do
-    manifest_version_id =
-      Map.get(payload, :manifest_version_id) || Map.get(payload, "manifest_version_id")
-
-    if is_binary(manifest_version_id) and manifest_version_id != "" do
-      request_post(
-        :register_runner,
-        base_url <>
-          "/api/orchestrator/v1/manifests/#{URI.encode(manifest_version_id)}/runner/register",
-        service_token,
-        %{},
-        session_context
-      )
-    else
-      {:error, operation_error(:register_runner, :post, base_url, :missing_manifest_version_id)}
-    end
   end
 
   @spec bootstrap_active_manifest(String.t(), String.t(), session_context()) ::
@@ -1265,7 +1161,7 @@ defmodule Favn.CLI.OrchestratorClient do
         content_hash: version.content_hash,
         schema_version: version.schema_version,
         runner_contract_version: version.runner_contract_version,
-        required_runner_release_id: version.required_runner_release_id,
+        runner_releases: version.runner_releases,
         serialization_format: version.serialization_format,
         manifest: canonical_json_value(version.manifest)
       },

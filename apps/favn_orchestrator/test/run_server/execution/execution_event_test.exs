@@ -7,7 +7,7 @@ defmodule FavnOrchestrator.RunServer.Execution.ExecutionEventTest do
   alias FavnOrchestrator.RunState
 
   test "stale await monitor and timeout messages do not remove the current await" do
-    execution_id = "exec_1"
+    task_id = "rt_1"
     monitor_ref = make_ref()
     timeout_token = make_ref()
 
@@ -16,24 +16,24 @@ defmodule FavnOrchestrator.RunServer.Execution.ExecutionEventTest do
       monitor_ref: monitor_ref,
       timeout_token: timeout_token,
       timeout_ref: make_ref(),
-      entry: %{execution_id: execution_id},
+      entry: %{task_id: task_id},
       kind: :pipeline
     }
 
     state = %RunExecutionState{
-      awaits: %{execution_id => await},
-      await_monitors: %{monitor_ref => execution_id},
-      await_timers: %{timeout_token => execution_id}
+      awaits: %{task_id => await},
+      await_monitors: %{monitor_ref => task_id},
+      await_timers: %{timeout_token => task_id}
     }
 
     assert {:cont, ^state} =
              Execution.handle_event(
                state,
-               {:runner_await_down, execution_id, make_ref(), :stale}
+               {:runner_await_down, task_id, make_ref(), :stale}
              )
 
     assert {:cont, ^state} =
-             Execution.handle_event(state, {:attempt_timeout, execution_id, make_ref()})
+             Execution.handle_event(state, {:attempt_timeout, task_id, make_ref()})
   end
 
   test "stale admission generations do not remove the current waiter" do
@@ -53,7 +53,7 @@ defmodule FavnOrchestrator.RunServer.Execution.ExecutionEventTest do
         id: "continue-independent-siblings",
         manifest_version_id: "manifest-version",
         manifest_content_hash: "manifest-hash",
-        required_runner_release_id: FavnTestSupport.runner_release_id(),
+        runner_releases: %{"default" => FavnTestSupport.runner_release_id()},
         asset_ref: {__MODULE__, :asset}
       )
 

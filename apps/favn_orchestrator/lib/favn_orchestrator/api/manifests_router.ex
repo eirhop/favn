@@ -78,11 +78,11 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
       {:error, {:manifest_runner_contract_version_mismatch, _expected, _actual}} ->
         validation_error(conn, "Manifest runner contract version does not match payload")
 
-      {:error, {:invalid_required_runner_release_id, _value}} ->
-        validation_error(conn, "Invalid required runner release id")
+      {:error, {:invalid_runner_releases, _value}} ->
+        validation_error(conn, "Invalid runner release map")
 
-      {:error, {:manifest_required_runner_release_id_mismatch, _expected, _actual}} ->
-        validation_error(conn, "Manifest runner release id does not match payload")
+      {:error, {:manifest_runner_releases_mismatch, _expected, _actual}} ->
+        validation_error(conn, "Manifest runner release map does not match payload")
 
       {:error, :manifest_version_conflict} ->
         Response.error(
@@ -216,15 +216,6 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
       {:error, :invalid_sample_limit} ->
         validation_error(conn, "Invalid sample limit")
 
-      {:error, reason}
-      when reason in [
-             :runner_client_not_available,
-             :runner_release_info_unavailable,
-             :runner_not_ready,
-             :runner_unavailable
-           ] ->
-        Response.error(conn, 503, "service_unavailable", "Runner inspection is not available")
-
       {:error, {:runner_release_mismatch, required, actual}} ->
         Response.error(conn, 409, "runner_release_mismatch", "Runner release does not match", %{
           required_runner_release_id: required,
@@ -254,56 +245,6 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
     end
   end
 
-  post "/:manifest_version_id/runner/register" do
-    with :ok <- Authentication.ensure_service(conn),
-         {:ok, _session, _actor, context} <- Authentication.workspace_context(conn, :operator),
-         {:ok, registration} <-
-           FavnOrchestrator.register_manifest_with_runner(context, manifest_version_id) do
-      Response.data(conn, 200, %{registration: registration})
-    else
-      {:error, %Error{kind: :not_found}} ->
-        Response.error(conn, 404, "not_found", "Manifest version was not found")
-
-      {:error, :runner_manifest_conflict} ->
-        Response.error(
-          conn,
-          409,
-          "runner_manifest_conflict",
-          "Runner has a different manifest for this version id"
-        )
-
-      {:error, {:runner_release_mismatch, required, actual}} ->
-        Response.error(
-          conn,
-          409,
-          "runner_release_mismatch",
-          "Runner release does not match the manifest requirement",
-          %{required_runner_release_id: required, runner_release_id: actual}
-        )
-
-      {:error, reason}
-      when reason in [
-             :runner_client_not_available,
-             :runner_release_info_unavailable,
-             :runner_not_ready,
-             :runner_unavailable
-           ] ->
-        Response.error(
-          conn,
-          503,
-          "runner_unavailable",
-          "Runner manifest registration is unavailable"
-        )
-
-      {:error, :service_unauthorized} ->
-        authentication_error(conn, :service_unauthorized)
-
-      {:error, reason} ->
-        Logger.error("runner manifest registration failed: #{inspect(reason)}")
-        Response.error(conn, 400, "bad_request", "Request failed")
-    end
-  end
-
   match _ do
     Response.error(conn, 404, "not_found", "Route was not found")
   end
@@ -327,7 +268,7 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
           resource_id: manifest_version_id,
           outcome: "accepted",
           workspace_id: runtime.workspace_id,
-          required_runner_release_id: runtime.required_runner_release_id,
+          runner_releases: runtime.runner_releases,
           service_identity: Authentication.service_identity(conn)
         }
         |> Map.merge(IdempotentCommand.audit_metadata(idempotency, "accepted"))
@@ -338,7 +279,7 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
            activated: true,
            manifest_version_id: manifest_version_id,
            deployment_id: runtime.deployment_id,
-           required_runner_release_id: runtime.required_runner_release_id,
+           runner_releases: runtime.runner_releases,
            revision: runtime.revision
          }, "manifest", manifest_version_id}
 
@@ -385,6 +326,20 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
           "historical_manifest_not_activatable"
         )
 
+      {:error, {:runner_protocol_not_activatable, protocol_version}} ->
+        activation_rejected(
+          conn,
+          context,
+          session,
+          actor,
+          manifest_version_id,
+          idempotency,
+          503,
+          "runner_protocol_not_activatable",
+          "Runner protocol is not yet available for activation",
+          %{runner_protocol_version: protocol_version}
+        )
+
       {:error, {:runner_release_mismatch, required, actual}} ->
         activation_rejected(
           conn,
@@ -400,40 +355,6 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
             required_runner_release_id: required,
             runner_release_id: actual
           }
-        )
-
-      {:error, :runner_manifest_conflict} ->
-        activation_rejected(
-          conn,
-          context,
-          session,
-          actor,
-          manifest_version_id,
-          idempotency,
-          409,
-          "runner_manifest_conflict",
-          "Runner has conflicting manifest content",
-          %{}
-        )
-
-      {:error, reason}
-      when reason in [
-             :runner_client_not_available,
-             :runner_release_info_unavailable,
-             :runner_not_ready,
-             :runner_unavailable
-           ] ->
-        activation_rejected(
-          conn,
-          context,
-          session,
-          actor,
-          manifest_version_id,
-          idempotency,
-          503,
-          "runner_unavailable",
-          "Runner is not ready for activation",
-          %{}
         )
 
       {:error, reason} ->
@@ -552,7 +473,7 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
     |> put_option(:content_hash, Map.get(params, "content_hash"))
     |> put_option(:schema_version, Map.get(params, "schema_version"))
     |> put_option(:runner_contract_version, Map.get(params, "runner_contract_version"))
-    |> put_option(:required_runner_release_id, Map.get(params, "required_runner_release_id"))
+    |> put_option(:runner_releases, Map.get(params, "runner_releases"))
     |> put_option(:serialization_format, Map.get(params, "serialization_format"))
   end
 
@@ -560,6 +481,9 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
 
   defp put_option(opts, key, value) when is_binary(value) and value != "",
     do: Keyword.put(opts, key, value)
+
+  defp put_option(opts, :runner_releases, value) when is_map(value),
+    do: Keyword.put(opts, :runner_releases, value)
 
   defp put_option(opts, _key, _value), do: opts
 

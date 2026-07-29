@@ -183,10 +183,53 @@ defmodule FavnOrchestrator.API.DTO do
       target_label: run_target_label(run, target_refs),
       target_refs: target_refs,
       manifest_version_id: run.manifest_version_id,
-      required_runner_release_id: Map.get(run, :required_runner_release_id),
+      runner_releases: Map.get(run, :runner_releases, %{}),
       event_seq: run.event_seq,
       started_at: datetime(run.started_at),
       finished_at: datetime(run.finished_at)
+    }
+  end
+
+  @spec run_submission(map()) :: map()
+  def run_submission(submission) when is_map(submission) do
+    %{
+      submission_id: submission.submission_id,
+      run_id: submission.run_id,
+      source: atom_name(submission.source),
+      deployment_id: submission.deployment_id,
+      manifest_version_id: submission.manifest_version_id,
+      target_kind: submission.target_kind,
+      target_id: submission.target_id,
+      status: atom_name(submission.status),
+      attempt: submission.attempt,
+      failure_kind: atom_name(Map.get(submission, :failure_kind)),
+      error: normalize(Map.get(submission, :error)),
+      cancellation_requested_at: datetime(Map.get(submission, :cancellation_requested_at)),
+      retry_root_id: submission.retry_root_id,
+      retry_of_submission_id: Map.get(submission, :retry_of_submission_id),
+      superseded_by_submission_id: Map.get(submission, :superseded_by_submission_id),
+      enqueued_at: datetime(submission.enqueued_at),
+      available_at: datetime(submission.available_at),
+      preparing_at: datetime(Map.get(submission, :preparing_at)),
+      admitting_at: datetime(Map.get(submission, :admitting_at)),
+      terminal_at: datetime(Map.get(submission, :terminal_at)),
+      updated_at: datetime(submission.updated_at)
+    }
+  end
+
+  @spec run_submission_stats(map()) :: map()
+  def run_submission_stats(stats) when is_map(stats) do
+    %{
+      total: stats.total,
+      counts: normalize(stats.counts),
+      failure_counts: normalize(stats.failure_counts),
+      queued_depth: stats.queued_depth,
+      active_depth: stats.active_depth,
+      retrying_depth: stats.retrying_depth,
+      cancellation_requested_depth: stats.cancellation_requested_depth,
+      oldest_queued_at: datetime(Map.get(stats, :oldest_queued_at)),
+      oldest_queued_age_ms: Map.get(stats, :oldest_queued_age_ms),
+      observed_at: datetime(stats.observed_at)
     }
   end
 
@@ -198,7 +241,7 @@ defmodule FavnOrchestrator.API.DTO do
       submit_kind: atom_name(run.submit_kind),
       manifest_version_id: run.manifest_version_id,
       manifest_content_hash: run.manifest_content_hash,
-      required_runner_release_id: Map.get(run, :required_runner_release_id),
+      runner_releases: Map.get(run, :runner_releases, %{}),
       event_seq: run.event_seq,
       started_at: datetime(run.started_at),
       finished_at: datetime(run.finished_at),

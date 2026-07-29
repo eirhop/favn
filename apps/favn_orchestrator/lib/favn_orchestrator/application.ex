@@ -4,7 +4,6 @@ defmodule FavnOrchestrator.Application do
   use Application
 
   alias FavnOrchestrator.API.Config, as: APIConfig
-  alias FavnOrchestrator.ActiveManifestReconciler
   alias FavnOrchestrator.Auth.Store, as: AuthStore
   alias FavnOrchestrator.BackfillDispatcher
   alias FavnOrchestrator.BoundedDispatcher
@@ -18,9 +17,9 @@ defmodule FavnOrchestrator.Application do
   alias FavnOrchestrator.RebuildDispatcher
   alias FavnOrchestrator.RunManager
   alias FavnOrchestrator.RunRecovery
-  alias FavnOrchestrator.RunnerHealth
+  alias FavnOrchestrator.RunSubmission.Supervisor, as: RunSubmissionSupervisor
   alias FavnOrchestrator.RuntimeConfig
-  alias FavnOrchestrator.RuntimeStarter
+  alias FavnOrchestrator.RuntimeBootstrap
   alias FavnOrchestrator.Shutdown
   alias FavnOrchestrator.Scheduler.PersistenceRuntime, as: PersistenceSchedulerRuntime
 
@@ -38,7 +37,7 @@ defmodule FavnOrchestrator.Application do
              Supervisor.start_link(
                [
                  {Lifecycle, shutdown_drain_timeout_ms: timeout_ms},
-                 {RuntimeStarter, runtime?: false}
+                 {RuntimeBootstrap, runtime?: false}
                ],
                strategy: :one_for_all,
                name: FavnOrchestrator.Supervisor
@@ -78,17 +77,31 @@ defmodule FavnOrchestrator.Application do
             {DynamicSupervisor, strategy: :one_for_one, name: FavnOrchestrator.RunSupervisor},
             {Task.Supervisor, name: FavnOrchestrator.RunManagerTaskSupervisor},
             {RunManager, []},
-            {FavnOrchestrator.ResourceRecovery, []}
+            {RunSubmissionSupervisor, config: runtime_config.run_submissions},
+            {FavnOrchestrator.ResourceRecovery, []},
+            {FavnOrchestrator.RunnerRegistry, []},
+            {FavnOrchestrator.RunnerDemandLimiter, []},
+            {FavnOrchestrator.RunnerQueueSupervisor, []},
+            {Task.Supervisor, name: FavnOrchestrator.RunnerClaimSupervisor},
+            {Task.Supervisor, name: FavnOrchestrator.RunnerTaskWaitSupervisor},
+            {FavnOrchestrator.RunnerTaskResultRouter, []},
+            {FavnOrchestrator.RunnerGateway, []},
+            {FavnOrchestrator.RunnerTaskRecovery, []},
+            {FavnOrchestrator.RunnerCapacityReconciler, []},
+            {Registry, keys: :unique, name: FavnOrchestrator.RebuildPlanningRegistry},
+            {DynamicSupervisor,
+             strategy: :one_for_one, name: FavnOrchestrator.RebuildPlanningSupervisor},
+            {Registry, keys: :unique, name: FavnOrchestrator.RebuildExecutionRegistry},
+            {DynamicSupervisor,
+             strategy: :one_for_one, name: FavnOrchestrator.RebuildExecutionSupervisor}
           ] ++
           [{BackfillDispatcher, []}, {RebuildDispatcher, []}] ++
           [
             {RunRecovery, []},
-            {RunnerHealth, []},
-            {ActiveManifestReconciler, []},
             {BoundedDispatcher, []}
           ] ++
           scheduler_children(runtime_config) ++
-          api_children(runtime_config) ++ [{RuntimeStarter, runtime?: true}]
+          api_children(runtime_config) ++ [{RuntimeBootstrap, runtime?: true}]
 
       with {:ok, supervisor} <-
              Supervisor.start_link(children,

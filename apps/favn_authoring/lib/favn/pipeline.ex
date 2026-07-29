@@ -266,6 +266,7 @@ defmodule Favn.Pipeline do
       Module.register_attribute(__MODULE__, :favn_pipeline_retry, persist: false)
       Module.register_attribute(__MODULE__, :favn_pipeline_max_concurrency, persist: false)
       Module.register_attribute(__MODULE__, :favn_pipeline_execution_pool, persist: false)
+      Module.register_attribute(__MODULE__, :favn_pipeline_runner_pool, persist: false)
       Module.register_attribute(__MODULE__, :favn_pipeline_resource_recovery, persist: false)
       Module.register_attribute(__MODULE__, :favn_pipeline_source, persist: false)
       Module.register_attribute(__MODULE__, :favn_pipeline_outputs, persist: false)
@@ -499,6 +500,27 @@ defmodule Favn.Pipeline do
   end
 
   @doc """
+  Selects the default logical runner environment for pipeline assets.
+
+  Asset-level `runner_pool` declarations override this value. Pool names are
+  opaque user-defined atoms; `:default` is used when neither level declares one.
+  """
+  defmacro runner_pool(name) do
+    quote bind_quoted: [name: name] do
+      Favn.Pipeline.ensure_in_pipeline_block!(__MODULE__, "runner_pool")
+
+      Favn.Pipeline.ensure_singleton_clause!(
+        __MODULE__,
+        :favn_pipeline_runner_pool,
+        "runner_pool"
+      )
+
+      Favn.Pipeline.validate_runner_pool!(name)
+      @favn_pipeline_runner_pool name
+    end
+  end
+
+  @doc """
   Opts a pipeline into linked recovery runs after a resource circuit closes.
 
   `:retry_remaining` submits a new run for explicitly safe failed nodes and
@@ -708,6 +730,7 @@ defmodule Favn.Pipeline do
         retry_policy: Module.get_attribute(env.module, :favn_pipeline_retry),
         max_concurrency: Module.get_attribute(env.module, :favn_pipeline_max_concurrency),
         execution_pool: Module.get_attribute(env.module, :favn_pipeline_execution_pool),
+        runner_pool: Module.get_attribute(env.module, :favn_pipeline_runner_pool),
         resource_recovery: Module.get_attribute(env.module, :favn_pipeline_resource_recovery),
         source: Module.get_attribute(env.module, :favn_pipeline_source),
         outputs: Module.get_attribute(env.module, :favn_pipeline_outputs) || []
@@ -812,6 +835,17 @@ defmodule Favn.Pipeline do
 
       true ->
         raise ArgumentError, "pipeline clause `execution_pool` must be a non-nil atom"
+    end
+  end
+
+  @doc false
+  def validate_runner_pool!(value) do
+    case Favn.RunnerPool.validate_source(value) do
+      :ok ->
+        :ok
+
+      {:error, _reason} ->
+        raise ArgumentError, "pipeline clause `runner_pool` must be a valid non-nil atom"
     end
   end
 

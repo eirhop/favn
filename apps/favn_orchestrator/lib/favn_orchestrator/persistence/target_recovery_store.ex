@@ -3,8 +3,9 @@ defmodule FavnOrchestrator.Persistence.TargetRecoveryStore do
 
   alias FavnOrchestrator.Persistence.Commands.ActivateRecoveredTargetGeneration
   alias FavnOrchestrator.Persistence.Commands.BeginTargetRecovery
-  alias FavnOrchestrator.Persistence.Commands.CreateTargetRecoveryPlan
+  alias FavnOrchestrator.Persistence.Commands.CreateTargetRecoveryIntent
   alias FavnOrchestrator.Persistence.Commands.FailTargetRecovery
+  alias FavnOrchestrator.Persistence.Commands.FinalizeTargetRecoveryPlan
   alias FavnOrchestrator.Persistence.Commands.MarkTargetRecoveryUnknown
   alias FavnOrchestrator.Persistence.Error
   alias FavnOrchestrator.Persistence.Queries.GetInitialTargetRecoveryCandidate
@@ -14,7 +15,9 @@ defmodule FavnOrchestrator.Persistence.TargetRecoveryStore do
 
   @callback get_initial_candidate(GetInitialTargetRecoveryCandidate.t()) ::
               {:ok, InitialTargetRecoveryCandidate.t()} | {:error, Error.t()}
-  @callback create_plan(CreateTargetRecoveryPlan.t()) ::
+  @callback create_intent(CreateTargetRecoveryIntent.t()) ::
+              {:ok, TargetRecoveryOperation.t()} | {:error, Error.t()}
+  @callback finalize_plan(FinalizeTargetRecoveryPlan.t()) ::
               {:ok, TargetRecoveryOperation.t()} | {:error, Error.t()}
   @callback begin_recovery(BeginTargetRecovery.t()) ::
               {:ok, TargetRecoveryOperation.t()} | {:error, Error.t()}

@@ -3,11 +3,11 @@ defmodule FavnRunner.ApplicationTest do
 
   test "a lifecycle crash restarts runner dependencies and restores admission" do
     lifecycle = Process.whereis(FavnRunner.Lifecycle)
-    server = Process.whereis(FavnRunner.Server)
-    starter = Process.whereis(FavnRunner.RuntimeStarter)
+    manifest_store = Process.whereis(FavnRunner.ManifestStore)
+    starter = Process.whereis(FavnRunner.RuntimeBootstrap)
 
     assert is_pid(lifecycle)
-    assert is_pid(server)
+    assert is_pid(manifest_store)
     assert is_pid(starter)
     assert FavnRunner.Lifecycle.diagnostics().status == :accepting
 
@@ -15,17 +15,17 @@ defmodule FavnRunner.ApplicationTest do
 
     assert_eventually(fn ->
       restarted_lifecycle = Process.whereis(FavnRunner.Lifecycle)
-      restarted_server = Process.whereis(FavnRunner.Server)
-      restarted_starter = Process.whereis(FavnRunner.RuntimeStarter)
+      restarted_manifest_store = Process.whereis(FavnRunner.ManifestStore)
+      restarted_starter = Process.whereis(FavnRunner.RuntimeBootstrap)
 
       is_pid(restarted_lifecycle) and restarted_lifecycle != lifecycle and
-        is_pid(restarted_server) and restarted_server != server and
+        is_pid(restarted_manifest_store) and restarted_manifest_store != manifest_store and
         is_pid(restarted_starter) and restarted_starter != starter and
         FavnRunner.Lifecycle.diagnostics().status == :accepting
     end)
   end
 
-  for critical <- [FavnRunner.Server, FavnRunner.ManifestStore] do
+  for critical <- [FavnRunner.ManifestStore] do
     test "a #{inspect(critical)} crash cannot orphan an active worker" do
       critical = unquote(critical)
       lifecycle = Process.whereis(FavnRunner.Lifecycle)

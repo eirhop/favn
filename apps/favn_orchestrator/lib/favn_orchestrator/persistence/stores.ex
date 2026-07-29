@@ -9,6 +9,8 @@ defmodule FavnOrchestrator.Persistence.Stores do
   @capabilities [
     registry: FavnOrchestrator.Persistence.RegistryStore,
     runs: FavnOrchestrator.Persistence.RunStore,
+    run_submissions: FavnOrchestrator.Persistence.RunSubmissionStore,
+    runner_tasks: FavnOrchestrator.Persistence.RunnerTaskStore,
     run_ownership: FavnOrchestrator.Persistence.RunOwnershipStore,
     scheduler: FavnOrchestrator.Persistence.SchedulerStore,
     admission: FavnOrchestrator.Persistence.AdmissionStore,
@@ -32,6 +34,8 @@ defmodule FavnOrchestrator.Persistence.Stores do
   @type t :: %__MODULE__{
           registry: module(),
           runs: module(),
+          run_submissions: module(),
+          runner_tasks: module(),
           run_ownership: module(),
           scheduler: module(),
           admission: module(),

@@ -1,194 +1,104 @@
 # favn_orchestrator
 
-Purpose: the control plane and public backend facade for manifests, deployments,
-runs, schedules, events, identity, authorization, audit, idempotency, backfills,
-freshness, and execution coordination.
+Purpose: the always-on control plane for manifests, deployments, durable run
+submission, DAG coordination, schedules, runner demand, identity, audit, and
+operator APIs.
 
 ## Boundaries
 
-- `FavnOrchestrator` is the public facade used by `favn_view` and same-BEAM
-  operator clients.
-- Private HTTP routes live under `FavnOrchestrator.API` and expose versioned,
-  JSON-safe DTOs.
-- Persistence contracts live under `FavnOrchestrator.Persistence`; concrete
-  PostgreSQL modules live in `favn_storage_postgres`.
-- `FavnOrchestrator.WorkspaceContext` scopes customer operations.
-  `FavnOrchestrator.OperatorContext` carries authenticated actor and workspace or
-  platform authority. Callers must not infer workspace from a run identifier.
-- Domain lifecycle and policy remain here. Stores implement atomic commands and
-  bounded queries; they do not decide scheduling, retries, repair policy, or user
-  authorization.
+- `FavnOrchestrator` is the public same-BEAM facade used by `favn_view` and
+  local/operator workflows.
+- Private HTTP routes expose versioned JSON-safe control-plane and scaler
+  contracts.
+- Persistence behaviours live under `FavnOrchestrator.Persistence`; concrete
+  PostgreSQL implementations live in `favn_storage_postgres`.
+- Runners are disposable workers. PostgreSQL remains the authority for queued
+  work, claims, leases, fencing, results, and downstream DAG readiness.
+- Favn exposes demand and runner protocols. It does not provision or terminate
+  infrastructure.
 
-## Main areas
+## Submission and DAG coordination
 
-- `Manifests`, `ExecutionPackages`, `ManifestStore`, `ManifestIndexCache`, and
-  deployment planning own
-  immutable compact global releases, package-first publication, on-demand runtime
-  package attachment, bounded compiled indexes, and exact workspace deployment
-  catalogs. Publication is runner-independent and leaves a manifest staged.
-  Activation loads that immutable version, requires an explicitly ready runner
-  reporting the exact `required_runner_release_id`, verifies or registers the
-  manifest in the runner cache, and only then commits the deployment pointer.
-  Runner outage returns a service-unavailable result; a release mismatch or
-  conflicting runner cache entry returns a conflict without changing the active
-  deployment. `Manifests` emits bounded publication and activation telemetry.
-  Runner diagnostic events include latency, status, manifest id when known, and
-  the required/actual release ids on mismatch. Rejected activation audit entries
-  contain only actor/service identity, stable reason codes, idempotency metadata,
-  and relevant release ids; selection and configuration are not copied into them.
-- `Runs`, `RunManager`, `RunServer`, and `TransitionWriter` own submission,
-  execution, retry, cancellation, snapshots, events, and durable publication.
-  Submission derives the runner release only from the selected immutable manifest;
-  caller options cannot override it. The run's workspace, deployment, manifest id,
-  manifest content hash, and runner release id are one immutable identity. Dispatch,
-  relation inspection, runner results, recovery, events, diagnostics, and compact
-  operator summaries preserve or verify that identity.
-  `RunManager` coordinates only bounded in-memory admission and process tracking;
-  PostgreSQL work happens in callers or supervised recovery workers so one slow
-  database operation cannot block unrelated manager calls.
-- `RunOwnership`, `ExecutionAdmission`, `MaterializationClaims`, and scheduler
-  runtime modules own fenced distributed coordination.
-- `TargetGenerations` resolves persisted asset writes to one durable physical
-  generation and non-persisted assets to a durable workspace evidence binding.
-  Materialization claims pin that identity before execution; freshness and window
-  reads first resolve the relevant binding so retired physical-generation evidence
-  is not presented as current. Manifest and runner changes retain non-persisted
-  evidence; explicit runs and backfills publish newer evidence under the same
-  binding. `TargetCompatibilityPlanner` inspects persisted relations
-  through the runner during deployment, classifies desired/active/physical state,
-  and freezes the result into the target binding. `TargetAdmission` rejects only
-  selected dependency paths containing a rebuild-required, drifted, or
-  ownership-unknown target before ordinary mutation.
-- `RunnerClient.BeamNode` is the sole production runner transport. It connects
-  to one validated static long node name, performs bounded `:erpc` calls, and
-  never loads or calls `favn_runner` inside the control-plane BEAM. Readiness
-  accepts only connected runner diagnostics with a ready verified release ID.
-- `ControlPlaneRuntimeConfig` reads the production environment once and validates
-  both same-BEAM applications before either supervisor starts. Production always
-  installs the PostgreSQL backend; there is no storage selector. `RuntimeConfig`
-  freezes runner, instance, HTTP, and shutdown values for hot runtime paths.
-- `Lifecycle` owns monotonic `starting`, `accepting`, `draining`, and `stopping`
-  state plus monitored admission permits. `Shutdown` flips readiness before
-  waiting for admitted mutations and active run servers, then requests durable
-  cancellation at the configured deadline. One lifecycle election makes repeated
-  View and Orchestrator shutdown callbacks reuse the same drain result. PostgreSQL
-  fencing remains the crash recovery authority. The private API rejects unsafe
-  methods with a stable, retryable `503 runtime_draining` response while read-only
-  requests remain live.
-- `RuntimeStarter` is the final child of a coupled `one_for_all` runtime tree. It
-  performs the idempotent bootstrap and marks the lifecycle accepting only after
-  restarted dependencies are alive. Lifecycle, `RunManager`, `RunSupervisor`,
-  and active run servers therefore cannot survive or restart independently and
-  lose ownership visibility; a critical child failure restarts the whole
-  control-plane runtime for fenced PostgreSQL recovery.
-- `ResourceCircuits` resolves configured execution-pool and SQL-connection
-  resources before ordinary capacity admission. It records only explicit runner
-  resource outcomes, while `ResourceRecovery` submits linked targeted runs for
-  durable, unexpired, safe candidates after an exclusive probe succeeds. Its
-  supervised bounded sweep resumes pending candidates after restart, and
-  deterministic recovery run ids make uncertain submission replay idempotent.
-- Run recovery discovers active workspace identities from PostgreSQL rather than
-  treating a static node environment list as persistence authority.
-- `Backfills` and `BackfillDispatcher` own range expansion, parent/child state,
-  dispatch, and compensation.
-- `Rebuilds` creates immutable, hash-addressed manual plans from one active
-  manifest, frozen generation bindings, adapter capabilities, exact logical
-  items, and a conservative topological downstream repair graph. An idempotency
-  key resolves to the original frozen plan; approval revalidates every pin and
-  acquires all write-target locks in canonical order before changing state. Each
-  planned item also freezes the runtime-input resolver identity and payload
-  fingerprint. Execution resolves sensitive values through the normal encrypted
-  run-pin store and must match that frozen expectation.
-  `RebuildDispatcher` resumes fenced operations from PostgreSQL checkpoints,
-  submits candidate items serially, accepts success only with the exact
-  operation/generation/partition materialization ledger, validates the complete
-  authored check and contract result set on the final candidate item, persists activation
-  intent before the runner swap, reconciles unknown replies through the marker,
-  and retries idempotent retired-relation cleanup without changing a successful
-  operation outcome. Ordinary writes to locked targets fail admission; work
-  carrying the matching rebuild operation identity may proceed.
-  Ambiguous child outcomes remain durable and are reconciled against the exact
-  materialization ledger before retry or candidate cleanup. Safe-failure
-  candidates remain available for same-plan resume; cancelled and invalid
-  candidates are discarded through retryable terminal cleanup checkpoints.
-- `Coverage` owns explicit-time expected-window evaluation, active-generation
-  evidence counts, opaque gap pagination, and immutable exact-gap backfill
-  plans. Coverage reads are bounded and remain independent from freshness;
-  submission revalidates every pinned identity before calling `Backfills` with
-  the reviewed non-contiguous window set.
-- `Identity` and `Auth` own accounts, memberships, sessions, service identities,
-  policy enforcement, and audit intent. Source development may issue
-  `trusted_local_dev` operator sessions only through an explicit,
-  capability-gated FavnLocal boot contract; normal View boot paths cannot
-  enable that provider implicitly.
-- `Operator.Catalogue`, `Operator.Lineage`, `Operator.Schedules`, `Logs`, and the
-  facade expose bounded read models to thin clients. Asset catalogue detail
-  decodes freshness keys structurally and projects run anchors, exact coverage,
-  aggregated calendar freshness, and persisted target compatibility separately;
-  only anchor and exact-window projections carry submission intent. Compatibility
-  DTOs expose bounded structured differences and generation/fingerprint identity,
-  never adapter sessions or connection secrets. `AssetRunContext` binds a
-  manifest-pinned asset to one selecting pipeline policy and timezone. Catalogue
-  reads and operator commands share its stable id, reject forged or stale contexts,
-  and surface multi-pipeline ambiguity instead of depending on manifest order.
-- `RunReadModel` keeps requested backfill anchors distinct from exact effective
-  asset windows. Its default operator detail path expands compact relational
-  projections; the events view is the explicit bounded snapshot/event path.
-- `RuntimeInputPins` owns encrypted resolve/pin/replay behavior. Raw resolved
-  credentials never enter generic run metadata. Pins are bound to the selected
-  asset's exact execution-package hash and resolver.
-- `Readiness`, `Diagnostics`, and persistence maintenance expose safe operational
-  state without bypassing the public boundary. `RunnerHealth` maintains one
-  bounded, reusable remote diagnostic snapshot. `ActiveManifestReconciler`
-  periodically restores active manifests after runner-cache restarts and treats a
-  configured workspace without a deployment as valid. Readiness uses stable
-  component names and cached snapshots, verifies lifecycle admission and the
-  connected runner release, and requires every existing active manifest to be
-  aligned and registered. Pending, stale, malformed, and failed snapshots make
-  readiness fail closed without putting remote or mutation work on the HTTP path.
+`RunSubmissions` durably records accepted intent before planning. Bounded
+workers claim submissions with workspace-fair concurrency, pin the active
+manifest, plan the DAG, create the run, and enqueue only asset attempts that
+are runnable now. Scheduler, API, backfill, rebuild, recovery, and child-run
+producers all use this authority.
 
-Run snapshots and append-only events are authoritative for run state. Compact
-operator projections are versioned, repairable, and updated through the durable
-outbox. PubSub and PostgreSQL notifications only reduce refresh latency.
-Current snapshots require the runner release binding and use storage format v3.
-Historical terminal v2 snapshots remain readable with a nil release id for audit.
-A non-terminal v2 snapshot cannot be recovered or dispatched and returns the stable
-`legacy_runner_release_unbound` reason.
-Catalogue and planning paths share the byte- and entry-bounded compiled manifest
-index cache; generated SQL execution
-trees are loaded only after execution admission for the selected runtime asset and
-attached to `RunnerWork` before runner preflight. The per-run `Manifest.Index` is
-reduced to the planned asset subset and provides constant-time lookup; wide stages
-never retain all packages at once. Wide-stage admission yields after a small
-node/time batch so ownership renewal and cancellation messages cannot be starved.
-Wide-stage retry persistence writes one authoritative compact stage-bitset checkpoint
-instead of per-node retry-scheduled transitions, keeping the database work constant
-per retry decision.
-Terminal node failure does not stop independent stage siblings. Downstream nodes
-with incomplete required upstreams are durably blocked. Resource-open blocking is
-a terminal node result in the source run; opt-in recovery always creates another
-linked run and never rewrites that source result.
-Run-list APIs select compact relational summaries without the authoritative JSON
-snapshot. Operator detail reconstruction caps full child snapshots at four and marks
-`child_run_details_truncated?` when more relational child rows exist.
-Asset assurance projects every ordered SQL contract row-count claim with its exact
-or bounded constraint, condition, violation policy, stable claim identity, and
-latest bounded check result; `favn_view` does not reconstruct this state.
+`RunManager`, `RunServer`, and `TransitionWriter` coordinate one admitted run.
+The run pins the deployment, manifest ID, manifest content hash, and the
+complete pool-to-release map. Each planned asset selects its explicit
+`runner_pool` (or the configured default), and the resulting task pins the one
+matching release.
 
-## Tests
+A task result becomes visible durably before its downstream DAG nodes are
+made runnable. Runner loss is handled from task lease and result state, not
+from process-monitor state alone. Safe failures may retry under policy;
+unknown outcomes require reconciliation and are not blindly replayed.
 
-- Pure orchestration policy and facade tests:
-  `apps/favn_orchestrator/test/`.
-- PostgreSQL transaction, concurrency, authority, tenancy, and query tests:
-  `apps/favn_storage_postgres/test/storage_v2/`.
-- Product-level deployment artifact qualification:
-  `apps/favn/test/acceptance/deployment_artifacts_test.exs`.
-- Docker-free source lifecycle acceptance:
-  `apps/favn/test/acceptance/docker_free_local_lifecycle_test.exs`.
+## Runner capacity and registry
 
-Use this app when changing lifecycle semantics, persistence contracts, workspace
-authorization, private API behavior, live-event DTOs, backfills, scheduling,
-admission, ownership, retries, cancellation, readiness, or operator read models.
-The supported one-control-plane/one-runner deployment and private network contract
-are documented under `docs/production/`; multi-node routing and failover are not
-part of this release.
+`RunnerTasks` owns the durable task facade. `RunnerRegistry` is a process-local
+registry of connected dynamic BEAM runners for the single control plane. A
+runner registers its instance, boot, pool, release, slot count, capabilities,
+and BEAM PID. Monitors remove disconnected sessions; runners re-register after
+either side restarts.
+
+The registry is intentionally not durable. PostgreSQL already contains the
+work and assignment authority. Registration only answers which live process
+may be notified or assigned work now.
+
+The orchestrator exposes exact demand for each pool/release partition:
+
+```text
+GET /internal/runner-demand/<pool>/<release-id>
+```
+
+The scalar is bounded and cheap to poll. Infrastructure starts enough jobs to
+cover demand. The orchestrator never calls Azure, Kubernetes, KEDA, ECS,
+Nomad, or a VM provider.
+
+After a runner finishes a task, it claims another. With no compatible work, an
+elastic runner follows the configured idle grace and self-exits; a resident
+runner waits. Exact release-drain reads protect manifest/image rollback and
+overlap.
+
+## Manifest lifecycle
+
+`Manifests`, `ExecutionPackages`, `ManifestStore`, and
+`ManifestIndexCache` own immutable publication and workspace activation.
+Manifest versions carry an arbitrary logical pool-to-release map. Publication
+and activation do not require a live runner, so the control plane remains
+ready at zero runners.
+
+Physical relation inspection and generation operations are durable runner
+tasks. They use the same exact pool/release selection, claim, fencing, result,
+and acknowledgement protocol as asset attempts.
+
+## Other authorities
+
+- `RunOwnership` and `ExecutionAdmission` own fenced distributed coordination.
+- `TargetGenerations` resolves persisted assets to physical generations and
+  non-persisted assets to durable workspace evidence bindings. Claims and reads
+  pin that identity; `MaterializationClaims` and rebuild modules own
+  physical-generation mutation and activation.
+- Scheduler modules own durable occurrence intent and overlap policy.
+- Runtime-input pins, audit, auth, idempotency, logs, and projections are
+  explicit persistence boundaries.
+- Readiness checks configuration, lifecycle, API, scheduler, PostgreSQL, and
+  queue/counter consistency. Zero connected runners is healthy.
+
+## Main code
+
+- `apps/favn_orchestrator/lib/favn_orchestrator/run_submissions.ex`
+- `apps/favn_orchestrator/lib/favn_orchestrator/run_manager.ex`
+- `apps/favn_orchestrator/lib/favn_orchestrator/run_server.ex`
+- `apps/favn_orchestrator/lib/favn_orchestrator/runner_tasks.ex`
+- `apps/favn_orchestrator/lib/favn_orchestrator/runner_registry.ex`
+- `apps/favn_orchestrator/lib/favn_orchestrator/api/runner_capacity_router.ex`
+- `apps/favn_orchestrator/lib/favn_orchestrator/manifests.ex`
+- `apps/favn_orchestrator/lib/favn_orchestrator/production_runtime_config.ex`
+
+Tests live under `apps/favn_orchestrator/test/`. Cross-node protocol and
+PostgreSQL authority tests additionally live in `apps/favn_runner/test/` and
+`apps/favn_storage_postgres/test/`.

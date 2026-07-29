@@ -57,7 +57,9 @@ defmodule Favn.ConsumerDependencyInstallTest do
     copy_checkout!(repo_root, snapshot_dir)
 
     assert {_, 0} = System.cmd("git", ["init", "-q"], cd: snapshot_dir)
-    assert {_, 0} = System.cmd("git", ["add", "."], cd: snapshot_dir)
+
+    assert {_, 0} =
+             System.cmd("git", ["-c", "core.longpaths=true", "add", "."], cd: snapshot_dir)
 
     assert {_, 0} =
              System.cmd(

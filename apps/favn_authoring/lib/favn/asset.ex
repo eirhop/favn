@@ -339,6 +339,7 @@ defmodule Favn.Asset do
           freshness: 1,
           retry: 1,
           execution_pool: 1,
+          runner_pool: 1,
           relation: 1,
           runtime_config: 1,
           runtime_config: 2,
@@ -407,6 +408,7 @@ defmodule Favn.Asset do
              :freshness,
              :retry,
              :execution_pool,
+             :runner_pool,
              :runtime_config,
              :window,
              :relation
@@ -460,6 +462,7 @@ defmodule Favn.Asset do
           freshness: FreshnessPolicy.t() | nil,
           retry_policy: Favn.Retry.Policy.t() | nil,
           execution_pool: atom() | nil,
+          runner_pool: atom() | nil,
           relation: RelationRef.t() | nil,
           materialization: Favn.SQLAsset.Materialization.t() | nil,
           partition_spec: Favn.SQL.PartitionSpec.t() | nil,
@@ -493,6 +496,7 @@ defmodule Favn.Asset do
     freshness: nil,
     retry_policy: nil,
     execution_pool: nil,
+    runner_pool: nil,
     relation: nil,
     materialization: nil,
     partition_spec: nil,
@@ -524,6 +528,7 @@ defmodule Favn.Asset do
     validate_freshness!(asset.freshness)
     validate_retry_policy!(asset.retry_policy)
     validate_execution_pool!(asset.execution_pool)
+    validate_runner_pool!(asset.runner_pool)
     validate_relation!(asset.relation)
     validate_runtime_config!(asset.runtime_config)
     validate_session_requirements!(asset.session_requirements)
@@ -703,6 +708,15 @@ defmodule Favn.Asset do
           "asset execution_pool must be an atom or nil, got: #{inspect(value)}"
   end
 
+  defp validate_runner_pool!(nil), do: :ok
+
+  defp validate_runner_pool!(value) do
+    case Favn.RunnerPool.validate_source(value) do
+      :ok -> :ok
+      {:error, _reason} -> raise ArgumentError, "asset runner_pool must be a valid non-nil atom"
+    end
+  end
+
   defp validate_retry_policy!(nil), do: :ok
 
   defp validate_retry_policy!(%Favn.Retry.Policy{} = policy) do
@@ -778,6 +792,7 @@ defmodule Favn.Asset do
     coverage = AssetDeclarations.take(env.module, :coverage)
     retry = AssetDeclarations.take(env.module, :retry)
     execution_pool = AssetDeclarations.take(env.module, :execution_pool)
+    runner_pool = AssetDeclarations.take(env.module, :runner_pool)
     meta = AssetDeclarations.take(env.module, :meta)
     runtime_config = AssetDeclarations.take(env.module, :runtime_config)
     window = AssetDeclarations.take(env.module, :window)
@@ -797,6 +812,7 @@ defmodule Favn.Asset do
       coverage: coverage,
       retry: retry,
       execution_pool: execution_pool,
+      runner_pool: runner_pool,
       meta: meta,
       runtime_config: runtime_config,
       window: window,
@@ -848,6 +864,7 @@ defmodule Favn.Asset do
 
     retry_policy = normalize_single_asset_retry!(raw_asset.retry, raw_asset)
     execution_pool = normalize_execution_pool!(raw_asset.execution_pool, raw_asset)
+    runner_pool = normalize_runner_pool!(raw_asset.runner_pool, raw_asset)
 
     asset = %__MODULE__{
       module: raw_asset.module,
@@ -867,7 +884,8 @@ defmodule Favn.Asset do
       coverage_spec: coverage_spec,
       freshness: freshness,
       retry_policy: retry_policy,
-      execution_pool: execution_pool
+      execution_pool: execution_pool,
+      runner_pool: runner_pool
     }
 
     try do
@@ -1056,6 +1074,23 @@ defmodule Favn.Asset do
       raw_asset.line,
       "invalid execution_pool value #{inspect(value)}; expected a non-nil atom"
     )
+  end
+
+  defp normalize_runner_pool!([], _raw_asset), do: nil
+
+  defp normalize_runner_pool!([value], _raw_asset) do
+    case Favn.RunnerPool.validate_source(value) do
+      :ok -> value
+      {:error, _reason} -> raise ArgumentError, "runner_pool must be a valid non-nil atom"
+    end
+  end
+
+  defp normalize_runner_pool!([_first, _second | _rest], _raw_asset) do
+    raise ArgumentError, "multiple runner_pool declarations are not allowed"
+  end
+
+  defp normalize_runner_pool!(value, _raw_asset) do
+    raise ArgumentError, "invalid runner_pool value #{inspect(value)}; expected a non-nil atom"
   end
 
   defp validate_relation_attr!([], _env), do: :ok

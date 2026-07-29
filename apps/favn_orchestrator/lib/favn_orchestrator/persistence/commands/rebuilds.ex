@@ -8,6 +8,8 @@ defmodule FavnOrchestrator.Persistence.Commands.RebuildPlanAction do
     :reason,
     :upstream_impact,
     :pinned_input_generation_ids,
+    :runner_pool,
+    :required_runner_release_id,
     :status
   ]
   defstruct [
@@ -18,6 +20,8 @@ defmodule FavnOrchestrator.Persistence.Commands.RebuildPlanAction do
     :upstream_impact,
     :mapping_proof,
     :pinned_input_generation_ids,
+    :runner_pool,
+    :required_runner_release_id,
     :candidate_generation,
     :status
   ]
@@ -30,6 +34,8 @@ defmodule FavnOrchestrator.Persistence.Commands.RebuildPlanAction do
           upstream_impact: map(),
           mapping_proof: map() | nil,
           pinned_input_generation_ids: [map()],
+          runner_pool: String.t(),
+          required_runner_release_id: String.t(),
           candidate_generation: map() | nil,
           status: :planned
         }
@@ -71,8 +77,65 @@ defmodule FavnOrchestrator.Persistence.Commands.RebuildPlanItem do
         }
 end
 
+defmodule FavnOrchestrator.Persistence.Commands.BeginRebuildPlan do
+  @moduledoc "Persists a rebuild-planning continuation before runner work is enqueued."
+
+  alias FavnOrchestrator.Persistence.CommandIdempotency
+  alias FavnOrchestrator.Persistence.WorkspaceContext
+
+  @enforce_keys [
+    :workspace_context,
+    :command_id,
+    :operation_id,
+    :root_target_id,
+    :manifest_version_id,
+    :planning_hash,
+    :planning_payload,
+    :actor_id,
+    :reason,
+    :idempotency_key,
+    :evaluated_at,
+    :occurred_at
+  ]
+  defstruct [
+    :workspace_context,
+    :command_id,
+    :operation_id,
+    :root_target_id,
+    :manifest_version_id,
+    :active_generation_id,
+    :planning_hash,
+    :planning_payload,
+    :actor_id,
+    :session_id,
+    :reason,
+    :idempotency_key,
+    :evaluated_at,
+    :occurred_at,
+    :idempotency
+  ]
+
+  @type t :: %__MODULE__{
+          workspace_context: WorkspaceContext.t(),
+          command_id: String.t(),
+          operation_id: String.t(),
+          root_target_id: String.t(),
+          manifest_version_id: String.t(),
+          active_generation_id: String.t() | nil,
+          planning_hash: String.t(),
+          planning_payload: map(),
+          actor_id: String.t(),
+          session_id: String.t() | nil,
+          reason: String.t(),
+          idempotency_key: String.t(),
+          evaluated_at: DateTime.t(),
+          occurred_at: DateTime.t(),
+          idempotency: CommandIdempotency.t() | nil
+        }
+end
+
 defmodule FavnOrchestrator.Persistence.Commands.CreateRebuildPlan do
-  @moduledoc "Persists one immutable manual rebuild plan and its candidate generations."
+  @moduledoc "Finalizes one durable planning continuation into an immutable rebuild plan."
 
   alias FavnOrchestrator.Persistence.Commands.RebuildPlanAction
   alias FavnOrchestrator.Persistence.Commands.RebuildPlanItem
@@ -150,14 +213,22 @@ defmodule FavnOrchestrator.Persistence.Commands.ClaimRebuildOperation do
 
   alias FavnOrchestrator.Persistence.WorkspaceContext
   @enforce_keys [:workspace_context, :command_id, :owner_id, :lease_duration_ms]
-  defstruct [:workspace_context, :command_id, :owner_id, :lease_duration_ms, :operation_id]
+  defstruct [
+    :workspace_context,
+    :command_id,
+    :owner_id,
+    :lease_duration_ms,
+    :operation_id,
+    exclude_operation_ids: []
+  ]
 
   @type t :: %__MODULE__{
           workspace_context: WorkspaceContext.t(),
           command_id: String.t(),
           owner_id: String.t(),
           lease_duration_ms: pos_integer(),
-          operation_id: String.t() | nil
+          operation_id: String.t() | nil,
+          exclude_operation_ids: [String.t()]
         }
 end
 
@@ -238,6 +309,33 @@ defmodule FavnOrchestrator.Persistence.Commands.RetryRebuildOperation do
           plan_hash: String.t(),
           occurred_at: DateTime.t(),
           idempotency: CommandIdempotency.t() | nil
+        }
+end
+
+defmodule FavnOrchestrator.Persistence.Commands.RenewRebuildOperationLease do
+  @moduledoc "Renews one exact rebuild dispatcher lease without changing aggregate state."
+
+  alias FavnOrchestrator.Persistence.WorkspaceContext
+
+  @enforce_keys [
+    :workspace_context,
+    :command_id,
+    :operation_id,
+    :owner_id,
+    :fencing_token,
+    :lease_duration_ms,
+    :occurred_at
+  ]
+  defstruct @enforce_keys
+
+  @type t :: %__MODULE__{
+          workspace_context: WorkspaceContext.t(),
+          command_id: String.t(),
+          operation_id: String.t(),
+          owner_id: String.t(),
+          fencing_token: pos_integer(),
+          lease_duration_ms: pos_integer(),
+          occurred_at: DateTime.t()
         }
 end
 
@@ -708,7 +806,7 @@ defmodule FavnOrchestrator.Persistence.Results.RebuildOperation do
           root_target_id: String.t(),
           manifest_version_id: String.t(),
           active_generation_id: String.t() | nil,
-          candidate_generation_id: String.t(),
+          candidate_generation_id: String.t() | nil,
           plan_hash: String.t(),
           plan_version: pos_integer(),
           plan_payload: map(),
@@ -719,8 +817,8 @@ defmodule FavnOrchestrator.Persistence.Results.RebuildOperation do
           evaluated_at: DateTime.t(),
           coverage_start: DateTime.t() | nil,
           coverage_end: DateTime.t() | nil,
-          action_count: pos_integer(),
-          window_count: pos_integer(),
+          action_count: non_neg_integer(),
+          window_count: non_neg_integer(),
           state: atom(),
           phase: atom(),
           activation_token: String.t() | nil,
@@ -751,6 +849,8 @@ defmodule FavnOrchestrator.Persistence.Results.RebuildAction do
     :upstream_impact,
     :mapping_proof,
     :pinned_input_generation_ids,
+    :runner_pool,
+    :required_runner_release_id,
     :candidate_generation_id,
     :status,
     :child_operation_id,
@@ -776,6 +876,8 @@ defmodule FavnOrchestrator.Persistence.Results.RebuildAction do
           upstream_impact: map(),
           mapping_proof: map() | nil,
           pinned_input_generation_ids: [map()],
+          runner_pool: String.t(),
+          required_runner_release_id: String.t(),
           candidate_generation_id: String.t() | nil,
           status: atom(),
           child_operation_id: String.t() | nil,

@@ -356,7 +356,6 @@ defmodule FavnView.WebReadinessTest do
       refute source =~ "FavnOrchestrator.Readiness"
       refute source =~ "FavnOrchestrator.Storage"
       refute source =~ "Scheduler.Runtime"
-      refute source =~ "RunnerClient"
       refute source =~ "/api/orchestrator"
       refute source =~ "service_token"
     end

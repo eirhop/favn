@@ -8,7 +8,7 @@ defmodule FavnStoragePostgres.Migrations.AddCommitSafeLogReplayV2 do
   def up do
     alter table(:log_entries, prefix: @prefix) do
       add(:asset_step_id, :text)
-      add(:runner_execution_id, :text)
+      add(:runner_task_id, :text)
       add(:node_key_hash, :binary)
       add(:asset_ref_hash, :binary)
       add(:stream, :text)
@@ -34,10 +34,10 @@ defmodule FavnStoragePostgres.Migrations.AddCommitSafeLogReplayV2 do
     create(
       index(
         :log_entries,
-        [:workspace_id, :runner_execution_id, {:desc, :occurred_at}, {:desc, :log_id}],
+        [:workspace_id, :runner_task_id, {:desc, :occurred_at}, {:desc, :log_id}],
         prefix: @prefix,
         name: :log_entries_runner_idx,
-        where: "runner_execution_id IS NOT NULL"
+        where: "runner_task_id IS NOT NULL"
       )
     )
 
@@ -62,7 +62,7 @@ defmodule FavnStoragePostgres.Migrations.AddCommitSafeLogReplayV2 do
         prefix: @prefix,
         check:
           "(asset_step_id IS NULL OR octet_length(asset_step_id) BETWEEN 1 AND 255) " <>
-            "AND (runner_execution_id IS NULL OR octet_length(runner_execution_id) BETWEEN 1 AND 255) " <>
+            "AND (runner_task_id IS NULL OR octet_length(runner_task_id) BETWEEN 1 AND 255) " <>
             "AND (stream IS NULL OR stream IN ('stdout', 'stderr', 'system'))"
       )
     )
@@ -86,7 +86,7 @@ defmodule FavnStoragePostgres.Migrations.AddCommitSafeLogReplayV2 do
       remove(:stream)
       remove(:asset_ref_hash)
       remove(:node_key_hash)
-      remove(:runner_execution_id)
+      remove(:runner_task_id)
       remove(:asset_step_id)
     end
   end

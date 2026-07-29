@@ -14,7 +14,14 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
       Path.join(System.tmp_dir!(), "favn-runtime-config-ca-#{System.unique_integer()}.pem")
 
     File.write!(ca_file, "test-ca")
-    on_exit(fn -> File.rm(ca_file) end)
+    tls_file = ca_file <> ".dist.config"
+    write_tls_options(tls_file, ca_file)
+
+    on_exit(fn ->
+      File.rm(ca_file)
+      File.rm(tls_file)
+    end)
+
     %{ca_file: ca_file}
   end
 
@@ -60,24 +67,24 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
              max_missed_all_occurrences: 1_000
            ]
 
+    assert config.run_submissions == [
+             global_concurrency: 8,
+             per_workspace_concurrency: 2
+           ]
+
+    assert config.runner_pools == %{
+             "default" => %{mode: :elastic, idle_grace_ms: 15_000}
+           }
+
     assert config.runner == %{
              topology: :beam_node,
              control_plane_node: "control@control-plane.internal",
-             runner_node: "runner@runner.internal",
              distribution_port: 9_100,
              epmd_port: 4_369,
+             transport: :tls,
+             mutual_tls?: true,
              cookie_configured?: true
            }
-
-    assert config.runner_client == FavnOrchestrator.RunnerClient.BeamNode
-
-    assert config.runner_client_opts == [
-             runner_node: "runner@runner.internal",
-             runner_module: Module.concat(["FavnRunner"]),
-             runner_rpc_timeout_ms: 15_000,
-             runner_diagnostics_timeout_ms: 5_000,
-             runner_await_timeout_buffer_ms: 2_000
-           ]
   end
 
   test "validate/1 accepts explicit supported production values", %{ca_file: ca_file} do
@@ -99,9 +106,13 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
         "FAVN_SCHEDULER_ENABLED" => "false",
         "FAVN_SCHEDULER_TICK_MS" => "250",
         "FAVN_SCHEDULER_MAX_MISSED_ALL_OCCURRENCES" => "2",
-        "FAVN_RUNNER_RPC_TIMEOUT_MS" => "30000",
-        "FAVN_RUNNER_DIAGNOSTICS_TIMEOUT_MS" => "3000",
-        "FAVN_RUNNER_AWAIT_TIMEOUT_BUFFER_MS" => "500",
+        "FAVN_RUN_SUBMISSION_CONCURRENCY" => "12",
+        "FAVN_RUN_SUBMISSION_WORKSPACE_CONCURRENCY" => "3",
+        "FAVN_RUNNER_POOLS" =>
+          Jason.encode!(%{
+            "duckdb" => %{"mode" => "elastic", "idle_grace_ms" => 30_000},
+            "pure_elixir" => %{"mode" => "resident"}
+          }),
         "ERL_EPMD_PORT" => "44369"
       })
 
@@ -123,10 +134,41 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
              max_missed_all_occurrences: 2
            ]
 
+    assert config.run_submissions == [
+             global_concurrency: 12,
+             per_workspace_concurrency: 3
+           ]
+
+    assert config.runner_pools == %{
+             "duckdb" => %{mode: :elastic, idle_grace_ms: 30_000},
+             "pure_elixir" => %{mode: :resident, idle_grace_ms: :infinity}
+           }
+
     assert config.runner.epmd_port == 44_369
-    assert config.runner_client_opts[:runner_rpc_timeout_ms] == 30_000
-    assert config.runner_client_opts[:runner_diagnostics_timeout_ms] == 3_000
-    assert config.runner_client_opts[:runner_await_timeout_buffer_ms] == 500
+  end
+
+  test "runner pool env rejects infrastructure fields and does not create atoms", %{
+    ca_file: ca_file
+  } do
+    pool_name = "customer_pool_" <> Integer.to_string(System.unique_integer([:positive]))
+
+    env =
+      ca_file
+      |> base_env()
+      |> Map.put(
+        "FAVN_RUNNER_POOLS",
+        Jason.encode!(%{pool_name => %{"mode" => "elastic", "cpu" => 4}})
+      )
+
+    assert {:error,
+            %{
+              status: :invalid,
+              error:
+                {:invalid_env, "FAVN_RUNNER_POOLS",
+                 "JSON object of pool names to elastic/resident lifecycle policy"}
+            }} = ProductionRuntimeConfig.validate(env)
+
+    assert_raise ArgumentError, fn -> String.to_existing_atom(pool_name) end
   end
 
   test "production composition is always PostgreSQL and requires no storage selector", %{
@@ -279,6 +321,17 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
              |> ProductionRuntimeConfig.validate()
 
     assert {:error,
+            %{
+              error:
+                {:invalid_env, "FAVN_RUN_SUBMISSION_WORKSPACE_CONCURRENCY",
+                 "not greater than FAVN_RUN_SUBMISSION_CONCURRENCY"}
+            }} =
+             base
+             |> Map.put("FAVN_RUN_SUBMISSION_CONCURRENCY", "2")
+             |> Map.put("FAVN_RUN_SUBMISSION_WORKSPACE_CONCURRENCY", "3")
+             |> ProductionRuntimeConfig.validate()
+
+    assert {:error,
             %{error: {:invalid_secret_env, "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS", :too_short}}} =
              base
              |> Map.put("FAVN_ORCHESTRATOR_API_SERVICE_TOKENS", "favn_web:short-secret")
@@ -299,14 +352,9 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
              |> ProductionRuntimeConfig.validate()
 
     assert {:error,
-            %{error: {:invalid_env, "FAVN_RUNNER_NODE", "different from control-plane node"}}} =
+            %{error: {:invalid_env, "FAVN_CONTROL_PLANE_NODE", "long name@private-dns-name"}}} =
              base
-             |> Map.put("FAVN_RUNNER_NODE", "control@control-plane.internal")
-             |> ProductionRuntimeConfig.validate()
-
-    assert {:error, %{error: {:invalid_env, "FAVN_RUNNER_NODE", "long name@private-dns-name"}}} =
-             base
-             |> Map.put("FAVN_RUNNER_NODE", "runner@localhost")
+             |> Map.put("FAVN_CONTROL_PLANE_NODE", "control@localhost")
              |> ProductionRuntimeConfig.validate()
 
     assert {:error,
@@ -318,12 +366,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
              |> ProductionRuntimeConfig.validate()
   end
 
-  test "apply_from_env/1 freezes redacted PostgreSQL composition", %{ca_file: ca_file} do
-    fresh_runner_node =
-      "runner#{System.unique_integer([:positive, :monotonic])}@runner.internal"
-
-    assert_raise ArgumentError, fn -> String.to_existing_atom(fresh_runner_node) end
-
+  test "apply/1 freezes redacted PostgreSQL composition", %{ca_file: ca_file} do
     orchestrator_keys = [
       :persistence_backend,
       :persistence_options,
@@ -337,8 +380,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
       :auth_session_ttl_seconds,
       :active_run_plan_max_bytes,
       :scheduler,
-      :runner_client,
-      :runner_client_opts,
+      :runner_pools,
       :production_runtime_diagnostics,
       :auth_bootstrap_username,
       :auth_bootstrap_password,
@@ -360,17 +402,18 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
       restore_env(:favn_storage_postgres, previous_postgres)
     end)
 
-    assert :ok =
-             ca_file
-             |> base_env()
-             |> Map.put(
-               "FAVN_RUNTIME_INPUT_PIN_KEYS",
-               Jason.encode!(%{"1" => @old_pin_key, "2" => @pin_key})
-             )
-             |> Map.put("FAVN_RUNTIME_INPUT_PIN_KEY_VERSION", "2")
-             |> Map.put("FAVN_SCHEDULER_ENABLED", "false")
-             |> Map.put("FAVN_RUNNER_NODE", fresh_runner_node)
-             |> ProductionRuntimeConfig.apply_from_env()
+    env =
+      ca_file
+      |> base_env()
+      |> Map.put(
+        "FAVN_RUNTIME_INPUT_PIN_KEYS",
+        Jason.encode!(%{"1" => @old_pin_key, "2" => @pin_key})
+      )
+      |> Map.put("FAVN_RUNTIME_INPUT_PIN_KEY_VERSION", "2")
+      |> Map.put("FAVN_SCHEDULER_ENABLED", "false")
+
+    assert {:ok, config} = ProductionRuntimeConfig.validate(env)
+    assert :ok = ProductionRuntimeConfig.apply(config)
 
     assert Application.get_env(:favn_orchestrator, :persistence_backend) ==
              ProductionRuntimeConfig.postgres_backend()
@@ -395,6 +438,11 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
            ) == 2
 
     assert Application.get_env(:favn_orchestrator, :scheduler)[:enabled] == false
+
+    assert Application.get_env(:favn_orchestrator, :runner_pools) == %{
+             "default" => %{mode: :elastic, idle_grace_ms: 15_000}
+           }
+
     assert Application.get_env(:favn_orchestrator, :workspace_ids) == ["salmon-one", "salmon-two"]
     assert Application.get_env(:favn_orchestrator, :auth_bootstrap_username) == "admin"
     assert Application.get_env(:favn_orchestrator, :auth_bootstrap_roles) == [:admin]
@@ -406,12 +454,6 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
 
     assert Application.get_env(:favn_orchestrator, :active_run_plan_max_bytes) ==
              512 * 1_024 * 1_024
-
-    assert Application.get_env(:favn_orchestrator, :runner_client) ==
-             FavnOrchestrator.RunnerClient.BeamNode
-
-    assert Application.get_env(:favn_orchestrator, :runner_client_opts)[:runner_node] ==
-             String.to_existing_atom(fresh_runner_node)
 
     diagnostics = Application.get_env(:favn_orchestrator, :production_runtime_diagnostics)
     refute inspect(diagnostics) =~ "secret"
@@ -425,9 +467,10 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
     assert diagnostics.runner == %{
              topology: :beam_node,
              control_plane_node: "control@control-plane.internal",
-             runner_node: fresh_runner_node,
              distribution_port: 9_100,
              epmd_port: 4_369,
+             transport: :tls,
+             mutual_tls?: true,
              cookie_configured?: true
            }
 
@@ -461,10 +504,30 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
       "FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME" => "admin",
       "FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD" => "admin-password-long",
       "FAVN_CONTROL_PLANE_NODE" => "control@control-plane.internal",
-      "FAVN_RUNNER_NODE" => "runner@runner.internal",
       "FAVN_DISTRIBUTION_COOKIE" => "bN7!tQ2#vL9@xR4$kM8%pC6&zH3*eW5?",
-      "FAVN_BEAM_DISTRIBUTION_PORT" => "9100"
+      "FAVN_BEAM_DISTRIBUTION_PORT" => "9100",
+      "FAVN_DISTRIBUTION_TLS_OPTIONS_FILE" => ca_file <> ".dist.config"
     }
+  end
+
+  defp write_tls_options(path, credential) do
+    options = [
+      server: [
+        certfile: String.to_charlist(credential),
+        keyfile: String.to_charlist(credential),
+        cacertfile: String.to_charlist(credential),
+        verify: :verify_peer,
+        fail_if_no_peer_cert: true
+      ],
+      client: [
+        certfile: String.to_charlist(credential),
+        keyfile: String.to_charlist(credential),
+        cacertfile: String.to_charlist(credential),
+        verify: :verify_peer
+      ]
+    ]
+
+    File.write!(path, IO.iodata_to_binary(:io_lib.format("~p.~n", [options])))
   end
 
   defp snapshot_env(app, keys), do: Map.new(keys, &{&1, Application.get_env(app, &1)})

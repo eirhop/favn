@@ -29,9 +29,7 @@ defmodule FavnOrchestrator.InitialTargetGenerationReconcilerTest do
     end
   end
 
-  defmodule RunnerClient do
-    @behaviour Favn.Contracts.RunnerClient
-
+  defmodule RunnerExecutor do
     def inspect_relation(request, opts) do
       send(Keyword.fetch!(opts, :test_pid), {:inspect_relation, request})
       Process.get(:inspection_result)
@@ -99,23 +97,23 @@ defmodule FavnOrchestrator.InitialTargetGenerationReconcilerTest do
     def release_manifest(_lease_id, _opts), do: :ok
     def submit_work(_work, _opts), do: {:error, :not_used}
     def resolve_runtime_inputs(_work, _opts), do: {:error, :not_used}
-    def await_result(_execution_id, _timeout, _opts), do: {:error, :not_used}
-    def cancel_work(_execution_id, _cancellation, _opts), do: {:error, :not_used}
     def subscribe_execution_logs(_execution_id, _pid, _opts), do: {:error, :not_used}
     def unsubscribe_execution_logs(_execution_id, _pid, _opts), do: :ok
     def diagnostics(_opts), do: {:error, :not_used}
   end
 
   setup do
-    previous_client = Application.get_env(:favn_orchestrator, :runner_client)
-    previous_opts = Application.get_env(:favn_orchestrator, :runner_client_opts)
+    previous_client = Application.get_env(:favn_orchestrator, :test_runner_executor)
+    previous_opts = Application.get_env(:favn_orchestrator, :test_runner_executor_opts)
 
-    Application.put_env(:favn_orchestrator, :runner_client, RunnerClient)
-    Application.put_env(:favn_orchestrator, :runner_client_opts, test_pid: self())
+    Application.put_env(:favn_orchestrator, :test_runner_executor, RunnerExecutor)
+    Application.put_env(:favn_orchestrator, :test_runner_executor_opts, test_pid: self())
 
     stores = %Stores{
       registry: FakeStore,
       runs: FakeStore,
+      run_submissions: FakeStore,
+      runner_tasks: FavnOrchestrator.TestRunnerTaskStore,
       run_ownership: FakeStore,
       scheduler: FakeStore,
       admission: FakeStore,
@@ -138,8 +136,8 @@ defmodule FavnOrchestrator.InitialTargetGenerationReconcilerTest do
     Process.put(:test_pid, self())
 
     on_exit(fn ->
-      restore_env(:runner_client, previous_client)
-      restore_env(:runner_client_opts, previous_opts)
+      restore_env(:test_runner_executor, previous_client)
+      restore_env(:test_runner_executor_opts, previous_opts)
     end)
 
     version = version()
@@ -323,7 +321,7 @@ defmodule FavnOrchestrator.InitialTargetGenerationReconcilerTest do
   defp inspection(version) do
     %RelationInspectionResult{
       asset_ref: @ref,
-      required_runner_release_id: version.required_runner_release_id,
+      required_runner_release_id: version.runner_releases["default"],
       relation: %{catalog: nil, schema: "analytics", name: "monthly_orders", type: :table},
       columns: [%{name: "id", data_type: "BIGINT", nullable?: false}],
       table_metadata: %{},

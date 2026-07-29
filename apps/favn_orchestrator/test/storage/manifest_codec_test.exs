@@ -17,7 +17,7 @@ defmodule FavnOrchestrator.Storage.ManifestCodecTest do
 
     assert {:ok, record} = ManifestCodec.to_record(version)
     assert record.manifest_version_id == "mv_codec"
-    assert record.required_runner_release_id == FavnTestSupport.runner_release_id()
+    assert record.runner_releases == %{"default" => FavnTestSupport.runner_release_id()}
 
     assert {:ok, decoded} = ManifestCodec.from_record(record)
     assert decoded.manifest_version_id == version.manifest_version_id
@@ -38,25 +38,13 @@ defmodule FavnOrchestrator.Storage.ManifestCodecTest do
     assert expected == String.duplicate("0", 64)
   end
 
-  test "requires the envelope runner release identity and matches it to the manifest" do
+  test "round-trips the canonical manifest release map" do
     version = manifest_version("mv_codec_release_binding")
     assert {:ok, record} = ManifestCodec.to_record(version)
 
-    assert {:error, {:invalid_manifest_record_field, :required_runner_release_id, nil}} =
-             record
-             |> Map.delete(:required_runner_release_id)
-             |> ManifestCodec.from_record()
+    assert {:ok, decoded} = ManifestCodec.from_record(record)
 
-    assert {:error, {:manifest_required_runner_release_id_mismatch, alternate_id, required_id}} =
-             record
-             |> Map.put(
-               :required_runner_release_id,
-               FavnTestSupport.runner_release_id(:alternate)
-             )
-             |> ManifestCodec.from_record()
-
-    assert alternate_id == FavnTestSupport.runner_release_id(:alternate)
-    assert required_id == FavnTestSupport.runner_release_id()
+    assert decoded.runner_releases == version.runner_releases
   end
 
   test "preserves content hash invariant across raw decode and rehydration" do

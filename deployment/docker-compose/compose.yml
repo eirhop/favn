@@ -1,0 +1,293 @@
+services:
+  certificates:
+    build:
+      context: .
+      dockerfile: certificates.Dockerfile
+    volumes:
+      - postgres-certificates:/certificates/postgres
+      - control-plane-certificates:/certificates/control-plane
+      - runner-certificates:/certificates/runner
+    restart: "no"
+
+  postgres:
+    build:
+      context: .
+      dockerfile: postgres.Dockerfile
+    environment:
+      POSTGRES_DB: favn
+      POSTGRES_USER: favn_migrator
+      POSTGRES_PASSWORD: ${FAVN_MIGRATOR_DATABASE_PASSWORD:?run prepare.sh first}
+      FAVN_RUNTIME_DATABASE_PASSWORD: ${FAVN_RUNTIME_DATABASE_PASSWORD:?run prepare.sh first}
+    command:
+      - postgres
+      - -c
+      - ssl=on
+      - -c
+      - ssl_cert_file=/var/lib/postgresql/certs/server.crt
+      - -c
+      - ssl_key_file=/var/lib/postgresql/certs/server.key
+      - -c
+      - ssl_ca_file=/var/lib/postgresql/certs/ca.crt
+      - -c
+      - listen_addresses=*
+    depends_on:
+      certificates:
+        condition: service_completed_successfully
+    volumes:
+      - postgres-certificates:/certificates:ro
+      - postgres-data:/var/lib/postgresql
+      - ./postgres-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "PGPASSWORD=$$POSTGRES_PASSWORD PGSSLROOTCERT=/var/lib/postgresql/certs/ca.crt psql 'host=postgres dbname=favn user=favn_migrator sslmode=verify-full' --tuples-only --command 'SELECT 1' | grep -q 1",
+        ]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+      start_period: 5s
+    networks:
+      - favn-private
+    restart: unless-stopped
+
+  database-migrate:
+    image: favn-control-plane:${FAVN_IMAGE_TAG}
+    entrypoint: ["/app/bin/favn_control_plane_ops"]
+    command: ["migrate"]
+    hostname: operations
+    environment:
+      FAVN_DEPLOYMENT_MODE: production
+      FAVN_DATABASE_URL: ecto://favn_migrator:${FAVN_MIGRATOR_DATABASE_PASSWORD}@postgres:5432/favn
+      FAVN_DATABASE_SSL_MODE: verify-full
+      FAVN_DATABASE_SSL_CA_FILE: /etc/favn/tls/ca.crt
+      FAVN_CONTROL_PLANE_NODE: favn_control_plane_ops@operations
+      FAVN_DISTRIBUTION_COOKIE: ${FAVN_DISTRIBUTION_COOKIE}
+      FAVN_DISTRIBUTION_TLS_OPTIONS_FILE: /etc/favn/tls/control-plane-ssl-dist.config
+      FAVN_BEAM_DISTRIBUTION_PORT: "9200"
+      ERL_AFLAGS: -proto_dist inet_tls -ssl_dist_optfile /etc/favn/tls/control-plane-ssl-dist.config
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - control-plane-certificates:/etc/favn/tls:ro
+    networks:
+      - favn-private
+    profiles: ["operations"]
+    restart: "no"
+
+  database-grant:
+    image: favn-control-plane:${FAVN_IMAGE_TAG}
+    entrypoint: ["/app/bin/favn_control_plane_ops"]
+    command: ["grant-runtime"]
+    hostname: operations
+    environment:
+      FAVN_DEPLOYMENT_MODE: production
+      FAVN_DATABASE_URL: ecto://favn_migrator:${FAVN_MIGRATOR_DATABASE_PASSWORD}@postgres:5432/favn
+      FAVN_DATABASE_SSL_MODE: verify-full
+      FAVN_DATABASE_SSL_CA_FILE: /etc/favn/tls/ca.crt
+      FAVN_DATABASE_RUNTIME_ROLE: favn_runtime
+      FAVN_CONTROL_PLANE_NODE: favn_control_plane_ops@operations
+      FAVN_DISTRIBUTION_COOKIE: ${FAVN_DISTRIBUTION_COOKIE}
+      FAVN_DISTRIBUTION_TLS_OPTIONS_FILE: /etc/favn/tls/control-plane-ssl-dist.config
+      FAVN_BEAM_DISTRIBUTION_PORT: "9200"
+      ERL_AFLAGS: -proto_dist inet_tls -ssl_dist_optfile /etc/favn/tls/control-plane-ssl-dist.config
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - control-plane-certificates:/etc/favn/tls:ro
+    networks:
+      - favn-private
+    profiles: ["operations"]
+    restart: "no"
+
+  workspace-provision:
+    image: favn-control-plane:${FAVN_IMAGE_TAG}
+    entrypoint: ["/app/bin/favn_control_plane_ops"]
+    command: ["provision-workspace"]
+    hostname: operations
+    environment:
+      FAVN_DEPLOYMENT_MODE: production
+      FAVN_DATABASE_URL: ecto://favn_migrator:${FAVN_MIGRATOR_DATABASE_PASSWORD}@postgres:5432/favn
+      FAVN_DATABASE_SSL_MODE: verify-full
+      FAVN_DATABASE_SSL_CA_FILE: /etc/favn/tls/ca.crt
+      FAVN_CONTROL_PLANE_NODE: favn_control_plane_ops@operations
+      FAVN_DISTRIBUTION_COOKIE: ${FAVN_DISTRIBUTION_COOKIE}
+      FAVN_DISTRIBUTION_TLS_OPTIONS_FILE: /etc/favn/tls/control-plane-ssl-dist.config
+      FAVN_BEAM_DISTRIBUTION_PORT: "9200"
+      ERL_AFLAGS: -proto_dist inet_tls -ssl_dist_optfile /etc/favn/tls/control-plane-ssl-dist.config
+      FAVN_WORKSPACE_ID: elastic-simulation
+      FAVN_WORKSPACE_SLUG: elastic-simulation
+      FAVN_WORKSPACE_NAME: Elastic runner simulation
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - control-plane-certificates:/etc/favn/tls:ro
+    networks:
+      - favn-private
+    profiles: ["operations"]
+    restart: "no"
+
+  database-verify:
+    image: favn-control-plane:${FAVN_IMAGE_TAG}
+    entrypoint: ["/app/bin/favn_control_plane_ops"]
+    command: ["verify-schema"]
+    hostname: operations
+    environment:
+      FAVN_DEPLOYMENT_MODE: production
+      FAVN_DATABASE_URL: ecto://favn_runtime:${FAVN_RUNTIME_DATABASE_PASSWORD}@postgres:5432/favn
+      FAVN_DATABASE_SSL_MODE: verify-full
+      FAVN_DATABASE_SSL_CA_FILE: /etc/favn/tls/ca.crt
+      FAVN_CONTROL_PLANE_NODE: favn_control_plane_ops@operations
+      FAVN_DISTRIBUTION_COOKIE: ${FAVN_DISTRIBUTION_COOKIE}
+      FAVN_DISTRIBUTION_TLS_OPTIONS_FILE: /etc/favn/tls/control-plane-ssl-dist.config
+      FAVN_BEAM_DISTRIBUTION_PORT: "9200"
+      ERL_AFLAGS: -proto_dist inet_tls -ssl_dist_optfile /etc/favn/tls/control-plane-ssl-dist.config
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - control-plane-certificates:/etc/favn/tls:ro
+    networks:
+      - favn-private
+    profiles: ["operations"]
+    restart: "no"
+
+  control-plane:
+    image: favn-control-plane:${FAVN_IMAGE_TAG}
+    hostname: control-plane.favn.local
+    build:
+      context: ../..
+      dockerfile: rel/control_plane/Dockerfile
+      args:
+        FAVN_SOURCE_REVISION: ${FAVN_SOURCE_REVISION}
+        FAVN_BUILD_TIMESTAMP: ${FAVN_BUILD_TIMESTAMP}
+    environment:
+      FAVN_DEPLOYMENT_MODE: production
+      FAVN_DATABASE_URL: ecto://favn_runtime:${FAVN_RUNTIME_DATABASE_PASSWORD}@postgres:5432/favn
+      FAVN_DATABASE_SSL_MODE: verify-full
+      FAVN_DATABASE_SSL_CA_FILE: /etc/favn/tls/ca.crt
+      FAVN_RUNTIME_INPUT_PIN_KEYS: ${FAVN_RUNTIME_INPUT_PIN_KEYS}
+      FAVN_RUNTIME_INPUT_PIN_KEY_VERSION: "1"
+      FAVN_ORCHESTRATOR_API_SERVICE_TOKENS: platform-v1|platform_operator:${FAVN_PLATFORM_TOKEN},capacity-v1|capacity_reader:${FAVN_CAPACITY_TOKEN}
+      FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME: admin
+      FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD: ${FAVN_BOOTSTRAP_PASSWORD}
+      FAVN_ORCHESTRATOR_BOOTSTRAP_ROLES: admin
+      FAVN_WORKSPACE_IDS: elastic-simulation
+      FAVN_SCHEDULER_ENABLED: "false"
+      FAVN_CONTROL_PLANE_NODE: favn_control_plane@control-plane.favn.local
+      FAVN_RUNNER_POOLS: '{"default":{"mode":"elastic","idle_grace_ms":5000}}'
+      FAVN_DISTRIBUTION_COOKIE: ${FAVN_DISTRIBUTION_COOKIE}
+      FAVN_DISTRIBUTION_TLS_OPTIONS_FILE: /etc/favn/tls/control-plane-ssl-dist.config
+      FAVN_BEAM_DISTRIBUTION_PORT: "9100"
+      ERL_AFLAGS: -proto_dist inet_tls -ssl_dist_optfile /etc/favn/tls/control-plane-ssl-dist.config
+      FAVN_VIEW_SECRET_KEY_BASE: ${FAVN_VIEW_SECRET_KEY_BASE}
+      FAVN_VIEW_PUBLIC_ORIGIN: https://favn.localhost
+      FAVN_VIEW_BIND_HOST: 0.0.0.0
+      FAVN_VIEW_PORT: "4000"
+      FAVN_VIEW_TRUSTED_PROXY_CIDRS: 172.16.0.0/12
+    depends_on:
+      certificates:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+    volumes:
+      - control-plane-certificates:/etc/favn/tls:ro
+    ports:
+      - "127.0.0.1:${FAVN_VIEW_HOST_PORT:-4173}:4000"
+      - "127.0.0.1:${FAVN_API_HOST_PORT:-4101}:4101"
+    networks:
+      favn-private:
+        aliases:
+          - control-plane.favn.local
+      favn-edge:
+    stop_grace_period: 190s
+    restart: unless-stopped
+
+  operator:
+    image: favn-elastic-simulation-operator:${FAVN_IMAGE_TAG}
+    build:
+      context: ../..
+      dockerfile: deployment/docker-compose/customer.Dockerfile
+      target: operator
+      args:
+        FAVN_RUNNER_RELEASE_ID: ${FAVN_RUNNER_RELEASE_ID}
+    environment:
+      FAVN_ORCHESTRATOR_URL: http://control-plane:4101
+      FAVN_ORCHESTRATOR_SERVICE_TOKEN: ${FAVN_PLATFORM_TOKEN}
+      FAVN_WORKSPACE_ID: elastic-simulation
+    depends_on:
+      control-plane:
+        condition: service_healthy
+    networks:
+      - favn-private
+    profiles: ["operations"]
+    restart: "no"
+
+  runner:
+    image: favn-elastic-simulation-runner:${FAVN_IMAGE_TAG}
+    hostname: ${FAVN_RUNNER_NODE_HOST_ALIAS:-runner.favn.local}
+    build:
+      context: ../..
+      dockerfile: deployment/docker-compose/customer.Dockerfile
+      target: runner
+      args:
+        FAVN_RUNNER_RELEASE_ID: ${FAVN_RUNNER_RELEASE_ID}
+    environment:
+      FAVN_RUNNER_RELEASE_ID: ${FAVN_RUNNER_RELEASE_ID}
+      FAVN_RUNNER_POOL: default
+      FAVN_RUNNER_LIFECYCLE_MODE: elastic
+      FAVN_RUNNER_MAX_UPTIME_MS: "300000"
+      FAVN_RUNNER_NODE_HOST_ALIAS: runner.favn.local
+      FAVN_CONTROL_PLANE_NODE: favn_control_plane@control-plane.favn.local
+      FAVN_DISTRIBUTION_COOKIE: ${FAVN_DISTRIBUTION_COOKIE}
+      FAVN_DISTRIBUTION_TLS_OPTIONS_FILE: /etc/favn/tls/runner-ssl-dist.config
+      ERL_AFLAGS: -proto_dist inet_tls -ssl_dist_optfile /etc/favn/tls/runner-ssl-dist.config
+    volumes:
+      - runner-certificates:/etc/favn/tls:ro
+    networks:
+      - favn-private
+    stop_grace_period: 130s
+    profiles: ["runner"]
+    restart: "no"
+
+  scaler:
+    image: favn-elastic-simulation-scaler:${FAVN_IMAGE_TAG}
+    build:
+      context: .
+      dockerfile: scaler.Dockerfile
+    environment:
+      FAVN_COMPOSE_PROJECT_NAME: ${FAVN_COMPOSE_PROJECT_NAME}
+      FAVN_RUNNER_RELEASE_ID: ${FAVN_RUNNER_RELEASE_ID}
+      FAVN_CAPACITY_TOKEN: ${FAVN_CAPACITY_TOKEN}
+      FAVN_API_URL: http://control-plane:4101
+      FAVN_COMPOSE_FILE: /workspace/compose.yml
+      FAVN_COMPOSE_ENV_FILE: /workspace/.env.local
+      FAVN_SCALER_MAX_RUNNERS: "3"
+      FAVN_SCALER_TIMEOUT_SECONDS: "240"
+      FAVN_SCALER_POLL_SECONDS: "0.5"
+    depends_on:
+      control-plane:
+        condition: service_healthy
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./compose.yml:/workspace/compose.yml:ro
+      - ./.env.local:/workspace/.env.local:ro
+      - ./simulation-results:/results
+    networks:
+      - favn-private
+    profiles: ["scaler"]
+    restart: "no"
+
+networks:
+  favn-private:
+    internal: true
+  favn-edge:
+
+volumes:
+  postgres-certificates:
+  control-plane-certificates:
+  runner-certificates:
+  postgres-data:

@@ -51,15 +51,14 @@ variables.
 | `FAVN_SCHEDULER_ENABLED` | Strict `true` or `false`, default `true`. |
 | `FAVN_SCHEDULER_TICK_MS` | `100..86400000`, default `15000`. |
 | `FAVN_SCHEDULER_MAX_MISSED_ALL_OCCURRENCES` | `0..100000`, default `1000`. |
+| `FAVN_RUN_SUBMISSION_CONCURRENCY` | Global bounded preparation/admission workers, `1..256`, default `8`. |
+| `FAVN_RUN_SUBMISSION_WORKSPACE_CONCURRENCY` | Per-workspace worker cap, `1..256`, default `2`; it cannot exceed the global cap. |
 | `FAVN_SHUTDOWN_DRAIN_TIMEOUT_MS` | `1000..3600000`, default `120000`. |
 | `FAVN_CONTROL_PLANE_NODE` | Required long distributed-BEAM node name on private DNS. |
-| `FAVN_RUNNER_NODE` | Required distinct runner long node name on private DNS. |
-| `FAVN_DISTRIBUTION_COOKIE` | Required high-entropy secret shared only by the two trusted nodes. |
-| `FAVN_BEAM_DISTRIBUTION_PORT` | Required fixed private distribution port. |
+| `FAVN_RUNNER_POOLS` | JSON object of operator-defined pool names to `elastic` or `resident` lifecycle policy; defaults to one elastic `default` pool with `15000` ms idle grace. |
+| `FAVN_DISTRIBUTION_COOKIE` | Required high-entropy secret shared by the control plane and trusted runner releases. |
+| `FAVN_BEAM_DISTRIBUTION_PORT` | Required fixed private control-plane distribution port. |
 | `ERL_EPMD_PORT` | Optional private EPMD port, default `4369`. |
-| `FAVN_RUNNER_RPC_TIMEOUT_MS` | `100..120000`, default `15000`. |
-| `FAVN_RUNNER_DIAGNOSTICS_TIMEOUT_MS` | `100..30000`, default `5000`. |
-| `FAVN_RUNNER_AWAIT_TIMEOUT_BUFFER_MS` | `0..120000`, default `2000`. |
 
 ## Lifecycle, readiness, and shutdown
 
@@ -69,32 +68,21 @@ PostgreSQL ownership and fencing remain the recovery authority after a crash.
 Readiness is true only in `accepting`. Liveness remains true while draining so
 the platform can distinguish an orderly drain from a failed process.
 
-The control-plane readiness response has the stable checks `config`, `api`,
-`view`, `storage`, `schema`, `scheduler`, `lifecycle`, `runner_connection`,
-`runner_release`, and `active_manifests`. A configured workspace may have no
-deployment, so a clean installation can become ready before its first publish.
-Every workspace that does have an active manifest must align with the connected
-operator-identified runner release and be present in its manifest cache.
-
-HTTP readiness reads cached snapshots only. A bounded background runner probe
-checks the runner server, required supervisors and registries, extensions, and
-data-plane adapters. A separate bounded reconciliation pass re-registers active
-manifests after runner-cache restarts. Pending, failed, timed-out, malformed, or
-stale snapshots fail closed; the readiness request itself never performs remote
-adapter or PostgreSQL mutation work.
-Successful periodic runner diagnostics and active-manifest reconciliation log at
-`debug`; failures and timeouts log at `warning`. Both paths emit telemetry at
-every configured log level.
+Control-plane readiness checks configuration, API/View, storage/schema,
+scheduler, lifecycle, active manifest pool bindings, and durable runner
+queue/counter health. Zero registered runners is healthy and expected when
+elastic pools have no work. HTTP readiness reads bounded state and never starts
+infrastructure or performs runner work.
 
 On `SIGTERM`, the application callback enters `draining` before OTP stops the
 supervision tree. New HTTP mutations, run/rerun and backfill submissions,
-scheduler/backfill claims, manifest publication/activation, runner manifest
-leases, runner work, runtime-input resolution, and executable inspection are
+scheduler/backfill claims, manifest publication/activation, durable task
+enqueue, runtime-input resolution, and executable inspection are
 rejected. Read-only operator and health requests remain available until the
 listeners stop. Work admitted before the transition is tracked by monitored
 permits and may finish for up to `FAVN_SHUTDOWN_DRAIN_TIMEOUT_MS`. At the
-deadline, control-plane runs use the durable cancellation path and runner
-executions are stopped through the runner result path. A runner forced to stop a
+deadline, control-plane runs request cancellation through the durable task
+authority. A runner forced to stop a
 worker records `native_cancel_unknown` as an unknown-outcome interruption rather
 than claiming safe cancellation. Unresolved outcomes remain explicit and are
 handled by fenced recovery after restart; shutdown never invents success.

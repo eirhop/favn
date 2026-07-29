@@ -10,7 +10,7 @@ current limits live in [`FEATURES.md`](FEATURES.md); release gates live in
 1. [#522 — runnable release artifacts and supported deployment topology](https://github.com/eirhop/favn/issues/522)
    - Ship one reusable Favn control-plane image, an editable customer-owned
      runner template, and the explicit release-ID manifest interface.
-   - Qualify the one-control-plane/one-runner topology, runtime-only
+   - Qualify the one-control-plane/elastic-runner topology, runtime-only
      configuration, environment-only secrets, health, packaging, upgrades, and
      clean-container acceptance.
    - Validate the manifest, runner, and public package boundary through the clean
@@ -20,8 +20,14 @@ current limits live in [`FEATURES.md`](FEATURES.md); release gates live in
      boundary are implemented; remaining #522 work is target deployment
      qualification and publishing evidence.
 2. [#525 — durable scheduling and asynchronous orchestration](https://github.com/eirhop/favn/issues/525)
-   - Persist submission intent, move work outside scheduler/RunManager critical
-     paths, and add bounded workers, recovery, fairness, cancellation, and visibility.
+   - Durable run submissions and durable runner tasks are implemented as
+     distinct queue contracts: control-plane workers consume the first and
+     compatible runners consume the second.
+   - The same implementation adds bounded workers, recovery, fairness,
+     cancellation, visibility, arbitrary user-defined runner pools, numeric
+     capacity demand, release coexistence, and elastic self-exit. Final
+     production qualification remains part of the
+     [one-control-plane elastic-runner program](architecture/elastic-runners.md).
 3. [#526 — DuckDB/DuckLake data-plane production hardening](https://github.com/eirhop/favn/issues/526)
    - Define data-plane durability and recovery, add failure injection and honest
      cancellation, and finish safe operator resource controls.
@@ -34,9 +40,18 @@ current limits live in [`FEATURES.md`](FEATURES.md); release gates live in
 
 Observability and drill tooling from #523 should start alongside #522; #523 closes
 last as release qualification. The initial supported target is one control-plane
-node, one separate runner node, and PostgreSQL. Multi-node control-plane/runner
-scaling is tracked in [#529](https://github.com/eirhop/favn/issues/529).
-Deployments without a fully isolated trusted BEAM network are tracked in
+node, PostgreSQL, and zero to N runners across arbitrary user-defined pools.
+A maximum of one resident runner remains a supported deployment configuration,
+not a separate architecture. The runner-scaling part of
+[#529](https://github.com/eirhop/favn/issues/529) will be delivered in the same
+implementation PR as #525; multi-control-plane availability remains open as
+later work.
+
+Production runner connections will use mutually authenticated TLS distributed
+BEAM inside a private network, while retaining distributed BEAM's broad peer
+trust.
+Least-privilege or untrusted-runner transport and broader automatic
+credential-rotation work remain tracked in
 [#530](https://github.com/eirhop/favn/issues/530).
 
 The first supported release is ready only when these epics are complete or a
@@ -54,7 +69,8 @@ remaining item is explicitly removed from the supported product contract.
 - A smaller development-only storage adapter only if PostgreSQL developer-loop
   measurements justify a second implementation.
 - Native Windows CI when Windows becomes a supported platform.
-- Multi-node control-plane and runner clusters after the single-node roles are
+- Multi-control-plane availability after one-control-plane elastic runners are
   proven in production.
-- Encrypted or least-privilege runner transport, runtime secret providers, and
-  automatic rotation for less isolated deployments.
+- Least-privilege runner transport that does not grant full BEAM peer trust,
+  runtime secret providers, and automatic rotation for less isolated
+  deployments.

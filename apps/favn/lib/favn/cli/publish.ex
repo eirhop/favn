@@ -6,7 +6,7 @@ defmodule Favn.CLI.Publish do
 
   @type summary :: %{
           manifest_version_id: String.t(),
-          required_runner_release_id: String.t(),
+          runner_releases: Favn.RunnerPool.releases(),
           status: String.t()
         }
 
@@ -30,7 +30,7 @@ defmodule Favn.CLI.Publish do
       {:ok,
        %{
          manifest_version_id: registration.manifest_version_id,
-         required_runner_release_id: publication.version.required_runner_release_id,
+         runner_releases: publication.version.runner_releases,
          status: registration.status
        }}
     end
@@ -46,14 +46,13 @@ defmodule Favn.CLI.Publish do
     canonical_manifest_version_id =
       get_in(response, ["data", "registration", "canonical_manifest_version_id"])
 
-    required_runner_release_id =
-      get_in(response, ["data", "manifest", "required_runner_release_id"])
+    runner_releases = get_in(response, ["data", "manifest", "runner_releases"])
 
     if valid_registration?(
          status,
          manifest_version_id,
          canonical_manifest_version_id,
-         required_runner_release_id,
+         runner_releases,
          version
        ) do
       {:ok, %{status: status, manifest_version_id: canonical_manifest_version_id}}
@@ -64,7 +63,7 @@ defmodule Favn.CLI.Publish do
           status: status,
           manifest_version_id: manifest_version_id,
           canonical_manifest_version_id: canonical_manifest_version_id,
-          required_runner_release_id: required_runner_release_id
+          runner_releases: runner_releases
         }}}
     end
   end
@@ -73,31 +72,31 @@ defmodule Favn.CLI.Publish do
          "published",
          manifest_version_id,
          canonical_manifest_version_id,
-         required_runner_release_id,
+         runner_releases,
          version
        ) do
     manifest_version_id == version.manifest_version_id and
       canonical_manifest_version_id == version.manifest_version_id and
-      required_runner_release_id == version.required_runner_release_id
+      runner_releases == version.runner_releases
   end
 
   defp valid_registration?(
          "already_published",
          manifest_version_id,
          canonical_manifest_version_id,
-         required_runner_release_id,
+         runner_releases,
          version
        ) do
     manifest_version_id == version.manifest_version_id and
       is_binary(canonical_manifest_version_id) and canonical_manifest_version_id != "" and
-      required_runner_release_id == version.required_runner_release_id
+      runner_releases == version.runner_releases
   end
 
   defp valid_registration?(
          _status,
          _manifest_version_id,
          _canonical_manifest_version_id,
-         _required_runner_release_id,
+         _runner_releases,
          _version
        ),
        do: false

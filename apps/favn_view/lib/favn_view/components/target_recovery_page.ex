@@ -8,6 +8,7 @@ defmodule FavnView.Components.TargetRecoveryPage do
   alias FavnView.Components.GlassPanel
 
   attr :target_id, :string, default: ""
+  attr :reason, :string, default: "Interrupted initial materialization"
   attr :plan, :map, default: nil
   attr :operation, :map, default: nil
   attr :error, :string, default: nil
@@ -28,6 +29,7 @@ defmodule FavnView.Components.TargetRecoveryPage do
           <p class="text-xs font-semibold uppercase tracking-[0.18em] text-base-content/50">
             Plan recovery
           </p>
+
           <p class="mt-2 text-sm text-base-content/65">
             Planning is read-only. Favn will require its original generation,
             successful materialization, physical fingerprint, and marker identity.
@@ -49,6 +51,7 @@ defmodule FavnView.Components.TargetRecoveryPage do
                 data-testid="recovery-target"
               />
             </label>
+
             <label class="form-control block">
               <span class="label-text text-xs text-base-content/60">Reason</span>
               <textarea
@@ -56,8 +59,9 @@ defmodule FavnView.Components.TargetRecoveryPage do
                 required
                 class="textarea textarea-bordered mt-1 min-h-24 w-full bg-base-100/30"
                 data-testid="recovery-reason"
-              >Interrupted initial materialization</textarea>
+              >{@reason}</textarea>
             </label>
+
             <button
               class="btn btn-primary w-full"
               disabled={@planning?}
@@ -79,8 +83,10 @@ defmodule FavnView.Components.TargetRecoveryPage do
                 <p class="text-xs font-semibold uppercase tracking-[0.18em] text-base-content/50">
                   Immutable evidence plan
                 </p>
+
                 <p class="mt-2 break-all font-mono text-xs">{field(@plan, :plan_id)}</p>
               </div>
+
               <button
                 :if={field(field(@plan, :permissions, %{}), :start, false)}
                 phx-click="start_recovery"
@@ -91,6 +97,7 @@ defmodule FavnView.Components.TargetRecoveryPage do
                 Start recovery
               </button>
             </div>
+
             <dl class="mt-5 grid gap-3 text-sm sm:grid-cols-2">
               <.item label="Plan hash" value={field(@plan, :plan_hash)} />
               <.item label="Expires" value={field(@plan, :expires_at)} />
@@ -111,10 +118,12 @@ defmodule FavnView.Components.TargetRecoveryPage do
                 <p class="text-xs font-semibold uppercase tracking-[0.18em] text-base-content/50">
                   Recovery operation
                 </p>
+
                 <p class="mt-2 break-all font-mono text-xs">
                   {field(@operation, :operation_id)}
                 </p>
               </div>
+
               <button
                 :if={field(field(@operation, :permissions, %{}), :reconcile, false)}
                 phx-click="reconcile_recovery"
@@ -124,6 +133,7 @@ defmodule FavnView.Components.TargetRecoveryPage do
                 Reconcile marker
               </button>
             </div>
+
             <dl class="mt-5 grid gap-3 text-sm sm:grid-cols-2">
               <.item label="State" value={field(@operation, :state)} />
               <.item label="Phase" value={field(@operation, :phase)} />
@@ -158,6 +168,7 @@ defmodule FavnView.Components.TargetRecoveryPage do
     ~H"""
     <div :if={not is_nil(@value)}>
       <dt class="text-xs text-base-content/45">{@label}</dt>
+
       <dd class="mt-1 break-all font-mono text-xs">{format_value(@value)}</dd>
     </div>
     """

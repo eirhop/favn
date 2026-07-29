@@ -9,7 +9,7 @@ defmodule Favn.Log.Filter do
   @type t :: %__MODULE__{
           run_id: String.t() | nil,
           asset_step_id: String.t() | nil,
-          runner_execution_id: String.t() | nil,
+          runner_task_id: String.t() | nil,
           node_key: String.t() | nil,
           asset_ref: String.t() | nil,
           stream: Entry.stream() | nil,
@@ -21,7 +21,7 @@ defmodule Favn.Log.Filter do
 
   defstruct run_id: nil,
             asset_step_id: nil,
-            runner_execution_id: nil,
+            runner_task_id: nil,
             node_key: nil,
             asset_ref: nil,
             stream: nil,
@@ -43,7 +43,7 @@ defmodule Favn.Log.Filter do
     struct!(__MODULE__, %{
       run_id: Map.get(attrs, :run_id),
       asset_step_id: Map.get(attrs, :asset_step_id),
-      runner_execution_id: Map.get(attrs, :runner_execution_id),
+      runner_task_id: Map.get(attrs, :runner_task_id),
       node_key: normalize_identity(Map.get(attrs, :node_key), &Identity.node_key/1),
       asset_ref: normalize_identity(Map.get(attrs, :asset_ref), &Identity.asset_ref/1),
       stream: normalize_optional_enum(Map.get(attrs, :stream), Entry.streams(), :stream),

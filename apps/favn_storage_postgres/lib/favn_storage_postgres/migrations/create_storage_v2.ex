@@ -52,6 +52,7 @@ defmodule FavnStoragePostgres.Migrations.CreateStorageV2 do
       add(:content_hash, :binary, null: false)
       add(:schema_version, :integer, null: false)
       add(:runner_contract_version, :integer, null: false)
+      add(:runner_releases, :map, null: false)
       add(:payload_version, :smallint, null: false)
       add(:manifest, :map, null: false)
       add(:inserted_at, :timestamptz, null: false)
@@ -77,6 +78,13 @@ defmodule FavnStoragePostgres.Migrations.CreateStorageV2 do
       constraint(:manifest_versions, :manifest_versions_versions_valid,
         prefix: @prefix,
         check: "schema_version > 0 AND runner_contract_version > 0 AND payload_version > 0"
+      )
+    )
+
+    create(
+      constraint(:manifest_versions, :manifest_versions_runner_releases_valid,
+        prefix: @prefix,
+        check: "jsonb_typeof(runner_releases) = 'object' AND runner_releases <> '{}'::jsonb"
       )
     )
 
@@ -491,6 +499,238 @@ defmodule FavnStoragePostgres.Migrations.CreateStorageV2 do
       )
     )
 
+    create table(:run_submissions, prefix: @prefix, primary_key: false) do
+      add(
+        :workspace_id,
+        references(:workspaces,
+          prefix: @prefix,
+          column: :workspace_id,
+          type: :text,
+          on_delete: :restrict
+        ),
+        primary_key: true
+      )
+
+      add(:submission_id, :text, primary_key: true)
+      add(:source, :text, null: false)
+      add(:idempotency_key, :text, null: false)
+      add(:request_hash, :binary, null: false)
+      add(:authority, :map, null: false)
+      add(:deployment_id, :text, null: false)
+      add(:manifest_version_id, :text, null: false)
+      add(:target_kind, :text, null: false)
+      add(:target_id, :text, null: false)
+      add(:run_id, :text, null: false)
+      add(:intent, :map, null: false)
+      add(:status, :text, null: false)
+      add(:attempt, :integer, null: false, default: 0)
+      add(:claim_owner, :text)
+      add(:claim_generation, :bigint, null: false, default: 0)
+      add(:claim_expires_at, :timestamptz)
+      add(:preparation, :map)
+      add(:outcome, :map)
+      add(:error, :map)
+      add(:failure_kind, :text)
+      add(:cancellation_requested_at, :timestamptz)
+      add(:cancellation_reason, :text)
+      add(:retry_root_id, :text, null: false)
+      add(:retry_of_submission_id, :text)
+      add(:retry_command_id, :text)
+      add(:superseded_by_submission_id, :text)
+      add(:enqueued_at, :timestamptz, null: false)
+      add(:available_at, :timestamptz, null: false)
+      add(:preparing_at, :timestamptz)
+      add(:admitting_at, :timestamptz)
+      add(:terminal_at, :timestamptz)
+      timestamps(type: :timestamptz)
+    end
+
+    create(
+      unique_index(:run_submissions, [:workspace_id, :idempotency_key],
+        prefix: @prefix,
+        name: :run_submissions_idempotency_uidx
+      )
+    )
+
+    create(
+      unique_index(
+        :run_submissions,
+        [:workspace_id, :retry_of_submission_id, :retry_command_id],
+        prefix: @prefix,
+        name: :run_submissions_retry_child_uidx,
+        where: "retry_of_submission_id IS NOT NULL"
+      )
+    )
+
+    create(
+      index(
+        :run_submissions,
+        [:workspace_id, :available_at, :enqueued_at, :submission_id],
+        prefix: @prefix,
+        name: :run_submissions_claim_idx,
+        where: "status = 'queued'"
+      )
+    )
+
+    create(
+      index(
+        :run_submissions,
+        [:workspace_id],
+        prefix: @prefix,
+        name: :run_submissions_queued_workspace_idx,
+        where: "status = 'queued'"
+      )
+    )
+
+    create(
+      index(
+        :run_submissions,
+        [:workspace_id, :status, {:desc, :inserted_at}, {:desc, :submission_id}],
+        prefix: @prefix,
+        name: :run_submissions_status_page_idx
+      )
+    )
+
+    create(
+      index(
+        :run_submissions,
+        [:workspace_id, :claim_expires_at, :submission_id],
+        prefix: @prefix,
+        name: :run_submissions_stale_claim_idx,
+        where: "status IN ('preparing', 'admitting')"
+      )
+    )
+
+    create(
+      index(
+        :run_submissions,
+        [:workspace_id, {:desc, :inserted_at}, {:desc, :submission_id}],
+        prefix: @prefix,
+        name: :run_submissions_page_idx
+      )
+    )
+
+    create(
+      unique_index(:run_submissions, [:workspace_id, :run_id],
+        prefix: @prefix,
+        name: :run_submissions_run_idx
+      )
+    )
+
+    create(
+      constraint(:run_submissions, :run_submissions_values_valid,
+        prefix: @prefix,
+        check:
+          "source IN ('api', 'operator', 'scheduler', 'backfill', 'rebuild', 'recovery', 'child_run') AND " <>
+            "status IN ('queued', 'preparing', 'admitting', 'submitted', 'failed', 'cancelled', 'superseded') AND " <>
+            "target_kind IN ('asset', 'pipeline') AND " <>
+            "octet_length(request_hash) = 32 AND attempt >= 0 AND claim_generation >= 0 AND " <>
+            "jsonb_typeof(authority) = 'object' AND " <>
+            "authority ?& ARRAY['workspace_id', 'principal_id', 'roles', 'request_id'] AND " <>
+            "authority - ARRAY['workspace_id', 'principal_id', 'roles', 'request_id'] = '{}'::jsonb AND " <>
+            "jsonb_typeof(authority->'workspace_id') = 'string' AND " <>
+            "authority->>'workspace_id' = workspace_id AND " <>
+            "jsonb_typeof(authority->'principal_id') = 'string' AND " <>
+            "octet_length(authority->>'principal_id') BETWEEN 1 AND 255 AND " <>
+            "jsonb_typeof(authority->'roles') = 'array' AND " <>
+            "jsonb_array_length(authority->'roles') BETWEEN 1 AND 4 AND " <>
+            "authority->'roles' <@ '[\"customer_reader\", \"customer_operator\", \"workspace_admin\", \"platform_operator\"]'::jsonb AND " <>
+            "jsonb_array_length(authority->'roles') = (" <>
+            "CASE WHEN authority->'roles' ? 'customer_reader' THEN 1 ELSE 0 END + " <>
+            "CASE WHEN authority->'roles' ? 'customer_operator' THEN 1 ELSE 0 END + " <>
+            "CASE WHEN authority->'roles' ? 'workspace_admin' THEN 1 ELSE 0 END + " <>
+            "CASE WHEN authority->'roles' ? 'platform_operator' THEN 1 ELSE 0 END) AND " <>
+            "(authority->'request_id' = 'null'::jsonb OR " <>
+            "(jsonb_typeof(authority->'request_id') = 'string' AND " <>
+            "octet_length(authority->>'request_id') BETWEEN 1 AND 255)) AND " <>
+            "(failure_kind IS NULL OR failure_kind IN ('safe', 'permanent', 'unknown')) AND " <>
+            "(retry_of_submission_id IS NULL) = (retry_command_id IS NULL) AND " <>
+            "(cancellation_requested_at IS NULL) = (cancellation_reason IS NULL) AND " <>
+            "(cancellation_reason IS NULL OR octet_length(cancellation_reason) BETWEEN 1 AND 2048)"
+      )
+    )
+
+    create(
+      constraint(:run_submissions, :run_submissions_state_shape_valid,
+        prefix: @prefix,
+        check:
+          "(status = 'queued' AND claim_owner IS NULL AND claim_expires_at IS NULL AND terminal_at IS NULL AND failure_kind IS NULL AND superseded_by_submission_id IS NULL) OR " <>
+            "(status = 'preparing' AND claim_owner IS NOT NULL AND claim_expires_at IS NOT NULL AND preparing_at IS NOT NULL AND terminal_at IS NULL AND failure_kind IS NULL AND superseded_by_submission_id IS NULL) OR " <>
+            "(status = 'admitting' AND claim_owner IS NOT NULL AND claim_expires_at IS NOT NULL AND preparing_at IS NOT NULL AND admitting_at IS NOT NULL AND terminal_at IS NULL AND failure_kind IS NULL AND superseded_by_submission_id IS NULL) OR " <>
+            "(status = 'submitted' AND claim_owner IS NULL AND claim_expires_at IS NULL AND terminal_at IS NOT NULL AND outcome IS NOT NULL AND failure_kind IS NULL AND superseded_by_submission_id IS NULL) OR " <>
+            "(status = 'failed' AND claim_owner IS NULL AND claim_expires_at IS NULL AND terminal_at IS NOT NULL AND error IS NOT NULL AND failure_kind IS NOT NULL AND superseded_by_submission_id IS NULL) OR " <>
+            "(status = 'cancelled' AND claim_owner IS NULL AND claim_expires_at IS NULL AND terminal_at IS NOT NULL AND failure_kind IS NULL AND superseded_by_submission_id IS NULL) OR " <>
+            "(status = 'superseded' AND claim_owner IS NULL AND claim_expires_at IS NULL AND terminal_at IS NOT NULL AND failure_kind IS NULL AND superseded_by_submission_id IS NOT NULL)"
+      )
+    )
+
+    execute("""
+    ALTER TABLE #{@prefix}.run_submissions
+    ADD CONSTRAINT run_submissions_retry_root_fk
+    FOREIGN KEY (workspace_id, retry_root_id)
+    REFERENCES #{@prefix}.run_submissions(workspace_id, submission_id)
+    ON DELETE RESTRICT
+    DEFERRABLE INITIALLY DEFERRED
+    """)
+
+    execute("""
+    ALTER TABLE #{@prefix}.run_submissions
+    ADD CONSTRAINT run_submissions_retry_of_fk
+    FOREIGN KEY (workspace_id, retry_of_submission_id)
+    REFERENCES #{@prefix}.run_submissions(workspace_id, submission_id)
+    ON DELETE RESTRICT
+    DEFERRABLE INITIALLY DEFERRED
+    """)
+
+    execute("""
+    ALTER TABLE #{@prefix}.run_submissions
+    ADD CONSTRAINT run_submissions_superseded_by_fk
+    FOREIGN KEY (workspace_id, superseded_by_submission_id)
+    REFERENCES #{@prefix}.run_submissions(workspace_id, submission_id)
+    ON DELETE RESTRICT
+    DEFERRABLE INITIALLY DEFERRED
+    """)
+
+    create table(:run_submission_commands, prefix: @prefix, primary_key: false) do
+      add(:workspace_id, :text, null: false, primary_key: true)
+      add(:command_id, :text, null: false, primary_key: true)
+      add(:submission_id, :text)
+      add(:command_kind, :text, null: false)
+      add(:request_hash, :binary, null: false)
+      add(:result, :map, null: false)
+      add(:inserted_at, :timestamptz, null: false)
+    end
+
+    execute("""
+    ALTER TABLE #{@prefix}.run_submission_commands
+    ADD CONSTRAINT run_submission_commands_workspace_fk
+    FOREIGN KEY (workspace_id)
+    REFERENCES #{@prefix}.workspaces(workspace_id)
+    ON DELETE RESTRICT
+    """)
+
+    create(
+      index(:run_submission_commands, [:inserted_at],
+        prefix: @prefix,
+        name: :run_submission_commands_retention_idx
+      )
+    )
+
+    execute("""
+    ALTER TABLE #{@prefix}.run_submission_commands
+    ADD CONSTRAINT run_submission_commands_submission_fk
+    FOREIGN KEY (workspace_id, submission_id)
+    REFERENCES #{@prefix}.run_submissions(workspace_id, submission_id)
+    ON DELETE RESTRICT
+    """)
+
+    create(
+      constraint(:run_submission_commands, :run_submission_commands_values_valid,
+        prefix: @prefix,
+        check: "octet_length(request_hash) = 32 AND octet_length(command_kind) BETWEEN 1 AND 64"
+      )
+    )
+
     create table(:run_events, prefix: @prefix, primary_key: false) do
       add(:event_id, :bigint, primary_key: true, generated: "BY DEFAULT AS IDENTITY")
       add(:workspace_id, :text, null: false)
@@ -744,57 +984,6 @@ defmodule FavnStoragePostgres.Migrations.CreateStorageV2 do
       constraint(:run_ownerships, :run_ownerships_fence_valid,
         prefix: @prefix,
         check: "fencing_token >= 0"
-      )
-    )
-
-    create table(:runner_executions, prefix: @prefix, primary_key: false) do
-      add(:workspace_id, :text, null: false, primary_key: true)
-      add(:runner_execution_id, :text, null: false, primary_key: true)
-      add(:run_id, :text, null: false)
-      add(:dispatch_id, :text, null: false)
-      add(:last_command_id, :text, null: false)
-      add(:owner_id, :text, null: false)
-      add(:run_fencing_token, :bigint, null: false)
-      add(:status, :text, null: false)
-      add(:version, :bigint, null: false, default: 1)
-      add(:dispatch_payload, :map, null: false)
-      add(:result, :map)
-      add(:error, :map)
-      add(:dispatched_at, :timestamptz)
-      add(:terminal_at, :timestamptz)
-      timestamps(type: :timestamptz)
-    end
-
-    create(unique_index(:runner_executions, [:workspace_id, :dispatch_id], prefix: @prefix))
-
-    execute("""
-    ALTER TABLE #{@prefix}.runner_executions
-    ADD CONSTRAINT runner_executions_run_fk
-    FOREIGN KEY (workspace_id, run_id)
-    REFERENCES #{@prefix}.runs(workspace_id, run_id)
-    ON DELETE RESTRICT
-    """)
-
-    create(
-      index(:runner_executions, [:workspace_id, :run_id, {:desc, :inserted_at}],
-        prefix: @prefix,
-        name: :runner_executions_run_idx
-      )
-    )
-
-    create(
-      index(:runner_executions, [:owner_id, :status, :workspace_id, :runner_execution_id],
-        prefix: @prefix,
-        name: :runner_executions_owner_active_idx,
-        where: "terminal_at IS NULL"
-      )
-    )
-
-    create(
-      constraint(:runner_executions, :runner_executions_values_valid,
-        prefix: @prefix,
-        check:
-          "run_fencing_token > 0 AND version > 0 AND status IN ('dispatching', 'running', 'cancelling', 'ok', 'error', 'cancelled', 'timed_out')"
       )
     )
   end

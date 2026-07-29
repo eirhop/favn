@@ -680,7 +680,7 @@ defmodule FavnOrchestrator.RunReadModel.StepProjection do
   end
 
   defp cascade_failure_steps(events) do
-    started_by_execution_id = started_step_ids_by_runner_execution_id(events)
+    started_by_execution_id = started_step_ids_by_runner_task_id(events)
 
     events
     |> Enum.filter(&event_type?(&1, :stage_draining_after_failure))
@@ -689,7 +689,7 @@ defmodule FavnOrchestrator.RunReadModel.StepProjection do
       root_failure_asset_ref = RunQuery.public_ref(value(data, :failed_asset_ref))
 
       data
-      |> value(:pending_execution_ids, [])
+      |> value(:pending_task_ids, [])
       |> List.wrap()
       |> Enum.reduce(acc, fn execution_id, step_acc ->
         case Map.get(started_by_execution_id, execution_id) do
@@ -700,13 +700,13 @@ defmodule FavnOrchestrator.RunReadModel.StepProjection do
     end)
   end
 
-  defp started_step_ids_by_runner_execution_id(events) do
+  defp started_step_ids_by_runner_task_id(events) do
     events
     |> Enum.filter(fn event ->
       event_type?(event, :step_started) or event_type?(event, :step_retry_started)
     end)
     |> Map.new(fn event ->
-      {value(event.data || %{}, :runner_execution_id), event_step_id(event.run_id, event)}
+      {value(event.data || %{}, :runner_task_id), event_step_id(event.run_id, event)}
     end)
     |> Map.delete(nil)
   end
