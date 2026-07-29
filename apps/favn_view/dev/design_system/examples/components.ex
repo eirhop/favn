@@ -16,9 +16,9 @@ defmodule FavnView.Dev.DesignSystem.Examples.Components do
 
   alias FavnView.Components.ModeRail
   alias FavnView.Components.Navigation
-  alias FavnView.Components.ScheduleUi
   alias FavnView.Dev.DesignSystem.Example
   alias FavnView.Dev.DesignSystem.Fixtures
+  alias FavnView.Dev.DesignSystem.Fixtures.Schedules
   alias FavnView.Dev.DesignSystem.Fixtures.Timeline
 
   @doc """
@@ -229,6 +229,23 @@ defmodule FavnView.Dev.DesignSystem.Examples.Components do
 
   defp schedules do
     %{
+      "schedule_detail_page/schedule_actions" => [
+        Example.attrs(
+          :disabled,
+          %{schedule: Schedules.actions(:disabled)},
+          "Enabling is the primary action, and needs no confirmation."
+        ),
+        Example.attrs(
+          :enabled,
+          %{schedule: Schedules.actions(:enabled)},
+          "Disabling stops future occurrences, so it is destructive and confirms first."
+        ),
+        Example.attrs(
+          :needs_review,
+          %{schedule: Schedules.actions(:needs_review)},
+          "The definition changed after approval: enabling approves the current one."
+        )
+      ],
       "schedule_ui/activation_badge" => [
         Example.attrs(:pending_activation, %{
           state: :pending_activation,
@@ -252,7 +269,7 @@ defmodule FavnView.Dev.DesignSystem.Examples.Components do
         })
       ],
       "schedule_ui/occurrence_preview_table" => [
-        Example.attrs(:preview_rows, %{occurrences: ScheduleUi.sample_occurrences()}),
+        Example.attrs(:preview_rows, %{occurrences: Schedules.occurrences()}),
         Example.attrs(:empty, %{occurrences: []})
       ]
     }

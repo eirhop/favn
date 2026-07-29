@@ -25,6 +25,7 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
   alias FavnView.Dev.DesignSystem.Example
   alias FavnView.Dev.DesignSystem.Fixtures
   alias FavnView.Dev.DesignSystem.Fixtures.AssetDetail
+  alias FavnView.Dev.DesignSystem.Fixtures.Schedules
   alias FavnView.Dev.DesignSystem.Fixtures.Timeline
 
   @doc """
@@ -342,6 +343,19 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
         Example.attrs(:selected, %{
           selected: true,
           window: Timeline.data_window("2026-06-12", "Jun 12", :success)
+        }),
+        Example.attrs(
+          :selected_running,
+          %{selected: true, window: Timeline.refresh_window("2026-06-13", "Jun 13", :warning)},
+          "Selection is judged per status: the boundary rule only applies to a window an operator has picked."
+        ),
+        Example.attrs(:selected_failed, %{
+          selected: true,
+          window: Timeline.data_window("2026-06-10", "Jun 10", :error)
+        }),
+        Example.attrs(:selected_missing, %{
+          selected: true,
+          window: Timeline.data_window("2026-06-11", "Jun 11", :muted)
         })
       ]
     }
@@ -627,18 +641,19 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
     empty_schedules = %{
       schedules: [],
       all_schedules: [],
-      filters: SchedulesPage.sample_filters(),
+      filters: Schedules.filters(),
       filter_options: %{pipelines: [], windows: []},
-      summary: SchedulesPage.sample_summary([]),
+      summary: Schedules.summary([]),
       loading: false,
       error: nil,
       nav_items: SchedulesPage.nav_items()
     }
 
     detail = %{
-      schedule: ScheduleDetailPage.sample_schedule(),
-      occurrence_preview: ScheduleDetailPage.sample_occurrences(),
+      schedule: Schedules.schedule(),
+      occurrence_preview: Schedules.occurrences(),
       occurrence_error: nil,
+      activation_error: nil,
       active_view: :overview,
       loading: false,
       error: nil,
@@ -646,7 +661,7 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
     }
 
     enabled =
-      ScheduleDetailPage.sample_schedule(%{
+      Schedules.schedule(%{
         activation_state: :enabled,
         activation_label: "Enabled",
         activation_tone: :success,
@@ -658,11 +673,11 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
     %{
       "schedules_page/schedules_page" => [
         Example.attrs(:schedules, %{
-          schedules: SchedulesPage.sample_schedules(),
-          all_schedules: SchedulesPage.sample_schedules(),
-          filters: SchedulesPage.sample_filters(),
-          filter_options: SchedulesPage.sample_filter_options(),
-          summary: SchedulesPage.sample_summary(),
+          schedules: Schedules.list(),
+          all_schedules: Schedules.list(),
+          filters: Schedules.filters(),
+          filter_options: Schedules.filter_options(),
+          summary: Schedules.summary(),
           loading: false,
           error: nil,
           nav_items: SchedulesPage.nav_items()
@@ -703,7 +718,7 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
           Map.put(
             detail,
             :schedule,
-            ScheduleDetailPage.sample_schedule(%{
+            Schedules.schedule(%{
               last_scheduler_error: %{
                 occurred_label: "May 24 12:02",
                 phase_label: "Submit run",
@@ -719,7 +734,7 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
           Map.put(
             detail,
             :schedule,
-            ScheduleDetailPage.sample_schedule(%{
+            Schedules.schedule(%{
               activation_state: :enabled,
               activation_label: "Enabled",
               activation_tone: :success,
@@ -730,6 +745,11 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
               current_run_label: "run_8f3a2c"
             })
           )
+        ),
+        Example.attrs(
+          :activation_failed,
+          Map.put(detail, :activation_error, "Could not update schedule. Try again later."),
+          "A refused activation belongs next to the state it failed to change."
         ),
         Example.attrs(
           :not_found,
