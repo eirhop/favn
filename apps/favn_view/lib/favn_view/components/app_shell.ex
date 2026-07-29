@@ -80,7 +80,7 @@ defmodule FavnView.Components.AppShell do
                   :if={@status}
                   tone={@status_tone}
                   label={@status}
-                  size={:xs}
+                  size={:sm}
                   glow
                   class="hidden sm:inline-flex"
                 />

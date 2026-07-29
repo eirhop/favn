@@ -60,7 +60,7 @@ defmodule FavnView.Components.NavRail do
       </summary>
 
       <nav
-        class="dropdown-content favn-surface-rail z-30 mt-3 w-64 rounded-box p-3 shadow-xl"
+        class="dropdown-content favn-surface-rail z-50 mt-3 w-64 rounded-box p-3 shadow-xl"
         aria-label="Mobile primary navigation"
       >
         <ul class="menu gap-1 p-0">

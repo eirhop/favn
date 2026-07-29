@@ -10,6 +10,12 @@ defmodule FavnView.Dev.DesignSystemHTML do
   Chrome — the label above each example — is deliberately outside the
   `data-favn-example` element, so measuring an example never measures the
   viewer's own furniture.
+
+  Each example element takes layout containment, which makes it the containing
+  block for its own absolutely *and* fixed positioned descendants and its own
+  stacking context. Without it a mode rail floated over whichever example
+  happened to be beside it and an open dialog covered the page, because both
+  resolved against the page instead of the example they belong to.
   """
 
   use FavnView, :html
@@ -123,6 +129,14 @@ defmodule FavnView.Dev.DesignSystemHTML do
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <title>{document_title(@plan)}</title>
         <link rel="stylesheet" href="/assets/css/app.css" />
+        <style>
+          /* An example holding an overlay is the containing block for it, so the
+             overlay needs somewhere to be: a modal fills its container, and a
+             container sized to a button clips the dialog inside it. This is the
+             viewer's own furniture, which is why it is here and not in the
+             product stylesheet. */
+          section[data-favn-example]:has(.modal, [role="dialog"]) { min-height: 36rem; }
+        </style>
         <script defer src="/design-system/audit.js">
         </script>
       </head>
@@ -372,6 +386,7 @@ defmodule FavnView.Dev.DesignSystemHTML do
       </div>
 
       <section
+        class="relative isolate [contain:layout]"
         data-favn-example={"#{@entry.id}/#{@example.id}"}
         data-favn-component={Entry.label(@entry)}
         data-favn-source={@example.source}

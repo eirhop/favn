@@ -244,7 +244,7 @@ defmodule FavnView.Components.PipelinesPage do
         </span>
       </summary>
 
-      <div class="dropdown-content z-20 mt-2 w-80 rounded-box border border-base-content/10 bg-base-100 p-3 shadow-xl">
+      <div class="dropdown-content z-50 mt-2 w-80 rounded-box border border-base-content/10 bg-base-100 p-3 shadow-xl">
         <p class="mb-2 text-xs font-medium uppercase tracking-[0.2em] favn-text-subtle">
           Selected assets
         </p>

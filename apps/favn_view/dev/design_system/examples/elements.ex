@@ -48,6 +48,11 @@ defmodule FavnView.Dev.DesignSystem.Examples.Elements do
           &badge_variants/1,
           "Outline steps back when a row already carries a status badge."
         ),
+        Example.render(
+          :sizes,
+          &badge_sizes/1,
+          "The smallest box is the tightest fit: at `xs` a label has 14px of content height to sit in."
+        ),
         Example.render(:with_icon, &badge_with_icon/1),
         Example.render(
           :overflow,
@@ -68,8 +73,8 @@ defmodule FavnView.Dev.DesignSystem.Examples.Elements do
         ),
         Example.attrs(
           :shell_glow,
-          %{tone: :success, label: "Healthy", size: :xs, glow: true},
-          "`glow` is reserved for the shell's live status."
+          %{tone: :success, label: "Healthy", size: :sm, glow: true},
+          "`glow` is reserved for the shell's live status, at the size the shell uses."
         )
       ],
       "badge/status_dot" => [
@@ -401,6 +406,16 @@ defmodule FavnView.Dev.DesignSystem.Examples.Elements do
       <.badge tone={:info} variant={:soft}>Soft</.badge>
       <.badge tone={:info} variant={:outline}>Outline</.badge>
       <.badge tone={:info} variant={:solid}>Solid</.badge>
+    </.inline>
+    """
+  end
+
+  defp badge_sizes(assigns) do
+    ~H"""
+    <.inline gap={:sm}>
+      <.badge tone={:success} size={:xs}>Healthy</.badge>
+      <.badge tone={:success} size={:sm}>Healthy</.badge>
+      <.badge tone={:success} size={:md}>Healthy</.badge>
     </.inline>
     """
   end

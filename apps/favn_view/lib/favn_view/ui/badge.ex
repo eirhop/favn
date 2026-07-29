@@ -32,7 +32,12 @@ defmodule FavnView.UI.Badge do
 
   alias FavnView.UI.Tokens
 
-  @sizes %{xs: "badge-xs", sm: "badge-sm", md: nil}
+  # DaisyUI's `badge-xs` is a 16px box carrying 10px text on a 15px line box,
+  # which leaves 14px of content height — one pixel short, so a descender crosses
+  # the bottom border. `leading-none` makes the line box the text's own height and
+  # the label fits with room to spare. The gap shrinks with the box too: 8px
+  # between a 2px dot and a word reads as two separate things.
+  @sizes %{xs: "badge-xs gap-1 leading-none", sm: "badge-sm gap-1.5", md: "gap-2"}
 
   attr :tone, :atom, default: :neutral, doc: "see `FavnView.UI.Tokens`"
   attr :variant, :atom, default: :soft, values: [:soft, :outline, :solid]
@@ -52,7 +57,7 @@ defmodule FavnView.UI.Badge do
     ~H"""
     <span
       class={[
-        "badge gap-1.5",
+        "badge",
         @size_class,
         variant_class(@variant),
         Tokens.badge_class(@tone),
@@ -82,7 +87,7 @@ defmodule FavnView.UI.Badge do
     ~H"""
     <span
       class={[
-        "badge badge-soft gap-2",
+        "badge badge-soft",
         @size_class,
         Tokens.badge_class(@tone),
         @glow && "favn-status-glow",
