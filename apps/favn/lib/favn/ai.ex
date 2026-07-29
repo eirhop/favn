@@ -245,7 +245,9 @@ defmodule Favn.AI do
     `Favn.prepare_manifest_publication/2`: schema 14 has one compact manifest
     index bound to exact releases per pool and immutable content-addressed SQL
     execution packages, with no inline SQL manifest form or compatibility
-    fallback.
+    fallback. Default manifest version IDs are `mv_` plus the full canonical
+    index content hash. Publication still deduplicates by `content_hash` and may
+    return an older persisted ID for identical content.
   - To resolve pipeline targets, read `Favn resolve_pipeline`, then
     `Favn.Pipeline.Resolver` if needed.
   - To plan execution order, read `Favn plan_asset_run`, then

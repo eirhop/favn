@@ -28,7 +28,7 @@ defmodule FavnAuthoring.Deployment.ManifestPublicationTest do
       )
     )
 
-    %{manifest_path: manifest_path}
+    %{manifest_path: manifest_path, root_dir: root_dir}
   end
 
   test "raw manifests receive a stable content-derived version", context do
@@ -37,6 +37,27 @@ defmodule FavnAuthoring.Deployment.ManifestPublicationTest do
 
     assert first.manifest_version_id == second.manifest_version_id
     assert first.content_hash == second.content_hash
+    assert first.manifest_version_id == "mv_" <> first.content_hash
+  end
+
+  test "packaged manifests preserve an explicitly published legacy id", context do
+    assert {:ok, default_version} = ManifestPublication.read_version(context.manifest_path)
+    legacy_id = "mv_legacy_random_001"
+
+    File.write!(
+      Path.join(context.root_dir, "bundle.json"),
+      JSON.encode_to_iodata!(%{
+        "manifest" => %{
+          "manifest_version_id" => legacy_id,
+          "content_hash" => default_version.content_hash,
+          "runner_releases" => default_version.runner_releases
+        }
+      })
+    )
+
+    assert {:ok, published} = ManifestPublication.read_version(context.manifest_path)
+    assert published.manifest_version_id == legacy_id
+    assert published.content_hash == default_version.content_hash
   end
 
   test "missing manifests return the structured read failure", context do

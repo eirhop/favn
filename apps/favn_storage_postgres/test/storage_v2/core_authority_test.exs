@@ -2836,6 +2836,50 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert published_metadata.runner_releases == version.runner_releases
   end
 
+  test "HTTP publication keeps a persisted legacy manifest id canonical by content hash",
+       fixture do
+    authorize_platform_service_token()
+
+    legacy_version = fixture.version
+    assert {:ok, derived_version} = Version.new(legacy_version.manifest)
+
+    assert derived_version.content_hash == legacy_version.content_hash
+    assert derived_version.manifest_version_id == "mv_" <> derived_version.content_hash
+    refute derived_version.manifest_version_id == legacy_version.manifest_version_id
+
+    response = publish_manifest_request(derived_version)
+
+    assert response.status == 200
+
+    assert %{
+             "data" => %{
+               "manifest" => %{
+                 "manifest_version_id" => canonical_id,
+                 "content_hash" => content_hash
+               },
+               "registration" => %{
+                 "status" => "already_published",
+                 "manifest_version_id" => requested_id,
+                 "canonical_manifest_version_id" => canonical_id
+               }
+             }
+           } = JSON.decode!(response.resp_body)
+
+    assert requested_id == derived_version.manifest_version_id
+    assert canonical_id == legacy_version.manifest_version_id
+    assert content_hash == legacy_version.content_hash
+
+    assert {:ok, persisted} =
+             RegistryStore.get_manifest(
+               %FavnOrchestrator.Persistence.Queries.ManifestSelector.ByContentHash{
+                 content_hash: legacy_version.content_hash
+               }
+             )
+
+    assert persisted.manifest_version_id == legacy_version.manifest_version_id
+    assert {:ok, ^persisted} = Version.verify(persisted)
+  end
+
   test "HTTP execution-package boundary rejects oversized and non-canonical batches", fixture do
     authorize_platform_service_token()
 

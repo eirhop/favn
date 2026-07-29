@@ -42,6 +42,63 @@ defmodule Favn.Manifest.VersionTest do
     assert byte_size(version.content_hash) == 64
   end
 
+  test "derives the default manifest version id from the full content hash" do
+    assert {:ok, %Version{} = version} = Version.new(current_manifest())
+
+    assert version.manifest_version_id == "mv_" <> version.content_hash
+    assert version.manifest_version_id =~ ~r/^mv_[0-9a-f]{64}$/
+  end
+
+  test "keeps the default identity stable for identical canonical content" do
+    manifest = current_manifest()
+
+    assert {:ok, first} = Version.new(manifest)
+    assert {:ok, second} = Version.new(manifest)
+
+    assert second.content_hash == first.content_hash
+    assert second.manifest_version_id == first.manifest_version_id
+  end
+
+  test "keeps the default identity stable across canonical JSON rehydration" do
+    assert {:ok, first} = Version.new(current_manifest())
+    assert {:ok, encoded} = Serializer.encode_manifest(first.manifest)
+    assert {:ok, decoded} = Serializer.decode_manifest(encoded)
+    assert {:ok, rehydrated} = Version.new(decoded)
+
+    assert rehydrated.manifest == first.manifest
+    assert rehydrated.content_hash == first.content_hash
+    assert rehydrated.manifest_version_id == first.manifest_version_id
+  end
+
+  test "changes the default identity when canonical content changes" do
+    assert {:ok, first} = Version.new(current_manifest(%{metadata: %{owner: "first"}}))
+    assert {:ok, second} = Version.new(current_manifest(%{metadata: %{owner: "second"}}))
+
+    refute second.content_hash == first.content_hash
+    refute second.manifest_version_id == first.manifest_version_id
+  end
+
+  test "excludes build and envelope metadata from the default identity" do
+    manifest = current_manifest()
+    first_build = Build.new(manifest, diagnostics: [%{message: "first"}])
+    second_build = Build.new(manifest, diagnostics: [%{message: "second"}])
+
+    assert {:ok, first} =
+             Version.new(first_build, inserted_at: ~U[2026-01-01 00:00:00Z])
+
+    assert {:ok, second} =
+             Version.new(second_build, inserted_at: ~U[2026-02-01 00:00:00Z])
+
+    assert second.content_hash == first.content_hash
+    assert second.manifest_version_id == first.manifest_version_id
+    refute second.inserted_at == first.inserted_at
+  end
+
+  test "rejects an invalid explicit manifest version id" do
+    assert {:error, {:invalid_manifest_version_id, ""}} =
+             Version.new(current_manifest(), manifest_version_id: "")
+  end
+
   test "retains immutable identity when dropping the manifest payload" do
     assert {:ok, %Version{} = version} =
              Version.new(current_manifest(),
@@ -251,12 +308,12 @@ defmodule Favn.Manifest.VersionTest do
     assert version.content_hash == manifest_hash
   end
 
-  test "verifies published manifest version envelopes without minting a new identity" do
+  test "verifies legacy published manifest ids without minting a new identity" do
     manifest = current_manifest()
 
     assert {:ok, original} =
              Version.new(manifest,
-               manifest_version_id: "mv_published_envelope",
+               manifest_version_id: "mv_legacy_random_001",
                inserted_at: ~U[2026-01-01 00:00:00Z]
              )
 
@@ -278,6 +335,8 @@ defmodule Favn.Manifest.VersionTest do
     assert verified.runner_releases == original.runner_releases
     assert verified.serialization_format == original.serialization_format
     assert verified.inserted_at == original.inserted_at
+    refute verified.manifest_version_id == "mv_" <> verified.content_hash
+    assert {:ok, ^verified} = Version.verify(verified)
   end
 
   test "rejects published manifest version envelopes with mismatched hashes" do

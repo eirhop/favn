@@ -43,7 +43,18 @@ defmodule Favn.DeploymentArtifactsAcceptanceTest do
              )
 
     assert manifest.runner_releases == %{}
+    assert manifest.status == :built
     assert File.regular?(manifest.manifest_path)
     refute File.exists?(Path.join([root_dir, ".favn", "dist", "manifest", "latest.json"]))
+
+    assert {:ok, repeated} =
+             ManifestBuilder.run(
+               root_dir: root_dir,
+               runner_releases: %{},
+               allow_non_prod_build: true,
+               skip_compile: true
+             )
+
+    assert repeated == %{manifest | status: :already_built}
   end
 end

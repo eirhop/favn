@@ -374,7 +374,9 @@ defmodule Favn do
   Wraps a manifest in an immutable manifest-version envelope.
 
   Use this when the manifest will be registered, activated, or attached to runs.
-  The result keeps the canonical manifest together with stable version identity.
+  The default manifest version ID is `mv_` plus the full canonical content hash,
+  so equivalent manifests receive the same ID. Pass `:manifest_version_id` only
+  when preserving an imported or previously published identity.
   """
   @spec pin_manifest_version(map() | struct(), keyword()) ::
           {:ok, Favn.Manifest.Version.t()} | {:error, term()}
