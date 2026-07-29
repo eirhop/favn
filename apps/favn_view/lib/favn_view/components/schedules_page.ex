@@ -325,15 +325,12 @@ defmodule FavnView.Components.SchedulesPage do
       <td class="whitespace-nowrap text-xs favn-text-muted">{@schedule.updated_label}</td>
 
       <td>
-        <button
-          type="button"
-          class="btn btn-ghost btn-xs favn-icon-button"
-          data-copy-text={@schedule.id}
-          aria-label={"Copy #{@schedule.id}"}
+        <.copy_button
+          value={@schedule.id}
+          title={"Copy #{@schedule.id}"}
+          size={:xs}
           data-testid="copy-schedule-id"
-        >
-          <.icon name="hero-clipboard-document" class="size-4" />
-        </button>
+        />
       </td>
     </tr>
     """
@@ -391,14 +388,7 @@ defmodule FavnView.Components.SchedulesPage do
           </p>
         </div>
 
-        <button
-          type="button"
-          class="btn btn-ghost btn-xs favn-icon-button"
-          data-copy-text={@schedule.id}
-          aria-label={"Copy #{@schedule.id}"}
-        >
-          <.icon name="hero-clipboard-document" class="size-4" />
-        </button>
+        <.copy_button value={@schedule.id} title={"Copy #{@schedule.id}"} size={:xs} />
       </div>
     </article>
     """

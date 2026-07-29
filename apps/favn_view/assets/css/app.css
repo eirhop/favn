@@ -679,6 +679,56 @@ summary {
     box-shadow: 0 0 22px color-mix(in oklab, var(--favn-action) 32%, transparent);
   }
 
+  /* One edge for the whole family, and a barely-there one: these buttons are
+     glass, so the tinted fill and the coloured label carry the meaning and the
+     border only closes the shape. A firm outline was tried and looked like a
+     different product.
+
+     It has to be stated rather than left alone, though. Every `--btn-border`
+     above and below is ignored — DaisyUI's `.btn` wins the custom property, and
+     the edge that appeared came from its depth shadow tinted by the fill, which
+     is why the three variants each drew a different weight and the supporting
+     button out-shouted the primary action beside it. `border-color` direct, one
+     strength, hue from `currentColor`. `!important` because what it overrides is
+     DaisyUI's, emitted from a layer that outranks this one. */
+  .btn.favn-btn-action,
+  .btn.favn-btn-supporting,
+  .btn.favn-btn-destructive {
+    border-color: color-mix(in oklab, currentColor 20%, transparent) !important;
+  }
+
+  .btn.favn-btn-action:hover,
+  .btn.favn-btn-action:focus-visible,
+  .btn.favn-btn-supporting:hover,
+  .btn.favn-btn-supporting:focus-visible,
+  .btn.favn-btn-destructive:hover,
+  .btn.favn-btn-destructive:focus-visible {
+    border-color: color-mix(in oklab, currentColor 48%, transparent) !important;
+  }
+
+  /* A button that stays pressed is reporting a state, not just being clickable,
+     and a boundary that identifies state owes 3:1 — the resting 42% measures
+     2.32. This is the same rule the mode rail's current item follows. */
+  .btn.favn-btn-action[aria-pressed="true"],
+  .btn.favn-btn-supporting[aria-pressed="true"],
+  .btn.favn-btn-destructive[aria-pressed="true"] {
+    border-color: color-mix(in oklab, currentColor 88%, transparent) !important;
+  }
+
+  /* A link-shaped button is still an action, so it wears the action colour.
+     DaisyUI's `btn-link` inherits `--color-primary`, which put a blue "Open
+     manifest" next to a violet "Run asset" and made the same intent look like
+     two different things. Blue stays reserved for real links in prose. */
+  .btn.favn-btn-link {
+    --btn-fg: var(--favn-action);
+    color: var(--favn-action) !important;
+  }
+
+  .btn.favn-btn-link:hover,
+  .btn.favn-btn-link:focus-visible {
+    color: color-mix(in oklab, var(--favn-action) 82%, var(--color-base-content)) !important;
+  }
+
   /* `.btn` declares `--btn-fg` itself, so these need the extra class to win. */
   .btn.favn-btn-supporting {
     --btn-color: color-mix(in oklab, var(--color-primary) 17%, var(--color-base-100));

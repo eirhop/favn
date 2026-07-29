@@ -100,6 +100,13 @@ defmodule FavnView.Dev.DesignSystem.Examples.Elements do
         ),
         Example.render(:block, &button_block/1)
       ],
+      "button/copy_button" => [
+        Example.render(
+          :labelled_and_bare,
+          &copy_button_shapes/1,
+          "Labelled beside a value; bare in a table cell, where the column already names it."
+        )
+      ],
       "button/icon_button" => [
         Example.render(
           :variants,
@@ -511,6 +518,16 @@ defmodule FavnView.Dev.DesignSystem.Examples.Elements do
     <div class="w-80">
       <.button block>Submit backfill</.button>
     </div>
+    """
+  end
+
+  defp copy_button_shapes(assigns) do
+    ~H"""
+    <.inline gap={:sm}>
+      <.copy_button value="schedule:MyApp.Pipelines.Daily:daily" label="Copy id" />
+      <.copy_button value={~s({"rows": 1204})} label="Copy JSON" variant={:ghost} size={:xs} />
+      <.copy_button value="run_8f3a2c" title="Copy run id" size={:xs} />
+    </.inline>
     """
   end
 

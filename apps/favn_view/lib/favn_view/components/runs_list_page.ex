@@ -378,7 +378,7 @@ defmodule FavnView.Components.RunsListPage do
             class="btn btn-ghost btn-xs mt-0.5 h-6 min-h-6 w-6 px-0"
             phx-click="toggle_group"
             phx-value-id={@group.id}
-            aria-expanded={@expanded}
+            aria-expanded={to_string(@expanded)}
             data-testid="toggle-execution-group"
           >
             <.icon
@@ -555,7 +555,7 @@ defmodule FavnView.Components.RunsListPage do
           class="btn btn-ghost btn-sm"
           phx-click="toggle_group"
           phx-value-id={@group.id}
-          aria-expanded={@expanded}
+          aria-expanded={to_string(@expanded)}
         >
           <.icon
             name={if(@expanded, do: "hero-chevron-down", else: "hero-chevron-right")}

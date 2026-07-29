@@ -154,7 +154,7 @@ defmodule FavnView.Components.LogViewer do
         enabled?={@live_tail?}
         testid="log-live-tail-toggle"
       />
-      <.copy_button />
+      <.copy_logs_button />
 
       <span
         class="favn-text-muted inline-flex items-center gap-1.5 text-xs"
@@ -240,9 +240,16 @@ defmodule FavnView.Components.LogViewer do
     """
   end
 
+  @doc """
+  Copies every line currently in the terminal.
+
+  Not `FavnView.UI.Button.copy_button/1`: that copies one known value, and this
+  copies whatever the filters have left on screen, which only the client knows.
+  Hence `data-copy-logs` and no value.
+  """
   attr :class, :any, default: nil
 
-  def copy_button(assigns) do
+  def copy_logs_button(assigns) do
     ~H"""
     <button
       type="button"
@@ -321,14 +328,14 @@ defmodule FavnView.Components.LogViewer do
           <p class="favn-log-dim">metadata</p>
           <pre class="mt-1 whitespace-pre-wrap break-words"><code>{@log.metadata_text}</code></pre>
         </div>
-        <button
-          type="button"
-          class="btn btn-xs btn-ghost mt-2 gap-1.5 border border-[var(--favn-terminal-boundary)]"
-          data-copy-text={log_copy_text(@log)}
+        <.copy_button
+          value={log_copy_text(@log)}
+          label="Copy entry"
+          variant={:ghost}
+          size={:xs}
+          class="mt-2 border border-[var(--favn-terminal-boundary)]"
           data-testid="log-row-copy-button"
-        >
-          <.icon name="hero-clipboard-document" size={:xs} /> Copy entry
-        </button>
+        />
       </div>
     </details>
     """

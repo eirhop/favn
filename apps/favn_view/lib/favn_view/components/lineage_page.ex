@@ -153,7 +153,7 @@ defmodule FavnView.Components.LineagePage do
             phx-click={if(mode[:disabled], do: false, else: "set_mode")}
             phx-value-mode={mode.id}
             disabled={mode[:disabled] || false}
-            aria-pressed={@view_mode == mode.id}
+            aria-pressed={to_string(@view_mode == mode.id)}
           >
             {mode.label}
           </button>

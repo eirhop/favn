@@ -42,6 +42,40 @@ Do not restate those rules in a plan or a summary. Apply them.
 - A control that does nothing does not ship. No `href="#"`, no permanently
   disabled mode, no "coming soon".
 
+## Overriding DaisyUI: assume your rule did nothing
+
+A CSS rule that looks correct and has no effect has cost this project several
+rounds. `@layer` ordering beats specificity outright, and DaisyUI emits from
+layers that outrank ours, so three failures repeat:
+
+- **A layered override is discarded.** DaisyUI emits `color` and `border-color`
+  from `@layer utilities`, which outranks `@layer components` no matter how
+  specific the selector. This is why `.favn-text-muted` and `.favn-text-subtle`
+  are unlayered: inside `@layer components` they lost to `.label` and painted
+  nothing.
+- **Setting DaisyUI's own custom property is not a way in.** `.btn` declares
+  `--btn-border`, `--btn-fg`, and friends itself, and its declaration wins — so
+  every `--btn-border` the Favn button variants set was ignored for months, and
+  the edge that appeared on screen was DaisyUI's depth shadow tinted by the fill.
+  Set the real property (`border-color`), not the variable DaisyUI reads.
+- **Unlayered is not the strongest thing.** An unlayered rule outranks every
+  layer but still loses to a layered `!important`. `.btn.favn-control-boundary`
+  therefore lives *inside* `@layer components`, after `.favn-surface-control`,
+  with `!important` — because what it overrides is a layered `!important`.
+
+So: never conclude from the source that a rule applied. Measure the computed
+value in the browser and compare it to the value you wrote.
+
+```javascript
+getComputedStyle(document.querySelector(".favn-btn-action")).borderTopColor
+```
+
+Two traps in the measurement itself. A property listed in `transition` returns
+its *interpolated* value, so a read taken immediately after load or a class
+change is mid-animation — wait, or read a settled element. And `getComputedStyle`
+returns `oklab(...)` or `oklch(...)`, which regex-extracting three numbers turns
+into nonsense; to get sRGB, paint the value on a canvas and read the pixel.
+
 ## Finishing
 
 Measure, then look. On a `/design-system/render` page, `window.favn.audit()`

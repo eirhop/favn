@@ -76,15 +76,14 @@ defmodule FavnView.Components.OutputMetadata do
     >
       <div class="flex items-center justify-between gap-3">
         <h3 class="text-sm font-medium">{@title}</h3>
-        <button
+        <.copy_button
           :if={!@empty?}
-          type="button"
-          class="btn btn-ghost btn-xs rounded-field"
-          data-copy-text={@raw_json}
+          value={@raw_json}
+          label="Copy JSON"
+          variant={:ghost}
+          size={:xs}
           data-testid="output-metadata-copy"
-        >
-          <.icon name="hero-clipboard-document" class="size-4" /> Copy JSON
-        </button>
+        />
       </div>
 
       <div

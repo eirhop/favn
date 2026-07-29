@@ -53,7 +53,7 @@ defmodule FavnView.UI.Button do
     secondary: "favn-btn-supporting",
     ghost: "btn-ghost",
     danger: "favn-btn-destructive",
-    link: "btn-link"
+    link: "btn-link favn-btn-link"
   }
 
   @sizes %{xs: "btn-xs", sm: "btn-sm", md: nil, lg: "btn-lg"}
@@ -83,8 +83,7 @@ defmodule FavnView.UI.Button do
     if link?(assigns.rest) do
       ~H"""
       <.link class={@button_class} {@rest}>
-        <.icon :if={@icon} name={@icon} size={@icon_size} />
-        {render_slot(@inner_block)}
+        <.icon :if={@icon} name={@icon} size={@icon_size} /> {render_slot(@inner_block)}
         <.icon :if={@trailing_icon} name={@trailing_icon} size={@icon_size} />
       </.link>
       """
@@ -92,8 +91,7 @@ defmodule FavnView.UI.Button do
       ~H"""
       <button type={@rest[:type] || "button"} class={@button_class} {@rest}>
         <span :if={@loading} class="loading loading-spinner loading-xs" aria-hidden="true"></span>
-        <.icon :if={@icon && !@loading} name={@icon} size={@icon_size} />
-        {render_slot(@inner_block)}
+        <.icon :if={@icon && !@loading} name={@icon} size={@icon_size} /> {render_slot(@inner_block)}
         <.icon :if={@trailing_icon} name={@trailing_icon} size={@icon_size} />
       </button>
       """
@@ -121,8 +119,7 @@ defmodule FavnView.UI.Button do
     if link?(assigns.rest) do
       ~H"""
       <.link class={@button_class} aria-label={@label} data-tip={@tooltip && @label} {@rest}>
-        <.icon name={@icon} size={@icon_size} />
-        <span class="sr-only">{@label}</span>
+        <.icon name={@icon} size={@icon_size} /> <span class="sr-only">{@label}</span>
       </.link>
       """
     else
@@ -134,11 +131,64 @@ defmodule FavnView.UI.Button do
         data-tip={@tooltip && @label}
         {@rest}
       >
-        <.icon name={@icon} size={@icon_size} />
-        <span class="sr-only">{@label}</span>
+        <.icon name={@icon} size={@icon_size} /> <span class="sr-only">{@label}</span>
       </button>
       """
     end
+  end
+
+  @doc """
+  Copies one value to the clipboard.
+
+  Copying an id is the most repeated action in the product, and it had been
+  hand-rolled at every call site — four different class stacks for the same
+  gesture. This is that gesture, once. Passing `label` renders a labelled
+  button; omitting it renders the icon alone, for a table cell where the
+  column heading already says what the value is.
+
+  The copy itself is a document-level listener on `data-copy-text`, so this
+  needs no hook of its own.
+
+  ## Examples
+
+      <.copy_button value={@schedule.id} label="Copy id" />
+      <.copy_button value={@run.id} title="Copy run id" />
+  """
+  attr :value, :string, required: true, doc: "the text placed on the clipboard"
+  attr :label, :string, default: nil, doc: "visible label; omit for the icon alone"
+  attr :title, :string, default: "Copy", doc: "accessible name when there is no label"
+  attr :variant, :atom, default: :secondary, values: [:secondary, :ghost]
+  attr :size, :atom, default: :sm, values: [:xs, :sm, :md]
+  attr :class, :any, default: nil
+  attr :rest, :global
+
+  def copy_button(%{label: nil} = assigns) do
+    ~H"""
+    <.icon_button
+      icon="hero-clipboard-document"
+      label={@title}
+      variant={:ghost}
+      size={@size}
+      class={@class}
+      data-copy-text={@value}
+      {@rest}
+    />
+    """
+  end
+
+  def copy_button(assigns) do
+    ~H"""
+    <.button
+      variant={@variant}
+      size={@size}
+      icon="hero-clipboard-document"
+      class={@class}
+      data-copy-text={@value}
+      {@rest}
+    >
+      {@label}
+    </.button>
+    """
   end
 
   @doc """

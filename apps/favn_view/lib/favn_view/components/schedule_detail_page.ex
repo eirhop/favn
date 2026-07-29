@@ -111,10 +111,15 @@ defmodule FavnView.Components.ScheduleDetailPage do
   @doc """
   Header controls for one schedule.
 
-  The activation control is the page's primary action, because a schedule an
-  operator is looking at is one they are deciding about. Which direction it
-  offers, and whether it confirms first, follows from the activation state — see
-  `activation_control/1`.
+  Two controls, and only controls. The activation control is the page's primary
+  action, because a schedule an operator is looking at is one they are deciding
+  about; which direction it offers, and whether it confirms first, follows from
+  the activation state — see `activation_control/1`. Copying the id is the
+  supporting action next to it.
+
+  That a schedule is defined by the manifest is a fact about it, not a control,
+  and it used to sit here as a pill wearing a control surface — something that
+  looked clickable and did nothing. It is a fact in the header instead.
   """
   attr :schedule, :map, required: true
 
@@ -122,7 +127,7 @@ defmodule FavnView.Components.ScheduleDetailPage do
     assigns = assign(assigns, :activation, activation_control(assigns.schedule))
 
     ~H"""
-    <div class="flex flex-wrap items-center gap-2">
+    <.button_group>
       <.button
         variant={@activation.variant}
         icon={@activation.icon}
@@ -135,19 +140,12 @@ defmodule FavnView.Components.ScheduleDetailPage do
         {@activation.label}
       </.button>
 
-      <button
-        type="button"
-        class="btn btn-sm favn-surface-control rounded-field gap-2"
-        data-copy-text={@schedule.id}
+      <.copy_button
+        value={@schedule.id}
+        label="Copy id"
         data-testid="copy-detail-schedule-id"
-      >
-        <.icon name="hero-clipboard-document" class="size-4" /> Copy id
-      </button>
-
-      <span class="badge badge-sm favn-surface-control gap-2" data-testid="schedule-manifest-control">
-        <.icon name="hero-code-bracket" class="size-4" /> Managed by manifest
-      </span>
-    </div>
+      />
+    </.button_group>
     """
   end
 
@@ -548,11 +546,19 @@ defmodule FavnView.Components.ScheduleDetailPage do
     |> assign(:facts, schedule_facts(schedule))
   end
 
+  # "Defined in" answers the question an operator asks when they look for an edit
+  # control and find only enable and disable: the cron, window, and policies come
+  # from the pipeline module, so changing them is a code change and a publish.
   defp schedule_facts(schedule) do
     [
       %{label: "Cron", value: schedule.cron},
       %{label: "Timezone", value: schedule.timezone},
-      %{label: "Window", value: schedule.window_label}
+      %{label: "Window", value: schedule.window_label},
+      %{
+        label: "Defined in",
+        value: schedule.pipeline_label,
+        title: "#{schedule.pipeline_label} — edit the schedule in code and publish it"
+      }
     ]
   end
 
