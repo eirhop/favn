@@ -4,6 +4,7 @@ defmodule FavnOrchestrator.API.CommandErrorsTest do
   import ExUnit.CaptureLog
 
   alias FavnOrchestrator.API.CommandErrors
+  alias FavnOrchestrator.Persistence.Error
 
   test "redacts untrusted validation values in diagnostics" do
     secret = "command-error-secret"
@@ -77,5 +78,18 @@ defmodule FavnOrchestrator.API.CommandErrorsTest do
   test "does not reinterpret unrelated tuple failures as admission conflicts" do
     assert CommandErrors.admission({:invalid_window_request, %{}}) == nil
     assert CommandErrors.admission(:rebuild_required) == nil
+  end
+
+  test "maps only explicitly classified durable idempotency conflicts" do
+    conflict =
+      Error.new(:conflict, "storage detail is private",
+        details: %{reason_code: "idempotency_conflict"}
+      )
+
+    assert {:error, 409, "idempotency_conflict",
+            "The idempotency key was already used with different request content", %{}} =
+             CommandErrors.idempotency(conflict)
+
+    assert CommandErrors.idempotency(Error.new(:conflict, "unrelated conflict")) == nil
   end
 end

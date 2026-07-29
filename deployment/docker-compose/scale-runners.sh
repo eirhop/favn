@@ -13,7 +13,9 @@ max_launches=${FAVN_SCALER_MAX_LAUNCHES:-16}
 timeout_seconds=${FAVN_SCALER_TIMEOUT_SECONDS:-240}
 poll_seconds=${FAVN_SCALER_POLL_SECONDS:-0.5}
 expect_sequence=${FAVN_SCALER_EXPECT_SEQUENCE:-true}
-timeline=/results/simulation-timeline.jsonl
+timeline=${FAVN_SCALER_TIMELINE:-/results/simulation-timeline.jsonl}
+allowed_failures_file=${FAVN_SCALER_ALLOWED_FAILURES_FILE:-}
+drain_signal_file=${FAVN_SCALER_DRAIN_SIGNAL_FILE:-}
 
 case "$max_runners" in
   ''|*[!0-9]*|0)
@@ -111,34 +113,63 @@ snapshot() {
   observe_sequence "$running"
 }
 
+snapshot_api_unavailable() {
+  running=$1
+
+  jq -cn \
+    --arg timestamp "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
+    --argjson running "$running" \
+    '{timestamp:$timestamp,phase:"api_unavailable",outstanding:null,running:$running}' \
+    >>"$timeline"
+
+  printf 'api_unavailable demand=unknown runners=%s\n' "$running"
+}
+
 mkdir -p /results
+mkdir -p "$(dirname -- "$timeline")"
 : >"$timeline"
 
 deadline=$(( $(date +%s) + timeout_seconds ))
 seen_demand=false
 launch_sequence=0
-launched_ids=
+active_launched_ids=
 scaler_instance="$(date +%s)-$$"
 
 while [ "$(date +%s)" -lt "$deadline" ]; do
-  for container_id in $launched_ids; do
+  still_running_ids=
+  for container_id in $active_launched_ids; do
     running=$(docker inspect --format '{{.State.Running}}' "$container_id")
 
     if [ "$running" = "false" ]; then
       exit_code=$(docker inspect --format '{{.State.ExitCode}}' "$container_id")
       if [ "$exit_code" -ne 0 ]; then
-        echo "runner $container_id exited with code $exit_code" >&2
-        exit 1
+        if [ -n "$allowed_failures_file" ] &&
+            [ -f "$allowed_failures_file" ] &&
+            grep -Fxq "$container_id" "$allowed_failures_file"; then
+          :
+        else
+          echo "runner $container_id exited with code $exit_code" >&2
+          exit 1
+        fi
       fi
+    else
+      still_running_ids="$still_running_ids $container_id"
     fi
   done
+  active_launched_ids=$still_running_ids
 
-  response=$(
-    curl --fail --silent --show-error \
-      --max-time 5 \
-      --header "Authorization: Bearer $FAVN_CAPACITY_TOKEN" \
-      "$api_url/internal/runner-demand/default/$FAVN_RUNNER_RELEASE_ID"
-  )
+  if ! response=$(
+      curl --fail --silent --show-error \
+        --max-time 5 \
+        --header "Authorization: Bearer $FAVN_CAPACITY_TOKEN" \
+        "$api_url/internal/runner-demand/default/$FAVN_RUNNER_RELEASE_ID"
+    ); then
+    running=$(running_runner_count)
+    snapshot_api_unavailable "$running"
+    sleep "$poll_seconds"
+    continue
+  fi
+
   outstanding=$(printf '%s' "$response" | jq -er '.outstanding')
   running=$(running_runner_count)
   snapshot poll "$outstanding" "$running"
@@ -185,7 +216,7 @@ while [ "$(date +%s)" -lt "$deadline" ]; do
       exit 1
     fi
 
-    launched_ids="$launched_ids $container_id"
+    active_launched_ids="$active_launched_ids $container_id"
 
     index=$(( index + 1 ))
   done
@@ -196,13 +227,10 @@ while [ "$(date +%s)" -lt "$deadline" ]; do
   fi
 
   if [ "$seen_demand" = true ] && [ "$outstanding" -eq 0 ] && [ "$running" -eq 0 ]; then
-    for container_id in $launched_ids; do
-      exit_code=$(docker inspect --format '{{.State.ExitCode}}' "$container_id")
-      if [ "$exit_code" -ne 0 ]; then
-        echo "runner $container_id exited with code $exit_code" >&2
-        exit 1
-      fi
-    done
+    if [ -n "$drain_signal_file" ] && [ ! -f "$drain_signal_file" ]; then
+      sleep "$poll_seconds"
+      continue
+    fi
 
     if [ "$expect_sequence" = true ] && [ "$sequence_state" -ne 5 ]; then
       echo "runner sequence did not contain 0 -> 3 -> 2 -> 1 -> 0" >&2
@@ -212,7 +240,7 @@ while [ "$(date +%s)" -lt "$deadline" ]; do
     if [ "$expect_sequence" = true ]; then
       echo "verified runner sequence 0 -> 3 -> 2 -> 1 -> 0"
     else
-      echo "bootstrap runner demand drained successfully"
+      echo "runner demand drained successfully"
     fi
 
     exit 0

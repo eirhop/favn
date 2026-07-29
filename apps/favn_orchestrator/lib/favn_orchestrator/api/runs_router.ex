@@ -265,6 +265,11 @@ defmodule FavnOrchestrator.API.RunsRouter do
   defp submit_error(:active_manifest_not_set),
     do: {:error, 404, "not_found", "Active manifest is not set", %{}}
 
+  defp submit_error(%FavnOrchestrator.Persistence.Error{} = reason) do
+    CommandErrors.idempotency(reason) ||
+      {:error, 400, "bad_request", "Request failed", %{}}
+  end
+
   defp submit_error(reason) when is_tuple(reason),
     do:
       CommandErrors.admission(reason) || CommandErrors.operator(reason) ||

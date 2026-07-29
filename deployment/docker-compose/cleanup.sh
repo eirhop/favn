@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 compose_file="$script_dir/compose.yml"
 env_file="$script_dir/.env.local"
 
@@ -29,6 +29,11 @@ docker compose \
   --profile operations \
   --profile runner \
   --profile scaler \
-  down --volumes --remove-orphans
+  --profile qualification \
+  down \
+  --timeout "${FAVN_COMPOSE_STOP_TIMEOUT_SECONDS:-10}" \
+  --volumes \
+  --remove-orphans
 
+rm -f "$script_dir/.qualification-active"
 echo "removed the $project_name containers, network, PostgreSQL data, and certificate volumes"

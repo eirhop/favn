@@ -68,6 +68,9 @@ service. Multi-control-plane application failover is a later topology claim.
   customer-owned single-host deployment example.
 - [`issue_522_acceptance_matrix.md`](issue_522_acceptance_matrix.md) maps the
   portable production contract to executable container evidence.
+- [`issue_523_acceptance_matrix.md`](issue_523_acceptance_matrix.md) defines the
+  local PostgreSQL load/recovery qualification and the separately deferred
+  managed-service acceptance work.
 - [`../storage/postgresql/architecture.md`](../storage/postgresql/architecture.md)
   defines the implemented storage architecture.
 - [`../storage/postgresql/data-model.md`](../storage/postgresql/data-model.md)

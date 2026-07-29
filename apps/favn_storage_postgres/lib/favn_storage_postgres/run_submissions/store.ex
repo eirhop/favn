@@ -404,7 +404,11 @@ defmodule FavnStoragePostgres.RunSubmissions.Store do
         Codec.result(submission)
 
       %RunSubmission{} ->
-        rollback(:conflict, "run submission idempotency key has different intent")
+        rollback(
+          :conflict,
+          "run submission idempotency key has different intent",
+          details: %{reason_code: "idempotency_conflict"}
+        )
 
       nil ->
         reject_run_identity_collision!(workspace_id, command.run_id)
@@ -1124,7 +1128,7 @@ defmodule FavnStoragePostgres.RunSubmissions.Store do
     error -> {:error, ErrorMapper.map(error)}
   end
 
-  defp rollback(kind, message) do
-    Repo.rollback(Error.new(kind, message))
+  defp rollback(kind, message, opts \\ []) do
+    Repo.rollback(Error.new(kind, message, opts))
   end
 end

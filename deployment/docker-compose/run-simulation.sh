@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 compose_file="$script_dir/compose.yml"
 env_file="$script_dir/.env.local"
 
@@ -45,7 +45,7 @@ is_manifest_version_id() {
     "$value"|''|*[!0-9a-f]*) return 1 ;;
   esac
 
-  [ "${#digest}" -eq 32 ]
+  [ "${#digest}" -eq 64 ]
 }
 
 wait_healthy() {

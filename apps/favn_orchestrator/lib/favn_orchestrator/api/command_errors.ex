@@ -10,6 +10,7 @@ defmodule FavnOrchestrator.API.CommandErrors do
 
   alias FavnOrchestrator.API.DTO
   alias FavnOrchestrator.API.Response
+  alias FavnOrchestrator.Persistence.Error
   alias FavnOrchestrator.Redaction
 
   @type command_error :: {:error, pos_integer(), String.t(), String.t(), map()}
@@ -93,6 +94,18 @@ defmodule FavnOrchestrator.API.CommandErrors do
   end
 
   def admission(_reason), do: nil
+
+  @doc "Maps a durable idempotency conflict, or returns `nil` when unrelated."
+  @spec idempotency(term()) :: command_error() | nil
+  def idempotency(%Error{
+        kind: :conflict,
+        details: %{reason_code: "idempotency_conflict"}
+      }) do
+    {:error, 409, "idempotency_conflict",
+     "The idempotency key was already used with different request content", %{}}
+  end
+
+  def idempotency(_reason), do: nil
 
   @doc "Maps a run-window policy failure to an idempotent command result."
   @spec window(term()) :: command_error()

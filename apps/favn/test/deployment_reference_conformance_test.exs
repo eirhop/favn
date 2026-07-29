@@ -111,6 +111,7 @@ defmodule Favn.DeploymentReferenceConformanceTest do
     control_plane = services["control-plane"]
     runner = services["runner"]
     scaler_service = services["scaler"]
+    qualification_service = services["qualification"]
 
     assert "ssl=on" in postgres["command"]
     assert postgres["healthcheck"]["test"] |> List.last() =~ "sslmode=verify-full"
@@ -128,6 +129,10 @@ defmodule Favn.DeploymentReferenceConformanceTest do
     assert control_plane["environment"]["FAVN_CONTROL_PLANE_NODE"] =~ ".favn.local"
     assert control_plane["environment"]["FAVN_RUNNER_POOLS"] =~ ~s("mode":"elastic")
     assert control_plane["environment"]["FAVN_RUNNER_POOLS"] =~ ~s("idle_grace_ms":5000)
+
+    assert control_plane["environment"]["FAVN_ORCHESTRATOR_API_SERVICE_TOKENS"] =~
+             "platform-v1|platform_operator+platform_reader:"
+
     assert "control-plane-certificates:/etc/favn/tls:ro" in control_plane["volumes"]
     refute Enum.any?(control_plane["volumes"], &String.starts_with?(&1, "runner-certificates:"))
 
@@ -143,6 +148,17 @@ defmodule Favn.DeploymentReferenceConformanceTest do
     assert scaler_service["profiles"] == ["scaler"]
     assert "/var/run/docker.sock:/var/run/docker.sock" in scaler_service["volumes"]
 
+    assert qualification_service["profiles"] == ["qualification"]
+    assert qualification_service["entrypoint"] == ["/usr/local/bin/qualify-favn-postgres"]
+    assert "/var/run/docker.sock:/var/run/docker.sock" in qualification_service["volumes"]
+
+    assert "postgres-certificates:/etc/favn/postgres-tls:ro" in qualification_service[
+             "volumes"
+           ]
+
+    assert qualification_service["environment"]["FAVN_QUALIFICATION_DURATION_SECONDS"] ==
+             "${FAVN_QUALIFICATION_DURATION_SECONDS:-14400}"
+
     scaler = read("deployment/docker-compose/scale-runners.sh")
     assert scaler =~ "outstanding - running"
     assert scaler =~ "compose run"
@@ -153,6 +169,10 @@ defmodule Favn.DeploymentReferenceConformanceTest do
     assert scaler =~ "exited with code"
     assert scaler =~ "0 -> 3 -> 2 -> 1 -> 0"
     assert scaler =~ "unexpected runner transition"
+    assert scaler =~ "FAVN_SCALER_ALLOWED_FAILURES_FILE"
+    assert scaler =~ "FAVN_SCALER_DRAIN_SIGNAL_FILE"
+    assert scaler =~ "snapshot_api_unavailable"
+    assert scaler =~ "active_launched_ids"
     refute scaler =~ "compose up --scale"
     refute scaler =~ "docker stop"
 
@@ -160,7 +180,33 @@ defmodule Favn.DeploymentReferenceConformanceTest do
     assert simulation =~ "for workload in fast medium slow"
     assert simulation =~ "operator \"run-$workload\""
     assert simulation =~ "FAVN_MANIFEST_VERSION_ID=$manifest_version_id"
+    assert simulation =~ ~s([ "${#digest}" -eq 64 ])
     assert simulation =~ "scaler did not exit within 120 seconds"
+
+    qualification = read("deployment/docker-compose/qualify-postgres.sh")
+    assert qualification =~ "/api/orchestrator/v1/runs"
+    assert qualification =~ "Idempotency-Key: $idempotency_key"
+    assert qualification =~ "idempotency_conflict"
+    assert qualification =~ "docker kill --signal KILL"
+    assert qualification =~ "inject_service_failure control-plane"
+    assert qualification =~ "inject_service_failure postgres"
+    assert qualification =~ "qualification-observe.sql"
+    assert qualification =~ "qualification-outcomes.sql"
+    assert qualification =~ "safe_failure_classification"
+    assert qualification =~ "non_reusable_materialization_claim_succeeded"
+    assert qualification =~ "final-validation.json"
+    assert qualification =~ "evidence_contains_secret"
+    refute qualification =~ "mix favn.run"
+
+    qualification_runner = read("deployment/docker-compose/run-qualification.sh")
+    assert qualification_runner =~ "run-simulation.sh"
+    assert qualification_runner =~ "compose run"
+    assert qualification_runner =~ "--detach"
+    assert qualification_runner =~ "FAVN_QUALIFICATION_RUN_ID=$run_id"
+
+    status = read("deployment/docker-compose/qualification-status.sh")
+    assert status =~ "controller.log"
+    assert status =~ "final-validation.json"
   end
 
   test "provider names and SDKs stay outside Favn core" do
