@@ -292,7 +292,7 @@ defmodule FavnView.Components.LineagePage do
           />
         </div>
       </div>
-       <.lineage_hint_strip /> <.lineage_minimap graph={@graph} positions={@positions} />
+      <.lineage_hint_strip /> <.lineage_minimap graph={@graph} positions={@positions} />
     </section>
     """
   end
@@ -414,7 +414,7 @@ defmodule FavnView.Components.LineagePage do
           {@node.schema || @node.layer} · {@node.kind}
         </p>
       </div>
-       <span class={status_dot_class(@node.freshness_status)}></span>
+      <span class={status_dot_class(@node.freshness_status)}></span>
     </button>
     """
   end
@@ -508,13 +508,13 @@ defmodule FavnView.Components.LineagePage do
             <span class="flex items-center gap-2">
               <.icon name="hero-exclamation-triangle" class="size-4 text-warning" /> {issue.label}
             </span>
-             <span class="favn-text-muted">{issue.count}</span>
+            <span class="favn-text-muted">{issue.count}</span>
           </div>
         </.inspector_section>
-         <.dependency_list title="Downstream" items={@inspector.downstream} />
+        <.dependency_list title="Downstream" items={@inspector.downstream} />
         <.dependency_list title="Upstream" items={@inspector.upstream} />
       </div>
-       <.inspector_actions actions={@inspector.actions} />
+      <.inspector_actions actions={@inspector.actions} />
     </div>
     """
   end
@@ -543,17 +543,17 @@ defmodule FavnView.Components.LineagePage do
           <div :if={is_nil(@inspector.latest_run)} class="text-sm favn-text-muted">
             No run evidence yet.
           </div>
-           <.definition :if={@inspector.latest_run} label="Run" value={@inspector.latest_run.id} />
+          <.definition :if={@inspector.latest_run} label="Run" value={@inspector.latest_run.id} />
           <.definition
             :if={@inspector.latest_run}
             label="Status"
             value={to_string(@inspector.latest_run.status)}
           />
         </.inspector_section>
-         <.dependency_list title="Downstream" items={@inspector.downstream} />
+        <.dependency_list title="Downstream" items={@inspector.downstream} />
         <.dependency_list title="Upstream" items={@inspector.upstream} />
       </div>
-       <.inspector_actions actions={@inspector.actions} />
+      <.inspector_actions actions={@inspector.actions} />
     </div>
     """
   end
@@ -589,7 +589,7 @@ defmodule FavnView.Components.LineagePage do
           </div>
         </.inspector_section>
       </div>
-       <.inspector_actions actions={@inspector.actions} />
+      <.inspector_actions actions={@inspector.actions} />
     </div>
     """
   end
@@ -676,7 +676,7 @@ defmodule FavnView.Components.LineagePage do
     ~H"""
     <section class="space-y-2.5 border-b border-base-content/10 pb-5 last:border-b-0">
       <h3 class="text-sm font-medium favn-text-muted">{@title}</h3>
-       {render_slot(@inner_block)}
+      {render_slot(@inner_block)}
     </section>
     """
   end
@@ -708,7 +708,7 @@ defmodule FavnView.Components.LineagePage do
         <span class={status_text_class(@status)}>
           <span class={status_dot_class(@status)}></span> {@count} {@label}
         </span>
-         <span class="favn-text-subtle">{@percent}%</span>
+        <span class="favn-text-subtle">{@percent}%</span>
       </div>
 
       <div class="h-1.5 overflow-hidden rounded-full bg-base-content/10">

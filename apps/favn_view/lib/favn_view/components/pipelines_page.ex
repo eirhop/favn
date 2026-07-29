@@ -49,7 +49,7 @@ defmodule FavnView.Components.PipelinesPage do
           >
             <.pipeline_table pipelines={@pipelines} />
           </.panel>
-           <.pipeline_card_list :if={@pipelines != []} pipelines={@pipelines} />
+          <.pipeline_card_list :if={@pipelines != []} pipelines={@pipelines} />
         </div>
       </div>
     </AppShell.app_shell>

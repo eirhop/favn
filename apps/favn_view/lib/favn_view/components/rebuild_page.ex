@@ -379,7 +379,7 @@ defmodule FavnView.Components.RebuildPage do
             <div :for={action <- field(@operation, :actions, [])} class="py-4 text-xs">
               <div class="flex flex-wrap items-center gap-2">
                 <p class="min-w-0 flex-1 truncate font-mono">{field(action, :target_id)}</p>
-                 <span class="badge badge-ghost badge-sm">{humanize(field(action, :action))}</span>
+                <span class="badge badge-ghost badge-sm">{humanize(field(action, :action))}</span>
                 <span class={state_badge(field(action, :status))}>
                   {humanize(field(action, :status))}
                 </span>

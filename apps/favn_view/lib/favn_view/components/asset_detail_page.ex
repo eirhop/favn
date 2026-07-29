@@ -675,7 +675,7 @@ defmodule FavnView.Components.AssetDetailPage do
             </button>
           </div>
         </div>
-         <.freshness_summary freshness={@freshness} />
+        <.freshness_summary freshness={@freshness} />
         <div class="overflow-x-auto pb-2">
           <div class="flex min-w-[58rem] items-end justify-between gap-3 pt-3">
             <.timeline_window
@@ -773,7 +773,7 @@ defmodule FavnView.Components.AssetDetailPage do
             <span class={freshness_badge_class(@freshness[:state])}>
               {freshness_state_label(@freshness[:state])}
             </span>
-             <span class="text-xs favn-text-muted">{freshness_policy_label(@freshness)}</span>
+            <span class="text-xs favn-text-muted">{freshness_policy_label(@freshness)}</span>
           </div>
 
           <p class="mt-2 text-sm favn-text-muted">{@freshness[:explanation]}</p>
@@ -804,7 +804,7 @@ defmodule FavnView.Components.AssetDetailPage do
             <span class={freshness_badge_class(@freshness[:state])}>
               {freshness_state_label(@freshness[:state])}
             </span>
-             <span class="badge badge-ghost badge-sm">{freshness_policy_label(@freshness)}</span>
+            <span class="badge badge-ghost badge-sm">{freshness_policy_label(@freshness)}</span>
           </div>
 
           <p class="mt-3 text-sm favn-text-muted">{@freshness[:explanation]}</p>
@@ -1048,7 +1048,7 @@ defmodule FavnView.Components.AssetDetailPage do
                       {column[:via]}
                     </span>
                   </div>
-                   <span :if={column[:sources] == []} class="favn-text-subtle">Not declared</span>
+                  <span :if={column[:sources] == []} class="favn-text-subtle">Not declared</span>
                 </td>
               </tr>
             </tbody>
@@ -1174,7 +1174,7 @@ defmodule FavnView.Components.AssetDetailPage do
       ]}>
         <div class="max-w-16 text-balance">{@window.label}</div>
       </div>
-       <span :if={@selected} class="status status-primary favn-status-glow"></span>
+      <span :if={@selected} class="status status-primary favn-status-glow"></span>
     </div>
     """
   end

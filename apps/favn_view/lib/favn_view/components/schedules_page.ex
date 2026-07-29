@@ -319,7 +319,7 @@ defmodule FavnView.Components.SchedulesPage do
         >
           {@schedule.current_run_label}
         </.link>
-         <span :if={!@schedule.in_flight_run_id}>-</span>
+        <span :if={!@schedule.in_flight_run_id}>-</span>
       </td>
 
       <td class="whitespace-nowrap text-xs favn-text-muted">{@schedule.updated_label}</td>

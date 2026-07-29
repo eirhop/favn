@@ -439,10 +439,10 @@ defmodule FavnView.Components.ScheduleDetailPage do
             >
               {@schedule.current_run_label}
             </.link>
-             <span :if={!@schedule.in_flight_run_id}>-</span>
+            <span :if={!@schedule.in_flight_run_id}>-</span>
           </dd>
         </div>
-         <.config_row label="Updated" value={@schedule.updated_label} icon="hero-arrow-path" />
+        <.config_row label="Updated" value={@schedule.updated_label} icon="hero-arrow-path" />
       </dl>
     </section>
     """

@@ -189,7 +189,7 @@ defmodule FavnView.Components.RunsListPage do
             data-testid="execution-group-search"
           />
         </label>
-         <input id="runs-filter-toggle" type="checkbox" class="peer sr-only" />
+        <input id="runs-filter-toggle" type="checkbox" class="peer sr-only" />
         <label
           for="runs-filter-toggle"
           class="btn btn-sm favn-surface-control rounded-field xl:hidden"
