@@ -90,14 +90,25 @@ defmodule FavnView.Components.OutputMetadataTest do
       assert html =~ "mart"
     end
 
-    test "does not list individual checks when they all passed" do
+    test "says nothing about checks that all passed" do
       html =
         render_component(&OutputMetadata.output_metadata/1,
           metadata: @sql_metadata,
           status: :ok
         )
 
+      refute html =~ ~s(data-testid="sql-check-summary")
       refute html =~ ~s(data-testid="sql-check-result")
+    end
+
+    test "a no-op write still reports itself, because keeping a table is a decision" do
+      metadata = Map.put(@sql_metadata, "write_outcome", "no_op")
+
+      html =
+        render_component(&OutputMetadata.output_metadata/1, metadata: metadata, status: :ok)
+
+      assert html =~ ~s(data-testid="sql-check-summary")
+      assert html =~ "No-op write"
     end
 
     test "lists the individual checks once one has failed" do

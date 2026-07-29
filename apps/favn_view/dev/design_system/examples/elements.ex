@@ -270,6 +270,61 @@ defmodule FavnView.Dev.DesignSystem.Examples.Elements do
       "data/metric" => [
         Example.render(:summary_band, &metrics/1, "The band a list screen opens with.")
       ],
+      "data/outcome_meter" => [
+        Example.attrs(
+          :mixed,
+          %{
+            segments: [
+              %{tone: :success, count: 9, label: "succeeded"},
+              %{tone: :error, count: 1, label: "failed"},
+              %{tone: :info, count: 2, label: "running"},
+              %{tone: :neutral, count: 2, label: "queued"}
+            ],
+            summary: "14 assets"
+          },
+          "One bar replaces four counters, and the legend is the bar's own key."
+        ),
+        Example.attrs(
+          :single_outcome,
+          %{
+            segments: [
+              %{tone: :success, count: 14, label: "succeeded"},
+              %{tone: :error, count: 0, label: "failed"},
+              %{tone: :info, count: 0, label: "running"}
+            ],
+            summary: "14 assets"
+          },
+          "An outcome that did not occur is absent. Nothing spends a row saying zero."
+        ),
+        Example.attrs(
+          :one_failure_in_many,
+          %{
+            segments: [
+              %{tone: :success, count: 199, label: "succeeded"},
+              %{tone: :error, count: 1, label: "failed"}
+            ],
+            summary: "200 assets"
+          },
+          "A single failure among two hundred keeps a visible sliver rather than rounding away."
+        ),
+        Example.attrs(
+          :compact,
+          %{
+            segments: [
+              %{tone: :success, count: 3, label: "succeeded"},
+              %{tone: :error, count: 1, label: "failed"}
+            ],
+            size: :sm,
+            legend?: false
+          },
+          "Inside a table cell, where the row already carries the counts."
+        ),
+        Example.attrs(
+          :nothing_yet,
+          %{segments: [], summary: "No assets"},
+          "An empty population renders an empty track, not a broken bar."
+        )
+      ],
       "data/mono" => [
         Example.attrs(:identifier, %{value: "run_2026_06_12"}, "Identifiers are monospaced.")
       ]

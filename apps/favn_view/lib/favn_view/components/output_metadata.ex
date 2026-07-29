@@ -136,7 +136,7 @@ defmodule FavnView.Components.OutputMetadata do
       </div>
 
       <div
-        :if={@check_summary}
+        :if={@check_summary && @check_summary.tone != :success}
         class={[
           "mt-4 rounded-box border p-3",
           check_summary_class(@check_summary.tone)
@@ -160,10 +160,7 @@ defmodule FavnView.Components.OutputMetadata do
           {@check_summary.description}
         </p>
 
-        <div
-          :if={@check_summary.tone != :success and @check_summary.checks != []}
-          class="mt-3 grid gap-2"
-        >
+        <div :if={@check_summary.checks != []} class="mt-3 grid gap-2">
           <article
             :for={check <- @check_summary.checks}
             class="rounded-field border border-current/15 bg-base-100/55 p-2.5"

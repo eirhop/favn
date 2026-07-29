@@ -91,7 +91,7 @@ defmodule FavnView.Components.RunDetailPage.Flow do
         <p class="mt-0.5 truncate text-xs favn-text-subtle">{@lane.detail}</p>
       </div>
 
-      <div class="relative py-2" style={"min-height: #{lane_height(@lane.tracks)}rem"}>
+      <div class="relative py-2 pr-3" style={"min-height: #{lane_height(@lane.tracks)}rem"}>
         <span
           :if={!is_nil(@now_offset)}
           class="pointer-events-none absolute inset-y-0 z-0 w-px bg-info/50"
@@ -114,7 +114,7 @@ defmodule FavnView.Components.RunDetailPage.Flow do
           phx-value-attempt-id={bar.attempt_id}
           disabled={is_nil(bar.attempt_id)}
           class={[
-            "absolute z-10 flex h-5 min-w-1.5 items-center overflow-hidden rounded-full border",
+            "absolute z-10 flex h-6 min-w-6 items-center overflow-hidden rounded-full border",
             "px-1.5 text-[0.7rem] leading-none transition disabled:cursor-default",
             "hover:brightness-125 focus-visible:outline focus-visible:outline-2",
             bar_class(bar.tone),
@@ -155,10 +155,12 @@ defmodule FavnView.Components.RunDetailPage.Flow do
     """
   end
 
-  # Bars are 1.25rem tall on a 1.75rem pitch, so two concurrent windows for one
-  # asset read as two rows rather than one bar with a shadow.
-  defp bar_top(track), do: 0.5 + track * 1.75
-  defp lane_height(tracks), do: 1.0 + tracks * 1.75
+  # Bars are 1.5rem tall on a 2rem pitch: 24px is the smallest target the design
+  # system's audit accepts, and a bar can be as narrow as its minimum width, so
+  # the height is what has to carry the target size. Two concurrent windows for
+  # one asset then read as two rows rather than one bar with a shadow.
+  defp bar_top(track), do: 0.5 + track * 2.0
+  defp lane_height(tracks), do: 1.0 + tracks * 2.0
 
   defp bar_class(tone) do
     tone = Tokens.tone(tone)
