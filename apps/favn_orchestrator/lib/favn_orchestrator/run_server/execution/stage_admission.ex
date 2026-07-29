@@ -434,6 +434,8 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
             window: RunnerWork.window(work),
             task_id: task.task_id,
             assignment_generation: task.assignment_generation,
+            runner_pool: task.runner_pool,
+            required_runner_release_id: task.required_runner_release_id,
             decision: Map.get(ctx.decisions, ctx.node_key, %{}),
             attempt: ctx.attempt,
             stage: ctx.stage,

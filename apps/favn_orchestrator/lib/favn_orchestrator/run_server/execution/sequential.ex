@@ -416,6 +416,8 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
       window: RunnerWork.window(work),
       task_id: task.task_id,
       assignment_generation: task.assignment_generation,
+      runner_pool: task.runner_pool,
+      required_runner_release_id: task.required_runner_release_id,
       stage: lifecycle.stage,
       attempt: lifecycle.attempt,
       execution_pool: RunnerWork.execution_pool(work)
