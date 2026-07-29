@@ -147,7 +147,7 @@ defmodule FavnView.Components.LineagePage do
             type="button"
             class={[
               "join-item btn btn-ghost btn-xs h-8 rounded-field px-3 text-xs font-normal",
-              @view_mode == mode.id && "bg-primary/15 text-primary",
+              @view_mode == mode.id && "favn-btn-supporting",
               mode[:disabled] && "opacity-45"
             ]}
             phx-click={if(mode[:disabled], do: false, else: "set_mode")}

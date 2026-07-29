@@ -286,7 +286,11 @@
     var kinds = [];
     var size = (parseFloat(style.fontSize) || 0) / zoom;
     var weight = parseInt(style.fontWeight, 10) || 400;
-    var text = hasOwnText(element);
+    // An `sr-only` label is text nobody looks at, so its colour cannot be a
+    // contrast failure: it exists for a screen reader, which does not read
+    // colour. Judging it made the verdict depend on whichever colour the hidden
+    // span happened to inherit, which is noise wearing the shape of a finding.
+    var text = hasOwnText(element) && !visuallyHidden(element, style);
 
     if (text && (size >= LARGE_TEXT_PX || (size >= LARGE_BOLD_TEXT_PX && weight >= BOLD))) {
       kinds.push("large_text");

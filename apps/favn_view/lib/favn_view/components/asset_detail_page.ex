@@ -1663,20 +1663,25 @@ defmodule FavnView.Components.AssetDetailPage do
     |> Map.put(:run_label, "Run this window")
   end
 
+  # A window's border is the boundary that says which state it is in, so it owes
+  # 3:1 against the wash behind it, in both themes. The opacities are measured,
+  # not chosen, and the light theme sets them: its tone colours sit much closer in
+  # luminance to a pale wash than the dark theme's do. At the values these
+  # replaced, all four measured under 2.6.
   defp timeline_window_class(%{status: :success}) do
-    "border-success/40 bg-success/15 text-success"
+    "border-success/90 bg-success/15 text-success"
   end
 
   defp timeline_window_class(%{status: :warning}) do
-    "border-warning/45 bg-warning/15 text-warning"
+    "border-warning/90 bg-warning/15 text-warning"
   end
 
   defp timeline_window_class(%{status: :error}) do
-    "border-error/45 bg-error/15 text-error"
+    "border-error/80 bg-error/15 text-error"
   end
 
   defp timeline_window_class(%{status: :muted}) do
-    "border-base-content/15 bg-base-content/10 favn-text-subtle"
+    "border-base-content/60 bg-base-content/10 favn-text-subtle"
   end
 
   defp timeline_icon(:success), do: "hero-check-circle"

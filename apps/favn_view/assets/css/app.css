@@ -479,6 +479,20 @@ summary {
     color: var(--color-base-content);
   }
 
+  /* Stacking order, so a control that opens is never covered by the furniture
+     around it. Chrome first, then anything that opens over it:
+
+       z-10  page content that layers within itself (sticky headers, timelines)
+       z-20  nav rail, page mode rail
+       z-30  mobile mode dock
+       z-50  dropdowns and popovers — above every rail, by rule
+       z-60  toasts
+       z-80+ modal backdrops and drawers
+
+     Two things at the same level are ordered by DOM position, which is how a
+     dropdown at z-20 ended up behind a rail also at z-20: the rail is rendered
+     later in the shell. An overlay must therefore sit a level above chrome, not
+     level with it. */
   .favn-surface-rail,
   .favn-icon-rail {
     border: var(--border) solid color-mix(in oklab, var(--color-primary) 20%, color-mix(in oklab, var(--color-base-content) 8%, transparent));
@@ -525,9 +539,14 @@ summary {
     border-color: color-mix(in oklab, var(--color-primary) 24%, transparent);
   }
 
+  /* The border is what says "this mode is the current one", so it is held to the
+     3:1 WCAG asks of a boundary that identifies state. At the 38% this used it
+     measured 1.95 against the rail: visible as decoration, not as a state. The
+     label sits on the lit surface rather than the rail, where bare `--color-primary`
+     measured 4.26 in the light theme, so it borrows a little base-content. */
   .favn-mode-item-active {
-    color: var(--color-primary);
-    border-color: color-mix(in oklab, var(--color-primary) 38%, transparent);
+    color: color-mix(in oklab, var(--color-primary) 85%, var(--color-base-content));
+    border-color: color-mix(in oklab, var(--color-primary) 85%, transparent);
     background:
       radial-gradient(circle at 50% 100%, color-mix(in oklab, var(--color-primary) 28%, transparent), transparent 70%),
       color-mix(in oklab, var(--color-primary) 13%, transparent);
