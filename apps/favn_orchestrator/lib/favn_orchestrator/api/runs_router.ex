@@ -275,11 +275,6 @@ defmodule FavnOrchestrator.API.RunsRouter do
       CommandErrors.admission(reason) || CommandErrors.operator(reason) ||
         CommandErrors.window(reason)
 
-  defp submit_error(reason) do
-    Logger.error("run.submit failed after request validation: #{inspect(reason)}")
-    {:error, 400, "bad_request", "Request failed", %{}}
-  end
-
   defp cancel(conn, run_id, session, actor, context, idempotency) do
     case cancel_run(context, run_id, %{actor_id: actor.id}, idempotency) do
       :ok ->
