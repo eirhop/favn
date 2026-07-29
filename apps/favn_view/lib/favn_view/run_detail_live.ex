@@ -342,7 +342,8 @@ defmodule FavnView.RunDetailLive do
         []
       end
 
-    matrix = matrix(attempts, windows)
+    active? = active_group?(summary)
+    matrix = matrix(attempts, windows, active?)
     failures = Enum.filter(attempts, &(&1.status_tone == :error))
 
     backfill_failures =
@@ -357,7 +358,7 @@ defmodule FavnView.RunDetailLive do
       subscribed_run_id: root_run.id,
       subscribed_run_ids: subscribed_run_ids(root_run, child_runs),
       raw_status: status,
-      active?: active_group?(summary),
+      active?: active?,
       cancellable?: !is_nil(cancel_target),
       cancel_run_id: cancel_target && cancel_target.id,
       cancel_label: cancel_target && cancel_target.label,
@@ -845,7 +846,7 @@ defmodule FavnView.RunDetailLive do
     }
   end
 
-  defp matrix(attempts, windows) do
+  defp matrix(attempts, windows, active?) do
     windows =
       if windows == [] or Enum.any?(attempts, &is_nil(&1.window)) do
         windows ++ [%{id: "none", label: "No window", range_label: nil}]
@@ -869,7 +870,7 @@ defmodule FavnView.RunDetailLive do
         cells =
           Enum.map(windows, fn window ->
             matrix_attempt_cell(Map.get(attempts_by_window_id, {asset.key, window.id}, [])) ||
-              pending_cell(asset, window)
+              pending_cell(asset, window, active?)
           end)
 
         Map.put(asset, :cells, cells)
@@ -890,7 +891,14 @@ defmodule FavnView.RunDetailLive do
     Map.put(latest, :other_attempt_count, length(attempts) - 1)
   end
 
-  defp pending_cell(asset, window) do
+  # A cell with no attempt means "no attempt exists for this asset in this window".
+  # While the run is active that is fair to read as queued. Once it has settled it
+  # is not: a finished run reported twelve queued attempts because eleven of its
+  # assets simply had nothing to do in the other window.
+  defp pending_cell(asset, window, active?) do
+    {status, raw_status} =
+      if active?, do: {"Queued", :pending}, else: {"Not run", :not_run}
+
     %{
       id: nil,
       asset_key: asset.key,
@@ -900,8 +908,8 @@ defmodule FavnView.RunDetailLive do
       window: window,
       window_id: window.id,
       window_label: window.label,
-      status: "Queued",
-      raw_status: :pending,
+      status: status,
+      raw_status: raw_status,
       status_tone: :neutral,
       started_at_raw: nil,
       finished_at_raw: nil,

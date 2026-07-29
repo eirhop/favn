@@ -567,6 +567,8 @@ defmodule FavnView.AssetDetailLive do
         blocks_writes?: true
       })
 
+    headline = headline_status(detail)
+
     %{
       manifest_version_id: detail.manifest_version_id,
       target_id: detail.target_id,
@@ -578,8 +580,8 @@ defmodule FavnView.AssetDetailLive do
       has_data_windows?: detail.has_data_windows?,
       has_freshness_timeline?: Map.get(detail, :has_freshness_timeline?, false),
       title: detail.name || asset_name(detail),
-      status: status_label(Map.get(detail, :status)),
-      status_tone: status_tone(Map.get(detail, :status)),
+      status: headline.label,
+      status_tone: headline.tone,
       freshness: Map.get(detail, :freshness, missing_freshness_detail()),
       coverage: Map.get(detail, :coverage),
       coverage_policy: Map.get(detail, :coverage_policy),
@@ -671,15 +673,41 @@ defmodule FavnView.AssetDetailLive do
     |> List.last()
   end
 
-  defp status_label(:healthy), do: "Healthy"
-  defp status_label(:running), do: "Running"
-  defp status_label(:failed), do: "Failed"
-  defp status_label(_status), do: "Unknown"
+  # The orchestrator's asset `:status` reports the latest *run*: `:healthy` means
+  # the last run did not fail. Coverage and compatibility are separate facts, and
+  # the page shows all three — so a badge that echoed `:status` alone announced
+  # "Healthy" directly above "Coverage incomplete, 6 windows missing". A headline
+  # states the worst thing the page knows, because that is what a headline is for.
+  defp headline_status(detail) do
+    cond do
+      Map.get(detail, :status) == :failed ->
+        %{label: "Last run failed", tone: :error}
 
-  defp status_tone(:healthy), do: :success
-  defp status_tone(:running), do: :warning
-  defp status_tone(:failed), do: :error
-  defp status_tone(_status), do: :neutral
+      Map.get(detail, :status) == :running ->
+        %{label: "Running", tone: :warning}
+
+      coverage_status(detail) == :incomplete ->
+        %{label: "Coverage incomplete", tone: :warning}
+
+      blocks_writes?(detail) ->
+        %{label: "Writes blocked", tone: :warning}
+
+      Map.get(detail, :status) == :healthy and coverage_status(detail) == :complete ->
+        %{label: "Healthy", tone: :success}
+
+      Map.get(detail, :status) == :healthy ->
+        %{label: "Last run ok", tone: :success}
+
+      true ->
+        %{label: "Unknown", tone: :neutral}
+    end
+  end
+
+  defp coverage_status(detail),
+    do: get_in(detail, [:coverage, Access.key(:status)]) || :unknown
+
+  defp blocks_writes?(detail),
+    do: get_in(detail, [:compatibility, Access.key(:blocks_writes?)]) == true
 
   defp coverage_error_label(:coverage_selection_stale),
     do: "Coverage changed. Refresh the plan and review it again."

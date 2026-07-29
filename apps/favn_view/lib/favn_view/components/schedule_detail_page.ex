@@ -551,7 +551,7 @@ defmodule FavnView.Components.ScheduleDetailPage do
   # from the pipeline module, so changing them is a code change and a publish.
   defp schedule_facts(schedule) do
     [
-      %{label: "Cron", value: schedule.cron},
+      %{label: "Cron", value: schedule.cron, mono: true},
       %{label: "Timezone", value: schedule.timezone},
       %{label: "Window", value: schedule.window_label},
       %{

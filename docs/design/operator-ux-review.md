@@ -255,9 +255,10 @@ from that walkthrough, worst first.
    Healthy while the page below reports coverage incomplete, six missing
    windows, and "no successful freshness evidence exists". One of the two is
    lying; the badge is.
-4. **A cron loses its spaces in the header.** `0 2 * * *` renders as `0 2***` in
-   the schedule header facts and correctly in the panel below — HTML whitespace
-   collapse on a value that needs it preserved.
+4. **A cron is unreadable in the header.** `0 2 * * *` reads as `0 2***`. The
+   markup is innocent — the DOM holds the spaces and sets `nowrap` — but the
+   value is set in a proportional sans face at 12px, where `* * *` merges into
+   one glyph cluster. A cron is code and has to be set as code.
 5. **A stale sign-in flash sits on the status home.** A red "Please sign in to
    continue" is shown *while signed in*, left over from the login redirect, so a
    healthy page opens looking like a failure.

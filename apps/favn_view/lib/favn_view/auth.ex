@@ -89,6 +89,11 @@ defmodule FavnView.Auth do
     |> put_session(@session_token_key, token)
     |> put_session(@workspace_key, workspace_id)
     |> put_session(@live_socket_key, live_socket_id(session_id))
+    # `renew_session/1` clears the stored session, but a flash put by the guard
+    # that sent the operator here is already in this connection's assigns, so it
+    # would be persisted alongside this one and the first signed-in page would
+    # open showing "Please sign in to continue" in red.
+    |> Phoenix.Controller.clear_flash()
     |> put_flash(:info, "Signed in")
     |> Phoenix.Controller.redirect(to: safe_return_to(return_to) || "/assets")
   end

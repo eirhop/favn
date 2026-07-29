@@ -143,6 +143,7 @@ defmodule FavnView.Components.RunDetailPage.Overview do
         <.legend_item label="Failed" tone={:error} /> <.legend_item label="Running" tone={:info} />
         <.legend_item label="Queued" tone={:warning} />
         <.legend_item label="Skipped" tone={:neutral} />
+        <.legend_item label="Not run" tone={:neutral} />
         <span class="ml-auto favn-text-subtle">Click any cell to open attempt details.</span>
       </div>
     </section>

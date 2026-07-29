@@ -35,7 +35,10 @@ defmodule FavnView.UI.Data do
 
   attr :facts, :list,
     required: true,
-    doc: "maps with `:label` and `:value`, and optional `:tone` and `:title`"
+    doc:
+      "maps with `:label` and `:value`, and optional `:tone`, `:title`, and `:mono` " <>
+        "for a value that is code — a cron, an id, a hash — where a proportional " <>
+        "face runs characters together"
 
   attr :columns, :integer, default: 3, doc: "columns at the `sm` breakpoint and up"
   attr :class, :any, default: nil
@@ -51,6 +54,7 @@ defmodule FavnView.UI.Data do
         <dd
           class={[
             "mt-0.5 truncate font-medium",
+            fact[:mono] && "font-mono",
             (fact[:tone] && Tokens.text_class(fact[:tone])) || "text-base-content"
           ]}
           title={fact[:title] || to_string(fact.value)}
