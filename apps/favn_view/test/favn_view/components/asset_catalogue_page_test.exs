@@ -7,12 +7,12 @@ defmodule FavnView.Components.AssetCataloguePageTest do
 
   doctest AssetCataloguePage, import: true
 
-  test "groups assets by namespace and states each namespace once" do
+  test "sorts by namespace and states it once per row" do
     assets =
       for {connection, catalogue, name} <- [
+            {"postgres", "crm", "accounts"},
             {"duckdb", "sales", "stg_orders"},
-            {"duckdb", "sales", "mart_daily_sales"},
-            {"postgres", "crm", "accounts"}
+            {"duckdb", "sales", "mart_daily_sales"}
           ] do
         %{
           id: "#{connection}.#{catalogue}.#{name}",
@@ -28,22 +28,19 @@ defmodule FavnView.Components.AssetCataloguePageTest do
         }
       end
 
-    namespaces = AssetCataloguePage.asset_namespaces(assets)
+    sorted = AssetCataloguePage.sorted_assets(assets)
 
-    assert Enum.map(namespaces, &{&1.connection, &1.catalogue, length(&1.assets)}) == [
-             {"duckdb", "sales", 2},
-             {"postgres", "crm", 1}
-           ]
+    assert Enum.map(sorted, & &1.name) == ["mart_daily_sales", "stg_orders", "accounts"]
 
-    html =
-      render_component(&AssetCataloguePage.asset_namespace/1, namespace: hd(namespaces))
+    html = render_component(&AssetCataloguePage.asset_table/1, assets: sorted)
 
-    # The namespace header states connection and catalogue, so the rows must not
-    # repeat them: that repetition is what made the table too wide.
-    assert html =~ "duckdb"
-    assert html =~ "sales"
-    refute html =~ ">Connection<"
-    refute html =~ ">Catalogue<"
+    # Namespace is one cell per row - the pair reads as a single address, with
+    # connection and catalogue as separately coloured segments.
+    assert length(Regex.scan(~r/data-testid="asset-namespace"/, html)) == 3
+    assert html =~ ~s(<span class="text-secondary">duckdb</span>)
+    assert html =~ ~s(<span class="text-accent">sales</span>)
+    assert html =~ ~s(<span class="text-secondary">postgres</span>)
+    assert html =~ ~s(<span class="text-accent">crm</span>)
   end
 
   test "renders compatibility independently from health and coverage" do

@@ -81,9 +81,9 @@ defmodule FavnView.UI.Data do
   def data_table(assigns) do
     ~H"""
     <div class={["overflow-x-auto", @class]}>
-      <table class="table table-lg" id={@id}>
+      <table class="table table-sm text-sm" id={@id}>
         <thead>
-          <tr class="border-base-content/10 favn-text-muted">
+          <tr class="border-base-content/10 text-xs favn-text-muted">
             <th :for={col <- @col} class={["font-medium", align_class(col[:align]), col[:class]]}>
               {col.label}
             </th>
@@ -97,10 +97,10 @@ defmodule FavnView.UI.Data do
             class="group border-base-content/10 transition hover:bg-primary/10 focus-within:bg-primary/10"
             data-testid={@row_testid}
           >
-            <td :for={col <- @col} class={[align_class(col[:align]), col[:class]]}>
+            <td :for={col <- @col} class={["align-middle", align_class(col[:align]), col[:class]]}>
               {render_slot(col, row)}
             </td>
-            <td :if={@action != [] || @row_navigate} class="text-right">
+            <td :if={@action != [] || @row_navigate} class="text-right align-middle">
               <div class="flex items-center justify-end gap-1">
                 {render_slot(@action, row)}
                 <.icon_button

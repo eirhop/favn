@@ -253,3 +253,13 @@ Decisions that need a human, recorded rather than guessed:
    already did, because near-white on those fills measured 2.6–3.2:1. It is the
    accessible choice but it does read differently from a conventional filled
    button; worth a look before it spreads further.
+5. **Where do connection icons come from?** The catalogue draws one neutral
+   glyph per connection, because connection names are project-author-chosen
+   (`warehouse`, `sf_prod`) and a name-to-vendor mapping guesses wrong outside
+   the examples. The honest mechanism is the adapter behind a connection
+   declaring its own icon (plugin manifest → facade → view model); that is a
+   cross-app change and needs a decision. Asset *type* icons (table, view,
+   file, metric) come from the declared type and need no configuration.
+6. **Light theme needs its own colour pass.** The dark theme carried the
+   design; light was derived and it shows. Revisit base surfaces, tone
+   weights, and the action colour in light mode as one deliberate pass.
