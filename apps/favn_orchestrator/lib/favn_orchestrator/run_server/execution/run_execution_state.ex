@@ -61,6 +61,7 @@ defmodule FavnOrchestrator.RunServer.Execution.RunExecutionState do
           stage_decisions: map(),
           stage_freshness_context: map() | nil,
           freshness_context: map() | nil,
+          freshness_checkpoint: map() | nil,
           terminal_failure: map() | nil,
           pipeline_continuation: map() | nil
         }
@@ -89,6 +90,7 @@ defmodule FavnOrchestrator.RunServer.Execution.RunExecutionState do
             stage_decisions: %{},
             stage_freshness_context: nil,
             freshness_context: nil,
+            freshness_checkpoint: nil,
             terminal_failure: nil,
             pipeline_continuation: nil
 
@@ -106,7 +108,8 @@ defmodule FavnOrchestrator.RunServer.Execution.RunExecutionState do
       work_set: ActiveTaskSet.new(run),
       sequential_refs: Keyword.get(opts, :sequential_refs, []),
       stage_groups: Keyword.get(opts, :stage_groups, []),
-      freshness_context: Keyword.get(opts, :freshness_context)
+      freshness_context: Keyword.get(opts, :freshness_context),
+      freshness_checkpoint: Keyword.get(opts, :freshness_checkpoint)
     }
   end
 

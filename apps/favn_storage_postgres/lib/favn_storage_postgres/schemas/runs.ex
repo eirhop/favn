@@ -94,6 +94,28 @@ defmodule FavnStoragePostgres.Schemas.RunPlan do
   end
 end
 
+defmodule FavnStoragePostgres.Schemas.RunExecutionCheckpoint do
+  @moduledoc false
+  use Ecto.Schema
+
+  @primary_key false
+  @schema_prefix "favn_control"
+  schema "run_execution_checkpoints" do
+    field(:workspace_id, :string, primary_key: true)
+    field(:run_id, :string, primary_key: true)
+    field(:owner_id, :string)
+    field(:fencing_token, :integer)
+    field(:checkpoint_version, :integer)
+    field(:checkpoint_revision, :integer)
+    field(:checkpoint_sequence, :integer)
+    field(:stage, :integer)
+    field(:attempt, :integer)
+    field(:payload, :binary)
+    field(:payload_hash, :binary)
+    field(:updated_at, :utc_datetime_usec)
+  end
+end
+
 defmodule FavnStoragePostgres.Schemas.RunTarget do
   @moduledoc false
   use Ecto.Schema

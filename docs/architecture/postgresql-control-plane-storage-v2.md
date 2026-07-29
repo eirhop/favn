@@ -114,9 +114,14 @@ the deployment composition root selects and starts the backend.
   once for the planned scope; individual work does not rescan the full plan.
 - `RunManager` is only a bounded in-memory coordinator. Database I/O and crash
   terminalization run in caller or supervised worker processes so one slow query
-  cannot serialize its mailbox.
-- Pipeline retry recovery persists one compact stage checkpoint rather than one
-  mutable snapshot field or retry-scheduled event per node.
+  cannot serialize its mailbox. Initial decoded-plan admission is resized from
+  the measured retained execution state after checkpoint recovery, keeping
+  concurrent run contexts inside the same node-wide memory budget.
+- Pipeline execution persists one fenced compact freshness checkpoint per run;
+  runner tasks retain task-local settlement data and a checkpoint reference
+  rather than copying manifest definitions or accumulated run state. Pipeline
+  retry selection remains one compact stage checkpoint rather than one mutable
+  snapshot field or retry-scheduled event per node.
 - Growing histories use stable keyset cursors and declared page, batch, and payload
   limits. Queryable lifecycle fields remain typed scalar columns; JSONB is reserved
   for bounded versioned values read as a unit.

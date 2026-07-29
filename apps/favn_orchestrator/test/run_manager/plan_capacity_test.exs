@@ -40,6 +40,26 @@ defmodule FavnOrchestrator.RunManager.PlanCapacityTest do
     assert max_bytes == bytes - 1
   end
 
+  test "resizes an admitted run to its measured retained execution state" do
+    run = run("resized", 1_024)
+    initial_bytes = PlanCapacity.allocation_bytes(run)
+    measured_bytes = PlanCapacity.retained_term_bytes({run, :binary.copy("x", 4_096)})
+    capacity = PlanCapacity.new(max_active_run_plan_bytes: measured_bytes)
+
+    assert {:ok, reserved} = PlanCapacity.reserve(capacity, {"ws", run.id}, run)
+    assert reserved.allocated_bytes == initial_bytes
+
+    assert {:ok, resized} =
+             PlanCapacity.resize(reserved, {"ws", run.id}, measured_bytes)
+
+    assert resized.allocated_bytes == measured_bytes
+
+    assert {:error, {:run_plan_exceeds_node_capacity, required, ^measured_bytes}} =
+             PlanCapacity.resize(resized, {"ws", run.id}, measured_bytes + 1)
+
+    assert required == measured_bytes + 1
+  end
+
   defp run(id, payload_bytes) do
     %RunState{
       id: id,

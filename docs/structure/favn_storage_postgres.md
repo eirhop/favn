@@ -25,6 +25,11 @@ Favn's PostgreSQL 18 control-plane persistence.
 - `run_plans` stores one bounded immutable plan per planned run. `runs.snapshot`
   stores only mutable state plus the plan hash, keeping every transition below its
   independent 4 MiB boundary.
+- `run_execution_checkpoints` stores at most one fenced, versioned freshness
+  continuation per run. It excludes immutable manifest definitions and is
+  replaced by a monotonic checkpoint revision under the current run event
+  sequence and ownership fence, so runner-task fan-out does not multiply shared
+  DAG state.
 - `run_submissions` durably owns accepted, normalized run intent before a run
   exists. Available submissions are claimed in bounded FIFO batches with
   `SKIP LOCKED`, database-time leases, and monotonically increasing fencing

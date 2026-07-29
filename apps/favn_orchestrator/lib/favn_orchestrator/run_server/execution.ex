@@ -27,6 +27,8 @@ defmodule FavnOrchestrator.RunServer.Execution do
   alias FavnOrchestrator.RunnerTasks
   alias FavnOrchestrator.RunServer.Execution.FreshnessContext
   alias FavnOrchestrator.RunServer.Execution.PipelineRetryCheckpoint
+  alias FavnOrchestrator.RunServer.Execution.PipelineFreshnessCheckpoint
+  alias FavnOrchestrator.RunServer.Execution.PipelineTaskContinuation
   alias FavnOrchestrator.RunServer.Execution.ResultBuilder
   alias FavnOrchestrator.RunServer.Execution.RunExecutionState
   alias FavnOrchestrator.RunServer.Execution.ActiveTaskSet
@@ -84,14 +86,16 @@ defmodule FavnOrchestrator.RunServer.Execution do
         with :ok <- RunnerIdentityVerifier.verify_run_manifest(run_state, version),
              {:ok, manifest_index} <- ManifestIndexCache.fetch(version),
              execution_index <- compact_execution_index(run_state, manifest_index),
-             {:ok, freshness_context} <- FreshnessContext.initialize(run_state, execution_index) do
+             {:ok, {freshness_context, freshness_checkpoint}} <-
+               load_freshness_context(run_state, execution_index) do
           state =
             RunExecutionState.new(run_state, Version.identity(version),
               mode: :pipeline,
               manifest_index: execution_index,
               manifest_lease_id: nil,
               stage_groups: pipeline_stage_groups(run_state),
-              freshness_context: freshness_context
+              freshness_context: freshness_context,
+              freshness_checkpoint: freshness_checkpoint
             )
 
           case restore_active_tasks(state) do
@@ -304,13 +308,15 @@ defmodule FavnOrchestrator.RunServer.Execution do
   @spec compact_execution_index(RunState.t(), Favn.Manifest.Index.t()) ::
           compact_index()
   def compact_execution_index(%RunState{} = run, manifest_index) do
+    refs_by_target_id = refs_by_target_id(manifest_index.assets_by_ref)
+
     refs =
       case run.plan do
         %Favn.Plan{nodes: nodes} ->
           Enum.reduce(nodes, MapSet.new(), fn {_node_key, node}, refs ->
             refs
             |> MapSet.put(node.ref)
-            |> MapSet.union(input_generation_refs(node, manifest_index.assets_by_ref))
+            |> MapSet.union(input_generation_refs(node, refs_by_target_id))
           end)
 
         nil ->
@@ -325,23 +331,37 @@ defmodule FavnOrchestrator.RunServer.Execution do
     }
   end
 
-  defp input_generation_refs(node, assets_by_ref) do
-    target_ids =
-      node
-      |> Map.get(:input_generations, [])
-      |> Enum.map(&Map.get(&1, :target_id, Map.get(&1, "target_id")))
-      |> MapSet.new()
-
+  defp refs_by_target_id(assets_by_ref) do
     assets_by_ref
-    |> Enum.reduce(MapSet.new(), fn {ref, asset}, refs ->
+    |> Enum.reduce(%{}, fn {ref, asset}, refs ->
       persisted_target_id = asset.target_descriptor && asset.target_descriptor.target_id
 
-      if MapSet.member?(target_ids, TargetIdentity.for_asset(ref)) or
-           MapSet.member?(target_ids, persisted_target_id),
-         do: MapSet.put(refs, ref),
-         else: refs
+      refs
+      |> put_target_ref(TargetIdentity.for_asset(ref), ref)
+      |> maybe_put_target_ref(persisted_target_id, ref)
     end)
   end
+
+  defp input_generation_refs(node, refs_by_target_id) do
+    node
+    |> Map.get(:input_generations, [])
+    |> Enum.reduce(MapSet.new(), fn generation, refs ->
+      target_id = Map.get(generation, :target_id, Map.get(generation, "target_id"))
+
+      case Map.get(refs_by_target_id, target_id) do
+        %MapSet{} = input_refs -> MapSet.union(refs, input_refs)
+        nil -> refs
+      end
+    end)
+  end
+
+  defp maybe_put_target_ref(refs, target_id, ref) when is_binary(target_id),
+    do: put_target_ref(refs, target_id, ref)
+
+  defp maybe_put_target_ref(refs, _target_id, _ref), do: refs
+
+  defp put_target_ref(refs, target_id, ref),
+    do: Map.update(refs, target_id, MapSet.new([ref]), &MapSet.put(&1, ref))
 
   defp continue_state(%RunExecutionState{status: :retry_wait} = state), do: {:cont, state}
 
@@ -500,14 +520,12 @@ defmodule FavnOrchestrator.RunServer.Execution do
     do: {:error, {:invalid_sequential_runner_task_count, length(tasks)}}
 
   defp restore_task_waits(%RunExecutionState{mode: :pipeline} = state, tasks) do
-    entries = Enum.map(tasks, &restored_entry(state, &1))
-    stages = entries |> Enum.map(& &1.stage) |> Enum.uniq()
-
-    with [stage] <- stages,
+    with {:ok, state} <- prepare_pipeline_task_recovery(state, tasks),
+         entries <- Enum.map(tasks, &restored_entry(state, &1)),
+         [stage] <- entries |> Enum.map(& &1.stage) |> Enum.uniq(),
          stage_index when is_integer(stage_index) <-
            Enum.find_index(state.stage_groups, fn {candidate, _keys} -> candidate == stage end) do
       decisions = Map.new(entries, &{&1.node_key, &1.decision})
-      freshness_context = entries |> List.first() |> Map.fetch!(:freshness_context)
 
       stage_state =
         StageAttemptState.new(
@@ -525,7 +543,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
             stage_attempt: entries |> List.first() |> Map.fetch!(:attempt),
             stage_state: stage_state,
             stage_decisions: decisions,
-            stage_freshness_context: freshness_context,
+            stage_freshness_context: state.freshness_context,
             accumulated_results: persisted_node_results(state.run)
         }
         |> start_pipeline_awaits(entries)
@@ -558,10 +576,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
       materialization_claim: Map.get(context, :materialization_claim),
       execution_pool: RunnerWork.execution_pool(work),
       resource_circuit_permits: Map.get(context, :resource_circuit_permits, []),
-      freshness_key: Map.get(context, :freshness_key),
-      version: state.version,
-      manifest_index: state.manifest_index,
-      freshness_context: Map.get(context, :freshness_context, state.freshness_context)
+      freshness_key: Map.get(context, :freshness_key)
     }
   end
 
@@ -707,20 +722,27 @@ defmodule FavnOrchestrator.RunServer.Execution do
     end
   end
 
-  defp finish_stage_classification(state, []) do
-    state
-    |> Map.put(:freshness_context, state.stage_freshness_context)
-    |> Map.put(:stage_index, state.stage_index + 1)
-    |> Map.put(:pipeline_continuation, nil)
-    |> Map.put(:status, :starting)
-    |> defer_pipeline_continue()
-  end
-
   defp finish_stage_classification(state, runnable_node_keys) do
-    state
-    |> Map.put(:pipeline_continuation, nil)
-    |> Map.put(:status, :submitting)
-    |> submit_pipeline_stage_attempt(runnable_node_keys, 1)
+    {stage, _node_keys} = Enum.at(state.stage_groups, state.stage_index)
+
+    case put_freshness_checkpoint(state, stage, 1, state.stage_freshness_context) do
+      {:ok, checkpointed} when runnable_node_keys == [] ->
+        checkpointed
+        |> Map.put(:freshness_context, checkpointed.stage_freshness_context)
+        |> Map.put(:stage_index, checkpointed.stage_index + 1)
+        |> Map.put(:pipeline_continuation, nil)
+        |> Map.put(:status, :starting)
+        |> defer_pipeline_continue()
+
+      {:ok, checkpointed} ->
+        checkpointed
+        |> Map.put(:pipeline_continuation, nil)
+        |> Map.put(:status, :submitting)
+        |> submit_pipeline_stage_attempt(runnable_node_keys, 1)
+
+      {:error, reason} ->
+        terminalize_checkpoint_failure(state, reason)
+    end
   end
 
   defp defer_pipeline_continue(%RunExecutionState{} = state) do
@@ -733,6 +755,32 @@ defmodule FavnOrchestrator.RunServer.Execution do
          node_keys,
          attempt,
          completed_node_statuses \\ %{}
+       ) do
+    {stage, _stage_node_keys} = Enum.at(state.stage_groups, state.stage_index)
+
+    with {:ok, state} <-
+           ensure_freshness_checkpoint(
+             state,
+             stage,
+             attempt,
+             state.stage_freshness_context
+           ) do
+      submit_pipeline_stage_attempt_with_checkpoint(
+        state,
+        node_keys,
+        attempt,
+        completed_node_statuses
+      )
+    else
+      {:error, reason} -> terminalize_checkpoint_failure(state, reason)
+    end
+  end
+
+  defp submit_pipeline_stage_attempt_with_checkpoint(
+         state,
+         node_keys,
+         attempt,
+         completed_node_statuses
        ) do
     case submit_stage_entries(state, state.run, node_keys, attempt) do
       {:ok, run_after_submit, entries, deferred_node_keys, queued_steps, waiters,
@@ -827,10 +875,18 @@ defmodule FavnOrchestrator.RunServer.Execution do
 
     state.stage_state
     |> Map.put(:run, state.run)
-    |> StageResult.process(entry, result, %{
-      stage: entry.stage,
-      attempt: entry.attempt
-    })
+    |> StageResult.process(
+      Map.merge(entry, %{
+        version: state.version,
+        manifest_index: state.manifest_index,
+        freshness_context: state.stage_freshness_context
+      }),
+      result,
+      %{
+        stage: entry.stage,
+        attempt: entry.attempt
+      }
+    )
     |> handle_pipeline_settlement(state)
   end
 
@@ -1214,15 +1270,17 @@ defmodule FavnOrchestrator.RunServer.Execution do
             state.stage_freshness_context
           )
 
-        continue_pipeline(%{
-          state
-          | run: persisted_run,
-            accumulated_results: next_results,
-            freshness_context: next_context,
-            stage_index: state.stage_index + 1,
-            stage_state: nil,
-            terminal_failure: state.terminal_failure
-        })
+        continue_after_stage_checkpoint(
+          %{
+            state
+            | run: persisted_run,
+              accumulated_results: next_results,
+              freshness_context: next_context,
+              stage_state: nil,
+              terminal_failure: state.terminal_failure
+          },
+          next_context
+        )
 
       {:ok, _next_run, _next_results, _retry_refs, _attempted_node_keys, _node_statuses} ->
         schedule_pipeline_retry(state)
@@ -1240,15 +1298,17 @@ defmodule FavnOrchestrator.RunServer.Execution do
         terminal_failure =
           state.terminal_failure || %{status: persisted_run.status, error: persisted_run.error}
 
-        continue_pipeline(%{
-          state
-          | run: persisted_run,
-            accumulated_results: next_results,
-            freshness_context: next_context,
-            stage_index: state.stage_index + 1,
-            stage_state: nil,
-            terminal_failure: terminal_failure
-        })
+        continue_after_stage_checkpoint(
+          %{
+            state
+            | run: persisted_run,
+              accumulated_results: next_results,
+              freshness_context: next_context,
+              stage_state: nil,
+              terminal_failure: terminal_failure
+          },
+          next_context
+        )
     end
   end
 
@@ -1494,6 +1554,162 @@ defmodule FavnOrchestrator.RunServer.Execution do
 
   defp persisted_node_results(%RunState{}), do: []
 
+  defp load_freshness_context(%RunState{} = run, manifest_index) do
+    case PipelineFreshnessCheckpoint.load(run, manifest_index) do
+      {:ok, {context, reference}} ->
+        {:ok, {context, reference}}
+
+      {:ok, nil} ->
+        with {:ok, context} <- FreshnessContext.initialize(run, manifest_index) do
+          {:ok, {context, nil}}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp prepare_pipeline_task_recovery(
+         %RunExecutionState{freshness_checkpoint: reference} = state,
+         tasks
+       )
+       when is_map(reference) do
+    if Enum.all?(tasks, fn task ->
+         pipeline_task_checkpoint_valid?(task, reference) or
+           legacy_pipeline_task_checkpoint_valid?(
+             task,
+             reference,
+             state.freshness_context
+           )
+       end),
+       do: {:ok, state},
+       else: {:error, :runner_task_freshness_checkpoint_mismatch}
+  end
+
+  defp prepare_pipeline_task_recovery(
+         %RunExecutionState{freshness_checkpoint: nil} = state,
+         tasks
+       ) do
+    with {:ok, {legacy_context, stage, attempt}} <- legacy_pipeline_task_context(tasks),
+         {:ok, checkpointed} <-
+           put_freshness_checkpoint(
+             %{state | freshness_context: legacy_context},
+             stage,
+             attempt,
+             legacy_context
+           ) do
+      {:ok, checkpointed}
+    end
+  end
+
+  defp pipeline_task_checkpoint_valid?(task, reference) do
+    context = task.orchestration_context
+    work = task.payload
+    candidate = PipelineTaskContinuation.checkpoint(context)
+
+    work.stage == reference.stage and work.attempt == reference.attempt and
+      PipelineTaskContinuation.valid?(context) and
+      PipelineFreshnessCheckpoint.matches?(reference, candidate)
+  end
+
+  defp legacy_pipeline_task_checkpoint_valid?(task, reference, expected_context) do
+    with %RunnerWork{} = work <- task.payload,
+         true <- work.stage == reference.stage and work.attempt == reference.attempt,
+         {:ok, context} <-
+           PipelineTaskContinuation.legacy_freshness_context(task.orchestration_context) do
+      context == expected_context
+    else
+      _invalid -> false
+    end
+  end
+
+  defp legacy_pipeline_task_context(tasks) when is_list(tasks) and tasks != [] do
+    Enum.reduce_while(tasks, {:ok, nil}, fn task, {:ok, expected} ->
+      with %RunnerWork{} = work <- task.payload,
+           {:ok, context} <-
+             PipelineTaskContinuation.legacy_freshness_context(task.orchestration_context),
+           {:ok, next} <- merge_legacy_task_context(expected, context, work.stage, work.attempt) do
+        {:cont, {:ok, next}}
+      else
+        _invalid -> {:halt, {:error, :legacy_pipeline_runner_task_continuation_invalid}}
+      end
+    end)
+    |> case do
+      {:ok, {context, stage, attempt}} -> {:ok, {context, stage, attempt}}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp legacy_pipeline_task_context(_tasks),
+    do: {:error, :legacy_pipeline_runner_task_continuation_invalid}
+
+  defp merge_legacy_task_context(nil, context, stage, attempt),
+    do: {:ok, {context, stage, attempt}}
+
+  defp merge_legacy_task_context(
+         {expected_context, expected_stage, expected_attempt} = expected,
+         context,
+         stage,
+         attempt
+       ) do
+    if context == expected_context and stage == expected_stage and attempt == expected_attempt,
+      do: {:ok, expected},
+      else: {:error, :legacy_pipeline_runner_task_continuation_mismatch}
+  end
+
+  defp ensure_freshness_checkpoint(state, stage, attempt, context) do
+    case state.freshness_checkpoint do
+      %{stage: ^stage, attempt: ^attempt, sequence: sequence}
+      when sequence == state.run.event_seq ->
+        {:ok, state}
+
+      _missing_or_stale ->
+        put_freshness_checkpoint(state, stage, attempt, context)
+    end
+  end
+
+  defp put_freshness_checkpoint(state, stage, attempt, context) do
+    case PipelineFreshnessCheckpoint.put(
+           state.run,
+           stage,
+           attempt,
+           context,
+           state.freshness_checkpoint
+         ) do
+      {:ok, reference} -> {:ok, %{state | freshness_checkpoint: reference}}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp continue_after_stage_checkpoint(state, context) do
+    {stage, _node_keys} = Enum.at(state.stage_groups, state.stage_index)
+
+    case put_freshness_checkpoint(state, stage, state.stage_attempt, context) do
+      {:ok, checkpointed} ->
+        continue_pipeline(%{
+          checkpointed
+          | stage_index: checkpointed.stage_index + 1,
+            status: :starting
+        })
+
+      {:error, reason} ->
+        terminalize_checkpoint_failure(state, reason)
+    end
+  end
+
+  defp terminalize_checkpoint_failure(state, reason) do
+    all_results = ResultBuilder.sort_asset_results(state.run, state.accumulated_results)
+
+    {:terminal,
+     terminalize_pipeline_failed_run(
+       Snapshots.snapshot_update(state.run,
+         status: :error,
+         error: {:pipeline_freshness_checkpoint_failed, reason}
+       ),
+       all_results
+     )}
+  end
+
   defp metadata_field(metadata, key) when is_map(metadata),
     do: Map.get(metadata, key, Map.get(metadata, Atom.to_string(key)))
 
@@ -1514,6 +1730,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
       node_keys: node_keys,
       decisions: state.stage_decisions,
       freshness_context: state.stage_freshness_context,
+      freshness_checkpoint: state.freshness_checkpoint,
       attempt: attempt,
       manifest_lease_id: state.manifest_lease_id,
       queued_steps: queued_steps

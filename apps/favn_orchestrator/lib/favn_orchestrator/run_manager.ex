@@ -125,6 +125,14 @@ defmodule FavnOrchestrator.RunManager do
   end
 
   @doc false
+  @spec resize_active_run_memory(RunState.t(), term()) :: :ok | {:error, term()}
+  def resize_active_run_memory(%RunState{} = run, retained_state) do
+    call_manager(
+      {:resize_active_run_memory, run_key(run), PlanCapacity.retained_term_bytes(retained_state)}
+    )
+  end
+
+  @doc false
   @spec active_runs(pos_integer()) ::
           {:ok, [%{workspace_id: String.t(), run_id: String.t()}]} | {:error, term()}
   def active_runs(timeout_ms \\ run_manager_call_timeout())
@@ -165,6 +173,16 @@ defmodule FavnOrchestrator.RunManager do
 
   def handle_call(:plan_capacity_diagnostics, _from, state) do
     {:reply, {:ok, PlanCapacity.diagnostics(state.plan_capacity)}, state}
+  end
+
+  def handle_call({:resize_active_run_memory, run_key, required_bytes}, _from, state) do
+    case PlanCapacity.resize(state.plan_capacity, run_key, required_bytes) do
+      {:ok, plan_capacity} ->
+        {:reply, :ok, %{state | plan_capacity: plan_capacity}}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
   end
 
   def handle_call(:active_runs, _from, state) do
@@ -484,7 +502,8 @@ defmodule FavnOrchestrator.RunManager do
       %{
         run_state: run_state,
         version: version,
-        recovering?: Keyword.get(opts, :recovering?, false)
+        recovering?: Keyword.get(opts, :recovering?, false),
+        capacity_managed?: true
       }
       |> then(fn args ->
         case Keyword.get(opts, :storage_ownership) do

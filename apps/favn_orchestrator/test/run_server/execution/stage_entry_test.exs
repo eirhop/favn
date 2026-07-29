@@ -3,7 +3,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageEntryTest do
 
   alias FavnOrchestrator.RunServer.Execution.StageEntry
 
-  test "requires freshness inputs used after runner settlement" do
+  test "retains task-local settlement state without shared run context" do
     attrs = %{
       run_id: "run-stage-entry",
       asset_step_id: "step-stage-entry",
@@ -24,16 +24,9 @@ defmodule FavnOrchestrator.RunServer.Execution.StageEntryTest do
       freshness_key: :freshness_key
     }
 
-    assert_raise ArgumentError, ~r/version.*manifest_index.*freshness_context/, fn ->
-      StageEntry.new!(attrs)
-    end
-
     assert %{
              runner_pool: "default",
-             required_runner_release_id: required_runner_release_id,
-             version: :version,
-             manifest_index: :manifest_index,
-             freshness_context: %{now: :now}
+             required_runner_release_id: required_runner_release_id
            } =
              entry =
              StageEntry.new!(
@@ -46,6 +39,13 @@ defmodule FavnOrchestrator.RunServer.Execution.StageEntryTest do
 
     assert is_map(entry)
     assert required_runner_release_id == FavnTestSupport.runner_release_id()
+    refute Map.has_key?(entry, :version)
+    refute Map.has_key?(entry, :manifest_index)
+    refute Map.has_key?(entry, :freshness_context)
     refute Map.has_key?(entry, :__struct__)
+
+    assert_raise ArgumentError, ~r/freshness_key/, fn ->
+      StageEntry.new!(Map.delete(attrs, :freshness_key))
+    end
   end
 end

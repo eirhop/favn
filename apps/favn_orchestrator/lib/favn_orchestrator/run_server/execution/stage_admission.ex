@@ -22,6 +22,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
   alias FavnOrchestrator.RunServer.Cancellation
   alias FavnOrchestrator.RunServer.Execution.ActiveTaskSet
   alias FavnOrchestrator.RunServer.Execution.PreSubmitFailure
+  alias FavnOrchestrator.RunServer.Execution.PipelineTaskContinuation
   alias FavnOrchestrator.RunServer.Execution.StageClassifier
   alias FavnOrchestrator.RunServer.Execution.StageEntry
   alias FavnOrchestrator.RunServer.Execution.StepAttemptLifecycle
@@ -58,11 +59,13 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
          node_keys: node_keys,
          decisions: decisions,
          freshness_context: freshness_context,
+         freshness_checkpoint: freshness_checkpoint,
          attempt: attempt,
          manifest_lease_id: manifest_lease_id,
          queued_steps: %MapSet{} = queued_steps
        })
-       when is_list(node_keys) and is_map(decisions) and is_map(freshness_context) do
+       when is_list(node_keys) and is_map(decisions) and is_map(freshness_context) and
+              is_map(freshness_checkpoint) do
     ctx = %{
       current_run: run_state,
       version: version,
@@ -70,6 +73,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
       stage: stage,
       decisions: decisions,
       freshness_context: freshness_context,
+      freshness_checkpoint: freshness_checkpoint,
       attempt: attempt,
       manifest_lease_id: manifest_lease_id,
       entries_rev: [],
@@ -443,10 +447,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
             materialization_claim: MaterializationClaims.enrich(ctx.materialization_claim, work),
             execution_pool: RunnerWork.execution_pool(work),
             resource_circuit_permits: ctx.resource_circuit_permits,
-            freshness_key: decision_freshness_key(ctx.decisions, ctx.node_key),
-            version: ctx.version,
-            manifest_index: ctx.manifest_index,
-            freshness_context: ctx.freshness_context
+            freshness_key: decision_freshness_key(ctx.decisions, ctx.node_key)
           })
 
         do_submit(ctx.rest, %{
@@ -462,14 +463,13 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
   end
 
   defp orchestration_context(ctx) do
-    %{
-      kind: :pipeline,
+    PipelineTaskContinuation.new!(%{
       decision: Map.get(ctx.decisions, ctx.node_key, %{}),
       materialization_claim: MaterializationClaims.enrich(ctx.materialization_claim, ctx.work),
       resource_circuit_permits: ctx.resource_circuit_permits,
-      freshness_context: ctx.freshness_context,
+      freshness_checkpoint: ctx.freshness_checkpoint,
       freshness_key: decision_freshness_key(ctx.decisions, ctx.node_key)
-    }
+    })
   end
 
   defp fail_unsubmitted_entry(ctx, asset_ref, reason) do

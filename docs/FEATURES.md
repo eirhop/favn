@@ -175,6 +175,9 @@ operator contract is [`production/postgresql_operator_runbook.md`](production/po
   producer and scheduler processes; accepted intent survives a control-plane
   restart and scheduler occurrence completion is atomic with enqueue.
 - Durable runner-task queues and elastic multi-runner execution are implemented.
+  Pipeline tasks retain bounded task-local continuation data and reference one
+  shared, fenced freshness checkpoint per run; immutable manifest
+  definitions are reconstructed only by the orchestrator.
   Live managed-platform scale, restore/load, and cold-start evidence remain
   production release gates.
 - SQL adapter-native cancellation and broader DuckDB/DuckLake failure-injection

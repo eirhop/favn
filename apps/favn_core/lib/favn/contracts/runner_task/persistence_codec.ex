@@ -5,6 +5,7 @@ defmodule Favn.Contracts.RunnerTask.PersistenceCodec do
 
   @protocol_version RunnerTask.version()
   @max_term_bytes 1_048_576
+  @max_orchestration_context_bytes 4 * 1_048_576
 
   def encode_payload(task_kind, payload),
     do: encode("runner_task_payload", task_kind, nil, payload, &RunnerTask.validate_payload/2)
@@ -56,7 +57,7 @@ defmodule Favn.Contracts.RunnerTask.PersistenceCodec do
   defp encode_private(tag, value) do
     binary = :erlang.term_to_binary(value, [:deterministic])
 
-    if byte_size(binary) <= @max_term_bytes do
+    if byte_size(binary) <= @max_orchestration_context_bytes do
       {:ok,
        %{
          "encoding" => "erlang-term-base64",
@@ -65,7 +66,9 @@ defmodule Favn.Contracts.RunnerTask.PersistenceCodec do
          "type" => tag
        }}
     else
-      {:error, {:runner_task_orchestration_context_too_large, byte_size(binary), @max_term_bytes}}
+      {:error,
+       {:runner_task_orchestration_context_too_large, byte_size(binary),
+        @max_orchestration_context_bytes}}
     end
   end
 
@@ -79,9 +82,11 @@ defmodule Favn.Contracts.RunnerTask.PersistenceCodec do
          true <-
            Map.keys(envelope) |> Enum.sort() ==
              Enum.sort(~w(encoding payload protocol_version type)),
-         true <- is_binary(payload) and byte_size(payload) <= encoded_limit(),
+         true <-
+           is_binary(payload) and
+             byte_size(payload) <= encoded_limit(@max_orchestration_context_bytes),
          {:ok, binary} <- Base.decode64(payload),
-         true <- byte_size(binary) <= @max_term_bytes,
+         true <- byte_size(binary) <= @max_orchestration_context_bytes,
          {:ok, value} <- decode_uncompressed_term(binary),
          true <- is_map(value) do
       {:ok, value}
@@ -130,7 +135,7 @@ defmodule Favn.Contracts.RunnerTask.PersistenceCodec do
 
     with true <- Map.drop(envelope, ["payload"]) == expected,
          payload when is_binary(payload) <- Map.get(envelope, "payload"),
-         true <- byte_size(payload) <= encoded_limit(),
+         true <- byte_size(payload) <= encoded_limit(@max_term_bytes),
          {:ok, binary} <- Base.decode64(payload),
          true <- byte_size(binary) <= @max_term_bytes,
          {:ok, value} <- decode_uncompressed_term(binary),
@@ -164,5 +169,5 @@ defmodule Favn.Contracts.RunnerTask.PersistenceCodec do
   defp maybe_put_outcome(envelope, outcome),
     do: Map.put(envelope, "outcome", Atom.to_string(outcome))
 
-  defp encoded_limit, do: div(@max_term_bytes * 4, 3) + 4
+  defp encoded_limit(max_bytes), do: div(max_bytes * 4, 3) + 4
 end

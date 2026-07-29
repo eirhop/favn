@@ -67,6 +67,38 @@ defmodule FavnOrchestrator.RunManager.PlanCapacity do
     end
   end
 
+  @spec resize(t(), key(), non_neg_integer()) ::
+          {:ok, t()}
+          | {:error, {:run_plan_exceeds_node_capacity, non_neg_integer(), pos_integer()}}
+          | {:error, {:run_plan_capacity_exhausted, map()}}
+  def resize(%__MODULE__{} = capacity, key, required_bytes)
+      when is_integer(required_bytes) and required_bytes >= 0 do
+    current_bytes = Map.get(capacity.allocations, key, 0)
+    next_allocated_bytes = capacity.allocated_bytes - current_bytes + required_bytes
+
+    cond do
+      required_bytes > capacity.max_bytes ->
+        {:error, {:run_plan_exceeds_node_capacity, required_bytes, capacity.max_bytes}}
+
+      next_allocated_bytes <= capacity.max_bytes ->
+        {:ok,
+         %{
+           capacity
+           | allocated_bytes: next_allocated_bytes,
+             allocations: Map.put(capacity.allocations, key, required_bytes)
+         }}
+
+      true ->
+        {:error,
+         {:run_plan_capacity_exhausted,
+          %{
+            required_bytes: required_bytes,
+            allocated_bytes: capacity.allocated_bytes,
+            max_bytes: capacity.max_bytes
+          }}}
+    end
+  end
+
   @spec release(t(), key()) :: t()
   def release(%__MODULE__{} = capacity, key) do
     case Map.pop(capacity.allocations, key) do
@@ -88,6 +120,9 @@ defmodule FavnOrchestrator.RunManager.PlanCapacity do
   def allocation_bytes(%RunState{plan: plan}) do
     @term_budget_multiplier * :erlang.external_size(plan)
   end
+
+  @spec retained_term_bytes(term()) :: non_neg_integer()
+  def retained_term_bytes(term), do: @term_budget_multiplier * :erlang.external_size(term)
 
   @spec diagnostics(t()) :: map()
   def diagnostics(%__MODULE__{} = capacity) do
