@@ -233,6 +233,96 @@ examples first means writing them twice.
 Each step ends with `window.favn.audit()` clean for the components it touched,
 and the flow exercised against the example project rather than fixtures alone.
 
+## What the example project showed
+
+Every screen above had been judged against design-system fixtures. Run against
+`examples/basic-workflow-tutorial` with two real pipeline runs and two real
+schedules, the fixtures turn out to have been flattering. These are findings
+from that walkthrough, worst first.
+
+### Wrong, not just ugly
+
+1. **The runs list drops data the run detail has.** Every row shows
+   `Target: No target`, `Trigger: Unknown`, `Window range: No explicit window`,
+   and `Duration: -`. The same runs on `/runs/:id` show the pipeline, the
+   trigger, `Jul 23`, and `9.1 s`, and `mix favn.runs list` shows the target
+   too. The list's view model is not reading fields that are present.
+2. **A finished run reports queued work.** On run detail, the asset-window grid
+   marks every cell where an asset did not run in that window as `Queued` —
+   twelve of them, on a run that completed. "Did not apply" and "waiting to
+   start" must not share a label.
+3. **Asset detail says `Healthy` above `Incomplete`.** The header badge reads
+   Healthy while the page below reports coverage incomplete, six missing
+   windows, and "no successful freshness evidence exists". One of the two is
+   lying; the badge is.
+4. **A cron loses its spaces in the header.** `0 2 * * *` renders as `0 2***` in
+   the schedule header facts and correctly in the panel below — HTML whitespace
+   collapse on a value that needs it preserved.
+5. **A stale sign-in flash sits on the status home.** A red "Please sign in to
+   continue" is shown *while signed in*, left over from the login redirect, so a
+   healthy page opens looking like a failure.
+
+### Identity is unreadable
+
+6. **Raw target ids as titles.** The status home lists
+   `asset:Elixir.CrmDemo.Warehouse.Core.Sales.Events.Engagement:asset` — scheme
+   prefix, `Elixir.` prefix, and all. It is the widest thing on the page.
+7. **Six catalogue rows named `asset`.** An asset whose module declares no name
+   defaults to `asset`, so the Asset column shows six identical rows. The leaf
+   name alone cannot identify an asset; `/pipelines` already solves this by
+   showing the name bold with its module underneath, and it is the most readable
+   list in the product because of it.
+8. **A 90-character base64 id printed under every schedule name**, which widens
+   the table until the activation and runtime columns are pushed off-screen
+   behind a horizontal scrollbar. The id belongs behind the copy button.
+9. **Namespace reads `unknown · uncatalogued`** for every Elixir asset, in
+   colour, so the dependent filters added in step 4 have nothing to narrow.
+   Either derive the namespace from the module path or leave the cell empty.
+10. **Window keys are raw.** Asset detail's gap list shows
+    `day:Etc/UTC:2026-07-22T00:00:00.000000Z` six times where it means "Jul 22".
+
+### The logs terminal's premise does not hold
+
+11. Every orchestrator log message is `asset execution started`,
+    `asset execution finished`, or `step queued`, with `orchestrator` as the
+    source. One line per entry was designed on the assumption that the message
+    distinguishes the line; against real data forty identical lines do not. The
+    asset ref has to be *on* the line, not behind its disclosure.
+
+### Buttons outside the family
+
+12. Twenty-three raw DaisyUI colour buttons remain across ten files
+    (`btn-primary`, `btn-warning`, `btn-info`, `btn-error`), six in
+    `rebuild_page.ex` alone. `/rebuilds` therefore shows a solid bright blue
+    "Create immutable plan" — the loudest control in the product — next to
+    `/recoveries`, which uses the action colour correctly.
+
+### Smaller, still worth fixing
+
+13. Seven status-home rows give the identical reason "Declared windows are
+    missing", so the page cannot be triaged, only clicked through one row at a
+    time. Two disabled schedules — exactly "what needs me" — do not appear at
+    all.
+14. The state glyph on each status row carries the full target id as its
+    accessible name, so a screen reader hears the id twice per row.
+15. Run detail's header spends six cards on four zeros, and its back link says
+    "Back to asset" for a pipeline run reached from `/runs`.
+16. `1 windows`.
+17. `/pipelines` shows `Selected assets: Engagement +1` for a pipeline that ran
+    fourteen assets.
+18. Schedule and rebuild pages ask for a target id in a bare text field with no
+    picker, placeholder, or format hint.
+19. Filter select labels clip on `/schedules` (`Runtime▾`, `Window▾`), and
+    `Clear` renders as though active when no filter is set.
+
+### Confirmed working against a real backend
+
+Schedule enable and disable, which the review had recorded as "appears to fail
+unconditionally", now works: `crm_daily` went Disabled → Enabled from the
+browser, the activation, runtime, and next-due cards all updated, and
+`mix favn.schedules list` reports `state=enabled`. The control did not exist
+before; the handler behind it had never been reachable.
+
 ## Open questions
 
 Decisions that need a human, recorded rather than guessed:
