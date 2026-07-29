@@ -43,6 +43,7 @@ defmodule FavnView.UI do
       import FavnView.UI.Badge
       import FavnView.UI.Button
       import FavnView.UI.Data
+      import FavnView.UI.Dialog
       import FavnView.UI.Feedback
       import FavnView.UI.Field
       import FavnView.UI.Icon

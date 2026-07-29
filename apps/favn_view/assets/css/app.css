@@ -188,14 +188,22 @@
   color: var(--color-error);
 }
 
-/* A checkbox has no surface of its own, so its border is the only thing saying
-   it exists. DaisyUI ships it at 20px with a border measuring 1.59:1 — under
-   both the 3:1 boundary limit and the 24px target minimum. Unlayered for the
-   same reason as the button colours above. */
-.checkbox {
+/* A checkbox and a radio have no surface of their own, so the border is the only
+   thing saying they exist. DaisyUI ships both at 20px with a border measuring
+   1.59:1 — under the 3:1 boundary limit and under the 24px target minimum.
+   Unlayered for the same reason as the button colours above. */
+.checkbox,
+.radio {
   width: 1.5rem;
   height: 1.5rem;
   border-color: color-mix(in oklab, var(--color-base-content) 62%, transparent);
+}
+
+/* A `<summary>` is a click target, so it has to be one you can hit. */
+summary {
+  display: flex;
+  align-items: center;
+  min-height: 1.5rem;
 }
 
 @layer components {
@@ -272,6 +280,7 @@
      chevron, so the marker matches every other icon in the interface. */
   summary {
     list-style: none;
+    cursor: pointer;
   }
 
   summary::-webkit-details-marker {
