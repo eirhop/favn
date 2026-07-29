@@ -217,10 +217,16 @@ examples first means writing them twice.
    second gate, `FavnView.Dev.DesignSystem.Palette`, now checks every token pair
    in `mix test` without a browser.
 3. **Done.** `/` is the status home.
-4. **Part done.** Asset state is three glyphs instead of three word badges.
-   Namespace grouping and the run dialog are not started.
+4. **Done.** Asset state is three glyphs instead of three word badges, the
+   catalogue browses by connection · catalogue namespace, and run
+   configuration is a dialog (`FavnView.UI.Dialog`) leading with the two
+   sentences that matter.
 5. Runs list and run detail, including the timeline migration. Not started.
-6. Logs. Not started.
+6. **Done.** The log viewer is a dense terminal: one line per entry on a
+   fixed-dark canvas (`--favn-terminal-*`, palette-gated), identity behind a
+   per-line disclosure, error lines marked and jumpable, live tail that
+   pauses in scrollback, and a step strip on run-scoped pages naming the
+   failed step.
 7. Pipelines, schedules, rebuilds, recovery. Not started.
 8. Design-system examples and coverage; then lineage. Not started.
 
