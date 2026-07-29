@@ -673,12 +673,35 @@ defmodule FavnView.AssetDetailLive do
     |> List.last()
   end
 
-  # The orchestrator's asset `:status` reports the latest *run*: `:healthy` means
-  # the last run did not fail. Coverage and compatibility are separate facts, and
-  # the page shows all three — so a badge that echoed `:status` alone announced
-  # "Healthy" directly above "Coverage incomplete, 6 windows missing". A headline
-  # states the worst thing the page knows, because that is what a headline is for.
-  defp headline_status(detail) do
+  @doc """
+  The worst thing the asset detail page knows, as a label and a tone.
+
+  The orchestrator's asset `:status` reports the latest *run*: `:healthy` means
+  the last run did not fail. Coverage and compatibility are separate facts, and
+  the page shows all three — so a badge that echoed `:status` alone announced
+  "Healthy" directly above "Coverage incomplete, 6 windows missing". A headline
+  states the worst thing the page knows, because that is what a headline is for.
+
+      iex> FavnView.AssetDetailLive.headline_status(%{status: :failed})
+      %{label: "Last run failed", tone: :error}
+
+      iex> FavnView.AssetDetailLive.headline_status(%{
+      ...>   status: :healthy,
+      ...>   coverage: %{status: :incomplete}
+      ...> })
+      %{label: "Coverage incomplete", tone: :warning}
+
+      iex> FavnView.AssetDetailLive.headline_status(%{
+      ...>   status: :healthy,
+      ...>   coverage: %{status: :complete}
+      ...> })
+      %{label: "Healthy", tone: :success}
+
+      iex> FavnView.AssetDetailLive.headline_status(%{})
+      %{label: "Unknown", tone: :neutral}
+  """
+  @spec headline_status(map()) :: %{label: String.t(), tone: atom()}
+  def headline_status(detail) do
     cond do
       Map.get(detail, :status) == :failed ->
         %{label: "Last run failed", tone: :error}
@@ -703,10 +726,33 @@ defmodule FavnView.AssetDetailLive do
     end
   end
 
-  defp coverage_status(detail),
+  @doc """
+  Coverage status for an asset detail, `:unknown` when the backend did not report one.
+
+      iex> FavnView.AssetDetailLive.coverage_status(%{coverage: %{status: :complete}})
+      :complete
+
+      iex> FavnView.AssetDetailLive.coverage_status(%{})
+      :unknown
+  """
+  @spec coverage_status(map()) :: atom()
+  def coverage_status(detail),
     do: get_in(detail, [:coverage, Access.key(:status)]) || :unknown
 
-  defp blocks_writes?(detail),
+  @doc """
+  Whether the active manifest's compatibility verdict forbids writing this asset.
+
+  Absent compatibility is not a block: the caller substitutes its own conservative
+  default before deciding whether a run may be submitted.
+
+      iex> FavnView.AssetDetailLive.blocks_writes?(%{compatibility: %{blocks_writes?: true}})
+      true
+
+      iex> FavnView.AssetDetailLive.blocks_writes?(%{})
+      false
+  """
+  @spec blocks_writes?(map()) :: boolean()
+  def blocks_writes?(detail),
     do: get_in(detail, [:compatibility, Access.key(:blocks_writes?)]) == true
 
   defp coverage_error_label(:coverage_selection_stale),
