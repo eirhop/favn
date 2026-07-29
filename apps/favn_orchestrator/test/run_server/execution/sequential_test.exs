@@ -150,7 +150,7 @@ defmodule FavnOrchestrator.RunServer.Execution.SequentialTest do
           upstream: [],
           downstream: [],
           stage: 0,
-          execution_pool: :mercatus_api,
+          execution_pool: :partner_api,
           action: :run,
           retry_policy: Favn.Retry.Policy.default(),
           retry_policy_source: :default
@@ -192,7 +192,7 @@ defmodule FavnOrchestrator.RunServer.Execution.SequentialTest do
         attempt: 1,
         lease: nil,
         materialization_claim: nil,
-        execution_pool: :mercatus_api,
+        execution_pool: :partner_api,
         resource_circuit_permits: [],
         freshness_key: "latest",
         version: version,
