@@ -144,16 +144,20 @@
    Two tiers replace the twelve. Both are required to pass AA on the most raised
    surface, so hierarchy comes from size and weight, which do not trade against
    legibility. */
+/* The action colour is violet because it is the one hue band the status
+   vocabulary leaves free: blue is links and info, green is success and
+   healthy, amber is warning, red is error. The action must never be mistaken
+   for a state. */
 [data-theme="favn-dark"] {
-  --favn-action: oklch(87% 0.23 130);
-  --favn-action-content: oklch(18% 0.05 130);
+  --favn-action: oklch(80% 0.14 305);
+  --favn-action-content: oklch(20% 0.06 305);
   --favn-text-muted: oklch(80% 0.022 245);
   --favn-text-subtle: oklch(70% 0.022 245);
 }
 
 [data-theme="favn-light"] {
-  --favn-action: oklch(47% 0.15 130);
-  --favn-action-content: oklch(98% 0.02 130);
+  --favn-action: oklch(44% 0.19 305);
+  --favn-action-content: oklch(98% 0.01 305);
   --favn-text-muted: oklch(38% 0.03 255);
   --favn-text-subtle: oklch(43% 0.03 255);
 }
@@ -186,6 +190,10 @@
    `:disabled` is excluded so an inactive control keeps its muted label. */
 .btn.favn-btn-action:not(:disabled):not(.btn-disabled) {
   color: var(--favn-action);
+}
+
+.btn.favn-btn-action-solid:not(:disabled):not(.btn-disabled) {
+  color: var(--favn-action-content);
 }
 
 .btn.favn-btn-supporting:not(:disabled):not(.btn-disabled) {
@@ -608,9 +616,9 @@ summary {
   /* The primary action: outlined and lit, never filled. A solid block of
      colour reads as a banner on these glass surfaces, and it forced a pale
      label onto a mid-tone fill — which measured 2.78:1 and failed AA. Drawing
-     the action colour as the *label* instead puts a near-white-bright lime on
-     the dark field, so the contrast comes from the design rather than from
-     tuning a fill. */
+     the action colour as the *label* instead puts a bright violet on the dark
+     field, so the contrast comes from the design rather than from tuning a
+     fill. */
   .btn.favn-btn-action {
     --btn-color: color-mix(in oklab, var(--favn-action) 12%, var(--color-base-100));
     --btn-fg: var(--favn-action);
@@ -630,6 +638,26 @@ summary {
     box-shadow:
       0 0 0 1px color-mix(in oklab, var(--favn-action) 22%, transparent) inset,
       0 0 22px color-mix(in oklab, var(--favn-action) 26%, transparent);
+  }
+
+  /* The filled action, for the confirming control in a dialog: the one moment
+     the interface should insist. The label is `--favn-action-content`, so the
+     pair is judged by the palette gate like every solid surface. */
+  .btn.favn-btn-action-solid {
+    --btn-color: var(--favn-action);
+    --btn-fg: var(--favn-action-content);
+    --btn-border: color-mix(in oklab, var(--favn-action) 82%, var(--color-base-content));
+    transition:
+      color 160ms ease,
+      background-color 160ms ease,
+      border-color 160ms ease,
+      box-shadow 160ms ease;
+  }
+
+  .btn.favn-btn-action-solid:hover,
+  .btn.favn-btn-action-solid:focus-visible {
+    --btn-color: color-mix(in oklab, var(--favn-action) 88%, var(--color-base-content));
+    box-shadow: 0 0 22px color-mix(in oklab, var(--favn-action) 32%, transparent);
   }
 
   /* `.btn` declares `--btn-fg` itself, so these need the extra class to win. */

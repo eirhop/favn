@@ -7,15 +7,19 @@ defmodule FavnView.UI.Button do
   | Variant | Use it for | Rule |
   | --- | --- | --- |
   | `:primary` | the single action that advances the current state | at most one per view state |
+  | `:solid` | the confirming control in a dialog | at most one per dialog |
   | `:secondary` | supporting actions next to a primary one | any number |
   | `:ghost` | tertiary actions, toolbar controls, dismissals | any number |
   | `:danger` | destructive or irreversible actions | always confirm server-side |
   | `:link` | inline navigation inside prose or table cells | no surface, no padding |
 
-  `:primary` is the only variant that uses `--favn-action`, the electric lime
-  that appears nowhere else in the interface. Two buttons competing for it in
-  one view state defeats the point: the operator should find the next step by
-  colour, without reading.
+  `:primary` and `:solid` are the only variants that use `--favn-action`, the
+  violet that appears nowhere else in the interface — violet because it is the
+  hue the status vocabulary leaves free, so the action can never be mistaken
+  for a state. Two buttons competing for it in one view state defeats the
+  point: the operator should find the next step by colour, without reading.
+  `:primary` is outlined and lives on pages; `:solid` is filled and reserved
+  for the moment a dialog asks for a decision.
 
   Every mutating button must be authorised on the server. Rendering a button
   conditionally is presentation, never authorisation.
@@ -45,6 +49,7 @@ defmodule FavnView.UI.Button do
 
   @variants %{
     primary: "favn-btn-action",
+    solid: "favn-btn-action-solid",
     secondary: "favn-btn-supporting",
     ghost: "btn-ghost",
     danger: "favn-btn-destructive",
@@ -53,7 +58,10 @@ defmodule FavnView.UI.Button do
 
   @sizes %{xs: "btn-xs", sm: "btn-sm", md: nil, lg: "btn-lg"}
 
-  attr :variant, :atom, default: :primary, values: [:primary, :secondary, :ghost, :danger, :link]
+  attr :variant, :atom,
+    default: :primary,
+    values: [:primary, :solid, :secondary, :ghost, :danger, :link]
+
   attr :size, :atom, default: :sm, values: [:xs, :sm, :md, :lg]
   attr :icon, :string, default: nil, doc: "leading heroicon name"
   attr :trailing_icon, :string, default: nil

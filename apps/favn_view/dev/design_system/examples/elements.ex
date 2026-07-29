@@ -452,6 +452,7 @@ defmodule FavnView.Dev.DesignSystem.Examples.Elements do
     ~H"""
     <.inline gap={:sm}>
       <.button variant={:primary}>Run pipeline</.button>
+      <.button variant={:solid}>Run asset</.button>
       <.button variant={:secondary}>Plan backfill</.button>
       <.button variant={:ghost}>Reset filters</.button>
       <.button variant={:danger}>Cancel run</.button>

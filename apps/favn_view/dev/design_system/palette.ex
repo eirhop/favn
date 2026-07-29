@@ -147,6 +147,13 @@ defmodule FavnView.Dev.DesignSystem.Palette do
         why: "the action colour is also used for inline emphasis"
       },
       %{
+        id: :action_solid_label,
+        foreground: "--favn-action-content",
+        background: "--favn-action",
+        limit: 4.5,
+        why: "the filled action button and the label on it"
+      },
+      %{
         id: :muted_text,
         foreground: "--favn-text-muted",
         background: "--color-base-100",

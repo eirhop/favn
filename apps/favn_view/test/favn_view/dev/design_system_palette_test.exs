@@ -67,9 +67,12 @@ defmodule FavnView.Dev.DesignSystem.PaletteTest do
     end
 
     test "reproduces the contrast the browser measured for the primary button" do
-      # The browser measured 12.52:1 for the action label over its own wash.
-      action = Color.parse!(Theme.fetch!("favn-dark", "--favn-action"))
-      base = Color.parse!(Theme.fetch!("favn-dark", "--color-base-100"))
+      # The browser measured 12.52:1 for the original lime action label over
+      # its own wash. The colours are literals, not theme tokens: this test
+      # anchors the conversion maths to a browser measurement, and must not
+      # move when the palette does.
+      action = Color.parse!("oklch(87% 0.23 130)")
+      base = Color.parse!("oklch(12% 0.035 260)")
       wash = Color.mix(action, base, 0.12)
 
       ratio =

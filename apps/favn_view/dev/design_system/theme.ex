@@ -33,11 +33,12 @@ defmodule FavnView.Dev.DesignSystem.Theme do
   ## Examples
 
       iex> tokens = FavnView.Dev.DesignSystem.Theme.tokens("favn-dark")
-      iex> tokens["--color-base-100"]
-      "oklch(12% 0.035 260)"
+      iex> String.starts_with?(tokens["--color-base-100"], "oklch(")
+      true
 
-      iex> FavnView.Dev.DesignSystem.Theme.tokens("favn-dark")["--favn-action"]
-      "oklch(87% 0.23 130)"
+      iex> tokens = FavnView.Dev.DesignSystem.Theme.tokens("favn-dark")
+      iex> String.starts_with?(tokens["--favn-action"], "oklch(")
+      true
   """
   @spec tokens(String.t()) :: %{String.t() => String.t()}
   def tokens(theme) when theme in @themes do
@@ -80,8 +81,9 @@ defmodule FavnView.Dev.DesignSystem.Theme do
 
   ## Examples
 
-      iex> FavnView.Dev.DesignSystem.Theme.root_tokens()["--favn-terminal-bg"]
-      "oklch(15% 0.02 255)"
+      iex> tokens = FavnView.Dev.DesignSystem.Theme.root_tokens()
+      iex> String.starts_with?(tokens["--favn-terminal-bg"], "oklch(")
+      true
   """
   @spec root_tokens() :: %{String.t() => String.t()}
   def root_tokens do

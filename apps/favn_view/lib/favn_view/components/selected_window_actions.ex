@@ -36,18 +36,18 @@ defmodule FavnView.Components.SelectedWindowActions do
     >
       <div class="min-w-0">
         <p class="text-xs uppercase tracking-[0.18em] favn-text-subtle">Run asset</p>
-        
+
         <p class="mt-1 text-sm font-medium text-base-content">{selection_label(@selected_window)}</p>
-        
+
         <p class="mt-0.5 text-xs favn-text-muted">{status_label(@selected_window)}</p>
-        
+
         <p
           :if={@selected_window && !@selected_window.run_enabled?}
           class="mt-1 text-xs favn-text-subtle"
         >
           {run_disabled_reason_label(@selected_window.run_disabled_reason)}
         </p>
-        
+
         <p
           :if={@selected_window_error}
           class="mt-1 text-xs text-error"
@@ -55,12 +55,12 @@ defmodule FavnView.Components.SelectedWindowActions do
         >
           {@selected_window_error}
         </p>
-        
+
         <p :if={@submitted_run_id} class="mt-1 text-xs text-success" data-testid="submitted-run-id">
           Submitted {@submitted_run_id}
         </p>
       </div>
-      
+
       <div class="flex w-full shrink-0 justify-end gap-2 sm:w-auto">
         <.button
           icon="hero-play"
@@ -76,7 +76,7 @@ defmodule FavnView.Components.SelectedWindowActions do
           Run asset
         </.button>
       </div>
-      
+
       <.run_config_panel
         :if={@run_config_open?}
         selected_window={@selected_window}
@@ -118,19 +118,19 @@ defmodule FavnView.Components.SelectedWindowActions do
         data-testid="run-config-form"
       >
         <.field_row label="Dependencies">{dependencies_summary(@run_config)}</.field_row>
-        
+
         <.field_row label="Refresh">{refresh_label(@run_config.refresh)}</.field_row>
-        
+
         <details
           class="rounded-box border border-base-content/10 p-3"
           data-testid="run-config-advanced"
         >
           <summary class="favn-text-muted cursor-pointer text-xs">Change how it runs</summary>
-          
+
           <div class="mt-3 space-y-4">
             <fieldset class="fieldset">
               <legend class="fieldset-legend">Plan scope / dependencies</legend>
-              
+
               <.radio_card
                 name="run_config[dependencies]"
                 value="all"
@@ -146,13 +146,13 @@ defmodule FavnView.Components.SelectedWindowActions do
                 description="Plan only the selected target and window."
               />
             </fieldset>
-            
+
             <fieldset
               :if={window_context_enabled?(@has_data_windows?, @selected_window)}
               class="fieldset"
             >
               <legend class="fieldset-legend">{window_context_legend(@active_timeline)}</legend>
-              
+
               <input
                 type="hidden"
                 name="run_config[source]"
@@ -168,15 +168,15 @@ defmodule FavnView.Components.SelectedWindowActions do
                     data-testid="run-config-window-kind"
                   >
                     <option value="hour" selected={@run_config.kind == "hour"}>Hour</option>
-                    
+
                     <option value="day" selected={@run_config.kind == "day"}>Day</option>
-                    
+
                     <option value="month" selected={@run_config.kind == "month"}>Month</option>
-                    
+
                     <option value="year" selected={@run_config.kind == "year"}>Year</option>
                   </select>
                 </label>
-                
+
                 <label class="form-control">
                   <span class="label-text text-xs">From</span>
                   <input
@@ -189,7 +189,7 @@ defmodule FavnView.Components.SelectedWindowActions do
                     data-testid="run-config-window-value"
                   />
                 </label>
-                
+
                 <label class="form-control">
                   <span class="label-text text-xs">To</span>
                   <input
@@ -202,7 +202,7 @@ defmodule FavnView.Components.SelectedWindowActions do
                     data-testid="run-config-window-to"
                   />
                 </label>
-                
+
                 <label class="form-control">
                   <span class="label-text text-xs">Timezone</span>
                   <input
@@ -215,19 +215,19 @@ defmodule FavnView.Components.SelectedWindowActions do
                   />
                 </label>
               </div>
-              
+
               <p class="mt-2 text-xs favn-text-muted">
                 {window_context_description(@selected_window, @active_timeline)}
               </p>
-              
+
               <p :if={is_nil(@selected_window)} class="mt-1 text-xs favn-text-muted">
                 Range backfills default to missing refresh; choose force explicitly to recompute existing successful windows.
               </p>
             </fieldset>
-            
+
             <fieldset class="fieldset">
               <legend class="fieldset-legend">Refresh behavior</legend>
-              
+
               <.radio_card
                 name="run_config[refresh]"
                 value="auto"
@@ -266,12 +266,12 @@ defmodule FavnView.Components.SelectedWindowActions do
             </fieldset>
           </div>
         </details>
-        
+
         <.notice :if={forces_upstream?(@run_config)} tone={:warning}>
           Forcing upstream assets changes their inputs, so downstream assets in the planned graph can rerun too.
         </.notice>
       </.form>
-      
+
       <:actions>
         <.button
           variant={:ghost}
@@ -281,8 +281,9 @@ defmodule FavnView.Components.SelectedWindowActions do
         >
           Cancel
         </.button>
-        
+
         <.button
+          variant={:solid}
           type="submit"
           form="run-config-form"
           loading={@submitting_window_run?}
