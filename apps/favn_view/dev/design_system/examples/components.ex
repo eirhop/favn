@@ -107,7 +107,11 @@ defmodule FavnView.Dev.DesignSystem.Examples.Components do
   defp logs do
     %{
       "log_viewer/log_viewer" => [
-        Example.attrs(:mixed_levels, Fixtures.Logs.viewer_attrs()),
+        Example.attrs(
+          :mixed_levels,
+          Fixtures.Logs.viewer_attrs(),
+          "One error in the stream, so the toolbar grows the error jump control."
+        ),
         Example.attrs(
           :empty,
           Fixtures.Logs.viewer_attrs(%{logs: []}),
@@ -115,15 +119,13 @@ defmodule FavnView.Dev.DesignSystem.Examples.Components do
         ),
         Example.attrs(
           :multi_line_sql,
-          Fixtures.Logs.viewer_attrs(%{logs: Fixtures.Logs.sql_only(), subtitle: "SQL output"}),
-          "SQL keeps its line breaks; the viewer must not collapse them."
+          Fixtures.Logs.viewer_attrs(%{logs: Fixtures.Logs.sql_only()}),
+          "SQL keeps its line breaks; continuation lines align at the message column."
         ),
         Example.attrs(
           :stacktrace,
-          Fixtures.Logs.viewer_attrs(%{
-            logs: Fixtures.Logs.stacktrace(),
-            subtitle: "Error output"
-          })
+          Fixtures.Logs.viewer_attrs(%{logs: Fixtures.Logs.stacktrace()}),
+          "A failed line takes the error colour and a lit left edge."
         ),
         Example.attrs(
           :wrap_on,
@@ -133,7 +135,7 @@ defmodule FavnView.Dev.DesignSystem.Examples.Components do
         Example.attrs(
           :wrap_off,
           Fixtures.Logs.viewer_attrs(%{logs: Fixtures.Logs.long(), wrap?: false}),
-          "Unwrapped: one row per entry, horizontal overflow inside the viewer only."
+          "Unwrapped: one row per entry, horizontal overflow inside the terminal only."
         ),
         Example.attrs(
           :truncated,

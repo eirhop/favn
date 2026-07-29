@@ -41,16 +41,18 @@ defmodule FavnView.Dev.DesignSystem.Examples do
 
   # A provider's map builds every fixture it uses, and the index page asks for
   # every entry, so an uncached walk builds each provider's fixtures once per
-  # card. The cache key carries the provider's md5, so editing a provider and
-  # letting the code reloader recompile it serves the new examples immediately;
-  # superseded entries are just a little dev-session garbage.
+  # card — 186 rebuilds in one request. The memo is per-process because that is
+  # the whole requirement: a request dedupes its own walk and then dies. A
+  # longer-lived cache went stale the first time a *dependency* of a provider
+  # (a view model the fixtures call) was recompiled, because no key derivable
+  # from the provider alone can see that edit.
   defp examples(provider) do
-    key = {__MODULE__, provider, provider.module_info(:md5)}
+    key = {__MODULE__, provider}
 
-    case :persistent_term.get(key, :missing) do
+    case Process.get(key, :missing) do
       :missing ->
         map = provider.all()
-        :persistent_term.put(key, map)
+        Process.put(key, map)
         map
 
       map ->

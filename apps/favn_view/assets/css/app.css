@@ -158,6 +158,24 @@
   --favn-text-subtle: oklch(43% 0.03 255);
 }
 
+/* The log terminal keeps one dark canvas in both themes — a terminal is an
+   idiom, not a surface, and log colour semantics (error red, warning amber)
+   must not re-tune per theme. Every colour here is asserted against
+   `--favn-terminal-bg` by the palette gate in
+   `dev/design_system/palette.ex`, so edits fail the test suite before they
+   fail an operator. */
+:root {
+  --favn-terminal-bg: oklch(15% 0.02 255);
+  --favn-terminal-border: oklch(32% 0.03 255);
+  --favn-terminal-boundary: oklch(52% 0.03 255);
+  --favn-terminal-text: oklch(90% 0.015 250);
+  --favn-terminal-dim: oklch(70% 0.025 250);
+  --favn-terminal-debug: oklch(64% 0.02 250);
+  --favn-terminal-info: oklch(78% 0.1 230);
+  --favn-terminal-warning: oklch(84% 0.12 85);
+  --favn-terminal-error: oklch(74% 0.16 22);
+}
+
 /* Button label colours are deliberately unlayered.
    DaisyUI emits its own `color` for buttons in `@layer utilities`, and a later
    layer beats an earlier one no matter how specific the earlier selector is.
@@ -206,18 +224,22 @@ summary {
   min-height: 1.5rem;
 }
 
+/* The two secondary text tiers. `muted` is metadata and labels a reader is
+   expected to read; `subtle` is the faintest tier the contract allows. There
+   is no third: a tier nobody can read is not information.
+   Unlayered because the tier must win wherever it is placed — DaisyUI paints
+   its own text colours (a select's `.label`, a button's label) from
+   `@layer utilities`, which outranks any layered override. */
+.favn-text-muted {
+  color: var(--favn-text-muted);
+}
+
+.favn-text-subtle {
+  color: var(--favn-text-subtle);
+}
+
+
 @layer components {
-  /* The two secondary text tiers. `muted` is metadata and labels a reader is
-     expected to read; `subtle` is the faintest tier the contract allows. There
-     is no third: a tier nobody can read is not information. */
-  .favn-text-muted {
-    color: var(--favn-text-muted);
-  }
-
-  .favn-text-subtle {
-    color: var(--favn-text-subtle);
-  }
-
   /* `favn-shell-bg` is the full page shell and claims the viewport. The
      design-system browser wants the same atmosphere without claiming it, so it
      uses `favn-shell-backdrop`, which stays as tall as its content and lets the
@@ -295,6 +317,69 @@ summary {
     transform: rotate(90deg);
   }
 
+  /* The log terminal. One entry is one line; the line is a <summary> whose
+     expansion holds the entry's identity and metadata. Level is encoded twice —
+     a colour and a three-letter tag — so colour is never the only signal. */
+  .favn-terminal {
+    background: var(--favn-terminal-bg);
+    color: var(--favn-terminal-text);
+    border: var(--border) solid var(--favn-terminal-border);
+  }
+
+  .favn-terminal .favn-log-dim {
+    color: var(--favn-terminal-dim);
+  }
+
+  .favn-log-line > summary {
+    padding: 0.125rem 0.75rem;
+  }
+
+  .favn-log-line > summary:hover {
+    background: color-mix(in oklab, var(--favn-terminal-text) 8%, transparent);
+  }
+
+  .favn-log-line .favn-log-marker {
+    transition: transform 160ms ease;
+  }
+
+  .favn-log-line[open] > summary .favn-log-marker {
+    transform: rotate(90deg);
+  }
+
+  .favn-log-line[data-log-level="debug"] .favn-log-level {
+    color: var(--favn-terminal-debug);
+  }
+
+  .favn-log-line[data-log-level="info"] .favn-log-level {
+    color: var(--favn-terminal-info);
+  }
+
+  .favn-log-line[data-log-level="warning"] .favn-log-level {
+    color: var(--favn-terminal-warning);
+  }
+
+  .favn-log-line[data-log-level="warning"] > summary {
+    box-shadow: inset 2px 0 0 0 var(--favn-terminal-warning);
+  }
+
+  /* A failed line must be findable while scrolling fast: the whole message
+     takes the error colour and the line grows a lit left edge and a wash. */
+  .favn-log-line[data-log-level="error"] > summary {
+    color: var(--favn-terminal-error);
+    background: color-mix(in oklab, var(--favn-terminal-error) 10%, transparent);
+    box-shadow: inset 2px 0 0 0 var(--favn-terminal-error);
+  }
+
+  .favn-log-line[data-log-level="error"] > summary:hover {
+    background: color-mix(in oklab, var(--favn-terminal-error) 18%, transparent);
+  }
+
+  .favn-log-expanded {
+    border-top: var(--border) solid var(--favn-terminal-border);
+    background: color-mix(in oklab, var(--favn-terminal-text) 4%, transparent);
+    padding: 0.5rem 0.75rem 0.625rem 2.25rem;
+  }
+
   /* Selection is a state, so it has to be identifiable: an opaque border plus a
      lit edge, rather than a tinted hairline that measured 2.47:1. */
   .favn-list-card-selected {
@@ -357,6 +442,15 @@ summary {
       0 1px 0 color-mix(in oklab, var(--color-base-content) 12%, transparent) inset,
       0 0 0 1px color-mix(in oklab, var(--color-primary) 16%, transparent) inset,
       0 14px 38px color-mix(in oklab, var(--color-primary) 10%, transparent) !important;
+  }
+
+  /* A control whose border is the thing identifying it — a stateful toggle
+     chip on the glass surface — needs that border at 3:1; the glass border
+     sits near 1.8:1, which is fine only for controls with their own fill.
+     `!important` because the surface rule above is `!important`, and this must
+     follow it in the same layer to win the tie, including over `:hover`. */
+  .btn.favn-control-boundary {
+    border-color: color-mix(in oklab, var(--color-base-content) 62%, transparent) !important;
   }
 
   .favn-control-glass :is(input, select),

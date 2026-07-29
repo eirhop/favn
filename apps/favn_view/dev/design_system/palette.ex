@@ -44,6 +44,7 @@ defmodule FavnView.Dev.DesignSystem.Palette do
   @soft_wash 0.16
 
   @type check :: %{
+          optional(:base) => String.t(),
           id: atom(),
           theme: String.t(),
           foreground: String.t(),
@@ -63,11 +64,15 @@ defmodule FavnView.Dev.DesignSystem.Palette do
         }
 
   @doc """
-  Every check, for every theme.
+  Every check: the themed ones for every theme, then the `:root` terminal
+  checks, which are fixed because the log terminal stays dark in both themes.
   """
   @spec checks() :: [check()]
   def checks do
-    for theme <- Theme.themes(), check <- checks_for_theme(), do: Map.put(check, :theme, theme)
+    themed =
+      for theme <- Theme.themes(), check <- checks_for_theme(), do: Map.put(check, :theme, theme)
+
+    themed ++ Enum.map(terminal_checks(), &Map.put(&1, :theme, ":root"))
   end
 
   @doc """
@@ -172,6 +177,60 @@ defmodule FavnView.Dev.DesignSystem.Palette do
     ] ++ Enum.map(@tones, &wash_check/1) ++ Enum.map(@solid_surfaces, &solid_check/1)
   end
 
+  # The log terminal's canvas is `--favn-terminal-bg` in both themes, so its
+  # text colours are judged once, against that background. `dim` is the time
+  # and source gutter — read constantly, so it is held to the normal-text
+  # limit, not treated as decoration.
+  defp terminal_checks do
+    level_checks =
+      for level <- [:debug, :info, :warning, :error] do
+        %{
+          id: :"terminal_#{level}",
+          foreground: "--favn-terminal-#{level}",
+          background: "--favn-terminal-bg",
+          base: "--favn-terminal-bg",
+          limit: 4.5,
+          why: "a #{level} log line against the terminal canvas"
+        }
+      end
+
+    [
+      %{
+        id: :terminal_text,
+        foreground: "--favn-terminal-text",
+        background: "--favn-terminal-bg",
+        base: "--favn-terminal-bg",
+        limit: 4.5,
+        why: "log messages against the terminal canvas"
+      },
+      %{
+        id: :terminal_dim,
+        foreground: "--favn-terminal-dim",
+        background: "--favn-terminal-bg",
+        base: "--favn-terminal-bg",
+        limit: 4.5,
+        why: "the time and source gutter against the terminal canvas"
+      },
+      %{
+        id: :terminal_error_on_wash,
+        foreground: "--favn-terminal-error",
+        background: {:wash, "--favn-terminal-error", 0.1},
+        base: "--favn-terminal-bg",
+        limit: 4.5,
+        why: "an error line draws its text over its own 10% wash"
+      },
+      %{
+        id: :terminal_boundary,
+        foreground: "--favn-terminal-boundary",
+        background: "--favn-terminal-bg",
+        base: "--favn-terminal-bg",
+        limit: 3.0,
+        why: "the border identifying a ghost control on the terminal canvas"
+      }
+      | level_checks
+    ]
+  end
+
   defp wash_check(tone) do
     token = "--color-#{tone}"
 
@@ -198,7 +257,7 @@ defmodule FavnView.Dev.DesignSystem.Palette do
 
   defp verdict(check) do
     foreground = Theme.fetch!(check.theme, check.foreground) |> Color.parse!()
-    base = Theme.fetch!(check.theme, "--color-base-100") |> Color.parse!()
+    base = Theme.fetch!(check.theme, Map.get(check, :base, "--color-base-100")) |> Color.parse!()
     {background, background_label} = background(check, base)
 
     ratio = Audit.contrast_ratio(Color.to_srgb(foreground), Color.to_srgb(background))

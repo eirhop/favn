@@ -51,8 +51,26 @@ const Hooks = {
   },
   FavnLogViewer: {
     mounted() {
+      // Follow pauses while the operator reads scrollback and resumes when
+      // they return to the bottom, so live tail never fights error-jumping.
+      this.atBottom = true
+      this.errorIndex = -1
       this.scrollToBottom()
+
+      this.terminal()?.addEventListener("scroll", () => {
+        const terminal = this.terminal()
+        if (!terminal) return
+        this.atBottom =
+          terminal.scrollTop + terminal.clientHeight >= terminal.scrollHeight - 8
+      })
+
       this.el.addEventListener("click", event => {
+        const errorNav = event.target.closest("[data-log-error-nav]")
+        if (errorNav) {
+          this.jumpToError(errorNav.dataset.logErrorNav)
+          return
+        }
+
         const textButton = event.target.closest("[data-copy-text]")
         if (textButton) {
           navigator.clipboard?.writeText(textButton.dataset.copyText || "")
@@ -70,11 +88,26 @@ const Hooks = {
     updated() {
       this.scrollToBottom()
     },
+    terminal() {
+      return this.el.querySelector("[data-testid='log-terminal-window']")
+    },
     scrollToBottom() {
       if (this.el.dataset.liveTail !== "true") return
+      if (!this.atBottom) return
 
-      const terminal = this.el.querySelector("[data-testid='log-terminal-window']")
+      const terminal = this.terminal()
       if (terminal) terminal.scrollTop = terminal.scrollHeight
+    },
+    jumpToError(direction) {
+      const errors = Array.from(this.el.querySelectorAll("[data-log-level='error']"))
+      if (errors.length === 0) return
+
+      this.errorIndex = direction === "prev"
+        ? (this.errorIndex <= 0 ? errors.length - 1 : this.errorIndex - 1)
+        : (this.errorIndex >= errors.length - 1 ? 0 : this.errorIndex + 1)
+
+      this.atBottom = false
+      errors[this.errorIndex].scrollIntoView({block: "center"})
     }
   },
   LineageCanvas: {

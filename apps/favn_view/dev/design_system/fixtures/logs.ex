@@ -132,16 +132,17 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.Logs do
 
   @doc """
   Assigns for `FavnView.Components.LogViewer.log_viewer/1`.
+
+  Accepts `:logs` as raw entries and converts them, so callers state content
+  rather than view-model shapes.
   """
   @spec viewer_attrs(map()) :: map()
   def viewer_attrs(overrides \\ %{}) do
     logs = Map.get(overrides, :logs, mixed())
 
     %{
-      logs: logs,
       visible_logs: LogsViewModel.entries(logs),
-      title: "Logs",
-      subtitle: "Live system and run logs",
+      scope: :global,
       status: :ready,
       live?: true,
       live_tail?: true,
@@ -149,11 +150,9 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.Logs do
       search_query: "",
       selected_level: "all",
       selected_source: "all",
-      empty_state: "No logs yet.",
-      facts: facts()
+      empty_state: "No logs yet."
     }
-    |> Map.merge(overrides)
-    |> then(&Map.put(&1, :visible_logs, LogsViewModel.entries(&1.logs)))
+    |> Map.merge(Map.delete(overrides, :logs))
   end
 
   @doc """
@@ -200,7 +199,8 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.Logs do
   end
 
   @doc """
-  Assigns for the run logs page.
+  Assigns for the run logs page, including the step strip: one step failed, so
+  the strip must say so before the operator reads a single log line.
   """
   @spec run_page_attrs() :: map()
   def run_page_attrs do
@@ -208,16 +208,48 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.Logs do
       logs: for_run("run_2026_06_12"),
       title: "Run logs",
       subtitle: "run_2026_06_12 · customer_orders_daily",
-      status: "Running",
-      status_tone: :info,
+      status: "Failed",
+      status_tone: :error,
       nav_items: AssetCataloguePage.nav_items(:runs),
       back_href: "/runs/run_2026_06_12",
       back_label: "Back to run",
       facts: Enum.take(facts(), 2),
       scope: :run,
+      run_id: "run_2026_06_12",
+      run_steps: run_steps(),
       filter: %Filter{run_id: "run_2026_06_12"},
       empty_state: "No logs recorded for this run yet."
     })
+  end
+
+  @doc """
+  The per-step results the run logs page links to.
+  """
+  @spec run_steps() :: [map()]
+  def run_steps do
+    [
+      %{
+        id: "01",
+        display_name: "stg_orders",
+        status: "Succeeded",
+        status_tone: :success,
+        duration: "48 s"
+      },
+      %{
+        id: "02",
+        display_name: "stg_customers",
+        status: "Succeeded",
+        status_tone: :success,
+        duration: "31 s"
+      },
+      %{
+        id: "03",
+        display_name: "customer_orders_daily",
+        status: "Failed",
+        status_tone: :error,
+        duration: "2.1 s"
+      }
+    ]
   end
 
   @doc """

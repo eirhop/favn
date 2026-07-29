@@ -49,8 +49,21 @@ defmodule FavnView.Dev.DesignSystem.Theme do
 
   @doc """
   Fetches one token, raising when the theme does not define it.
+
+  `":root"` fetches from `root_tokens/0` instead of a theme.
   """
   @spec fetch!(String.t(), String.t()) :: String.t()
+  def fetch!(":root", token) do
+    case Map.fetch(root_tokens(), token) do
+      {:ok, value} ->
+        value
+
+      :error ->
+        raise KeyError,
+              ":root does not define #{token} in #{Path.relative_to_cwd(@stylesheet)}"
+    end
+  end
+
   def fetch!(theme, token) do
     case Map.fetch(tokens(theme), token) do
       {:ok, value} ->
@@ -60,6 +73,22 @@ defmodule FavnView.Dev.DesignSystem.Theme do
         raise KeyError,
               "#{theme} does not define #{token} in #{Path.relative_to_cwd(@stylesheet)}"
     end
+  end
+
+  @doc """
+  Tokens declared on `:root`, which are shared by every theme.
+
+  ## Examples
+
+      iex> FavnView.Dev.DesignSystem.Theme.root_tokens()["--favn-terminal-bg"]
+      "oklch(15% 0.02 255)"
+  """
+  @spec root_tokens() :: %{String.t() => String.t()}
+  def root_tokens do
+    @css
+    |> blocks_starting_with(":root")
+    |> Enum.join("\n")
+    |> declarations()
   end
 
   # The `@plugin` block for a theme is found by its `name:` declaration rather

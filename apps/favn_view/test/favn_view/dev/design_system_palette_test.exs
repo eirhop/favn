@@ -24,10 +24,10 @@ defmodule FavnView.Dev.DesignSystem.PaletteTest do
              """
     end
 
-    test "both themes are checked, not just the default one" do
+    test "both themes are checked, plus the shared terminal tokens" do
       themes = Palette.verdicts() |> Enum.map(& &1.theme) |> Enum.uniq() |> Enum.sort()
 
-      assert themes == ["favn-dark", "favn-light"]
+      assert themes == [":root", "favn-dark", "favn-light"]
     end
 
     test "a check names why it exists" do
