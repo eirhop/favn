@@ -4,41 +4,48 @@ defmodule FavnView.Components.RunDetailPage.WindowSemanticsTest do
   import Phoenix.LiveViewTest
 
   alias FavnView.Components.RunDetailPage
-  alias FavnView.Components.RunDetailPage.Overview
-  alias FavnView.Components.RunDetailPage.Stats
+  alias FavnView.Dev.DesignSystem.Fixtures.Runs
 
-  test "labels requested anchors separately from effective runtime windows" do
-    run =
-      :running
-      |> RunDetailPage.sample_execution_group()
-      |> Map.put(:effective_window_count, 7)
-
-    stats = render_component(&Stats.execution_group_stats/1, run: run)
-    overview = render_component(&Overview.overview_panel/1, run: run)
-
-    assert stats =~ "Requested windows"
-    assert stats =~ "anchors complete"
-    assert stats =~ "Effective windows"
-    assert stats =~ "asset runtime windows"
-    assert overview =~ "Effective asset windows"
-    assert overview =~ "pipeline's effective selection"
+  defp render_page(run, opts \\ []) do
+    render_component(
+      &RunDetailPage.run_detail_page/1,
+      Keyword.merge([run: run, run_id: run.id], opts)
+    )
   end
 
-  test "visibly marks a bounded detail slice while retaining exact header totals" do
-    run =
-      :running
-      |> RunDetailPage.sample_execution_group()
-      |> Map.put(:asset_attempts_truncated?, true)
+  test "a multi-window run reports window progress separately from asset progress" do
+    html = render_page(Runs.backfill(:running))
 
-    html =
-      render_component(&RunDetailPage.run_detail_page/1,
-        run: run,
-        run_id: run.id,
-        active_mode: :overview
-      )
+    assert html =~ ~s(data-testid="asset-progress")
+    assert html =~ ~s(data-testid="window-progress")
+    assert html =~ "2 windows"
+  end
+
+  test "a single-window run says nothing about window progress" do
+    html = render_page(Runs.single_window())
+
+    assert html =~ ~s(data-testid="asset-progress")
+    refute html =~ ~s(data-testid="window-progress")
+  end
+
+  test "an outcome that did not occur is absent rather than shown as zero" do
+    html = render_page(Runs.single_window())
+
+    assert html =~ "2 succeeded"
+    refute html =~ "0 failed"
+    refute html =~ "0 running"
+  end
+
+  test "a bounded detail slice is marked without implying the meters are partial" do
+    run = Map.put(Runs.backfill(:running), :asset_attempts_truncated?, true)
+    html = render_page(run)
 
     assert html =~ "run-detail-truncated-warning"
-    assert html =~ "Header totals are exact"
-    assert html =~ "some detail rows are omitted"
+    assert html =~ "meters above are exact"
+  end
+
+  test "window runs are only counted in the rail when there is more than one" do
+    assert render_page(Runs.backfill(:running)) =~ "Window runs"
+    refute render_page(Runs.single_window()) =~ ~s(data-testid="window-progress")
   end
 end

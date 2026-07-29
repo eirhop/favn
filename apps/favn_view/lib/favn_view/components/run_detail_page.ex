@@ -1,6 +1,16 @@
 defmodule FavnView.Components.RunDetailPage do
   @moduledoc """
-  Backfill-centric run detail page for operator inspection.
+  Run detail: one flow of work, and a panel for whatever the operator selects.
+
+  This page used to offer five peer modes — overview, timeline, failures, window
+  runs, events — which were five projections of one list of asset attempts. The
+  flow replaces the first three: it keeps time like the timeline did, keeps the
+  dependency order the timeline threw away, and renders each failure in the lane
+  it happened in, so there is nothing left for a failures tab to show.
+
+  Window runs stays because a child run is a different object from an asset
+  attempt. Events stays because a raw stream is sometimes the only way to see what
+  a stuck run last did.
   """
 
   use FavnView, :html
@@ -10,19 +20,21 @@ defmodule FavnView.Components.RunDetailPage do
   alias FavnView.Components.RunDetailPage.AttemptDrawer
   alias FavnView.Components.RunDetailPage.Events
   alias FavnView.Components.RunDetailPage.Failures
+  alias FavnView.Components.RunDetailPage.Flow
   alias FavnView.Components.RunDetailPage.NotFound
-  alias FavnView.Components.RunDetailPage.Overview
-  alias FavnView.Components.RunDetailPage.Samples
-  alias FavnView.Components.RunDetailPage.Stats
-  alias FavnView.Components.RunDetailPage.Timeline
+  alias FavnView.Components.RunDetailPage.Progress
   alias FavnView.Components.RunDetailPage.WindowRuns
+  alias FavnView.RunFlow
 
   attr :run, :map, required: true
   attr :run_id, :string, required: true
   attr :nav_items, :list, default: []
-  attr :active_mode, :atom, default: :overview
-  attr :timeline_state, :map, default: nil
-  attr :timeline_hook?, :boolean, default: false
+  attr :active_mode, :atom, default: :flow
+
+  attr :flow, :map,
+    default: nil,
+    doc: "a prebuilt `FavnView.RunFlow` projection; derived from the run when absent"
+
   attr :selected_child_run_id, :string, default: nil
   attr :selected_attempt_id, :string, default: nil
   attr :flash, :map, default: %{}
@@ -33,6 +45,7 @@ defmodule FavnView.Components.RunDetailPage do
     assigns =
       assigns
       |> assign(:run, run)
+      |> assign(:flow, assigns.flow || flow(run))
       |> assign(:selected_attempt, selected_attempt(run, assigns.selected_attempt_id))
 
     ~H"""
@@ -48,40 +61,39 @@ defmodule FavnView.Components.RunDetailPage do
       flash={@flash}
     >
       <:actions :if={@run[:cancellable?]}>
-        <button
-          type="button"
-          class="btn btn-error btn-soft btn-sm gap-2 rounded-box border-error/30"
+        <.button
+          variant={:danger}
+          icon="hero-no-symbol"
           phx-click="cancel_run"
           phx-disable-with="Cancelling..."
           data-confirm="Cancel this run? Active runner work will be asked to stop."
           data-testid="cancel-run-button"
         >
-          <.icon name="hero-no-symbol" class="size-4" /> {@run[:cancel_label] || "Cancel run"}
-        </button>
+          {@run[:cancel_label] || "Cancel run"}
+        </.button>
       </:actions>
 
       <:actions :if={@run[:retry_remaining?]}>
-        <button
-          type="button"
-          class="btn btn-primary btn-soft btn-sm gap-2 rounded-box border-primary/30"
+        <.button
+          icon="hero-arrow-path"
           phx-click="retry_remaining"
           phx-disable-with="Submitting..."
           data-confirm="Retry remaining failed or not-started assets with the same run configuration?"
           data-testid="retry-remaining-button"
         >
-          <.icon name="hero-arrow-path" class="size-4" /> {@run[:retry_remaining_label] ||
-            "Retry remaining"}
-        </button>
+          {@run[:retry_remaining_label] || "Retry remaining"}
+        </.button>
       </:actions>
-       <NotFound.not_found_panel :if={!@run[:found?]} run={@run} />
+
+      <NotFound.not_found_panel :if={!@run[:found?]} run={@run} />
       <.execution_group_page
         :if={@run[:found?]}
         run={@run}
+        flow={@flow}
         active_mode={@active_mode}
-        timeline_state={@timeline_state || default_timeline_state(@run)}
-        timeline_hook?={@timeline_hook?}
         selected_child_run_id={@selected_child_run_id}
         selected_attempt={@selected_attempt}
+        selected_attempt_id={@selected_attempt_id}
       />
       <:mode_rail>
         <ModeRail.mode_rail active={@active_mode} modes={run_modes(@run)} on_select="set_mode" />
@@ -91,72 +103,64 @@ defmodule FavnView.Components.RunDetailPage do
   end
 
   attr :run, :map, required: true
+  attr :flow, :map, default: nil
   attr :active_mode, :atom, required: true
-  attr :timeline_state, :map, required: true
-  attr :timeline_hook?, :boolean, required: true
   attr :selected_child_run_id, :string, default: nil
   attr :selected_attempt, :map, default: nil
+  attr :selected_attempt_id, :string, default: nil
 
   def execution_group_page(assigns) do
     ~H"""
-    <div class="mx-auto flex w-full max-w-[120rem] flex-col gap-3" data-testid="run-detail-page">
-      <Stats.execution_group_stats run={@run} />
-      <div
-        :if={
-          @run.asset_attempts_truncated? or @run.requested_windows_truncated? or
-            @run.child_runs_truncated?
-        }
-        class="rounded-box border border-warning/30 bg-warning/10 p-3 text-sm text-warning-content"
+    <div class="mx-auto flex w-full max-w-[110rem] flex-col gap-4" data-testid="run-detail-page">
+      <Progress.run_progress run={@run} />
+
+      <.notice
+        :if={truncated?(@run)}
+        tone={:warning}
+        icon="hero-scissors"
         data-testid="run-detail-truncated-warning"
       >
-        Showing the first bounded detail slice. Header totals are exact; some detail rows are omitted.
+        Showing the first bounded detail slice. The meters above are exact; some detail rows
+        are omitted.
+      </.notice>
+
+      <Failures.window_failures run={@run} />
+
+      <div data-run-active={to_string(@run.active?)}>
+        <Flow.flow
+          :if={@active_mode == :flow and @flow}
+          flow={@flow}
+          selected_attempt_id={@selected_attempt_id}
+        />
+        <WindowRuns.window_runs_panel
+          :if={@active_mode == :windows}
+          run={@run}
+          selected_child_run_id={@selected_child_run_id}
+        />
+        <Events.events_panel :if={@active_mode == :events} run={@run} />
       </div>
 
-      <.panel
-        padding={:none}
-        class="p-0"
-        data-testid={if(@active_mode == :overview, do: "run-overview-panel", else: "run-mode-panel")}
-        data-run-active={to_string(@run.active?)}
-      >
-        <div class="p-3 sm:p-4 lg:p-5">
-          <Overview.overview_panel :if={@active_mode == :overview} run={@run} />
-          <Timeline.timeline_panel
-            :if={@active_mode == :timeline}
-            run={@run}
-            timeline_state={@timeline_state}
-            timeline_hook?={@timeline_hook?}
-          /> <Failures.failures_panel :if={@active_mode == :failures} run={@run} />
-          <WindowRuns.window_runs_panel
-            :if={@active_mode == :windows}
-            run={@run}
-            selected_child_run_id={@selected_child_run_id}
-          /> <Events.events_panel :if={@active_mode == :events} run={@run} />
-        </div>
-      </.panel>
-       <AttemptDrawer.attempt_drawer :if={@selected_attempt} attempt={@selected_attempt} />
+      <AttemptDrawer.attempt_drawer :if={@selected_attempt} attempt={@selected_attempt} />
     </div>
     """
   end
 
-  defdelegate sample_run(status \\ :running), to: Samples
-  defdelegate empty_run(), to: Samples
-  defdelegate sample_run_with_no_results(status), to: Samples
-  defdelegate sample_run_with_long_asset_names(), to: Samples
-  defdelegate sample_run_with_node_statuses(), to: Samples
-  defdelegate sample_nav_items(), to: Samples
-  defdelegate sample_full_refresh_run(), to: Samples
-  defdelegate sample_single_window_run(), to: Samples
-  defdelegate sample_timeline_run(), to: Samples
-  defdelegate sample_completed_timeline_run(), to: Samples
-  defdelegate sample_admission_failed_backfill(), to: Samples
-  defdelegate not_found_run(), to: Samples
-  defdelegate unavailable_run(), to: Samples
-  defdelegate sample_execution_group(status \\ :running), to: Samples
+  # The LiveView precomputes the flow so a refresh does not rebuild it inside
+  # `render/1`. Every other caller — design-system examples, component tests —
+  # only has a run, so derive it here rather than make each of them do it.
+  defp flow(%{found?: true, attempts: attempts, active?: active?}),
+    do: RunFlow.build(attempts, active?: active?)
+
+  defp flow(_run), do: nil
 
   defp selected_attempt(%{attempts: attempts}, attempt_id) when is_binary(attempt_id),
     do: Enum.find(attempts, &(&1.id == attempt_id))
 
   defp selected_attempt(_run, _attempt_id), do: nil
+
+  defp truncated?(run) do
+    run.asset_attempts_truncated? or run.requested_windows_truncated? or run.child_runs_truncated?
+  end
 
   defp normalize_run(run) when is_map(run) do
     run
@@ -164,69 +168,28 @@ defmodule FavnView.Components.RunDetailPage do
     |> Map.put_new(:backfill_failures, [])
     |> Map.put_new(:backfill_failure_count, 0)
     |> Map.put_new(:retry_remaining?, false)
-    |> Map.put_new(:effective_window_count, length(Map.get(run, :windows, [])))
     |> Map.put_new(:requested_windows_truncated?, false)
     |> Map.put_new(:asset_attempts_truncated?, false)
     |> Map.put_new(:child_runs_truncated?, false)
   end
 
-  defp default_timeline_state(%{active?: true}) do
-    live_timeline_state()
-  end
-
-  defp default_timeline_state(%{running_asset_attempts: running}) when running > 0 do
-    live_timeline_state()
-  end
-
-  defp default_timeline_state(%{raw_status: status}) when status in [:pending, :running] do
-    live_timeline_state()
-  end
-
-  defp default_timeline_state(_run) do
-    %{
-      mode: :fit,
-      zoom: "full",
-      live_follow?: false,
-      search: "",
-      status: "all",
-      window: "all",
-      failed_only?: false,
-      running_only?: false
-    }
-  end
-
-  defp live_timeline_state do
-    %{
-      mode: :live,
-      zoom: "30m",
-      live_follow?: true,
-      search: "",
-      status: "all",
-      window: "all",
-      failed_only?: false,
-      running_only?: false
-    }
-  end
-
   defp run_modes(run) do
     [
-      %{id: :overview, label: "Overview", icon: "hero-table-cells"},
-      %{id: :timeline, label: "Timeline", icon: "hero-chart-bar"},
-      %{
-        id: :failures,
-        label: "Failures",
-        icon: "hero-exclamation-triangle",
-        count: failed_count(run)
-      },
+      %{id: :flow, label: "Flow", icon: "hero-chart-bar"},
       %{
         id: :windows,
         label: "Window runs",
         icon: "hero-rectangle-stack",
-        count: run[:total_windows]
+        count: window_run_count(run)
       },
       %{id: :events, label: "Events", icon: "hero-signal"}
     ]
   end
+
+  # A single-window run has exactly one window run, which is this page. Showing
+  # "1" next to Window runs invites a click that lands back where it started.
+  defp window_run_count(%{total_windows: total}) when is_integer(total) and total > 1, do: total
+  defp window_run_count(_run), do: nil
 
   defp run_facts(%{found?: true} = run) do
     [
@@ -241,9 +204,6 @@ defmodule FavnView.Components.RunDetailPage do
   defp page_title(_run, run_id), do: "Run #{short_id(run_id)}"
   defp page_subtitle(%{found?: true, subtitle: subtitle}), do: subtitle
   defp page_subtitle(_run), do: "Run detail"
-
-  defp failed_count(run),
-    do: (run[:failed_asset_attempts] || 0) + (run[:backfill_failure_count] || 0)
 
   defp short_id(id) when is_binary(id) and byte_size(id) > 18, do: String.slice(id, 0, 18)
   defp short_id(id), do: to_string(id)

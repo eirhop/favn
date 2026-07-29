@@ -316,6 +316,112 @@ from that walkthrough, worst first.
 19. Filter select labels clip on `/schedules` (`Runtime▾`, `Window▾`), and
     `Clear` renders as though active when no filter is set.
 
+## Run detail: what the screen should say
+
+Run detail is the screen an operator opens when something matters, so it is the
+one worth designing from the question rather than from the data model. Today it
+is designed from the data model, and that is the whole problem.
+
+### What the operator is actually asking
+
+Four questions, in this order, and nothing else:
+
+1. Is it done, and did it work?
+2. If it failed: what failed, why, and what does that block?
+3. If it is running: what is it doing now, and is it stuck?
+4. Did the data come out right?
+
+Everything the page currently shows that answers none of these is forensic:
+execution group ids, manifest version ids, window keys, event sequences,
+`effective_window_count`. Forensics are not deleted — they move behind an
+explicit request to see the receipts. A page that shows them by default is
+telling the operator that it does not know which facts matter either.
+
+### Why the current structure cannot answer them
+
+**Five modes are one question wearing five hats.** Overview, Timeline,
+Failures, Window runs, and Events are all projections of a single list of asset
+attempts — filtered, grouped by parent, laid on a time axis, or dumped raw.
+Splitting one question across five peer tabs is not progressive disclosure; it
+is a filing cabinet, and it makes the operator reconstruct the run in their head
+from four partial views.
+
+**Seven stat cards are one number and its own breakdown.** "Requested windows
+1/2", "Effective windows 2", "Asset attempts 5/12", "Succeeded 5", "Failed 0",
+"Running 0", "Queued 7" — four of those are a decomposition of the third, and
+the first two are compiler vocabulary. Seven cards of equal weight answer
+question 1 by making the reader do arithmetic. Against the example project this
+was six cards showing four zeros (finding 15).
+
+**Both primary visuals throw away the run's structure.** A run is a DAG
+executed over time. The matrix keeps neither: it is asset × window, so
+dependency order and duration are both absent, and it grows as the product of
+two dimensions — twelve assets over a thirty-day backfill is 360 cells. The
+timeline keeps time but sorts rows into Running / Ran / Queued / Skipped, which
+actively destroys dependency order, the single most useful ordering a run has.
+Neither can show the thing an operator most needs after a failure: what the
+failure *blocked*.
+
+### The design
+
+One primary visual, and everything else is a selection on it.
+
+**Header: one sentence and one bar.** The status, the counts inline, the
+elapsed time, and what triggered it, as prose — then a single slim meter
+segmented by outcome. That meter is the seven cards, readable without
+arithmetic, and it doubles as the colour legend for the rest of the page.
+
+**Primary visual: asset lanes, grouped by stage, positioned in time.** Rows are
+assets, grouped by execution stage, which *is* the dependency order. Each lane
+carries one bar per window, placed on a shared time axis. This is the only
+layout that answers all four questions at once:
+
+- order and dependencies, from the stage grouping
+- what is running now, from a bar with a live edge
+- what a failure blocked, from empty lanes in the stages after it
+- duration and the critical path, from bar lengths
+
+**Failures render where they happened.** The failing asset's error appears in
+its own lane, with retry next to it. There is no Failures mode: a run with
+failures shows them in place, and a healthy run shows no failure chrome at all,
+which is the correct amount for a healthy run.
+
+**Windows become a filter, not a mode.** A chip row over the same visual.
+
+**Selecting an asset answers question 4 in one line.** Not twenty flattened
+metadata rows — the verdict: rows written, the relation written to, and the
+check outcome. `rows_written`, the target relation, and the quality verdict are
+the three facts worth promoting; the remaining metadata and the raw JSON stay
+behind disclosure, and check *names* appear only when a check warned or failed.
+
+**Events leave the rail.** An event stream is a debug view of a table. It stays
+reachable; it is not a peer of "what happened in this run".
+
+Net effect: five modes and seven cards become one screen, one meter, one visual,
+and one detail panel.
+
+### Performance: this screen is live
+
+Run detail subscribes to run events and refreshes on a 100 ms coalesce, so
+everything below happens up to ten times a second while a run is active.
+
+1. **The whole run re-projects on every refresh.** `load_run/4` refetches and
+   rebuilds one large `@run` map, so every component taking `run={@run}` is
+   invalidated and LiveView re-diffs the entire page when one attempt changed.
+   Volatile state has to be separated from stable state, and attempt rows have
+   to be a keyed `stream` so a status change patches one row.
+2. **Three quadratic passes.** `child_runs_from_public/3` filters every attempt
+   per child run, `timeline_from_public/2` searches every attempt per timeline
+   entry, and `matrix/3` walks every window per asset. All three are single
+   grouped passes.
+3. **A large part of the DOM exists only for tests.** `overview.ex` renders four
+   separate `sr-only` regions that repeat every attempt's name, key, status,
+   stage, window, and error as text, plus `legacy_asset_text` — a concatenation
+   of every field of every asset result, rebuilt on every refresh and rendered
+   into a hidden div so `data-testid` assertions can grep it. The run's data is
+   rendered twice per refresh, and the second copy is invisible. Tests should
+   assert against the real markup.
+
 ### Not a UI finding, but it blocks UI review
 
 `mix favn.dev` in the example project intermittently tears the whole stack down

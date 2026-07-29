@@ -11,32 +11,32 @@ defmodule FavnView.RunDetailLive do
   alias FavnView.LogsViewModel
   alias FavnView.OperatorErrorLabels
   alias FavnView.RunEventRefresh
+  alias FavnView.RunFlow
 
   @refresh_interval_ms 1_500
   @initial_load_retry_count 10
   @coalesce_refresh_ms 100
   @active_statuses [:pending, :running]
-  @valid_modes ~w(overview timeline failures windows events)
-  @timeline_zoom_levels ~w(5m 15m 30m 1h 6h full)
+  @valid_modes ~w(flow windows events)
 
   @impl true
   def mount(%{"run_id" => run_id}, _session, socket) do
     run =
       operator_context(socket)
-      |> load_run(run_id, nil, :overview)
+      |> load_run(run_id, nil, :flow)
       |> mark_initializing()
 
     socket =
       assign(socket,
         run_id: run_id,
         run: run,
-        active_mode: :overview,
-        timeline_state: default_timeline_state(run),
+        active_mode: :flow,
         selected_child_run_id: nil,
         selected_attempt_id: nil,
         detail_load_attempts_remaining: initial_load_attempts(run),
         nav_items: AssetCataloguePage.nav_items(:runs)
       )
+      |> assign_flow()
       |> RunEventRefresh.init([:refresh_timer_ref, :fallback_poll_ref])
       |> sync_run_event_refresh()
       |> maybe_schedule_fallback_poll()
@@ -96,71 +96,28 @@ defmodule FavnView.RunDetailLive do
     socket
     |> assign(:run, run)
     |> assign(:detail_load_attempts_remaining, attempts_remaining)
+    |> assign_flow()
     |> RunEventRefresh.mark_refreshed(run_event_sequences(run))
     |> sync_run_event_refresh()
     |> maybe_schedule_fallback_poll()
   end
 
+  # The flow is geometry over the attempts, so it only changes when they do.
+  # Recomputing it here rather than in `render/1` keeps it out of the diff when a
+  # refresh brought nothing new.
+  defp assign_flow(%{assigns: %{run: %{found?: true} = run}} = socket) do
+    assign(
+      socket,
+      :flow,
+      RunFlow.build(run.attempts, active?: run.active?)
+    )
+  end
+
+  defp assign_flow(socket), do: assign(socket, :flow, nil)
+
   @impl true
   def handle_event("set_mode", %{"mode" => mode}, socket) when mode in @valid_modes do
     {:noreply, patch_run_state(socket, active_mode: String.to_existing_atom(mode))}
-  end
-
-  def handle_event("timeline_zoom", %{"zoom" => zoom}, socket)
-      when zoom in @timeline_zoom_levels do
-    {:noreply,
-     patch_run_state(socket,
-       active_mode: :timeline,
-       timeline_state: %{
-         socket.assigns.timeline_state
-         | zoom: zoom,
-           mode: :manual,
-           live_follow?: false
-       }
-     )}
-  end
-
-  def handle_event("timeline_fit", _params, socket) do
-    {:noreply,
-     patch_run_state(socket,
-       active_mode: :timeline,
-       timeline_state: %{socket.assigns.timeline_state | mode: :fit, live_follow?: false}
-     )}
-  end
-
-  def handle_event("timeline_focus", _params, socket) do
-    zoom = socket.assigns.timeline_state.zoom
-
-    {:noreply,
-     patch_run_state(socket,
-       active_mode: :timeline,
-       timeline_state: %{
-         socket.assigns.timeline_state
-         | zoom: if(zoom == "full", do: "30m", else: zoom),
-           mode: :manual,
-           live_follow?: false
-       }
-     )}
-  end
-
-  def handle_event("timeline_jump_now", _params, socket) do
-    if socket.assigns.run[:active?] do
-      {:noreply,
-       patch_run_state(socket,
-         active_mode: :timeline,
-         timeline_state: %{socket.assigns.timeline_state | mode: :live, live_follow?: true}
-       )}
-    else
-      {:noreply, socket}
-    end
-  end
-
-  def handle_event("timeline_pause_live", _params, socket) do
-    {:noreply,
-     patch_run_state(socket,
-       active_mode: :timeline,
-       timeline_state: %{socket.assigns.timeline_state | live_follow?: false}
-     )}
   end
 
   def handle_event("cancel_run", _params, socket) do
@@ -210,20 +167,6 @@ defmodule FavnView.RunDetailLive do
     end
   end
 
-  def handle_event("timeline_filter", %{"timeline" => filters}, socket) do
-    timeline_state =
-      socket.assigns.timeline_state
-      |> Map.merge(%{
-        search: Map.get(filters, "search", ""),
-        status: Map.get(filters, "status", "all"),
-        window: Map.get(filters, "window", "all"),
-        failed_only?: Map.has_key?(filters, "failed_only"),
-        running_only?: Map.has_key?(filters, "running_only")
-      })
-
-    {:noreply, patch_run_state(socket, active_mode: :timeline, timeline_state: timeline_state)}
-  end
-
   def handle_event("select_attempt", %{"attempt-id" => attempt_id}, socket) do
     {:noreply, assign(socket, :selected_attempt_id, attempt_id)}
   end
@@ -242,8 +185,7 @@ defmodule FavnView.RunDetailLive do
       run_id={@run_id}
       nav_items={@nav_items}
       active_mode={@active_mode}
-      timeline_state={@timeline_state}
-      timeline_hook?={true}
+      flow={@flow}
       selected_child_run_id={@selected_child_run_id}
       selected_attempt_id={@selected_attempt_id}
       flash={@flash}
@@ -267,21 +209,20 @@ defmodule FavnView.RunDetailLive do
         )
       end
 
-    timeline_state = timeline_state_from_params(params, run)
-
     selected_child_run_id =
       selected_child_run_id_from_params(params, run, socket.assigns.run_id)
 
     active_mode =
-      if selected_child_run_id && active_mode == :overview, do: :windows, else: active_mode
+      if selected_child_run_id && active_mode == :flow, do: :windows, else: active_mode
 
     {:noreply,
-     assign(socket,
+     socket
+     |> assign(
        run: run,
        active_mode: active_mode,
-       timeline_state: timeline_state,
        selected_child_run_id: selected_child_run_id
-     )}
+     )
+     |> assign_flow()}
   end
 
   @impl true
@@ -294,7 +235,7 @@ defmodule FavnView.RunDetailLive do
   end
 
   defp load_run(operator_context, run_id, existing_back_asset_href, active_mode) do
-    opts = [view: active_mode, limit: 200]
+    opts = [view: detail_view(active_mode), limit: 200]
     opts = if active_mode == :events, do: Keyword.put(opts, :include, [:events]), else: opts
 
     case get_operator_run_detail(operator_context, run_id, opts) do
@@ -317,6 +258,11 @@ defmodule FavnView.RunDetailLive do
     end
   end
 
+  # The facade view values predate the flow, and `:overview`, `:timeline`, and
+  # `:failures` all resolve to the same read there. The flow needs that read.
+  defp detail_view(:flow), do: :overview
+  defp detail_view(active_mode), do: active_mode
+
   defp detail_from_execution_group(
          %{summary: summary, root_run: root_run} = detail,
          operator_context,
@@ -325,7 +271,6 @@ defmodule FavnView.RunDetailLive do
          active_mode
        ) do
     attempts = Enum.map(Map.get(detail, :asset_attempts, []), &attempt_from_public/1)
-    legacy_asset_results = Enum.map(Map.get(detail, :steps, []), &legacy_step_from_public/1)
     windows = Enum.map(Map.get(detail, :windows, []), &window_from_public/1)
 
     requested_windows =
@@ -335,15 +280,7 @@ defmodule FavnView.RunDetailLive do
     child_runs = child_runs_from_public(Map.get(detail, :child_runs, []), attempts, windows)
     cancel_target = cancel_target(summary, root_run, child_runs, run_id)
 
-    timeline =
-      if active_mode == :timeline do
-        Enum.map(Map.get(detail, :timeline, []), &timeline_from_public(&1, attempts))
-      else
-        []
-      end
-
     active? = active_group?(summary)
-    matrix = matrix(attempts, windows, active?)
     failures = Enum.filter(attempts, &(&1.status_tone == :error))
 
     backfill_failures =
@@ -397,21 +334,16 @@ defmodule FavnView.RunDetailLive do
       progress_label:
         get_in(summary, [:progress, :label]) ||
           progress_label(summary.completed_asset_attempts, summary.total_asset_attempts),
-      matrix: matrix,
-      assets: matrix.assets,
-      windows: matrix.windows,
+      windows: windows,
       requested_windows: requested_windows,
       requested_windows_truncated?: Map.get(detail, :requested_windows_truncated?, false),
       attempts: attempts,
       asset_attempts_truncated?: Map.get(detail, :asset_attempts_truncated?, false),
-      legacy_asset_results: legacy_asset_results,
-      legacy_asset_text: legacy_asset_text(legacy_asset_results),
       failures: failures,
       backfill_failures: backfill_failures,
       backfill_failure_count: Map.get(detail, :backfill_failure_count, length(backfill_failures)),
       child_runs: child_runs,
       child_runs_truncated?: Map.get(detail, :child_run_details_truncated?, false),
-      timeline: timeline,
       events: Enum.map(events, &event_from_public/1),
       latest_event_summary: latest_event_summary(detail, events),
       waiting_activity?: events == [] and active_group?(summary),
@@ -592,110 +524,17 @@ defmodule FavnView.RunDetailLive do
 
   defp patch_run_state(socket, updates) do
     active_mode = Keyword.get(updates, :active_mode, socket.assigns.active_mode)
-    timeline_state = Keyword.get(updates, :timeline_state, socket.assigns.timeline_state)
 
-    push_patch(socket,
-      to: ~p"/runs/#{socket.assigns.run_id}?#{run_query_params(active_mode, timeline_state)}"
-    )
+    push_patch(socket, to: ~p"/runs/#{socket.assigns.run_id}?#{run_query_params(active_mode)}")
   end
 
-  defp run_query_params(:overview, _timeline_state), do: %{}
-
-  defp run_query_params(active_mode, timeline_state) do
-    Map.put(timeline_query_params(timeline_state), "view", Atom.to_string(active_mode))
-  end
-
-  defp timeline_query_params(timeline_state) do
-    %{}
-    |> maybe_put_param(
-      "timeline_zoom",
-      timeline_state.zoom,
-      timeline_state.zoom != "30m" or timeline_state.mode == :manual
-    )
-    |> maybe_put_param(
-      "timeline_mode",
-      Atom.to_string(timeline_state.mode),
-      timeline_state.mode != :live
-    )
-    |> maybe_put_param("timeline_follow", "0", timeline_state.live_follow? == false)
-    |> maybe_put_param("timeline_search", timeline_state.search, timeline_state.search != "")
-    |> maybe_put_param("timeline_status", timeline_state.status, timeline_state.status != "all")
-    |> maybe_put_param("timeline_window", timeline_state.window, timeline_state.window != "all")
-    |> maybe_put_param("timeline_failed", "1", timeline_state.failed_only?)
-    |> maybe_put_param("timeline_running", "1", timeline_state.running_only?)
-  end
-
-  defp maybe_put_param(params, key, value, true), do: Map.put(params, key, value)
-  defp maybe_put_param(params, _key, _value, false), do: params
+  defp run_query_params(:flow), do: %{}
+  defp run_query_params(active_mode), do: %{"view" => Atom.to_string(active_mode)}
 
   defp active_mode_from_params(%{"view" => mode}, _current) when mode in @valid_modes,
     do: String.to_existing_atom(mode)
 
-  defp active_mode_from_params(_params, _current), do: :overview
-
-  defp timeline_state_from_params(params, run) do
-    default = default_timeline_state(run)
-    mode = timeline_mode(Map.get(params, "timeline_mode"), default.mode)
-    zoom = timeline_zoom(Map.get(params, "timeline_zoom"), default.zoom)
-
-    %{
-      default
-      | mode: mode,
-        zoom: zoom,
-        live_follow?: Map.get(params, "timeline_follow") != "0" and mode == :live,
-        search: Map.get(params, "timeline_search", default.search),
-        status: Map.get(params, "timeline_status", default.status),
-        window: Map.get(params, "timeline_window", default.window),
-        failed_only?: Map.get(params, "timeline_failed") == "1",
-        running_only?: Map.get(params, "timeline_running") == "1"
-    }
-  end
-
-  defp default_timeline_state(%{active?: true}) do
-    live_timeline_state()
-  end
-
-  defp default_timeline_state(%{running_asset_attempts: running}) when running > 0 do
-    live_timeline_state()
-  end
-
-  defp default_timeline_state(%{raw_status: status}) when status in @active_statuses do
-    live_timeline_state()
-  end
-
-  defp default_timeline_state(_run) do
-    %{
-      mode: :fit,
-      zoom: "full",
-      live_follow?: false,
-      search: "",
-      status: "all",
-      window: "all",
-      failed_only?: false,
-      running_only?: false
-    }
-  end
-
-  defp live_timeline_state do
-    %{
-      mode: :live,
-      zoom: "30m",
-      live_follow?: true,
-      search: "",
-      status: "all",
-      window: "all",
-      failed_only?: false,
-      running_only?: false
-    }
-  end
-
-  defp timeline_mode("fit", _default), do: :fit
-  defp timeline_mode("manual", _default), do: :manual
-  defp timeline_mode("live", _default), do: :live
-  defp timeline_mode(_mode, default), do: default
-
-  defp timeline_zoom(zoom, _default) when zoom in @timeline_zoom_levels, do: zoom
-  defp timeline_zoom(_zoom, default), do: default
+  defp active_mode_from_params(_params, _current), do: :flow
 
   defp selected_child_run_id_from_params(params, run, requested_run_id) do
     child_ids = MapSet.new(Enum.map(run[:child_runs] || [], & &1.id))
@@ -795,12 +634,17 @@ defmodule FavnView.RunDetailLive do
     }
   end
 
+  # Both lookups were a scan per child run, so a thirty-window backfill walked
+  # every attempt thirty times on every live refresh. One grouping pass each.
   defp child_runs_from_public(child_runs, attempts, windows) do
+    attempts_by_run_id = Enum.group_by(attempts, & &1.run_id)
+    windows_by_child_run_id = Map.new(windows, &{&1.child_run_id, &1})
+
     Enum.map(child_runs, fn child ->
-      child_attempts = Enum.filter(attempts, &(&1.run_id == child.id))
+      child_attempts = Map.get(attempts_by_run_id, child.id, [])
 
       window =
-        Enum.find(windows, &(&1.child_run_id == child.id)) || window_from_public(child.window)
+        Map.get(windows_by_child_run_id, child.id) || window_from_public(child.window)
 
       completed = Enum.count(child_attempts, &terminal_status?(&1.raw_status))
       total = length(child_attempts)
@@ -823,106 +667,6 @@ defmodule FavnView.RunDetailLive do
         attempts: child_attempts
       }
     end)
-  end
-
-  defp timeline_from_public(entry, attempts) do
-    attempt = Enum.find(attempts, &(&1.id == entry.attempt_id))
-
-    %{
-      attempt_id: entry.attempt_id,
-      asset_key: entry.asset_key,
-      asset_name: LogsViewModel.display_name(entry.asset_key) || entry.asset_key,
-      child_run_id: entry.child_run_id,
-      window: window_from_public(entry.window),
-      window_label: window_label(entry.window) || "No window",
-      status: status_label(entry.status),
-      raw_status: entry.status,
-      status_tone: status_tone(entry.status),
-      started_at_raw: entry.started_at,
-      finished_at_raw: entry.finished_at,
-      started_at: LogsViewModel.timestamp_label(entry.started_at),
-      finished_at: LogsViewModel.timestamp_label(entry.finished_at),
-      duration: if(attempt, do: attempt.duration, else: "-")
-    }
-  end
-
-  defp matrix(attempts, windows, active?) do
-    windows =
-      if windows == [] or Enum.any?(attempts, &is_nil(&1.window)) do
-        windows ++ [%{id: "none", label: "No window", range_label: nil}]
-      else
-        windows
-      end
-
-    assets =
-      attempts
-      |> Enum.uniq_by(& &1.asset_key)
-      |> Enum.map(fn attempt ->
-        %{key: attempt.asset_key, name: attempt.short_asset_name, stage: attempt.stage_label}
-      end)
-      |> Enum.sort_by(& &1.name)
-
-    attempts_by_window_id =
-      Enum.group_by(attempts, &{&1.asset_key, &1.window_id || "none"})
-
-    rows =
-      Enum.map(assets, fn asset ->
-        cells =
-          Enum.map(windows, fn window ->
-            matrix_attempt_cell(Map.get(attempts_by_window_id, {asset.key, window.id}, [])) ||
-              pending_cell(asset, window, active?)
-          end)
-
-        Map.put(asset, :cells, cells)
-      end)
-
-    %{assets: assets, windows: windows, rows: rows}
-  end
-
-  defp matrix_attempt_cell([]), do: nil
-
-  defp matrix_attempt_cell(attempts) do
-    latest =
-      Enum.max_by(attempts, fn attempt ->
-        {attempt.finished_at_raw || attempt.started_at_raw || ~U[1970-01-01 00:00:00Z],
-         attempt.attempt_number || 0, attempt.id}
-      end)
-
-    Map.put(latest, :other_attempt_count, length(attempts) - 1)
-  end
-
-  # A cell with no attempt means "no attempt exists for this asset in this window".
-  # While the run is active that is fair to read as queued. Once it has settled it
-  # is not: a finished run reported twelve queued attempts because eleven of its
-  # assets simply had nothing to do in the other window.
-  defp pending_cell(asset, window, active?) do
-    {status, raw_status} =
-      if active?, do: {"Queued", :pending}, else: {"Not run", :not_run}
-
-    %{
-      id: nil,
-      asset_key: asset.key,
-      asset_ref: asset.key,
-      short_asset_name: asset.name,
-      stage_label: asset.stage,
-      window: window,
-      window_id: window.id,
-      window_label: window.label,
-      status: status,
-      raw_status: raw_status,
-      status_tone: :neutral,
-      started_at_raw: nil,
-      finished_at_raw: nil,
-      duration_ms: nil,
-      duration: "-",
-      started_at: "-",
-      finished_at: "-",
-      child_run_id: Map.get(window, :child_run_id),
-      run_id: Map.get(window, :child_run_id),
-      attempt_number: nil,
-      error_summary: nil,
-      logs_href: nil
-    }
   end
 
   defp current_activity(attempts) do
@@ -953,38 +697,6 @@ defmodule FavnView.RunDetailLive do
       asset: LogsViewModel.ref_label(Map.get(event, :asset_ref)),
       summary: event_summary(event)
     }
-  end
-
-  defp legacy_step_from_public(step) do
-    %{
-      id: step.id,
-      asset_ref: step.asset_ref,
-      display_name: LogsViewModel.display_name(step.asset_ref) || step.asset_ref,
-      status: legacy_step_status_label(step.status, Map.get(step, :failure_role)),
-      stage: stage_label(step.stage),
-      window: window_label(step.window) || "No window",
-      error: error_summary(step.error),
-      explanation: step.explanation,
-      logs_href: ~p"/runs/#{Map.get(step, :run_id, step.id)}/assets/#{step.id}/logs"
-    }
-  end
-
-  defp legacy_asset_text(steps) do
-    steps
-    |> Enum.map(fn step ->
-      [
-        step.display_name,
-        step.asset_ref,
-        step.status,
-        step.stage,
-        step.window,
-        step.error,
-        step.explanation
-      ]
-      |> Enum.reject(&is_nil/1)
-      |> Enum.join(" ")
-    end)
-    |> Enum.join(" ")
   end
 
   defp group_title(%{trigger_type: :backfill}), do: "Backfill run"
@@ -1114,11 +826,6 @@ defmodule FavnView.RunDetailLive do
 
   defp latest_event_summary([]), do: nil
   defp latest_event_summary(events), do: events |> List.last() |> Map.get(:summary)
-
-  defp legacy_step_status_label(_status, :cascade), do: "Cascade failed"
-  defp legacy_step_status_label(status, _role) when status in [:pending, "pending"], do: "Waiting"
-  defp legacy_step_status_label(status, _role) when status in [:ok, "ok"], do: "Succeeded"
-  defp legacy_step_status_label(status, _role), do: status_label(status)
 
   defp window_identity(nil), do: "none"
 

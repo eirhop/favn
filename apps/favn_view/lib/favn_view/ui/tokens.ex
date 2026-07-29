@@ -110,6 +110,23 @@ defmodule FavnView.UI.Tokens do
   def surface_class(tone), do: "bg-" <> color(tone) <> "/10"
 
   @doc """
+  Solid fill class for a tone, for bars and meters that carry meaning by area.
+
+  Washes (`surface_class/1`) are for backgrounds behind text. A meter segment is
+  the mark itself, so it needs full saturation to stay legible at a few pixels
+  wide.
+
+      iex> FavnView.UI.Tokens.fill_class(:success)
+      "bg-success"
+
+      iex> FavnView.UI.Tokens.fill_class(:neutral)
+      "bg-base-content/25"
+  """
+  @spec fill_class(tone()) :: String.t()
+  def fill_class(:neutral), do: "bg-base-content/25"
+  def fill_class(tone), do: "bg-" <> color(tone)
+
+  @doc """
   Alert colour class for a tone.
 
   DaisyUI has no `alert-neutral`, so the neutral tone renders as a plain

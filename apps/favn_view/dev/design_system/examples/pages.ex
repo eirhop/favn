@@ -18,13 +18,13 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
   alias FavnView.Components.Navigation
   alias FavnView.Components.PipelineDetailPage
   alias FavnView.Components.PipelinesPage
-  alias FavnView.Components.RunDetailPage
   alias FavnView.Components.RunsListPage
   alias FavnView.Components.ScheduleDetailPage
   alias FavnView.Components.SchedulesPage
   alias FavnView.Dev.DesignSystem.Example
   alias FavnView.Dev.DesignSystem.Fixtures
   alias FavnView.Dev.DesignSystem.Fixtures.AssetDetail
+  alias FavnView.Dev.DesignSystem.Fixtures.Runs
   alias FavnView.Dev.DesignSystem.Fixtures.Schedules
   alias FavnView.Dev.DesignSystem.Fixtures.Timeline
 
@@ -507,129 +507,84 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
       ],
       "run_detail_page/run_detail_page" => [
         Example.attrs(
-          :backfill_overview,
+          :running_backfill,
           %{
-            run:
-              Map.merge(RunDetailPage.sample_run(:running), %{
-                cancellable?: true,
-                cancel_run_id: "run_backfill_8f2c9d1"
-              }),
+            run: Runs.backfill(:running),
             run_id: "run_backfill_8f2c9d1",
-            nav_items: RunDetailPage.sample_nav_items(),
-            active_mode: :overview
+            nav_items: Runs.nav_items()
           },
-          "A running backfill: the window matrix is the primary visual."
+          "The flow is the primary visual: stage order is dependency order."
         ),
-        Example.attrs(:attempt_drawer_open, %{
-          run: RunDetailPage.sample_run(:partial),
+        Example.attrs(
+          :failed_backfill,
+          %{
+            run: Runs.backfill(:partial),
+            run_id: "run_backfill_8f2c9d1",
+            nav_items: Runs.nav_items()
+          },
+          "A stage-2 failure renders in its own lane, under the stage that fed it."
+        ),
+        Example.attrs(:attempt_selected, %{
+          run: Runs.backfill(:partial),
           run_id: "run_backfill_8f2c9d1",
-          nav_items: RunDetailPage.sample_nav_items(),
-          active_mode: :overview,
+          nav_items: Runs.nav_items(),
           selected_attempt_id: "revenue_metrics-2026-02"
         }),
         Example.attrs(
           :single_window,
           %{
-            run: RunDetailPage.sample_single_window_run(),
+            run: Runs.single_window(),
             run_id: "run_daily_orders_2026_05_19",
-            nav_items: RunDetailPage.sample_nav_items(),
-            active_mode: :overview
+            nav_items: Runs.nav_items()
           },
-          "One window: the matrix must not imply a backfill."
+          "One window: no window meter, and no window-run count in the rail."
         ),
         Example.attrs(
           :full_refresh,
           %{
-            run: RunDetailPage.sample_full_refresh_run(),
+            run: Runs.full_refresh(),
             run_id: "run_full_refresh_sales",
-            nav_items: RunDetailPage.sample_nav_items(),
-            active_mode: :overview
+            nav_items: Runs.nav_items()
           },
-          "No window at all."
+          "No window at all, and one asset still running."
         ),
-        Example.attrs(:events, %{
-          run: RunDetailPage.sample_run(:running),
-          run_id: "run_backfill_8f2c9d1",
-          nav_items: RunDetailPage.sample_nav_items(),
-          active_mode: :events
-        }),
-        Example.attrs(:window_runs, %{
-          run: RunDetailPage.sample_run(:running),
-          run_id: "run_backfill_8f2c9d1",
-          nav_items: RunDetailPage.sample_nav_items(),
-          active_mode: :windows
-        }),
-        Example.attrs(:failures, %{
-          run: RunDetailPage.sample_run(:partial),
-          run_id: "run_backfill_8f2c9d1",
-          nav_items: RunDetailPage.sample_nav_items(),
-          active_mode: :failures
-        }),
         Example.attrs(
           :admission_failure,
           %{
-            run: RunDetailPage.sample_admission_failed_backfill(),
+            run: Runs.admission_failure(),
             run_id: "run_backfill_unknown_pool",
-            nav_items: RunDetailPage.sample_nav_items(),
-            active_mode: :failures
+            nav_items: Runs.nav_items()
           },
-          "Rejected before any asset ran, so there are no attempts to show."
+          "Rejected before any asset ran, so the failure has no lane and is called out."
         ),
-        Example.attrs(:timeline_live, %{
-          run: RunDetailPage.sample_timeline_run(),
-          run_id: "run_sales_backfill_timeline",
-          nav_items: RunDetailPage.sample_nav_items(),
-          active_mode: :timeline
+        Example.attrs(:window_runs, %{
+          run: Runs.backfill(:running),
+          run_id: "run_backfill_8f2c9d1",
+          nav_items: Runs.nav_items(),
+          active_mode: :windows
         }),
-        Example.attrs(:timeline_manual_zoom, %{
-          run: RunDetailPage.sample_timeline_run(),
-          run_id: "run_sales_backfill_timeline",
-          nav_items: RunDetailPage.sample_nav_items(),
-          active_mode: :timeline,
-          timeline_state: timeline_state(%{mode: :manual, zoom: "1h"})
+        Example.attrs(:events, %{
+          run: Runs.backfill(:running),
+          run_id: "run_backfill_8f2c9d1",
+          nav_items: Runs.nav_items(),
+          active_mode: :events
         }),
-        Example.attrs(:timeline_completed, %{
-          run: RunDetailPage.sample_completed_timeline_run(),
-          run_id: "run_sales_backfill_timeline_done",
-          nav_items: RunDetailPage.sample_nav_items(),
-          active_mode: :timeline,
-          timeline_state: timeline_state(%{})
-        }),
-        Example.attrs(
-          :timeline_skipped_filter,
-          %{
-            run: RunDetailPage.sample_completed_timeline_run(),
-            run_id: "run_sales_backfill_timeline_done",
-            nav_items: RunDetailPage.sample_nav_items(),
-            active_mode: :timeline,
-            timeline_state: timeline_state(%{status: "skipped"})
-          },
-          "Filtered to skipped attempts only."
-        ),
         Example.attrs(
           :not_found,
-          %{
-            run: RunDetailPage.not_found_run(),
-            run_id: "run_missing",
-            nav_items: RunDetailPage.sample_nav_items()
-          },
+          %{run: Runs.not_found(), run_id: "run_missing", nav_items: Runs.nav_items()},
           "No such run. Neutral, not an error."
         ),
         Example.attrs(
           :snapshot_unavailable,
-          %{
-            run: RunDetailPage.unavailable_run(),
-            run_id: "run_unreadable",
-            nav_items: RunDetailPage.sample_nav_items()
-          },
+          %{run: Runs.unavailable(), run_id: "run_unreadable", nav_items: Runs.nav_items()},
           "The run exists but its snapshot could not be read."
         ),
         Example.attrs(
           :initializing,
           %{
-            run: Map.put(RunDetailPage.not_found_run(), :initializing?, true),
+            run: Map.put(Runs.not_found(), :initializing?, true),
             run_id: "run_committed",
-            nav_items: RunDetailPage.sample_nav_items()
+            nav_items: Runs.nav_items()
           },
           "Committed but not yet observable. Must not read as not-found."
         )
@@ -1007,21 +962,5 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
         )
       ]
     }
-  end
-
-  defp timeline_state(overrides) do
-    Map.merge(
-      %{
-        mode: :fit,
-        zoom: "full",
-        live_follow?: false,
-        search: "",
-        status: "all",
-        window: "all",
-        failed_only?: false,
-        running_only?: false
-      },
-      overrides
-    )
   end
 end
