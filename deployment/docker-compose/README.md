@@ -158,8 +158,8 @@ sh ./run-qualification.sh
 The POSIX wrapper runs this complete smoke drill first. It then starts a
 detached qualification controller inside the scaler image and prints the run
 ID, controller ID, and evidence directory. The controller owns API load,
-sampling, runner replacement, control-plane and PostgreSQL crash recovery,
-drain, log collection, redaction checks, and final assertions.
+sampling, recovery after a killed runner, control-plane and PostgreSQL crash
+recovery, drain, log collection, redaction checks, and final assertions.
 
 Check it without interrupting it:
 
