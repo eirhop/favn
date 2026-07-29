@@ -13,6 +13,7 @@ defmodule FavnView.Components.ScheduleDetailPage do
   attr :schedule, :map, default: nil
   attr :occurrence_preview, :list, default: []
   attr :occurrence_error, :any, default: nil
+  attr :activation_error, :string, default: nil
   attr :active_view, :atom, default: :overview
   attr :loading, :boolean, default: false
   attr :error, :any, default: nil
@@ -61,6 +62,15 @@ defmodule FavnView.Components.ScheduleDetailPage do
             class="min-w-0 overflow-x-hidden space-y-4"
             data-testid={"schedule-detail-#{@active_view}"}
           >
+            <.notice
+              :if={@activation_error}
+              tone={:error}
+              icon="hero-exclamation-triangle"
+              data-testid="schedule-activation-error"
+            >
+              {@activation_error}
+            </.notice>
+
             <.status_cards schedule={@schedule} />
             <.panel
               padding={:none}
@@ -98,11 +108,33 @@ defmodule FavnView.Components.ScheduleDetailPage do
     """
   end
 
+  @doc """
+  Header controls for one schedule.
+
+  The activation control is the page's primary action, because a schedule an
+  operator is looking at is one they are deciding about. Which direction it
+  offers, and whether it confirms first, follows from the activation state — see
+  `activation_control/1`.
+  """
   attr :schedule, :map, required: true
 
   def schedule_actions(assigns) do
+    assigns = assign(assigns, :activation, activation_control(assigns.schedule))
+
     ~H"""
     <div class="flex flex-wrap items-center gap-2">
+      <.button
+        variant={@activation.variant}
+        icon={@activation.icon}
+        phx-click="set_schedule_activation"
+        phx-value-action={@activation.action}
+        phx-disable-with={@activation.pending_label}
+        data-confirm={@activation.confirm}
+        data-testid="set-schedule-activation"
+      >
+        {@activation.label}
+      </.button>
+
       <button
         type="button"
         class="btn btn-sm favn-surface-control rounded-field gap-2"
@@ -117,6 +149,72 @@ defmodule FavnView.Components.ScheduleDetailPage do
       </span>
     </div>
     """
+  end
+
+  @doc """
+  The activation control one schedule state offers.
+
+  Disabling is destructive — future occurrences stop being submitted — so it is
+  a `:danger` button behind a confirmation. `:needs_review` means the definition
+  changed after it was approved, so enabling approves the current definition and
+  says so rather than pretending nothing changed.
+
+  ## Examples
+
+      iex> FavnView.Components.ScheduleDetailPage.activation_control(
+      ...>   %{activation_state: :enabled}
+      ...> ).action
+      "disable"
+
+      iex> FavnView.Components.ScheduleDetailPage.activation_control(
+      ...>   %{activation_state: :disabled}
+      ...> ).action
+      "enable"
+
+      iex> FavnView.Components.ScheduleDetailPage.activation_control(
+      ...>   %{activation_state: :needs_review}
+      ...> ).label
+      "Approve and enable"
+  """
+  @spec activation_control(map()) :: %{
+          action: String.t(),
+          label: String.t(),
+          pending_label: String.t(),
+          icon: String.t(),
+          variant: atom(),
+          confirm: String.t() | nil
+        }
+  def activation_control(%{activation_state: :enabled}) do
+    %{
+      action: "disable",
+      label: "Disable",
+      pending_label: "Disabling…",
+      icon: "hero-pause-circle",
+      variant: :danger,
+      confirm: "Stop submitting future runs for this schedule?"
+    }
+  end
+
+  def activation_control(%{activation_state: :needs_review}) do
+    %{
+      action: "enable",
+      label: "Approve and enable",
+      pending_label: "Approving…",
+      icon: "hero-power",
+      variant: :primary,
+      confirm: "The definition changed after it was approved. Enable the current definition?"
+    }
+  end
+
+  def activation_control(_schedule) do
+    %{
+      action: "enable",
+      label: "Enable",
+      pending_label: "Enabling…",
+      icon: "hero-power",
+      variant: :primary,
+      confirm: nil
+    }
   end
 
   attr :schedule, :map, required: true
@@ -431,39 +529,6 @@ defmodule FavnView.Components.ScheduleDetailPage do
       %{id: :occurrences, label: "Occurrences", icon: "hero-calendar-days"}
     ]
   end
-
-  def sample_schedule do
-    %{
-      id: "schedule:MyApp.Pipelines.Daily:daily",
-      schedule_label: "daily",
-      pipeline_label: "MyApp.Pipelines.Daily",
-      cron: "0 6 * * *",
-      timezone: "Europe/Oslo",
-      window_label: "Day Europe/Oslo",
-      overlap: :forbid,
-      missed: :skip,
-      manifest_active?: true,
-      activation_state: :pending_activation,
-      activation_label: "Pending activation",
-      activation_tone: :warning,
-      runtime_state: :inactive,
-      runtime_label: "Inactive",
-      effective_enabled?: false,
-      next_due_label: "May 25 06:00",
-      last_evaluated_label: "-",
-      last_due_label: "-",
-      last_submitted_label: "-",
-      queued_due_label: "-",
-      updated_label: "May 24 12:00",
-      in_flight_run_id: nil,
-      current_run_label: nil,
-      last_scheduler_error: nil
-    }
-  end
-
-  def sample_schedule(attrs) when is_map(attrs), do: Map.merge(sample_schedule(), attrs)
-
-  def sample_occurrences, do: ScheduleUi.sample_occurrences()
 
   defp assign_detail_header(%{schedule: nil} = assigns) do
     assigns
