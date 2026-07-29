@@ -236,7 +236,16 @@ defmodule FavnOrchestrator.Persistence.Results.ManifestSummary do
 end
 
 defmodule FavnOrchestrator.Persistence.Results.ExecutionGroupOverview do
-  @moduledoc "Compact bounded execution-group projection."
+  @moduledoc """
+  Compact bounded execution-group projection.
+
+  The counts come from the group's own row. Identity and timing — what the run
+  was for, what triggered it, and how long it took — come from the group's root
+  run, so a store that can resolve them fills them and one that cannot leaves
+  them `nil`. A list of runs that cannot say what each run targeted is not a
+  list of runs, which is why these are part of the projection rather than
+  something the caller fetches per row.
+  """
   @enforce_keys [:workspace_id, :root_run_id, :status, :run_count, :latest_event_id]
   defstruct [
     :workspace_id,
@@ -249,7 +258,11 @@ defmodule FavnOrchestrator.Persistence.Results.ExecutionGroupOverview do
     :failed_count,
     :latest_event_id,
     :source_publication_id,
-    :updated_at
+    :updated_at,
+    :trigger_type,
+    :started_at,
+    :finished_at,
+    target_refs: []
   ]
 
   @type t :: %__MODULE__{
@@ -263,7 +276,11 @@ defmodule FavnOrchestrator.Persistence.Results.ExecutionGroupOverview do
           failed_count: non_neg_integer(),
           latest_event_id: pos_integer(),
           source_publication_id: pos_integer(),
-          updated_at: DateTime.t()
+          updated_at: DateTime.t(),
+          trigger_type: atom() | nil,
+          started_at: DateTime.t() | nil,
+          finished_at: DateTime.t() | nil,
+          target_refs: [String.t()]
         }
 end
 

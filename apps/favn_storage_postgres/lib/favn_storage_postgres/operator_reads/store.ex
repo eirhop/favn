@@ -110,7 +110,15 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
         |> limit(^(page.limit + 1))
 
       rows = Repo.all(query)
-      {:ok, cursor_page(rows, page.limit, &group_result/1, &group_cursor/1)}
+
+      # Enriched from the page's own rows, so the two extra queries are bounded by
+      # the page limit rather than by the workspace's history.
+      returned = Enum.take(rows, page.limit)
+      targets = target_refs_by_group(returned)
+      roots = root_runs_by_group(returned)
+      mapper = &group_result(&1, targets, roots)
+
+      {:ok, cursor_page(rows, page.limit, mapper, &group_cursor/1)}
     end
   rescue
     error -> {:error, ErrorMapper.map(error)}
@@ -490,7 +498,12 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
     }
   end
 
-  defp group_result(group) do
+  defp group_result(group), do: group_result(group, %{}, %{})
+
+  defp group_result(group, targets, roots) do
+    key = {group.workspace_id, group.root_run_id}
+    root = Map.get(roots, key)
+
     %GroupOverviewResult{
       workspace_id: group.workspace_id,
       root_run_id: group.root_run_id,
@@ -502,7 +515,11 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
       failed_count: group.failed_count,
       latest_event_id: group.latest_event_id,
       source_publication_id: group.source_publication_id,
-      updated_at: group.updated_at
+      updated_at: group.updated_at,
+      trigger_type: root && RunEnum.decode!(:trigger_type, root.trigger_type),
+      started_at: root && root.inserted_at,
+      finished_at: root && root.terminal_at,
+      target_refs: Map.get(targets, key, [])
     }
   end
 
@@ -651,6 +668,65 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
       nil ->
         %{total: 0, completed: 0, failed: 0}
     end
+  end
+
+  # One query for a whole page of groups rather than one per row. The `in` pair is
+  # a cross product of the page's workspaces and root runs, so it can return a
+  # pair the page does not contain; that is harmless because every lookup is by
+  # exact `{workspace_id, root_run_id}`, and the over-fetch is bounded by the page.
+  defp target_refs_by_group([]), do: %{}
+
+  defp target_refs_by_group(groups) do
+    {workspace_ids, root_run_ids} = group_keys(groups)
+
+    from(target in RunTarget,
+      join: run in Run,
+      on: run.workspace_id == target.workspace_id and run.run_id == target.run_id,
+      where:
+        run.workspace_id in ^workspace_ids and
+          run.root_execution_group_id in ^root_run_ids and
+          target.target_kind == "asset",
+      select:
+        {run.workspace_id, run.root_execution_group_id, target.target_module, target.target_name},
+      distinct: true
+    )
+    |> Repo.all()
+    |> Enum.reduce(%{}, fn
+      {workspace_id, root_run_id, module, name}, acc
+      when is_binary(module) and is_binary(name) ->
+        Map.update(
+          acc,
+          {workspace_id, root_run_id},
+          [module <> ":" <> name],
+          &[
+            module <> ":" <> name | &1
+          ]
+        )
+
+      _incomplete_identity, acc ->
+        acc
+    end)
+    |> Map.new(fn {key, refs} -> {key, Enum.sort(refs)} end)
+  end
+
+  defp root_runs_by_group([]), do: %{}
+
+  defp root_runs_by_group(groups) do
+    {workspace_ids, root_run_ids} = group_keys(groups)
+
+    from(run in Run,
+      where: run.workspace_id in ^workspace_ids and run.run_id in ^root_run_ids,
+      select: map(run, [:workspace_id, :run_id, :trigger_type, :inserted_at, :terminal_at])
+    )
+    |> Repo.all()
+    |> Map.new(&{{&1.workspace_id, &1.run_id}, &1})
+  end
+
+  defp group_keys(groups) do
+    {
+      groups |> Enum.map(& &1.workspace_id) |> Enum.uniq(),
+      groups |> Enum.map(& &1.root_run_id) |> Enum.uniq()
+    }
   end
 
   defp target_refs(workspace_id, root_run_id) do

@@ -206,8 +206,10 @@ defmodule FavnOrchestrator.RunReadModel do
   @doc """
   Expands a compact persisted execution-group overview into the public summary shape.
 
-  Fields that are not part of the compact projection remain empty or `nil`; callers
-  still receive the complete, stable public contract.
+  Identity and timing come from the projection's root-run fields when the store
+  resolved them. Window totals are genuinely not in this projection — the compact
+  row counts runs, not windows — so they stay zero here and a caller that needs
+  them reads the group detail.
   """
   @spec from_execution_group_overview(PersistedExecutionGroupOverview.t()) ::
           execution_group_summary()
@@ -234,12 +236,12 @@ defmodule FavnOrchestrator.RunReadModel do
       status: status,
       health: execution_group_health(status, failure_count, active?),
       active?: active?,
-      trigger_type: nil,
-      target_assets: [],
+      trigger_type: group.trigger_type,
+      target_assets: group.target_refs,
       root_status: status,
-      started_at: group.updated_at,
-      finished_at: if(active?, do: nil, else: group.updated_at),
-      duration_ms: nil,
+      started_at: group.started_at || group.updated_at,
+      finished_at: overview_finished_at(group, active?),
+      duration_ms: duration_ms(group.started_at, group.finished_at),
       total_windows: 0,
       completed_windows: 0,
       failed_windows: 0,
@@ -1021,6 +1023,11 @@ defmodule FavnOrchestrator.RunReadModel do
   defp public_overview_status(:succeeded), do: :ok
   defp public_overview_status(:failed), do: :error
   defp public_overview_status(status), do: status
+
+  # An active group has no finish time even if the root run recorded one, and a
+  # settled group falls back to its last update when the root run did not.
+  defp overview_finished_at(_group, true), do: nil
+  defp overview_finished_at(group, false), do: group.finished_at || group.updated_at
 
   defp target_assets(%RunState{target_refs: refs}) when is_list(refs) and refs != [],
     do: Enum.map(refs, &RunQuery.public_ref/1)

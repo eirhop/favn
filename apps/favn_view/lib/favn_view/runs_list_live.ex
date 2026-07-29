@@ -467,7 +467,7 @@ defmodule FavnView.RunsListLive do
     percent = min(100, round(completed_attempts * 100 / total))
 
     %{
-      window_label: if(group.total_windows > 0, do: window_label, else: "No windows"),
+      window_label: if(group.total_windows > 0, do: window_label, else: "Not a backfill"),
       attempt_label: attempt_label,
       percent: percent,
       title: "#{window_label}; #{attempt_label}",
@@ -509,7 +509,11 @@ defmodule FavnView.RunsListLive do
     end
   end
 
-  defp window_count_label(%{total_windows: 0}), do: "No explicit window"
+  # `total_windows` counts backfill windows, so zero means this run is not a
+  # backfill — not that it ran without a window. A run's own requested window is
+  # in its snapshot, which the list's compact projection never loads, so the list
+  # must not claim to know it either.
+  defp window_count_label(%{total_windows: 0}), do: "Not a backfill"
   defp window_count_label(%{total_windows: 1}), do: "1 window"
   defp window_count_label(%{total_windows: total}), do: "#{total} windows"
 

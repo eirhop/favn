@@ -6271,6 +6271,14 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert group.run_count == 1
     assert group.running_count == 1
 
+    # A page of groups has to say what each run was for and what triggered it,
+    # or a runs list cannot be read. These come from the root run, not from the
+    # group's own row, so they are the part most easily lost.
+    assert group.target_refs != []
+    assert group.trigger_type != nil
+    assert %DateTime{} = group.started_at
+    assert is_nil(group.finished_at), "a running group has not finished"
+
     assert {:ok, detail} =
              OperatorReadStore.get_execution_group(%GetExecutionGroup{
                workspace_context: fixture.workspace_context,
