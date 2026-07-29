@@ -5,6 +5,47 @@ defmodule FavnView.Components.AssetCataloguePageTest do
 
   alias FavnView.Components.AssetCataloguePage
 
+  doctest AssetCataloguePage, import: true
+
+  test "groups assets by namespace and states each namespace once" do
+    assets =
+      for {connection, catalogue, name} <- [
+            {"duckdb", "sales", "stg_orders"},
+            {"duckdb", "sales", "mart_daily_sales"},
+            {"postgres", "crm", "accounts"}
+          ] do
+        %{
+          id: "#{connection}.#{catalogue}.#{name}",
+          route_id: "#{connection}.#{catalogue}.#{name}",
+          name: name,
+          connection: connection,
+          catalogue: catalogue,
+          type: "table",
+          status: :healthy,
+          coverage_status: :complete,
+          compatibility_status: :ready,
+          last_run_label: "6m ago"
+        }
+      end
+
+    namespaces = AssetCataloguePage.asset_namespaces(assets)
+
+    assert Enum.map(namespaces, &{&1.connection, &1.catalogue, length(&1.assets)}) == [
+             {"duckdb", "sales", 2},
+             {"postgres", "crm", 1}
+           ]
+
+    html =
+      render_component(&AssetCataloguePage.asset_namespace/1, namespace: hd(namespaces))
+
+    # The namespace header states connection and catalogue, so the rows must not
+    # repeat them: that repetition is what made the table too wide.
+    assert html =~ "duckdb"
+    assert html =~ "sales"
+    refute html =~ ">Connection<"
+    refute html =~ ">Catalogue<"
+  end
+
   test "renders compatibility independently from health and coverage" do
     assets =
       [

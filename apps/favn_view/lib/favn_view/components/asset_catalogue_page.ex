@@ -7,7 +7,11 @@ defmodule FavnView.Components.AssetCataloguePage do
   section components. It contains no surface, badge, or button styling of its
   own — those come from `FavnView.UI`.
 
-  The catalogue renders the same rows twice by viewport: a `data_table/1` on
+  Assets are browsed by the namespace they are declared in — connection, then
+  catalogue — rather than as one flat list. A flat list is a search interface: it
+  only helps someone who already knows the name they want.
+
+  Within a namespace the rows are rendered twice by viewport: a `data_table/1` on
   desktop and one `list_card/1` per asset on mobile. That is deliberate; a table
   narrowed to a phone is unscannable.
 
@@ -85,11 +89,11 @@ defmodule FavnView.Components.AssetCataloguePage do
             data-testid="asset-empty-state"
           />
 
-          <.panel :if={@assets != []} class="hidden overflow-hidden lg:block">
-            <.asset_table assets={@assets} />
-          </.panel>
-
-          <.asset_card_list :if={@assets != []} assets={@assets} />
+          <.asset_namespace
+            :for={namespace <- asset_namespaces(@assets)}
+            namespace={namespace}
+            open?={namespaces_open?(@assets, @filters)}
+          />
         </.stack>
 
         <LineagePage.lineage_explorer
@@ -150,7 +154,81 @@ defmodule FavnView.Components.AssetCataloguePage do
   end
 
   @doc """
-  Desktop table of assets.
+  One `connection · catalogue` namespace, with its assets inside.
+
+  A flat list of every asset is a search interface, not a catalogue: it assumes
+  the operator already knows the name they want. Assets are declared inside a
+  connection and a catalogue, so that is the hierarchy they are browsed by — the
+  same two segments that make up the target id.
+
+  Collapsing is a `<details>` element rather than a LiveView event, so the state
+  is the browser's, survives a re-render, and costs no round trip. Groups start
+  open; a namespace hidden by default is a namespace nobody finds.
+  """
+  attr :namespace, :map, required: true
+  attr :open?, :boolean, default: true
+
+  def asset_namespace(assigns) do
+    ~H"""
+    <details open={@open?} data-testid="asset-namespace">
+      <summary class="favn-surface-control mb-2 flex cursor-pointer items-center gap-2 rounded-box px-3 py-2">
+        <.icon name="hero-chevron-right" size={:sm} class="favn-namespace-marker favn-text-subtle" />
+        <.connection_icon connection={@namespace.connection} />
+        <span class="font-mono text-sm">{@namespace.connection}</span>
+        <.icon name="hero-chevron-right" size={:xs} class="favn-text-subtle" />
+        <span class="font-mono text-sm">{@namespace.catalogue}</span>
+        <.count_badge
+          count={length(@namespace.assets)}
+          label={asset_count_label(length(@namespace.assets))}
+          class="ml-auto"
+        />
+      </summary>
+
+      <.panel class="mb-4 hidden overflow-hidden lg:block">
+        <.asset_table assets={@namespace.assets} />
+      </.panel>
+
+      <.asset_card_list assets={@namespace.assets} class="mb-4" />
+    </details>
+    """
+  end
+
+  @doc """
+  Groups assets into `connection · catalogue` namespaces, in name order.
+
+  ## Examples
+
+      iex> alias FavnView.Components.AssetCataloguePage
+      iex> assets = [
+      ...>   %{name: "b", connection: "duckdb", catalogue: "sales"},
+      ...>   %{name: "a", connection: "duckdb", catalogue: "sales"},
+      ...>   %{name: "c", connection: "postgres", catalogue: "crm"}
+      ...> ]
+      iex> AssetCataloguePage.asset_namespaces(assets) |> Enum.map(&{&1.connection, &1.catalogue, Enum.map(&1.assets, fn a -> a.name end)})
+      [{"duckdb", "sales", ["a", "b"]}, {"postgres", "crm", ["c"]}]
+  """
+  @spec asset_namespaces([map()]) :: [map()]
+  def asset_namespaces(assets) do
+    assets
+    |> Enum.group_by(
+      &{Map.get(&1, :connection, "unknown"), Map.get(&1, :catalogue, "uncatalogued")}
+    )
+    |> Enum.map(fn {{connection, catalogue}, grouped} ->
+      %{
+        connection: connection,
+        catalogue: catalogue,
+        assets: Enum.sort_by(grouped, &Map.get(&1, :name, ""))
+      }
+    end)
+    |> Enum.sort_by(&{&1.connection, &1.catalogue})
+  end
+
+  @doc """
+  Desktop table of the assets in one namespace.
+
+  Connection and catalogue are deliberately absent: every row in this table
+  shares them, and the namespace header above states them once. Repeating a
+  constant in every row is what made the table too wide to read.
   """
   attr :assets, :list, required: true
 
@@ -174,13 +252,6 @@ defmodule FavnView.Components.AssetCataloguePage do
           {asset.name}
         </.link>
       </:col>
-      <:col :let={asset} label="Connection">
-        <span class="flex items-center gap-2 favn-text-muted">
-          <.connection_icon connection={asset.connection} />
-          {asset.connection}
-        </span>
-      </:col>
-      <:col :let={asset} label="Catalogue" class="favn-text-muted">{asset.catalogue}</:col>
       <:col :let={asset} label="Type" class="favn-text-muted">{asset.type}</:col>
       <:col :let={asset} label="State">
         <.asset_state_icons asset={asset} />
@@ -194,10 +265,11 @@ defmodule FavnView.Components.AssetCataloguePage do
   Mobile list of assets.
   """
   attr :assets, :list, required: true
+  attr :class, :any, default: nil
 
   def asset_card_list(assigns) do
     ~H"""
-    <.stack gap={:sm} class="lg:hidden" data-testid="asset-card-list">
+    <.stack gap={:sm} class={["lg:hidden", @class]} data-testid="asset-card-list">
       <.asset_card :for={asset <- @assets} asset={asset} />
     </.stack>
     """
@@ -219,7 +291,7 @@ defmodule FavnView.Components.AssetCataloguePage do
             </span>
             <div class="min-w-0">
               <.section_title>{@asset.name}</.section_title>
-              <.meta>{@asset.connection} · {@asset.catalogue} · {@asset.type}</.meta>
+              <.meta>{@asset.type}</.meta>
             </div>
           </div>
           <.inline gap={:sm} class="text-xs favn-text-muted">
@@ -441,6 +513,22 @@ defmodule FavnView.Components.AssetCataloguePage do
       {"Platform", "platform"},
       {"Marketing", "marketing"}
     ]
+  end
+
+  defp asset_count_label(1), do: "asset"
+  defp asset_count_label(_count), do: "assets"
+
+  # Namespaces start open. They are collapsed only when there are enough of them
+  # that the headers themselves stop fitting on a screen, and never while a
+  # filter is narrowing the list — a search that hides its own results is worse
+  # than a long page.
+  defp namespaces_open?(assets, filters) do
+    filtering? =
+      Map.get(filters, :search, "") not in [nil, ""] or
+        Map.get(filters, :connection, "all") != "all" or
+        Map.get(filters, :catalogue, "all") != "all"
+
+    filtering? or length(asset_namespaces(assets)) <= 8
   end
 
   defp coverage_status(asset), do: Map.get(asset, :coverage_status, :unknown)

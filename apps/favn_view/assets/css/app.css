@@ -268,6 +268,24 @@
       0 14px 40px color-mix(in oklab, var(--color-base-100) 54%, transparent) !important;
   }
 
+  /* A `<details>` disclosure: hide the native triangle and rotate our own
+     chevron, so the marker matches every other icon in the interface. */
+  summary {
+    list-style: none;
+  }
+
+  summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .favn-namespace-marker {
+    transition: transform 160ms ease;
+  }
+
+  details[open] > summary .favn-namespace-marker {
+    transform: rotate(90deg);
+  }
+
   /* Selection is a state, so it has to be identifiable: an opaque border plus a
      lit edge, rather than a tinted hairline that measured 2.47:1. */
   .favn-list-card-selected {
