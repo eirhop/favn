@@ -26,9 +26,15 @@ defmodule FavnOrchestrator.RunServer.Execution.FreshnessContext do
           upstream_statuses: map(),
           now: DateTime.t()
         }
+  @type asset_index :: %Index{
+          planning_index: term(),
+          assets_by_ref: map(),
+          pipelines_by_ref: map(),
+          schedules_by_ref: map()
+        }
 
   @doc "Loads the persisted freshness evidence required by a pipeline plan."
-  @spec initialize(RunState.t(), Index.t() | Version.t()) ::
+  @spec initialize(RunState.t(), asset_index() | Version.t()) ::
           {:ok, t()} | {:error, {:freshness_state_lookup_failed, term()}}
   def initialize(%RunState{} = run_state, manifest) do
     assets_by_ref = assets_by_ref(manifest)

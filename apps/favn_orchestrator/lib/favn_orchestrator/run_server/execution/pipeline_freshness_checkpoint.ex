@@ -17,6 +17,7 @@ defmodule FavnOrchestrator.RunServer.Execution.PipelineFreshnessCheckpoint do
   alias FavnOrchestrator.Persistence.Results.RunExecutionCheckpoint
   alias FavnOrchestrator.Persistence.SystemContext
   alias FavnOrchestrator.RefreshPolicy
+  alias FavnOrchestrator.RunServer.Execution.FreshnessContext
   alias FavnOrchestrator.RunState
 
   @checkpoint_version 1
@@ -45,9 +46,10 @@ defmodule FavnOrchestrator.RunServer.Execution.PipelineFreshnessCheckpoint do
         }
 
   @doc "Returns the current durable checkpoint, or `nil` for a new run."
-  @spec load(RunState.t(), Index.t()) ::
+  @spec load(RunState.t(), FreshnessContext.asset_index()) ::
           {:ok, {map(), checkpoint_ref()} | nil} | {:error, term()}
-  def load(%RunState{} = run, %Index{} = manifest_index) do
+  def load(%RunState{workspace_id: workspace_id} = run, %Index{} = manifest_index)
+      when is_binary(workspace_id) do
     query = %GetRunExecutionCheckpoint{
       workspace_context: SystemContext.workspace(run.workspace_id, :run_checkpoint_read),
       run_id: run.id
@@ -68,12 +70,26 @@ defmodule FavnOrchestrator.RunServer.Execution.PipelineFreshnessCheckpoint do
     end
   end
 
+  def load(%RunState{}, %Index{}),
+    do: {:error, :run_execution_checkpoint_workspace_required}
+
   @doc "Fenced replacement of the run's single shared checkpoint."
   @spec put(RunState.t(), non_neg_integer(), pos_integer(), map(), checkpoint_ref() | nil) ::
           {:ok, checkpoint_ref()} | {:error, term()}
-  def put(%RunState{} = run, stage, attempt, context, previous_reference)
+  def put(
+        %RunState{
+          workspace_id: workspace_id,
+          storage_owner_id: owner_id,
+          storage_fencing_token: fencing_token
+        } = run,
+        stage,
+        attempt,
+        context,
+        previous_reference
+      )
       when is_integer(stage) and stage >= 0 and is_integer(attempt) and attempt > 0 and
-             is_map(context) and
+             is_binary(workspace_id) and is_binary(owner_id) and is_integer(fencing_token) and
+             fencing_token > 0 and is_map(context) and
              (is_nil(previous_reference) or is_map(previous_reference)) do
     with {:ok, revision} <- next_revision(previous_reference),
          {:ok, payload} <- encode_payload(run.id, context),
@@ -110,6 +126,9 @@ defmodule FavnOrchestrator.RunServer.Execution.PipelineFreshnessCheckpoint do
       {:error, reason} -> {:error, {:run_execution_checkpoint_write_failed, reason}}
     end
   end
+
+  def put(%RunState{}, _stage, _attempt, _context, _previous_reference),
+    do: {:error, :invalid_run_execution_checkpoint_owner}
 
   @doc "Returns true when a task continuation names the loaded checkpoint."
   @spec matches?(checkpoint_ref() | nil, term()) :: boolean()
@@ -155,7 +174,8 @@ defmodule FavnOrchestrator.RunServer.Execution.PipelineFreshnessCheckpoint do
   def decode_payload(_payload), do: {:error, :invalid_pipeline_freshness_checkpoint}
 
   @doc false
-  @spec restore_payload(binary(), RunState.t(), Index.t()) :: {:ok, map()} | {:error, term()}
+  @spec restore_payload(binary(), RunState.t(), FreshnessContext.asset_index()) ::
+          {:ok, map()} | {:error, term()}
   def restore_payload(payload, %RunState{} = run, %Index{} = manifest_index) do
     with {:ok, decoded} <- decode_payload(payload) do
       restore_context(decoded, run, manifest_index)
@@ -325,6 +345,7 @@ defmodule FavnOrchestrator.RunServer.Execution.PipelineFreshnessCheckpoint do
     end
   end
 
+  # sobelow_skip ["Misc.BinToTerm"]
   defp safe_binary_to_term(payload) do
     {:ok, :erlang.binary_to_term(payload, [:safe])}
   rescue

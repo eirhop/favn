@@ -52,6 +52,12 @@ defmodule FavnOrchestrator.RunServer.Execution.PipelineFreshnessCheckpointTest d
     assert restored.assets_by_ref == manifest_index.assets_by_ref
     assert restored.prior_states[{{__MODULE__, :source}, "latest"}] == state
     assert restored.current_states[{{__MODULE__, :source}, nil}] == state
+
+    assert {:error, :run_execution_checkpoint_workspace_required} =
+             PipelineFreshnessCheckpoint.load(run, manifest_index)
+
+    assert {:error, :invalid_run_execution_checkpoint_owner} =
+             PipelineFreshnessCheckpoint.put(run, 0, 1, base, nil)
   end
 
   test "runner-task continuation size is independent of the run freshness context" do
