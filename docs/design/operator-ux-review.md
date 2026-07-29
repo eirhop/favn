@@ -316,6 +316,30 @@ from that walkthrough, worst first.
 19. Filter select labels clip on `/schedules` (`Runtime▾`, `Window▾`), and
     `Clear` renders as though active when no filter is set.
 
+### Not a UI finding, but it blocks UI review
+
+`mix favn.dev` in the example project intermittently tears the whole stack down
+about forty seconds after it starts serving, with
+`** (Mix) failed to start Favn development: :runner_start_timeout`. The runner
+does leave evidence, and the evidence is not a timeout: `erl_crash.dump` in the
+project root decodes to
+
+```
+Runtime terminating during boot ({badarg,[{io,put_chars,[standard_error, …
+  ** (ArgumentError) errors were found at the given arguments:
+    * 1st argument: the device does not exist
+```
+
+So the runner raised something — the masked text begins
+`** (ErlangError) Erlang error: :term…` — and then died *reporting* it, because
+`FavnLocal.RunnerProcessLauncher` starts it without a `standard_error` device.
+The launcher's 30 s `@runner_start_timeout_ms` then reports the silence as a
+timeout, which is why the symptom names the wrong cause.
+
+Two separate defects: a runner that cannot report its own errors, and a
+supervisor that translates "child said nothing" into "child was slow". The
+first hides every runner boot failure in this launch mode.
+
 ### Confirmed working against a real backend
 
 Schedule enable and disable, which the review had recorded as "appears to fail
