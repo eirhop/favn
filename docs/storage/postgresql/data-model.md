@@ -89,6 +89,12 @@ by that deployment; the value is not duplicated on `workspace_deployments`.
 Historical manifests from schema versions before the runner-release contract keep
 a null binding for audit only and cannot become active.
 
+`manifest_versions.content_hash` is the authoritative unique deduplication key.
+New authoring defaults the version ID to `mv_` plus the full hexadecimal content
+hash, but PostgreSQL intentionally does not enforce that formula: imported and
+historical rows may have explicit IDs. Re-publishing their content returns the
+existing row and leaves all deployment and run references unchanged.
+
 ## Runs, events, execution, logs, and outbox
 
 ```mermaid

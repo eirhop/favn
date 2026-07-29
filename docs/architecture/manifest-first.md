@@ -103,6 +103,12 @@ A manifest version is an immutable wrapper around compact index data. It records
 manifest version id, content hash, schema version, runner contract version,
 serialization format, and index payload. It never contains executable SQL.
 
+New versions use `mv_` plus the full lowercase SHA-256 content hash as their
+default version ID. The ID is derived only after the manifest has been
+canonicalized and hashed. Explicit IDs remain valid for imported and persisted
+envelopes, and verification does not rewrite or require them to match the
+default formula.
+
 Each SQL asset contains one 64-character package hash. The referenced package
 contains the complete compiled SQL execution tree and its asset ref. Package
 identity covers that canonical payload. The authoring publication verifies exact
@@ -117,6 +123,11 @@ and a set of content-addressed execution artifacts. Schema 7 and inline
 The orchestrator persists manifest versions and chooses which one is active. A
 run should refer to the manifest version id and content hash, not to the latest
 loaded module state.
+
+The content hash is the authoritative deduplication key. Publication looks up
+identical content before registration and returns its persisted canonical
+version ID. This remains necessary for explicit IDs, historical random IDs, and
+concurrent publication even though new default IDs are deterministic.
 
 Pinning protects repeatability. If the active manifest changes later, existing
 runs still point at the version they were created from.

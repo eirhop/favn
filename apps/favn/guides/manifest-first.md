@@ -161,6 +161,23 @@ by hand.
 {:ok, version} = Favn.pin_manifest_version(manifest)
 ```
 
+The default version ID is content-addressed:
+
+```elixir
+version.manifest_version_id == "mv_" <> version.content_hash
+```
+
+Both values use the full lowercase SHA-256 hash of the canonical manifest
+payload. Build-only diagnostics and envelope metadata such as `inserted_at` do
+not change them.
+
+`content_hash` remains the canonical publication and storage deduplication key.
+If the same content was already persisted under an older or explicitly supplied
+ID, publication returns that existing ID rather than rewriting it. Explicit
+`:manifest_version_id` values remain supported for imported and previously
+published envelopes; ordinary authoring should use the content-addressed
+default.
+
 The pinned version can be compared and selected by runtime tooling. Deployment
 code should use `Favn.prepare_manifest_publication/2` so the exact package set is
 validated before transfer.

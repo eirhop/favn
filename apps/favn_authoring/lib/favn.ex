@@ -205,7 +205,11 @@ defmodule FavnAuthoring do
   def validate_manifest_compatibility(manifest), do: Compatibility.validate_manifest(manifest)
 
   @doc """
-  Pins a manifest into an immutable manifest-version envelope.
+  Pins a manifest into an immutable, content-addressed version envelope.
+
+  The default manifest version ID is `mv_` plus the full canonical content
+  hash. Pass `:manifest_version_id` only to preserve an imported or previously
+  published identity.
   """
   @spec pin_manifest_version(map() | struct(), keyword()) :: {:ok, Version.t()} | {:error, term()}
   def pin_manifest_version(manifest, opts \\ []) when is_list(opts) do

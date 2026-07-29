@@ -5,6 +5,11 @@ defmodule Favn.Manifest.Version do
   Runtime work may retain only the version identity after compiling the
   manifest into a bounded execution index. In that form `manifest` is `nil`;
   all immutable version and runner-release fields remain available.
+
+  Versions minted without an explicit `:manifest_version_id` use `mv_` plus the
+  full lowercase SHA-256 `content_hash`. Explicit IDs remain supported for
+  imported and already-published envelopes. Verification preserves those IDs;
+  `content_hash` remains the canonical deduplication identity.
   """
 
   alias Favn.Manifest
@@ -79,9 +84,15 @@ defmodule Favn.Manifest.Version do
           | Compatibility.error()
           | Identity.error()
 
+  @doc """
+  Canonicalizes a manifest and pins it in an immutable version envelope.
+
+  By default the manifest version ID is `mv_` plus the full lowercase SHA-256
+  content hash. Pass `:manifest_version_id` only when preserving an explicit
+  external or previously published identity.
+  """
   @spec new(map() | struct(), [opt()]) :: {:ok, t()} | {:error, error()}
   def new(manifest, opts \\ []) when is_list(opts) do
-    manifest_version_id = Keyword.get(opts, :manifest_version_id, default_manifest_version_id())
     serialization_format = Keyword.get(opts, :serialization_format, "json-v1")
 
     with :ok <- validate_opts(opts),
@@ -93,12 +104,12 @@ defmodule Favn.Manifest.Version do
          {:ok, runner_contract_version} <-
            read_field(stable_manifest, :runner_contract_version),
          {:ok, runner_releases} <- read_field(stable_manifest, :runner_releases),
-         :ok <- validate_manifest_version_id(manifest_version_id),
          :ok <- validate_serialization_format(serialization_format),
          {:ok, content_hash} <-
            Identity.hash_manifest(stable_manifest,
              algorithm: Keyword.get(opts, :hash_algorithm, :sha256)
-           ) do
+           ),
+         {:ok, manifest_version_id} <- resolve_manifest_version_id(opts, content_hash) do
       {:ok,
        %__MODULE__{
          manifest_version_id: manifest_version_id,
@@ -308,7 +319,14 @@ defmodule Favn.Manifest.Version do
   defp match_runner_releases(actual, expected),
     do: {:error, {:manifest_runner_releases_mismatch, expected, actual}}
 
-  defp default_manifest_version_id do
-    "mv_" <> Base.encode16(:crypto.strong_rand_bytes(16), case: :lower)
+  defp resolve_manifest_version_id(opts, content_hash) do
+    case Keyword.fetch(opts, :manifest_version_id) do
+      {:ok, manifest_version_id} ->
+        with :ok <- validate_manifest_version_id(manifest_version_id),
+             do: {:ok, manifest_version_id}
+
+      :error ->
+        {:ok, "mv_" <> content_hash}
+    end
   end
 end

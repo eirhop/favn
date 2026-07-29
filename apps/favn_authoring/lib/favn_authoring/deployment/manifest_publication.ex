@@ -1,7 +1,7 @@
 defmodule FavnAuthoring.Deployment.ManifestPublication do
   @moduledoc false
 
-  alias Favn.Manifest.{ExecutionPackage, Identity, Publication, Serializer, Version}
+  alias Favn.Manifest.{ExecutionPackage, Publication, Serializer, Version}
 
   @spec read(Path.t()) :: {:ok, Publication.t()} | {:error, term()}
   def read(path) when is_binary(path) do
@@ -116,14 +116,7 @@ defmodule FavnAuthoring.Deployment.ManifestPublication do
     Version.from_published(manifest, metadata_opts)
   end
 
-  defp decode_version(%{} = manifest, _metadata_opts) do
-    with {:ok, content_hash} <- Identity.hash_manifest(manifest) do
-      Version.new(manifest, manifest_version_id: stable_manifest_version_id(content_hash))
-    end
-  end
+  defp decode_version(%{} = manifest, _metadata_opts), do: Version.new(manifest)
 
   defp decode_version(_other, _metadata_opts), do: {:error, :invalid_manifest_index_json}
-
-  defp stable_manifest_version_id(content_hash),
-    do: "mv_" <> String.slice(content_hash, 0, 32)
 end

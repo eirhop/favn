@@ -28,7 +28,12 @@ defmodule Favn.Manifest.Publication do
           | ExecutionPackage.error()
           | Version.error()
 
-  @doc "Pins a build and verifies exact package coverage."
+  @doc """
+  Pins a build and verifies exact package coverage.
+
+  Without an explicit `:manifest_version_id`, the pinned index uses the
+  content-addressed default from `Favn.Manifest.Version.new/2`.
+  """
   @spec new(Build.t(), keyword()) :: {:ok, t()} | {:error, error()}
   def new(%Build{} = build, opts \\ []) when is_list(opts) do
     with {:ok, version} <- Version.new(build.manifest, opts) do

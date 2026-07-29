@@ -148,6 +148,7 @@ defmodule Favn.Manifest.GeneratorTest do
              )
 
     assert {:ok, publication} = Favn.prepare_manifest_publication(build)
+    assert publication.version.manifest_version_id == "mv_" <> publication.version.content_hash
     assert [package] = publication.execution_packages
     assert package.content_hash == sql_asset.execution_package_hash
     assert %Favn.Manifest.SQLExecution{} = package.sql_execution
