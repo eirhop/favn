@@ -305,12 +305,18 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.Logs do
     ]
   end
 
+  # Joined explicitly rather than written as a heredoc: a heredoc inherits the
+  # checked-out file's line endings, and this fixture exists to prove that the
+  # viewer preserves "\n".
   defp sql do
-    """
-    Running SQL:
-    SELECT customer_id, order_id, total_amount
-    FROM raw.orders
-    WHERE order_date >= '2026-06-12'\
-    """
+    Enum.join(
+      [
+        "Running SQL:",
+        "SELECT customer_id, order_id, total_amount",
+        "FROM raw.orders",
+        "WHERE order_date >= '2026-06-12'"
+      ],
+      "\n"
+    )
   end
 end
