@@ -19,6 +19,14 @@ defmodule FavnView.RunDetailLive do
   @active_statuses [:pending, :running]
   @valid_modes ~w(flow windows events)
 
+  # A live run's clock has to move on its own. Run events are the only thing that
+  # used to advance the axis, so a running bar sat still for however long the
+  # runner was quiet and then jumped — which reads as the UI lagging rather than
+  # as the asset taking a while. This re-projects the flow on a fixed tick with no
+  # facade call, and the bars interpolate between ticks in CSS, so the timeline
+  # advances smoothly whether or not anything is happening.
+  @flow_tick_ms 1_000
+
   @impl true
   def mount(%{"run_id" => run_id}, _session, socket) do
     run =
@@ -36,8 +44,8 @@ defmodule FavnView.RunDetailLive do
         detail_load_attempts_remaining: initial_load_attempts(run),
         nav_items: AssetCataloguePage.nav_items(:runs)
       )
+      |> RunEventRefresh.init([:refresh_timer_ref, :fallback_poll_ref, :flow_tick_ref])
       |> assign_flow()
-      |> RunEventRefresh.init([:refresh_timer_ref, :fallback_poll_ref])
       |> sync_run_event_refresh()
       |> maybe_schedule_fallback_poll()
 
@@ -73,6 +81,13 @@ defmodule FavnView.RunDetailLive do
     {:noreply, socket |> refresh_run() |> maybe_schedule_fallback_poll()}
   end
 
+  def handle_info({:tick_flow, token}, socket) do
+    case LiveRefresh.take(socket, :flow_tick_ref, token) do
+      {:ok, socket} -> {:noreply, assign_flow(socket)}
+      {:stale, socket} -> {:noreply, socket}
+    end
+  end
+
   def handle_info({:favn_run_event, event}, socket) do
     {:noreply, RunEventRefresh.handle_event(socket, event, run_event_refresh_opts(socket))}
   end
@@ -102,18 +117,30 @@ defmodule FavnView.RunDetailLive do
     |> maybe_schedule_fallback_poll()
   end
 
-  # The flow is geometry over the attempts, so it only changes when they do.
-  # Recomputing it here rather than in `render/1` keeps it out of the diff when a
-  # refresh brought nothing new.
+  # The flow is geometry over the attempts and the clock. Recomputing it here
+  # rather than in `render/1` keeps it out of the diff when nothing moved, and
+  # lets the tick advance the axis without refetching the run.
   defp assign_flow(%{assigns: %{run: %{found?: true} = run}} = socket) do
-    assign(
-      socket,
-      :flow,
-      RunFlow.build(run.attempts, active?: run.active?)
-    )
+    socket
+    |> assign(:flow, RunFlow.build(run.attempts, active?: run.active?))
+    |> maybe_schedule_flow_tick()
   end
 
-  defp assign_flow(socket), do: assign(socket, :flow, nil)
+  defp assign_flow(socket) do
+    socket
+    |> assign(:flow, nil)
+    |> maybe_schedule_flow_tick()
+  end
+
+  defp maybe_schedule_flow_tick(%{assigns: %{run: %{active?: true}}} = socket) do
+    if connected?(socket) do
+      LiveRefresh.schedule_once(socket, :flow_tick_ref, :tick_flow, @flow_tick_ms)
+    else
+      socket
+    end
+  end
+
+  defp maybe_schedule_flow_tick(socket), do: socket
 
   @impl true
   def handle_event("set_mode", %{"mode" => mode}, socket) when mode in @valid_modes do

@@ -139,7 +139,7 @@ defmodule FavnView.RunFlow do
       tone: tone,
       status: lane_status(attempts, tone),
       raw_status: Map.get(first, :raw_status),
-      detail: detail(attempts),
+      detail: detail(attempts, bars),
       empty_label: empty_label(attempts, active?),
       bars: bars,
       tracks: max(Enum.count(Enum.uniq(Enum.map(bars, & &1.track))), 1),
@@ -160,6 +160,7 @@ defmodule FavnView.RunFlow do
             running_end(active?, now_ms, bar_start)
 
         bar_width = width(bar_end - bar_start, span)
+        elapsed = if running?, do: bar_end - bar_start
 
         [
           %{
@@ -170,8 +171,9 @@ defmodule FavnView.RunFlow do
             track: 0,
             tone: tone(attempt),
             running?: running?,
-            label: bar_label(attempt, bar_width),
-            title: title(attempt),
+            elapsed_ms: elapsed,
+            label: bar_label(attempt, bar_width, elapsed),
+            title: title(attempt, elapsed),
             start: bar_start,
             finish: bar_end
           }
@@ -215,9 +217,22 @@ defmodule FavnView.RunFlow do
       times ->
         start_ms = Enum.min(times)
         end_ms = if active?, do: max(Enum.max(times), now_ms), else: Enum.max(times)
-        pad(start_ms, end_ms)
+
+        start_ms
+        |> pad(end_ms)
+        |> headroom(active?)
     end
   end
+
+  # An active run's axis would otherwise end exactly at `now`, putting the
+  # now-marker on the container's right edge and the running bar's faded end
+  # outside it. A little headroom past now keeps both visible and gives the bar
+  # somewhere to grow into, which is what makes the advance readable.
+  defp headroom({start_ms, end_ms}, true) do
+    {start_ms, end_ms + max(div(end_ms - start_ms, 12), 1_000)}
+  end
+
+  defp headroom(bounds, false), do: bounds
 
   # A run whose attempts all finished inside a second would otherwise have a
   # one-millisecond axis, where every tick carries the same label.
@@ -262,17 +277,31 @@ defmodule FavnView.RunFlow do
   # not the edge. The duration lives in the lane instead, where it always fits.
   @labelled_width 9.0
 
-  defp bar_label(attempt, width) when width >= @labelled_width,
+  # A running attempt's `duration` is "-", because it has not finished. Its
+  # elapsed time is the number the operator is watching, so that is what the bar
+  # and the lane say while it runs, recomputed on every tick.
+  defp bar_label(_attempt, width, elapsed)
+       when width >= @labelled_width and is_integer(elapsed),
+       do: total_duration_label(elapsed)
+
+  defp bar_label(attempt, width, _elapsed) when width >= @labelled_width,
     do: Map.get(attempt, :duration) || ""
 
-  defp bar_label(_attempt, _width), do: nil
+  defp bar_label(_attempt, _width, _elapsed), do: nil
 
   # The lane's second line carries the window and the duration, because the bar
   # can carry neither at these widths.
-  defp detail(attempts) do
-    case Enum.reject([window_detail(attempts), duration_detail(attempts)], &is_nil/1) do
+  defp detail(attempts, bars) do
+    case Enum.reject([window_detail(attempts), duration_detail(attempts, bars)], &is_nil/1) do
       [] -> Map.get(List.first(attempts), :status) || "Unknown"
       parts -> Enum.join(parts, " · ")
+    end
+  end
+
+  defp duration_detail(attempts, bars) do
+    case Enum.find(bars, &(&1.running? and is_integer(&1.elapsed_ms))) do
+      nil -> finished_duration_detail(attempts)
+      bar -> "#{total_duration_label(bar.elapsed_ms)} elapsed"
     end
   end
 
@@ -286,9 +315,9 @@ defmodule FavnView.RunFlow do
     end
   end
 
-  defp duration_detail([attempt]), do: usable(Map.get(attempt, :duration))
+  defp finished_duration_detail([attempt]), do: usable(Map.get(attempt, :duration))
 
-  defp duration_detail(attempts) do
+  defp finished_duration_detail(attempts) do
     case attempts |> Enum.map(&Map.get(&1, :duration_ms)) |> Enum.reject(&is_nil/1) do
       [] -> nil
       values -> "#{total_duration_label(Enum.sum(values))} total"
@@ -380,14 +409,19 @@ defmodule FavnView.RunFlow do
     ms |> DateTime.from_unix!(:millisecond) |> Calendar.strftime("%H:%M:%S")
   end
 
-  defp title(attempt) do
+  defp title(attempt, elapsed) do
     [
       Map.get(attempt, :short_asset_name),
       Map.get(attempt, :window_label),
       Map.get(attempt, :status),
-      Map.get(attempt, :duration)
+      elapsed_or_duration(attempt, elapsed)
     ]
     |> Enum.reject(&(is_nil(&1) or &1 == "" or &1 == "-"))
     |> Enum.join(" · ")
   end
+
+  defp elapsed_or_duration(_attempt, elapsed) when is_integer(elapsed),
+    do: "#{total_duration_label(elapsed)} elapsed"
+
+  defp elapsed_or_duration(attempt, _elapsed), do: Map.get(attempt, :duration)
 end

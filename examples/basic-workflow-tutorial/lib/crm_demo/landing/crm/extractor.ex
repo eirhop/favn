@@ -23,7 +23,7 @@ defmodule CrmDemo.Landing.Crm.Extractor do
   def extract(ctx) do
     settings = ctx.asset.settings
     config = ctx.runtime_config.crm_api
-    client = Client.new(config.base_url, config.token)
+    client = Client.new(config.base_url, config.token, latency_ms: Map.get(config, :latency_ms))
 
     landing_run_id = "#{ctx.run_id}-attempt-#{ctx.attempt}"
     extracted_at = DateTime.utc_now()

@@ -609,10 +609,21 @@ summary {
     }
   }
 
-  /* A running bar on the run flow has no end yet, so its right edge must not
-     look like a finish. It fades out and breathes, which reads as "still going"
-     without animating position — the bar's width already grows every refresh,
-     and two motions at once would look like a glitch. */
+  /* The server re-projects a live run's flow once a second. Interpolating
+     position and width over exactly that interval, linearly, turns those
+     discrete updates into one continuous advance: each transition finishes as
+     the next value arrives, so nothing steps and nothing eases in and out.
+     Applied to every bar, not just the running one, because the axis end moves
+     with the clock and every bar rescales slightly with it. */
+  .favn-flow-advancing {
+    transition-property: left, width;
+    transition-duration: 1000ms;
+    transition-timing-function: linear;
+  }
+
+  /* A running bar has no end yet, so its right edge must not look like a finish.
+     It fades out and breathes, which reads as "still going" while the width
+     itself carries the elapsed time. */
   .favn-flow-bar-running {
     mask-image: linear-gradient(to right, black 60%, transparent 100%);
     animation: favn-flow-pulse 2.4s ease-in-out infinite;
@@ -631,6 +642,12 @@ summary {
   @media (prefers-reduced-motion: reduce) {
     .favn-flow-bar-running {
       animation: none;
+    }
+
+    /* The bar still has to move — it is the data. Cutting the interpolation makes
+       it step once a second instead, which is the honest minimum here. */
+    .favn-flow-advancing {
+      transition-property: none;
     }
   }
 

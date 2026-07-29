@@ -168,11 +168,41 @@ defmodule FavnView.RunFlowTest do
           now_ms: now
         )
 
-      assert [%{bars: [bar]}] = lanes(flow)
+      assert [%{bars: [bar]} = lane] = lanes(flow)
       assert bar.running?
       assert bar.left == 0.0
-      assert bar.width > 90.0
-      assert flow.axis.now_offset == 100.0
+
+      # The axis keeps headroom past now, so the bar and the now-marker both stay
+      # inside the track instead of sitting on its right edge.
+      assert bar.width > 85.0 and bar.width < 100.0
+      assert flow.axis.now_offset > 85.0 and flow.axis.now_offset < 100.0
+
+      # A running attempt's `duration` is "-", so the elapsed time computed from
+      # the clock is the only number the lane can honestly show.
+      assert bar.elapsed_ms == 90_000
+      assert lane.detail == "Jul 23 · 1m 30s elapsed"
+      assert bar.title =~ "1m 30s elapsed"
+    end
+
+    test "the elapsed label advances with the clock, not with events" do
+      base = DateTime.to_unix(@anchor, :millisecond)
+
+      attempts = [
+        attempt(raw_status: :running, status: "Running", status_tone: :info, finished_at_raw: nil)
+      ]
+
+      labels =
+        for offset <- [5_000, 20_000, 65_000] do
+          flow = RunFlow.build(attempts, active?: true, now_ms: base + offset)
+          [lane] = lanes(flow)
+          lane.detail
+        end
+
+      assert labels == [
+               "Jul 23 · 5.0 s elapsed",
+               "Jul 23 · 20.0 s elapsed",
+               "Jul 23 · 1m 5s elapsed"
+             ]
     end
 
     test "a settled run's axis ends with its last attempt, not with now" do

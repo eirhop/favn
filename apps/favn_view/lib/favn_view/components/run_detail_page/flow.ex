@@ -42,6 +42,7 @@ defmodule FavnView.Components.RunDetailPage.Flow do
 
           <.lane
             :for={lane <- stage.lanes}
+            id={"flow-lane-#{stage.id}-#{lane.id}"}
             lane={lane}
             now_offset={@flow.axis.now_offset}
             selected_attempt_id={@selected_attempt_id}
@@ -71,6 +72,7 @@ defmodule FavnView.Components.RunDetailPage.Flow do
     """
   end
 
+  attr :id, :string, required: true
   attr :lane, :map, required: true
   attr :now_offset, :any, required: true
   attr :selected_attempt_id, :string, required: true
@@ -78,6 +80,7 @@ defmodule FavnView.Components.RunDetailPage.Flow do
   defp lane(assigns) do
     ~H"""
     <div
+      id={@id}
       class="grid grid-cols-[minmax(9rem,14rem)_minmax(0,1fr)] border-b border-base-content/10 last:border-b-0"
       data-testid="flow-lane"
       data-asset-key={@lane.key}
@@ -94,7 +97,7 @@ defmodule FavnView.Components.RunDetailPage.Flow do
       <div class="relative py-2 pr-3" style={"min-height: #{lane_height(@lane.tracks)}rem"}>
         <span
           :if={!is_nil(@now_offset)}
-          class="pointer-events-none absolute inset-y-0 z-0 w-px bg-info/50"
+          class="pointer-events-none absolute inset-y-0 z-0 w-px bg-info/50 favn-flow-advancing"
           style={"left: #{@now_offset}%"}
           aria-hidden="true"
         />
@@ -109,15 +112,18 @@ defmodule FavnView.Components.RunDetailPage.Flow do
 
         <button
           :for={bar <- @lane.bars}
+          id={"flow-bar-#{@id}-#{bar.id}"}
           type="button"
           phx-click={bar.attempt_id && "select_attempt"}
           phx-value-attempt-id={bar.attempt_id}
           disabled={is_nil(bar.attempt_id)}
           class={[
             "absolute z-10 flex h-6 min-w-6 items-center overflow-hidden rounded-full border",
-            "px-1.5 text-[0.7rem] leading-none transition disabled:cursor-default",
+            "px-1.5 text-[0.7rem] leading-none disabled:cursor-default",
             "hover:brightness-125 focus-visible:outline focus-visible:outline-2",
             bar_class(bar.tone),
+            is_nil(@now_offset) && "transition",
+            !is_nil(@now_offset) && "favn-flow-advancing",
             bar.running? && "favn-flow-bar-running",
             bar.attempt_id == @selected_attempt_id &&
               "ring-2 ring-primary ring-offset-1 ring-offset-base-100"

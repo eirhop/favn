@@ -174,22 +174,43 @@ defmodule FavnView.Components.RunDetailPage do
   end
 
   defp run_modes(run) do
-    [
+    List.flatten([
       %{id: :flow, label: "Flow", icon: "hero-chart-bar"},
-      %{
-        id: :windows,
-        label: "Window runs",
-        icon: "hero-rectangle-stack",
-        count: window_run_count(run)
-      },
+      window_mode(run),
       %{id: :events, label: "Events", icon: "hero-signal"}
-    ]
+    ])
   end
 
-  # A single-window run has exactly one window run, which is this page. Showing
-  # "1" next to Window runs invites a click that lands back where it started.
-  defp window_run_count(%{total_windows: total}) when is_integer(total) and total > 1, do: total
-  defp window_run_count(_run), do: nil
+  # A run that executes its assets directly has no child runs, so the mode has
+  # nothing to show. A single-window run has exactly one, which is this page —
+  # offering it invites a click that lands back where it started.
+  defp window_mode(run) do
+    case window_run_count(run) do
+      nil ->
+        []
+
+      count ->
+        [
+          %{
+            id: :windows,
+            label: "Window runs",
+            icon: "hero-rectangle-stack",
+            count: count
+          }
+        ]
+    end
+  end
+
+  defp window_run_count(run) do
+    total = Map.get(run, :total_windows)
+    children = length(Map.get(run, :child_runs, []))
+
+    cond do
+      is_integer(total) and total > 1 -> total
+      children > 1 -> children
+      true -> nil
+    end
+  end
 
   defp run_facts(%{found?: true} = run) do
     [
