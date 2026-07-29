@@ -36,6 +36,20 @@ made runnable. Runner loss is handled from task lease and result state, not
 from process-monitor state alone. Safe failures may retry under policy;
 unknown outcomes require reconciliation and are not blindly replayed.
 
+`RunServer` keeps one shared freshness context for the active pipeline run and
+persists its compact mutable form as a fenced run checkpoint. Runner tasks
+carry only task-local settlement facts and a checkpoint reference. Recovery
+loads that checkpoint once, rebuilds immutable asset definitions from the
+pinned manifest, and rejects task continuations that name a different
+checkpoint.
+
+`RunManager` initially admits a run from a conservative decoded-plan estimate,
+then resizes that same node-wide reservation from the measured retained
+execution state after checkpoint recovery. The plan, compact manifest
+projection, and shared freshness context therefore remain inside one global
+active-run memory budget instead of relying only on the per-checkpoint size
+limit.
+
 ## Runner capacity and registry
 
 `RunnerTasks` owns the durable task facade. `RunnerRegistry` is a process-local

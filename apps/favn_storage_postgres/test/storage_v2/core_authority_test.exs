@@ -48,6 +48,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnOrchestrator.Persistence.Commands.DeploymentCapacityScope
   alias FavnOrchestrator.Persistence.Commands.ProvisionWorkspace
   alias FavnOrchestrator.Persistence.Commands.PinRuntimeInputs
+  alias FavnOrchestrator.Persistence.Commands.PutRunExecutionCheckpoint
   alias FavnOrchestrator.Persistence.Commands.PurgePersistence
   alias FavnOrchestrator.Persistence.Commands.RegisterManifest
   alias FavnOrchestrator.Persistence.Commands.RegisterExecutionPackages
@@ -98,6 +99,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnOrchestrator.Persistence.Queries.GetActor
   alias FavnOrchestrator.Persistence.Queries.GetSession
   alias FavnOrchestrator.Persistence.Queries.GetRun
+  alias FavnOrchestrator.Persistence.Queries.GetRunExecutionCheckpoint
   alias FavnOrchestrator.Persistence.Queries.GetRuntimeInputs
   alias FavnOrchestrator.Persistence.Queries.GetRunnerTask
   alias FavnOrchestrator.Persistence.Queries.GetTargetStatuses
@@ -4409,6 +4411,116 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
              })
   end
 
+  test "stores one fenced, exact-replay-safe execution checkpoint per run", fixture do
+    {create, run} = create_run_command(fixture)
+    assert {:ok, _created} = RunStore.create_run(create)
+
+    assert {:ok, ownership} =
+             RunOwnershipStore.claim_run(%ClaimRun{
+               workspace_context: fixture.workspace_context,
+               command_id: "claim-checkpoint:" <> run.id,
+               run_id: run.id,
+               owner_id: "checkpoint-owner",
+               lease_duration_ms: 30_000
+             })
+
+    payload = :erlang.term_to_binary(%{format: :checkpoint, states: []}, [:deterministic])
+
+    command = %PutRunExecutionCheckpoint{
+      workspace_context: fixture.workspace_context,
+      run_id: run.id,
+      owner_id: ownership.owner_id,
+      fencing_token: ownership.fencing_token,
+      checkpoint_version: 1,
+      checkpoint_revision: 1,
+      checkpoint_sequence: run.event_seq,
+      stage: 0,
+      attempt: 1,
+      payload: payload,
+      payload_hash: :crypto.hash(:sha256, payload),
+      occurred_at: DateTime.utc_now()
+    }
+
+    assert {:ok, checkpoint} = RunStore.put_execution_checkpoint(command)
+    assert checkpoint.payload == payload
+    assert checkpoint.checkpoint_revision == 1
+    assert checkpoint.checkpoint_sequence == run.event_seq
+    assert checkpoint.stage == 0
+    assert checkpoint.attempt == 1
+    assert {:ok, ^checkpoint} = RunStore.put_execution_checkpoint(command)
+
+    assert {:ok, ^checkpoint} =
+             RunStore.get_execution_checkpoint(%GetRunExecutionCheckpoint{
+               workspace_context: fixture.workspace_context,
+               run_id: run.id
+             })
+
+    different_payload = :erlang.term_to_binary(%{format: :checkpoint, states: [:changed]})
+
+    assert {:error, %{kind: :conflict}} =
+             RunStore.put_execution_checkpoint(%{
+               command
+               | payload: different_payload,
+                 payload_hash: :crypto.hash(:sha256, different_payload)
+             })
+
+    running = RunState.transition(run, status: :running)
+
+    assert {:ok, _committed} =
+             RunStore.commit_transition(%CommitRunTransition{
+               workspace_context: fixture.workspace_context,
+               command_id: "transition-checkpoint:" <> run.id,
+               expected_sequence: run.event_seq,
+               owner_id: ownership.owner_id,
+               fencing_token: ownership.fencing_token,
+               run: running,
+               event: %{
+                 run_id: run.id,
+                 sequence: running.event_seq,
+                 event_type: :run_started,
+                 status: :running,
+                 occurred_at: DateTime.utc_now()
+               }
+             })
+
+    advanced = %{
+      command
+      | checkpoint_revision: 2,
+        checkpoint_sequence: running.event_seq,
+        stage: 1,
+        payload: different_payload,
+        payload_hash: :crypto.hash(:sha256, different_payload),
+        occurred_at: DateTime.utc_now()
+    }
+
+    assert {:ok, advanced_checkpoint} = RunStore.put_execution_checkpoint(advanced)
+    assert advanced_checkpoint.checkpoint_revision == 2
+    assert advanced_checkpoint.checkpoint_sequence == running.event_seq
+    assert advanced_checkpoint.stage == 1
+    assert advanced_checkpoint.payload == different_payload
+    assert {:error, %{kind: :conflict}} = RunStore.put_execution_checkpoint(command)
+
+    same_sequence_next_stage = %{
+      advanced
+      | checkpoint_revision: 3,
+        stage: 2,
+        occurred_at: DateTime.utc_now()
+    }
+
+    assert {:ok, next_stage_checkpoint} =
+             RunStore.put_execution_checkpoint(same_sequence_next_stage)
+
+    assert next_stage_checkpoint.checkpoint_revision == 3
+    assert next_stage_checkpoint.checkpoint_sequence == running.event_seq
+    assert next_stage_checkpoint.stage == 2
+
+    assert {:error, %{kind: :fenced}} =
+             RunStore.put_execution_checkpoint(%{
+               same_sequence_next_stage
+               | fencing_token: ownership.fencing_token + 1
+             })
+  end
+
   test "run detail fetches an active retry checkpoint beyond the first event page", fixture do
     {command, run} = pipeline_run_command(fixture)
     assert {:ok, _created} = RunStore.create_run(command)
@@ -4582,6 +4694,56 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert keys.c in submitted
     assert keys.e in submitted
     refute keys.d in submitted
+  end
+
+  test "all-runnable second stage advances its checkpoint at the same run sequence", fixture do
+    asset = Enum.find(fixture.version.manifest.assets, &(&1.ref == {MyApp.Asset, :asset}))
+    {plan, keys} = continuation_regression_plan(asset.semantic_generation_id)
+    {command, original} = pipeline_run_command(fixture)
+
+    run =
+      RunState.new(
+        id: original.id,
+        workspace_id: fixture.workspace_id,
+        deployment_id: fixture.deployment_id,
+        manifest_version_id: fixture.version.manifest_version_id,
+        manifest_content_hash: fixture.version.content_hash,
+        runner_releases: fixture.version.runner_releases,
+        asset_ref: original.asset_ref,
+        target_refs: original.target_refs,
+        submit_kind: :pipeline,
+        plan: plan,
+        metadata: %{pipeline_execution_policy: %{max_concurrency: 1}}
+      )
+
+    command = %{command | run: run, event: %{command.event | occurred_at: run.inserted_at}}
+    assert {:ok, _created} = RunStore.create_run(command)
+
+    {:ok, runner_state} =
+      Agent.start_link(fn -> %{work: %{}, submitted: [], fail_key: :never} end)
+
+    share_repo_sandbox!()
+    start_supervised!({FavnOrchestrator.ExecutionAdmission.Coordinator, []})
+    start_supervised!({Task.Supervisor, name: FavnOrchestrator.RunnerClaimSupervisor})
+    start_supervised!({RunnerTaskResultRouter, []})
+
+    runner = spawn_link(fn -> durable_pipeline_runner(runner_state, fixture, :never) end)
+    assert {:ok, pid} = RunServer.start_link(%{run_state: run, version: fixture.version})
+    monitor = Process.monitor(pid)
+    assert_receive {:DOWN, ^monitor, :process, ^pid, :normal}, 5_000
+    send(runner, :stop)
+
+    assert {:ok, finished} =
+             RunStore.get_run(%GetRun{
+               workspace_context: fixture.workspace_context,
+               run_id: run.id
+             })
+
+    assert finished.status == :ok
+    assert Enum.all?(finished.result.node_results, &(&1.status == :ok))
+
+    submitted = Agent.get(runner_state, &Enum.reverse(&1.submitted))
+    assert Enum.sort(submitted) == Enum.sort(Map.values(keys))
   end
 
   defp durable_pipeline_runner(state, fixture, fail_key) do

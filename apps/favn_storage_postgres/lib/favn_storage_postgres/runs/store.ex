@@ -11,11 +11,13 @@ defmodule FavnStoragePostgres.Runs.Store do
   alias FavnOrchestrator.Persistence.Commands.CommitRunTransition
   alias FavnOrchestrator.Persistence.Commands.CreateRun
   alias FavnOrchestrator.Persistence.Commands.PinRuntimeInputs
+  alias FavnOrchestrator.Persistence.Commands.PutRunExecutionCheckpoint
   alias FavnOrchestrator.Persistence.Commands.RequestRunCancellation
   alias FavnOrchestrator.Persistence.Commands.RunTarget, as: RunTargetCommand
   alias FavnOrchestrator.Persistence.Error
   alias FavnOrchestrator.Persistence.PlatformContext
   alias FavnOrchestrator.Persistence.Queries.GetRun
+  alias FavnOrchestrator.Persistence.Queries.GetRunExecutionCheckpoint
   alias FavnOrchestrator.Persistence.Queries.GetRuntimeInputs
   alias FavnOrchestrator.Persistence.Queries.PagePublishedRunEvents
   alias FavnOrchestrator.Persistence.Queries.PageRunEvents
@@ -23,6 +25,10 @@ defmodule FavnStoragePostgres.Runs.Store do
   alias FavnOrchestrator.Persistence.RunEnum
   alias FavnOrchestrator.Persistence.Results.CursorPage
   alias FavnOrchestrator.Persistence.Results.RunCommitted
+
+  alias FavnOrchestrator.Persistence.Results.RunExecutionCheckpoint,
+    as: RunExecutionCheckpointResult
+
   alias FavnOrchestrator.Persistence.Results.RunSummary
   alias FavnOrchestrator.Persistence.WorkspaceContext
   alias FavnOrchestrator.RunCancellation
@@ -44,6 +50,7 @@ defmodule FavnStoragePostgres.Runs.Store do
   alias FavnStoragePostgres.Schemas.OutboxEvent
   alias FavnStoragePostgres.Schemas.Run
   alias FavnStoragePostgres.Schemas.RunEvent
+  alias FavnStoragePostgres.Schemas.RunExecutionCheckpoint
   alias FavnStoragePostgres.Schemas.RunOwnership
   alias FavnStoragePostgres.Schemas.RunPlan
   alias FavnStoragePostgres.Schemas.RunSubmission
@@ -59,6 +66,7 @@ defmodule FavnStoragePostgres.Runs.Store do
   @max_runtime_input_pins 1_000
   @runtime_input_package_batch_size 500
   @max_cancel_reason_bytes 32 * 1_024
+  @max_execution_checkpoint_bytes 64 * 1_024 * 1_024
   @snapshot_version 2
 
   @impl true
@@ -271,6 +279,43 @@ defmodule FavnStoragePostgres.Runs.Store do
     else
       {:error, %Error{} = error} -> {:error, error}
       {:error, reason} -> {:error, ErrorMapper.map(reason)}
+    end
+  rescue
+    error -> {:error, ErrorMapper.map(error)}
+  end
+
+  @impl true
+  def put_execution_checkpoint(%PutRunExecutionCheckpoint{} = command) do
+    with :ok <- validate_execution_checkpoint(command),
+         {:ok, result} <-
+           Repo.transaction(fn ->
+             validate_execution_checkpoint_fence!(command)
+             put_execution_checkpoint!(command)
+           end) do
+      {:ok, result}
+    else
+      {:error, %Error{} = error} -> {:error, error}
+      {:error, reason} -> {:error, ErrorMapper.map(reason)}
+    end
+  rescue
+    error -> {:error, ErrorMapper.map(error)}
+  end
+
+  @impl true
+  def get_execution_checkpoint(%GetRunExecutionCheckpoint{} = query) do
+    with :ok <- validate_execution_checkpoint_query(query) do
+      case Repo.get_by(RunExecutionCheckpoint,
+             workspace_id: query.workspace_context.workspace_id,
+             run_id: query.run_id
+           ) do
+        %RunExecutionCheckpoint{} = checkpoint ->
+          {:ok, execution_checkpoint_result(checkpoint)}
+
+        nil ->
+          {:error, Error.new(:not_found, "run execution checkpoint not found")}
+      end
+    else
+      {:error, %Error{} = error} -> {:error, error}
     end
   rescue
     error -> {:error, ErrorMapper.map(error)}
@@ -679,6 +724,53 @@ defmodule FavnStoragePostgres.Runs.Store do
   end
 
   defp validate_runtime_input_query(%GetRuntimeInputs{} = query) do
+    cond do
+      not workspace_reader?(query.workspace_context) ->
+        {:error, Error.new(:forbidden, "workspace read role required")}
+
+      not valid_identity?(query.run_id) ->
+        {:error, Error.new(:invalid, "invalid run identity")}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp validate_execution_checkpoint(%PutRunExecutionCheckpoint{} = command) do
+    cond do
+      not workspace_writer?(command.workspace_context) ->
+        {:error, Error.new(:forbidden, "workspace write role required")}
+
+      not valid_identity?(command.run_id) or not valid_identity?(command.owner_id) ->
+        {:error, Error.new(:invalid, "invalid run execution checkpoint identity")}
+
+      not is_integer(command.fencing_token) or command.fencing_token < 1 ->
+        {:error, Error.new(:invalid, "invalid run execution checkpoint fence")}
+
+      command.checkpoint_version != 1 or not is_integer(command.checkpoint_revision) or
+        command.checkpoint_revision < 1 or not is_integer(command.checkpoint_sequence) or
+          command.checkpoint_sequence < 1 ->
+        {:error, Error.new(:invalid, "invalid run execution checkpoint version")}
+
+      not is_integer(command.stage) or command.stage < 0 or not is_integer(command.attempt) or
+          command.attempt < 1 ->
+        {:error, Error.new(:invalid, "invalid run execution checkpoint position")}
+
+      not is_binary(command.payload) or
+        byte_size(command.payload) > @max_execution_checkpoint_bytes or
+        not is_binary(command.payload_hash) or byte_size(command.payload_hash) != 32 or
+          :crypto.hash(:sha256, command.payload) != command.payload_hash ->
+        {:error, Error.new(:invalid, "invalid run execution checkpoint payload")}
+
+      not is_struct(command.occurred_at, DateTime) ->
+        {:error, Error.new(:invalid, "invalid run execution checkpoint timestamp")}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp validate_execution_checkpoint_query(%GetRunExecutionCheckpoint{} = query) do
     cond do
       not workspace_reader?(query.workspace_context) ->
         {:error, Error.new(:forbidden, "workspace read role required")}
@@ -1196,6 +1288,136 @@ defmodule FavnStoragePostgres.Runs.Store do
       _ownership ->
         Repo.rollback(Error.new(:fenced, "run ownership fencing token is stale"))
     end
+  end
+
+  defp validate_execution_checkpoint_fence!(%PutRunExecutionCheckpoint{} = command) do
+    workspace_id = command.workspace_context.workspace_id
+
+    ownership =
+      RunOwnership
+      |> where(
+        [ownership],
+        ownership.workspace_id == ^workspace_id and ownership.run_id == ^command.run_id
+      )
+      |> lock("FOR UPDATE")
+      |> Repo.one()
+
+    run =
+      Run
+      |> where([run], run.workspace_id == ^workspace_id and run.run_id == ^command.run_id)
+      |> lock("FOR UPDATE")
+      |> Repo.one()
+
+    case {ownership, run} do
+      {
+        %RunOwnership{
+          owner_id: owner_id,
+          fencing_token: fencing_token,
+          released_at: nil,
+          expires_at: %DateTime{} = expires_at
+        },
+        %Run{event_sequence: sequence, status: status}
+      }
+      when owner_id == command.owner_id and fencing_token == command.fencing_token and
+             sequence == command.checkpoint_sequence and status in ["pending", "running"] ->
+        case SQL.query!(Repo, "SELECT $1::timestamptz > clock_timestamp()", [expires_at]) do
+          %{rows: [[true]]} -> :ok
+          _result -> Repo.rollback(Error.new(:fenced, "run ownership lease has expired"))
+        end
+
+      {%RunOwnership{}, %Run{event_sequence: sequence}}
+      when sequence != command.checkpoint_sequence ->
+        Repo.rollback(
+          Error.new(:conflict, "run sequence changed", details: %{actual_sequence: sequence})
+        )
+
+      {%RunOwnership{}, %Run{status: status}} when status not in ["pending", "running"] ->
+        Repo.rollback(Error.new(:conflict, "run is terminal"))
+
+      {%RunOwnership{}, %Run{}} ->
+        Repo.rollback(Error.new(:fenced, "run ownership changed"))
+
+      _missing ->
+        Repo.rollback(Error.new(:not_found, "run ownership not found"))
+    end
+  end
+
+  defp put_execution_checkpoint!(%PutRunExecutionCheckpoint{} = command) do
+    workspace_id = command.workspace_context.workspace_id
+
+    existing =
+      RunExecutionCheckpoint
+      |> where(
+        [checkpoint],
+        checkpoint.workspace_id == ^workspace_id and checkpoint.run_id == ^command.run_id
+      )
+      |> lock("FOR UPDATE")
+      |> Repo.one()
+
+    cond do
+      is_nil(existing) ->
+        if command.checkpoint_revision != 1 do
+          Repo.rollback(
+            Error.new(:conflict, "run execution checkpoint revision must start at one")
+          )
+        end
+
+        %RunExecutionCheckpoint{}
+        |> Map.merge(execution_checkpoint_attrs(command))
+        |> Repo.insert!()
+        |> execution_checkpoint_result()
+
+      existing.checkpoint_revision == command.checkpoint_revision and
+        existing.checkpoint_sequence == command.checkpoint_sequence and
+        existing.checkpoint_version == command.checkpoint_version and
+        existing.stage == command.stage and existing.attempt == command.attempt and
+          existing.payload_hash == command.payload_hash ->
+        execution_checkpoint_result(existing)
+
+      existing.checkpoint_revision + 1 != command.checkpoint_revision or
+          existing.checkpoint_sequence > command.checkpoint_sequence ->
+        Repo.rollback(
+          Error.new(:conflict, "run execution checkpoint revision did not advance",
+            details: %{
+              actual_revision: existing.checkpoint_revision,
+              actual_sequence: existing.checkpoint_sequence
+            }
+          )
+        )
+
+      true ->
+        existing
+        |> Ecto.Changeset.change(execution_checkpoint_attrs(command))
+        |> Repo.update()
+        |> case do
+          {:ok, checkpoint} -> execution_checkpoint_result(checkpoint)
+          {:error, changeset} -> Repo.rollback(changeset)
+        end
+    end
+  end
+
+  defp execution_checkpoint_attrs(command) do
+    %{
+      workspace_id: command.workspace_context.workspace_id,
+      run_id: command.run_id,
+      owner_id: command.owner_id,
+      fencing_token: command.fencing_token,
+      checkpoint_version: command.checkpoint_version,
+      checkpoint_revision: command.checkpoint_revision,
+      checkpoint_sequence: command.checkpoint_sequence,
+      stage: command.stage,
+      attempt: command.attempt,
+      payload: command.payload,
+      payload_hash: command.payload_hash,
+      updated_at: command.occurred_at
+    }
+  end
+
+  defp execution_checkpoint_result(%RunExecutionCheckpoint{} = checkpoint) do
+    struct!(
+      RunExecutionCheckpointResult,
+      checkpoint |> Map.from_struct() |> Map.delete(:__meta__)
+    )
   end
 
   defp encode_write(%RunState{} = run, event, opts \\ []) do

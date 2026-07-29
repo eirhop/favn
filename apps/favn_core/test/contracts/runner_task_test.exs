@@ -252,6 +252,23 @@ defmodule Favn.Contracts.RunnerTaskTest do
              Favn.Contracts.RunnerTask.PersistenceCodec.decode_orchestration_context(envelope)
   end
 
+  test "private orchestration context has a four MiB task-local safety bound" do
+    context = %{kind: :pipeline, task_local_data: :binary.copy("x", 2 * 1_024 * 1_024)}
+
+    assert {:ok, envelope} =
+             Favn.Contracts.RunnerTask.PersistenceCodec.encode_orchestration_context(context)
+
+    assert {:ok, ^context} =
+             Favn.Contracts.RunnerTask.PersistenceCodec.decode_orchestration_context(envelope)
+
+    oversized = %{kind: :pipeline, task_local_data: :binary.copy("x", 4 * 1_024 * 1_024)}
+
+    assert {:error, {:runner_task_orchestration_context_too_large, actual, 4_194_304}} =
+             Favn.Contracts.RunnerTask.PersistenceCodec.encode_orchestration_context(oversized)
+
+    assert actual > 4_194_304
+  end
+
   test "every protocol 13 message validates and round trips" do
     now = DateTime.utc_now()
 

@@ -802,6 +802,24 @@ Receipt snapshots reference and hash those values, so replay returns the exact
 historical fence without copying multi-megabyte fields or consulting a newer
 mutable value.
 
+Pipeline orchestration context is split by ownership. A runner-task row stores
+only task-local settlement facts: its freshness decision, materialization
+claim, circuit permits, freshness key, and a compact checkpoint reference.
+Run-wide freshness state is stored once in the fenced
+`run_execution_checkpoints` row. Immutable asset definitions are excluded and
+rebuilt from the pinned manifest during recovery. This keeps task size
+independent of manifest size and avoids multiplying one run's DAG state by its
+number of concurrent runner tasks. A monotonic checkpoint revision orders
+replacements independently of the run-event sequence used for ownership
+fencing. The decoded task-local orchestration context still has a 4 MiB hard
+safety bound; increasing that bound accommodates legitimate high-fan-in
+settlement data but is not the scaling mechanism.
+
+During the checkpoint-schema rollout only, recovery accepts the exact prior
+pipeline continuation shape, verifies that every active task names the same
+embedded freshness context and stage attempt, and seeds revision one from that
+context. Newly created tasks always use the compact reference shape.
+
 ### 5. Replace the execution ledger with queue persistence
 
 The schema below is the required final state. To keep every reviewed checkpoint
@@ -947,6 +965,8 @@ direct submit/await behavior:
   and resumes the run;
 - `StageResult` consumes the persisted typed result and performs existing
   freshness, materialization, circuit, generation, retry, and DAG transitions;
+- `RunServer` restores shared freshness state once from the fenced run
+  checkpoint and validates every active task's checkpoint reference;
 - completion of a stage enqueues only newly runnable downstream nodes.
 
 Refactor these modules:

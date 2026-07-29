@@ -1,9 +1,6 @@
 defmodule FavnOrchestrator.RunServer.Execution.StageEntry do
   @moduledoc false
 
-  alias Favn.Manifest.Index
-  alias Favn.Manifest.Version
-
   @fields [
     :run_id,
     :asset_step_id,
@@ -21,10 +18,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageEntry do
     :materialization_claim,
     :execution_pool,
     :resource_circuit_permits,
-    :freshness_key,
-    :version,
-    :manifest_index,
-    :freshness_context
+    :freshness_key
   ]
   @type t :: %{
           required(:run_id) => String.t(),
@@ -45,10 +39,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageEntry do
           required(:resource_circuit_permits) => [
             FavnOrchestrator.Persistence.Results.ResourceCircuitPermit.t()
           ],
-          required(:freshness_key) => term(),
-          required(:version) => Version.t(),
-          required(:manifest_index) => Index.t(),
-          required(:freshness_context) => map()
+          required(:freshness_key) => term()
         }
 
   @spec new!(map()) :: t()

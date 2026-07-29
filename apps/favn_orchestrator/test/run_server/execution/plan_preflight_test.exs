@@ -14,6 +14,7 @@ defmodule FavnOrchestrator.RunServer.Execution.PlanPreflightTest do
 
   defmodule FakeStore do
     def get_freshness_many(_command), do: {:ok, []}
+    def get_execution_checkpoint(_query), do: {:error, %{kind: :not_found}}
 
     def get_evidence_bindings(query) do
       {:ok, Enum.map(query.target_ids, &evidence_binding/1)}

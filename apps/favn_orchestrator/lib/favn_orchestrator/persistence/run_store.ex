@@ -5,15 +5,18 @@ defmodule FavnOrchestrator.Persistence.RunStore do
   alias FavnOrchestrator.Persistence.Commands.CommitRunTransition
   alias FavnOrchestrator.Persistence.Commands.CreateRun
   alias FavnOrchestrator.Persistence.Commands.PinRuntimeInputs
+  alias FavnOrchestrator.Persistence.Commands.PutRunExecutionCheckpoint
   alias FavnOrchestrator.Persistence.Commands.RequestRunCancellation
   alias FavnOrchestrator.Persistence.Error
   alias FavnOrchestrator.Persistence.Queries.GetRun
+  alias FavnOrchestrator.Persistence.Queries.GetRunExecutionCheckpoint
   alias FavnOrchestrator.Persistence.Queries.GetRuntimeInputs
   alias FavnOrchestrator.Persistence.Queries.PagePublishedRunEvents
   alias FavnOrchestrator.Persistence.Queries.PageRunEvents
   alias FavnOrchestrator.Persistence.Queries.PageRuns
   alias FavnOrchestrator.Persistence.Results.CursorPage
   alias FavnOrchestrator.Persistence.Results.RunCommitted
+  alias FavnOrchestrator.Persistence.Results.RunExecutionCheckpoint
   alias FavnOrchestrator.Persistence.Results.RunSummary
   alias FavnOrchestrator.RunState
 
@@ -30,4 +33,8 @@ defmodule FavnOrchestrator.Persistence.RunStore do
               {:ok, CursorPage.t(map())} | {:error, Error.t()}
   @callback pin_runtime_inputs(PinRuntimeInputs.t()) :: {:ok, [Pin.t()]} | {:error, Error.t()}
   @callback get_runtime_inputs(GetRuntimeInputs.t()) :: {:ok, [Pin.t()]} | {:error, Error.t()}
+  @callback put_execution_checkpoint(PutRunExecutionCheckpoint.t()) ::
+              {:ok, RunExecutionCheckpoint.t()} | {:error, Error.t()}
+  @callback get_execution_checkpoint(GetRunExecutionCheckpoint.t()) ::
+              {:ok, RunExecutionCheckpoint.t()} | {:error, Error.t()}
 end

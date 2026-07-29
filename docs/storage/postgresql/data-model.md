@@ -172,6 +172,18 @@ erDiagram
         bigint fencing_token
         timestamptz expires_at
     }
+    RUN_EXECUTION_CHECKPOINTS {
+        text workspace_id PK, FK
+        text run_id PK, FK
+        text owner_id
+        bigint fencing_token
+        bigint checkpoint_revision
+        bigint checkpoint_sequence
+        int stage
+        int attempt
+        bytea payload
+        bytea payload_hash
+    }
     RUNNER_TASKS {
         text workspace_id PK, FK
         text task_id PK
@@ -254,6 +266,7 @@ erDiagram
     WORKSPACE_DEPLOYMENT_TARGETS ||--o{ RUN_TARGETS : authorizes
     RUN_EVENTS ||--o{ RUN_TARGETS : submitted_by
     RUNS ||--o| RUN_OWNERSHIPS : fenced_by
+    RUNS ||--o| RUN_EXECUTION_CHECKPOINTS : resumes_from
     RUNS ||--o{ RUNNER_TASKS : schedules
     RUNNER_TASKS ||--o{ RUNNER_TASK_COMMANDS : fences
     RUNNER_TASKS ||--o{ RUNNER_TASK_LOG_BATCHES : logs
@@ -279,6 +292,21 @@ Runner tasks are authoritative from enqueue through claim, assignment lease,
 fenced result delivery, acknowledgement, cancellation, and recovery. Capacity
 demand is maintained transactionally per pool/release partition. Connected BEAM
 runner membership is intentionally process-local and is not a database table.
+
+Pipeline freshness state is shared run state, not runner work. A pipeline
+stores at most one fenced `RUN_EXECUTION_CHECKPOINTS` row. The
+checkpoint contains the mutable freshness projection and original decision
+time, while immutable asset definitions are rebuilt from the pinned manifest.
+Each runner task stores only its task-local settlement data and a
+stage/attempt/revision/sequence/hash reference to that checkpoint. The
+checkpoint revision advances independently of the run-event sequence, which
+remains the ownership fence and may legitimately stay unchanged across two
+all-runnable stages. The checkpoint is replaced after a stage drains and before
+the next stage creates tasks, so
+durable size is proportional to retained runs rather than runner-task fan-out;
+normal run retention removes it through the run foreign key.
+Runner-task orchestration context remains independently bounded after decoding;
+the PostgreSQL JSONB bound includes base64 envelope overhead.
 
 `RUN_SUBMISSIONS` is authoritative before `RUNS` exists, so its intended
 deployment, manifest, target, run identity, redacted authority, and normalized

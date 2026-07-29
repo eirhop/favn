@@ -14,6 +14,7 @@ defmodule FavnOrchestrator.RunServer do
   alias FavnOrchestrator.Persistence.SystemContext
   alias FavnOrchestrator.Persistence.Results.RunOwnership, as: Ownership
   alias FavnOrchestrator.RunExecutionCleanup
+  alias FavnOrchestrator.RunManager
   alias FavnOrchestrator.RunOwnership
   alias FavnOrchestrator.RunServer.Execution
   alias FavnOrchestrator.RunServer.Execution.RunExecutionState
@@ -28,6 +29,7 @@ defmodule FavnOrchestrator.RunServer do
           required(:run_state) => RunState.t(),
           required(:version) => Version.t(),
           optional(:recovering?) => boolean(),
+          optional(:capacity_managed?) => boolean(),
           optional(:storage_ownership) => Ownership.t()
         }
 
@@ -243,17 +245,42 @@ defmodule FavnOrchestrator.RunServer do
   defp start_execution(state, %RunState{} = running, %Version{} = version) do
     case Execution.start_state(running, version) do
       {:ok, execution_state} ->
-        state
-        |> Map.delete(:version)
-        |> Map.put(:run_state, running)
-        |> Map.put(:execution_state, execution_state)
-        |> continue_execution()
+        case resize_execution_memory(state, running, execution_state) do
+          :ok ->
+            state
+            |> Map.delete(:version)
+            |> Map.put(:run_state, running)
+            |> Map.put(:execution_state, execution_state)
+            |> continue_execution()
+
+          {:error, {:run_plan_exceeds_node_capacity, _, _} = reason} ->
+            terminal =
+              Snapshots.snapshot_update(running,
+                status: :error,
+                error: reason
+              )
+
+            finalize_terminal(state, terminal)
+
+          {:error, reason} ->
+            :ok = Execution.release_manifest_lease(running)
+            {:stop, {:shutdown, reason}, state}
+        end
 
       {:terminal, terminal} ->
         :ok = Execution.release_manifest_lease(running)
         finalize_terminal(state, terminal)
     end
   end
+
+  defp resize_execution_memory(
+         %{capacity_managed?: true},
+         %RunState{} = run,
+         %RunExecutionState{} = execution_state
+       ),
+       do: RunManager.resize_active_run_memory(run, execution_state)
+
+  defp resize_execution_memory(_state, %RunState{}, %RunExecutionState{}), do: :ok
 
   defp schedule_run_start_persist_retry(state, running, version, reason) do
     token = make_ref()

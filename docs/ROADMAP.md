@@ -28,6 +28,10 @@ current limits live in [`FEATURES.md`](FEATURES.md); release gates live in
      capacity demand, release coexistence, and elastic self-exit. Final
      production qualification remains part of the
      [one-control-plane elastic-runner program](architecture/elastic-runners.md).
+   - Remaining recovery hardening includes reconstructing already-settled
+     sibling statuses after a mid-stage control-plane crash and batching active
+     runner-task recovery reads. Load qualification must include concurrent
+     checkpoint decoding against the node-wide active-run memory budget.
 3. [#526 — DuckDB/DuckLake data-plane production hardening](https://github.com/eirhop/favn/issues/526)
    - Define data-plane durability and recovery, add failure injection and honest
      cancellation, and finish safe operator resource controls.

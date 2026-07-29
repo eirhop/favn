@@ -117,6 +117,47 @@ defmodule FavnOrchestrator.Persistence.Commands.PinRuntimeInputs do
         }
 end
 
+defmodule FavnOrchestrator.Persistence.Commands.PutRunExecutionCheckpoint do
+  @moduledoc """
+  Replaces the single fenced execution checkpoint owned by an active run.
+
+  The payload is an internal, versioned binary produced by the orchestrator.
+  """
+
+  alias FavnOrchestrator.Persistence.WorkspaceContext
+
+  @enforce_keys [
+    :workspace_context,
+    :run_id,
+    :owner_id,
+    :fencing_token,
+    :checkpoint_version,
+    :checkpoint_revision,
+    :checkpoint_sequence,
+    :stage,
+    :attempt,
+    :payload,
+    :payload_hash,
+    :occurred_at
+  ]
+  defstruct @enforce_keys
+
+  @type t :: %__MODULE__{
+          workspace_context: WorkspaceContext.t(),
+          run_id: String.t(),
+          owner_id: String.t(),
+          fencing_token: pos_integer(),
+          checkpoint_version: pos_integer(),
+          checkpoint_revision: pos_integer(),
+          checkpoint_sequence: pos_integer(),
+          stage: non_neg_integer(),
+          attempt: pos_integer(),
+          payload: binary(),
+          payload_hash: binary(),
+          occurred_at: DateTime.t()
+        }
+end
+
 defmodule FavnOrchestrator.Persistence.Queries.GetRun do
   @moduledoc "Fetches one run under a workspace authority boundary."
 
@@ -124,6 +165,20 @@ defmodule FavnOrchestrator.Persistence.Queries.GetRun do
   @enforce_keys [:workspace_context, :run_id]
   defstruct [:workspace_context, :run_id]
   @type t :: %__MODULE__{workspace_context: WorkspaceContext.t(), run_id: String.t()}
+end
+
+defmodule FavnOrchestrator.Persistence.Queries.GetRunExecutionCheckpoint do
+  @moduledoc "Fetches the single execution checkpoint for one workspace run."
+
+  alias FavnOrchestrator.Persistence.WorkspaceContext
+
+  @enforce_keys [:workspace_context, :run_id]
+  defstruct @enforce_keys
+
+  @type t :: %__MODULE__{
+          workspace_context: WorkspaceContext.t(),
+          run_id: String.t()
+        }
 end
 
 defmodule FavnOrchestrator.Persistence.Queries.PageRuns do
@@ -234,6 +289,41 @@ defmodule FavnOrchestrator.Persistence.Results.RunCommitted do
           event_id: pos_integer(),
           outbox_event_id: pos_integer(),
           replayed?: boolean()
+        }
+end
+
+defmodule FavnOrchestrator.Persistence.Results.RunExecutionCheckpoint do
+  @moduledoc "Durable shared execution checkpoint for one run."
+
+  @enforce_keys [
+    :workspace_id,
+    :run_id,
+    :owner_id,
+    :fencing_token,
+    :checkpoint_version,
+    :checkpoint_revision,
+    :checkpoint_sequence,
+    :stage,
+    :attempt,
+    :payload,
+    :payload_hash,
+    :updated_at
+  ]
+  defstruct @enforce_keys
+
+  @type t :: %__MODULE__{
+          workspace_id: String.t(),
+          run_id: String.t(),
+          owner_id: String.t(),
+          fencing_token: pos_integer(),
+          checkpoint_version: pos_integer(),
+          checkpoint_revision: pos_integer(),
+          checkpoint_sequence: pos_integer(),
+          stage: non_neg_integer(),
+          attempt: pos_integer(),
+          payload: binary(),
+          payload_hash: binary(),
+          updated_at: DateTime.t()
         }
 end
 
