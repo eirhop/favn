@@ -549,6 +549,8 @@ defmodule FavnOrchestrator.RunServer.Execution do
       window: RunnerWork.window(work),
       task_id: task.task_id,
       assignment_generation: task.assignment_generation,
+      runner_pool: task.runner_pool,
+      required_runner_release_id: task.required_runner_release_id,
       decision: Map.get(context, :decision, %{}),
       attempt: work.attempt,
       stage: work.stage,
@@ -582,28 +584,31 @@ defmodule FavnOrchestrator.RunServer.Execution do
     handle_pipeline_await_result(state, entry, validate_await_result(entry, result))
   end
 
-  defp validate_await_result(
-         %{version: %Version{} = version, execution_pool: runner_pool},
-         {:ok, %RunnerResult{} = result}
-       ) do
-    with {:ok, required} <-
-           Version.release_for_pool(version, runner_pool || Favn.RunnerPool.default()),
+  defp validate_await_result(entry, {:ok, %RunnerResult{} = result}) do
+    with {:ok, required} <- Map.fetch(entry, :required_runner_release_id),
          :ok <- RunnerIdentityVerifier.verify_result(required, result) do
       {:ok, result}
     else
+      :error ->
+        runner_release_validation_error(:runner_task_release_identity_missing)
+
       {:error, reason} ->
-        {:error,
-         RunnerError.new(
-           type: :runner_release_mismatch,
-           message: "Runner result release identity does not match the runner task",
-           reason: reason,
-           retryable?: false,
-           outcome: :unknown
-         )}
+        runner_release_validation_error(reason)
     end
   end
 
   defp validate_await_result(_entry, result), do: result
+
+  defp runner_release_validation_error(reason) do
+    {:error,
+     RunnerError.new(
+       type: :runner_release_mismatch,
+       message: "Runner result release identity does not match the runner task",
+       reason: reason,
+       retryable?: false,
+       outcome: :unknown
+     )}
+  end
 
   defp resume_retry(%RunExecutionState{mode: :sequential} = state, retry) do
     state

@@ -12,6 +12,8 @@ defmodule FavnOrchestrator.RunServer.Execution.StageEntryTest do
       window: nil,
       task_id: "rt_stage_entry",
       assignment_generation: 0,
+      runner_pool: "default",
+      required_runner_release_id: FavnTestSupport.runner_release_id(),
       decision: %{},
       attempt: 1,
       stage: 0,
@@ -27,6 +29,8 @@ defmodule FavnOrchestrator.RunServer.Execution.StageEntryTest do
     end
 
     assert %{
+             runner_pool: "default",
+             required_runner_release_id: required_runner_release_id,
              version: :version,
              manifest_index: :manifest_index,
              freshness_context: %{now: :now}
@@ -41,6 +45,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageEntryTest do
              )
 
     assert is_map(entry)
+    assert required_runner_release_id == FavnTestSupport.runner_release_id()
     refute Map.has_key?(entry, :__struct__)
   end
 end

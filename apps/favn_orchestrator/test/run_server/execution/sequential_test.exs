@@ -5,14 +5,21 @@ defmodule FavnOrchestrator.RunServer.Execution.SequentialTest do
   alias Favn.Manifest.Index
   alias Favn.Plan
   alias Favn.Contracts.RunnerError
+  alias Favn.Contracts.RunnerResult
   alias FavnOrchestrator.Persistence.Runtime, as: PersistenceRuntime
   alias FavnOrchestrator.Persistence.Stores
+  alias FavnOrchestrator.RunServer.Execution
+  alias FavnOrchestrator.RunServer.Execution.ActiveTaskSet
   alias FavnOrchestrator.RunServer.Execution.RunExecutionState
   alias FavnOrchestrator.RunServer.Execution.Sequential
+  alias FavnOrchestrator.RunServer.Execution.StageAttemptState
+  alias FavnOrchestrator.RunServer.Execution.StageEntry
   alias FavnOrchestrator.RunServer.PersistenceRetry
   alias FavnOrchestrator.RunState
 
   defmodule FakeStore do
+    def get_run(_query), do: {:error, :forced_missing}
+
     def commit_transition(command) do
       send(self(), {:commit_transition, command})
       {:error, :forced_failure}
@@ -121,6 +128,116 @@ defmodule FavnOrchestrator.RunServer.Execution.SequentialTest do
     assert_receive {:commit_transition, command}
     assert command.event.event_type == :step_failed
     assert command.event.data.window == window
+  end
+
+  test "pipeline settlement uses its durable runner task release, not its execution pool" do
+    release_id = FavnTestSupport.runner_release_id()
+    task_id = "rt_named_execution_pool"
+    ref = {__MODULE__.Asset, :orders}
+    node_key = {ref, nil}
+
+    plan = %Plan{
+      target_refs: [ref],
+      target_node_keys: [node_key],
+      topo_order: [ref],
+      stages: [[ref]],
+      node_stages: [[node_key]],
+      nodes: %{
+        node_key => %{
+          ref: ref,
+          node_key: node_key,
+          window: nil,
+          upstream: [],
+          downstream: [],
+          stage: 0,
+          execution_pool: :mercatus_api,
+          action: :run,
+          retry_policy: Favn.Retry.Policy.default(),
+          retry_policy_source: :default
+        }
+      }
+    }
+
+    run =
+      RunState.new(
+        id: "run-named-execution-pool",
+        workspace_id: "workspace-named-execution-pool",
+        manifest_version_id: "manifest-named-execution-pool",
+        manifest_content_hash: "sha256:named-execution-pool",
+        runner_releases: %{"default" => release_id},
+        asset_ref: ref,
+        target_refs: [ref],
+        plan: plan
+      )
+
+    version = %Version{
+      manifest_version_id: run.manifest_version_id,
+      content_hash: run.manifest_content_hash,
+      runner_releases: %{"default" => release_id}
+    }
+
+    entry =
+      StageEntry.new!(%{
+        run_id: run.id,
+        asset_step_id: "step-named-execution-pool",
+        asset_ref: ref,
+        node_key: node_key,
+        window: nil,
+        task_id: task_id,
+        assignment_generation: 0,
+        runner_pool: "default",
+        required_runner_release_id: release_id,
+        decision: %{},
+        stage: 0,
+        attempt: 1,
+        lease: nil,
+        materialization_claim: nil,
+        execution_pool: :mercatus_api,
+        resource_circuit_permits: [],
+        freshness_key: "latest",
+        version: version,
+        manifest_index: %Index{},
+        freshness_context: %{}
+      })
+
+    timeout_token = make_ref()
+    timeout_ref = Process.send_after(self(), :unused_timeout, 60_000)
+
+    state = %RunExecutionState{
+      run: run,
+      version: version,
+      mode: :pipeline,
+      work_set: ActiveTaskSet.from_entries(run, [entry]),
+      stage_state: StageAttemptState.new(run, [], [entry], [], MapSet.new()),
+      awaits: %{
+        task_id => %{
+          pid: nil,
+          monitor_ref: nil,
+          timeout_token: timeout_token,
+          timeout_ref: timeout_ref,
+          entry: entry,
+          kind: :pipeline
+        }
+      },
+      await_timers: %{timeout_token => task_id}
+    }
+
+    result = %RunnerResult{
+      run_id: run.id,
+      manifest_version_id: run.manifest_version_id,
+      manifest_content_hash: run.manifest_content_hash,
+      required_runner_release_id: release_id,
+      status: :ok,
+      asset_results: []
+    }
+
+    assert {:persist_retry, _state,
+            %PersistenceRetry{event_type: :step_finished, data: %{asset_ref: ^ref}},
+            :forced_failure} =
+             Execution.handle_event(state, {:runner_result, task_id, {:ok, result}})
+
+    assert_receive {:commit_transition, command}
+    assert command.event.event_type == :step_finished
   end
 end
 
