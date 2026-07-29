@@ -78,6 +78,24 @@ FAVN_DEV_RELOADABLE_APPS=favn_view mix phx.server
 The value is a comma-separated app list. Changes to apps outside it need a
 server restart to be picked up. Unset, the whole umbrella reloads as usual.
 
+## When `mix favn.dev` says the runner is not ready
+
+`mix favn.dev` launches the runner as a second OS process, so its output arrives
+here only as port data. It is written to the terminal and appended to
+`.favn/local/runner.log` in the project, which is where to look when the stack
+dies — the terminal goes with it.
+
+Two failures are now told apart. `the runner exited before it was ready` means
+the process is gone and the log holds its last words. `the runner did not become
+ready in time` means it is still alive and did not register inside the startup
+budget, which is 30 seconds by default and enough on a native filesystem. Through
+a bind mount, where the runner loads the project's code paths across the mount, it
+sometimes is not:
+
+```bash
+FAVN_DEV_RUNNER_START_TIMEOUT_MS=120000 mix favn.dev
+```
+
 ## Design system
 
 `/design-system` lists every function component in `FavnView.UI` and

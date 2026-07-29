@@ -56,6 +56,14 @@ defmodule Mix.Tasks.Favn.Dev do
   defp error_message({:legacy_local_state, path}),
     do: "obsolete Docker-era local state exists at #{path}; remove that generated directory once"
 
+  defp error_message({:runner_exited_before_ready, log_path}),
+    do: "the runner exited before it was ready; its output is in #{log_path}"
+
+  defp error_message({:runner_start_timeout, log_path}) do
+    "the runner did not become ready in time; its output is in #{log_path}. " <>
+      "Set FAVN_DEV_RUNNER_START_TIMEOUT_MS to allow longer on a slow filesystem."
+  end
+
   defp error_message(reason), do: "failed to start Favn development: #{inspect(reason)}"
 
   defp build_view_assets! do

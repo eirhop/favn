@@ -10,12 +10,28 @@ defmodule FavnLocal.RunnerProcess do
     case Application.ensure_all_started(:favn_runner) do
       {:ok, _applications} ->
         monitor_operator()
-        IO.puts("Favn local runner ready: #{node()}")
+        announce_ready()
         Process.sleep(:infinity)
 
       {:error, reason} ->
         raise "failed to start Favn runner: #{inspect(reason)}"
     end
+  end
+
+  # This runner's stdout is a port owned by the stack that launched it, and that
+  # stack can close the port while this process is still booting — a stop, or a
+  # restart that abandoned it. Writing to the closed device then raises
+  # `ErlangError :terminated`, and an `elixir -e` script has no `:standard_error`
+  # left to report that on, so reporting it raised `badarg` and killed the VM
+  # "during boot", leaving an `erl_crash.dump` in the project root and no trace of
+  # the real reason. Failing to announce is not a failure worth dying for: the
+  # operator-node monitor above already decides when this runner should stop.
+  defp announce_ready do
+    IO.puts("Favn local runner ready: #{node()}")
+  rescue
+    _no_device -> :ok
+  catch
+    _kind, _reason -> :ok
   end
 
   @spec stop() :: :ok

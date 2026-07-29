@@ -36,6 +36,16 @@ defmodule FavnLocal.Locator do
     end
   end
 
+  @doc """
+  Path of the log the launched runner's output is appended to.
+
+  The runner is a separate OS process, so its output reaches this node only as
+  port data. Writing it here as well as to the terminal means a boot failure
+  survives the stack that died reporting it.
+  """
+  @spec runner_log_path(Path.t()) :: Path.t()
+  def runner_log_path(root_dir), do: Path.join(state_dir(root_dir), "runner.log")
+
   @spec delete(Path.t()) :: :ok
   def delete(root_dir) do
     _ = File.rm(state_path(root_dir))
