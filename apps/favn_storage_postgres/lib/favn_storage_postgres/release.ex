@@ -36,6 +36,7 @@ defmodule FavnStoragePostgres.Release do
           | :admin_recover
           | :admin_password_reset
           | :admin_actor_status
+          | :admin_entra_identity
           | :verify_schema
           | :verify_workspace
           | :verify_restore
@@ -332,6 +333,48 @@ defmodule FavnStoragePostgres.Release do
   def admin_actor_status(_input) do
     release_operation(:admin_actor_status, fn ->
       error(:admin_actor_status, :invalid_actor_status, reason: :map_required)
+    end)
+  end
+
+  @doc "Links or unlinks one Entra object ID for one exact global actor."
+  @spec admin_entra_identity(map()) :: result()
+  def admin_entra_identity(input) when is_map(input) do
+    database_operation(:admin_entra_identity, fn ->
+      with {:ok, username} <- fetch_string(input, :username),
+           {:ok, tenant_id} <- fetch_string(input, :tenant_id),
+           {:ok, object_id} <- fetch_string(input, :object_id),
+           {:ok, action} <- fetch_entra_action(input),
+           {:ok, actor} <-
+             AdminLifecycle.configure_entra_identity(
+               username,
+               tenant_id,
+               object_id,
+               action,
+               identity_store: IdentityStore
+             ) do
+        Logger.warning(
+          "favn.release.entra_identity_changed actor_id=#{actor.actor_id} action=#{actor.action}"
+        )
+
+        ok(:admin_entra_identity,
+          actor_id: actor.actor_id,
+          username: actor.username,
+          provider: actor.provider,
+          action: actor.action
+        )
+      else
+        {:error, %PersistenceError{} = failure} ->
+          persistence_error(:admin_entra_identity, failure)
+
+        {:error, reason} ->
+          error(:admin_entra_identity, :invalid_entra_identity, reason: safe_reason(reason))
+      end
+    end)
+  end
+
+  def admin_entra_identity(_input) do
+    release_operation(:admin_entra_identity, fn ->
+      error(:admin_entra_identity, :invalid_entra_identity, reason: :map_required)
     end)
   end
 
@@ -644,6 +687,16 @@ defmodule FavnStoragePostgres.Release do
       "active" -> {:ok, :active}
       "disabled" -> {:ok, :disabled}
       _invalid -> {:error, {:status, :invalid}}
+    end
+  end
+
+  defp fetch_entra_action(input) do
+    case Map.get(input, :action, Map.get(input, "action")) do
+      :link -> {:ok, :link}
+      :unlink -> {:ok, :unlink}
+      "link" -> {:ok, :link}
+      "unlink" -> {:ok, :unlink}
+      _invalid -> {:error, {:action, :invalid}}
     end
   end
 

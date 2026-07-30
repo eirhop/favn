@@ -7,10 +7,11 @@ The short version is:
 
 - run one control-plane container;
 - keep it on a private network;
-- put one trusted HTTPS reverse proxy in front of it;
+- put one trusted HTTPS ingress in front of it;
 - use PostgreSQL with verified TLS, backups, and a separate runtime account;
-- let operators reach the proxy through a VPN or an identity-aware access
-  service with MFA; and
+- use Azure Container Apps Easy Auth with Microsoft Entra for SSO and MFA, or
+  let operators reach a trusted proxy through an equivalent identity-aware
+  access service; and
 - expose no database, internal API, EPMD, or BEAM distribution port publicly.
 
 `mix favn.dev` is a local-development tool, not a production server. Production
@@ -52,7 +53,8 @@ Operator
    |
    | VPN or identity-aware access with MFA
    v
-HTTPS reverse proxy
+Trusted HTTPS ingress
+(reverse proxy or Container Apps Easy Auth)
    |
    | private HTTP and LiveView WebSocket
    v
@@ -63,7 +65,7 @@ One Favn control-plane container
 Managed PostgreSQL        Favn runners
 ```
 
-Only the HTTPS reverse proxy receives operator traffic. PostgreSQL, the
+Only the trusted HTTPS ingress receives operator traffic. PostgreSQL, the
 container's HTTP listener, the private orchestrator API, EPMD, and BEAM
 distribution stay private.
 
@@ -107,6 +109,13 @@ rollback, and database recovery.
 The repository includes an Azure Container Apps reference, but it has not had a
 live Azure qualification. Treat it as a starting point, not a production-ready
 claim.
+
+For Azure Container Apps, the recommended first authentication option is
+Microsoft Entra through Easy Auth. Container Apps ingress and Easy Auth act as
+the managed authentication proxy, so a separate Nginx-style proxy is not
+required solely for SSO. See [Operator Authentication](operator-authentication.md)
+for the exact trust boundary, environment, identity-link command, logout, and
+break-glass procedure.
 
 ## Network checklist
 
@@ -235,8 +244,9 @@ Use this order:
 7. Require health and readiness before exposing the proxy route.
 8. Create the first platform administrator through the trusted one-off
    bootstrap command.
-9. Sign in through the real HTTPS origin.
-10. Run one harmless smoke operation and inspect its audit record.
+9. When using Entra, link the administrator's immutable tenant and object IDs.
+10. Sign in through the real HTTPS origin.
+11. Run one harmless smoke operation and inspect its audit record.
 
 From a trusted source checkout with production database authority:
 
@@ -346,8 +356,9 @@ multi-node topology.
 
 Understand these before launch:
 
-- Favn does not yet provide MFA or external identity-provider integration. Use
-  an MFA-capable VPN or identity-aware proxy.
+- Microsoft Entra is supported only through Azure Container Apps Easy Auth.
+  Native OIDC, other identity providers, and Entra group/role authorization
+  are not implemented.
 - Only one control-plane BEAM is supported.
 - Zero-downtime control-plane replacement is not supported.
 - Login throttling and immediate PubSub disconnect are node-local.

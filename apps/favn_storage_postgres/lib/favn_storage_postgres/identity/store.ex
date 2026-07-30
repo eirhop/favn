@@ -12,6 +12,7 @@ defmodule FavnStoragePostgres.Identity.Store do
   alias FavnOrchestrator.Persistence.Commands.CompleteOperatorCommand
   alias FavnOrchestrator.Persistence.Commands.CreateActor
   alias FavnOrchestrator.Persistence.Commands.CreateSession
+  alias FavnOrchestrator.Persistence.Commands.LinkExternalIdentity
   alias FavnOrchestrator.Persistence.Commands.RecordAudit
   alias FavnOrchestrator.Persistence.Commands.RecoverAdministratorCredential
   alias FavnOrchestrator.Persistence.Commands.ReserveOperatorCommand
@@ -20,6 +21,7 @@ defmodule FavnStoragePostgres.Identity.Store do
   alias FavnOrchestrator.Persistence.Commands.RotateWorkspaceSession
   alias FavnOrchestrator.Persistence.Commands.SetActorAccess
   alias FavnOrchestrator.Persistence.Commands.SetActorStatus
+  alias FavnOrchestrator.Persistence.Commands.UnlinkExternalIdentity
   alias FavnOrchestrator.Persistence.Error
   alias FavnOrchestrator.Persistence.PlatformContext
   alias FavnOrchestrator.Persistence.Queries.GetActor
@@ -35,6 +37,7 @@ defmodule FavnStoragePostgres.Identity.Store do
   alias FavnOrchestrator.Persistence.Results.GlobalActor
   alias FavnOrchestrator.Persistence.Results.Session, as: SessionResult
   alias FavnOrchestrator.Persistence.Results.WorkspaceMembership, as: WorkspaceMembershipResult
+  alias FavnOrchestrator.Persistence.Selectors.ActorByExternalIdentity
   alias FavnOrchestrator.Persistence.Selectors.ActorById
   alias FavnOrchestrator.Persistence.Selectors.ActorByUsername
   alias FavnOrchestrator.Persistence.Selectors.SessionById
@@ -47,6 +50,7 @@ defmodule FavnStoragePostgres.Identity.Store do
   alias FavnStoragePostgres.Schemas.AuthActor
   alias FavnStoragePostgres.Schemas.AuthAuditEntry
   alias FavnStoragePostgres.Schemas.AuthCredential
+  alias FavnStoragePostgres.Schemas.AuthExternalIdentity
   alias FavnStoragePostgres.Schemas.AuthOperatorCommand
   alias FavnStoragePostgres.Schemas.AuthPlatformAuditEntry
   alias FavnStoragePostgres.Schemas.AuthPlatformGrant
@@ -97,6 +101,22 @@ defmodule FavnStoragePostgres.Identity.Store do
     end
   rescue
     error -> {:error, ErrorMapper.map(error)}
+  end
+
+  @impl true
+  def link_external_identity(%LinkExternalIdentity{} = command) do
+    with :ok <- validate_external_identity_command(command),
+         {:ok, :ok} <- transaction(fn -> link_external_identity!(command) end) do
+      :ok
+    end
+  end
+
+  @impl true
+  def unlink_external_identity(%UnlinkExternalIdentity{} = command) do
+    with :ok <- validate_external_identity_command(command),
+         {:ok, :ok} <- transaction(fn -> unlink_external_identity!(command) end) do
+      :ok
+    end
   end
 
   @impl true
@@ -1021,6 +1041,7 @@ defmodule FavnStoragePostgres.Identity.Store do
     workspace_id = command.workspace_context.workspace_id
     ensure_active_actor!(command.actor_id)
     ensure_membership!(workspace_id, command.actor_id)
+    ensure_external_identity_link!(command)
 
     existing =
       from(session in AuthSession,
@@ -1035,6 +1056,9 @@ defmodule FavnStoragePostgres.Identity.Store do
       not is_nil(existing) and existing.session_id == command.session_id and
         existing.actor_id == command.actor_id and existing.token_hash == command.token_hash and
         existing.workspace_id == workspace_id and existing.expires_at == command.expires_at and
+        existing.provider == command.provider and
+        existing.external_tenant_id == command.external_tenant_id and
+        existing.external_subject_id == command.external_subject_id and
           existing.creation_command_id == command.command_id ->
         session_result(existing)
 
@@ -1052,6 +1076,8 @@ defmodule FavnStoragePostgres.Identity.Store do
             creation_command_id: command.command_id,
             token_hash: command.token_hash,
             provider: command.provider,
+            external_tenant_id: command.external_tenant_id,
+            external_subject_id: command.external_subject_id,
             status: "active",
             expires_at: command.expires_at,
             inserted_at: command.occurred_at,
@@ -1064,7 +1090,11 @@ defmodule FavnStoragePostgres.Identity.Store do
           command.command_id,
           "session.created",
           command.session_id,
-          %{"actor_id" => command.actor_id, "workspace_id" => workspace_id},
+          %{
+            "actor_id" => command.actor_id,
+            "workspace_id" => workspace_id,
+            "provider" => command.provider
+          },
           command.occurred_at,
           "session"
         )
@@ -1101,13 +1131,16 @@ defmodule FavnStoragePostgres.Identity.Store do
 
   defp rotate_workspace_session!(command) do
     source_workspace_id = command.source_context.workspace_id
+    source_snapshot = Repo.get(AuthSession, command.source_session_id)
+    ensure_source_session_identity!(source_snapshot, command)
+    ensure_external_identity_link!(source_snapshot)
+    ensure_active_actor!(command.actor_id)
+    ensure_membership!(command.target_workspace_id, command.actor_id)
+
     source = lock_session!(command.source_session_id)
+    ensure_source_session_identity!(source, command)
 
     cond do
-      source.actor_id != command.actor_id or
-          command.source_context.principal_id != command.actor_id ->
-        Repo.rollback(Error.new(:forbidden, "session actor mismatch"))
-
       source.workspace_id != source_workspace_id or source.status != "active" or
           not future?(source.expires_at) ->
         Repo.rollback(Error.new(:forbidden, "source session is not active"))
@@ -1118,9 +1151,6 @@ defmodule FavnStoragePostgres.Identity.Store do
       true ->
         :ok
     end
-
-    ensure_active_actor!(command.actor_id)
-    ensure_membership!(command.target_workspace_id, command.actor_id)
 
     existing =
       from(session in AuthSession,
@@ -1143,6 +1173,8 @@ defmodule FavnStoragePostgres.Identity.Store do
         creation_command_id: command.command_id,
         token_hash: command.token_hash,
         provider: command.provider,
+        external_tenant_id: source.external_tenant_id,
+        external_subject_id: source.external_subject_id,
         status: "active",
         expires_at: command.expires_at,
         inserted_at: command.occurred_at,
@@ -1325,6 +1357,28 @@ defmodule FavnStoragePostgres.Identity.Store do
       nil -> Repo.rollback(Error.new(:not_found, "actor membership not found"))
       tuple -> actor_result(tuple)
     end
+  end
+
+  defp actor_query(
+         workspace_id,
+         %ActorByExternalIdentity{
+           provider: provider,
+           tenant_id: tenant_id,
+           subject_id: subject_id
+         }
+       ) do
+    from(actor in AuthActor,
+      join: identity in AuthExternalIdentity,
+      on: identity.actor_id == actor.actor_id,
+      join: membership in AuthWorkspaceMembership,
+      on: membership.actor_id == actor.actor_id,
+      left_join: credential in AuthCredential,
+      on: credential.actor_id == actor.actor_id,
+      where:
+        membership.workspace_id == ^workspace_id and identity.provider == ^provider and
+          identity.tenant_id == ^tenant_id and identity.subject_id == ^subject_id,
+      select: {actor, membership, credential}
+    )
   end
 
   defp actor_query(workspace_id, selector) do
@@ -2033,6 +2087,9 @@ defmodule FavnStoragePostgres.Identity.Store do
         %ActorByUsername{username: username} ->
           is_binary(username) and normalize_username(username) != ""
 
+        %ActorByExternalIdentity{} = identity ->
+          valid_external_identity?(identity)
+
         _other ->
           false
       end
@@ -2040,6 +2097,172 @@ defmodule FavnStoragePostgres.Identity.Store do
     if workspace_context?(query.workspace_context) and selector?,
       do: :ok,
       else: {:error, ErrorMapper.map(:invalid)}
+  end
+
+  defp link_external_identity!(command) do
+    actor = Repo.get(AuthActor, command.actor_id)
+
+    if is_nil(actor) do
+      Repo.rollback(Error.new(:not_found, "global actor not found"))
+    end
+
+    existing =
+      Repo.get_by(AuthExternalIdentity,
+        provider: command.provider,
+        tenant_id: command.tenant_id,
+        subject_id: command.subject_id
+      )
+
+    cond do
+      match?(
+        %AuthExternalIdentity{actor_id: actor_id} when actor_id == command.actor_id,
+        existing
+      ) ->
+        :ok
+
+      not is_nil(existing) ->
+        Repo.rollback(Error.new(:conflict, "external identity is already linked"))
+
+      true ->
+        %AuthExternalIdentity{
+          provider: command.provider,
+          tenant_id: command.tenant_id,
+          subject_id: command.subject_id,
+          actor_id: command.actor_id,
+          linked_at: command.occurred_at,
+          inserted_at: command.occurred_at
+        }
+        |> Repo.insert!()
+
+        platform_audit!(
+          command.platform_context,
+          command.command_id,
+          "external_identity.linked",
+          command.actor_id,
+          external_identity_audit_detail(command),
+          command.occurred_at
+        )
+
+        :ok
+    end
+  end
+
+  defp unlink_external_identity!(command) do
+    {deleted, _rows} =
+      from(identity in AuthExternalIdentity,
+        where:
+          identity.provider == ^command.provider and identity.tenant_id == ^command.tenant_id and
+            identity.subject_id == ^command.subject_id and identity.actor_id == ^command.actor_id
+      )
+      |> Repo.delete_all()
+
+    if deleted == 0 do
+      Repo.rollback(Error.new(:not_found, "external identity link not found"))
+    end
+
+    {revoked_sessions, _rows} =
+      from(session in AuthSession,
+        where:
+          session.actor_id == ^command.actor_id and session.provider == ^command.provider and
+            session.external_tenant_id == ^command.tenant_id and
+            session.external_subject_id == ^command.subject_id and
+            session.status == "active"
+      )
+      |> Repo.update_all(
+        set: [
+          status: "revoked",
+          revoked_at: command.occurred_at,
+          updated_at: command.occurred_at
+        ]
+      )
+
+    platform_audit!(
+      command.platform_context,
+      command.command_id,
+      "external_identity.unlinked",
+      command.actor_id,
+      Map.put(external_identity_audit_detail(command), "sessions_revoked", revoked_sessions),
+      command.occurred_at
+    )
+
+    :ok
+  end
+
+  defp validate_external_identity_command(command) do
+    context = command.platform_context
+
+    if PlatformContext.valid?(context) and :platform_admin in context.roles and
+         valid_id?(command.command_id) and valid_id?(command.actor_id) and
+         valid_external_identity?(command) and match?(%DateTime{}, command.occurred_at),
+       do: :ok,
+       else: {:error, Error.new(:forbidden, "platform administrator authority required")}
+  end
+
+  defp valid_external_identity?(identity) do
+    identity.provider == "azure_container_apps_entra" and uuid?(identity.tenant_id) and
+      uuid?(identity.subject_id)
+  end
+
+  defp ensure_external_identity_link!(%{
+         provider: "azure_container_apps_entra",
+         actor_id: actor_id,
+         external_tenant_id: tenant_id,
+         external_subject_id: subject_id
+       })
+       when is_binary(actor_id) and is_binary(tenant_id) and is_binary(subject_id) do
+    identity =
+      from(identity in AuthExternalIdentity,
+        where:
+          identity.provider == "azure_container_apps_entra" and
+            identity.tenant_id == ^tenant_id and identity.subject_id == ^subject_id,
+        lock: "FOR KEY SHARE"
+      )
+      |> Repo.one()
+
+    if is_nil(identity) or identity.actor_id != actor_id do
+      Repo.rollback(Error.new(:forbidden, "external identity link is not active"))
+    end
+
+    :ok
+  end
+
+  defp ensure_external_identity_link!(%{provider: provider})
+       when provider in ["password_local", "trusted_local_dev"],
+       do: :ok
+
+  defp ensure_external_identity_link!(_session_or_command),
+    do: Repo.rollback(Error.new(:forbidden, "external identity link is not active"))
+
+  defp ensure_source_session_identity!(
+         %{actor_id: actor_id, provider: provider},
+         %{actor_id: actor_id, provider: provider, source_context: %{principal_id: actor_id}}
+       ),
+       do: :ok
+
+  defp ensure_source_session_identity!(_source, _command),
+    do: Repo.rollback(Error.new(:forbidden, "session actor or provider mismatch"))
+
+  defp uuid?(value) when is_binary(value),
+    do:
+      Regex.match?(
+        ~r/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+        value
+      )
+
+  defp uuid?(_value), do: false
+
+  defp external_identity_audit_detail(command) do
+    %{
+      "provider" => command.provider,
+      "tenant_fingerprint" => identity_fingerprint(command.tenant_id),
+      "subject_fingerprint" => identity_fingerprint(command.subject_id)
+    }
+  end
+
+  defp identity_fingerprint(value) do
+    :crypto.hash(:sha256, value)
+    |> Base.encode16(case: :lower)
+    |> String.slice(0, 16)
   end
 
   defp validate_page_actors(page) do
@@ -2177,14 +2400,20 @@ defmodule FavnStoragePostgres.Identity.Store do
   end
 
   defp validate_create_session(command) do
-    valid_credential_version? =
+    valid_provider_shape? =
       case command.provider do
         "password_local" ->
           is_integer(command.expected_credential_version) and
-            command.expected_credential_version > 0
+            command.expected_credential_version > 0 and
+            is_nil(command.external_tenant_id) and is_nil(command.external_subject_id)
 
         "trusted_local_dev" ->
-          is_nil(command.expected_credential_version)
+          is_nil(command.expected_credential_version) and
+            is_nil(command.external_tenant_id) and is_nil(command.external_subject_id)
+
+        "azure_container_apps_entra" ->
+          is_nil(command.expected_credential_version) and uuid?(command.external_tenant_id) and
+            uuid?(command.external_subject_id)
 
         _provider ->
           false
@@ -2193,7 +2422,7 @@ defmodule FavnStoragePostgres.Identity.Store do
     if workspace_context?(command.workspace_context) and
          Enum.all?([command.command_id, command.session_id, command.actor_id], &valid_id?/1) and
          is_binary(command.token_hash) and byte_size(command.token_hash) >= 32 and
-         valid_credential_version? and
+         valid_provider_shape? and
          match?(%DateTime{}, command.expires_at) and match?(%DateTime{}, command.occurred_at) and
          DateTime.compare(command.expires_at, command.occurred_at) == :gt,
        do: :ok,
@@ -2212,7 +2441,11 @@ defmodule FavnStoragePostgres.Identity.Store do
            ],
            &valid_id?/1
          ) and is_binary(command.token_hash) and byte_size(command.token_hash) >= 32 and
-         command.provider in ["password_local", "trusted_local_dev"] and
+         command.provider in [
+           "password_local",
+           "trusted_local_dev",
+           "azure_container_apps_entra"
+         ] and
          match?(%DateTime{}, command.expires_at) and
          match?(%DateTime{}, command.occurred_at) and
          DateTime.compare(command.expires_at, command.occurred_at) == :gt,

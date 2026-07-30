@@ -50,9 +50,28 @@ defmodule FavnOrchestrator.Persistence.Selectors.ActorByUsername do
   @type t :: %__MODULE__{username: String.t()}
 end
 
+defmodule FavnOrchestrator.Persistence.Selectors.ActorByExternalIdentity do
+  @moduledoc """
+  Selects one actor by an immutable identity-provider subject.
+
+  Mutable claims such as email, display name, groups, and roles are
+  deliberately absent from this selector.
+  """
+
+  @enforce_keys [:provider, :tenant_id, :subject_id]
+  defstruct [:provider, :tenant_id, :subject_id]
+
+  @type t :: %__MODULE__{
+          provider: String.t(),
+          tenant_id: String.t(),
+          subject_id: String.t()
+        }
+end
+
 defmodule FavnOrchestrator.Persistence.Queries.GetActor do
   @moduledoc "Fetches global identity, current credential, and membership in one workspace."
 
+  alias FavnOrchestrator.Persistence.Selectors.ActorByExternalIdentity
   alias FavnOrchestrator.Persistence.Selectors.ActorById
   alias FavnOrchestrator.Persistence.Selectors.ActorByUsername
   alias FavnOrchestrator.Persistence.WorkspaceContext
@@ -61,7 +80,61 @@ defmodule FavnOrchestrator.Persistence.Queries.GetActor do
 
   @type t :: %__MODULE__{
           workspace_context: WorkspaceContext.t(),
-          selector: ActorById.t() | ActorByUsername.t()
+          selector: ActorById.t() | ActorByUsername.t() | ActorByExternalIdentity.t()
+        }
+end
+
+defmodule FavnOrchestrator.Persistence.Commands.LinkExternalIdentity do
+  @moduledoc "Links one immutable provider subject to one exact global actor."
+
+  alias FavnOrchestrator.Persistence.PlatformContext
+
+  @enforce_keys [
+    :platform_context,
+    :command_id,
+    :actor_id,
+    :provider,
+    :tenant_id,
+    :subject_id,
+    :occurred_at
+  ]
+  defstruct @enforce_keys
+
+  @type t :: %__MODULE__{
+          platform_context: PlatformContext.t(),
+          command_id: String.t(),
+          actor_id: String.t(),
+          provider: String.t(),
+          tenant_id: String.t(),
+          subject_id: String.t(),
+          occurred_at: DateTime.t()
+        }
+end
+
+defmodule FavnOrchestrator.Persistence.Commands.UnlinkExternalIdentity do
+  @moduledoc "Removes one exact immutable provider-subject link."
+
+  alias FavnOrchestrator.Persistence.PlatformContext
+
+  @enforce_keys [
+    :platform_context,
+    :command_id,
+    :actor_id,
+    :provider,
+    :tenant_id,
+    :subject_id,
+    :occurred_at
+  ]
+  defstruct @enforce_keys
+
+  @type t :: %__MODULE__{
+          platform_context: PlatformContext.t(),
+          command_id: String.t(),
+          actor_id: String.t(),
+          provider: String.t(),
+          tenant_id: String.t(),
+          subject_id: String.t(),
+          occurred_at: DateTime.t()
         }
 end
 
@@ -319,6 +392,8 @@ defmodule FavnOrchestrator.Persistence.Commands.CreateSession do
     :actor_id,
     :token_hash,
     :provider,
+    :external_tenant_id,
+    :external_subject_id,
     :expected_credential_version,
     :expires_at,
     :occurred_at
@@ -331,6 +406,8 @@ defmodule FavnOrchestrator.Persistence.Commands.CreateSession do
           actor_id: String.t(),
           token_hash: binary(),
           provider: String.t(),
+          external_tenant_id: String.t() | nil,
+          external_subject_id: String.t() | nil,
           expected_credential_version: pos_integer() | nil,
           expires_at: DateTime.t(),
           occurred_at: DateTime.t()

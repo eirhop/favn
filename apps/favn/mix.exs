@@ -60,6 +60,7 @@ defmodule Favn.MixProject do
         "guides/ai-agents.md",
         "guides/manifest-first.md",
         "guides/runtime-model.md",
+        "guides/operator-authentication.md",
         "guides/adapters.md",
         "guides/cheatsheet.cheatmd"
       ],
@@ -82,7 +83,7 @@ defmodule Favn.MixProject do
         "Mix Tasks": ~r/^Mix\.Tasks\.Favn(?:\.|$)/
       ],
       groups_for_extras: [
-        Production: ~r/guides\/secure-production-deployment\.md/,
+        Production: ~r/guides\/(secure-production-deployment|operator-authentication)\.md/,
         Cheatsheets: ~r/cheatsheet\.cheatmd/,
         Guides: ~r/guides\//
       ]

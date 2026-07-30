@@ -166,6 +166,11 @@ operator contract is [`production/postgresql_operator_runbook.md`](production/po
   to N runners across arbitrary user-defined pools on a trusted private network.
   Multi-control-plane availability is deferred.
 - Secrets are environment-only and rotate through an operator-controlled restart.
+- Azure Container Apps deployments can use single-tenant Microsoft Entra Easy
+  Auth. Favn persists an exact tenant/object-ID-to-actor link and continues to
+  own actor status, workspace membership, roles, opaque sessions, revocation,
+  workspace switching, and redacted audit. Native OIDC, other proxy assertion
+  formats, and provider group/role authorization remain out of scope.
 - PostgreSQL production-size restore, provider PITR, failover/load evidence,
   dashboards, and alert wiring remain release gates.
 - PostgreSQL backup does not recover DuckDB files, DuckLake metadata, object

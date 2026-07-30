@@ -4,6 +4,7 @@ defmodule Mix.Tasks.Favn.AdminTasksTest do
   alias FavnStoragePostgres.AdminSecret
   alias Mix.Tasks.Favn.Admin.Actor
   alias Mix.Tasks.Favn.Admin.Bootstrap
+  alias Mix.Tasks.Favn.Admin.Entra
   alias Mix.Tasks.Favn.Admin.PasswordReset
   alias Mix.Tasks.Favn.Admin.Recover
 
@@ -70,6 +71,48 @@ defmodule Mix.Tasks.Favn.AdminTasksTest do
              ])
 
     assert message =~ "invalid option"
+  end
+
+  test "Entra link requires the immutable tenant and object IDs" do
+    assert {:error, "--tenant-id is required"} =
+             Entra.parse_args([
+               "--username",
+               "operator",
+               "--object-id",
+               "22222222-2222-4222-8222-222222222222",
+               "--action",
+               "link"
+             ])
+
+    assert {:error, "--action must be link or unlink"} =
+             Entra.parse_args([
+               "--username",
+               "operator",
+               "--tenant-id",
+               "11111111-1111-4111-8111-111111111111",
+               "--object-id",
+               "22222222-2222-4222-8222-222222222222",
+               "--action",
+               "grant-admin"
+             ])
+
+    assert {:ok,
+            %{
+              username: "operator",
+              tenant_id: "11111111-1111-4111-8111-111111111111",
+              object_id: "22222222-2222-4222-8222-222222222222",
+              action: "link"
+            }} =
+             Entra.parse_args([
+               "--username",
+               "operator",
+               "--tenant-id",
+               "11111111-1111-4111-8111-111111111111",
+               "--object-id",
+               "22222222-2222-4222-8222-222222222222",
+               "--action",
+               "link"
+             ])
   end
 
   test "global password reset accepts only username and optional protected file" do

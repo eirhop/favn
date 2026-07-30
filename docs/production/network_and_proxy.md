@@ -19,8 +19,8 @@ server requires runner client certificates.
 
 | Listener | Allowed peers | Public exposure |
 | --- | --- | --- |
-| View HTTPS origin | Authenticated operators through VPN or reverse proxy | Reverse proxy only |
-| View container HTTP port | Reverse proxy and private health system | Never directly |
+| View HTTPS origin | Authenticated operators through VPN, reverse proxy, or Container Apps Easy Auth | Trusted ingress only |
+| View container HTTP port | Trusted ingress and private health system | Never directly |
 | Private orchestrator API | Scalers and trusted operator tooling | Never |
 | Control-plane EPMD | Trusted runner network only | Never |
 | Control-plane BEAM distribution port | Trusted dynamic runners only | Never |
@@ -52,3 +52,17 @@ The repository container gate does not qualify an operator proxy or managed
 network. Validate the chosen proxy, forwarded-header allowlist, real LiveView
 WebSocket upgrade, certificate rotation, runner scale-out, and runner egress in
 the target deployment.
+
+### Azure Container Apps Easy Auth
+
+For the supported Entra option, Container Apps ingress and Easy Auth are the
+trusted authentication proxy. A second reverse proxy is not required solely
+for SSO. Easy Auth must require authentication, use the intended single Entra
+tenant, and replace the client-principal header before Favn receives the
+request.
+
+No network route may bypass Container Apps ingress and reach the Favn listener.
+Favn validates the configured tenant and immutable object ID but deliberately
+does not validate or store the provider token. Enterprise application
+assignment is a useful outer allowlist; Favn actor status, workspace membership,
+and roles remain the authorization authority.

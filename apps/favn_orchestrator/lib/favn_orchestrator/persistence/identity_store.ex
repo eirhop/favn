@@ -1,5 +1,8 @@
 defmodule FavnOrchestrator.Persistence.IdentityStore do
-  @moduledoc "Persistence contract for actors, memberships, grants, sessions, and audit."
+  @moduledoc """
+  Persistence contract for actors, external identity links, memberships,
+  grants, sessions, and audit.
+  """
 
   alias FavnOrchestrator.Persistence.Commands.AttachActorMembership
   alias FavnOrchestrator.Persistence.Commands.BootstrapAdministrator
@@ -7,6 +10,7 @@ defmodule FavnOrchestrator.Persistence.IdentityStore do
   alias FavnOrchestrator.Persistence.Commands.CompleteOperatorCommand
   alias FavnOrchestrator.Persistence.Commands.CreateActor
   alias FavnOrchestrator.Persistence.Commands.CreateSession
+  alias FavnOrchestrator.Persistence.Commands.LinkExternalIdentity
   alias FavnOrchestrator.Persistence.Commands.RecordAudit
   alias FavnOrchestrator.Persistence.Commands.RecoverAdministratorCredential
   alias FavnOrchestrator.Persistence.Commands.ReserveOperatorCommand
@@ -15,6 +19,7 @@ defmodule FavnOrchestrator.Persistence.IdentityStore do
   alias FavnOrchestrator.Persistence.Commands.RotateWorkspaceSession
   alias FavnOrchestrator.Persistence.Commands.SetActorAccess
   alias FavnOrchestrator.Persistence.Commands.SetActorStatus
+  alias FavnOrchestrator.Persistence.Commands.UnlinkExternalIdentity
   alias FavnOrchestrator.Persistence.Error
   alias FavnOrchestrator.Persistence.Queries.GetActor
   alias FavnOrchestrator.Persistence.Queries.GetGlobalActor
@@ -34,6 +39,10 @@ defmodule FavnOrchestrator.Persistence.IdentityStore do
   @callback get_actor(GetActor.t()) :: {:ok, Actor.t()} | {:error, Error.t()}
   @callback get_global_actor(GetGlobalActor.t()) ::
               {:ok, GlobalActor.t()} | {:error, Error.t()}
+  @callback link_external_identity(LinkExternalIdentity.t()) ::
+              :ok | {:error, Error.t()}
+  @callback unlink_external_identity(UnlinkExternalIdentity.t()) ::
+              :ok | {:error, Error.t()}
   @callback page_actors(PageActors.t()) ::
               {:ok, CursorPage.t(Actor.t())} | {:error, Error.t()}
   @callback list_actor_memberships(ListActorMemberships.t()) ::

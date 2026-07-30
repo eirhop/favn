@@ -74,6 +74,22 @@ defmodule FavnStoragePostgres.Schemas.AuthCredential do
   end
 end
 
+defmodule FavnStoragePostgres.Schemas.AuthExternalIdentity do
+  @moduledoc false
+  use Ecto.Schema
+
+  @primary_key false
+  @schema_prefix "favn_control"
+  schema "auth_external_identities" do
+    field(:provider, :string, primary_key: true)
+    field(:tenant_id, :string, primary_key: true)
+    field(:subject_id, :string, primary_key: true)
+    field(:actor_id, :string)
+    field(:linked_at, :utc_datetime_usec)
+    field(:inserted_at, :utc_datetime_usec)
+  end
+end
+
 defmodule FavnStoragePostgres.Schemas.AuthSession do
   @moduledoc false
   use Ecto.Schema
@@ -86,6 +102,8 @@ defmodule FavnStoragePostgres.Schemas.AuthSession do
     field(:creation_command_id, :string)
     field(:token_hash, :binary)
     field(:provider, :string)
+    field(:external_tenant_id, :string)
+    field(:external_subject_id, :string)
     field(:status, :string)
     field(:expires_at, :utc_datetime_usec)
     field(:revoked_at, :utc_datetime_usec)

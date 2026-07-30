@@ -52,6 +52,11 @@ defmodule Favn do
   the [IEx Session Cheatsheet](iex-cheatsheet.html) for the complete interactive
   workflow and option reference.
 
+  Production operators can use local passwords or Microsoft Entra through
+  Azure Container Apps Easy Auth. Read
+  [Operator Authentication](operator-authentication.html) for the auth flow,
+  exact identity-link command, security boundary, and break-glass procedure.
+
   This module also keeps callable helpers for local SQL runtime operations:
   `render/2`, `preview/2`, `explain/2`, and `materialize/2`.
 

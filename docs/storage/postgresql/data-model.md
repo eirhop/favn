@@ -744,7 +744,7 @@ repaired from authoritative publications.
 | Materialization | `materialization_claims`, `materializations`, `coverage_baselines` | Authoritative |
 | Backfills | `backfills`, `backfill_plan_batches`, `backfill_windows` | Authoritative |
 | Logs | `log_batches`, `log_entries` | Authoritative operational history subject to retention |
-| Identity and audit | `auth_actors`, `auth_credentials`, `auth_sessions`, `auth_workspace_memberships`, `auth_platform_grants`, `auth_audit_entries`, `auth_platform_audit_entries` | Authoritative |
+| Identity and audit | `auth_actors`, `auth_credentials`, `auth_external_identities`, `auth_sessions`, `auth_workspace_memberships`, `auth_platform_grants`, `auth_audit_entries`, `auth_platform_audit_entries` | Authoritative |
 | API/maintenance | `idempotency_records`, `maintenance_jobs` | Authoritative coordination |
 | Projection infrastructure | `projection_cursors`, `projection_failures` | Durable projector state |
 | Read projections | `execution_group_overviews`, `backfill_overviews`, `target_statuses`, `asset_window_states`, `asset_freshness_states`, `asset_attempt_overviews` | Derived and repairable |

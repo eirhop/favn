@@ -7,29 +7,30 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
   """
 
   alias Ecto.Adapters.SQL
-  alias FavnStoragePostgres.Migrations.AddBackfillsAndProjectionsV2
   alias FavnStoragePostgres.Migrations.AddAssetAttemptOverviewsV2
   alias FavnStoragePostgres.Migrations.AddAssetEvidenceBindingsV2
+  alias FavnStoragePostgres.Migrations.AddBackfillsAndProjectionsV2
   alias FavnStoragePostgres.Migrations.AddCommitSafeLogReplayV2
+  alias FavnStoragePostgres.Migrations.AddCoordinationAndSchedulingV2
   alias FavnStoragePostgres.Migrations.AddDeploymentTargetDescriptorsV2
   alias FavnStoragePostgres.Migrations.AddExecutionGroupStartOrderingV2
   alias FavnStoragePostgres.Migrations.AddExecutionPackageRuntimeInputResolverV2
-  alias FavnStoragePostgres.Migrations.AddCoordinationAndSchedulingV2
+  alias FavnStoragePostgres.Migrations.AddExternalIdentitiesV2
   alias FavnStoragePostgres.Migrations.AddLogsIdentityAndOperationsV2
-  alias FavnStoragePostgres.Migrations.AddRuntimeInputKeyInventoryV2
+  alias FavnStoragePostgres.Migrations.AddOperatorCommandIntentsV2
   alias FavnStoragePostgres.Migrations.AddRebuildOperatorReadsV2
   alias FavnStoragePostgres.Migrations.AddRebuildRunnerBindingsV2
-  alias FavnStoragePostgres.Migrations.AddRunnerTasksV2
-  alias FavnStoragePostgres.Migrations.AddRunExecutionCheckpointsV2
   alias FavnStoragePostgres.Migrations.AddResourceCircuitsV2
+  alias FavnStoragePostgres.Migrations.AddRunExecutionCheckpointsV2
+  alias FavnStoragePostgres.Migrations.AddRunnerTasksV2
+  alias FavnStoragePostgres.Migrations.AddRuntimeInputKeyInventoryV2
   alias FavnStoragePostgres.Migrations.AddScheduleOperatorReadsV2
   alias FavnStoragePostgres.Migrations.AddScheduleActivationsV2
   alias FavnStoragePostgres.Migrations.AddTargetGenerationFoundationV2
   alias FavnStoragePostgres.Migrations.AddTargetRecoveryV2
   alias FavnStoragePostgres.Migrations.BindAuthSessionsToWorkspacesV2
-  alias FavnStoragePostgres.Migrations.AddOperatorCommandIntentsV2
-  alias FavnStoragePostgres.Migrations.CreateStorageV2
   alias FavnStoragePostgres.Migrations.CompleteRebuildOrchestrationV2
+  alias FavnStoragePostgres.Migrations.CreateStorageV2
   alias FavnStoragePostgres.Migrations.EnforceRunPlanManifestIdentityV2
   alias FavnStoragePostgres.Migrations.HardenIdempotencyV2
   alias FavnStoragePostgres.Migrations.HardenIdentifierBoundsV2
@@ -78,7 +79,8 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     {20_260_729_010_000, IncreaseRunnerTaskOrchestrationContextBoundV2},
     {20_260_730_000_000, AddExecutionGroupStartOrderingV2},
     {20_260_730_010_000, BindAuthSessionsToWorkspacesV2},
-    {20_260_730_020_000, AddOperatorCommandIntentsV2}
+    {20_260_730_020_000, AddOperatorCommandIntentsV2},
+    {20_260_730_030_000, AddExternalIdentitiesV2}
   ]
   @required_tables ~w(
     schema_migrations
@@ -145,6 +147,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     log_entries
     auth_actors
     auth_credentials
+    auth_external_identities
     auth_sessions
     auth_workspace_memberships
     auth_platform_grants
@@ -208,6 +211,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     auth_sessions_expiry_retention_idx
     auth_sessions_workspace_page_idx
     auth_sessions_workspace_actor_session_uidx
+    auth_external_identities_actor_uidx
     materialization_claims_retention_idx
     projection_failures_retention_idx
     log_entries_retention_idx
@@ -293,13 +297,15 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
       ~w(audit_id workspace_id command_id principal_id action subject_kind subject_id detail occurred_at inserted_at),
     "auth_credentials" =>
       ~w(actor_id password_hash algorithm version changed_at inserted_at updated_at),
+    "auth_external_identities" =>
+      ~w(provider tenant_id subject_id actor_id linked_at inserted_at),
     "auth_platform_audit_entries" =>
       ~w(audit_id command_id principal_id action subject_kind subject_id detail occurred_at inserted_at),
     "auth_operator_commands" =>
       ~w(intent_id workspace_id actor_id session_id operation resource_type resource_id key_hash request_fingerprint status result_resource_type result_resource_id result_detail expires_at terminal_at inserted_at updated_at),
     "auth_platform_grants" => ~w(actor_id roles status version inserted_at updated_at),
     "auth_sessions" =>
-      ~w(session_id actor_id workspace_id creation_command_id token_hash provider status expires_at revoked_at last_seen_at inserted_at updated_at),
+      ~w(session_id actor_id workspace_id creation_command_id token_hash provider external_tenant_id external_subject_id status expires_at revoked_at last_seen_at inserted_at updated_at),
     "auth_workspace_memberships" =>
       ~w(workspace_id actor_id roles status version inserted_at updated_at),
     "backfill_overviews" =>
@@ -483,6 +489,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     backfill_windows_values_valid backfill_windows_claim_shape_v2 projection_cursors_values_valid
     auth_actors_values_valid
     auth_credentials_values_valid auth_sessions_values_valid auth_sessions_workspace_bound
+    auth_external_identities_values_valid auth_external_identities_actor_fk
     auth_workspace_memberships_values_valid
     auth_platform_grants_values_valid log_batches_count_valid log_entries_values_valid
     log_entries_filter_values_valid
@@ -530,7 +537,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
                           Enum.map(@identifier_constraint_tables, &"#{&1}_identifier_lengths_v2") ++
                           Enum.map(@payload_constraint_tables, &"#{&1}_payload_bounds_v2")
   @expected_versions Enum.map(@migrations, fn {version, _module} -> version end)
-  @expected_definition_fingerprint "5ed6c280fc1c1500d810ae9d9997a315db9f31f602f182cab5acbd668929bf6a"
+  @expected_definition_fingerprint "c67f06430dffd09eeaeb050e56cddd3c1bf9a869e1b812267132980dc609c2cf"
 
   @doc "Creates the V2 namespace and applies every known migration."
   @spec migrate!(module()) :: :ok

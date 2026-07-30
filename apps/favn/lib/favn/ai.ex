@@ -42,6 +42,10 @@ defmodule Favn.AI do
 
   - To author one Elixir asset, read `Favn.Asset`, then `Favn.Namespace` and
     `Favn.Window` if needed.
+  - To deploy operator authentication, read the
+    [Operator Authentication](operator-authentication.html) guide. The first
+    SSO adapter is Microsoft Entra through Azure Container Apps Easy Auth;
+    Favn roles remain authoritative.
   - To choose where a value belongs, use this fixed runtime model: non-secret
     static asset values use `settings` and `ctx.asset.settings`; pipeline
     settings use `ctx.pipeline.settings`; submitted run values use `ctx.params`;

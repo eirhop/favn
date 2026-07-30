@@ -40,6 +40,10 @@ current limits live in [`FEATURES.md`](FEATURES.md); release gates live in
      authorization, accessibility, and real-browser release acceptance.
    - The UI plan, its measured findings, and the order of work are in
      [`design/operator-ux-review.md`](design/operator-ux-review.md).
+   - [#580](https://github.com/eirhop/favn/issues/580) now has a first,
+     deliberately narrow external-auth adapter: single-tenant Microsoft Entra
+     through Azure Container Apps Easy Auth, with durable explicit actor links.
+     Generic OIDC and additional providers remain future work.
 5. [#523 — PostgreSQL production proof and observability](https://github.com/eirhop/favn/issues/523)
    - Prove managed PostgreSQL 18 restore, PITR, load, contention, failover, query
      plans, least privilege, dashboards, alerts, and incident response.

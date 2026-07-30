@@ -31,6 +31,17 @@ database migration and workspace provisioning, run the one-time interactive
 bootstrap operation documented in
 [`../../docs/production/control_plane_environment.md`](../../docs/production/control_plane_environment.md).
 
+For Microsoft Entra SSO through Container Apps Easy Auth, set
+`enableEntraEasyAuth=true`, `viewEntraTenantId`, `viewEntraClientId`,
+`viewEntraClientSecret`, and `viewEntraWorkspaceId`. The template then enables
+Easy Auth, requires authentication, and redirects browser requests to Entra.
+It deliberately does not create or own the company app registration or its
+enterprise-application assignments. Configure that existing registration's
+callback URL and require assignment for the intended users. Then link each
+immutable Entra object ID with `mix favn.admin.entra`. The complete flow,
+no-bypass requirement, logout, and break-glass procedure is in
+[`../../apps/favn/guides/operator-authentication.md`](../../apps/favn/guides/operator-authentication.md).
+
 Favn keeps assigned tasks in `outstanding` until their durable result is
 accepted. This matches event-job queue guidance: active work remains visible
 while the platform accounts for running executions. Qualify this exact behavior
