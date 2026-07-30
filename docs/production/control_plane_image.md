@@ -105,12 +105,14 @@ The copied `env.example` documents the minimum variables. Important groups are:
 
 - PostgreSQL URL and verified TLS;
 - runtime-input pin keys;
-- Orchestrator service tokens and bootstrap identity;
+- Orchestrator service tokens;
 - workspace IDs;
 - View public origin, proxy CIDRs, and secret key base;
 - control-plane and runner node names, distribution cookie, and fixed port.
 
 Do not bake values into either image or pass secrets as Docker build arguments.
+Administrator bootstrap is a separate explicit operation; it is never configured
+through the control-plane environment.
 
 ## Migrations and workspace provisioning
 

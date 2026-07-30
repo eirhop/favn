@@ -52,6 +52,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnOrchestrator.Persistence.Commands.PurgePersistence
   alias FavnOrchestrator.Persistence.Commands.RegisterManifest
   alias FavnOrchestrator.Persistence.Commands.RegisterExecutionPackages
+  alias FavnOrchestrator.Persistence.Commands.RecoverAdministratorCredential
   alias FavnOrchestrator.Persistence.Commands.RequestRunCancellation
   alias FavnOrchestrator.Persistence.Commands.ReleaseRunOwnership
   alias FavnOrchestrator.Persistence.Commands.ReleaseTargetOperationLocks
@@ -66,6 +67,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnOrchestrator.Persistence.Commands.LogEntry
   alias FavnOrchestrator.Persistence.Commands.PurgeLogs
   alias FavnOrchestrator.Persistence.Commands.RevokeSessions
+  alias FavnOrchestrator.Persistence.Commands.ResetActorCredential
   alias FavnOrchestrator.Persistence.Commands.RenewMaterializationClaim
   alias FavnOrchestrator.Persistence.Commands.RenewRebuildOperationLease
   alias FavnOrchestrator.Persistence.Commands.RenewRunOwnership
@@ -144,6 +146,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnOrchestrator.API.SSE
   alias FavnOrchestrator.API.Router
   alias FavnOrchestrator.AdminLifecycle
+  alias FavnOrchestrator.Auth.Credentials
   alias FavnOrchestrator.Identity
   alias FavnOrchestrator.Lifecycle
   alias FavnOrchestrator.Manifests
@@ -7044,6 +7047,86 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     refute audit_text =~ replacement_password
     refute audit_text =~ "password_hash"
     refute audit_text =~ "$argon2"
+  end
+
+  test "administrator recovery and actor credential reset replay exact commands", fixture do
+    username = "replay-admin-#{System.unique_integer([:positive])}"
+
+    assert {:ok, administrator} =
+             AdminLifecycle.bootstrap(
+               [fixture.workspace_id],
+               username,
+               "initial-replay-password",
+               "Replay Administrator",
+               identity_store: IdentityStore
+             )
+
+    recovery = %RecoverAdministratorCredential{
+      platform_context: fixture.platform_context,
+      command_id: "admin-recovery-replay-#{System.unique_integer([:positive])}",
+      username: username,
+      password_hash: Credentials.hash_password("recovered-replay-password").password_hash,
+      occurred_at: DateTime.utc_now()
+    }
+
+    administrator_id = administrator.actor_id
+
+    assert {:ok, ^administrator_id} = IdentityStore.recover_administrator_credential(recovery)
+    assert {:ok, ^administrator_id} = IdentityStore.recover_administrator_credential(recovery)
+
+    changed_recovery = %{
+      recovery
+      | password_hash: Credentials.hash_password("changed-recovery-password").password_hash
+    }
+
+    assert {:error, %Error{kind: :conflict}} =
+             IdentityStore.recover_administrator_credential(changed_recovery)
+
+    {:ok, admin_context} =
+      WorkspaceContext.new(fixture.workspace_id, "auth:replay-admin", [:workspace_admin])
+
+    actor_username = "replay-actor-#{System.unique_integer([:positive])}"
+
+    assert {:ok, actor} =
+             Identity.create_actor(
+               admin_context,
+               actor_username,
+               "initial-actor-password",
+               "Replay Actor",
+               [:viewer]
+             )
+
+    reset = %ResetActorCredential{
+      platform_context: fixture.platform_context,
+      command_id: "actor-reset-replay-#{System.unique_integer([:positive])}",
+      username: actor_username,
+      password_hash: Credentials.hash_password("reset-replay-password").password_hash,
+      occurred_at: DateTime.utc_now()
+    }
+
+    actor_id = actor.id
+
+    assert {:ok, ^actor_id} = IdentityStore.reset_actor_credential(reset)
+    assert {:ok, ^actor_id} = IdentityStore.reset_actor_credential(reset)
+
+    changed_reset = %{
+      reset
+      | password_hash: Credentials.hash_password("changed-reset-password").password_hash
+    }
+
+    assert {:error, %Error{kind: :conflict}} =
+             IdentityStore.reset_actor_credential(changed_reset)
+
+    assert %{rows: [[2]]} =
+             SQL.query!(
+               Repo,
+               """
+               SELECT count(*)
+               FROM favn_control.auth_platform_audit_entries
+               WHERE command_id IN ($1, $2)
+               """,
+               [recovery.command_id, reset.command_id]
+             )
   end
 
   test "commits a projected batch after its lease deadline while retaining the cursor lock",

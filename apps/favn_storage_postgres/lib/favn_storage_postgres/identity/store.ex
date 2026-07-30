@@ -545,20 +545,13 @@ defmodule FavnStoragePostgres.Identity.Store do
 
     fingerprint = hash!(command.password_hash) |> Base.url_encode64(padding: false)
 
-    expected_detail = %{
-      "credential_fingerprint" => fingerprint,
-      "credential_version" => credential.version + 1,
-      "actor_reactivated" => actor.status != "active",
-      "sessions_revoked" => true
-    }
-
     case platform_audit_by_command(
            command.command_id,
            "administrator.credential.recovered"
          ) do
       %AuthPlatformAuditEntry{
         subject_id: actor_id,
-        detail: ^expected_detail
+        detail: %{"request_fingerprint" => ^fingerprint}
       }
       when actor_id == actor.actor_id ->
         actor.actor_id
@@ -567,6 +560,13 @@ defmodule FavnStoragePostgres.Identity.Store do
         Repo.rollback(Error.new(:conflict, "administrator recovery command changed"))
 
       nil ->
+        expected_detail = %{
+          "request_fingerprint" => fingerprint,
+          "credential_version" => credential.version + 1,
+          "actor_reactivated" => actor.status != "active",
+          "sessions_revoked" => true
+        }
+
         actor
         |> Ecto.Changeset.change(%{
           status: "active",
@@ -624,15 +624,11 @@ defmodule FavnStoragePostgres.Identity.Store do
 
     fingerprint = hash!(command.password_hash) |> Base.url_encode64(padding: false)
 
-    expected_detail = %{
-      "credential_fingerprint" => fingerprint,
-      "credential_version" => credential.version + 1,
-      "actor_status_preserved" => actor.status,
-      "sessions_revoked" => true
-    }
-
     case platform_audit_by_command(command.command_id, "actor.credential.reset") do
-      %AuthPlatformAuditEntry{subject_id: actor_id, detail: ^expected_detail}
+      %AuthPlatformAuditEntry{
+        subject_id: actor_id,
+        detail: %{"request_fingerprint" => ^fingerprint}
+      }
       when actor_id == actor.actor_id ->
         actor.actor_id
 
@@ -640,6 +636,13 @@ defmodule FavnStoragePostgres.Identity.Store do
         Repo.rollback(Error.new(:conflict, "actor credential reset command changed"))
 
       nil ->
+        expected_detail = %{
+          "request_fingerprint" => fingerprint,
+          "credential_version" => credential.version + 1,
+          "actor_status_preserved" => actor.status,
+          "sessions_revoked" => true
+        }
+
         credential
         |> Ecto.Changeset.change(%{
           password_hash: command.password_hash,
