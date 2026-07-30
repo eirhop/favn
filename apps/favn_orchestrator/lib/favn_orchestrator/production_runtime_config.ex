@@ -7,7 +7,6 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
   before supervised runtime components start.
   """
 
-  alias FavnOrchestrator.Auth.Credentials
   alias FavnOrchestrator.Auth.ServiceTokens
   alias FavnOrchestrator.API.ManifestPublication.Config, as: ManifestPublicationConfig
   alias Favn.RuntimeInput.KeyringConfig
@@ -45,7 +44,6 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
           manifest_publication: keyword(),
           api_service_tokens: [ServiceTokens.token_config()],
           workspace_ids: [String.t()],
-          auth_bootstrap: keyword(),
           auth_session_ttl_seconds: pos_integer(),
           active_run_plan_max_bytes: pos_integer(),
           scheduler: keyword(),
@@ -124,29 +122,11 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
     Application.put_env(:favn_orchestrator, :workspace_ids, config.workspace_ids)
     Application.delete_env(:favn_orchestrator, :api_service_tokens_env)
 
-    Application.put_env(
-      :favn_orchestrator,
-      :auth_bootstrap_username,
-      Keyword.fetch!(config.auth_bootstrap, :username)
-    )
-
-    Application.put_env(
-      :favn_orchestrator,
-      :auth_bootstrap_password,
-      Keyword.fetch!(config.auth_bootstrap, :password)
-    )
-
-    Application.put_env(
-      :favn_orchestrator,
-      :auth_bootstrap_display_name,
-      Keyword.fetch!(config.auth_bootstrap, :display_name)
-    )
-
-    Application.put_env(
-      :favn_orchestrator,
-      :auth_bootstrap_roles,
-      Keyword.fetch!(config.auth_bootstrap, :roles)
-    )
+    Application.put_env(:favn_orchestrator, :allow_automatic_admin_bootstrap, false)
+    Application.delete_env(:favn_orchestrator, :auth_bootstrap_username)
+    Application.delete_env(:favn_orchestrator, :auth_bootstrap_password)
+    Application.delete_env(:favn_orchestrator, :auth_bootstrap_display_name)
+    Application.delete_env(:favn_orchestrator, :auth_bootstrap_roles)
 
     Application.put_env(
       :favn_orchestrator,
@@ -179,6 +159,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
   @spec validate(map()) :: {:ok, config()} | {:error, map()}
   def validate(env) when is_map(env) do
     with {:ok, deployment_mode} <- DeploymentMode.from_env(env),
+         :ok <- reject_legacy_admin_bootstrap_env(env),
          {:ok, runner} <- runner(env),
          {:ok, instance_id} <- instance_id(env, runner.control_plane_node),
          {:ok, {postgres, runtime_input_pin}} <- postgres(env, deployment_mode),
@@ -187,7 +168,6 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
          {:ok, manifest_publication} <- manifest_publication(env),
          {:ok, tokens} <- api_service_tokens(env),
          {:ok, workspace_ids} <- workspace_ids(env),
-         {:ok, auth_bootstrap} <- auth_bootstrap(env),
          {:ok, auth_session_ttl_seconds} <- auth_session_ttl_seconds(env),
          {:ok, active_run_plan_max_bytes} <- active_run_plan_max_bytes(env),
          {:ok, scheduler} <- scheduler(env, workspace_ids),
@@ -205,7 +185,6 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
          manifest_publication: ManifestPublicationConfig.to_keyword(manifest_publication),
          api_service_tokens: tokens,
          workspace_ids: workspace_ids,
-         auth_bootstrap: auth_bootstrap,
          auth_session_ttl_seconds: auth_session_ttl_seconds,
          active_run_plan_max_bytes: active_run_plan_max_bytes,
          scheduler: scheduler,
@@ -248,7 +227,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
         redacted: true
       },
       workspaces: %{configured_count: length(config.workspace_ids)},
-      auth_bootstrap: %{username_configured?: true, password_configured?: true, redacted: true},
+      admin_lifecycle: %{bootstrap: :explicit_one_time_command, recovery: :explicit_command},
       auth_session: %{ttl_seconds: config.auth_session_ttl_seconds},
       active_run_plan: %{max_bytes: config.active_run_plan_max_bytes},
       runtime_input_pin: %{
@@ -357,26 +336,6 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
     end
   end
 
-  defp auth_bootstrap(env) do
-    with {:ok, username} <- required(env, "FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME"),
-         {:ok, password} <- required_secret(env, "FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD"),
-         {:ok, display_name} <-
-           required_or_default(env, "FAVN_ORCHESTRATOR_BOOTSTRAP_DISPLAY_NAME", "Favn Admin"),
-         {:ok, roles_raw} <-
-           required_or_default(env, "FAVN_ORCHESTRATOR_BOOTSTRAP_ROLES", "admin"),
-         roles = roles_raw |> String.split(",", trim: true) |> Enum.map(&String.trim/1),
-         {:ok, actor} <- normalize_bootstrap_actor(username, display_name, roles),
-         :ok <- validate_bootstrap_password(password) do
-      {:ok,
-       [
-         username: actor.username,
-         password: password,
-         display_name: actor.display_name,
-         roles: actor.roles
-       ]}
-    end
-  end
-
   defp auth_session_ttl_seconds(env) do
     int(
       env,
@@ -385,6 +344,23 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
       1,
       @max_session_ttl_seconds
     )
+  end
+
+  defp reject_legacy_admin_bootstrap_env(env) do
+    legacy_names = [
+      "FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME",
+      "FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD",
+      "FAVN_ORCHESTRATOR_BOOTSTRAP_DISPLAY_NAME",
+      "FAVN_ORCHESTRATOR_BOOTSTRAP_ROLES"
+    ]
+
+    case Enum.find(legacy_names, &Map.has_key?(env, &1)) do
+      nil ->
+        :ok
+
+      name ->
+        {:error, {:invalid_env, name, "removed; use the explicit administrator command"}}
+    end
   end
 
   defp active_run_plan_max_bytes(env) do
@@ -738,32 +714,6 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
     case :inet.parse_ipv4_address(String.to_charlist(host)) do
       {:ok, _ip} -> :ok
       {:error, _reason} -> {:error, {:invalid_env, name, host, "IPv4 address"}}
-    end
-  end
-
-  defp normalize_bootstrap_actor(username, display_name, roles) do
-    case Credentials.normalize_actor(username, display_name, roles) do
-      {:ok, actor} ->
-        {:ok, actor}
-
-      {:error, :invalid_roles} ->
-        {:error, {:invalid_env, "FAVN_ORCHESTRATOR_BOOTSTRAP_ROLES", "viewer,operator,admin"}}
-
-      {:error, reason} when reason in [:invalid_display_name, :display_name_too_long] ->
-        {:error, {:invalid_env, "FAVN_ORCHESTRATOR_BOOTSTRAP_DISPLAY_NAME", "display name"}}
-
-      {:error, _reason} ->
-        {:error, {:invalid_env, "FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME", "username"}}
-    end
-  end
-
-  defp validate_bootstrap_password(password) do
-    case Credentials.validate_password(password) do
-      :ok ->
-        :ok
-
-      {:error, _reason} ->
-        {:error, {:invalid_env, "FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD", "15..1024 byte password"}}
     end
   end
 

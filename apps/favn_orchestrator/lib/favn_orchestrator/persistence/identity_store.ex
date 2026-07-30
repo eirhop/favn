@@ -2,11 +2,13 @@ defmodule FavnOrchestrator.Persistence.IdentityStore do
   @moduledoc "Persistence contract for actors, memberships, grants, sessions, and audit."
 
   alias FavnOrchestrator.Persistence.Commands.ChangeActorPassword
+  alias FavnOrchestrator.Persistence.Commands.BootstrapAdministrator
   alias FavnOrchestrator.Persistence.Commands.CompleteOperatorCommand
   alias FavnOrchestrator.Persistence.Commands.AttachActorMembership
   alias FavnOrchestrator.Persistence.Commands.CreateActor
   alias FavnOrchestrator.Persistence.Commands.CreateSession
   alias FavnOrchestrator.Persistence.Commands.RecordAudit
+  alias FavnOrchestrator.Persistence.Commands.RecoverAdministratorCredential
   alias FavnOrchestrator.Persistence.Commands.ReserveOperatorCommand
   alias FavnOrchestrator.Persistence.Commands.RevokeSessions
   alias FavnOrchestrator.Persistence.Commands.RotateWorkspaceSession
@@ -34,6 +36,10 @@ defmodule FavnOrchestrator.Persistence.IdentityStore do
   @callback set_access(SetActorAccess.t()) :: {:ok, Actor.t()} | {:error, Error.t()}
   @callback attach_actor_membership(AttachActorMembership.t()) ::
               {:ok, Actor.t()} | {:error, Error.t()}
+  @callback bootstrap_administrator(BootstrapAdministrator.t()) ::
+              {:ok, Actor.t()} | {:error, Error.t()}
+  @callback recover_administrator_credential(RecoverAdministratorCredential.t()) ::
+              {:ok, String.t()} | {:error, Error.t()}
   @callback set_actor_status(SetActorStatus.t()) :: :ok | {:error, Error.t()}
   @callback change_password(ChangeActorPassword.t()) :: :ok | {:error, Error.t()}
   @callback create_session(CreateSession.t()) :: {:ok, Session.t()} | {:error, Error.t()}

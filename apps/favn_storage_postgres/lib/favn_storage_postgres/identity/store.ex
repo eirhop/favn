@@ -7,11 +7,13 @@ defmodule FavnStoragePostgres.Identity.Store do
 
   alias Ecto.Adapters.SQL
   alias FavnOrchestrator.Persistence.Commands.AttachActorMembership
+  alias FavnOrchestrator.Persistence.Commands.BootstrapAdministrator
   alias FavnOrchestrator.Persistence.Commands.ChangeActorPassword
   alias FavnOrchestrator.Persistence.Commands.CompleteOperatorCommand
   alias FavnOrchestrator.Persistence.Commands.CreateActor
   alias FavnOrchestrator.Persistence.Commands.CreateSession
   alias FavnOrchestrator.Persistence.Commands.RecordAudit
+  alias FavnOrchestrator.Persistence.Commands.RecoverAdministratorCredential
   alias FavnOrchestrator.Persistence.Commands.ReserveOperatorCommand
   alias FavnOrchestrator.Persistence.Commands.RevokeSessions
   alias FavnOrchestrator.Persistence.Commands.RotateWorkspaceSession
@@ -139,6 +141,20 @@ defmodule FavnStoragePostgres.Identity.Store do
   def attach_actor_membership(%AttachActorMembership{} = command) do
     with :ok <- validate_attach_actor_membership(command) do
       transaction(fn -> attach_actor_membership!(command) end)
+    end
+  end
+
+  @impl true
+  def bootstrap_administrator(%BootstrapAdministrator{} = command) do
+    with :ok <- validate_bootstrap_administrator(command) do
+      transaction(fn -> bootstrap_administrator!(command) end)
+    end
+  end
+
+  @impl true
+  def recover_administrator_credential(%RecoverAdministratorCredential{} = command) do
+    with :ok <- validate_recover_administrator_credential(command) do
+      transaction(fn -> recover_administrator_credential!(command) end)
     end
   end
 
@@ -353,6 +369,243 @@ defmodule FavnStoragePostgres.Identity.Store do
     )
 
     load_actor!(workspace_id, command.actor_id)
+  end
+
+  defp bootstrap_administrator!(command) do
+    SQL.query!(Repo, "SELECT pg_advisory_xact_lock(hashtext('favn.admin.bootstrap'))", [])
+
+    if administrator_exists?() do
+      Repo.rollback(
+        Error.new(:conflict, "administrator bootstrap is already complete",
+          details: %{reason_code: "administrator_already_exists"}
+        )
+      )
+    end
+
+    existing_workspace_ids =
+      from(workspace in Workspace,
+        where: workspace.workspace_id in ^command.workspace_ids,
+        select: workspace.workspace_id
+      )
+      |> Repo.all()
+      |> Enum.sort()
+
+    if existing_workspace_ids != command.workspace_ids do
+      Repo.rollback(
+        Error.new(:not_found, "one or more bootstrap workspaces do not exist",
+          details: %{reason_code: "bootstrap_workspace_not_found"}
+        )
+      )
+    end
+
+    [first_workspace_id | remaining_workspace_ids] = command.workspace_ids
+
+    {:ok, first_context} =
+      WorkspaceContext.new(
+        first_workspace_id,
+        command.platform_context.principal_id,
+        [:workspace_admin]
+      )
+
+    actor =
+      create_actor!(%CreateActor{
+        workspace_context: first_context,
+        command_id: command.command_id,
+        actor_id: command.actor_id,
+        username: command.username,
+        display_name: command.display_name,
+        password_hash: command.password_hash,
+        roles: [:workspace_admin],
+        occurred_at: command.occurred_at
+      })
+
+    Enum.each(remaining_workspace_ids, fn workspace_id ->
+      {:ok, context} =
+        WorkspaceContext.new(
+          workspace_id,
+          command.platform_context.principal_id,
+          [:workspace_admin]
+        )
+
+      %AuthWorkspaceMembership{
+        workspace_id: workspace_id,
+        actor_id: command.actor_id,
+        roles: ["workspace_admin"],
+        status: "active",
+        version: 1,
+        inserted_at: command.occurred_at,
+        updated_at: command.occurred_at
+      }
+      |> Repo.insert!()
+
+      workspace_audit!(
+        context,
+        command.command_id,
+        "actor.created",
+        command.actor_id,
+        %{"roles" => ["workspace_admin"]},
+        command.occurred_at
+      )
+    end)
+
+    %AuthPlatformGrant{
+      actor_id: command.actor_id,
+      roles: ["platform_admin"],
+      status: "active",
+      version: 1,
+      inserted_at: command.occurred_at,
+      updated_at: command.occurred_at
+    }
+    |> Repo.insert!()
+
+    platform_audit!(
+      command.platform_context,
+      command.command_id,
+      "administrator.bootstrapped",
+      command.actor_id,
+      %{
+        "username" => command.username,
+        "workspace_ids" => command.workspace_ids,
+        "workspace_roles" => ["workspace_admin"],
+        "platform_roles" => ["platform_admin"]
+      },
+      command.occurred_at
+    )
+
+    actor
+  end
+
+  defp recover_administrator_credential!(command) do
+    SQL.query!(Repo, "SELECT pg_advisory_xact_lock(hashtext('favn.admin.recover'))", [])
+
+    normalized_username = normalize_username(command.username)
+
+    actor =
+      from(actor in AuthActor,
+        where: actor.normalized_username == ^normalized_username,
+        lock: "FOR UPDATE"
+      )
+      |> Repo.one()
+
+    if is_nil(actor) do
+      Repo.rollback(
+        Error.new(:not_found, "administrator not found",
+          details: %{reason_code: "administrator_not_found"}
+        )
+      )
+    end
+
+    unless administrator?(actor.actor_id) do
+      Repo.rollback(
+        Error.new(:forbidden, "credential recovery is restricted to administrators",
+          details: %{reason_code: "administrator_required"}
+        )
+      )
+    end
+
+    credential =
+      from(credential in AuthCredential,
+        where: credential.actor_id == ^actor.actor_id,
+        lock: "FOR UPDATE"
+      )
+      |> Repo.one!()
+
+    fingerprint = hash!(command.password_hash) |> Base.url_encode64(padding: false)
+
+    expected_detail = %{
+      "credential_fingerprint" => fingerprint,
+      "credential_version" => credential.version + 1,
+      "actor_reactivated" => actor.status != "active",
+      "sessions_revoked" => true
+    }
+
+    case platform_audit_by_command(
+           command.command_id,
+           "administrator.credential.recovered"
+         ) do
+      %AuthPlatformAuditEntry{
+        subject_id: actor_id,
+        detail: ^expected_detail
+      }
+      when actor_id == actor.actor_id ->
+        actor.actor_id
+
+      %AuthPlatformAuditEntry{} ->
+        Repo.rollback(Error.new(:conflict, "administrator recovery command changed"))
+
+      nil ->
+        actor
+        |> Ecto.Changeset.change(%{
+          status: "active",
+          version: actor.version + 1,
+          updated_at: command.occurred_at
+        })
+        |> Repo.update!()
+
+        credential
+        |> Ecto.Changeset.change(%{
+          password_hash: command.password_hash,
+          version: credential.version + 1,
+          changed_at: command.occurred_at,
+          updated_at: command.occurred_at
+        })
+        |> Repo.update!()
+
+        revoke_actor_sessions!(actor.actor_id, command.occurred_at)
+
+        platform_audit!(
+          command.platform_context,
+          command.command_id,
+          "administrator.credential.recovered",
+          actor.actor_id,
+          expected_detail,
+          command.occurred_at
+        )
+
+        actor.actor_id
+    end
+  end
+
+  defp administrator_exists? do
+    %{rows: [[exists?]]} =
+      SQL.query!(
+        Repo,
+        """
+        SELECT EXISTS (
+          SELECT 1
+          FROM favn_control.auth_workspace_memberships
+          WHERE 'workspace_admin' = ANY(roles)
+          UNION ALL
+          SELECT 1
+          FROM favn_control.auth_platform_grants
+          WHERE 'platform_admin' = ANY(roles)
+        )
+        """,
+        []
+      )
+
+    exists?
+  end
+
+  defp administrator?(actor_id) do
+    %{rows: [[administrator?]]} =
+      SQL.query!(
+        Repo,
+        """
+        SELECT EXISTS (
+          SELECT 1
+          FROM favn_control.auth_workspace_memberships
+          WHERE actor_id = $1 AND 'workspace_admin' = ANY(roles)
+          UNION ALL
+          SELECT 1
+          FROM favn_control.auth_platform_grants
+          WHERE actor_id = $1 AND 'platform_admin' = ANY(roles)
+        )
+        """,
+        [actor_id]
+      )
+
+    administrator?
   end
 
   defp set_access!(%{scope_kind: :workspace} = command) do
@@ -692,6 +945,8 @@ defmodule FavnStoragePostgres.Identity.Store do
         Repo.rollback(Error.new(:conflict, "session identity has different content"))
 
       true ->
+        ensure_credential_version!(command.actor_id, command.expected_credential_version)
+
         session =
           %AuthSession{
             session_id: command.session_id,
@@ -937,6 +1192,29 @@ defmodule FavnStoragePostgres.Identity.Store do
     case Repo.get_by(AuthWorkspaceMembership, workspace_id: workspace_id, actor_id: actor_id) do
       %AuthWorkspaceMembership{status: "active"} = membership -> membership
       _other -> Repo.rollback(Error.new(:not_found, "active actor membership not found"))
+    end
+  end
+
+  defp ensure_credential_version!(_actor_id, nil), do: :ok
+
+  defp ensure_credential_version!(actor_id, expected_version) do
+    credential =
+      from(credential in AuthCredential,
+        where: credential.actor_id == ^actor_id,
+        lock: "FOR UPDATE"
+      )
+      |> Repo.one()
+
+    case credential do
+      %AuthCredential{version: ^expected_version} ->
+        :ok
+
+      _credential ->
+        Repo.rollback(
+          Error.new(:conflict, "credential changed before session issuance",
+            details: %{reason_code: "credential_version_changed"}
+          )
+        )
     end
   end
 
@@ -1714,6 +1992,41 @@ defmodule FavnStoragePostgres.Identity.Store do
        else: {:error, ErrorMapper.map(:invalid)}
   end
 
+  defp validate_bootstrap_administrator(command) do
+    context = command.platform_context
+    workspace_ids = command.workspace_ids
+
+    if PlatformContext.valid?(context) and :platform_admin in context.roles and
+         Enum.all?([command.command_id, command.actor_id], &valid_id?/1) and
+         is_list(workspace_ids) and workspace_ids != [] and
+         workspace_ids == workspace_ids |> Enum.uniq() |> Enum.sort() and
+         Enum.all?(workspace_ids, &valid_id?/1) and
+         is_binary(command.username) and normalize_username(command.username) != "" and
+         byte_size(normalize_username(command.username)) <= 255 and
+         is_binary(command.display_name) and command.display_name != "" and
+         byte_size(command.display_name) <= 255 and valid_password_hash?(command.password_hash) and
+         match?(%DateTime{}, command.occurred_at),
+       do: :ok,
+       else:
+         {:error,
+          Error.new(:forbidden, "explicit platform administrator bootstrap authority required")}
+  end
+
+  defp validate_recover_administrator_credential(command) do
+    context = command.platform_context
+
+    if PlatformContext.valid?(context) and :platform_admin in context.roles and
+         valid_id?(command.command_id) and is_binary(command.username) and
+         normalize_username(command.username) != "" and
+         byte_size(normalize_username(command.username)) <= 255 and
+         valid_password_hash?(command.password_hash) and
+         match?(%DateTime{}, command.occurred_at),
+       do: :ok,
+       else:
+         {:error,
+          Error.new(:forbidden, "explicit platform administrator recovery authority required")}
+  end
+
   defp validate_set_actor_status(command) do
     context = command.platform_context
 
@@ -1744,10 +2057,23 @@ defmodule FavnStoragePostgres.Identity.Store do
   end
 
   defp validate_create_session(command) do
+    valid_credential_version? =
+      case command.provider do
+        "password_local" ->
+          is_integer(command.expected_credential_version) and
+            command.expected_credential_version > 0
+
+        "trusted_local_dev" ->
+          is_nil(command.expected_credential_version)
+
+        _provider ->
+          false
+      end
+
     if workspace_context?(command.workspace_context) and
          Enum.all?([command.command_id, command.session_id, command.actor_id], &valid_id?/1) and
          is_binary(command.token_hash) and byte_size(command.token_hash) >= 32 and
-         command.provider in ["password_local", "trusted_local_dev"] and
+         valid_credential_version? and
          match?(%DateTime{}, command.expires_at) and match?(%DateTime{}, command.occurred_at) and
          DateTime.compare(command.expires_at, command.occurred_at) == :gt,
        do: :ok,

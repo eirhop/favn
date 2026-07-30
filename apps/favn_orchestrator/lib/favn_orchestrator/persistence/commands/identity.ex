@@ -158,6 +158,67 @@ defmodule FavnOrchestrator.Persistence.Commands.AttachActorMembership do
         }
 end
 
+defmodule FavnOrchestrator.Persistence.Commands.BootstrapAdministrator do
+  @moduledoc """
+  Creates the first administrator under explicit host/release authority.
+
+  The store must reject this command once any administrator exists.
+  """
+
+  alias FavnOrchestrator.Persistence.PlatformContext
+
+  @enforce_keys [
+    :platform_context,
+    :command_id,
+    :actor_id,
+    :workspace_ids,
+    :username,
+    :display_name,
+    :password_hash,
+    :occurred_at
+  ]
+  defstruct @enforce_keys
+
+  @type t :: %__MODULE__{
+          platform_context: PlatformContext.t(),
+          command_id: String.t(),
+          actor_id: String.t(),
+          workspace_ids: [String.t()],
+          username: String.t(),
+          display_name: String.t(),
+          password_hash: String.t(),
+          occurred_at: DateTime.t()
+        }
+end
+
+defmodule FavnOrchestrator.Persistence.Commands.RecoverAdministratorCredential do
+  @moduledoc """
+  Rotates an existing administrator credential under break-glass host authority.
+
+  Recovery activates the global actor and revokes every active session, but
+  does not silently change workspace memberships or grants.
+  """
+
+  alias FavnOrchestrator.Persistence.PlatformContext
+
+  @enforce_keys [
+    :platform_context,
+    :command_id,
+    :username,
+    :password_hash,
+    :occurred_at
+  ]
+  defstruct @enforce_keys
+
+  @type t :: %__MODULE__{
+          platform_context: PlatformContext.t(),
+          command_id: String.t(),
+          username: String.t(),
+          password_hash: String.t(),
+          occurred_at: DateTime.t()
+        }
+end
+
 defmodule FavnOrchestrator.Persistence.Commands.ChangeActorPassword do
   @moduledoc "Replaces one current credential hash and optionally revokes active sessions."
 
@@ -214,6 +275,7 @@ defmodule FavnOrchestrator.Persistence.Commands.CreateSession do
     :actor_id,
     :token_hash,
     :provider,
+    :expected_credential_version,
     :expires_at,
     :occurred_at
   ]
@@ -225,6 +287,7 @@ defmodule FavnOrchestrator.Persistence.Commands.CreateSession do
           actor_id: String.t(),
           token_hash: binary(),
           provider: String.t(),
+          expected_credential_version: pos_integer() | nil,
           expires_at: DateTime.t(),
           occurred_at: DateTime.t()
         }

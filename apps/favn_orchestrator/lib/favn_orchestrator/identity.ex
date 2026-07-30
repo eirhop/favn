@@ -47,7 +47,8 @@ defmodule FavnOrchestrator.Identity do
           required(:status) => :active | :disabled,
           required(:workspace_id) => String.t(),
           required(:access_version) => pos_integer(),
-          required(:version) => pos_integer()
+          required(:version) => pos_integer(),
+          optional(:credential_version) => pos_integer()
         }
 
   @type session :: %{
@@ -158,7 +159,7 @@ defmodule FavnOrchestrator.Identity do
            }),
          :ok <- active_actor?(actor),
          :ok <- Credentials.verify_password(password, %{password_hash: actor.credential_hash}) do
-      {:ok, actor_map(actor)}
+      {:ok, actor |> actor_map() |> Map.put(:credential_version, actor.credential_version)}
     else
       _invalid -> Credentials.dummy_verify()
     end
@@ -169,7 +170,10 @@ defmodule FavnOrchestrator.Identity do
           {:ok, session()} | {:error, term()}
   def issue_session(%WorkspaceContext{} = context, actor_id, opts \\ [])
       when is_binary(actor_id) and is_list(opts) do
-    with {:ok, issued} <- Session.issue(actor_id, opts),
+    expected_credential_version = Keyword.get(opts, :expected_credential_version)
+    session_opts = Keyword.drop(opts, [:expected_credential_version])
+
+    with {:ok, issued} <- Session.issue(actor_id, session_opts),
          {:ok, persisted} <-
            store().create_session(%CreateSession{
              workspace_context: context,
@@ -178,6 +182,7 @@ defmodule FavnOrchestrator.Identity do
              actor_id: actor_id,
              token_hash: Session.token_hash(issued.token),
              provider: issued.provider,
+             expected_credential_version: expected_credential_version,
              expires_at: issued.expires_at,
              occurred_at: issued.issued_at
            }) do

@@ -12,11 +12,13 @@ defmodule FavnStoragePostgres.Release do
 
   alias Ecto.Adapters.SQL
   alias Favn.RuntimeInput.KeyringConfig
+  alias FavnOrchestrator.AdminLifecycle
   alias FavnOrchestrator.Persistence.Commands.ProvisionWorkspace
   alias FavnOrchestrator.Persistence.Error, as: PersistenceError
   alias FavnOrchestrator.Persistence.PlatformContext
   alias FavnOrchestrator.Redaction
   alias FavnStoragePostgres.Config
+  alias FavnStoragePostgres.Identity.Store, as: IdentityStore
   alias FavnStoragePostgres.Privileges
   alias FavnStoragePostgres.Registry.Store
   alias FavnStoragePostgres.Repo
@@ -30,6 +32,8 @@ defmodule FavnStoragePostgres.Release do
 
   @type operation ::
           :migrate
+          | :admin_bootstrap
+          | :admin_recover
           | :verify_schema
           | :verify_workspace
           | :verify_restore
@@ -110,6 +114,128 @@ defmodule FavnStoragePostgres.Release do
   def verify_workspace(_workspace_id) do
     release_operation(:verify_workspace, fn ->
       error(:verify_workspace, :invalid_workspace, reason: :workspace_id_required)
+    end)
+  end
+
+  @doc "Creates the one-time initial administrator from an explicit release command."
+  @spec admin_bootstrap(map()) :: result()
+  def admin_bootstrap(input) when is_map(input) do
+    database_operation(:admin_bootstrap, fn ->
+      with {:ok, workspace_ids} <- fetch_string_list(input, :workspace_ids),
+           {:ok, username} <- fetch_string(input, :username),
+           {:ok, password} <- fetch_string(input, :password),
+           {:ok, display_name} <- fetch_string(input, :display_name),
+           {:ok, actor} <-
+             AdminLifecycle.bootstrap(workspace_ids, username, password, display_name,
+               identity_store: IdentityStore
+             ) do
+        Logger.info(
+          "favn.release.administrator_bootstrapped actor_id=#{actor.actor_id} workspaces=#{length(workspace_ids)}"
+        )
+
+        ok(:admin_bootstrap,
+          actor_id: actor.actor_id,
+          username: actor.username,
+          workspace_ids: workspace_ids
+        )
+      else
+        {:error, %PersistenceError{} = failure} ->
+          persistence_error(:admin_bootstrap, failure)
+
+        {:error, reason} ->
+          error(:admin_bootstrap, :invalid_admin_bootstrap, reason: safe_reason(reason))
+      end
+    end)
+  end
+
+  def admin_bootstrap(_input) do
+    release_operation(:admin_bootstrap, fn ->
+      error(:admin_bootstrap, :invalid_admin_bootstrap, reason: :map_required)
+    end)
+  end
+
+  @doc """
+  Secure interactive bootstrap entry point for a packaged release.
+
+  The password is read without echo from the release's standard input. It is
+  never part of an argument, environment variable, or returned result.
+  """
+  @spec admin_bootstrap_from_stdin([String.t()], String.t(), String.t()) :: result()
+  def admin_bootstrap_from_stdin(workspace_ids, username, display_name)
+      when is_list(workspace_ids) and is_binary(username) and is_binary(display_name) do
+    with {:ok, password} <- read_password("New administrator password") do
+      admin_bootstrap(%{
+        workspace_ids: workspace_ids,
+        username: username,
+        display_name: display_name,
+        password: password
+      })
+    else
+      {:error, reason} ->
+        release_operation(:admin_bootstrap, fn ->
+          error(:admin_bootstrap, :password_input_failed, reason: reason)
+        end)
+    end
+  end
+
+  def admin_bootstrap_from_stdin(_workspace_ids, _username, _display_name) do
+    release_operation(:admin_bootstrap, fn ->
+      error(:admin_bootstrap, :invalid_admin_bootstrap, reason: :arguments_required)
+    end)
+  end
+
+  @doc "Rotates one existing administrator credential and revokes all sessions."
+  @spec admin_recover(map()) :: result()
+  def admin_recover(input) when is_map(input) do
+    database_operation(:admin_recover, fn ->
+      with {:ok, username} <- fetch_string(input, :username),
+           {:ok, password} <- fetch_string(input, :password),
+           {:ok, actor} <-
+             AdminLifecycle.recover(username, password, identity_store: IdentityStore) do
+        Logger.warning("favn.release.administrator_recovered actor_id=#{actor.actor_id}")
+
+        ok(:admin_recover,
+          actor_id: actor.actor_id,
+          username: actor.username,
+          sessions_revoked: true
+        )
+      else
+        {:error, %PersistenceError{} = failure} ->
+          persistence_error(:admin_recover, failure)
+
+        {:error, reason} ->
+          error(:admin_recover, :invalid_admin_recovery, reason: safe_reason(reason))
+      end
+    end)
+  end
+
+  def admin_recover(_input) do
+    release_operation(:admin_recover, fn ->
+      error(:admin_recover, :invalid_admin_recovery, reason: :map_required)
+    end)
+  end
+
+  @doc """
+  Secure interactive recovery entry point for a packaged release.
+
+  The replacement password is read without echo from the release's standard
+  input. Recovery revokes every existing session for the administrator.
+  """
+  @spec admin_recover_from_stdin(String.t()) :: result()
+  def admin_recover_from_stdin(username) when is_binary(username) do
+    with {:ok, password} <- read_password("Replacement administrator password") do
+      admin_recover(%{username: username, password: password})
+    else
+      {:error, reason} ->
+        release_operation(:admin_recover, fn ->
+          error(:admin_recover, :password_input_failed, reason: reason)
+        end)
+    end
+  end
+
+  def admin_recover_from_stdin(_username) do
+    release_operation(:admin_recover, fn ->
+      error(:admin_recover, :invalid_admin_recovery, reason: :username_required)
     end)
   end
 
@@ -396,6 +522,25 @@ defmodule FavnStoragePostgres.Release do
   defp valid_identifier?(value),
     do: is_binary(value) and value != "" and byte_size(value) <= 255
 
+  defp fetch_string(input, key) do
+    case Map.get(input, key, Map.get(input, Atom.to_string(key))) do
+      value when is_binary(value) and value != "" -> {:ok, value}
+      _missing -> {:error, {key, :required}}
+    end
+  end
+
+  defp fetch_string_list(input, key) do
+    case Map.get(input, key, Map.get(input, Atom.to_string(key))) do
+      values when is_list(values) and values != [] and length(values) <= 100 ->
+        if Enum.all?(values, &(is_binary(&1) and &1 != "")),
+          do: {:ok, values},
+          else: {:error, {key, :invalid}}
+
+      _missing ->
+        {:error, {key, :required}}
+    end
+  end
+
   defp normalize_versions(version) when is_integer(version), do: normalize_versions([version])
 
   defp normalize_versions(versions)
@@ -524,6 +669,26 @@ defmodule FavnStoragePostgres.Release do
       :actual_definition_fingerprint,
       :runtime_role
     ])
+  end
+
+  defp read_password(prompt) do
+    case :io.get_password(String.to_charlist(prompt <> ": ")) do
+      password when is_list(password) ->
+        password = List.to_string(password)
+
+        cond do
+          password == "" -> {:error, :empty_password}
+          byte_size(password) > 1_024 -> {:error, :password_too_long}
+          String.contains?(password, <<0>>) -> {:error, :password_contains_null}
+          true -> {:ok, password}
+        end
+
+      :eof ->
+        {:error, :end_of_input}
+
+      {:error, _reason} ->
+        {:error, :stdin_unavailable}
+    end
   end
 
   defp persistence_error(operation, %PersistenceError{} = failure) do

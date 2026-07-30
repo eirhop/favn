@@ -87,6 +87,23 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
            }
   end
 
+  test "legacy bootstrap environment is rejected without exposing its value", %{ca_file: ca_file} do
+    secret = "legacy-bootstrap-secret-that-must-remain-redacted"
+
+    assert {:error,
+            %{
+              error:
+                {:invalid_env, "FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD",
+                 "removed; use the explicit administrator command"}
+            } = failure} =
+             ca_file
+             |> base_env()
+             |> Map.put("FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD", secret)
+             |> ProductionRuntimeConfig.validate()
+
+    refute inspect(failure) =~ secret
+  end
+
   test "validate/1 accepts explicit supported production values", %{ca_file: ca_file} do
     env =
       ca_file
@@ -310,7 +327,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
     refute Keyword.has_key?(config.postgres, :ssl_ca_file)
   end
 
-  test "validate/1 rejects invalid service, auth, scheduler, and runner values", %{
+  test "validate/1 rejects invalid service, session, scheduler, and runner values", %{
     ca_file: ca_file
   } do
     base = base_env(ca_file)
@@ -343,15 +360,6 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
              |> ProductionRuntimeConfig.validate()
 
     assert {:error,
-            %{
-              error:
-                {:invalid_env, "FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD", "15..1024 byte password"}
-            }} =
-             base
-             |> Map.put("FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD", "short")
-             |> ProductionRuntimeConfig.validate()
-
-    assert {:error,
             %{error: {:invalid_env, "FAVN_CONTROL_PLANE_NODE", "long name@private-dns-name"}}} =
              base
              |> Map.put("FAVN_CONTROL_PLANE_NODE", "control@localhost")
@@ -377,6 +385,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
       :api_service_tokens,
       :api_service_tokens_env,
       :workspace_ids,
+      :allow_automatic_admin_bootstrap,
       :auth_session_ttl_seconds,
       :active_run_plan_max_bytes,
       :scheduler,
@@ -401,6 +410,9 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
       restore_env(:favn_orchestrator, previous_orchestrator)
       restore_env(:favn_storage_postgres, previous_postgres)
     end)
+
+    Application.put_env(:favn_orchestrator, :auth_bootstrap_username, "legacy-admin")
+    Application.put_env(:favn_orchestrator, :auth_bootstrap_password, "legacy-password")
 
     env =
       ca_file
@@ -444,8 +456,10 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
            }
 
     assert Application.get_env(:favn_orchestrator, :workspace_ids) == ["salmon-one", "salmon-two"]
-    assert Application.get_env(:favn_orchestrator, :auth_bootstrap_username) == "admin"
-    assert Application.get_env(:favn_orchestrator, :auth_bootstrap_roles) == [:admin]
+    assert Application.get_env(:favn_orchestrator, :allow_automatic_admin_bootstrap) == false
+    assert Application.get_env(:favn_orchestrator, :auth_bootstrap_username) == nil
+    assert Application.get_env(:favn_orchestrator, :auth_bootstrap_password) == nil
+    assert Application.get_env(:favn_orchestrator, :auth_bootstrap_roles) == nil
 
     assert Application.get_env(:favn_orchestrator, :instance_id) ==
              "control@control-plane.internal"
@@ -463,6 +477,11 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
     assert diagnostics.runtime_input_pin == %{current_version: 2, retained_versions: [1, 2]}
     assert diagnostics.active_run_plan == %{max_bytes: 512 * 1_024 * 1_024}
     assert diagnostics.api_service_tokens.ids == ["favn_web"]
+
+    assert diagnostics.admin_lifecycle == %{
+             bootstrap: :explicit_one_time_command,
+             recovery: :explicit_command
+           }
 
     assert diagnostics.runner == %{
              topology: :beam_node,
@@ -501,8 +520,6 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
       "FAVN_RUNTIME_INPUT_PIN_KEYS" => Jason.encode!(%{"1" => @pin_key}),
       "FAVN_WORKSPACE_IDS" => "salmon-one,salmon-two",
       "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS" => @token_env,
-      "FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME" => "admin",
-      "FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD" => "admin-password-long",
       "FAVN_CONTROL_PLANE_NODE" => "control@control-plane.internal",
       "FAVN_DISTRIBUTION_COOKIE" => "bN7!tQ2#vL9@xR4$kM8%pC6&zH3*eW5?",
       "FAVN_BEAM_DISTRIBUTION_PORT" => "9100",

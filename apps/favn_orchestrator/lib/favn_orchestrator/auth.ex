@@ -40,8 +40,12 @@ defmodule FavnOrchestrator.Auth do
           {:ok, session(), actor()} | {:error, term()}
   def password_login(%WorkspaceContext{} = context, username, password, opts) do
     with {:ok, actor} <- Store.authenticate_password(context, username, password, opts),
-         {:ok, session} <- Store.issue_session(context, actor.id, provider: "password_local") do
-      {:ok, session, actor}
+         {:ok, session} <-
+           Store.issue_session(context, actor.id,
+             provider: "password_local",
+             expected_credential_version: actor.credential_version
+           ) do
+      {:ok, session, Map.delete(actor, :credential_version)}
     end
   end
 

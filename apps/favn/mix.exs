@@ -30,6 +30,7 @@ defmodule Favn.MixProject do
       internal_dep(:favn_local, "../favn_local", runtime: false),
       internal_dep(:favn_sql_runtime, "../favn_sql_runtime"),
       internal_dep(:favn_orchestrator, "../favn_orchestrator", runtime: false),
+      internal_dep(:favn_storage_postgres, "../favn_storage_postgres", runtime: false),
       internal_dep(:favn_test_support, "../favn_test_support", only: :test),
       {:ex_doc, "~> 0.38", only: :dev, runtime: false},
       {:mint, "~> 1.6", runtime: false},

@@ -52,8 +52,6 @@ defmodule Favn.DeploymentReferenceConformanceTest do
           "FAVN_RUNTIME_INPUT_PIN_KEYS",
           "FAVN_RUNTIME_INPUT_PIN_KEY_VERSION",
           "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS",
-          "FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME",
-          "FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD",
           "FAVN_WORKSPACE_IDS",
           "FAVN_RUNNER_POOLS",
           "FAVN_VIEW_PUBLIC_ORIGIN",
@@ -195,7 +193,7 @@ defmodule Favn.DeploymentReferenceConformanceTest do
     assert qualification =~ "safe_failure_classification"
     assert qualification =~ "non_reusable_materialization_claim_succeeded"
     assert qualification =~ "final-validation.json"
-    assert qualification =~ "secret_scan_expected=8"
+    assert qualification =~ "secret_scan_expected=7"
     assert qualification =~ "configured_secret_values_scanned"
     assert qualification =~ "leaked_variable_names"
     refute qualification =~ "mix favn.run"
