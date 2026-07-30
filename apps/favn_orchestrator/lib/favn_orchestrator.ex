@@ -18,6 +18,7 @@ defmodule FavnOrchestrator do
   alias FavnOrchestrator.Coverage
   alias FavnOrchestrator.Diagnostics
   alias FavnOrchestrator.Events
+  alias FavnOrchestrator.Idempotency
   alias FavnOrchestrator.Logs
   alias FavnOrchestrator.Lifecycle
   alias FavnOrchestrator.ManifestStore
@@ -38,6 +39,7 @@ defmodule FavnOrchestrator do
   alias FavnOrchestrator.OperatorErrorDTO
   alias FavnOrchestrator.OperationRunnerTasks
   alias FavnOrchestrator.Persistence.Error, as: PersistenceError
+  alias FavnOrchestrator.Persistence.CommandIdempotency
   alias FavnOrchestrator.Persistence
   alias FavnOrchestrator.Persistence.Queries.CountExecutionGroups
   alias FavnOrchestrator.Persistence.Queries.GetExecutionGroup
@@ -439,9 +441,54 @@ defmodule FavnOrchestrator do
            session_id: operator_context.session_id,
            requested_by: :operator
          },
-         {:ok, opts} <- merge_coverage_metadata(opts, metadata),
-         {:ok, backfill} <- Coverage.submit_missing_backfill(context, target_id, plan, opts) do
-      {:ok, backfill.root_run_id}
+         {:ok, domain_opts} <-
+           opts
+           |> Keyword.delete(:idempotency_key)
+           |> merge_coverage_metadata(metadata),
+         {:ok, intent} <-
+           begin_operator_command(
+             context,
+             operator_context,
+             actor,
+             "coverage.backfill.submit",
+             "asset",
+             target_id,
+             %{
+               target_id: target_id,
+               plan:
+                 Map.take(plan, [
+                   :plan_id,
+                   :plan_hash,
+                   :manifest_version_id,
+                   :deployment_id,
+                   :window_count,
+                   :selection
+                 ])
+             },
+             opts
+           ),
+         opts <-
+           domain_opts
+           |> Keyword.put(:idempotency, intent.idempotency)
+           |> Keyword.put_new(
+             :root_run_id,
+             OperatorAudit.deterministic_id(intent, "run", [target_id])
+           ),
+         result <- Coverage.submit_missing_backfill(context, target_id, plan, opts) do
+      finish_operator_result(
+        context,
+        operator_context,
+        actor,
+        intent,
+        "backfill",
+        target_id,
+        result,
+        fn backfill ->
+          {backfill.root_run_id,
+           %{backfill_id: backfill.backfill_id, root_run_id: backfill.root_run_id},
+           {:ok, backfill.root_run_id}}
+        end
+      )
     end
   end
 
@@ -458,37 +505,41 @@ defmodule FavnOrchestrator do
   @doc "Creates an immutable manual rebuild plan after operator reauthorization."
   @spec plan_operator_rebuild(OperatorContext.t(), String.t(), String.t(), keyword()) ::
           {:ok, map()} | {:error, term()}
-  def plan_operator_rebuild(%OperatorContext{} = operator_context, target_id, reason, opts \\ [])
+  def plan_operator_rebuild(%OperatorContext{} = operator_context, target_id, reason, opts)
       when is_binary(target_id) and is_binary(reason) and is_list(opts) do
-    with {:ok, context, actor} <- authorize_operator_context(operator_context, :operator) do
-      case Rebuilds.plan(context, target_id, reason, opts) do
-        {:ok, plan} ->
-          audit_operator_rebuild(
-            context,
-            operator_context,
-            actor,
-            "rebuild.plan",
-            plan.plan_id,
-            %{target_id: target_id, reason: reason, plan_hash: plan.plan_hash},
-            "accepted",
-            plan.idempotency_replay?
-          )
-
-          {:ok, OperatorRebuilds.plan(plan, admin?(context))}
-
-        {:error, failure} = error ->
-          audit_operator_rebuild(
-            context,
-            operator_context,
-            actor,
-            "rebuild.plan",
-            target_id,
-            %{target_id: target_id, reason: reason, error_code: rebuild_error_code(failure)},
-            "rejected"
-          )
-
-          error
-      end
+    with {:ok, context, actor} <- authorize_operator_context(operator_context, :operator),
+         {:ok, intent} <-
+           begin_operator_command(
+             context,
+             operator_context,
+             actor,
+             "rebuild.plan",
+             "target",
+             target_id,
+             %{target_id: target_id, reason: reason},
+             opts
+           ),
+         opts <-
+           opts
+           |> put_rebuild_plan_idempotency(intent)
+           |> Keyword.put_new(
+             :operation_id,
+             OperatorAudit.deterministic_id(intent, "rebuild", [target_id])
+           ),
+         result <- Rebuilds.plan(context, target_id, reason, opts) do
+      finish_operator_result(
+        context,
+        operator_context,
+        actor,
+        intent,
+        "rebuild",
+        target_id,
+        result,
+        fn plan ->
+          {plan.plan_id, %{plan_id: plan.plan_id, plan_hash: plan.plan_hash},
+           {:ok, OperatorRebuilds.plan(plan, admin?(context))}}
+        end
+      )
     end
   end
 
@@ -499,38 +550,41 @@ defmodule FavnOrchestrator do
         %OperatorContext{} = operator_context,
         plan_id,
         plan_hash,
-        opts \\ []
+        opts
       )
       when is_binary(plan_id) and is_binary(plan_hash) and is_list(opts) do
-    with {:ok, context, actor} <- authorize_operator_context(operator_context, :admin) do
-      case Rebuilds.start(context, plan_id, plan_hash, opts) do
-        {:ok, operation} ->
-          audit_operator_rebuild(
-            context,
-            operator_context,
-            actor,
-            "rebuild.start",
-            operation.operation_id,
-            %{plan_hash: plan_hash, state: operation.state},
-            "accepted",
-            operation.idempotency_replay? == true
-          )
-
-          {:ok, OperatorRebuilds.operation(operation, true)}
-
-        {:error, failure} = error ->
-          audit_operator_rebuild(
-            context,
-            operator_context,
-            actor,
-            "rebuild.start",
-            plan_id,
-            %{plan_hash: plan_hash, error_code: rebuild_error_code(failure)},
-            "rejected"
-          )
-
-          error
-      end
+    with {:ok, context, actor} <- authorize_operator_context(operator_context, :admin),
+         {:ok, intent} <-
+           begin_operator_command(
+             context,
+             operator_context,
+             actor,
+             "rebuild.start",
+             "rebuild",
+             plan_id,
+             %{plan_id: plan_id, plan_hash: plan_hash},
+             opts
+           ),
+         result <-
+           Rebuilds.start(
+             context,
+             plan_id,
+             plan_hash,
+             put_rebuild_command_idempotency(opts, intent)
+           ) do
+      finish_operator_result(
+        context,
+        operator_context,
+        actor,
+        intent,
+        "rebuild",
+        plan_id,
+        result,
+        fn operation ->
+          {operation.operation_id, %{operation_id: operation.operation_id},
+           {:ok, OperatorRebuilds.operation(operation, true)}}
+        end
+      )
     end
   end
 
@@ -573,18 +627,40 @@ defmodule FavnOrchestrator do
         %OperatorContext{} = operator_context,
         operation_id,
         reason,
-        opts \\ []
+        opts
       )
       when is_binary(operation_id) and is_binary(reason) and is_list(opts) do
-    with {:ok, context, actor} <- authorize_operator_context(operator_context, :admin) do
-      finish_operator_rebuild_mutation(
-        Rebuilds.cancel(context, operation_id, reason, opts),
+    with {:ok, context, actor} <- authorize_operator_context(operator_context, :admin),
+         {:ok, intent} <-
+           begin_operator_command(
+             context,
+             operator_context,
+             actor,
+             "rebuild.cancel",
+             "rebuild",
+             operation_id,
+             %{operation_id: operation_id, reason: reason},
+             opts
+           ),
+         result <-
+           Rebuilds.cancel(
+             context,
+             operation_id,
+             reason,
+             put_rebuild_command_idempotency(opts, intent)
+           ) do
+      finish_operator_result(
         context,
         operator_context,
         actor,
-        "rebuild.cancel",
+        intent,
+        "rebuild",
         operation_id,
-        %{reason: reason}
+        result,
+        fn operation ->
+          {operation.operation_id, %{operation_id: operation.operation_id},
+           {:ok, OperatorRebuilds.operation(operation, true)}}
+        end
       )
     end
   end
@@ -596,18 +672,40 @@ defmodule FavnOrchestrator do
         %OperatorContext{} = operator_context,
         operation_id,
         plan_hash,
-        opts \\ []
+        opts
       )
       when is_binary(operation_id) and is_binary(plan_hash) and is_list(opts) do
-    with {:ok, context, actor} <- authorize_operator_context(operator_context, :admin) do
-      finish_operator_rebuild_mutation(
-        Rebuilds.retry(context, operation_id, plan_hash, opts),
+    with {:ok, context, actor} <- authorize_operator_context(operator_context, :admin),
+         {:ok, intent} <-
+           begin_operator_command(
+             context,
+             operator_context,
+             actor,
+             "rebuild.retry",
+             "rebuild",
+             operation_id,
+             %{operation_id: operation_id, plan_hash: plan_hash},
+             opts
+           ),
+         result <-
+           Rebuilds.retry(
+             context,
+             operation_id,
+             plan_hash,
+             put_rebuild_command_idempotency(opts, intent)
+           ) do
+      finish_operator_result(
         context,
         operator_context,
         actor,
-        "rebuild.retry",
+        intent,
+        "rebuild",
         operation_id,
-        %{plan_hash: plan_hash}
+        result,
+        fn operation ->
+          {operation.operation_id, %{operation_id: operation.operation_id},
+           {:ok, OperatorRebuilds.operation(operation, true)}}
+        end
       )
     end
   end
@@ -615,89 +713,41 @@ defmodule FavnOrchestrator do
   @doc "Requests reconciliation of an unknown rebuild outcome after administrator reauthorization."
   @spec reconcile_operator_rebuild(OperatorContext.t(), String.t(), keyword()) ::
           {:ok, map()} | {:error, term()}
-  def reconcile_operator_rebuild(%OperatorContext{} = operator_context, operation_id, opts \\ [])
+  def reconcile_operator_rebuild(%OperatorContext{} = operator_context, operation_id, opts)
       when is_binary(operation_id) and is_list(opts) do
-    with {:ok, context, actor} <- authorize_operator_context(operator_context, :admin) do
-      finish_operator_rebuild_mutation(
-        Rebuilds.reconcile(context, operation_id, opts),
+    with {:ok, context, actor} <- authorize_operator_context(operator_context, :admin),
+         {:ok, intent} <-
+           begin_operator_command(
+             context,
+             operator_context,
+             actor,
+             "rebuild.reconcile",
+             "rebuild",
+             operation_id,
+             %{operation_id: operation_id},
+             opts
+           ),
+         result <-
+           Rebuilds.reconcile(
+             context,
+             operation_id,
+             put_rebuild_command_idempotency(opts, intent)
+           ) do
+      finish_operator_result(
         context,
         operator_context,
         actor,
-        "rebuild.reconcile",
+        intent,
+        "rebuild",
         operation_id,
-        %{}
+        result,
+        fn operation ->
+          {operation.operation_id, %{operation_id: operation.operation_id},
+           {:ok, OperatorRebuilds.operation(operation, true)}}
+        end
       )
     end
   end
-
-  defp finish_operator_rebuild_mutation(
-         result,
-         context,
-         operator_context,
-         actor,
-         action,
-         operation_id,
-         detail
-       ) do
-    case result do
-      {:ok, operation} ->
-        audit_operator_rebuild(
-          context,
-          operator_context,
-          actor,
-          action,
-          operation_id,
-          Map.put(detail, :state, operation.state),
-          "accepted",
-          operation.idempotency_replay? == true
-        )
-
-        {:ok, OperatorRebuilds.operation(operation, true)}
-
-      {:error, failure} = error ->
-        audit_operator_rebuild(
-          context,
-          operator_context,
-          actor,
-          action,
-          operation_id,
-          Map.put(detail, :error_code, rebuild_error_code(failure)),
-          "rejected"
-        )
-
-        error
-    end
-  end
-
-  defp audit_operator_rebuild(
-         context,
-         operator_context,
-         actor,
-         action,
-         operation_id,
-         detail,
-         outcome,
-         replayed? \\ false
-       ) do
-    OperatorAudit.put_best_effort(context, %{
-      action: action,
-      actor_id: actor.id,
-      session_id: operator_context.session_id,
-      resource_type: "rebuild",
-      resource_id: operation_id,
-      service_identity: "same_beam_operator_ui",
-      outcome: outcome,
-      detail: detail,
-      idempotency: %{replayed: replayed?}
-    })
-  end
-
-  defp rebuild_error_code(%PersistenceError{kind: kind, details: details}) do
-    Map.get(details, :reason_code) || Map.get(details, "reason_code") || Atom.to_string(kind)
-  end
-
-  defp rebuild_error_code(reason) when is_atom(reason), do: Atom.to_string(reason)
-  defp rebuild_error_code(_reason), do: "rebuild_failed"
 
   @doc "Creates an immutable evidence-backed target-recovery plan after reauthorization."
   @spec plan_operator_target_recovery(
@@ -710,45 +760,43 @@ defmodule FavnOrchestrator do
         %OperatorContext{} = operator_context,
         target_id,
         reason,
-        opts \\ []
+        opts
       )
       when is_binary(target_id) and is_binary(reason) and is_list(opts) do
-    with {:ok, context, actor} <- authorize_operator_context(operator_context, :operator) do
-      case TargetRecovery.plan(context, target_id, reason, opts) do
-        {:ok, plan} ->
-          OperatorAudit.put_best_effort(context, %{
-            action: "target_recovery.plan",
-            actor_id: actor.id,
-            session_id: operator_context.session_id,
-            resource_type: "target_recovery",
-            resource_id: plan.plan_id,
-            service_identity: "same_beam_operator_ui",
-            outcome: "accepted",
-            detail: %{target_id: target_id, reason: reason, plan_hash: plan.plan_hash},
-            idempotency: %{replayed: plan.idempotency_replay?}
-          })
-
-          {:ok, OperatorTargetRecovery.plan(plan, admin?(context))}
-
-        {:error, failure} = error ->
-          OperatorAudit.put_best_effort(context, %{
-            action: "target_recovery.plan",
-            actor_id: actor.id,
-            session_id: operator_context.session_id,
-            resource_type: "target_recovery",
-            resource_id: target_id,
-            service_identity: "same_beam_operator_ui",
-            outcome: "rejected",
-            detail: %{
-              target_id: target_id,
-              reason: reason,
-              error_code: OperatorTargetRecovery.error_code(failure)
-            },
-            idempotency: %{replayed: false}
-          })
-
-          error
-      end
+    with {:ok, context, actor} <- authorize_operator_context(operator_context, :operator),
+         {:ok, intent} <-
+           begin_operator_command(
+             context,
+             operator_context,
+             actor,
+             "target_recovery.plan",
+             "target",
+             target_id,
+             %{target_id: target_id, reason: reason},
+             opts
+           ),
+         opts <-
+           opts
+           |> Keyword.put(:idempotency_key, intent.key_hash)
+           |> Keyword.put_new(:session_id, operator_context.session_id)
+           |> Keyword.put_new(
+             :operation_id,
+             OperatorAudit.deterministic_id(intent, "target_recovery", [target_id])
+           ),
+         result <- TargetRecovery.plan(context, target_id, reason, opts) do
+      finish_operator_result(
+        context,
+        operator_context,
+        actor,
+        intent,
+        "target_recovery",
+        target_id,
+        result,
+        fn plan ->
+          {plan.plan_id, %{plan_id: plan.plan_id, plan_hash: plan.plan_hash},
+           {:ok, OperatorTargetRecovery.plan(plan, admin?(context))}}
+        end
+      )
     end
   end
 
@@ -763,44 +811,41 @@ defmodule FavnOrchestrator do
         %OperatorContext{} = operator_context,
         operation_id,
         plan_hash,
-        opts \\ []
+        opts
       )
       when is_binary(operation_id) and is_binary(plan_hash) and is_list(opts) do
-    with {:ok, context, actor} <- authorize_operator_context(operator_context, :admin) do
-      case TargetRecovery.start(context, operation_id, plan_hash, opts) do
-        {:ok, operation} ->
-          OperatorAudit.put_best_effort(context, %{
-            action: "target_recovery.start",
-            actor_id: actor.id,
-            session_id: operator_context.session_id,
-            resource_type: "target_recovery",
-            resource_id: operation_id,
-            service_identity: "same_beam_operator_ui",
-            outcome: "accepted",
-            detail: %{plan_hash: plan_hash, state: operation.state},
-            idempotency: %{replayed: operation.idempotency_replay? == true}
-          })
-
-          {:ok, OperatorTargetRecovery.operation(operation, true)}
-
-        {:error, failure} = error ->
-          OperatorAudit.put_best_effort(context, %{
-            action: "target_recovery.start",
-            actor_id: actor.id,
-            session_id: operator_context.session_id,
-            resource_type: "target_recovery",
-            resource_id: operation_id,
-            service_identity: "same_beam_operator_ui",
-            outcome: "rejected",
-            detail: %{
-              plan_hash: plan_hash,
-              error_code: OperatorTargetRecovery.error_code(failure)
-            },
-            idempotency: %{replayed: false}
-          })
-
-          error
-      end
+    with {:ok, context, actor} <- authorize_operator_context(operator_context, :admin),
+         {:ok, intent} <-
+           begin_operator_command(
+             context,
+             operator_context,
+             actor,
+             "target_recovery.start",
+             "target_recovery",
+             operation_id,
+             %{operation_id: operation_id, plan_hash: plan_hash},
+             opts
+           ),
+         result <-
+           TargetRecovery.start(
+             context,
+             operation_id,
+             plan_hash,
+             Keyword.drop(opts, [:idempotency_key])
+           ) do
+      finish_operator_result(
+        context,
+        operator_context,
+        actor,
+        intent,
+        "target_recovery",
+        operation_id,
+        result,
+        fn operation ->
+          {operation.operation_id, %{operation_id: operation.operation_id},
+           {:ok, OperatorTargetRecovery.operation(operation, true)}}
+        end
+      )
     end
   end
 
@@ -821,41 +866,40 @@ defmodule FavnOrchestrator do
   def reconcile_operator_target_recovery(
         %OperatorContext{} = operator_context,
         operation_id,
-        opts \\ []
+        opts
       )
       when is_binary(operation_id) and is_list(opts) do
-    with {:ok, context, actor} <- authorize_operator_context(operator_context, :admin) do
-      case TargetRecovery.reconcile(context, operation_id, opts) do
-        {:ok, operation} ->
-          OperatorAudit.put_best_effort(context, %{
-            action: "target_recovery.reconcile",
-            actor_id: actor.id,
-            session_id: operator_context.session_id,
-            resource_type: "target_recovery",
-            resource_id: operation_id,
-            service_identity: "same_beam_operator_ui",
-            outcome: "accepted",
-            detail: %{state: operation.state},
-            idempotency: %{replayed: operation.idempotency_replay? == true}
-          })
-
-          {:ok, OperatorTargetRecovery.operation(operation, true)}
-
-        {:error, failure} = error ->
-          OperatorAudit.put_best_effort(context, %{
-            action: "target_recovery.reconcile",
-            actor_id: actor.id,
-            session_id: operator_context.session_id,
-            resource_type: "target_recovery",
-            resource_id: operation_id,
-            service_identity: "same_beam_operator_ui",
-            outcome: "rejected",
-            detail: %{error_code: OperatorTargetRecovery.error_code(failure)},
-            idempotency: %{replayed: false}
-          })
-
-          error
-      end
+    with {:ok, context, actor} <- authorize_operator_context(operator_context, :admin),
+         {:ok, intent} <-
+           begin_operator_command(
+             context,
+             operator_context,
+             actor,
+             "target_recovery.reconcile",
+             "target_recovery",
+             operation_id,
+             %{operation_id: operation_id},
+             opts
+           ),
+         result <-
+           TargetRecovery.reconcile(
+             context,
+             operation_id,
+             Keyword.drop(opts, [:idempotency_key])
+           ) do
+      finish_operator_result(
+        context,
+        operator_context,
+        actor,
+        intent,
+        "target_recovery",
+        operation_id,
+        result,
+        fn operation ->
+          {operation.operation_id, %{operation_id: operation.operation_id},
+           {:ok, OperatorTargetRecovery.operation(operation, true)}}
+        end
+      )
     end
   end
 
@@ -902,21 +946,63 @@ defmodule FavnOrchestrator do
   run; callers should not dispatch to asset/pipeline-specific submit functions.
   """
   @spec submit_operator_run(
-          operator_actor_context(),
+          OperatorContext.t(),
           String.t(),
           map(),
-          AssetRunRequest.t() | PipelineRunRequest.t() | map() | keyword() | nil
+          AssetRunRequest.t() | PipelineRunRequest.t() | map() | keyword() | nil,
+          keyword()
         ) :: {:ok, run_id()} | {:error, term()}
-  def submit_operator_run(actor_context, manifest_version_id, target, command_input \\ %{})
-
   def submit_operator_run(
         %OperatorContext{} = operator_context,
         manifest_version_id,
         target,
-        command_input
-      ) do
-    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :operator) do
-      OperatorCommands.submit_run(context, manifest_version_id, target, command_input, [])
+        command_input,
+        opts
+      )
+      when is_list(opts) do
+    resource_id =
+      Map.get(target, :target_id) || Map.get(target, "target_id") || Map.get(target, :id) ||
+        Map.get(target, "id") || manifest_version_id
+
+    resource_type =
+      target
+      |> then(&(Map.get(&1, :type) || Map.get(&1, "type") || :target))
+      |> to_string()
+
+    with {:ok, context, actor} <- authorize_operator_context(operator_context, :operator),
+         {:ok, intent} <-
+           begin_operator_command(
+             context,
+             operator_context,
+             actor,
+             "run.submit",
+             resource_type,
+             resource_id,
+             %{
+               manifest_version_id: manifest_version_id,
+               target: target,
+               command_input: command_input
+             },
+             opts
+           ),
+         result <-
+           OperatorCommands.submit_run(
+             context,
+             manifest_version_id,
+             target,
+             command_input,
+             run_command_opts(intent)
+           ) do
+      finish_operator_result(
+        context,
+        operator_context,
+        actor,
+        intent,
+        "run",
+        resource_id,
+        result,
+        fn run_id -> {run_id, %{run_id: run_id}, {:ok, run_id}} end
+      )
     end
   end
 
@@ -949,27 +1035,18 @@ defmodule FavnOrchestrator do
   @spec submit_operator_asset_backfill(
           operator_actor_context(),
           String.t(),
-          String.t()
-        ) :: {:ok, run_id()} | {:error, term()}
-  @spec submit_operator_asset_backfill(
-          operator_actor_context(),
           String.t(),
-          String.t(),
-          AssetBackfillRequest.t() | map() | keyword()
+          AssetBackfillRequest.t() | map() | keyword(),
+          keyword()
         ) :: {:ok, run_id()} | {:error, term()}
-  def submit_operator_asset_backfill(
-        actor_context,
-        manifest_version_id,
-        target_id,
-        command_input \\ %{}
-      )
-
   def submit_operator_asset_backfill(
         %OperatorContext{} = operator_context,
         manifest_version_id,
         target_id,
-        command_input
-      ) do
+        command_input,
+        command_opts
+      )
+      when is_list(command_opts) do
     with {:ok, context, actor} <- authorize_operator_context(operator_context, :operator),
          {:ok, request} <- AssetBackfillRequest.from_input(command_input),
          {:ok, version} <- ManifestStore.get_manifest(context, manifest_version_id),
@@ -980,12 +1057,32 @@ defmodule FavnOrchestrator do
              asset.ref,
              request.dependency_mode
            ),
+         {:ok, intent} <-
+           begin_operator_command(
+             context,
+             operator_context,
+             actor,
+             "asset.backfill.submit",
+             "asset",
+             target_id,
+             %{
+               manifest_version_id: manifest_version_id,
+               target_id: target_id,
+               request: request
+             },
+             command_opts
+           ),
          opts <-
            request
            |> operator_backfill_opts(actor, operator_context)
            |> Keyword.put(:dependencies, request.dependency_mode)
-           |> Keyword.put(:refresh, refresh),
-         {:ok, backfill} <-
+           |> Keyword.put(:refresh, refresh)
+           |> Keyword.put(:idempotency, intent.idempotency)
+           |> Keyword.put(
+             :root_run_id,
+             OperatorAudit.deterministic_id(intent, "run", [target_id])
+           ),
+         result <-
            FavnOrchestrator.Backfills.submit_asset(
              context,
              manifest_version_id,
@@ -993,7 +1090,20 @@ defmodule FavnOrchestrator do
              request.range,
              opts
            ) do
-      {:ok, backfill.root_run_id}
+      finish_operator_result(
+        context,
+        operator_context,
+        actor,
+        intent,
+        "backfill",
+        target_id,
+        result,
+        fn backfill ->
+          {backfill.root_run_id,
+           %{backfill_id: backfill.backfill_id, root_run_id: backfill.root_run_id},
+           {:ok, backfill.root_run_id}}
+        end
+      )
     end
   end
 
@@ -1087,39 +1197,66 @@ defmodule FavnOrchestrator do
   @spec submit_operator_pipeline_backfill(
           operator_actor_context(),
           String.t(),
-          String.t()
-        ) :: {:ok, run_id()} | {:error, term()}
-  @spec submit_operator_pipeline_backfill(
-          operator_actor_context(),
           String.t(),
-          String.t(),
-          PipelineBackfillRequest.t() | map() | keyword()
+          PipelineBackfillRequest.t() | map() | keyword(),
+          keyword()
         ) :: {:ok, run_id()} | {:error, term()}
-  def submit_operator_pipeline_backfill(
-        actor_context,
-        manifest_version_id,
-        target_id,
-        command_input \\ %{}
-      )
-
   def submit_operator_pipeline_backfill(
         %OperatorContext{} = operator_context,
         manifest_version_id,
         target_id,
-        command_input
-      ) do
+        command_input,
+        command_opts
+      )
+      when is_list(command_opts) do
     with {:ok, context, actor} <- authorize_operator_context(operator_context, :operator),
          {:ok, request} <- PipelineBackfillRequest.from_input(command_input),
          true <- is_nil(request.coverage_baseline_id),
-         {:ok, backfill} <-
+         {:ok, intent} <-
+           begin_operator_command(
+             context,
+             operator_context,
+             actor,
+             "pipeline.backfill.submit",
+             "pipeline",
+             target_id,
+             %{
+               manifest_version_id: manifest_version_id,
+               target_id: target_id,
+               request: request
+             },
+             command_opts
+           ),
+         opts <-
+           request
+           |> operator_backfill_opts(actor, operator_context)
+           |> Keyword.put(:idempotency, intent.idempotency)
+           |> Keyword.put(
+             :root_run_id,
+             OperatorAudit.deterministic_id(intent, "run", [target_id])
+           ),
+         result <-
            FavnOrchestrator.Backfills.submit_pipeline(
              context,
              manifest_version_id,
              target_id,
              request.range,
-             operator_backfill_opts(request, actor, operator_context)
+             opts
            ) do
-      {:ok, backfill.root_run_id}
+      finish_operator_result(
+        context,
+        operator_context,
+        actor,
+        intent,
+        "backfill",
+        target_id,
+        result,
+        fn backfill ->
+          {backfill.root_run_id,
+           %{backfill_id: backfill.backfill_id, root_run_id: backfill.root_run_id},
+           {:ok, backfill.root_run_id}}
+        end
+      )
     else
       false -> {:error, {:unsupported_backfill_option, :coverage_baseline_id}}
       {:error, _reason} = error -> error
@@ -1254,15 +1391,43 @@ defmodule FavnOrchestrator do
   validates the actor/session context before forwarding cancellation to the
   run-manager lifecycle contract.
   """
-  @spec cancel_operator_run(operator_actor_context(), run_id()) :: :ok | {:error, term()}
-  def cancel_operator_run(%OperatorContext{} = operator_context, run_id)
-      when is_binary(run_id) do
-    with {:ok, context, actor} <- authorize_operator_context(operator_context, :operator) do
-      cancel_run(context, run_id, %{actor_id: actor.id, requested_by: :operator})
+  @spec cancel_operator_run(operator_actor_context(), run_id(), keyword()) ::
+          :ok | {:error, term()}
+  def cancel_operator_run(%OperatorContext{} = operator_context, run_id, opts)
+      when is_binary(run_id) and is_list(opts) do
+    with {:ok, context, actor} <- authorize_operator_context(operator_context, :operator),
+         {:ok, intent} <-
+           begin_operator_command(
+             context,
+             operator_context,
+             actor,
+             "run.cancel",
+             "run",
+             run_id,
+             %{run_id: run_id},
+             opts
+           ),
+         result <-
+           cancel_run(
+             context,
+             run_id,
+             %{actor_id: actor.id, requested_by: :operator},
+             idempotency: intent.idempotency
+           ) do
+      finish_operator_result(
+        context,
+        operator_context,
+        actor,
+        intent,
+        "run",
+        run_id,
+        result,
+        fn :ok -> {run_id, %{run_id: run_id}, :ok} end
+      )
     end
   end
 
-  def cancel_operator_run(_actor_context, _run_id), do: {:error, :unauthenticated}
+  def cancel_operator_run(_actor_context, _run_id, _opts), do: {:error, :unauthenticated}
 
   @doc false
   @spec retry_remaining(WorkspaceContext.t(), run_id(), keyword()) ::
@@ -1278,16 +1443,49 @@ defmodule FavnOrchestrator do
   @doc """
   Submits remaining retry work on behalf of an authenticated operator.
   """
-  @spec retry_operator_run_remaining(operator_actor_context(), run_id()) ::
+  @spec retry_operator_run_remaining(operator_actor_context(), run_id(), keyword()) ::
           {:ok, map()} | {:partial, map()} | {:error, term()}
-  def retry_operator_run_remaining(%OperatorContext{} = operator_context, run_id)
-      when is_binary(run_id) do
-    with {:ok, context, actor} <- authorize_operator_context(operator_context, :operator) do
-      retry_remaining(context, run_id, metadata: %{operator_retry: true, actor_id: actor.id})
+  def retry_operator_run_remaining(%OperatorContext{} = operator_context, run_id, opts)
+      when is_binary(run_id) and is_list(opts) do
+    with {:ok, context, actor} <- authorize_operator_context(operator_context, :operator),
+         {:ok, plan} <- RunRetryPlanner.remaining(context, run_id),
+         {:ok, intent} <-
+           begin_operator_command(
+             context,
+             operator_context,
+             actor,
+             "run.retry_remaining",
+             "run",
+             run_id,
+             %{run_id: run_id, retry_plan_fingerprint: remaining_retry_plan_fingerprint(plan)},
+             opts
+           ),
+         result <-
+           submit_remaining_retry_plan(context, plan,
+             metadata: %{operator_retry: true, actor_id: actor.id},
+             operator_intent: intent
+           ) do
+      finish_operator_result(
+        context,
+        operator_context,
+        actor,
+        intent,
+        "run_retry",
+        run_id,
+        result,
+        fn
+          {:partial, value} ->
+            {run_id, %{source_run_id: run_id, run_ids: value.run_ids}, {:partial, value}}
+
+          value ->
+            {run_id, %{source_run_id: run_id, run_ids: value.run_ids}, {:ok, value}}
+        end
+      )
     end
   end
 
-  def retry_operator_run_remaining(_actor_context, _run_id), do: {:error, :unauthenticated}
+  def retry_operator_run_remaining(_actor_context, _run_id, _opts),
+    do: {:error, :unauthenticated}
 
   @doc "Returns a browser-safe operator error DTO for a public UI context."
   @spec operator_error(operator_error_context(), term()) :: OperatorErrorDTO.t()
@@ -1301,6 +1499,15 @@ defmodule FavnOrchestrator do
 
   def operator_error(:run_cancel, reason), do: OperatorErrorDTO.run_cancel(reason)
   def operator_error(:run_failure_detail, reason), do: OperatorErrorDTO.run_failure_detail(reason)
+
+  @doc """
+  Returns whether a failed browser command must retain its exact idempotency key.
+
+  `true` means the durable outcome is unknown, so issuing a new key could repeat
+  a write that already happened. Proven rejections return `false`.
+  """
+  @spec operator_command_retryable?(term()) :: boolean()
+  def operator_command_retryable?(reason), do: operator_error_outcome(reason) == "unknown"
 
   @doc "Submits a rerun within one explicit workspace."
   @spec rerun(WorkspaceContext.t(), run_id(), keyword()) ::
@@ -1332,13 +1539,14 @@ defmodule FavnOrchestrator do
        ) do
     children
     |> Enum.reduce_while({:ok, []}, fn child, {:ok, acc} ->
-      run_id = new_run_id()
+      {run_id, child_idempotency} = remaining_retry_identity(plan, child, opts)
 
       submit_opts =
         plan
         |> remaining_retry_opts(child, opts)
         |> Keyword.put(:run_id, run_id)
         |> Keyword.put(:submission_source, :child_run)
+        |> maybe_put_opt(:_idempotency, child_idempotency)
 
       case RunSubmissions.enqueue_rerun(context, child.source_run_id, submit_opts) do
         {:ok, ^run_id} ->
@@ -1413,15 +1621,58 @@ defmodule FavnOrchestrator do
       not Keyword.keyword?(opts) ->
         {:error, :invalid_retry_remaining_options}
 
-      Keyword.keys(opts) -- [:metadata] != [] ->
-        {:error, {:invalid_retry_remaining_options, Keyword.keys(opts) -- [:metadata]}}
+      Keyword.keys(opts) -- [:metadata, :operator_intent] != [] ->
+        {:error,
+         {:invalid_retry_remaining_options, Keyword.keys(opts) -- [:metadata, :operator_intent]}}
 
       not is_map(Keyword.get(opts, :metadata, %{})) ->
         {:error, :invalid_retry_remaining_metadata}
 
+      not is_nil(Keyword.get(opts, :operator_intent)) and
+          not match?(%OperatorAudit{}, Keyword.get(opts, :operator_intent)) ->
+        {:error, :invalid_retry_remaining_intent}
+
       true ->
         :ok
     end
+  end
+
+  defp remaining_retry_identity(plan, child, opts) do
+    case Keyword.get(opts, :operator_intent) do
+      %OperatorAudit{} = intent ->
+        %CommandIdempotency{} = base_idempotency = intent.idempotency
+
+        parts = [
+          plan.source_run_id,
+          child.source_run_id,
+          Map.get(child, :backfill_run_id),
+          Map.get(child, :window_key),
+          child.node_keys
+        ]
+
+        run_id = OperatorAudit.deterministic_id(intent, "run", parts)
+        fingerprint = Idempotency.request_fingerprint(parts)
+        key_hash = Idempotency.request_fingerprint([intent.key_hash, parts])
+
+        child_idempotency =
+          %CommandIdempotency{
+            base_idempotency
+            | operation: "run.retry_remaining.child",
+              key_hash: key_hash,
+              request_fingerprint: fingerprint
+          }
+
+        {run_id, child_idempotency}
+
+      nil ->
+        {new_run_id(), nil}
+    end
+  end
+
+  defp remaining_retry_plan_fingerprint(plan) do
+    plan
+    |> Map.take([:source_run_id, :asset_count, :children])
+    |> Idempotency.request_fingerprint()
   end
 
   defp remaining_retry_trigger(plan, child) do
@@ -1707,13 +1958,35 @@ defmodule FavnOrchestrator do
           {:ok, map()} | {:error, term()}
   def enable_schedule(%OperatorContext{} = operator_context, schedule_id, opts \\ [])
       when is_binary(schedule_id) and is_list(opts) do
-    with {:ok, context, actor} <- authorize_operator_context(operator_context, :operator) do
-      Schedules.activate(
+    with {:ok, context, actor} <- authorize_operator_context(operator_context, :operator),
+         {:ok, intent} <-
+           begin_operator_command(
+             context,
+             operator_context,
+             actor,
+             "schedule.enable",
+             "schedule",
+             schedule_id,
+             %{schedule_id: schedule_id, reason: Keyword.get(opts, :reason, "operator request")},
+             idempotency_key_opts(opts)
+           ),
+         result <-
+           Schedules.activate(
+             context,
+             schedule_id,
+             actor.id,
+             Keyword.get(opts, :reason, "operator request"),
+             Keyword.put(opts, :command_id, intent.key_hash)
+           ) do
+      finish_operator_result(
         context,
+        operator_context,
+        actor,
+        intent,
+        "schedule",
         schedule_id,
-        actor.id,
-        Keyword.get(opts, :reason, "operator request"),
-        opts
+        result,
+        fn receipt -> {schedule_id, %{schedule_id: schedule_id}, {:ok, receipt}} end
       )
     end
   end
@@ -1723,13 +1996,35 @@ defmodule FavnOrchestrator do
           {:ok, map()} | {:error, term()}
   def disable_schedule(%OperatorContext{} = operator_context, schedule_id, opts \\ [])
       when is_binary(schedule_id) and is_list(opts) do
-    with {:ok, context, actor} <- authorize_operator_context(operator_context, :operator) do
-      Schedules.deactivate(
+    with {:ok, context, actor} <- authorize_operator_context(operator_context, :operator),
+         {:ok, intent} <-
+           begin_operator_command(
+             context,
+             operator_context,
+             actor,
+             "schedule.disable",
+             "schedule",
+             schedule_id,
+             %{schedule_id: schedule_id, reason: Keyword.get(opts, :reason, "operator request")},
+             idempotency_key_opts(opts)
+           ),
+         result <-
+           Schedules.deactivate(
+             context,
+             schedule_id,
+             actor.id,
+             Keyword.get(opts, :reason, "operator request"),
+             Keyword.put(opts, :command_id, intent.key_hash)
+           ) do
+      finish_operator_result(
         context,
+        operator_context,
+        actor,
+        intent,
+        "schedule",
         schedule_id,
-        actor.id,
-        Keyword.get(opts, :reason, "operator request"),
-        opts
+        result,
+        fn receipt -> {schedule_id, %{schedule_id: schedule_id}, {:ok, receipt}} end
       )
     end
   end
@@ -1797,6 +2092,191 @@ defmodule FavnOrchestrator do
   defp operator_refresh(:auto), do: nil
   defp operator_refresh(:missing), do: :missing
   defp operator_refresh(:force_all), do: :force
+
+  defp begin_operator_command(
+         context,
+         operator_context,
+         actor,
+         operation,
+         resource_type,
+         resource_id,
+         request,
+         opts
+       ) do
+    case Keyword.fetch(opts, :idempotency_key) do
+      {:ok, raw_key} ->
+        OperatorAudit.begin_command(
+          context,
+          operator_context,
+          actor,
+          operation,
+          resource_type,
+          resource_id,
+          request,
+          raw_key
+        )
+
+      :error ->
+        {:error, :idempotency_key_required}
+    end
+  end
+
+  defp idempotency_key_opts(opts) do
+    case Keyword.fetch(opts, :command_id) do
+      {:ok, command_id} -> Keyword.put_new(opts, :idempotency_key, command_id)
+      :error -> opts
+    end
+  end
+
+  defp put_rebuild_plan_idempotency(opts, %OperatorAudit{} = intent) do
+    opts
+    |> Keyword.put(:idempotency, intent.idempotency)
+    |> Keyword.put(:idempotency_key, intent.key_hash)
+  end
+
+  defp put_rebuild_command_idempotency(opts, %OperatorAudit{} = intent) do
+    opts
+    |> Keyword.delete(:idempotency_key)
+    |> Keyword.put(:idempotency, intent.idempotency)
+    |> Keyword.put_new(:command_id, intent.key_hash)
+  end
+
+  defp run_command_opts(%OperatorAudit{} = intent) do
+    [
+      run_id: OperatorAudit.deterministic_id(intent, "run"),
+      idempotency: intent.idempotency,
+      submission_source: :operator
+    ]
+  end
+
+  defp finish_operator_result(
+         context,
+         operator_context,
+         actor,
+         intent,
+         resource_type,
+         fallback_resource_id,
+         result,
+         success
+       ) do
+    case result do
+      {:ok, value} ->
+        {resource_id, detail, public_result} = success.(value)
+
+        finish_operator_audit(
+          context,
+          operator_context,
+          actor,
+          intent,
+          "accepted",
+          resource_type,
+          resource_id,
+          detail,
+          public_result
+        )
+
+      :ok ->
+        {resource_id, detail, public_result} = success.(:ok)
+
+        finish_operator_audit(
+          context,
+          operator_context,
+          actor,
+          intent,
+          "accepted",
+          resource_type,
+          resource_id,
+          detail,
+          public_result
+        )
+
+      {:partial, value} ->
+        {resource_id, detail, public_result} = success.({:partial, value})
+
+        finish_operator_audit(
+          context,
+          operator_context,
+          actor,
+          intent,
+          "partial",
+          resource_type,
+          resource_id,
+          detail,
+          public_result
+        )
+
+      {:error, reason} = error ->
+        outcome = operator_error_outcome(reason)
+
+        finish_operator_audit(
+          context,
+          operator_context,
+          actor,
+          intent,
+          outcome,
+          resource_type,
+          fallback_resource_id,
+          %{error_code: operator_error_code(reason)},
+          error
+        )
+    end
+  end
+
+  defp finish_operator_audit(
+         context,
+         operator_context,
+         actor,
+         intent,
+         outcome,
+         resource_type,
+         resource_id,
+         detail,
+         result
+       ) do
+    case OperatorAudit.finish_command(
+           context,
+           operator_context,
+           actor,
+           intent,
+           outcome,
+           resource_type,
+           resource_id,
+           detail
+         ) do
+      :ok -> result
+      {:error, reason} -> {:error, {:operator_audit_incomplete, reason}}
+    end
+  end
+
+  defp operator_error_code(%PersistenceError{kind: kind}), do: Atom.to_string(kind)
+  defp operator_error_code(reason) when is_atom(reason), do: Atom.to_string(reason)
+  defp operator_error_code({kind, _detail}) when is_atom(kind), do: Atom.to_string(kind)
+  defp operator_error_code(_reason), do: "operator_command_failed"
+
+  defp operator_error_outcome(%PersistenceError{retryable?: true}), do: "unknown"
+
+  defp operator_error_outcome({:operator_audit_incomplete, _reason}), do: "unknown"
+
+  defp operator_error_outcome(%PersistenceError{kind: kind})
+       when kind in [:timeout, :unavailable, :internal],
+       do: "unknown"
+
+  defp operator_error_outcome(%PersistenceError{}), do: "rejected"
+
+  defp operator_error_outcome(reason) when is_atom(reason) do
+    value = Atom.to_string(reason)
+
+    if reason in [:timeout, :unavailable, :unknown_outcome, :storage_unavailable] or
+         String.contains?(value, "timeout") or String.contains?(value, "unavailable") or
+         String.contains?(value, "unknown"),
+       do: "unknown",
+       else: "rejected"
+  end
+
+  defp operator_error_outcome({kind, _detail}) when is_atom(kind),
+    do: operator_error_outcome(kind)
+
+  defp operator_error_outcome(_reason), do: "unknown"
 
   defp execution_group_status(filters) do
     cond do

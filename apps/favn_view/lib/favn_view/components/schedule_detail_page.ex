@@ -70,7 +70,6 @@ defmodule FavnView.Components.ScheduleDetailPage do
             >
               {@activation_error}
             </.notice>
-
             <.status_cards schedule={@schedule} />
             <.panel
               padding={:none}
@@ -133,6 +132,8 @@ defmodule FavnView.Components.ScheduleDetailPage do
         icon={@activation.icon}
         phx-click="set_schedule_activation"
         phx-value-action={@activation.action}
+        data-command-operation={"schedule_#{@activation.action}"}
+        data-command-resource={@schedule.id}
         phx-disable-with={@activation.pending_label}
         data-confirm={@activation.confirm}
         data-testid="set-schedule-activation"

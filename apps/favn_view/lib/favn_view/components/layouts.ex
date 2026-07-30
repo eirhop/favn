@@ -10,4 +10,13 @@ defmodule FavnView.Layouts do
   use FavnView, :html
 
   embed_templates "layouts/*"
+
+  defp operator_command_scope(%FavnView.Auth.Scope{
+         workspace_id: workspace_id,
+         actor: %{id: actor_id}
+       }) do
+    Enum.join([workspace_id, actor_id], ":")
+  end
+
+  defp operator_command_scope(_scope), do: nil
 end

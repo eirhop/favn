@@ -147,6 +147,8 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnOrchestrator.Lifecycle
   alias FavnOrchestrator.Manifests
   alias FavnOrchestrator.Operator.Catalogue
+  alias FavnOrchestrator.Operator.Audit, as: OperatorAudit
+  alias FavnOrchestrator.OperatorContext
   alias FavnOrchestrator.RunManager.SubmissionBuilder
   alias FavnOrchestrator.RunOwnership
   alias FavnOrchestrator.RunReadModel
@@ -6001,6 +6003,352 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert entry.subject_kind == "run"
     assert entry.subject_id == "run-audit-#{fixture.workspace_id}"
     assert entry.detail["password"] == "[REDACTED]"
+  end
+
+  test "operator audit replay requires the exact same redacted command", fixture do
+    identity = api_identity(fixture, [:operator])
+
+    entry = %{
+      action: "run.cancel",
+      actor_id: identity.actor.id,
+      session_id: identity.session.id,
+      resource_type: "run",
+      resource_id: "run-audit-replay",
+      service_identity: "same_beam_operator_ui",
+      outcome: "requested",
+      detail: %{request: %{run_id: "run-audit-replay"}},
+      idempotency: %{
+        operation: "run.cancel",
+        key_hash:
+          :crypto.hash(:sha256, "operator-audit-replay-key")
+          |> Base.encode16(case: :lower),
+        replayed: false
+      }
+    }
+
+    assert :ok = Identity.record_audit(fixture.workspace_context, entry)
+    assert :ok = Identity.record_audit(fixture.workspace_context, entry)
+
+    assert {:error, %Error{kind: :conflict}} =
+             Identity.record_audit(
+               fixture.workspace_context,
+               put_in(entry, [:detail, :request, :run_id], "changed-run")
+             )
+  end
+
+  test "pending operator commands survive reconnect and become terminal", fixture do
+    identity = api_identity(fixture, [:operator])
+
+    assert {:ok, lookup_context} =
+             WorkspaceContext.new(fixture.workspace_id, "browser:test", [:customer_reader])
+
+    assert {:ok, context, session, actor} =
+             Identity.authorize_session(
+               lookup_context,
+               identity.actor.id,
+               identity.session.id,
+               :operator
+             )
+
+    assert {:ok, operator_context} =
+             OperatorContext.new(fixture.workspace_id, actor, session)
+
+    request = %{run_id: "run-reconnect", metadata: %{password: "never-fingerprint-me"}}
+
+    assert {:ok, first} =
+             OperatorAudit.begin_command(
+               context,
+               operator_context,
+               actor,
+               "run.cancel",
+               "run",
+               "run-reconnect",
+               request,
+               "run-cancel:first:0123456789abcdef"
+             )
+
+    expired_at = DateTime.add(DateTime.utc_now(), -3_600, :second)
+    cutoff = DateTime.utc_now()
+
+    SQL.query!(
+      Repo,
+      """
+      INSERT INTO favn_control.idempotency_records (
+        workspace_id, operation, principal_kind, principal_id, key_hash,
+        request_fingerprint, status, expires_at, inserted_at, updated_at
+      )
+      VALUES ($1, $2, 'actor', $3, $4, $5, 'started', $6, $6, $6)
+      """,
+      [
+        fixture.workspace_id,
+        first.operation,
+        actor.id,
+        first.key_hash,
+        first.request_fingerprint,
+        expired_at
+      ]
+    )
+
+    assert {:ok, %{status: :completed, batch_count: 0}} =
+             MaintenanceStore.purge(%PurgePersistence{
+               platform_context: fixture.platform_context,
+               job_id: "retain-operator-idempotency-#{System.unique_integer([:positive])}",
+               target: :idempotency,
+               workspace_id: fixture.workspace_id,
+               cutoff: cutoff,
+               limit: 10
+             })
+
+    assert %{rows: [[1]]} =
+             SQL.query!(
+               Repo,
+               """
+               SELECT count(*)
+               FROM favn_control.idempotency_records
+               WHERE workspace_id = $1 AND operation = $2 AND key_hash = $3
+               """,
+               [fixture.workspace_id, first.operation, first.key_hash]
+             )
+
+    SQL.query!(
+      Repo,
+      """
+      UPDATE favn_control.auth_sessions
+      SET status = 'revoked', expires_at = $3, updated_at = $3
+      WHERE workspace_id = $1 AND session_id = $2
+      """,
+      [fixture.workspace_id, session.id, expired_at]
+    )
+
+    assert {:ok, %{status: :completed, batch_count: 0}} =
+             MaintenanceStore.purge(%PurgePersistence{
+               platform_context: fixture.platform_context,
+               job_id: "retain-operator-session-#{System.unique_integer([:positive])}",
+               target: :sessions,
+               workspace_id: fixture.workspace_id,
+               cutoff: cutoff,
+               limit: 10
+             })
+
+    assert %{rows: [[1]]} =
+             SQL.query!(
+               Repo,
+               """
+               SELECT count(*)
+               FROM favn_control.auth_sessions
+               WHERE workspace_id = $1 AND session_id = $2
+               """,
+               [fixture.workspace_id, session.id]
+             )
+
+    assert {:ok, replacement_session} = Identity.issue_session(lookup_context, actor.id)
+
+    assert {:ok, replacement_context, replacement_session, replacement_actor} =
+             Identity.authorize_session(
+               lookup_context,
+               actor.id,
+               replacement_session.id,
+               :operator
+             )
+
+    assert {:ok, replacement_operator_context} =
+             OperatorContext.new(
+               fixture.workspace_id,
+               replacement_actor,
+               replacement_session
+             )
+
+    assert {:ok, recovered} =
+             OperatorAudit.begin_command(
+               replacement_context,
+               replacement_operator_context,
+               replacement_actor,
+               "run.cancel",
+               "run",
+               "run-reconnect",
+               request,
+               "run-cancel:first:0123456789abcdef"
+             )
+
+    assert recovered.key_hash == first.key_hash
+    assert recovered.request_fingerprint == first.request_fingerprint
+
+    assert %{rows: [[replacement_session_id]]} =
+             SQL.query!(
+               Repo,
+               """
+               SELECT session_id
+               FROM favn_control.auth_operator_commands
+               WHERE workspace_id = $1 AND key_hash = $2
+               """,
+               [fixture.workspace_id, recovered.key_hash]
+             )
+
+    assert replacement_session_id == replacement_session.id
+
+    assert %{rows: [[true]]} =
+             SQL.query!(
+               Repo,
+               """
+               SELECT expires_at > $4
+               FROM favn_control.idempotency_records
+               WHERE workspace_id = $1 AND operation = $2 AND key_hash = $3
+               """,
+               [fixture.workspace_id, first.operation, first.key_hash, cutoff]
+             )
+
+    assert {:error, %Error{kind: :conflict, retryable?: true}} =
+             OperatorAudit.begin_command(
+               replacement_context,
+               replacement_operator_context,
+               replacement_actor,
+               "run.cancel",
+               "run",
+               "run-reconnect",
+               request,
+               "run-cancel:second:0123456789abcdef"
+             )
+
+    assert {:error, %Error{kind: :conflict, retryable?: true}} =
+             OperatorAudit.begin_command(
+               replacement_context,
+               replacement_operator_context,
+               replacement_actor,
+               "run.cancel",
+               "run",
+               "run-reconnect",
+               %{run_id: "changed-run"},
+               "run-cancel:first:0123456789abcdef"
+             )
+
+    assert {:error, %Error{kind: :conflict, retryable?: true}} =
+             OperatorAudit.begin_command(
+               replacement_context,
+               replacement_operator_context,
+               replacement_actor,
+               "run.cancel",
+               "run",
+               "run-reconnect",
+               put_in(request, [:metadata, :password], "different-secret"),
+               "run-cancel:first:0123456789abcdef"
+             )
+
+    assert :ok =
+             OperatorAudit.finish_command(
+               replacement_context,
+               replacement_operator_context,
+               replacement_actor,
+               recovered,
+               "accepted",
+               "run",
+               "run-reconnect",
+               %{run_id: "run-reconnect"}
+             )
+
+    assert {:ok, next} =
+             OperatorAudit.begin_command(
+               context,
+               operator_context,
+               actor,
+               "run.cancel",
+               "run",
+               "run-reconnect",
+               request,
+               "run-cancel:third:0123456789abcdef"
+             )
+
+    refute next.key_hash == first.key_hash
+
+    assert {:ok, page} = Identity.page_audit(fixture.workspace_context, limit: 20)
+
+    outcomes =
+      page.items
+      |> Enum.filter(&(&1.action == "run.cancel"))
+      |> Enum.map(& &1.detail["outcome"])
+
+    assert "requested" in outcomes
+    assert "accepted" in outcomes
+    assert Enum.any?(page.items, &(&1.action == "run.cancel.recovered"))
+    refute inspect(page.items) =~ "never-fingerprint-me"
+  end
+
+  test "an unknown operator command can resolve to a proven terminal result", fixture do
+    identity = api_identity(fixture, [:operator])
+
+    assert {:ok, lookup_context} =
+             WorkspaceContext.new(fixture.workspace_id, "browser:test", [:customer_reader])
+
+    assert {:ok, context, session, actor} =
+             Identity.authorize_session(
+               lookup_context,
+               identity.actor.id,
+               identity.session.id,
+               :operator
+             )
+
+    assert {:ok, operator_context} =
+             OperatorContext.new(fixture.workspace_id, actor, session)
+
+    request = %{run_id: "run-unknown"}
+    key = "run-cancel:unknown:0123456789abcdef"
+
+    assert {:ok, intent} =
+             OperatorAudit.begin_command(
+               context,
+               operator_context,
+               actor,
+               "run.cancel",
+               "run",
+               "run-unknown",
+               request,
+               key
+             )
+
+    assert :ok =
+             OperatorAudit.finish_command(
+               context,
+               operator_context,
+               actor,
+               intent,
+               "unknown",
+               "run",
+               "run-unknown",
+               %{reason: "transport_outcome_unknown"}
+             )
+
+    assert {:error, %Error{kind: :conflict, retryable?: true}} =
+             OperatorAudit.begin_command(
+               context,
+               operator_context,
+               actor,
+               "run.cancel",
+               "run",
+               "run-unknown",
+               request,
+               "run-cancel:new-after-unknown:0123456789abcdef"
+             )
+
+    assert :ok =
+             OperatorAudit.finish_command(
+               context,
+               operator_context,
+               actor,
+               intent,
+               "accepted",
+               "run",
+               "run-unknown",
+               %{run_id: "run-unknown"}
+             )
+
+    assert {:ok, page} = Identity.page_audit(fixture.workspace_context, limit: 20)
+
+    outcomes =
+      page.items
+      |> Enum.filter(&(&1.action == "run.cancel"))
+      |> Enum.map(& &1.detail["outcome"])
+
+    assert "unknown" in outcomes
+    assert "accepted" in outcomes
   end
 
   test "service-token manifest activation is idempotent and durably audited", fixture do

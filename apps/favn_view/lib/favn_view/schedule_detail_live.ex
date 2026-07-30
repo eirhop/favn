@@ -45,7 +45,11 @@ defmodule FavnView.ScheduleDetailLive do
     {:noreply, assign(socket, :active_view, :occurrences)}
   end
 
-  def handle_event("set_schedule_activation", %{"action" => action}, socket)
+  def handle_event(
+        "set_schedule_activation",
+        %{"action" => action} = params,
+        socket
+      )
       when action in ["enable", "disable"] do
     schedule_id = socket.assigns.schedule_id
 
@@ -53,7 +57,8 @@ defmodule FavnView.ScheduleDetailLive do
       CommandAttempt.next(
         socket.assigns.activation_attempt,
         @activation_operation,
-        {schedule_id, action}
+        {schedule_id, action},
+        params
       )
 
     result =
@@ -75,14 +80,16 @@ defmodule FavnView.ScheduleDetailLive do
            activation_attempt: nil,
            activation_error: nil,
            error: error
-         )}
+         )
+         |> CommandAttempt.acknowledge(attempt)}
 
       {:error, reason} ->
         failure = OperatorErrorLabels.failure(:schedule_activation, reason)
+        {socket, retained_attempt} = CommandAttempt.settle_failure(socket, attempt, reason)
 
         {:noreply,
          assign(socket,
-           activation_attempt: if(failure.retryable?, do: attempt, else: nil),
+           activation_attempt: retained_attempt,
            activation_error: failure.label
          )}
     end

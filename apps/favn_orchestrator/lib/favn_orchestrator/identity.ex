@@ -13,9 +13,11 @@ defmodule FavnOrchestrator.Identity do
   alias FavnOrchestrator.Persistence
   alias FavnOrchestrator.Persistence.Commands.AttachActorMembership
   alias FavnOrchestrator.Persistence.Commands.ChangeActorPassword
+  alias FavnOrchestrator.Persistence.Commands.CompleteOperatorCommand
   alias FavnOrchestrator.Persistence.Commands.CreateActor
   alias FavnOrchestrator.Persistence.Commands.CreateSession
   alias FavnOrchestrator.Persistence.Commands.RecordAudit
+  alias FavnOrchestrator.Persistence.Commands.ReserveOperatorCommand
   alias FavnOrchestrator.Persistence.Commands.RevokeSessions
   alias FavnOrchestrator.Persistence.Commands.RotateWorkspaceSession
   alias FavnOrchestrator.Persistence.Commands.SetActorAccess
@@ -504,6 +506,14 @@ defmodule FavnOrchestrator.Identity do
   rescue
     _error -> {:error, :invalid_audit_entry}
   end
+
+  @doc false
+  def reserve_operator_command(%ReserveOperatorCommand{} = command),
+    do: store().reserve_operator_command(command)
+
+  @doc false
+  def complete_operator_command(%CompleteOperatorCommand{} = command),
+    do: store().complete_operator_command(command)
 
   defp audit_command_id(scope, entry) do
     case audit_idempotency_key_hash(entry) do

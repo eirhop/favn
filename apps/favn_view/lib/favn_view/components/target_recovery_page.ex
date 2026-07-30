@@ -40,11 +40,9 @@ defmodule FavnView.Components.TargetRecoveryPage do
           error={@error}
           planning?={@planning?}
         />
-
         <div class="space-y-5">
           <.plan_panel :if={@plan} plan={@plan} />
           <.operation_panel :if={@operation} operation={@operation} />
-
           <.empty_state
             :if={!@plan && !@operation}
             title="No recovery planned"
@@ -74,7 +72,14 @@ defmodule FavnView.Components.TargetRecoveryPage do
         materialization, physical fingerprint, and marker identity.
       </p>
 
-      <.form for={%{}} as={:recovery} phx-submit="plan_recovery" class="mt-5 space-y-4">
+      <.form
+        for={%{}}
+        as={:recovery}
+        phx-submit="plan_recovery"
+        class="mt-5 space-y-4"
+        data-command-operation="target_recovery_plan"
+        data-command-resource-field="recovery[target_id]"
+      >
         <.input
           name="recovery[target_id]"
           label="Target id"
@@ -122,6 +127,8 @@ defmodule FavnView.Components.TargetRecoveryPage do
           :if={field(field(@plan, :permissions, %{}), :start, false)}
           variant={:danger}
           phx-click="start_recovery"
+          data-command-operation="target_recovery_start"
+          data-command-resource={field(@plan, :plan_id)}
           data-confirm="Activate this exact proven generation?"
           data-testid="start-recovery"
         >
@@ -155,6 +162,8 @@ defmodule FavnView.Components.TargetRecoveryPage do
           :if={field(field(@operation, :permissions, %{}), :reconcile, false)}
           variant={:secondary}
           phx-click="reconcile_recovery"
+          data-command-operation="target_recovery_reconcile"
+          data-command-resource={field(@operation, :operation_id)}
           data-testid="reconcile-recovery"
         >
           Reconcile marker
@@ -186,6 +195,7 @@ defmodule FavnView.Components.TargetRecoveryPage do
     ~H"""
     <div :if={not is_nil(@value)}>
       <dt class="text-xs favn-text-subtle">{@label}</dt>
+
       <dd class="mt-1"><.mono value={format_value(@value)} /></dd>
     </div>
     """

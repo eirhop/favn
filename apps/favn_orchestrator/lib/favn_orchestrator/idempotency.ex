@@ -19,6 +19,16 @@ defmodule FavnOrchestrator.Idempotency do
     |> Base.encode16(case: :lower)
   end
 
+  @doc "Builds a keyed equality tag without storing recoverable request material."
+  @spec request_hmac(term(), binary()) :: String.t()
+  def request_hmac(input, key) when is_binary(key) and byte_size(key) >= 32 do
+    input
+    |> canonicalize()
+    |> Jason.encode!()
+    |> then(&:crypto.mac(:hmac, :sha256, key, &1))
+    |> Base.encode16(case: :lower)
+  end
+
   defp sha256(value) when is_binary(value), do: :crypto.hash(:sha256, value)
 
   defp canonicalize(nil), do: %{"__type__" => "null"}

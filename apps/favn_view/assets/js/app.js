@@ -38,6 +38,129 @@ setTheme(localStorage.getItem(themeKey) || defaultTheme)
 window.addEventListener("storage", event => event.key === themeKey && setTheme(event.newValue))
 window.addEventListener("favn:set-theme", event => setTheme(event.target.dataset.favnTheme))
 
+const operatorCommandRegistryKey = "favn:operator-command-intents:v1"
+
+const readOperatorCommands = () => {
+  const stored = JSON.parse(localStorage.getItem(operatorCommandRegistryKey) || "{}")
+
+  return Object.fromEntries(
+    Object.entries(stored).filter(([_slot, command]) =>
+      command &&
+      typeof command.key === "string" &&
+      Number.isFinite(command.createdAt)
+    )
+  )
+}
+
+const writeOperatorCommands = commands => {
+  localStorage.setItem(operatorCommandRegistryKey, JSON.stringify(commands))
+}
+
+const operatorCommandOperation = element => {
+  const field = element.dataset.commandOperationPresentField
+  const input = field && element.elements?.namedItem(field)
+
+  if (input?.value && element.dataset.commandOperationPresent) {
+    return element.dataset.commandOperationPresent
+  }
+
+  return element.dataset.commandOperation
+}
+
+const operatorCommandSlot = element => {
+  const scope = document.body.dataset.operatorCommandScope
+  const operation = operatorCommandOperation(element)
+  const resourceField = element.dataset.commandResourceField
+  const resourceInput = resourceField && element.elements?.namedItem(resourceField)
+  const resource = resourceInput?.value || element.dataset.commandResource
+
+  if (!scope || !operation || !resource) return null
+  return JSON.stringify([scope, operation, resource])
+}
+
+const randomOperatorCommandKey = operation => {
+  const bytes = new Uint8Array(16)
+  crypto.getRandomValues(bytes)
+  const random = Array.from(bytes, byte => byte.toString(16).padStart(2, "0")).join("")
+  return `${operation}:browser:${random}`
+}
+
+const prepareOperatorCommand = element => {
+  const slot = operatorCommandSlot(element)
+  if (!slot) return null
+
+  const commands = readOperatorCommands()
+  const existing = commands[slot]
+  if (existing) return existing.key
+
+  const operation = operatorCommandOperation(element).replace(/[^a-zA-Z0-9_.-]/g, "_")
+  const key = randomOperatorCommandKey(operation)
+  commands[slot] = {key, createdAt: Date.now()}
+  writeOperatorCommands(commands)
+  return key
+}
+
+const blockUnsafeCommand = event => {
+  event.preventDefault()
+  event.stopImmediatePropagation()
+  window.alert("This command could not be safely prepared. Enable browser storage and try again.")
+}
+
+// Prepare the durable key synchronously before LiveView serializes the event.
+// The storage slot deliberately matches the server's one-pending-command
+// boundary: actor/workspace + operation + resource. Keeping the actor scope
+// stable across session rotation lets an exact unknown command be recovered.
+// A changed request still conflicts instead of silently repeating a write.
+document.addEventListener("submit", event => {
+  const form = event.target.closest("form[data-command-operation]")
+  if (!form) return
+
+  try {
+    const key = prepareOperatorCommand(form)
+    if (!key) return blockUnsafeCommand(event)
+
+    let input = form.querySelector("input[data-operator-command-key]")
+    if (!input) {
+      input = document.createElement("input")
+      input.type = "hidden"
+      input.name = "idempotency_key"
+      input.dataset.operatorCommandKey = "true"
+      form.appendChild(input)
+    }
+    input.value = key
+  } catch (_error) {
+    blockUnsafeCommand(event)
+  }
+}, true)
+
+document.addEventListener("click", event => {
+  const control = event.target.closest("[data-command-operation][phx-click]")
+  if (!control) return
+
+  try {
+    const key = prepareOperatorCommand(control)
+    if (!key) return blockUnsafeCommand(event)
+    control.setAttribute("phx-value-idempotency_key", key)
+  } catch (_error) {
+    blockUnsafeCommand(event)
+  }
+}, true)
+
+window.addEventListener("phx:operator-command-terminal", event => {
+  try {
+    const key = event.detail?.idempotency_key
+    if (typeof key !== "string") return
+
+    const commands = readOperatorCommands()
+    const remaining = Object.fromEntries(
+      Object.entries(commands).filter(([_slot, command]) => command.key !== key)
+    )
+    writeOperatorCommands(remaining)
+  } catch (_error) {
+    // A failed acknowledgement is safe: the next action replays the exact key.
+  }
+})
+
 const Hooks = {
   FavnClipboard: {
     mounted() {

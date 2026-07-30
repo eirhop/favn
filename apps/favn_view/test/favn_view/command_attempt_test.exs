@@ -26,4 +26,11 @@ defmodule FavnView.CommandAttemptTest do
     assert CommandAttempt.next(nil, "backfill_submit", "target").key
            |> String.starts_with?("backfill_submit:")
   end
+
+  test "a browser-supplied key survives a LiveView remount" do
+    key = "run_cancel:browser:01234567-89ab-cdef-0123-456789abcdef"
+
+    assert %CommandAttempt{key: ^key} =
+             CommandAttempt.next(nil, "run_cancel", "run-1", %{"idempotency_key" => key})
+  end
 end

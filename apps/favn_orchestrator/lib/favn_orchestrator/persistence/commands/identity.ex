@@ -1,8 +1,6 @@
 defmodule FavnOrchestrator.Persistence.Commands.CreateActor do
   @moduledoc "Creates a global actor, current credential, and initial workspace membership."
 
-  alias FavnOrchestrator.Persistence.WorkspaceContext
-
   @enforce_keys [
     :workspace_context,
     :command_id,
@@ -103,7 +101,6 @@ defmodule FavnOrchestrator.Persistence.Commands.SetActorAccess do
   @moduledoc "Changes one workspace membership or explicitly authorized platform grant."
 
   alias FavnOrchestrator.Persistence.PlatformContext
-  alias FavnOrchestrator.Persistence.WorkspaceContext
 
   @enforce_keys [
     :authority,
@@ -413,6 +410,52 @@ defmodule FavnOrchestrator.Persistence.Commands.RecordAudit do
           detail: map(),
           occurred_at: DateTime.t()
         }
+end
+
+defmodule FavnOrchestrator.Persistence.Commands.ReserveOperatorCommand do
+  @moduledoc "Durably reserves or recovers one pending browser command intent."
+
+  alias FavnOrchestrator.Persistence.WorkspaceContext
+
+  @enforce_keys [
+    :workspace_context,
+    :actor_id,
+    :session_id,
+    :operation,
+    :resource_type,
+    :resource_id,
+    :key_hash,
+    :request_fingerprint,
+    :detail,
+    :expires_at,
+    :occurred_at
+  ]
+  defstruct @enforce_keys
+
+  @type t :: %__MODULE__{}
+end
+
+defmodule FavnOrchestrator.Persistence.Commands.CompleteOperatorCommand do
+  @moduledoc "Marks one reserved browser command terminal and appends its result audit."
+
+  alias FavnOrchestrator.Persistence.WorkspaceContext
+
+  @enforce_keys [
+    :workspace_context,
+    :actor_id,
+    :session_id,
+    :operation,
+    :key_hash,
+    :request_fingerprint,
+    :outcome,
+    :resource_type,
+    :resource_id,
+    :detail,
+    :occurred_at
+  ]
+  defstruct @enforce_keys
+
+  @type t :: %__MODULE__{}
 end
 
 defmodule FavnOrchestrator.Persistence.Queries.PageAudit do

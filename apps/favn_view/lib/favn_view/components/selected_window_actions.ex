@@ -27,6 +27,7 @@ defmodule FavnView.Components.SelectedWindowActions do
   attr :selected_window_error, :string, default: nil
   attr :submitted_run_id, :string, default: nil
   attr :can_submit_runs?, :boolean, default: false
+  attr :command_resource, :string, required: true
 
   def selected_window_actions(assigns) do
     ~H"""
@@ -86,6 +87,7 @@ defmodule FavnView.Components.SelectedWindowActions do
         run_config_valid?={@run_config_valid?}
         submitting_window_run?={@submitting_window_run?}
         can_submit_runs?={@can_submit_runs?}
+        command_resource={@command_resource}
       />
     </div>
     """
@@ -98,6 +100,7 @@ defmodule FavnView.Components.SelectedWindowActions do
   attr :run_config_valid?, :boolean, default: true
   attr :submitting_window_run?, :boolean, default: false
   attr :can_submit_runs?, :boolean, default: false
+  attr :command_resource, :string, required: true
 
   def run_config_panel(assigns) do
     ~H"""
@@ -114,6 +117,14 @@ defmodule FavnView.Components.SelectedWindowActions do
         as={:run_config}
         phx-change="change_run_config"
         phx-submit="run_selected_window"
+        data-command-operation="asset_run_submit"
+        data-command-operation-present-field={
+          if(is_nil(@selected_window), do: "run_config[to]", else: nil)
+        }
+        data-command-operation-present={
+          if(is_nil(@selected_window), do: "asset_backfill_submit", else: nil)
+        }
+        data-command-resource={@command_resource}
         class="space-y-4"
         data-testid="run-config-form"
       >
@@ -327,6 +338,7 @@ defmodule FavnView.Components.SelectedWindowActions do
   # both never opens the advanced section, which is the point of having one.
   defp run_dialog_title(nil), do: "Run asset"
   defp run_dialog_title(window), do: "Run #{window.range_label}"
+
 
   defp dependencies_summary(%{dependencies: "none"}), do: "This asset only"
   defp dependencies_summary(_run_config), do: "With upstream dependencies"

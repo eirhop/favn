@@ -8,9 +8,11 @@ defmodule FavnStoragePostgres.Identity.Store do
   alias Ecto.Adapters.SQL
   alias FavnOrchestrator.Persistence.Commands.AttachActorMembership
   alias FavnOrchestrator.Persistence.Commands.ChangeActorPassword
+  alias FavnOrchestrator.Persistence.Commands.CompleteOperatorCommand
   alias FavnOrchestrator.Persistence.Commands.CreateActor
   alias FavnOrchestrator.Persistence.Commands.CreateSession
   alias FavnOrchestrator.Persistence.Commands.RecordAudit
+  alias FavnOrchestrator.Persistence.Commands.ReserveOperatorCommand
   alias FavnOrchestrator.Persistence.Commands.RevokeSessions
   alias FavnOrchestrator.Persistence.Commands.RotateWorkspaceSession
   alias FavnOrchestrator.Persistence.Commands.SetActorAccess
@@ -42,6 +44,7 @@ defmodule FavnStoragePostgres.Identity.Store do
   alias FavnStoragePostgres.Schemas.AuthCredential
   alias FavnStoragePostgres.Schemas.AuthPlatformAuditEntry
   alias FavnStoragePostgres.Schemas.AuthPlatformGrant
+  alias FavnStoragePostgres.Schemas.AuthOperatorCommand
   alias FavnStoragePostgres.Schemas.AuthSession
   alias FavnStoragePostgres.Schemas.AuthWorkspaceMembership
   alias FavnStoragePostgres.Schemas.Workspace
@@ -49,7 +52,6 @@ defmodule FavnStoragePostgres.Identity.Store do
   @workspace_roles [:customer_reader, :customer_operator, :workspace_admin]
   @platform_roles [:platform_reader, :platform_operator, :platform_admin]
   @access_statuses [:active, :suspended, :revoked]
-
   @impl true
   def create_actor(%CreateActor{} = command) do
     with :ok <- validate_create_actor(command) do
@@ -231,6 +233,21 @@ defmodule FavnStoragePostgres.Identity.Store do
   def record_audit(%RecordAudit{} = command) do
     with :ok <- validate_record_audit(command),
          {:ok, :ok} <- transaction(fn -> record_audit!(command) end) do
+      :ok
+    end
+  end
+
+  @impl true
+  def reserve_operator_command(%ReserveOperatorCommand{} = command) do
+    with :ok <- validate_reserve_operator_command(command) do
+      transaction(fn -> reserve_operator_command!(command) end)
+    end
+  end
+
+  @impl true
+  def complete_operator_command(%CompleteOperatorCommand{} = command) do
+    with :ok <- validate_complete_operator_command(command),
+         {:ok, :ok} <- transaction(fn -> complete_operator_command!(command) end) do
       :ok
     end
   end
@@ -1109,42 +1126,385 @@ defmodule FavnStoragePostgres.Identity.Store do
   end
 
   defp record_audit!(%RecordAudit{scope: %WorkspaceContext{} = context} = command) do
-    %AuthAuditEntry{
-      workspace_id: context.workspace_id,
-      command_id: command.command_id,
-      principal_id: context.principal_id,
-      action: command.action,
-      subject_kind: command.subject_kind,
-      subject_id: command.subject_id,
-      detail: Redaction.redact(command.detail),
-      occurred_at: command.occurred_at,
-      inserted_at: command.occurred_at
+    detail = normalized_audit_detail!(command.detail)
+
+    case audit_by_command(context.workspace_id, command.command_id, command.action) do
+      %AuthAuditEntry{
+        principal_id: principal_id,
+        subject_kind: subject_kind,
+        subject_id: subject_id,
+        detail: existing_detail
+      }
+      when principal_id == context.principal_id and subject_kind == command.subject_kind and
+             subject_id == command.subject_id and existing_detail == detail ->
+        :ok
+
+      %AuthAuditEntry{} ->
+        Repo.rollback(Error.new(:conflict, "audit command has different content"))
+
+      nil ->
+        %AuthAuditEntry{
+          workspace_id: context.workspace_id,
+          command_id: command.command_id,
+          principal_id: context.principal_id,
+          action: command.action,
+          subject_kind: command.subject_kind,
+          subject_id: command.subject_id,
+          detail: detail,
+          occurred_at: command.occurred_at,
+          inserted_at: command.occurred_at
+        }
+        |> Repo.insert!(
+          on_conflict: :nothing,
+          conflict_target: [:workspace_id, :command_id, :action]
+        )
+
+        record_audit!(command)
+    end
+  end
+
+  defp record_audit!(%RecordAudit{scope: %PlatformContext{} = context} = command) do
+    detail = normalized_audit_detail!(command.detail)
+
+    case platform_audit_by_command(command.command_id, command.action) do
+      %AuthPlatformAuditEntry{
+        principal_id: principal_id,
+        subject_kind: subject_kind,
+        subject_id: subject_id,
+        detail: existing_detail
+      }
+      when principal_id == context.principal_id and subject_kind == command.subject_kind and
+             subject_id == command.subject_id and existing_detail == detail ->
+        :ok
+
+      %AuthPlatformAuditEntry{} ->
+        Repo.rollback(Error.new(:conflict, "audit command has different content"))
+
+      nil ->
+        %AuthPlatformAuditEntry{
+          command_id: command.command_id,
+          principal_id: context.principal_id,
+          action: command.action,
+          subject_kind: command.subject_kind,
+          subject_id: command.subject_id,
+          detail: detail,
+          occurred_at: command.occurred_at,
+          inserted_at: command.occurred_at
+        }
+        |> Repo.insert!(
+          on_conflict: :nothing,
+          conflict_target: [:command_id, :action]
+        )
+
+        record_audit!(command)
+    end
+  end
+
+  defp reserve_operator_command!(command) do
+    now = command.occurred_at
+
+    {intent, replayed?} =
+      case replayable_operator_intent(command) do
+        nil -> {insert_and_lock_operator_intent!(command, now), false}
+        intent -> {intent, true}
+      end
+
+    validate_operator_intent!(intent, command)
+
+    intent =
+      if replayed?,
+        do: recover_operator_intent!(intent, command, now),
+        else: intent
+
+    unless replayed? do
+      record_audit!(%RecordAudit{
+        scope: command.workspace_context,
+        command_id: operator_audit_id(intent, "requested"),
+        action: command.operation,
+        subject_kind: command.resource_type,
+        subject_id: command.resource_id,
+        detail: command.detail,
+        occurred_at: now
+      })
+    end
+
+    %{
+      key_hash: intent.key_hash,
+      request_fingerprint: intent.request_fingerprint,
+      expires_at: intent.expires_at,
+      replayed?: replayed?
     }
-    |> Repo.insert!(
-      on_conflict: :nothing,
-      conflict_target: [:workspace_id, :command_id, :action]
+  end
+
+  defp replayable_operator_intent(command) do
+    workspace_id = command.workspace_context.workspace_id
+
+    from(intent in AuthOperatorCommand,
+      where:
+        intent.workspace_id == ^workspace_id and intent.actor_id == ^command.actor_id and
+          intent.operation == ^command.operation and intent.key_hash == ^command.key_hash,
+      lock: "FOR UPDATE"
+    )
+    |> Repo.one()
+  end
+
+  defp validate_operator_intent!(intent, command) do
+    mismatch? =
+      intent.request_fingerprint != command.request_fingerprint or
+        intent.key_hash != command.key_hash or
+        intent.resource_type != command.resource_type or
+        intent.resource_id != command.resource_id or intent.actor_id != command.actor_id
+
+    if mismatch? do
+      unresolved? = intent.status in ["pending", "unknown"]
+
+      Repo.rollback(
+        Error.new(:conflict, "operator command has different unresolved content",
+          retryable?: unresolved?,
+          details: %{reason_code: "operator_command_unresolved"}
+        )
+      )
+    end
+  end
+
+  defp recover_operator_intent!(intent, command, now) do
+    intent =
+      if intent.status == "pending" and DateTime.compare(intent.expires_at, now) != :gt do
+        intent
+        |> Ecto.Changeset.change(status: "unknown", terminal_at: now, updated_at: now)
+        |> Repo.update!()
+        |> tap(&record_expired_operator_intent!(command.workspace_context, &1, now))
+      else
+        intent
+      end
+
+    previous_session_id = intent.session_id
+
+    recovered =
+      intent
+      |> Ecto.Changeset.change(
+        session_id: command.session_id,
+        expires_at: command.expires_at,
+        updated_at: now
+      )
+      |> Repo.update!()
+
+    renew_domain_idempotency!(recovered, command.expires_at)
+
+    if previous_session_id != command.session_id do
+      record_operator_recovery_audit!(
+        command.workspace_context,
+        recovered,
+        previous_session_id,
+        now
+      )
+    end
+
+    recovered
+  end
+
+  defp renew_domain_idempotency!(intent, expires_at) do
+    SQL.query!(
+      Repo,
+      """
+      UPDATE favn_control.idempotency_records
+      SET expires_at = GREATEST(expires_at, $6), updated_at = clock_timestamp()
+      WHERE workspace_id = $1 AND operation = $2 AND principal_kind = 'actor'
+        AND principal_id = $3 AND key_hash = $4 AND request_fingerprint = $5
+      """,
+      [
+        intent.workspace_id,
+        intent.operation,
+        intent.actor_id,
+        intent.key_hash,
+        intent.request_fingerprint,
+        expires_at
+      ]
     )
 
     :ok
   end
 
-  defp record_audit!(%RecordAudit{scope: %PlatformContext{} = context} = command) do
-    %AuthPlatformAuditEntry{
-      command_id: command.command_id,
-      principal_id: context.principal_id,
-      action: command.action,
-      subject_kind: command.subject_kind,
-      subject_id: command.subject_id,
-      detail: Redaction.redact(command.detail),
-      occurred_at: command.occurred_at,
-      inserted_at: command.occurred_at
+  defp record_expired_operator_intent!(context, intent, now) do
+    record_audit!(%RecordAudit{
+      scope: context,
+      command_id: operator_audit_id(intent, "unknown"),
+      action: intent.operation,
+      subject_kind: intent.resource_type,
+      subject_id: intent.resource_id,
+      detail: %{
+        actor_id: intent.actor_id,
+        session_id: intent.session_id,
+        outcome: "unknown",
+        result: %{reason: "intent_expired_before_terminal_result"}
+      },
+      occurred_at: now
+    })
+  end
+
+  defp record_operator_recovery_audit!(context, intent, previous_session_id, now) do
+    record_audit!(%RecordAudit{
+      scope: context,
+      command_id:
+        operator_audit_id(
+          intent,
+          Enum.join(["recovered", previous_session_id, intent.session_id], ":")
+        ),
+      action: intent.operation <> ".recovered",
+      subject_kind: intent.resource_type,
+      subject_id: intent.resource_id,
+      detail: %{
+        actor_id: intent.actor_id,
+        previous_session_id: previous_session_id,
+        session_id: intent.session_id,
+        outcome: "recovered"
+      },
+      occurred_at: now
+    })
+  end
+
+  defp insert_and_lock_operator_intent!(command, now) do
+    workspace_id = command.workspace_context.workspace_id
+
+    %AuthOperatorCommand{
+      intent_id:
+        operator_intent_id(
+          workspace_id,
+          command.actor_id,
+          command.operation,
+          command.key_hash
+        ),
+      workspace_id: workspace_id,
+      actor_id: command.actor_id,
+      session_id: command.session_id,
+      operation: command.operation,
+      resource_type: command.resource_type,
+      resource_id: command.resource_id,
+      key_hash: command.key_hash,
+      request_fingerprint: command.request_fingerprint,
+      status: "pending",
+      expires_at: command.expires_at,
+      inserted_at: now,
+      updated_at: now
     }
     |> Repo.insert!(
       on_conflict: :nothing,
-      conflict_target: [:command_id, :action]
+      conflict_target:
+        {:unsafe_fragment,
+         ~s<(workspace_id, operation, resource_type, resource_id) WHERE status IN ('pending', 'unknown')>}
     )
 
+    from(intent in AuthOperatorCommand,
+      where:
+        intent.workspace_id == ^workspace_id and intent.operation == ^command.operation and
+          intent.resource_type == ^command.resource_type and
+          intent.resource_id == ^command.resource_id and intent.status in ["pending", "unknown"],
+      lock: "FOR UPDATE"
+    )
+    |> Repo.one!()
+  end
+
+  defp complete_operator_command!(command) do
+    workspace_id = command.workspace_context.workspace_id
+
+    intent =
+      from(intent in AuthOperatorCommand,
+        where:
+          intent.workspace_id == ^workspace_id and intent.actor_id == ^command.actor_id and
+            intent.session_id == ^command.session_id and intent.operation == ^command.operation and
+            intent.key_hash == ^command.key_hash,
+        lock: "FOR UPDATE"
+      )
+      |> Repo.one()
+
+    case intent do
+      nil ->
+        Repo.rollback(Error.new(:not_found, "operator command intent not found"))
+
+      %AuthOperatorCommand{request_fingerprint: fingerprint}
+      when fingerprint != command.request_fingerprint ->
+        Repo.rollback(Error.new(:conflict, "operator command request changed"))
+
+      %AuthOperatorCommand{status: status} = intent when status in ["pending", "unknown"] ->
+        if status == "unknown" and command.outcome == "unknown" do
+          replay_operator_result!(command, intent)
+        else
+          resolve_operator_result!(command, intent)
+        end
+
+      %AuthOperatorCommand{} = intent ->
+        replay_operator_result!(command, intent)
+    end
+  end
+
+  defp resolve_operator_result!(command, intent) do
+    changes = %{
+      status: command.outcome,
+      result_resource_type: command.resource_type,
+      result_resource_id: command.resource_id,
+      result_detail: normalized_audit_detail!(command.detail),
+      terminal_at: command.occurred_at,
+      updated_at: command.occurred_at
+    }
+
+    intent
+    |> Ecto.Changeset.change(changes)
+    |> Repo.update!()
+
+    record_operator_result_audit!(command, intent)
     :ok
+  end
+
+  defp replay_operator_result!(command, intent) do
+    detail = normalized_audit_detail!(command.detail)
+
+    if intent.status == "unknown" and command.outcome == "unknown" do
+      :ok
+    else
+      same_result? =
+        intent.status == command.outcome and
+          intent.result_resource_type == command.resource_type and
+          intent.result_resource_id == command.resource_id and
+          semantic_operator_result(intent.result_detail) == semantic_operator_result(detail)
+
+      if same_result?,
+        do: :ok,
+        else: Repo.rollback(Error.new(:conflict, "operator command result changed"))
+    end
+  end
+
+  defp semantic_operator_result(detail) when is_map(detail), do: Map.delete(detail, "session_id")
+  defp semantic_operator_result(detail), do: detail
+
+  defp record_operator_result_audit!(command, intent) do
+    record_audit!(%RecordAudit{
+      scope: command.workspace_context,
+      command_id: operator_audit_id(intent, command.outcome),
+      action: command.operation,
+      subject_kind: command.resource_type,
+      subject_id: command.resource_id,
+      detail: command.detail,
+      occurred_at: command.occurred_at
+    })
+  end
+
+  defp operator_intent_id(workspace_id, actor_id, operation, key_hash) do
+    digest =
+      :crypto.hash(:sha256, Enum.join([workspace_id, actor_id, operation, key_hash], <<0>>))
+      |> Base.encode16(case: :lower)
+
+    "operator_intent:" <> digest
+  end
+
+  defp operator_audit_id(intent, outcome) do
+    digest =
+      :crypto.hash(
+        :sha256,
+        Enum.join([intent.workspace_id, intent.intent_id, intent.operation, outcome], <<0>>)
+      )
+      |> Base.encode16(case: :lower)
+
+    "audit:" <> digest
   end
 
   defp platform_audit!(context, command_id, action, subject_id, detail, occurred_at) do
@@ -1466,13 +1826,77 @@ defmodule FavnStoragePostgres.Identity.Store do
   defp validate_record_audit(command) do
     scope? = WorkspaceContext.valid?(command.scope) or PlatformContext.valid?(command.scope)
 
+    detail? =
+      case Jason.encode(Redaction.redact(command.detail)) do
+        {:ok, encoded} -> byte_size(encoded) in 2..65_536
+        {:error, _reason} -> false
+      end
+
     if scope? and
          Enum.all?(
            [command.command_id, command.action, command.subject_kind, command.subject_id],
            &valid_id?/1
-         ) and is_map(command.detail) and match?(%DateTime{}, command.occurred_at),
+         ) and is_map(command.detail) and detail? and match?(%DateTime{}, command.occurred_at),
        do: :ok,
        else: {:error, ErrorMapper.map(:invalid)}
+  end
+
+  defp normalized_audit_detail!(detail) do
+    detail
+    |> Redaction.redact()
+    |> Jason.encode!()
+    |> Jason.decode!()
+  end
+
+  defp validate_reserve_operator_command(command) do
+    valid? =
+      WorkspaceContext.valid?(command.workspace_context) and
+        command.workspace_context.principal_id == command.actor_id and
+        Enum.all?(
+          [
+            command.actor_id,
+            command.session_id,
+            command.operation,
+            command.resource_type,
+            command.resource_id,
+            command.key_hash,
+            command.request_fingerprint
+          ],
+          &valid_id?/1
+        ) and is_map(command.detail) and valid_audit_detail?(command.detail) and
+        match?(%DateTime{}, command.expires_at) and match?(%DateTime{}, command.occurred_at) and
+        DateTime.compare(command.expires_at, command.occurred_at) == :gt
+
+    if valid?, do: :ok, else: {:error, ErrorMapper.map(:invalid)}
+  end
+
+  defp validate_complete_operator_command(command) do
+    valid? =
+      WorkspaceContext.valid?(command.workspace_context) and
+        command.workspace_context.principal_id == command.actor_id and
+        command.outcome in ["accepted", "partial", "rejected", "unknown"] and
+        Enum.all?(
+          [
+            command.actor_id,
+            command.session_id,
+            command.operation,
+            command.key_hash,
+            command.request_fingerprint,
+            command.resource_type,
+            command.resource_id
+          ],
+          &valid_id?/1
+        ) and is_map(command.detail) and valid_audit_detail?(command.detail) and
+        match?(%DateTime{}, command.occurred_at)
+
+    if valid?, do: :ok, else: {:error, ErrorMapper.map(:invalid)}
+  end
+
+  defp valid_audit_detail?(detail) do
+    case Jason.encode(Redaction.redact(detail)) do
+      {:ok, encoded} -> byte_size(encoded) in 2..65_536
+      {:error, _reason} -> false
+    end
   end
 
   defp validate_page_audit(page) do

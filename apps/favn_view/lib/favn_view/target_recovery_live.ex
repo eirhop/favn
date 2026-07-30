@@ -3,6 +3,7 @@ defmodule FavnView.TargetRecoveryLive do
 
   use FavnView, :live_view
 
+  alias FavnView.CommandAttempt
   alias FavnView.Components.TargetRecoveryPage
 
   @impl true
@@ -22,6 +23,8 @@ defmodule FavnView.TargetRecoveryLive do
        plan: nil,
        operation: operation,
        planning_attempt: attempt,
+       start_attempt: nil,
+       reconcile_attempt: nil,
        planning?: false,
        error: nil
      )}
@@ -30,10 +33,10 @@ defmodule FavnView.TargetRecoveryLive do
   @impl true
   def handle_event(
         "plan_recovery",
-        %{"recovery" => %{"target_id" => target_id, "reason" => reason}},
+        %{"recovery" => %{"target_id" => target_id, "reason" => reason}} = params,
         socket
       ) do
-    attempt = planning_attempt(socket.assigns.planning_attempt, target_id, reason)
+    attempt = planning_attempt(socket.assigns.planning_attempt, target_id, reason, params)
 
     socket =
       assign(socket,
@@ -48,27 +51,48 @@ defmodule FavnView.TargetRecoveryLive do
     case plan_recovery(context(socket), target_id, reason, attempt) do
       {:ok, plan} ->
         {:noreply,
-         assign(socket, planning_attempt: nil, planning?: false, plan: plan, operation: nil)}
+         socket
+         |> CommandAttempt.acknowledge(attempt)
+         |> assign(planning_attempt: nil, planning?: false, plan: plan, operation: nil)}
 
       {:error, failure} ->
-        {:noreply, planning_failed(socket, attempt, failure)}
+        {socket, retained_attempt} = CommandAttempt.settle_failure(socket, attempt, failure)
+
+        if retained_attempt do
+          {:noreply, planning_failed(socket, retained_attempt, failure)}
+        else
+          {:noreply,
+           assign(socket, planning_attempt: nil, planning?: false, error: error_label(failure))}
+        end
     end
   end
 
-  def handle_event("start_recovery", _params, %{assigns: %{plan: plan}} = socket)
+  def handle_event("start_recovery", params, %{assigns: %{plan: plan}} = socket)
       when is_map(plan) do
-    case start_recovery(context(socket), plan.plan_id, plan.plan_hash) do
+    attempt =
+      CommandAttempt.next(
+        socket.assigns.start_attempt,
+        "target_recovery_start",
+        plan.plan_id,
+        params
+      )
+
+    socket = assign(socket, :start_attempt, attempt)
+
+    case start_recovery(context(socket), plan.plan_id, plan.plan_hash, attempt.key) do
       {:ok, operation} ->
         {:noreply,
          socket
-         |> assign(operation: operation, error: nil)
+         |> CommandAttempt.acknowledge(attempt)
+         |> assign(operation: operation, error: nil, start_attempt: nil)
          |> push_patch(
            to:
              ~p"/recoveries?#{[target_id: socket.assigns.target_id, operation_id: operation.operation_id]}"
          )}
 
       {:error, failure} ->
-        {:noreply, assign(socket, error: error_label(failure))}
+        {socket, attempt} = CommandAttempt.settle_failure(socket, attempt, failure)
+        {:noreply, assign(socket, error: error_label(failure), start_attempt: attempt)}
     end
   end
 
@@ -76,12 +100,29 @@ defmodule FavnView.TargetRecoveryLive do
 
   def handle_event(
         "reconcile_recovery",
-        _params,
+        params,
         %{assigns: %{operation: %{operation_id: operation_id}}} = socket
       ) do
-    case reconcile_recovery(context(socket), operation_id) do
-      {:ok, operation} -> {:noreply, assign(socket, operation: operation, error: nil)}
-      {:error, failure} -> {:noreply, assign(socket, error: error_label(failure))}
+    attempt =
+      CommandAttempt.next(
+        socket.assigns.reconcile_attempt,
+        "target_recovery_reconcile",
+        operation_id,
+        params
+      )
+
+    socket = assign(socket, :reconcile_attempt, attempt)
+
+    case reconcile_recovery(context(socket), operation_id, attempt.key) do
+      {:ok, operation} ->
+        {:noreply,
+         socket
+         |> CommandAttempt.acknowledge(attempt)
+         |> assign(operation: operation, error: nil, reconcile_attempt: nil)}
+
+      {:error, failure} ->
+        {socket, attempt} = CommandAttempt.settle_failure(socket, attempt, failure)
+        {:noreply, assign(socket, error: error_label(failure), reconcile_attempt: attempt)}
     end
   end
 
@@ -114,24 +155,24 @@ defmodule FavnView.TargetRecoveryLive do
       target_id,
       reason,
       operation_id: attempt.operation_id,
-      idempotency_key: attempt.operation_id
+      idempotency_key: attempt.key
     )
   end
 
-  defp start_recovery(context, plan_id, plan_hash) do
+  defp start_recovery(context, plan_id, plan_hash, idempotency_key) do
     Application.get_env(
       :favn_view,
       :start_operator_target_recovery_fun,
-      &FavnOrchestrator.start_operator_target_recovery/3
-    ).(context, plan_id, plan_hash)
+      &FavnOrchestrator.start_operator_target_recovery/4
+    ).(context, plan_id, plan_hash, idempotency_key: idempotency_key)
   end
 
-  defp reconcile_recovery(context, operation_id) do
+  defp reconcile_recovery(context, operation_id, idempotency_key) do
     Application.get_env(
       :favn_view,
       :reconcile_operator_target_recovery_fun,
-      &FavnOrchestrator.reconcile_operator_target_recovery/2
-    ).(context, operation_id)
+      &FavnOrchestrator.reconcile_operator_target_recovery/3
+    ).(context, operation_id, idempotency_key: idempotency_key)
   end
 
   defp load_operation(_context, nil), do: nil
@@ -202,25 +243,41 @@ defmodule FavnView.TargetRecoveryLive do
   defp planning_attempt(
          %{target_id: target_id, request_fingerprint: request_fingerprint} = attempt,
          target_id,
-         reason
+         reason,
+         params
        ) do
-    if request_fingerprint == planning_request_fingerprint(target_id, reason),
-      do: attempt,
-      else: new_planning_attempt(target_id, reason)
+    if request_fingerprint == planning_request_fingerprint(target_id, reason) do
+      Map.put_new(attempt, :key, supplied_key(params) || attempt.operation_id)
+    else
+      new_planning_attempt(target_id, reason, params)
+    end
   end
 
-  defp planning_attempt(_attempt, target_id, reason),
-    do: new_planning_attempt(target_id, reason)
+  defp planning_attempt(_attempt, target_id, reason, params),
+    do: new_planning_attempt(target_id, reason, params)
 
-  defp new_planning_attempt(target_id, reason) do
+  defp new_planning_attempt(target_id, reason, params) do
+    key =
+      supplied_key(params) ||
+        CommandAttempt.next(nil, "target_recovery_plan", {target_id, reason}).key
+
     %{
       operation_id:
         "target_recovery_ui_" <>
-          Base.encode16(:crypto.strong_rand_bytes(16), case: :lower),
+          (:crypto.hash(:sha256, key)
+           |> Base.encode16(case: :lower)
+           |> String.slice(0, 32)),
+      key: key,
       target_id: target_id,
       request_fingerprint: planning_request_fingerprint(target_id, reason)
     }
   end
+
+  defp supplied_key(%{"idempotency_key" => key})
+       when is_binary(key) and byte_size(key) in 16..255,
+       do: key
+
+  defp supplied_key(_params), do: nil
 
   defp patch_planning_attempt(socket, attempt) do
     push_patch(socket,

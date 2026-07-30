@@ -185,6 +185,7 @@ defmodule FavnView.Components.AssetDetailPage do
       planning?={@planning_coverage?}
       submitting?={@submitting_coverage?}
       can_plan?={@can_submit_runs? && @can_run_asset?}
+      command_resource={@rebuild_target_id}
     />
     <.window_timeline_panel
       :if={@active_mode == :timeline}
@@ -217,6 +218,7 @@ defmodule FavnView.Components.AssetDetailPage do
       selected_window_error={@selected_window_error}
       submitted_run_id={@submitted_run_id}
       can_submit_runs?={@can_submit_runs?}
+      command_resource={@rebuild_target_id}
     />
     <div :if={@active_mode == :details} class="mx-auto w-full max-w-6xl space-y-6">
       <.assurance_panel :if={@assurance} assurance={@assurance} />
@@ -350,6 +352,7 @@ defmodule FavnView.Components.AssetDetailPage do
   attr :planning?, :boolean, default: false
   attr :submitting?, :boolean, default: false
   attr :can_plan?, :boolean, default: false
+  attr :command_resource, :string, required: true
 
   def coverage_summary_panel(assigns) do
     ~H"""
@@ -506,6 +509,8 @@ defmodule FavnView.Components.AssetDetailPage do
               type="button"
               class="btn btn-primary btn-sm mt-4"
               phx-click="submit_missing_coverage"
+              data-command-operation="coverage_backfill_submit"
+              data-command-resource={@command_resource}
               disabled={@submitting?}
               data-testid="submit-missing-coverage"
             >
@@ -572,6 +577,7 @@ defmodule FavnView.Components.AssetDetailPage do
   attr :selected_window_error, :string, default: nil
   attr :submitted_run_id, :string, default: nil
   attr :can_submit_runs?, :boolean, default: false
+  attr :command_resource, :string, required: true
 
   def window_timeline_panel(assigns) do
     assigns = assign(assigns, :timeline, active_timeline(assigns))
@@ -700,6 +706,7 @@ defmodule FavnView.Components.AssetDetailPage do
           selected_window_error={@selected_window_error}
           submitted_run_id={@submitted_run_id}
           can_submit_runs?={@can_submit_runs?}
+          command_resource={@command_resource}
         />
       </div>
     </.panel>
