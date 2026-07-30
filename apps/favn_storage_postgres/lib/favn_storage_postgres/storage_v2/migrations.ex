@@ -12,6 +12,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
   alias FavnStoragePostgres.Migrations.AddAssetEvidenceBindingsV2
   alias FavnStoragePostgres.Migrations.AddCommitSafeLogReplayV2
   alias FavnStoragePostgres.Migrations.AddDeploymentTargetDescriptorsV2
+  alias FavnStoragePostgres.Migrations.AddExecutionGroupStartOrderingV2
   alias FavnStoragePostgres.Migrations.AddExecutionPackageRuntimeInputResolverV2
   alias FavnStoragePostgres.Migrations.AddCoordinationAndSchedulingV2
   alias FavnStoragePostgres.Migrations.AddLogsIdentityAndOperationsV2
@@ -72,7 +73,8 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     {20_260_728_000_000, AddTargetRecoveryV2},
     {20_260_728_010_000, AddAssetEvidenceBindingsV2},
     {20_260_729_000_000, AddRunExecutionCheckpointsV2},
-    {20_260_729_010_000, IncreaseRunnerTaskOrchestrationContextBoundV2}
+    {20_260_729_010_000, IncreaseRunnerTaskOrchestrationContextBoundV2},
+    {20_260_730_000_000, AddExecutionGroupStartOrderingV2}
   ]
   @required_tables ~w(
     schema_migrations
@@ -241,6 +243,8 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     projection_failures_event_uidx
     execution_group_overviews_recent_idx
     execution_group_overviews_platform_recent_idx
+    execution_group_overviews_started_idx
+    execution_group_overviews_platform_started_idx
     backfill_overviews_status_idx
     target_statuses_status_idx
     asset_window_states_history_idx
@@ -299,7 +303,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     "coverage_baselines" =>
       ~w(workspace_id baseline_id deployment_id manifest_version_id target_kind target_id coverage_start coverage_end evidence evidence_hash version inserted_at updated_at),
     "execution_group_overviews" =>
-      ~w(workspace_id root_run_id status run_count pending_count running_count succeeded_count failed_count latest_event_id source_publication_id inserted_at updated_at),
+      ~w(workspace_id root_run_id status run_count pending_count running_count succeeded_count failed_count latest_event_id source_publication_id trigger_type started_at finished_at inserted_at updated_at),
     "execution_lease_scopes" => ~w(workspace_id lease_id scope_id units inserted_at),
     "execution_leases" =>
       ~w(workspace_id lease_id run_id step_id command_id request_hash owner_id owner_generation last_renewal_id status expires_at released_at inserted_at updated_at),
@@ -510,7 +514,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
                           Enum.map(@identifier_constraint_tables, &"#{&1}_identifier_lengths_v2") ++
                           Enum.map(@payload_constraint_tables, &"#{&1}_payload_bounds_v2")
   @expected_versions Enum.map(@migrations, fn {version, _module} -> version end)
-  @expected_definition_fingerprint "0f6251a37fcc542d6e36017b72dee4c436913ee57c3363415e3280d9dc21c28c"
+  @expected_definition_fingerprint "8504e018b43f5ffb6967664acdc6ac8073929e66ceb423a6d89948b6488567d2"
 
   @doc "Creates the V2 namespace and applies every known migration."
   @spec migrate!(module()) :: :ok

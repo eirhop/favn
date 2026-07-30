@@ -498,6 +498,11 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
           "More runs than one page holds, so the days stop where the page did rather than claiming they were empty."
         ),
         Example.attrs(
+          :later_page,
+          RunsList.later_page(),
+          "A page reached by stepping older. One page is one read of the index, at any depth."
+        ),
+        Example.attrs(
           :filters_open,
           RunsList.filters_open(),
           "The narrow-screen disclosure, opened. On a wide screen these controls are always out."

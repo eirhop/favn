@@ -24,7 +24,7 @@ defmodule FavnView.RunsListLive do
         listing: {:flat, []},
         counts: nil,
         filters: %RunsFilters{},
-        truncated?: false,
+        more?: false,
         filters_open?: false,
         error: nil,
         run_events_live?: false,
@@ -48,7 +48,7 @@ defmodule FavnView.RunsListLive do
       listing={@listing}
       filters={@filters}
       counts={@counts}
-      truncated?={@truncated?}
+      more?={@more?}
       filters_open?={@filters_open?}
       error={@error}
       nav_items={@nav_items}
@@ -69,8 +69,21 @@ defmodule FavnView.RunsListLive do
     {:noreply, patch(socket, RunsFilters.toggle_order(socket.assigns.filters))}
   end
 
-  def handle_event("load_more", _params, socket) do
-    {:noreply, patch(socket, RunsFilters.grow(socket.assigns.filters))}
+  def handle_event("next_page", _params, socket) do
+    last = List.last(socket.assigns.runs)
+
+    filters =
+      RunsFilters.next_page(
+        socket.assigns.filters,
+        last && last.started_at_raw,
+        (last && last.id) || ""
+      )
+
+    {:noreply, patch(socket, filters)}
+  end
+
+  def handle_event("first_page", _params, socket) do
+    {:noreply, patch(socket, RunsFilters.first_page(socket.assigns.filters))}
   end
 
   @impl true
@@ -123,14 +136,17 @@ defmodule FavnView.RunsListLive do
     |> maybe_schedule_fallback_poll()
   end
 
-  defp assign_page(socket, {:ok, %{items: runs, has_more?: truncated?}}, filters, now) do
+  # A page that has more behind it, or that started after a cursor, covers only
+  # part of the range, so the day enumeration is clamped to what was loaded: a day
+  # outside the page is unknown rather than empty.
+  defp assign_page(socket, {:ok, %{items: runs, has_more?: more?}}, filters, now) do
     listing =
       RunDays.layout(runs, RunsFilters.window(filters, now), now,
         order: filters.order,
-        complete?: not truncated?
+        complete?: not more? and not RunsFilters.paged?(filters)
       )
 
-    assign(socket, runs: runs, listing: listing, truncated?: truncated?, error: nil)
+    assign(socket, runs: runs, listing: listing, more?: more?, error: nil)
   end
 
   defp assign_page(socket, {:error, reason}, _filters, _now) do
@@ -139,7 +155,7 @@ defmodule FavnView.RunsListLive do
     assign(socket,
       runs: [],
       listing: {:flat, []},
-      truncated?: false,
+      more?: false,
       error: "Backend unavailable"
     )
   end

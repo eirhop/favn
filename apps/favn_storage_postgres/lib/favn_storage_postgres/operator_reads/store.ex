@@ -112,16 +112,14 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
         |> after_group(page.after, page.order)
         |> order_groups(page.order)
         |> limit(^(page.limit + 1))
-        |> select([group: group, root: root], %{group: group, started_at: root.inserted_at})
 
       rows = Repo.all(query)
 
-      # Enriched from the page's own rows, so the two extra queries are bounded by
-      # the page limit rather than by the workspace's history.
-      groups = rows |> Enum.take(page.limit) |> Enum.map(& &1.group)
+      # Enriched from the page's own rows, so the extra query is bounded by the page
+      # limit rather than by the workspace's history.
+      groups = Enum.take(rows, page.limit)
       targets = target_refs_by_group(groups)
-      roots = root_runs_by_group(groups)
-      mapper = &group_result(&1.group, targets, roots)
+      mapper = &group_result(&1, targets)
 
       {:ok, cursor_page(rows, page.limit, mapper, &group_cursor/1)}
     end
@@ -534,12 +532,10 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
     }
   end
 
-  defp group_result(group), do: group_result(group, %{}, %{})
+  defp group_result(group), do: group_result(group, %{})
 
-  defp group_result(group, targets, roots) do
-    key = {group.workspace_id, group.root_run_id}
-    root = Map.get(roots, key)
-    by_kind = Map.get(targets, key, %{})
+  defp group_result(group, targets) do
+    by_kind = Map.get(targets, {group.workspace_id, group.root_run_id}, %{})
 
     %GroupOverviewResult{
       workspace_id: group.workspace_id,
@@ -553,9 +549,9 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
       latest_event_id: group.latest_event_id,
       source_publication_id: group.source_publication_id,
       updated_at: group.updated_at,
-      trigger_type: root && RunEnum.decode!(:trigger_type, root.trigger_type),
-      started_at: root && root.inserted_at,
-      finished_at: root && root.terminal_at,
+      trigger_type: group.trigger_type && RunEnum.decode!(:trigger_type, group.trigger_type),
+      started_at: group.started_at,
+      finished_at: group.finished_at,
       target_refs: Map.get(by_kind, "asset", []),
       pipeline_refs: Map.get(by_kind, "pipeline", [])
     }
@@ -752,19 +748,6 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
     end)
   end
 
-  defp root_runs_by_group([]), do: %{}
-
-  defp root_runs_by_group(groups) do
-    {workspace_ids, root_run_ids} = group_keys(groups)
-
-    from(run in Run,
-      where: run.workspace_id in ^workspace_ids and run.run_id in ^root_run_ids,
-      select: map(run, [:workspace_id, :run_id, :trigger_type, :inserted_at, :terminal_at])
-    )
-    |> Repo.all()
-    |> Map.new(&{{&1.workspace_id, &1.run_id}, &1})
-  end
-
   defp group_keys(groups) do
     {
       groups |> Enum.map(& &1.workspace_id) |> Enum.uniq(),
@@ -914,11 +897,11 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
   defp manifest_cursor(row),
     do: %{inserted_at: row.inserted_at, manifest_version_id: row.manifest_version_id}
 
-  defp group_cursor(row),
+  defp group_cursor(group),
     do: %{
-      started_at: row.started_at,
-      workspace_id: row.group.workspace_id,
-      root_run_id: row.group.root_run_id
+      started_at: group.started_at,
+      workspace_id: group.workspace_id,
+      root_run_id: group.root_run_id
     }
 
   defp run_cursor(row),
@@ -938,19 +921,11 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
     )
   end
 
-  # The root run is joined rather than looked up per row: it carries when the
-  # group started, what triggered it, and — through its targets — what it was for,
-  # which is what every filter on a runs list narrows by. The join is on the runs
-  # primary key, and it is a left join so a group whose root run has not been
-  # written yet is still listed rather than silently dropped.
-  defp group_query do
-    from(group in ExecutionGroupOverview,
-      as: :group,
-      left_join: root in Run,
-      as: :root,
-      on: root.workspace_id == group.workspace_id and root.run_id == group.root_run_id
-    )
-  end
+  # One table. When the group started, what triggered it, and when it finished are
+  # projected onto the group row, so ordering, the window filters, and the keyset
+  # all read the same index instead of joining every group in the workspace to its
+  # root run and sorting the result.
+  defp group_query, do: from(group in ExecutionGroupOverview, as: :group)
 
   defp group_scope(query, %WorkspaceContext{workspace_id: workspace_id}),
     do: where(query, [group: group], group.workspace_id == ^workspace_id)
@@ -968,17 +943,17 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
   defp group_trigger(query, nil), do: query
 
   defp group_trigger(query, trigger_type),
-    do: where(query, [root: root], root.trigger_type == ^trigger_type)
+    do: where(query, [group: group], group.trigger_type == ^trigger_type)
 
   defp group_started_after(query, nil), do: query
 
   defp group_started_after(query, %DateTime{} = after_at),
-    do: where(query, [root: root], root.inserted_at >= ^after_at)
+    do: where(query, [group: group], group.started_at >= ^after_at)
 
   defp group_started_before(query, nil), do: query
 
   defp group_started_before(query, %DateTime{} = before_at),
-    do: where(query, [root: root], root.inserted_at < ^before_at)
+    do: where(query, [group: group], group.started_at < ^before_at)
 
   defp group_search(query, nil), do: query
 
@@ -1019,19 +994,22 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
     |> String.replace("_", "\\_")
   end
 
-  # A group whose root run is missing has no start instant to order by, so it
-  # sorts last in both directions instead of taking the top of the page.
+  # A group with no start instant yet — a projection that saw a child run's event
+  # before its root's — sorts to the oldest end in both directions, which is what
+  # "not started as far as we know" means. Ascending nulls first is the exact
+  # reverse of descending nulls last, so both directions are the one index read
+  # forwards or backwards.
   defp order_groups(query, :started_asc) do
-    order_by(query, [group: group, root: root],
-      asc_nulls_last: root.inserted_at,
+    order_by(query, [group: group],
+      asc_nulls_first: group.started_at,
       asc: group.workspace_id,
       asc: group.root_run_id
     )
   end
 
   defp order_groups(query, :started_desc) do
-    order_by(query, [group: group, root: root],
-      desc_nulls_last: root.inserted_at,
+    order_by(query, [group: group],
+      desc_nulls_last: group.started_at,
       desc: group.workspace_id,
       desc: group.root_run_id
     )
@@ -1039,24 +1017,50 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
 
   defp after_group(query, nil, _order), do: query
 
+  # Ascending, the nulls are already behind the cursor, so the next page is
+  # everything with a start instant beyond it.
+  defp after_group(query, %{started_at: nil} = cursor, :started_asc) do
+    where(
+      query,
+      [group: group],
+      not is_nil(group.started_at) or
+        (group.workspace_id > ^cursor.workspace_id or
+           (group.workspace_id == ^cursor.workspace_id and
+              group.root_run_id > ^cursor.root_run_id))
+    )
+  end
+
   defp after_group(query, cursor, :started_asc) do
     where(
       query,
-      [group: group, root: root],
-      root.inserted_at > ^cursor.started_at or
-        (root.inserted_at == ^cursor.started_at and
+      [group: group],
+      group.started_at > ^cursor.started_at or
+        (group.started_at == ^cursor.started_at and
            (group.workspace_id > ^cursor.workspace_id or
               (group.workspace_id == ^cursor.workspace_id and
                  group.root_run_id > ^cursor.root_run_id)))
     )
   end
 
+  # Descending, the nulls are the tail, so a cursor inside them can only be
+  # followed by more of them.
+  defp after_group(query, %{started_at: nil} = cursor, :started_desc) do
+    where(
+      query,
+      [group: group],
+      is_nil(group.started_at) and
+        (group.workspace_id < ^cursor.workspace_id or
+           (group.workspace_id == ^cursor.workspace_id and
+              group.root_run_id < ^cursor.root_run_id))
+    )
+  end
+
   defp after_group(query, cursor, :started_desc) do
     where(
       query,
-      [group: group, root: root],
-      root.inserted_at < ^cursor.started_at or
-        (root.inserted_at == ^cursor.started_at and
+      [group: group],
+      is_nil(group.started_at) or group.started_at < ^cursor.started_at or
+        (group.started_at == ^cursor.started_at and
            (group.workspace_id < ^cursor.workspace_id or
               (group.workspace_id == ^cursor.workspace_id and
                  group.root_run_id < ^cursor.root_run_id)))
@@ -1120,11 +1124,14 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
   end
 
   defp validate_group_page(page) do
+    # A cursor may carry no start instant, because the row it was taken from had
+    # none. Rejecting that would make the tail of the list unpageable.
     cursor? =
       is_nil(page.after) or
         match?(
-          %{started_at: %DateTime{}, workspace_id: workspace_id, root_run_id: run_id}
-          when is_binary(workspace_id) and is_binary(run_id),
+          %{started_at: started_at, workspace_id: workspace_id, root_run_id: run_id}
+          when is_binary(workspace_id) and is_binary(run_id) and
+                 (is_nil(started_at) or is_struct(started_at, DateTime)),
           page.after
         )
 

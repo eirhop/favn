@@ -512,19 +512,16 @@ of this read model.
 `active`, `failed`, `succeeded`, and `total`, narrowed by the same filters as the
 page read.
 
-### Known cost: the sort key is not on the projection
+### The sort key belongs to the group
 
-Ordering by when the root run started means ordering by `runs.inserted_at` across
-a left join, and neither `execution_group_overviews` nor `runs` has an index that
-serves it — the old `latest_event_id` ordering did. At thousands of groups this is
-a join plus a sort of the whole filtered set, repeated on every live refresh. The
-fix is to denormalise `started_at` onto the group projection with an index on
-`(workspace_id, started_at desc, root_run_id)`, which would also make the window
-filters and the counts indexable. Not done yet.
+Ordering by when the root run started first meant ordering by `runs.inserted_at`
+across a left join, which no index served — a sort of the whole workspace on every
+page read and every live refresh. `started_at`, `trigger_type`, and `finished_at`
+are projected onto `execution_group_overviews` now, so ordering, the window
+filters, the keyset, and the counts are one index on one table.
 
-Paging is also only half wired: the store has a keyset cursor, but the list grows
-by re-reading with a larger `limit`, capped at 500. Beyond that an operator has to
-narrow rather than scroll.
+Paging steps a window rather than growing a pile: `Older` carries the last row's
+sort key, which is the store's keyset, so any page costs one read of one page.
 
 ### Three things the page was saying wrongly
 

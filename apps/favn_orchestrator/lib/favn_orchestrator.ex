@@ -1386,14 +1386,20 @@ defmodule FavnOrchestrator do
     * `:started_after`, `:started_before` — `DateTime` bounds on when the group's
       root run started
     * `:order` — `:started_desc` (default) or `:started_asc`
-    * `:limit`, `:after` — page size and keyset cursor
+    * `:limit` — page size, capped at 500
+    * `:after` — the keyset cursor from a previous page's `next_cursor`. A caller
+      that never sees a workspace id may pass `%{started_at: _, root_run_id: _}`
+      and the authorized workspace completes it.
 
-  Every filter is applied by the store, so `page.has_more?` and the returned items
-  describe the same filtered set.
+  Every filter is applied by the store, so `page.has_more?`, `page.next_cursor`,
+  and the returned items describe the same filtered set. Paging by the cursor
+  costs the same at any depth; growing `:limit` instead re-reads from the start.
   """
   @spec page_execution_groups(OperatorContext.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def page_execution_groups(%OperatorContext{} = operator_context, filters)
       when is_list(filters) do
+    cursor = group_cursor(Keyword.get(filters, :after), operator_context.workspace_id)
+
     with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer),
          {:ok, page} <-
            Persistence.stores().operator_reads.page_execution_groups(%PageExecutionGroups{
@@ -1404,12 +1410,21 @@ defmodule FavnOrchestrator do
              started_after: Keyword.get(filters, :started_after),
              started_before: Keyword.get(filters, :started_before),
              order: Keyword.get(filters, :order, :started_desc),
-             after: Keyword.get(filters, :after),
+             after: cursor,
              limit: min(Keyword.get(filters, :limit, 100), 500)
            }) do
       {:ok, %{page | items: Enum.map(page.items, &execution_group_summary/1)}}
     end
   end
+
+  # A browser holds a cursor without a workspace in it, because a workspace id is
+  # not the browser's to carry. Completing it from the session's hint grants no
+  # authority: the store still scopes the page to the authorized workspace, so a
+  # cursor naming another one selects nothing rather than reading it.
+  defp group_cursor(cursor, workspace_id) when is_map(cursor),
+    do: Map.put_new(cursor, :workspace_id, workspace_id)
+
+  defp group_cursor(cursor, _workspace_id), do: cursor
 
   @doc """
   Returns execution-group counts per status for one authorized operator workspace.

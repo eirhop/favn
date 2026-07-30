@@ -33,11 +33,11 @@ defmodule FavnView.RunsFiltersTest do
     end
 
     test "a hand-edited param falls back rather than failing the page" do
-      filters = RunsFilters.from_params(%{"range" => "??", "status" => "??", "limit" => "-3"})
+      filters = RunsFilters.from_params(%{"range" => "??", "status" => "??", "order" => "??"})
 
       assert filters.range == :today
       assert filters.status == :any
-      assert filters.limit == 50
+      assert filters.order == :started_desc
     end
   end
 
@@ -56,11 +56,6 @@ defmodule FavnView.RunsFiltersTest do
 
       assert changed.range == :today
       assert RunsFilters.to_params(changed) == []
-    end
-
-    test "narrowing resets a page that had been grown" do
-      filters = RunsFilters.from_params(%{"limit" => "200"})
-      assert RunsFilters.change(filters, %{"q" => "orders"}).limit == 50
     end
 
     test "a search survives changing the range" do
@@ -173,14 +168,59 @@ defmodule FavnView.RunsFiltersTest do
     end
   end
 
-  describe "growth" do
-    test "a page grows by one step until it reaches the store's ceiling" do
-      filters = %RunsFilters{limit: 450}
-      assert RunsFilters.growth(filters) == 50
+  describe "paging" do
+    test "the next page is the last row's sort key, and it round-trips through the URL" do
+      filters = RunsFilters.from_params(%{"range" => "month"})
+      paged = RunsFilters.next_page(filters, ~U[2026-07-11 08:30:00Z], "run_crm_daily_9f2")
 
-      grown = RunsFilters.grow(filters)
-      assert grown.limit == 500
-      assert RunsFilters.growth(grown) == nil
+      assert RunsFilters.paged?(paged)
+      assert {"after", "2026-07-11T08:30:00Z|run_crm_daily_9f2"} in RunsFilters.to_params(paged)
+
+      assert paged
+             |> RunsFilters.to_params()
+             |> Map.new()
+             |> RunsFilters.from_params() == paged
+    end
+
+    test "the cursor reaches the store, and one page is always one page" do
+      filters =
+        RunsFilters.next_page(%RunsFilters{}, ~U[2026-07-11 08:30:00Z], "run_crm_daily_9f2")
+
+      store_filters = RunsFilters.store_filters(filters, @now)
+
+      assert Keyword.get(store_filters, :limit) == RunsFilters.page_size()
+
+      assert Keyword.get(store_filters, :after) == %{
+               started_at: ~U[2026-07-11 08:30:00Z],
+               root_run_id: "run_crm_daily_9f2"
+             }
+    end
+
+    test "the counts ignore the page, because they are of the whole filtered set" do
+      filters = RunsFilters.next_page(%RunsFilters{}, ~U[2026-07-11 08:30:00Z], "run_9f2")
+      refute Keyword.has_key?(RunsFilters.count_filters(filters, @now), :after)
+    end
+
+    test "a row with no start instant cannot be paged from" do
+      refute RunsFilters.paged?(RunsFilters.next_page(%RunsFilters{}, nil, "run_9f2"))
+    end
+
+    test "a hand-edited cursor falls back to the first page rather than failing" do
+      for value <- ["", "not-a-date|run_1", "2026-07-11T08:30:00Z", "2026-07-11T08:30:00Z|"] do
+        refute RunsFilters.paged?(RunsFilters.from_params(%{"after" => value}))
+      end
+    end
+
+    test "every other control returns to the first page" do
+      paged = RunsFilters.next_page(%RunsFilters{}, ~U[2026-07-11 08:30:00Z], "run_9f2")
+
+      refute RunsFilters.paged?(RunsFilters.first_page(paged))
+      refute RunsFilters.paged?(RunsFilters.toggle_order(paged))
+      refute RunsFilters.paged?(RunsFilters.change(paged, %{"range" => "week"}))
+
+      assert paged
+             |> RunsFilters.status_filters(nil)
+             |> Enum.all?(&(not Enum.any?(&1.params, fn {key, _value} -> key == "after" end)))
     end
   end
 end

@@ -37,9 +37,7 @@ defmodule FavnView.RunsFilters do
   @default_range :today
   @default_status :any
   @default_order :started_desc
-  @default_limit 50
-  @limit_step 50
-  @max_limit 500
+  @page_size 50
 
   @status_definitions [
     %{
@@ -82,11 +80,12 @@ defmodule FavnView.RunsFilters do
             from: nil,
             to: nil,
             order: @default_order,
-            limit: @default_limit
+            after: nil
 
   @type range :: :hour | :today | :week | :month | :custom | :all
   @type status :: :any | :active | :succeeded | :failed
   @type order :: :started_desc | :started_asc
+  @type cursor :: %{started_at: DateTime.t(), root_run_id: String.t()}
 
   @type t :: %__MODULE__{
           range: range(),
@@ -95,7 +94,7 @@ defmodule FavnView.RunsFilters do
           from: Date.t() | nil,
           to: Date.t() | nil,
           order: order(),
-          limit: pos_integer()
+          after: cursor() | nil
         }
 
   @doc """
@@ -120,7 +119,7 @@ defmodule FavnView.RunsFilters do
       from: from,
       to: to,
       order: enum(params["order"], @orders, @default_order),
-      limit: limit(params["limit"])
+      after: cursor(params["after"])
     }
   end
 
@@ -139,12 +138,12 @@ defmodule FavnView.RunsFilters do
       {"range", filters.range, @default_range},
       {"status", filters.status, @default_status},
       {"q", filters.search, ""},
-      {"order", filters.order, @default_order},
-      {"limit", filters.limit, @default_limit}
+      {"order", filters.order, @default_order}
     ]
     |> Enum.reject(fn {_key, value, default} -> value == default end)
     |> Enum.map(fn {key, value, _default} -> {key, to_string(value)} end)
     |> Kernel.++(date_params(filters))
+    |> Kernel.++(cursor_params(filters))
   end
 
   @doc """
@@ -157,40 +156,56 @@ defmodule FavnView.RunsFilters do
 
   The status is not among these. It is set by the count buttons, which are links,
   so it round-trips through the URL rather than through this form.
+
+  Every change returns to the first page: a narrower filter has no business
+  starting where the last one was left.
   """
   @spec change(t(), map()) :: t()
   def change(%__MODULE__{} = filters, params) when is_map(params) do
     current = Map.new(to_params(filters))
-    submitted = Map.take(params, ~w(range q from to order limit))
+    submitted = Map.take(params, ~w(range q from to order))
     merged = Map.merge(current, submitted)
 
     merged
     |> maybe_force_custom(current, submitted)
+    |> Map.delete("after")
     |> from_params()
-    |> Map.put(:limit, @default_limit)
   end
 
-  @doc "Returns the same filters ordered the other way."
+  @doc "Returns the same filters ordered the other way, from the first page."
   @spec toggle_order(t()) :: t()
   def toggle_order(%__MODULE__{order: :started_desc} = filters),
-    do: %{filters | order: :started_asc, limit: @default_limit}
+    do: %{filters | order: :started_asc, after: nil}
 
   def toggle_order(%__MODULE__{} = filters),
-    do: %{filters | order: @default_order, limit: @default_limit}
+    do: %{filters | order: @default_order, after: nil}
 
-  @doc "Returns the same filters with room for one more page of rows."
-  @spec grow(t()) :: t()
-  def grow(%__MODULE__{limit: limit} = filters),
-    do: %{filters | limit: min(limit + @limit_step, @max_limit)}
+  @doc """
+  Returns the same filters starting after one row, which is the next page.
 
-  @doc "How many more rows `grow/1` would ask for, or `nil` at the ceiling."
-  @spec growth(t()) :: pos_integer() | nil
-  def growth(%__MODULE__{limit: limit}) do
-    case min(limit + @limit_step, @max_limit) - limit do
-      0 -> nil
-      step -> step
-    end
-  end
+  The row is the last one on screen, so the page after it costs the same read
+  whether it is the second page or the two hundredth: the cursor is a bound on the
+  index the list is already ordered by, not an offset to count past.
+  """
+  @spec next_page(t(), DateTime.t() | nil, String.t()) :: t()
+  def next_page(%__MODULE__{} = filters, %DateTime{} = started_at, root_run_id)
+      when is_binary(root_run_id),
+      do: %{filters | after: %{started_at: started_at, root_run_id: root_run_id}}
+
+  def next_page(%__MODULE__{} = filters, _started_at, _root_run_id), do: filters
+
+  @doc "Returns the same filters back at the first page."
+  @spec first_page(t()) :: t()
+  def first_page(%__MODULE__{} = filters), do: %{filters | after: nil}
+
+  @doc "Whether these filters are showing anything other than the first page."
+  @spec paged?(t()) :: boolean()
+  def paged?(%__MODULE__{after: nil}), do: false
+  def paged?(%__MODULE__{}), do: true
+
+  @doc "How many runs one page holds."
+  @spec page_size() :: pos_integer()
+  def page_size, do: @page_size
 
   @doc """
   The instants this range covers, as an inclusive start and an exclusive end.
@@ -226,20 +241,22 @@ defmodule FavnView.RunsFilters do
   def store_filters(%__MODULE__{} = filters, now) do
     {started_after, started_before} = window(filters, now)
 
-    [limit: filters.limit, order: filters.order]
+    [limit: @page_size, order: filters.order]
     |> put_filter(:status, store_status(filters.status))
     |> put_filter(:search, presence(filters.search))
     |> put_filter(:started_after, started_after)
     |> put_filter(:started_before, started_before)
+    |> put_filter(:after, filters.after)
   end
 
   @doc """
   The keyword filters `FavnOrchestrator.count_execution_groups/2` accepts.
 
-  These are `store_filters/2` without the status, the page size, or the order,
-  because the counts differ from the list in exactly one way: they are taken once
-  per status. Deriving them from the same function is what keeps a count equal to
-  the number of rows clicking it produces.
+  These are `store_filters/2` without the status, the page, or the order, because
+  the counts differ from the list in exactly one way: they are taken once per
+  status. Deriving them from the same function is what keeps a count equal to the
+  number of rows clicking it produces — and a count is of the whole filtered set,
+  not of the page being looked at.
 
       iex> filters = FavnView.RunsFilters.from_params(%{"q" => "orders", "range" => "all"})
       iex> FavnView.RunsFilters.count_filters(filters, ~U[2026-07-30 10:00:00Z])
@@ -247,7 +264,7 @@ defmodule FavnView.RunsFilters do
   """
   @spec count_filters(t(), DateTime.t()) :: keyword()
   def count_filters(%__MODULE__{} = filters, now),
-    do: filters |> store_filters(now) |> Keyword.drop([:status, :limit, :order])
+    do: filters |> store_filters(now) |> Keyword.drop([:status, :limit, :order, :after])
 
   @doc """
   The status axis, as four choices that each carry their own count.
@@ -257,7 +274,8 @@ defmodule FavnView.RunsFilters do
   not its size is known yet.
 
   Every other axis is preserved, so switching status keeps the range, the dates,
-  and the search the operator already set.
+  and the search the operator already set. The page is not an axis: a different
+  status starts at its own first page.
   """
   @spec status_filters(t(), map() | nil) :: [map()]
   def status_filters(%__MODULE__{} = filters, counts) do
@@ -270,7 +288,7 @@ defmodule FavnView.RunsFilters do
         tone: choice.tone,
         count: counts && Map.get(counts, choice.count_key),
         active?: filters.status == choice.status,
-        params: to_params(%{filters | status: choice.status, limit: @default_limit})
+        params: to_params(%{filters | status: choice.status, after: nil})
       }
     end)
   end
@@ -359,6 +377,29 @@ defmodule FavnView.RunsFilters do
 
   defp date_params(%__MODULE__{}), do: []
 
+  # The cursor is the sort key of the last row on the page, which is exactly what
+  # the store's keyset needs. It travels in the URL rather than in socket state, so
+  # a page is a link and the browser's own history is the way back.
+  defp cursor_params(%__MODULE__{after: %{started_at: started_at, root_run_id: run_id}}),
+    do: [{"after", "#{DateTime.to_iso8601(started_at)}|#{run_id}"}]
+
+  defp cursor_params(%__MODULE__{}), do: []
+
+  defp cursor(value) when is_binary(value) do
+    with [instant, run_id] <- String.split(value, "|", parts: 2),
+         {:ok, started_at, _offset} <- DateTime.from_iso8601(instant),
+         true <- run_id != "" do
+      %{started_at: started_at, root_run_id: run_id}
+    else
+      _unusable -> nil
+    end
+  end
+
+  defp cursor(%{started_at: %DateTime{}, root_run_id: run_id} = value) when is_binary(run_id),
+    do: value
+
+  defp cursor(_value), do: nil
+
   defp range(value, from, to) do
     case enum(value, @ranges, nil) do
       nil -> if is_nil(from) and is_nil(to), do: @default_range, else: :custom
@@ -385,18 +426,6 @@ defmodule FavnView.RunsFilters do
   end
 
   defp presence(_value), do: nil
-
-  defp limit(value) when is_binary(value) do
-    case Integer.parse(value) do
-      {parsed, ""} -> limit(parsed)
-      _unparseable -> @default_limit
-    end
-  end
-
-  defp limit(value) when is_integer(value) and value > 0,
-    do: value |> min(@max_limit) |> max(@limit_step)
-
-  defp limit(_value), do: @default_limit
 
   defp date(value) when is_binary(value) do
     case Date.from_iso8601(value) do

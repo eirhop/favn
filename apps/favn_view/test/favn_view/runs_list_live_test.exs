@@ -31,7 +31,7 @@ defmodule FavnView.RunsListLiveTest do
     assert run.target == "orders"
     assert run.target_title == "MyApp.Assets.Orders.orders"
     assert run.progress.total == 1
-    refute assigns.truncated?
+    refute assigns.more?
   end
 
   test "a backfill is timed by its group, not by the root run that submitted it" do
@@ -171,7 +171,49 @@ defmodule FavnView.RunsListLiveTest do
 
     socket = load(%{"range" => "week"})
 
-    assert socket.assigns.truncated?
+    assert socket.assigns.more?
+    assert {:flat, [_run]} = socket.assigns.listing
+  end
+
+  test "the next page starts after the last row on this one" do
+    now = DateTime.utc_now()
+    older = DateTime.add(now, -7200, :second)
+
+    stub_page([execution_group("run-newer", now), execution_group("run-older", older)])
+
+    socket = load(%{"range" => "week"})
+
+    assert {:noreply, socket} = RunsListLive.handle_event("next_page", %{}, socket)
+    assert {:live, :patch, %{to: path}} = socket.redirected
+
+    assert path =~ "after=" <> URI.encode_www_form("#{DateTime.to_iso8601(older)}|run-older")
+  end
+
+  test "the cursor reaches the store instead of a larger page" do
+    stub_page([], fn opts -> send(self(), {:filters, opts}) end)
+
+    load(%{"after" => "2026-07-11T08:30:00Z|run-older"})
+
+    assert_received {:filters, opts}
+
+    assert Keyword.get(opts, :after) == %{
+             started_at: ~U[2026-07-11 08:30:00Z],
+             root_run_id: "run-older"
+           }
+
+    assert Keyword.get(opts, :limit) == 50
+  end
+
+  # A later page covers part of the range at both ends, so it must not enumerate
+  # days it never reached — including the days between its first row and today.
+  test "a later page never claims a day outside it was empty" do
+    now = DateTime.utc_now()
+    older = DateTime.add(now, -5 * 86_400, :second)
+
+    stub_page([execution_group("run-older", older)])
+
+    socket = load(%{"range" => "month", "after" => "2026-07-11T08:30:00Z|run-newer"})
+
     assert {:flat, [_run]} = socket.assigns.listing
   end
 

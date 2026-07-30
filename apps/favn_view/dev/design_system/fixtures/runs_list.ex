@@ -60,9 +60,22 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.RunsList do
     attrs(filters, Enum.take(daily_runs(), 4))
   end
 
-  @doc "More runs than one page holds."
+  @doc "More runs than one page holds, so a page follows this one."
   @spec truncated() :: map()
-  def truncated, do: %{today() | truncated?: true}
+  def truncated, do: %{today() | more?: true}
+
+  @doc "A page reached from the one before it, with another behind it."
+  @spec later_page() :: map()
+  def later_page do
+    filters =
+      RunsFilters.next_page(
+        RunsFilters.from_params(%{"range" => "month"}),
+        DateTime.add(@now, -3 * 86_400, :second),
+        "run_crm_daily_2003_11"
+      )
+
+    %{attrs(filters, Enum.drop(daily_runs(), 4)) | more?: true}
+  end
 
   @doc "The narrow-screen filter disclosure, opened."
   @spec filters_open() :: map()
@@ -89,7 +102,7 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.RunsList do
         ),
       filters: filters,
       counts: counts(counted || runs),
-      truncated?: false,
+      more?: false,
       filters_open?: false,
       error: nil,
       nav_items: nav_items()

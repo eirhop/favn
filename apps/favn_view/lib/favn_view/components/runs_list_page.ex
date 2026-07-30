@@ -44,7 +44,7 @@ defmodule FavnView.Components.RunsListPage do
 
   attr :filters, RunsFilters, required: true
   attr :counts, :map, default: nil, doc: "store-wide counts, or `nil` if they could not be read"
-  attr :truncated?, :boolean, default: false
+  attr :more?, :boolean, default: false, doc: "whether a page follows this one"
   attr :filters_open?, :boolean, default: false, doc: "narrow screens only; wide ones always show"
   attr :error, :string, default: nil
   attr :nav_items, :list, required: true
@@ -82,16 +82,7 @@ defmodule FavnView.Components.RunsListPage do
 
             <.runs_cards :if={!empty?(@listing)} listing={@listing} />
 
-            <div :if={@truncated?} class="p-4 text-center">
-              <.button
-                phx-click="load_more"
-                variant={:ghost}
-                icon="hero-arrow-down"
-                data-testid="load-more-runs"
-              >
-                Load {RunsFilters.growth(@filters) || 0} more
-              </.button>
-            </div>
+            <.runs_pager filters={@filters} more?={@more?} />
           </div>
         </.panel>
       </div>
@@ -281,6 +272,49 @@ defmodule FavnView.Components.RunsListPage do
           <.run_row :for={run <- day_runs(day)} run={run} />
         </tbody>
       </table>
+    </div>
+    """
+  end
+
+  @doc """
+  The step to the next page of older runs, and the way back to the newest.
+
+  The list is a window rather than a pile: one page is one read of the index the
+  rows are already ordered by, so the two hundredth page costs what the second
+  does. Nothing is rendered when the first page is the only page.
+  """
+  attr :filters, RunsFilters, required: true
+  attr :more?, :boolean, required: true
+
+  def runs_pager(assigns) do
+    ~H"""
+    <div
+      :if={@more? or RunsFilters.paged?(@filters)}
+      class="flex items-center justify-between gap-3 border-t border-base-content/10 p-3"
+      data-testid="runs-pager"
+    >
+      <.button
+        :if={RunsFilters.paged?(@filters)}
+        phx-click="first_page"
+        variant={:ghost}
+        icon="hero-arrow-up"
+        data-testid="runs-newest-page"
+      >
+        Newest
+      </.button>
+      <span :if={!RunsFilters.paged?(@filters)} class="text-xs favn-text-subtle">
+        {RunsFilters.page_size()} most recent
+      </span>
+
+      <.button
+        :if={@more?}
+        phx-click="next_page"
+        variant={:ghost}
+        trailing_icon="hero-arrow-right"
+        data-testid="runs-next-page"
+      >
+        Older
+      </.button>
     </div>
     """
   end

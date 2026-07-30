@@ -6598,6 +6598,51 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     end
   end
 
+  # The runs list reads this every page and again on every live refresh, so its
+  # order has to come from an index rather than from sorting the workspace. The
+  # sort key is projected onto the group for exactly this reason: ordering it on
+  # the root run's insert time meant a join and a sort with no index to serve it.
+  test "paging execution groups by start time is index-ordered in both directions",
+       fixture do
+    plans =
+      Repo.transaction(fn ->
+        SQL.query!(Repo, "SET LOCAL enable_seqscan = off", [])
+
+        for order <- ["DESC NULLS LAST", "ASC NULLS FIRST"] do
+          direction = if order == "DESC NULLS LAST", do: "DESC", else: "ASC"
+
+          %{rows: rows} =
+            SQL.query!(
+              Repo,
+              """
+              EXPLAIN (FORMAT TEXT)
+              SELECT root_run_id
+              FROM favn_control.execution_group_overviews
+              WHERE workspace_id = $1 AND started_at >= $2
+              ORDER BY started_at #{order},
+                       workspace_id #{direction},
+                       root_run_id #{direction}
+              LIMIT 51
+              """,
+              [
+                fixture.workspace_context.workspace_id,
+                DateTime.add(DateTime.utc_now(), -86_400, :second)
+              ]
+            )
+
+          rows |> List.flatten() |> Enum.join("\n")
+        end
+      end)
+      |> then(fn {:ok, plans} -> plans end)
+
+    for plan <- plans do
+      assert plan =~ "started_idx"
+      refute plan =~ "Sort"
+    end
+
+    assert Enum.at(plans, 1) =~ "Backward"
+  end
+
   test "outbox publication preserves run causality when business clocks move backwards",
        fixture do
     {command, run} = create_run_command(fixture)
