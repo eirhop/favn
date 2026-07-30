@@ -59,10 +59,7 @@ workspace-administrator membership to every listed workspace, and records
 durable audit entries. Normal startup contains no bootstrap secret and cannot
 repeat this action.
 
-If an existing administrator loses access, first drain and stop every control
-plane/web instance. This prevents an already-connected LiveView from remaining
-open while the separate recovery VM changes durable state. Then use the
-explicit recovery operation:
+If an existing administrator loses access, use the explicit recovery operation:
 
 ```console
 mix favn.admin.recover --username USERNAME
@@ -77,8 +74,37 @@ bin/favn_control_plane eval 'IO.inspect(FavnStoragePostgres.Release.admin_recove
 Recovery is allowed only for an actor that already has an administrator role.
 It activates the global actor, rotates its password, revokes all of its
 sessions, and records a durable platform audit entry. It does not add or repair
-workspace memberships. Start the control plane again only after the command
-succeeds. Run recovery only as a documented break-glass operation.
+workspace memberships. Durable authorization rejects those sessions
+immediately; a passive LiveView connected to an unclustered control-plane
+process leaves on its next revalidation, within 30 seconds. Run recovery only as
+a documented break-glass operation.
+
+For a non-administrator who has lost the password, use the separate global actor
+reset. It preserves actor status and workspace memberships, rotates the
+credential, revokes every session, and records a platform audit entry:
+
+```console
+mix favn.admin.password_reset --username USERNAME
+```
+
+For a packaged release:
+
+```console
+bin/favn_control_plane eval 'IO.inspect(FavnStoragePostgres.Release.admin_password_reset_from_stdin("USERNAME"))'
+```
+
+To disable or re-enable an exact global actor without changing memberships:
+
+```console
+mix favn.admin.actor --username USERNAME --status disabled
+mix favn.admin.actor --username USERNAME --status active
+```
+
+The packaged-release equivalent is
+`FavnStoragePostgres.Release.admin_actor_status/1`. Disabling revokes every
+session across every workspace. See
+[`operator_security.md`](operator_security.md) for the complete role, session,
+and audit contract.
 
 ## Orchestrator and runner boundary
 

@@ -298,15 +298,16 @@ defmodule FavnView.AdminLive do
   end
 
   defp append_page(socket, kind) do
-    cursor = socket.assigns[:"#{kind}_next_cursor"]
+    {items_key, cursor_key, has_more_key} = page_assigns(kind)
+    cursor = socket.assigns[cursor_key]
 
     if cursor do
       case page(kind, operator_context(socket), cursor) do
         {:ok, result} ->
           socket
-          |> assign(kind, socket.assigns[kind] ++ result.items)
-          |> assign(:"#{kind}_next_cursor", result.next_cursor)
-          |> assign(:"#{kind}_has_more?", result.has_more?)
+          |> assign(items_key, socket.assigns[items_key] ++ result.items)
+          |> assign(cursor_key, result.next_cursor)
+          |> assign(has_more_key, result.has_more?)
 
         {:error, _reason} ->
           put_flash(socket, :error, "More records could not be loaded")
@@ -317,19 +318,27 @@ defmodule FavnView.AdminLive do
   end
 
   defp assign_page(socket, kind, {:ok, result}) do
+    {items_key, cursor_key, has_more_key} = page_assigns(kind)
+
     socket
-    |> assign(kind, result.items)
-    |> assign(:"#{kind}_next_cursor", result.next_cursor)
-    |> assign(:"#{kind}_has_more?", result.has_more?)
+    |> assign(items_key, result.items)
+    |> assign(cursor_key, result.next_cursor)
+    |> assign(has_more_key, result.has_more?)
   end
 
   defp assign_page(socket, kind, {:error, _reason}) do
+    {items_key, cursor_key, has_more_key} = page_assigns(kind)
+
     socket
-    |> assign(kind, [])
-    |> assign(:"#{kind}_next_cursor", nil)
-    |> assign(:"#{kind}_has_more?", false)
+    |> assign(items_key, [])
+    |> assign(cursor_key, nil)
+    |> assign(has_more_key, false)
     |> put_flash(:error, "Some administration data is unavailable")
   end
+
+  defp page_assigns(:actors), do: {:actors, :actors_next_cursor, :actors_has_more?}
+  defp page_assigns(:sessions), do: {:sessions, :sessions_next_cursor, :sessions_has_more?}
+  defp page_assigns(:audit), do: {:audit, :audit_next_cursor, :audit_has_more?}
 
   defp page(:actors, context, cursor) do
     call(:page_operator_actors_fun, &FavnOrchestrator.page_operator_actors/2, [
