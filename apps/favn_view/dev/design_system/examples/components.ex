@@ -287,6 +287,7 @@ defmodule FavnView.Dev.DesignSystem.Examples.Components do
           %{
             selected_window: nil,
             has_data_windows?: false,
+            command_resource: "asset:customer_orders_daily",
             run_config: Timeline.full_refresh_run_config()
           },
           "An asset with no windows can only be refreshed whole."
@@ -295,18 +296,21 @@ defmodule FavnView.Dev.DesignSystem.Examples.Components do
           selected_window: nil,
           has_data_windows?: true,
           active_timeline: :refresh,
+          command_resource: "asset:customer_orders_daily",
           run_config: Timeline.default_run_config()
         }),
         Example.attrs(:selected_refresh_period, %{
           selected_window: refresh,
           has_data_windows?: true,
           active_timeline: :refresh,
+          command_resource: "asset:customer_orders_daily",
           run_config: Timeline.default_run_config()
         }),
         Example.attrs(:selected_data_window, %{
           selected_window: data,
           has_data_windows?: true,
           active_timeline: :data_coverage,
+          command_resource: "asset:customer_orders_daily",
           run_config: Timeline.run_config(:data_coverage_timeline, :day, "2026-06-12")
         }),
         Example.attrs(
@@ -316,6 +320,7 @@ defmodule FavnView.Dev.DesignSystem.Examples.Components do
             has_data_windows?: true,
             active_timeline: :refresh,
             run_config_open?: true,
+            command_resource: "asset:customer_orders_daily",
             run_config: Timeline.default_run_config()
           },
           "The editable form, with no window selected."
@@ -327,6 +332,7 @@ defmodule FavnView.Dev.DesignSystem.Examples.Components do
             has_data_windows?: true,
             active_timeline: :refresh,
             run_config_open?: true,
+            command_resource: "asset:customer_orders_daily",
             run_config:
               Timeline.run_config(:refresh_timeline, :day, "2026-06-10", "none", "force_all")
           },
@@ -336,18 +342,21 @@ defmodule FavnView.Dev.DesignSystem.Examples.Components do
           selected_window: refresh,
           has_data_windows?: true,
           submitting_window_run?: true,
+          command_resource: "asset:customer_orders_daily",
           run_config: Timeline.default_run_config()
         }),
         Example.attrs(:submitted, %{
           selected_window: refresh,
           has_data_windows?: true,
           submitted_run_id: "run_01HZ",
+          command_resource: "asset:customer_orders_daily",
           run_config: Timeline.default_run_config()
         }),
         Example.attrs(:submit_error, %{
           selected_window: refresh,
           has_data_windows?: true,
           selected_window_error: "Could not submit run.",
+          command_resource: "asset:customer_orders_daily",
           run_config: Timeline.default_run_config()
         }),
         Example.attrs(
@@ -358,6 +367,7 @@ defmodule FavnView.Dev.DesignSystem.Examples.Components do
             run_config_open?: true,
             run_config_valid?: false,
             selected_window_error: "force_selected_upstream requires dependencies=all.",
+            command_resource: "asset:customer_orders_daily",
             run_config:
               Timeline.run_config(
                 :refresh_timeline,
@@ -376,6 +386,7 @@ defmodule FavnView.Dev.DesignSystem.Examples.Components do
               Map.merge(data, %{run_enabled?: false, run_disabled_reason: :invalid_window}),
             has_data_windows?: true,
             active_timeline: :data_coverage,
+            command_resource: "asset:customer_orders_daily",
             run_config: Timeline.run_config(:data_coverage_timeline, :day, "2026-06-12")
           },
           "The window cannot be run, so no control implies that it can."
@@ -451,6 +462,7 @@ defmodule FavnView.Dev.DesignSystem.Examples.Components do
     ~H"""
     <.panel padding={:lg} class="mx-auto w-full max-w-4xl">
       <h2 class="text-xl font-medium">Shell content slot</h2>
+
       <p class="mt-2 text-base-content/60">Page components provide the centred content.</p>
     </.panel>
     """

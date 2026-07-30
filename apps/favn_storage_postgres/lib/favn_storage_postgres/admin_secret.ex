@@ -53,7 +53,9 @@ defmodule FavnStoragePostgres.AdminSecret do
   end
 
   defp read_stdin(prompt) do
-    case :io.get_password(String.to_charlist(prompt <> ": ")) do
+    IO.write(:stderr, prompt <> ": ")
+
+    case :io.get_password() do
       password when is_list(password) -> password |> List.to_string() |> normalize()
       :eof -> {:error, "password input ended before a password was provided"}
       {:error, _reason} -> {:error, "password could not be read from stdin"}

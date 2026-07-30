@@ -339,7 +339,6 @@ defmodule FavnView.Components.SelectedWindowActions do
   defp run_dialog_title(nil), do: "Run asset"
   defp run_dialog_title(window), do: "Run #{window.range_label}"
 
-
   defp dependencies_summary(%{dependencies: "none"}), do: "This asset only"
   defp dependencies_summary(_run_config), do: "With upstream dependencies"
 

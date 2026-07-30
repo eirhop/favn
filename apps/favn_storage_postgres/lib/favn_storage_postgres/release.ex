@@ -778,7 +778,9 @@ defmodule FavnStoragePostgres.Release do
   end
 
   defp read_password(prompt) do
-    case :io.get_password(String.to_charlist(prompt <> ": ")) do
+    IO.write(:stderr, prompt <> ": ")
+
+    case :io.get_password() do
       password when is_list(password) ->
         password = List.to_string(password)
 

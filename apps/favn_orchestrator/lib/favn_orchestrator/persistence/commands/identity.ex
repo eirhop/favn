@@ -1,6 +1,8 @@
 defmodule FavnOrchestrator.Persistence.Commands.CreateActor do
   @moduledoc "Creates a global actor, current credential, and initial workspace membership."
 
+  alias FavnOrchestrator.Persistence.WorkspaceContext
+
   @enforce_keys [
     :workspace_context,
     :command_id,
@@ -114,6 +116,7 @@ defmodule FavnOrchestrator.Persistence.Commands.SetActorAccess do
   @moduledoc "Changes one workspace membership or explicitly authorized platform grant."
 
   alias FavnOrchestrator.Persistence.PlatformContext
+  alias FavnOrchestrator.Persistence.WorkspaceContext
 
   @enforce_keys [
     :authority,
