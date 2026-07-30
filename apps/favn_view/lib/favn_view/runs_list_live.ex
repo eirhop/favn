@@ -211,15 +211,15 @@ defmodule FavnView.RunsListLive do
     end
   end
 
+  # Every seam takes the operator context, because the context is what carries the
+  # workspace and the authorization. A one-argument override used to be accepted
+  # here, which made "call this boundary read unscoped" a supported shape.
   defp call_page_execution_groups(operator_context, opts) do
-    fun =
-      Application.get_env(
-        :favn_view,
-        :page_execution_groups_fun,
-        &FavnOrchestrator.page_execution_groups/2
-      )
-
-    if is_function(fun, 2), do: fun.(operator_context, opts), else: fun.(opts)
+    Application.get_env(
+      :favn_view,
+      :page_execution_groups_fun,
+      &FavnOrchestrator.page_execution_groups/2
+    ).(operator_context, opts)
   end
 
   defp call_count_execution_groups(operator_context, opts) do
@@ -261,7 +261,7 @@ defmodule FavnView.RunsListLive do
       started_on: short_date(Map.get(group, :started_at)),
       started_at_raw: Map.get(group, :started_at),
       started_at_title: full_timestamp(Map.get(group, :started_at)),
-      duration: duration_label(group, run_counts(group))
+      duration: duration_label(group)
     }
   end
 
@@ -315,21 +315,6 @@ defmodule FavnView.RunsListLive do
   defp assets_word(1), do: "asset"
   defp assets_word(_count), do: "assets"
 
-  defp run_counts(group) do
-    totals = group |> Map.get(:summary_totals, %{}) |> Map.get(:asset_attempts, %{})
-
-    %{
-      total: count(totals, :total, group, :total_asset_attempts),
-      completed: count(totals, :completed, group, :completed_asset_attempts),
-      failed: count(totals, :failed, group, :failed_asset_attempts),
-      running: count(totals, :running, group, :running_asset_attempts),
-      queued: count(totals, :queued, group, :queued_asset_attempts)
-    }
-  end
-
-  defp count(totals, key, group, fallback_key),
-    do: Map.get(totals, key) || Map.get(group, fallback_key, 0)
-
   defp display_status(:ok), do: :succeeded
   defp display_status(:error), do: :failed
   defp display_status(:pending), do: :queued
@@ -345,24 +330,16 @@ defmodule FavnView.RunsListLive do
   defp status_label(:timed_out), do: "Timed out"
   defp status_label(_status), do: "Unknown"
 
-  # A backfill's root run is finished as soon as it has submitted its windows, so
-  # its own duration is milliseconds while the backfill ran for minutes. The
-  # group's row records when it was last touched, and that span is what the
-  # operator means by how long it took.
-  defp duration_label(group, %{total: runs}) when runs > 1,
-    do: span_label(Map.get(group, :started_at), Map.get(group, :last_activity_at))
-
-  defp duration_label(%{status: status, duration_ms: nil}, _runs)
+  # The group's own duration, which the projection now measures from when the group
+  # started to when it settled. This used to compute a span from `last_activity_at`
+  # for multi-run groups, because the projection reported a backfill as finishing
+  # the instant it was submitted — a workaround for a wrong number rather than a
+  # different question.
+  defp duration_label(%{status: status, duration_ms: nil})
        when status in [:running, :pending],
        do: "elapsed"
 
-  defp duration_label(group, _runs),
-    do: LogsViewModel.duration_ms_label(Map.get(group, :duration_ms))
-
-  defp span_label(%DateTime{} = from, %DateTime{} = to),
-    do: LogsViewModel.duration_ms_label(max(DateTime.diff(to, from, :millisecond), 0))
-
-  defp span_label(_from, _to), do: "-"
+  defp duration_label(group), do: LogsViewModel.duration_ms_label(Map.get(group, :duration_ms))
 
   defp refs(refs) when is_list(refs) do
     refs

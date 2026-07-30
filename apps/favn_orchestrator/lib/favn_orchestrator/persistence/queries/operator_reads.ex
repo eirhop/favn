@@ -57,7 +57,7 @@ defmodule FavnOrchestrator.Persistence.Queries.PageExecutionGroups do
           started_before: DateTime.t() | nil,
           after:
             %{
-              started_at: DateTime.t(),
+              started_at: DateTime.t() | nil,
               workspace_id: String.t(),
               root_run_id: String.t()
             }
@@ -77,8 +77,9 @@ defmodule FavnOrchestrator.Persistence.Queries.CountExecutionGroups do
 
   Every field except the status narrows the same way `PageExecutionGroups` does,
   because a count offered next to a filter has to be the size of what that filter
-  would return. Only the status axis is left open, and the result reports one
-  count per value it could take.
+  would return. Only the status axis is left open, and the result counts the
+  buckets an operator asks in: pending and running together, failed, and
+  succeeded.
   """
 
   alias FavnOrchestrator.Persistence.PlatformContext
@@ -371,8 +372,9 @@ defmodule FavnOrchestrator.Persistence.Results.ExecutionGroupCounts do
   How many execution groups the queried scope holds, per status.
 
   `active` counts pending and running together, because a queued run is one the
-  operator is waiting on. `total` is every status, including the ones with no
-  count of their own.
+  operator is waiting on. Only four statuses are ever projected, so
+  `active + failed + succeeded == total`; a group with a failed run counts as
+  failed even while its other runs are still going.
   """
   @enforce_keys [:active, :failed, :succeeded, :total]
   defstruct @enforce_keys

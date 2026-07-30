@@ -115,7 +115,7 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
         |> group_trigger(trigger_type)
         |> group_started_after(page.started_after)
         |> group_started_before(page.started_before)
-        |> group_search(page.search)
+        |> group_search(page.search, page.scope)
         |> after_group(page.after, page.order)
         |> order_groups(page.order)
         |> limit(^(page.limit + 1))
@@ -145,7 +145,7 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
         |> group_trigger(trigger_type)
         |> group_started_after(query.started_after)
         |> group_started_before(query.started_before)
-        |> group_search(query.search)
+        |> group_search(query.search, query.scope)
         |> select([group: group], %{
           active: filter(count(), group.status in ^@active_group_statuses),
           failed: filter(count(), group.status == "failed"),
@@ -242,7 +242,12 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
 
       {:ok,
        %OperatorRunOverviewResult{
-         overview: group_result(overview),
+         overview:
+           group_result(
+             overview,
+             target_refs_by_group([overview]),
+             asset_counts_by_group([overview])
+           ),
          root_run: run_result(root),
          runs: runs.items,
          requested_windows: requested_windows.items,
@@ -545,8 +550,6 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
     }
   end
 
-  defp group_result(group), do: group_result(group, %{}, %{})
-
   defp group_result(group, targets, assets) do
     key = {group.workspace_id, group.root_run_id}
     by_kind = Map.get(targets, key, %{})
@@ -563,7 +566,9 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
       latest_event_id: group.latest_event_id,
       source_publication_id: group.source_publication_id,
       updated_at: group.updated_at,
-      trigger_type: group.trigger_type && RunEnum.decode!(:trigger_type, group.trigger_type),
+      # A trigger this release does not know costs the row its trigger, not the
+      # caller its page: one unrecognised value must not fail a list of fifty.
+      trigger_type: RunEnum.decode(:trigger_type, group.trigger_type),
       started_at: group.started_at,
       finished_at: group.finished_at,
       target_refs: Map.get(by_kind, "asset", []),
@@ -994,9 +999,9 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
   defp group_started_before(query, %DateTime{} = before_at),
     do: where(query, [group: group], group.started_at < ^before_at)
 
-  defp group_search(query, nil), do: query
+  defp group_search(query, nil, _scope), do: query
 
-  defp group_search(query, search) do
+  defp group_search(query, search, scope) do
     case String.trim(search) do
       "" ->
         query
@@ -1007,24 +1012,35 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
         where(
           query,
           [group: group],
-          ilike(group.root_run_id, ^pattern) or exists(matching_target(pattern))
+          ilike(group.root_run_id, ^pattern) or exists(matching_target(pattern, scope))
         )
     end
   end
 
   # Correlated on the group rather than on one run, so searching for an asset
   # finds the backfill that touched it in one of fifty windows.
-  defp matching_target(pattern) do
+  #
+  # The workspace is also pinned as a constant, not only through the correlation:
+  # PostgreSQL is free to de-correlate this into a hashed subplan, and when it does,
+  # a correlated-only predicate is evaluated after the join — which turns one
+  # keystroke into a scan of every run target in the deployment.
+  defp matching_target(pattern, scope) do
     from(target in RunTarget,
       join: run in Run,
       on: run.workspace_id == target.workspace_id and run.run_id == target.run_id,
       where:
         run.workspace_id == parent_as(:group).workspace_id and
           run.root_execution_group_id == parent_as(:group).root_run_id,
-      where: ilike(target.target_module, ^pattern) or ilike(target.target_name, ^pattern),
-      select: 1
+      where: ilike(target.target_module, ^pattern) or ilike(target.target_name, ^pattern)
     )
+    |> search_scope(scope)
+    |> select([_target, _run], 1)
   end
+
+  defp search_scope(query, %WorkspaceContext{workspace_id: workspace_id}),
+    do: where(query, [target, run], target.workspace_id == ^workspace_id)
+
+  defp search_scope(query, _scope), do: query
 
   defp escape_like(term) do
     term

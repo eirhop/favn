@@ -1379,7 +1379,11 @@ defmodule FavnOrchestrator do
 
   Supported filters:
 
-    * `:status` — one group status, or `:only_failed`/`:only_running` as booleans
+    * `:status` — one status, or a list to ask for any of several (`[:pending,
+      :running]` is "in flight"). Run vocabulary is accepted and folded onto the
+      four projected group statuses. A status that cannot be folded is an error
+      rather than an ignored filter.
+    * `:only_failed`, `:only_running` — booleans, and they override `:status`
     * `:search` — matches the group's root run id and its runs' target modules and
       names
     * `:trigger_type` — one trigger, for example `:schedule`
@@ -1418,11 +1422,13 @@ defmodule FavnOrchestrator do
   end
 
   # A browser holds a cursor without a workspace in it, because a workspace id is
-  # not the browser's to carry. Completing it from the session's hint grants no
-  # authority: the store still scopes the page to the authorized workspace, so a
-  # cursor naming another one selects nothing rather than reading it.
+  # not the browser's to carry. Completing it from the session's own hint grants no
+  # authority — the store scopes the page to the authorized workspace either way —
+  # and it overwrites rather than defers to a supplied id: the cursor's workspace is
+  # a live comparand in the keyset tie-break, so a foreign one would not read
+  # another workspace but would make rows sharing an instant repeat or vanish.
   defp group_cursor(cursor, workspace_id) when is_map(cursor),
-    do: Map.put_new(cursor, :workspace_id, workspace_id)
+    do: Map.put(cursor, :workspace_id, workspace_id)
 
   defp group_cursor(cursor, _workspace_id), do: cursor
 
@@ -1699,21 +1705,32 @@ defmodule FavnOrchestrator do
   # A group's status is one of four projected values, so a caller may ask in run
   # vocabulary and get the group equivalent. A list asks for any of several, which
   # is how "running or queued" is expressed without two round trips.
+  #
+  # Anything this vocabulary cannot express becomes `:unknown`, which the store
+  # rejects as an invalid status. Folding it to `nil` instead would drop the `WHERE`
+  # clause and answer "every group in the workspace", which is further from the
+  # truth than an error. An empty list is the same case: no status is not any
+  # status.
   defp group_status(nil), do: nil
+  defp group_status([]), do: :unknown
 
   defp group_status(statuses) when is_list(statuses) do
-    case statuses |> Enum.map(&group_status/1) |> Enum.reject(&is_nil/1) |> Enum.uniq() do
-      [] -> nil
+    case statuses |> Enum.map(&group_status/1) |> Enum.uniq() do
       [single] -> single
-      several -> several
+      several -> if :unknown in several, do: :unknown, else: several
     end
   end
 
   defp group_status(status) when status in [:ok, :succeeded], do: :succeeded
-  defp group_status(status) when status in [:error, :failed, :partial], do: :failed
+
+  # A group whose run went partial is projected as succeeded, because the group
+  # completed. Mapping `:partial` to `:failed` returned exactly the groups that did
+  # not go partial.
+  defp group_status(:partial), do: :succeeded
+  defp group_status(status) when status in [:error, :failed], do: :failed
   defp group_status(status) when status in [:pending, :queued], do: :pending
   defp group_status(:running), do: :running
-  defp group_status(_status), do: nil
+  defp group_status(_status), do: :unknown
 
   defp execution_group_summary(group), do: RunReadModel.from_execution_group_overview(group)
 

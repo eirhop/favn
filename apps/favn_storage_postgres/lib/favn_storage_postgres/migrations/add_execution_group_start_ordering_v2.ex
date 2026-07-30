@@ -12,11 +12,23 @@ defmodule FavnStoragePostgres.Migrations.AddExecutionGroupStartOrderingV2 do
       add(:finished_at, :timestamptz)
     end
 
+    # `finished_at` is when the group stopped, not when its root run did: a
+    # backfill's root run is terminal the instant it is created, so it is the last
+    # of the group's runs to end that finished the group. A group with work still
+    # outstanding has not finished at all.
     execute("""
     UPDATE #{@prefix}.execution_group_overviews AS overview
     SET trigger_type = root.trigger_type,
         started_at = root.inserted_at,
-        finished_at = root.terminal_at
+        finished_at = CASE
+          WHEN overview.pending_count > 0 OR overview.running_count > 0 THEN NULL
+          ELSE (
+            SELECT max(member.terminal_at)
+            FROM #{@prefix}.runs AS member
+            WHERE member.workspace_id = overview.workspace_id
+              AND member.root_execution_group_id = overview.root_run_id
+          )
+        END
     FROM #{@prefix}.runs AS root
     WHERE root.workspace_id = overview.workspace_id
       AND root.run_id = overview.root_run_id

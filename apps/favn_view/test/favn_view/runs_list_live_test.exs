@@ -71,26 +71,33 @@ defmodule FavnView.RunsListLiveTest do
     assert run.started_on == "11 Jul"
   end
 
-  test "a backfill is timed by its group, not by the root run that submitted it" do
+  # The row reports the duration the projection measured. It used to derive a span
+  # from `last_activity_at` for multi-run groups, to work around a projection that
+  # called a backfill finished the instant it was submitted; that is fixed at the
+  # source now, and `apps/favn_storage_postgres` owns the test for it.
+  test "a group's duration is the one the projection measured" do
     started_at = ~U[2026-07-30 09:00:00Z]
 
     group =
       Map.merge(execution_group(), %{
         status: :ok,
         started_at: started_at,
-        finished_at: DateTime.add(started_at, 12, :millisecond),
-        duration_ms: 12,
-        last_activity_at: DateTime.add(started_at, 154, :second),
-        summary_totals: %{
-          windows: %{total: 0, completed: 0, failed: 0},
-          asset_attempts: %{total: 8, completed: 8, failed: 0, running: 0, queued: 0}
-        }
+        finished_at: DateTime.add(started_at, 154, :second),
+        duration_ms: 154_000,
+        last_activity_at: DateTime.add(started_at, 154, :second)
       })
 
     stub_page([group])
 
     assert {:flat, [run]} = load(%{}).assigns.listing
     assert run.duration == "154.0 s"
+  end
+
+  test "a group still going reports elapsed rather than a duration it does not have" do
+    stub_page([Map.merge(execution_group(), %{status: :running, duration_ms: nil})])
+
+    assert {:flat, [run]} = load(%{}).assigns.listing
+    assert run.duration == "elapsed"
   end
 
   test "a pipeline run is named by its pipeline, not by the first of its assets" do

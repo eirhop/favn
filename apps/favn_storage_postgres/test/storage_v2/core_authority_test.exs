@@ -6598,6 +6598,89 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     end
   end
 
+  # A backfill's root run is terminal the instant it is created — it exists to group
+  # the window runs that do the work. Recording the root run's `terminal_at` as the
+  # group's finish therefore reported every backfill as finishing before it started,
+  # with a duration of zero. The group finishes when nothing in it is outstanding.
+  test "a group finishes when its last run settles, not when its root run does",
+       fixture do
+    {root_command, root} = create_run_command(fixture)
+    assert {:ok, _created} = RunStore.create_run(root_command)
+
+    child_id = "run-child-#{System.unique_integer([:positive])}"
+    {child_command, child} = create_run_command(fixture, child_id)
+    child = %{child | root_run_id: root.id}
+
+    assert {:ok, _created} = RunStore.create_run(%{child_command | run: child})
+
+    settle = fn run, sequence, command ->
+      finished =
+        RunState.transition(
+          run,
+          [status: :ok, metadata: Map.put(run.metadata, :terminal_event_type, :run_finished)],
+          DateTime.utc_now()
+        )
+
+      assert {:ok, _committed} =
+               RunStore.commit_transition(%CommitRunTransition{
+                 workspace_context: fixture.workspace_context,
+                 command_id: command,
+                 expected_sequence: sequence,
+                 run: finished,
+                 event: %{
+                   run_id: run.id,
+                   sequence: sequence + 1,
+                   event_type: :run_finished,
+                   status: :ok,
+                   occurred_at: DateTime.utc_now()
+                 }
+               })
+
+      finished
+    end
+
+    settle.(root, 1, "settle-root:" <> root.id)
+
+    overview = fn ->
+      assert {:ok, publications} = Sequencer.sequence_batch()
+
+      SQL.query!(
+        Repo,
+        "UPDATE favn_control.projection_cursors SET owner_id = NULL, claim_expires_at = NULL WHERE projector_name = 'control_plane_v1' AND shard_id = 0",
+        []
+      )
+
+      assert drain_projector("node-a") >= length(publications)
+
+      Repo.get_by!(FavnStoragePostgres.Schemas.ExecutionGroupOverview,
+        workspace_id: fixture.workspace_id,
+        root_run_id: root.id
+      )
+    end
+
+    # The root has settled but the child has not, so the group has not finished.
+    outstanding = overview.()
+    assert outstanding.run_count == 2
+    assert is_nil(outstanding.finished_at)
+
+    settle.(child, 1, "settle-child:" <> child.id)
+
+    settled = overview.()
+    assert settled.status == "succeeded"
+    assert %DateTime{} = settled.finished_at
+    assert DateTime.compare(settled.finished_at, settled.started_at) == :gt
+
+    # The root run stopped first, and taking its instant is what this rules out.
+    assert %{rows: [[%DateTime{} = root_terminal_at]]} =
+             SQL.query!(
+               Repo,
+               "SELECT terminal_at FROM favn_control.runs WHERE workspace_id = $1 AND run_id = $2",
+               [fixture.workspace_id, root.id]
+             )
+
+    assert DateTime.compare(settled.finished_at, root_terminal_at) == :gt
+  end
+
   # A group's own counters count runs, which is one for everything but a backfill.
   # What the list reports is asset steps, so they are counted per group in one
   # bounded aggregate rather than inferred from the run count.
