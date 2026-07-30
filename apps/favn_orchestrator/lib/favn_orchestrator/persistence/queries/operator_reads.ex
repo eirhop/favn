@@ -69,24 +69,29 @@ end
 
 defmodule FavnOrchestrator.Persistence.Queries.CountExecutionGroups do
   @moduledoc """
-  Counts execution groups per operator question, in one pass over one scope.
+  Counts execution groups per status, in one pass over one narrowed scope.
 
-  A runs list has to answer "what is running", "what failed today", and "how much
-  ran today" before the operator has clicked anything, and a count taken from the
+  A runs list has to say how much is running, how much failed, and how much
+  succeeded before the operator has clicked anything, and a count taken from the
   first page of a list is only ever the count of that page.
 
-  `since` is the boundary for "today". The caller owns it, because the operator's
-  day is not necessarily the UTC day.
+  Every field except the status narrows the same way `PageExecutionGroups` does,
+  because a count offered next to a filter has to be the size of what that filter
+  would return. Only the status axis is left open, and the result reports one
+  count per value it could take.
   """
 
   alias FavnOrchestrator.Persistence.PlatformContext
   alias FavnOrchestrator.Persistence.WorkspaceContext
-  @enforce_keys [:scope, :since]
-  defstruct [:scope, :since]
+  @enforce_keys [:scope]
+  defstruct [:scope, :search, :trigger_type, :started_after, :started_before]
 
   @type t :: %__MODULE__{
           scope: WorkspaceContext.t() | PlatformContext.t(),
-          since: DateTime.t()
+          search: String.t() | nil,
+          trigger_type: atom() | nil,
+          started_after: DateTime.t() | nil,
+          started_before: DateTime.t() | nil
         }
 end
 
@@ -348,18 +353,19 @@ end
 
 defmodule FavnOrchestrator.Persistence.Results.ExecutionGroupCounts do
   @moduledoc """
-  How many execution groups a scope holds, per operator question.
+  How many execution groups the queried scope holds, per status.
 
-  `active` ignores `since` on purpose: a run that started yesterday and has not
-  finished is still what the operator means by "currently running".
+  `active` counts pending and running together, because a queued run is one the
+  operator is waiting on. `total` is every status, including the ones with no
+  count of their own.
   """
-  @enforce_keys [:active, :failed_since, :started_since, :total]
+  @enforce_keys [:active, :failed, :succeeded, :total]
   defstruct @enforce_keys
 
   @type t :: %__MODULE__{
           active: non_neg_integer(),
-          failed_since: non_neg_integer(),
-          started_since: non_neg_integer(),
+          failed: non_neg_integer(),
+          succeeded: non_neg_integer(),
           total: non_neg_integer()
         }
 end

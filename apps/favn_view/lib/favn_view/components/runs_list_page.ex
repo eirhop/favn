@@ -11,10 +11,18 @@ defmodule FavnView.Components.RunsListPage do
   headers whenever the range covers more than one day: a day with no runs still
   gets a row, and the gap is the answer.
 
-  Everything else the operator can ask is three controls — a search, a status, and
-  a time range — plus a sort direction, which lives in the column it acts on. One
-  row of chrome, not nine. The four buttons write to the same three controls, so a
-  question is a shortcut rather than a mode the operator can get stuck in.
+  The status is that row of buttons and nothing else — a select beside them would
+  be a second way to set the same field, and the counts make the buttons the
+  better one. What is left is a search and a time range, plus a sort direction
+  that lives in the column it acts on.
+
+  ## Narrow screens
+
+  The table is the reason the page exists, so on a narrow screen it gets the room:
+  the search and the range collapse behind one control, and the status buttons
+  stay, because their counts are the answer rather than a way to look for it. The
+  rows become cards and the page itself scrolls, rather than a short region
+  inside it.
 
   ## Why the table is local
 
@@ -37,6 +45,7 @@ defmodule FavnView.Components.RunsListPage do
   attr :filters, RunsFilters, required: true
   attr :counts, :map, default: nil, doc: "store-wide counts, or `nil` if they could not be read"
   attr :truncated?, :boolean, default: false
+  attr :filters_open?, :boolean, default: false, doc: "narrow screens only; wide ones always show"
   attr :error, :string, default: nil
   attr :nav_items, :list, required: true
 
@@ -46,10 +55,9 @@ defmodule FavnView.Components.RunsListPage do
       title="Runs"
       subtitle={RunsFilters.range_label(@filters)}
       nav_items={@nav_items}
-      content_scroll?={false}
     >
       <div
-        class="mx-auto flex min-h-0 w-full max-w-[110rem] flex-1 flex-col pb-24 lg:pb-0"
+        class="mx-auto flex w-full max-w-[110rem] flex-col lg:min-h-0 lg:flex-1"
         data-testid="runs-list-page"
       >
         <.error_state
@@ -62,12 +70,12 @@ defmodule FavnView.Components.RunsListPage do
         <.panel
           :if={!@error}
           padding={:none}
-          class="flex min-h-0 flex-1 flex-col overflow-hidden"
+          class="flex flex-col lg:min-h-0 lg:flex-1 lg:overflow-hidden"
           data-testid="runs-panel"
         >
-          <.runs_toolbar filters={@filters} counts={@counts} />
+          <.runs_toolbar filters={@filters} counts={@counts} filters_open?={@filters_open?} />
 
-          <div class="min-h-0 flex-1 overflow-y-auto">
+          <div class="lg:min-h-0 lg:flex-1 lg:overflow-y-auto">
             <.runs_empty_state :if={empty?(@listing)} filters={@filters} />
 
             <.runs_table :if={!empty?(@listing)} listing={@listing} order={@filters.order} />
@@ -93,25 +101,48 @@ defmodule FavnView.Components.RunsListPage do
 
   attr :filters, RunsFilters, required: true
   attr :counts, :map, default: nil
+  attr :filters_open?, :boolean, default: false
 
   def runs_toolbar(assigns) do
-    assigns = assign(assigns, :presets, RunsFilters.presets(assigns.filters, assigns.counts))
+    assigns =
+      assign(assigns, :choices, RunsFilters.status_filters(assigns.filters, assigns.counts))
 
     ~H"""
     <div class="border-b border-base-content/10 p-3 sm:p-4">
-      <div class="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+      <div class="flex flex-wrap items-center gap-2 sm:gap-3 lg:justify-between">
         <nav
-          class="favn-surface-rail flex flex-wrap items-center gap-0.5 rounded-box p-1"
-          aria-label="Run scopes"
-          data-testid="run-scopes"
+          class="favn-surface-rail grid w-full grid-cols-2 gap-0.5 rounded-box p-1 sm:flex sm:w-auto sm:flex-wrap sm:items-center"
+          aria-label="Run status"
+          data-testid="run-statuses"
         >
-          <.scope_button :for={preset <- @presets} preset={preset} />
+          <.status_button :for={choice <- @choices} choice={choice} />
         </nav>
 
+        <.button
+          variant={:ghost}
+          icon="hero-adjustments-horizontal"
+          class="ml-auto shrink-0 lg:hidden"
+          phx-click="toggle_filters"
+          aria-expanded={to_string(@filters_open?)}
+          aria-controls="runs-filters"
+          data-testid="toggle-runs-filters"
+        >
+          Filters
+          <span
+            :if={RunsFilters.adjusted?(@filters)}
+            class="size-1.5 rounded-full bg-primary"
+            aria-hidden="true"
+          />
+        </.button>
+
         <form
+          id="runs-filters"
           phx-change="filter_runs"
           phx-submit="filter_runs"
-          class="flex flex-wrap items-center gap-2"
+          class={[
+            "w-full flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center lg:w-auto",
+            (@filters_open? && "flex") || "hidden lg:flex"
+          ]}
           data-testid="runs-filters"
         >
           <.search_field
@@ -119,15 +150,7 @@ defmodule FavnView.Components.RunsListPage do
             value={@filters.search}
             label="Search runs"
             placeholder="Run id, pipeline, or asset"
-            class="w-full sm:w-52"
-          />
-          <.select_field
-            name="filters[status]"
-            label="Status"
-            options={RunsFilters.status_options()}
-            value={to_string(@filters.status)}
-            icon="hero-signal"
-            class="w-full sm:w-40"
+            class="sm:w-56"
           />
           <.select_field
             name="filters[range]"
@@ -135,12 +158,26 @@ defmodule FavnView.Components.RunsListPage do
             options={RunsFilters.range_options()}
             value={to_string(@filters.range)}
             icon="hero-calendar-days"
-            class="w-full sm:w-40"
+            class="sm:w-44"
           />
-          <div :if={RunsFilters.custom?(@filters)} class="flex items-center gap-2">
-            <.date_input name="filters[from]" label="From date" value={@filters.from} />
-            <span class="text-xs favn-text-subtle">to</span>
-            <.date_input name="filters[to]" label="To date" value={@filters.to} />
+          <div
+            :if={RunsFilters.custom?(@filters)}
+            class="flex w-full items-center gap-2 sm:w-auto"
+            data-testid="runs-custom-range"
+          >
+            <.date_input
+              name="filters[from]"
+              label="From date"
+              value={@filters.from}
+              class="min-w-0 flex-1 sm:w-36 sm:flex-none"
+            />
+            <span class="shrink-0 text-xs favn-text-subtle">to</span>
+            <.date_input
+              name="filters[to]"
+              label="To date"
+              value={@filters.to}
+              class="min-w-0 flex-1 sm:w-36 sm:flex-none"
+            />
           </div>
         </form>
       </div>
@@ -148,32 +185,39 @@ defmodule FavnView.Components.RunsListPage do
     """
   end
 
-  attr :preset, :map, required: true
+  @doc """
+  One value of the status axis, carrying how many runs it would list.
 
-  def scope_button(assigns) do
+  The attr is a whole choice rather than a status, because `status` means a tone
+  everywhere else in this library.
+  """
+  attr :choice, :map, required: true
+
+  def status_button(assigns) do
     ~H"""
     <.link
-      patch={runs_path(@preset.params)}
+      patch={runs_path(@choice.params)}
       class={
         [
-          "favn-mode-item h-9 gap-1.5 rounded-field px-2.5 text-sm font-medium",
+          "favn-mode-item h-9 justify-start gap-1.5 rounded-field px-2.5 text-sm font-medium sm:justify-center",
           "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
           # The rail's own colour is tuned for icon-only buttons; these carry words,
           # which are held to the higher contrast ask, so an inactive one borrows the
           # muted text tier rather than the rail's decorative tint.
-          (@preset.active? && "favn-mode-item-active") || "favn-text-muted"
+          (@choice.active? && "favn-mode-item-active") || "favn-text-muted"
         ]
       }
-      aria-current={@preset.active? && "page"}
-      data-testid={"run-scope-#{@preset.id}"}
+      title={@choice.hint}
+      aria-current={@choice.active? && "page"}
+      data-testid={"run-status-#{@choice.id}"}
     >
-      <.icon name={@preset.icon} size={:md} class={Tokens.text_class(Tokens.tone(@preset.tone))} />
-      <span class="whitespace-nowrap">{@preset.label}</span>
+      <.icon name={@choice.icon} size={:md} class={Tokens.text_class(Tokens.tone(@choice.tone))} />
+      <span class="whitespace-nowrap">{@choice.label}</span>
       <.count_badge
-        :if={is_integer(@preset.count)}
-        count={@preset.count}
+        :if={is_integer(@choice.count)}
+        count={@choice.count}
         label="runs"
-        tone={count_tone(@preset)}
+        tone={count_tone(@choice)}
       />
     </.link>
     """
@@ -182,10 +226,11 @@ defmodule FavnView.Components.RunsListPage do
   attr :name, :string, required: true
   attr :label, :string, required: true
   attr :value, :any, default: nil
+  attr :class, :any, default: nil
 
   def date_input(assigns) do
     ~H"""
-    <label class="input input-sm favn-surface-control w-36 px-3">
+    <label class={["input input-sm favn-surface-control px-3", @class]}>
       <span class="sr-only">{@label}</span>
       <input
         type="date"
@@ -203,38 +248,40 @@ defmodule FavnView.Components.RunsListPage do
 
   def runs_table(assigns) do
     ~H"""
-    <table class="hidden w-full table table-sm lg:table" data-testid="runs-table">
-      <thead class="sticky top-0 z-10 bg-base-100/85 backdrop-blur">
-        <tr class="border-base-content/10 text-xs favn-text-muted">
-          <th class="w-64 font-medium">Run</th>
-          <th class="font-medium">Target</th>
-          <th class="w-36 font-medium">
-            <.sort_button order={@order} />
-          </th>
-          <th class="w-28 font-medium">Duration</th>
-          <th class="w-10"><span class="sr-only">Open</span></th>
-        </tr>
-      </thead>
+    <div class="hidden lg:block">
+      <table class="w-full table table-sm" data-testid="runs-table">
+        <thead class="sticky top-0 z-10 bg-base-100/85 backdrop-blur">
+          <tr class="border-base-content/10 text-xs favn-text-muted">
+            <th class="w-64 font-medium">Run</th>
+            <th class="font-medium">Target</th>
+            <th class="w-36 font-medium">
+              <.sort_button order={@order} />
+            </th>
+            <th class="w-28 font-medium">Duration</th>
+            <th class="w-10"><span class="sr-only">Open</span></th>
+          </tr>
+        </thead>
 
-      <tbody :if={match?({:flat, _}, @listing)}>
-        <.run_row :for={run <- flat_runs(@listing)} run={run} />
-      </tbody>
+        <tbody :if={match?({:flat, _}, @listing)}>
+          <.run_row :for={run <- flat_runs(@listing)} run={run} />
+        </tbody>
 
-      <tbody :for={day <- day_groups(@listing)} id={day.id} data-testid="runs-day-group">
-        <tr :if={day.kind == :gap} class="border-base-content/10" data-testid="runs-day-gap">
-          <td colspan="5" class="py-1.5 text-xs favn-text-subtle">
-            <.gap_heading day={day} />
-          </td>
-        </tr>
+        <tbody :for={day <- day_groups(@listing)} id={day.id} data-testid="runs-day-group">
+          <tr :if={day.kind == :gap} class="border-base-content/10" data-testid="runs-day-gap">
+            <td colspan="5" class="py-1.5 text-xs favn-text-subtle">
+              <.gap_heading day={day} />
+            </td>
+          </tr>
 
-        <tr :if={day.kind == :day} class="border-none bg-base-content/[0.06]">
-          <th colspan="5" class="py-1.5">
-            <.day_heading day={day} />
-          </th>
-        </tr>
-        <.run_row :for={run <- day_runs(day)} run={run} />
-      </tbody>
-    </table>
+          <tr :if={day.kind == :day} class="border-none bg-base-content/[0.06]">
+            <th colspan="5" class="py-1.5">
+              <.day_heading day={day} />
+            </th>
+          </tr>
+          <.run_row :for={run <- day_runs(day)} run={run} />
+        </tbody>
+      </table>
+    </div>
     """
   end
 

@@ -25,6 +25,7 @@ defmodule FavnView.RunsListLive do
         counts: nil,
         filters: %RunsFilters{},
         truncated?: false,
+        filters_open?: false,
         error: nil,
         run_events_live?: false,
         nav_items: RunsListPage.nav_items(:runs)
@@ -48,6 +49,7 @@ defmodule FavnView.RunsListLive do
       filters={@filters}
       counts={@counts}
       truncated?={@truncated?}
+      filters_open?={@filters_open?}
       error={@error}
       nav_items={@nav_items}
     />
@@ -57,6 +59,10 @@ defmodule FavnView.RunsListLive do
   @impl true
   def handle_event("filter_runs", %{"filters" => params}, socket) do
     {:noreply, patch(socket, RunsFilters.change(socket.assigns.filters, params))}
+  end
+
+  def handle_event("toggle_filters", _params, socket) do
+    {:noreply, update(socket, :filters_open?, &(not &1))}
   end
 
   def handle_event("toggle_started_order", _params, socket) do
@@ -102,9 +108,10 @@ defmodule FavnView.RunsListLive do
   defp patch(socket, filters),
     do: push_patch(socket, to: RunsListPage.runs_path(RunsFilters.to_params(filters)))
 
-  # One read for the page and one for the counts. The counts are of the whole
-  # workspace rather than of this page, so the scope buttons keep telling the truth
-  # when the page is truncated.
+  # One read for the page and one for the counts. The counts are of the store
+  # rather than of this page, so the status buttons keep telling the truth when the
+  # page is truncated, and they are narrowed the same way the page is, so the
+  # number on a button is the number of rows clicking it produces.
   defp load_runs(socket) do
     now = DateTime.utc_now()
     filters = socket.assigns.filters
@@ -112,7 +119,7 @@ defmodule FavnView.RunsListLive do
 
     socket
     |> assign_page(page_execution_groups(operator_context, filters, now), filters, now)
-    |> assign(:counts, counts(operator_context, now))
+    |> assign(:counts, counts(operator_context, filters, now))
     |> maybe_schedule_fallback_poll()
   end
 
@@ -150,10 +157,8 @@ defmodule FavnView.RunsListLive do
     end
   end
 
-  defp counts(operator_context, now) do
-    since = DateTime.new!(DateTime.to_date(now), ~T[00:00:00], "Etc/UTC")
-
-    case call_count_execution_groups(operator_context, since: since) do
+  defp counts(operator_context, filters, now) do
+    case call_count_execution_groups(operator_context, RunsFilters.count_filters(filters, now)) do
       {:ok, counts} when is_map(counts) ->
         counts
 

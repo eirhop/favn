@@ -131,16 +131,19 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
 
   @impl true
   def count_execution_groups(%CountExecutionGroups{} = query) do
-    with :ok <- validate_count_groups(query) do
-      since = query.since
-
+    with :ok <- validate_count_groups(query),
+         {:ok, trigger_type} <- encoded_trigger(query.trigger_type) do
       counts =
         group_query()
         |> group_scope(query.scope)
-        |> select([group: group, root: root], %{
+        |> group_trigger(trigger_type)
+        |> group_started_after(query.started_after)
+        |> group_started_before(query.started_before)
+        |> group_search(query.search)
+        |> select([group: group], %{
           active: filter(count(), group.status in ^@active_group_statuses),
-          failed_since: filter(count(), group.status == "failed" and root.inserted_at >= ^since),
-          started_since: filter(count(), root.inserted_at >= ^since),
+          failed: filter(count(), group.status == "failed"),
+          succeeded: filter(count(), group.status == "succeeded"),
           total: count()
         })
         |> Repo.one()
@@ -148,8 +151,8 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
       {:ok,
        %ExecutionGroupCounts{
          active: counts.active,
-         failed_since: counts.failed_since,
-         started_since: counts.started_since,
+         failed: counts.failed,
+         succeeded: counts.succeeded,
          total: counts.total
        }}
     end
@@ -1141,9 +1144,13 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
   end
 
   defp validate_count_groups(query) do
-    if group_scope?(query.scope) and match?(%DateTime{}, query.since),
-      do: :ok,
-      else: {:error, ErrorMapper.map(:invalid)}
+    valid? =
+      group_scope?(query.scope) and
+        (is_nil(query.search) or is_binary(query.search)) and
+        (is_nil(query.trigger_type) or is_atom(query.trigger_type)) and
+        valid_instant?(query.started_after) and valid_instant?(query.started_before)
+
+    if valid?, do: :ok, else: {:error, ErrorMapper.map(:invalid)}
   end
 
   defp group_scope?(scope),

@@ -146,8 +146,8 @@ defmodule FavnOrchestrator do
 
   @type execution_group_counts :: %{
           active: non_neg_integer(),
-          failed_since: non_neg_integer(),
-          started_since: non_neg_integer(),
+          failed: non_neg_integer(),
+          succeeded: non_neg_integer(),
           total: non_neg_integer()
         }
   @type operator_run_detail :: RunReadModel.operator_run_detail()
@@ -1412,31 +1412,28 @@ defmodule FavnOrchestrator do
   end
 
   @doc """
-  Returns execution-group counts for one authorized operator workspace.
+  Returns execution-group counts per status for one authorized operator workspace.
 
-  `:since` is the instant "today" begins for this operator, and defaults to the
-  start of the current UTC day. The counts are of the whole workspace, not of one
-  page, so a runs list can say how much is running and how much failed without
-  first loading either set.
+  Accepts `:search`, `:trigger_type`, `:started_after`, and `:started_before`,
+  which narrow exactly as they do in `page_execution_groups/2`. Pass the same
+  values and each count is the size of the set that filter plus that status would
+  return, rather than the size of one loaded page.
   """
   @spec count_execution_groups(OperatorContext.t(), keyword()) ::
           {:ok, execution_group_counts()} | {:error, term()}
   def count_execution_groups(%OperatorContext{} = operator_context, opts \\ [])
       when is_list(opts) do
-    since = Keyword.get(opts, :since) || start_of_utc_day()
-
     with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer),
          {:ok, %ExecutionGroupCounts{} = counts} <-
            Persistence.stores().operator_reads.count_execution_groups(%CountExecutionGroups{
              scope: context,
-             since: since
+             search: Keyword.get(opts, :search),
+             trigger_type: Keyword.get(opts, :trigger_type),
+             started_after: Keyword.get(opts, :started_after),
+             started_before: Keyword.get(opts, :started_before)
            }) do
       {:ok, Map.from_struct(counts)}
     end
-  end
-
-  defp start_of_utc_day do
-    DateTime.utc_now() |> DateTime.to_date() |> DateTime.new!(~T[00:00:00], "Etc/UTC")
   end
 
   @doc "Returns bounded execution-group details for one authorized operator workspace."

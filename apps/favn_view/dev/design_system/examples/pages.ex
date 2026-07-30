@@ -475,12 +475,12 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
         Example.attrs(
           :today,
           RunsList.today(),
-          "The default view: one day, so no day headers, and the counts answer three questions before a click."
+          "The default view: one day, so no day headers, and each status says how much it holds before a click."
         ),
         Example.attrs(
           :failed_today,
           RunsList.failed_today(),
-          "The failures scope, reached from its own count."
+          "Failures only, reached from their own count. The counts do not move, because status is the axis they leave open."
         ),
         Example.attrs(
           :month_with_gaps,
@@ -496,6 +496,11 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
           :truncated,
           RunsList.truncated(),
           "More runs than one page holds, so the days stop where the page did rather than claiming they were empty."
+        ),
+        Example.attrs(
+          :filters_open,
+          RunsList.filters_open(),
+          "The narrow-screen disclosure, opened. On a wide screen these controls are always out."
         ),
         Example.attrs(:empty, RunsList.empty()),
         Example.attrs(:no_matches, RunsList.no_matches()),

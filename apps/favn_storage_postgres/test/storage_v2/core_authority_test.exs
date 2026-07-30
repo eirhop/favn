@@ -6567,33 +6567,34 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert [tail] = Enum.map(next_page.items, & &1.root_run_id)
     assert [head, tail] == both
 
-    since = DateTime.new!(DateTime.to_date(now), ~T[00:00:00], "Etc/UTC")
+    counts = fn filters ->
+      query = struct!(%CountExecutionGroups{scope: fixture.workspace_context}, filters)
+      assert {:ok, counts} = OperatorReadStore.count_execution_groups(query)
+      counts
+    end
 
-    assert {:ok, counts} =
-             OperatorReadStore.count_execution_groups(%CountExecutionGroups{
-               scope: fixture.workspace_context,
-               since: since
-             })
+    unfiltered = counts.([])
+    assert unfiltered.total == 2
+    assert unfiltered.active == 2
+    assert unfiltered.failed == 0
+    assert unfiltered.succeeded == 0
 
-    assert counts.total == 2
-    assert counts.started_since == 2
-    assert counts.active == 2
-    assert counts.failed_since == 0
-
-    # A run that is still going is what the operator means by "running", whatever
-    # day it started on, so `active` must not move with the boundary.
-    assert {:ok, tomorrow} =
-             OperatorReadStore.count_execution_groups(%CountExecutionGroups{
-               scope: fixture.workspace_context,
-               since: DateTime.add(since, 86_400, :second)
-             })
-
-    assert tomorrow.started_since == 0
-    assert tomorrow.active == 2
+    # A count offered next to a filter has to be the size of what that filter
+    # returns, so every narrowing the page accepts narrows the counts too.
+    assert counts.(search: first_run.id).total == 1
+    assert counts.(search: "no-such-target").total == 0
+    assert counts.(trigger_type: :resource_recovery).total == 0
+    assert counts.(started_after: DateTime.add(now, 3600, :second)).active == 0
+    assert counts.(started_before: DateTime.add(now, -3600, :second)).total == 0
 
     for invalid <- [[started_after: "today"], [order: :duration_desc], [trigger_type: :nonsense]] do
       query = struct!(%PageExecutionGroups{scope: fixture.workspace_context, limit: 10}, invalid)
       assert {:error, %Error{kind: :invalid}} = OperatorReadStore.page_execution_groups(query)
+    end
+
+    for invalid <- [[started_after: "today"], [trigger_type: :nonsense], [search: 7]] do
+      query = struct!(%CountExecutionGroups{scope: fixture.workspace_context}, invalid)
+      assert {:error, %Error{kind: :invalid}} = OperatorReadStore.count_execution_groups(query)
     end
   end
 

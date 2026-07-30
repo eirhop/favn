@@ -555,7 +555,13 @@ summary {
       0 0 24px color-mix(in oklab, var(--color-primary) 22%, transparent);
   }
 
-  .favn-mode-item-active::after {
+  /* The marker belongs to the two variants that place it: a rail item puts it
+     beside itself, a dock item under itself. An item with no variant has no
+     placement for it, and an absolute box with no offsets lands wherever the
+     content flow left off — which read as a dot dropped in the middle of a
+     labelled button. So the marker is opt-in with the variant, not the base. */
+  .favn-mode-rail-item.favn-mode-item-active::after,
+  .favn-mode-dock-item.favn-mode-item-active::after {
     position: absolute;
     content: "";
     width: 0.25rem;

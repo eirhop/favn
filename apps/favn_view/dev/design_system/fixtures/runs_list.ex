@@ -28,11 +28,19 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.RunsList do
   @spec today() :: map()
   def today, do: attrs(RunsFilters.from_params(%{}), todays_runs())
 
-  @doc "The failures-only scope, which is the question the counts point at."
+  @doc """
+  The failures-only status, which is the question the counts point at.
+
+  The counts are still those of the whole day, because the status is the one axis
+  they do not narrow — a count that dropped to what is on screen could never send
+  the operator anywhere else.
+  """
   @spec failed_today() :: map()
   def failed_today do
     filters = RunsFilters.from_params(%{"status" => "failed"})
-    attrs(filters, Enum.filter(todays_runs(), &(&1.status == :failed)))
+    failures = Enum.filter(todays_runs(), &(&1.status == :failed))
+
+    attrs(filters, failures, todays_runs())
   end
 
   @doc """
@@ -56,6 +64,10 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.RunsList do
   @spec truncated() :: map()
   def truncated, do: %{today() | truncated?: true}
 
+  @doc "The narrow-screen filter disclosure, opened."
+  @spec filters_open() :: map()
+  def filters_open, do: %{today() | filters_open?: true}
+
   @doc "Nothing ran today, which is a real answer rather than an empty screen."
   @spec empty() :: map()
   def empty, do: attrs(RunsFilters.from_params(%{}), [])
@@ -68,7 +80,7 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.RunsList do
   @spec unavailable() :: map()
   def unavailable, do: %{empty() | error: "Backend unavailable"}
 
-  defp attrs(filters, runs) do
+  defp attrs(filters, runs, counted \\ nil) do
     %{
       listing:
         RunDays.layout(runs, RunsFilters.window(filters, @now), @now,
@@ -76,10 +88,25 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.RunsList do
           complete?: true
         ),
       filters: filters,
-      counts: %{active: 2, failed_since: 1, started_since: 6, total: 148},
+      counts: counts(counted || runs),
       truncated?: false,
+      filters_open?: false,
       error: nil,
       nav_items: nav_items()
+    }
+  end
+
+  # The counts come from the same runs the example lists, so a button's number and
+  # the rows below it cannot disagree in a screenshot.
+  defp counts(runs) do
+    by_status = Enum.frequencies_by(runs, & &1.status)
+    count = &Map.get(by_status, &1, 0)
+
+    %{
+      active: count.(:running) + count.(:queued),
+      failed: count.(:failed),
+      succeeded: count.(:succeeded),
+      total: length(runs)
     }
   end
 

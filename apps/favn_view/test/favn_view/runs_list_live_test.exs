@@ -5,7 +5,7 @@ defmodule FavnView.RunsListLiveTest do
 
   alias FavnView.RunsListLive
 
-  @counts %{active: 2, failed_since: 1, started_since: 6, total: 148}
+  @counts %{active: 2, failed: 1, succeeded: 6, total: 148}
 
   setup do
     previous_page = Application.get_env(:favn_view, :page_execution_groups_fun)
@@ -89,13 +89,59 @@ defmodule FavnView.RunsListLiveTest do
     refute Keyword.has_key?(opts, :started_after)
   end
 
-  test "the scope buttons count the whole store rather than the loaded page" do
+  test "the status buttons count the store rather than the loaded page" do
     stub_page([execution_group()])
 
     html = render_component(&RunsListLive.render/1, load(%{}).assigns)
 
-    assert html =~ "Running now"
+    assert html =~ "Running"
+    assert html =~ "Succeeded"
     assert html =~ "148"
+  end
+
+  test "the counts are narrowed the same way the list is, minus the status" do
+    stub_page([])
+
+    Application.put_env(:favn_view, :count_execution_groups_fun, fn _context, opts ->
+      send(self(), {:count_filters, opts})
+      {:ok, @counts}
+    end)
+
+    load(%{"status" => "failed", "q" => "orders", "range" => "week"})
+
+    assert_received {:count_filters, opts}
+    assert Keyword.get(opts, :search) == "orders"
+    assert %DateTime{} = Keyword.get(opts, :started_after)
+    refute Keyword.has_key?(opts, :status)
+  end
+
+  test "the filter disclosure opens and closes without reloading the list" do
+    stub_page([execution_group()], fn _opts -> send(self(), :page_read) end)
+
+    socket = load(%{})
+    assert_received :page_read
+    refute socket.assigns.filters_open?
+
+    assert {:noreply, opened} = RunsListLive.handle_event("toggle_filters", %{}, socket)
+    assert opened.assigns.filters_open?
+    refute_received :page_read
+
+    assert {:noreply, closed} = RunsListLive.handle_event("toggle_filters", %{}, opened)
+    refute closed.assigns.filters_open?
+  end
+
+  # A row and a card of the same run were both on screen on a narrow viewport,
+  # because `hidden` and the table display utility collided on one element. Each
+  # list belongs inside a container that hides it, not on an element whose own
+  # display class fights the one hiding it.
+  test "a narrow screen renders each run once, not as a row and a card" do
+    stub_page([execution_group()])
+
+    html = render_component(&RunsListLive.render/1, load(%{}).assigns)
+
+    assert html =~ ~r|<div class="hidden lg:block">\s*<table|
+    assert html =~ ~r/class="[^"]*lg:hidden"[^>]*data-testid="runs-card-list"/
+    refute html =~ ~r/<table[^>]*\bhidden\b/
   end
 
   test "a range covering several days grows day headers, and names the empty ones" do

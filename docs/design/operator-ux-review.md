@@ -475,12 +475,15 @@ Everything else the old page offered was a knob without a question behind it.
 
 ### The design
 
-Four buttons across the top, one per question, each carrying its own count from
-the store rather than from the loaded page — so three of the four are answered
-before anything is clicked, and the counts stay true when the page is truncated.
-Underneath, the same two axes as ordinary controls plus a search, so a button is
-a shortcut rather than a mode the operator can get stuck in: three controls in
-one row, not nine in two.
+One control per axis. The status is four buttons — Running (including queued),
+Failed, Succeeded, All — each carrying its own count from the store rather than
+from the loaded page, so the counts stay true when the page is truncated. The time
+range is a select, with a search beside it. A button that set both axes at once
+was tried and rejected: it took the range away from whatever the operator had set,
+so four buttons meant four combinations rather than one axis.
+
+The counts narrow by everything the list narrows by except the status, so a count
+is the number of rows clicking it produces.
 
 Question 4 is a question about *absence*, and a list can only answer it if the
 days with nothing in them are on screen. So whenever the range covers more than
@@ -506,9 +509,22 @@ declared; it does not reach connection, catalogue, or schema, which are not part
 of this read model.
 
 `count_execution_groups/2` is new: one query with filtered aggregates returning
-`active`, `failed_since`, `started_since`, and `total` for the whole workspace.
-`active` ignores the boundary on purpose — a run that started yesterday and has
-not finished is still what the operator means by "running".
+`active`, `failed`, `succeeded`, and `total`, narrowed by the same filters as the
+page read.
+
+### Known cost: the sort key is not on the projection
+
+Ordering by when the root run started means ordering by `runs.inserted_at` across
+a left join, and neither `execution_group_overviews` nor `runs` has an index that
+serves it — the old `latest_event_id` ordering did. At thousands of groups this is
+a join plus a sort of the whole filtered set, repeated on every live refresh. The
+fix is to denormalise `started_at` onto the group projection with an index on
+`(workspace_id, started_at desc, root_run_id)`, which would also make the window
+filters and the counts indexable. Not done yet.
+
+Paging is also only half wired: the store has a keyset cursor, but the list grows
+by re-reading with a larger `limit`, capped at 500. Beyond that an operator has to
+narrow rather than scroll.
 
 ### Three things the page was saying wrongly
 

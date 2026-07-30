@@ -5,9 +5,9 @@ defmodule FavnView.RunsFilters do
   An operator arrives at the runs page with one of four questions — what is
   running, what failed today, what ran today, and did this pipeline run every
   day — and each is a pair of a time range and a status. Those two axes are the
-  whole filter model. `presets/2` names the four pairings so the common questions
-  are one click, and the axes stay adjustable underneath, so a preset is a
-  shortcut rather than a mode the operator can get stuck in.
+  whole filter model, and each is one control: the status is four buttons that
+  carry their own counts, the range is a select. Neither writes to the other, so
+  every question is one adjustment away from every other.
 
   Every field round-trips through the URL, so a filtered list is a link an
   operator can send to someone else. Defaults are omitted from the query string,
@@ -41,40 +41,36 @@ defmodule FavnView.RunsFilters do
   @limit_step 50
   @max_limit 500
 
-  @preset_definitions [
+  @status_definitions [
     %{
-      id: :running,
-      label: "Running now",
-      icon: "hero-bolt",
-      range: :all,
       status: :active,
+      label: "Running",
+      hint: "Running or queued",
+      icon: "hero-bolt",
       count_key: :active,
       tone: :info
     },
     %{
-      id: :failed_today,
-      label: "Failed today",
-      icon: "hero-exclamation-triangle",
-      range: :today,
       status: :failed,
-      count_key: :failed_since,
+      label: "Failed",
+      hint: "Failed runs",
+      icon: "hero-exclamation-triangle",
+      count_key: :failed,
       tone: :error
     },
     %{
-      id: :today,
-      label: "Today",
-      icon: "hero-calendar-days",
-      range: :today,
-      status: :any,
-      count_key: :started_since,
-      tone: :neutral
+      status: :succeeded,
+      label: "Succeeded",
+      hint: "Successful runs",
+      icon: "hero-check-circle",
+      count_key: :succeeded,
+      tone: :success
     },
     %{
-      id: :all,
-      label: "All runs",
-      icon: "hero-clock",
-      range: :all,
       status: :any,
+      label: "All",
+      hint: "Every status",
+      icon: "hero-queue-list",
       count_key: :total,
       tone: :neutral
     }
@@ -158,11 +154,14 @@ defmodule FavnView.RunsFilters do
   a custom one even though the range control still reads something else. Any
   change resets the page size: a narrower filter should not inherit however far
   the previous one was scrolled.
+
+  The status is not among these. It is set by the count buttons, which are links,
+  so it round-trips through the URL rather than through this form.
   """
   @spec change(t(), map()) :: t()
   def change(%__MODULE__{} = filters, params) when is_map(params) do
     current = Map.new(to_params(filters))
-    submitted = Map.take(params, ~w(range status q from to order limit))
+    submitted = Map.take(params, ~w(range q from to order limit))
     merged = Map.merge(current, submitted)
 
     merged
@@ -235,25 +234,43 @@ defmodule FavnView.RunsFilters do
   end
 
   @doc """
-  The four named questions, each with the params that ask it.
+  The keyword filters `FavnOrchestrator.count_execution_groups/2` accepts.
 
-  `counts` is a `FavnOrchestrator.count_execution_groups/2` result, or `nil`
-  before one has been read. A preset with no count still renders — the question
-  is worth offering whether or not its size is known yet.
+  These are `store_filters/2` without the status, the page size, or the order,
+  because the counts differ from the list in exactly one way: they are taken once
+  per status. Deriving them from the same function is what keeps a count equal to
+  the number of rows clicking it produces.
+
+      iex> filters = FavnView.RunsFilters.from_params(%{"q" => "orders", "range" => "all"})
+      iex> FavnView.RunsFilters.count_filters(filters, ~U[2026-07-30 10:00:00Z])
+      [search: "orders"]
   """
-  @spec presets(t(), map() | nil) :: [map()]
-  def presets(%__MODULE__{} = filters, counts) do
-    Enum.map(@preset_definitions, fn preset ->
-      target = %{filters | range: preset.range, status: preset.status, from: nil, to: nil}
+  @spec count_filters(t(), DateTime.t()) :: keyword()
+  def count_filters(%__MODULE__{} = filters, now),
+    do: filters |> store_filters(now) |> Keyword.drop([:status, :limit, :order])
 
+  @doc """
+  The status axis, as four choices that each carry their own count.
+
+  `counts` is a `count_filters/2` read, or `nil` before one has been taken. A
+  choice with no count still renders — the filter is worth offering whether or
+  not its size is known yet.
+
+  Every other axis is preserved, so switching status keeps the range, the dates,
+  and the search the operator already set.
+  """
+  @spec status_filters(t(), map() | nil) :: [map()]
+  def status_filters(%__MODULE__{} = filters, counts) do
+    Enum.map(@status_definitions, fn choice ->
       %{
-        id: preset.id,
-        label: preset.label,
-        icon: preset.icon,
-        tone: preset.tone,
-        count: counts && Map.get(counts, preset.count_key),
-        active?: filters.range == preset.range and filters.status == preset.status,
-        params: to_params(%{target | limit: @default_limit})
+        id: choice.status,
+        label: choice.label,
+        hint: choice.hint,
+        icon: choice.icon,
+        tone: choice.tone,
+        count: counts && Map.get(counts, choice.count_key),
+        active?: filters.status == choice.status,
+        params: to_params(%{filters | status: choice.status, limit: @default_limit})
       }
     end)
   end
@@ -268,6 +285,23 @@ defmodule FavnView.RunsFilters do
   def narrowed?(%__MODULE__{} = filters),
     do: filters.status != @default_status or presence(filters.search) != nil
 
+  @doc """
+  Whether the search or the time range is off its default.
+
+  On a narrow screen these two live behind a disclosure, and a collapsed control
+  that is quietly filtering the list is a control that lies. This is what the
+  button uses to say so.
+
+      iex> FavnView.RunsFilters.adjusted?(%FavnView.RunsFilters{})
+      false
+
+      iex> FavnView.RunsFilters.adjusted?(%FavnView.RunsFilters{range: :week})
+      true
+  """
+  @spec adjusted?(t()) :: boolean()
+  def adjusted?(%__MODULE__{} = filters),
+    do: filters.range != @default_range or presence(filters.search) != nil
+
   @doc "`{label, value}` pairs for the time-range control."
   @spec range_options() :: [{String.t(), String.t()}]
   def range_options do
@@ -278,17 +312,6 @@ defmodule FavnView.RunsFilters do
       {"Last 30 days", "month"},
       {"Custom range", "custom"},
       {"All time", "all"}
-    ]
-  end
-
-  @doc "`{label, value}` pairs for the status control."
-  @spec status_options() :: [{String.t(), String.t()}]
-  def status_options do
-    [
-      {"Any status", "any"},
-      {"Running or queued", "active"},
-      {"Succeeded", "succeeded"},
-      {"Failed", "failed"}
     ]
   end
 
