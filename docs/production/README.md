@@ -15,7 +15,7 @@ UI completion, managed-provider evidence, and data-plane recovery.
 | Lifecycle, readiness, bounded drain | Implemented | Owning-layer tests cover policy; real signal, cancellation, and recovery drills remain target-environment evidence. |
 | Control-plane release image | Implemented | CI directly builds, scans, attests, and publishes green commit images. |
 | Customer runner and manifest releases | Implemented boundary | Customer CI and target-environment execution and upgrade/rollback drills remain. |
-| Operator UI | Prototype | Finish core flows, audit mutations, and add browser acceptance. |
+| Operator UI | Security/admin baseline implemented | Complete visual discovery separately; add the browser/accessibility release gate in #579. |
 | DuckDB/DuckLake data plane | Prototype | Define and verify backup, recovery, cancellation, and failure behavior. |
 | Multi-node control-plane coordination | Implemented foundation | Deferred; package and prove it before claiming application-node failover. |
 
@@ -64,6 +64,9 @@ service. Multi-control-plane application failover is a later topology claim.
   private ports, distributed-Erlang limitations, and reverse-proxy contract.
 - [`secret_rotation.md`](secret_rotation.md) defines environment-only manual
   overlap, restart, inventory, and invalidation procedures.
+- [`operator_security.md`](operator_security.md) defines operator roles,
+  workspace/session behavior, administration, audit, qualification, and known
+  security limits.
 - [`local_docker_compose.md`](local_docker_compose.md) defines the optional
   customer-owned single-host deployment example.
 - [`issue_522_acceptance_matrix.md`](issue_522_acceptance_matrix.md) maps the

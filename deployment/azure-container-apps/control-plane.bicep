@@ -5,7 +5,6 @@ param name string = 'favn-control-plane'
 param image string
 param workspaceIds string
 param runnerPools string
-param bootstrapUsername string
 param viewPublicOrigin string
 param viewTrustedProxyCidrs string
 param runtimeInputPinKeyVersion int = 1
@@ -19,8 +18,6 @@ param runtimeInputPinKeys string
 param platformServiceTokens string
 @secure()
 param capacityReaderToken string
-@secure()
-param bootstrapPassword string
 @secure()
 param viewSecretKeyBase string
 @secure()
@@ -100,10 +97,6 @@ resource controlPlane 'Microsoft.App/containerApps@2026-01-01' = {
           value: '${platformServiceTokens},capacity-scaler|capacity_reader:${capacityReaderToken}'
         }
         {
-          name: 'bootstrap-password'
-          value: bootstrapPassword
-        }
-        {
           name: 'view-secret-key-base'
           value: viewSecretKeyBase
         }
@@ -142,14 +135,6 @@ resource controlPlane 'Microsoft.App/containerApps@2026-01-01' = {
             {
               name: 'FAVN_ORCHESTRATOR_API_SERVICE_TOKENS'
               secretRef: 'api-service-tokens'
-            }
-            {
-              name: 'FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME'
-              value: bootstrapUsername
-            }
-            {
-              name: 'FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD'
-              secretRef: 'bootstrap-password'
             }
             {
               name: 'FAVN_WORKSPACE_IDS'

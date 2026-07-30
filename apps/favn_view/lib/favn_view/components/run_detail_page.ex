@@ -65,6 +65,8 @@ defmodule FavnView.Components.RunDetailPage do
           variant={:danger}
           icon="hero-no-symbol"
           phx-click="cancel_run"
+          data-command-operation="run_cancel"
+          data-command-resource={@run[:cancel_run_id] || @run_id}
           phx-disable-with="Cancelling..."
           data-confirm="Cancel this run? Active runner work will be asked to stop."
           data-testid="cancel-run-button"
@@ -77,6 +79,8 @@ defmodule FavnView.Components.RunDetailPage do
         <.button
           icon="hero-arrow-path"
           phx-click="retry_remaining"
+          data-command-operation="run_retry_remaining"
+          data-command-resource={@run_id}
           phx-disable-with="Submitting..."
           data-confirm="Retry remaining failed or not-started assets with the same run configuration?"
           data-testid="retry-remaining-button"
@@ -84,7 +88,6 @@ defmodule FavnView.Components.RunDetailPage do
           {@run[:retry_remaining_label] || "Retry remaining"}
         </.button>
       </:actions>
-
       <NotFound.not_found_panel :if={!@run[:found?]} run={@run} />
       <.execution_group_page
         :if={@run[:found?]}
@@ -113,7 +116,6 @@ defmodule FavnView.Components.RunDetailPage do
     ~H"""
     <div class="mx-auto flex w-full max-w-[110rem] flex-col gap-4" data-testid="run-detail-page">
       <Progress.run_progress run={@run} />
-
       <.notice
         :if={truncated?(@run)}
         tone={:warning}
@@ -123,9 +125,7 @@ defmodule FavnView.Components.RunDetailPage do
         Showing the first bounded detail slice. The meters above are exact; some detail rows
         are omitted.
       </.notice>
-
       <Failures.window_failures run={@run} />
-
       <div data-run-active={to_string(@run.active?)}>
         <Flow.flow
           :if={@active_mode == :flow and @flow}
@@ -136,10 +136,8 @@ defmodule FavnView.Components.RunDetailPage do
           :if={@active_mode == :windows}
           run={@run}
           selected_child_run_id={@selected_child_run_id}
-        />
-        <Events.events_panel :if={@active_mode == :events} run={@run} />
+        /> <Events.events_panel :if={@active_mode == :events} run={@run} />
       </div>
-
       <AttemptDrawer.attempt_drawer :if={@selected_attempt} attempt={@selected_attempt} />
     </div>
     """

@@ -26,6 +26,8 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
   alias FavnStoragePostgres.Migrations.AddScheduleActivationsV2
   alias FavnStoragePostgres.Migrations.AddTargetGenerationFoundationV2
   alias FavnStoragePostgres.Migrations.AddTargetRecoveryV2
+  alias FavnStoragePostgres.Migrations.BindAuthSessionsToWorkspacesV2
+  alias FavnStoragePostgres.Migrations.AddOperatorCommandIntentsV2
   alias FavnStoragePostgres.Migrations.CreateStorageV2
   alias FavnStoragePostgres.Migrations.CompleteRebuildOrchestrationV2
   alias FavnStoragePostgres.Migrations.EnforceRunPlanManifestIdentityV2
@@ -74,7 +76,9 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     {20_260_728_010_000, AddAssetEvidenceBindingsV2},
     {20_260_729_000_000, AddRunExecutionCheckpointsV2},
     {20_260_729_010_000, IncreaseRunnerTaskOrchestrationContextBoundV2},
-    {20_260_730_000_000, AddExecutionGroupStartOrderingV2}
+    {20_260_730_000_000, AddExecutionGroupStartOrderingV2},
+    {20_260_730_010_000, BindAuthSessionsToWorkspacesV2},
+    {20_260_730_020_000, AddOperatorCommandIntentsV2}
   ]
   @required_tables ~w(
     schema_migrations
@@ -146,6 +150,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     auth_platform_grants
     auth_audit_entries
     auth_platform_audit_entries
+    auth_operator_commands
     idempotency_records
     maintenance_jobs
   )
@@ -201,6 +206,8 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     schedule_occurrences_claim_command_idx
     auth_sessions_inactive_retention_idx
     auth_sessions_expiry_retention_idx
+    auth_sessions_workspace_page_idx
+    auth_sessions_workspace_actor_session_uidx
     materialization_claims_retention_idx
     projection_failures_retention_idx
     log_entries_retention_idx
@@ -258,6 +265,9 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     auth_workspace_memberships_page_idx
     auth_audit_entries_page_idx
     auth_platform_audit_entries_page_idx
+    auth_operator_commands_key_uidx
+    auth_operator_commands_pending_request_uidx
+    auth_operator_commands_session_pending_idx
     idempotency_records_expiry_idx
     maintenance_jobs_queue_idx
   )
@@ -285,9 +295,11 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
       ~w(actor_id password_hash algorithm version changed_at inserted_at updated_at),
     "auth_platform_audit_entries" =>
       ~w(audit_id command_id principal_id action subject_kind subject_id detail occurred_at inserted_at),
+    "auth_operator_commands" =>
+      ~w(intent_id workspace_id actor_id session_id operation resource_type resource_id key_hash request_fingerprint status result_resource_type result_resource_id result_detail expires_at terminal_at inserted_at updated_at),
     "auth_platform_grants" => ~w(actor_id roles status version inserted_at updated_at),
     "auth_sessions" =>
-      ~w(session_id actor_id creation_command_id token_hash provider status expires_at revoked_at last_seen_at inserted_at updated_at),
+      ~w(session_id actor_id workspace_id creation_command_id token_hash provider status expires_at revoked_at last_seen_at inserted_at updated_at),
     "auth_workspace_memberships" =>
       ~w(workspace_id actor_id roles status version inserted_at updated_at),
     "backfill_overviews" =>
@@ -470,7 +482,8 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     asset_attempt_overviews_values_valid
     backfill_windows_values_valid backfill_windows_claim_shape_v2 projection_cursors_values_valid
     auth_actors_values_valid
-    auth_credentials_values_valid auth_sessions_values_valid auth_workspace_memberships_values_valid
+    auth_credentials_values_valid auth_sessions_values_valid auth_sessions_workspace_bound
+    auth_workspace_memberships_values_valid
     auth_platform_grants_values_valid log_batches_count_valid log_entries_values_valid
     log_entries_filter_values_valid
     workspace_deployment_targets_descriptor_valid
@@ -509,12 +522,15 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     target_operation_locks_workspace_fk backfills_root_run_fk
     backfills_deployment_manifest_fk backfills_target_fk backfill_plan_batches_backfill_fk
     backfill_windows_batch_fk backfill_windows_run_fk auth_credentials_actor_fk
-    auth_sessions_actor_fk auth_workspace_memberships_workspace_fk auth_workspace_memberships_actor_fk
+    auth_sessions_actor_fk auth_sessions_workspace_fk auth_workspace_memberships_workspace_fk
+    auth_workspace_memberships_actor_fk
+    auth_operator_commands_workspace_fk auth_operator_commands_actor_fk
+    auth_operator_commands_session_authority_fk auth_operator_commands_values_valid
   ) ++
                           Enum.map(@identifier_constraint_tables, &"#{&1}_identifier_lengths_v2") ++
                           Enum.map(@payload_constraint_tables, &"#{&1}_payload_bounds_v2")
   @expected_versions Enum.map(@migrations, fn {version, _module} -> version end)
-  @expected_definition_fingerprint "8504e018b43f5ffb6967664acdc6ac8073929e66ceb423a6d89948b6488567d2"
+  @expected_definition_fingerprint "5ed6c280fc1c1500d810ae9d9997a315db9f31f602f182cab5acbd668929bf6a"
 
   @doc "Creates the V2 namespace and applies every known migration."
   @spec migrate!(module()) :: :ok

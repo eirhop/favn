@@ -164,6 +164,7 @@ defmodule FavnLocal.Config do
     Application.put_env(:favn_orchestrator, :auth_bootstrap_password, config.bootstrap_password)
     Application.put_env(:favn_orchestrator, :auth_bootstrap_display_name, "Local Administrator")
     Application.put_env(:favn_orchestrator, :auth_bootstrap_roles, [:admin])
+    Application.put_env(:favn_orchestrator, :allow_automatic_admin_bootstrap, true)
 
     capability_hash = ServiceTokens.hash_token(config.service_token)
 

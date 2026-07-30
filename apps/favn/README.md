@@ -129,6 +129,7 @@ not depend on Favn runtime, storage, or UI implementation apps directly.
 - [Authoring Assets](guides/authoring-assets.md): define assets, SQL assets, multi-assets, namespaces, pipelines, schedules, windows, and freshness.
 - [Transactional SQL Asset Checks](guides/sql-asset-checks.md): validate staged candidates and published targets atomically with fail, warn, and successful no-op policies.
 - [Local Development](guides/local-development.md): use `mix favn.*` commands locally.
+- [Secure Production Deployment](guides/secure-production-deployment.md): deploy one control plane with private networking, HTTPS, verified PostgreSQL TLS, protected secrets, and a practical security checklist.
 - [IEx Session Cheatsheet](guides/iex-cheatsheet.cheatmd): submit, inspect, and debug runs interactively while `mix favn.dev` is running.
 - [Configuration](guides/configuration.md): configure discovery, runtime environment, SQL connections, DuckDB, ADBC, and pooling.
 - [SQL Client](guides/sql-client.md): use `Favn.SQLClient` from Elixir code.

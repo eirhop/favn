@@ -6,6 +6,7 @@ defmodule FavnView.AssetDetailLive do
   require Logger
 
   alias FavnView.AssetRoute
+  alias FavnView.CommandAttempt
   alias FavnView.Components.AssetCataloguePage
   alias FavnView.Components.AssetDetailPage
   alias FavnView.Components.ErrorPage
@@ -48,6 +49,8 @@ defmodule FavnView.AssetDetailLive do
         coverage_action_error: nil,
         planning_coverage?: false,
         submitting_coverage?: false,
+        coverage_attempt: nil,
+        run_attempt: nil,
         nav_items: AssetCataloguePage.nav_items()
       )
 
@@ -81,7 +84,9 @@ defmodule FavnView.AssetDetailLive do
          coverage_cursor_stack: [],
          coverage_action_error: nil,
          planning_coverage?: false,
-         submitting_coverage?: false
+         submitting_coverage?: false,
+         coverage_attempt: nil,
+         run_attempt: nil
        )}
     end
   end
@@ -163,32 +168,50 @@ defmodule FavnView.AssetDetailLive do
       ),
       do: {:noreply, socket}
 
-  def handle_event("submit_missing_coverage", _params, socket) do
+  def handle_event("submit_missing_coverage", params, socket) do
     case socket.assigns.coverage_plan do
       nil ->
         {:noreply, assign(socket, :coverage_action_error, "Plan missing windows first.")}
 
       plan ->
-        socket = assign(socket, submitting_coverage?: true, coverage_action_error: nil)
+        attempt =
+          CommandAttempt.next(
+            socket.assigns.coverage_attempt,
+            "coverage_backfill_submit",
+            {socket.assigns.asset.target_id, plan},
+            params
+          )
+
+        socket =
+          assign(socket,
+            submitting_coverage?: true,
+            coverage_action_error: nil,
+            coverage_attempt: attempt
+          )
 
         case FavnOrchestrator.submit_missing_coverage_backfill(
                actor_context(socket),
                socket.assigns.asset.target_id,
                plan,
-               root_run_id: coverage_root_run_id(plan)
+               root_run_id: coverage_root_run_id(plan),
+               idempotency_key: attempt.key
              ) do
           {:ok, run_id} ->
             {:noreply,
              socket
+             |> CommandAttempt.acknowledge(attempt)
              |> put_flash(:info, "Missing-window backfill submitted")
              |> push_navigate(to: ~p"/runs/#{run_id}")}
 
           {:error, reason} ->
+            {socket, attempt} = CommandAttempt.settle_failure(socket, attempt, reason)
+
             {:noreply,
              assign(socket,
                submitting_coverage?: false,
                coverage_action_error: coverage_error_label(reason),
-               coverage_plan: nil
+               coverage_plan: nil,
+               coverage_attempt: attempt
              )}
         end
     end
@@ -357,45 +380,58 @@ defmodule FavnView.AssetDetailLive do
          )}
 
       true ->
-        submit_asset_run(socket, asset, selected_window, run_config)
+        submit_asset_run(socket, asset, selected_window, run_config, params)
     end
   end
 
-  defp submit_asset_run(socket, asset, selected_window, run_config) do
+  defp submit_asset_run(socket, asset, selected_window, run_config, params) do
+    attempt =
+      CommandAttempt.next(
+        socket.assigns.run_attempt,
+        "asset_run_submit",
+        {asset.target_id, selected_window, run_config},
+        params
+      )
+
     socket =
       assign(socket,
         run_config: run_config,
         run_config_valid?: true,
         submitting_window_run?: true,
         selected_window_error: nil,
-        submitted_run_id: nil
+        submitted_run_id: nil,
+        run_attempt: attempt
       )
 
-    case submit_asset_window_run(socket, asset, selected_window, run_config) do
+    case submit_asset_window_run(socket, asset, selected_window, run_config, attempt.key) do
       {:ok, run_id, :single} ->
         {:noreply,
          socket
+         |> CommandAttempt.acknowledge(attempt)
          |> put_flash(:info, "Run submitted")
          |> push_navigate(to: ~p"/runs/#{run_id}")}
 
       {:ok, run_id, :backfill} ->
         {:noreply,
          socket
+         |> CommandAttempt.acknowledge(attempt)
          |> put_flash(:info, "Asset backfill submitted")
          |> push_navigate(to: ~p"/runs/#{run_id}")}
 
       {:error, reason} ->
         Logger.error("asset.run submit failed reason=#{inspect(reason)}")
+        {socket, attempt} = CommandAttempt.settle_failure(socket, attempt, reason)
 
         {:noreply,
          assign(socket,
            submitting_window_run?: false,
-           selected_window_error: submit_error_label(reason)
+           selected_window_error: submit_error_label(reason),
+           run_attempt: attempt
          )}
     end
   end
 
-  defp submit_asset_window_run(socket, asset, nil, %{to: to} = run_config)
+  defp submit_asset_window_run(socket, asset, nil, %{to: to} = run_config, idempotency_key)
        when is_binary(to) and to != "" do
     request = %{
       range: range_request(run_config),
@@ -407,14 +443,15 @@ defmodule FavnView.AssetDetailLive do
            actor_context(socket),
            asset.manifest_version_id,
            asset.target_id,
-           request
+           request,
+           idempotency_key: idempotency_key
          ) do
       {:ok, run_id} -> {:ok, run_id, :backfill}
       {:error, reason} -> {:error, reason}
     end
   end
 
-  defp submit_asset_window_run(socket, asset, selected_window, run_config) do
+  defp submit_asset_window_run(socket, asset, selected_window, run_config, idempotency_key) do
     request = %{
       run_context_id: asset.selected_run_context && asset.selected_run_context.id,
       selection: timeline_selection(selected_window, run_config),
@@ -426,7 +463,8 @@ defmodule FavnView.AssetDetailLive do
            actor_context(socket),
            asset.manifest_version_id,
            %{type: :asset, id: asset.target_id},
-           request
+           request,
+           idempotency_key: idempotency_key
          ) do
       {:ok, run_id} -> {:ok, run_id, :single}
       {:error, reason} -> {:error, reason}

@@ -42,6 +42,18 @@ defmodule FavnView.ApplicationConfigTest do
     refute Application.fetch_env!(:favn_view, :session_cookie_options)[:secure]
   end
 
+  test "Phoenix logging filters browser credentials and session material" do
+    filtered =
+      Phoenix.Logger.filter_values(%{
+        "current_password" => "current",
+        "new_password_confirmation" => "replacement",
+        "operator_session_token" => "opaque",
+        "credential" => "credential-value"
+      })
+
+    assert Enum.all?(Map.values(filtered), &(&1 == "[FILTERED]"))
+  end
+
   defp restore_env(key, nil), do: Application.delete_env(:favn_view, key)
   defp restore_env(key, value), do: Application.put_env(:favn_view, key, value)
 end

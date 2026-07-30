@@ -74,8 +74,6 @@ defmodule FavnView.ControlPlaneRuntimeConfigTest do
       "FAVN_RUNTIME_INPUT_PIN_KEYS" => Jason.encode!(%{"1" => @pin_key}),
       "FAVN_WORKSPACE_IDS" => "workspace-one",
       "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS" => "view-v1:#{@token}",
-      "FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME" => "admin",
-      "FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD" => "bootstrap-password-long",
       "FAVN_CONTROL_PLANE_NODE" => "control@control-plane.internal",
       "FAVN_DISTRIBUTION_COOKIE" => "bN7!tQ2#vL9@xR4$kM8%pC6&zH3*eW5?",
       "FAVN_BEAM_DISTRIBUTION_PORT" => "9100",

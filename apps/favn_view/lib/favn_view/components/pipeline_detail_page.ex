@@ -116,7 +116,13 @@ defmodule FavnView.Components.PipelineDetailPage do
             Submit the active manifest pipeline, equivalent to <code class="font-mono">mix favn.run</code>.
           </p>
 
-          <form phx-submit="run_pipeline" class="mt-4" data-testid="run-pipeline-form">
+          <form
+            phx-submit="run_pipeline"
+            class="mt-4"
+            data-command-operation="pipeline_run_submit"
+            data-command-resource={@pipeline.id}
+            data-testid="run-pipeline-form"
+          >
             <button
               type="submit"
               class="btn btn-primary"
@@ -157,6 +163,8 @@ defmodule FavnView.Components.PipelineDetailPage do
 
           <form
             phx-submit="submit_backfill"
+            data-command-operation="pipeline_backfill_submit"
+            data-command-resource={@pipeline.id}
             class="mt-4 grid gap-3 sm:grid-cols-[1fr_1fr_8rem_9rem_auto]"
             data-testid="pipeline-backfill-form"
           >

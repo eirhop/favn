@@ -12,7 +12,9 @@ import Config
 config :favn_view,
   generators: [context_app: false]
 
-config :phoenix, :json_library, Jason
+config :phoenix,
+  json_library: Jason,
+  filter_parameters: ["password", "secret", "token", "credential"]
 
 config :favn_storage_postgres,
   environment: config_env(),
@@ -71,6 +73,7 @@ config :favn_orchestrator,
   api_service_tokens: [],
   api_service_tokens_env: "",
   auth_session_ttl_seconds: 43_200,
+  allow_automatic_admin_bootstrap: false,
   auth_bootstrap_username: "",
   auth_bootstrap_password: "",
   auth_bootstrap_display_name: "Favn Admin",

@@ -109,6 +109,7 @@ defmodule FavnView.Components.AssetDetailPageTest do
 
     html =
       render_component(&AssetDetailPage.coverage_summary_panel/1,
+        command_resource: "asset:orders",
         coverage: %{
           status: :incomplete,
           evaluated_at: ~U[2026-07-22 12:00:00Z],
@@ -155,6 +156,7 @@ defmodule FavnView.Components.AssetDetailPageTest do
   test "only offers a backfill plan for missing windows displayed on the current page" do
     html =
       render_component(&AssetDetailPage.coverage_summary_panel/1,
+        command_resource: "asset:orders",
         coverage: %{
           status: :incomplete,
           expected_count: 4,
@@ -174,6 +176,7 @@ defmodule FavnView.Components.AssetDetailPageTest do
   test "renders an explicit unknown coverage reason without counts" do
     html =
       render_component(&AssetDetailPage.coverage_summary_panel/1,
+        command_resource: "asset:orders",
         coverage: %{status: :unknown, unknown_reason: :coverage_not_declared}
       )
 

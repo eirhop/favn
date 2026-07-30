@@ -33,7 +33,14 @@ defmodule FavnView.Components.RebuildPage do
             Planning is read-only. Review the immutable plan before starting it.
           </p>
 
-          <.form for={%{}} as={:rebuild} phx-submit="plan_rebuild" class="mt-5 space-y-4">
+          <.form
+            for={%{}}
+            as={:rebuild}
+            phx-submit="plan_rebuild"
+            class="mt-5 space-y-4"
+            data-command-operation="rebuild_plan"
+            data-command-resource-field="rebuild[target_id]"
+          >
             <label class="form-control block">
               <span class="label-text text-xs favn-text-muted">Target id</span>
               <input
@@ -170,6 +177,8 @@ defmodule FavnView.Components.RebuildPage do
               :if={@plan |> field(:permissions, %{}) |> field(:start, false)}
               type="button"
               phx-click="start_rebuild"
+              data-command-operation="rebuild_start"
+              data-command-resource={field(@plan, :plan_id)}
               class="btn btn-warning mt-4 w-full"
               data-confirm="Start this reviewed rebuild plan?"
               data-testid="start-rebuild"
@@ -287,6 +296,8 @@ defmodule FavnView.Components.RebuildPage do
               <button
                 :if={permitted?(@operation, :start)}
                 phx-click="start_rebuild"
+                data-command-operation="rebuild_start"
+                data-command-resource={field(@operation, :operation_id)}
                 class="btn btn-warning btn-sm"
                 data-confirm="Start this reviewed rebuild plan?"
                 data-testid="start-rebuild"
@@ -294,6 +305,8 @@ defmodule FavnView.Components.RebuildPage do
               <button
                 :if={permitted?(@operation, :retry)}
                 phx-click="retry_rebuild"
+                data-command-operation="rebuild_retry"
+                data-command-resource={field(@operation, :operation_id)}
                 class="btn btn-primary btn-sm"
                 data-confirm="Retry safe failed rebuild work?"
                 data-testid="retry-rebuild"
@@ -301,6 +314,8 @@ defmodule FavnView.Components.RebuildPage do
               <button
                 :if={permitted?(@operation, :reconcile)}
                 phx-click="reconcile_rebuild"
+                data-command-operation="rebuild_reconcile"
+                data-command-resource={field(@operation, :operation_id)}
                 class="btn btn-info btn-sm"
                 data-testid="reconcile-rebuild"
               >Reconcile</button>
@@ -312,6 +327,8 @@ defmodule FavnView.Components.RebuildPage do
             for={%{}}
             as={:cancel}
             phx-submit="cancel_rebuild"
+            data-command-operation="rebuild_cancel"
+            data-command-resource={field(@operation, :operation_id)}
             class="mt-5 flex flex-col gap-2 border-t border-base-content/10 pt-5 sm:flex-row"
           >
             <input

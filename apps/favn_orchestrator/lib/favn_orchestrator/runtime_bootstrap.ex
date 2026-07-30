@@ -3,7 +3,6 @@ defmodule FavnOrchestrator.RuntimeBootstrap do
 
   use GenServer
 
-  alias FavnOrchestrator.Auth
   alias FavnOrchestrator.Lifecycle
   alias FavnOrchestrator.OperationalEvents
 
@@ -16,7 +15,7 @@ defmodule FavnOrchestrator.RuntimeBootstrap do
   def init(opts) do
     runtime? = Keyword.get(opts, :runtime?, true)
 
-    with :ok <- maybe_bootstrap(runtime?),
+    with :ok <- maybe_bootstrap_local_development(runtime?),
          :ok <- Lifecycle.mark_accepting() do
       if runtime?, do: OperationalEvents.emit(:orchestrator_started, %{}, %{})
       {:ok, %{runtime?: runtime?}}
@@ -25,6 +24,11 @@ defmodule FavnOrchestrator.RuntimeBootstrap do
     end
   end
 
-  defp maybe_bootstrap(true), do: Auth.bootstrap_configured_actor()
-  defp maybe_bootstrap(false), do: :ok
+  defp maybe_bootstrap_local_development(true) do
+    if Application.get_env(:favn_orchestrator, :allow_automatic_admin_bootstrap, false),
+      do: FavnOrchestrator.Auth.bootstrap_configured_actor(),
+      else: :ok
+  end
+
+  defp maybe_bootstrap_local_development(false), do: :ok
 end

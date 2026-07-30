@@ -56,7 +56,10 @@ defmodule FavnView.TargetRecoveryLiveTest do
 
     assert {:ok, mounted} = TargetRecoveryLive.mount(%{}, %{}, socket())
 
+    browser_key = "target_recovery_plan:browser:01234567-89ab-cdef-0123-456789abcdef"
+
     params = %{
+      "idempotency_key" => browser_key,
       "recovery" => %{
         "target_id" => "asset:orders",
         "reason" => "recover interrupted target"
@@ -68,7 +71,8 @@ defmodule FavnView.TargetRecoveryLiveTest do
 
     assert_received {:plan_attempt, first_opts}
     assert timed_out.assigns.planning_attempt.operation_id == first_opts[:operation_id]
-    assert first_opts[:idempotency_key] == first_opts[:operation_id]
+    assert first_opts[:idempotency_key] == browser_key
+    refute first_opts[:idempotency_key] == first_opts[:operation_id]
     assert timed_out.assigns.operation.state == :planning
 
     assert {:live, :patch, %{to: patched_path}} = timed_out.redirected

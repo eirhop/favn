@@ -79,6 +79,18 @@ defmodule FavnView.ProductionRuntimeConfig do
     )
 
     put_endpoint_secret_key_base(config.secret_key_base)
+
+    Application.put_env(
+      :favn_orchestrator,
+      :operator_command_hmac_key,
+      :crypto.mac(
+        :hmac,
+        :sha256,
+        config.secret_key_base,
+        "favn.operator-command-request-fingerprint.v1"
+      )
+    )
+
     Application.put_env(:favn_view, :production_runtime_diagnostics, diagnostics(config))
     :persistent_term.put(@persistent_key, runtime_config(config))
     :ok

@@ -109,8 +109,9 @@ defmodule FavnOrchestrator.API.ActorsRouter do
 
   put "/:actor_id/password" do
     with {:ok, session, actor, context} <- authorize_viewer(conn),
-         {:ok, password} <- required_string(conn.body_params, "password"),
-         :ok <- set_actor_password(context, actor_id, password) do
+         {:ok, current_password} <- required_string(conn.body_params, "current_password"),
+         {:ok, new_password} <- required_string(conn.body_params, "new_password"),
+         :ok <- set_actor_password(context, actor_id, current_password, new_password) do
       audit_mutation(conn, context, "actor.password.set", actor_id, session, actor)
       Response.data(conn, 200, %{updated: true, actor_id: actor_id})
     else
@@ -120,6 +121,9 @@ defmodule FavnOrchestrator.API.ActorsRouter do
       {:error, reason}
       when reason in [:password_too_short, :password_too_long, :password_blank] ->
         validation_error(conn, "Password does not meet policy")
+
+      {:error, :invalid_current_password} ->
+        validation_error(conn, "Current password is incorrect")
 
       {:error, {:missing_field, field}} ->
         missing_field(conn, field)
@@ -158,8 +162,8 @@ defmodule FavnOrchestrator.API.ActorsRouter do
   defp update_actor_roles(context, actor_id, roles),
     do: Auth.update_actor_roles(context, actor_id, roles)
 
-  defp set_actor_password(context, actor_id, password),
-    do: Auth.set_actor_password(context, actor_id, password)
+  defp set_actor_password(context, actor_id, current_password, new_password),
+    do: Auth.set_actor_password(context, actor_id, current_password, new_password)
 
   defp audit_mutation(conn, context, action, resource_id, session, actor) do
     Audit.put_best_effort(context, %{

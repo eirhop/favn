@@ -30,6 +30,82 @@ interlock variables. Runtime code receives the validated connection and key-ring
 values through frozen application configuration; it does not reread environment
 variables.
 
+## Initial administrator and break-glass recovery
+
+Production startup never creates or changes an administrator. After migrations
+and workspace provisioning, but before the initial control-plane start, run the
+bootstrap operation once from a trusted operator shell:
+
+```console
+mix favn.admin.bootstrap --workspace WORKSPACE --username USERNAME
+```
+
+Repeat `--workspace` to grant the first administrator access to more than one
+workspace. The command reads the password without echo. A protected Unix file
+may be used with `--password-file`; it must be a regular file with no
+group/other permission bits. Windows uses stdin because portable ACL
+verification is unavailable.
+
+A packaged release does not include Mix. Run its equivalent with an attached
+interactive stdin:
+
+```console
+bin/favn_control_plane eval 'IO.inspect(FavnStoragePostgres.Release.admin_bootstrap_from_stdin(["WORKSPACE"], "USERNAME", "Favn Admin"))'
+```
+
+Bootstrap is serialized in PostgreSQL and succeeds only when no administrator
+role exists. It creates one global actor, grants platform administration, adds
+workspace-administrator membership to every listed workspace, and records
+durable audit entries. Normal startup contains no bootstrap secret and cannot
+repeat this action.
+
+If an existing administrator loses access, use the explicit recovery operation:
+
+```console
+mix favn.admin.recover --username USERNAME
+```
+
+For a packaged release:
+
+```console
+bin/favn_control_plane eval 'IO.inspect(FavnStoragePostgres.Release.admin_recover_from_stdin("USERNAME"))'
+```
+
+Recovery is allowed only for an actor that already has an administrator role.
+It activates the global actor, rotates its password, revokes all of its
+sessions, and records a durable platform audit entry. It does not add or repair
+workspace memberships. Durable authorization rejects those sessions
+immediately; a passive LiveView connected to an unclustered control-plane
+process leaves on its next revalidation, within 30 seconds. Run recovery only as
+a documented break-glass operation.
+
+For a non-administrator who has lost the password, use the separate global actor
+reset. It preserves actor status and workspace memberships, rotates the
+credential, revokes every session, and records a platform audit entry:
+
+```console
+mix favn.admin.password_reset --username USERNAME
+```
+
+For a packaged release:
+
+```console
+bin/favn_control_plane eval 'IO.inspect(FavnStoragePostgres.Release.admin_password_reset_from_stdin("USERNAME"))'
+```
+
+To disable or re-enable an exact global actor without changing memberships:
+
+```console
+mix favn.admin.actor --username USERNAME --status disabled
+mix favn.admin.actor --username USERNAME --status active
+```
+
+The packaged-release equivalent is
+`FavnStoragePostgres.Release.admin_actor_status/1`. Disabling revokes every
+session across every workspace. See
+[`operator_security.md`](operator_security.md) for the complete role, session,
+and audit contract.
+
 ## Orchestrator and runner boundary
 
 | Variable | Contract |
@@ -43,10 +119,6 @@ variables.
 | `FAVN_ORCHESTRATOR_MANIFEST_COMPRESSED_LIMIT_BYTES` | `1 MiB..32 MiB`, default `8 MiB`. |
 | `FAVN_ORCHESTRATOR_MANIFEST_DECOMPRESSED_LIMIT_BYTES` | At least the compressed limit and at most `128 MiB`, default `64 MiB`. |
 | `FAVN_ORCHESTRATOR_AUTH_SESSION_TTL` | `1..2592000` seconds, default `43200`. |
-| `FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME` | Required normalized initial operator username. |
-| `FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD` | Required `15..1024` byte initial operator secret. |
-| `FAVN_ORCHESTRATOR_BOOTSTRAP_DISPLAY_NAME` | Bounded display name, default `Favn Admin`. |
-| `FAVN_ORCHESTRATOR_BOOTSTRAP_ROLES` | Required known comma-separated role set, default `admin`. |
 | `FAVN_ORCHESTRATOR_ACTIVE_RUN_PLAN_MAX_BYTES` | `64 MiB..8 GiB`, default `512 MiB`. |
 | `FAVN_SCHEDULER_ENABLED` | Strict `true` or `false`, default `true`. |
 | `FAVN_SCHEDULER_TICK_MS` | `100..86400000`, default `15000`. |
@@ -122,14 +194,15 @@ The complete exposure and trusted-network checklist is
 
 ## Secret rotation
 
-This release reads secrets only from environment variables. It does not read
-mounted secret files, call Azure Key Vault, or hot-reload credentials. Platforms
-may resolve vault references into environment values, but changing a value
-requires a manually controlled drain and service restart. Configure overlapping
-versioned service-token identities before removing an old token. Automatic secret
-rotation remains future work. After successful initial-actor provisioning, the
-control plane removes the bootstrap password from its application configuration;
-the durable credential store retains only its password hash.
+Long-running release configuration reads secrets only from environment
+variables. It does not read mounted secret files, call Azure Key Vault, or
+hot-reload credentials. Platforms may resolve vault references into environment
+values, but changing a value requires a manually controlled drain and service
+restart. Configure overlapping versioned service-token identities before
+removing an old token. Automatic secret rotation remains future work.
+Administrator bootstrap and recovery are explicit exceptions: their one-off
+commands read the password from protected operator input and persist only its
+password hash. The password is never a control-plane environment variable.
 
 Every rotation uses a maintenance window: drain admission, wait up to
 `FAVN_SHUTDOWN_DRAIN_TIMEOUT_MS`, change the platform environment, restart only

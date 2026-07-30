@@ -6,6 +6,7 @@ defmodule FavnView.PipelineDetailLive do
   require Logger
 
   alias FavnView.AssetRoute
+  alias FavnView.CommandAttempt
   alias FavnView.Components.ErrorPage
   alias FavnView.Components.PipelineDetailPage
   alias FavnView.Components.PipelinesPage
@@ -27,6 +28,8 @@ defmodule FavnView.PipelineDetailLive do
         pipeline: pipeline,
         run_error: nil,
         backfill_error: nil,
+        run_attempt: nil,
+        backfill_attempt: nil,
         backfill_config: default_backfill_config(pipeline),
         nav_items: PipelinesPage.nav_items(:pipelines)
       )
@@ -44,23 +47,32 @@ defmodule FavnView.PipelineDetailLive do
     {:noreply, socket}
   end
 
-  def handle_event("run_pipeline", _params, socket) do
+  def handle_event("run_pipeline", params, socket) do
     pipeline = socket.assigns.pipeline
+
+    attempt =
+      CommandAttempt.next(socket.assigns.run_attempt, "pipeline_run_submit", pipeline.id, params)
+
+    socket = assign(socket, :run_attempt, attempt)
 
     case FavnOrchestrator.submit_operator_run(
            actor_context(socket),
            pipeline.manifest_version_id,
-           %{type: :pipeline, id: pipeline.id}
+           %{type: :pipeline, id: pipeline.id},
+           %{},
+           idempotency_key: attempt.key
          ) do
       {:ok, run_id} ->
         {:noreply,
          socket
+         |> CommandAttempt.acknowledge(attempt)
          |> put_flash(:info, "Pipeline run submitted")
          |> push_navigate(to: ~p"/runs/#{run_id}")}
 
       {:error, reason} ->
         Logger.error("pipeline.run submit failed reason=#{inspect(reason)}")
-        {:noreply, assign(socket, :run_error, submit_error_label(reason))}
+        {socket, attempt} = CommandAttempt.settle_failure(socket, attempt, reason)
+        {:noreply, assign(socket, run_error: submit_error_label(reason), run_attempt: attempt)}
     end
   end
 
@@ -76,9 +88,19 @@ defmodule FavnView.PipelineDetailLive do
      )}
   end
 
-  def handle_event("submit_backfill", %{"backfill" => params}, socket) do
-    config = backfill_config(params)
+  def handle_event("submit_backfill", %{"backfill" => form_params} = params, socket) do
+    config = backfill_config(form_params)
     pipeline = socket.assigns.pipeline
+
+    attempt =
+      CommandAttempt.next(
+        socket.assigns.backfill_attempt,
+        "pipeline_backfill_submit",
+        {pipeline.id, config},
+        params
+      )
+
+    socket = assign(socket, :backfill_attempt, attempt)
 
     with true <- pipeline.can_backfill?,
          nil <- validate_backfill_config(config),
@@ -87,10 +109,12 @@ defmodule FavnView.PipelineDetailLive do
              actor_context(socket),
              pipeline.manifest_version_id,
              pipeline.id,
-             %{range: Map.drop(config, [:refresh]), refresh_mode: config.refresh}
+             %{range: Map.drop(config, [:refresh]), refresh_mode: config.refresh},
+             idempotency_key: attempt.key
            ) do
       {:noreply,
        socket
+       |> CommandAttempt.acknowledge(attempt)
        |> put_flash(:info, "Pipeline backfill submitted")
        |> push_navigate(to: ~p"/runs/#{run_id}")}
     else
@@ -110,11 +134,13 @@ defmodule FavnView.PipelineDetailLive do
 
       {:error, reason} ->
         Logger.error("pipeline.backfill submit failed reason=#{inspect(reason)}")
+        {socket, attempt} = CommandAttempt.settle_failure(socket, attempt, reason)
 
         {:noreply,
          assign(socket,
            backfill_config: config,
-           backfill_error: submit_error_label(reason)
+           backfill_error: submit_error_label(reason),
+           backfill_attempt: attempt
          )}
     end
   end

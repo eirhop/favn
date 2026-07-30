@@ -9,18 +9,26 @@ defmodule FavnOrchestrator.Identity do
 
   alias FavnOrchestrator.Auth.Credentials
   alias FavnOrchestrator.Auth.Session
+  alias FavnOrchestrator.Events
   alias FavnOrchestrator.Persistence
+  alias FavnOrchestrator.Persistence.Commands.AttachActorMembership
   alias FavnOrchestrator.Persistence.Commands.ChangeActorPassword
+  alias FavnOrchestrator.Persistence.Commands.CompleteOperatorCommand
   alias FavnOrchestrator.Persistence.Commands.CreateActor
   alias FavnOrchestrator.Persistence.Commands.CreateSession
   alias FavnOrchestrator.Persistence.Commands.RecordAudit
+  alias FavnOrchestrator.Persistence.Commands.ReserveOperatorCommand
   alias FavnOrchestrator.Persistence.Commands.RevokeSessions
+  alias FavnOrchestrator.Persistence.Commands.RotateWorkspaceSession
   alias FavnOrchestrator.Persistence.Commands.SetActorAccess
+  alias FavnOrchestrator.Persistence.Commands.SetActorStatus
   alias FavnOrchestrator.Persistence.Error
   alias FavnOrchestrator.Persistence.Queries.GetActor
   alias FavnOrchestrator.Persistence.Queries.GetSession
+  alias FavnOrchestrator.Persistence.Queries.ListActorMemberships
   alias FavnOrchestrator.Persistence.Queries.PageActors
   alias FavnOrchestrator.Persistence.Queries.PageAudit
+  alias FavnOrchestrator.Persistence.Queries.PageSessions
   alias FavnOrchestrator.Persistence.Results.Actor, as: ActorResult
   alias FavnOrchestrator.Persistence.Results.AuditEntry
   alias FavnOrchestrator.Persistence.Results.CursorPage
@@ -37,15 +45,21 @@ defmodule FavnOrchestrator.Identity do
           required(:display_name) => String.t(),
           required(:roles) => [:viewer | :operator | :admin],
           required(:status) => :active | :disabled,
+          required(:global_status) => :active | :disabled,
+          required(:membership_status) => :active | :suspended | :revoked,
           required(:workspace_id) => String.t(),
-          required(:access_version) => pos_integer()
+          required(:access_version) => pos_integer(),
+          required(:version) => pos_integer(),
+          optional(:credential_version) => pos_integer()
         }
 
   @type session :: %{
           required(:id) => String.t(),
           required(:actor_id) => String.t(),
+          required(:workspace_id) => String.t(),
           required(:provider) => String.t(),
           required(:issued_at) => DateTime.t(),
+          required(:status) => :active | :revoked | :expired,
           required(:expires_at) => DateTime.t(),
           required(:revoked_at) => DateTime.t() | nil,
           optional(:token) => String.t()
@@ -98,6 +112,43 @@ defmodule FavnOrchestrator.Identity do
     end
   end
 
+  @doc "Attaches one exact existing username to the current workspace."
+  @spec attach_actor_membership(
+          WorkspaceContext.t(),
+          String.t(),
+          [atom() | String.t()]
+        ) :: {:ok, actor()} | {:error, term()}
+  def attach_actor_membership(%WorkspaceContext{} = context, username, roles)
+      when is_binary(username) and is_list(roles) do
+    with :ok <- authorize(context, :admin),
+         {:ok, roles} <- Credentials.normalize_roles(roles),
+         normalized_username <- normalize_username(username),
+         {:ok, actor} <-
+           store().attach_actor_membership(%AttachActorMembership{
+             workspace_context: context,
+             command_id:
+               command_id(
+                 "actor-membership-attach",
+                 Enum.join(
+                   [
+                     context.workspace_id,
+                     normalized_username,
+                     roles |> Enum.sort() |> Enum.map_join(",", &Atom.to_string/1)
+                   ],
+                   ":"
+                 )
+               ),
+             username: username,
+             roles: persistence_roles(roles),
+             occurred_at: DateTime.utc_now()
+           }) do
+      {:ok, actor_map(actor)}
+    else
+      {:error, %Error{kind: :not_found}} -> {:error, :actor_not_available}
+      {:error, _reason} = error -> error
+    end
+  end
+
   @doc "Authenticates a password in exactly one workspace."
   @spec authenticate_password(WorkspaceContext.t(), String.t(), String.t()) ::
           {:ok, actor()} | {:error, :invalid_credentials}
@@ -111,7 +162,7 @@ defmodule FavnOrchestrator.Identity do
            }),
          :ok <- active_actor?(actor),
          :ok <- Credentials.verify_password(password, %{password_hash: actor.credential_hash}) do
-      {:ok, actor_map(actor)}
+      {:ok, actor |> actor_map() |> Map.put(:credential_version, actor.credential_version)}
     else
       _invalid -> Credentials.dummy_verify()
     end
@@ -122,7 +173,10 @@ defmodule FavnOrchestrator.Identity do
           {:ok, session()} | {:error, term()}
   def issue_session(%WorkspaceContext{} = context, actor_id, opts \\ [])
       when is_binary(actor_id) and is_list(opts) do
-    with {:ok, issued} <- Session.issue(actor_id, opts),
+    expected_credential_version = Keyword.get(opts, :expected_credential_version)
+    session_opts = Keyword.drop(opts, [:expected_credential_version])
+
+    with {:ok, issued} <- Session.issue(actor_id, session_opts),
          {:ok, persisted} <-
            store().create_session(%CreateSession{
              workspace_context: context,
@@ -131,6 +185,7 @@ defmodule FavnOrchestrator.Identity do
              actor_id: actor_id,
              token_hash: Session.token_hash(issued.token),
              provider: issued.provider,
+             expected_credential_version: expected_credential_version,
              expires_at: issued.expires_at,
              occurred_at: issued.issued_at
            }) do
@@ -157,6 +212,67 @@ defmodule FavnOrchestrator.Identity do
       {:ok, session_map(session), actor_map(actor)}
     else
       _invalid -> {:error, :invalid_session}
+    end
+  end
+
+  @doc "Returns only the authenticated actor's workspace memberships."
+  @spec list_actor_memberships(WorkspaceContext.t(), String.t()) ::
+          {:ok, [map()]} | {:error, term()}
+  def list_actor_memberships(%WorkspaceContext{} = context, actor_id)
+      when is_binary(actor_id) do
+    with true <- context.principal_id == actor_id,
+         {:ok, memberships} <-
+           store().list_actor_memberships(%ListActorMemberships{
+             workspace_context: context,
+             actor_id: actor_id
+           }) do
+      {:ok,
+       Enum.map(memberships, fn membership ->
+         %{
+           id: membership.workspace_id,
+           slug: membership.workspace_slug,
+           name: membership.workspace_name,
+           roles: operator_roles(membership.roles),
+           status: membership.status,
+           access_version: membership.version
+         }
+       end)}
+    else
+      false -> {:error, :forbidden}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  @doc "Atomically revokes the source session and issues one for the target workspace."
+  @spec rotate_workspace_session(WorkspaceContext.t(), session(), String.t(), keyword()) ::
+          {:ok, session()} | {:error, term()}
+  def rotate_workspace_session(
+        %WorkspaceContext{} = source_context,
+        %{id: source_session_id, actor_id: actor_id},
+        target_workspace_id,
+        opts \\ []
+      )
+      when is_binary(target_workspace_id) and is_list(opts) do
+    with :ok <- validate_opts(opts, [:ttl_seconds, :provider]),
+         {:ok, issued} <- Session.issue(actor_id, opts),
+         {:ok, persisted} <-
+           store().rotate_workspace_session(%RotateWorkspaceSession{
+             source_context: source_context,
+             command_id: command_id("session-switch", issued.id),
+             source_session_id: source_session_id,
+             target_workspace_id: target_workspace_id,
+             session_id: issued.id,
+             actor_id: actor_id,
+             token_hash: Session.token_hash(issued.token),
+             provider: issued.provider,
+             expires_at: issued.expires_at,
+             occurred_at: issued.issued_at
+           }) do
+      Events.broadcast_session_revoked(source_session_id)
+      {:ok, persisted |> session_map() |> Map.put(:token, issued.token)}
+    else
+      {:error, %Error{} = error} -> {:error, error}
+      {:error, _reason} = error -> error
     end
   end
 
@@ -226,6 +342,26 @@ defmodule FavnOrchestrator.Identity do
           {:ok, actor()} | {:error, term()}
   def set_roles(%WorkspaceContext{} = context, actor_id, roles, expected_version)
       when is_binary(actor_id) and is_list(roles) and is_integer(expected_version) do
+    set_membership_access(context, actor_id, roles, :active, expected_version)
+  end
+
+  @doc "Changes one current-workspace membership with optimistic concurrency."
+  @spec set_membership_access(
+          WorkspaceContext.t(),
+          String.t(),
+          [atom() | String.t()],
+          :active | :suspended | :revoked,
+          non_neg_integer()
+        ) :: {:ok, actor()} | {:error, term()}
+  def set_membership_access(
+        %WorkspaceContext{} = context,
+        actor_id,
+        roles,
+        status,
+        expected_version
+      )
+      when is_binary(actor_id) and is_list(roles) and
+             status in [:active, :suspended, :revoked] and is_integer(expected_version) do
     with :ok <- authorize(context, :admin),
          {:ok, roles} <- Credentials.normalize_roles(roles),
          {:ok, actor} <-
@@ -234,16 +370,17 @@ defmodule FavnOrchestrator.Identity do
              command_id:
                command_id(
                  "actor-access",
-                 actor_access_identity(actor_id, roles, expected_version)
+                 actor_access_identity(actor_id, roles, status, expected_version)
                ),
              actor_id: actor_id,
              scope_kind: :workspace,
              workspace_id: context.workspace_id,
              roles: persistence_roles(roles),
-             status: :active,
+             status: status,
              expected_version: expected_version,
              occurred_at: DateTime.utc_now()
            }) do
+      Events.broadcast_workspace_actor_changed(context.workspace_id, actor_id)
       {:ok, actor_map(actor)}
     end
   end
@@ -258,20 +395,62 @@ defmodule FavnOrchestrator.Identity do
   def set_membership(context, actor_id, roles, expected_version),
     do: set_roles(context, actor_id, roles, expected_version)
 
-  @doc "Changes a password and revokes all active sessions atomically."
-  @spec change_password(WorkspaceContext.t(), String.t(), String.t()) :: :ok | {:error, term()}
-  def change_password(%WorkspaceContext{} = context, actor_id, password)
-      when is_binary(actor_id) and is_binary(password) do
+  @doc "Changes global actor status under explicit platform-admin authority."
+  @spec set_global_actor_status(
+          FavnOrchestrator.Persistence.PlatformContext.t(),
+          String.t(),
+          :active | :disabled,
+          pos_integer()
+        ) :: :ok | {:error, term()}
+  def set_global_actor_status(context, actor_id, status, expected_version)
+      when is_binary(actor_id) and status in [:active, :disabled] and
+             is_integer(expected_version) do
+    identity = "#{actor_id}:#{status}:#{expected_version}"
+
+    case store().set_actor_status(%SetActorStatus{
+           platform_context: context,
+           command_id: command_id("actor-status", identity),
+           actor_id: actor_id,
+           status: status,
+           expected_version: expected_version,
+           occurred_at: DateTime.utc_now()
+         }) do
+      :ok ->
+        Events.broadcast_actor_changed(actor_id)
+        :ok
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  @doc "Verifies the current password, changes it, and revokes all sessions atomically."
+  @spec change_password(WorkspaceContext.t(), String.t(), String.t(), String.t()) ::
+          :ok | {:error, term()}
+  def change_password(%WorkspaceContext{} = context, actor_id, current_password, new_password)
+      when is_binary(actor_id) and is_binary(current_password) and is_binary(new_password) do
     with :ok <- authorize_self(context, actor_id),
-         :ok <- Credentials.validate_password(password) do
-      store().change_password(%ChangeActorPassword{
-        workspace_context: context,
-        command_id: command_id("actor-password", random_identity()),
-        actor_id: actor_id,
-        password_hash: password_hash(password),
-        occurred_at: DateTime.utc_now(),
-        revoke_sessions?: true
-      })
+         {:ok, actor} <- get_actor_result(context, actor_id),
+         :ok <-
+           Credentials.verify_password(current_password, %{
+             password_hash: actor.credential_hash
+           }),
+         :ok <- Credentials.validate_password(new_password),
+         result <-
+           store().change_password(%ChangeActorPassword{
+             workspace_context: context,
+             command_id: command_id("actor-password", random_identity()),
+             actor_id: actor_id,
+             password_hash: password_hash(new_password),
+             expected_credential_version: actor.credential_version,
+             occurred_at: DateTime.utc_now(),
+             revoke_sessions?: true
+           }) do
+      if result == :ok, do: Events.broadcast_actor_changed(actor_id)
+      result
+    else
+      {:error, :invalid_credentials} -> {:error, :invalid_current_password}
+      {:error, _reason} = error -> error
     end
   end
 
@@ -284,13 +463,35 @@ defmodule FavnOrchestrator.Identity do
              selector: %SessionById{session_id: session_id}
            }),
          :ok <- authorize_session_revocation(context, session.actor_id) do
-      store().revoke_sessions(%RevokeSessions{
-        workspace_context: context,
-        command_id: command_id("session-revoke", session_id),
-        session_id: session_id,
-        actor_id: nil,
-        occurred_at: DateTime.utc_now()
-      })
+      result =
+        store().revoke_sessions(%RevokeSessions{
+          workspace_context: context,
+          command_id: command_id("session-revoke", session_id),
+          session_id: session_id,
+          actor_id: nil,
+          occurred_at: DateTime.utc_now()
+        })
+
+      if result == :ok, do: Events.broadcast_session_revoked(session_id)
+      result
+    end
+  end
+
+  @doc "Returns one bounded page of sessions issued for the current workspace."
+  @spec page_sessions(WorkspaceContext.t(), keyword()) ::
+          {:ok, CursorPage.t(session())} | {:error, term()}
+  def page_sessions(%WorkspaceContext{} = context, opts \\ []) when is_list(opts) do
+    with :ok <- authorize(context, :admin),
+         :ok <- validate_opts(opts, [:actor_id, :status, :after, :limit]),
+         {:ok, page} <-
+           store().page_sessions(%PageSessions{
+             workspace_context: context,
+             actor_id: Keyword.get(opts, :actor_id),
+             status: Keyword.get(opts, :status),
+             after: Keyword.get(opts, :after),
+             limit: Keyword.get(opts, :limit, 50)
+           }) do
+      {:ok, %{page | items: Enum.map(page.items, &session_map/1)}}
     end
   end
 
@@ -313,6 +514,14 @@ defmodule FavnOrchestrator.Identity do
   rescue
     _error -> {:error, :invalid_audit_entry}
   end
+
+  @doc false
+  def reserve_operator_command(%ReserveOperatorCommand{} = command),
+    do: store().reserve_operator_command(command)
+
+  @doc false
+  def complete_operator_command(%CompleteOperatorCommand{} = command),
+    do: store().complete_operator_command(command)
 
   defp audit_command_id(scope, entry) do
     case audit_idempotency_key_hash(entry) do
@@ -394,9 +603,9 @@ defmodule FavnOrchestrator.Identity do
       else: {:error, :forbidden}
   end
 
-  defp actor_access_identity(actor_id, roles, expected_version) do
+  defp actor_access_identity(actor_id, roles, status, expected_version) do
     normalized_roles = roles |> Enum.map(&Atom.to_string/1) |> Enum.sort() |> Enum.join(",")
-    "#{actor_id}:#{expected_version}:#{normalized_roles}"
+    "#{actor_id}:#{status}:#{expected_version}:#{normalized_roles}"
   end
 
   defp audit_subject_id(entry) do
@@ -437,8 +646,11 @@ defmodule FavnOrchestrator.Identity do
           do: :active,
           else: :disabled
         ),
+      global_status: global_actor_status(actor.status),
+      membership_status: actor.membership_status,
       workspace_id: actor.workspace_id,
       access_version: actor.access_version,
+      version: actor.version,
       inserted_at: nil,
       updated_at: nil
     }
@@ -448,8 +660,10 @@ defmodule FavnOrchestrator.Identity do
     %{
       id: session.session_id,
       actor_id: session.actor_id,
+      workspace_id: session.workspace_id,
       provider: session.provider,
       issued_at: session.issued_at,
+      status: session.status,
       expires_at: session.expires_at,
       revoked_at: session.revoked_at
     }
@@ -464,6 +678,9 @@ defmodule FavnOrchestrator.Identity do
     end)
     |> Enum.uniq()
   end
+
+  defp global_actor_status(:active), do: :active
+  defp global_actor_status(_disabled_or_retired), do: :disabled
 
   defp operator_roles(roles) do
     roles
@@ -488,6 +705,10 @@ defmodule FavnOrchestrator.Identity do
   defp password_hash(password) do
     %{password_hash: hash} = Credentials.hash_password(password)
     hash
+  end
+
+  defp normalize_username(username) do
+    username |> String.trim() |> String.normalize(:nfkc) |> String.downcase()
   end
 
   defp validate_opts(opts, allowed) do

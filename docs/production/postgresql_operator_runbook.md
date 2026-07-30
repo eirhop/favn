@@ -39,7 +39,7 @@ FAVN_DATABASE_SSL_CA_FILE=/run/secrets/postgresql-ca.pem
 FAVN_RUNTIME_INPUT_PIN_KEYS='{"1":"<base64-32-byte-key>","2":"<base64-32-byte-key>"}'
 FAVN_RUNTIME_INPUT_PIN_KEY_VERSION=<current-positive-integer>
 FAVN_INSTANCE_ID=<stable-node-or-replica-identity>
-FAVN_WORKSPACE_IDS=<comma-separated-workspaces-enabled-for-scheduling-and-bootstrap>
+FAVN_WORKSPACE_IDS=<comma-separated-workspaces-enabled-for-scheduling>
 ```
 
 Migration jobs use a separate URL for the migrator role. Never put database URLs
@@ -53,10 +53,11 @@ from the configured keyring.
 Production rejects disabled TLS. The configured CA file must be a regular file and
 certificate hostname verification must succeed.
 
-`FAVN_WORKSPACE_IDS` configures scheduler and explicit bootstrap scope; it is not a
-run-recovery authority boundary. Recovery pages active workspace identities directly
-from PostgreSQL so a provisioned workspace cannot lose orphan recovery merely because
-one node's environment list is stale.
+`FAVN_WORKSPACE_IDS` configures scheduler scope only; it is not an administrator
+bootstrap or run-recovery authority boundary. Administrator bootstrap names its
+workspace explicitly. Recovery pages active workspace identities directly from
+PostgreSQL so a provisioned workspace cannot lose orphan recovery merely because one
+node's environment list is stale.
 
 ## Connection budget
 

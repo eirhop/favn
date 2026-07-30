@@ -6,6 +6,9 @@ database_url = System.get_env("FAVN_DATABASE_URL")
 runtime_input_pin_key = System.get_env("FAVN_RUNTIME_INPUT_PIN_KEY")
 duckdb_adbc_driver = System.get_env("DUCKDB_ADBC_DRIVER")
 
+config :favn_orchestrator,
+  operator_command_hmac_key: :crypto.hash(:sha256, "favn-dev-operator-command-hmac-key")
+
 if is_binary(database_url) and database_url != "" and is_binary(runtime_input_pin_key) and
      runtime_input_pin_key != "" do
   config :favn_orchestrator,

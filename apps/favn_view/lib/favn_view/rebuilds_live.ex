@@ -6,6 +6,7 @@ defmodule FavnView.RebuildsLive do
   require Logger
 
   alias FavnView.Components.RebuildPage
+  alias FavnView.CommandAttempt
 
   @page_size 100
 
@@ -20,6 +21,8 @@ defmodule FavnView.RebuildsLive do
        has_more?: page && page.has_more?,
        target_id: Map.get(params, "target_id", ""),
        plan: nil,
+       plan_attempt: nil,
+       start_attempt: nil,
        planning?: false,
        error: error
      )}
@@ -28,28 +31,53 @@ defmodule FavnView.RebuildsLive do
   @impl true
   def handle_event(
         "plan_rebuild",
-        %{"rebuild" => %{"target_id" => target_id, "reason" => reason}},
+        %{"rebuild" => %{"target_id" => target_id, "reason" => reason}} = params,
         socket
       ) do
     socket = assign(socket, planning?: true, error: nil, plan: nil, target_id: target_id)
 
-    case plan_rebuild(context(socket), target_id, reason) do
+    attempt =
+      CommandAttempt.next(
+        socket.assigns.plan_attempt,
+        "rebuild_plan",
+        {target_id, reason},
+        params
+      )
+
+    socket = assign(socket, :plan_attempt, attempt)
+
+    case plan_rebuild(context(socket), target_id, reason, attempt.key) do
       {:ok, plan} ->
-        {:noreply, assign(socket, planning?: false, plan: plan)}
+        {:noreply,
+         socket
+         |> CommandAttempt.acknowledge(attempt)
+         |> assign(planning?: false, plan: plan, plan_attempt: nil)}
 
       {:error, failure} ->
-        {:noreply, assign(socket, planning?: false, error: error_label(failure))}
+        {socket, attempt} = CommandAttempt.settle_failure(socket, attempt, failure)
+
+        {:noreply,
+         assign(socket, planning?: false, error: error_label(failure), plan_attempt: attempt)}
     end
   end
 
-  def handle_event("start_rebuild", _params, %{assigns: %{plan: plan}} = socket)
+  def handle_event("start_rebuild", params, %{assigns: %{plan: plan}} = socket)
       when is_map(plan) do
-    case start_rebuild(context(socket), plan.plan_id, plan.plan_hash) do
+    attempt =
+      CommandAttempt.next(socket.assigns.start_attempt, "rebuild_start", plan.plan_id, params)
+
+    socket = assign(socket, :start_attempt, attempt)
+
+    case start_rebuild(context(socket), plan.plan_id, plan.plan_hash, attempt.key) do
       {:ok, operation} ->
-        {:noreply, push_navigate(socket, to: ~p"/rebuilds/#{operation.operation_id}")}
+        {:noreply,
+         socket
+         |> CommandAttempt.acknowledge(attempt)
+         |> push_navigate(to: ~p"/rebuilds/#{operation.operation_id}")}
 
       {:error, failure} ->
-        {:noreply, assign(socket, :error, error_label(failure))}
+        {socket, attempt} = CommandAttempt.settle_failure(socket, attempt, failure)
+        {:noreply, assign(socket, error: error_label(failure), start_attempt: attempt)}
     end
   end
 
@@ -105,20 +133,20 @@ defmodule FavnView.RebuildsLive do
     ).(context, opts)
   end
 
-  defp plan_rebuild(context, target_id, reason) do
+  defp plan_rebuild(context, target_id, reason, idempotency_key) do
     Application.get_env(
       :favn_view,
       :plan_operator_rebuild_fun,
-      &FavnOrchestrator.plan_operator_rebuild/3
-    ).(context, target_id, reason)
+      &FavnOrchestrator.plan_operator_rebuild/4
+    ).(context, target_id, reason, idempotency_key: idempotency_key)
   end
 
-  defp start_rebuild(context, plan_id, plan_hash) do
+  defp start_rebuild(context, plan_id, plan_hash, idempotency_key) do
     Application.get_env(
       :favn_view,
       :start_operator_rebuild_fun,
-      &FavnOrchestrator.start_operator_rebuild/3
-    ).(context, plan_id, plan_hash)
+      &FavnOrchestrator.start_operator_rebuild/4
+    ).(context, plan_id, plan_hash, idempotency_key: idempotency_key)
   end
 
   defp error_label(:forbidden), do: "Administrator access is required."

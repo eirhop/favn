@@ -61,6 +61,7 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.AssetDetail do
       active_mode: :timeline,
       selected_window: nil,
       run_config_open?: false,
+      command_resource: "asset:customer_orders_daily",
       run_config: Timeline.default_run_config()
     }
   end
@@ -109,6 +110,7 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.AssetDetail do
       :freshness,
       :selected_window,
       :run_config_open?,
+      :command_resource,
       :run_config
     ])
   end

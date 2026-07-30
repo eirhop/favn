@@ -40,8 +40,12 @@ defmodule FavnOrchestrator.Auth do
           {:ok, session(), actor()} | {:error, term()}
   def password_login(%WorkspaceContext{} = context, username, password, opts) do
     with {:ok, actor} <- Store.authenticate_password(context, username, password, opts),
-         {:ok, session} <- Store.issue_session(context, actor.id, provider: "password_local") do
-      {:ok, session, actor}
+         {:ok, session} <-
+           Store.issue_session(context, actor.id,
+             provider: "password_local",
+             expected_credential_version: actor.credential_version
+           ) do
+      {:ok, session, Map.delete(actor, :credential_version)}
     end
   end
 
@@ -74,6 +78,21 @@ defmodule FavnOrchestrator.Auth do
     Store.introspect_session(context, session_token)
   end
 
+  @doc "Lists the authenticated actor's workspaces without exposing other tenants to admins."
+  @spec list_actor_workspaces(WorkspaceContext.t(), String.t()) ::
+          {:ok, [map()]} | {:error, term()}
+  def list_actor_workspaces(%WorkspaceContext{} = context, actor_id) when is_binary(actor_id) do
+    Identity.list_actor_memberships(context, actor_id)
+  end
+
+  @doc "Rotates the authenticated session into another active workspace."
+  @spec switch_workspace(WorkspaceContext.t(), session(), String.t()) ::
+          {:ok, session()} | {:error, term()}
+  def switch_workspace(%WorkspaceContext{} = context, session, target_workspace_id)
+      when is_map(session) and is_binary(target_workspace_id) do
+    Identity.rotate_workspace_session(context, session, target_workspace_id)
+  end
+
   @doc "Revokes one session only within its explicit workspace."
   @spec revoke_session(WorkspaceContext.t(), String.t()) :: :ok | {:error, term()}
   def revoke_session(%WorkspaceContext{} = context, session_id) when is_binary(session_id) do
@@ -98,6 +117,13 @@ defmodule FavnOrchestrator.Auth do
     Identity.create_actor(context, username, password, display_name, roles)
   end
 
+  @doc "Attaches an exact existing global username to the authorized workspace."
+  @spec attach_actor_membership(WorkspaceContext.t(), String.t(), [atom() | String.t()]) ::
+          {:ok, actor()} | {:error, term()}
+  def attach_actor_membership(%WorkspaceContext{} = context, username, roles) do
+    Identity.attach_actor_membership(context, username, roles)
+  end
+
   @doc "Replaces one actor's workspace roles using the current access version."
   @spec update_actor_roles(WorkspaceContext.t(), String.t(), [atom() | String.t()]) ::
           {:ok, actor()} | {:error, term()}
@@ -107,11 +133,30 @@ defmodule FavnOrchestrator.Auth do
     end
   end
 
-  @doc "Changes the authenticated actor's own password and revokes its active sessions."
-  @spec set_actor_password(WorkspaceContext.t(), String.t(), String.t()) ::
+  @doc "Changes current-workspace roles and membership status."
+  @spec update_actor_membership(
+          WorkspaceContext.t(),
+          String.t(),
+          [atom() | String.t()],
+          :active | :suspended | :revoked
+        ) :: {:ok, actor()} | {:error, term()}
+  def update_actor_membership(%WorkspaceContext{} = context, actor_id, roles, status) do
+    with {:ok, actor} <- Identity.get_actor(context, actor_id) do
+      Identity.set_membership_access(context, actor_id, roles, status, actor.access_version)
+    end
+  end
+
+  @doc "Returns workspace-bound sessions for current-workspace administration."
+  @spec page_sessions(WorkspaceContext.t(), keyword()) :: {:ok, map()} | {:error, term()}
+  def page_sessions(%WorkspaceContext{} = context, opts \\ []) when is_list(opts) do
+    Identity.page_sessions(context, opts)
+  end
+
+  @doc "Verifies and changes the authenticated actor's own global password."
+  @spec set_actor_password(WorkspaceContext.t(), String.t(), String.t(), String.t()) ::
           :ok | {:error, term()}
-  def set_actor_password(%WorkspaceContext{} = context, actor_id, password) do
-    Identity.change_password(context, actor_id, password)
+  def set_actor_password(%WorkspaceContext{} = context, actor_id, current_password, new_password) do
+    Identity.change_password(context, actor_id, current_password, new_password)
   end
 
   @doc "Fetches an actor through one explicit workspace membership."

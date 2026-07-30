@@ -82,6 +82,7 @@ defmodule FavnStoragePostgres.Schemas.AuthSession do
   @schema_prefix "favn_control"
   schema "auth_sessions" do
     field(:actor_id, :string)
+    field(:workspace_id, :string)
     field(:creation_command_id, :string)
     field(:token_hash, :binary)
     field(:provider, :string)
@@ -158,6 +159,31 @@ defmodule FavnStoragePostgres.Schemas.AuthPlatformAuditEntry do
     field(:detail, :map)
     field(:occurred_at, :utc_datetime_usec)
     field(:inserted_at, :utc_datetime_usec)
+  end
+end
+
+defmodule FavnStoragePostgres.Schemas.AuthOperatorCommand do
+  @moduledoc false
+  use Ecto.Schema
+
+  @primary_key {:intent_id, :string, autogenerate: false}
+  @schema_prefix "favn_control"
+  schema "auth_operator_commands" do
+    field(:workspace_id, :string)
+    field(:actor_id, :string)
+    field(:session_id, :string)
+    field(:operation, :string)
+    field(:resource_type, :string)
+    field(:resource_id, :string)
+    field(:key_hash, :string)
+    field(:request_fingerprint, :string)
+    field(:status, :string)
+    field(:result_resource_type, :string)
+    field(:result_resource_id, :string)
+    field(:result_detail, :map)
+    field(:expires_at, :utc_datetime_usec)
+    field(:terminal_at, :utc_datetime_usec)
+    timestamps(type: :utc_datetime_usec)
   end
 end
 

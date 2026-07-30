@@ -48,7 +48,9 @@ defmodule FavnView.RebuildsLiveTest do
     :page_operator_rebuild_items_fun,
     :cancel_operator_rebuild_fun,
     :retry_operator_rebuild_fun,
-    :reconcile_operator_rebuild_fun
+    :reconcile_operator_rebuild_fun,
+    :list_operator_workspaces_fun,
+    :subscribe_operator_identity_fun
   ]
 
   setup do
@@ -57,6 +59,14 @@ defmodule FavnView.RebuildsLiveTest do
     Application.put_env(:favn_view, :page_operator_rebuilds_fun, fn :operator_context, opts ->
       send(self(), {:page_rebuilds, opts})
       {:ok, %{items: [], next_cursor: nil, has_more?: false, limit: 100}}
+    end)
+
+    Application.put_env(:favn_view, :list_operator_workspaces_fun, fn _operator_context ->
+      {:ok, [%{id: "workspace-1", name: "Workspace 1", status: :active}]}
+    end)
+
+    Application.put_env(:favn_view, :subscribe_operator_identity_fun, fn _operator_context ->
+      :ok
     end)
 
     stores =
@@ -94,7 +104,8 @@ defmodule FavnView.RebuildsLiveTest do
     end)
 
     Application.put_env(:favn_view, :plan_operator_rebuild_fun, fn
-      ^operator_context, "asset:orders", "schema changed" ->
+      ^operator_context, "asset:orders", "schema changed", opts ->
+        assert is_binary(opts[:idempotency_key])
         send(test_pid, :mounted_plan)
 
         {:ok,
@@ -108,7 +119,8 @@ defmodule FavnView.RebuildsLiveTest do
     end)
 
     Application.put_env(:favn_view, :start_operator_rebuild_fun, fn
-      ^operator_context, "rebuild-browser-plan", ^plan_hash ->
+      ^operator_context, "rebuild-browser-plan", ^plan_hash, opts ->
+        assert is_binary(opts[:idempotency_key])
         send(test_pid, :mounted_start)
         {:ok, %{operation_id: "rebuild-browser-plan"}}
     end)
@@ -139,7 +151,8 @@ defmodule FavnView.RebuildsLiveTest do
     test_pid = self()
 
     Application.put_env(:favn_view, :plan_operator_rebuild_fun, fn
-      :operator_context, "asset:orders", "schema changed" ->
+      :operator_context, "asset:orders", "schema changed", opts ->
+        assert is_binary(opts[:idempotency_key])
         send(test_pid, :planned_through_facade)
 
         {:ok,
@@ -151,7 +164,8 @@ defmodule FavnView.RebuildsLiveTest do
     end)
 
     Application.put_env(:favn_view, :start_operator_rebuild_fun, fn
-      :operator_context, "rebuild-plan-1", plan_hash ->
+      :operator_context, "rebuild-plan-1", plan_hash, opts ->
+        assert is_binary(opts[:idempotency_key])
         send(test_pid, {:started_through_facade, plan_hash})
         {:ok, %{operation_id: "rebuild-plan-1"}}
     end)
@@ -208,25 +222,29 @@ defmodule FavnView.RebuildsLiveTest do
     end)
 
     Application.put_env(:favn_view, :start_operator_rebuild_fun, fn
-      :operator_context, "rebuild-plan-1", ^plan_hash ->
+      :operator_context, "rebuild-plan-1", ^plan_hash, opts ->
+        assert is_binary(opts[:idempotency_key])
         send(test_pid, :started_rebuild)
         {:ok, operation}
     end)
 
     Application.put_env(:favn_view, :cancel_operator_rebuild_fun, fn
-      :operator_context, "rebuild-plan-1", "operator request" ->
+      :operator_context, "rebuild-plan-1", "operator request", opts ->
+        assert is_binary(opts[:idempotency_key])
         send(test_pid, :cancelled_rebuild)
         {:ok, operation}
     end)
 
     Application.put_env(:favn_view, :retry_operator_rebuild_fun, fn
-      :operator_context, "rebuild-plan-1", ^plan_hash ->
+      :operator_context, "rebuild-plan-1", ^plan_hash, opts ->
+        assert is_binary(opts[:idempotency_key])
         send(test_pid, :retried_rebuild)
         {:ok, operation}
     end)
 
     Application.put_env(:favn_view, :reconcile_operator_rebuild_fun, fn
-      :operator_context, "rebuild-plan-1" ->
+      :operator_context, "rebuild-plan-1", opts ->
+        assert is_binary(opts[:idempotency_key])
         send(test_pid, :reconciled_rebuild)
         {:ok, operation}
     end)
@@ -297,6 +315,7 @@ defmodule FavnView.RebuildsLiveTest do
     session = %SessionResult{
       session_id: "session-browser-admin",
       actor_id: actor_id,
+      workspace_id: workspace_id,
       provider: "password_local",
       issued_at: now,
       status: :active,

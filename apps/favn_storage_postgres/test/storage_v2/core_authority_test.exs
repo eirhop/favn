@@ -52,6 +52,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnOrchestrator.Persistence.Commands.PurgePersistence
   alias FavnOrchestrator.Persistence.Commands.RegisterManifest
   alias FavnOrchestrator.Persistence.Commands.RegisterExecutionPackages
+  alias FavnOrchestrator.Persistence.Commands.RecoverAdministratorCredential
   alias FavnOrchestrator.Persistence.Commands.RequestRunCancellation
   alias FavnOrchestrator.Persistence.Commands.ReleaseRunOwnership
   alias FavnOrchestrator.Persistence.Commands.ReleaseTargetOperationLocks
@@ -66,6 +67,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnOrchestrator.Persistence.Commands.LogEntry
   alias FavnOrchestrator.Persistence.Commands.PurgeLogs
   alias FavnOrchestrator.Persistence.Commands.RevokeSessions
+  alias FavnOrchestrator.Persistence.Commands.ResetActorCredential
   alias FavnOrchestrator.Persistence.Commands.RenewMaterializationClaim
   alias FavnOrchestrator.Persistence.Commands.RenewRebuildOperationLease
   alias FavnOrchestrator.Persistence.Commands.RenewRunOwnership
@@ -74,6 +76,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnOrchestrator.Persistence.Commands.CommitScheduleEvaluation
   alias FavnOrchestrator.Persistence.Commands.ScheduleOccurrenceIntent
   alias FavnOrchestrator.Persistence.Commands.SetScheduleActivation
+  alias FavnOrchestrator.Persistence.Commands.SetActorStatus
   alias FavnOrchestrator.Persistence.Commands.StartBackfillPlan
   alias FavnOrchestrator.Persistence.Commands.StartRebuildOperation
   alias FavnOrchestrator.Persistence.Commands.RebuildPlanAction
@@ -97,6 +100,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnOrchestrator.Persistence.Queries.GetExecutionPackage
   alias FavnOrchestrator.Persistence.Queries.GetManifestTargetDescriptors
   alias FavnOrchestrator.Persistence.Queries.GetActor
+  alias FavnOrchestrator.Persistence.Queries.GetGlobalActor
   alias FavnOrchestrator.Persistence.Queries.GetSession
   alias FavnOrchestrator.Persistence.Queries.GetRun
   alias FavnOrchestrator.Persistence.Queries.GetRunExecutionCheckpoint
@@ -117,6 +121,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnOrchestrator.Persistence.Queries.PageExecutionGroups
   alias FavnOrchestrator.Persistence.Queries.PageManifests
   alias FavnOrchestrator.Persistence.Queries.PageAudit
+  alias FavnOrchestrator.Persistence.Queries.PageSessions
   alias FavnOrchestrator.Persistence.Queries.PageLogs
   alias FavnOrchestrator.Persistence.Queries.PageRunEvents
   alias FavnOrchestrator.Persistence.Queries.PagePublishedRunEvents
@@ -138,13 +143,16 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnOrchestrator.RunCancellation
   alias FavnOrchestrator.ExecutionAdmission
   alias FavnOrchestrator.Backfills
-  alias FavnOrchestrator.Auth
   alias FavnOrchestrator.API.SSE
   alias FavnOrchestrator.API.Router
+  alias FavnOrchestrator.AdminLifecycle
+  alias FavnOrchestrator.Auth.Credentials
   alias FavnOrchestrator.Identity
   alias FavnOrchestrator.Lifecycle
   alias FavnOrchestrator.Manifests
   alias FavnOrchestrator.Operator.Catalogue
+  alias FavnOrchestrator.Operator.Audit, as: OperatorAudit
+  alias FavnOrchestrator.OperatorContext
   alias FavnOrchestrator.RunManager.SubmissionBuilder
   alias FavnOrchestrator.RunOwnership
   alias FavnOrchestrator.RunReadModel
@@ -5648,6 +5656,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
       actor_id: actor_id,
       token_hash: token_hash,
       provider: "password_local",
+      expected_credential_version: fetched.credential_version,
       expires_at: DateTime.add(now, 3_600, :second),
       occurred_at: now
     }
@@ -5670,6 +5679,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
                command_id: "password-change:" <> actor_id,
                actor_id: actor_id,
                password_hash: changed_hash,
+               expected_credential_version: 1,
                occurred_at: now,
                revoke_sessions?: true
              })
@@ -5730,20 +5740,46 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
              Identity.authenticate_password(login_context, username, "not-the-password")
 
     assert {:error, :forbidden} =
-             Identity.change_password(fixture.workspace_context, actor.id, "replacement-password")
+             Identity.change_password(
+               fixture.workspace_context,
+               actor.id,
+               password,
+               "replacement-password"
+             )
 
     assert {:ok, self_context} =
              WorkspaceContext.new(fixture.workspace_id, actor.id, [:customer_operator])
 
-    assert :ok = Identity.change_password(self_context, actor.id, "replacement-password")
+    assert {:error, :invalid_current_password} =
+             Identity.change_password(
+               self_context,
+               actor.id,
+               "wrong-current-password",
+               "replacement-password"
+             )
+
+    assert {:ok, _still_authenticated} =
+             Identity.authenticate_password(login_context, username, password)
+
+    assert :ok =
+             Identity.change_password(
+               self_context,
+               actor.id,
+               password,
+               "replacement-password"
+             )
 
     assert {:error, :invalid_credentials} =
              Identity.authenticate_password(login_context, username, password)
 
-    assert {:ok, _authenticated} =
+    assert {:ok, authenticated} =
              Identity.authenticate_password(login_context, username, "replacement-password")
 
-    assert {:ok, issued} = Identity.issue_session(login_context, actor.id)
+    assert {:ok, issued} =
+             Identity.issue_session(login_context, actor.id,
+               expected_credential_version: authenticated.credential_version
+             )
+
     assert is_binary(issued.token)
     refute Map.has_key?(issued, :token_hash)
 
@@ -5780,6 +5816,295 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
              Identity.introspect_session(login_context, issued.token)
   end
 
+  test "sessions stay tenant-bound and workspace switching rotates authority atomically",
+       fixture do
+    target = provision_deploy_fixture(fixture.version)
+    suffix = Integer.to_string(System.unique_integer([:positive]))
+    username = "switch-#{suffix}"
+    password = "workspace-switch-password-#{suffix}"
+
+    assert {:ok, actor} =
+             Identity.create_actor(
+               fixture.workspace_context,
+               username,
+               password,
+               "Workspace Switcher",
+               [:admin]
+             )
+
+    assert {:ok, _target_actor} =
+             Identity.attach_actor_membership(target.workspace_context, username, [:operator])
+
+    {:ok, source_login} =
+      WorkspaceContext.new(fixture.workspace_id, "auth:source", [:customer_reader])
+
+    {:ok, target_login} =
+      WorkspaceContext.new(target.workspace_id, "auth:target", [:customer_reader])
+
+    assert {:ok, authenticated} =
+             Identity.authenticate_password(source_login, username, password)
+
+    assert {:ok, source_session} =
+             Identity.issue_session(source_login, actor.id,
+               expected_credential_version: authenticated.credential_version
+             )
+
+    assert {:error, :invalid_session} =
+             Identity.introspect_session(target_login, source_session.token)
+
+    {:ok, self_context} =
+      WorkspaceContext.new(fixture.workspace_id, actor.id, [:workspace_admin],
+        request_id: source_session.id
+      )
+
+    assert {:ok, memberships} = Identity.list_actor_memberships(self_context, actor.id)
+
+    assert Enum.map(memberships, & &1.id) |> Enum.sort() ==
+             Enum.sort([fixture.workspace_id, target.workspace_id])
+
+    assert {:error, :forbidden} =
+             Identity.list_actor_memberships(fixture.workspace_context, actor.id)
+
+    assert {:ok, target_session} =
+             Identity.rotate_workspace_session(
+               self_context,
+               source_session,
+               target.workspace_id
+             )
+
+    assert target_session.workspace_id == target.workspace_id
+
+    assert {:error, :invalid_session} =
+             Identity.introspect_session(source_login, source_session.token)
+
+    assert {:ok, introspected, switched_actor} =
+             Identity.introspect_session(target_login, target_session.token)
+
+    assert introspected.id == target_session.id
+    assert switched_actor.id == actor.id
+
+    assert {:error, %Error{kind: :not_found}} =
+             IdentityStore.get_session(%GetSession{
+               workspace_context: fixture.workspace_context,
+               selector: %FavnOrchestrator.Persistence.Selectors.SessionById{
+                 session_id: target_session.id
+               }
+             })
+
+    assert {:ok, source_sessions} =
+             IdentityStore.page_sessions(%PageSessions{
+               workspace_context: fixture.workspace_context,
+               actor_id: actor.id,
+               limit: 10
+             })
+
+    assert Enum.map(source_sessions.items, &{&1.session_id, &1.status}) == [
+             {source_session.id, :revoked}
+           ]
+
+    assert {:ok, target_sessions} =
+             IdentityStore.page_sessions(%PageSessions{
+               workspace_context: target.workspace_context,
+               actor_id: actor.id,
+               limit: 10
+             })
+
+    assert Enum.map(target_sessions.items, & &1.session_id) == [target_session.id]
+
+    assert {:ok, source_audit} =
+             IdentityStore.page_audit(%PageAudit{
+               scope: fixture.workspace_context,
+               limit: 20
+             })
+
+    assert {:ok, target_audit} =
+             IdentityStore.page_audit(%PageAudit{
+               scope: target.workspace_context,
+               limit: 20
+             })
+
+    assert Enum.any?(source_audit.items, &(&1.action == "session.workspace_switched"))
+    assert Enum.any?(target_audit.items, &(&1.action == "session.workspace_switched"))
+  end
+
+  test "membership suspension is workspace-only and global disable is platform-only", fixture do
+    target = provision_deploy_fixture(fixture.version)
+    suffix = Integer.to_string(System.unique_integer([:positive]))
+    username = "security-#{suffix}"
+    password = "security-password-#{suffix}"
+
+    assert {:ok, actor} =
+             Identity.create_actor(
+               fixture.workspace_context,
+               username,
+               password,
+               "Security Actor",
+               [:admin]
+             )
+
+    assert {:ok, target_actor} =
+             Identity.set_membership(target.workspace_context, actor.id, [:operator], 0)
+
+    {:ok, source_login} =
+      WorkspaceContext.new(fixture.workspace_id, "auth:source", [:customer_reader])
+
+    {:ok, target_login} =
+      WorkspaceContext.new(target.workspace_id, "auth:target", [:customer_reader])
+
+    assert {:ok, authenticated} =
+             Identity.authenticate_password(source_login, username, password)
+
+    assert {:ok, source_session} =
+             Identity.issue_session(source_login, actor.id,
+               expected_credential_version: authenticated.credential_version
+             )
+
+    assert {:ok, target_session} =
+             Identity.issue_session(target_login, actor.id,
+               expected_credential_version: authenticated.credential_version
+             )
+
+    assert {:ok, suspended} =
+             Identity.set_membership_access(
+               target.workspace_context,
+               actor.id,
+               [:operator],
+               :suspended,
+               target_actor.access_version
+             )
+
+    assert suspended.status == :disabled
+    assert {:ok, _, _} = Identity.introspect_session(source_login, source_session.token)
+
+    assert {:error, :invalid_session} =
+             Identity.introspect_session(target_login, target_session.token)
+
+    assert {:error, %Error{kind: :conflict}} =
+             Identity.set_membership_access(
+               fixture.workspace_context,
+               actor.id,
+               [:viewer],
+               :active,
+               actor.access_version
+             )
+
+    assert {:ok, disabled} =
+             AdminLifecycle.set_actor_status(username, :disabled, identity_store: IdentityStore)
+
+    assert disabled.actor_id == actor.id
+    assert disabled.sessions_revoked
+
+    assert {:ok, %{status: :disabled}} =
+             AdminLifecycle.set_actor_status(username, :disabled, identity_store: IdentityStore)
+
+    assert {:ok, %{status: :disabled}} =
+             IdentityStore.get_global_actor(%GetGlobalActor{
+               platform_context: fixture.platform_context,
+               username: username
+             })
+
+    assert {:ok, disabled_actor_page} =
+             Identity.page_actors(fixture.workspace_context, limit: 100)
+
+    disabled_actor = Enum.find(disabled_actor_page.items, &(&1.id == actor.id))
+    assert disabled_actor.status == :disabled
+    assert disabled_actor.global_status == :disabled
+
+    assert {:error, :invalid_session} =
+             Identity.introspect_session(source_login, source_session.token)
+
+    assert {:ok, %{status: :active, sessions_revoked: false}} =
+             AdminLifecycle.set_actor_status(username, :active, identity_store: IdentityStore)
+
+    assert {:ok, _authenticated_again} =
+             Identity.authenticate_password(source_login, username, password)
+
+    assert {:ok, current_global_actor} =
+             IdentityStore.get_global_actor(%GetGlobalActor{
+               platform_context: fixture.platform_context,
+               username: username
+             })
+
+    assert {:error, %Error{kind: :conflict}} =
+             IdentityStore.set_actor_status(%SetActorStatus{
+               platform_context: fixture.platform_context,
+               command_id: "actor-status-stale:#{actor.id}",
+               actor_id: actor.id,
+               status: :disabled,
+               expected_version: current_global_actor.version - 1,
+               occurred_at: DateTime.utc_now()
+             })
+
+    assert {:ok, platform_audit} =
+             IdentityStore.page_audit(%PageAudit{
+               scope: fixture.platform_context,
+               limit: 20
+             })
+
+    assert Enum.any?(platform_audit.items, fn entry ->
+             entry.action == "actor.status.changed" and entry.subject_id == actor.id
+           end)
+  end
+
+  test "operator administration facades reauthorize reads and self password rotation", fixture do
+    suffix = Integer.to_string(System.unique_integer([:positive]))
+    username = "facade-admin-#{suffix}"
+    password = "facade-admin-password-#{suffix}"
+
+    assert {:ok, actor} =
+             Identity.create_actor(
+               fixture.workspace_context,
+               username,
+               password,
+               "Facade Administrator",
+               [:admin]
+             )
+
+    {:ok, login_context} =
+      WorkspaceContext.new(fixture.workspace_id, "auth:facade", [:customer_reader])
+
+    assert {:ok, authenticated} =
+             Identity.authenticate_password(login_context, username, password)
+
+    assert {:ok, session} =
+             Identity.issue_session(login_context, actor.id,
+               expected_credential_version: authenticated.credential_version
+             )
+
+    assert {:ok, operator_context} =
+             FavnOrchestrator.operator_context(fixture.workspace_id, actor, session)
+
+    assert {:ok, actor_page} =
+             FavnOrchestrator.page_operator_actors(operator_context, limit: 10)
+
+    assert Enum.any?(actor_page.items, &(&1.id == actor.id))
+
+    assert {:ok, session_page} =
+             FavnOrchestrator.page_operator_sessions(operator_context, limit: 10)
+
+    assert Enum.any?(session_page.items, &(&1.id == session.id))
+
+    assert {:ok, audit_page} =
+             FavnOrchestrator.page_operator_audit(operator_context, limit: 10)
+
+    assert Enum.any?(audit_page.items, &(&1.action == "session.created"))
+
+    replacement_password = "facade-replacement-password-#{suffix}"
+
+    assert :ok =
+             FavnOrchestrator.change_operator_password(
+               operator_context,
+               password,
+               replacement_password
+             )
+
+    assert {:error, :invalid_session} =
+             Identity.introspect_session(login_context, session.token)
+
+    assert {:ok, _authenticated_again} =
+             Identity.authenticate_password(login_context, username, replacement_password)
+  end
+
   test "operational API audit is durable and workspace scoped", fixture do
     assert :ok =
              Identity.record_audit(fixture.workspace_context, %{
@@ -5796,6 +6121,355 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert entry.subject_kind == "run"
     assert entry.subject_id == "run-audit-#{fixture.workspace_id}"
     assert entry.detail["password"] == "[REDACTED]"
+  end
+
+  test "operator audit replay requires the exact same redacted command", fixture do
+    identity = api_identity(fixture, [:operator])
+
+    entry = %{
+      action: "run.cancel",
+      actor_id: identity.actor.id,
+      session_id: identity.session.id,
+      resource_type: "run",
+      resource_id: "run-audit-replay",
+      service_identity: "same_beam_operator_ui",
+      outcome: "requested",
+      detail: %{request: %{run_id: "run-audit-replay"}},
+      idempotency: %{
+        operation: "run.cancel",
+        key_hash:
+          :crypto.hash(:sha256, "operator-audit-replay-key")
+          |> Base.encode16(case: :lower),
+        replayed: false
+      }
+    }
+
+    assert :ok = Identity.record_audit(fixture.workspace_context, entry)
+    assert :ok = Identity.record_audit(fixture.workspace_context, entry)
+
+    assert {:error, %Error{kind: :conflict}} =
+             Identity.record_audit(
+               fixture.workspace_context,
+               put_in(entry, [:detail, :request, :run_id], "changed-run")
+             )
+  end
+
+  test "pending operator commands survive reconnect and become terminal", fixture do
+    identity = api_identity(fixture, [:operator])
+
+    assert {:ok, lookup_context} =
+             WorkspaceContext.new(fixture.workspace_id, "browser:test", [:customer_reader])
+
+    assert {:ok, context, session, actor} =
+             Identity.authorize_session(
+               lookup_context,
+               identity.actor.id,
+               identity.session.id,
+               :operator
+             )
+
+    assert {:ok, operator_context} =
+             OperatorContext.new(fixture.workspace_id, actor, session)
+
+    request = %{run_id: "run-reconnect", metadata: %{password: "never-fingerprint-me"}}
+
+    assert {:ok, first} =
+             OperatorAudit.begin_command(
+               context,
+               operator_context,
+               actor,
+               "run.cancel",
+               "run",
+               "run-reconnect",
+               request,
+               "run-cancel:first:0123456789abcdef"
+             )
+
+    expired_at = DateTime.add(DateTime.utc_now(), -3_600, :second)
+    cutoff = DateTime.utc_now()
+
+    SQL.query!(
+      Repo,
+      """
+      INSERT INTO favn_control.idempotency_records (
+        workspace_id, operation, principal_kind, principal_id, key_hash,
+        request_fingerprint, status, expires_at, inserted_at, updated_at
+      )
+      VALUES ($1, $2, 'actor', $3, $4, $5, 'started', $6, $6, $6)
+      """,
+      [
+        fixture.workspace_id,
+        first.operation,
+        actor.id,
+        first.key_hash,
+        first.request_fingerprint,
+        expired_at
+      ]
+    )
+
+    assert {:ok, %{status: :completed, batch_count: 0}} =
+             MaintenanceStore.purge(%PurgePersistence{
+               platform_context: fixture.platform_context,
+               job_id: "retain-operator-idempotency-#{System.unique_integer([:positive])}",
+               target: :idempotency,
+               workspace_id: fixture.workspace_id,
+               cutoff: cutoff,
+               limit: 10
+             })
+
+    assert %{rows: [[1]]} =
+             SQL.query!(
+               Repo,
+               """
+               SELECT count(*)
+               FROM favn_control.idempotency_records
+               WHERE workspace_id = $1 AND operation = $2 AND key_hash = $3
+               """,
+               [fixture.workspace_id, first.operation, first.key_hash]
+             )
+
+    SQL.query!(
+      Repo,
+      """
+      UPDATE favn_control.auth_sessions
+      SET status = 'revoked', expires_at = $3, updated_at = $3
+      WHERE workspace_id = $1 AND session_id = $2
+      """,
+      [fixture.workspace_id, session.id, expired_at]
+    )
+
+    assert {:ok, %{status: :completed, batch_count: 0}} =
+             MaintenanceStore.purge(%PurgePersistence{
+               platform_context: fixture.platform_context,
+               job_id: "retain-operator-session-#{System.unique_integer([:positive])}",
+               target: :sessions,
+               workspace_id: fixture.workspace_id,
+               cutoff: cutoff,
+               limit: 10
+             })
+
+    assert %{rows: [[1]]} =
+             SQL.query!(
+               Repo,
+               """
+               SELECT count(*)
+               FROM favn_control.auth_sessions
+               WHERE workspace_id = $1 AND session_id = $2
+               """,
+               [fixture.workspace_id, session.id]
+             )
+
+    assert {:ok, replacement_session} =
+             Identity.issue_session(lookup_context, actor.id,
+               expected_credential_version: identity.credential_version
+             )
+
+    assert {:ok, replacement_context, replacement_session, replacement_actor} =
+             Identity.authorize_session(
+               lookup_context,
+               actor.id,
+               replacement_session.id,
+               :operator
+             )
+
+    assert {:ok, replacement_operator_context} =
+             OperatorContext.new(
+               fixture.workspace_id,
+               replacement_actor,
+               replacement_session
+             )
+
+    assert {:ok, recovered} =
+             OperatorAudit.begin_command(
+               replacement_context,
+               replacement_operator_context,
+               replacement_actor,
+               "run.cancel",
+               "run",
+               "run-reconnect",
+               request,
+               "run-cancel:first:0123456789abcdef"
+             )
+
+    assert recovered.key_hash == first.key_hash
+    assert recovered.request_fingerprint == first.request_fingerprint
+
+    assert %{rows: [[replacement_session_id]]} =
+             SQL.query!(
+               Repo,
+               """
+               SELECT session_id
+               FROM favn_control.auth_operator_commands
+               WHERE workspace_id = $1 AND key_hash = $2
+               """,
+               [fixture.workspace_id, recovered.key_hash]
+             )
+
+    assert replacement_session_id == replacement_session.id
+
+    assert %{rows: [[true]]} =
+             SQL.query!(
+               Repo,
+               """
+               SELECT expires_at > $4
+               FROM favn_control.idempotency_records
+               WHERE workspace_id = $1 AND operation = $2 AND key_hash = $3
+               """,
+               [fixture.workspace_id, first.operation, first.key_hash, cutoff]
+             )
+
+    assert {:error, %Error{kind: :conflict, retryable?: true}} =
+             OperatorAudit.begin_command(
+               replacement_context,
+               replacement_operator_context,
+               replacement_actor,
+               "run.cancel",
+               "run",
+               "run-reconnect",
+               request,
+               "run-cancel:second:0123456789abcdef"
+             )
+
+    assert {:error, %Error{kind: :conflict, retryable?: true}} =
+             OperatorAudit.begin_command(
+               replacement_context,
+               replacement_operator_context,
+               replacement_actor,
+               "run.cancel",
+               "run",
+               "run-reconnect",
+               %{run_id: "changed-run"},
+               "run-cancel:first:0123456789abcdef"
+             )
+
+    assert {:error, %Error{kind: :conflict, retryable?: true}} =
+             OperatorAudit.begin_command(
+               replacement_context,
+               replacement_operator_context,
+               replacement_actor,
+               "run.cancel",
+               "run",
+               "run-reconnect",
+               put_in(request, [:metadata, :password], "different-secret"),
+               "run-cancel:first:0123456789abcdef"
+             )
+
+    assert :ok =
+             OperatorAudit.finish_command(
+               replacement_context,
+               replacement_operator_context,
+               replacement_actor,
+               recovered,
+               "accepted",
+               "run",
+               "run-reconnect",
+               %{run_id: "run-reconnect"}
+             )
+
+    assert {:ok, next} =
+             OperatorAudit.begin_command(
+               context,
+               operator_context,
+               actor,
+               "run.cancel",
+               "run",
+               "run-reconnect",
+               request,
+               "run-cancel:third:0123456789abcdef"
+             )
+
+    refute next.key_hash == first.key_hash
+
+    assert {:ok, page} = Identity.page_audit(fixture.workspace_context, limit: 20)
+
+    outcomes =
+      page.items
+      |> Enum.filter(&(&1.action == "run.cancel"))
+      |> Enum.map(& &1.detail["outcome"])
+
+    assert "requested" in outcomes
+    assert "accepted" in outcomes
+    assert Enum.any?(page.items, &(&1.action == "run.cancel.recovered"))
+    refute inspect(page.items) =~ "never-fingerprint-me"
+  end
+
+  test "an unknown operator command can resolve to a proven terminal result", fixture do
+    identity = api_identity(fixture, [:operator])
+
+    assert {:ok, lookup_context} =
+             WorkspaceContext.new(fixture.workspace_id, "browser:test", [:customer_reader])
+
+    assert {:ok, context, session, actor} =
+             Identity.authorize_session(
+               lookup_context,
+               identity.actor.id,
+               identity.session.id,
+               :operator
+             )
+
+    assert {:ok, operator_context} =
+             OperatorContext.new(fixture.workspace_id, actor, session)
+
+    request = %{run_id: "run-unknown"}
+    key = "run-cancel:unknown:0123456789abcdef"
+
+    assert {:ok, intent} =
+             OperatorAudit.begin_command(
+               context,
+               operator_context,
+               actor,
+               "run.cancel",
+               "run",
+               "run-unknown",
+               request,
+               key
+             )
+
+    assert :ok =
+             OperatorAudit.finish_command(
+               context,
+               operator_context,
+               actor,
+               intent,
+               "unknown",
+               "run",
+               "run-unknown",
+               %{reason: "transport_outcome_unknown"}
+             )
+
+    assert {:error, %Error{kind: :conflict, retryable?: true}} =
+             OperatorAudit.begin_command(
+               context,
+               operator_context,
+               actor,
+               "run.cancel",
+               "run",
+               "run-unknown",
+               request,
+               "run-cancel:new-after-unknown:0123456789abcdef"
+             )
+
+    assert :ok =
+             OperatorAudit.finish_command(
+               context,
+               operator_context,
+               actor,
+               intent,
+               "accepted",
+               "run",
+               "run-unknown",
+               %{run_id: "run-unknown"}
+             )
+
+    assert {:ok, page} = Identity.page_audit(fixture.workspace_context, limit: 20)
+
+    outcomes =
+      page.items
+      |> Enum.filter(&(&1.action == "run.cancel"))
+      |> Enum.map(& &1.detail["outcome"])
+
+    assert "unknown" in outcomes
+    assert "accepted" in outcomes
   end
 
   test "service-token manifest activation is idempotent and durably audited", fixture do
@@ -6106,8 +6780,8 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert publish.status == 403
   end
 
-  test "one bootstrap identity can be added idempotently to separate runtime workspaces",
-       fixture do
+  test "administrator bootstrap is one-time and recovery rotates credentials", fixture do
+    share_repo_sandbox!()
     second_workspace_id = "ws-bootstrap-#{System.unique_integer([:positive])}"
 
     assert :ok =
@@ -6119,37 +6793,47 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
                occurred_at: DateTime.utc_now()
              })
 
-    keys = [
-      :auth_bootstrap_username,
-      :auth_bootstrap_password,
-      :auth_bootstrap_display_name,
-      :auth_bootstrap_roles,
-      :workspace_ids
-    ]
-
-    previous = Map.new(keys, &{&1, Application.get_env(:favn_orchestrator, &1)})
-    on_exit(fn -> Enum.each(previous, fn {key, value} -> restore_app_env(key, value) end) end)
-
     username = "bootstrap-#{System.unique_integer([:positive])}"
     password = "bootstrap-password-long"
+    replacement_password = "replacement-password-long"
 
-    Application.put_env(:favn_orchestrator, :auth_bootstrap_username, username)
-    Application.put_env(:favn_orchestrator, :auth_bootstrap_password, password)
-    Application.put_env(:favn_orchestrator, :auth_bootstrap_display_name, "Platform Operator")
-    Application.put_env(:favn_orchestrator, :auth_bootstrap_roles, [:admin])
+    parent = self()
 
-    Application.put_env(:favn_orchestrator, :workspace_ids, [fixture.workspace_id])
-    assert :ok = Auth.bootstrap_configured_actor()
-    assert Application.get_env(:favn_orchestrator, :auth_bootstrap_password) == nil
+    attempts =
+      for attempt <- 1..2 do
+        Task.async(fn ->
+          send(parent, {:bootstrap_ready, attempt})
 
-    Application.put_env(:favn_orchestrator, :auth_bootstrap_password, password)
-    Application.put_env(:favn_orchestrator, :workspace_ids, [second_workspace_id])
-    assert :ok = Auth.bootstrap_configured_actor()
-    assert Application.get_env(:favn_orchestrator, :auth_bootstrap_password) == nil
+          receive do
+            :bootstrap_start ->
+              AdminLifecycle.bootstrap(
+                [second_workspace_id, fixture.workspace_id],
+                username,
+                password,
+                "Platform Administrator",
+                identity_store: IdentityStore
+              )
+          end
+        end)
+      end
 
-    Application.put_env(:favn_orchestrator, :auth_bootstrap_password, password)
-    assert :ok = Auth.bootstrap_configured_actor()
-    assert Application.get_env(:favn_orchestrator, :auth_bootstrap_password) == nil
+    assert_receive {:bootstrap_ready, 1}
+    assert_receive {:bootstrap_ready, 2}
+    Enum.each(attempts, &send(&1.pid, :bootstrap_start))
+
+    results = Enum.map(attempts, &Task.await(&1, 15_000))
+
+    assert [{:ok, bootstrapped}] = Enum.filter(results, &match?({:ok, _actor}, &1))
+    assert [{:error, %Error{kind: :conflict}}] = Enum.reject(results, &match?({:ok, _actor}, &1))
+
+    assert {:error, %Error{kind: :conflict}} =
+             AdminLifecycle.bootstrap(
+               [fixture.workspace_id],
+               "second-admin",
+               "second-bootstrap-password",
+               "Second Administrator",
+               identity_store: IdentityStore
+             )
 
     {:ok, first_login_context} =
       WorkspaceContext.new(fixture.workspace_id, "auth:password", [:customer_reader])
@@ -6164,6 +6848,296 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
              Identity.authenticate_password(second_login_context, username, password)
 
     assert first_actor.id == second_actor.id
+    assert first_actor.id == bootstrapped.actor_id
+    assert first_actor.roles == [:admin]
+    assert first_actor.status == :active
+    assert second_actor.roles == [:admin]
+    assert second_actor.status == :active
+
+    assert %{rows: [[["platform_admin"], "active"]]} =
+             SQL.query!(
+               Repo,
+               """
+               SELECT roles, status
+               FROM favn_control.auth_platform_grants
+               WHERE actor_id = $1
+               """,
+               [first_actor.id]
+             )
+
+    assert %{rows: membership_rows} =
+             SQL.query!(
+               Repo,
+               """
+               SELECT workspace_id, roles, status
+               FROM favn_control.auth_workspace_memberships
+               WHERE actor_id = $1
+               ORDER BY workspace_id
+               """,
+               [first_actor.id]
+             )
+
+    assert membership_rows ==
+             [
+               [fixture.workspace_id, ["workspace_admin"], "active"],
+               [second_workspace_id, ["workspace_admin"], "active"]
+             ]
+             |> Enum.sort()
+
+    assert {:ok, session} =
+             Identity.issue_session(first_login_context, first_actor.id,
+               expected_credential_version: first_actor.credential_version
+             )
+
+    assert {:ok, second_session} =
+             Identity.issue_session(second_login_context, second_actor.id,
+               expected_credential_version: second_actor.credential_version
+             )
+
+    assert :ok =
+             Identity.set_global_actor_status(
+               fixture.platform_context,
+               first_actor.id,
+               :disabled,
+               first_actor.version
+             )
+
+    assert {:error, :invalid_credentials} =
+             Identity.authenticate_password(first_login_context, username, password)
+
+    assert {:ok, recovered} =
+             AdminLifecycle.recover(username, replacement_password, identity_store: IdentityStore)
+
+    assert recovered.actor_id == first_actor.id
+
+    assert {:error,
+            %Error{
+              kind: :conflict,
+              details: %{reason_code: "credential_version_changed"}
+            }} =
+             Identity.issue_session(first_login_context, first_actor.id,
+               expected_credential_version: first_actor.credential_version
+             )
+
+    assert {:error, :invalid_credentials} =
+             Identity.authenticate_password(first_login_context, username, password)
+
+    assert {:ok, recovered_actor} =
+             Identity.authenticate_password(first_login_context, username, replacement_password)
+
+    assert recovered_actor.id == first_actor.id
+
+    assert {:error, :invalid_session} =
+             Identity.introspect_session(first_login_context, session.token)
+
+    assert {:error, :invalid_session} =
+             Identity.introspect_session(second_login_context, second_session.token)
+
+    {:ok, admin_context} =
+      WorkspaceContext.new(fixture.workspace_id, "auth:admin-test", [:workspace_admin])
+
+    viewer_username = "viewer-#{System.unique_integer([:positive])}"
+
+    assert {:ok, viewer} =
+             Identity.create_actor(
+               admin_context,
+               viewer_username,
+               "viewer-password-long",
+               "Viewer",
+               [:viewer]
+             )
+
+    assert {:ok, authenticated_viewer} =
+             Identity.authenticate_password(
+               first_login_context,
+               viewer_username,
+               "viewer-password-long"
+             )
+
+    assert {:ok, viewer_session} =
+             Identity.issue_session(first_login_context, viewer.id,
+               expected_credential_version: authenticated_viewer.credential_version
+             )
+
+    assert {:error, %Error{kind: :forbidden}} =
+             AdminLifecycle.recover(viewer_username, replacement_password,
+               identity_store: IdentityStore
+             )
+
+    viewer_replacement_password = "viewer-replacement-password"
+
+    assert {:ok, reset_viewer} =
+             AdminLifecycle.reset_actor_credential(
+               viewer_username,
+               viewer_replacement_password,
+               identity_store: IdentityStore
+             )
+
+    assert reset_viewer.actor_id == viewer.id
+
+    assert {:error, :invalid_credentials} =
+             Identity.authenticate_password(
+               first_login_context,
+               viewer_username,
+               "viewer-password-long"
+             )
+
+    assert {:ok, reset_viewer_actor} =
+             Identity.authenticate_password(
+               first_login_context,
+               viewer_username,
+               viewer_replacement_password
+             )
+
+    assert reset_viewer_actor.id == viewer.id
+
+    assert {:error, :invalid_session} =
+             Identity.introspect_session(first_login_context, viewer_session.token)
+
+    assert %{rows: [[1]]} =
+             SQL.query!(
+               Repo,
+               """
+               SELECT count(*)
+               FROM favn_control.auth_platform_audit_entries
+               WHERE action = 'administrator.bootstrapped' AND subject_id = $1
+               """,
+               [first_actor.id]
+             )
+
+    assert %{rows: [[1]]} =
+             SQL.query!(
+               Repo,
+               """
+               SELECT count(*)
+               FROM favn_control.auth_platform_audit_entries
+               WHERE action = 'actor.credential.reset' AND subject_id = $1
+               """,
+               [viewer.id]
+             )
+
+    assert %{rows: [[1]]} =
+             SQL.query!(
+               Repo,
+               """
+               SELECT count(*)
+               FROM favn_control.auth_platform_audit_entries
+               WHERE action = 'administrator.credential.recovered' AND subject_id = $1
+               """,
+               [first_actor.id]
+             )
+
+    assert %{rows: audit_details} =
+             SQL.query!(
+               Repo,
+               """
+               SELECT detail
+               FROM favn_control.auth_platform_audit_entries
+               WHERE subject_id = $1
+               UNION ALL
+               SELECT detail
+               FROM favn_control.auth_audit_entries
+               WHERE subject_id = $1
+               """,
+               [first_actor.id]
+             )
+
+    audit_text = inspect(audit_details)
+    refute audit_text =~ password
+    refute audit_text =~ replacement_password
+    refute audit_text =~ "password_hash"
+    refute audit_text =~ "$argon2"
+  end
+
+  test "administrator recovery and actor credential reset replay exact commands", fixture do
+    workspace_admin_username = "pre-bootstrap-admin-#{System.unique_integer([:positive])}"
+
+    assert {:ok, _workspace_admin} =
+             Identity.create_actor(
+               fixture.workspace_context,
+               workspace_admin_username,
+               "pre-bootstrap-password",
+               "Pre-bootstrap Workspace Administrator",
+               [:admin]
+             )
+
+    username = "replay-admin-#{System.unique_integer([:positive])}"
+
+    assert {:ok, administrator} =
+             AdminLifecycle.bootstrap(
+               [fixture.workspace_id],
+               username,
+               "initial-replay-password",
+               "Replay Administrator",
+               identity_store: IdentityStore
+             )
+
+    recovery = %RecoverAdministratorCredential{
+      platform_context: fixture.platform_context,
+      command_id: "admin-recovery-replay-#{System.unique_integer([:positive])}",
+      username: username,
+      password_hash: Credentials.hash_password("recovered-replay-password").password_hash,
+      occurred_at: DateTime.utc_now()
+    }
+
+    administrator_id = administrator.actor_id
+
+    assert {:ok, ^administrator_id} = IdentityStore.recover_administrator_credential(recovery)
+    assert {:ok, ^administrator_id} = IdentityStore.recover_administrator_credential(recovery)
+
+    changed_recovery = %{
+      recovery
+      | password_hash: Credentials.hash_password("changed-recovery-password").password_hash
+    }
+
+    assert {:error, %Error{kind: :conflict}} =
+             IdentityStore.recover_administrator_credential(changed_recovery)
+
+    {:ok, admin_context} =
+      WorkspaceContext.new(fixture.workspace_id, "auth:replay-admin", [:workspace_admin])
+
+    actor_username = "replay-actor-#{System.unique_integer([:positive])}"
+
+    assert {:ok, actor} =
+             Identity.create_actor(
+               admin_context,
+               actor_username,
+               "initial-actor-password",
+               "Replay Actor",
+               [:viewer]
+             )
+
+    reset = %ResetActorCredential{
+      platform_context: fixture.platform_context,
+      command_id: "actor-reset-replay-#{System.unique_integer([:positive])}",
+      username: actor_username,
+      password_hash: Credentials.hash_password("reset-replay-password").password_hash,
+      occurred_at: DateTime.utc_now()
+    }
+
+    actor_id = actor.id
+
+    assert {:ok, ^actor_id} = IdentityStore.reset_actor_credential(reset)
+    assert {:ok, ^actor_id} = IdentityStore.reset_actor_credential(reset)
+
+    changed_reset = %{
+      reset
+      | password_hash: Credentials.hash_password("changed-reset-password").password_hash
+    }
+
+    assert {:error, %Error{kind: :conflict}} =
+             IdentityStore.reset_actor_credential(changed_reset)
+
+    assert %{rows: [[2]]} =
+             SQL.query!(
+               Repo,
+               """
+               SELECT count(*)
+               FROM favn_control.auth_platform_audit_entries
+               WHERE command_id IN ($1, $2)
+               """,
+               [recovery.command_id, reset.command_id]
+             )
   end
 
   test "commits a projected batch after its lease deadline while retaining the cursor lock",
@@ -7388,12 +8362,13 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   defp api_identity(fixture, roles) do
     suffix = Integer.to_string(System.unique_integer([:positive]))
     username = "http-actor-#{suffix}"
+    password = "http-boundary-password-#{suffix}"
 
     assert {:ok, actor} =
              Identity.create_actor(
                fixture.workspace_context,
                username,
-               "http-boundary-password-#{suffix}",
+               password,
                "HTTP Boundary Actor",
                roles
              )
@@ -7401,8 +8376,15 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert {:ok, login_context} =
              WorkspaceContext.new(fixture.workspace_id, "auth:http-test", [:customer_reader])
 
-    assert {:ok, session} = Identity.issue_session(login_context, actor.id)
-    %{actor: actor, session: session}
+    assert {:ok, authenticated} =
+             Identity.authenticate_password(login_context, username, password)
+
+    assert {:ok, session} =
+             Identity.issue_session(login_context, actor.id,
+               expected_credential_version: authenticated.credential_version
+             )
+
+    %{actor: actor, session: session, credential_version: authenticated.credential_version}
   end
 
   defp execution_package(ref) do

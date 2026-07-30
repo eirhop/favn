@@ -305,11 +305,21 @@ defmodule FavnStoragePostgres.Maintenance.Store do
           AND ($1::text IS NULL OR EXISTS (
             SELECT 1 FROM favn_control.auth_workspace_memberships membership
             WHERE membership.workspace_id = $1 AND membership.actor_id = session.actor_id
-          ))
+        ))
         ORDER BY session.session_id LIMIT $3 FOR UPDATE SKIP LOCKED
+      ),
+      deleted_operator_commands AS (
+        DELETE FROM favn_control.auth_operator_commands intent USING candidates
+        WHERE intent.session_id = candidates.session_id
+          AND intent.status IN ('accepted', 'partial', 'rejected')
+          AND intent.expires_at < $2
       )
       DELETE FROM favn_control.auth_sessions session USING candidates
       WHERE session.session_id = candidates.session_id
+        AND NOT EXISTS (
+          SELECT 1 FROM favn_control.auth_operator_commands intent
+          WHERE intent.session_id = session.session_id
+        )
       """,
       command
     )
@@ -322,6 +332,15 @@ defmodule FavnStoragePostgres.Maintenance.Store do
         SELECT ctid FROM favn_control.idempotency_records
         WHERE ($1::text IS NULL OR workspace_id = $1)
           AND expires_at < $2
+          AND NOT EXISTS (
+            SELECT 1
+            FROM favn_control.auth_operator_commands intent
+            WHERE intent.workspace_id = idempotency_records.workspace_id
+              AND intent.operation = idempotency_records.operation
+              AND intent.actor_id = idempotency_records.principal_id
+              AND convert_to(intent.key_hash, 'UTF8') = idempotency_records.key_hash
+              AND intent.status IN ('pending', 'unknown')
+          )
         ORDER BY expires_at LIMIT $3 FOR UPDATE SKIP LOCKED
       )
       DELETE FROM favn_control.idempotency_records record USING candidates

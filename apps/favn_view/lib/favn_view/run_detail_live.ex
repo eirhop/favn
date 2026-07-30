@@ -7,6 +7,7 @@ defmodule FavnView.RunDetailLive do
   alias FavnView.Auth.Scope
   alias FavnView.Components.AssetCataloguePage
   alias FavnView.Components.RunDetailPage
+  alias FavnView.CommandAttempt
   alias FavnView.LiveRefresh
   alias FavnView.LogsViewModel
   alias FavnView.OperatorErrorLabels
@@ -41,6 +42,8 @@ defmodule FavnView.RunDetailLive do
         active_mode: :flow,
         selected_child_run_id: nil,
         selected_attempt_id: nil,
+        cancel_attempt: nil,
+        retry_attempt: nil,
         detail_load_attempts_remaining: initial_load_attempts(run),
         nav_items: AssetCataloguePage.nav_items(:runs)
       )
@@ -147,18 +150,34 @@ defmodule FavnView.RunDetailLive do
     {:noreply, patch_run_state(socket, active_mode: String.to_existing_atom(mode))}
   end
 
-  def handle_event("cancel_run", _params, socket) do
+  def handle_event("cancel_run", params, socket) do
     case socket.assigns.run do
       %{cancellable?: true, cancel_run_id: run_id} when is_binary(run_id) ->
-        case FavnOrchestrator.cancel_operator_run(actor_context(socket), run_id) do
+        attempt =
+          CommandAttempt.next(socket.assigns.cancel_attempt, "run_cancel", run_id, params)
+
+        socket = assign(socket, :cancel_attempt, attempt)
+
+        case FavnOrchestrator.cancel_operator_run(
+               actor_context(socket),
+               run_id,
+               idempotency_key: attempt.key
+             ) do
           :ok ->
             {:noreply,
              socket
+             |> CommandAttempt.acknowledge(attempt)
+             |> assign(:cancel_attempt, nil)
              |> put_flash(:info, "Run cancellation requested")
              |> refresh_run()}
 
           {:error, reason} ->
-            {:noreply, put_flash(socket, :error, cancel_error_label(reason))}
+            {socket, attempt} = CommandAttempt.settle_failure(socket, attempt, reason)
+
+            {:noreply,
+             socket
+             |> assign(:cancel_attempt, attempt)
+             |> put_flash(:error, cancel_error_label(reason))}
         end
 
       _run ->
@@ -166,27 +185,47 @@ defmodule FavnView.RunDetailLive do
     end
   end
 
-  def handle_event("retry_remaining", _params, socket) do
+  def handle_event("retry_remaining", params, socket) do
     case socket.assigns.run do
       %{retry_remaining?: true} ->
+        attempt =
+          CommandAttempt.next(
+            socket.assigns.retry_attempt,
+            "run_retry_remaining",
+            socket.assigns.run_id,
+            params
+          )
+
+        socket = assign(socket, :retry_attempt, attempt)
+
         case FavnOrchestrator.retry_operator_run_remaining(
                actor_context(socket),
-               socket.assigns.run_id
+               socket.assigns.run_id,
+               idempotency_key: attempt.key
              ) do
           {:ok, %{run_ids: run_ids, asset_count: asset_count}} ->
             {:noreply,
              socket
+             |> CommandAttempt.acknowledge(attempt)
+             |> assign(:retry_attempt, nil)
              |> put_flash(:info, retry_remaining_submitted_label(run_ids, asset_count))
              |> refresh_run()}
 
           {:partial, %{run_ids: run_ids, reason: reason}} ->
             {:noreply,
              socket
+             |> CommandAttempt.acknowledge(attempt)
+             |> assign(:retry_attempt, nil)
              |> put_flash(:error, retry_remaining_partial_label(run_ids, reason))
              |> refresh_run()}
 
           {:error, reason} ->
-            {:noreply, put_flash(socket, :error, retry_remaining_error_label(reason))}
+            {socket, attempt} = CommandAttempt.settle_failure(socket, attempt, reason)
+
+            {:noreply,
+             socket
+             |> assign(:retry_attempt, attempt)
+             |> put_flash(:error, retry_remaining_error_label(reason))}
         end
 
       _run ->

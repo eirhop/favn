@@ -38,7 +38,7 @@ defmodule FavnView.ScheduleDetailLiveTest do
     assert is_nil(enabled.assigns.activation_error)
   end
 
-  test "a retryable failure retries under the same command id" do
+  test "a proven runtime refusal lets the next click issue a new command" do
     stub_activation(:enable_schedule_fun, {:error, :runtime_starting})
 
     assert {:noreply, failed} = activate(mount!(), "enable")
@@ -48,7 +48,7 @@ defmodule FavnView.ScheduleDetailLiveTest do
     assert {:noreply, _retried} = activate(failed, "enable")
     assert_received {:activation, retry_opts}
 
-    assert retry_opts[:command_id] == first_opts[:command_id]
+    refute retry_opts[:command_id] == first_opts[:command_id]
   end
 
   test "a succeeded command does not lend its command id to the next one" do

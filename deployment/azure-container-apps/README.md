@@ -26,6 +26,11 @@ the same pinned Key Vault secret version); otherwise KEDA demand reads fail
 closed. `runnerPools` is the JSON lifecycle-policy map and must contain every
 pool deployed as a runner job.
 
+The template deliberately has no administrator bootstrap secret. After
+database migration and workspace provisioning, run the one-time interactive
+bootstrap operation documented in
+[`../../docs/production/control_plane_environment.md`](../../docs/production/control_plane_environment.md).
+
 Favn keeps assigned tasks in `outstanding` until their durable result is
 accepted. This matches event-job queue guidance: active work remains visible
 while the platform accounts for running executions. Qualify this exact behavior

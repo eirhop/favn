@@ -3,13 +3,22 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="csrf-token" content={get_csrf_token()} />
-    <.live_title default="Operator" suffix=" · Favn" phx-no-format>{assigns[:page_title]}</.live_title>
+    <meta name="csrf-token" content={get_csrf_token()} /> <.live_title
+      default="Operator"
+      suffix=" · Favn"
+      phx-no-format
+    >{assigns[:page_title]}</.live_title>
     <link phx-track-static rel="stylesheet" href={~p"/assets/css/app.css"} />
     <script defer phx-track-static type="text/javascript" src={~p"/assets/js/app.js"}>
     </script>
   </head>
-  <body>
+
+  <body data-operator-command-scope={operator_command_scope(assigns[:current_scope])}>
+    <.operator_controls current_scope={assigns[:current_scope]} />
+    <.workspace_switcher
+      current_scope={assigns[:current_scope]}
+      workspaces={assigns[:operator_workspaces] || []}
+    />
     {@inner_content}
   </body>
 </html>
