@@ -23,21 +23,13 @@ defmodule FavnStoragePostgres.TestSupport.DistributedRunnerAgent do
     with {:ok, %RunnerTask.RegistrationAck{status: :accepted} = ack} <-
            retry(fn -> RunnerGateway.register(gateway, registration, self()) end),
          {:ok, %RunnerTask.Assignment{} = assignment} <-
-           retry(fn ->
-             RunnerGateway.request(
-               gateway,
-               %RunnerTask.ClaimRequest{
-                 command_id: "claim-#{runner_id}",
-                 issued_at: DateTime.utc_now(),
-                 runner_instance_id: runner_id,
-                 runner_session_generation: ack.runner_session_generation,
-                 runner_pool: runner_pool,
-                 required_runner_release_id: release_id,
-                 supported_task_kinds: [:relation_inspection],
-                 capabilities: ["relation_inspection"]
-               }
-             )
-           end),
+           claim_assignment(
+             gateway,
+             runner_id,
+             runner_pool,
+             release_id,
+             ack.runner_session_generation
+           ),
          {:ok, %{status: :running}} <-
            retry(fn ->
              RunnerGateway.request(
@@ -69,6 +61,51 @@ defmodule FavnStoragePostgres.TestSupport.DistributedRunnerAgent do
     else
       failure ->
         send(owner, {:distributed_runner_failed, cohort_ref, runner_id, failure})
+    end
+  end
+
+  defp claim_assignment(
+         gateway,
+         runner_id,
+         runner_pool,
+         release_id,
+         runner_session_generation,
+         attempts \\ @retry_attempts
+       ) do
+    attempt = @retry_attempts - attempts + 1
+
+    result =
+      retry(fn ->
+        RunnerGateway.request(
+          gateway,
+          %RunnerTask.ClaimRequest{
+            command_id: "claim-#{runner_id}-#{attempt}",
+            issued_at: DateTime.utc_now(),
+            runner_instance_id: runner_id,
+            runner_session_generation: runner_session_generation,
+            runner_pool: runner_pool,
+            required_runner_release_id: release_id,
+            supported_task_kinds: [:relation_inspection],
+            capabilities: ["relation_inspection"]
+          }
+        )
+      end)
+
+    case result do
+      {:ok, %RunnerTask.NoWork{action: :wait}} when attempts > 1 ->
+        Process.sleep(@retry_delay_ms)
+
+        claim_assignment(
+          gateway,
+          runner_id,
+          runner_pool,
+          release_id,
+          runner_session_generation,
+          attempts - 1
+        )
+
+      result ->
+        result
     end
   end
 

@@ -1,3 +1,5 @@
 .env.local
 .env.local.tmp
 simulation-results/
+qualification-results/
+.qualification-active

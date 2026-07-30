@@ -65,7 +65,8 @@ defmodule FavnOrchestrator.API.RunsRouterServiceAuthTest do
 
     def stats(_query), do: {:ok, Process.get(:runs_router_submission_stats)}
 
-    def get_runtime_state(_query), do: {:error, :active_manifest_not_set}
+    def get_runtime_state(_query),
+      do: {:error, Process.get(:runs_router_runtime_state_error, :active_manifest_not_set)}
 
     def record_audit(command) do
       send(Process.get(:runs_router_test_pid), {:record_audit, command})
@@ -114,6 +115,7 @@ defmodule FavnOrchestrator.API.RunsRouterServiceAuthTest do
     Process.put(:runs_router_test_pid, self())
     Process.delete(:runs_router_list_error)
     Process.delete(:runs_router_events_error)
+    Process.delete(:runs_router_runtime_state_error)
 
     stores = %Stores{
       registry: EmptyRunsStore,
@@ -149,6 +151,7 @@ defmodule FavnOrchestrator.API.RunsRouterServiceAuthTest do
       Process.delete(:runs_router_test_pid)
       Process.delete(:runs_router_list_error)
       Process.delete(:runs_router_events_error)
+      Process.delete(:runs_router_runtime_state_error)
       if Process.alive?(runtime), do: GenServer.stop(runtime)
     end)
 
@@ -219,6 +222,22 @@ defmodule FavnOrchestrator.API.RunsRouterServiceAuthTest do
 
     assert response.status == 404
     assert get_in(Jason.decode!(response.resp_body), ["error", "code"]) == "not_found"
+  end
+
+  test "unmapped run submission failures return a redacted stable response" do
+    Process.put(:runs_router_runtime_state_error, :future_submission_failure)
+
+    response = submit_request()
+
+    assert response.status == 400
+
+    assert %{
+             "error" => %{
+               "code" => "bad_request",
+               "message" => "Request failed",
+               "details" => %{}
+             }
+           } = Jason.decode!(response.resp_body)
   end
 
   test "platform admin service token does not imply run submission access" do

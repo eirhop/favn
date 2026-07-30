@@ -281,7 +281,11 @@ defmodule FavnStoragePostgres.StorageV2.RunSubmissionsTest do
         intent: %{"selection" => "different"}
     }
 
-    assert {:error, %{kind: :conflict}} = Store.enqueue(conflicting)
+    assert {:error,
+            %{
+              kind: :conflict,
+              details: %{reason_code: "idempotency_conflict"}
+            }} = Store.enqueue(conflicting)
 
     run_collision = %{
       enqueue_command(fixture, "run-collision")

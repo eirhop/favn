@@ -219,60 +219,8 @@ defmodule FavnOrchestrator.API.RunsRouter do
         {:ok, 202, %{run: run_summary(context, run_id)}, "run", run_id}
 
       {:error, reason} ->
-        submit_error(reason)
+        CommandErrors.submission(reason)
     end
-  end
-
-  defp submit_error(:invalid_target), do: validation_command_error("Invalid run target request")
-
-  defp submit_error(:invalid_manifest_selection),
-    do: validation_command_error("Invalid manifest selection")
-
-  defp submit_error(:invalid_dependencies),
-    do:
-      {:error, 422, "validation_failed", "dependencies is only supported for asset targets",
-       %{field: "dependencies"}}
-
-  defp submit_error({:invalid_operator_timeout_ms, _value}),
-    do: validation_command_error("Invalid timeout_ms")
-
-  defp submit_error({reason, _value})
-       when reason in [
-              :invalid_operator_selection_source,
-              :invalid_operator_selection_id,
-              :invalid_operator_window
-            ],
-       do: validation_command_error("Invalid run window request")
-
-  defp submit_error(:invalid_window_request),
-    do: validation_command_error("Invalid run window request")
-
-  defp submit_error(:invalid_asset_target),
-    do: validation_command_error("Invalid asset target id")
-
-  defp submit_error(:invalid_pipeline_target),
-    do: validation_command_error("Invalid pipeline target id")
-
-  defp submit_error(:ambiguous_asset_run_context),
-    do:
-      {:error, 422, "validation_failed", "Asset run context is required",
-       %{field: "run_context_id"}}
-
-  defp submit_error(:invalid_asset_run_context),
-    do:
-      {:error, 422, "validation_failed", "Invalid asset run context", %{field: "run_context_id"}}
-
-  defp submit_error(:active_manifest_not_set),
-    do: {:error, 404, "not_found", "Active manifest is not set", %{}}
-
-  defp submit_error(reason) when is_tuple(reason),
-    do:
-      CommandErrors.admission(reason) || CommandErrors.operator(reason) ||
-        CommandErrors.window(reason)
-
-  defp submit_error(reason) do
-    Logger.error("run.submit failed after request validation: #{inspect(reason)}")
-    {:error, 400, "bad_request", "Request failed", %{}}
   end
 
   defp cancel(conn, run_id, session, actor, context, idempotency) do
