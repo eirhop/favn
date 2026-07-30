@@ -271,7 +271,8 @@ wait_for_busy_runner() {
     if assignment=$(busy_runner_assignment) &&
         [ -n "$assignment" ] &&
         printf '%s' "$assignment" |
-          jq -e '.task_id != null and .runner_instance_id != null' >/dev/null; then
+          jq -e '.task_id != null and .runner_instance_id != null' >/dev/null &&
+        [ "$(running_runner_count)" -eq 1 ]; then
       busy_runner_name=$(printf '%s' "$assignment" | jq -r '.runner_instance_id')
 
       if [ "$(docker inspect --format '{{.State.Running}}' "$busy_runner_name" 2>/dev/null)" = "true" ]; then
@@ -281,7 +282,7 @@ wait_for_busy_runner() {
     fi
 
     if [ "$fault_work_submitted" = "false" ]; then
-      submit_one runner_recovery
+      submit_one runner_recovery "$runner_fault_target_id"
       fault_work_submitted=true
     fi
 
@@ -543,9 +544,10 @@ run_payload() {
   payload_sequence=$1
   payload_phase=$2
   payload_variant=${3:-normal}
+  payload_target_id=${4:-$target_id}
 
   jq -cn \
-    --arg target_id "$target_id" \
+    --arg target_id "$payload_target_id" \
     --arg qualification_run_id "$run_id" \
     --arg phase "$payload_phase" \
     --arg variant "$payload_variant" \
@@ -604,8 +606,9 @@ record_accepted_run() {
 
 submit_one() {
   submit_phase=$1
+  submit_target_id=${2:-$target_id}
   sequence=$(( sequence + 1 ))
-  payload=$(run_payload "$sequence" "$submit_phase")
+  payload=$(run_payload "$sequence" "$submit_phase" normal "$submit_target_id")
   idempotency_key="$run_id-run-$sequence"
 
   if ! post_run_resolving_unknown run_submit "$idempotency_key" "$payload"; then
@@ -673,7 +676,7 @@ inject_runner_failure() {
   printf '%s\n' "$runner_id" >>"$allowed_failures_file"
   event runner_crash_injected "$runner_id"
   docker kill --signal KILL "$runner_id" >/dev/null
-  submit_one runner_recovery
+  submit_one runner_recovery "$runner_fault_target_id"
 
   replacement_id=
   replacement_name=
@@ -1030,6 +1033,17 @@ target_id=$(
     | if length == 1 then .[0] else error("expected one fast probe target") end
   ' "$api_body_file"
 ) || fail "active manifest did not contain exactly one fast probe target"
+
+runner_fault_target_id=$(
+  jq -er '
+    [
+      .data.targets.assets[]
+      | select(.asset_ref | contains("CrmDemo.Lifecycle.ElasticScaleProbe.Slow"))
+      | .target_id
+    ]
+    | if length == 1 then .[0] else error("expected one slow probe target") end
+  ' "$api_body_file"
+) || fail "active manifest did not contain exactly one slow probe target"
 
 phase=idempotency
 prove_idempotency
