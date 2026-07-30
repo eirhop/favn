@@ -148,9 +148,15 @@ On 2026-07-30 the issue branch passed:
   repository's reviewed exception policy.
 
 Docker Scout could not run because the local Docker client was not signed in.
-Grype used the same pinned version and policy as CI instead. The final
-production-artifact HTTPS/PostgreSQL manual check and umbrella test are recorded
-in the PR qualification evidence, not inferred from these static scans.
+Grype used the same pinned version and policy as CI instead.
+
+The production image built from commit `0532e7e7` was also exercised manually
+against PostgreSQL with verified TLS and an HTTPS Caddy edge. The check covered
+the production security headers and cookie flags, CSRF rejection, successful
+login and administrator access, the hidden single-workspace switcher, actor
+disable, password reset, session invalidation, logout protection, and secret
+redaction. No browser automation was used. A normal direct HTTP request was
+redirected to HTTPS.
 
 ## Known limits
 
@@ -159,6 +165,12 @@ in the PR qualification evidence, not inferred from these static scans.
   production-artifact check are the gate for this change.
 - MFA/external identity integration is deferred to
   [#580](https://github.com/eirhop/favn/issues/580).
+- Forwarded scheme and client-address headers are trusted when the immediate
+  peer is inside the configured trusted-proxy CIDRs. The manual check confirmed
+  that a peer in an overly broad trusted Docker CIDR can therefore claim HTTPS
+  with `X-Forwarded-Proto`. Production must restrict those CIDRs and network
+  access to the actual edge proxies. Spoofing acceptance and hardened guidance
+  are tracked in [#581](https://github.com/eirhop/favn/issues/581).
 - The supported topology is one control-plane BEAM. Login throttling and
   immediate PubSub disconnect are node-local; the durable authorization check
   remains PostgreSQL-backed.
