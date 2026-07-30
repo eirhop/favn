@@ -5,6 +5,15 @@
 @source "../css";
 @source "../js";
 @source "../../lib/favn_view";
+@source "../../dev";
+
+/* `FavnView.UI.Tokens` builds these class names at runtime, so the scanner above
+   cannot see them and Tailwind would omit them. Keep this list in sync with that
+   module: every tone must render in every family it exposes. */
+@source inline("{badge,status,alert,btn}-{neutral,primary,info,success,warning,error}");
+@source inline("text-{primary,info,success,warning,error}");
+@source inline("bg-{primary,info,success,warning,error}/10");
+@source inline("border-{primary,info,success,warning,error}/35");
 
 /* A Tailwind plugin that makes "hero-#{ICON}" classes available.
    The heroicons installation itself is managed by your mix.exs */
@@ -32,10 +41,15 @@
   --color-base-200: oklch(17% 0.04 258);
   --color-base-300: oklch(23% 0.045 254);
   --color-base-content: oklch(92% 0.025 245);
+  /* The `-content` tokens are dark on purpose. These surfaces sit at 66-68%
+     lightness because they must also work as *text* on the dark base, and a
+     near-white label on a surface that light cannot reach 4.5:1 — primary
+     measured 2.78:1, secondary 2.62:1. Dark labels on bright fills is what
+     info, success, warning, and accent already do here. */
   --color-primary: oklch(68% 0.19 250);
-  --color-primary-content: oklch(98% 0.015 250);
+  --color-primary-content: oklch(16% 0.04 250);
   --color-secondary: oklch(66% 0.16 210);
-  --color-secondary-content: oklch(98% 0.015 210);
+  --color-secondary-content: oklch(15% 0.035 210);
   --color-accent: oklch(74% 0.16 165);
   --color-accent-content: oklch(14% 0.035 165);
   --color-neutral: oklch(29% 0.04 258);
@@ -47,7 +61,7 @@
   --color-warning: oklch(78% 0.16 78);
   --color-warning-content: oklch(18% 0.04 78);
   --color-error: oklch(66% 0.2 25);
-  --color-error-content: oklch(98% 0.015 25);
+  --color-error-content: oklch(16% 0.05 25);
   --radius-selector: 999rem;
   --radius-field: 1rem;
   --radius-box: 1.5rem;
@@ -67,21 +81,29 @@
   --color-base-200: oklch(94% 0.015 250);
   --color-base-300: oklch(88% 0.02 250);
   --color-base-content: oklch(20% 0.035 255);
-  --color-primary: oklch(56% 0.17 248);
+  /* 51%, not 56%: primary is also link text, and on the light base 56% measured
+     4.34:1 — just under AA. */
+  --color-primary: oklch(51% 0.18 248);
   --color-primary-content: oklch(98% 0.015 248);
   --color-secondary: oklch(52% 0.12 210);
   --color-secondary-content: oklch(98% 0.015 210);
-  --color-accent: oklch(58% 0.13 165);
+  /* 49%, not 58%: a near-white label on the lighter mint measured 3.76:1. */
+  --color-accent: oklch(49% 0.13 165);
   --color-accent-content: oklch(98% 0.015 165);
   --color-neutral: oklch(36% 0.04 255);
   --color-neutral-content: oklch(98% 0.01 250);
-  --color-info: oklch(58% 0.16 235);
+  /* The status tones are read as *text* in soft badges and notices, not only as
+     fills. At the dark theme's lightness they measured 2.58:1 to 4.05:1 on the
+     light base, so every one of them failed AA. These are the same hues, dropped
+     to a lightness that is legible on a light surface — which is why the light
+     theme's warning is a deep amber rather than the dark theme's yellow. */
+  --color-info: oklch(46% 0.16 235);
   --color-info-content: oklch(98% 0.015 235);
-  --color-success: oklch(58% 0.15 155);
+  --color-success: oklch(44% 0.14 155);
   --color-success-content: oklch(98% 0.015 155);
-  --color-warning: oklch(68% 0.15 78);
-  --color-warning-content: oklch(19% 0.04 78);
-  --color-error: oklch(58% 0.19 25);
+  --color-warning: oklch(46% 0.12 78);
+  --color-warning-content: oklch(98% 0.02 78);
+  --color-error: oklch(47% 0.19 25);
   --color-error-content: oklch(98% 0.015 25);
   --radius-selector: 999rem;
   --radius-field: 1rem;
@@ -104,17 +126,148 @@
 /* Make LiveView wrapper divs transparent for layout */
 [data-phx-session], [data-phx-teleported-src] { display: contents }
 
+/* The one colour that is not part of the calm blue field.
+   `--color-primary` is the atmosphere token: every panel border, glow, and
+   backdrop gradient is mixed from it, so it cannot also be the action colour
+   without turning the whole shell that hue. `--favn-action` exists only for
+   the primary action, which is why an operator can find the thing to do next
+   by colour alone.
+   Hue 130 is deliberate. `success` sits at 155 and means "healthy"; an
+   electric lime at 130, far more saturated than any status tone, does not
+   read as a status. */
+/* Secondary text is a colour, not an opacity.
+   The UI had twelve `text-base-content/NN` levels, and on the light theme the
+   faint end measured 2.94:1 against a 4.5:1 limit. That is not tunable: a 45%
+   alpha of dark-on-light caps near 3:1 whatever the base is. Opacity also lies
+   about layering — the same class renders differently on every surface it lands
+   on, so no single measurement covers it.
+   Two tiers replace the twelve. Both are required to pass AA on the most raised
+   surface, so hierarchy comes from size and weight, which do not trade against
+   legibility. */
+/* The action colour is violet because it is the one hue band the status
+   vocabulary leaves free: blue is links and info, green is success and
+   healthy, amber is warning, red is error. The action must never be mistaken
+   for a state. */
+[data-theme="favn-dark"] {
+  --favn-action: oklch(80% 0.14 305);
+  --favn-action-content: oklch(20% 0.06 305);
+  --favn-text-muted: oklch(80% 0.022 245);
+  --favn-text-subtle: oklch(70% 0.022 245);
+}
+
+[data-theme="favn-light"] {
+  --favn-action: oklch(44% 0.19 305);
+  --favn-action-content: oklch(98% 0.01 305);
+  --favn-text-muted: oklch(38% 0.03 255);
+  --favn-text-subtle: oklch(43% 0.03 255);
+}
+
+/* The log terminal keeps one dark canvas in both themes — a terminal is an
+   idiom, not a surface, and log colour semantics (error red, warning amber)
+   must not re-tune per theme. Every colour here is asserted against
+   `--favn-terminal-bg` by the palette gate in
+   `dev/design_system/palette.ex`, so edits fail the test suite before they
+   fail an operator. */
+:root {
+  --favn-terminal-bg: oklch(15% 0.02 255);
+  --favn-terminal-border: oklch(32% 0.03 255);
+  --favn-terminal-boundary: oklch(52% 0.03 255);
+  --favn-terminal-text: oklch(90% 0.015 250);
+  --favn-terminal-dim: oklch(70% 0.025 250);
+  --favn-terminal-debug: oklch(64% 0.02 250);
+  --favn-terminal-info: oklch(78% 0.1 230);
+  --favn-terminal-warning: oklch(84% 0.12 85);
+  --favn-terminal-error: oklch(74% 0.16 22);
+}
+
+/* Button label colours are deliberately unlayered.
+   DaisyUI emits its own `color` for buttons in `@layer utilities`, and a later
+   layer beats an earlier one no matter how specific the earlier selector is.
+   So `--btn-fg` set from `@layer components` never reached the label, and every
+   Favn button variant rendered plain base-content text: the tint only ever
+   showed in the background and border. Unlayered rules outrank every layer,
+   which is the one place these belong.
+   `:disabled` is excluded so an inactive control keeps its muted label. */
+.btn.favn-btn-action:not(:disabled):not(.btn-disabled) {
+  color: var(--favn-action);
+}
+
+.btn.favn-btn-action-solid:not(:disabled):not(.btn-disabled) {
+  color: var(--favn-action-content);
+}
+
+.btn.favn-btn-supporting:not(:disabled):not(.btn-disabled) {
+  color: color-mix(in oklab, var(--color-primary) 78%, var(--color-base-content));
+}
+
+.btn.favn-btn-supporting:not(:disabled):not(.btn-disabled):hover,
+.btn.favn-btn-supporting:not(:disabled):not(.btn-disabled):focus-visible {
+  color: var(--color-primary);
+}
+
+.btn.favn-btn-destructive:not(:disabled):not(.btn-disabled) {
+  color: color-mix(in oklab, var(--color-error) 78%, var(--color-base-content));
+}
+
+.btn.favn-btn-destructive:not(:disabled):not(.btn-disabled):hover,
+.btn.favn-btn-destructive:not(:disabled):not(.btn-disabled):focus-visible {
+  color: var(--color-error);
+}
+
+/* A checkbox and a radio have no surface of their own, so the border is the only
+   thing saying they exist. DaisyUI ships both at 20px with a border measuring
+   1.59:1 — under the 3:1 boundary limit and under the 24px target minimum.
+   Unlayered for the same reason as the button colours above. */
+.checkbox,
+.radio {
+  width: 1.5rem;
+  height: 1.5rem;
+  border-color: color-mix(in oklab, var(--color-base-content) 62%, transparent);
+}
+
+/* A `<summary>` is a click target, so it has to be one you can hit. */
+summary {
+  display: flex;
+  align-items: center;
+  min-height: 1.5rem;
+}
+
+/* The two secondary text tiers. `muted` is metadata and labels a reader is
+   expected to read; `subtle` is the faintest tier the contract allows. There
+   is no third: a tier nobody can read is not information.
+   Unlayered because the tier must win wherever it is placed — DaisyUI paints
+   its own text colours (a select's `.label`, a button's label) from
+   `@layer utilities`, which outranks any layered override. */
+.favn-text-muted {
+  color: var(--favn-text-muted);
+}
+
+.favn-text-subtle {
+  color: var(--favn-text-subtle);
+}
+
+
 @layer components {
-  .favn-shell-bg {
+  /* `favn-shell-bg` is the full page shell and claims the viewport. The
+     design-system browser wants the same atmosphere without claiming it, so it
+     uses `favn-shell-backdrop`, which stays as tall as its content and lets the
+     document scroll normally. */
+  .favn-shell-bg,
+  .favn-shell-backdrop {
     position: relative;
-    min-height: 100vh;
-    overflow: hidden;
     font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     background:
       radial-gradient(circle at 16% 58%, color-mix(in oklab, var(--color-primary) 32%, transparent), transparent 22rem),
       radial-gradient(circle at 90% 92%, color-mix(in oklab, var(--color-secondary) 42%, transparent), transparent 24rem),
       radial-gradient(circle at 62% 20%, color-mix(in oklab, var(--color-base-300) 72%, transparent), transparent 34rem),
       var(--color-base-100);
+  }
+
+  /* `overflow: hidden` must not reach `favn-shell-backdrop`: on a scrolling
+     document it would disable wheel scrolling for the whole page. */
+  .favn-shell-bg {
+    min-height: 100vh;
+    overflow: hidden;
   }
 
   .favn-surface-panel,
@@ -151,6 +304,97 @@
       0 1px 0 color-mix(in oklab, var(--color-base-content) 12%, transparent) inset,
       0 20px 70px color-mix(in oklab, var(--color-primary) 12%, transparent),
       0 14px 40px color-mix(in oklab, var(--color-base-100) 54%, transparent) !important;
+  }
+
+  /* A `<details>` disclosure: hide the native triangle and rotate our own
+     chevron, so the marker matches every other icon in the interface. */
+  summary {
+    list-style: none;
+    cursor: pointer;
+  }
+
+  summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .favn-namespace-marker {
+    transition: transform 160ms ease;
+  }
+
+  details[open] > summary .favn-namespace-marker {
+    transform: rotate(90deg);
+  }
+
+  /* The log terminal. One entry is one line; the line is a <summary> whose
+     expansion holds the entry's identity and metadata. Level is encoded twice —
+     a colour and a three-letter tag — so colour is never the only signal. */
+  .favn-terminal {
+    background: var(--favn-terminal-bg);
+    color: var(--favn-terminal-text);
+    border: var(--border) solid var(--favn-terminal-border);
+  }
+
+  .favn-terminal .favn-log-dim {
+    color: var(--favn-terminal-dim);
+  }
+
+  .favn-log-line > summary {
+    padding: 0.125rem 0.75rem;
+  }
+
+  .favn-log-line > summary:hover {
+    background: color-mix(in oklab, var(--favn-terminal-text) 8%, transparent);
+  }
+
+  .favn-log-line .favn-log-marker {
+    transition: transform 160ms ease;
+  }
+
+  .favn-log-line[open] > summary .favn-log-marker {
+    transform: rotate(90deg);
+  }
+
+  .favn-log-line[data-log-level="debug"] .favn-log-level {
+    color: var(--favn-terminal-debug);
+  }
+
+  .favn-log-line[data-log-level="info"] .favn-log-level {
+    color: var(--favn-terminal-info);
+  }
+
+  .favn-log-line[data-log-level="warning"] .favn-log-level {
+    color: var(--favn-terminal-warning);
+  }
+
+  .favn-log-line[data-log-level="warning"] > summary {
+    box-shadow: inset 2px 0 0 0 var(--favn-terminal-warning);
+  }
+
+  /* A failed line must be findable while scrolling fast: the whole message
+     takes the error colour and the line grows a lit left edge and a wash. */
+  .favn-log-line[data-log-level="error"] > summary {
+    color: var(--favn-terminal-error);
+    background: color-mix(in oklab, var(--favn-terminal-error) 10%, transparent);
+    box-shadow: inset 2px 0 0 0 var(--favn-terminal-error);
+  }
+
+  .favn-log-line[data-log-level="error"] > summary:hover {
+    background: color-mix(in oklab, var(--favn-terminal-error) 18%, transparent);
+  }
+
+  .favn-log-expanded {
+    border-top: var(--border) solid var(--favn-terminal-border);
+    background: color-mix(in oklab, var(--favn-terminal-text) 4%, transparent);
+    padding: 0.5rem 0.75rem 0.625rem 2.25rem;
+  }
+
+  /* Selection is a state, so it has to be identifiable: an opaque border plus a
+     lit edge, rather than a tinted hairline that measured 2.47:1. */
+  .favn-list-card-selected {
+    border-color: var(--color-primary) !important;
+    box-shadow:
+      inset 3px 0 0 0 var(--color-primary),
+      0 0 24px color-mix(in oklab, var(--color-primary) 22%, transparent) !important;
   }
 
   .glass.favn-surface-list {
@@ -208,6 +452,15 @@
       0 14px 38px color-mix(in oklab, var(--color-primary) 10%, transparent) !important;
   }
 
+  /* A control whose border is the thing identifying it — a stateful toggle
+     chip on the glass surface — needs that border at 3:1; the glass border
+     sits near 1.8:1, which is fine only for controls with their own fill.
+     `!important` because the surface rule above is `!important`, and this must
+     follow it in the same layer to win the tie, including over `:hover`. */
+  .btn.favn-control-boundary {
+    border-color: color-mix(in oklab, var(--color-base-content) 62%, transparent) !important;
+  }
+
   .favn-control-glass :is(input, select),
   .favn-surface-control :is(input, select) {
     color: inherit;
@@ -226,6 +479,20 @@
     color: var(--color-base-content);
   }
 
+  /* Stacking order, so a control that opens is never covered by the furniture
+     around it. Chrome first, then anything that opens over it:
+
+       z-10  page content that layers within itself (sticky headers, timelines)
+       z-20  nav rail, page mode rail
+       z-30  mobile mode dock
+       z-50  dropdowns and popovers — above every rail, by rule
+       z-60  toasts
+       z-80+ modal backdrops and drawers
+
+     Two things at the same level are ordered by DOM position, which is how a
+     dropdown at z-20 ended up behind a rail also at z-20: the rail is rendered
+     later in the shell. An overlay must therefore sit a level above chrome, not
+     level with it. */
   .favn-surface-rail,
   .favn-icon-rail {
     border: var(--border) solid color-mix(in oklab, var(--color-primary) 20%, color-mix(in oklab, var(--color-base-content) 8%, transparent));
@@ -272,9 +539,14 @@
     border-color: color-mix(in oklab, var(--color-primary) 24%, transparent);
   }
 
+  /* The border is what says "this mode is the current one", so it is held to the
+     3:1 WCAG asks of a boundary that identifies state. At the 38% this used it
+     measured 1.95 against the rail: visible as decoration, not as a state. The
+     label sits on the lit surface rather than the rail, where bare `--color-primary`
+     measured 4.26 in the light theme, so it borrows a little base-content. */
   .favn-mode-item-active {
-    color: var(--color-primary);
-    border-color: color-mix(in oklab, var(--color-primary) 38%, transparent);
+    color: color-mix(in oklab, var(--color-primary) 85%, var(--color-base-content));
+    border-color: color-mix(in oklab, var(--color-primary) 85%, transparent);
     background:
       radial-gradient(circle at 50% 100%, color-mix(in oklab, var(--color-primary) 28%, transparent), transparent 70%),
       color-mix(in oklab, var(--color-primary) 13%, transparent);
@@ -283,7 +555,13 @@
       0 0 24px color-mix(in oklab, var(--color-primary) 22%, transparent);
   }
 
-  .favn-mode-item-active::after {
+  /* The marker belongs to the two variants that place it: a rail item puts it
+     beside itself, a dock item under itself. An item with no variant has no
+     placement for it, and an absolute box with no offsets lands wherever the
+     content flow left off — which read as a dot dropped in the middle of a
+     labelled button. So the marker is opt-in with the variant, not the base. */
+  .favn-mode-rail-item.favn-mode-item-active::after,
+  .favn-mode-dock-item.favn-mode-item-active::after {
     position: absolute;
     content: "";
     width: 0.25rem;
@@ -335,6 +613,195 @@
       width: 2.5rem;
       height: 2.5rem;
     }
+  }
+
+  /* The server re-projects a live run's flow once a second. Interpolating
+     position and width over exactly that interval, linearly, turns those
+     discrete updates into one continuous advance: each transition finishes as
+     the next value arrives, so nothing steps and nothing eases in and out.
+     Applied to every bar, not just the running one, because the axis end moves
+     with the clock and every bar rescales slightly with it. */
+  .favn-flow-advancing {
+    transition-property: left, width;
+    transition-duration: 1000ms;
+    transition-timing-function: linear;
+  }
+
+  /* A running bar has no end yet, so its right edge must not look like a finish.
+     It fades out and breathes, which reads as "still going" while the width
+     itself carries the elapsed time. */
+  .favn-flow-bar-running {
+    mask-image: linear-gradient(to right, black 60%, transparent 100%);
+    animation: favn-flow-pulse 2.4s ease-in-out infinite;
+  }
+
+  @keyframes favn-flow-pulse {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.72;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .favn-flow-bar-running {
+      animation: none;
+    }
+
+    /* The bar still has to move — it is the data. Cutting the interpolation makes
+       it step once a second instead, which is the honest minimum here. */
+    .favn-flow-advancing {
+      transition-property: none;
+    }
+  }
+
+  /* DaisyUI's `btn-soft` mixes its colour into `base-100`, which is near-black in
+     favn-dark, so a soft button loses its surface entirely. These drive DaisyUI's
+     own button variables instead, so secondary and danger keep a readable
+     container in both themes. */
+  /* DaisyUI's `neutral` colour is a dark slate, so `badge-neutral` and
+     `status-neutral` render dark-on-dark in favn-dark. The neutral tone is
+     "no judgement", which reads better as plain base-content anyway. */
+  .badge.favn-badge-neutral {
+    --badge-color: color-mix(in oklab, var(--color-base-content) 72%, transparent);
+    --badge-fg: var(--color-base-100);
+  }
+
+  /* DaisyUI ships no `alert-neutral`; `alert-soft` already falls back to
+     base-content, so this only softens it to match the other tones. */
+  .alert.favn-alert-neutral {
+    --alert-color: color-mix(in oklab, var(--color-base-content) 70%, transparent);
+  }
+
+  .status.favn-status-neutral {
+    background-color: color-mix(in oklab, var(--color-base-content) 45%, transparent);
+    color: color-mix(in oklab, var(--color-base-content) 45%, transparent);
+  }
+
+  /* The primary action: outlined and lit, never filled. A solid block of
+     colour reads as a banner on these glass surfaces, and it forced a pale
+     label onto a mid-tone fill — which measured 2.78:1 and failed AA. Drawing
+     the action colour as the *label* instead puts a bright violet on the dark
+     field, so the contrast comes from the design rather than from tuning a
+     fill. */
+  .btn.favn-btn-action {
+    --btn-color: color-mix(in oklab, var(--favn-action) 12%, var(--color-base-100));
+    --btn-fg: var(--favn-action);
+    --btn-border: color-mix(in oklab, var(--favn-action) 52%, var(--color-base-100));
+    box-shadow: 0 0 0 1px color-mix(in oklab, var(--favn-action) 12%, transparent) inset;
+    transition:
+      color 160ms ease,
+      background-color 160ms ease,
+      border-color 160ms ease,
+      box-shadow 160ms ease;
+  }
+
+  .btn.favn-btn-action:hover,
+  .btn.favn-btn-action:focus-visible {
+    --btn-color: color-mix(in oklab, var(--favn-action) 20%, var(--color-base-100));
+    --btn-border: color-mix(in oklab, var(--favn-action) 76%, var(--color-base-100));
+    box-shadow:
+      0 0 0 1px color-mix(in oklab, var(--favn-action) 22%, transparent) inset,
+      0 0 22px color-mix(in oklab, var(--favn-action) 26%, transparent);
+  }
+
+  /* The filled action, for the confirming control in a dialog: the one moment
+     the interface should insist. The label is `--favn-action-content`, so the
+     pair is judged by the palette gate like every solid surface. */
+  .btn.favn-btn-action-solid {
+    --btn-color: var(--favn-action);
+    --btn-fg: var(--favn-action-content);
+    --btn-border: color-mix(in oklab, var(--favn-action) 82%, var(--color-base-content));
+    transition:
+      color 160ms ease,
+      background-color 160ms ease,
+      border-color 160ms ease,
+      box-shadow 160ms ease;
+  }
+
+  .btn.favn-btn-action-solid:hover,
+  .btn.favn-btn-action-solid:focus-visible {
+    --btn-color: color-mix(in oklab, var(--favn-action) 88%, var(--color-base-content));
+    box-shadow: 0 0 22px color-mix(in oklab, var(--favn-action) 32%, transparent);
+  }
+
+  /* One edge for the whole family, and a barely-there one: these buttons are
+     glass, so the tinted fill and the coloured label carry the meaning and the
+     border only closes the shape. A firm outline was tried and looked like a
+     different product.
+
+     It has to be stated rather than left alone, though. Every `--btn-border`
+     above and below is ignored — DaisyUI's `.btn` wins the custom property, and
+     the edge that appeared came from its depth shadow tinted by the fill, which
+     is why the three variants each drew a different weight and the supporting
+     button out-shouted the primary action beside it. `border-color` direct, one
+     strength, hue from `currentColor`. `!important` because what it overrides is
+     DaisyUI's, emitted from a layer that outranks this one. */
+  .btn.favn-btn-action,
+  .btn.favn-btn-supporting,
+  .btn.favn-btn-destructive {
+    border-color: color-mix(in oklab, currentColor 20%, transparent) !important;
+  }
+
+  .btn.favn-btn-action:hover,
+  .btn.favn-btn-action:focus-visible,
+  .btn.favn-btn-supporting:hover,
+  .btn.favn-btn-supporting:focus-visible,
+  .btn.favn-btn-destructive:hover,
+  .btn.favn-btn-destructive:focus-visible {
+    border-color: color-mix(in oklab, currentColor 48%, transparent) !important;
+  }
+
+  /* A button that stays pressed is reporting a state, not just being clickable,
+     and a boundary that identifies state owes 3:1 — the resting 42% measures
+     2.32. This is the same rule the mode rail's current item follows. */
+  .btn.favn-btn-action[aria-pressed="true"],
+  .btn.favn-btn-supporting[aria-pressed="true"],
+  .btn.favn-btn-destructive[aria-pressed="true"] {
+    border-color: color-mix(in oklab, currentColor 88%, transparent) !important;
+  }
+
+  /* A link-shaped button is still an action, so it wears the action colour.
+     DaisyUI's `btn-link` inherits `--color-primary`, which put a blue "Open
+     manifest" next to a violet "Run asset" and made the same intent look like
+     two different things. Blue stays reserved for real links in prose. */
+  .btn.favn-btn-link {
+    --btn-fg: var(--favn-action);
+    color: var(--favn-action) !important;
+  }
+
+  .btn.favn-btn-link:hover,
+  .btn.favn-btn-link:focus-visible {
+    color: color-mix(in oklab, var(--favn-action) 82%, var(--color-base-content)) !important;
+  }
+
+  /* `.btn` declares `--btn-fg` itself, so these need the extra class to win. */
+  .btn.favn-btn-supporting {
+    --btn-color: color-mix(in oklab, var(--color-primary) 17%, var(--color-base-100));
+    --btn-fg: color-mix(in oklab, var(--color-primary) 78%, var(--color-base-content));
+    --btn-border: color-mix(in oklab, var(--color-primary) 42%, var(--color-base-100));
+  }
+
+  .btn.favn-btn-supporting:hover,
+  .btn.favn-btn-supporting:focus-visible {
+    --btn-color: color-mix(in oklab, var(--color-primary) 27%, var(--color-base-100));
+    --btn-fg: var(--color-primary);
+    --btn-border: color-mix(in oklab, var(--color-primary) 64%, var(--color-base-100));
+  }
+
+  .btn.favn-btn-destructive {
+    --btn-color: color-mix(in oklab, var(--color-error) 18%, var(--color-base-100));
+    --btn-fg: color-mix(in oklab, var(--color-error) 78%, var(--color-base-content));
+    --btn-border: color-mix(in oklab, var(--color-error) 46%, var(--color-base-100));
+  }
+
+  .btn.favn-btn-destructive:hover,
+  .btn.favn-btn-destructive:focus-visible {
+    --btn-color: color-mix(in oklab, var(--color-error) 28%, var(--color-base-100));
+    --btn-fg: var(--color-error);
+    --btn-border: color-mix(in oklab, var(--color-error) 68%, var(--color-base-100));
   }
 
   .favn-icon-button {

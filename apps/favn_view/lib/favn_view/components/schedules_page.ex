@@ -6,9 +6,7 @@ defmodule FavnView.Components.SchedulesPage do
   use FavnView, :html
 
   alias FavnView.Components.AppShell
-  alias FavnView.Components.AssetCataloguePage
-  alias FavnView.Components.GlassPanel
-  alias FavnView.Components.ModeRail
+  alias FavnView.Components.Navigation
   alias FavnView.Components.ScheduleUi
 
   attr :schedules, :list, required: true
@@ -16,7 +14,6 @@ defmodule FavnView.Components.SchedulesPage do
   attr :filters, :map, required: true
   attr :filter_options, :map, required: true
   attr :summary, :map, required: true
-  attr :active_mode, :atom, required: true
   attr :loading, :boolean, default: false
   attr :error, :string, default: nil
   attr :nav_items, :list, required: true
@@ -27,7 +24,6 @@ defmodule FavnView.Components.SchedulesPage do
       title="Schedules"
       subtitle="Manage and monitor pipeline schedules."
       nav_items={@nav_items}
-      show_header?={false}
       content_scroll?={false}
     >
       <div
@@ -35,14 +31,17 @@ defmodule FavnView.Components.SchedulesPage do
         class="mx-auto flex min-h-0 w-full max-w-[120rem] flex-1 flex-col pb-24 lg:pb-0"
         data-testid="schedules-page"
       >
-        <.loading_state :if={@loading} />
-        <.error_state :if={!@loading && @error} error={@error} />
-
+        <.loading_state :if={@loading} label="Loading schedules" />
+        <.error_state
+          :if={!@loading && @error}
+          title="Could not load schedules"
+          description={@error}
+          data-testid="schedules-error-state"
+        />
         <div :if={!@loading && !@error} class="flex min-h-0 flex-1 flex-col gap-2.5 lg:gap-3">
-          <.helper_text />
-          <.summary_band summary={@summary} />
-
-          <GlassPanel.glass_panel
+          <.helper_text /> <.summary_band summary={@summary} />
+          <.panel
+            padding={:none}
             class="flex min-h-0 flex-1 flex-col overflow-hidden p-3 sm:p-4"
             data-testid="schedules-panel"
           >
@@ -51,25 +50,31 @@ defmodule FavnView.Components.SchedulesPage do
               filter_options={@filter_options}
               result_count={length(@schedules)}
             />
-
-            <.empty_state :if={@all_schedules == []} />
-            <.filtered_empty_state :if={@all_schedules != [] && @schedules == []} />
-            <.schedules_table :if={@schedules != []} schedules={@schedules} />
+            <.empty_state
+              :if={@all_schedules == []}
+              title="No schedules found"
+              description="Deploy a manifest with scheduled pipelines to see them here."
+              icon="hero-calendar-days"
+              data-testid="schedules-empty-state"
+            />
+            <.empty_state
+              :if={@all_schedules != [] && @schedules == []}
+              title="No schedules match these filters"
+              description="Clear filters or try a broader search."
+              icon="hero-funnel"
+              data-testid="schedules-filtered-empty-state"
+            /> <.schedules_table :if={@schedules != []} schedules={@schedules} />
             <.schedule_cards :if={@schedules != []} schedules={@schedules} />
-          </GlassPanel.glass_panel>
+          </.panel>
         </div>
       </div>
-
-      <:mode_rail>
-        <ModeRail.mode_rail active={@active_mode} modes={schedules_modes()} on_select="set_mode" />
-      </:mode_rail>
     </AppShell.app_shell>
     """
   end
 
   def helper_text(assigns) do
     ~H"""
-    <p class="text-xs text-base-content/55">
+    <p class="text-xs favn-text-muted">
       New schedules are disabled by default until activated.
     </p>
     """
@@ -90,8 +95,7 @@ defmodule FavnView.Components.SchedulesPage do
           label="Pending activation"
           value={@summary.pending_activation}
           caption="Awaiting review"
-        />
-        <.summary_metric label="Disabled" value={@summary.disabled} caption="Operator disabled" />
+        /> <.summary_metric label="Disabled" value={@summary.disabled} caption="Operator disabled" />
         <.summary_metric label="Running" value={@summary.running} caption="In flight" />
         <.summary_metric label="Queued" value={@summary.queued} caption="Waiting" />
       </div>
@@ -106,11 +110,13 @@ defmodule FavnView.Components.SchedulesPage do
   def summary_metric(assigns) do
     ~H"""
     <div class="space-y-1 border-base-content/10 sm:border-l sm:pl-5 first:border-l-0 first:pl-0">
-      <p class="text-[0.68rem] font-semibold uppercase tracking-[0.2em] text-base-content/50">
+      <p class="text-[0.68rem] font-semibold uppercase tracking-[0.2em] favn-text-subtle">
         {@label}
       </p>
+
       <p class="text-xl font-semibold leading-none text-base-content">{@value}</p>
-      <p class="text-xs text-base-content/55">{@caption}</p>
+
+      <p class="text-xs favn-text-muted">{@caption}</p>
     </div>
     """
   end
@@ -130,7 +136,7 @@ defmodule FavnView.Components.SchedulesPage do
     >
       <div class="flex flex-wrap items-center gap-2">
         <label class="favn-surface-control input input-sm h-9 min-h-9 min-w-0 flex-1 items-center gap-2 rounded-field sm:min-w-72 lg:max-w-96">
-          <.icon name="hero-magnifying-glass" class="size-4 text-base-content/45" />
+          <.icon name="hero-magnifying-glass" class="size-4 favn-text-subtle" />
           <input
             type="search"
             name="filters[search]"
@@ -166,7 +172,6 @@ defmodule FavnView.Components.SchedulesPage do
           value={@filters["window"]}
           options={window_options(@filter_options.windows)}
         />
-
         <button
           type="button"
           phx-click="clear_filters"
@@ -175,7 +180,8 @@ defmodule FavnView.Components.SchedulesPage do
         >
           Clear
         </button>
-        <span class="ml-auto text-xs text-base-content/45" data-testid="schedule-result-count">
+
+        <span class="ml-auto text-xs favn-text-subtle" data-testid="schedule-result-count">
           {@result_count} results
         </span>
       </div>
@@ -191,7 +197,7 @@ defmodule FavnView.Components.SchedulesPage do
   def select_control(assigns) do
     ~H"""
     <label class="favn-surface-control flex h-9 min-h-9 min-w-36 items-center overflow-hidden rounded-field border border-base-content/10 bg-base-100/20 text-sm shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
-      <span class="border-r border-base-content/10 px-3 text-xs text-base-content/45">{@label}</span>
+      <span class="border-r border-base-content/10 px-3 text-xs favn-text-subtle">{@label}</span>
       <select
         name={"filters[#{@name}]"}
         value={@value}
@@ -212,22 +218,35 @@ defmodule FavnView.Components.SchedulesPage do
     <div class="hidden min-h-0 flex-1 overflow-auto border-t border-base-content/10 xl:block">
       <table class="table table-sm" data-testid="schedules-table">
         <thead>
-          <tr class="border-base-content/10 text-xs text-base-content/55">
+          <tr class="border-base-content/10 text-xs favn-text-muted">
             <th class="w-64 font-medium">Schedule</th>
+
             <th class="font-medium">Pipeline</th>
+
             <th class="font-medium">Cadence</th>
+
             <th class="font-medium">Window</th>
+
             <th class="font-medium">Policies</th>
+
             <th class="font-medium">Activation</th>
+
             <th class="font-medium">Runtime</th>
+
             <th class="font-medium">Issue</th>
+
             <th class="font-medium">Next due</th>
+
             <th class="font-medium">Last submitted</th>
+
             <th class="font-medium">Current run</th>
+
             <th class="font-medium">Updated</th>
+
             <th class="font-medium">Actions</th>
           </tr>
         </thead>
+
         <tbody>
           <.schedule_row :for={schedule <- @schedules} schedule={schedule} />
         </tbody>
@@ -252,35 +271,47 @@ defmodule FavnView.Components.SchedulesPage do
           >
             {@schedule.schedule_label}
           </.link>
-          <p class="truncate font-mono text-xs text-base-content/50" title={@schedule.id}>
+
+          <p class="truncate font-mono text-xs favn-text-subtle" title={@schedule.id}>
             {@schedule.id}
           </p>
         </div>
       </td>
-      <td class="max-w-52 truncate text-xs text-base-content/75" title={@schedule.pipeline_label}>
+
+      <td class="max-w-52 truncate text-xs favn-text-muted" title={@schedule.pipeline_label}>
         {@schedule.pipeline_label}
       </td>
-      <td class="whitespace-nowrap text-xs text-base-content/70">
+
+      <td class="whitespace-nowrap text-xs favn-text-muted">
         <p class="font-mono">{@schedule.cron}</p>
-        <p class="text-base-content/45">{@schedule.timezone}</p>
+
+        <p class="favn-text-subtle">{@schedule.timezone}</p>
       </td>
-      <td class="whitespace-nowrap text-xs text-base-content/70">{@schedule.window_label}</td>
+
+      <td class="whitespace-nowrap text-xs favn-text-muted">{@schedule.window_label}</td>
+
       <td><.policy_chips schedule={@schedule} /></td>
+
       <td>
         <ScheduleUi.activation_badge
           state={@schedule.activation_state}
           label={@schedule.activation_label}
         />
       </td>
+
       <td>
         <ScheduleUi.runtime_badge state={@schedule.runtime_state} label={@schedule.runtime_label} />
       </td>
-      <td class="whitespace-nowrap text-xs text-base-content/70">
+
+      <td class="whitespace-nowrap text-xs favn-text-muted">
         <ScheduleUi.scheduler_error_badge error={@schedule.last_scheduler_error} />
       </td>
-      <td class="whitespace-nowrap text-xs text-base-content/70">{@schedule.next_due_label}</td>
-      <td class="whitespace-nowrap text-xs text-base-content/70">{@schedule.last_submitted_label}</td>
-      <td class="whitespace-nowrap text-xs text-base-content/70">
+
+      <td class="whitespace-nowrap text-xs favn-text-muted">{@schedule.next_due_label}</td>
+
+      <td class="whitespace-nowrap text-xs favn-text-muted">{@schedule.last_submitted_label}</td>
+
+      <td class="whitespace-nowrap text-xs favn-text-muted">
         <.link
           :if={@schedule.in_flight_run_id}
           navigate={~p"/runs/#{@schedule.in_flight_run_id}"}
@@ -290,17 +321,16 @@ defmodule FavnView.Components.SchedulesPage do
         </.link>
         <span :if={!@schedule.in_flight_run_id}>-</span>
       </td>
-      <td class="whitespace-nowrap text-xs text-base-content/70">{@schedule.updated_label}</td>
+
+      <td class="whitespace-nowrap text-xs favn-text-muted">{@schedule.updated_label}</td>
+
       <td>
-        <button
-          type="button"
-          class="btn btn-ghost btn-xs favn-icon-button"
-          data-copy-text={@schedule.id}
-          aria-label={"Copy #{@schedule.id}"}
+        <.copy_button
+          value={@schedule.id}
+          title={"Copy #{@schedule.id}"}
+          size={:xs}
           data-testid="copy-schedule-id"
-        >
-          <.icon name="hero-clipboard-document" class="size-4" />
-        </button>
+        />
       </td>
     </tr>
     """
@@ -330,6 +360,7 @@ defmodule FavnView.Components.SchedulesPage do
             <span class="favn-density-list-card-icon flex shrink-0 items-center justify-center rounded-field border border-primary/30 bg-primary/10 text-primary">
               <.icon name="hero-calendar-days" class="size-4" />
             </span>
+
             <div class="min-w-0">
               <.link
                 navigate={~p"/schedules/#{@schedule.route_id}"}
@@ -337,31 +368,27 @@ defmodule FavnView.Components.SchedulesPage do
               >
                 {@schedule.schedule_label}
               </.link>
-              <p class="mt-0.5 truncate text-xs text-base-content/60">{@schedule.pipeline_label}</p>
+
+              <p class="mt-0.5 truncate text-xs favn-text-muted">{@schedule.pipeline_label}</p>
             </div>
           </div>
-          <div class="flex flex-wrap items-center gap-2 text-xs text-base-content/65">
+
+          <div class="flex flex-wrap items-center gap-2 text-xs favn-text-muted">
             <ScheduleUi.activation_badge
               state={@schedule.activation_state}
               label={@schedule.activation_label}
             />
             <ScheduleUi.runtime_badge state={@schedule.runtime_state} label={@schedule.runtime_label} />
             <ScheduleUi.scheduler_error_badge error={@schedule.last_scheduler_error} />
-            <span>{@schedule.cron}</span>
-            <span>{@schedule.window_label}</span>
+            <span>{@schedule.cron}</span> <span>{@schedule.window_label}</span>
           </div>
-          <p class="truncate font-mono text-xs text-base-content/45" title={@schedule.id}>
+
+          <p class="truncate font-mono text-xs favn-text-subtle" title={@schedule.id}>
             {@schedule.id}
           </p>
         </div>
-        <button
-          type="button"
-          class="btn btn-ghost btn-xs favn-icon-button"
-          data-copy-text={@schedule.id}
-          aria-label={"Copy #{@schedule.id}"}
-        >
-          <.icon name="hero-clipboard-document" class="size-4" />
-        </button>
+
+        <.copy_button value={@schedule.id} title={"Copy #{@schedule.id}"} size={:xs} />
       </div>
     </article>
     """
@@ -378,66 +405,7 @@ defmodule FavnView.Components.SchedulesPage do
     """
   end
 
-  def loading_state(assigns) do
-    ~H"""
-    <GlassPanel.glass_panel class="mx-auto flex min-h-64 max-w-2xl items-center justify-center p-10">
-      <div class="text-center">
-        <span class="loading loading-ring loading-lg text-primary"></span>
-        <p class="mt-4 text-base-content/60">Loading schedules</p>
-      </div>
-    </GlassPanel.glass_panel>
-    """
-  end
-
-  def empty_state(assigns) do
-    ~H"""
-    <GlassPanel.glass_panel
-      class="mx-auto max-w-2xl p-10 text-center"
-      data-testid="schedules-empty-state"
-    >
-      <h2 class="text-xl font-medium">No schedules found</h2>
-      <p class="mt-2 text-base-content/60">
-        Deploy a manifest with scheduled pipelines to see them here.
-      </p>
-    </GlassPanel.glass_panel>
-    """
-  end
-
-  def filtered_empty_state(assigns) do
-    ~H"""
-    <GlassPanel.glass_panel
-      class="mx-auto max-w-2xl p-10 text-center"
-      data-testid="schedules-filtered-empty-state"
-    >
-      <h2 class="text-xl font-medium">No schedules match these filters</h2>
-      <p class="mt-2 text-base-content/60">Clear filters or try a broader search.</p>
-    </GlassPanel.glass_panel>
-    """
-  end
-
-  attr :error, :string, required: true
-
-  def error_state(assigns) do
-    ~H"""
-    <GlassPanel.glass_panel
-      class="mx-auto max-w-2xl p-10 text-center"
-      data-testid="schedules-error-state"
-    >
-      <h2 class="text-xl font-medium">Could not load schedules</h2>
-      <p class="mt-2 text-base-content/60">{@error}</p>
-    </GlassPanel.glass_panel>
-    """
-  end
-
-  def schedules_modes do
-    [
-      %{id: :list, label: "List", icon: "hero-list-bullet"},
-      %{id: :filters, label: "Filters", icon: "hero-funnel", disabled: true},
-      %{id: :more, label: "More", icon: "hero-ellipsis-vertical", disabled: true}
-    ]
-  end
-
-  def nav_items(active \\ :schedules), do: AssetCataloguePage.nav_items(active)
+  def nav_items(active \\ :schedules), do: Navigation.items(active)
 
   def activation_options do
     [
@@ -462,123 +430,6 @@ defmodule FavnView.Components.SchedulesPage do
 
   def pipeline_options(options), do: [{"Pipeline", "all"} | options]
   def window_options(options), do: [{"Window", "all"} | options]
-
-  def sample_filters do
-    %{
-      "search" => "",
-      "activation_state" => "all",
-      "runtime_state" => "all",
-      "pipeline" => "all",
-      "window" => "all"
-    }
-  end
-
-  def sample_filter_options do
-    %{
-      pipelines: [{"MyApp.Pipelines.Daily", "MyApp.Pipelines.Daily"}],
-      windows: [{"Day", "day"}, {"No window", "none"}]
-    }
-  end
-
-  def sample_summary(entries \\ sample_schedules()) do
-    %{
-      total: length(entries),
-      enabled: Enum.count(entries, &(&1.activation_state == :enabled)),
-      pending_activation: Enum.count(entries, &(&1.activation_state == :pending_activation)),
-      disabled: Enum.count(entries, &(&1.activation_state == :disabled)),
-      running: Enum.count(entries, &(&1.runtime_state == :running)),
-      queued: Enum.count(entries, &(&1.runtime_state == :queued))
-    }
-  end
-
-  def sample_schedules do
-    [
-      %{
-        id: "schedule:MyApp.Pipelines.Daily:daily",
-        route_id: "s-c2NoZWR1bGU6TXlBcHAuUGlwZWxpbmVzLkRhaWx5OmRhaWx5",
-        schedule_label: "daily",
-        pipeline_label: "MyApp.Pipelines.Daily",
-        cron: "0 6 * * *",
-        timezone: "Europe/Oslo",
-        window_label: "Day Europe/Oslo",
-        overlap: :forbid,
-        missed: :skip,
-        activation_state: :pending_activation,
-        activation_label: "Pending activation",
-        runtime_state: :inactive,
-        runtime_label: "Inactive",
-        next_due_label: "May 25 06:00",
-        last_submitted_label: "-",
-        in_flight_run_id: nil,
-        current_run_label: nil,
-        last_scheduler_error: nil,
-        updated_label: "May 24 12:00"
-      },
-      %{
-        id: "schedule:MyApp.Pipelines.Marketing:refresh",
-        route_id: "s-c2NoZWR1bGU6TXlBcHAuUGlwZWxpbmVzLk1hcmtldGluZzpyZWZyZXNo",
-        schedule_label: "refresh",
-        pipeline_label: "MyApp.Pipelines.Marketing",
-        cron: "*/15 * * * *",
-        timezone: "Etc/UTC",
-        window_label: "No window",
-        overlap: :allow,
-        missed: :one,
-        activation_state: :enabled,
-        activation_label: "Enabled",
-        runtime_state: :running,
-        runtime_label: "Running",
-        next_due_label: "May 24 12:15",
-        last_submitted_label: "May 24 12:00",
-        in_flight_run_id: "run_8f3a2c",
-        current_run_label: "run_8f3a2c",
-        last_scheduler_error: nil,
-        updated_label: "May 24 12:01"
-      },
-      %{
-        id: "schedule:MyApp.Pipelines.Hourly:hourly",
-        route_id: "s-c2NoZWR1bGU6TXlBcHAuUGlwZWxpbmVzLkhvdXJseTpob3VybHk",
-        schedule_label: "hourly",
-        pipeline_label: "MyApp.Pipelines.Hourly",
-        cron: "0 * * * *",
-        timezone: "Etc/UTC",
-        window_label: "Hour Etc/UTC",
-        overlap: :queue_one,
-        missed: :one,
-        activation_state: :needs_review,
-        activation_label: "Needs review",
-        runtime_state: :inactive,
-        runtime_label: "Inactive",
-        next_due_label: "May 24 13:00",
-        last_submitted_label: "May 24 11:00",
-        in_flight_run_id: nil,
-        current_run_label: nil,
-        last_scheduler_error: %{phase_label: "Submit run", message: "Window policy invalid"},
-        updated_label: "May 24 12:03"
-      },
-      %{
-        id: "schedule:MyApp.Pipelines.Monthly:monthly",
-        route_id: "s-c2NoZWR1bGU6TXlBcHAuUGlwZWxpbmVzLk1vbnRobHk6bW9udGhseQ",
-        schedule_label: "monthly",
-        pipeline_label: "MyApp.Pipelines.Monthly",
-        cron: "0 5 1 * *",
-        timezone: "Europe/Oslo",
-        window_label: "Month Europe/Oslo",
-        overlap: :queue_one,
-        missed: :one,
-        activation_state: :disabled,
-        activation_label: "Disabled",
-        runtime_state: :queued,
-        runtime_label: "Queued",
-        next_due_label: "Jun 1 05:00",
-        last_submitted_label: "May 1 05:00",
-        in_flight_run_id: nil,
-        current_run_label: nil,
-        last_scheduler_error: nil,
-        updated_label: "May 24 12:04"
-      }
-    ]
-  end
 
   defp policy_label(nil), do: "-"
 

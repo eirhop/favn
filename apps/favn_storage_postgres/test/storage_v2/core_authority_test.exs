@@ -113,6 +113,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnOrchestrator.Persistence.Queries.GetRuntimeState
   alias FavnOrchestrator.Persistence.Queries.MissingExecutionPackageHashes
   alias FavnOrchestrator.Persistence.Queries.GetDeploymentTargets
+  alias FavnOrchestrator.Persistence.Queries.CountExecutionGroups
   alias FavnOrchestrator.Persistence.Queries.PageExecutionGroups
   alias FavnOrchestrator.Persistence.Queries.PageManifests
   alias FavnOrchestrator.Persistence.Queries.PageAudit
@@ -6271,6 +6272,14 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert group.run_count == 1
     assert group.running_count == 1
 
+    # A page of groups has to say what each run was for and what triggered it,
+    # or a runs list cannot be read. These come from the root run, not from the
+    # group's own row, so they are the part most easily lost.
+    assert group.target_refs != []
+    assert group.trigger_type != nil
+    assert %DateTime{} = group.started_at
+    assert is_nil(group.finished_at), "a running group has not finished"
+
     assert {:ok, detail} =
              OperatorReadStore.get_execution_group(%GetExecutionGroup{
                workspace_context: fixture.workspace_context,
@@ -6484,6 +6493,284 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
              manifests.items,
              &(&1.manifest_version_id == fixture.version.manifest_version_id)
            )
+  end
+
+  test "a page of execution groups narrows in the store rather than in the caller", fixture do
+    {first_command, first_run} = create_run_command(fixture)
+    {second_command, second_run} = create_run_command(fixture)
+
+    assert {:ok, _created} = RunStore.create_run(first_command)
+    assert {:ok, _created} = RunStore.create_run(second_command)
+
+    assert {:ok, publications} = Sequencer.sequence_batch()
+    assert publications != []
+
+    SQL.query!(
+      Repo,
+      "UPDATE favn_control.projection_cursors SET owner_id = NULL, claim_expires_at = NULL WHERE projector_name = 'control_plane_v1' AND shard_id = 0",
+      []
+    )
+
+    assert drain_projector("node-a") >= length(publications)
+
+    ids = fn filters ->
+      query = struct!(%PageExecutionGroups{scope: fixture.workspace_context, limit: 10}, filters)
+      assert {:ok, page} = OperatorReadStore.page_execution_groups(query)
+      Enum.map(page.items, & &1.root_run_id)
+    end
+
+    both = ids.([])
+    assert Enum.sort(both) == Enum.sort([first_run.id, second_run.id])
+
+    # Ordering is by when the root run started, so reversing the order reverses
+    # the page rather than producing some third arrangement.
+    assert ids.(order: :started_asc) == Enum.reverse(both)
+
+    assert ids.(search: first_run.id) == [first_run.id]
+    assert Enum.sort(ids.(search: "myapp.ass")) == Enum.sort(both)
+    assert ids.(search: "no-such-target") == []
+    assert ids.(search: "   ") == both
+
+    # A wildcard the operator typed is a character to look for, not a pattern.
+    assert ids.(search: "%") == []
+
+    assert {:ok, %{items: [reference | _]}} =
+             OperatorReadStore.page_execution_groups(%PageExecutionGroups{
+               scope: fixture.workspace_context,
+               limit: 1
+             })
+
+    assert Enum.sort(ids.(trigger_type: reference.trigger_type)) == Enum.sort(both)
+    assert ids.(trigger_type: :resource_recovery) == []
+
+    now = DateTime.utc_now()
+    assert ids.(started_after: DateTime.add(now, 3600, :second)) == []
+    assert ids.(started_before: DateTime.add(now, -3600, :second)) == []
+    assert Enum.sort(ids.(started_after: DateTime.add(now, -3600, :second))) == Enum.sort(both)
+
+    assert {:ok, first_page} =
+             OperatorReadStore.page_execution_groups(%PageExecutionGroups{
+               scope: fixture.workspace_context,
+               limit: 1
+             })
+
+    assert first_page.has_more?
+    assert [head] = Enum.map(first_page.items, & &1.root_run_id)
+
+    assert {:ok, next_page} =
+             OperatorReadStore.page_execution_groups(%PageExecutionGroups{
+               scope: fixture.workspace_context,
+               limit: 1,
+               after: first_page.next_cursor
+             })
+
+    assert [tail] = Enum.map(next_page.items, & &1.root_run_id)
+    assert [head, tail] == both
+
+    counts = fn filters ->
+      query = struct!(%CountExecutionGroups{scope: fixture.workspace_context}, filters)
+      assert {:ok, counts} = OperatorReadStore.count_execution_groups(query)
+      counts
+    end
+
+    unfiltered = counts.([])
+    assert unfiltered.total == 2
+    assert unfiltered.active == 2
+    assert unfiltered.failed == 0
+    assert unfiltered.succeeded == 0
+
+    # A count offered next to a filter has to be the size of what that filter
+    # returns, so every narrowing the page accepts narrows the counts too.
+    assert counts.(search: first_run.id).total == 1
+    assert counts.(search: "no-such-target").total == 0
+    assert counts.(trigger_type: :resource_recovery).total == 0
+    assert counts.(started_after: DateTime.add(now, 3600, :second)).active == 0
+    assert counts.(started_before: DateTime.add(now, -3600, :second)).total == 0
+
+    for invalid <- [[started_after: "today"], [order: :duration_desc], [trigger_type: :nonsense]] do
+      query = struct!(%PageExecutionGroups{scope: fixture.workspace_context, limit: 10}, invalid)
+      assert {:error, %Error{kind: :invalid}} = OperatorReadStore.page_execution_groups(query)
+    end
+
+    for invalid <- [[started_after: "today"], [trigger_type: :nonsense], [search: 7]] do
+      query = struct!(%CountExecutionGroups{scope: fixture.workspace_context}, invalid)
+      assert {:error, %Error{kind: :invalid}} = OperatorReadStore.count_execution_groups(query)
+    end
+  end
+
+  # A backfill's root run is terminal the instant it is created — it exists to group
+  # the window runs that do the work. Recording the root run's `terminal_at` as the
+  # group's finish therefore reported every backfill as finishing before it started,
+  # with a duration of zero. The group finishes when nothing in it is outstanding.
+  test "a group finishes when its last run settles, not when its root run does",
+       fixture do
+    {root_command, root} = create_run_command(fixture)
+    assert {:ok, _created} = RunStore.create_run(root_command)
+
+    child_id = "run-child-#{System.unique_integer([:positive])}"
+    {child_command, child} = create_run_command(fixture, child_id)
+    child = %{child | root_run_id: root.id}
+
+    assert {:ok, _created} = RunStore.create_run(%{child_command | run: child})
+
+    settle = fn run, sequence, command ->
+      finished =
+        RunState.transition(
+          run,
+          [status: :ok, metadata: Map.put(run.metadata, :terminal_event_type, :run_finished)],
+          DateTime.utc_now()
+        )
+
+      assert {:ok, _committed} =
+               RunStore.commit_transition(%CommitRunTransition{
+                 workspace_context: fixture.workspace_context,
+                 command_id: command,
+                 expected_sequence: sequence,
+                 run: finished,
+                 event: %{
+                   run_id: run.id,
+                   sequence: sequence + 1,
+                   event_type: :run_finished,
+                   status: :ok,
+                   occurred_at: DateTime.utc_now()
+                 }
+               })
+
+      finished
+    end
+
+    settle.(root, 1, "settle-root:" <> root.id)
+
+    overview = fn ->
+      assert {:ok, publications} = Sequencer.sequence_batch()
+
+      SQL.query!(
+        Repo,
+        "UPDATE favn_control.projection_cursors SET owner_id = NULL, claim_expires_at = NULL WHERE projector_name = 'control_plane_v1' AND shard_id = 0",
+        []
+      )
+
+      assert drain_projector("node-a") >= length(publications)
+
+      Repo.get_by!(FavnStoragePostgres.Schemas.ExecutionGroupOverview,
+        workspace_id: fixture.workspace_id,
+        root_run_id: root.id
+      )
+    end
+
+    # The root has settled but the child has not, so the group has not finished.
+    outstanding = overview.()
+    assert outstanding.run_count == 2
+    assert is_nil(outstanding.finished_at)
+
+    settle.(child, 1, "settle-child:" <> child.id)
+
+    settled = overview.()
+    assert settled.status == "succeeded"
+    assert %DateTime{} = settled.finished_at
+    assert DateTime.compare(settled.finished_at, settled.started_at) == :gt
+
+    # The root run stopped first, and taking its instant is what this rules out.
+    assert %{rows: [[%DateTime{} = root_terminal_at]]} =
+             SQL.query!(
+               Repo,
+               "SELECT terminal_at FROM favn_control.runs WHERE workspace_id = $1 AND run_id = $2",
+               [fixture.workspace_id, root.id]
+             )
+
+    assert DateTime.compare(settled.finished_at, root_terminal_at) == :gt
+  end
+
+  # A group's own counters count runs, which is one for everything but a backfill.
+  # What the list reports is asset steps, so they are counted per group in one
+  # bounded aggregate rather than inferred from the run count.
+  test "an execution group page counts the asset steps its runs recorded", fixture do
+    {command, run} = create_run_command(fixture)
+    {other_command, other_run} = create_run_command(fixture)
+    assert {:ok, _created} = RunStore.create_run(command)
+    assert {:ok, _created} = RunStore.create_run(other_command)
+    assert {:ok, publications} = Sequencer.sequence_batch()
+    assert publications != []
+
+    SQL.query!(
+      Repo,
+      "UPDATE favn_control.projection_cursors SET owner_id = NULL, claim_expires_at = NULL WHERE projector_name = 'control_plane_v1' AND shard_id = 0",
+      []
+    )
+
+    assert drain_projector("node-a") >= length(publications)
+
+    for {step, status} <- [{"step-1", "ok"}, {"step-2", "error"}, {"step-3", "queued"}] do
+      SQL.query!(
+        Repo,
+        """
+        INSERT INTO favn_control.asset_attempt_overviews
+          (workspace_id, root_run_id, run_id, asset_step_id, asset_ref, window_identity,
+           status, source_publication_id, updated_at)
+        VALUES ($1, $2, $3, $4, $5, 'none', $6, 1, now())
+        """,
+        [fixture.workspace_context.workspace_id, run.id, run.id, step, "MyApp.Assets.a", status]
+      )
+    end
+
+    assert {:ok, page} =
+             OperatorReadStore.page_execution_groups(%PageExecutionGroups{
+               scope: fixture.workspace_context,
+               limit: 10
+             })
+
+    assert %{asset_counts: counts} = Enum.find(page.items, &(&1.root_run_id == run.id))
+    assert counts == %{total: 3, completed: 2, failed: 1, running: 0, queued: 1}
+
+    # A group whose steps have not been recorded reports nothing rather than
+    # borrowing its run count.
+    assert %{asset_counts: %{total: 0, completed: 0}} =
+             Enum.find(page.items, &(&1.root_run_id == other_run.id))
+  end
+
+  # The runs list reads this every page and again on every live refresh, so its
+  # order has to come from an index rather than from sorting the workspace. The
+  # sort key is projected onto the group for exactly this reason: ordering it on
+  # the root run's insert time meant a join and a sort with no index to serve it.
+  test "paging execution groups by start time is index-ordered in both directions",
+       fixture do
+    plans =
+      Repo.transaction(fn ->
+        SQL.query!(Repo, "SET LOCAL enable_seqscan = off", [])
+
+        for order <- ["DESC NULLS LAST", "ASC NULLS FIRST"] do
+          direction = if order == "DESC NULLS LAST", do: "DESC", else: "ASC"
+
+          %{rows: rows} =
+            SQL.query!(
+              Repo,
+              """
+              EXPLAIN (FORMAT TEXT)
+              SELECT root_run_id
+              FROM favn_control.execution_group_overviews
+              WHERE workspace_id = $1 AND started_at >= $2
+              ORDER BY started_at #{order},
+                       workspace_id #{direction},
+                       root_run_id #{direction}
+              LIMIT 51
+              """,
+              [
+                fixture.workspace_context.workspace_id,
+                DateTime.add(DateTime.utc_now(), -86_400, :second)
+              ]
+            )
+
+          rows |> List.flatten() |> Enum.join("\n")
+        end
+      end)
+      |> then(fn {:ok, plans} -> plans end)
+
+    for plan <- plans do
+      assert plan =~ "started_idx"
+      refute plan =~ "Sort"
+    end
+
+    assert Enum.at(plans, 1) =~ "Backward"
   end
 
   test "outbox publication preserves run causality when business clocks move backwards",

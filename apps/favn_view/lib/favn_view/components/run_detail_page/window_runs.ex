@@ -1,7 +1,13 @@
 defmodule FavnView.Components.RunDetailPage.WindowRuns do
-  @moduledoc false
+  @moduledoc """
+  The child runs a backfill created, one per requested anchor.
+
+  A window run is a different object from an asset attempt — it has its own id,
+  its own status, and its own page — which is why it survived the collapse of the
+  other modes into the flow.
+  """
+
   use FavnView, :html
-  import FavnView.Components.RunDetailPage.Ui
 
   attr :run, :map, required: true
   attr :selected_child_run_id, :string, default: nil
@@ -9,43 +15,51 @@ defmodule FavnView.Components.RunDetailPage.WindowRuns do
   def window_runs_panel(assigns) do
     ~H"""
     <section data-testid="window-runs-view">
-      <h2 class="text-lg font-medium">Window runs</h2>
-      <p class="text-sm text-base-content/55">
-        Child runs created for requested backfill anchors. Effective asset windows are shown on Overview.
-      </p>
+      <.empty_state
+        :if={@run.child_runs == []}
+        icon="hero-rectangle-stack"
+        title="No window runs"
+        description="This run executes its assets directly rather than through per-window child runs."
+      />
 
-      <div class="mt-4 space-y-2">
-        <div
-          :for={child <- @run.child_runs}
-          class={window_run_row_class(child.id == @selected_child_run_id)}
-          data-testid="window-run-row"
-          data-run-id={child.id}
-          data-selected={to_string(child.id == @selected_child_run_id)}
+      <.panel :if={@run.child_runs != []} padding={:sm}>
+        <:header title="Window runs" subtitle="One child run per requested backfill anchor." />
+        <.data_table
+          id="window-runs"
+          rows={@run.child_runs}
+          row_id={&"window-run-#{&1.id}"}
+          row_navigate={&~p"/runs/#{&1.id}"}
+          row_testid="window-run-row"
+          row_class={&selected_class(&1.id == @selected_child_run_id)}
         >
-          <div class="grid gap-3 lg:grid-cols-[minmax(0,1fr)_8rem_8rem_8rem_12rem] lg:items-center">
-            <div class="min-w-0">
-              <p class="font-medium">{child.window_label}</p>
-              <.link navigate={~p"/runs/#{child.id}"} class="font-mono text-xs text-primary">
-                {child.id}
-              </.link>
-            </div>
-            <span class={status_badge_class(child.status_tone)}>{child.status}</span>
-            <p class="text-sm">{child.progress}</p>
-            <p class="text-sm">{child.duration}</p>
-            <p class="text-xs text-base-content/55">
-              {child.succeeded_count} succeeded · {child.failed_count} failed · {child.running_count} running
-            </p>
-          </div>
-        </div>
-      </div>
+          <:col :let={child} label="Window">
+            <p class="font-medium">{child.window_label}</p>
+            <.mono value={child.id} truncate />
+          </:col>
+          <:col :let={child} label="Status">
+            <.status_badge tone={child.status_tone} label={child.status} size={:sm} />
+          </:col>
+          <:col :let={child} label="Assets">{child.progress}</:col>
+          <:col :let={child} label="Duration">{child.duration}</:col>
+          <:col :let={child} label="Outcome">
+            <.outcome_meter
+              segments={[
+                %{tone: :success, count: child.succeeded_count, label: "succeeded"},
+                %{tone: :error, count: child.failed_count, label: "failed"},
+                %{tone: :info, count: child.running_count, label: "running"},
+                %{tone: :neutral, count: child.queued_count, label: "queued"}
+              ]}
+              size={:sm}
+              legend?={false}
+              class="w-32"
+            />
+          </:col>
+        </.data_table>
+      </.panel>
     </section>
     """
   end
 
-  defp window_run_row_class(true),
-    do:
-      "rounded-box border border-primary/50 bg-primary/10 p-3 shadow-[0_0_24px_rgba(14,165,233,0.18)]"
-
-  defp window_run_row_class(false),
-    do: "rounded-box border border-base-content/10 bg-base-content/[0.03] p-3"
+  defp selected_class(true), do: "bg-primary/10 outline outline-1 outline-primary/40"
+  defp selected_class(false), do: nil
 end

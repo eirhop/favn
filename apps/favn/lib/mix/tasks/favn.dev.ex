@@ -56,15 +56,35 @@ defmodule Mix.Tasks.Favn.Dev do
   defp error_message({:legacy_local_state, path}),
     do: "obsolete Docker-era local state exists at #{path}; remove that generated directory once"
 
+  defp error_message({:runner_exited_before_ready, log_path}),
+    do: "the runner exited before it was ready; its output is in #{log_path}"
+
+  defp error_message({:runner_start_timeout, log_path}) do
+    "the runner did not become ready in time; its output is in #{log_path}. " <>
+      "Set FAVN_DEV_RUNNER_START_TIMEOUT_MS to allow longer on a slow filesystem."
+  end
+
   defp error_message(reason), do: "failed to start Favn development: #{inspect(reason)}"
 
   defp build_view_assets! do
     case Mix.Project.deps_paths() do
       %{favn_view: view_root} ->
         FavnLocal.Assets.build!(view_root)
+        verify_stylesheet!(view_root)
 
       _missing ->
         Mix.raise("failed to locate favn_view source assets")
+    end
+  end
+
+  # The View links the built stylesheet at runtime, so a missing or empty file
+  # produces a silently unstyled page. Fail here, where the cause is obvious.
+  defp verify_stylesheet!(view_root) do
+    path = Path.join(view_root, "priv/static/assets/css/app.css")
+
+    case File.stat(path) do
+      {:ok, %File.Stat{size: size}} when size > 0 -> :ok
+      _other -> Mix.raise("favn_view stylesheet was not built: #{path}")
     end
   end
 
@@ -76,26 +96,10 @@ defmodule Mix.Tasks.Favn.Dev do
            stderr_to_stdout: true
          ) do
       {_output, 0} ->
-        reload_storybook!()
+        :ok
 
       {_output, status} ->
         Mix.raise("failed to recompile favn_view after asset generation (exit #{status})")
-    end
-  end
-
-  defp reload_storybook! do
-    :code.purge(FavnView.Storybook)
-    :code.delete(FavnView.Storybook)
-
-    case Code.ensure_loaded(FavnView.Storybook) do
-      {:module, FavnView.Storybook} ->
-        case apply(FavnView.Storybook, :asset_hash, [:css_path]) do
-          hash when is_binary(hash) and byte_size(hash) > 0 -> :ok
-          _missing -> Mix.raise("favn_view Storybook CSS hash is unavailable after asset build")
-        end
-
-      {:error, reason} ->
-        Mix.raise("failed to reload favn_view Storybook after asset build: #{inspect(reason)}")
     end
   end
 

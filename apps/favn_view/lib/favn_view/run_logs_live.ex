@@ -25,6 +25,8 @@ defmodule FavnView.RunLogsLive do
           %{label: "Started", value: run[:started_at] || "-"},
           %{label: "Duration", value: run[:duration] || "-"}
         ],
+        run_id: run_id,
+        run_steps: run[:asset_results] || [],
         back_href: ~p"/runs/#{run_id}",
         back_label: "Back to run",
         empty_state: "No logs recorded for this run yet."

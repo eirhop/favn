@@ -1,18 +1,26 @@
 defmodule FavnView.Components.LogViewer do
   @moduledoc """
-  Reusable terminal-style backend log viewer.
+  The log terminal.
+
+  One entry is one monospaced line — time, level tag, source, message — on a
+  dark canvas that stays dark in both themes, because a terminal is an idiom
+  rather than a surface. Identity and metadata live behind each line's
+  disclosure, so the reading surface holds nothing but the log itself.
+
+  Failures are the reason an operator is here, so error lines take the error
+  colour, a lit left edge, and a wash, and the toolbar grows a jump control
+  that walks between them without a server round trip.
+
+  The page owns the title, status, and facts; this component owns only the
+  terminal and its controls.
   """
 
   use FavnView, :html
 
   alias FavnView.LogsViewModel
 
-  attr :logs, :list, default: []
   attr :visible_logs, :list, default: []
-  attr :filter, :any, default: nil
   attr :scope, :atom, default: :global
-  attr :title, :string, default: "Logs"
-  attr :subtitle, :string, default: nil
   attr :status, :atom, default: :ready
   attr :live?, :boolean, default: false
   attr :live_tail?, :boolean, default: true
@@ -20,9 +28,7 @@ defmodule FavnView.Components.LogViewer do
   attr :search_query, :string, default: ""
   attr :selected_level, :string, default: "all"
   attr :selected_source, :string, default: "all"
-  attr :next_cursor, :any, default: nil
   attr :empty_state, :string, default: "No logs yet."
-  attr :facts, :list, default: []
   attr :warning, :string, default: nil
   attr :context_note, :string, default: nil
 
@@ -31,56 +37,27 @@ defmodule FavnView.Components.LogViewer do
       assigns
       |> assign(:levels, LogsViewModel.levels())
       |> assign(:sources, LogsViewModel.sources())
+      |> assign(:error_count, Enum.count(assigns.visible_logs, &(&1.level == "error")))
 
     ~H"""
     <section
-      class="mx-auto flex min-h-0 w-full max-w-[120rem] flex-1"
+      class="mx-auto flex min-h-0 w-full max-w-[120rem] flex-1 flex-col"
       data-testid="log-viewer"
       data-log-scope={@scope}
     >
-      <div class="card glass favn-glass-panel min-h-0 flex-1 overflow-hidden rounded-box border border-primary/20 bg-base-200/35 shadow-2xl">
-        <div class="flex flex-col gap-3 border-b border-base-content/10 p-4 sm:gap-5 sm:p-6 lg:flex-row lg:items-start lg:justify-between">
-          <div class="min-w-0">
-            <div class="flex flex-wrap items-center gap-2 sm:gap-3">
-              <h2 class="text-xl font-medium tracking-tight sm:text-2xl">{@title}</h2>
-              <span class={live_badge_class(@live?)} data-testid="log-live-status">
-                <span class={["status", @live? && "status-success", !@live? && "status-neutral"]}></span>
-                {if @live?, do: "Live streaming", else: "Loaded"}
-              </span>
-            </div>
-            <p :if={@subtitle} class="mt-1 text-xs text-base-content/55 sm:mt-2 sm:text-sm">
-              {@subtitle}
-            </p>
-            <p
-              :if={@context_note}
-              class="mt-2 text-xs text-warning/80 sm:mt-3 sm:text-sm"
-              data-testid="log-context-note"
-            >
-              {@context_note}
-            </p>
-            <p
-              :if={@warning}
-              class="mt-2 text-xs text-warning/80 sm:mt-3 sm:text-sm"
-              data-testid="log-stream-warning"
-            >
-              {@warning}
-            </p>
-          </div>
+      <.notice :if={@context_note} class="mb-3" data-testid="log-context-note">
+        {@context_note}
+      </.notice>
+      <.notice :if={@warning} class="mb-3" data-testid="log-stream-warning">
+        {@warning}
+      </.notice>
 
-          <dl
-            :if={@facts != []}
-            class="grid grid-cols-3 gap-2 rounded-box border border-base-content/10 bg-base-content/[0.03] p-2 text-xs sm:gap-4 sm:border-0 sm:bg-transparent sm:p-0 sm:text-sm lg:min-w-[24rem]"
-          >
-            <div
-              :for={fact <- @facts}
-              class="min-w-0 border-base-content/10 px-2 first:pl-0 sm:border-l sm:border-base-content/20 sm:pl-5 sm:first:border-l-0 sm:first:pl-0"
-            >
-              <dt class="truncate text-base-content/55">{fact.label}</dt>
-              <dd class="mt-0.5 truncate font-medium text-base-content sm:mt-1">{fact.value}</dd>
-            </div>
-          </dl>
-        </div>
-
+      <div
+        id="log-terminal"
+        phx-hook="FavnLogViewer"
+        data-live-tail={to_string(@live_tail?)}
+        class="flex min-h-0 flex-1 flex-col"
+      >
         <.toolbar
           search_query={@search_query}
           selected_level={@selected_level}
@@ -89,17 +66,17 @@ defmodule FavnView.Components.LogViewer do
           sources={@sources}
           wrap?={@wrap?}
           live_tail?={@live_tail?}
+          live?={@live?}
+          error_count={@error_count}
         />
 
         <div
-          id="log-terminal"
-          phx-hook="FavnLogViewer"
-          data-live-tail={to_string(@live_tail?)}
-          class="relative flex min-h-0 flex-1 flex-col border-t border-base-content/10 bg-base-100/55 p-4 sm:p-5"
+          class="favn-terminal min-h-[16rem] flex-1 overflow-auto rounded-box py-2 font-mono text-[0.8125rem] leading-6"
+          data-testid="log-terminal-window"
         >
           <div
             :if={@status == :loading}
-            class="flex min-h-[16rem] flex-1 items-center justify-center rounded-box border border-dashed border-base-content/15 p-8 text-center text-sm text-base-content/55"
+            class="favn-log-dim flex h-full min-h-[14rem] items-center justify-center text-sm"
             data-testid="log-loading-state"
           >
             Loading logs...
@@ -107,34 +84,27 @@ defmodule FavnView.Components.LogViewer do
 
           <div
             :if={@status == :error}
-            class="flex min-h-[16rem] flex-1 items-center justify-center rounded-box border border-error/25 bg-error/5 p-8 text-center text-sm text-error"
+            class="flex h-full min-h-[14rem] items-center justify-center text-sm text-[var(--favn-terminal-error)]"
             data-testid="log-error-state"
           >
             Unable to load logs.
           </div>
 
           <div
-            :if={@status != :loading and @status != :error and @visible_logs == []}
-            class="flex min-h-[16rem] flex-1 flex-col items-center justify-center rounded-box border border-dashed border-base-content/15 p-8 text-center text-sm text-base-content/55"
+            :if={@status not in [:loading, :error] and @visible_logs == []}
+            class="favn-log-dim flex h-full min-h-[14rem] flex-col items-center justify-center gap-2 text-sm"
             data-testid="log-empty-state"
           >
             {@empty_state}
-            <span :if={@live?} class="mt-2 block text-xs text-base-content/45">
-              Listening for logs...
-            </span>
+            <span :if={@live?} class="text-xs">Listening for logs...</span>
           </div>
 
           <div
             :if={@status not in [:loading, :error] and @visible_logs != []}
-            class={[
-              "min-h-[16rem] flex-1 overflow-auto rounded-box border border-base-content/10 bg-[#020817]/75 p-4 font-mono text-sm leading-6 shadow-inner",
-              !@wrap? && "whitespace-nowrap"
-            ]}
-            data-testid="log-terminal-window"
+            class={[!@wrap? && "w-max min-w-full"]}
+            data-log-copy-rows
           >
-            <div class="min-w-max space-y-5" data-log-copy-rows>
-              <.log_row :for={log <- @visible_logs} log={log} wrap?={@wrap?} />
-            </div>
+            <.log_row :for={log <- @visible_logs} log={log} wrap?={@wrap?} />
           </div>
         </div>
       </div>
@@ -149,82 +119,80 @@ defmodule FavnView.Components.LogViewer do
   attr :sources, :list, required: true
   attr :wrap?, :boolean, required: true
   attr :live_tail?, :boolean, required: true
+  attr :live?, :boolean, required: true
+  attr :error_count, :integer, required: true
 
   def toolbar(assigns) do
     ~H"""
-    <form
-      phx-change="filter_logs"
-      class="border-t border-base-content/10 p-3 sm:grid sm:grid-cols-[minmax(14rem,1fr)_10rem_11rem_auto_auto_auto] sm:items-center sm:gap-3 sm:p-5"
-    >
-      <div class="flex items-center gap-2 sm:contents">
-        <label class="input favn-control-glass min-w-0 flex-1 items-center gap-2 rounded-box sm:flex">
-          <.icon name="hero-magnifying-glass" class="size-5 text-base-content/55" />
-          <input
-            type="search"
-            name="filters[search]"
-            value={@search_query}
-            placeholder="Search logs..."
-            class="grow"
-            phx-debounce="250"
-            data-testid="log-search-input"
-          />
-        </label>
-
-        <details class="dropdown dropdown-end sm:hidden">
-          <summary
-            class="btn btn-square favn-control-glass rounded-box"
-            aria-label="Log filters"
-            data-testid="log-filter-menu-toggle"
-          >
-            <.icon name="hero-funnel" class="size-5" />
-          </summary>
-          <div class="dropdown-content z-20 mt-2 w-[min(20rem,calc(100vw-2rem))] rounded-box border border-base-content/10 bg-base-200/95 p-3 shadow-2xl backdrop-blur">
-            <div class="grid gap-2">
-              <.level_select
-                selected_level={@selected_level}
-                levels={@levels}
-                testid="log-level-filter-mobile"
-              />
-              <.source_select
-                selected_source={@selected_source}
-                sources={@sources}
-                testid="log-source-filter-mobile"
-              />
-              <.toggle_button
-                event="toggle_wrap"
-                label="Wrap"
-                enabled?={@wrap?}
-                testid="log-wrap-toggle-mobile"
-              />
-              <.toggle_button
-                event="toggle_live_tail"
-                label="Live tail"
-                enabled?={@live_tail?}
-                testid="log-live-tail-toggle-mobile"
-              />
-              <.copy_button class="w-full justify-center" />
-            </div>
-          </div>
-        </details>
-      </div>
-
-      <div class="hidden sm:contents">
-        <.level_select selected_level={@selected_level} levels={@levels} testid="log-level-filter" />
-        <.source_select
-          selected_source={@selected_source}
-          sources={@sources}
-          testid="log-source-filter"
+    <form phx-change="filter_logs" class="flex flex-wrap items-center gap-2 pb-3">
+      <label class="input input-sm favn-surface-control min-w-[12rem] flex-1 items-center gap-2 rounded-box">
+        <.icon name="hero-magnifying-glass" size={:sm} class="favn-text-muted" />
+        <input
+          type="search"
+          name="filters[search]"
+          value={@search_query}
+          placeholder="Search logs..."
+          class="grow"
+          phx-debounce="250"
+          data-testid="log-search-input"
         />
-        <.toggle_button event="toggle_wrap" label="Wrap" enabled?={@wrap?} testid="log-wrap-toggle" />
-        <.toggle_button
-          event="toggle_live_tail"
-          label="Live tail"
-          enabled?={@live_tail?}
-          testid="log-live-tail-toggle"
-        />
-        <.copy_button />
-      </div>
+      </label>
+
+      <.level_select selected_level={@selected_level} levels={@levels} testid="log-level-filter" />
+      <.source_select
+        selected_source={@selected_source}
+        sources={@sources}
+        testid="log-source-filter"
+      />
+
+      <.error_jump :if={@error_count > 0} error_count={@error_count} />
+
+      <.toggle_button event="toggle_wrap" label="Wrap" enabled?={@wrap?} testid="log-wrap-toggle" />
+      <.toggle_button
+        event="toggle_live_tail"
+        label="Follow"
+        enabled?={@live_tail?}
+        testid="log-live-tail-toggle"
+      />
+      <.copy_logs_button />
+
+      <span
+        class="favn-text-muted inline-flex items-center gap-1.5 text-xs"
+        data-testid="log-live-status"
+      >
+        <.status_dot tone={if @live?, do: :success, else: :neutral} label="" glow={@live?} />
+        {if @live?, do: "Live", else: "Loaded"}
+      </span>
     </form>
+    """
+  end
+
+  attr :error_count, :integer, required: true
+
+  defp error_jump(assigns) do
+    ~H"""
+    <div
+      class="inline-flex items-center gap-1 rounded-box border border-error/40 bg-error/10 py-0.5 pr-0.5 pl-2.5"
+      data-testid="log-error-jump"
+    >
+      <span class="text-xs font-medium text-error">
+        {@error_count} {if @error_count == 1, do: "error", else: "errors"}
+      </span>
+      <.icon_button
+        icon="hero-chevron-up"
+        label="Previous error"
+        size={:xs}
+        data-log-error-nav="prev"
+        data-testid="log-error-prev"
+      />
+      <.icon_button
+        icon="hero-chevron-down"
+        label="Next error"
+        size={:xs}
+        data-log-error-nav="next"
+        data-testid="log-error-next"
+      />
+    </div>
     """
   end
 
@@ -234,8 +202,8 @@ defmodule FavnView.Components.LogViewer do
 
   def level_select(assigns) do
     ~H"""
-    <label class="select favn-control-glass rounded-box">
-      <span class="label">Level</span>
+    <label class="select select-sm favn-surface-control w-[9.5rem] rounded-box">
+      <span class="label favn-text-muted">Level</span>
       <select name="filters[level]" data-testid={@testid}>
         <option value="all" selected={@selected_level == "all"}>All</option>
         <option
@@ -256,8 +224,8 @@ defmodule FavnView.Components.LogViewer do
 
   def source_select(assigns) do
     ~H"""
-    <label class="select favn-control-glass rounded-box">
-      <span class="label">Source</span>
+    <label class="select select-sm favn-surface-control w-[11rem] rounded-box">
+      <span class="label favn-text-muted">Source</span>
       <select name="filters[source]" data-testid={@testid}>
         <option value="all" selected={@selected_source == "all"}>All</option>
         <option
@@ -272,17 +240,24 @@ defmodule FavnView.Components.LogViewer do
     """
   end
 
+  @doc """
+  Copies every line currently in the terminal.
+
+  Not `FavnView.UI.Button.copy_button/1`: that copies one known value, and this
+  copies whatever the filters have left on screen, which only the client knows.
+  Hence `data-copy-logs` and no value.
+  """
   attr :class, :any, default: nil
 
-  def copy_button(assigns) do
+  def copy_logs_button(assigns) do
     ~H"""
     <button
       type="button"
-      class={["btn favn-control-glass rounded-box", @class]}
+      class={["btn btn-sm favn-surface-control rounded-box", @class]}
       data-copy-logs
       data-testid="log-copy-button"
     >
-      <.icon name="hero-clipboard-document" class="size-5" /> Copy
+      <.icon name="hero-clipboard-document" size={:sm} /> Copy
     </button>
     """
   end
@@ -297,12 +272,12 @@ defmodule FavnView.Components.LogViewer do
     <button
       type="button"
       phx-click={@event}
-      class="btn favn-control-glass rounded-box justify-between gap-3"
+      class="btn btn-sm favn-surface-control favn-control-boundary rounded-box gap-2"
       aria-pressed={to_string(@enabled?)}
       data-testid={@testid}
     >
       <span>{@label}</span>
-      <span class={["toggle toggle-success toggle-sm", @enabled? && "toggle-checked"]}></span>
+      <span class={["toggle toggle-success toggle-xs", @enabled? && "toggle-checked"]}></span>
     </button>
     """
   end
@@ -312,86 +287,68 @@ defmodule FavnView.Components.LogViewer do
 
   def log_row(assigns) do
     ~H"""
-    <article
-      class="grid gap-2 text-slate-100/90 sm:grid-cols-[9.5rem_4.5rem_13rem_minmax(0,1fr)]"
+    <details
+      class="favn-log-line"
       data-testid="log-row"
+      data-log-level={@log.level}
       data-log-copy-row
       data-log-copy-text={log_copy_text(@log)}
-      title={sequence_title(@log)}
     >
-      <time class="text-slate-400">{@log.timestamp}</time>
-      <span class={["font-semibold", level_class(@log.level)]}>{@log.level_label}</span>
-      <span class="truncate text-slate-400">{@log.source_label}</span>
-      <div class="min-w-0">
-        <div class="flex gap-2">
-          <pre class={[
-            "m-0 min-w-0 flex-1 font-mono text-slate-100/90",
-            @wrap? && "whitespace-pre-wrap break-words",
-            !@wrap? && "whitespace-pre"
-          ]}><code>{@log.message}</code></pre>
-          <button
-            :if={@log.level == "error"}
-            type="button"
-            class="btn btn-error btn-soft btn-xs shrink-0 rounded-box"
-            data-copy-text={log_copy_text(@log)}
-            data-testid="log-error-copy-button"
-            aria-label="Copy error log"
-          >
-            <.icon name="hero-clipboard-document" class="size-4" /> Copy
-          </button>
-        </div>
-        <div :if={@log.details != []} class="mt-2 flex flex-wrap gap-1.5 text-[0.68rem] leading-4">
-          <span
-            :for={detail <- @log.details}
-            class="rounded-full border border-slate-700/80 bg-slate-900/80 px-2 py-0.5 text-slate-300"
-            title={detail.title}
-            data-testid="log-detail-chip"
-          >
-            <span class="text-slate-500">{detail.label}</span> {detail.display}
-          </span>
-        </div>
-        <details
-          :if={@log.details != [] or @log.metadata_text != ""}
-          class="mt-2 rounded-box border border-slate-700/70 bg-slate-950/70 px-3 py-2 text-xs text-slate-300"
-          data-testid="log-details-panel"
-        >
-          <summary class="cursor-pointer text-slate-400">All details</summary>
-          <dl :if={@log.details != []} class="mt-2 grid gap-1.5 sm:grid-cols-[7rem_minmax(0,1fr)]">
-            <div :for={detail <- @log.details} class="contents">
-              <dt class="text-slate-500">{detail.label}</dt>
-              <dd class="break-all text-slate-200">{detail.title}</dd>
-            </div>
-          </dl>
-          <div :if={@log.metadata_text != ""} class="mt-3">
-            <p class="text-slate-500">metadata</p>
-            <pre class="mt-1 whitespace-pre-wrap break-words text-slate-200"><code>{@log.metadata_text}</code></pre>
-          </div>
-        </details>
+      <summary class="gap-3" title={sequence_title(@log)}>
+        <.icon
+          name="hero-chevron-right"
+          class="favn-log-marker favn-log-dim size-3 shrink-0"
+        />
+        <time class="favn-log-dim shrink-0 tabular-nums">{@log.time}</time>
+        <span class="favn-log-level w-9 shrink-0 font-semibold">{level_tag(@log.level)}</span>
+        <span class="favn-log-dim w-28 shrink-0 truncate">{@log.source_label}</span>
+        <code class={[
+          "min-w-0 flex-1",
+          @wrap? && "whitespace-pre-wrap break-words",
+          !@wrap? && "whitespace-pre"
+        ]}>{@log.message}</code>
         <span
           :if={@log.truncated?}
-          class="mt-1 inline-flex rounded-full border border-warning/30 px-2 py-0.5 text-[0.65rem] uppercase tracking-[0.16em] text-warning/80"
+          class="shrink-0 self-start rounded-full border border-[var(--favn-terminal-warning)] px-2 text-[0.65rem] uppercase tracking-[0.16em] text-[var(--favn-terminal-warning)]"
         >
           truncated
         </span>
+      </summary>
+
+      <div class="favn-log-expanded text-xs" data-testid="log-details-panel">
+        <dl class="grid gap-x-4 gap-y-1 sm:grid-cols-[6rem_minmax(0,1fr)]">
+          <dt class="favn-log-dim">logged</dt>
+          <dd class="break-all">{@log.timestamp} UTC</dd>
+          <%= for detail <- @log.details do %>
+            <dt class="favn-log-dim">{detail.label}</dt>
+            <dd class="break-all">{detail.title}</dd>
+          <% end %>
+        </dl>
+        <div :if={@log.metadata_text != ""} class="mt-2">
+          <p class="favn-log-dim">metadata</p>
+          <pre class="mt-1 whitespace-pre-wrap break-words"><code>{@log.metadata_text}</code></pre>
+        </div>
+        <.copy_button
+          value={log_copy_text(@log)}
+          label="Copy entry"
+          variant={:ghost}
+          size={:xs}
+          class="mt-2 border border-[var(--favn-terminal-boundary)]"
+          data-testid="log-row-copy-button"
+        />
       </div>
-    </article>
+    </details>
     """
   end
 
   defp level_label(level), do: level |> Atom.to_string() |> String.upcase()
   defp source_label(source), do: source |> Atom.to_string() |> String.replace("_", ":")
 
-  defp level_class("debug"), do: "text-slate-500"
-  defp level_class("warning"), do: "text-amber-300"
-  defp level_class("error"), do: "text-rose-300"
-  defp level_class(_level), do: "text-sky-300"
-
-  defp live_badge_class(true),
-    do:
-      "badge badge-success badge-soft gap-1.5 px-2 py-2 text-xs sm:gap-2 sm:px-3 sm:py-3 sm:text-sm"
-
-  defp live_badge_class(false),
-    do: "badge badge-ghost gap-1.5 px-2 py-2 text-xs sm:gap-2 sm:px-3 sm:py-3 sm:text-sm"
+  defp level_tag("debug"), do: "DBG"
+  defp level_tag("info"), do: "INF"
+  defp level_tag("warning"), do: "WRN"
+  defp level_tag("error"), do: "ERR"
+  defp level_tag(level), do: level |> String.upcase() |> String.slice(0, 3)
 
   defp sequence_title(%{global_sequence: nil}), do: nil
   defp sequence_title(%{global_sequence: sequence}), do: "global sequence #{sequence}"

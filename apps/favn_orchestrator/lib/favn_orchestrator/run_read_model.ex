@@ -129,6 +129,14 @@ defmodule FavnOrchestrator.RunReadModel do
           required(:active?) => boolean(),
           required(:trigger_type) => atom() | nil,
           required(:target_assets) => [String.t()],
+          optional(:target_pipelines) => [String.t()],
+          optional(:asset_counts) => %{
+            total: non_neg_integer(),
+            completed: non_neg_integer(),
+            failed: non_neg_integer(),
+            running: non_neg_integer(),
+            queued: non_neg_integer()
+          },
           required(:root_status) => RunState.status(),
           required(:started_at) => DateTime.t() | nil,
           required(:finished_at) => DateTime.t() | nil,
@@ -206,14 +214,17 @@ defmodule FavnOrchestrator.RunReadModel do
   @doc """
   Expands a compact persisted execution-group overview into the public summary shape.
 
-  Fields that are not part of the compact projection remain empty or `nil`; callers
-  still receive the complete, stable public contract.
+  Identity and timing come from the projection's root-run fields when the store
+  resolved them. Window totals are genuinely not in this projection — the compact
+  row counts runs, not windows — so they stay zero here and a caller that needs
+  them reads the group detail.
   """
   @spec from_execution_group_overview(PersistedExecutionGroupOverview.t()) ::
           execution_group_summary()
   def from_execution_group_overview(%PersistedExecutionGroupOverview{} = group) do
     status = public_overview_status(group.status)
     completed = group.succeeded_count + group.failed_count
+    assets = group.asset_counts || %{}
 
     attempt_counts = %{
       total: group.run_count,
@@ -234,12 +245,14 @@ defmodule FavnOrchestrator.RunReadModel do
       status: status,
       health: execution_group_health(status, failure_count, active?),
       active?: active?,
-      trigger_type: nil,
-      target_assets: [],
+      trigger_type: group.trigger_type,
+      target_assets: group.target_refs,
+      target_pipelines: group.pipeline_refs,
+      asset_counts: asset_counts(assets),
       root_status: status,
-      started_at: group.updated_at,
-      finished_at: if(active?, do: nil, else: group.updated_at),
-      duration_ms: nil,
+      started_at: group.started_at || group.updated_at,
+      finished_at: overview_finished_at(group, active?),
+      duration_ms: duration_ms(group.started_at, group.finished_at),
       total_windows: 0,
       completed_windows: 0,
       failed_windows: 0,
@@ -1018,9 +1031,26 @@ defmodule FavnOrchestrator.RunReadModel do
     }
   end
 
+  # The asset steps the group recorded, which is the work it did. The group's own
+  # counters count runs; for everything but a backfill that is always one.
+  defp asset_counts(counts) do
+    %{
+      total: Map.get(counts, :total, 0),
+      completed: Map.get(counts, :completed, 0),
+      failed: Map.get(counts, :failed, 0),
+      running: Map.get(counts, :running, 0),
+      queued: Map.get(counts, :queued, 0)
+    }
+  end
+
   defp public_overview_status(:succeeded), do: :ok
   defp public_overview_status(:failed), do: :error
   defp public_overview_status(status), do: status
+
+  # An active group has no finish time even if the root run recorded one, and a
+  # settled group falls back to its last update when the root run did not.
+  defp overview_finished_at(_group, true), do: nil
+  defp overview_finished_at(group, false), do: group.finished_at || group.updated_at
 
   defp target_assets(%RunState{target_refs: refs}) when is_list(refs) and refs != [],
     do: Enum.map(refs, &RunQuery.public_ref/1)

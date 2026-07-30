@@ -3,6 +3,7 @@ defmodule FavnView.AssetCatalogueLive do
 
   use FavnView, :live_view
 
+  alias FavnView.AssetCatalogueFilters
   alias FavnView.AssetRoute
   alias FavnView.Components.AssetCataloguePage
 
@@ -33,8 +34,8 @@ defmodule FavnView.AssetCatalogueLive do
         loading: false,
         error: error,
         nav_items: AssetCataloguePage.nav_items(),
-        connection_options: connection_options(assets),
-        catalogue_options: catalogue_options(assets)
+        connection_options: AssetCatalogueFilters.connection_options(assets),
+        catalogue_options: AssetCatalogueFilters.catalogue_options(assets, "all")
       )
 
     {:ok, socket}
@@ -52,12 +53,18 @@ defmodule FavnView.AssetCatalogueLive do
 
   @impl true
   def handle_event("filter_assets", %{"filters" => params}, socket) do
-    filters = normalize_filters(params)
+    all_assets = socket.assigns.all_assets
+
+    filters =
+      params
+      |> AssetCatalogueFilters.normalize()
+      |> AssetCatalogueFilters.reconcile_catalogue(all_assets)
 
     {:noreply,
      assign(socket,
        filters: filters,
-       assets: filter_assets(socket.assigns.all_assets, filters)
+       assets: AssetCatalogueFilters.filter(all_assets, filters),
+       catalogue_options: AssetCatalogueFilters.catalogue_options(all_assets, filters.connection)
      )}
   end
 
@@ -122,6 +129,7 @@ defmodule FavnView.AssetCatalogueLive do
       loading={@loading}
       error={@error}
       nav_items={@nav_items}
+      flash={@flash}
       connection_options={@connection_options}
       catalogue_options={@catalogue_options}
       lineage_graph={@lineage_graph}
@@ -246,26 +254,6 @@ defmodule FavnView.AssetCatalogueLive do
 
   defp configured_fun(key, default), do: Application.get_env(:favn_view, key, default)
 
-  defp normalize_filters(params) do
-    %{
-      search: Map.get(params, "search", ""),
-      connection: Map.get(params, "connection", "all"),
-      catalogue: Map.get(params, "catalogue", "all")
-    }
-  end
-
-  defp filter_assets(assets, filters) do
-    search = filters.search |> String.downcase() |> String.trim()
-
-    Enum.filter(assets, fn asset ->
-      matches_search? = search == "" || String.contains?(String.downcase(asset.name), search)
-      matches_connection? = filters.connection == "all" || asset.connection == filters.connection
-      matches_catalogue? = filters.catalogue == "all" || asset.catalogue == filters.catalogue
-
-      matches_search? && matches_connection? && matches_catalogue?
-    end)
-  end
-
   defp load_assets(operator_context) do
     fun =
       configured_fun(
@@ -302,21 +290,6 @@ defmodule FavnView.AssetCatalogueLive do
     }
   end
 
-  defp connection_options(assets), do: options_from_assets(assets, :connection, "Connection")
-  defp catalogue_options(assets), do: options_from_assets(assets, :catalogue, "Catalogue")
-
-  defp options_from_assets(assets, field, label) do
-    options =
-      assets
-      |> Enum.map(&Map.fetch!(&1, field))
-      |> Enum.reject(&(&1 in [nil, ""]))
-      |> Enum.uniq()
-      |> Enum.sort()
-      |> Enum.map(&{option_label(&1), &1})
-
-    [{label, "all"} | options]
-  end
-
   defp relation_field(relation, field) do
     Map.get(relation, field) || Map.get(relation, Atom.to_string(field))
   end
@@ -327,12 +300,6 @@ defmodule FavnView.AssetCatalogueLive do
     |> to_string()
     |> String.split(":")
     |> List.last()
-  end
-
-  defp option_label(value) do
-    value
-    |> String.replace("_", " ")
-    |> String.capitalize()
   end
 
   defp last_run_label(%DateTime{} = datetime) do

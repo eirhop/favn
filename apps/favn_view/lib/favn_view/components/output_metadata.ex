@@ -42,22 +42,71 @@ defmodule FavnView.Components.OutputMetadata do
   ]
   @active_statuses [:pending, :running, :retrying, "pending", "running", "retrying"]
 
+  @doc """
+  The one line worth reading about what an attempt wrote.
+
+  Output metadata is a bag of twenty-odd fields, and rendering all of them gives
+  every field equal weight. Three facts answer "did the data come out right?":
+  how many rows landed, where they landed, and whether the quality checks were
+  satisfied. The rest is forensic and belongs behind disclosure.
+
+  Returns `nil` when the metadata says nothing about a write, so a caller can
+  omit the line rather than print "unknown".
+
+      iex> alias FavnView.Components.OutputMetadata
+      iex> OutputMetadata.outcome(%{"rows_written" => 1204, "relation" => "crm.daily"}, :ok)
+      %{headline: "Wrote 1,204 rows", target: "crm.daily", tone: :success, checks: nil}
+
+  A SQL asset reports where it materialised rather than a row count, so the
+  headline says what happened and the target says where:
+
+      iex> alias FavnView.Components.OutputMetadata
+      iex> metadata = %{
+      ...>   "write_outcome" => "written",
+      ...>   "materialized" => %{"schema" => "mart", "name" => "pipeline_daily"}
+      ...> }
+      iex> OutputMetadata.outcome(metadata, :ok)
+      %{headline: "Table written", target: "mart.pipeline_daily", tone: :success, checks: nil}
+
+      iex> alias FavnView.Components.OutputMetadata
+      iex> OutputMetadata.outcome(%{"write_outcome" => "no_op"}, :ok)
+      %{headline: "Kept the existing table", target: nil, tone: :info, checks: nil}
+
+      iex> FavnView.Components.OutputMetadata.outcome(%{}, :ok)
+      nil
+  """
+  @spec outcome(any(), any()) :: map() | nil
+  def outcome(metadata, status) when is_map(metadata) and map_size(metadata) > 0 do
+    rows = row_count(metadata)
+    write_outcome = metadata_value(metadata, :write_outcome)
+    checks = metadata |> metadata_value(:check_results) |> normalize_checks()
+
+    case write_headline(rows, write_outcome, status) do
+      nil ->
+        nil
+
+      {headline, tone} ->
+        %{
+          headline: headline,
+          target: write_target(metadata),
+          tone: tone,
+          checks: checks_label(checks)
+        }
+    end
+  end
+
+  def outcome(_metadata, _status), do: nil
+
   attr :id, :string, default: "output-metadata"
   attr :metadata, :any, default: nil
   attr :status, :any, default: nil
   attr :title, :string, default: "Output metadata"
   attr :class, :string, default: nil
-  attr :initial_rows, :integer, default: 12
 
   def output_metadata(assigns) do
-    rows = metadata_rows(assigns.metadata)
-    {visible_rows, hidden_rows} = Enum.split(rows, assigns.initial_rows)
-
     assigns =
       assigns
-      |> assign(:rows, rows)
-      |> assign(:visible_rows, visible_rows)
-      |> assign(:hidden_rows, hidden_rows)
+      |> assign(:rows, metadata_rows(assigns.metadata))
       |> assign(:raw_json, raw_json(assigns.metadata))
       |> assign(:empty?, empty_metadata?(assigns.metadata))
       |> assign(:failed?, failed_status?(assigns.status))
@@ -76,19 +125,18 @@ defmodule FavnView.Components.OutputMetadata do
     >
       <div class="flex items-center justify-between gap-3">
         <h3 class="text-sm font-medium">{@title}</h3>
-        <button
+        <.copy_button
           :if={!@empty?}
-          type="button"
-          class="btn btn-ghost btn-xs rounded-field"
-          data-copy-text={@raw_json}
+          value={@raw_json}
+          label="Copy JSON"
+          variant={:ghost}
+          size={:xs}
           data-testid="output-metadata-copy"
-        >
-          <.icon name="hero-clipboard-document" class="size-4" /> Copy JSON
-        </button>
+        />
       </div>
 
       <div
-        :if={@check_summary}
+        :if={@check_summary && @check_summary.tone != :success}
         class={[
           "mt-4 rounded-box border p-3",
           check_summary_class(@check_summary.tone)
@@ -146,45 +194,34 @@ defmodule FavnView.Components.OutputMetadata do
 
       <p
         :if={@empty? && @failed?}
-        class="mt-3 text-sm text-base-content/55"
+        class="mt-3 text-sm favn-text-muted"
         data-testid="output-metadata-empty"
       >
         No output metadata available because the attempt failed before completion.
       </p>
       <p
         :if={@empty? && @active?}
-        class="mt-3 text-sm text-base-content/55"
+        class="mt-3 text-sm favn-text-muted"
         data-testid="output-metadata-empty"
       >
         No output metadata yet.
       </p>
       <p
         :if={@empty? && !@failed? && !@active?}
-        class="mt-3 text-sm text-base-content/55"
+        class="mt-3 text-sm favn-text-muted"
         data-testid="output-metadata-empty"
       >
         No output metadata returned.
       </p>
 
-      <dl :if={!@empty?} class="mt-4 divide-y divide-base-content/10 text-sm">
-        <.metadata_row :for={row <- @visible_rows} row={row} />
-      </dl>
-
-      <details :if={@hidden_rows != []} class="mt-3 rounded-box border border-base-content/10 p-3">
-        <summary class="cursor-pointer text-xs font-medium text-base-content/65">
-          Show {length(@hidden_rows)} more metadata {if(length(@hidden_rows) == 1,
-            do: "field",
-            else: "fields"
-          )}
+      <details :if={!@empty?} class="mt-3 rounded-box border border-base-content/10 p-3">
+        <summary class="cursor-pointer text-xs font-medium favn-text-muted">
+          All {length(@rows)} metadata {if(length(@rows) == 1, do: "field", else: "fields")}
         </summary>
         <dl class="mt-3 divide-y divide-base-content/10 text-sm">
-          <.metadata_row :for={row <- @hidden_rows} row={row} />
+          <.metadata_row :for={row <- @rows} row={row} />
         </dl>
-      </details>
-
-      <details :if={!@empty?} class="mt-3 rounded-box border border-base-content/10 p-3">
-        <summary class="cursor-pointer text-xs font-medium text-base-content/65">Raw JSON</summary>
-        <pre class="mt-3 max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-box bg-base-300/35 p-3 text-xs text-base-content/80"><code>{@raw_json}</code></pre>
+        <pre class="mt-3 max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-box bg-base-300/35 p-3 text-xs favn-text-muted"><code>{@raw_json}</code></pre>
       </details>
     </section>
     """
@@ -195,7 +232,7 @@ defmodule FavnView.Components.OutputMetadata do
   defp metadata_row(assigns) do
     ~H"""
     <div class="grid gap-1 py-2 first:pt-0 last:pb-0 sm:grid-cols-[11rem_minmax(0,1fr)] sm:gap-4">
-      <dt class="text-xs text-base-content/45">{@row.label}</dt>
+      <dt class="text-xs favn-text-subtle">{@row.label}</dt>
       <dd class={["break-words font-medium", @row.mono? && "font-mono text-xs"]}>{@row.value}</dd>
     </div>
     """
@@ -274,6 +311,86 @@ defmodule FavnView.Components.OutputMetadata do
   end
 
   defp check_summary(_metadata, _status), do: nil
+
+  defp write_headline(_rows, outcome, _status) when outcome in [:not_started, "not_started"],
+    do: {"No write was attempted", :error}
+
+  defp write_headline(_rows, outcome, _status) when outcome in [:unknown, "unknown"],
+    do: {"Write outcome unknown", :error}
+
+  defp write_headline(_rows, outcome, _status) when outcome in [:no_op, "no_op"],
+    do: {"Kept the existing table", :info}
+
+  defp write_headline(rows, _outcome, status) when is_integer(rows) do
+    tone = if failed_status?(status), do: :error, else: :success
+    {"Wrote #{thousands(rows)} #{if rows == 1, do: "row", else: "rows"}", tone}
+  end
+
+  # A SQL asset reports `write_outcome: "written"` and no row count at all — the
+  # count is not something the materialisation returns. Saying "Table written"
+  # and naming the relation is the whole of what the metadata knows, and it is
+  # still the answer to "did the data come out right?".
+  defp write_headline(_rows, outcome, status)
+       when outcome in [:written, :committed, "written", "committed"] do
+    tone = if failed_status?(status), do: :error, else: :success
+    {"Table written", tone}
+  end
+
+  defp write_headline(_rows, _outcome, _status), do: nil
+
+  defp row_count(metadata) do
+    Enum.find_value([:rows_written, :rows_affected, :rows_inserted], fn key ->
+      case metadata_value(metadata, key) do
+        rows when is_integer(rows) -> rows
+        _absent -> nil
+      end
+    end)
+  end
+
+  defp write_target(metadata) do
+    materialized_target(metadata_value(metadata, :materialized)) ||
+      Enum.find_value([:relation, :table], fn key ->
+        case metadata_value(metadata, key) do
+          value when is_binary(value) and value != "" -> value
+          _other -> nil
+        end
+      end)
+  end
+
+  defp materialized_target(materialized) when is_map(materialized) do
+    [:schema, :name]
+    |> Enum.map(&metadata_value(materialized, &1))
+    |> Enum.reject(&(!is_binary(&1) or &1 == ""))
+    |> case do
+      [] -> nil
+      parts -> Enum.join(parts, ".")
+    end
+  end
+
+  defp materialized_target(_materialized), do: nil
+
+  defp checks_label([]), do: nil
+
+  defp checks_label(checks) do
+    failed = Enum.count(checks, &(&1.tone == :error))
+    warned = Enum.count(checks, &(&1.tone == :warning))
+    total = length(checks)
+
+    cond do
+      failed > 0 -> %{label: "#{failed} of #{total} checks failed", tone: :error}
+      warned > 0 -> %{label: "#{warned} of #{total} checks warned", tone: :warning}
+      total == 1 -> %{label: "1 check passed", tone: :success}
+      true -> %{label: "#{total} checks passed", tone: :success}
+    end
+  end
+
+  defp thousands(value) do
+    value
+    |> Integer.to_string()
+    |> String.reverse()
+    |> String.replace(~r/(\d{3})(?=\d)/, "\\1,")
+    |> String.reverse()
+  end
 
   defp normalize_checks(checks) when is_list(checks), do: Enum.map(checks, &normalize_check/1)
   defp normalize_checks(_checks), do: []

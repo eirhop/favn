@@ -41,7 +41,7 @@ defmodule FavnView.Router do
 
     live_session :operator,
       on_mount: [{FavnView.Auth, :require_authenticated_operator}] do
-      live "/", PageLive, :home
+      live "/", StatusLive, :home
       live "/assets", AssetCatalogueLive, :index
       live "/assets/:asset_id", AssetDetailLive, :show
       live "/pipelines", PipelinesLive, :index
@@ -72,16 +72,22 @@ defmodule FavnView.Router do
     # you can use Plug.BasicAuth to set up some basic authentication
     # as long as you are also using SSL (which you should anyway).
     import Phoenix.LiveDashboard.Router
-    import PhoenixStorybook.Router
 
-    scope "/" do
-      storybook_assets()
+    # The design-system browser renders complete documents with no session, no
+    # CSRF token, and no LiveView socket, so it needs neither the product layout
+    # nor the browser pipeline. It keeps the same content security policy as
+    # everything else: a development surface should not need a weaker one.
+    pipeline :design_system do
+      plug :accepts, ["html", "js", "json"]
+      plug :put_secure_browser_headers, @secure_browser_headers
     end
 
-    scope "/" do
-      pipe_through :browser
+    scope "/design-system", FavnView.Dev do
+      pipe_through :design_system
 
-      live_storybook("/storybook", backend_module: FavnView.Storybook)
+      get "/", DesignSystemController, :index
+      get "/render", DesignSystemController, :show
+      get "/audit.js", DesignSystemController, :audit_js
     end
 
     scope "/dev" do

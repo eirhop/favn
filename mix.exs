@@ -61,7 +61,6 @@ defmodule FavnUmbrella.MixProject do
   defp listeners(:dev), do: [Phoenix.CodeReloader]
   defp listeners(_env), do: []
 
-  defp dialyzer_ignore_warnings(:dev), do: ".dialyzer_ignore.dev.exs"
   defp dialyzer_ignore_warnings(:test), do: ".dialyzer_ignore.test.exs"
   defp dialyzer_ignore_warnings(_env), do: ".dialyzer_ignore.exs"
 

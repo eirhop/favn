@@ -28,6 +28,16 @@ if is_binary(duckdb_adbc_driver) and duckdb_adbc_driver != "" do
     entrypoint: "duckdb_adbc_init"
 end
 
+# The code reloader recompiles every umbrella app on each request. On a bind
+# mount (dev containers, network filesystems) that sweep costs seconds per
+# page, so it can be scoped to the apps actually being edited, comma
+# separated. Unset, the whole umbrella reloads as usual.
+reloadable_apps =
+  case System.get_env("FAVN_DEV_RELOADABLE_APPS", "") do
+    "" -> nil
+    apps -> apps |> String.split(",", trim: true) |> Enum.map(&String.to_atom/1)
+  end
+
 # For development, we disable any cache and enable
 # debugging and code reloading.
 #
@@ -41,6 +51,7 @@ config :favn_view, FavnView.Endpoint,
   ],
   check_origin: false,
   code_reloader: true,
+  reloadable_apps: reloadable_apps,
   debug_errors: true,
   secret_key_base: "Us78fGI34yxUbXGH5KjKVxK6KhSoad+Zy01o8KwaT1etO8OTjhQSr7Zxd5+X2693",
   watchers: [

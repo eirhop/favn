@@ -13,7 +13,8 @@ doing instead of searching the entire tree.
 | [`production/`](production/) | Deployment contracts, security, and operator runbooks. |
 | [`operators/`](operators/) | Control-plane behavior visible to operators. |
 | [`structure/`](structure/) | Ownership maps for each umbrella application. |
-| [`contributing/`](contributing/) | Contributor workflows and documentation rules. |
+| [`design/`](design/) | Operator UI style guide and component patterns. |
+| [`contributing/`](contributing/) | Contributor workflows, the development server, and documentation rules. |
 | [`FEATURES.md`](FEATURES.md) | Implemented product capability inventory. |
 | [`ROADMAP.md`](ROADMAP.md) | Forward-looking product direction. |
 

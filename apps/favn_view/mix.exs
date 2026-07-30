@@ -29,9 +29,20 @@ defmodule FavnView.MixProject do
     ]
   end
 
-  # Specifies which paths to compile per environment.
-  defp elixirc_paths(:test), do: ["lib", "test/support"]
-  defp elixirc_paths(_), do: ["lib"]
+  @doc """
+  The paths compiled in each environment.
+
+  `dev/` holds the design-system browser and its fixtures. It is compiled in
+  `:dev`, where the browser is served, and in `:test`, where the fixtures are
+  shared with component tests — but never in `:prod`, so a release contains none
+  of it and no configuration mistake can expose it.
+
+  This is public so `test/favn_view/design_system_isolation_test.exs` can assert
+  the `:prod` value directly instead of inferring it.
+  """
+  def elixirc_paths(:dev), do: ["lib", "dev"]
+  def elixirc_paths(:test), do: ["lib", "dev", "test/support"]
+  def elixirc_paths(_env), do: ["lib"]
 
   defp listeners(:dev), do: [Phoenix.CodeReloader]
   defp listeners(_env), do: []
@@ -45,7 +56,6 @@ defmodule FavnView.MixProject do
       {:phoenix_html, "~> 4.1"},
       {:phoenix_live_reload, "~> 1.2", only: :dev},
       {:phoenix_live_view, "~> 1.2"},
-      {:phoenix_storybook, "~> 1.0", runtime: false},
       {:tidewave, "~> 0.5", only: :dev},
       {:lazy_html, ">= 0.1.0", only: :test},
       {:phoenix_live_dashboard, "~> 0.8.3"},

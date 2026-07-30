@@ -9,8 +9,6 @@ defmodule FavnView.Application do
   def start(_type, _args) do
     with :ok <- FavnView.ApplicationConfig.configure(),
          :ok <- ensure_runtime_config() do
-      start_storybook()
-
       children = [
         FavnView.Telemetry,
         {Phoenix.PubSub, name: FavnView.PubSub},
@@ -58,14 +56,6 @@ defmodule FavnView.Application do
   @impl true
   def config_change(changed, _new, removed) do
     FavnView.Endpoint.config_change(changed, removed)
-    :ok
-  end
-
-  defp start_storybook do
-    if Application.get_env(:favn_view, :dev_routes, false) do
-      {:ok, _apps} = Application.ensure_all_started(:phoenix_storybook)
-    end
-
     :ok
   end
 end

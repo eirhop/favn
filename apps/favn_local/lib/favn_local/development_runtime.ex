@@ -23,7 +23,7 @@ defmodule FavnLocal.DevelopmentRuntime do
   @probe_interval_ms 100
   @runner_drain_probe_interval_ms 50
   @runner_drain_timeout_ms 60_000
-  @runner_start_timeout_ms 30_000
+  @default_runner_start_timeout_ms 30_000
   @runner_stop_timeout_ms 15_000
   @request_timeout_ms 120_000
 
@@ -62,7 +62,7 @@ defmodule FavnLocal.DevelopmentRuntime do
          publication: publication,
          status: :starting,
          startup_action: :deploy,
-         deadline: now_ms() + @runner_start_timeout_ms,
+         deadline: now_ms() + runner_start_timeout_ms(),
          ready_waiters: [],
          request: nil,
          task: nil,
@@ -99,7 +99,7 @@ defmodule FavnLocal.DevelopmentRuntime do
            publication: publication,
            status: :reloading,
            request: {from, publication, release_id},
-           deadline: now_ms() + @runner_start_timeout_ms
+           deadline: now_ms() + runner_start_timeout_ms()
        }}
     else
       {:error, reason} ->
@@ -138,7 +138,7 @@ defmodule FavnLocal.DevelopmentRuntime do
 
       :not_ready ->
         if now_ms() >= state.deadline do
-          fail(state, :runner_start_timeout)
+          fail(state, start_failure(state, state.runner))
         else
           schedule(:probe_runner, @probe_interval_ms)
           {:noreply, state}
@@ -154,7 +154,7 @@ defmodule FavnLocal.DevelopmentRuntime do
 
       :not_ready ->
         if now_ms() >= state.deadline do
-          abort_candidate(state, :runner_start_timeout)
+          abort_candidate(state, start_failure(state, candidate))
         else
           schedule(:probe_runner, @probe_interval_ms)
           {:noreply, state}
@@ -189,8 +189,13 @@ defmodule FavnLocal.DevelopmentRuntime do
     {:noreply, state}
   end
 
+  # Runner output is written twice on purpose. The terminal is where an operator
+  # is looking; the log file is what survives, and a runner that dies during boot
+  # takes the terminal down with it. Output is never dropped for being from a port
+  # we no longer track — that output is exactly the interesting kind.
   def handle_info({port, {:data, bytes}}, state) when is_port(port) do
-    if managed_port?(state, port), do: IO.write(bytes)
+    IO.write(bytes)
+    append_runner_log(state, bytes)
     {:noreply, state}
   end
 
@@ -353,7 +358,7 @@ defmodule FavnLocal.DevelopmentRuntime do
            | runner: runner,
              status: :starting,
              startup_action: :recover,
-             deadline: now_ms() + @runner_start_timeout_ms
+             deadline: now_ms() + runner_start_timeout_ms()
          }}
 
       {:error, reason} ->
@@ -532,6 +537,40 @@ defmodule FavnLocal.DevelopmentRuntime do
          request: nil,
          task: nil
      }}
+  end
+
+  # Starting the runner means booting a second BEAM and loading the project's code
+  # paths. Thirty seconds is generous on a native filesystem and not always enough
+  # through a bind mount, where the whole stack then tears itself down. Overridable
+  # so a slow environment can say so rather than be told it is broken.
+  defp runner_start_timeout_ms do
+    case Integer.parse(System.get_env("FAVN_DEV_RUNNER_START_TIMEOUT_MS", "")) do
+      {milliseconds, ""} when milliseconds > 0 -> milliseconds
+      _unset_or_invalid -> @default_runner_start_timeout_ms
+    end
+  end
+
+  # "The runner never registered" has two causes that need different answers, and
+  # reporting both as a timeout sent an operator looking for a slow machine when
+  # the runner had already died. A closed port means the OS process is gone.
+  defp start_failure(state, %{port: port}) do
+    if is_nil(Port.info(port)),
+      do: {:runner_exited_before_ready, runner_log_path(state)},
+      else: {:runner_start_timeout, runner_log_path(state)}
+  end
+
+  defp start_failure(state, _runner), do: {:runner_start_timeout, runner_log_path(state)}
+
+  defp runner_log_path(%{config: config}), do: Locator.runner_log_path(config.root_dir)
+
+  defp append_runner_log(state, bytes) do
+    path = runner_log_path(state)
+
+    with :ok <- File.mkdir_p(Path.dirname(path)) do
+      File.write(path, bytes, [:append])
+    end
+  catch
+    _kind, _reason -> :ok
   end
 
   defp managed_port?(state, port) do
