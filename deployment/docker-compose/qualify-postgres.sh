@@ -187,6 +187,12 @@ running_runner_ids() {
     --filter "label=com.docker.compose.service=runner"
 }
 
+runner_ids() {
+  docker ps --all --quiet \
+    --filter "label=com.docker.compose.project=$FAVN_COMPOSE_PROJECT_NAME" \
+    --filter "label=com.docker.compose.service=runner"
+}
+
 running_runner_count() {
   ids=$(running_runner_ids)
 
@@ -222,32 +228,31 @@ LIMIT 1;
 SQL
 }
 
-runner_instance_has_task() {
+runner_instance_task_assignment() {
   runner_instance_id=$1
 
-  assigned=$(
-    PGPASSWORD="$FAVN_RUNTIME_DATABASE_PASSWORD" \
-      PGCONNECT_TIMEOUT=5 \
-      PGSSLROOTCERT=/etc/favn/postgres-tls/ca.crt \
-      psql \
-      --no-psqlrc \
-      --quiet \
-      --tuples-only \
-      --no-align \
-      --set "qualification_started_at=$qualification_started_at" \
-      --set "runner_instance_id=$runner_instance_id" \
-      "host=postgres dbname=favn user=favn_runtime sslmode=verify-full" <<'SQL'
-SELECT EXISTS (
-  SELECT 1
-  FROM favn_control.runner_tasks
-  WHERE workspace_id = 'elastic-simulation'
-    AND inserted_at >= :'qualification_started_at'::timestamptz
-    AND assigned_runner_instance_id = :'runner_instance_id'
-);
+  PGPASSWORD="$FAVN_RUNTIME_DATABASE_PASSWORD" \
+    PGCONNECT_TIMEOUT=5 \
+    PGSSLROOTCERT=/etc/favn/postgres-tls/ca.crt \
+    psql \
+    --no-psqlrc \
+    --quiet \
+    --tuples-only \
+    --no-align \
+    --set "qualification_started_at=$qualification_started_at" \
+    --set "runner_instance_id=$runner_instance_id" \
+    "host=postgres dbname=favn user=favn_runtime sslmode=verify-full" <<'SQL'
+SELECT jsonb_build_object(
+  'task_id', task_id,
+  'status', status
+)
+FROM favn_control.runner_tasks
+WHERE workspace_id = 'elastic-simulation'
+  AND inserted_at >= :'qualification_started_at'::timestamptz
+  AND assigned_runner_instance_id = :'runner_instance_id'
+ORDER BY updated_at DESC
+LIMIT 1;
 SQL
-  ) || return 1
-
-  [ "$assigned" = "t" ]
 }
 
 runner_demand() {
@@ -662,7 +667,7 @@ inject_runner_failure() {
   killed_runner_name=$(printf '%s' "$busy_runner_assignment_json" | jq -r '.runner_instance_id')
   killed_task_id=$(printf '%s' "$busy_runner_assignment_json" | jq -r '.task_id')
   runner_id=$(docker inspect --format '{{.Id}}' "$killed_runner_name")
-  baseline_runner_ids=$(running_runner_ids)
+  baseline_runner_ids=$(runner_ids)
   fault_started_epoch=$(date +%s)
 
   printf '%s\n' "$runner_id" >>"$allowed_failures_file"
@@ -672,7 +677,9 @@ inject_runner_failure() {
 
   replacement_id=
   replacement_name=
-  replacement_demand=
+  replacement_task_id=
+  replacement_task_status=
+  replacement_demand=0
   replacement_deadline=$(( $(date +%s) + runner_replacement_timeout_seconds ))
 
   while [ "$(date +%s)" -lt "$replacement_deadline" ]; do
@@ -685,30 +692,37 @@ inject_runner_failure() {
         ;;
     esac
 
-    for candidate_id in $(running_runner_ids); do
+    if [ "$current_demand" -gt "$replacement_demand" ]; then
+      replacement_demand=$current_demand
+    fi
+
+    for candidate_id in $(runner_ids); do
       if printf '%s\n' "$baseline_runner_ids" | grep -F -x -q -- "$candidate_id"; then
         continue
       fi
 
       candidate_name=$(docker inspect --format '{{.Name}}' "$candidate_id" | sed 's#^/##')
 
-      if [ "$current_demand" -gt 0 ] && runner_instance_has_task "$candidate_name"; then
+      if assignment=$(runner_instance_task_assignment "$candidate_name") &&
+          [ -n "$assignment" ] &&
+          printf '%s' "$assignment" | jq -e '.task_id != null' >/dev/null; then
         replacement_id=$(docker inspect --format '{{.Id}}' "$candidate_id")
         replacement_name=$candidate_name
-        replacement_demand=$current_demand
+        replacement_task_id=$(printf '%s' "$assignment" | jq -r '.task_id')
+        replacement_task_status=$(printf '%s' "$assignment" | jq -r '.status')
         break
       fi
     done
 
-    if [ -n "$replacement_id" ]; then
+    if [ -n "$replacement_id" ] && [ "$replacement_demand" -gt 0 ]; then
       break
     fi
 
     sleep 1
   done
 
-  if [ -z "$replacement_id" ]; then
-    fail "killed busy runner was not replaced by a distinct working runner while demand remained"
+  if [ -z "$replacement_id" ] || [ "$replacement_demand" -le 0 ]; then
+    fail "killed busy runner was not replaced by a distinct working runner after live demand"
   fi
 
   replacement_seconds=$(( $(date +%s) - fault_started_epoch ))
@@ -719,7 +733,9 @@ inject_runner_failure() {
     --arg killed_container_id "$runner_id" \
     --arg replacement_runner_instance_id "$replacement_name" \
     --arg replacement_container_id "$replacement_id" \
-    --argjson demand_at_replacement "$replacement_demand" \
+    --arg replacement_task_id "$replacement_task_id" \
+    --arg replacement_task_status "$replacement_task_status" \
+    --argjson demand_observed_after_fault "$replacement_demand" \
     --argjson replacement_seconds "$replacement_seconds" \
     --argjson replacement_timeout_seconds "$runner_replacement_timeout_seconds" \
     '{
@@ -730,7 +746,9 @@ inject_runner_failure() {
       replacement_runner_instance_id:$replacement_runner_instance_id,
       replacement_container_id:$replacement_container_id,
       replacement_claimed_work:true,
-      demand_at_replacement:$demand_at_replacement,
+      replacement_task_id:$replacement_task_id,
+      replacement_task_status:$replacement_task_status,
+      demand_observed_after_fault:$demand_observed_after_fault,
       replacement_seconds:$replacement_seconds,
       replacement_timeout_seconds:$replacement_timeout_seconds
     }' >"$runner_fault_file"
@@ -1271,7 +1289,9 @@ assertions=$(
         passed:(
           $runner_fault.killed_runner_was_busy == true and
           $runner_fault.replacement_claimed_work == true and
-          $runner_fault.demand_at_replacement > 0 and
+          $runner_fault.replacement_task_id != null and
+          $runner_fault.replacement_task_id != "" and
+          $runner_fault.demand_observed_after_fault > 0 and
           $runner_fault.killed_container_id !=
             $runner_fault.replacement_container_id and
           $runner_fault.replacement_seconds <=
@@ -1281,7 +1301,7 @@ assertions=$(
         expected:{
           distinct_replacement:true,
           replacement_claimed_work:true,
-          demand_at_replacement:"greater than zero",
+          demand_observed_after_fault:"greater than zero",
           maximum_replacement_seconds:
             $runner_fault.replacement_timeout_seconds
         }
