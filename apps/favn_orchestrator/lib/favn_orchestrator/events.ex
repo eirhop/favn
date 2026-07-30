@@ -8,6 +8,7 @@ defmodule FavnOrchestrator.Events do
   alias FavnOrchestrator.RunEvent
 
   @run_topic_prefix "favn:orchestrator:runs"
+  @identity_topic_prefix "favn:orchestrator:identity"
   @persistence_topic "favn:orchestrator:persistence:published"
 
   @spec subscribe_run(String.t(), String.t()) :: :ok | {:error, term()}
@@ -44,6 +45,54 @@ defmodule FavnOrchestrator.Events do
   end
 
   def unsubscribe_runs(_workspace_id), do: :ok
+
+  @doc "Subscribes a browser process to persisted identity invalidations."
+  @spec subscribe_identity(String.t(), String.t(), String.t()) :: :ok | {:error, term()}
+  def subscribe_identity(workspace_id, actor_id, session_id)
+      when is_binary(workspace_id) and workspace_id != "" and is_binary(actor_id) and
+             actor_id != "" and is_binary(session_id) and session_id != "" do
+    topics = [
+      identity_session_topic(session_id),
+      identity_actor_topic(actor_id),
+      identity_workspace_actor_topic(workspace_id, actor_id)
+    ]
+
+    Enum.reduce_while(topics, :ok, fn topic, :ok ->
+      case Phoenix.PubSub.subscribe(pubsub_name(), topic) do
+        :ok -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  def subscribe_identity(_workspace_id, _actor_id, _session_id),
+    do: {:error, :invalid_identity_subscription}
+
+  @doc "Broadcasts revocation of one persisted session after commit."
+  @spec broadcast_session_revoked(String.t()) :: :ok
+  def broadcast_session_revoked(session_id) when is_binary(session_id) and session_id != "" do
+    broadcast_identity(identity_session_topic(session_id), {:favn_identity_invalidated, :session})
+  end
+
+  @doc "Broadcasts a workspace membership change after commit."
+  @spec broadcast_workspace_actor_changed(String.t(), String.t()) :: :ok
+  def broadcast_workspace_actor_changed(workspace_id, actor_id)
+      when is_binary(workspace_id) and workspace_id != "" and is_binary(actor_id) and
+             actor_id != "" do
+    broadcast_identity(
+      identity_workspace_actor_topic(workspace_id, actor_id),
+      {:favn_identity_invalidated, :workspace_membership}
+    )
+  end
+
+  @doc "Broadcasts a platform-global actor change after commit."
+  @spec broadcast_actor_changed(String.t()) :: :ok
+  def broadcast_actor_changed(actor_id) when is_binary(actor_id) and actor_id != "" do
+    broadcast_identity(
+      identity_actor_topic(actor_id),
+      {:favn_identity_invalidated, :actor}
+    )
+  end
 
   @doc "Subscribes to node-local durable-publication wake-ups."
   @spec subscribe_persistence_publications() :: :ok | {:error, term()}
@@ -90,6 +139,21 @@ defmodule FavnOrchestrator.Events do
   @spec run_topic(String.t(), String.t()) :: String.t()
   def run_topic(workspace_id, run_id) when is_binary(workspace_id) and is_binary(run_id),
     do: runs_topic(workspace_id) <> ":run:" <> run_id
+
+  defp identity_session_topic(session_id), do: @identity_topic_prefix <> ":session:" <> session_id
+  defp identity_actor_topic(actor_id), do: @identity_topic_prefix <> ":actor:" <> actor_id
+
+  defp identity_workspace_actor_topic(workspace_id, actor_id),
+    do: @identity_topic_prefix <> ":workspace:" <> workspace_id <> ":actor:" <> actor_id
+
+  defp broadcast_identity(topic, message) do
+    _ = Phoenix.PubSub.broadcast(pubsub_name(), topic, message)
+    :ok
+  rescue
+    error ->
+      Logger.warning("failed to broadcast identity invalidation: #{inspect(error)}")
+      :ok
+  end
 
   @spec pubsub_name() :: module()
   def pubsub_name do

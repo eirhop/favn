@@ -80,6 +80,25 @@ defmodule FavnOrchestrator.Persistence.Queries.PageActors do
         }
 end
 
+defmodule FavnOrchestrator.Persistence.Queries.ListActorMemberships do
+  @moduledoc """
+  Lists the authenticated actor's workspace memberships.
+
+  Cross-workspace membership discovery is deliberately self-only. A workspace
+  administrator may manage the actor's membership in the current workspace,
+  but cannot use that authority to discover the actor's other tenants.
+  """
+
+  alias FavnOrchestrator.Persistence.WorkspaceContext
+  @enforce_keys [:workspace_context, :actor_id]
+  defstruct [:workspace_context, :actor_id]
+
+  @type t :: %__MODULE__{
+          workspace_context: WorkspaceContext.t(),
+          actor_id: String.t()
+        }
+end
+
 defmodule FavnOrchestrator.Persistence.Commands.SetActorAccess do
   @moduledoc "Changes one workspace membership or explicitly authorized platform grant."
 
@@ -121,16 +140,46 @@ defmodule FavnOrchestrator.Persistence.Commands.SetActorAccess do
         }
 end
 
+defmodule FavnOrchestrator.Persistence.Commands.AttachActorMembership do
+  @moduledoc """
+  Attaches an exact existing global username to the authority workspace.
+
+  This avoids exposing a platform-wide actor search surface to workspace
+  administrators.
+  """
+
+  alias FavnOrchestrator.Persistence.WorkspaceContext
+  @enforce_keys [:workspace_context, :command_id, :username, :roles, :occurred_at]
+  defstruct [:workspace_context, :command_id, :username, :roles, :occurred_at]
+
+  @type t :: %__MODULE__{
+          workspace_context: WorkspaceContext.t(),
+          command_id: String.t(),
+          username: String.t(),
+          roles: [atom()],
+          occurred_at: DateTime.t()
+        }
+end
+
 defmodule FavnOrchestrator.Persistence.Commands.ChangeActorPassword do
   @moduledoc "Replaces one current credential hash and optionally revokes active sessions."
 
   alias FavnOrchestrator.Persistence.WorkspaceContext
-  @enforce_keys [:workspace_context, :command_id, :actor_id, :password_hash, :occurred_at]
+
+  @enforce_keys [
+    :workspace_context,
+    :command_id,
+    :actor_id,
+    :password_hash,
+    :expected_credential_version,
+    :occurred_at
+  ]
   defstruct [
     :workspace_context,
     :command_id,
     :actor_id,
     :password_hash,
+    :expected_credential_version,
     :occurred_at,
     revoke_sessions?: true
   ]
@@ -140,6 +189,7 @@ defmodule FavnOrchestrator.Persistence.Commands.ChangeActorPassword do
           command_id: String.t(),
           actor_id: String.t(),
           password_hash: String.t(),
+          expected_credential_version: pos_integer(),
           occurred_at: DateTime.t(),
           revoke_sessions?: boolean()
         }
@@ -183,6 +233,55 @@ defmodule FavnOrchestrator.Persistence.Commands.CreateSession do
         }
 end
 
+defmodule FavnOrchestrator.Persistence.Commands.RotateWorkspaceSession do
+  @moduledoc """
+  Atomically moves an authenticated browser session to another workspace.
+
+  The old workspace-bound session is revoked in the same transaction that
+  creates the new target-workspace session and records both audit entries.
+  """
+
+  alias FavnOrchestrator.Persistence.WorkspaceContext
+
+  @enforce_keys [
+    :source_context,
+    :command_id,
+    :source_session_id,
+    :target_workspace_id,
+    :session_id,
+    :actor_id,
+    :token_hash,
+    :provider,
+    :expires_at,
+    :occurred_at
+  ]
+  defstruct [
+    :source_context,
+    :command_id,
+    :source_session_id,
+    :target_workspace_id,
+    :session_id,
+    :actor_id,
+    :token_hash,
+    :provider,
+    :expires_at,
+    :occurred_at
+  ]
+
+  @type t :: %__MODULE__{
+          source_context: WorkspaceContext.t(),
+          command_id: String.t(),
+          source_session_id: String.t(),
+          target_workspace_id: String.t(),
+          session_id: String.t(),
+          actor_id: String.t(),
+          token_hash: binary(),
+          provider: String.t(),
+          expires_at: DateTime.t(),
+          occurred_at: DateTime.t()
+        }
+end
+
 defmodule FavnOrchestrator.Persistence.Selectors.SessionById do
   @moduledoc "Selects one session by stable ID."
   @enforce_keys [:session_id]
@@ -212,6 +311,22 @@ defmodule FavnOrchestrator.Persistence.Queries.GetSession do
         }
 end
 
+defmodule FavnOrchestrator.Persistence.Queries.PageSessions do
+  @moduledoc "Keyset-pages sessions that were issued for one workspace."
+
+  alias FavnOrchestrator.Persistence.WorkspaceContext
+  @enforce_keys [:workspace_context]
+  defstruct [:workspace_context, :actor_id, :status, :after, limit: 100]
+
+  @type t :: %__MODULE__{
+          workspace_context: WorkspaceContext.t(),
+          actor_id: String.t() | nil,
+          status: :active | :revoked | :expired | nil,
+          after: %{inserted_at: DateTime.t(), session_id: String.t()} | nil,
+          limit: 1..500
+        }
+end
+
 defmodule FavnOrchestrator.Persistence.Commands.RevokeSessions do
   @moduledoc "Idempotently revokes one session or every active session for one actor."
 
@@ -224,6 +339,42 @@ defmodule FavnOrchestrator.Persistence.Commands.RevokeSessions do
           command_id: String.t(),
           session_id: String.t() | nil,
           actor_id: String.t() | nil,
+          occurred_at: DateTime.t()
+        }
+end
+
+defmodule FavnOrchestrator.Persistence.Commands.SetActorStatus do
+  @moduledoc """
+  Changes global actor status under platform-admin authority.
+
+  Disabling an actor revokes every active session in the same transaction.
+  """
+
+  alias FavnOrchestrator.Persistence.PlatformContext
+
+  @enforce_keys [
+    :platform_context,
+    :command_id,
+    :actor_id,
+    :status,
+    :expected_version,
+    :occurred_at
+  ]
+  defstruct [
+    :platform_context,
+    :command_id,
+    :actor_id,
+    :status,
+    :expected_version,
+    :occurred_at
+  ]
+
+  @type t :: %__MODULE__{
+          platform_context: PlatformContext.t(),
+          command_id: String.t(),
+          actor_id: String.t(),
+          status: :active | :disabled,
+          expected_version: pos_integer(),
           occurred_at: DateTime.t()
         }
 end
@@ -313,10 +464,19 @@ end
 
 defmodule FavnOrchestrator.Persistence.Results.Session do
   @moduledoc "Opaque session metadata; raw tokens and token hashes are never returned."
-  @enforce_keys [:session_id, :actor_id, :provider, :issued_at, :status, :expires_at]
+  @enforce_keys [
+    :session_id,
+    :actor_id,
+    :workspace_id,
+    :provider,
+    :issued_at,
+    :status,
+    :expires_at
+  ]
   defstruct [
     :session_id,
     :actor_id,
+    :workspace_id,
     :provider,
     :issued_at,
     :status,
@@ -328,12 +488,28 @@ defmodule FavnOrchestrator.Persistence.Results.Session do
   @type t :: %__MODULE__{
           session_id: String.t(),
           actor_id: String.t(),
+          workspace_id: String.t(),
           provider: String.t(),
           issued_at: DateTime.t(),
           status: :active | :revoked | :expired,
           expires_at: DateTime.t(),
           revoked_at: DateTime.t() | nil,
           last_seen_at: DateTime.t() | nil
+        }
+end
+
+defmodule FavnOrchestrator.Persistence.Results.WorkspaceMembership do
+  @moduledoc "One actor membership enriched with the workspace display identity."
+  @enforce_keys [:workspace_id, :workspace_slug, :workspace_name, :roles, :status, :version]
+  defstruct [:workspace_id, :workspace_slug, :workspace_name, :roles, :status, :version]
+
+  @type t :: %__MODULE__{
+          workspace_id: String.t(),
+          workspace_slug: String.t(),
+          workspace_name: String.t(),
+          roles: [atom()],
+          status: :active | :suspended | :revoked,
+          version: pos_integer()
         }
 end
 

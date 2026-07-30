@@ -401,6 +401,7 @@ defmodule FavnOrchestrator.API.RebuildsRouterTest do
     session = %SessionResult{
       session_id: "session-#{name}",
       actor_id: actor_id,
+      workspace_id: workspace_id,
       provider: "password_local",
       issued_at: now,
       status: :active,

@@ -225,6 +225,110 @@ defmodule FavnOrchestrator do
     end
   end
 
+  @doc "Returns the current actor's workspace choices after persisted reauthorization."
+  @spec list_operator_workspaces(OperatorContext.t()) :: {:ok, [map()]} | {:error, term()}
+  def list_operator_workspaces(%OperatorContext{} = operator_context) do
+    with {:ok, context, actor} <- authorize_operator_context(operator_context, :viewer) do
+      Auth.list_actor_workspaces(context, actor.id)
+    end
+  end
+
+  @doc "Atomically rotates the current session into another active workspace."
+  @spec switch_operator_workspace(OperatorContext.t(), String.t()) ::
+          {:ok, operator_session()} | {:error, term()}
+  def switch_operator_workspace(%OperatorContext{} = operator_context, target_workspace_id)
+      when is_binary(target_workspace_id) do
+    with {:ok, context, actor} <- authorize_operator_context(operator_context, :viewer) do
+      Auth.switch_workspace(
+        context,
+        %{id: operator_context.session_id, actor_id: actor.id},
+        target_workspace_id
+      )
+    end
+  end
+
+  @doc "Subscribes the current process to identity invalidation topics."
+  @spec subscribe_operator_identity(OperatorContext.t()) :: :ok | {:error, term()}
+  def subscribe_operator_identity(%OperatorContext{} = context) do
+    Events.subscribe_identity(context.workspace_id, context.actor_id, context.session_id)
+  end
+
+  @doc "Pages current-workspace actors after administrator reauthorization."
+  @spec page_operator_actors(OperatorContext.t(), keyword()) :: {:ok, map()} | {:error, term()}
+  def page_operator_actors(%OperatorContext{} = operator_context, opts \\ []) do
+    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :admin) do
+      Auth.page_actors(context, opts)
+    end
+  end
+
+  @doc "Creates an actor in the current workspace after administrator reauthorization."
+  @spec create_operator_actor(
+          OperatorContext.t(),
+          String.t(),
+          String.t(),
+          String.t(),
+          [atom() | String.t()]
+        ) :: {:ok, operator_actor()} | {:error, term()}
+  def create_operator_actor(
+        %OperatorContext{} = operator_context,
+        username,
+        password,
+        display_name,
+        roles
+      ) do
+    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :admin) do
+      Auth.create_actor(context, username, password, display_name, roles)
+    end
+  end
+
+  @doc "Attaches one exact existing username to the current workspace."
+  @spec attach_operator_actor(
+          OperatorContext.t(),
+          String.t(),
+          [atom() | String.t()]
+        ) :: {:ok, operator_actor()} | {:error, term()}
+  def attach_operator_actor(%OperatorContext{} = operator_context, username, roles) do
+    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :admin) do
+      Auth.attach_actor_membership(context, username, roles)
+    end
+  end
+
+  @doc "Changes current-workspace membership after administrator reauthorization."
+  @spec update_operator_actor_membership(
+          OperatorContext.t(),
+          String.t(),
+          [atom() | String.t()],
+          :active | :suspended | :revoked
+        ) :: {:ok, operator_actor()} | {:error, term()}
+  def update_operator_actor_membership(
+        %OperatorContext{} = operator_context,
+        actor_id,
+        roles,
+        status
+      ) do
+    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :admin) do
+      Auth.update_actor_membership(context, actor_id, roles, status)
+    end
+  end
+
+  @doc "Pages sessions issued for the current workspace after admin reauthorization."
+  @spec page_operator_sessions(OperatorContext.t(), keyword()) ::
+          {:ok, map()} | {:error, term()}
+  def page_operator_sessions(%OperatorContext{} = operator_context, opts \\ []) do
+    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :admin) do
+      Auth.page_sessions(context, opts)
+    end
+  end
+
+  @doc "Revokes one current-workspace session after admin reauthorization."
+  @spec revoke_operator_managed_session(OperatorContext.t(), String.t()) ::
+          :ok | {:error, term()}
+  def revoke_operator_managed_session(%OperatorContext{} = operator_context, session_id) do
+    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :admin) do
+      Auth.revoke_session(context, session_id)
+    end
+  end
+
   @doc """
   Returns whether an operator actor has at least the required role.
   """

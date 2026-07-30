@@ -82,6 +82,7 @@ defmodule FavnStoragePostgres.Schemas.AuthSession do
   @schema_prefix "favn_control"
   schema "auth_sessions" do
     field(:actor_id, :string)
+    field(:workspace_id, :string)
     field(:creation_command_id, :string)
     field(:token_hash, :binary)
     field(:provider, :string)

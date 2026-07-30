@@ -17,6 +17,7 @@ defmodule FavnStoragePostgres.StorageV2.ConcurrencyAuthorityTest do
   alias FavnOrchestrator.Persistence.Commands.ClaimRecoveryBatch
   alias FavnOrchestrator.Persistence.Commands.ClaimRun
   alias FavnOrchestrator.Persistence.Commands.CommitRunTransition
+  alias FavnOrchestrator.Persistence.Commands.CreateActor
   alias FavnOrchestrator.Persistence.Commands.CreateRun
   alias FavnOrchestrator.Persistence.Commands.DeployManifest
   alias FavnOrchestrator.Persistence.Commands.DeploymentCapacityScope
@@ -30,6 +31,7 @@ defmodule FavnStoragePostgres.StorageV2.ConcurrencyAuthorityTest do
   alias FavnOrchestrator.Persistence.Commands.ReleaseExecutionLease
   alias FavnOrchestrator.Persistence.Commands.RunTarget
   alias FavnOrchestrator.Persistence.Commands.SetScheduleActivation
+  alias FavnOrchestrator.Persistence.Commands.SetActorAccess
   alias FavnOrchestrator.Persistence.Commands.StartBackfillPlan
   alias FavnOrchestrator.Persistence.Commands.TransitionBackfillWindow
   alias FavnOrchestrator.Persistence.CommandIdempotency
@@ -45,6 +47,7 @@ defmodule FavnStoragePostgres.StorageV2.ConcurrencyAuthorityTest do
   alias FavnStoragePostgres.Backfills.Store, as: BackfillStore
   alias FavnStoragePostgres.Config
   alias FavnStoragePostgres.Idempotency.Transaction, as: IdempotencyTransaction
+  alias FavnStoragePostgres.Identity.Store, as: IdentityStore
   alias FavnStoragePostgres.Materialization.Store, as: MaterializationStore
   alias FavnStoragePostgres.Logs.Store, as: LogStore
   alias FavnStoragePostgres.Outbox.Sequencer
@@ -227,6 +230,67 @@ defmodule FavnStoragePostgres.StorageV2.ConcurrencyAuthorityTest do
 
   setup %{version: version} do
     {:ok, provision_fixture(36, version)}
+  end
+
+  test "concurrent admin demotions cannot orphan a workspace", fixture do
+    now = DateTime.utc_now()
+
+    actors =
+      Enum.map(1..2, fn index ->
+        actor_id = "last-admin-#{index}-#{random_id()}"
+
+        assert {:ok, actor} =
+                 IdentityStore.create_actor(%CreateActor{
+                   workspace_context: fixture.workspace_context,
+                   command_id: "create:#{actor_id}",
+                   actor_id: actor_id,
+                   username: "#{actor_id}@example.test",
+                   display_name: "Last Admin #{index}",
+                   password_hash: "$argon2id$v=19$m=65536,t=3,p=4$c2FsdA$aGFzaC1sYXN0LWFkbWlu",
+                   roles: [:workspace_admin],
+                   occurred_at: now
+                 })
+
+        actor
+      end)
+
+    results =
+      actors
+      |> Task.async_stream(
+        fn actor ->
+          IdentityStore.set_access(%SetActorAccess{
+            authority: fixture.workspace_context,
+            command_id: "demote:#{actor.actor_id}",
+            actor_id: actor.actor_id,
+            scope_kind: :workspace,
+            workspace_id: fixture.workspace_id,
+            roles: [:customer_reader],
+            status: :active,
+            expected_version: actor.access_version,
+            occurred_at: DateTime.utc_now()
+          })
+        end,
+        max_concurrency: 2,
+        ordered: false,
+        timeout: 30_000
+      )
+      |> Enum.map(fn {:ok, result} -> result end)
+
+    assert Enum.count(results, &match?({:ok, _actor}, &1)) == 1
+    assert Enum.count(results, &match?({:error, %{kind: :conflict}}, &1)) == 1
+
+    %{rows: [[1]]} =
+      SQL.query!(
+        Repo,
+        """
+        SELECT count(*)
+        FROM favn_control.auth_workspace_memberships
+        WHERE workspace_id = $1
+          AND status = 'active'
+          AND 'workspace_admin' = ANY(roles)
+        """,
+        [fixture.workspace_id]
+      )
   end
 
   test "concurrent workspace provisioning is one exact-retry-safe mutation" do

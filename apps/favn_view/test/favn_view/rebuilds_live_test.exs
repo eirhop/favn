@@ -297,6 +297,7 @@ defmodule FavnView.RebuildsLiveTest do
     session = %SessionResult{
       session_id: "session-browser-admin",
       actor_id: actor_id,
+      workspace_id: workspace_id,
       provider: "password_local",
       issued_at: now,
       status: :active,

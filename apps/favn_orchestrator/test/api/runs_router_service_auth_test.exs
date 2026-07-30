@@ -430,6 +430,7 @@ defmodule FavnOrchestrator.API.RunsRouterServiceAuthTest do
     session = %SessionResult{
       session_id: "session-#{name}",
       actor_id: actor_id,
+      workspace_id: workspace_id,
       provider: "password_local",
       issued_at: now,
       status: if(Keyword.get(opts, :expires_in, 3_600) > 0, do: :active, else: :expired),
