@@ -16,6 +16,7 @@ defmodule FavnOrchestrator.Persistence.IdentityStore do
   alias FavnOrchestrator.Persistence.Commands.SetActorStatus
   alias FavnOrchestrator.Persistence.Error
   alias FavnOrchestrator.Persistence.Queries.GetActor
+  alias FavnOrchestrator.Persistence.Queries.GetGlobalActor
   alias FavnOrchestrator.Persistence.Queries.GetSession
   alias FavnOrchestrator.Persistence.Queries.ListActorMemberships
   alias FavnOrchestrator.Persistence.Queries.PageActors
@@ -24,11 +25,14 @@ defmodule FavnOrchestrator.Persistence.IdentityStore do
   alias FavnOrchestrator.Persistence.Results.Actor
   alias FavnOrchestrator.Persistence.Results.AuditEntry
   alias FavnOrchestrator.Persistence.Results.CursorPage
+  alias FavnOrchestrator.Persistence.Results.GlobalActor
   alias FavnOrchestrator.Persistence.Results.Session
   alias FavnOrchestrator.Persistence.Results.WorkspaceMembership
 
   @callback create_actor(CreateActor.t()) :: {:ok, Actor.t()} | {:error, Error.t()}
   @callback get_actor(GetActor.t()) :: {:ok, Actor.t()} | {:error, Error.t()}
+  @callback get_global_actor(GetGlobalActor.t()) ::
+              {:ok, GlobalActor.t()} | {:error, Error.t()}
   @callback page_actors(PageActors.t()) ::
               {:ok, CursorPage.t(Actor.t())} | {:error, Error.t()}
   @callback list_actor_memberships(ListActorMemberships.t()) ::

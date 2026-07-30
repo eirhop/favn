@@ -2,6 +2,7 @@ defmodule Mix.Tasks.Favn.AdminTasksTest do
   use ExUnit.Case, async: true
 
   alias Favn.CLI.AdminSecret
+  alias Mix.Tasks.Favn.Admin.Actor
   alias Mix.Tasks.Favn.Admin.Bootstrap
   alias Mix.Tasks.Favn.Admin.Recover
 
@@ -45,6 +46,29 @@ defmodule Mix.Tasks.Favn.AdminTasksTest do
                "--password-file",
                "/run/secrets/admin"
              ])
+  end
+
+  test "global actor status accepts only one exact username and safe status" do
+    assert {:error, "--username is required"} =
+             Actor.parse_args(["--status", "disabled"])
+
+    assert {:error, "--status must be active or disabled"} =
+             Actor.parse_args(["--username", "operator", "--status", "suspended"])
+
+    assert {:ok, %{username: "operator", status: "disabled"}} =
+             Actor.parse_args(["--username", "operator", "--status", "disabled"])
+
+    assert {:error, message} =
+             Actor.parse_args([
+               "--username",
+               "operator",
+               "--status",
+               "disabled",
+               "--workspace",
+               "must-not-scope-global-status"
+             ])
+
+    assert message =~ "invalid option"
   end
 
   @tag :tmp_dir

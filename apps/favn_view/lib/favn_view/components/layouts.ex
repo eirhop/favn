@@ -48,6 +48,28 @@ defmodule FavnView.Layouts do
     """
   end
 
+  attr :current_scope, :any, default: nil
+
+  def operator_controls(assigns) do
+    ~H"""
+    <nav
+      :if={match?(%FavnView.Auth.Scope{}, @current_scope)}
+      aria-label="Account"
+      class="fixed right-3 top-3 z-50 flex gap-2"
+      data-testid="operator-controls"
+    >
+      <.link navigate={~p"/account/security"} class="btn btn-sm">Account</.link>
+      <.link
+        :if={FavnView.Auth.Scope.has_role?(@current_scope, :admin)}
+        navigate={~p"/admin"}
+        class="btn btn-sm"
+      >
+        Admin
+      </.link>
+    </nav>
+    """
+  end
+
   defp operator_command_scope(%FavnView.Auth.Scope{
          workspace_id: workspace_id,
          actor: %{id: actor_id}

@@ -45,6 +45,8 @@ defmodule FavnOrchestrator.Identity do
           required(:display_name) => String.t(),
           required(:roles) => [:viewer | :operator | :admin],
           required(:status) => :active | :disabled,
+          required(:global_status) => :active | :disabled,
+          required(:membership_status) => :active | :suspended | :revoked,
           required(:workspace_id) => String.t(),
           required(:access_version) => pos_integer(),
           required(:version) => pos_integer(),
@@ -57,6 +59,7 @@ defmodule FavnOrchestrator.Identity do
           required(:workspace_id) => String.t(),
           required(:provider) => String.t(),
           required(:issued_at) => DateTime.t(),
+          required(:status) => :active | :revoked | :expired,
           required(:expires_at) => DateTime.t(),
           required(:revoked_at) => DateTime.t() | nil,
           optional(:token) => String.t()
@@ -643,6 +646,8 @@ defmodule FavnOrchestrator.Identity do
           do: :active,
           else: :disabled
         ),
+      global_status: global_actor_status(actor.status),
+      membership_status: actor.membership_status,
       workspace_id: actor.workspace_id,
       access_version: actor.access_version,
       version: actor.version,
@@ -658,6 +663,7 @@ defmodule FavnOrchestrator.Identity do
       workspace_id: session.workspace_id,
       provider: session.provider,
       issued_at: session.issued_at,
+      status: session.status,
       expires_at: session.expires_at,
       revoked_at: session.revoked_at
     }
@@ -672,6 +678,9 @@ defmodule FavnOrchestrator.Identity do
     end)
     |> Enum.uniq()
   end
+
+  defp global_actor_status(:active), do: :active
+  defp global_actor_status(_disabled_or_retired), do: :disabled
 
   defp operator_roles(roles) do
     roles

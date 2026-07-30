@@ -12,7 +12,9 @@ import Config
 config :favn_view,
   generators: [context_app: false]
 
-config :phoenix, :json_library, Jason
+config :phoenix,
+  json_library: Jason,
+  filter_parameters: ["password", "secret", "token", "credential"]
 
 config :favn_storage_postgres,
   environment: config_env(),

@@ -57,6 +57,8 @@ defmodule FavnView.Router do
       live "/rebuilds", RebuildsLive, :index
       live "/rebuilds/:operation_id", RebuildDetailLive, :show
       live "/recoveries", TargetRecoveryLive, :index
+      live "/account/security", AccountSecurityLive, :edit
+      live "/admin", AdminLive, :index
     end
   end
 

@@ -312,6 +312,36 @@ defmodule FavnView.WorkspaceSessionTest do
     assert_redirect(view, "/login")
   end
 
+  test "connected LiveViews revalidate durable sessions without relying on PubSub", %{conn: conn} do
+    {actor, session} = identity("workspace-one", "session-one")
+    {:ok, validity} = Agent.start_link(fn -> true end)
+
+    Application.put_env(:favn_view, :introspect_operator_session_fun, fn
+      "workspace-one", "opaque-token" ->
+        if Agent.get(validity, & &1),
+          do: {:ok, session, actor},
+          else: {:error, :invalid_session}
+    end)
+
+    Application.put_env(:favn_view, :list_operator_workspaces_fun, fn _context ->
+      {:ok, [%{id: "workspace-one", name: "One", status: :active}]}
+    end)
+
+    Application.put_env(:favn_view, :subscribe_operator_identity_fun, fn _context -> :ok end)
+
+    assert {:ok, view, _html} =
+             live_isolated(conn, IdentityProbeLive,
+               session: %{
+                 "operator_workspace_id" => "workspace-one",
+                 "operator_session_token" => "opaque-token"
+               }
+             )
+
+    Agent.update(validity, fn _ -> false end)
+    send(view.pid, :favn_revalidate_operator_identity)
+    assert_redirect(view, "/login")
+  end
+
   test "connected LiveView mount fails closed when identity subscription fails", %{conn: conn} do
     {actor, session} = identity("workspace-one", "session-one")
     put_live_identity_boundary(actor, session, {:error, :pubsub_unavailable})

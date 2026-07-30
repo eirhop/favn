@@ -34,6 +34,7 @@ defmodule FavnStoragePostgres.Release do
           :migrate
           | :admin_bootstrap
           | :admin_recover
+          | :admin_actor_status
           | :verify_schema
           | :verify_workspace
           | :verify_restore
@@ -236,6 +237,40 @@ defmodule FavnStoragePostgres.Release do
   def admin_recover_from_stdin(_username) do
     release_operation(:admin_recover, fn ->
       error(:admin_recover, :invalid_admin_recovery, reason: :username_required)
+    end)
+  end
+
+  @doc "Enables or disables one exact global actor from a trusted release command."
+  @spec admin_actor_status(map()) :: result()
+  def admin_actor_status(input) when is_map(input) do
+    database_operation(:admin_actor_status, fn ->
+      with {:ok, username} <- fetch_string(input, :username),
+           {:ok, status} <- fetch_actor_status(input),
+           {:ok, actor} <-
+             AdminLifecycle.set_actor_status(username, status, identity_store: IdentityStore) do
+        Logger.warning(
+          "favn.release.actor_status_changed actor_id=#{actor.actor_id} status=#{actor.status}"
+        )
+
+        ok(:admin_actor_status,
+          actor_id: actor.actor_id,
+          username: actor.username,
+          status: actor.status,
+          sessions_revoked: actor.sessions_revoked
+        )
+      else
+        {:error, %PersistenceError{} = failure} ->
+          persistence_error(:admin_actor_status, failure)
+
+        {:error, reason} ->
+          error(:admin_actor_status, :invalid_actor_status, reason: safe_reason(reason))
+      end
+    end)
+  end
+
+  def admin_actor_status(_input) do
+    release_operation(:admin_actor_status, fn ->
+      error(:admin_actor_status, :invalid_actor_status, reason: :map_required)
     end)
   end
 
@@ -538,6 +573,16 @@ defmodule FavnStoragePostgres.Release do
 
       _missing ->
         {:error, {key, :required}}
+    end
+  end
+
+  defp fetch_actor_status(input) do
+    case Map.get(input, :status, Map.get(input, "status")) do
+      :active -> {:ok, :active}
+      :disabled -> {:ok, :disabled}
+      "active" -> {:ok, :active}
+      "disabled" -> {:ok, :disabled}
+      _invalid -> {:error, {:status, :invalid}}
     end
   end
 

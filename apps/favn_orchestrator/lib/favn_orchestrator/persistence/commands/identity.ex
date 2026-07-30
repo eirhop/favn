@@ -63,6 +63,19 @@ defmodule FavnOrchestrator.Persistence.Queries.GetActor do
         }
 end
 
+defmodule FavnOrchestrator.Persistence.Queries.GetGlobalActor do
+  @moduledoc "Fetches one exact global actor under explicit platform-admin authority."
+
+  alias FavnOrchestrator.Persistence.PlatformContext
+  @enforce_keys [:platform_context, :username]
+  defstruct [:platform_context, :username]
+
+  @type t :: %__MODULE__{
+          platform_context: PlatformContext.t(),
+          username: String.t()
+        }
+end
+
 defmodule FavnOrchestrator.Persistence.Queries.PageActors do
   @moduledoc "Keyset-pages actors with memberships in one workspace."
 
@@ -564,6 +577,19 @@ defmodule FavnOrchestrator.Persistence.Results.Actor do
           credential_hash: String.t() | nil,
           credential_version: pos_integer() | nil,
           access_version: pos_integer(),
+          version: pos_integer()
+        }
+end
+
+defmodule FavnOrchestrator.Persistence.Results.GlobalActor do
+  @moduledoc "Non-secret global actor state for trusted lifecycle administration."
+  @enforce_keys [:actor_id, :username, :status, :version]
+  defstruct [:actor_id, :username, :status, :version]
+
+  @type t :: %__MODULE__{
+          actor_id: String.t(),
+          username: String.t(),
+          status: :active | :disabled,
           version: pos_integer()
         }
 end

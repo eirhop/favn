@@ -12,7 +12,9 @@ defmodule FavnOrchestrator.AdminLifecycle do
   alias FavnOrchestrator.Persistence
   alias FavnOrchestrator.Persistence.Commands.BootstrapAdministrator
   alias FavnOrchestrator.Persistence.Commands.RecoverAdministratorCredential
+  alias FavnOrchestrator.Persistence.Commands.SetActorStatus
   alias FavnOrchestrator.Persistence.PlatformContext
+  alias FavnOrchestrator.Persistence.Queries.GetGlobalActor
 
   @principal_id "release:admin-lifecycle"
   @grant_id "release:admin-lifecycle"
@@ -70,6 +72,41 @@ defmodule FavnOrchestrator.AdminLifecycle do
 
   def recover(_username, _password, _opts), do: {:error, :invalid_admin_recovery}
 
+  @doc """
+  Enables or disables one exact global actor from a trusted release command.
+
+  Disabling revokes every actor session in every workspace. Workspace
+  administrators deliberately cannot invoke this platform-global operation.
+  """
+  @spec set_actor_status(String.t(), :active | :disabled, keyword()) ::
+          {:ok, map()} | {:error, term()}
+  def set_actor_status(username, status, opts \\ [])
+
+  def set_actor_status(username, status, opts)
+      when is_binary(username) and status in [:active, :disabled] and is_list(opts) do
+    with {:ok, actor_input} <- Credentials.normalize_actor(username, "Actor status", [:admin]),
+         {:ok, context} <- platform_context(),
+         store = identity_store(opts),
+         {:ok, actor} <-
+           store.get_global_actor(%GetGlobalActor{
+             platform_context: context,
+             username: actor_input.username
+           }),
+         :ok <- update_actor_status(store, context, actor, status) do
+      Events.broadcast_actor_changed(actor.actor_id)
+
+      {:ok,
+       %{
+         actor_id: actor.actor_id,
+         username: actor.username,
+         status: status,
+         sessions_revoked: status == :disabled
+       }}
+    end
+  end
+
+  def set_actor_status(_username, _status, _opts), do: {:error, :invalid_actor_status}
+
   defp platform_context do
     PlatformContext.new(@principal_id, @grant_id, [:platform_admin])
   end
@@ -105,6 +142,17 @@ defmodule FavnOrchestrator.AdminLifecycle do
 
   defp operation_id(prefix) do
     prefix <> ":" <> Base.encode16(:crypto.strong_rand_bytes(16), case: :lower)
+  end
+
+  defp update_actor_status(store, context, actor, status) do
+    store.set_actor_status(%SetActorStatus{
+      platform_context: context,
+      command_id: operation_id("actor-status"),
+      actor_id: actor.actor_id,
+      status: status,
+      expected_version: actor.version,
+      occurred_at: DateTime.utc_now()
+    })
   end
 
   defp actor_result(actor) do

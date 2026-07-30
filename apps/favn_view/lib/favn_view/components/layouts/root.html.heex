@@ -14,6 +14,7 @@
   </head>
 
   <body data-operator-command-scope={operator_command_scope(assigns[:current_scope])}>
+    <.operator_controls current_scope={assigns[:current_scope]} />
     <.workspace_switcher
       current_scope={assigns[:current_scope]}
       workspaces={assigns[:operator_workspaces] || []}

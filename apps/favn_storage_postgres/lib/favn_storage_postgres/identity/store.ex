@@ -22,6 +22,7 @@ defmodule FavnStoragePostgres.Identity.Store do
   alias FavnOrchestrator.Persistence.Error
   alias FavnOrchestrator.Persistence.PlatformContext
   alias FavnOrchestrator.Persistence.Queries.GetActor
+  alias FavnOrchestrator.Persistence.Queries.GetGlobalActor
   alias FavnOrchestrator.Persistence.Queries.GetSession
   alias FavnOrchestrator.Persistence.Queries.ListActorMemberships
   alias FavnOrchestrator.Persistence.Queries.PageActors
@@ -30,6 +31,7 @@ defmodule FavnStoragePostgres.Identity.Store do
   alias FavnOrchestrator.Persistence.Results.Actor, as: ActorResult
   alias FavnOrchestrator.Persistence.Results.AuditEntry, as: AuditResult
   alias FavnOrchestrator.Persistence.Results.CursorPage
+  alias FavnOrchestrator.Persistence.Results.GlobalActor
   alias FavnOrchestrator.Persistence.Results.Session, as: SessionResult
   alias FavnOrchestrator.Persistence.Results.WorkspaceMembership, as: WorkspaceMembershipResult
   alias FavnOrchestrator.Persistence.Selectors.ActorById
@@ -67,6 +69,29 @@ defmodule FavnStoragePostgres.Identity.Store do
       case actor_query(query.workspace_context.workspace_id, query.selector) |> Repo.one() do
         nil -> {:error, Error.new(:not_found, "actor membership not found")}
         tuple -> {:ok, actor_result(tuple)}
+      end
+    end
+  rescue
+    error -> {:error, ErrorMapper.map(error)}
+  end
+
+  @impl true
+  def get_global_actor(%GetGlobalActor{} = query) do
+    with :ok <- validate_get_global_actor(query) do
+      normalized_username = normalize_username(query.username)
+
+      case Repo.get_by(AuthActor, normalized_username: normalized_username) do
+        nil ->
+          {:error, Error.new(:not_found, "global actor not found")}
+
+        actor ->
+          {:ok,
+           %GlobalActor{
+             actor_id: actor.actor_id,
+             username: actor.username,
+             status: global_actor_status(actor.status),
+             version: actor.version
+           }}
       end
     end
   rescue
@@ -2038,6 +2063,16 @@ defmodule FavnStoragePostgres.Identity.Store do
        else: {:error, Error.new(:forbidden, "platform administrator authority required")}
   end
 
+  defp validate_get_global_actor(query) do
+    context = query.platform_context
+    normalized_username = normalize_username(query.username)
+
+    if PlatformContext.valid?(context) and :platform_admin in context.roles and
+         normalized_username != "" and byte_size(normalized_username) <= 255,
+       do: :ok,
+       else: {:error, Error.new(:forbidden, "platform administrator authority required")}
+  end
+
   defp common_access_valid?(command, allowed_roles) do
     valid_id?(command.command_id) and valid_id?(command.actor_id) and
       valid_roles?(command.roles, allowed_roles) and command.status in @access_statuses and
@@ -2247,4 +2282,7 @@ defmodule FavnStoragePostgres.Identity.Store do
 
   defp valid_bound?(value, min, max), do: is_integer(value) and value >= min and value <= max
   defp valid_id?(value), do: is_binary(value) and value != "" and byte_size(value) <= 255
+
+  defp global_actor_status("active"), do: :active
+  defp global_actor_status(_disabled_or_retired), do: :disabled
 end

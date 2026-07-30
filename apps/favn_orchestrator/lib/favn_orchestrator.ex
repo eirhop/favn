@@ -331,6 +331,28 @@ defmodule FavnOrchestrator do
     end
   end
 
+  @doc "Changes the current actor's global password and revokes every actor session."
+  @spec change_operator_password(OperatorContext.t(), String.t(), String.t()) ::
+          :ok | {:error, term()}
+  def change_operator_password(
+        %OperatorContext{} = operator_context,
+        current_password,
+        new_password
+      )
+      when is_binary(current_password) and is_binary(new_password) do
+    with {:ok, context, actor} <- authorize_operator_context(operator_context, :viewer) do
+      Auth.set_actor_password(context, actor.id, current_password, new_password)
+    end
+  end
+
+  @doc "Pages redacted current-workspace authorization audit after admin reauthorization."
+  @spec page_operator_audit(OperatorContext.t(), keyword()) :: {:ok, map()} | {:error, term()}
+  def page_operator_audit(%OperatorContext{} = operator_context, opts \\ []) do
+    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :admin) do
+      Auth.page_audit(context, opts)
+    end
+  end
+
   @doc """
   Returns whether an operator actor has at least the required role.
   """

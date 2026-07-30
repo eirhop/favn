@@ -17,6 +17,7 @@ defmodule FavnView.Auth do
   @session_token_key :operator_session_token
   @workspace_key :operator_workspace_id
   @live_socket_key :live_socket_id
+  @default_revalidation_interval_ms 30_000
 
   @doc """
   Fetches the current sanitized operator scope into `conn.assigns` when present.
@@ -273,13 +274,15 @@ defmodule FavnView.Auth do
                  ),
                refreshed_scope = Scope.new(workspace_id, actor, session),
                true <- Scope.has_role?(refreshed_scope, :viewer) do
+            schedule_identity_revalidation()
+
             {:cont,
              socket
              |> assign_live_scope(refreshed_scope)
              |> Phoenix.LiveView.attach_hook(
                :operator_identity_invalidation,
                :handle_info,
-               &handle_identity_invalidation/2
+               &handle_identity_message(&1, &2, workspace_id, token)
              )}
           else
             _invalid -> {:halt, Phoenix.LiveView.redirect(socket, to: "/login")}
@@ -299,6 +302,48 @@ defmodule FavnView.Auth do
     |> Phoenix.Component.assign(:current_actor, scope.actor)
     |> Phoenix.Component.assign(:can_submit_runs?, Scope.has_role?(scope, :operator))
     |> Phoenix.Component.assign(:operator_workspaces, active_workspaces(scope))
+  end
+
+  defp handle_identity_message(
+         {:favn_identity_invalidated, _reason} = message,
+         socket,
+         _workspace_id,
+         _token
+       ) do
+    handle_identity_invalidation(message, socket)
+  end
+
+  defp handle_identity_message(
+         :favn_revalidate_operator_identity,
+         socket,
+         workspace_id,
+         token
+       ) do
+    with {:ok, session, actor} <-
+           call(
+             :introspect_operator_session_fun,
+             &FavnOrchestrator.introspect_operator_session/2,
+             [workspace_id, token]
+           ),
+         refreshed_scope = Scope.new(workspace_id, actor, session),
+         true <- Scope.has_role?(refreshed_scope, :viewer) do
+      schedule_identity_revalidation()
+      {:cont, assign_live_scope(socket, refreshed_scope)}
+    else
+      _invalid -> {:halt, Phoenix.LiveView.redirect(socket, to: "/login")}
+    end
+  end
+
+  defp handle_identity_message(_message, socket, _workspace_id, _token), do: {:cont, socket}
+
+  defp schedule_identity_revalidation do
+    Process.send_after(
+      self(),
+      :favn_revalidate_operator_identity,
+      @default_revalidation_interval_ms
+    )
+
+    :ok
   end
 
   defp fetch_operator_session_credentials(%Plug.Conn{} = conn) do
