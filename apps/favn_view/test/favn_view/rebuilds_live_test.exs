@@ -48,7 +48,9 @@ defmodule FavnView.RebuildsLiveTest do
     :page_operator_rebuild_items_fun,
     :cancel_operator_rebuild_fun,
     :retry_operator_rebuild_fun,
-    :reconcile_operator_rebuild_fun
+    :reconcile_operator_rebuild_fun,
+    :list_operator_workspaces_fun,
+    :subscribe_operator_identity_fun
   ]
 
   setup do
@@ -57,6 +59,14 @@ defmodule FavnView.RebuildsLiveTest do
     Application.put_env(:favn_view, :page_operator_rebuilds_fun, fn :operator_context, opts ->
       send(self(), {:page_rebuilds, opts})
       {:ok, %{items: [], next_cursor: nil, has_more?: false, limit: 100}}
+    end)
+
+    Application.put_env(:favn_view, :list_operator_workspaces_fun, fn _operator_context ->
+      {:ok, [%{id: "workspace-1", name: "Workspace 1", status: :active}]}
+    end)
+
+    Application.put_env(:favn_view, :subscribe_operator_identity_fun, fn _operator_context ->
+      :ok
     end)
 
     stores =

@@ -11,6 +11,43 @@ defmodule FavnView.Layouts do
 
   embed_templates "layouts/*"
 
+  attr :current_scope, :any, default: nil
+  attr :workspaces, :list, default: []
+
+  def workspace_switcher(assigns) do
+    workspaces = Enum.filter(assigns.workspaces, &(Map.get(&1, :status) == :active))
+    assigns = assign(assigns, :workspaces, workspaces)
+
+    ~H"""
+    <div
+      :if={match?(%FavnView.Auth.Scope{}, @current_scope) && length(@workspaces) > 1}
+      class="fixed bottom-3 left-3 z-50 flex items-end gap-2 rounded-box border border-base-content/10 bg-base-200/95 p-2 shadow-lg"
+      data-testid="workspace-switcher"
+    >
+      <form action={~p"/workspaces/switch"} method="post" class="flex items-end gap-2">
+        <input type="hidden" name="_csrf_token" value={get_csrf_token()} />
+        <label class="form-control">
+          <span class="label py-0 text-xs">Workspace</span>
+          <select
+            name="workspace_id"
+            class="select select-sm select-bordered"
+            aria-label="Workspace"
+          >
+            <option
+              :for={workspace <- @workspaces}
+              value={workspace.id}
+              selected={workspace.id == @current_scope.workspace_id}
+            >
+              {Map.get(workspace, :name) || Map.get(workspace, :slug) || workspace.id}
+            </option>
+          </select>
+        </label>
+        <button type="submit" class="btn btn-sm btn-primary">Switch</button>
+      </form>
+    </div>
+    """
+  end
+
   defp operator_command_scope(%FavnView.Auth.Scope{
          workspace_id: workspace_id,
          actor: %{id: actor_id}

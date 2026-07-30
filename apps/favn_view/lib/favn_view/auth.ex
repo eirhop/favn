@@ -25,11 +25,14 @@ defmodule FavnView.Auth do
   def fetch_current_scope(conn, _opts) do
     case scope_from_session(conn) do
       {:ok, scope} ->
-        assign(conn, :current_scope, scope)
+        conn
+        |> assign(:current_scope, scope)
+        |> assign(:operator_workspaces, active_workspaces(scope))
 
       {:error, :missing_session} ->
         conn
         |> assign(:current_scope, nil)
+        |> assign(:operator_workspaces, [])
 
       {:error, :invalid_session} ->
         conn
@@ -37,6 +40,7 @@ defmodule FavnView.Auth do
         |> delete_session(@workspace_key)
         |> delete_session(@live_socket_key)
         |> assign(:current_scope, nil)
+        |> assign(:operator_workspaces, [])
     end
   end
 
@@ -125,6 +129,52 @@ defmodule FavnView.Auth do
   end
 
   @doc """
+  Atomically rotates the current operator session into another active workspace.
+  """
+  @spec switch_operator_workspace(Plug.Conn.t(), String.t()) ::
+          {:ok, Plug.Conn.t()} | {:error, Plug.Conn.t()}
+  def switch_operator_workspace(conn, target_workspace_id)
+      when is_binary(target_workspace_id) do
+    scope = conn.assigns[:current_scope]
+    old_live_socket_id = get_session(conn, @live_socket_key)
+
+    result =
+      case scope do
+        %Scope{} ->
+          call(
+            :switch_operator_workspace_fun,
+            &FavnOrchestrator.switch_operator_workspace/2,
+            [scope.operator_context, String.trim(target_workspace_id)]
+          )
+
+        _scope ->
+          {:error, :unauthenticated}
+      end
+
+    case result do
+      {:ok, session} ->
+        if is_binary(old_live_socket_id) do
+          Endpoint.broadcast(old_live_socket_id, "disconnect", %{})
+        end
+
+        {:ok,
+         conn
+         |> renew_session()
+         |> put_session(@session_token_key, Map.fetch!(session, :token))
+         |> put_session(@workspace_key, Map.fetch!(session, :workspace_id))
+         |> put_session(@live_socket_key, live_socket_id(Map.fetch!(session, :id)))
+         |> put_flash(:info, "Workspace switched")
+         |> Phoenix.Controller.redirect(to: "/")}
+
+      {:error, _reason} ->
+        {:error,
+         conn
+         |> put_flash(:error, "Could not switch workspace")
+         |> Phoenix.Controller.redirect(to: "/")}
+    end
+  end
+
+  @doc """
   LiveView `on_mount` hook that authenticates operator LiveViews on every mount.
   """
   @spec on_mount(atom(), map(), map(), Phoenix.LiveView.Socket.t()) ::
@@ -132,17 +182,15 @@ defmodule FavnView.Auth do
   def on_mount(:require_authenticated_operator, _params, session, socket) do
     with {:ok, workspace_id, token} <- fetch_operator_session_credentials(session),
          {:ok, orchestrator_session, actor} <-
-           FavnOrchestrator.introspect_operator_session(workspace_id, token) do
+           call(
+             :introspect_operator_session_fun,
+             &FavnOrchestrator.introspect_operator_session/2,
+             [workspace_id, token]
+           ) do
       scope = Scope.new(workspace_id, actor, orchestrator_session)
 
       if Scope.has_role?(scope, :viewer) do
-        socket =
-          socket
-          |> Phoenix.Component.assign(:current_scope, scope)
-          |> Phoenix.Component.assign(:current_actor, scope.actor)
-          |> Phoenix.Component.assign(:can_submit_runs?, Scope.has_role?(scope, :operator))
-
-        {:cont, socket}
+        subscribe_live_identity(socket, scope, workspace_id, token)
       else
         {:halt, Phoenix.LiveView.redirect(socket, to: "/login")}
       end
@@ -176,12 +224,81 @@ defmodule FavnView.Auth do
   def live_socket_id(session_id) when is_binary(session_id),
     do: "operator_sessions:#{session_id}"
 
+  @doc false
+  def handle_identity_invalidation({:favn_identity_invalidated, _reason}, socket) do
+    {:halt, Phoenix.LiveView.redirect(socket, to: "/login")}
+  end
+
+  def handle_identity_invalidation(_message, socket), do: {:cont, socket}
+
   defp scope_from_session(conn) do
     with {:ok, workspace_id, token} <- fetch_operator_session_credentials(conn),
          {:ok, session, actor} <-
-           FavnOrchestrator.introspect_operator_session(workspace_id, token) do
+           call(
+             :introspect_operator_session_fun,
+             &FavnOrchestrator.introspect_operator_session/2,
+             [workspace_id, token]
+           ) do
       {:ok, Scope.new(workspace_id, actor, session)}
     end
+  end
+
+  defp active_workspaces(%Scope{} = scope) do
+    case call(
+           :list_operator_workspaces_fun,
+           &FavnOrchestrator.list_operator_workspaces/1,
+           [scope.operator_context]
+         ) do
+      {:ok, workspaces} when is_list(workspaces) ->
+        Enum.filter(workspaces, &(Map.get(&1, :status) == :active))
+
+      {:error, _reason} ->
+        []
+    end
+  end
+
+  defp subscribe_live_identity(socket, scope, workspace_id, token) do
+    if Phoenix.LiveView.connected?(socket) do
+      case call(
+             :subscribe_operator_identity_fun,
+             &FavnOrchestrator.subscribe_operator_identity/1,
+             [scope.operator_context]
+           ) do
+        :ok ->
+          with {:ok, session, actor} <-
+                 call(
+                   :introspect_operator_session_fun,
+                   &FavnOrchestrator.introspect_operator_session/2,
+                   [workspace_id, token]
+                 ),
+               refreshed_scope = Scope.new(workspace_id, actor, session),
+               true <- Scope.has_role?(refreshed_scope, :viewer) do
+            {:cont,
+             socket
+             |> assign_live_scope(refreshed_scope)
+             |> Phoenix.LiveView.attach_hook(
+               :operator_identity_invalidation,
+               :handle_info,
+               &handle_identity_invalidation/2
+             )}
+          else
+            _invalid -> {:halt, Phoenix.LiveView.redirect(socket, to: "/login")}
+          end
+
+        {:error, _reason} ->
+          {:halt, Phoenix.LiveView.redirect(socket, to: "/login")}
+      end
+    else
+      {:cont, assign_live_scope(socket, scope)}
+    end
+  end
+
+  defp assign_live_scope(socket, scope) do
+    socket
+    |> Phoenix.Component.assign(:current_scope, scope)
+    |> Phoenix.Component.assign(:current_actor, scope.actor)
+    |> Phoenix.Component.assign(:can_submit_runs?, Scope.has_role?(scope, :operator))
+    |> Phoenix.Component.assign(:operator_workspaces, active_workspaces(scope))
   end
 
   defp fetch_operator_session_credentials(%Plug.Conn{} = conn) do
@@ -216,5 +333,13 @@ defmodule FavnView.Auth do
     conn
     |> configure_session(renew: true)
     |> clear_session()
+  end
+
+  defp call(key, default, args) do
+    fun = Application.get_env(:favn_view, key, default)
+
+    if is_function(fun, length(args)),
+      do: apply(fun, args),
+      else: apply(default, args)
   end
 end

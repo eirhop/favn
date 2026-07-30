@@ -38,6 +38,7 @@ defmodule FavnView.Router do
 
     delete "/logout", OperatorSessionController, :delete
     post "/logout", OperatorSessionController, :delete
+    post "/workspaces/switch", WorkspaceSessionController, :create
 
     live_session :operator,
       on_mount: [{FavnView.Auth, :require_authenticated_operator}] do
