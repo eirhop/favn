@@ -663,6 +663,8 @@ prove_idempotency() {
 }
 
 inject_runner_failure() {
+  runner_fault_pause_started_epoch=$(date +%s)
+
   if ! wait_for_busy_runner; then
     fail "runner fault phase did not find a runner with an active task"
   fi
@@ -756,11 +758,14 @@ inject_runner_failure() {
       replacement_timeout_seconds:$replacement_timeout_seconds
     }' >"$runner_fault_file"
 
+  runner_fault_pause_seconds=$(( $(date +%s) - runner_fault_pause_started_epoch ))
+  sampling_paused_seconds=$(( sampling_paused_seconds + runner_fault_pause_seconds ))
   event runner_replaced "$replacement_id"
 }
 
 inject_service_failure() {
   service=$1
+  service_fault_pause_started_epoch=$(date +%s)
   container_id=$(service_container_id "$service")
 
   if [ -z "$container_id" ]; then
@@ -782,6 +787,8 @@ inject_service_failure() {
     fail "control plane did not recover after the PostgreSQL crash"
   fi
 
+  service_fault_pause_seconds=$(( $(date +%s) - service_fault_pause_started_epoch ))
+  sampling_paused_seconds=$(( sampling_paused_seconds + service_fault_pause_seconds ))
   event "${service}_recovered" "$container_id"
 }
 
@@ -880,7 +887,13 @@ collect_performance_summary() {
     ' "$samples_file"
   )
   minimum_sustained_submissions=$(( (duration_seconds * min_submissions_per_minute + 59) / 60 ))
-  expected_samples=$(( duration_seconds / sample_interval_seconds ))
+  sampling_eligible_seconds=$(( duration_seconds - sampling_paused_seconds ))
+
+  if [ "$sampling_eligible_seconds" -lt "$sample_interval_seconds" ]; then
+    sampling_eligible_seconds=$sample_interval_seconds
+  fi
+
+  expected_samples=$(( sampling_eligible_seconds / sample_interval_seconds ))
 
   if [ "$expected_samples" -lt 1 ]; then
     expected_samples=1
@@ -898,6 +911,8 @@ collect_performance_summary() {
     --argjson sustained_submissions "$sustained_submissions" \
     --argjson minimum_sustained_submissions "$minimum_sustained_submissions" \
     --argjson sustained_samples "$sustained_samples" \
+    --argjson sampling_paused_seconds "$sampling_paused_seconds" \
+    --argjson sampling_eligible_seconds "$sampling_eligible_seconds" \
     --argjson expected_samples "$expected_samples" \
     --argjson minimum_samples "$minimum_samples" \
     --argjson minimum_sample_coverage_percent "$min_sample_coverage_percent" \
@@ -918,6 +933,8 @@ collect_performance_summary() {
       },
       sample_completeness:{
         sustained_samples:$sustained_samples,
+        measured_fault_pause_seconds:$sampling_paused_seconds,
+        sampling_eligible_seconds:$sampling_eligible_seconds,
         expected_samples:$expected_samples,
         minimum_samples:$minimum_samples,
         minimum_coverage_percent:$minimum_sample_coverage_percent
@@ -1078,6 +1095,7 @@ last_sample_at=0
 runner_fault_done=false
 control_plane_fault_done=false
 postgres_fault_done=false
+sampling_paused_seconds=0
 phase=sustained_load
 
 while [ "$(date +%s)" -lt "$load_deadline" ]; do
@@ -1290,6 +1308,10 @@ assertions=$(
         ),
         observed:{
           sustained_samples:$performance.sample_completeness.sustained_samples,
+          measured_fault_pause_seconds:
+            $performance.sample_completeness.measured_fault_pause_seconds,
+          sampling_eligible_seconds:
+            $performance.sample_completeness.sampling_eligible_seconds,
           expected_samples:$performance.sample_completeness.expected_samples
         },
         expected:{
