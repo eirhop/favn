@@ -204,6 +204,8 @@ running_runner_count() {
 }
 
 busy_runner_assignment() {
+  runner_fault_run_id=$1
+
   PGPASSWORD="$FAVN_RUNTIME_DATABASE_PASSWORD" \
     PGCONNECT_TIMEOUT=5 \
     PGSSLROOTCERT=/etc/favn/postgres-tls/ca.crt \
@@ -213,6 +215,7 @@ busy_runner_assignment() {
     --tuples-only \
     --no-align \
     --set "qualification_started_at=$qualification_started_at" \
+    --set "runner_fault_run_id=$runner_fault_run_id" \
     "host=postgres dbname=favn user=favn_runtime sslmode=verify-full" <<'SQL'
 SELECT jsonb_build_object(
   'task_id', task_id,
@@ -221,6 +224,7 @@ SELECT jsonb_build_object(
 FROM favn_control.runner_tasks
 WHERE workspace_id = 'elastic-simulation'
   AND inserted_at >= :'qualification_started_at'::timestamptz
+  AND run_id = :'runner_fault_run_id'
   AND status = 'running'
   AND assigned_runner_instance_id IS NOT NULL
 ORDER BY updated_at DESC
@@ -265,10 +269,11 @@ runner_demand() {
 
 wait_for_busy_runner() {
   deadline=$(( $(date +%s) + runner_replacement_timeout_seconds ))
-  fault_work_submitted=false
+  submit_one runner_recovery "$runner_fault_target_id"
+  runner_fault_run_id=$last_submitted_run_id
 
   while [ "$(date +%s)" -lt "$deadline" ]; do
-    if assignment=$(busy_runner_assignment) &&
+    if assignment=$(busy_runner_assignment "$runner_fault_run_id") &&
         [ -n "$assignment" ] &&
         printf '%s' "$assignment" |
           jq -e '.task_id != null and .runner_instance_id != null' >/dev/null &&
@@ -279,11 +284,6 @@ wait_for_busy_runner() {
         busy_runner_assignment_json=$assignment
         return 0
       fi
-    fi
-
-    if [ "$fault_work_submitted" = "false" ]; then
-      submit_one runner_recovery "$runner_fault_target_id"
-      fault_work_submitted=true
     fi
 
     sleep 1
@@ -622,6 +622,7 @@ submit_one() {
 
   accepted_run_id=$(jq -er '.data.run.id' "$api_body_file") ||
     fail "run submission response did not contain a run ID"
+  last_submitted_run_id=$accepted_run_id
   record_accepted_run "$accepted_run_id" "$sequence" "$submit_phase"
 }
 
@@ -671,6 +672,7 @@ inject_runner_failure() {
 
   killed_runner_name=$(printf '%s' "$busy_runner_assignment_json" | jq -r '.runner_instance_id')
   killed_task_id=$(printf '%s' "$busy_runner_assignment_json" | jq -r '.task_id')
+  killed_run_id=$runner_fault_run_id
   runner_id=$(docker inspect --format '{{.Id}}' "$killed_runner_name")
   baseline_runner_ids=$(runner_ids)
   fault_started_epoch=$(date +%s)
@@ -734,6 +736,7 @@ inject_runner_failure() {
 
   jq -n \
     --arg killed_task_id "$killed_task_id" \
+    --arg killed_run_id "$killed_run_id" \
     --arg killed_runner_instance_id "$killed_runner_name" \
     --arg killed_container_id "$runner_id" \
     --arg replacement_runner_instance_id "$replacement_name" \
@@ -745,6 +748,7 @@ inject_runner_failure() {
     --argjson replacement_timeout_seconds "$runner_replacement_timeout_seconds" \
     '{
       killed_task_id:$killed_task_id,
+      killed_run_id:$killed_run_id,
       killed_runner_instance_id:$killed_runner_instance_id,
       killed_container_id:$killed_container_id,
       killed_runner_was_busy:true,
