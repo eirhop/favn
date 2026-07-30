@@ -207,20 +207,19 @@ busy_runner_assignment() {
     --tuples-only \
     --no-align \
     --set "qualification_started_at=$qualification_started_at" \
-    "host=postgres dbname=favn user=favn_runtime sslmode=verify-full" \
-    --command "
-      SELECT jsonb_build_object(
-        'task_id', task_id,
-        'runner_instance_id', assigned_runner_instance_id
-      )
-      FROM favn_control.runner_tasks
-      WHERE workspace_id = 'elastic-simulation'
-        AND inserted_at >= :'qualification_started_at'::timestamptz
-        AND status = 'running'
-        AND assigned_runner_instance_id IS NOT NULL
-      ORDER BY updated_at DESC
-      LIMIT 1
-    "
+    "host=postgres dbname=favn user=favn_runtime sslmode=verify-full" <<'SQL'
+SELECT jsonb_build_object(
+  'task_id', task_id,
+  'runner_instance_id', assigned_runner_instance_id
+)
+FROM favn_control.runner_tasks
+WHERE workspace_id = 'elastic-simulation'
+  AND inserted_at >= :'qualification_started_at'::timestamptz
+  AND status = 'running'
+  AND assigned_runner_instance_id IS NOT NULL
+ORDER BY updated_at DESC
+LIMIT 1;
+SQL
 }
 
 runner_instance_has_task() {
@@ -237,16 +236,15 @@ runner_instance_has_task() {
       --no-align \
       --set "qualification_started_at=$qualification_started_at" \
       --set "runner_instance_id=$runner_instance_id" \
-      "host=postgres dbname=favn user=favn_runtime sslmode=verify-full" \
-      --command "
-        SELECT EXISTS (
-          SELECT 1
-          FROM favn_control.runner_tasks
-          WHERE workspace_id = 'elastic-simulation'
-            AND inserted_at >= :'qualification_started_at'::timestamptz
-            AND assigned_runner_instance_id = :'runner_instance_id'
-        )
-      "
+      "host=postgres dbname=favn user=favn_runtime sslmode=verify-full" <<'SQL'
+SELECT EXISTS (
+  SELECT 1
+  FROM favn_control.runner_tasks
+  WHERE workspace_id = 'elastic-simulation'
+    AND inserted_at >= :'qualification_started_at'::timestamptz
+    AND assigned_runner_instance_id = :'runner_instance_id'
+);
+SQL
   ) || return 1
 
   [ "$assigned" = "t" ]
