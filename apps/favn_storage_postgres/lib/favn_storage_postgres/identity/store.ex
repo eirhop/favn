@@ -15,6 +15,7 @@ defmodule FavnStoragePostgres.Identity.Store do
   alias FavnOrchestrator.Persistence.Commands.RecordAudit
   alias FavnOrchestrator.Persistence.Commands.RecoverAdministratorCredential
   alias FavnOrchestrator.Persistence.Commands.ReserveOperatorCommand
+  alias FavnOrchestrator.Persistence.Commands.ResetActorCredential
   alias FavnOrchestrator.Persistence.Commands.RevokeSessions
   alias FavnOrchestrator.Persistence.Commands.RotateWorkspaceSession
   alias FavnOrchestrator.Persistence.Commands.SetActorAccess
@@ -46,9 +47,9 @@ defmodule FavnStoragePostgres.Identity.Store do
   alias FavnStoragePostgres.Schemas.AuthActor
   alias FavnStoragePostgres.Schemas.AuthAuditEntry
   alias FavnStoragePostgres.Schemas.AuthCredential
+  alias FavnStoragePostgres.Schemas.AuthOperatorCommand
   alias FavnStoragePostgres.Schemas.AuthPlatformAuditEntry
   alias FavnStoragePostgres.Schemas.AuthPlatformGrant
-  alias FavnStoragePostgres.Schemas.AuthOperatorCommand
   alias FavnStoragePostgres.Schemas.AuthSession
   alias FavnStoragePostgres.Schemas.AuthWorkspaceMembership
   alias FavnStoragePostgres.Schemas.Workspace
@@ -180,6 +181,13 @@ defmodule FavnStoragePostgres.Identity.Store do
   def recover_administrator_credential(%RecoverAdministratorCredential{} = command) do
     with :ok <- validate_recover_administrator_credential(command) do
       transaction(fn -> recover_administrator_credential!(command) end)
+    end
+  end
+
+  @impl true
+  def reset_actor_credential(%ResetActorCredential{} = command) do
+    with :ok <- validate_reset_actor_credential(command) do
+      transaction(fn -> reset_actor_credential!(command) end)
     end
   end
 
@@ -582,6 +590,71 @@ defmodule FavnStoragePostgres.Identity.Store do
           command.platform_context,
           command.command_id,
           "administrator.credential.recovered",
+          actor.actor_id,
+          expected_detail,
+          command.occurred_at
+        )
+
+        actor.actor_id
+    end
+  end
+
+  defp reset_actor_credential!(command) do
+    normalized_username = normalize_username(command.username)
+
+    actor =
+      from(actor in AuthActor,
+        where: actor.normalized_username == ^normalized_username,
+        lock: "FOR UPDATE"
+      )
+      |> Repo.one()
+
+    if is_nil(actor) do
+      Repo.rollback(
+        Error.new(:not_found, "actor not found", details: %{reason_code: "actor_not_found"})
+      )
+    end
+
+    credential =
+      from(credential in AuthCredential,
+        where: credential.actor_id == ^actor.actor_id,
+        lock: "FOR UPDATE"
+      )
+      |> Repo.one!()
+
+    fingerprint = hash!(command.password_hash) |> Base.url_encode64(padding: false)
+
+    expected_detail = %{
+      "credential_fingerprint" => fingerprint,
+      "credential_version" => credential.version + 1,
+      "actor_status_preserved" => actor.status,
+      "sessions_revoked" => true
+    }
+
+    case platform_audit_by_command(command.command_id, "actor.credential.reset") do
+      %AuthPlatformAuditEntry{subject_id: actor_id, detail: ^expected_detail}
+      when actor_id == actor.actor_id ->
+        actor.actor_id
+
+      %AuthPlatformAuditEntry{} ->
+        Repo.rollback(Error.new(:conflict, "actor credential reset command changed"))
+
+      nil ->
+        credential
+        |> Ecto.Changeset.change(%{
+          password_hash: command.password_hash,
+          version: credential.version + 1,
+          changed_at: command.occurred_at,
+          updated_at: command.occurred_at
+        })
+        |> Repo.update!()
+
+        revoke_actor_sessions!(actor.actor_id, command.occurred_at)
+
+        platform_audit!(
+          command.platform_context,
+          command.command_id,
+          "actor.credential.reset",
           actor.actor_id,
           expected_detail,
           command.occurred_at
@@ -2050,6 +2123,19 @@ defmodule FavnStoragePostgres.Identity.Store do
        else:
          {:error,
           Error.new(:forbidden, "explicit platform administrator recovery authority required")}
+  end
+
+  defp validate_reset_actor_credential(command) do
+    context = command.platform_context
+
+    if PlatformContext.valid?(context) and :platform_admin in context.roles and
+         valid_id?(command.command_id) and is_binary(command.username) and
+         normalize_username(command.username) != "" and
+         byte_size(normalize_username(command.username)) <= 255 and
+         valid_password_hash?(command.password_hash) and
+         match?(%DateTime{}, command.occurred_at),
+       do: :ok,
+       else: {:error, Error.new(:forbidden, "platform administrator authority required")}
   end
 
   defp validate_set_actor_status(command) do

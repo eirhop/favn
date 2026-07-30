@@ -6935,7 +6935,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
 
     viewer_username = "viewer-#{System.unique_integer([:positive])}"
 
-    assert {:ok, _viewer} =
+    assert {:ok, viewer} =
              Identity.create_actor(
                admin_context,
                viewer_username,
@@ -6944,10 +6944,52 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
                [:viewer]
              )
 
+    assert {:ok, authenticated_viewer} =
+             Identity.authenticate_password(
+               first_login_context,
+               viewer_username,
+               "viewer-password-long"
+             )
+
+    assert {:ok, viewer_session} =
+             Identity.issue_session(first_login_context, viewer.id,
+               expected_credential_version: authenticated_viewer.credential_version
+             )
+
     assert {:error, %Error{kind: :forbidden}} =
              AdminLifecycle.recover(viewer_username, replacement_password,
                identity_store: IdentityStore
              )
+
+    viewer_replacement_password = "viewer-replacement-password"
+
+    assert {:ok, reset_viewer} =
+             AdminLifecycle.reset_actor_credential(
+               viewer_username,
+               viewer_replacement_password,
+               identity_store: IdentityStore
+             )
+
+    assert reset_viewer.actor_id == viewer.id
+
+    assert {:error, :invalid_credentials} =
+             Identity.authenticate_password(
+               first_login_context,
+               viewer_username,
+               "viewer-password-long"
+             )
+
+    assert {:ok, reset_viewer_actor} =
+             Identity.authenticate_password(
+               first_login_context,
+               viewer_username,
+               viewer_replacement_password
+             )
+
+    assert reset_viewer_actor.id == viewer.id
+
+    assert {:error, :invalid_session} =
+             Identity.introspect_session(first_login_context, viewer_session.token)
 
     assert %{rows: [[1]]} =
              SQL.query!(
@@ -6958,6 +7000,17 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
                WHERE action = 'administrator.bootstrapped' AND subject_id = $1
                """,
                [first_actor.id]
+             )
+
+    assert %{rows: [[1]]} =
+             SQL.query!(
+               Repo,
+               """
+               SELECT count(*)
+               FROM favn_control.auth_platform_audit_entries
+               WHERE action = 'actor.credential.reset' AND subject_id = $1
+               """,
+               [viewer.id]
              )
 
     assert %{rows: [[1]]} =

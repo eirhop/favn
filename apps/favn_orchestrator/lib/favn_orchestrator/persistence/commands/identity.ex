@@ -232,6 +232,34 @@ defmodule FavnOrchestrator.Persistence.Commands.RecoverAdministratorCredential d
         }
 end
 
+defmodule FavnOrchestrator.Persistence.Commands.ResetActorCredential do
+  @moduledoc """
+  Rotates one exact global actor credential under trusted platform authority.
+
+  The actor's global status and workspace memberships are preserved. Every
+  active session is revoked so the replacement credential is required.
+  """
+
+  alias FavnOrchestrator.Persistence.PlatformContext
+
+  @enforce_keys [
+    :platform_context,
+    :command_id,
+    :username,
+    :password_hash,
+    :occurred_at
+  ]
+  defstruct @enforce_keys
+
+  @type t :: %__MODULE__{
+          platform_context: PlatformContext.t(),
+          command_id: String.t(),
+          username: String.t(),
+          password_hash: String.t(),
+          occurred_at: DateTime.t()
+        }
+end
+
 defmodule FavnOrchestrator.Persistence.Commands.ChangeActorPassword do
   @moduledoc "Replaces one current credential hash and optionally revokes active sessions."
 

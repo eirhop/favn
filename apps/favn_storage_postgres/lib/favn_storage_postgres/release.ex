@@ -34,6 +34,7 @@ defmodule FavnStoragePostgres.Release do
           :migrate
           | :admin_bootstrap
           | :admin_recover
+          | :admin_password_reset
           | :admin_actor_status
           | :verify_schema
           | :verify_workspace
@@ -237,6 +238,66 @@ defmodule FavnStoragePostgres.Release do
   def admin_recover_from_stdin(_username) do
     release_operation(:admin_recover, fn ->
       error(:admin_recover, :invalid_admin_recovery, reason: :username_required)
+    end)
+  end
+
+  @doc "Rotates one exact global actor credential and revokes all sessions."
+  @spec admin_password_reset(map()) :: result()
+  def admin_password_reset(input) when is_map(input) do
+    database_operation(:admin_password_reset, fn ->
+      with {:ok, username} <- fetch_string(input, :username),
+           {:ok, password} <- fetch_string(input, :password),
+           {:ok, actor} <-
+             AdminLifecycle.reset_actor_credential(username, password,
+               identity_store: IdentityStore
+             ) do
+        Logger.warning("favn.release.actor_password_reset actor_id=#{actor.actor_id}")
+
+        ok(:admin_password_reset,
+          actor_id: actor.actor_id,
+          username: actor.username,
+          sessions_revoked: true
+        )
+      else
+        {:error, %PersistenceError{} = failure} ->
+          persistence_error(:admin_password_reset, failure)
+
+        {:error, reason} ->
+          error(:admin_password_reset, :invalid_actor_credential_reset,
+            reason: safe_reason(reason)
+          )
+      end
+    end)
+  end
+
+  def admin_password_reset(_input) do
+    release_operation(:admin_password_reset, fn ->
+      error(:admin_password_reset, :invalid_actor_credential_reset, reason: :map_required)
+    end)
+  end
+
+  @doc """
+  Secure interactive password-reset entry point for a packaged release.
+
+  The replacement password is read without echo. The actor's status and grants
+  are preserved, while all of its sessions are revoked.
+  """
+  @spec admin_password_reset_from_stdin(String.t()) :: result()
+  def admin_password_reset_from_stdin(username) when is_binary(username) do
+    case read_password("Replacement actor password") do
+      {:ok, password} ->
+        admin_password_reset(%{username: username, password: password})
+
+      {:error, reason} ->
+        release_operation(:admin_password_reset, fn ->
+          error(:admin_password_reset, :password_input_failed, reason: reason)
+        end)
+    end
+  end
+
+  def admin_password_reset_from_stdin(_username) do
+    release_operation(:admin_password_reset, fn ->
+      error(:admin_password_reset, :invalid_actor_credential_reset, reason: :username_required)
     end)
   end
 

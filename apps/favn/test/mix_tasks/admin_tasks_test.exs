@@ -4,6 +4,7 @@ defmodule Mix.Tasks.Favn.AdminTasksTest do
   alias Favn.CLI.AdminSecret
   alias Mix.Tasks.Favn.Admin.Actor
   alias Mix.Tasks.Favn.Admin.Bootstrap
+  alias Mix.Tasks.Favn.Admin.PasswordReset
   alias Mix.Tasks.Favn.Admin.Recover
 
   test "bootstrap requires explicit workspaces and never accepts a password argument" do
@@ -66,6 +67,28 @@ defmodule Mix.Tasks.Favn.AdminTasksTest do
                "disabled",
                "--workspace",
                "must-not-scope-global-status"
+             ])
+
+    assert message =~ "invalid option"
+  end
+
+  test "global password reset accepts only username and optional protected file" do
+    assert {:error, "--username is required"} = PasswordReset.parse_args([])
+
+    assert {:ok, %{username: "operator"}, [password_file: "/run/secrets/operator"]} =
+             PasswordReset.parse_args([
+               "--username",
+               "operator",
+               "--password-file",
+               "/run/secrets/operator"
+             ])
+
+    assert {:error, message} =
+             PasswordReset.parse_args([
+               "--username",
+               "operator",
+               "--password",
+               "must-never-enter-process-arguments"
              ])
 
     assert message =~ "invalid option"

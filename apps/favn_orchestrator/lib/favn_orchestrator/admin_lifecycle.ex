@@ -12,6 +12,7 @@ defmodule FavnOrchestrator.AdminLifecycle do
   alias FavnOrchestrator.Persistence
   alias FavnOrchestrator.Persistence.Commands.BootstrapAdministrator
   alias FavnOrchestrator.Persistence.Commands.RecoverAdministratorCredential
+  alias FavnOrchestrator.Persistence.Commands.ResetActorCredential
   alias FavnOrchestrator.Persistence.Commands.SetActorStatus
   alias FavnOrchestrator.Persistence.PlatformContext
   alias FavnOrchestrator.Persistence.Queries.GetGlobalActor
@@ -71,6 +72,37 @@ defmodule FavnOrchestrator.AdminLifecycle do
   end
 
   def recover(_username, _password, _opts), do: {:error, :invalid_admin_recovery}
+
+  @doc """
+  Rotates one exact global actor password from a trusted platform command.
+
+  Unlike administrator recovery, this preserves the actor's current status and
+  grants. Every session is revoked across all workspaces.
+  """
+  @spec reset_actor_credential(String.t(), String.t(), keyword()) ::
+          {:ok, %{actor_id: String.t(), username: String.t()}} | {:error, term()}
+  def reset_actor_credential(username, password, opts \\ [])
+
+  def reset_actor_credential(username, password, opts)
+      when is_binary(username) and is_binary(password) and is_list(opts) do
+    with {:ok, actor} <- Credentials.normalize_actor(username, "Credential reset", [:viewer]),
+         :ok <- Credentials.validate_password(password),
+         {:ok, context} <- platform_context(),
+         {:ok, actor_id} <-
+           identity_store(opts).reset_actor_credential(%ResetActorCredential{
+             platform_context: context,
+             command_id: operation_id("actor-credential-reset"),
+             username: actor.username,
+             password_hash: Credentials.hash_password(password).password_hash,
+             occurred_at: DateTime.utc_now()
+           }) do
+      Events.broadcast_actor_changed(actor_id)
+      {:ok, %{actor_id: actor_id, username: actor.username}}
+    end
+  end
+
+  def reset_actor_credential(_username, _password, _opts),
+    do: {:error, :invalid_actor_credential_reset}
 
   @doc """
   Enables or disables one exact global actor from a trusted release command.
