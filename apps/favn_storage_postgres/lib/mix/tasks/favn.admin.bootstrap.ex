@@ -17,7 +17,7 @@ defmodule Mix.Tasks.Favn.Admin.Bootstrap do
   password is never accepted as a command-line value or environment variable.
   """
 
-  alias Favn.CLI.AdminSecret
+  alias FavnStoragePostgres.AdminSecret
   alias FavnStoragePostgres.Release
 
   @switches [

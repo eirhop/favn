@@ -7050,6 +7050,17 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   end
 
   test "administrator recovery and actor credential reset replay exact commands", fixture do
+    workspace_admin_username = "pre-bootstrap-admin-#{System.unique_integer([:positive])}"
+
+    assert {:ok, _workspace_admin} =
+             Identity.create_actor(
+               fixture.workspace_context,
+               workspace_admin_username,
+               "pre-bootstrap-password",
+               "Pre-bootstrap Workspace Administrator",
+               [:admin]
+             )
+
     username = "replay-admin-#{System.unique_integer([:positive])}"
 
     assert {:ok, administrator} =

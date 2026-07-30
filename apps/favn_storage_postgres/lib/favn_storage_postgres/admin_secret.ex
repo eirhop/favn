@@ -1,4 +1,4 @@
-defmodule Favn.CLI.AdminSecret do
+defmodule FavnStoragePostgres.AdminSecret do
   @moduledoc false
 
   import Bitwise

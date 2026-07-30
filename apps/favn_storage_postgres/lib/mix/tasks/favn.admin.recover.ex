@@ -15,7 +15,7 @@ defmodule Mix.Tasks.Favn.Admin.Recover do
   stdin/protected-file contract as `mix favn.admin.bootstrap`.
   """
 
-  alias Favn.CLI.AdminSecret
+  alias FavnStoragePostgres.AdminSecret
   alias FavnStoragePostgres.Release
 
   @switches [username: :string, password_file: :string]

@@ -674,10 +674,6 @@ defmodule FavnStoragePostgres.Identity.Store do
         """
         SELECT EXISTS (
           SELECT 1
-          FROM favn_control.auth_workspace_memberships
-          WHERE 'workspace_admin' = ANY(roles)
-          UNION ALL
-          SELECT 1
           FROM favn_control.auth_platform_grants
           WHERE 'platform_admin' = ANY(roles)
         )

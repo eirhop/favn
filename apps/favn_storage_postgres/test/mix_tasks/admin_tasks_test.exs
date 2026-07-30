@@ -1,7 +1,7 @@
 defmodule Mix.Tasks.Favn.AdminTasksTest do
   use ExUnit.Case, async: true
 
-  alias Favn.CLI.AdminSecret
+  alias FavnStoragePostgres.AdminSecret
   alias Mix.Tasks.Favn.Admin.Actor
   alias Mix.Tasks.Favn.Admin.Bootstrap
   alias Mix.Tasks.Favn.Admin.PasswordReset
