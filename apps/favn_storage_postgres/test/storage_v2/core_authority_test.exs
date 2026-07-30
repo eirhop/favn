@@ -6737,6 +6737,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     plans =
       Repo.transaction(fn ->
         SQL.query!(Repo, "SET LOCAL enable_seqscan = off", [])
+        SQL.query!(Repo, "SET LOCAL enable_sort = off", [])
 
         for order <- ["DESC NULLS LAST", "ASC NULLS FIRST"] do
           direction = if order == "DESC NULLS LAST", do: "DESC", else: "ASC"
