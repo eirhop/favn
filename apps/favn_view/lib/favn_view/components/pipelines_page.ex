@@ -6,13 +6,10 @@ defmodule FavnView.Components.PipelinesPage do
   use FavnView, :html
 
   alias FavnView.Components.AppShell
-  alias FavnView.Components.AssetCataloguePage
-  alias FavnView.Components.GlassPanel
-  alias FavnView.Components.ModeRail
+  alias FavnView.Components.Navigation
 
   attr :pipelines, :list, required: true
   attr :filters, :map, required: true
-  attr :active_mode, :atom, required: true
   attr :loading, :boolean, default: false
   attr :error, :string, default: nil
   attr :nav_items, :list, required: true
@@ -26,27 +23,35 @@ defmodule FavnView.Components.PipelinesPage do
       nav_items={@nav_items}
     >
       <div class="mx-auto w-full max-w-[120rem] pb-24 lg:pb-0" data-testid="pipelines-page">
-        <.loading_state :if={@loading} />
-        <.error_state :if={!@loading && @error} error={@error} />
-
+        <.loading_state :if={@loading} label="Loading pipelines" />
+        <.error_state
+          :if={!@loading && @error}
+          title="Could not load pipelines"
+          description={@error}
+          data-testid="pipelines-error-state"
+        />
         <div :if={!@loading && !@error} class="space-y-3.5 lg:space-y-5">
           <div id="pipeline-filters" data-testid="pipeline-filters">
             <.pipeline_filters filters={@filters} status_options={@status_options} />
           </div>
 
-          <.empty_state :if={@pipelines == []} />
-
-          <GlassPanel.glass_panel :if={@pipelines != []} class="hidden overflow-visible lg:block">
+          <.empty_state
+            :if={@pipelines == []}
+            title="No pipelines found"
+            description="Try changing the search or health filter."
+            icon="hero-queue-list"
+            data-testid="pipelines-empty-state"
+          />
+          <.panel
+            :if={@pipelines != []}
+            padding={:none}
+            class="hidden overflow-visible p-5 sm:p-6 lg:block"
+          >
             <.pipeline_table pipelines={@pipelines} />
-          </GlassPanel.glass_panel>
-
+          </.panel>
           <.pipeline_card_list :if={@pipelines != []} pipelines={@pipelines} />
         </div>
       </div>
-
-      <:mode_rail>
-        <ModeRail.mode_rail active={@active_mode} modes={pipeline_modes()} on_select="set_mode" />
-      </:mode_rail>
     </AppShell.app_shell>
     """
   end
@@ -56,40 +61,23 @@ defmodule FavnView.Components.PipelinesPage do
 
   def pipeline_filters(assigns) do
     ~H"""
-    <form
-      phx-change="filter_pipelines"
-      phx-submit="filter_pipelines"
-      class="grid grid-cols-2 gap-2.5 lg:grid-cols-[1fr_12rem] lg:gap-3"
-    >
-      <label class="input input-sm favn-surface-control col-span-2 w-full gap-3 px-4 focus-within:outline focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-primary lg:col-span-1">
-        <.icon name="hero-magnifying-glass" class="size-5 shrink-0 text-base-content/60" />
-        <span class="sr-only">Search pipelines</span>
-        <input
-          id="pipeline-search"
-          type="search"
-          name="filters[search]"
-          value={@filters.search}
-          placeholder="Search pipelines or selected assets"
-          autocomplete="off"
-          phx-debounce="200"
-        />
-      </label>
-
-      <label class="select select-sm favn-surface-control w-full gap-2 px-3 focus-within:outline focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-primary">
-        <.icon name="hero-heart" class="size-5 shrink-0 text-base-content/65" />
-        <span class="sr-only">Health filter</span>
-        <select name="filters[status]" id="pipeline-status-filter" aria-label="Health filter">
-          <option
-            :for={{label, value} <- @status_options}
-            value={value}
-            selected={@filters.status == value}
-          >
-            {label}
-          </option>
-        </select>
-        <.icon name="hero-chevron-down" class="size-5 shrink-0 text-base-content/65" />
-      </label>
-    </form>
+    <.filter_bar on_change="filter_pipelines" class="lg:grid-cols-[1fr_12rem]">
+      <.search_field
+        id="pipeline-search"
+        name="filters[search]"
+        label="Search pipelines"
+        placeholder="Search pipelines or selected assets"
+        value={@filters.search}
+      />
+      <.select_field
+        id="pipeline-status-filter"
+        name="filters[status]"
+        label="Health filter"
+        icon="hero-heart"
+        options={@status_options}
+        value={@filters.status}
+      />
+    </.filter_bar>
     """
   end
 
@@ -100,16 +88,23 @@ defmodule FavnView.Components.PipelinesPage do
     <div class="overflow-x-auto overflow-y-visible p-5 sm:p-6">
       <table class="table table-lg" data-testid="pipelines-table">
         <thead>
-          <tr class="border-base-content/10 text-base-content/65">
+          <tr class="border-base-content/10 favn-text-muted">
             <th class="font-medium">Pipeline</th>
+
             <th class="font-medium">Deps</th>
+
             <th class="font-medium">Window</th>
+
             <th class="font-medium">Selected assets</th>
+
             <th class="font-medium">Health</th>
+
             <th class="font-medium">Last run</th>
+
             <th class="font-medium">Runtime</th>
           </tr>
         </thead>
+
         <tbody>
           <.pipeline_table_row :for={pipeline <- @pipelines} pipeline={pipeline} />
         </tbody>
@@ -131,22 +126,30 @@ defmodule FavnView.Components.PipelinesPage do
           <span class="flex size-8 items-center justify-center rounded-field border border-primary/25 bg-primary/10 text-primary">
             <.icon name="hero-queue-list" class="size-4" />
           </span>
+
           <div class="min-w-0">
             <p class="truncate">{@pipeline.name}</p>
-            <p class="truncate text-xs font-normal text-base-content/50" title={@pipeline.label}>
+
+            <p class="truncate text-xs font-normal favn-text-subtle" title={@pipeline.label}>
               {@pipeline.label}
             </p>
           </div>
         </.link>
       </td>
-      <td class="whitespace-nowrap text-base-content/70">{@pipeline.dependencies_label}</td>
-      <td class="whitespace-nowrap text-base-content/70">{@pipeline.window_label}</td>
+
+      <td class="whitespace-nowrap favn-text-muted">{@pipeline.dependencies_label}</td>
+
+      <td class="whitespace-nowrap favn-text-muted">{@pipeline.window_label}</td>
+
       <td class="min-w-56 max-w-80">
         <.selected_assets pipeline={@pipeline} />
       </td>
-      <td><.status_badge status={@pipeline.status} /></td>
-      <td class="whitespace-nowrap text-base-content/70">{@pipeline.last_run_label}</td>
-      <td class="whitespace-nowrap text-base-content/70">{@pipeline.runtime_label}</td>
+
+      <td><.status_badge tone={@pipeline.status} label={status_label(@pipeline.status)} /></td>
+
+      <td class="whitespace-nowrap favn-text-muted">{@pipeline.last_run_label}</td>
+
+      <td class="whitespace-nowrap favn-text-muted">{@pipeline.runtime_label}</td>
     </tr>
     """
   end
@@ -165,9 +168,8 @@ defmodule FavnView.Components.PipelinesPage do
 
   def pipeline_card(assigns) do
     ~H"""
-    <.link
+    <.list_card
       navigate={~p"/pipelines/#{FavnView.AssetRoute.to_param(@pipeline.id)}"}
-      class="card glass favn-surface-list favn-density-list-card block rounded-box"
       data-testid="pipeline-card"
     >
       <div class="flex items-start justify-between gap-3">
@@ -176,31 +178,32 @@ defmodule FavnView.Components.PipelinesPage do
             <span class="favn-density-list-card-icon flex shrink-0 items-center justify-center rounded-field border border-primary/30 bg-primary/10 text-primary">
               <.icon name="hero-queue-list" class="size-4" />
             </span>
+
             <div class="min-w-0 flex-1">
-              <h2 class="truncate text-base font-medium leading-tight text-base-content">
-                {@pipeline.name}
-              </h2>
-              <p class="mt-0.5 truncate text-xs text-base-content/60">
+              <.section_title>{@pipeline.name}</.section_title>
+
+              <.meta>
                 {@pipeline.dependencies_label} · {@pipeline.window_label} · {asset_count_label(
                   @pipeline
                 )}
-              </p>
+              </.meta>
             </div>
           </div>
-          <div class="flex flex-wrap items-center gap-3 text-xs text-base-content/65">
-            <.status_badge status={@pipeline.status} />
-            <span>{@pipeline.last_run_label}</span>
-            <span>{@pipeline.runtime_label}</span>
+
+          <div class="flex flex-wrap items-center gap-3 text-xs favn-text-muted">
+            <.status_badge tone={@pipeline.status} label={status_label(@pipeline.status)} />
+            <span>{@pipeline.last_run_label}</span> <span>{@pipeline.runtime_label}</span>
           </div>
+
           <p
-            class="truncate text-xs text-base-content/55"
+            class="truncate text-xs favn-text-muted"
             title={Enum.join(@pipeline.selected_assets, ", ")}
           >
             {selected_assets_preview(@pipeline)}
           </p>
         </div>
       </div>
-    </.link>
+    </.list_card>
     """
   end
 
@@ -208,7 +211,7 @@ defmodule FavnView.Components.PipelinesPage do
 
   def selected_assets(%{pipeline: %{selected_assets: []}} = assigns) do
     ~H"""
-    <span class="text-sm text-base-content/55">No resolved assets</span>
+    <span class="text-sm favn-text-muted">No resolved assets</span>
     """
   end
 
@@ -234,77 +237,24 @@ defmodule FavnView.Components.PipelinesPage do
           >
             {List.first(@pipeline.selected_assets)}
           </span>
+
           <span class="badge badge-xs badge-soft badge-info shrink-0">
             +{length(@pipeline.selected_assets) - 1}
           </span>
         </span>
       </summary>
-      <div class="dropdown-content z-20 mt-2 w-80 rounded-box border border-base-content/10 bg-base-100 p-3 shadow-xl">
-        <p class="mb-2 text-xs font-medium uppercase tracking-[0.2em] text-base-content/45">
+
+      <div class="dropdown-content z-50 mt-2 w-80 rounded-box border border-base-content/10 bg-base-100 p-3 shadow-xl">
+        <p class="mb-2 text-xs font-medium uppercase tracking-[0.2em] favn-text-subtle">
           Selected assets
         </p>
-        <ul class="space-y-1 text-xs text-base-content/75">
+
+        <ul class="space-y-1 text-xs favn-text-muted">
           <li :for={asset <- @pipeline.selected_assets} class="truncate" title={asset}>{asset}</li>
         </ul>
       </div>
     </details>
     """
-  end
-
-  attr :status, :atom, required: true
-
-  def status_badge(assigns) do
-    ~H"""
-    <span class={["badge badge-sm badge-soft gap-2", status_badge_class(@status)]}>
-      <span class={["status", status_dot_class(@status)]}></span>
-      {status_label(@status)}
-    </span>
-    """
-  end
-
-  def loading_state(assigns) do
-    ~H"""
-    <GlassPanel.glass_panel class="mx-auto flex min-h-64 max-w-2xl items-center justify-center p-10">
-      <div class="text-center">
-        <span class="loading loading-ring loading-lg text-primary"></span>
-        <p class="mt-4 text-base-content/60">Loading pipelines</p>
-      </div>
-    </GlassPanel.glass_panel>
-    """
-  end
-
-  def empty_state(assigns) do
-    ~H"""
-    <GlassPanel.glass_panel
-      class="mx-auto max-w-2xl p-10 text-center"
-      data-testid="pipelines-empty-state"
-    >
-      <h2 class="text-xl font-medium">No pipelines found</h2>
-      <p class="mt-2 text-base-content/60">Try changing the search or health filter.</p>
-    </GlassPanel.glass_panel>
-    """
-  end
-
-  attr :error, :string, required: true
-
-  def error_state(assigns) do
-    ~H"""
-    <GlassPanel.glass_panel
-      class="mx-auto max-w-2xl p-10 text-center"
-      data-testid="pipelines-error-state"
-    >
-      <h2 class="text-xl font-medium">Could not load pipelines</h2>
-      <p class="mt-2 text-base-content/60">{@error}</p>
-    </GlassPanel.glass_panel>
-    """
-  end
-
-  def pipeline_modes do
-    [
-      %{id: :list, label: "List", icon: "hero-list-bullet"},
-      %{id: :filters, label: "Filters", icon: "hero-funnel", disabled: true},
-      %{id: :more, label: "More", icon: "hero-ellipsis-vertical", disabled: true}
-    ]
   end
 
   def sample_pipelines do
@@ -344,24 +294,13 @@ defmodule FavnView.Components.PipelinesPage do
     [{"Health", "all"}, {"Healthy", "healthy"}, {"Running", "running"}, {"Failed", "failed"}]
   end
 
-  def nav_items(active \\ :pipelines), do: AssetCataloguePage.nav_items(active)
+  def nav_items(active \\ :pipelines), do: Navigation.items(active)
 
   defp selected_assets_preview(%{selected_assets: []}), do: "No resolved assets"
   defp selected_assets_preview(%{selected_assets: assets}), do: Enum.join(assets, ", ")
 
   defp asset_count_label(%{asset_count: 1}), do: "1 asset"
   defp asset_count_label(%{asset_count: count}), do: "#{count} assets"
-
-  defp status_badge_class(:healthy), do: "badge-success"
-  defp status_badge_class(:running), do: "badge-info"
-  defp status_badge_class(:failed), do: "badge-error"
-  defp status_badge_class(:unknown), do: "badge-neutral"
-  defp status_badge_class(_status), do: "badge-neutral"
-
-  defp status_dot_class(:healthy), do: "status-success"
-  defp status_dot_class(:running), do: "status-info"
-  defp status_dot_class(:failed), do: "status-error"
-  defp status_dot_class(_status), do: "status-neutral"
 
   defp status_label(:healthy), do: "Healthy"
   defp status_label(:running), do: "Running"

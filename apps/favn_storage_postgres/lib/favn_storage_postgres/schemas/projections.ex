@@ -33,6 +33,9 @@ defmodule FavnStoragePostgres.Schemas.ExecutionGroupOverview do
     field(:failed_count, :integer)
     field(:latest_event_id, :integer)
     field(:source_publication_id, :integer)
+    field(:trigger_type, :string)
+    field(:started_at, :utc_datetime_usec)
+    field(:finished_at, :utc_datetime_usec)
     field(:inserted_at, :utc_datetime_usec)
     field(:updated_at, :utc_datetime_usec)
   end

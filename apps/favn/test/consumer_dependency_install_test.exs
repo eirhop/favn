@@ -110,22 +110,6 @@ defmodule Favn.ConsumerDependencyInstallTest do
     view_root = Path.join([consumer_dir, "deps", "favn", "apps", "favn_view"])
     assert File.stat!(Path.join(view_root, "priv/static/assets/css/app.css")).size > 0
     assert File.stat!(Path.join(view_root, "priv/static/assets/js/app.js")).size > 0
-
-    hash_probe = """
-    hash = FavnView.Storybook.asset_hash(:css_path)
-
-    unless is_binary(hash) and byte_size(hash) > 0 do
-      raise "Storybook CSS hash is unavailable"
-    end
-    """
-
-    assert {_, 0} =
-             System.cmd(
-               "mix",
-               ["run", "--no-start", "--no-compile", "--eval", hash_probe],
-               cd: consumer_dir,
-               stderr_to_stdout: true
-             )
   end
 
   @tag :slow

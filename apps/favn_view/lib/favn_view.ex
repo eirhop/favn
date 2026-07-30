@@ -84,8 +84,8 @@ defmodule FavnView do
 
       # HTML escaping functionality
       import Phoenix.HTML
-      # Core UI components
-      import FavnView.CoreComponents
+      # The Favn UI element library: see `FavnView.UI`
+      use FavnView.UI
 
       # Common modules used in templates
       alias Phoenix.LiveView.JS

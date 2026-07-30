@@ -368,8 +368,8 @@ defmodule FavnStoragePostgres.Projections.Projector do
       INSERT INTO favn_control.execution_group_overviews
         (workspace_id, root_run_id, status, run_count, pending_count, running_count,
          succeeded_count, failed_count, latest_event_id, source_publication_id,
-         inserted_at, updated_at)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $11)
+         trigger_type, started_at, finished_at, inserted_at, updated_at)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $12, $13, $14, $11, $11)
       ON CONFLICT (workspace_id, root_run_id) DO UPDATE
       SET run_count = execution_group_overviews.run_count + EXCLUDED.run_count,
           pending_count = execution_group_overviews.pending_count + EXCLUDED.pending_count,
@@ -385,6 +385,15 @@ defmodule FavnStoragePostgres.Projections.Projector do
           latest_event_id = GREATEST(execution_group_overviews.latest_event_id,
                                     EXCLUDED.latest_event_id),
           source_publication_id = EXCLUDED.source_publication_id,
+          trigger_type = COALESCE(EXCLUDED.trigger_type,
+                                  execution_group_overviews.trigger_type),
+          started_at = COALESCE(EXCLUDED.started_at, execution_group_overviews.started_at),
+          finished_at = CASE
+            WHEN execution_group_overviews.pending_count + EXCLUDED.pending_count > 0
+              OR execution_group_overviews.running_count + EXCLUDED.running_count > 0
+            THEN NULL
+            ELSE EXCLUDED.updated_at
+          END,
           updated_at = EXCLUDED.updated_at
       WHERE execution_group_overviews.source_publication_id < EXCLUDED.source_publication_id
       """,
@@ -399,10 +408,31 @@ defmodule FavnStoragePostgres.Projections.Projector do
         delta.failed,
         run_event.event_id,
         event.publication_id,
-        event.published_at || event.inserted_at
+        event.published_at || event.inserted_at,
+        root_only(run, run.trigger_type),
+        root_only(run, run.inserted_at),
+        settled_at(delta, event)
       ]
     )
   end
+
+  # The group is named after its root run, and only the root run's own events know
+  # when the group started and what triggered it. A child run's event carries
+  # neither, so it passes NULL and the upsert coalesces rather than clearing what a
+  # root event already established.
+  defp root_only(%{run_id: run_id, root_execution_group_id: run_id}, value), do: value
+  defp root_only(_run, _value), do: nil
+
+  # When the group stopped, which is not when its root run stopped. A backfill's
+  # root run is terminal the instant it is created — it exists to group the window
+  # runs that do the work — so taking its `terminal_at` reported every backfill as
+  # having finished before it started, and a zero duration with it.
+  #
+  # A group is finished when nothing in it is pending or running, so this is the
+  # instant of the event that settled it, and it goes back to NULL if a later run
+  # unsettles the group. On insert the row's own counts are the delta.
+  defp settled_at(%{pending: 0, running: 0}, event), do: event.published_at || event.inserted_at
+  defp settled_at(_delta, _event), do: nil
 
   defp project_target_statuses!({_run, _run_event, status, status}, _event), do: :ok
 

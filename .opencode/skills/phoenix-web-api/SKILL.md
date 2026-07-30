@@ -15,8 +15,8 @@ This skill is for Phoenix API/server work, not LiveView UI work.
 
 ## Core Rules
 
-- Always use the `tidewave_orchestrator` MCP when the `apps/favn_orchestrator` runtime is running and the task involves API routes, Plug pipelines, request behavior, logs, source lookup, runtime state, or Phoenix/Plug docs.
-- If `tidewave_orchestrator` is unavailable because the runtime is not running, say so explicitly and continue with static inspection only when that is sufficient.
+- Use the Tidewave MCP endpoint when the umbrella development server is running and the task involves API routes, Plug pipelines, request behavior, logs, source lookup, runtime state, or Phoenix/Plug docs. One endpoint covers the whole node; see [`docs/contributing/dev-server.md`](../../../docs/contributing/dev-server.md). Note that the orchestrator's private API listener is off on that server.
+- If Tidewave is unavailable because that server is not running, say so explicitly and continue with static inspection only when that is sufficient.
 - Keep endpoints, routers, controllers, and plugs thin.
 - Business logic belongs behind explicit orchestrator public APIs or facades.
 - Plugs handle request concerns, not orchestration internals.

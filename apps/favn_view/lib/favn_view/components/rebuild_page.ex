@@ -5,7 +5,6 @@ defmodule FavnView.Components.RebuildPage do
 
   alias FavnView.Components.AppShell
   alias FavnView.Components.AssetCataloguePage
-  alias FavnView.Components.GlassPanel
 
   attr :operations, :list, required: true
   attr :plan, :map, default: nil
@@ -25,17 +24,18 @@ defmodule FavnView.Components.RebuildPage do
         class="mx-auto grid w-full max-w-[120rem] gap-5 xl:grid-cols-[minmax(22rem,0.8fr)_minmax(0,1.7fr)]"
         data-testid="rebuilds-page"
       >
-        <GlassPanel.glass_panel class="p-5 sm:p-6">
-          <p class="text-xs font-semibold uppercase tracking-[0.18em] text-base-content/50">
+        <.panel padding={:none} class="p-5 sm:p-6">
+          <p class="text-xs font-semibold uppercase tracking-[0.18em] favn-text-subtle">
             Plan a rebuild
           </p>
-          <p class="mt-2 text-sm text-base-content/65">
+
+          <p class="mt-2 text-sm favn-text-muted">
             Planning is read-only. Review the immutable plan before starting it.
           </p>
 
           <.form for={%{}} as={:rebuild} phx-submit="plan_rebuild" class="mt-5 space-y-4">
             <label class="form-control block">
-              <span class="label-text text-xs text-base-content/60">Target id</span>
+              <span class="label-text text-xs favn-text-muted">Target id</span>
               <input
                 name="rebuild[target_id]"
                 value={@target_id}
@@ -44,9 +44,9 @@ defmodule FavnView.Components.RebuildPage do
                 data-testid="rebuild-target"
               />
             </label>
+
             <label class="form-control block">
-              <span class="label-text text-xs text-base-content/60">Reason</span>
-              <textarea
+              <span class="label-text text-xs favn-text-muted">Reason</span> <textarea
                 name="rebuild[reason]"
                 required
                 maxlength="4096"
@@ -54,6 +54,7 @@ defmodule FavnView.Components.RebuildPage do
                 data-testid="rebuild-reason"
               ></textarea>
             </label>
+
             <button class="btn btn-primary w-full" disabled={@planning?} data-testid="plan-rebuild">
               {if @planning?, do: "Planning…", else: "Create immutable plan"}
             </button>
@@ -67,6 +68,7 @@ defmodule FavnView.Components.RebuildPage do
             data-testid="rebuild-plan"
           >
             <p class="font-medium">Plan ready for review</p>
+
             <dl class="mt-3 space-y-2 text-xs">
               <.fact label="Plan id" value={field(@plan, :plan_id)} mono? />
               <.fact label="Plan hash" value={field(@plan, :plan_hash)} mono? />
@@ -79,8 +81,7 @@ defmodule FavnView.Components.RebuildPage do
               <.fact
                 label="Evaluated"
                 value={@plan |> field(:payload, %{}) |> field(:evaluated_at) |> format_time()}
-              />
-              <.fact label="Declared coverage" value={plan_coverage(@plan, :declared_from)} />
+              /> <.fact label="Declared coverage" value={plan_coverage(@plan, :declared_from)} />
               <.fact label="Effective coverage" value={plan_coverage(@plan, :effective_from)} />
               <.fact label="Coverage through" value={plan_coverage(@plan, :through)} />
               <.fact label="Evaluated range" value={plan_range(@plan)} />
@@ -115,16 +116,20 @@ defmodule FavnView.Components.RebuildPage do
                 mono?
               />
             </dl>
+
             <div :if={plan_capabilities(@plan) != []} class="mt-4 space-y-2 text-xs">
-              <p class="font-medium text-base-content/60">Adapter capabilities</p>
+              <p class="font-medium favn-text-muted">Adapter capabilities</p>
+
               <div
                 :for={{target_id, capabilities} <- plan_capabilities(@plan)}
                 class="rounded-box border border-base-content/10 p-3"
               >
                 <p class="truncate font-mono">{target_id}</p>
-                <p class="mt-1 break-all font-mono text-base-content/55">{json_text(capabilities)}</p>
+
+                <p class="mt-1 break-all font-mono favn-text-muted">{json_text(capabilities)}</p>
               </div>
             </div>
+
             <div
               :if={plan_actions(@plan) != []}
               class="mt-4 max-h-64 overflow-y-auto rounded-box border border-base-content/10"
@@ -140,8 +145,10 @@ defmodule FavnView.Components.RebuildPage do
                     {humanize(field(action, :action))}
                   </span>
                 </div>
-                <p class="mt-1 text-base-content/55">{action_reason(action)}</p>
-                <dl class="mt-2 grid gap-1 text-base-content/50">
+
+                <p class="mt-1 favn-text-muted">{action_reason(action)}</p>
+
+                <dl class="mt-2 grid gap-1 favn-text-subtle">
                   <.action_detail label="Mapping proof" value={field(action, :mapping_proof)} />
                   <.action_detail
                     label="Pinned inputs"
@@ -158,6 +165,7 @@ defmodule FavnView.Components.RebuildPage do
                 </dl>
               </div>
             </div>
+
             <button
               :if={@plan |> field(:permissions, %{}) |> field(:start, false)}
               type="button"
@@ -169,19 +177,20 @@ defmodule FavnView.Components.RebuildPage do
               Approve and start
             </button>
           </div>
-        </GlassPanel.glass_panel>
+        </.panel>
 
-        <GlassPanel.glass_panel class="min-w-0 p-5 sm:p-6">
+        <.panel padding={:none} class="min-w-0 p-5 sm:p-6">
           <div class="flex items-center justify-between gap-3">
             <div>
-              <p class="text-xs font-semibold uppercase tracking-[0.18em] text-base-content/50">
+              <p class="text-xs font-semibold uppercase tracking-[0.18em] favn-text-subtle">
                 Operations
               </p>
-              <p class="mt-1 text-sm text-base-content/60">Newest first</p>
+
+              <p class="mt-1 text-sm favn-text-muted">Newest first</p>
             </div>
           </div>
 
-          <div :if={@operations == []} class="py-16 text-center text-sm text-base-content/55">
+          <div :if={@operations == []} class="py-16 text-center text-sm favn-text-muted">
             No rebuild operations yet.
           </div>
 
@@ -195,17 +204,22 @@ defmodule FavnView.Components.RebuildPage do
               <div class="min-w-0">
                 <div class="flex flex-wrap items-center gap-2">
                   <p class="truncate font-medium">{field(operation, :root_target_id)}</p>
+
                   <span class={state_badge(field(operation, :state))}>{humanize(
                     field(operation, :state)
                   )}</span>
                 </div>
-                <p class="mt-1 truncate font-mono text-xs text-base-content/45">
+
+                <p class="mt-1 truncate font-mono text-xs favn-text-subtle">
                   {field(operation, :operation_id)}
                 </p>
-                <p class="mt-1 truncate text-xs text-base-content/55">{field(operation, :reason)}</p>
+
+                <p class="mt-1 truncate text-xs favn-text-muted">{field(operation, :reason)}</p>
               </div>
-              <div class="text-left text-xs text-base-content/55 sm:text-right">
+
+              <div class="text-left text-xs favn-text-muted sm:text-right">
                 <p>{progress_label(field(operation, :progress, %{}))}</p>
+
                 <p class="mt-1">{format_time(field(operation, :updated_at))}</p>
               </div>
             </.link>
@@ -220,7 +234,7 @@ defmodule FavnView.Components.RebuildPage do
           >
             Load more
           </button>
-        </GlassPanel.glass_panel>
+        </.panel>
       </div>
     </AppShell.app_shell>
     """
@@ -251,7 +265,7 @@ defmodule FavnView.Components.RebuildPage do
           {@error}
         </p>
 
-        <GlassPanel.glass_panel class="p-5 sm:p-6">
+        <.panel padding={:none} class="p-5 sm:p-6">
           <div class="grid gap-5 lg:grid-cols-[minmax(0,1fr)_auto]">
             <dl class="grid gap-4 text-xs sm:grid-cols-2 xl:grid-cols-4">
               <.fact label="Phase" value={humanize(field(@operation, :phase))} />
@@ -263,8 +277,7 @@ defmodule FavnView.Components.RebuildPage do
                 label="Candidate generation"
                 value={field(@operation, :candidate_generation_id)}
                 mono?
-              />
-              <.fact label="Plan hash" value={field(@operation, :plan_hash)} mono? />
+              /> <.fact label="Plan hash" value={field(@operation, :plan_hash)} mono? />
               <.fact label="Started" value={format_time(field(@operation, :started_at))} />
               <.fact label="Completed" value={format_time(field(@operation, :completed_at))} />
               <.fact label="Cleanup" value={humanize(field(@operation, :cleanup_state))} />
@@ -317,43 +330,51 @@ defmodule FavnView.Components.RebuildPage do
               Cancel rebuild
             </button>
           </.form>
-        </GlassPanel.glass_panel>
+        </.panel>
 
-        <GlassPanel.glass_panel
+        <.panel
           :if={present?(field(@operation, :terminal_error))}
+          padding={:none}
           class="border border-error/25 p-5 text-sm"
         >
           <p class="font-medium text-error">Terminal error</p>
-          <p class="mt-2 text-base-content/70">{error_label(field(@operation, :terminal_error))}</p>
-        </GlassPanel.glass_panel>
 
-        <GlassPanel.glass_panel
+          <p class="mt-2 favn-text-muted">{error_label(field(@operation, :terminal_error))}</p>
+        </.panel>
+
+        <.panel
           :if={present?(field(@operation, :unknown_outcome))}
+          padding={:none}
           class="border border-warning/30 p-5 text-sm"
         >
           <p class="font-medium text-warning">Outcome needs reconciliation</p>
-          <p class="mt-2 break-all font-mono text-xs text-base-content/65">
+
+          <p class="mt-2 break-all font-mono text-xs favn-text-muted">
             {json_text(field(@operation, :unknown_outcome))}
           </p>
-        </GlassPanel.glass_panel>
+        </.panel>
 
-        <GlassPanel.glass_panel
+        <.panel
           :if={present?(field(@operation, :validation_result))}
+          padding={:none}
           class="p-5 text-sm"
         >
           <p class="font-medium">Candidate validation</p>
-          <p class="mt-2 break-all font-mono text-xs text-base-content/65">
+
+          <p class="mt-2 break-all font-mono text-xs favn-text-muted">
             {json_text(field(@operation, :validation_result))}
           </p>
-        </GlassPanel.glass_panel>
+        </.panel>
 
-        <GlassPanel.glass_panel
+        <.panel
           :if={field(@operation, :actions, []) != []}
+          padding={:none}
           class="min-w-0 p-5 sm:p-6"
         >
-          <p class="text-xs font-semibold uppercase tracking-[0.18em] text-base-content/50">
+          <p class="text-xs font-semibold uppercase tracking-[0.18em] favn-text-subtle">
             Downstream actions
           </p>
+
           <div class="mt-4 divide-y divide-base-content/10">
             <div :for={action <- field(@operation, :actions, [])} class="py-4 text-xs">
               <div class="flex flex-wrap items-center gap-2">
@@ -363,7 +384,8 @@ defmodule FavnView.Components.RebuildPage do
                   {humanize(field(action, :status))}
                 </span>
               </div>
-              <dl class="mt-2 grid gap-1 text-base-content/55 sm:grid-cols-2">
+
+              <dl class="mt-2 grid gap-1 favn-text-muted sm:grid-cols-2">
                 <.action_detail label="Progress" value={field(action, :progress, %{})} />
                 <.action_detail label="Validation" value={field(action, :validation_result)} />
                 <.action_detail label="Failure" value={field(action, :terminal_error)} />
@@ -371,15 +393,17 @@ defmodule FavnView.Components.RebuildPage do
               </dl>
             </div>
           </div>
-        </GlassPanel.glass_panel>
+        </.panel>
 
-        <GlassPanel.glass_panel class="min-w-0 p-5 sm:p-6">
-          <p class="text-xs font-semibold uppercase tracking-[0.18em] text-base-content/50">
+        <.panel padding={:none} class="min-w-0 p-5 sm:p-6">
+          <p class="text-xs font-semibold uppercase tracking-[0.18em] favn-text-subtle">
             Logical work items
           </p>
-          <div :if={@items == []} class="py-12 text-center text-sm text-base-content/55">
+
+          <div :if={@items == []} class="py-12 text-center text-sm favn-text-muted">
             No logical work items.
           </div>
+
           <div :if={@items != []} class="mt-4 overflow-x-auto">
             <table class="table table-sm">
               <thead>
@@ -387,26 +411,32 @@ defmodule FavnView.Components.RebuildPage do
                   <th>Target</th><th>Window</th><th>Status</th><th>Attempts</th><th>Rows</th>
                 </tr>
               </thead>
+
               <tbody>
                 <tr :for={item <- @items} data-testid="rebuild-item">
                   <td class="max-w-72 truncate">{field(item, :target_id)}</td>
+
                   <td class="font-mono text-xs">{field(item, :window_key) || "full generation"}</td>
+
                   <td>
                     <span class={state_badge(field(item, :status))}>{humanize(field(item, :status))}</span>
                   </td>
+
                   <td>{field(item, :attempt_count, 0)}</td>
+
                   <td>{field(item, :row_count, "-")}</td>
                 </tr>
               </tbody>
             </table>
           </div>
+
           <button
             :if={@items_has_more?}
             phx-click="load_more_items"
             class="btn btn-ghost btn-sm mt-4 w-full"
             data-testid="load-more-rebuild-items"
           >Load more</button>
-        </GlassPanel.glass_panel>
+        </.panel>
       </div>
     </AppShell.app_shell>
     """
@@ -419,8 +449,9 @@ defmodule FavnView.Components.RebuildPage do
   defp fact(assigns) do
     ~H"""
     <div class="min-w-0">
-      <dt class="text-base-content/45">{@label}</dt>
-      <dd class={["mt-1 break-all text-base-content/80", @mono? && "font-mono"]}>{@value || "-"}</dd>
+      <dt class="favn-text-subtle">{@label}</dt>
+
+      <dd class={["mt-1 break-all favn-text-muted", @mono? && "font-mono"]}>{@value || "-"}</dd>
     </div>
     """
   end
@@ -432,6 +463,7 @@ defmodule FavnView.Components.RebuildPage do
     ~H"""
     <div :if={present?(@value)} class="grid grid-cols-[8rem_minmax(0,1fr)] gap-2">
       <dt>{@label}</dt>
+
       <dd class="break-all font-mono">{json_text(@value)}</dd>
     </div>
     """

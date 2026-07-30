@@ -38,6 +38,8 @@ current limits live in [`FEATURES.md`](FEATURES.md); release gates live in
 4. [#524 — production operator UI, security, and browser acceptance](https://github.com/eirhop/favn/issues/524)
    - Finish operator workflows, mutation audit, actor/session administration,
      authorization, accessibility, and real-browser release acceptance.
+   - The UI plan, its measured findings, and the order of work are in
+     [`design/operator-ux-review.md`](design/operator-ux-review.md).
 5. [#523 — PostgreSQL production proof and observability](https://github.com/eirhop/favn/issues/523)
    - Prove managed PostgreSQL 18 restore, PITR, load, contention, failover, query
      plans, least privilege, dashboards, alerts, and incident response.

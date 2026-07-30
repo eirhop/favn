@@ -39,8 +39,11 @@ defmodule FavnOrchestrator do
   alias FavnOrchestrator.OperationRunnerTasks
   alias FavnOrchestrator.Persistence.Error, as: PersistenceError
   alias FavnOrchestrator.Persistence
+  alias FavnOrchestrator.Persistence.Queries.CountExecutionGroups
   alias FavnOrchestrator.Persistence.Queries.GetExecutionGroup
   alias FavnOrchestrator.Persistence.Queries.PageExecutionGroups
+  alias FavnOrchestrator.Persistence.Results.Backfill, as: PersistedBackfill
+  alias FavnOrchestrator.Persistence.Results.ExecutionGroupCounts
   alias FavnOrchestrator.Persistence.WorkspaceContext
   alias FavnOrchestrator.Projector
   alias FavnOrchestrator.RunEvent
@@ -140,6 +143,13 @@ defmodule FavnOrchestrator do
   @type run_detail :: RunReadModel.run_detail()
   @type execution_group_summary :: RunReadModel.execution_group_summary()
   @type execution_group_detail :: RunReadModel.execution_group_detail()
+
+  @type execution_group_counts :: %{
+          active: non_neg_integer(),
+          failed: non_neg_integer(),
+          succeeded: non_neg_integer(),
+          total: non_neg_integer()
+        }
   @type operator_run_detail :: RunReadModel.operator_run_detail()
   @type schedule_list_entry :: ScheduleListEntry.t()
   @type schedule_occurrence_preview :: ScheduleOccurrencePreview.t()
@@ -781,43 +791,6 @@ defmodule FavnOrchestrator do
   def unsubscribe_logs(subscription), do: Logs.unsubscribe_logs(subscription)
 
   @doc """
-  Submits one asset run command for an authenticated operator actor context.
-
-  This is the same-BEAM boundary for browser, API, and CLI operator actions.
-  Callers pass operator intent, such as dependency mode, refresh mode, and
-  selected timeline window. The orchestrator validates that intent and translates
-  it into runtime submit options after resolving the manifest target.
-
-  Missing or incomplete actor/session context returns `{:error,
-  :unauthenticated}`; authenticated actors without the operator role return
-  `{:error, :forbidden}`.
-
-  TODO: add a narrow audit event for accepted LiveView operator commands once the
-  audit shape for same-BEAM browser actions is finalized.
-  """
-  @spec submit_operator_asset_run(
-          operator_actor_context(),
-          String.t(),
-          String.t()
-        ) :: {:ok, run_id()} | {:error, term()}
-  @spec submit_operator_asset_run(
-          operator_actor_context(),
-          String.t(),
-          String.t(),
-          AssetRunRequest.t() | map() | keyword() | nil
-        ) :: {:ok, run_id()} | {:error, term()}
-  def submit_operator_asset_run(
-        %OperatorContext{} = operator_context,
-        manifest_version_id,
-        target_id,
-        command_input \\ %{}
-      ) do
-    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :operator) do
-      OperatorCommands.submit_asset_run(context, manifest_version_id, target_id, command_input)
-    end
-  end
-
-  @doc """
   Submits one manifest target run for an authenticated operator actor context.
 
   This is the shared command boundary for browser, API, and CLI callers. The
@@ -917,42 +890,6 @@ defmodule FavnOrchestrator do
              opts
            ) do
       {:ok, backfill.root_run_id}
-    end
-  end
-
-  @doc """
-  Submits one pipeline run command for an authenticated operator actor context.
-
-  This is the same-BEAM boundary for browser, API, and CLI operator actions.
-  Callers pass operator intent and the orchestrator translates it into runtime
-  submit options after resolving the manifest pipeline target.
-
-  Missing or incomplete actor/session context returns `{:error,
-  :unauthenticated}`; authenticated actors without the operator role return
-  `{:error, :forbidden}`.
-
-  TODO: add a narrow audit event for accepted LiveView operator commands once the
-  audit shape for same-BEAM browser actions is finalized.
-  """
-  @spec submit_operator_pipeline_run(
-          operator_actor_context(),
-          String.t(),
-          String.t()
-        ) :: {:ok, run_id()} | {:error, term()}
-  @spec submit_operator_pipeline_run(
-          operator_actor_context(),
-          String.t(),
-          String.t(),
-          PipelineRunRequest.t() | map() | keyword() | nil
-        ) :: {:ok, run_id()} | {:error, term()}
-  def submit_operator_pipeline_run(
-        %OperatorContext{} = operator_context,
-        manifest_version_id,
-        target_id,
-        command_input \\ %{}
-      ) do
-    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :operator) do
-      OperatorCommands.submit_pipeline_run(context, manifest_version_id, target_id, command_input)
     end
   end
 
@@ -1082,6 +1019,100 @@ defmodule FavnOrchestrator do
     else
       false -> {:error, {:unsupported_backfill_option, :coverage_baseline_id}}
       {:error, _reason} = error -> error
+    end
+  end
+
+  @doc """
+  Plans one pipeline backfill without writing control-plane state.
+
+  The browser shows the plan — window count, range, and keys — before the
+  operator confirms the submit, so a mistyped range is caught while it is
+  still only a preview.
+  """
+  @spec plan_operator_pipeline_backfill(
+          operator_actor_context(),
+          String.t(),
+          String.t(),
+          PipelineBackfillRequest.t() | map() | keyword()
+        ) :: {:ok, FavnOrchestrator.Backfills.plan()} | {:error, term()}
+  def plan_operator_pipeline_backfill(
+        %OperatorContext{} = operator_context,
+        manifest_version_id,
+        target_id,
+        command_input \\ %{}
+      ) do
+    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :operator),
+         {:ok, request} <- PipelineBackfillRequest.from_input(command_input) do
+      FavnOrchestrator.Backfills.plan_pipeline(
+        context,
+        manifest_version_id,
+        target_id,
+        request.range,
+        []
+      )
+    end
+  end
+
+  @doc """
+  Fetches one backfill for an authenticated operator actor context.
+
+  Expected, succeeded, and failed window counts live on the backfill, not on
+  its root run, so this is how the browser shows how a backfill is going.
+  """
+  @spec get_operator_backfill(operator_actor_context(), String.t()) ::
+          {:ok, PersistedBackfill.t()} | {:error, term()}
+  def get_operator_backfill(%OperatorContext{} = operator_context, backfill_id)
+      when is_binary(backfill_id) do
+    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer) do
+      FavnOrchestrator.Backfills.get(context, backfill_id)
+    end
+  end
+
+  @doc """
+  Returns one bounded keyset page of a backfill's windows for an operator.
+
+  Options are `:limit`, `:status` (a window status atom to narrow to, such as
+  `:failed`), and `:after` (the cursor from the previous page). A failed
+  window carries its error, which is what an operator drills in for.
+  """
+  @spec page_operator_backfill_windows(operator_actor_context(), String.t(), keyword()) ::
+          {:ok, map()} | {:error, term()}
+  def page_operator_backfill_windows(
+        %OperatorContext{} = operator_context,
+        backfill_id,
+        opts \\ []
+      )
+      when is_binary(backfill_id) and is_list(opts) do
+    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer) do
+      FavnOrchestrator.Backfills.page_windows(context, backfill_id, opts)
+    end
+  end
+
+  @doc """
+  Lists the manifest releases visible to an operator.
+
+  Today that is the active release alone — the same set the API's manifest
+  list returns — so the browser and the CLI cannot disagree about what is
+  deployed.
+  """
+  @spec list_operator_manifests(operator_actor_context()) ::
+          {:ok, [manifest_summary()]} | {:error, term()}
+  def list_operator_manifests(%OperatorContext{} = operator_context) do
+    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer),
+         {:ok, %{manifest: manifest}} <- Manifests.active(context) do
+      {:ok, [manifest]}
+    end
+  end
+
+  @doc """
+  Fetches one manifest release's details for an operator.
+  """
+  @spec get_operator_manifest(operator_actor_context(), String.t()) ::
+          {:ok, map()} | {:error, term()}
+  def get_operator_manifest(%OperatorContext{} = operator_context, manifest_version_id)
+      when is_binary(manifest_version_id) do
+    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer) do
+      Manifests.get_active_release(context, manifest_version_id)
     end
   end
 
@@ -1343,18 +1374,86 @@ defmodule FavnOrchestrator do
     end
   end
 
-  @doc "Returns a bounded execution-group page for one authorized operator workspace."
+  @doc """
+  Returns a bounded execution-group page for one authorized operator workspace.
+
+  Supported filters:
+
+    * `:status` — one status, or a list to ask for any of several (`[:pending,
+      :running]` is "in flight"). Run vocabulary is accepted and folded onto the
+      four projected group statuses. A status that cannot be folded is an error
+      rather than an ignored filter.
+    * `:only_failed`, `:only_running` — booleans, and they override `:status`
+    * `:search` — matches the group's root run id and its runs' target modules and
+      names
+    * `:trigger_type` — one trigger, for example `:schedule`
+    * `:started_after`, `:started_before` — `DateTime` bounds on when the group's
+      root run started
+    * `:order` — `:started_desc` (default) or `:started_asc`
+    * `:limit` — page size, capped at 500
+    * `:after` — the keyset cursor from a previous page's `next_cursor`. A caller
+      that never sees a workspace id may pass `%{started_at: _, root_run_id: _}`
+      and the authorized workspace completes it.
+
+  Every filter is applied by the store, so `page.has_more?`, `page.next_cursor`,
+  and the returned items describe the same filtered set. Paging by the cursor
+  costs the same at any depth; growing `:limit` instead re-reads from the start.
+  """
   @spec page_execution_groups(OperatorContext.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def page_execution_groups(%OperatorContext{} = operator_context, filters)
       when is_list(filters) do
+    cursor = group_cursor(Keyword.get(filters, :after), operator_context.workspace_id)
+
     with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer),
          {:ok, page} <-
            Persistence.stores().operator_reads.page_execution_groups(%PageExecutionGroups{
              scope: context,
              status: execution_group_status(filters),
+             search: Keyword.get(filters, :search),
+             trigger_type: Keyword.get(filters, :trigger_type),
+             started_after: Keyword.get(filters, :started_after),
+             started_before: Keyword.get(filters, :started_before),
+             order: Keyword.get(filters, :order, :started_desc),
+             after: cursor,
              limit: min(Keyword.get(filters, :limit, 100), 500)
            }) do
       {:ok, %{page | items: Enum.map(page.items, &execution_group_summary/1)}}
+    end
+  end
+
+  # A browser holds a cursor without a workspace in it, because a workspace id is
+  # not the browser's to carry. Completing it from the session's own hint grants no
+  # authority — the store scopes the page to the authorized workspace either way —
+  # and it overwrites rather than defers to a supplied id: the cursor's workspace is
+  # a live comparand in the keyset tie-break, so a foreign one would not read
+  # another workspace but would make rows sharing an instant repeat or vanish.
+  defp group_cursor(cursor, workspace_id) when is_map(cursor),
+    do: Map.put(cursor, :workspace_id, workspace_id)
+
+  defp group_cursor(cursor, _workspace_id), do: cursor
+
+  @doc """
+  Returns execution-group counts per status for one authorized operator workspace.
+
+  Accepts `:search`, `:trigger_type`, `:started_after`, and `:started_before`,
+  which narrow exactly as they do in `page_execution_groups/2`. Pass the same
+  values and each count is the size of the set that filter plus that status would
+  return, rather than the size of one loaded page.
+  """
+  @spec count_execution_groups(OperatorContext.t(), keyword()) ::
+          {:ok, execution_group_counts()} | {:error, term()}
+  def count_execution_groups(%OperatorContext{} = operator_context, opts \\ [])
+      when is_list(opts) do
+    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer),
+         {:ok, %ExecutionGroupCounts{} = counts} <-
+           Persistence.stores().operator_reads.count_execution_groups(%CountExecutionGroups{
+             scope: context,
+             search: Keyword.get(opts, :search),
+             trigger_type: Keyword.get(opts, :trigger_type),
+             started_after: Keyword.get(opts, :started_after),
+             started_before: Keyword.get(opts, :started_before)
+           }) do
+      {:ok, Map.from_struct(counts)}
     end
   end
 
@@ -1599,13 +1698,39 @@ defmodule FavnOrchestrator do
     cond do
       Keyword.get(filters, :only_failed) -> :failed
       Keyword.get(filters, :only_running) -> :running
-      Keyword.get(filters, :status) in [:ok, :succeeded] -> :succeeded
-      Keyword.get(filters, :status) in [:error, :failed, :partial] -> :failed
-      Keyword.get(filters, :status) in [:pending, :queued] -> :pending
-      Keyword.get(filters, :status) == :running -> :running
-      true -> nil
+      true -> group_status(Keyword.get(filters, :status))
     end
   end
+
+  # A group's status is one of four projected values, so a caller may ask in run
+  # vocabulary and get the group equivalent. A list asks for any of several, which
+  # is how "running or queued" is expressed without two round trips.
+  #
+  # Anything this vocabulary cannot express becomes `:unknown`, which the store
+  # rejects as an invalid status. Folding it to `nil` instead would drop the `WHERE`
+  # clause and answer "every group in the workspace", which is further from the
+  # truth than an error. An empty list is the same case: no status is not any
+  # status.
+  defp group_status(nil), do: nil
+  defp group_status([]), do: :unknown
+
+  defp group_status(statuses) when is_list(statuses) do
+    case statuses |> Enum.map(&group_status/1) |> Enum.uniq() do
+      [single] -> single
+      several -> if :unknown in several, do: :unknown, else: several
+    end
+  end
+
+  defp group_status(status) when status in [:ok, :succeeded], do: :succeeded
+
+  # A group whose run went partial is projected as succeeded, because the group
+  # completed. Mapping `:partial` to `:failed` returned exactly the groups that did
+  # not go partial.
+  defp group_status(:partial), do: :succeeded
+  defp group_status(status) when status in [:error, :failed], do: :failed
+  defp group_status(status) when status in [:pending, :queued], do: :pending
+  defp group_status(:running), do: :running
+  defp group_status(_status), do: :unknown
 
   defp execution_group_summary(group), do: RunReadModel.from_execution_group_overview(group)
 

@@ -123,7 +123,7 @@ defmodule FavnView.RebuildDetailLive do
       back_label="Rebuilds"
     >
       <p
-        class="mx-auto mt-16 max-w-2xl text-center text-sm text-base-content/60"
+        class="mx-auto mt-16 max-w-2xl text-center text-sm favn-text-muted"
         data-testid="rebuild-error"
       >
         {@error}

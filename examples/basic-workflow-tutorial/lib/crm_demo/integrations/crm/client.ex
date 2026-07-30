@@ -16,9 +16,13 @@ defmodule CrmDemo.Integrations.Crm.Client do
   """
 
   @enforce_keys [:base_url, :token]
-  defstruct [:base_url, :token]
+  defstruct [:base_url, :token, latency_ms: 0]
 
-  @type t :: %__MODULE__{base_url: String.t() | nil, token: String.t() | nil}
+  @type t :: %__MODULE__{
+          base_url: String.t() | nil,
+          token: String.t() | nil,
+          latency_ms: non_neg_integer()
+        }
 
   @type page :: %{rows: [map()], next_cursor: String.t() | nil}
 
@@ -138,11 +142,43 @@ defmodule CrmDemo.Integrations.Crm.Client do
   @doc """
   Builds a client from resolved runtime configuration.
 
+  `:latency_ms` is how long each page takes to come back. It defaults to zero, so
+  the tutorial and its tests stay fast, and a real deployment would not configure
+  it at all — a real client's latency comes from the network. Setting it makes the
+  landing assets take the seconds a real extraction takes, which is what the
+  operator UI's run timeline is shaped around.
+
       iex> CrmDemo.Integrations.Crm.Client.new("https://crm.test/v1", "token").base_url
       "https://crm.test/v1"
+
+      iex> CrmDemo.Integrations.Crm.Client.new(nil, nil, latency_ms: 250).latency_ms
+      250
+
+      iex> CrmDemo.Integrations.Crm.Client.new(nil, nil, latency_ms: "400").latency_ms
+      400
+
+      iex> CrmDemo.Integrations.Crm.Client.new(nil, nil, latency_ms: "nonsense").latency_ms
+      0
   """
-  @spec new(String.t() | nil, String.t() | nil) :: t()
-  def new(base_url, token), do: %__MODULE__{base_url: base_url, token: token}
+  @spec new(String.t() | nil, String.t() | nil, keyword()) :: t()
+  def new(base_url, token, opts \\ []) do
+    %__MODULE__{
+      base_url: base_url,
+      token: token,
+      latency_ms: latency_ms(Keyword.get(opts, :latency_ms))
+    }
+  end
+
+  defp latency_ms(value) when is_integer(value) and value > 0, do: value
+
+  defp latency_ms(value) when is_binary(value) do
+    case Integer.parse(value) do
+      {milliseconds, ""} when milliseconds > 0 -> milliseconds
+      _unset_or_invalid -> 0
+    end
+  end
+
+  defp latency_ms(_value), do: 0
 
   @doc """
   Fetches one page of records.
@@ -158,7 +194,9 @@ defmodule CrmDemo.Integrations.Crm.Client do
   last one.
   """
   @spec fetch_page(t(), String.t(), keyword()) :: {:ok, page()}
-  def fetch_page(%__MODULE__{}, endpoint, opts) do
+  def fetch_page(%__MODULE__{} = client, endpoint, opts) do
+    if client.latency_ms > 0, do: Process.sleep(client.latency_ms)
+
     offset = String.to_integer(Keyword.get(opts, :cursor) || "0")
     page_size = Keyword.fetch!(opts, :page_size)
 

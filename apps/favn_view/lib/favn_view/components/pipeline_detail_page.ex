@@ -6,17 +6,14 @@ defmodule FavnView.Components.PipelineDetailPage do
   use FavnView, :html
 
   alias FavnView.Components.AppShell
-  alias FavnView.Components.GlassPanel
-  alias FavnView.Components.ModeRail
-  alias FavnView.Components.PipelinesPage
 
   attr :pipeline, :map, required: true
   attr :nav_items, :list, required: true
-  attr :active_mode, :atom, default: :runs
   attr :run_error, :string, default: nil
   attr :backfill_error, :string, default: nil
   attr :backfill_config, :map, required: true
   attr :can_submit_runs?, :boolean, default: false
+  attr :flash, :map, default: %{}
 
   def pipeline_detail_page(assigns) do
     ~H"""
@@ -26,6 +23,7 @@ defmodule FavnView.Components.PipelineDetailPage do
       status={@pipeline.status_label}
       status_tone={status_tone(@pipeline.status)}
       nav_items={@nav_items}
+      flash={@flash}
     >
       <div
         class="mx-auto w-full max-w-[120rem] space-y-4 pb-24 lg:pb-0"
@@ -38,13 +36,8 @@ defmodule FavnView.Components.PipelineDetailPage do
           backfill_error={@backfill_error}
           backfill_config={@backfill_config}
           can_submit_runs?={@can_submit_runs?}
-        />
-        <.history_panel pipeline={@pipeline} />
+        /> <.history_panel pipeline={@pipeline} />
       </div>
-
-      <:mode_rail>
-        <ModeRail.mode_rail active={@active_mode} modes={detail_modes()} on_select="set_mode" />
-      </:mode_rail>
     </AppShell.app_shell>
     """
   end
@@ -53,15 +46,18 @@ defmodule FavnView.Components.PipelineDetailPage do
 
   def summary_panel(assigns) do
     ~H"""
-    <GlassPanel.glass_panel class="p-6 sm:p-8" data-testid="pipeline-summary-panel">
+    <.panel padding={:none} class="p-6 sm:p-8" data-testid="pipeline-summary-panel">
       <div class="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
         <div class="min-w-0">
-          <p class="text-xs uppercase tracking-[0.2em] text-base-content/45">Pipeline</p>
+          <p class="text-xs uppercase tracking-[0.2em] favn-text-subtle">Pipeline</p>
+
           <h2 class="mt-2 text-2xl font-medium tracking-tight">{@pipeline.name}</h2>
-          <p class="mt-2 break-words font-mono text-xs text-base-content/55">{@pipeline.label}</p>
+
+          <p class="mt-2 break-words font-mono text-xs favn-text-muted">{@pipeline.label}</p>
         </div>
+
         <div class="flex flex-wrap gap-2">
-          <PipelinesPage.status_badge status={@pipeline.status} />
+          <.status_badge tone={status_tone(@pipeline.status)} label={@pipeline.status_label} />
           <span class="badge badge-ghost badge-sm">{@pipeline.dependencies_label}</span>
           <span class="badge badge-ghost badge-sm">{@pipeline.window_label}</span>
         </div>
@@ -74,17 +70,19 @@ defmodule FavnView.Components.PipelineDetailPage do
       </div>
 
       <div class="mt-6">
-        <p class="text-xs uppercase tracking-[0.18em] text-base-content/45">Selected assets</p>
+        <p class="text-xs uppercase tracking-[0.18em] favn-text-subtle">Selected assets</p>
+
         <div class="mt-3 flex flex-wrap gap-2">
           <span :for={asset <- @pipeline.selected_assets} class="badge badge-soft badge-info">
             {asset}
           </span>
-          <span :if={@pipeline.selected_assets == []} class="text-sm text-base-content/55">
+
+          <span :if={@pipeline.selected_assets == []} class="text-sm favn-text-muted">
             No resolved assets
           </span>
         </div>
       </div>
-    </GlassPanel.glass_panel>
+    </.panel>
     """
   end
 
@@ -94,7 +92,8 @@ defmodule FavnView.Components.PipelineDetailPage do
   def summary_stat(assigns) do
     ~H"""
     <div class="rounded-box border border-base-content/10 bg-base-content/[0.03] p-4">
-      <p class="text-xs uppercase tracking-[0.16em] text-base-content/45">{@label}</p>
+      <p class="text-xs uppercase tracking-[0.16em] favn-text-subtle">{@label}</p>
+
       <p class="mt-1 text-sm font-medium text-base-content">{@value}</p>
     </div>
     """
@@ -108,13 +107,15 @@ defmodule FavnView.Components.PipelineDetailPage do
 
   def actions_panel(assigns) do
     ~H"""
-    <GlassPanel.glass_panel class="p-6 sm:p-8" data-testid="pipeline-actions-panel">
+    <.panel padding={:none} class="p-6 sm:p-8" data-testid="pipeline-actions-panel">
       <div class="grid gap-6 lg:grid-cols-[1fr_1.4fr]">
         <div>
-          <p class="text-xs uppercase tracking-[0.2em] text-base-content/45">Run pipeline</p>
-          <p class="mt-2 text-sm text-base-content/65">
+          <p class="text-xs uppercase tracking-[0.2em] favn-text-subtle">Run pipeline</p>
+
+          <p class="mt-2 text-sm favn-text-muted">
             Submit the active manifest pipeline, equivalent to <code class="font-mono">mix favn.run</code>.
           </p>
+
           <form phx-submit="run_pipeline" class="mt-4" data-testid="run-pipeline-form">
             <button
               type="submit"
@@ -125,30 +126,35 @@ defmodule FavnView.Components.PipelineDetailPage do
               <.icon name="hero-play" class="size-4" /> Run pipeline
             </button>
           </form>
+
           <p
             :if={!@can_submit_runs?}
-            class="mt-3 text-sm text-base-content/60"
+            class="mt-3 text-sm favn-text-muted"
             data-testid="pipeline-operator-required-help"
           >
             Operator role required to submit runs.
           </p>
+
           <p
             :if={!@pipeline.can_run_without_window?}
-            class="mt-3 text-sm text-base-content/60"
+            class="mt-3 text-sm favn-text-muted"
             data-testid="pipeline-run-disabled-help"
           >
             This pipeline requires an explicit window. Use backfill or choose a specific window.
           </p>
+
           <p :if={@run_error} class="mt-3 text-sm text-error" data-testid="pipeline-run-error">
             {@run_error}
           </p>
         </div>
 
         <div>
-          <p class="text-xs uppercase tracking-[0.2em] text-base-content/45">Backfill</p>
-          <p class="mt-2 text-sm text-base-content/65">
+          <p class="text-xs uppercase tracking-[0.2em] favn-text-subtle">Backfill</p>
+
+          <p class="mt-2 text-sm favn-text-muted">
             Submit an explicit range, equivalent to <code class="font-mono">mix favn.backfill submit</code>.
           </p>
+
           <form
             phx-submit="submit_backfill"
             class="mt-4 grid gap-3 sm:grid-cols-[1fr_1fr_8rem_9rem_auto]"
@@ -165,6 +171,7 @@ defmodule FavnView.Components.PipelineDetailPage do
                 disabled={!@can_submit_runs? || !@pipeline.can_backfill?}
               />
             </label>
+
             <label class="form-control">
               <span class="label-text text-xs">To</span>
               <input
@@ -175,6 +182,7 @@ defmodule FavnView.Components.PipelineDetailPage do
                 disabled={!@can_submit_runs? || !@pipeline.can_backfill?}
               />
             </label>
+
             <label class="form-control">
               <span class="label-text text-xs">Kind</span>
               <select
@@ -191,6 +199,7 @@ defmodule FavnView.Components.PipelineDetailPage do
                 </option>
               </select>
             </label>
+
             <label class="form-control">
               <span class="label-text text-xs">Refresh</span>
               <select
@@ -202,10 +211,13 @@ defmodule FavnView.Components.PipelineDetailPage do
                 <option value="missing" selected={@backfill_config.refresh == "missing"}>
                   missing
                 </option>
+
                 <option value="force" selected={@backfill_config.refresh == "force"}>force</option>
+
                 <option value="auto" selected={@backfill_config.refresh == "auto"}>auto</option>
               </select>
             </label>
+
             <button
               type="submit"
               class="btn btn-primary btn-soft self-end"
@@ -215,20 +227,23 @@ defmodule FavnView.Components.PipelineDetailPage do
               Backfill
             </button>
           </form>
+
           <p
             :if={@pipeline.can_backfill?}
-            class="mt-2 text-xs text-base-content/55"
+            class="mt-2 text-xs favn-text-muted"
             data-testid="pipeline-backfill-defaults"
           >
             Defaults to {@backfill_config.kind} windows in {@backfill_config.timezone} with {@backfill_config.refresh} refresh.
           </p>
+
           <p
             :if={!@pipeline.can_backfill?}
-            class="mt-2 text-xs text-base-content/55"
+            class="mt-2 text-xs favn-text-muted"
             data-testid="pipeline-backfill-disabled-help"
           >
             Backfill requires a windowed pipeline.
           </p>
+
           <p
             :if={@backfill_error}
             class="mt-3 text-sm text-error"
@@ -238,7 +253,7 @@ defmodule FavnView.Components.PipelineDetailPage do
           </p>
         </div>
       </div>
-    </GlassPanel.glass_panel>
+    </.panel>
     """
   end
 
@@ -246,30 +261,37 @@ defmodule FavnView.Components.PipelineDetailPage do
 
   def history_panel(assigns) do
     ~H"""
-    <GlassPanel.glass_panel class="overflow-hidden" data-testid="pipeline-history-panel">
+    <.panel padding={:none} class="overflow-hidden" data-testid="pipeline-history-panel">
       <div class="border-b border-base-content/10 p-5 sm:p-6">
         <h2 class="text-lg font-medium">Run history</h2>
-        <p class="mt-1 text-sm text-base-content/60">
+
+        <p class="mt-1 text-sm favn-text-muted">
           Pipeline and backfill runs matched to this pipeline.
         </p>
       </div>
 
-      <div :if={@pipeline.runs == []} class="p-8 text-center text-sm text-base-content/60">
+      <div :if={@pipeline.runs == []} class="p-8 text-center text-sm favn-text-muted">
         No runs have been recorded for this pipeline yet.
       </div>
 
       <div :if={@pipeline.runs != []} class="overflow-x-auto">
         <table class="table" data-testid="pipeline-runs-table">
           <thead>
-            <tr class="border-base-content/10 text-base-content/65">
+            <tr class="border-base-content/10 favn-text-muted">
               <th>Run</th>
+
               <th>Status</th>
+
               <th>Kind</th>
+
               <th>Window</th>
+
               <th>Started</th>
+
               <th>Duration</th>
             </tr>
           </thead>
+
           <tbody>
             <tr
               :for={run <- @pipeline.runs}
@@ -281,16 +303,23 @@ defmodule FavnView.Components.PipelineDetailPage do
                   {run.short_id}
                 </.link>
               </td>
-              <td><PipelinesPage.status_badge status={run.status} /></td>
+
+              <td>
+                <.status_badge tone={status_tone(run.status)} label={status_label(run.status)} />
+              </td>
+
               <td>{run.kind_label}</td>
+
               <td>{run.window_label}</td>
+
               <td>{run.started_at_label}</td>
+
               <td>{run.duration_label}</td>
             </tr>
           </tbody>
         </table>
       </div>
-    </GlassPanel.glass_panel>
+    </.panel>
     """
   end
 
@@ -325,13 +354,13 @@ defmodule FavnView.Components.PipelineDetailPage do
     }
   end
 
-  def detail_modes do
-    [
-      %{id: :runs, label: "Runs", icon: "hero-clock"},
-      %{id: :assets, label: "Assets", icon: "hero-cube", disabled: true},
-      %{id: :more, label: "More", icon: "hero-ellipsis-vertical", disabled: true}
-    ]
-  end
+  defp status_label(:healthy), do: "Healthy"
+  defp status_label(:running), do: "Running"
+  defp status_label(:succeeded), do: "Succeeded"
+  defp status_label(:queued), do: "Queued"
+  defp status_label(:failed), do: "Failed"
+  defp status_label(:cancelled), do: "Cancelled"
+  defp status_label(_status), do: "Unknown"
 
   defp status_tone(:healthy), do: :success
   defp status_tone(:running), do: :info

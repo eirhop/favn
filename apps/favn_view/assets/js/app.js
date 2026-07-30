@@ -51,8 +51,26 @@ const Hooks = {
   },
   FavnLogViewer: {
     mounted() {
+      // Follow pauses while the operator reads scrollback and resumes when
+      // they return to the bottom, so live tail never fights error-jumping.
+      this.atBottom = true
+      this.errorIndex = -1
       this.scrollToBottom()
+
+      this.terminal()?.addEventListener("scroll", () => {
+        const terminal = this.terminal()
+        if (!terminal) return
+        this.atBottom =
+          terminal.scrollTop + terminal.clientHeight >= terminal.scrollHeight - 8
+      })
+
       this.el.addEventListener("click", event => {
+        const errorNav = event.target.closest("[data-log-error-nav]")
+        if (errorNav) {
+          this.jumpToError(errorNav.dataset.logErrorNav)
+          return
+        }
+
         const textButton = event.target.closest("[data-copy-text]")
         if (textButton) {
           navigator.clipboard?.writeText(textButton.dataset.copyText || "")
@@ -70,11 +88,26 @@ const Hooks = {
     updated() {
       this.scrollToBottom()
     },
+    terminal() {
+      return this.el.querySelector("[data-testid='log-terminal-window']")
+    },
     scrollToBottom() {
       if (this.el.dataset.liveTail !== "true") return
+      if (!this.atBottom) return
 
-      const terminal = this.el.querySelector("[data-testid='log-terminal-window']")
+      const terminal = this.terminal()
       if (terminal) terminal.scrollTop = terminal.scrollHeight
+    },
+    jumpToError(direction) {
+      const errors = Array.from(this.el.querySelectorAll("[data-log-level='error']"))
+      if (errors.length === 0) return
+
+      this.errorIndex = direction === "prev"
+        ? (this.errorIndex <= 0 ? errors.length - 1 : this.errorIndex - 1)
+        : (this.errorIndex >= errors.length - 1 ? 0 : this.errorIndex + 1)
+
+      this.atBottom = false
+      errors[this.errorIndex].scrollIntoView({block: "center"})
     }
   },
   LineageCanvas: {
@@ -122,82 +155,6 @@ const Hooks = {
       this.content.style.transform = `translate(${this.pan.x}px, ${this.pan.y}px) scale(${this.scale})`
     }
   },
-  FavnTimeline: {
-    mounted() {
-      this.userPaused = false
-      this.followNow()
-      this.syncMinimapViewport()
-
-      this.el.addEventListener("scroll", () => {
-        if (!this.ignoreScroll && this.el.dataset.liveFollow === "true") {
-          this.userPaused = true
-          this.pushEvent("timeline_pause_live", {})
-        }
-
-        this.syncMinimapViewport()
-      }, {passive: true})
-
-      const minimap = document.getElementById("run-timeline-minimap")
-      minimap?.addEventListener("click", event => {
-        const track = minimap.querySelector("[data-testid='timeline-minimap-track']") || minimap
-        const bounds = track.getBoundingClientRect()
-        if (!bounds.width) return
-
-        const ratio = Math.max(0, Math.min(1, (event.clientX - bounds.left) / bounds.width))
-        this.pendingFocusRatio = ratio
-        this.pushEvent("timeline_focus", {ratio})
-        this.scrollToRatio(ratio)
-      })
-    },
-    updated() {
-      this.followNow()
-      this.syncMinimapViewport()
-      if (this.pendingFocusRatio !== undefined) {
-        const ratio = this.pendingFocusRatio
-        this.pendingFocusRatio = undefined
-        window.requestAnimationFrame(() => {
-          this.scrollToRatio(ratio)
-          this.syncMinimapViewport()
-        })
-      }
-    },
-    scrollToRatio(ratio) {
-      const maxScroll = Math.max(this.el.scrollWidth - this.el.clientWidth, 0)
-      this.ignoreScroll = true
-      this.el.scrollLeft = Math.max(0, Math.min(maxScroll, this.el.scrollWidth * ratio - this.el.clientWidth / 2))
-      window.requestAnimationFrame(() => {
-        this.ignoreScroll = false
-        this.syncMinimapViewport()
-      })
-    },
-    followNow() {
-      if (this.el.dataset.active !== "true" || this.el.dataset.liveFollow !== "true") return
-      if (this.el.dataset.fitMode === "true") return
-
-      const offset = Number.parseFloat(this.el.dataset.nowOffset || "100") / 100
-      const maxScroll = Math.max(this.el.scrollWidth - this.el.clientWidth, 0)
-      const target = Math.max(0, Math.min(maxScroll, this.el.scrollWidth * offset - this.el.clientWidth * 0.72))
-
-      this.ignoreScroll = true
-      this.el.scrollLeft = target
-      window.requestAnimationFrame(() => {
-        this.ignoreScroll = false
-        this.syncMinimapViewport()
-      })
-    },
-    syncMinimapViewport() {
-      const minimap = document.getElementById("run-timeline-minimap")
-      const viewport = minimap?.querySelector("[data-testid='timeline-minimap-viewport']")
-      if (!viewport) return
-
-      const scrollWidth = Math.max(this.el.scrollWidth, this.el.clientWidth, 1)
-      const width = Math.max(0, Math.min(100, this.el.clientWidth / scrollWidth * 100))
-      const left = Math.max(0, Math.min(100 - width, this.el.scrollLeft / scrollWidth * 100))
-
-      viewport.style.left = `${left}%`
-      viewport.style.width = `${width}%`
-    }
-  }
 }
 
 document.addEventListener("click", event => {

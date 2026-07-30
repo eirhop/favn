@@ -8,6 +8,15 @@ Ownership rules:
 
 - `apps/favn_view/lib/favn_view/` contains the endpoint, router, LiveViews,
   controllers, components, and web helpers.
+- `apps/favn_view/lib/favn_view/ui/` owns the design-system element library
+  (`FavnView.UI`): tones, type scale, surfaces, buttons, badges, states, data
+  presentation, and form/filter controls. Sections and pages compose these
+  elements and must not re-implement their styling with utility classes. The
+  visual contract is [`../design/style-guide.md`](../design/style-guide.md) and
+  the composition contract is
+  [`../design/component-patterns.md`](../design/component-patterns.md).
+- `FavnView.Components.Navigation` is the single source of truth for primary
+  navigation. Every entry must resolve to a live route in `FavnView.Router`.
 - `FavnView.ApplicationConfig` owns the baseline endpoint and browser-session
   configuration used both inside the umbrella and when Favn starts from a
   consumer project. Boot owners may add listener and runtime overrides without
@@ -21,8 +30,8 @@ Ownership rules:
   LiveView `on_mount` auth, and sanitized view-local scope assignment. Durable
   auth state remains in `favn_orchestrator`.
 - `apps/favn_view/assets/` contains the standard Phoenix-generated asset setup.
-- `apps/favn_view/storybook/` contains PhoenixStorybook stories for reusable
-  UI component states.
+- `apps/favn_view/dev/` contains the design-system browser and the view-model
+  fixtures it shares with tests. It is compiled in `:dev` and `:test` only.
 - `apps/favn_view/test/` contains endpoint, controller, and LiveView tests.
 - Run overview and run detail LiveViews must render orchestrator-owned run read
   models. They may prepare view-models and UI query state, but must not derive
@@ -31,8 +40,8 @@ Ownership rules:
 - Run detail presents requested anchors, permitted expansion, and effective
   asset windows as separate concepts. It asks for compact view-specific data and
   requests the bounded event detail only when the Events tab is active.
-- Run detail Storybook coverage is split by view so heavy Timeline variations do
-  not slow down the overview story.
+- Run detail design-system examples name the mode they render, so a heavy
+  Timeline example can be requested without rendering the overview.
 - `favn_view` must call backend behavior only through the public orchestrator
   facade. It must not depend on storage, scheduler, runner, persistence, repo,
   manifest compiler, plugin, adapter, or low-level orchestrator internals.
@@ -81,8 +90,10 @@ Ownership rules:
   cron, missed, overlap, window, next-due, or failure semantics locally. Detail
   tabs beyond Overview and Occurrences must stay disabled or backed by new
   orchestrator read models.
-- Tidewave is plugged only in dev. PhoenixStorybook is mounted under
-  `/storybook` when dev routes are enabled.
+- Tidewave is plugged only in dev, and the design-system browser is routed under
+  `/design-system` only when dev routes are enabled. Both therefore exist on the
+  umbrella development server and nowhere else; see
+  [`../contributing/dev-server.md`](../contributing/dev-server.md).
 - SQL contracts, expected-versus-observed candidate schema, flattened fragment
   origins, ordered row-count bounds/parameters and policies, lineage, Contract
   and Custom checks,

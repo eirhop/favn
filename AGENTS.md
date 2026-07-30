@@ -44,14 +44,18 @@ reports are not active requirements unless a current document links to them.
 
 ## Tool routing
 
-- Use `tidewave_view` for running Phoenix/LiveView, routes, stories, logs, and UI
-  source inspection.
-- Use `tidewave_orchestrator` for running API, orchestration, storage, database,
-  and backend source inspection.
-- Tidewave requires the corresponding local runtime. Runtime inspection does not
-  relax application boundaries.
-- Use Playwright for rendered browser behavior and `/storybook`, not for backend
-  inspection.
+- Tidewave and `/design-system` require the umbrella development server. Start it
+  as described in [`docs/contributing/dev-server.md`](docs/contributing/dev-server.md);
+  neither is available from a Favn project that depends on `favn`.
+- That server runs the View and the orchestrator in one BEAM, so its single
+  Tidewave endpoint inspects UI, orchestration, storage, and core source, docs,
+  logs, and runtime state.
+- Use Tidewave for runtime inspection, source lookup, and logs. Runtime
+  inspection does not relax application boundaries.
+- Use a browser for rendered behavior and for `/design-system`, not for backend
+  inspection. On the design-system pages, call `window.favn.audit()` for measured
+  contrast, target-size, and clipping verdicts plus the bounding box of every
+  example; take a screenshot when the question is one measurement cannot answer.
 - Prefer targeted searches, diffs, and command output over whole-repository reads.
 
 ## Verification

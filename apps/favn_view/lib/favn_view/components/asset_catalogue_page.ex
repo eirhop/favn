@@ -1,14 +1,34 @@
 defmodule FavnView.Components.AssetCataloguePage do
   @moduledoc """
-  Asset catalogue page components for the first Favn operator catalogue screen.
+  The asset catalogue screen.
+
+  This is the reference example of a Favn page component: it renders the shell,
+  chooses between the content, loading, empty, and error states, and composes
+  section components. It contains no surface, badge, or button styling of its
+  own — those come from `FavnView.UI`.
+
+  Assets are one table, sorted by connection, catalogue, then name, so the
+  namespace still reads as the natural grouping without costing a disclosure
+  per group. Namespace narrowing lives in the filters instead, and the two
+  selects are dependent: choosing a connection narrows the catalogue options
+  to that connection's catalogues, so an empty combination cannot be chosen.
+
+  The rows are rendered twice by viewport: a `data_table/1` on desktop and one
+  `list_card/1` per asset on mobile. That is deliberate; a table narrowed to a
+  phone is unscannable.
+
+  Health, coverage, and target compatibility are three independent
+  orchestrator-owned statuses, rendered as three separate glyphs by
+  `asset_state_icons/1`. The view maps each to a tone, an icon, and a label; it
+  never derives one from another.
   """
 
   use FavnView, :html
 
   alias FavnView.Components.AppShell
-  alias FavnView.Components.GlassPanel
   alias FavnView.Components.LineagePage
   alias FavnView.Components.ModeRail
+  alias FavnView.Components.Navigation
 
   attr :assets, :list, required: true
   attr :filters, :map, required: true
@@ -18,6 +38,7 @@ defmodule FavnView.Components.AssetCataloguePage do
   attr :nav_items, :list, required: true
   attr :connection_options, :list, required: true
   attr :catalogue_options, :list, required: true
+  attr :flash, :map, default: %{}
   attr :lineage_graph, :any, default: nil
   attr :lineage_inspector, :any, default: nil
   attr :lineage_loading, :boolean, default: false
@@ -33,6 +54,7 @@ defmodule FavnView.Components.AssetCataloguePage do
       title="Asset catalogue"
       subtitle="Browse and monitor all assets"
       nav_items={@nav_items}
+      flash={@flash}
       content_scroll?={@active_mode != :lineage}
     >
       <div
@@ -43,26 +65,38 @@ defmodule FavnView.Components.AssetCataloguePage do
         ]}
         data-testid="asset-catalogue-page"
       >
-        <.loading_state :if={@loading} />
-        <.error_state :if={!@loading && @error} />
+        <.loading_state :if={@loading} label="Loading assets" />
 
-        <div :if={!@loading && !@error && @active_mode == :list} class="space-y-3.5 lg:space-y-5">
+        <.error_state
+          :if={!@loading && @error}
+          title="Could not load assets"
+          description={@error}
+          data-testid="asset-error-state"
+        />
+
+        <.stack :if={!@loading && !@error && @active_mode == :list} gap={{:md, :lg}}>
           <div id="asset-filters" data-testid="asset-filters">
-            <.asset_catalogue_filters
+            <.asset_filters
               filters={@filters}
               connection_options={@connection_options}
               catalogue_options={@catalogue_options}
             />
           </div>
 
-          <.empty_state :if={@assets == []} />
+          <.empty_state
+            :if={@assets == []}
+            title="No assets found"
+            description="Try changing the search or filters."
+            icon="hero-magnifying-glass"
+            data-testid="asset-empty-state"
+          />
 
-          <GlassPanel.glass_panel :if={@assets != []} class="hidden overflow-hidden lg:block">
-            <.asset_table assets={@assets} />
-          </GlassPanel.glass_panel>
+          <.panel :if={@assets != []} class="hidden overflow-hidden lg:block">
+            <.asset_table assets={sorted_assets(@assets)} />
+          </.panel>
 
-          <.asset_card_list :if={@assets != []} assets={@assets} />
-        </div>
+          <.asset_card_list :if={@assets != []} assets={sorted_assets(@assets)} />
+        </.stack>
 
         <LineagePage.lineage_explorer
           :if={!@loading && !@error && @active_mode == :lineage}
@@ -85,326 +119,252 @@ defmodule FavnView.Components.AssetCataloguePage do
     """
   end
 
+  @doc """
+  Search and narrowing controls for the catalogue.
+  """
   attr :filters, :map, required: true
   attr :connection_options, :list, required: true
   attr :catalogue_options, :list, required: true
 
-  def asset_catalogue_filters(assigns) do
+  def asset_filters(assigns) do
     ~H"""
-    <form
-      phx-change="filter_assets"
-      phx-submit="filter_assets"
-      class="grid grid-cols-2 gap-2.5 lg:grid-cols-[1fr_12rem_12rem] lg:gap-3"
-    >
-      <label class="input input-sm favn-surface-control col-span-2 w-full gap-3 px-4 focus-within:outline focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-primary lg:col-span-1">
-        <.icon name="hero-magnifying-glass" class="size-5 shrink-0 text-base-content/60" />
-        <span class="sr-only">Search assets</span>
-        <input
-          id="asset-search"
-          type="search"
-          name="filters[search]"
-          value={@filters.search}
-          placeholder="Search assets"
-          autocomplete="off"
-          phx-debounce="200"
-        />
-      </label>
-
-      <label class="select select-sm favn-surface-control w-full gap-2 px-3 focus-within:outline focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-primary">
-        <.icon name="hero-circle-stack" class="size-5 shrink-0 text-base-content/65" />
-        <span class="sr-only">Connection filter</span>
-        <select
-          name="filters[connection]"
-          id="connection-filter"
-          aria-label="Connection filter"
-          class="appearance-none"
-        >
-          <option
-            :for={{label, value} <- @connection_options}
-            value={value}
-            selected={@filters.connection == value}
-          >
-            {label}
-          </option>
-        </select>
-        <.icon name="hero-chevron-down" class="size-5 shrink-0 text-base-content/65" />
-      </label>
-
-      <label class="select select-sm favn-surface-control w-full gap-2 px-3 focus-within:outline focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-primary">
-        <.icon name="hero-folder" class="size-5 shrink-0 text-base-content/65" />
-        <span class="sr-only">Catalogue filter</span>
-        <select
-          name="filters[catalogue]"
-          id="catalogue-filter"
-          aria-label="Catalogue filter"
-          class="appearance-none"
-        >
-          <option
-            :for={{label, value} <- @catalogue_options}
-            value={value}
-            selected={@filters.catalogue == value}
-          >
-            {label}
-          </option>
-        </select>
-        <.icon name="hero-chevron-down" class="size-5 shrink-0 text-base-content/65" />
-      </label>
-    </form>
+    <.filter_bar on_change="filter_assets">
+      <.search_field
+        id="asset-search"
+        name="filters[search]"
+        label="Search assets"
+        value={@filters.search}
+      />
+      <.select_field
+        id="connection-filter"
+        name="filters[connection]"
+        label="Connection filter"
+        icon="hero-circle-stack"
+        options={@connection_options}
+        value={@filters.connection}
+      />
+      <.select_field
+        id="catalogue-filter"
+        name="filters[catalogue]"
+        label="Catalogue filter"
+        icon="hero-folder"
+        options={@catalogue_options}
+        value={@filters.catalogue}
+      />
+    </.filter_bar>
     """
   end
 
+  @doc """
+  Sorts assets by connection, catalogue, then name.
+
+  The namespace is the sort key rather than a group header, so the hierarchy
+  still reads top to bottom without costing a disclosure per group.
+
+  ## Examples
+
+      iex> alias FavnView.Components.AssetCataloguePage
+      iex> assets = [
+      ...>   %{name: "c", connection: "postgres", catalogue: "crm"},
+      ...>   %{name: "b", connection: "duckdb", catalogue: "sales"},
+      ...>   %{name: "a", connection: "duckdb", catalogue: "sales"}
+      ...> ]
+      iex> AssetCataloguePage.sorted_assets(assets) |> Enum.map(& &1.name)
+      ["a", "b", "c"]
+  """
+  @spec sorted_assets([map()]) :: [map()]
+  def sorted_assets(assets) do
+    Enum.sort_by(
+      assets,
+      &{Map.get(&1, :connection, ""), Map.get(&1, :catalogue, ""), Map.get(&1, :name, "")}
+    )
+  end
+
+  @doc """
+  Desktop table of all assets.
+
+  Namespace is one column — `connection · catalogue` with the connection's
+  icon — not two: the pair is read as a single address, and two columns of
+  repeated words are what made the old table too wide to scan.
+  """
   attr :assets, :list, required: true
 
   def asset_table(assigns) do
     ~H"""
-    <div class="overflow-x-auto p-5 sm:p-6">
-      <table class="table table-lg" data-testid="asset-table">
-        <thead>
-          <tr class="border-base-content/10 text-base-content/65">
-            <th class="font-medium">Asset name</th>
-            <th class="font-medium">Connection</th>
-            <th class="font-medium">Catalogue</th>
-            <th class="font-medium">Type</th>
-            <th class="font-medium">Status</th>
-            <th class="font-medium">Coverage</th>
-            <th class="font-medium">Compatibility</th>
-            <th class="font-medium">Last run</th>
-            <th class="sr-only">Open</th>
-          </tr>
-        </thead>
-        <tbody>
-          <.asset_table_row :for={asset <- @assets} asset={asset} />
-        </tbody>
-      </table>
-    </div>
-    """
-  end
-
-  attr :asset, :map, required: true
-
-  def asset_table_row(assigns) do
-    ~H"""
-    <tr
-      class="group border-base-content/10 transition hover:bg-primary/10 focus-within:bg-primary/10"
-      data-testid="asset-row"
+    <.data_table
+      id="asset-table"
+      rows={@assets}
+      row_testid="asset-row"
+      row_navigate={&~p"/assets/#{asset_route_id(&1)}"}
+      data-testid="asset-table"
     >
-      <td>
+      <:col :let={asset} label="Asset">
         <.link
-          navigate={~p"/assets/#{asset_route_id(@asset)}"}
+          navigate={~p"/assets/#{asset_route_id(asset)}"}
           class="flex items-center gap-3 font-medium text-base-content focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-primary"
         >
-          <span class="flex size-8 items-center justify-center rounded-field border border-success/25 bg-success/10 text-success">
-            <.icon name={asset_type_icon(@asset.type)} class="size-4" />
+          <span class="flex size-8 items-center justify-center rounded-field border border-primary/25 bg-primary/10 text-primary">
+            <.icon name={asset_type_icon(asset.type)} />
           </span>
-          {@asset.name}
+          {asset.name}
         </.link>
-      </td>
-      <td>
-        <span class="flex items-center gap-2 text-base-content/75">
-          <.connection_icon connection={@asset.connection} />
-          {connection_label(@asset.connection)}
+      </:col>
+      <:col :let={asset} label="Namespace">
+        <span
+          class="inline-flex items-center gap-1.5 font-mono text-xs"
+          data-testid="asset-namespace"
+        >
+          <.connection_icon connection={asset.connection} size={:sm} class="text-secondary" />
+          <span class="text-secondary">{asset.connection}</span>
+          <span class="favn-text-subtle">·</span>
+          <span class="text-accent">{asset.catalogue}</span>
         </span>
-      </td>
-      <td class="text-base-content/70">{@asset.catalogue}</td>
-      <td class="text-base-content/70">{@asset.type}</td>
-      <td><.status_badge status={@asset.status} /></td>
-      <td><.coverage_badge status={coverage_status(@asset)} /></td>
-      <td><.compatibility_badge status={compatibility_status(@asset)} /></td>
-      <td class="text-base-content/70">{@asset.last_run_label}</td>
-      <td class="text-right">
-        <.icon_button
-          navigate={~p"/assets/#{asset_route_id(@asset)}"}
-          label={"Open #{@asset.name}"}
-          icon="hero-chevron-right"
-        />
-      </td>
-    </tr>
+      </:col>
+      <:col :let={asset} label="Type" class="favn-text-muted">{asset.type}</:col>
+      <:col :let={asset} label="State">
+        <.asset_state_icons asset={asset} />
+      </:col>
+      <:col :let={asset} label="Last run" class="favn-text-muted">{asset.last_run_label}</:col>
+    </.data_table>
     """
   end
 
+  @doc """
+  Mobile list of assets.
+  """
   attr :assets, :list, required: true
+  attr :class, :any, default: nil
 
   def asset_card_list(assigns) do
     ~H"""
-    <div class="space-y-2.5 lg:hidden" data-testid="asset-card-list">
+    <.stack gap={:sm} class={["lg:hidden", @class]} data-testid="asset-card-list">
       <.asset_card :for={asset <- @assets} asset={asset} />
-    </div>
+    </.stack>
     """
   end
 
+  @doc """
+  One asset as a compact list row.
+  """
   attr :asset, :map, required: true
 
   def asset_card(assigns) do
     ~H"""
-    <.link
-      navigate={~p"/assets/#{asset_route_id(@asset)}"}
-      class="card glass favn-surface-list favn-density-list-card block rounded-box transition hover:border-primary/40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-primary"
-      data-testid="asset-card"
-    >
+    <.list_card navigate={~p"/assets/#{asset_route_id(@asset)}"} data-testid="asset-card">
       <div class="flex items-start justify-between gap-3">
         <div class="min-w-0 space-y-2">
           <div class="flex items-center gap-3">
-            <span class="favn-density-list-card-icon flex shrink-0 items-center justify-center rounded-field border border-primary/30 bg-primary/10 text-primary">
-              <.connection_icon connection={@asset.connection} />
+            <span class="favn-density-list-card-icon flex shrink-0 items-center justify-center rounded-field border border-secondary/30 bg-secondary/10">
+              <.connection_icon connection={@asset.connection} class="text-secondary" />
             </span>
             <div class="min-w-0">
-              <h2 class="truncate text-base font-medium leading-tight text-base-content">
-                {@asset.name}
-              </h2>
-              <p class="mt-0.5 truncate text-xs text-base-content/60">
-                {connection_label(@asset.connection)} · {@asset.catalogue} · {@asset.type}
+              <.section_title>{@asset.name}</.section_title>
+              <p class="truncate font-mono text-xs">
+                <span class="text-secondary">{@asset.connection}</span>
+                <span class="favn-text-subtle">·</span>
+                <span class="text-accent">{@asset.catalogue}</span>
+                <span class="favn-text-subtle">· {@asset.type}</span>
               </p>
             </div>
           </div>
-          <div class="flex flex-wrap items-center gap-3 text-xs text-base-content/65">
-            <.status_badge status={@asset.status} />
-            <.coverage_badge status={coverage_status(@asset)} />
-            <.compatibility_badge status={compatibility_status(@asset)} />
+          <.inline gap={:sm} class="text-xs favn-text-muted">
+            <.asset_state_icons asset={@asset} />
             <span>{@asset.last_run_label}</span>
-          </div>
+          </.inline>
         </div>
-        <.icon name="hero-chevron-right" class="mt-2 size-5 shrink-0 text-base-content/55" />
+        <.icon name="hero-chevron-right" size={:md} class="mt-2 shrink-0 favn-text-muted" />
       </div>
-    </.link>
+    </.list_card>
     """
   end
 
-  attr :status, :atom, required: true
+  @doc """
+  Health, data coverage, and target compatibility as three glyphs.
 
-  def status_badge(assigns) do
+  These are three independent orchestrator-owned statuses, and the view never
+  derives one from another. As words they were the widest thing in the row —
+  three badges taking more space than the asset name they described, which is
+  what pushed the row past a phone viewport. As glyphs they read at a glance and
+  keep their meaning on hover and to a screen reader.
+
+  Each state has its own icon rather than sharing one per tone, so the three
+  dimensions stay distinguishable without relying on colour.
+  """
+  attr :asset, :map, required: true
+
+  def asset_state_icons(assigns) do
     ~H"""
-    <span class={["badge badge-sm badge-soft gap-2", status_badge_class(@status)]}>
-      <span class={["status", status_dot_class(@status)]}></span>
-      {status_label(@status)}
-    </span>
+    <.inline gap={:xs} data-testid="asset-states">
+      <.status_icon {health_glyph(Map.get(@asset, :status))} />
+      <.status_icon {coverage_glyph(coverage_status(@asset))} />
+      <.status_icon {compatibility_glyph(compatibility_status(@asset))} />
+    </.inline>
     """
   end
 
+  @doc """
+  Data-coverage completeness, independent of health.
+  """
   attr :status, :atom, required: true
 
   def coverage_badge(assigns) do
     ~H"""
-    <span
-      class={["badge badge-sm badge-outline", coverage_badge_class(@status)]}
-      data-testid="asset-coverage-status"
-    >
+    <.badge tone={@status} variant={:outline} data-testid="asset-coverage-status">
       Coverage {coverage_status_label(@status)}
-    </span>
+    </.badge>
     """
   end
 
+  @doc """
+  Target compatibility, independent of health and coverage.
+  """
   attr :status, :atom, required: true
 
   def compatibility_badge(assigns) do
     ~H"""
-    <span
-      class={["badge badge-sm badge-soft", compatibility_badge_class(@status)]}
-      data-testid="asset-compatibility-status"
-    >
+    <.badge tone={compatibility_tone(@status)} data-testid="asset-compatibility-status">
       {compatibility_status_label(@status)}
-    </span>
+    </.badge>
     """
   end
 
+  @doc """
+  Icon for the data system an asset lives in.
+
+  One glyph for every connection, deliberately: connection names are chosen by
+  the project author (`warehouse`, `sf_prod`), so mapping names to vendor
+  icons guesses wrong everywhere except the examples. A real per-system icon
+  has to come from what the user configured — the adapter behind the
+  connection declaring one — which needs facade support; recorded in the
+  operator UX review. Colour is the caller's: in the catalogue the whole
+  connection segment wears `text-secondary`.
+  """
   attr :connection, :string, required: true
+  attr :size, :atom, default: :md, values: [:xs, :sm, :md, :lg]
+  attr :class, :any, default: "favn-text-muted"
 
   def connection_icon(assigns) do
     ~H"""
-    <.icon
-      name={connection_icon_name(@connection)}
-      class={["size-5", connection_icon_class(@connection)]}
-    />
+    <.icon name="hero-circle-stack" size={@size} class={@class} />
     """
   end
 
-  attr :navigate, :string, required: true
-  attr :label, :string, required: true
-  attr :icon, :string, required: true
-
-  def icon_button(assigns) do
-    ~H"""
-    <.link
-      navigate={@navigate}
-      class="btn btn-ghost btn-circle favn-icon-button"
-      aria-label={@label}
-    >
-      <.icon name={@icon} class="size-5" />
-    </.link>
-    """
-  end
-
-  def loading_state(assigns) do
-    ~H"""
-    <GlassPanel.glass_panel class="mx-auto flex min-h-64 max-w-2xl items-center justify-center p-10">
-      <div class="text-center">
-        <span class="loading loading-ring loading-lg text-primary"></span>
-        <p class="mt-4 text-base-content/60">Loading assets</p>
-      </div>
-    </GlassPanel.glass_panel>
-    """
-  end
-
-  def empty_state(assigns) do
-    ~H"""
-    <GlassPanel.glass_panel class="mx-auto max-w-2xl p-10 text-center" data-testid="asset-empty-state">
-      <h2 class="text-xl font-medium">No assets found</h2>
-      <p class="mt-2 text-base-content/60">Try changing the search or filters.</p>
-    </GlassPanel.glass_panel>
-    """
-  end
-
-  def error_state(assigns) do
-    ~H"""
-    <GlassPanel.glass_panel class="mx-auto max-w-2xl p-10 text-center" data-testid="asset-error-state">
-      <h2 class="text-xl font-medium">Could not load assets</h2>
-      <p class="mt-2 text-base-content/60">Retry</p>
-    </GlassPanel.glass_panel>
-    """
-  end
-
+  @doc """
+  The catalogue's view modes.
+  """
   def catalogue_modes do
     [
       %{id: :list, label: "List", icon: "hero-list-bullet"},
-      %{id: :lineage, label: "Lineage", icon: "hero-share"},
-      %{id: :filters, label: "Filters", icon: "hero-funnel", disabled: true},
-      %{id: :more, label: "More", icon: "hero-ellipsis-vertical", disabled: true}
+      %{id: :lineage, label: "Lineage", icon: "hero-share"}
     ]
   end
 
-  def nav_items(active \\ :assets) do
-    [
-      %{label: "Assets", icon: "hero-sparkles", href: "/assets", active: active == :assets},
-      %{
-        label: "Pipelines",
-        icon: "hero-queue-list",
-        href: "/pipelines",
-        active: active == :pipelines
-      },
-      %{label: "Storage", icon: "hero-circle-stack", href: "#"},
-      %{label: "Runs", icon: "hero-rocket-launch", href: "/runs", active: active == :runs},
-      %{
-        label: "Rebuilds",
-        icon: "hero-arrow-path-rounded-square",
-        href: "/rebuilds",
-        active: active == :rebuilds
-      },
-      %{
-        label: "Recovery",
-        icon: "hero-shield-check",
-        href: "/recoveries",
-        active: active == :recoveries
-      },
-      %{
-        label: "Schedules",
-        icon: "hero-calendar-days",
-        href: "/schedules",
-        active: active == :schedules
-      },
-      %{label: "Logs", icon: "hero-document-text", href: "/logs", active: active == :logs},
-      %{label: "Alerts", icon: "hero-bell", href: "#"},
-      %{label: "Settings", icon: "hero-cog-6-tooth", href: "#"}
-    ]
-  end
+  @doc """
+  Primary navigation items with the catalogue marked active.
+
+  Kept as a thin delegate so LiveViews and stories have one obvious call.
+  """
+  def nav_items(active \\ :assets), do: Navigation.items(active)
 
   def sample_assets do
     [
@@ -534,44 +494,106 @@ defmodule FavnView.Components.AssetCataloguePage do
     ]
   end
 
-  defp status_badge_class(:healthy), do: "badge-success"
-  defp status_badge_class(:fresh), do: "badge-info"
-  defp status_badge_class(:running), do: "badge-warning"
-  defp status_badge_class(:failed), do: "badge-error"
-  defp status_badge_class(:missed), do: "badge-warning"
-  defp status_badge_class(:unknown), do: "badge-neutral"
-  defp status_badge_class(_status), do: "badge-neutral"
-
-  defp status_dot_class(:healthy), do: "status-success"
-  defp status_dot_class(:fresh), do: "status-info"
-  defp status_dot_class(:running), do: "status-warning"
-  defp status_dot_class(:failed), do: "status-error"
-  defp status_dot_class(:missed), do: "status-warning"
-  defp status_dot_class(:unknown), do: "status-neutral"
-  defp status_dot_class(_status), do: "status-neutral"
-
-  defp status_label(:healthy), do: "Healthy"
-  defp status_label(:fresh), do: "Fresh"
-  defp status_label(:running), do: "Running"
-  defp status_label(:failed), do: "Failed"
-  defp status_label(:missed), do: "Missed"
-  defp status_label(:unknown), do: "Unknown"
-  defp status_label(_status), do: "Unknown"
-
   defp coverage_status(asset), do: Map.get(asset, :coverage_status, :unknown)
   defp compatibility_status(asset), do: Map.get(asset, :compatibility_status, :ready)
-  defp coverage_badge_class(:complete), do: "badge-success"
-  defp coverage_badge_class(:incomplete), do: "badge-warning"
-  defp coverage_badge_class(:unknown), do: "badge-neutral"
-  defp coverage_badge_class(_status), do: "badge-neutral"
+
+  # One glyph per state, not per tone. A reader who cannot separate green from
+  # amber still sees a tick, a clock, and a cross as different shapes, and the
+  # three dimensions do not borrow each other's icons.
+  defp health_glyph(status) do
+    case status do
+      :healthy ->
+        %{tone: :success, icon: "hero-check-circle", label: "Healthy"}
+
+      :fresh ->
+        %{tone: :success, icon: "hero-check-circle", label: "Fresh"}
+
+      :running ->
+        %{tone: :info, icon: "hero-arrow-path", label: "Running now"}
+
+      :failed ->
+        %{tone: :error, icon: "hero-x-circle", label: "The last run failed"}
+
+      :missed ->
+        %{tone: :warning, icon: "hero-clock", label: "Missed its window"}
+
+      :stale ->
+        %{tone: :warning, icon: "hero-clock", label: "Later than its freshness policy allows"}
+
+      :degraded ->
+        %{tone: :warning, icon: "hero-exclamation-triangle", label: "Running with reduced health"}
+
+      _other ->
+        %{
+          tone: :neutral,
+          icon: "hero-question-mark-circle",
+          label: "Health unknown: it has not run yet"
+        }
+    end
+  end
+
+  defp coverage_glyph(status) do
+    case status do
+      :complete ->
+        %{
+          tone: :success,
+          icon: "hero-squares-2x2",
+          label: "Coverage complete: every declared window is materialised"
+        }
+
+      :incomplete ->
+        %{
+          tone: :warning,
+          icon: "hero-exclamation-circle",
+          label: "Coverage incomplete: declared windows are missing"
+        }
+
+      _other ->
+        %{tone: :neutral, icon: "hero-question-mark-circle", label: "Coverage unknown"}
+    end
+  end
+
+  defp compatibility_glyph(status) do
+    case status do
+      :ready ->
+        %{tone: :success, icon: "hero-shield-check", label: "Target compatible with the contract"}
+
+      :rebuild_available ->
+        %{tone: :info, icon: "hero-arrow-path-rounded-square", label: "A rebuild is available"}
+
+      :rebuild_required ->
+        %{
+          tone: :error,
+          icon: "hero-arrow-path-rounded-square",
+          label: "Rebuild required before writes"
+        }
+
+      :uninitialized ->
+        %{tone: :neutral, icon: "hero-minus-circle", label: "Target not initialised yet"}
+
+      :unexpected_drift ->
+        %{
+          tone: :error,
+          icon: "hero-exclamation-triangle",
+          label: "Target drift: it no longer matches the contract"
+        }
+
+      :operator_decision ->
+        %{tone: :warning, icon: "hero-hand-raised", label: "Waiting on an operator decision"}
+
+      _other ->
+        %{tone: :neutral, icon: "hero-question-mark-circle", label: "Compatibility unknown"}
+    end
+  end
+
   defp coverage_status_label(:complete), do: "complete"
   defp coverage_status_label(:incomplete), do: "incomplete"
   defp coverage_status_label(_status), do: "unknown"
 
-  defp compatibility_badge_class(:ready), do: "badge-success"
-  defp compatibility_badge_class(:rebuild_available), do: "badge-info"
-  defp compatibility_badge_class(:uninitialized), do: "badge-neutral"
-  defp compatibility_badge_class(_blocking), do: "badge-error"
+  defp compatibility_tone(:ready), do: :success
+  defp compatibility_tone(:rebuild_available), do: :info
+  defp compatibility_tone(:uninitialized), do: :neutral
+  defp compatibility_tone(_blocking), do: :error
 
   defp compatibility_status_label(:ready), do: "Compatible"
   defp compatibility_status_label(:rebuild_available), do: "Rebuild available"
@@ -582,21 +604,6 @@ defmodule FavnView.Components.AssetCataloguePage do
   defp compatibility_status_label(_status), do: "Compatibility unknown"
 
   defp asset_route_id(asset), do: Map.get(asset, :route_id, asset.id)
-
-  defp connection_label("s3"), do: "s3"
-  defp connection_label(connection), do: connection
-
-  defp connection_icon_name("snowflake"), do: "hero-sparkles"
-  defp connection_icon_name("s3"), do: "hero-circle-stack"
-  defp connection_icon_name("postgres"), do: "hero-circle-stack"
-  defp connection_icon_name("duckdb"), do: "hero-circle-stack"
-  defp connection_icon_name(_connection), do: "hero-circle-stack"
-
-  defp connection_icon_class("snowflake"), do: "text-info"
-  defp connection_icon_class("s3"), do: "text-success"
-  defp connection_icon_class("postgres"), do: "text-info"
-  defp connection_icon_class("duckdb"), do: "text-warning"
-  defp connection_icon_class(_connection), do: "text-base-content/60"
 
   defp asset_type_icon("metric"), do: "hero-chart-bar"
   defp asset_type_icon("file"), do: "hero-document"

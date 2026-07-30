@@ -15,6 +15,7 @@ defmodule FavnView.LogsViewModel do
       global_sequence: Map.get(entry, :global_sequence),
       occurred_at: Map.get(entry, :occurred_at),
       timestamp: time_label(Map.get(entry, :occurred_at)),
+      time: time_of_day(Map.get(entry, :occurred_at)),
       level: normalize_atom(Map.get(entry, :level, :info)),
       level_label: Map.get(entry, :level, :info) |> normalize_atom() |> String.upcase(),
       source: normalize_atom(Map.get(entry, :source, :user_code)),
@@ -168,6 +169,9 @@ defmodule FavnView.LogsViewModel do
 
   defp time_label(%DateTime{} = value), do: Calendar.strftime(value, "%b %-d %H:%M:%S")
   defp time_label(_value), do: "--- -- --:--:--"
+
+  defp time_of_day(%DateTime{} = value), do: Calendar.strftime(value, "%H:%M:%S")
+  defp time_of_day(_value), do: "--:--:--"
 
   defp source_label(source), do: source |> normalize_atom() |> String.replace("_", ":")
   defp normalize_atom(value) when is_atom(value), do: Atom.to_string(value)

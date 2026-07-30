@@ -11,8 +11,8 @@ public API contracts, or compile-time versus runtime contracts.
 
 ## Core Rules
 
-- Use the relevant Tidewave MCP whenever the corresponding runtime is running and architectural work depends on runtime routes, logs, source lookup, orchestration state, storage state, or boundary behavior: `tidewave_view` for `apps/favn_view` and `tidewave_orchestrator` for `apps/favn_orchestrator`.
-- If the relevant MCP is unavailable because the runtime is not running, say so explicitly and continue with static inspection only when that is sufficient.
+- Use the Tidewave MCP endpoint whenever the umbrella development server is running and architectural work depends on runtime routes, logs, source lookup, orchestration state, storage state, or boundary behavior. That server runs every app in one BEAM, so one endpoint covers all of them; see [`docs/contributing/dev-server.md`](../../../docs/contributing/dev-server.md).
+- If Tidewave is unavailable because that server is not running, say so explicitly and continue with static inspection only when that is sufficient.
 - Preserve manifest-first design: manifests and explicit contracts drive runtime behavior.
 - Keep app boundaries strict and boring.
 - `favn` is the public DSL surface only.

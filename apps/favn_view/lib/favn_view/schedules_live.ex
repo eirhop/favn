@@ -15,8 +15,6 @@ defmodule FavnView.SchedulesLive do
     "window" => "all"
   }
 
-  @valid_modes ~w(list)
-
   @impl true
   def mount(_params, _session, socket) do
     {entries, error} = load_entries(operator_context(socket), @default_filters)
@@ -28,7 +26,6 @@ defmodule FavnView.SchedulesLive do
         filters: @default_filters,
         filter_options: filter_options(entries),
         summary: summary(entries),
-        active_mode: :list,
         loading: false,
         error: error,
         nav_items: SchedulesPage.nav_items(:schedules)
@@ -65,12 +62,6 @@ defmodule FavnView.SchedulesLive do
      )}
   end
 
-  def handle_event("set_mode", %{"mode" => mode}, socket) when mode in @valid_modes do
-    {:noreply, assign(socket, :active_mode, String.to_existing_atom(mode))}
-  end
-
-  def handle_event("set_mode", _params, socket), do: {:noreply, socket}
-
   @impl true
   def render(assigns) do
     ~H"""
@@ -80,7 +71,6 @@ defmodule FavnView.SchedulesLive do
       filters={@filters}
       filter_options={@filter_options}
       summary={@summary}
-      active_mode={@active_mode}
       loading={@loading}
       error={@error}
       nav_items={@nav_items}

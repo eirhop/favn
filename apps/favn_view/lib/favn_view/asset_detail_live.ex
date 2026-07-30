@@ -8,11 +8,10 @@ defmodule FavnView.AssetDetailLive do
   alias FavnView.AssetRoute
   alias FavnView.Components.AssetCataloguePage
   alias FavnView.Components.AssetDetailPage
-  alias FavnView.Components.AppShell
-  alias FavnView.Components.GlassPanel
+  alias FavnView.Components.ErrorPage
   alias FavnView.Auth.Scope
 
-  @valid_modes ~w(timeline runs lineage docs code details)
+  @valid_modes ~w(timeline details)
   @dependency_choices ~w(all none)
   @refresh_choices ~w(auto missing force_selected force_selected_upstream force_all)
   @source_choices ~w(refresh_timeline data_coverage_timeline)
@@ -485,45 +484,31 @@ defmodule FavnView.AssetDetailLive do
       selected_window_error={@selected_window_error}
       submitted_run_id={@submitted_run_id}
       can_submit_runs?={@can_submit_runs?}
+      flash={@flash}
     />
-
-    <AppShell.app_shell
+    <ErrorPage.error_page
       :if={match?({:error, _reason}, @asset_state)}
       title={asset_error_title(@asset_state)}
       subtitle={@asset_id}
+      description={asset_error_message(@asset_state)}
       nav_items={@nav_items}
-    >
-      <div class="mx-auto w-full max-w-4xl">
-        <GlassPanel.glass_panel class="p-8 text-center" data-testid="asset-backend-error-state">
-          <h2 class="text-xl font-medium">{asset_error_title(@asset_state)}</h2>
-          <p class="mt-2 text-base-content/60">
-            {asset_error_message(@asset_state)}
-          </p>
-          <.link navigate={~p"/assets"} class="btn btn-primary btn-soft mt-6">
-            Back to catalogue
-          </.link>
-        </GlassPanel.glass_panel>
-      </div>
-    </AppShell.app_shell>
-
-    <AppShell.app_shell
+      flash={@flash}
+      back_navigate={~p"/assets"}
+      back_label="Back to catalogue"
+      data-testid="asset-backend-error-state"
+    />
+    <ErrorPage.error_page
       :if={match?({:not_found, _id}, @asset_state)}
       title="Asset not found"
       subtitle={@asset_id}
+      description="No active catalogue entry matches this asset id."
+      tone={:neutral}
       nav_items={@nav_items}
-    >
-      <div class="mx-auto w-full max-w-4xl">
-        <GlassPanel.glass_panel class="p-8 text-center" data-testid="asset-not-found-state">
-          <h2 class="text-xl font-medium">Asset not found</h2>
-          <p class="mt-2 text-base-content/60">
-            No active catalogue entry matches this asset id.
-          </p>
-          <.link navigate={~p"/assets"} class="btn btn-primary btn-soft mt-6">
-            Back to catalogue
-          </.link>
-        </GlassPanel.glass_panel>
-      </div>
-    </AppShell.app_shell>
+      flash={@flash}
+      back_navigate={~p"/assets"}
+      back_label="Back to catalogue"
+      data-testid="asset-not-found-state"
+    />
     """
   end
 
@@ -582,6 +567,8 @@ defmodule FavnView.AssetDetailLive do
         blocks_writes?: true
       })
 
+    headline = headline_status(detail)
+
     %{
       manifest_version_id: detail.manifest_version_id,
       target_id: detail.target_id,
@@ -593,8 +580,8 @@ defmodule FavnView.AssetDetailLive do
       has_data_windows?: detail.has_data_windows?,
       has_freshness_timeline?: Map.get(detail, :has_freshness_timeline?, false),
       title: detail.name || asset_name(detail),
-      status: status_label(Map.get(detail, :status)),
-      status_tone: status_tone(Map.get(detail, :status)),
+      status: headline.label,
+      status_tone: headline.tone,
       freshness: Map.get(detail, :freshness, missing_freshness_detail()),
       coverage: Map.get(detail, :coverage),
       coverage_policy: Map.get(detail, :coverage_policy),
@@ -686,15 +673,87 @@ defmodule FavnView.AssetDetailLive do
     |> List.last()
   end
 
-  defp status_label(:healthy), do: "Healthy"
-  defp status_label(:running), do: "Running"
-  defp status_label(:failed), do: "Failed"
-  defp status_label(_status), do: "Unknown"
+  @doc """
+  The worst thing the asset detail page knows, as a label and a tone.
 
-  defp status_tone(:healthy), do: :success
-  defp status_tone(:running), do: :warning
-  defp status_tone(:failed), do: :error
-  defp status_tone(_status), do: :neutral
+  The orchestrator's asset `:status` reports the latest *run*: `:healthy` means
+  the last run did not fail. Coverage and compatibility are separate facts, and
+  the page shows all three — so a badge that echoed `:status` alone announced
+  "Healthy" directly above "Coverage incomplete, 6 windows missing". A headline
+  states the worst thing the page knows, because that is what a headline is for.
+
+      iex> FavnView.AssetDetailLive.headline_status(%{status: :failed})
+      %{label: "Last run failed", tone: :error}
+
+      iex> FavnView.AssetDetailLive.headline_status(%{
+      ...>   status: :healthy,
+      ...>   coverage: %{status: :incomplete}
+      ...> })
+      %{label: "Coverage incomplete", tone: :warning}
+
+      iex> FavnView.AssetDetailLive.headline_status(%{
+      ...>   status: :healthy,
+      ...>   coverage: %{status: :complete}
+      ...> })
+      %{label: "Healthy", tone: :success}
+
+      iex> FavnView.AssetDetailLive.headline_status(%{})
+      %{label: "Unknown", tone: :neutral}
+  """
+  @spec headline_status(map()) :: %{label: String.t(), tone: atom()}
+  def headline_status(detail) do
+    cond do
+      Map.get(detail, :status) == :failed ->
+        %{label: "Last run failed", tone: :error}
+
+      Map.get(detail, :status) == :running ->
+        %{label: "Running", tone: :warning}
+
+      coverage_status(detail) == :incomplete ->
+        %{label: "Coverage incomplete", tone: :warning}
+
+      blocks_writes?(detail) ->
+        %{label: "Writes blocked", tone: :warning}
+
+      Map.get(detail, :status) == :healthy and coverage_status(detail) == :complete ->
+        %{label: "Healthy", tone: :success}
+
+      Map.get(detail, :status) == :healthy ->
+        %{label: "Last run ok", tone: :success}
+
+      true ->
+        %{label: "Unknown", tone: :neutral}
+    end
+  end
+
+  @doc """
+  Coverage status for an asset detail, `:unknown` when the backend did not report one.
+
+      iex> FavnView.AssetDetailLive.coverage_status(%{coverage: %{status: :complete}})
+      :complete
+
+      iex> FavnView.AssetDetailLive.coverage_status(%{})
+      :unknown
+  """
+  @spec coverage_status(map()) :: atom()
+  def coverage_status(detail),
+    do: get_in(detail, [:coverage, Access.key(:status)]) || :unknown
+
+  @doc """
+  Whether the active manifest's compatibility verdict forbids writing this asset.
+
+  Absent compatibility is not a block: the caller substitutes its own conservative
+  default before deciding whether a run may be submitted.
+
+      iex> FavnView.AssetDetailLive.blocks_writes?(%{compatibility: %{blocks_writes?: true}})
+      true
+
+      iex> FavnView.AssetDetailLive.blocks_writes?(%{})
+      false
+  """
+  @spec blocks_writes?(map()) :: boolean()
+  def blocks_writes?(detail),
+    do: get_in(detail, [:compatibility, Access.key(:blocks_writes?)]) == true
 
   defp coverage_error_label(:coverage_selection_stale),
     do: "Coverage changed. Refresh the plan and review it again."
