@@ -39,9 +39,11 @@ defmodule FavnOrchestrator do
   alias FavnOrchestrator.OperationRunnerTasks
   alias FavnOrchestrator.Persistence.Error, as: PersistenceError
   alias FavnOrchestrator.Persistence
+  alias FavnOrchestrator.Persistence.Queries.CountExecutionGroups
   alias FavnOrchestrator.Persistence.Queries.GetExecutionGroup
   alias FavnOrchestrator.Persistence.Queries.PageExecutionGroups
   alias FavnOrchestrator.Persistence.Results.Backfill, as: PersistedBackfill
+  alias FavnOrchestrator.Persistence.Results.ExecutionGroupCounts
   alias FavnOrchestrator.Persistence.WorkspaceContext
   alias FavnOrchestrator.Projector
   alias FavnOrchestrator.RunEvent
@@ -141,6 +143,13 @@ defmodule FavnOrchestrator do
   @type run_detail :: RunReadModel.run_detail()
   @type execution_group_summary :: RunReadModel.execution_group_summary()
   @type execution_group_detail :: RunReadModel.execution_group_detail()
+
+  @type execution_group_counts :: %{
+          active: non_neg_integer(),
+          failed_since: non_neg_integer(),
+          started_since: non_neg_integer(),
+          total: non_neg_integer()
+        }
   @type operator_run_detail :: RunReadModel.operator_run_detail()
   @type schedule_list_entry :: ScheduleListEntry.t()
   @type schedule_occurrence_preview :: ScheduleOccurrencePreview.t()
@@ -1365,7 +1374,23 @@ defmodule FavnOrchestrator do
     end
   end
 
-  @doc "Returns a bounded execution-group page for one authorized operator workspace."
+  @doc """
+  Returns a bounded execution-group page for one authorized operator workspace.
+
+  Supported filters:
+
+    * `:status` — one group status, or `:only_failed`/`:only_running` as booleans
+    * `:search` — matches the group's root run id and its runs' target modules and
+      names
+    * `:trigger_type` — one trigger, for example `:schedule`
+    * `:started_after`, `:started_before` — `DateTime` bounds on when the group's
+      root run started
+    * `:order` — `:started_desc` (default) or `:started_asc`
+    * `:limit`, `:after` — page size and keyset cursor
+
+  Every filter is applied by the store, so `page.has_more?` and the returned items
+  describe the same filtered set.
+  """
   @spec page_execution_groups(OperatorContext.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def page_execution_groups(%OperatorContext{} = operator_context, filters)
       when is_list(filters) do
@@ -1374,10 +1399,44 @@ defmodule FavnOrchestrator do
            Persistence.stores().operator_reads.page_execution_groups(%PageExecutionGroups{
              scope: context,
              status: execution_group_status(filters),
+             search: Keyword.get(filters, :search),
+             trigger_type: Keyword.get(filters, :trigger_type),
+             started_after: Keyword.get(filters, :started_after),
+             started_before: Keyword.get(filters, :started_before),
+             order: Keyword.get(filters, :order, :started_desc),
+             after: Keyword.get(filters, :after),
              limit: min(Keyword.get(filters, :limit, 100), 500)
            }) do
       {:ok, %{page | items: Enum.map(page.items, &execution_group_summary/1)}}
     end
+  end
+
+  @doc """
+  Returns execution-group counts for one authorized operator workspace.
+
+  `:since` is the instant "today" begins for this operator, and defaults to the
+  start of the current UTC day. The counts are of the whole workspace, not of one
+  page, so a runs list can say how much is running and how much failed without
+  first loading either set.
+  """
+  @spec count_execution_groups(OperatorContext.t(), keyword()) ::
+          {:ok, execution_group_counts()} | {:error, term()}
+  def count_execution_groups(%OperatorContext{} = operator_context, opts \\ [])
+      when is_list(opts) do
+    since = Keyword.get(opts, :since) || start_of_utc_day()
+
+    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer),
+         {:ok, %ExecutionGroupCounts{} = counts} <-
+           Persistence.stores().operator_reads.count_execution_groups(%CountExecutionGroups{
+             scope: context,
+             since: since
+           }) do
+      {:ok, Map.from_struct(counts)}
+    end
+  end
+
+  defp start_of_utc_day do
+    DateTime.utc_now() |> DateTime.to_date() |> DateTime.new!(~T[00:00:00], "Etc/UTC")
   end
 
   @doc "Returns bounded execution-group details for one authorized operator workspace."
@@ -1621,13 +1680,28 @@ defmodule FavnOrchestrator do
     cond do
       Keyword.get(filters, :only_failed) -> :failed
       Keyword.get(filters, :only_running) -> :running
-      Keyword.get(filters, :status) in [:ok, :succeeded] -> :succeeded
-      Keyword.get(filters, :status) in [:error, :failed, :partial] -> :failed
-      Keyword.get(filters, :status) in [:pending, :queued] -> :pending
-      Keyword.get(filters, :status) == :running -> :running
-      true -> nil
+      true -> group_status(Keyword.get(filters, :status))
     end
   end
+
+  # A group's status is one of four projected values, so a caller may ask in run
+  # vocabulary and get the group equivalent. A list asks for any of several, which
+  # is how "running or queued" is expressed without two round trips.
+  defp group_status(nil), do: nil
+
+  defp group_status(statuses) when is_list(statuses) do
+    case statuses |> Enum.map(&group_status/1) |> Enum.reject(&is_nil/1) |> Enum.uniq() do
+      [] -> nil
+      [single] -> single
+      several -> several
+    end
+  end
+
+  defp group_status(status) when status in [:ok, :succeeded], do: :succeeded
+  defp group_status(status) when status in [:error, :failed, :partial], do: :failed
+  defp group_status(status) when status in [:pending, :queued], do: :pending
+  defp group_status(:running), do: :running
+  defp group_status(_status), do: nil
 
   defp execution_group_summary(group), do: RunReadModel.from_execution_group_overview(group)
 

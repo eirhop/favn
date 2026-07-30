@@ -13,24 +13,80 @@ defmodule FavnOrchestrator.Persistence.Queries.PageManifests do
 end
 
 defmodule FavnOrchestrator.Persistence.Queries.PageExecutionGroups do
-  @moduledoc "Keyset-pages compact execution-group overviews under an explicit scope."
+  @moduledoc """
+  Keyset-pages compact execution-group overviews under an explicit scope.
+
+  Every field but `scope` narrows the page, and they compose: a query carrying a
+  status, a search term, and a start window returns only groups that satisfy all
+  three. Narrowing has to happen here rather than in the caller, because a page
+  filtered after the fact reports the size of the page instead of the size of the
+  answer.
+
+  Groups are ordered by when their root run started, which is the question a runs
+  list is asked, and `started_after`/`started_before` bound that same instant. The
+  cursor follows the same key, so ordering, filtering, and paging cannot disagree
+  about what "recent" means.
+
+  `search` matches the group's root run id and the module or name of any target
+  any run in the group declared. It does not reach physical target coordinates —
+  connection, catalogue, or schema — because those are not part of this read
+  model.
+  """
 
   alias FavnOrchestrator.Persistence.PlatformContext
   alias FavnOrchestrator.Persistence.WorkspaceContext
   @enforce_keys [:scope]
-  defstruct [:scope, :status, :after, limit: 100]
+  defstruct [
+    :scope,
+    :status,
+    :search,
+    :trigger_type,
+    :started_after,
+    :started_before,
+    :after,
+    order: :started_desc,
+    limit: 100
+  ]
 
   @type t :: %__MODULE__{
           scope: WorkspaceContext.t() | PlatformContext.t(),
-          status: atom() | nil,
+          status: atom() | [atom()] | nil,
+          search: String.t() | nil,
+          trigger_type: atom() | nil,
+          started_after: DateTime.t() | nil,
+          started_before: DateTime.t() | nil,
           after:
             %{
-              latest_event_id: pos_integer(),
+              started_at: DateTime.t(),
               workspace_id: String.t(),
               root_run_id: String.t()
             }
             | nil,
+          order: :started_desc | :started_asc,
           limit: 1..500
+        }
+end
+
+defmodule FavnOrchestrator.Persistence.Queries.CountExecutionGroups do
+  @moduledoc """
+  Counts execution groups per operator question, in one pass over one scope.
+
+  A runs list has to answer "what is running", "what failed today", and "how much
+  ran today" before the operator has clicked anything, and a count taken from the
+  first page of a list is only ever the count of that page.
+
+  `since` is the boundary for "today". The caller owns it, because the operator's
+  day is not necessarily the UTC day.
+  """
+
+  alias FavnOrchestrator.Persistence.PlatformContext
+  alias FavnOrchestrator.Persistence.WorkspaceContext
+  @enforce_keys [:scope, :since]
+  defstruct [:scope, :since]
+
+  @type t :: %__MODULE__{
+          scope: WorkspaceContext.t() | PlatformContext.t(),
+          since: DateTime.t()
         }
 end
 
@@ -245,6 +301,10 @@ defmodule FavnOrchestrator.Persistence.Results.ExecutionGroupOverview do
   them `nil`. A list of runs that cannot say what each run targeted is not a
   list of runs, which is why these are part of the projection rather than
   something the caller fetches per row.
+
+  `target_refs` and `pipeline_refs` are separate because a pipeline run declares
+  every asset it will touch, and fourteen asset refs do not tell an operator what
+  was submitted. The pipeline does.
   """
   @enforce_keys [:workspace_id, :root_run_id, :status, :run_count, :latest_event_id]
   defstruct [
@@ -262,7 +322,8 @@ defmodule FavnOrchestrator.Persistence.Results.ExecutionGroupOverview do
     :trigger_type,
     :started_at,
     :finished_at,
-    target_refs: []
+    target_refs: [],
+    pipeline_refs: []
   ]
 
   @type t :: %__MODULE__{
@@ -280,7 +341,26 @@ defmodule FavnOrchestrator.Persistence.Results.ExecutionGroupOverview do
           trigger_type: atom() | nil,
           started_at: DateTime.t() | nil,
           finished_at: DateTime.t() | nil,
-          target_refs: [String.t()]
+          target_refs: [String.t()],
+          pipeline_refs: [String.t()]
+        }
+end
+
+defmodule FavnOrchestrator.Persistence.Results.ExecutionGroupCounts do
+  @moduledoc """
+  How many execution groups a scope holds, per operator question.
+
+  `active` ignores `since` on purpose: a run that started yesterday and has not
+  finished is still what the operator means by "currently running".
+  """
+  @enforce_keys [:active, :failed_since, :started_since, :total]
+  defstruct @enforce_keys
+
+  @type t :: %__MODULE__{
+          active: non_neg_integer(),
+          failed_since: non_neg_integer(),
+          started_since: non_neg_integer(),
+          total: non_neg_integer()
         }
 end
 

@@ -113,6 +113,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnOrchestrator.Persistence.Queries.GetRuntimeState
   alias FavnOrchestrator.Persistence.Queries.MissingExecutionPackageHashes
   alias FavnOrchestrator.Persistence.Queries.GetDeploymentTargets
+  alias FavnOrchestrator.Persistence.Queries.CountExecutionGroups
   alias FavnOrchestrator.Persistence.Queries.PageExecutionGroups
   alias FavnOrchestrator.Persistence.Queries.PageManifests
   alias FavnOrchestrator.Persistence.Queries.PageAudit
@@ -6492,6 +6493,108 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
              manifests.items,
              &(&1.manifest_version_id == fixture.version.manifest_version_id)
            )
+  end
+
+  test "a page of execution groups narrows in the store rather than in the caller", fixture do
+    {first_command, first_run} = create_run_command(fixture)
+    {second_command, second_run} = create_run_command(fixture)
+
+    assert {:ok, _created} = RunStore.create_run(first_command)
+    assert {:ok, _created} = RunStore.create_run(second_command)
+
+    assert {:ok, publications} = Sequencer.sequence_batch()
+    assert publications != []
+
+    SQL.query!(
+      Repo,
+      "UPDATE favn_control.projection_cursors SET owner_id = NULL, claim_expires_at = NULL WHERE projector_name = 'control_plane_v1' AND shard_id = 0",
+      []
+    )
+
+    assert drain_projector("node-a") >= length(publications)
+
+    ids = fn filters ->
+      query = struct!(%PageExecutionGroups{scope: fixture.workspace_context, limit: 10}, filters)
+      assert {:ok, page} = OperatorReadStore.page_execution_groups(query)
+      Enum.map(page.items, & &1.root_run_id)
+    end
+
+    both = ids.([])
+    assert Enum.sort(both) == Enum.sort([first_run.id, second_run.id])
+
+    # Ordering is by when the root run started, so reversing the order reverses
+    # the page rather than producing some third arrangement.
+    assert ids.(order: :started_asc) == Enum.reverse(both)
+
+    assert ids.(search: first_run.id) == [first_run.id]
+    assert Enum.sort(ids.(search: "myapp.ass")) == Enum.sort(both)
+    assert ids.(search: "no-such-target") == []
+    assert ids.(search: "   ") == both
+
+    # A wildcard the operator typed is a character to look for, not a pattern.
+    assert ids.(search: "%") == []
+
+    assert {:ok, %{items: [reference | _]}} =
+             OperatorReadStore.page_execution_groups(%PageExecutionGroups{
+               scope: fixture.workspace_context,
+               limit: 1
+             })
+
+    assert Enum.sort(ids.(trigger_type: reference.trigger_type)) == Enum.sort(both)
+    assert ids.(trigger_type: :resource_recovery) == []
+
+    now = DateTime.utc_now()
+    assert ids.(started_after: DateTime.add(now, 3600, :second)) == []
+    assert ids.(started_before: DateTime.add(now, -3600, :second)) == []
+    assert Enum.sort(ids.(started_after: DateTime.add(now, -3600, :second))) == Enum.sort(both)
+
+    assert {:ok, first_page} =
+             OperatorReadStore.page_execution_groups(%PageExecutionGroups{
+               scope: fixture.workspace_context,
+               limit: 1
+             })
+
+    assert first_page.has_more?
+    assert [head] = Enum.map(first_page.items, & &1.root_run_id)
+
+    assert {:ok, next_page} =
+             OperatorReadStore.page_execution_groups(%PageExecutionGroups{
+               scope: fixture.workspace_context,
+               limit: 1,
+               after: first_page.next_cursor
+             })
+
+    assert [tail] = Enum.map(next_page.items, & &1.root_run_id)
+    assert [head, tail] == both
+
+    since = DateTime.new!(DateTime.to_date(now), ~T[00:00:00], "Etc/UTC")
+
+    assert {:ok, counts} =
+             OperatorReadStore.count_execution_groups(%CountExecutionGroups{
+               scope: fixture.workspace_context,
+               since: since
+             })
+
+    assert counts.total == 2
+    assert counts.started_since == 2
+    assert counts.active == 2
+    assert counts.failed_since == 0
+
+    # A run that is still going is what the operator means by "running", whatever
+    # day it started on, so `active` must not move with the boundary.
+    assert {:ok, tomorrow} =
+             OperatorReadStore.count_execution_groups(%CountExecutionGroups{
+               scope: fixture.workspace_context,
+               since: DateTime.add(since, 86_400, :second)
+             })
+
+    assert tomorrow.started_since == 0
+    assert tomorrow.active == 2
+
+    for invalid <- [[started_after: "today"], [order: :duration_desc], [trigger_type: :nonsense]] do
+      query = struct!(%PageExecutionGroups{scope: fixture.workspace_context, limit: 10}, invalid)
+      assert {:error, %Error{kind: :invalid}} = OperatorReadStore.page_execution_groups(query)
+    end
   end
 
   test "outbox publication preserves run causality when business clocks move backwards",

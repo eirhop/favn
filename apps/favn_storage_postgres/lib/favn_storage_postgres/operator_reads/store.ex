@@ -9,6 +9,7 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
   alias FavnOrchestrator.Persistence.Error
   alias FavnOrchestrator.Persistence.PlatformContext
   alias FavnOrchestrator.Persistence.Queries.FreshnessIdentity
+  alias FavnOrchestrator.Persistence.Queries.CountExecutionGroups
   alias FavnOrchestrator.Persistence.Queries.CountSuccessfulAssetWindows
   alias FavnOrchestrator.Persistence.Queries.GetExecutionGroup
   alias FavnOrchestrator.Persistence.Queries.GetOperatorRunOverview
@@ -27,6 +28,7 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
   alias FavnOrchestrator.Persistence.Results.AssetAttemptOverview, as: AssetAttemptResult
   alias FavnOrchestrator.Persistence.Results.CursorPage
   alias FavnOrchestrator.Persistence.Results.ExecutionGroup
+  alias FavnOrchestrator.Persistence.Results.ExecutionGroupCounts
   alias FavnOrchestrator.Persistence.Results.ExecutionGroupOverview, as: GroupOverviewResult
   alias FavnOrchestrator.Persistence.Results.FreshnessState, as: FreshnessResult
   alias FavnOrchestrator.Persistence.Results.ManifestSummary
@@ -50,6 +52,8 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
 
   @max_batch 500
   @group_statuses [:pending, :running, :succeeded, :failed]
+  @group_orders [:started_desc, :started_asc]
+  @active_group_statuses ~w(pending running)
   @run_summary_fields [
     :workspace_id,
     :run_id,
@@ -95,30 +99,59 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
 
   @impl true
   def page_execution_groups(%PageExecutionGroups{} = page) do
-    with :ok <- validate_group_page(page) do
+    with :ok <- validate_group_page(page),
+         {:ok, trigger_type} <- encoded_trigger(page.trigger_type) do
       query =
-        ExecutionGroupOverview
+        group_query()
         |> group_scope(page.scope)
         |> group_status(page.status)
-        |> after_group(page.after)
-        |> order_by(
-          [group],
-          desc: group.latest_event_id,
-          asc: group.workspace_id,
-          asc: group.root_run_id
-        )
+        |> group_trigger(trigger_type)
+        |> group_started_after(page.started_after)
+        |> group_started_before(page.started_before)
+        |> group_search(page.search)
+        |> after_group(page.after, page.order)
+        |> order_groups(page.order)
         |> limit(^(page.limit + 1))
+        |> select([group: group, root: root], %{group: group, started_at: root.inserted_at})
 
       rows = Repo.all(query)
 
       # Enriched from the page's own rows, so the two extra queries are bounded by
       # the page limit rather than by the workspace's history.
-      returned = Enum.take(rows, page.limit)
-      targets = target_refs_by_group(returned)
-      roots = root_runs_by_group(returned)
-      mapper = &group_result(&1, targets, roots)
+      groups = rows |> Enum.take(page.limit) |> Enum.map(& &1.group)
+      targets = target_refs_by_group(groups)
+      roots = root_runs_by_group(groups)
+      mapper = &group_result(&1.group, targets, roots)
 
       {:ok, cursor_page(rows, page.limit, mapper, &group_cursor/1)}
+    end
+  rescue
+    error -> {:error, ErrorMapper.map(error)}
+  end
+
+  @impl true
+  def count_execution_groups(%CountExecutionGroups{} = query) do
+    with :ok <- validate_count_groups(query) do
+      since = query.since
+
+      counts =
+        group_query()
+        |> group_scope(query.scope)
+        |> select([group: group, root: root], %{
+          active: filter(count(), group.status in ^@active_group_statuses),
+          failed_since: filter(count(), group.status == "failed" and root.inserted_at >= ^since),
+          started_since: filter(count(), root.inserted_at >= ^since),
+          total: count()
+        })
+        |> Repo.one()
+
+      {:ok,
+       %ExecutionGroupCounts{
+         active: counts.active,
+         failed_since: counts.failed_since,
+         started_since: counts.started_since,
+         total: counts.total
+       }}
     end
   rescue
     error -> {:error, ErrorMapper.map(error)}
@@ -503,6 +536,7 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
   defp group_result(group, targets, roots) do
     key = {group.workspace_id, group.root_run_id}
     root = Map.get(roots, key)
+    by_kind = Map.get(targets, key, %{})
 
     %GroupOverviewResult{
       workspace_id: group.workspace_id,
@@ -519,7 +553,8 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
       trigger_type: root && RunEnum.decode!(:trigger_type, root.trigger_type),
       started_at: root && root.inserted_at,
       finished_at: root && root.terminal_at,
-      target_refs: Map.get(targets, key, [])
+      target_refs: Map.get(by_kind, "asset", []),
+      pipeline_refs: Map.get(by_kind, "pipeline", [])
     }
   end
 
@@ -676,6 +711,8 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
   # exact `{workspace_id, root_run_id}`, and the over-fetch is bounded by the page.
   defp target_refs_by_group([]), do: %{}
 
+  # Pipelines come back alongside assets because a pipeline run's fourteen asset
+  # targets do not say what the operator asked for; the pipeline does.
   defp target_refs_by_group(groups) do
     {workspace_ids, root_run_ids} = group_keys(groups)
 
@@ -685,28 +722,31 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
       where:
         run.workspace_id in ^workspace_ids and
           run.root_execution_group_id in ^root_run_ids and
-          target.target_kind == "asset",
+          target.target_kind in ["asset", "pipeline"],
       select:
-        {run.workspace_id, run.root_execution_group_id, target.target_module, target.target_name},
+        {run.workspace_id, run.root_execution_group_id, target.target_kind, target.target_module,
+         target.target_name},
       distinct: true
     )
     |> Repo.all()
     |> Enum.reduce(%{}, fn
-      {workspace_id, root_run_id, module, name}, acc
+      {workspace_id, root_run_id, kind, module, name}, acc
       when is_binary(module) and is_binary(name) ->
+        ref = module <> ":" <> name
+
         Map.update(
           acc,
           {workspace_id, root_run_id},
-          [module <> ":" <> name],
-          &[
-            module <> ":" <> name | &1
-          ]
+          %{kind => [ref]},
+          &Map.update(&1, kind, [ref], fn refs -> [ref | refs] end)
         )
 
       _incomplete_identity, acc ->
         acc
     end)
-    |> Map.new(fn {key, refs} -> {key, Enum.sort(refs)} end)
+    |> Map.new(fn {key, by_kind} ->
+      {key, Map.new(by_kind, fn {kind, refs} -> {kind, Enum.sort(refs)} end)}
+    end)
   end
 
   defp root_runs_by_group([]), do: %{}
@@ -873,9 +913,9 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
 
   defp group_cursor(row),
     do: %{
-      latest_event_id: row.latest_event_id,
-      workspace_id: row.workspace_id,
-      root_run_id: row.root_run_id
+      started_at: row.started_at,
+      workspace_id: row.group.workspace_id,
+      root_run_id: row.group.root_run_id
     }
 
   defp run_cursor(row),
@@ -895,28 +935,138 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
     )
   end
 
+  # The root run is joined rather than looked up per row: it carries when the
+  # group started, what triggered it, and — through its targets — what it was for,
+  # which is what every filter on a runs list narrows by. The join is on the runs
+  # primary key, and it is a left join so a group whose root run has not been
+  # written yet is still listed rather than silently dropped.
+  defp group_query do
+    from(group in ExecutionGroupOverview,
+      as: :group,
+      left_join: root in Run,
+      as: :root,
+      on: root.workspace_id == group.workspace_id and root.run_id == group.root_run_id
+    )
+  end
+
   defp group_scope(query, %WorkspaceContext{workspace_id: workspace_id}),
-    do: where(query, [group], group.workspace_id == ^workspace_id)
+    do: where(query, [group: group], group.workspace_id == ^workspace_id)
 
   defp group_scope(query, %PlatformContext{}), do: query
 
   defp group_status(query, nil), do: query
 
+  defp group_status(query, statuses) when is_list(statuses),
+    do: where(query, [group: group], group.status in ^Enum.map(statuses, &Atom.to_string/1))
+
   defp group_status(query, status),
-    do: where(query, [group], group.status == ^Atom.to_string(status))
+    do: where(query, [group: group], group.status == ^Atom.to_string(status))
 
-  defp after_group(query, nil), do: query
+  defp group_trigger(query, nil), do: query
 
-  defp after_group(query, cursor) do
+  defp group_trigger(query, trigger_type),
+    do: where(query, [root: root], root.trigger_type == ^trigger_type)
+
+  defp group_started_after(query, nil), do: query
+
+  defp group_started_after(query, %DateTime{} = after_at),
+    do: where(query, [root: root], root.inserted_at >= ^after_at)
+
+  defp group_started_before(query, nil), do: query
+
+  defp group_started_before(query, %DateTime{} = before_at),
+    do: where(query, [root: root], root.inserted_at < ^before_at)
+
+  defp group_search(query, nil), do: query
+
+  defp group_search(query, search) do
+    case String.trim(search) do
+      "" ->
+        query
+
+      term ->
+        pattern = "%" <> escape_like(term) <> "%"
+
+        where(
+          query,
+          [group: group],
+          ilike(group.root_run_id, ^pattern) or exists(matching_target(pattern))
+        )
+    end
+  end
+
+  # Correlated on the group rather than on one run, so searching for an asset
+  # finds the backfill that touched it in one of fifty windows.
+  defp matching_target(pattern) do
+    from(target in RunTarget,
+      join: run in Run,
+      on: run.workspace_id == target.workspace_id and run.run_id == target.run_id,
+      where:
+        run.workspace_id == parent_as(:group).workspace_id and
+          run.root_execution_group_id == parent_as(:group).root_run_id,
+      where: ilike(target.target_module, ^pattern) or ilike(target.target_name, ^pattern),
+      select: 1
+    )
+  end
+
+  defp escape_like(term) do
+    term
+    |> String.replace("\\", "\\\\")
+    |> String.replace("%", "\\%")
+    |> String.replace("_", "\\_")
+  end
+
+  # A group whose root run is missing has no start instant to order by, so it
+  # sorts last in both directions instead of taking the top of the page.
+  defp order_groups(query, :started_asc) do
+    order_by(query, [group: group, root: root],
+      asc_nulls_last: root.inserted_at,
+      asc: group.workspace_id,
+      asc: group.root_run_id
+    )
+  end
+
+  defp order_groups(query, :started_desc) do
+    order_by(query, [group: group, root: root],
+      desc_nulls_last: root.inserted_at,
+      desc: group.workspace_id,
+      desc: group.root_run_id
+    )
+  end
+
+  defp after_group(query, nil, _order), do: query
+
+  defp after_group(query, cursor, :started_asc) do
     where(
       query,
-      [group],
-      group.latest_event_id < ^cursor.latest_event_id or
-        (group.latest_event_id == ^cursor.latest_event_id and
+      [group: group, root: root],
+      root.inserted_at > ^cursor.started_at or
+        (root.inserted_at == ^cursor.started_at and
            (group.workspace_id > ^cursor.workspace_id or
               (group.workspace_id == ^cursor.workspace_id and
                  group.root_run_id > ^cursor.root_run_id)))
     )
+  end
+
+  defp after_group(query, cursor, :started_desc) do
+    where(
+      query,
+      [group: group, root: root],
+      root.inserted_at < ^cursor.started_at or
+        (root.inserted_at == ^cursor.started_at and
+           (group.workspace_id < ^cursor.workspace_id or
+              (group.workspace_id == ^cursor.workspace_id and
+                 group.root_run_id < ^cursor.root_run_id)))
+    )
+  end
+
+  defp encoded_trigger(nil), do: {:ok, nil}
+
+  defp encoded_trigger(trigger_type) do
+    case RunEnum.encode(:trigger_type, trigger_type) do
+      {:ok, encoded} -> {:ok, encoded}
+      :error -> {:error, ErrorMapper.map(:invalid)}
+    end
   end
 
   defp after_group_run(query, nil), do: query
@@ -970,20 +1120,45 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
     cursor? =
       is_nil(page.after) or
         match?(
-          %{latest_event_id: event_id, workspace_id: workspace_id, root_run_id: run_id}
-          when is_integer(event_id) and is_binary(workspace_id) and is_binary(run_id),
+          %{started_at: %DateTime{}, workspace_id: workspace_id, root_run_id: run_id}
+          when is_binary(workspace_id) and is_binary(run_id),
           page.after
         )
 
-    if WorkspaceContext.valid?(page.scope) or PlatformContext.valid?(page.scope) do
-      if (is_nil(page.status) or page.status in @group_statuses) and cursor? and
-           valid_limit?(page.limit),
-         do: :ok,
-         else: {:error, ErrorMapper.map(:invalid)}
+    narrowing? =
+      valid_group_status?(page.status) and
+        (is_nil(page.search) or is_binary(page.search)) and
+        (is_nil(page.trigger_type) or is_atom(page.trigger_type)) and
+        valid_instant?(page.started_after) and valid_instant?(page.started_before)
+
+    if group_scope?(page.scope) do
+      if narrowing? and page.order in @group_orders and cursor? and valid_limit?(page.limit),
+        do: :ok,
+        else: {:error, ErrorMapper.map(:invalid)}
     else
       {:error, ErrorMapper.map(:invalid)}
     end
   end
+
+  defp validate_count_groups(query) do
+    if group_scope?(query.scope) and match?(%DateTime{}, query.since),
+      do: :ok,
+      else: {:error, ErrorMapper.map(:invalid)}
+  end
+
+  defp group_scope?(scope),
+    do: WorkspaceContext.valid?(scope) or PlatformContext.valid?(scope)
+
+  defp valid_instant?(nil), do: true
+  defp valid_instant?(%DateTime{}), do: true
+  defp valid_instant?(_value), do: false
+
+  defp valid_group_status?(nil), do: true
+
+  defp valid_group_status?([_ | _] = statuses),
+    do: Enum.all?(statuses, &(&1 in @group_statuses))
+
+  defp valid_group_status?(status), do: status in @group_statuses
 
   defp validate_get_group(query) do
     if workspace_context?(query.workspace_context) and valid_id?(query.root_run_id) and

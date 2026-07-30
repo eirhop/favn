@@ -1,21 +1,42 @@
 defmodule FavnView.Components.RunsListPage do
   @moduledoc """
-  Execution-group oriented runs overview components.
+  The runs list, built around the four questions an operator opens it to ask.
+
+  What is running, what failed today, what ran today, and did this pipeline run
+  every day — those are the questions, so they are the four buttons across the
+  top, each carrying its own count from the store rather than from this page. The
+  count is the answer to three of them before anything is clicked.
+
+  The fourth is a question about absence, which is why the table grows day
+  headers whenever the range covers more than one day: a day with no runs still
+  gets a row, and the gap is the answer.
+
+  Everything else the operator can ask is three controls — a search, a status, and
+  a time range — plus a sort direction, which lives in the column it acts on. One
+  row of chrome, not nine. The four buttons write to the same three controls, so a
+  question is a shortcut rather than a mode the operator can get stuck in.
+
+  ## Why the table is local
+
+  `FavnView.UI.Data.data_table/1` renders one flat list of rows with one header.
+  This table has a sortable header and a header row per day, with columns that
+  stay aligned across all of them, which is one table with several bodies rather
+  than a list of tables. That structure is this page's, so it lives here.
   """
 
   use FavnView, :html
 
   alias FavnView.Components.AppShell
   alias FavnView.Components.Navigation
+  alias FavnView.RunsFilters
 
-  attr :groups, :list, required: true
-  attr :all_groups, :list, default: []
-  attr :group_details, :map, default: %{}
-  attr :expanded_group_ids, MapSet, default: MapSet.new()
-  attr :filters, :map, required: true
-  attr :filter_options, :map, required: true
-  attr :summary, :map, required: true
-  attr :loading, :boolean, default: false
+  attr :listing, :any,
+    required: true,
+    doc: "`{:flat, runs}` when the range is one day, `{:days, days}` when it is more"
+
+  attr :filters, RunsFilters, required: true
+  attr :counts, :map, default: nil, doc: "store-wide counts, or `nil` if they could not be read"
+  attr :truncated?, :boolean, default: false
   attr :error, :string, default: nil
   attr :nav_items, :list, required: true
 
@@ -23,909 +44,447 @@ defmodule FavnView.Components.RunsListPage do
     ~H"""
     <AppShell.app_shell
       title="Runs"
-      subtitle="Backfills and runs"
+      subtitle={RunsFilters.range_label(@filters)}
       nav_items={@nav_items}
       content_scroll?={false}
     >
       <div
-        class="mx-auto flex min-h-0 w-full max-w-[120rem] flex-1 flex-col pb-24 lg:pb-0"
+        class="mx-auto flex min-h-0 w-full max-w-[110rem] flex-1 flex-col pb-24 lg:pb-0"
         data-testid="runs-list-page"
       >
-        <.loading_state :if={@loading} label="Loading runs" />
         <.error_state
-          :if={!@loading && @error}
+          :if={@error}
           title="Could not load runs"
           description={@error}
           data-testid="runs-error-state"
         />
-        <div :if={!@loading && !@error} class="flex min-h-0 flex-1 flex-col gap-2.5 lg:gap-3">
-          <.summary_band summary={@summary} />
-          <.panel
-            padding={:none}
-            class="flex min-h-0 flex-1 flex-col overflow-hidden p-3 sm:p-4"
-            data-testid="execution-groups-panel"
-          >
-            <.filters_bar
-              filters={@filters}
-              filter_options={@filter_options}
-              result_count={length(@groups)}
-            />
-            <.empty_state
-              :if={@all_groups == []}
-              title="No runs yet"
-              description="Submit an asset, pipeline, or backfill to see run activity here."
-              icon="hero-rocket-launch"
-              data-testid="runs-empty-state"
-            />
-            <.empty_state
-              :if={@all_groups != [] && @groups == []}
-              title="No runs found"
-              description="Adjust search or filters to widen the overview."
-              icon="hero-funnel"
-              data-testid="runs-filtered-empty-state"
-            />
-            <.execution_groups_table
-              :if={@groups != []}
-              groups={@groups}
-              group_details={@group_details}
-              expanded_group_ids={@expanded_group_ids}
-            />
-            <.execution_group_cards
-              :if={@groups != []}
-              groups={@groups}
-              group_details={@group_details}
-              expanded_group_ids={@expanded_group_ids}
-            />
-          </.panel>
-        </div>
+
+        <.panel
+          :if={!@error}
+          padding={:none}
+          class="flex min-h-0 flex-1 flex-col overflow-hidden"
+          data-testid="runs-panel"
+        >
+          <.runs_toolbar filters={@filters} counts={@counts} />
+
+          <div class="min-h-0 flex-1 overflow-y-auto">
+            <.runs_empty_state :if={empty?(@listing)} filters={@filters} />
+
+            <.runs_table :if={!empty?(@listing)} listing={@listing} order={@filters.order} />
+
+            <.runs_cards :if={!empty?(@listing)} listing={@listing} />
+
+            <div :if={@truncated?} class="p-4 text-center">
+              <.button
+                phx-click="load_more"
+                variant={:ghost}
+                icon="hero-arrow-down"
+                data-testid="load-more-runs"
+              >
+                Load {RunsFilters.growth(@filters) || 0} more
+              </.button>
+            </div>
+          </div>
+        </.panel>
       </div>
     </AppShell.app_shell>
     """
   end
 
-  attr :summary, :map, required: true
+  attr :filters, RunsFilters, required: true
+  attr :counts, :map, default: nil
 
-  def summary_band(assigns) do
+  def runs_toolbar(assigns) do
+    assigns = assign(assigns, :presets, RunsFilters.presets(assigns.filters, assigns.counts))
+
     ~H"""
-    <section
-      class="favn-surface-panel rounded-box border border-base-content/10 bg-base-100/35 px-4 py-3 shadow-[0_16px_60px_rgba(0,0,0,0.22)] sm:px-5 sm:py-4"
-      data-testid="runs-summary-band"
-    >
-      <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
-        <.summary_metric label="Runs" value={@summary.total_groups} caption="Total" />
-        <.summary_metric label="Windows" value={@summary.total_windows} caption="Across backfills" />
-        <div class="space-y-1.5 border-base-content/10 sm:border-l sm:pl-5">
-          <p class="text-[0.68rem] font-semibold uppercase tracking-[0.2em] favn-text-subtle">
-            Asset attempts
-          </p>
+    <div class="border-b border-base-content/10 p-3 sm:p-4">
+      <div class="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+        <nav
+          class="favn-surface-rail flex flex-wrap items-center gap-0.5 rounded-box p-1"
+          aria-label="Run scopes"
+          data-testid="run-scopes"
+        >
+          <.scope_button :for={preset <- @presets} preset={preset} />
+        </nav>
 
-          <p class="text-xl font-semibold leading-none text-base-content">
-            {@summary.completed_asset_attempts}
-            <span class="favn-text-subtle">/ {@summary.total_asset_attempts}</span>
-          </p>
-
-          <progress
-            class="progress progress-info h-1.5 w-full bg-base-content/10"
-            value={@summary.completed_asset_attempts}
-            max={max(@summary.total_asset_attempts, 1)}
-          ></progress>
-        </div>
-
-        <div class="space-y-2 border-base-content/10 sm:border-l sm:pl-5 xl:col-span-2">
-          <p class="text-[0.68rem] font-semibold uppercase tracking-[0.2em] favn-text-subtle">
-            Health summary
-          </p>
-
-          <div class="grid grid-cols-2 gap-2 text-sm sm:grid-cols-4">
-            <.health_count tone={:success} label="Succeeded" value={@summary.health.succeeded} />
-            <.health_count tone={:error} label="Failed" value={@summary.health.failed} />
-            <.health_count tone={:info} label="Running" value={@summary.health.running} />
-            <.health_count tone={:warning} label="Queued" value={@summary.health.queued} />
-          </div>
-        </div>
-      </div>
-    </section>
-    """
-  end
-
-  attr :label, :string, required: true
-  attr :value, :any, required: true
-  attr :caption, :string, required: true
-
-  def summary_metric(assigns) do
-    ~H"""
-    <div class="space-y-1 border-base-content/10 sm:border-l sm:pl-5 first:border-l-0 first:pl-0">
-      <p class="text-[0.68rem] font-semibold uppercase tracking-[0.2em] favn-text-subtle">
-        {@label}
-      </p>
-
-      <p class="text-xl font-semibold leading-none text-base-content">{@value}</p>
-
-      <p class="text-xs favn-text-muted">{@caption}</p>
-    </div>
-    """
-  end
-
-  attr :tone, :atom, required: true
-  attr :label, :string, required: true
-  attr :value, :integer, required: true
-
-  def health_count(assigns) do
-    ~H"""
-    <div class="min-w-0">
-      <p class={["font-semibold", Tokens.text_class(@tone)]}>
-        <span class={["status status-xs align-middle", Tokens.dot_class(@tone)]}></span>
-        <span class="ml-1">{@value}</span>
-      </p>
-
-      <p class="truncate text-xs favn-text-muted">{@label}</p>
-    </div>
-    """
-  end
-
-  attr :filters, :map, required: true
-  attr :filter_options, :map, required: true
-  attr :result_count, :integer, required: true
-
-  def filters_bar(assigns) do
-    ~H"""
-    <.form
-      for={%{}}
-      as={:filters}
-      phx-change="filter_groups"
-      class="pb-3"
-      data-testid="execution-group-filters"
-    >
-      <div class="flex flex-wrap items-center gap-2">
-        <label class="favn-surface-control input input-sm h-9 min-h-9 min-w-0 flex-1 items-center gap-2 rounded-field sm:min-w-72 lg:max-w-80">
-          <.icon name="hero-magnifying-glass" class="size-4 favn-text-subtle" />
-          <input
-            type="search"
-            name="filters[search]"
-            value={@filters["search"]}
-            placeholder="Search runs..."
-            class="grow"
-            phx-debounce="250"
-            data-testid="execution-group-search"
+        <form
+          phx-change="filter_runs"
+          phx-submit="filter_runs"
+          class="flex flex-wrap items-center gap-2"
+          data-testid="runs-filters"
+        >
+          <.search_field
+            name="filters[q]"
+            value={@filters.search}
+            label="Search runs"
+            placeholder="Run id, pipeline, or asset"
+            class="w-full sm:w-52"
           />
-        </label>
-        <input id="runs-filter-toggle" type="checkbox" class="peer sr-only" />
-        <label
-          for="runs-filter-toggle"
-          class="btn btn-sm favn-surface-control rounded-field xl:hidden"
-        >
-          <.icon name="hero-funnel" class="size-4" /> Filters
-        </label>
-
-        <span
-          class="ml-auto text-xs favn-text-subtle xl:hidden"
-          data-testid="execution-group-result-count"
-        >
-          {@result_count} results
-        </span>
-
-        <div class="hidden w-full flex-wrap items-center gap-2 pt-2 peer-checked:flex xl:flex xl:w-auto xl:flex-1 xl:pt-0">
-          <.select_control
+          <.select_field
+            name="filters[status]"
             label="Status"
-            name="status"
-            value={@filters["status"]}
-            options={status_options()}
+            options={RunsFilters.status_options()}
+            value={to_string(@filters.status)}
+            icon="hero-signal"
+            class="w-full sm:w-40"
           />
-          <.select_control
-            label="Trigger"
-            name="trigger"
-            value={@filters["trigger"]}
-            options={trigger_options(@filter_options.triggers)}
+          <.select_field
+            name="filters[range]"
+            label="Time range"
+            options={RunsFilters.range_options()}
+            value={to_string(@filters.range)}
+            icon="hero-calendar-days"
+            class="w-full sm:w-40"
           />
-          <.select_control
-            label="Target"
-            name="target"
-            value={@filters["target"]}
-            options={target_options(@filter_options.targets)}
-          />
-          <.select_control
-            label="Window"
-            name="window"
-            value={@filters["window"]}
-            options={window_options()}
-          />
-          <.select_control label="Sort" name="sort" value={@filters["sort"]} options={sort_options()} />
-          <div class="ml-auto flex flex-wrap items-center justify-end gap-x-3 gap-y-2">
-            <.toggle_control
-              label="Only failed"
-              name="only_failed"
-              checked={@filters["only_failed"] == "true"}
-            />
-            <.toggle_control
-              label="Only running"
-              name="only_running"
-              checked={@filters["only_running"] == "true"}
-            />
-            <.toggle_control
-              label="Only incomplete"
-              name="only_incomplete"
-              checked={@filters["only_incomplete"] == "true"}
-            />
-            <button
-              type="button"
-              phx-click="clear_filters"
-              class="text-xs font-semibold favn-text-muted transition hover:text-primary"
-              data-testid="clear-run-filters"
-            >
-              Clear
-            </button>
-
-            <span
-              class="hidden text-xs favn-text-subtle xl:inline"
-              data-testid="execution-group-result-count"
-            >
-              {@result_count} results
-            </span>
+          <div :if={RunsFilters.custom?(@filters)} class="flex items-center gap-2">
+            <.date_input name="filters[from]" label="From date" value={@filters.from} />
+            <span class="text-xs favn-text-subtle">to</span>
+            <.date_input name="filters[to]" label="To date" value={@filters.to} />
           </div>
-        </div>
-      </div>
-    </.form>
-    """
-  end
-
-  attr :label, :string, required: true
-  attr :name, :string, required: true
-  attr :value, :string, required: true
-  attr :options, :list, required: true
-
-  def select_control(assigns) do
-    ~H"""
-    <label class="favn-surface-control flex h-9 min-h-9 min-w-32 items-center overflow-hidden rounded-field border border-base-content/10 bg-base-100/20 text-sm shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
-      <span class="border-r border-base-content/10 px-3 text-xs favn-text-subtle">{@label}</span>
-      <select
-        name={"filters[#{@name}]"}
-        value={@value}
-        class="select select-ghost select-sm h-8 min-h-8 flex-1 bg-transparent px-2 focus:outline-none"
-      >
-        <option :for={{label, value} <- @options} value={value} selected={@value == value}>
-          {label}
-        </option>
-      </select>
-    </label>
-    """
-  end
-
-  attr :label, :string, required: true
-  attr :name, :string, required: true
-  attr :checked, :boolean, default: false
-
-  def toggle_control(assigns) do
-    ~H"""
-    <label class="flex items-center gap-2 text-xs favn-text-muted">
-      <input type="hidden" name={"filters[#{@name}]"} value="false" />
-      <input
-        type="checkbox"
-        name={"filters[#{@name}]"}
-        value="true"
-        checked={@checked}
-        class="toggle toggle-info toggle-xs"
-      /> <span class="whitespace-nowrap leading-none">{@label}</span>
-    </label>
-    """
-  end
-
-  attr :groups, :list, required: true
-  attr :group_details, :map, required: true
-  attr :expanded_group_ids, MapSet, required: true
-
-  def execution_groups_table(assigns) do
-    ~H"""
-    <div class="hidden min-h-0 flex-1 overflow-auto border-t border-base-content/10 lg:block">
-      <table class="table table-sm" data-testid="execution-groups-table">
-        <thead>
-          <tr class="border-base-content/10 text-xs favn-text-muted">
-            <th class="w-64 font-medium">Backfill / run</th>
-
-            <th class="font-medium">Trigger</th>
-
-            <th class="font-medium">Target</th>
-
-            <th class="font-medium">Window range</th>
-
-            <th class="font-medium">Progress</th>
-
-            <th class="font-medium">Health</th>
-
-            <th class="font-medium">Current activity</th>
-
-            <th class="font-medium">Started</th>
-
-            <th class="font-medium">Duration</th>
-          </tr>
-        </thead>
-
-        <tbody>
-          <%= for group <- @groups do %>
-            <.execution_group_row
-              group={group}
-              expanded={MapSet.member?(@expanded_group_ids, group.id)}
-            />
-            <.child_runs_row
-              :if={MapSet.member?(@expanded_group_ids, group.id)}
-              group={group}
-              detail={Map.get(@group_details, group.id)}
-            />
-          <% end %>
-        </tbody>
-      </table>
-
-      <div class="sticky bottom-0 border-t border-base-content/10 bg-base-100/80 px-2 py-3 text-xs favn-text-muted backdrop-blur">
-        Showing 1-{length(@groups)} of {length(@groups)} runs
+        </form>
       </div>
     </div>
     """
   end
 
-  attr :group, :map, required: true
-  attr :expanded, :boolean, required: true
+  attr :preset, :map, required: true
 
-  def execution_group_row(assigns) do
+  def scope_button(assigns) do
     ~H"""
-    <tr
-      class="group border-base-content/10 bg-base-100/5 text-sm transition hover:bg-primary/10 focus-within:bg-primary/10"
-      data-testid="execution-group-row"
-      data-group-id={@group.id}
+    <.link
+      patch={runs_path(@preset.params)}
+      class={
+        [
+          "favn-mode-item h-9 gap-1.5 rounded-field px-2.5 text-sm font-medium",
+          "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
+          # The rail's own colour is tuned for icon-only buttons; these carry words,
+          # which are held to the higher contrast ask, so an inactive one borrows the
+          # muted text tier rather than the rail's decorative tint.
+          (@preset.active? && "favn-mode-item-active") || "favn-text-muted"
+        ]
+      }
+      aria-current={@preset.active? && "page"}
+      data-testid={"run-scope-#{@preset.id}"}
     >
-      <td>
-        <div class="flex items-start gap-2">
-          <button
-            type="button"
-            class="btn btn-ghost btn-xs mt-0.5 h-6 min-h-6 w-6 px-0"
-            phx-click="toggle_group"
-            phx-value-id={@group.id}
-            aria-expanded={to_string(@expanded)}
-            data-testid="toggle-execution-group"
-          >
-            <.icon
-              name={if(@expanded, do: "hero-chevron-down", else: "hero-chevron-right")}
-              class="size-4"
-            />
-          </button>
-
-          <div class="min-w-0">
-            <div class="flex flex-wrap items-center gap-1.5">
-              <.run_status_badge status={@group.status} /> <.trigger_badge trigger={@group.trigger} />
-            </div>
-
-            <.link
-              navigate={~p"/runs/#{@group.id}"}
-              class="mt-1 block max-w-44 truncate font-mono text-xs favn-text-muted hover:text-primary"
-              title={@group.id}
-              data-testid="execution-group-link"
-            >
-              {@group.short_id}
-            </.link>
-          </div>
-        </div>
-      </td>
-
-      <td class="text-xs favn-text-muted">{@group.trigger}</td>
-
-      <td class="min-w-44 max-w-56"><.target_cell group={@group} /></td>
-
-      <td class="min-w-36 text-xs favn-text-muted">
-        <p>{@group.window}</p>
-
-        <p class="text-xs favn-text-subtle">{@group.window_count_label}</p>
-      </td>
-
-      <td class="min-w-40"><.progress_cell progress={@group.progress} /></td>
-
-      <td class="min-w-36"><.health_counts health={@group.health} /></td>
-
-      <td class="min-w-40"><.activity_cell activity={@group.current_activity} /></td>
-
-      <td class="whitespace-nowrap text-xs favn-text-muted">{@group.started_at}</td>
-
-      <td class="whitespace-nowrap text-xs favn-text-muted">{@group.duration}</td>
-    </tr>
-    """
-  end
-
-  attr :group, :map, required: true
-  attr :detail, :any, default: nil
-
-  def child_runs_row(assigns) do
-    ~H"""
-    <tr class="border-base-content/10 bg-base-100/20" data-testid="execution-group-children-row">
-      <td colspan="9" class="p-0">
-        <div class="mx-3 mb-3 rounded-box border border-base-content/10 bg-base-100/25 p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]">
-          <p :if={is_nil(@detail)} class="p-4 text-sm favn-text-muted">Loading window runs...</p>
-
-          <p :if={match?(%{error: _}, @detail)} class="p-4 text-sm text-error">
-            Could not load window runs.
-          </p>
-
-          <div :if={match?(%{child_runs: []}, @detail)} class="p-4 text-sm favn-text-muted">
-            No window runs for this backfill.
-          </div>
-
-          <table
-            :if={match?(%{child_runs: [_ | _]}, @detail)}
-            class="table table-sm"
-            data-testid="child-runs-table"
-          >
-            <thead>
-              <tr class="border-base-content/10 favn-text-muted">
-                <th>Window / run</th>
-
-                <th>Status</th>
-
-                <th>Progress</th>
-
-                <th>Started</th>
-
-                <th>Duration</th>
-
-                <th></th>
-              </tr>
-            </thead>
-
-            <tbody>
-              <tr
-                :for={child <- @detail.child_runs}
-                class="border-base-content/10"
-                data-testid="child-run-row"
-                data-run-id={child.id}
-              >
-                <td>
-                  <p class="font-medium text-base-content">{child.window}</p>
-
-                  <p class="font-mono text-xs favn-text-muted">{child.short_id}</p>
-                </td>
-
-                <td><.run_status_badge status={child.status} /></td>
-
-                <td><.progress_label progress={child.progress} /></td>
-
-                <td class="whitespace-nowrap favn-text-muted">{child.started_at}</td>
-
-                <td class="whitespace-nowrap favn-text-muted">{child.duration}</td>
-
-                <td class="text-right">
-                  <.link
-                    navigate={~p"/runs/#{@group.id}?view=windows&child_run_id=#{child.id}"}
-                    class="btn btn-ghost btn-xs text-primary"
-                  >
-                    Open window run
-                  </.link>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </td>
-    </tr>
-    """
-  end
-
-  attr :groups, :list, required: true
-  attr :group_details, :map, required: true
-  attr :expanded_group_ids, MapSet, required: true
-
-  def execution_group_cards(assigns) do
-    ~H"""
-    <div class="space-y-2.5 p-3 lg:hidden" data-testid="execution-group-card-list">
-      <.execution_group_card
-        :for={group <- @groups}
-        group={group}
-        expanded={MapSet.member?(@expanded_group_ids, group.id)}
-        detail={Map.get(@group_details, group.id)}
+      <.icon name={@preset.icon} size={:md} class={Tokens.text_class(Tokens.tone(@preset.tone))} />
+      <span class="whitespace-nowrap">{@preset.label}</span>
+      <.count_badge
+        :if={is_integer(@preset.count)}
+        count={@preset.count}
+        label="runs"
+        tone={count_tone(@preset)}
       />
-    </div>
+    </.link>
     """
   end
 
-  attr :group, :map, required: true
-  attr :expanded, :boolean, required: true
-  attr :detail, :any, default: nil
+  attr :name, :string, required: true
+  attr :label, :string, required: true
+  attr :value, :any, default: nil
 
-  def execution_group_card(assigns) do
+  def date_input(assigns) do
     ~H"""
-    <article
-      class="card favn-surface-list rounded-box p-3"
-      data-testid="execution-group-card"
-      data-group-id={@group.id}
-    >
-      <div class="flex items-start justify-between gap-3">
-        <div class="min-w-0 space-y-2">
-          <div class="flex flex-wrap items-center gap-1.5">
-            <.run_status_badge status={@group.status} /> <.trigger_badge trigger={@group.trigger} />
-          </div>
-
-          <.link
-            navigate={~p"/runs/#{@group.id}"}
-            class="block truncate font-mono text-sm font-medium text-base-content hover:text-primary"
-          >
-            {@group.short_id}
-          </.link>
-
-          <p class="line-clamp-2 text-sm favn-text-muted" title={@group.target_title}>
-            {@group.target}
-          </p>
-        </div>
-
-        <button
-          type="button"
-          class="btn btn-ghost btn-sm"
-          phx-click="toggle_group"
-          phx-value-id={@group.id}
-          aria-expanded={to_string(@expanded)}
-        >
-          <.icon
-            name={if(@expanded, do: "hero-chevron-down", else: "hero-chevron-right")}
-            class="size-4"
-          />
-        </button>
-      </div>
-
-      <div class="mt-3 grid grid-cols-2 gap-3 text-xs favn-text-muted">
-        <div><span class="block favn-text-subtle">Window</span>{@group.window}</div>
-
-        <div><span class="block favn-text-subtle">Started</span>{@group.started_at}</div>
-
-        <div class="col-span-2"><.progress_cell progress={@group.progress} /></div>
-
-        <div class="col-span-2"><.health_counts health={@group.health} /></div>
-      </div>
-
-      <div :if={@expanded} class="mt-3 border-t border-base-content/10 pt-3">
-        <p :if={is_nil(@detail)} class="text-xs favn-text-muted">Loading window runs...</p>
-
-        <div :if={match?(%{child_runs: [_ | _]}, @detail)} class="space-y-2">
-          <.link
-            :for={child <- @detail.child_runs}
-            navigate={~p"/runs/#{@group.id}?view=windows&child_run_id=#{child.id}"}
-            class="block rounded-field border border-base-content/10 p-2 text-xs hover:border-primary/30"
-            data-testid="child-run-card"
-          >
-            <span class="font-medium">{child.window}</span>
-            <span class="ml-2 favn-text-muted">{child.short_id}</span>
-          </.link>
-        </div>
-      </div>
-    </article>
+    <label class="input input-sm favn-surface-control w-36 px-3">
+      <span class="sr-only">{@label}</span>
+      <input
+        type="date"
+        name={@name}
+        value={@value && Date.to_iso8601(@value)}
+        aria-label={@label}
+        class="grow"
+      />
+    </label>
     """
   end
 
-  attr :group, :map, required: true
+  attr :listing, :any, required: true
+  attr :order, :atom, required: true
 
-  def target_cell(%{group: %{targets: [_single]}} = assigns) do
+  def runs_table(assigns) do
     ~H"""
-    <p class="max-w-56 truncate text-sm font-medium text-base-content" title={@group.target_title}>
-      {@group.target}
-    </p>
+    <table class="hidden w-full table table-sm lg:table" data-testid="runs-table">
+      <thead class="sticky top-0 z-10 bg-base-100/85 backdrop-blur">
+        <tr class="border-base-content/10 text-xs favn-text-muted">
+          <th class="w-64 font-medium">Run</th>
+          <th class="font-medium">Target</th>
+          <th class="w-36 font-medium">
+            <.sort_button order={@order} />
+          </th>
+          <th class="w-28 font-medium">Duration</th>
+          <th class="w-10"><span class="sr-only">Open</span></th>
+        </tr>
+      </thead>
+
+      <tbody :if={match?({:flat, _}, @listing)}>
+        <.run_row :for={run <- flat_runs(@listing)} run={run} />
+      </tbody>
+
+      <tbody :for={day <- day_groups(@listing)} id={day.id} data-testid="runs-day-group">
+        <tr :if={day.kind == :gap} class="border-base-content/10" data-testid="runs-day-gap">
+          <td colspan="5" class="py-1.5 text-xs favn-text-subtle">
+            <.gap_heading day={day} />
+          </td>
+        </tr>
+
+        <tr :if={day.kind == :day} class="border-none bg-base-content/[0.06]">
+          <th colspan="5" class="py-1.5">
+            <.day_heading day={day} />
+          </th>
+        </tr>
+        <.run_row :for={run <- day_runs(day)} run={run} />
+      </tbody>
+    </table>
     """
   end
 
-  def target_cell(assigns) do
+  @doc "A stretch of days on which nothing ran, as one line."
+  attr :day, :map, required: true
+
+  def gap_heading(assigns) do
     ~H"""
-    <details class="dropdown dropdown-hover dropdown-bottom">
-      <summary class="list-none marker:content-none">
-        <span class="inline-flex max-w-full cursor-default items-center gap-2 align-middle">
-          <span
-            class="max-w-48 truncate text-sm font-medium text-base-content"
-            title={@group.target_title}
-          >
-            {@group.target}
-          </span>
-
-          <span class="badge badge-xs badge-soft badge-info shrink-0">
-            +{length(@group.targets) - 1}
-          </span>
-        </span>
-      </summary>
-
-      <div class="dropdown-content z-50 mt-2 w-80 rounded-box border border-base-content/10 bg-base-100 p-3 shadow-xl">
-        <p class="mb-2 text-xs font-medium uppercase tracking-[0.2em] favn-text-subtle">
-          Targets
-        </p>
-
-        <ul class="space-y-1 text-xs favn-text-muted">
-          <li :for={target <- @group.targets} class="truncate" title={target}>{target}</li>
-        </ul>
-      </div>
-    </details>
-    """
-  end
-
-  attr :status, :atom, required: true
-
-  def run_status_badge(assigns) do
-    ~H"""
-    <.status_badge tone={status_tone(@status)} label={status_label(@status)} />
-    """
-  end
-
-  attr :trigger, :string, required: true
-
-  def trigger_badge(assigns) do
-    ~H"""
-    <span class="badge badge-sm badge-outline border-primary/40 text-primary">{@trigger}</span>
-    """
-  end
-
-  attr :progress, :map, required: true
-
-  def progress_cell(assigns) do
-    ~H"""
-    <div class="space-y-1" title={@progress.title}>
-      <p class="text-sm favn-text-muted">{@progress.window_label}</p>
-
-      <p class="text-xs favn-text-muted">{@progress.attempt_label}</p>
-
-      <progress
-        class={["progress h-1.5 w-full bg-base-content/10", progress_class(@progress.tone)]}
-        value={@progress.percent}
-        max="100"
-      ></progress>
-    </div>
-    """
-  end
-
-  attr :progress, :map, required: true
-
-  def progress_label(assigns) do
-    ~H"""
-    <span class="whitespace-nowrap text-sm favn-text-muted" title={@progress.title}>
-      {@progress.label}
+    <span class="inline-flex items-center gap-2">
+      <.icon name="hero-minus-small" size={:sm} />
+      {gap_text(@day)}
     </span>
     """
   end
 
-  attr :health, :map, required: true
+  attr :order, :atom, required: true
 
-  def health_counts(assigns) do
+  def sort_button(assigns) do
     ~H"""
-    <div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
-      <.health_count tone={:success} label="ok" value={@health.succeeded} />
-      <.health_count tone={:error} label="fail" value={@health.failed} />
-      <.health_count tone={:info} label="run" value={@health.running} />
-      <.health_count tone={:warning} label="queue" value={@health.queued} />
+    <button
+      type="button"
+      phx-click="toggle_started_order"
+      class="inline-flex items-center gap-1 font-medium transition hover:text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+      aria-label={"Started, #{sort_label(@order)}. Click to reverse."}
+      data-testid="sort-started"
+    >
+      Started
+      <.icon
+        name={if(@order == :started_asc, do: "hero-bars-arrow-up", else: "hero-bars-arrow-down")}
+        size={:sm}
+      />
+    </button>
+    """
+  end
+
+  attr :day, :map, required: true
+
+  def day_heading(assigns) do
+    ~H"""
+    <div class="flex flex-wrap items-center gap-x-3 gap-y-1">
+      <span class="text-xs font-semibold uppercase tracking-[0.14em] text-base-content">
+        {@day.label}
+      </span>
+      <span :if={@day.total > 0} class="text-xs font-normal favn-text-muted">
+        {@day.total} {if(@day.total == 1, do: "run", else: "runs")}
+      </span>
+      <span :if={@day.failed > 0} class="text-xs font-normal text-error">
+        {@day.failed} failed
+      </span>
+      <span :if={@day.active > 0} class="text-xs font-normal text-info">
+        {@day.active} in flight
+      </span>
     </div>
     """
   end
 
-  attr :activity, :any, default: nil
+  attr :run, :map, required: true
 
-  def activity_cell(%{activity: nil} = assigns) do
+  def run_row(assigns) do
     ~H"""
-    <span class="text-sm favn-text-subtle">-</span>
+    <tr
+      id={"run-row-#{@run.id}"}
+      class="group border-base-content/10 text-sm transition hover:bg-primary/10 focus-within:bg-primary/10"
+      data-testid="run-row"
+      data-run-id={@run.id}
+    >
+      <td class="align-middle"><.run_identity run={@run} /></td>
+
+      <td class="max-w-64 align-middle"><.run_target run={@run} /></td>
+
+      <td class="whitespace-nowrap align-middle text-xs favn-text-muted" title={@run.started_at_title}>
+        {@run.started_at}
+      </td>
+
+      <td class="whitespace-nowrap align-middle text-xs favn-text-muted">{@run.duration}</td>
+
+      <td class="text-right align-middle">
+        <.icon_button
+          navigate={~p"/runs/#{@run.id}"}
+          icon="hero-chevron-right"
+          label={"Open run #{@run.short_id}"}
+          shape={:circle}
+        />
+      </td>
+    </tr>
     """
   end
 
-  def activity_cell(assigns) do
+  attr :run, :map, required: true
+
+  def run_identity(assigns) do
     ~H"""
-    <div class="text-sm">
-      <p class="max-w-40 truncate font-medium text-base-content" title={@activity.asset}>
-        {@activity.asset}
+    <div class="flex min-w-0 items-center gap-2">
+      <.status_dot tone={@run.status} label={@run.status_label} />
+      <div class="min-w-0 flex-1">
+        <.link
+          navigate={~p"/runs/#{@run.id}"}
+          class="block truncate font-mono text-xs font-medium text-base-content hover:text-primary"
+          title={@run.id}
+          data-testid="run-link"
+        >
+          {@run.short_id}
+        </.link>
+        <p class="truncate text-[0.68rem] favn-text-subtle">
+          {@run.status_label} · {@run.trigger}
+        </p>
+        <.run_progress :if={@run.progress.total > 1} run={@run} />
+      </div>
+    </div>
+    """
+  end
+
+  attr :run, :map, required: true
+
+  def run_target(assigns) do
+    ~H"""
+    <div class="min-w-0">
+      <p class="truncate font-medium text-base-content" title={@run.target_title}>{@run.target}</p>
+      <p :if={@run.target_detail} class="truncate text-[0.68rem] favn-text-subtle">
+        {@run.target_detail}
       </p>
-
-      <p class="text-xs favn-text-muted">{@activity.window}</p>
     </div>
     """
   end
 
-  def sample_groups do
-    [
-      %{
-        id: "run_backfill_8f2c9d1",
-        short_id: "run_back...2c9d1",
-        target: "Favn.Examples.Sales.revenue_metrics",
-        target_title: "Favn.Examples.Sales.revenue_metrics",
-        targets: ["Favn.Examples.Sales.revenue_metrics"],
-        status: :running,
-        raw_status: :running,
-        trigger: "Backfill",
-        trigger_type: :backfill,
-        window: "Jan 2026 -> May 2026",
-        window_count_label: "5 windows",
-        progress: %{
-          window_label: "4 / 5 windows",
-          attempt_label: "86 / 100 attempts",
-          percent: 86,
-          title: "4 / 5 windows; 86 / 100 attempts",
-          tone: :info
-        },
-        health: %{succeeded: 82, failed: 3, running: 1, queued: 14},
-        current_activity: %{asset: "daily_sales", window: "May 2026 window"},
-        started_at: "May 19 16:26",
-        duration: "1h 32m",
-        child_run_ids: ~w(run_child_91a2b7e0 run_child_d4f6a3c1 run_child_a1b3c5d9),
-        total_windows: 5,
-        completed_windows: 4,
-        failed_windows: 0,
-        total_asset_attempts: 100,
-        completed_asset_attempts: 86,
-        failed_asset_attempts: 3,
-        running_asset_attempts: 1,
-        queued_asset_attempts: 14
-      },
-      %{
-        id: "run_backfill_7b3a4c2d",
-        short_id: "run_back...a4c2d",
-        target: "Favn.Examples.Sales.inventory",
-        target_title: "Favn.Examples.Sales.inventory",
-        targets: ["Favn.Examples.Sales.inventory"],
-        status: :failed,
-        raw_status: :error,
-        trigger: "Backfill",
-        trigger_type: :backfill,
-        window: "Mar 2025 -> Dec 2025",
-        window_count_label: "10 windows",
-        progress: %{
-          window_label: "4 / 10 windows",
-          attempt_label: "172 / 250 attempts",
-          percent: 69,
-          title: "4 / 10 windows; 172 / 250 attempts",
-          tone: :error
-        },
-        health: %{succeeded: 122, failed: 12, running: 0, queued: 116},
-        current_activity: nil,
-        started_at: "May 12 14:03",
-        duration: "2d 6h",
-        child_run_ids: ~w(run_child_failure),
-        total_windows: 10,
-        completed_windows: 4,
-        failed_windows: 1,
-        total_asset_attempts: 250,
-        completed_asset_attempts: 172,
-        failed_asset_attempts: 12,
-        running_asset_attempts: 0,
-        queued_asset_attempts: 116
-      }
-    ]
+  @doc """
+  How far a group of runs has got — which, for a backfill, is its windows.
+
+  Only rendered when there is more than one run to divide. A single-run group
+  would read `1 / 1`, which is chrome pretending to be information, and a whole
+  column of it was the old page's widest dead space.
+  """
+  attr :run, :map, required: true
+
+  def run_progress(assigns) do
+    ~H"""
+    <div class="mt-1.5 max-w-40">
+      <.outcome_meter
+        segments={@run.progress.segments}
+        summary={@run.progress.summary}
+        size={:sm}
+        legend?={false}
+      />
+      <p class="mt-1 truncate text-[0.68rem] favn-text-muted">{@run.progress.summary}</p>
+    </div>
+    """
   end
 
-  def sample_detail do
-    %{
-      child_runs: [
-        %{
-          id: "run_child_91a2b7e0",
-          short_id: "run_child_91a2b7e0",
-          status: :succeeded,
-          raw_status: :ok,
-          target: "daily_sales",
-          window: "Jan 2026",
-          progress: %{label: "20 / 20", title: "20 attempts"},
-          started_at: "May 19 15:10",
-          duration: "8m 21s"
-        },
-        %{
-          id: "run_child_d4f6a3c1",
-          short_id: "run_child_d4f6a3c1",
-          status: :succeeded,
-          raw_status: :ok,
-          target: "daily_sales",
-          window: "Feb 2026",
-          progress: %{label: "20 / 20", title: "20 attempts"},
-          started_at: "May 19 15:21",
-          duration: "8m 03s"
-        },
-        %{
-          id: "run_child_a1b3c5d9",
-          short_id: "run_child_a1b3c5d9",
-          status: :running,
-          raw_status: :running,
-          target: "daily_sales",
-          window: "May 2026",
-          progress: %{label: "9 / 20", title: "9 attempts"},
-          started_at: "May 19 16:26",
-          duration: "26m 14s"
-        }
-      ]
-    }
+  attr :listing, :any, required: true
+
+  def runs_cards(assigns) do
+    ~H"""
+    <div class="space-y-2.5 p-3 lg:hidden" data-testid="runs-card-list">
+      <.run_card :for={run <- flat_runs(@listing)} run={run} />
+
+      <div :for={day <- day_groups(@listing)} class="space-y-2.5" id={"card-#{day.id}"}>
+        <p :if={day.kind == :gap} class="pl-1 text-xs favn-text-subtle">
+          <.gap_heading day={day} />
+        </p>
+        <.day_heading :if={day.kind == :day} day={day} />
+        <.run_card :for={run <- day_runs(day)} run={run} />
+      </div>
+    </div>
+    """
   end
 
-  def sample_summary(groups \\ sample_groups()) do
-    %{
-      total_groups: length(groups),
-      total_windows: Enum.sum(Enum.map(groups, & &1.total_windows)),
-      completed_windows: Enum.sum(Enum.map(groups, & &1.completed_windows)),
-      total_asset_attempts: Enum.sum(Enum.map(groups, & &1.total_asset_attempts)),
-      completed_asset_attempts: Enum.sum(Enum.map(groups, & &1.completed_asset_attempts)),
-      failed_asset_attempts: Enum.sum(Enum.map(groups, & &1.failed_asset_attempts)),
-      running_asset_attempts: Enum.sum(Enum.map(groups, & &1.running_asset_attempts)),
-      queued_asset_attempts: Enum.sum(Enum.map(groups, & &1.queued_asset_attempts)),
-      health: %{succeeded: 0, failed: 1, running: 1, queued: 0},
-      last_updated: "May 19 16:55"
-    }
+  attr :run, :map, required: true
+
+  def run_card(assigns) do
+    ~H"""
+    <.list_card navigate={~p"/runs/#{@run.id}"} class="space-y-2.5" data-testid="run-card">
+      <div class="flex items-start justify-between gap-3">
+        <div class="min-w-0">
+          <.status_badge tone={@run.status} label={@run.status_label} />
+          <p class="mt-1.5 truncate text-sm font-medium text-base-content" title={@run.target_title}>
+            {@run.target}
+          </p>
+          <p class="truncate font-mono text-[0.68rem] favn-text-subtle">{@run.short_id}</p>
+        </div>
+        <div class="shrink-0 text-right text-xs favn-text-muted">
+          <p>{@run.started_at}</p>
+          <p class="favn-text-subtle">{@run.duration}</p>
+        </div>
+      </div>
+
+      <.outcome_meter
+        :if={@run.progress.total > 1}
+        segments={@run.progress.segments}
+        summary={@run.progress.summary}
+        size={:sm}
+      />
+    </.list_card>
+    """
   end
 
-  def sample_filters do
-    %{
-      "search" => "",
-      "status" => "all",
-      "trigger" => "all",
-      "target" => "all",
-      "window" => "all",
-      "only_failed" => "false",
-      "only_running" => "false",
-      "only_incomplete" => "false",
-      "sort" => "started_desc"
-    }
+  attr :filters, RunsFilters, required: true
+
+  def runs_empty_state(assigns) do
+    ~H"""
+    <.empty_state
+      :if={RunsFilters.narrowed?(@filters)}
+      title="No runs match"
+      description={"Nothing in #{RunsFilters.range_label(@filters)} matches this search and status."}
+      icon="hero-funnel"
+      data-testid="runs-filtered-empty-state"
+    />
+    <.empty_state
+      :if={!RunsFilters.narrowed?(@filters)}
+      title={"No runs in #{RunsFilters.range_label(@filters)}"}
+      description="Widen the time range, or submit an asset, pipeline, or backfill."
+      icon="hero-rocket-launch"
+      data-testid="runs-empty-state"
+    />
+    """
   end
 
-  def sample_filter_options(groups \\ sample_groups()) do
-    %{
-      targets: groups |> Enum.flat_map(& &1.targets) |> Enum.uniq(),
-      triggers: [:backfill, :manual, :schedule, :retry]
-    }
-  end
-
+  @doc "Navigation items for the runs section."
+  @spec nav_items(atom()) :: list()
   def nav_items(active \\ :runs), do: Navigation.items(active)
 
-  defp status_options do
-    [
-      {"All", "all"},
-      {"Succeeded", "succeeded"},
-      {"Failed", "failed"},
-      {"Running", "running"},
-      {"Queued", "queued"},
-      {"Incomplete", "incomplete"},
-      {"Partial", "partial"}
-    ]
-  end
+  @doc """
+  The path for one set of `FavnView.RunsFilters` params.
 
-  defp trigger_options(triggers) do
-    [{"All", "all"} | Enum.map(triggers, &{label(&1), to_string(&1)})]
-  end
+  The default view carries no params, and `/runs?` is not a URL anyone should be
+  handed, so an empty list is the bare path.
+  """
+  @spec runs_path([{String.t(), String.t()}]) :: String.t()
+  def runs_path([]), do: ~p"/runs"
+  def runs_path(params), do: ~p"/runs?#{params}"
 
-  defp target_options(targets) do
-    [{"All", "all"} | Enum.map(targets, &{&1, &1})]
-  end
+  defp empty?({:flat, runs}), do: runs == []
+  defp empty?({:days, days}), do: Enum.all?(days, &(&1.kind == :gap))
 
-  defp sort_options do
-    [
-      {"Started desc", "started_desc"},
-      {"Status priority", "status_priority"},
-      {"Failed first", "failed_first"},
-      {"Running first", "running_first"}
-    ]
-  end
+  defp day_runs(%{kind: :day, runs: runs}), do: runs
+  defp day_runs(_gap), do: []
 
-  defp window_options do
-    [{"All", "all"}, {"Has window", "has_window"}, {"No window", "no_window"}]
-  end
+  defp gap_text(%{label: label, days: 1}), do: "#{label} · no runs"
+  defp gap_text(%{label: label, days: days}), do: "#{label} · no runs · #{days} days"
 
-  defp progress_class(:error), do: "progress-error"
-  defp progress_class(:warning), do: "progress-warning"
-  defp progress_class(:info), do: "progress-info"
-  defp progress_class(_tone), do: "progress-success"
+  defp flat_runs({:flat, runs}), do: runs
+  defp flat_runs(_layout), do: []
 
-  defp status_tone(:succeeded), do: :success
-  defp status_tone(:ok), do: :success
-  defp status_tone(:running), do: :info
-  defp status_tone(status) when status in [:queued, :pending, :incomplete, :partial], do: :warning
-  defp status_tone(status) when status in [:failed, :error, :blocked, :timed_out], do: :error
-  defp status_tone(_status), do: :neutral
+  defp day_groups({:days, days}), do: days
+  defp day_groups(_layout), do: []
 
-  defp status_label(:succeeded), do: "Succeeded"
-  defp status_label(:ok), do: "Succeeded"
-  defp status_label(:running), do: "Running"
-  defp status_label(:queued), do: "Queued"
-  defp status_label(:pending), do: "Queued"
-  defp status_label(:incomplete), do: "Incomplete"
-  defp status_label(:partial), do: "Partial"
-  defp status_label(:failed), do: "Failed"
-  defp status_label(:error), do: "Failed"
-  defp status_label(:blocked), do: "Blocked"
-  defp status_label(:cancelled), do: "Cancelled"
-  defp status_label(:skipped_fresh), do: "Skipped"
-  defp status_label(:timed_out), do: "Timed out"
-  defp status_label(_status), do: "Unknown"
+  defp sort_label(:started_asc), do: "oldest first"
+  defp sort_label(_order), do: "newest first"
 
-  defp label(nil), do: "Unknown"
-
-  defp label(value) do
-    value
-    |> to_string()
-    |> String.replace("_", " ")
-    |> String.capitalize()
-  end
+  # A scope button with nothing in it should not shout, and one with failures
+  # should. The count is the same number either way.
+  defp count_tone(%{count: 0}), do: :neutral
+  defp count_tone(%{tone: tone}), do: tone
 end

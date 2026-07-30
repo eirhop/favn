@@ -221,13 +221,6 @@
    "Function retry_remaining_partial_label/2 will never be called."},
   {"lib/favn_view/run_detail_live.ex",
    "The pattern can never match the type :forbidden | :invalid_context | :unauthenticated."},
-  {"lib/favn_view/runs_list_live.ex",
-   "The pattern can never match the type {:error, :forbidden | :invalid_context | :unauthenticated}."},
-  {"lib/favn_view/runs_list_live.ex", "Function detail_from_public/1 will never be called."},
-  {"lib/favn_view/runs_list_live.ex", "Function child_run_from_public/2 will never be called."},
-  {"lib/favn_view/runs_list_live.ex", "Function display_run_status/1 will never be called."},
-  {"lib/favn_view/runs_list_live.ex", "Function progress_label/2 will never be called."},
-  {"lib/favn_view/runs_list_live.ex", "Function progress_title/1 will never be called."},
   {"lib/mix/tasks/favn.postgres.maintenance.ex", "Function usage!/0 has no local return."},
   {"lib/mix/tasks/favn.postgres.provision_workspace.ex", "Function usage!/0 has no local return."}
 ]

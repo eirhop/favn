@@ -9,6 +9,7 @@ defmodule FavnOrchestrator.Persistence.OperatorReadStore do
   alias FavnOrchestrator.Persistence.Queries.GetFreshnessMany
   alias FavnOrchestrator.Persistence.Queries.GetTargetStatuses
   alias FavnOrchestrator.Persistence.Queries.GetSuccessfulAssetWindowKeys
+  alias FavnOrchestrator.Persistence.Queries.CountExecutionGroups
   alias FavnOrchestrator.Persistence.Queries.PageExecutionGroups
   alias FavnOrchestrator.Persistence.Queries.PageGroupRuns
   alias FavnOrchestrator.Persistence.Queries.PageGroupWindows
@@ -16,6 +17,7 @@ defmodule FavnOrchestrator.Persistence.OperatorReadStore do
   alias FavnOrchestrator.Persistence.Queries.PageTargetRuns
   alias FavnOrchestrator.Persistence.Results.CursorPage
   alias FavnOrchestrator.Persistence.Results.ExecutionGroup
+  alias FavnOrchestrator.Persistence.Results.ExecutionGroupCounts
   alias FavnOrchestrator.Persistence.Results.ExecutionGroupOverview
   alias FavnOrchestrator.Persistence.Results.FreshnessState
   alias FavnOrchestrator.Persistence.Results.ManifestSummary
@@ -27,6 +29,8 @@ defmodule FavnOrchestrator.Persistence.OperatorReadStore do
               {:ok, CursorPage.t(ManifestSummary.t())} | {:error, Error.t()}
   @callback page_execution_groups(PageExecutionGroups.t()) ::
               {:ok, CursorPage.t(ExecutionGroupOverview.t())} | {:error, Error.t()}
+  @callback count_execution_groups(CountExecutionGroups.t()) ::
+              {:ok, ExecutionGroupCounts.t()} | {:error, Error.t()}
   @callback get_execution_group(GetExecutionGroup.t()) ::
               {:ok, ExecutionGroup.t()} | {:error, Error.t()}
   @callback get_operator_run_overview(GetOperatorRunOverview.t()) ::

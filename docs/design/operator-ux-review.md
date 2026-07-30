@@ -454,6 +454,90 @@ browser, the activation, runtime, and next-due cards all updated, and
 `mix favn.schedules list` reports `state=enabled`. The control did not exist
 before; the handler behind it had never been reachable.
 
+## Runs list: four questions, not nine filters
+
+The list carried nine filter controls across two rows, a five-metric summary
+band, and a black "Showing 1-8 of 8 runs" bar pinned to the bottom. Six of the
+nine filters did nothing: only `status`, `only_failed`, and `only_running`
+reached the store, and `search`, `trigger`, `target`, `window`,
+`only_incomplete`, and `sort` were decoration. Setting `Trigger = Backfill` in
+the browser left all eleven rows on screen, still showing Pipeline and Manual.
+
+### What the operator is actually asking
+
+1. What is currently running?
+2. What has failed today?
+3. What has run today — did all my expected assets run?
+4. Has pipeline X run each day this month?
+
+Each is a pair of a time range and a status, which is the whole filter model.
+Everything else the old page offered was a knob without a question behind it.
+
+### The design
+
+Four buttons across the top, one per question, each carrying its own count from
+the store rather than from the loaded page — so three of the four are answered
+before anything is clicked, and the counts stay true when the page is truncated.
+Underneath, the same two axes as ordinary controls plus a search, so a button is
+a shortcut rather than a mode the operator can get stuck in: three controls in
+one row, not nine in two.
+
+Question 4 is a question about *absence*, and a list can only answer it if the
+days with nothing in them are on screen. So whenever the range covers more than
+one day the table grows day headers, and every day in the range gets a row.
+Consecutive empty days collapse into one line — twenty-eight rows each saying
+"no runs" is the right answer told badly, and `28 Jul to 1 Jul · no runs · 28
+days` is the same fact readable at a glance.
+
+A truncated page never claims a day was empty: day enumeration shrinks to the
+span actually loaded, because a day past the end of a page is unknown, not empty.
+
+The bottom bar is gone. The count lives on the active button, and a page with
+more behind it ends in a "Load 50 more" button that scrolls with the content.
+
+### What the store had to learn
+
+`page_execution_groups/2` now narrows by `search`, `trigger_type`,
+`started_after`, `started_before`, and a status that may be a list, and orders by
+when the group's root run started rather than by last activity — so ordering,
+filtering, and the keyset cursor all agree about what "recent" means. `search`
+matches the root run id and the module or name of any target any run in the group
+declared; it does not reach connection, catalogue, or schema, which are not part
+of this read model.
+
+`count_execution_groups/2` is new: one query with filtered aggregates returning
+`active`, `failed_since`, `started_since`, and `total` for the whole workspace.
+`active` ignores the boundary on purpose — a run that started yesterday and has
+not finished is still what the operator means by "running".
+
+### Three things the page was saying wrongly
+
+- **A pipeline run was named by the first of its assets.** Fourteen asset targets
+  rendered as `activities +13 more`, which describes the plan rather than the
+  submission. The group projection now carries `pipeline_refs` separately, and the
+  row reads `crm_daily · 14 assets`.
+- **Run counts were labelled as assets.** `total_asset_attempts` on the group
+  projection is the group's *run* count; the list reported `1 / 1 assets` for
+  every ordinary run. It now says runs, and says nothing at all when there is one
+  — a meter reading `1 / 1` is chrome pretending to be information, and a whole
+  column of it was the page's widest dead space.
+- **Backfills showed `Duration 0 ms`.** A backfill's root run finishes as soon as
+  it has submitted its windows. For a multi-run group the duration is now the
+  group's own span, which is what the operator means by how long it took.
+
+### The inline window-run expansion is gone
+
+Each expanded row cost a `get_execution_group_detail/3` call, repeated on every
+refresh — at 1.5 s under live events that is one facade call per expanded row per
+tick. Run detail owns window runs now, and the whole row navigates there.
+
+### Deliberately not built yet
+
+A per-day calendar for question 4 needs a new aggregate read and is a separate
+screen's worth of work; the day-grouped table answers the question without it.
+Sorting by duration would need SQL ordering on a computed column and was not
+asked for.
+
 ## Open questions
 
 Decisions that need a human, recorded rather than guessed:

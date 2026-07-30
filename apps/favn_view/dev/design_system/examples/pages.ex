@@ -18,13 +18,13 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
   alias FavnView.Components.Navigation
   alias FavnView.Components.PipelineDetailPage
   alias FavnView.Components.PipelinesPage
-  alias FavnView.Components.RunsListPage
   alias FavnView.Components.ScheduleDetailPage
   alias FavnView.Components.SchedulesPage
   alias FavnView.Dev.DesignSystem.Example
   alias FavnView.Dev.DesignSystem.Fixtures
   alias FavnView.Dev.DesignSystem.Fixtures.AssetDetail
   alias FavnView.Dev.DesignSystem.Fixtures.Runs
+  alias FavnView.Dev.DesignSystem.Fixtures.RunsList
   alias FavnView.Dev.DesignSystem.Fixtures.Schedules
   alias FavnView.Dev.DesignSystem.Fixtures.Timeline
 
@@ -470,40 +470,36 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
   end
 
   defp runs do
-    empty_runs = %{
-      groups: [],
-      all_groups: [],
-      group_details: %{},
-      expanded_group_ids: MapSet.new(),
-      filters: RunsListPage.sample_filters(),
-      filter_options: %{targets: [], triggers: []},
-      summary: RunsListPage.sample_summary([]),
-      loading: false,
-      error: nil,
-      nav_items: RunsListPage.nav_items()
-    }
-
     %{
       "runs_list_page/runs_list_page" => [
         Example.attrs(
-          :execution_groups,
-          %{
-            groups: RunsListPage.sample_groups(),
-            all_groups: RunsListPage.sample_groups(),
-            group_details: %{"run_backfill_8f2c9d1" => RunsListPage.sample_detail()},
-            expanded_group_ids: MapSet.new(["run_backfill_8f2c9d1"]),
-            filters: RunsListPage.sample_filters(),
-            filter_options: RunsListPage.sample_filter_options(),
-            summary: RunsListPage.sample_summary(),
-            loading: false,
-            error: nil,
-            nav_items: RunsListPage.nav_items()
-          },
-          "One group expanded, showing the runs inside it."
+          :today,
+          RunsList.today(),
+          "The default view: one day, so no day headers, and the counts answer three questions before a click."
         ),
-        Example.attrs(:empty, empty_runs),
-        Example.attrs(:loading, Map.put(empty_runs, :loading, true)),
-        Example.attrs(:error, Map.put(empty_runs, :error, "load_failed"))
+        Example.attrs(
+          :failed_today,
+          RunsList.failed_today(),
+          "The failures scope, reached from its own count."
+        ),
+        Example.attrs(
+          :month_with_gaps,
+          RunsList.month_with_gaps(),
+          "A month of one pipeline. The days with no row are the answer to \"did it run every day\"."
+        ),
+        Example.attrs(
+          :custom_range,
+          RunsList.custom_range(),
+          "An explicit pair of dates, so the range control shows its inputs."
+        ),
+        Example.attrs(
+          :truncated,
+          RunsList.truncated(),
+          "More runs than one page holds, so the days stop where the page did rather than claiming they were empty."
+        ),
+        Example.attrs(:empty, RunsList.empty()),
+        Example.attrs(:no_matches, RunsList.no_matches()),
+        Example.attrs(:error, RunsList.unavailable())
       ],
       "run_detail_page/run_detail_page" => [
         Example.attrs(

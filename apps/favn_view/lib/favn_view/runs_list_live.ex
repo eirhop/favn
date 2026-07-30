@@ -8,76 +8,78 @@ defmodule FavnView.RunsListLive do
   alias FavnView.Components.RunsListPage
   alias FavnView.LiveRefresh
   alias FavnView.LogsViewModel
+  alias FavnView.RunDays
+  alias FavnView.RunsFilters
 
   @refresh_interval_ms 1_500
   @coalesce_refresh_ms 100
-  @active_statuses [:queued, :running, :incomplete]
-  @default_filters %{
-    "search" => "",
-    "status" => "all",
-    "trigger" => "all",
-    "target" => "all",
-    "window" => "all",
-    "only_failed" => "false",
-    "only_running" => "false",
-    "only_incomplete" => "false",
-    "sort" => "started_desc"
-  }
+  @active_statuses [:queued, :running, :incomplete, :pending]
 
   @impl true
   def mount(_params, _session, socket) do
-    filters = @default_filters
-    operator_context = socket.assigns.current_scope.operator_context
-    {groups, error} = load_groups(operator_context, filters)
-
     socket =
-      assign(socket,
-        groups: groups,
-        visible_groups: groups,
-        group_details: %{},
-        expanded_group_ids: MapSet.new(),
-        filters: filters,
-        filter_options: filter_options(groups),
-        summary: overview_summary(groups),
-        loading: false,
-        error: error,
+      socket
+      |> assign(
+        runs: [],
+        listing: {:flat, []},
+        counts: nil,
+        filters: %RunsFilters{},
+        truncated?: false,
+        error: nil,
         run_events_live?: false,
         nav_items: RunsListPage.nav_items(:runs)
       )
       |> LiveRefresh.init([:refresh_timer_ref, :fallback_poll_ref])
       |> maybe_subscribe_runs()
-      |> maybe_schedule_fallback_poll()
 
     {:ok, socket}
   end
 
   @impl true
+  def handle_params(params, _uri, socket) do
+    {:noreply, socket |> assign(:filters, RunsFilters.from_params(params)) |> load_runs()}
+  end
+
+  @impl true
+  def render(assigns) do
+    ~H"""
+    <RunsListPage.runs_list_page
+      listing={@listing}
+      filters={@filters}
+      counts={@counts}
+      truncated?={@truncated?}
+      error={@error}
+      nav_items={@nav_items}
+    />
+    """
+  end
+
+  @impl true
+  def handle_event("filter_runs", %{"filters" => params}, socket) do
+    {:noreply, patch(socket, RunsFilters.change(socket.assigns.filters, params))}
+  end
+
+  def handle_event("toggle_started_order", _params, socket) do
+    {:noreply, patch(socket, RunsFilters.toggle_order(socket.assigns.filters))}
+  end
+
+  def handle_event("load_more", _params, socket) do
+    {:noreply, patch(socket, RunsFilters.grow(socket.assigns.filters))}
+  end
+
+  @impl true
   def handle_info({:refresh_runs, token}, socket) do
     case LiveRefresh.take(socket, :refresh_timer_ref, token) do
-      {:ok, socket} ->
-        {:noreply, refresh_runs(socket)}
-
-      {:stale, socket} ->
-        {:noreply, socket}
+      {:ok, socket} -> {:noreply, load_runs(socket)}
+      {:stale, socket} -> {:noreply, socket}
     end
   end
 
   def handle_info({:poll_runs, token}, socket) do
     case LiveRefresh.take(socket, :fallback_poll_ref, token) do
-      {:ok, socket} ->
-        {:noreply, socket |> refresh_runs() |> maybe_schedule_fallback_poll()}
-
-      {:stale, socket} ->
-        {:noreply, socket}
+      {:ok, socket} -> {:noreply, load_runs(socket)}
+      {:stale, socket} -> {:noreply, socket}
     end
-  end
-
-  def handle_info(:refresh_runs, socket) do
-    {:noreply, refresh_runs(socket)}
-  end
-
-  def handle_info(:poll_runs, socket) do
-    {:noreply, socket |> refresh_runs() |> maybe_schedule_fallback_poll()}
   end
 
   def handle_info({:favn_run_event, _event}, socket) do
@@ -86,74 +88,6 @@ defmodule FavnView.RunsListLive do
 
   def handle_info(:favn_persistence_published, socket) do
     {:noreply, schedule_coalesced_refresh(socket)}
-  end
-
-  defp refresh_runs(socket) do
-    {groups, error} =
-      load_groups(socket.assigns.current_scope.operator_context, socket.assigns.filters)
-
-    socket
-    |> assign_groups(groups, error)
-    |> refresh_expanded_details()
-    |> maybe_schedule_fallback_poll()
-  end
-
-  @impl true
-  def handle_event("filter_groups", %{"filters" => params}, socket) do
-    filters = normalize_filters(socket.assigns.filters, params)
-
-    {visible_groups, error} =
-      load_groups(socket.assigns.current_scope.operator_context, filters)
-
-    {:noreply,
-     assign(socket,
-       filters: filters,
-       visible_groups: visible_groups,
-       summary: overview_summary(visible_groups),
-       error: error
-     )}
-  end
-
-  def handle_event("toggle_group", %{"id" => group_id}, socket) do
-    expanded = socket.assigns.expanded_group_ids
-
-    socket =
-      if MapSet.member?(expanded, group_id) do
-        assign(socket, :expanded_group_ids, MapSet.delete(expanded, group_id))
-      else
-        socket
-        |> assign(:expanded_group_ids, MapSet.put(expanded, group_id))
-        |> ensure_group_detail(group_id)
-      end
-
-    {:noreply, socket}
-  end
-
-  def handle_event("clear_filters", _params, socket) do
-    {groups, error} = load_groups(socket.assigns.current_scope.operator_context, @default_filters)
-
-    {:noreply,
-     socket
-     |> assign_groups(groups, error)
-     |> assign(filters: @default_filters)}
-  end
-
-  @impl true
-  def render(assigns) do
-    ~H"""
-    <RunsListPage.runs_list_page
-      groups={@visible_groups}
-      all_groups={@groups}
-      group_details={@group_details}
-      expanded_group_ids={@expanded_group_ids}
-      filters={@filters}
-      filter_options={@filter_options}
-      summary={@summary}
-      loading={@loading}
-      error={@error}
-      nav_items={@nav_items}
-    />
-    """
   end
 
   @impl true
@@ -165,14 +99,67 @@ defmodule FavnView.RunsListLive do
     :ok
   end
 
-  defp load_groups(operator_context, filters) do
-    case page_execution_groups(operator_context, orchestrator_filters(filters)) do
-      {:ok, %{items: groups}} ->
-        {Enum.map(groups, &group_from_public/1), nil}
+  defp patch(socket, filters),
+    do: push_patch(socket, to: RunsListPage.runs_path(RunsFilters.to_params(filters)))
+
+  # One read for the page and one for the counts. The counts are of the whole
+  # workspace rather than of this page, so the scope buttons keep telling the truth
+  # when the page is truncated.
+  defp load_runs(socket) do
+    now = DateTime.utc_now()
+    filters = socket.assigns.filters
+    operator_context = socket.assigns.current_scope.operator_context
+
+    socket
+    |> assign_page(page_execution_groups(operator_context, filters, now), filters, now)
+    |> assign(:counts, counts(operator_context, now))
+    |> maybe_schedule_fallback_poll()
+  end
+
+  defp assign_page(socket, {:ok, %{items: runs, has_more?: truncated?}}, filters, now) do
+    listing =
+      RunDays.layout(runs, RunsFilters.window(filters, now), now,
+        order: filters.order,
+        complete?: not truncated?
+      )
+
+    assign(socket, runs: runs, listing: listing, truncated?: truncated?, error: nil)
+  end
+
+  defp assign_page(socket, {:error, reason}, _filters, _now) do
+    Logger.error("runs.list failed: #{inspect(reason)}")
+
+    assign(socket,
+      runs: [],
+      listing: {:flat, []},
+      truncated?: false,
+      error: "Backend unavailable"
+    )
+  end
+
+  defp page_execution_groups(operator_context, filters, now) do
+    case call_page_execution_groups(
+           operator_context,
+           RunsFilters.store_filters(filters, now)
+         ) do
+      {:ok, %{items: items} = page} ->
+        {:ok, %{page | items: Enum.map(items, &run_from_public/1)}}
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  defp counts(operator_context, now) do
+    since = DateTime.new!(DateTime.to_date(now), ~T[00:00:00], "Etc/UTC")
+
+    case call_count_execution_groups(operator_context, since: since) do
+      {:ok, counts} when is_map(counts) ->
+        counts
 
       {:error, reason} ->
-        Logger.error("runs.list failed: #{inspect(reason)}")
-        {[], "Backend unavailable"}
+        Logger.error("runs.counts failed: #{inspect(reason)}")
+        nil
     end
   end
 
@@ -184,20 +171,18 @@ defmodule FavnView.RunsListLive do
     end
   end
 
-  defp maybe_schedule_fallback_poll(%{assigns: %{groups: groups}} = socket) do
-    if connected?(socket) and Enum.any?(groups, &active_status?(&1.status)) do
+  defp maybe_schedule_fallback_poll(%{assigns: %{runs: runs}} = socket) do
+    if connected?(socket) and Enum.any?(runs, &(&1.raw_status in @active_statuses)) do
       LiveRefresh.schedule_once(socket, :fallback_poll_ref, :poll_runs, @refresh_interval_ms)
     else
       socket
     end
   end
 
-  defp maybe_schedule_fallback_poll(socket), do: socket
-
   defp maybe_subscribe_runs(socket) do
     if connected?(socket) do
       case subscribe_runs(socket.assigns.current_scope.operator_context) do
-        :ok -> socket |> assign(:run_events_live?, true) |> schedule_coalesced_refresh()
+        :ok -> assign(socket, :run_events_live?, true)
         {:error, _reason} -> socket
       end
     else
@@ -205,7 +190,7 @@ defmodule FavnView.RunsListLive do
     end
   end
 
-  defp page_execution_groups(operator_context, opts) do
+  defp call_page_execution_groups(operator_context, opts) do
     fun =
       Application.get_env(
         :favn_view,
@@ -214,6 +199,14 @@ defmodule FavnView.RunsListLive do
       )
 
     if is_function(fun, 2), do: fun.(operator_context, opts), else: fun.(opts)
+  end
+
+  defp call_count_execution_groups(operator_context, opts) do
+    Application.get_env(
+      :favn_view,
+      :count_execution_groups_fun,
+      &FavnOrchestrator.count_execution_groups/2
+    ).(operator_context, opts)
   end
 
   defp subscribe_runs(operator_context) do
@@ -226,311 +219,125 @@ defmodule FavnView.RunsListLive do
 
   defp unsubscribe_runs(operator_context), do: FavnOrchestrator.unsubscribe_runs(operator_context)
 
-  defp assign_groups(socket, groups, error) do
-    assign(socket,
-      groups: groups,
-      visible_groups: groups,
-      filter_options: filter_options(groups),
-      summary: overview_summary(groups),
-      error: error
-    )
-  end
-
-  defp orchestrator_filters(filters) do
-    []
-    |> Keyword.put(:limit, 100)
-    |> maybe_put_search_filter(Map.get(filters, "search"))
-    |> maybe_put_status_filter(Map.get(filters, "status"))
-    |> maybe_put_atom_filter(:trigger_type, Map.get(filters, "trigger"))
-    |> maybe_put_filter(:target_asset, Map.get(filters, "target"))
-    |> maybe_put_atom_filter(:window, Map.get(filters, "window"))
-    |> maybe_put_boolean_filter(:only_failed, Map.get(filters, "only_failed"))
-    |> maybe_put_boolean_filter(:only_running, Map.get(filters, "only_running"))
-    |> maybe_put_boolean_filter(:only_incomplete, Map.get(filters, "only_incomplete"))
-    |> Keyword.put(:sort, sort_filter(Map.get(filters, "sort")))
-  end
-
-  defp maybe_put_search_filter(opts, value) when is_binary(value) and value != "",
-    do: Keyword.put(opts, :search, value)
-
-  defp maybe_put_search_filter(opts, _value), do: opts
-
-  defp maybe_put_status_filter(opts, "failed"), do: Keyword.put(opts, :only_failed, true)
-  defp maybe_put_status_filter(opts, "running"), do: Keyword.put(opts, :only_running, true)
-  defp maybe_put_status_filter(opts, "incomplete"), do: Keyword.put(opts, :only_incomplete, true)
-  defp maybe_put_status_filter(opts, "succeeded"), do: Keyword.put(opts, :status, :ok)
-  defp maybe_put_status_filter(opts, "partial"), do: Keyword.put(opts, :status, :partial)
-  defp maybe_put_status_filter(opts, "queued"), do: Keyword.put(opts, :status, :pending)
-  defp maybe_put_status_filter(opts, _value), do: opts
-
-  defp maybe_put_atom_filter(opts, _key, value) when value in [nil, "", "all"], do: opts
-
-  defp maybe_put_atom_filter(opts, key, value) do
-    case known_filter_atom(value) do
-      nil -> opts
-      atom -> Keyword.put(opts, key, atom)
-    end
-  end
-
-  defp maybe_put_filter(opts, _key, value) when value in [nil, "", "all"], do: opts
-  defp maybe_put_filter(opts, key, value), do: Keyword.put(opts, key, value)
-
-  defp maybe_put_boolean_filter(opts, key, "true"), do: Keyword.put(opts, key, true)
-  defp maybe_put_boolean_filter(opts, _key, _value), do: opts
-
-  defp sort_filter(value) when value in ["status_priority", "failed_first", "running_first"],
-    do: String.to_existing_atom(value)
-
-  defp sort_filter(_value), do: :started_desc
-
-  defp known_filter_atom("backfill"), do: :backfill
-  defp known_filter_atom("manual"), do: :manual
-  defp known_filter_atom("schedule"), do: :schedule
-  defp known_filter_atom("retry"), do: :retry
-  defp known_filter_atom("has_window"), do: :has_window
-  defp known_filter_atom("no_window"), do: :no_window
-  defp known_filter_atom(_value), do: nil
-
-  defp ensure_group_detail(socket, group_id) do
-    if Map.has_key?(socket.assigns.group_details, group_id) do
-      socket
-    else
-      case FavnOrchestrator.get_execution_group_detail(
-             socket.assigns.current_scope.operator_context,
-             group_id,
-             []
-           ) do
-        {:ok, detail} ->
-          update(socket, :group_details, &Map.put(&1, group_id, detail_from_public(detail)))
-
-        {:error, reason} ->
-          Logger.error(
-            "runs.group_detail failed group_id=#{inspect(group_id)} reason=#{inspect(reason)}"
-          )
-
-          update(
-            socket,
-            :group_details,
-            &Map.put(&1, group_id, %{error: "Unable to load run group"})
-          )
-      end
-    end
-  end
-
-  defp refresh_expanded_details(socket) do
-    Enum.reduce(
-      socket.assigns.expanded_group_ids,
-      assign(socket, :group_details, %{}),
-      fn group_id, acc ->
-        ensure_group_detail(acc, group_id)
-      end
-    )
-  end
-
-  defp group_from_public(group) do
-    targets = targets(Map.get(group, :target_assets, []), nil)
-    target = List.first(targets) || "No target"
-    status = display_group_status(Map.get(group, :status))
-    current_activity = current_activity(Map.get(group, :currently_running_asset_attempts, []))
-    window = window_range_label(group)
+  defp run_from_public(group) do
+    target = target(group)
+    status = display_status(Map.get(group, :status))
     progress = progress(group)
-    health = health(group)
 
     %{
       id: group.id,
       short_id: short_id(group.id),
-      target: short_target(target),
-      target_title: target,
-      targets: targets,
+      target: short_target(target.label),
+      target_title: target.label,
+      target_detail: target.detail,
       status: status,
+      status_label: status_label(status),
       raw_status: Map.get(group, :status),
       trigger: label(Map.get(group, :trigger_type)),
-      trigger_type: Map.get(group, :trigger_type),
-      window: window,
-      window_count_label: window_count_label(group),
       progress: progress,
-      health: health,
-      current_activity: current_activity,
       started_at: short_timestamp(Map.get(group, :started_at)),
-      started_at_sort: timestamp_sort(Map.get(group, :started_at)),
-      duration: duration_label(group),
-      child_run_ids: Map.get(group, :child_run_ids, []),
-      total_windows: Map.get(group, :total_windows, 0),
-      completed_windows: Map.get(group, :completed_windows, 0),
-      failed_windows: Map.get(group, :failed_windows, 0),
-      total_asset_attempts: Map.get(group, :total_asset_attempts, 0),
-      completed_asset_attempts: Map.get(group, :completed_asset_attempts, 0),
-      failed_asset_attempts: Map.get(group, :failed_asset_attempts, 0),
-      running_asset_attempts: Map.get(group, :running_asset_attempts, 0),
-      queued_asset_attempts: Map.get(group, :queued_asset_attempts, 0)
+      started_at_raw: Map.get(group, :started_at),
+      started_at_title: full_timestamp(Map.get(group, :started_at)),
+      duration: duration_label(group, progress)
     }
   end
 
-  defp detail_from_public(%{child_runs: child_runs, windows: windows}) do
-    %{child_runs: Enum.map(child_runs, &child_run_from_public(&1, windows)), windows: windows}
+  # A pipeline run declares every asset it will touch, so naming the first of
+  # fourteen and calling the rest "+13 more" describes the plan rather than the
+  # submission. The pipeline is what the operator asked for; the assets are how
+  # many it covers.
+  defp target(group) do
+    assets = refs(Map.get(group, :target_assets, []))
+
+    case refs(Map.get(group, :target_pipelines, [])) do
+      [pipeline | _rest] -> %{label: pipeline, detail: asset_detail(assets)}
+      [] -> %{label: List.first(assets) || "No target", detail: extra_detail(assets)}
+    end
   end
 
-  defp child_run_from_public(run, windows) do
-    window = Enum.find(windows, &(Map.get(&1, :child_run_id) == run.id))
-    targets = targets(Map.get(run, :target_refs, []), Map.get(run, :asset_ref))
-    progress = Map.get(run, :progress)
+  defp asset_detail([]), do: nil
+  defp asset_detail([_single]), do: "1 asset"
+  defp asset_detail(assets), do: "#{length(assets)} assets"
 
-    %{
-      id: run.id,
-      short_id: short_id(run.id),
-      status: display_run_status(Map.get(run, :status)),
-      raw_status: Map.get(run, :status),
-      target: short_target(List.first(targets) || "No target"),
-      window: window_label(window || Map.get(run, :window)) || "-",
-      progress: progress_label(progress, targets),
-      started_at: short_timestamp(Map.get(run, :started_at)),
-      duration: LogsViewModel.duration_ms_label(Map.get(run, :duration_ms))
-    }
-  end
+  defp extra_detail(assets) when length(assets) > 1, do: "+#{length(assets) - 1} more"
+  defp extra_detail(_assets), do: nil
 
-  defp normalize_filters(existing, params) do
-    @default_filters
-    |> Map.merge(existing || %{})
-    |> Map.merge(params || %{})
-  end
-
-  defp filter_options(groups) do
-    %{
-      targets: groups |> Enum.flat_map(& &1.targets) |> Enum.uniq() |> Enum.sort(),
-      triggers:
-        groups
-        |> Enum.map(& &1.trigger_type)
-        |> Enum.reject(&is_nil/1)
-        |> Enum.uniq()
-        |> Enum.sort()
-    }
-  end
-
-  defp overview_summary(groups) do
-    health =
-      Enum.reduce(groups, %{succeeded: 0, failed: 0, running: 0, queued: 0}, fn group, acc ->
-        Map.update!(acc, health_bucket(group.status), &(&1 + 1))
-      end)
-
-    %{
-      total_groups: length(groups),
-      total_windows: Enum.sum(Enum.map(groups, & &1.total_windows)),
-      completed_windows: Enum.sum(Enum.map(groups, & &1.completed_windows)),
-      total_asset_attempts: Enum.sum(Enum.map(groups, & &1.total_asset_attempts)),
-      completed_asset_attempts: Enum.sum(Enum.map(groups, & &1.completed_asset_attempts)),
-      failed_asset_attempts: Enum.sum(Enum.map(groups, & &1.failed_asset_attempts)),
-      running_asset_attempts: Enum.sum(Enum.map(groups, & &1.running_asset_attempts)),
-      queued_asset_attempts: Enum.sum(Enum.map(groups, & &1.queued_asset_attempts)),
-      health: health,
-      last_updated: short_timestamp(DateTime.utc_now())
-    }
-  end
-
-  defp health_bucket(:failed), do: :failed
-  defp health_bucket(:partial), do: :failed
-  defp health_bucket(:running), do: :running
-  defp health_bucket(:queued), do: :queued
-  defp health_bucket(:incomplete), do: :queued
-  defp health_bucket(_status), do: :succeeded
-
-  defp display_group_status(:ok), do: :succeeded
-  defp display_group_status(:error), do: :failed
-  defp display_group_status(:pending), do: :queued
-  defp display_group_status(status), do: status || :unknown
-
-  defp display_run_status(:ok), do: :succeeded
-  defp display_run_status(:error), do: :failed
-  defp display_run_status(:pending), do: :queued
-  defp display_run_status(status), do: status || :unknown
-
-  defp current_activity([attempt | _]) do
-    window = window_label(Map.get(attempt, :window)) || "current window"
-    %{asset: Map.get(attempt, :asset_key) || Map.get(attempt, :asset_ref), window: window}
-  end
-
-  defp current_activity(_attempts), do: nil
-
+  # These counts are of the runs in the group, which is what the group projection
+  # holds. For a backfill that is its window runs and the meter is the answer to
+  # "how far along"; for a single run there is nothing to divide, so the row says
+  # nothing rather than "1 / 1".
   defp progress(group) do
-    totals = Map.get(group, :summary_totals, %{})
-    window_counts = Map.get(totals, :windows, %{})
-
-    attempt_counts =
-      Map.get(totals, :asset_attempts, Map.get(group, :progress, %{})[:counts] || %{})
-
-    completed_windows = Map.get(window_counts, :completed, group.completed_windows)
-    total_windows = Map.get(window_counts, :total, group.total_windows)
-    completed_attempts = Map.get(attempt_counts, :completed, group.completed_asset_attempts)
-    total_attempts = Map.get(attempt_counts, :total, group.total_asset_attempts)
-    window_label = "#{completed_windows} / #{total_windows} windows"
-    attempt_label = "#{completed_attempts} / #{total_attempts} attempts"
-    total = max(total_attempts, 1)
-    percent = min(100, round(completed_attempts * 100 / total))
+    counts = run_counts(group)
+    succeeded = max(counts.completed - counts.failed, 0)
 
     %{
-      window_label: if(group.total_windows > 0, do: window_label, else: "Not a backfill"),
-      attempt_label: attempt_label,
-      percent: percent,
-      title: "#{window_label}; #{attempt_label}",
-      tone: progress_tone(group)
+      total: counts.total,
+      segments: [
+        %{tone: :success, count: succeeded, label: "ok"},
+        %{tone: :error, count: counts.failed, label: "failed"},
+        %{tone: :info, count: counts.running, label: "running"},
+        %{tone: :neutral, count: counts.queued, label: "queued"}
+      ],
+      summary: "#{counts.completed} / #{counts.total} runs"
     }
   end
 
-  defp progress_tone(%{status: :failed}), do: :error
-  defp progress_tone(%{status: :partial}), do: :warning
-  defp progress_tone(%{status: :running}), do: :info
-  defp progress_tone(%{health: :error}), do: :error
-  defp progress_tone(%{health: :warning}), do: :warning
-  defp progress_tone(%{health: :active}), do: :info
-  defp progress_tone(_group), do: :success
-
-  defp health(group) do
-    counts = group |> Map.get(:summary_totals, %{}) |> Map.get(:asset_attempts, %{})
-    failed = Map.get(counts, :failed, group.failed_asset_attempts)
-    running = Map.get(counts, :running, group.running_asset_attempts)
-    queued = Map.get(counts, :queued, group.queued_asset_attempts)
-    completed = Map.get(counts, :completed, group.completed_asset_attempts)
-    succeeded = max(completed - failed, 0)
+  defp run_counts(group) do
+    totals = group |> Map.get(:summary_totals, %{}) |> Map.get(:asset_attempts, %{})
 
     %{
-      succeeded: succeeded,
-      failed: failed,
-      running: running,
-      queued: queued,
-      status: group.health
+      total: count(totals, :total, group, :total_asset_attempts),
+      completed: count(totals, :completed, group, :completed_asset_attempts),
+      failed: count(totals, :failed, group, :failed_asset_attempts),
+      running: count(totals, :running, group, :running_asset_attempts),
+      queued: count(totals, :queued, group, :queued_asset_attempts)
     }
   end
 
-  defp window_range_label(%{total_windows: 0}), do: "-"
+  defp count(totals, key, group, fallback_key),
+    do: Map.get(totals, key) || Map.get(group, fallback_key, 0)
 
-  defp window_range_label(group) do
-    case {Map.get(group, :total_windows), Map.get(group, :completed_windows)} do
-      {1, _} -> "1 window"
-      {total, _} -> "#{total} windows"
-    end
+  defp display_status(:ok), do: :succeeded
+  defp display_status(:error), do: :failed
+  defp display_status(:pending), do: :queued
+  defp display_status(status), do: status || :unknown
+
+  defp status_label(:succeeded), do: "Succeeded"
+  defp status_label(:failed), do: "Failed"
+  defp status_label(:queued), do: "Queued"
+  defp status_label(:running), do: "Running"
+  defp status_label(:partial), do: "Partial"
+  defp status_label(:incomplete), do: "Incomplete"
+  defp status_label(:cancelled), do: "Cancelled"
+  defp status_label(:timed_out), do: "Timed out"
+  defp status_label(_status), do: "Unknown"
+
+  # A backfill's root run is finished as soon as it has submitted its windows, so
+  # its own duration is milliseconds while the backfill ran for minutes. The
+  # group's row records when it was last touched, and that span is what the
+  # operator means by how long it took.
+  defp duration_label(group, %{total: total}) when total > 1,
+    do: span_label(Map.get(group, :started_at), Map.get(group, :last_activity_at))
+
+  defp duration_label(%{status: status, duration_ms: nil}, _progress)
+       when status in [:running, :pending],
+       do: "elapsed"
+
+  defp duration_label(group, _progress),
+    do: LogsViewModel.duration_ms_label(Map.get(group, :duration_ms))
+
+  defp span_label(%DateTime{} = from, %DateTime{} = to),
+    do: LogsViewModel.duration_ms_label(max(DateTime.diff(to, from, :millisecond), 0))
+
+  defp span_label(_from, _to), do: "-"
+
+  defp refs(refs) when is_list(refs) do
+    refs
+    |> Enum.map(&LogsViewModel.ref_label/1)
+    |> Enum.reject(&(&1 in [nil, "", "nil"]))
   end
 
-  # `total_windows` counts backfill windows, so zero means this run is not a
-  # backfill — not that it ran without a window. A run's own requested window is
-  # in its snapshot, which the list's compact projection never loads, so the list
-  # must not claim to know it either.
-  defp window_count_label(%{total_windows: 0}), do: "Not a backfill"
-  defp window_count_label(%{total_windows: 1}), do: "1 window"
-  defp window_count_label(%{total_windows: total}), do: "#{total} windows"
-
-  defp duration_label(%{status: status, duration_ms: nil}) when status in [:running, :queued],
-    do: "elapsed"
-
-  defp duration_label(group), do: LogsViewModel.duration_ms_label(Map.get(group, :duration_ms))
-
-  defp targets([], nil), do: ["No target"]
-  defp targets([], asset_ref), do: targets(List.wrap(asset_ref), nil)
-
-  defp targets(refs, _asset_ref) do
-    case refs |> Enum.map(&LogsViewModel.ref_label/1) |> Enum.reject(&(&1 in [nil, "", "nil"])) do
-      [] -> ["No target"]
-      targets -> targets
-    end
-  end
+  defp refs(_refs), do: []
 
   defp short_target("No target"), do: "No target"
 
@@ -539,30 +346,6 @@ defmodule FavnView.RunsListLive do
 
   defp short_target(target), do: target
 
-  defp window_label(%{label: label}) when is_binary(label), do: label
-  defp window_label(%{"label" => label}) when is_binary(label), do: label
-  defp window_label(%{key: key}) when is_binary(key), do: key
-  defp window_label(%{"key" => key}) when is_binary(key), do: key
-  defp window_label(_window), do: nil
-
-  defp progress_label(%{label: label} = progress, _targets) when is_binary(label) do
-    %{label: label, title: progress_title(progress)}
-  end
-
-  defp progress_label(_progress, targets) do
-    total = length(targets)
-    %{label: "-", title: "#{total} target #{if(total == 1, do: "asset", else: "assets")}"}
-  end
-
-  defp progress_title(%{counts: counts}) when is_map(counts), do: inspect(counts)
-  defp progress_title(%{"counts" => counts}) when is_map(counts), do: inspect(counts)
-  defp progress_title(%{label: label}), do: label
-
-  defp active_status?(status), do: status in @active_statuses
-
-  defp timestamp_sort(%DateTime{} = value), do: DateTime.to_unix(value, :microsecond)
-  defp timestamp_sort(_value), do: 0
-
   defp short_id(id) when is_binary(id) and byte_size(id) > 18 do
     binary_part(id, 0, 9) <> "..." <> binary_part(id, byte_size(id) - 6, 6)
   end
@@ -570,15 +353,17 @@ defmodule FavnView.RunsListLive do
   defp short_id(id) when is_binary(id), do: id
   defp short_id(_id), do: "unknown"
 
-  defp short_timestamp(%DateTime{} = value), do: Calendar.strftime(value, "%b %-d %H:%M")
+  defp short_timestamp(%DateTime{} = value), do: Calendar.strftime(value, "%H:%M:%S")
   defp short_timestamp(_value), do: "-"
+
+  defp full_timestamp(%DateTime{} = value),
+    do: Calendar.strftime(value, "%b %-d, %Y %H:%M:%S UTC")
+
+  defp full_timestamp(_value), do: "Not started"
 
   defp label(nil), do: "Unknown"
 
   defp label(value) do
-    value
-    |> to_string()
-    |> String.replace("_", " ")
-    |> String.capitalize()
+    value |> to_string() |> String.replace("_", " ") |> String.capitalize()
   end
 end
