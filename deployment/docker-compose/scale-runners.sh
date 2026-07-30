@@ -206,6 +206,7 @@ while [ "$(date +%s)" -lt "$deadline" ]; do
         --detach \
         --no-deps \
         --name "$container_name" \
+        --env "FAVN_RUNNER_INSTANCE_ID=$container_name" \
         --env "FAVN_RUNNER_NODE_HOST_ALIAS=$container_name" \
         runner |
         tail -n 1

@@ -15,11 +15,11 @@ not by itself close issue #523 or justify a managed-production claim.
 | L1 | Production images start with PostgreSQL 18, verified TLS, separate migrator/runtime roles, and no runners. | Existing Compose bootstrap and schema verification logs. | PostgreSQL and the control plane become healthy; migrations, grants, workspace provisioning, and schema verification exit zero. | Local, this PR |
 | L2 | The immutable manifest and runner release work before load starts. | Existing PR #565 publication, activation, and `0 -> 3 -> 2 -> 1 -> 0` smoke evidence. | Publication, activation, three probe runs, exact scale sequence, and final drain all pass. | Local, this PR |
 | L3 | API commands are authenticated and idempotent. | `api-requests.jsonl` and the phase event log. | Replaying an identical run request returns the same run ID; reusing its key for different content returns `409 idempotency_conflict`; no mutation is blindly retried with a new key. | Local, this PR |
-| L4 | Sustained API load creates durable work and elastic runners keep pace. | Submitted-run ledger, API latency samples, queue samples, scaler timeline, Docker statistics, and PostgreSQL statistics. | No unresolved API submission outcomes; queue age remains observable; accepted submissions become durable and terminal; unaffected runs end `ok`. | Local, this PR |
-| L5 | Runners scale up, churn, replace a killed runner, and return to zero. | Fault events, scaler timeline, runner inspect records, and final capacity response. | A deliberately killed runner is replaced while demand exists; unexpected non-zero runner exits fail the qualification; final partition state is drained with zero registered runners. | Local, this PR |
+| L4 | Sustained API load creates durable work and elastic runners keep pace. | Submitted-run ledger, API latency samples, queue samples, scaler timeline, Docker statistics, PostgreSQL statistics, and `performance-summary.json`. | No unresolved API submission outcomes; API p95 is at most 250 ms; queue age is at most 5 seconds; queue depth is at most 48; at least four sustained submissions per minute are accepted; at least 80% of scheduled samples are present; accepted submissions become durable and terminal; unaffected runs end `ok`. | Local, this PR |
+| L5 | Runners scale up, churn, replace a killed runner, and return to zero. | Fault events, `runner-fault.json`, scaler timeline, runner inspect records, and final capacity response. | A runner with a PostgreSQL-confirmed running task is killed; a distinct runner container starts, claims work, and is observed while demand remains within 120 seconds; unexpected non-zero runner exits fail the qualification; final partition state is drained with zero registered runners. | Local, this PR |
 | L6 | A control-plane crash does not lose accepted work or unsafely replay writes. | Before/after samples, crash event, container health transition, run/submission status counts, per-run outcomes, and control-plane logs. | The same container restarts healthy; accepted work drains; no run remains pending/running. An in-flight, already-completed write may end with the explicit `non_reusable_materialization_claim_succeeded` recovery error instead of being replayed. | Local, this PR |
 | L7 | A PostgreSQL crash recovers without corrupting durable control-plane state. | Before/after database statistics, crash event, health transitions, schema verification, and final database counts. | PostgreSQL crash recovery completes; the control plane becomes ready again; schema verification passes; no qualification run or runner task remains non-terminal. | Local, this PR |
-| L8 | Operators can diagnose load and recovery after the test. | `run.json`, `events.jsonl`, `api-requests.jsonl`, `samples.jsonl`, `database-samples.jsonl`, Docker statistics, component logs, and `final-validation.json`. | Evidence is timestamped, identifies the source revision and configuration, contains no configured secrets, and is sufficient to reproduce every final assertion. | Local, this PR |
+| L8 | Operators can diagnose load and recovery after the test. | `run.json`, `events.jsonl`, `api-requests.jsonl`, `samples.jsonl`, `database-samples.jsonl`, Docker statistics, component logs, and `final-validation.json`. | Evidence is timestamped, identifies the source revision and configuration, scans every generated credential value for leakage, and is sufficient to reproduce every final assertion. | Local, this PR |
 | L9 | The system reaches a clean terminal state. | Final API capacity/submission/in-flight responses and read-only PostgreSQL status aggregates. | Queue, in-flight runs, outstanding runner tasks, active runs, pending operations, durable blockers, and registered runners are all zero; outbox and projection lag are zero; every run and task is terminal. At most one runner task is `unknown`, corresponding to the deliberate runner kill, and at most one safely classified run error is allowed per injected fault. | Local, this PR |
 | M1 | Managed PostgreSQL backup, restore, point-in-time recovery, failover, alerting, and provider limits are production-ready. | Provider-native backup/restore records, monitoring history, incident drills, and operating notes. | The work data platform meets its chosen RPO/RTO and alert thresholds under real traffic. | Deferred to workplace test deployment |
 | M2 | Favn remains healthy under representative production traffic for weeks. | Multi-week service, database, queue, runner, and alert history from the work test platform. | No unexplained data loss, stuck durable state, tenant leak, alert gap, or unbounded resource trend. | Deferred to workplace test deployment |
@@ -64,6 +64,20 @@ configured load duration. A mutation with an uncertain network result is
 resolved only by replaying the exact payload with the exact same idempotency
 key.
 
+The default local performance budgets are intentionally explicit:
+
+- API p95 latency: 250 ms;
+- maximum queued age: 5 seconds;
+- maximum queued depth: 48;
+- minimum sustained submission rate: four accepted runs per minute;
+- minimum sample coverage: 80%; and
+- busy-runner replacement: 120 seconds.
+
+Each budget has a matching `FAVN_QUALIFICATION_*` environment override in
+`compose.yml`. A non-default budget is recorded in `run.json`; changing a
+budget changes the claim being tested and must be justified in the result
+report.
+
 ## Evidence contract
 
 Each run writes an ignored directory at
@@ -78,6 +92,8 @@ Each run writes an ignored directory at
 | `samples.jsonl` | Readiness, submission queue, in-flight runs, runner capacity, and live container counts. |
 | `database-samples.jsonl` | Read-only PostgreSQL throughput, connection, lock, outbox, projection, run, submission, and runner-task aggregates. |
 | `workload-outcomes.json` | Per-run and per-task terminal status plus a bounded, redacted recovery-failure classification. |
+| `performance-summary.json` | Measured API p95, queue pressure, sustained submission rate, and sample completeness against recorded budgets. |
+| `runner-fault.json` | The PostgreSQL-confirmed busy runner, killed container, distinct replacement, claimed work, live demand, and replacement time. |
 | `docker-stats.jsonl` | Container CPU, memory, network, block-I/O, and process snapshots. |
 | `control-plane.log`, `postgres.log`, `runner.log` | Timestamped component logs retained for diagnosis. |
 | `container-states.jsonl` | Sanitized terminal container state and exit metadata; container environments are excluded. |

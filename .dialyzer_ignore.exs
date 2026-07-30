@@ -80,8 +80,6 @@
   {"lib/favn_orchestrator/api/runs_router.ex", "The pattern can never match the type true."},
   {"lib/favn_orchestrator/api/runs_router.ex",
    "The pattern can never match the type \n  {:error,\n   :invalid_manifest_selection\n   | :invalid_target\n   | {:manifest_filter_lookup_failed, _}\n   | {:unsupported_retry_option, atom(), :use_retry_policy}\n   | %FavnOrchestrator.Persistence.Error{\n       :details => map(),\n       :kind =>\n         :conflict\n         | :constraint\n         | :fenced\n         | :forbidden\n         | :internal\n         | :invalid\n         | :limit_exceeded\n         | :not_found\n         | :timeout\n         | :unavailable\n         | :unsupported,\n       :message => binary(),\n       :retryable? => boolean()\n     }}\n."},
-  {"lib/favn_orchestrator/api/runs_router.ex",
-   "The pattern can never match the type \n  {:manifest_filter_lookup_failed, _}\n  | {:unsupported_retry_option, atom(), :use_retry_policy}\n  | %FavnOrchestrator.Persistence.Error{\n      :details => map(),\n      :kind =>\n        :conflict\n        | :constraint\n        | :fenced\n        | :forbidden\n        | :internal\n        | :invalid\n        | :limit_exceeded\n        | :not_found\n        | :timeout\n        | :unavailable\n        | :unsupported,\n      :message => binary(),\n      :retryable? => boolean()\n    }\n."},
   {"lib/favn_orchestrator/auth.ex",
    "The pattern can never match the type {:error, :invalid_credentials}."},
   {"lib/favn_orchestrator/auth.ex", "The pattern can never match the type {:error, _}."},

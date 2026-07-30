@@ -92,4 +92,24 @@ defmodule FavnOrchestrator.API.CommandErrorsTest do
 
     assert CommandErrors.idempotency(Error.new(:conflict, "unrelated conflict")) == nil
   end
+
+  test "maps every run submission failure without exposing unknown details" do
+    secret = "unmapped-submission-secret"
+
+    log =
+      capture_log(fn ->
+        assert {:error, 400, "bad_request", "Request failed", %{}} =
+                 CommandErrors.submission(%{
+                   reason: :future_submission_failure,
+                   password: secret
+                 })
+      end)
+
+    refute log =~ secret
+    assert log =~ "unmapped run submission failure"
+    assert log =~ "[REDACTED]"
+
+    assert {:error, 404, "not_found", "Run target was not found", %{}} =
+             CommandErrors.submission(:manifest_or_target_not_active_in_workspace)
+  end
 end

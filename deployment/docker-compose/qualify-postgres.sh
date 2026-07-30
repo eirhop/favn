@@ -18,6 +18,12 @@ submit_interval_seconds=${FAVN_QUALIFICATION_SUBMIT_INTERVAL_SECONDS:-2}
 sample_interval_seconds=${FAVN_QUALIFICATION_SAMPLE_INTERVAL_SECONDS:-10}
 initial_backlog=${FAVN_QUALIFICATION_INITIAL_BACKLOG:-24}
 drain_timeout_seconds=${FAVN_QUALIFICATION_DRAIN_TIMEOUT_SECONDS:-1800}
+max_api_p95_ms=${FAVN_QUALIFICATION_MAX_API_P95_MS:-250}
+max_queue_age_ms=${FAVN_QUALIFICATION_MAX_QUEUE_AGE_MS:-5000}
+max_queue_depth=${FAVN_QUALIFICATION_MAX_QUEUE_DEPTH:-48}
+min_submissions_per_minute=${FAVN_QUALIFICATION_MIN_SUBMISSIONS_PER_MINUTE:-4}
+min_sample_coverage_percent=${FAVN_QUALIFICATION_MIN_SAMPLE_COVERAGE_PERCENT:-80}
+runner_replacement_timeout_seconds=${FAVN_QUALIFICATION_RUNNER_REPLACEMENT_TIMEOUT_SECONDS:-120}
 max_runners=${FAVN_SCALER_MAX_RUNNERS:-12}
 max_launches=${FAVN_SCALER_MAX_LAUNCHES:-10000}
 scaler_poll_seconds=${FAVN_SCALER_POLL_SECONDS:-1}
@@ -31,6 +37,8 @@ samples_file="$run_dir/samples.jsonl"
 database_samples_file="$run_dir/database-samples.jsonl"
 workload_outcomes_file="$run_dir/workload-outcomes.json"
 docker_stats_file="$run_dir/docker-stats.jsonl"
+performance_file="$run_dir/performance-summary.json"
+runner_fault_file="$run_dir/runner-fault.json"
 allowed_failures_file="$run_dir/allowed-runner-exits"
 scaler_drain_signal_file="$run_dir/scaler-drain-requested"
 final_file="$run_dir/final-validation.json"
@@ -59,8 +67,21 @@ positive_integer FAVN_QUALIFICATION_SUBMIT_INTERVAL_SECONDS "$submit_interval_se
 positive_integer FAVN_QUALIFICATION_SAMPLE_INTERVAL_SECONDS "$sample_interval_seconds"
 positive_integer FAVN_QUALIFICATION_INITIAL_BACKLOG "$initial_backlog"
 positive_integer FAVN_QUALIFICATION_DRAIN_TIMEOUT_SECONDS "$drain_timeout_seconds"
+positive_integer FAVN_QUALIFICATION_MAX_API_P95_MS "$max_api_p95_ms"
+positive_integer FAVN_QUALIFICATION_MAX_QUEUE_AGE_MS "$max_queue_age_ms"
+positive_integer FAVN_QUALIFICATION_MAX_QUEUE_DEPTH "$max_queue_depth"
+positive_integer FAVN_QUALIFICATION_MIN_SUBMISSIONS_PER_MINUTE "$min_submissions_per_minute"
+positive_integer FAVN_QUALIFICATION_MIN_SAMPLE_COVERAGE_PERCENT "$min_sample_coverage_percent"
+positive_integer \
+  FAVN_QUALIFICATION_RUNNER_REPLACEMENT_TIMEOUT_SECONDS \
+  "$runner_replacement_timeout_seconds"
 positive_integer FAVN_SCALER_MAX_RUNNERS "$max_runners"
 positive_integer FAVN_SCALER_MAX_LAUNCHES "$max_launches"
+
+if [ "$min_sample_coverage_percent" -gt 100 ]; then
+  echo "FAVN_QUALIFICATION_MIN_SAMPLE_COVERAGE_PERCENT must be at most 100" >&2
+  exit 64
+fi
 
 case "$run_id" in
   ''|*[!A-Za-z0-9._-]*)
@@ -174,6 +195,97 @@ running_runner_count() {
   else
     printf '%s\n' "$ids" | wc -l | tr -d ' '
   fi
+}
+
+busy_runner_assignment() {
+  PGPASSWORD="$FAVN_RUNTIME_DATABASE_PASSWORD" \
+    PGCONNECT_TIMEOUT=5 \
+    PGSSLROOTCERT=/etc/favn/postgres-tls/ca.crt \
+    psql \
+    --no-psqlrc \
+    --quiet \
+    --tuples-only \
+    --no-align \
+    --set "qualification_started_at=$qualification_started_at" \
+    "host=postgres dbname=favn user=favn_runtime sslmode=verify-full" \
+    --command "
+      SELECT jsonb_build_object(
+        'task_id', task_id,
+        'runner_instance_id', assigned_runner_instance_id
+      )
+      FROM favn_control.runner_tasks
+      WHERE workspace_id = 'elastic-simulation'
+        AND inserted_at >= :'qualification_started_at'::timestamptz
+        AND status = 'running'
+        AND assigned_runner_instance_id IS NOT NULL
+      ORDER BY updated_at DESC
+      LIMIT 1
+    "
+}
+
+runner_instance_has_task() {
+  runner_instance_id=$1
+
+  assigned=$(
+    PGPASSWORD="$FAVN_RUNTIME_DATABASE_PASSWORD" \
+      PGCONNECT_TIMEOUT=5 \
+      PGSSLROOTCERT=/etc/favn/postgres-tls/ca.crt \
+      psql \
+      --no-psqlrc \
+      --quiet \
+      --tuples-only \
+      --no-align \
+      --set "qualification_started_at=$qualification_started_at" \
+      --set "runner_instance_id=$runner_instance_id" \
+      "host=postgres dbname=favn user=favn_runtime sslmode=verify-full" \
+      --command "
+        SELECT EXISTS (
+          SELECT 1
+          FROM favn_control.runner_tasks
+          WHERE workspace_id = 'elastic-simulation'
+            AND inserted_at >= :'qualification_started_at'::timestamptz
+            AND assigned_runner_instance_id = :'runner_instance_id'
+        )
+      "
+  ) || return 1
+
+  [ "$assigned" = "t" ]
+}
+
+runner_demand() {
+  curl --fail --silent --show-error \
+    --max-time 5 \
+    --header "Authorization: Bearer $FAVN_CAPACITY_TOKEN" \
+    "$api_url/internal/runner-demand/default/$FAVN_RUNNER_RELEASE_ID" |
+    jq -er '.outstanding'
+}
+
+wait_for_busy_runner() {
+  deadline=$(( $(date +%s) + runner_replacement_timeout_seconds ))
+  fault_work_submitted=false
+
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    if assignment=$(busy_runner_assignment) &&
+        [ -n "$assignment" ] &&
+        printf '%s' "$assignment" |
+          jq -e '.task_id != null and .runner_instance_id != null' >/dev/null; then
+      busy_runner_name=$(printf '%s' "$assignment" | jq -r '.runner_instance_id')
+
+      if [ "$(docker inspect --format '{{.State.Running}}' "$busy_runner_name" 2>/dev/null)" = "true" ]; then
+        busy_runner_assignment_json=$assignment
+        return 0
+      fi
+    fi
+
+    if [ "$fault_work_submitted" = "false" ]; then
+      submit_one runner_recovery
+      fault_work_submitted=true
+    fi
+
+    sleep 1
+  done
+
+  return 1
 }
 
 request_id_from_headers() {
@@ -545,16 +657,87 @@ prove_idempotency() {
 }
 
 inject_runner_failure() {
-  runner_id=$(running_runner_ids | head -n 1)
-
-  if [ -z "$runner_id" ]; then
-    fail "runner fault phase found no running runner"
+  if ! wait_for_busy_runner; then
+    fail "runner fault phase did not find a runner with an active task"
   fi
 
-  runner_id=$(docker inspect --format '{{.Id}}' "$runner_id")
+  killed_runner_name=$(printf '%s' "$busy_runner_assignment_json" | jq -r '.runner_instance_id')
+  killed_task_id=$(printf '%s' "$busy_runner_assignment_json" | jq -r '.task_id')
+  runner_id=$(docker inspect --format '{{.Id}}' "$killed_runner_name")
+  baseline_runner_ids=$(running_runner_ids)
+  fault_started_epoch=$(date +%s)
+
   printf '%s\n' "$runner_id" >>"$allowed_failures_file"
   event runner_crash_injected "$runner_id"
   docker kill --signal KILL "$runner_id" >/dev/null
+  submit_one runner_recovery
+
+  replacement_id=
+  replacement_name=
+  replacement_demand=
+  replacement_deadline=$(( $(date +%s) + runner_replacement_timeout_seconds ))
+
+  while [ "$(date +%s)" -lt "$replacement_deadline" ]; do
+    current_demand=$(runner_demand 2>/dev/null || printf '')
+
+    case "$current_demand" in
+      ''|*[!0-9]*)
+        sleep 1
+        continue
+        ;;
+    esac
+
+    for candidate_id in $(running_runner_ids); do
+      if printf '%s\n' "$baseline_runner_ids" | grep -F -x -q -- "$candidate_id"; then
+        continue
+      fi
+
+      candidate_name=$(docker inspect --format '{{.Name}}' "$candidate_id" | sed 's#^/##')
+
+      if [ "$current_demand" -gt 0 ] && runner_instance_has_task "$candidate_name"; then
+        replacement_id=$(docker inspect --format '{{.Id}}' "$candidate_id")
+        replacement_name=$candidate_name
+        replacement_demand=$current_demand
+        break
+      fi
+    done
+
+    if [ -n "$replacement_id" ]; then
+      break
+    fi
+
+    sleep 1
+  done
+
+  if [ -z "$replacement_id" ]; then
+    fail "killed busy runner was not replaced by a distinct working runner while demand remained"
+  fi
+
+  replacement_seconds=$(( $(date +%s) - fault_started_epoch ))
+
+  jq -n \
+    --arg killed_task_id "$killed_task_id" \
+    --arg killed_runner_instance_id "$killed_runner_name" \
+    --arg killed_container_id "$runner_id" \
+    --arg replacement_runner_instance_id "$replacement_name" \
+    --arg replacement_container_id "$replacement_id" \
+    --argjson demand_at_replacement "$replacement_demand" \
+    --argjson replacement_seconds "$replacement_seconds" \
+    --argjson replacement_timeout_seconds "$runner_replacement_timeout_seconds" \
+    '{
+      killed_task_id:$killed_task_id,
+      killed_runner_instance_id:$killed_runner_instance_id,
+      killed_container_id:$killed_container_id,
+      killed_runner_was_busy:true,
+      replacement_runner_instance_id:$replacement_runner_instance_id,
+      replacement_container_id:$replacement_container_id,
+      replacement_claimed_work:true,
+      demand_at_replacement:$demand_at_replacement,
+      replacement_seconds:$replacement_seconds,
+      replacement_timeout_seconds:$replacement_timeout_seconds
+    }' >"$runner_fault_file"
+
+  event runner_replaced "$replacement_id"
 }
 
 inject_service_failure() {
@@ -584,9 +767,12 @@ inject_service_failure() {
 }
 
 collect_logs_and_state() {
+  controller_hostname=$(hostname)
+  controller_id=$(docker inspect --format '{{.Id}}' "$controller_hostname")
   control_plane_id=$(service_container_id control-plane)
   postgres_id=$(service_container_id postgres)
 
+  docker logs --timestamps "$controller_id" >"$run_dir/controller.log" 2>&1
   docker logs --timestamps "$control_plane_id" >"$run_dir/control-plane.log" 2>&1
   docker logs --timestamps "$postgres_id" >"$run_dir/postgres.log" 2>&1
   : >"$run_dir/runner.log"
@@ -620,17 +806,140 @@ collect_logs_and_state() {
   done
 }
 
-evidence_contains_secret() {
-  for secret in \
-    "$FAVN_PLATFORM_TOKEN" \
-    "$FAVN_CAPACITY_TOKEN" \
-    "$FAVN_RUNTIME_DATABASE_PASSWORD"; do
-    if grep -R -F -q -- "$secret" "$run_dir"; then
-      return 0
-    fi
-  done
+api_p95_ms() {
+  jq -r '
+    select(
+      .transport == "ok" and
+      .status != null and
+      .duration_seconds != null
+    )
+    | .duration_seconds * 1000
+  ' "$api_file" |
+    sort -n |
+    awk '
+      { values[NR] = $1 }
+      END {
+        if (NR == 0) {
+          print 0
+        } else {
+          percentile_index = int((NR * 95 + 99) / 100)
+          print values[percentile_index]
+        }
+      }
+    '
+}
 
-  return 1
+collect_performance_summary() {
+  observed_api_p95_ms=$(api_p95_ms)
+  observed_max_queue_age_ms=$(
+    jq -s '[.[] | (.submissions.oldest_queued_age_ms // 0)] | max // 0' "$samples_file"
+  )
+  observed_max_queue_depth=$(
+    jq -s '[.[] | (.submissions.queued_depth // 0)] | max // 0' "$samples_file"
+  )
+  sustained_submissions=$(
+    jq -s '
+      [
+        .[]
+        | select(.phase == "sustained_load" or .phase == "runner_recovery")
+      ]
+      | length
+    ' "$submitted_file"
+  )
+  sustained_samples=$(
+    jq -s '
+      [
+        .[]
+        | select(
+            .phase == "sustained_load" or
+            .phase == "runner_recovery" or
+            .phase == "control_plane_recovery" or
+            .phase == "postgres_recovery"
+          )
+      ]
+      | length
+    ' "$samples_file"
+  )
+  minimum_sustained_submissions=$(( (duration_seconds * min_submissions_per_minute + 59) / 60 ))
+  expected_samples=$(( duration_seconds / sample_interval_seconds ))
+
+  if [ "$expected_samples" -lt 1 ]; then
+    expected_samples=1
+  fi
+
+  minimum_samples=$(( (expected_samples * min_sample_coverage_percent + 99) / 100 ))
+
+  jq -n \
+    --argjson api_p95_ms "$observed_api_p95_ms" \
+    --argjson max_api_p95_ms "$max_api_p95_ms" \
+    --argjson max_queue_age_ms "$observed_max_queue_age_ms" \
+    --argjson queue_age_budget_ms "$max_queue_age_ms" \
+    --argjson max_queue_depth "$observed_max_queue_depth" \
+    --argjson queue_depth_budget "$max_queue_depth" \
+    --argjson sustained_submissions "$sustained_submissions" \
+    --argjson minimum_sustained_submissions "$minimum_sustained_submissions" \
+    --argjson sustained_samples "$sustained_samples" \
+    --argjson expected_samples "$expected_samples" \
+    --argjson minimum_samples "$minimum_samples" \
+    --argjson minimum_sample_coverage_percent "$min_sample_coverage_percent" \
+    '{
+      api_latency:{
+        p95_ms:$api_p95_ms,
+        maximum_p95_ms:$max_api_p95_ms
+      },
+      queue_pressure:{
+        maximum_age_ms:$max_queue_age_ms,
+        maximum_age_budget_ms:$queue_age_budget_ms,
+        maximum_depth:$max_queue_depth,
+        maximum_depth_budget:$queue_depth_budget
+      },
+      throughput:{
+        sustained_submissions:$sustained_submissions,
+        minimum_sustained_submissions:$minimum_sustained_submissions
+      },
+      sample_completeness:{
+        sustained_samples:$sustained_samples,
+        expected_samples:$expected_samples,
+        minimum_samples:$minimum_samples,
+        minimum_coverage_percent:$minimum_sample_coverage_percent
+      }
+    }' >"$performance_file"
+}
+
+scan_evidence_for_secrets() {
+  secret_scan_expected=8
+  secret_scan_count=0
+  secret_leak_names='[]'
+
+  while IFS='=' read -r name value; do
+    case "$name" in
+      FAVN_MIGRATOR_DATABASE_PASSWORD|\
+      FAVN_RUNTIME_DATABASE_PASSWORD|\
+      FAVN_RUNTIME_INPUT_PIN_KEYS|\
+      FAVN_PLATFORM_TOKEN|\
+      FAVN_CAPACITY_TOKEN|\
+      FAVN_BOOTSTRAP_PASSWORD|\
+      FAVN_DISTRIBUTION_COOKIE|\
+      FAVN_VIEW_SECRET_KEY_BASE)
+        secret_scan_count=$(( secret_scan_count + 1 ))
+
+        if [ "$name" = "FAVN_RUNTIME_INPUT_PIN_KEYS" ]; then
+          secret_values=$(printf '%s' "$value" | jq -er '.[]')
+        else
+          secret_values=$value
+        fi
+
+        for secret in $secret_values; do
+          if [ -n "$secret" ] && grep -R -F -q -- "$secret" "$run_dir"; then
+            secret_leak_names=$(
+              printf '%s' "$secret_leak_names" |
+                jq -c --arg name "$name" '. + [$name] | unique'
+            )
+          fi
+        done
+        ;;
+    esac
+  done <"$env_file"
 }
 
 mkdir -p "$run_dir"
@@ -657,6 +966,12 @@ jq -n \
   --argjson sample_interval_seconds "$sample_interval_seconds" \
   --argjson initial_backlog "$initial_backlog" \
   --argjson max_runners "$max_runners" \
+  --argjson max_api_p95_ms "$max_api_p95_ms" \
+  --argjson max_queue_age_ms "$max_queue_age_ms" \
+  --argjson max_queue_depth "$max_queue_depth" \
+  --argjson min_submissions_per_minute "$min_submissions_per_minute" \
+  --argjson min_sample_coverage_percent "$min_sample_coverage_percent" \
+  --argjson runner_replacement_timeout_seconds "$runner_replacement_timeout_seconds" \
   '{
     run_id:$run_id,
     started_at:$started_at,
@@ -669,6 +984,14 @@ jq -n \
     sample_interval_seconds:$sample_interval_seconds,
     initial_backlog:$initial_backlog,
     max_runners:$max_runners,
+    acceptance_thresholds:{
+      maximum_api_p95_ms:$max_api_p95_ms,
+      maximum_queue_age_ms:$max_queue_age_ms,
+      maximum_queue_depth:$max_queue_depth,
+      minimum_submissions_per_minute:$min_submissions_per_minute,
+      minimum_sample_coverage_percent:$min_sample_coverage_percent,
+      runner_replacement_timeout_seconds:$runner_replacement_timeout_seconds
+    },
     fault_schedule:["runner_crash_25_percent","control_plane_crash_50_percent","postgres_crash_75_percent"]
   }' >"$run_dir/run.json"
 
@@ -774,6 +1097,12 @@ while [ "$(date +%s)" -lt "$load_deadline" ]; do
   sleep "$submit_interval_seconds"
 done
 
+if [ "$runner_fault_done" != "true" ] ||
+    [ "$control_plane_fault_done" != "true" ] ||
+    [ "$postgres_fault_done" != "true" ]; then
+  fail "sustained load ended before every scheduled fault was injected"
+fi
+
 phase=draining
 touch "$scaler_drain_signal_file"
 event submissions_stopped "waiting for durable work and runners to drain"
@@ -812,16 +1141,25 @@ if ! collect_workload_outcomes; then
 fi
 
 collect_logs_and_state
+collect_performance_summary
+
+if [ ! -s "$runner_fault_file" ]; then
+  fail "runner replacement evidence is missing"
+fi
 
 final_sample=$(tail -n 1 "$samples_file")
 final_database=$(tail -n 1 "$database_samples_file")
 submitted_count=$(wc -l <"$submitted_file" | tr -d ' ')
+performance_summary=$(cat "$performance_file")
+runner_fault=$(cat "$runner_fault_file")
 
 assertions=$(
   jq -cn \
     --argjson sample "$final_sample" \
     --argjson database "$final_database" \
     --argjson submitted_count "$submitted_count" \
+    --argjson performance "$performance_summary" \
+    --argjson runner_fault "$runner_fault" \
     '[
       {
         id:"readiness",
@@ -873,6 +1211,82 @@ assertions=$(
         ),
         observed:$database.submission_statuses,
         expected:{submitted:$submitted_count}
+      },
+      {
+        id:"sustained_api_latency",
+        passed:(
+          $performance.api_latency.p95_ms <=
+            $performance.api_latency.maximum_p95_ms
+        ),
+        observed:$performance.api_latency.p95_ms,
+        expected:{
+          maximum_p95_ms:$performance.api_latency.maximum_p95_ms
+        }
+      },
+      {
+        id:"sustained_queue_pressure",
+        passed:(
+          $performance.queue_pressure.maximum_age_ms <=
+            $performance.queue_pressure.maximum_age_budget_ms and
+          $performance.queue_pressure.maximum_depth <=
+            $performance.queue_pressure.maximum_depth_budget
+        ),
+        observed:{
+          maximum_age_ms:$performance.queue_pressure.maximum_age_ms,
+          maximum_depth:$performance.queue_pressure.maximum_depth
+        },
+        expected:{
+          maximum_age_ms:$performance.queue_pressure.maximum_age_budget_ms,
+          maximum_depth:$performance.queue_pressure.maximum_depth_budget
+        }
+      },
+      {
+        id:"sustained_submission_rate",
+        passed:(
+          $performance.throughput.sustained_submissions >=
+            $performance.throughput.minimum_sustained_submissions
+        ),
+        observed:$performance.throughput.sustained_submissions,
+        expected:{
+          minimum_sustained_submissions:
+            $performance.throughput.minimum_sustained_submissions
+        }
+      },
+      {
+        id:"sustained_sample_completeness",
+        passed:(
+          $performance.sample_completeness.sustained_samples >=
+            $performance.sample_completeness.minimum_samples
+        ),
+        observed:{
+          sustained_samples:$performance.sample_completeness.sustained_samples,
+          expected_samples:$performance.sample_completeness.expected_samples
+        },
+        expected:{
+          minimum_samples:$performance.sample_completeness.minimum_samples,
+          minimum_coverage_percent:
+            $performance.sample_completeness.minimum_coverage_percent
+        }
+      },
+      {
+        id:"busy_runner_replaced",
+        passed:(
+          $runner_fault.killed_runner_was_busy == true and
+          $runner_fault.replacement_claimed_work == true and
+          $runner_fault.demand_at_replacement > 0 and
+          $runner_fault.killed_container_id !=
+            $runner_fault.replacement_container_id and
+          $runner_fault.replacement_seconds <=
+            $runner_fault.replacement_timeout_seconds
+        ),
+        observed:$runner_fault,
+        expected:{
+          distinct_replacement:true,
+          replacement_claimed_work:true,
+          demand_at_replacement:"greater than zero",
+          maximum_replacement_seconds:
+            $runner_fault.replacement_timeout_seconds
+        }
       },
       {
         id:"run_outcomes",
@@ -941,28 +1355,32 @@ assertions=$(
       },
       {
         id:"database_waits_drained",
-        passed:($database.waiting_locks == 0),
+        passed:($database.waiting_locks == 0 and $database.deadlocks == 0),
         observed:{waiting_locks:$database.waiting_locks,deadlocks:$database.deadlocks},
-        expected:{waiting_locks:0}
+        expected:{waiting_locks:0,deadlocks:0}
       }
     ]'
 )
 
-if evidence_contains_secret; then
-  redaction_passed=false
-else
-  redaction_passed=true
-fi
+scan_evidence_for_secrets
 
 assertions=$(
   printf '%s' "$assertions" |
     jq -c \
-      --argjson passed "$redaction_passed" \
+      --argjson expected "$secret_scan_expected" \
+      --argjson scanned "$secret_scan_count" \
+      --argjson leaks "$secret_leak_names" \
       '. + [{
         id:"evidence_redaction",
-        passed:$passed,
-        observed:(if $passed then "no configured secret found" else "configured secret found" end),
-        expected:"no configured secret found"
+        passed:($scanned == $expected and ($leaks | length) == 0),
+        observed:{
+          configured_secret_values_scanned:$scanned,
+          leaked_variable_names:$leaks
+        },
+        expected:{
+          configured_secret_values_scanned:$expected,
+          leaked_variable_names:[]
+        }
       }]'
 )
 

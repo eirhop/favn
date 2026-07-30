@@ -107,6 +107,62 @@ defmodule FavnOrchestrator.API.CommandErrors do
 
   def idempotency(_reason), do: nil
 
+  @doc """
+  Maps every run-submission failure to a stable, redacted API response.
+
+  Known validation, admission, visibility, and persistence failures retain
+  their public classifications. Unknown failures are logged through the
+  bounded redactor and returned as a generic bad request.
+  """
+  @spec submission(term()) :: command_error()
+  def submission(:invalid_target), do: validation_error("Invalid run target request")
+  def submission(:invalid_manifest_selection), do: validation_error("Invalid manifest selection")
+
+  def submission(:invalid_dependencies) do
+    {:error, 422, "validation_failed", "dependencies is only supported for asset targets",
+     %{field: "dependencies"}}
+  end
+
+  def submission({:invalid_operator_timeout_ms, _value}),
+    do: validation_error("Invalid timeout_ms")
+
+  def submission({reason, _value})
+      when reason in [
+             :invalid_operator_selection_source,
+             :invalid_operator_selection_id,
+             :invalid_operator_window
+           ],
+      do: validation_error("Invalid run window request")
+
+  def submission(:invalid_window_request), do: validation_error("Invalid run window request")
+  def submission(:invalid_asset_target), do: validation_error("Invalid asset target id")
+  def submission(:invalid_pipeline_target), do: validation_error("Invalid pipeline target id")
+
+  def submission(:ambiguous_asset_run_context) do
+    {:error, 422, "validation_failed", "Asset run context is required",
+     %{field: "run_context_id"}}
+  end
+
+  def submission(:invalid_asset_run_context) do
+    {:error, 422, "validation_failed", "Invalid asset run context", %{field: "run_context_id"}}
+  end
+
+  def submission(:active_manifest_not_set),
+    do: {:error, 404, "not_found", "Active manifest is not set", %{}}
+
+  def submission(:manifest_or_target_not_active_in_workspace),
+    do: {:error, 404, "not_found", "Run target was not found", %{}}
+
+  def submission(%Error{} = reason) do
+    idempotency(reason) || unknown_submission(reason)
+  end
+
+  def submission(reason) when is_tuple(reason) do
+    admission(reason) || operator(reason) || window(reason)
+  end
+
+  def submission(reason), do: unknown_submission(reason)
+
   @doc "Maps a run-window policy failure to an idempotent command result."
   @spec window(term()) :: command_error()
   def window(reason) do
@@ -238,6 +294,14 @@ defmodule FavnOrchestrator.API.CommandErrors do
   end
 
   defp backfill_details(_reason), do: :error
+
+  defp validation_error(message),
+    do: {:error, 422, "validation_failed", message, %{}}
+
+  defp unknown_submission(reason) do
+    log_invalid("unmapped run submission failure", reason)
+    {:error, 400, "bad_request", "Request failed", %{}}
+  end
 
   defp log_invalid(message, value) do
     diagnostic = Redaction.redact_operational_bounded(%{reason: value})
