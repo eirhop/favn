@@ -1196,7 +1196,7 @@ collect_logs_and_state
 collect_performance_summary
 
 if [ ! -s "$runner_fault_file" ]; then
-  fail "runner replacement evidence is missing"
+  fail "busy-runner recovery evidence is missing"
 fi
 
 final_sample=$(tail -n 1 "$samples_file")

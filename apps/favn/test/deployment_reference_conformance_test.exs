@@ -195,7 +195,9 @@ defmodule Favn.DeploymentReferenceConformanceTest do
     assert qualification =~ "safe_failure_classification"
     assert qualification =~ "non_reusable_materialization_claim_succeeded"
     assert qualification =~ "final-validation.json"
-    assert qualification =~ "evidence_contains_secret"
+    assert qualification =~ "secret_scan_expected=8"
+    assert qualification =~ "configured_secret_values_scanned"
+    assert qualification =~ "leaked_variable_names"
     refute qualification =~ "mix favn.run"
 
     qualification_runner = read("deployment/docker-compose/run-qualification.sh")

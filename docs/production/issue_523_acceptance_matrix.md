@@ -71,7 +71,7 @@ The default local performance budgets are intentionally explicit:
 - maximum queued depth: 48;
 - minimum sustained submission rate: four accepted runs per minute;
 - minimum sample coverage: 80%; and
-- busy-runner replacement: 120 seconds.
+- busy-runner recovery: 120 seconds.
 
 Each budget has a matching `FAVN_QUALIFICATION_*` environment override in
 `compose.yml`. A non-default budget is recorded in `run.json`; changing a
