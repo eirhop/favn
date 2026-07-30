@@ -30,6 +30,7 @@ docker compose \
   --profile runner \
   --profile scaler \
   --profile qualification \
+  --profile proxy-security \
   down \
   --timeout "${FAVN_COMPOSE_STOP_TIMEOUT_SECONDS:-10}" \
   --volumes \

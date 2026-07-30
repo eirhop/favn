@@ -12,7 +12,14 @@ defmodule FavnView.ProductionRuntimeConfig do
   @max_timeout_ms 30_000
   @max_proxy_cidrs 32
   @max_proxy_cidrs_bytes 4_096
+  @forwarded_for_policies %{
+    "replace" => :replace,
+    "append" => :append,
+    "ignore" => :ignore
+  }
   @persistent_key {__MODULE__, :config}
+
+  require Logger
 
   alias Favn.DeploymentMode
 
@@ -25,6 +32,10 @@ defmodule FavnView.ProductionRuntimeConfig do
           bind_ip: :inet.ip4_address(),
           port: :inet.port_number(),
           trusted_proxy_cidrs: [map()],
+          forwarded_for_policy: :replace | :append | :ignore,
+          public_origin_host: String.t(),
+          public_origin_port: :inet.port_number(),
+          ssl_options: term(),
           http_server: map(),
           shutdown_drain_timeout_ms: pos_integer(),
           auth: map(),
@@ -35,6 +46,10 @@ defmodule FavnView.ProductionRuntimeConfig do
   @type runtime_config :: %{
           deployment_mode: DeploymentMode.t(),
           trusted_proxy_cidrs: [map()],
+          forwarded_for_policy: :replace | :append | :ignore,
+          public_origin_host: String.t(),
+          public_origin_port: :inet.port_number(),
+          ssl_options: term(),
           http_server: map(),
           orchestrator_readiness_timeout_ms: pos_integer(),
           auth: map(),
@@ -71,6 +86,7 @@ defmodule FavnView.ProductionRuntimeConfig do
   @doc "Applies one already validated web configuration before the endpoint starts."
   @spec apply(config()) :: :ok
   def apply(config) when is_map(config) do
+    warn_trusted_proxy_subnets(config.trusted_proxy_cidrs)
     Application.put_env(:favn_view, :public_origin, config.public_origin)
     configure_endpoint(config)
 
@@ -110,20 +126,27 @@ defmodule FavnView.ProductionRuntimeConfig do
          {:ok, {bind_host, bind_ip}} <- bind_host(env),
          {:ok, port} <- port(env),
          {:ok, trusted_proxy_cidrs} <- trusted_proxy_cidrs(env),
+         {:ok, forwarded_for_policy} <- forwarded_for_policy(env),
          {:ok, http_server} <- http_server(env),
          {:ok, shutdown_drain_timeout_ms} <- shutdown_drain_timeout_ms(env),
          {:ok, auth} <- auth(env),
          {:ok, session_cookie_options} <- session_cookie_options(deployment_mode) do
+      origin_uri = URI.parse(public_origin)
+
       {:ok,
        %{
          deployment_mode: deployment_mode,
          public_origin: public_origin,
+         public_origin_host: origin_uri.host,
+         public_origin_port: origin_uri.port || default_port(origin_uri.scheme),
+         ssl_options: Plug.SSL.init(host: origin_uri.authority, hsts: true, exclude: []),
          orchestrator_readiness_timeout_ms: timeout_ms,
          secret_key_base: secret_key_base,
          bind_host: bind_host,
          bind_ip: bind_ip,
          port: port,
          trusted_proxy_cidrs: trusted_proxy_cidrs,
+         forwarded_for_policy: forwarded_for_policy,
          http_server: http_server,
          shutdown_drain_timeout_ms: shutdown_drain_timeout_ms,
          auth: auth,
@@ -148,7 +171,7 @@ defmodule FavnView.ProductionRuntimeConfig do
         redacted: true
       },
       listener: %{bind_host: config.bind_host, port: config.port},
-      trusted_proxies: %{configured_count: length(config.trusted_proxy_cidrs)},
+      trusted_proxies: trusted_proxy_diagnostics(config),
       http_server: config.http_server,
       shutdown: %{drain_timeout_ms: config.shutdown_drain_timeout_ms},
       orchestrator: %{
@@ -198,6 +221,33 @@ defmodule FavnView.ProductionRuntimeConfig do
   @spec trusted_proxy?(:inet.ip_address()) :: boolean()
   def trusted_proxy?(address) when is_tuple(address) do
     Enum.any?(runtime_config!().trusted_proxy_cidrs, &cidr_match?(address, &1))
+  end
+
+  @doc "Returns how an authorized proxy represents the client address."
+  @spec forwarded_for_policy() :: :replace | :append | :ignore
+  def forwarded_for_policy do
+    case :persistent_term.get(@persistent_key, :missing) do
+      %{forwarded_for_policy: policy} -> policy
+      :missing -> :replace
+    end
+  end
+
+  @doc "Returns the configured public host and port used after trusted HTTPS rewriting."
+  @spec public_origin_connection() :: {String.t(), :inet.port_number()} | nil
+  def public_origin_connection do
+    case :persistent_term.get(@persistent_key, :missing) do
+      %{public_origin_host: host, public_origin_port: port} -> {host, port}
+      :missing -> nil
+    end
+  end
+
+  @doc "Returns the boot-frozen SSL redirect options."
+  @spec ssl_options() :: term()
+  def ssl_options do
+    case :persistent_term.get(@persistent_key, :missing) do
+      %{ssl_options: options} -> options
+      :missing -> Plug.SSL.init(host: nil, hsts: true, exclude: [])
+    end
   end
 
   @spec configured_timeout_ms() :: pos_integer()
@@ -362,6 +412,7 @@ defmodule FavnView.ProductionRuntimeConfig do
          {prefix, ""} <- Integer.parse(prefix_text),
          true <- valid_prefix?(address, prefix),
          cidr = %{address: address, prefix: prefix},
+         true <- canonical_network?(cidr),
          true <- private_cidr?(cidr) do
       {:ok, cidr}
     else
@@ -399,6 +450,13 @@ defmodule FavnView.ProductionRuntimeConfig do
   defp valid_prefix?(address, prefix) when tuple_size(address) == 8,
     do: prefix in 0..128
 
+  defp canonical_network?(%{address: address, prefix: prefix}) do
+    address_binary = ip_binary(address)
+    host_bits = bit_size(address_binary) - prefix
+    <<_network::bitstring-size(^prefix), host::bitstring-size(^host_bits)>> = address_binary
+    host == <<0::size(host_bits)>>
+  end
+
   defp cidr_match?(address, %{address: network, prefix: prefix}) do
     address_binary = ip_binary(address)
     network_binary = ip_binary(network)
@@ -431,7 +489,19 @@ defmodule FavnView.ProductionRuntimeConfig do
 
   defp invalid_proxy_cidrs do
     {:error,
-     {:invalid_env, "FAVN_VIEW_TRUSTED_PROXY_CIDRS", "comma-separated private IPv4 or IPv6 CIDRs"}}
+     {:invalid_env, "FAVN_VIEW_TRUSTED_PROXY_CIDRS",
+      "comma-separated canonical private IPv4 or IPv6 CIDRs"}}
+  end
+
+  defp forwarded_for_policy(env) do
+    with {:ok, value} <-
+           required_or_default(env, "FAVN_VIEW_FORWARDED_FOR_POLICY", "replace"),
+         {:ok, policy} <- Map.fetch(@forwarded_for_policies, String.downcase(value)) do
+      {:ok, policy}
+    else
+      _invalid ->
+        {:error, {:invalid_env, "FAVN_VIEW_FORWARDED_FOR_POLICY", "replace, append, or ignore"}}
+    end
   end
 
   defp http_server(env) do
@@ -471,6 +541,10 @@ defmodule FavnView.ProductionRuntimeConfig do
     Map.take(config, [
       :deployment_mode,
       :trusted_proxy_cidrs,
+      :forwarded_for_policy,
+      :public_origin_host,
+      :public_origin_port,
+      :ssl_options,
       :http_server,
       :auth,
       :orchestrator_readiness_timeout_ms,
@@ -644,4 +718,50 @@ defmodule FavnView.ProductionRuntimeConfig do
 
   defp default_port("https"), do: 443
   defp default_port("http"), do: 80
+
+  defp trusted_proxy_diagnostics(config) do
+    exact_peer_count = Enum.count(config.trusted_proxy_cidrs, &exact_peer?/1)
+    subnets = Enum.reject(config.trusted_proxy_cidrs, &exact_peer?/1)
+
+    %{
+      configured_count: length(config.trusted_proxy_cidrs),
+      exact_peer_count: exact_peer_count,
+      subnet_count: length(subnets),
+      forwarded_for_policy: config.forwarded_for_policy,
+      warning_count: length(subnets),
+      warnings: Enum.map(subnets, &proxy_subnet_warning/1)
+    }
+  end
+
+  defp warn_trusted_proxy_subnets(cidrs) do
+    cidrs
+    |> Enum.reject(&exact_peer?/1)
+    |> Enum.each(fn cidr ->
+      Logger.warning(
+        "FAVN_VIEW_TRUSTED_PROXY_CIDRS authorizes every peer in #{format_cidr(cidr)}; " <>
+          "CIDR trust is network authorization, not cryptographic proxy authentication"
+      )
+    end)
+  end
+
+  defp proxy_subnet_warning(cidr) do
+    %{
+      code: :trusted_proxy_subnet,
+      family: address_family(cidr.address),
+      prefix: cidr.prefix
+    }
+  end
+
+  defp exact_peer?(%{address: address, prefix: prefix}) when tuple_size(address) == 4,
+    do: prefix == 32
+
+  defp exact_peer?(%{address: address, prefix: prefix}) when tuple_size(address) == 8,
+    do: prefix == 128
+
+  defp address_family(address) when tuple_size(address) == 4, do: :ipv4
+  defp address_family(address) when tuple_size(address) == 8, do: :ipv6
+
+  defp format_cidr(%{address: address, prefix: prefix}) do
+    "#{address |> :inet.ntoa() |> to_string()}/#{prefix}"
+  end
 end

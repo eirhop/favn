@@ -80,6 +80,7 @@ defmodule Favn.DeploymentReferenceConformanceTest do
           "FAVN_VIEW_PUBLIC_ORIGIN",
           "FAVN_VIEW_SECRET_KEY_BASE",
           "FAVN_VIEW_TRUSTED_PROXY_CIDRS",
+          "FAVN_VIEW_FORWARDED_FOR_POLICY",
           "FAVN_CONTROL_PLANE_NODE",
           "FAVN_DISTRIBUTION_COOKIE",
           "FAVN_DISTRIBUTION_TLS_OPTIONS_FILE"
@@ -143,6 +144,11 @@ defmodule Favn.DeploymentReferenceConformanceTest do
     assert control_plane["environment"]["FAVN_DEPLOYMENT_MODE"] == "production"
     assert control_plane["environment"]["FAVN_DATABASE_SSL_MODE"] == "verify-full"
 
+    assert control_plane["environment"]["FAVN_VIEW_TRUSTED_PROXY_CIDRS"] ==
+             "172.31.58.2/32"
+
+    assert control_plane["environment"]["FAVN_VIEW_FORWARDED_FOR_POLICY"] == "replace"
+
     assert control_plane["environment"]["FAVN_DISTRIBUTION_TLS_OPTIONS_FILE"] ==
              "/etc/favn/tls/control-plane-ssl-dist.config"
 
@@ -179,6 +185,38 @@ defmodule Favn.DeploymentReferenceConformanceTest do
 
     assert qualification_service["environment"]["FAVN_QUALIFICATION_DURATION_SECONDS"] ==
              "${FAVN_QUALIFICATION_DURATION_SECONDS:-14400}"
+
+    https_proxy = services["https-proxy"]
+    proxy_security = services["proxy-security"]
+
+    assert https_proxy["profiles"] == ["proxy-security"]
+    assert get_in(https_proxy, ["networks", "favn-edge", "ipv4_address"]) == "172.31.58.2"
+    assert proxy_security["profiles"] == ["proxy-security"]
+    assert get_in(proxy_security, ["networks", "favn-edge", "ipv4_address"]) == "172.31.58.4"
+
+    assert get_in(services, ["proxy-header-receiver", "networks", "favn-edge", "ipv4_address"]) ==
+             "172.31.58.5"
+
+    assert get_in(services, ["proxy-header-receiver", "entrypoint"]) == ["nc"]
+
+    assert get_in(services, ["proxy-header-receiver", "command"]) ==
+             ["-l", "-p", "8080", "-e", "/usr/local/bin/receive-proxy-headers"]
+
+    caddy = read("deployment/docker-compose/trusted-proxy.Caddyfile")
+    assert caddy =~ "/__proxy_header_probe"
+    assert caddy =~ "header_up -Forwarded"
+    assert caddy =~ "header_up X-Forwarded-For {remote_host}"
+    assert caddy =~ "header_up X-Forwarded-Proto https"
+
+    proxy_check = read("deployment/docker-compose/check-trusted-proxy.sh")
+    assert proxy_check =~ "TP-001"
+    assert proxy_check =~ "TP-002"
+    assert proxy_check =~ "TP-003"
+    assert proxy_check =~ "TP-004"
+    assert proxy_check =~ "proxy-upstream-request.txt"
+    assert proxy_check =~ "X-Forwarded-For: 172\\.31\\.58\\.4"
+    assert proxy_check =~ "X-Forwarded-Proto: https"
+    assert proxy_check =~ "https://favn.localhost/api/web/v1/health/ready"
 
     scaler = read("deployment/docker-compose/scale-runners.sh")
     assert scaler =~ "outstanding - running"

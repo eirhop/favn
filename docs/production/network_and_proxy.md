@@ -41,12 +41,56 @@ The reverse proxy owns public TLS and must:
 - support LiveView WebSocket upgrades and long-lived connections;
 - remove client-supplied forwarded headers before adding trusted values;
 - appear inside `FAVN_VIEW_TRUSTED_PROXY_CIDRS`;
+- implement the behavior selected by `FAVN_VIEW_FORWARDED_FOR_POLICY`;
 - apply an equal or shorter deadline than `FAVN_HTTP_REQUEST_TIMEOUT_MS`; and
 - expose no route to the private API, BEAM ports, or database.
 
-Favn accepts forwarded scheme, host, port, and client IP only from the
-configured private proxy allowlist. Browser responses use secure cookies and a
-restrictive content security policy.
+`FAVN_VIEW_TRUSTED_PROXY_CIDRS` authorizes the immediate socket peer. Prefer an
+exact IPv4 `/32` or IPv6 `/128`. Favn accepts a canonical private subnet when a
+platform's ingress source address can change, but emits a startup warning
+because every peer in that subnet receives the same authority. CIDR trust is
+network authorization, not cryptographic proxy authentication.
+
+`FAVN_VIEW_FORWARDED_FOR_POLICY` has three provider-neutral values:
+
+- `replace` is the default. The proxy must remove the incoming chain and write
+  exactly one client IP.
+- `append` is for an ingress that appends the address it observed. Favn bounds
+  one header-line chain and trusts only its rightmost entry. Duplicate header
+  lines are rejected as ambiguous.
+- `ignore` keeps the immediate proxy address as the remote identity.
+
+Favn consumes only client IP and scheme. It strips standard `Forwarded` plus
+`X-Forwarded-For`, `X-Forwarded-Host`, `X-Forwarded-Port`, and
+`X-Forwarded-Proto` before routing, ignores forwarded host and port, and uses
+`FAVN_VIEW_PUBLIC_ORIGIN` as the fixed redirect authority. Untrusted peers
+cannot turn plaintext into HTTPS with these headers.
+
+The immutable container's own `GET /api/web/v1/health/ready` probe is the only
+plaintext exception. It is accepted only when the immediate socket peer is the
+exact IPv4 or IPv6 loopback address. A `Host: localhost` value from any network
+peer grants no exception.
+
+Use `replace` with a fixed proxy or same-replica sidecar:
+
+```text
+FAVN_VIEW_TRUSTED_PROXY_CIDRS=10.42.0.5/32
+FAVN_VIEW_FORWARDED_FOR_POLICY=replace
+```
+
+Use `append` only when target-environment evidence proves both the append
+contract and an exclusive ingress subnet:
+
+```text
+FAVN_VIEW_TRUSTED_PROXY_CIDRS=10.42.8.0/24
+FAVN_VIEW_FORWARDED_FOR_POLICY=append
+```
+
+For higher assurance, isolate this hop or terminate mutually authenticated TLS
+at a local sidecar. Favn's listener does not itself authenticate a proxy
+certificate. Validate the chosen proxy, real WebSocket upgrade, source
+addresses, network exclusivity, certificate rotation, runner scale-out, and
+runner egress in the target deployment.
 
 The repository container gate does not qualify an operator proxy or managed
 network. Validate the chosen proxy, forwarded-header allowlist, real LiveView

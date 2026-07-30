@@ -11,6 +11,12 @@ param enableEntraEasyAuth bool = false
 param viewEntraTenantId string = ''
 param viewEntraClientId string = ''
 param viewEntraWorkspaceId string = ''
+@allowed([
+  'replace'
+  'append'
+  'ignore'
+])
+param viewForwardedForPolicy string = 'replace'
 param runtimeInputPinKeyVersion int = 1
 @secure()
 param databaseUrl string
@@ -166,6 +172,10 @@ resource controlPlane 'Microsoft.App/containerApps@2026-01-01' = {
             {
               name: 'FAVN_VIEW_TRUSTED_PROXY_CIDRS'
               value: viewTrustedProxyCidrs
+            }
+            {
+              name: 'FAVN_VIEW_FORWARDED_FOR_POLICY'
+              value: viewForwardedForPolicy
             }
             {
               name: 'FAVN_VIEW_AUTH_MODE'

@@ -131,6 +131,8 @@ Complete every item:
   adding its own trusted values.
 - [ ] `FAVN_VIEW_PUBLIC_ORIGIN` is the exact external HTTPS origin.
 - [ ] `FAVN_VIEW_TRUSTED_PROXY_CIDRS` contains only the real proxy peers.
+- [ ] `FAVN_VIEW_FORWARDED_FOR_POLICY` matches what the last trusted proxy
+  actually does.
 - [ ] PostgreSQL accepts connections only from the control plane and trusted
   one-off database operations.
 - [ ] EPMD and BEAM distribution accept connections only from the private
@@ -143,11 +145,75 @@ For example, if the proxy has the fixed private address `10.42.0.5`, prefer:
 ```text
 FAVN_VIEW_PUBLIC_ORIGIN=https://favn.example.com
 FAVN_VIEW_TRUSTED_PROXY_CIDRS=10.42.0.5/32
+FAVN_VIEW_FORWARDED_FOR_POLICY=replace
+```
+
+In simple terms, the CIDR setting answers "who may speak for the proxy?" The
+policy setting answers "where did that proxy put the client address?"
+
+| Proxy behavior | Policy | What Favn trusts |
+| --- | --- | --- |
+| Removes the incoming chain and writes one address | `replace` (default) | One exact address |
+| Keeps the incoming chain and adds its observed address on the right | `append` | Only the rightmost address |
+| Does not provide a useful client address | `ignore` | The proxy's socket address |
+
+Use `replace` whenever you control the proxy. For example:
+
+```text
+# Proxy 10.42.0.5 removes Forwarded and X-Forwarded-* from the request,
+# then writes one X-Forwarded-For value and X-Forwarded-Proto.
+FAVN_VIEW_TRUSTED_PROXY_CIDRS=10.42.0.5/32
+FAVN_VIEW_FORWARDED_FOR_POLICY=replace
+```
+
+Some managed ingress systems append their observed client address and do not
+offer a replace setting. Use `append` only after verifying that contract in the
+target environment:
+
+```text
+# The platform routes only its ingress subnet to the View port and appends the
+# address it observed as the rightmost X-Forwarded-For entry.
+FAVN_VIEW_TRUSTED_PROXY_CIDRS=10.42.8.0/24
+FAVN_VIEW_FORWARDED_FOR_POLICY=append
+```
+
+Favn ignores every earlier entry in that chain because a client may have
+supplied it. The platform must send the chain as one header line; duplicate
+`X-Forwarded-For` header lines are rejected as ambiguous. A same-replica
+sidecar is simpler:
+
+```text
+FAVN_VIEW_TRUSTED_PROXY_CIDRS=127.0.0.1/32
+FAVN_VIEW_FORWARDED_FOR_POLICY=replace
 ```
 
 Do not use a broad range such as `172.16.0.0/12` merely because containers use
-addresses inside it. Any peer inside a trusted range may provide forwarded
-scheme and client-address headers.
+addresses inside it. Favn warns at startup for every trusted subnet that is
+wider than one host. Such a subnet can be legitimate when a managed ingress
+has changing source addresses, but every workload in it is authorized to claim
+HTTPS and a client address. Network rules must ensure that only the real
+ingress can reach the View port.
+
+The setting accepts canonical network addresses only. Write `10.42.8.0/24`,
+not `10.42.8.7/24`. This prevents a misleading value whose host bits would have
+been silently ignored.
+
+Favn always removes `Forwarded`, `X-Forwarded-For`, `X-Forwarded-Host`,
+`X-Forwarded-Port`, and `X-Forwarded-Proto` before routing. It never trusts a
+forwarded host or port: redirects use the fixed `FAVN_VIEW_PUBLIC_ORIGIN`. A
+direct non-proxy HTTP request remains HTTP and is redirected to that fixed
+origin even if it supplies forged forwarding headers.
+
+One narrow exception keeps the immutable container health check useful: an
+exact loopback peer may call `GET /api/web/v1/health/ready` over plaintext.
+Changing the `Host` header to `localhost` does not create this exception for a
+network peer.
+
+CIDR trust is network authorization, not cryptographic proxy authentication.
+For a higher-assurance deployment, put the hop on an exclusive private network
+or use a local sidecar. If another workload can enter the trusted network,
+terminate authenticated transport such as mutual TLS at a sidecar before the
+request reaches Favn.
 
 A simple firewall model is:
 

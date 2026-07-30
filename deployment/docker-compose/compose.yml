@@ -184,7 +184,8 @@ services:
       FAVN_VIEW_PUBLIC_ORIGIN: https://favn.localhost
       FAVN_VIEW_BIND_HOST: 0.0.0.0
       FAVN_VIEW_PORT: "4000"
-      FAVN_VIEW_TRUSTED_PROXY_CIDRS: 172.16.0.0/12
+      FAVN_VIEW_TRUSTED_PROXY_CIDRS: 172.31.58.2/32
+      FAVN_VIEW_FORWARDED_FOR_POLICY: replace
     depends_on:
       certificates:
         condition: service_completed_successfully
@@ -200,8 +201,55 @@ services:
         aliases:
           - control-plane.favn.local
       favn-edge:
+        ipv4_address: 172.31.58.3
     stop_grace_period: 190s
     restart: unless-stopped
+
+  https-proxy:
+    image: caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
+    depends_on:
+      control-plane:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${FAVN_PROXY_HOST_PORT:-4443}:443"
+    volumes:
+      - ./trusted-proxy.Caddyfile:/etc/caddy/Caddyfile:ro
+    networks:
+      favn-edge:
+        ipv4_address: 172.31.58.2
+    profiles: ["proxy-security"]
+    restart: "no"
+
+  proxy-header-receiver:
+    image: alpine:3.22@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce
+    entrypoint: ["nc"]
+    command: ["-l", "-p", "8080", "-e", "/usr/local/bin/receive-proxy-headers"]
+    volumes:
+      - ./receive-proxy-headers.sh:/usr/local/bin/receive-proxy-headers:ro
+      - ./proxy-security-results:/results
+    networks:
+      favn-edge:
+        ipv4_address: 172.31.58.5
+    profiles: ["proxy-security"]
+    restart: "no"
+
+  proxy-security:
+    image: curlimages/curl:8.16.0@sha256:463eaf6072688fe96ac64fa623fe73e1dbe25d8ad6c34404a669ad3ce1f104b6
+    user: "0:0"
+    entrypoint: ["/bin/sh", "/usr/local/bin/check-trusted-proxy"]
+    depends_on:
+      https-proxy:
+        condition: service_started
+      proxy-header-receiver:
+        condition: service_started
+    volumes:
+      - ./check-trusted-proxy.sh:/usr/local/bin/check-trusted-proxy:ro
+      - ./proxy-security-results:/results
+    networks:
+      favn-edge:
+        ipv4_address: 172.31.58.4
+    profiles: ["proxy-security"]
+    restart: "no"
 
   operator:
     image: favn-elastic-simulation-operator:${FAVN_IMAGE_TAG}
@@ -324,6 +372,9 @@ networks:
   favn-private:
     internal: true
   favn-edge:
+    ipam:
+      config:
+        - subnet: 172.31.58.0/29
 
 volumes:
   postgres-certificates:

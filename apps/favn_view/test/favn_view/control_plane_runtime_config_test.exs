@@ -41,6 +41,7 @@ defmodule FavnView.ControlPlaneRuntimeConfigTest do
 
     assert config.view.public_origin == "https://favn.example.com"
     assert config.view.bind_ip == {0, 0, 0, 0}
+    assert config.view.forwarded_for_policy == :replace
     assert config.view.http_server == config.orchestrator.http_server
 
     diagnostics = %{
@@ -80,7 +81,8 @@ defmodule FavnView.ControlPlaneRuntimeConfigTest do
       "FAVN_DISTRIBUTION_TLS_OPTIONS_FILE" => tls_options_file,
       "FAVN_VIEW_PUBLIC_ORIGIN" => "https://favn.example.com",
       "FAVN_VIEW_SECRET_KEY_BASE" => @secret_key_base,
-      "FAVN_VIEW_TRUSTED_PROXY_CIDRS" => "10.0.0.0/8"
+      "FAVN_VIEW_TRUSTED_PROXY_CIDRS" => "10.42.0.5/32",
+      "FAVN_VIEW_FORWARDED_FOR_POLICY" => "replace"
     }
   end
 

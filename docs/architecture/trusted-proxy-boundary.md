@@ -134,8 +134,9 @@ proxies, the final trusted proxy must validate that chain and replace it with
 one normalized address before forwarding to Favn.
 
 The implementation bounds accepted header length and entry count before
-splitting. Invalid, oversized, or ambiguous values do not fail the request;
-they leave `conn.remote_ip` equal to the authorized proxy peer.
+splitting and requires exactly one header line. Invalid, oversized, duplicate,
+or ambiguous values do not fail the request; they leave `conn.remote_ip` equal
+to the authorized proxy peer.
 
 ### Scheme, host, and port
 

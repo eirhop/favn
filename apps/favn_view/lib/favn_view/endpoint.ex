@@ -1,6 +1,17 @@
 defmodule FavnView.Endpoint do
   use Phoenix.Endpoint, otp_app: :favn_view
 
+  # Phoenix inserts socket dispatch before the ordinary endpoint plug list.
+  # Override the Plug.Builder call so transport security runs before sockets,
+  # static files, and every user plug. Phoenix's generated call/2 wraps this
+  # function and supplies the endpoint private data before invoking it.
+  @impl Plug
+  def call(conn, opts) do
+    conn
+    |> FavnView.Plugs.RuntimeTransportSecurity.call([])
+    |> super(opts)
+  end
+
   @doc false
   def session_options, do: FavnView.ProductionRuntimeConfig.session_cookie_options()
 
@@ -38,8 +49,6 @@ defmodule FavnView.Endpoint do
 
   plug Plug.RequestId
   plug Plug.Telemetry, event_prefix: [:phoenix, :endpoint]
-
-  plug FavnView.Plugs.RuntimeTransportSecurity
 
   plug FavnView.Plugs.RequestParsers
 
