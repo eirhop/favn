@@ -150,8 +150,7 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.RunsList do
         status: :running,
         trigger: "Backfill",
         minutes_ago: 51,
-        duration: "elapsed",
-        runs: %{ok: 4, failed: 0, running: 2, queued: 4}
+        duration: "elapsed"
       }),
       run(%{
         id: "run_crm_daily_2026_07_30_3ef8",
@@ -200,6 +199,7 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.RunsList do
   defp run(attrs) do
     started_at = DateTime.add(@now, -attrs.minutes_ago * 60, :second)
     target = target(attrs)
+    assets = assets(attrs)
 
     %{
       id: attrs.id,
@@ -207,12 +207,14 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.RunsList do
       target: target.label,
       target_title: target.title,
       target_detail: target.detail,
+      assets: assets.label,
+      assets_failed: assets.failed,
       status: attrs.status,
       status_label: status_label(attrs.status),
       raw_status: raw_status(attrs.status),
       trigger: attrs.trigger,
-      progress: progress(attrs),
       started_at: Calendar.strftime(started_at, "%H:%M:%S"),
+      started_on: Calendar.strftime(started_at, "%-d %b"),
       started_at_raw: started_at,
       started_at_title: Calendar.strftime(started_at, "%b %-d, %Y %H:%M:%S UTC"),
       duration: attrs.duration
@@ -231,26 +233,23 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.RunsList do
     %{label: asset, title: "CrmDemo.Warehouse.Core.Sales.#{Macro.camelize(asset)}", detail: nil}
   end
 
-  defp progress(attrs) do
-    counts = Map.get(attrs, :runs, single_run_counts(attrs.status))
-    total = counts.ok + counts.failed + counts.running + counts.queued
+  # What happened to the run's asset steps, which is what the row reports. A
+  # queued run has none yet, so the row falls back to the plan.
+  defp assets(%{status: :queued}), do: %{label: nil, failed: 0}
 
-    %{
-      total: total,
-      segments: [
-        %{tone: :success, count: counts.ok, label: "ok"},
-        %{tone: :error, count: counts.failed, label: "failed"},
-        %{tone: :info, count: counts.running, label: "running"},
-        %{tone: :neutral, count: counts.queued, label: "queued"}
-      ],
-      summary: "#{counts.ok + counts.failed} / #{total} runs"
-    }
+  defp assets(attrs) do
+    total = Map.get(attrs, :assets, 1)
+    failed = if attrs.status == :failed, do: min(2, total), else: 0
+    completed = if attrs.status == :running, do: div(total, 2), else: total
+
+    %{label: assets_label(completed, total), failed: failed}
   end
 
-  defp single_run_counts(:succeeded), do: %{ok: 1, failed: 0, running: 0, queued: 0}
-  defp single_run_counts(:failed), do: %{ok: 0, failed: 1, running: 0, queued: 0}
-  defp single_run_counts(:running), do: %{ok: 0, failed: 0, running: 1, queued: 0}
-  defp single_run_counts(:queued), do: %{ok: 0, failed: 0, running: 0, queued: 1}
+  defp assets_label(total, total), do: "#{total} #{word(total)}"
+  defp assets_label(completed, total), do: "#{completed} / #{total} #{word(total)}"
+
+  defp word(1), do: "asset"
+  defp word(_count), do: "assets"
 
   defp short_id(id) when byte_size(id) > 18,
     do: binary_part(id, 0, 9) <> "..." <> binary_part(id, byte_size(id) - 6, 6)

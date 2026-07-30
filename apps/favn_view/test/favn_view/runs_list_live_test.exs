@@ -30,8 +30,45 @@ defmodule FavnView.RunsListLiveTest do
     assert run.status_label == "Running"
     assert run.target == "orders"
     assert run.target_title == "MyApp.Assets.Orders.orders"
-    assert run.progress.total == 1
+    assert run.assets == "3 / 4 assets"
+    assert run.assets_failed == 1
     refute assigns.more?
+  end
+
+  # The group's own counters count runs, which is one for everything but a backfill.
+  # The row reports asset steps, so a fourteen-asset pipeline run says fourteen.
+  test "a row counts asset steps, not the runs that submitted them" do
+    group =
+      Map.merge(execution_group(), %{
+        asset_counts: %{total: 14, completed: 14, failed: 0, running: 0, queued: 0}
+      })
+
+    stub_page([group])
+
+    assert {:flat, [run]} = load(%{}).assigns.listing
+    assert run.assets == "14 assets"
+    assert run.assets_failed == 0
+  end
+
+  test "a run with no asset steps yet reports the plan instead of a fraction" do
+    group =
+      Map.merge(execution_group(), %{
+        asset_counts: %{total: 0, completed: 0, failed: 0, running: 0, queued: 0}
+      })
+
+    stub_page([group])
+
+    assert {:flat, [run]} = load(%{}).assigns.listing
+    assert run.assets == nil
+    assert run.target_detail == nil
+  end
+
+  test "each row carries its own date, so a page reached by paging back is readable" do
+    stub_page([execution_group("run-1", ~U[2026-07-11 08:30:00Z])])
+
+    assert [run] = load(%{"range" => "month"}).assigns.runs
+    assert run.started_at == "08:30:00"
+    assert run.started_on == "11 Jul"
   end
 
   test "a backfill is timed by its group, not by the root run that submitted it" do
@@ -53,7 +90,6 @@ defmodule FavnView.RunsListLiveTest do
     stub_page([group])
 
     assert {:flat, [run]} = load(%{}).assigns.listing
-    assert run.progress.summary == "8 / 8 runs"
     assert run.duration == "154.0 s"
   end
 
@@ -288,6 +324,7 @@ defmodule FavnView.RunsListLiveTest do
         windows: %{total: 0, completed: 0, failed: 0},
         asset_attempts: counts
       },
+      asset_counts: %{total: 4, completed: 3, failed: 1, running: 1, queued: 0},
       last_activity_at: DateTime.utc_now(),
       currently_running_asset_attempts: [],
       child_run_ids: []

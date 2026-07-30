@@ -54,6 +54,13 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
   @group_statuses [:pending, :running, :succeeded, :failed]
   @group_orders [:started_desc, :started_asc]
   @active_group_statuses ~w(pending running)
+  # One vocabulary for what happened to an asset step, shared by every read that
+  # counts them. `skipped_fresh` is completed without being failed: the asset was
+  # already up to date, which is a result rather than a non-event.
+  @completed_asset_statuses ~w(ok error timed_out cancelled skipped_fresh blocked)
+  @failed_asset_statuses ~w(error timed_out cancelled blocked)
+  @running_asset_statuses ~w(running retrying)
+  @no_asset_counts %{total: 0, completed: 0, failed: 0, running: 0, queued: 0}
   @run_summary_fields [
     :workspace_id,
     :run_id,
@@ -115,11 +122,12 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
 
       rows = Repo.all(query)
 
-      # Enriched from the page's own rows, so the extra query is bounded by the page
-      # limit rather than by the workspace's history.
+      # Enriched from the page's own rows, so the extra queries are bounded by the
+      # page limit rather than by the workspace's history.
       groups = Enum.take(rows, page.limit)
       targets = target_refs_by_group(groups)
-      mapper = &group_result(&1, targets)
+      assets = asset_counts_by_group(groups)
+      mapper = &group_result(&1, targets, assets)
 
       {:ok, cursor_page(rows, page.limit, mapper, &group_cursor/1)}
     end
@@ -182,7 +190,12 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
            failure_page(query.workspace_context, query.root_run_id, query.detail_limit) do
       {:ok,
        %ExecutionGroup{
-         overview: group_result(overview),
+         overview:
+           group_result(
+             overview,
+             target_refs_by_group([overview]),
+             asset_counts_by_group([overview])
+           ),
          runs: runs,
          windows: windows,
          failures: failures
@@ -532,10 +545,11 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
     }
   end
 
-  defp group_result(group), do: group_result(group, %{})
+  defp group_result(group), do: group_result(group, %{}, %{})
 
-  defp group_result(group, targets) do
-    by_kind = Map.get(targets, {group.workspace_id, group.root_run_id}, %{})
+  defp group_result(group, targets, assets) do
+    key = {group.workspace_id, group.root_run_id}
+    by_kind = Map.get(targets, key, %{})
 
     %GroupOverviewResult{
       workspace_id: group.workspace_id,
@@ -553,7 +567,8 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
       started_at: group.started_at,
       finished_at: group.finished_at,
       target_refs: Map.get(by_kind, "asset", []),
-      pipeline_refs: Map.get(by_kind, "pipeline", [])
+      pipeline_refs: Map.get(by_kind, "pipeline", []),
+      asset_counts: Map.get(assets, key, @no_asset_counts)
     }
   end
 
@@ -650,18 +665,10 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
       where: attempt.workspace_id == ^workspace_id and attempt.root_run_id == ^root_run_id,
       select: %{
         total: count(attempt.asset_step_id),
-        completed:
-          fragment(
-            "count(*) FILTER (WHERE ? IN ('ok', 'error', 'timed_out', 'cancelled', 'skipped_fresh', 'blocked'))",
-            attempt.status
-          ),
-        failed:
-          fragment(
-            "count(*) FILTER (WHERE ? IN ('error', 'timed_out', 'cancelled', 'blocked'))",
-            attempt.status
-          ),
-        running: fragment("count(*) FILTER (WHERE ? IN ('running', 'retrying'))", attempt.status),
-        queued: fragment("count(*) FILTER (WHERE ? = 'queued')", attempt.status),
+        completed: filter(count(), attempt.status in ^@completed_asset_statuses),
+        failed: filter(count(), attempt.status in ^@failed_asset_statuses),
+        running: filter(count(), attempt.status in ^@running_asset_statuses),
+        queued: filter(count(), attempt.status == "queued"),
         effective_windows:
           fragment(
             "count(DISTINCT ?) FILTER (WHERE ? <> 'none')",
@@ -745,6 +752,38 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
     end)
     |> Map.new(fn {key, by_kind} ->
       {key, Map.new(by_kind, fn {kind, refs} -> {kind, Enum.sort(refs)} end)}
+    end)
+  end
+
+  defp asset_counts_by_group([]), do: %{}
+
+  # What actually happened, per asset step, across every run in the group. A
+  # backfill's windows each contribute their own steps, so this counts the work
+  # rather than the submissions — which is the number a list of runs is read for.
+  #
+  # One grouped aggregate over the page's own groups, on the index whose leading
+  # columns are exactly these two.
+  defp asset_counts_by_group(groups) do
+    {workspace_ids, root_run_ids} = group_keys(groups)
+
+    from(attempt in AssetAttemptOverview,
+      where:
+        attempt.workspace_id in ^workspace_ids and
+          attempt.root_run_id in ^root_run_ids,
+      group_by: [attempt.workspace_id, attempt.root_run_id],
+      select: %{
+        workspace_id: attempt.workspace_id,
+        root_run_id: attempt.root_run_id,
+        total: count(),
+        completed: filter(count(), attempt.status in ^@completed_asset_statuses),
+        failed: filter(count(), attempt.status in ^@failed_asset_statuses),
+        running: filter(count(), attempt.status in ^@running_asset_statuses),
+        queued: filter(count(), attempt.status == "queued")
+      }
+    )
+    |> Repo.all()
+    |> Map.new(fn row ->
+      {{row.workspace_id, row.root_run_id}, Map.drop(row, [:workspace_id, :root_run_id])}
     end)
   end
 

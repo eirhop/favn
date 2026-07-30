@@ -243,7 +243,7 @@ defmodule FavnView.RunsListLive do
   defp run_from_public(group) do
     target = target(group)
     status = display_status(Map.get(group, :status))
-    progress = progress(group)
+    assets = assets(group)
 
     %{
       id: group.id,
@@ -251,15 +251,17 @@ defmodule FavnView.RunsListLive do
       target: short_target(target.label),
       target_title: target.label,
       target_detail: target.detail,
+      assets: assets.label,
+      assets_failed: assets.failed,
       status: status,
       status_label: status_label(status),
       raw_status: Map.get(group, :status),
       trigger: label(Map.get(group, :trigger_type)),
-      progress: progress,
-      started_at: short_timestamp(Map.get(group, :started_at)),
+      started_at: short_time(Map.get(group, :started_at)),
+      started_on: short_date(Map.get(group, :started_at)),
       started_at_raw: Map.get(group, :started_at),
       started_at_title: full_timestamp(Map.get(group, :started_at)),
-      duration: duration_label(group, progress)
+      duration: duration_label(group, run_counts(group))
     }
   end
 
@@ -283,25 +285,35 @@ defmodule FavnView.RunsListLive do
   defp extra_detail(assets) when length(assets) > 1, do: "+#{length(assets) - 1} more"
   defp extra_detail(_assets), do: nil
 
-  # These counts are of the runs in the group, which is what the group projection
-  # holds. For a backfill that is its window runs and the meter is the answer to
-  # "how far along"; for a single run there is nothing to divide, so the row says
-  # nothing rather than "1 / 1".
-  defp progress(group) do
-    counts = run_counts(group)
-    succeeded = max(counts.completed - counts.failed, 0)
+  # How much of the work happened: asset steps finished out of asset steps the
+  # group has. The runs in a group are a submission detail — one for everything
+  # except a backfill, where they are its windows — and no operator opens this page
+  # to count submissions.
+  defp assets(group) do
+    counts = asset_counts(group)
+
+    %{label: assets_label(counts), failed: counts.failed}
+  end
+
+  defp asset_counts(group) do
+    counts = Map.get(group, :asset_counts) || %{}
 
     %{
-      total: counts.total,
-      segments: [
-        %{tone: :success, count: succeeded, label: "ok"},
-        %{tone: :error, count: counts.failed, label: "failed"},
-        %{tone: :info, count: counts.running, label: "running"},
-        %{tone: :neutral, count: counts.queued, label: "queued"}
-      ],
-      summary: "#{counts.completed} / #{counts.total} runs"
+      total: Map.get(counts, :total, 0),
+      completed: Map.get(counts, :completed, 0),
+      failed: Map.get(counts, :failed, 0)
     }
   end
+
+  # Nothing has run yet, so the plan is the only honest thing to report.
+  defp assets_label(%{total: 0}), do: nil
+  defp assets_label(%{total: total, completed: total}), do: "#{total} #{assets_word(total)}"
+
+  defp assets_label(%{total: total, completed: completed}),
+    do: "#{completed} / #{total} #{assets_word(total)}"
+
+  defp assets_word(1), do: "asset"
+  defp assets_word(_count), do: "assets"
 
   defp run_counts(group) do
     totals = group |> Map.get(:summary_totals, %{}) |> Map.get(:asset_attempts, %{})
@@ -337,14 +349,14 @@ defmodule FavnView.RunsListLive do
   # its own duration is milliseconds while the backfill ran for minutes. The
   # group's row records when it was last touched, and that span is what the
   # operator means by how long it took.
-  defp duration_label(group, %{total: total}) when total > 1,
+  defp duration_label(group, %{total: runs}) when runs > 1,
     do: span_label(Map.get(group, :started_at), Map.get(group, :last_activity_at))
 
-  defp duration_label(%{status: status, duration_ms: nil}, _progress)
+  defp duration_label(%{status: status, duration_ms: nil}, _runs)
        when status in [:running, :pending],
        do: "elapsed"
 
-  defp duration_label(group, _progress),
+  defp duration_label(group, _runs),
     do: LogsViewModel.duration_ms_label(Map.get(group, :duration_ms))
 
   defp span_label(%DateTime{} = from, %DateTime{} = to),
@@ -374,8 +386,19 @@ defmodule FavnView.RunsListLive do
   defp short_id(id) when is_binary(id), do: id
   defp short_id(_id), do: "unknown"
 
-  defp short_timestamp(%DateTime{} = value), do: Calendar.strftime(value, "%H:%M:%S")
-  defp short_timestamp(_value), do: "-"
+  defp short_time(%DateTime{} = value), do: Calendar.strftime(value, "%H:%M:%S")
+  defp short_time(_value), do: "-"
+
+  # The day headers only group a multi-day range, and a page reached by paging back
+  # can start anywhere, so each row carries its own date. The year appears only
+  # when it is not this one.
+  defp short_date(%DateTime{} = value) do
+    if value.year == DateTime.utc_now().year,
+      do: Calendar.strftime(value, "%-d %b"),
+      else: Calendar.strftime(value, "%-d %b %Y")
+  end
+
+  defp short_date(_value), do: nil
 
   defp full_timestamp(%DateTime{} = value),
     do: Calendar.strftime(value, "%b %-d, %Y %H:%M:%S UTC")

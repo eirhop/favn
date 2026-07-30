@@ -386,8 +386,9 @@ defmodule FavnView.Components.RunsListPage do
 
       <td class="max-w-64 align-middle"><.run_target run={@run} /></td>
 
-      <td class="whitespace-nowrap align-middle text-xs favn-text-muted" title={@run.started_at_title}>
-        {@run.started_at}
+      <td class="whitespace-nowrap align-middle text-xs" title={@run.started_at_title}>
+        <p class="favn-text-muted">{@run.started_at}</p>
+        <p :if={@run.started_on} class="text-[0.68rem] favn-text-subtle">{@run.started_on}</p>
       </td>
 
       <td class="whitespace-nowrap align-middle text-xs favn-text-muted">{@run.duration}</td>
@@ -422,44 +423,33 @@ defmodule FavnView.Components.RunsListPage do
         <p class="truncate text-[0.68rem] favn-text-subtle">
           {@run.status_label} · {@run.trigger}
         </p>
-        <.run_progress :if={@run.progress.total > 1} run={@run} />
       </div>
     </div>
     """
   end
 
+  @doc """
+  What the run was for, and how much of it happened.
+
+  The second line counts asset steps, because that is the work: a pipeline run of
+  fourteen assets did fourteen things, and a backfill did one per window. The runs
+  inside a group are a submission detail and were never worth a column.
+  """
   attr :run, :map, required: true
 
   def run_target(assigns) do
     ~H"""
     <div class="min-w-0">
       <p class="truncate font-medium text-base-content" title={@run.target_title}>{@run.target}</p>
-      <p :if={@run.target_detail} class="truncate text-[0.68rem] favn-text-subtle">
-        {@run.target_detail}
+      <p class="flex min-w-0 items-center gap-1.5 text-[0.68rem]">
+        <span :if={@run.assets} class="truncate favn-text-subtle">{@run.assets}</span>
+        <span :if={!@run.assets && @run.target_detail} class="truncate favn-text-subtle">
+          {@run.target_detail} planned
+        </span>
+        <span :if={@run.assets_failed > 0} class="shrink-0 text-error">
+          {@run.assets_failed} failed
+        </span>
       </p>
-    </div>
-    """
-  end
-
-  @doc """
-  How far a group of runs has got — which, for a backfill, is its windows.
-
-  Only rendered when there is more than one run to divide. A single-run group
-  would read `1 / 1`, which is chrome pretending to be information, and a whole
-  column of it was the old page's widest dead space.
-  """
-  attr :run, :map, required: true
-
-  def run_progress(assigns) do
-    ~H"""
-    <div class="mt-1.5 max-w-40">
-      <.outcome_meter
-        segments={@run.progress.segments}
-        summary={@run.progress.summary}
-        size={:sm}
-        legend?={false}
-      />
-      <p class="mt-1 truncate text-[0.68rem] favn-text-muted">{@run.progress.summary}</p>
     </div>
     """
   end
@@ -486,7 +476,7 @@ defmodule FavnView.Components.RunsListPage do
 
   def run_card(assigns) do
     ~H"""
-    <.list_card navigate={~p"/runs/#{@run.id}"} class="space-y-2.5" data-testid="run-card">
+    <.list_card navigate={~p"/runs/#{@run.id}"} class="space-y-1.5" data-testid="run-card">
       <div class="flex items-start justify-between gap-3">
         <div class="min-w-0">
           <.status_badge tone={@run.status} label={@run.status_label} />
@@ -496,17 +486,18 @@ defmodule FavnView.Components.RunsListPage do
           <p class="truncate font-mono text-[0.68rem] favn-text-subtle">{@run.short_id}</p>
         </div>
         <div class="shrink-0 text-right text-xs favn-text-muted">
+          <p :if={@run.started_on} class="favn-text-subtle">{@run.started_on}</p>
           <p>{@run.started_at}</p>
           <p class="favn-text-subtle">{@run.duration}</p>
         </div>
       </div>
 
-      <.outcome_meter
-        :if={@run.progress.total > 1}
-        segments={@run.progress.segments}
-        summary={@run.progress.summary}
-        size={:sm}
-      />
+      <p class="flex items-center gap-1.5 text-[0.68rem]">
+        <span :if={@run.assets} class="truncate favn-text-subtle">{@run.assets}</span>
+        <span :if={@run.assets_failed > 0} class="shrink-0 text-error">
+          {@run.assets_failed} failed
+        </span>
+      </p>
     </.list_card>
     """
   end

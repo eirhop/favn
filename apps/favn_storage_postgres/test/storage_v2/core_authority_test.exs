@@ -6598,6 +6598,53 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     end
   end
 
+  # A group's own counters count runs, which is one for everything but a backfill.
+  # What the list reports is asset steps, so they are counted per group in one
+  # bounded aggregate rather than inferred from the run count.
+  test "an execution group page counts the asset steps its runs recorded", fixture do
+    {command, run} = create_run_command(fixture)
+    {other_command, other_run} = create_run_command(fixture)
+    assert {:ok, _created} = RunStore.create_run(command)
+    assert {:ok, _created} = RunStore.create_run(other_command)
+    assert {:ok, publications} = Sequencer.sequence_batch()
+    assert publications != []
+
+    SQL.query!(
+      Repo,
+      "UPDATE favn_control.projection_cursors SET owner_id = NULL, claim_expires_at = NULL WHERE projector_name = 'control_plane_v1' AND shard_id = 0",
+      []
+    )
+
+    assert drain_projector("node-a") >= length(publications)
+
+    for {step, status} <- [{"step-1", "ok"}, {"step-2", "error"}, {"step-3", "queued"}] do
+      SQL.query!(
+        Repo,
+        """
+        INSERT INTO favn_control.asset_attempt_overviews
+          (workspace_id, root_run_id, run_id, asset_step_id, asset_ref, window_identity,
+           status, source_publication_id, updated_at)
+        VALUES ($1, $2, $3, $4, $5, 'none', $6, 1, now())
+        """,
+        [fixture.workspace_context.workspace_id, run.id, run.id, step, "MyApp.Assets.a", status]
+      )
+    end
+
+    assert {:ok, page} =
+             OperatorReadStore.page_execution_groups(%PageExecutionGroups{
+               scope: fixture.workspace_context,
+               limit: 10
+             })
+
+    assert %{asset_counts: counts} = Enum.find(page.items, &(&1.root_run_id == run.id))
+    assert counts == %{total: 3, completed: 2, failed: 1, running: 0, queued: 1}
+
+    # A group whose steps have not been recorded reports nothing rather than
+    # borrowing its run count.
+    assert %{asset_counts: %{total: 0, completed: 0}} =
+             Enum.find(page.items, &(&1.root_run_id == other_run.id))
+  end
+
   # The runs list reads this every page and again on every live refresh, so its
   # order has to come from an index rather than from sorting the workspace. The
   # sort key is projected onto the group for exactly this reason: ordering it on

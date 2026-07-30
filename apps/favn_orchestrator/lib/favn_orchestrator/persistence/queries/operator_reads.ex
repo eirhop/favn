@@ -310,6 +310,11 @@ defmodule FavnOrchestrator.Persistence.Results.ExecutionGroupOverview do
   `target_refs` and `pipeline_refs` are separate because a pipeline run declares
   every asset it will touch, and fourteen asset refs do not tell an operator what
   was submitted. The pipeline does.
+
+  `asset_counts` is how much of the work actually happened: one count per asset
+  step the group has recorded, across every run in it. The group's own counters
+  count *runs*, which for a backfill is its windows and for everything else is
+  one — a number that answers nothing.
   """
   @enforce_keys [:workspace_id, :root_run_id, :status, :run_count, :latest_event_id]
   defstruct [
@@ -328,8 +333,17 @@ defmodule FavnOrchestrator.Persistence.Results.ExecutionGroupOverview do
     :started_at,
     :finished_at,
     target_refs: [],
-    pipeline_refs: []
+    pipeline_refs: [],
+    asset_counts: %{total: 0, completed: 0, failed: 0, running: 0, queued: 0}
   ]
+
+  @type asset_counts :: %{
+          total: non_neg_integer(),
+          completed: non_neg_integer(),
+          failed: non_neg_integer(),
+          running: non_neg_integer(),
+          queued: non_neg_integer()
+        }
 
   @type t :: %__MODULE__{
           workspace_id: String.t(),
@@ -347,7 +361,8 @@ defmodule FavnOrchestrator.Persistence.Results.ExecutionGroupOverview do
           started_at: DateTime.t() | nil,
           finished_at: DateTime.t() | nil,
           target_refs: [String.t()],
-          pipeline_refs: [String.t()]
+          pipeline_refs: [String.t()],
+          asset_counts: asset_counts()
         }
 end
 

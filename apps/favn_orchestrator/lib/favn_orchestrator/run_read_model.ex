@@ -130,6 +130,13 @@ defmodule FavnOrchestrator.RunReadModel do
           required(:trigger_type) => atom() | nil,
           required(:target_assets) => [String.t()],
           optional(:target_pipelines) => [String.t()],
+          optional(:asset_counts) => %{
+            total: non_neg_integer(),
+            completed: non_neg_integer(),
+            failed: non_neg_integer(),
+            running: non_neg_integer(),
+            queued: non_neg_integer()
+          },
           required(:root_status) => RunState.status(),
           required(:started_at) => DateTime.t() | nil,
           required(:finished_at) => DateTime.t() | nil,
@@ -217,6 +224,7 @@ defmodule FavnOrchestrator.RunReadModel do
   def from_execution_group_overview(%PersistedExecutionGroupOverview{} = group) do
     status = public_overview_status(group.status)
     completed = group.succeeded_count + group.failed_count
+    assets = group.asset_counts || %{}
 
     attempt_counts = %{
       total: group.run_count,
@@ -240,6 +248,7 @@ defmodule FavnOrchestrator.RunReadModel do
       trigger_type: group.trigger_type,
       target_assets: group.target_refs,
       target_pipelines: group.pipeline_refs,
+      asset_counts: asset_counts(assets),
       root_status: status,
       started_at: group.started_at || group.updated_at,
       finished_at: overview_finished_at(group, active?),
@@ -1019,6 +1028,18 @@ defmodule FavnOrchestrator.RunReadModel do
       unit: :assets,
       label: "#{attempt_counts.completed} / #{attempt_counts.total} asset attempts",
       counts: attempt_counts
+    }
+  end
+
+  # The asset steps the group recorded, which is the work it did. The group's own
+  # counters count runs; for everything but a backfill that is always one.
+  defp asset_counts(counts) do
+    %{
+      total: Map.get(counts, :total, 0),
+      completed: Map.get(counts, :completed, 0),
+      failed: Map.get(counts, :failed, 0),
+      running: Map.get(counts, :running, 0),
+      queued: Map.get(counts, :queued, 0)
     }
   end
 
