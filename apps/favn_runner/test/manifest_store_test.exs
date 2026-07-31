@@ -134,8 +134,11 @@ defmodule FavnRunner.ManifestStoreTest do
                server: store
              )
 
-    Process.sleep(150)
-    assert :ok = ManifestStore.register(second, server: store)
+    # An expired lease must stop pinning capacity. Poll for that rather than
+    # assuming one fixed sleep always outlives the lease: expiry is only
+    # evaluated lazily inside `register`, and a loaded machine can delay either
+    # side of a bare sleep/expiry comparison.
+    assert_eventually(fn -> ManifestStore.register(second, server: store) == :ok end)
     assert %{active_leases: 0, count: 1} = ManifestStore.diagnostics(server: store)
   end
 
@@ -232,5 +235,17 @@ defmodule FavnRunner.ManifestStoreTest do
         name: :asset
       }
     ]
+  end
+
+  defp assert_eventually(fun, attempts \\ 100)
+  defp assert_eventually(_fun, 0), do: flunk("condition did not become true")
+
+  defp assert_eventually(fun, attempts) do
+    if fun.() do
+      :ok
+    else
+      Process.sleep(10)
+      assert_eventually(fun, attempts - 1)
+    end
   end
 end

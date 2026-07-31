@@ -1472,10 +1472,12 @@ defmodule FavnRunner.RunnerAgentTest do
 
   test "killing an asset executor also terminates its owned customer-code worker" do
     :ok = FavnRunner.TaskResultBuffer.reset()
+    Application.put_env(:favn_runner, :announcing_asset_owner, self())
+    on_exit(fn -> Application.delete_env(:favn_runner, :announcing_asset_owner) end)
 
     asset = %Favn.Manifest.Asset{
-      ref: {__MODULE__.SlowAsset, :asset},
-      module: __MODULE__.SlowAsset,
+      ref: {__MODULE__.AnnouncingAsset, :asset},
+      module: __MODULE__.AnnouncingAsset,
       name: :asset,
       type: :elixir,
       execution: %{entrypoint: :asset, arity: 1}
@@ -1521,13 +1523,18 @@ defmodule FavnRunner.RunnerAgentTest do
       )
 
     assert_receive {:task_started, %RunnerTask.Started{}, ^agent}, 2_000
+
+    # The worker announces itself from inside the asset body, so it is parked in
+    # an infinite sleep and cannot exit on its own before the kill below.
+    assert_receive {:asset_running, worker}, 2_000
+    worker_monitor = Process.monitor(worker)
+    refute_receive {:DOWN, ^worker_monitor, :process, ^worker, _reason}, 100
+
     assert_eventually(fn -> is_pid(:sys.get_state(agent).executor) end)
     executor = :sys.get_state(agent).executor
-    assert_eventually(fn -> is_pid(:sys.get_state(executor).worker) end)
-    worker = :sys.get_state(executor).worker
+    assert :sys.get_state(executor).worker == worker
 
     executor_monitor = Process.monitor(executor)
-    worker_monitor = Process.monitor(worker)
     Process.exit(executor, :kill)
 
     assert_receive {:DOWN, ^executor_monitor, :process, ^executor, :killed}
@@ -1663,5 +1670,19 @@ defmodule FavnRunner.RunnerAgentTest do
 
   defmodule SlowAsset do
     def asset(_context), do: Process.sleep(:infinity)
+  end
+
+  # Announces the worker process before parking it, so a test can prove the
+  # worker reached the asset body instead of peeking at executor state and
+  # racing a worker that may still exit on its own.
+  defmodule AnnouncingAsset do
+    def asset(_context) do
+      case Application.get_env(:favn_runner, :announcing_asset_owner) do
+        owner when is_pid(owner) -> send(owner, {:asset_running, self()})
+        _other -> :ok
+      end
+
+      Process.sleep(:infinity)
+    end
   end
 end
