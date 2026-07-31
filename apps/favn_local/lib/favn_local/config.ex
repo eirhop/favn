@@ -4,6 +4,7 @@ defmodule FavnLocal.Config do
   alias Favn.RunnerRelease
   alias FavnLocal.SourceRelease
   alias FavnOrchestrator.Auth.ServiceTokens
+  alias FavnOrchestrator.Operator.Audit
   alias FavnStoragePostgres.Config, as: PostgresConfig
   alias FavnView.ApplicationConfig, as: ViewConfig
 
@@ -158,6 +159,15 @@ defmodule FavnLocal.Config do
       enabled: config.scheduler_enabled?,
       tick_ms: 1_000,
       workspace_ids: [config.workspace_id]
+    )
+
+    # Browser mutations record operator command intents, which need this key
+    # even locally. Deriving it from the persisted secret key base keeps
+    # request fingerprints stable across restarts, like production.
+    Application.put_env(
+      :favn_orchestrator,
+      :operator_command_hmac_key,
+      Audit.derive_command_hmac_key(config.view_secret_key_base)
     )
 
     Application.put_env(:favn_orchestrator, :auth_bootstrap_username, "admin")

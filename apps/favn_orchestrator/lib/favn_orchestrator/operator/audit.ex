@@ -19,6 +19,7 @@ defmodule FavnOrchestrator.Operator.Audit do
   alias FavnOrchestrator.Redaction
 
   @retention_seconds 7 * 24 * 60 * 60
+  @fingerprint_key_context "favn.operator-command-request-fingerprint.v1"
 
   @enforce_keys [:operation, :key_hash, :request_fingerprint, :idempotency]
   defstruct [:operation, :key_hash, :request_fingerprint, :idempotency]
@@ -145,6 +146,19 @@ defmodule FavnOrchestrator.Operator.Audit do
       },
       occurred_at: DateTime.utc_now()
     })
+  end
+
+  @doc """
+  Derives the operator command HMAC key from a deployment's secret key base.
+
+  Every boot path that configures `:operator_command_hmac_key` must derive it
+  through this function, so request fingerprints stay comparable across
+  restarts of the same deployment.
+  """
+  @spec derive_command_hmac_key(String.t()) :: binary()
+  def derive_command_hmac_key(secret_key_base)
+      when is_binary(secret_key_base) and byte_size(secret_key_base) >= 32 do
+    :crypto.mac(:hmac, :sha256, secret_key_base, @fingerprint_key_context)
   end
 
   @doc "Builds a stable, bounded resource ID from a persisted operator intent."

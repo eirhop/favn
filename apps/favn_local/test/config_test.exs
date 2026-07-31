@@ -8,6 +8,7 @@ defmodule FavnLocal.ConfigTest do
   alias FavnLocal.Config
   alias FavnLocal.Locator
   alias FavnOrchestrator.Auth.ServiceTokens
+  alias FavnOrchestrator.Operator.Audit
 
   @pin_key Base.encode64(String.duplicate("k", 32))
 
@@ -213,6 +214,9 @@ defmodule FavnLocal.ConfigTest do
              username: "admin",
              capability_hash: ServiceTokens.hash_token(config.service_token)
            }
+
+    assert Application.fetch_env!(:favn_orchestrator, :operator_command_hmac_key) ==
+             Audit.derive_command_hmac_key(config.view_secret_key_base)
 
     assert [
              %{
