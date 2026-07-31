@@ -25,6 +25,7 @@ defmodule FavnView.Components.AssetCataloguePage do
 
   use FavnView, :html
 
+  alias FavnView.AssetCatalogueFilters
   alias FavnView.Components.AppShell
   alias FavnView.Components.LineagePage
   alias FavnView.Components.ModeRail
@@ -38,6 +39,11 @@ defmodule FavnView.Components.AssetCataloguePage do
   attr :nav_items, :list, required: true
   attr :connection_options, :list, required: true
   attr :catalogue_options, :list, required: true
+
+  attr :scope_choices, :list,
+    required: true,
+    doc: "see `FavnView.AssetCatalogueFilters.scope_choices/2`"
+
   attr :flash, :map, default: %{}
   attr :lineage_graph, :any, default: nil
   attr :lineage_inspector, :any, default: nil
@@ -58,45 +64,49 @@ defmodule FavnView.Components.AssetCataloguePage do
       content_scroll?={@active_mode != :lineage}
     >
       <div
-        class={[
-          "mx-auto flex w-full max-w-[120rem] flex-1 flex-col",
-          @active_mode == :lineage && "min-h-0 pb-20 lg:pb-0",
-          @active_mode != :lineage && "pb-24 lg:pb-0"
-        ]}
+        class={
+          [
+            "mx-auto flex w-full max-w-[120rem] flex-1 flex-col",
+            @active_mode == :lineage && "min-h-0 pb-20 lg:pb-0",
+            # `lg:min-h-0` is what lets the panel stop growing, so the table's own
+            # region scrolls and its header pins. Without it the whole page grows
+            # and the shell scrolls instead, taking the header with it.
+            @active_mode != :lineage && "pb-24 lg:min-h-0 lg:pb-0"
+          ]
+        }
         data-testid="asset-catalogue-page"
       >
         <.loading_state :if={@loading} label="Loading assets" />
-
         <.error_state
           :if={!@loading && @error}
           title="Could not load assets"
           description={@error}
           data-testid="asset-error-state"
         />
+        <div
+          :if={!@loading && !@error && @active_mode == :list}
+          class="flex flex-col lg:min-h-0 lg:flex-1"
+        >
+          <.table_panel count={length(@assets)} count_label="assets" data-testid="assets-panel">
+            <:toolbar>
+              <.asset_filters
+                filters={@filters}
+                connection_options={@connection_options}
+                catalogue_options={@catalogue_options}
+                scope_choices={@scope_choices}
+              />
+            </:toolbar>
 
-        <.stack :if={!@loading && !@error && @active_mode == :list} gap={{:md, :lg}}>
-          <div id="asset-filters" data-testid="asset-filters">
-            <.asset_filters
-              filters={@filters}
-              connection_options={@connection_options}
-              catalogue_options={@catalogue_options}
-            />
-          </div>
-
-          <.empty_state
-            :if={@assets == []}
-            title="No assets found"
-            description="Try changing the search or filters."
-            icon="hero-magnifying-glass"
-            data-testid="asset-empty-state"
-          />
-
-          <.panel :if={@assets != []} class="hidden overflow-hidden lg:block">
-            <.asset_table assets={sorted_assets(@assets)} />
-          </.panel>
-
-          <.asset_card_list :if={@assets != []} assets={sorted_assets(@assets)} />
-        </.stack>
+            <.empty_state
+              :if={@assets == []}
+              title="No assets found"
+              description="Try changing the search or filters."
+              icon="hero-magnifying-glass"
+              data-testid="asset-empty-state"
+            /> <.asset_table :if={@assets != []} assets={sorted_assets(@assets)} />
+            <.asset_card_list :if={@assets != []} assets={sorted_assets(@assets)} />
+          </.table_panel>
+        </div>
 
         <LineagePage.lineage_explorer
           :if={!@loading && !@error && @active_mode == :lineage}
@@ -125,33 +135,47 @@ defmodule FavnView.Components.AssetCataloguePage do
   attr :filters, :map, required: true
   attr :connection_options, :list, required: true
   attr :catalogue_options, :list, required: true
+  attr :scope_choices, :list, required: true
 
   def asset_filters(assigns) do
     ~H"""
-    <.filter_bar on_change="filter_assets">
-      <.search_field
-        id="asset-search"
-        name="filters[search]"
-        label="Search assets"
-        value={@filters.search}
-      />
-      <.select_field
-        id="connection-filter"
-        name="filters[connection]"
-        label="Connection filter"
-        icon="hero-circle-stack"
-        options={@connection_options}
-        value={@filters.connection}
-      />
-      <.select_field
-        id="catalogue-filter"
-        name="filters[catalogue]"
-        label="Catalogue filter"
-        icon="hero-folder"
-        options={@catalogue_options}
-        value={@filters.catalogue}
-      />
-    </.filter_bar>
+    <.table_toolbar
+      on_change="filter_assets"
+      filters_id="asset-filters"
+      on_clear="clear_filters"
+      adjusted?={AssetCatalogueFilters.narrowed?(@filters)}
+      search_name="filters[search]"
+      search_label="Search assets"
+      search_value={@filters.search}
+    >
+      <:scopes>
+        <.scope_rail
+          label="Asset state"
+          choices={@scope_choices}
+          on_select="set_scope"
+          data-testid="asset-scopes"
+        />
+      </:scopes>
+
+      <:filters>
+        <.select_field
+          id="connection-filter"
+          name="filters[connection]"
+          label="Connection filter"
+          icon="hero-circle-stack"
+          options={@connection_options}
+          value={@filters.connection}
+        />
+        <.select_field
+          id="catalogue-filter"
+          name="filters[catalogue]"
+          label="Catalogue filter"
+          icon="hero-folder"
+          options={@catalogue_options}
+          value={@filters.catalogue}
+        />
+      </:filters>
+    </.table_toolbar>
     """
   end
 
@@ -196,35 +220,40 @@ defmodule FavnView.Components.AssetCataloguePage do
       rows={@assets}
       row_testid="asset-row"
       row_navigate={&~p"/assets/#{asset_route_id(&1)}"}
+      fill?
       data-testid="asset-table"
     >
-      <:col :let={asset} label="Asset">
-        <.link
-          navigate={~p"/assets/#{asset_route_id(asset)}"}
-          class="flex items-center gap-3 font-medium text-base-content focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-primary"
-        >
-          <span class="flex size-8 items-center justify-center rounded-field border border-primary/25 bg-primary/10 text-primary">
+      <:col :let={asset} label="Asset" class="w-80">
+        <div class="flex min-w-0 items-center gap-3">
+          <span class="flex size-8 shrink-0 items-center justify-center rounded-field border border-primary/25 bg-primary/10 text-primary">
             <.icon name={asset_type_icon(asset.type)} />
           </span>
-          {asset.name}
-        </.link>
+
+          <.stacked_cell
+            primary={asset.name}
+            secondary={asset.type}
+            navigate={~p"/assets/#{asset_route_id(asset)}"}
+          />
+        </div>
       </:col>
-      <:col :let={asset} label="Namespace">
+
+      <:col :let={asset} label="Namespace" class="w-64">
         <span
-          class="inline-flex items-center gap-1.5 font-mono text-xs"
+          class="inline-flex min-w-0 items-center gap-1.5 font-mono text-xs"
           data-testid="asset-namespace"
         >
           <.connection_icon connection={asset.connection} size={:sm} class="text-secondary" />
-          <span class="text-secondary">{asset.connection}</span>
+          <span class="truncate text-secondary">{asset.connection}</span>
           <span class="favn-text-subtle">·</span>
-          <span class="text-accent">{asset.catalogue}</span>
+          <span class="truncate text-accent">{asset.catalogue}</span>
         </span>
       </:col>
-      <:col :let={asset} label="Type" class="favn-text-muted">{asset.type}</:col>
-      <:col :let={asset} label="State">
+
+      <:col :let={asset} label="State" class="w-28">
         <.asset_state_icons asset={asset} />
       </:col>
-      <:col :let={asset} label="Last run" class="favn-text-muted">{asset.last_run_label}</:col>
+
+      <:col :let={asset} label="Last run" class="w-32 favn-text-muted">{asset.last_run_label}</:col>
     </.data_table>
     """
   end
@@ -237,7 +266,7 @@ defmodule FavnView.Components.AssetCataloguePage do
 
   def asset_card_list(assigns) do
     ~H"""
-    <.stack gap={:sm} class={["lg:hidden", @class]} data-testid="asset-card-list">
+    <.stack gap={:sm} class={["p-3 lg:hidden", @class]} data-testid="asset-card-list">
       <.asset_card :for={asset <- @assets} asset={asset} />
     </.stack>
     """
@@ -257,8 +286,10 @@ defmodule FavnView.Components.AssetCataloguePage do
             <span class="favn-density-list-card-icon flex shrink-0 items-center justify-center rounded-field border border-secondary/30 bg-secondary/10">
               <.connection_icon connection={@asset.connection} class="text-secondary" />
             </span>
+
             <div class="min-w-0">
               <.section_title>{@asset.name}</.section_title>
+
               <p class="truncate font-mono text-xs">
                 <span class="text-secondary">{@asset.connection}</span>
                 <span class="favn-text-subtle">·</span>
@@ -267,9 +298,9 @@ defmodule FavnView.Components.AssetCataloguePage do
               </p>
             </div>
           </div>
+
           <.inline gap={:sm} class="text-xs favn-text-muted">
-            <.asset_state_icons asset={@asset} />
-            <span>{@asset.last_run_label}</span>
+            <.asset_state_icons asset={@asset} /> <span>{@asset.last_run_label}</span>
           </.inline>
         </div>
         <.icon name="hero-chevron-right" size={:md} class="mt-2 shrink-0 favn-text-muted" />

@@ -183,18 +183,11 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.Schedules do
   end
 
   @doc """
-  The list summary counted from `entries`, the way the LiveView counts it.
+  The scope choices counted from `entries`, the way the LiveView counts them.
   """
-  @spec summary([map()]) :: map()
-  def summary(entries \\ list()) do
-    %{
-      total: length(entries),
-      enabled: Enum.count(entries, &(&1.activation_state == :enabled)),
-      pending_activation: Enum.count(entries, &(&1.activation_state == :pending_activation)),
-      disabled: Enum.count(entries, &(&1.activation_state == :disabled)),
-      running: Enum.count(entries, &(&1.runtime_state == :running)),
-      queued: Enum.count(entries, &(&1.runtime_state == :queued))
-    }
+  @spec scope_choices([map()]) :: [map()]
+  def scope_choices(entries \\ list()) do
+    FavnView.ScheduleFilters.scope_choices(entries, filters())
   end
 
   @doc "The list filters in their default, nothing-selected state."

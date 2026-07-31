@@ -22,7 +22,10 @@ defmodule FavnView.Components.PipelinesPage do
       subtitle="Monitor active manifest pipelines"
       nav_items={@nav_items}
     >
-      <div class="mx-auto w-full max-w-[120rem] pb-24 lg:pb-0" data-testid="pipelines-page">
+      <div
+        class="mx-auto flex w-full max-w-[120rem] flex-col pb-24 lg:min-h-0 lg:flex-1 lg:pb-0"
+        data-testid="pipelines-page"
+      >
         <.loading_state :if={@loading} label="Loading pipelines" />
         <.error_state
           :if={!@loading && @error}
@@ -30,26 +33,25 @@ defmodule FavnView.Components.PipelinesPage do
           description={@error}
           data-testid="pipelines-error-state"
         />
-        <div :if={!@loading && !@error} class="space-y-3.5 lg:space-y-5">
-          <div id="pipeline-filters" data-testid="pipeline-filters">
-            <.pipeline_filters filters={@filters} status_options={@status_options} />
-          </div>
-
-          <.empty_state
-            :if={@pipelines == []}
-            title="No pipelines found"
-            description="Try changing the search or health filter."
-            icon="hero-queue-list"
-            data-testid="pipelines-empty-state"
-          />
-          <.panel
-            :if={@pipelines != []}
-            padding={:none}
-            class="hidden overflow-visible p-5 sm:p-6 lg:block"
+        <div :if={!@loading && !@error} class="flex flex-col lg:min-h-0 lg:flex-1">
+          <.table_panel
+            count={length(@pipelines)}
+            count_label="pipelines"
+            data-testid="pipelines-panel"
           >
-            <.pipeline_table pipelines={@pipelines} />
-          </.panel>
-          <.pipeline_card_list :if={@pipelines != []} pipelines={@pipelines} />
+            <:toolbar>
+              <.pipeline_filters filters={@filters} status_options={@status_options} />
+            </:toolbar>
+
+            <.empty_state
+              :if={@pipelines == []}
+              title="No pipelines found"
+              description="Try changing the search or health filter."
+              icon="hero-queue-list"
+              data-testid="pipelines-empty-state"
+            /> <.pipeline_table :if={@pipelines != []} pipelines={@pipelines} />
+            <.pipeline_card_list :if={@pipelines != []} pipelines={@pipelines} />
+          </.table_panel>
         </div>
       </div>
     </AppShell.app_shell>
@@ -61,96 +63,87 @@ defmodule FavnView.Components.PipelinesPage do
 
   def pipeline_filters(assigns) do
     ~H"""
-    <.filter_bar on_change="filter_pipelines" class="lg:grid-cols-[1fr_12rem]">
-      <.search_field
-        id="pipeline-search"
-        name="filters[search]"
-        label="Search pipelines"
-        placeholder="Search pipelines or selected assets"
-        value={@filters.search}
-      />
-      <.select_field
-        id="pipeline-status-filter"
-        name="filters[status]"
-        label="Health filter"
-        icon="hero-heart"
-        options={@status_options}
-        value={@filters.status}
-      />
-    </.filter_bar>
+    <.table_toolbar
+      on_change="filter_pipelines"
+      filters_id="pipeline-filters"
+      on_clear="clear_filters"
+      adjusted?={narrowed?(@filters)}
+      search_name="filters[search]"
+      search_label="Search pipelines"
+      search_placeholder="Search pipelines or selected assets"
+      search_value={@filters.search}
+    >
+      <:filters>
+        <.select_field
+          id="pipeline-status-filter"
+          name="filters[status]"
+          label="Health filter"
+          icon="hero-heart"
+          options={@status_options}
+          value={@filters.status}
+        />
+      </:filters>
+    </.table_toolbar>
     """
   end
 
+  @doc """
+  Desktop table of pipelines, on the shared list-screen standard.
+
+  Deps and window used to be two columns of repeated words; they qualify the
+  cadence rather than answering a question of their own, so they now sit under
+  the window value in one cell and give the width back to the asset selection.
+  """
   attr :pipelines, :list, required: true
 
   def pipeline_table(assigns) do
     ~H"""
-    <div class="overflow-x-auto overflow-y-visible p-5 sm:p-6">
-      <table class="table table-lg" data-testid="pipelines-table">
-        <thead>
-          <tr class="border-base-content/10 favn-text-muted">
-            <th class="font-medium">Pipeline</th>
-
-            <th class="font-medium">Deps</th>
-
-            <th class="font-medium">Window</th>
-
-            <th class="font-medium">Selected assets</th>
-
-            <th class="font-medium">Health</th>
-
-            <th class="font-medium">Last run</th>
-
-            <th class="font-medium">Runtime</th>
-          </tr>
-        </thead>
-
-        <tbody>
-          <.pipeline_table_row :for={pipeline <- @pipelines} pipeline={pipeline} />
-        </tbody>
-      </table>
-    </div>
-    """
-  end
-
-  attr :pipeline, :map, required: true
-
-  def pipeline_table_row(assigns) do
-    ~H"""
-    <tr class="group border-base-content/10 transition hover:bg-primary/10" data-testid="pipeline-row">
-      <td>
-        <.link
-          navigate={~p"/pipelines/#{FavnView.AssetRoute.to_param(@pipeline.id)}"}
-          class="flex items-center gap-3 font-medium text-base-content"
-        >
-          <span class="flex size-8 items-center justify-center rounded-field border border-primary/25 bg-primary/10 text-primary">
+    <.data_table
+      id="pipelines-table"
+      rows={@pipelines}
+      row_testid="pipeline-row"
+      row_navigate={&~p"/pipelines/#{FavnView.AssetRoute.to_param(&1.id)}"}
+      fill?
+      data-testid="pipelines-table"
+    >
+      <:col :let={pipeline} label="Pipeline" class="w-72">
+        <div class="flex min-w-0 items-center gap-3">
+          <span class="flex size-8 shrink-0 items-center justify-center rounded-field border border-primary/25 bg-primary/10 text-primary">
             <.icon name="hero-queue-list" class="size-4" />
           </span>
 
-          <div class="min-w-0">
-            <p class="truncate">{@pipeline.name}</p>
+          <.stacked_cell
+            primary={pipeline.name}
+            secondary={pipeline.label}
+            navigate={~p"/pipelines/#{FavnView.AssetRoute.to_param(pipeline.id)}"}
+          />
+        </div>
+      </:col>
 
-            <p class="truncate text-xs font-normal favn-text-subtle" title={@pipeline.label}>
-              {@pipeline.label}
-            </p>
-          </div>
-        </.link>
-      </td>
+      <:col :let={pipeline} label="Window" class="w-40">
+        <.stacked_cell
+          primary={pipeline.window_label}
+          secondary={pipeline.dependencies_label}
+          tone={:muted}
+        />
+      </:col>
 
-      <td class="whitespace-nowrap favn-text-muted">{@pipeline.dependencies_label}</td>
+      <:col :let={pipeline} label="Selected assets" class="min-w-56 max-w-80">
+        <.selected_assets pipeline={pipeline} />
+      </:col>
 
-      <td class="whitespace-nowrap favn-text-muted">{@pipeline.window_label}</td>
+      <:col :let={pipeline} label="Health" class="w-28">
+        <.status_badge tone={pipeline.status} label={status_label(pipeline.status)} />
+      </:col>
 
-      <td class="min-w-56 max-w-80">
-        <.selected_assets pipeline={@pipeline} />
-      </td>
-
-      <td><.status_badge tone={@pipeline.status} label={status_label(@pipeline.status)} /></td>
-
-      <td class="whitespace-nowrap favn-text-muted">{@pipeline.last_run_label}</td>
-
-      <td class="whitespace-nowrap favn-text-muted">{@pipeline.runtime_label}</td>
-    </tr>
+      <:col :let={pipeline} label="Last run" class="w-32">
+        <.stacked_cell
+          primary={pipeline.last_run_label}
+          secondary={pipeline.runtime_label}
+          tone={:muted}
+        />
+      </:col>
+    </.data_table>
     """
   end
 
@@ -158,7 +151,7 @@ defmodule FavnView.Components.PipelinesPage do
 
   def pipeline_card_list(assigns) do
     ~H"""
-    <div class="space-y-2.5 lg:hidden" data-testid="pipeline-card-list">
+    <div class="space-y-2.5 p-3 lg:hidden" data-testid="pipeline-card-list">
       <.pipeline_card :for={pipeline <- @pipelines} pipeline={pipeline} />
     </div>
     """
@@ -207,6 +200,15 @@ defmodule FavnView.Components.PipelinesPage do
     """
   end
 
+  @doc """
+  What the pipeline resolves to: the first asset, and how many follow.
+
+  A hover dropdown listing every asset used to live here. It cannot survive the
+  shared table, whose header pins because the rows scroll — a scroll region clips
+  any panel escaping its bounds. The runs table answers the same question with
+  the first name plus a count, and the whole list stays reachable as a tooltip,
+  so that is what this does. The pipeline's own page lists the assets in full.
+  """
   attr :pipeline, :map, required: true
 
   def selected_assets(%{pipeline: %{selected_assets: []}} = assigns) do
@@ -215,45 +217,17 @@ defmodule FavnView.Components.PipelinesPage do
     """
   end
 
-  def selected_assets(%{pipeline: %{selected_assets: [_single]}} = assigns) do
-    ~H"""
-    <p
-      class="truncate text-sm font-medium text-base-content"
-      title={List.first(@pipeline.selected_assets)}
-    >
-      {List.first(@pipeline.selected_assets)}
-    </p>
-    """
-  end
-
   def selected_assets(assigns) do
     ~H"""
-    <details class="dropdown dropdown-hover dropdown-bottom">
-      <summary class="list-none marker:content-none">
-        <span class="inline-flex max-w-full cursor-default items-center gap-2 align-middle">
-          <span
-            class="truncate text-sm font-medium text-base-content"
-            title={List.first(@pipeline.selected_assets)}
-          >
-            {List.first(@pipeline.selected_assets)}
-          </span>
+    <div class="flex min-w-0 items-center gap-2" title={Enum.join(@pipeline.selected_assets, ", ")}>
+      <span class="truncate text-sm font-medium text-base-content">
+        {List.first(@pipeline.selected_assets)}
+      </span>
 
-          <span class="badge badge-xs badge-soft badge-info shrink-0">
-            +{length(@pipeline.selected_assets) - 1}
-          </span>
-        </span>
-      </summary>
-
-      <div class="dropdown-content z-50 mt-2 w-80 rounded-box border border-base-content/10 bg-base-100 p-3 shadow-xl">
-        <p class="mb-2 text-xs font-medium uppercase tracking-[0.2em] favn-text-subtle">
-          Selected assets
-        </p>
-
-        <ul class="space-y-1 text-xs favn-text-muted">
-          <li :for={asset <- @pipeline.selected_assets} class="truncate" title={asset}>{asset}</li>
-        </ul>
-      </div>
-    </details>
+      <span :if={length(@pipeline.selected_assets) > 1} class="shrink-0 text-xs favn-text-subtle">
+        +{length(@pipeline.selected_assets) - 1} more
+      </span>
+    </div>
     """
   end
 
@@ -292,6 +266,22 @@ defmodule FavnView.Components.PipelinesPage do
 
   def status_options do
     [{"Health", "all"}, {"Healthy", "healthy"}, {"Running", "running"}, {"Failed", "failed"}]
+  end
+
+  @doc """
+  Whether anything narrows the list beyond its default view.
+
+  ## Examples
+
+      iex> FavnView.Components.PipelinesPage.narrowed?(%{search: "", status: "all"})
+      false
+
+      iex> FavnView.Components.PipelinesPage.narrowed?(%{search: "", status: "failed"})
+      true
+  """
+  @spec narrowed?(map()) :: boolean()
+  def narrowed?(filters) do
+    String.trim(to_string(filters.search)) != "" or filters.status != "all"
   end
 
   def nav_items(active \\ :pipelines), do: Navigation.items(active)
