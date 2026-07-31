@@ -177,7 +177,8 @@ supported by this release.
 | `FAVN_VIEW_SECRET_KEY_BASE` | Required secret of at least 64 bytes. |
 | `FAVN_VIEW_BIND_HOST` | IPv4 bind address, default `0.0.0.0`. Unified boot freezes this address for container health probes; wildcard maps to loopback. |
 | `FAVN_VIEW_PORT` | `1..65535`, default `4000`. |
-| `FAVN_VIEW_TRUSTED_PROXY_CIDRS` | Required comma-separated private IPv4/IPv6 proxy allowlist, maximum 32 entries. |
+| `FAVN_VIEW_TRUSTED_PROXY_CIDRS` | Required comma-separated canonical private IPv4/IPv6 proxy allowlist, maximum 32 entries. Prefer exact `/32` or `/128` peers; wider subnets emit a startup warning. |
+| `FAVN_VIEW_FORWARDED_FOR_POLICY` | `replace`, `append`, or `ignore`; default `replace`. Describes how an authorized proxy represents the client address. |
 | `FAVN_VIEW_AUTH_MODE` | `password` (default) or `azure_container_apps_entra`. The selected mode is frozen at startup. |
 | `FAVN_VIEW_ENTRA_TENANT_ID` | Required UUID in Entra mode. Only principals from this immutable tenant are accepted; diagnostics redact it. |
 | `FAVN_VIEW_ENTRA_WORKSPACE_ID` | Required Favn workspace for initial Entra sign-in; diagnostics redact it. |
@@ -188,11 +189,15 @@ supported by this release.
 | `FAVN_HTTP_BODY_LIMIT_BYTES` | Ordinary request-body limit `64 KiB..8 MiB`, default `1 MiB`. Manifest publication keeps its separate limits. |
 
 Only an immediate peer inside `FAVN_VIEW_TRUSTED_PROXY_CIDRS` may supply
-`X-Forwarded-For`, `Host`, `Port`, or `Proto`. Favn strips those headers from
-untrusted peers before routing. The reverse proxy must terminate TLS, forward
-LiveView WebSocket upgrades, remove client-supplied forwarded headers, and have
-no public route to the orchestrator API, EPMD, BEAM distribution, or PostgreSQL.
-The complete exposure and trusted-network checklist is
+forwarded client IP or scheme. `replace` requires one exact
+`X-Forwarded-For` value. `append` trusts only the rightmost value in a bounded
+chain. `ignore` retains the immediate peer. Favn strips `Forwarded`,
+`X-Forwarded-For`, `X-Forwarded-Host`, `X-Forwarded-Port`, and
+`X-Forwarded-Proto` before routing and never uses forwarded host or port; the
+fixed public origin controls redirects. The reverse proxy must terminate TLS,
+forward LiveView WebSocket upgrades, and have no public route to the
+orchestrator API, EPMD, BEAM distribution, or PostgreSQL. The complete exposure
+and trusted-network checklist is
 [`network_and_proxy.md`](network_and_proxy.md).
 
 The Entra mode is specific to Azure Container Apps Easy Auth. Configure the

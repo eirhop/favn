@@ -13,8 +13,8 @@ This example proves Favn's production deployment contracts on one Docker host:
   `0 -> 3 -> 2 -> 1 -> 0`.
 
 This is a qualification harness, not a production platform template. The
-generated certificates expire after seven days, the View has no HTTPS reverse
-proxy, credentials live in an ignored local file, and the scaler has
+generated certificates expire after seven days, Caddy uses a disposable local
+CA, credentials live in an ignored local file, and the scaler has
 root-equivalent access to the local Docker daemon. Kubernetes/KEDA, Azure
 Container Apps, ECS, Nomad, or another production scheduler must implement the
 same [provider-neutral demand contract](../README.md).
@@ -28,7 +28,7 @@ than replacing it.
 
 - Docker Engine or Docker Desktop with Linux containers and Compose;
 - a POSIX-compatible shell; and
-- free loopback ports `4173` and `4101`.
+- free loopback ports `4173`, `4101`, and `4443`.
 
 The first build downloads base images and Hex dependencies and can take several
 minutes. Run every command from this directory.
@@ -72,9 +72,35 @@ docker compose --env-file .env.local --project-name favn-elastic-simulation -f c
 docker compose --env-file .env.local --project-name favn-elastic-simulation -f compose.yml logs runner
 ```
 
-The View is reachable at `http://127.0.0.1:4173`. Its configured public origin
-is HTTPS because that is the production contract; this harness intentionally
-does not claim reverse-proxy or browser-session qualification.
+The direct View listener is reachable only on loopback at
+`http://127.0.0.1:4173`. The optional proxy-security profile exposes the real
+HTTPS edge on `https://127.0.0.1:4443` with the expected host
+`favn.localhost`. Its certificate chains to a disposable local CA and is not
+for browser use.
+
+## Run the trusted-proxy security check
+
+```sh
+sh ./run-trusted-proxy-security.sh
+```
+
+This focused, production-image check starts real Caddy and gives it the exact
+trusted address `172.31.58.2/32`. A second container on the same network has a
+different address and acts as an untrusted peer. The check records stable
+assertions in `proxy-security-results/trusted-proxy-security.json`:
+
+- `TP-001`: HTTPS through the proxy reaches View without a redirect loop.
+- `TP-002`: a one-shot upstream receiver captures the actual proxy request and
+  proves that Caddy removed forged forwarding identity and wrote its own.
+- `TP-003`: a non-proxy peer cannot use forwarding headers to make direct
+  plaintext HTTP appear HTTPS.
+- `TP-004`: the redirect authority remains the configured public origin, not
+  a forged host.
+
+The application tests add bounded malformed-chain cases and verify that
+standard `Forwarded` plus every consumed `X-Forwarded-*` header is removed.
+Run `cleanup.sh` before or after this check when the named Compose project
+already contains containers.
 
 ## How scaling is simulated
 
@@ -185,7 +211,7 @@ qualify:
 - KEDA or any managed provider's polling and job-accounting behavior;
 - private cloud networking, registry policy, secret stores, or certificate
   rotation;
-- HTTPS ingress, trusted proxies, or browser sessions; or
+- browser sessions or managed-platform ingress behavior; or
 - DuckDB data-plane durability across disposable runner containers.
 
 Those remain target-environment tests. Do not use local success as a production

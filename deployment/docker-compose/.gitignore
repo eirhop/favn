@@ -2,4 +2,5 @@
 .env.local.tmp
 simulation-results/
 qualification-results/
+proxy-security-results/
 .qualification-active

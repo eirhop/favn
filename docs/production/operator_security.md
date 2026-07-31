@@ -178,12 +178,12 @@ redirected to HTTPS.
   production-artifact check are the gate for this change.
 - The first external identity adapter is intentionally limited to
   single-tenant Microsoft Entra through Azure Container Apps Easy Auth.
-- Forwarded scheme and client-address headers are trusted when the immediate
-  peer is inside the configured trusted-proxy CIDRs. The manual check confirmed
-  that a peer in an overly broad trusted Docker CIDR can therefore claim HTTPS
-  with `X-Forwarded-Proto`. Production must restrict those CIDRs and network
-  access to the actual edge proxies. Spoofing acceptance and hardened guidance
-  are tracked in [#581](https://github.com/eirhop/favn/issues/581).
+- Forwarded scheme and client-address headers are accepted only from an
+  authorized immediate peer. Exact peers are preferred; wider private subnets
+  produce a startup warning and require exclusive network routing. CIDR trust
+  is network authorization, not cryptographic proxy authentication. Use an
+  isolated hop, a local sidecar, or authenticated transport for deployments
+  where other workloads could enter the trusted network.
 - The supported topology is one control-plane BEAM. Login throttling and
   immediate PubSub disconnect are node-local; the durable authorization check
   remains PostgreSQL-backed.

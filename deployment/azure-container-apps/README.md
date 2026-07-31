@@ -26,6 +26,27 @@ the same pinned Key Vault secret version); otherwise KEDA demand reads fail
 closed. `runnerPools` is the JSON lifecycle-policy map and must contain every
 pool deployed as a runner job.
 
+The web proxy settings are generic and must match the actual ingress behavior:
+
+```text
+viewTrustedProxyCidrs=<canonical private source CIDR>
+viewForwardedForPolicy=replace|append|ignore
+```
+
+Use `replace` when the last proxy removes incoming forwarding headers and
+writes one client address. Use `append` only if the actual ingress appends the
+address it observed to the right of any incoming chain; Favn ignores earlier
+entries. Use `ignore` if the application does not need the original client IP.
+Exact `/32` or `/128` peers are safest. A changing managed-ingress source may
+require a private subnet, but every workload in that subnet is then authorized
+to claim HTTPS. Restrict the View port to ingress sources and verify the source
+range and header behavior in the deployed environment.
+
+These settings do not expose the View listener by themselves. This reference
+currently routes private ingress to the orchestrator API on port `4101`, not
+the operator View on port `4000`; add and qualify a separate private operator
+route before treating it as an operator deployment.
+
 The template deliberately has no administrator bootstrap secret. After
 database migration and workspace provisioning, run the one-time interactive
 bootstrap operation documented in

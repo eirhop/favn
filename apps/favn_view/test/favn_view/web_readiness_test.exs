@@ -1,6 +1,8 @@
 defmodule FavnView.WebReadinessTest do
   use FavnView.ConnCase, async: false
 
+  import ExUnit.CaptureLog
+
   alias FavnView.ProductionRuntimeConfig
   alias FavnView.Readiness
 
@@ -177,7 +179,7 @@ defmodule FavnView.WebReadinessTest do
              ProductionRuntimeConfig.validate(%{
                "FAVN_VIEW_PUBLIC_ORIGIN" => "https://favn.example.com",
                "FAVN_VIEW_SECRET_KEY_BASE" => @secret_key_base,
-               "FAVN_VIEW_TRUSTED_PROXY_CIDRS" => "10.0.0.0/8,127.0.0.1/32",
+               "FAVN_VIEW_TRUSTED_PROXY_CIDRS" => "10.42.0.5/32,127.0.0.1/32",
                "FAVN_VIEW_ORCHESTRATOR_READINESS_TIMEOUT_MS" => "250"
              })
 
@@ -186,6 +188,7 @@ defmodule FavnView.WebReadinessTest do
     assert config.bind_host == "0.0.0.0"
     assert config.port == 4_000
     assert length(config.trusted_proxy_cidrs) == 2
+    assert config.forwarded_for_policy == :replace
 
     assert {:error, %{error: {:invalid_env, "FAVN_VIEW_PUBLIC_ORIGIN", _expected}}} =
              ProductionRuntimeConfig.validate(%{
@@ -278,7 +281,7 @@ defmodule FavnView.WebReadinessTest do
              ProductionRuntimeConfig.apply_from_env(%{
                "FAVN_VIEW_PUBLIC_ORIGIN" => "https://favn.example.com",
                "FAVN_VIEW_SECRET_KEY_BASE" => @secret_key_base,
-               "FAVN_VIEW_TRUSTED_PROXY_CIDRS" => "10.0.0.0/8",
+               "FAVN_VIEW_TRUSTED_PROXY_CIDRS" => "10.42.0.5/32",
                "FAVN_VIEW_ORCHESTRATOR_READINESS_TIMEOUT_MS" => "250"
              })
 
@@ -315,7 +318,7 @@ defmodule FavnView.WebReadinessTest do
              ProductionRuntimeConfig.validate(%{
                "FAVN_VIEW_PUBLIC_ORIGIN" => "https://favn.example.com",
                "FAVN_VIEW_SECRET_KEY_BASE" => @secret_key_base,
-               "FAVN_VIEW_TRUSTED_PROXY_CIDRS" => "10.0.0.0/8"
+               "FAVN_VIEW_TRUSTED_PROXY_CIDRS" => "10.42.0.5/32"
              })
 
     Application.put_env(
@@ -328,7 +331,7 @@ defmodule FavnView.WebReadinessTest do
              ProductionRuntimeConfig.validate(%{
                "FAVN_VIEW_PUBLIC_ORIGIN" => "https://favn.example.com",
                "FAVN_VIEW_SECRET_KEY_BASE" => @secret_key_base,
-               "FAVN_VIEW_TRUSTED_PROXY_CIDRS" => "10.0.0.0/8"
+               "FAVN_VIEW_TRUSTED_PROXY_CIDRS" => "10.42.0.5/32"
              })
 
     Application.put_env(
@@ -341,7 +344,7 @@ defmodule FavnView.WebReadinessTest do
              ProductionRuntimeConfig.validate(%{
                "FAVN_VIEW_PUBLIC_ORIGIN" => "https://favn.example.com",
                "FAVN_VIEW_SECRET_KEY_BASE" => @secret_key_base,
-               "FAVN_VIEW_TRUSTED_PROXY_CIDRS" => "10.0.0.0/8"
+               "FAVN_VIEW_TRUSTED_PROXY_CIDRS" => "10.42.0.5/32"
              })
   end
 
@@ -349,12 +352,27 @@ defmodule FavnView.WebReadinessTest do
     base = %{
       "FAVN_VIEW_PUBLIC_ORIGIN" => "https://favn.example.com",
       "FAVN_VIEW_SECRET_KEY_BASE" => @secret_key_base,
-      "FAVN_VIEW_TRUSTED_PROXY_CIDRS" => "10.0.0.0/8"
+      "FAVN_VIEW_TRUSTED_PROXY_CIDRS" => "10.42.0.5/32"
     }
 
     assert {:error, %{error: {:invalid_env, "FAVN_VIEW_TRUSTED_PROXY_CIDRS", _expected}}} =
              base
              |> Map.put("FAVN_VIEW_TRUSTED_PROXY_CIDRS", "203.0.113.0/24")
+             |> ProductionRuntimeConfig.validate()
+
+    assert {:error, %{error: {:invalid_env, "FAVN_VIEW_TRUSTED_PROXY_CIDRS", _expected}}} =
+             base
+             |> Map.put("FAVN_VIEW_TRUSTED_PROXY_CIDRS", "10.42.0.5/24")
+             |> ProductionRuntimeConfig.validate()
+
+    assert {:error, %{error: {:invalid_env, "FAVN_VIEW_TRUSTED_PROXY_CIDRS", _expected}}} =
+             base
+             |> Map.put("FAVN_VIEW_TRUSTED_PROXY_CIDRS", "fd00::1/64")
+             |> ProductionRuntimeConfig.validate()
+
+    assert {:error, %{error: {:invalid_env, "FAVN_VIEW_FORWARDED_FOR_POLICY", _expected}}} =
+             base
+             |> Map.put("FAVN_VIEW_FORWARDED_FOR_POLICY", "leftmost")
              |> ProductionRuntimeConfig.validate()
 
     assert {:error, %{error: {:invalid_env, "FAVN_HTTP_MAX_CONNECTIONS", "1..100000"}}} =
@@ -364,8 +382,59 @@ defmodule FavnView.WebReadinessTest do
 
     assert {:ok, config} = ProductionRuntimeConfig.validate(base)
     :ok = ProductionRuntimeConfig.apply(config)
-    assert ProductionRuntimeConfig.trusted_proxy?({10, 20, 30, 40})
+    assert ProductionRuntimeConfig.forwarded_for_policy() == :replace
+    assert ProductionRuntimeConfig.trusted_proxy?({10, 42, 0, 5})
+    refute ProductionRuntimeConfig.trusted_proxy?({10, 42, 0, 6})
     refute ProductionRuntimeConfig.trusted_proxy?({192, 168, 1, 1})
+
+    assert {:ok, ipv6_config} =
+             base
+             |> Map.put("FAVN_VIEW_TRUSTED_PROXY_CIDRS", "fd00::1/128")
+             |> ProductionRuntimeConfig.validate()
+
+    :ok = ProductionRuntimeConfig.apply(ipv6_config)
+    assert ProductionRuntimeConfig.trusted_proxy?({0xFD00, 0, 0, 0, 0, 0, 0, 1})
+    refute ProductionRuntimeConfig.trusted_proxy?({0xFD00, 0, 0, 0, 0, 0, 0, 2})
+  end
+
+  test "proxy subnet remains valid but is visible in logs and diagnostics" do
+    previous_endpoint = Application.get_env(:favn_view, FavnView.Endpoint)
+    primary_level = :logger.get_primary_config().level
+
+    on_exit(fn ->
+      Application.put_env(:favn_view, FavnView.Endpoint, previous_endpoint)
+      :ok = Logger.configure(level: primary_level)
+    end)
+
+    assert {:ok, config} =
+             ProductionRuntimeConfig.validate(%{
+               "FAVN_VIEW_PUBLIC_ORIGIN" => "https://favn.example.com",
+               "FAVN_VIEW_SECRET_KEY_BASE" => @secret_key_base,
+               "FAVN_VIEW_TRUSTED_PROXY_CIDRS" => "10.42.8.0/24",
+               "FAVN_VIEW_FORWARDED_FOR_POLICY" => "append"
+             })
+
+    diagnostics = ProductionRuntimeConfig.diagnostics(config)
+
+    assert diagnostics.trusted_proxies == %{
+             configured_count: 1,
+             exact_peer_count: 0,
+             subnet_count: 1,
+             forwarded_for_policy: :append,
+             warning_count: 1,
+             warnings: [%{code: :trusted_proxy_subnet, family: :ipv4, prefix: 24}]
+           }
+
+    :ok = Logger.configure(level: :warning)
+
+    log =
+      capture_log([level: :warning], fn ->
+        assert :ok = ProductionRuntimeConfig.apply(config)
+      end)
+
+    assert log =~ "10.42.8.0/24"
+    assert log =~ "network authorization"
+    refute log =~ @secret_key_base
   end
 
   test "production config files do not commit a production secret key base" do

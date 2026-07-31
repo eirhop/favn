@@ -52,6 +52,7 @@ docker run --rm \
       "FAVN_DISTRIBUTION_COOKIE=$(random_base64 48)" \
       "FAVN_VIEW_SECRET_KEY_BASE=$(random_base64 64)" \
       "FAVN_VIEW_HOST_PORT=4173" \
+      "FAVN_PROXY_HOST_PORT=4443" \
       "FAVN_API_HOST_PORT=4101"
   ' >"$temporary_path"
 
