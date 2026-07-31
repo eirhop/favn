@@ -29,13 +29,11 @@ defmodule FavnView.PipelinesLive do
 
   @impl true
   def handle_event("filter_pipelines", %{"filters" => params}, socket) do
-    filters = normalize_filters(params)
+    {:noreply, apply_filters(socket, normalize_filters(params))}
+  end
 
-    {:noreply,
-     assign(socket,
-       filters: filters,
-       pipelines: filter_pipelines(socket.assigns.all_pipelines, filters)
-     )}
+  def handle_event("clear_filters", _params, socket) do
+    {:noreply, apply_filters(socket, @default_filters)}
   end
 
   @impl true
@@ -50,6 +48,13 @@ defmodule FavnView.PipelinesLive do
       status_options={@status_options}
     />
     """
+  end
+
+  defp apply_filters(socket, filters) do
+    assign(socket,
+      filters: filters,
+      pipelines: filter_pipelines(socket.assigns.all_pipelines, filters)
+    )
   end
 
   defp load_pipelines(operator_context) do

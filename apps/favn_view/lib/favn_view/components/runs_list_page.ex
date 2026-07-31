@@ -66,25 +66,26 @@ defmodule FavnView.Components.RunsListPage do
           description={@error}
           data-testid="runs-error-state"
         />
-
-        <.panel
+        <.table_panel
           :if={!@error}
-          padding={:none}
-          class="flex flex-col lg:min-h-0 lg:flex-1 lg:overflow-hidden"
+          count={row_count(@listing)}
+          count_label="runs"
           data-testid="runs-panel"
         >
-          <.runs_toolbar filters={@filters} counts={@counts} filters_open?={@filters_open?} />
+          <:toolbar>
+            <.runs_toolbar filters={@filters} counts={@counts} filters_open?={@filters_open?} />
+          </:toolbar>
 
           <div class="lg:min-h-0 lg:flex-1 lg:overflow-y-auto">
             <.runs_empty_state :if={empty?(@listing)} filters={@filters} />
-
             <.runs_table :if={!empty?(@listing)} listing={@listing} order={@filters.order} />
-
             <.runs_cards :if={!empty?(@listing)} listing={@listing} />
-
-            <.runs_pager filters={@filters} more?={@more?} />
           </div>
-        </.panel>
+
+          <:footer>
+            <.runs_pager filters={@filters} more?={@more?} />
+          </:footer>
+        </.table_panel>
       </div>
     </AppShell.app_shell>
     """
@@ -95,122 +96,58 @@ defmodule FavnView.Components.RunsListPage do
   attr :filters_open?, :boolean, default: false
 
   def runs_toolbar(assigns) do
-    assigns =
-      assign(assigns, :choices, RunsFilters.status_filters(assigns.filters, assigns.counts))
+    choices =
+      assigns.filters
+      |> RunsFilters.status_filters(assigns.counts)
+      |> Enum.map(&Map.merge(&1, %{patch: runs_path(&1.params), count_label: "runs"}))
+
+    assigns = assign(assigns, :choices, choices)
 
     ~H"""
-    <div class="border-b border-base-content/10 p-3 sm:p-4">
-      <div class="flex flex-wrap items-center gap-2 sm:gap-3 lg:justify-between">
-        <nav
-          class="favn-surface-rail grid w-full grid-cols-2 gap-0.5 rounded-box p-1 sm:flex sm:w-auto sm:flex-wrap sm:items-center"
-          aria-label="Run status"
-          data-testid="run-statuses"
-        >
-          <.status_button :for={choice <- @choices} choice={choice} />
-        </nav>
-
-        <.button
-          variant={:ghost}
-          icon="hero-adjustments-horizontal"
-          class="ml-auto shrink-0 lg:hidden"
-          phx-click="toggle_filters"
-          aria-expanded={to_string(@filters_open?)}
-          aria-controls="runs-filters"
-          data-testid="toggle-runs-filters"
-        >
-          Filters
-          <span
-            :if={RunsFilters.adjusted?(@filters)}
-            class="size-1.5 rounded-full bg-primary"
-            aria-hidden="true"
-          />
-        </.button>
-
-        <form
-          id="runs-filters"
-          phx-change="filter_runs"
-          phx-submit="filter_runs"
-          class={[
-            "w-full flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center lg:w-auto",
-            (@filters_open? && "flex") || "hidden lg:flex"
-          ]}
-          data-testid="runs-filters"
-        >
-          <.search_field
-            name="filters[q]"
-            value={@filters.search}
-            label="Search runs"
-            placeholder="Run id, pipeline, or asset"
-            class="sm:w-56"
-          />
-          <.select_field
-            name="filters[range]"
-            label="Time range"
-            options={RunsFilters.range_options()}
-            value={to_string(@filters.range)}
-            icon="hero-calendar-days"
-            class="sm:w-44"
-          />
-          <div
-            :if={RunsFilters.custom?(@filters)}
-            class="flex w-full items-center gap-2 sm:w-auto"
-            data-testid="runs-custom-range"
-          >
-            <.date_input
-              name="filters[from]"
-              label="From date"
-              value={@filters.from}
-              class="min-w-0 flex-1 sm:w-36 sm:flex-none"
-            />
-            <span class="shrink-0 text-xs favn-text-subtle">to</span>
-            <.date_input
-              name="filters[to]"
-              label="To date"
-              value={@filters.to}
-              class="min-w-0 flex-1 sm:w-36 sm:flex-none"
-            />
-          </div>
-        </form>
-      </div>
-    </div>
-    """
-  end
-
-  @doc """
-  One value of the status axis, carrying how many runs it would list.
-
-  The attr is a whole choice rather than a status, because `status` means a tone
-  everywhere else in this library.
-  """
-  attr :choice, :map, required: true
-
-  def status_button(assigns) do
-    ~H"""
-    <.link
-      patch={runs_path(@choice.params)}
-      class={
-        [
-          "favn-mode-item h-9 justify-start gap-1.5 rounded-field px-2.5 text-sm font-medium sm:justify-center",
-          "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
-          # The rail's own colour is tuned for icon-only buttons; these carry words,
-          # which are held to the higher contrast ask, so an inactive one borrows the
-          # muted text tier rather than the rail's decorative tint.
-          (@choice.active? && "favn-mode-item-active") || "favn-text-muted"
-        ]
-      }
-      title={@choice.hint}
-      aria-current={@choice.active? && "page"}
-      data-testid={"run-status-#{@choice.id}"}
+    <.table_toolbar
+      on_change="filter_runs"
+      filters_id="runs-filters"
+      on_toggle="toggle_filters"
+      filters_open?={@filters_open?}
+      on_clear="clear_filters"
+      adjusted?={RunsFilters.narrowed?(@filters) or RunsFilters.adjusted?(@filters)}
+      search_name="filters[q]"
+      search_label="Search runs"
+      search_placeholder="Run id, pipeline, or asset"
+      search_value={@filters.search}
     >
-      <.icon name={@choice.icon} size={:md} class={Tokens.text_class(Tokens.tone(@choice.tone))} />
-      <span class="whitespace-nowrap">{@choice.label}</span>
-      <.count_badge
-        :if={is_integer(@choice.count)}
-        count={@choice.count}
-        label="runs"
-        tone={count_tone(@choice)}
-      />
-    </.link>
+      <:scopes>
+        <.scope_rail label="Run status" choices={@choices} data-testid="run-statuses" />
+      </:scopes>
+
+      <:filters>
+        <.select_field
+          name="filters[range]"
+          label="Time range"
+          options={RunsFilters.range_options()}
+          value={to_string(@filters.range)}
+          icon="hero-calendar-days"
+        />
+        <div
+          :if={RunsFilters.custom?(@filters)}
+          class="flex w-full items-center gap-2 sm:w-auto"
+          data-testid="runs-custom-range"
+        >
+          <.date_input
+            name="filters[from]"
+            label="From date"
+            value={@filters.from}
+            class="min-w-0 flex-1 sm:w-36 sm:flex-none"
+          /> <span class="shrink-0 text-xs favn-text-subtle">to</span>
+          <.date_input
+            name="filters[to]"
+            label="To date"
+            value={@filters.to}
+            class="min-w-0 flex-1 sm:w-36 sm:flex-none"
+          />
+        </div>
+      </:filters>
+    </.table_toolbar>
     """
   end
 
@@ -221,7 +158,7 @@ defmodule FavnView.Components.RunsListPage do
 
   def date_input(assigns) do
     ~H"""
-    <label class={["input input-sm favn-surface-control px-3", @class]}>
+    <label class={["input input-sm favn-surface-control h-9 min-h-9 px-3", @class]}>
       <span class="sr-only">{@label}</span>
       <input
         type="date"
@@ -244,11 +181,15 @@ defmodule FavnView.Components.RunsListPage do
         <thead class="sticky top-0 z-10 bg-base-100/85 backdrop-blur">
           <tr class="border-base-content/10 text-xs favn-text-muted">
             <th class="w-64 font-medium">Run</th>
+
             <th class="font-medium">Target</th>
+
             <th class="w-36 font-medium">
               <.sort_button order={@order} />
             </th>
+
             <th class="w-28 font-medium">Duration</th>
+
             <th class="w-10"><span class="sr-only">Open</span></th>
           </tr>
         </thead>
@@ -290,7 +231,7 @@ defmodule FavnView.Components.RunsListPage do
     ~H"""
     <div
       :if={@more? or RunsFilters.paged?(@filters)}
-      class="flex items-center justify-between gap-3 border-t border-base-content/10 p-3"
+      class="flex items-center gap-2"
       data-testid="runs-pager"
     >
       <.button
@@ -302,9 +243,6 @@ defmodule FavnView.Components.RunsListPage do
       >
         Newest
       </.button>
-      <span :if={!RunsFilters.paged?(@filters)} class="text-xs favn-text-subtle">
-        {RunsFilters.page_size()} most recent
-      </span>
 
       <.button
         :if={@more?}
@@ -325,8 +263,7 @@ defmodule FavnView.Components.RunsListPage do
   def gap_heading(assigns) do
     ~H"""
     <span class="inline-flex items-center gap-2">
-      <.icon name="hero-minus-small" size={:sm} />
-      {gap_text(@day)}
+      <.icon name="hero-minus-small" size={:sm} /> {gap_text(@day)}
     </span>
     """
   end
@@ -359,12 +296,15 @@ defmodule FavnView.Components.RunsListPage do
       <span class="text-xs font-semibold uppercase tracking-[0.14em] text-base-content">
         {@day.label}
       </span>
+
       <span :if={@day.total > 0} class="text-xs font-normal favn-text-muted">
         {@day.total} {if(@day.total == 1, do: "run", else: "runs")}
       </span>
+
       <span :if={@day.failed > 0} class="text-xs font-normal text-error">
         {@day.failed} failed
       </span>
+
       <span :if={@day.active > 0} class="text-xs font-normal text-info">
         {@day.active} in flight
       </span>
@@ -388,6 +328,7 @@ defmodule FavnView.Components.RunsListPage do
 
       <td class="whitespace-nowrap align-middle text-xs" title={@run.started_at_title}>
         <p class="favn-text-muted">{@run.started_at}</p>
+
         <p :if={@run.started_on} class="text-[0.68rem] favn-text-subtle">{@run.started_on}</p>
       </td>
 
@@ -420,6 +361,7 @@ defmodule FavnView.Components.RunsListPage do
         >
           {@run.short_id}
         </.link>
+
         <p class="truncate text-[0.68rem] favn-text-subtle">
           {@run.status_label} · {@run.trigger}
         </p>
@@ -441,11 +383,13 @@ defmodule FavnView.Components.RunsListPage do
     ~H"""
     <div class="min-w-0">
       <p class="truncate font-medium text-base-content" title={@run.target_title}>{@run.target}</p>
+
       <p class="flex min-w-0 items-center gap-1.5 text-[0.68rem]">
         <span :if={@run.assets} class="truncate favn-text-subtle">{@run.assets}</span>
         <span :if={!@run.assets && @run.target_detail} class="truncate favn-text-subtle">
           {@run.target_detail} planned
         </span>
+
         <span :if={@run.assets_failed > 0} class="shrink-0 text-error">
           {@run.assets_failed} failed
         </span>
@@ -460,7 +404,6 @@ defmodule FavnView.Components.RunsListPage do
     ~H"""
     <div class="space-y-2.5 p-3 lg:hidden" data-testid="runs-card-list">
       <.run_card :for={run <- flat_runs(@listing)} run={run} />
-
       <div :for={day <- day_groups(@listing)} class="space-y-2.5" id={"card-#{day.id}"}>
         <p :if={day.kind == :gap} class="pl-1 text-xs favn-text-subtle">
           <.gap_heading day={day} />
@@ -483,11 +426,15 @@ defmodule FavnView.Components.RunsListPage do
           <p class="mt-1.5 truncate text-sm font-medium text-base-content" title={@run.target_title}>
             {@run.target}
           </p>
+
           <p class="truncate font-mono text-[0.68rem] favn-text-subtle">{@run.short_id}</p>
         </div>
+
         <div class="shrink-0 text-right text-xs favn-text-muted">
           <p :if={@run.started_on} class="favn-text-subtle">{@run.started_on}</p>
+
           <p>{@run.started_at}</p>
+
           <p class="favn-text-subtle">{@run.duration}</p>
         </div>
       </div>
@@ -540,6 +487,13 @@ defmodule FavnView.Components.RunsListPage do
   defp empty?({:flat, runs}), do: runs == []
   defp empty?({:days, days}), do: Enum.all?(days, &(&1.kind == :gap))
 
+  # The rows on this page, whichever layout it is in. Day headers and gaps are
+  # not rows, so they are not counted.
+  defp row_count({:flat, runs}), do: length(runs)
+
+  defp row_count({:days, days}),
+    do: days |> Enum.filter(&(&1.kind == :day)) |> Enum.map(&length(&1.runs)) |> Enum.sum()
+
   defp day_runs(%{kind: :day, runs: runs}), do: runs
   defp day_runs(_gap), do: []
 
@@ -554,9 +508,4 @@ defmodule FavnView.Components.RunsListPage do
 
   defp sort_label(:started_asc), do: "oldest first"
   defp sort_label(_order), do: "newest first"
-
-  # A scope button with nothing in it should not shout, and one with failures
-  # should. The count is the same number either way.
-  defp count_tone(%{count: 0}), do: :neutral
-  defp count_tone(%{tone: tone}), do: tone
 end

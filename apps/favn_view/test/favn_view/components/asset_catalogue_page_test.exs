@@ -35,12 +35,13 @@ defmodule FavnView.Components.AssetCataloguePageTest do
     html = render_component(&AssetCataloguePage.asset_table/1, assets: sorted)
 
     # Namespace is one cell per row - the pair reads as a single address, with
-    # connection and catalogue as separately coloured segments.
+    # connection and catalogue as separately coloured segments. The tone is the
+    # contract here, so the assertion tolerates the layout classes beside it.
     assert length(Regex.scan(~r/data-testid="asset-namespace"/, html)) == 3
-    assert html =~ ~s(<span class="text-secondary">duckdb</span>)
-    assert html =~ ~s(<span class="text-accent">sales</span>)
-    assert html =~ ~s(<span class="text-secondary">postgres</span>)
-    assert html =~ ~s(<span class="text-accent">crm</span>)
+    assert html =~ ~r{<span class="[^"]*text-secondary[^"]*">\s*duckdb\s*</span>}
+    assert html =~ ~r{<span class="[^"]*text-accent[^"]*">\s*sales\s*</span>}
+    assert html =~ ~r{<span class="[^"]*text-secondary[^"]*">\s*postgres\s*</span>}
+    assert html =~ ~r{<span class="[^"]*text-accent[^"]*">\s*crm\s*</span>}
   end
 
   test "renders compatibility independently from health and coverage" do

@@ -10,26 +10,45 @@ defmodule FavnView.UI.Data do
   | --- | --- |
   | `fact_list/1` | a handful of labelled values about one thing |
   | `data_table/1` | many rows of the same shape, on desktop |
+  | `stacked_cell/1` | a table cell whose value needs a qualifier under it |
   | `metric/1` | one number that the operator watches |
   | `mono/1` | ids, fingerprints, and anything copied verbatim |
 
   A table is a desktop affordance. On mobile the same rows should render as
   `FavnView.UI.Surface.list_card/1`; do not shrink a table to fit a phone.
 
+  ## The list-screen standard
+
+  `/runs` is the reference: a compact table whose header stays put while the rows
+  scroll, two-line cells so a row answers a question without a second column, and
+  one trailing chevron per row. `data_table/1` carries that standard, so a list
+  screen adopts it by passing `fill?` and letting the panel bound the height —
+  not by restyling a table of its own.
+
+  `fill?` and the sticky header work together. Sticky positioning needs a
+  scrolling ancestor with a bounded height, so `fill?` makes the table's own
+  wrapper that ancestor: put it in a `flex min-h-0 flex-1` panel and the header
+  pins to the top of the rows rather than to the page.
+
   ## Examples
 
       <.fact_list facts={[%{label: "Trigger", value: "Schedule"}]} />
 
-      <.data_table id="runs" rows={@runs} row_navigate={&~p"/runs/\#{&1.id}"}>
-        <:col :let={run} label="Run">{run.id}</:col>
+      <.data_table id="runs" rows={@runs} row_navigate={&~p"/runs/\#{&1.id}"} fill?>
+        <:col :let={run} label="Run" class="w-64">
+          <.stacked_cell primary={run.short_id} secondary={run.trigger} mono={:primary} />
+        </:col>
         <:col :let={run} label="Status"><.status_badge tone={run.tone} label={run.status} /></:col>
       </.data_table>
   """
 
   use Phoenix.Component
 
+  import FavnView.UI.Badge
   import FavnView.UI.Button
+  import FavnView.UI.Field, only: [search_field: 1]
   import FavnView.UI.Icon
+  import FavnView.UI.Surface
 
   alias FavnView.UI.Tokens
 
@@ -51,6 +70,7 @@ defmodule FavnView.UI.Data do
     <dl class={["grid gap-3 text-xs sm:gap-4", @grid_class, @class]} {@rest}>
       <div :for={fact <- @facts} class="min-w-0">
         <dt class="favn-text-subtle">{fact.label}</dt>
+
         <dd
           class={[
             "mt-0.5 truncate font-medium",
@@ -76,6 +96,16 @@ defmodule FavnView.UI.Data do
     default: nil,
     doc: "function returning extra classes for a row, for a selected or deep-linked row"
 
+  attr :fill?, :boolean,
+    default: false,
+    doc:
+      "make the wrapper the scroll region, for a table inside a `flex min-h-0 flex-1` panel; " <>
+        "required for the sticky header to pin to the rows instead of the page"
+
+  attr :sticky_header?, :boolean,
+    default: true,
+    doc: "set false only where the header would pin against a second one"
+
   attr :class, :any, default: nil
   attr :rest, :global
 
@@ -89,16 +119,18 @@ defmodule FavnView.UI.Data do
 
   def data_table(assigns) do
     ~H"""
-    <div class={["overflow-x-auto", @class]}>
-      <table class="table table-sm text-sm" id={@id}>
-        <thead>
+    <div class={[(@fill? && "min-h-0 flex-1 overflow-auto") || "overflow-x-auto", @class]}>
+      <table class="table table-sm w-full text-sm" id={@id}>
+        <thead class={@sticky_header? && "sticky top-0 z-10 bg-base-100/85 backdrop-blur"}>
           <tr class="border-base-content/10 text-xs favn-text-muted">
             <th :for={col <- @col} class={["font-medium", align_class(col[:align]), col[:class]]}>
               {col.label}
             </th>
+
             <th :if={@action != [] || @row_navigate} class="sr-only">Actions</th>
           </tr>
         </thead>
+
         <tbody>
           <tr
             :for={row <- @rows}
@@ -112,6 +144,7 @@ defmodule FavnView.UI.Data do
             <td :for={col <- @col} class={["align-middle", align_class(col[:align]), col[:class]]}>
               {render_slot(col, row)}
             </td>
+
             <td :if={@action != [] || @row_navigate} class="text-right align-middle">
               <div class="flex items-center justify-end gap-1">
                 {render_slot(@action, row)}
@@ -127,6 +160,384 @@ defmodule FavnView.UI.Data do
           </tr>
         </tbody>
       </table>
+    </div>
+    """
+  end
+
+  @doc """
+  The panel a list screen's table lives in.
+
+  A sticky header needs a scrolling ancestor of bounded height, and getting that
+  wrong shows up as a header pinned to the wrong edge or a page with two
+  scrollbars. The recipe is four utilities deep and every list screen needs the
+  same one, so it lives here rather than in each page: this is the only place the
+  bounding is written down.
+
+  The panel also owns the footer, so how many rows a list is showing is reported
+  in the same corner every time — trailing edge, below the rows it counts, where
+  a reader looks after reading them rather than among the controls that produced
+  them.
+
+  Pair it with `data_table/1` and `fill?`. Below `lg` the table is not the right
+  shape for the viewport, so a screen renders `FavnView.UI.Surface.list_card/1`
+  rows instead; pass `desktop_only?` when those cards live outside this panel.
+
+      <.table_panel desktop_only?>
+        <.data_table id="pipelines" rows={@pipelines} fill?>
+          <:col :let={pipeline} label="Pipeline">{pipeline.name}</:col>
+        </.data_table>
+      </.table_panel>
+  """
+  attr :desktop_only?, :boolean,
+    default: false,
+    doc: "hide below `lg`, for a screen whose cards render outside this panel"
+
+  attr :count, :integer,
+    default: nil,
+    doc: "how many rows are listed; rendered in the footer's trailing corner"
+
+  attr :count_label, :string, default: "rows", doc: "what the count counts, pluralised"
+
+  attr :class, :any, default: nil
+  attr :rest, :global
+  slot :toolbar, doc: "filters or scope controls that scroll with the panel rather than the rows"
+
+  slot :footer,
+    doc: "paging or other controls for the whole list, at the footer's leading edge"
+
+  slot :inner_block, required: true
+
+  def table_panel(assigns) do
+    ~H"""
+    <.panel
+      padding={:none}
+      class={[
+        (@desktop_only? && "hidden lg:flex") || "flex",
+        "flex-col lg:min-h-0 lg:flex-1 lg:overflow-hidden",
+        @class
+      ]}
+      {@rest}
+    >
+      <div :if={@toolbar != []} class="shrink-0">{render_slot(@toolbar)}</div>
+      {render_slot(@inner_block)}
+
+      <div
+        :if={@count || @footer != []}
+        class="flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-base-content/10 p-3"
+      >
+        <div class="flex min-w-0 flex-wrap items-center gap-2">{render_slot(@footer)}</div>
+
+        <p :if={@count} class="shrink-0 text-xs favn-text-subtle" data-testid="table-count">
+          {@count} {@count_label}
+        </p>
+      </div>
+    </.panel>
+    """
+  end
+
+  @doc """
+  The search and narrowing controls above a list screen's rows.
+
+  Placement is part of the standard, not a page's choice. The controls sit inside
+  `table_panel/1` above the rows, separated by one rule, so the operator finds
+  them in the same place on every list — and so they scroll with the panel while
+  the table header pins to the rows beneath them.
+
+  What goes where: `scopes` is a rail of buttons for the one axis that carries
+  counts, at the start; `filters` is the search and the selects, at the end;
+  `meta` is a result count. A screen uses the shared `search_field/1` and
+  `select_field/1` inside `filters` rather than dressing its own inputs, which is
+  what made `/schedules` look like a different application from `/runs`.
+
+  Passing `on_change` renders the form, so filtering works with and without
+  JavaScript without each page wiring its own. Passing `on_toggle` collapses the
+  filters behind one control below `lg`, for a screen whose scopes must stay
+  visible on a phone; without it the filters are always shown.
+
+      <.table_toolbar
+        on_change="filter_schedules"
+        filters_id="schedule-filters"
+        search_name="filters[search]"
+        search_label="Search schedules"
+        search_value={@filters["search"]}
+        on_clear="clear_filters"
+        adjusted?={@narrowed?}
+      >
+        <:scopes><.scope_rail label="Schedule state" choices={@scope_choices} /></:scopes>
+        <:filters>
+          <.select_field name="filters[window]" label="Window" options={@windows} value={@window} />
+        </:filters>
+      </.table_toolbar>
+
+  ## The order is fixed
+
+  Reading left to right: the scope rail, then the narrowing controls, then the
+  search at the far edge. Search is last because it is the control an operator
+  returns to most and the only one whose position should never move; the selects
+  a screen happens to need sit between them. How many rows resulted is not a
+  control and does not belong here — `table_panel/1` reports it in the footer.
+
+  That order is this component's, not a caller's — the search is an attr rather
+  than a slot precisely so a screen cannot place it somewhere else, and the
+  selects share one width so a row of them lines up across screens.
+  """
+  attr :on_change, :string, default: nil, doc: "LiveView event; renders the form around `filters`"
+  attr :filters_id, :string, default: nil
+  attr :on_toggle, :string, default: nil, doc: "event that collapses the filters below `lg`"
+  attr :filters_open?, :boolean, default: false, doc: "only meaningful with `on_toggle`"
+
+  attr :search_name, :string, default: nil, doc: "form field name; renders the search when set"
+  attr :search_label, :string, default: "Search", doc: "screen-reader name and placeholder"
+  attr :search_placeholder, :string, default: nil
+  attr :search_value, :any, default: nil
+
+  attr :on_clear, :string,
+    default: nil,
+    doc: "event that resets every filter; the control appears only once something is set"
+
+  attr :adjusted?, :boolean,
+    default: false,
+    doc: "whether anything narrows the list; shows the clear control and marks the collapsed one"
+
+  attr :class, :any, default: nil
+  attr :rest, :global
+
+  slot :scopes, doc: "a rail of buttons for the axis that carries counts"
+  slot :filters, doc: "the selects this screen narrows by; use `select_field/1`"
+
+  def table_toolbar(assigns) do
+    ~H"""
+    <div class={["border-b border-base-content/10 p-3 sm:p-4", @class]} {@rest}>
+      <div class="flex flex-wrap items-center gap-2 sm:gap-3 lg:flex-nowrap">
+        <div :if={@scopes != []} class="w-full sm:w-auto">{render_slot(@scopes)}</div>
+
+        <.button
+          :if={@on_toggle}
+          variant={:ghost}
+          icon="hero-adjustments-horizontal"
+          class="ml-auto shrink-0 lg:hidden"
+          phx-click={@on_toggle}
+          aria-expanded={to_string(@filters_open?)}
+          aria-controls={@filters_id}
+          data-testid="toggle-table-filters"
+        >
+          Filters
+          <span :if={@adjusted?} class="size-1.5 rounded-full bg-primary" aria-hidden="true" />
+        </.button>
+
+        <form
+          :if={@search_name || @filters != []}
+          id={@filters_id}
+          phx-change={@on_change}
+          phx-submit={@on_change}
+          class={[
+            "items-stretch gap-2 sm:flex-row sm:flex-wrap sm:items-center lg:ml-auto lg:flex-nowrap",
+            filters_class(assigns)
+          ]}
+          data-testid="table-filters"
+        >
+          <.button
+            :if={@on_clear && @adjusted?}
+            type="button"
+            variant={:ghost}
+            icon="hero-x-mark"
+            class="h-9 min-h-9 shrink-0"
+            phx-click={@on_clear}
+            data-testid="clear-table-filters"
+          >
+            Clear
+          </.button>
+
+          <div
+            :if={@filters != []}
+            class={
+              [
+                "contents sm:flex sm:flex-wrap sm:items-center sm:gap-2",
+                # One width for every select, so a row of them lines up across
+                # screens, and `nowrap` so two of them never stack into a column
+                # while there is still room beside them.
+                "sm:[&>label]:w-44 lg:flex-nowrap"
+              ]
+            }
+          >
+            {render_slot(@filters)}
+          </div>
+
+          <.search_field
+            :if={@search_name}
+            name={@search_name}
+            label={@search_label}
+            placeholder={@search_placeholder}
+            value={@search_value}
+            class="min-w-0 sm:w-64"
+          />
+        </form>
+      </div>
+    </div>
+    """
+  end
+
+  @doc """
+  The one axis of a list screen that carries counts, as a rail of buttons.
+
+  A select hides its options and tells you nothing until you open it. For the
+  question a list screen exists to answer — what is failing, what is disabled,
+  what has gaps — the count beside each choice *is* the answer, so it belongs in
+  a rail where every count is visible at once and one click narrows to it.
+
+  Every choice is a map with `:id`, `:label`, `:icon`, `:tone`, `:active?`, and
+  a `:count` (`nil` when it could not be read). Counts must come from the whole
+  collection rather than the filtered page, or a button reports the list it is
+  already showing instead of the list clicking it would produce.
+
+  A rail either patches the URL, with a `:patch` path per choice, or pushes
+  `on_select` with the choice id as `scope`.
+
+      <.scope_rail label="Run status" choices={@choices} />
+      <.scope_rail label="Asset state" choices={@choices} on_select="set_scope" />
+  """
+  attr :label, :string, required: true, doc: "accessible name for the rail"
+  attr :choices, :list, required: true
+  attr :on_select, :string, default: nil, doc: "event name; omit for a patching rail"
+  attr :class, :any, default: nil
+  attr :rest, :global
+
+  def scope_rail(assigns) do
+    ~H"""
+    <nav
+      class={[
+        "favn-surface-rail grid w-full grid-cols-2 gap-0.5 rounded-box p-1",
+        "sm:flex sm:w-auto sm:flex-wrap sm:items-center",
+        @class
+      ]}
+      aria-label={@label}
+      {@rest}
+    >
+      <.scope_button :for={choice <- @choices} choice={choice} on_select={@on_select} />
+    </nav>
+    """
+  end
+
+  @doc """
+  One value of a `scope_rail/1`, carrying how many rows it would list.
+
+  The attr is a whole choice rather than a status, because `status` means a tone
+  everywhere else in this library.
+  """
+  attr :choice, :map, required: true
+  attr :on_select, :string, default: nil
+
+  def scope_button(assigns) do
+    assigns = assign(assigns, :classes, scope_button_classes(assigns.choice))
+
+    ~H"""
+    <.link
+      :if={!@on_select}
+      patch={@choice.patch}
+      class={@classes}
+      title={@choice[:hint]}
+      aria-current={@choice.active? && "page"}
+      data-testid={"scope-#{@choice.id}"}
+    >
+      <.scope_button_content choice={@choice} />
+    </.link>
+
+    <button
+      :if={@on_select}
+      type="button"
+      phx-click={@on_select}
+      phx-value-scope={@choice.id}
+      class={@classes}
+      title={@choice[:hint]}
+      aria-pressed={to_string(@choice.active?)}
+      data-testid={"scope-#{@choice.id}"}
+    >
+      <.scope_button_content choice={@choice} />
+    </button>
+    """
+  end
+
+  attr :choice, :map, required: true
+
+  defp scope_button_content(assigns) do
+    ~H"""
+    <.icon name={@choice.icon} size={:md} class={Tokens.text_class(Tokens.tone(@choice.tone))} />
+    <span class="whitespace-nowrap">{@choice.label}</span>
+    <.count_badge
+      :if={is_integer(@choice.count)}
+      count={@choice.count}
+      label={@choice[:count_label] || "rows"}
+      tone={count_tone(@choice)}
+    />
+    """
+  end
+
+  @doc """
+  A table cell that carries a value and the qualifier that makes it legible.
+
+  A run id means little without its trigger, a schedule name little without its
+  id, an asset name little without its namespace. Each list screen used to solve
+  that with either a second column — which widens the table past the viewport —
+  or its own two-line markup, which drifted. This is that markup, once.
+
+  Both lines truncate rather than wrap, so a long value cannot change the row
+  height, and the full value stays reachable as a tooltip.
+
+      <.stacked_cell primary={@schedule.label} secondary={@schedule.id} mono={:secondary} />
+  """
+  attr :primary, :string, required: true
+  attr :secondary, :string, default: nil
+  attr :title, :string, default: nil, doc: "tooltip for the primary line; defaults to its text"
+  attr :secondary_title, :string, default: nil
+  attr :navigate, :any, default: nil, doc: "makes the primary line a link"
+
+  attr :mono, :atom,
+    default: :none,
+    values: [:none, :primary, :secondary, :both],
+    doc: "which lines are code — an id, a cron, a hash — rather than prose"
+
+  attr :tone, :atom, default: nil, doc: "tone for the primary line; defaults to full contrast"
+  attr :class, :any, default: nil
+  attr :rest, :global
+
+  def stacked_cell(assigns) do
+    ~H"""
+    <div class={["min-w-0", @class]} {@rest}>
+      <.link
+        :if={@navigate}
+        navigate={@navigate}
+        class={[
+          "block truncate font-medium hover:text-primary",
+          mono?(@mono, :primary) && "font-mono text-xs",
+          (@tone && Tokens.text_class(Tokens.tone(@tone))) || "text-base-content"
+        ]}
+        title={@title || @primary}
+      >
+        {@primary}
+      </.link>
+
+      <p
+        :if={!@navigate}
+        class={[
+          "truncate font-medium",
+          mono?(@mono, :primary) && "font-mono text-xs",
+          (@tone && Tokens.text_class(Tokens.tone(@tone))) || "text-base-content"
+        ]}
+        title={@title || @primary}
+      >
+        {@primary}
+      </p>
+
+      <p
+        :if={@secondary}
+        class={[
+          "truncate text-[0.68rem] favn-text-subtle",
+          mono?(@mono, :secondary) && "font-mono"
+        ]}
+        title={@secondary_title || @secondary}
+      >
+        {@secondary}
+      </p>
     </div>
     """
   end
@@ -148,12 +559,13 @@ defmodule FavnView.UI.Data do
     ~H"""
     <div class={["min-w-0", @class]} {@rest}>
       <div class="flex items-center gap-2 text-xs favn-text-subtle">
-        <.icon :if={@icon} name={@icon} size={:xs} />
-        {@label}
+        <.icon :if={@icon} name={@icon} size={:xs} /> {@label}
       </div>
+
       <div class={["mt-1 truncate text-2xl font-light tracking-tight", Tokens.text_class(@tone)]}>
         {@value}
       </div>
+
       <p :if={@hint} class="mt-0.5 truncate text-xs favn-text-subtle">{@hint}</p>
     </div>
     """
@@ -216,6 +628,7 @@ defmodule FavnView.UI.Data do
           data-tone={segment.tone}
         />
       </div>
+
       <p
         :if={@legend? and @present != []}
         class="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs favn-text-muted"
@@ -225,8 +638,7 @@ defmodule FavnView.UI.Data do
           <span class={[
             "size-1.5 shrink-0 rounded-full",
             Tokens.fill_class(Tokens.tone(segment.tone))
-          ]} />
-          {segment.count} {segment.label}
+          ]} /> {segment.count} {segment.label}
         </span>
       </p>
     </div>
@@ -271,6 +683,32 @@ defmodule FavnView.UI.Data do
 
   defp align_class(:end), do: "text-right"
   defp align_class(_align), do: nil
+
+  # The rail's own colour is tuned for icon-only buttons; these carry words,
+  # which are held to the higher contrast ask, so an inactive one borrows the
+  # muted text tier rather than the rail's decorative tint.
+  defp scope_button_classes(choice) do
+    [
+      "favn-mode-item h-9 justify-start gap-1.5 rounded-field px-2.5 text-sm font-medium sm:justify-center",
+      "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
+      (choice.active? && "favn-mode-item-active") || "favn-text-muted"
+    ]
+  end
+
+  # A scope button with nothing in it should not shout, and one with failures
+  # should. The count is the same number either way.
+  defp count_tone(%{count: 0}), do: :neutral
+  defp count_tone(%{tone: tone}), do: tone
+
+  # Without a toggle the filters are always laid out; with one they are a
+  # narrow-screen disclosure that `lg` reopens for good.
+  defp filters_class(%{on_toggle: nil}), do: "flex w-full flex-col lg:w-auto"
+  defp filters_class(%{filters_open?: true}), do: "flex w-full flex-col lg:w-auto"
+  defp filters_class(_assigns), do: "hidden w-full flex-col lg:flex lg:w-auto"
+
+  defp mono?(:both, _line), do: true
+  defp mono?(line, line), do: true
+  defp mono?(_mono, _line), do: false
 
   defp segment_count(segment) do
     case Map.get(segment, :count) do
