@@ -94,7 +94,8 @@ runtime inputs, and SQL integrations remain pre-v1 and may change.
   admitted work may settle until the configured deadline, after which ordinary
   durable cancellation/result paths preserve honest recovery state.
 - The production control plane is an immutable Linux amd64 OTP release containing
-  only View, Orchestrator, PostgreSQL storage, Core, and runtime dependencies. It
+  only View, Orchestrator, PostgreSQL storage, Core, Azure credential support,
+  and runtime dependencies. It
   runs as non-root, supports a read-only root filesystem, and has fixed health and
   release-operation entrypoints.
 
@@ -116,6 +117,11 @@ accessibility, and production-provider qualification are unfinished.
 - Separate tasks own migration, runtime grants, workspace provisioning, restore
   verification, projection backfill, and bounded retention. Runtime nodes never
   migrate automatically.
+- PostgreSQL supports explicit password and Azure managed-identity modes. Azure
+  mode obtains fresh-enough per-connection tokens through its own bounded cache,
+  covers notifications and one-off release operations, suppresses ambient
+  PostgreSQL password defaults, and preserves connection backoff on provider
+  failure.
 - Live PostgreSQL suites cover tenancy, idempotency, concurrency, fencing, claims,
   query plans, restore mechanics, and multi-node database authority.
 
@@ -178,6 +184,9 @@ operator contract is [`production/postgresql_operator_runbook.md`](production/po
   own actor status, workspace membership, roles, opaque sessions, revocation,
   workspace switching, and redacted audit. Native OIDC, other proxy assertion
   formats, and provider group/role authorization remain out of scope.
+- The Azure Container Apps database reference uses separate user-assigned
+  managed identities and PostgreSQL roles for runtime and migration, without a
+  database URL/password secret. Live Azure qualification remains required.
 - The local production-shaped HTTP-boundary phase catalogues every browser and
   private API route and fails on catalogue or required-evidence drift. It is not
   the complete #578 release verdict. Role/workspace isolation, abuse pressure,

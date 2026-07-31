@@ -2,7 +2,21 @@
 param location string = resourceGroup().location
 param environmentId string
 param name string = 'favn-control-plane'
+param operationsName string = '${name}-database-operations'
 param image string
+param databaseHost string
+param databasePort int = 5432
+param databaseName string
+param runtimeDatabaseUsername string = 'favn_runtime'
+param migrationDatabaseUsername string = 'favn_migrator'
+@allowed([
+  'migrate'
+  'verify-schema'
+  'verify-restore'
+  'grant-runtime'
+  'runtime-input-key-inventory'
+])
+param databaseOperation string = 'migrate'
 param workspaceIds string
 param runnerPools string
 param viewPublicOrigin string
@@ -18,8 +32,6 @@ param viewEntraWorkspaceId string = ''
 ])
 param viewForwardedForPolicy string = 'replace'
 param runtimeInputPinKeyVersion int = 1
-@secure()
-param databaseUrl string
 @secure()
 param databaseCaCertificate string
 @secure()
@@ -43,9 +55,25 @@ param distributionCertificate string
 @secure()
 param distributionPrivateKey string
 
+resource runtimeIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
+  name: '${name}-postgres-runtime'
+  location: location
+}
+
+resource migrationIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
+  name: '${name}-postgres-migration'
+  location: location
+}
+
 resource controlPlane 'Microsoft.App/containerApps@2026-01-01' = {
   name: name
   location: location
+  identity: {
+    type: 'UserAssigned'
+    userAssignedIdentities: {
+      '${runtimeIdentity.id}': {}
+    }
+  }
   properties: {
     managedEnvironmentId: environmentId
     configuration: {
@@ -90,10 +118,6 @@ resource controlPlane 'Microsoft.App/containerApps@2026-01-01' = {
           value: distributionPrivateKey
         }
         {
-          name: 'database-url'
-          value: databaseUrl
-        }
-        {
           name: 'database-ca'
           value: databaseCaCertificate
         }
@@ -130,8 +154,28 @@ resource controlPlane 'Microsoft.App/containerApps@2026-01-01' = {
               value: 'production'
             }
             {
-              name: 'FAVN_DATABASE_URL'
-              secretRef: 'database-url'
+              name: 'FAVN_DATABASE_AUTH_MODE'
+              value: 'azure_managed_identity'
+            }
+            {
+              name: 'FAVN_DATABASE_HOST'
+              value: databaseHost
+            }
+            {
+              name: 'FAVN_DATABASE_PORT'
+              value: string(databasePort)
+            }
+            {
+              name: 'FAVN_DATABASE_NAME'
+              value: databaseName
+            }
+            {
+              name: 'FAVN_DATABASE_USERNAME'
+              value: runtimeDatabaseUsername
+            }
+            {
+              name: 'FAVN_AZURE_MANAGED_IDENTITY_CLIENT_ID'
+              value: runtimeIdentity.properties.clientId
             }
             {
               name: 'FAVN_DATABASE_SSL_MODE'
@@ -266,6 +310,175 @@ resource controlPlane 'Microsoft.App/containerApps@2026-01-01' = {
         minReplicas: 1
         maxReplicas: 1
       }
+    }
+  }
+}
+
+resource databaseOperations 'Microsoft.App/jobs@2026-01-01' = {
+  name: operationsName
+  location: location
+  identity: {
+    type: 'UserAssigned'
+    userAssignedIdentities: {
+      '${migrationIdentity.id}': {}
+    }
+  }
+  properties: {
+    environmentId: environmentId
+    configuration: {
+      triggerType: 'Manual'
+      replicaTimeout: 3600
+      replicaRetryLimit: 0
+      manualTriggerConfig: {
+        parallelism: 1
+        replicaCompletionCount: 1
+      }
+      identitySettings: [
+        {
+          identity: migrationIdentity.id
+          lifecycle: 'All'
+        }
+      ]
+      secrets: [
+        {
+          name: 'distribution-cookie'
+          value: distributionCookie
+        }
+        {
+          name: 'distribution-tls-options'
+          value: distributionTlsOptions
+        }
+        {
+          name: 'distribution-ca'
+          value: distributionCaCertificate
+        }
+        {
+          name: 'distribution-certificate'
+          value: distributionCertificate
+        }
+        {
+          name: 'distribution-private-key'
+          value: distributionPrivateKey
+        }
+        {
+          name: 'database-ca'
+          value: databaseCaCertificate
+        }
+      ]
+    }
+    template: {
+      containers: [
+        {
+          name: 'database-operations'
+          image: image
+          command: [
+            '/app/bin/favn_control_plane_ops'
+          ]
+          args: [
+            databaseOperation
+          ]
+          env: [
+            {
+              name: 'FAVN_DEPLOYMENT_MODE'
+              value: 'production'
+            }
+            {
+              name: 'FAVN_DATABASE_AUTH_MODE'
+              value: 'azure_managed_identity'
+            }
+            {
+              name: 'FAVN_DATABASE_HOST'
+              value: databaseHost
+            }
+            {
+              name: 'FAVN_DATABASE_PORT'
+              value: string(databasePort)
+            }
+            {
+              name: 'FAVN_DATABASE_NAME'
+              value: databaseName
+            }
+            {
+              name: 'FAVN_DATABASE_USERNAME'
+              value: migrationDatabaseUsername
+            }
+            {
+              name: 'FAVN_DATABASE_RUNTIME_ROLE'
+              value: runtimeDatabaseUsername
+            }
+            {
+              name: 'FAVN_AZURE_MANAGED_IDENTITY_CLIENT_ID'
+              value: migrationIdentity.properties.clientId
+            }
+            {
+              name: 'FAVN_DATABASE_SSL_MODE'
+              value: 'verify-full'
+            }
+            {
+              name: 'FAVN_DATABASE_SSL_CA_FILE'
+              value: '/etc/favn/database-ca.crt'
+            }
+            {
+              name: 'FAVN_CONTROL_PLANE_NODE'
+              value: 'favn-control-ops@favn-control-plane-ops.internal'
+            }
+            {
+              name: 'FAVN_DISTRIBUTION_COOKIE'
+              secretRef: 'distribution-cookie'
+            }
+            {
+              name: 'FAVN_BEAM_DISTRIBUTION_PORT'
+              value: '9200'
+            }
+            {
+              name: 'FAVN_DISTRIBUTION_TLS_OPTIONS_FILE'
+              value: '/etc/favn/ssl_dist.config'
+            }
+            {
+              name: 'ERL_AFLAGS'
+              value: '-proto_dist inet_tls -ssl_dist_optfile /etc/favn/ssl_dist.config'
+            }
+          ]
+          resources: {
+            cpu: json('0.5')
+            memory: '1Gi'
+          }
+          volumeMounts: [
+            {
+              volumeName: 'operation-certificates'
+              mountPath: '/etc/favn'
+            }
+          ]
+        }
+      ]
+      volumes: [
+        {
+          name: 'operation-certificates'
+          storageType: 'Secret'
+          secrets: [
+            {
+              secretRef: 'distribution-tls-options'
+              path: 'ssl_dist.config'
+            }
+            {
+              secretRef: 'distribution-ca'
+              path: 'ca.crt'
+            }
+            {
+              secretRef: 'distribution-certificate'
+              path: 'tls.crt'
+            }
+            {
+              secretRef: 'distribution-private-key'
+              path: 'tls.key'
+            }
+            {
+              secretRef: 'database-ca'
+              path: 'database-ca.crt'
+            }
+          ]
+        }
+      ]
     }
   }
 }

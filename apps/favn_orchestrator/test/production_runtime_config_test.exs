@@ -164,6 +164,75 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
     assert config.runner.epmd_port == 44_369
   end
 
+  test "validate/1 accepts passwordless Azure PostgreSQL components", %{ca_file: ca_file} do
+    client_id = "11111111-2222-3333-4444-555555555555"
+
+    env =
+      ca_file
+      |> base_env()
+      |> Map.delete("FAVN_DATABASE_URL")
+      |> Map.merge(%{
+        "FAVN_DATABASE_AUTH_MODE" => "azure_managed_identity",
+        "FAVN_DATABASE_HOST" => "favn-postgres.postgres.database.azure.com",
+        "FAVN_DATABASE_PORT" => "5432",
+        "FAVN_DATABASE_NAME" => "favn",
+        "FAVN_DATABASE_USERNAME" => "favn_runtime",
+        "FAVN_AZURE_MANAGED_IDENTITY_CLIENT_ID" => client_id
+      })
+
+    assert {:ok, config} = ProductionRuntimeConfig.validate(env)
+
+    provider = Module.concat([Favn, Azure, ControlPlanePostgresAuth])
+    assert config.postgres[:authentication] == {:dynamic, provider, [client_id: client_id]}
+    assert config.postgres[:hostname] == "favn-postgres.postgres.database.azure.com"
+    assert config.postgres[:database] == "favn"
+    assert config.postgres[:username] == "favn_runtime"
+    refute Keyword.has_key?(config.postgres, :url)
+    refute Keyword.has_key?(config.postgres, :password)
+
+    diagnostics = ProductionRuntimeConfig.diagnostics(config)
+    assert diagnostics.postgres.authentication_mode == :azure_managed_identity
+    refute inspect(diagnostics) =~ client_id
+    refute inspect(diagnostics) =~ "favn_runtime"
+  end
+
+  test "database authentication modes reject ambiguous deployment inputs", %{ca_file: ca_file} do
+    base = base_env(ca_file)
+
+    assert {:error,
+            %{
+              error:
+                {:invalid_env, "FAVN_DATABASE_HOST", "not valid for selected database auth mode"}
+            }} =
+             base
+             |> Map.put("FAVN_DATABASE_HOST", "postgres.example")
+             |> ProductionRuntimeConfig.validate()
+
+    assert {:error,
+            %{
+              error:
+                {:invalid_env, "FAVN_DATABASE_URL", "not valid for selected database auth mode"}
+            }} =
+             base
+             |> Map.put("FAVN_DATABASE_AUTH_MODE", "azure_managed_identity")
+             |> Map.put("FAVN_DATABASE_HOST", "postgres.example")
+             |> Map.put("FAVN_DATABASE_NAME", "favn")
+             |> Map.put("FAVN_DATABASE_USERNAME", "favn_runtime")
+             |> ProductionRuntimeConfig.validate()
+
+    assert {:error, %{error: {:invalid_env, "FAVN_AZURE_MANAGED_IDENTITY_CLIENT_ID", "UUID"}}} =
+             base
+             |> Map.delete("FAVN_DATABASE_URL")
+             |> Map.merge(%{
+               "FAVN_DATABASE_AUTH_MODE" => "azure_managed_identity",
+               "FAVN_DATABASE_HOST" => "postgres.example",
+               "FAVN_DATABASE_NAME" => "favn",
+               "FAVN_DATABASE_USERNAME" => "favn_runtime",
+               "FAVN_AZURE_MANAGED_IDENTITY_CLIENT_ID" => "client-id-canary"
+             })
+             |> ProductionRuntimeConfig.validate()
+  end
+
   test "runner pool env rejects infrastructure fields and does not create atoms", %{
     ca_file: ca_file
   } do

@@ -15,7 +15,7 @@ no storage selector.
 
 | Variable | Contract |
 | --- | --- |
-| `FAVN_DATABASE_URL` | Required PostgreSQL URL. It is always redacted. URL query parameters are rejected so they cannot override the separately validated TLS, pool, or timeout settings. |
+| `FAVN_DATABASE_AUTH_MODE` | Optional; `password` by default or `azure_managed_identity`. The two modes have mutually exclusive connection inputs. |
 | `FAVN_DATABASE_SSL_MODE` | Required; only `verify-full` or `verify_full` is accepted by the production loader. |
 | `FAVN_DATABASE_SSL_CA_FILE` | Optional absolute readable CA bundle. Without it, Erlang's system trust store is used. |
 | `FAVN_DATABASE_POOL_SIZE` | `1..200`, default `15`. |
@@ -24,6 +24,28 @@ no storage selector.
 | `FAVN_DATABASE_TIMEOUT_MS` | `1..120000`, default `15000`. |
 | `FAVN_RUNTIME_INPUT_PIN_KEYS` | Required bounded JSON object of version to 32-byte/base64 key. |
 | `FAVN_RUNTIME_INPUT_PIN_KEY_VERSION` | Positive version used for new writes; default `1`, and it must exist in the key set. |
+
+Password mode requires `FAVN_DATABASE_URL`. The URL is always redacted, and URL
+query parameters are rejected so they cannot override the separately validated
+TLS, pool, or timeout settings.
+
+Azure managed-identity mode rejects `FAVN_DATABASE_URL` and requires ordinary,
+non-secret connection components:
+
+| Variable | Contract |
+| --- | --- |
+| `FAVN_DATABASE_HOST` | Azure Database for PostgreSQL hostname. |
+| `FAVN_DATABASE_PORT` | Optional `1..65535`, default `5432`. |
+| `FAVN_DATABASE_NAME` | PostgreSQL database name. |
+| `FAVN_DATABASE_USERNAME` | PostgreSQL role mapped to the selected Entra identity. |
+| `FAVN_AZURE_MANAGED_IDENTITY_CLIENT_ID` | Optional user-assigned managed-identity client ID. Omit it for the system-assigned identity. |
+
+Every new Repo or notification connection obtains a fresh-enough token from an
+independently supervised, bounded Azure cache. Existing authenticated sessions
+remain open when the token used for their original handshake expires. Expected
+identity-provider failures fail closed and enter connection backoff; Favn never
+retries a database write or transaction. Release operations use the same path.
+Use separate managed identities and PostgreSQL roles for runtime and migration.
 
 Production rejects plaintext PostgreSQL, including loopback URLs and unsafe
 interlock variables. Runtime code receives the validated connection and key-ring

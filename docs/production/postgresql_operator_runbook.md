@@ -1,6 +1,8 @@
 # PostgreSQL Control-Plane Operator Runbook
 
-Status: Storage V2 implementation runbook; managed-provider proof is tracked by #523
+Status: Storage V2 implementation runbook; issue #588's managed-identity path is
+implemented, while its live Azure acceptance remains part of the #523/#578
+production proof.
 Scope: Favn-owned `favn_control` schema on PostgreSQL 18
 
 Implementation architecture and ER diagrams live in
@@ -31,7 +33,7 @@ database.
 
 ## Required configuration
 
-Runtime nodes require:
+Runtime nodes using password authentication require:
 
 ```text
 FAVN_DATABASE_URL=ecto://favn_runtime:<secret>@<host>/<database>
@@ -52,6 +54,27 @@ from the configured keyring.
 
 Production rejects disabled TLS. The configured CA file must be a regular file and
 certificate hostname verification must succeed.
+
+Azure Database for PostgreSQL deployments may replace both URLs/passwords with
+managed identity:
+
+```text
+FAVN_DATABASE_AUTH_MODE=azure_managed_identity
+FAVN_DATABASE_HOST=<server>.postgres.database.azure.com
+FAVN_DATABASE_PORT=5432
+FAVN_DATABASE_NAME=favn
+FAVN_DATABASE_USERNAME=favn_runtime
+FAVN_AZURE_MANAGED_IDENTITY_CLIENT_ID=<runtime-identity-client-id>
+FAVN_DATABASE_SSL_MODE=verify-full
+FAVN_DATABASE_SSL_CA_FILE=/run/secrets/postgresql-ca.pem
+```
+
+The migration job uses the same variables with its distinct client ID and
+`FAVN_DATABASE_USERNAME=favn_migrator`. PostgreSQL must map the two Entra
+service principals to separate roles before either process starts. A provider
+or token failure prevents new connections and follows connection backoff;
+existing healthy sessions continue. Do not retry an operation whose database
+outcome is unknown.
 
 `FAVN_WORKSPACE_IDS` configures scheduler scope only; it is not an administrator
 bootstrap or run-recovery authority boundary. Administrator bootstrap names its

@@ -24,7 +24,8 @@ defmodule FavnAzure.MixProject do
     [
       internal_dep(:favn_core, "../favn_core"),
       internal_dep(:favn_test_support, "../favn_test_support", only: :test),
-      {:jason, "~> 1.4"}
+      {:jason, "~> 1.4"},
+      {:telemetry, "~> 1.0"}
     ]
   end
 

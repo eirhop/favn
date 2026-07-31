@@ -243,13 +243,32 @@ Production uses PostgreSQL 18 as the durable authority.
   certificate expiry.
 - [ ] Keep database administrator and monitoring connection headroom.
 
-The essential runtime settings look like:
+Password authentication uses:
 
 ```text
 FAVN_DATABASE_URL=ecto://favn_runtime:<secret>@postgres.internal/favn
 FAVN_DATABASE_SSL_MODE=verify-full
 FAVN_DATABASE_SSL_CA_FILE=/run/secrets/postgresql-ca.pem
 ```
+
+Azure Database for PostgreSQL can instead use managed identity without a
+database password or URL secret:
+
+```text
+FAVN_DATABASE_AUTH_MODE=azure_managed_identity
+FAVN_DATABASE_HOST=<server>.postgres.database.azure.com
+FAVN_DATABASE_PORT=5432
+FAVN_DATABASE_NAME=favn
+FAVN_DATABASE_USERNAME=favn_runtime
+FAVN_AZURE_MANAGED_IDENTITY_CLIENT_ID=<runtime-user-assigned-identity-client-id>
+FAVN_DATABASE_SSL_MODE=verify-full
+FAVN_DATABASE_SSL_CA_FILE=/run/secrets/postgresql-ca.pem
+```
+
+Use a different user-assigned identity and `favn_migrator` PostgreSQL role for
+the one-off migration job. Tokens are requested for each new physical
+connection through a bounded cache; they are never placed in application
+configuration, URLs, logs, or diagnostics.
 
 Do not add TLS settings to the URL query string. Favn validates TLS, pool, and
 timeout settings separately and rejects URL query parameters in production.
@@ -422,9 +441,10 @@ multi-node topology.
 
 Understand these before launch:
 
-- Microsoft Entra is supported only through Azure Container Apps Easy Auth.
-  Native OIDC, other identity providers, and Entra group/role authorization
-  are not implemented.
+- Operator SSO supports Microsoft Entra only through Azure Container Apps Easy
+  Auth. Native OIDC, other identity providers, and Entra group/role
+  authorization are not implemented. This is separate from managed-identity
+  authentication to Azure Database for PostgreSQL.
 - Only one control-plane BEAM is supported.
 - Zero-downtime control-plane replacement is not supported.
 - Login throttling and immediate PubSub disconnect are node-local.

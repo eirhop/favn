@@ -11,6 +11,7 @@ UI completion, managed-provider evidence, and data-plane recovery.
 | Area | Status | Production gate |
 | --- | --- | --- |
 | PostgreSQL Storage V2 | Implemented | Prove it against a production-sized restored snapshot and managed-provider PITR. |
+| Azure PostgreSQL managed identity | Connection/reconnect, release operations, and reference deployment implemented | Run #588's passwordless, long-duration reconnect acceptance in the target Azure environment. |
 | Workspace isolation, fencing, idempotency, bounded reads | Implemented | Record load, contention, failover, and recovery evidence. |
 | Lifecycle, readiness, bounded drain | Implemented | Owning-layer tests cover policy; real signal, cancellation, and recovery drills remain target-environment evidence. |
 | Control-plane release image | Implemented | CI directly builds, scans, attests, and publishes green commit images. |

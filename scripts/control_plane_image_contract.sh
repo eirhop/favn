@@ -28,10 +28,10 @@ inspect() {
 [[ $(inspect '{{json .Config.Healthcheck.Test}}') == '["CMD","/app/bin/favn_control_plane_health"]' ]]
 
 image_environment=$(inspect '{{range .Config.Env}}{{println .}}{{end}}')
-! grep -Ei '^FAVN_.*(TOKEN|PASSWORD|COOKIE|SECRET|DATABASE_URL|PIN_KEY)=' <<< "$image_environment" | grep -q .
+! grep -Ei '^FAVN_.*(TOKEN|PASSWORD|COOKIE|SECRET|DATABASE_URL|PIN_KEY|STORAGE_KEY|SAS)=' <<< "$image_environment" | grep -q .
 
 image_history=$(docker image history --no-trunc --format '{{.CreatedBy}}' "$image")
-! grep -Ei '(TOKEN|PASSWORD|COOKIE|SECRET_KEY_BASE|DATABASE_URL|PIN_KEY)=' <<< "$image_history" | grep -q .
+! grep -Ei '(TOKEN|PASSWORD|COOKIE|SECRET_KEY_BASE|DATABASE_URL|PIN_KEY|STORAGE_KEY|SAS)=' <<< "$image_history" | grep -q .
 
 contract=$(cat <<'SH'
 set -eu
@@ -45,6 +45,7 @@ test "$(cat /app/runtime-versions/OTP_VERSION)" = 29.0.4
 test ! -e /app/releases/COOKIE
 ! find /app -type f \( -name COOKIE -o -name .erlang.cookie \) | grep -q .
 find /app/lib -maxdepth 1 -type d -name 'favn_core-*' | grep -q .
+find /app/lib -maxdepth 1 -type d -name 'favn_azure-*' | grep -q .
 find /app/lib -maxdepth 1 -type d -name 'favn_view-*' | grep -q .
 find /app/lib -maxdepth 1 -type d -name 'favn_orchestrator-*' | grep -q .
 find /app/lib -maxdepth 1 -type d -name 'favn_storage_postgres-*' | grep -q .

@@ -1,21 +1,22 @@
 # `favn_azure` Structure
 
-Reader: contributors and documentation agents changing Azure runner
-authentication.
+Reader: contributors and documentation agents changing Azure runner or
+control-plane database authentication.
 
 Documentation type: reference.
 
-`favn_azure` is an optional public integration package. It owns Azure token
-acquisition and the first concrete implementation of the public runner-plugin
-lifecycle. It does not own DuckDB syntax, SQL connection behavior, orchestrator
-state, or durable credential storage.
+`favn_azure` is an optional public integration package and a fixed application in
+the control-plane release. It owns Azure token acquisition, the public
+runner-plugin lifecycle, and the internal control-plane PostgreSQL
+managed-identity provider. It does not own DuckDB syntax, Postgrex option
+normalization, orchestrator state, or durable credential storage.
 
 ## App Metadata
 
 - Mix app: `:favn_azure`
 - Description: Azure integration helpers for Favn adapters
 - Runtime applications: `:logger`, `:inets`, `:ssl`
-- Direct runtime dependencies: `:favn_core`, `:jason`
+- Direct runtime dependencies: `:favn_core`, `:jason`, `:telemetry`
 - Test-only dependency: `:favn_test_support`
 - Public entrypoints: `Favn.Azure.RunnerPlugin`, `Favn.Azure.Credentials`
 
@@ -32,6 +33,9 @@ state, or durable credential storage.
 | `apps/favn_azure/lib/favn/azure/credentials/azure_cli.ex` | Azure CLI provider for an arbitrary requested Azure resource. |
 | `apps/favn_azure/lib/favn/azure/credentials/managed_identity.ex` | IMDS and Azure App Service managed-identity provider with bounded transient retry. |
 | `apps/favn_azure/lib/favn/azure/postgres_entra_token.ex` | PostgreSQL resource facade delegating to the shared credential service. |
+| `apps/favn_azure/lib/favn/azure/control_plane_postgres_auth.ex` | Internal provider boundary for control-plane per-connection tokens, safe status, and failure classification. |
+| `apps/favn_azure/lib/favn/azure/control_plane_postgres_auth/` | Independently named credential/cache lifecycle for the control plane; it never uses the runner plugin's cache. |
+| `apps/favn_azure/lib/favn/azure/postgres_authentication_error.ex` | Redacted managed-identity failure class returned to PostgreSQL storage. |
 | `apps/favn_azure/lib/favn/azure/token.ex` | Token struct with normalized UTC expiry and always-redacted Inspect output. |
 | `apps/favn_azure/lib/favn/azure/token_error.ex` | Redacted acquisition error with retryability and bounded details. |
 
@@ -65,8 +69,9 @@ state, or durable credential storage.
 - User-assigned identity selection belongs in the request `client_id`. App
   Service identity headers are read at provider-call time and never enter the
   request, cache key, logs, or Inspect output.
-- The orchestrator owns control-plane state and scheduling. This package does
-  not authenticate Favn control-plane storage.
+- The orchestrator owns control-plane state and scheduling. The PostgreSQL
+  storage app owns connection normalization and failure transport; this package
+  supplies only the selected Azure credential and lifecycle.
 
 ## Verification
 
@@ -75,6 +80,9 @@ state, or durable credential storage.
   token redaction, runtime refs, and PostgreSQL facade delegation.
 - `apps/favn_azure/test/favn/azure/runner_plugin_test.exs` covers lifecycle child
   contribution and option validation.
+- `apps/favn_azure/test/favn/azure/control_plane_postgres_auth_test.exs` covers
+  independent lifecycle, validity margins, safe classifications, and process
+  status redaction.
 - `apps/favn_duckdb_adbc/test/sql/adapter/duckdb_adbc_azure_pool_test.exs`
   covers PostgreSQL token reuse, expiry refresh, superseded-session eviction,
   and new ADBC physical-session bootstrap.

@@ -27,7 +27,11 @@ defmodule Favn.Azure.Credentials.Cache do
     :clock,
     entries: %{},
     inflight: %{},
-    refs: %{}
+    refs: %{},
+    successful_provider_fetches: 0,
+    failed_provider_fetches: 0,
+    last_provider_fetch_monotonic_ms: nil,
+    last_provider_failure_class: nil
   ]
 
   @type server :: GenServer.server()
@@ -47,6 +51,13 @@ defmodule Favn.Azure.Credentials.Cache do
     :exit, _reason -> {:error, cache_error(:cache_unavailable)}
   end
 
+  @spec status(server(), timeout()) :: map()
+  def status(server, timeout \\ 1_000) do
+    GenServer.call(server, :status, timeout)
+  catch
+    :exit, _reason -> %{available?: false}
+  end
+
   @impl true
   def init(opts) do
     state = %__MODULE__{
@@ -62,8 +73,7 @@ defmodule Favn.Azure.Credentials.Cache do
       fetch_timeout:
         bounded_integer(opts, :fetch_timeout, @default_fetch_timeout, 1, @max_fetch_timeout),
       max_entries: bounded_integer(opts, :max_entries, @default_max_entries, 1, @max_entries),
-      max_inflight:
-        bounded_integer(opts, :max_inflight, @default_max_inflight, 1, @max_inflight),
+      max_inflight: bounded_integer(opts, :max_inflight, @default_max_inflight, 1, @max_inflight),
       max_waiters_per_key:
         bounded_integer(
           opts,
@@ -96,6 +106,8 @@ defmodule Favn.Azure.Credentials.Cache do
     end
   end
 
+  def handle_call(:status, _from, state), do: {:reply, status_map(state), state}
+
   @impl true
   def handle_info({ref, result}, state) when is_reference(ref) do
     case Map.fetch(state.refs, ref) do
@@ -125,6 +137,26 @@ defmodule Favn.Azure.Credentials.Cache do
       :error ->
         {:noreply, state}
     end
+  end
+
+  @impl true
+  def format_status(_reason, [_process_dictionary, state]), do: status_map(state)
+
+  defp status_map(state) do
+    %{
+      available?: true,
+      cached_entries: map_size(state.entries),
+      inflight: map_size(state.inflight),
+      max_entries: state.max_entries,
+      max_inflight: state.max_inflight,
+      max_waiters_per_key: state.max_waiters_per_key,
+      refresh_before_seconds: state.refresh_before_seconds,
+      fetch_timeout: state.fetch_timeout,
+      successful_provider_fetches: state.successful_provider_fetches,
+      failed_provider_fetches: state.failed_provider_fetches,
+      last_provider_fetch_monotonic_ms: state.last_provider_fetch_monotonic_ms,
+      last_provider_failure_class: state.last_provider_failure_class
+    }
   end
 
   defp queue_or_start(key, request, provider_opts, stale, from, state) do
@@ -177,6 +209,7 @@ defmodule Favn.Azure.Credentials.Cache do
       refs = Map.delete(state.refs, inflight.task.ref)
       {reply, entries} = resolve_result(result, inflight.stale, state.entries, key, state)
       Enum.each(inflight.waiters, &GenServer.reply(&1, reply))
+      state = record_fetch_outcome(state, result)
       %{state | inflight: inflight_by_key, refs: refs, entries: entries}
     else
       state
@@ -207,13 +240,46 @@ defmodule Favn.Azure.Credentials.Cache do
 
   defp fallback(_stale, entries, error), do: {{:error, error}, entries}
 
+  defp record_fetch_outcome(state, {:ok, %Token{} = token}) do
+    if Token.valid_for?(token, 0, state.clock.()) do
+      %{
+        state
+        | successful_provider_fetches: state.successful_provider_fetches + 1,
+          last_provider_fetch_monotonic_ms: System.monotonic_time(:millisecond),
+          last_provider_failure_class: nil
+      }
+    else
+      record_fetch_failure(state, :provider_returned_expired_token)
+    end
+  end
+
+  defp record_fetch_outcome(state, {:error, %TokenError{type: type}}) when is_atom(type),
+    do: record_fetch_failure(state, type)
+
+  defp record_fetch_outcome(state, {:task_failure, reason}) when is_atom(reason),
+    do: record_fetch_failure(state, reason)
+
+  defp record_fetch_outcome(state, _invalid),
+    do: record_fetch_failure(state, :invalid_provider_result)
+
+  defp record_fetch_failure(state, class) do
+    %{
+      state
+      | failed_provider_fetches: state.failed_provider_fetches + 1,
+        last_provider_fetch_monotonic_ms: System.monotonic_time(:millisecond),
+        last_provider_failure_class: class
+    }
+  end
+
   defp put_bounded(entries, key, token, max_entries) do
     entries =
       Map.reject(entries, fn {_entry_key, cached} -> not Token.valid_for?(cached, 0) end)
 
     entries =
       if map_size(entries) >= max_entries and not Map.has_key?(entries, key) do
-        {oldest_key, _token} = Enum.min_by(entries, fn {_entry_key, cached} -> cached.expires_at end)
+        {oldest_key, _token} =
+          Enum.min_by(entries, fn {_entry_key, cached} -> cached.expires_at end)
+
         Map.delete(entries, oldest_key)
       else
         entries

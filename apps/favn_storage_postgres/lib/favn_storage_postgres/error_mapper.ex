@@ -49,5 +49,9 @@ defmodule FavnStoragePostgres.ErrorMapper do
   def map(:conflict), do: Error.new(:conflict, "persistence write conflicts with committed state")
   def map(:invalid), do: Error.new(:invalid, "invalid persistence command")
 
+  def map(:database_authentication_lifecycle_unavailable) do
+    Error.new(:unavailable, "database authentication lifecycle unavailable", retryable?: true)
+  end
+
   def map(_reason), do: Error.new(:internal, "internal persistence failure")
 end

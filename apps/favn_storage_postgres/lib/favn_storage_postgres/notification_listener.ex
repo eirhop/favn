@@ -19,7 +19,7 @@ defmodule FavnStoragePostgres.NotificationListener do
 
   @impl true
   def init(options) do
-    with {:ok, connection} <- Postgrex.Notifications.start_link(connection_options(options)),
+    with {:ok, connection} <- Postgrex.Notifications.start_link(options),
          {:ok, committed_ref} <- Postgrex.Notifications.listen(connection, @committed_channel),
          {:ok, published_ref} <- Postgrex.Notifications.listen(connection, @published_channel),
          {:ok, admission_ref} <- Postgrex.Notifications.listen(connection, @admission_channel) do
@@ -72,15 +72,5 @@ defmodule FavnStoragePostgres.NotificationListener do
   defp wake(server) do
     if Process.whereis(server), do: GenServer.cast(server, :wake)
     :ok
-  end
-
-  defp connection_options(options) do
-    url_options = options |> Keyword.fetch!(:url) |> Ecto.Repo.Supervisor.parse_url()
-
-    options
-    |> Keyword.take([:ssl, :socket_options, :connect_timeout, :timeout])
-    |> Keyword.merge(url_options)
-    |> Keyword.put(:auto_reconnect, true)
-    |> Keyword.put(:sync_connect, true)
   end
 end
