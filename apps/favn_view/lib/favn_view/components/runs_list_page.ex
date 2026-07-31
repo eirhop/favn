@@ -66,7 +66,12 @@ defmodule FavnView.Components.RunsListPage do
           description={@error}
           data-testid="runs-error-state"
         />
-        <.table_panel :if={!@error} data-testid="runs-panel">
+        <.table_panel
+          :if={!@error}
+          count={row_count(@listing)}
+          count_label="runs"
+          data-testid="runs-panel"
+        >
           <:toolbar>
             <.runs_toolbar filters={@filters} counts={@counts} filters_open?={@filters_open?} />
           </:toolbar>
@@ -75,8 +80,11 @@ defmodule FavnView.Components.RunsListPage do
             <.runs_empty_state :if={empty?(@listing)} filters={@filters} />
             <.runs_table :if={!empty?(@listing)} listing={@listing} order={@filters.order} />
             <.runs_cards :if={!empty?(@listing)} listing={@listing} />
-            <.runs_pager filters={@filters} more?={@more?} />
           </div>
+
+          <:footer>
+            <.runs_pager filters={@filters} more?={@more?} />
+          </:footer>
         </.table_panel>
       </div>
     </AppShell.app_shell>
@@ -101,27 +109,24 @@ defmodule FavnView.Components.RunsListPage do
       filters_id="runs-filters"
       on_toggle="toggle_filters"
       filters_open?={@filters_open?}
-      adjusted?={RunsFilters.adjusted?(@filters)}
+      on_clear="clear_filters"
+      adjusted?={RunsFilters.narrowed?(@filters) or RunsFilters.adjusted?(@filters)}
+      search_name="filters[q]"
+      search_label="Search runs"
+      search_placeholder="Run id, pipeline, or asset"
+      search_value={@filters.search}
     >
       <:scopes>
         <.scope_rail label="Run status" choices={@choices} data-testid="run-statuses" />
       </:scopes>
 
       <:filters>
-        <.search_field
-          name="filters[q]"
-          value={@filters.search}
-          label="Search runs"
-          placeholder="Run id, pipeline, or asset"
-          class="sm:w-56"
-        />
         <.select_field
           name="filters[range]"
           label="Time range"
           options={RunsFilters.range_options()}
           value={to_string(@filters.range)}
           icon="hero-calendar-days"
-          class="sm:w-44"
         />
         <div
           :if={RunsFilters.custom?(@filters)}
@@ -153,7 +158,7 @@ defmodule FavnView.Components.RunsListPage do
 
   def date_input(assigns) do
     ~H"""
-    <label class={["input input-sm favn-surface-control px-3", @class]}>
+    <label class={["input input-sm favn-surface-control h-9 min-h-9 px-3", @class]}>
       <span class="sr-only">{@label}</span>
       <input
         type="date"
@@ -226,7 +231,7 @@ defmodule FavnView.Components.RunsListPage do
     ~H"""
     <div
       :if={@more? or RunsFilters.paged?(@filters)}
-      class="flex items-center justify-between gap-3 border-t border-base-content/10 p-3"
+      class="flex items-center gap-2"
       data-testid="runs-pager"
     >
       <.button
@@ -238,10 +243,6 @@ defmodule FavnView.Components.RunsListPage do
       >
         Newest
       </.button>
-
-      <span :if={!RunsFilters.paged?(@filters)} class="text-xs favn-text-subtle">
-        {RunsFilters.page_size()} most recent
-      </span>
 
       <.button
         :if={@more?}
@@ -485,6 +486,13 @@ defmodule FavnView.Components.RunsListPage do
 
   defp empty?({:flat, runs}), do: runs == []
   defp empty?({:days, days}), do: Enum.all?(days, &(&1.kind == :gap))
+
+  # The rows on this page, whichever layout it is in. Day headers and gaps are
+  # not rows, so they are not counted.
+  defp row_count({:flat, runs}), do: length(runs)
+
+  defp row_count({:days, days}),
+    do: days |> Enum.filter(&(&1.kind == :day)) |> Enum.map(&length(&1.runs)) |> Enum.sum()
 
   defp day_runs(%{kind: :day, runs: runs}), do: runs
   defp day_runs(_gap), do: []

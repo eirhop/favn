@@ -65,6 +65,10 @@ defmodule FavnView.RunsListLive do
     {:noreply, update(socket, :filters_open?, &(not &1))}
   end
 
+  def handle_event("clear_filters", _params, socket) do
+    {:noreply, patch(socket, %RunsFilters{})}
+  end
+
   def handle_event("toggle_started_order", _params, socket) do
     {:noreply, patch(socket, RunsFilters.toggle_order(socket.assigns.filters))}
   end

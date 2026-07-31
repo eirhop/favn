@@ -875,15 +875,24 @@ defmodule FavnView.Dev.DesignSystem.Examples.Elements do
     assigns = assign(assigns, :rows, table_rows())
 
     ~H"""
-    <div class="flex h-72 flex-col">
-      <.table_panel>
+    <div class="flex h-96 flex-col">
+      <.table_panel count={length(@rows)} count_label="runs">
         <:toolbar>
-          <.table_toolbar on_change="filter_runs" filters_id="panel-example-filters">
+          <.table_toolbar
+            on_change="filter_runs"
+            filters_id="panel-example-filters"
+            search_name="filters[q]"
+            search_label="Search runs"
+          >
             <:filters>
-              <.search_field name="filters[q]" label="Search runs" value="" class="sm:w-56" />
+              <.select_field
+                name="filters[range]"
+                label="Time range"
+                icon="hero-calendar-days"
+                options={[{"Today", "today"}, {"This week", "week"}]}
+                value="today"
+              />
             </:filters>
-
-            <:meta>3 results</:meta>
           </.table_toolbar>
         </:toolbar>
 
@@ -905,20 +914,23 @@ defmodule FavnView.Dev.DesignSystem.Examples.Elements do
 
   defp table_toolbar_example(assigns) do
     ~H"""
-    <.table_toolbar on_change="filter_assets" filters_id="toolbar-example-filters">
+    <.table_toolbar
+      on_change="filter_assets"
+      filters_id="toolbar-example-filters"
+      search_name="filters[search]"
+      search_label="Search assets"
+      on_clear="clear_filters"
+      adjusted?={true}
+    >
       <:filters>
-        <.search_field name="filters[search]" label="Search assets" value="" class="sm:w-56" />
         <.select_field
           name="filters[connection]"
           label="Connection filter"
           icon="hero-circle-stack"
           options={[{"Connection", "all"}, {"DuckDB", "duckdb"}]}
           value="all"
-          class="sm:w-44"
         />
       </:filters>
-
-      <:meta>12 results</:meta>
     </.table_toolbar>
     """
   end
@@ -930,6 +942,8 @@ defmodule FavnView.Dev.DesignSystem.Examples.Elements do
       filters_id="toolbar-scopes-filters"
       on_toggle="toggle_filters"
       adjusted?={true}
+      search_name="filters[q]"
+      search_label="Search runs"
     >
       <:scopes>
         <nav class="favn-surface-rail flex flex-wrap items-center gap-0.5 rounded-box p-1">
@@ -942,10 +956,6 @@ defmodule FavnView.Dev.DesignSystem.Examples.Elements do
           </span>
         </nav>
       </:scopes>
-
-      <:filters>
-        <.search_field name="filters[q]" label="Search runs" value="" class="sm:w-56" />
-      </:filters>
     </.table_toolbar>
     """
   end

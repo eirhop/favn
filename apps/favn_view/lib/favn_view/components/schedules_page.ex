@@ -44,13 +44,16 @@ defmodule FavnView.Components.SchedulesPage do
         />
         <div :if={!@loading && !@error} class="flex min-h-0 flex-1 flex-col gap-2.5 lg:gap-3">
           <.helper_text />
-          <.table_panel data-testid="schedules-panel">
+          <.table_panel
+            count={length(@schedules)}
+            count_label="schedules"
+            data-testid="schedules-panel"
+          >
             <:toolbar>
               <.filters_bar
                 filters={@filters}
                 filter_options={@filter_options}
                 scope_choices={@scope_choices}
-                result_count={length(@schedules)}
               />
             </:toolbar>
 
@@ -95,11 +98,18 @@ defmodule FavnView.Components.SchedulesPage do
   attr :filters, :map, required: true
   attr :filter_options, :map, required: true
   attr :scope_choices, :list, required: true
-  attr :result_count, :integer, required: true
 
   def filters_bar(assigns) do
     ~H"""
-    <.table_toolbar on_change="filter_schedules" filters_id="schedule-filters">
+    <.table_toolbar
+      on_change="filter_schedules"
+      filters_id="schedule-filters"
+      on_clear="clear_filters"
+      adjusted?={narrowed?(@filters)}
+      search_name="filters[search]"
+      search_label="Search schedules"
+      search_value={@filters["search"]}
+    >
       <:scopes>
         <.scope_rail
           label="Schedule state"
@@ -110,20 +120,12 @@ defmodule FavnView.Components.SchedulesPage do
       </:scopes>
 
       <:filters>
-        <.search_field
-          id="schedule-search"
-          name="filters[search]"
-          label="Search schedules"
-          value={@filters["search"]}
-          class="sm:w-56"
-        />
         <.select_field
           name="filters[pipeline]"
           label="Pipeline"
           icon="hero-queue-list"
           options={pipeline_options(@filter_options.pipelines)}
           value={@filters["pipeline"]}
-          class="sm:w-44"
         />
         <.select_field
           name="filters[window]"
@@ -131,21 +133,8 @@ defmodule FavnView.Components.SchedulesPage do
           icon="hero-calendar-days"
           options={window_options(@filter_options.windows)}
           value={@filters["window"]}
-          class="sm:w-36"
         />
-        <.button
-          type="button"
-          variant={:ghost}
-          phx-click="clear_filters"
-          data-testid="clear-schedule-filters"
-        >
-          Clear
-        </.button>
       </:filters>
-
-      <:meta>
-        <span data-testid="schedule-result-count">{@result_count} results</span>
-      </:meta>
     </.table_toolbar>
     """
   end
@@ -317,6 +306,28 @@ defmodule FavnView.Components.SchedulesPage do
   @spec policies_label(map()) :: String.t()
   def policies_label(schedule) do
     Enum.map_join([schedule.overlap, schedule.missed], " · ", &policy_label/1)
+  end
+
+  @doc """
+  Whether anything narrows the list beyond its default view.
+
+  This is what decides the clear control is worth showing: with nothing set there
+  is nothing to clear, and a permanent one is a button that usually does nothing.
+
+  ## Examples
+
+      iex> FavnView.Components.SchedulesPage.narrowed?(%{"search" => "", "window" => "all"})
+      false
+
+      iex> FavnView.Components.SchedulesPage.narrowed?(%{"search" => "daily"})
+      true
+  """
+  @spec narrowed?(map()) :: boolean()
+  def narrowed?(filters) do
+    Enum.any?(filters, fn
+      {"search", value} -> String.trim(to_string(value)) != ""
+      {_key, value} -> value not in ["all", nil]
+    end)
   end
 
   def nav_items(active \\ :schedules), do: Navigation.items(active)

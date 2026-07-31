@@ -34,7 +34,11 @@ defmodule FavnView.Components.PipelinesPage do
           data-testid="pipelines-error-state"
         />
         <div :if={!@loading && !@error} class="flex flex-col lg:min-h-0 lg:flex-1">
-          <.table_panel data-testid="pipelines-panel">
+          <.table_panel
+            count={length(@pipelines)}
+            count_label="pipelines"
+            data-testid="pipelines-panel"
+          >
             <:toolbar>
               <.pipeline_filters filters={@filters} status_options={@status_options} />
             </:toolbar>
@@ -59,16 +63,17 @@ defmodule FavnView.Components.PipelinesPage do
 
   def pipeline_filters(assigns) do
     ~H"""
-    <.table_toolbar on_change="filter_pipelines" filters_id="pipeline-filters">
+    <.table_toolbar
+      on_change="filter_pipelines"
+      filters_id="pipeline-filters"
+      on_clear="clear_filters"
+      adjusted?={narrowed?(@filters)}
+      search_name="filters[search]"
+      search_label="Search pipelines"
+      search_placeholder="Search pipelines or selected assets"
+      search_value={@filters.search}
+    >
       <:filters>
-        <.search_field
-          id="pipeline-search"
-          name="filters[search]"
-          label="Search pipelines"
-          placeholder="Search pipelines or selected assets"
-          value={@filters.search}
-          class="sm:w-72"
-        />
         <.select_field
           id="pipeline-status-filter"
           name="filters[status]"
@@ -76,7 +81,6 @@ defmodule FavnView.Components.PipelinesPage do
           icon="hero-heart"
           options={@status_options}
           value={@filters.status}
-          class="sm:w-44"
         />
       </:filters>
     </.table_toolbar>
@@ -262,6 +266,22 @@ defmodule FavnView.Components.PipelinesPage do
 
   def status_options do
     [{"Health", "all"}, {"Healthy", "healthy"}, {"Running", "running"}, {"Failed", "failed"}]
+  end
+
+  @doc """
+  Whether anything narrows the list beyond its default view.
+
+  ## Examples
+
+      iex> FavnView.Components.PipelinesPage.narrowed?(%{search: "", status: "all"})
+      false
+
+      iex> FavnView.Components.PipelinesPage.narrowed?(%{search: "", status: "failed"})
+      true
+  """
+  @spec narrowed?(map()) :: boolean()
+  def narrowed?(filters) do
+    String.trim(to_string(filters.search)) != "" or filters.status != "all"
   end
 
   def nav_items(active \\ :pipelines), do: Navigation.items(active)

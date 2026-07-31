@@ -46,6 +46,7 @@ defmodule FavnView.UI.Data do
 
   import FavnView.UI.Badge
   import FavnView.UI.Button
+  import FavnView.UI.Field, only: [search_field: 1]
   import FavnView.UI.Icon
   import FavnView.UI.Surface
 
@@ -172,6 +173,11 @@ defmodule FavnView.UI.Data do
   same one, so it lives here rather than in each page: this is the only place the
   bounding is written down.
 
+  The panel also owns the footer, so how many rows a list is showing is reported
+  in the same corner every time — trailing edge, below the rows it counts, where
+  a reader looks after reading them rather than among the controls that produced
+  them.
+
   Pair it with `data_table/1` and `fill?`. Below `lg` the table is not the right
   shape for the viewport, so a screen renders `FavnView.UI.Surface.list_card/1`
   rows instead; pass `desktop_only?` when those cards live outside this panel.
@@ -186,9 +192,19 @@ defmodule FavnView.UI.Data do
     default: false,
     doc: "hide below `lg`, for a screen whose cards render outside this panel"
 
+  attr :count, :integer,
+    default: nil,
+    doc: "how many rows are listed; rendered in the footer's trailing corner"
+
+  attr :count_label, :string, default: "rows", doc: "what the count counts, pluralised"
+
   attr :class, :any, default: nil
   attr :rest, :global
   slot :toolbar, doc: "filters or scope controls that scroll with the panel rather than the rows"
+
+  slot :footer,
+    doc: "paging or other controls for the whole list, at the footer's leading edge"
+
   slot :inner_block, required: true
 
   def table_panel(assigns) do
@@ -204,6 +220,17 @@ defmodule FavnView.UI.Data do
     >
       <div :if={@toolbar != []} class="shrink-0">{render_slot(@toolbar)}</div>
       {render_slot(@inner_block)}
+
+      <div
+        :if={@count || @footer != []}
+        class="flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-base-content/10 p-3"
+      >
+        <div class="flex min-w-0 flex-wrap items-center gap-2">{render_slot(@footer)}</div>
+
+        <p :if={@count} class="shrink-0 text-xs favn-text-subtle" data-testid="table-count">
+          {@count} {@count_label}
+        </p>
+      </div>
     </.panel>
     """
   end
@@ -227,33 +254,61 @@ defmodule FavnView.UI.Data do
   filters behind one control below `lg`, for a screen whose scopes must stay
   visible on a phone; without it the filters are always shown.
 
-      <.table_toolbar on_change="filter_schedules" filters_id="schedule-filters">
+      <.table_toolbar
+        on_change="filter_schedules"
+        filters_id="schedule-filters"
+        search_name="filters[search]"
+        search_label="Search schedules"
+        search_value={@filters["search"]}
+        on_clear="clear_filters"
+        adjusted?={@narrowed?}
+      >
+        <:scopes><.scope_rail label="Schedule state" choices={@scope_choices} /></:scopes>
         <:filters>
-          <.search_field name="filters[search]" label="Search schedules" value={@filters["search"]} />
+          <.select_field name="filters[window]" label="Window" options={@windows} value={@window} />
         </:filters>
-        <:meta>{@result_count} results</:meta>
       </.table_toolbar>
+
+  ## The order is fixed
+
+  Reading left to right: the scope rail, then the narrowing controls, then the
+  search at the far edge. Search is last because it is the control an operator
+  returns to most and the only one whose position should never move; the selects
+  a screen happens to need sit between them. How many rows resulted is not a
+  control and does not belong here — `table_panel/1` reports it in the footer.
+
+  That order is this component's, not a caller's — the search is an attr rather
+  than a slot precisely so a screen cannot place it somewhere else, and the
+  selects share one width so a row of them lines up across screens.
   """
   attr :on_change, :string, default: nil, doc: "LiveView event; renders the form around `filters`"
   attr :filters_id, :string, default: nil
   attr :on_toggle, :string, default: nil, doc: "event that collapses the filters below `lg`"
   attr :filters_open?, :boolean, default: false, doc: "only meaningful with `on_toggle`"
 
+  attr :search_name, :string, default: nil, doc: "form field name; renders the search when set"
+  attr :search_label, :string, default: "Search", doc: "screen-reader name and placeholder"
+  attr :search_placeholder, :string, default: nil
+  attr :search_value, :any, default: nil
+
+  attr :on_clear, :string,
+    default: nil,
+    doc: "event that resets every filter; the control appears only once something is set"
+
   attr :adjusted?, :boolean,
     default: false,
-    doc: "marks the collapsed control when a filter is set"
+    doc: "whether anything narrows the list; shows the clear control and marks the collapsed one"
 
   attr :class, :any, default: nil
   attr :rest, :global
 
   slot :scopes, doc: "a rail of buttons for the axis that carries counts"
-  slot :filters, doc: "search and selects; use `search_field/1` and `select_field/1`"
-  slot :meta, doc: "a result count, aligned to the end"
+  slot :filters, doc: "the selects this screen narrows by; use `select_field/1`"
 
   def table_toolbar(assigns) do
     ~H"""
     <div class={["border-b border-base-content/10 p-3 sm:p-4", @class]} {@rest}>
-      <div class="flex flex-wrap items-center gap-2 sm:gap-3 lg:justify-between">
+      <div class="flex flex-wrap items-center gap-2 sm:gap-3 lg:flex-nowrap">
         <div :if={@scopes != []} class="w-full sm:w-auto">{render_slot(@scopes)}</div>
 
         <.button
@@ -271,27 +326,52 @@ defmodule FavnView.UI.Data do
         </.button>
 
         <form
-          :if={@filters != []}
+          :if={@search_name || @filters != []}
           id={@filters_id}
           phx-change={@on_change}
           phx-submit={@on_change}
-          class={
-            [
-              "gap-2 sm:flex-row sm:flex-wrap sm:items-center",
-              # Always at the end, whether or not a scope rail holds the start, so
-              # the search sits in the same corner on every list screen.
-              "lg:ml-auto",
-              filters_class(assigns)
-            ]
-          }
+          class={[
+            "items-stretch gap-2 sm:flex-row sm:flex-wrap sm:items-center lg:ml-auto lg:flex-nowrap",
+            filters_class(assigns)
+          ]}
           data-testid="table-filters"
         >
-          {render_slot(@filters)}
-        </form>
+          <.button
+            :if={@on_clear && @adjusted?}
+            type="button"
+            variant={:ghost}
+            icon="hero-x-mark"
+            class="h-9 min-h-9 shrink-0"
+            phx-click={@on_clear}
+            data-testid="clear-table-filters"
+          >
+            Clear
+          </.button>
 
-        <div :if={@meta != []} class="ml-auto shrink-0 text-xs favn-text-subtle">
-          {render_slot(@meta)}
-        </div>
+          <div
+            :if={@filters != []}
+            class={
+              [
+                "contents sm:flex sm:flex-wrap sm:items-center sm:gap-2",
+                # One width for every select, so a row of them lines up across
+                # screens, and `nowrap` so two of them never stack into a column
+                # while there is still room beside them.
+                "sm:[&>label]:w-44 lg:flex-nowrap"
+              ]
+            }
+          >
+            {render_slot(@filters)}
+          </div>
+
+          <.search_field
+            :if={@search_name}
+            name={@search_name}
+            label={@search_label}
+            placeholder={@search_placeholder}
+            value={@search_value}
+            class="min-w-0 sm:w-64"
+          />
+        </form>
       </div>
     </div>
     """

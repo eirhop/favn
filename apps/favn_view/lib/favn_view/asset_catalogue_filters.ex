@@ -77,6 +77,25 @@ defmodule FavnView.AssetCatalogueFilters do
   def defaults, do: %{search: "", connection: "all", catalogue: "all", scope: "all"}
 
   @doc """
+  Whether anything narrows the list beyond its default view.
+
+  ## Examples
+
+      iex> FavnView.AssetCatalogueFilters.narrowed?(FavnView.AssetCatalogueFilters.defaults())
+      false
+
+      iex> FavnView.AssetCatalogueFilters.narrowed?(
+      ...>   %{FavnView.AssetCatalogueFilters.defaults() | scope: "unhealthy"}
+      ...> )
+      true
+  """
+  @spec narrowed?(map()) :: boolean()
+  def narrowed?(filters) do
+    String.trim(to_string(Map.get(filters, :search, ""))) != "" or
+      Enum.any?([:connection, :catalogue, :scope], &(Map.get(filters, &1, "all") != "all"))
+  end
+
+  @doc """
   Scope choices for `FavnView.UI.Data.scope_rail/1`.
 
   Counts come from every asset rather than the filtered page, so the number on a

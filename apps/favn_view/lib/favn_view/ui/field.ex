@@ -67,11 +67,16 @@ defmodule FavnView.UI.Field do
 
   def search_field(assigns) do
     ~H"""
-    <label class={[
-      "input input-sm favn-surface-control col-span-2 w-full gap-3 px-4",
-      "focus-within:outline focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-primary lg:col-span-1",
-      @class
-    ]}>
+    <label class={
+      [
+        "input input-sm favn-surface-control col-span-2 w-full gap-3 px-4",
+        # Every control on a list toolbar shares the scope rail's 36px box, so the
+        # row has one baseline rather than three.
+        "h-9 min-h-9",
+        "focus-within:outline focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-primary lg:col-span-1",
+        @class
+      ]
+    }>
       <.icon name="hero-magnifying-glass" size={:md} class="shrink-0 favn-text-muted" />
       <span class="sr-only">{@label}</span>
       <input
@@ -99,6 +104,7 @@ defmodule FavnView.UI.Field do
     ~H"""
     <label class={[
       "select select-sm favn-surface-control w-full gap-2 px-3",
+      "h-9 min-h-9",
       "focus-within:outline focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-primary",
       @class
     ]}>
@@ -197,6 +203,7 @@ defmodule FavnView.UI.Field do
           />{@label}
         </span>
       </label>
+
       <.field_error :for={msg <- @errors}>{msg}</.field_error>
     </div>
     """
@@ -218,6 +225,7 @@ defmodule FavnView.UI.Field do
           {Phoenix.HTML.Form.options_for_select(@options, @value)}
         </select>
       </label>
+
       <.field_error :for={msg <- @errors}>{msg}</.field_error>
     </div>
     """
@@ -227,14 +235,14 @@ defmodule FavnView.UI.Field do
     ~H"""
     <div class="fieldset mb-2">
       <label for={@id}>
-        <span :if={@label} class="label mb-1">{@label}</span>
-        <textarea
+        <span :if={@label} class="label mb-1">{@label}</span> <textarea
           id={@id}
           name={@name}
           class={[@class || "w-full textarea", @errors != [] && (@error_class || "textarea-error")]}
           {@rest}
         >{Phoenix.HTML.Form.normalize_value("textarea", @value)}</textarea>
       </label>
+
       <.field_error :for={msg <- @errors}>{msg}</.field_error>
     </div>
     """
@@ -254,6 +262,7 @@ defmodule FavnView.UI.Field do
           {@rest}
         />
       </label>
+
       <.field_error :for={msg <- @errors}>{msg}</.field_error>
     </div>
     """
@@ -267,8 +276,7 @@ defmodule FavnView.UI.Field do
   def field_error(assigns) do
     ~H"""
     <p class="mt-1.5 flex items-center gap-2 text-sm text-error">
-      <.icon name="hero-exclamation-circle" size={:md} />
-      {render_slot(@inner_block)}
+      <.icon name="hero-exclamation-circle" size={:md} /> {render_slot(@inner_block)}
     </p>
     """
   end

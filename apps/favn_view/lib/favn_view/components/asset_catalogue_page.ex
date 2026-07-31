@@ -25,6 +25,7 @@ defmodule FavnView.Components.AssetCataloguePage do
 
   use FavnView, :html
 
+  alias FavnView.AssetCatalogueFilters
   alias FavnView.Components.AppShell
   alias FavnView.Components.LineagePage
   alias FavnView.Components.ModeRail
@@ -86,7 +87,7 @@ defmodule FavnView.Components.AssetCataloguePage do
           :if={!@loading && !@error && @active_mode == :list}
           class="flex flex-col lg:min-h-0 lg:flex-1"
         >
-          <.table_panel data-testid="assets-panel">
+          <.table_panel count={length(@assets)} count_label="assets" data-testid="assets-panel">
             <:toolbar>
               <.asset_filters
                 filters={@filters}
@@ -138,7 +139,15 @@ defmodule FavnView.Components.AssetCataloguePage do
 
   def asset_filters(assigns) do
     ~H"""
-    <.table_toolbar on_change="filter_assets" filters_id="asset-filters">
+    <.table_toolbar
+      on_change="filter_assets"
+      filters_id="asset-filters"
+      on_clear="clear_filters"
+      adjusted?={AssetCatalogueFilters.narrowed?(@filters)}
+      search_name="filters[search]"
+      search_label="Search assets"
+      search_value={@filters.search}
+    >
       <:scopes>
         <.scope_rail
           label="Asset state"
@@ -149,13 +158,6 @@ defmodule FavnView.Components.AssetCataloguePage do
       </:scopes>
 
       <:filters>
-        <.search_field
-          id="asset-search"
-          name="filters[search]"
-          label="Search assets"
-          value={@filters.search}
-          class="sm:w-72"
-        />
         <.select_field
           id="connection-filter"
           name="filters[connection]"
@@ -163,7 +165,6 @@ defmodule FavnView.Components.AssetCataloguePage do
           icon="hero-circle-stack"
           options={@connection_options}
           value={@filters.connection}
-          class="sm:w-44"
         />
         <.select_field
           id="catalogue-filter"
@@ -172,7 +173,6 @@ defmodule FavnView.Components.AssetCataloguePage do
           icon="hero-folder"
           options={@catalogue_options}
           value={@filters.catalogue}
-          class="sm:w-44"
         />
       </:filters>
     </.table_toolbar>

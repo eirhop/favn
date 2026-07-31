@@ -69,6 +69,10 @@ defmodule FavnView.AssetCatalogueLive do
     {:noreply, apply_filters(socket, %{socket.assigns.filters | scope: scope})}
   end
 
+  def handle_event("clear_filters", _params, socket) do
+    {:noreply, apply_filters(socket, @default_filters)}
+  end
+
   def handle_event("set_mode", %{"mode" => mode}, socket) when mode in @valid_modes do
     {:noreply, push_patch(socket, to: ~p"/assets?#{mode_query(mode)}")}
   end
