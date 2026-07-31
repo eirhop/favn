@@ -89,7 +89,7 @@ defmodule FavnView.RunsListLiveTest do
 
     stub_page([group])
 
-    assert {:flat, [run]} = load(%{}).assigns.listing
+    assert [run] = load(%{}).assigns.runs
     assert run.duration == "154.0 s"
   end
 
