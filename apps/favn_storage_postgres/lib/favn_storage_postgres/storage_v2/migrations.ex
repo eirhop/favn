@@ -23,6 +23,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
   alias FavnStoragePostgres.Migrations.AddResourceCircuitsV2
   alias FavnStoragePostgres.Migrations.AddRunExecutionCheckpointsV2
   alias FavnStoragePostgres.Migrations.AddRunnerTasksV2
+  alias FavnStoragePostgres.Migrations.AddRunnerTaskOperatorReadsV2
   alias FavnStoragePostgres.Migrations.AddRuntimeInputKeyInventoryV2
   alias FavnStoragePostgres.Migrations.AddScheduleOperatorReadsV2
   alias FavnStoragePostgres.Migrations.AddScheduleActivationsV2
@@ -80,7 +81,8 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     {20_260_730_000_000, AddExecutionGroupStartOrderingV2},
     {20_260_730_010_000, BindAuthSessionsToWorkspacesV2},
     {20_260_730_020_000, AddOperatorCommandIntentsV2},
-    {20_260_730_030_000, AddExternalIdentitiesV2}
+    {20_260_730_030_000, AddExternalIdentitiesV2},
+    {20_260_731_000_000, AddRunnerTaskOperatorReadsV2}
   ]
   @required_tables ~w(
     schema_migrations
@@ -192,6 +194,8 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     runner_tasks_domain_identity_uidx
     runner_tasks_claim_idx
     runner_tasks_run_idx
+    runner_tasks_workspace_recent_idx
+    runner_tasks_workspace_status_recent_idx
     runner_tasks_expired_idx
     runner_task_log_batches_sequence_uidx
     runner_task_commands_retention_idx
@@ -537,7 +541,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
                           Enum.map(@identifier_constraint_tables, &"#{&1}_identifier_lengths_v2") ++
                           Enum.map(@payload_constraint_tables, &"#{&1}_payload_bounds_v2")
   @expected_versions Enum.map(@migrations, fn {version, _module} -> version end)
-  @expected_definition_fingerprint "c67f06430dffd09eeaeb050e56cddd3c1bf9a869e1b812267132980dc609c2cf"
+  @expected_definition_fingerprint "7042d2d4dd7617ebec5ed5c05817228dc3c0f1e9bc07e87967da609c1c2ea1c4"
 
   @doc "Creates the V2 namespace and applies every known migration."
   @spec migrate!(module()) :: :ok

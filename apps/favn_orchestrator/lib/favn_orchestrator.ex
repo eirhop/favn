@@ -31,6 +31,7 @@ defmodule FavnOrchestrator do
   alias FavnOrchestrator.Operator.TargetRecovery, as: OperatorTargetRecovery
   alias FavnOrchestrator.Operator.Commands, as: OperatorCommands
   alias FavnOrchestrator.OperatorContext
+  alias FavnOrchestrator.OperatorRunActivity
   alias FavnOrchestrator.Operator.Schedules
   alias FavnOrchestrator.OperatorCommands.AssetBackfillRequest
   alias FavnOrchestrator.OperatorCommands.AssetRunRequest
@@ -52,6 +53,7 @@ defmodule FavnOrchestrator do
   alias FavnOrchestrator.RunEvents.Query, as: RunEventQuery
   alias FavnOrchestrator.RunManager
   alias FavnOrchestrator.RunnerIdentityVerifier
+  alias FavnOrchestrator.RunnerOverview
   alias FavnOrchestrator.RunReadModel
   alias FavnOrchestrator.Rebuilds
   alias FavnOrchestrator.TargetRecovery
@@ -1776,6 +1778,26 @@ defmodule FavnOrchestrator do
       when is_binary(run_id) and is_list(opts) do
     with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer) do
       RunReadModel.get_operator_run_detail(context, run_id, opts)
+    end
+  end
+
+  @doc "Returns admitted run detail or durable pre-admission state after operator reauthorization."
+  @spec get_operator_run_activity(OperatorContext.t(), run_id(), keyword()) ::
+          {:ok, OperatorRunActivity.activity()} | {:error, term()}
+  def get_operator_run_activity(%OperatorContext{} = operator_context, run_id, opts)
+      when is_binary(run_id) and is_list(opts) do
+    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer) do
+      OperatorRunActivity.get(context, run_id, opts)
+    end
+  end
+
+  @doc "Returns live runner presence and recent durable runner tasks after operator reauthorization."
+  @spec get_operator_runner_overview(OperatorContext.t(), keyword()) ::
+          {:ok, map()} | {:error, term()}
+  def get_operator_runner_overview(%OperatorContext{} = operator_context, opts \\ [])
+      when is_list(opts) do
+    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer) do
+      RunnerOverview.get(context, opts)
     end
   end
 

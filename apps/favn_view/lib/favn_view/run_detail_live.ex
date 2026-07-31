@@ -308,8 +308,8 @@ defmodule FavnView.RunDetailLive do
     opts = [view: detail_view(active_mode), limit: 200]
     opts = if active_mode == :events, do: Keyword.put(opts, :include, [:events]), else: opts
 
-    case get_operator_run_detail(operator_context, run_id, opts) do
-      {:ok, detail} ->
+    case get_operator_run_activity(operator_context, run_id, opts) do
+      {:ok, %{kind: :run, detail: detail}} ->
         detail_from_execution_group(
           detail,
           operator_context,
@@ -317,6 +317,9 @@ defmodule FavnView.RunDetailLive do
           existing_back_asset_href,
           active_mode
         )
+
+      {:ok, %{kind: :submission, submission: submission}} ->
+        submission_from_public(submission)
 
       {:error, reason} ->
         %{
@@ -326,6 +329,27 @@ defmodule FavnView.RunDetailLive do
           error: error_label(reason)
         }
     end
+  end
+
+  defp submission_from_public(submission) do
+    %{
+      id: submission.run_id,
+      found?: false,
+      submission?: true,
+      initializing?: false,
+      active?: submission.active?,
+      raw_status: submission.status,
+      status: submission.status_label,
+      status_tone: submission.status_tone,
+      target_kind: submission.target_kind,
+      target_id: submission.target_id,
+      attempt: submission.attempt,
+      enqueued_at: timestamp_label(submission.enqueued_at),
+      updated_at: timestamp_label(submission.updated_at),
+      terminal_at: timestamp_label(submission.terminal_at),
+      failure: submission.failure,
+      subscribed_run_ids: []
+    }
   end
 
   # The facade view values predate the flow, and `:overview`, `:timeline`, and
@@ -433,6 +457,16 @@ defmodule FavnView.RunDetailLive do
   end
 
   defp maybe_schedule_fallback_poll(
+         %{assigns: %{run: %{submission?: true, active?: true}}} = socket
+       ) do
+    if connected?(socket) do
+      LiveRefresh.schedule_once(socket, :fallback_poll_ref, :poll_run, @refresh_interval_ms)
+    else
+      socket
+    end
+  end
+
+  defp maybe_schedule_fallback_poll(
          %{
            assigns: %{
              run: %{found?: false},
@@ -468,12 +502,15 @@ defmodule FavnView.RunDetailLive do
 
   defp maybe_schedule_fallback_poll(socket), do: socket
 
+  defp mark_initializing(%{submission?: true} = run), do: Map.put(run, :initializing?, false)
   defp mark_initializing(%{found?: false} = run), do: Map.put(run, :initializing?, true)
   defp mark_initializing(run), do: Map.put(run, :initializing?, false)
 
+  defp initial_load_attempts(%{submission?: true}), do: 0
   defp initial_load_attempts(%{found?: false}), do: @initial_load_retry_count
   defp initial_load_attempts(_run), do: 0
 
+  defp next_load_attempts(_remaining, %{submission?: true}), do: 0
   defp next_load_attempts(_remaining, %{found?: true}), do: 0
   defp next_load_attempts(remaining, _run) when remaining > 0, do: remaining - 1
   defp next_load_attempts(_remaining, _run), do: 0
@@ -502,16 +539,21 @@ defmodule FavnView.RunDetailLive do
 
   defp operator_context(socket), do: actor_context(socket)
 
-  defp get_operator_run_detail(operator_context, run_id, opts) do
+  defp get_operator_run_activity(operator_context, run_id, opts) do
     fun =
       Application.get_env(
         :favn_view,
-        :operator_run_detail_fun,
-        &FavnOrchestrator.get_operator_run_detail/3
+        :operator_run_activity_fun,
+        &FavnOrchestrator.get_operator_run_activity/3
       )
 
     if is_function(fun, 3), do: fun.(operator_context, run_id, opts), else: fun.(run_id, opts)
   end
+
+  defp timestamp_label(nil), do: nil
+
+  defp timestamp_label(%DateTime{} = value),
+    do: Calendar.strftime(value, "%b %-d, %Y %H:%M:%S UTC")
 
   defp subscribe_run(operator_context, run_id) do
     Application.get_env(

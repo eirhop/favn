@@ -408,7 +408,7 @@ defmodule FavnView.AssetDetailLive do
         {:noreply,
          socket
          |> CommandAttempt.acknowledge(attempt)
-         |> put_flash(:info, "Run submitted")
+         |> put_flash(:info, "Run request queued")
          |> push_navigate(to: ~p"/runs/#{run_id}")}
 
       {:ok, run_id, :backfill} ->

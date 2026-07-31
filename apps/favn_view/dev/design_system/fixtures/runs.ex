@@ -169,6 +169,40 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.Runs do
     %{id: "run_unreadable", found?: false, not_found?: false, error: "Run could not be loaded"}
   end
 
+  @doc "A durable submission before a run execution projection exists."
+  @spec submission(:queued | :preparing | :failed) :: map()
+  def submission(status) when status in [:queued, :preparing, :failed] do
+    failure =
+      if status == :failed do
+        %{
+          title: "Run preparation failed",
+          message: "Favn could not inspect a physical relation required by this run.",
+          remediation:
+            "Check runner diagnostics, configure the DuckDB ADBC driver, and submit the run again.",
+          code: "physical_inspection_unavailable"
+        }
+      end
+
+    %{
+      id: "run_submission_crm_reference",
+      found?: false,
+      submission?: true,
+      initializing?: false,
+      active?: status in [:queued, :preparing],
+      raw_status: status,
+      status: status |> Atom.to_string() |> String.capitalize(),
+      status_tone: if(status == :failed, do: :error, else: :info),
+      target_kind: "pipeline",
+      target_id: "crm_Reference",
+      attempt: if(status == :queued, do: 0, else: 1),
+      enqueued_at: "Jul 31, 2026 12:00:00 UTC",
+      updated_at: "Jul 31, 2026 12:00:06 UTC",
+      terminal_at: if(status == :failed, do: "Jul 31, 2026 12:00:06 UTC"),
+      failure: failure,
+      subscribed_run_ids: []
+    }
+  end
+
   defp run(overrides) do
     attempts = Map.fetch!(overrides, :attempts)
     status = Map.fetch!(overrides, :status)
