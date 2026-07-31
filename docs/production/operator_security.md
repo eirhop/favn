@@ -1,13 +1,15 @@
 # Operator authorization and security
 
 This document is the security contract for the production operator surface.
-It covers the functional and security baseline implemented for issue #524.
+It covers the functional and security baseline implemented for issue #524 and
+the first external-auth adapter from issue #580.
 Visual polish remains continuous discovery work. Automated browser and
 accessibility acceptance is intentionally split into
 [issue #579](https://github.com/eirhop/favn/issues/579).
 
 The supported topology is one production control-plane BEAM behind one trusted
-HTTPS reverse proxy. Multi-node application failover is not claimed.
+HTTPS ingress. This may be a conventional reverse proxy or Azure Container
+Apps ingress with Easy Auth. Multi-node application failover is not claimed.
 
 ## Roles and boundaries
 
@@ -77,10 +79,20 @@ backoff. These counters are deliberately node-local and disposable. That is
 correct for the supported one-control-plane topology; a future load-balanced
 multi-node topology must add a shared or edge limiter before it is supported.
 
-Favn currently has no MFA or external identity-provider integration. Deploy the
-operator surface only behind the documented trusted proxy and administrative
-network controls. Stronger identity assurance is tracked in
-[issue #580](https://github.com/eirhop/favn/issues/580).
+Azure Container Apps deployments may use Microsoft Entra through Easy Auth.
+Easy Auth authenticates the request and owns token validation, MFA, Conditional
+Access, provider session lifetime, signing-key rotation, replay, and clock
+skew. Favn accepts only the immutable `tid` and `oid` claims from the
+platform-injected principal, resolves a pre-created provider link, then applies
+its own durable actor status, workspace membership, roles, and sessions.
+
+Email, display name, provider groups, and provider roles cannot grant Favn
+authorization. The adapter is valid only when the Favn listener cannot be
+reached without passing through Container Apps ingress. Native OIDC and other
+proxy assertion formats are not supported. The complete setup and break-glass
+contract is in the HexDocs
+[Operator Authentication](../../apps/favn/guides/operator-authentication.md)
+guide.
 
 ## Mutation, audit, and redaction
 
@@ -110,6 +122,7 @@ mix favn.admin.bootstrap --workspace WORKSPACE --username USERNAME
 mix favn.admin.recover --username USERNAME
 mix favn.admin.password_reset --username USERNAME
 mix favn.admin.actor --username USERNAME --status active|disabled
+mix favn.admin.entra --username USERNAME --tenant-id UUID --object-id UUID --action link|unlink
 ```
 
 Bootstrap, administrator recovery, and ordinary actor password reset read the
@@ -163,8 +176,8 @@ redirected to HTTPS.
 - Automated browser and accessibility release acceptance is deferred to
   [#579](https://github.com/eirhop/favn/issues/579). Elixir tests and a manual
   production-artifact check are the gate for this change.
-- MFA/external identity integration is deferred to
-  [#580](https://github.com/eirhop/favn/issues/580).
+- The first external identity adapter is intentionally limited to
+  single-tenant Microsoft Entra through Azure Container Apps Easy Auth.
 - Forwarded scheme and client-address headers are trusted when the immediate
   peer is inside the configured trusted-proxy CIDRs. The manual check confirmed
   that a peer in an overly broad trusted Docker CIDR can therefore claim HTTPS

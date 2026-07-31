@@ -4,10 +4,43 @@ defmodule FavnView.OperatorSessionController do
   use FavnView, :controller
 
   alias FavnView.Auth
+  alias FavnView.Auth.AzureContainerAppsEntra
+  alias FavnView.ProductionRuntimeConfig
 
   def new(conn, params) do
     return_to = Auth.safe_return_to(params["return_to"])
 
+    case ProductionRuntimeConfig.auth() do
+      %{mode: :azure_container_apps_entra} = config ->
+        entra_login(conn, config, return_to)
+
+      %{mode: :password} ->
+        password_login_page(conn, return_to)
+    end
+  end
+
+  def create(conn, %{"operator" => operator_params}) do
+    if ProductionRuntimeConfig.auth().mode == :password do
+      create_password_session(conn, operator_params)
+    else
+      access_denied(conn)
+    end
+  end
+
+  def create(conn, _params) do
+    if ProductionRuntimeConfig.auth().mode == :password do
+      conn
+      |> put_status(:unauthorized)
+      |> put_flash(:error, "Invalid username or password")
+      |> render_login("", "", nil)
+    else
+      access_denied(conn)
+    end
+  end
+
+  def delete(conn, _params), do: Auth.log_out_operator(conn)
+
+  defp password_login_page(conn, return_to) do
     case source_development_login(conn, return_to) do
       {:ok, conn} ->
         conn
@@ -22,7 +55,7 @@ defmodule FavnView.OperatorSessionController do
     end
   end
 
-  def create(conn, %{"operator" => operator_params}) do
+  defp create_password_session(conn, operator_params) do
     workspace_id = operator_params |> Map.get("workspace_id", "") |> String.trim()
     username = operator_params |> Map.get("username", "") |> String.trim()
     password = Map.get(operator_params, "password", "")
@@ -41,15 +74,6 @@ defmodule FavnView.OperatorSessionController do
         |> render_login(workspace_id, username, return_to)
     end
   end
-
-  def create(conn, _params) do
-    conn
-    |> put_status(:unauthorized)
-    |> put_flash(:error, "Invalid username or password")
-    |> render_login("", "", nil)
-  end
-
-  def delete(conn, _params), do: Auth.log_out_operator(conn)
 
   defp source_development_login(conn, return_to) do
     case Application.get_env(:favn_view, :source_development_passwordless_login) do
@@ -80,6 +104,34 @@ defmodule FavnView.OperatorSessionController do
       return_to: return_to,
       page_title: "Operator sign in"
     )
+  end
+
+  defp entra_login(conn, config, return_to) do
+    with {:ok, identity} <- AzureContainerAppsEntra.identity(conn, config.tenant_id),
+         {:ok, session, _actor} <-
+           operator_external_login(config.workspace_id, identity) do
+      Auth.log_in_operator(conn, config.workspace_id, session, return_to)
+    else
+      _denied -> access_denied(conn)
+    end
+  end
+
+  defp operator_external_login(workspace_id, identity) do
+    login_fun =
+      Application.get_env(
+        :favn_view,
+        :operator_external_login_fun,
+        &FavnOrchestrator.operator_external_login/2
+      )
+
+    login_fun.(workspace_id, identity)
+  end
+
+  defp access_denied(conn) do
+    conn
+    |> put_status(:forbidden)
+    |> put_resp_content_type("text/plain")
+    |> send_resp(403, "Access denied")
   end
 
   defp remote_ip(conn), do: conn.remote_ip |> :inet.ntoa() |> to_string()

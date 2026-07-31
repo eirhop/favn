@@ -197,6 +197,34 @@ defmodule FavnOrchestrator do
     end
   end
 
+  @doc """
+  Creates a Favn session for a pre-linked identity authenticated by the
+  configured external platform adapter.
+
+  This does not accept provider roles, groups, email addresses, or tokens.
+  """
+  @spec operator_external_login(String.t(), map()) ::
+          {:ok, operator_session(), operator_actor()} | {:error, :invalid_credentials}
+  def operator_external_login(
+        workspace_id,
+        %{
+          provider: "azure_container_apps_entra",
+          tenant_id: tenant_id,
+          subject_id: subject_id
+        } = identity
+      )
+      when is_binary(workspace_id) and is_binary(tenant_id) and is_binary(subject_id) do
+    with {:ok, context} <-
+           WorkspaceContext.new(workspace_id, "auth:external-login", [:customer_reader]),
+         {:ok, session, actor} <- Auth.external_login(context, identity) do
+      {:ok, session, actor}
+    else
+      {:error, _reason} -> {:error, :invalid_credentials}
+    end
+  end
+
+  def operator_external_login(_workspace_id, _identity), do: {:error, :invalid_credentials}
+
   @doc false
   @spec trusted_local_development_login(String.t(), String.t(), String.t()) ::
           {:ok, operator_session()} | {:error, :trusted_local_development_unavailable}

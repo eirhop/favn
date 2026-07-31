@@ -33,6 +33,7 @@ defmodule FavnOrchestrator.Identity do
   alias FavnOrchestrator.Persistence.Results.AuditEntry
   alias FavnOrchestrator.Persistence.Results.CursorPage
   alias FavnOrchestrator.Persistence.Results.Session, as: SessionResult
+  alias FavnOrchestrator.Persistence.Selectors.ActorByExternalIdentity
   alias FavnOrchestrator.Persistence.Selectors.ActorById
   alias FavnOrchestrator.Persistence.Selectors.ActorByUsername
   alias FavnOrchestrator.Persistence.Selectors.SessionById
@@ -168,13 +169,57 @@ defmodule FavnOrchestrator.Identity do
     end
   end
 
+  @doc """
+  Resolves one pre-linked immutable external identity in exactly one workspace.
+
+  Authentication of the upstream request belongs to the configured platform
+  adapter. Favn uses only provider, tenant ID, and subject ID to find the
+  durable actor; provider roles and mutable profile claims are ignored.
+  """
+  @spec authenticate_external_identity(WorkspaceContext.t(), map()) ::
+          {:ok, actor()} | {:error, :invalid_credentials}
+  def authenticate_external_identity(
+        %WorkspaceContext{} = context,
+        %{
+          provider: "azure_container_apps_entra",
+          tenant_id: tenant_id,
+          subject_id: subject_id
+        }
+      )
+      when is_binary(tenant_id) and is_binary(subject_id) do
+    with {:ok, actor} <-
+           store().get_actor(%GetActor{
+             workspace_context: context,
+             selector: %ActorByExternalIdentity{
+               provider: "azure_container_apps_entra",
+               tenant_id: tenant_id,
+               subject_id: subject_id
+             }
+           }),
+         :ok <- active_actor?(actor) do
+      {:ok, actor_map(actor)}
+    else
+      _invalid -> {:error, :invalid_credentials}
+    end
+  end
+
+  def authenticate_external_identity(_context, _identity), do: {:error, :invalid_credentials}
+
   @doc "Issues one opaque session for an active workspace member."
   @spec issue_session(WorkspaceContext.t(), String.t(), keyword()) ::
           {:ok, session()} | {:error, term()}
   def issue_session(%WorkspaceContext{} = context, actor_id, opts \\ [])
       when is_binary(actor_id) and is_list(opts) do
     expected_credential_version = Keyword.get(opts, :expected_credential_version)
-    session_opts = Keyword.drop(opts, [:expected_credential_version])
+    external_tenant_id = Keyword.get(opts, :external_tenant_id)
+    external_subject_id = Keyword.get(opts, :external_subject_id)
+
+    session_opts =
+      Keyword.drop(opts, [
+        :expected_credential_version,
+        :external_tenant_id,
+        :external_subject_id
+      ])
 
     with {:ok, issued} <- Session.issue(actor_id, session_opts),
          {:ok, persisted} <-
@@ -185,6 +230,8 @@ defmodule FavnOrchestrator.Identity do
              actor_id: actor_id,
              token_hash: Session.token_hash(issued.token),
              provider: issued.provider,
+             external_tenant_id: external_tenant_id,
+             external_subject_id: external_subject_id,
              expected_credential_version: expected_credential_version,
              expires_at: issued.expires_at,
              occurred_at: issued.issued_at

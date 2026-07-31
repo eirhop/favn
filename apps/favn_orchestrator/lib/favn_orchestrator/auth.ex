@@ -3,8 +3,8 @@ defmodule FavnOrchestrator.Auth do
   Orchestrator-owned actor, session, and authorization helpers.
   """
 
-  alias FavnOrchestrator.Auth.Store
   alias FavnOrchestrator.Auth.ServiceTokens
+  alias FavnOrchestrator.Auth.Store
   alias FavnOrchestrator.Identity
   alias FavnOrchestrator.Persistence.WorkspaceContext
 
@@ -49,6 +49,31 @@ defmodule FavnOrchestrator.Auth do
     end
   end
 
+  @doc "Issues a Favn session for one pre-linked, upstream-authenticated identity."
+  @spec external_login(WorkspaceContext.t(), map()) ::
+          {:ok, session(), actor()} | {:error, term()}
+  def external_login(%WorkspaceContext{} = context, identity) when is_map(identity) do
+    result =
+      with {:ok, actor} <- Identity.authenticate_external_identity(context, identity),
+           {:ok, session} <-
+             Store.issue_session(context, actor.id,
+               provider: "azure_container_apps_entra",
+               external_tenant_id: identity.tenant_id,
+               external_subject_id: identity.subject_id
+             ) do
+        {:ok, session, actor}
+      end
+
+    case result do
+      {:ok, _session, _actor} = success ->
+        success
+
+      {:error, _reason} ->
+        record_external_login_denial(context, identity)
+        {:error, :invalid_credentials}
+    end
+  end
+
   @doc false
   @spec trusted_local_development_login(String.t(), String.t(), String.t()) ::
           {:ok, session()} | {:error, :trusted_local_development_unavailable}
@@ -68,6 +93,28 @@ defmodule FavnOrchestrator.Auth do
     else
       _unavailable -> {:error, :trusted_local_development_unavailable}
     end
+  end
+
+  defp record_external_login_denial(context, identity) do
+    tenant_id = Map.get(identity, :tenant_id, "")
+    subject_id = Map.get(identity, :subject_id, "")
+
+    _ =
+      Identity.record_audit(context, %{
+        action: "external_login.denied",
+        resource_type: "external_identity",
+        resource_id: external_identity_fingerprint(tenant_id, subject_id),
+        outcome: "denied",
+        provider: "azure_container_apps_entra"
+      })
+
+    :ok
+  end
+
+  defp external_identity_fingerprint(tenant_id, subject_id) do
+    :crypto.hash(:sha256, Enum.join([tenant_id, subject_id], <<0>>))
+    |> Base.encode16(case: :lower)
+    |> String.slice(0, 16)
   end
 
   @doc "Resolves one session only within its explicit workspace."

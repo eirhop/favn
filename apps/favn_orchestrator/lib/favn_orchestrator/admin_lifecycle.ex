@@ -11,9 +11,11 @@ defmodule FavnOrchestrator.AdminLifecycle do
   alias FavnOrchestrator.Events
   alias FavnOrchestrator.Persistence
   alias FavnOrchestrator.Persistence.Commands.BootstrapAdministrator
+  alias FavnOrchestrator.Persistence.Commands.LinkExternalIdentity
   alias FavnOrchestrator.Persistence.Commands.RecoverAdministratorCredential
   alias FavnOrchestrator.Persistence.Commands.ResetActorCredential
   alias FavnOrchestrator.Persistence.Commands.SetActorStatus
+  alias FavnOrchestrator.Persistence.Commands.UnlinkExternalIdentity
   alias FavnOrchestrator.Persistence.PlatformContext
   alias FavnOrchestrator.Persistence.Queries.GetGlobalActor
 
@@ -139,6 +141,51 @@ defmodule FavnOrchestrator.AdminLifecycle do
 
   def set_actor_status(_username, _status, _opts), do: {:error, :invalid_actor_status}
 
+  @doc """
+  Links or unlinks one Entra object ID to one exact global Favn username.
+
+  This trusted release operation never treats email or display name as an
+  identity key. Audit records contain bounded fingerprints, not the object ID.
+  """
+  @spec configure_entra_identity(
+          String.t(),
+          String.t(),
+          String.t(),
+          :link | :unlink,
+          keyword()
+        ) :: {:ok, map()} | {:error, term()}
+  def configure_entra_identity(username, tenant_id, object_id, action, opts \\ [])
+
+  def configure_entra_identity(username, tenant_id, object_id, action, opts)
+      when is_binary(username) and is_binary(tenant_id) and is_binary(object_id) and
+             action in [:link, :unlink] and is_list(opts) do
+    with {:ok, actor_input} <-
+           Credentials.normalize_actor(username, "External identity", [:viewer]),
+         {:ok, tenant_id} <- normalize_uuid(tenant_id),
+         {:ok, object_id} <- normalize_uuid(object_id),
+         {:ok, context} <- platform_context(),
+         store = identity_store(opts),
+         {:ok, actor} <-
+           store.get_global_actor(%GetGlobalActor{
+             platform_context: context,
+             username: actor_input.username
+           }),
+         :ok <- apply_external_identity(store, context, actor, tenant_id, object_id, action) do
+      Events.broadcast_actor_changed(actor.actor_id)
+
+      {:ok,
+       %{
+         actor_id: actor.actor_id,
+         username: actor.username,
+         provider: "azure_container_apps_entra",
+         action: action
+       }}
+    end
+  end
+
+  def configure_entra_identity(_username, _tenant_id, _object_id, _action, _opts),
+    do: {:error, :invalid_entra_identity}
+
   defp platform_context do
     PlatformContext.new(@principal_id, @grant_id, [:platform_admin])
   end
@@ -185,6 +232,41 @@ defmodule FavnOrchestrator.AdminLifecycle do
       expected_version: actor.version,
       occurred_at: DateTime.utc_now()
     })
+  end
+
+  defp apply_external_identity(store, context, actor, tenant_id, object_id, :link) do
+    store.link_external_identity(%LinkExternalIdentity{
+      platform_context: context,
+      command_id: operation_id("external-identity-link"),
+      actor_id: actor.actor_id,
+      provider: "azure_container_apps_entra",
+      tenant_id: tenant_id,
+      subject_id: object_id,
+      occurred_at: DateTime.utc_now()
+    })
+  end
+
+  defp apply_external_identity(store, context, actor, tenant_id, object_id, :unlink) do
+    store.unlink_external_identity(%UnlinkExternalIdentity{
+      platform_context: context,
+      command_id: operation_id("external-identity-unlink"),
+      actor_id: actor.actor_id,
+      provider: "azure_container_apps_entra",
+      tenant_id: tenant_id,
+      subject_id: object_id,
+      occurred_at: DateTime.utc_now()
+    })
+  end
+
+  defp normalize_uuid(value) do
+    normalized = value |> String.trim() |> String.downcase()
+
+    if Regex.match?(
+         ~r/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+         normalized
+       ),
+       do: {:ok, normalized},
+       else: {:error, :invalid_entra_identity}
   end
 
   defp actor_result(actor) do

@@ -38,6 +38,29 @@ defmodule Favn.DeploymentReferenceConformanceTest do
     scale = bicep_block(template, "scale:")
 
     assert source =~ "resource controlPlane 'Microsoft.App/containerApps@2026-01-01'"
+
+    assert source =~
+             "resource easyAuth 'Microsoft.App/containerApps/authConfigs@2026-01-01'"
+
+    easy_auth = bicep_block(source, "resource easyAuth ")
+    assert easy_auth =~ "enabled: enableEntraEasyAuth"
+
+    assert easy_auth =~
+             "unauthenticatedClientAction: enableEntraEasyAuth ? 'RedirectToLoginPage' : 'AllowAnonymous'"
+
+    assert easy_auth =~
+             "redirectToProvider: enableEntraEasyAuth ? 'azureactivedirectory' : ''"
+
+    assert easy_auth =~ "identityProviders: enableEntraEasyAuth ? {"
+    assert easy_auth =~ "clientId: viewEntraClientId"
+    assert easy_auth =~ "clientSecretSettingName: 'entra-client-secret'"
+
+    assert easy_auth =~
+             "openIdIssuer: 'https://login.microsoftonline.com/${viewEntraTenantId}/v2.0'"
+
+    assert source =~
+             "value: enableEntraEasyAuth ? 'azure_container_apps_entra' : 'password'"
+
     assert configuration =~ "external: false"
     assert configuration =~ "targetPort: 4369"
     assert configuration =~ "targetPort: 9100"

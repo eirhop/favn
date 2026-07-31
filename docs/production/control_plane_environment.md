@@ -178,6 +178,9 @@ supported by this release.
 | `FAVN_VIEW_BIND_HOST` | IPv4 bind address, default `0.0.0.0`. Unified boot freezes this address for container health probes; wildcard maps to loopback. |
 | `FAVN_VIEW_PORT` | `1..65535`, default `4000`. |
 | `FAVN_VIEW_TRUSTED_PROXY_CIDRS` | Required comma-separated private IPv4/IPv6 proxy allowlist, maximum 32 entries. |
+| `FAVN_VIEW_AUTH_MODE` | `password` (default) or `azure_container_apps_entra`. The selected mode is frozen at startup. |
+| `FAVN_VIEW_ENTRA_TENANT_ID` | Required UUID in Entra mode. Only principals from this immutable tenant are accepted; diagnostics redact it. |
+| `FAVN_VIEW_ENTRA_WORKSPACE_ID` | Required Favn workspace for initial Entra sign-in; diagnostics redact it. |
 | `FAVN_VIEW_ORCHESTRATOR_READINESS_TIMEOUT_MS` | `100..30000`, default `1000`. |
 | `FAVN_HTTP_MAX_CONNECTIONS` | Exact per-listener connection ceiling `1..100000`, default `1024`. |
 | `FAVN_HTTP_REQUEST_TIMEOUT_MS` | Request-body read deadline `1000..120000`, default `30000`; configure an equal or shorter total deadline at the reverse proxy. |
@@ -191,6 +194,12 @@ LiveView WebSocket upgrades, remove client-supplied forwarded headers, and have
 no public route to the orchestrator API, EPMD, BEAM distribution, or PostgreSQL.
 The complete exposure and trusted-network checklist is
 [`network_and_proxy.md`](network_and_proxy.md).
+
+The Entra mode is specific to Azure Container Apps Easy Auth. Configure the
+provider-to-actor link with `mix favn.admin.entra`; do not use email, display
+name, groups, or provider roles as authorization keys. See the HexDocs
+[Operator Authentication](../../apps/favn/guides/operator-authentication.md)
+guide for Azure settings, logout, denial behavior, and break-glass switching.
 
 ## Secret rotation
 

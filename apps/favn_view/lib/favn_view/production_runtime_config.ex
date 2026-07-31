@@ -27,6 +27,7 @@ defmodule FavnView.ProductionRuntimeConfig do
           trusted_proxy_cidrs: [map()],
           http_server: map(),
           shutdown_drain_timeout_ms: pos_integer(),
+          auth: map(),
           session_cookie_options: keyword(),
           force_ssl?: boolean()
         }
@@ -36,6 +37,7 @@ defmodule FavnView.ProductionRuntimeConfig do
           trusted_proxy_cidrs: [map()],
           http_server: map(),
           orchestrator_readiness_timeout_ms: pos_integer(),
+          auth: map(),
           session_cookie_options: keyword(),
           force_ssl?: boolean()
         }
@@ -110,6 +112,7 @@ defmodule FavnView.ProductionRuntimeConfig do
          {:ok, trusted_proxy_cidrs} <- trusted_proxy_cidrs(env),
          {:ok, http_server} <- http_server(env),
          {:ok, shutdown_drain_timeout_ms} <- shutdown_drain_timeout_ms(env),
+         {:ok, auth} <- auth(env),
          {:ok, session_cookie_options} <- session_cookie_options(deployment_mode) do
       {:ok,
        %{
@@ -123,6 +126,7 @@ defmodule FavnView.ProductionRuntimeConfig do
          trusted_proxy_cidrs: trusted_proxy_cidrs,
          http_server: http_server,
          shutdown_drain_timeout_ms: shutdown_drain_timeout_ms,
+         auth: auth,
          session_cookie_options: session_cookie_options,
          force_ssl?: deployment_mode == :production
        }}
@@ -150,7 +154,8 @@ defmodule FavnView.ProductionRuntimeConfig do
       orchestrator: %{
         boundary: :same_beam_facade,
         readiness_timeout_ms: config.orchestrator_readiness_timeout_ms
-      }
+      },
+      authentication: auth_diagnostics(config.auth)
     }
   end
 
@@ -203,6 +208,15 @@ defmodule FavnView.ProductionRuntimeConfig do
 
       :missing ->
         Application.get_env(:favn_view, :orchestrator_readiness_timeout_ms, @default_timeout_ms)
+    end
+  end
+
+  @doc "Returns the frozen operator authentication mode and redacted-safe identifiers."
+  @spec auth() :: map()
+  def auth do
+    case :persistent_term.get(@persistent_key, :missing) do
+      %{auth: auth} -> auth
+      :missing -> Application.get_env(:favn_view, :operator_auth, %{mode: :password})
     end
   end
 
@@ -458,6 +472,7 @@ defmodule FavnView.ProductionRuntimeConfig do
       :deployment_mode,
       :trusted_proxy_cidrs,
       :http_server,
+      :auth,
       :orchestrator_readiness_timeout_ms,
       :session_cookie_options,
       :force_ssl?
@@ -516,6 +531,69 @@ defmodule FavnView.ProductionRuntimeConfig do
   defp redact({:invalid_env, name, expected}), do: {:invalid_env, name, expected}
   defp redact({:invalid_secret_env, name, expected}), do: {:invalid_secret_env, name, expected}
   defp redact({:invalid_session_cookie, reason}), do: {:invalid_session_cookie, reason}
+
+  defp auth(env) do
+    mode =
+      case fetch(env, "FAVN_VIEW_AUTH_MODE") do
+        {:ok, value} -> String.downcase(value)
+        :error -> "password"
+      end
+
+    case mode do
+      "password" ->
+        {:ok, %{mode: :password}}
+
+      "azure_container_apps_entra" ->
+        with {:ok, tenant_id} <- required_uuid(env, "FAVN_VIEW_ENTRA_TENANT_ID"),
+             {:ok, workspace_id} <- entra_workspace_id(env) do
+          {:ok,
+           %{
+             mode: :azure_container_apps_entra,
+             tenant_id: tenant_id,
+             workspace_id: workspace_id
+           }}
+        end
+
+      _invalid ->
+        {:error, {:invalid_env, "FAVN_VIEW_AUTH_MODE", "password or azure_container_apps_entra"}}
+    end
+  end
+
+  defp entra_workspace_id(env) do
+    with {:ok, workspace_id} <- required(env, "FAVN_VIEW_ENTRA_WORKSPACE_ID"),
+         true <- byte_size(workspace_id) <= 255 do
+      {:ok, workspace_id}
+    else
+      {:error, _reason} = error -> error
+      false -> {:error, {:invalid_env, "FAVN_VIEW_ENTRA_WORKSPACE_ID", "1..255 bytes"}}
+    end
+  end
+
+  defp required_uuid(env, name) do
+    with {:ok, value} <- required(env, name),
+         normalized = String.downcase(value),
+         true <-
+           Regex.match?(
+             ~r/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+             normalized
+           ) do
+      {:ok, normalized}
+    else
+      {:error, _reason} = error -> error
+      false -> {:error, {:invalid_env, name, "Microsoft Entra tenant UUID"}}
+    end
+  end
+
+  defp auth_diagnostics(%{mode: :azure_container_apps_entra}) do
+    %{
+      mode: :azure_container_apps_entra,
+      tenant_configured?: true,
+      workspace_configured?: true,
+      identifiers_redacted?: true
+    }
+  end
+
+  defp auth_diagnostics(%{mode: :password}), do: %{mode: :password}
 
   defp configure_endpoint(%{public_origin: origin} = config) when is_binary(origin) do
     endpoint_config = Application.get_env(:favn_view, FavnView.Endpoint, [])

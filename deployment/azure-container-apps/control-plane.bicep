@@ -7,6 +7,10 @@ param workspaceIds string
 param runnerPools string
 param viewPublicOrigin string
 param viewTrustedProxyCidrs string
+param enableEntraEasyAuth bool = false
+param viewEntraTenantId string = ''
+param viewEntraClientId string = ''
+param viewEntraWorkspaceId string = ''
 param runtimeInputPinKeyVersion int = 1
 @secure()
 param databaseUrl string
@@ -20,6 +24,8 @@ param platformServiceTokens string
 param capacityReaderToken string
 @secure()
 param viewSecretKeyBase string
+@secure()
+param viewEntraClientSecret string = ''
 @secure()
 param distributionCookie string
 @secure()
@@ -56,7 +62,7 @@ resource controlPlane 'Microsoft.App/containerApps@2026-01-01' = {
           }
         ]
       }
-      secrets: [
+      secrets: concat([
         {
           name: 'distribution-cookie'
           value: distributionCookie
@@ -100,7 +106,12 @@ resource controlPlane 'Microsoft.App/containerApps@2026-01-01' = {
           name: 'view-secret-key-base'
           value: viewSecretKeyBase
         }
-      ]
+      ], enableEntraEasyAuth ? [
+        {
+          name: 'entra-client-secret'
+          value: viewEntraClientSecret
+        }
+      ] : [])
     }
     template: {
       containers: [
@@ -155,6 +166,18 @@ resource controlPlane 'Microsoft.App/containerApps@2026-01-01' = {
             {
               name: 'FAVN_VIEW_TRUSTED_PROXY_CIDRS'
               value: viewTrustedProxyCidrs
+            }
+            {
+              name: 'FAVN_VIEW_AUTH_MODE'
+              value: enableEntraEasyAuth ? 'azure_container_apps_entra' : 'password'
+            }
+            {
+              name: 'FAVN_VIEW_ENTRA_TENANT_ID'
+              value: viewEntraTenantId
+            }
+            {
+              name: 'FAVN_VIEW_ENTRA_WORKSPACE_ID'
+              value: viewEntraWorkspaceId
             }
             {
               name: 'RELEASE_NODE'
@@ -232,6 +255,38 @@ resource controlPlane 'Microsoft.App/containerApps@2026-01-01' = {
       scale: {
         minReplicas: 1
         maxReplicas: 1
+      }
+    }
+  }
+}
+
+resource easyAuth 'Microsoft.App/containerApps/authConfigs@2026-01-01' = {
+  parent: controlPlane
+  name: 'current'
+  properties: {
+    platform: {
+      enabled: enableEntraEasyAuth
+    }
+    globalValidation: {
+      unauthenticatedClientAction: enableEntraEasyAuth ? 'RedirectToLoginPage' : 'AllowAnonymous'
+      redirectToProvider: enableEntraEasyAuth ? 'azureactivedirectory' : ''
+    }
+    httpSettings: {
+      requireHttps: true
+    }
+    identityProviders: enableEntraEasyAuth ? {
+      azureActiveDirectory: {
+        enabled: true
+        registration: {
+          clientId: viewEntraClientId
+          clientSecretSettingName: 'entra-client-secret'
+          openIdIssuer: 'https://login.microsoftonline.com/${viewEntraTenantId}/v2.0'
+        }
+      }
+    } : {}
+    login: {
+      tokenStore: {
+        enabled: false
       }
     }
   }

@@ -137,6 +137,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnOrchestrator.Persistence.Error
   alias FavnOrchestrator.Persistence.Stores
   alias FavnOrchestrator.Persistence.Selectors.ActorByUsername
+  alias FavnOrchestrator.Persistence.Selectors.ActorByExternalIdentity
   alias FavnOrchestrator.Persistence.Selectors.SessionByTokenHash
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Rebuild.Plan, as: RebuildPlan
@@ -146,6 +147,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnOrchestrator.API.SSE
   alias FavnOrchestrator.API.Router
   alias FavnOrchestrator.AdminLifecycle
+  alias FavnOrchestrator.Auth
   alias FavnOrchestrator.Auth.Credentials
   alias FavnOrchestrator.Identity
   alias FavnOrchestrator.Lifecycle
@@ -6044,6 +6046,199 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert Enum.any?(platform_audit.items, fn entry ->
              entry.action == "actor.status.changed" and entry.subject_id == actor.id
            end)
+  end
+
+  test "Entra identities are explicitly linked and Favn authorization remains authoritative",
+       fixture do
+    tenant_id = "11111111-1111-4111-8111-111111111111"
+    object_id = "22222222-2222-4222-8222-222222222222"
+    username = "entra-#{System.unique_integer([:positive])}"
+
+    assert {:ok, actor} =
+             Identity.create_actor(
+               fixture.workspace_context,
+               username,
+               "entra-password-long",
+               "Entra Actor",
+               [:viewer]
+             )
+
+    assert {:ok, linked} =
+             AdminLifecycle.configure_entra_identity(
+               username,
+               tenant_id,
+               object_id,
+               :link,
+               identity_store: IdentityStore
+             )
+
+    assert linked.actor_id == actor.id
+
+    {:ok, login_context} =
+      WorkspaceContext.new(fixture.workspace_id, "auth:external-login", [:customer_reader])
+
+    identity = %{
+      provider: "azure_container_apps_entra",
+      tenant_id: tenant_id,
+      subject_id: object_id
+    }
+
+    assert {:ok, external_actor} =
+             Identity.authenticate_external_identity(login_context, identity)
+
+    assert external_actor.id == actor.id
+    assert external_actor.roles == [:viewer]
+
+    second_username = "entra-second-#{System.unique_integer([:positive])}"
+
+    assert {:ok, _second_actor} =
+             Identity.create_actor(
+               fixture.workspace_context,
+               second_username,
+               "entra-second-password-long",
+               "Second Entra Actor",
+               [:viewer]
+             )
+
+    assert {:error, %Error{kind: :conflict}} =
+             AdminLifecycle.configure_entra_identity(
+               second_username,
+               tenant_id,
+               object_id,
+               :link,
+               identity_store: IdentityStore
+             )
+
+    assert {:error,
+            %Error{
+              kind: :constraint,
+              details: %{constraint: "auth_external_identities_actor_uidx"}
+            }} =
+             AdminLifecycle.configure_entra_identity(
+               username,
+               tenant_id,
+               "33333333-3333-4333-8333-333333333333",
+               :link,
+               identity_store: IdentityStore
+             )
+
+    parent = self()
+
+    stale_login =
+      Task.async(fn ->
+        receive do
+          :start -> :ok
+        end
+
+        {:ok, stale_actor} = Identity.authenticate_external_identity(login_context, identity)
+        send(parent, :external_identity_resolved)
+
+        receive do
+          :continue -> :ok
+        end
+
+        Identity.issue_session(login_context, stale_actor.id,
+          provider: "azure_container_apps_entra",
+          external_tenant_id: tenant_id,
+          external_subject_id: object_id
+        )
+      end)
+
+    Sandbox.allow(Repo, self(), stale_login.pid)
+    send(stale_login.pid, :start)
+    assert_receive :external_identity_resolved
+
+    assert {:ok, _unlinked_during_login} =
+             AdminLifecycle.configure_entra_identity(
+               username,
+               tenant_id,
+               object_id,
+               :unlink,
+               identity_store: IdentityStore
+             )
+
+    send(stale_login.pid, :continue)
+    assert {:error, %Error{kind: :forbidden}} = Task.await(stale_login)
+
+    assert {:ok, _relinked} =
+             AdminLifecycle.configure_entra_identity(
+               username,
+               tenant_id,
+               object_id,
+               :link,
+               identity_store: IdentityStore
+             )
+
+    assert {:ok, session} =
+             Identity.issue_session(login_context, actor.id,
+               provider: "azure_container_apps_entra",
+               external_tenant_id: tenant_id,
+               external_subject_id: object_id
+             )
+
+    assert session.provider == "azure_container_apps_entra"
+
+    assert {:ok, _session, %{id: actor_id}} =
+             Identity.introspect_session(login_context, session.token)
+
+    assert actor_id == actor.id
+
+    assert {:ok, platform_audit} =
+             IdentityStore.page_audit(%PageAudit{
+               scope: fixture.platform_context,
+               limit: 50
+             })
+
+    link_audit =
+      Enum.find(platform_audit.items, fn entry ->
+        entry.action == "external_identity.linked" and entry.subject_id == actor.id
+      end)
+
+    assert link_audit
+    refute inspect(link_audit) =~ object_id
+    refute inspect(link_audit) =~ tenant_id
+
+    assert {:ok, _unlinked} =
+             AdminLifecycle.configure_entra_identity(
+               username,
+               tenant_id,
+               object_id,
+               :unlink,
+               identity_store: IdentityStore
+             )
+
+    assert {:error, :invalid_credentials} =
+             Identity.authenticate_external_identity(login_context, identity)
+
+    assert {:error, :invalid_session} =
+             Identity.introspect_session(login_context, session.token)
+
+    assert {:error, :invalid_credentials} = Auth.external_login(login_context, identity)
+
+    assert {:ok, workspace_audit} =
+             IdentityStore.page_audit(%PageAudit{
+               scope: fixture.workspace_context,
+               limit: 50
+             })
+
+    denial =
+      Enum.find(workspace_audit.items, fn entry ->
+        entry.action == "external_login.denied"
+      end)
+
+    assert denial
+    refute inspect(denial) =~ object_id
+    refute inspect(denial) =~ tenant_id
+
+    assert {:error, %Error{kind: :not_found}} =
+             IdentityStore.get_actor(%GetActor{
+               workspace_context: login_context,
+               selector: %ActorByExternalIdentity{
+                 provider: "azure_container_apps_entra",
+                 tenant_id: tenant_id,
+                 subject_id: object_id
+               }
+             })
   end
 
   test "operator administration facades reauthorize reads and self password rotation", fixture do

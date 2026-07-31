@@ -13,6 +13,7 @@ defmodule FavnView.Auth do
 
   alias FavnView.Auth.Scope
   alias FavnView.Endpoint
+  alias FavnView.ProductionRuntimeConfig
 
   @session_token_key :operator_session_token
   @workspace_key :operator_workspace_id
@@ -126,7 +127,7 @@ defmodule FavnView.Auth do
     conn
     |> renew_session()
     |> put_flash(:info, "Signed out")
-    |> Phoenix.Controller.redirect(to: "/login")
+    |> Phoenix.Controller.redirect(to: logout_redirect())
   end
 
   @doc """
@@ -378,6 +379,13 @@ defmodule FavnView.Auth do
     conn
     |> configure_session(renew: true)
     |> clear_session()
+  end
+
+  defp logout_redirect do
+    case ProductionRuntimeConfig.auth() do
+      %{mode: :azure_container_apps_entra} -> "/.auth/logout"
+      %{mode: :password} -> "/login"
+    end
   end
 
   defp call(key, default, args) do

@@ -238,6 +238,38 @@ defmodule FavnView.WebReadinessTest do
              })
   end
 
+  test "production runtime config validates and redacts Easy Auth identifiers" do
+    assert {:ok, config} =
+             ProductionRuntimeConfig.validate(%{
+               "FAVN_VIEW_PUBLIC_ORIGIN" => "https://favn.example.com",
+               "FAVN_VIEW_SECRET_KEY_BASE" => @secret_key_base,
+               "FAVN_VIEW_TRUSTED_PROXY_CIDRS" => "10.0.0.0/8",
+               "FAVN_VIEW_AUTH_MODE" => "azure_container_apps_entra",
+               "FAVN_VIEW_ENTRA_TENANT_ID" => "11111111-1111-4111-8111-111111111111",
+               "FAVN_VIEW_ENTRA_WORKSPACE_ID" => "workspace-1"
+             })
+
+    assert config.auth == %{
+             mode: :azure_container_apps_entra,
+             tenant_id: "11111111-1111-4111-8111-111111111111",
+             workspace_id: "workspace-1"
+           }
+
+    diagnostics = ProductionRuntimeConfig.diagnostics(config)
+    assert diagnostics.authentication.mode == :azure_container_apps_entra
+    assert diagnostics.authentication.identifiers_redacted?
+    refute inspect(diagnostics) =~ "11111111-1111-4111-8111-111111111111"
+    refute inspect(diagnostics) =~ "workspace-1"
+
+    assert {:error, %{error: {:missing_env, "FAVN_VIEW_ENTRA_TENANT_ID"}}} =
+             ProductionRuntimeConfig.validate(%{
+               "FAVN_VIEW_PUBLIC_ORIGIN" => "https://favn.example.com",
+               "FAVN_VIEW_SECRET_KEY_BASE" => @secret_key_base,
+               "FAVN_VIEW_TRUSTED_PROXY_CIDRS" => "10.0.0.0/8",
+               "FAVN_VIEW_AUTH_MODE" => "azure_container_apps_entra"
+             })
+  end
+
   test "production runtime config wires public origin into endpoint config" do
     previous_endpoint = Application.get_env(:favn_view, FavnView.Endpoint)
     on_exit(fn -> Application.put_env(:favn_view, FavnView.Endpoint, previous_endpoint) end)
