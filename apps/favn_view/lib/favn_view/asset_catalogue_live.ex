@@ -8,7 +8,7 @@ defmodule FavnView.AssetCatalogueLive do
   alias FavnView.Components.AssetCataloguePage
   alias FavnView.OperatorErrorLabels
 
-  @default_filters %{search: "", connection: "all", catalogue: "all"}
+  @default_filters AssetCatalogueFilters.defaults()
   @valid_modes ~w(list lineage)
   @valid_lineage_modes ~w(all)
 
@@ -36,7 +36,8 @@ defmodule FavnView.AssetCatalogueLive do
         error: error,
         nav_items: AssetCataloguePage.nav_items(),
         connection_options: AssetCatalogueFilters.connection_options(assets),
-        catalogue_options: AssetCatalogueFilters.catalogue_options(assets, "all")
+        catalogue_options: AssetCatalogueFilters.catalogue_options(assets, "all"),
+        scope_choices: AssetCatalogueFilters.scope_choices(assets, @default_filters)
       )
 
     {:ok, socket}
@@ -54,19 +55,18 @@ defmodule FavnView.AssetCatalogueLive do
 
   @impl true
   def handle_event("filter_assets", %{"filters" => params}, socket) do
-    all_assets = socket.assigns.all_assets
-
+    # The form does not carry the scope, so it is preserved rather than reset.
     filters =
       params
+      |> Map.put("scope", socket.assigns.filters.scope)
       |> AssetCatalogueFilters.normalize()
-      |> AssetCatalogueFilters.reconcile_catalogue(all_assets)
+      |> AssetCatalogueFilters.reconcile_catalogue(socket.assigns.all_assets)
 
-    {:noreply,
-     assign(socket,
-       filters: filters,
-       assets: AssetCatalogueFilters.filter(all_assets, filters),
-       catalogue_options: AssetCatalogueFilters.catalogue_options(all_assets, filters.connection)
-     )}
+    {:noreply, apply_filters(socket, filters)}
+  end
+
+  def handle_event("set_scope", %{"scope" => scope}, socket) do
+    {:noreply, apply_filters(socket, %{socket.assigns.filters | scope: scope})}
   end
 
   def handle_event("set_mode", %{"mode" => mode}, socket) when mode in @valid_modes do
@@ -133,6 +133,7 @@ defmodule FavnView.AssetCatalogueLive do
       flash={@flash}
       connection_options={@connection_options}
       catalogue_options={@catalogue_options}
+      scope_choices={@scope_choices}
       lineage_graph={@lineage_graph}
       lineage_inspector={@lineage_inspector}
       lineage_loading={@lineage_loading}
@@ -254,6 +255,19 @@ defmodule FavnView.AssetCatalogueLive do
       )
 
   defp configured_fun(key, default), do: Application.get_env(:favn_view, key, default)
+
+  # Counts come from every asset, not the filtered page, so the number on a scope
+  # button is the number of rows clicking it produces.
+  defp apply_filters(socket, filters) do
+    all_assets = socket.assigns.all_assets
+
+    assign(socket,
+      filters: filters,
+      assets: AssetCatalogueFilters.filter(all_assets, filters),
+      catalogue_options: AssetCatalogueFilters.catalogue_options(all_assets, filters.connection),
+      scope_choices: AssetCatalogueFilters.scope_choices(all_assets, filters)
+    )
+  end
 
   defp load_assets(operator_context) do
     fun =

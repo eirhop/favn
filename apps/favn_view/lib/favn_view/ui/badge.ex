@@ -65,8 +65,7 @@ defmodule FavnView.UI.Badge do
       ]}
       {@rest}
     >
-      <.icon :if={@icon} name={@icon} size={:xs} />
-      {render_slot(@inner_block)}
+      <.icon :if={@icon} name={@icon} size={:xs} /> {render_slot(@inner_block)}
     </span>
     """
   end
@@ -95,8 +94,7 @@ defmodule FavnView.UI.Badge do
       ]}
       {@rest}
     >
-      <span class={["status", status_size_class(@size), Tokens.dot_class(@tone)]}></span>
-      {@label}
+      <span class={["status", status_size_class(@size), Tokens.dot_class(@tone)]}></span> {@label}
     </span>
     """
   end
@@ -111,8 +109,7 @@ defmodule FavnView.UI.Badge do
 
     ~H"""
     <span class={["badge badge-xs badge-soft", Tokens.badge_class(@tone), @class]}>
-      {@count}
-      <span :if={@label} class="sr-only">{@label}</span>
+      {@count} <span :if={@label} class="sr-only">{@label}</span>
     </span>
     """
   end
@@ -148,7 +145,17 @@ defmodule FavnView.UI.Badge do
 
     ~H"""
     <span
-      class={["tooltip inline-flex items-center", "tooltip-#{@tooltip}", @class]}
+      class={
+        [
+          "tooltip inline-flex items-center",
+          # A table's sticky header owns z-10, so a tooltip on the first row would
+          # open underneath it and hide the row it belongs to. Only the hovered
+          # icon is raised, and a row scrolled under the header cannot be hovered.
+          "z-20",
+          "tooltip-#{@tooltip}",
+          @class
+        ]
+      }
       data-tip={@label}
     >
       <.icon name={@icon} size={:sm} class={Tokens.text_class(@tone)} />

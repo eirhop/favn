@@ -88,8 +88,12 @@ defmodule FavnView.Components.RunsListPage do
   attr :filters_open?, :boolean, default: false
 
   def runs_toolbar(assigns) do
-    assigns =
-      assign(assigns, :choices, RunsFilters.status_filters(assigns.filters, assigns.counts))
+    choices =
+      assigns.filters
+      |> RunsFilters.status_filters(assigns.counts)
+      |> Enum.map(&Map.merge(&1, %{patch: runs_path(&1.params), count_label: "runs"}))
+
+    assigns = assign(assigns, :choices, choices)
 
     ~H"""
     <.table_toolbar
@@ -100,13 +104,7 @@ defmodule FavnView.Components.RunsListPage do
       adjusted?={RunsFilters.adjusted?(@filters)}
     >
       <:scopes>
-        <nav
-          class="favn-surface-rail grid w-full grid-cols-2 gap-0.5 rounded-box p-1 sm:flex sm:w-auto sm:flex-wrap sm:items-center"
-          aria-label="Run status"
-          data-testid="run-statuses"
-        >
-          <.status_button :for={choice <- @choices} choice={choice} />
-        </nav>
+        <.scope_rail label="Run status" choices={@choices} data-testid="run-statuses" />
       </:scopes>
 
       <:filters>
@@ -145,44 +143,6 @@ defmodule FavnView.Components.RunsListPage do
         </div>
       </:filters>
     </.table_toolbar>
-    """
-  end
-
-  @doc """
-  One value of the status axis, carrying how many runs it would list.
-
-  The attr is a whole choice rather than a status, because `status` means a tone
-  everywhere else in this library.
-  """
-  attr :choice, :map, required: true
-
-  def status_button(assigns) do
-    ~H"""
-    <.link
-      patch={runs_path(@choice.params)}
-      class={
-        [
-          "favn-mode-item h-9 justify-start gap-1.5 rounded-field px-2.5 text-sm font-medium sm:justify-center",
-          "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
-          # The rail's own colour is tuned for icon-only buttons; these carry words,
-          # which are held to the higher contrast ask, so an inactive one borrows the
-          # muted text tier rather than the rail's decorative tint.
-          (@choice.active? && "favn-mode-item-active") || "favn-text-muted"
-        ]
-      }
-      title={@choice.hint}
-      aria-current={@choice.active? && "page"}
-      data-testid={"run-status-#{@choice.id}"}
-    >
-      <.icon name={@choice.icon} size={:md} class={Tokens.text_class(Tokens.tone(@choice.tone))} />
-      <span class="whitespace-nowrap">{@choice.label}</span>
-      <.count_badge
-        :if={is_integer(@choice.count)}
-        count={@choice.count}
-        label="runs"
-        tone={count_tone(@choice)}
-      />
-    </.link>
     """
   end
 
@@ -540,9 +500,4 @@ defmodule FavnView.Components.RunsListPage do
 
   defp sort_label(:started_asc), do: "oldest first"
   defp sort_label(_order), do: "newest first"
-
-  # A scope button with nothing in it should not shout, and one with failures
-  # should. The count is the same number either way.
-  defp count_tone(%{count: 0}), do: :neutral
-  defp count_tone(%{tone: tone}), do: tone
 end

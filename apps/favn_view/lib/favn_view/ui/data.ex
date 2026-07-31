@@ -44,6 +44,7 @@ defmodule FavnView.UI.Data do
 
   use Phoenix.Component
 
+  import FavnView.UI.Badge
   import FavnView.UI.Button
   import FavnView.UI.Icon
   import FavnView.UI.Surface
@@ -274,7 +275,15 @@ defmodule FavnView.UI.Data do
           id={@filters_id}
           phx-change={@on_change}
           phx-submit={@on_change}
-          class={["gap-2 sm:flex-row sm:flex-wrap sm:items-center lg:w-auto", filters_class(assigns)]}
+          class={
+            [
+              "gap-2 sm:flex-row sm:flex-wrap sm:items-center",
+              # Always at the end, whether or not a scope rail holds the start, so
+              # the search sits in the same corner on every list screen.
+              "lg:ml-auto",
+              filters_class(assigns)
+            ]
+          }
           data-testid="table-filters"
         >
           {render_slot(@filters)}
@@ -285,6 +294,101 @@ defmodule FavnView.UI.Data do
         </div>
       </div>
     </div>
+    """
+  end
+
+  @doc """
+  The one axis of a list screen that carries counts, as a rail of buttons.
+
+  A select hides its options and tells you nothing until you open it. For the
+  question a list screen exists to answer — what is failing, what is disabled,
+  what has gaps — the count beside each choice *is* the answer, so it belongs in
+  a rail where every count is visible at once and one click narrows to it.
+
+  Every choice is a map with `:id`, `:label`, `:icon`, `:tone`, `:active?`, and
+  a `:count` (`nil` when it could not be read). Counts must come from the whole
+  collection rather than the filtered page, or a button reports the list it is
+  already showing instead of the list clicking it would produce.
+
+  A rail either patches the URL, with a `:patch` path per choice, or pushes
+  `on_select` with the choice id as `scope`.
+
+      <.scope_rail label="Run status" choices={@choices} />
+      <.scope_rail label="Asset state" choices={@choices} on_select="set_scope" />
+  """
+  attr :label, :string, required: true, doc: "accessible name for the rail"
+  attr :choices, :list, required: true
+  attr :on_select, :string, default: nil, doc: "event name; omit for a patching rail"
+  attr :class, :any, default: nil
+  attr :rest, :global
+
+  def scope_rail(assigns) do
+    ~H"""
+    <nav
+      class={[
+        "favn-surface-rail grid w-full grid-cols-2 gap-0.5 rounded-box p-1",
+        "sm:flex sm:w-auto sm:flex-wrap sm:items-center",
+        @class
+      ]}
+      aria-label={@label}
+      {@rest}
+    >
+      <.scope_button :for={choice <- @choices} choice={choice} on_select={@on_select} />
+    </nav>
+    """
+  end
+
+  @doc """
+  One value of a `scope_rail/1`, carrying how many rows it would list.
+
+  The attr is a whole choice rather than a status, because `status` means a tone
+  everywhere else in this library.
+  """
+  attr :choice, :map, required: true
+  attr :on_select, :string, default: nil
+
+  def scope_button(assigns) do
+    assigns = assign(assigns, :classes, scope_button_classes(assigns.choice))
+
+    ~H"""
+    <.link
+      :if={!@on_select}
+      patch={@choice.patch}
+      class={@classes}
+      title={@choice[:hint]}
+      aria-current={@choice.active? && "page"}
+      data-testid={"scope-#{@choice.id}"}
+    >
+      <.scope_button_content choice={@choice} />
+    </.link>
+
+    <button
+      :if={@on_select}
+      type="button"
+      phx-click={@on_select}
+      phx-value-scope={@choice.id}
+      class={@classes}
+      title={@choice[:hint]}
+      aria-pressed={to_string(@choice.active?)}
+      data-testid={"scope-#{@choice.id}"}
+    >
+      <.scope_button_content choice={@choice} />
+    </button>
+    """
+  end
+
+  attr :choice, :map, required: true
+
+  defp scope_button_content(assigns) do
+    ~H"""
+    <.icon name={@choice.icon} size={:md} class={Tokens.text_class(Tokens.tone(@choice.tone))} />
+    <span class="whitespace-nowrap">{@choice.label}</span>
+    <.count_badge
+      :if={is_integer(@choice.count)}
+      count={@choice.count}
+      label={@choice[:count_label] || "rows"}
+      tone={count_tone(@choice)}
+    />
     """
   end
 
@@ -499,6 +603,22 @@ defmodule FavnView.UI.Data do
 
   defp align_class(:end), do: "text-right"
   defp align_class(_align), do: nil
+
+  # The rail's own colour is tuned for icon-only buttons; these carry words,
+  # which are held to the higher contrast ask, so an inactive one borrows the
+  # muted text tier rather than the rail's decorative tint.
+  defp scope_button_classes(choice) do
+    [
+      "favn-mode-item h-9 justify-start gap-1.5 rounded-field px-2.5 text-sm font-medium sm:justify-center",
+      "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
+      (choice.active? && "favn-mode-item-active") || "favn-text-muted"
+    ]
+  end
+
+  # A scope button with nothing in it should not shout, and one with failures
+  # should. The count is the same number either way.
+  defp count_tone(%{count: 0}), do: :neutral
+  defp count_tone(%{tone: tone}), do: tone
 
   # Without a toggle the filters are always laid out; with one they are a
   # narrow-screen disclosure that `lg` reopens for good.

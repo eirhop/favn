@@ -13,6 +13,7 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
   and a page asserted in a `favn_view` test are the same page.
   """
 
+  alias FavnView.AssetCatalogueFilters
   alias FavnView.Components.AssetCataloguePage
   alias FavnView.Components.LineagePage
   alias FavnView.Components.Navigation
@@ -84,17 +85,19 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
   end
 
   defp asset_catalogue do
-    filters = %{search: "", connection: "all", catalogue: "all"}
+    filters = AssetCatalogueFilters.defaults()
+    assets = AssetCataloguePage.sample_assets()
 
     base = %{
-      assets: AssetCataloguePage.sample_assets(),
+      assets: assets,
       filters: filters,
       active_mode: :list,
       loading: false,
       error: nil,
       nav_items: AssetCataloguePage.nav_items(:assets),
       connection_options: AssetCataloguePage.connection_options(),
-      catalogue_options: AssetCataloguePage.catalogue_options()
+      catalogue_options: AssetCataloguePage.catalogue_options(),
+      scope_choices: AssetCatalogueFilters.scope_choices(assets, filters)
     }
 
     %{
@@ -604,7 +607,7 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
       all_schedules: [],
       filters: Schedules.filters(),
       filter_options: %{pipelines: [], windows: []},
-      summary: Schedules.summary([]),
+      scope_choices: Schedules.scope_choices([]),
       loading: false,
       error: nil,
       nav_items: SchedulesPage.nav_items()
@@ -638,7 +641,7 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
           all_schedules: Schedules.list(),
           filters: Schedules.filters(),
           filter_options: Schedules.filter_options(),
-          summary: Schedules.summary(),
+          scope_choices: Schedules.scope_choices(),
           loading: false,
           error: nil,
           nav_items: SchedulesPage.nav_items()

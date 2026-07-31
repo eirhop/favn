@@ -38,6 +38,11 @@ defmodule FavnView.Components.AssetCataloguePage do
   attr :nav_items, :list, required: true
   attr :connection_options, :list, required: true
   attr :catalogue_options, :list, required: true
+
+  attr :scope_choices, :list,
+    required: true,
+    doc: "see `FavnView.AssetCatalogueFilters.scope_choices/2`"
+
   attr :flash, :map, default: %{}
   attr :lineage_graph, :any, default: nil
   attr :lineage_inspector, :any, default: nil
@@ -87,6 +92,7 @@ defmodule FavnView.Components.AssetCataloguePage do
                 filters={@filters}
                 connection_options={@connection_options}
                 catalogue_options={@catalogue_options}
+                scope_choices={@scope_choices}
               />
             </:toolbar>
 
@@ -128,10 +134,20 @@ defmodule FavnView.Components.AssetCataloguePage do
   attr :filters, :map, required: true
   attr :connection_options, :list, required: true
   attr :catalogue_options, :list, required: true
+  attr :scope_choices, :list, required: true
 
   def asset_filters(assigns) do
     ~H"""
     <.table_toolbar on_change="filter_assets" filters_id="asset-filters">
+      <:scopes>
+        <.scope_rail
+          label="Asset state"
+          choices={@scope_choices}
+          on_select="set_scope"
+          data-testid="asset-scopes"
+        />
+      </:scopes>
+
       <:filters>
         <.search_field
           id="asset-search"

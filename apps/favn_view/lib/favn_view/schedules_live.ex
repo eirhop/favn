@@ -5,6 +5,7 @@ defmodule FavnView.SchedulesLive do
 
   alias FavnView.Components.SchedulesPage
   alias FavnView.OperatorErrorLabels
+  alias FavnView.ScheduleFilters
   alias FavnView.ScheduleRoute
 
   @default_filters %{
@@ -25,7 +26,7 @@ defmodule FavnView.SchedulesLive do
         all_schedules: entries,
         filters: @default_filters,
         filter_options: filter_options(entries),
-        summary: summary(entries),
+        scope_choices: ScheduleFilters.scope_choices(entries, @default_filters),
         loading: false,
         error: error,
         nav_items: SchedulesPage.nav_items(:schedules)
@@ -36,16 +37,15 @@ defmodule FavnView.SchedulesLive do
 
   @impl true
   def handle_event("filter_schedules", %{"filters" => params}, socket) do
-    filters = normalize_filters(socket.assigns.filters, params)
-    {entries, error} = load_entries(operator_context(socket), filters)
+    {:noreply, apply_filters(socket, normalize_filters(socket.assigns.filters, params))}
+  end
 
-    {:noreply,
-     assign(socket,
-       schedules: entries,
-       filters: filters,
-       summary: summary(entries),
-       error: error
-     )}
+  # The rail sets the two state filters rather than a third one of its own, so a
+  # scope and the list can never disagree about what is being shown.
+  def handle_event("set_scope", %{"scope" => scope}, socket) do
+    filters = Map.merge(socket.assigns.filters, ScheduleFilters.scope_filters(scope))
+
+    {:noreply, apply_filters(socket, filters)}
   end
 
   def handle_event("clear_filters", _params, socket) do
@@ -57,7 +57,7 @@ defmodule FavnView.SchedulesLive do
        all_schedules: entries,
        filters: @default_filters,
        filter_options: filter_options(entries),
-       summary: summary(entries),
+       scope_choices: ScheduleFilters.scope_choices(entries, @default_filters),
        error: error
      )}
   end
@@ -70,12 +70,25 @@ defmodule FavnView.SchedulesLive do
       all_schedules={@all_schedules}
       filters={@filters}
       filter_options={@filter_options}
-      summary={@summary}
+      scope_choices={@scope_choices}
       loading={@loading}
       error={@error}
       nav_items={@nav_items}
     />
     """
+  end
+
+  # Counts come from every schedule, not the filtered page, so the number on a
+  # scope button is the number of rows clicking it produces.
+  defp apply_filters(socket, filters) do
+    {entries, error} = load_entries(operator_context(socket), filters)
+
+    assign(socket,
+      schedules: entries,
+      filters: filters,
+      scope_choices: ScheduleFilters.scope_choices(socket.assigns.all_schedules, filters),
+      error: error
+    )
   end
 
   defp load_entries(operator_context, filters) do
@@ -194,17 +207,6 @@ defmodule FavnView.SchedulesLive do
     |> Enum.uniq()
     |> Enum.sort_by(&to_string/1)
     |> Enum.map(&{label_fun.(&1), to_string(&1)})
-  end
-
-  defp summary(entries) do
-    %{
-      total: length(entries),
-      enabled: Enum.count(entries, &(&1.activation_state == :enabled)),
-      pending_activation: Enum.count(entries, &(&1.activation_state == :pending_activation)),
-      disabled: Enum.count(entries, &(&1.activation_state == :disabled)),
-      running: Enum.count(entries, &(&1.runtime_state == :running)),
-      queued: Enum.count(entries, &(&1.runtime_state == :queued))
-    }
   end
 
   defp schedule_label(nil), do: "default"

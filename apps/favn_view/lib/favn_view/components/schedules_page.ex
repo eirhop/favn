@@ -13,7 +13,11 @@ defmodule FavnView.Components.SchedulesPage do
   attr :all_schedules, :list, default: []
   attr :filters, :map, required: true
   attr :filter_options, :map, required: true
-  attr :summary, :map, required: true
+
+  attr :scope_choices, :list,
+    required: true,
+    doc: "see `FavnView.ScheduleFilters.scope_choices/2`"
+
   attr :loading, :boolean, default: false
   attr :error, :string, default: nil
   attr :nav_items, :list, required: true
@@ -39,12 +43,13 @@ defmodule FavnView.Components.SchedulesPage do
           data-testid="schedules-error-state"
         />
         <div :if={!@loading && !@error} class="flex min-h-0 flex-1 flex-col gap-2.5 lg:gap-3">
-          <.helper_text /> <.summary_band summary={@summary} />
+          <.helper_text />
           <.table_panel data-testid="schedules-panel">
             <:toolbar>
               <.filters_bar
                 filters={@filters}
                 filter_options={@filter_options}
+                scope_choices={@scope_choices}
                 result_count={length(@schedules)}
               />
             </:toolbar>
@@ -79,62 +84,31 @@ defmodule FavnView.Components.SchedulesPage do
     """
   end
 
-  attr :summary, :map, required: true
-
-  def summary_band(assigns) do
-    ~H"""
-    <section
-      class="favn-surface-panel rounded-box border border-base-content/10 bg-base-100/35 px-4 py-3 shadow-[0_16px_60px_rgba(0,0,0,0.22)] sm:px-5 sm:py-4"
-      data-testid="schedules-summary-band"
-    >
-      <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
-        <.summary_metric label="Total schedules" value={@summary.total} caption="Active manifest" />
-        <.summary_metric label="Enabled" value={@summary.enabled} caption="Operator enabled" />
-        <.summary_metric
-          label="Pending activation"
-          value={@summary.pending_activation}
-          caption="Awaiting review"
-        /> <.summary_metric label="Disabled" value={@summary.disabled} caption="Operator disabled" />
-        <.summary_metric label="Running" value={@summary.running} caption="In flight" />
-        <.summary_metric label="Queued" value={@summary.queued} caption="Waiting" />
-      </div>
-    </section>
-    """
-  end
-
-  attr :label, :string, required: true
-  attr :value, :any, required: true
-  attr :caption, :string, required: true
-
-  def summary_metric(assigns) do
-    ~H"""
-    <div class="space-y-1 border-base-content/10 sm:border-l sm:pl-5 first:border-l-0 first:pl-0">
-      <p class="text-[0.68rem] font-semibold uppercase tracking-[0.2em] favn-text-subtle">
-        {@label}
-      </p>
-
-      <p class="text-xl font-semibold leading-none text-base-content">{@value}</p>
-
-      <p class="text-xs favn-text-muted">{@caption}</p>
-    </div>
-    """
-  end
-
   @doc """
   Search and narrowing for the schedule list.
 
-  Four axes narrow a schedule list, which is more than the shared select fits in
-  one row, so they wrap. They are the shared fields regardless: a bespoke
-  label-and-select pill used to live here and made this screen read as a
-  different application from `/runs`.
+  Activation and runtime are the scope rail and nothing else. They had a select
+  each as well, which is a second way to set the same field, and the counts make
+  the rail the better one. What is left narrows a different axis: which pipeline,
+  which window, and a search.
   """
   attr :filters, :map, required: true
   attr :filter_options, :map, required: true
+  attr :scope_choices, :list, required: true
   attr :result_count, :integer, required: true
 
   def filters_bar(assigns) do
     ~H"""
     <.table_toolbar on_change="filter_schedules" filters_id="schedule-filters">
+      <:scopes>
+        <.scope_rail
+          label="Schedule state"
+          choices={@scope_choices}
+          on_select="set_scope"
+          data-testid="schedule-scopes"
+        />
+      </:scopes>
+
       <:filters>
         <.search_field
           id="schedule-search"
@@ -142,22 +116,6 @@ defmodule FavnView.Components.SchedulesPage do
           label="Search schedules"
           value={@filters["search"]}
           class="sm:w-56"
-        />
-        <.select_field
-          name="filters[activation_state]"
-          label="Activation"
-          icon="hero-check-badge"
-          options={activation_options()}
-          value={@filters["activation_state"]}
-          class="sm:w-40"
-        />
-        <.select_field
-          name="filters[runtime_state]"
-          label="Runtime"
-          icon="hero-bolt"
-          options={runtime_options()}
-          value={@filters["runtime_state"]}
-          class="sm:w-36"
         />
         <.select_field
           name="filters[pipeline]"
