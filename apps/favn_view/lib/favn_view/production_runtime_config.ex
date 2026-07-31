@@ -22,6 +22,7 @@ defmodule FavnView.ProductionRuntimeConfig do
   require Logger
 
   alias Favn.DeploymentMode
+  alias FavnOrchestrator.Operator.Audit
 
   @type config :: %{
           deployment_mode: DeploymentMode.t(),
@@ -101,12 +102,7 @@ defmodule FavnView.ProductionRuntimeConfig do
     Application.put_env(
       :favn_orchestrator,
       :operator_command_hmac_key,
-      :crypto.mac(
-        :hmac,
-        :sha256,
-        config.secret_key_base,
-        "favn.operator-command-request-fingerprint.v1"
-      )
+      Audit.derive_command_hmac_key(config.secret_key_base)
     )
 
     Application.put_env(:favn_view, :production_runtime_diagnostics, diagnostics(config))

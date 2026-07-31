@@ -28,6 +28,32 @@ defmodule FavnView.WorkspaceSessionTest do
     end
   end
 
+  # Every real LiveView pattern-matches only the messages it sends itself, so an
+  # identity message that reaches `handle_info/2` raises instead of being ignored.
+  defmodule StrictProbeLive do
+    use FavnView, :live_view
+
+    alias FavnView.Auth
+
+    @impl true
+    def mount(params, session, socket) do
+      case Auth.on_mount(:require_authenticated_operator, params, session, socket) do
+        {:cont, socket} -> {:ok, socket}
+        {:halt, socket} -> {:ok, socket}
+      end
+    end
+
+    @impl true
+    def handle_info(:expected_message, socket), do: {:noreply, socket}
+
+    @impl true
+    def render(assigns) do
+      ~H"""
+      <div id="strict-probe">{@current_scope.actor.display_name}</div>
+      """
+    end
+  end
+
   @env_keys [
     :introspect_operator_session_fun,
     :list_operator_workspaces_fun,
@@ -340,6 +366,36 @@ defmodule FavnView.WorkspaceSessionTest do
     Agent.update(validity, fn _ -> false end)
     send(view.pid, :favn_revalidate_operator_identity)
     assert_redirect(view, "/login")
+  end
+
+  test "a successful revalidation refreshes the scope without reaching the page", %{conn: conn} do
+    {actor, session} = identity("workspace-one", "session-one")
+    {:ok, current_actor} = Agent.start_link(fn -> actor end)
+
+    Application.put_env(:favn_view, :introspect_operator_session_fun, fn
+      "workspace-one", "opaque-token" -> {:ok, session, Agent.get(current_actor, & &1)}
+    end)
+
+    Application.put_env(:favn_view, :list_operator_workspaces_fun, fn _context ->
+      {:ok, [%{id: "workspace-one", name: "One", status: :active}]}
+    end)
+
+    Application.put_env(:favn_view, :subscribe_operator_identity_fun, fn _context -> :ok end)
+
+    assert {:ok, view, html} =
+             live_isolated(conn, StrictProbeLive,
+               session: %{
+                 "operator_workspace_id" => "workspace-one",
+                 "operator_session_token" => "opaque-token"
+               }
+             )
+
+    assert html =~ "Operator"
+
+    Agent.update(current_actor, &%{&1 | display_name: "Renamed Operator"})
+    send(view.pid, :favn_revalidate_operator_identity)
+
+    assert render(view) =~ "Renamed Operator"
   end
 
   test "connected LiveView mount fails closed when identity subscription fails", %{conn: conn} do

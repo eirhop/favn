@@ -305,6 +305,9 @@ defmodule FavnView.Auth do
     |> Phoenix.Component.assign(:operator_workspaces, active_workspaces(scope))
   end
 
+  # Both identity messages are the hook's own, so they halt. Continuing would
+  # deliver them to the page's `handle_info/2`, which crashes every LiveView
+  # whose clauses are not exhaustive.
   defp handle_identity_message(
          {:favn_identity_invalidated, _reason} = message,
          socket,
@@ -329,7 +332,7 @@ defmodule FavnView.Auth do
          refreshed_scope = Scope.new(workspace_id, actor, session),
          true <- Scope.has_role?(refreshed_scope, :viewer) do
       schedule_identity_revalidation()
-      {:cont, assign_live_scope(socket, refreshed_scope)}
+      {:halt, assign_live_scope(socket, refreshed_scope)}
     else
       _invalid -> {:halt, Phoenix.LiveView.redirect(socket, to: "/login")}
     end
