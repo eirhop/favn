@@ -5454,12 +5454,6 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
 
     assert {:ok, _publications} = Sequencer.sequence_batch()
 
-    SQL.query!(
-      Repo,
-      "UPDATE favn_control.projection_cursors SET owner_id = NULL, claim_expires_at = NULL WHERE projector_name = 'control_plane_v1' AND shard_id = 0",
-      []
-    )
-
     count = drain_projector("projector:" <> run.id)
     assert count > 0
 
@@ -7421,12 +7415,6 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert {:ok, publications} = Sequencer.sequence_batch()
     assert publications != []
 
-    SQL.query!(
-      Repo,
-      "UPDATE favn_control.projection_cursors SET owner_id = NULL, claim_expires_at = NULL WHERE projector_name = 'control_plane_v1' AND shard_id = 0",
-      []
-    )
-
     assert drain_projector("node-a") >= length(publications)
 
     assert {:ok, group_page} =
@@ -7674,12 +7662,6 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert {:ok, publications} = Sequencer.sequence_batch()
     assert publications != []
 
-    SQL.query!(
-      Repo,
-      "UPDATE favn_control.projection_cursors SET owner_id = NULL, claim_expires_at = NULL WHERE projector_name = 'control_plane_v1' AND shard_id = 0",
-      []
-    )
-
     assert drain_projector("node-a") >= length(publications)
 
     ids = fn filters ->
@@ -7813,12 +7795,6 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     overview = fn ->
       assert {:ok, publications} = Sequencer.sequence_batch()
 
-      SQL.query!(
-        Repo,
-        "UPDATE favn_control.projection_cursors SET owner_id = NULL, claim_expires_at = NULL WHERE projector_name = 'control_plane_v1' AND shard_id = 0",
-        []
-      )
-
       assert drain_projector("node-a") >= length(publications)
 
       Repo.get_by!(FavnStoragePostgres.Schemas.ExecutionGroupOverview,
@@ -7860,12 +7836,6 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert {:ok, _created} = RunStore.create_run(other_command)
     assert {:ok, publications} = Sequencer.sequence_batch()
     assert publications != []
-
-    SQL.query!(
-      Repo,
-      "UPDATE favn_control.projection_cursors SET owner_id = NULL, claim_expires_at = NULL WHERE projector_name = 'control_plane_v1' AND shard_id = 0",
-      []
-    )
 
     assert drain_projector("node-a") >= length(publications)
 
@@ -8005,16 +7975,6 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
              )
 
     assert first < second and second < third
-
-    SQL.query!(
-      Repo,
-      """
-      UPDATE favn_control.projection_cursors
-      SET owner_id = NULL, claim_expires_at = NULL
-      WHERE projector_name = 'control_plane_v1' AND shard_id = 0
-      """,
-      []
-    )
 
     assert drain_projector("clock-skew-projector") >= length(publications)
 
@@ -8547,11 +8507,34 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     )
   end
 
-  defp drain_projector(owner_id, total \\ 0) do
+  # A projector claim is deliberately held until its lease expires, and suites
+  # that share this database commit real claims. Release any stale claim first so
+  # draining under a fresh owner id is never rejected as `projection stream is
+  # owned`, which previously surfaced as a CaseClauseError here.
+  defp drain_projector(owner_id) do
+    release_projection_cursor!()
+    drain_projector(owner_id, 0)
+  end
+
+  defp drain_projector(owner_id, total) do
     case Projector.project_batch(owner_id, limit: 250) do
       {:ok, %{count: 250}} -> drain_projector(owner_id, total + 250)
       {:ok, %{count: count}} -> total + count
     end
+  end
+
+  defp release_projection_cursor! do
+    SQL.query!(
+      Repo,
+      """
+      UPDATE favn_control.projection_cursors
+      SET owner_id = NULL, claim_expires_at = NULL
+      WHERE projector_name = 'control_plane_v1' AND shard_id = 0
+      """,
+      []
+    )
+
+    :ok
   end
 
   defp api_identity(fixture, roles) do
