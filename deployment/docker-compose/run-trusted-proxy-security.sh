@@ -49,6 +49,15 @@ build_compose() {
     "$@"
 }
 
+build_images() {
+  if build_compose build --help 2>/dev/null | grep -q -- '--provenance'; then
+    build_compose build --builder "$image_builder_name" --provenance=false "$@"
+  else
+    export BUILDX_NO_DEFAULT_ATTESTATIONS=1
+    build_compose build --builder "$image_builder_name" "$@"
+  fi
+}
+
 existing=$(compose ps --all --quiet)
 if [ -n "$existing" ]; then
   echo "the $project_name project already has containers; inspect it or run cleanup.sh first" >&2
@@ -61,8 +70,7 @@ mkdir -p "$script_dir/proxy-security-results"
 compose pull https-proxy proxy-header-receiver proxy-security
 sh "$script_dir/verify-image-source.sh" "$env_file" clean
 sh "$script_dir/ensure-image-builder.sh" "$image_builder_name"
-build_compose build --builder "$image_builder_name" --provenance=false \
-  certificates postgres control-plane
+build_images certificates postgres control-plane
 compose up certificates
 compose up --detach postgres
 

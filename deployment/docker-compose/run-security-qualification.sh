@@ -104,7 +104,18 @@ build_compose() {
     --project-name "$image_build_project_name" \
     --file "$compose_file" \
     --file "$security_compose_file" \
+    --profile security \
+    --profile proxy-security \
     "$@"
+}
+
+build_images() {
+  if build_compose build --help 2>/dev/null | grep -q -- '--provenance'; then
+    build_compose build --builder "$image_builder_name" --provenance=false "$@"
+  else
+    export BUILDX_NO_DEFAULT_ATTESTATIONS=1
+    build_compose build --builder "$image_builder_name" "$@"
+  fi
 }
 
 record() {
@@ -205,9 +216,7 @@ MSYS_NO_PATHCONV=1 docker run --rm \
 compose config --quiet
 sh "$script_dir/verify-image-source.sh" "$env_file" "$source_state"
 sh "$script_dir/ensure-image-builder.sh" "$image_builder_name"
-build_compose --profile security --profile proxy-security build \
-  --builder "$image_builder_name" --provenance=false \
-  certificates postgres control-plane security-browser
+build_images certificates postgres control-plane security-browser
 
 compose up certificates
 compose up --detach postgres

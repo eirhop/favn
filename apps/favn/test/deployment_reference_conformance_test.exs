@@ -338,6 +338,8 @@ defmodule Favn.DeploymentReferenceConformanceTest do
       assert runner =~ "ensure-image-builder.sh"
       assert runner =~ "--builder \"$image_builder_name\""
       assert runner =~ "--provenance=false"
+      assert runner =~ "BUILDX_NO_DEFAULT_ATTESTATIONS=1"
+      assert runner =~ "build_compose build --help"
     end
 
     security_runner = read("deployment/docker-compose/run-security-qualification.sh")

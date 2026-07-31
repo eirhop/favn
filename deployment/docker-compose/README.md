@@ -50,7 +50,9 @@ layers. It refuses dirty checkouts and refuses to overwrite the file unless
 The build runs through the dedicated `favn-qualification-v1` Buildx builder.
 Its cache is reusable but capped at 12 GB and configured to preserve at least
 20 GB of free disk space. This keeps qualification cache policy separate from
-Docker's shared default builder.
+Docker's shared default builder. The wrappers disable default provenance
+attestations through the Compose flag when available and the equivalent Buildx
+environment setting on older Compose releases.
 
 `run-simulation.sh` then:
 

@@ -47,6 +47,15 @@ build_compose() {
     "$@"
 }
 
+build_images() {
+  if build_compose build --help 2>/dev/null | grep -q -- '--provenance'; then
+    build_compose build --builder "$image_builder_name" --provenance=false "$@"
+  else
+    export BUILDX_NO_DEFAULT_ATTESTATIONS=1
+    build_compose build --builder "$image_builder_name" "$@"
+  fi
+}
+
 is_container_id() {
   value=$1
 
@@ -111,8 +120,7 @@ mkdir -p "$script_dir/simulation-results"
 sh "$script_dir/verify-image-source.sh" "$env_file" clean
 sh "$script_dir/ensure-image-builder.sh" "$image_builder_name"
 
-build_compose build --builder "$image_builder_name" --provenance=false \
-  certificates postgres control-plane operator runner scaler
+build_images certificates postgres control-plane operator runner scaler
 compose up certificates
 compose up --detach postgres
 wait_healthy postgres
