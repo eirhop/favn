@@ -10,18 +10,34 @@ defmodule FavnView.UI.Data do
   | --- | --- |
   | `fact_list/1` | a handful of labelled values about one thing |
   | `data_table/1` | many rows of the same shape, on desktop |
+  | `stacked_cell/1` | a table cell whose value needs a qualifier under it |
   | `metric/1` | one number that the operator watches |
   | `mono/1` | ids, fingerprints, and anything copied verbatim |
 
   A table is a desktop affordance. On mobile the same rows should render as
   `FavnView.UI.Surface.list_card/1`; do not shrink a table to fit a phone.
 
+  ## The list-screen standard
+
+  `/runs` is the reference: a compact table whose header stays put while the rows
+  scroll, two-line cells so a row answers a question without a second column, and
+  one trailing chevron per row. `data_table/1` carries that standard, so a list
+  screen adopts it by passing `fill?` and letting the panel bound the height —
+  not by restyling a table of its own.
+
+  `fill?` and the sticky header work together. Sticky positioning needs a
+  scrolling ancestor with a bounded height, so `fill?` makes the table's own
+  wrapper that ancestor: put it in a `flex min-h-0 flex-1` panel and the header
+  pins to the top of the rows rather than to the page.
+
   ## Examples
 
       <.fact_list facts={[%{label: "Trigger", value: "Schedule"}]} />
 
-      <.data_table id="runs" rows={@runs} row_navigate={&~p"/runs/\#{&1.id}"}>
-        <:col :let={run} label="Run">{run.id}</:col>
+      <.data_table id="runs" rows={@runs} row_navigate={&~p"/runs/\#{&1.id}"} fill?>
+        <:col :let={run} label="Run" class="w-64">
+          <.stacked_cell primary={run.short_id} secondary={run.trigger} mono={:primary} />
+        </:col>
         <:col :let={run} label="Status"><.status_badge tone={run.tone} label={run.status} /></:col>
       </.data_table>
   """
@@ -30,6 +46,7 @@ defmodule FavnView.UI.Data do
 
   import FavnView.UI.Button
   import FavnView.UI.Icon
+  import FavnView.UI.Surface
 
   alias FavnView.UI.Tokens
 
@@ -51,6 +68,7 @@ defmodule FavnView.UI.Data do
     <dl class={["grid gap-3 text-xs sm:gap-4", @grid_class, @class]} {@rest}>
       <div :for={fact <- @facts} class="min-w-0">
         <dt class="favn-text-subtle">{fact.label}</dt>
+
         <dd
           class={[
             "mt-0.5 truncate font-medium",
@@ -76,6 +94,16 @@ defmodule FavnView.UI.Data do
     default: nil,
     doc: "function returning extra classes for a row, for a selected or deep-linked row"
 
+  attr :fill?, :boolean,
+    default: false,
+    doc:
+      "make the wrapper the scroll region, for a table inside a `flex min-h-0 flex-1` panel; " <>
+        "required for the sticky header to pin to the rows instead of the page"
+
+  attr :sticky_header?, :boolean,
+    default: true,
+    doc: "set false only where the header would pin against a second one"
+
   attr :class, :any, default: nil
   attr :rest, :global
 
@@ -89,16 +117,18 @@ defmodule FavnView.UI.Data do
 
   def data_table(assigns) do
     ~H"""
-    <div class={["overflow-x-auto", @class]}>
-      <table class="table table-sm text-sm" id={@id}>
-        <thead>
+    <div class={[(@fill? && "min-h-0 flex-1 overflow-auto") || "overflow-x-auto", @class]}>
+      <table class="table table-sm w-full text-sm" id={@id}>
+        <thead class={@sticky_header? && "sticky top-0 z-10 bg-base-100/85 backdrop-blur"}>
           <tr class="border-base-content/10 text-xs favn-text-muted">
             <th :for={col <- @col} class={["font-medium", align_class(col[:align]), col[:class]]}>
               {col.label}
             </th>
+
             <th :if={@action != [] || @row_navigate} class="sr-only">Actions</th>
           </tr>
         </thead>
+
         <tbody>
           <tr
             :for={row <- @rows}
@@ -112,6 +142,7 @@ defmodule FavnView.UI.Data do
             <td :for={col <- @col} class={["align-middle", align_class(col[:align]), col[:class]]}>
               {render_slot(col, row)}
             </td>
+
             <td :if={@action != [] || @row_navigate} class="text-right align-middle">
               <div class="flex items-center justify-end gap-1">
                 {render_slot(@action, row)}
@@ -127,6 +158,202 @@ defmodule FavnView.UI.Data do
           </tr>
         </tbody>
       </table>
+    </div>
+    """
+  end
+
+  @doc """
+  The panel a list screen's table lives in.
+
+  A sticky header needs a scrolling ancestor of bounded height, and getting that
+  wrong shows up as a header pinned to the wrong edge or a page with two
+  scrollbars. The recipe is four utilities deep and every list screen needs the
+  same one, so it lives here rather than in each page: this is the only place the
+  bounding is written down.
+
+  Pair it with `data_table/1` and `fill?`. Below `lg` the table is not the right
+  shape for the viewport, so a screen renders `FavnView.UI.Surface.list_card/1`
+  rows instead; pass `desktop_only?` when those cards live outside this panel.
+
+      <.table_panel desktop_only?>
+        <.data_table id="pipelines" rows={@pipelines} fill?>
+          <:col :let={pipeline} label="Pipeline">{pipeline.name}</:col>
+        </.data_table>
+      </.table_panel>
+  """
+  attr :desktop_only?, :boolean,
+    default: false,
+    doc: "hide below `lg`, for a screen whose cards render outside this panel"
+
+  attr :class, :any, default: nil
+  attr :rest, :global
+  slot :toolbar, doc: "filters or scope controls that scroll with the panel rather than the rows"
+  slot :inner_block, required: true
+
+  def table_panel(assigns) do
+    ~H"""
+    <.panel
+      padding={:none}
+      class={[
+        (@desktop_only? && "hidden lg:flex") || "flex",
+        "flex-col lg:min-h-0 lg:flex-1 lg:overflow-hidden",
+        @class
+      ]}
+      {@rest}
+    >
+      <div :if={@toolbar != []} class="shrink-0">{render_slot(@toolbar)}</div>
+      {render_slot(@inner_block)}
+    </.panel>
+    """
+  end
+
+  @doc """
+  The search and narrowing controls above a list screen's rows.
+
+  Placement is part of the standard, not a page's choice. The controls sit inside
+  `table_panel/1` above the rows, separated by one rule, so the operator finds
+  them in the same place on every list — and so they scroll with the panel while
+  the table header pins to the rows beneath them.
+
+  What goes where: `scopes` is a rail of buttons for the one axis that carries
+  counts, at the start; `filters` is the search and the selects, at the end;
+  `meta` is a result count. A screen uses the shared `search_field/1` and
+  `select_field/1` inside `filters` rather than dressing its own inputs, which is
+  what made `/schedules` look like a different application from `/runs`.
+
+  Passing `on_change` renders the form, so filtering works with and without
+  JavaScript without each page wiring its own. Passing `on_toggle` collapses the
+  filters behind one control below `lg`, for a screen whose scopes must stay
+  visible on a phone; without it the filters are always shown.
+
+      <.table_toolbar on_change="filter_schedules" filters_id="schedule-filters">
+        <:filters>
+          <.search_field name="filters[search]" label="Search schedules" value={@filters["search"]} />
+        </:filters>
+        <:meta>{@result_count} results</:meta>
+      </.table_toolbar>
+  """
+  attr :on_change, :string, default: nil, doc: "LiveView event; renders the form around `filters`"
+  attr :filters_id, :string, default: nil
+  attr :on_toggle, :string, default: nil, doc: "event that collapses the filters below `lg`"
+  attr :filters_open?, :boolean, default: false, doc: "only meaningful with `on_toggle`"
+
+  attr :adjusted?, :boolean,
+    default: false,
+    doc: "marks the collapsed control when a filter is set"
+
+  attr :class, :any, default: nil
+  attr :rest, :global
+
+  slot :scopes, doc: "a rail of buttons for the axis that carries counts"
+  slot :filters, doc: "search and selects; use `search_field/1` and `select_field/1`"
+  slot :meta, doc: "a result count, aligned to the end"
+
+  def table_toolbar(assigns) do
+    ~H"""
+    <div class={["border-b border-base-content/10 p-3 sm:p-4", @class]} {@rest}>
+      <div class="flex flex-wrap items-center gap-2 sm:gap-3 lg:justify-between">
+        <div :if={@scopes != []} class="w-full sm:w-auto">{render_slot(@scopes)}</div>
+
+        <.button
+          :if={@on_toggle}
+          variant={:ghost}
+          icon="hero-adjustments-horizontal"
+          class="ml-auto shrink-0 lg:hidden"
+          phx-click={@on_toggle}
+          aria-expanded={to_string(@filters_open?)}
+          aria-controls={@filters_id}
+          data-testid="toggle-table-filters"
+        >
+          Filters
+          <span :if={@adjusted?} class="size-1.5 rounded-full bg-primary" aria-hidden="true" />
+        </.button>
+
+        <form
+          :if={@filters != []}
+          id={@filters_id}
+          phx-change={@on_change}
+          phx-submit={@on_change}
+          class={["gap-2 sm:flex-row sm:flex-wrap sm:items-center lg:w-auto", filters_class(assigns)]}
+          data-testid="table-filters"
+        >
+          {render_slot(@filters)}
+        </form>
+
+        <div :if={@meta != []} class="ml-auto shrink-0 text-xs favn-text-subtle">
+          {render_slot(@meta)}
+        </div>
+      </div>
+    </div>
+    """
+  end
+
+  @doc """
+  A table cell that carries a value and the qualifier that makes it legible.
+
+  A run id means little without its trigger, a schedule name little without its
+  id, an asset name little without its namespace. Each list screen used to solve
+  that with either a second column — which widens the table past the viewport —
+  or its own two-line markup, which drifted. This is that markup, once.
+
+  Both lines truncate rather than wrap, so a long value cannot change the row
+  height, and the full value stays reachable as a tooltip.
+
+      <.stacked_cell primary={@schedule.label} secondary={@schedule.id} mono={:secondary} />
+  """
+  attr :primary, :string, required: true
+  attr :secondary, :string, default: nil
+  attr :title, :string, default: nil, doc: "tooltip for the primary line; defaults to its text"
+  attr :secondary_title, :string, default: nil
+  attr :navigate, :any, default: nil, doc: "makes the primary line a link"
+
+  attr :mono, :atom,
+    default: :none,
+    values: [:none, :primary, :secondary, :both],
+    doc: "which lines are code — an id, a cron, a hash — rather than prose"
+
+  attr :tone, :atom, default: nil, doc: "tone for the primary line; defaults to full contrast"
+  attr :class, :any, default: nil
+  attr :rest, :global
+
+  def stacked_cell(assigns) do
+    ~H"""
+    <div class={["min-w-0", @class]} {@rest}>
+      <.link
+        :if={@navigate}
+        navigate={@navigate}
+        class={[
+          "block truncate font-medium hover:text-primary",
+          mono?(@mono, :primary) && "font-mono text-xs",
+          (@tone && Tokens.text_class(Tokens.tone(@tone))) || "text-base-content"
+        ]}
+        title={@title || @primary}
+      >
+        {@primary}
+      </.link>
+
+      <p
+        :if={!@navigate}
+        class={[
+          "truncate font-medium",
+          mono?(@mono, :primary) && "font-mono text-xs",
+          (@tone && Tokens.text_class(Tokens.tone(@tone))) || "text-base-content"
+        ]}
+        title={@title || @primary}
+      >
+        {@primary}
+      </p>
+
+      <p
+        :if={@secondary}
+        class={[
+          "truncate text-[0.68rem] favn-text-subtle",
+          mono?(@mono, :secondary) && "font-mono"
+        ]}
+        title={@secondary_title || @secondary}
+      >
+        {@secondary}
+      </p>
     </div>
     """
   end
@@ -148,12 +375,13 @@ defmodule FavnView.UI.Data do
     ~H"""
     <div class={["min-w-0", @class]} {@rest}>
       <div class="flex items-center gap-2 text-xs favn-text-subtle">
-        <.icon :if={@icon} name={@icon} size={:xs} />
-        {@label}
+        <.icon :if={@icon} name={@icon} size={:xs} /> {@label}
       </div>
+
       <div class={["mt-1 truncate text-2xl font-light tracking-tight", Tokens.text_class(@tone)]}>
         {@value}
       </div>
+
       <p :if={@hint} class="mt-0.5 truncate text-xs favn-text-subtle">{@hint}</p>
     </div>
     """
@@ -216,6 +444,7 @@ defmodule FavnView.UI.Data do
           data-tone={segment.tone}
         />
       </div>
+
       <p
         :if={@legend? and @present != []}
         class="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs favn-text-muted"
@@ -225,8 +454,7 @@ defmodule FavnView.UI.Data do
           <span class={[
             "size-1.5 shrink-0 rounded-full",
             Tokens.fill_class(Tokens.tone(segment.tone))
-          ]} />
-          {segment.count} {segment.label}
+          ]} /> {segment.count} {segment.label}
         </span>
       </p>
     </div>
@@ -271,6 +499,16 @@ defmodule FavnView.UI.Data do
 
   defp align_class(:end), do: "text-right"
   defp align_class(_align), do: nil
+
+  # Without a toggle the filters are always laid out; with one they are a
+  # narrow-screen disclosure that `lg` reopens for good.
+  defp filters_class(%{on_toggle: nil}), do: "flex w-full flex-col lg:w-auto"
+  defp filters_class(%{filters_open?: true}), do: "flex w-full flex-col lg:w-auto"
+  defp filters_class(_assigns), do: "hidden w-full flex-col lg:flex lg:w-auto"
+
+  defp mono?(:both, _line), do: true
+  defp mono?(line, line), do: true
+  defp mono?(_mono, _line), do: false
 
   defp segment_count(segment) do
     case Map.get(segment, :count) do

@@ -227,6 +227,33 @@ defmodule FavnView.Dev.DesignSystem.Examples.Elements do
           "An empty table renders headers only. Pair it with an empty state instead."
         )
       ],
+      "data/table_panel" => [
+        Example.render(
+          :list_screen_standard,
+          &table_panel_example/1,
+          "The whole list-screen standard: toolbar, then a table whose header pins " <>
+            "because the rows scroll. Every list screen composes exactly these three."
+        )
+      ],
+      "data/table_toolbar" => [
+        Example.render(
+          :search_and_filters,
+          &table_toolbar_example/1,
+          "Search and selects sit at the end, a result count after them."
+        ),
+        Example.render(
+          :with_scopes,
+          &table_toolbar_scopes_example/1,
+          "A scope rail carrying counts goes at the start, as on /runs."
+        )
+      ],
+      "data/stacked_cell" => [
+        Example.render(
+          :value_and_qualifier,
+          &stacked_cell_example/1,
+          "The second line is what makes the first legible: an id, a namespace, a timezone."
+        )
+      ],
       "data/fact_list" => [
         Example.attrs(
           :three_columns,
@@ -466,7 +493,9 @@ defmodule FavnView.Dev.DesignSystem.Examples.Elements do
     ~H"""
     <.inline gap={:sm}>
       <.badge tone={:info} variant={:soft}>Soft</.badge>
+
       <.badge tone={:info} variant={:outline}>Outline</.badge>
+
       <.badge tone={:info} variant={:solid}>Solid</.badge>
     </.inline>
     """
@@ -476,7 +505,9 @@ defmodule FavnView.Dev.DesignSystem.Examples.Elements do
     ~H"""
     <.inline gap={:sm}>
       <.badge tone={:success} size={:xs}>Healthy</.badge>
+
       <.badge tone={:success} size={:sm}>Healthy</.badge>
+
       <.badge tone={:success} size={:md}>Healthy</.badge>
     </.inline>
     """
@@ -497,10 +528,8 @@ defmodule FavnView.Dev.DesignSystem.Examples.Elements do
   defp status_badge_lifecycle(assigns) do
     ~H"""
     <.inline gap={:sm}>
-      <.status_badge tone={:success} label="Healthy" />
-      <.status_badge tone={:info} label="Running" />
-      <.status_badge tone={:warning} label="Stale" />
-      <.status_badge tone={:error} label="Failed" />
+      <.status_badge tone={:success} label="Healthy" /> <.status_badge tone={:info} label="Running" />
+      <.status_badge tone={:warning} label="Stale" /> <.status_badge tone={:error} label="Failed" />
       <.status_badge tone={:neutral} label="Unknown" />
     </.inline>
     """
@@ -510,8 +539,7 @@ defmodule FavnView.Dev.DesignSystem.Examples.Elements do
     ~H"""
     <.inline gap={:sm}>
       <.status_badge tone={:succeeded} label="Succeeded" />
-      <.status_badge tone={:queued} label="Queued" />
-      <.status_badge tone={:missed} label="Missed" />
+      <.status_badge tone={:queued} label="Queued" /> <.status_badge tone={:missed} label="Missed" />
       <.status_badge tone={:blocked} label="Blocked" />
     </.inline>
     """
@@ -528,12 +556,10 @@ defmodule FavnView.Dev.DesignSystem.Examples.Elements do
   defp button_variants(assigns) do
     ~H"""
     <.inline gap={:sm}>
-      <.button variant={:primary}>Run pipeline</.button>
-      <.button variant={:solid}>Run asset</.button>
+      <.button variant={:primary}>Run pipeline</.button> <.button variant={:solid}>Run asset</.button>
       <.button variant={:secondary}>Plan backfill</.button>
       <.button variant={:ghost}>Reset filters</.button>
-      <.button variant={:danger}>Cancel run</.button>
-      <.button variant={:link}>Open manifest</.button>
+      <.button variant={:danger}>Cancel run</.button> <.button variant={:link}>Open manifest</.button>
     </.inline>
     """
   end
@@ -541,10 +567,8 @@ defmodule FavnView.Dev.DesignSystem.Examples.Elements do
   defp button_sizes(assigns) do
     ~H"""
     <.inline gap={:sm}>
-      <.button size={:xs}>Extra small</.button>
-      <.button size={:sm}>Small</.button>
-      <.button size={:md}>Medium</.button>
-      <.button size={:lg}>Large</.button>
+      <.button size={:xs}>Extra small</.button> <.button size={:sm}>Small</.button>
+      <.button size={:md}>Medium</.button> <.button size={:lg}>Large</.button>
     </.inline>
     """
   end
@@ -561,8 +585,7 @@ defmodule FavnView.Dev.DesignSystem.Examples.Elements do
   defp button_states(assigns) do
     ~H"""
     <.inline gap={:sm}>
-      <.button loading>Submitting</.button>
-      <.button disabled>Not permitted</.button>
+      <.button loading>Submitting</.button> <.button disabled>Not permitted</.button>
       <.button variant={:secondary} navigate="/runs">All runs</.button>
     </.inline>
     """
@@ -650,7 +673,9 @@ defmodule FavnView.Dev.DesignSystem.Examples.Elements do
     ~H"""
     <.stack gap={{:md, :lg}}>
       <div class="favn-surface-list rounded-box p-3 text-sm">Filters</div>
+
       <div class="favn-surface-list rounded-box p-3 text-sm">Table</div>
+
       <div class="favn-surface-list rounded-box p-3 text-sm">Pagination</div>
     </.stack>
     """
@@ -660,7 +685,9 @@ defmodule FavnView.Dev.DesignSystem.Examples.Elements do
     ~H"""
     <.stack gap={:sm}>
       <div class="favn-surface-list rounded-box p-3 text-sm">mart_daily_sales</div>
+
       <div class="favn-surface-list rounded-box p-3 text-sm">stg_orders</div>
+
       <div class="favn-surface-list rounded-box p-3 text-sm">raw_payments</div>
     </.stack>
     """
@@ -671,6 +698,7 @@ defmodule FavnView.Dev.DesignSystem.Examples.Elements do
     <.inline gap={:xs}>
       <.status_badge tone={:success} label="Healthy" />
       <.badge tone={:warning} variant={:outline}>Coverage incomplete</.badge>
+
       <.badge tone={:neutral} variant={:outline}>duckdb</.badge>
     </.inline>
     """
@@ -711,6 +739,7 @@ defmodule FavnView.Dev.DesignSystem.Examples.Elements do
       <:actions>
         <.button variant={:ghost} icon="hero-arrow-path">Refresh</.button>
       </:actions>
+
       <p class="text-sm text-base-content/70">28 of 30 windows materialised.</p>
     </.panel>
     """
@@ -721,6 +750,7 @@ defmodule FavnView.Dev.DesignSystem.Examples.Elements do
     <.panel>
       <:header title="Backfill plan" />
       <p class="text-sm text-base-content/70">2 missing windows.</p>
+
       <:footer>
         <.button>Submit backfill</.button>
       </:footer>
@@ -743,7 +773,9 @@ defmodule FavnView.Dev.DesignSystem.Examples.Elements do
         <div class="flex items-start justify-between gap-3">
           <div class="min-w-0">
             <h2 class="truncate text-base font-medium">mart_daily_sales</h2>
+
             <p class="mt-0.5 truncate text-xs text-base-content/60">duckdb · sales · table</p>
+
             <div class="mt-2"><.status_badge tone={:success} label="Healthy" /></div>
           </div>
           <.icon name="hero-chevron-right" size={:md} class="mt-1 shrink-0 text-base-content/55" />
@@ -799,10 +831,13 @@ defmodule FavnView.Dev.DesignSystem.Examples.Elements do
     ~H"""
     <.data_table id="runs-table" rows={@rows} row_navigate={&"/runs/#{&1.id}"}>
       <:col :let={run} label="Run">{run.id}</:col>
+
       <:col :let={run} label="Target">{run.target}</:col>
+
       <:col :let={run} label="Status">
         <.status_badge tone={run.status} label={to_string(run.status)} />
       </:col>
+
       <:col :let={run} label="Duration" align={:end}>{run.duration}</:col>
     </.data_table>
     """
@@ -814,9 +849,11 @@ defmodule FavnView.Dev.DesignSystem.Examples.Elements do
     ~H"""
     <.data_table id="runs-table-actions" rows={@rows}>
       <:col :let={run} label="Run">{run.id}</:col>
+
       <:col :let={run} label="Status">
         <.status_badge tone={run.status} label={to_string(run.status)} />
       </:col>
+
       <:action :let={run}>
         <.icon_button icon="hero-document-text" label={"Logs for " <> run.id} />
       </:action>
@@ -828,8 +865,98 @@ defmodule FavnView.Dev.DesignSystem.Examples.Elements do
     ~H"""
     <.data_table id="runs-table-empty" rows={[]}>
       <:col :let={run} label="Run">{run.id}</:col>
+
       <:col :let={run} label="Status">{run.status}</:col>
     </.data_table>
+    """
+  end
+
+  defp table_panel_example(assigns) do
+    assigns = assign(assigns, :rows, table_rows())
+
+    ~H"""
+    <div class="flex h-72 flex-col">
+      <.table_panel>
+        <:toolbar>
+          <.table_toolbar on_change="filter_runs" filters_id="panel-example-filters">
+            <:filters>
+              <.search_field name="filters[q]" label="Search runs" value="" class="sm:w-56" />
+            </:filters>
+
+            <:meta>3 results</:meta>
+          </.table_toolbar>
+        </:toolbar>
+
+        <.data_table id="table-panel-example" rows={@rows} row_navigate={&"/runs/#{&1.id}"} fill?>
+          <:col :let={run} label="Run" class="w-48">
+            <.stacked_cell primary={run.id} secondary={run.target} mono={:primary} />
+          </:col>
+
+          <:col :let={run} label="Status" class="w-28">
+            <.status_badge tone={run.status} label={to_string(run.status)} />
+          </:col>
+
+          <:col :let={run} label="Duration" class="w-24" align={:end}>{run.duration}</:col>
+        </.data_table>
+      </.table_panel>
+    </div>
+    """
+  end
+
+  defp table_toolbar_example(assigns) do
+    ~H"""
+    <.table_toolbar on_change="filter_assets" filters_id="toolbar-example-filters">
+      <:filters>
+        <.search_field name="filters[search]" label="Search assets" value="" class="sm:w-56" />
+        <.select_field
+          name="filters[connection]"
+          label="Connection filter"
+          icon="hero-circle-stack"
+          options={[{"Connection", "all"}, {"DuckDB", "duckdb"}]}
+          value="all"
+          class="sm:w-44"
+        />
+      </:filters>
+
+      <:meta>12 results</:meta>
+    </.table_toolbar>
+    """
+  end
+
+  defp table_toolbar_scopes_example(assigns) do
+    ~H"""
+    <.table_toolbar
+      on_change="filter_runs"
+      filters_id="toolbar-scopes-filters"
+      on_toggle="toggle_filters"
+      adjusted?={true}
+    >
+      <:scopes>
+        <nav class="favn-surface-rail flex flex-wrap items-center gap-0.5 rounded-box p-1">
+          <span class="favn-mode-item favn-mode-item-active h-9 rounded-field px-2.5 text-sm font-medium">
+            Running <.count_badge count={2} label="runs" tone={:info} />
+          </span>
+
+          <span class="favn-mode-item h-9 rounded-field px-2.5 text-sm font-medium favn-text-muted">
+            Failed <.count_badge count={1} label="runs" tone={:error} />
+          </span>
+        </nav>
+      </:scopes>
+
+      <:filters>
+        <.search_field name="filters[q]" label="Search runs" value="" class="sm:w-56" />
+      </:filters>
+    </.table_toolbar>
+    """
+  end
+
+  defp stacked_cell_example(assigns) do
+    ~H"""
+    <.stack gap={:md}>
+      <.stacked_cell primary="crm_daily" secondary="schedule-v2:cG1wZWxpbmU" mono={:secondary} />
+      <.stacked_cell primary="0 2 * * *" secondary="Etc/UTC" mono={:primary} tone={:muted} />
+      <.stacked_cell primary="mart_daily_sales" secondary="table" navigate="/assets/mart" />
+    </.stack>
     """
   end
 
@@ -885,10 +1012,13 @@ defmodule FavnView.Dev.DesignSystem.Examples.Elements do
       <.notice tone={:warning}>
         Target compatibility blocks writes until the target is rebuilt.
       </.notice>
+
       <.notice tone={:error}>
         Run cancellation was rejected: the run already reached a terminal status.
       </.notice>
+
       <.notice tone={:info}>New schedules stay disabled until an operator activates them.</.notice>
+
       <.notice tone={:success}>All declared windows are materialised.</.notice>
     </.stack>
     """
@@ -897,10 +1027,8 @@ defmodule FavnView.Dev.DesignSystem.Examples.Elements do
   defp icon_sizes(assigns) do
     ~H"""
     <.inline gap={:md}>
-      <.icon name="hero-sparkles" size={:xs} />
-      <.icon name="hero-sparkles" size={:sm} />
-      <.icon name="hero-sparkles" size={:md} />
-      <.icon name="hero-sparkles" size={:lg} />
+      <.icon name="hero-sparkles" size={:xs} /> <.icon name="hero-sparkles" size={:sm} />
+      <.icon name="hero-sparkles" size={:md} /> <.icon name="hero-sparkles" size={:lg} />
     </.inline>
     """
   end

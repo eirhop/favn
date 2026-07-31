@@ -40,16 +40,15 @@ defmodule FavnView.Components.SchedulesPage do
         />
         <div :if={!@loading && !@error} class="flex min-h-0 flex-1 flex-col gap-2.5 lg:gap-3">
           <.helper_text /> <.summary_band summary={@summary} />
-          <.panel
-            padding={:none}
-            class="flex min-h-0 flex-1 flex-col overflow-hidden p-3 sm:p-4"
-            data-testid="schedules-panel"
-          >
-            <.filters_bar
-              filters={@filters}
-              filter_options={@filter_options}
-              result_count={length(@schedules)}
-            />
+          <.table_panel data-testid="schedules-panel">
+            <:toolbar>
+              <.filters_bar
+                filters={@filters}
+                filter_options={@filter_options}
+                result_count={length(@schedules)}
+              />
+            </:toolbar>
+
             <.empty_state
               :if={@all_schedules == []}
               title="No schedules found"
@@ -65,7 +64,7 @@ defmodule FavnView.Components.SchedulesPage do
               data-testid="schedules-filtered-empty-state"
             /> <.schedules_table :if={@schedules != []} schedules={@schedules} />
             <.schedule_cards :if={@schedules != []} schedules={@schedules} />
-          </.panel>
+          </.table_panel>
         </div>
       </div>
     </AppShell.app_shell>
@@ -121,218 +120,175 @@ defmodule FavnView.Components.SchedulesPage do
     """
   end
 
+  @doc """
+  Search and narrowing for the schedule list.
+
+  Four axes narrow a schedule list, which is more than the shared select fits in
+  one row, so they wrap. They are the shared fields regardless: a bespoke
+  label-and-select pill used to live here and made this screen read as a
+  different application from `/runs`.
+  """
   attr :filters, :map, required: true
   attr :filter_options, :map, required: true
   attr :result_count, :integer, required: true
 
   def filters_bar(assigns) do
     ~H"""
-    <.form
-      for={%{}}
-      as={:filters}
-      phx-change="filter_schedules"
-      class="pb-3"
-      data-testid="schedule-filters"
-    >
-      <div class="flex flex-wrap items-center gap-2">
-        <label class="favn-surface-control input input-sm h-9 min-h-9 min-w-0 flex-1 items-center gap-2 rounded-field sm:min-w-72 lg:max-w-96">
-          <.icon name="hero-magnifying-glass" class="size-4 favn-text-subtle" />
-          <input
-            type="search"
-            name="filters[search]"
-            value={@filters["search"]}
-            placeholder="Search schedules..."
-            class="grow"
-            phx-debounce="250"
-            data-testid="schedule-search"
-          />
-        </label>
-
-        <.select_control
+    <.table_toolbar on_change="filter_schedules" filters_id="schedule-filters">
+      <:filters>
+        <.search_field
+          id="schedule-search"
+          name="filters[search]"
+          label="Search schedules"
+          value={@filters["search"]}
+          class="sm:w-56"
+        />
+        <.select_field
+          name="filters[activation_state]"
           label="Activation"
-          name="activation_state"
-          value={@filters["activation_state"]}
+          icon="hero-check-badge"
           options={activation_options()}
+          value={@filters["activation_state"]}
+          class="sm:w-40"
         />
-        <.select_control
+        <.select_field
+          name="filters[runtime_state]"
           label="Runtime"
-          name="runtime_state"
-          value={@filters["runtime_state"]}
+          icon="hero-bolt"
           options={runtime_options()}
+          value={@filters["runtime_state"]}
+          class="sm:w-36"
         />
-        <.select_control
+        <.select_field
+          name="filters[pipeline]"
           label="Pipeline"
-          name="pipeline"
-          value={@filters["pipeline"]}
+          icon="hero-queue-list"
           options={pipeline_options(@filter_options.pipelines)}
+          value={@filters["pipeline"]}
+          class="sm:w-44"
         />
-        <.select_control
+        <.select_field
+          name="filters[window]"
           label="Window"
-          name="window"
-          value={@filters["window"]}
+          icon="hero-calendar-days"
           options={window_options(@filter_options.windows)}
+          value={@filters["window"]}
+          class="sm:w-36"
         />
-        <button
+        <.button
           type="button"
+          variant={:ghost}
           phx-click="clear_filters"
-          class="btn btn-sm favn-surface-control rounded-field"
           data-testid="clear-schedule-filters"
         >
           Clear
-        </button>
+        </.button>
+      </:filters>
 
-        <span class="ml-auto text-xs favn-text-subtle" data-testid="schedule-result-count">
-          {@result_count} results
-        </span>
-      </div>
-    </.form>
+      <:meta>
+        <span data-testid="schedule-result-count">{@result_count} results</span>
+      </:meta>
+    </.table_toolbar>
     """
   end
 
-  attr :label, :string, required: true
-  attr :name, :string, required: true
-  attr :value, :string, required: true
-  attr :options, :list, required: true
+  @doc """
+  Desktop table of schedules, on the shared list-screen standard.
 
-  def select_control(assigns) do
-    ~H"""
-    <label class="favn-surface-control flex h-9 min-h-9 min-w-36 items-center overflow-hidden rounded-field border border-base-content/10 bg-base-100/20 text-sm shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
-      <span class="border-r border-base-content/10 px-3 text-xs favn-text-subtle">{@label}</span>
-      <select
-        name={"filters[#{@name}]"}
-        value={@value}
-        class="select select-ghost select-sm h-8 min-h-8 flex-1 bg-transparent px-2 focus:outline-none"
-      >
-        <option :for={{label, value} <- @options} value={value} selected={@value == value}>
-          {label}
-        </option>
-      </select>
-    </label>
-    """
-  end
-
+  Thirteen columns fitted no viewport, so the ones that qualify each other are
+  paired into the standard's two-line cells: the id under the name, the timezone
+  under the cron, the policies under the window, and each timestamp under the
+  state it belongs to. Nothing was dropped — the same facts sit in seven columns
+  that fit, in the order an operator reads them.
+  """
   attr :schedules, :list, required: true
 
   def schedules_table(assigns) do
     ~H"""
-    <div class="hidden min-h-0 flex-1 overflow-auto border-t border-base-content/10 xl:block">
-      <table class="table table-sm" data-testid="schedules-table">
-        <thead>
-          <tr class="border-base-content/10 text-xs favn-text-muted">
-            <th class="w-64 font-medium">Schedule</th>
-
-            <th class="font-medium">Pipeline</th>
-
-            <th class="font-medium">Cadence</th>
-
-            <th class="font-medium">Window</th>
-
-            <th class="font-medium">Policies</th>
-
-            <th class="font-medium">Activation</th>
-
-            <th class="font-medium">Runtime</th>
-
-            <th class="font-medium">Issue</th>
-
-            <th class="font-medium">Next due</th>
-
-            <th class="font-medium">Last submitted</th>
-
-            <th class="font-medium">Current run</th>
-
-            <th class="font-medium">Updated</th>
-
-            <th class="font-medium">Actions</th>
-          </tr>
-        </thead>
-
-        <tbody>
-          <.schedule_row :for={schedule <- @schedules} schedule={schedule} />
-        </tbody>
-      </table>
-    </div>
-    """
-  end
-
-  attr :schedule, :map, required: true
-
-  def schedule_row(assigns) do
-    ~H"""
-    <tr
-      class="group border-base-content/10 bg-base-100/5 text-sm transition hover:bg-primary/10"
-      data-testid="schedule-row"
+    <.data_table
+      id="schedules-table"
+      rows={@schedules}
+      row_testid="schedule-row"
+      row_navigate={&~p"/schedules/#{&1.route_id}"}
+      fill?
+      class="hidden lg:block"
+      data-testid="schedules-table"
     >
-      <td>
-        <div class="min-w-0">
-          <.link
-            navigate={~p"/schedules/#{@schedule.route_id}"}
-            class="block truncate font-medium text-base-content hover:text-primary"
-          >
-            {@schedule.schedule_label}
-          </.link>
+      <:col :let={schedule} label="Schedule" class="w-64">
+        <.stacked_cell
+          primary={schedule.schedule_label}
+          secondary={schedule.id}
+          mono={:secondary}
+          navigate={~p"/schedules/#{schedule.route_id}"}
+        />
+      </:col>
 
-          <p class="truncate font-mono text-xs favn-text-subtle" title={@schedule.id}>
-            {@schedule.id}
+      <:col :let={schedule} label="Pipeline" class="max-w-52">
+        <.stacked_cell primary={schedule.pipeline_label} tone={:muted} />
+      </:col>
+
+      <:col :let={schedule} label="Cadence" class="w-40">
+        <.stacked_cell
+          primary={schedule.cron}
+          secondary={schedule.timezone}
+          mono={:primary}
+          tone={:muted}
+        />
+      </:col>
+
+      <:col :let={schedule} label="Window" class="w-36">
+        <.stacked_cell
+          primary={schedule.window_label}
+          secondary={policies_label(schedule)}
+          tone={:muted}
+        />
+      </:col>
+
+      <:col :let={schedule} label="Activation" class="w-40">
+        <div class="min-w-0 space-y-1">
+          <ScheduleUi.activation_badge
+            state={schedule.activation_state}
+            label={schedule.activation_label}
+          />
+          <p class="truncate text-[0.68rem] favn-text-subtle">
+            Next {schedule.next_due_label}
           </p>
         </div>
-      </td>
+      </:col>
 
-      <td class="max-w-52 truncate text-xs favn-text-muted" title={@schedule.pipeline_label}>
-        {@schedule.pipeline_label}
-      </td>
+      <:col :let={schedule} label="Runtime" class="w-44">
+        <div class="min-w-0 space-y-1">
+          <div class="flex flex-wrap items-center gap-1.5">
+            <ScheduleUi.runtime_badge state={schedule.runtime_state} label={schedule.runtime_label} />
+            <ScheduleUi.scheduler_error_badge error={schedule.last_scheduler_error} />
+          </div>
 
-      <td class="whitespace-nowrap text-xs favn-text-muted">
-        <p class="font-mono">{@schedule.cron}</p>
+          <p class="truncate text-[0.68rem] favn-text-subtle">
+            <.link
+              :if={schedule.in_flight_run_id}
+              navigate={~p"/runs/#{schedule.in_flight_run_id}"}
+              class="font-mono text-primary hover:underline"
+            >
+              {schedule.current_run_label}
+            </.link>
+            <span :if={!schedule.in_flight_run_id}>{schedule.last_submitted_label}</span>
+          </p>
+        </div>
+      </:col>
 
-        <p class="favn-text-subtle">{@schedule.timezone}</p>
-      </td>
+      <:col :let={schedule} label="Updated" class="w-28">
+        <.stacked_cell primary={schedule.updated_label} tone={:muted} />
+      </:col>
 
-      <td class="whitespace-nowrap text-xs favn-text-muted">{@schedule.window_label}</td>
-
-      <td><.policy_chips schedule={@schedule} /></td>
-
-      <td>
-        <ScheduleUi.activation_badge
-          state={@schedule.activation_state}
-          label={@schedule.activation_label}
-        />
-      </td>
-
-      <td>
-        <ScheduleUi.runtime_badge state={@schedule.runtime_state} label={@schedule.runtime_label} />
-      </td>
-
-      <td class="whitespace-nowrap text-xs favn-text-muted">
-        <ScheduleUi.scheduler_error_badge error={@schedule.last_scheduler_error} />
-      </td>
-
-      <td class="whitespace-nowrap text-xs favn-text-muted">{@schedule.next_due_label}</td>
-
-      <td class="whitespace-nowrap text-xs favn-text-muted">{@schedule.last_submitted_label}</td>
-
-      <td class="whitespace-nowrap text-xs favn-text-muted">
-        <.link
-          :if={@schedule.in_flight_run_id}
-          navigate={~p"/runs/#{@schedule.in_flight_run_id}"}
-          class="font-mono text-primary hover:underline"
-        >
-          {@schedule.current_run_label}
-        </.link>
-        <span :if={!@schedule.in_flight_run_id}>-</span>
-      </td>
-
-      <td class="whitespace-nowrap text-xs favn-text-muted">{@schedule.updated_label}</td>
-
-      <td>
+      <:action :let={schedule}>
         <.copy_button
-          value={@schedule.id}
-          title={"Copy #{@schedule.id}"}
+          value={schedule.id}
+          title={"Copy #{schedule.id}"}
           size={:xs}
           data-testid="copy-schedule-id"
         />
-      </td>
-    </tr>
+      </:action>
+    </.data_table>
     """
   end
 
@@ -340,7 +296,7 @@ defmodule FavnView.Components.SchedulesPage do
 
   def schedule_cards(assigns) do
     ~H"""
-    <div class="space-y-2.5 xl:hidden" data-testid="schedule-card-list">
+    <div class="space-y-2.5 p-3 lg:hidden" data-testid="schedule-card-list">
       <.schedule_card :for={schedule <- @schedules} schedule={schedule} />
     </div>
     """
@@ -387,22 +343,22 @@ defmodule FavnView.Components.SchedulesPage do
             {@schedule.id}
           </p>
         </div>
-
         <.copy_button value={@schedule.id} title={"Copy #{@schedule.id}"} size={:xs} />
       </div>
     </article>
     """
   end
 
-  attr :schedule, :map, required: true
+  @doc """
+  The overlap and missed-run policies as one line.
 
-  def policy_chips(assigns) do
-    ~H"""
-    <div class="flex flex-wrap gap-1.5">
-      <span class="badge badge-xs badge-soft badge-neutral">{policy_label(@schedule.overlap)}</span>
-      <span class="badge badge-xs badge-soft badge-neutral">{policy_label(@schedule.missed)}</span>
-    </div>
-    """
+  They were two badges in a column of their own. As words under the window they
+  read as what they are — how this cadence behaves when it collides with itself
+  or falls behind — and cost no width.
+  """
+  @spec policies_label(map()) :: String.t()
+  def policies_label(schedule) do
+    Enum.map_join([schedule.overlap, schedule.missed], " · ", &policy_label/1)
   end
 
   def nav_items(active \\ :schedules), do: Navigation.items(active)
