@@ -98,8 +98,11 @@ runtime inputs, and SQL integrations remain pre-v1 and may change.
   runs as non-root, supports a read-only root filesystem, and has fixed health and
   release-operation entrypoints.
 
-These capabilities are implemented and tested, but several operator workflows
-and production-provider qualification gates remain unfinished.
+These capabilities are implemented and tested. A production-shaped HTTP
+boundary qualification now covers route catalogue drift, baseline
+authentication failures, proxy behavior, browser navigation, durable-state
+fingerprints, and network isolation. The remaining issue #578 phases, manual
+accessibility, and production-provider qualification are unfinished.
 
 ## PostgreSQL Storage V2
 
@@ -155,10 +158,14 @@ operator contract is [`production/postgresql_operator_runbook.md`](production/po
 - Rebuild pages enforce plan/review/start separation, page bounded operation and
   item histories, show progress and unknown outcomes, and render only
   server-authorized cancellation, retry, and reconciliation actions.
-- The UI remains a prototype: some asset-detail modes are placeholders, mutation
-  audit outside the rebuild workflow is incomplete, actor/session/audit
-  administration is absent, and there is
-  no production browser acceptance suite.
+- The UI remains a prototype: some asset-detail modes are placeholders and
+  visual/manual accessibility qualification remains. Actor, session, audit, and
+  credential administration are implemented. A Playwright/axe HTTP-boundary
+  suite now checks anonymous and administrator navigation for every catalogued
+  browser GET route, CSRF rejection for every browser mutation route, secure
+  cookies, session revocation, HTTPS/proxy headers, and serious or critical
+  automated WCAG 2.2 findings. The complete role/workspace and Entra browser
+  matrix remains in #579.
 
 ## Production limits
 
@@ -171,6 +178,12 @@ operator contract is [`production/postgresql_operator_runbook.md`](production/po
   own actor status, workspace membership, roles, opaque sessions, revocation,
   workspace switching, and redacted audit. Native OIDC, other proxy assertion
   formats, and provider group/role authorization remain out of scope.
+- The local production-shaped HTTP-boundary phase catalogues every browser and
+  private API route and fails on catalogue or required-evidence drift. It is not
+  the complete #578 release verdict. Role/workspace isolation, abuse pressure,
+  runner/PostgreSQL transport and authority, OCI/secret inspection, Azure
+  ingress, managed Entra, WAF/rate-limiting policy, and manual accessibility
+  still require their documented phase or target-environment evidence.
 - PostgreSQL production-size restore, provider PITR, failover/load evidence,
   dashboards, and alert wiring remain release gates.
 - PostgreSQL backup does not recover DuckDB files, DuckLake metadata, object

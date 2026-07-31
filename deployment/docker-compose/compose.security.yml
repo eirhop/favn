@@ -1,0 +1,170 @@
+services:
+  certificates:
+    network_mode: none
+
+  postgres:
+    networks: !override
+      - security-database
+
+  database-migrate:
+    networks: !override
+      - security-database
+
+  database-grant:
+    networks: !override
+      - security-database
+
+  workspace-provision:
+    networks: !override
+      - security-database
+
+  database-verify:
+    networks: !override
+      - security-database
+
+  control-plane:
+    ports: !reset []
+    volumes:
+      - control-plane-certificates:/etc/favn/tls:ro
+      - ./security/secrets:/run/secrets/favn-security:ro
+    environment:
+      FAVN_VIEW_TRUSTED_PROXY_CIDRS: 172.31.59.2/32
+    networks: !override
+      security-database:
+      security-operator-api:
+      security-runner-control:
+        aliases:
+          - control-plane.favn.local
+      security-view-upstream:
+        ipv4_address: 172.31.59.3
+
+  https-proxy:
+    networks: !override
+      security-public-edge:
+        ipv4_address: 172.31.58.2
+        aliases:
+          - favn.localhost
+      security-view-upstream:
+        ipv4_address: 172.31.59.2
+      security-proxy-instrumentation:
+
+  proxy-header-receiver:
+    networks: !override
+      - security-proxy-instrumentation
+
+  proxy-security:
+    networks: !override
+      security-public-edge:
+        ipv4_address: 172.31.58.4
+      security-view-upstream:
+        ipv4_address: 172.31.59.4
+
+  operator:
+    networks: !override
+      - security-operator-api
+
+  runner:
+    networks: !override
+      - security-runner-control
+
+  scaler:
+    networks: !override
+      - security-operator-api
+
+  qualification:
+    networks: !override
+      - security-operator-api
+      - security-database
+
+  security-browser:
+    build:
+      context: ./security
+      dockerfile: Dockerfile
+    command: ["npx", "playwright", "test"]
+    environment:
+      FAVN_SECURITY_BASE_URL: https://favn.localhost
+      FAVN_SECURITY_WORKSPACE_ID: elastic-simulation
+      FAVN_SECURITY_ADMIN_USERNAME: security-admin
+      FAVN_SECURITY_ADMIN_PASSWORD_FILE: /run/secrets/favn-security/admin-password
+      FAVN_SECURITY_EVIDENCE_DIR: /results/browser
+      FAVN_SECURITY_BROWSER_DIAGNOSTICS: ${FAVN_SECURITY_BROWSER_DIAGNOSTICS:-0}
+    depends_on:
+      https-proxy:
+        condition: service_started
+    volumes:
+      - ./security/catalog.json:/security/catalog.json:ro
+      - ./security/playwright.config.mjs:/security/playwright.config.mjs:ro
+      - ./security/browser.spec.mjs:/security/browser.spec.mjs:ro
+      - ./security/lib:/security/lib:ro
+      - ./security/secrets:/run/secrets/favn-security:ro
+      - ./security-results:/results
+    networks:
+      - security-public-edge
+    group_add: ["10001"]
+    profiles: ["security"]
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
+    restart: "no"
+
+  security-api:
+    build:
+      context: ./security
+      dockerfile: Dockerfile
+    command: ["node", "/security/api-security.mjs"]
+    environment:
+      FAVN_SECURITY_API_URL: http://control-plane:4101
+      FAVN_SECURITY_PLATFORM_TOKEN: ${FAVN_PLATFORM_TOKEN}
+      FAVN_SECURITY_CAPACITY_TOKEN: ${FAVN_CAPACITY_TOKEN}
+      FAVN_SECURITY_WORKSPACE_ID: elastic-simulation
+      FAVN_SECURITY_ADMIN_USERNAME: security-admin
+      FAVN_SECURITY_ADMIN_PASSWORD_FILE: /run/secrets/favn-security/admin-password
+      FAVN_SECURITY_EVIDENCE_DIR: /results/api
+      FAVN_SECURITY_COMPOSE_ENV_FILE: /run/favn-security-compose-env
+      FAVN_SECURITY_SOURCE_STATE: ${FAVN_SECURITY_SOURCE_STATE}
+      FAVN_SOURCE_REVISION: ${FAVN_SOURCE_REVISION}
+    depends_on:
+      control-plane:
+        condition: service_healthy
+    volumes:
+      - ./security/catalog.json:/security/catalog.json:ro
+      - ./security/api-security.mjs:/security/api-security.mjs:ro
+      - ./security/verdict.mjs:/security/verdict.mjs:ro
+      - ./security/lib:/security/lib:ro
+      - ./security/secrets:/run/secrets/favn-security:ro
+      - ./.env.local:/run/favn-security-compose-env:ro
+      - ./security-results:/results
+    networks:
+      - security-operator-api
+    group_add: ["10001"]
+    profiles: ["security"]
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
+    restart: "no"
+
+networks:
+  security-public-edge:
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.31.58.0/29
+  security-view-upstream:
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.31.59.0/29
+  security-proxy-instrumentation:
+    internal: true
+  security-operator-api:
+    internal: true
+  security-runner-control:
+    internal: true
+  security-database:
+    internal: true

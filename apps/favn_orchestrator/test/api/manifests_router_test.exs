@@ -71,6 +71,17 @@ defmodule FavnOrchestrator.API.ManifestsRouterTest do
     end
   end
 
+  test "rejects an unauthenticated malformed publication before parsing it" do
+    response =
+      :post
+      |> conn("/", "")
+      |> Map.put(:body_params, %{"manifest" => "invalid"})
+      |> ManifestsRouter.call(ManifestsRouter.init([]))
+
+    assert response.status == 401
+    assert get_in(Jason.decode!(response.resp_body), ["error", "code"]) == "service_unauthorized"
+  end
+
   test "service-token activation reaches the persisted manifest boundary without actor headers" do
     start_missing_manifest_runtime()
 

@@ -55,7 +55,7 @@ defmodule FavnView.Layouts do
     <nav
       :if={match?(%FavnView.Auth.Scope{}, @current_scope)}
       aria-label="Account"
-      class="fixed right-3 top-3 z-50 flex gap-2"
+      class="fixed right-3 bottom-20 z-50 flex gap-2 lg:bottom-3"
       data-testid="operator-controls"
     >
       <.link navigate={~p"/account/security"} class="btn btn-sm">Account</.link>

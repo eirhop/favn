@@ -25,18 +25,18 @@ defmodule FavnOrchestrator.API.CoverageRouterTest do
     :ok
   end
 
-  test "rejects an out-of-range missing-window page before reading coverage" do
+  test "authenticates actor context before validating missing-window pagination" do
     response = request(:get, "/assets/asset-a/missing?limit=501")
 
-    assert response.status == 422
-    assert get_in(Jason.decode!(response.resp_body), ["error", "code"]) == "validation_failed"
+    assert response.status == 401
+    assert get_in(Jason.decode!(response.resp_body), ["error", "code"]) == "unauthenticated"
   end
 
-  test "requires an immutable plan for missing-window submission" do
+  test "authenticates actor context before validating a missing-window submission" do
     response = request(:post, "/assets/asset-a/backfill", %{})
 
-    assert response.status == 422
-    assert get_in(Jason.decode!(response.resp_body), ["error", "code"]) == "validation_failed"
+    assert response.status == 401
+    assert get_in(Jason.decode!(response.resp_body), ["error", "code"]) == "unauthenticated"
   end
 
   test "maps bounded coverage overflow to a stable conflict" do

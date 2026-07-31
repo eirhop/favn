@@ -10,7 +10,7 @@ defmodule FavnView.AuthBoundaryTest do
     assert redirected_to(conn) == "/login?return_to=%2Fassets"
   end
 
-  test "browser responses include the production content security policy", %{conn: conn} do
+  test "browser responses include the production security headers", %{conn: conn} do
     conn = get(conn, ~p"/login")
 
     assert [policy] = get_resp_header(conn, "content-security-policy")
@@ -21,6 +21,14 @@ defmodule FavnView.AuthBoundaryTest do
     refute policy =~ " wss:"
     refute policy =~ "unsafe-eval"
     refute policy =~ "script-src 'self' 'unsafe-inline'"
+
+    assert get_resp_header(conn, "permissions-policy") == [
+             "camera=(), geolocation=(), microphone=()"
+           ]
+
+    assert get_resp_header(conn, "referrer-policy") == ["no-referrer"]
+    assert get_resp_header(conn, "x-content-type-options") == ["nosniff"]
+    assert get_resp_header(conn, "x-frame-options") == ["DENY"]
   end
 
   test "return paths accept only local absolute paths" do

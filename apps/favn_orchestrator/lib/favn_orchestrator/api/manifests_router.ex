@@ -28,6 +28,9 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
       {:error, :active_manifest_not_set} ->
         Response.error(conn, 404, "not_found", "Active manifest is not set")
 
+      {:error, %Error{kind: :not_found}} ->
+        Response.error(conn, 404, "not_found", "Active manifest is not set")
+
       {:error, reason} when reason in [:forbidden, :service_unauthorized, :unauthenticated] ->
         authentication_error(conn, reason)
 
@@ -39,8 +42,10 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
 
   post "/" do
     with :ok <- Authentication.ensure_service(conn),
+         {:ok, platform_context} <-
+           Authentication.platform_context(conn, :platform_operator),
          {:ok, version} <- build_version(conn.body_params),
-         {:ok, registration_status, canonical_version, platform_context} <- publish(conn, version),
+         {:ok, registration_status, canonical_version} <- publish(platform_context, version),
          summary <- Manifests.summary(canonical_version) do
       Audit.put_best_effort(platform_context, %{
         action: "manifest.register",
@@ -164,6 +169,9 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
       {:error, :active_manifest_not_set} ->
         Response.error(conn, 404, "not_found", "Active manifest is not set")
 
+      {:error, %Error{kind: :not_found}} ->
+        Response.error(conn, 404, "not_found", "Active manifest is not set")
+
       {:error, reason} ->
         authentication_error(conn, reason)
     end
@@ -175,6 +183,9 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
       Response.data(conn, 200, normalize_details(details))
     else
       {:error, :manifest_version_not_found} ->
+        Response.error(conn, 404, "not_found", "Manifest version was not found")
+
+      {:error, %Error{kind: :not_found}} ->
         Response.error(conn, 404, "not_found", "Manifest version was not found")
 
       {:error, reason} when reason in [:forbidden, :service_unauthorized, :unauthenticated] ->
@@ -446,21 +457,16 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
     end
   end
 
-  defp publish(conn, %Version{} = version) do
-    with {:ok, context} <- Authentication.platform_context(conn, :platform_operator),
-         result <- Manifests.publish(context, version) do
-      case result do
-        {:ok, :published, %Version{} = canonical} ->
-          {:ok, :published, canonical, context}
+  defp publish(context, %Version{} = version) do
+    case Manifests.publish(context, version) do
+      {:ok, :published, %Version{} = canonical} ->
+        {:ok, :published, canonical}
 
-        {:ok, :already_published, %Version{} = canonical} ->
-          {:ok, :already_published, canonical, context}
+      {:ok, :already_published, %Version{} = canonical} ->
+        {:ok, :already_published, canonical}
 
-        {:error, reason} ->
-          {:error, reason}
-      end
-    else
-      {:error, reason} -> {:error, reason}
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 

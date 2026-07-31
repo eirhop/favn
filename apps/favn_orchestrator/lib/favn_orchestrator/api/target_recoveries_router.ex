@@ -19,9 +19,9 @@ defmodule FavnOrchestrator.API.TargetRecoveriesRouter do
 
   post "/plan" do
     with :ok <- Authentication.ensure_service(conn),
-         {:ok, target_id, reason} <- plan_request(conn.body_params),
          {:ok, session, actor, context} <-
-           Authentication.workspace_or_service_context(conn, :operator) do
+           Authentication.workspace_or_service_context(conn, :operator),
+         {:ok, target_id, reason} <- plan_request(conn.body_params) do
       IdempotentCommand.run(
         conn,
         context,
@@ -79,9 +79,9 @@ defmodule FavnOrchestrator.API.TargetRecoveriesRouter do
 
   post "/" do
     with :ok <- Authentication.ensure_service(conn),
-         {:ok, operation_id, plan_hash} <- start_request(conn.body_params),
          {:ok, session, actor, context} <-
-           Authentication.workspace_or_service_context(conn, :admin) do
+           Authentication.workspace_or_service_context(conn, :admin),
+         {:ok, operation_id, plan_hash} <- start_request(conn.body_params) do
       mutate(
         conn,
         context,

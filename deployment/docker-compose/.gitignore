@@ -3,4 +3,7 @@
 simulation-results/
 qualification-results/
 proxy-security-results/
+security-results/
+security-run-logs/
+security/secrets/
 .qualification-active

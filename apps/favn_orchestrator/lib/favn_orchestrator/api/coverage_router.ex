@@ -30,8 +30,8 @@ defmodule FavnOrchestrator.API.CoverageRouter do
 
   get "/assets/:target_id/missing" do
     with :ok <- Authentication.ensure_service(conn),
-         {:ok, opts} <- page_options(conn.params),
          {:ok, session, actor, context} <- Authentication.workspace_context(conn, :viewer),
+         {:ok, opts} <- page_options(conn.params),
          {:ok, operator_context} <-
            FavnOrchestrator.operator_context(context.workspace_id, actor, session),
          {:ok, page} <-
@@ -58,8 +58,8 @@ defmodule FavnOrchestrator.API.CoverageRouter do
 
   post "/assets/:target_id/backfill" do
     with :ok <- Authentication.ensure_service(conn),
-         {:ok, plan} <- request_plan(conn.body_params),
          {:ok, session, actor, context} <- Authentication.workspace_context(conn, :operator),
+         {:ok, plan} <- request_plan(conn.body_params),
          {:ok, operator_context} <-
            FavnOrchestrator.operator_context(context.workspace_id, actor, session) do
       IdempotentCommand.run(

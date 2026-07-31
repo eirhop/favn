@@ -155,7 +155,7 @@ defmodule FavnOrchestrator.API.RebuildsRouterTest do
         service_identity: "rebuild_router_test",
         token_hash: ServiceTokens.hash_token(@token),
         enabled: true,
-        platform_roles: []
+        platform_roles: [:platform_operator]
       ]
     ])
 
@@ -319,6 +319,26 @@ defmodule FavnOrchestrator.API.RebuildsRouterTest do
     assert error_code(response) == "invalid_rebuild_page"
   end
 
+  test "rejects unauthenticated malformed inputs before validating them" do
+    post_response =
+      :post
+      |> conn("/plan", "")
+      |> Map.put(:body_params, %{})
+      |> RebuildsRouter.call(RebuildsRouter.init([]))
+
+    assert post_response.status == 401
+    assert error_code(post_response) == "service_unauthorized"
+
+    get_response =
+      :get
+      |> conn("/?limit=201")
+      |> fetch_query_params()
+      |> RebuildsRouter.call(RebuildsRouter.init([]))
+
+    assert get_response.status == 401
+    assert error_code(get_response) == "service_unauthorized"
+  end
+
   test "requires reasons for plans and cancellation" do
     response = request(:post, "/plan", %{"target_id" => "asset-a"})
     assert response.status == 422
@@ -363,6 +383,7 @@ defmodule FavnOrchestrator.API.RebuildsRouterTest do
     method
     |> conn(path, "")
     |> put_req_header("authorization", "Bearer #{@token}")
+    |> put_req_header("x-favn-workspace-id", "workspace-a")
     |> fetch_query_params()
     |> maybe_put_params(params)
     |> RebuildsRouter.call(RebuildsRouter.init([]))

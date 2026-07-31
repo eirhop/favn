@@ -160,7 +160,11 @@ defmodule FavnView.Components.LogViewer do
         class="favn-text-muted inline-flex items-center gap-1.5 text-xs"
         data-testid="log-live-status"
       >
-        <.status_dot tone={if @live?, do: :success, else: :neutral} label="" glow={@live?} />
+        <.status_dot
+          tone={if @live?, do: :success, else: :neutral}
+          label={if @live?, do: "Log stream live", else: "Log stream loaded"}
+          glow={@live?}
+        />
         {if @live?, do: "Live", else: "Loaded"}
       </span>
     </form>
