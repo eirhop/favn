@@ -22,9 +22,9 @@ defmodule FavnOrchestrator.API.RebuildsRouter do
 
   post "/plan" do
     with :ok <- Authentication.ensure_service(conn),
-         {:ok, target_id, reason} <- plan_request(conn.body_params),
          {:ok, session, actor, context} <-
-           Authentication.workspace_or_service_context(conn, :operator) do
+           Authentication.workspace_or_service_context(conn, :operator),
+         {:ok, target_id, reason} <- plan_request(conn.body_params) do
       IdempotentCommand.run(
         conn,
         context,
@@ -81,9 +81,9 @@ defmodule FavnOrchestrator.API.RebuildsRouter do
 
   post "/" do
     with :ok <- Authentication.ensure_service(conn),
-         {:ok, plan_id, plan_hash} <- start_request(conn.body_params),
          {:ok, session, actor, context} <-
-           Authentication.workspace_or_service_context(conn, :admin) do
+           Authentication.workspace_or_service_context(conn, :admin),
+         {:ok, plan_id, plan_hash} <- start_request(conn.body_params) do
       mutate(conn, context, session, actor, "rebuild.start", plan_id, fn idempotency ->
         Rebuilds.start(context, plan_id, plan_hash, idempotency: idempotency.command_idempotency)
       end)
@@ -94,9 +94,9 @@ defmodule FavnOrchestrator.API.RebuildsRouter do
 
   get "/" do
     with :ok <- Authentication.ensure_service(conn),
-         {:ok, opts} <- operation_page_options(conn.params),
          {:ok, _session, _actor, context} <-
            Authentication.workspace_or_service_context(conn, :viewer),
+         {:ok, opts} <- operation_page_options(conn.params),
          {:ok, page} <- Rebuilds.page(context, opts) do
       Response.data(conn, 200, %{
         items: Enum.map(page.items, &RebuildDTO.operation(&1, false, :summary)),
@@ -109,9 +109,9 @@ defmodule FavnOrchestrator.API.RebuildsRouter do
 
   get "/:operation_id/items" do
     with :ok <- Authentication.ensure_service(conn),
-         {:ok, opts} <- item_page_options(conn.params),
          {:ok, _session, _actor, context} <-
            Authentication.workspace_or_service_context(conn, :viewer),
+         {:ok, opts} <- item_page_options(conn.params),
          {:ok, page} <- Rebuilds.page_items(context, operation_id, opts) do
       Response.data(conn, 200, %{
         items: Enum.map(page.items, &RebuildDTO.item/1),
@@ -124,9 +124,9 @@ defmodule FavnOrchestrator.API.RebuildsRouter do
 
   post "/:operation_id/cancel" do
     with :ok <- Authentication.ensure_service(conn),
-         {:ok, reason} <- required_string(conn.body_params, "reason", :rebuild_reason_required),
          {:ok, session, actor, context} <-
-           Authentication.workspace_or_service_context(conn, :admin) do
+           Authentication.workspace_or_service_context(conn, :admin),
+         {:ok, reason} <- required_string(conn.body_params, "reason", :rebuild_reason_required) do
       mutate(conn, context, session, actor, "rebuild.cancel", operation_id, fn idempotency ->
         Rebuilds.cancel(context, operation_id, reason,
           idempotency: idempotency.command_idempotency
@@ -139,9 +139,9 @@ defmodule FavnOrchestrator.API.RebuildsRouter do
 
   post "/:operation_id/retry" do
     with :ok <- Authentication.ensure_service(conn),
-         {:ok, plan_hash} <- required_hash(conn.body_params, "plan_hash"),
          {:ok, session, actor, context} <-
-           Authentication.workspace_or_service_context(conn, :admin) do
+           Authentication.workspace_or_service_context(conn, :admin),
+         {:ok, plan_hash} <- required_hash(conn.body_params, "plan_hash") do
       mutate(conn, context, session, actor, "rebuild.retry", operation_id, fn idempotency ->
         Rebuilds.retry(context, operation_id, plan_hash,
           idempotency: idempotency.command_idempotency

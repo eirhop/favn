@@ -55,7 +55,7 @@ defmodule FavnView.PipelinesLive do
   defp load_pipelines(operator_context) do
     case active_pipeline_catalogue(operator_context) do
       {:ok, entries} -> {Enum.map(entries, &pipeline_from_entry/1), nil}
-      {:error, reason} -> {[], OperatorErrorLabels.load(reason)}
+      {:error, reason} -> {[], OperatorErrorLabels.collection_load(reason)}
     end
   end
 

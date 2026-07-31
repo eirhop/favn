@@ -1,0 +1,48 @@
+name: HTTP boundary security qualification
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/security-qualification.yml'
+      - 'apps/favn_orchestrator/**'
+      - 'apps/favn_storage_postgres/**'
+      - 'apps/favn_view/**'
+      - 'config/**'
+      - 'deployment/docker-compose/**'
+      - 'rel/control_plane/**'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('{0}-pr-{1}', github.workflow, github.event.pull_request.number) || format('{0}-run-{1}', github.workflow, github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  production-shaped-security:
+    name: Production-shaped HTTP boundary
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check security surface catalogue
+        run: node deployment/docker-compose/security/catalog-check.mjs
+
+      - name: Run security qualification
+        run: sh deployment/docker-compose/run-security-qualification.sh
+
+      - name: Upload redacted security evidence
+        if: success()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: security-qualification-${{ github.sha }}
+          path: |
+            deployment/docker-compose/security-results/**/assertions.jsonl
+            deployment/docker-compose/security-results/verdict.json
+          if-no-files-found: warn
+          retention-days: 14
