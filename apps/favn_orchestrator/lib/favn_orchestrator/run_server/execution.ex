@@ -20,6 +20,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
   alias FavnOrchestrator.CancellationOutcome
   alias FavnOrchestrator.ExecutionAdmission
   alias FavnOrchestrator.ManifestIndexCache
+  alias FavnOrchestrator.OperationalEvents
   alias FavnOrchestrator.Persistence.SystemContext
   alias FavnOrchestrator.RunExecutionCleanup
   alias FavnOrchestrator.RunOwnership
@@ -54,6 +55,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
           :continue
           | {:runner_result, String.t(), term()}
           | {:runner_task_result, String.t(), term()}
+          | {:runner_task_started, String.t(), term()}
           | {:runner_await_down, String.t(), reference(), term()}
           | {:attempt_timeout, String.t(), reference()}
           | {:retry_attempt, reference()}
@@ -135,6 +137,22 @@ defmodule FavnOrchestrator.RunServer.Execution do
 
   def handle_event(%RunExecutionState{} = state, {:runner_task_result, task_id, task}) do
     handle_event(state, {:runner_result, task_id, durable_task_result(task)})
+  end
+
+  # A runner reported the awaited task as started. The `:step_running` event is
+  # an advisory presence signal for read models: a persist failure is dropped
+  # rather than retried, because the attempt's terminal step event still lands.
+  def handle_event(%RunExecutionState{} = state, {:runner_task_started, task_id, _task}) do
+    case Map.get(state.awaits, task_id) do
+      %{started_persisted?: true} ->
+        {:cont, state}
+
+      %{entry: entry} = await ->
+        persist_step_running(state, task_id, await, entry)
+
+      nil ->
+        {:cont, state}
+    end
   end
 
   def handle_event(%RunExecutionState{} = state, {:runner_result, task_id, result}) do
@@ -442,7 +460,8 @@ defmodule FavnOrchestrator.RunServer.Execution do
         FavnOrchestrator.RunnerTaskResultRouter.await(
           state.run.workspace_id,
           entry.task_id,
-          parent
+          parent,
+          notify_started?: true
         )
       end)
 
@@ -463,6 +482,44 @@ defmodule FavnOrchestrator.RunServer.Execution do
       entry: entry,
       kind: kind
     })
+  end
+
+  # A restart rebuilds awaits without the started_persisted? marker, so a
+  # re-delivered started signal can persist a second `:step_running` event.
+  # The event is advisory, so the duplicate is acceptable.
+  defp persist_step_running(%RunExecutionState{} = state, task_id, await, entry) do
+    data = %{
+      asset_ref: Map.get(entry, :asset_ref),
+      runner_task_id: task_id,
+      node_key: Map.get(entry, :node_key),
+      asset_step_id: Map.get(entry, :asset_step_id),
+      window: Map.get(entry, :window),
+      stage: Map.get(entry, :stage),
+      attempt: Map.get(entry, :attempt),
+      execution_pool: Map.get(entry, :execution_pool)
+    }
+
+    running = RunState.transition(state.run, status: :running)
+
+    case Persistence.persist_run_step(running, :step_running, data) do
+      :ok ->
+        marked = Map.put(await, :started_persisted?, true)
+        state = RunExecutionState.put_await(%{state | run: running}, task_id, marked)
+        {:cont, state}
+
+      {:error, :external_cancel} ->
+        {:terminal, Snapshots.cancelled_snapshot(state.run)}
+
+      {:error, reason} ->
+        OperationalEvents.emit(
+          :step_running_persist_failed,
+          %{},
+          %{run_id: state.run.id, task_id: task_id, reason: reason},
+          level: :warning
+        )
+
+        {:cont, state}
+    end
   end
 
   defp restore_active_tasks(%RunExecutionState{} = state) do

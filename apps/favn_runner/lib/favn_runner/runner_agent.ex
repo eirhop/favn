@@ -262,6 +262,13 @@ defmodule FavnRunner.RunnerAgent do
     {:noreply, %{state | idle_timer: nil, final_claim?: true, phase: :idle}}
   end
 
+  # Residents poll on idle expiry instead of exiting, so a lost wake delays
+  # queued work by at most one wait interval.
+  def handle_info(:idle_expired, %{assignment: nil, lifecycle_mode: :resident} = state) do
+    send(self(), :claim)
+    {:noreply, %{state | idle_timer: nil, phase: :idle}}
+  end
+
   def handle_info(:idle_expired, state), do: {:noreply, state}
 
   def handle_info(:max_uptime, %{lifecycle_mode: :elastic, assignment: nil} = state) do
@@ -961,9 +968,6 @@ defmodule FavnRunner.RunnerAgent do
     state.exit_fun.(0)
     {:stop, :normal, state}
   end
-
-  defp wait_for_work(%{lifecycle_mode: :resident} = state, %RunnerTask.NoWork{}),
-    do: {:noreply, %{state | phase: :waiting, idle_timer: nil}}
 
   defp wait_for_work(%{final_claim?: true} = state, %RunnerTask.NoWork{}) do
     state.exit_fun.(0)

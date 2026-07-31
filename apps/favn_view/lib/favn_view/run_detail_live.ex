@@ -122,9 +122,13 @@ defmodule FavnView.RunDetailLive do
 
   # The flow is geometry over the attempts and the clock. Recomputing it here
   # rather than in `render/1` keeps it out of the diff when nothing moved, and
-  # lets the tick advance the axis without refetching the run.
+  # lets the tick advance the axis without refetching the run. The header's
+  # elapsed duration shares the tick so both clocks read the same now.
   defp assign_flow(%{assigns: %{run: %{found?: true} = run}} = socket) do
+    run = Map.put(run, :elapsed_duration, duration_or_elapsed(run_timing(run)))
+
     socket
+    |> assign(:run, run)
     |> assign(:flow, RunFlow.build(run.attempts, active?: run.active?))
     |> maybe_schedule_flow_tick()
   end
@@ -181,7 +185,7 @@ defmodule FavnView.RunDetailLive do
         end
 
       _run ->
-        {:noreply, socket}
+        {:noreply, put_flash(socket, :error, "This run can no longer be cancelled")}
     end
   end
 
@@ -378,6 +382,8 @@ defmodule FavnView.RunDetailLive do
       started_at: LogsViewModel.timestamp_label(summary.started_at),
       finished_at: LogsViewModel.timestamp_label(summary.finished_at),
       duration: LogsViewModel.duration_ms_label(summary.duration_ms),
+      duration_ms_raw: summary.duration_ms,
+      started_at_raw: summary.started_at,
       elapsed_duration: duration_or_elapsed(summary),
       manifest_version_id: root_run.manifest_version_id || "Unknown",
       total_windows: summary.total_windows,
@@ -875,6 +881,9 @@ defmodule FavnView.RunDetailLive do
 
   defp duration_or_elapsed(_summary), do: "-"
 
+  defp run_timing(run),
+    do: %{duration_ms: Map.get(run, :duration_ms_raw), started_at: Map.get(run, :started_at_raw)}
+
   defp progress_label(_done, 0), do: "0 / 0"
   defp progress_label(done, total), do: "#{done} / #{total}"
   defp stage_label(nil), do: nil
@@ -952,6 +961,8 @@ defmodule FavnView.RunDetailLive do
   defp label(nil), do: "Unknown"
   defp label(:step_started), do: "Step submitted"
   defp label("step_started"), do: "Step submitted"
+  defp label(:step_running), do: "Runner started"
+  defp label("step_running"), do: "Runner started"
   defp label(value), do: value |> to_string() |> String.replace("_", " ") |> String.capitalize()
 
   defp error_summary(nil), do: nil

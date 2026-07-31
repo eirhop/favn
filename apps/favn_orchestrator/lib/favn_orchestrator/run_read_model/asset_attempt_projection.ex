@@ -8,10 +8,13 @@ defmodule FavnOrchestrator.RunReadModel.AssetAttemptProjection do
 
   alias FavnOrchestrator.WindowSummary
 
+  # Submission events project as queued: the runner task exists but no runner
+  # has reported it started. Only `step_running` marks an attempt as running.
   @step_statuses %{
     "step_queued" => :queued,
-    "step_started" => :running,
-    "step_retry_started" => :running,
+    "step_started" => :queued,
+    "step_retry_started" => :queued,
+    "step_running" => :running,
     "step_retry_scheduled" => :retrying,
     "step_finished" => :ok,
     "step_failed" => :error,

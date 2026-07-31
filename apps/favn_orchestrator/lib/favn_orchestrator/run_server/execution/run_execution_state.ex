@@ -28,7 +28,8 @@ defmodule FavnOrchestrator.RunServer.Execution.RunExecutionState do
           required(:timeout_token) => reference(),
           required(:timeout_ref) => reference(),
           required(:entry) => map(),
-          required(:kind) => :sequential | :pipeline
+          required(:kind) => :sequential | :pipeline,
+          optional(:started_persisted?) => boolean()
         }
 
   @type timer_entry :: %{

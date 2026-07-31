@@ -173,6 +173,31 @@ defmodule FavnOrchestrator.RunManager.CancellationTest do
     refute_received {:run_server_message, _message}
   end
 
+  test "active cancellation durably cancels a queued task even if the hint is lost", %{
+    context: context
+  } do
+    task = durable_task(:queued)
+    {:ok, task_agent} = Agent.start_link(fn -> %{task: task} end)
+    configure_runner_task_test(task_agent)
+
+    current =
+      run(:running)
+      |> Map.put(:event_seq, 2)
+      |> put_in([Access.key(:metadata), :active_runner_task_ids], [task.task_id])
+
+    put_replayed_commit(run(:pending))
+    Process.put(:run_manager_cancellation_current_run, current)
+
+    blackhole = spawn(fn -> Process.sleep(:infinity) end)
+
+    :sys.replace_state(RunManager, fn state ->
+      put_in(state, [:run_pids, {context.workspace_id, current.id}], blackhole)
+    end)
+
+    assert :ok = RunManager.cancel_run(context, current.id, %{actor_id: "operator"})
+    assert_receive {:runner_task_cancellation_requested, _command, %{status: :cancelled}}
+  end
+
   test "inactive cancellation terminalizes a durably queued runner task", %{context: context} do
     task = durable_task(:queued)
     {:ok, task_agent} = Agent.start_link(fn -> %{task: task} end)

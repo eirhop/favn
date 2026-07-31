@@ -32,6 +32,27 @@ defmodule FavnOrchestrator.RunnerQueueCoordinator do
     GenServer.call(pid, {:wait, observed_generation, session})
   end
 
+  @doc """
+  Registers `session` as a waiter regardless of the current generation.
+
+  Callers must issue one more claim after enrolling: a task enqueued before
+  enrollment has already spent its wake and only that claim can pick it up.
+  """
+  @spec enroll(String.t(), String.t(), map()) :: :ok
+  def enroll(pool, release, session) do
+    {:ok, pid} = ensure_started(pool, release)
+    GenServer.call(pid, {:enroll, session})
+  end
+
+  @doc """
+  Removes the waiter registered for `runner_instance_id`, if any.
+  """
+  @spec cancel_wait(String.t(), String.t(), String.t()) :: :ok
+  def cancel_wait(pool, release, runner_instance_id) do
+    {:ok, pid} = ensure_started(pool, release)
+    GenServer.call(pid, {:cancel_wait, runner_instance_id})
+  end
+
   def notify(pool, release, count \\ 1) when is_integer(count) and count >= 0 do
     if Process.whereis(FavnOrchestrator.RunnerQueueDynamicSupervisor) do
       with {:ok, pid} <- ensure_started(pool, release) do
@@ -65,6 +86,12 @@ defmodule FavnOrchestrator.RunnerQueueCoordinator do
       {:reply, :retry, state}
     end
   end
+
+  def handle_call({:enroll, session}, _from, state),
+    do: {:reply, :ok, put_waiter(state, session)}
+
+  def handle_call({:cancel_wait, runner_instance_id}, _from, state),
+    do: {:reply, :ok, drop_waiter(state, runner_instance_id)}
 
   @impl true
   def handle_cast({:notify, count}, state) do
@@ -104,8 +131,20 @@ defmodule FavnOrchestrator.RunnerQueueCoordinator do
   end
 
   defp put_waiter(state, session) do
+    state = drop_waiter(state, session.runner_instance_id)
+    ref = Process.monitor(session.agent_pid)
+    waiter = Map.put(session, :waiter_monitor_ref, ref)
+
+    %{
+      state
+      | waiters: state.waiters ++ [waiter],
+        monitors: Map.put(state.monitors, ref, session.runner_instance_id)
+    }
+  end
+
+  defp drop_waiter(state, runner_instance_id) do
     {removed, waiters} =
-      Enum.split_with(state.waiters, &(&1.runner_instance_id == session.runner_instance_id))
+      Enum.split_with(state.waiters, &(&1.runner_instance_id == runner_instance_id))
 
     monitors =
       Enum.reduce(removed, state.monitors, fn old, monitors ->
@@ -113,14 +152,7 @@ defmodule FavnOrchestrator.RunnerQueueCoordinator do
         Map.delete(monitors, old.waiter_monitor_ref)
       end)
 
-    ref = Process.monitor(session.agent_pid)
-    waiter = Map.put(session, :waiter_monitor_ref, ref)
-
-    %{
-      state
-      | waiters: waiters ++ [waiter],
-        monitors: Map.put(monitors, ref, session.runner_instance_id)
-    }
+    %{state | waiters: waiters, monitors: monitors}
   end
 
   defp via(pool, release),

@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 
-FROM hexpm/elixir:1.20.2-erlang-29.0.3-debian-trixie-20260713-slim AS builder
+FROM hexpm/elixir:1.20.2-erlang-29.0.4-debian-trixie-20260713-slim AS builder
 
 ENV MIX_ENV=prod
 WORKDIR /build

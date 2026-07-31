@@ -251,14 +251,19 @@ summary {
   /* `favn-shell-bg` is the full page shell and claims the viewport. The
      design-system browser wants the same atmosphere without claiming it, so it
      uses `favn-shell-backdrop`, which stays as tall as its content and lets the
-     document scroll normally. */
+     document scroll normally.
+
+     Keep these glows away from where a content surface has an edge. A panel's
+     translucent fill darkens whatever it covers, so a bright glow crossing the
+     panel boundary reads as a hard-edged step rather than as atmosphere: dim
+     inside, bright outside, with the border as the seam. A glow that sat at
+     `90% 92%` did exactly that against the run timeline's bottom-right corner. */
   .favn-shell-bg,
   .favn-shell-backdrop {
     position: relative;
     font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     background:
       radial-gradient(circle at 16% 58%, color-mix(in oklab, var(--color-primary) 32%, transparent), transparent 22rem),
-      radial-gradient(circle at 90% 92%, color-mix(in oklab, var(--color-secondary) 42%, transparent), transparent 24rem),
       radial-gradient(circle at 62% 20%, color-mix(in oklab, var(--color-base-300) 72%, transparent), transparent 34rem),
       var(--color-base-100);
   }
@@ -270,6 +275,11 @@ summary {
     overflow: hidden;
   }
 
+  /* No tinted outer glow on a surface. The page scroller (`main`) is an
+     `overflow-y-auto` box, and CSS forces the other axis to clip with it, so a
+     soft coloured shadow is sliced dead flat at the scroller's left and right
+     edges — a feathered glow becomes a hard-edged bright band. The remaining
+     shadow is `base-100`, the page colour, so clipping it is invisible. */
   .favn-surface-panel,
   .favn-glass-panel {
     border: var(--border) solid color-mix(in oklab, var(--color-primary) 24%, color-mix(in oklab, var(--color-base-content) 8%, transparent));
@@ -278,7 +288,6 @@ summary {
       color-mix(in oklab, var(--color-base-200) 36%, transparent);
     box-shadow:
       0 1px 0 color-mix(in oklab, var(--color-base-content) 12%, transparent) inset,
-      0 20px 70px color-mix(in oklab, var(--color-primary) 12%, transparent),
       0 14px 40px color-mix(in oklab, var(--color-base-100) 54%, transparent);
     backdrop-filter: blur(24px) saturate(135%);
   }
@@ -290,7 +299,6 @@ summary {
       color-mix(in oklab, var(--color-base-200) 32%, transparent);
     box-shadow:
       0 1px 0 color-mix(in oklab, var(--color-base-content) 10%, transparent) inset,
-      0 14px 46px color-mix(in oklab, var(--color-primary) 8%, transparent),
       0 10px 32px color-mix(in oklab, var(--color-base-100) 46%, transparent);
     backdrop-filter: blur(22px) saturate(132%);
   }
@@ -302,7 +310,6 @@ summary {
       color-mix(in oklab, var(--color-base-200) 36%, transparent) !important;
     box-shadow:
       0 1px 0 color-mix(in oklab, var(--color-base-content) 12%, transparent) inset,
-      0 20px 70px color-mix(in oklab, var(--color-primary) 12%, transparent),
       0 14px 40px color-mix(in oklab, var(--color-base-100) 54%, transparent) !important;
   }
 
@@ -404,7 +411,6 @@ summary {
       color-mix(in oklab, var(--color-base-200) 32%, transparent) !important;
     box-shadow:
       0 1px 0 color-mix(in oklab, var(--color-base-content) 10%, transparent) inset,
-      0 14px 46px color-mix(in oklab, var(--color-primary) 8%, transparent),
       0 10px 32px color-mix(in oklab, var(--color-base-100) 46%, transparent) !important;
   }
 

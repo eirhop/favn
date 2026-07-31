@@ -9,16 +9,17 @@ defmodule FavnRunner.RunnerAgentTest do
   defmodule FakeControlPlane do
     use GenServer
 
-    def start_link(owner), do: GenServer.start_link(__MODULE__, owner)
+    def start_link(owner) when is_pid(owner), do: start_link({owner, 60_000})
+    def start_link({owner, wait_ms}), do: GenServer.start_link(__MODULE__, {owner, wait_ms})
 
     @impl true
-    def init(owner), do: {:ok, owner}
+    def init({owner, wait_ms}), do: {:ok, %{owner: owner, wait_ms: wait_ms}}
 
     @impl true
-    def handle_call(:gateway, _from, owner), do: {:reply, {:ok, self()}, owner}
+    def handle_call(:gateway, _from, state), do: {:reply, {:ok, self()}, state}
 
-    def handle_call({:register, registration, agent}, _from, owner) do
-      send(owner, {:registered, registration, agent})
+    def handle_call({:register, registration, agent}, _from, state) do
+      send(state.owner, {:registered, registration, agent})
 
       {:reply,
        {:ok,
@@ -26,11 +27,11 @@ defmodule FavnRunner.RunnerAgentTest do
           runner_instance_id: registration.runner_instance_id,
           runner_session_generation: max(registration.runner_session_generation, 1),
           status: :accepted
-        }}, owner}
+        }}, state}
     end
 
-    def handle_call({:request, %RunnerTask.ClaimRequest{} = request}, _from, owner) do
-      send(owner, {:claimed, request})
+    def handle_call({:request, %RunnerTask.ClaimRequest{} = request}, _from, state) do
+      send(state.owner, {:claimed, request})
 
       {:reply,
        {:ok,
@@ -39,23 +40,23 @@ defmodule FavnRunner.RunnerAgentTest do
           runner_instance_id: request.runner_instance_id,
           runner_session_generation: request.runner_session_generation,
           action: :wait,
-          wait_ms: 5
-        }}, owner}
+          wait_ms: state.wait_ms
+        }}, state}
     end
 
-    def handle_call({:request, %RunnerTask.CancellationAck{} = acknowledgement}, _from, owner) do
-      send(owner, {:cancellation_ack, acknowledgement})
-      {:reply, {:ok, acknowledgement}, owner}
+    def handle_call({:request, %RunnerTask.CancellationAck{} = acknowledgement}, _from, state) do
+      send(state.owner, {:cancellation_ack, acknowledgement})
+      {:reply, {:ok, acknowledgement}, state}
     end
 
-    def handle_call({:request, %RunnerTask.LeaseRenewal{} = renewal}, _from, owner) do
-      send(owner, {:lease_renewal, renewal})
-      {:reply, {:error, :control_plane_unavailable}, owner}
+    def handle_call({:request, %RunnerTask.LeaseRenewal{} = renewal}, _from, state) do
+      send(state.owner, {:lease_renewal, renewal})
+      {:reply, {:error, :control_plane_unavailable}, state}
     end
 
-    def handle_call({:request, %RunnerTask.Result{} = result}, _from, owner) do
-      send(owner, {:result_delivery, result})
-      {:reply, {:error, %{kind: :fenced}}, owner}
+    def handle_call({:request, %RunnerTask.Result{} = result}, _from, state) do
+      send(state.owner, {:result_delivery, result})
+      {:reply, {:error, %{kind: :fenced}}, state}
     end
   end
 
@@ -638,7 +639,7 @@ defmodule FavnRunner.RunnerAgentTest do
 
   test "an elastic runner honors the control-plane wait and exits after a final empty claim" do
     owner = self()
-    {:ok, control_plane} = start_supervised({FakeControlPlane, self()})
+    {:ok, control_plane} = start_supervised({FakeControlPlane, {self(), 5}})
 
     agent =
       start_supervised!(
@@ -754,8 +755,8 @@ defmodule FavnRunner.RunnerAgentTest do
     assert_eventually(fn -> not Process.alive?(agent) end)
   end
 
-  test "a resident runner parks until the control plane wakes it" do
-    {:ok, control_plane} = start_supervised({FakeControlPlane, self()})
+  test "a resident runner waits within its interval until the control plane wakes it" do
+    {:ok, control_plane} = start_supervised({FakeControlPlane, {self(), 60_000}})
 
     agent =
       start_supervised!(
@@ -783,6 +784,25 @@ defmodule FavnRunner.RunnerAgentTest do
     )
 
     assert_receive {:claimed, %RunnerTask.ClaimRequest{}}, 500
+  end
+
+  test "a resident runner re-claims when its wait interval expires without a wake" do
+    {:ok, control_plane} = start_supervised({FakeControlPlane, {self(), 5}})
+
+    agent =
+      start_supervised!(
+        {RunnerAgent,
+         name: nil,
+         connection: control_plane,
+         runner_pool: :duckdb,
+         lifecycle_mode: :resident,
+         exit_fun: fn _status -> :ok end}
+      )
+
+    assert_receive {:registered, %RunnerTask.Registration{}, ^agent}
+    assert_receive {:claimed, %RunnerTask.ClaimRequest{}}
+    assert_receive {:claimed, %RunnerTask.ClaimRequest{}}, 500
+    assert Process.alive?(agent)
   end
 
   test "cancellation is acknowledged and applied only to the exact assignment fence" do
@@ -1452,10 +1472,12 @@ defmodule FavnRunner.RunnerAgentTest do
 
   test "killing an asset executor also terminates its owned customer-code worker" do
     :ok = FavnRunner.TaskResultBuffer.reset()
+    Application.put_env(:favn_runner, :announcing_asset_owner, self())
+    on_exit(fn -> Application.delete_env(:favn_runner, :announcing_asset_owner) end)
 
     asset = %Favn.Manifest.Asset{
-      ref: {__MODULE__.SlowAsset, :asset},
-      module: __MODULE__.SlowAsset,
+      ref: {__MODULE__.AnnouncingAsset, :asset},
+      module: __MODULE__.AnnouncingAsset,
       name: :asset,
       type: :elixir,
       execution: %{entrypoint: :asset, arity: 1}
@@ -1501,13 +1523,18 @@ defmodule FavnRunner.RunnerAgentTest do
       )
 
     assert_receive {:task_started, %RunnerTask.Started{}, ^agent}, 2_000
+
+    # The worker announces itself from inside the asset body, so it is parked in
+    # an infinite sleep and cannot exit on its own before the kill below.
+    assert_receive {:asset_running, worker}, 2_000
+    worker_monitor = Process.monitor(worker)
+    refute_receive {:DOWN, ^worker_monitor, :process, ^worker, _reason}, 100
+
     assert_eventually(fn -> is_pid(:sys.get_state(agent).executor) end)
     executor = :sys.get_state(agent).executor
-    assert_eventually(fn -> is_pid(:sys.get_state(executor).worker) end)
-    worker = :sys.get_state(executor).worker
+    assert :sys.get_state(executor).worker == worker
 
     executor_monitor = Process.monitor(executor)
-    worker_monitor = Process.monitor(worker)
     Process.exit(executor, :kill)
 
     assert_receive {:DOWN, ^executor_monitor, :process, ^executor, :killed}
@@ -1643,5 +1670,19 @@ defmodule FavnRunner.RunnerAgentTest do
 
   defmodule SlowAsset do
     def asset(_context), do: Process.sleep(:infinity)
+  end
+
+  # Announces the worker process before parking it, so a test can prove the
+  # worker reached the asset body instead of peeking at executor state and
+  # racing a worker that may still exit on its own.
+  defmodule AnnouncingAsset do
+    def asset(_context) do
+      case Application.get_env(:favn_runner, :announcing_asset_owner) do
+        owner when is_pid(owner) -> send(owner, {:asset_running, self()})
+        _other -> :ok
+      end
+
+      Process.sleep(:infinity)
+    end
   end
 end

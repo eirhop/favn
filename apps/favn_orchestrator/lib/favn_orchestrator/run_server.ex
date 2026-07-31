@@ -158,6 +158,12 @@ defmodule FavnOrchestrator.RunServer do
       ),
       do: {:noreply, defer_execution_event(state, message)}
 
+  def handle_info(
+        {:runner_task_started, _, _, _} = message,
+        %{execution_persist_pending: _} = state
+      ),
+      do: {:noreply, defer_execution_event(state, message)}
+
   def handle_info({:DOWN, _, :process, _, _} = message, %{execution_persist_pending: _} = state),
     do: {:noreply, defer_execution_event(state, message)}
 
@@ -184,6 +190,12 @@ defmodule FavnOrchestrator.RunServer do
 
   def handle_info({:runner_task_result, _workspace_id, task_id, task}, state),
     do: handle_execution_event(state, {:runner_task_result, task_id, task})
+
+  def handle_info(
+        {:runner_task_started, _workspace_id, task_id, task},
+        %{execution_state: %RunExecutionState{}} = state
+      ),
+      do: handle_execution_event(state, {:runner_task_started, task_id, task})
 
   def handle_info(
         {:DOWN, monitor_ref, :process, _pid, reason},
@@ -224,6 +236,20 @@ defmodule FavnOrchestrator.RunServer do
     execution_state = %{execution_state | run: latest_run_snapshot(execution_state.run)}
     terminal = Execution.cancel(execution_state, reason)
     finalize_terminal(state, terminal)
+  end
+
+  # Without execution state there is nothing to unwind here: pending start or
+  # terminal persists detect the durable cancel evidence through sequence
+  # fencing on their next attempt. Log the dropped hint so it is observable.
+  def handle_info({:favn_run_cancel_requested, reason}, state) do
+    OperationalEvents.emit(
+      :run_cancel_hint_dropped,
+      %{},
+      %{run_id: current_run_id(state), reason: reason},
+      level: :warning
+    )
+
+    {:noreply, state}
   end
 
   def handle_info(_message, state), do: {:noreply, state}
@@ -464,6 +490,9 @@ defmodule FavnOrchestrator.RunServer do
        attempt: attempt
      })}
   end
+
+  defp current_run_id(%{run_state: %RunState{id: run_id}}), do: run_id
+  defp current_run_id(_state), do: nil
 
   defp persisted_cancelled?(%RunState{workspace_id: workspace_id, id: run_id})
        when is_binary(workspace_id) do

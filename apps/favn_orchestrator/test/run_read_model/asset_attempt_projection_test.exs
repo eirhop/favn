@@ -30,8 +30,32 @@ defmodule FavnOrchestrator.RunReadModel.AssetAttemptProjectionTest do
     assert {:ok, attempt} = AssetAttemptProjection.from_event(event)
     assert attempt.window_identity == "none"
     assert attempt.window == nil
+  end
+
+  test "submission projects as queued until a runner reports the step running" do
+    submitted = %{
+      event_type: :step_started,
+      occurred_at: @occurred_at,
+      asset_ref: {MyApp.Gold, :orders},
+      data: %{asset_step_id: "step-runner", attempt: 1}
+    }
+
+    assert {:ok, queued} = AssetAttemptProjection.from_event(submitted)
+    assert queued.status == :queued
+    assert queued.started_at == nil
+
+    picked_up = ~U[2026-07-20 10:05:30Z]
+
+    running = %{
+      event_type: :step_running,
+      occurred_at: picked_up,
+      asset_ref: {MyApp.Gold, :orders},
+      data: %{asset_step_id: "step-runner", attempt: 1}
+    }
+
+    assert {:ok, attempt} = AssetAttemptProjection.from_event(running)
     assert attempt.status == :running
-    assert attempt.started_at == @occurred_at
+    assert attempt.started_at == picked_up
   end
 
   test "ignores historical step events that do not carry a complete asset identity" do

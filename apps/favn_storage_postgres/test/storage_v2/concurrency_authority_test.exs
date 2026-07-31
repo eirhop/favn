@@ -229,6 +229,7 @@ defmodule FavnStoragePostgres.StorageV2.ConcurrencyAuthorityTest do
   end
 
   setup %{version: version} do
+    on_exit(&release_projection_cursor!/0)
     {:ok, provision_fixture(36, version)}
   end
 
@@ -1766,6 +1767,24 @@ defmodule FavnStoragePostgres.StorageV2.ConcurrencyAuthorityTest do
   defp await_projector_expiry!(timeout_ms) do
     deadline = System.monotonic_time(:millisecond) + timeout_ms
     do_await_projector_expiry!(deadline)
+  end
+
+  # A projector claim is deliberately held until its lease expires, and this file
+  # commits for real rather than through the sandbox. Claims taken here with long
+  # leases would otherwise still be live when a later test file drains the
+  # projector, failing it with a `projection stream is owned` conflict.
+  defp release_projection_cursor! do
+    SQL.query!(
+      Repo,
+      """
+      UPDATE favn_control.projection_cursors
+      SET owner_id = NULL, claim_expires_at = NULL, updated_at = clock_timestamp()
+      WHERE owner_id IS NOT NULL
+      """,
+      []
+    )
+
+    :ok
   end
 
   defp do_await_ownership_expiry!(workspace_id, run_id, deadline) do

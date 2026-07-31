@@ -168,6 +168,7 @@ defmodule FavnOrchestrator.RunnerTasks do
              occurred_at: message.occurred_at
            }) do
       maybe_mark_busy(message, task)
+      RunnerTaskResultRouter.notify_started(task)
       emit_started(task)
 
       {:ok, task}
@@ -351,32 +352,10 @@ defmodule FavnOrchestrator.RunnerTasks do
         request.required_runner_release_id
       )
 
-    command = %C.ClaimRunnerTask{
-      platform_context: platform_context(:runner_task_claim),
-      command_id: store_claim_id(request.command_id, attempt),
-      runner_instance_id: request.runner_instance_id,
-      runner_session_generation: request.runner_session_generation,
-      runner_pool: request.runner_pool,
-      required_runner_release_id: request.required_runner_release_id,
-      supported_task_kinds: request.supported_task_kinds,
-      capabilities: request.capabilities,
-      lease_duration_ms: lease_ms(),
-      issued_at: request.issued_at,
-      occurred_at: DateTime.utc_now()
-    }
-
-    case store().claim(command) do
-      {:ok, nil} ->
-        wait_or_retry(request, session, observed, attempt)
-
-      {:ok, task} ->
-        assignment = assignment(request, task)
-        {:ok, _session} = RunnerRegistry.finish_claim(request, assignment)
-        {:ok, assignment}
-
-      {:error, reason} ->
-        _ = RunnerRegistry.finish_claim(request, no_work(request, :wait, 0))
-        {:error, reason}
+    case store().claim(claim_command(request, attempt)) do
+      {:ok, nil} -> wait_or_retry(request, session, observed, attempt)
+      {:ok, task} -> finish_assignment(request, task)
+      {:error, reason} -> finish_claim_error(request, reason)
     end
   end
 
@@ -393,7 +372,69 @@ defmodule FavnOrchestrator.RunnerTasks do
     end
   end
 
-  defp wait_or_retry(request, _session, _observed, _attempt), do: finish_empty_claim(request)
+  # The generation kept moving, so no racing wait was accepted. Enrolling
+  # unconditionally before one final claim keeps the runner wakeable: a task
+  # enqueued after enrollment wakes it, and a task enqueued before enrollment
+  # (whose wake found no waiters) is picked up by that claim.
+  defp wait_or_retry(request, session, _observed, attempt) do
+    :ok =
+      RunnerQueueCoordinator.enroll(
+        request.runner_pool,
+        request.required_runner_release_id,
+        session
+      )
+
+    case store().claim(claim_command(request, attempt + 1)) do
+      {:ok, nil} ->
+        finish_empty_claim(request)
+
+      {:ok, task} ->
+        finish_assignment(request, task)
+
+      {:error, reason} ->
+        cancel_wait(request)
+        finish_claim_error(request, reason)
+    end
+  end
+
+  defp claim_command(request, attempt) do
+    %C.ClaimRunnerTask{
+      platform_context: platform_context(:runner_task_claim),
+      command_id: store_claim_id(request.command_id, attempt),
+      runner_instance_id: request.runner_instance_id,
+      runner_session_generation: request.runner_session_generation,
+      runner_pool: request.runner_pool,
+      required_runner_release_id: request.required_runner_release_id,
+      supported_task_kinds: request.supported_task_kinds,
+      capabilities: request.capabilities,
+      lease_duration_ms: lease_ms(),
+      issued_at: request.issued_at,
+      occurred_at: DateTime.utc_now()
+    }
+  end
+
+  # A runner claiming on its poll timer may still hold a waiter slot from an
+  # earlier cycle; release it so a wake is never spent on a busy runner.
+  defp finish_assignment(request, task) do
+    cancel_wait(request)
+    assignment = assignment(request, task)
+    {:ok, _session} = RunnerRegistry.finish_claim(request, assignment)
+    {:ok, assignment}
+  end
+
+  defp finish_claim_error(request, reason) do
+    _ = RunnerRegistry.finish_claim(request, no_work(request, :wait, 0))
+    {:error, reason}
+  end
+
+  defp cancel_wait(request) do
+    :ok =
+      RunnerQueueCoordinator.cancel_wait(
+        request.runner_pool,
+        request.required_runner_release_id,
+        request.runner_instance_id
+      )
+  end
 
   defp finish_empty_claim(request) do
     wait_ms =

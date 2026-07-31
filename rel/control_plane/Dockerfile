@@ -1,4 +1,4 @@
-FROM --platform=linux/amd64 hexpm/elixir:1.20.2-erlang-29.0.3-debian-trixie-20260713-slim@sha256:6fcd8ea864221b960c1ec418e3b10fa488298ff9e70c9e0f3db18070e610fb8a AS builder
+FROM --platform=linux/amd64 hexpm/elixir:1.20.2-erlang-29.0.4-debian-trixie-20260713-slim@sha256:5a4f24baf7f8963e4e03d0f63bf7d0e44babd1891ce9415b68e4c61846aab7b2 AS builder
 
 ENV MIX_ENV=prod
 WORKDIR /build
@@ -14,7 +14,7 @@ RUN mix local.hex 2.5.1 --force \
     && mix local.rebar rebar3 https://github.com/erlang/rebar3/releases/download/3.27.0/rebar3 \
          --sha512 0d00494d849fdc521a55142278d1f6ba552954fbd65b80d40df8022f594f05d6c99ed1d731bc263691a04176e11d4c6e126c56ba20dca19c5e42d4ffab2e7e36 \
          --force
-RUN test "$(cat /usr/local/lib/erlang/releases/29/OTP_VERSION)" = 29.0.3 \
+RUN test "$(cat /usr/local/lib/erlang/releases/29/OTP_VERSION)" = 29.0.4 \
     && install -d /build/runtime-versions \
     && cp /usr/local/lib/erlang/releases/29/OTP_VERSION /build/runtime-versions/OTP_VERSION \
     && elixir -e 'IO.write(System.version())' > /build/runtime-versions/ELIXIR_VERSION \
@@ -74,7 +74,7 @@ LABEL org.opencontainers.image.title="Favn control plane" \
       io.favn.manifest-schema-version="$FAVN_MANIFEST_SCHEMA_VERSION" \
       io.favn.runner-contract-version="$FAVN_RUNNER_CONTRACT_VERSION" \
       io.favn.elixir-version="1.20.2" \
-      io.favn.otp-version="29.0.3" \
+      io.favn.otp-version="29.0.4" \
       io.favn.target="linux/amd64"
 
 ENV HOME=/tmp/favn \

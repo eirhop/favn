@@ -681,9 +681,39 @@ defmodule FavnOrchestrator.RunManager do
 
   defp notify_cancellation(context, run_key, run, reason) do
     case call_manager({:notify_cancellation, run_key, reason}) do
-      :active -> :ok
+      :active -> enforce_active_cancellation(run, reason)
       :inactive -> continue_inactive_cancellation(context, run, reason)
       {:error, _reason} = error -> error
+    end
+  end
+
+  # The message to an active run server is a hint that can be lost. Durable
+  # enforcement is the task cancellation itself: the store cancels queued
+  # tasks atomically and the result router delivers the cancelled outcome to
+  # the awaiting run server, which settles through its normal result path.
+  # Dispatch runs off the caller because acknowledgement waits for
+  # live-assigned tasks can take up to a second each.
+  defp enforce_active_cancellation(%RunState{} = run, reason) do
+    dispatch = fn ->
+      _outcomes =
+        Cancellation.dispatch_runner_tasks(
+          run,
+          ActiveTaskSet.active_runner_task_ids(run),
+          reason
+        )
+
+      :ok
+    end
+
+    case Process.whereis(FavnOrchestrator.RunManagerTaskSupervisor) do
+      nil ->
+        dispatch.()
+
+      _supervisor ->
+        {:ok, _pid} =
+          Task.Supervisor.start_child(FavnOrchestrator.RunManagerTaskSupervisor, dispatch)
+
+        :ok
     end
   end
 
