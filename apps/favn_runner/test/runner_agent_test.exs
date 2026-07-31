@@ -9,16 +9,17 @@ defmodule FavnRunner.RunnerAgentTest do
   defmodule FakeControlPlane do
     use GenServer
 
-    def start_link(owner), do: GenServer.start_link(__MODULE__, owner)
+    def start_link(owner) when is_pid(owner), do: start_link({owner, 60_000})
+    def start_link({owner, wait_ms}), do: GenServer.start_link(__MODULE__, {owner, wait_ms})
 
     @impl true
-    def init(owner), do: {:ok, owner}
+    def init({owner, wait_ms}), do: {:ok, %{owner: owner, wait_ms: wait_ms}}
 
     @impl true
-    def handle_call(:gateway, _from, owner), do: {:reply, {:ok, self()}, owner}
+    def handle_call(:gateway, _from, state), do: {:reply, {:ok, self()}, state}
 
-    def handle_call({:register, registration, agent}, _from, owner) do
-      send(owner, {:registered, registration, agent})
+    def handle_call({:register, registration, agent}, _from, state) do
+      send(state.owner, {:registered, registration, agent})
 
       {:reply,
        {:ok,
@@ -26,11 +27,11 @@ defmodule FavnRunner.RunnerAgentTest do
           runner_instance_id: registration.runner_instance_id,
           runner_session_generation: max(registration.runner_session_generation, 1),
           status: :accepted
-        }}, owner}
+        }}, state}
     end
 
-    def handle_call({:request, %RunnerTask.ClaimRequest{} = request}, _from, owner) do
-      send(owner, {:claimed, request})
+    def handle_call({:request, %RunnerTask.ClaimRequest{} = request}, _from, state) do
+      send(state.owner, {:claimed, request})
 
       {:reply,
        {:ok,
@@ -39,23 +40,23 @@ defmodule FavnRunner.RunnerAgentTest do
           runner_instance_id: request.runner_instance_id,
           runner_session_generation: request.runner_session_generation,
           action: :wait,
-          wait_ms: 5
-        }}, owner}
+          wait_ms: state.wait_ms
+        }}, state}
     end
 
-    def handle_call({:request, %RunnerTask.CancellationAck{} = acknowledgement}, _from, owner) do
-      send(owner, {:cancellation_ack, acknowledgement})
-      {:reply, {:ok, acknowledgement}, owner}
+    def handle_call({:request, %RunnerTask.CancellationAck{} = acknowledgement}, _from, state) do
+      send(state.owner, {:cancellation_ack, acknowledgement})
+      {:reply, {:ok, acknowledgement}, state}
     end
 
-    def handle_call({:request, %RunnerTask.LeaseRenewal{} = renewal}, _from, owner) do
-      send(owner, {:lease_renewal, renewal})
-      {:reply, {:error, :control_plane_unavailable}, owner}
+    def handle_call({:request, %RunnerTask.LeaseRenewal{} = renewal}, _from, state) do
+      send(state.owner, {:lease_renewal, renewal})
+      {:reply, {:error, :control_plane_unavailable}, state}
     end
 
-    def handle_call({:request, %RunnerTask.Result{} = result}, _from, owner) do
-      send(owner, {:result_delivery, result})
-      {:reply, {:error, %{kind: :fenced}}, owner}
+    def handle_call({:request, %RunnerTask.Result{} = result}, _from, state) do
+      send(state.owner, {:result_delivery, result})
+      {:reply, {:error, %{kind: :fenced}}, state}
     end
   end
 
@@ -638,7 +639,7 @@ defmodule FavnRunner.RunnerAgentTest do
 
   test "an elastic runner honors the control-plane wait and exits after a final empty claim" do
     owner = self()
-    {:ok, control_plane} = start_supervised({FakeControlPlane, self()})
+    {:ok, control_plane} = start_supervised({FakeControlPlane, {self(), 5}})
 
     agent =
       start_supervised!(
@@ -754,8 +755,8 @@ defmodule FavnRunner.RunnerAgentTest do
     assert_eventually(fn -> not Process.alive?(agent) end)
   end
 
-  test "a resident runner parks until the control plane wakes it" do
-    {:ok, control_plane} = start_supervised({FakeControlPlane, self()})
+  test "a resident runner waits within its interval until the control plane wakes it" do
+    {:ok, control_plane} = start_supervised({FakeControlPlane, {self(), 60_000}})
 
     agent =
       start_supervised!(
@@ -783,6 +784,25 @@ defmodule FavnRunner.RunnerAgentTest do
     )
 
     assert_receive {:claimed, %RunnerTask.ClaimRequest{}}, 500
+  end
+
+  test "a resident runner re-claims when its wait interval expires without a wake" do
+    {:ok, control_plane} = start_supervised({FakeControlPlane, {self(), 5}})
+
+    agent =
+      start_supervised!(
+        {RunnerAgent,
+         name: nil,
+         connection: control_plane,
+         runner_pool: :duckdb,
+         lifecycle_mode: :resident,
+         exit_fun: fn _status -> :ok end}
+      )
+
+    assert_receive {:registered, %RunnerTask.Registration{}, ^agent}
+    assert_receive {:claimed, %RunnerTask.ClaimRequest{}}
+    assert_receive {:claimed, %RunnerTask.ClaimRequest{}}, 500
+    assert Process.alive?(agent)
   end
 
   test "cancellation is acknowledged and applied only to the exact assignment fence" do

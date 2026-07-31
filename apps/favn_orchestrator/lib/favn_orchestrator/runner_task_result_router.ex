@@ -5,6 +5,12 @@ defmodule FavnOrchestrator.RunnerTaskResultRouter do
   Durable subscription checks run asynchronously behind a fixed concurrency
   ceiling. A provisional waiter is installed before each read so notifications
   racing the read remain deterministic and cannot be lost.
+
+  Waiters subscribed with `notify_started?: true` additionally receive a
+  `{:runner_task_started, workspace_id, task_id, task}` message when the
+  assigned runner reports the task as started. Started notifications are
+  advisory presence signals: they do not consume the waiter and carry no
+  delivery guarantee beyond the subscription check.
   """
   use GenServer
 
@@ -19,10 +25,18 @@ defmodule FavnOrchestrator.RunnerTaskResultRouter do
     GenServer.start_link(__MODULE__, opts, name: Keyword.get(opts, :name, __MODULE__))
   end
 
-  def subscribe(workspace_id, task_id, pid \\ self()) do
+  @doc """
+  Subscribes `pid` to the terminal result of one task.
+
+  With `notify_started?: true` the subscriber also receives
+  `{:runner_task_started, workspace_id, task_id, task}` messages.
+  """
+  @spec subscribe(String.t(), String.t(), pid(), keyword()) ::
+          :ready | :waiting | {:error, term()}
+  def subscribe(workspace_id, task_id, pid \\ self(), opts \\ []) do
     case Process.whereis(__MODULE__) do
       nil -> {:error, :runner_task_result_router_unavailable}
-      _router -> GenServer.call(__MODULE__, {:subscribe, workspace_id, task_id, pid})
+      _router -> GenServer.call(__MODULE__, {:subscribe, workspace_id, task_id, pid, opts})
     end
   catch
     :exit, reason -> {:error, {:runner_task_result_router_call_failed, reason}}
@@ -30,48 +44,60 @@ defmodule FavnOrchestrator.RunnerTaskResultRouter do
 
   def notify(task), do: GenServer.cast(__MODULE__, {:notify, task})
 
+  @doc "Delivers a started notification to opted-in waiters without consuming them."
+  @spec notify_started(map()) :: :ok
+  def notify_started(task), do: GenServer.cast(__MODULE__, {:notify_started, task})
+
   @doc false
-  def await(workspace_id, task_id, parent) do
+  def await(workspace_id, task_id, parent, opts \\ []) do
     parent_ref = Process.monitor(parent)
-    do_await(workspace_id, task_id, parent, parent_ref)
+    do_await(workspace_id, task_id, parent, parent_ref, opts)
   end
 
-  defp do_await(workspace_id, task_id, parent, parent_ref) do
+  defp do_await(workspace_id, task_id, parent, parent_ref, opts) do
     case Process.whereis(__MODULE__) do
       router when is_pid(router) ->
         monitor_ref = Process.monitor(router)
 
-        case subscribe(workspace_id, task_id, self()) do
+        case subscribe(workspace_id, task_id, self(), opts) do
           result when result in [:ready, :waiting] ->
-            receive do
-              {:runner_task_result, ^workspace_id, ^task_id, _task} = message ->
-                Process.demonitor(monitor_ref, [:flush])
-                Process.demonitor(parent_ref, [:flush])
-                send(parent, message)
-
-              {:DOWN, ^monitor_ref, :process, ^router, _reason} ->
-                do_await(workspace_id, task_id, parent, parent_ref)
-
-              {:DOWN, ^parent_ref, :process, ^parent, _reason} ->
-                :ok
-            end
+            await_result(workspace_id, task_id, parent, parent_ref, router, monitor_ref, opts)
 
           {:error, _reason} ->
             Process.demonitor(monitor_ref, [:flush])
-            retry_await(workspace_id, task_id, parent, parent_ref)
+            retry_await(workspace_id, task_id, parent, parent_ref, opts)
         end
 
       _unavailable ->
-        retry_await(workspace_id, task_id, parent, parent_ref)
+        retry_await(workspace_id, task_id, parent, parent_ref, opts)
     end
   end
 
-  defp retry_await(workspace_id, task_id, parent, parent_ref) do
+  defp await_result(workspace_id, task_id, parent, parent_ref, router, monitor_ref, opts) do
+    receive do
+      {:runner_task_result, ^workspace_id, ^task_id, _task} = message ->
+        Process.demonitor(monitor_ref, [:flush])
+        Process.demonitor(parent_ref, [:flush])
+        send(parent, message)
+
+      {:runner_task_started, ^workspace_id, ^task_id, _task} = message ->
+        send(parent, message)
+        await_result(workspace_id, task_id, parent, parent_ref, router, monitor_ref, opts)
+
+      {:DOWN, ^monitor_ref, :process, ^router, _reason} ->
+        do_await(workspace_id, task_id, parent, parent_ref, opts)
+
+      {:DOWN, ^parent_ref, :process, ^parent, _reason} ->
+        :ok
+    end
+  end
+
+  defp retry_await(workspace_id, task_id, parent, parent_ref, opts) do
     receive do
       {:DOWN, ^parent_ref, :process, ^parent, _reason} ->
         :ok
     after
-      50 -> do_await(workspace_id, task_id, parent, parent_ref)
+      50 -> do_await(workspace_id, task_id, parent, parent_ref, opts)
     end
   end
 
@@ -95,7 +121,7 @@ defmodule FavnOrchestrator.RunnerTaskResultRouter do
   end
 
   @impl true
-  def handle_call({:subscribe, workspace_id, task_id, pid}, from, state) do
+  def handle_call({:subscribe, workspace_id, task_id, pid, opts}, from, state) do
     key = {workspace_id, task_id}
 
     if map_size(state.checks) < state.max_concurrency do
@@ -110,6 +136,7 @@ defmodule FavnOrchestrator.RunnerTaskResultRouter do
         check_ref: task.ref,
         from: from,
         monitor_ref: monitor_ref,
+        notify_started?: Keyword.get(opts, :notify_started?, false),
         pid: pid
       }
 
@@ -146,6 +173,21 @@ defmodule FavnOrchestrator.RunnerTaskResultRouter do
         |> demonitor_waiter(waiter)
         |> cancel_check(waiter.check_ref)
       end)
+
+    {:noreply, state}
+  end
+
+  def handle_cast(
+        {:notify_started, %{workspace_id: workspace_id, task_id: task_id} = task},
+        state
+      ) do
+    state.waiters
+    |> Map.get({workspace_id, task_id}, [])
+    |> Enum.each(fn waiter ->
+      if waiter.notify_started? do
+        send(waiter.pid, {:runner_task_started, workspace_id, task_id, task})
+      end
+    end)
 
     {:noreply, state}
   end
@@ -196,8 +238,16 @@ defmodule FavnOrchestrator.RunnerTaskResultRouter do
     end
   end
 
-  defp finish_check(state, key, monitor_ref, {:ok, _task}) do
+  # A task already running at subscription time gets its started notification
+  # from the check itself, covering restarts and runners that raced ahead of
+  # the subscription.
+  defp finish_check(state, key, monitor_ref, {:ok, task}) do
     update_waiter(state, key, monitor_ref, fn waiter ->
+      if waiter.notify_started? and task.status == :running do
+        {workspace_id, task_id} = key
+        send(waiter.pid, {:runner_task_started, workspace_id, task_id, task})
+      end
+
       GenServer.reply(waiter.from, :waiting)
       %{waiter | check_ref: nil, from: nil}
     end)

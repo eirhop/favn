@@ -119,6 +119,67 @@ defmodule FavnOrchestrator.RunnerTaskResultRouterTest do
     GenServer.stop(router)
   end
 
+  test "started notifications reach opted-in waiters without consuming them", %{
+    store_state: store_state
+  } do
+    {:ok, router} = RunnerTaskResultRouter.start_link([])
+    Process.unlink(router)
+    parent = self()
+
+    queued = %{workspace_id: "workspace", task_id: "rt_started", status: :queued}
+    Agent.update(store_state, &%{&1 | response: {:ok, queued}})
+
+    waiter =
+      spawn_link(fn ->
+        RunnerTaskResultRouter.await("workspace", "rt_started", parent, notify_started?: true)
+      end)
+
+    assert_eventually(fn -> Agent.get(store_state, & &1.reads) >= 1 end)
+
+    running = %{queued | status: :running}
+    RunnerTaskResultRouter.notify_started(running)
+    assert_receive {:runner_task_started, "workspace", "rt_started", ^running}
+    assert Process.alive?(waiter)
+
+    terminal = Map.merge(running, %{status: :succeeded, result: %{status: :ok}})
+    RunnerTaskResultRouter.notify(terminal)
+    assert_receive {:runner_task_result, "workspace", "rt_started", ^terminal}
+
+    GenServer.stop(router)
+  end
+
+  test "started notifications skip waiters that did not opt in", %{store_state: store_state} do
+    {:ok, router} = RunnerTaskResultRouter.start_link([])
+    Process.unlink(router)
+
+    queued = %{workspace_id: "workspace", task_id: "rt_plain", status: :queued}
+    Agent.update(store_state, &%{&1 | response: {:ok, queued}})
+
+    assert RunnerTaskResultRouter.subscribe("workspace", "rt_plain", self()) == :waiting
+
+    RunnerTaskResultRouter.notify_started(%{queued | status: :running})
+    refute_receive {:runner_task_started, _workspace, _task, _task_state}, 50
+
+    GenServer.stop(router)
+  end
+
+  test "a task already running at subscription time delivers started from the check", %{
+    store_state: store_state
+  } do
+    {:ok, router} = RunnerTaskResultRouter.start_link([])
+    Process.unlink(router)
+
+    running = %{workspace_id: "workspace", task_id: "rt_live", status: :running}
+    Agent.update(store_state, &%{&1 | response: {:ok, running}})
+
+    assert RunnerTaskResultRouter.subscribe("workspace", "rt_live", self(), notify_started?: true) ==
+             :waiting
+
+    assert_receive {:runner_task_started, "workspace", "rt_live", ^running}
+
+    GenServer.stop(router)
+  end
+
   test "subscriber loss cancels its durable read and releases capacity", %{
     store_state: store_state
   } do

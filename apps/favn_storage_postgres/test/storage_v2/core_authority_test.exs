@@ -7497,7 +7497,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
                event: %{
                  run_id: run.id,
                  sequence: 3,
-                 event_type: :step_started,
+                 event_type: :step_running,
                  status: :running,
                  data: %{
                    asset_step_id: "step:" <> run.id,

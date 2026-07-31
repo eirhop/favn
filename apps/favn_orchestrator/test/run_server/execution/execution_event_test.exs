@@ -36,6 +36,30 @@ defmodule FavnOrchestrator.RunServer.Execution.ExecutionEventTest do
              Execution.handle_event(state, {:attempt_timeout, task_id, make_ref()})
   end
 
+  test "runner started signals are ignored without a live, unpersisted await" do
+    task_id = "rt_started"
+
+    missing = %RunExecutionState{awaits: %{}}
+
+    assert {:cont, ^missing} =
+             Execution.handle_event(missing, {:runner_task_started, task_id, %{}})
+
+    await = %{
+      pid: self(),
+      monitor_ref: make_ref(),
+      timeout_token: make_ref(),
+      timeout_ref: make_ref(),
+      entry: %{task_id: task_id},
+      kind: :pipeline,
+      started_persisted?: true
+    }
+
+    persisted = %RunExecutionState{awaits: %{task_id => await}}
+
+    assert {:cont, ^persisted} =
+             Execution.handle_event(persisted, {:runner_task_started, task_id, %{}})
+  end
+
   test "stale admission generations do not remove the current waiter" do
     waiter = %{waiter_id: "waiter_1", wake_generation: 2}
     state = %RunExecutionState{admission_waiters: %{waiter.waiter_id => waiter}}
