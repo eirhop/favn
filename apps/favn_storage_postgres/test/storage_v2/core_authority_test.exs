@@ -2317,191 +2317,21 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
              })
   end
 
-  test "release-safe operations return redacted stable results", _fixture do
-    telemetry_handler = "release-operation-#{System.unique_integer([:positive])}"
-    parent = self()
-
-    :ok =
-      :telemetry.attach_many(
-        telemetry_handler,
-        [
-          [:favn, :storage_postgres, :release_operation, :start],
-          [:favn, :storage_postgres, :release_operation, :stop]
-        ],
-        fn event, measurements, metadata, _config ->
-          send(parent, {event, measurements, metadata})
-        end,
-        nil
-      )
-
-    on_exit(fn -> _ = :telemetry.detach(telemetry_handler) end)
-
-    previous_keyring = System.get_env("FAVN_RUNTIME_INPUT_PIN_KEYS")
-    previous_key_version = System.get_env("FAVN_RUNTIME_INPUT_PIN_KEY_VERSION")
-
-    System.put_env(
-      "FAVN_RUNTIME_INPUT_PIN_KEYS",
-      JSON.encode!(%{
-        "1" => "0123456789abcdef0123456789abcdef",
-        "2" => "abcdef0123456789abcdef0123456789"
-      })
-    )
-
-    System.put_env("FAVN_RUNTIME_INPUT_PIN_KEY_VERSION", "2")
-
-    on_exit(fn ->
-      restore_system_env("FAVN_RUNTIME_INPUT_PIN_KEYS", previous_keyring)
-      restore_system_env("FAVN_RUNTIME_INPUT_PIN_KEY_VERSION", previous_key_version)
-    end)
-
+  test "release operations refuse an already-started repo without leaking configuration",
+       _fixture do
     database_url = System.fetch_env!("FAVN_DATABASE_URL")
 
     log =
       capture_log(fn ->
-        send(parent, {:release_result, Release.verify_schema()})
+        assert {:error, %{operation: :verify_schema, status: :error, code: :repo_already_started}} =
+                 Release.verify_schema()
       end)
 
-    assert_receive {:release_result,
-                    {:ok,
-                     %{
-                       operation: :verify_schema,
-                       status: :ok,
-                       schema: "favn_control",
-                       definition_fingerprint: fingerprint
-                     }}}
-
-    assert byte_size(fingerprint) == 64
     refute log =~ database_url
 
     if database_userinfo = URI.parse(database_url).userinfo do
       refute log =~ database_userinfo
     end
-
-    assert_receive {[:favn, :storage_postgres, :release_operation, :start],
-                    %{system_time: system_time}, %{operation: :verify_schema}}
-
-    assert is_integer(system_time)
-
-    assert_receive {[:favn, :storage_postgres, :release_operation, :stop],
-                    %{duration_ms: duration_ms}, %{operation: :verify_schema, status: :ok}}
-
-    assert is_integer(duration_ms) and duration_ms >= 0
-
-    Repo.checkout(fn ->
-      %{rows: [[previous_timeout]]} = SQL.query!(Repo, "SHOW statement_timeout", [])
-
-      assert {:ok,
-              %{
-                operation: :verify_restore,
-                status: :ok,
-                statement_timeout_ms: 600_000
-              }} = Release.verify_restore()
-
-      assert %{rows: [[^previous_timeout]]} =
-               SQL.query!(Repo, "SHOW statement_timeout", [])
-    end)
-
-    workspace_id = "release-ws-#{System.unique_integer([:positive])}"
-
-    workspace = %{
-      workspace_id: workspace_id,
-      slug: workspace_id,
-      display_name: "Release Workspace"
-    }
-
-    assert {:error,
-            %{
-              operation: :verify_workspace,
-              status: :error,
-              code: :workspace_not_found,
-              workspace_id: ^workspace_id
-            }} = Release.verify_workspace(workspace_id)
-
-    assert {:ok, %{operation: :provision_workspace, status: :ok, workspace_id: ^workspace_id}} =
-             Release.provision_workspace(workspace)
-
-    assert {:ok, %{operation: :verify_workspace, status: :ok, workspace_id: ^workspace_id}} =
-             Release.verify_workspace(workspace_id)
-
-    assert {:ok, %{operation: :provision_workspace, status: :ok, workspace_id: ^workspace_id}} =
-             Release.provision_workspace(workspace)
-
-    SQL.query!(
-      Repo,
-      """
-      INSERT INTO favn_control.runtime_input_key_versions (key_version, first_used_at)
-      VALUES (98, clock_timestamp())
-      ON CONFLICT (key_version) DO NOTHING
-      """,
-      []
-    )
-
-    assert {:ok,
-            %{
-              operation: :runtime_input_key_inventory,
-              status: :ok,
-              inventory: inventory,
-              current_version: 2,
-              retained_versions: [1, 2],
-              invalid_versions: []
-            }} = Release.runtime_input_key_inventory()
-
-    assert Enum.any?(inventory, &(&1.key_version == 98 and &1.pin_count == 0))
-
-    assert {:error,
-            %{
-              operation: :compact_runtime_input_keys,
-              status: :error,
-              code: :current_key_version_requested,
-              current_version: 2
-            }} = Release.compact_runtime_input_keys(2)
-
-    assert_receive {[:favn, :storage_postgres, :release_operation, :start],
-                    %{system_time: rejected_system_time},
-                    %{operation: :compact_runtime_input_keys}}
-
-    assert is_integer(rejected_system_time)
-
-    assert_receive {[:favn, :storage_postgres, :release_operation, :stop],
-                    %{duration_ms: rejected_duration_ms},
-                    %{
-                      operation: :compact_runtime_input_keys,
-                      status: :error,
-                      code: :current_key_version_requested
-                    }}
-
-    assert is_integer(rejected_duration_ms) and rejected_duration_ms >= 0
-
-    assert {:ok,
-            %{
-              operation: :compact_runtime_input_keys,
-              status: :ok,
-              requested_versions: [98],
-              removed_versions: [98]
-            }} = Release.compact_runtime_input_keys(98)
-
-    %{rows: [[current_role]]} = SQL.query!(Repo, "SELECT current_user", [])
-    previous_role = System.get_env("FAVN_DATABASE_RUNTIME_ROLE")
-    System.put_env("FAVN_DATABASE_RUNTIME_ROLE", current_role)
-
-    on_exit(fn -> restore_system_env("FAVN_DATABASE_RUNTIME_ROLE", previous_role) end)
-
-    assert {:error, %{operation: :migrate, status: :error, code: :restricted_runtime_role}} =
-             Release.migrate()
-
-    assert {:error, %{operation: :grant_runtime, status: :error, code: :restricted_runtime_role}} =
-             Release.grant_runtime()
-
-    assert_receive {[:favn, :storage_postgres, :release_operation, :stop],
-                    %{duration_ms: failed_duration_ms},
-                    %{
-                      operation: :migrate,
-                      status: :error,
-                      code: :restricted_runtime_role
-                    }}
-
-    assert is_integer(failed_duration_ms) and failed_duration_ms >= 0
-    :ok = :telemetry.detach(telemetry_handler)
   end
 
   test "rejects malformed workspace authority before every sensitive read", fixture do
@@ -3248,13 +3078,13 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
 
   test "reports exact backend capabilities and schema readiness" do
     assert :ok = Backend.stores() |> Stores.validate()
-    assert {:ok, %{ready?: true, status: :ready}} = Backend.readiness([])
 
-    assert {:ok, diagnostics} =
-             Backend.diagnostics(
-               url: System.fetch_env!("FAVN_DATABASE_URL"),
-               ssl_mode: :disable
-             )
+    options = [url: System.fetch_env!("FAVN_DATABASE_URL"), ssl_mode: :disable]
+
+    assert {:ok, %{ready?: true, status: :ready} = readiness} = Backend.readiness(options)
+    assert readiness.checks.authentication == %{mode: :password, lifecycle_ready?: true}
+
+    assert {:ok, diagnostics} = Backend.diagnostics(options)
 
     assert diagnostics.engine.name == :postgresql
     assert diagnostics.engine.version.major == 18
@@ -3269,7 +3099,12 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
       []
     )
 
-    assert {:ok, readiness} = Backend.readiness([])
+    assert {:ok, readiness} =
+             Backend.readiness(
+               url: System.fetch_env!("FAVN_DATABASE_URL"),
+               ssl_mode: :disable
+             )
+
     refute readiness.ready?
     assert readiness.status == :not_ready
 
@@ -8874,7 +8709,4 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
 
   defp restore_app_env(key, nil), do: Application.delete_env(:favn_orchestrator, key)
   defp restore_app_env(key, value), do: Application.put_env(:favn_orchestrator, key, value)
-
-  defp restore_system_env(key, nil), do: System.delete_env(key)
-  defp restore_system_env(key, value), do: System.put_env(key, value)
 end

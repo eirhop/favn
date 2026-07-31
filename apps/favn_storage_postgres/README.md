@@ -26,6 +26,12 @@ lifecycle decisions remain in `favn_orchestrator`.
 - PostgreSQL major 18 is required.
 - Runtime nodes validate the exact schema and never migrate at boot.
 - Production requires verified TLS and a least-privilege runtime role.
+- Authentication is explicit: password deployments use the existing URL;
+  Azure deployments use managed identity through an independently supervised
+  `favn_azure` cache for every new Repo and notification connection.
+- Expected managed-identity failures fail closed through connection backoff.
+  Existing healthy sessions remain open, and Favn never retries a database
+  write whose outcome may be unknown.
 - Every tenant operation carries an explicit workspace or platform context.
 - PostgreSQL `NOTIFY` is only a wake-up optimization; durable outbox publications
   and cursors provide replay correctness.

@@ -17,6 +17,7 @@ defmodule FavnStoragePostgres.Release do
   alias FavnOrchestrator.Persistence.Error, as: PersistenceError
   alias FavnOrchestrator.Persistence.PlatformContext
   alias FavnOrchestrator.Redaction
+  alias FavnStoragePostgres.Authentication
   alias FavnStoragePostgres.Config
   alias FavnStoragePostgres.Identity.Store, as: IdentityStore
   alias FavnStoragePostgres.Privileges
@@ -555,8 +556,12 @@ defmodule FavnStoragePostgres.Release do
 
   defp with_repo(operation, function) do
     with :ok <- ensure_dependencies(operation),
-         {:ok, options} <- configured_repo_options(operation),
-         {:ok, repo_state} <- start_repo(operation, options) do
+         {:ok, connection_config} <- configured_connection_config(operation),
+         :ok <- ensure_authentication_dependencies(operation, connection_config.authentication),
+         {:ok, authentication_state} <-
+           start_authentication(operation, connection_config.authentication),
+         {:ok, repo_state} <-
+           start_repo(operation, connection_config.repo_options, authentication_state) do
       try do
         function.()
       rescue
@@ -566,6 +571,7 @@ defmodule FavnStoragePostgres.Release do
           error(operation, :operation_failed, failure_kind: kind, reason: safe_reason(reason))
       after
         stop_repo(repo_state)
+        stop_authentication(authentication_state)
       end
     end
   end
@@ -602,21 +608,28 @@ defmodule FavnStoragePostgres.Release do
     end
   end
 
-  defp configured_repo_options(operation) do
-    case Config.repo_options_from_env() do
-      {:ok, options} ->
-        {:ok, options}
+  defp configured_connection_config(operation) do
+    case Config.connection_config_from_env() do
+      {:ok, connection_config} ->
+        {:ok, connection_config}
 
       {:error, reason} ->
         error(operation, :invalid_database_configuration, reason: safe_reason(reason))
     end
   end
 
-  defp start_repo(operation, options) do
+  defp start_repo(operation, options, authentication_state) do
     case Repo.start_link(options) do
-      {:ok, pid} -> {:ok, %{pid: pid, owned?: true}}
-      {:error, {:already_started, pid}} -> {:ok, %{pid: pid, owned?: false}}
-      {:error, reason} -> database_error(operation, reason)
+      {:ok, pid} ->
+        {:ok, %{pid: pid, owned?: true}}
+
+      {:error, {:already_started, _pid}} ->
+        stop_authentication(authentication_state)
+        error(operation, :repo_already_started)
+
+      {:error, reason} ->
+        stop_authentication(authentication_state)
+        database_error(operation, reason)
     end
   end
 
@@ -624,7 +637,44 @@ defmodule FavnStoragePostgres.Release do
     if Process.alive?(pid), do: GenServer.stop(pid)
   end
 
-  defp stop_repo(%{owned?: false}), do: :ok
+  defp ensure_authentication_dependencies(operation, authentication) do
+    with {:ok, applications} <- Authentication.applications(authentication) do
+      Enum.reduce_while(applications, :ok, fn application, :ok ->
+        case Application.ensure_all_started(application) do
+          {:ok, _started} ->
+            {:cont, :ok}
+
+          {:error, {_application, _reason}} ->
+            {:halt, error(operation, :dependency_start_failed)}
+        end
+      end)
+    else
+      {:error, _reason} -> error(operation, :invalid_database_authentication_provider)
+    end
+  end
+
+  defp start_authentication(operation, authentication) do
+    with {:ok, child_specs} <- Authentication.child_specs(authentication) do
+      case child_specs do
+        [] ->
+          {:ok, %{pid: nil}}
+
+        child_specs ->
+          case Supervisor.start_link(child_specs, strategy: :one_for_one) do
+            {:ok, pid} -> {:ok, %{pid: pid}}
+            {:error, _reason} -> error(operation, :database_authentication_start_failed)
+          end
+      end
+    else
+      {:error, _reason} -> error(operation, :invalid_database_authentication_provider)
+    end
+  end
+
+  defp stop_authentication(%{pid: nil}), do: :ok
+
+  defp stop_authentication(%{pid: pid}) do
+    if Process.alive?(pid), do: Supervisor.stop(pid)
+  end
 
   defp require_elevated_role(operation) do
     %{rows: [[current_role]]} = SQL.query!(Repo, "SELECT current_user", [])

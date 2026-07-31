@@ -1,7 +1,7 @@
 defmodule FavnControlPlane.Release do
   @moduledoc false
 
-  @applications [:favn_core, :favn_storage_postgres, :favn_orchestrator, :favn_view]
+  @applications [:favn_core, :favn_azure, :favn_storage_postgres, :favn_orchestrator, :favn_view]
 
   @doc false
   @spec applications() :: [atom()]

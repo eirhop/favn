@@ -29,15 +29,39 @@ defmodule Favn.DeploymentReferenceConformanceTest do
     assert runner =~ "name: 'FAVN_RUNNER_MAX_UPTIME_MS'"
   end
 
-  test "Azure control plane has one replica and all mandatory production inputs" do
+  test "Azure control plane uses distinct managed identities and mandatory production inputs" do
     source = read("deployment/azure-container-apps/control-plane.bicep")
     resource = bicep_block(source, "resource controlPlane ")
     configuration = bicep_block(resource, "configuration:")
     template = bicep_block(resource, "template:")
     control_plane = bicep_block(template, "containers:")
     scale = bicep_block(template, "scale:")
+    operations = bicep_block(source, "resource databaseOperations ")
 
     assert source =~ "resource controlPlane 'Microsoft.App/containerApps@2026-01-01'"
+
+    assert source =~
+             "resource runtimeIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31'"
+
+    assert source =~ "name: '${name}-postgres-runtime'"
+
+    assert source =~
+             "resource migrationIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31'"
+
+    assert source =~ "name: '${name}-postgres-migration'"
+    assert resource =~ "'${runtimeIdentity.id}': {}"
+    assert control_plane =~ "value: runtimeIdentity.properties.clientId"
+
+    assert source =~ "resource databaseOperations 'Microsoft.App/jobs@2026-01-01'"
+    assert operations =~ "'${migrationIdentity.id}': {}"
+    assert operations =~ "triggerType: 'Manual'"
+    assert operations =~ "replicaRetryLimit: 0"
+    assert operations =~ "parallelism: 1"
+    assert operations =~ "replicaCompletionCount: 1"
+    assert operations =~ "'/app/bin/favn_control_plane_ops'"
+    assert operations =~ "value: migrationIdentity.properties.clientId"
+    assert operations =~ "value: migrationDatabaseUsername"
+    assert operations =~ "value: runtimeDatabaseUsername"
 
     assert source =~
              "resource easyAuth 'Microsoft.App/containerApps/authConfigs@2026-01-01'"
@@ -69,7 +93,12 @@ defmodule Favn.DeploymentReferenceConformanceTest do
 
     for variable <- [
           "FAVN_DEPLOYMENT_MODE",
-          "FAVN_DATABASE_URL",
+          "FAVN_DATABASE_AUTH_MODE",
+          "FAVN_DATABASE_HOST",
+          "FAVN_DATABASE_PORT",
+          "FAVN_DATABASE_NAME",
+          "FAVN_DATABASE_USERNAME",
+          "FAVN_AZURE_MANAGED_IDENTITY_CLIENT_ID",
           "FAVN_DATABASE_SSL_MODE",
           "FAVN_DATABASE_SSL_CA_FILE",
           "FAVN_RUNTIME_INPUT_PIN_KEYS",
@@ -92,6 +121,12 @@ defmodule Favn.DeploymentReferenceConformanceTest do
              "capacity-scaler|capacity_reader:${capacityReaderToken}"
 
     assert control_plane =~ "-proto_dist inet_tls"
+    refute source =~ "param databaseUrl"
+    refute source =~ "name: 'database-url'"
+    refute source =~ "name: 'FAVN_DATABASE_URL'"
+
+    image_contract = read("scripts/control_plane_image_contract.sh")
+    assert image_contract =~ "-name 'favn_azure-*'"
   end
 
   test "KEDA resources parse and encode exact authenticated default ScaledJob scaling" do

@@ -58,6 +58,7 @@ backend in the current BEAM through `FavnLocal.Config`.
 
 The PostgreSQL backend supervisor owns:
 
+- the selected authentication-provider lifecycle, before every database child;
 - one Ecto repo and connection pool per orchestrator node;
 - exact schema-readiness validation;
 - the durable outbox publication sequencer and notification listener;
@@ -66,6 +67,27 @@ The PostgreSQL backend supervisor owns:
 
 Runtime nodes never migrate automatically. A separate migration command runs
 with migration privileges before runtime deployment.
+
+## Connection authentication
+
+Password deployments keep the validated URL path. Azure deployments provide an
+explicit host, port, database, PostgreSQL role, and managed-identity selection;
+they contain no database password or token in application configuration.
+
+Repo pool members and the Postgrex notification listener share one
+storage-owned per-connect callback. It asks `favn_azure` for a token that remains
+valid beyond the bounded connection margin and injects the token only into that
+physical connection attempt. Concurrent callers share the provider's bounded
+single-flight cache. Replacement connections obtain a new token; healthy
+sessions are not recycled merely because their original login token expires.
+
+The pinned DBConnection/Postgrex callback API cannot return an error tuple.
+Expected provider failures are therefore recorded as redacted classifications
+and translated to a generated non-secret rejected credential. Postgrex returns
+the resulting authentication failure through its ordinary reconnect backoff.
+Programmer defects still raise. Azure mode explicitly suppresses Postgrex's
+ambient `PGPASSWORD` fallback, and diagnostics contain only the mode, lifecycle
+state, safe counters/classes, and pool/TLS bounds.
 
 ## Write path
 

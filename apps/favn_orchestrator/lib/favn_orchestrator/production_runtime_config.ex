@@ -207,8 +207,9 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
       status: :ok,
       deployment_mode: config.deployment_mode,
       instance: %{configured?: true},
-      storage: %{backend: :postgres, database: %{configured?: true, url: :redacted}},
+      storage: %{backend: :postgres, database: %{configured?: true, endpoint: :redacted}},
       postgres: %{
+        authentication_mode: database_authentication_mode(config.postgres),
         ssl_mode: Keyword.fetch!(config.postgres, :ssl_mode),
         pool_size: Keyword.fetch!(config.postgres, :pool_size),
         timeout_ms: Keyword.fetch!(config.postgres, :timeout),
@@ -245,10 +246,15 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
   @spec postgres_backend() :: module()
   def postgres_backend, do: @postgres_backend
 
+  defp database_authentication_mode(postgres) do
+    case Keyword.get(postgres, :authentication, :password) do
+      :password -> :password
+      {:dynamic, _provider, _options} -> :azure_managed_identity
+    end
+  end
+
   defp postgres(env, deployment_mode) do
-    with {:ok, url} <- required_secret(env, "FAVN_DATABASE_URL"),
-         :ok <- postgres_url("FAVN_DATABASE_URL", url),
-         :ok <- deployment_database_url(url, deployment_mode),
+    with {:ok, connection_options} <- postgres_connection(env, deployment_mode),
          {:ok, tls_options} <- postgres_tls(env, deployment_mode),
          {:ok, pool_size} <- int(env, "FAVN_DATABASE_POOL_SIZE", "15", 1, @max_postgres_pool_size),
          {:ok, queue_target} <-
@@ -260,15 +266,102 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
          {:ok, runtime_input_pin} <- KeyringConfig.from_env(env) do
       {:ok,
        {
-         [
-           url: url,
-           pool_size: pool_size,
-           queue_target: queue_target,
-           queue_interval: queue_interval,
-           timeout: timeout
-         ] ++ tls_options,
+         connection_options ++
+           [
+             pool_size: pool_size,
+             queue_target: queue_target,
+             queue_interval: queue_interval,
+             timeout: timeout
+           ] ++ tls_options,
          runtime_input_pin
        }}
+    end
+  end
+
+  defp postgres_connection(env, deployment_mode) do
+    case Map.get(env, "FAVN_DATABASE_AUTH_MODE", "password") do
+      "password" -> password_postgres_connection(env, deployment_mode)
+      "azure_managed_identity" -> azure_postgres_connection(env)
+      _invalid -> {:error, {:invalid_env, "FAVN_DATABASE_AUTH_MODE", "supported mode"}}
+    end
+  end
+
+  defp password_postgres_connection(env, deployment_mode) do
+    with :ok <- reject_present(env, azure_database_environment_names()),
+         {:ok, url} <- required_secret(env, "FAVN_DATABASE_URL"),
+         :ok <- postgres_url("FAVN_DATABASE_URL", url),
+         :ok <- deployment_database_url(url, deployment_mode) do
+      {:ok, [authentication: :password, url: url]}
+    end
+  end
+
+  defp azure_postgres_connection(env) do
+    with :ok <- reject_present(env, ["FAVN_DATABASE_URL"]),
+         {:ok, hostname} <- required(env, "FAVN_DATABASE_HOST"),
+         :ok <- postgres_hostname(hostname),
+         {:ok, port} <- int(env, "FAVN_DATABASE_PORT", "5432", 1, 65_535),
+         {:ok, database} <- required(env, "FAVN_DATABASE_NAME"),
+         :ok <- postgres_component("FAVN_DATABASE_NAME", database),
+         {:ok, username} <- required(env, "FAVN_DATABASE_USERNAME"),
+         :ok <- postgres_component("FAVN_DATABASE_USERNAME", username),
+         {:ok, client_id} <- optional_client_id(env) do
+      provider = Module.concat([Favn, Azure, ControlPlanePostgresAuth])
+      provider_options = if client_id, do: [client_id: client_id], else: []
+
+      {:ok,
+       [
+         authentication: {:dynamic, provider, provider_options},
+         hostname: hostname,
+         port: port,
+         database: database,
+         username: username
+       ]}
+    end
+  end
+
+  defp optional_client_id(env) do
+    case fetch(env, "FAVN_AZURE_MANAGED_IDENTITY_CLIENT_ID") do
+      :error ->
+        {:ok, nil}
+
+      {:ok, client_id} ->
+        if Regex.match?(
+             ~r/\A[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\z/,
+             client_id
+           ) do
+          {:ok, client_id}
+        else
+          {:error, {:invalid_env, "FAVN_AZURE_MANAGED_IDENTITY_CLIENT_ID", "UUID"}}
+        end
+    end
+  end
+
+  defp postgres_hostname(hostname) do
+    if byte_size(hostname) <= 253 and not String.contains?(hostname, ["/", ":", " "]),
+      do: :ok,
+      else: {:error, {:invalid_env, "FAVN_DATABASE_HOST", "database hostname"}}
+  end
+
+  defp postgres_component(name, value) do
+    if byte_size(value) <= 255 and not String.contains?(value, ["/", "\0"]),
+      do: :ok,
+      else: {:error, {:invalid_env, name, "non-empty PostgreSQL identifier"}}
+  end
+
+  defp azure_database_environment_names do
+    [
+      "FAVN_DATABASE_HOST",
+      "FAVN_DATABASE_PORT",
+      "FAVN_DATABASE_NAME",
+      "FAVN_DATABASE_USERNAME",
+      "FAVN_AZURE_MANAGED_IDENTITY_CLIENT_ID"
+    ]
+  end
+
+  defp reject_present(env, names) do
+    case Enum.find(names, &Map.has_key?(env, &1)) do
+      nil -> :ok
+      name -> {:error, {:invalid_env, name, "not valid for selected database auth mode"}}
     end
   end
 

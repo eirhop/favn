@@ -12,6 +12,7 @@ defmodule FavnStoragePostgres.Backend do
   alias FavnOrchestrator.Persistence.Error
   alias FavnOrchestrator.Persistence.Readiness
   alias FavnOrchestrator.Persistence.Stores
+  alias FavnStoragePostgres.Authentication
   alias FavnStoragePostgres.BackendSupervisor
   alias FavnStoragePostgres.Config
   alias FavnStoragePostgres.ErrorMapper
@@ -22,10 +23,19 @@ defmodule FavnStoragePostgres.Backend do
 
   @impl true
   def child_specs(options) when is_list(options) do
-    with {:ok, repo_options} <- Config.repo_options(options),
+    with {:ok, connection_config} <- Config.connection_config(options),
+         {:ok, _applications} <- Authentication.applications(connection_config.authentication),
+         {:ok, provider_children} <-
+           Authentication.child_specs(connection_config.authentication),
          :ok <- Stores.validate(stores()),
          {:ok, {_version, _key}} <- RuntimeInputKeys.current() do
-      {:ok, [Supervisor.child_spec({BackendSupervisor, repo_options}, id: BackendSupervisor)]}
+      {:ok,
+       [
+         Supervisor.child_spec(
+           {BackendSupervisor, {connection_config, provider_children}},
+           id: BackendSupervisor
+         )
+       ]}
     else
       {:error, reason} -> {:error, configuration_error(reason)}
     end
@@ -56,26 +66,29 @@ defmodule FavnStoragePostgres.Backend do
   end
 
   @impl true
-  def readiness(_options) do
-    case Migrations.diagnostics(Repo) do
-      {:ok, diagnostics} ->
-        runtime_input_keys = runtime_input_key_diagnostics(diagnostics)
-        ready? = diagnostics.ready? and runtime_input_keys.ready?
+  def readiness(options) do
+    with {:ok, connection_config} <- Config.connection_config(options),
+         authentication <- Authentication.status(connection_config.authentication),
+         true <- Map.get(authentication, :lifecycle_ready?, false),
+         {:ok, diagnostics} <- Migrations.diagnostics(Repo) do
+      runtime_input_keys = runtime_input_key_diagnostics(diagnostics)
+      ready? = diagnostics.ready? and runtime_input_keys.ready?
 
-        {:ok,
-         %Readiness{
-           status: if(ready?, do: :ready, else: readiness_status(diagnostics)),
-           ready?: ready?,
-           backend: __MODULE__,
-           checks: %{
-             engine: diagnostics.engine,
-             schema: schema_summary(diagnostics),
-             runtime_input_keys: runtime_input_keys
-           }
-         }}
-
-      {:error, reason} ->
-        {:error, ErrorMapper.map(reason)}
+      {:ok,
+       %Readiness{
+         status: if(ready?, do: :ready, else: readiness_status(diagnostics)),
+         ready?: ready?,
+         backend: __MODULE__,
+         checks: %{
+           engine: diagnostics.engine,
+           authentication: authentication,
+           schema: schema_summary(diagnostics),
+           runtime_input_keys: runtime_input_keys
+         }
+       }}
+    else
+      false -> {:error, ErrorMapper.map(:database_authentication_lifecycle_unavailable)}
+      {:error, reason} -> {:error, ErrorMapper.map(reason)}
     end
   rescue
     error -> {:error, ErrorMapper.map(error)}
@@ -83,7 +96,7 @@ defmodule FavnStoragePostgres.Backend do
 
   @impl true
   def diagnostics(options) when is_list(options) do
-    with {:ok, repo_options} <- Config.repo_options(options),
+    with {:ok, connection_config} <- Config.connection_config(options),
          {:ok, schema} <- Migrations.diagnostics(Repo) do
       runtime_input_keys = runtime_input_key_diagnostics(schema)
 
@@ -92,7 +105,7 @@ defmodule FavnStoragePostgres.Backend do
          backend: __MODULE__,
          engine: schema.engine,
          schema: schema_summary(schema),
-         pool: Config.redacted(repo_options),
+         pool: Config.redacted(connection_config.repo_options),
          features: %{
            workspaces: true,
            multi_node_fencing: true,
@@ -101,6 +114,7 @@ defmodule FavnStoragePostgres.Backend do
            encrypted_runtime_inputs: true
          },
          metadata: %{
+           authentication: Authentication.status(connection_config.authentication),
            runtime_input_keys: runtime_input_keys,
            manifest_cache: ManifestCache.diagnostics()
          }

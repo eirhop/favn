@@ -26,6 +26,21 @@ the same pinned Key Vault secret version); otherwise KEDA demand reads fail
 closed. `runnerPools` is the JSON lifecycle-policy map and must contain every
 pool deployed as a runner job.
 
+The control-plane template uses Azure Database for PostgreSQL managed identity.
+It creates two deterministic, distinct user-assigned identities and derives each
+client ID from the resource it assigns:
+
+- `${name}-postgres-runtime` is assigned only to the long-running control plane
+  and maps to `runtimeDatabaseUsername`;
+- `${name}-postgres-migration` is assigned only to the manual
+  database-operations job and maps to `migrationDatabaseUsername`.
+
+Use different identity resources and PostgreSQL roles. The template contains no
+database URL/password secret. It still mounts the database CA for verified TLS.
+The manual job invokes only an allowlisted `favn_control_plane_ops` operation;
+deploy or override `databaseOperation` for the exact controlled operation being
+performed.
+
 The web proxy settings are generic and must match the actual ingress behavior:
 
 ```text

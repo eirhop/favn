@@ -116,9 +116,9 @@ defimpl Inspect, for: Favn.Azure.Credentials.Request do
       "#Favn.Azure.Credentials.Request<",
       to_doc(
         [
-          resource: request.resource,
+          resource: :redacted,
           provider: request.provider,
-          client_id: request.client_id,
+          identity: if(request.client_id, do: :user_assigned, else: :default),
           endpoint: request.endpoint
         ],
         opts
