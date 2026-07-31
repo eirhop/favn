@@ -77,6 +77,7 @@ services:
       - security-database
 
   security-browser:
+    image: favn-security-probe:${FAVN_IMAGE_TAG}
     build:
       context: ./security
       dockerfile: Dockerfile
@@ -111,9 +112,7 @@ services:
     restart: "no"
 
   security-api:
-    build:
-      context: ./security
-      dockerfile: Dockerfile
+    image: favn-security-probe:${FAVN_IMAGE_TAG}
     command: ["node", "/security/api-security.mjs"]
     environment:
       FAVN_SECURITY_API_URL: http://control-plane:4101

@@ -1,5 +1,6 @@
 services:
   certificates:
+    image: favn-qualification-certificates:${FAVN_IMAGE_TAG}
     build:
       context: .
       dockerfile: certificates.Dockerfile
@@ -10,6 +11,7 @@ services:
     restart: "no"
 
   postgres:
+    image: favn-qualification-postgres:${FAVN_IMAGE_TAG}
     build:
       context: .
       dockerfile: postgres.Dockerfile

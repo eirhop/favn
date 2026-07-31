@@ -165,11 +165,14 @@ defmodule Favn.DeploymentReferenceConformanceTest do
     services = compose["services"]
 
     postgres = services["postgres"]
+    certificates = services["certificates"]
     control_plane = services["control-plane"]
     runner = services["runner"]
     scaler_service = services["scaler"]
     qualification_service = services["qualification"]
 
+    assert certificates["image"] == "favn-qualification-certificates:${FAVN_IMAGE_TAG}"
+    assert postgres["image"] == "favn-qualification-postgres:${FAVN_IMAGE_TAG}"
     assert "ssl=on" in postgres["command"]
     assert postgres["healthcheck"]["test"] |> List.last() =~ "sslmode=verify-full"
     assert get_in(services, ["database-migrate", "command"]) == ["migrate"]
@@ -303,6 +306,99 @@ defmodule Favn.DeploymentReferenceConformanceTest do
     status = read("deployment/docker-compose/qualification-status.sh")
     assert status =~ "controller.log"
     assert status =~ "final-validation.json"
+  end
+
+  test "Compose qualification reuses revision images and excludes generated state" do
+    prepare = read("deployment/docker-compose/prepare.sh")
+    assert prepare =~ "FAVN_IMAGE_BUILD_PROJECT_NAME"
+    assert prepare =~ "FAVN_IMAGE_BUILDER_NAME"
+    assert prepare =~ "git -C \"$repository_root\" show -s --format=%cI"
+    assert prepare =~ "Docker qualification requires a clean checkout"
+    assert prepare =~ "dirty diagnostic builds require an explicit unique FAVN_IMAGE_TAG"
+    assert prepare =~ "favn-compose-runner:$FAVN_SOURCE_REVISION:$FAVN_IMAGE_TAG"
+    assert prepare =~ "sha256sum"
+
+    security_compose = read("deployment/docker-compose/compose.security.yml")
+
+    assert length(
+             Regex.scan(~r/image: favn-security-probe:\$\{FAVN_IMAGE_TAG\}/, security_compose)
+           ) ==
+             2
+
+    assert length(Regex.scan(~r/context: \.\/security/, security_compose)) == 1
+
+    for path <- [
+          "deployment/docker-compose/run-simulation.sh",
+          "deployment/docker-compose/run-trusted-proxy-security.sh",
+          "deployment/docker-compose/run-security-qualification.sh"
+        ] do
+      runner = read(path)
+      assert runner =~ "--project-name \"$image_build_project_name\""
+      assert runner =~ "verify-image-source.sh"
+      assert runner =~ "ensure-image-builder.sh"
+      assert runner =~ "--builder \"$image_builder_name\""
+      assert runner =~ "--provenance=false"
+    end
+
+    security_runner = read("deployment/docker-compose/run-security-qualification.sh")
+    assert security_runner =~ "certificates postgres control-plane security-browser"
+    refute security_runner =~ "control-plane security-browser security-api"
+
+    for path <- [
+          "rel/control_plane/Dockerfile.dockerignore",
+          "deployment/docker-compose/customer.Dockerfile.dockerignore"
+        ] do
+      dockerignore = read(path)
+      assert dockerignore =~ "deployment/docker-compose/security/secrets"
+      assert dockerignore =~ "deployment/docker-compose/security-results"
+    end
+
+    assert read("deployment/docker-compose/security/Dockerfile.dockerignore") ==
+             "**\n!package.json\n!package-lock.json\n"
+
+    local_context_ignore = read("deployment/docker-compose/.dockerignore")
+
+    for source <- [
+          "generate-certificates.sh",
+          "postgres-entrypoint.sh",
+          "scale-runners.sh",
+          "qualify-postgres.sh",
+          "qualification-observe.sql",
+          "qualification-outcomes.sql"
+        ] do
+      assert local_context_ignore =~ "!#{source}"
+    end
+
+    buildkit_config = read("deployment/docker-compose/buildkitd.toml")
+    assert buildkit_config =~ ~s(maxUsedSpace = "12GB")
+    assert buildkit_config =~ ~s(minFreeSpace = "20GB")
+
+    builder = read("deployment/docker-compose/ensure-image-builder.sh")
+    assert builder =~ "--driver docker-container"
+    assert builder =~ "--driver-opt default-load=true"
+    assert builder =~ "--buildkitd-config"
+    assert builder =~ "maxUsedSpace = '12GB'"
+    assert builder =~ "minFreeSpace = '20GB'"
+
+    source_verifier = read("deployment/docker-compose/verify-image-source.sh")
+    assert source_verifier =~ "prepared image revision does not match the checked-out HEAD"
+    assert source_verifier =~ "qualification images require the unchanged clean revision"
+    assert source_verifier =~ "dirty qualification requires a unique diagnostic image tag"
+
+    image_pruner = read("deployment/docker-compose/prune-qualification-images.sh")
+    assert image_pruner =~ "^pr565-[0-9a-f]{12}$"
+    assert image_pruner =~ "^diagnostic-[0-9a-f]{12}-[0-9]{14}-[0-9]+$"
+    assert image_pruner =~ "protected_clean_tag"
+    assert image_pruner =~ ~s([ "$retained_clean_tags" -le 3 ])
+    refute image_pruner =~ "docker image prune"
+
+    cleanup = read("deployment/docker-compose/cleanup.sh")
+    assert cleanup =~ "--rmi local"
+    assert cleanup =~ "prune-qualification-images.sh"
+
+    security_runner = read("deployment/docker-compose/run-security-qualification.sh")
+    assert security_runner =~ "FAVN_IMAGE_TAG=\"diagnostic-$short_revision-$run_suffix\""
+    assert security_runner =~ "prune-qualification-images.sh"
   end
 
   test "provider names and SDKs stay outside Favn core" do
