@@ -47,7 +47,7 @@ defmodule FavnStoragePostgres.StorageV2.ManagedIdentityConnectionTest do
       )
       |> Keyword.put(:show_sensitive_data_on_connection_error, false)
 
-    refute inspect(options) =~ password
+    assert Keyword.fetch!(options, :password) == nil
 
     pool = start_supervised!({Postgrex, options})
 
