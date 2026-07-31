@@ -41,8 +41,18 @@ sh ./run-simulation.sh
 ```
 
 `prepare.sh` uses a short-lived Alpine container to create `.env.local` with
-disposable random credentials, one runner release ID, and build metadata. It
-refuses to overwrite that file unless `--force` is explicit.
+disposable random credentials. The image tag, runner release ID, image-build
+project, and build timestamp are deterministic for the checked-out revision, so
+repeating the drill does not create another set of images or invalidate compiled
+layers. It refuses dirty checkouts and refuses to overwrite the file unless
+`--force` is explicit.
+
+The build runs through the dedicated `favn-qualification-v1` Buildx builder.
+Its cache is reusable but capped at 12 GB and configured to preserve at least
+20 GB of free disk space. This keeps qualification cache policy separate from
+Docker's shared default builder. The wrappers disable default provenance
+attestations through the Compose flag when available and the equivalent Buildx
+environment setting on older Compose releases.
 
 `run-simulation.sh` then:
 
@@ -129,8 +139,10 @@ harness; never deploy this scaler as a production service.
 For debugging, the same phases can be invoked separately:
 
 ```sh
-docker compose --env-file .env.local --project-name favn-elastic-simulation -f compose.yml \
-  build certificates postgres control-plane operator runner scaler
+sh ./ensure-image-builder.sh favn-qualification-v1
+docker compose --env-file .env.local --project-name favn-qualification-images -f compose.yml \
+  build --builder favn-qualification-v1 --provenance=false \
+  certificates postgres control-plane operator runner scaler
 docker compose --env-file .env.local --project-name favn-elastic-simulation -f compose.yml up certificates
 docker compose --env-file .env.local --project-name favn-elastic-simulation -f compose.yml up -d postgres
 docker compose --env-file .env.local --project-name favn-elastic-simulation -f compose.yml run --rm database-migrate
@@ -168,9 +180,15 @@ sh ./cleanup.sh
 rm -- .env.local
 ```
 
-`cleanup.sh` removes only the explicitly named Compose project's containers,
-network, PostgreSQL data volume, and generated-certificate volume. The
-credential file is removed separately so deletion remains visible.
+`cleanup.sh` removes the explicitly named Compose project's containers, network,
+PostgreSQL data volume, generated-certificate volume, diagnostic images, and
+obsolete revision-addressed qualification tags. Images for the current clean
+revision and the three newest clean revisions per repository remain available
+for reuse and concurrent runs. The credential file is removed separately so
+deletion remains visible.
+
+The harness never prunes Docker's shared default builder or unrelated images.
+The dedicated builder applies its own bounded garbage collection automatically.
 
 ## Sustained PostgreSQL qualification
 

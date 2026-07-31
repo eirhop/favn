@@ -34,7 +34,9 @@ docker compose \
   down \
   --timeout "${FAVN_COMPOSE_STOP_TIMEOUT_SECONDS:-10}" \
   --volumes \
-  --remove-orphans
+  --remove-orphans \
+  --rmi local
 
+sh "$script_dir/prune-qualification-images.sh" "$env_file"
 rm -f "$script_dir/.qualification-active"
-echo "removed the $project_name containers, network, PostgreSQL data, and certificate volumes"
+echo "removed the $project_name containers, network, volumes, and obsolete qualification images"

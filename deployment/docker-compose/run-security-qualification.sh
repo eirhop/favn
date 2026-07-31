@@ -21,8 +21,9 @@ cleanup() {
   if command -v compose >/dev/null 2>&1; then
     compose --profile security --profile proxy-security down \
       --timeout "${FAVN_COMPOSE_STOP_TIMEOUT_SECONDS:-10}" \
-      --volumes --remove-orphans >/dev/null 2>&1 || true
+      --volumes --remove-orphans --rmi local >/dev/null 2>&1 || true
   fi
+  sh "$script_dir/prune-qualification-images.sh" "$env_file" || true
   rm -f "$admin_password_file" "$env_file"
 }
 
@@ -58,6 +59,10 @@ run_suffix="$(date -u +%Y%m%d%H%M%S)-$$"
 export FAVN_COMPOSE_PROJECT_NAME="favn-security-$short_revision-$run_suffix"
 export FAVN_SOURCE_REVISION="$source_revision"
 export FAVN_SECURITY_SOURCE_STATE="$source_state"
+if [ "$source_state" = "dirty_diagnostic" ]; then
+  export FAVN_QUALIFICATION_ALLOW_DIRTY=1
+  export FAVN_IMAGE_TAG="diagnostic-$short_revision-$run_suffix"
+fi
 
 sh "$script_dir/prepare.sh"
 owns_generated_state=1
@@ -66,13 +71,23 @@ project_name=$(
   sed -n 's/^FAVN_COMPOSE_PROJECT_NAME=//p' "$env_file" |
     head -n 1
 )
+image_build_project_name=$(
+  sed -n 's/^FAVN_IMAGE_BUILD_PROJECT_NAME=//p' "$env_file" |
+    head -n 1
+)
+image_builder_name=$(
+  sed -n 's/^FAVN_IMAGE_BUILDER_NAME=//p' "$env_file" |
+    head -n 1
+)
 
-case "$project_name" in
-  ""|*[!a-z0-9_-]*)
-    echo "refusing to use an invalid Compose project name" >&2
-    exit 1
-    ;;
-esac
+for name in "$project_name" "$image_build_project_name" "$image_builder_name"; do
+  case "$name" in
+    ""|*[!a-z0-9_-]*)
+      echo "refusing to use an invalid Compose project name" >&2
+      exit 1
+      ;;
+  esac
+done
 
 compose() {
   docker compose \
@@ -81,6 +96,26 @@ compose() {
     --file "$compose_file" \
     --file "$security_compose_file" \
     "$@"
+}
+
+build_compose() {
+  docker compose \
+    --env-file "$env_file" \
+    --project-name "$image_build_project_name" \
+    --file "$compose_file" \
+    --file "$security_compose_file" \
+    --profile security \
+    --profile proxy-security \
+    "$@"
+}
+
+build_images() {
+  if build_compose build --help 2>/dev/null | grep -q -- '--provenance'; then
+    build_compose build --builder "$image_builder_name" --provenance=false "$@"
+  else
+    export BUILDX_NO_DEFAULT_ATTESTATIONS=1
+    build_compose build --builder "$image_builder_name" "$@"
+  fi
 }
 
 record() {
@@ -179,8 +214,9 @@ MSYS_NO_PATHCONV=1 docker run --rm \
   '
 
 compose config --quiet
-compose --profile security --profile proxy-security build \
-  certificates postgres control-plane security-browser security-api
+sh "$script_dir/verify-image-source.sh" "$env_file" "$source_state"
+sh "$script_dir/ensure-image-builder.sh" "$image_builder_name"
+build_images certificates postgres control-plane security-browser
 
 compose up certificates
 compose up --detach postgres

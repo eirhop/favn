@@ -13,11 +13,23 @@ project_name=$(
   sed -n 's/^FAVN_COMPOSE_PROJECT_NAME=//p' "$env_file" |
     head -n 1
 )
+image_build_project_name=$(
+  sed -n 's/^FAVN_IMAGE_BUILD_PROJECT_NAME=//p' "$env_file" |
+    head -n 1
+)
+image_builder_name=$(
+  sed -n 's/^FAVN_IMAGE_BUILDER_NAME=//p' "$env_file" |
+    head -n 1
+)
 
-if [ -z "$project_name" ]; then
-  echo "FAVN_COMPOSE_PROJECT_NAME is missing from $env_file" >&2
-  exit 1
-fi
+for name in "$project_name" "$image_build_project_name" "$image_builder_name"; do
+  case "$name" in
+    ""|*[!a-z0-9_-]*)
+      echo "refusing to use an invalid Compose project name" >&2
+      exit 1
+      ;;
+  esac
+done
 
 compose() {
   docker compose \
@@ -25,6 +37,23 @@ compose() {
     --project-name "$project_name" \
     --file "$compose_file" \
     "$@"
+}
+
+build_compose() {
+  docker compose \
+    --env-file "$env_file" \
+    --project-name "$image_build_project_name" \
+    --file "$compose_file" \
+    "$@"
+}
+
+build_images() {
+  if build_compose build --help 2>/dev/null | grep -q -- '--provenance'; then
+    build_compose build --builder "$image_builder_name" --provenance=false "$@"
+  else
+    export BUILDX_NO_DEFAULT_ATTESTATIONS=1
+    build_compose build --builder "$image_builder_name" "$@"
+  fi
 }
 
 is_container_id() {
@@ -88,8 +117,10 @@ fi
 
 docker version >/dev/null
 mkdir -p "$script_dir/simulation-results"
+sh "$script_dir/verify-image-source.sh" "$env_file" clean
+sh "$script_dir/ensure-image-builder.sh" "$image_builder_name"
 
-compose build certificates postgres control-plane operator runner scaler
+build_images certificates postgres control-plane operator runner scaler
 compose up certificates
 compose up --detach postgres
 wait_healthy postgres

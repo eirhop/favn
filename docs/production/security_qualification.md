@@ -65,11 +65,15 @@ From a clean checkout on a Linux Docker host:
 sh deployment/docker-compose/run-security-qualification.sh
 ```
 
-The command builds the actual release image, creates disposable credentials and
-PostgreSQL data, applies migrations and runtime grants, provisions a workspace,
-bootstraps a disposable administrator from a mounted secret file, then runs the
-proxy, API, and Playwright/axe probes. It removes containers, networks, and
-volumes on exit unless `FAVN_SECURITY_KEEP_STACK=1` is set for diagnosis.
+The command builds revision-addressed release and probe images, creates
+disposable credentials and PostgreSQL data, applies migrations and runtime
+grants, provisions a workspace, bootstraps a disposable administrator from a
+mounted secret file, then runs the proxy, API, and Playwright/axe probes. A
+repeat run of the same revision reuses those images and compiled layers. It
+uses a dedicated Buildx builder whose cache is capped at 12 GB. On exit it
+removes containers, networks, volumes, diagnostic images, and obsolete clean
+revision tags unless `FAVN_SECURITY_KEEP_STACK=1` is set for diagnosis. Images
+for the current and three newest clean revisions per repository remain reusable.
 
 Redacted JSONL assertion evidence and the final verdict are written under
 `deployment/docker-compose/security-results/`. That directory and all generated
@@ -87,7 +91,8 @@ passes. A duplicate assertion, tool crash, missing route, unreachable
 dependency, incomplete evidence file, or unknown test outcome is a failure, not
 a skipped check. A reusable verdict requires a clean checkout whose `HEAD`
 matches the recorded source revision. Dirty runs require
-`FAVN_SECURITY_ALLOW_DIRTY=1` and produce only `diagnostic_pass`.
+`FAVN_SECURITY_ALLOW_DIRTY=1`, use a unique non-reusable diagnostic image tag,
+and produce only `diagnostic_pass`.
 
 Before writing a verdict, the harness scans the retained result tree for every
 generated password, token, cookie, and key from the disposable Compose

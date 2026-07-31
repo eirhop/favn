@@ -13,13 +13,23 @@ project_name=$(
   sed -n 's/^FAVN_COMPOSE_PROJECT_NAME=//p' "$env_file" |
     head -n 1
 )
+image_build_project_name=$(
+  sed -n 's/^FAVN_IMAGE_BUILD_PROJECT_NAME=//p' "$env_file" |
+    head -n 1
+)
+image_builder_name=$(
+  sed -n 's/^FAVN_IMAGE_BUILDER_NAME=//p' "$env_file" |
+    head -n 1
+)
 
-case "$project_name" in
-  ""|*[!a-z0-9_-]*)
-    echo "refusing to use an invalid Compose project name" >&2
-    exit 1
-    ;;
-esac
+for name in "$project_name" "$image_build_project_name" "$image_builder_name"; do
+  case "$name" in
+    ""|*[!a-z0-9_-]*)
+      echo "refusing to use an invalid Compose project name" >&2
+      exit 1
+      ;;
+  esac
+done
 
 compose() {
   docker compose \
@@ -28,6 +38,24 @@ compose() {
     --file "$compose_file" \
     --profile proxy-security \
     "$@"
+}
+
+build_compose() {
+  docker compose \
+    --env-file "$env_file" \
+    --project-name "$image_build_project_name" \
+    --file "$compose_file" \
+    --profile proxy-security \
+    "$@"
+}
+
+build_images() {
+  if build_compose build --help 2>/dev/null | grep -q -- '--provenance'; then
+    build_compose build --builder "$image_builder_name" --provenance=false "$@"
+  else
+    export BUILDX_NO_DEFAULT_ATTESTATIONS=1
+    build_compose build --builder "$image_builder_name" "$@"
+  fi
 }
 
 existing=$(compose ps --all --quiet)
@@ -40,7 +68,9 @@ docker version >/dev/null
 mkdir -p "$script_dir/proxy-security-results"
 
 compose pull https-proxy proxy-header-receiver proxy-security
-compose build certificates postgres control-plane
+sh "$script_dir/verify-image-source.sh" "$env_file" clean
+sh "$script_dir/ensure-image-builder.sh" "$image_builder_name"
+build_images certificates postgres control-plane
 compose up certificates
 compose up --detach postgres
 

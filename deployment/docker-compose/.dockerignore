@@ -1,0 +1,10 @@
+**
+!certificates.Dockerfile
+!generate-certificates.sh
+!postgres.Dockerfile
+!postgres-entrypoint.sh
+!scaler.Dockerfile
+!scale-runners.sh
+!qualify-postgres.sh
+!qualification-observe.sql
+!qualification-outcomes.sql

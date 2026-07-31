@@ -8,4 +8,11 @@
 **/cover
 **/doc
 **/test
+deployment/docker-compose/.qualification-active
+deployment/docker-compose/qualification-results
+deployment/docker-compose/proxy-security-results
+deployment/docker-compose/security-results
+deployment/docker-compose/security-run-logs
+deployment/docker-compose/security/secrets
+deployment/docker-compose/simulation-results
 erl_crash.dump
