@@ -6,6 +6,7 @@ defmodule FavnView.AssetCatalogueLive do
   alias FavnView.AssetCatalogueFilters
   alias FavnView.AssetRoute
   alias FavnView.Components.AssetCataloguePage
+  alias FavnView.OperatorErrorLabels
 
   @default_filters %{search: "", connection: "all", catalogue: "all"}
   @valid_modes ~w(list lineage)
@@ -268,7 +269,7 @@ defmodule FavnView.AssetCatalogueLive do
         {Enum.map(entries, &asset_from_entry/1), nil}
 
       {:error, reason} ->
-        {[], reason}
+        {[], OperatorErrorLabels.collection_load(reason)}
     end
   end
 

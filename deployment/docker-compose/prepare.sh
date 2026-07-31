@@ -23,10 +23,11 @@ umask 077
 trap 'rm -f "$temporary_path"' EXIT HUP INT TERM
 
 docker run --rm \
+  --env FAVN_COMPOSE_PROJECT_NAME="${FAVN_COMPOSE_PROJECT_NAME:-favn-elastic-simulation}" \
   --env FAVN_SOURCE_REVISION="$source_revision" \
   --env FAVN_SHORT_REVISION="$short_revision" \
   --env FAVN_BUILD_TIMESTAMP="$build_timestamp" \
-  alpine:3.22 \
+  alpine:3.22@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce \
   sh -eu -c '
     random_hex() {
       head -c "$1" /dev/urandom | od -An -tx1 | tr -d " \n"
@@ -39,7 +40,7 @@ docker run --rm \
     pin_key=$(random_base64 32)
 
     printf "%s\n" \
-      "FAVN_COMPOSE_PROJECT_NAME=favn-elastic-simulation" \
+      "FAVN_COMPOSE_PROJECT_NAME=$FAVN_COMPOSE_PROJECT_NAME" \
       "FAVN_IMAGE_TAG=pr565-$FAVN_SHORT_REVISION" \
       "FAVN_SOURCE_REVISION=$FAVN_SOURCE_REVISION" \
       "FAVN_BUILD_TIMESTAMP=$FAVN_BUILD_TIMESTAMP" \

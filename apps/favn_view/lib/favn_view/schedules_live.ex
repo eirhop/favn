@@ -81,7 +81,7 @@ defmodule FavnView.SchedulesLive do
   defp load_entries(operator_context, filters) do
     case page_schedule_list_entries(operator_context, orchestrator_filters(filters)) do
       {:ok, %{items: entries}} -> {Enum.map(entries, &schedule_from_public/1), nil}
-      {:error, reason} -> {[], OperatorErrorLabels.load(reason)}
+      {:error, reason} -> {[], OperatorErrorLabels.collection_load(reason)}
     end
   end
 

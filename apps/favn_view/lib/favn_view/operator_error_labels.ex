@@ -17,8 +17,17 @@ defmodule FavnView.OperatorErrorLabels do
   @type failure :: %{label: String.t(), retryable?: boolean()}
 
   @doc "Returns a safe label for catalogue and detail load failures."
-  @spec load(reason()) :: String.t() | atom()
+  @spec load(reason()) :: String.t() | :not_found
   def load(reason), do: :load |> FavnOrchestrator.operator_error(reason) |> load_label()
+
+  @doc "Returns a string-safe label for collection pages."
+  @spec collection_load(reason()) :: String.t()
+  def collection_load(reason) do
+    case load(reason) do
+      :not_found -> "No active manifest is available."
+      label when is_binary(label) -> label
+    end
+  end
 
   @doc "Returns a safe label for schedule occurrence preview failures."
   @spec schedule_occurrences(reason()) :: String.t()

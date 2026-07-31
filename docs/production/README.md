@@ -15,7 +15,8 @@ UI completion, managed-provider evidence, and data-plane recovery.
 | Lifecycle, readiness, bounded drain | Implemented | Owning-layer tests cover policy; real signal, cancellation, and recovery drills remain target-environment evidence. |
 | Control-plane release image | Implemented | CI directly builds, scans, attests, and publishes green commit images. |
 | Customer runner and manifest releases | Implemented boundary | Customer CI and target-environment execution and upgrade/rollback drills remain. |
-| Operator UI | Security/admin baseline implemented | Complete visual discovery separately; add the browser/accessibility release gate in #579. |
+| Operator UI | Security/admin baseline and HTTP browser smoke gate implemented | Complete #579's role/workspace/Entra matrix plus manual keyboard, screen-reader, visual, and target-Azure qualification. |
+| Security qualification | HTTP-boundary phase implemented | Complete #578's runner, PostgreSQL, abuse-pressure, artifact/secret, and final release-gate phases. |
 | DuckDB/DuckLake data plane | Prototype | Define and verify backup, recovery, cancellation, and failure behavior. |
 | Multi-node control-plane coordination | Implemented foundation | Deferred; package and prove it before claiming application-node failover. |
 
@@ -39,6 +40,8 @@ never manages containers or durable database data.
    controls, and browser acceptance path.
 5. [Prove PostgreSQL operation on the target managed service](https://github.com/eirhop/favn/issues/523), including restore,
    load, failover, observability, and tenant-isolation evidence.
+6. [Qualify the production attack surface](https://github.com/eirhop/favn/issues/578) on every release candidate and attach
+   the separate Azure/Entra and manual accessibility evidence.
 
 Build #523's telemetry and drill tooling early, then use it to qualify the first
 supported one-control-plane/elastic-runner deployment on the target managed
@@ -67,6 +70,9 @@ service. Multi-control-plane application failover is a later topology claim.
 - [`operator_security.md`](operator_security.md) defines operator roles,
   workspace/session behavior, administration, audit, qualification, and known
   security limits.
+- [`security_qualification.md`](security_qualification.md) defines the
+  HTTP-boundary threat model, complete route catalogue, isolated attacker
+  topology, evidence rules, phase verdict, and explicit remaining boundaries.
 - [`local_docker_compose.md`](local_docker_compose.md) defines the optional
   customer-owned single-host deployment example.
 - [`issue_522_acceptance_matrix.md`](issue_522_acceptance_matrix.md) maps the

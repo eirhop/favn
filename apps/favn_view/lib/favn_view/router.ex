@@ -4,7 +4,13 @@ defmodule FavnView.Router do
   import FavnView.Auth
 
   @content_security_policy "default-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; object-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'"
-  @secure_browser_headers %{"content-security-policy" => @content_security_policy}
+  @secure_browser_headers %{
+    "content-security-policy" => @content_security_policy,
+    "permissions-policy" => "camera=(), geolocation=(), microphone=()",
+    "referrer-policy" => "no-referrer",
+    "x-content-type-options" => "nosniff",
+    "x-frame-options" => "DENY"
+  }
 
   pipeline :browser do
     plug :accepts, ["html"]

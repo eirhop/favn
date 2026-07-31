@@ -141,6 +141,9 @@ defmodule FavnOrchestrator.API.Router do
       {:error, :service_unauthorized} ->
         error(conn, 401, "service_unauthorized", "Invalid service credentials")
 
+      {:error, :forbidden} ->
+        error(conn, 403, "forbidden", "Platform operator access is required")
+
       {:error, reason} ->
         Logger.error("bootstrap.active_manifest failed: #{inspect(reason)}")
         error(conn, 400, "bad_request", "Request failed")

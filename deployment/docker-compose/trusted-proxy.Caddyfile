@@ -13,6 +13,11 @@
 https://favn.localhost {
 	tls internal
 
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		-Server
+	}
+
 	handle /__proxy_header_probe {
 		reverse_proxy http://proxy-header-receiver:8080 {
 			import sanitized_proxy_headers
@@ -21,5 +26,12 @@ https://favn.localhost {
 
 	reverse_proxy http://control-plane:4000 {
 		import sanitized_proxy_headers
+
+		# Bandit closes some rejected-request connections after sending the
+		# response. Do not reuse a socket that may have been closed by the
+		# upstream, and never mask that race by retrying mutation requests.
+		transport http {
+			keepalive off
+		}
 	}
 }
