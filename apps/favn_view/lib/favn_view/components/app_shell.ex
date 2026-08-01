@@ -3,7 +3,8 @@ defmodule FavnView.Components.AppShell do
   The application frame every operator screen renders inside.
 
   The shell owns the ambient background, the primary navigation, the one page
-  title, the account controls, flash, and the slot where a page mounts its mode
+  title, the current workspace context, flash, and the slot where a page mounts
+  its mode
   rail. A page component supplies content and metadata; it never draws chrome of
   its own and never renders a second `page_title/1`.
 
@@ -28,6 +29,7 @@ defmodule FavnView.Components.AppShell do
 
   use FavnView, :html
 
+  alias FavnView.Auth.Scope
   alias FavnView.Components.NavRail
 
   attr :title, :string, required: true, doc: "names the screen; the only page title"
@@ -35,6 +37,9 @@ defmodule FavnView.Components.AppShell do
   attr :status, :string, default: nil, doc: "one live status word for the screen"
   attr :status_tone, :atom, default: :success, doc: "see `FavnView.UI.Tokens`"
   attr :nav_items, :list, default: [], doc: "see `FavnView.Components.Navigation.items/1`"
+  attr :current_scope, :any, default: nil
+  attr :operator_workspaces, :list, default: []
+  attr :admin_active?, :boolean, default: false
   attr :back_href, :string, default: nil
   attr :back_label, :string, default: nil
   attr :facts, :list, default: [], doc: "toolbar facts; see `FavnView.UI.Data.fact_list/1`"
@@ -49,15 +54,29 @@ defmodule FavnView.Components.AppShell do
   slot :actions, doc: "screen-level actions, rendered in the toolbar"
 
   def app_shell(assigns) do
+    assigns = assign(assigns, :admin?, Scope.has_role?(assigns.current_scope, :admin))
+
     ~H"""
     <div class="favn-shell-bg text-base-content">
       <div class="favn-orbital-grid" aria-hidden="true"></div>
-      <NavRail.nav_rail items={@nav_items} />
+      <NavRail.nav_rail
+        items={@nav_items}
+        current_scope={@current_scope}
+        operator_workspaces={@operator_workspaces}
+        admin?={@admin?}
+        admin_active?={@admin_active?}
+      />
 
       <div class="relative z-10 flex h-screen min-h-0 flex-col px-5 py-3 md:py-4 md:pl-32 md:pr-8 lg:pr-32">
         <header class="mx-auto flex w-full max-w-[120rem] shrink-0 items-center justify-between gap-3">
           <div class="flex min-w-0 items-center gap-3">
-            <NavRail.nav_menu items={@nav_items} />
+            <NavRail.nav_menu
+              items={@nav_items}
+              current_scope={@current_scope}
+              operator_workspaces={@operator_workspaces}
+              admin?={@admin?}
+              admin_active?={@admin_active?}
+            />
             <.link navigate={~p"/"} class="btn btn-ghost gap-2 px-2 md:hidden" aria-label="Favn home">
               <.icon name="hero-sparkles" size={:md} />
               <span class="text-lg font-semibold">Favn</span>
@@ -90,6 +109,13 @@ defmodule FavnView.Components.AppShell do
           </div>
 
           <div class="flex items-center gap-3">
+            <.icon_button
+              navigate={~p"/account/security"}
+              icon="hero-user-circle"
+              label="Account security"
+              tooltip={:bottom}
+              class="hidden sm:inline-flex"
+            />
             <FavnView.Components.ThemeToggle.theme_toggle />
             <form action={~p"/logout"} method="post">
               <input type="hidden" name="_method" value="delete" />

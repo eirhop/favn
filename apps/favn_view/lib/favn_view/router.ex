@@ -65,6 +65,10 @@ defmodule FavnView.Router do
       live "/rebuilds/:operation_id", RebuildDetailLive, :show
       live "/recoveries", TargetRecoveryLive, :index
       live "/account/security", AccountSecurityLive, :edit
+    end
+
+    live_session :admin_operator,
+      on_mount: [{FavnView.Auth, {:require_authenticated_operator, :admin}}] do
       live "/admin", AdminLive, :index
     end
   end

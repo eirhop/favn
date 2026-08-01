@@ -125,6 +125,8 @@ defmodule FavnView.RebuildDetailLive do
       items={@items}
       items_has_more?={@items_has_more? || false}
       error={@error}
+      current_scope={@current_scope}
+      operator_workspaces={@operator_workspaces}
     />
     """
   end
@@ -134,6 +136,8 @@ defmodule FavnView.RebuildDetailLive do
     <AppShell.app_shell
       title="Rebuild unavailable"
       nav_items={RebuildPage.nav_items()}
+      current_scope={@current_scope}
+      operator_workspaces={@operator_workspaces}
       back_href={~p"/rebuilds"}
       back_label="Rebuilds"
     >

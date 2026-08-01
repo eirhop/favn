@@ -13,6 +13,8 @@ defmodule FavnView.Components.PipelinesPage do
   attr :loading, :boolean, default: false
   attr :error, :string, default: nil
   attr :nav_items, :list, required: true
+  attr :current_scope, :any, default: nil
+  attr :operator_workspaces, :list, default: []
   attr :status_options, :list, required: true
 
   def pipelines_page(assigns) do
@@ -21,6 +23,8 @@ defmodule FavnView.Components.PipelinesPage do
       title="Pipelines"
       subtitle="Monitor active manifest pipelines"
       nav_items={@nav_items}
+      current_scope={@current_scope}
+      operator_workspaces={@operator_workspaces}
     >
       <div
         class="mx-auto flex w-full max-w-[120rem] flex-col pb-24 lg:min-h-0 lg:flex-1 lg:pb-0"

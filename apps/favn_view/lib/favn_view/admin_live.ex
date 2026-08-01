@@ -10,16 +10,23 @@ defmodule FavnView.AdminLive do
   use FavnView, :live_view
 
   alias FavnView.Auth.Scope
+  alias FavnView.Components.AdminPage
+  alias FavnView.Components.Navigation
 
   @page_size 50
 
   @impl true
   def mount(_params, _session, socket) do
     if Scope.has_role?(socket.assigns[:current_scope], :admin) do
-      {:ok, load_initial(socket)}
+      {:ok, socket |> assign(:admin_tab, :operators) |> load_initial()}
     else
       {:ok, Phoenix.LiveView.redirect(socket, to: "/")}
     end
+  end
+
+  @impl true
+  def handle_params(params, _uri, socket) do
+    {:noreply, assign(socket, :admin_tab, normalize_admin_tab(params["tab"]))}
   end
 
   @impl true
@@ -119,176 +126,25 @@ defmodule FavnView.AdminLive do
   @impl true
   def render(assigns) do
     ~H"""
-    <main class="mx-auto max-w-7xl space-y-8 p-6" data-testid="workspace-admin">
-      <header class="space-y-1">
-        <p class="text-sm opacity-70">Workspace {@current_scope.workspace_id}</p>
-        <h1 class="text-2xl font-semibold">Administration</h1>
-        <p class="text-sm opacity-70">
-          Changes on this page apply only to the current workspace.
-        </p>
-      </header>
-
-      <.flash_group flash={@flash} />
-
-      <section class="grid gap-6 lg:grid-cols-2">
-        <form phx-submit="create_actor" class="space-y-3 rounded-box border p-4">
-          <h2 class="font-semibold">Create actor</h2>
-          <input
-            name="username"
-            type="text"
-            autocomplete="off"
-            required
-            placeholder="Username"
-            class="input input-bordered w-full"
-          />
-          <input
-            name="display_name"
-            type="text"
-            required
-            placeholder="Display name"
-            class="input input-bordered w-full"
-          />
-          <input
-            name="password"
-            type="password"
-            autocomplete="new-password"
-            required
-            placeholder="Password"
-            class="input input-bordered w-full"
-          />
-          <input
-            name="password_confirmation"
-            type="password"
-            autocomplete="new-password"
-            required
-            placeholder="Confirm password"
-            class="input input-bordered w-full"
-          />
-          <.role_select />
-          <button class="btn btn-primary" type="submit">Create</button>
-        </form>
-
-        <form phx-submit="attach_actor" class="space-y-3 rounded-box border p-4">
-          <h2 class="font-semibold">Attach existing actor</h2>
-          <p class="text-sm opacity-70">
-            The exact username must already exist. Other workspace memberships are not disclosed.
-          </p>
-          <input
-            name="username"
-            type="text"
-            autocomplete="off"
-            required
-            placeholder="Exact username"
-            class="input input-bordered w-full"
-          />
-          <.role_select />
-          <button class="btn btn-primary" type="submit">Attach</button>
-        </form>
-      </section>
-
-      <section class="space-y-3">
-        <h2 class="text-xl font-semibold">Actors and memberships</h2>
-        <p :if={@actors == []} class="opacity-70">No actors found.</p>
-        <div :for={actor <- @actors} class="rounded-box border p-4">
-          <div class="mb-3">
-            <strong>{actor.display_name || actor.username || actor.id}</strong>
-            <span class="ml-2 text-sm opacity-70">{actor.username}</span>
-            <span class="ml-2 text-sm">{actor.status}</span>
-          </div>
-          <form phx-submit="update_membership" class="flex flex-wrap items-end gap-3">
-            <input type="hidden" name="actor_id" value={actor.id} />
-            <.role_select selected={primary_role(actor.roles)} />
-            <label>
-              <span class="block text-xs">Membership status</span>
-              <select name="status" class="select select-bordered">
-                <option
-                  :for={status <- [:active, :suspended, :revoked]}
-                  value={status}
-                  selected={membership_status_value(actor) == status}
-                >
-                  {status}
-                </option>
-              </select>
-            </label>
-            <button
-              type="submit"
-              class="btn"
-              disabled={actor.id == @current_scope.actor.id}
-            >
-              Update
-            </button>
-          </form>
-        </div>
-        <button :if={@actors_has_more?} phx-click="load_more_actors" class="btn">
-          Load more actors
-        </button>
-      </section>
-
-      <section class="space-y-3">
-        <h2 class="text-xl font-semibold">Sessions</h2>
-        <p :if={@sessions == []} class="opacity-70">No sessions found.</p>
-        <div
-          :for={session <- @sessions}
-          class="flex flex-wrap items-center gap-3 rounded-box border p-4"
-        >
-          <code>{session.id}</code>
-          <span>Actor {session.actor_id}</span>
-          <span>{session.provider}</span>
-          <span>{session_state(session)}</span>
-          <span :if={session.expires_at}>expires {format_time(session.expires_at)}</span>
-          <button
-            :if={session_state(session) == "active"}
-            phx-click="revoke_session"
-            phx-value-session_id={session.id}
-            class="btn btn-error btn-sm"
-            disabled={session.id == @current_scope.session.id}
-          >
-            Revoke
-          </button>
-        </div>
-        <button :if={@sessions_has_more?} phx-click="load_more_sessions" class="btn">
-          Load more sessions
-        </button>
-      </section>
-
-      <section class="space-y-3">
-        <h2 class="text-xl font-semibold">Authorization audit</h2>
-        <p class="text-sm opacity-70">
-          This view intentionally shows redacted metadata, not stored request detail.
-        </p>
-        <p :if={@audit == []} class="opacity-70">No audit records found.</p>
-        <div :for={entry <- @audit} class="grid gap-1 rounded-box border p-4 md:grid-cols-4">
-          <span>{entry.action}</span>
-          <span>{entry.subject_kind}: {entry.subject_id}</span>
-          <span>Actor {entry.principal_id}</span>
-          <time>{format_time(entry.occurred_at)}</time>
-        </div>
-        <button :if={@audit_has_more?} phx-click="load_more_audit" class="btn">
-          Load more audit
-        </button>
-      </section>
-    </main>
+    <AdminPage.admin_page
+      current_scope={@current_scope}
+      operator_workspaces={@operator_workspaces}
+      nav_items={Navigation.items(:admin)}
+      admin_tab={@admin_tab}
+      actors={@actors}
+      actors_has_more?={@actors_has_more?}
+      sessions={@sessions}
+      sessions_has_more?={@sessions_has_more?}
+      audit={@audit}
+      audit_has_more?={@audit_has_more?}
+      flash={@flash}
+    />
     """
   end
 
-  attr :selected, :atom, default: :viewer
-
-  defp role_select(assigns) do
-    ~H"""
-    <label>
-      <span class="block text-xs">Role</span>
-      <select name="role" class="select select-bordered">
-        <option
-          :for={role <- [:viewer, :operator, :admin]}
-          value={role}
-          selected={@selected == role}
-        >
-          {role}
-        </option>
-      </select>
-    </label>
-    """
-  end
+  defp normalize_admin_tab("sessions"), do: :sessions
+  defp normalize_admin_tab("audit"), do: :audit
+  defp normalize_admin_tab(_tab), do: :operators
 
   defp load_initial(socket) do
     socket
@@ -374,21 +230,6 @@ defmodule FavnView.AdminLive do
   defp parse_membership_status(%{"status" => "revoked"}), do: {:ok, :revoked}
   defp parse_membership_status(_params), do: {:error, :invalid_membership_status}
 
-  defp membership_status_value(%{membership_status: status})
-       when status in [:active, :suspended, :revoked],
-       do: status
-
-  defp membership_status_value(%{status: :active}), do: :active
-  defp membership_status_value(_actor), do: :suspended
-
-  defp primary_role(roles) do
-    cond do
-      :admin in roles -> :admin
-      :operator in roles -> :operator
-      true -> :viewer
-    end
-  end
-
   defp confirm_password(%{
          "password" => password,
          "password_confirmation" => password
@@ -397,15 +238,6 @@ defmodule FavnView.AdminLive do
        do: :ok
 
   defp confirm_password(_params), do: {:error, :password_confirmation_mismatch}
-
-  defp session_state(%{status: status}) when status in [:active, :revoked, :expired],
-    do: Atom.to_string(status)
-
-  defp session_state(%{revoked_at: revoked_at}) when not is_nil(revoked_at), do: "revoked"
-  defp session_state(_session), do: "active"
-
-  defp format_time(%DateTime{} = value), do: Calendar.strftime(value, "%Y-%m-%d %H:%M:%S UTC")
-  defp format_time(_value), do: "unknown"
 
   defp operator_context(socket), do: socket.assigns.current_scope.operator_context
 

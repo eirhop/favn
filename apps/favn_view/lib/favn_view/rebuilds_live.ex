@@ -108,6 +108,8 @@ defmodule FavnView.RebuildsLive do
       error={@error}
       has_more?={@has_more? || false}
       planning?={@planning?}
+      current_scope={@current_scope}
+      operator_workspaces={@operator_workspaces}
     />
     """
   end

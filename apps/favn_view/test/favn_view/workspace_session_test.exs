@@ -5,7 +5,7 @@ defmodule FavnView.WorkspaceSessionTest do
 
   alias FavnView.Auth
   alias FavnView.Auth.Scope
-  alias FavnView.Layouts
+  alias FavnView.Components.WorkspaceMenu
 
   defmodule IdentityProbeLive do
     use FavnView, :live_view
@@ -423,20 +423,22 @@ defmodule FavnView.WorkspaceSessionTest do
     assert {:redirect, %{to: "/login"}} = redirected.redirected
   end
 
-  test "workspace switcher is hidden for one active workspace" do
+  test "workspace menu shows the current workspace and switches between active workspaces" do
     {actor, session} = identity("workspace-one", "session-one")
     scope = Scope.new("workspace-one", actor, session)
 
     hidden =
-      render_component(&Layouts.workspace_switcher/1,
+      render_component(&WorkspaceMenu.workspace_menu/1,
         current_scope: scope,
         workspaces: [%{id: "workspace-one", name: "One", status: :active}]
       )
 
-    refute hidden =~ ~s(data-testid="workspace-switcher")
+    assert hidden =~ ~s(data-testid="workspace-menu")
+    refute hidden =~ ~s(data-testid="workspace-menu-trigger")
+    assert hidden =~ "One"
 
     visible =
-      render_component(&Layouts.workspace_switcher/1,
+      render_component(&WorkspaceMenu.workspace_menu/1,
         current_scope: scope,
         workspaces: [
           %{id: "workspace-one", name: "One", status: :active},
@@ -444,8 +446,8 @@ defmodule FavnView.WorkspaceSessionTest do
         ]
       )
 
-    assert visible =~ ~s(data-testid="workspace-switcher")
-    assert visible =~ ~s(value="workspace-one" selected)
+    assert visible =~ ~s(data-testid="workspace-menu-trigger")
+    assert visible =~ ~s(value="workspace-one")
     assert visible =~ ~s(value="workspace-two")
   end
 

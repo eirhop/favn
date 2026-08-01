@@ -35,6 +35,8 @@ defmodule FavnView.Components.Navigation do
     {:logs, "Logs", "hero-document-text", "/logs"}
   ]
 
+  @admin_destination {:admin, "Admin", "hero-cog-6-tooth", "/admin"}
+
   @sections Enum.map(@destinations, fn {section, _label, _icon, _href} -> section end)
 
   @doc """
@@ -54,5 +56,14 @@ defmodule FavnView.Components.Navigation do
     Enum.map(@destinations, fn {section, label, icon, href} ->
       %{label: label, icon: icon, href: href, active: section == active}
     end)
+  end
+
+  @doc """
+  The administrator-only destination for the primary navigation.
+  """
+  @spec admin_item(boolean()) :: item()
+  def admin_item(active \\ false) do
+    {section, label, icon, href} = @admin_destination
+    %{label: label, icon: icon, href: href, active: active && section == :admin}
   end
 end

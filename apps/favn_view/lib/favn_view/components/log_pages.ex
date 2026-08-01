@@ -15,6 +15,8 @@ defmodule FavnView.Components.LogPages do
   alias FavnView.Components.OutputMetadata
 
   attr :nav_items, :list, default: []
+  attr :current_scope, :any, default: nil
+  attr :operator_workspaces, :list, default: []
   attr :title, :string, required: true
   attr :subtitle, :string, default: nil
   attr :visible_logs, :list, default: []
@@ -36,6 +38,8 @@ defmodule FavnView.Components.LogPages do
       title={@title}
       subtitle={@subtitle}
       nav_items={@nav_items}
+      current_scope={@current_scope}
+      operator_workspaces={@operator_workspaces}
     >
       <.viewer assigns={assigns} />
     </AppShell.app_shell>
@@ -43,6 +47,8 @@ defmodule FavnView.Components.LogPages do
   end
 
   attr :nav_items, :list, default: []
+  attr :current_scope, :any, default: nil
+  attr :operator_workspaces, :list, default: []
   attr :title, :string, required: true
   attr :subtitle, :string, default: nil
   attr :status, :string, default: nil
@@ -73,6 +79,8 @@ defmodule FavnView.Components.LogPages do
       status={@status}
       status_tone={@status_tone}
       nav_items={@nav_items}
+      current_scope={@current_scope}
+      operator_workspaces={@operator_workspaces}
       back_href={@back_href}
       back_label={@back_label}
       facts={@facts}
@@ -84,6 +92,8 @@ defmodule FavnView.Components.LogPages do
   end
 
   attr :nav_items, :list, default: []
+  attr :current_scope, :any, default: nil
+  attr :operator_workspaces, :list, default: []
   attr :title, :string, required: true
   attr :subtitle, :string, default: nil
   attr :status, :string, default: nil
@@ -114,6 +124,8 @@ defmodule FavnView.Components.LogPages do
       status={@status}
       status_tone={@status_tone}
       nav_items={@nav_items}
+      current_scope={@current_scope}
+      operator_workspaces={@operator_workspaces}
       back_href={@back_href}
       back_label={@back_label}
       facts={@facts}

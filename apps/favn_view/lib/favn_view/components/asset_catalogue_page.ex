@@ -37,6 +37,8 @@ defmodule FavnView.Components.AssetCataloguePage do
   attr :loading, :boolean, default: false
   attr :error, :string, default: nil
   attr :nav_items, :list, required: true
+  attr :current_scope, :any, default: nil
+  attr :operator_workspaces, :list, default: []
   attr :connection_options, :list, required: true
   attr :catalogue_options, :list, required: true
 
@@ -60,6 +62,8 @@ defmodule FavnView.Components.AssetCataloguePage do
       title="Asset catalogue"
       subtitle="Browse and monitor all assets"
       nav_items={@nav_items}
+      current_scope={@current_scope}
+      operator_workspaces={@operator_workspaces}
       flash={@flash}
       content_scroll?={@active_mode != :lineage}
     >

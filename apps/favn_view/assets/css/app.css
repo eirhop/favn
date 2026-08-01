@@ -509,6 +509,43 @@ summary {
     backdrop-filter: blur(22px) saturate(130%);
   }
 
+  .favn-workspace-control__name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  @media (min-width: 48rem) {
+    .favn-workspace-control {
+      flex-direction: column;
+      gap: 0.25rem;
+      padding-inline: 0.25rem;
+      text-align: center;
+    }
+
+    .favn-workspace-control__name {
+      max-height: 2rem;
+      width: 100%;
+      flex: none;
+      overflow: hidden;
+      white-space: normal;
+      overflow-wrap: anywhere;
+      font-size: 0.65rem;
+      line-height: 1rem;
+    }
+
+    .favn-workspace-control__chevron {
+      display: none;
+    }
+  }
+
+  @media (max-height: 40rem) {
+    .favn-nav-rail {
+      overflow-x: hidden;
+      overflow-y: auto;
+    }
+  }
+
   .favn-mode-shell {
     border: var(--border) solid color-mix(in oklab, var(--color-primary) 22%, color-mix(in oklab, var(--color-base-content) 7%, transparent));
     background:

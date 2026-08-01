@@ -179,9 +179,18 @@ defmodule FavnView.Auth do
   @doc """
   LiveView `on_mount` hook that authenticates operator LiveViews on every mount.
   """
-  @spec on_mount(atom(), map(), map(), Phoenix.LiveView.Socket.t()) ::
+  @spec on_mount(atom() | {atom(), atom()}, map(), map(), Phoenix.LiveView.Socket.t()) ::
           {:cont, Phoenix.LiveView.Socket.t()} | {:halt, Phoenix.LiveView.Socket.t()}
   def on_mount(:require_authenticated_operator, _params, session, socket) do
+    authenticate_live_operator(session, socket, :viewer)
+  end
+
+  def on_mount({:require_authenticated_operator, required_role}, _params, session, socket)
+      when required_role in [:viewer, :operator, :admin] do
+    authenticate_live_operator(session, socket, required_role)
+  end
+
+  defp authenticate_live_operator(session, socket, required_role) do
     with {:ok, workspace_id, token} <- fetch_operator_session_credentials(session),
          {:ok, orchestrator_session, actor} <-
            call(
@@ -191,10 +200,10 @@ defmodule FavnView.Auth do
            ) do
       scope = Scope.new(workspace_id, actor, orchestrator_session)
 
-      if Scope.has_role?(scope, :viewer) do
-        subscribe_live_identity(socket, scope, workspace_id, token)
+      if Scope.has_role?(scope, required_role) do
+        subscribe_live_identity(socket, scope, workspace_id, token, required_role)
       else
-        {:halt, Phoenix.LiveView.redirect(socket, to: "/login")}
+        deny_live_scope(socket, scope)
       end
     else
       _error ->
@@ -259,7 +268,7 @@ defmodule FavnView.Auth do
     end
   end
 
-  defp subscribe_live_identity(socket, scope, workspace_id, token) do
+  defp subscribe_live_identity(socket, scope, workspace_id, token, required_role) do
     if Phoenix.LiveView.connected?(socket) do
       case call(
              :subscribe_operator_identity_fun,
@@ -267,26 +276,31 @@ defmodule FavnView.Auth do
              [scope.operator_context]
            ) do
         :ok ->
-          with {:ok, session, actor} <-
-                 call(
-                   :introspect_operator_session_fun,
-                   &FavnOrchestrator.introspect_operator_session/2,
-                   [workspace_id, token]
-                 ),
-               refreshed_scope = Scope.new(workspace_id, actor, session),
-               true <- Scope.has_role?(refreshed_scope, :viewer) do
-            schedule_identity_revalidation()
+          case call(
+                 :introspect_operator_session_fun,
+                 &FavnOrchestrator.introspect_operator_session/2,
+                 [workspace_id, token]
+               ) do
+            {:ok, session, actor} ->
+              refreshed_scope = Scope.new(workspace_id, actor, session)
 
-            {:cont,
-             socket
-             |> assign_live_scope(refreshed_scope)
-             |> Phoenix.LiveView.attach_hook(
-               :operator_identity_invalidation,
-               :handle_info,
-               &handle_identity_message(&1, &2, workspace_id, token)
-             )}
-          else
-            _invalid -> {:halt, Phoenix.LiveView.redirect(socket, to: "/login")}
+              if Scope.has_role?(refreshed_scope, required_role) do
+                schedule_identity_revalidation()
+
+                {:cont,
+                 socket
+                 |> assign_live_scope(refreshed_scope)
+                 |> Phoenix.LiveView.attach_hook(
+                   :operator_identity_invalidation,
+                   :handle_info,
+                   &handle_identity_message(&1, &2, workspace_id, token, required_role)
+                 )}
+              else
+                deny_live_scope(socket, refreshed_scope)
+              end
+
+            {:error, _reason} ->
+              {:halt, Phoenix.LiveView.redirect(socket, to: "/login")}
           end
 
         {:error, _reason} ->
@@ -312,7 +326,8 @@ defmodule FavnView.Auth do
          {:favn_identity_invalidated, _reason} = message,
          socket,
          _workspace_id,
-         _token
+         _token,
+         _required_role
        ) do
     handle_identity_invalidation(message, socket)
   end
@@ -321,24 +336,36 @@ defmodule FavnView.Auth do
          :favn_revalidate_operator_identity,
          socket,
          workspace_id,
-         token
+         token,
+         required_role
        ) do
-    with {:ok, session, actor} <-
-           call(
-             :introspect_operator_session_fun,
-             &FavnOrchestrator.introspect_operator_session/2,
-             [workspace_id, token]
-           ),
-         refreshed_scope = Scope.new(workspace_id, actor, session),
-         true <- Scope.has_role?(refreshed_scope, :viewer) do
-      schedule_identity_revalidation()
-      {:halt, assign_live_scope(socket, refreshed_scope)}
-    else
-      _invalid -> {:halt, Phoenix.LiveView.redirect(socket, to: "/login")}
+    case call(
+           :introspect_operator_session_fun,
+           &FavnOrchestrator.introspect_operator_session/2,
+           [workspace_id, token]
+         ) do
+      {:ok, session, actor} ->
+        refreshed_scope = Scope.new(workspace_id, actor, session)
+
+        if Scope.has_role?(refreshed_scope, required_role) do
+          schedule_identity_revalidation()
+          {:halt, assign_live_scope(socket, refreshed_scope)}
+        else
+          deny_live_scope(socket, refreshed_scope)
+        end
+
+      {:error, _reason} ->
+        {:halt, Phoenix.LiveView.redirect(socket, to: "/login")}
     end
   end
 
-  defp handle_identity_message(_message, socket, _workspace_id, _token), do: {:cont, socket}
+  defp handle_identity_message(_message, socket, _workspace_id, _token, _required_role),
+    do: {:cont, socket}
+
+  defp deny_live_scope(socket, scope) do
+    destination = if Scope.has_role?(scope, :viewer), do: "/", else: "/login"
+    {:halt, Phoenix.LiveView.redirect(socket, to: destination)}
+  end
 
   defp schedule_identity_revalidation do
     Process.send_after(

@@ -497,6 +497,8 @@ defmodule FavnView.AssetDetailLive do
       selected_run_context={@asset.selected_run_context}
       run_context_status={@asset.run_context_status}
       nav_items={@nav_items}
+      current_scope={@current_scope}
+      operator_workspaces={@operator_workspaces}
       refresh_timeline={@asset.refresh_timeline}
       freshness_timeline={@asset.freshness_timeline}
       data_coverage_timeline={@asset.data_coverage_timeline}
@@ -530,6 +532,8 @@ defmodule FavnView.AssetDetailLive do
       subtitle={@asset_id}
       description={asset_error_message(@asset_state)}
       nav_items={@nav_items}
+      current_scope={@current_scope}
+      operator_workspaces={@operator_workspaces}
       flash={@flash}
       back_navigate={~p"/assets"}
       back_label="Back to catalogue"
@@ -542,6 +546,8 @@ defmodule FavnView.AssetDetailLive do
       description="No active catalogue entry matches this asset id."
       tone={:neutral}
       nav_items={@nav_items}
+      current_scope={@current_scope}
+      operator_workspaces={@operator_workspaces}
       flash={@flash}
       back_navigate={~p"/assets"}
       back_label="Back to catalogue"

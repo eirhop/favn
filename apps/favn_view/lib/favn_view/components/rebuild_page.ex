@@ -12,6 +12,8 @@ defmodule FavnView.Components.RebuildPage do
   attr :error, :string, default: nil
   attr :has_more?, :boolean, default: false
   attr :planning?, :boolean, default: false
+  attr :current_scope, :any, default: nil
+  attr :operator_workspaces, :list, default: []
 
   def rebuilds_page(assigns) do
     ~H"""
@@ -19,6 +21,8 @@ defmodule FavnView.Components.RebuildPage do
       title="Rebuilds"
       subtitle="Manual generation replacement"
       nav_items={nav_items()}
+      current_scope={@current_scope}
+      operator_workspaces={@operator_workspaces}
     >
       <div
         class="mx-auto grid w-full max-w-[120rem] gap-5 xl:grid-cols-[minmax(22rem,0.8fr)_minmax(0,1.7fr)]"
@@ -253,6 +257,8 @@ defmodule FavnView.Components.RebuildPage do
   attr :items, :list, required: true
   attr :items_has_more?, :boolean, default: false
   attr :error, :string, default: nil
+  attr :current_scope, :any, default: nil
+  attr :operator_workspaces, :list, default: []
 
   def rebuild_detail_page(assigns) do
     ~H"""
@@ -262,6 +268,8 @@ defmodule FavnView.Components.RebuildPage do
       status={humanize(field(@operation, :state))}
       status_tone={state_tone(field(@operation, :state))}
       nav_items={nav_items()}
+      current_scope={@current_scope}
+      operator_workspaces={@operator_workspaces}
       back_href={~p"/rebuilds"}
       back_label="Rebuilds"
     >

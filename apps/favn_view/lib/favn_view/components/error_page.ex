@@ -30,6 +30,8 @@ defmodule FavnView.Components.ErrorPage do
   attr :subtitle, :string, default: nil
   attr :description, :string, required: true
   attr :nav_items, :list, default: []
+  attr :current_scope, :any, default: nil
+  attr :operator_workspaces, :list, default: []
   attr :flash, :map, default: %{}
   attr :tone, :atom, default: :error, values: [:error, :warning, :neutral]
   attr :back_navigate, :string, default: nil
@@ -42,6 +44,8 @@ defmodule FavnView.Components.ErrorPage do
       title={@title}
       subtitle={@subtitle}
       nav_items={@nav_items}
+      current_scope={@current_scope}
+      operator_workspaces={@operator_workspaces}
       flash={@flash}
     >
       <div class="mx-auto w-full max-w-4xl" {@rest}>

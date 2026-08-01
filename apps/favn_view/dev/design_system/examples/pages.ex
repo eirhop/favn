@@ -14,6 +14,7 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
   """
 
   alias FavnView.AssetCatalogueFilters
+  alias FavnView.Auth.Scope
   alias FavnView.Components.AssetCataloguePage
   alias FavnView.Components.LineagePage
   alias FavnView.Components.Navigation
@@ -37,6 +38,8 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
   def all do
     %{}
     |> Map.merge(status())
+    |> Map.merge(admin())
+    |> Map.merge(account_security())
     |> Map.merge(asset_catalogue())
     |> Map.merge(asset_detail())
     |> Map.merge(timelines())
@@ -82,6 +85,116 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
         ),
         Example.attrs(:loading, %{groups: [], loading: true, nav_items: nav_items}),
         Example.attrs(:error, %{groups: [], error: "load_failed", nav_items: nav_items})
+      ]
+    }
+  end
+
+  defp admin do
+    now = ~U[2026-08-01 10:00:00Z]
+
+    scope = %Scope{
+      workspace_id: "workspace-one",
+      actor: %{id: "actor-admin", roles: [:admin]},
+      session: %{id: "session-current"}
+    }
+
+    base = %{
+      current_scope: scope,
+      operator_workspaces: [
+        %{id: "workspace-one", name: "Workspace One", status: :active},
+        %{id: "workspace-two", name: "Workspace Two", status: :active}
+      ],
+      nav_items: Navigation.items(:admin),
+      admin_tab: :operators,
+      actors: [
+        %{
+          id: "actor-admin",
+          username: "admin@example.com",
+          display_name: "Workspace Admin",
+          roles: [:admin],
+          status: :active,
+          membership_status: :active
+        },
+        %{
+          id: "actor-operator",
+          username: "operator@example.com",
+          display_name: "Data Operator",
+          roles: [:operator],
+          status: :active,
+          membership_status: :active
+        }
+      ],
+      actors_has_more?: false,
+      sessions: [
+        %{
+          id: "session-current",
+          actor_id: "actor-admin",
+          provider: "password",
+          status: :active,
+          expires_at: DateTime.add(now, 86_400, :second)
+        },
+        %{
+          id: "session-operator",
+          actor_id: "actor-operator",
+          provider: "azure_ad",
+          status: :active,
+          expires_at: DateTime.add(now, 43_200, :second)
+        }
+      ],
+      sessions_has_more?: false,
+      audit: [
+        %{
+          action: "membership.updated",
+          subject_kind: "actor",
+          subject_id: "actor-operator",
+          principal_id: "actor-admin",
+          occurred_at: now
+        }
+      ],
+      audit_has_more?: false
+    }
+
+    %{
+      "admin_page/admin_page" => [
+        Example.attrs(
+          :operators,
+          base,
+          "The focused default tab for creating operators and managing workspace membership."
+        ),
+        Example.attrs(
+          :sessions,
+          Map.put(base, :admin_tab, :sessions),
+          "Session controls are separated from identity changes so revocation is easy to find."
+        ),
+        Example.attrs(
+          :audit,
+          Map.put(base, :admin_tab, :audit),
+          "Audit history is available without competing with the operational controls."
+        )
+      ]
+    }
+  end
+
+  defp account_security do
+    scope = %Scope{
+      workspace_id: "workspace-one",
+      actor: %{id: "actor-viewer", roles: [:viewer]},
+      session: %{id: "session-current"}
+    }
+
+    %{
+      "account_security_page/account_security_page" => [
+        Example.attrs(
+          :default,
+          %{
+            current_scope: scope,
+            operator_workspaces: [
+              %{id: "workspace-one", name: "Workspace One", status: :active}
+            ],
+            nav_items: Navigation.items()
+          },
+          "A labelled password form in the shared application shell."
+        )
       ]
     }
   end

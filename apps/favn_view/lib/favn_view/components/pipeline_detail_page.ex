@@ -9,6 +9,8 @@ defmodule FavnView.Components.PipelineDetailPage do
 
   attr :pipeline, :map, required: true
   attr :nav_items, :list, required: true
+  attr :current_scope, :any, default: nil
+  attr :operator_workspaces, :list, default: []
   attr :run_error, :string, default: nil
   attr :backfill_error, :string, default: nil
   attr :backfill_config, :map, required: true
@@ -23,6 +25,8 @@ defmodule FavnView.Components.PipelineDetailPage do
       status={@pipeline.status_label}
       status_tone={status_tone(@pipeline.status)}
       nav_items={@nav_items}
+      current_scope={@current_scope}
+      operator_workspaces={@operator_workspaces}
       flash={@flash}
     >
       <div

@@ -38,6 +38,32 @@ defmodule FavnView.AdminLiveTest do
              conn |> authenticated_conn() |> live(~p"/admin")
   end
 
+  test "an open admin page redirects when durable revalidation removes the admin role", %{
+    conn: conn
+  } do
+    {actor, session} = identity(:admin)
+    {:ok, current_role} = Agent.start_link(fn -> :admin end)
+
+    Application.put_env(:favn_view, :introspect_operator_session_fun, fn
+      "workspace-one", "opaque-token" ->
+        {:ok, session, %{actor | roles: [Agent.get(current_role, & &1)]}}
+    end)
+
+    Application.put_env(:favn_view, :list_operator_workspaces_fun, fn _context ->
+      {:ok, [%{id: "workspace-one", name: "One", status: :active}]}
+    end)
+
+    Application.put_env(:favn_view, :subscribe_operator_identity_fun, fn _context -> :ok end)
+    put_admin_pages()
+
+    assert {:ok, view, _html} = conn |> authenticated_conn() |> live(~p"/admin")
+
+    Agent.update(current_role, fn _role -> :viewer end)
+    send(view.pid, :favn_revalidate_operator_identity)
+
+    assert_redirect(view, "/")
+  end
+
   test "admin reads stay current-workspace scoped and audit detail is not rendered", %{conn: conn} do
     put_identity_boundary(:admin)
     test_pid = self()
@@ -49,7 +75,16 @@ defmodule FavnView.AdminLiveTest do
 
     Application.put_env(:favn_view, :page_operator_sessions_fun, fn context, opts ->
       send(test_pid, {:sessions_context, context.workspace_id, opts})
-      {:ok, page([managed_session()])}
+
+      {:ok,
+       page([
+         managed_session(),
+         Map.merge(managed_session(), %{
+           id: "session-revoked",
+           status: :revoked,
+           revoked_at: DateTime.utc_now()
+         })
+       ])}
     end)
 
     Application.put_env(:favn_view, :page_operator_audit_fun, fn context, opts ->
@@ -68,10 +103,37 @@ defmodule FavnView.AdminLiveTest do
        ])}
     end)
 
-    assert {:ok, _view, html} = conn |> authenticated_conn() |> live(~p"/admin")
+    assert {:ok, view, html} = conn |> authenticated_conn() |> live(~p"/admin")
     assert html =~ ~s(data-testid="workspace-admin")
-    assert html =~ "session.revoked"
-    refute html =~ "secret-looking-value"
+    assert html =~ ~s(data-tip="Admin")
+    assert html =~ ~s(data-testid="workspace-menu")
+    assert html =~ ~s(data-testid="admin-tabs")
+    assert html =~ ~s(data-testid="admin-tab-operators")
+    assert html =~ ~s(href="/account/security")
+    refute html =~ ~s(data-testid="operator-controls")
+    refute html =~ "session.revoked"
+
+    view
+    |> element("a[data-testid=scope-sessions]")
+    |> render_click()
+
+    assert_patch(view, ~p"/admin?tab=sessions")
+    sessions_html = render(view)
+    assert sessions_html =~ ~s(data-testid="admin-tab-sessions")
+    assert sessions_html =~ "session-other"
+    assert sessions_html =~ "session-revoked"
+    assert sessions_html =~ "Revoked"
+    refute sessions_html =~ ~s(data-testid="admin-tab-operators")
+
+    view
+    |> element("a[data-testid=scope-audit]")
+    |> render_click()
+
+    assert_patch(view, ~p"/admin?tab=audit")
+    audit_html = render(view)
+    assert audit_html =~ ~s(data-testid="admin-tab-audit")
+    assert audit_html =~ "session.revoked"
+    refute audit_html =~ "secret-looking-value"
     assert_receive {:actors_context, "workspace-one", [limit: 50]}
     assert_receive {:sessions_context, "workspace-one", [limit: 50]}
     assert_receive {:audit_context, "workspace-one", [limit: 50]}
@@ -201,6 +263,8 @@ defmodule FavnView.AdminLiveTest do
     end)
 
     assert {:ok, view, html} = conn |> authenticated_conn() |> live(~p"/account/security")
+    assert html =~ "Current password"
+    assert html =~ "Confirm new password"
     refute html =~ "current-secret-value"
     refute html =~ "replacement-secret-value"
 

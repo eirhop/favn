@@ -31,6 +31,8 @@ defmodule FavnView.Components.AssetDetailPage do
   attr :selected_run_context, :map, default: nil
   attr :run_context_status, :atom, default: :unavailable
   attr :nav_items, :list, required: true
+  attr :current_scope, :any, default: nil
+  attr :operator_workspaces, :list, default: []
   attr :timeline, :list, default: []
   attr :refresh_timeline, :list, default: nil
   attr :freshness_timeline, :list, default: nil
@@ -69,6 +71,8 @@ defmodule FavnView.Components.AssetDetailPage do
       status={@status}
       status_tone={@status_tone}
       nav_items={@nav_items}
+      current_scope={@current_scope}
+      operator_workspaces={@operator_workspaces}
       flash={@flash}
     >
       <.central_view

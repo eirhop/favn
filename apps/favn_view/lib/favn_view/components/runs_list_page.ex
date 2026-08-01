@@ -48,6 +48,8 @@ defmodule FavnView.Components.RunsListPage do
   attr :filters_open?, :boolean, default: false, doc: "narrow screens only; wide ones always show"
   attr :error, :string, default: nil
   attr :nav_items, :list, required: true
+  attr :current_scope, :any, default: nil
+  attr :operator_workspaces, :list, default: []
 
   def runs_list_page(assigns) do
     ~H"""
@@ -55,6 +57,8 @@ defmodule FavnView.Components.RunsListPage do
       title="Runs"
       subtitle={RunsFilters.range_label(@filters)}
       nav_items={@nav_items}
+      current_scope={@current_scope}
+      operator_workspaces={@operator_workspaces}
     >
       <div
         class="mx-auto flex w-full max-w-[110rem] flex-col lg:min-h-0 lg:flex-1"

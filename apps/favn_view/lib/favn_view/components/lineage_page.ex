@@ -28,6 +28,8 @@ defmodule FavnView.Components.LineagePage do
   attr :loading, :boolean, default: false
   attr :error, :any, default: nil
   attr :nav_items, :list, default: []
+  attr :current_scope, :any, default: nil
+  attr :operator_workspaces, :list, default: []
   attr :zoom, :integer, default: 62
   attr :canvas_hook?, :boolean, default: true
   attr :inspector_open?, :boolean, default: true
@@ -42,6 +44,8 @@ defmodule FavnView.Components.LineagePage do
       status="Live"
       status_tone={:success}
       nav_items={@nav_items}
+      current_scope={@current_scope}
+      operator_workspaces={@operator_workspaces}
       back_href={~p"/assets"}
       back_label="Back to assets"
       content_scroll?={false}

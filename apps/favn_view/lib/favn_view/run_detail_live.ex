@@ -254,6 +254,8 @@ defmodule FavnView.RunDetailLive do
       run={@run}
       run_id={@run_id}
       nav_items={@nav_items}
+      current_scope={@current_scope}
+      operator_workspaces={@operator_workspaces}
       active_mode={@active_mode}
       flow={@flow}
       selected_child_run_id={@selected_child_run_id}
