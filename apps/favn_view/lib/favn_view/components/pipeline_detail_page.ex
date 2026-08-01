@@ -126,7 +126,7 @@ defmodule FavnView.Components.PipelineDetailPage do
             <button
               type="submit"
               class="btn btn-primary"
-              disabled={!@can_submit_runs? || !@pipeline.can_run_without_window?}
+              disabled={!@can_submit_runs?}
               data-testid="run-pipeline-button"
             >
               <.icon name="hero-play" class="size-4" /> Run pipeline
@@ -142,11 +142,11 @@ defmodule FavnView.Components.PipelineDetailPage do
           </p>
 
           <p
-            :if={!@pipeline.can_run_without_window?}
+            :if={!is_nil(Map.get(@pipeline, :window))}
             class="mt-3 text-sm favn-text-muted"
-            data-testid="pipeline-run-disabled-help"
+            data-testid="pipeline-latest-window-help"
           >
-            This pipeline requires an explicit window. Use backfill or choose a specific window.
+            No window selected: this submits the latest complete window. Use backfill for a range.
           </p>
 
           <p :if={@run_error} class="mt-3 text-sm text-error" data-testid="pipeline-run-error">

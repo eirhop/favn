@@ -42,11 +42,6 @@ defmodule FavnView.PipelineDetailLive do
     {:noreply, assign(socket, :run_error, "Pipeline not found.")}
   end
 
-  def handle_event("run_pipeline", _params, %{assigns: %{pipeline: pipeline}} = socket)
-      when pipeline.can_run_without_window? == false do
-    {:noreply, socket}
-  end
-
   def handle_event("run_pipeline", params, socket) do
     pipeline = socket.assigns.pipeline
 
@@ -55,7 +50,7 @@ defmodule FavnView.PipelineDetailLive do
 
     socket = assign(socket, :run_attempt, attempt)
 
-    case FavnOrchestrator.submit_operator_run(
+    case facade(:submit_operator_run_fun, &FavnOrchestrator.submit_operator_run/5).(
            actor_context(socket),
            pipeline.manifest_version_id,
            %{type: :pipeline, id: pipeline.id},
@@ -215,6 +210,8 @@ defmodule FavnView.PipelineDetailLive do
     %Scope{} = scope = socket.assigns.current_scope
     scope.operator_context
   end
+
+  defp facade(key, default), do: Application.get_env(:favn_view, key, default)
 
   defp pipeline_from_detail(detail) do
     selected_assets = Map.get(detail, :selected_assets, [])
