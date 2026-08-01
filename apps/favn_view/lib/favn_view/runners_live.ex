@@ -34,6 +34,8 @@ defmodule FavnView.RunnersLive do
       loading={@loading}
       error={@error}
       nav_items={@nav_items}
+      current_scope={@current_scope}
+      operator_workspaces={@operator_workspaces}
       flash={@flash}
     />
     """

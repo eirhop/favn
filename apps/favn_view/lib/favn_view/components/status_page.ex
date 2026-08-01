@@ -53,6 +53,8 @@ defmodule FavnView.Components.StatusPage do
   attr :loading, :boolean, default: false
   attr :error, :string, default: nil
   attr :nav_items, :list, required: true
+  attr :current_scope, :any, default: nil
+  attr :operator_workspaces, :list, default: []
   attr :flash, :map, default: %{}
 
   def status_page(assigns) do
@@ -63,6 +65,8 @@ defmodule FavnView.Components.StatusPage do
       title="Status"
       subtitle={subtitle(@total)}
       nav_items={@nav_items}
+      current_scope={@current_scope}
+      operator_workspaces={@operator_workspaces}
       flash={@flash}
     >
       <div

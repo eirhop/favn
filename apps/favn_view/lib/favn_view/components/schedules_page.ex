@@ -21,6 +21,8 @@ defmodule FavnView.Components.SchedulesPage do
   attr :loading, :boolean, default: false
   attr :error, :string, default: nil
   attr :nav_items, :list, required: true
+  attr :current_scope, :any, default: nil
+  attr :operator_workspaces, :list, default: []
 
   def schedules_page(assigns) do
     ~H"""
@@ -28,6 +30,8 @@ defmodule FavnView.Components.SchedulesPage do
       title="Schedules"
       subtitle="Manage and monitor pipeline schedules."
       nav_items={@nav_items}
+      current_scope={@current_scope}
+      operator_workspaces={@operator_workspaces}
       content_scroll?={false}
     >
       <div

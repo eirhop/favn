@@ -17,29 +17,47 @@ defmodule FavnView.Components.NavRail do
 
   use FavnView, :html
 
+  alias FavnView.Components.Navigation
+  alias FavnView.Components.WorkspaceMenu
+
   attr :items, :list, required: true, doc: "see `FavnView.Components.Navigation.items/1`"
   attr :class, :any, default: nil
+  attr :current_scope, :any, default: nil
+  attr :operator_workspaces, :list, default: []
+  attr :admin?, :boolean, default: false
+  attr :admin_active?, :boolean, default: false
 
   def nav_rail(assigns) do
     ~H"""
     <aside class={[
-      "favn-surface-rail absolute inset-y-0 left-0 z-20 hidden w-24 flex-col items-center justify-between",
-      "border-y-0 border-l-0 px-4 py-8 md:flex",
+      "favn-nav-rail favn-surface-rail absolute inset-y-0 left-0 z-20 hidden w-24 flex-col items-center justify-between",
+      "border-y-0 border-l-0 px-4 py-4 md:flex",
       @class
     ]}>
-      <.link navigate={~p"/"} class="btn btn-ghost px-2" aria-label="Favn home">
-        <.icon name="hero-sparkles" size={:md} />
-      </.link>
+      <div class="flex w-full flex-col items-center gap-2">
+        <.link navigate={~p"/"} class="btn btn-ghost px-2" aria-label="Favn home">
+          <.icon name="hero-sparkles" size={:md} />
+        </.link>
+
+        <WorkspaceMenu.workspace_menu
+          current_scope={@current_scope}
+          workspaces={@operator_workspaces}
+          class="w-full"
+        />
+      </div>
 
       <nav aria-label="Primary navigation">
-        <ul class="menu gap-4 p-0">
+        <ul class="menu gap-2 p-0">
           <li :for={item <- @items}>
             <.nav_rail_item item={item} />
+          </li>
+          <li :if={@admin?}>
+            <.nav_rail_item item={Navigation.admin_item(@admin_active?)} />
           </li>
         </ul>
       </nav>
 
-      <div class="h-10" aria-hidden="true"></div>
+      <div class="h-4" aria-hidden="true"></div>
     </aside>
     """
   end
@@ -47,8 +65,14 @@ defmodule FavnView.Components.NavRail do
   attr :items, :list, required: true
   attr :class, :any, default: nil
   attr :open, :boolean, default: false, doc: "render expanded; used by Storybook"
+  attr :current_scope, :any, default: nil
+  attr :operator_workspaces, :list, default: []
+  attr :admin?, :boolean, default: false
+  attr :admin_active?, :boolean, default: false
 
   def nav_menu(assigns) do
+    assigns = assign(assigns, :admin_item, Navigation.admin_item(assigns.admin_active?))
+
     ~H"""
     <details class={["dropdown md:hidden", @class]} open={@open}>
       <summary
@@ -63,6 +87,12 @@ defmodule FavnView.Components.NavRail do
         class="dropdown-content favn-surface-rail z-50 mt-3 w-64 rounded-box p-3 shadow-xl"
         aria-label="Mobile primary navigation"
       >
+        <WorkspaceMenu.workspace_menu
+          current_scope={@current_scope}
+          workspaces={@operator_workspaces}
+          class="mb-3"
+        />
+
         <ul class="menu gap-1 p-0">
           <li :for={item <- @items}>
             <.link
@@ -75,6 +105,28 @@ defmodule FavnView.Components.NavRail do
             >
               <.icon name={item.icon} size={:md} />
               <span>{item.label}</span>
+            </.link>
+          </li>
+          <li :if={@admin?}>
+            <.link
+              navigate={@admin_item.href}
+              class={[
+                "favn-icon-button rounded-field border border-transparent favn-text-muted",
+                @admin_item.active && "border-primary/40 bg-primary/15 text-primary"
+              ]}
+              aria-current={@admin_item.active && "page"}
+            >
+              <.icon name={@admin_item.icon} size={:md} />
+              <span>{@admin_item.label}</span>
+            </.link>
+          </li>
+          <li>
+            <.link
+              navigate={~p"/account/security"}
+              class="favn-icon-button rounded-field border border-transparent favn-text-muted"
+            >
+              <.icon name="hero-user-circle" size={:md} />
+              <span>Account security</span>
             </.link>
           </li>
         </ul>

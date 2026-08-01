@@ -134,6 +134,8 @@ defmodule FavnView.AssetCatalogueLive do
       loading={@loading}
       error={@error}
       nav_items={@nav_items}
+      current_scope={@current_scope}
+      operator_workspaces={@operator_workspaces}
       flash={@flash}
       connection_options={@connection_options}
       catalogue_options={@catalogue_options}

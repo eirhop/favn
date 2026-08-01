@@ -149,6 +149,8 @@ defmodule FavnView.PipelineDetailLive do
       :if={@pipeline}
       pipeline={@pipeline}
       nav_items={@nav_items}
+      current_scope={@current_scope}
+      operator_workspaces={@operator_workspaces}
       run_error={@run_error}
       backfill_error={@backfill_error}
       backfill_config={@backfill_config}
@@ -161,6 +163,8 @@ defmodule FavnView.PipelineDetailLive do
       subtitle={@pipeline_id}
       description={pipeline_error_message(@pipeline_state)}
       nav_items={@nav_items}
+      current_scope={@current_scope}
+      operator_workspaces={@operator_workspaces}
       flash={@flash}
       back_navigate={~p"/pipelines"}
       back_label="Back to pipelines"
@@ -173,6 +177,8 @@ defmodule FavnView.PipelineDetailLive do
       description="No active manifest pipeline matches this pipeline id."
       tone={:neutral}
       nav_items={@nav_items}
+      current_scope={@current_scope}
+      operator_workspaces={@operator_workspaces}
       flash={@flash}
       back_navigate={~p"/pipelines"}
       back_label="Back to pipelines"

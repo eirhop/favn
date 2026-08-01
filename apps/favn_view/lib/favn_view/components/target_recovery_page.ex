@@ -20,6 +20,8 @@ defmodule FavnView.Components.TargetRecoveryPage do
   attr :operation, :map, default: nil
   attr :error, :string, default: nil
   attr :planning?, :boolean, default: false
+  attr :current_scope, :any, default: nil
+  attr :operator_workspaces, :list, default: []
   attr :flash, :map, default: %{}
 
   def page(assigns) do
@@ -28,6 +30,8 @@ defmodule FavnView.Components.TargetRecoveryPage do
       title="Target recovery"
       subtitle="Restore proven Favn ownership after an interrupted initial materialization"
       nav_items={Navigation.items(:recoveries)}
+      current_scope={@current_scope}
+      operator_workspaces={@operator_workspaces}
       flash={@flash}
     >
       <div

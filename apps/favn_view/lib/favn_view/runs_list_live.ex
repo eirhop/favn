@@ -43,6 +43,8 @@ defmodule FavnView.RunsListLive do
 
   @impl true
   def render(assigns) do
+    assigns = assign_new(assigns, :operator_workspaces, fn -> [] end)
+
     ~H"""
     <RunsListPage.runs_list_page
       listing={@listing}
@@ -52,6 +54,8 @@ defmodule FavnView.RunsListLive do
       filters_open?={@filters_open?}
       error={@error}
       nav_items={@nav_items}
+      current_scope={@current_scope}
+      operator_workspaces={@operator_workspaces}
     />
     """
   end

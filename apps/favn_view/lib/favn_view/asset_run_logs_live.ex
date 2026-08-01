@@ -18,6 +18,8 @@ defmodule FavnView.AssetRunLogsLive do
           context.log_filter || %Favn.Log.Filter{run_id: run_id, asset_step_id: asset_step_id},
         scope: :asset,
         nav_items: LogsLiveSupport.nav_items(:runs),
+        current_scope: socket.assigns.current_scope,
+        operator_workspaces: socket.assigns.operator_workspaces,
         title: context.title,
         subtitle: context.subtitle,
         status: context.status,

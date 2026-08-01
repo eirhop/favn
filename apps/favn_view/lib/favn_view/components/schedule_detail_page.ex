@@ -18,6 +18,8 @@ defmodule FavnView.Components.ScheduleDetailPage do
   attr :loading, :boolean, default: false
   attr :error, :any, default: nil
   attr :nav_items, :list, required: true
+  attr :current_scope, :any, default: nil
+  attr :operator_workspaces, :list, default: []
 
   def schedule_detail_page(assigns) do
     assigns = assign_detail_header(assigns)
@@ -29,6 +31,8 @@ defmodule FavnView.Components.ScheduleDetailPage do
       status={@status}
       status_tone={@status_tone}
       nav_items={@nav_items}
+      current_scope={@current_scope}
+      operator_workspaces={@operator_workspaces}
       back_href={~p"/schedules"}
       back_label="Back to schedules"
       facts={@facts}

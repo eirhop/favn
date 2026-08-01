@@ -16,6 +16,8 @@ defmodule FavnView.LogsLive do
         filter: %Favn.Log.Filter{},
         scope: :global,
         nav_items: LogsLiveSupport.nav_items(:logs),
+        current_scope: socket.assigns.current_scope,
+        operator_workspaces: socket.assigns.operator_workspaces,
         title: "Logs",
         subtitle: "Live system and run logs",
         empty_state: "No logs yet."

@@ -138,6 +138,8 @@ defmodule FavnView.TargetRecoveryLive do
       operation={@operation}
       planning?={@planning?}
       error={@error}
+      current_scope={@current_scope}
+      operator_workspaces={@operator_workspaces}
       flash={@flash}
     />
     """

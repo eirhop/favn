@@ -30,6 +30,8 @@ defmodule FavnView.Components.RunDetailPage do
   attr :run, :map, required: true
   attr :run_id, :string, required: true
   attr :nav_items, :list, default: []
+  attr :current_scope, :any, default: nil
+  attr :operator_workspaces, :list, default: []
   attr :active_mode, :atom, default: :flow
 
   attr :flow, :map,
@@ -56,6 +58,8 @@ defmodule FavnView.Components.RunDetailPage do
       status={@run[:status]}
       status_tone={@run[:status_tone] || :neutral}
       nav_items={@nav_items}
+      current_scope={@current_scope}
+      operator_workspaces={@operator_workspaces}
       back_href={@run[:back_asset_href]}
       back_label={if(@run[:back_asset_href], do: "Back to asset", else: nil)}
       facts={run_facts(@run)}

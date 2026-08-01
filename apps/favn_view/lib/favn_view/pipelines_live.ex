@@ -45,6 +45,8 @@ defmodule FavnView.PipelinesLive do
       loading={@loading}
       error={@error}
       nav_items={@nav_items}
+      current_scope={@current_scope}
+      operator_workspaces={@operator_workspaces}
       status_options={@status_options}
     />
     """

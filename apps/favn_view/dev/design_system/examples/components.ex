@@ -14,6 +14,7 @@ defmodule FavnView.Dev.DesignSystem.Examples.Components do
 
   import FavnView.Components.AppShell
 
+  alias FavnView.Auth.Scope
   alias FavnView.Components.ModeRail
   alias FavnView.Components.Navigation
   alias FavnView.Dev.DesignSystem.Example
@@ -29,6 +30,7 @@ defmodule FavnView.Dev.DesignSystem.Examples.Components do
     %{}
     |> Map.merge(shell())
     |> Map.merge(navigation())
+    |> Map.merge(workspace())
     |> Map.merge(logs())
     |> Map.merge(schedules())
     |> Map.merge(window_actions())
@@ -69,6 +71,20 @@ defmodule FavnView.Dev.DesignSystem.Examples.Components do
         ),
         Example.attrs(:runs_active, %{items: Navigation.items(:runs)}),
         Example.attrs(
+          :admin_active,
+          %{
+            items: Navigation.items(:runs),
+            current_scope: %Scope{workspace_id: "workspace-one"},
+            operator_workspaces: [
+              %{id: "workspace-one", name: "Workspace One", status: :active},
+              %{id: "workspace-two", name: "Workspace Two", status: :active}
+            ],
+            admin?: true,
+            admin_active?: true
+          },
+          "Administrators get one primary Admin destination, marked active on the admin page."
+        ),
+        Example.attrs(
           :nothing_active,
           %{items: Navigation.items()},
           "A screen that is not reachable from the rail marks nothing active."
@@ -84,6 +100,21 @@ defmodule FavnView.Dev.DesignSystem.Examples.Components do
           :open,
           %{items: Navigation.items(:runs), open: true},
           "Labels are visible here because there is room for them."
+        ),
+        Example.attrs(
+          :admin_active,
+          %{
+            items: Navigation.items(:runs),
+            open: true,
+            current_scope: %Scope{workspace_id: "workspace-one"},
+            operator_workspaces: [
+              %{id: "workspace-one", name: "Workspace One", status: :active},
+              %{id: "workspace-two", name: "Workspace Two", status: :active}
+            ],
+            admin?: true,
+            admin_active?: true
+          },
+          "The mobile menu keeps workspace switching and Admin in the same predictable order."
         )
       ],
       "mode_rail/mode_rail" => [
@@ -99,6 +130,32 @@ defmodule FavnView.Dev.DesignSystem.Examples.Components do
             ]
           },
           "A disabled mode stays visible so the screen's shape does not change."
+        )
+      ]
+    }
+  end
+
+  defp workspace do
+    %{
+      "workspace_menu/workspace_menu" => [
+        Example.attrs(
+          :single_workspace,
+          %{
+            current_scope: %Scope{workspace_id: "workspace-one"},
+            workspaces: [%{id: "workspace-one", name: "Workspace One", status: :active}]
+          },
+          "The current workspace remains visible without adding an unnecessary switcher."
+        ),
+        Example.attrs(
+          :multiple_workspaces,
+          %{
+            current_scope: %Scope{workspace_id: "workspace-one"},
+            workspaces: [
+              %{id: "workspace-one", name: "Workspace One", status: :active},
+              %{id: "workspace-two", name: "Workspace Two", status: :active}
+            ]
+          },
+          "Multiple active workspaces turn the current name into an easy switcher."
         )
       ]
     }

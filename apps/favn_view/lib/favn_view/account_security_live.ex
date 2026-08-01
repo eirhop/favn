@@ -8,6 +8,9 @@ defmodule FavnView.AccountSecurityLive do
 
   use FavnView, :live_view
 
+  alias FavnView.Components.AccountSecurityPage
+  alias FavnView.Components.Navigation
+
   @impl true
   def mount(_params, _session, socket), do: {:ok, socket}
 
@@ -37,44 +40,12 @@ defmodule FavnView.AccountSecurityLive do
   @impl true
   def render(assigns) do
     ~H"""
-    <main class="mx-auto max-w-xl space-y-6 p-6" data-testid="account-security">
-      <header>
-        <h1 class="text-2xl font-semibold">Account security</h1>
-        <p class="mt-1 text-sm opacity-70">
-          Changing your password revokes every active session in every workspace.
-        </p>
-      </header>
-
-      <.flash_group flash={@flash} />
-
-      <form phx-submit="change_password" class="space-y-4 rounded-box border p-4">
-        <input
-          name="current_password"
-          type="password"
-          autocomplete="current-password"
-          required
-          placeholder="Current password"
-          class="input input-bordered w-full"
-        />
-        <input
-          name="new_password"
-          type="password"
-          autocomplete="new-password"
-          required
-          placeholder="New password"
-          class="input input-bordered w-full"
-        />
-        <input
-          name="new_password_confirmation"
-          type="password"
-          autocomplete="new-password"
-          required
-          placeholder="Confirm new password"
-          class="input input-bordered w-full"
-        />
-        <button type="submit" class="btn btn-primary">Change password</button>
-      </form>
-    </main>
+    <AccountSecurityPage.account_security_page
+      current_scope={@current_scope}
+      operator_workspaces={@operator_workspaces}
+      nav_items={Navigation.items()}
+      flash={@flash}
+    />
     """
   end
 

@@ -17,6 +17,8 @@ defmodule FavnView.RunLogsLive do
         filter: %Favn.Log.Filter{run_id: run_id},
         scope: :run,
         nav_items: LogsLiveSupport.nav_items(:runs),
+        current_scope: socket.assigns.current_scope,
+        operator_workspaces: socket.assigns.operator_workspaces,
         title: run[:title],
         subtitle: run[:subtitle] || "Run #{run[:title]}",
         status: run[:status],
