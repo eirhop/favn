@@ -66,7 +66,7 @@ defmodule FavnView.PipelineDetailLive do
         {:noreply,
          socket
          |> CommandAttempt.acknowledge(attempt)
-         |> put_flash(:info, "Pipeline run submitted")
+         |> put_flash(:info, "Run request queued")
          |> push_navigate(to: ~p"/runs/#{run_id}")}
 
       {:error, reason} ->

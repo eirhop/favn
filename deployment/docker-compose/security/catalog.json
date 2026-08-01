@@ -42,7 +42,8 @@
     {"id": "WEB-021", "method": "GET", "path": "/rebuilds/{operation_id}", "access": "viewer"},
     {"id": "WEB-022", "method": "GET", "path": "/recoveries", "access": "operator"},
     {"id": "WEB-023", "method": "GET", "path": "/account/security", "access": "viewer"},
-    {"id": "WEB-024", "method": "GET", "path": "/admin", "access": "admin"}
+    {"id": "WEB-024", "method": "GET", "path": "/admin", "access": "admin"},
+    {"id": "WEB-025", "method": "GET", "path": "/runners", "access": "viewer"}
   ],
   "api": [
     {"id": "API-001", "method": "GET", "path": "/api/orchestrator/v1/health", "access": "public"},

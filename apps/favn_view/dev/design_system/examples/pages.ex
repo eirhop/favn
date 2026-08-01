@@ -21,6 +21,7 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
   alias FavnView.Components.PipelinesPage
   alias FavnView.Components.ScheduleDetailPage
   alias FavnView.Components.SchedulesPage
+  alias FavnView.Components.RunnersPage
   alias FavnView.Dev.DesignSystem.Example
   alias FavnView.Dev.DesignSystem.Fixtures
   alias FavnView.Dev.DesignSystem.Fixtures.AssetDetail
@@ -43,6 +44,7 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
     |> Map.merge(log_pages())
     |> Map.merge(pipelines())
     |> Map.merge(runs())
+    |> Map.merge(runners())
     |> Map.merge(schedules())
     |> Map.merge(rebuilds())
     |> Map.merge(recovery())
@@ -596,7 +598,99 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
             nav_items: Runs.nav_items()
           },
           "Committed but not yet observable. Must not read as not-found."
+        ),
+        Example.attrs(:submission_queued, %{
+          run: Runs.submission(:queued),
+          run_id: "run_submission_crm_reference",
+          nav_items: Runs.nav_items()
+        }),
+        Example.attrs(:submission_preparing, %{
+          run: Runs.submission(:preparing),
+          run_id: "run_submission_crm_reference",
+          nav_items: Runs.nav_items()
+        }),
+        Example.attrs(
+          :submission_failed,
+          %{
+            run: Runs.submission(:failed),
+            run_id: "run_submission_crm_reference",
+            nav_items: Runs.nav_items()
+          },
+          "Preparation failed before admission; the durable failure points to runner diagnostics."
         )
+      ]
+    }
+  end
+
+  defp runners do
+    now = ~U[2026-07-31 12:00:00Z]
+
+    runner = %{
+      runner_instance_id: "runner-local-duckdb",
+      runner_pool: "duckdb",
+      required_runner_release_id: "rr_local",
+      status: :idle,
+      supported_task_kinds: [:relation_inspection, :asset_attempt],
+      capabilities: ["relation_inspection", "asset_execution"],
+      registered_at: now,
+      active_task_id: nil
+    }
+
+    failed_task = %{
+      task_id: "runner-task-inspection",
+      task_kind: :relation_inspection,
+      status: :failed,
+      runner_pool: "duckdb",
+      assigned_runner_instance_id: "runner-local-duckdb",
+      enqueued_at: now,
+      failure: %{
+        title: "Driver unavailable",
+        message: "failed to initialize DuckDB ADBC connection: driver unavailable",
+        remediation: "Set DUCKDB_ADBC_DRIVER and restart the runner.",
+        code: "driver_unavailable"
+      }
+    }
+
+    %{
+      "runners_page/runners_page" => [
+        Example.attrs(:connected, %{
+          overview: %{
+            runner_count: 1,
+            registry_status: :available,
+            runners: [runner],
+            tasks: [],
+            failures: [],
+            observed_at: now
+          },
+          nav_items: RunnersPage.nav_items()
+        }),
+        Example.attrs(:failed_task, %{
+          overview: %{
+            runner_count: 0,
+            registry_status: :available,
+            runners: [],
+            tasks: [failed_task],
+            failures: [failed_task],
+            observed_at: now
+          },
+          nav_items: RunnersPage.nav_items()
+        }),
+        Example.attrs(:empty, %{
+          overview: %{
+            runner_count: 0,
+            registry_status: :available,
+            runners: [],
+            tasks: [],
+            failures: [],
+            observed_at: now
+          },
+          nav_items: RunnersPage.nav_items()
+        }),
+        Example.attrs(:loading, %{loading: true, nav_items: RunnersPage.nav_items()}),
+        Example.attrs(:error, %{
+          error: "Runner diagnostics are unavailable",
+          nav_items: RunnersPage.nav_items()
+        })
       ]
     }
   end

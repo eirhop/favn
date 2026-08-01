@@ -29,6 +29,7 @@ defmodule FavnView.Components.Navigation do
     {:pipelines, "Pipelines", "hero-queue-list", "/pipelines"},
     {:schedules, "Schedules", "hero-calendar-days", "/schedules"},
     {:runs, "Runs", "hero-rocket-launch", "/runs"},
+    {:runners, "Runners", "hero-server-stack", "/runners"},
     {:rebuilds, "Rebuilds", "hero-arrow-path-rounded-square", "/rebuilds"},
     {:recoveries, "Recovery", "hero-shield-check", "/recoveries"},
     {:logs, "Logs", "hero-document-text", "/logs"}

@@ -85,6 +85,11 @@ MIX_ENV=test mix do --app favn_view cmd mix test --no-compile
 
 Use the umbrella suite only when the change crosses app boundaries.
 
+When adding or changing a production browser route or page, also run
+`node deployment/docker-compose/security/catalog-check.mjs` and the full
+`sh deployment/docker-compose/run-security-qualification.sh` harness so
+authenticated accessibility failures are caught before CI.
+
 ## Reference
 
 - Function components, attrs, slots: https://hexdocs.pm/phoenix_live_view/Phoenix.Component.html

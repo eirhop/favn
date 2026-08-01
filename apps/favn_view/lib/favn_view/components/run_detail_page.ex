@@ -23,6 +23,7 @@ defmodule FavnView.Components.RunDetailPage do
   alias FavnView.Components.RunDetailPage.Flow
   alias FavnView.Components.RunDetailPage.NotFound
   alias FavnView.Components.RunDetailPage.Progress
+  alias FavnView.Components.RunDetailPage.Submission
   alias FavnView.Components.RunDetailPage.WindowRuns
   alias FavnView.RunFlow
 
@@ -88,7 +89,8 @@ defmodule FavnView.Components.RunDetailPage do
           {@run[:retry_remaining_label] || "Retry remaining"}
         </.button>
       </:actions>
-      <NotFound.not_found_panel :if={!@run[:found?]} run={@run} />
+      <Submission.submission_panel :if={@run[:submission?]} run={@run} />
+      <NotFound.not_found_panel :if={!@run[:found?] && !@run[:submission?]} run={@run} />
       <.execution_group_page
         :if={@run[:found?]}
         run={@run}
@@ -98,7 +100,7 @@ defmodule FavnView.Components.RunDetailPage do
         selected_attempt={@selected_attempt}
         selected_attempt_id={@selected_attempt_id}
       />
-      <:mode_rail>
+      <:mode_rail :if={@run[:found?]}>
         <ModeRail.mode_rail active={@active_mode} modes={run_modes(@run)} on_select="set_mode" />
       </:mode_rail>
     </AppShell.app_shell>
@@ -218,10 +220,22 @@ defmodule FavnView.Components.RunDetailPage do
     ]
   end
 
+  defp run_facts(%{submission?: true} = run) do
+    [
+      %{label: "Queued", value: run.enqueued_at || "-"},
+      %{label: "Target", value: run.target_id, mono: true},
+      %{label: "Attempt", value: run.attempt}
+    ]
+  end
+
   defp run_facts(_run), do: []
   defp page_title(%{found?: true, title: title}, _run_id), do: title
   defp page_title(_run, run_id), do: "Run #{short_id(run_id)}"
   defp page_subtitle(%{found?: true, subtitle: subtitle}), do: subtitle
+
+  defp page_subtitle(%{submission?: true, target_kind: kind}),
+    do: "#{String.capitalize(kind)} request"
+
   defp page_subtitle(_run), do: "Run detail"
 
   defp short_id(id) when is_binary(id) and byte_size(id) > 18, do: String.slice(id, 0, 18)

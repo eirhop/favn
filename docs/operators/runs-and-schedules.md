@@ -78,6 +78,24 @@ or unknown failures. Authenticated viewers can inspect
 `GET /api/orchestrator/v1/runs/submissions/stats`. A failed submission is not
 silently converted into a missing run.
 
+The run detail page follows the same contract. Before admission it shows the
+durable `queued`, `preparing`, or `starting` submission state. A preparation
+failure remains attached to the reserved run id and links to `/runners` instead
+of becoming a not-found page.
+
+Use `/runners` to inspect two different kinds of evidence:
+
+- connected runners and their current pool, release, capabilities, and live
+  state;
+- recent workspace-scoped runner tasks from PostgreSQL, including redacted
+  terminal errors and remediation.
+
+Live runner presence is process-local and disappears when a runner disconnects.
+Task history is durable, so the error that caused a runner task to fail remains
+available after the runner exits or restarts. For a missing DuckDB ADBC driver,
+the page preserves the redacted driver error and points local development to
+`DUCKDB_ADBC_DRIVER`.
+
 ### Choose Asset Dependency Scope And Refresh
 
 Direct asset submissions have two independent controls:
