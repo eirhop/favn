@@ -2,19 +2,23 @@ defmodule FavnView.AssetCatalogueFilters do
   @moduledoc """
   Pure filter logic for the asset catalogue.
 
-  The connection and catalogue selects are dependent: choosing a connection
-  narrows the catalogue options to that connection's catalogues, and a
-  catalogue that stops existing under the new connection falls back to `"all"`
-  rather than silently filtering everything away. Both rules live here, pure
-  and testable, so the LiveView only wires events to them.
+  The three namespace selects are a dependent chain, in relation order:
+  connection narrows catalogue, and connection plus catalogue narrow schema. A
+  choice that stops existing under a wider selection falls back to `"all"`
+  rather than silently filtering everything away. The rules live here, pure and
+  testable, so the LiveView only wires events to them.
   """
 
   @type filters :: %{
           search: String.t(),
           connection: String.t(),
           catalogue: String.t(),
+          schema: String.t(),
           scope: String.t()
         }
+
+  # In relation order, each narrowed by every level above it.
+  @namespace_levels [:connection, :catalogue, :schema]
 
   # The three states the catalogue reports are independent, and each has its own
   # bad news: a run that failed, a window that was never materialised, a target
@@ -60,7 +64,7 @@ defmodule FavnView.AssetCatalogueFilters do
   ## Examples
 
       iex> FavnView.AssetCatalogueFilters.normalize(%{"connection" => "duckdb"})
-      %{search: "", connection: "duckdb", catalogue: "all", scope: "all"}
+      %{search: "", connection: "duckdb", catalogue: "all", schema: "all", scope: "all"}
   """
   @spec normalize(map()) :: filters()
   def normalize(params) do
@@ -68,13 +72,15 @@ defmodule FavnView.AssetCatalogueFilters do
       search: Map.get(params, "search", ""),
       connection: Map.get(params, "connection", "all"),
       catalogue: Map.get(params, "catalogue", "all"),
+      schema: Map.get(params, "schema", "all"),
       scope: Map.get(params, "scope", "all")
     }
   end
 
   @doc "The default, nothing-narrowed filter state."
   @spec defaults() :: filters()
-  def defaults, do: %{search: "", connection: "all", catalogue: "all", scope: "all"}
+  def defaults,
+    do: %{search: "", connection: "all", catalogue: "all", schema: "all", scope: "all"}
 
   @doc """
   Whether anything narrows the list beyond its default view.
@@ -92,7 +98,7 @@ defmodule FavnView.AssetCatalogueFilters do
   @spec narrowed?(map()) :: boolean()
   def narrowed?(filters) do
     String.trim(to_string(Map.get(filters, :search, ""))) != "" or
-      Enum.any?([:connection, :catalogue, :scope], &(Map.get(filters, &1, "all") != "all"))
+      Enum.any?([:scope | @namespace_levels], &(Map.get(filters, &1, "all") != "all"))
   end
 
   @doc """
@@ -125,55 +131,37 @@ defmodule FavnView.AssetCatalogueFilters do
   end
 
   @doc """
-  Drops a catalogue choice that does not exist under the chosen connection.
+  Drops a catalogue or schema choice that the levels above it no longer allow.
+
+  Reconciliation runs in relation order, so narrowing a connection can reset the
+  catalogue, and that reset in turn widens which schemas are allowed.
 
   ## Examples
 
-      iex> assets = [%{connection: "duckdb", catalogue: "sales"}]
-      iex> FavnView.AssetCatalogueFilters.reconcile_catalogue(
-      ...>   %{search: "", connection: "duckdb", catalogue: "crm"},
+      iex> assets = [%{connection: "duckdb", catalogue: "raw", schema: "sales"}]
+      iex> FavnView.AssetCatalogueFilters.reconcile_namespace(
+      ...>   %{connection: "duckdb", catalogue: "mart", schema: "sales"},
       ...>   assets
       ...> )
-      %{search: "", connection: "duckdb", catalogue: "all"}
+      %{connection: "duckdb", catalogue: "all", schema: "sales"}
 
-      iex> assets = [%{connection: "duckdb", catalogue: "sales"}]
-      iex> FavnView.AssetCatalogueFilters.reconcile_catalogue(
-      ...>   %{search: "", connection: "duckdb", catalogue: "sales"},
+      iex> assets = [%{connection: "duckdb", catalogue: "raw", schema: "sales"}]
+      iex> FavnView.AssetCatalogueFilters.reconcile_namespace(
+      ...>   %{connection: "duckdb", catalogue: "raw", schema: "finance"},
       ...>   assets
       ...> )
-      %{search: "", connection: "duckdb", catalogue: "sales"}
+      %{connection: "duckdb", catalogue: "raw", schema: "all"}
   """
-  @spec reconcile_catalogue(filters(), [map()]) :: filters()
-  def reconcile_catalogue(%{catalogue: "all"} = filters, _assets), do: filters
-
-  def reconcile_catalogue(filters, assets) do
-    valid? =
-      assets
-      |> Enum.filter(&(filters.connection == "all" or &1.connection == filters.connection))
-      |> Enum.any?(&(&1.catalogue == filters.catalogue))
-
-    if valid?, do: filters, else: %{filters | catalogue: "all"}
-  end
-
-  @doc """
-  Catalogue select options for the chosen connection.
-
-  ## Examples
-
-      iex> assets = [
-      ...>   %{connection: "duckdb", catalogue: "sales"},
-      ...>   %{connection: "postgres", catalogue: "crm"}
-      ...> ]
-      iex> FavnView.AssetCatalogueFilters.catalogue_options(assets, "duckdb")
-      [{"Catalogue", "all"}, {"Sales", "sales"}]
-  """
-  @spec catalogue_options([map()], String.t()) :: [{String.t(), String.t()}]
-  def catalogue_options(assets, "all"), do: options(assets, :catalogue, "Catalogue")
-
-  def catalogue_options(assets, connection) do
-    assets
-    |> Enum.filter(&(&1.connection == connection))
-    |> options(:catalogue, "Catalogue")
+  @spec reconcile_namespace(map(), [map()]) :: map()
+  def reconcile_namespace(filters, assets) do
+    Enum.reduce(@namespace_levels, filters, fn level, acc ->
+      if Map.get(acc, level, "all") == "all" or
+           Enum.any?(narrow(assets, acc, level), &(Map.get(&1, level) == Map.get(acc, level))) do
+        acc
+      else
+        Map.put(acc, level, "all")
+      end
+    end)
   end
 
   @doc """
@@ -183,17 +171,64 @@ defmodule FavnView.AssetCatalogueFilters do
   def connection_options(assets), do: options(assets, :connection, "Connection")
 
   @doc """
+  Catalogue select options allowed by the chosen connection.
+
+  ## Examples
+
+      iex> assets = [
+      ...>   %{connection: "duckdb", catalogue: "raw", schema: "sales"},
+      ...>   %{connection: "postgres", catalogue: "crm", schema: "sales"}
+      ...> ]
+      iex> FavnView.AssetCatalogueFilters.catalogue_options(assets, %{connection: "duckdb"})
+      [{"Catalogue", "all"}, {"Raw", "raw"}]
+  """
+  @spec catalogue_options([map()], map()) :: [{String.t(), String.t()}]
+  def catalogue_options(assets, filters),
+    do: assets |> narrow(filters, :catalogue) |> options(:catalogue, "Catalogue")
+
+  @doc """
+  Schema select options allowed by the chosen connection and catalogue.
+
+  ## Examples
+
+      iex> assets = [
+      ...>   %{connection: "duckdb", catalogue: "raw", schema: "sales"},
+      ...>   %{connection: "duckdb", catalogue: "mart", schema: "finance"}
+      ...> ]
+      iex> FavnView.AssetCatalogueFilters.schema_options(
+      ...>   assets,
+      ...>   %{connection: "duckdb", catalogue: "raw"}
+      ...> )
+      [{"Schema", "all"}, {"Sales", "sales"}]
+  """
+  @spec schema_options([map()], map()) :: [{String.t(), String.t()}]
+  def schema_options(assets, filters),
+    do: assets |> narrow(filters, :schema) |> options(:schema, "Schema")
+
+  # Assets still allowed by every namespace level above `level`.
+  defp narrow(assets, filters, level) do
+    above = Enum.take_while(@namespace_levels, &(&1 != level))
+
+    Enum.filter(assets, fn asset ->
+      Enum.all?(above, fn key ->
+        chosen = Map.get(filters, key, "all")
+        chosen == "all" or Map.get(asset, key) == chosen
+      end)
+    end)
+  end
+
+  @doc """
   Assets matching the search, connection, and catalogue.
 
   ## Examples
 
       iex> assets = [
-      ...>   %{name: "stg_orders", connection: "duckdb", catalogue: "sales"},
-      ...>   %{name: "accounts", connection: "postgres", catalogue: "crm"}
+      ...>   %{name: "stg_orders", connection: "duckdb", catalogue: "raw", schema: "sales"},
+      ...>   %{name: "accounts", connection: "postgres", catalogue: "crm", schema: "sales"}
       ...> ]
       iex> FavnView.AssetCatalogueFilters.filter(
       ...>   assets,
-      ...>   %{search: "", connection: "duckdb", catalogue: "all", scope: "all"}
+      ...>   %{search: "", connection: "duckdb", catalogue: "all", schema: "all", scope: "all"}
       ...> ) |> Enum.map(& &1.name)
       ["stg_orders"]
   """
@@ -204,10 +239,14 @@ defmodule FavnView.AssetCatalogueFilters do
 
     Enum.filter(assets, fn asset ->
       matches_search? = search == "" || String.contains?(String.downcase(asset.name), search)
-      matches_connection? = filters.connection == "all" || asset.connection == filters.connection
-      matches_catalogue? = filters.catalogue == "all" || asset.catalogue == filters.catalogue
 
-      matches_search? && matches_connection? && matches_catalogue? && in_scope?(asset, scope)
+      matches_namespace? =
+        Enum.all?(@namespace_levels, fn level ->
+          chosen = Map.get(filters, level, "all")
+          chosen == "all" or Map.get(asset, level) == chosen
+        end)
+
+      matches_search? && matches_namespace? && in_scope?(asset, scope)
     end)
   end
 
@@ -226,7 +265,7 @@ defmodule FavnView.AssetCatalogueFilters do
   defp options(assets, field, label) do
     options =
       assets
-      |> Enum.map(&Map.fetch!(&1, field))
+      |> Enum.map(&Map.get(&1, field))
       |> Enum.reject(&(&1 in [nil, ""]))
       |> Enum.uniq()
       |> Enum.sort()

@@ -67,8 +67,10 @@ defmodule FavnView.UI.Dialog do
         <header class="mb-4 flex items-start justify-between gap-3">
           <div class="min-w-0">
             <h2 id={"#{@id}-title"} class="text-base font-medium">{@title}</h2>
-            <p :if={@subtitle} class="favn-text-muted mt-1 text-xs">{@subtitle}</p>
+
+            <p :if={@subtitle} class="favn-text-muted mt-1 text-sm">{@subtitle}</p>
           </div>
+
           <.icon_button
             icon="hero-x-mark"
             label="Close"
@@ -77,9 +79,7 @@ defmodule FavnView.UI.Dialog do
             data-testid={"#{@id}-close"}
           />
         </header>
-
         {render_slot(@inner_block)}
-
         <footer :if={@actions != []} class="modal-action">
           {render_slot(@actions)}
         </footer>

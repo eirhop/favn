@@ -64,11 +64,13 @@ defmodule FavnView.UI.Surface do
           >
             <.icon name={header[:icon]} size={:md} />
           </span>
+
           <div class="min-w-0">
             <h2 class="truncate text-base font-medium tracking-tight text-base-content">
               {header.title}
             </h2>
-            <p :if={header[:subtitle]} class="mt-0.5 truncate text-xs favn-text-muted">
+
+            <p :if={header[:subtitle]} class="mt-0.5 truncate text-sm favn-text-muted">
               {header[:subtitle]}
             </p>
           </div>
@@ -78,9 +80,7 @@ defmodule FavnView.UI.Surface do
           {render_slot(@actions)}
         </div>
       </div>
-
       {render_slot(@inner_block)}
-
       <div :if={@footer != []} class="mt-4 border-t border-base-content/10 pt-4">
         {render_slot(@footer)}
       </div>
@@ -178,7 +178,7 @@ defmodule FavnView.UI.Surface do
   def surface_divider(assigns) do
     ~H"""
     <div class={["flex items-center gap-3 py-3", @class]}>
-      <span class="text-xs uppercase tracking-[0.18em] favn-text-subtle">{@label}</span>
+      <span class="text-sm uppercase tracking-[0.18em] favn-text-subtle">{@label}</span>
       <span class="h-px flex-1 bg-base-content/10"></span>
     </div>
     """

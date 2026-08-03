@@ -74,14 +74,12 @@ defmodule FavnView.Components.StatusPage do
         data-testid="status-page"
       >
         <.loading_state :if={@loading} label="Checking for anything that needs attention" />
-
         <.error_state
           :if={!@loading && @error}
           title="Could not load status"
           description={@error}
           data-testid="status-error-state"
         />
-
         <.stack :if={!@loading && !@error} gap={{:md, :lg}}>
           <.notice :for={source <- @unavailable} tone={:warning}>
             {source} could not be reached, so anything needing attention there is not listed.
@@ -93,9 +91,7 @@ defmodule FavnView.Components.StatusPage do
             description="No failing runs, no stale assets, no schedules in error, and no operations waiting to be reconciled."
             icon="hero-check-circle"
             data-testid="status-all-clear"
-          />
-
-          <.concern_group :for={group <- @groups} group={group} />
+          /> <.concern_group :for={group <- @groups} group={group} />
         </.stack>
       </div>
     </AppShell.app_shell>
@@ -131,12 +127,13 @@ defmodule FavnView.Components.StatusPage do
             <.status_dot tone={Map.get(@concern, :tone, @tone)} label={@concern.title} />
             <span class="truncate font-medium">{@concern.title}</span>
           </.inline>
-          <p class="favn-text-muted text-xs">{@concern.detail}</p>
+
+          <p class="favn-text-muted text-sm">{@concern.detail}</p>
         </div>
 
         <div class="flex shrink-0 items-center gap-2">
           <.meta :if={@concern[:meta]}>{@concern.meta}</.meta>
-          <span class="favn-text-subtle text-xs">{@concern.action_label}</span>
+          <span class="favn-text-subtle text-sm">{@concern.action_label}</span>
           <.icon name="hero-chevron-right" size={:sm} class="favn-text-subtle" />
         </div>
       </div>

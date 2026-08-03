@@ -125,6 +125,7 @@ defmodule FavnView.Components.OutputMetadata do
     >
       <div class="flex items-center justify-between gap-3">
         <h3 class="text-sm font-medium">{@title}</h3>
+
         <.copy_button
           :if={!@empty?}
           value={@raw_json}
@@ -147,16 +148,19 @@ defmodule FavnView.Components.OutputMetadata do
       >
         <div class="flex flex-wrap items-center justify-between gap-2">
           <p class="text-sm font-medium">{@check_summary.title}</p>
+
           <div class="flex flex-wrap gap-1.5">
             <span class={check_badge_class(@check_summary.tone)}>
               {@check_summary.quality_label}
             </span>
+
             <span :if={@check_summary.write_label} class="badge badge-outline badge-sm">
               {@check_summary.write_label}
             </span>
           </div>
         </div>
-        <p :if={@check_summary.description} class="mt-1 text-xs opacity-70">
+
+        <p :if={@check_summary.description} class="mt-1 text-sm opacity-70">
           {@check_summary.description}
         </p>
 
@@ -171,20 +175,25 @@ defmodule FavnView.Components.OutputMetadata do
             <div class="flex flex-wrap items-center justify-between gap-2">
               <div class="flex flex-wrap items-center gap-2">
                 <span class={check_origin_badge(check.origin)}>{check.origin_label}</span>
-                <p class="font-mono text-xs font-semibold">{check.name}</p>
+                <p class="font-mono text-sm font-semibold">{check.name}</p>
               </div>
+
               <p :if={check.claim_id} class="mt-1 font-mono text-[0.7rem] opacity-55">
                 {check.claim_id}
               </p>
               <span class={check_badge_class(check.tone)}>{check.outcome_label}</span>
             </div>
-            <p class="mt-1 text-xs opacity-65">
+
+            <p class="mt-1 text-sm opacity-65">
               {check.phase_label}{check.duration_label}
             </p>
-            <p :if={check.message} class="mt-1 text-xs">{check.message}</p>
-            <dl :if={check.metrics != []} class="mt-2 grid gap-1 text-xs">
+
+            <p :if={check.message} class="mt-1 text-sm">{check.message}</p>
+
+            <dl :if={check.metrics != []} class="mt-2 grid gap-1 text-sm">
               <div :for={{key, value} <- check.metrics} class="flex justify-between gap-3">
                 <dt class="opacity-60">{key}</dt>
+
                 <dd class="break-all font-mono">{value}</dd>
               </div>
             </dl>
@@ -199,6 +208,7 @@ defmodule FavnView.Components.OutputMetadata do
       >
         No output metadata available because the attempt failed before completion.
       </p>
+
       <p
         :if={@empty? && @active?}
         class="mt-3 text-sm favn-text-muted"
@@ -206,6 +216,7 @@ defmodule FavnView.Components.OutputMetadata do
       >
         No output metadata yet.
       </p>
+
       <p
         :if={@empty? && !@failed? && !@active?}
         class="mt-3 text-sm favn-text-muted"
@@ -215,13 +226,14 @@ defmodule FavnView.Components.OutputMetadata do
       </p>
 
       <details :if={!@empty?} class="mt-3 rounded-box border border-base-content/10 p-3">
-        <summary class="cursor-pointer text-xs font-medium favn-text-muted">
+        <summary class="cursor-pointer text-sm font-medium favn-text-muted">
           All {length(@rows)} metadata {if(length(@rows) == 1, do: "field", else: "fields")}
         </summary>
+
         <dl class="mt-3 divide-y divide-base-content/10 text-sm">
           <.metadata_row :for={row <- @rows} row={row} />
         </dl>
-        <pre class="mt-3 max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-box bg-base-300/35 p-3 text-xs favn-text-muted"><code>{@raw_json}</code></pre>
+        <pre class="mt-3 max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-box bg-base-300/35 p-3 text-sm favn-text-muted"><code>{@raw_json}</code></pre>
       </details>
     </section>
     """
@@ -232,8 +244,9 @@ defmodule FavnView.Components.OutputMetadata do
   defp metadata_row(assigns) do
     ~H"""
     <div class="grid gap-1 py-2 first:pt-0 last:pb-0 sm:grid-cols-[11rem_minmax(0,1fr)] sm:gap-4">
-      <dt class="text-xs favn-text-subtle">{@row.label}</dt>
-      <dd class={["break-words font-medium", @row.mono? && "font-mono text-xs"]}>{@row.value}</dd>
+      <dt class="text-sm favn-text-subtle">{@row.label}</dt>
+
+      <dd class={["break-words font-medium", @row.mono? && "font-mono text-sm"]}>{@row.value}</dd>
     </div>
     """
   end

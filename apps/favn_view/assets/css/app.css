@@ -246,7 +246,6 @@ summary {
   color: var(--favn-text-subtle);
 }
 
-
 @layer components {
   /* `favn-shell-bg` is the full page shell and claims the viewport. The
      design-system browser wants the same atmosphere without claiming it, so it

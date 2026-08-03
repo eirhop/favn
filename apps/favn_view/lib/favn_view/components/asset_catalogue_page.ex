@@ -41,6 +41,7 @@ defmodule FavnView.Components.AssetCataloguePage do
   attr :operator_workspaces, :list, default: []
   attr :connection_options, :list, required: true
   attr :catalogue_options, :list, required: true
+  attr :schema_options, :list, required: true
 
   attr :scope_choices, :list,
     required: true,
@@ -97,6 +98,7 @@ defmodule FavnView.Components.AssetCataloguePage do
                 filters={@filters}
                 connection_options={@connection_options}
                 catalogue_options={@catalogue_options}
+                schema_options={@schema_options}
                 scope_choices={@scope_choices}
               />
             </:toolbar>
@@ -139,6 +141,7 @@ defmodule FavnView.Components.AssetCataloguePage do
   attr :filters, :map, required: true
   attr :connection_options, :list, required: true
   attr :catalogue_options, :list, required: true
+  attr :schema_options, :list, required: true
   attr :scope_choices, :list, required: true
 
   def asset_filters(assigns) do
@@ -170,7 +173,10 @@ defmodule FavnView.Components.AssetCataloguePage do
           options={@connection_options}
           value={@filters.connection}
         />
+        <!-- A level whose options are only the "all" placeholder cannot narrow
+        anything, and a select that changes nothing is worse than a missing one. -->
         <.select_field
+          :if={length(@catalogue_options) > 1}
           id="catalogue-filter"
           name="filters[catalogue]"
           label="Catalogue filter"
@@ -178,42 +184,55 @@ defmodule FavnView.Components.AssetCataloguePage do
           options={@catalogue_options}
           value={@filters.catalogue}
         />
+        <.select_field
+          :if={length(@schema_options) > 1}
+          id="schema-filter"
+          name="filters[schema]"
+          label="Schema filter"
+          icon="hero-rectangle-stack"
+          options={@schema_options}
+          value={@filters.schema}
+        />
       </:filters>
     </.table_toolbar>
     """
   end
 
   @doc """
-  Sorts assets by connection, catalogue, then name.
+  Sorts assets by their namespace address, then by name.
 
   The namespace is the sort key rather than a group header, so the hierarchy
-  still reads top to bottom without costing a disclosure per group.
+  still reads top to bottom without costing a disclosure per group. Assets whose
+  address is inferred from the module sort after every declared one: an inferred
+  address addresses nothing, so interleaving the two would imply a hierarchy the
+  catalogue cannot resolve.
 
   ## Examples
 
       iex> alias FavnView.Components.AssetCataloguePage
       iex> assets = [
-      ...>   %{name: "c", connection: "postgres", catalogue: "crm"},
-      ...>   %{name: "b", connection: "duckdb", catalogue: "sales"},
-      ...>   %{name: "a", connection: "duckdb", catalogue: "sales"}
+      ...>   %{name: "d", module_path: ["lifecycle"]},
+      ...>   %{name: "c", connection: "postgres", catalogue: "crm", schema: "sales"},
+      ...>   %{name: "b", connection: "duckdb", catalogue: "raw", schema: "sales"},
+      ...>   %{name: "a", connection: "duckdb", catalogue: "raw", schema: nil}
       ...> ]
       iex> AssetCataloguePage.sorted_assets(assets) |> Enum.map(& &1.name)
-      ["a", "b", "c"]
+      ["a", "b", "c", "d"]
   """
   @spec sorted_assets([map()]) :: [map()]
   def sorted_assets(assets) do
-    Enum.sort_by(
-      assets,
-      &{Map.get(&1, :connection, ""), Map.get(&1, :catalogue, ""), Map.get(&1, :name, "")}
-    )
+    Enum.sort_by(assets, fn asset ->
+      {(namespace_inferred?(asset) && 1) || 0, Enum.map(namespace_levels(asset), & &1.value),
+       Map.get(asset, :name) || ""}
+    end)
   end
 
   @doc """
   Desktop table of all assets.
 
-  Namespace is one column — `connection · catalogue` with the connection's
-  icon — not two: the pair is read as a single address, and two columns of
-  repeated words are what made the old table too wide to scan.
+  Namespace is one column — the relation address with the connection's icon —
+  not one column per level: the levels are read as a single address, and columns
+  of repeated words are what made the old table too wide to scan.
   """
   attr :assets, :list, required: true
 
@@ -242,15 +261,7 @@ defmodule FavnView.Components.AssetCataloguePage do
       </:col>
 
       <:col :let={asset} label="Namespace" class="w-64">
-        <span
-          class="inline-flex min-w-0 items-center gap-1.5 font-mono text-xs"
-          data-testid="asset-namespace"
-        >
-          <.connection_icon connection={asset.connection} size={:sm} class="text-secondary" />
-          <span class="truncate text-secondary">{asset.connection}</span>
-          <span class="favn-text-subtle">·</span>
-          <span class="truncate text-accent">{asset.catalogue}</span>
-        </span>
+        <.asset_namespace asset={asset} />
       </:col>
 
       <:col :let={asset} label="State" class="w-28">
@@ -288,28 +299,110 @@ defmodule FavnView.Components.AssetCataloguePage do
         <div class="min-w-0 space-y-2">
           <div class="flex items-center gap-3">
             <span class="favn-density-list-card-icon flex shrink-0 items-center justify-center rounded-field border border-secondary/30 bg-secondary/10">
-              <.connection_icon connection={@asset.connection} class="text-secondary" />
+              <.icon
+                :if={namespace_inferred?(@asset)}
+                name="hero-code-bracket-square"
+                class="favn-text-subtle"
+              />
+              <.connection_icon
+                :if={!namespace_inferred?(@asset)}
+                connection={@asset.connection}
+                class="text-secondary"
+              />
             </span>
 
             <div class="min-w-0">
               <.section_title>{@asset.name}</.section_title>
 
-              <p class="truncate font-mono text-xs">
-                <span class="text-secondary">{@asset.connection}</span>
-                <span class="favn-text-subtle">·</span>
-                <span class="text-accent">{@asset.catalogue}</span>
-                <span class="favn-text-subtle">· {@asset.type}</span>
-              </p>
+              <.inline gap={:xs} class="min-w-0">
+                <.asset_namespace asset={@asset} icon={false} />
+                <span class="shrink-0 font-mono text-sm favn-text-subtle">· {@asset.type}</span>
+              </.inline>
             </div>
           </div>
 
-          <.inline gap={:sm} class="text-xs favn-text-muted">
+          <.inline gap={:sm} class="text-sm favn-text-muted">
             <.asset_state_icons asset={@asset} /> <span>{@asset.last_run_label}</span>
           </.inline>
         </div>
         <.icon name="hero-chevron-right" size={:md} class="mt-2 shrink-0 favn-text-muted" />
       </div>
     </.list_card>
+    """
+  end
+
+  @doc """
+  An asset's namespace: `connection · catalogue · schema`.
+
+  Only levels that exist are shown. An earlier version substituted `unknown` and
+  `uncatalogued` for missing ones, which read as populated levels and hid
+  `schema` — the level most assets do declare — behind a placeholder for one
+  they do not.
+
+  An asset that declares no relation levels shows its module path instead, since a
+  well-structured project's modules mirror its relation levels. The icon says
+  which: a data-system glyph for an address that exists physically, a code glyph
+  for one inferred from the module. That distinction matters — the second is not
+  somewhere you can go and query.
+
+  `namespace_defect/1` marks the one combination that cannot work: a catalogue
+  without a schema. `Favn.SQLAsset` refuses to render `catalog.name`, so such an
+  asset is misconfigured rather than merely sparse, and the catalogue is where an
+  operator sees it first.
+  """
+  attr :asset, :map, required: true
+
+  attr :icon, :boolean,
+    default: true,
+    doc: "set false where the surrounding row already shows the connection glyph"
+
+  def asset_namespace(assigns) do
+    assigns =
+      assigns
+      |> assign(:levels, namespace_levels(assigns.asset))
+      |> assign(:defect, namespace_defect(assigns.asset))
+      |> assign(:module?, namespace_inferred?(assigns.asset))
+
+    ~H"""
+    <span
+      :if={@levels == []}
+      class="inline-flex min-w-0 items-center gap-1.5 text-sm favn-text-subtle"
+      title="This asset declares no relation levels and its module has no namespace segments."
+      data-testid="asset-namespace"
+    >
+      <.icon name="hero-minus-circle" size={:sm} /> No namespace
+    </span>
+
+    <span
+      :if={@levels != []}
+      class="inline-flex min-w-0 items-center gap-1.5 font-mono text-sm"
+      title={namespace_title(@levels, @module?)}
+      data-testid="asset-namespace"
+      data-namespace-source={(@module? && "module") || "relation"}
+    >
+      <.icon
+        :if={@icon && @module?}
+        name="hero-code-bracket-square"
+        size={:sm}
+        class="shrink-0 favn-text-subtle"
+      />
+      <.connection_icon
+        :if={@icon && !@module?}
+        connection={@asset.connection}
+        size={:sm}
+        class="shrink-0 text-secondary"
+      />
+      <span :for={{level, index} <- Enum.with_index(@levels)} class="inline-flex min-w-0 gap-1.5">
+        <span :if={index > 0} class="favn-text-subtle">·</span>
+        <span class={["truncate", level_class(level.level)]}>
+          {level.value}
+        </span>
+      </span>
+
+      <span :if={@defect} data-testid="asset-namespace-defect" class="inline-flex">
+        <.status_icon tone={:error} icon="hero-exclamation-triangle" label={@defect} />
+      </span>
+    </span>
     """
   end
 
@@ -374,7 +467,7 @@ defmodule FavnView.Components.AssetCataloguePage do
   operator UX review. Colour is the caller's: in the catalogue the whole
   connection segment wears `text-secondary`.
   """
-  attr :connection, :string, required: true
+  attr :connection, :string, default: nil, doc: "nil when the asset owns no relation"
   attr :size, :atom, default: :md, values: [:xs, :sm, :md, :lg]
   attr :class, :any, default: "favn-text-muted"
 
@@ -407,7 +500,8 @@ defmodule FavnView.Components.AssetCataloguePage do
         id: "customer_orders_daily",
         name: "customer_orders_daily",
         connection: "snowflake",
-        catalogue: "sales",
+        catalogue: "mart",
+        schema: "sales",
         type: "table",
         status: :healthy,
         coverage_status: :complete,
@@ -418,7 +512,8 @@ defmodule FavnView.Components.AssetCataloguePage do
         id: "stg_orders",
         name: "stg_orders",
         connection: "snowflake",
-        catalogue: "sales",
+        catalogue: "raw",
+        schema: "sales",
         type: "view",
         status: :healthy,
         coverage_status: :incomplete,
@@ -429,7 +524,8 @@ defmodule FavnView.Components.AssetCataloguePage do
         id: "stg_customers",
         name: "stg_customers",
         connection: "snowflake",
-        catalogue: "sales",
+        catalogue: "raw",
+        schema: "sales",
         type: "view",
         status: :healthy,
         coverage_status: :unknown,
@@ -440,7 +536,8 @@ defmodule FavnView.Components.AssetCataloguePage do
         id: "raw_payments",
         name: "raw_payments",
         connection: "s3",
-        catalogue: "finance",
+        catalogue: "raw",
+        schema: "finance",
         type: "file",
         status: :running,
         compatibility_status: :ready,
@@ -450,7 +547,8 @@ defmodule FavnView.Components.AssetCataloguePage do
         id: "mart_daily_sales",
         name: "mart_daily_sales",
         connection: "snowflake",
-        catalogue: "sales",
+        catalogue: "mart",
+        schema: "sales",
         type: "table",
         status: :fresh,
         compatibility_status: :rebuild_required,
@@ -460,7 +558,8 @@ defmodule FavnView.Components.AssetCataloguePage do
         id: "mart_customer_360",
         name: "mart_customer_360",
         connection: "duckdb",
-        catalogue: "marketing",
+        catalogue: "mart",
+        schema: "marketing",
         type: "table",
         status: :fresh,
         compatibility_status: :unexpected_drift,
@@ -470,27 +569,40 @@ defmodule FavnView.Components.AssetCataloguePage do
         id: "dq_orders_nulls",
         name: "dq_orders_nulls",
         connection: "snowflake",
-        catalogue: "platform",
+        catalogue: "core",
+        schema: "platform",
         type: "metric",
         status: :failed,
         compatibility_status: :ready,
         last_run_label: "Failed 12m ago"
       },
+      # Three shapes the real catalogue contains and the address has to survive:
+      # an asset whose namespace comes from its module rather than a relation, one
+      # with neither, and one whose catalogue has no schema and cannot resolve.
       %{
-        id: "alerts_revenue_drop",
-        name: "alerts_revenue_drop",
-        connection: "snowflake",
-        catalogue: "finance",
-        type: "metric",
+        id: "land_crm_activities",
+        name: "activities",
+        module_path: ["landing", "crm", "daily"],
+        type: "elixir",
+        status: :healthy,
+        compatibility_status: :ready,
+        last_run_label: "9m ago"
+      },
+      %{
+        id: "retry_probe",
+        name: "retry_probe",
+        module_path: [],
+        type: "elixir",
         status: :missed,
         compatibility_status: :ready,
-        last_run_label: "Missed 1h ago"
+        last_run_label: "31m ago"
       },
       %{
         id: "stg_payments",
         name: "stg_payments",
         connection: "postgres",
-        catalogue: "finance",
+        catalogue: "raw",
+        schema: nil,
         type: "table",
         status: :healthy,
         compatibility_status: :operator_decision,
@@ -500,7 +612,8 @@ defmodule FavnView.Components.AssetCataloguePage do
         id: "monthly_marketing_spend",
         name: "monthly_marketing_spend",
         connection: "s3",
-        catalogue: "marketing",
+        catalogue: "core",
+        schema: "marketing",
         type: "file",
         status: :fresh,
         compatibility_status: :ready,
@@ -522,12 +635,113 @@ defmodule FavnView.Components.AssetCataloguePage do
   def catalogue_options do
     [
       {"Catalogue", "all"},
+      {"Raw", "raw"},
+      {"Core", "core"},
+      {"Mart", "mart"}
+    ]
+  end
+
+  def schema_options do
+    [
+      {"Schema", "all"},
       {"Sales", "sales"},
       {"Finance", "finance"},
       {"Platform", "platform"},
       {"Marketing", "marketing"}
     ]
   end
+
+  @doc """
+  The namespace levels to show for an asset, widest first.
+
+  The levels an asset's relation declares, and when it declares none, its module
+  path — which in a well-structured project mirrors the same hierarchy. A relation
+  carrying only a `name` is legal and declares no levels, so the fallback keys off
+  the levels being empty rather than off the relation being absent.
+
+  ## Examples
+
+      iex> alias FavnView.Components.AssetCataloguePage
+      iex> AssetCataloguePage.namespace_levels(
+      ...>   %{connection: "warehouse", catalogue: nil, schema: "sales"}
+      ...> )
+      [%{level: :connection, value: "warehouse"}, %{level: :schema, value: "sales"}]
+
+      iex> alias FavnView.Components.AssetCataloguePage
+      iex> AssetCataloguePage.namespace_levels(%{module_path: ["lifecycle", "probes"]})
+      [%{level: :module, value: "lifecycle"}, %{level: :module, value: "probes"}]
+  """
+  @spec namespace_levels(map()) :: [%{level: atom(), value: String.t()}]
+  def namespace_levels(asset) do
+    case relation_levels(asset) do
+      [] -> asset |> Map.get(:module_path, []) |> Enum.map(&%{level: :module, value: &1})
+      levels -> levels
+    end
+  end
+
+  @doc """
+  Whether an asset's namespace was inferred from its module rather than declared.
+
+  ## Examples
+
+      iex> alias FavnView.Components.AssetCataloguePage
+      iex> AssetCataloguePage.namespace_inferred?(%{module_path: ["lifecycle"]})
+      true
+
+      iex> alias FavnView.Components.AssetCataloguePage
+      iex> AssetCataloguePage.namespace_inferred?(
+      ...>   %{connection: "warehouse", module_path: ["warehouse"]}
+      ...> )
+      false
+  """
+  @spec namespace_inferred?(map()) :: boolean()
+  def namespace_inferred?(asset), do: relation_levels(asset) == []
+
+  @doc """
+  The reason an asset's relation cannot resolve, or `nil`.
+
+  A catalogue-qualified relation with no schema is the one combination that
+  cannot work: `Favn.SQLAsset`'s renderer rejects a `catalog.name` address, so
+  the asset is misconfigured rather than merely sparse. Only declared levels are
+  judged — a module path addresses nothing, so it cannot be wrong this way.
+
+  ## Examples
+
+      iex> alias FavnView.Components.AssetCataloguePage
+      iex> AssetCataloguePage.namespace_defect(
+      ...>   %{connection: "warehouse", catalogue: "raw", schema: nil}
+      ...> )
+      "A catalogue-qualified relation needs a schema; SQL rendering rejects this address."
+
+      iex> alias FavnView.Components.AssetCataloguePage
+      iex> AssetCataloguePage.namespace_defect(
+      ...>   %{connection: "warehouse", catalogue: "raw", schema: "sales"}
+      ...> )
+      nil
+  """
+  @spec namespace_defect(map()) :: String.t() | nil
+  def namespace_defect(asset) do
+    if Map.get(asset, :catalogue) not in [nil, ""] and Map.get(asset, :schema) in [nil, ""] do
+      "A catalogue-qualified relation needs a schema; SQL rendering rejects this address."
+    end
+  end
+
+  defp relation_levels(asset) do
+    [:connection, :catalogue, :schema]
+    |> Enum.map(&%{level: &1, value: Map.get(asset, &1)})
+    |> Enum.reject(&(&1.value in [nil, ""]))
+  end
+
+  defp level_class(:connection), do: "text-secondary"
+  defp level_class(:catalogue), do: "text-accent"
+  defp level_class(_level), do: "favn-text-muted"
+
+  defp namespace_title(levels, true),
+    do:
+      "Derived from the module path; this asset declares no relation levels. " <>
+        Enum.map_join(levels, ".", & &1.value)
+
+  defp namespace_title(levels, false), do: Enum.map_join(levels, ".", & &1.value)
 
   defp coverage_status(asset), do: Map.get(asset, :coverage_status, :unknown)
   defp compatibility_status(asset), do: Map.get(asset, :compatibility_status, :ready)

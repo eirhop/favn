@@ -774,7 +774,7 @@ defmodule FavnView.Dev.DesignSystem.Examples.Elements do
           <div class="min-w-0">
             <h2 class="truncate text-base font-medium">mart_daily_sales</h2>
 
-            <p class="mt-0.5 truncate text-xs text-base-content/60">duckdb · sales · table</p>
+            <p class="mt-0.5 truncate text-sm text-base-content/60">duckdb · sales · table</p>
 
             <div class="mt-2"><.status_badge tone={:success} label="Healthy" /></div>
           </div>

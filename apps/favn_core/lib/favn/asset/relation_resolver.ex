@@ -19,6 +19,14 @@ defmodule Favn.Asset.RelationResolver do
   def inferred_relation_name_for_module(module) when is_atom(module) do
     module
     |> Module.split()
+    |> inferred_relation_name_for_segments()
+  end
+
+  # The control plane names assets it has no loaded module for, working from the
+  # segments of a persisted ref string, so the rule itself takes segments.
+  @spec inferred_relation_name_for_segments([binary()]) :: binary()
+  def inferred_relation_name_for_segments(segments) when is_list(segments) do
+    segments
     |> List.last()
     |> Macro.underscore()
   end

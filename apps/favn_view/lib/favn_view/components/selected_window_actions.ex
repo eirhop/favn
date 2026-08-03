@@ -36,28 +36,28 @@ defmodule FavnView.Components.SelectedWindowActions do
       data-testid="selected-window-actions"
     >
       <div class="min-w-0">
-        <p class="text-xs uppercase tracking-[0.18em] favn-text-subtle">Run asset</p>
+        <p class="text-sm uppercase tracking-[0.18em] favn-text-subtle">Run asset</p>
 
         <p class="mt-1 text-sm font-medium text-base-content">{selection_label(@selected_window)}</p>
 
-        <p class="mt-0.5 text-xs favn-text-muted">{status_label(@selected_window)}</p>
+        <p class="mt-0.5 text-sm favn-text-muted">{status_label(@selected_window)}</p>
 
         <p
           :if={@selected_window && !@selected_window.run_enabled?}
-          class="mt-1 text-xs favn-text-subtle"
+          class="mt-1 text-sm favn-text-subtle"
         >
           {run_disabled_reason_label(@selected_window.run_disabled_reason)}
         </p>
 
         <p
           :if={@selected_window_error}
-          class="mt-1 text-xs text-error"
+          class="mt-1 text-sm text-error"
           data-testid="selected-window-error"
         >
           {@selected_window_error}
         </p>
 
-        <p :if={@submitted_run_id} class="mt-1 text-xs text-success" data-testid="submitted-run-id">
+        <p :if={@submitted_run_id} class="mt-1 text-sm text-success" data-testid="submitted-run-id">
           Submitted {@submitted_run_id}
         </p>
       </div>
@@ -136,7 +136,7 @@ defmodule FavnView.Components.SelectedWindowActions do
           class="rounded-box border border-base-content/10 p-3"
           data-testid="run-config-advanced"
         >
-          <summary class="favn-text-muted cursor-pointer text-xs">Change how it runs</summary>
+          <summary class="favn-text-muted cursor-pointer text-sm">Change how it runs</summary>
 
           <div class="mt-3 space-y-4">
             <fieldset class="fieldset">
@@ -171,7 +171,7 @@ defmodule FavnView.Components.SelectedWindowActions do
               />
               <div class="grid gap-3 sm:grid-cols-[8rem_1fr_1fr_10rem]">
                 <label class="form-control">
-                  <span class="label-text text-xs">Kind</span>
+                  <span class="label-text text-sm">Kind</span>
                   <select
                     name="run_config[kind]"
                     class="select select-bordered select-sm"
@@ -189,7 +189,7 @@ defmodule FavnView.Components.SelectedWindowActions do
                 </label>
 
                 <label class="form-control">
-                  <span class="label-text text-xs">From</span>
+                  <span class="label-text text-sm">From</span>
                   <input
                     type="text"
                     name="run_config[value]"
@@ -202,7 +202,7 @@ defmodule FavnView.Components.SelectedWindowActions do
                 </label>
 
                 <label class="form-control">
-                  <span class="label-text text-xs">To</span>
+                  <span class="label-text text-sm">To</span>
                   <input
                     type="text"
                     name="run_config[to]"
@@ -215,7 +215,7 @@ defmodule FavnView.Components.SelectedWindowActions do
                 </label>
 
                 <label class="form-control">
-                  <span class="label-text text-xs">Timezone</span>
+                  <span class="label-text text-sm">Timezone</span>
                   <input
                     type="text"
                     name="run_config[timezone]"
@@ -227,11 +227,11 @@ defmodule FavnView.Components.SelectedWindowActions do
                 </label>
               </div>
 
-              <p class="mt-2 text-xs favn-text-muted">
+              <p class="mt-2 text-sm favn-text-muted">
                 {window_context_description(@selected_window, @active_timeline)}
               </p>
 
-              <p :if={is_nil(@selected_window)} class="mt-1 text-xs favn-text-muted">
+              <p :if={is_nil(@selected_window)} class="mt-1 text-sm favn-text-muted">
                 Range backfills default to missing refresh; choose force explicitly to recompute existing successful windows.
               </p>
             </fieldset>
@@ -327,7 +327,7 @@ defmodule FavnView.Components.SelectedWindowActions do
       />
       <span>
         <span class="block font-medium text-base-content">{@title}</span>
-        <span class="mt-0.5 block text-xs leading-5 favn-text-muted">{@description}</span>
+        <span class="mt-0.5 block text-sm leading-5 favn-text-muted">{@description}</span>
       </span>
     </label>
     """

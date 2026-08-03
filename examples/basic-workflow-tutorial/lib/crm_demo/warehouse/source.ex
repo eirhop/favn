@@ -10,6 +10,6 @@ defmodule CrmDemo.Warehouse.Source do
 
   use Favn.Namespace
 
-  relation(schema: "source")
+  relation(catalog: "source")
   meta(tags: [:source])
 end

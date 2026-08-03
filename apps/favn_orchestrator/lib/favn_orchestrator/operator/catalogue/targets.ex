@@ -10,6 +10,7 @@ defmodule FavnOrchestrator.Operator.Catalogue.Targets do
   alias Favn.Manifest.Index
   alias Favn.Manifest.Pipeline
   alias Favn.Manifest.PipelineResolver
+  alias Favn.Asset.RelationResolver
   alias Favn.Manifest.Version
   alias Favn.RelationRef
   alias Favn.RuntimeConfig.Ref, as: RuntimeConfigRef
@@ -20,8 +21,13 @@ defmodule FavnOrchestrator.Operator.Catalogue.Targets do
   @descriptor_keys ~w(
     target_id label asset_ref type relation metadata execution_pool runtime_config
     depends_on materialization partition_spec window max_concurrency can_run_without_window?
-    can_backfill? name selected_assets dependencies persisted?
+    can_backfill? selected_assets dependencies persisted?
   )a
+
+  # `use Favn.Asset`, `use Favn.SQLAsset`, and `use Favn.Source` all name their
+  # single asset `:asset`, so the ref name distinguishes nothing unless the module
+  # declared several through `Favn.MultiAsset`.
+  @anonymous_ref_name "asset"
 
   @doc "Returns sorted asset targets for a manifest version."
   @spec assets(Version.t()) :: [map()]
@@ -36,13 +42,17 @@ defmodule FavnOrchestrator.Operator.Catalogue.Targets do
   @spec asset(Asset.t()) :: map()
   def asset(%Asset{} = asset) do
     target_ref = asset.ref
+    asset_ref = ref_string(target_ref)
+    relation = relation_dto(asset.relation)
 
     %{
       target_id: ManifestTarget.asset_id(target_ref),
       label: inspect(target_ref),
-      asset_ref: ref_string(target_ref),
+      asset_ref: asset_ref,
+      name: asset_name(asset_ref, relation),
+      module_path: module_namespace_segments(asset_ref),
       type: atom_name(asset.type),
-      relation: relation_dto(asset.relation),
+      relation: relation,
       metadata: normalize_map(asset.metadata),
       execution_pool: atom_name(asset.execution_pool),
       runtime_config: normalize_data(asset.runtime_config),
@@ -100,6 +110,12 @@ defmodule FavnOrchestrator.Operator.Catalogue.Targets do
         end
       end)
 
+    restored
+    |> restore_dependencies()
+    |> put_derived_names()
+  end
+
+  defp restore_dependencies(restored) do
     case Map.get(restored, :dependencies) do
       value when value in ["all", "none", "unknown"] ->
         Map.put(restored, :dependencies, String.to_existing_atom(value))
@@ -108,6 +124,18 @@ defmodule FavnOrchestrator.Operator.Catalogue.Targets do
         restored
     end
   end
+
+  # `name` and `module_path` are derived on read instead of persisted, so a
+  # deployment planned before they existed resolves them too — without them an
+  # operator sees every single-asset module as "asset" until someone republishes.
+  # Both come from `asset_ref`, which asset descriptors have always carried.
+  defp put_derived_names(%{asset_ref: asset_ref} = restored) when is_binary(asset_ref) do
+    restored
+    |> Map.put(:name, asset_name(asset_ref, Map.get(restored, :relation)))
+    |> Map.put(:module_path, module_namespace_segments(asset_ref))
+  end
+
+  defp put_derived_names(restored), do: restored
 
   @doc "Serializes a target descriptor into its JSONB-safe persistence form."
   @spec serialize_descriptor(map()) :: %{optional(String.t()) => term()}
@@ -123,6 +151,87 @@ defmodule FavnOrchestrator.Operator.Catalogue.Targets do
       {:error, _reason} -> raw_selector_refs(index, pipeline)
     end
   end
+
+  @doc """
+  The name an operator should see for one asset.
+
+  In order of preference: the name the asset's relation owns, its ref name, then
+  the last segment of its module. The last case is not a fallback for broken
+  input — `use Favn.Asset`, `use Favn.SQLAsset`, and `use Favn.Source` all
+  produce the ref name `:asset`, so for a single-asset module the module is the
+  only thing that distinguishes it. Without this every plain Elixir asset in a
+  project reads "asset".
+
+  Derived from the persisted `asset_ref` string rather than from a loaded module,
+  because the control plane serves deployments whose project code it never loads.
+  That is also why this cannot call
+  `Favn.Asset.RelationResolver.inferred_relation_name_for_asset/1`, which settles
+  the same question with `function_exported?/3` on the asset's own module; the
+  rule the two share lives in `inferred_relation_name_for_segments/1`.
+
+  ## Examples
+
+      iex> alias FavnOrchestrator.Operator.Catalogue.Targets
+      iex> Targets.asset_name("Elixir.MyApp.Lifecycle.RetryProbe:asset", nil)
+      "retry_probe"
+
+      iex> alias FavnOrchestrator.Operator.Catalogue.Targets
+      iex> Targets.asset_name("Elixir.MyApp.Landing.Crm.Daily:activities", nil)
+      "activities"
+
+      iex> alias FavnOrchestrator.Operator.Catalogue.Targets
+      iex> Targets.asset_name("Elixir.MyApp.Warehouse.Account:asset", %{"name" => "account"})
+      "account"
+  """
+  @spec asset_name(String.t() | nil, map() | nil) :: String.t() | nil
+  def asset_name(asset_ref, relation) when is_binary(asset_ref) do
+    relation_name(relation) || ref_display_name(asset_ref)
+  end
+
+  def asset_name(_asset_ref, relation), do: relation_name(relation)
+
+  @doc """
+  An asset module's namespace segments, project root and name-bearing leaf removed.
+
+  A well-structured project's module path mirrors its relation levels, so this is
+  what an operator UI can show for an asset that owns no relation at all — a
+  landing asset writing files, a probe. The leaf is dropped only when it is
+  already carrying the asset's name, so no segment is shown twice.
+
+  The root is assumed, not detected: the first segment is dropped because a Favn
+  project nests its assets under one root module. A project that nests them
+  deeper, or not at all, shifts every segment, so treat the result as a module
+  path and not as a resolved relation address.
+
+  ## Examples
+
+      iex> alias FavnOrchestrator.Operator.Catalogue.Targets
+      iex> Targets.module_namespace_segments("Elixir.MyApp.Warehouse.Source.Crm.Events.Activity:asset")
+      ["warehouse", "source", "crm", "events"]
+
+      iex> alias FavnOrchestrator.Operator.Catalogue.Targets
+      iex> Targets.module_namespace_segments("Elixir.MyApp.Landing.Crm.Daily:activities")
+      ["landing", "crm", "daily"]
+
+      iex> alias FavnOrchestrator.Operator.Catalogue.Targets
+      iex> Targets.module_namespace_segments("Elixir.Orders:asset")
+      []
+  """
+  @spec module_namespace_segments(String.t() | nil) :: [String.t()]
+  def module_namespace_segments(asset_ref) when is_binary(asset_ref) do
+    case split_ref(asset_ref) do
+      {segments, name} ->
+        segments
+        |> Enum.drop(1)
+        |> drop_name_bearing_leaf(name)
+        |> Enum.map(&Macro.underscore/1)
+
+      :error ->
+        []
+    end
+  end
+
+  def module_namespace_segments(_asset_ref), do: []
 
   @doc "Formats a canonical asset ref for operator DTOs."
   @spec ref_string(term()) :: String.t()
@@ -194,6 +303,42 @@ defmodule FavnOrchestrator.Operator.Catalogue.Targets do
       {:error, _reason} -> normalize_data(policy)
     end
   end
+
+  defp ref_display_name(asset_ref) do
+    case split_ref(asset_ref) do
+      {segments, @anonymous_ref_name} ->
+        RelationResolver.inferred_relation_name_for_segments(segments)
+
+      {_segments, name} ->
+        name
+
+      :error ->
+        nil
+    end
+  end
+
+  defp drop_name_bearing_leaf(segments, @anonymous_ref_name), do: Enum.drop(segments, -1)
+  defp drop_name_bearing_leaf(segments, _name), do: segments
+
+  # `ref_string/1` joins the module and name atoms with a colon, so the two come
+  # back apart the same way. A ref that is not that shape — `inspect/1` output for
+  # a malformed ref — yields no name and no segments rather than a guess.
+  defp split_ref(asset_ref) do
+    case String.split(asset_ref, ":", parts: 2) do
+      [module, name] when module != "" and name != "" -> {module_segments(module), name}
+      _other -> :error
+    end
+  end
+
+  # `Atom.to_string/1` prefixes an Elixir module with "Elixir."; an Erlang module
+  # or a plain atom has no prefix and is its own single segment.
+  defp module_segments("Elixir." <> module), do: String.split(module, ".")
+  defp module_segments(module), do: [module]
+
+  defp relation_name(nil), do: nil
+  defp relation_name(%{name: name}) when is_binary(name), do: name
+  defp relation_name(%{"name" => name}) when is_binary(name), do: name
+  defp relation_name(_relation), do: nil
 
   defp relation_dto(nil), do: nil
 

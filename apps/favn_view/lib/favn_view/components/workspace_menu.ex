@@ -37,7 +37,7 @@ defmodule FavnView.Components.WorkspaceMenu do
     >
       <details :if={length(@workspaces) > 1} class="dropdown w-full">
         <summary
-          class="favn-workspace-control favn-surface-control flex w-full min-w-0 cursor-pointer list-none items-center gap-2 rounded-field px-2 py-2 text-left text-xs favn-text-muted transition hover:border-primary/40 hover:text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary [&::-webkit-details-marker]:hidden"
+          class="favn-workspace-control favn-surface-control flex w-full min-w-0 cursor-pointer list-none items-center gap-2 rounded-field px-2 py-2 text-left text-sm favn-text-muted transition hover:border-primary/40 hover:text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary [&::-webkit-details-marker]:hidden"
           aria-label="Switch workspace"
           title={workspace_name(@current_workspace)}
           data-testid="workspace-menu-trigger"
@@ -46,6 +46,7 @@ defmodule FavnView.Components.WorkspaceMenu do
           <span class="favn-workspace-control__name min-w-0 flex-1">
             {workspace_name(@current_workspace)}
           </span>
+
           <.icon
             name="hero-chevron-down"
             size={:xs}
@@ -54,7 +55,7 @@ defmodule FavnView.Components.WorkspaceMenu do
         </summary>
 
         <div class="dropdown-content favn-surface-rail z-50 mt-2 w-64 rounded-box p-2 shadow-xl md:top-0 md:left-full md:mt-0 md:ml-2">
-          <p class="px-2 pb-2 text-xs uppercase tracking-[0.14em] favn-text-subtle">
+          <p class="px-2 pb-2 text-sm uppercase tracking-[0.14em] favn-text-subtle">
             Switch workspace
           </p>
 
@@ -82,7 +83,7 @@ defmodule FavnView.Components.WorkspaceMenu do
 
       <div
         :if={length(@workspaces) <= 1}
-        class="favn-workspace-control favn-surface-control flex min-w-0 items-center gap-2 rounded-field px-2 py-2 text-xs favn-text-muted"
+        class="favn-workspace-control favn-surface-control flex min-w-0 items-center gap-2 rounded-field px-2 py-2 text-sm favn-text-muted"
         aria-label={"Current workspace: #{workspace_name(@current_workspace)}"}
         title={workspace_name(@current_workspace)}
       >

@@ -9,6 +9,6 @@ defmodule CrmDemo.Warehouse.Core do
 
   use Favn.Namespace
 
-  relation(schema: "core")
+  relation(catalog: "core")
   meta(tags: [:core])
 end

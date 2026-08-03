@@ -85,7 +85,7 @@ defmodule FavnView.Components.SchedulesPage do
 
   def helper_text(assigns) do
     ~H"""
-    <p class="text-xs favn-text-muted">
+    <p class="text-sm favn-text-muted">
       New schedules are disabled by default until activated.
     </p>
     """
@@ -201,7 +201,7 @@ defmodule FavnView.Components.SchedulesPage do
             state={schedule.activation_state}
             label={schedule.activation_label}
           />
-          <p class="truncate text-[0.68rem] favn-text-subtle">
+          <p class="truncate text-sm favn-text-subtle">
             Next {schedule.next_due_label}
           </p>
         </div>
@@ -214,7 +214,7 @@ defmodule FavnView.Components.SchedulesPage do
             <ScheduleUi.scheduler_error_badge error={schedule.last_scheduler_error} />
           </div>
 
-          <p class="truncate text-[0.68rem] favn-text-subtle">
+          <p class="truncate text-sm favn-text-subtle">
             <.link
               :if={schedule.in_flight_run_id}
               navigate={~p"/runs/#{schedule.in_flight_run_id}"}
@@ -276,11 +276,11 @@ defmodule FavnView.Components.SchedulesPage do
                 {@schedule.schedule_label}
               </.link>
 
-              <p class="mt-0.5 truncate text-xs favn-text-muted">{@schedule.pipeline_label}</p>
+              <p class="mt-0.5 truncate text-sm favn-text-muted">{@schedule.pipeline_label}</p>
             </div>
           </div>
 
-          <div class="flex flex-wrap items-center gap-2 text-xs favn-text-muted">
+          <div class="flex flex-wrap items-center gap-2 text-sm favn-text-muted">
             <ScheduleUi.activation_badge
               state={@schedule.activation_state}
               label={@schedule.activation_label}
@@ -290,7 +290,7 @@ defmodule FavnView.Components.SchedulesPage do
             <span>{@schedule.cron}</span> <span>{@schedule.window_label}</span>
           </div>
 
-          <p class="truncate font-mono text-xs favn-text-subtle" title={@schedule.id}>
+          <p class="truncate font-mono text-sm favn-text-subtle" title={@schedule.id}>
             {@schedule.id}
           </p>
         </div>

@@ -29,13 +29,18 @@ defmodule CrmDemo.Warehouse.ManifestTest do
   end
 
   test "namespaces supply the relation each layer writes to" do
+    # Each level comes from a different ancestor: the connection from
+    # `CrmDemo.Warehouse`, the catalog from the phase namespace, the schema from
+    # the domain namespace, and only the name from the leaf.
     assert {:ok, account} = Favn.get_asset(Account)
     assert account.relation.connection == :warehouse
-    assert account.relation.schema == "source"
+    assert account.relation.catalog == "source"
+    assert account.relation.schema == "crm"
     assert account.relation.name == "account"
 
     assert {:ok, customer} = Favn.get_asset(Customer)
-    assert customer.relation.schema == "core"
+    assert customer.relation.catalog == "core"
+    assert customer.relation.schema == "sales"
   end
 
   test "source contracts end with the shared metadata fragment" do

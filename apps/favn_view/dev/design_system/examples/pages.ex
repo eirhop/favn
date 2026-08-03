@@ -212,6 +212,7 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
       nav_items: AssetCataloguePage.nav_items(:assets),
       connection_options: AssetCataloguePage.connection_options(),
       catalogue_options: AssetCataloguePage.catalogue_options(),
+      schema_options: AssetCataloguePage.schema_options(),
       scope_choices: AssetCatalogueFilters.scope_choices(assets, filters)
     }
 
@@ -237,7 +238,13 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
           :empty,
           Map.merge(base, %{
             assets: [],
-            filters: %{search: "orders", connection: "duckdb", catalogue: "marketing"}
+            filters: %{
+              search: "orders",
+              connection: "duckdb",
+              catalogue: "mart",
+              schema: "marketing",
+              scope: "all"
+            }
           }),
           "Filtered to nothing. The filters must stay visible so the operator can undo them."
         ),

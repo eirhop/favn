@@ -30,14 +30,12 @@ defmodule FavnView.Components.RunDetailPage.Flow do
         title="No asset work yet"
         description="This run has been accepted. Lanes appear as the runner reports each asset."
       />
-
       <div :if={@flow.stages != []} class="favn-surface-panel overflow-hidden rounded-box">
         <.axis axis={@flow.axis} />
-
         <div :for={stage <- @flow.stages} data-testid="flow-stage" data-stage={stage.id}>
           <div class="flex items-baseline gap-2 border-b border-base-content/10 bg-base-content/[0.03] px-3 py-1.5">
-            <span class="text-xs font-medium">{stage.label}</span>
-            <span class="text-xs favn-text-subtle">{stage.hint}</span>
+            <span class="text-sm font-medium">{stage.label}</span>
+            <span class="text-sm favn-text-subtle">{stage.hint}</span>
           </div>
 
           <.lane
@@ -57,8 +55,9 @@ defmodule FavnView.Components.RunDetailPage.Flow do
 
   defp axis(assigns) do
     ~H"""
-    <div class="grid grid-cols-[minmax(9rem,14rem)_minmax(0,1fr)] border-b border-base-content/10 text-xs favn-text-subtle">
+    <div class="grid grid-cols-[minmax(9rem,14rem)_minmax(0,1fr)] border-b border-base-content/10 text-sm favn-text-subtle">
       <div class="border-r border-base-content/10 px-3 py-1.5">Asset</div>
+
       <div class="relative h-7">
         <span
           :for={tick <- @axis.ticks}
@@ -91,7 +90,8 @@ defmodule FavnView.Components.RunDetailPage.Flow do
           <.status_dot tone={@lane.tone} label={@lane.status} />
           <p class="truncate text-sm font-medium" title={@lane.key}>{@lane.name}</p>
         </div>
-        <p class="mt-0.5 truncate text-xs favn-text-subtle">{@lane.detail}</p>
+
+        <p class="mt-0.5 truncate text-sm favn-text-subtle">{@lane.detail}</p>
       </div>
 
       <div class="relative py-2 pr-3" style={"min-height: #{lane_height(@lane.tracks)}rem"}>
@@ -101,10 +101,9 @@ defmodule FavnView.Components.RunDetailPage.Flow do
           style={"left: #{@now_offset}%"}
           aria-hidden="true"
         />
-
         <p
           :if={@lane.bars == []}
-          class="px-3 py-1 text-xs favn-text-subtle"
+          class="px-3 py-1 text-sm favn-text-subtle"
           data-testid="flow-lane-empty"
         >
           {@lane.empty_label}
@@ -146,13 +145,14 @@ defmodule FavnView.Components.RunDetailPage.Flow do
     >
       <div class="border-r border-base-content/10" />
       <div class="min-w-0 px-3 py-2">
-        <p class="text-xs text-error">{@lane.error.summary}</p>
+        <p class="text-sm text-error">{@lane.error.summary}</p>
+
         <button
           :if={@lane.error.attempt_id}
           type="button"
           phx-click="select_attempt"
           phx-value-attempt-id={@lane.error.attempt_id}
-          class="mt-1 text-xs font-medium text-error underline-offset-2 hover:underline"
+          class="mt-1 text-sm font-medium text-error underline-offset-2 hover:underline"
         >
           Open failed attempt
         </button>

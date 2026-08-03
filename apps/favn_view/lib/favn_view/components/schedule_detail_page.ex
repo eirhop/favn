@@ -278,11 +278,11 @@ defmodule FavnView.Components.ScheduleDetailPage do
         </span>
 
         <div class="min-w-0">
-          <p class="text-xs favn-text-muted">{@label}</p>
+          <p class="text-sm favn-text-muted">{@label}</p>
 
           <p class="truncate text-2xl font-light tracking-tight text-base-content">{@value}</p>
 
-          <p :if={@detail} class="truncate text-xs favn-text-subtle">{@detail}</p>
+          <p :if={@detail} class="truncate text-sm favn-text-subtle">{@detail}</p>
         </div>
       </div>
     </div>
@@ -377,7 +377,7 @@ defmodule FavnView.Components.ScheduleDetailPage do
 
           <p class="mt-2">{hd(@occurrence_preview).due_label}</p>
 
-          <p class="mt-1 text-xs favn-text-subtle">{hd(@occurrence_preview).window_label}</p>
+          <p class="mt-1 text-sm favn-text-subtle">{hd(@occurrence_preview).window_label}</p>
         </div>
 
         <p :if={!@error && @occurrence_preview == []} class="font-medium text-base-content">
@@ -405,7 +405,7 @@ defmodule FavnView.Components.ScheduleDetailPage do
             {@schedule.last_scheduler_error.phase_label}: {@schedule.last_scheduler_error.message}
           </p>
 
-          <p class="mt-1 text-xs favn-text-subtle">
+          <p class="mt-1 text-sm favn-text-subtle">
             {@schedule.last_scheduler_error.occurred_label} · {@schedule.last_scheduler_error.code_label}
           </p>
         </div>
@@ -470,7 +470,7 @@ defmodule FavnView.Components.ScheduleDetailPage do
             </p>
           </div>
 
-          <div class="flex flex-wrap gap-2 text-xs">
+          <div class="flex flex-wrap gap-2 text-sm">
             <span class="badge badge-soft badge-neutral">Next due {@schedule.next_due_label}</span>
             <span class="badge badge-soft badge-neutral">{@schedule.timezone}</span>
             <span class="badge badge-soft badge-neutral">{@schedule.window_label}</span>

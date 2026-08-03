@@ -67,7 +67,7 @@ defmodule FavnView.UI.Data do
     assigns = assign(assigns, :grid_class, grid_class(assigns.columns))
 
     ~H"""
-    <dl class={["grid gap-3 text-xs sm:gap-4", @grid_class, @class]} {@rest}>
+    <dl class={["grid gap-3 text-sm sm:gap-4", @grid_class, @class]} {@rest}>
       <div :for={fact <- @facts} class="min-w-0">
         <dt class="favn-text-subtle">{fact.label}</dt>
 
@@ -86,6 +86,16 @@ defmodule FavnView.UI.Data do
     """
   end
 
+  @doc """
+  The standard list-screen table.
+
+  Carries no size modifier, because DaisyUI's bare `.table` is already the Favn
+  body size — 0.875rem, with `table-md` a synonym for it. Each modifier sets a
+  font size *and* its matching cell padding as one pair with no variable between
+  them, so the size class is the whole decision: `table-sm` drops rows to
+  0.75rem, and its `:not(thead, tfoot) tr` selector outranks a `text-sm`
+  utility in the same layer, so adding one back does nothing.
+  """
   attr :id, :string, required: true
   attr :rows, :list, required: true
   attr :row_id, :any, default: nil, doc: "function returning the DOM id for a row"
@@ -120,9 +130,9 @@ defmodule FavnView.UI.Data do
   def data_table(assigns) do
     ~H"""
     <div class={[(@fill? && "min-h-0 flex-1 overflow-auto") || "overflow-x-auto", @class]}>
-      <table class="table table-sm w-full text-sm" id={@id}>
+      <table class="table w-full" id={@id}>
         <thead class={@sticky_header? && "sticky top-0 z-10 bg-base-100/85 backdrop-blur"}>
-          <tr class="border-base-content/10 text-xs favn-text-muted">
+          <tr class="border-base-content/10 favn-text-muted">
             <th :for={col <- @col} class={["font-medium", align_class(col[:align]), col[:class]]}>
               {col.label}
             </th>
@@ -227,7 +237,7 @@ defmodule FavnView.UI.Data do
       >
         <div class="flex min-w-0 flex-wrap items-center gap-2">{render_slot(@footer)}</div>
 
-        <p :if={@count} class="shrink-0 text-xs favn-text-subtle" data-testid="table-count">
+        <p :if={@count} class="shrink-0 text-sm favn-text-subtle" data-testid="table-count">
           {@count} {@count_label}
         </p>
       </div>
@@ -331,7 +341,7 @@ defmodule FavnView.UI.Data do
           phx-change={@on_change}
           phx-submit={@on_change}
           class={[
-            "items-stretch gap-2 sm:flex-row sm:flex-wrap sm:items-center lg:ml-auto lg:flex-nowrap",
+            "items-stretch gap-2 sm:flex-row sm:flex-wrap sm:items-center lg:ml-auto",
             filters_class(assigns)
           ]}
           data-testid="table-filters"
@@ -354,9 +364,11 @@ defmodule FavnView.UI.Data do
               [
                 "contents sm:flex sm:flex-wrap sm:items-center sm:gap-2",
                 # One width for every select, so a row of them lines up across
-                # screens, and `nowrap` so two of them never stack into a column
-                # while there is still room beside them.
-                "sm:[&>label]:w-44 lg:flex-nowrap"
+                # screens. Wrapping is left to flexbox rather than forced off at
+                # `lg`: it only breaks a line that is genuinely full, and three
+                # selects beside a scope rail and a search field overflowed a
+                # 1024px viewport while `nowrap` held them on one line.
+                "sm:[&>label]:w-44"
               ]
             }
           >
@@ -508,7 +520,7 @@ defmodule FavnView.UI.Data do
         navigate={@navigate}
         class={[
           "block truncate font-medium hover:text-primary",
-          mono?(@mono, :primary) && "font-mono text-xs",
+          mono?(@mono, :primary) && "font-mono text-sm",
           (@tone && Tokens.text_class(Tokens.tone(@tone))) || "text-base-content"
         ]}
         title={@title || @primary}
@@ -520,7 +532,7 @@ defmodule FavnView.UI.Data do
         :if={!@navigate}
         class={[
           "truncate font-medium",
-          mono?(@mono, :primary) && "font-mono text-xs",
+          mono?(@mono, :primary) && "font-mono text-sm",
           (@tone && Tokens.text_class(Tokens.tone(@tone))) || "text-base-content"
         ]}
         title={@title || @primary}
@@ -531,7 +543,7 @@ defmodule FavnView.UI.Data do
       <p
         :if={@secondary}
         class={[
-          "truncate text-[0.68rem] favn-text-subtle",
+          "truncate text-sm favn-text-subtle",
           mono?(@mono, :secondary) && "font-mono"
         ]}
         title={@secondary_title || @secondary}
@@ -558,7 +570,7 @@ defmodule FavnView.UI.Data do
 
     ~H"""
     <div class={["min-w-0", @class]} {@rest}>
-      <div class="flex items-center gap-2 text-xs favn-text-subtle">
+      <div class="flex items-center gap-2 text-sm favn-text-subtle">
         <.icon :if={@icon} name={@icon} size={:xs} /> {@label}
       </div>
 
@@ -566,7 +578,7 @@ defmodule FavnView.UI.Data do
         {@value}
       </div>
 
-      <p :if={@hint} class="mt-0.5 truncate text-xs favn-text-subtle">{@hint}</p>
+      <p :if={@hint} class="mt-0.5 truncate text-sm favn-text-subtle">{@hint}</p>
     </div>
     """
   end
@@ -631,7 +643,7 @@ defmodule FavnView.UI.Data do
 
       <p
         :if={@legend? and @present != []}
-        class="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs favn-text-muted"
+        class="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm favn-text-muted"
       >
         <span :if={@summary} class="font-medium text-base-content">{@summary}</span>
         <span :for={segment <- @present} class="inline-flex items-center gap-1.5">
@@ -657,7 +669,7 @@ defmodule FavnView.UI.Data do
   def mono(assigns) do
     ~H"""
     <span
-      class={["font-mono text-xs", (@truncate && "block truncate") || "break-all", @class]}
+      class={["font-mono text-sm", (@truncate && "block truncate") || "break-all", @class]}
       title={@value}
     >
       {@value}
@@ -675,7 +687,7 @@ defmodule FavnView.UI.Data do
   def field_row(assigns) do
     ~H"""
     <div class={["flex flex-col gap-0.5 py-1.5 sm:flex-row sm:items-baseline sm:gap-4", @class]}>
-      <span class="shrink-0 text-xs favn-text-subtle sm:w-44">{@label}</span>
+      <span class="shrink-0 text-sm favn-text-subtle sm:w-44">{@label}</span>
       <span class="min-w-0 text-sm favn-text-muted">{render_slot(@inner_block)}</span>
     </div>
     """

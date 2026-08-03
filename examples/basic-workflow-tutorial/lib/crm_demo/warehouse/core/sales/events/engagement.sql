@@ -7,8 +7,8 @@ select
 
   core_metadata(@favn_run_started_at)
 
-from source.activity as activity
-inner join source.account as account
+from source.crm.activity as activity
+inner join source.crm.account as account
   on account.account_id = activity.account_id
 where activity.occurred_at >= @window_start
   and activity.occurred_at < @window_end

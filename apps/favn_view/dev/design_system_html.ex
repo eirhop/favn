@@ -56,43 +56,45 @@ defmodule FavnView.Dev.DesignSystemHTML do
         <title>Favn design system</title>
         <link rel="stylesheet" href="/assets/css/app.css" />
       </head>
+
       <body class="favn-shell-backdrop min-h-screen text-base-content">
         <main class="mx-auto max-w-6xl space-y-8 p-6">
           <header class="space-y-3">
             <.eyebrow>Development only</.eyebrow>
+
             <.page_title>Favn design system</.page_title>
+
             <p class="max-w-3xl text-sm text-base-content/70">
               Every function component in <code class="font-mono">FavnView.UI</code>
               and <code class="font-mono">FavnView.Components</code>, discovered by reflection
               rather than registered by hand.
             </p>
+
             <.inline gap={:sm}>
               <.badge tone={:neutral} variant={:outline}>{@total} components</.badge>
+
               <.badge tone={:success} variant={:outline}>
                 {length(@coverage.covered)} with an example
               </.badge>
+
               <a :if={@coverage.needs_example != []} href="#needs-example">
                 <.badge tone={:warning} variant={:outline}>
                   {length(@coverage.needs_example)} need one
                 </.badge>
               </a>
+
               <a href="#querying">
                 <.badge tone={:neutral} variant={:outline}>querying &amp; audit</.badge>
               </a>
             </.inline>
           </header>
-
           <.toolbar query={@query} entries={@entries} total={@total} />
-
           <p :if={@entries == []} class="text-sm text-base-content/60">
             Nothing matches. <a class="link" href="/design-system">Show everything</a>.
           </p>
-
           <.group_section :for={group <- Catalogue.groups()} group={group} entries={@entries} />
-
           <section id="reference" class="scroll-mt-6 space-y-4 border-t border-base-content/10 pt-8">
             <.usage />
-
             <.gap_panel
               :if={@coverage.needs_example != []}
               id="needs-example"
@@ -101,7 +103,6 @@ defmodule FavnView.Dev.DesignSystemHTML do
               title="Cannot render without an example"
               subtitle="A required assign here is a domain-shaped value the design system will not invent."
             />
-
             <.gap_panel
               :if={@coverage.defaults_only != []}
               id="defaults-only"
@@ -137,9 +138,11 @@ defmodule FavnView.Dev.DesignSystemHTML do
              product stylesheet. */
           section[data-favn-example]:has(.modal, [role="dialog"]) { min-height: 36rem; }
         </style>
+
         <script defer src="/design-system/audit.js">
         </script>
       </head>
+
       <body class="text-base-content">
         <div
           id="favn-design-system"
@@ -159,10 +162,10 @@ defmodule FavnView.Dev.DesignSystemHTML do
             <section :for={item <- @plan.items} class="space-y-3">
               <div :if={@query.chrome?} class="flex flex-wrap items-baseline gap-2">
                 <h2 class="font-mono text-sm text-base-content/80">{item.entry.id}</h2>
-                <span class="font-mono text-xs text-base-content/40">{Entry.label(item.entry)}</span>
+                <span class="font-mono text-sm text-base-content/40">{Entry.label(item.entry)}</span>
               </div>
 
-              <p :if={@query.chrome? and item.examples == []} class="text-xs text-base-content/50">
+              <p :if={@query.chrome? and item.examples == []} class="text-sm text-base-content/50">
                 No examples in this mode.
               </p>
 
@@ -209,14 +212,14 @@ defmodule FavnView.Dev.DesignSystemHTML do
           />
         </nav>
 
-        <div class="ml-auto flex flex-wrap items-center gap-1.5 text-xs text-base-content/50">
+        <div class="ml-auto flex flex-wrap items-center gap-1.5 text-sm text-base-content/50">
           <a :for={group <- Catalogue.groups()} class="link-hover link" href={"#group-#{group}"}>
             {group_title(group)}&nbsp;↓
           </a>
         </div>
       </div>
 
-      <p :if={filtered?(@query)} class="text-xs text-base-content/60">
+      <p :if={filtered?(@query)} class="text-sm text-base-content/60">
         Showing {length(@entries)} of {@total} components.
         <a class="link" href="/design-system">Clear</a>
       </p>
@@ -254,14 +257,15 @@ defmodule FavnView.Dev.DesignSystemHTML do
       <.panel>
         <:header title={@title} subtitle={@subtitle} icon="hero-exclamation-triangle" />
         <details>
-          <summary class="cursor-pointer text-xs text-base-content/60">
+          <summary class="cursor-pointer text-sm text-base-content/60">
             {length(@entries)} components
           </summary>
+
           <ul class="mt-3 flex flex-wrap gap-2">
             <li :for={entry <- @entries}>
               <a
                 class={[
-                  "font-mono text-xs underline decoration-dotted",
+                  "font-mono text-sm underline decoration-dotted",
                   Tokens.text_class(@tone)
                 ]}
                 href={render_path(entry.id, mode: "defaults")}
@@ -287,9 +291,11 @@ defmodule FavnView.Dev.DesignSystemHTML do
     <section :if={@grouped != []} id={"group-#{@group}"} class="scroll-mt-6 space-y-3">
       <div class="flex flex-wrap items-baseline gap-2">
         <.section_title>{group_title(@group)}</.section_title>
-        <span class="text-xs text-base-content/50">{length(@grouped)}</span>
+        <span class="text-sm text-base-content/50">{length(@grouped)}</span>
       </div>
+
       <p class="text-sm text-base-content/60">{group_doc(@group)}</p>
+
       <div class="grid items-start gap-2.5 md:grid-cols-2">
         <.entry_card :for={entry <- @grouped} entry={entry} />
       </div>
@@ -323,10 +329,11 @@ defmodule FavnView.Dev.DesignSystemHTML do
           <a class="font-mono text-sm font-medium text-primary hover:underline" href={@href}>
             {@entry.id}
           </a>
+
           <p class="truncate font-mono text-[11px] text-base-content/40">{Entry.label(@entry)}</p>
         </div>
 
-        <p :if={@doc} class="text-xs text-base-content/65">{@doc}</p>
+        <p :if={@doc} class="text-sm text-base-content/65">{@doc}</p>
 
         <div class="flex flex-wrap gap-1.5">
           <a
@@ -336,12 +343,14 @@ defmodule FavnView.Dev.DesignSystemHTML do
           >
             {example.id}
           </a>
+
           <a
             class="badge badge-sm badge-outline font-mono opacity-60"
             href={render_path(@entry.id, mode: "defaults")}
           >
             defaults
           </a>
+
           <a
             :for={axis <- @axes}
             class="badge badge-sm badge-outline font-mono opacity-60"
@@ -351,13 +360,16 @@ defmodule FavnView.Dev.DesignSystemHTML do
           </a>
         </div>
 
-        <dl class="grid grid-cols-[5rem_1fr] gap-x-3 gap-y-1 text-xs">
+        <dl class="grid grid-cols-[5rem_1fr] gap-x-3 gap-y-1 text-sm">
           <dt class="text-base-content/45">Required</dt>
+
           <dd class="font-mono text-base-content/75">
             {if @required == [], do: "—", else: Enum.join(@required, ", ")}
           </dd>
+
           <div :if={@entry.slots != []} class="contents">
             <dt class="text-base-content/45">Slots</dt>
+
             <dd class="font-mono text-base-content/75">
               {Enum.map_join(@entry.slots, ", ", &slot_label/1)}
             </dd>
@@ -378,11 +390,11 @@ defmodule FavnView.Dev.DesignSystemHTML do
     ~H"""
     <div class="space-y-1.5">
       <div :if={@chrome?} class="flex flex-wrap items-baseline gap-2">
-        <span class="font-mono text-xs text-base-content/55">{@example.id}</span>
+        <span class="font-mono text-sm text-base-content/55">{@example.id}</span>
         <span :if={@example.source != :curated} class="badge badge-xs badge-outline font-mono">
           {@example.source}
         </span>
-        <span :if={@example.doc} class="text-xs text-base-content/45">{@example.doc}</span>
+        <span :if={@example.doc} class="text-sm text-base-content/45">{@example.doc}</span>
       </div>
 
       <section
@@ -404,8 +416,9 @@ defmodule FavnView.Dev.DesignSystemHTML do
 
   defp render_error(assigns) do
     ~H"""
-    <div class="rounded-box border border-error/40 bg-error/10 p-3 text-xs">
+    <div class="rounded-box border border-error/40 bg-error/10 p-3 text-sm">
       <p class="font-medium text-error">This example did not render.</p>
+
       <p :if={@example.unavailable != []} class="mt-1 text-base-content/70">
         Required assigns the design system cannot invent: <span class="font-mono">{Enum.join(@example.unavailable, ", ")}</span>. Add a curated example.
       </p>
@@ -422,13 +435,15 @@ defmodule FavnView.Dev.DesignSystemHTML do
       <.panel>
         <:header title="Querying" subtitle="The URL is the whole interface" icon="hero-link" />
         <div class="space-y-3">
-          <dl class="grid grid-cols-[12rem_1fr] gap-x-4 gap-y-1.5 text-xs">
+          <dl class="grid grid-cols-[12rem_1fr] gap-x-4 gap-y-1.5 text-sm">
             <div :for={{param, meaning} <- @params} class="contents">
               <dt class="font-mono text-base-content/55">{param}</dt>
+
               <dd class="text-base-content/75">{meaning}</dd>
             </div>
           </dl>
-          <p class="text-xs text-base-content/60">
+
+          <p class="text-sm text-base-content/60">
             After loading a render URL, call
             <code class="font-mono text-base-content/80">window.favn.audit()</code>
             for measured verdicts and the bounding box of every example, or

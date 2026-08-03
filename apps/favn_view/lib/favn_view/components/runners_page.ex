@@ -42,9 +42,7 @@ defmodule FavnView.Components.RunnersPage do
             Refresh diagnostics
           </.button>
         </div>
-
         <.loading_state :if={@loading} label="Loading runner diagnostics" />
-
         <.error_state
           :if={!@loading && @error}
           title="Could not load runner diagnostics"
@@ -53,7 +51,6 @@ defmodule FavnView.Components.RunnersPage do
         >
           <:action><.button phx-click="reload" icon="hero-arrow-path">Retry</.button></:action>
         </.error_state>
-
         <.overview :if={!@loading && !@error && @overview} overview={@overview} />
       </div>
     </AppShell.app_shell>
@@ -70,7 +67,6 @@ defmodule FavnView.Components.RunnersPage do
         subtitle="Live process presence on this control-plane node"
         icon="hero-server-stack"
       />
-
       <.empty_state
         :if={@overview.registry_status == :available && @overview.runners == []}
         title="No runners connected"
@@ -78,7 +74,6 @@ defmodule FavnView.Components.RunnersPage do
         icon="hero-server-stack"
         data-testid="runners-empty-state"
       />
-
       <.notice
         :if={@overview.registry_status == :unavailable}
         tone={:error}
@@ -86,6 +81,7 @@ defmodule FavnView.Components.RunnersPage do
         data-testid="runner-registry-unavailable"
       >
         <p class="font-medium">Runner registry unavailable</p>
+
         <p class="mt-1">
           Live runner presence cannot be read on this control-plane node. Durable task history remains available below.
         </p>
@@ -102,7 +98,6 @@ defmodule FavnView.Components.RunnersPage do
         subtitle="Durable workspace failures remain visible even after newer work arrives"
         icon="hero-exclamation-triangle"
       />
-
       <.empty_state
         :if={failures(@overview) == []}
         title="No recent runner failures"
@@ -110,7 +105,6 @@ defmodule FavnView.Components.RunnersPage do
         icon="hero-check-circle"
         data-testid="runner-failures-empty-state"
       />
-
       <.stack :if={failures(@overview) != []} gap={:sm}>
         <.task_card :for={task <- failures(@overview)} task={task} />
       </.stack>
@@ -122,7 +116,6 @@ defmodule FavnView.Components.RunnersPage do
         subtitle="Durable workspace task history, newest first"
         icon="hero-queue-list"
       />
-
       <.empty_state
         :if={activity_tasks(@overview) == []}
         title="No other recent runner activity"
@@ -130,7 +123,6 @@ defmodule FavnView.Components.RunnersPage do
         icon="hero-queue-list"
         data-testid="runner-tasks-empty-state"
       />
-
       <.stack :if={activity_tasks(@overview) != []} gap={:sm}>
         <.task_card :for={task <- activity_tasks(@overview)} task={task} />
       </.stack>
@@ -148,9 +140,9 @@ defmodule FavnView.Components.RunnersPage do
           primary={@runner.runner_instance_id}
           secondary={"#{@runner.runner_pool} · #{@runner.required_runner_release_id}"}
           mono={:both}
-        />
-        <.status_badge tone={runner_tone(@runner.status)} label={status_label(@runner.status)} />
+        /> <.status_badge tone={runner_tone(@runner.status)} label={status_label(@runner.status)} />
       </div>
+
       <.fact_list
         class="mt-3"
         columns={3}
@@ -160,7 +152,7 @@ defmodule FavnView.Components.RunnersPage do
           %{label: "Registered", value: format_time(@runner.registered_at)}
         ]}
       />
-      <p :if={@runner.active_task_id} class="mt-3 text-xs favn-text-muted">
+      <p :if={@runner.active_task_id} class="mt-3 text-sm favn-text-muted">
         Active task: <.mono value={@runner.active_task_id} />
       </p>
     </.list_card>
@@ -177,8 +169,7 @@ defmodule FavnView.Components.RunnersPage do
           primary={humanize(@task.task_kind)}
           secondary={@task.task_id}
           mono={:secondary}
-        />
-        <.status_badge tone={task_tone(@task.status)} label={status_label(@task.status)} />
+        /> <.status_badge tone={task_tone(@task.status)} label={status_label(@task.status)} />
       </div>
 
       <.notice
@@ -188,9 +179,12 @@ defmodule FavnView.Components.RunnersPage do
         data-testid="runner-task-error"
       >
         <p class="font-medium">{@task.failure.title}</p>
+
         <p class="mt-1 break-words">{@task.failure.message}</p>
+
         <p class="mt-2 favn-text-muted">{@task.failure.remediation}</p>
-        <p class="mt-2 font-mono text-xs">{@task.failure.code}</p>
+
+        <p class="mt-2 font-mono text-sm">{@task.failure.code}</p>
       </.notice>
 
       <.fact_list

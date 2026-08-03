@@ -6,41 +6,105 @@ defmodule FavnView.AssetCatalogueFiltersTest do
   doctest AssetCatalogueFilters
 
   @assets [
-    %{name: "stg_orders", connection: "duckdb", catalogue: "sales"},
-    %{name: "mart_daily_sales", connection: "duckdb", catalogue: "sales"},
-    %{name: "raw_events", connection: "duckdb", catalogue: "platform"},
-    %{name: "accounts", connection: "postgres", catalogue: "crm"}
+    %{name: "stg_orders", connection: "duckdb", catalogue: "raw", schema: "sales"},
+    %{name: "mart_daily_sales", connection: "duckdb", catalogue: "mart", schema: "sales"},
+    %{name: "raw_events", connection: "duckdb", catalogue: "raw", schema: "platform"},
+    %{name: "accounts", connection: "postgres", catalogue: "core", schema: "crm"},
+    # What the catalogue projects for an asset owning no relation: nil levels and
+    # a module path. The path is deliberately not folded into the levels — it
+    # addresses nothing, so it must not become an option an operator can pick.
+    %{
+      name: "landed_events",
+      connection: nil,
+      catalogue: nil,
+      schema: nil,
+      module_path: ["lifecycle", "probes"]
+    }
   ]
 
+  defp filters(overrides), do: Map.merge(AssetCatalogueFilters.defaults(), overrides)
+
   test "choosing a connection narrows the catalogue options to its catalogues" do
-    assert AssetCatalogueFilters.catalogue_options(@assets, "duckdb") == [
+    assert AssetCatalogueFilters.catalogue_options(@assets, %{connection: "duckdb"}) == [
              {"Catalogue", "all"},
-             {"Platform", "platform"},
-             {"Sales", "sales"}
+             {"Mart", "mart"},
+             {"Raw", "raw"}
            ]
 
-    assert AssetCatalogueFilters.catalogue_options(@assets, "postgres") == [
+    assert AssetCatalogueFilters.catalogue_options(@assets, %{connection: "postgres"}) == [
              {"Catalogue", "all"},
-             {"Crm", "crm"}
+             {"Core", "core"}
            ]
+  end
+
+  test "schema options narrow by connection and catalogue together" do
+    assert AssetCatalogueFilters.schema_options(@assets, %{
+             connection: "duckdb",
+             catalogue: "raw"
+           }) == [{"Schema", "all"}, {"Platform", "platform"}, {"Sales", "sales"}]
+
+    assert AssetCatalogueFilters.schema_options(@assets, %{
+             connection: "duckdb",
+             catalogue: "mart"
+           }) == [{"Schema", "all"}, {"Sales", "sales"}]
+  end
+
+  test "an asset that owns no relation contributes no namespace options" do
+    # Its module path segments must not surface as connections, which is what
+    # happened while the path stood in for the levels: "Lifecycle" appeared in the
+    # Connection select beside real connections and filtered to inferred rows.
+    assert AssetCatalogueFilters.connection_options(@assets) == [
+             {"Connection", "all"},
+             {"Duckdb", "duckdb"},
+             {"Postgres", "postgres"}
+           ]
+
+    refute AssetCatalogueFilters.schema_options(@assets, %{})
+           |> Enum.any?(&(elem(&1, 1) == "probes"))
   end
 
   test "switching connection resets a catalogue that no longer exists" do
-    filters = %{search: "", connection: "postgres", catalogue: "sales"}
+    reconciled =
+      AssetCatalogueFilters.reconcile_namespace(
+        filters(%{connection: "postgres", catalogue: "raw"}),
+        @assets
+      )
 
-    assert AssetCatalogueFilters.reconcile_catalogue(filters, @assets).catalogue == "all"
+    assert reconciled.catalogue == "all"
   end
 
   test "a still-valid catalogue survives a connection switch" do
-    filters = %{search: "", connection: "duckdb", catalogue: "sales"}
+    given = filters(%{connection: "duckdb", catalogue: "raw"})
 
-    assert AssetCatalogueFilters.reconcile_catalogue(filters, @assets) == filters
+    assert AssetCatalogueFilters.reconcile_namespace(given, @assets) == given
   end
 
-  test "search, connection, and catalogue narrow together" do
-    filters = %{search: "stg", connection: "duckdb", catalogue: "sales"}
+  test "resetting a catalogue does not drag down a schema the connection still allows" do
+    reconciled =
+      AssetCatalogueFilters.reconcile_namespace(
+        filters(%{connection: "duckdb", catalogue: "core", schema: "sales"}),
+        @assets
+      )
 
-    assert AssetCatalogueFilters.filter(@assets, filters) |> Enum.map(& &1.name) ==
+    assert reconciled.catalogue == "all"
+    assert reconciled.schema == "sales"
+  end
+
+  test "a schema outside the chosen catalogue resets" do
+    reconciled =
+      AssetCatalogueFilters.reconcile_namespace(
+        filters(%{connection: "duckdb", catalogue: "mart", schema: "platform"}),
+        @assets
+      )
+
+    assert reconciled.catalogue == "mart"
+    assert reconciled.schema == "all"
+  end
+
+  test "search and all three namespace levels narrow together" do
+    given = filters(%{search: "stg", connection: "duckdb", catalogue: "raw", schema: "sales"})
+
+    assert AssetCatalogueFilters.filter(@assets, given) |> Enum.map(& &1.name) ==
              ["stg_orders"]
   end
 
@@ -110,9 +174,9 @@ defmodule FavnView.AssetCatalogueFiltersTest do
   end
 
   test "a scope narrows alongside the other filters rather than replacing them" do
-    filters = %{search: "gappy", connection: "all", catalogue: "all", scope: "unhealthy"}
+    given = filters(%{search: "gappy", scope: "unhealthy"})
 
-    assert AssetCatalogueFilters.filter(@stateful, filters) == []
+    assert AssetCatalogueFilters.filter(@stateful, given) == []
   end
 
   test "counts are of the collection, not of an already narrowed page" do

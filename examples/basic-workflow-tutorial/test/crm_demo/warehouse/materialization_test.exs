@@ -20,13 +20,17 @@ defmodule CrmDemo.Warehouse.MaterializationTest do
   @daily [Deal, Activity, Opportunity, Engagement, PipelineDaily, ExecutiveOverview]
 
   setup do
-    File.rm_rf!(Storage.root())
-    File.rm(database_path())
-
-    on_exit(fn ->
+    reset_warehouse = fn ->
       File.rm_rf!(Storage.root())
-      File.rm(database_path())
-    end)
+      # The wildcard takes the `.wal` sidecar with the database. Left behind, it
+      # replays into the freshly attached file and repopulates what this deleted.
+      Enum.each(database_paths(), fn path ->
+        Enum.each(Path.wildcard(path <> "*"), &File.rm/1)
+      end)
+    end
+
+    reset_warehouse.()
+    on_exit(reset_warehouse)
 
     :ok
   end
@@ -41,7 +45,7 @@ defmodule CrmDemo.Warehouse.MaterializationTest do
 
     assert query("""
            select customer_id, contact_count, health_status
-           from mart.account_health
+           from mart.sales.account_health
            order by customer_id
            """) == [
              %{"customer_id" => "acct_001", "contact_count" => 2, "health_status" => "engaged"},
@@ -60,7 +64,7 @@ defmodule CrmDemo.Warehouse.MaterializationTest do
 
     assert query("""
            select stage, deal_count, cast(pipeline_amount_cents as bigint) as amount
-           from mart.pipeline_daily
+           from mart.sales.pipeline_daily
            order by stage
            """) == [
              %{"stage" => "proposal", "deal_count" => 1, "amount" => 45_000},
@@ -74,7 +78,7 @@ defmodule CrmDemo.Warehouse.MaterializationTest do
              cast(pipeline_amount_cents as bigint) as amount,
              customer_count,
              engaged_count
-           from mart.executive_overview
+           from mart.sales.executive_overview
            """) == [
              %{"deal_count" => 3, "amount" => 74_500, "customer_count" => 4, "engaged_count" => 2}
            ]
@@ -89,7 +93,7 @@ defmodule CrmDemo.Warehouse.MaterializationTest do
              select
                count(distinct _landing_run_id) as runs,
                count(distinct _row_hash) as hashes
-             from source.account
+             from source.crm.account
              """)
   end
 
@@ -105,13 +109,14 @@ defmodule CrmDemo.Warehouse.MaterializationTest do
       Enum.each(@daily, &assert_published(&1, window))
     end)
 
-    assert query("select snapshot_date, deal_count from mart.pipeline_daily order by 1, 2") == [
-             %{"snapshot_date" => ~D[2026-07-22], "deal_count" => 1},
-             %{"snapshot_date" => ~D[2026-07-22], "deal_count" => 1},
-             %{"snapshot_date" => ~D[2026-07-23], "deal_count" => 1},
-             %{"snapshot_date" => ~D[2026-07-23], "deal_count" => 1},
-             %{"snapshot_date" => ~D[2026-07-23], "deal_count" => 1}
-           ]
+    assert query("select snapshot_date, deal_count from mart.sales.pipeline_daily order by 1, 2") ==
+             [
+               %{"snapshot_date" => ~D[2026-07-22], "deal_count" => 1},
+               %{"snapshot_date" => ~D[2026-07-22], "deal_count" => 1},
+               %{"snapshot_date" => ~D[2026-07-23], "deal_count" => 1},
+               %{"snapshot_date" => ~D[2026-07-23], "deal_count" => 1},
+               %{"snapshot_date" => ~D[2026-07-23], "deal_count" => 1}
+             ]
   end
 
   test "a contract violation fails the asset and leaves the target untouched" do
@@ -127,7 +132,7 @@ defmodule CrmDemo.Warehouse.MaterializationTest do
     assert error.type == :check_failed
     assert error.phase == :before_materialize
 
-    assert query("select count(*) as n from source.account") == [%{"n" => 4}]
+    assert query("select count(*) as n from source.crm.account") == [%{"n" => 4}]
   end
 
   defp land_reference do
@@ -171,12 +176,20 @@ defmodule CrmDemo.Warehouse.MaterializationTest do
     end
   end
 
-  defp database_path do
+  # Every phase is its own attached catalog, so there is one file per phase.
+  # Removing only the connection's own database left the marts populated from the
+  # previous test and turned one window's rows into two.
+  #
+  # Read with `fetch!` throughout: if a key here is ever renamed, this has to fail
+  # loudly rather than quietly return fewer paths and reintroduce that bug.
+  defp database_paths do
     :favn
     |> Application.fetch_env!(:connections)
     |> Keyword.fetch!(:warehouse)
-    |> Keyword.fetch!(:open)
-    |> Keyword.fetch!(:database)
-    |> Path.expand()
+    |> Keyword.fetch!(:duckdb)
+    |> Keyword.fetch!(:resources)
+    |> Enum.map(fn {_name, resource} ->
+      resource |> Keyword.fetch!(:params) |> Keyword.fetch!(:database_path) |> Path.expand()
+    end)
   end
 end

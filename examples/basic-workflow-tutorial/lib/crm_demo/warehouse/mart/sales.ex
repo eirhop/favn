@@ -3,5 +3,7 @@ defmodule CrmDemo.Warehouse.Mart.Sales do
 
   use Favn.Namespace
 
+  relation(schema: "sales")
+
   meta(tags: [:sales])
 end

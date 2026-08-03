@@ -42,6 +42,8 @@ defmodule FavnOrchestrator.Operator.Catalogue do
           required(:target_id) => String.t(),
           required(:label) => String.t(),
           optional(:asset_ref) => String.t(),
+          optional(:name) => String.t(),
+          optional(:module_path) => [String.t()],
           optional(:type) => String.t(),
           optional(:relation) => map() | nil,
           optional(:metadata) => map(),
@@ -61,6 +63,8 @@ defmodule FavnOrchestrator.Operator.Catalogue do
           required(:target_id) => String.t(),
           required(:label) => String.t(),
           optional(:asset_ref) => String.t(),
+          optional(:name) => String.t(),
+          optional(:module_path) => [String.t()],
           optional(:type) => String.t(),
           optional(:relation) => map() | nil,
           optional(:metadata) => map(),
@@ -143,6 +147,7 @@ defmodule FavnOrchestrator.Operator.Catalogue do
           required(:name) => String.t(),
           required(:asset_ref) => String.t() | nil,
           required(:canonical_asset_ref) => Favn.Ref.t(),
+          required(:module_path) => [String.t()],
           required(:relation) => map() | nil,
           required(:type) => String.t() | nil,
           required(:status) => :healthy | :running | :failed | :unknown,
@@ -700,10 +705,9 @@ defmodule FavnOrchestrator.Operator.Catalogue do
       run_context_selection.selected && AssetRunContext.descriptor(run_context_selection.selected)
 
     target
-    |> Map.take([:target_id, :label, :asset_ref, :relation, :type, :window])
+    |> Map.take([:target_id, :label, :asset_ref, :name, :module_path, :relation, :type, :window])
     |> Map.put(:manifest_version_id, version.manifest_version_id)
     |> Map.put(:canonical_asset_ref, asset.ref)
-    |> Map.put(:name, asset_detail_name(target))
     |> Status.put(status)
     |> Map.put(:freshness, AssetFreshness.detail(asset, version, freshness_states, context_opts))
     |> Map.put(:assurance, Assurance.detail(asset, latest_run))
@@ -741,20 +745,4 @@ defmodule FavnOrchestrator.Operator.Catalogue do
     |> Enum.map(fn {_run_ref_string, run} -> run end)
     |> RunHistory.latest()
   end
-
-  defp asset_detail_name(%{relation: relation, asset_ref: asset_ref, label: label}) do
-    relation_name(relation) || asset_ref_name(asset_ref) || label
-  end
-
-  defp relation_name(%{name: name}) when is_binary(name), do: name
-  defp relation_name(%{"name" => name}) when is_binary(name), do: name
-  defp relation_name(_relation), do: nil
-
-  defp asset_ref_name(asset_ref) when is_binary(asset_ref) do
-    asset_ref
-    |> String.split(":")
-    |> List.last()
-  end
-
-  defp asset_ref_name(_asset_ref), do: nil
 end
