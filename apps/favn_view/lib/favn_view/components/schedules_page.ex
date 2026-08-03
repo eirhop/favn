@@ -23,6 +23,7 @@ defmodule FavnView.Components.SchedulesPage do
   attr :nav_items, :list, required: true
   attr :current_scope, :any, default: nil
   attr :operator_workspaces, :list, default: []
+  attr :filters_open?, :boolean, default: false, doc: "narrow screens only; wide ones always show"
 
   def schedules_page(assigns) do
     ~H"""
@@ -58,6 +59,7 @@ defmodule FavnView.Components.SchedulesPage do
                 filters={@filters}
                 filter_options={@filter_options}
                 scope_choices={@scope_choices}
+                filters_open?={@filters_open?}
               />
             </:toolbar>
 
@@ -102,12 +104,14 @@ defmodule FavnView.Components.SchedulesPage do
   attr :filters, :map, required: true
   attr :filter_options, :map, required: true
   attr :scope_choices, :list, required: true
+  attr :filters_open?, :boolean, default: false
 
   def filters_bar(assigns) do
     ~H"""
     <.table_toolbar
       on_change="filter_schedules"
       filters_id="schedule-filters"
+      filters_open?={@filters_open?}
       on_clear="clear_filters"
       adjusted?={narrowed?(@filters)}
       search_name="filters[search]"
@@ -162,7 +166,7 @@ defmodule FavnView.Components.SchedulesPage do
       row_testid="schedule-row"
       row_navigate={&~p"/schedules/#{&1.route_id}"}
       fill?
-      class="hidden lg:block"
+      desktop_only?
       data-testid="schedules-table"
     >
       <:col :let={schedule} label="Schedule" class="w-64">

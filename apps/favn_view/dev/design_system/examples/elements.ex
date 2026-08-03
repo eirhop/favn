@@ -245,6 +245,12 @@ defmodule FavnView.Dev.DesignSystem.Examples.Elements do
           :with_scopes,
           &table_toolbar_scopes_example/1,
           "A scope rail carrying counts goes at the start, as on /runs."
+        ),
+        Example.render(
+          :filters_open,
+          &table_toolbar_open_example/1,
+          "The narrow-screen disclosure opened. Below `lg` the filters are always " <>
+            "behind the Filters control, so this is the only way to see them there."
         )
       ],
       "data/stacked_cell" => [
@@ -935,12 +941,35 @@ defmodule FavnView.Dev.DesignSystem.Examples.Elements do
     """
   end
 
+  defp table_toolbar_open_example(assigns) do
+    ~H"""
+    <.table_toolbar
+      on_change="filter_assets"
+      filters_id="toolbar-open-filters"
+      filters_open?={true}
+      search_name="filters[search]"
+      search_label="Search assets"
+      on_clear="clear_filters"
+      adjusted?={true}
+    >
+      <:filters>
+        <.select_field
+          name="filters[catalogue]"
+          label="Catalogue filter"
+          icon="hero-folder"
+          options={[{"Catalogue", "all"}, {"Source", "source"}]}
+          value="all"
+        />
+      </:filters>
+    </.table_toolbar>
+    """
+  end
+
   defp table_toolbar_scopes_example(assigns) do
     ~H"""
     <.table_toolbar
       on_change="filter_runs"
       filters_id="toolbar-scopes-filters"
-      on_toggle="toggle_filters"
       adjusted?={true}
       search_name="filters[q]"
       search_label="Search runs"

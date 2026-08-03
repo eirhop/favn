@@ -34,6 +34,7 @@ defmodule FavnView.AssetCatalogueLive do
         lineage_inspector_open?: true,
         loading: false,
         error: error,
+        filters_open?: false,
         nav_items: AssetCataloguePage.nav_items(),
         connection_options: AssetCatalogueFilters.connection_options(assets),
         catalogue_options: AssetCatalogueFilters.catalogue_options(assets, @default_filters),
@@ -72,6 +73,10 @@ defmodule FavnView.AssetCatalogueLive do
 
   def handle_event("clear_filters", _params, socket) do
     {:noreply, apply_filters(socket, @default_filters)}
+  end
+
+  def handle_event("toggle_filters", _params, socket) do
+    {:noreply, update(socket, :filters_open?, &(not &1))}
   end
 
   def handle_event("set_mode", %{"mode" => mode}, socket) when mode in @valid_modes do
@@ -142,6 +147,7 @@ defmodule FavnView.AssetCatalogueLive do
       catalogue_options={@catalogue_options}
       schema_options={@schema_options}
       scope_choices={@scope_choices}
+      filters_open?={@filters_open?}
       lineage_graph={@lineage_graph}
       lineage_inspector={@lineage_inspector}
       lineage_loading={@lineage_loading}

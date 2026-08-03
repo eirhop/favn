@@ -111,7 +111,6 @@ defmodule FavnView.Components.RunsListPage do
     <.table_toolbar
       on_change="filter_runs"
       filters_id="runs-filters"
-      on_toggle="toggle_filters"
       filters_open?={@filters_open?}
       on_clear="clear_filters"
       adjusted?={RunsFilters.narrowed?(@filters) or RunsFilters.adjusted?(@filters)}

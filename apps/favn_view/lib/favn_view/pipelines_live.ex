@@ -20,6 +20,7 @@ defmodule FavnView.PipelinesLive do
         filters: @default_filters,
         loading: false,
         error: error,
+        filters_open?: false,
         nav_items: PipelinesPage.nav_items(:pipelines),
         status_options: status_options(pipelines)
       )
@@ -36,6 +37,10 @@ defmodule FavnView.PipelinesLive do
     {:noreply, apply_filters(socket, @default_filters)}
   end
 
+  def handle_event("toggle_filters", _params, socket) do
+    {:noreply, update(socket, :filters_open?, &(not &1))}
+  end
+
   @impl true
   def render(assigns) do
     ~H"""
@@ -48,6 +53,7 @@ defmodule FavnView.PipelinesLive do
       current_scope={@current_scope}
       operator_workspaces={@operator_workspaces}
       status_options={@status_options}
+      filters_open?={@filters_open?}
     />
     """
   end

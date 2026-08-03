@@ -30,6 +30,14 @@ defmodule FavnView.UI.Data do
   wrapper that ancestor: put it in a `flex min-h-0 flex-1` panel and the header
   pins to the top of the rows rather than to the page.
 
+  Two more rules hold on every list screen, and both are the element's rather
+  than a caller's because the screens that skipped them each looked reasonable in
+  isolation: `desktop_only?` on the table, so its rows and the cards below `lg`
+  are never both showing, and the filters as a narrow-screen disclosure in
+  `table_toolbar/1`, so the scope rail and the rows keep the width a phone has.
+  `test/favn_view/components/list_screen_standard_test.exs` asserts both for all
+  of them at once.
+
   ## Examples
 
       <.fact_list facts={[%{label: "Trigger", value: "Schedule"}]} />
@@ -95,6 +103,12 @@ defmodule FavnView.UI.Data do
   them, so the size class is the whole decision: `table-sm` drops rows to
   0.75rem, and its `:not(thead, tfoot) tr` selector outranks a `text-sm`
   utility in the same layer, so adding one back does nothing.
+
+  A table is not the right shape for a phone, so a list screen pairs this with
+  `card_list/1` and sets `desktop_only?`. That flag lives here rather than in a
+  `class` a caller passes, because a screen that forgot it rendered every row
+  twice on a phone — once as a row and once as a card — and nothing about the
+  markup said which of the two was supposed to be showing.
   """
   attr :id, :string, required: true
   attr :rows, :list, required: true
@@ -116,6 +130,12 @@ defmodule FavnView.UI.Data do
     default: true,
     doc: "set false only where the header would pin against a second one"
 
+  attr :desktop_only?, :boolean,
+    default: false,
+    doc:
+      "hide below `lg`, where a `card_list/1` renders the same rows instead; every list " <>
+        "screen sets it, and a table without a card alternative does not"
+
   attr :class, :any, default: nil
   attr :rest, :global
 
@@ -129,7 +149,11 @@ defmodule FavnView.UI.Data do
 
   def data_table(assigns) do
     ~H"""
-    <div class={[(@fill? && "min-h-0 flex-1 overflow-auto") || "overflow-x-auto", @class]}>
+    <div class={[
+      (@fill? && "min-h-0 flex-1 overflow-auto") || "overflow-x-auto",
+      @desktop_only? && "hidden lg:block",
+      @class
+    ]}>
       <table class="table w-full" id={@id}>
         <thead class={@sticky_header? && "sticky top-0 z-10 bg-base-100/85 backdrop-blur"}>
           <tr class="border-base-content/10 favn-text-muted">
@@ -260,13 +284,21 @@ defmodule FavnView.UI.Data do
   what made `/schedules` look like a different application from `/runs`.
 
   Passing `on_change` renders the form, so filtering works with and without
-  JavaScript without each page wiring its own. Passing `on_toggle` collapses the
-  filters behind one control below `lg`, for a screen whose scopes must stay
-  visible on a phone; without it the filters are always shown.
+  JavaScript without each page wiring its own.
+
+  ## Below `lg` the filters are always a disclosure
+
+  Not a per-screen choice. A phone has room for the scope rail or the filters,
+  not both, so the filters collapse behind one control and the scopes — whose
+  counts are the answer rather than a way to look for it — stay visible. A screen
+  therefore assigns `filters_open?` and handles `on_toggle`, which defaults to
+  `"toggle_filters"`. The collapsed control carries a dot while anything is set,
+  so a filter is never in force with no sign of it.
 
       <.table_toolbar
         on_change="filter_schedules"
         filters_id="schedule-filters"
+        filters_open?={@filters_open?}
         search_name="filters[search]"
         search_label="Search schedules"
         search_value={@filters["search"]}
@@ -293,8 +325,14 @@ defmodule FavnView.UI.Data do
   """
   attr :on_change, :string, default: nil, doc: "LiveView event; renders the form around `filters`"
   attr :filters_id, :string, default: nil
-  attr :on_toggle, :string, default: nil, doc: "event that collapses the filters below `lg`"
-  attr :filters_open?, :boolean, default: false, doc: "only meaningful with `on_toggle`"
+
+  attr :on_toggle, :string,
+    default: "toggle_filters",
+    doc: "event that opens and closes the filters below `lg`; every list screen handles it"
+
+  attr :filters_open?, :boolean,
+    default: false,
+    doc: "whether the narrow-screen disclosure is open; `lg` and up ignores it"
 
   attr :search_name, :string, default: nil, doc: "form field name; renders the search when set"
   attr :search_label, :string, default: "Search", doc: "screen-reader name and placeholder"
@@ -322,7 +360,7 @@ defmodule FavnView.UI.Data do
         <div :if={@scopes != []} class="w-full sm:w-auto">{render_slot(@scopes)}</div>
 
         <.button
-          :if={@on_toggle}
+          :if={@search_name || @filters != []}
           variant={:ghost}
           icon="hero-adjustments-horizontal"
           class="ml-auto shrink-0 lg:hidden"
@@ -712,9 +750,10 @@ defmodule FavnView.UI.Data do
   defp count_tone(%{count: 0}), do: :neutral
   defp count_tone(%{tone: tone}), do: tone
 
-  # Without a toggle the filters are always laid out; with one they are a
-  # narrow-screen disclosure that `lg` reopens for good.
-  defp filters_class(%{on_toggle: nil}), do: "flex w-full flex-col lg:w-auto"
+  # Below `lg` the filters are a disclosure, on every list screen rather than on
+  # the ones that opted in: a phone has room for the scope rail or the filters,
+  # not both, and a screen that laid them out inline pushed its rows off-screen.
+  # `lg` and up reopens them for good.
   defp filters_class(%{filters_open?: true}), do: "flex w-full flex-col lg:w-auto"
   defp filters_class(_assigns), do: "hidden w-full flex-col lg:flex lg:w-auto"
 

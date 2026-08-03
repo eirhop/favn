@@ -47,6 +47,7 @@ defmodule FavnView.Components.AssetCataloguePage do
     required: true,
     doc: "see `FavnView.AssetCatalogueFilters.scope_choices/2`"
 
+  attr :filters_open?, :boolean, default: false, doc: "narrow screens only; wide ones always show"
   attr :flash, :map, default: %{}
   attr :lineage_graph, :any, default: nil
   attr :lineage_inspector, :any, default: nil
@@ -100,6 +101,7 @@ defmodule FavnView.Components.AssetCataloguePage do
                 catalogue_options={@catalogue_options}
                 schema_options={@schema_options}
                 scope_choices={@scope_choices}
+                filters_open?={@filters_open?}
               />
             </:toolbar>
 
@@ -143,12 +145,14 @@ defmodule FavnView.Components.AssetCataloguePage do
   attr :catalogue_options, :list, required: true
   attr :schema_options, :list, required: true
   attr :scope_choices, :list, required: true
+  attr :filters_open?, :boolean, default: false
 
   def asset_filters(assigns) do
     ~H"""
     <.table_toolbar
       on_change="filter_assets"
       filters_id="asset-filters"
+      filters_open?={@filters_open?}
       on_clear="clear_filters"
       adjusted?={AssetCatalogueFilters.narrowed?(@filters)}
       search_name="filters[search]"
@@ -244,6 +248,7 @@ defmodule FavnView.Components.AssetCataloguePage do
       row_testid="asset-row"
       row_navigate={&~p"/assets/#{asset_route_id(&1)}"}
       fill?
+      desktop_only?
       data-testid="asset-table"
     >
       <:col :let={asset} label="Asset" class="w-80">

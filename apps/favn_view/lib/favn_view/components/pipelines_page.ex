@@ -16,6 +16,7 @@ defmodule FavnView.Components.PipelinesPage do
   attr :current_scope, :any, default: nil
   attr :operator_workspaces, :list, default: []
   attr :status_options, :list, required: true
+  attr :filters_open?, :boolean, default: false, doc: "narrow screens only; wide ones always show"
 
   def pipelines_page(assigns) do
     ~H"""
@@ -44,7 +45,11 @@ defmodule FavnView.Components.PipelinesPage do
             data-testid="pipelines-panel"
           >
             <:toolbar>
-              <.pipeline_filters filters={@filters} status_options={@status_options} />
+              <.pipeline_filters
+                filters={@filters}
+                status_options={@status_options}
+                filters_open?={@filters_open?}
+              />
             </:toolbar>
 
             <.empty_state
@@ -64,12 +69,14 @@ defmodule FavnView.Components.PipelinesPage do
 
   attr :filters, :map, required: true
   attr :status_options, :list, required: true
+  attr :filters_open?, :boolean, default: false
 
   def pipeline_filters(assigns) do
     ~H"""
     <.table_toolbar
       on_change="filter_pipelines"
       filters_id="pipeline-filters"
+      filters_open?={@filters_open?}
       on_clear="clear_filters"
       adjusted?={narrowed?(@filters)}
       search_name="filters[search]"
@@ -108,6 +115,7 @@ defmodule FavnView.Components.PipelinesPage do
       row_testid="pipeline-row"
       row_navigate={&~p"/pipelines/#{FavnView.AssetRoute.to_param(&1.id)}"}
       fill?
+      desktop_only?
       data-testid="pipelines-table"
     >
       <:col :let={pipeline} label="Pipeline" class="w-72">

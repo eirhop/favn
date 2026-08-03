@@ -29,6 +29,7 @@ defmodule FavnView.SchedulesLive do
         scope_choices: ScheduleFilters.scope_choices(entries, @default_filters),
         loading: false,
         error: error,
+        filters_open?: false,
         nav_items: SchedulesPage.nav_items(:schedules)
       )
 
@@ -62,6 +63,10 @@ defmodule FavnView.SchedulesLive do
      )}
   end
 
+  def handle_event("toggle_filters", _params, socket) do
+    {:noreply, update(socket, :filters_open?, &(not &1))}
+  end
+
   @impl true
   def render(assigns) do
     ~H"""
@@ -71,6 +76,7 @@ defmodule FavnView.SchedulesLive do
       filters={@filters}
       filter_options={@filter_options}
       scope_choices={@scope_choices}
+      filters_open?={@filters_open?}
       loading={@loading}
       error={@error}
       nav_items={@nav_items}
