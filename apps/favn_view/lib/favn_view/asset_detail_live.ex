@@ -11,8 +11,8 @@ defmodule FavnView.AssetDetailLive do
   alias FavnView.Components.AssetDetailPage
   alias FavnView.Components.ErrorPage
   alias FavnView.Auth.Scope
+  alias FavnView.LogsViewModel
 
-  @valid_modes ~w(timeline details)
   @dependency_choices ~w(all none)
   @refresh_choices ~w(auto missing force_selected force_selected_upstream force_all)
   @source_choices ~w(refresh_timeline data_coverage_timeline)
@@ -34,7 +34,8 @@ defmodule FavnView.AssetDetailLive do
         run_context_id: run_context_id,
         asset_state: asset_state,
         asset: asset,
-        active_mode: :timeline,
+        selected_run_id: nil,
+        selected_run: nil,
         active_timeline: :refresh,
         selected_window: nil,
         run_config_open?: false,
@@ -57,47 +58,46 @@ defmodule FavnView.AssetDetailLive do
     {:ok, socket}
   end
 
+  # The rail navigates rather than assigning, so `handle_params` runs on every mode
+  # change with the process still mounted. Only a different asset or run context
+  # costs a reload; the mode and the selected run are resolved every time.
   @impl true
   def handle_params(%{"asset_id" => asset_id} = params, _uri, socket) do
     run_context_id = run_context_param(params)
 
-    if socket.assigns.asset_id == asset_id and socket.assigns.run_context_id == run_context_id do
-      {:noreply, socket}
-    else
-      asset_state = load_asset(actor_context(socket), asset_id, run_context_id)
+    socket =
+      if socket.assigns.asset_id == asset_id and socket.assigns.run_context_id == run_context_id do
+        socket
+      else
+        asset_state = load_asset(actor_context(socket), asset_id, run_context_id)
 
-      {:noreply,
-       assign(socket,
-         asset_id: asset_id,
-         run_context_id: run_context_id,
-         asset_state: asset_state,
-         asset: asset_from_state(asset_state),
-         selected_window: nil,
-         run_config_open?: false,
-         run_config: default_run_config(),
-         run_config_valid?: true,
-         submitting_window_run?: false,
-         submitted_run_id: nil,
-         selected_window_error: nil,
-         coverage_plan: nil,
-         coverage_page_cursor: nil,
-         coverage_cursor_stack: [],
-         coverage_action_error: nil,
-         planning_coverage?: false,
-         submitting_coverage?: false,
-         coverage_attempt: nil,
-         run_attempt: nil
-       )}
-    end
+        assign(socket,
+          asset_id: asset_id,
+          run_context_id: run_context_id,
+          asset_state: asset_state,
+          asset: asset_from_state(asset_state),
+          selected_window: nil,
+          run_config_open?: false,
+          run_config: default_run_config(),
+          run_config_valid?: true,
+          submitting_window_run?: false,
+          submitted_run_id: nil,
+          selected_window_error: nil,
+          coverage_plan: nil,
+          coverage_page_cursor: nil,
+          coverage_cursor_stack: [],
+          coverage_action_error: nil,
+          planning_coverage?: false,
+          submitting_coverage?: false,
+          coverage_attempt: nil,
+          run_attempt: nil
+        )
+      end
+
+    {:noreply, assign_selected_run(socket, Map.get(params, "run_id"))}
   end
 
   @impl true
-  def handle_event("set_mode", %{"mode" => mode}, socket) when mode in @valid_modes do
-    {:noreply, assign(socket, :active_mode, String.to_existing_atom(mode))}
-  end
-
-  def handle_event("set_mode", _params, socket), do: {:noreply, socket}
-
   def handle_event("plan_missing_coverage", _params, socket) do
     asset = socket.assigns.asset
 
@@ -502,7 +502,11 @@ defmodule FavnView.AssetDetailLive do
       refresh_timeline={@asset.refresh_timeline}
       freshness_timeline={@asset.freshness_timeline}
       data_coverage_timeline={@asset.data_coverage_timeline}
-      active_mode={@active_mode}
+      active_mode={active_mode(@live_action)}
+      asset_id={@asset_id}
+      runs={@asset.runs}
+      selected_run_id={@selected_run_id}
+      selected_run={@selected_run}
       freshness={@asset.freshness}
       coverage={@asset.coverage}
       coverage_policy={@asset.coverage_policy}
@@ -555,6 +559,51 @@ defmodule FavnView.AssetDetailLive do
     />
     """
   end
+
+  # A run selection loads only that run. Re-resolving the whole asset detail would
+  # rebuild the freshness plan, the coverage page, and three timelines to change one
+  # panel.
+  defp assign_selected_run(socket, nil),
+    do: assign(socket, selected_run_id: nil, selected_run: nil)
+
+  defp assign_selected_run(%{assigns: %{selected_run_id: run_id}} = socket, run_id), do: socket
+
+  defp assign_selected_run(socket, run_id) do
+    assign(socket,
+      selected_run_id: run_id,
+      selected_run: load_selected_run(socket, run_id)
+    )
+  end
+
+  defp load_selected_run(%{assigns: %{asset: nil}}, _run_id), do: nil
+
+  defp load_selected_run(socket, run_id) do
+    target_id = AssetRoute.from_param(socket.assigns.asset_id)
+
+    case FavnOrchestrator.active_asset_run_detail(actor_context(socket), target_id, run_id) do
+      {:ok, run} ->
+        {:ok, run}
+
+      {:error, :not_found} ->
+        {:not_found, run_id}
+
+      {:error, reason} ->
+        Logger.error(
+          "asset_run_detail.load failed asset_id=#{inspect(socket.assigns.asset_id)} " <>
+            "run_id=#{inspect(run_id)} reason=#{inspect(reason)}"
+        )
+
+        {:error, :backend_unavailable}
+    end
+  end
+
+  # `:run` is a selection inside the runs page, not a fifth destination, so the rail
+  # stays lit on Runs while a run is open.
+  defp active_mode(:runs), do: :runs
+  defp active_mode(:run), do: :runs
+  defp active_mode(:coverage), do: :coverage
+  defp active_mode(:diagnostics), do: :diagnostics
+  defp active_mode(_live_action), do: :overview
 
   defp load_asset(operator_context, asset_id, run_context_id) do
     target_id = AssetRoute.from_param(asset_id)
@@ -648,8 +697,43 @@ defmodule FavnView.AssetDetailLive do
       refresh_timeline: refresh_timeline,
       freshness_timeline: freshness_timeline,
       data_coverage_timeline: data_coverage_timeline,
-      timeline: timeline
+      timeline: timeline,
+      runs: Enum.map(Map.get(detail, :runs, []), &run_entry(&1, asset_id))
     }
+  end
+
+  defp run_entry(run, asset_id) do
+    started_at = Map.get(run, :started_at)
+
+    %{
+      id: run.id,
+      patch: ~p"/assets/#{asset_id}/runs/#{run.id}",
+      status: run.status,
+      status_tone: LogsViewModel.status_tone(run.status),
+      status_label: LogsViewModel.status_label(run.status),
+      trigger_label: LogsViewModel.trigger_label(Map.get(run, :submit_kind)),
+      started_at: started_at,
+      day_label: started_at && Calendar.strftime(started_at, "%b %-d"),
+      time_label: started_at && Calendar.strftime(started_at, "%H:%M"),
+      duration_label: duration_label(Map.get(run, :duration_ms)),
+      window_label: run |> Map.get(:window) |> window_entry_label()
+    }
+  end
+
+  defp window_entry_label(%{label: label}) when is_binary(label), do: label
+  defp window_entry_label(_window), do: nil
+
+  defp duration_label(nil), do: nil
+  defp duration_label(ms) when ms < 1_000, do: "#{ms}ms"
+
+  defp duration_label(ms) when ms < 60_000 do
+    seconds = Float.round(ms / 1_000, 1)
+    "#{:erlang.float_to_binary(seconds, decimals: 1)}s"
+  end
+
+  defp duration_label(ms) do
+    total = div(ms, 1_000)
+    "#{div(total, 60)}m #{rem(total, 60)}s"
   end
 
   defp run_context_param(%{"run_context" => value}) when is_binary(value) and value != "",

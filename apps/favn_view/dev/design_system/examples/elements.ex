@@ -360,9 +360,65 @@ defmodule FavnView.Dev.DesignSystem.Examples.Elements do
       ],
       "data/mono" => [
         Example.attrs(:identifier, %{value: "run_2026_06_12"}, "Identifiers are monospaced.")
+      ],
+      "data/run_timeline" => [
+        Example.attrs(
+          :selected,
+          %{
+            runs: run_timeline_runs(),
+            selected_id: "run-b",
+            class: "favn-surface-list rounded-box max-h-96 w-80 p-3"
+          },
+          "A day heading appears once however many runs it holds, and the selected " <>
+            "run is the one in the address bar rather than one the rail remembers."
+        ),
+        Example.attrs(
+          :unselected,
+          %{
+            runs: run_timeline_runs(),
+            class: "favn-surface-list rounded-box max-h-96 w-80 p-3"
+          },
+          "Nothing selected: the failure still reads as the one entry worth opening."
+        ),
+        Example.attrs(
+          :empty,
+          %{
+            runs: [],
+            empty_label: "This asset has not run yet.",
+            class: "favn-surface-list rounded-box w-80 p-3"
+          },
+          "An asset with no history says so instead of showing an empty rail."
+        )
       ]
     }
   end
+
+  defp run_timeline_runs do
+    [
+      run_timeline_run("run-d", "Aug 3", "10:25", :success, "Daily Aug 3", "4.2s"),
+      run_timeline_run("run-c", "Aug 3", "04:10", :success, "Daily Aug 3", "3.9s"),
+      run_timeline_run("run-b", "Aug 2", "10:25", :error, "Daily Aug 2", "1.1s"),
+      run_timeline_run("run-a", "Jul 31", "10:25", :info, "Daily Jul 31", nil)
+    ]
+  end
+
+  defp run_timeline_run(id, day_label, time_label, tone, window_label, duration_label) do
+    %{
+      id: id,
+      patch: "/assets/orders/runs/#{id}",
+      status_tone: tone,
+      status_label: run_timeline_status_label(tone),
+      trigger_label: "Schedule",
+      day_label: day_label,
+      time_label: time_label,
+      duration_label: duration_label,
+      window_label: window_label
+    }
+  end
+
+  defp run_timeline_status_label(:success), do: "Succeeded"
+  defp run_timeline_status_label(:error), do: "Failed"
+  defp run_timeline_status_label(_tone), do: "Running"
 
   defp fields do
     %{

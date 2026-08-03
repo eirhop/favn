@@ -123,6 +123,15 @@ defmodule FavnView.LogsViewModel do
 
   def status_tone(_status), do: :neutral
 
+  # What started a run, as one standalone word. Both halves of the asset runs page
+  # read it — the spine and the run panel — so a run cannot be labelled "Backfill" in
+  # one and "Backfill pipeline" in the other.
+  def trigger_label(kind) when kind in [:backfill_pipeline, "backfill_pipeline"], do: "Backfill"
+  def trigger_label(nil), do: nil
+
+  def trigger_label(kind),
+    do: kind |> to_string() |> String.replace("_", " ") |> String.capitalize()
+
   def timestamp_label(%DateTime{} = value),
     do: Calendar.strftime(value, "%b %-d, %Y %H:%M:%S UTC")
 

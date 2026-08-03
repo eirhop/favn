@@ -42,20 +42,25 @@ defmodule FavnOrchestrator.Operator.Catalogue.RunHistory do
     }
   end
 
-  @doc "Returns canonical asset-ref/run pairs represented by a run."
-  @spec ref_entries(map()) :: [{String.t(), map()}]
-  def ref_entries(run) when is_map(run) do
-    refs =
-      [Map.get(run, :asset_ref) | List.wrap(Map.get(run, :target_refs))] ++
-        (run
-         |> Map.get(:asset_results, %{})
-         |> normalize_map()
-         |> Map.keys())
+  @doc """
+  Projects one run into a stable asset-history entry.
 
-    refs
-    |> Enum.filter(&match?({_module, _name}, &1))
-    |> Enum.uniq()
-    |> Enum.map(&{Targets.ref_string(&1), run})
+  The window is supplied by the caller rather than read off the run. A compact
+  history row carries neither params nor metadata, so `scope/1` can never see a
+  window in one; the window timeline resolves the same relationship from the other
+  side, naming the run that last wrote each window.
+  """
+  @spec asset_entry(map(), map() | nil) :: map()
+  def asset_entry(run, window) when is_map(run) do
+    %{
+      id: Map.fetch!(run, :id),
+      status: Map.fetch!(run, :status),
+      submit_kind: Map.get(run, :submit_kind),
+      started_at: Map.get(run, :started_at),
+      finished_at: Map.get(run, :finished_at),
+      duration_ms: duration_ms(run),
+      window: window
+    }
   end
 
   @doc "Returns the most recently updated run, or `nil` for an empty list."
@@ -75,6 +80,17 @@ defmodule FavnOrchestrator.Operator.Catalogue.RunHistory do
       end
     end)
   end
+
+  @doc "Returns a run's wall-clock duration, or `nil` while it has not finished."
+  @spec duration_ms(map()) :: non_neg_integer() | nil
+  def duration_ms(%{
+        started_at: %DateTime{} = started_at,
+        finished_at: %DateTime{} = finished_at
+      }) do
+    max(DateTime.diff(finished_at, started_at, :millisecond), 0)
+  end
+
+  def duration_ms(_run), do: nil
 
   defp scope(run) do
     params = normalize_map(Map.get(run, :params))
@@ -160,15 +176,6 @@ defmodule FavnOrchestrator.Operator.Catalogue.RunHistory do
     do: value == Atom.to_string(module)
 
   defp same_pipeline_ref?(_value, _module), do: false
-
-  defp duration_ms(%{
-         started_at: %DateTime{} = started_at,
-         finished_at: %DateTime{} = finished_at
-       }) do
-    max(DateTime.diff(finished_at, started_at, :millisecond), 0)
-  end
-
-  defp duration_ms(_run), do: nil
 
   defp normalize_map(value) when is_map(value), do: value
   defp normalize_map(_value), do: %{}

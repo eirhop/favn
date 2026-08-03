@@ -58,11 +58,92 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.AssetDetail do
       coverage_gaps: [],
       coverage_pagination: coverage_pagination(false),
       compatibility: compatibility(:ready),
-      active_mode: :timeline,
+      active_mode: :overview,
+      asset_id: "customer_orders_daily",
+      runs: runs(),
+      selected_run_id: nil,
+      selected_run: nil,
       selected_window: nil,
       run_config_open?: false,
       command_resource: "asset:customer_orders_daily",
       run_config: Timeline.default_run_config()
+    }
+  end
+
+  @doc """
+  Four runs across three days, so the spine shows a repeated day and a gap.
+  """
+  @spec runs() :: [map()]
+  def runs do
+    [
+      run("run-d", "Jun 12", "10:25", :success, "Daily Jun 12", "4.2s"),
+      run("run-c", "Jun 12", "04:10", :success, "Daily Jun 12", "3.9s"),
+      run("run-b", "Jun 11", "10:25", :error, "Daily Jun 11", "1.1s"),
+      run("run-a", "Jun 9", "10:25", :success, "Daily Jun 9", "4.0s")
+    ]
+  end
+
+  @doc """
+  One selected run: a succeeded one whose contract and checks all held.
+  """
+  @spec selected_run() :: {:ok, map()}
+  def selected_run do
+    {:ok,
+     %{
+       run_id: "run-d",
+       target_id: "asset:customer_orders_daily",
+       status: :ok,
+       submit_kind: :schedule,
+       trigger: %{},
+       started_at: ~U[2026-06-12 10:25:04Z],
+       finished_at: ~U[2026-06-12 10:25:08Z],
+       duration_ms: 4_210,
+       window: %{kind: :day, value: "2026-06-12", label: "Daily Jun 12", range: "Jun 12, 2026"},
+       error: nil,
+       assurance: assurance(),
+       asset_result: %{
+         status: :ok,
+         stage: 0,
+         started_at: ~U[2026-06-12 10:25:04Z],
+         finished_at: ~U[2026-06-12 10:25:08Z],
+         duration_ms: 4_210,
+         attempt_count: 1,
+         max_attempts: 3,
+         error: nil,
+         meta: %{
+           "rows_written" => 1_284,
+           "relation" => "mart.customer_orders_daily",
+           "write_outcome" => "written",
+           "quality_status" => "passed"
+         }
+       },
+       runtime_inputs: [
+         %{
+           node_key: {{CrmDemo.Assets.CustomerOrdersDaily, :asset}, nil},
+           resolver: CrmDemo.Resolvers.LandedOrders,
+           input_identity: "landing/orders/2026-06-12.csv",
+           payload_fingerprint: @hash_a,
+           source_run_id: "run-c",
+           source_node_key: nil,
+           source_payload_fingerprint: @hash_b
+         }
+       ]
+     }}
+  end
+
+  defp run(id, day_label, time_label, tone, window_label, duration_label) do
+    %{
+      id: id,
+      patch: "/assets/customer_orders_daily/runs/#{id}",
+      status: (tone == :error && :error) || :ok,
+      status_tone: tone,
+      status_label: (tone == :error && "Failed") || "Succeeded",
+      trigger_label: "Schedule",
+      started_at: ~U[2026-06-12 10:25:04Z],
+      day_label: day_label,
+      time_label: time_label,
+      duration_label: duration_label,
+      window_label: window_label
     }
   end
 
@@ -73,12 +154,12 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.AssetDetail do
   def attrs(overrides) when is_map(overrides), do: Map.merge(base_attrs(), overrides)
 
   @doc """
-  The details mode showing one freshness state.
+  The overview mode showing one freshness state.
   """
   @spec freshness_attrs(atom()) :: map()
   def freshness_attrs(state) do
     attrs(%{
-      active_mode: :details,
+      active_mode: :overview,
       selected_window: List.last(Timeline.refresh_timeline()),
       freshness: AssetDetailPage.sample_freshness(state)
     })
@@ -278,54 +359,70 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.AssetDetail do
   end
 
   @doc """
-  The details mode showing a contract with a parameterised row-count claim.
+  The runs mode with nothing selected, showing the contract on its own.
   """
   @spec assurance_attrs() :: map()
-  def assurance_attrs do
+  def assurance_attrs, do: attrs(%{active_mode: :runs, assurance: assurance()})
+
+  @doc """
+  The runs mode with one succeeded run open beside the spine.
+  """
+  @spec selected_run_attrs() :: map()
+  def selected_run_attrs do
+    attrs(%{
+      active_mode: :runs,
+      assurance: assurance(),
+      selected_run_id: "run-d",
+      selected_run: selected_run()
+    })
+  end
+
+  @doc """
+  A contract with a parameterised row-count claim and a composed fragment.
+  """
+  @spec assurance() :: map()
+  def assurance do
     fragment = MyApp.Contracts.AuditMetadata
 
-    attrs(%{
-      active_mode: :details,
-      assurance: %{
-        quality_status: :passed,
-        write_outcome: :written,
-        latest_run_id: "run_customer_orders_daily",
-        contract_validation: nil,
-        checks: [],
-        contract: %{
-          grain: %{by: [:order_id], description: "one customer order"},
-          unique_keys: [[:order_id]],
-          row_counts: [
-            %{
-              claim_id: "row_count.equals.param.expected_rows",
-              equals: %{source: :param, name: :expected_rows},
-              min: nil,
-              max: nil,
-              when: nil,
-              on_violation: :fail,
-              latest_result: %{outcome: :passed}
-            },
-            %{
-              claim_id: "row_count.min.1",
-              equals: nil,
-              min: 1,
-              max: nil,
-              when: :target_exists,
-              on_violation: :skip_materialization,
-              latest_result: %{outcome: :condition_skipped}
-            }
-          ],
-          compositions: [
-            %{module: fragment, start_index: 1, columns: [:processed_at, :favn_run_id]}
-          ],
-          columns: [
-            contract_column(:order_id, :integer, %{kind: :local}),
-            contract_column(:processed_at, :datetime, %{kind: :fragment, module: fragment}),
-            contract_column(:favn_run_id, :string, %{kind: :fragment, module: fragment})
-          ]
-        }
+    %{
+      quality_status: :passed,
+      write_outcome: :written,
+      latest_run_id: "run_customer_orders_daily",
+      contract_validation: nil,
+      checks: [],
+      contract: %{
+        grain: %{by: [:order_id], description: "one customer order"},
+        unique_keys: [[:order_id]],
+        row_counts: [
+          %{
+            claim_id: "row_count.equals.param.expected_rows",
+            equals: %{source: :param, name: :expected_rows},
+            min: nil,
+            max: nil,
+            when: nil,
+            on_violation: :fail,
+            latest_result: %{outcome: :passed}
+          },
+          %{
+            claim_id: "row_count.min.1",
+            equals: nil,
+            min: 1,
+            max: nil,
+            when: :target_exists,
+            on_violation: :skip_materialization,
+            latest_result: %{outcome: :condition_skipped}
+          }
+        ],
+        compositions: [
+          %{module: fragment, start_index: 1, columns: [:processed_at, :favn_run_id]}
+        ],
+        columns: [
+          contract_column(:order_id, :integer, %{kind: :local}),
+          contract_column(:processed_at, :datetime, %{kind: :fragment, module: fragment}),
+          contract_column(:favn_run_id, :string, %{kind: :fragment, module: fragment})
+        ]
       }
-    })
+    }
   end
 
   defp contract_column(name, type, origin) do

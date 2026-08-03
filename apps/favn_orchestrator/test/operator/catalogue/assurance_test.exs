@@ -3,6 +3,8 @@ defmodule FavnOrchestrator.Operator.Catalogue.AssuranceTest do
 
   alias Favn.SQL.Contract
   alias FavnOrchestrator.Operator.Catalogue.Assurance
+  alias FavnOrchestrator.Projector
+  alias FavnOrchestrator.RunState
 
   test "associates ordered row-count claims with canonical ids and latest results" do
     asset_ref = {MyApp.Orders, :asset}
@@ -51,5 +53,64 @@ defmodule FavnOrchestrator.Operator.Catalogue.AssuranceTest do
              :passed,
              :warned
            ]
+  end
+
+  test "reads evidence out of a projected run rather than a hand-built map" do
+    asset_ref = {MyApp.Orders, :asset}
+
+    contract = Contract.new!(columns: [%{name: :id, type: :integer, null: false}])
+
+    checks = [
+      %{
+        name: :orders_present,
+        claim_id: nil,
+        at: :after_materialize,
+        when: nil,
+        on_violation: :fail,
+        message: nil,
+        origin: :asset
+      }
+    ]
+
+    run =
+      RunState.new(
+        id: "run-projected",
+        workspace_id: "ws-assurance",
+        deployment_id: "deploy-assurance",
+        manifest_version_id: "mv-assurance",
+        manifest_content_hash: "hash-assurance",
+        runner_releases: %{default: "rr_assurance"},
+        asset_ref: asset_ref,
+        target_refs: [asset_ref]
+      )
+      |> Map.put(:result, %{
+        asset_results: [
+          %{
+            ref: asset_ref,
+            status: :ok,
+            meta: %{
+              quality_status: :passed,
+              write_outcome: :written,
+              check_results: [
+                %{name: :orders_present, outcome: :passed, metrics: %{actual: 12}}
+              ]
+            }
+          }
+        ]
+      })
+
+    detail =
+      Assurance.detail(
+        %{ref: asset_ref, assurance: %{contract: contract, checks: checks}},
+        Projector.project_run(run)
+      )
+
+    # The other test builds its run by hand, so it passed while production fed this
+    # projection a compact history row that carries no result at all and left every
+    # value below nil.
+    assert detail.quality_status == :passed
+    assert detail.write_outcome == :written
+    assert [%{latest_result: %{outcome: :passed, metrics: %{actual: 12}}}] = detail.checks
+    assert detail.latest_run_id == "run-projected"
   end
 end

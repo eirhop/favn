@@ -2,6 +2,10 @@ defmodule FavnView.Components.ModeRail do
   @moduledoc """
   Page-local mode controls that render as a right rail on desktop and a bottom
   dock on mobile.
+
+  A mode carrying `:patch` navigates instead of pushing an event, so the mode
+  becomes a real URL that survives a refresh and answers the back button. Modes
+  without it stay event-driven through `on_select`.
   """
 
   use FavnView, :html
@@ -18,6 +22,7 @@ defmodule FavnView.Components.ModeRail do
     attr :active, :boolean
     attr :disabled, :boolean
     attr :badge, :string
+    attr :patch, :string
   end
 
   def mode_rail(assigns) do
@@ -61,28 +66,49 @@ defmodule FavnView.Components.ModeRail do
   attr :mobile, :boolean, default: false
 
   def mode_button(assigns) do
-    ~H"""
-    <button
-      type="button"
-      class={[
+    assigns =
+      assign(assigns, :item_class, [
         "favn-mode-item focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
-        @mobile && "favn-mode-dock-item",
-        !@mobile && "favn-mode-rail-item",
-        @active && "favn-mode-item-active",
-        @mode[:disabled] && "btn-disabled opacity-45"
-      ]}
+        assigns.mobile && "favn-mode-dock-item",
+        !assigns.mobile && "favn-mode-rail-item",
+        assigns.active && "favn-mode-item-active",
+        assigns.mode[:disabled] && "btn-disabled opacity-45"
+      ])
+
+    ~H"""
+    <.link
+      :if={@mode[:patch]}
+      patch={@mode.patch}
+      class={@item_class}
+      aria-label={@mode.label}
+      aria-current={(@active && "page") || nil}
+    >
+      <.mode_glyph mode={@mode} />
+    </.link>
+    <button
+      :if={is_nil(@mode[:patch])}
+      type="button"
+      class={@item_class}
       aria-label={@mode.label}
       aria-pressed={to_string(@active)}
       disabled={@mode[:disabled] || false}
       phx-click={@on_select}
       phx-value-mode={@mode.id}
     >
-      <.icon name={@mode.icon} class="size-5" />
-      <span :if={@mode[:badge]} class="badge badge-primary badge-xs absolute right-1 top-1">
-        {@mode.badge}
-      </span>
-      <span class="sr-only">{@mode.label}</span>
+      <.mode_glyph mode={@mode} />
     </button>
+    """
+  end
+
+  attr :mode, :map, required: true
+
+  defp mode_glyph(assigns) do
+    ~H"""
+    <.icon name={@mode.icon} class="size-5" />
+    <span :if={@mode[:badge]} class="badge badge-primary badge-xs absolute right-1 top-1">
+      {@mode.badge}
+    </span>
+    <span class="sr-only">{@mode.label}</span>
     """
   end
 
@@ -102,7 +128,8 @@ defmodule FavnView.Components.ModeRail do
         icon: item.icon,
         active: item[:active] || false,
         disabled: item[:disabled] || false,
-        badge: item[:badge]
+        badge: item[:badge],
+        patch: item[:patch]
       }
     end)
   end

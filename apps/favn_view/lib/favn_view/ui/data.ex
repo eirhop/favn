@@ -56,6 +56,7 @@ defmodule FavnView.UI.Data do
   import FavnView.UI.Button
   import FavnView.UI.Field, only: [search_field: 1]
   import FavnView.UI.Icon
+  import FavnView.UI.State, only: [empty_state: 1]
   import FavnView.UI.Surface
 
   alias FavnView.UI.Tokens
@@ -716,6 +717,108 @@ defmodule FavnView.UI.Data do
   end
 
   @doc """
+  A run history as a vertical spine, newest at the top.
+
+  Use this instead of a table when the reader is picking one entry to inspect
+  rather than comparing a page of them. A table answers "which of these is worst";
+  a spine answers "what happened, and when did the rhythm break" — the gaps between
+  entries are the point, so the dates carry the column and each entry stays one
+  glance wide.
+
+  Entries are grouped by day, and the day appears once as a heading rather than on
+  every row, so a day with six runs reads as one day.
+
+      <.run_timeline
+        runs={@runs}
+        selected_id={@selected_run_id}
+        empty_label="This asset has not run yet."
+      />
+  """
+  attr :runs, :list,
+    required: true,
+    doc:
+      "newest first; maps with `:id`, `:patch`, `:status_tone`, `:status_label`, " <>
+        "`:day_label`, `:time_label`, and optional `:window_label`, `:duration_label`, " <>
+        "and `:trigger_label`"
+
+  attr :selected_id, :string, default: nil
+  attr :label, :string, default: "Runs", doc: "names the region for assistive technology"
+  attr :empty_label, :string, default: "No runs yet."
+  attr :class, :any, default: nil
+  attr :rest, :global
+
+  def run_timeline(assigns) do
+    assigns = assign(assigns, :days, group_runs_by_day(assigns.runs))
+
+    ~H"""
+    <div
+      class={["min-h-0 overflow-y-auto", @class]}
+      role="navigation"
+      aria-label={@label}
+      {@rest}
+    >
+      <.empty_state :if={@runs == []} title={@empty_label} icon="hero-clock" />
+
+      <ol :if={@runs != []} class="relative space-y-4">
+        <li :for={day <- @days}>
+          <p class="sticky top-0 z-10 bg-base-100/85 py-1 text-xs font-medium uppercase tracking-wide backdrop-blur favn-text-subtle">
+            {day.label}
+          </p>
+
+          <ol class="mt-1 space-y-1">
+            <li :for={run <- day.runs} class="relative pl-6">
+              <span
+                class="absolute left-[7px] top-0 h-full w-px bg-base-content/10"
+                aria-hidden="true"
+              ></span>
+              <span
+                class={[
+                  "absolute left-0 top-3 size-[15px] rounded-full ring-3 ring-base-100",
+                  Tokens.surface_class(run.status_tone)
+                ]}
+                aria-hidden="true"
+              >
+                <span class={[
+                  "absolute inset-[3px] rounded-full",
+                  Tokens.dot_class(run.status_tone),
+                  "status"
+                ]}></span>
+              </span>
+
+              <.link
+                patch={run.patch}
+                aria-current={(run.id == @selected_id && "true") || nil}
+                class={[
+                  "block rounded-field px-2.5 py-2 transition-colors",
+                  (run.id == @selected_id && "favn-mode-item-active") ||
+                    "hover:bg-base-content/5"
+                ]}
+              >
+                <span class="flex items-baseline justify-between gap-2">
+                  <span class="font-mono text-sm text-base-content">{run.time_label}</span>
+                  <span class={["truncate text-sm", Tokens.text_class(run.status_tone)]}>
+                    {run.status_label}
+                  </span>
+                </span>
+
+                <span
+                  :if={run[:window_label] || run[:duration_label] || run[:trigger_label]}
+                  class="mt-0.5 flex items-baseline gap-2 truncate text-sm favn-text-subtle"
+                >
+                  <span :if={run[:window_label]} class="truncate">{run.window_label}</span>
+                  <span :if={run[:duration_label]}>{run.duration_label}</span>
+                  <span :if={run[:trigger_label]} class="truncate">{run.trigger_label}</span>
+                </span>
+              </.link>
+            </li>
+          </ol>
+        </li>
+      </ol>
+    </div>
+    """
+  end
+
+  @doc """
   Label and value stacked, for detail panels with many one-line facts.
   """
   attr :label, :string, required: true
@@ -729,6 +832,14 @@ defmodule FavnView.UI.Data do
       <span class="min-w-0 text-sm favn-text-muted">{render_slot(@inner_block)}</span>
     </div>
     """
+  end
+
+  # `Enum.chunk_by/2` rather than `group_by`, so the caller's newest-first order
+  # survives; grouping would reorder the days by however the map hashed them.
+  defp group_runs_by_day(runs) do
+    runs
+    |> Enum.chunk_by(& &1[:day_label])
+    |> Enum.map(&%{label: List.first(&1)[:day_label] || "Unknown date", runs: &1})
   end
 
   defp align_class(:end), do: "text-right"

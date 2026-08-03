@@ -419,7 +419,13 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
         Example.attrs(:freshness_unknown, AssetDetail.freshness_attrs(:unknown)),
         Example.attrs(:freshness_always_run, AssetDetail.freshness_attrs(:always_run)),
         Example.attrs(
-          :contract_and_row_counts,
+          :run_selected,
+          AssetDetail.selected_run_attrs(),
+          "One run open: the contract now says what that run observed, not what the " <>
+            "asset last did."
+        ),
+        Example.attrs(
+          :contract_without_a_run,
           AssetDetail.assurance_attrs(),
           "A contract with a composed fragment and a parameterised row-count claim."
         )

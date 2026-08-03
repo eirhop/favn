@@ -91,6 +91,8 @@ defmodule FavnOrchestrator do
   @type pipeline_detail :: Catalogue.pipeline_detail()
   @type asset_timeline_window :: Catalogue.asset_timeline_window()
   @type asset_detail :: Catalogue.asset_detail()
+  @type asset_run_history_entry :: Catalogue.asset_run_history_entry()
+  @type asset_run_detail :: Catalogue.asset_run_detail()
   @type asset_freshness_reason :: Catalogue.asset_freshness_reason()
   @type asset_freshness_detail :: Catalogue.asset_freshness_detail()
   @type coverage_summary :: Favn.Coverage.Summary.t()
@@ -440,6 +442,23 @@ defmodule FavnOrchestrator do
       when is_binary(target_id) and is_list(opts) do
     with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer) do
       Catalogue.active_asset_detail(context, target_id, opts)
+    end
+  end
+
+  @doc """
+  Returns one asset's view of one of its runs for an operator workspace.
+
+  Answers "what did this run actually produce for this asset" — the manifest-pinned
+  data contract and checks beside the results that run recorded for them, the
+  asset's own step outcome, the run metadata, and the runtime inputs the run pinned.
+  A run belonging to another asset reads as `:not_found`.
+  """
+  @spec active_asset_run_detail(OperatorContext.t(), String.t(), run_id()) ::
+          {:ok, asset_run_detail()} | {:error, term()}
+  def active_asset_run_detail(%OperatorContext{} = operator_context, target_id, run_id)
+      when is_binary(target_id) and is_binary(run_id) do
+    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer) do
+      Catalogue.active_asset_run_detail(context, target_id, run_id)
     end
   end
 

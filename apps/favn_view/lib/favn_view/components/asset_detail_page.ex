@@ -8,7 +8,9 @@ defmodule FavnView.Components.AssetDetailPage do
   alias FavnView.Components.AppShell
   alias FavnView.Components.ModeRail
   alias FavnView.Components.Navigation
+  alias FavnView.Components.OutputMetadata
   alias FavnView.Components.SelectedWindowActions
+  alias FavnView.LogsViewModel
 
   attr :title, :string, required: true
   attr :status, :string, required: true
@@ -37,7 +39,7 @@ defmodule FavnView.Components.AssetDetailPage do
   attr :refresh_timeline, :list, default: nil
   attr :freshness_timeline, :list, default: nil
   attr :data_coverage_timeline, :list, default: nil
-  attr :active_mode, :atom, default: :timeline
+  attr :active_mode, :atom, default: :overview
   attr :freshness, :map, default: nil
   attr :coverage, :any, default: nil
   attr :coverage_policy, :map, default: nil
@@ -48,6 +50,15 @@ defmodule FavnView.Components.AssetDetailPage do
   attr :compatibility, :map, default: nil
   attr :rebuild_target_id, :string, default: nil
   attr :assurance, :map, default: nil
+
+  attr :asset_id, :string, required: true, doc: "route id; the rail patches relative to it"
+  attr :runs, :list, default: [], doc: "newest first; see `FavnView.UI.Data.run_timeline/1`"
+  attr :selected_run_id, :string, default: nil
+
+  attr :selected_run, :any,
+    default: nil,
+    doc: "`{:ok, detail}`, `{:not_found, id}`, `{:error, reason}`, or nil when none is selected"
+
   attr :coverage_plan, :map, default: nil
   attr :coverage_action_error, :string, default: nil
   attr :planning_coverage?, :boolean, default: false
@@ -74,6 +85,7 @@ defmodule FavnView.Components.AssetDetailPage do
       current_scope={@current_scope}
       operator_workspaces={@operator_workspaces}
       flash={@flash}
+      content_scroll?={@active_mode != :runs}
     >
       <.central_view
         active_mode={@active_mode}
@@ -106,6 +118,10 @@ defmodule FavnView.Components.AssetDetailPage do
         compatibility={@compatibility}
         rebuild_target_id={@rebuild_target_id}
         assurance={@assurance}
+        asset_id={@asset_id}
+        runs={@runs}
+        selected_run_id={@selected_run_id}
+        selected_run={@selected_run}
         coverage_plan={@coverage_plan}
         coverage_action_error={@coverage_action_error}
         planning_coverage?={@planning_coverage?}
@@ -120,7 +136,10 @@ defmodule FavnView.Components.AssetDetailPage do
         can_submit_runs?={@can_submit_runs?}
       />
       <:mode_rail>
-        <ModeRail.mode_rail active={@active_mode} modes={detail_modes()} on_select="set_mode" />
+        <ModeRail.mode_rail
+          active={@active_mode}
+          modes={detail_modes(@asset_id, @has_data_windows?)}
+        />
       </:mode_rail>
     </AppShell.app_shell>
     """
@@ -157,6 +176,15 @@ defmodule FavnView.Components.AssetDetailPage do
   attr :compatibility, :map, default: nil
   attr :rebuild_target_id, :string, default: nil
   attr :assurance, :map, default: nil
+
+  attr :asset_id, :string, required: true, doc: "route id; the rail patches relative to it"
+  attr :runs, :list, default: [], doc: "newest first; see `FavnView.UI.Data.run_timeline/1`"
+  attr :selected_run_id, :string, default: nil
+
+  attr :selected_run, :any,
+    default: nil,
+    doc: "`{:ok, detail}`, `{:not_found, id}`, `{:error, reason}`, or nil when none is selected"
+
   attr :coverage_plan, :map, default: nil
   attr :coverage_action_error, :string, default: nil
   attr :planning_coverage?, :boolean, default: false
@@ -173,12 +201,72 @@ defmodule FavnView.Components.AssetDetailPage do
   def central_view(assigns) do
     ~H"""
     <.compatibility_panel
-      :if={@active_mode == :timeline && @compatibility}
+      :if={
+        @active_mode == :overview && @compatibility &&
+          Map.get(@compatibility, :blocks_writes?, false)
+      }
+      compatibility={@compatibility}
+      rebuild_target_id={@rebuild_target_id}
+    />
+
+    <div
+      :if={@active_mode == :runs}
+      class="flex min-h-0 w-full flex-1 flex-col-reverse gap-4 lg:flex-row"
+    >
+      <div class="min-h-0 flex-1 overflow-y-auto lg:pr-2">
+        <.run_detail_panel
+          :if={match?({:ok, _run}, @selected_run)}
+          run={elem(@selected_run, 1)}
+          asset_id={@asset_id}
+        />
+
+        <.error_state
+          :if={match?({:error, _reason}, @selected_run)}
+          title="This run cannot be read"
+          description="The control plane did not return the run. Try again, or open it from the runs screen."
+          data-testid="asset-run-error-state"
+        />
+
+        <.empty_state
+          :if={match?({:not_found, _id}, @selected_run)}
+          title="Run not found"
+          description="No run of this asset matches that id."
+          icon="hero-question-mark-circle"
+          data-testid="asset-run-not-found-state"
+        />
+
+        <div :if={is_nil(@selected_run)} class="space-y-6">
+          <.notice tone={:info} icon="hero-cursor-arrow-rays">
+            Pick a run to see what it observed against the contract below.
+          </.notice>
+
+          <.assurance_panel :if={@assurance} assurance={@assurance} />
+
+          <.empty_state
+            :if={is_nil(@assurance)}
+            title="This asset declares no contract"
+            description="Add a contract or checks to compare what a run produced against what it promised."
+            icon="hero-document-text"
+          />
+        </div>
+      </div>
+
+      <.run_timeline
+        runs={@runs}
+        selected_id={@selected_run_id}
+        empty_label="This asset has not run yet."
+        class="favn-surface-list rounded-box max-h-72 shrink-0 p-3 lg:max-h-none lg:w-80"
+        data-testid="asset-run-timeline"
+      />
+    </div>
+
+    <.compatibility_panel
+      :if={@active_mode == :diagnostics && @compatibility}
       compatibility={@compatibility}
       rebuild_target_id={@rebuild_target_id}
     />
     <.coverage_summary_panel
-      :if={@active_mode == :timeline && @coverage}
+      :if={@active_mode == :coverage && @coverage}
       coverage={@coverage}
       policy={@coverage_policy}
       gaps={@coverage_gaps}
@@ -192,7 +280,8 @@ defmodule FavnView.Components.AssetDetailPage do
       command_resource={@rebuild_target_id}
     />
     <.window_timeline_panel
-      :if={@active_mode == :timeline}
+      :if={@active_mode in [:overview, :coverage]}
+      timelines={mode_timelines(@active_mode)}
       window_kind_label={@window_kind_label}
       refresh_timeline_label={@refresh_timeline_label}
       refresh_cadence_label={@refresh_cadence_label}
@@ -224,12 +313,18 @@ defmodule FavnView.Components.AssetDetailPage do
       can_submit_runs?={@can_submit_runs?}
       command_resource={@rebuild_target_id}
     />
-    <div :if={@active_mode == :details} class="mx-auto w-full max-w-6xl space-y-6">
-      <.assurance_panel :if={@assurance} assurance={@assurance} />
+    <div :if={@active_mode == :overview} class="mx-auto mt-6 w-full max-w-[120rem]">
       <.freshness_detail_panel freshness={@freshness} />
     </div>
     """
   end
+
+  # Overview asks whether the asset is fresh and ran when it should have; Coverage
+  # asks whether every period it is expected to cover has data. Each page offers only
+  # the timelines that answer its own question, so neither can leave the reader on a
+  # strip about the other.
+  defp mode_timelines(:coverage), do: [:data_coverage]
+  defp mode_timelines(_mode), do: [:refresh, :freshness]
 
   attr :compatibility, :map, required: true
   attr :rebuild_target_id, :string, default: nil
@@ -583,7 +678,13 @@ defmodule FavnView.Components.AssetDetailPage do
   attr :can_submit_runs?, :boolean, default: false
   attr :command_resource, :string, required: true
 
+  attr :timelines, :list,
+    default: [:refresh, :freshness, :data_coverage],
+    doc: "which timelines this page may show; a page scoped to one renders no toggle"
+
   def window_timeline_panel(assigns) do
+    assigns = assign(assigns, :toggles, timeline_toggles(assigns))
+    assigns = assign(assigns, :active_timeline, resolved_timeline(assigns))
     assigns = assign(assigns, :timeline, active_timeline(assigns))
     assigns = assign(assigns, :timeline_range, active_timeline_range(assigns))
     assigns = assign(assigns, :timeline_label, active_timeline_label(assigns))
@@ -611,49 +712,19 @@ defmodule FavnView.Components.AssetDetailPage do
           </div>
 
           <div class="flex flex-wrap items-center gap-3 self-start text-sm favn-text-muted">
-            <div :if={@has_data_windows? or @has_freshness_timeline?} class="join">
+            <div :if={length(@toggles) > 1} class="join">
               <button
+                :for={toggle <- @toggles}
                 type="button"
                 class={[
                   "btn btn-sm join-item",
-                  @active_timeline == :refresh && "btn-primary btn-soft",
-                  @active_timeline != :refresh && "btn-ghost"
+                  (@active_timeline == toggle.id && "btn-primary btn-soft") || "btn-ghost"
                 ]}
                 phx-click="set_timeline"
-                phx-value-timeline="refresh"
-                data-testid="refresh-timeline-toggle"
+                phx-value-timeline={toggle.id}
+                data-testid={toggle.testid}
               >
-                Run
-              </button>
-
-              <button
-                :if={@has_freshness_timeline?}
-                type="button"
-                class={[
-                  "btn btn-sm join-item",
-                  @active_timeline == :freshness && "btn-primary btn-soft",
-                  @active_timeline != :freshness && "btn-ghost"
-                ]}
-                phx-click="set_timeline"
-                phx-value-timeline="freshness"
-                data-testid="freshness-timeline-toggle"
-              >
-                Freshness
-              </button>
-
-              <button
-                :if={@has_data_windows?}
-                type="button"
-                class={[
-                  "btn btn-sm join-item",
-                  @active_timeline == :data_coverage && "btn-primary btn-soft",
-                  @active_timeline != :data_coverage && "btn-ghost"
-                ]}
-                phx-click="set_timeline"
-                phx-value-timeline="data_coverage"
-                data-testid="data-coverage-timeline-toggle"
-              >
-                Data
+                {toggle.label}
               </button>
             </div>
 
@@ -885,7 +956,7 @@ defmodule FavnView.Components.AssetDetailPage do
           <h2 class="mt-1 text-xl font-medium tracking-tight">Contract and quality checks</h2>
 
           <p class="mt-2 max-w-3xl text-sm favn-text-muted">
-            Authored expectations, observed candidate evidence, and the latest generated and custom check outcomes.
+            What the asset promises to produce, beside what the run named below actually observed.
           </p>
         </div>
 
@@ -1117,6 +1188,162 @@ defmodule FavnView.Components.AssetDetailPage do
     """
   end
 
+  @doc """
+  One run's result for one asset, ordered by how likely each part is to be the answer.
+
+  The outcome comes first, then the failure if there was one, then the contract and
+  check evidence, and only then the inputs and metadata. A run that succeeded renders
+  short: the sections that hold nothing surprising are `details` the reader opens,
+  not panels they scroll past.
+  """
+  attr :run, :map, required: true, doc: "see `FavnOrchestrator.asset_run_detail/0`"
+  attr :asset_id, :string, required: true
+
+  def run_detail_panel(assigns) do
+    result = assigns.run[:asset_result]
+    meta = (result && result[:meta]) || %{}
+
+    assigns =
+      assigns
+      |> assign(:failed?, run_failed?(assigns.run))
+      |> assign(:result, result)
+      |> assign(:meta, meta)
+      |> assign(:write, OutputMetadata.outcome(meta, result && result[:status]))
+      |> assign(:inputs, List.wrap(assigns.run[:runtime_inputs]))
+
+    ~H"""
+    <div class="space-y-6" data-testid="asset-run-detail">
+      <.panel padding={:none} class="p-6 sm:p-8">
+        <div class="flex flex-wrap items-start justify-between gap-3">
+          <div class="min-w-0">
+            <p class="text-sm uppercase tracking-[0.18em] favn-text-subtle">Run</p>
+            <.mono value={@run.run_id} class="mt-1 block text-base" />
+          </div>
+
+          <.status_badge
+            tone={LogsViewModel.status_tone(@run.status)}
+            label={LogsViewModel.status_label(@run.status)}
+          />
+        </div>
+
+        <p :if={@write} class={["mt-4 text-lg font-light", Tokens.text_class(@write.tone)]}>
+          {@write.headline}
+          <span :if={@write.target} class="font-mono text-sm favn-text-subtle">
+            → {@write.target}
+          </span>
+        </p>
+
+        <.fact_list class="mt-6" columns={3} facts={run_facts(@run, @result)} />
+
+        <.notice
+          :if={@failed?}
+          tone={:error}
+          icon="hero-exclamation-triangle"
+          class="mt-6"
+          data-testid="asset-run-failure"
+        >
+          <p class="font-medium">{run_error_label(@run, @result)}</p>
+          <.link
+            navigate={~p"/runs/#{@run.run_id}"}
+            class="mt-1 inline-flex text-sm underline decoration-dotted"
+          >
+            Open the full run
+          </.link>
+        </.notice>
+      </.panel>
+
+      <.assurance_panel :if={@run[:assurance]} assurance={@run.assurance} />
+
+      <.panel :if={@inputs != []} padding={:none} class="p-6 sm:p-8">
+        <details>
+          <summary class="cursor-pointer text-sm font-medium">
+            Resolved inputs <span class="favn-text-subtle">({length(@inputs)})</span>
+          </summary>
+
+          <p class="mt-2 max-w-3xl text-sm favn-text-muted">
+            Which payload each resolver selected for this run. Values are not shown; a
+            resolver can declare its parameters sensitive, so the identity and the
+            fingerprint are what can be reported.
+          </p>
+
+          <div class="mt-4 space-y-3" data-testid="asset-run-inputs">
+            <div
+              :for={input <- @inputs}
+              class="rounded-box border border-base-content/10 bg-base-content/[0.03] p-4"
+            >
+              <p class="font-mono text-sm font-semibold">{inspect(input[:resolver])}</p>
+
+              <.field_row label="Input identity">
+                <.mono value={to_string(input[:input_identity])} />
+              </.field_row>
+              <.field_row label="Payload fingerprint">
+                <.mono value={to_string(input[:payload_fingerprint])} />
+              </.field_row>
+              <.field_row :if={input[:source_run_id]} label="Inherited from run">
+                <.link navigate={~p"/assets/#{@asset_id}/runs/#{input[:source_run_id]}"}>
+                  <.mono value={input[:source_run_id]} />
+                </.link>
+              </.field_row>
+            </div>
+          </div>
+        </details>
+      </.panel>
+
+      <OutputMetadata.output_metadata
+        :if={@meta != %{}}
+        id={"asset-run-metadata-#{@run.run_id}"}
+        metadata={@meta}
+        status={@result && @result[:status]}
+      />
+    </div>
+    """
+  end
+
+  defp run_facts(run, result) do
+    [
+      %{label: "Started", value: LogsViewModel.timestamp_label(run[:started_at])},
+      %{label: "Duration", value: duration_fact(run[:duration_ms])},
+      %{label: "Window", value: run_window_label(run[:window])},
+      %{label: "Trigger", value: LogsViewModel.trigger_label(run[:submit_kind]) || "Unknown"},
+      %{label: "Attempts", value: attempts_label(result)}
+    ]
+  end
+
+  defp run_failed?(run) do
+    LogsViewModel.status_tone(run[:status]) == :error or
+      (run[:asset_result] && LogsViewModel.status_tone(run.asset_result[:status]) == :error)
+  end
+
+  defp run_error_label(run, result) do
+    error = (result && result[:error]) || run[:error]
+
+    case error do
+      nil -> "This run failed after its asset step finished."
+      %{message: message} when is_binary(message) -> message
+      error when is_binary(error) -> error
+      error -> inspect(error)
+    end
+  end
+
+  defp duration_fact(nil), do: "Not finished"
+  defp duration_fact(ms) when ms < 1_000, do: "#{ms} ms"
+
+  defp duration_fact(ms) when ms < 60_000,
+    do: "#{:erlang.float_to_binary(ms / 1_000, decimals: 1)} s"
+
+  defp duration_fact(ms), do: "#{div(ms, 60_000)}m #{rem(div(ms, 1_000), 60)}s"
+
+  defp run_window_label(%{label: label}) when is_binary(label), do: label
+  defp run_window_label(%{value: value}) when is_binary(value), do: value
+  defp run_window_label(_window), do: "Full refresh"
+
+  defp attempts_label(%{attempt_count: count, max_attempts: max})
+       when is_integer(count) and is_integer(max),
+       do: "#{count} of #{max}"
+
+  defp attempts_label(%{attempt_count: count}) when is_integer(count), do: to_string(count)
+  defp attempts_label(_result), do: "Not reported"
+
   attr :label, :string, required: true
   attr :value, :string, required: true
 
@@ -1306,11 +1533,39 @@ defmodule FavnView.Components.AssetDetailPage do
     }
   end
 
-  def detail_modes do
+  @doc """
+  Returns the rail destinations for one asset, newest question first.
+
+  Coverage answers whether data exists for every period the asset is expected to
+  cover, which is only a question for an asset that runs per window. A full-refresh
+  asset replaces its whole relation on every run, so the rail leaves the destination
+  out rather than offering a page with nothing to say.
+  """
+  @spec detail_modes(String.t(), boolean()) :: [map()]
+  def detail_modes(asset_id, has_data_windows?) do
     [
-      %{id: :timeline, label: "Timeline", icon: "hero-calendar-days"},
-      %{id: :details, label: "Details", icon: "hero-document-text"}
+      %{
+        id: :overview,
+        label: "Overview",
+        icon: "hero-squares-2x2",
+        patch: ~p"/assets/#{asset_id}"
+      },
+      %{id: :runs, label: "Runs", icon: "hero-clock", patch: ~p"/assets/#{asset_id}/runs"},
+      has_data_windows? &&
+        %{
+          id: :coverage,
+          label: "Coverage",
+          icon: "hero-calendar-days",
+          patch: ~p"/assets/#{asset_id}/coverage"
+        },
+      %{
+        id: :diagnostics,
+        label: "Diagnostics",
+        icon: "hero-wrench-screwdriver",
+        patch: ~p"/assets/#{asset_id}/diagnostics"
+      }
     ]
+    |> Enum.filter(& &1)
   end
 
   defp observed_by_name(%{observed_columns: columns}) when is_list(columns),
@@ -1594,6 +1849,43 @@ defmodule FavnView.Components.AssetDetailPage do
   end
 
   defp run_context_policy_label(%{timezone: timezone}), do: timezone
+
+  # A single toggle is not a choice, so a page scoped to one timeline shows none.
+  # Testids stay literal rather than derived from the id, because they are the
+  # contract the tests and the browser checks address these buttons by.
+  defp timeline_toggles(assigns) do
+    [
+      %{id: :refresh, label: "Run", testid: "refresh-timeline-toggle", available?: true},
+      %{
+        id: :freshness,
+        label: "Freshness",
+        testid: "freshness-timeline-toggle",
+        available?: assigns.has_freshness_timeline?
+      },
+      %{
+        id: :data_coverage,
+        label: "Data",
+        testid: "data-coverage-timeline-toggle",
+        available?: assigns.has_data_windows?
+      }
+    ]
+    |> Enum.filter(&(&1.available? and &1.id in assigns.timelines))
+    |> Enum.map(&Map.delete(&1, :available?))
+  end
+
+  # The selection lives on the LiveView and is shared by every page, so a page that
+  # does not offer the selected timeline falls back to its own first one rather than
+  # rendering a strip its toggle cannot reach.
+  defp resolved_timeline(%{active_timeline: active, toggles: toggles}) do
+    if Enum.any?(toggles, &(&1.id == active)) do
+      active
+    else
+      case toggles do
+        [%{id: id} | _rest] -> id
+        [] -> active
+      end
+    end
+  end
 
   defp active_timeline(%{active_timeline: :data_coverage, data_coverage_timeline: timeline})
        when is_list(timeline), do: timeline

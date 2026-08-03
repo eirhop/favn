@@ -8,6 +8,7 @@ defmodule FavnOrchestrator.Operator.Catalogue do
   """
 
   alias Favn.Manifest.Version
+  alias Favn.RuntimeInput.Pin
   alias Favn.Window.Key, as: WindowKey
   alias FavnOrchestrator.AssetRunContext
   alias FavnOrchestrator.Backfill.AssetWindowState
@@ -24,10 +25,12 @@ defmodule FavnOrchestrator.Operator.Catalogue do
   alias FavnOrchestrator.Persistence.Queries.GetAssetWindowStates
   alias FavnOrchestrator.Persistence.Queries.GetTargetBindings
   alias FavnOrchestrator.Persistence.Queries.GetTargetStatuses
+  alias FavnOrchestrator.Persistence.Error, as: PersistenceError
   alias FavnOrchestrator.Persistence.Queries.PageTargetRuns
   alias FavnOrchestrator.Persistence.Results.TargetStatus, as: PersistenceTargetStatus
   alias FavnOrchestrator.Persistence.WorkspaceContext
   alias FavnOrchestrator.Projector
+  alias FavnOrchestrator.Runs
   alias FavnOrchestrator.TargetGenerations
 
   @type manifest_summary :: %{
@@ -140,6 +143,23 @@ defmodule FavnOrchestrator.Operator.Catalogue do
           required(:run_label) => String.t() | nil
         }
 
+  @type asset_run_window :: %{
+          required(:kind) => :hour | :day | :month | :year,
+          required(:value) => String.t(),
+          required(:label) => String.t(),
+          required(:range) => String.t()
+        }
+
+  @type asset_run_history_entry :: %{
+          required(:id) => String.t(),
+          required(:status) => atom(),
+          required(:submit_kind) => atom() | nil,
+          required(:started_at) => DateTime.t() | nil,
+          required(:finished_at) => DateTime.t() | nil,
+          required(:duration_ms) => non_neg_integer() | nil,
+          required(:window) => asset_run_window() | nil
+        }
+
   @type asset_detail :: %{
           required(:target_id) => String.t(),
           required(:manifest_version_id) => String.t(),
@@ -171,7 +191,36 @@ defmodule FavnOrchestrator.Operator.Catalogue do
           required(:coverage_pagination) => map(),
           required(:compatibility) => map(),
           required(:assurance) => map() | nil,
+          required(:runs) => [asset_run_history_entry()],
           required(:timeline) => [asset_timeline_window()]
+        }
+
+  @type asset_run_result :: %{
+          required(:status) => atom() | nil,
+          required(:stage) => non_neg_integer() | nil,
+          required(:started_at) => DateTime.t() | nil,
+          required(:finished_at) => DateTime.t() | nil,
+          required(:duration_ms) => non_neg_integer() | nil,
+          required(:attempt_count) => non_neg_integer() | nil,
+          required(:max_attempts) => non_neg_integer() | nil,
+          required(:error) => term(),
+          required(:meta) => map()
+        }
+
+  @type asset_run_detail :: %{
+          required(:run_id) => String.t(),
+          required(:target_id) => String.t(),
+          required(:status) => atom(),
+          required(:submit_kind) => atom() | nil,
+          required(:trigger) => map(),
+          required(:started_at) => DateTime.t() | nil,
+          required(:finished_at) => DateTime.t() | nil,
+          required(:duration_ms) => non_neg_integer() | nil,
+          required(:window) => map() | nil,
+          required(:error) => term(),
+          required(:assurance) => map() | nil,
+          required(:asset_result) => asset_run_result() | nil,
+          required(:runtime_inputs) => [map()]
         }
 
   @type asset_freshness_reason :: %{
@@ -276,11 +325,10 @@ defmodule FavnOrchestrator.Operator.Catalogue do
            ),
          {:ok, status} <- target_status(context, runtime, :asset, target_id),
          {:ok, page} <- target_runs(context, runtime, :asset, target_id),
+         {:ok, run_history} <- asset_run_history(context, page),
          {:ok, projected_window_states} <- asset_window_states(context, asset, target_id),
          {:ok, window_states} <-
            catalogue_window_states(projected_window_states, asset, version) do
-      runs = Enum.map(page.items, &Projector.project_run_summary/1)
-
       detail_opts =
         opts
         |> Keyword.put(:now, now)
@@ -294,7 +342,7 @@ defmodule FavnOrchestrator.Operator.Catalogue do
           status || unknown_status(context, runtime, :asset, target_id),
           loaded_freshness.states,
           window_states,
-          runs,
+          run_history,
           detail_opts,
           run_context_selection
         )
@@ -309,6 +357,96 @@ defmodule FavnOrchestrator.Operator.Catalogue do
       false -> {:error, :not_found}
       {:error, _reason} = error -> error
     end
+  end
+
+  @doc """
+  Returns one asset's view of one of its own runs in a workspace deployment.
+
+  Deliberately narrow. Selecting a run must not re-resolve the freshness plan, the
+  coverage page, and the window timeline that `active_asset_detail/3` builds, so
+  this reads the manifest asset, the run snapshot, and the run's pinned inputs and
+  nothing else.
+  """
+  @spec active_asset_run_detail(WorkspaceContext.t(), String.t(), String.t()) ::
+          {:ok, asset_run_detail()} | {:error, term()}
+  def active_asset_run_detail(%WorkspaceContext{} = context, target_id, run_id)
+      when is_binary(target_id) and is_binary(run_id) do
+    with {:ok, {runtime, grants}} <-
+           ManifestStore.get_active_deployment(context, customer_visible_only: true),
+         true <- MapSet.member?(granted_ids(grants, :asset), target_id),
+         {:ok, version} <- ManifestStore.get_manifest(context, runtime.manifest_version_id),
+         {:ok, asset} <- asset_for_target(version, target_id),
+         {:ok, run_state} <- Runs.get(context, run_id),
+         run <- Projector.project_run(run_state),
+         true <- run_covers_asset?(run, asset.ref),
+         {:ok, pins} <- Runs.get_runtime_inputs(context, run_id) do
+      {:ok, asset_run_detail_entry(asset, target_id, run, pins)}
+    else
+      false -> {:error, :not_found}
+      {:error, %PersistenceError{kind: :not_found}} -> {:error, :not_found}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  # A run id is a URL parameter, so a run belonging to another asset must read as
+  # missing rather than render an unrelated result under this asset's name.
+  defp run_covers_asset?(run, asset_ref) do
+    Map.get(run, :asset_ref) == asset_ref or
+      asset_ref in List.wrap(Map.get(run, :target_refs)) or
+      Map.has_key?(Map.get(run, :asset_results) || %{}, asset_ref)
+  end
+
+  defp asset_run_detail_entry(asset, target_id, run, pins) do
+    asset_result = Map.get(run.asset_results || %{}, asset.ref)
+
+    %{
+      run_id: run.id,
+      target_id: target_id,
+      status: run.status,
+      submit_kind: run.submit_kind,
+      trigger: run.trigger || %{},
+      started_at: run.started_at,
+      finished_at: run.finished_at,
+      duration_ms: RunHistory.duration_ms(run),
+      window: run_window(run),
+      error: run.error,
+      assurance: Assurance.detail(asset, run),
+      asset_result: asset_result_detail(asset_result),
+      runtime_inputs: runtime_inputs(pins, asset.ref)
+    }
+  end
+
+  defp asset_result_detail(nil), do: nil
+
+  defp asset_result_detail(result) do
+    %{
+      status: Map.get(result, :status),
+      stage: Map.get(result, :stage),
+      started_at: Map.get(result, :started_at),
+      finished_at: Map.get(result, :finished_at),
+      duration_ms: Map.get(result, :duration_ms),
+      attempt_count: Map.get(result, :attempt_count),
+      max_attempts: Map.get(result, :max_attempts),
+      error: Map.get(result, :error),
+      # The whole bag, not a chosen field: the operator UI already owns the priority
+      # ordering and the disclosure for asset output metadata, and a key this release
+      # does not know about is still evidence.
+      meta: Map.get(result, :meta) || %{}
+    }
+  end
+
+  defp run_window(run) do
+    field(run.params, :window) || field(run.metadata, :selected_window) ||
+      field(run.metadata, :window)
+  end
+
+  # `Pin.lineage/1` reports which payload a resolver selected, not the payload: a
+  # pin's own params may be declared sensitive, so the identity and fingerprint are
+  # the whole safe projection.
+  defp runtime_inputs(pins, asset_ref) do
+    pins
+    |> Enum.filter(&match?({^asset_ref, _window}, &1.node_key))
+    |> Enum.map(&Pin.lineage/1)
   end
 
   defp coverage_snapshot(%Favn.Coverage.Summary{} = summary, manifest_version_id) do
@@ -672,15 +810,15 @@ defmodule FavnOrchestrator.Operator.Catalogue do
          status,
          freshness_states,
          asset_window_states,
-         runs,
+         run_history,
          opts,
          run_context_selection
        ) do
     target = Targets.asset(asset)
     ref_string = Targets.ref_string(asset.ref)
     latest_freshness = AssetFreshness.latest_for_ref(freshness_states, ref_string)
-    latest_run = latest_run_for_ref(runs, ref_string)
-    runs_by_id = Map.new(runs, &{&1.id, &1})
+    latest_run = run_history.latest
+    runs_by_id = Map.new(run_history.items, &{&1.id, &1})
 
     context_opts =
       opts
@@ -710,8 +848,9 @@ defmodule FavnOrchestrator.Operator.Catalogue do
     |> Map.put(:canonical_asset_ref, asset.ref)
     |> Status.put(status)
     |> Map.put(:freshness, AssetFreshness.detail(asset, version, freshness_states, context_opts))
-    |> Map.put(:assurance, Assurance.detail(asset, latest_run))
+    |> Map.put(:assurance, Assurance.detail(asset, run_history.latest_snapshot))
     |> Map.merge(timeline)
+    |> Map.put(:runs, asset_run_entries(run_history.items, timeline))
     |> Map.put(:run_contexts, context_descriptors)
     |> Map.put(:selected_run_context, selected_context_descriptor)
     |> Map.put(:run_context_status, run_context_selection.status)
@@ -738,11 +877,57 @@ defmodule FavnOrchestrator.Operator.Catalogue do
 
   defp field(_value, _key, default), do: default
 
-  defp latest_run_for_ref(runs, ref_string) do
-    runs
-    |> Enum.flat_map(&RunHistory.ref_entries/1)
-    |> Enum.filter(fn {run_ref_string, _run} -> run_ref_string == ref_string end)
-    |> Enum.map(fn {_run_ref_string, run} -> run end)
-    |> RunHistory.latest()
+  # `page_target_runs` filters on `target_id`, so every row already belongs to this
+  # asset and the newest row is its latest run. The ref filter this replaced could
+  # never match: a compact history row from that query carries no `asset_ref` and an
+  # empty `target_refs`, so it selected nothing and the asset detail reported no
+  # latest run however many times the asset had run.
+  defp asset_run_history(context, page) do
+    runs = Enum.map(page.items, &Projector.project_run_summary/1)
+    latest = RunHistory.latest(runs)
+
+    with {:ok, snapshot} <- run_snapshot(context, latest) do
+      {:ok, %{items: runs, latest: latest, latest_snapshot: snapshot}}
+    end
+  end
+
+  # `Assurance` reads check evidence out of a run's `asset_results`, which only a
+  # snapshot carries, so the latest run is loaded in full. Passing the compact row
+  # left every check result, quality status, write outcome, and contract validation
+  # nil no matter what the run recorded.
+  defp run_snapshot(_context, nil), do: {:ok, nil}
+
+  defp run_snapshot(context, %{id: run_id}) do
+    case Runs.get(context, run_id) do
+      {:ok, run_state} ->
+        {:ok, Projector.project_run(run_state)}
+
+      # Retention can prune a snapshot while its history row survives. That is a run
+      # with no evidence, not a failed read.
+      {:error, %PersistenceError{kind: :not_found}} ->
+        {:ok, nil}
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  defp asset_run_entries(runs, timeline) do
+    windows_by_run = windows_by_run_id(timeline)
+
+    Enum.map(runs, &RunHistory.asset_entry(&1, Map.get(windows_by_run, &1.id)))
+  end
+
+  # Data windows are read first so a windowed asset labels a run with the window it
+  # wrote rather than the refresh period it happened to land in.
+  defp windows_by_run_id(timeline) do
+    [:data_coverage_timeline, :refresh_timeline, :freshness_timeline]
+    |> Enum.flat_map(&List.wrap(Map.get(timeline, &1)))
+    |> Enum.reduce(%{}, fn window, acc ->
+      case window.latest_run_id do
+        nil -> acc
+        run_id -> Map.put_new(acc, run_id, Map.take(window, [:kind, :value, :label, :range]))
+      end
+    end)
   end
 end
