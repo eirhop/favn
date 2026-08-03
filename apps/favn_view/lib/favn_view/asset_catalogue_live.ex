@@ -29,7 +29,6 @@ defmodule FavnView.AssetCatalogueLive do
         lineage_selected_kind: nil,
         lineage_loading: false,
         lineage_error: nil,
-        lineage_search: "",
         lineage_zoom: 62,
         lineage_inspector_open?: true,
         loading: false,
@@ -152,7 +151,6 @@ defmodule FavnView.AssetCatalogueLive do
       lineage_inspector={@lineage_inspector}
       lineage_loading={@lineage_loading}
       lineage_error={@lineage_error}
-      lineage_search={@lineage_search}
       lineage_zoom={@lineage_zoom}
       lineage_inspector_open?={@lineage_inspector_open?}
     />

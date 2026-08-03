@@ -610,79 +610,54 @@ defmodule FavnView.Components.AssetDetailPage do
             <p class="mt-2 text-sm favn-text-muted">{@timeline_kind_label}</p>
           </div>
 
-          <div class="join self-start text-sm favn-text-muted">
-            <button
-              :if={@has_data_windows? or @has_freshness_timeline?}
-              type="button"
-              class={[
-                "btn btn-sm join-item",
-                @active_timeline == :refresh && "btn-primary btn-soft",
-                @active_timeline != :refresh && "btn-ghost"
-              ]}
-              phx-click="set_timeline"
-              phx-value-timeline="refresh"
-              data-testid="refresh-timeline-toggle"
-            >
-              Run
-            </button>
+          <div class="flex flex-wrap items-center gap-3 self-start text-sm favn-text-muted">
+            <div :if={@has_data_windows? or @has_freshness_timeline?} class="join">
+              <button
+                type="button"
+                class={[
+                  "btn btn-sm join-item",
+                  @active_timeline == :refresh && "btn-primary btn-soft",
+                  @active_timeline != :refresh && "btn-ghost"
+                ]}
+                phx-click="set_timeline"
+                phx-value-timeline="refresh"
+                data-testid="refresh-timeline-toggle"
+              >
+                Run
+              </button>
 
-            <button
-              :if={@has_freshness_timeline?}
-              type="button"
-              class={[
-                "btn btn-sm join-item",
-                @active_timeline == :freshness && "btn-primary btn-soft",
-                @active_timeline != :freshness && "btn-ghost"
-              ]}
-              phx-click="set_timeline"
-              phx-value-timeline="freshness"
-              data-testid="freshness-timeline-toggle"
-            >
-              Freshness
-            </button>
+              <button
+                :if={@has_freshness_timeline?}
+                type="button"
+                class={[
+                  "btn btn-sm join-item",
+                  @active_timeline == :freshness && "btn-primary btn-soft",
+                  @active_timeline != :freshness && "btn-ghost"
+                ]}
+                phx-click="set_timeline"
+                phx-value-timeline="freshness"
+                data-testid="freshness-timeline-toggle"
+              >
+                Freshness
+              </button>
 
-            <button
-              :if={@has_data_windows?}
-              type="button"
-              class={[
-                "btn btn-sm join-item",
-                @active_timeline == :data_coverage && "btn-primary btn-soft",
-                @active_timeline != :data_coverage && "btn-ghost"
-              ]}
-              phx-click="set_timeline"
-              phx-value-timeline="data_coverage"
-              data-testid="data-coverage-timeline-toggle"
-            >
-              Data
-            </button>
+              <button
+                :if={@has_data_windows?}
+                type="button"
+                class={[
+                  "btn btn-sm join-item",
+                  @active_timeline == :data_coverage && "btn-primary btn-soft",
+                  @active_timeline != :data_coverage && "btn-ghost"
+                ]}
+                phx-click="set_timeline"
+                phx-value-timeline="data_coverage"
+                data-testid="data-coverage-timeline-toggle"
+              >
+                Data
+              </button>
+            </div>
 
-            <button
-              type="button"
-              class="btn btn-ghost btn-sm join-item"
-              aria-label="Previous window range"
-            >
-              <.icon name="hero-chevron-left" class="size-4" />
-            </button>
-
-            <span class="btn btn-ghost btn-sm join-item pointer-events-none normal-case">
-              {@timeline_range}
-            </span>
-
-            <button
-              type="button"
-              class="btn btn-ghost btn-sm join-item"
-              aria-label="Next window range"
-            >
-              <.icon name="hero-chevron-right" class="size-4" />
-            </button>
-
-            <button
-              type="button"
-              class="btn btn-ghost btn-square btn-sm join-item"
-              aria-label="Calendar placeholder"
-            >
-              <.icon name="hero-calendar-days" class="size-4" />
-            </button>
+            <span data-testid="timeline-range">{@timeline_range}</span>
           </div>
         </div>
         <.freshness_summary freshness={@freshness} />

@@ -24,7 +24,6 @@ defmodule FavnView.Components.LineagePage do
   attr :graph, :any, default: nil
   attr :inspector, :any, default: nil
   attr :view_mode, :atom, default: :all
-  attr :search, :string, default: ""
   attr :loading, :boolean, default: false
   attr :error, :any, default: nil
   attr :nav_items, :list, default: []
@@ -54,7 +53,6 @@ defmodule FavnView.Components.LineagePage do
         graph={@graph}
         inspector={@inspector}
         view_mode={@view_mode}
-        search={@search}
         loading={@loading}
         error={@error}
         zoom={@zoom}
@@ -68,7 +66,6 @@ defmodule FavnView.Components.LineagePage do
   attr :graph, :any, default: nil
   attr :inspector, :any, default: nil
   attr :view_mode, :atom, default: :all
-  attr :search, :string, default: ""
   attr :loading, :boolean, default: false
   attr :error, :any, default: nil
   attr :zoom, :integer, default: 62
@@ -101,7 +98,7 @@ defmodule FavnView.Components.LineagePage do
         data-testid="lineage-empty-state"
       />
       <div :if={!@loading && !@error && @graph} class="flex min-h-0 flex-1 flex-col gap-3">
-        <.lineage_toolbar view_mode={@view_mode} search={@search} zoom={@zoom} />
+        <.lineage_toolbar view_mode={@view_mode} zoom={@zoom} />
         <div class={[
           "grid min-h-0 flex-1 gap-3",
           @inspector_open? && "xl:grid-cols-[minmax(0,1fr)_22rem] 2xl:grid-cols-[minmax(0,1fr)_24rem]"
@@ -115,30 +112,14 @@ defmodule FavnView.Components.LineagePage do
   end
 
   attr :view_mode, :atom, required: true
-  attr :search, :string, required: true
   attr :zoom, :integer, required: true
 
   def lineage_toolbar(assigns) do
     ~H"""
     <div
-      class="flex shrink-0 flex-col gap-2 lg:flex-row lg:items-center lg:justify-between"
+      class="flex shrink-0 flex-col gap-2 lg:flex-row lg:items-center"
       data-testid="lineage-toolbar"
     >
-      <div class="flex min-w-0 flex-1 gap-2">
-        <label class="input input-sm favn-surface-control min-w-0 flex-1 gap-3 px-4 focus-within:outline focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-primary">
-          <.icon name="hero-magnifying-glass" class="size-5 shrink-0 favn-text-muted" />
-          <span class="sr-only">Search lineage</span>
-          <input
-            type="search"
-            name="search"
-            value={@search}
-            placeholder="Search lineage coming soon"
-            autocomplete="off"
-            disabled
-          /> <kbd class="kbd kbd-xs border-base-content/10 bg-base-100/20 favn-text-subtle">K</kbd>
-        </label>
-      </div>
-
       <div class="flex items-center gap-2 overflow-x-auto pb-1 lg:pb-0">
         <div
           class="join favn-surface-control min-h-0 rounded-box p-1"

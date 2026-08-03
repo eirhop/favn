@@ -53,7 +53,6 @@ defmodule FavnView.Components.AssetCataloguePage do
   attr :lineage_inspector, :any, default: nil
   attr :lineage_loading, :boolean, default: false
   attr :lineage_error, :any, default: nil
-  attr :lineage_search, :string, default: ""
   attr :lineage_zoom, :integer, default: 62
   attr :lineage_inspector_open?, :boolean, default: true
   attr :lineage_canvas_hook?, :boolean, default: true
@@ -121,7 +120,6 @@ defmodule FavnView.Components.AssetCataloguePage do
           graph={@lineage_graph}
           inspector={@lineage_inspector}
           view_mode={:all}
-          search={@lineage_search}
           loading={@lineage_loading}
           error={@lineage_error}
           zoom={@lineage_zoom}

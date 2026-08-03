@@ -227,7 +227,6 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
             lineage_inspector: LineagePage.sample_group_inspector(),
             lineage_loading: false,
             lineage_error: nil,
-            lineage_search: "",
             lineage_zoom: 62,
             lineage_inspector_open?: true,
             lineage_canvas_hook?: false
