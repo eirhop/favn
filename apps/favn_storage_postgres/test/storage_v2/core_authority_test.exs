@@ -4232,7 +4232,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert_receive :stale_started
     assert_receive :current_started
 
-    assert {:error, %{kind: :conflict}} = Task.await(stale)
+    assert {:error, %{kind: :fenced}} = Task.await(stale)
     assert {:ok, persisted_task} = Task.await(current)
 
     assert persisted_task.runtime_input_payload_fingerprint ==
@@ -4244,6 +4244,23 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
                run_id: run.id,
                node_keys: [node_key]
              })
+
+    # A resolved resolution is pinned and stays protected: the same fenced
+    # assignment cannot replace it with different inputs.
+    {:ok, replacement_resolution} =
+      Resolution.new(
+        resolver: MyApp.RuntimeInputResolver,
+        params: %{account_id: 3, token: "replacement-secret"},
+        input_identity: "replacement-input",
+        sensitive_params: [:token]
+      )
+
+    replacement_pin = Pin.new(run.id, node_key, replacement_resolution)
+
+    assert {:error, %{kind: :conflict}} =
+             FavnStoragePostgres.RunnerTasks.Store.persist_runtime_inputs(
+               command.(current_assignment, "replacement", replacement_pin)
+             )
   end
 
   test "runtime input package lookup matches exact asset pairs", fixture do

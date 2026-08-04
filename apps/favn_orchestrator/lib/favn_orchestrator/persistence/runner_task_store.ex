@@ -1,5 +1,17 @@
 defmodule FavnOrchestrator.Persistence.RunnerTaskStore do
-  @moduledoc "Persistence contract for durable, fenced runner tasks and exact capacity demand."
+  @moduledoc """
+  Persistence contract for durable, fenced runner tasks and exact capacity
+  demand.
+
+  Error kinds carry retry semantics the runner acts on, so implementations
+  must keep them apart: a command whose fencing identity (instance id, session
+  generation, assignment generation) no longer matches the current assignment
+  fails with kind `:fenced`, while a content conflict from a correctly fenced
+  caller - a payload mismatch, an already-recorded resolution - fails with
+  kind `:conflict`. The runner abandons an assignment on `:fenced` and treats
+  `:conflict` as a permanent rejection of the message it sent; conflating the
+  two turns one into the other's recovery path.
+  """
 
   alias FavnOrchestrator.Persistence.Commands, as: C
   alias FavnOrchestrator.Persistence.Queries, as: Q

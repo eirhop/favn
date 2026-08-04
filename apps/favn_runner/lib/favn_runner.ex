@@ -244,14 +244,15 @@ defmodule FavnRunner do
       })
     else
       {:error, error} ->
-        retryable? = resolver_retryable?(error)
-
+        # Runtime-input resolution runs strictly before any materialization
+        # SQL, so a failure here cannot have touched the target: the outcome
+        # is a safe failure regardless of whether retrying it makes sense.
         {:error,
          RunnerError.normalize(error,
            phase: error_phase(error),
-           retryable?: retryable?,
+           retryable?: resolver_retryable?(error),
            retry_after_ms: resolver_retry_after(error),
-           outcome: if(retryable?, do: :safe_failure, else: :unknown)
+           outcome: :safe_failure
          )}
     end
   end

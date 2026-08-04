@@ -32,6 +32,15 @@ The pool policy is owned by the control plane:
 - `elastic` runners wait for `idle_grace_ms`, make one final atomic claim, and
   exit when no compatible work remains.
 
+Task outcomes never terminate a `resident` runner: it reports (or drops, once
+fenced) and claims the next task. The lifecycle contract behind that - and the
+failure classification that keeps every delivered result acceptable to the
+control plane - is documented on `FavnRunner.RunnerAgent` and
+`Favn.Contracts.RunnerTask.classify_failure/2`. On the control-plane side,
+`FavnOrchestrator.RunnerTaskRecovery` bounds how many times one task can be
+reassigned, so a poisoned task is eventually released as terminal `unknown`
+instead of monopolizing its pool.
+
 Self-exit is the scale-down contract. Favn never selects an infrastructure
 instance to terminate. A service, Job, VM supervisor, Kubernetes controller,
 or other infrastructure layer observes the process exit and removes its

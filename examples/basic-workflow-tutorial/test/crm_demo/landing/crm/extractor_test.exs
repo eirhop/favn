@@ -52,6 +52,23 @@ defmodule CrmDemo.Landing.Crm.ExtractorTest do
     assert File.read!(path) == ""
   end
 
+  test "two windows of one run land side by side without overwriting" do
+    first_window = RunContext.day(~D[2026-07-22])
+    second_window = RunContext.day(~D[2026-07-23])
+    ctx = RunContext.new({Daily, :deals}, window: first_window)
+
+    assert {:ok, first} = Daily.asset(ctx)
+    assert {:ok, second} = Daily.asset(%{ctx | window: second_window})
+
+    refute first.landing_run_id == second.landing_run_id
+
+    assert Storage.latest_manifest!("deals", first_window).landing_run_id ==
+             first.landing_run_id
+
+    assert Storage.latest_manifest!("deals", second_window).landing_run_id ==
+             second.landing_run_id
+  end
+
   test "a retry lands a new run instead of modifying the failed one" do
     ctx = RunContext.new({Snapshots, :contacts})
 

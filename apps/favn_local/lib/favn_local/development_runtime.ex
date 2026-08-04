@@ -26,6 +26,8 @@ defmodule FavnLocal.DevelopmentRuntime do
   @default_runner_start_timeout_ms 30_000
   @runner_stop_timeout_ms 15_000
   @request_timeout_ms 120_000
+  @runner_crash_window_ms 60_000
+  @runner_crash_budget 5
 
   @type status :: :starting | :ready | :reloading | :stopping | :failed
 
@@ -69,6 +71,7 @@ defmodule FavnLocal.DevelopmentRuntime do
          pending_deployment: nil,
          stopping_ports: MapSet.new(),
          ignored_ports: MapSet.new(),
+         runner_exits: [],
          failure: nil
        }}
     else
@@ -347,27 +350,57 @@ defmodule FavnLocal.DevelopmentRuntime do
   defp runner_exited_managed(%{candidate: %{port: port}} = state, port, _status),
     do: abort_candidate(%{state | candidate: nil}, :candidate_runner_exited)
 
-  defp runner_exited_managed(%{runner: %{port: port}, status: :ready} = state, port, _status) do
-    case RunnerProcessLauncher.start(state.config, state.runner.release_id) do
-      {:ok, runner} ->
-        schedule(:probe_runner, @probe_interval_ms)
+  # A runner that keeps dying will not be fixed by another silent relaunch.
+  # Budgeting the restarts turns an invisible crash loop into an explicit
+  # failure that points the operator at the runner log.
+  defp runner_exited_managed(%{runner: %{port: port}, status: :ready} = state, port, status) do
+    case runner_crash_budget_state(state.runner_exits, now_ms()) do
+      {:fail, exits} ->
+        fail(
+          %{state | runner_exits: exits},
+          {:runner_crash_loop,
+           %{
+             exits_in_window: length(exits) + 1,
+             window_ms: @runner_crash_window_ms,
+             last_exit_status: status,
+             runner_log: runner_log_path(state)
+           }}
+        )
 
-        {:noreply,
-         %{
-           state
-           | runner: runner,
-             status: :starting,
-             startup_action: :recover,
-             deadline: now_ms() + runner_start_timeout_ms()
-         }}
+      {:continue, exits} ->
+        case RunnerProcessLauncher.start(state.config, state.runner.release_id) do
+          {:ok, runner} ->
+            schedule(:probe_runner, @probe_interval_ms)
 
-      {:error, reason} ->
-        fail(state, {:runner_crashed, reason})
+            {:noreply,
+             %{
+               state
+               | runner: runner,
+                 status: :starting,
+                 startup_action: :recover,
+                 deadline: now_ms() + runner_start_timeout_ms(),
+                 runner_exits: exits
+             }}
+
+          {:error, reason} ->
+            fail(state, {:runner_crashed, reason})
+        end
     end
   end
 
   defp runner_exited_managed(state, _port, status),
     do: fail(state, {:runner_exited, status})
+
+  @doc false
+  @spec runner_crash_budget_state([integer()], integer()) ::
+          {:continue | :fail, [integer()]}
+  def runner_crash_budget_state(exits, now_ms) do
+    recent = Enum.filter(exits, &(&1 > now_ms - @runner_crash_window_ms))
+
+    if length(recent) >= @runner_crash_budget,
+      do: {:fail, recent},
+      else: {:continue, [now_ms | recent]}
+  end
 
   defp restart_retiring(state, retiring, exit_status) do
     case RunnerProcessLauncher.start(state.config, retiring.release_id) do

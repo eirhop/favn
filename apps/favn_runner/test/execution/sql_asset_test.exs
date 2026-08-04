@@ -600,7 +600,9 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
 
     started_at = System.monotonic_time(:millisecond)
 
-    assert {:error, %RunnerError{type: :runtime_inputs_timeout, outcome: :unknown}} =
+    # Resolution runs strictly before any materialization SQL, so even a
+    # timed-out resolver leaves the target untouched: a safe failure.
+    assert {:error, %RunnerError{type: :runtime_inputs_timeout, outcome: :safe_failure}} =
              FavnRunner.resolve_runtime_inputs(work)
 
     assert System.monotonic_time(:millisecond) - started_at < 400

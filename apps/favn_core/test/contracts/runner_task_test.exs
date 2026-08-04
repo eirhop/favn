@@ -519,6 +519,45 @@ defmodule Favn.Contracts.RunnerTaskTest do
              })
   end
 
+  test "classify_failure follows the error envelope" do
+    assert {:failed, :safe_to_retry} =
+             classify(:asset_attempt, outcome: :safe_failure, retryable?: true)
+
+    assert {:failed, :terminal} =
+             classify(:asset_attempt, outcome: :safe_failure, retryable?: false)
+
+    assert {:unknown, :unknown_do_not_retry} = classify(:asset_attempt, outcome: :unknown)
+    assert {:unknown, :unknown_do_not_retry} = classify(:relation_inspection, outcome: :unknown)
+    assert {:unknown, :reconcile_before_retry} = classify(:generation_activate, outcome: :unknown)
+    assert {:cancelled, :terminal} = classify(:asset_attempt, outcome: :cancelled)
+  end
+
+  test "classify_failure always yields a pair validate_terminal_retry accepts" do
+    errors =
+      for outcome <- [:safe_failure, :unknown, :cancelled],
+          retryable? <- [true, false] do
+        RunnerError.new(outcome: outcome, retryable?: retryable?)
+      end
+
+    for kind <- Favn.Contracts.RunnerTask.task_kinds(), error <- errors do
+      {outcome, retry_class} = Favn.Contracts.RunnerTask.classify_failure(kind, error)
+
+      assert :ok ==
+               Favn.Contracts.RunnerTask.validate_terminal_retry(
+                 kind,
+                 outcome,
+                 retry_class,
+                 error
+               ),
+             "kind #{inspect(kind)} with error #{inspect({error.outcome, error.retryable?})} " <>
+               "classified as unacceptable #{inspect({outcome, retry_class})}"
+    end
+  end
+
+  defp classify(kind, fields) do
+    Favn.Contracts.RunnerTask.classify_failure(kind, RunnerError.new(fields))
+  end
+
   defp assignment(kind, payload) do
     %Assignment{
       command_id: "claim-assignment",

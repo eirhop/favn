@@ -12,6 +12,7 @@ defmodule FavnRunner.TaskExecutor do
   alias Favn.Contracts.GenerationReconciliationRequest
   alias Favn.Contracts.RunnerError
   alias Favn.Contracts.RunnerResult
+  alias Favn.Contracts.RunnerTask
   alias Favn.Contracts.RunnerTask.Assignment
   alias Favn.Contracts.RunnerWork
   alias Favn.Manifest.ExecutionPackage
@@ -527,20 +528,16 @@ defmodule FavnRunner.TaskExecutor do
     do: kind in [:relation_inspection, :generation_capabilities, :generation_marker_read]
 
   defp operation_result(
-         _kind,
+         kind,
          {:ok, %{outcome: :safe_failure, error: %RunnerError{} = error}}
        ),
-       do: %Result{
-         outcome: :failed,
-         retry_class: :safe_to_retry,
-         error: %{error | retryable?: true}
-       }
+       do: classified_result(kind, %{error | outcome: :safe_failure, retryable?: true})
 
   defp operation_result(
-         _kind,
+         kind,
          {:ok, %{outcome: :outcome_unknown, error: %RunnerError{} = error}}
        ),
-       do: %Result{outcome: :unknown, retry_class: :reconcile_before_retry, error: error}
+       do: classified_result(kind, %{error | outcome: :unknown})
 
   defp operation_result(_kind, {:ok, result}),
     do: %Result{outcome: :succeeded, retry_class: :terminal, result: result}
@@ -549,6 +546,8 @@ defmodule FavnRunner.TaskExecutor do
 
   defp operation_error(kind, reason)
        when kind in [:relation_inspection, :generation_capabilities, :generation_marker_read] do
+    # normalize/2 keeps an already-normalized error's own classification;
+    # classified_result/2 then derives the one accepted outcome/retry pair.
     error =
       RunnerError.normalize(reason,
         phase: :runner_task_execution,
@@ -556,14 +555,10 @@ defmodule FavnRunner.TaskExecutor do
         outcome: :safe_failure
       )
 
-    %Result{
-      outcome: :failed,
-      retry_class: :safe_to_retry,
-      error: error
-    }
+    classified_result(kind, error)
   end
 
-  defp operation_error(_kind, reason) do
+  defp operation_error(kind, reason) do
     error =
       RunnerError.normalize(reason,
         phase: :runner_task_execution,
@@ -571,10 +566,11 @@ defmodule FavnRunner.TaskExecutor do
         outcome: :unknown
       )
 
-    %Result{
-      outcome: :unknown,
-      retry_class: :reconcile_before_retry,
-      error: error
-    }
+    classified_result(kind, error)
+  end
+
+  defp classified_result(kind, %RunnerError{} = error) do
+    {outcome, retry_class} = RunnerTask.classify_failure(kind, error)
+    %Result{outcome: outcome, retry_class: retry_class, error: error}
   end
 end

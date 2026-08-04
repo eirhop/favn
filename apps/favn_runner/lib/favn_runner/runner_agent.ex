@@ -1,5 +1,18 @@
 defmodule FavnRunner.RunnerAgent do
-  @moduledoc "One-slot pull/execute/report loop for durable protocol-13 runner tasks."
+  @moduledoc """
+  One-slot pull/execute/report loop for durable protocol-13 runner tasks.
+
+  Failure results are always classified from their error envelope through
+  `Favn.Contracts.RunnerTask.classify_failure/2`, so every result the agent
+  delivers is one the control plane accepts. A permanent rejection is never
+  retried through reconnects: the agent delivers one coherent unknown-outcome
+  fallback and otherwise abandons the fenced assignment.
+
+  Task outcomes never terminate a `:resident` agent. Lost leases, stale
+  assignment resumes, and abandoned assignments are reported (or dropped when
+  fenced) and the agent claims the next task. An `:elastic` agent exits in
+  those situations and lets its pool replace it.
+  """
   use GenServer
 
   require Logger
@@ -214,7 +227,7 @@ defmodule FavnRunner.RunnerAgent do
 
         control_operation?(state, :preparation) ->
           state = stop_control_operation(state, :preparation)
-          :ok = TaskResultBuffer.put_result(prestart_cancelled_result(assignment, cancellation))
+          :ok = buffer_result(prestart_cancelled_result(assignment, cancellation))
           send(self(), :deliver_result)
 
           ack = cancellation_ack(state, assignment, cancellation, :observed)
@@ -299,7 +312,7 @@ defmodule FavnRunner.RunnerAgent do
       ) do
     state = clear_executor_monitor(state)
     protocol_result = lease_lost_result(state.assignment, result)
-    :ok = TaskResultBuffer.put_result(protocol_result)
+    :ok = buffer_result(protocol_result)
     send(self(), :deliver_result)
     {:noreply, %{state | executor: nil, phase: :reporting}}
   end
@@ -309,7 +322,7 @@ defmodule FavnRunner.RunnerAgent do
         %{executor: executor, phase: :lease_lost} = state
       ) do
     state = clear_executor_monitor(state)
-    :ok = TaskResultBuffer.put_result(lease_lost_protocol_result(state.assignment))
+    :ok = buffer_result(lease_lost_protocol_result(state.assignment))
     send(self(), :deliver_result)
     {:noreply, %{state | executor: nil, phase: :reporting}}
   end
@@ -319,7 +332,7 @@ defmodule FavnRunner.RunnerAgent do
         %{executor: executor} = state
       ) do
     state = clear_executor_monitor(state)
-    :ok = TaskResultBuffer.put_result(protocol_result(state.assignment, result))
+    :ok = buffer_result(protocol_result(state.assignment, result))
     send(self(), :deliver_result)
     {:noreply, %{state | executor: nil, phase: :reporting}}
   end
@@ -330,7 +343,7 @@ defmodule FavnRunner.RunnerAgent do
       ) do
     state = clear_executor_monitor(state)
     protocol_result = protocol_result(state.assignment, result)
-    :ok = TaskResultBuffer.put_result(protocol_result)
+    :ok = buffer_result(protocol_result)
     send(self(), :deliver_result)
     {:noreply, %{state | executor: nil, phase: :reporting}}
   end
@@ -347,7 +360,7 @@ defmodule FavnRunner.RunnerAgent do
         executor_stopped_protocol_result(state.assignment, reason)
       end
 
-    :ok = TaskResultBuffer.put_result(result)
+    :ok = buffer_result(result)
     send(self(), :deliver_result)
     {:noreply, %{state | executor: nil, executor_monitor: nil, phase: :reporting}}
   end
@@ -414,7 +427,7 @@ defmodule FavnRunner.RunnerAgent do
           phase: :lease_lost,
           lease_timer: nil,
           lease_deadline_timer: nil,
-          draining?: true
+          draining?: drain_after_lease_loss?(state)
         })
 
       if is_pid(state.executor) do
@@ -422,7 +435,7 @@ defmodule FavnRunner.RunnerAgent do
         {:noreply, start_control_operation(state, :lease_cancellation, operation)}
       else
         if is_nil(TaskResultBuffer.pending_result()) do
-          :ok = TaskResultBuffer.put_result(lease_lost_protocol_result(assignment))
+          :ok = buffer_result(lease_lost_protocol_result(assignment))
         end
 
         send(self(), :deliver_result)
@@ -479,12 +492,16 @@ defmodule FavnRunner.RunnerAgent do
              version,
              assignment.required_runner_release_id
            ),
+         # This closure holds a snapshot of the assignment, and a slow manifest
+         # fetch can outlive the snapshot's lease horizon even while renewals
+         # keep the real assignment alive on the agent. Acquire the manifest
+         # lease for a fresh horizon; every later renewal keeps it in step.
          :ok <-
            ManifestStore.acquire_for_release(
              version,
              assignment.required_runner_release_id,
              lease_id,
-             assignment.lease_expires_at
+             DateTime.add(DateTime.utc_now(), lease_ms(), :millisecond)
            ),
          {:ok, state, payload} <- prepare_payload(state, assignment, lease_id),
          {:ok, _task} <- request(state, started_message(state, assignment)) do
@@ -532,9 +549,16 @@ defmodule FavnRunner.RunnerAgent do
           report_preparation_failure(state, assignment, lease_id, reason)
       end
     else
-      :ok = TaskResultBuffer.put_result(lease_lost_protocol_result(assignment))
+      :ok = buffer_result(lease_lost_protocol_result(assignment))
       send(self(), :deliver_result)
-      {:noreply, %{state | manifest_lease_id: lease_id, phase: :reporting, draining?: true}}
+
+      {:noreply,
+       %{
+         state
+         | manifest_lease_id: lease_id,
+           phase: :reporting,
+           draining?: drain_after_lease_loss?(state)
+       }}
     end
   end
 
@@ -581,7 +605,17 @@ defmodule FavnRunner.RunnerAgent do
 
         persist_runtime_inputs(state, work, message)
 
-      {:error, %RunnerError{} = error} ->
+      {:error, reason} ->
+        # Resolution failures that arrive as plain reasons (lease or release
+        # verification, for example) happened before any SQL ran, so they are
+        # safe failures; an already-normalized error keeps its own envelope.
+        error =
+          RunnerError.normalize(reason,
+            phase: :runtime_inputs,
+            retryable?: true,
+            outcome: :safe_failure
+          )
+
         message = %RunnerTask.RuntimeInputsResolved{
           workspace_id: assignment.workspace_id,
           task_id: assignment.task_id,
@@ -618,7 +652,10 @@ defmodule FavnRunner.RunnerAgent do
         {:error, {:runtime_input_resolution_rejected, status}, pending_state}
 
       {:error, reason} ->
-        if stale_assignment_error?(reason) do
+        # Stale fences and permanent rejections recur on every retry, so they
+        # must fail the preparation; only transport-shaped failures warrant a
+        # reconnect-and-resume.
+        if stale_assignment_error?(reason) or permanent_control_rejection?(reason) do
           {:error, reason, pending_state}
         else
           {:reconnect, pending_state}
@@ -630,12 +667,17 @@ defmodule FavnRunner.RunnerAgent do
   end
 
   defp report_preparation_failure(state, assignment, lease_id, reason) do
+    # normalize/2 keeps an already-normalized error's own classification, so
+    # the opts below only classify plain reasons; the result's outcome and
+    # retry class are then derived from whatever the error actually says.
     error =
       RunnerError.normalize(reason,
         phase: :runner_task_preparation,
         retryable?: true,
         outcome: :safe_failure
       )
+
+    {outcome, retry_class} = RunnerTask.classify_failure(assignment.task_kind, error)
 
     protocol_result = %RunnerTask.Result{
       workspace_id: assignment.workspace_id,
@@ -644,15 +686,15 @@ defmodule FavnRunner.RunnerAgent do
       runner_instance_id: state.runner_instance_id,
       runner_session_generation: state.session_generation,
       assignment_generation: assignment.assignment_generation,
-      outcome: :failed,
-      retry_class: :safe_to_retry,
+      outcome: outcome,
+      retry_class: retry_class,
       result: nil,
       error: error,
       finished_at: DateTime.utc_now()
     }
 
     TaskResultBuffer.reset()
-    TaskResultBuffer.put_result(protocol_result)
+    buffer_result(protocol_result)
     send(self(), :deliver_result)
     {:noreply, %{state | manifest_lease_id: lease_id, phase: :reporting}}
   end
@@ -829,10 +871,27 @@ defmodule FavnRunner.RunnerAgent do
   end
 
   defp handle_control_operation_result(:result, {:error, reason}, state) do
-    if stale_assignment_error?(reason),
-      do: abandon_stale_assignment(state),
-      else: reconnect(state)
+    cond do
+      stale_assignment_error?(reason) -> abandon_stale_assignment(state)
+      permanent_control_rejection?(reason) -> handle_rejected_result(state, reason)
+      pending_result_invalid?() -> handle_rejected_result(state, reason)
+      true -> reconnect(state)
+    end
   end
+
+  defp handle_control_operation_result(
+         :result,
+         {:ok, %RunnerTask.ResultAck{status: :stale}},
+         state
+       ),
+       do: abandon_stale_assignment(state)
+
+  defp handle_control_operation_result(
+         :result,
+         {:ok, %RunnerTask.ResultAck{status: :rejected} = ack},
+         state
+       ),
+       do: handle_rejected_result(state, {:result_ack_rejected, ack.task_id})
 
   defp handle_control_operation_result(:result, _error, state), do: reconnect(state)
 
@@ -842,6 +901,124 @@ defmodule FavnRunner.RunnerAgent do
   defp handle_control_operation_result(kind, _result, state)
        when kind in [:lease_cancellation],
        do: {:noreply, state}
+
+  # A permanent rejection will recur on every delivery attempt, so retrying
+  # through reconnects can only wedge the assignment until its lease expires.
+  # Replace the rejected result with a coherent unknown-outcome report once;
+  # if even that is rejected, abandon the assignment and let the control
+  # plane's lease expiry own the task's fate.
+  defp handle_rejected_result(state, reason) do
+    case TaskResultBuffer.pending_result() do
+      %RunnerTask.Result{error: %RunnerError{type: :runner_task_result_rejected}} ->
+        Logger.error(
+          "runner task fallback result was rejected as well; abandoning the assignment",
+          reason: reason
+        )
+
+        abandon_stale_assignment(state)
+
+      %RunnerTask.Result{} = rejected ->
+        Logger.error(
+          "runner task result rejected as invalid; delivering unknown-outcome fallback",
+          reason: reason
+        )
+
+        error =
+          RunnerError.new(
+            type: :runner_task_result_rejected,
+            phase: :runner_task_reporting,
+            message: "Control plane rejected the runner task result as invalid",
+            details: %{rejection: inspect(reason, limit: 20, printable_limit: 1_024)},
+            retryable?: false,
+            outcome: :unknown
+          )
+
+        {outcome, retry_class} = RunnerTask.classify_failure(rejected.task_kind, error)
+
+        fallback = %{
+          rejected
+          | outcome: outcome,
+            retry_class: retry_class,
+            result: nil,
+            error: error,
+            finished_at: DateTime.utc_now()
+        }
+
+        :ok = TaskResultBuffer.acknowledge_result()
+        :ok = buffer_result(fallback)
+        send(self(), :deliver_result)
+        {:noreply, state}
+
+      nil ->
+        abandon_stale_assignment(state)
+    end
+  end
+
+  # If the runner's own contract validation rejects the pending result, the
+  # control plane will reject it on every attempt as well.
+  defp pending_result_invalid? do
+    case TaskResultBuffer.pending_result() do
+      %RunnerTask.Result{} = result -> RunnerTask.Result.validate(result) != :ok
+      _other -> false
+    end
+  end
+
+  defp permanent_control_rejection?(%{kind: kind}) when kind in [:invalid, :conflict], do: true
+
+  defp permanent_control_rejection?(
+         {:invalid_runner_task_retry_classification, _kind, _outcome, _retry_class, _error}
+       ),
+       do: true
+
+  defp permanent_control_rejection?({:invalid_runner_task_result, _kind, _outcome, _result}),
+    do: true
+
+  defp permanent_control_rejection?({:invalid_runner_task_error, _outcome, _error}), do: true
+  defp permanent_control_rejection?({:invalid_runner_error, _error}), do: true
+  defp permanent_control_rejection?({:invalid_runner_task_message, _tag, _field}), do: true
+
+  # Runtime-input resolution messages are validated by the control plane, and
+  # a validation failure recurs verbatim on every resend. Reconnecting would
+  # wedge the assignment: renewals keep the lease alive, so recovery never
+  # intervenes either.
+  defp permanent_control_rejection?({:invalid_runtime_inputs_resolved, _status}), do: true
+  defp permanent_control_rejection?(:invalid_runtime_input_payload_fingerprint), do: true
+
+  defp permanent_control_rejection?(_reason), do: false
+
+  # Last gate before a result is buffered for delivery. An incoherent
+  # outcome/retry-class pair would be rejected by the control plane on every
+  # delivery attempt, wedging the assignment, so reclassify it from the error
+  # envelope itself and report loudly instead of shipping it.
+  defp buffer_result(%RunnerTask.Result{} = message) do
+    message =
+      case RunnerTask.Result.validate(message) do
+        :ok ->
+          message
+
+        {:error, _reason} = invalid ->
+          coerced = coerce_result_classification(message)
+
+          Logger.error(
+            "runner task result was incoherent and has been reclassified " <>
+              "(task_id=#{message.task_id} outcome=#{inspect(message.outcome)} " <>
+              "retry_class=#{inspect(message.retry_class)} -> " <>
+              "outcome=#{inspect(coerced.outcome)} retry_class=#{inspect(coerced.retry_class)})",
+            reason: invalid
+          )
+
+          coerced
+      end
+
+    TaskResultBuffer.put_result(message)
+  end
+
+  defp coerce_result_classification(%RunnerTask.Result{error: %RunnerError{} = error} = message) do
+    {outcome, retry_class} = RunnerTask.classify_failure(message.task_kind, error)
+    %{message | outcome: outcome, retry_class: retry_class}
+  end
+
+  defp coerce_result_classification(%RunnerTask.Result{} = message), do: message
 
   defp protocol_result(assignment, %RunnerResult{status: :ok} = result) do
     result_message(assignment, result, :succeeded, :terminal, nil)
@@ -857,28 +1034,14 @@ defmodule FavnRunner.RunnerAgent do
     )
   end
 
-  defp protocol_result(assignment, %RunnerResult{status: :cancelled, error: error} = result) do
-    result_message(assignment, result, :cancelled, :terminal, error)
-  end
-
-  defp protocol_result(
-         assignment,
-         %RunnerResult{error: %RunnerError{outcome: :safe_failure, retryable?: true} = error} =
-           result
-       ) do
-    result_message(assignment, result, :failed, :safe_to_retry, error)
-  end
-
-  defp protocol_result(
-         assignment,
-         %RunnerResult{error: %RunnerError{outcome: :unknown} = error} = result
-       ) do
-    result_message(assignment, result, :unknown, :unknown_do_not_retry, error)
+  defp protocol_result(assignment, %RunnerResult{status: :cancelled, error: nil} = result) do
+    result_message(assignment, result, :cancelled, :terminal, nil)
   end
 
   defp protocol_result(assignment, %RunnerResult{error: error} = result) do
     error = error || RunnerError.new(outcome: :unknown, retryable?: false)
-    result_message(assignment, result, :failed, :unknown_do_not_retry, error)
+    {outcome, retry_class} = RunnerTask.classify_failure(assignment.task_kind, error)
+    result_message(assignment, result, outcome, retry_class, error)
   end
 
   defp lease_lost_result(assignment, %RunnerResult{} = result) do
@@ -1006,6 +1169,25 @@ defmodule FavnRunner.RunnerAgent do
     max(1, div(ceiling, 2) + :rand.uniform(max(div(ceiling, 2), 1)))
   end
 
+  # A stale-resume rejection means the control plane has already fenced the
+  # assignment this runner was trying to resume: the runner holds nothing it
+  # is allowed to report. A resident runner drops the fenced assignment and
+  # registers fresh so one lost task never costs the pool its only runner; an
+  # elastic runner exits and lets its pool replace it.
+  defp stop_rejected_registration(
+         %{lifecycle_mode: :resident, draining?: false} = state,
+         :stale_runner_task_resume = reason
+       ) do
+    Logger.warning(
+      "runner registration resume rejected as stale; dropping the fenced assignment",
+      reason: reason
+    )
+
+    state = drop_fenced_assignment(state)
+    send(self(), :connect)
+    {:noreply, %{state | phase: :connecting}}
+  end
+
   defp stop_rejected_registration(state, reason) do
     Logger.error("runner registration rejected: #{inspect(reason)}", reason: reason)
 
@@ -1016,6 +1198,28 @@ defmodule FavnRunner.RunnerAgent do
     if state.manifest_lease_id, do: ManifestStore.release(state.manifest_lease_id)
     state.exit_fun.(1)
     {:stop, :normal, %{state | draining?: true, phase: :draining}}
+  end
+
+  # Tears down everything belonging to an assignment the control plane has
+  # fenced away. The pending result (if any) can never be accepted for a
+  # fenced assignment, so it is dropped rather than delivered. A manifest
+  # lease acquired inside a preparation op that is killed here never reached
+  # state.manifest_lease_id; it self-expires at its horizon.
+  defp drop_fenced_assignment(state) do
+    state =
+      state
+      |> stop_control_operation(:preparation)
+      |> stop_control_operation(:lease_cancellation)
+
+    if is_pid(state.executor) do
+      _ = safe_cancel_executor(state.executor, :stale_runner_task_resume)
+      _ = DynamicSupervisor.terminate_child(FavnRunner.TaskExecutorSupervisor, state.executor)
+    end
+
+    state = clear_executor_monitor(state)
+    TaskResultBuffer.reset()
+    if state.manifest_lease_id, do: ManifestStore.release(state.manifest_lease_id)
+    clear_assignment(state)
   end
 
   defp safe_cancel_executor(executor, reason) do
@@ -1057,14 +1261,19 @@ defmodule FavnRunner.RunnerAgent do
       state = %{state | lease_timer: Process.send_after(self(), :renew_lease, delay)}
       reconnect(state)
     else
-      state = %{state | phase: :lease_lost, lease_timer: nil, draining?: true}
+      state = %{
+        state
+        | phase: :lease_lost,
+          lease_timer: nil,
+          draining?: drain_after_lease_loss?(state)
+      }
 
       if is_pid(state.executor) do
         _ = TaskExecutor.cancel(state.executor, :runner_task_lease_lost)
         {:noreply, state}
       else
         if is_nil(TaskResultBuffer.pending_result()) do
-          :ok = TaskResultBuffer.put_result(lease_lost_protocol_result(assignment))
+          :ok = buffer_result(lease_lost_protocol_result(assignment))
         end
 
         send(self(), :deliver_result)
@@ -1072,6 +1281,11 @@ defmodule FavnRunner.RunnerAgent do
       end
     end
   end
+
+  # Losing one lease ends an elastic runner's useful life; its pool replaces
+  # it. A resident runner reports the loss and keeps serving the pool.
+  defp drain_after_lease_loss?(state),
+    do: state.lifecycle_mode == :elastic or state.draining?
 
   defp resume_after_registration(%{assignment: nil} = state) do
     send(self(), :claim)
@@ -1116,6 +1330,14 @@ defmodule FavnRunner.RunnerAgent do
   defp stale_assignment_error?({:stale_runner_task_assignment, _details}), do: true
   defp stale_assignment_error?(:stale_runner_task_assignment), do: true
   defp stale_assignment_error?(_reason), do: false
+
+  defp abandon_stale_assignment(%{lifecycle_mode: :resident, draining?: false} = state) do
+    :ok = TaskResultBuffer.acknowledge_result()
+    if state.manifest_lease_id, do: ManifestStore.release(state.manifest_lease_id)
+    state = clear_assignment(state)
+    send(self(), :claim)
+    {:noreply, state}
+  end
 
   defp abandon_stale_assignment(state) do
     :ok = TaskResultBuffer.acknowledge_result()

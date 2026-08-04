@@ -25,7 +25,11 @@ defmodule CrmDemo.Landing.Crm.Extractor do
     config = ctx.runtime_config.crm_api
     client = Client.new(config.base_url, config.token, latency_ms: Map.get(config, :latency_ms))
 
-    landing_run_id = "#{ctx.run_id}-attempt-#{ctx.attempt}"
+    # One run can land many windows of the same dataset (a month-grain run
+    # expands into daily landing steps), so the id must carry the window or
+    # every window writes into the same directory and overwrites the previous
+    # window's manifest.
+    landing_run_id = landing_run_id(ctx)
     extracted_at = DateTime.utc_now()
 
     {files, row_count} = write_parts(client, settings, ctx.window, landing_run_id, 1, nil)
@@ -51,6 +55,12 @@ defmodule CrmDemo.Landing.Crm.Extractor do
        rows_landed: row_count,
        manifest_path: manifest_path
      }}
+  end
+
+  defp landing_run_id(%{window: nil} = ctx), do: "#{ctx.run_id}-attempt-#{ctx.attempt}"
+
+  defp landing_run_id(%{window: window} = ctx) do
+    "#{ctx.run_id}-#{Calendar.strftime(window.start_at, "%Y%m%dT%H%M%SZ")}-attempt-#{ctx.attempt}"
   end
 
   # Every page becomes one part file, including an empty first page, so a window

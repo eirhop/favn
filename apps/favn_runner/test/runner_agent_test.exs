@@ -1,6 +1,7 @@
 defmodule FavnRunner.RunnerAgentTest do
   use ExUnit.Case, async: false
 
+  alias Favn.Contracts.RunnerError
   alias Favn.Contracts.RunnerTask
   alias Favn.Contracts.RunnerResult
   alias FavnRunner.RunnerAgent
@@ -222,6 +223,338 @@ defmodule FavnRunner.RunnerAgentTest do
       }
 
       {:reply, {:ok, ack}, state}
+    end
+
+    @impl true
+    def handle_cast(:connect, state), do: {:noreply, state}
+  end
+
+  defmodule PreparationFailureControlPlane do
+    @moduledoc false
+    use GenServer
+
+    def start_link(opts), do: GenServer.start_link(__MODULE__, Map.new(opts))
+
+    @impl true
+    def init(state), do: {:ok, Map.merge(state, %{assignment: nil, result_replies: []})}
+
+    @impl true
+    def handle_call(:gateway, _from, state), do: {:reply, {:ok, self()}, state}
+
+    def handle_call({:register, registration, agent}, _from, state) do
+      send(state.owner, {:registered, registration, agent})
+
+      assignment = %RunnerTask.Assignment{
+        command_id: "prep-failure-claim",
+        workspace_id: "workspace-prep-failure",
+        task_id: "rt_" <> state.work.run_id,
+        task_kind: :asset_attempt,
+        runner_instance_id: registration.runner_instance_id,
+        runner_session_generation: 1,
+        assignment_generation: 1,
+        runner_pool: "duckdb",
+        required_runner_release_id: FavnTestSupport.runner_release_id(),
+        assigned_at: DateTime.utc_now(),
+        lease_expires_at: DateTime.add(DateTime.utc_now(), 30, :second),
+        retry_class: :unknown_do_not_retry,
+        payload: state.work
+      }
+
+      ack = %RunnerTask.RegistrationAck{
+        runner_instance_id: registration.runner_instance_id,
+        runner_session_generation: 1,
+        status: :accepted
+      }
+
+      {:reply, {:ok, ack},
+       %{state | assignment: state.assignment || assignment}
+       |> Map.put(:result_replies, Map.get(state, :reject_results, []))}
+    end
+
+    def handle_call(
+          {:request, %RunnerTask.ClaimRequest{} = request},
+          _from,
+          %{assignment: nil} = state
+        ) do
+      send(state.owner, {:claimed_next, request})
+
+      no_work = %RunnerTask.NoWork{
+        command_id: request.command_id,
+        runner_instance_id: request.runner_instance_id,
+        runner_session_generation: request.runner_session_generation,
+        action: :wait,
+        wait_ms: 60_000
+      }
+
+      {:reply, {:ok, no_work}, state}
+    end
+
+    def handle_call({:request, %RunnerTask.ClaimRequest{}}, _from, state),
+      do: {:reply, {:ok, state.assignment}, state}
+
+    def handle_call({:fetch_manifest, _assignment}, _from, state),
+      do: {:reply, {:ok, state.version}, state}
+
+    def handle_call(
+          {:request, %RunnerTask.RuntimeInputsResolved{} = message},
+          _from,
+          %{reject_runtime_inputs: reason} = state
+        )
+        when not is_nil(reason) do
+      send(state.owner, {:runtime_inputs_rejected, message, reason})
+      {:reply, {:error, reason}, state}
+    end
+
+    def handle_call({:request, %RunnerTask.RuntimeInputsResolved{} = message}, _from, state) do
+      send(state.owner, {:runtime_inputs_reported, message})
+
+      ack = %RunnerTask.RuntimeInputsAck{
+        workspace_id: message.workspace_id,
+        task_id: message.task_id,
+        runner_instance_id: message.runner_instance_id,
+        runner_session_generation: message.runner_session_generation,
+        assignment_generation: message.assignment_generation,
+        resolution_id: message.resolution_id,
+        payload_fingerprint: message.runtime_inputs && message.runtime_inputs.payload_fingerprint,
+        status: :persisted
+      }
+
+      {:reply, {:ok, ack}, state}
+    end
+
+    def handle_call({:request, %RunnerTask.LeaseRenewal{} = renewal}, _from, state),
+      do: {:reply, {:ok, %{lease_expires_at: renewal.lease_expires_at}}, state}
+
+    def handle_call(
+          {:request, %RunnerTask.Result{} = result},
+          _from,
+          %{result_replies: [reply | rest]} = state
+        ) do
+      send(state.owner, {:result_rejected, result, reply})
+      {:reply, {:error, reply}, %{state | result_replies: rest}}
+    end
+
+    def handle_call({:request, %RunnerTask.Result{} = result}, _from, state) do
+      send(state.owner, {:result_delivered, result, RunnerTask.Result.validate(result)})
+
+      ack = %RunnerTask.ResultAck{
+        workspace_id: result.workspace_id,
+        task_id: result.task_id,
+        runner_instance_id: result.runner_instance_id,
+        runner_session_generation: result.runner_session_generation,
+        assignment_generation: result.assignment_generation,
+        result_version: result.result_version,
+        status: :persisted
+      }
+
+      {:reply, {:ok, ack}, %{state | assignment: nil}}
+    end
+
+    @impl true
+    def handle_cast(:connect, state), do: {:noreply, state}
+  end
+
+  defmodule StaleResumeControlPlane do
+    @moduledoc false
+    use GenServer
+
+    def start_link(opts), do: GenServer.start_link(__MODULE__, Map.new(opts))
+
+    @impl true
+    def init(state), do: {:ok, Map.merge(state, %{assignment: nil})}
+
+    @impl true
+    def handle_call(:gateway, _from, state), do: {:reply, {:ok, self()}, state}
+
+    def handle_call(
+          {:register, %RunnerTask.Registration{active_assignment: nil} = registration, agent},
+          _from,
+          state
+        ) do
+      send(state.owner, {:fresh_registration, registration, agent})
+
+      assignment =
+        if state.assignment == :consumed do
+          nil
+        else
+          %RunnerTask.Assignment{
+            command_id: "stale-resume-claim",
+            workspace_id: "workspace-stale-resume",
+            task_id: "rt_" <> state.work.run_id,
+            task_kind: :asset_attempt,
+            runner_instance_id: registration.runner_instance_id,
+            runner_session_generation: 1,
+            assignment_generation: 1,
+            runner_pool: "duckdb",
+            required_runner_release_id: FavnTestSupport.runner_release_id(),
+            assigned_at: DateTime.utc_now(),
+            lease_expires_at: DateTime.add(DateTime.utc_now(), 30, :second),
+            retry_class: :unknown_do_not_retry,
+            payload: state.work
+          }
+        end
+
+      ack = %RunnerTask.RegistrationAck{
+        runner_instance_id: registration.runner_instance_id,
+        runner_session_generation: 1,
+        status: :accepted
+      }
+
+      {:reply, {:ok, ack}, %{state | assignment: assignment}}
+    end
+
+    def handle_call({:register, registration, agent}, _from, state) do
+      send(state.owner, {:resume_rejected, registration, agent})
+
+      ack = %RunnerTask.RegistrationAck{
+        runner_instance_id: registration.runner_instance_id,
+        runner_session_generation: registration.runner_session_generation,
+        status: :rejected,
+        reason: :stale_runner_task_resume
+      }
+
+      {:reply, {:ok, ack}, %{state | assignment: :consumed}}
+    end
+
+    def handle_call(
+          {:request, %RunnerTask.ClaimRequest{} = request},
+          _from,
+          %{assignment: assignment} = state
+        )
+        when assignment in [nil, :consumed] do
+      send(state.owner, {:claimed_after_drop, request})
+
+      no_work = %RunnerTask.NoWork{
+        command_id: request.command_id,
+        runner_instance_id: request.runner_instance_id,
+        runner_session_generation: request.runner_session_generation,
+        action: :wait,
+        wait_ms: 60_000
+      }
+
+      {:reply, {:ok, no_work}, state}
+    end
+
+    def handle_call({:request, %RunnerTask.ClaimRequest{}}, _from, state),
+      do: {:reply, {:ok, state.assignment}, state}
+
+    def handle_call({:fetch_manifest, _assignment}, _from, state),
+      do: {:reply, {:ok, state.version}, state}
+
+    def handle_call({:request, %RunnerTask.RuntimeInputsResolved{} = message}, _from, state) do
+      ack = %RunnerTask.RuntimeInputsAck{
+        workspace_id: message.workspace_id,
+        task_id: message.task_id,
+        runner_instance_id: message.runner_instance_id,
+        runner_session_generation: message.runner_session_generation,
+        assignment_generation: message.assignment_generation,
+        resolution_id: message.resolution_id,
+        status: :persisted
+      }
+
+      {:reply, {:ok, ack}, state}
+    end
+
+    def handle_call({:request, %RunnerTask.LeaseRenewal{} = renewal}, _from, state),
+      do: {:reply, {:ok, %{lease_expires_at: renewal.lease_expires_at}}, state}
+
+    def handle_call({:request, %RunnerTask.Result{} = result}, _from, state) do
+      send(state.owner, {:result_attempted, result})
+      {:reply, {:error, :control_plane_unavailable}, state}
+    end
+
+    @impl true
+    def handle_cast(:connect, state), do: {:noreply, state}
+  end
+
+  defmodule LeaseLossControlPlane do
+    @moduledoc false
+    use GenServer
+
+    def start_link(opts), do: GenServer.start_link(__MODULE__, Map.new(opts))
+
+    @impl true
+    def init(state), do: {:ok, Map.merge(state, %{assignment: nil, served?: false})}
+
+    @impl true
+    def handle_call(:gateway, _from, state), do: {:reply, {:ok, self()}, state}
+
+    def handle_call({:register, registration, agent}, _from, state) do
+      send(state.owner, {:registered, registration, agent})
+
+      assignment =
+        if state.served? do
+          nil
+        else
+          %RunnerTask.Assignment{
+            command_id: "lease-loss-claim",
+            workspace_id: "workspace-lease-loss",
+            task_id: "rt_" <> state.work.run_id,
+            task_kind: :asset_attempt,
+            runner_instance_id: registration.runner_instance_id,
+            runner_session_generation: 1,
+            assignment_generation: 1,
+            runner_pool: "duckdb",
+            required_runner_release_id: FavnTestSupport.runner_release_id(),
+            assigned_at: DateTime.utc_now(),
+            lease_expires_at: DateTime.add(DateTime.utc_now(), 300, :millisecond),
+            retry_class: :unknown_do_not_retry,
+            payload: state.work
+          }
+        end
+
+      ack = %RunnerTask.RegistrationAck{
+        runner_instance_id: registration.runner_instance_id,
+        runner_session_generation: max(registration.runner_session_generation, 1),
+        status: :accepted
+      }
+
+      {:reply, {:ok, ack}, %{state | assignment: state.assignment || assignment}}
+    end
+
+    def handle_call(
+          {:request, %RunnerTask.ClaimRequest{} = request},
+          _from,
+          %{assignment: nil} = state
+        ) do
+      send(state.owner, {:claimed_next, request})
+
+      no_work = %RunnerTask.NoWork{
+        command_id: request.command_id,
+        runner_instance_id: request.runner_instance_id,
+        runner_session_generation: request.runner_session_generation,
+        action: :wait,
+        wait_ms: 60_000
+      }
+
+      {:reply, {:ok, no_work}, state}
+    end
+
+    def handle_call({:request, %RunnerTask.ClaimRequest{}}, _from, state),
+      do: {:reply, {:ok, state.assignment}, %{state | served?: true}}
+
+    def handle_call({:fetch_manifest, _assignment}, _from, state),
+      do: {:reply, {:ok, state.version}, state}
+
+    def handle_call({:request, %RunnerTask.LeaseRenewal{} = renewal}, _from, state) do
+      send(state.owner, {:renewal_failed, renewal})
+      {:reply, {:error, :control_plane_unavailable}, state}
+    end
+
+    def handle_call({:request, %RunnerTask.Result{} = result}, _from, state) do
+      send(state.owner, {:result_delivered, result, RunnerTask.Result.validate(result)})
+
+      ack = %RunnerTask.ResultAck{
+        workspace_id: result.workspace_id,
+        task_id: result.task_id,
+        runner_instance_id: result.runner_instance_id,
+        runner_session_generation: result.runner_session_generation,
+        assignment_generation: result.assignment_generation,
+        result_version: result.result_version,
+        status: :persisted
+      }
+
+      {:reply, {:ok, ack}, %{state | assignment: nil}}
     end
 
     @impl true
@@ -1004,11 +1337,15 @@ defmodule FavnRunner.RunnerAgentTest do
                       retry_class: :unknown_do_not_retry
                     }}
 
-    assert_receive {:runner_exit, 0}
+    # The fenced delivery is abandoned and the resident runner keeps serving
+    # instead of exiting.
+    assert_receive {:claimed, %RunnerTask.ClaimRequest{}}, 500
+    refute_received {:runner_exit, _status}
     refute_receive {:result_delivery, %RunnerTask.Result{task_id: "rt_task"}}, 100
+    assert Process.alive?(agent)
   end
 
-  test "an expired unrenewed lease stops execution and enters conservative drain" do
+  test "an expired unrenewed lease stops execution without draining a resident runner" do
     {:ok, control_plane} = start_supervised({FakeControlPlane, self()})
     {:ok, executor} = start_supervised({FakeExecutor, self()})
 
@@ -1047,7 +1384,7 @@ defmodule FavnRunner.RunnerAgentTest do
 
     state = :sys.get_state(agent)
     assert state.phase == :lease_lost
-    assert state.draining?
+    refute state.draining?
   end
 
   test "a stale result fence is abandoned instead of retrying forever" do
@@ -1099,8 +1436,12 @@ defmodule FavnRunner.RunnerAgentTest do
     send(agent, :deliver_result)
 
     assert_receive {:result_delivery, ^result}
-    assert_receive {:runner_exit, 0}
-    assert_eventually(fn -> not Process.alive?(agent) end)
+
+    # The fenced result is dropped and the resident runner claims new work
+    # instead of exiting.
+    assert_receive {:claimed, %RunnerTask.ClaimRequest{}}, 500
+    refute_received {:runner_exit, _status}
+    assert Process.alive?(agent)
     assert nil == FavnRunner.TaskResultBuffer.pending_result()
   end
 
@@ -1543,6 +1884,294 @@ defmodule FavnRunner.RunnerAgentTest do
     refute Process.alive?(worker)
     assert_receive {:cancelled_result_persisted, %RunnerTask.Result{}}, 2_000
     assert_eventually(fn -> is_nil(:sys.get_state(agent).assignment) end)
+  end
+
+  test "a resolver failure that arrives with an unknown outcome is still reported acceptably" do
+    {version, work} = executable_work("unknown_prep_failure")
+    owner = self()
+
+    {:ok, control_plane} =
+      start_supervised(
+        {PreparationFailureControlPlane, owner: self(), version: version, work: work}
+      )
+
+    agent =
+      start_supervised!(
+        {RunnerAgent,
+         name: nil,
+         connection: control_plane,
+         runner_pool: :duckdb,
+         lifecycle_mode: :resident,
+         runtime_input_resolver: fn _work ->
+           {:error,
+            RunnerError.new(
+              type: :runtime_inputs_raised,
+              phase: :runtime_inputs,
+              message: "runtime input resolver raised",
+              retryable?: false,
+              outcome: :unknown
+            )}
+         end,
+         exit_fun: fn status -> send(owner, {:runner_exit, status}) end}
+      )
+
+    assert_receive {:runtime_inputs_reported, %RunnerTask.RuntimeInputsResolved{status: :failed}},
+                   2_000
+
+    assert_receive {:result_delivered, %RunnerTask.Result{} = result, validation}, 2_000
+    assert validation == :ok
+    assert result.outcome == :unknown
+    assert result.retry_class == :unknown_do_not_retry
+    assert result.error.type == :runtime_inputs_raised
+
+    assert_receive {:claimed_next, %RunnerTask.ClaimRequest{}}, 2_000
+    refute_received {:runner_exit, _status}
+    assert Process.alive?(agent)
+  end
+
+  test "a deterministic safe resolver failure reports failed/terminal and the runner claims on" do
+    {version, work} = executable_work("safe_prep_failure")
+    owner = self()
+
+    {:ok, control_plane} =
+      start_supervised(
+        {PreparationFailureControlPlane, owner: self(), version: version, work: work}
+      )
+
+    agent =
+      start_supervised!(
+        {RunnerAgent,
+         name: nil,
+         connection: control_plane,
+         runner_pool: :duckdb,
+         lifecycle_mode: :resident,
+         runtime_input_resolver: fn _work ->
+           {:error,
+            RunnerError.new(
+              type: :runtime_inputs_failed,
+              phase: :runtime_inputs,
+              message: "no completed landing run for the window",
+              retryable?: false,
+              outcome: :safe_failure
+            )}
+         end,
+         exit_fun: fn status -> send(owner, {:runner_exit, status}) end}
+      )
+
+    assert_receive {:result_delivered, %RunnerTask.Result{} = result, validation}, 2_000
+    assert validation == :ok
+    assert result.outcome == :failed
+    assert result.retry_class == :terminal
+    assert result.error.type == :runtime_inputs_failed
+
+    assert_receive {:claimed_next, %RunnerTask.ClaimRequest{}}, 2_000
+    refute_received {:runner_exit, _status}
+    assert Process.alive?(agent)
+  end
+
+  test "a permanently rejected result is replaced by an accepted unknown fallback" do
+    {version, work} = executable_work("rejected_result")
+    owner = self()
+
+    {:ok, control_plane} =
+      start_supervised(
+        {PreparationFailureControlPlane,
+         owner: self(), version: version, work: work, reject_results: [%{kind: :invalid}]}
+      )
+
+    agent =
+      start_supervised!(
+        {RunnerAgent,
+         name: nil,
+         connection: control_plane,
+         runner_pool: :duckdb,
+         lifecycle_mode: :resident,
+         runtime_input_resolver: fn _work ->
+           {:error, RunnerError.new(retryable?: false, outcome: :safe_failure)}
+         end,
+         exit_fun: fn status -> send(owner, {:runner_exit, status}) end}
+      )
+
+    assert_receive {:result_rejected, %RunnerTask.Result{}, %{kind: :invalid}}, 2_000
+
+    assert_receive {:result_delivered, %RunnerTask.Result{} = fallback, validation}, 2_000
+    assert validation == :ok
+    assert fallback.outcome == :unknown
+    assert fallback.retry_class == :unknown_do_not_retry
+    assert fallback.error.type == :runner_task_result_rejected
+
+    assert_receive {:claimed_next, %RunnerTask.ClaimRequest{}}, 2_000
+    refute_received {:runner_exit, _status}
+    assert Process.alive?(agent)
+  end
+
+  test "a rejected runtime-input resolution fails the preparation instead of resending forever" do
+    {version, work} = executable_work("runtime_inputs_rejected")
+    owner = self()
+
+    {:ok, control_plane} =
+      start_supervised(
+        {PreparationFailureControlPlane,
+         owner: self(),
+         version: version,
+         work: work,
+         reject_runtime_inputs: {:invalid_runtime_inputs_resolved, :failed}}
+      )
+
+    agent =
+      start_supervised!(
+        {RunnerAgent,
+         name: nil,
+         connection: control_plane,
+         runner_pool: :duckdb,
+         lifecycle_mode: :resident,
+         runtime_input_resolver: fn _work ->
+           {:error, RunnerError.new(retryable?: false, outcome: :safe_failure)}
+         end,
+         exit_fun: fn status -> send(owner, {:runner_exit, status}) end}
+      )
+
+    assert_receive {:runtime_inputs_rejected, %RunnerTask.RuntimeInputsResolved{}, _reason},
+                   2_000
+
+    assert_receive {:result_delivered, %RunnerTask.Result{} = result, validation}, 2_000
+    assert validation == :ok
+    assert result.outcome == :failed
+    assert result.retry_class == :safe_to_retry
+
+    assert_receive {:claimed_next, %RunnerTask.ClaimRequest{}}, 2_000
+    refute_received {:runtime_inputs_rejected, _message, _reason}
+    refute_received {:runner_exit, _status}
+    assert Process.alive?(agent)
+  end
+
+  test "a rejected fallback abandons the assignment instead of delivering it again" do
+    {version, work} = executable_work("rejected_fallback")
+    owner = self()
+
+    {:ok, control_plane} =
+      start_supervised(
+        {PreparationFailureControlPlane,
+         owner: self(),
+         version: version,
+         work: work,
+         reject_results: [%{kind: :invalid}, %{kind: :invalid}]}
+      )
+
+    agent =
+      start_supervised!(
+        {RunnerAgent,
+         name: nil,
+         connection: control_plane,
+         runner_pool: :duckdb,
+         lifecycle_mode: :resident,
+         runtime_input_resolver: fn _work ->
+           {:error, RunnerError.new(retryable?: false, outcome: :safe_failure)}
+         end,
+         exit_fun: fn status -> send(owner, {:runner_exit, status}) end}
+      )
+
+    assert_receive {:result_rejected, %RunnerTask.Result{}, %{kind: :invalid}}, 2_000
+
+    assert_receive {:result_rejected, %RunnerTask.Result{} = fallback, %{kind: :invalid}}, 2_000
+    assert fallback.error.type == :runner_task_result_rejected
+
+    # The assignment is abandoned: the next delivered result comes from a fresh
+    # attempt at the re-claimed task, not a third try at the dead fallback.
+    assert_receive {:result_delivered, %RunnerTask.Result{} = retried, :ok}, 2_000
+    assert retried.error.type == :runner_error
+
+    assert_receive {:claimed_next, %RunnerTask.ClaimRequest{}}, 2_000
+    refute_received {:runner_exit, _status}
+    assert Process.alive?(agent)
+  end
+
+  test "a resident runner drops a fenced assignment on stale resume and keeps serving" do
+    {version, work} = executable_work("stale_resume_resident")
+    owner = self()
+
+    {:ok, control_plane} =
+      start_supervised({StaleResumeControlPlane, owner: self(), version: version, work: work})
+
+    agent =
+      start_supervised!(
+        {RunnerAgent,
+         name: nil,
+         connection: control_plane,
+         runner_pool: :duckdb,
+         lifecycle_mode: :resident,
+         runtime_input_resolver: fn _work ->
+           {:error, RunnerError.new(retryable?: false, outcome: :safe_failure)}
+         end,
+         exit_fun: fn status -> send(owner, {:runner_exit, status}) end}
+      )
+
+    assert_receive {:fresh_registration, %RunnerTask.Registration{}, ^agent}, 2_000
+    assert_receive {:result_attempted, %RunnerTask.Result{}}, 2_000
+    assert_receive {:resume_rejected, %RunnerTask.Registration{}, ^agent}, 2_000
+
+    assert_receive {:fresh_registration, %RunnerTask.Registration{active_assignment: nil},
+                    ^agent},
+                   2_000
+
+    assert_receive {:claimed_after_drop, %RunnerTask.ClaimRequest{}}, 2_000
+    refute_received {:runner_exit, _status}
+    assert Process.alive?(agent)
+  end
+
+  test "an elastic runner still exits when its assignment resume is rejected as stale" do
+    {version, work} = executable_work("stale_resume_elastic")
+    owner = self()
+
+    {:ok, control_plane} =
+      start_supervised({StaleResumeControlPlane, owner: self(), version: version, work: work})
+
+    agent =
+      start_supervised!(
+        {RunnerAgent,
+         name: nil,
+         connection: control_plane,
+         runner_pool: :duckdb,
+         runtime_input_resolver: fn _work ->
+           {:error, RunnerError.new(retryable?: false, outcome: :safe_failure)}
+         end,
+         exit_fun: fn status -> send(owner, {:runner_exit, status}) end}
+      )
+
+    assert_receive {:resume_rejected, %RunnerTask.Registration{}, ^agent}, 2_000
+    assert_receive {:runner_exit, 1}, 2_000
+    assert_eventually(fn -> not Process.alive?(agent) end)
+  end
+
+  test "a resident runner reports a lost lease and keeps claiming instead of draining" do
+    {version, work} = executable_work("lease_loss_resident")
+    owner = self()
+
+    {:ok, control_plane} =
+      start_supervised({LeaseLossControlPlane, owner: self(), version: version, work: work})
+
+    agent =
+      start_supervised!(
+        {RunnerAgent,
+         name: nil,
+         connection: control_plane,
+         runner_pool: :duckdb,
+         lifecycle_mode: :resident,
+         runtime_input_resolver: fn _work -> Process.sleep(60_000) end,
+         exit_fun: fn status -> send(owner, {:runner_exit, status}) end}
+      )
+
+    assert_receive {:renewal_failed, %RunnerTask.LeaseRenewal{}}, 2_000
+
+    assert_receive {:result_delivered, %RunnerTask.Result{} = result, validation}, 3_000
+    assert validation == :ok
+    assert result.outcome == :unknown
+    assert result.retry_class == :unknown_do_not_retry
+    assert result.error.type == :runner_task_lease_lost
+
+    assert_receive {:claimed_next, %RunnerTask.ClaimRequest{}}, 3_000
+    refute_received {:runner_exit, _status}
+    assert Process.alive?(agent)
   end
 
   defp executable_work(suffix) do

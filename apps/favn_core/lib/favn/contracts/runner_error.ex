@@ -33,6 +33,7 @@ defmodule Favn.Contracts.RunnerError do
   @sensitive_assignment ~r/(token|password|secret|authorization|cookie|credential|database|dsn|url|uri|api_key|apikey|access_key|accesskey|private_key|privatekey)\s*[:=]\s*((?:Bearer\s+)?[^\s,;]+)/i
   @bearer_token ~r/(bearer)\s+([^\s,;]+)/i
   @url_userinfo ~r/([a-z][a-z0-9+.-]*:\/\/)([^\s\/@:]+):([^\s\/@]+)@([^\s,;]+)/i
+  @max_text_bytes 4_096
 
   @type t :: %__MODULE__{
           kind: kind(),
@@ -88,6 +89,10 @@ defmodule Favn.Contracts.RunnerError do
 
   @doc """
   Builds a runner error envelope from explicit fields.
+
+  `message` and `reason` are truncated to the 4096-byte limit `validate/1`
+  enforces, so an envelope built here never fails validation over text an
+  exception happened to carry.
   """
   @spec new(keyword() | map()) :: t()
   def new(fields \\ []) when is_map(fields) or is_list(fields) do
@@ -100,8 +105,8 @@ defmodule Favn.Contracts.RunnerError do
       kind: Map.get(fields, :kind, :error),
       type: Map.get(fields, :type, type_from_reason(reason)),
       phase: Map.get(fields, :phase, phase_from_reason(reason)),
-      message: message(Map.get(fields, :message), reason),
-      reason: safe_reason(reason),
+      message: fields |> Map.get(:message) |> message(reason) |> truncate_text(),
+      reason: reason |> safe_reason() |> truncate_text(),
       details: details(Map.get(fields, :details, %{})),
       retryable?: Map.get(fields, :retryable?, false),
       retry_after_ms: normalize_retry_after(Map.get(fields, :retry_after_ms)),
@@ -113,6 +118,12 @@ defmodule Favn.Contracts.RunnerError do
 
   @doc """
   Normalizes an arbitrary error term into a redaction-safe envelope.
+
+  An input that is already a `%Favn.Contracts.RunnerError{}` is returned
+  unchanged: `opts` never override an existing envelope's classification.
+  Callers that need an `{outcome, retry_class}` pair for a result must derive
+  it from the envelope itself, for example through
+  `Favn.Contracts.RunnerTask.classify_failure/2`.
   """
   @spec normalize(term(), keyword()) :: t()
   def normalize(error, opts \\ [])
@@ -390,6 +401,27 @@ defmodule Favn.Contracts.RunnerError do
     |> String.replace(@url_userinfo, "[REDACTED_URL]")
     |> String.replace(@bearer_token, "\\1 [REDACTED]")
     |> String.replace(@sensitive_assignment, "\\1=[REDACTED]")
+  end
+
+  defp truncate_text(nil), do: nil
+
+  defp truncate_text(value) when is_binary(value) and byte_size(value) <= @max_text_bytes,
+    do: value
+
+  defp truncate_text(value) when is_binary(value),
+    do: value |> binary_part(0, @max_text_bytes) |> trim_split_codepoint(3)
+
+  # A byte cut can land inside a UTF-8 sequence; a codepoint is at most four
+  # bytes, so at most three trailing bytes need trimming. Text that was not
+  # valid UTF-8 to begin with is returned as cut - validation only bounds bytes.
+  defp trim_split_codepoint(binary, 0), do: binary
+
+  defp trim_split_codepoint(binary, attempts) do
+    if String.valid?(binary) do
+      binary
+    else
+      trim_split_codepoint(binary_part(binary, 0, byte_size(binary) - 1), attempts - 1)
+    end
   end
 
   defp sensitive_key?(key) when is_binary(key) do
