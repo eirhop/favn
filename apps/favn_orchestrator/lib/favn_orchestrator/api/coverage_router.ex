@@ -101,10 +101,7 @@ defmodule FavnOrchestrator.API.CoverageRouter do
          context,
          idempotency
        ) do
-    opts = [
-      root_run_id: idempotency.run_id,
-      idempotency: idempotency.command_idempotency
-    ]
+    opts = [idempotency: idempotency.command_idempotency]
 
     case FavnOrchestrator.submit_missing_coverage_backfill(
            operator_context,

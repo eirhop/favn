@@ -214,7 +214,6 @@ defmodule FavnView.AssetDetailLive do
                actor_context(socket),
                socket.assigns.asset.target_id,
                plan,
-               root_run_id: coverage_root_run_id(plan),
                idempotency_key: attempt.key
              ) do
           {:ok, run_id} ->
@@ -945,9 +944,6 @@ defmodule FavnView.AssetDetailLive do
       [evaluated_at: asset.coverage.evaluated_at, window_keys: MapSet.to_list(selection)]
     end
   end
-
-  defp coverage_root_run_id(plan),
-    do: "run_coverage_" <> String.slice(plan.plan_hash, 0, 40)
 
   # The period the asset is due for, as the backend reports it. Absent when no single
   # pipeline owns the asset, in which case the dialog opens on its own empty default —
