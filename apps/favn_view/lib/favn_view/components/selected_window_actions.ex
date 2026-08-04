@@ -356,7 +356,7 @@ defmodule FavnView.Components.SelectedWindowActions do
 
   defp forces_upstream?(_run_config), do: false
 
-  defp selection_label(nil), do: "No timeline context selected. The run will use default config."
+  defp selection_label(nil), do: "The latest period"
   defp selection_label(window), do: window.range_label
 
   defp window_context_enabled?(true, _selected_window), do: true
@@ -385,7 +385,9 @@ defmodule FavnView.Components.SelectedWindowActions do
   defp run_plan_description(window),
     do: "Submit a planned graph using #{window.range_label} as editable context."
 
-  defp status_label(nil), do: "Default run config"
+  # Nothing picked is a real choice with a real outcome — the asset runs for whatever
+  # period it is due — so it says that rather than naming the absent selection.
+  defp status_label(nil), do: "Pick a period above to run a different one"
   defp status_label(%{status_label: label}), do: label
   defp status_label(%{status: :success}), do: "Fresh"
   defp status_label(%{status: :warning}), do: "Running"

@@ -1081,7 +1081,8 @@ defmodule FavnView.Components.AssetDetailPage do
           <p class="text-sm uppercase tracking-[0.18em] favn-text-subtle">Run context</p>
 
           <p class="mt-1 text-sm favn-text-muted">
-            Choose the pipeline policy used for run anchors and freshness evaluation.
+            Which pipeline's schedule this asset follows. It decides the periods below
+            and how freshness is judged.
           </p>
         </div>
 
