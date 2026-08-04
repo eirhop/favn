@@ -976,6 +976,14 @@ defmodule FavnRunner.RunnerAgent do
   defp permanent_control_rejection?({:invalid_runner_task_error, _outcome, _error}), do: true
   defp permanent_control_rejection?({:invalid_runner_error, _error}), do: true
   defp permanent_control_rejection?({:invalid_runner_task_message, _tag, _field}), do: true
+
+  # Runtime-input resolution messages are validated by the control plane, and
+  # a validation failure recurs verbatim on every resend. Reconnecting would
+  # wedge the assignment: renewals keep the lease alive, so recovery never
+  # intervenes either.
+  defp permanent_control_rejection?({:invalid_runtime_inputs_resolved, _status}), do: true
+  defp permanent_control_rejection?(:invalid_runtime_input_payload_fingerprint), do: true
+
   defp permanent_control_rejection?(_reason), do: false
 
   # Last gate before a result is buffered for delivery. An incoherent
@@ -1194,7 +1202,9 @@ defmodule FavnRunner.RunnerAgent do
 
   # Tears down everything belonging to an assignment the control plane has
   # fenced away. The pending result (if any) can never be accepted for a
-  # fenced assignment, so it is dropped rather than delivered.
+  # fenced assignment, so it is dropped rather than delivered. A manifest
+  # lease acquired inside a preparation op that is killed here never reached
+  # state.manifest_lease_id; it self-expires at its horizon.
   defp drop_fenced_assignment(state) do
     state =
       state

@@ -295,6 +295,16 @@ defmodule FavnRunner.RunnerAgentTest do
     def handle_call({:fetch_manifest, _assignment}, _from, state),
       do: {:reply, {:ok, state.version}, state}
 
+    def handle_call(
+          {:request, %RunnerTask.RuntimeInputsResolved{} = message},
+          _from,
+          %{reject_runtime_inputs: reason} = state
+        )
+        when not is_nil(reason) do
+      send(state.owner, {:runtime_inputs_rejected, message, reason})
+      {:reply, {:error, reason}, state}
+    end
+
     def handle_call({:request, %RunnerTask.RuntimeInputsResolved{} = message}, _from, state) do
       send(state.owner, {:runtime_inputs_reported, message})
 
@@ -1989,6 +1999,87 @@ defmodule FavnRunner.RunnerAgentTest do
     assert fallback.outcome == :unknown
     assert fallback.retry_class == :unknown_do_not_retry
     assert fallback.error.type == :runner_task_result_rejected
+
+    assert_receive {:claimed_next, %RunnerTask.ClaimRequest{}}, 2_000
+    refute_received {:runner_exit, _status}
+    assert Process.alive?(agent)
+  end
+
+  test "a rejected runtime-input resolution fails the preparation instead of resending forever" do
+    {version, work} = executable_work("runtime_inputs_rejected")
+    owner = self()
+
+    {:ok, control_plane} =
+      start_supervised(
+        {PreparationFailureControlPlane,
+         owner: self(),
+         version: version,
+         work: work,
+         reject_runtime_inputs: {:invalid_runtime_inputs_resolved, :failed}}
+      )
+
+    agent =
+      start_supervised!(
+        {RunnerAgent,
+         name: nil,
+         connection: control_plane,
+         runner_pool: :duckdb,
+         lifecycle_mode: :resident,
+         runtime_input_resolver: fn _work ->
+           {:error, RunnerError.new(retryable?: false, outcome: :safe_failure)}
+         end,
+         exit_fun: fn status -> send(owner, {:runner_exit, status}) end}
+      )
+
+    assert_receive {:runtime_inputs_rejected, %RunnerTask.RuntimeInputsResolved{}, _reason},
+                   2_000
+
+    assert_receive {:result_delivered, %RunnerTask.Result{} = result, validation}, 2_000
+    assert validation == :ok
+    assert result.outcome == :failed
+    assert result.retry_class == :safe_to_retry
+
+    assert_receive {:claimed_next, %RunnerTask.ClaimRequest{}}, 2_000
+    refute_received {:runtime_inputs_rejected, _message, _reason}
+    refute_received {:runner_exit, _status}
+    assert Process.alive?(agent)
+  end
+
+  test "a rejected fallback abandons the assignment instead of delivering it again" do
+    {version, work} = executable_work("rejected_fallback")
+    owner = self()
+
+    {:ok, control_plane} =
+      start_supervised(
+        {PreparationFailureControlPlane,
+         owner: self(),
+         version: version,
+         work: work,
+         reject_results: [%{kind: :invalid}, %{kind: :invalid}]}
+      )
+
+    agent =
+      start_supervised!(
+        {RunnerAgent,
+         name: nil,
+         connection: control_plane,
+         runner_pool: :duckdb,
+         lifecycle_mode: :resident,
+         runtime_input_resolver: fn _work ->
+           {:error, RunnerError.new(retryable?: false, outcome: :safe_failure)}
+         end,
+         exit_fun: fn status -> send(owner, {:runner_exit, status}) end}
+      )
+
+    assert_receive {:result_rejected, %RunnerTask.Result{}, %{kind: :invalid}}, 2_000
+
+    assert_receive {:result_rejected, %RunnerTask.Result{} = fallback, %{kind: :invalid}}, 2_000
+    assert fallback.error.type == :runner_task_result_rejected
+
+    # The assignment is abandoned: the next delivered result comes from a fresh
+    # attempt at the re-claimed task, not a third try at the dead fallback.
+    assert_receive {:result_delivered, %RunnerTask.Result{} = retried, :ok}, 2_000
+    assert retried.error.type == :runner_error
 
     assert_receive {:claimed_next, %RunnerTask.ClaimRequest{}}, 2_000
     refute_received {:runner_exit, _status}

@@ -2,11 +2,14 @@ defmodule FavnOrchestrator.RunnerTaskRecovery do
   @moduledoc """
   Bounded recovery loop for expired fenced runner-task assignments.
 
-  Every claim and every recovery increments a task's assignment generation, so
-  the generation is also the task's lifetime assignment count. A task whose
-  generation reaches the assignment budget is released as terminal `:unknown`
-  instead of requeued: without the budget, a task that poisons its runner on
-  every assignment would monopolize its pool forever.
+  Every claim, retry, and recovery fence increments a task's assignment
+  generation, so the generation counts every fencing event in the task's
+  lifetime - an expire-and-requeue cycle consumes two units (the recovery
+  fence plus the next claim). A task whose generation reaches the assignment
+  budget is released as terminal `:unknown` instead of requeued: without the
+  budget, a task that poisons its runner on every assignment would monopolize
+  its pool forever. The default budget of 12 parks such a task after roughly
+  six expire-and-requeue cycles.
   """
   use GenServer
 
@@ -145,7 +148,9 @@ defmodule FavnOrchestrator.RunnerTaskRecovery do
 
   def assignment_budget_exhausted?(_task, _assignment_budget), do: false
 
-  defp unknown_recovery_reason(task, assignment_budget) do
+  @doc false
+  @spec unknown_recovery_reason(map(), pos_integer()) :: RunnerError.t()
+  def unknown_recovery_reason(task, assignment_budget) do
     if assignment_budget_exhausted?(task, assignment_budget) do
       RunnerError.new(
         type: :runner_task_assignment_budget_exhausted,

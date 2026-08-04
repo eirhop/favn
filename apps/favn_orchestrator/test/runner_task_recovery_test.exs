@@ -57,4 +57,24 @@ defmodule FavnOrchestrator.RunnerTaskRecoveryTest do
                assignment_generation: 1
              })
   end
+
+  test "a budget-exhausted release names the budget in its error envelope" do
+    reason = RunnerTaskRecovery.unknown_recovery_reason(%{assignment_generation: 12}, 12)
+
+    assert reason.type == :runner_task_assignment_budget_exhausted
+    assert reason.outcome == :unknown
+    refute reason.retryable?
+    assert reason.details.assignment_generation == 12
+    assert reason.details.assignment_budget == 12
+    assert :ok = Favn.Contracts.RunnerError.validate(reason)
+  end
+
+  test "an unknown release under budget keeps the generic envelope" do
+    reason = RunnerTaskRecovery.unknown_recovery_reason(%{assignment_generation: 3}, 12)
+
+    assert reason.type == :runner_error
+    assert reason.outcome == :unknown
+    refute reason.retryable?
+    assert :ok = Favn.Contracts.RunnerError.validate(reason)
+  end
 end
