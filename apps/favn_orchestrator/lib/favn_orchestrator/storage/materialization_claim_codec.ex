@@ -74,7 +74,7 @@ defmodule FavnOrchestrator.Storage.MaterializationClaimCodec do
       "heartbeat_at" => datetime_to_dto(claim.heartbeat_at),
       "expires_at" => datetime_to_dto(claim.expires_at),
       "finished_at" => datetime_to_dto(claim.finished_at),
-      "metadata" => JsonSafe.data(claim.metadata || %{})
+      "metadata" => JsonSafe.data(claim.metadata)
     }
   end
 

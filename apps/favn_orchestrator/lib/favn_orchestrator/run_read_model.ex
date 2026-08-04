@@ -1350,10 +1350,6 @@ defmodule FavnOrchestrator.RunReadModel do
     }
   end
 
-  defp attempt_status(status, %{status: window_status}, :overview)
-       when status in [:pending, nil] and window_status in [:running, :pending, :queued],
-       do: ExecutionStatus.normalize(window_status)
-
   defp attempt_status(status, _window_hint, _mode), do: ExecutionStatus.normalize(status)
 
   defp attempt_identity(run_id, asset_step_id), do: run_id <> ":" <> asset_step_id
@@ -1502,14 +1498,6 @@ defmodule FavnOrchestrator.RunReadModel do
   defp classify(%RunState{submit_kind: :pipeline}), do: :pipeline
   defp classify(%RunState{}), do: :asset
 
-  defp progress(%RunState{}, :backfill_parent, nil), do: nil
-
-  defp progress(%RunState{}, :backfill_parent, []), do: nil
-
-  defp progress(%RunState{}, :backfill_parent, windows) when is_list(windows) do
-    window_progress(windows)
-  end
-
   defp progress(%RunState{} = run, role, _backfill_windows) do
     step_progress = StepProjection.progress(run)
     unit = if(role in [:pipeline, :backfill_child], do: :steps, else: step_progress.unit)
@@ -1545,10 +1533,6 @@ defmodule FavnOrchestrator.RunReadModel do
     }
   end
 
-  defp asset_step_log_note(_step, true) do
-    "Exact asset-step logs were not found; showing run logs for this asset instead."
-  end
-
   defp asset_step_log_note(nil, false), do: "Asset step context not found, showing matching logs."
   defp asset_step_log_note(_step, false), do: nil
 
@@ -1560,31 +1544,6 @@ defmodule FavnOrchestrator.RunReadModel do
       %{label: "Duration", value: step.duration_ms},
       %{label: "Attempt", value: step.attempt}
     ]
-  end
-
-  defp window_progress(windows) do
-    counts = %{
-      total: length(windows),
-      pending: count_status(windows, [:pending]),
-      running: count_status(windows, [:running]),
-      succeeded: count_status(windows, [:ok, :partial]),
-      failed: count_status(windows, [:error]),
-      cancelled: count_status(windows, [:cancelled]),
-      timed_out: count_status(windows, [:timed_out])
-    }
-
-    completed = counts.succeeded + counts.failed + counts.cancelled + counts.timed_out
-    counts = Map.put(counts, :completed, completed)
-
-    %{
-      unit: :windows,
-      label: "#{completed}/#{counts.total} windows complete",
-      counts: counts
-    }
-  end
-
-  defp count_status(windows, statuses) do
-    Enum.count(windows, &(&1.status in statuses))
   end
 
   defp unit_label(:assets, 1), do: "asset"

@@ -78,7 +78,7 @@ defmodule FavnOrchestrator.Storage.Freshness.AssetFreshnessStateCodec do
          "manifest_content_hash" => state.manifest_content_hash,
          "evidence_generation_id" => state.evidence_generation_id,
          "input_versions" => input_versions,
-         "metadata" => JsonSafe.data(state.metadata || %{}),
+         "metadata" => JsonSafe.data(state.metadata),
          "updated_at" => datetime_to_dto(state.updated_at)
        }}
     end
@@ -103,9 +103,6 @@ defmodule FavnOrchestrator.Storage.Freshness.AssetFreshnessStateCodec do
     |> collect(&input_version_to_dto/1)
     |> sort_input_versions()
   end
-
-  defp input_versions_to_dto(input_versions),
-    do: {:error, {:invalid_input_versions, input_versions}}
 
   defp input_version_to_dto(%{} = input_version) do
     upstream_node_key = field(input_version, :upstream_node_key)

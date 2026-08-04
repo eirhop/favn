@@ -568,8 +568,6 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
     Selection.from_value(selection)
   end
 
-  defp source_window_selection(%RunState{}), do: {:ok, nil}
-
   defp resolve_pipeline_window_selection(
          %Pipeline{},
          %Index{},
@@ -666,8 +664,6 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
       "active_runner_task_ids"
     ])
   end
-
-  defp rerun_base_metadata(%RunState{}), do: %{}
 
   defp rerun_metadata(%RunState{} = source_run, opts) do
     metadata = Keyword.get(opts, :metadata, %{})

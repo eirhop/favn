@@ -117,6 +117,4 @@ defmodule FavnOrchestrator.Storage.RunQuery do
 
   defp map_get(map, key) when is_map(map),
     do: Map.get(map, key) || Map.get(map, Atom.to_string(key))
-
-  defp map_get(_value, _key), do: nil
 end

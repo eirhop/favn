@@ -292,9 +292,6 @@ defmodule FavnOrchestrator.Operator.Catalogue.Targets do
 
   defp pipeline_name(%{name: name}) when is_atom(name), do: Atom.to_string(name)
 
-  defp pipeline_name(%{module: module}) when is_atom(module),
-    do: module |> Atom.to_string() |> String.split(".") |> List.last()
-
   defp pipeline_dependencies(%{deps: deps}) when deps in [:all, :none], do: deps
   defp pipeline_dependencies(_pipeline), do: :unknown
 

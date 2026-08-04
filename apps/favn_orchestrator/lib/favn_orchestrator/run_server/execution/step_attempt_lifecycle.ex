@@ -29,13 +29,17 @@ defmodule FavnOrchestrator.RunServer.Execution.StepAttemptLifecycle do
   @type node_key :: Favn.Plan.node_key()
   @type retry :: %{
           required(:node_key) => node_key(),
+          required(:asset_ref) => Favn.Ref.t(),
+          required(:asset_step_id) => String.t(),
+          required(:window) => term(),
+          required(:stage) => non_neg_integer(),
           required(:attempt) => pos_integer(),
           required(:next_attempt) => pos_integer(),
+          required(:max_attempts) => pos_integer(),
           required(:retry_after_ms) => non_neg_integer(),
-          required(:asset_step_id) => String.t(),
-          required(:asset_ref) => Favn.Ref.t(),
-          optional(:window) => term(),
-          optional(:execution_pool) => atom() | String.t() | nil
+          required(:retry_policy) => Policy.t(),
+          required(:retry_policy_source) => Favn.Plan.retry_policy_source(),
+          required(:execution_pool) => atom() | String.t() | nil
         }
 
   @type t :: %__MODULE__{
@@ -173,27 +177,33 @@ defmodule FavnOrchestrator.RunServer.Execution.StepAttemptLifecycle do
           {:ok, retry()} | :terminal
   def schedule_retry(%__MODULE__{} = lifecycle, failure \\ nil) do
     if lifecycle.attempt < lifecycle.max_attempts do
-      policy = lifecycle.retry_policy || legacy_retry_policy(lifecycle.run)
-
-      {:ok,
-       %{
-         node_key: lifecycle.node_key,
-         asset_ref: lifecycle.asset_ref,
-         asset_step_id: lifecycle.asset_step_id,
-         window: lifecycle.window,
-         stage: lifecycle.stage,
-         attempt: lifecycle.attempt,
-         max_attempts: lifecycle.max_attempts,
-         next_attempt: lifecycle.attempt + 1,
-         retry_after_ms:
-           Policy.delay_ms(policy, lifecycle.attempt, retry_after_ms(failure), :rand.uniform()),
-         retry_policy: policy,
-         retry_policy_source: lifecycle.retry_policy_source || :operator,
-         execution_pool: lifecycle.execution_pool
-       }}
+      {:ok, retry(lifecycle, failure)}
     else
       :terminal
     end
+  end
+
+  # Internal construction helper. Call only after `retry_allowed?/3` returned true.
+  @doc false
+  @spec retry(t(), RunnerResult.t() | RunnerError.t() | term()) :: retry()
+  def retry(%__MODULE__{} = lifecycle, failure \\ nil) do
+    policy = lifecycle.retry_policy || legacy_retry_policy(lifecycle.run)
+
+    %{
+      node_key: lifecycle.node_key,
+      asset_ref: lifecycle.asset_ref,
+      asset_step_id: lifecycle.asset_step_id,
+      window: lifecycle.window,
+      stage: lifecycle.stage,
+      attempt: lifecycle.attempt,
+      max_attempts: lifecycle.max_attempts,
+      next_attempt: lifecycle.attempt + 1,
+      retry_after_ms:
+        Policy.delay_ms(policy, lifecycle.attempt, retry_after_ms(failure), :rand.uniform()),
+      retry_policy: policy,
+      retry_policy_source: lifecycle.retry_policy_source || :operator,
+      execution_pool: lifecycle.execution_pool
+    }
   end
 
   @doc "Returns the policy frozen into one planned node."

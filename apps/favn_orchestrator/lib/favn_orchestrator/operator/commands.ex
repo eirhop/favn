@@ -309,8 +309,6 @@ defmodule FavnOrchestrator.Operator.Commands do
   defp put_metadata(opts, metadata) when is_map(metadata),
     do: {:ok, Keyword.put(opts, :metadata, metadata)}
 
-  defp put_metadata(_opts, _metadata), do: {:error, :invalid_run_metadata}
-
   defp maybe_put(opts, _key, nil), do: opts
   defp maybe_put(opts, key, value), do: Keyword.put(opts, key, value)
 

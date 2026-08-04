@@ -350,8 +350,6 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
 
   defp maybe_add_waiter(%{waiters: waiters, waiter: waiter}), do: waiters ++ [waiter]
   defp maybe_add_waiter(%{waiters: waiters}), do: waiters
-  defp maybe_add_waiter(_ctx), do: []
-
   defp entries(%{entries_rev: entries_rev}), do: Enum.reverse(entries_rev)
   defp attempted_node_keys(ctx), do: Enum.map(entries(ctx), & &1.node_key)
   defp task_ids(ctx), do: Enum.map(entries(ctx), & &1.task_id)

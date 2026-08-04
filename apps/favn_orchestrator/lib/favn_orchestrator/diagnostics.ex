@@ -106,9 +106,6 @@ defmodule FavnOrchestrator.Diagnostics do
 
   defp storage_check do
     case Persistence.diagnostics() do
-      {:ok, %{ready?: false} = details} ->
-        error(:storage_readiness, "Storage is not ready", details, Map.get(details, :status))
-
       {:ok, details} ->
         ok(:storage_readiness, "Storage is ready", details)
 
