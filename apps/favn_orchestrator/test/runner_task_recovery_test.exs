@@ -26,7 +26,35 @@ defmodule FavnOrchestrator.RunnerTaskRecoveryTest do
              RunnerTaskRecovery.recovery_disposition(%{
                status: :preparing,
                cancellation_acknowledged_at: nil,
-               retry_class: :unknown_do_not_retry
+               retry_class: :unknown_do_not_retry,
+               assignment_generation: 2
+             })
+  end
+
+  test "a task that exhausts its assignment budget is released as unknown, not requeued" do
+    task = %{
+      status: :preparing,
+      cancellation_acknowledged_at: nil,
+      retry_class: :unknown_do_not_retry,
+      assignment_generation: 12
+    }
+
+    assert :unknown == RunnerTaskRecovery.recovery_disposition(task)
+
+    assert :requeue ==
+             RunnerTaskRecovery.recovery_disposition(%{task | assignment_generation: 11})
+
+    assert :unknown == RunnerTaskRecovery.recovery_disposition(task, 12)
+    assert :requeue == RunnerTaskRecovery.recovery_disposition(task, 13)
+  end
+
+  test "the assignment budget never rescues an unsafe status back to requeue" do
+    assert :unknown ==
+             RunnerTaskRecovery.recovery_disposition(%{
+               status: :running,
+               cancellation_acknowledged_at: nil,
+               retry_class: :unknown_do_not_retry,
+               assignment_generation: 1
              })
   end
 end

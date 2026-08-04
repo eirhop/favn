@@ -113,6 +113,12 @@ defmodule Favn.Contracts.RunnerError do
 
   @doc """
   Normalizes an arbitrary error term into a redaction-safe envelope.
+
+  An input that is already a `%Favn.Contracts.RunnerError{}` is returned
+  unchanged: `opts` never override an existing envelope's classification.
+  Callers that need an `{outcome, retry_class}` pair for a result must derive
+  it from the envelope itself, for example through
+  `Favn.Contracts.RunnerTask.classify_failure/2`.
   """
   @spec normalize(term(), keyword()) :: t()
   def normalize(error, opts \\ [])

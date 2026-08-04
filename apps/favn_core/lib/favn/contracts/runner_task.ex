@@ -19,6 +19,12 @@ defmodule Favn.Contracts.RunnerTask do
   ]
   @retry_classes [:safe_to_retry, :reconcile_before_retry, :unknown_do_not_retry, :terminal]
   @terminal_outcomes [:succeeded, :failed, :cancelled, :unknown]
+  @reconcilable_kinds [
+    :generation_marker_initialize,
+    :generation_activate,
+    :generation_reconcile,
+    :generation_discard
+  ]
 
   @spec version() :: 13
   def version, do: @version
@@ -82,13 +88,7 @@ defmodule Favn.Contracts.RunnerTask do
         :reconcile_before_retry,
         %Favn.Contracts.RunnerError{outcome: :unknown} = error
       )
-      when outcome in [:failed, :unknown] and
-             kind in [
-               :generation_marker_initialize,
-               :generation_activate,
-               :generation_reconcile,
-               :generation_discard
-             ],
+      when outcome in [:failed, :unknown] and kind in @reconcilable_kinds,
       do: Favn.Contracts.RunnerError.validate(error)
 
   def validate_terminal_retry(
@@ -110,6 +110,33 @@ defmodule Favn.Contracts.RunnerTask do
 
   def validate_terminal_retry(kind, outcome, retry_class, error),
     do: {:error, {:invalid_runner_task_retry_classification, kind, outcome, retry_class, error}}
+
+  @doc """
+  Maps a normalized runner error to the one `{outcome, retry_class}` pair that
+  `validate_terminal_retry/4` accepts for it.
+
+  Total over every `Favn.Contracts.RunnerError` outcome, so a runner that
+  classifies failure results through this function always produces a result
+  the control plane can accept. The pair follows the error envelope:
+
+    * a `:cancelled` error reports a cancelled task
+    * a retryable `:safe_failure` may be retried safely
+    * a non-retryable `:safe_failure` failed deterministically and is terminal
+    * an `:unknown` outcome must not be blindly retried; reconcilable
+      generation task kinds keep their reconcile-then-retry class
+  """
+  @spec classify_failure(atom(), Favn.Contracts.RunnerError.t()) ::
+          {:cancelled | :failed | :unknown,
+           :terminal | :safe_to_retry | :reconcile_before_retry | :unknown_do_not_retry}
+  def classify_failure(kind, %Favn.Contracts.RunnerError{} = error) when kind in @task_kinds do
+    case error do
+      %{outcome: :cancelled} -> {:cancelled, :terminal}
+      %{outcome: :safe_failure, retryable?: true} -> {:failed, :safe_to_retry}
+      %{outcome: :safe_failure} -> {:failed, :terminal}
+      _unknown when kind in @reconcilable_kinds -> {:unknown, :reconcile_before_retry}
+      _unknown -> {:unknown, :unknown_do_not_retry}
+    end
+  end
 
   @doc false
   @spec validate_payload(atom(), term()) :: :ok | {:error, term()}

@@ -890,7 +890,7 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
 
     assert {:ok, ^first} = Store.claim(first_command)
 
-    assert {:error, %{kind: :conflict}} =
+    assert {:error, %{kind: :fenced}} =
              Store.transition(transition_command(fixture, first, "stale-start", :running))
 
     assert {:ok, running} =
@@ -1014,7 +1014,7 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
     assert occurred_at == DateTime.to_iso8601(fixture.now)
   end
 
-  test "runtime-input acknowledgements persist only bounded metadata and cannot be replaced",
+  test "runtime-input acknowledgements persist bounded metadata; failed resolutions are replaceable",
        fixture do
     assert {:ok, _task} = Store.enqueue(enqueue_command(fixture, "runtime-inputs"))
 
@@ -1061,13 +1061,18 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
 
     assert exact_retry.runtime_input_resolution_id == resolved.runtime_input_resolution_id
 
-    assert {:error, %{kind: :conflict}} =
+    # A failed resolution pins nothing durable, so a later resolution from the
+    # currently fenced assignment replaces it instead of wedging the task.
+    assert {:ok, replaced} =
              Store.persist_runtime_inputs(%{
                command
-               | command_id: "runtime-inputs-conflict",
+               | command_id: "runtime-inputs-replacement",
                  resolution_id: "resolution-two",
                  error: Favn.Contracts.RunnerError.new(type: :different_failure)
              })
+
+    assert replaced.runtime_input_resolution_id == "resolution-two"
+    assert replaced.runtime_input_resolution_status == :failed
 
     %{rows: [[resolution_id, status, persisted_fingerprint, persisted_error]]} =
       SQL.query!(
@@ -1083,12 +1088,12 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
         [fixture.workspace_id, assigned.task_id]
       )
 
-    assert resolution_id == "resolution-one"
+    assert resolution_id == "resolution-two"
     assert status == "failed"
     assert persisted_fingerprint == nil
     assert persisted_error
 
-    assert %{rows: [[1, error_size, max_snapshot_size]]} =
+    assert %{rows: [[2, error_size, max_snapshot_size]]} =
              SQL.query!(
                Repo,
                """
@@ -1109,6 +1114,41 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
     assert error_size > 0
     assert error_size <= 262_144
     assert max_snapshot_size <= 262_144
+
+    # The incident path: the assignment expires, the task is requeued, and the
+    # next assignment must be able to record its own resolution outcome.
+    assert {:ok, requeued} =
+             Store.release(
+               release_command(
+                 fixture,
+                 assigned,
+                 "runtime-inputs-requeue",
+                 :requeue,
+                 :lease_expired
+               )
+             )
+
+    assert requeued.status == :queued
+
+    assert {:ok, reassigned} =
+             Store.claim(
+               claim_command(fixture, "reclaim-runtime-inputs", "runner-runtime-inputs-two")
+             )
+
+    assert reassigned.assignment_generation == assigned.assignment_generation + 1
+
+    assert {:ok, regenerated} =
+             Store.persist_runtime_inputs(%{
+               command
+               | command_id: "runtime-inputs-generation-two",
+                 runner_instance_id: reassigned.assigned_runner_instance_id,
+                 runner_session_generation: reassigned.assigned_runner_session_generation,
+                 assignment_generation: reassigned.assignment_generation,
+                 resolution_id: "resolution-three"
+             })
+
+    assert regenerated.runtime_input_resolution_id == "resolution-three"
+    assert regenerated.runtime_input_resolution_status == :failed
   end
 
   test "terminal results are typed and persisted once with exact demand removal", fixture do
@@ -1594,6 +1634,12 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
   end
 
   test "expired assignments are claimed once for fenced recovery", fixture do
+    # recover_expired scans every workspace, so expired assignments left behind
+    # by interrupted runs against the shared test database would surface in this
+    # test's recovery batch. This module is async: false, so nothing else is
+    # mid-assignment while the purge runs.
+    purge_expired_assignments!()
+
     assert {:ok, _task} = Store.enqueue(enqueue_command(fixture, "recover"))
 
     assert {:ok, assigned} =
@@ -2525,6 +2571,23 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
   end
 
   defp explain_text(%{rows: rows}), do: rows |> List.flatten() |> Enum.join("\n")
+
+  defp purge_expired_assignments! do
+    SQL.query!(Repo, """
+    DELETE FROM favn_control.runner_task_command_tasks c
+    USING favn_control.runner_tasks t
+    WHERE c.workspace_id = t.workspace_id
+      AND c.task_id = t.task_id
+      AND t.assignment_expires_at < now()
+    """)
+
+    SQL.query!(
+      Repo,
+      "DELETE FROM favn_control.runner_tasks WHERE assignment_expires_at < now()"
+    )
+
+    :ok
+  end
 
   defp platform_command_id(fixture, suffix),
     do: "#{fixture.workspace_id}:#{suffix}"

@@ -17,10 +17,10 @@ defmodule CrmDemo.Warehouse.ManifestTest do
 
   test "the project compiles into one manifest" do
     assert {:ok, %Manifest{} = manifest} =
-             Favn.generate_manifest(runner_release_id: @runner_release_id)
+             Favn.generate_manifest(runner_releases: %{"default" => @runner_release_id})
 
-    assert length(manifest.assets) == 17
-    assert length(manifest.pipelines) == 3
+    assert length(manifest.assets) == 23
+    assert length(manifest.pipelines) == 6
 
     assert Enum.all?(
              Enum.filter(manifest.assets, &(&1.type == :sql)),
@@ -100,7 +100,9 @@ defmodule CrmDemo.Warehouse.ManifestTest do
   end
 
   test "the manifest content hash survives JSON publication" do
-    assert {:ok, build} = FavnAuthoring.build_manifest(runner_release_id: @runner_release_id)
+    assert {:ok, build} =
+             FavnAuthoring.build_manifest(runner_releases: %{"default" => @runner_release_id})
+
     assert {:ok, pinned} = FavnAuthoring.pin_manifest_version(build.manifest)
     assert {:ok, hash} = FavnAuthoring.hash_manifest(build.manifest)
     assert hash == pinned.content_hash
@@ -108,7 +110,7 @@ defmodule CrmDemo.Warehouse.ManifestTest do
 
   defp published_asset(module) do
     assert {:ok, %Manifest{} = manifest} =
-             Favn.generate_manifest(runner_release_id: @runner_release_id)
+             Favn.generate_manifest(runner_releases: %{"default" => @runner_release_id})
 
     Enum.find(manifest.assets, &(&1.ref == {module, :asset}))
   end

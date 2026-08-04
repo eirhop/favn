@@ -307,25 +307,41 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
             Repo.rollback(Error.new(:invalid, "invalid runtime input resolution status"))
         end
 
-      if task.runtime_input_resolution_status do
-        if task.runtime_input_resolution_id == command.resolution_id and
-             task.runtime_input_resolution_status == persisted_status and
-             task.runtime_input_payload_fingerprint == persisted_fingerprint and
-             task.runtime_input_error == persisted_resolution_error do
+      cond do
+        is_nil(task.runtime_input_resolution_status) ->
+          update_task!(
+            task,
+            command,
+            attrs ++
+              [
+                runtime_input_resolution_id: command.resolution_id,
+                runtime_inputs_resolved_at: command.occurred_at
+              ]
+          )
+
+        task.runtime_input_resolution_id == command.resolution_id and
+          task.runtime_input_resolution_status == persisted_status and
+          task.runtime_input_payload_fingerprint == persisted_fingerprint and
+            task.runtime_input_error == persisted_resolution_error ->
           task
-        else
+
+        task.runtime_input_resolution_status == "failed" ->
+          # A failed resolution pins nothing durable, so the currently fenced
+          # assignment may replace it with its own outcome. Without this, a
+          # task whose first attempt failed resolution could never record a
+          # second attempt's result and would wedge until its lease expired.
+          update_task!(
+            task,
+            command,
+            attrs ++
+              [
+                runtime_input_resolution_id: command.resolution_id,
+                runtime_inputs_resolved_at: command.occurred_at
+              ]
+          )
+
+        true ->
           Repo.rollback(Error.new(:conflict, "runner task runtime input result conflict"))
-        end
-      else
-        update_task!(
-          task,
-          command,
-          attrs ++
-            [
-              runtime_input_resolution_id: command.resolution_id,
-              runtime_inputs_resolved_at: command.occurred_at
-            ]
-        )
       end
     end)
   end
@@ -947,7 +963,10 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
          task.assignment_generation == command.assignment_generation do
       task
     else
-      Repo.rollback(Error.new(:conflict, "stale runner task assignment"))
+      # :fenced (not :conflict) so runners can distinguish "this assignment
+      # was fenced away, abandon it" from content conflicts they must not
+      # blindly retry.
+      Repo.rollback(Error.new(:fenced, "stale runner task assignment"))
     end
   end
 
