@@ -89,7 +89,7 @@ defmodule FavnOrchestrator do
   @type pipeline_catalogue_entry :: Catalogue.pipeline_catalogue_entry()
   @type pipeline_run_history_entry :: Catalogue.pipeline_run_history_entry()
   @type pipeline_detail :: Catalogue.pipeline_detail()
-  @type asset_timeline_window :: Catalogue.asset_timeline_window()
+  @type asset_run_config :: Catalogue.asset_run_config()
   @type asset_detail :: Catalogue.asset_detail()
   @type asset_dependency :: Catalogue.asset_dependency()
   @type asset_documentation :: Catalogue.asset_documentation()

@@ -26,10 +26,10 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
   alias FavnView.Dev.DesignSystem.Example
   alias FavnView.Dev.DesignSystem.Fixtures
   alias FavnView.Dev.DesignSystem.Fixtures.AssetDetail
+  alias FavnView.Dev.DesignSystem.Fixtures.RunConfig
   alias FavnView.Dev.DesignSystem.Fixtures.Runs
   alias FavnView.Dev.DesignSystem.Fixtures.RunsList
   alias FavnView.Dev.DesignSystem.Fixtures.Schedules
-  alias FavnView.Dev.DesignSystem.Fixtures.Timeline
 
   @doc """
   Every curated page example, keyed by catalogue entry id.
@@ -42,7 +42,6 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
     |> Map.merge(account_security())
     |> Map.merge(asset_catalogue())
     |> Map.merge(asset_detail())
-    |> Map.merge(timelines())
     |> Map.merge(lineage())
     |> Map.merge(log_pages())
     |> Map.merge(pipelines())
@@ -268,7 +267,6 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
             title: "stg_payments",
             status: "Unknown",
             status_tone: :neutral,
-            has_freshness_timeline?: false,
             has_data_windows?: false,
             freshness: FavnView.Components.AssetDetailPage.sample_freshness(:unknown)
           }),
@@ -278,10 +276,6 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
           :coverage_complete,
           AssetDetail.coverage_attrs(%{}),
           "The coverage page: every expected day has data, so every cell is quiet."
-        ),
-        Example.attrs(
-          :active_freshness,
-          AssetDetail.attrs(%{active_timeline: :freshness})
         ),
         Example.attrs(
           :incomplete_coverage,
@@ -418,17 +412,16 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
             can_run_asset?: false,
             run_contexts: AssetDetail.run_contexts(),
             selected_run_context: nil,
-            run_context_status: :ambiguous,
-            refresh_timeline: [],
-            refresh_window_range: "No windows",
-            refresh_timeline_label: "Run context required",
-            refresh_cadence_label: "Select a pipeline context"
+            run_context_status: :ambiguous
           }),
-          "Two pipelines could own this asset, so there is no timeline until one is chosen."
+          "Two pipelines could own this asset, so it cannot be run until one is chosen."
         ),
         Example.attrs(
           :run_config_open,
-          AssetDetail.attrs(%{run_config_open?: true, run_config: Timeline.default_run_config()}),
+          AssetDetail.attrs(%{
+            run_config_open?: true,
+            run_config: RunConfig.default_run_config()
+          }),
           "The run dialog, over the page rather than inside a card. It lives at page " <>
             "level because a panel sets a backdrop-filter, which clips a fixed-position " <>
             "child to the card."
@@ -438,8 +431,8 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
           AssetDetail.attrs(%{
             run_config_open?: true,
             run_config:
-              Timeline.run_config(:refresh_timeline, :day, "2026-06-10", "none", "force_all"),
-            selected_window_error: "Choose a period Favn can resolve."
+              RunConfig.run_config(:refresh_timeline, :day, "2026-06-10", "none", "force_all"),
+            run_error: "Choose a period Favn can resolve."
           }),
           "A configuration that cannot be submitted says so inside the dialog, where the " <>
             "field that caused it is."
@@ -474,64 +467,6 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
           AssetDetail.assurance_attrs(),
           "A contract with a composed fragment and a parameterised row-count claim."
         )
-      ]
-    }
-  end
-
-  defp timelines do
-    panel = AssetDetail.window_timeline_panel_attrs()
-
-    %{
-      "asset_detail_page/window_timeline_panel" => [
-        Example.attrs(:refresh_and_data, panel),
-        Example.attrs(
-          :refresh_only,
-          Map.merge(panel, %{
-            has_data_windows?: false,
-            data_coverage_timeline: nil,
-            has_freshness_timeline?: false,
-            freshness_timeline: nil
-          })
-        ),
-        Example.attrs(:active_data_coverage, Map.put(panel, :active_timeline, :data_coverage)),
-        Example.attrs(:active_freshness, Map.put(panel, :active_timeline, :freshness)),
-        Example.attrs(
-          :selected_refresh_period,
-          Map.put(panel, :selected_window, List.last(Timeline.refresh_timeline()))
-        ),
-        Example.attrs(
-          :run_config_open,
-          Map.merge(panel, %{run_config_open?: true, run_config: Timeline.default_run_config()})
-        )
-      ],
-      "asset_detail_page/timeline_window" => [
-        Example.attrs(:fresh, %{window: Timeline.refresh_window("2026-06-12", "Jun 12", :success)}),
-        Example.attrs(:running, %{
-          window: Timeline.refresh_window("2026-06-13", "Jun 13", :warning)
-        }),
-        Example.attrs(:failed, %{window: Timeline.data_window("2026-06-10", "Jun 10", :error)}),
-        Example.attrs(
-          :missing,
-          %{window: Timeline.data_window("2026-06-11", "Jun 11", :muted)},
-          "A window with no data at all."
-        ),
-        Example.attrs(:selected, %{
-          selected: true,
-          window: Timeline.data_window("2026-06-12", "Jun 12", :success)
-        }),
-        Example.attrs(
-          :selected_running,
-          %{selected: true, window: Timeline.refresh_window("2026-06-13", "Jun 13", :warning)},
-          "Selection is judged per status: the boundary rule only applies to a window an operator has picked."
-        ),
-        Example.attrs(:selected_failed, %{
-          selected: true,
-          window: Timeline.data_window("2026-06-10", "Jun 10", :error)
-        }),
-        Example.attrs(:selected_missing, %{
-          selected: true,
-          window: Timeline.data_window("2026-06-11", "Jun 11", :muted)
-        })
       ]
     }
   end

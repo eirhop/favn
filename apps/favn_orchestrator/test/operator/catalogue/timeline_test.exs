@@ -20,230 +20,235 @@ defmodule FavnOrchestrator.Operator.Catalogue.TimelineTest do
   @asset_ref {__MODULE__.Orders, :asset}
   @now ~U[2026-07-17 10:00:00Z]
 
-  test "separates run anchors, exact data windows, and composite calendar freshness" do
-    asset = asset_fixture()
-    states = [freshness_state(:june, :ok), freshness_state(:july, :ok)]
+  describe "the period an asset is due for" do
+    test "comes from the run anchor policy, not the asset's own window grain" do
+      asset = asset_fixture()
+      states = [freshness_state(:june, :ok), freshness_state(:july, :ok)]
 
-    detail =
-      Timeline.build(
-        version_fixture(asset),
-        asset,
-        List.last(states),
-        nil,
-        states,
-        [],
-        %{},
-        now: @now
-      )
+      resolved =
+        Timeline.build(
+          version_fixture(asset),
+          asset,
+          List.last(states),
+          nil,
+          states,
+          [],
+          %{},
+          now: @now
+        )
 
-    run_anchor = List.last(detail.refresh_timeline)
-    june = Enum.find(detail.data_coverage_timeline, &(&1.value == "2026-06"))
-    july = Enum.find(detail.data_coverage_timeline, &(&1.value == "2026-07"))
-    freshness = List.last(detail.freshness_timeline)
+      # The asset writes monthly windows and is refreshed on a monthly anchor, so both
+      # agree here. What matters is which one the dialog opens on: the anchor, because
+      # that is what a run submits against.
+      assert resolved.default_run_config.source == :refresh_timeline
+      assert resolved.default_run_config.kind == :month
+      assert resolved.default_run_config.value == "2026-07"
+      assert resolved.default_run_config.timezone == "Europe/Oslo"
+      assert resolved.default_run_config.dependencies == :all
+      assert resolved.default_run_config.refresh == :auto
+    end
 
-    assert detail.refresh_timeline_label == "Monthly run anchors"
-    assert detail.refresh_cadence_label == "Monthly run anchors Europe/Oslo"
-    assert run_anchor.kind == :month
-    assert run_anchor.timezone == "Europe/Oslo"
-    assert run_anchor.default_run_config.source == :refresh_timeline
-    assert run_anchor.default_run_config.kind == :month
+    test "falls back to the schedule timezone when the pipeline declares no window" do
+      asset = asset_fixture()
 
-    assert %{status: :covered} = june
-    assert %{status: :covered} = july
+      resolved =
+        Timeline.build(version_fixture(asset, nil), asset, nil, nil, [], [], %{}, now: @now)
 
-    assert detail.freshness_timeline_label == "Daily freshness periods"
-    assert detail.freshness_cadence_label == "Daily freshness Europe/Oslo"
-    assert freshness.value == "2026-07-17"
-    assert freshness.timezone == "Europe/Oslo"
-    assert freshness.status == :fresh
-    refute freshness.run_enabled?
+      assert resolved.default_run_config.kind == :day
+      assert resolved.default_run_config.timezone == "Europe/Oslo"
+    end
+
+    test "prefers the configuration a failed run used, so a retry repeats it" do
+      asset = asset_fixture()
+      state = freshness_state(:july, :error)
+
+      run = %{
+        id: "run_july",
+        metadata: %{
+          asset_dependencies: :none,
+          refresh_policy: %{mode: :force_assets, include_upstream?: true}
+        }
+      }
+
+      resolved =
+        Timeline.build(
+          version_fixture(asset),
+          asset,
+          state,
+          nil,
+          [state],
+          [],
+          %{"run_july" => run},
+          now: @now
+        )
+
+      assert resolved.default_run_config.dependencies == :none
+      assert resolved.default_run_config.refresh == :force_selected_upstream
+    end
+
+    test "is absent for an asset no pipeline unambiguously owns" do
+      asset = asset_fixture()
+      states = [freshness_state(:june, :ok), freshness_state(:july, :ok)]
+      version = multi_pipeline_version_fixture(asset, :declared)
+
+      resolved =
+        Timeline.build(version, asset, List.last(states), nil, states, [], %{}, now: @now)
+
+      # Two pipelines could own it, so there is no anchor to be due for. Offering one
+      # would be a guess an operator could not check.
+      assert resolved.default_run_config == nil
+
+      freshness = AssetFreshness.detail(asset, version, states, now: @now)
+      assert freshness.state == :unknown
+      assert [%{kind: :run_context_required}] = freshness.reasons
+    end
+
+    test "does not depend on the order the pipelines happen to be declared in" do
+      asset = asset_fixture()
+      states = [freshness_state(:june, :ok), freshness_state(:july, :ok)]
+
+      declared =
+        Timeline.build(
+          multi_pipeline_version_fixture(asset, :declared),
+          asset,
+          List.last(states),
+          nil,
+          states,
+          [],
+          %{},
+          now: @now
+        )
+
+      reversed =
+        Timeline.build(
+          multi_pipeline_version_fixture(asset, :reversed),
+          asset,
+          List.last(states),
+          nil,
+          states,
+          [],
+          %{},
+          now: @now
+        )
+
+      assert declared == reversed
+    end
+
+    test "follows the run context it is given rather than choosing one" do
+      asset = asset_fixture()
+      states = [freshness_state(:june, :ok), freshness_state(:july, :ok)]
+      version = multi_pipeline_version_fixture(asset, :declared)
+
+      assert {:ok, contexts} = AssetRunContext.list(version, asset)
+      scheduled = Enum.find(contexts, &(&1.pipeline.name == :scheduled_current))
+      manual = Enum.find(contexts, &(&1.pipeline.name == :manual_previous))
+
+      assert resolve(version, asset, states, scheduled).default_run_config
+             |> Map.take([:value, :timezone]) == %{value: "2026-07", timezone: "Europe/Oslo"}
+
+      assert resolve(version, asset, states, manual).default_run_config
+             |> Map.take([:value, :timezone]) == %{value: "2026-06", timezone: "Etc/UTC"}
+    end
   end
 
-  test "does not mark a partial or failed composite calendar period fresh" do
-    asset = asset_fixture()
-    version = version_fixture(asset)
+  describe "the period each run wrote" do
+    test "labels a run from the asset's own data window, not its refresh anchor" do
+      asset = asset_fixture()
+      states = [freshness_state(:june, :ok), freshness_state(:july, :ok)]
 
-    partial =
-      Timeline.build(
-        version,
-        asset,
-        freshness_state(:june, :ok),
-        nil,
-        [freshness_state(:june, :ok)],
-        [],
-        %{},
-        now: @now
-      )
+      resolved =
+        Timeline.build(
+          version_fixture(asset),
+          asset,
+          List.last(states),
+          nil,
+          states,
+          [],
+          %{},
+          now: @now
+        )
 
-    assert List.last(partial.freshness_timeline).status == :missing
+      assert %{kind: :month, value: "2026-07", label: "Jul 2026", range: "July 2026"} =
+               resolved.run_windows["run_july"]
 
-    header = AssetFreshness.detail(asset, version, [freshness_state(:june, :ok)], now: @now)
-    refute header.state == :fresh
+      assert %{value: "2026-06"} = resolved.run_windows["run_june"]
+    end
 
-    wrong_window_states = [freshness_state(:may, :ok), freshness_state(:june, :ok)]
+    test "has no entry for a run outside the periods it walked" do
+      asset = asset_fixture()
+      state = freshness_state(:may, :ok)
 
-    wrong_windows =
-      Timeline.build(
-        version,
-        asset,
-        List.last(wrong_window_states),
-        nil,
-        wrong_window_states,
-        [],
-        %{},
-        now: @now
-      )
+      resolved =
+        Timeline.build(version_fixture(asset), asset, state, nil, [state], [], %{}, now: @now)
 
-    assert List.last(wrong_windows.freshness_timeline).status == :missing
-
-    failed_states = [freshness_state(:june, :ok), freshness_state(:july, :error)]
-
-    failed =
-      Timeline.build(
-        version,
-        asset,
-        List.last(failed_states),
-        nil,
-        failed_states,
-        [],
-        %{},
-        now: @now
-      )
-
-    assert List.last(failed.freshness_timeline).status == :failed
+      # May is inside the thirty-period walk, so it is labelled; a run id that never
+      # appears is simply absent rather than labelled with something invented.
+      assert Map.has_key?(resolved.run_windows, "run_may")
+      refute Map.has_key?(resolved.run_windows, "run_never_happened")
+    end
   end
 
-  test "uses the schedule timezone for a policy-less pipeline context" do
-    asset = asset_fixture()
+  describe "has_data_windows?" do
+    test "is true for an asset that writes one window per period" do
+      asset = asset_fixture()
 
-    detail =
-      Timeline.build(
-        version_fixture(asset, nil),
-        asset,
-        nil,
-        nil,
-        [],
-        [],
-        %{},
-        now: @now
-      )
+      resolved =
+        Timeline.build(version_fixture(asset), asset, nil, nil, [], [], %{}, now: @now)
 
-    refresh = List.last(detail.refresh_timeline)
+      assert resolved.has_data_windows?
+    end
 
-    assert refresh.kind == :day
-    assert refresh.timezone == "Europe/Oslo"
-    assert refresh.default_run_config.timezone == "Europe/Oslo"
+    test "is false for an asset that replaces its whole relation" do
+      asset = %{asset_fixture() | window: nil}
+
+      resolved =
+        Timeline.build(version_fixture(asset), asset, nil, nil, [], [], %{}, now: @now)
+
+      refute resolved.has_data_windows?
+    end
   end
 
-  test "requires every fine-grained asset window expanded from a coarse run anchor" do
-    asset = daily_asset_fixture()
-    version = version_fixture(asset)
+  # Composite calendar freshness — a calendar period is fresh only when every window
+  # expanded into it succeeded — is `AssetFreshness`'s answer, not the period walk's.
+  # These cover it here because the walk used to answer it too, and a change that moves
+  # the rule back should have to break something.
+  describe "composite calendar freshness" do
+    test "a partially covered calendar period is not fresh" do
+      asset = asset_fixture()
+      version = version_fixture(asset)
 
-    start_at =
-      DateTime.new!(
-        ~D[2026-07-17],
-        ~T[00:00:00],
-        "Europe/Oslo",
-        Favn.Timezone.database!()
-      )
+      header = AssetFreshness.detail(asset, version, [freshness_state(:june, :ok)], now: @now)
 
-    state = freshness_state_for(:day, start_at, ~D[2026-07-17], :ok, "one_day")
+      refute header.state == :fresh
+    end
 
-    detail =
-      Timeline.build(
-        version,
-        asset,
-        state,
-        nil,
-        [state],
-        [],
-        %{},
-        now: @now
-      )
+    test "a coarse anchor expanded into finer windows requires every one of them" do
+      asset = daily_asset_fixture()
+      version = version_fixture(asset)
 
-    assert List.last(detail.freshness_timeline).status == :missing
+      start_at =
+        DateTime.new!(~D[2026-07-17], ~T[00:00:00], "Europe/Oslo", Favn.Timezone.database!())
 
-    header = AssetFreshness.detail(asset, version, [state], now: @now)
-    refute header.state == :fresh
+      state = freshness_state_for(:day, start_at, ~D[2026-07-17], :ok, "one_day")
+      header = AssetFreshness.detail(asset, version, [state], now: @now)
+
+      refute header.state == :fresh
+    end
   end
 
-  test "uses one explicit pipeline context consistently and surfaces context-free ambiguity" do
-    asset = asset_fixture()
-    states = [freshness_state(:june, :ok), freshness_state(:july, :ok)]
-    version = multi_pipeline_version_fixture(asset, :declared)
-
-    assert {:ok, contexts} = AssetRunContext.list(version, asset)
-    scheduled = Enum.find(contexts, &(&1.pipeline.name == :scheduled_current))
-    manual = Enum.find(contexts, &(&1.pipeline.name == :manual_previous))
-
-    scheduled_detail =
-      Timeline.build(
-        version,
-        asset,
-        List.last(states),
-        nil,
-        states,
-        [],
-        %{},
-        now: @now,
-        asset_run_context: scheduled,
-        run_context_status: :selected
-      )
-
-    assert List.last(scheduled_detail.refresh_timeline).value == "2026-07"
-    assert List.last(scheduled_detail.refresh_timeline).timezone == "Europe/Oslo"
-
-    assert Enum.find(scheduled_detail.data_coverage_timeline, &(&1.value == "2026-06")).status ==
-             :covered
-
-    assert Enum.find(scheduled_detail.data_coverage_timeline, &(&1.value == "2026-07")).status ==
-             :covered
-
-    assert List.last(scheduled_detail.freshness_timeline).status == :fresh
-
-    manual_detail =
-      Timeline.build(
-        version,
-        asset,
-        List.last(states),
-        nil,
-        states,
-        [],
-        %{},
-        now: @now,
-        asset_run_context: manual,
-        run_context_status: :selected
-      )
-
-    assert List.last(manual_detail.refresh_timeline).value == "2026-06"
-    assert List.last(manual_detail.refresh_timeline).timezone == "Etc/UTC"
-    assert List.last(manual_detail.freshness_timeline).status == :fresh
-
-    ambiguous =
-      Timeline.build(version, asset, List.last(states), nil, states, [], %{}, now: @now)
-
-    reordered =
-      Timeline.build(
-        multi_pipeline_version_fixture(asset, :reversed),
-        asset,
-        List.last(states),
-        nil,
-        states,
-        [],
-        %{},
-        now: @now
-      )
-
-    assert ambiguous.refresh_timeline == []
-    assert ambiguous.refresh_timeline_label == "Run context required"
-    assert List.last(ambiguous.freshness_timeline).status == :unknown
-
-    assert Map.take(ambiguous, [:refresh_timeline, :refresh_timeline_label]) ==
-             Map.take(reordered, [:refresh_timeline, :refresh_timeline_label])
-
-    freshness = AssetFreshness.detail(asset, version, states, now: @now)
-    assert freshness.state == :unknown
-    assert [%{kind: :run_context_required}] = freshness.reasons
+  defp resolve(version, asset, states, run_context) do
+    Timeline.build(
+      version,
+      asset,
+      List.last(states),
+      nil,
+      states,
+      [],
+      %{},
+      now: @now,
+      asset_run_context: run_context,
+      run_context_status: :selected
+    )
   end
 
   defp asset_fixture do
@@ -298,8 +303,8 @@ defmodule FavnOrchestrator.Operator.Catalogue.TimelineTest do
     }
 
     %Version{
-      manifest_version_id: "mv_timeline_composite_#{asset.window.kind}",
-      content_hash: "sha256:timeline-composite-#{asset.window.kind}",
+      manifest_version_id: "mv_timeline_composite_#{asset.window && asset.window.kind}",
+      content_hash: "sha256:timeline-composite-#{asset.window && asset.window.kind}",
       manifest: %Manifest{
         assets: [asset],
         pipelines: [pipeline],
@@ -346,8 +351,8 @@ defmodule FavnOrchestrator.Operator.Catalogue.TimelineTest do
     pipelines = if order == :reversed, do: [scheduled, manual], else: [manual, scheduled]
 
     %Version{
-      manifest_version_id: "mv_timeline_multi_#{order}",
-      content_hash: "sha256:timeline-multi-#{order}",
+      manifest_version_id: "mv_timeline_multi",
+      content_hash: "sha256:timeline-multi",
       manifest: %Manifest{
         assets: [asset],
         pipelines: pipelines,

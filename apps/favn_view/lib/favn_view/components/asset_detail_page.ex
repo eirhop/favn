@@ -10,26 +10,18 @@ defmodule FavnView.Components.AssetDetailPage do
   alias FavnView.Components.ModeRail
   alias FavnView.Components.Navigation
   alias FavnView.Components.OutputMetadata
-  alias FavnView.Components.SelectedWindowActions
+  alias FavnView.Components.RunConfigDialog
   alias FavnView.CoverageCalendar
   alias FavnView.LogsViewModel
 
   attr :title, :string, required: true
   attr :status, :string, required: true
   attr :status_tone, :atom, default: :success
-  attr :window_kind_label, :string, default: "Windows"
-  attr :refresh_timeline_label, :string, default: "Refresh periods"
-  attr :refresh_cadence_label, :string, default: "Refresh cadence"
-  attr :freshness_timeline_label, :string, default: "Freshness periods"
-  attr :freshness_cadence_label, :string, default: "Freshness cadence"
-  attr :data_coverage_timeline_label, :string, default: "Data windows"
-  attr :window_range, :string, required: true
-  attr :refresh_window_range, :string, default: "No windows"
-  attr :freshness_window_range, :string, default: "No windows"
-  attr :data_coverage_window_range, :string, default: "No windows"
-  attr :active_timeline, :atom, default: :refresh
-  attr :has_freshness_timeline?, :boolean, default: false
-  attr :has_data_windows?, :boolean, default: false
+
+  attr :has_data_windows?, :boolean,
+    default: false,
+    doc: "whether the asset runs per window; decides if the rail offers Coverage"
+
   attr :can_run_asset?, :boolean, default: true
   attr :run_contexts, :list, default: []
   attr :selected_run_context, :map, default: nil
@@ -37,10 +29,6 @@ defmodule FavnView.Components.AssetDetailPage do
   attr :nav_items, :list, required: true
   attr :current_scope, :any, default: nil
   attr :operator_workspaces, :list, default: []
-  attr :timeline, :list, default: []
-  attr :refresh_timeline, :list, default: nil
-  attr :freshness_timeline, :list, default: nil
-  attr :data_coverage_timeline, :list, default: nil
   attr :active_mode, :atom, default: :overview
   attr :freshness, :map, default: nil
   attr :coverage, :any, default: nil
@@ -92,19 +80,15 @@ defmodule FavnView.Components.AssetDetailPage do
   attr :coverage_action_error, :string, default: nil
   attr :planning_coverage?, :boolean, default: false
   attr :submitting_coverage?, :boolean, default: false
-  attr :selected_window, :map, default: nil
   attr :run_config_open?, :boolean, default: false
   attr :run_config, :map, default: %{dependencies: "all", refresh: "auto"}
   attr :run_config_valid?, :boolean, default: true
   attr :submitting_window_run?, :boolean, default: false
-  attr :selected_window_error, :string, default: nil
-  attr :submitted_run_id, :string, default: nil
+  attr :run_error, :string, default: nil, doc: "why the last run submission was refused"
   attr :can_submit_runs?, :boolean, default: false
   attr :flash, :map, default: %{}
 
   def asset_detail_page(assigns) do
-    assigns = assign(assigns, :refresh_timeline, assigns.refresh_timeline || assigns.timeline)
-
     ~H"""
     <AppShell.app_shell
       title={@title}
@@ -118,26 +102,10 @@ defmodule FavnView.Components.AssetDetailPage do
     >
       <.central_view
         active_mode={@active_mode}
-        window_kind_label={@window_kind_label}
-        refresh_timeline_label={@refresh_timeline_label}
-        refresh_cadence_label={@refresh_cadence_label}
-        freshness_timeline_label={@freshness_timeline_label}
-        freshness_cadence_label={@freshness_cadence_label}
-        data_coverage_timeline_label={@data_coverage_timeline_label}
-        window_range={@window_range}
-        refresh_window_range={@refresh_window_range}
-        freshness_window_range={@freshness_window_range}
-        data_coverage_window_range={@data_coverage_window_range}
-        active_timeline={@active_timeline}
-        has_freshness_timeline?={@has_freshness_timeline?}
-        has_data_windows?={@has_data_windows?}
         can_run_asset?={@can_run_asset?}
         run_contexts={@run_contexts}
         selected_run_context={@selected_run_context}
         run_context_status={@run_context_status}
-        refresh_timeline={@refresh_timeline}
-        freshness_timeline={@freshness_timeline}
-        data_coverage_timeline={@data_coverage_timeline}
         freshness={@freshness}
         coverage={@coverage}
         coverage_policy={@coverage_policy}
@@ -162,13 +130,7 @@ defmodule FavnView.Components.AssetDetailPage do
         coverage_action_error={@coverage_action_error}
         planning_coverage?={@planning_coverage?}
         submitting_coverage?={@submitting_coverage?}
-        selected_window={@selected_window}
-        run_config_open?={@run_config_open?}
-        run_config={@run_config}
-        run_config_valid?={@run_config_valid?}
         submitting_window_run?={@submitting_window_run?}
-        selected_window_error={@selected_window_error}
-        submitted_run_id={@submitted_run_id}
         can_submit_runs?={@can_submit_runs?}
       />
       <:mode_rail>
@@ -179,15 +141,13 @@ defmodule FavnView.Components.AssetDetailPage do
       </:mode_rail>
 
       <:overlay>
-        <SelectedWindowActions.run_config_panel
+        <RunConfigDialog.run_config_dialog
           :if={@run_config_open?}
-          selected_window={@selected_window}
           has_data_windows?={@has_data_windows?}
-          active_timeline={@active_timeline}
           run_config={@run_config}
           run_config_valid?={@run_config_valid?}
           submitting_window_run?={@submitting_window_run?}
-          error={@selected_window_error}
+          error={@run_error}
           can_submit_runs?={@can_submit_runs?}
           command_resource={@rebuild_target_id}
         />
@@ -198,26 +158,10 @@ defmodule FavnView.Components.AssetDetailPage do
 
   attr :active_mode, :atom, required: true
   attr :title, :string, required: true
-  attr :window_kind_label, :string, default: "Windows"
-  attr :refresh_timeline_label, :string, default: "Refresh periods"
-  attr :refresh_cadence_label, :string, default: "Refresh cadence"
-  attr :freshness_timeline_label, :string, default: "Freshness periods"
-  attr :freshness_cadence_label, :string, default: "Freshness cadence"
-  attr :data_coverage_timeline_label, :string, default: "Data windows"
-  attr :window_range, :string, required: true
-  attr :refresh_window_range, :string, default: "No windows"
-  attr :freshness_window_range, :string, default: "No windows"
-  attr :data_coverage_window_range, :string, default: "No windows"
-  attr :active_timeline, :atom, default: :refresh
-  attr :has_freshness_timeline?, :boolean, default: false
-  attr :has_data_windows?, :boolean, default: false
   attr :can_run_asset?, :boolean, default: true
   attr :run_contexts, :list, default: []
   attr :selected_run_context, :map, default: nil
   attr :run_context_status, :atom, default: :unavailable
-  attr :refresh_timeline, :list, default: []
-  attr :freshness_timeline, :list, default: nil
-  attr :data_coverage_timeline, :list, default: nil
   attr :freshness, :map, default: nil
   attr :coverage, :any, default: nil
   attr :coverage_policy, :map, default: nil
@@ -268,13 +212,7 @@ defmodule FavnView.Components.AssetDetailPage do
   attr :coverage_action_error, :string, default: nil
   attr :planning_coverage?, :boolean, default: false
   attr :submitting_coverage?, :boolean, default: false
-  attr :selected_window, :map, default: nil
-  attr :run_config_open?, :boolean, default: false
-  attr :run_config, :map, default: %{dependencies: "all", refresh: "auto"}
-  attr :run_config_valid?, :boolean, default: true
   attr :submitting_window_run?, :boolean, default: false
-  attr :selected_window_error, :string, default: nil
-  attr :submitted_run_id, :string, default: nil
   attr :can_submit_runs?, :boolean, default: false
 
   def central_view(assigns) do
@@ -903,120 +841,6 @@ defmodule FavnView.Components.AssetDetailPage do
     end
   end
 
-  attr :window_range, :string, required: true
-  attr :window_kind_label, :string, default: "Windows"
-  attr :refresh_timeline_label, :string, default: "Refresh periods"
-  attr :refresh_cadence_label, :string, default: "Refresh cadence"
-  attr :freshness_timeline_label, :string, default: "Freshness periods"
-  attr :freshness_cadence_label, :string, default: "Freshness cadence"
-  attr :data_coverage_timeline_label, :string, default: "Data windows"
-  attr :refresh_window_range, :string, default: "No windows"
-  attr :freshness_window_range, :string, default: "No windows"
-  attr :data_coverage_window_range, :string, default: "No windows"
-  attr :active_timeline, :atom, default: :refresh
-  attr :has_freshness_timeline?, :boolean, default: false
-  attr :has_data_windows?, :boolean, default: false
-  attr :can_run_asset?, :boolean, default: true
-  attr :run_contexts, :list, default: []
-  attr :selected_run_context, :map, default: nil
-  attr :run_context_status, :atom, default: :unavailable
-  attr :refresh_timeline, :list, default: []
-  attr :freshness_timeline, :list, default: nil
-  attr :data_coverage_timeline, :list, default: nil
-  attr :freshness, :map, default: nil
-  attr :selected_window, :map, default: nil
-  attr :run_config_open?, :boolean, default: false
-  attr :run_config, :map, default: %{dependencies: "all", refresh: "auto"}
-  attr :run_config_valid?, :boolean, default: true
-  attr :submitting_window_run?, :boolean, default: false
-  attr :selected_window_error, :string, default: nil
-  attr :submitted_run_id, :string, default: nil
-  attr :can_submit_runs?, :boolean, default: false
-  attr :command_resource, :string, required: true
-
-  attr :timelines, :list,
-    default: [:refresh, :freshness, :data_coverage],
-    doc: "which timelines this page may show; a page scoped to one renders no toggle"
-
-  attr :show_freshness?, :boolean,
-    default: true,
-    doc: "off for a page that already states freshness above the strip"
-
-  def window_timeline_panel(assigns) do
-    assigns = assign(assigns, :toggles, timeline_toggles(assigns))
-    assigns = assign(assigns, :active_timeline, resolved_timeline(assigns))
-    assigns = assign(assigns, :timeline, active_timeline(assigns))
-    assigns = assign(assigns, :timeline_range, active_timeline_range(assigns))
-    assigns = assign(assigns, :timeline_label, active_timeline_label(assigns))
-    assigns = assign(assigns, :timeline_kind_label, active_timeline_kind_label(assigns))
-
-    ~H"""
-    <.panel
-      padding={:none}
-      id="window-timeline"
-      class="mx-auto w-full max-w-[120rem] p-6 sm:p-8 lg:p-10"
-      data-testid="window-timeline-panel"
-    >
-      <div class="flex flex-col gap-10">
-        <.run_context_selector
-          :if={@run_contexts != []}
-          contexts={@run_contexts}
-          selected={@selected_run_context}
-          status={@run_context_status}
-        />
-        <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-          <div>
-            <h2 class="text-xl font-medium tracking-tight">{@timeline_label}</h2>
-
-            <p class="mt-2 text-sm favn-text-muted">{@timeline_kind_label}</p>
-          </div>
-
-          <div class="flex flex-wrap items-center gap-3 self-start text-sm favn-text-muted">
-            <div :if={length(@toggles) > 1} class="join">
-              <button
-                :for={toggle <- @toggles}
-                type="button"
-                class={[
-                  "btn btn-sm join-item",
-                  (@active_timeline == toggle.id && "btn-primary btn-soft") || "btn-ghost"
-                ]}
-                phx-click="set_timeline"
-                phx-value-timeline={toggle.id}
-                data-testid={toggle.testid}
-              >
-                {toggle.label}
-              </button>
-            </div>
-
-            <span data-testid="timeline-range">{@timeline_range}</span>
-          </div>
-        </div>
-        <.freshness_summary :if={@show_freshness?} freshness={@freshness} />
-        <div class="overflow-x-auto pb-2">
-          <div class="flex min-w-[58rem] items-end justify-between gap-3 pt-3">
-            <.timeline_window
-              :for={window <- @timeline}
-              window={window}
-              selected={selected_window?(@selected_window, window)}
-              selectable?={@active_timeline != :freshness}
-            />
-          </div>
-        </div>
-
-        <SelectedWindowActions.selected_window_actions
-          :if={@active_timeline != :freshness}
-          selected_window={@selected_window}
-          can_run_asset?={@can_run_asset?}
-          submitting_window_run?={@submitting_window_run?}
-          selected_window_error={@selected_window_error}
-          submitted_run_id={@submitted_run_id}
-          can_submit_runs?={@can_submit_runs?}
-        />
-      </div>
-    </.panel>
-    """
-  end
-
   attr :contexts, :list, required: true
   attr :selected, :map, default: nil
   attr :status, :atom, required: true
@@ -1412,36 +1236,6 @@ defmodule FavnView.Components.AssetDetailPage do
       [] -> "Not declared"
       levels -> Enum.join(levels, ".")
     end
-  end
-
-  attr :freshness, :map, default: nil
-
-  def freshness_summary(assigns) do
-    ~H"""
-    <div
-      :if={@freshness}
-      class={[
-        "rounded-box border p-4",
-        freshness_panel_class(@freshness[:state])
-      ]}
-      data-testid="asset-freshness-summary"
-    >
-      <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div class="min-w-0">
-          <p class="text-sm uppercase tracking-[0.18em] favn-text-subtle">Freshness</p>
-
-          <div class="mt-1 flex flex-wrap items-center gap-2">
-            <span class={freshness_badge_class(@freshness[:state])}>
-              {freshness_state_label(@freshness[:state])}
-            </span>
-            <span class="text-sm favn-text-muted">{freshness_policy_label(@freshness)}</span>
-          </div>
-
-          <p class="mt-2 text-sm favn-text-muted">{@freshness[:explanation]}</p>
-        </div>
-      </div>
-    </div>
-    """
   end
 
   attr :freshness, :map, default: nil
@@ -2079,104 +1873,7 @@ defmodule FavnView.Components.AssetDetailPage do
   defp attempts_label(%{attempt_count: count}) when is_integer(count), do: to_string(count)
   defp attempts_label(_result), do: "Not reported"
 
-  attr :window, :map, required: true
-  attr :selected, :boolean, default: false
-  attr :selectable?, :boolean, default: true
-
-  def timeline_window(assigns) do
-    ~H"""
-    <div class="flex flex-col items-center gap-4">
-      <button
-        type="button"
-        phx-click={@selectable? && "select_window"}
-        phx-value-window-id={@window.id}
-        disabled={!@selectable?}
-        data-testid={"timeline-window-#{@window.id}"}
-        class={[
-          "flex h-32 w-9 items-center justify-center rounded-box border backdrop-blur-sm transition hover:border-primary/50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-primary",
-          timeline_window_class(@window),
-          @selected && "ring-2 ring-primary shadow-primary/40 shadow-lg"
-        ]}
-        aria-label={"#{@window.date_label}: #{timeline_label(@window.status)}"}
-        aria-pressed={to_string(@selected)}
-      >
-        <.icon name={timeline_icon(@window.status)} class="size-4" />
-      </button>
-
-      <div class={[
-        "text-center text-sm leading-tight favn-text-muted",
-        @selected && "text-primary"
-      ]}>
-        <div class="max-w-16 text-balance">{@window.label}</div>
-      </div>
-      <span :if={@selected} class="status status-primary favn-status-glow"></span>
-    </div>
-    """
-  end
-
   def sample_nav_items, do: Navigation.items(:assets)
-
-  def sample_timeline do
-    [
-      %{day: "24", month: "May", status: :success},
-      %{day: "25", month: "May", status: :success},
-      %{day: "26", month: "May", status: :success},
-      %{day: "27", month: "May", status: :success},
-      %{day: "28", month: "May", status: :warning},
-      %{day: "29", month: "May", status: :muted},
-      %{day: "30", month: "May", status: :muted},
-      %{day: "31", month: "May", status: :success},
-      %{day: "1", month: "Jun", status: :success},
-      %{day: "2", month: "Jun", status: :warning},
-      %{day: "3", month: "Jun", status: :success},
-      %{day: "4", month: "Jun", status: :success},
-      %{day: "5", month: "Jun", status: :success},
-      %{day: "6", month: "Jun", status: :success},
-      %{day: "7", month: "Jun", status: :muted},
-      %{day: "8", month: "Jun", status: :muted},
-      %{day: "9", month: "Jun", status: :success},
-      %{day: "10", month: "Jun", status: :success},
-      %{day: "11", month: "Jun", status: :success},
-      %{day: "12", month: "Jun", status: :success, current: true},
-      %{day: "13", month: "Jun", status: :success},
-      %{day: "14", month: "Jun", status: :success},
-      %{day: "15", month: "Jun", status: :success},
-      %{day: "16", month: "Jun", status: :success},
-      %{day: "17", month: "Jun", status: :success},
-      %{day: "18", month: "Jun", status: :success},
-      %{day: "19", month: "Jun", status: :success},
-      %{day: "20", month: "Jun", status: :muted},
-      %{day: "21", month: "Jun", status: :muted},
-      %{day: "22", month: "Jun", status: :success}
-    ]
-    |> Enum.map(&sample_window/1)
-  end
-
-  def muted_timeline do
-    sample_timeline()
-    |> Enum.map(&(&1 |> Map.put(:status, :muted) |> Map.delete(:current)))
-    |> List.update_at(20, &Map.put(&1, :current, true))
-  end
-
-  def selected_sample_window do
-    Enum.find(sample_timeline(), & &1[:current])
-  end
-
-  def selected_muted_window do
-    Enum.find(muted_timeline(), & &1[:current])
-  end
-
-  def non_runnable_timeline do
-    Enum.map(sample_timeline(), fn window ->
-      window
-      |> Map.put(:run_enabled?, false)
-      |> Map.put(:run_disabled_reason, :asset_has_no_window_policy)
-    end)
-  end
-
-  def selected_non_runnable_window do
-    Enum.find(non_runnable_timeline(), & &1[:current])
-  end
 
   def sample_freshness(:fresh) do
     %{
@@ -2642,9 +2339,6 @@ defmodule FavnView.Components.AssetDetailPage do
   defp value(map, key, default \\ nil) when is_map(map),
     do: Map.get(map, key, Map.get(map, Atom.to_string(key), default))
 
-  defp selected_window?(nil, _window), do: false
-  defp selected_window?(selected_window, window), do: selected_window.id == window.id
-
   defp selected_run_context?(%{id: id}, %{id: id}), do: true
   defp selected_run_context?(_selected, _context), do: false
 
@@ -2653,128 +2347,6 @@ defmodule FavnView.Components.AssetDetailPage do
   end
 
   defp run_context_policy_label(%{timezone: timezone}), do: timezone
-
-  # A single toggle is not a choice, so a page scoped to one timeline shows none.
-  # Testids stay literal rather than derived from the id, because they are the
-  # contract the tests and the browser checks address these buttons by.
-  defp timeline_toggles(assigns) do
-    [
-      %{id: :refresh, label: "Run", testid: "refresh-timeline-toggle", available?: true},
-      %{
-        id: :freshness,
-        label: "Freshness",
-        testid: "freshness-timeline-toggle",
-        available?: assigns.has_freshness_timeline?
-      },
-      %{
-        id: :data_coverage,
-        label: "Data",
-        testid: "data-coverage-timeline-toggle",
-        available?: assigns.has_data_windows?
-      }
-    ]
-    |> Enum.filter(&(&1.available? and &1.id in assigns.timelines))
-    |> Enum.map(&Map.delete(&1, :available?))
-  end
-
-  # The selection lives on the LiveView and is shared by every page, so a page that
-  # does not offer the selected timeline falls back to its own first one rather than
-  # rendering a strip its toggle cannot reach.
-  defp resolved_timeline(%{active_timeline: active, toggles: toggles}) do
-    if Enum.any?(toggles, &(&1.id == active)) do
-      active
-    else
-      case toggles do
-        [%{id: id} | _rest] -> id
-        [] -> active
-      end
-    end
-  end
-
-  defp active_timeline(%{active_timeline: :data_coverage, data_coverage_timeline: timeline})
-       when is_list(timeline), do: timeline
-
-  defp active_timeline(%{active_timeline: :freshness, freshness_timeline: timeline})
-       when is_list(timeline), do: timeline
-
-  defp active_timeline(%{refresh_timeline: timeline}), do: timeline
-
-  defp active_timeline_range(%{
-         active_timeline: :data_coverage,
-         data_coverage_window_range: range
-       }),
-       do: range
-
-  defp active_timeline_range(%{
-         active_timeline: :freshness,
-         freshness_window_range: range
-       }),
-       do: range
-
-  defp active_timeline_range(%{refresh_window_range: range}), do: range
-
-  defp active_timeline_label(%{active_timeline: :data_coverage}), do: "Data coverage timeline"
-  defp active_timeline_label(%{active_timeline: :freshness}), do: "Freshness timeline"
-  defp active_timeline_label(_assigns), do: "Run anchor timeline"
-
-  defp active_timeline_kind_label(%{
-         active_timeline: :data_coverage,
-         data_coverage_timeline_label: label
-       }),
-       do: label
-
-  defp active_timeline_kind_label(%{
-         active_timeline: :freshness,
-         freshness_cadence_label: label
-       }),
-       do: label
-
-  defp active_timeline_kind_label(%{refresh_cadence_label: label}), do: label
-
-  defp sample_window(%{month: month, day: day} = window) do
-    year = if month == "May", do: 2026, else: 2026
-    date_label = "#{month} #{day}, #{year}"
-
-    window
-    |> Map.put(:id, "#{String.downcase(month)}-#{day}-#{year}")
-    |> Map.put(:label, day)
-    |> Map.put(:date_label, date_label)
-    |> Map.put(:range_label, date_label)
-    |> Map.put(:run_enabled?, true)
-    |> Map.put(:run_disabled_reason, nil)
-    |> Map.put(:run_label, "Run this window")
-  end
-
-  # A window's border is the boundary that says which state it is in, so it owes
-  # 3:1 against the wash behind it, in both themes. The opacities are measured,
-  # not chosen, and the light theme sets them: its tone colours sit much closer in
-  # luminance to a pale wash than the dark theme's do. At the values these
-  # replaced, all four measured under 2.6.
-  defp timeline_window_class(%{status: :success}) do
-    "border-success/90 bg-success/15 text-success"
-  end
-
-  defp timeline_window_class(%{status: :warning}) do
-    "border-warning/90 bg-warning/15 text-warning"
-  end
-
-  defp timeline_window_class(%{status: :error}) do
-    "border-error/80 bg-error/15 text-error"
-  end
-
-  defp timeline_window_class(%{status: :muted}) do
-    "border-base-content/60 bg-base-content/10 favn-text-subtle"
-  end
-
-  defp timeline_icon(:success), do: "hero-check-circle"
-  defp timeline_icon(:warning), do: "hero-clock"
-  defp timeline_icon(:error), do: "hero-x-circle"
-  defp timeline_icon(:muted), do: "hero-minus-circle"
-
-  defp timeline_label(:success), do: "fresh"
-  defp timeline_label(:warning), do: "running"
-  defp timeline_label(:error), do: "failed"
-  defp timeline_label(:muted), do: "unknown"
 
   defp freshness_state_label(:fresh), do: "Fresh"
   defp freshness_state_label(:stale), do: "Stale"
@@ -2785,11 +2357,6 @@ defmodule FavnView.Components.AssetDetailPage do
   defp freshness_badge_class(:stale), do: "badge badge-warning badge-soft badge-sm"
   defp freshness_badge_class(:always_run), do: "badge badge-info badge-soft badge-sm"
   defp freshness_badge_class(_state), do: "badge badge-neutral badge-soft badge-sm"
-
-  defp freshness_panel_class(:fresh), do: "border-success/20 bg-success/10"
-  defp freshness_panel_class(:stale), do: "border-warning/25 bg-warning/10"
-  defp freshness_panel_class(:always_run), do: "border-info/20 bg-info/10"
-  defp freshness_panel_class(_state), do: "border-base-content/10 bg-base-content/[0.035]"
 
   defp freshness_policy_label(%{policy: %{label: label}}) when is_binary(label), do: label
   defp freshness_policy_label(%{"policy" => %{"label" => label}}) when is_binary(label), do: label

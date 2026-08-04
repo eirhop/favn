@@ -38,14 +38,11 @@ defmodule FavnView.AssetDetailLive do
         selected_run_id: nil,
         selected_run: nil,
         documentation: nil,
-        active_timeline: :refresh,
-        selected_window: nil,
         run_config_open?: false,
         run_config: default_run_config(),
         run_config_valid?: true,
         submitting_window_run?: false,
-        submitted_run_id: nil,
-        selected_window_error: nil,
+        run_error: nil,
         coverage_plan: nil,
         coverage_windows: nil,
         coverage_action_error: nil,
@@ -78,13 +75,11 @@ defmodule FavnView.AssetDetailLive do
           run_context_id: run_context_id,
           asset_state: asset_state,
           asset: asset_from_state(asset_state),
-          selected_window: nil,
           run_config_open?: false,
           run_config: default_run_config(),
           run_config_valid?: true,
           submitting_window_run?: false,
-          submitted_run_id: nil,
-          selected_window_error: nil,
+          run_error: nil,
           coverage_plan: nil,
           coverage_windows: nil,
           coverage_action_error: nil,
@@ -243,102 +238,28 @@ defmodule FavnView.AssetDetailLive do
     end
   end
 
-  def handle_event("select_window", _params, %{assigns: %{active_timeline: :freshness}} = socket),
-    do: {:noreply, socket}
-
-  def handle_event("select_window", %{"window-id" => window_id}, socket) do
-    current = socket.assigns.selected_window
-
-    selected_window =
-      socket.assigns
-      |> Map.get(:asset)
-      |> asset_timeline(socket.assigns.active_timeline)
-      |> Enum.find(&(&1.id == window_id))
-
-    cond do
-      current && current.id == window_id ->
-        {:noreply,
-         assign(socket,
-           selected_window: nil,
-           run_config_open?: false,
-           run_config: default_run_config(),
-           run_config_valid?: true,
-           selected_window_error: nil,
-           submitted_run_id: nil
-         )}
-
-      selected_window ->
-        {:noreply,
-         assign(socket,
-           selected_window: selected_window,
-           run_config_open?: false,
-           run_config: default_run_config(),
-           run_config_valid?: true,
-           selected_window_error: nil,
-           submitted_run_id: nil
-         )}
-
-      true ->
-        {:noreply, socket}
-    end
-  end
-
-  def handle_event("select_window", _params, socket), do: {:noreply, socket}
-
-  def handle_event("set_timeline", %{"timeline" => timeline}, socket)
-      when timeline in ["refresh", "freshness", "data_coverage"] do
-    {:noreply,
-     assign(socket,
-       active_timeline: timeline_atom(timeline),
-       selected_window: nil,
-       run_config_open?: false,
-       run_config: default_run_config(),
-       run_config_valid?: true,
-       selected_window_error: nil,
-       submitted_run_id: nil
-     )}
-  end
-
-  def handle_event("set_timeline", _params, socket), do: {:noreply, socket}
-
-  def handle_event(
-        "open_run_config",
-        _params,
-        %{assigns: %{active_timeline: :freshness}} = socket
-      ) do
-    {:noreply, assign(socket, :selected_window_error, "Freshness periods are read-only.")}
-  end
-
+  # The dialog opens on the period the asset is due for, which the backend reports.
+  # Nothing on screen picks a period any more, so there is no selection to reconcile.
   def handle_event("open_run_config", _params, socket) do
-    %{asset: asset, selected_window: selected_window} = socket.assigns
+    %{asset: asset} = socket.assigns
 
     cond do
       !socket.assigns.can_submit_runs? ->
-        {:noreply,
-         assign(socket, :selected_window_error, "Operator role required to submit runs.")}
+        {:noreply, assign(socket, :run_error, "Operator role required to submit runs.")}
 
       is_nil(asset) or !asset.can_run_asset? ->
-        {:noreply, assign(socket, :selected_window_error, "This asset cannot be run.")}
-
-      selected_window && !selected_window.run_enabled? ->
-        {:noreply,
-         assign(
-           socket,
-           :selected_window_error,
-           disabled_reason_label(selected_window.run_disabled_reason)
-         )}
+        {:noreply, assign(socket, :run_error, "This asset cannot be run.")}
 
       true ->
-        run_config = context_run_config(asset, socket.assigns.active_timeline, selected_window)
-        error = validate_run_config(run_config, selected_window)
+        run_config = asset_run_config(asset)
+        error = validate_run_config(run_config)
 
         {:noreply,
          assign(socket,
            run_config_open?: true,
            run_config: run_config,
            run_config_valid?: is_nil(error),
-           selected_window_error: error,
-           submitted_run_id: nil
+           run_error: error
          )}
     end
   end
@@ -349,31 +270,18 @@ defmodule FavnView.AssetDetailLive do
 
   def handle_event("change_run_config", params, socket) do
     run_config = run_config_from_params(params, socket.assigns.run_config)
-    error = validate_run_config(run_config, socket.assigns.selected_window)
+    error = validate_run_config(run_config)
 
     {:noreply,
      assign(socket,
        run_config: run_config,
        run_config_valid?: is_nil(error),
-       selected_window_error: error
+       run_error: error
      )}
   end
 
-  def handle_event(
-        "run_selected_window",
-        _params,
-        %{assigns: %{active_timeline: :freshness}} = socket
-      ) do
-    {:noreply,
-     assign(socket,
-       run_config_open?: false,
-       submitting_window_run?: false,
-       selected_window_error: "Freshness periods are read-only."
-     )}
-  end
-
-  def handle_event("run_selected_window", params, socket) do
-    %{asset: asset, selected_window: selected_window} = socket.assigns
+  def handle_event("submit_run", params, socket) do
+    %{asset: asset} = socket.assigns
 
     run_config = run_config_from_params(params, socket.assigns.run_config)
 
@@ -382,40 +290,32 @@ defmodule FavnView.AssetDetailLive do
         {:noreply,
          assign(socket,
            run_config: run_config,
-           selected_window_error: "Operator role required to submit runs."
+           run_error: "Operator role required to submit runs."
          )}
 
       is_nil(asset) or !asset.can_run_asset? ->
-        {:noreply, assign(socket, :selected_window_error, "This asset cannot be run.")}
+        {:noreply, assign(socket, :run_error, "This asset cannot be run.")}
 
-      selected_window && !selected_window.run_enabled? ->
-        {:noreply,
-         assign(
-           socket,
-           :selected_window_error,
-           disabled_reason_label(selected_window.run_disabled_reason)
-         )}
-
-      error = validate_run_config(run_config, selected_window) ->
+      error = validate_run_config(run_config) ->
         {:noreply,
          assign(socket,
            run_config: run_config,
            run_config_valid?: false,
            submitting_window_run?: false,
-           selected_window_error: error
+           run_error: error
          )}
 
       true ->
-        submit_asset_run(socket, asset, selected_window, run_config, params)
+        submit_asset_run(socket, asset, run_config, params)
     end
   end
 
-  defp submit_asset_run(socket, asset, selected_window, run_config, params) do
+  defp submit_asset_run(socket, asset, run_config, params) do
     attempt =
       CommandAttempt.next(
         socket.assigns.run_attempt,
         "asset_run_submit",
-        {asset.target_id, selected_window, run_config},
+        {asset.target_id, run_config},
         params
       )
 
@@ -424,12 +324,11 @@ defmodule FavnView.AssetDetailLive do
         run_config: run_config,
         run_config_valid?: true,
         submitting_window_run?: true,
-        selected_window_error: nil,
-        submitted_run_id: nil,
+        run_error: nil,
         run_attempt: attempt
       )
 
-    case submit_asset_window_run(socket, asset, selected_window, run_config, attempt.key) do
+    case submit_asset_window_run(socket, asset, run_config, attempt.key) do
       {:ok, run_id, :single} ->
         {:noreply,
          socket
@@ -451,13 +350,14 @@ defmodule FavnView.AssetDetailLive do
         {:noreply,
          assign(socket,
            submitting_window_run?: false,
-           selected_window_error: submit_error_label(reason),
+           run_error: submit_error_label(reason),
            run_attempt: attempt
          )}
     end
   end
 
-  defp submit_asset_window_run(socket, asset, nil, %{to: to} = run_config, idempotency_key)
+  # A "To" period turns one run into a backfill over the inclusive range.
+  defp submit_asset_window_run(socket, asset, %{to: to} = run_config, idempotency_key)
        when is_binary(to) and to != "" do
     request = %{
       range: range_request(run_config),
@@ -477,10 +377,10 @@ defmodule FavnView.AssetDetailLive do
     end
   end
 
-  defp submit_asset_window_run(socket, asset, selected_window, run_config, idempotency_key) do
+  defp submit_asset_window_run(socket, asset, run_config, idempotency_key) do
     request = %{
       run_context_id: asset.selected_run_context && asset.selected_run_context.id,
-      selection: timeline_selection(selected_window, run_config),
+      selection: timeline_selection(run_config),
       dependency_mode: run_config.dependencies,
       refresh_mode: run_config.refresh
     }
@@ -505,18 +405,6 @@ defmodule FavnView.AssetDetailLive do
       title={@asset.title}
       status={@asset.status}
       status_tone={@asset.status_tone}
-      window_kind_label={@asset.window_kind_label}
-      refresh_timeline_label={@asset.refresh_timeline_label}
-      refresh_cadence_label={@asset.refresh_cadence_label}
-      freshness_timeline_label={@asset.freshness_timeline_label}
-      freshness_cadence_label={@asset.freshness_cadence_label}
-      data_coverage_timeline_label={@asset.data_coverage_timeline_label}
-      window_range={@asset.window_range}
-      refresh_window_range={@asset.refresh_window_range}
-      freshness_window_range={@asset.freshness_window_range}
-      data_coverage_window_range={@asset.data_coverage_window_range}
-      active_timeline={@active_timeline}
-      has_freshness_timeline?={@asset.has_freshness_timeline?}
       has_data_windows?={@asset.has_data_windows?}
       can_run_asset?={@asset.can_run_asset?}
       run_contexts={@asset.run_contexts}
@@ -525,9 +413,6 @@ defmodule FavnView.AssetDetailLive do
       nav_items={@nav_items}
       current_scope={@current_scope}
       operator_workspaces={@operator_workspaces}
-      refresh_timeline={@asset.refresh_timeline}
-      freshness_timeline={@asset.freshness_timeline}
-      data_coverage_timeline={@asset.data_coverage_timeline}
       active_mode={active_mode(@live_action)}
       asset_id={@asset_id}
       runs={@asset.runs}
@@ -552,13 +437,11 @@ defmodule FavnView.AssetDetailLive do
       coverage_action_error={@coverage_action_error}
       planning_coverage?={@planning_coverage?}
       submitting_coverage?={@submitting_coverage?}
-      selected_window={@selected_window}
       run_config_open?={@run_config_open?}
       run_config={@run_config}
       run_config_valid?={@run_config_valid?}
       submitting_window_run?={@submitting_window_run?}
-      selected_window_error={@selected_window_error}
-      submitted_run_id={@submitted_run_id}
+      run_error={@run_error}
       can_submit_runs?={@can_submit_runs?}
       flash={@flash}
     />
@@ -694,16 +577,6 @@ defmodule FavnView.AssetDetailLive do
   end
 
   defp asset_from_detail(detail, asset_id) do
-    refresh_timeline = Enum.map(detail.refresh_timeline, &timeline_window/1)
-
-    freshness_timeline =
-      detail[:freshness_timeline] && Enum.map(detail.freshness_timeline, &timeline_window/1)
-
-    data_coverage_timeline =
-      detail.data_coverage_timeline && Enum.map(detail.data_coverage_timeline, &timeline_window/1)
-
-    timeline = refresh_timeline
-
     run_contexts =
       detail
       |> Map.get(:run_contexts, [])
@@ -728,7 +601,7 @@ defmodule FavnView.AssetDetailLive do
       selected_run_context: Map.get(detail, :selected_run_context),
       run_context_status: Map.get(detail, :run_context_status, :unavailable),
       has_data_windows?: detail.has_data_windows?,
-      has_freshness_timeline?: Map.get(detail, :has_freshness_timeline?, false),
+      default_run_config: Map.get(detail, :default_run_config),
       title: detail.name || asset_name(detail),
       status: headline.label,
       status_tone: headline.tone,
@@ -737,21 +610,6 @@ defmodule FavnView.AssetDetailLive do
       coverage_policy: Map.get(detail, :coverage_policy),
       compatibility: compatibility,
       assurance: Map.get(detail, :assurance),
-      window_kind_label: window_kind_label(Map.get(detail, :window)),
-      refresh_timeline_label: Map.get(detail, :refresh_timeline_label, "Refresh periods"),
-      refresh_cadence_label: Map.get(detail, :refresh_cadence_label, "Refresh cadence"),
-      freshness_timeline_label: Map.get(detail, :freshness_timeline_label, "Freshness periods"),
-      freshness_cadence_label: Map.get(detail, :freshness_cadence_label, "Freshness cadence"),
-      data_coverage_timeline_label:
-        Map.get(detail, :data_coverage_timeline_label, "Data windows"),
-      window_range: window_range(timeline),
-      refresh_window_range: window_range(refresh_timeline),
-      freshness_window_range: window_range(freshness_timeline || []),
-      data_coverage_window_range: window_range(data_coverage_timeline || []),
-      refresh_timeline: refresh_timeline,
-      freshness_timeline: freshness_timeline,
-      data_coverage_timeline: data_coverage_timeline,
-      timeline: timeline,
       runs: Enum.map(Map.get(detail, :runs, []), &run_entry(&1, asset_id)),
       relation: Map.get(detail, :relation),
       type: Map.get(detail, :type),
@@ -832,54 +690,6 @@ defmodule FavnView.AssetDetailLive do
 
   defp run_context_path(asset_id, run_context_id) do
     ~p"/assets/#{asset_id}?#{[run_context: run_context_id]}"
-  end
-
-  defp timeline_window(window) do
-    %{
-      id: window.id,
-      label: window.label,
-      value: Map.get(window, :value),
-      kind: Map.get(window, :kind),
-      source: Map.get(window, :source),
-      timezone: Map.get(window, :timezone),
-      date: window.date,
-      date_label: window.range,
-      range_label: window.range,
-      status: timeline_status(window.status),
-      status_label: timeline_status_label(window.status),
-      latest_run_id: window.latest_run_id,
-      latest_run_status: window.latest_run_status,
-      latest_run_at: window.latest_run_at,
-      run_enabled?: window.run_enabled?,
-      run_disabled_reason: window.run_disabled_reason,
-      run_label: window.run_label || "Run asset",
-      default_run_config: Map.get(window, :default_run_config, %{}),
-      latest_run_config: Map.get(window, :latest_run_config)
-    }
-  end
-
-  defp timeline_status(:healthy), do: :success
-  defp timeline_status(:fresh), do: :success
-  defp timeline_status(:covered), do: :success
-  defp timeline_status(:running), do: :warning
-  defp timeline_status(:failed), do: :error
-  defp timeline_status(:stale), do: :warning
-  defp timeline_status(:missing), do: :muted
-  defp timeline_status(_status), do: :muted
-
-  defp timeline_status_label(:fresh), do: "Fresh"
-  defp timeline_status_label(:covered), do: "Covered"
-  defp timeline_status_label(:missing), do: "Missing"
-  defp timeline_status_label(:stale), do: "Stale"
-  defp timeline_status_label(:failed), do: "Failed"
-  defp timeline_status_label(:running), do: "Running"
-  defp timeline_status_label(_status), do: "Unknown"
-
-  defp window_range([]), do: "No windows"
-
-  defp window_range([first | _] = timeline) do
-    last = List.last(timeline)
-    "#{first.label} - #{last.label}"
   end
 
   defp asset_name(detail) do
@@ -1156,44 +966,12 @@ defmodule FavnView.AssetDetailLive do
   defp coverage_root_run_id(plan),
     do: "run_coverage_" <> String.slice(plan.plan_hash, 0, 40)
 
-  defp window_kind_label(%{kind: kind}), do: window_kind_label(kind)
-  defp window_kind_label(%{"kind" => kind}), do: window_kind_label(kind)
-  defp window_kind_label(kind) when kind in [:hour, "hour"], do: "Hourly windows"
-  defp window_kind_label(kind) when kind in [:day, "day"], do: "Daily windows"
-  defp window_kind_label(kind) when kind in [:month, "month"], do: "Monthly windows"
-  defp window_kind_label(kind) when kind in [:year, "year"], do: "Yearly windows"
-  defp window_kind_label(_kind), do: "Windows"
+  # The period the asset is due for, as the backend reports it. An asset with no
+  # window policy has none, and the dialog offers no period fields for it.
+  defp asset_run_config(%{default_run_config: config}) when is_map(config),
+    do: config_from_backend(config)
 
-  defp timeline_atom("refresh"), do: :refresh
-  defp timeline_atom("freshness"), do: :freshness
-  defp timeline_atom("data_coverage"), do: :data_coverage
-
-  defp asset_timeline(nil, _active_timeline), do: []
-  defp asset_timeline(asset, :refresh), do: Map.get(asset, :refresh_timeline, [])
-  defp asset_timeline(asset, :freshness), do: Map.get(asset, :freshness_timeline, []) || []
-
-  defp asset_timeline(asset, :data_coverage),
-    do: Map.get(asset, :data_coverage_timeline, []) || []
-
-  defp context_run_config(asset, active_timeline, nil) do
-    asset
-    |> asset_timeline(active_timeline)
-    |> List.last()
-    |> selected_run_config()
-  end
-
-  defp context_run_config(_asset, _active_timeline, selected_window),
-    do: selected_run_config(selected_window)
-
-  defp selected_run_config(nil), do: default_run_config()
-
-  defp selected_run_config(%{latest_run_config: config}) when is_map(config) do
-    config_from_backend(config)
-  end
-
-  defp selected_run_config(%{default_run_config: config}) when is_map(config) do
-    config_from_backend(config)
-  end
+  defp asset_run_config(_asset), do: default_run_config()
 
   defp config_from_backend(config) do
     %{
@@ -1238,8 +1016,10 @@ defmodule FavnView.AssetDetailLive do
   defp source_config_value("data_coverage_timeline"), do: "data_coverage_timeline"
   defp source_config_value(_source), do: nil
 
-  defp timeline_selection(nil, %{source: source, kind: kind, value: value, timezone: timezone})
-       when is_binary(source) and source != nil and is_binary(kind) and kind != "" and
+  # An asset with no period to run submits no selection, and the backend plans it for
+  # whatever period its own policy says is due.
+  defp timeline_selection(%{source: source, kind: kind, value: value, timezone: timezone})
+       when is_binary(source) and is_binary(kind) and kind != "" and
               is_binary(value) and value != "" do
     %{
       source: source,
@@ -1250,18 +1030,7 @@ defmodule FavnView.AssetDetailLive do
     }
   end
 
-  defp timeline_selection(nil, _run_config), do: nil
-
-  defp timeline_selection(window, _run_config) do
-    %{
-      source: window.source,
-      id: window.id,
-      kind: window.kind,
-      value: window.value,
-      timezone: window.timezone,
-      run_id: window.latest_run_id
-    }
-  end
+  defp timeline_selection(_run_config), do: nil
 
   defp range_request(%{kind: kind, value: from, to: to, timezone: timezone}) do
     %{kind: kind, from: from, to: to, timezone: timezone}
@@ -1307,7 +1076,7 @@ defmodule FavnView.AssetDetailLive do
 
   defp run_config_from_params(_params, current_config), do: current_config || default_run_config()
 
-  defp validate_run_config(config, selected_window) do
+  defp validate_run_config(config) do
     cond do
       config.dependencies not in @dependency_choices ->
         "Dependency choice is invalid."
@@ -1318,19 +1087,14 @@ defmodule FavnView.AssetDetailLive do
       config.dependencies == "none" and config.refresh == "force_selected_upstream" ->
         "force_selected_upstream requires dependencies=all."
 
-      is_nil(selected_window) and window_context_requested?(config) and
-          config.source not in @source_choices ->
+      window_context_requested?(config) and config.source not in @source_choices ->
         "Window source is invalid."
 
-      is_nil(selected_window) and window_context_requested?(config) and
-          config.kind not in @window_kind_choices ->
+      window_context_requested?(config) and config.kind not in @window_kind_choices ->
         "Window kind is invalid."
 
-      is_nil(selected_window) and window_context_requested?(config) and blank?(config.value) ->
+      window_context_requested?(config) and blank?(config.value) ->
         "Window range start is required."
-
-      is_nil(selected_window) and range_requested?(config) and blank?(config.to) ->
-        "Window range end is required."
 
       window_context_requested?(config) and not valid_timezone?(config.timezone) ->
         "Timezone is invalid."
@@ -1342,8 +1106,6 @@ defmodule FavnView.AssetDetailLive do
 
   defp window_context_requested?(config),
     do: not blank?(Map.get(config, :value)) or not blank?(Map.get(config, :to))
-
-  defp range_requested?(config), do: not blank?(Map.get(config, :to))
 
   defp blank?(value), do: not is_binary(value) or String.trim(value) == ""
   defp valid_timezone?(value) when is_binary(value), do: String.match?(value, @timezone_pattern)
@@ -1357,10 +1119,6 @@ defmodule FavnView.AssetDetailLive do
   end
 
   defp asset_error_message({:error, _reason}), do: "Backend unavailable. Try again later."
-
-  defp disabled_reason_label(:asset_has_no_window_policy), do: "This asset has no window policy."
-  defp disabled_reason_label(:invalid_window), do: "This window cannot be run."
-  defp disabled_reason_label(_reason), do: "This window is not runnable."
 
   defp submit_error_label(:invalid_asset_target), do: "Asset target is no longer available."
   defp submit_error_label({:invalid_window_id, _reason}), do: "Window id is invalid."

@@ -6,54 +6,42 @@ defmodule FavnView.Components.AssetDetailPageTest do
   alias FavnView.Components.AssetDetailPage
   alias FavnView.AssetDetailLive
 
-  test "renders calendar freshness separately from actionable run and data timelines" do
-    html =
-      render_component(&AssetDetailPage.window_timeline_panel/1,
-        window_kind_label: "Monthly windows",
-        refresh_timeline_label: "Monthly run anchors",
-        refresh_cadence_label: "Monthly run anchors Europe/Oslo",
-        freshness_timeline_label: "Daily freshness periods",
-        freshness_cadence_label: "Daily freshness Europe/Oslo",
-        data_coverage_timeline_label: "Monthly data windows",
-        window_range: "Jun 2026 - Jul 2026",
-        refresh_window_range: "Jun 2026 - Jul 2026",
-        freshness_window_range: "Jul 16 - Jul 17",
-        data_coverage_window_range: "Jun 2026 - Jul 2026",
-        active_timeline: :freshness,
-        has_freshness_timeline?: true,
-        has_data_windows?: true,
-        refresh_timeline: [],
-        freshness_timeline: [freshness_window()],
-        data_coverage_timeline: [],
-        freshness: nil
-      )
-
-    assert html =~ "Freshness timeline"
-    assert html =~ "Daily freshness Europe/Oslo"
-    assert html =~ ~s(data-testid="freshness-timeline-toggle")
-    assert html =~ ~s(data-testid="refresh-timeline-toggle")
-    assert html =~ ~s(data-testid="data-coverage-timeline-toggle")
-    assert html =~ ~s(disabled)
-    refute html =~ ~s(data-testid="selected-window-actions")
-    refute html =~ ~s(phx-click="select_window")
-  end
-
-  test "rejects forged run events while the read-only freshness timeline is active" do
+  # A disabled button is a hint, not a guard: the event can still arrive from a forged
+  # message, so both events check the permission themselves rather than trusting that
+  # the control that sends them was rendered enabled.
+  test "refuses a forged run event from someone who cannot submit runs" do
     socket = %Phoenix.LiveView.Socket{
-      assigns: %{__changed__: %{}, active_timeline: :freshness}
+      assigns: %{
+        __changed__: %{},
+        can_submit_runs?: false,
+        run_config: %{},
+        asset: %{can_run_asset?: true, default_run_config: nil}
+      }
     }
 
-    assert {:noreply, open_socket} =
-             AssetDetailLive.handle_event("open_run_config", %{}, socket)
+    assert {:noreply, open_socket} = AssetDetailLive.handle_event("open_run_config", %{}, socket)
+    assert open_socket.assigns.run_error == "Operator role required to submit runs."
+    refute open_socket.assigns[:run_config_open?]
 
-    assert open_socket.assigns.selected_window_error == "Freshness periods are read-only."
+    assert {:noreply, submit_socket} = AssetDetailLive.handle_event("submit_run", %{}, socket)
+    assert submit_socket.assigns.run_error == "Operator role required to submit runs."
+  end
 
-    assert {:noreply, submit_socket} =
-             AssetDetailLive.handle_event("run_selected_window", %{}, socket)
+  test "refuses a forged run event for an asset that cannot be run" do
+    socket = %Phoenix.LiveView.Socket{
+      assigns: %{
+        __changed__: %{},
+        can_submit_runs?: true,
+        run_config: %{},
+        asset: %{can_run_asset?: false, default_run_config: nil}
+      }
+    }
 
-    assert submit_socket.assigns.selected_window_error == "Freshness periods are read-only."
-    refute submit_socket.assigns.run_config_open?
-    refute submit_socket.assigns.submitting_window_run?
+    assert {:noreply, open_socket} = AssetDetailLive.handle_event("open_run_config", %{}, socket)
+    assert open_socket.assigns.run_error == "This asset cannot be run."
+
+    assert {:noreply, submit_socket} = AssetDetailLive.handle_event("submit_run", %{}, socket)
+    assert submit_socket.assigns.run_error == "This asset cannot be run."
   end
 
   test "ignores duplicate missing-coverage submissions while one is in flight" do
@@ -398,15 +386,6 @@ defmodule FavnView.Components.AssetDetailPageTest do
       native_type: to_string(type),
       nullable?: false,
       nullability_observed?: true
-    }
-  end
-
-  defp freshness_window do
-    %{
-      id: "freshness:day:2026-07-17",
-      label: "Jul 17",
-      date_label: "Jul 17, 2026",
-      status: :success
     }
   end
 end

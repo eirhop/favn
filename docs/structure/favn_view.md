@@ -65,17 +65,26 @@ Ownership rules:
   expansion, or backfill state in the UI. The asset form may reject incompatible
   choices immediately, but the orchestrator remains authoritative for forged
   events and non-browser callers.
-- Asset detail renders orchestrator-owned run-anchor, data-coverage, and calendar
-  freshness timelines as distinct views. Calendar freshness periods are
-  read-only; the view must never translate one into pipeline anchor or exact
-  data-window submission intent. When the orchestrator reports multiple pipeline
-  run contexts, the view keeps the selected stable context id in the asset route
-  and includes it in run requests; run actions stay disabled until one is selected.
+- Asset detail is one LiveView with `live_action` sub-pages, so moving between
+  Overview, Runs, Coverage, Documentation, and Diagnostics patches rather than
+  remounts. Each sub-page loads only what it renders; coverage and documentation are
+  read when their own page opens.
+- Asset detail submits a run through one dialog, prefilled from the orchestrator's
+  reported due period. The view does not derive that period, and offers period fields
+  only for an asset the orchestrator reports as windowed. When the orchestrator
+  reports multiple pipeline run contexts, the view keeps the selected stable context
+  id in the asset route and includes it in run requests; run actions stay disabled
+  until one is selected.
+- Asset coverage renders the orchestrator's expected windows as a calendar whose grain
+  and navigation bounds come from `FavnView.CoverageCalendar`. The view owns which
+  unit fills one screen per grain; it does not compute which windows exist, how many a
+  period holds across a clock change, or whether one is covered.
 - Asset catalogue and detail render the orchestrator-owned target compatibility
-  status independently from health, freshness, and coverage. The detail page may
-  present the bounded reason, structured diff, generation, and fingerprints, and
-  must disable ordinary run/backfill actions when `blocks_writes?` is true. It
-  does not reclassify compatibility from manifest or physical target metadata.
+  status independently from health, freshness, and coverage. Diagnostics states the
+  verdict and the fix in operator words and keeps the bounded reason, structured diff,
+  generation, and fingerprints reachable behind disclosures. It must disable ordinary
+  run/backfill actions when `blocks_writes?` is true, and does not reclassify
+  compatibility from manifest or physical target metadata.
 - Operator run cancellation controls must call the public `FavnOrchestrator`
   facade only. UI state may disable buttons, show confirmations, and map stable
   error atoms to labels, but cancellation lifecycle, audit, idempotency, runner

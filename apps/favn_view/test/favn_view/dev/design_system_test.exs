@@ -8,6 +8,7 @@ defmodule FavnView.Dev.DesignSystemTest do
   alias FavnView.Dev.DesignSystem.Catalogue
   alias FavnView.Dev.DesignSystem.Entry
   alias FavnView.Dev.DesignSystem.Example
+  alias FavnView.Dev.DesignSystem.Examples
   alias FavnView.Dev.DesignSystem.Generated
   alias FavnView.Dev.DesignSystem.Query
   alias FavnView.Dev.DesignSystem.Render
@@ -66,6 +67,21 @@ defmodule FavnView.Dev.DesignSystemTest do
         end
 
       assert failures == [], "these examples raised:\n\n" <> Enum.join(failures, "\n\n")
+    end
+
+    # The catalogue drops an example key that names no component, so deleting a
+    # component leaves its examples behind with nothing to say they are orphaned.
+    test "every curated example key names a component that exists" do
+      ids = DesignSystem.entries() |> Enum.map(& &1.id) |> MapSet.new()
+
+      orphans =
+        Examples.covered()
+        |> MapSet.difference(ids)
+        |> MapSet.to_list()
+        |> Enum.sort()
+
+      assert orphans == [],
+             "these example keys name no component:\n\n" <> Enum.join(orphans, "\n")
     end
 
     test "the element library is covered" do

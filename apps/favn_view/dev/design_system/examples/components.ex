@@ -19,8 +19,8 @@ defmodule FavnView.Dev.DesignSystem.Examples.Components do
   alias FavnView.Components.Navigation
   alias FavnView.Dev.DesignSystem.Example
   alias FavnView.Dev.DesignSystem.Fixtures
+  alias FavnView.Dev.DesignSystem.Fixtures.RunConfig
   alias FavnView.Dev.DesignSystem.Fixtures.Schedules
-  alias FavnView.Dev.DesignSystem.Fixtures.Timeline
 
   @doc """
   Every curated section example, keyed by catalogue entry id.
@@ -33,7 +33,7 @@ defmodule FavnView.Dev.DesignSystem.Examples.Components do
     |> Map.merge(workspace())
     |> Map.merge(logs())
     |> Map.merge(schedules())
-    |> Map.merge(window_actions())
+    |> Map.merge(run_config_dialog())
   end
 
   defp shell do
@@ -332,121 +332,66 @@ defmodule FavnView.Dev.DesignSystem.Examples.Components do
     }
   end
 
-  defp window_actions do
-    refresh = List.last(Timeline.refresh_timeline())
-    failed = Enum.find(Timeline.refresh_timeline(), &(&1.status == :error))
-    data = List.last(Timeline.data_coverage_timeline())
+  defp run_config_dialog do
+    base = %{
+      has_data_windows?: true,
+      can_submit_runs?: true,
+      command_resource: "asset:customer_orders_daily",
+      run_config: RunConfig.default_run_config()
+    }
 
     %{
-      "selected_window_actions/selected_window_actions" => [
+      "run_config_dialog/run_config_dialog" => [
         Example.attrs(
-          :no_selection_full_refresh,
-          %{
-            selected_window: nil,
-            has_data_windows?: false,
-            command_resource: "asset:customer_orders_daily",
-            run_config: Timeline.full_refresh_run_config()
-          },
-          "An asset with no windows can only be refreshed whole."
+          :windowed,
+          base,
+          "A windowed asset opens on the period it is due for, so agreeing with it is one click."
         ),
-        Example.attrs(:no_selection_windowed, %{
-          selected_window: nil,
-          has_data_windows?: true,
-          active_timeline: :refresh,
-          command_resource: "asset:customer_orders_daily",
-          run_config: Timeline.default_run_config()
-        }),
-        Example.attrs(:selected_refresh_period, %{
-          selected_window: refresh,
-          has_data_windows?: true,
-          active_timeline: :refresh,
-          command_resource: "asset:customer_orders_daily",
-          run_config: Timeline.default_run_config()
-        }),
-        Example.attrs(:selected_data_window, %{
-          selected_window: data,
-          has_data_windows?: true,
-          active_timeline: :data_coverage,
-          command_resource: "asset:customer_orders_daily",
-          run_config: Timeline.run_config(:data_coverage_timeline, :day, "2026-06-12")
-        }),
         Example.attrs(
-          :run_config_open,
-          %{
-            selected_window: nil,
-            has_data_windows?: true,
-            active_timeline: :refresh,
-            run_config_open?: true,
-            command_resource: "asset:customer_orders_daily",
-            run_config: Timeline.default_run_config()
-          },
-          "The editable form, with no window selected."
+          :full_refresh,
+          Map.merge(base, %{
+            has_data_windows?: false,
+            run_config: RunConfig.full_refresh_run_config()
+          }),
+          "An asset with no window policy is offered no period: it replaces its whole " <>
+            "relation on every run."
         ),
         Example.attrs(
           :prefilled_from_failed_run,
-          %{
-            selected_window: failed,
-            has_data_windows?: true,
-            active_timeline: :refresh,
-            run_config_open?: true,
-            command_resource: "asset:customer_orders_daily",
-            run_config:
-              Timeline.run_config(:refresh_timeline, :day, "2026-06-10", "none", "force_all")
-          },
-          "Retrying a failure prefills the config that failure used."
+          Map.put(
+            base,
+            :run_config,
+            RunConfig.run_config(:refresh_timeline, :day, "2026-06-10", "none", "force_all")
+          ),
+          "Retrying a failure prefills the configuration that failure used, so the summary " <>
+            "lines above the advanced section already read \"This asset only\" and \"Force\"."
         ),
-        Example.attrs(:submitting, %{
-          selected_window: refresh,
-          has_data_windows?: true,
-          submitting_window_run?: true,
-          command_resource: "asset:customer_orders_daily",
-          run_config: Timeline.default_run_config()
-        }),
-        Example.attrs(:submitted, %{
-          selected_window: refresh,
-          has_data_windows?: true,
-          submitted_run_id: "run_01HZ",
-          command_resource: "asset:customer_orders_daily",
-          run_config: Timeline.default_run_config()
-        }),
-        Example.attrs(:submit_error, %{
-          selected_window: refresh,
-          has_data_windows?: true,
-          selected_window_error: "Could not submit run.",
-          command_resource: "asset:customer_orders_daily",
-          run_config: Timeline.default_run_config()
-        }),
+        Example.attrs(
+          :submitting,
+          Map.put(base, :submitting_window_run?, true),
+          "Every control locks while the submission is in flight, so a second click cannot " <>
+            "queue a second run."
+        ),
         Example.attrs(
           :invalid_config,
-          %{
-            selected_window: refresh,
-            has_data_windows?: true,
-            run_config_open?: true,
+          Map.merge(base, %{
             run_config_valid?: false,
-            selected_window_error: "force_selected_upstream requires dependencies=all.",
-            command_resource: "asset:customer_orders_daily",
+            error: "force_selected_upstream requires dependencies=all.",
             run_config:
-              Timeline.run_config(
+              RunConfig.run_config(
                 :refresh_timeline,
                 :day,
                 "2026-06-12",
                 "none",
                 "force_selected_upstream"
               )
-          },
-          "An incompatible combination blocks submission and says why."
+          }),
+          "An incompatible combination blocks submission and says why, inside the dialog."
         ),
         Example.attrs(
-          :not_runnable,
-          %{
-            selected_window:
-              Map.merge(data, %{run_enabled?: false, run_disabled_reason: :invalid_window}),
-            has_data_windows?: true,
-            active_timeline: :data_coverage,
-            command_resource: "asset:customer_orders_daily",
-            run_config: Timeline.run_config(:data_coverage_timeline, :day, "2026-06-12")
-          },
-          "The window cannot be run, so no control implies that it can."
+          :viewer_cannot_submit,
+          Map.put(base, :can_submit_runs?, false),
+          "A viewer can read the plan but not queue it."
         )
       ]
     }

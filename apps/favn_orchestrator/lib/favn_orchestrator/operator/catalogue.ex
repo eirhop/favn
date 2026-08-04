@@ -126,23 +126,19 @@ defmodule FavnOrchestrator.Operator.Catalogue do
           required(:runs) => [pipeline_run_history_entry()]
         }
 
-  @type asset_timeline_window :: %{
-          required(:id) => String.t(),
-          required(:source) => :refresh_timeline | :freshness_timeline | :data_coverage_timeline,
+  @typedoc """
+  The period a run dialog should open on, and how it should plan.
+
+  `nil` for an asset with no window policy: it replaces its whole relation on every
+  run, so there is no period to prefill.
+  """
+  @type asset_run_config :: %{
+          required(:source) => :refresh_timeline | :data_coverage_timeline,
           required(:kind) => :hour | :day | :month | :year,
           required(:value) => String.t(),
           required(:timezone) => String.t(),
-          required(:label) => String.t(),
-          required(:date) => Date.t(),
-          required(:range) => String.t(),
-          required(:status) =>
-            :fresh | :covered | :running | :failed | :missing | :stale | :unknown,
-          required(:latest_run_id) => String.t() | nil,
-          required(:latest_run_status) => atom() | nil,
-          required(:latest_run_at) => DateTime.t() | nil,
-          required(:run_enabled?) => boolean(),
-          required(:run_disabled_reason) => atom() | nil,
-          required(:run_label) => String.t() | nil
+          required(:dependencies) => :all | :none,
+          required(:refresh) => atom()
         }
 
   @type asset_sql_documentation :: %{
@@ -205,11 +201,8 @@ defmodule FavnOrchestrator.Operator.Catalogue do
           required(:latest_run_status) => atom() | nil,
           required(:latest_run_at) => DateTime.t() | nil,
           required(:window) => map() | nil,
-          required(:refresh_timeline) => [asset_timeline_window()],
-          required(:freshness_timeline) => [asset_timeline_window()] | nil,
-          required(:data_coverage_timeline) => [asset_timeline_window()] | nil,
-          required(:has_freshness_timeline?) => boolean(),
           required(:has_data_windows?) => boolean(),
+          required(:default_run_config) => asset_run_config() | nil,
           required(:can_run_asset?) => boolean(),
           required(:run_contexts) => [map()],
           required(:selected_run_context) => map() | nil,
@@ -219,8 +212,7 @@ defmodule FavnOrchestrator.Operator.Catalogue do
           required(:coverage_policy) => map() | nil,
           required(:compatibility) => map(),
           required(:assurance) => map() | nil,
-          required(:runs) => [asset_run_history_entry()],
-          required(:timeline) => [asset_timeline_window()]
+          required(:runs) => [asset_run_history_entry()]
         }
 
   @type asset_run_result :: %{
@@ -969,7 +961,7 @@ defmodule FavnOrchestrator.Operator.Catalogue do
       |> Keyword.put(:asset_run_context, run_context_selection.selected)
       |> Keyword.put(:run_context_status, run_context_selection.status)
 
-    timeline =
+    periods =
       Timeline.build(
         version,
         asset,
@@ -1005,8 +997,8 @@ defmodule FavnOrchestrator.Operator.Catalogue do
     |> Status.put(status)
     |> Map.put(:freshness, AssetFreshness.detail(asset, version, freshness_states, context_opts))
     |> Map.put(:assurance, Assurance.detail(asset, run_history.latest_snapshot))
-    |> Map.merge(timeline)
-    |> Map.put(:runs, asset_run_entries(run_history.items, timeline))
+    |> Map.merge(Map.take(periods, [:has_data_windows?, :default_run_config]))
+    |> Map.put(:runs, asset_run_entries(run_history.items, periods.run_windows))
     |> Map.put(:run_contexts, context_descriptors)
     |> Map.put(:selected_run_context, selected_context_descriptor)
     |> Map.put(:run_context_status, run_context_selection.status)
@@ -1109,22 +1101,7 @@ defmodule FavnOrchestrator.Operator.Catalogue do
     end
   end
 
-  defp asset_run_entries(runs, timeline) do
-    windows_by_run = windows_by_run_id(timeline)
-
+  defp asset_run_entries(runs, windows_by_run) do
     Enum.map(runs, &RunHistory.asset_entry(&1, Map.get(windows_by_run, &1.id)))
-  end
-
-  # Data windows are read first so a windowed asset labels a run with the window it
-  # wrote rather than the refresh period it happened to land in.
-  defp windows_by_run_id(timeline) do
-    [:data_coverage_timeline, :refresh_timeline, :freshness_timeline]
-    |> Enum.flat_map(&List.wrap(Map.get(timeline, &1)))
-    |> Enum.reduce(%{}, fn window, acc ->
-      case window.latest_run_id do
-        nil -> acc
-        run_id -> Map.put_new(acc, run_id, Map.take(window, [:kind, :value, :label, :range]))
-      end
-    end)
   end
 end

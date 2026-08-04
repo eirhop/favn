@@ -1,13 +1,13 @@
 defmodule FavnView.Dev.DesignSystem.Fixtures.AssetDetail do
   @moduledoc """
-  View models for the asset detail page and its timeline panel.
+  View models for the asset detail page.
 
-  The asset detail screen is the densest surface Favn has: a refresh timeline, a
-  freshness timeline, a data-coverage timeline, coverage evidence, target
-  compatibility, a contract, and a run-config form, each with its own states. The
-  states are the point — `:rebuild_required` and `:unexpected_drift` must not
-  look alike, and `:unknown` coverage must not look like complete coverage — so
-  every one of them is a fixture rather than a variation of prose.
+  The asset detail screen is the densest surface Favn has: a run history, coverage
+  evidence, target compatibility, a contract, documentation, and a run dialog, each
+  with its own states. The states are the point — `:rebuild_required` and
+  `:unexpected_drift` must not look alike, and `:unknown` coverage must not look like
+  complete coverage — so every one of them is a fixture rather than a variation of
+  prose.
 
   `base_attrs/0` is the healthy screen. Every other fixture is that map with the
   one thing under test changed, so a diff between two examples is the difference
@@ -17,7 +17,7 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.AssetDetail do
   alias FavnView.AssetDetailLive
   alias FavnView.Components.AssetDetailPage
   alias FavnView.CoverageCalendar
-  alias FavnView.Dev.DesignSystem.Fixtures.Timeline
+  alias FavnView.Dev.DesignSystem.Fixtures.RunConfig
 
   @hash_a String.duplicate("a", 64)
   @hash_b String.duplicate("b", 64)
@@ -34,17 +34,6 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.AssetDetail do
       title: "customer_orders_daily",
       status: "Healthy",
       status_tone: :success,
-      window_range: "May 14 - Jun 12",
-      refresh_window_range: "May 14 - Jun 12",
-      freshness_window_range: "May 14 - Jun 12",
-      data_coverage_window_range: "May 14 - Jun 12",
-      refresh_timeline_label: "Monthly run anchors",
-      refresh_cadence_label: "Monthly run anchors Europe/Oslo",
-      freshness_timeline_label: "Daily freshness periods",
-      freshness_cadence_label: "Daily freshness Europe/Oslo",
-      data_coverage_timeline_label: "Daily data windows",
-      active_timeline: :refresh,
-      has_freshness_timeline?: true,
       has_data_windows?: true,
       can_run_asset?: true,
       # An operator, because the screens exist to be acted on. A viewer sees the same
@@ -55,9 +44,6 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.AssetDetail do
       selected_run_context: List.last(run_contexts()),
       run_context_status: :selected,
       nav_items: AssetDetailPage.sample_nav_items(),
-      refresh_timeline: Timeline.refresh_timeline(),
-      freshness_timeline: Timeline.freshness_timeline(),
-      data_coverage_timeline: Timeline.data_coverage_timeline(),
       freshness: AssetDetailPage.sample_freshness(:fresh),
       coverage: coverage(:complete),
       coverage_policy: coverage_policy(),
@@ -76,10 +62,9 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.AssetDetail do
       downstream: downstream(),
       selected_run_id: nil,
       selected_run: nil,
-      selected_window: nil,
       run_config_open?: false,
       command_resource: "asset:customer_orders_daily",
-      run_config: Timeline.default_run_config()
+      run_config: RunConfig.default_run_config()
     }
   end
 
@@ -435,42 +420,7 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.AssetDetail do
   """
   @spec freshness_attrs(atom()) :: map()
   def freshness_attrs(state) do
-    attrs(%{
-      active_mode: :overview,
-      selected_window: List.last(Timeline.refresh_timeline()),
-      freshness: AssetDetailPage.sample_freshness(state)
-    })
-  end
-
-  @doc """
-  The window timeline panel on its own, with both timelines available.
-  """
-  @spec window_timeline_panel_attrs() :: map()
-  def window_timeline_panel_attrs do
-    base_attrs()
-    |> Map.take([
-      :window_range,
-      :refresh_window_range,
-      :freshness_window_range,
-      :data_coverage_window_range,
-      :refresh_timeline_label,
-      :refresh_cadence_label,
-      :freshness_timeline_label,
-      :freshness_cadence_label,
-      :data_coverage_timeline_label,
-      :active_timeline,
-      :has_freshness_timeline?,
-      :has_data_windows?,
-      :can_run_asset?,
-      :refresh_timeline,
-      :freshness_timeline,
-      :data_coverage_timeline,
-      :freshness,
-      :selected_window,
-      :run_config_open?,
-      :command_resource,
-      :run_config
-    ])
+    attrs(%{active_mode: :overview, freshness: AssetDetailPage.sample_freshness(state)})
   end
 
   @doc """
