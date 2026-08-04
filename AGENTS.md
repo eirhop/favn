@@ -30,6 +30,9 @@ scheduler, runner, repo, compiler, or plugin internals directly.
   guide or technical document and link to it elsewhere.
 - Public DSL changes must update the canonical guide, public docs/typespecs, and
   `Favn.AI` routing in the same change.
+- Any HTTP route change must update `deployment/docker-compose/security/catalog.json`
+  in the same change. See
+  [`docs/production/security_qualification.md`](docs/production/security_qualification.md#add-or-change-a-route).
 - Prefer small explicit modules, deterministic data flow, stable return shapes,
   focused tests, and shared fixtures from `apps/favn_test_support`.
 - Preserve explicit failure and unknown-outcome semantics. Never blindly retry

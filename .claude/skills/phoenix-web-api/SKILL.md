@@ -23,6 +23,7 @@ This skill is for Phoenix API/server work, not LiveView UI work.
 - Controllers delegate to explicit domain/orchestrator functions.
 - API errors should be stable, explicit, and documented where relevant.
 - Request authorization must happen server-side.
+- A route added to, removed from, or renamed in the API router or any sub-router it forwards to is catalogued in `deployment/docker-compose/security/catalog.json` in the same change, or a required CI job fails. Follow [`docs/production/security_qualification.md`](../../../docs/production/security_qualification.md#add-or-change-a-route) — it also states the authentication and scope behaviour a catalogued route must have.
 - Do not put persistence logic directly in controllers or plugs.
 - Do not let API DTOs leak storage or internal implementation details unless explicitly intended.
 - Use Tidewave only in dev, and do not use runtime inspection to bypass Favn app boundaries.
