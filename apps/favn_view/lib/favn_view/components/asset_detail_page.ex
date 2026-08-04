@@ -11,6 +11,7 @@ defmodule FavnView.Components.AssetDetailPage do
   alias FavnView.Components.Navigation
   alias FavnView.Components.OutputMetadata
   alias FavnView.Components.SelectedWindowActions
+  alias FavnView.CoverageCalendar
   alias FavnView.LogsViewModel
 
   attr :title, :string, required: true
@@ -44,8 +45,23 @@ defmodule FavnView.Components.AssetDetailPage do
   attr :freshness, :map, default: nil
   attr :coverage, :any, default: nil
   attr :coverage_policy, :map, default: nil
-  attr :coverage_gaps, :list, default: []
   attr :coverage_pagination, :map, default: %{limit: 100, has_more: false, next_cursor: nil}
+
+  attr :coverage_calendar, :map,
+    default: %{
+      layout: :empty,
+      kind: nil,
+      timezone: nil,
+      columns: 7,
+      column_labels: [],
+      groups: [],
+      from_label: nil,
+      through_label: nil,
+      examined_count: 0,
+      missing_count: 0,
+      selected_count: 0
+    },
+    doc: "a `FavnView.CoverageCalendar.build/1` result"
 
   attr :coverage_page_cursor, :string, default: nil
   attr :compatibility, :map, default: nil
@@ -122,7 +138,7 @@ defmodule FavnView.Components.AssetDetailPage do
         freshness={@freshness}
         coverage={@coverage}
         coverage_policy={@coverage_policy}
-        coverage_gaps={@coverage_gaps}
+        coverage_calendar={@coverage_calendar}
         coverage_pagination={@coverage_pagination}
         coverage_page_cursor={@coverage_page_cursor}
         compatibility={@compatibility}
@@ -187,8 +203,23 @@ defmodule FavnView.Components.AssetDetailPage do
   attr :freshness, :map, default: nil
   attr :coverage, :any, default: nil
   attr :coverage_policy, :map, default: nil
-  attr :coverage_gaps, :list, default: []
   attr :coverage_pagination, :map, default: %{limit: 100, has_more: false, next_cursor: nil}
+
+  attr :coverage_calendar, :map,
+    default: %{
+      layout: :empty,
+      kind: nil,
+      timezone: nil,
+      columns: 7,
+      column_labels: [],
+      groups: [],
+      from_label: nil,
+      through_label: nil,
+      examined_count: 0,
+      missing_count: 0,
+      selected_count: 0
+    },
+    doc: "a `FavnView.CoverageCalendar.build/1` result"
 
   attr :coverage_page_cursor, :string, default: nil
   attr :compatibility, :map, default: nil
@@ -298,16 +329,24 @@ defmodule FavnView.Components.AssetDetailPage do
       documentation={@documentation}
     />
 
-    <.compatibility_panel
-      :if={@active_mode == :diagnostics && @compatibility}
-      compatibility={@compatibility}
-      rebuild_target_id={@rebuild_target_id}
-    />
-    <.coverage_summary_panel
+    <div :if={@active_mode == :diagnostics} class="mx-auto w-full max-w-[120rem] space-y-6">
+      <.compatibility_panel
+        :if={@compatibility}
+        compatibility={@compatibility}
+        rebuild_target_id={@rebuild_target_id}
+      />
+
+      <.coverage_rules_panel
+        :if={@coverage_policy}
+        coverage={@coverage}
+        policy={@coverage_policy}
+      />
+    </div>
+
+    <.coverage_panel
       :if={@active_mode == :coverage && @coverage}
       coverage={@coverage}
-      policy={@coverage_policy}
-      gaps={@coverage_gaps}
+      calendar={@coverage_calendar}
       pagination={@coverage_pagination}
       page_cursor={@coverage_page_cursor}
       plan={@coverage_plan}
@@ -318,8 +357,9 @@ defmodule FavnView.Components.AssetDetailPage do
       command_resource={@rebuild_target_id}
     />
     <.window_timeline_panel
-      :if={@active_mode == :coverage}
-      timelines={[:data_coverage]}
+      :if={@active_mode == :overview}
+      show_freshness?={false}
+      timelines={[:refresh, :freshness]}
       window_kind_label={@window_kind_label}
       refresh_timeline_label={@refresh_timeline_label}
       refresh_cadence_label={@refresh_cadence_label}
@@ -567,9 +607,23 @@ defmodule FavnView.Components.AssetDetailPage do
     """
   end
 
+  @doc """
+  Which periods hold data, and a way to fill the ones that do not.
+
+  One sentence answers the question and the calendar shows where, because the shape
+  of a gap is the useful part: one bad week and every Sunday need different fixes and
+  a count of six cannot tell them apart.
+
+  What the periods are is a fact about this asset's configuration rather than about
+  its data, so the timezone, the start date, and the availability delay are on
+  Diagnostics and not here.
+  """
   attr :coverage, :any, required: true
-  attr :policy, :map, default: nil
-  attr :gaps, :list, default: []
+
+  attr :calendar, :map,
+    required: true,
+    doc: "a `FavnView.CoverageCalendar.build/1` result"
+
   attr :pagination, :map, default: %{limit: 100, has_more: false, next_cursor: nil}
   attr :page_cursor, :string, default: nil
   attr :plan, :map, default: nil
@@ -579,198 +633,271 @@ defmodule FavnView.Components.AssetDetailPage do
   attr :can_plan?, :boolean, default: false
   attr :command_resource, :string, required: true
 
-  def coverage_summary_panel(assigns) do
+  def coverage_panel(assigns) do
     ~H"""
     <.panel
       padding={:none}
-      class="mx-auto mb-6 w-full max-w-[120rem] p-6 sm:p-8"
-      data-testid="asset-coverage-summary"
+      class="mx-auto w-full max-w-5xl p-6 sm:p-8"
+      data-testid="asset-coverage"
     >
-      <div class="flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
-        <div class="min-w-0 space-y-3">
-          <div class="flex flex-wrap items-center gap-2">
-            <p class="text-sm uppercase tracking-[0.18em] favn-text-subtle">Coverage</p>
+      <div class="flex flex-wrap items-center justify-between gap-3">
+        <h2 class="text-sm uppercase tracking-[0.18em] favn-text-subtle">Coverage</h2>
 
-            <span class={coverage_badge_class(field(@coverage, :status))}>
-              {coverage_status_label(field(@coverage, :status))}
-            </span>
-          </div>
-
-          <p class="text-sm favn-text-muted">
-            {coverage_explanation(@coverage)}
-          </p>
-
-          <dl :if={field(@coverage, :status) != :unknown} class="grid gap-3 sm:grid-cols-3">
-            <.coverage_metric label="Expected" value={field(@coverage, :expected_count, 0)} />
-            <.coverage_metric label="Covered" value={field(@coverage, :covered_count, 0)} />
-            <.coverage_metric label="Missing" value={field(@coverage, :missing_count, 0)} />
-          </dl>
-
-          <dl class="grid gap-x-6 gap-y-2 text-sm favn-text-muted sm:grid-cols-2">
-            <div>
-              <dt class="favn-text-subtle">Evaluated at</dt>
-
-              <dd>{coverage_time(field(@coverage, :evaluated_at))}</dd>
-            </div>
-
-            <div>
-              <dt class="favn-text-subtle">Active target generation</dt>
-
-              <dd class="break-all font-mono">
-                {coverage_generation_label(field(@coverage, :active_target_generation_id))}
-              </dd>
-            </div>
-          </dl>
-
-          <dl :if={@policy} class="grid gap-x-6 gap-y-2 text-sm favn-text-muted sm:grid-cols-2">
-            <div>
-              <dt class="favn-text-subtle">Timezone</dt>
-
-              <dd class="font-mono">
-                {field(@policy, :timezone)} ({humanize(field(@policy, :timezone_source))})
-              </dd>
-            </div>
-
-            <div>
-              <dt class="favn-text-subtle">Coverage starts</dt>
-
-              <dd>
-                {coverage_time(field(@policy, :declared_from))} declared · {coverage_time(
-                  field(@policy, :effective_from)
-                )} effective
-              </dd>
-            </div>
-
-            <div>
-              <dt class="favn-text-subtle">Expected through</dt>
-
-              <dd>{coverage_window_label(field(@coverage, :last_expected_window))}</dd>
-            </div>
-
-            <div>
-              <dt class="favn-text-subtle">Availability</dt>
-
-              <dd>{availability_label(field(@policy, :availability_delay_seconds, 0))}</dd>
-            </div>
-          </dl>
-        </div>
-
-        <div class="w-full space-y-3 xl:max-w-xl">
-          <div
-            :if={field(@coverage, :status) == :incomplete}
-            class="rounded-box border border-warning/20 bg-warning/5 p-4"
-          >
-            <p class="text-sm font-medium uppercase tracking-[0.16em] text-warning">Exact gaps</p>
-
-            <div class="mt-2 max-h-32 space-y-1 overflow-y-auto font-mono text-sm favn-text-muted">
-              <p :for={gap <- @gaps}>{field(gap, :window_key)}</p>
-
-              <p :if={@gaps == []} class="font-sans favn-text-subtle">
-                No missing windows in this page.
-              </p>
-            </div>
-
-            <div
-              :if={@page_cursor || field(@pagination, :has_more, false)}
-              class="mt-3 flex items-center justify-between gap-3"
-              data-testid="coverage-gap-pagination"
-            >
-              <button
-                type="button"
-                class="btn btn-ghost btn-xs"
-                phx-click="page_missing_coverage"
-                phx-value-direction="previous"
-                disabled={is_nil(@page_cursor)}
-                data-testid="previous-coverage-gap-page"
-              >
-                Previous
-              </button>
-
-              <span class="text-center font-sans text-sm favn-text-subtle">
-                {length(@gaps)} gaps on this page
-              </span>
-
-              <button
-                type="button"
-                class="btn btn-ghost btn-xs"
-                phx-click="page_missing_coverage"
-                phx-value-direction="next"
-                disabled={!field(@pagination, :has_more, false)}
-                data-testid="next-coverage-gap-page"
-              >
-                Next
-              </button>
-            </div>
-          </div>
-
-          <button
-            :if={field(@coverage, :status) == :incomplete && @gaps != [] && is_nil(@plan)}
-            type="button"
-            class="btn btn-warning btn-soft btn-sm"
-            phx-click="plan_missing_coverage"
-            disabled={!@can_plan? || @planning?}
-            data-testid="plan-missing-coverage"
-          >
-            <span :if={@planning?} class="loading loading-spinner loading-xs"></span>
-            Review missing-window backfill
-          </button>
-
-          <div
-            :if={@plan}
-            class="rounded-box border border-primary/25 bg-primary/5 p-4"
-            data-testid="coverage-plan-review"
-          >
-            <p class="text-sm font-medium">Review immutable plan</p>
-
-            <p class="mt-1 break-all font-mono text-sm favn-text-muted">
-              {field(@plan, :plan_hash)}
-            </p>
-
-            <div class="mt-3 max-h-36 space-y-1 overflow-y-auto font-mono text-sm favn-text-muted">
-              <p :for={window <- field(@plan, :windows, [])}>{field(window, :window_key)}</p>
-            </div>
-
-            <button
-              type="button"
-              class="btn btn-primary btn-sm mt-4"
-              phx-click="submit_missing_coverage"
-              data-command-operation="coverage_backfill_submit"
-              data-command-resource={@command_resource}
-              disabled={@submitting?}
-              data-testid="submit-missing-coverage"
-            >
-              <span :if={@submitting?} class="loading loading-spinner loading-xs"></span>
-              Submit exact {field(@plan, :window_count, 0)} windows
-            </button>
-          </div>
-
-          <p
-            :if={!@can_plan? && field(@coverage, :status) == :incomplete}
-            class="text-sm text-warning"
-          >
-            Select a valid run context and use an operator account to plan this backfill.
-          </p>
-
-          <p :if={@action_error} class="text-sm text-error" data-testid="coverage-action-error">
-            {@action_error}
-          </p>
-        </div>
+        <span class={coverage_badge_class(field(@coverage, :status))}>
+          {coverage_status_label(field(@coverage, :status))}
+        </span>
       </div>
+
+      <p class="mt-3 max-w-2xl">{coverage_answer(@coverage, @calendar)}</p>
+
+      <.coverage_calendar
+        :if={@calendar.layout != :empty}
+        class="mt-6"
+        layout={@calendar.layout}
+        groups={@calendar.groups}
+        columns={@calendar.columns}
+        column_labels={@calendar.column_labels}
+        on_select={(@can_plan? && "toggle_coverage_window") || nil}
+        data-testid="asset-coverage-calendar"
+      />
+
+      <p :if={coverage_caption(@calendar, @pagination)} class="mt-4 text-sm favn-text-subtle">
+        {coverage_caption(@calendar, @pagination)}
+      </p>
+
+      <div
+        :if={@page_cursor || field(@pagination, :has_more, false)}
+        class="mt-3 flex items-center gap-2"
+        data-testid="coverage-gap-pagination"
+      >
+        <button
+          type="button"
+          class="btn btn-ghost btn-sm"
+          phx-click="page_missing_coverage"
+          phx-value-direction="previous"
+          disabled={is_nil(@page_cursor)}
+          data-testid="previous-coverage-gap-page"
+        >
+          Earlier
+        </button>
+
+        <button
+          type="button"
+          class="btn btn-ghost btn-sm"
+          phx-click="page_missing_coverage"
+          phx-value-direction="next"
+          disabled={!field(@pagination, :has_more, false)}
+          data-testid="next-coverage-gap-page"
+        >
+          Later
+        </button>
+      </div>
+
+      <div
+        :if={coverage_backfillable?(@coverage) && is_nil(@plan)}
+        class="mt-6 flex flex-wrap items-center gap-3 border-t border-base-content/10 pt-5"
+      >
+        <button
+          type="button"
+          class="btn btn-warning btn-soft btn-sm"
+          phx-click="plan_missing_coverage"
+          disabled={!@can_plan? || @planning?}
+          data-testid="plan-missing-coverage"
+        >
+          <span :if={@planning?} class="loading loading-spinner loading-xs"></span>
+          {coverage_backfill_label(@coverage, @calendar)}
+        </button>
+
+        <button
+          :if={@calendar.selected_count > 0}
+          type="button"
+          class="btn btn-ghost btn-sm"
+          phx-click="clear_coverage_selection"
+          data-testid="clear-coverage-selection"
+        >
+          Clear selection
+        </button>
+
+        <p :if={!@can_plan?} class="text-sm text-warning">
+          Backfilling needs an operator account and a working target.
+        </p>
+      </div>
+
+      <div
+        :if={@plan}
+        class="mt-6 border-t border-base-content/10 pt-5"
+        data-testid="coverage-plan-review"
+      >
+        <p class="font-medium">
+          Ready to backfill {field(@plan, :window_count, 0)} {CoverageCalendar.period_noun(
+            @calendar.kind,
+            field(@plan, :window_count, 0)
+          )}
+        </p>
+
+        <ul class="mt-2 max-h-40 space-y-0.5 overflow-y-auto text-sm favn-text-muted">
+          <li :for={window <- field(@plan, :windows, [])}>{coverage_plan_window_label(window)}</li>
+        </ul>
+
+        <button
+          type="button"
+          class="btn btn-primary btn-sm mt-4"
+          phx-click="submit_missing_coverage"
+          data-command-operation="coverage_backfill_submit"
+          data-command-resource={@command_resource}
+          disabled={@submitting?}
+          data-testid="submit-missing-coverage"
+        >
+          <span :if={@submitting?} class="loading loading-spinner loading-xs"></span>
+          Start the backfill
+        </button>
+      </div>
+
+      <p :if={@action_error} class="mt-4 text-sm text-error" data-testid="coverage-action-error">
+        {@action_error}
+      </p>
     </.panel>
     """
   end
 
-  attr :label, :string, required: true
-  attr :value, :integer, required: true
+  # Coverage the operator can act on: incomplete, with at least one period named.
+  defp coverage_backfillable?(coverage),
+    do: field(coverage, :status) == :incomplete and field(coverage, :missing_count, 0) > 0
 
-  defp coverage_metric(assigns) do
+  defp coverage_backfill_label(_coverage, %{selected_count: selected} = calendar)
+       when selected > 0 do
+    "Backfill #{selected} selected #{CoverageCalendar.period_noun(calendar.kind, selected)}"
+  end
+
+  defp coverage_backfill_label(coverage, calendar) do
+    missing = field(coverage, :missing_count, 0)
+    "Backfill all #{missing} missing #{CoverageCalendar.period_noun(calendar.kind, missing)}"
+  end
+
+  defp coverage_answer(coverage, calendar) do
+    expected = field(coverage, :expected_count, 0)
+    missing = field(coverage, :missing_count, 0)
+    periods = CoverageCalendar.period_noun(calendar.kind, expected)
+
+    case field(coverage, :status) do
+      :complete when expected == 0 ->
+        "No period is due yet, so nothing is missing."
+
+      :complete ->
+        "All #{expected} #{periods} that should hold data do."
+
+      :incomplete ->
+        "#{missing} of #{expected} #{periods} have no data."
+
+      _unknown ->
+        coverage_unknown_answer(field(coverage, :unknown_reason))
+    end
+  end
+
+  defp coverage_unknown_answer(:coverage_not_declared),
+    do: "This asset does not say which periods it should cover, so there is nothing to check."
+
+  defp coverage_unknown_answer(:non_windowed_asset),
+    do: "This asset rewrites its whole table every run, so it has no periods to cover."
+
+  defp coverage_unknown_answer(:target_generation_uninitialized),
+    do: "This asset has never been built, so there is nothing to compare against yet."
+
+  defp coverage_unknown_answer(_reason),
+    do: "Favn could not read coverage just now. Reload the page to try again."
+
+  defp coverage_caption(%{layout: :empty}, _pagination), do: nil
+
+  defp coverage_caption(calendar, pagination) do
+    [coverage_range_sentence(calendar), coverage_more_sentence(pagination)]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join(" ")
+  end
+
+  # Hours are listed rather than drawn, so the caption has to say that only the
+  # missing ones are on screen; a grid shows every period it examined.
+  defp coverage_range_sentence(%{layout: :list} = calendar) do
+    "Listing the #{calendar.missing_count} missing " <>
+      "#{CoverageCalendar.period_noun(calendar.kind, calendar.missing_count)} " <>
+      "of #{calendar.examined_count} checked#{coverage_zone_suffix(calendar)}."
+  end
+
+  defp coverage_range_sentence(calendar) do
+    "Showing #{calendar.examined_count} " <>
+      "#{CoverageCalendar.period_noun(calendar.kind, calendar.examined_count)}, " <>
+      "#{calendar.from_label} to #{calendar.through_label}#{coverage_zone_suffix(calendar)}."
+  end
+
+  defp coverage_zone_suffix(%{timezone: timezone}) when is_binary(timezone),
+    do: ", in #{timezone}"
+
+  defp coverage_zone_suffix(_calendar), do: ""
+
+  defp coverage_more_sentence(pagination) do
+    if field(pagination, :has_more, false), do: "Later periods are on the next page."
+  end
+
+  @doc """
+  How Favn decided which periods this asset owes data for.
+
+  Configuration rather than data, which is why it is here and not on the coverage
+  page: an operator reading the calendar wants to know what is missing, and an
+  operator reading this wants to know why the calendar starts where it does.
+  """
+  attr :coverage, :any, default: nil
+  attr :policy, :map, required: true
+
+  def coverage_rules_panel(assigns) do
     ~H"""
-    <div class="rounded-box border border-base-content/10 bg-base-content/[0.03] p-3">
-      <dt class="text-sm uppercase tracking-[0.14em] favn-text-subtle">{@label}</dt>
+    <.panel padding={:none} class="p-6 sm:p-8" data-testid="asset-coverage-rules">
+      <h2 class="text-sm uppercase tracking-[0.18em] favn-text-subtle">Coverage rules</h2>
 
-      <dd class="mt-1 text-xl font-medium">{@value}</dd>
-    </div>
+      <.fact_list
+        class="mt-4"
+        columns={2}
+        facts={[
+          %{label: "Periods are in", value: field(@policy, :timezone) || "Not declared"},
+          %{label: "Counted from", value: coverage_start_label(@policy)},
+          %{
+            label: "A period counts once",
+            value: availability_label(field(@policy, :availability_delay_seconds, 0))
+          },
+          %{
+            label: "Expected through",
+            value: coverage_window_label(field(@coverage, :last_expected_window))
+          },
+          %{label: "Last checked", value: coverage_time(field(@coverage, :evaluated_at))},
+          %{
+            label: "Evidence generation",
+            value: coverage_generation_label(field(@coverage, :active_target_generation_id))
+          }
+        ]}
+      />
+    </.panel>
     """
+  end
+
+  # Coverage starts at the later of what the author declared and when the target was
+  # first built, so the two only need telling apart when they disagree.
+  defp coverage_start_label(policy) do
+    declared = field(policy, :declared_from)
+    effective = field(policy, :effective_from)
+
+    if declared && effective && declared != effective do
+      "#{coverage_time(effective)}, declared #{coverage_time(declared)}"
+    else
+      coverage_time(effective)
+    end
+  end
+
+  defp coverage_plan_window_label(window) do
+    case field(window, :start_at) do
+      %DateTime{} = start_at ->
+        CoverageCalendar.period_label(field(window, :kind), start_at)
+
+      _absent ->
+        field(window, :window_key)
+    end
   end
 
   attr :window_range, :string, required: true
@@ -807,6 +934,10 @@ defmodule FavnView.Components.AssetDetailPage do
   attr :timelines, :list,
     default: [:refresh, :freshness, :data_coverage],
     doc: "which timelines this page may show; a page scoped to one renders no toggle"
+
+  attr :show_freshness?, :boolean,
+    default: true,
+    doc: "off for a page that already states freshness above the strip"
 
   def window_timeline_panel(assigns) do
     assigns = assign(assigns, :toggles, timeline_toggles(assigns))
@@ -857,7 +988,7 @@ defmodule FavnView.Components.AssetDetailPage do
             <span data-testid="timeline-range">{@timeline_range}</span>
           </div>
         </div>
-        <.freshness_summary freshness={@freshness} />
+        <.freshness_summary :if={@show_freshness?} freshness={@freshness} />
         <div class="overflow-x-auto pb-2">
           <div class="flex min-w-[58rem] items-end justify-between gap-3 pt-3">
             <.timeline_window
@@ -908,19 +1039,21 @@ defmodule FavnView.Components.AssetDetailPage do
           </p>
         </div>
 
-        <div class="flex flex-wrap gap-2">
+        <div class="flex min-w-0 flex-wrap gap-2">
           <.link
             :for={context <- @contexts}
             patch={context.href}
             class={[
-              "btn btn-sm",
+              "btn btn-sm h-auto min-h-8 max-w-full flex-col items-start whitespace-normal py-1.5 text-left",
               selected_run_context?(@selected, context) && "btn-primary btn-soft",
               !selected_run_context?(@selected, context) && "btn-ghost"
             ]}
             data-testid={"asset-run-context-#{context.id}"}
           >
-            {context.label}
-            <span class="text-sm opacity-60">{run_context_policy_label(context)}</span>
+            <span class="max-w-full break-words">{context.label}</span>
+            <span class="max-w-full break-words text-sm opacity-60">
+              {run_context_policy_label(context)}
+            </span>
           </.link>
         </div>
       </div>
@@ -2247,22 +2380,6 @@ defmodule FavnView.Components.AssetDetailPage do
   defp coverage_status_label(:complete), do: "Complete"
   defp coverage_status_label(:incomplete), do: "Incomplete"
   defp coverage_status_label(_status), do: "Unknown"
-
-  defp coverage_explanation(coverage) do
-    case field(coverage, :status) do
-      :complete ->
-        "Every window expected at this evaluation time has successful evidence."
-
-      :incomplete ->
-        "Some expected windows do not have successful evidence in the active generation."
-
-      :unknown ->
-        "Coverage is unavailable: #{humanize(field(coverage, :unknown_reason))}."
-
-      _other ->
-        "Coverage is unavailable."
-    end
-  end
 
   defp coverage_time(%DateTime{} = value),
     do: Calendar.strftime(value, "%b %-d, %Y %H:%M %Z")

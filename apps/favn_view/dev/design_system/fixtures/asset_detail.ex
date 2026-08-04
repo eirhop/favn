@@ -16,6 +16,7 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.AssetDetail do
 
   alias FavnView.AssetDetailLive
   alias FavnView.Components.AssetDetailPage
+  alias FavnView.CoverageCalendar
   alias FavnView.Dev.DesignSystem.Fixtures.Timeline
 
   @hash_a String.duplicate("a", 64)
@@ -46,6 +47,10 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.AssetDetail do
       has_freshness_timeline?: true,
       has_data_windows?: true,
       can_run_asset?: true,
+      # An operator, because the screens exist to be acted on. A viewer sees the same
+      # facts with the controls explained away, and that is its own fixture rather
+      # than the default every example inherits.
+      can_submit_runs?: true,
       run_contexts: [List.last(run_contexts())],
       selected_run_context: List.last(run_contexts()),
       run_context_status: :selected,
@@ -56,7 +61,7 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.AssetDetail do
       freshness: AssetDetailPage.sample_freshness(:fresh),
       coverage: coverage(:complete),
       coverage_policy: coverage_policy(),
-      coverage_gaps: [],
+      coverage_calendar: coverage_calendar([]),
       coverage_pagination: coverage_pagination(false),
       compatibility: compatibility(:ready),
       active_mode: :overview,
@@ -311,10 +316,50 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.AssetDetail do
 
   Coverage evidence only renders there, so a fixture that changed `:coverage` while
   staying on the overview would demonstrate nothing.
+
+  The calendar is derived from `:coverage_gaps` and `:coverage_selected` the way the
+  LiveView derives it, so an example cannot show two missing days in the summary and
+  a full month in the grid. Coverage that is `:unknown` gets no range at all, because
+  a calendar drawn from invented bounds would read as tracked coverage.
   """
   @spec coverage_attrs(map()) :: map()
   def coverage_attrs(overrides) when is_map(overrides) do
-    attrs(Map.merge(%{active_mode: :coverage, active_timeline: :data_coverage}, overrides))
+    gaps = Map.get(overrides, :coverage_gaps, [])
+    selected = Map.get(overrides, :coverage_selected, [])
+    merged = Map.merge(base_attrs(), Map.drop(overrides, [:coverage_gaps, :coverage_selected]))
+
+    examined = if merged.coverage[:status] == :unknown, do: %{}, else: coverage_examined()
+
+    merged
+    |> Map.put(:active_mode, :coverage)
+    |> Map.put(:coverage_calendar, coverage_calendar(gaps, examined, selected))
+    |> attrs()
+  end
+
+  @doc """
+  The range one coverage page examined: three weeks of daily windows.
+  """
+  @spec coverage_examined() :: map()
+  def coverage_examined do
+    %{
+      kind: :day,
+      timezone: "Europe/Oslo",
+      from: ~U[2026-07-01 00:00:00Z],
+      through: ~U[2026-07-22 00:00:00Z],
+      count: 22
+    }
+  end
+
+  @doc """
+  The calendar the coverage page renders, built the way the LiveView builds it.
+  """
+  @spec coverage_calendar([map()], map(), [String.t()]) :: map()
+  def coverage_calendar(gaps, examined \\ nil, selected \\ []) do
+    CoverageCalendar.build(%{
+      examined: examined || coverage_examined(),
+      gaps: gaps,
+      selected: selected
+    })
   end
 
   @doc """
@@ -419,14 +464,21 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.AssetDetail do
   end
 
   @doc """
-  Two missing windows.
+  Two missing days, a week apart, so the calendar shows a pattern rather than a run.
   """
   @spec coverage_gaps() :: [map()]
   def coverage_gaps do
-    [
-      %{window_key: "day:Europe/Oslo:2026-07-08"},
-      %{window_key: "day:Europe/Oslo:2026-07-15"}
-    ]
+    [coverage_gap(~U[2026-07-08 00:00:00Z]), coverage_gap(~U[2026-07-15 00:00:00Z])]
+  end
+
+  defp coverage_gap(start_at) do
+    %{
+      window_key: "day:Europe/Oslo:" <> Date.to_iso8601(DateTime.to_date(start_at)),
+      kind: :day,
+      timezone: "Europe/Oslo",
+      start_at: start_at,
+      end_at: DateTime.add(start_at, 1, :day)
+    }
   end
 
   @doc """
@@ -448,6 +500,12 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.AssetDetail do
   def coverage_plan do
     %{plan_hash: @hash_a, window_count: 2, windows: coverage_gaps()}
   end
+
+  @doc """
+  The window keys of the two missing days, for the selected-backfill fixture.
+  """
+  @spec coverage_selection() :: [String.t()]
+  def coverage_selection, do: Enum.map(coverage_gaps(), & &1.window_key)
 
   @doc """
   Target compatibility, in each state the operator has to tell apart.

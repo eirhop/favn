@@ -32,11 +32,29 @@ defmodule FavnOrchestrator.Coverage do
   @type missing_page :: %{
           required(:summary) => Summary.t(),
           required(:items) => [map()],
+          required(:examined) => examined(),
           required(:pagination) => %{
             required(:limit) => pos_integer(),
             required(:has_more) => boolean(),
             required(:next_cursor) => String.t() | nil
           }
+        }
+
+  @typedoc """
+  The contiguous run of expected windows one page compared against evidence.
+
+  A page reports the windows it found missing, which on its own does not say what
+  it looked at: a page with no items is either fully covered or past the end of
+  the expected range. Callers that draw the whole range — a calendar marking each
+  period covered or missing — need the bounds, and deriving them from the summary
+  only works for the first page.
+  """
+  @type examined :: %{
+          required(:kind) => atom() | nil,
+          required(:timezone) => String.t() | nil,
+          required(:from) => DateTime.t() | nil,
+          required(:through) => DateTime.t() | nil,
+          required(:count) => non_neg_integer()
         }
 
   @doc "Returns a bounded coverage summary for one active asset target."
@@ -99,12 +117,19 @@ defmodule FavnOrchestrator.Coverage do
     end)
   end
 
-  @doc "Builds an immutable exact backfill plan from all or one page of missing windows."
+  @doc """
+  Builds an immutable exact backfill plan from missing windows.
+
+  Three selections, in order of precedence: `:window_keys` plans exactly the named
+  windows, `:cursor`/`:limit` plans one page, and neither plans every missing
+  window. The selection is part of the plan hash, so a plan reviewed as three days
+  cannot be submitted as a whole year.
+  """
   @spec plan_missing_backfill(WorkspaceContext.t(), String.t(), keyword()) ::
           {:ok, map()} | {:error, term()}
   def plan_missing_backfill(%WorkspaceContext{} = context, target_id, opts \\ [])
       when is_binary(target_id) and is_list(opts) do
-    with :ok <- validate_options(opts, [:evaluated_at, :cursor, :limit]),
+    with :ok <- validate_options(opts, [:evaluated_at, :cursor, :limit, :window_keys]),
          evaluated_at <- Keyword.get(opts, :evaluated_at, DateTime.utc_now()),
          :ok <- validate_datetime(evaluated_at),
          {:ok, selection} <- backfill_selection(opts),
@@ -132,6 +157,22 @@ defmodule FavnOrchestrator.Coverage do
     end
   end
 
+  defp missing_selection(context, target_id, evaluated_at, %{mode: :explicit} = selection) do
+    with {:ok, summary, missing} <-
+           missing_selection(context, target_id, evaluated_at, %{mode: :all}) do
+      requested = MapSet.new(selection.window_keys)
+      selected = Enum.filter(missing, &MapSet.member?(requested, &1.window_key))
+
+      # Every named window has to still be missing. One of them being covered since
+      # the operator selected it means the plan they are about to review is not the
+      # one they built, and silently planning the remainder would run something
+      # other than what was asked for.
+      if length(selected) == MapSet.size(requested),
+        do: {:ok, summary, selected},
+        else: {:error, :coverage_selection_stale}
+    end
+  end
+
   defp missing_selection(context, target_id, evaluated_at, selection) do
     page_opts =
       [evaluated_at: evaluated_at, limit: selection.limit]
@@ -145,15 +186,39 @@ defmodule FavnOrchestrator.Coverage do
   end
 
   defp backfill_selection(opts) do
-    if Keyword.has_key?(opts, :cursor) or Keyword.has_key?(opts, :limit) do
-      with {:ok, limit} <- page_limit(Keyword.get(opts, :limit, @max_page)),
-           {:ok, cursor} <- optional_cursor(Keyword.get(opts, :cursor)) do
-        {:ok, %{mode: :page, cursor: cursor, limit: limit}}
-      end
-    else
-      {:ok, %{mode: :all}}
+    cond do
+      Keyword.has_key?(opts, :window_keys) and
+          (Keyword.has_key?(opts, :cursor) or Keyword.has_key?(opts, :limit)) ->
+        {:error, :invalid_coverage_options}
+
+      Keyword.has_key?(opts, :window_keys) ->
+        explicit_selection(Keyword.fetch!(opts, :window_keys))
+
+      Keyword.has_key?(opts, :cursor) or Keyword.has_key?(opts, :limit) ->
+        with {:ok, limit} <- page_limit(Keyword.get(opts, :limit, @max_page)),
+             {:ok, cursor} <- optional_cursor(Keyword.get(opts, :cursor)) do
+          {:ok, %{mode: :page, cursor: cursor, limit: limit}}
+        end
+
+      true ->
+        {:ok, %{mode: :all}}
     end
   end
+
+  # Sorted, so the plan hash depends on which windows were chosen and not on the
+  # order they were clicked in.
+  defp explicit_selection(keys) when is_list(keys) and keys != [] do
+    unique = Enum.uniq(keys)
+
+    if length(unique) == length(keys) and length(keys) <= @max_backfill_windows and
+         Enum.all?(keys, &(is_binary(&1) and byte_size(&1) in 1..255)) do
+      {:ok, %{mode: :explicit, window_keys: Enum.sort(keys)}}
+    else
+      {:error, :invalid_coverage_window_selection}
+    end
+  end
+
+  defp explicit_selection(_keys), do: {:error, :invalid_coverage_window_selection}
 
   defp optional_cursor(nil), do: {:ok, nil}
 
@@ -336,7 +401,13 @@ defmodule FavnOrchestrator.Coverage do
   defp missing_page(context, snapshot, evaluated_at, after_key, limit) do
     with {:ok, summary} <- summarize(context, snapshot, evaluated_at) do
       if summary.status == :unknown do
-        {:ok, %{summary: summary, items: [], pagination: page_metadata(limit, false, nil)}}
+        {:ok,
+         %{
+           summary: summary,
+           items: [],
+           examined: examined([]),
+           pagination: page_metadata(limit, false, nil)
+         }}
       else
         identity = %{
           evidence_generation_id: summary.evidence_generation_id,
@@ -382,14 +453,33 @@ defmodule FavnOrchestrator.Coverage do
      %{
        summary: summary,
        items: items,
+       examined: examined(expected_page.items),
        pagination: page_metadata(limit, expected_page.has_more?, next_cursor)
      }}
+  end
+
+  defp examined([]), do: %{kind: nil, timezone: nil, from: nil, through: nil, count: 0}
+
+  defp examined([first | _rest] = anchors) do
+    %{
+      kind: first.kind,
+      timezone: first.timezone,
+      from: first.start_at,
+      through: List.last(anchors).start_at,
+      count: length(anchors)
+    }
   end
 
   defp unknown_page(snapshot, evaluated_at, limit) do
     with {:ok, summary} <-
            unknown_summary(snapshot, evaluated_at, :authoritative_state_unavailable) do
-      {:ok, %{summary: summary, items: [], pagination: page_metadata(limit, false, nil)}}
+      {:ok,
+       %{
+         summary: summary,
+         items: [],
+         examined: examined([]),
+         pagination: page_metadata(limit, false, nil)
+       }}
     end
   end
 
@@ -692,6 +782,12 @@ defmodule FavnOrchestrator.Coverage do
   defp normalize_selection(%{mode: :all}), do: {:ok, %{mode: :all}}
   defp normalize_selection(%{"mode" => "all"}), do: {:ok, %{mode: :all}}
 
+  defp normalize_selection(%{mode: mode} = selection) when mode in [:explicit, "explicit"],
+    do: explicit_selection(field(selection, :window_keys))
+
+  defp normalize_selection(%{"mode" => "explicit"} = selection),
+    do: explicit_selection(field(selection, :window_keys))
+
   defp normalize_selection(selection) when is_map(selection) do
     with mode when mode in [:page, "page"] <- field(selection, :mode),
          {:ok, limit} <- page_limit(field(selection, :limit)),
@@ -705,6 +801,7 @@ defmodule FavnOrchestrator.Coverage do
   defp normalize_selection(_selection), do: {:error, :invalid_coverage_backfill_plan}
 
   defp selection_options(%{mode: :all}), do: []
+  defp selection_options(%{mode: :explicit, window_keys: keys}), do: [window_keys: keys]
   defp selection_options(%{mode: :page, cursor: nil, limit: limit}), do: [limit: limit]
 
   defp selection_options(%{mode: :page, cursor: cursor, limit: limit}),

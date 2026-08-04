@@ -148,6 +148,41 @@ defmodule FavnOrchestrator.CoverageTest do
     refute second.pagination.has_more
   end
 
+  test "each page reports the run of expected windows it compared", fixture do
+    assert {:ok, first} =
+             Coverage.missing_windows(fixture.context, fixture.target_id,
+               evaluated_at: @evaluated_at,
+               limit: 2
+             )
+
+    # A caller drawing the whole range cannot derive these from the summary once it
+    # pages: the summary describes every expected window, not the two this page read.
+    assert first.examined.kind == :day
+    assert first.examined.count == 2
+    assert first.examined.from.day == 1
+    assert first.examined.through.day == 2
+
+    assert {:ok, second} =
+             Coverage.missing_windows(fixture.context, fixture.target_id,
+               cursor: first.pagination.next_cursor,
+               limit: 2
+             )
+
+    assert second.examined.count == 1
+    assert second.examined.from.day == 3
+  end
+
+  test "an unreadable page examined nothing rather than an empty range", fixture do
+    Process.put(:coverage_keys_result, {:error, :unavailable})
+
+    assert {:ok, page} =
+             Coverage.missing_windows(fixture.context, fixture.target_id,
+               evaluated_at: @evaluated_at
+             )
+
+    assert page.examined == %{kind: nil, timezone: nil, from: nil, through: nil, count: 0}
+  end
+
   test "rejects a cursor after the durable evidence binding changes", fixture do
     assert {:ok, page} =
              Coverage.missing_windows(fixture.context, fixture.target_id,
@@ -264,6 +299,95 @@ defmodule FavnOrchestrator.CoverageTest do
     assert plan.selection == %{mode: :page, cursor: nil, limit: 2}
     assert plan.window_count == 2
     assert Enum.map(plan.windows, & &1.start_at.day) == [1, 2]
+  end
+
+  test "can freeze exactly the windows an operator named", fixture do
+    assert {:ok, all} =
+             Coverage.plan_missing_backfill(fixture.context, fixture.target_id,
+               evaluated_at: @evaluated_at
+             )
+
+    [_first, second, third] = all.windows
+
+    assert {:ok, plan} =
+             Coverage.plan_missing_backfill(fixture.context, fixture.target_id,
+               evaluated_at: @evaluated_at,
+               window_keys: [third.window_key, second.window_key]
+             )
+
+    # Sorted, so the plan hash depends on which windows were chosen rather than the
+    # order they were clicked in.
+    assert plan.selection == %{
+             mode: :explicit,
+             window_keys: Enum.sort([second.window_key, third.window_key])
+           }
+
+    assert plan.window_count == 2
+    assert Enum.map(plan.windows, & &1.start_at.day) == [2, 3]
+    assert plan.plan_hash != all.plan_hash
+  end
+
+  test "an explicit plan survives a round trip and rejects a window that filled in",
+       fixture do
+    assert {:ok, all} =
+             Coverage.plan_missing_backfill(fixture.context, fixture.target_id,
+               evaluated_at: @evaluated_at
+             )
+
+    [first, second, _third] = all.windows
+
+    assert {:ok, plan} =
+             Coverage.plan_missing_backfill(fixture.context, fixture.target_id,
+               evaluated_at: @evaluated_at,
+               window_keys: [first.window_key, second.window_key]
+             )
+
+    # The plan the operator reviewed round-trips through the LiveView untouched, so
+    # revalidation has to accept it byte for byte before anything is submitted.
+    assert {:ok, revalidated} =
+             Coverage.plan_missing_backfill(
+               fixture.context,
+               fixture.target_id,
+               evaluated_at: plan.evaluated_at,
+               window_keys: plan.selection.window_keys
+             )
+
+    assert revalidated.plan_hash == plan.plan_hash
+
+    # One of the two is covered now. Planning the remaining one would run something
+    # other than what was reviewed, so the whole selection is refused.
+    Process.put(:coverage_count_result, {:ok, 1})
+    Process.put(:coverage_successful_keys, ["window:" <> first.window_key])
+
+    assert {:error, :coverage_selection_stale} =
+             Coverage.plan_missing_backfill(fixture.context, fixture.target_id,
+               evaluated_at: @evaluated_at,
+               window_keys: [first.window_key, second.window_key]
+             )
+  end
+
+  test "rejects a window selection that is empty, duplicated, or paged as well",
+       fixture do
+    assert {:error, :invalid_coverage_window_selection} =
+             Coverage.plan_missing_backfill(fixture.context, fixture.target_id, window_keys: [])
+
+    assert {:error, :invalid_coverage_window_selection} =
+             Coverage.plan_missing_backfill(fixture.context, fixture.target_id,
+               window_keys: ["day:Etc/UTC:2026-07-01", "day:Etc/UTC:2026-07-01"]
+             )
+
+    assert {:error, :invalid_coverage_window_selection} =
+             Coverage.plan_missing_backfill(fixture.context, fixture.target_id,
+               window_keys: [:not_a_key]
+             )
+
+    # A selection and a page are two different answers to "which windows", so asking
+    # for both is a caller bug rather than a precedence question.
+    assert {:error, :invalid_coverage_options} =
+             Coverage.plan_missing_backfill(fixture.context, fixture.target_id,
+               window_keys: ["day:Etc/UTC:2026-07-01"],
+               limit: 2
+             )
   end
 
   test "emits bounded coverage query telemetry", fixture do

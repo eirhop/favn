@@ -13,6 +13,7 @@ defmodule FavnView.UI.Data do
   | `stacked_cell/1` | a table cell whose value needs a qualifier under it |
   | `metric/1` | one number that the operator watches |
   | `mono/1` | ids, fingerprints, and anything copied verbatim |
+  | `coverage_calendar/1` | which periods of a range hold data and which do not |
 
   A table is a desktop affordance. On mobile the same rows should render as
   `FavnView.UI.Surface.list_card/1`; do not shrink a table to fit a phone.
@@ -1018,6 +1019,122 @@ defmodule FavnView.UI.Data do
   end
 
   @doc """
+  A calendar of the periods a windowed asset should hold data for.
+
+  Every examined period gets a cell, so the shape of what is missing is visible:
+  one bad week reads differently from every Sunday, and a list of window keys reads
+  as neither. Periods that were not examined are absent rather than drawn, because a
+  blank cell must never be mistaken for a covered one.
+
+  Missing cells are buttons when `on_select` is set, so the operator can pick the
+  periods to backfill. Covered cells are inert.
+
+  Build the groups with `FavnView.CoverageCalendar.build/1`.
+
+      <.coverage_calendar
+        layout={@calendar.layout}
+        groups={@calendar.groups}
+        columns={@calendar.columns}
+        column_labels={@calendar.column_labels}
+        on_select="toggle_coverage_window"
+      />
+  """
+  attr :groups, :list,
+    required: true,
+    doc:
+      "maps with `:id`, `:label`, `:blanks`, and `:cells`; a cell has `:id`, `:label`, " <>
+        "`:title`, `:state`, `:selected?`, and `:key`"
+
+  attr :layout, :atom, default: :grid, doc: "`:grid`, `:list`, or `:empty`"
+  attr :columns, :integer, default: 7
+  attr :column_labels, :list, default: []
+  attr :on_select, :string, default: nil, doc: "LiveView event; omit for a read-only calendar"
+  attr :empty_label, :string, default: "No periods to show yet."
+  attr :class, :any, default: nil
+  attr :rest, :global
+
+  def coverage_calendar(assigns) do
+    ~H"""
+    <div class={["space-y-5", @class]} {@rest}>
+      <.empty_state :if={@layout == :empty} title={@empty_label} icon="hero-calendar-days" />
+
+      <section :for={group <- @groups} class="space-y-1.5">
+        <p class="text-sm font-medium">{group.label}</p>
+
+        <div
+          :if={@layout == :grid && @column_labels != []}
+          class={["grid max-w-sm gap-1", calendar_columns_class(@columns)]}
+          aria-hidden="true"
+        >
+          <span :for={label <- @column_labels} class="text-center text-xs favn-text-subtle">
+            {label}
+          </span>
+        </div>
+
+        <!-- Bounded, so a cell stays roughly square whatever the panel is wide. A grid
+        that filled a desktop panel gave each day 140px and read as a row of buttons
+        rather than a month. -->
+        <div class={
+          (@layout == :grid && ["grid max-w-sm gap-1", calendar_columns_class(@columns)]) ||
+            "flex flex-wrap gap-1"
+        }>
+          <span :for={_blank <- calendar_blanks(@layout, group)} class="h-9" aria-hidden="true"></span>
+          <.calendar_cell :for={cell <- group.cells} cell={cell} on_select={@on_select} />
+        </div>
+      </section>
+    </div>
+    """
+  end
+
+  attr :cell, :map, required: true
+  attr :on_select, :string, default: nil
+
+  defp calendar_cell(%{cell: %{state: :missing}, on_select: on_select} = assigns)
+       when is_binary(on_select) do
+    ~H"""
+    <button
+      type="button"
+      id={@cell.id}
+      phx-click={@on_select}
+      phx-value-key={@cell.key}
+      aria-pressed={to_string(@cell.selected?)}
+      title={@cell.title}
+      class={[
+        "h-9 rounded-field border px-1.5 text-center text-sm",
+        (@cell.selected? && "border-primary bg-primary/15 font-medium text-base-content") ||
+          "border-warning/35 bg-warning/10 text-warning hover:bg-warning/20"
+      ]}
+    >
+      {@cell.label}
+    </button>
+    """
+  end
+
+  defp calendar_cell(%{cell: %{state: :missing}} = assigns) do
+    ~H"""
+    <span
+      id={@cell.id}
+      title={@cell.title}
+      class="flex h-9 items-center justify-center rounded-field border border-warning/35 bg-warning/10 px-1.5 text-sm text-warning"
+    >
+      {@cell.label}
+    </span>
+    """
+  end
+
+  defp calendar_cell(assigns) do
+    ~H"""
+    <span
+      id={@cell.id}
+      title={@cell.title}
+      class="flex h-9 items-center justify-center rounded-field bg-base-content/5 px-1.5 text-sm favn-text-subtle"
+    >
+      {@cell.label}
+    </span>
+    """
+  end
+
+  @doc """
   Label and value stacked, for detail panels with many one-line facts.
   """
   attr :label, :string, required: true
@@ -1092,6 +1209,15 @@ defmodule FavnView.UI.Data do
     parts = Enum.map_join(segments, ", ", &"#{&1.count} #{&1.label}")
     if summary, do: "#{summary}: #{parts}", else: parts
   end
+
+  # A list layout fills from the left, so only a grid pads its first cell into the
+  # right column.
+  defp calendar_blanks(:grid, %{blanks: blanks}) when blanks > 0, do: List.duplicate(nil, blanks)
+  defp calendar_blanks(_layout, _group), do: []
+
+  defp calendar_columns_class(7), do: "grid-cols-7"
+  defp calendar_columns_class(6), do: "grid-cols-6"
+  defp calendar_columns_class(_columns), do: "grid-cols-6"
 
   defp grid_class(1), do: "sm:grid-cols-1"
   defp grid_class(2), do: "sm:grid-cols-2"

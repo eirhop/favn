@@ -279,7 +279,7 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
         Example.attrs(
           :coverage_complete,
           AssetDetail.coverage_attrs(%{}),
-          "The coverage page: every expected period has data."
+          "The coverage page: every expected day has data, so every cell is quiet."
         ),
         Example.attrs(
           :active_freshness,
@@ -292,7 +292,17 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
             coverage_gaps: AssetDetail.coverage_gaps(),
             coverage_pagination: AssetDetail.coverage_pagination(true)
           }),
-          "Missing windows, with more pages of gaps behind a cursor."
+          "Two missing days a week apart, and later periods still to page through. " <>
+            "The pattern is the point: a list of window keys could not show it."
+        ),
+        Example.attrs(
+          :selected_coverage_periods,
+          AssetDetail.coverage_attrs(%{
+            coverage: AssetDetail.coverage(:incomplete),
+            coverage_gaps: AssetDetail.coverage_gaps(),
+            coverage_selected: AssetDetail.coverage_selection()
+          }),
+          "Days picked for backfill. The button counts the selection rather than the gaps."
         ),
         Example.attrs(
           :later_coverage_page,
@@ -304,13 +314,24 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
           })
         ),
         Example.attrs(
+          :viewer_coverage,
+          AssetDetail.coverage_attrs(%{
+            can_submit_runs?: false,
+            coverage: AssetDetail.coverage(:incomplete),
+            coverage_gaps: AssetDetail.coverage_gaps()
+          }),
+          "A viewer sees exactly which days are missing and is told why they cannot " <>
+            "fill them. The cells stop being controls rather than looking broken."
+        ),
+        Example.attrs(
           :unknown_coverage,
           AssetDetail.coverage_attrs(%{
             coverage: AssetDetail.coverage(:unknown),
             coverage_policy: nil,
             coverage_gaps: []
           }),
-          "Coverage was never declared. This must not read as complete coverage."
+          "Coverage was never declared. No calendar at all, because an empty grid " <>
+            "would read as complete coverage."
         ),
         Example.attrs(
           :coverage_plan_review,
@@ -318,7 +339,8 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
             coverage: AssetDetail.coverage(:incomplete),
             coverage_gaps: AssetDetail.coverage_gaps(),
             coverage_plan: AssetDetail.coverage_plan()
-          })
+          }),
+          "The plan names the days in words. The operator confirms what they read."
         ),
         Example.attrs(
           :docs_sql,
@@ -400,12 +422,6 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
           AssetDetail.attrs(%{selected_window: List.last(Timeline.refresh_timeline())})
         ),
         Example.attrs(
-          :selected_data_window,
-          AssetDetail.coverage_attrs(%{
-            selected_window: List.last(Timeline.data_coverage_timeline())
-          })
-        ),
-        Example.attrs(
           :run_config_open,
           AssetDetail.attrs(%{run_config_open?: true, run_config: Timeline.default_run_config()})
         ),
@@ -435,11 +451,12 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
         ),
         Example.attrs(
           :non_runnable_window,
-          AssetDetail.coverage_attrs(%{
+          AssetDetail.attrs(%{
             selected_window:
-              Timeline.data_window("2026-06-12", "Jun 12", :muted)
+              Timeline.refresh_window("2026-06-12", "Jun 12", :muted)
               |> Map.merge(%{run_enabled?: false, run_disabled_reason: :invalid_window})
-          })
+          }),
+          "A period the operator picked that cannot be run, and the reason why."
         ),
         Example.attrs(:freshness_fresh, AssetDetail.freshness_attrs(:fresh)),
         Example.attrs(

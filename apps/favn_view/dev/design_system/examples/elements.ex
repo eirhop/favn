@@ -16,6 +16,7 @@ defmodule FavnView.Dev.DesignSystem.Examples.Elements do
 
   use FavnView, :html
 
+  alias FavnView.CoverageCalendar
   alias FavnView.Dev.DesignSystem.Example
 
   @doc """
@@ -447,7 +448,113 @@ defmodule FavnView.Dev.DesignSystem.Examples.Elements do
           },
           "An asset with no history says so instead of showing an empty rail."
         )
+      ],
+      "data/coverage_calendar" => [
+        Example.attrs(
+          :scattered_gaps,
+          calendar_attrs(~w(2026-07-08 2026-07-15 2026-07-22), []),
+          "Three missing days, one a week apart. The pattern is what a list of " <>
+            "window keys cannot show."
+        ),
+        Example.attrs(
+          :consecutive_gaps,
+          calendar_attrs(~w(2026-07-13 2026-07-14 2026-07-15 2026-07-16), []),
+          "A four-day outage. Same count as three scattered days, entirely " <>
+            "different cause."
+        ),
+        Example.attrs(
+          :selected,
+          calendar_attrs(
+            ~w(2026-07-08 2026-07-15),
+            ~w(day:Europe/Oslo:2026-07-08)
+          ),
+          "One of two missing days picked for backfill. Selection has to beat the " <>
+            "missing wash without becoming the loudest thing on the page."
+        ),
+        Example.attrs(
+          :complete,
+          calendar_attrs([], []),
+          "Every expected day has data. The grid is deliberately quiet, so the eye " <>
+            "goes to a gap the moment one appears."
+        ),
+        Example.attrs(
+          :read_only,
+          Map.put(calendar_attrs(~w(2026-07-08), []), :on_select, nil),
+          "Without an event, missing days are marked but not selectable — the state " <>
+            "for a viewer who cannot submit a backfill."
+        ),
+        Example.attrs(
+          :months,
+          %{
+            layout: :grid,
+            columns: 6,
+            column_labels: [],
+            groups:
+              CoverageCalendar.build(%{
+                examined: %{
+                  kind: :month,
+                  timezone: "Europe/Oslo",
+                  from: ~U[2025-09-01 00:00:00Z],
+                  through: ~U[2026-07-01 00:00:00Z],
+                  count: 11
+                },
+                gaps: [
+                  %{
+                    window_key: "month:Europe/Oslo:2025-12",
+                    kind: :month,
+                    start_at: ~U[2025-12-01 00:00:00Z]
+                  }
+                ]
+              }).groups,
+            on_select: "toggle_coverage_window"
+          },
+          "A monthly asset. Cells are months and there are no weekday columns, so " <>
+            "the grid never implies a week that does not exist."
+        ),
+        Example.attrs(
+          :empty,
+          %{layout: :empty, groups: [], empty_label: "Coverage is not tracked here."},
+          "Nothing examined at all. An empty grid would read as complete coverage, " <>
+            "so there is no grid."
+        )
       ]
+    }
+  end
+
+  # Built through `CoverageCalendar.build/1` rather than hand-written, so an example
+  # cannot show a layout the real derivation never produces.
+  defp calendar_attrs(missing_dates, selected) do
+    calendar =
+      CoverageCalendar.build(%{
+        examined: %{
+          kind: :day,
+          timezone: "Europe/Oslo",
+          from: ~U[2026-07-01 00:00:00Z],
+          through: ~U[2026-07-31 00:00:00Z],
+          count: 31
+        },
+        gaps: Enum.map(missing_dates, &calendar_gap/1),
+        selected: selected
+      })
+
+    %{
+      layout: calendar.layout,
+      columns: calendar.columns,
+      column_labels: calendar.column_labels,
+      groups: calendar.groups,
+      on_select: "toggle_coverage_window"
+    }
+  end
+
+  defp calendar_gap(date) do
+    {:ok, start_at, _offset} = DateTime.from_iso8601(date <> "T00:00:00Z")
+
+    %{
+      window_key: "day:Europe/Oslo:" <> date,
+      kind: :day,
+      timezone: "Europe/Oslo",
+      start_at: start_at,
+      end_at: DateTime.add(start_at, 1, :day)
     }
   end
 

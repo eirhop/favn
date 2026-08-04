@@ -500,7 +500,12 @@ defmodule FavnOrchestrator do
     end
   end
 
-  @doc "Plans an exact backfill for all or one page of missing windows."
+  @doc """
+  Plans an exact backfill of missing windows.
+
+  Pass `:window_keys` to plan named windows, `:cursor`/`:limit` to plan one page,
+  or neither to plan every missing window.
+  """
   @spec plan_missing_coverage_backfill(OperatorContext.t(), String.t(), keyword()) ::
           {:ok, map()} | {:error, term()}
   def plan_missing_coverage_backfill(%OperatorContext{} = operator_context, target_id, opts \\ [])

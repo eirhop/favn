@@ -11,6 +11,7 @@ defmodule FavnView.AssetDetailLive do
   alias FavnView.Components.AssetDetailPage
   alias FavnView.Components.ErrorPage
   alias FavnView.Auth.Scope
+  alias FavnView.CoverageCalendar
   alias FavnView.LogsViewModel
 
   @dependency_choices ~w(all none)
@@ -49,6 +50,7 @@ defmodule FavnView.AssetDetailLive do
         coverage_page_cursor: nil,
         coverage_cursor_stack: [],
         coverage_action_error: nil,
+        coverage_selection: MapSet.new(),
         planning_coverage?: false,
         submitting_coverage?: false,
         coverage_attempt: nil,
@@ -56,7 +58,7 @@ defmodule FavnView.AssetDetailLive do
         nav_items: AssetCataloguePage.nav_items()
       )
 
-    {:ok, socket}
+    {:ok, assign_coverage_calendar(socket)}
   end
 
   # The rail navigates rather than assigning, so `handle_params` runs on every mode
@@ -88,12 +90,14 @@ defmodule FavnView.AssetDetailLive do
           coverage_page_cursor: nil,
           coverage_cursor_stack: [],
           coverage_action_error: nil,
+          coverage_selection: MapSet.new(),
           planning_coverage?: false,
           submitting_coverage?: false,
           coverage_attempt: nil,
           run_attempt: nil,
           documentation: nil
         )
+        |> assign_coverage_calendar()
       end
 
     {:noreply,
@@ -102,7 +106,30 @@ defmodule FavnView.AssetDetailLive do
      |> maybe_load_documentation()}
   end
 
+  # Selecting a period narrows the backfill to it. A plan already under review is
+  # discarded, because it was built from a different set than the one now on screen.
   @impl true
+  def handle_event("toggle_coverage_window", %{"key" => key}, socket) when is_binary(key) do
+    selection = socket.assigns.coverage_selection
+
+    selection =
+      if MapSet.member?(selection, key),
+        do: MapSet.delete(selection, key),
+        else: MapSet.put(selection, key)
+
+    {:noreply,
+     socket
+     |> assign(coverage_selection: selection, coverage_plan: nil, coverage_action_error: nil)
+     |> assign_coverage_calendar()}
+  end
+
+  def handle_event("clear_coverage_selection", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(coverage_selection: MapSet.new(), coverage_plan: nil, coverage_action_error: nil)
+     |> assign_coverage_calendar()}
+  end
+
   def handle_event("plan_missing_coverage", _params, socket) do
     asset = socket.assigns.asset
 
@@ -128,7 +155,7 @@ defmodule FavnView.AssetDetailLive do
         case FavnOrchestrator.plan_missing_coverage_backfill(
                actor_context(socket),
                asset.target_id,
-               coverage_page_options(asset, socket.assigns.coverage_page_cursor)
+               coverage_plan_options(asset, socket.assigns.coverage_selection)
              ) do
           {:ok, plan} ->
             {:noreply, assign(socket, planning_coverage?: false, coverage_plan: plan)}
@@ -521,7 +548,7 @@ defmodule FavnView.AssetDetailLive do
       freshness={@asset.freshness}
       coverage={@asset.coverage}
       coverage_policy={@asset.coverage_policy}
-      coverage_gaps={@asset.coverage_gaps}
+      coverage_calendar={@coverage_calendar}
       coverage_pagination={@asset.coverage_pagination}
       coverage_page_cursor={@coverage_page_cursor}
       compatibility={@asset.compatibility}
@@ -715,6 +742,7 @@ defmodule FavnView.AssetDetailLive do
       coverage: Map.get(detail, :coverage),
       coverage_policy: Map.get(detail, :coverage_policy),
       coverage_gaps: Map.get(detail, :coverage_gaps, []),
+      coverage_examined: Map.get(detail, :coverage_examined),
       coverage_pagination:
         Map.get(detail, :coverage_pagination, %{limit: 100, has_more: false, next_cursor: nil}),
       compatibility: compatibility,
@@ -1006,19 +1034,50 @@ defmodule FavnView.AssetDetailLive do
           asset
           |> Map.put(:coverage, page.summary)
           |> Map.put(:coverage_gaps, page.items)
+          |> Map.put(:coverage_examined, page.examined)
           |> Map.put(:coverage_pagination, page.pagination)
 
+        # The selection is dropped with the page it was made on. Carrying it would
+        # mean a button reading "Backfill 4 selected days" beside a calendar showing
+        # none of them.
         {:noreply,
-         assign(socket,
+         socket
+         |> assign(
            asset: asset,
            coverage_page_cursor: cursor,
            coverage_cursor_stack: cursor_stack,
+           coverage_selection: MapSet.new(),
            coverage_plan: nil,
            coverage_action_error: nil
-         )}
+         )
+         |> assign_coverage_calendar()}
 
       {:error, reason} ->
         {:noreply, assign(socket, :coverage_action_error, coverage_error_label(reason))}
+    end
+  end
+
+  defp assign_coverage_calendar(%{assigns: %{asset: nil}} = socket),
+    do: assign(socket, :coverage_calendar, CoverageCalendar.build(%{}))
+
+  defp assign_coverage_calendar(%{assigns: %{asset: asset}} = socket) do
+    calendar =
+      CoverageCalendar.build(%{
+        examined: Map.get(asset, :coverage_examined),
+        gaps: Map.get(asset, :coverage_gaps, []),
+        selected: socket.assigns.coverage_selection
+      })
+
+    assign(socket, :coverage_calendar, calendar)
+  end
+
+  # No selection means every missing period, which is what the button offers when
+  # nothing is picked. A selection plans exactly those periods and nothing else.
+  defp coverage_plan_options(asset, selection) do
+    if MapSet.size(selection) == 0 do
+      [evaluated_at: asset.coverage.evaluated_at]
+    else
+      [evaluated_at: asset.coverage.evaluated_at, window_keys: MapSet.to_list(selection)]
     end
   end
 
