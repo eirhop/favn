@@ -43,7 +43,12 @@
     {"id": "WEB-022", "method": "GET", "path": "/recoveries", "access": "operator"},
     {"id": "WEB-023", "method": "GET", "path": "/account/security", "access": "viewer"},
     {"id": "WEB-024", "method": "GET", "path": "/admin", "access": "admin"},
-    {"id": "WEB-025", "method": "GET", "path": "/runners", "access": "viewer"}
+    {"id": "WEB-025", "method": "GET", "path": "/runners", "access": "viewer"},
+    {"id": "WEB-026", "method": "GET", "path": "/assets/{asset_id}/runs", "access": "viewer"},
+    {"id": "WEB-027", "method": "GET", "path": "/assets/{asset_id}/runs/{run_id}", "access": "viewer"},
+    {"id": "WEB-028", "method": "GET", "path": "/assets/{asset_id}/coverage", "access": "viewer"},
+    {"id": "WEB-029", "method": "GET", "path": "/assets/{asset_id}/docs", "access": "viewer"},
+    {"id": "WEB-030", "method": "GET", "path": "/assets/{asset_id}/diagnostics", "access": "viewer"}
   ],
   "api": [
     {"id": "API-001", "method": "GET", "path": "/api/orchestrator/v1/health", "access": "public"},

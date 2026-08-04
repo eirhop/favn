@@ -522,7 +522,10 @@ defmodule FavnView.AssetDetailLive do
   defp active_mode(_live_action), do: :overview
 
   # A SQL asset's source is a content-addressed package that has to be fetched and
-  # verified, so it is read when the page that shows it opens and not before.
+  # verified, so it is read when the page that shows it opens and not before. An asset
+  # the catalogue does not have renders the not-found page, so there is nothing to fetch.
+  defp maybe_load_documentation(%{assigns: %{asset: nil}} = socket), do: socket
+
   defp maybe_load_documentation(%{assigns: %{live_action: :docs, documentation: nil}} = socket) do
     target_id = AssetRoute.from_param(socket.assigns.asset_id)
 
