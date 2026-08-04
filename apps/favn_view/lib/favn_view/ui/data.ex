@@ -763,15 +763,24 @@ defmodule FavnView.UI.Data do
       <.lineage_wires count={length(@inputs)} direction={:in} />
       <.lineage_stack_arrow />
 
-      <div class="flex shrink-0 items-center justify-center md:px-1">
-        <div
-          class="flex min-w-0 max-w-[14rem] items-center gap-2 rounded-box border border-primary/40 bg-primary/10 px-3 py-2"
-          data-testid="lineage-centre"
-        >
-          <.icon :if={@centre[:icon]} name={@centre.icon} size={:sm} class="shrink-0 text-primary" />
-          <span class="truncate font-medium text-primary" title={@centre.label}>
-            {@centre.label}
-          </span>
+      <div class="flex shrink-0 flex-col md:px-1">
+        <.lineage_heading />
+
+        <div class="flex flex-1 items-center justify-center">
+          <div
+            class="flex min-w-0 items-center gap-2 rounded-box border border-primary/40 bg-primary/10 px-3 py-2"
+            data-testid="lineage-centre"
+          >
+            <.icon
+              :if={@centre[:icon]}
+              name={@centre.icon}
+              size={:sm}
+              class="shrink-0 text-primary"
+            />
+            <span class="truncate font-medium text-primary" title={@centre.label}>
+              {@centre.label}
+            </span>
+          </div>
         </div>
       </div>
 
@@ -790,16 +799,37 @@ defmodule FavnView.UI.Data do
   defp lineage_column(assigns) do
     ~H"""
     <div class="flex min-w-0 flex-1 flex-col">
-      <p class="mb-2 text-sm favn-text-subtle">{@label}</p>
+      <.lineage_heading label={@label} />
 
       <p :if={@nodes == []} class="text-sm favn-text-muted">{@empty}</p>
 
-      <ul :if={@nodes != []} class="flex flex-1 flex-col justify-around gap-2">
-        <li :for={node <- @nodes} class="min-w-0">
+      <!-- `auto-rows-fr` is `minmax(0, 1fr)`, so slot `i` of `n` centres exactly at
+      `(i + 0.5) / n` however tall a node turns out to be — which is what the drawn
+      wires assume. Neither `justify-around` nor `flex-1` slots manage that: a node
+      that wraps to two lines takes more than its share and pulls its neighbours off
+      the line drawn to meet them, because a percentage flex basis resolves against a
+      height this container does not definitely have. No gap for the same reason;
+      the separation is the slack inside each slot. -->
+      <ul :if={@nodes != []} class="grid min-h-fit flex-1 auto-rows-fr">
+        <li :for={node <- @nodes} class="flex min-w-0 items-center py-1">
           <.lineage_node node={node} />
         </li>
       </ul>
     </div>
+    """
+  end
+
+  # Every column carries this row, the wires and the centre included, so all four
+  # measure their vertical space from the same origin. Without it the SVG spanned
+  # heading-plus-list while the nodes were spread over the list alone, and every wire
+  # met its node half a heading too high. The invisible copy is a zero-width space
+  # rather than a fixed height, so it cannot drift from the real one.
+  attr :label, :string, default: nil
+
+  defp lineage_heading(assigns) do
+    ~H"""
+    <p :if={@label} class="mb-2 text-sm favn-text-subtle">{@label}</p>
+    <p :if={is_nil(@label)} class="mb-2 hidden text-sm md:block" aria-hidden="true">&#8203;</p>
     """
   end
 
@@ -810,7 +840,7 @@ defmodule FavnView.UI.Data do
     <.link
       :if={@node[:navigate]}
       navigate={@node.navigate}
-      class="favn-surface-control flex min-w-0 items-center gap-2 rounded-box px-3 py-2 transition-colors hover:border-primary/40"
+      class="favn-surface-control flex min-w-0 flex-1 items-center gap-2 rounded-box px-3 py-2 transition-colors hover:border-primary/40"
       title={@node[:title] || @node.label}
     >
       <.icon :if={@node[:icon]} name={@node.icon} size={:sm} class="shrink-0 favn-text-subtle" />
@@ -839,23 +869,26 @@ defmodule FavnView.UI.Data do
     assigns = assign(assigns, :paths, lineage_paths(assigns.count, assigns.direction))
 
     ~H"""
-    <svg
-      :if={@paths != []}
-      class="hidden w-10 shrink-0 self-stretch favn-text-subtle md:block"
-      viewBox="0 0 100 100"
-      preserveAspectRatio="none"
-      aria-hidden="true"
-    >
-      <path
-        :for={path <- @paths}
-        d={path}
-        fill="none"
-        stroke="currentColor"
-        stroke-width="1"
-        vector-effect="non-scaling-stroke"
-      />
-    </svg>
-    <div :if={@paths == []} class="hidden w-10 shrink-0 md:block"></div>
+    <div class="hidden w-10 shrink-0 flex-col md:flex">
+      <.lineage_heading />
+
+      <svg
+        :if={@paths != []}
+        class="w-full flex-1 favn-text-subtle"
+        viewBox="0 0 100 100"
+        preserveAspectRatio="none"
+        aria-hidden="true"
+      >
+        <path
+          :for={path <- @paths}
+          d={path}
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1"
+          vector-effect="non-scaling-stroke"
+        />
+      </svg>
+    </div>
     """
   end
 
