@@ -30,6 +30,7 @@ defmodule Favn.Assets.Planner do
       `:none` includes target refs only.
   """
   @type dependencies_mode :: :all | :none
+  @type visited_refs :: %{optional(Ref.t()) => true}
 
   @type backfill_anchor_range :: %{
           required(:kind) => Anchor.kind(),
@@ -227,19 +228,23 @@ defmodule Favn.Assets.Planner do
   defp selected_refs(_index, target_refs, :none), do: {:ok, MapSet.new(target_refs)}
 
   defp selected_refs(index, target_refs, :all) do
-    walk_upstream(index.upstream, target_refs, MapSet.new())
+    with {:ok, visited} <- walk_upstream(index.upstream, target_refs, %{}) do
+      {:ok, visited |> Map.keys() |> MapSet.new()}
+    end
   end
 
+  @spec walk_upstream(%{Ref.t() => MapSet.t(Ref.t())}, [Ref.t()], visited_refs()) ::
+          {:ok, visited_refs()} | {:error, :asset_not_found}
   defp walk_upstream(_upstream, [], selected), do: {:ok, selected}
 
   defp walk_upstream(upstream, [ref | rest], selected) do
-    if MapSet.member?(selected, ref) do
+    if Map.has_key?(selected, ref) do
       walk_upstream(upstream, rest, selected)
     else
       case Map.fetch(upstream, ref) do
         {:ok, dependencies} ->
           pending = Enum.reduce(dependencies, rest, &[&1 | &2])
-          walk_upstream(upstream, pending, MapSet.put(selected, ref))
+          walk_upstream(upstream, pending, Map.put(selected, ref, true))
 
         :error ->
           {:error, :asset_not_found}

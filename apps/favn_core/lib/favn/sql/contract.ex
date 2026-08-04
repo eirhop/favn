@@ -296,8 +296,8 @@ defmodule Favn.SQL.Contract do
     do: raise(ArgumentError, "invalid contract unique key #{inspect(other)}")
 
   defp validate_fields!(fields) do
-    allowed = MapSet.new([:grain, :columns, :compositions, :unique_keys, :row_counts])
-    unknown = fields |> Map.keys() |> Enum.reject(&MapSet.member?(allowed, &1)) |> Enum.sort()
+    allowed = [:grain, :columns, :compositions, :unique_keys, :row_counts]
+    unknown = fields |> Map.keys() |> Enum.reject(&(&1 in allowed)) |> Enum.sort()
 
     if unknown != [],
       do: raise(ArgumentError, "invalid SQL output contract fields #{inspect(unknown)}")

@@ -8,14 +8,15 @@ defmodule Favn.Manifest.Serializer do
 
   alias Favn.Manifest.Build
 
-  @compile_time_only_keys MapSet.new([
-                            "diagnostics",
-                            "generated_at",
-                            "compiler_version",
-                            "build_metadata"
-                          ])
+  @compile_time_only_keys [
+    "diagnostics",
+    "generated_at",
+    "compiler_version",
+    "build_metadata"
+  ]
 
   @type error :: {:encode_failed, term()} | {:decode_failed, term()}
+  @type dropped_keys :: [String.t()]
 
   @doc """
   Encodes an arbitrary JSON-compatible value with Favn's canonical ordering.
@@ -74,6 +75,7 @@ defmodule Favn.Manifest.Serializer do
 
   def manifest_payload(other), do: other
 
+  @spec normalize_value(term(), dropped_keys()) :: term()
   defp normalize_value(%DateTime{} = datetime, _dropped_keys), do: DateTime.to_iso8601(datetime)
 
   defp normalize_value(%MapSet{} = set, dropped_keys) do
@@ -100,7 +102,7 @@ defmodule Favn.Manifest.Serializer do
     |> Enum.reduce(%{}, fn {key, value}, acc ->
       normalized_key = normalize_key(key)
 
-      if MapSet.member?(dropped_keys, normalized_key) do
+      if normalized_key in dropped_keys do
         acc
       else
         Map.put(acc, normalized_key, normalize_value(value, dropped_keys))

@@ -81,8 +81,8 @@ defmodule Favn.ResourceRecovery.Policy do
   defp validate_max_age(value), do: {:error, {:invalid_resource_recovery_max_age_ms, value}}
 
   defp reject_unknown_keys(value) do
-    allowed = MapSet.new([:max_age_ms, "max_age_ms"])
-    unknown = value |> Map.keys() |> Enum.reject(&MapSet.member?(allowed, &1))
+    allowed = [:max_age_ms, "max_age_ms"]
+    unknown = value |> Map.keys() |> Enum.reject(&(&1 in allowed))
 
     if unknown == [],
       do: :ok,

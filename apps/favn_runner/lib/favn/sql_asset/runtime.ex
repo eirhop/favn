@@ -1636,13 +1636,9 @@ defmodule Favn.SQLAsset.Runtime do
     end)
   end
 
-  defp definition_relation_inputs(%Definition{}), do: []
-
   defp resolved_relations(refs) when is_list(refs) do
     Enum.map(refs, fn ref -> Map.get(ref, :relation) || Map.get(ref, "relation") end)
   end
-
-  defp resolved_relations(_refs), do: []
 
   defp relation_catalog(%RelationRef{catalog: catalog}) when is_binary(catalog) and catalog != "",
     do: [catalog]
@@ -1676,9 +1672,6 @@ defmodule Favn.SQLAsset.Runtime do
     do: Keyword.put(opts, :required_resources, resources)
 
   defp map_sql_result_error({:ok, result}, _asset_ref, _phase), do: {:ok, result}
-
-  defp map_sql_result_error({:ok, write_plan, result}, _asset_ref, _phase),
-    do: {:ok, write_plan, result}
 
   defp map_sql_result_error({:error, %SQLError{} = error}, asset_ref, phase) do
     safe_error = SQLError.redact(error)

@@ -65,10 +65,6 @@ defmodule FavnRunner.ManifestResolver do
     end
   end
 
-  defp normalize_refs(asset_ref, _asset_refs) do
-    include_asset_ref(asset_ref, [])
-  end
-
   defp include_asset_ref(nil, refs), do: {:ok, refs}
 
   defp include_asset_ref(asset_ref, refs) do

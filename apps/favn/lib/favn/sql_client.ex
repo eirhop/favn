@@ -507,8 +507,6 @@ defmodule Favn.SQLClient do
     end
   end
 
-  defp relation_scope(%RelationRef{}), do: nil
-
   defp catalog_name(catalog) when is_binary(catalog) and catalog != "", do: catalog
 
   defp catalog_name(catalog) when is_atom(catalog) and not is_nil(catalog),

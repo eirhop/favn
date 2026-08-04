@@ -79,10 +79,9 @@ defmodule Favn.CircuitBreaker.Policy do
   def max_probe_after_ms, do: @max_probe_after_ms
 
   defp reject_unknown_keys(value) do
-    allowed =
-      MapSet.new([:failure_threshold, :probe_after_ms, "failure_threshold", "probe_after_ms"])
+    allowed = [:failure_threshold, :probe_after_ms, "failure_threshold", "probe_after_ms"]
 
-    unknown = value |> Map.keys() |> Enum.reject(&MapSet.member?(allowed, &1))
+    unknown = value |> Map.keys() |> Enum.reject(&(&1 in allowed))
 
     if unknown == [],
       do: :ok,
