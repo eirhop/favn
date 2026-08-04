@@ -36,6 +36,7 @@ defmodule FavnView.AssetDetailLive do
         asset: asset,
         selected_run_id: nil,
         selected_run: nil,
+        documentation: nil,
         active_timeline: :refresh,
         selected_window: nil,
         run_config_open?: false,
@@ -90,11 +91,15 @@ defmodule FavnView.AssetDetailLive do
           planning_coverage?: false,
           submitting_coverage?: false,
           coverage_attempt: nil,
-          run_attempt: nil
+          run_attempt: nil,
+          documentation: nil
         )
       end
 
-    {:noreply, assign_selected_run(socket, Map.get(params, "run_id"))}
+    {:noreply,
+     socket
+     |> assign_selected_run(Map.get(params, "run_id"))
+     |> maybe_load_documentation()}
   end
 
   @impl true
@@ -512,6 +517,7 @@ defmodule FavnView.AssetDetailLive do
       downstream={@asset.downstream}
       selected_run_id={@selected_run_id}
       selected_run={@selected_run}
+      documentation={@documentation}
       freshness={@asset.freshness}
       coverage={@asset.coverage}
       coverage_policy={@asset.coverage_policy}
@@ -607,8 +613,33 @@ defmodule FavnView.AssetDetailLive do
   defp active_mode(:runs), do: :runs
   defp active_mode(:run), do: :runs
   defp active_mode(:coverage), do: :coverage
+  defp active_mode(:docs), do: :docs
   defp active_mode(:diagnostics), do: :diagnostics
   defp active_mode(_live_action), do: :overview
+
+  # A SQL asset's source is a content-addressed package that has to be fetched and
+  # verified, so it is read when the page that shows it opens and not before.
+  defp maybe_load_documentation(%{assigns: %{live_action: :docs, documentation: nil}} = socket) do
+    target_id = AssetRoute.from_param(socket.assigns.asset_id)
+
+    result =
+      case FavnOrchestrator.active_asset_documentation(actor_context(socket), target_id) do
+        {:ok, documentation} ->
+          {:ok, documentation}
+
+        {:error, reason} ->
+          Logger.error(
+            "asset_documentation.load failed asset_id=#{inspect(socket.assigns.asset_id)} " <>
+              "reason=#{inspect(reason)}"
+          )
+
+          {:error, :backend_unavailable}
+      end
+
+    assign(socket, :documentation, result)
+  end
+
+  defp maybe_load_documentation(socket), do: socket
 
   defp load_asset(operator_context, asset_id, run_context_id) do
     target_id = AssetRoute.from_param(asset_id)

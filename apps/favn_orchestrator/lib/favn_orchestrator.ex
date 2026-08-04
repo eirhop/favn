@@ -92,6 +92,7 @@ defmodule FavnOrchestrator do
   @type asset_timeline_window :: Catalogue.asset_timeline_window()
   @type asset_detail :: Catalogue.asset_detail()
   @type asset_dependency :: Catalogue.asset_dependency()
+  @type asset_documentation :: Catalogue.asset_documentation()
   @type asset_run_history_entry :: Catalogue.asset_run_history_entry()
   @type asset_run_detail :: Catalogue.asset_run_detail()
   @type asset_freshness_reason :: Catalogue.asset_freshness_reason()
@@ -443,6 +444,22 @@ defmodule FavnOrchestrator do
       when is_binary(target_id) and is_list(opts) do
     with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer) do
       Catalogue.active_asset_detail(context, target_id, opts)
+    end
+  end
+
+  @doc """
+  Returns what one asset is and how it is written, for an operator workspace.
+
+  Answers "what does this thing do" — the author's own documentation, its tags and
+  owner, where it lands, and then whichever source it has: the query text for a SQL
+  asset, the module and function for an Elixir one.
+  """
+  @spec active_asset_documentation(OperatorContext.t(), String.t()) ::
+          {:ok, asset_documentation()} | {:error, term()}
+  def active_asset_documentation(%OperatorContext{} = operator_context, target_id)
+      when is_binary(target_id) do
+    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer) do
+      Catalogue.active_asset_documentation(context, target_id)
     end
   end
 

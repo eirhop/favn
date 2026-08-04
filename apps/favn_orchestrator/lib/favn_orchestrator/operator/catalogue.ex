@@ -7,12 +7,14 @@ defmodule FavnOrchestrator.Operator.Catalogue do
   must continue to call the facade rather than this implementation module.
   """
 
+  alias Favn.Manifest.ExecutionPackage
   alias Favn.Manifest.Version
   alias Favn.RuntimeInput.Pin
   alias Favn.Window.Key, as: WindowKey
   alias FavnOrchestrator.AssetRunContext
   alias FavnOrchestrator.Backfill.AssetWindowState
   alias FavnOrchestrator.Coverage
+  alias FavnOrchestrator.ExecutionPackages
   alias FavnOrchestrator.Freshness.StateLoader
   alias FavnOrchestrator.ManifestStore
   alias FavnOrchestrator.Operator.Catalogue.Assurance
@@ -141,6 +143,23 @@ defmodule FavnOrchestrator.Operator.Catalogue do
           required(:run_enabled?) => boolean(),
           required(:run_disabled_reason) => atom() | nil,
           required(:run_label) => String.t() | nil
+        }
+
+  @type asset_sql_documentation :: %{
+          required(:sql) => String.t(),
+          required(:reads) => [%{name: String.t() | nil, asset_ref: String.t() | nil}],
+          required(:fragments) => [%{name: String.t() | nil, kind: String.t() | nil}],
+          required(:resolver) => String.t() | nil
+        }
+
+  @type asset_documentation :: %{
+          required(:description) => String.t() | nil,
+          required(:type) => String.t() | nil,
+          required(:metadata) => [%{key: String.t(), value: String.t()}],
+          required(:relation) => map() | nil,
+          required(:entrypoint) =>
+            %{module: String.t(), function: String.t(), arity: non_neg_integer() | nil} | nil,
+          required(:sql) => asset_sql_documentation() | nil
         }
 
   @type asset_dependency :: %{
@@ -369,6 +388,125 @@ defmodule FavnOrchestrator.Operator.Catalogue do
       {:error, _reason} = error -> error
     end
   end
+
+  @doc """
+  Returns what one asset is and how it is written, for the documentation page.
+
+  Separate from `active_asset_detail/3` because the source of a SQL asset is a
+  content-addressed package that has to be fetched and verified, and no other page
+  needs it. An asset with no package reports `nil` source rather than failing: that is
+  every asset that is not SQL, and what an Elixir asset has instead is its entrypoint.
+  """
+  @spec active_asset_documentation(WorkspaceContext.t(), String.t()) ::
+          {:ok, asset_documentation()} | {:error, term()}
+  def active_asset_documentation(%WorkspaceContext{} = context, target_id)
+      when is_binary(target_id) do
+    with {:ok, {runtime, grants}} <-
+           ManifestStore.get_active_deployment(context, customer_visible_only: true),
+         true <- MapSet.member?(granted_ids(grants, :asset), target_id),
+         {:ok, version} <- ManifestStore.get_manifest(context, runtime.manifest_version_id),
+         {:ok, asset} <- asset_for_target(version, target_id),
+         {:ok, package} <-
+           ExecutionPackages.fetch(context, runtime.deployment_id, version, asset) do
+      {:ok, asset_documentation_entry(asset, package)}
+    else
+      false -> {:error, :not_found}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp asset_documentation_entry(asset, package) do
+    target = Targets.asset(asset)
+
+    %{
+      description: asset.description,
+      type: target.type,
+      metadata: normalize_metadata(asset.metadata),
+      relation: target.relation,
+      entrypoint: entrypoint(asset),
+      sql: sql_documentation(package)
+    }
+  end
+
+  # A SQL asset's source is its query; there is no Elixir function to name.
+
+  defp entrypoint(%{type: :sql}), do: nil
+
+  defp entrypoint(%{module: module, execution: execution}) when is_atom(module) do
+    case field(execution, :entrypoint) do
+      nil ->
+        nil
+
+      name ->
+        %{module: inspect(module), function: to_string(name), arity: field(execution, :arity)}
+    end
+  end
+
+  defp entrypoint(_asset), do: nil
+
+  defp sql_documentation(%ExecutionPackage{sql_execution: execution})
+       when not is_nil(execution) do
+    %{
+      sql: execution.sql,
+      reads: Enum.map(List.wrap(execution.relation_inputs), &relation_input_label/1),
+      fragments: Enum.map(List.wrap(execution.sql_definitions), &sql_definition_label/1),
+      resolver: runtime_input_resolver(execution.runtime_inputs)
+    }
+  end
+
+  defp sql_documentation(_package), do: nil
+
+  defp relation_input_label(input) do
+    %{
+      name: field(input, :name) |> to_label(),
+      asset_ref: input |> field(:asset_ref) |> ref_label()
+    }
+  end
+
+  defp sql_definition_label(definition) do
+    %{
+      name: definition |> field(:name) |> to_label(),
+      kind: definition |> field(:kind) |> to_label()
+    }
+  end
+
+  defp runtime_input_resolver(nil), do: nil
+  defp runtime_input_resolver(inputs), do: inputs |> field(:resolver) |> ref_label()
+
+  defp to_label(nil), do: nil
+  defp to_label(value) when is_binary(value), do: value
+  defp to_label(value), do: to_string(value)
+
+  defp ref_label(nil), do: nil
+
+  defp ref_label({module, name}) when is_atom(module) and is_atom(name),
+    do: Targets.ref_string({module, name})
+
+  defp ref_label(module) when is_atom(module), do: inspect(module)
+  defp ref_label(value) when is_binary(value), do: value
+  defp ref_label(value), do: inspect(value)
+
+  # Metadata is authored freely, so it is reported as sorted string pairs rather than
+  # trusted to be a flat map of scalars the UI can print.
+  defp normalize_metadata(metadata) when is_map(metadata) do
+    metadata
+    |> Enum.reject(fn {_key, value} -> value in [nil, "", [], %{}] end)
+    |> Enum.map(fn {key, value} -> %{key: to_label(key), value: metadata_label(value)} end)
+    |> Enum.sort_by(& &1.key)
+  end
+
+  defp normalize_metadata(_metadata), do: []
+
+  defp metadata_label(value) when is_binary(value), do: value
+  defp metadata_label(value) when is_number(value) or is_atom(value), do: to_string(value)
+
+  defp metadata_label(value) when is_list(value) do
+    if Enum.all?(value, &(is_binary(&1) or is_atom(&1) or is_number(&1))),
+      do: Enum.map_join(value, ", ", &to_string/1),
+      else: inspect(value)
+  end
+
+  defp metadata_label(value), do: inspect(value)
 
   @doc """
   Returns one asset's view of one of its own runs in a workspace deployment.

@@ -77,6 +77,79 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.AssetDetail do
   end
 
   @doc """
+  The documentation page for one asset kind.
+
+  `:sql` and `:elixir` are separate fixtures rather than one with a flag, because the
+  bottom half of the page is genuinely different for each and a shared fixture would
+  let one of them render half-empty without anyone noticing.
+  """
+  @spec documentation_attrs(:sql | :elixir | :undocumented | :error) :: map()
+  def documentation_attrs(kind) do
+    attrs(%{active_mode: :docs, documentation: documentation(kind)})
+  end
+
+  defp documentation(:error), do: {:error, :backend_unavailable}
+
+  defp documentation(:sql) do
+    {:ok,
+     %{
+       description:
+         "One row per customer order, joined to the customer dimension.\n" <>
+           "Cancelled orders are excluded.",
+       type: "sql",
+       metadata: [
+         %{key: "owner", value: "data-platform@efb.no"},
+         %{key: "tags", value: "finance, daily, gdpr-personal"}
+       ],
+       relation: relation(),
+       entrypoint: nil,
+       sql: %{
+         sql: """
+         select
+             o.order_id,
+             o.customer_id,
+             o.placed_at,
+             sum(l.line_total) as order_total
+         from {{ ref(:stg_orders) }} as o
+         join {{ ref(:stg_customers) }} as c on c.customer_id = o.customer_id
+         where o.status <> 'cancelled'
+         group by 1, 2, 3
+         """,
+         reads: [
+           %{name: "stg_orders", asset_ref: "Elixir.MyApp.Staging.Orders:asset"},
+           %{name: "stg_customers", asset_ref: "Elixir.MyApp.Staging.Customers:asset"}
+         ],
+         fragments: [%{name: "audit_metadata", kind: "fragment"}],
+         resolver: "MyApp.Resolvers.LandedOrders"
+       }
+     }}
+  end
+
+  defp documentation(:elixir) do
+    {:ok,
+     %{
+       description: "Loads the daily order extract from the finance SFTP drop.",
+       type: "elixir",
+       metadata: [%{key: "owner", value: "data-platform@efb.no"}],
+       relation: %{connection: "warehouse", catalog: "source", schema: nil, name: "raw_orders"},
+       entrypoint: %{module: "MyApp.Sources.RawOrders", function: "load", arity: 1},
+       sql: nil
+     }}
+  end
+
+  defp documentation(:undocumented) do
+    {:ok,
+     %{
+       description: nil,
+       type: "elixir",
+       metadata: [],
+       relation: nil,
+       entrypoint: nil,
+       sql: nil
+     }}
+  end
+
+  @doc """
   A fully qualified four-level relation address.
   """
   @spec relation() :: map()

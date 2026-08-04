@@ -321,6 +321,22 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
           })
         ),
         Example.attrs(
+          :docs_sql,
+          AssetDetail.documentation_attrs(:sql),
+          "A SQL asset: the author's own words, then the query and what it reads."
+        ),
+        Example.attrs(
+          :docs_elixir,
+          AssetDetail.documentation_attrs(:elixir),
+          "An Elixir asset has no query, so it names the function Favn calls instead."
+        ),
+        Example.attrs(
+          :docs_undocumented,
+          AssetDetail.documentation_attrs(:undocumented),
+          "Nothing authored at all. The page says how to fix that rather than " <>
+            "rendering four empty panels."
+        ),
+        Example.attrs(
           :diagnostics,
           AssetDetail.diagnostics_attrs(%{}),
           "The diagnostics page on a healthy target."

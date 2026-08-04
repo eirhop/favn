@@ -165,12 +165,13 @@ defmodule FavnView.Components.AssetRunTimelineTest do
     windowed = AssetDetailPage.detail_modes("orders", true)
     full_refresh = AssetDetailPage.detail_modes("orders", false)
 
-    assert Enum.map(windowed, & &1.id) == [:overview, :runs, :coverage, :diagnostics]
+    assert Enum.map(windowed, & &1.id) == [:overview, :runs, :coverage, :docs, :diagnostics]
 
     # Coverage asks whether every expected period has data. A full-refresh asset
     # replaces its whole relation every run, so the question does not apply and the
-    # destination is absent rather than empty.
-    assert Enum.map(full_refresh, & &1.id) == [:overview, :runs, :diagnostics]
+    # destination is absent rather than empty. Every other destination is there for
+    # both, because every asset has runs, documentation and a configuration.
+    assert Enum.map(full_refresh, & &1.id) == [:overview, :runs, :docs, :diagnostics]
 
     # Every destination is a URL. The modes used to be an assign, so a refresh lost
     # the tab and the back button walked out of the asset entirely.

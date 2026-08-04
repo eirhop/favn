@@ -65,6 +65,10 @@ defmodule FavnView.Components.AssetDetailPage do
     default: nil,
     doc: "`{:ok, detail}`, `{:not_found, id}`, `{:error, reason}`, or nil when none is selected"
 
+  attr :documentation, :any,
+    default: nil,
+    doc: "`{:ok, docs}` or `{:error, reason}`; nil until the documentation page opens"
+
   attr :coverage_plan, :map, default: nil
   attr :coverage_action_error, :string, default: nil
   attr :planning_coverage?, :boolean, default: false
@@ -133,6 +137,7 @@ defmodule FavnView.Components.AssetDetailPage do
         downstream={@downstream}
         selected_run_id={@selected_run_id}
         selected_run={@selected_run}
+        documentation={@documentation}
         title={@title}
         coverage_plan={@coverage_plan}
         coverage_action_error={@coverage_action_error}
@@ -202,6 +207,10 @@ defmodule FavnView.Components.AssetDetailPage do
   attr :selected_run, :any,
     default: nil,
     doc: "`{:ok, detail}`, `{:not_found, id}`, `{:error, reason}`, or nil when none is selected"
+
+  attr :documentation, :any,
+    default: nil,
+    doc: "`{:ok, docs}` or `{:error, reason}`; nil until the documentation page opens"
 
   attr :coverage_plan, :map, default: nil
   attr :coverage_action_error, :string, default: nil
@@ -282,6 +291,12 @@ defmodule FavnView.Components.AssetDetailPage do
         data-testid="asset-run-timeline"
       />
     </div>
+
+    <.asset_documentation
+      :if={@active_mode == :docs}
+      title={@title}
+      documentation={@documentation}
+    />
 
     <.compatibility_panel
       :if={@active_mode == :diagnostics && @compatibility}
@@ -920,6 +935,152 @@ defmodule FavnView.Components.AssetDetailPage do
     </div>
     """
   end
+
+  @doc """
+  What the asset is and how it is written.
+
+  The top half reads the same whatever the asset is: the author's own documentation,
+  its tags, its full address. The bottom half is the source, and that genuinely
+  differs — a SQL asset has a query and the tables it reads, an Elixir asset has a
+  module and a function. Showing one layout for both would mean showing empty fields
+  half the time.
+  """
+  attr :documentation, :any,
+    default: nil,
+    doc: "`{:ok, docs}`, `{:error, reason}`, or nil while the page has not opened"
+
+  attr :title, :string, required: true
+
+  def asset_documentation(assigns) do
+    docs = documentation_or_nil(assigns.documentation)
+
+    assigns =
+      assigns
+      |> assign(:docs, docs)
+      |> assign(:sql, docs && docs[:sql])
+
+    ~H"""
+    <div class="mx-auto w-full max-w-5xl space-y-6" data-testid="asset-documentation">
+      <.error_state
+        :if={match?({:error, _reason}, @documentation)}
+        title="Documentation cannot be read"
+        description="The control plane did not return this asset's definition."
+        data-testid="asset-documentation-error"
+      />
+
+      <.panel :if={@docs} padding={:none} class="p-6 sm:p-8">
+        <h2 class="text-sm uppercase tracking-[0.18em] favn-text-subtle">What this is</h2>
+
+        <p :if={@docs[:description]} class="mt-3 max-w-3xl whitespace-pre-line">
+          {@docs.description}
+        </p>
+
+        <p :if={is_nil(@docs[:description])} class="mt-3 text-sm favn-text-muted">
+          This asset has no documentation. Add a <code class="font-mono">@doc</code> to the
+          module and it appears here.
+        </p>
+
+        <dl :if={@docs[:metadata] != []} class="mt-6 space-y-2" data-testid="asset-tags">
+          <.field_row :for={entry <- @docs.metadata} label={humanize(entry.key)}>
+            {entry.value}
+          </.field_row>
+        </dl>
+
+        <div class="mt-6 flex flex-wrap items-baseline gap-x-3 border-t border-base-content/10 pt-4">
+          <span class="text-sm favn-text-subtle">Full address</span>
+          <.mono value={full_relation_address(@docs[:relation])} />
+        </div>
+      </.panel>
+
+      <.panel :if={@sql} padding={:none} class="p-6 sm:p-8" data-testid="asset-sql">
+        <div class="flex flex-wrap items-baseline justify-between gap-2">
+          <h2 class="text-sm uppercase tracking-[0.18em] favn-text-subtle">The query</h2>
+          <span class="text-sm favn-text-subtle">{sql_line_count(@sql.sql)}</span>
+        </div>
+
+        <.fact_list
+          class="mt-4"
+          columns={2}
+          facts={
+            [
+              %{label: "Reads", value: reads_label(@sql.reads)},
+              @sql[:resolver] &&
+                %{label: "Input resolver", value: @sql.resolver, mono: true}
+            ]
+            |> Enum.filter(& &1)
+          }
+        />
+
+        <div :if={@sql[:fragments] != []} class="mt-4 flex flex-wrap items-baseline gap-2">
+          <span class="text-sm favn-text-subtle">Built from</span>
+          <.badge :for={fragment <- @sql.fragments} variant={:outline}>{fragment.name}</.badge>
+        </div>
+
+        <pre class="favn-surface-control mt-4 overflow-x-auto rounded-box p-4 text-sm"><code class="font-mono">{@sql.sql}</code></pre>
+      </.panel>
+
+      <.panel
+        :if={@docs && @docs[:entrypoint]}
+        padding={:none}
+        class="p-6 sm:p-8"
+        data-testid="asset-entrypoint"
+      >
+        <h2 class="text-sm uppercase tracking-[0.18em] favn-text-subtle">The code that runs</h2>
+
+        <.mono value={entrypoint_label(@docs.entrypoint)} class="mt-3 block text-base" />
+
+        <p class="mt-2 text-sm favn-text-muted">
+          Favn calls this function for every run. Its source lives in your project, not here.
+        </p>
+      </.panel>
+
+      <.empty_state
+        :if={@docs && is_nil(@sql) && is_nil(@docs[:entrypoint])}
+        title="No source to show"
+        description="This asset declares neither a query nor an entrypoint."
+        icon="hero-document"
+      />
+    </div>
+    """
+  end
+
+  defp documentation_or_nil({:ok, docs}), do: docs
+  defp documentation_or_nil(_documentation), do: nil
+
+  # Every level, unlike the overview's queryable address: this page is where someone
+  # checks how the asset is addressed, including the connection Favn reaches it over.
+  defp full_relation_address(nil), do: "Not declared"
+
+  defp full_relation_address(relation) do
+    [:connection, :catalog, :schema, :name]
+    |> Enum.map(&field(relation, &1))
+    |> Enum.reject(&(&1 in [nil, ""]))
+    |> case do
+      [] -> "Not declared"
+      levels -> Enum.join(levels, ".")
+    end
+  end
+
+  defp sql_line_count(sql) when is_binary(sql) do
+    case length(String.split(sql, "\n")) do
+      1 -> "1 line"
+      count -> "#{count} lines"
+    end
+  end
+
+  defp sql_line_count(_sql), do: nil
+
+  defp reads_label([]), do: "Nothing. It reads its source directly."
+
+  defp reads_label(reads),
+    do: Enum.map_join(reads, ", ", &(&1[:name] || &1[:asset_ref] || "unknown"))
+
+  defp entrypoint_label(%{module: module, function: function, arity: arity})
+       when is_integer(arity),
+       do: "#{module}.#{function}/#{arity}"
+
+  defp entrypoint_label(%{module: module, function: function}), do: "#{module}.#{function}"
+  defp entrypoint_label(_entrypoint), do: "Not declared"
 
   @doc """
   The asset in one screen: what state it is in, what is wrong, and what feeds it.
@@ -1931,6 +2092,12 @@ defmodule FavnView.Components.AssetDetailPage do
           icon: "hero-calendar-days",
           patch: ~p"/assets/#{asset_id}/coverage"
         },
+      %{
+        id: :docs,
+        label: "Documentation",
+        icon: "hero-book-open",
+        patch: ~p"/assets/#{asset_id}/docs"
+      },
       %{
         id: :diagnostics,
         label: "Diagnostics",
