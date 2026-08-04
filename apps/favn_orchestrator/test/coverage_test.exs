@@ -148,39 +148,100 @@ defmodule FavnOrchestrator.CoverageTest do
     refute second.pagination.has_more
   end
 
-  test "each page reports the run of expected windows it compared", fixture do
-    assert {:ok, first} =
-             Coverage.missing_windows(fixture.context, fixture.target_id,
-               evaluated_at: @evaluated_at,
-               limit: 2
-             )
-
-    # A caller drawing the whole range cannot derive these from the summary once it
-    # pages: the summary describes every expected window, not the two this page read.
-    assert first.examined.kind == :day
-    assert first.examined.count == 2
-    assert first.examined.from.day == 1
-    assert first.examined.through.day == 2
-
-    assert {:ok, second} =
-             Coverage.missing_windows(fixture.context, fixture.target_id,
-               cursor: first.pagination.next_cursor,
-               limit: 2
-             )
-
-    assert second.examined.count == 1
-    assert second.examined.from.day == 3
-  end
-
-  test "an unreadable page examined nothing rather than an empty range", fixture do
-    Process.put(:coverage_keys_result, {:error, :unavailable})
-
-    assert {:ok, page} =
-             Coverage.missing_windows(fixture.context, fixture.target_id,
+  test "reports covered windows as well as missing ones, and the range's own bounds",
+       fixture do
+    assert {:ok, bare} =
+             Coverage.window_states(fixture.context, fixture.target_id,
                evaluated_at: @evaluated_at
              )
 
-    assert page.examined == %{kind: nil, timezone: nil, from: nil, through: nil, count: 0}
+    # The evidence key comes from the window the query itself reported, so the test
+    # cannot pass by agreeing with a hand-written encoding that has drifted.
+    [_first, second, _third] = bare.windows
+    Process.put(:coverage_count_result, {:ok, 1})
+    Process.put(:coverage_successful_keys, ["window:" <> second.window_key])
+
+    assert {:ok, states} =
+             Coverage.window_states(fixture.context, fixture.target_id,
+               evaluated_at: @evaluated_at
+             )
+
+    assert states.kind == :day
+    assert states.timezone == "Etc/UTC"
+
+    # A calendar cannot work the complement out for itself, so both halves are named.
+    # Nothing here says the second day is covered except the evidence for it.
+    assert Enum.map(states.windows, &{&1.start_at.day, &1.covered?}) ==
+             [{1, false}, {2, true}, {3, false}]
+
+    # The bounds are the whole range, not this page, because they exist to say how far
+    # back navigation may go.
+    assert states.first_expected_at.day == 1
+    assert states.last_expected_at.day == 3
+    assert states.summary.missing_count == 2
+  end
+
+  test "addresses a range by an instant inside it, clamped to coverage", fixture do
+    assert {:ok, middle} =
+             Coverage.window_states(fixture.context, fixture.target_id,
+               evaluated_at: @evaluated_at,
+               at: ~U[2026-07-02 17:30:00Z],
+               limit: 1
+             )
+
+    # Floored to the period, so an instant part-way through the second day addresses
+    # the second day. A caller may hand over the start of a month without first
+    # checking that the month exists.
+    assert Enum.map(middle.windows, & &1.start_at.day) == [2]
+
+    assert {:ok, before} =
+             Coverage.window_states(fixture.context, fixture.target_id,
+               evaluated_at: @evaluated_at,
+               at: ~U[2020-01-01 00:00:00Z],
+               limit: 1
+             )
+
+    assert Enum.map(before.windows, & &1.start_at.day) == [1]
+
+    assert {:ok, past} =
+             Coverage.window_states(fixture.context, fixture.target_id,
+               evaluated_at: @evaluated_at,
+               at: ~U[2030-01-01 00:00:00Z]
+             )
+
+    # Past the end is empty rather than clamped back to the last period: a caller
+    # stepping forward has to be able to tell that it ran out.
+    assert past.windows == []
+    assert past.last_expected_at.day == 3
+  end
+
+  test "coverage that cannot be evaluated has no windows and no range", fixture do
+    Process.put(:coverage_version, version("semantic-a", nil))
+
+    assert {:ok, states} =
+             Coverage.window_states(fixture.context, fixture.target_id,
+               evaluated_at: @evaluated_at
+             )
+
+    assert states.summary.status == :unknown
+    assert states.windows == []
+    assert states.kind == nil
+    assert states.first_expected_at == nil
+  end
+
+  test "an unreadable evidence generation reports no windows rather than empty ones",
+       fixture do
+    Process.put(:coverage_keys_result, {:error, :unavailable})
+
+    assert {:ok, states} =
+             Coverage.window_states(fixture.context, fixture.target_id,
+               evaluated_at: @evaluated_at
+             )
+
+    # Returning three uncovered windows here would draw a calendar of gaps that may
+    # not exist, which is worse than drawing nothing.
+    assert states.windows == []
+    assert states.summary.status == :unknown
   end
 
   test "rejects a cursor after the durable evidence binding changes", fixture do

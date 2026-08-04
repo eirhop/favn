@@ -1,10 +1,10 @@
 defmodule FavnView.AssetCoverageTest do
   @moduledoc """
-  Covers the coverage page: the calendar layout and the panel that acts on it.
+  Covers the coverage page: the calendar layout, the navigator, and the panel.
 
-  The two are tested together because the contract between them is the derived
-  calendar, and a panel test with a hand-written calendar would pass while the
-  derivation produced a different shape.
+  They are tested together because the contract between them is the derived calendar,
+  and a panel test with a hand-written one would pass while the derivation produced a
+  different shape.
   """
 
   use ExUnit.Case, async: true
@@ -15,125 +15,260 @@ defmodule FavnView.AssetCoverageTest do
   alias FavnView.CoverageCalendar
   alias FavnView.UI.Data
 
-  describe "the calendar" do
-    test "draws every examined day and marks only the missing ones" do
-      calendar = day_calendar(~w(2026-07-08 2026-07-15))
+  describe "the shape of one screen" do
+    test "a daily asset shows one month, aligned to its weekdays" do
+      calendar = day_calendar([8, 15])
 
       assert calendar.layout == :grid
       assert calendar.columns == 7
       assert calendar.column_labels == ~w(Mon Tue Wed Thu Fri Sat Sun)
-      assert [july] = calendar.groups
-      assert july.label == "July 2026"
-      assert length(july.cells) == 22
+      assert calendar.unit_label == "July 2026"
+      assert calendar.period_count == 31
 
       # 1 July 2026 is a Wednesday, so the month opens two columns in. Without the
-      # padding the whole grid would be shifted and every weekday reading wrong.
-      assert july.blanks == 2
+      # padding every weekday on screen would be wrong.
+      assert calendar.blanks == 2
 
-      missing = Enum.filter(july.cells, &(&1.state == :missing))
+      missing = Enum.filter(calendar.cells, &(&1.state == :missing))
       assert Enum.map(missing, & &1.label) == ~w(8 15)
-      assert Enum.map(missing, & &1.key) == coverage_keys(~w(2026-07-08 2026-07-15))
-      assert Enum.all?(missing, &(&1.selected? == false))
+      assert Enum.map(missing, & &1.key) == window_keys([8, 15])
     end
 
-    test "a period past the examined range is absent rather than drawn as covered" do
-      # Twenty-two days examined out of a thirty-one day month, so the last nine are
-      # unknown. Drawing them plain would claim they hold data.
-      calendar = day_calendar([])
-      assert [july] = calendar.groups
-      assert Enum.map(july.cells, & &1.label) |> List.last() == "22"
-    end
+    test "an hourly asset shows one day of hours, however many the day has" do
+      # Twenty-three, because the clock went forward. The view is told the hours rather
+      # than counting to 24, which is the whole reason it is told them.
+      windows =
+        Enum.map([0, 1, 3, 4, 5], fn hour ->
+          window(:hour, "hour:Europe/Oslo:2026-03-29T#{pad(hour)}", hour(hour), hour != 4)
+        end)
 
-    test "marks the picked days and counts them" do
-      calendar = day_calendar(~w(2026-07-08 2026-07-15), ["day:Europe/Oslo:2026-07-08"])
+      calendar = CoverageCalendar.build(%{kind: :hour, timezone: "Europe/Oslo", windows: windows})
 
-      assert calendar.selected_count == 1
-      assert [july] = calendar.groups
-      selected = Enum.filter(july.cells, & &1.selected?)
-      assert Enum.map(selected, & &1.label) == ["8"]
-    end
-
-    test "a monthly asset gets months in a year and no weekday columns" do
-      calendar =
-        CoverageCalendar.build(%{
-          examined: %{
-            kind: :month,
-            timezone: "Europe/Oslo",
-            from: ~U[2025-11-01 00:00:00Z],
-            through: ~U[2026-02-01 00:00:00Z],
-            count: 4
-          },
-          gaps: [
-            %{
-              window_key: "month:Europe/Oslo:2025-12",
-              kind: :month,
-              start_at: ~U[2025-12-01 00:00:00Z]
-            }
-          ]
-        })
-
+      assert calendar.unit_label == "Sunday 29 March 2026"
       assert calendar.column_labels == []
-      assert Enum.map(calendar.groups, & &1.label) == ["2025", "2026"]
-      assert Enum.map(calendar.groups, & &1.blanks) == [10, 0]
-
-      cells = Enum.flat_map(calendar.groups, & &1.cells)
-      assert Enum.map(cells, & &1.label) == ~w(Nov Dec Jan Feb)
-      assert Enum.map(cells, & &1.state) == [:covered, :missing, :covered, :covered]
+      assert calendar.blanks == 0
+      assert calendar.period_count == 5
+      assert Enum.map(calendar.cells, & &1.label) == ~w(00:00 01:00 03:00 04:00 05:00)
+      assert Enum.map(calendar.cells, & &1.state) |> Enum.count(&(&1 == :missing)) == 1
     end
 
-    test "hours are listed rather than gridded, grouped by the day they fall on" do
+    test "a monthly asset shows one year of months, with no weekday columns" do
+      windows =
+        Enum.map(1..12, fn month ->
+          window(:month, "month:Europe/Oslo:2026-#{pad(month)}", month_at(month), month != 2)
+        end)
+
       calendar =
-        CoverageCalendar.build(%{
-          examined: %{
-            kind: :hour,
-            timezone: "Europe/Oslo",
-            from: ~U[2026-07-08 00:00:00Z],
-            through: ~U[2026-07-09 23:00:00Z],
-            count: 48
-          },
-          gaps: [
-            %{
-              window_key: "hour:x:2026-07-09T04",
-              kind: :hour,
-              start_at: ~U[2026-07-09 04:00:00Z]
-            },
-            %{window_key: "hour:x:2026-07-08T03", kind: :hour, start_at: ~U[2026-07-08 03:00:00Z]}
-          ]
+        CoverageCalendar.build(%{kind: :month, timezone: "Europe/Oslo", windows: windows})
+
+      assert calendar.unit_label == "2026"
+      assert calendar.column_labels == []
+      assert Enum.map(calendar.cells, & &1.label) |> Enum.take(3) == ~w(Jan Feb Mar)
+      assert Enum.at(calendar.cells, 1).state == :missing
+    end
+
+    test "a yearly asset shows every year at once and names the span" do
+      windows =
+        Enum.map(2024..2026, fn year ->
+          window(:year, "year:Europe/Oslo:#{year}", year_at(year), year != 2025)
+        end)
+
+      calendar = CoverageCalendar.build(%{kind: :year, timezone: "Europe/Oslo", windows: windows})
+
+      assert calendar.unit_label == "2024 to 2026"
+      assert Enum.map(calendar.cells, & &1.label) == ~w(2024 2025 2026)
+    end
+
+    test "a covered period carries no key, because there is nothing to select" do
+      calendar = day_calendar([8])
+      covered = Enum.find(calendar.cells, &(&1.state == :covered))
+
+      assert covered.key == nil
+      assert covered.selected? == false
+    end
+
+    test "no windows means no calendar at all" do
+      assert CoverageCalendar.build(%{}).layout == :empty
+      assert CoverageCalendar.build(%{}).cells == []
+      assert CoverageCalendar.build(%{}).unit_label == nil
+    end
+  end
+
+  describe "where the navigator can go" do
+    test "a daily asset steps by month and jumps by year and month" do
+      navigation =
+        CoverageCalendar.navigation(%{
+          kind: :day,
+          at: ~U[2026-07-01 00:00:00Z],
+          first_expected_at: ~U[2025-11-14 00:00:00Z],
+          last_expected_at: ~U[2026-09-30 00:00:00Z]
         })
 
-      # Stepping hour by hour across a daylight-saving boundary is timezone
-      # arithmetic, and 48 hour cells is not a calendar. Only the gaps are listed.
-      assert calendar.layout == :list
+      assert navigation.previous == "2026-06-01"
+      assert navigation.next == "2026-08-01"
+      assert Enum.map(navigation.jumps, & &1.name) == ~w(year month)
 
-      assert Enum.map(calendar.groups, & &1.label) == [
-               "Wednesday 8 July 2026",
-               "Thursday 9 July 2026"
-             ]
+      year = Enum.find(navigation.jumps, &(&1.name == "year"))
+      assert Enum.map(year.options, &elem(&1, 1)) == ~w(2025 2026)
 
-      assert Enum.map(calendar.groups, &Enum.map(&1.cells, fn cell -> cell.label end)) ==
-               [["03:00"], ["04:00"]]
+      # Coverage runs to September, so December is offered for 2026 only because the
+      # month select is scoped to the selected year. Here that year ends in September.
+      month = Enum.find(navigation.jumps, &(&1.name == "month"))
+      assert Enum.map(month.options, &elem(&1, 1)) == ~w(1 2 3 4 5 6 7 8 9)
     end
 
-    test "no examined range means no calendar at all" do
-      assert CoverageCalendar.build(%{}).layout == :empty
-      assert CoverageCalendar.build(%{}).groups == []
+    test "there is no step past either end of coverage" do
+      first =
+        CoverageCalendar.navigation(%{
+          kind: :day,
+          at: ~U[2026-07-05 00:00:00Z],
+          first_expected_at: ~U[2026-07-01 00:00:00Z],
+          last_expected_at: ~U[2026-09-30 00:00:00Z]
+        })
+
+      # A control that cannot go anywhere is absent rather than disabled, so the
+      # operator can tell they have reached the start.
+      assert first.previous == nil
+      assert first.next == "2026-08-01"
+
+      last =
+        CoverageCalendar.navigation(%{
+          kind: :day,
+          at: ~U[2026-09-14 00:00:00Z],
+          first_expected_at: ~U[2026-07-01 00:00:00Z],
+          last_expected_at: ~U[2026-09-30 00:00:00Z]
+        })
+
+      assert last.previous == "2026-08-01"
+      assert last.next == nil
+    end
+
+    test "an hourly asset steps by day and offers a day select" do
+      navigation =
+        CoverageCalendar.navigation(%{
+          kind: :hour,
+          at: ~U[2026-07-08 00:00:00Z],
+          first_expected_at: ~U[2026-07-01 00:00:00Z],
+          last_expected_at: ~U[2026-08-20 23:00:00Z]
+        })
+
+      assert navigation.previous == "2026-07-07"
+      assert navigation.next == "2026-07-09"
+
+      # One year, so no year select. Two months and a whole month of days, so both of
+      # those ship.
+      assert Enum.map(navigation.jumps, & &1.name) == ~w(month day)
+
+      day = Enum.find(navigation.jumps, &(&1.name == "day"))
+      assert Enum.map(day.options, &elem(&1, 1)) == Enum.map(1..31, &Integer.to_string/1)
+    end
+
+    test "a day select stops at the last day coverage expects" do
+      navigation =
+        CoverageCalendar.navigation(%{
+          kind: :hour,
+          at: ~U[2026-08-14 00:00:00Z],
+          first_expected_at: ~U[2026-07-01 00:00:00Z],
+          last_expected_at: ~U[2026-08-20 23:00:00Z]
+        })
+
+      # August is the last month, so its days stop on the 20th rather than the 31st.
+      day = Enum.find(navigation.jumps, &(&1.name == "day"))
+      assert Enum.map(day.options, &elem(&1, 1)) == Enum.map(1..20, &Integer.to_string/1)
+    end
+
+    test "a yearly asset has nothing to navigate" do
+      navigation =
+        CoverageCalendar.navigation(%{
+          kind: :year,
+          at: ~U[2024-01-01 00:00:00Z],
+          first_expected_at: ~U[2019-01-01 00:00:00Z],
+          last_expected_at: ~U[2026-01-01 00:00:00Z]
+        })
+
+      # Every year is already on screen, so a navigator would be chrome.
+      assert navigation == %{previous: nil, next: nil, jumps: []}
+    end
+
+    test "a range that fits one screen offers no jump" do
+      navigation =
+        CoverageCalendar.navigation(%{
+          kind: :day,
+          at: ~U[2026-07-01 00:00:00Z],
+          first_expected_at: ~U[2026-07-03 00:00:00Z],
+          last_expected_at: ~U[2026-07-28 00:00:00Z]
+        })
+
+      # One month, so both selects would hold one option each and neither ships.
+      assert navigation.jumps == []
+      assert navigation.previous == nil
+      assert navigation.next == nil
+    end
+  end
+
+  describe "resolving a jump" do
+    test "keeps the selects the operator did not touch" do
+      view = %{
+        kind: :day,
+        at: ~U[2026-07-01 00:00:00Z],
+        first_expected_at: ~U[2025-01-01 00:00:00Z],
+        last_expected_at: ~U[2026-12-31 00:00:00Z]
+      }
+
+      # Only the year changed, so the month stays July rather than resetting to January.
+      assert CoverageCalendar.jump_target(view, %{"year" => "2025", "month" => "7"}) ==
+               ~D[2025-07-01]
+    end
+
+    test "clamps a combination that falls outside coverage" do
+      view = %{
+        kind: :day,
+        at: ~U[2026-07-01 00:00:00Z],
+        first_expected_at: ~U[2026-06-01 00:00:00Z],
+        last_expected_at: ~U[2026-08-31 00:00:00Z]
+      }
+
+      assert CoverageCalendar.jump_target(view, %{"year" => "2026", "month" => "1"}) ==
+               ~D[2026-06-01]
+
+      assert CoverageCalendar.jump_target(view, %{"year" => "2026", "month" => "12"}) ==
+               ~D[2026-08-01]
+    end
+
+    test "an hourly jump keeps the day within the month it landed on" do
+      view = %{
+        kind: :hour,
+        at: ~U[2026-01-31 00:00:00Z],
+        first_expected_at: ~U[2026-01-01 00:00:00Z],
+        last_expected_at: ~U[2026-12-31 00:00:00Z]
+      }
+
+      # There is no 31 February, so the day gives way rather than the jump failing.
+      assert CoverageCalendar.jump_target(view, %{"month" => "2", "day" => "31"}) ==
+               ~D[2026-02-28]
+    end
+
+    test "an untracked asset resolves nothing" do
+      assert CoverageCalendar.jump_target(%{}, %{"year" => "2026"}) == nil
     end
   end
 
   describe "the calendar element" do
-    test "missing days are buttons carrying their window key, covered days are not" do
+    test "missing periods are buttons carrying their window key, covered ones are not" do
+      calendar = day_calendar([8])
+
       html =
         render_component(&Data.coverage_calendar/1,
-          layout: :grid,
-          columns: 7,
-          column_labels: ~w(Mon Tue Wed Thu Fri Sat Sun),
-          groups: day_calendar(~w(2026-07-08)).groups,
+          layout: calendar.layout,
+          cells: calendar.cells,
+          blanks: calendar.blanks,
+          columns: calendar.columns,
+          column_labels: calendar.column_labels,
           on_select: "toggle_coverage_window"
         )
 
-      assert html =~ ~s(phx-click="toggle_coverage_window")
       assert html =~ ~s(phx-value-key="day:Europe/Oslo:2026-07-08")
-      assert html =~ "Wednesday 8 July 2026"
+      assert html =~ "8 July 2026"
 
       # One button for the one missing day. A covered day is not a control, because
       # there is nothing to do with it.
@@ -141,56 +276,91 @@ defmodule FavnView.AssetCoverageTest do
     end
 
     test "without an event nothing is clickable" do
+      calendar = day_calendar([8])
+
       html =
         render_component(&Data.coverage_calendar/1,
-          groups: day_calendar(~w(2026-07-08)).groups,
-          column_labels: ~w(Mon Tue Wed Thu Fri Sat Sun)
+          cells: calendar.cells,
+          blanks: calendar.blanks,
+          column_labels: calendar.column_labels
         )
 
       refute html =~ "phx-click"
-      assert html =~ "Wednesday 8 July 2026"
+      assert html =~ "8 July 2026"
+    end
+  end
+
+  describe "the navigator element" do
+    test "renders a step only where there is somewhere to go" do
+      html =
+        render_component(&Data.calendar_navigator/1,
+          label: "July 2026",
+          next: "2026-08-01",
+          on_step: "show_coverage_period"
+        )
+
+      assert html =~ "July 2026"
+      assert html =~ ~s(data-testid="coverage-step-next")
+      assert html =~ ~s(phx-value-at="2026-08-01")
+      refute html =~ ~s(data-testid="coverage-step-previous")
+    end
+
+    test "a navigator with nowhere to go and nothing to pick is absent" do
+      html =
+        render_component(&Data.calendar_navigator/1,
+          label: "2026",
+          on_step: "show_coverage_period"
+        )
+
+      refute html =~ "2026"
+    end
+
+    test "renders one select per jump, with the current value chosen" do
+      html =
+        render_component(&Data.calendar_navigator/1,
+          label: "July 2026",
+          previous: "2026-06-01",
+          on_step: "show_coverage_period",
+          on_jump: "jump_coverage_period",
+          jumps: [
+            %{
+              name: "year",
+              label: "Year",
+              value: "2026",
+              options: [{"2025", "2025"}, {"2026", "2026"}]
+            }
+          ]
+        )
+
+      assert html =~ ~s(phx-change="jump_coverage_period")
+      assert html =~ ~s(data-testid="coverage-jump-year")
+      assert html =~ ~s(<option value="2026" selected)
     end
   end
 
   describe "the coverage panel" do
-    test "answers in one sentence and names the days it drew" do
+    test "answers in one sentence and names the grain it drew" do
       html =
-        render_component(&AssetDetailPage.coverage_panel/1,
-          command_resource: "asset:orders",
-          can_plan?: true,
-          coverage: %{
-            status: :incomplete,
-            expected_count: 22,
-            covered_count: 20,
-            missing_count: 2
-          },
-          calendar: day_calendar(~w(2026-07-08 2026-07-15))
+        coverage_panel(
+          %{status: :incomplete, expected_count: 300, covered_count: 298, missing_count: 2},
+          day_calendar([8, 15])
         )
 
       assert html =~ ~s(data-testid="asset-coverage")
-      assert html =~ "2 of 22 days have no data."
-      assert html =~ "Showing 22 days, 1 July 2026 to 22 July 2026, in Europe/Oslo."
-      assert html =~ "Backfill all 2 missing days"
+      assert html =~ "2 of 300 days have no data."
 
-      # The window key was the whole answer on the old screen. It survives only as the
-      # click payload — once, in `phx-value-key` — and never as something to read.
-      assert html |> String.split("day:Europe/Oslo:2026-07-08") |> length() == 2
-      assert html =~ ~s(phx-value-key="day:Europe/Oslo:2026-07-08")
-      assert html =~ "Wednesday 8 July 2026"
+      # The count is the whole range and the calendar is one month of it, so the
+      # caption has to say what is on screen rather than repeating the total.
+      assert html =~ "31 days, in Europe/Oslo."
+      assert html =~ "July 2026"
+      assert html =~ "Backfill all 2 missing days"
     end
 
     test "a selection replaces the offer to backfill everything" do
       html =
-        render_component(&AssetDetailPage.coverage_panel/1,
-          command_resource: "asset:orders",
-          can_plan?: true,
-          coverage: %{
-            status: :incomplete,
-            expected_count: 22,
-            covered_count: 20,
-            missing_count: 2
-          },
-          calendar: day_calendar(~w(2026-07-08 2026-07-15), ["day:Europe/Oslo:2026-07-08"])
+        coverage_panel(
+          %{status: :incomplete, expected_count: 31, covered_count: 29, missing_count: 2},
+          day_calendar([8, 15], window_keys([8]))
         )
 
       assert html =~ "Backfill 1 selected day"
@@ -198,49 +368,35 @@ defmodule FavnView.AssetCoverageTest do
       refute html =~ "Backfill all"
     end
 
-    test "complete coverage offers no backfill and no pagination" do
+    test "complete coverage offers no backfill" do
       html =
-        render_component(&AssetDetailPage.coverage_panel/1,
-          command_resource: "asset:orders",
-          can_plan?: true,
-          coverage: %{
-            status: :complete,
-            expected_count: 22,
-            covered_count: 22,
-            missing_count: 0
-          },
-          calendar: day_calendar([])
+        coverage_panel(
+          %{status: :complete, expected_count: 31, covered_count: 31, missing_count: 0},
+          day_calendar([])
         )
 
-      assert html =~ "All 22 days that should hold data do."
+      assert html =~ "All 31 days that should hold data do."
       refute html =~ ~s(data-testid="plan-missing-coverage")
-      refute html =~ ~s(data-testid="coverage-gap-pagination")
     end
 
-    test "unknown coverage says why in plain words and draws no grid" do
+    test "unknown coverage says why in plain words and draws no calendar" do
       html =
-        render_component(&AssetDetailPage.coverage_panel/1,
-          command_resource: "asset:orders",
-          coverage: %{status: :unknown, unknown_reason: :coverage_not_declared},
-          calendar: CoverageCalendar.build(%{})
+        coverage_panel(
+          %{status: :unknown, unknown_reason: :coverage_not_declared},
+          CoverageCalendar.build(%{})
         )
 
       assert html =~ "Unknown"
       assert html =~ "does not say which periods it should cover"
 
-      # An empty grid reads as a complete one, so there is no grid.
+      # An empty grid reads as a complete one, so there is no grid and no navigator.
       refute html =~ ~s(data-testid="asset-coverage-calendar")
+      refute html =~ ~s(data-testid="coverage-navigator")
       refute html =~ ~s(data-testid="plan-missing-coverage")
     end
 
-    test "a plan under review names each day in words before it can be submitted" do
-      gaps = [
-        %{
-          window_key: "day:Europe/Oslo:2026-07-08",
-          kind: :day,
-          start_at: ~U[2026-07-08 00:00:00Z]
-        }
-      ]
+    test "a plan under review names each period in words before it can be submitted" do
+      windows = [window(:day, "day:Europe/Oslo:2026-07-08", day_at(8), false)]
 
       html =
         render_component(&AssetDetailPage.coverage_panel/1,
@@ -248,12 +404,12 @@ defmodule FavnView.AssetCoverageTest do
           can_plan?: true,
           coverage: %{
             status: :incomplete,
-            expected_count: 22,
-            covered_count: 21,
+            expected_count: 31,
+            covered_count: 30,
             missing_count: 1
           },
-          calendar: day_calendar(~w(2026-07-08)),
-          plan: %{plan_hash: String.duplicate("a", 64), window_count: 1, windows: gaps}
+          calendar: day_calendar([8]),
+          plan: %{plan_hash: String.duplicate("a", 64), window_count: 1, windows: windows}
         )
 
       assert html =~ ~s(data-testid="coverage-plan-review")
@@ -273,63 +429,63 @@ defmodule FavnView.AssetCoverageTest do
           can_plan?: false,
           coverage: %{
             status: :incomplete,
-            expected_count: 22,
-            covered_count: 20,
+            expected_count: 31,
+            covered_count: 29,
             missing_count: 2
           },
-          calendar: day_calendar(~w(2026-07-08 2026-07-15))
+          calendar: day_calendar([8, 15])
         )
 
       assert html =~ "needs an operator account"
-      assert html =~ ~s(disabled)
       refute html =~ ~s(phx-click="toggle_coverage_window")
-    end
-
-    test "a truncated page says later periods follow" do
-      html =
-        render_component(&AssetDetailPage.coverage_panel/1,
-          command_resource: "asset:orders",
-          coverage: %{
-            status: :incomplete,
-            expected_count: 400,
-            covered_count: 398,
-            missing_count: 2
-          },
-          calendar: day_calendar(~w(2026-07-08 2026-07-15)),
-          pagination: %{limit: 366, has_more: true, next_cursor: "opaque-cursor"}
-        )
-
-      assert html =~ "Later periods are on the next page."
-      assert html =~ ~s(data-testid="next-coverage-gap-page")
-      assert html =~ ~s(data-testid="previous-coverage-gap-page")
     end
   end
 
-  defp day_calendar(missing_dates, selected \\ []) do
+  defp coverage_panel(coverage, calendar) do
+    render_component(&AssetDetailPage.coverage_panel/1,
+      command_resource: "asset:orders",
+      can_plan?: true,
+      coverage: coverage,
+      calendar: calendar,
+      navigation: %{previous: "2026-06-01", next: "2026-08-01", jumps: []}
+    )
+  end
+
+  defp day_calendar(missing_days, selected \\ []) do
+    windows =
+      Enum.map(1..31, fn day ->
+        window(
+          :day,
+          "day:Europe/Oslo:2026-07-#{pad(day)}",
+          day_at(day),
+          day not in missing_days
+        )
+      end)
+
     CoverageCalendar.build(%{
-      examined: %{
-        kind: :day,
-        timezone: "Europe/Oslo",
-        from: ~U[2026-07-01 00:00:00Z],
-        through: ~U[2026-07-22 00:00:00Z],
-        count: 22
-      },
-      gaps: Enum.map(missing_dates, &gap/1),
+      kind: :day,
+      timezone: "Europe/Oslo",
+      windows: windows,
       selected: selected
     })
   end
 
-  defp coverage_keys(dates), do: Enum.map(dates, &("day:Europe/Oslo:" <> &1))
-
-  defp gap(date) do
-    {:ok, start_at, _offset} = DateTime.from_iso8601(date <> "T00:00:00Z")
-
+  defp window(kind, key, start_at, covered?) do
     %{
-      window_key: "day:Europe/Oslo:" <> date,
-      kind: :day,
+      window_key: key,
+      kind: kind,
       timezone: "Europe/Oslo",
       start_at: start_at,
-      end_at: DateTime.add(start_at, 1, :day)
+      end_at: start_at,
+      covered?: covered?
     }
   end
+
+  defp window_keys(days), do: Enum.map(days, &"day:Europe/Oslo:2026-07-#{pad(&1)}")
+
+  defp day_at(day), do: DateTime.new!(Date.new!(2026, 7, day), ~T[00:00:00], "Etc/UTC")
+  defp month_at(month), do: DateTime.new!(Date.new!(2026, month, 1), ~T[00:00:00], "Etc/UTC")
+  defp year_at(year), do: DateTime.new!(Date.new!(year, 1, 1), ~T[00:00:00], "Etc/UTC")
+  defp hour(hour), do: DateTime.new!(~D[2026-03-29], Time.new!(hour, 0, 0), "Etc/UTC")
+  defp pad(value), do: String.pad_leading("#{value}", 2, "0")
 end

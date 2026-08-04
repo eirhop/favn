@@ -1,34 +1,47 @@
 defmodule FavnView.CoverageCalendar do
   @moduledoc """
-  Lays out the periods an asset should hold data for as a calendar.
+  Lays out one screen of the periods an asset should hold data for.
 
-  Coverage asks one question — is any period missing data — and a list of window
-  keys answers it in the wrong shape. `day:Europe/Oslo:2026-07-08` has to be read
-  character by character, and twenty of them in a row still do not say whether the
-  gap is one bad week or every Sunday. A grid says both at a glance.
+  Coverage asks one question — is any period missing data — and a list of window keys
+  answers it in the wrong shape. `day:Europe/Oslo:2026-07-08` has to be read character
+  by character, and twenty of them in a row still do not say whether the gap is one bad
+  week or every Sunday. A grid says both at a glance.
 
-  The grid draws exactly the periods the backend reported examining. A period past
-  the end of that range is neither covered nor missing: nothing looked at it, so it
-  is absent from the calendar rather than drawn as good news.
+  ## One unit per grain
 
-  Days, months, and years get a real grid. Hours get a grouped list of the missing
-  ones instead, because stepping hour by hour across a daylight-saving boundary is
-  timezone arithmetic and a screen of 366 hour cells is not a calendar anyone reads.
+  Coverage is only ever hourly, daily, monthly, or yearly, and each wants a different
+  screen. The unit is the next period up, which is also the step the navigator takes:
+
+  | Coverage | One screen | Cells | Steps by |
+  | --- | --- | --- | --- |
+  | hourly | one day | 24 (23 or 25 across a clock change) | day |
+  | daily | one month | 28 to 31, aligned to weekdays | month |
+  | monthly | one year | 12 | year |
+  | yearly | every year at once | one per year | nothing |
+
+  One component rather than four, because the cells, the tones, the selection and the
+  accessible names are identical and only the shape differs. Four would drift.
+
+  ## Nothing is counted here
+
+  Every cell comes from a window the backend reported, covered or not. The view never
+  enumerates a range itself: an hour-grained day has 23, 24, or 25 hours depending on
+  the clock change, and a calendar that assumed 24 would silently misplace a whole day
+  twice a year. A period nobody looked at is absent rather than drawn, because a blank
+  cell must never be mistaken for a covered one.
 
   ## Examples
 
       iex> FavnView.CoverageCalendar.build(%{
-      ...>   examined: %{
-      ...>     kind: :day,
-      ...>     timezone: "Europe/Oslo",
-      ...>     from: ~U[2026-07-06 00:00:00Z],
-      ...>     through: ~U[2026-07-08 00:00:00Z],
-      ...>     count: 3
-      ...>   },
-      ...>   gaps: [%{window_key: "day:Europe/Oslo:2026-07-07", start_at: ~U[2026-07-07 00:00:00Z]}]
+      ...>   kind: :day,
+      ...>   timezone: "Europe/Oslo",
+      ...>   windows: [
+      ...>     %{window_key: "day:Europe/Oslo:2026-07-06", start_at: ~U[2026-07-06 00:00:00Z], covered?: true},
+      ...>     %{window_key: "day:Europe/Oslo:2026-07-07", start_at: ~U[2026-07-07 00:00:00Z], covered?: false}
+      ...>   ]
       ...> })
-      ...> |> then(&{&1.layout, &1.missing_count, Enum.map(&1.groups, fn group -> group.label end)})
-      {:grid, 1, ["July 2026"]}
+      ...> |> then(&{&1.layout, &1.unit_label, &1.missing_count})
+      {:grid, "July 2026", 1}
   """
 
   @weekdays ~w(Mon Tue Wed Thu Fri Sat Sun)
@@ -42,60 +55,262 @@ defmodule FavnView.CoverageCalendar do
           selected?: boolean()
         }
 
-  @type group :: %{
-          id: String.t(),
-          label: String.t(),
-          blanks: non_neg_integer(),
-          cells: [cell()]
-        }
-
   @type t :: %{
-          layout: :grid | :list | :empty,
+          layout: :grid | :empty,
           kind: atom() | nil,
           timezone: String.t() | nil,
-          period_noun: String.t(),
+          unit_label: String.t() | nil,
+          blanks: non_neg_integer(),
           columns: pos_integer(),
           column_labels: [String.t()],
-          groups: [group()],
-          from_label: String.t() | nil,
-          through_label: String.t() | nil,
-          examined_count: non_neg_integer(),
+          cells: [cell()],
+          period_count: non_neg_integer(),
           missing_count: non_neg_integer(),
           selected_count: non_neg_integer()
         }
 
   @doc """
-  Builds the calendar from one page of missing coverage windows.
+  Builds one screen from the windows the backend reported for it.
 
-  Expects `:examined` (the range the page compared against evidence), `:gaps` (the
-  windows it found missing), and `:selected` (window keys the operator picked).
+  Expects `:kind`, `:timezone`, `:windows` (each with `:window_key`, `:start_at` and
+  `:covered?`), and `:selected` (window keys the operator picked).
   """
   @spec build(map()) :: t()
   def build(attrs) when is_map(attrs) do
-    examined = Map.get(attrs, :examined) || %{}
-    kind = Map.get(examined, :kind)
-    gaps = Map.get(attrs, :gaps) || []
+    kind = Map.get(attrs, :kind)
+    windows = Map.get(attrs, :windows) || []
     selected = MapSet.new(Map.get(attrs, :selected) || [])
-    periods = periods(kind, Map.get(examined, :from), Map.get(examined, :through))
+    cells = Enum.map(windows, &cell(&1, kind, selected))
 
     %{
-      layout: layout(kind, periods),
+      layout: if(cells == [], do: :empty, else: :grid),
       kind: kind,
-      timezone: Map.get(examined, :timezone),
-      period_noun: period_noun(kind),
+      timezone: Map.get(attrs, :timezone),
+      unit_label: unit_label(kind, windows),
+      blanks: blanks(kind, windows),
       columns: columns(kind),
       column_labels: column_labels(kind),
-      groups: groups(kind, periods, gaps, selected),
-      from_label: period_label(kind, Map.get(examined, :from)),
-      through_label: period_label(kind, Map.get(examined, :through)),
-      examined_count: Map.get(examined, :count, 0),
-      missing_count: length(gaps),
+      cells: cells,
+      period_count: length(windows),
+      missing_count: Enum.count(windows, &(Map.get(&1, :covered?) != true)),
       selected_count: MapSet.size(selected)
     }
   end
 
   @doc """
-  The plain name for one period of the given cadence, singular or plural.
+  Where the navigator can go from the screen on show.
+
+  Steps and jump options are both bounded by the range coverage actually has, so an
+  operator can reach the day coverage started and no further. A step with nowhere to go
+  is `nil` rather than a disabled button, and a select with one option is left out
+  entirely — a control that cannot change anything should not be on screen.
+
+  Targets are plain dates. The instant inside the period is the caller's to build,
+  because only the caller knows the timezone.
+
+  Expects `:kind`, `:at` (the first period on screen), `:first_expected_at` and
+  `:last_expected_at`.
+  """
+  @spec navigation(map()) :: %{
+          previous: String.t() | nil,
+          next: String.t() | nil,
+          jumps: [map()]
+        }
+  def navigation(attrs) when is_map(attrs) do
+    kind = Map.get(attrs, :kind)
+    at = Map.get(attrs, :at)
+    first = Map.get(attrs, :first_expected_at)
+    last = Map.get(attrs, :last_expected_at)
+
+    if is_nil(unit_noun(kind)) or is_nil(at) or is_nil(first) or is_nil(last) do
+      %{previous: nil, next: nil, jumps: []}
+    else
+      bounded_navigation(kind, to_date(at), to_date(first), to_date(last))
+    end
+  end
+
+  @doc """
+  The unit a jump selected, clamped into the range coverage has.
+
+  Whichever select the operator changed, the others keep their value, so changing the
+  year of a February screen lands on February. A combination that falls outside the
+  range is clamped rather than refused, because the selects only ever offer values
+  inside it and clamping is what makes a stale form harmless.
+  """
+  @spec jump_target(map(), map()) :: Date.t() | nil
+  def jump_target(attrs, params) when is_map(attrs) and is_map(params) do
+    kind = Map.get(attrs, :kind)
+    at = Map.get(attrs, :at)
+    first = Map.get(attrs, :first_expected_at)
+    last = Map.get(attrs, :last_expected_at)
+
+    if is_nil(unit_noun(kind)) or is_nil(at) or is_nil(first) or is_nil(last) do
+      nil
+    else
+      current = to_date(at)
+
+      year = integer_param(params, "year", current.year)
+      month = integer_param(params, "month", current.month)
+      day = integer_param(params, "day", current.day)
+
+      kind
+      |> jump_date(year, month, day)
+      |> clamp(unit_start(kind, to_date(first)), unit_start(kind, to_date(last)))
+    end
+  end
+
+  defp bounded_navigation(kind, at, first, last) do
+    current = unit_start(kind, at)
+    floor = unit_start(kind, first)
+    ceiling = unit_start(kind, last)
+
+    %{
+      previous: step_target(kind, current, -1, floor, ceiling),
+      next: step_target(kind, current, 1, floor, ceiling),
+      jumps: jumps(kind, current, first, last)
+    }
+  end
+
+  defp step_target(kind, current, direction, floor, ceiling) do
+    target = shift_unit(kind, current, direction)
+
+    if Date.compare(target, floor) != :lt and Date.compare(target, ceiling) != :gt,
+      do: Date.to_iso8601(target)
+  end
+
+  # The unit the screen belongs to, as its first date: the day for hourly coverage, the
+  # first of the month for daily, the first of January for monthly.
+  defp unit_start(:hour, date), do: date
+  defp unit_start(:day, date), do: %{date | day: 1}
+  defp unit_start(:month, date), do: %{date | month: 1, day: 1}
+  defp unit_start(_kind, date), do: date
+
+  defp shift_unit(:hour, date, count), do: Date.add(date, count)
+  defp shift_unit(:day, date, count), do: shift_months(date, count)
+  defp shift_unit(:month, date, count), do: %{date | year: date.year + count}
+  defp shift_unit(_kind, date, _count), do: date
+
+  defp shift_months(date, count) do
+    index = date.year * 12 + date.month - 1 + count
+    %{date | year: div(index, 12), month: rem(index, 12) + 1}
+  end
+
+  # Coarsest first, and only where there is a choice to make. A year select holding one
+  # year is a control that does nothing.
+  defp jumps(kind, current, first, last) do
+    [year_jump(current, first, last), month_jump(kind, current, first, last)]
+    |> Enum.concat([day_jump(kind, current, first, last)])
+    |> Enum.reject(&(is_nil(&1) or length(&1.options) < 2))
+  end
+
+  defp year_jump(current, first, last) do
+    %{
+      name: "year",
+      label: "Year",
+      value: Integer.to_string(current.year),
+      options: Enum.map(first.year..last.year, &{Integer.to_string(&1), Integer.to_string(&1)})
+    }
+  end
+
+  defp month_jump(:month, _current, _first, _last), do: nil
+
+  defp month_jump(_kind, current, first, last) do
+    %{
+      name: "month",
+      label: "Month",
+      value: Integer.to_string(current.month),
+      options: Enum.map(months_in(current.year, first, last), &month_option/1)
+    }
+  end
+
+  defp day_jump(:hour, current, first, last) do
+    %{
+      name: "day",
+      label: "Day",
+      value: Integer.to_string(current.day),
+      options:
+        current.year
+        |> days_in(current.month, first, last)
+        |> Enum.map(&{Integer.to_string(&1), Integer.to_string(&1)})
+    }
+  end
+
+  defp day_jump(_kind, _current, _first, _last), do: nil
+
+  # Only the months this year actually holds coverage for, so the first and last year
+  # of a range offer a part-year rather than all twelve.
+  defp months_in(year, first, last) do
+    from = if year == first.year, do: first.month, else: 1
+    through = if year == last.year, do: last.month, else: 12
+    if through < from, do: [], else: Enum.to_list(from..through)
+  end
+
+  defp days_in(year, month, first, last) do
+    from = if year == first.year and month == first.month, do: first.day, else: 1
+
+    through =
+      if year == last.year and month == last.month,
+        do: last.day,
+        else: Date.days_in_month(Date.new!(year, month, 1))
+
+    if through < from, do: [], else: Enum.to_list(from..through)
+  end
+
+  defp month_option(month),
+    do: {Calendar.strftime(Date.new!(2000, month, 1), "%B"), Integer.to_string(month)}
+
+  defp jump_date(:hour, year, month, day),
+    do: Date.new!(year, month, min(day, Date.days_in_month(Date.new!(year, month, 1))))
+
+  defp jump_date(:day, year, month, _day), do: Date.new!(year, month, 1)
+  defp jump_date(_kind, year, _month, _day), do: Date.new!(year, 1, 1)
+
+  defp clamp(date, floor, ceiling) do
+    cond do
+      Date.compare(date, floor) == :lt -> floor
+      Date.compare(date, ceiling) == :gt -> ceiling
+      true -> date
+    end
+  end
+
+  defp integer_param(params, name, fallback) do
+    case params |> Map.get(name) |> to_integer() do
+      nil -> fallback
+      value -> value
+    end
+  end
+
+  defp to_integer(value) when is_integer(value), do: value
+
+  defp to_integer(value) when is_binary(value) do
+    case Integer.parse(value) do
+      {parsed, ""} -> parsed
+      _other -> nil
+    end
+  end
+
+  defp to_integer(_value), do: nil
+
+  defp to_date(%DateTime{} = at), do: DateTime.to_date(at)
+  defp to_date(%Date{} = date), do: date
+
+  @doc """
+  The unit one screen covers, in the words its navigator uses.
+
+      iex> FavnView.CoverageCalendar.unit_noun(:day)
+      "month"
+
+      iex> FavnView.CoverageCalendar.unit_noun(:year)
+      nil
+  """
+  @spec unit_noun(atom() | nil) :: String.t() | nil
+  def unit_noun(:hour), do: "day"
+  def unit_noun(:day), do: "month"
+  def unit_noun(:month), do: "year"
+  def unit_noun(_kind), do: nil
+
+  @doc """
+  The plain name for one period of the given grain, singular or plural.
 
       iex> FavnView.CoverageCalendar.period_noun(:day, 1)
       "day"
@@ -106,6 +321,13 @@ defmodule FavnView.CoverageCalendar do
   @spec period_noun(atom() | nil, integer()) :: String.t()
   def period_noun(kind, count) when count == 1, do: period_noun(kind)
   def period_noun(kind, _count), do: period_noun(kind) <> "s"
+
+  @spec period_noun(atom() | nil) :: String.t()
+  def period_noun(:hour), do: "hour"
+  def period_noun(:day), do: "day"
+  def period_noun(:month), do: "month"
+  def period_noun(:year), do: "year"
+  def period_noun(_kind), do: "period"
 
   @doc """
   Names one period the way a person would write it.
@@ -124,179 +346,56 @@ defmodule FavnView.CoverageCalendar do
   def period_label(:year, %DateTime{} = at), do: Calendar.strftime(at, "%Y")
   def period_label(_kind, %DateTime{} = at), do: Calendar.strftime(at, "%-d %B %Y")
 
-  @spec period_noun(atom() | nil) :: String.t()
-  def period_noun(:hour), do: "hour"
-  def period_noun(:day), do: "day"
-  def period_noun(:month), do: "month"
-  def period_noun(:year), do: "year"
-  def period_noun(_kind), do: "period"
+  # Hours already read as a clock, days as a date; a month name or a year is the whole
+  # cell. Yearly coverage names the span rather than one year, because every year on
+  # screen at once has no single unit above it.
+  defp unit_label(_kind, []), do: nil
+  defp unit_label(:hour, [first | _rest]), do: Calendar.strftime(first.start_at, "%A %-d %B %Y")
+  defp unit_label(:day, [first | _rest]), do: Calendar.strftime(first.start_at, "%B %Y")
+  defp unit_label(:month, [first | _rest]), do: Calendar.strftime(first.start_at, "%Y")
 
-  defp layout(_kind, []), do: :empty
-  defp layout(:hour, _periods), do: :list
-  defp layout(_kind, _periods), do: :grid
+  defp unit_label(:year, windows) do
+    first = List.first(windows).start_at
+    last = List.last(windows).start_at
 
+    if first.year == last.year,
+      do: Integer.to_string(first.year),
+      else: "#{first.year} to #{last.year}"
+  end
+
+  defp unit_label(_kind, _windows), do: nil
+
+  # A month rarely starts on a Monday, so its first cell needs padding to land in its
+  # own weekday column. Every other grain fills from the left.
+  defp blanks(:day, [first | _rest]), do: Date.day_of_week(DateTime.to_date(first.start_at)) - 1
+  defp blanks(_kind, _windows), do: 0
+
+  defp columns(:hour), do: 6
   defp columns(:day), do: 7
-  defp columns(:month), do: 6
-  defp columns(_kind), do: 6
+  defp columns(:month), do: 4
+  defp columns(_kind), do: 5
 
   defp column_labels(:day), do: @weekdays
   defp column_labels(_kind), do: []
 
-  # Hours never enumerate: stepping across a daylight-saving boundary is timezone
-  # arithmetic the view has no business doing, and the list only needs the gaps.
-  defp periods(:hour, from, _through) when not is_nil(from), do: [:listed]
-  defp periods(_kind, nil, _through), do: []
-  defp periods(_kind, _from, nil), do: []
-
-  defp periods(:day, from, through) do
-    first = DateTime.to_date(from)
-    last = DateTime.to_date(through)
-
-    if Date.compare(last, first) == :lt do
-      []
-    else
-      Enum.map(Date.range(first, last), fn date ->
-        %{
-          key: date,
-          group_id: Calendar.strftime(date, "%Y-%m"),
-          group_label: Calendar.strftime(date, "%B %Y"),
-          label: Integer.to_string(date.day),
-          title: Calendar.strftime(date, "%A %-d %B %Y"),
-          column: Date.day_of_week(date)
-        }
-      end)
-    end
-  end
-
-  defp periods(:month, from, through) do
-    first = month_index(DateTime.to_date(from))
-    last = month_index(DateTime.to_date(through))
-
-    if last < first do
-      []
-    else
-      Enum.map(first..last, fn index ->
-        {year, month} = {div(index, 12), rem(index, 12) + 1}
-        date = Date.new!(year, month, 1)
-
-        %{
-          key: {year, month},
-          group_id: Integer.to_string(year),
-          group_label: Integer.to_string(year),
-          label: Calendar.strftime(date, "%b"),
-          title: Calendar.strftime(date, "%B %Y"),
-          column: month
-        }
-      end)
-    end
-  end
-
-  defp periods(:year, from, through) do
-    first = DateTime.to_date(from).year
-    last = DateTime.to_date(through).year
-
-    if last < first do
-      []
-    else
-      Enum.map(first..last, fn year ->
-        %{
-          key: year,
-          group_id: "years",
-          group_label: "Years",
-          label: Integer.to_string(year),
-          title: Integer.to_string(year),
-          column: nil
-        }
-      end)
-    end
-  end
-
-  defp periods(_kind, _from, _through), do: []
-
-  defp month_index(%Date{} = date), do: date.year * 12 + date.month - 1
-
-  defp groups(_kind, [], _gaps, _selected), do: []
-
-  defp groups(:hour, _periods, gaps, selected), do: hour_groups(gaps, selected)
-
-  defp groups(kind, periods, gaps, selected) do
-    missing = missing_by_period(kind, gaps)
-
-    periods
-    |> Enum.chunk_by(& &1.group_id)
-    |> Enum.map(fn [first | _rest] = chunk ->
-      %{
-        id: first.group_id,
-        label: first.group_label,
-        blanks: blanks(first),
-        cells: Enum.map(chunk, &cell(&1, missing, selected))
-      }
-    end)
-  end
-
-  # The first cell of a month is rarely a Monday, so it needs padding to land in
-  # its own weekday column. Every other cadence fills from the left.
-  defp blanks(%{column: column}) when is_integer(column), do: column - 1
-  defp blanks(_period), do: 0
-
-  defp cell(period, missing, selected) do
-    key = Map.get(missing, period.key)
+  defp cell(window, kind, selected) do
+    key = Map.get(window, :window_key)
+    covered? = Map.get(window, :covered?) == true
 
     %{
-      key: key,
-      id: cell_id(period),
-      label: period.label,
-      title: period.title,
-      state: if(key, do: :missing, else: :covered),
-      selected?: !is_nil(key) and MapSet.member?(selected, key)
+      # A covered period is not selectable, so it carries no key to select it with.
+      key: if(covered?, do: nil, else: key),
+      id: "coverage-#{key}",
+      label: cell_label(kind, window.start_at),
+      title: period_label(kind, window.start_at),
+      state: if(covered?, do: :covered, else: :missing),
+      selected?: not covered? and MapSet.member?(selected, key)
     }
   end
 
-  defp cell_id(%{group_id: group_id, label: label}), do: "coverage-#{group_id}-#{label}"
-
-  defp missing_by_period(kind, gaps) do
-    Enum.reduce(gaps, %{}, fn gap, acc ->
-      case period_key(kind, Map.get(gap, :start_at)) do
-        nil -> acc
-        key -> Map.put(acc, key, Map.get(gap, :window_key))
-      end
-    end)
-  end
-
-  defp period_key(_kind, nil), do: nil
-  defp period_key(:day, %DateTime{} = start_at), do: DateTime.to_date(start_at)
-  defp period_key(:month, %DateTime{} = start_at), do: {start_at.year, start_at.month}
-  defp period_key(:year, %DateTime{} = start_at), do: start_at.year
-  defp period_key(_kind, _start_at), do: nil
-
-  # An hour list groups the missing hours under the day they fall on, which is the
-  # only grouping that makes a run of them readable.
-  defp hour_groups(gaps, selected) do
-    gaps
-    |> Enum.filter(&match?(%DateTime{}, Map.get(&1, :start_at)))
-    |> Enum.sort_by(& &1.start_at, DateTime)
-    |> Enum.group_by(&DateTime.to_date(&1.start_at))
-    |> Enum.sort_by(fn {date, _gaps} -> date end, Date)
-    |> Enum.map(fn {date, day_gaps} ->
-      %{
-        id: Date.to_iso8601(date),
-        label: Calendar.strftime(date, "%A %-d %B %Y"),
-        blanks: 0,
-        cells: Enum.map(day_gaps, &hour_cell(&1, selected))
-      }
-    end)
-  end
-
-  defp hour_cell(gap, selected) do
-    label = Calendar.strftime(gap.start_at, "%H:%M")
-
-    %{
-      key: gap.window_key,
-      id: "coverage-#{gap.window_key}",
-      label: label,
-      title: Calendar.strftime(gap.start_at, "%H:%M on %-d %B %Y"),
-      state: :missing,
-      selected?: MapSet.member?(selected, gap.window_key)
-    }
-  end
+  defp cell_label(:hour, at), do: Calendar.strftime(at, "%H:%M")
+  defp cell_label(:day, at), do: Integer.to_string(at.day)
+  defp cell_label(:month, at), do: Calendar.strftime(at, "%b")
+  defp cell_label(:year, at), do: Integer.to_string(at.year)
+  defp cell_label(_kind, at), do: Calendar.strftime(at, "%-d %b")
 end

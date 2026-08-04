@@ -289,36 +289,37 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
           :incomplete_coverage,
           AssetDetail.coverage_attrs(%{
             coverage: AssetDetail.coverage(:incomplete),
-            coverage_gaps: AssetDetail.coverage_gaps(),
-            coverage_pagination: AssetDetail.coverage_pagination(true)
+            coverage_missing: [8, 15]
           }),
-          "Two missing days a week apart, and later periods still to page through. " <>
-            "The pattern is the point: a list of window keys could not show it."
+          "Two missing days a week apart, with months either side to step to. The " <>
+            "pattern is the point: a list of window keys could not show it."
         ),
         Example.attrs(
           :selected_coverage_periods,
           AssetDetail.coverage_attrs(%{
             coverage: AssetDetail.coverage(:incomplete),
-            coverage_gaps: AssetDetail.coverage_gaps(),
-            coverage_selected: AssetDetail.coverage_selection()
+            coverage_missing: [8, 15],
+            coverage_selected: AssetDetail.coverage_selection([8])
           }),
-          "Days picked for backfill. The button counts the selection rather than the gaps."
+          "One day picked for backfill. The button counts the selection rather than " <>
+            "every gap."
         ),
         Example.attrs(
-          :later_coverage_page,
+          :coverage_at_its_start,
           AssetDetail.coverage_attrs(%{
             coverage: AssetDetail.coverage(:incomplete),
-            coverage_gaps: AssetDetail.coverage_gaps(),
-            coverage_pagination: AssetDetail.coverage_pagination(true),
-            coverage_page_cursor: "opaque-page-2-cursor"
-          })
+            coverage_missing: [3, 4, 5],
+            coverage_navigation: AssetDetail.coverage_navigation_at_start()
+          }),
+          "The first month coverage has. There is no step back, so the operator can " <>
+            "tell they have reached the beginning rather than a button that refuses."
         ),
         Example.attrs(
           :viewer_coverage,
           AssetDetail.coverage_attrs(%{
             can_submit_runs?: false,
             coverage: AssetDetail.coverage(:incomplete),
-            coverage_gaps: AssetDetail.coverage_gaps()
+            coverage_missing: [8, 15]
           }),
           "A viewer sees exactly which days are missing and is told why they cannot " <>
             "fill them. The cells stop being controls rather than looking broken."
@@ -327,17 +328,16 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
           :unknown_coverage,
           AssetDetail.coverage_attrs(%{
             coverage: AssetDetail.coverage(:unknown),
-            coverage_policy: nil,
-            coverage_gaps: []
+            coverage_policy: nil
           }),
-          "Coverage was never declared. No calendar at all, because an empty grid " <>
-            "would read as complete coverage."
+          "Coverage was never declared. No calendar and no navigator, because an " <>
+            "empty grid would read as complete coverage."
         ),
         Example.attrs(
           :coverage_plan_review,
           AssetDetail.coverage_attrs(%{
             coverage: AssetDetail.coverage(:incomplete),
-            coverage_gaps: AssetDetail.coverage_gaps(),
+            coverage_missing: [8, 15],
             coverage_plan: AssetDetail.coverage_plan()
           }),
           "The plan names the days in words. The operator confirms what they read."

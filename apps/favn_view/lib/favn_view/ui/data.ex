@@ -1019,69 +1019,150 @@ defmodule FavnView.UI.Data do
   end
 
   @doc """
-  A calendar of the periods a windowed asset should hold data for.
+  One screen of the periods a windowed asset should hold data for.
 
-  Every examined period gets a cell, so the shape of what is missing is visible:
-  one bad week reads differently from every Sunday, and a list of window keys reads
-  as neither. Periods that were not examined are absent rather than drawn, because a
-  blank cell must never be mistaken for a covered one.
+  Every cell is a period the backend reported, covered or missing, so the shape of a
+  gap is visible: one bad week reads differently from every Sunday, and a list of
+  window keys reads as neither. A period nobody looked at is absent rather than drawn,
+  because a blank cell must never be mistaken for a covered one.
+
+  The grid adapts to the grain rather than being four components. Hourly coverage shows
+  one day of hours, daily one weekday-aligned month, monthly one year of twelve, yearly
+  every year at once — `FavnView.CoverageCalendar.build/1` decides the shape and this
+  renders it.
 
   Missing cells are buttons when `on_select` is set, so the operator can pick the
-  periods to backfill. Covered cells are inert.
-
-  Build the groups with `FavnView.CoverageCalendar.build/1`.
+  periods to backfill. Covered cells are inert, because there is nothing to do with one.
 
       <.coverage_calendar
         layout={@calendar.layout}
-        groups={@calendar.groups}
+        cells={@calendar.cells}
+        blanks={@calendar.blanks}
         columns={@calendar.columns}
         column_labels={@calendar.column_labels}
         on_select="toggle_coverage_window"
       />
   """
-  attr :groups, :list,
+  attr :cells, :list,
     required: true,
-    doc:
-      "maps with `:id`, `:label`, `:blanks`, and `:cells`; a cell has `:id`, `:label`, " <>
-        "`:title`, `:state`, `:selected?`, and `:key`"
+    doc: "maps with `:id`, `:label`, `:title`, `:state`, `:selected?`, and `:key`"
 
-  attr :layout, :atom, default: :grid, doc: "`:grid`, `:list`, or `:empty`"
+  attr :layout, :atom, default: :grid, doc: "`:grid` or `:empty`"
+  attr :blanks, :integer, default: 0, doc: "leading cells that pad the first period into place"
   attr :columns, :integer, default: 7
   attr :column_labels, :list, default: []
   attr :on_select, :string, default: nil, doc: "LiveView event; omit for a read-only calendar"
-  attr :empty_label, :string, default: "No periods to show yet."
+  attr :empty_label, :string, default: "No periods to show here."
   attr :class, :any, default: nil
   attr :rest, :global
 
   def coverage_calendar(assigns) do
     ~H"""
-    <div class={["space-y-5", @class]} {@rest}>
+    <div class={["space-y-1.5", @class]} {@rest}>
       <.empty_state :if={@layout == :empty} title={@empty_label} icon="hero-calendar-days" />
 
-      <section :for={group <- @groups} class="space-y-1.5">
-        <p class="text-sm font-medium">{group.label}</p>
+      <div
+        :if={@layout == :grid && @column_labels != []}
+        class={["grid max-w-sm gap-1", calendar_columns_class(@columns)]}
+        aria-hidden="true"
+      >
+        <span :for={label <- @column_labels} class="text-center text-xs favn-text-subtle">
+          {label}
+        </span>
+      </div>
 
-        <div
-          :if={@layout == :grid && @column_labels != []}
-          class={["grid max-w-sm gap-1", calendar_columns_class(@columns)]}
-          aria-hidden="true"
+      <!-- Bounded, so a cell stays roughly square whatever the panel is wide. A grid
+      that filled a desktop panel gave each day 140px and read as a row of buttons
+      rather than a month. -->
+      <div
+        :if={@layout == :grid}
+        class={["grid max-w-sm gap-1", calendar_columns_class(@columns)]}
+      >
+        <span :for={_blank <- calendar_blanks(@blanks)} class="h-9" aria-hidden="true"></span>
+        <.calendar_cell :for={cell <- @cells} cell={cell} on_select={@on_select} />
+      </div>
+    </div>
+    """
+  end
+
+  @doc """
+  Steps one screen of a calendar back and forward, bounded by what exists.
+
+  A control that cannot go anywhere does not ship, so `previous`/`next` are absent
+  rather than permanently disabled when there is nothing either side, and the whole bar
+  disappears when the range fits on one screen. The jump selects list only units inside
+  the range, which is what stops an operator asking for a month coverage never had.
+  """
+  attr :label, :string, required: true, doc: "the unit on screen, e.g. \"July 2026\""
+
+  attr :previous, :string,
+    default: nil,
+    doc: "value for `phx-value-at` on the step back; omit when there is nothing earlier"
+
+  attr :next, :string, default: nil, doc: "same, forward"
+  attr :on_step, :string, required: true
+  attr :on_jump, :string, default: nil, doc: "event for the selects; omit to offer no jump"
+
+  attr :jumps, :list,
+    default: [],
+    doc:
+      "maps with `:name`, `:label`, `:value` and `:options` (`{label, value}` pairs); " <>
+        "rendered left to right, coarsest first"
+
+  attr :class, :any, default: nil
+  attr :rest, :global
+
+  def calendar_navigator(assigns) do
+    ~H"""
+    <div
+      :if={@previous || @next || @jumps != []}
+      class={["flex flex-wrap items-center gap-3", @class]}
+      {@rest}
+    >
+      <div class="join">
+        <button
+          :if={@previous}
+          type="button"
+          class="btn btn-sm join-item"
+          phx-click={@on_step}
+          phx-value-at={@previous}
+          data-testid="coverage-step-previous"
         >
-          <span :for={label <- @column_labels} class="text-center text-xs favn-text-subtle">
-            {label}
-          </span>
-        </div>
+          <.icon name="hero-chevron-left" class="size-4" />
+          <span class="sr-only">Earlier</span>
+        </button>
 
-        <!-- Bounded, so a cell stays roughly square whatever the panel is wide. A grid
-        that filled a desktop panel gave each day 140px and read as a row of buttons
-        rather than a month. -->
-        <div class={
-          (@layout == :grid && ["grid max-w-sm gap-1", calendar_columns_class(@columns)]) ||
-            "flex flex-wrap gap-1"
-        }>
-          <span :for={_blank <- calendar_blanks(@layout, group)} class="h-9" aria-hidden="true"></span>
-          <.calendar_cell :for={cell <- group.cells} cell={cell} on_select={@on_select} />
-        </div>
-      </section>
+        <span class="btn btn-sm join-item pointer-events-none min-w-32 justify-center font-medium">
+          {@label}
+        </span>
+
+        <button
+          :if={@next}
+          type="button"
+          class="btn btn-sm join-item"
+          phx-click={@on_step}
+          phx-value-at={@next}
+          data-testid="coverage-step-next"
+        >
+          <.icon name="hero-chevron-right" class="size-4" />
+          <span class="sr-only">Later</span>
+        </button>
+      </div>
+
+      <form :if={@on_jump && @jumps != []} phx-change={@on_jump} class="flex flex-wrap gap-2">
+        <label :for={jump <- @jumps} class="contents">
+          <span class="sr-only">{jump.label}</span>
+          <select
+            name={jump.name}
+            class="select select-sm w-auto"
+            data-testid={"coverage-jump-#{jump.name}"}
+          >
+            <option :for={{label, value} <- jump.options} value={value} selected={value == jump.value}>
+              {label}
+            </option>
+          </select>
+        </label>
+      </form>
     </div>
     """
   end
@@ -1210,13 +1291,15 @@ defmodule FavnView.UI.Data do
     if summary, do: "#{summary}: #{parts}", else: parts
   end
 
-  # A list layout fills from the left, so only a grid pads its first cell into the
-  # right column.
-  defp calendar_blanks(:grid, %{blanks: blanks}) when blanks > 0, do: List.duplicate(nil, blanks)
-  defp calendar_blanks(_layout, _group), do: []
+  defp calendar_blanks(blanks) when is_integer(blanks) and blanks > 0,
+    do: List.duplicate(nil, blanks)
 
-  defp calendar_columns_class(7), do: "grid-cols-7"
+  defp calendar_blanks(_blanks), do: []
+
+  defp calendar_columns_class(4), do: "grid-cols-4"
+  defp calendar_columns_class(5), do: "grid-cols-5"
   defp calendar_columns_class(6), do: "grid-cols-6"
+  defp calendar_columns_class(7), do: "grid-cols-7"
   defp calendar_columns_class(_columns), do: "grid-cols-6"
 
   defp grid_class(1), do: "sm:grid-cols-1"

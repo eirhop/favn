@@ -35,11 +35,6 @@ defmodule FavnOrchestrator.Operator.Catalogue do
   alias FavnOrchestrator.Runs
   alias FavnOrchestrator.TargetGenerations
 
-  # A calendar of daily windows is only useful if it spans enough of the year to
-  # read, so the asset detail asks for a year of periods rather than the query's
-  # own default of one hundred. Anything longer is paged.
-  @coverage_page_limit 366
-
   @type manifest_summary :: %{
           required(:manifest_version_id) => String.t(),
           required(:content_hash) => String.t(),
@@ -222,9 +217,6 @@ defmodule FavnOrchestrator.Operator.Catalogue do
           required(:freshness) => asset_freshness_detail(),
           required(:coverage) => Favn.Coverage.Summary.t(),
           required(:coverage_policy) => map() | nil,
-          required(:coverage_gaps) => [map()],
-          required(:coverage_examined) => Coverage.examined(),
-          required(:coverage_pagination) => map(),
           required(:compatibility) => map(),
           required(:assurance) => map() | nil,
           required(:runs) => [asset_run_history_entry()],
@@ -342,12 +334,8 @@ defmodule FavnOrchestrator.Operator.Catalogue do
          {:ok, run_context_selection} <-
            AssetRunContext.select(version, asset, Keyword.get(opts, :run_context_id)),
          now <- Keyword.get(opts, :now) || DateTime.utc_now(),
-         {:ok, coverage_page} <-
-           Coverage.missing_windows(context, target_id,
-             evaluated_at: now,
-             limit: @coverage_page_limit
-           ),
-         :ok <- coverage_snapshot(coverage_page.summary, runtime.manifest_version_id),
+         {:ok, coverage} <- Coverage.summary(context, target_id, evaluated_at: now),
+         :ok <- coverage_snapshot(coverage, runtime.manifest_version_id),
          {:ok, compatibilities} <-
            target_compatibilities(context, [
              %{target_id: target_id, persisted?: not is_nil(asset.target_descriptor)}
@@ -385,11 +373,8 @@ defmodule FavnOrchestrator.Operator.Catalogue do
           detail_opts,
           run_context_selection
         )
-        |> Map.put(:coverage, coverage_page.summary)
+        |> Map.put(:coverage, coverage)
         |> Map.put(:coverage_policy, coverage_policy(asset.coverage))
-        |> Map.put(:coverage_gaps, coverage_page.items)
-        |> Map.put(:coverage_examined, coverage_page.examined)
-        |> Map.put(:coverage_pagination, coverage_page.pagination)
         |> Map.put(:compatibility, Map.fetch!(compatibilities, target_id))
 
       {:ok, detail}

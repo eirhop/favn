@@ -99,6 +99,7 @@ defmodule FavnOrchestrator do
   @type asset_freshness_detail :: Catalogue.asset_freshness_detail()
   @type coverage_summary :: Favn.Coverage.Summary.t()
   @type missing_coverage_page :: Coverage.missing_page()
+  @type coverage_window_states :: Coverage.window_states()
 
   @doc "Returns a customer-visible lineage graph after operator reauthorization."
   @spec get_operator_lineage_graph(OperatorContext.t(), keyword()) ::
@@ -487,6 +488,22 @@ defmodule FavnOrchestrator do
       when is_binary(target_id) do
     with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer) do
       Coverage.summary(context, target_id)
+    end
+  end
+
+  @doc """
+  Returns every expected coverage window in one addressed range after reauthorization.
+
+  Pass `:at` to name the range by an instant inside its first period and `:limit` to
+  bound how many periods follow it. Unlike `page_asset_missing_coverage/3` this
+  reports covered windows too, which is what a calendar of the range needs.
+  """
+  @spec active_asset_coverage_windows(OperatorContext.t(), String.t(), keyword()) ::
+          {:ok, coverage_window_states()} | {:error, term()}
+  def active_asset_coverage_windows(%OperatorContext{} = operator_context, target_id, opts \\ [])
+      when is_binary(target_id) and is_list(opts) do
+    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer) do
+      Coverage.window_states(context, target_id, opts)
     end
   end
 

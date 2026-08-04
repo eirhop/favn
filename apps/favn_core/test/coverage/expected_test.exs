@@ -44,6 +44,38 @@ defmodule Favn.Coverage.ExpectedTest do
     end
   end
 
+  test "addresses a page by an instant, floored to its period and clamped to the range" do
+    coverage = effective(:month, from: ~D[2026-01-01], through: ~D[2026-05-01])
+
+    assert {:ok, evaluation} = Expected.evaluate(coverage, ~U[2026-07-22 10:00:00Z])
+
+    # Part-way through March addresses March. A caller may hand over the first of a
+    # month, or any instant in it, without checking that the month exists.
+    assert {:ok, middle} = Expected.page_at(evaluation, ~U[2026-03-17 09:30:00Z], 2)
+    assert Enum.map(middle.items, & &1.start_at.month) == [3, 4]
+    assert middle.has_more?
+
+    # Before the range is the start of it, so a jump backwards past the beginning lands
+    # on the beginning rather than on nothing.
+    assert {:ok, before} = Expected.page_at(evaluation, ~U[2020-01-01 00:00:00Z], 2)
+    assert Enum.map(before.items, & &1.start_at.month) == [1, 2]
+
+    # Past the end is empty, so a caller stepping forward can tell it ran out.
+    assert {:ok, past} = Expected.page_at(evaluation, ~U[2030-01-01 00:00:00Z], 2)
+    assert past.items == []
+    refute past.has_more?
+  end
+
+  test "an addressed page of an empty range is empty rather than an error" do
+    coverage = effective(:day, from: ~D[2026-07-01], through: :latest_closed)
+
+    assert {:ok, evaluation} = Expected.evaluate(coverage, ~U[2026-06-01 00:00:00Z])
+    assert evaluation.expected_count == 0
+
+    assert {:ok, page} = Expected.page_at(evaluation, ~U[2026-07-01 00:00:00Z], 5)
+    assert page.items == []
+  end
+
   test "rejects a page cursor that is not a canonical coverage boundary" do
     coverage = effective(:day, from: ~D[2026-07-01], through: ~D[2026-07-03])
 

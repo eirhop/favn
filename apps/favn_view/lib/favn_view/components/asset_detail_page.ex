@@ -45,25 +45,27 @@ defmodule FavnView.Components.AssetDetailPage do
   attr :freshness, :map, default: nil
   attr :coverage, :any, default: nil
   attr :coverage_policy, :map, default: nil
-  attr :coverage_pagination, :map, default: %{limit: 100, has_more: false, next_cursor: nil}
 
   attr :coverage_calendar, :map,
     default: %{
       layout: :empty,
       kind: nil,
       timezone: nil,
+      unit_label: nil,
+      blanks: 0,
       columns: 7,
       column_labels: [],
-      groups: [],
-      from_label: nil,
-      through_label: nil,
-      examined_count: 0,
+      cells: [],
+      period_count: 0,
       missing_count: 0,
       selected_count: 0
     },
     doc: "a `FavnView.CoverageCalendar.build/1` result"
 
-  attr :coverage_page_cursor, :string, default: nil
+  attr :coverage_navigation, :map,
+    default: %{previous: nil, next: nil, jumps: []},
+    doc: "a `FavnView.CoverageCalendar.navigation/1` result"
+
   attr :compatibility, :map, default: nil
   attr :rebuild_target_id, :string, default: nil
   attr :manifest_version_id, :string, default: nil
@@ -140,8 +142,7 @@ defmodule FavnView.Components.AssetDetailPage do
         coverage={@coverage}
         coverage_policy={@coverage_policy}
         coverage_calendar={@coverage_calendar}
-        coverage_pagination={@coverage_pagination}
-        coverage_page_cursor={@coverage_page_cursor}
+        coverage_navigation={@coverage_navigation}
         compatibility={@compatibility}
         rebuild_target_id={@rebuild_target_id}
         manifest_version_id={@manifest_version_id}
@@ -205,25 +206,27 @@ defmodule FavnView.Components.AssetDetailPage do
   attr :freshness, :map, default: nil
   attr :coverage, :any, default: nil
   attr :coverage_policy, :map, default: nil
-  attr :coverage_pagination, :map, default: %{limit: 100, has_more: false, next_cursor: nil}
 
   attr :coverage_calendar, :map,
     default: %{
       layout: :empty,
       kind: nil,
       timezone: nil,
+      unit_label: nil,
+      blanks: 0,
       columns: 7,
       column_labels: [],
-      groups: [],
-      from_label: nil,
-      through_label: nil,
-      examined_count: 0,
+      cells: [],
+      period_count: 0,
       missing_count: 0,
       selected_count: 0
     },
     doc: "a `FavnView.CoverageCalendar.build/1` result"
 
-  attr :coverage_page_cursor, :string, default: nil
+  attr :coverage_navigation, :map,
+    default: %{previous: nil, next: nil, jumps: []},
+    doc: "a `FavnView.CoverageCalendar.navigation/1` result"
+
   attr :compatibility, :map, default: nil
   attr :rebuild_target_id, :string, default: nil
   attr :manifest_version_id, :string, default: nil
@@ -345,8 +348,7 @@ defmodule FavnView.Components.AssetDetailPage do
       :if={@active_mode == :coverage && @coverage}
       coverage={@coverage}
       calendar={@coverage_calendar}
-      pagination={@coverage_pagination}
-      page_cursor={@coverage_page_cursor}
+      navigation={@coverage_navigation}
       plan={@coverage_plan}
       action_error={@coverage_action_error}
       planning?={@planning_coverage?}
@@ -710,8 +712,10 @@ defmodule FavnView.Components.AssetDetailPage do
     required: true,
     doc: "a `FavnView.CoverageCalendar.build/1` result"
 
-  attr :pagination, :map, default: %{limit: 100, has_more: false, next_cursor: nil}
-  attr :page_cursor, :string, default: nil
+  attr :navigation, :map,
+    default: %{previous: nil, next: nil, jumps: []},
+    doc: "a `FavnView.CoverageCalendar.navigation/1` result"
+
   attr :plan, :map, default: nil
   attr :action_error, :string, default: nil
   attr :planning?, :boolean, default: false
@@ -736,48 +740,33 @@ defmodule FavnView.Components.AssetDetailPage do
 
       <p class="mt-3 max-w-2xl">{coverage_answer(@coverage, @calendar)}</p>
 
+      <.calendar_navigator
+        :if={@calendar.unit_label}
+        class="mt-6"
+        label={@calendar.unit_label}
+        previous={@navigation.previous}
+        next={@navigation.next}
+        jumps={@navigation.jumps}
+        on_step="show_coverage_period"
+        on_jump="jump_coverage_period"
+        data-testid="coverage-navigator"
+      />
+
       <.coverage_calendar
         :if={@calendar.layout != :empty}
-        class="mt-6"
+        class="mt-4"
         layout={@calendar.layout}
-        groups={@calendar.groups}
+        cells={@calendar.cells}
+        blanks={@calendar.blanks}
         columns={@calendar.columns}
         column_labels={@calendar.column_labels}
         on_select={(@can_plan? && "toggle_coverage_window") || nil}
         data-testid="asset-coverage-calendar"
       />
 
-      <p :if={coverage_caption(@calendar, @pagination)} class="mt-4 text-sm favn-text-subtle">
-        {coverage_caption(@calendar, @pagination)}
+      <p :if={coverage_caption(@calendar)} class="mt-4 text-sm favn-text-subtle">
+        {coverage_caption(@calendar)}
       </p>
-
-      <div
-        :if={@page_cursor || field(@pagination, :has_more, false)}
-        class="mt-3 flex items-center gap-2"
-        data-testid="coverage-gap-pagination"
-      >
-        <button
-          type="button"
-          class="btn btn-ghost btn-sm"
-          phx-click="page_missing_coverage"
-          phx-value-direction="previous"
-          disabled={is_nil(@page_cursor)}
-          data-testid="previous-coverage-gap-page"
-        >
-          Earlier
-        </button>
-
-        <button
-          type="button"
-          class="btn btn-ghost btn-sm"
-          phx-click="page_missing_coverage"
-          phx-value-direction="next"
-          disabled={!field(@pagination, :has_more, false)}
-          data-testid="next-coverage-gap-page"
-        >
-          Later
-        </button>
-      </div>
 
       <div
         :if={coverage_backfillable?(@coverage) && is_nil(@plan)}
@@ -892,35 +881,17 @@ defmodule FavnView.Components.AssetDetailPage do
   defp coverage_unknown_answer(_reason),
     do: "Favn could not read coverage just now. Reload the page to try again."
 
-  defp coverage_caption(%{layout: :empty}, _pagination), do: nil
+  defp coverage_caption(%{layout: :empty}), do: nil
 
-  defp coverage_caption(calendar, pagination) do
-    [coverage_range_sentence(calendar), coverage_more_sentence(pagination)]
-    |> Enum.reject(&is_nil/1)
-    |> Enum.join(" ")
-  end
+  # Which grain the cells are and which clock they are read against. The screen shows
+  # numbers in a grid, and neither fact is guessable from them.
+  defp coverage_caption(calendar) do
+    grain = CoverageCalendar.period_noun(calendar.kind, calendar.period_count)
 
-  # Hours are listed rather than drawn, so the caption has to say that only the
-  # missing ones are on screen; a grid shows every period it examined.
-  defp coverage_range_sentence(%{layout: :list} = calendar) do
-    "Listing the #{calendar.missing_count} missing " <>
-      "#{CoverageCalendar.period_noun(calendar.kind, calendar.missing_count)} " <>
-      "of #{calendar.examined_count} checked#{coverage_zone_suffix(calendar)}."
-  end
-
-  defp coverage_range_sentence(calendar) do
-    "Showing #{calendar.examined_count} " <>
-      "#{CoverageCalendar.period_noun(calendar.kind, calendar.examined_count)}, " <>
-      "#{calendar.from_label} to #{calendar.through_label}#{coverage_zone_suffix(calendar)}."
-  end
-
-  defp coverage_zone_suffix(%{timezone: timezone}) when is_binary(timezone),
-    do: ", in #{timezone}"
-
-  defp coverage_zone_suffix(_calendar), do: ""
-
-  defp coverage_more_sentence(pagination) do
-    if field(pagination, :has_more, false), do: "Later periods are on the next page."
+    case calendar.timezone do
+      nil -> "#{calendar.period_count} #{grain}."
+      timezone -> "#{calendar.period_count} #{grain}, in #{timezone}."
+    end
   end
 
   # Coverage starts at the later of what the author declared and when the target was

@@ -60,21 +60,36 @@ defmodule Favn.Coverage.Expected do
 
   def page(%{first_window: first, last_expected_window: last}, after_key, limit)
       when is_integer(limit) and limit in 1..500 do
-    with {:ok, start_at} <- page_start(first, last, after_key),
-         {:ok, anchors} <- collect(start_at, first.kind, first.timezone, last, limit + 1, []) do
-      has_more? = length(anchors) > limit
-      items = Enum.take(anchors, limit)
-
-      {:ok,
-       %{
-         items: items,
-         has_more?: has_more?,
-         next_after: if(has_more?, do: List.last(items).key, else: nil)
-       }}
+    with {:ok, start_at} <- page_start(first, last, after_key) do
+      collect_page(start_at, first, last, limit)
     end
   end
 
   def page(_evaluation, _after_key, _limit), do: {:error, :invalid_coverage_page}
+
+  @doc """
+  Returns one bounded canonical page starting at the period containing `at`.
+
+  `page/3` can only walk forward from a key it already has, which is all cursor
+  paging needs. Addressing a range directly — the month an operator asked to look
+  at — needs a start rather than a predecessor, and an instant inside the period is
+  the only handle a caller has before knowing the period exists.
+
+  The instant is floored to the period and clamped into the expected range, so a
+  request before coverage begins returns the first page and one past the end returns
+  nothing.
+  """
+  @spec page_at(evaluation(), DateTime.t(), 1..500) :: {:ok, page()} | {:error, term()}
+  def page_at(evaluation, at, limit \\ 100)
+
+  def page_at(%{first_window: first, last_expected_window: last}, %DateTime{} = at, limit)
+      when is_integer(limit) and limit in 1..500 do
+    with {:ok, start_at} <- clamped_start(first, last, at) do
+      collect_page(start_at, first, last, limit)
+    end
+  end
+
+  def page_at(_evaluation, _at, _limit), do: {:error, :invalid_coverage_page}
 
   @doc "Returns the hard expected-window safety limit."
   @spec max_windows() :: pos_integer()
@@ -119,6 +134,34 @@ defmodule Favn.Coverage.Expected do
         {:error, :coverage_window_limit_exceeded}
       else
         count_from(TimePeriod.shift!(cursor, kind, 1), last_start, kind, next_count)
+      end
+    end
+  end
+
+  defp collect_page(start_at, first, last, limit) do
+    with {:ok, anchors} <- collect(start_at, first.kind, first.timezone, last, limit + 1, []) do
+      has_more? = length(anchors) > limit
+      items = Enum.take(anchors, limit)
+
+      {:ok,
+       %{
+         items: items,
+         has_more?: has_more?,
+         next_after: if(has_more?, do: List.last(items).key, else: nil)
+       }}
+    end
+  end
+
+  # Nothing is expected yet, so no instant addresses a period.
+  defp clamped_start(_first, nil, _at), do: {:ok, nil}
+
+  defp clamped_start(first, last, at) do
+    with {:ok, local} <- DateTime.shift_zone(at, first.timezone, Favn.Timezone.database!()),
+         {:ok, floored} <- TimePeriod.floor(local, first.kind, first.timezone) do
+      cond do
+        DateTime.compare(floored, first.start_at) == :lt -> {:ok, first.start_at}
+        DateTime.compare(floored, last.start_at) == :gt -> {:ok, nil}
+        true -> {:ok, floored}
       end
     end
   end

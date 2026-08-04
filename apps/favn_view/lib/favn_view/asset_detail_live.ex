@@ -47,8 +47,7 @@ defmodule FavnView.AssetDetailLive do
         submitted_run_id: nil,
         selected_window_error: nil,
         coverage_plan: nil,
-        coverage_page_cursor: nil,
-        coverage_cursor_stack: [],
+        coverage_windows: nil,
         coverage_action_error: nil,
         coverage_selection: MapSet.new(),
         planning_coverage?: false,
@@ -87,8 +86,7 @@ defmodule FavnView.AssetDetailLive do
           submitted_run_id: nil,
           selected_window_error: nil,
           coverage_plan: nil,
-          coverage_page_cursor: nil,
-          coverage_cursor_stack: [],
+          coverage_windows: nil,
           coverage_action_error: nil,
           coverage_selection: MapSet.new(),
           planning_coverage?: false,
@@ -103,7 +101,8 @@ defmodule FavnView.AssetDetailLive do
     {:noreply,
      socket
      |> assign_selected_run(Map.get(params, "run_id"))
-     |> maybe_load_documentation()}
+     |> maybe_load_documentation()
+     |> maybe_load_coverage()}
   end
 
   # Selecting a period narrows the backfill to it. A plan already under review is
@@ -170,28 +169,23 @@ defmodule FavnView.AssetDetailLive do
     end
   end
 
-  def handle_event(
-        "page_missing_coverage",
-        %{"direction" => "next"},
-        %{assigns: %{asset: %{coverage_pagination: %{next_cursor: cursor}}}} = socket
-      )
-      when is_binary(cursor) do
-    load_coverage_page(
-      socket,
-      cursor,
-      [socket.assigns.coverage_page_cursor | socket.assigns.coverage_cursor_stack]
-    )
+  # The navigator only ever offers dates inside the range coverage has, so a step is a
+  # date and the backend clamps it. Nothing here has to know where coverage ends.
+  def handle_event("show_coverage_period", %{"at" => at}, socket) when is_binary(at) do
+    case Date.from_iso8601(at) do
+      {:ok, date} -> {:noreply, load_coverage_window(socket, date)}
+      {:error, _reason} -> {:noreply, socket}
+    end
   end
 
-  def handle_event(
-        "page_missing_coverage",
-        %{"direction" => "previous"},
-        %{assigns: %{coverage_cursor_stack: [cursor | remaining]}} = socket
-      ) do
-    load_coverage_page(socket, cursor, remaining)
-  end
+  def handle_event("show_coverage_period", _params, socket), do: {:noreply, socket}
 
-  def handle_event("page_missing_coverage", _params, socket), do: {:noreply, socket}
+  def handle_event("jump_coverage_period", params, socket) do
+    case CoverageCalendar.jump_target(coverage_view(socket), params) do
+      nil -> {:noreply, socket}
+      date -> {:noreply, load_coverage_window(socket, date)}
+    end
+  end
 
   def handle_event(
         "submit_missing_coverage",
@@ -549,8 +543,7 @@ defmodule FavnView.AssetDetailLive do
       coverage={@asset.coverage}
       coverage_policy={@asset.coverage_policy}
       coverage_calendar={@coverage_calendar}
-      coverage_pagination={@asset.coverage_pagination}
-      coverage_page_cursor={@coverage_page_cursor}
+      coverage_navigation={@coverage_navigation}
       compatibility={@asset.compatibility}
       rebuild_target_id={@asset.target_id}
       manifest_version_id={@asset.manifest_version_id}
@@ -742,10 +735,6 @@ defmodule FavnView.AssetDetailLive do
       freshness: Map.get(detail, :freshness, missing_freshness_detail()),
       coverage: Map.get(detail, :coverage),
       coverage_policy: Map.get(detail, :coverage_policy),
-      coverage_gaps: Map.get(detail, :coverage_gaps, []),
-      coverage_examined: Map.get(detail, :coverage_examined),
-      coverage_pagination:
-        Map.get(detail, :coverage_pagination, %{limit: 100, has_more: false, next_cursor: nil}),
       compatibility: compatibility,
       assurance: Map.get(detail, :assurance),
       window_kind_label: window_kind_label(Map.get(detail, :window)),
@@ -1022,54 +1011,145 @@ defmodule FavnView.AssetDetailLive do
   defp coverage_error_label({:coverage_unknown, _reason}), do: "Coverage is unavailable."
   defp coverage_error_label(_reason), do: "Could not prepare the missing-window backfill."
 
-  defp load_coverage_page(socket, cursor, cursor_stack) do
+  # Coverage is read when its own page opens, like the documentation page, so the other
+  # four sub-pages do not each pay for a window-keys query they never render. The
+  # newest unit opens first, because that is where a gap that matters usually is.
+  defp maybe_load_coverage(%{assigns: %{live_action: :coverage, coverage_windows: nil}} = socket),
+    do: load_coverage_window(socket, nil)
+
+  defp maybe_load_coverage(socket), do: socket
+
+  defp load_coverage_window(%{assigns: %{asset: nil}} = socket, _date), do: socket
+
+  defp load_coverage_window(socket, date) do
     asset = socket.assigns.asset
 
-    case FavnOrchestrator.page_asset_missing_coverage(
+    case FavnOrchestrator.active_asset_coverage_windows(
            actor_context(socket),
            asset.target_id,
-           coverage_page_options(asset, cursor)
+           coverage_window_options(socket, date)
          ) do
-      {:ok, page} ->
-        asset =
-          asset
-          |> Map.put(:coverage, page.summary)
-          |> Map.put(:coverage_gaps, page.items)
-          |> Map.put(:coverage_examined, page.examined)
-          |> Map.put(:coverage_pagination, page.pagination)
-
-        # The selection is dropped with the page it was made on. Carrying it would
+      {:ok, states} ->
+        # The selection is dropped with the screen it was made on. Carrying it would
         # mean a button reading "Backfill 4 selected days" beside a calendar showing
         # none of them.
-        {:noreply,
-         socket
-         |> assign(
-           asset: asset,
-           coverage_page_cursor: cursor,
-           coverage_cursor_stack: cursor_stack,
-           coverage_selection: MapSet.new(),
-           coverage_plan: nil,
-           coverage_action_error: nil
-         )
-         |> assign_coverage_calendar()}
+        socket
+        |> assign(
+          coverage_windows: states,
+          asset: Map.put(asset, :coverage, states.summary),
+          coverage_selection: MapSet.new(),
+          coverage_plan: nil,
+          coverage_action_error: nil
+        )
+        |> assign_coverage_calendar()
 
       {:error, reason} ->
-        {:noreply, assign(socket, :coverage_action_error, coverage_error_label(reason))}
+        Logger.error(
+          "asset_coverage.load failed asset_id=#{inspect(socket.assigns.asset_id)} " <>
+            "reason=#{inspect(reason)}"
+        )
+
+        assign(socket, :coverage_action_error, coverage_error_label(reason))
     end
   end
 
-  defp assign_coverage_calendar(%{assigns: %{asset: nil}} = socket),
-    do: assign(socket, :coverage_calendar, CoverageCalendar.build(%{}))
+  # A load with no date takes the last unit coverage expects, and every later one names
+  # a date the navigator offered. Both work from the summary's own bounds, so the first
+  # open needs no exploratory query to find out what grain the asset is.
+  defp coverage_window_options(socket, date) do
+    basis = coverage_basis(socket)
+    at = (date && local_instant(date, basis.timezone)) || latest_unit_instant(basis)
 
-  defp assign_coverage_calendar(%{assigns: %{asset: asset}} = socket) do
+    [evaluated_at: socket.assigns.asset.coverage.evaluated_at]
+    |> Keyword.put(:limit, coverage_unit_limit(basis.kind))
+    |> then(&if at, do: Keyword.put(&1, :at, at), else: &1)
+  end
+
+  # The grain and the range, from whichever source already knows them. A loaded screen
+  # reports both; before that the summary's own window anchors carry them, which is what
+  # lets the page open on the right month rather than on the start of coverage.
+  defp coverage_basis(%{assigns: %{coverage_windows: states}}) when is_map(states),
+    do: Map.take(states, [:kind, :timezone, :last_expected_at])
+
+  defp coverage_basis(%{assigns: %{asset: %{coverage: coverage}}}) when is_map(coverage) do
+    anchor = Map.get(coverage, :last_expected_window) || Map.get(coverage, :first_window)
+
+    %{
+      kind: anchor && Map.get(anchor, :kind),
+      timezone: anchor && Map.get(anchor, :timezone),
+      last_expected_at: anchor && Map.get(anchor, :start_at)
+    }
+  end
+
+  defp coverage_basis(_socket), do: %{kind: nil, timezone: nil, last_expected_at: nil}
+
+  # The unit holding the last period coverage expects. Opening on the start of a
+  # multi-year range would put an operator three years from the gap they came to see.
+  defp latest_unit_instant(%{last_expected_at: %DateTime{} = last, kind: kind, timezone: zone})
+       when is_binary(zone) do
+    last |> DateTime.to_date() |> coverage_unit_start(kind) |> local_instant(zone)
+  end
+
+  defp latest_unit_instant(_basis), do: nil
+
+  defp coverage_unit_start(date, :day), do: %{date | day: 1}
+  defp coverage_unit_start(date, :month), do: %{date | month: 1, day: 1}
+  defp coverage_unit_start(date, :year), do: %{date | month: 1, day: 1}
+  defp coverage_unit_start(date, _kind), do: date
+
+  # Midnight, adjusted when a clock change means the day has no midnight. The instant
+  # only has to fall inside the first period of the unit; the evaluator floors it.
+  defp local_instant(%Date{} = date, timezone) when is_binary(timezone) do
+    case DateTime.new(date, ~T[00:00:00], timezone, Favn.Timezone.database!()) do
+      {:ok, instant} -> instant
+      {:ambiguous, instant, _later} -> instant
+      {:gap, _before, instant} -> instant
+      {:error, _reason} -> nil
+    end
+  end
+
+  defp local_instant(_date, _timezone), do: nil
+
+  # One screen's worth. Yearly coverage has no unit above it, so it takes the whole
+  # range up to the query's own ceiling.
+  defp coverage_unit_limit(:hour), do: 25
+  defp coverage_unit_limit(:day), do: 31
+  defp coverage_unit_limit(:month), do: 12
+  defp coverage_unit_limit(_kind), do: 200
+
+  defp assign_coverage_calendar(%{assigns: %{coverage_windows: nil}} = socket) do
+    assign(socket,
+      coverage_calendar: CoverageCalendar.build(%{}),
+      coverage_navigation: CoverageCalendar.navigation(%{})
+    )
+  end
+
+  defp assign_coverage_calendar(%{assigns: %{coverage_windows: states}} = socket) do
     calendar =
       CoverageCalendar.build(%{
-        examined: Map.get(asset, :coverage_examined),
-        gaps: Map.get(asset, :coverage_gaps, []),
+        kind: states.kind,
+        timezone: states.timezone,
+        windows: states.windows,
         selected: socket.assigns.coverage_selection
       })
 
-    assign(socket, :coverage_calendar, calendar)
+    assign(socket,
+      coverage_calendar: calendar,
+      coverage_navigation: CoverageCalendar.navigation(coverage_view(socket))
+    )
+  end
+
+  # What the navigator reasons about: the unit on screen and the range it may move in.
+  defp coverage_view(%{assigns: %{coverage_windows: nil}}),
+    do: %{kind: nil, at: nil, first_expected_at: nil, last_expected_at: nil}
+
+  defp coverage_view(%{assigns: %{coverage_windows: states}}) do
+    %{
+      kind: states.kind,
+      at: states.windows |> List.first() |> then(&(&1 && &1.start_at)),
+      first_expected_at: states.first_expected_at,
+      last_expected_at: states.last_expected_at
+    }
   end
 
   # No selection means every missing period, which is what the button offers when
@@ -1081,17 +1161,6 @@ defmodule FavnView.AssetDetailLive do
       [evaluated_at: asset.coverage.evaluated_at, window_keys: MapSet.to_list(selection)]
     end
   end
-
-  defp coverage_page_options(asset, cursor) do
-    [
-      limit: asset.coverage_pagination.limit,
-      evaluated_at: asset.coverage.evaluated_at
-    ]
-    |> maybe_put_coverage_cursor(cursor)
-  end
-
-  defp maybe_put_coverage_cursor(opts, nil), do: opts
-  defp maybe_put_coverage_cursor(opts, cursor), do: Keyword.put(opts, :cursor, cursor)
 
   defp coverage_root_run_id(plan),
     do: "run_coverage_" <> String.slice(plan.plan_hash, 0, 40)

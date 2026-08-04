@@ -32,7 +32,6 @@ defmodule FavnOrchestrator.Coverage do
   @type missing_page :: %{
           required(:summary) => Summary.t(),
           required(:items) => [map()],
-          required(:examined) => examined(),
           required(:pagination) => %{
             required(:limit) => pos_integer(),
             required(:has_more) => boolean(),
@@ -41,20 +40,36 @@ defmodule FavnOrchestrator.Coverage do
         }
 
   @typedoc """
-  The contiguous run of expected windows one page compared against evidence.
-
-  A page reports the windows it found missing, which on its own does not say what
-  it looked at: a page with no items is either fully covered or past the end of
-  the expected range. Callers that draw the whole range — a calendar marking each
-  period covered or missing — need the bounds, and deriving them from the summary
-  only works for the first page.
+  One expected window and whether the pinned generation has evidence for it.
   """
-  @type examined :: %{
+  @type window_state :: %{
+          required(:window_key) => String.t(),
+          required(:kind) => atom(),
+          required(:timezone) => String.t(),
+          required(:start_at) => DateTime.t(),
+          required(:end_at) => DateTime.t(),
+          required(:covered?) => boolean()
+        }
+
+  @typedoc """
+  Every expected window in one addressed range, plus the bounds of the whole range.
+
+  `missing_windows/3` answers "what is missing", which is what a backfill needs. A
+  calendar needs the complement as well — a period with no evidence and a period
+  nobody looked at must not draw the same — and it cannot work the difference out
+  itself: an hour-grained day has 23, 24, or 25 hours depending on daylight saving,
+  and only the evaluator knows which.
+
+  `first_expected_at` and `last_expected_at` bound navigation, so a caller can offer
+  to step back exactly as far as coverage goes and no further.
+  """
+  @type window_states :: %{
+          required(:summary) => Summary.t(),
           required(:kind) => atom() | nil,
           required(:timezone) => String.t() | nil,
-          required(:from) => DateTime.t() | nil,
-          required(:through) => DateTime.t() | nil,
-          required(:count) => non_neg_integer()
+          required(:windows) => [window_state()],
+          required(:first_expected_at) => DateTime.t() | nil,
+          required(:last_expected_at) => DateTime.t() | nil
         }
 
   @doc "Returns a bounded coverage summary for one active asset target."
@@ -115,6 +130,93 @@ defmodule FavnOrchestrator.Coverage do
         {:ok, result}
       end
     end)
+  end
+
+  @doc """
+  Returns every expected window in one addressed range, covered or not.
+
+  `:at` names the range by an instant inside its first period; the evaluator floors
+  and clamps it, so a caller may pass the start of a month without checking that the
+  month is inside coverage. `:limit` bounds how many periods follow it. Defaults to
+  the start of coverage, matching `missing_windows/3` with no cursor.
+  """
+  @spec window_states(WorkspaceContext.t(), String.t(), keyword()) ::
+          {:ok, window_states()} | {:error, term()}
+  def window_states(%WorkspaceContext{} = context, target_id, opts \\ [])
+      when is_binary(target_id) and is_list(opts) do
+    timed_query(context, target_id, :window_states, fn ->
+      with :ok <- validate_options(opts, [:evaluated_at, :at, :limit]),
+           {:ok, limit} <- page_limit(Keyword.get(opts, :limit, @default_page)),
+           evaluated_at <- Keyword.get(opts, :evaluated_at, DateTime.utc_now()),
+           :ok <- validate_datetime(evaluated_at),
+           {:ok, snapshot} <- active_asset(context, target_id),
+           {:ok, summary} <- summarize(context, snapshot, evaluated_at) do
+        addressed_states(context, snapshot, summary, Keyword.get(opts, :at), limit)
+      end
+    end)
+  end
+
+  # Coverage that cannot be evaluated has no windows to draw, and inventing a range
+  # for it would put an empty calendar on screen where an explanation belongs.
+  defp addressed_states(_context, _snapshot, %Summary{status: :unknown} = summary, _at, _limit),
+    do: {:ok, unknown_window_states(summary)}
+
+  defp addressed_states(context, snapshot, summary, at, limit) do
+    identity = %{
+      evidence_generation_id: summary.evidence_generation_id,
+      target_generation_id: summary.active_target_generation_id
+    }
+
+    with {:ok, evaluation} <- Expected.evaluate(snapshot.asset.coverage, summary.evaluated_at),
+         at <- at || evaluation.first_window.start_at,
+         :ok <- validate_datetime(at),
+         {:ok, page} <- Expected.page_at(evaluation, at, limit) do
+      case successful_keys(context, snapshot, identity, page) do
+        {:ok, keys} ->
+          {:ok, addressed_window_states(summary, evaluation, page.items, keys)}
+
+        # The counts came back but the exact keys did not, so which periods are
+        # covered is unknown. Reporting them all as missing would draw a calendar of
+        # gaps that may not exist, and keeping the counted summary beside no windows
+        # would say two contradictory things at once.
+        {:error, _reason} ->
+          with {:ok, unknown} <-
+                 unknown_summary(snapshot, summary.evaluated_at, :authoritative_state_unavailable) do
+            {:ok, unknown_window_states(unknown)}
+          end
+      end
+    end
+  end
+
+  defp addressed_window_states(summary, evaluation, anchors, successful_keys) do
+    covered = MapSet.new(successful_keys)
+
+    %{
+      summary: summary,
+      kind: evaluation.coverage.kind,
+      timezone: evaluation.coverage.timezone,
+      first_expected_at: evaluation.first_window.start_at,
+      last_expected_at:
+        evaluation.last_expected_window && evaluation.last_expected_window.start_at,
+      windows: Enum.map(anchors, &window_state(&1, covered))
+    }
+  end
+
+  defp window_state(anchor, covered) do
+    anchor
+    |> missing_window()
+    |> Map.put(:covered?, MapSet.member?(covered, storage_window_key(anchor)))
+  end
+
+  defp unknown_window_states(summary) do
+    %{
+      summary: summary,
+      kind: nil,
+      timezone: nil,
+      windows: [],
+      first_expected_at: nil,
+      last_expected_at: nil
+    }
   end
 
   @doc """
@@ -401,13 +503,7 @@ defmodule FavnOrchestrator.Coverage do
   defp missing_page(context, snapshot, evaluated_at, after_key, limit) do
     with {:ok, summary} <- summarize(context, snapshot, evaluated_at) do
       if summary.status == :unknown do
-        {:ok,
-         %{
-           summary: summary,
-           items: [],
-           examined: examined([]),
-           pagination: page_metadata(limit, false, nil)
-         }}
+        {:ok, %{summary: summary, items: [], pagination: page_metadata(limit, false, nil)}}
       else
         identity = %{
           evidence_generation_id: summary.evidence_generation_id,
@@ -453,33 +549,14 @@ defmodule FavnOrchestrator.Coverage do
      %{
        summary: summary,
        items: items,
-       examined: examined(expected_page.items),
        pagination: page_metadata(limit, expected_page.has_more?, next_cursor)
      }}
-  end
-
-  defp examined([]), do: %{kind: nil, timezone: nil, from: nil, through: nil, count: 0}
-
-  defp examined([first | _rest] = anchors) do
-    %{
-      kind: first.kind,
-      timezone: first.timezone,
-      from: first.start_at,
-      through: List.last(anchors).start_at,
-      count: length(anchors)
-    }
   end
 
   defp unknown_page(snapshot, evaluated_at, limit) do
     with {:ok, summary} <-
            unknown_summary(snapshot, evaluated_at, :authoritative_state_unavailable) do
-      {:ok,
-       %{
-         summary: summary,
-         items: [],
-         examined: examined([]),
-         pagination: page_metadata(limit, false, nil)
-       }}
+      {:ok, %{summary: summary, items: [], pagination: page_metadata(limit, false, nil)}}
     end
   end
 

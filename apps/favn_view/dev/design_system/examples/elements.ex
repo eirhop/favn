@@ -451,110 +451,196 @@ defmodule FavnView.Dev.DesignSystem.Examples.Elements do
       ],
       "data/coverage_calendar" => [
         Example.attrs(
-          :scattered_gaps,
-          calendar_attrs(~w(2026-07-08 2026-07-15 2026-07-22), []),
-          "Three missing days, one a week apart. The pattern is what a list of " <>
-            "window keys cannot show."
+          :daily_scattered_gaps,
+          day_calendar_attrs(~w(8 15 22), []),
+          "A daily asset. Three missing days, one a week apart — the pattern is what a " <>
+            "list of window keys cannot show."
         ),
         Example.attrs(
-          :consecutive_gaps,
-          calendar_attrs(~w(2026-07-13 2026-07-14 2026-07-15 2026-07-16), []),
-          "A four-day outage. Same count as three scattered days, entirely " <>
-            "different cause."
+          :daily_consecutive_gaps,
+          day_calendar_attrs(~w(13 14 15 16), []),
+          "A four-day outage. One more missing day than the example above and an " <>
+            "entirely different cause."
         ),
         Example.attrs(
-          :selected,
-          calendar_attrs(
-            ~w(2026-07-08 2026-07-15),
-            ~w(day:Europe/Oslo:2026-07-08)
-          ),
+          :daily_selected,
+          day_calendar_attrs(~w(8 15), ~w(day:Europe/Oslo:2026-07-08)),
           "One of two missing days picked for backfill. Selection has to beat the " <>
             "missing wash without becoming the loudest thing on the page."
         ),
         Example.attrs(
-          :complete,
-          calendar_attrs([], []),
+          :daily_complete,
+          day_calendar_attrs([], []),
           "Every expected day has data. The grid is deliberately quiet, so the eye " <>
             "goes to a gap the moment one appears."
         ),
         Example.attrs(
-          :read_only,
-          Map.put(calendar_attrs(~w(2026-07-08), []), :on_select, nil),
+          :daily_read_only,
+          Map.put(day_calendar_attrs(~w(8), []), :on_select, nil),
           "Without an event, missing days are marked but not selectable — the state " <>
             "for a viewer who cannot submit a backfill."
         ),
         Example.attrs(
-          :months,
-          %{
-            layout: :grid,
-            columns: 6,
-            column_labels: [],
-            groups:
-              CoverageCalendar.build(%{
-                examined: %{
-                  kind: :month,
-                  timezone: "Europe/Oslo",
-                  from: ~U[2025-09-01 00:00:00Z],
-                  through: ~U[2026-07-01 00:00:00Z],
-                  count: 11
-                },
-                gaps: [
-                  %{
-                    window_key: "month:Europe/Oslo:2025-12",
-                    kind: :month,
-                    start_at: ~U[2025-12-01 00:00:00Z]
-                  }
-                ]
-              }).groups,
-            on_select: "toggle_coverage_window"
-          },
-          "A monthly asset. Cells are months and there are no weekday columns, so " <>
-            "the grid never implies a week that does not exist."
+          :hourly,
+          calendar_attrs(:hour, hourly_windows(), []),
+          "An hourly asset. One day of hours, not a month of them, and the count comes " <>
+            "from the backend so a clock-change day is 23 or 25 rather than a wrong 24."
+        ),
+        Example.attrs(
+          :monthly,
+          calendar_attrs(:month, monthly_windows(), []),
+          "A monthly asset. Cells are months in one year and there are no weekday " <>
+            "columns, so the grid never implies a week that does not exist."
+        ),
+        Example.attrs(
+          :yearly,
+          calendar_attrs(:year, yearly_windows(), []),
+          "A yearly asset. Every year at once, because there is no unit above a year " <>
+            "to page through."
         ),
         Example.attrs(
           :empty,
-          %{layout: :empty, groups: [], empty_label: "Coverage is not tracked here."},
-          "Nothing examined at all. An empty grid would read as complete coverage, " <>
-            "so there is no grid."
+          %{layout: :empty, cells: [], empty_label: "Coverage is not tracked here."},
+          "Nothing to draw. An empty grid would read as complete coverage, so there " <>
+            "is no grid."
+        )
+      ],
+      "data/calendar_navigator" => [
+        Example.attrs(
+          :mid_range,
+          %{
+            label: "July 2026",
+            previous: "2026-06-01",
+            next: "2026-08-01",
+            on_step: "show_coverage_period",
+            on_jump: "jump_coverage_period",
+            jumps: [
+              %{
+                name: "year",
+                label: "Year",
+                value: "2026",
+                options: [{"2025", "2025"}, {"2026", "2026"}]
+              },
+              %{
+                name: "month",
+                label: "Month",
+                value: "7",
+                options:
+                  Enum.map(1..12, &{Calendar.strftime(Date.new!(2000, &1, 1), "%B"), "#{&1}"})
+              }
+            ]
+          },
+          "A month with coverage either side of it."
+        ),
+        Example.attrs(
+          :at_the_start,
+          %{
+            label: "January 2025",
+            next: "2025-02-01",
+            on_step: "show_coverage_period",
+            on_jump: "jump_coverage_period",
+            jumps: [
+              %{
+                name: "month",
+                label: "Month",
+                value: "1",
+                options:
+                  Enum.map(1..6, &{Calendar.strftime(Date.new!(2000, &1, 1), "%B"), "#{&1}"})
+              }
+            ]
+          },
+          "The first month coverage has. There is no step back rather than a step back " <>
+            "that refuses, and the year select is gone because there is one year."
+        ),
+        Example.attrs(
+          :single_screen,
+          %{label: "2026", on_step: "show_coverage_period"},
+          "Everything fits on one screen, so the whole bar is absent. A navigator with " <>
+            "nothing to navigate is chrome."
         )
       ]
     }
   end
 
   # Built through `CoverageCalendar.build/1` rather than hand-written, so an example
-  # cannot show a layout the real derivation never produces.
-  defp calendar_attrs(missing_dates, selected) do
+  # cannot show a shape the real derivation never produces.
+  defp calendar_attrs(kind, windows, selected) do
     calendar =
       CoverageCalendar.build(%{
-        examined: %{
-          kind: :day,
-          timezone: "Europe/Oslo",
-          from: ~U[2026-07-01 00:00:00Z],
-          through: ~U[2026-07-31 00:00:00Z],
-          count: 31
-        },
-        gaps: Enum.map(missing_dates, &calendar_gap/1),
+        kind: kind,
+        timezone: "Europe/Oslo",
+        windows: windows,
         selected: selected
       })
 
     %{
       layout: calendar.layout,
+      cells: calendar.cells,
+      blanks: calendar.blanks,
       columns: calendar.columns,
       column_labels: calendar.column_labels,
-      groups: calendar.groups,
       on_select: "toggle_coverage_window"
     }
   end
 
-  defp calendar_gap(date) do
-    {:ok, start_at, _offset} = DateTime.from_iso8601(date <> "T00:00:00Z")
+  # July 2026 opens on a Wednesday, so the weekday padding is visible in every daily
+  # example rather than only in the one that happens to start on a Monday.
+  defp day_calendar_attrs(missing_days, selected) do
+    missing = MapSet.new(missing_days)
 
+    windows =
+      Enum.map(1..31, fn day ->
+        date = Date.new!(2026, 7, day)
+
+        coverage_window(
+          :day,
+          "day:Europe/Oslo:" <> Date.to_iso8601(date),
+          DateTime.new!(date, ~T[00:00:00], "Etc/UTC"),
+          not MapSet.member?(missing, Integer.to_string(day))
+        )
+      end)
+
+    calendar_attrs(:day, windows, selected)
+  end
+
+  defp hourly_windows do
+    Enum.map(0..23, fn hour ->
+      at = DateTime.new!(~D[2026-07-08], Time.new!(hour, 0, 0), "Etc/UTC")
+
+      coverage_window(
+        :hour,
+        "hour:Europe/Oslo:2026-07-08T#{String.pad_leading("#{hour}", 2, "0")}",
+        at,
+        hour not in [3, 4, 5, 17]
+      )
+    end)
+  end
+
+  defp monthly_windows do
+    Enum.map(1..12, fn month ->
+      at = DateTime.new!(Date.new!(2026, month, 1), ~T[00:00:00], "Etc/UTC")
+      key = "month:Europe/Oslo:2026-#{String.pad_leading("#{month}", 2, "0")}"
+
+      coverage_window(:month, key, at, month not in [2, 11])
+    end)
+  end
+
+  defp yearly_windows do
+    Enum.map(2019..2026, fn year ->
+      at = DateTime.new!(Date.new!(year, 1, 1), ~T[00:00:00], "Etc/UTC")
+
+      coverage_window(:year, "year:Europe/Oslo:#{year}", at, year != 2021)
+    end)
+  end
+
+  defp coverage_window(kind, key, start_at, covered?) do
     %{
-      window_key: "day:Europe/Oslo:" <> date,
-      kind: :day,
+      window_key: key,
+      kind: kind,
       timezone: "Europe/Oslo",
       start_at: start_at,
-      end_at: DateTime.add(start_at, 1, :day)
+      end_at: start_at,
+      covered?: covered?
     }
   end
 
