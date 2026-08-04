@@ -15,7 +15,7 @@ defmodule Favn.RunnerPool do
 
   @type source_name :: atom()
   @type runtime_name :: String.t()
-  @type releases :: %{required(runtime_name()) => String.t()}
+  @type releases :: %{optional(runtime_name()) => String.t()}
 
   @doc "Returns the source-level pool used when authoring omits a pool."
   @spec default() :: :default

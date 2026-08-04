@@ -14,6 +14,7 @@ defmodule FavnOrchestrator.API.OperatorCommands do
   alias Favn.Retry.Policy
 
   @type actor_context :: %{required(:actor) => map(), required(:session) => map()}
+  @type run_target :: %{required(:type) => String.t(), required(:id) => String.t()}
 
   @doc false
   @spec submit_run(map(), actor_context() | WorkspaceContext.t(), keyword()) ::
@@ -99,7 +100,7 @@ defmodule FavnOrchestrator.API.OperatorCommands do
   end
 
   @doc false
-  @spec normalize_run_input(map(), %{required(:type) => String.t()}) ::
+  @spec normalize_run_input(map(), run_target()) ::
           {:ok, keyword()} | {:error, term()}
   def normalize_run_input(params, %{type: "asset"}) do
     with {:ok, selection} <- asset_selection(params) do
@@ -128,6 +129,8 @@ defmodule FavnOrchestrator.API.OperatorCommands do
        |> put_optional(:timeout_ms, Map.get(params, "timeout_ms"))}
     end
   end
+
+  def normalize_run_input(_params, _target), do: {:error, :invalid_target}
 
   defp asset_selection(%{"window" => %{} = window}) do
     kind = field(window, "kind", :kind)

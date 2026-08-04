@@ -30,6 +30,10 @@ defmodule FavnOrchestrator.Persistence.RunEnum do
   }
 
   @type field :: :status | :submit_kind | :trigger_type
+  @type status :: FavnOrchestrator.RunState.status()
+  @type submit_kind :: :manual | :rerun | :pipeline | :backfill_asset | :backfill_pipeline
+  @type trigger_type ::
+          :manual | :pipeline | :rerun | :retry | :backfill | :schedule | :resource_recovery
 
   @spec decode!(field(), String.t()) :: atom()
   def decode!(field, value) when is_binary(value) do

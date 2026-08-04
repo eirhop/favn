@@ -5,6 +5,7 @@ defmodule FavnOrchestrator.RunReadModel.OperatorRunOverviewTest do
   alias FavnOrchestrator.Persistence.Results.ExecutionGroupOverview
   alias FavnOrchestrator.Persistence.Results.OperatorRunOverview
   alias FavnOrchestrator.Persistence.Results.PlannedAssetStep
+  alias FavnOrchestrator.Persistence.Results.OperatorRunOverviewNormalizer
   alias FavnOrchestrator.Persistence.Results.RunSummary
   alias FavnOrchestrator.RunReadModel
 
@@ -137,7 +138,7 @@ defmodule FavnOrchestrator.RunReadModel.OperatorRunOverviewTest do
       target_refs: ["MyApp.Gold:orders"]
     }
 
-    detail = RunReadModel.from_operator_run_overview(projection)
+    assert {:ok, detail} = RunReadModel.from_operator_run_overview(projection)
 
     assert detail.summary.requested_window_counts == %{total: 1, completed: 1, failed: 0}
     assert detail.summary.effective_window_count == 2
@@ -180,16 +181,99 @@ defmodule FavnOrchestrator.RunReadModel.OperatorRunOverviewTest do
     refute Map.has_key?(detail, :events)
   end
 
-  defp run(run_id, root_run_id, submit_kind) do
+  test "accepts empty and named runner release maps" do
+    named_projection =
+      projection_with_runner_releases(%{"default" => FavnTestSupport.runner_release_id()})
+
+    empty_projection = projection_with_runner_releases(%{})
+
+    assert {:ok, named_detail} = RunReadModel.from_operator_run_overview(named_projection)
+    assert {:ok, empty_detail} = RunReadModel.from_operator_run_overview(empty_projection)
+
+    assert named_detail.root_run.runner_releases == %{
+             "default" => FavnTestSupport.runner_release_id()
+           }
+
+    assert empty_detail.root_run.runner_releases == %{}
+  end
+
+  test "rejects malformed persisted overview status, list, and timestamp fields" do
+    projection = projection_with_runner_releases(%{})
+
+    assert {:error, :invalid_operator_run_overview} =
+             OperatorRunOverviewNormalizer.normalize_operator_overview(%{
+               projection
+               | root_run: %{projection.root_run | status: :unknown}
+             })
+
+    assert {:error, :invalid_operator_run_overview} =
+             OperatorRunOverviewNormalizer.normalize_operator_overview(%{
+               projection
+               | runs: [:bad]
+             })
+
+    assert {:error, :invalid_operator_run_overview} =
+             OperatorRunOverviewNormalizer.normalize_operator_overview(%{
+               projection
+               | root_run: %{projection.root_run | inserted_at: "not-a-timestamp"}
+             })
+  end
+
+  defp projection_with_runner_releases(runner_releases) do
+    %OperatorRunOverview{
+      overview: %ExecutionGroupOverview{
+        workspace_id: "workspace",
+        root_run_id: "root",
+        status: :succeeded,
+        run_count: 1,
+        pending_count: 0,
+        running_count: 0,
+        succeeded_count: 1,
+        failed_count: 0,
+        latest_event_id: 12,
+        updated_at: @finished_at
+      },
+      root_run: run("root", "root", :pipeline, runner_releases),
+      runs: [run("root", "root", :pipeline, runner_releases)],
+      requested_windows: [],
+      requested_windows_truncated?: false,
+      requested_window_counts: %{total: 0, completed: 0, failed: 0},
+      attempts: [],
+      attempt_counts: %{
+        total: 0,
+        completed: 0,
+        failed: 0,
+        running: 0,
+        queued: 0,
+        effective_windows: 0
+      },
+      attempts_truncated?: false,
+      runs_truncated?: false,
+      target_refs: []
+    }
+  end
+
+  defp run(
+         run_id,
+         root_run_id,
+         submit_kind,
+         runner_releases \\ %{
+           "default" => FavnTestSupport.runner_release_id()
+         }
+       ) do
     %RunSummary{
       workspace_id: "workspace",
       run_id: run_id,
       root_run_id: root_run_id,
+      deployment_id: "deployment-v1",
       status: :ok,
       event_sequence: 6,
       submit_kind: submit_kind,
+      trigger_type: :manual,
       manifest_version_id: "manifest-v1",
-      runner_releases: %{"default" => FavnTestSupport.runner_release_id()},
+      runner_releases: runner_releases,
+      submitted_event_id: 5,
+      latest_event_id: 6,
       inserted_at: @started_at,
       updated_at: @finished_at,
       terminal_at: @finished_at

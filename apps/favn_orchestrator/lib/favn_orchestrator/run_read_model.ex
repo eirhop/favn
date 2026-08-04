@@ -14,13 +14,15 @@ defmodule FavnOrchestrator.RunReadModel do
   alias FavnOrchestrator.Persistence
   alias FavnOrchestrator.Persistence.Queries.GetExecutionGroup
   alias FavnOrchestrator.Persistence.Queries.GetOperatorRunOverview
-  alias FavnOrchestrator.Persistence.Results.AssetAttemptOverview
   alias FavnOrchestrator.Persistence.Results.PlannedAssetStep
   alias FavnOrchestrator.Persistence.Results.Backfill, as: PersistedBackfill
   alias FavnOrchestrator.Persistence.Results.BackfillWindow, as: PersistedBackfillWindow
 
   alias FavnOrchestrator.Persistence.Results.ExecutionGroupOverview,
     as: PersistedExecutionGroupOverview
+
+  alias FavnOrchestrator.Persistence.Results.OperatorRunOverview
+  alias FavnOrchestrator.Persistence.Results.OperatorRunOverviewNormalizer
 
   alias FavnOrchestrator.Persistence.WorkspaceContext
   alias FavnOrchestrator.RunEvent
@@ -64,7 +66,7 @@ defmodule FavnOrchestrator.RunReadModel do
           required(:kind) => run_role(),
           required(:role) => run_role(),
           required(:status) => RunState.status(),
-          required(:submit_kind) => atom(),
+          required(:submit_kind) => FavnOrchestrator.Persistence.RunEnum.submit_kind(),
           required(:manifest_version_id) => String.t(),
           required(:runner_releases) => Favn.RunnerPool.releases(),
           required(:asset_ref) => Favn.Ref.t(),
@@ -82,9 +84,32 @@ defmodule FavnOrchestrator.RunReadModel do
           optional(:asset_counts) => asset_outcome_counts()
         }
 
+  @type compact_run_summary :: %{
+          required(:id) => String.t(),
+          required(:kind) => run_role(),
+          required(:role) => run_role(),
+          required(:status) => ExecutionStatus.t(),
+          required(:submit_kind) => FavnOrchestrator.Persistence.RunEnum.submit_kind(),
+          required(:manifest_version_id) => String.t(),
+          required(:runner_releases) => Favn.RunnerPool.releases(),
+          required(:asset_ref) => nil,
+          required(:target_refs) => [],
+          required(:parent_run_id) => String.t() | nil,
+          required(:root_run_id) => String.t() | nil,
+          required(:rerun_of_run_id) => String.t() | nil,
+          required(:window) => nil,
+          required(:progress_unit) => nil,
+          required(:progress) => nil,
+          required(:started_at) => DateTime.t(),
+          required(:finished_at) => DateTime.t() | nil,
+          required(:updated_at) => DateTime.t(),
+          required(:duration_ms) => non_neg_integer() | nil,
+          optional(:asset_counts) => asset_outcome_counts()
+        }
+
   @type backfill_failure :: %{
           required(:child_run_id) => String.t() | nil,
-          required(:status) => BackfillWindow.status(),
+          required(:status) => PersistedBackfillWindow.status(),
           required(:window) => window_summary(),
           required(:asset_ref) => String.t() | nil,
           required(:error) => term(),
@@ -117,7 +142,7 @@ defmodule FavnOrchestrator.RunReadModel do
           required(:root_execution_group_id) => String.t(),
           required(:child_run_id) => String.t() | nil,
           required(:run_id) => String.t(),
-          required(:status) => atom() | nil,
+          required(:status) => ExecutionStatus.t(),
           required(:asset_key) => String.t(),
           required(:asset_ref) => String.t(),
           required(:stage) => non_neg_integer() | nil,
@@ -178,7 +203,7 @@ defmodule FavnOrchestrator.RunReadModel do
           required(:finished_at) => DateTime.t() | nil,
           required(:asset_key) => String.t(),
           required(:window) => window_summary() | nil,
-          required(:status) => atom() | nil,
+          required(:status) => ExecutionStatus.t(),
           required(:stage) => non_neg_integer() | nil,
           required(:attempt_id) => String.t(),
           required(:child_run_id) => String.t() | nil,
@@ -195,7 +220,7 @@ defmodule FavnOrchestrator.RunReadModel do
           required(:events) => [RunEvent.t()]
         }
 
-  @type operator_run_detail :: %{
+  @type hydrated_operator_run_detail :: %{
           required(:summary) => execution_group_summary(),
           required(:root_run) => run_summary(),
           required(:child_runs) => [run_summary()],
@@ -215,6 +240,30 @@ defmodule FavnOrchestrator.RunReadModel do
           optional(:has_non_windowed_assets?) => boolean(),
           optional(:events) => [RunEvent.t()]
         }
+
+  @type compact_operator_run_detail :: %{
+          required(:summary) => execution_group_summary(),
+          required(:root_run) => compact_run_summary(),
+          required(:child_runs) => [compact_run_summary()],
+          required(:windows) => [map()],
+          required(:asset_attempts) => [asset_attempt_summary()],
+          required(:timeline) => [timeline_entry()],
+          required(:steps) => [],
+          required(:progress) => progress_summary() | nil,
+          required(:counts) => map(),
+          required(:backfill_failures) => [backfill_failure()],
+          required(:backfill_failure_count) => non_neg_integer(),
+          required(:root_event_sequence) => non_neg_integer() | nil,
+          required(:latest_global_event_sequence) => nil,
+          required(:latest_event) => nil,
+          required(:retry) => %{},
+          required(:requested_windows) => [map()],
+          required(:requested_windows_truncated?) => boolean(),
+          required(:child_run_details_truncated?) => boolean(),
+          required(:asset_attempts_truncated?) => boolean()
+        }
+
+  @type operator_run_detail :: hydrated_operator_run_detail() | compact_operator_run_detail()
 
   @type asset_step_log_context :: %{
           required(:run) => run_summary(),
@@ -405,7 +454,7 @@ defmodule FavnOrchestrator.RunReadModel do
                  limit: limit
                }
              ) do
-        {:ok, from_operator_run_overview(projection)}
+        from_operator_run_overview(projection)
       end
     else
       {:error, :invalid_opts}
@@ -430,14 +479,28 @@ defmodule FavnOrchestrator.RunReadModel do
 
   @doc "Expands the compact persisted operator overview without loading snapshots or events."
   @spec from_operator_run_overview(FavnOrchestrator.Persistence.Results.OperatorRunOverview.t()) ::
-          operator_run_detail()
-  def from_operator_run_overview(projection) do
-    planned_steps = if projection.attempts_truncated?, do: [], else: projection.planned_steps
+          {:ok, compact_operator_run_detail()} | {:error, :invalid_operator_run_overview}
+  def from_operator_run_overview(%OperatorRunOverview{} = projection) do
+    case OperatorRunOverviewNormalizer.normalize_operator_overview(projection) do
+      {:ok, normalized} ->
+        {:ok,
+         from_normalized_operator_run_overview(
+           normalized,
+           projection.planned_steps,
+           projection.asset_counts_by_run
+         )}
+
+      {:error, :invalid_operator_run_overview} ->
+        {:error, :invalid_operator_run_overview}
+    end
+  end
+
+  defp from_normalized_operator_run_overview(projection, planned_steps, asset_counts_by_run) do
+    planned_steps = if projection.attempts_truncated?, do: [], else: planned_steps
     attempts = compact_attempts_with_plan(projection.attempts, planned_steps)
     attempt_counts = Map.delete(projection.attempt_counts, :effective_windows)
-    asset_counts_by_run = Map.get(projection, :asset_counts_by_run, %{})
     requested_counts = projection.requested_window_counts
-    requested_windows = Enum.map(projection.requested_windows, &persisted_window_summary/1)
+    requested_windows = persisted_window_summaries(projection.requested_windows)
     effective_windows = effective_windows(attempts)
 
     root_run =
@@ -447,11 +510,11 @@ defmodule FavnOrchestrator.RunReadModel do
       )
 
     child_runs =
-      projection.runs
-      |> Enum.reject(&(&1.run_id == projection.root_run.run_id))
-      |> Enum.map(fn run ->
-        compact_run_summary(run, Map.get(asset_counts_by_run, run.run_id))
-      end)
+      compact_child_run_summaries(
+        projection.runs,
+        projection.root_run.run_id,
+        asset_counts_by_run
+      )
 
     active? = projection.overview.status in [:pending, :running]
     status = persisted_group_status(projection.overview.status)
@@ -489,15 +552,11 @@ defmodule FavnOrchestrator.RunReadModel do
       progress: progress,
       summary_totals: %{windows: requested_counts, asset_attempts: attempt_counts},
       last_activity_at: projection.overview.updated_at,
-      currently_running_asset_attempts:
-        Enum.filter(attempts, &ExecutionStatus.running?(&1.status)),
-      child_run_ids: Enum.map(child_runs, & &1.id)
+      currently_running_asset_attempts: running_attempts(attempts),
+      child_run_ids: run_ids(child_runs)
     }
 
-    backfill_failures =
-      projection.requested_windows
-      |> Enum.filter(&(&1.status == :failed))
-      |> Enum.map(&persisted_backfill_failure/1)
+    backfill_failures = compact_backfill_failures(projection.requested_windows)
 
     %{
       summary: summary,
@@ -524,7 +583,9 @@ defmodule FavnOrchestrator.RunReadModel do
     }
   end
 
-  defp compact_attempt_summary(%AssetAttemptOverview{} = attempt) do
+  @spec compact_attempt_summary(OperatorRunOverviewNormalizer.normalized_attempt()) ::
+          asset_attempt_summary()
+  defp compact_attempt_summary(attempt) do
     %{
       id: attempt_identity(attempt.run_id, attempt.asset_step_id),
       asset_step_id: attempt.asset_step_id,
@@ -550,7 +611,7 @@ defmodule FavnOrchestrator.RunReadModel do
   end
 
   defp compact_attempts_with_plan(attempts, planned_steps) do
-    attempts = Enum.map(attempts, &compact_attempt_summary/1)
+    attempts = compact_attempt_summaries(attempts)
     attempted = MapSet.new(attempts, &planned_match_key/1)
 
     planned =
@@ -610,33 +671,105 @@ defmodule FavnOrchestrator.RunReadModel do
 
   defp window_instant(_datetime), do: nil
 
-  defp compact_run_summary(run, asset_counts) do
-    status = ExecutionStatus.normalize(run.status)
+  @spec compact_attempt_summaries([OperatorRunOverviewNormalizer.normalized_attempt()]) ::
+          [asset_attempt_summary()]
+  defp compact_attempt_summaries([]), do: []
+
+  defp compact_attempt_summaries([attempt | attempts]) do
+    [compact_attempt_summary(attempt) | compact_attempt_summaries(attempts)]
+  end
+
+  defp compact_child_run_summaries([], _root_run_id, _asset_counts_by_run), do: []
+
+  defp compact_child_run_summaries(
+         [%{run_id: run_id} = run | runs],
+         root_run_id,
+         asset_counts_by_run
+       ) do
+    rest = compact_child_run_summaries(runs, root_run_id, asset_counts_by_run)
+
+    if run_id == root_run_id,
+      do: rest,
+      else: [compact_run_summary(run, Map.get(asset_counts_by_run, run_id)) | rest]
+  end
+
+  @spec run_ids([compact_run_summary()]) :: [String.t()]
+  defp run_ids([]), do: []
+  defp run_ids([%{id: id} | runs]), do: [id | run_ids(runs)]
+
+  @spec running_attempts([asset_attempt_summary()]) :: [asset_attempt_summary()]
+  defp running_attempts([]), do: []
+
+  defp running_attempts([attempt | attempts]) do
+    rest = running_attempts(attempts)
+    if ExecutionStatus.running?(attempt.status), do: [attempt | rest], else: rest
+  end
+
+  @spec compact_backfill_failures([OperatorRunOverviewNormalizer.normalized_window()]) ::
+          [backfill_failure()]
+  defp compact_backfill_failures([]), do: []
+
+  defp compact_backfill_failures([%{status: :failed} = window | windows]) do
+    [persisted_backfill_failure(window) | compact_backfill_failures(windows)]
+  end
+
+  defp compact_backfill_failures([_window | windows]), do: compact_backfill_failures(windows)
+
+  @spec compact_run_summary(
+          OperatorRunOverviewNormalizer.normalized_run(),
+          asset_outcome_counts() | nil
+        ) :: compact_run_summary()
+  defp compact_run_summary(
+         %{
+           run_id: run_id,
+           root_run_id: root_run_id,
+           parent_run_id: parent_run_id,
+           manifest_version_id: manifest_version_id,
+           runner_releases: runner_releases,
+           status: status,
+           submit_kind: submit_kind,
+           event_sequence: event_sequence,
+           inserted_at: %DateTime{} = inserted_at,
+           updated_at: %DateTime{} = updated_at,
+           terminal_at: terminal_at,
+           rerun_of_run_id: rerun_of_run_id
+         } = run,
+         asset_counts
+       )
+       when status in [:pending, :running, :ok, :partial, :error, :cancelled, :timed_out] do
+    status = ExecutionStatus.normalize(status)
 
     summary = %{
-      id: run.run_id,
+      id: run_id,
       kind: compact_run_role(run),
       role: compact_run_role(run),
       status: status,
-      submit_kind: run.submit_kind,
-      manifest_version_id: run.manifest_version_id,
-      runner_releases: run.runner_releases,
+      submit_kind: submit_kind,
+      manifest_version_id: manifest_version_id,
+      runner_releases: runner_releases,
       asset_ref: nil,
       target_refs: [],
-      parent_run_id: run.parent_run_id,
-      root_run_id: run.root_run_id,
-      rerun_of_run_id: run.rerun_of_run_id,
+      parent_run_id: parent_run_id,
+      root_run_id: root_run_id,
+      rerun_of_run_id: rerun_of_run_id,
       window: nil,
       progress_unit: nil,
       progress: nil,
-      started_at: run.inserted_at,
-      finished_at: run.terminal_at,
-      updated_at: run.updated_at,
-      duration_ms: duration_ms(run.inserted_at, run.terminal_at),
-      event_seq: run.event_sequence
+      started_at: inserted_at,
+      finished_at: terminal_at,
+      updated_at: updated_at,
+      duration_ms: duration_ms(inserted_at, terminal_at),
+      event_seq: event_sequence
     }
 
     if is_map(asset_counts), do: Map.put(summary, :asset_counts, asset_counts), else: summary
+  end
+
+  @spec persisted_window_summaries([OperatorRunOverviewNormalizer.normalized_window()]) :: [map()]
+  defp persisted_window_summaries([]), do: []
+
+  defp persisted_window_summaries([window | windows]) do
+    [persisted_window_summary(window) | persisted_window_summaries(windows)]
   end
 
   defp compact_run_role(%{run_id: id, root_run_id: id, submit_kind: :backfill_pipeline}),
@@ -883,7 +1016,7 @@ defmodule FavnOrchestrator.RunReadModel do
     end
   end
 
-  defp persisted_window_summary(%PersistedBackfillWindow{} = window) do
+  defp persisted_window_summary(window) do
     kind = persisted_window_kind(window.payload)
     timezone = persisted_window_value(window.payload, "timezone")
 
@@ -1020,10 +1153,10 @@ defmodule FavnOrchestrator.RunReadModel do
 
   defp persisted_backfill_failures(_backfill), do: {[], 0}
 
-  defp persisted_backfill_failure(%PersistedBackfillWindow{} = window) do
+  defp persisted_backfill_failure(window) do
     %{
       child_run_id: window.run_id,
-      status: persisted_window_status(window.status),
+      status: window.status,
       window:
         persisted_window_summary(window)
         |> Map.take([:key, :label, :kind, :start_at, :end_at, :timezone]),
@@ -1300,11 +1433,17 @@ defmodule FavnOrchestrator.RunReadModel do
     }
   end
 
+  @spec timeline_entries([asset_attempt_summary()]) :: [timeline_entry()]
   defp timeline_entries(attempts) do
-    now = DateTime.utc_now()
-
     attempts
-    |> Enum.map(fn attempt ->
+    |> timeline_entries(DateTime.utc_now())
+    |> Enum.sort_by(&timeline_sort_key/1)
+  end
+
+  defp timeline_entries([], _now), do: []
+
+  defp timeline_entries([attempt | attempts], now) do
+    [
       %{
         started_at: attempt.started_at,
         finished_at:
@@ -1317,8 +1456,8 @@ defmodule FavnOrchestrator.RunReadModel do
         child_run_id: attempt.child_run_id,
         root_execution_group_id: attempt.root_execution_group_id
       }
-    end)
-    |> Enum.sort_by(&timeline_sort_key/1)
+      | timeline_entries(attempts, now)
+    ]
   end
 
   defp error_summary(nil), do: nil

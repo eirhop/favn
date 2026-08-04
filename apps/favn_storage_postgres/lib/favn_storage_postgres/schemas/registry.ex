@@ -42,6 +42,14 @@ defmodule FavnStoragePostgres.Schemas.ManifestVersion do
     field(:manifest, :map)
     field(:inserted_at, :utc_datetime_usec)
   end
+
+  @type t :: %__MODULE__{
+          manifest_version_id: String.t(),
+          content_hash: binary(),
+          runner_releases: Favn.RunnerPool.releases(),
+          atom_strings: [String.t()] | nil,
+          manifest: map()
+        }
 end
 
 defmodule FavnStoragePostgres.Schemas.ExecutionPackage do

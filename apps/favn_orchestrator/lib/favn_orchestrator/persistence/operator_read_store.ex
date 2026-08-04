@@ -16,6 +16,7 @@ defmodule FavnOrchestrator.Persistence.OperatorReadStore do
   alias FavnOrchestrator.Persistence.Queries.PageManifests
   alias FavnOrchestrator.Persistence.Queries.PageTargetRuns
   alias FavnOrchestrator.Persistence.Results.CursorPage
+  alias FavnOrchestrator.Persistence.Results.BackfillWindow
   alias FavnOrchestrator.Persistence.Results.ExecutionGroup
   alias FavnOrchestrator.Persistence.Results.ExecutionGroupCounts
   alias FavnOrchestrator.Persistence.Results.ExecutionGroupOverview
@@ -38,7 +39,7 @@ defmodule FavnOrchestrator.Persistence.OperatorReadStore do
   @callback page_group_runs(PageGroupRuns.t()) ::
               {:ok, CursorPage.t(RunSummary.t())} | {:error, Error.t()}
   @callback page_group_windows(PageGroupWindows.t()) ::
-              {:ok, CursorPage.t()} | {:error, Error.t()}
+              {:ok, CursorPage.t(BackfillWindow.t())} | {:error, Error.t()}
   @callback get_target_statuses(GetTargetStatuses.t()) ::
               {:ok, [TargetStatus.t()]} | {:error, Error.t()}
   @callback page_target_runs(PageTargetRuns.t()) ::

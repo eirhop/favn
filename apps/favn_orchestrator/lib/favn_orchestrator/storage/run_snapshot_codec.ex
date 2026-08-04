@@ -154,7 +154,9 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
   @type manifest_record :: %{
           required(:manifest_version_id) => String.t(),
           required(:content_hash) => String.t(),
-          required(:manifest_index_json) => String.t()
+          required(:manifest_index_json) => String.t(),
+          optional(:atom_strings) => [String.t()],
+          optional(:runner_releases) => Favn.RunnerPool.releases()
         }
 
   @spec encode_run(RunState.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
