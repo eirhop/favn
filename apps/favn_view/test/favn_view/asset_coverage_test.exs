@@ -206,6 +206,44 @@ defmodule FavnView.AssetCoverageTest do
     end
   end
 
+  describe "which unit opens first" do
+    test "the newest one, where there is a unit above the grain" do
+      assert CoverageCalendar.opening_date(%{
+               kind: :day,
+               first_expected_at: ~U[2026-01-05 00:00:00Z],
+               last_expected_at: ~U[2026-07-19 00:00:00Z]
+             }) == ~D[2026-07-01]
+
+      assert CoverageCalendar.opening_date(%{
+               kind: :hour,
+               first_expected_at: ~U[2026-07-01 00:00:00Z],
+               last_expected_at: ~U[2026-07-19 13:00:00Z]
+             }) == ~D[2026-07-19]
+
+      assert CoverageCalendar.opening_date(%{
+               kind: :month,
+               first_expected_at: ~U[2024-03-01 00:00:00Z],
+               last_expected_at: ~U[2026-07-01 00:00:00Z]
+             }) == ~D[2026-01-01]
+    end
+
+    test "the start of the range, where the whole range is one screen" do
+      # A year grain has no unit above it, so every year is already on screen and the
+      # screen has to begin where coverage does. Opening on "the unit holding the last
+      # year" drew that one year and nothing else — four expected, one cell.
+      assert CoverageCalendar.opening_date(%{
+               kind: :year,
+               first_expected_at: ~U[2022-01-01 00:00:00Z],
+               last_expected_at: ~U[2025-01-01 00:00:00Z]
+             }) == ~D[2022-01-01]
+    end
+
+    test "nothing to open when nothing is expected" do
+      assert CoverageCalendar.opening_date(%{}) == nil
+      assert CoverageCalendar.opening_date(%{kind: :day, first_expected_at: nil}) == nil
+    end
+  end
+
   describe "resolving a jump" do
     test "keeps the selects the operator did not touch" do
       view = %{

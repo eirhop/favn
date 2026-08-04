@@ -1053,12 +1053,13 @@ defmodule FavnView.AssetDetailLive do
     end
   end
 
-  # A load with no date takes the last unit coverage expects, and every later one names
-  # a date the navigator offered. Both work from the summary's own bounds, so the first
-  # open needs no exploratory query to find out what grain the asset is.
+  # A load with no date opens on whichever unit the calendar says it should, and every
+  # later one names a date the navigator offered. Both work from the summary's own
+  # bounds, so the first open needs no exploratory query to learn the asset's grain.
   defp coverage_window_options(socket, date) do
     basis = coverage_basis(socket)
-    at = (date && local_instant(date, basis.timezone)) || latest_unit_instant(basis)
+    target = date || CoverageCalendar.opening_date(basis)
+    at = target && local_instant(target, basis.timezone)
 
     [evaluated_at: socket.assigns.asset.coverage.evaluated_at]
     |> Keyword.put(:limit, coverage_unit_limit(basis.kind))
@@ -1069,33 +1070,23 @@ defmodule FavnView.AssetDetailLive do
   # reports both; before that the summary's own window anchors carry them, which is what
   # lets the page open on the right month rather than on the start of coverage.
   defp coverage_basis(%{assigns: %{coverage_windows: states}}) when is_map(states),
-    do: Map.take(states, [:kind, :timezone, :last_expected_at])
+    do: Map.take(states, [:kind, :timezone, :first_expected_at, :last_expected_at])
 
   defp coverage_basis(%{assigns: %{asset: %{coverage: coverage}}}) when is_map(coverage) do
-    anchor = Map.get(coverage, :last_expected_window) || Map.get(coverage, :first_window)
+    first = Map.get(coverage, :first_window)
+    last = Map.get(coverage, :last_expected_window) || first
+    anchor = last || first
 
     %{
       kind: anchor && Map.get(anchor, :kind),
       timezone: anchor && Map.get(anchor, :timezone),
-      last_expected_at: anchor && Map.get(anchor, :start_at)
+      first_expected_at: first && Map.get(first, :start_at),
+      last_expected_at: last && Map.get(last, :start_at)
     }
   end
 
-  defp coverage_basis(_socket), do: %{kind: nil, timezone: nil, last_expected_at: nil}
-
-  # The unit holding the last period coverage expects. Opening on the start of a
-  # multi-year range would put an operator three years from the gap they came to see.
-  defp latest_unit_instant(%{last_expected_at: %DateTime{} = last, kind: kind, timezone: zone})
-       when is_binary(zone) do
-    last |> DateTime.to_date() |> coverage_unit_start(kind) |> local_instant(zone)
-  end
-
-  defp latest_unit_instant(_basis), do: nil
-
-  defp coverage_unit_start(date, :day), do: %{date | day: 1}
-  defp coverage_unit_start(date, :month), do: %{date | month: 1, day: 1}
-  defp coverage_unit_start(date, :year), do: %{date | month: 1, day: 1}
-  defp coverage_unit_start(date, _kind), do: date
+  defp coverage_basis(_socket),
+    do: %{kind: nil, timezone: nil, first_expected_at: nil, last_expected_at: nil}
 
   # Midnight, adjusted when a clock change means the day has no midnight. The instant
   # only has to fall inside the first period of the unit; the evaluator floors it.

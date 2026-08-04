@@ -130,6 +130,43 @@ defmodule FavnView.CoverageCalendar do
   end
 
   @doc """
+  The unit to open on when nothing has been asked for.
+
+  The newest one, because a gap that matters is usually recent and a multi-year range
+  opened at its start puts the operator years from what they came to see.
+
+  A grain with no unit above it is the exception: every period is already on one
+  screen, so the screen has to start where coverage starts. Opening a year-grained
+  asset on "the unit holding the last year" drew that one year and nothing else.
+
+      iex> FavnView.CoverageCalendar.opening_date(%{
+      ...>   kind: :day,
+      ...>   first_expected_at: ~U[2026-01-05 00:00:00Z],
+      ...>   last_expected_at: ~U[2026-07-19 00:00:00Z]
+      ...> })
+      ~D[2026-07-01]
+
+      iex> FavnView.CoverageCalendar.opening_date(%{
+      ...>   kind: :year,
+      ...>   first_expected_at: ~U[2022-01-01 00:00:00Z],
+      ...>   last_expected_at: ~U[2025-01-01 00:00:00Z]
+      ...> })
+      ~D[2022-01-01]
+  """
+  @spec opening_date(map()) :: Date.t() | nil
+  def opening_date(attrs) when is_map(attrs) do
+    kind = Map.get(attrs, :kind)
+    first = Map.get(attrs, :first_expected_at)
+    last = Map.get(attrs, :last_expected_at)
+
+    cond do
+      is_nil(unit_noun(kind)) -> first && to_date(first)
+      is_nil(last) -> first && to_date(first)
+      true -> unit_start(kind, to_date(last))
+    end
+  end
+
+  @doc """
   The unit a jump selected, clamped into the range coverage has.
 
   Whichever select the operator changed, the others keep their value, so changing the
