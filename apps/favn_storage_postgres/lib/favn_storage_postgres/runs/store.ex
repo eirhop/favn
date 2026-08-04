@@ -175,7 +175,6 @@ defmodule FavnStoragePostgres.Runs.Store do
        }}
     else
       {:error, %Error{} = error} -> {:error, error}
-      {:error, reason} -> {:error, ErrorMapper.map(reason)}
     end
   rescue
     error -> {:error, ErrorMapper.map(error)}
@@ -1217,9 +1216,6 @@ defmodule FavnStoragePostgres.Runs.Store do
 
           {:error, %Error{} = error} ->
             Repo.rollback(error)
-
-          {:error, reason} ->
-            Repo.rollback(ErrorMapper.map(reason))
         end
     end
   end

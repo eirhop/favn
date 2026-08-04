@@ -124,8 +124,6 @@
    "The pattern can never match the type \n  {:error,\n   %FavnOrchestrator.Persistence.Error{\n     :details => map(),\n     :kind =>\n       :conflict\n       | :constraint\n       | :fenced\n       | :forbidden\n       | :internal\n       | :invalid\n       | :limit_exceeded\n       | :not_found\n       | :timeout\n       | :unavailable\n       | :unsupported,\n     :message => binary(),\n     :retryable? => boolean()\n   }}\n."},
   {"lib/favn_storage_postgres/runs/decoder.ex", "The function call decode_run will not succeed."},
   {"lib/favn_storage_postgres/runs/store.ex",
-   "The pattern pattern {'error', _reason@1} can never match the type, because it is covered by previous clauses."},
-  {"lib/favn_storage_postgres/runs/store.ex",
    "The pattern can never match the type \n  {:error,\n   %FavnOrchestrator.Persistence.Error{\n     :details => map(),\n     :kind =>\n       :conflict\n       | :constraint\n       | :fenced\n       | :forbidden\n       | :internal\n       | :invalid\n       | :limit_exceeded\n       | :not_found\n       | :timeout\n       | :unavailable\n       | :unsupported,\n     :message => binary(),\n     :retryable? => boolean()\n   }}\n."},
   {"lib/favn_view/asset_detail_live.ex",
    "The pattern can never match the type {:error, :forbidden | :invalid_context | :unauthenticated}."},
