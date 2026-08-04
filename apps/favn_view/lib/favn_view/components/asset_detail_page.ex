@@ -937,256 +937,380 @@ defmodule FavnView.Components.AssetDetailPage do
     """
   end
 
+  @doc """
+  What one run promised to produce, and what it actually produced.
+
+  Two tables rather than a wall of cards. Every check is a row in one table —
+  contract row-count claims and hand-written checks alike — because a card each
+  stops working at the third check and an asset can declare a dozen. Columns are a
+  second table that stays shut when every column matched, so the reader opens it
+  only when there is a difference to look at.
+  """
   attr :assurance, :map, required: true
 
   def assurance_panel(assigns) do
+    validation = assigns.assurance[:contract_validation]
+    contract = assigns.assurance[:contract]
+    columns = column_rows(contract, validation)
+
     assigns =
       assigns
-      |> assign(:contract, assigns.assurance[:contract])
-      |> assign(:checks, assigns.assurance[:checks] || [])
-      |> assign(:validation, assigns.assurance[:contract_validation])
-      |> assign(:observed_by_name, observed_by_name(assigns.assurance[:contract_validation]))
+      |> assign(:contract, contract)
+      |> assign(:validation, validation)
+      |> assign(:check_rows, check_rows(assigns.assurance))
+      |> assign(:columns, columns)
+      |> assign(:observed?, is_map(validation))
+      |> assign(:mismatched, Enum.count(columns, & &1.mismatch))
 
     ~H"""
     <.panel padding={:none} class="p-6 sm:p-8" data-testid="asset-assurance-panel">
-      <div class="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-        <div>
-          <p class="text-sm uppercase tracking-[0.18em] favn-text-subtle">Data assurance</p>
-
-          <h2 class="mt-1 text-xl font-medium tracking-tight">Contract and quality checks</h2>
-
-          <p class="mt-2 max-w-3xl text-sm favn-text-muted">
-            What the asset promises to produce, beside what the run named below actually observed.
-          </p>
-        </div>
+      <div class="flex flex-wrap items-start justify-between gap-3">
+        <h2 class="text-xl font-medium tracking-tight">Data quality</h2>
 
         <div class="flex flex-wrap gap-2">
-          <span
+          <.status_badge
             :if={@assurance[:quality_status]}
-            class={assurance_status_badge(@assurance[:quality_status])}
-          >
-            Quality {humanize(@assurance[:quality_status])}
-          </span>
-
-          <span :if={@assurance[:write_outcome]} class="badge badge-outline badge-sm">
-            Write {humanize(@assurance[:write_outcome])}
-          </span>
+            tone={quality_tone(@assurance[:quality_status])}
+            label={quality_label(@assurance[:quality_status])}
+          />
+          <.badge :if={@assurance[:write_outcome]} variant={:outline}>
+            {write_label(@assurance[:write_outcome])}
+          </.badge>
         </div>
       </div>
 
-      <section :if={@contract} class="mt-8 space-y-5" data-testid="asset-output-contract">
-        <div class="grid gap-3 md:grid-cols-3">
-          <.assurance_fact label="Grain" value={grain_label(@contract[:grain])} />
-          <.assurance_fact label="Unique keys" value={unique_keys_label(@contract[:unique_keys])} />
-          <.assurance_fact
-            label="Row count claims"
-            value={row_counts_label(@contract[:row_counts])}
-          />
-        </div>
+      <.fact_list
+        :if={@contract}
+        class="mt-5"
+        columns={2}
+        facts={[
+          %{label: "One row per", value: grain_label(@contract[:grain])},
+          %{label: "Must be unique", value: unique_keys_label(@contract[:unique_keys])}
+        ]}
+      />
 
-        <div
-          :if={List.wrap(@contract[:row_counts]) != []}
-          class="grid gap-3 lg:grid-cols-2"
-          data-testid="contract-row-count-claims"
-        >
-          <article
-            :for={{row_count, index} <- Enum.with_index(List.wrap(@contract[:row_counts]), 1)}
-            class="rounded-box border border-base-content/10 bg-base-content/[0.03] p-4"
-            data-testid="contract-row-count-claim"
-            data-claim-id={row_count[:claim_id]}
-          >
-            <div class="flex flex-wrap items-start justify-between gap-2">
-              <div>
-                <p class="text-sm uppercase tracking-[0.14em] favn-text-subtle">
-                  Row count claim {index}
-                </p>
-
-                <p class="mt-1 text-sm font-medium">{row_count_constraint_label(row_count)}</p>
-
-                <p class="mt-1 font-mono text-[0.7rem] favn-text-subtle">
-                  {row_count[:claim_id]}
-                </p>
-              </div>
-
-              <span class={check_result_badge(row_count[:latest_result])}>
-                {check_result_label(row_count[:latest_result])}
-              </span>
-            </div>
-
-            <p class="mt-2 text-sm favn-text-muted">
-              On violation {humanize(row_count[:on_violation])}
-              <span :if={row_count[:when]}> · when {humanize(row_count[:when])}</span>
-            </p>
-          </article>
-        </div>
-
-        <div
-          :if={List.wrap(@contract[:compositions]) != []}
-          class="flex flex-wrap items-center gap-2 text-sm"
-          data-testid="contract-compositions"
-        >
-          <span class="favn-text-subtle">Composed fragments</span>
-          <span
-            :for={composition <- List.wrap(@contract[:compositions])}
-            class="badge badge-outline badge-sm font-mono"
-          >
-            {inspect(composition[:module])}
+      <section :if={@check_rows != []} class="mt-8" data-testid="asset-quality-checks">
+        <div class="flex flex-wrap items-baseline justify-between gap-2">
+          <h3 class="font-medium">Checks</h3>
+          <span class={["text-sm", Tokens.text_class(checks_tone(@check_rows))]}>
+            {checks_summary(@check_rows)}
           </span>
         </div>
 
-        <div class="overflow-x-auto rounded-box border border-base-content/10">
-          <table class="table min-w-[52rem]">
+        <div class="mt-3 overflow-x-auto">
+          <table class="table w-full min-w-[44rem]">
             <thead>
-              <tr>
-                <th>Column</th>
+              <tr class="border-base-content/10 favn-text-muted">
+                <th>Check</th>
 
-                <th>Expected</th>
+                <th>When</th>
 
-                <th>Observed</th>
+                <th>Expects</th>
 
-                <th>Lineage</th>
+                <th>Found</th>
+
+                <th>Result</th>
               </tr>
             </thead>
 
             <tbody>
-              <tr :for={column <- @contract[:columns]} data-testid="contract-column">
+              <tr
+                :for={row <- @check_rows}
+                class="border-base-content/10"
+                data-testid="asset-quality-check"
+              >
                 <td>
-                  <p class="font-mono font-semibold">{column[:name]}</p>
-
-                  <span
-                    :if={column[:origin]}
-                    class="mt-1 inline-flex max-w-xs break-all rounded border border-base-content/10 px-1.5 py-0.5 font-mono text-[0.65rem] favn-text-subtle"
-                    data-testid="contract-column-origin"
-                    data-origin={column[:origin][:kind]}
-                  >
-                    {column_origin_label(column[:origin])}
-                  </span>
-
-                  <p :if={column[:description]} class="mt-1 max-w-xs text-sm favn-text-muted">
-                    {column[:description]}
-                  </p>
-
-                  <div :if={column[:tags] != []} class="mt-1 flex flex-wrap gap-1">
-                    <span :for={tag <- column[:tags]} class="badge badge-ghost badge-xs">{tag}</span>
-                  </div>
+                  <.stacked_cell
+                    primary={row.name}
+                    secondary={row.detail}
+                    mono={:primary}
+                    class="max-w-[16rem]"
+                  />
                 </td>
 
-                <td>
-                  <span class="font-mono">{column[:type]}</span>
-                  <span class="favn-text-subtle"> · {nullability_label(column[:nullable?])}</span>
-                </td>
+                <td class="favn-text-muted">{row.when}</td>
+
+                <td class="favn-text-muted">{row.expects}</td>
+
+                <td class={row.found_tone && Tokens.text_class(row.found_tone)}>{row.found}</td>
 
                 <td>
-                  <span :if={@observed_by_name[to_string(column[:name])]}>
-                    <span class="font-mono">
-                      {observed_type(@observed_by_name[to_string(column[:name])])}
-                    </span>
-
-                    <span class="favn-text-subtle">
-                      · {observed_nullability(@observed_by_name[to_string(column[:name])])}
-                    </span>
-                  </span>
-
-                  <span
-                    :if={!@observed_by_name[to_string(column[:name])]}
-                    class="favn-text-subtle"
-                  >
-                    Not observed
-                  </span>
-                </td>
-
-                <td>
-                  <div :if={column[:sources] != []} class="space-y-1">
-                    <p :for={source <- column[:sources]} class="font-mono text-[0.7rem]">
-                      {lineage_label(source)}
-                    </p>
-
-                    <span :if={column[:via]} class="badge badge-outline badge-xs">
-                      {column[:via]}
-                    </span>
-                  </div>
-                  <span :if={column[:sources] == []} class="favn-text-subtle">Not declared</span>
+                  <.status_badge tone={row.tone} label={row.result} />
                 </td>
               </tr>
             </tbody>
           </table>
         </div>
+      </section>
 
-        <div
-          :if={@validation && @validation[:differences] != []}
-          class="rounded-box border border-error/25 bg-error/10 p-4"
-          data-testid="contract-schema-differences"
-        >
-          <h3 class="text-sm font-medium text-error">Schema differences</h3>
-
-          <ul class="mt-2 space-y-1 text-sm favn-text-muted">
-            <li :for={difference <- @validation[:differences]}>{difference_label(difference)}</li>
-          </ul>
-        </div>
-
-        <p
-          :if={@validation && @validation[:observed_truncated?]}
-          class="text-sm text-warning"
-        >
-          Candidate schema evidence is bounded to the first {length(@validation[:observed_columns])} of {@validation[
-            :observed_column_count
-          ]} columns.
+      <section :if={@columns != []} class="mt-8" data-testid="asset-output-contract">
+        <p :if={!@observed?} class="text-sm favn-text-muted">
+          This run did not record the table's actual columns, so only what the asset
+          promises is shown.
         </p>
+
+        <details open={@mismatched > 0}>
+          <summary class="flex cursor-pointer flex-wrap items-baseline justify-between gap-2">
+            <span class="font-medium">Columns</span>
+            <span class={["text-sm", Tokens.text_class(columns_tone(@mismatched, @observed?))]}>
+              {columns_summary(@columns, @mismatched, @observed?)}
+            </span>
+          </summary>
+
+          <div class="mt-3 overflow-x-auto">
+            <table class="table w-full min-w-[40rem]">
+              <thead>
+                <tr class="border-base-content/10 favn-text-muted">
+                  <th>Column</th>
+
+                  <th>Type</th>
+
+                  <th :if={@observed?}>Found</th>
+
+                  <th>Comes from</th>
+                </tr>
+              </thead>
+
+              <tbody>
+                <tr
+                  :for={column <- @columns}
+                  class="border-base-content/10"
+                  data-testid="contract-column"
+                >
+                  <td class="font-mono">{column.name}</td>
+
+                  <td class="favn-text-muted">{column.expected}</td>
+
+                  <td
+                    :if={@observed?}
+                    class={(column.mismatch && Tokens.text_class(:error)) || "favn-text-muted"}
+                  >
+                    {column.found}
+                  </td>
+
+                  <td class="favn-text-subtle">{column.source}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </details>
       </section>
 
-      <section :if={@checks != []} class="mt-8" data-testid="asset-quality-checks">
-        <div class="flex items-center justify-between gap-3">
-          <h3 class="text-sm font-medium">Checks</h3>
+      <.notice
+        :if={@validation && @validation[:differences] != []}
+        tone={:error}
+        class="mt-6"
+        data-testid="contract-schema-differences"
+      >
+        <p class="font-medium">The table does not match what the asset promises</p>
+        <ul class="mt-1 list-disc space-y-0.5 pl-4">
+          <li :for={difference <- @validation[:differences]}>{difference_label(difference)}</li>
+        </ul>
+      </.notice>
 
-          <span :if={@assurance[:latest_run_id]} class="font-mono text-sm favn-text-subtle">
-            {@assurance[:latest_run_id]}
-          </span>
-        </div>
-
-        <div class="mt-3 grid gap-3 lg:grid-cols-2">
-          <article
-            :for={check <- @checks}
-            class="rounded-box border border-base-content/10 bg-base-content/[0.03] p-4"
-            data-testid="asset-quality-check"
-            data-check-origin={check[:origin]}
-          >
-            <div class="flex flex-wrap items-start justify-between gap-2">
-              <div>
-                <div class="flex flex-wrap items-center gap-2">
-                  <span class={origin_badge(check[:origin])}>{origin_label(check[:origin])}</span>
-                  <p class="font-mono text-sm font-semibold">{check[:name]}</p>
-                </div>
-
-                <p :if={check[:claim_id]} class="mt-1 font-mono text-[0.7rem] favn-text-subtle">
-                  {check[:claim_id]}
-                </p>
-              </div>
-
-              <span class={check_result_badge(check[:latest_result])}>
-                {check_result_label(check[:latest_result])}
-              </span>
-            </div>
-
-            <p class="mt-2 text-sm favn-text-muted">
-              {humanize(check[:phase])} · on violation {humanize(check[:on_violation])}
-              <span :if={check[:when]}> · when {humanize(check[:when])}</span>
-            </p>
-
-            <p :if={check[:message]} class="mt-2 text-sm favn-text-muted">{check[:message]}</p>
-
-            <dl :if={check_metrics(check) != []} class="mt-3 grid gap-1 text-sm">
-              <div :for={{key, value} <- check_metrics(check)} class="flex justify-between gap-3">
-                <dt class="favn-text-subtle">{key}</dt>
-
-                <dd class="font-mono">{value}</dd>
-              </div>
-            </dl>
-          </article>
-        </div>
-      </section>
+      <p :if={@validation && @validation[:observed_truncated?]} class="mt-4 text-sm text-warning">
+        Only the first {length(@validation[:observed_columns])} of {@validation[
+          :observed_column_count
+        ]} columns were read.
+      </p>
     </.panel>
     """
   end
+
+  # Row-count claims and hand-written checks are the same thing to a reader: a rule
+  # that either held or did not. They were two different card layouts, so a contract
+  # claim looked unlike a check even when both had just passed.
+  defp check_rows(assurance) do
+    claim_rows =
+      assurance
+      |> get_in([Access.key(:contract, %{}), Access.key(:row_counts, [])])
+      |> List.wrap()
+      |> Enum.map(&row_count_check_row/1)
+
+    check_rows =
+      assurance
+      |> Map.get(:checks, [])
+      |> List.wrap()
+      |> Enum.reject(&(&1[:origin] == :contract and is_binary(&1[:claim_id])))
+      |> Enum.map(&declared_check_row/1)
+
+    claim_rows ++ check_rows
+  end
+
+  defp row_count_check_row(row_count) do
+    result = row_count[:latest_result]
+
+    %{
+      name: "Row count",
+      detail: row_count[:claim_id],
+      when: "After writing",
+      expects: row_count_constraint_label(row_count),
+      found: metric_value(result, [:actual, :row_count, :count]),
+      found_tone: nil,
+      result: check_result_label(result),
+      tone: check_result_tone(result),
+      on_violation: row_count[:on_violation]
+    }
+  end
+
+  defp declared_check_row(check) do
+    result = check[:latest_result]
+
+    %{
+      name: to_string(check[:name]),
+      detail: check[:claim_id] || violation_label(check[:on_violation]),
+      when: phase_label(check[:phase]),
+      expects: check[:message] || violation_label(check[:on_violation]),
+      found: metric_value(result, [:actual, :count, :rows]),
+      found_tone: nil,
+      result: check_result_label(result),
+      tone: check_result_tone(result),
+      on_violation: check[:on_violation]
+    }
+  end
+
+  # Contract claims already appear as their own rows, so a generated check that
+  # restates one would be the same rule twice under two names.
+  defp column_rows(nil, _validation), do: []
+
+  defp column_rows(contract, validation) do
+    observed = observed_by_name(validation)
+
+    contract
+    |> Map.get(:columns, [])
+    |> List.wrap()
+    |> Enum.map(fn column ->
+      found = Map.get(observed, to_string(column[:name]))
+
+      %{
+        name: to_string(column[:name]),
+        expected: column_type_label(column),
+        found: (found && observed_column_label(found)) || "not found",
+        mismatch: is_map(validation) and column_mismatch?(column, found),
+        source: column_source_label(column)
+      }
+    end)
+  end
+
+  defp column_mismatch?(_column, nil), do: true
+
+  defp column_mismatch?(column, found) do
+    to_string(value(found, :type)) != to_string(column[:type])
+  end
+
+  defp column_type_label(column) do
+    "#{column[:type]} · #{requirement_label(column[:nullable?])}"
+  end
+
+  defp observed_column_label(found) do
+    "#{observed_type(found)} · #{observed_requirement_label(found)}"
+  end
+
+  defp requirement_label(true), do: "optional"
+  defp requirement_label(_nullable), do: "required"
+
+  defp observed_requirement_label(column) do
+    if value(column, :nullability_observed?) in [true, "true"] do
+      requirement_label(value(column, :nullable?))
+    else
+      "requirement not read"
+    end
+  end
+
+  # The fragment a column came from is context, not the answer, so it reads as a
+  # quiet source rather than a badge shouting over the column name.
+  defp column_source_label(column) do
+    case column[:origin] do
+      %{kind: :fragment, module: module} -> "shared: #{inspect(module)}"
+      _other -> lineage_source_label(column[:sources])
+    end
+  end
+
+  defp lineage_source_label([]), do: "this asset"
+  defp lineage_source_label(nil), do: "this asset"
+  defp lineage_source_label(sources), do: Enum.map_join(sources, ", ", &lineage_label/1)
+
+  defp phase_label(phase) when phase in [:after_materialize, "after_materialize"],
+    do: "After writing"
+
+  defp phase_label(phase) when phase in [:before_materialize, "before_materialize"],
+    do: "Before writing"
+
+  defp phase_label(nil), do: "-"
+  defp phase_label(phase), do: humanize(phase)
+
+  defp violation_label(violation) when violation in [:fail, "fail"], do: "fails the run"
+  defp violation_label(violation) when violation in [:warn, "warn"], do: "warns only"
+
+  defp violation_label(violation)
+       when violation in [:skip_materialization, "skip_materialization"],
+       do: "skips writing"
+
+  defp violation_label(nil), do: nil
+  defp violation_label(violation), do: humanize(violation)
+
+  defp metric_value(nil, _keys), do: "-"
+
+  defp metric_value(result, keys) do
+    metrics = value(result, :metrics, %{})
+
+    Enum.find_value(keys, "-", fn key ->
+      case value(metrics, key) do
+        nil -> nil
+        found -> format_metric(found)
+      end
+    end)
+  end
+
+  defp format_metric(found) when is_integer(found), do: delimited(found)
+  defp format_metric(found) when is_binary(found) or is_atom(found), do: to_string(found)
+  defp format_metric(found), do: inspect(found)
+
+  defp delimited(value) do
+    value
+    |> Integer.to_string()
+    |> String.reverse()
+    |> String.replace(~r/(\d{3})(?=\d)/, "\\1,")
+    |> String.reverse()
+  end
+
+  defp checks_summary(rows) do
+    passed = Enum.count(rows, &(&1.tone == :success))
+    "#{passed} of #{length(rows)} passed"
+  end
+
+  defp checks_tone(rows) do
+    cond do
+      Enum.any?(rows, &(&1.tone == :error)) -> :error
+      Enum.any?(rows, &(&1.tone == :warning)) -> :warning
+      Enum.all?(rows, &(&1.tone == :success)) -> :success
+      true -> :neutral
+    end
+  end
+
+  defp columns_summary(columns, _mismatched, false), do: "#{length(columns)} promised"
+  defp columns_summary(columns, 0, true), do: "#{length(columns)} of #{length(columns)} matched"
+
+  defp columns_summary(columns, mismatched, true),
+    do: "#{length(columns) - mismatched} of #{length(columns)} matched"
+
+  defp columns_tone(_mismatched, false), do: :neutral
+  defp columns_tone(0, true), do: :success
+  defp columns_tone(_mismatched, true), do: :error
+
+  defp quality_tone(status) when status in [:passed, "passed"], do: :success
+  defp quality_tone(status) when status in [:warning, "warning"], do: :warning
+  defp quality_tone(_status), do: :error
+
+  defp quality_label(status) when status in [:passed, "passed"], do: "All checks passed"
+  defp quality_label(status) when status in [:warning, "warning"], do: "Checks warned"
+  defp quality_label(_status), do: "Checks failed"
+
+  defp write_label(outcome) when outcome in [:written, "written"], do: "Table written"
+  defp write_label(outcome) when outcome in [:no_op, "no_op"], do: "Nothing to write"
+  defp write_label(outcome) when outcome in [:rolled_back, "rolled_back"], do: "Rolled back"
+  defp write_label(outcome) when outcome in [:not_started, "not_started"], do: "Never started"
+  defp write_label(outcome), do: humanize(outcome)
 
   @doc """
   One run's result for one asset, ordered by how likely each part is to be the answer.
@@ -1343,19 +1467,6 @@ defmodule FavnView.Components.AssetDetailPage do
 
   defp attempts_label(%{attempt_count: count}) when is_integer(count), do: to_string(count)
   defp attempts_label(_result), do: "Not reported"
-
-  attr :label, :string, required: true
-  attr :value, :string, required: true
-
-  defp assurance_fact(assigns) do
-    ~H"""
-    <div class="rounded-box border border-base-content/10 bg-base-content/[0.03] p-3">
-      <p class="text-sm uppercase tracking-[0.14em] favn-text-subtle">{@label}</p>
-
-      <p class="mt-1 text-sm favn-text-muted">{@value}</p>
-    </div>
-    """
-  end
 
   attr :window, :map, required: true
   attr :selected, :boolean, default: false
@@ -1587,12 +1698,6 @@ defmodule FavnView.Components.AssetDetailPage do
   defp unique_keys_label(keys),
     do: Enum.map_join(keys, " · ", &Enum.map_join(&1, ", ", fn name -> to_string(name) end))
 
-  defp row_counts_label([]), do: "Not declared"
-  defp row_counts_label(nil), do: "Not declared"
-
-  defp row_counts_label([_row_count]), do: "1 ordered claim"
-  defp row_counts_label(row_counts), do: "#{length(row_counts)} ordered claims"
-
   defp row_count_constraint_label(%{equals: %{source: :param, name: name}}),
     do: "Exactly @#{name}"
 
@@ -1607,27 +1712,8 @@ defmodule FavnView.Components.AssetDetailPage do
   defp row_count_constraint_label(%{max: max}) when is_integer(max), do: "At most #{max}"
   defp row_count_constraint_label(_row_count), do: "Constraint unavailable"
 
-  defp nullability_label(true), do: "nullable"
-  defp nullability_label(false), do: "required"
-
-  defp column_origin_label(%{kind: :fragment, module: module}), do: inspect(module)
-  defp column_origin_label(%{kind: :local}), do: "Local"
-  defp column_origin_label(origin), do: inspect(origin)
-
   defp observed_type(column),
     do: value(column, :native_type) || value(column, :type) || "unknown"
-
-  defp observed_nullability(column) do
-    if value(column, :nullability_observed?) in [true, "true"] do
-      case value(column, :nullable?) do
-        true -> "nullable"
-        false -> "required"
-        _other -> "nullability unknown"
-      end
-    else
-      "nullability unverified"
-    end
-  end
 
   defp lineage_label(%{kind: :asset, asset_ref: {module, name}, column: column}),
     do: "#{inspect(module)}.#{name}.#{column}"
@@ -1653,28 +1739,46 @@ defmodule FavnView.Components.AssetDetailPage do
     |> Enum.join(" · ")
   end
 
-  defp assurance_status_badge(status) when status in [:passed, "passed"],
-    do: "badge badge-success badge-soft badge-sm"
+  defp check_result_label(nil), do: "not run"
 
-  defp assurance_status_badge(status) when status in [:warning, "warning"],
-    do: "badge badge-warning badge-soft badge-sm"
-
-  defp assurance_status_badge(_status), do: "badge badge-error badge-soft badge-sm"
-
-  defp origin_badge(:contract), do: "badge badge-info badge-soft badge-xs"
-  defp origin_badge(_origin), do: "badge badge-ghost badge-xs"
-  defp origin_label(:contract), do: "Contract"
-  defp origin_label(_origin), do: "Custom"
-
-  defp check_result_label(nil), do: "Not run"
-  defp check_result_label(result), do: result |> value(:outcome) |> humanize()
-
-  defp check_result_badge(nil), do: "badge badge-ghost badge-sm"
-
-  defp check_result_badge(result) do
+  defp check_result_label(result) do
     case value(result, :outcome) do
-      outcome when outcome in [:passed, "passed", :condition_skipped, "condition_skipped"] ->
-        "badge badge-success badge-soft badge-sm"
+      outcome when outcome in [:passed, "passed"] ->
+        "passed"
+
+      outcome when outcome in [:warned, "warned"] ->
+        "warned"
+
+      outcome when outcome in [:failed, "failed"] ->
+        "failed"
+
+      outcome when outcome in [:errored, "errored"] ->
+        "could not run"
+
+      outcome when outcome in [:not_run, "not_run"] ->
+        "not run"
+
+      # The check's own condition was not met, so there was nothing to check. That is
+      # not a pass and not a failure, and "condition skipped" said neither.
+      outcome when outcome in [:condition_skipped, "condition_skipped"] ->
+        "not needed"
+
+      outcome when outcome in [:materialization_skipped, "materialization_skipped"] ->
+        "blocked the write"
+
+      outcome ->
+        humanize(outcome)
+    end
+  end
+
+  # A skipped check is not a pass. Both used to render green, so a run whose checks
+  # never executed looked exactly like a run whose checks all held.
+  defp check_result_tone(nil), do: :neutral
+
+  defp check_result_tone(result) do
+    case value(result, :outcome) do
+      outcome when outcome in [:passed, "passed"] ->
+        :success
 
       outcome
       when outcome in [
@@ -1683,24 +1787,21 @@ defmodule FavnView.Components.AssetDetailPage do
              :materialization_skipped,
              "materialization_skipped"
            ] ->
-        "badge badge-warning badge-soft badge-sm"
+        :warning
 
-      outcome when outcome in [:not_run, "not_run"] ->
-        "badge badge-ghost badge-sm"
+      outcome
+      when outcome in [
+             :not_run,
+             "not_run",
+             :condition_skipped,
+             "condition_skipped"
+           ] ->
+        :neutral
 
       _outcome ->
-        "badge badge-error badge-soft badge-sm"
+        :error
     end
   end
-
-  defp check_metrics(%{latest_result: result}) when is_map(result) do
-    result
-    |> value(:metrics, %{})
-    |> Enum.map(fn {key, metric_value} -> {to_string(key), inspect(metric_value)} end)
-    |> Enum.sort_by(&elem(&1, 0))
-  end
-
-  defp check_metrics(_check), do: []
 
   defp humanize(nil), do: "unknown"
 

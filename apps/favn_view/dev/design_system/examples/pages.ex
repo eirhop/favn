@@ -277,8 +277,9 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
           "An asset with no windows at all. No timeline toggle, no window selection."
         ),
         Example.attrs(
-          :active_data_coverage,
-          AssetDetail.attrs(%{active_timeline: :data_coverage})
+          :coverage_complete,
+          AssetDetail.coverage_attrs(%{}),
+          "The coverage page: every expected period has data."
         ),
         Example.attrs(
           :active_freshness,
@@ -286,7 +287,7 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
         ),
         Example.attrs(
           :incomplete_coverage,
-          AssetDetail.attrs(%{
+          AssetDetail.coverage_attrs(%{
             coverage: AssetDetail.coverage(:incomplete),
             coverage_gaps: AssetDetail.coverage_gaps(),
             coverage_pagination: AssetDetail.coverage_pagination(true)
@@ -295,7 +296,7 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
         ),
         Example.attrs(
           :later_coverage_page,
-          AssetDetail.attrs(%{
+          AssetDetail.coverage_attrs(%{
             coverage: AssetDetail.coverage(:incomplete),
             coverage_gaps: AssetDetail.coverage_gaps(),
             coverage_pagination: AssetDetail.coverage_pagination(true),
@@ -304,7 +305,7 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
         ),
         Example.attrs(
           :unknown_coverage,
-          AssetDetail.attrs(%{
+          AssetDetail.coverage_attrs(%{
             coverage: AssetDetail.coverage(:unknown),
             coverage_policy: nil,
             coverage_gaps: []
@@ -313,28 +314,44 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
         ),
         Example.attrs(
           :coverage_plan_review,
-          AssetDetail.attrs(%{
+          AssetDetail.coverage_attrs(%{
             coverage: AssetDetail.coverage(:incomplete),
             coverage_gaps: AssetDetail.coverage_gaps(),
             coverage_plan: AssetDetail.coverage_plan()
           })
         ),
         Example.attrs(
+          :diagnostics,
+          AssetDetail.diagnostics_attrs(%{}),
+          "The diagnostics page on a healthy target."
+        ),
+        Example.attrs(
           :rebuild_available,
-          AssetDetail.attrs(%{compatibility: AssetDetail.compatibility(:rebuild_available)}),
+          AssetDetail.diagnostics_attrs(%{
+            compatibility: AssetDetail.compatibility(:rebuild_available)
+          }),
           "A rebuild is possible and writes still work."
         ),
         Example.attrs(
           :rebuild_required,
-          AssetDetail.attrs(%{
+          AssetDetail.diagnostics_attrs(%{
             can_run_asset?: false,
             compatibility: AssetDetail.compatibility(:rebuild_required)
           }),
           "Writes are blocked until the target is rebuilt."
         ),
         Example.attrs(
-          :unexpected_drift,
+          :blocked_writes_on_overview,
           AssetDetail.attrs(%{
+            can_run_asset?: false,
+            compatibility: AssetDetail.compatibility(:rebuild_required)
+          }),
+          "The overview raises blocked writes itself, because that changes what the " <>
+            "operator can do next. A rebuild that blocks nothing stays on diagnostics."
+        ),
+        Example.attrs(
+          :unexpected_drift,
+          AssetDetail.diagnostics_attrs(%{
             can_run_asset?: false,
             compatibility: AssetDetail.compatibility(:unexpected_drift)
           }),
@@ -342,7 +359,7 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
         ),
         Example.attrs(
           :operator_decision,
-          AssetDetail.attrs(%{
+          AssetDetail.diagnostics_attrs(%{
             can_run_asset?: false,
             compatibility: AssetDetail.compatibility(:operator_decision)
           }),
@@ -368,8 +385,7 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
         ),
         Example.attrs(
           :selected_data_window,
-          AssetDetail.attrs(%{
-            active_timeline: :data_coverage,
+          AssetDetail.coverage_attrs(%{
             selected_window: List.last(Timeline.data_coverage_timeline())
           })
         ),
@@ -403,8 +419,7 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
         ),
         Example.attrs(
           :non_runnable_window,
-          AssetDetail.attrs(%{
-            active_timeline: :data_coverage,
+          AssetDetail.coverage_attrs(%{
             selected_window:
               Timeline.data_window("2026-06-12", "Jun 12", :muted)
               |> Map.merge(%{run_enabled?: false, run_disabled_reason: :invalid_window})
@@ -422,7 +437,13 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
           :run_selected,
           AssetDetail.selected_run_attrs(),
           "One run open: the contract now says what that run observed, not what the " <>
-            "asset last did."
+            "asset last did. Everything held, so the columns table stays shut."
+        ),
+        Example.attrs(
+          :run_failed,
+          AssetDetail.failed_run_attrs(),
+          "A check broke and the table drifted. The columns table opens itself, and " <>
+            "the difference is named in words rather than left to the reader."
         ),
         Example.attrs(
           :contract_without_a_run,

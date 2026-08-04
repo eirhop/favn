@@ -230,7 +230,7 @@ defmodule FavnView.Components.AssetDetailPageTest do
     refute html =~ ~s(data-testid="asset-compatibility-blocked")
   end
 
-  test "renders every ordered row-count claim in the assurance contract" do
+  test "contract claims and hand-written checks share one table" do
     html =
       render_component(&AssetDetailPage.assurance_panel/1,
         assurance: %{
@@ -238,7 +238,30 @@ defmodule FavnView.Components.AssetDetailPageTest do
           write_outcome: :written,
           latest_run_id: nil,
           contract_validation: nil,
-          checks: [],
+          checks: [
+            %{
+              name: :orders_have_customer,
+              origin: :asset,
+              claim_id: nil,
+              phase: :after_materialize,
+              when: nil,
+              on_violation: :fail,
+              message: "every order names a customer",
+              latest_result: %{outcome: :passed, metrics: %{actual: 0}}
+            },
+            # A generated check restates a row-count claim, so it must not appear
+            # twice under two names.
+            %{
+              name: :row_count_min_1,
+              origin: :contract,
+              claim_id: "row_count.min.1",
+              phase: :after_materialize,
+              when: nil,
+              on_violation: :fail,
+              message: nil,
+              latest_result: %{outcome: :passed}
+            }
+          ],
           contract: %{
             grain: nil,
             unique_keys: [],
@@ -251,7 +274,7 @@ defmodule FavnView.Components.AssetDetailPageTest do
                 max: nil,
                 when: nil,
                 on_violation: :fail,
-                latest_result: %{outcome: :passed}
+                latest_result: %{outcome: :passed, metrics: %{actual: 1_284}}
               },
               %{
                 claim_id: "row_count.min.1",
@@ -267,12 +290,126 @@ defmodule FavnView.Components.AssetDetailPageTest do
         }
       )
 
-    assert html =~ ~s(data-claim-id="row_count.equals.param.expected_rows")
-    assert html =~ ~s(data-claim-id="row_count.min.1")
+    rows = html |> String.split(~s(data-testid="asset-quality-check")) |> length()
+
+    # Two claims plus one hand-written check. The generated duplicate of
+    # row_count.min.1 is dropped rather than listed beside the claim it restates.
+    assert rows - 1 == 3
+
     assert html =~ "Exactly @expected_rows"
     assert html =~ "At least 1"
-    assert html =~ "passed"
-    assert html =~ "condition skipped"
+    assert html =~ "every order names a customer"
+    assert html =~ "1,284"
+
+    # A check whose condition never held is not a pass, and must not read as one.
+    assert html =~ "not needed"
+    assert html =~ "2 of 3 passed"
+  end
+
+  test "columns stay shut when they matched and open themselves when they did not" do
+    matched =
+      render_component(&AssetDetailPage.assurance_panel/1, assurance: columns_assurance(:matched))
+
+    assert matched =~ "3 of 3 matched"
+    refute matched =~ "<details open"
+
+    drifted =
+      render_component(&AssetDetailPage.assurance_panel/1, assurance: columns_assurance(:drifted))
+
+    assert drifted =~ "2 of 3 matched"
+    assert drifted =~ "<details open"
+    assert drifted =~ "does not match what the asset promises"
+  end
+
+  test "says once that a run recorded no columns instead of once per column" do
+    html =
+      render_component(&AssetDetailPage.assurance_panel/1,
+        assurance: %{
+          quality_status: nil,
+          write_outcome: nil,
+          latest_run_id: nil,
+          contract_validation: nil,
+          checks: [],
+          contract: %{
+            grain: %{by: [:order_id], description: "one customer order"},
+            unique_keys: [[:order_id]],
+            row_counts: [],
+            columns: [
+              contract_column(:order_id, :integer),
+              contract_column(:total, :decimal),
+              contract_column(:placed_at, :datetime)
+            ]
+          }
+        }
+      )
+
+    assert html =~ "did not record the table's actual columns"
+    assert html =~ "3 promised"
+    refute html =~ "not found"
+    assert html =~ "One row per"
+    assert html =~ "order_id · one customer order"
+  end
+
+  defp columns_assurance(state) do
+    observed =
+      case state do
+        :matched ->
+          [observed_column(:order_id, :integer), observed_column(:total, :decimal)]
+
+        :drifted ->
+          [observed_column(:order_id, :integer), observed_column(:total, :string)]
+      end
+
+    %{
+      quality_status: :passed,
+      write_outcome: :written,
+      latest_run_id: "run-1",
+      checks: [],
+      contract_validation: %{
+        status: (state == :matched && :passed) || :failed,
+        expected_columns: [:order_id, :total, :placed_at],
+        observed_columns: observed ++ [observed_column(:placed_at, :datetime)],
+        differences:
+          (state == :drifted &&
+             [%{kind: :type_mismatch, column: :total, expected: :decimal, observed: :string}]) ||
+            [],
+        observed_column_count: 3,
+        observed_truncated?: false
+      },
+      contract: %{
+        grain: nil,
+        unique_keys: [],
+        row_counts: [],
+        columns: [
+          contract_column(:order_id, :integer),
+          contract_column(:total, :decimal),
+          contract_column(:placed_at, :datetime)
+        ]
+      }
+    }
+  end
+
+  defp contract_column(name, type) do
+    %{
+      name: name,
+      type: type,
+      nullable?: false,
+      description: nil,
+      tags: [],
+      via: nil,
+      sources: [],
+      origin: %{kind: :local}
+    }
+  end
+
+  defp observed_column(name, type) do
+    %{
+      name: name,
+      type: type,
+      native_type: to_string(type),
+      nullable?: false,
+      nullability_observed?: true
+    }
   end
 
   defp freshness_window do

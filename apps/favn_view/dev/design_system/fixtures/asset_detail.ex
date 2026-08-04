@@ -154,6 +154,29 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.AssetDetail do
   def attrs(overrides) when is_map(overrides), do: Map.merge(base_attrs(), overrides)
 
   @doc """
+  `base_attrs/0` on the coverage page, with the given keys replaced.
+
+  Coverage evidence only renders there, so a fixture that changed `:coverage` while
+  staying on the overview would demonstrate nothing.
+  """
+  @spec coverage_attrs(map()) :: map()
+  def coverage_attrs(overrides) when is_map(overrides) do
+    attrs(Map.merge(%{active_mode: :coverage, active_timeline: :data_coverage}, overrides))
+  end
+
+  @doc """
+  `base_attrs/0` on the diagnostics page, with the given keys replaced.
+
+  Compatibility renders in full only there. The overview shows it just when it
+  blocks writes, so a `:rebuild_available` fixture left on the overview would be a
+  page with nothing on it.
+  """
+  @spec diagnostics_attrs(map()) :: map()
+  def diagnostics_attrs(overrides) when is_map(overrides) do
+    attrs(Map.put(overrides, :active_mode, :diagnostics))
+  end
+
+  @doc """
   The overview mode showing one freshness state.
   """
   @spec freshness_attrs(atom()) :: map()
@@ -378,50 +401,177 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.AssetDetail do
   end
 
   @doc """
-  A contract with a parameterised row-count claim and a composed fragment.
+  The runs mode with a failed run open: a check broke and the table drifted.
   """
-  @spec assurance() :: map()
-  def assurance do
-    fragment = MyApp.Contracts.AuditMetadata
+  @spec failed_run_attrs() :: map()
+  def failed_run_attrs do
+    {:ok, run} = selected_run()
 
+    failed =
+      {:ok,
+       %{
+         run
+         | run_id: "run-b",
+           status: :error,
+           started_at: ~U[2026-06-11 10:25:04Z],
+           finished_at: ~U[2026-06-11 10:25:05Z],
+           duration_ms: 1_100,
+           window: %{
+             kind: :day,
+             value: "2026-06-11",
+             label: "Daily Jun 11",
+             range: "Jun 11, 2026"
+           },
+           error: %{message: "check orders_have_customer failed: 17 orders name no customer"},
+           assurance: assurance(:mismatch),
+           asset_result: %{
+             run.asset_result
+             | status: :error,
+               meta: %{"write_outcome" => "rolled_back", "quality_status" => "failed"}
+           }
+       }}
+
+    attrs(%{
+      active_mode: :runs,
+      assurance: assurance(:mismatch),
+      selected_run_id: "run-b",
+      selected_run: failed
+    })
+  end
+
+  @doc """
+  Assurance evidence for one run.
+
+  `:passed` carries four checks rather than the two generated row-count claims,
+  because the checks table has to be shown holding hand-written checks too — with
+  only claims in it, a layout that cannot scale past two rows looks fine.
+  """
+  @spec assurance(:passed | :mismatch) :: map()
+  def assurance(state \\ :passed)
+
+  def assurance(:passed) do
     %{
       quality_status: :passed,
       write_outcome: :written,
-      latest_run_id: "run_customer_orders_daily",
-      contract_validation: nil,
-      checks: [],
-      contract: %{
-        grain: %{by: [:order_id], description: "one customer order"},
-        unique_keys: [[:order_id]],
-        row_counts: [
-          %{
-            claim_id: "row_count.equals.param.expected_rows",
-            equals: %{source: :param, name: :expected_rows},
-            min: nil,
-            max: nil,
-            when: nil,
-            on_violation: :fail,
-            latest_result: %{outcome: :passed}
-          },
-          %{
-            claim_id: "row_count.min.1",
-            equals: nil,
-            min: 1,
-            max: nil,
-            when: :target_exists,
-            on_violation: :skip_materialization,
-            latest_result: %{outcome: :condition_skipped}
-          }
-        ],
-        compositions: [
-          %{module: fragment, start_index: 1, columns: [:processed_at, :favn_run_id]}
-        ],
-        columns: [
-          contract_column(:order_id, :integer, %{kind: :local}),
-          contract_column(:processed_at, :datetime, %{kind: :fragment, module: fragment}),
-          contract_column(:favn_run_id, :string, %{kind: :fragment, module: fragment})
-        ]
-      }
+      latest_run_id: "run-d",
+      contract_validation: contract_validation(:matched),
+      checks: [
+        declared_check(:orders_have_customer, :passed),
+        declared_check(:no_future_dates, :passed)
+      ],
+      contract: contract()
+    }
+  end
+
+  def assurance(:mismatch) do
+    %{
+      quality_status: :failed,
+      write_outcome: :rolled_back,
+      latest_run_id: "run-b",
+      contract_validation: contract_validation(:mismatch),
+      checks: [
+        declared_check(:orders_have_customer, :failed),
+        declared_check(:no_future_dates, :passed)
+      ],
+      contract: contract()
+    }
+  end
+
+  defp contract do
+    fragment = MyApp.Contracts.AuditMetadata
+
+    %{
+      grain: %{by: [:order_id], description: "one customer order"},
+      unique_keys: [[:order_id]],
+      row_counts: [
+        %{
+          claim_id: "row_count.equals.param.expected_rows",
+          equals: %{source: :param, name: :expected_rows},
+          min: nil,
+          max: nil,
+          when: nil,
+          on_violation: :fail,
+          latest_result: %{outcome: :passed, metrics: %{actual: 1_284}}
+        },
+        %{
+          claim_id: "row_count.min.1",
+          equals: nil,
+          min: 1,
+          max: nil,
+          when: :target_exists,
+          on_violation: :skip_materialization,
+          latest_result: %{outcome: :condition_skipped, metrics: %{}}
+        }
+      ],
+      compositions: [
+        %{module: fragment, start_index: 1, columns: [:processed_at, :favn_run_id]}
+      ],
+      columns: [
+        contract_column(:order_id, :integer, %{kind: :local}),
+        contract_column(:processed_at, :datetime, %{kind: :fragment, module: fragment}),
+        contract_column(:favn_run_id, :string, %{kind: :fragment, module: fragment})
+      ]
+    }
+  end
+
+  defp declared_check(name, outcome) do
+    %{
+      name: name,
+      origin: :asset,
+      claim_id: nil,
+      phase: :after_materialize,
+      when: nil,
+      on_violation: :fail,
+      message: check_message(name),
+      latest_result: %{outcome: outcome, metrics: %{actual: check_actual(name, outcome)}}
+    }
+  end
+
+  defp check_message(:orders_have_customer), do: "every order names a customer"
+  defp check_message(:no_future_dates), do: "no order is dated in the future"
+
+  defp check_actual(_name, :passed), do: 0
+  defp check_actual(_name, _outcome), do: 17
+
+  defp contract_validation(:matched) do
+    %{
+      status: :passed,
+      expected_columns: [:order_id, :processed_at, :favn_run_id],
+      observed_columns: [
+        observed_column(:order_id, :integer),
+        observed_column(:processed_at, :datetime),
+        observed_column(:favn_run_id, :string)
+      ],
+      differences: [],
+      observed_column_count: 3,
+      observed_truncated?: false
+    }
+  end
+
+  defp contract_validation(:mismatch) do
+    %{
+      status: :failed,
+      expected_columns: [:order_id, :processed_at, :favn_run_id],
+      observed_columns: [
+        observed_column(:order_id, :integer),
+        observed_column(:processed_at, :string)
+      ],
+      differences: [
+        %{kind: :type_mismatch, column: :processed_at, expected: :datetime, observed: :string},
+        %{kind: :missing_column, column: :favn_run_id}
+      ],
+      observed_column_count: 2,
+      observed_truncated?: false
+    }
+  end
+
+  defp observed_column(name, type) do
+    %{
+      name: name,
+      type: type,
+      native_type: to_string(type),
+      nullable?: false,
+      nullability_observed?: true
     }
   end
 
