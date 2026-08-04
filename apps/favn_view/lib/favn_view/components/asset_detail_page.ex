@@ -177,6 +177,21 @@ defmodule FavnView.Components.AssetDetailPage do
           modes={detail_modes(@asset_id, @has_data_windows?)}
         />
       </:mode_rail>
+
+      <:overlay>
+        <SelectedWindowActions.run_config_panel
+          :if={@run_config_open?}
+          selected_window={@selected_window}
+          has_data_windows?={@has_data_windows?}
+          active_timeline={@active_timeline}
+          run_config={@run_config}
+          run_config_valid?={@run_config_valid?}
+          submitting_window_run?={@submitting_window_run?}
+          error={@selected_window_error}
+          can_submit_runs?={@can_submit_runs?}
+          command_resource={@rebuild_target_id}
+        />
+      </:overlay>
     </AppShell.app_shell>
     """
   end
@@ -275,6 +290,12 @@ defmodule FavnView.Components.AssetDetailPage do
       downstream={@downstream}
       cadence_label={@cadence_label}
       type={@type}
+      run_contexts={@run_contexts}
+      selected_run_context={@selected_run_context}
+      run_context_status={@run_context_status}
+      can_run_asset?={@can_run_asset?}
+      can_submit_runs?={@can_submit_runs?}
+      submitting_window_run?={@submitting_window_run?}
       problems={asset_problems(assigns)}
     />
 
@@ -354,41 +375,6 @@ defmodule FavnView.Components.AssetDetailPage do
       planning?={@planning_coverage?}
       submitting?={@submitting_coverage?}
       can_plan?={@can_submit_runs? && @can_run_asset?}
-      command_resource={@rebuild_target_id}
-    />
-    <.window_timeline_panel
-      :if={@active_mode == :overview}
-      show_freshness?={false}
-      timelines={[:refresh, :freshness]}
-      window_kind_label={@window_kind_label}
-      refresh_timeline_label={@refresh_timeline_label}
-      refresh_cadence_label={@refresh_cadence_label}
-      freshness_timeline_label={@freshness_timeline_label}
-      freshness_cadence_label={@freshness_cadence_label}
-      data_coverage_timeline_label={@data_coverage_timeline_label}
-      window_range={@window_range}
-      refresh_window_range={@refresh_window_range}
-      freshness_window_range={@freshness_window_range}
-      data_coverage_window_range={@data_coverage_window_range}
-      active_timeline={@active_timeline}
-      has_freshness_timeline?={@has_freshness_timeline?}
-      has_data_windows?={@has_data_windows?}
-      can_run_asset?={@can_run_asset?}
-      run_contexts={@run_contexts}
-      selected_run_context={@selected_run_context}
-      run_context_status={@run_context_status}
-      refresh_timeline={@refresh_timeline}
-      freshness_timeline={@freshness_timeline}
-      data_coverage_timeline={@data_coverage_timeline}
-      freshness={@freshness}
-      selected_window={@selected_window}
-      run_config_open?={@run_config_open?}
-      run_config={@run_config}
-      run_config_valid?={@run_config_valid?}
-      submitting_window_run?={@submitting_window_run?}
-      selected_window_error={@selected_window_error}
-      submitted_run_id={@submitted_run_id}
-      can_submit_runs?={@can_submit_runs?}
       command_resource={@rebuild_target_id}
     />
     """
@@ -1021,16 +1007,10 @@ defmodule FavnView.Components.AssetDetailPage do
           :if={@active_timeline != :freshness}
           selected_window={@selected_window}
           can_run_asset?={@can_run_asset?}
-          has_data_windows?={@has_data_windows?}
-          active_timeline={@active_timeline}
-          run_config_open?={@run_config_open?}
-          run_config={@run_config}
-          run_config_valid?={@run_config_valid?}
           submitting_window_run?={@submitting_window_run?}
           selected_window_error={@selected_window_error}
           submitted_run_id={@submitted_run_id}
           can_submit_runs?={@can_submit_runs?}
-          command_resource={@command_resource}
         />
       </div>
     </.panel>
@@ -1251,6 +1231,12 @@ defmodule FavnView.Components.AssetDetailPage do
   attr :type, :string, default: nil
   attr :cadence_label, :string, default: nil
   attr :problems, :list, default: []
+  attr :run_contexts, :list, default: []
+  attr :selected_run_context, :map, default: nil
+  attr :run_context_status, :atom, default: :unavailable
+  attr :can_run_asset?, :boolean, default: true
+  attr :can_submit_runs?, :boolean, default: false
+  attr :submitting_window_run?, :boolean, default: false
 
   def asset_overview(assigns) do
     assigns = assign(assigns, :latest, List.first(assigns.runs))
@@ -1258,6 +1244,26 @@ defmodule FavnView.Components.AssetDetailPage do
     ~H"""
     <div class="mx-auto w-full max-w-[120rem] space-y-6" data-testid="asset-overview">
       <.panel padding={:none} class="p-6 sm:p-8">
+        <!-- The one thing an operator comes here to do sits where an action belongs, not
+        at the bottom of a strip of run anchors. Which period it runs for is the dialog's
+        business; filling gaps is Coverage's. -->
+        <div class="mb-5 flex flex-wrap items-start justify-between gap-3">
+          <div class="min-w-0">
+            <p class="text-sm uppercase tracking-[0.18em] favn-text-subtle">This asset</p>
+          </div>
+
+          <.button
+            icon="hero-play"
+            phx-click="open_run_config"
+            loading={@submitting_window_run?}
+            disabled={!@can_submit_runs? || !@can_run_asset? || @submitting_window_run?}
+            title={run_disabled_title(assigns)}
+            data-testid="run-this-asset"
+          >
+            Run this asset
+          </.button>
+        </div>
+
         <.fact_list columns={3} facts={overview_facts(assigns)} />
 
         <div class="mt-5 flex flex-wrap items-baseline gap-x-3 gap-y-1 border-t border-base-content/10 pt-4">
@@ -1272,6 +1278,20 @@ defmodule FavnView.Components.AssetDetailPage do
             Open the last run
           </.link>
         </div>
+      </.panel>
+
+      <!-- Only where the choice is real. One pipeline owns most assets, and a selector
+      holding one option is a control that cannot change anything. -->
+      <.panel
+        :if={length(@run_contexts) > 1 || @run_context_status == :ambiguous}
+        padding={:none}
+        class="p-6 sm:p-8"
+      >
+        <.run_context_selector
+          contexts={@run_contexts}
+          selected={@selected_run_context}
+          status={@run_context_status}
+        />
       </.panel>
 
       <.notice
@@ -1326,6 +1346,16 @@ defmodule FavnView.Components.AssetDetailPage do
       note: "not in this deployment"
     }
   end
+
+  # A disabled control has to say why, and the two reasons are different problems: one
+  # is the operator's role, the other is the asset's own state.
+  defp run_disabled_title(%{can_submit_runs?: false}),
+    do: "Running an asset needs an operator account"
+
+  defp run_disabled_title(%{can_run_asset?: false}),
+    do: "This asset cannot run until the problems above are resolved"
+
+  defp run_disabled_title(_assigns), do: nil
 
   defp asset_type_icon(type) when type in ["sql", :sql], do: "hero-table-cells"
   defp asset_type_icon(type) when type in ["elixir", :elixir], do: "hero-code-bracket"

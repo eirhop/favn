@@ -257,9 +257,10 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
     %{
       "asset_detail_page/asset_detail_page" => [
         Example.attrs(
-          :refresh_timeline,
+          :overview,
           AssetDetail.base_attrs(),
-          "The default screen: refresh timeline, nothing selected."
+          "The default screen: what state the asset is in, what feeds it, and the one " <>
+            "action worth taking."
         ),
         Example.attrs(
           :full_refresh_asset,
@@ -269,12 +270,9 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
             status_tone: :neutral,
             has_freshness_timeline?: false,
             has_data_windows?: false,
-            freshness_timeline: nil,
-            data_coverage_timeline: nil,
-            data_coverage_window_range: "No windows",
             freshness: FavnView.Components.AssetDetailPage.sample_freshness(:unknown)
           }),
-          "An asset with no windows at all. No timeline toggle, no window selection."
+          "An asset with no windows at all, so the rail offers no coverage page."
         ),
         Example.attrs(
           :coverage_complete,
@@ -429,45 +427,27 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
           "Two pipelines could own this asset, so there is no timeline until one is chosen."
         ),
         Example.attrs(
-          :selected_refresh_period,
-          AssetDetail.attrs(%{selected_window: List.last(Timeline.refresh_timeline())})
-        ),
-        Example.attrs(
           :run_config_open,
-          AssetDetail.attrs(%{run_config_open?: true, run_config: Timeline.default_run_config()})
+          AssetDetail.attrs(%{run_config_open?: true, run_config: Timeline.default_run_config()}),
+          "The run dialog, over the page rather than inside a card. It lives at page " <>
+            "level because a panel sets a backdrop-filter, which clips a fixed-position " <>
+            "child to the card."
         ),
         Example.attrs(
-          :prefilled_failed_run_config,
+          :run_config_error,
           AssetDetail.attrs(%{
-            selected_window: Enum.at(Timeline.refresh_timeline(), 1),
             run_config_open?: true,
             run_config:
-              Timeline.run_config(:refresh_timeline, :day, "2026-06-10", "none", "force_all")
+              Timeline.run_config(:refresh_timeline, :day, "2026-06-10", "none", "force_all"),
+            selected_window_error: "Choose a period Favn can resolve."
           }),
-          "Retrying a failed window prefills the config that failed."
+          "A configuration that cannot be submitted says so inside the dialog, where the " <>
+            "field that caused it is."
         ),
         Example.attrs(
-          :submit_success,
-          AssetDetail.attrs(%{
-            selected_window: List.last(Timeline.refresh_timeline()),
-            submitted_run_id: "run_01HZ"
-          })
-        ),
-        Example.attrs(
-          :submit_error,
-          AssetDetail.attrs(%{
-            selected_window: List.last(Timeline.refresh_timeline()),
-            selected_window_error: "Could not submit run."
-          })
-        ),
-        Example.attrs(
-          :non_runnable_window,
-          AssetDetail.attrs(%{
-            selected_window:
-              Timeline.refresh_window("2026-06-12", "Jun 12", :muted)
-              |> Map.merge(%{run_enabled?: false, run_disabled_reason: :invalid_window})
-          }),
-          "A period the operator picked that cannot be run, and the reason why."
+          :viewer_cannot_run,
+          AssetDetail.attrs(%{can_submit_runs?: false}),
+          "A viewer sees the asset and a disabled action that explains itself on hover."
         ),
         Example.attrs(:freshness_fresh, AssetDetail.freshness_attrs(:fresh)),
         Example.attrs(

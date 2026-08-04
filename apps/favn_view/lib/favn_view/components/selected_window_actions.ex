@@ -1,33 +1,33 @@
 defmodule FavnView.Components.SelectedWindowActions do
   @moduledoc """
-  Compact action strip for the selected asset timeline window.
+  The dialog that submits one asset run.
+
+  Render it at page level. `.favn-surface-panel` sets a `backdrop-filter`, which makes
+  it the containing block for a `position: fixed` descendant, so a dialog nested inside
+  a panel is clipped to that card rather than covering the page — which is what it did
+  while it lived inside the run-anchor strip.
   """
 
   use FavnView, :html
 
+  @doc """
+  Compact action strip for a selected timeline window.
+
+  No page renders this any more: the asset overview replaced it with one "Run this
+  asset" action, and `FavnView.Components.AssetDetailPage.window_timeline_panel/1` —
+  its only caller — is likewise unrendered. Both are kept compiling, and demonstrated
+  in the design system, until the window-timeline machinery behind them is removed as
+  its own change.
+
+  It no longer contains the dialog. A dialog nested in a panel is clipped to that
+  panel, so `run_config_panel/1` is rendered at page level instead.
+  """
   attr :selected_window, :map, default: nil
   attr :can_run_asset?, :boolean, default: true
-  attr :has_data_windows?, :boolean, default: false
-  attr :active_timeline, :atom, default: :refresh
-  attr :run_config_open?, :boolean, default: false
-
-  attr :run_config, :map,
-    default: %{
-      dependencies: "all",
-      refresh: "auto",
-      source: nil,
-      kind: "",
-      value: "",
-      to: "",
-      timezone: "Etc/UTC"
-    }
-
   attr :submitting_window_run?, :boolean, default: false
-  attr :run_config_valid?, :boolean, default: true
   attr :selected_window_error, :string, default: nil
   attr :submitted_run_id, :string, default: nil
   attr :can_submit_runs?, :boolean, default: false
-  attr :command_resource, :string, required: true
 
   def selected_window_actions(assigns) do
     ~H"""
@@ -77,18 +77,6 @@ defmodule FavnView.Components.SelectedWindowActions do
           Run asset
         </.button>
       </div>
-
-      <.run_config_panel
-        :if={@run_config_open?}
-        selected_window={@selected_window}
-        has_data_windows?={@has_data_windows?}
-        active_timeline={@active_timeline}
-        run_config={@run_config}
-        run_config_valid?={@run_config_valid?}
-        submitting_window_run?={@submitting_window_run?}
-        can_submit_runs?={@can_submit_runs?}
-        command_resource={@command_resource}
-      />
     </div>
     """
   end
@@ -99,6 +87,7 @@ defmodule FavnView.Components.SelectedWindowActions do
   attr :run_config, :map, required: true
   attr :run_config_valid?, :boolean, default: true
   attr :submitting_window_run?, :boolean, default: false
+  attr :error, :string, default: nil, doc: "why the configuration cannot be submitted"
   attr :can_submit_runs?, :boolean, default: false
   attr :command_resource, :string, required: true
 
@@ -281,6 +270,10 @@ defmodule FavnView.Components.SelectedWindowActions do
         <.notice :if={forces_upstream?(@run_config)} tone={:warning}>
           Forcing upstream assets changes their inputs, so downstream assets in the planned graph can rerun too.
         </.notice>
+
+        <p :if={@error} class="mt-4 text-sm text-error" data-testid="run-config-error">
+          {@error}
+        </p>
       </.form>
 
       <:actions>

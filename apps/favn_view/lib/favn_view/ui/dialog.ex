@@ -63,7 +63,15 @@ defmodule FavnView.UI.Dialog do
       phx-key="escape"
       data-testid={@id}
     >
-      <div class={["modal-box favn-surface-panel", size_class(@size)]}>
+      <!-- DaisyUI caps the box at `max-height: 100%` of a viewport-tall modal, so a long
+      dialog fills the screen edge to edge with nothing around it. Capped shorter here so
+      the box scrolls inside itself and sits in a page rather than replacing it. A phone
+      keeps nearly the whole screen, where margin is space it cannot spare. -->
+      <div class={[
+        "modal-box favn-surface-panel overflow-y-auto",
+        "max-h-[calc(100dvh-2rem)] sm:max-h-[calc(100dvh-6rem)]",
+        size_class(@size)
+      ]}>
         <header class="mb-4 flex items-start justify-between gap-3">
           <div class="min-w-0">
             <h2 id={"#{@id}-title"} class="text-base font-medium">{@title}</h2>
