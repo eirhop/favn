@@ -15,6 +15,20 @@ defmodule FavnView.AssetDetailLive do
   alias FavnView.CoverageCalendar
   alias FavnView.LogsViewModel
 
+  @dialyzer {:no_unused,
+             [
+               asset_from_detail: 2,
+               run_context_path: 2,
+               asset_name: 1,
+               run_entry: 2,
+               window_entry_label: 1,
+               cadence_label: 1,
+               cadence_word: 1,
+               window_field: 2,
+               duration_label: 1,
+               missing_freshness_detail: 0
+             ]}
+
   @impl true
   def mount(%{"asset_id" => asset_id} = params, _session, socket) do
     run_context_id = run_context_param(params)

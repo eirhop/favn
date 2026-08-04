@@ -45,7 +45,7 @@ defmodule FavnView.AuthBoundaryTest do
     end
   end
 
-  test "browser scope retains only public actor and session fields" do
+  test "browser scope accepts public atom-key actor and session DTOs" do
     actor = %{
       id: "actor-1",
       username: "operator",
@@ -67,6 +67,8 @@ defmodule FavnView.AuthBoundaryTest do
 
     scope = Scope.new("workspace-1", actor, session)
 
+    assert scope.actor.id == actor.id
+    assert scope.session.id == session.id
     assert scope.roles == [:operator]
     assert Scope.has_role?(scope, :viewer)
     assert Scope.has_role?(scope, :operator)

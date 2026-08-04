@@ -36,28 +36,32 @@ defmodule FavnView.Auth.Scope do
   @doc """
   Builds a browser-safe scope from orchestrator-owned actor and session data.
   """
-  @spec new(String.t(), map(), map()) :: t()
+  @spec new(
+          String.t(),
+          FavnOrchestrator.operator_actor(),
+          FavnOrchestrator.operator_session()
+        ) :: t()
   def new(workspace_id, actor, session)
       when is_binary(workspace_id) and workspace_id != "" and is_map(actor) and is_map(session) do
-    roles = sanitize_roles(Map.get(actor, :roles) || Map.get(actor, "roles") || [])
+    roles = sanitize_roles(actor.roles)
     {:ok, operator_context} = FavnOrchestrator.operator_context(workspace_id, actor, session)
 
     %__MODULE__{
       workspace_id: workspace_id,
       operator_context: operator_context,
       actor: %{
-        id: Map.get(actor, :id) || Map.fetch!(actor, "id"),
-        username: Map.get(actor, :username) || Map.get(actor, "username"),
-        display_name: Map.get(actor, :display_name) || Map.get(actor, "display_name"),
+        id: actor.id,
+        username: actor.username,
+        display_name: actor.display_name,
         roles: roles
       },
       session: %{
-        id: Map.get(session, :id) || Map.fetch!(session, "id"),
-        actor_id: Map.get(session, :actor_id) || Map.get(session, "actor_id"),
-        provider: Map.get(session, :provider) || Map.get(session, "provider"),
-        issued_at: Map.get(session, :issued_at) || Map.get(session, "issued_at"),
-        expires_at: Map.get(session, :expires_at) || Map.get(session, "expires_at"),
-        revoked_at: Map.get(session, :revoked_at) || Map.get(session, "revoked_at")
+        id: session.id,
+        actor_id: session.actor_id,
+        provider: session.provider,
+        issued_at: session.issued_at,
+        expires_at: session.expires_at,
+        revoked_at: session.revoked_at
       },
       roles: roles
     }

@@ -13,6 +13,8 @@ defmodule FavnView.LogsLiveSupport do
   @initial_limit 200
   @fetch_limit 500
   @poll_interval_ms 2_000
+  @dialyzer {:no_unused,
+             [target_label: 1, run_context_from_public: 2, asset_context_from_public: 1]}
 
   def mount_logs(socket, attrs) do
     filter = Filter.normalize(Map.fetch!(attrs, :filter))

@@ -30,9 +30,6 @@ defmodule FavnView.Plugs.TrustedProxyHeaders do
         else
           strip_forwarded_headers(conn)
         end
-
-      _unknown_peer ->
-        strip_forwarded_headers(conn)
     end
   end
 
