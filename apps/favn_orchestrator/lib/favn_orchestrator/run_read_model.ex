@@ -16,7 +16,6 @@ defmodule FavnOrchestrator.RunReadModel do
   alias FavnOrchestrator.Persistence.Queries.GetOperatorRunOverview
   alias FavnOrchestrator.Persistence.Results.PlannedAssetStep
   alias FavnOrchestrator.Persistence.Results.Backfill, as: PersistedBackfill
-  alias FavnOrchestrator.Persistence.Results.BackfillWindow, as: PersistedBackfillWindow
 
   alias FavnOrchestrator.Persistence.Results.ExecutionGroupOverview,
     as: PersistedExecutionGroupOverview
@@ -109,7 +108,7 @@ defmodule FavnOrchestrator.RunReadModel do
 
   @type backfill_failure :: %{
           required(:child_run_id) => String.t() | nil,
-          required(:status) => PersistedBackfillWindow.status(),
+          required(:status) => ExecutionStatus.known(),
           required(:window) => window_summary(),
           required(:asset_ref) => String.t() | nil,
           required(:error) => term(),
@@ -1156,7 +1155,7 @@ defmodule FavnOrchestrator.RunReadModel do
   defp persisted_backfill_failure(window) do
     %{
       child_run_id: window.run_id,
-      status: window.status,
+      status: persisted_window_status(window.status),
       window:
         persisted_window_summary(window)
         |> Map.take([:key, :label, :kind, :start_at, :end_at, :timezone]),

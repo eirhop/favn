@@ -2,6 +2,7 @@ defmodule FavnOrchestrator.RunReadModel.OperatorRunOverviewTest do
   use ExUnit.Case, async: true
 
   alias FavnOrchestrator.Persistence.Results.AssetAttemptOverview
+  alias FavnOrchestrator.Persistence.Results.BackfillWindow
   alias FavnOrchestrator.Persistence.Results.ExecutionGroupOverview
   alias FavnOrchestrator.Persistence.Results.OperatorRunOverview
   alias FavnOrchestrator.Persistence.Results.PlannedAssetStep
@@ -195,6 +196,34 @@ defmodule FavnOrchestrator.RunReadModel.OperatorRunOverviewTest do
            }
 
     assert empty_detail.root_run.runner_releases == %{}
+  end
+
+  test "normalizes persisted failed windows to the public error status" do
+    projection = projection_with_runner_releases(%{})
+
+    failed_window = %BackfillWindow{
+      workspace_id: "workspace",
+      backfill_id: "root",
+      window_id: "window-1",
+      window_key: "2026-07-20",
+      window_start: @started_at,
+      window_end: @finished_at,
+      status: :failed,
+      run_id: "child",
+      attempt_count: 1,
+      last_error: %{"message" => "failed"},
+      payload: %{},
+      version: 1
+    }
+
+    projection = %{
+      projection
+      | requested_windows: [failed_window],
+        requested_window_counts: %{total: 1, completed: 1, failed: 1}
+    }
+
+    assert {:ok, detail} = RunReadModel.from_operator_run_overview(projection)
+    assert [%{status: :error}] = detail.backfill_failures
   end
 
   test "rejects malformed persisted overview status, list, and timestamp fields" do
