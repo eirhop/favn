@@ -117,7 +117,6 @@
    "The pattern variable _result@1 can never match the type, because it is covered by previous clauses."},
   {"lib/favn_orchestrator/transition_writer.ex",
    "The pattern pattern <\#{'__struct__':='Elixir.FavnOrchestrator.RunEvent'}, __key@1> can never match the type, because it is covered by previous clauses."},
-  {"lib/favn_storage_postgres/backfills/store.ex", "The pattern can never match the type true."},
   {"lib/favn_storage_postgres/runs/decoder.ex",
    "Unknown type: FavnStoragePostgres.Schemas.Run.t/0."},
   {"lib/favn_storage_postgres/runs/decoder.ex",
