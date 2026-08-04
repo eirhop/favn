@@ -28,20 +28,6 @@ defmodule FavnOrchestrator.Operator.Catalogue.Status do
     |> Map.put(:latest_run_duration_ms, nil)
   end
 
-  @doc "Maps freshness or run evidence to a catalogue health status."
-  @spec catalogue(AssetFreshnessState.t() | nil, map() | nil) ::
-          :healthy | :running | :failed | :unknown
-  def catalogue(%AssetFreshnessState{} = freshness, _run) do
-    case freshness.latest_attempt_status || freshness.status do
-      status when status in [:ok, :skipped_fresh] -> :healthy
-      :running -> :running
-      status when status in [:error, :cancelled, :timed_out, :blocked] -> :failed
-      _other -> :unknown
-    end
-  end
-
-  def catalogue(nil, run), do: run_status(run)
-
   @doc "Returns the best latest run id from freshness and run evidence."
   @spec latest_run_id(AssetFreshnessState.t() | nil, map() | nil) :: String.t() | nil
   def latest_run_id(%AssetFreshnessState{latest_attempt_run_id: id}, _run) when is_binary(id),
@@ -53,25 +39,10 @@ defmodule FavnOrchestrator.Operator.Catalogue.Status do
   def latest_run_id(_freshness, %{id: id}) when is_binary(id), do: id
   def latest_run_id(_freshness, _run), do: nil
 
-  @doc "Returns the best latest run status from freshness and run evidence."
-  @spec latest_run_status(AssetFreshnessState.t() | nil, map() | nil) :: atom() | nil
-  def latest_run_status(%AssetFreshnessState{latest_attempt_status: status}, _run)
-      when not is_nil(status),
-      do: status
-
-  def latest_run_status(%AssetFreshnessState{status: status}, _run) when not is_nil(status),
-    do: status
-
-  def latest_run_status(_freshness, %{status: status}), do: status
-  def latest_run_status(_freshness, _run), do: nil
-
   @doc "Returns the best latest run timestamp from freshness and run evidence."
   @spec latest_run_at(AssetFreshnessState.t() | nil, map() | nil) :: DateTime.t() | nil
   def latest_run_at(%AssetFreshnessState{latest_attempt_at: %DateTime{} = at}, _run), do: at
   def latest_run_at(%AssetFreshnessState{latest_success_at: %DateTime{} = at}, _run), do: at
   def latest_run_at(_freshness, run) when is_map(run), do: RunHistory.time_key(run)
   def latest_run_at(_freshness, _run), do: nil
-
-  defp run_status(%{status: status}), do: TargetStatus.status_from_run(status)
-  defp run_status(_run), do: :unknown
 end

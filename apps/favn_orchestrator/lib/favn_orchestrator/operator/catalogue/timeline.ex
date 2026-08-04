@@ -11,11 +11,13 @@ defmodule FavnOrchestrator.Operator.Catalogue.Timeline do
   refreshed on — plus a direct read of calendar-period freshness evidence, whose grain
   is its own and which neither walk enumerates.
 
-  A third *walk* over those calendar periods used to draw its own strip, computing per
-  period whether every window expanded into it had succeeded. That is gone: it cost a
-  plan per period to produce a status nothing rendered. Whether a calendar period is
-  fully fresh is `FavnOrchestrator.Operator.Catalogue.AssetFreshness`'s answer, which
-  is where the header reads it.
+  Each walked period therefore carries only what answers those two questions: its grain
+  and value, the label and range a run entry shows, and the run that wrote it. A run
+  configuration is built for one period — the refresh anchor — because that is the only
+  one a dialog can open on. No period carries a status, because no caller can reach one:
+  whether a period is covered or fresh is
+  `FavnOrchestrator.Operator.Catalogue.AssetFreshness`'s answer, and computing a second
+  one here cost a plan per period to produce something nothing rendered.
 
   Values are derived from validated manifest policy and backend state. An invalid
   persisted kind or timezone falls back to the explicit daily UTC policy rather
@@ -99,7 +101,6 @@ defmodule FavnOrchestrator.Operator.Catalogue.Timeline do
         latest_run,
         freshness_states,
         asset_window_states,
-        runs_by_id,
         opts
       )
 
@@ -125,10 +126,8 @@ defmodule FavnOrchestrator.Operator.Catalogue.Timeline do
   # be evaluated on: a monthly asset's run wrote July, so it reads "Jul 2026" like
   # every other run of that asset, rather than "Jul 16" beside them.
   #
-  # Read straight from the states rather than by walking periods. Only the run each one
-  # points at is wanted; whether such a period is *fully* fresh is
-  # `FavnOrchestrator.Operator.Catalogue.AssetFreshness`'s answer, and computing it
-  # here cost a plan per period to produce a status nothing read.
+  # Read straight from the states rather than by walking periods: only the run each one
+  # points at is wanted.
   defp calendar_freshness_windows(asset, freshness_states) do
     asset_ref_string = Targets.ref_string(asset.ref)
     {written_kind, _timezone} = coverage_policy(asset)
@@ -188,13 +187,14 @@ defmodule FavnOrchestrator.Operator.Catalogue.Timeline do
     end)
   end
 
+  # No run config here: a coverage period only ever labels a run. The period a dialog
+  # opens on is the refresh anchor, which `due_run_config/1` reads.
   defp data_coverage_timeline(
          %{window: nil},
          _latest_freshness,
          _latest_run,
          _freshness_states,
          _asset_window_states,
-         _runs_by_id,
          _opts
        ),
        do: nil
@@ -205,7 +205,6 @@ defmodule FavnOrchestrator.Operator.Catalogue.Timeline do
          latest_run,
          freshness_states,
          asset_window_states,
-         runs_by_id,
          opts
        ) do
     {kind, timezone} = coverage_policy(asset)
@@ -220,44 +219,18 @@ defmodule FavnOrchestrator.Operator.Catalogue.Timeline do
 
     for offset <- 0..(@period_count - 1) do
       value = shift_value(kind, timezone, selected_value, offset - (@period_count - 1))
-      date = value_date(kind, value)
       window_state = Map.get(window_states, value)
       window_freshness = Map.get(freshness_states, value)
 
       %{
-        id: window_id(kind, value),
         kind: kind,
         value: value,
-        timezone: timezone,
         label: window_label(kind, value),
-        date: date,
         range: window_range(kind, value),
-        status:
-          coverage_status(
-            window_state,
-            window_freshness,
-            latest_freshness,
-            latest_run,
-            value,
-            latest_run_value
-          ),
         latest_run_id:
-          window_latest_run_id(window_state) || Status.latest_run_id(window_freshness, nil),
-        latest_run_status:
-          window_latest_run_status(window_state) ||
-            Status.latest_run_status(window_freshness, nil),
-        latest_run_at:
-          window_latest_run_at(window_state) || Status.latest_run_at(window_freshness, nil),
-        run_label: "Run this window"
+          window_latest_run_id(window_state) || Status.latest_run_id(window_freshness, nil)
       }
-      |> put_window_run_state(asset)
       |> maybe_put_latest_run(latest_freshness, latest_run, value, latest_run_value)
-      |> Map.put(:source, :data_coverage_timeline)
-      |> Map.put(
-        :default_run_config,
-        default_run_config(:data_coverage_timeline, kind, value, timezone)
-      )
-      |> put_latest_run_config(runs_by_id)
     end
   end
 
@@ -286,25 +259,14 @@ defmodule FavnOrchestrator.Operator.Catalogue.Timeline do
       freshness = Map.get(freshness_by_value, value)
 
       %{
-        id: "refresh:#{kind}:#{value}",
-        source: :refresh_timeline,
         kind: kind,
         value: value,
-        timezone: timezone,
         label: window_label(kind, value),
-        date: value_date(kind, value),
         range: window_range(kind, value),
-        status: refresh_status(freshness, latest_freshness, latest_run, value, latest_run_value),
-        latest_run_id: Status.latest_run_id(freshness, nil),
-        latest_run_status: Status.latest_run_status(freshness, nil),
-        latest_run_at: Status.latest_run_at(freshness, nil),
-        run_enabled?: true,
-        run_disabled_reason: nil,
-        run_label: "Run asset",
-        default_run_config: default_run_config(:refresh_timeline, kind, value, timezone)
+        latest_run_id: Status.latest_run_id(freshness, nil)
       }
       |> maybe_put_latest_run(latest_freshness, latest_run, value, latest_run_value)
-      |> put_latest_run_config(runs_by_id)
+      |> maybe_put_run_config(offset, kind, timezone, runs_by_id)
     end
   end
 
@@ -370,54 +332,20 @@ defmodule FavnOrchestrator.Operator.Catalogue.Timeline do
   defp normalize_policy(_kind, _timezone), do: default_policy()
   defp default_policy, do: {@default_kind, @default_timezone}
 
-  defp refresh_status(
-         %AssetFreshnessState{status: :ok},
-         _latest_freshness,
-         _latest_run,
-         _value,
-         _latest_run_value
-       ),
-       do: :fresh
+  # Only the last period of the refresh walk is offset zero, and only that one's config
+  # is ever read. Building one for the other 29 cost a `runs_by_id` lookup and a merge
+  # each to produce a map `due_run_config/1` never looks at.
+  defp maybe_put_run_config(window, offset, kind, timezone, runs_by_id)
+       when offset == @period_count - 1 do
+    window
+    |> Map.put(
+      :default_run_config,
+      default_run_config(:refresh_timeline, kind, window.value, timezone)
+    )
+    |> put_latest_run_config(runs_by_id)
+  end
 
-  defp refresh_status(
-         %AssetFreshnessState{status: :error},
-         _latest_freshness,
-         _latest_run,
-         _value,
-         _latest_run_value
-       ),
-       do: :failed
-
-  defp refresh_status(
-         %AssetFreshnessState{status: status},
-         _latest_freshness,
-         _latest_run,
-         _value,
-         _latest_run_value
-       )
-       when status in [:running, :pending],
-       do: :running
-
-  defp refresh_status(nil, latest_freshness, latest_run, value, value),
-    do: refresh_status_from_latest(latest_freshness, latest_run)
-
-  defp refresh_status(nil, _latest_freshness, _latest_run, _value, _latest_run_value),
-    do: :missing
-
-  defp refresh_status_from_latest(%AssetFreshnessState{status: :ok}, _run), do: :fresh
-  defp refresh_status_from_latest(%AssetFreshnessState{status: :error}, _run), do: :failed
-
-  defp refresh_status_from_latest(_freshness, %{status: status})
-       when status in [:running, :pending],
-       do: :running
-
-  defp refresh_status_from_latest(_freshness, %{status: :ok}), do: :fresh
-
-  defp refresh_status_from_latest(_freshness, %{status: status})
-       when status in [:partial, :error, :cancelled, :timed_out],
-       do: :failed
-
-  defp refresh_status_from_latest(_freshness, _run), do: :unknown
+  defp maybe_put_run_config(window, _offset, _kind, _timezone, _runs_by_id), do: window
 
   defp default_run_config(source, kind, value, timezone) do
     %{
@@ -460,25 +388,6 @@ defmodule FavnOrchestrator.Operator.Catalogue.Timeline do
 
   defp refresh_config(%{mode: :force_assets}, _default), do: :force_selected
   defp refresh_config(_refresh_policy, default), do: default
-
-  defp put_window_run_state(%{id: window_id} = window, asset) do
-    with {:ok, window_request} <- WindowSelection.data_coverage_request(window_id),
-         {:ok, _anchor_window} <- WindowSelection.resolve(asset, window_request) do
-      window
-      |> Map.put(:run_enabled?, true)
-      |> Map.put(:run_disabled_reason, nil)
-    else
-      {:error, reason} ->
-        window
-        |> Map.put(:run_enabled?, false)
-        |> Map.put(:run_disabled_reason, run_disabled_reason(reason))
-    end
-  end
-
-  defp run_disabled_reason({:window_request_without_policy, _kind}),
-    do: :asset_has_no_window_policy
-
-  defp run_disabled_reason(_reason), do: :invalid_window
 
   defp selected_value(kind, timezone, latest_freshness, latest_run, opts) do
     case {opts[:now], opts[:today], Status.latest_run_at(latest_freshness, latest_run)} do
@@ -573,63 +482,10 @@ defmodule FavnOrchestrator.Operator.Catalogue.Timeline do
     end)
   end
 
-  defp coverage_status(
-         %AssetWindowState{status: :ok},
-         _window_freshness,
-         _latest_freshness,
-         _latest_run,
-         _value,
-         _latest_run_value
-       ),
-       do: :covered
-
-  defp coverage_status(
-         %AssetWindowState{status: status},
-         _window_freshness,
-         _latest_freshness,
-         _latest_run,
-         _value,
-         _latest_run_value
-       )
-       when status in [:running, :pending],
-       do: :running
-
-  defp coverage_status(
-         %AssetWindowState{status: status},
-         _window_freshness,
-         _latest_freshness,
-         _latest_run,
-         _value,
-         _latest_run_value
-       )
-       when status in [:partial, :error, :cancelled, :timed_out],
-       do: :failed
-
-  defp coverage_status(
-         _window_state,
-         window_freshness,
-         latest_freshness,
-         latest_run,
-         value,
-         latest_run_value
-       ),
-       do:
-         timeline_status(window_freshness, latest_freshness, latest_run, value, latest_run_value)
-
   defp window_latest_run_id(%AssetWindowState{latest_run_id: run_id}) when is_binary(run_id),
     do: run_id
 
   defp window_latest_run_id(_state), do: nil
-
-  defp window_latest_run_status(%AssetWindowState{status: status}) when not is_nil(status),
-    do: status
-
-  defp window_latest_run_status(_state), do: nil
-
-  defp window_latest_run_at(%AssetWindowState{updated_at: %DateTime{} = updated_at}),
-    do: updated_at
-
-  defp window_latest_run_at(_state), do: nil
 
   defp value_from_datetime(nil, _kind, _timezone), do: nil
 
@@ -672,8 +528,6 @@ defmodule FavnOrchestrator.Operator.Catalogue.Timeline do
 
   defp value_date(:year, value), do: Date.new!(String.to_integer(value), 1, 1)
 
-  defp window_id(kind, value), do: "window:#{kind}:#{value}"
-
   defp window_label(:hour, <<date::binary-size(10), "T", hour::binary-size(2), rest::binary>>) do
     date
     |> Date.from_iso8601!()
@@ -705,33 +559,19 @@ defmodule FavnOrchestrator.Operator.Catalogue.Timeline do
   defp hour_offset_label(""), do: ""
   defp hour_offset_label(offset), do: " #{offset}"
 
-  defp timeline_status(%AssetFreshnessState{} = freshness, _latest, _run, _value, _latest_value),
-    do: coverage_status_from_catalogue(Status.catalogue(freshness, nil))
-
-  defp timeline_status(nil, latest_freshness, latest_run, value, value),
-    do: coverage_status_from_catalogue(Status.catalogue(latest_freshness, latest_run))
-
-  defp timeline_status(nil, _latest_freshness, _latest_run, _value, _latest_run_value),
-    do: :missing
-
-  defp coverage_status_from_catalogue(:healthy), do: :covered
-  defp coverage_status_from_catalogue(:failed), do: :failed
-  defp coverage_status_from_catalogue(:running), do: :running
-  defp coverage_status_from_catalogue(_status), do: :unknown
-
-  defp maybe_put_latest_run(window, latest_freshness, latest_run, value, value) do
-    window
-    |> put_if_missing(:latest_run_id, Status.latest_run_id(latest_freshness, latest_run))
-    |> put_if_missing(:latest_run_status, Status.latest_run_status(latest_freshness, latest_run))
-    |> put_if_missing(:latest_run_at, Status.latest_run_at(latest_freshness, latest_run))
-  end
+  # The period the latest run landed in has no per-period evidence of its own until that
+  # evidence is written, so without this the newest run carries no label at all.
+  defp maybe_put_latest_run(
+         %{latest_run_id: nil} = window,
+         latest_freshness,
+         latest_run,
+         value,
+         value
+       ),
+       do: Map.put(window, :latest_run_id, Status.latest_run_id(latest_freshness, latest_run))
 
   defp maybe_put_latest_run(window, _latest_freshness, _latest_run, _value, _latest_run_value),
     do: window
-
-  defp put_if_missing(map, key, value) do
-    if is_nil(Map.get(map, key)), do: Map.put(map, key, value), else: map
-  end
 
   defp field(value, key) when is_map(value) do
     case Map.fetch(value, key) do

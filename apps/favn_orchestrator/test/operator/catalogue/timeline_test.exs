@@ -205,6 +205,21 @@ defmodule FavnOrchestrator.Operator.Catalogue.TimelineTest do
                resolved.run_windows["run_june"]
     end
 
+    # A run that has only just finished has no per-period evidence yet: no window state,
+    # no freshness key. The period it landed in is the one the walk is anchored on, so
+    # that is the label it gets — without which the newest run on screen, the one an
+    # operator is most likely watching, is the only one with no period beside it.
+    test "labels a run whose period has no evidence written yet" do
+      asset = asset_fixture()
+      run = %{id: "run_just_finished", status: :ok, finished_at: @now}
+
+      resolved =
+        Timeline.build(version_fixture(asset), asset, nil, run, [], [], %{}, now: @now)
+
+      assert %{kind: :month, value: "2026-07", label: "Jul 2026"} =
+               resolved.run_windows["run_just_finished"]
+    end
+
     test "has no entry for a run outside the periods it walked" do
       asset = asset_fixture()
       state = freshness_state(:may, :ok)
