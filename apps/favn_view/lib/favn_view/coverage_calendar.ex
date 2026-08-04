@@ -167,6 +167,41 @@ defmodule FavnView.CoverageCalendar do
   end
 
   @doc """
+  The dates bounding the unit holding `date`, the second exclusive.
+
+  This is what the screen asks the backend for. It is a range and not a count because
+  a count cannot name a calendar unit: February holds 28 days and a clock change makes
+  a day hold 23 or 25 hours, so "31 days from 1 February" reaches into March. Asking
+  for the unit's own bounds is the only way to get exactly the unit.
+
+  `nil` as the upper bound means read to the end of coverage, which is what a grain
+  with no unit above it wants — every year belongs on one screen.
+
+      iex> FavnView.CoverageCalendar.unit_bounds(:day, ~D[2026-02-17])
+      {~D[2026-02-01], ~D[2026-03-01]}
+
+      iex> FavnView.CoverageCalendar.unit_bounds(:hour, ~D[2026-03-29])
+      {~D[2026-03-29], ~D[2026-03-30]}
+
+      iex> FavnView.CoverageCalendar.unit_bounds(:month, ~D[2026-07-08])
+      {~D[2026-01-01], ~D[2027-01-01]}
+
+      iex> FavnView.CoverageCalendar.unit_bounds(:year, ~D[2026-07-08])
+      {~D[2026-07-08], nil}
+  """
+  @spec unit_bounds(atom() | nil, Date.t() | nil) :: {Date.t() | nil, Date.t() | nil}
+  def unit_bounds(_kind, nil), do: {nil, nil}
+
+  def unit_bounds(kind, %Date{} = date) do
+    if is_nil(unit_noun(kind)) do
+      {date, nil}
+    else
+      from = unit_start(kind, date)
+      {from, shift_unit(kind, from, 1)}
+    end
+  end
+
+  @doc """
   The unit a jump selected, clamped into the range coverage has.
 
   Whichever select the operator changed, the others keep their value, so changing the
@@ -356,15 +391,14 @@ defmodule FavnView.CoverageCalendar do
       "months"
   """
   @spec period_noun(atom() | nil, integer()) :: String.t()
-  def period_noun(kind, count) when count == 1, do: period_noun(kind)
-  def period_noun(kind, _count), do: period_noun(kind) <> "s"
+  def period_noun(kind, count) when count == 1, do: singular_noun(kind)
+  def period_noun(kind, _count), do: singular_noun(kind) <> "s"
 
-  @spec period_noun(atom() | nil) :: String.t()
-  def period_noun(:hour), do: "hour"
-  def period_noun(:day), do: "day"
-  def period_noun(:month), do: "month"
-  def period_noun(:year), do: "year"
-  def period_noun(_kind), do: "period"
+  defp singular_noun(:hour), do: "hour"
+  defp singular_noun(:day), do: "day"
+  defp singular_noun(:month), do: "month"
+  defp singular_noun(:year), do: "year"
+  defp singular_noun(_kind), do: "period"
 
   @doc """
   Names one period the way a person would write it.

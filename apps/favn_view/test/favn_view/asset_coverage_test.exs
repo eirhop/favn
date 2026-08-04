@@ -11,6 +11,8 @@ defmodule FavnView.AssetCoverageTest do
 
   import Phoenix.LiveViewTest
 
+  doctest FavnView.CoverageCalendar, import: true
+
   alias FavnView.Components.AssetDetailPage
   alias FavnView.CoverageCalendar
   alias FavnView.UI.Data
@@ -241,6 +243,43 @@ defmodule FavnView.AssetCoverageTest do
     test "nothing to open when nothing is expected" do
       assert CoverageCalendar.opening_date(%{}) == nil
       assert CoverageCalendar.opening_date(%{kind: :day, first_expected_at: nil}) == nil
+    end
+  end
+
+  describe "the range one screen asks for" do
+    # The screen used to ask by count — 31 for day grain — and a count cannot name a
+    # calendar unit. February came back with three days of March on it, drawn under a
+    # February heading and selectable for backfill.
+    test "is the unit's own bounds, whatever that unit's length" do
+      assert CoverageCalendar.unit_bounds(:day, ~D[2026-02-17]) ==
+               {~D[2026-02-01], ~D[2026-03-01]}
+
+      assert CoverageCalendar.unit_bounds(:day, ~D[2026-04-30]) ==
+               {~D[2026-04-01], ~D[2026-05-01]}
+
+      assert CoverageCalendar.unit_bounds(:day, ~D[2026-12-01]) ==
+               {~D[2026-12-01], ~D[2027-01-01]}
+    end
+
+    test "is one day for hourly coverage, including the days a clock change shortens" do
+      assert CoverageCalendar.unit_bounds(:hour, ~D[2026-03-29]) ==
+               {~D[2026-03-29], ~D[2026-03-30]}
+    end
+
+    test "is one year for monthly coverage" do
+      assert CoverageCalendar.unit_bounds(:month, ~D[2026-07-08]) ==
+               {~D[2026-01-01], ~D[2027-01-01]}
+    end
+
+    # Yearly coverage has no unit above it, so the screen is every year in range. An
+    # open upper bound says "to the end of coverage" rather than naming a length.
+    test "is open-ended where the whole range is one screen" do
+      assert CoverageCalendar.unit_bounds(:year, ~D[2026-07-08]) == {~D[2026-07-08], nil}
+      assert CoverageCalendar.unit_bounds(nil, ~D[2026-07-08]) == {~D[2026-07-08], nil}
+    end
+
+    test "is nothing to ask for when nothing is expected" do
+      assert CoverageCalendar.unit_bounds(:day, nil) == {nil, nil}
     end
   end
 

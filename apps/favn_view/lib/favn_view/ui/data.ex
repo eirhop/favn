@@ -1025,15 +1025,9 @@ defmodule FavnView.UI.Data do
   @doc """
   One screen of the periods a windowed asset should hold data for.
 
-  Every cell is a period the backend reported, covered or missing, so the shape of a
-  gap is visible: one bad week reads differently from every Sunday, and a list of
-  window keys reads as neither. A period nobody looked at is absent rather than drawn,
-  because a blank cell must never be mistaken for a covered one.
-
-  The grid adapts to the grain rather than being four components. Hourly coverage shows
-  one day of hours, daily one weekday-aligned month, monthly one year of twelve, yearly
-  every year at once — `FavnView.CoverageCalendar.build/1` decides the shape and this
-  renders it.
+  `FavnView.CoverageCalendar.build/1` decides the shape — which unit fills a screen at
+  each grain, how the cells align, and why — and this renders it. One grid rather than
+  four components, because the differences are all in that result.
 
   Missing cells are buttons when `on_select` is set, so the operator can pick the
   periods to backfill. Covered cells are inert, because there is nothing to do with one.
@@ -1123,34 +1117,30 @@ defmodule FavnView.UI.Data do
       class={["flex flex-wrap items-center gap-3", @class]}
       {@rest}
     >
-      <div class="join">
-        <button
+      <!-- The unit's name is a heading, not a third control. Painted as a button
+      between two real ones it read as clickable and did nothing, which the rule
+      against dead affordances covers whether or not the paint is convincing. -->
+      <div class="flex items-center gap-2">
+        <.icon_button
           :if={@previous}
-          type="button"
-          class="btn btn-sm join-item"
+          icon="hero-chevron-left"
+          label="Earlier"
+          size={:sm}
           phx-click={@on_step}
           phx-value-at={@previous}
           data-testid="coverage-step-previous"
-        >
-          <.icon name="hero-chevron-left" class="size-4" />
-          <span class="sr-only">Earlier</span>
-        </button>
+        />
+        <p class="min-w-32 text-center text-sm font-medium">{@label}</p>
 
-        <span class="btn btn-sm join-item pointer-events-none min-w-32 justify-center font-medium">
-          {@label}
-        </span>
-
-        <button
+        <.icon_button
           :if={@next}
-          type="button"
-          class="btn btn-sm join-item"
+          icon="hero-chevron-right"
+          label="Later"
+          size={:sm}
           phx-click={@on_step}
           phx-value-at={@next}
           data-testid="coverage-step-next"
-        >
-          <.icon name="hero-chevron-right" class="size-4" />
-          <span class="sr-only">Later</span>
-        </button>
+        />
       </div>
 
       <form :if={@on_jump && @jumps != []} phx-change={@on_jump} class="flex flex-wrap gap-2">

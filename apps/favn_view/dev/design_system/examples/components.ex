@@ -391,7 +391,8 @@ defmodule FavnView.Dev.DesignSystem.Examples.Components do
         Example.attrs(
           :viewer_cannot_submit,
           Map.put(base, :can_submit_runs?, false),
-          "A viewer can read the plan but not queue it."
+          "A viewer can read the plan but not queue it, and the dialog says so. A " <>
+            "disabled button with no reason beside it reads as broken."
         )
       ]
     }

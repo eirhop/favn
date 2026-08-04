@@ -174,6 +174,37 @@ defmodule FavnOrchestrator.Operator.Catalogue.TimelineTest do
       assert %{value: "2026-06"} = resolved.run_windows["run_june"]
     end
 
+    # A `freshness :daily` policy on a monthly-windowed asset records its evidence under
+    # `calendar:day:<tz>:<date>`, which a walk of months matches nowhere. The walks reach
+    # only the *latest* such run, through `maybe_put_latest_run/5`, so every earlier one
+    # rendered with no period at all.
+    test "labels every run whose only evidence is a calendar-period freshness key" do
+      asset = calendar_freshness_asset()
+
+      june = calendar_freshness_state(~D[2026-06-11], :ok, "june")
+      july = calendar_freshness_state(~D[2026-07-16], :ok, "july")
+
+      resolved =
+        Timeline.build(
+          version_fixture(asset),
+          asset,
+          july,
+          nil,
+          [june, july],
+          [],
+          %{},
+          now: @now
+        )
+
+      # Both, and both named by the period the asset writes rather than the day its
+      # freshness was evaluated on — a monthly asset's run wrote July, not 16 July.
+      assert %{kind: :month, value: "2026-07", label: "Jul 2026"} =
+               resolved.run_windows["run_july"]
+
+      assert %{kind: :month, value: "2026-06", label: "Jun 2026"} =
+               resolved.run_windows["run_june"]
+    end
+
     test "has no entry for a run outside the periods it walked" do
       asset = asset_fixture()
       state = freshness_state(:may, :ok)
@@ -264,6 +295,36 @@ defmodule FavnOrchestrator.Operator.Catalogue.TimelineTest do
         ),
       freshness: FreshnessPolicy.from_value!(window_success: true)
     }
+  end
+
+  # A monthly window with a daily calendar freshness policy: the grain the asset writes
+  # and the grain its freshness is recorded under disagree, which is the whole point.
+  defp calendar_freshness_asset do
+    %{asset_fixture() | freshness: FreshnessPolicy.from_value!(:daily)}
+  end
+
+  defp calendar_freshness_state(%Date{} = period, status, id) do
+    freshness_key = FreshnessKey.calendar!(:day, "Europe/Oslo", period)
+    run_id = "run_#{id}"
+
+    {:ok, state} =
+      AssetFreshnessState.new(%{
+        asset_ref_module: elem(@asset_ref, 0),
+        asset_ref_name: elem(@asset_ref, 1),
+        freshness_key: freshness_key,
+        evidence_generation_id: "ag_test",
+        status: status,
+        freshness_version: "#{id}:v1",
+        latest_success_run_id: run_id,
+        latest_success_node_key: {@asset_ref, id},
+        latest_success_at: @now,
+        latest_attempt_run_id: run_id,
+        latest_attempt_status: status,
+        latest_attempt_at: @now,
+        updated_at: @now
+      })
+
+    state
   end
 
   defp daily_asset_fixture do

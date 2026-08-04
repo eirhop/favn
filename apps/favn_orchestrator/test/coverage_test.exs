@@ -181,38 +181,69 @@ defmodule FavnOrchestrator.CoverageTest do
     assert states.summary.missing_count == 2
   end
 
-  test "addresses a range by an instant inside it, clamped to coverage", fixture do
+  test "addresses a range by local dates, exclusive at the top and clamped to coverage",
+       fixture do
     assert {:ok, middle} =
              Coverage.window_states(fixture.context, fixture.target_id,
                evaluated_at: @evaluated_at,
-               at: ~U[2026-07-02 17:30:00Z],
-               limit: 1
+               from: ~D[2026-07-02],
+               until: ~D[2026-07-03]
              )
 
-    # Floored to the period, so an instant part-way through the second day addresses
-    # the second day. A caller may hand over the start of a month without first
-    # checking that the month exists.
+    # The upper bound is exclusive, so this is the second day and only the second day.
+    # A caller walking unit by unit never sees a period twice.
     assert Enum.map(middle.windows, & &1.start_at.day) == [2]
 
     assert {:ok, before} =
              Coverage.window_states(fixture.context, fixture.target_id,
                evaluated_at: @evaluated_at,
-               at: ~U[2020-01-01 00:00:00Z],
-               limit: 1
+               from: ~D[2020-01-01],
+               until: ~D[2026-07-02]
              )
 
+    # Before coverage begins is the beginning, so stepping back past the start lands on
+    # the start rather than on nothing.
     assert Enum.map(before.windows, & &1.start_at.day) == [1]
 
     assert {:ok, past} =
              Coverage.window_states(fixture.context, fixture.target_id,
                evaluated_at: @evaluated_at,
-               at: ~U[2030-01-01 00:00:00Z]
+               from: ~D[2030-01-01]
              )
 
     # Past the end is empty rather than clamped back to the last period: a caller
     # stepping forward has to be able to tell that it ran out.
     assert past.windows == []
     assert past.last_expected_at.day == 3
+  end
+
+  # The screen is one calendar unit, and its length is not a number the caller can
+  # know: February holds 28 days, a clock change makes a day hold 23 or 25 hours.
+  # Asking by count returned periods from the next unit, which the calendar drew under
+  # this unit's heading and offered for backfill.
+  test "a range never reaches into the unit after it", fixture do
+    Process.put(
+      :coverage_version,
+      version("semantic-a", coverage(~D[2026-07-01], ~D[2026-08-31]))
+    )
+
+    assert {:ok, july} =
+             Coverage.window_states(fixture.context, fixture.target_id,
+               evaluated_at: ~U[2026-09-15 00:00:00Z],
+               from: ~D[2026-07-01],
+               until: ~D[2026-08-01]
+             )
+
+    assert length(july.windows) == 31
+    assert Enum.all?(july.windows, &(&1.start_at.month == 7))
+  end
+
+  test "rejects a range bound that is not a date", fixture do
+    assert {:error, :invalid_coverage_options} =
+             Coverage.window_states(fixture.context, fixture.target_id,
+               evaluated_at: @evaluated_at,
+               from: ~U[2026-07-02 00:00:00Z]
+             )
   end
 
   test "coverage that cannot be evaluated has no windows and no range", fixture do
@@ -350,6 +381,45 @@ defmodule FavnOrchestrator.CoverageTest do
              Coverage.submit_missing_backfill(fixture.context, fixture.target_id, plan)
   end
 
+  # Submitting re-plans from the selection it was handed and refuses unless the hash
+  # still matches, so an explicit selection has to survive the trip out to a browser and
+  # back with its keys intact. If it did not, every backfill an operator picked on the
+  # calendar would come back `:coverage_selection_stale`: the plan would be rebuilt as
+  # *all* missing windows and disagree with the one they reviewed.
+  #
+  # This stops at revalidation rather than completing a submission, because the rest of
+  # `submit_missing_backfill/4` is the durable backfill queue, and faking that here
+  # would be a test of the fake. Checked separately that an explicit plan does reach the
+  # queue: it clears the hash, manifest, and deployment comparisons and stops only at
+  # the store this fixture does not implement.
+  test "a selection an operator named survives the round trip out to the client", fixture do
+    assert {:ok, all} =
+             Coverage.plan_missing_backfill(fixture.context, fixture.target_id,
+               evaluated_at: @evaluated_at
+             )
+
+    [_first, second, third] = all.windows
+
+    assert {:ok, plan} =
+             Coverage.plan_missing_backfill(fixture.context, fixture.target_id,
+               evaluated_at: @evaluated_at,
+               window_keys: [third.window_key, second.window_key]
+             )
+
+    # The selection as the client hands it back: string keys, no atoms.
+    selection = plan.selection |> Jason.encode!() |> Jason.decode!()
+
+    assert {:ok, resubmitted} =
+             Coverage.plan_missing_backfill(fixture.context, fixture.target_id,
+               evaluated_at: plan.evaluated_at,
+               window_keys: selection["window_keys"]
+             )
+
+    assert resubmitted.plan_hash == plan.plan_hash
+    assert resubmitted.plan_id == plan.plan_id
+    assert Enum.map(resubmitted.windows, & &1.start_at.day) == [2, 3]
+  end
+
   test "can freeze one bounded page instead of the full missing set", fixture do
     assert {:ok, plan} =
              Coverage.plan_missing_backfill(fixture.context, fixture.target_id,
@@ -477,15 +547,10 @@ defmodule FavnOrchestrator.CoverageTest do
     assert is_integer(duration) and duration >= 0
   end
 
-  defp coverage do
+  defp coverage(from \\ ~D[2026-07-01], through \\ ~D[2026-07-03]) do
     window = WindowSpec.new!(:day, timezone: "Etc/UTC")
 
-    {:ok, coverage} =
-      Effective.resolve(
-        Spec.new!(from: ~D[2026-07-01], through: ~D[2026-07-03]),
-        window,
-        nil
-      )
+    {:ok, coverage} = Effective.resolve(Spec.new!(from: from, through: through), window, nil)
 
     coverage
   end

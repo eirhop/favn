@@ -26,6 +26,11 @@ defmodule FavnOrchestrator.Coverage do
   alias Favn.Window.Key, as: WindowKey
 
   @default_page 100
+
+  # One calendar unit is at most 31 days, 25 hours, or 12 months. Year grain has no
+  # unit above it, so its screen is every year in coverage — this bounds that, and
+  # anything else is a caller asking for a range no screen was going to draw.
+  @window_states_cap 500
   @max_page 500
   @max_backfill_windows 10_000
 
@@ -135,42 +140,74 @@ defmodule FavnOrchestrator.Coverage do
   @doc """
   Returns every expected window in one addressed range, covered or not.
 
-  `:at` names the range by an instant inside its first period; the evaluator floors
-  and clamps it, so a caller may pass the start of a month without checking that the
-  month is inside coverage. `:limit` bounds how many periods follow it. Defaults to
-  the start of coverage, matching `missing_windows/3` with no cursor.
+  `:from` and `:until` name the range as local dates in the asset's own coverage
+  timezone, `:until` exclusive. Dates rather than instants because midnight is not
+  guaranteed to exist — a clock change can skip it — and resolving that is this
+  layer's job, not a caller's. `:from` is floored to its period and clamped into
+  coverage, so a caller may ask for a month without checking that the month is inside
+  the range; omitting both reads from the start of coverage to the safety cap.
+
+  A range rather than a count because a count cannot name a calendar unit: a month
+  holds 28 to 31 days and a day holds 23, 24, or 25 hours. A caller drawing one
+  unit passes that unit's bounds and gets exactly the periods inside it.
   """
   @spec window_states(WorkspaceContext.t(), String.t(), keyword()) ::
           {:ok, window_states()} | {:error, term()}
   def window_states(%WorkspaceContext{} = context, target_id, opts \\ [])
       when is_binary(target_id) and is_list(opts) do
     timed_query(context, target_id, :window_states, fn ->
-      with :ok <- validate_options(opts, [:evaluated_at, :at, :limit]),
-           {:ok, limit} <- page_limit(Keyword.get(opts, :limit, @default_page)),
+      with :ok <- validate_options(opts, [:evaluated_at, :from, :until]),
+           :ok <- validate_optional_date(Keyword.get(opts, :from)),
+           :ok <- validate_optional_date(Keyword.get(opts, :until)),
            evaluated_at <- Keyword.get(opts, :evaluated_at, DateTime.utc_now()),
            :ok <- validate_datetime(evaluated_at),
            {:ok, snapshot} <- active_asset(context, target_id),
            {:ok, summary} <- summarize(context, snapshot, evaluated_at) do
-        addressed_states(context, snapshot, summary, Keyword.get(opts, :at), limit)
+        addressed_states(context, snapshot, summary, opts)
       end
     end)
   end
 
+  defp validate_optional_date(nil), do: :ok
+  defp validate_optional_date(%Date{}), do: :ok
+  defp validate_optional_date(_other), do: {:error, :invalid_coverage_options}
+
+  # No range asked for reads from the start of coverage.
+  defp range_start(nil, _timezone, evaluation), do: {:ok, evaluation.first_window.start_at}
+  defp range_start(%Date{} = date, timezone, _evaluation), do: local_start(date, timezone)
+
+  defp range_end(nil, _timezone), do: {:ok, nil}
+  defp range_end(%Date{} = date, timezone), do: local_start(date, timezone)
+
+  # A date names a period, not an instant, and in some zones its midnight does not
+  # exist — 1970-01-01 in Asia/Ho_Chi_Minh, a spring-forward day in a zone that
+  # shifts at midnight. `:gap` gives the first instant that does exist, which is the
+  # start of that period; `:ambiguous` takes the earlier of the two.
+  defp local_start(%Date{} = date, timezone) do
+    case DateTime.new(date, ~T[00:00:00], timezone, Favn.Timezone.database!()) do
+      {:ok, instant} -> {:ok, instant}
+      {:ambiguous, earlier, _later} -> {:ok, earlier}
+      {:gap, _before, first_after} -> {:ok, first_after}
+      {:error, _reason} -> {:error, :invalid_coverage_options}
+    end
+  end
+
   # Coverage that cannot be evaluated has no windows to draw, and inventing a range
   # for it would put an empty calendar on screen where an explanation belongs.
-  defp addressed_states(_context, _snapshot, %Summary{status: :unknown} = summary, _at, _limit),
+  defp addressed_states(_context, _snapshot, %Summary{status: :unknown} = summary, _opts),
     do: {:ok, unknown_window_states(summary)}
 
-  defp addressed_states(context, snapshot, summary, at, limit) do
+  defp addressed_states(context, snapshot, summary, opts) do
     identity = %{
       evidence_generation_id: summary.evidence_generation_id,
       target_generation_id: summary.active_target_generation_id
     }
 
     with {:ok, evaluation} <- Expected.evaluate(snapshot.asset.coverage, summary.evaluated_at),
-         at <- at || evaluation.first_window.start_at,
-         :ok <- validate_datetime(at),
-         {:ok, page} <- Expected.page_at(evaluation, at, limit) do
+         timezone <- evaluation.coverage.timezone,
+         {:ok, from} <- range_start(Keyword.get(opts, :from), timezone, evaluation),
+         {:ok, until} <- range_end(Keyword.get(opts, :until), timezone),
+         {:ok, page} <- Expected.page_between(evaluation, from, until, @window_states_cap) do
       case successful_keys(context, snapshot, identity, page) do
         {:ok, keys} ->
           {:ok, addressed_window_states(summary, evaluation, page.items, keys)}

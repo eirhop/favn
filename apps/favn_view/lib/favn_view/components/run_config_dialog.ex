@@ -201,6 +201,17 @@ defmodule FavnView.Components.RunConfigDialog do
           Forcing upstream assets changes their inputs, so downstream assets in the planned graph can rerun too.
         </.notice>
 
+        <!-- Said in the dialog rather than left to a disabled button, because a control
+        that refuses without a reason reads as broken. A title attribute is not the
+        answer: it is unreliable on hover and absent on touch. -->
+        <p
+          :if={!@can_submit_runs?}
+          class="favn-text-muted mt-4 text-sm"
+          data-testid="run-config-not-permitted"
+        >
+          Running an asset needs an operator account. You can read the plan here, but not queue it.
+        </p>
+
         <p :if={@error} class="mt-4 text-sm text-error" data-testid="run-config-error">
           {@error}
         </p>

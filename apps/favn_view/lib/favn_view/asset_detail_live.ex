@@ -869,11 +869,11 @@ defmodule FavnView.AssetDetailLive do
   defp coverage_window_options(socket, date) do
     basis = coverage_basis(socket)
     target = date || CoverageCalendar.opening_date(basis)
-    at = target && local_instant(target, basis.timezone)
+    {from, until} = CoverageCalendar.unit_bounds(basis.kind, target)
 
     [evaluated_at: socket.assigns.asset.coverage.evaluated_at]
-    |> Keyword.put(:limit, coverage_unit_limit(basis.kind))
-    |> then(&if at, do: Keyword.put(&1, :at, at), else: &1)
+    |> then(&if from, do: Keyword.put(&1, :from, from), else: &1)
+    |> then(&if until, do: Keyword.put(&1, :until, until), else: &1)
   end
 
   # The grain and the range, from whichever source already knows them. A loaded screen
@@ -897,26 +897,6 @@ defmodule FavnView.AssetDetailLive do
 
   defp coverage_basis(_socket),
     do: %{kind: nil, timezone: nil, first_expected_at: nil, last_expected_at: nil}
-
-  # Midnight, adjusted when a clock change means the day has no midnight. The instant
-  # only has to fall inside the first period of the unit; the evaluator floors it.
-  defp local_instant(%Date{} = date, timezone) when is_binary(timezone) do
-    case DateTime.new(date, ~T[00:00:00], timezone, Favn.Timezone.database!()) do
-      {:ok, instant} -> instant
-      {:ambiguous, instant, _later} -> instant
-      {:gap, _before, instant} -> instant
-      {:error, _reason} -> nil
-    end
-  end
-
-  defp local_instant(_date, _timezone), do: nil
-
-  # One screen's worth. Yearly coverage has no unit above it, so it takes the whole
-  # range up to the query's own ceiling.
-  defp coverage_unit_limit(:hour), do: 25
-  defp coverage_unit_limit(:day), do: 31
-  defp coverage_unit_limit(:month), do: 12
-  defp coverage_unit_limit(_kind), do: 200
 
   defp assign_coverage_calendar(%{assigns: %{coverage_windows: nil}} = socket) do
     assign(socket,
@@ -966,8 +946,10 @@ defmodule FavnView.AssetDetailLive do
   defp coverage_root_run_id(plan),
     do: "run_coverage_" <> String.slice(plan.plan_hash, 0, 40)
 
-  # The period the asset is due for, as the backend reports it. An asset with no
-  # window policy has none, and the dialog offers no period fields for it.
+  # The period the asset is due for, as the backend reports it. Absent when no single
+  # pipeline owns the asset, in which case the dialog opens on its own empty default —
+  # and the action that opens it is disabled anyway. Whether the period *fields* show
+  # is `has_data_windows?`, decided by the page.
   defp asset_run_config(%{default_run_config: config}) when is_map(config),
     do: config_from_backend(config)
 

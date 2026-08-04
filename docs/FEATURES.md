@@ -170,8 +170,8 @@ operator contract is [`production/postgresql_operator_runbook.md`](production/po
   item histories, show progress and unknown outcomes, and render only
   server-authorized cancellation, retry, and reconciliation actions.
 - The UI remains a prototype: visual and manual accessibility qualification
-  remains. Actor, session, audit, and
-  credential administration are implemented. A Playwright/axe HTTP-boundary
+  remains. Actor, session, audit, and credential administration are
+  implemented. A Playwright/axe HTTP-boundary
   suite now checks anonymous and administrator navigation for every catalogued
   browser GET route, CSRF rejection for every browser mutation route, secure
   cookies, session revocation, HTTPS/proxy headers, and serious or critical

@@ -129,11 +129,14 @@ defmodule FavnOrchestrator.Operator.Catalogue do
   @typedoc """
   The period a run dialog should open on, and how it should plan.
 
-  `nil` for an asset with no window policy: it replaces its whole relation on every
-  run, so there is no period to prefill.
+  `nil` when no single pipeline owns the asset, because then there is no anchor it is
+  due for and offering one would be a guess an operator could not check. An asset with
+  no window policy still gets one — its pipeline's anchor decides when it runs, even
+  though the asset replaces its whole relation rather than one period. Whether the
+  dialog offers period *fields* is `has_data_windows?`, not this.
   """
   @type asset_run_config :: %{
-          required(:source) => :refresh_timeline | :data_coverage_timeline,
+          required(:source) => :refresh_timeline,
           required(:kind) => :hour | :day | :month | :year,
           required(:value) => String.t(),
           required(:timezone) => String.t(),
@@ -429,8 +432,6 @@ defmodule FavnOrchestrator.Operator.Catalogue do
     end
   end
 
-  defp entrypoint(_asset), do: nil
-
   defp sql_documentation(%ExecutionPackage{sql_execution: execution})
        when not is_nil(execution) do
     %{
@@ -474,15 +475,14 @@ defmodule FavnOrchestrator.Operator.Catalogue do
   defp ref_label(value), do: inspect(value)
 
   # Metadata is authored freely, so it is reported as sorted string pairs rather than
-  # trusted to be a flat map of scalars the UI can print.
+  # trusted to be a flat map of scalars the UI can print. The map itself is guaranteed
+  # by `Favn.Manifest.Asset`; only its contents are open.
   defp normalize_metadata(metadata) when is_map(metadata) do
     metadata
     |> Enum.reject(fn {_key, value} -> value in [nil, "", [], %{}] end)
     |> Enum.map(fn {key, value} -> %{key: to_label(key), value: metadata_label(value)} end)
     |> Enum.sort_by(& &1.key)
   end
-
-  defp normalize_metadata(_metadata), do: []
 
   defp metadata_label(value) when is_binary(value), do: value
   defp metadata_label(value) when is_number(value) or is_atom(value), do: to_string(value)
@@ -533,14 +533,14 @@ defmodule FavnOrchestrator.Operator.Catalogue do
   end
 
   defp asset_run_detail_entry(asset, target_id, run, pins) do
-    asset_result = Map.get(run.asset_results || %{}, asset.ref)
+    asset_result = Map.get(run.asset_results, asset.ref)
 
     %{
       run_id: run.id,
       target_id: target_id,
       status: run.status,
       submit_kind: run.submit_kind,
-      trigger: run.trigger || %{},
+      trigger: run.trigger,
       started_at: run.started_at,
       finished_at: run.finished_at,
       duration_ms: RunHistory.duration_ms(run),

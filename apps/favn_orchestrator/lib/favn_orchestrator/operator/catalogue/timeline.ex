@@ -8,12 +8,14 @@ defmodule FavnOrchestrator.Operator.Catalogue.Timeline do
   run dialog, and the period each of its recent runs wrote, which labels that run.
 
   Two walks answer both — the asset's own data windows and the run anchors it is
-  refreshed on. A third walk over composite calendar freshness periods used to draw
-  its own strip; it is gone, because the freshness key it matched on carries the same
-  refresh period the anchor walk already reads, so it never labelled a run the anchor
-  walk missed. Whether a calendar period is fully fresh is still answered, by
-  `FavnOrchestrator.Operator.Catalogue.AssetFreshness`, which is where the header
-  reads it.
+  refreshed on — plus a direct read of calendar-period freshness evidence, whose grain
+  is its own and which neither walk enumerates.
+
+  A third *walk* over those calendar periods used to draw its own strip, computing per
+  period whether every window expanded into it had succeeded. That is gone: it cost a
+  plan per period to produce a status nothing rendered. Whether a calendar period is
+  fully fresh is `FavnOrchestrator.Operator.Catalogue.AssetFreshness`'s answer, which
+  is where the header reads it.
 
   Values are derived from validated manifest policy and backend state. An invalid
   persisted kind or timezone falls back to the explicit daily UTC policy rather
@@ -104,8 +106,64 @@ defmodule FavnOrchestrator.Operator.Catalogue.Timeline do
     %{
       has_data_windows?: not is_nil(data_coverage_timeline),
       default_run_config: due_run_config(refresh_timeline),
-      run_windows: run_windows([data_coverage_timeline, refresh_timeline])
+      run_windows:
+        run_windows([
+          data_coverage_timeline,
+          refresh_timeline,
+          calendar_freshness_windows(asset, freshness_states)
+        ])
     }
+  end
+
+  # Evidence a calendar-period freshness policy records under its own grain, which
+  # neither walk above enumerates: an asset with a monthly window and `freshness
+  # :daily` persists `calendar:day:<tz>:<date>`, so a walk of months matches none of
+  # it. Without this, only that asset's most recent run carried a period — the walks
+  # reach the latest one through `maybe_put_latest_run/5` and no earlier one at all.
+  #
+  # The label is the period the asset *writes*, not the day its freshness happened to
+  # be evaluated on: a monthly asset's run wrote July, so it reads "Jul 2026" like
+  # every other run of that asset, rather than "Jul 16" beside them.
+  #
+  # Read straight from the states rather than by walking periods. Only the run each one
+  # points at is wanted; whether such a period is *fully* fresh is
+  # `FavnOrchestrator.Operator.Catalogue.AssetFreshness`'s answer, and computing it
+  # here cost a plan per period to produce a status nothing read.
+  defp calendar_freshness_windows(asset, freshness_states) do
+    asset_ref_string = Targets.ref_string(asset.ref)
+    {written_kind, _timezone} = coverage_policy(asset)
+
+    Enum.flat_map(freshness_states, fn
+      %AssetFreshnessState{} = state ->
+        with ^asset_ref_string <- AssetFreshness.ref_string(state),
+             {:ok, {:calendar, kind, _timezone, value}} <-
+               FreshnessKey.parse(state.freshness_key),
+             run_id when is_binary(run_id) <- Status.latest_run_id(state, nil),
+             {:ok, written} <- written_value(written_kind, kind, value) do
+          [
+            %{
+              latest_run_id: run_id,
+              kind: written_kind,
+              value: written,
+              label: window_label(written_kind, written),
+              range: window_range(written_kind, written)
+            }
+          ]
+        else
+          _other -> []
+        end
+
+      _state ->
+        []
+    end)
+  end
+
+  defp written_value(written_kind, key_kind, value) do
+    {:ok, value_from_date(written_kind, value_date(key_kind, value))}
+  rescue
+    # A key whose value does not parse as its own kind is corrupt, and an operator read
+    # drops the label rather than failing the whole screen over one run.
+    _error -> :error
   end
 
   # The last period of the refresh walk is offset zero: the anchor the asset is due

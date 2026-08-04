@@ -36,7 +36,8 @@ blocks in `mount/3` and shows nothing until it can show everything.
 
 **Controls exist that do nothing.** Not stubs marked as such, but buttons that
 look live: the asset timeline's previous/next window and calendar controls have
-no `phx-click`; the run timeline's "Group by" select is hardcoded `disabled`;
+no `phx-click` (that timeline is gone; the coverage calendar's navigator is wired);
+the run timeline's "Group by" select is hardcoded `disabled`;
 lineage ships a disabled search advertising "coming soon", four of five view
 tabs disabled, and inspector buttons that render labels and wire no event. Six
 of the nine filters on `/runs` are assembled by the LiveView and silently
@@ -140,15 +141,19 @@ are the widest column and the least information per pixel, and the audit shows
 they are what pushes rows past the viewport. Keep search, keep `<.data_table>`,
 lose the hand-rolled filters.
 
-### `/assets/:id` — the default view is the timeline
+### `/assets/:id` — five sub-pages, opening on an overview
 
-The strongest page conceptually and the worst structurally: 49 attrs, none of
-them a state, three top-level components in one `render/1`, one identical panel
-class stack copy-pasted ten times, and three dead controls. Target: asset title,
-health, and the window timeline; everything else behind progressive disclosure.
-Coverage, freshness, and compatibility stay but get real styling and honest
-empty states. Window paging gets wired or removed — a dead arrow is worse than
-no arrow.
+**Done.** The strongest page conceptually and the worst structurally: 49 attrs,
+none of them a state, three top-level components in one `render/1`, one identical
+panel class stack copy-pasted ten times, and three dead controls.
+
+It is now one LiveView with `live_action` sub-pages — Overview, Runs, Coverage,
+Documentation, Diagnostics — each loading only what it renders. The window
+timeline this section originally targeted was built and then removed: it showed
+run anchors that answered no question an operator had, and on an asset with no
+window of its own it showed the *pipeline's* anchors under a heading claiming they
+were the asset's. Coverage answers "what is missing" as a calendar, and Runs
+answers "what happened" as a history. Dead controls are gone rather than wired.
 
 ### Running an asset becomes a dialog
 
@@ -220,7 +225,9 @@ examples first means writing them twice.
 4. **Done.** Asset state is three glyphs instead of three word badges, the
    catalogue browses by connection · catalogue namespace, and run
    configuration is a dialog (`FavnView.UI.Dialog`) leading with the two
-   sentences that matter.
+   sentences that matter. Asset detail became five `live_action` sub-pages, and
+   coverage became a navigable calendar of expected periods; findings 3, 7, 9 and
+   10 above closed with them.
 5. Runs list and run detail, including the timeline migration. Not started.
 6. **Done.** The log viewer is a dense terminal: one line per entry on a
    fixed-dark canvas (`--favn-terminal-*`, palette-gated), identity behind a
@@ -251,7 +258,7 @@ from that walkthrough, worst first.
    marks every cell where an asset did not run in that window as `Queued` —
    twelve of them, on a run that completed. "Did not apply" and "waiting to
    start" must not share a label.
-3. **Asset detail says `Healthy` above `Incomplete`.** The header badge reads
+3. **Fixed.** *Asset detail says `Healthy` above `Incomplete`.* The header badge reads
    Healthy while the page below reports coverage incomplete, six missing
    windows, and "no successful freshness evidence exists". One of the two is
    lying; the badge is.
@@ -268,7 +275,7 @@ from that walkthrough, worst first.
 6. **Raw target ids as titles.** The status home lists
    `asset:Elixir.CrmDemo.Warehouse.Core.Sales.Events.Engagement:asset` — scheme
    prefix, `Elixir.` prefix, and all. It is the widest thing on the page.
-7. **Six catalogue rows named `asset`.** An asset whose module declares no name
+7. **Fixed.** *Six catalogue rows named `asset`.* An asset whose module declares no name
    defaults to `asset`, so the Asset column shows six identical rows. The leaf
    name alone cannot identify an asset; `/pipelines` already solves this by
    showing the name bold with its module underneath, and it is the most readable
@@ -276,10 +283,10 @@ from that walkthrough, worst first.
 8. **A 90-character base64 id printed under every schedule name**, which widens
    the table until the activation and runtime columns are pushed off-screen
    behind a horizontal scrollbar. The id belongs behind the copy button.
-9. **Namespace reads `unknown · uncatalogued`** for every Elixir asset, in
+9. **Fixed.** *Namespace reads `unknown · uncatalogued`* for every Elixir asset, in
    colour, so the dependent filters added in step 4 have nothing to narrow.
    Either derive the namespace from the module path or leave the cell empty.
-10. **Window keys are raw.** Asset detail's gap list shows
+10. **Fixed.** *Window keys are raw.* Asset detail's gap list shows
     `day:Etc/UTC:2026-07-22T00:00:00.000000Z` six times where it means "Jul 22".
 
 ### The logs terminal's premise does not hold

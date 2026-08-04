@@ -494,8 +494,8 @@ defmodule FavnOrchestrator do
   @doc """
   Returns every expected coverage window in one addressed range after reauthorization.
 
-  Pass `:at` to name the range by an instant inside its first period and `:limit` to
-  bound how many periods follow it. Unlike `page_asset_missing_coverage/3` this
+  Pass `:from` and `:until` as local dates in the asset's own coverage timezone,
+  `:until` exclusive, to name the range. Unlike `page_asset_missing_coverage/3` this
   reports covered windows too, which is what a calendar of the range needs.
   """
   @spec active_asset_coverage_windows(OperatorContext.t(), String.t(), keyword()) ::
