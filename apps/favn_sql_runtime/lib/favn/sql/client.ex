@@ -701,7 +701,7 @@ defmodule Favn.SQL.Client do
   end
 
   defp connect_with_admission(%Resolved{} = resolved, concurrency_policies, adapter_opts) do
-    pool_config = Map.get(resolved.config || %{}, :pool, %PoolConfig{})
+    pool_config = Map.get(resolved.config, :pool, %PoolConfig{})
 
     if pool_enabled?(resolved, adapter_opts, pool_config) do
       connect_with_pool(resolved, concurrency_policies, adapter_opts, pool_config)
@@ -1531,17 +1531,6 @@ defmodule Favn.SQL.Client do
         ]
     end
   end
-
-  defp discard_pooled_session_after_success?(_session, operation, _opts),
-    do:
-      operation in [
-        :execute,
-        :materialize,
-        :transaction,
-        :initialize_generation_marker,
-        :activate_generation,
-        :discard_generation
-      ]
 
   defp adapter_pool_safe_after_success?(
          %Session{capabilities: %Capabilities{extensions: extensions}},

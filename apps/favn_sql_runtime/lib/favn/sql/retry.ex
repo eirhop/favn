@@ -123,6 +123,6 @@ defmodule Favn.SQL.Retry do
       classification: Map.from_struct(classification)
     }
 
-    %Error{error | details: Map.put(error.details || %{}, :retry, retry_details)}
+    %Error{error | details: Map.put(error.details, :retry, retry_details)}
   end
 end

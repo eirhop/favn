@@ -1358,14 +1358,14 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
 
   defp maybe_preserve_transaction_body_result(%Error{} = error, value, opts) do
     if Keyword.get(opts, :preserve_body_result_on_commit_error?, false) do
-      %Error{error | details: Map.put(error.details || %{}, :transaction_body_result, value)}
+      %Error{error | details: Map.put(error.details, :transaction_body_result, value)}
     else
       error
     end
   end
 
   defp transaction_stage_error(%Error{} = error, stage),
-    do: %Error{error | details: Map.put(error.details || %{}, :transaction_stage, stage)}
+    do: %Error{error | details: Map.put(error.details, :transaction_stage, stage)}
 
   defp create_view_statement(target, %WritePlan{replace_existing?: true, select_sql: sql}),
     do: ["CREATE OR REPLACE VIEW ", target, " AS ", sql]

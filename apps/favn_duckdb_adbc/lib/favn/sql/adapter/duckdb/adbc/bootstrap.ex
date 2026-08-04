@@ -69,10 +69,6 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC.Bootstrap do
 
         {:error, %Error{} = error} ->
           {:halt, {:error, SessionScript.redact_step_error(error, step)}}
-
-        {:error, reason} ->
-          error = %Error{type: :execution_error, message: "DuckDB ADBC session script failed", cause: reason}
-          {:halt, {:error, SessionScript.redact_step_error(error, step)}}
       end
     end)
   end
@@ -131,7 +127,9 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC.Bootstrap do
   defp keyword_or_map(value, _context) when is_map(value), do: {:ok, value}
 
   defp keyword_or_map(value, context) when is_list(value) do
-    if Keyword.keyword?(value), do: {:ok, Map.new(value)}, else: {:error, {:invalid_config, context}}
+    if Keyword.keyword?(value),
+      do: {:ok, Map.new(value)},
+      else: {:error, {:invalid_config, context}}
   end
 
   defp keyword_or_map(_value, context), do: {:error, {:invalid_config, context}}
