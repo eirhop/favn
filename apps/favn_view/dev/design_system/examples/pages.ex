@@ -26,10 +26,10 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
   alias FavnView.Dev.DesignSystem.Example
   alias FavnView.Dev.DesignSystem.Fixtures
   alias FavnView.Dev.DesignSystem.Fixtures.AssetDetail
+  alias FavnView.Dev.DesignSystem.Fixtures.RunConfig
   alias FavnView.Dev.DesignSystem.Fixtures.Runs
   alias FavnView.Dev.DesignSystem.Fixtures.RunsList
   alias FavnView.Dev.DesignSystem.Fixtures.Schedules
-  alias FavnView.Dev.DesignSystem.Fixtures.Timeline
 
   @doc """
   Every curated page example, keyed by catalogue entry id.
@@ -42,7 +42,6 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
     |> Map.merge(account_security())
     |> Map.merge(asset_catalogue())
     |> Map.merge(asset_detail())
-    |> Map.merge(timelines())
     |> Map.merge(lineage())
     |> Map.merge(log_pages())
     |> Map.merge(pipelines())
@@ -212,6 +211,7 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
       nav_items: AssetCataloguePage.nav_items(:assets),
       connection_options: AssetCataloguePage.connection_options(),
       catalogue_options: AssetCataloguePage.catalogue_options(),
+      schema_options: AssetCataloguePage.schema_options(),
       scope_choices: AssetCatalogueFilters.scope_choices(assets, filters)
     }
 
@@ -226,7 +226,6 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
             lineage_inspector: LineagePage.sample_group_inspector(),
             lineage_loading: false,
             lineage_error: nil,
-            lineage_search: "",
             lineage_zoom: 62,
             lineage_inspector_open?: true,
             lineage_canvas_hook?: false
@@ -237,7 +236,13 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
           :empty,
           Map.merge(base, %{
             assets: [],
-            filters: %{search: "orders", connection: "duckdb", catalogue: "marketing"}
+            filters: %{
+              search: "orders",
+              connection: "duckdb",
+              catalogue: "mart",
+              schema: "marketing",
+              scope: "all"
+            }
           }),
           "Filtered to nothing. The filters must stay visible so the operator can undo them."
         ),
@@ -251,9 +256,10 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
     %{
       "asset_detail_page/asset_detail_page" => [
         Example.attrs(
-          :refresh_timeline,
+          :overview,
           AssetDetail.base_attrs(),
-          "The default screen: refresh timeline, nothing selected."
+          "The default screen: what state the asset is in, what feeds it, and the one " <>
+            "action worth taking."
         ),
         Example.attrs(
           :full_refresh_asset,
@@ -261,74 +267,132 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
             title: "stg_payments",
             status: "Unknown",
             status_tone: :neutral,
-            has_freshness_timeline?: false,
             has_data_windows?: false,
-            freshness_timeline: nil,
-            data_coverage_timeline: nil,
-            data_coverage_window_range: "No windows",
             freshness: FavnView.Components.AssetDetailPage.sample_freshness(:unknown)
           }),
-          "An asset with no windows at all. No timeline toggle, no window selection."
+          "An asset with no windows at all, so the rail offers no coverage page."
         ),
         Example.attrs(
-          :active_data_coverage,
-          AssetDetail.attrs(%{active_timeline: :data_coverage})
-        ),
-        Example.attrs(
-          :active_freshness,
-          AssetDetail.attrs(%{active_timeline: :freshness})
+          :coverage_complete,
+          AssetDetail.coverage_attrs(%{}),
+          "The coverage page: every expected day has data, so every cell is quiet."
         ),
         Example.attrs(
           :incomplete_coverage,
-          AssetDetail.attrs(%{
+          AssetDetail.coverage_attrs(%{
             coverage: AssetDetail.coverage(:incomplete),
-            coverage_gaps: AssetDetail.coverage_gaps(),
-            coverage_pagination: AssetDetail.coverage_pagination(true)
+            coverage_missing: [8, 15]
           }),
-          "Missing windows, with more pages of gaps behind a cursor."
+          "Two missing days a week apart, with months either side to step to. The " <>
+            "pattern is the point: a list of window keys could not show it."
         ),
         Example.attrs(
-          :later_coverage_page,
-          AssetDetail.attrs(%{
+          :selected_coverage_periods,
+          AssetDetail.coverage_attrs(%{
             coverage: AssetDetail.coverage(:incomplete),
-            coverage_gaps: AssetDetail.coverage_gaps(),
-            coverage_pagination: AssetDetail.coverage_pagination(true),
-            coverage_page_cursor: "opaque-page-2-cursor"
-          })
+            coverage_missing: [8, 15],
+            coverage_selected: AssetDetail.coverage_selection([8])
+          }),
+          "One day picked for backfill. The button counts the selection rather than " <>
+            "every gap."
+        ),
+        Example.attrs(
+          :coverage_at_its_start,
+          AssetDetail.coverage_attrs(%{
+            coverage: AssetDetail.coverage(:incomplete),
+            coverage_missing: [3, 4, 5],
+            coverage_navigation: AssetDetail.coverage_navigation_at_start()
+          }),
+          "The first month coverage has. There is no step back, so the operator can " <>
+            "tell they have reached the beginning rather than a button that refuses."
+        ),
+        Example.attrs(
+          :viewer_coverage,
+          AssetDetail.coverage_attrs(%{
+            can_submit_runs?: false,
+            coverage: AssetDetail.coverage(:incomplete),
+            coverage_missing: [8, 15]
+          }),
+          "A viewer sees exactly which days are missing and is told why they cannot " <>
+            "fill them. The cells stop being controls rather than looking broken."
         ),
         Example.attrs(
           :unknown_coverage,
-          AssetDetail.attrs(%{
+          AssetDetail.coverage_attrs(%{
             coverage: AssetDetail.coverage(:unknown),
-            coverage_policy: nil,
-            coverage_gaps: []
+            coverage_policy: nil
           }),
-          "Coverage was never declared. This must not read as complete coverage."
+          "Coverage was never declared. No calendar and no navigator, because an " <>
+            "empty grid would read as complete coverage."
         ),
         Example.attrs(
           :coverage_plan_review,
-          AssetDetail.attrs(%{
+          AssetDetail.coverage_attrs(%{
             coverage: AssetDetail.coverage(:incomplete),
-            coverage_gaps: AssetDetail.coverage_gaps(),
+            coverage_missing: [8, 15],
             coverage_plan: AssetDetail.coverage_plan()
-          })
+          }),
+          "The plan names the days in words. The operator confirms what they read."
+        ),
+        Example.attrs(
+          :docs_sql,
+          AssetDetail.documentation_attrs(:sql),
+          "A SQL asset: the author's own words, then the query and what it reads."
+        ),
+        Example.attrs(
+          :docs_elixir,
+          AssetDetail.documentation_attrs(:elixir),
+          "An Elixir asset has no query, so it names the function Favn calls instead."
+        ),
+        Example.attrs(
+          :docs_undocumented,
+          AssetDetail.documentation_attrs(:undocumented),
+          "Nothing authored at all. The page says how to fix that rather than " <>
+            "rendering four empty panels."
+        ),
+        Example.attrs(
+          :diagnostics,
+          AssetDetail.diagnostics_attrs(%{}),
+          "A healthy target says so in a sentence and offers no rebuild, because " <>
+            "there is nothing to rebuild."
+        ),
+        Example.attrs(
+          :diagnostics_without_a_table,
+          AssetDetail.diagnostics_attrs(%{
+            compatibility: AssetDetail.compatibility(:unmanaged),
+            coverage: AssetDetail.coverage(:unknown),
+            coverage_policy: nil
+          }),
+          "An asset that manages no table of its own. No verdict, no badge, and no " <>
+            "rebuild — the page says why rather than showing an empty one."
         ),
         Example.attrs(
           :rebuild_available,
-          AssetDetail.attrs(%{compatibility: AssetDetail.compatibility(:rebuild_available)}),
+          AssetDetail.diagnostics_attrs(%{
+            compatibility: AssetDetail.compatibility(:rebuild_available)
+          }),
           "A rebuild is possible and writes still work."
         ),
         Example.attrs(
           :rebuild_required,
-          AssetDetail.attrs(%{
+          AssetDetail.diagnostics_attrs(%{
             can_run_asset?: false,
             compatibility: AssetDetail.compatibility(:rebuild_required)
           }),
           "Writes are blocked until the target is rebuilt."
         ),
         Example.attrs(
-          :unexpected_drift,
+          :blocked_writes_on_overview,
           AssetDetail.attrs(%{
+            can_run_asset?: false,
+            compatibility: AssetDetail.compatibility(:rebuild_required)
+          }),
+          "The overview raises blocked writes itself, because that changes what the " <>
+            "operator can do next. A rebuild that blocks nothing stays on diagnostics."
+        ),
+        Example.attrs(
+          :unexpected_drift,
+          AssetDetail.diagnostics_attrs(%{
             can_run_asset?: false,
             compatibility: AssetDetail.compatibility(:unexpected_drift)
           }),
@@ -336,7 +400,7 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
         ),
         Example.attrs(
           :operator_decision,
-          AssetDetail.attrs(%{
+          AssetDetail.diagnostics_attrs(%{
             can_run_asset?: false,
             compatibility: AssetDetail.compatibility(:operator_decision)
           }),
@@ -348,61 +412,35 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
             can_run_asset?: false,
             run_contexts: AssetDetail.run_contexts(),
             selected_run_context: nil,
-            run_context_status: :ambiguous,
-            refresh_timeline: [],
-            refresh_window_range: "No windows",
-            refresh_timeline_label: "Run context required",
-            refresh_cadence_label: "Select a pipeline context"
+            run_context_status: :ambiguous
           }),
-          "Two pipelines could own this asset, so there is no timeline until one is chosen."
-        ),
-        Example.attrs(
-          :selected_refresh_period,
-          AssetDetail.attrs(%{selected_window: List.last(Timeline.refresh_timeline())})
-        ),
-        Example.attrs(
-          :selected_data_window,
-          AssetDetail.attrs(%{
-            active_timeline: :data_coverage,
-            selected_window: List.last(Timeline.data_coverage_timeline())
-          })
+          "Two pipelines could own this asset, so it cannot be run until one is chosen."
         ),
         Example.attrs(
           :run_config_open,
-          AssetDetail.attrs(%{run_config_open?: true, run_config: Timeline.default_run_config()})
+          AssetDetail.attrs(%{
+            run_config_open?: true,
+            run_config: RunConfig.default_run_config()
+          }),
+          "The run dialog, over the page rather than inside a card. It lives at page " <>
+            "level because a panel sets a backdrop-filter, which clips a fixed-position " <>
+            "child to the card."
         ),
         Example.attrs(
-          :prefilled_failed_run_config,
+          :run_config_error,
           AssetDetail.attrs(%{
-            selected_window: Enum.at(Timeline.refresh_timeline(), 1),
             run_config_open?: true,
             run_config:
-              Timeline.run_config(:refresh_timeline, :day, "2026-06-10", "none", "force_all")
+              RunConfig.run_config(:refresh_timeline, :day, "2026-06-10", "none", "force_all"),
+            run_error: "Choose a period Favn can resolve."
           }),
-          "Retrying a failed window prefills the config that failed."
+          "A configuration that cannot be submitted says so inside the dialog, where the " <>
+            "field that caused it is."
         ),
         Example.attrs(
-          :submit_success,
-          AssetDetail.attrs(%{
-            selected_window: List.last(Timeline.refresh_timeline()),
-            submitted_run_id: "run_01HZ"
-          })
-        ),
-        Example.attrs(
-          :submit_error,
-          AssetDetail.attrs(%{
-            selected_window: List.last(Timeline.refresh_timeline()),
-            selected_window_error: "Could not submit run."
-          })
-        ),
-        Example.attrs(
-          :non_runnable_window,
-          AssetDetail.attrs(%{
-            active_timeline: :data_coverage,
-            selected_window:
-              Timeline.data_window("2026-06-12", "Jun 12", :muted)
-              |> Map.merge(%{run_enabled?: false, run_disabled_reason: :invalid_window})
-          })
+          :viewer_cannot_run,
+          AssetDetail.attrs(%{can_submit_runs?: false}),
+          "A viewer sees the asset and a disabled action that explains itself on hover."
         ),
         Example.attrs(:freshness_fresh, AssetDetail.freshness_attrs(:fresh)),
         Example.attrs(
@@ -413,68 +451,22 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
         Example.attrs(:freshness_unknown, AssetDetail.freshness_attrs(:unknown)),
         Example.attrs(:freshness_always_run, AssetDetail.freshness_attrs(:always_run)),
         Example.attrs(
-          :contract_and_row_counts,
+          :run_selected,
+          AssetDetail.selected_run_attrs(),
+          "One run open: the contract now says what that run observed, not what the " <>
+            "asset last did. Everything held, so the columns table stays shut."
+        ),
+        Example.attrs(
+          :run_failed,
+          AssetDetail.failed_run_attrs(),
+          "A check broke and the table drifted. The columns table opens itself, and " <>
+            "the difference is named in words rather than left to the reader."
+        ),
+        Example.attrs(
+          :contract_without_a_run,
           AssetDetail.assurance_attrs(),
           "A contract with a composed fragment and a parameterised row-count claim."
         )
-      ]
-    }
-  end
-
-  defp timelines do
-    panel = AssetDetail.window_timeline_panel_attrs()
-
-    %{
-      "asset_detail_page/window_timeline_panel" => [
-        Example.attrs(:refresh_and_data, panel),
-        Example.attrs(
-          :refresh_only,
-          Map.merge(panel, %{
-            has_data_windows?: false,
-            data_coverage_timeline: nil,
-            has_freshness_timeline?: false,
-            freshness_timeline: nil
-          })
-        ),
-        Example.attrs(:active_data_coverage, Map.put(panel, :active_timeline, :data_coverage)),
-        Example.attrs(:active_freshness, Map.put(panel, :active_timeline, :freshness)),
-        Example.attrs(
-          :selected_refresh_period,
-          Map.put(panel, :selected_window, List.last(Timeline.refresh_timeline()))
-        ),
-        Example.attrs(
-          :run_config_open,
-          Map.merge(panel, %{run_config_open?: true, run_config: Timeline.default_run_config()})
-        )
-      ],
-      "asset_detail_page/timeline_window" => [
-        Example.attrs(:fresh, %{window: Timeline.refresh_window("2026-06-12", "Jun 12", :success)}),
-        Example.attrs(:running, %{
-          window: Timeline.refresh_window("2026-06-13", "Jun 13", :warning)
-        }),
-        Example.attrs(:failed, %{window: Timeline.data_window("2026-06-10", "Jun 10", :error)}),
-        Example.attrs(
-          :missing,
-          %{window: Timeline.data_window("2026-06-11", "Jun 11", :muted)},
-          "A window with no data at all."
-        ),
-        Example.attrs(:selected, %{
-          selected: true,
-          window: Timeline.data_window("2026-06-12", "Jun 12", :success)
-        }),
-        Example.attrs(
-          :selected_running,
-          %{selected: true, window: Timeline.refresh_window("2026-06-13", "Jun 13", :warning)},
-          "Selection is judged per status: the boundary rule only applies to a window an operator has picked."
-        ),
-        Example.attrs(:selected_failed, %{
-          selected: true,
-          window: Timeline.data_window("2026-06-10", "Jun 10", :error)
-        }),
-        Example.attrs(:selected_missing, %{
-          selected: true,
-          window: Timeline.data_window("2026-06-11", "Jun 11", :muted)
-        })
       ]
     }
   end

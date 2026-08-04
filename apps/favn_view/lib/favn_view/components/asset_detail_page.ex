@@ -5,27 +5,23 @@ defmodule FavnView.Components.AssetDetailPage do
 
   use FavnView, :html
 
+  alias FavnView.AssetRoute
   alias FavnView.Components.AppShell
   alias FavnView.Components.ModeRail
   alias FavnView.Components.Navigation
-  alias FavnView.Components.SelectedWindowActions
+  alias FavnView.Components.OutputMetadata
+  alias FavnView.Components.RunConfigDialog
+  alias FavnView.CoverageCalendar
+  alias FavnView.LogsViewModel
 
   attr :title, :string, required: true
   attr :status, :string, required: true
   attr :status_tone, :atom, default: :success
-  attr :window_kind_label, :string, default: "Windows"
-  attr :refresh_timeline_label, :string, default: "Refresh periods"
-  attr :refresh_cadence_label, :string, default: "Refresh cadence"
-  attr :freshness_timeline_label, :string, default: "Freshness periods"
-  attr :freshness_cadence_label, :string, default: "Freshness cadence"
-  attr :data_coverage_timeline_label, :string, default: "Data windows"
-  attr :window_range, :string, required: true
-  attr :refresh_window_range, :string, default: "No windows"
-  attr :freshness_window_range, :string, default: "No windows"
-  attr :data_coverage_window_range, :string, default: "No windows"
-  attr :active_timeline, :atom, default: :refresh
-  attr :has_freshness_timeline?, :boolean, default: false
-  attr :has_data_windows?, :boolean, default: false
+
+  attr :has_data_windows?, :boolean,
+    default: false,
+    doc: "whether the asset runs per window; decides if the rail offers Coverage"
+
   attr :can_run_asset?, :boolean, default: true
   attr :run_contexts, :list, default: []
   attr :selected_run_context, :map, default: nil
@@ -33,38 +29,66 @@ defmodule FavnView.Components.AssetDetailPage do
   attr :nav_items, :list, required: true
   attr :current_scope, :any, default: nil
   attr :operator_workspaces, :list, default: []
-  attr :timeline, :list, default: []
-  attr :refresh_timeline, :list, default: nil
-  attr :freshness_timeline, :list, default: nil
-  attr :data_coverage_timeline, :list, default: nil
-  attr :active_mode, :atom, default: :timeline
+  attr :active_mode, :atom, default: :overview
   attr :freshness, :map, default: nil
   attr :coverage, :any, default: nil
   attr :coverage_policy, :map, default: nil
-  attr :coverage_gaps, :list, default: []
-  attr :coverage_pagination, :map, default: %{limit: 100, has_more: false, next_cursor: nil}
 
-  attr :coverage_page_cursor, :string, default: nil
+  attr :coverage_calendar, :map,
+    default: %{
+      layout: :empty,
+      kind: nil,
+      timezone: nil,
+      unit_label: nil,
+      blanks: 0,
+      columns: 7,
+      column_labels: [],
+      cells: [],
+      period_count: 0,
+      missing_count: 0,
+      selected_count: 0
+    },
+    doc: "a `FavnView.CoverageCalendar.build/1` result"
+
+  attr :coverage_navigation, :map,
+    default: %{previous: nil, next: nil, jumps: []},
+    doc: "a `FavnView.CoverageCalendar.navigation/1` result"
+
   attr :compatibility, :map, default: nil
   attr :rebuild_target_id, :string, default: nil
+  attr :manifest_version_id, :string, default: nil
   attr :assurance, :map, default: nil
+
+  attr :asset_id, :string, required: true, doc: "route id; the rail patches relative to it"
+  attr :runs, :list, default: [], doc: "newest first; see `FavnView.UI.Data.run_timeline/1`"
+  attr :relation, :map, default: nil, doc: "the four address levels the asset declares"
+  attr :cadence_label, :string, default: nil, doc: "how often it runs, in plain words"
+  attr :type, :string, default: nil, doc: "`\"sql\"`, `\"elixir\"`, or `\"source\"`"
+  attr :upstream, :list, default: [], doc: "assets this one reads"
+  attr :downstream, :list, default: [], doc: "assets that read this one"
+  attr :selected_run_id, :string, default: nil
+
+  attr :selected_run, :any,
+    default: nil,
+    doc: "`{:ok, detail}`, `{:not_found, id}`, `{:error, reason}`, or nil when none is selected"
+
+  attr :documentation, :any,
+    default: nil,
+    doc: "`{:ok, docs}` or `{:error, reason}`; nil until the documentation page opens"
+
   attr :coverage_plan, :map, default: nil
   attr :coverage_action_error, :string, default: nil
   attr :planning_coverage?, :boolean, default: false
   attr :submitting_coverage?, :boolean, default: false
-  attr :selected_window, :map, default: nil
   attr :run_config_open?, :boolean, default: false
   attr :run_config, :map, default: %{dependencies: "all", refresh: "auto"}
   attr :run_config_valid?, :boolean, default: true
   attr :submitting_window_run?, :boolean, default: false
-  attr :selected_window_error, :string, default: nil
-  attr :submitted_run_id, :string, default: nil
+  attr :run_error, :string, default: nil, doc: "why the last run submission was refused"
   attr :can_submit_runs?, :boolean, default: false
   attr :flash, :map, default: %{}
 
   def asset_detail_page(assigns) do
-    assigns = assign(assigns, :refresh_timeline, assigns.refresh_timeline || assigns.timeline)
-
     ~H"""
     <AppShell.app_shell
       title={@title}
@@ -74,116 +98,216 @@ defmodule FavnView.Components.AssetDetailPage do
       current_scope={@current_scope}
       operator_workspaces={@operator_workspaces}
       flash={@flash}
+      content_scroll?={@active_mode != :runs}
     >
       <.central_view
         active_mode={@active_mode}
-        window_kind_label={@window_kind_label}
-        refresh_timeline_label={@refresh_timeline_label}
-        refresh_cadence_label={@refresh_cadence_label}
-        freshness_timeline_label={@freshness_timeline_label}
-        freshness_cadence_label={@freshness_cadence_label}
-        data_coverage_timeline_label={@data_coverage_timeline_label}
-        window_range={@window_range}
-        refresh_window_range={@refresh_window_range}
-        freshness_window_range={@freshness_window_range}
-        data_coverage_window_range={@data_coverage_window_range}
-        active_timeline={@active_timeline}
-        has_freshness_timeline?={@has_freshness_timeline?}
-        has_data_windows?={@has_data_windows?}
         can_run_asset?={@can_run_asset?}
         run_contexts={@run_contexts}
         selected_run_context={@selected_run_context}
         run_context_status={@run_context_status}
-        refresh_timeline={@refresh_timeline}
-        freshness_timeline={@freshness_timeline}
-        data_coverage_timeline={@data_coverage_timeline}
         freshness={@freshness}
         coverage={@coverage}
         coverage_policy={@coverage_policy}
-        coverage_gaps={@coverage_gaps}
-        coverage_pagination={@coverage_pagination}
-        coverage_page_cursor={@coverage_page_cursor}
+        coverage_calendar={@coverage_calendar}
+        coverage_navigation={@coverage_navigation}
         compatibility={@compatibility}
         rebuild_target_id={@rebuild_target_id}
+        manifest_version_id={@manifest_version_id}
         assurance={@assurance}
+        asset_id={@asset_id}
+        runs={@runs}
+        relation={@relation}
+        cadence_label={@cadence_label}
+        type={@type}
+        upstream={@upstream}
+        downstream={@downstream}
+        selected_run_id={@selected_run_id}
+        selected_run={@selected_run}
+        documentation={@documentation}
+        title={@title}
         coverage_plan={@coverage_plan}
         coverage_action_error={@coverage_action_error}
         planning_coverage?={@planning_coverage?}
         submitting_coverage?={@submitting_coverage?}
-        selected_window={@selected_window}
-        run_config_open?={@run_config_open?}
-        run_config={@run_config}
-        run_config_valid?={@run_config_valid?}
         submitting_window_run?={@submitting_window_run?}
-        selected_window_error={@selected_window_error}
-        submitted_run_id={@submitted_run_id}
         can_submit_runs?={@can_submit_runs?}
       />
       <:mode_rail>
-        <ModeRail.mode_rail active={@active_mode} modes={detail_modes()} on_select="set_mode" />
+        <ModeRail.mode_rail
+          active={@active_mode}
+          modes={detail_modes(@asset_id, @has_data_windows?)}
+        />
       </:mode_rail>
+
+      <:overlay>
+        <RunConfigDialog.run_config_dialog
+          :if={@run_config_open?}
+          has_data_windows?={@has_data_windows?}
+          run_config={@run_config}
+          run_config_valid?={@run_config_valid?}
+          submitting_window_run?={@submitting_window_run?}
+          error={@run_error}
+          can_submit_runs?={@can_submit_runs?}
+          command_resource={@rebuild_target_id}
+        />
+      </:overlay>
     </AppShell.app_shell>
     """
   end
 
   attr :active_mode, :atom, required: true
-  attr :window_kind_label, :string, default: "Windows"
-  attr :refresh_timeline_label, :string, default: "Refresh periods"
-  attr :refresh_cadence_label, :string, default: "Refresh cadence"
-  attr :freshness_timeline_label, :string, default: "Freshness periods"
-  attr :freshness_cadence_label, :string, default: "Freshness cadence"
-  attr :data_coverage_timeline_label, :string, default: "Data windows"
-  attr :window_range, :string, required: true
-  attr :refresh_window_range, :string, default: "No windows"
-  attr :freshness_window_range, :string, default: "No windows"
-  attr :data_coverage_window_range, :string, default: "No windows"
-  attr :active_timeline, :atom, default: :refresh
-  attr :has_freshness_timeline?, :boolean, default: false
-  attr :has_data_windows?, :boolean, default: false
+  attr :title, :string, required: true
   attr :can_run_asset?, :boolean, default: true
   attr :run_contexts, :list, default: []
   attr :selected_run_context, :map, default: nil
   attr :run_context_status, :atom, default: :unavailable
-  attr :refresh_timeline, :list, default: []
-  attr :freshness_timeline, :list, default: nil
-  attr :data_coverage_timeline, :list, default: nil
   attr :freshness, :map, default: nil
   attr :coverage, :any, default: nil
   attr :coverage_policy, :map, default: nil
-  attr :coverage_gaps, :list, default: []
-  attr :coverage_pagination, :map, default: %{limit: 100, has_more: false, next_cursor: nil}
 
-  attr :coverage_page_cursor, :string, default: nil
+  attr :coverage_calendar, :map,
+    default: %{
+      layout: :empty,
+      kind: nil,
+      timezone: nil,
+      unit_label: nil,
+      blanks: 0,
+      columns: 7,
+      column_labels: [],
+      cells: [],
+      period_count: 0,
+      missing_count: 0,
+      selected_count: 0
+    },
+    doc: "a `FavnView.CoverageCalendar.build/1` result"
+
+  attr :coverage_navigation, :map,
+    default: %{previous: nil, next: nil, jumps: []},
+    doc: "a `FavnView.CoverageCalendar.navigation/1` result"
+
   attr :compatibility, :map, default: nil
   attr :rebuild_target_id, :string, default: nil
+  attr :manifest_version_id, :string, default: nil
   attr :assurance, :map, default: nil
+
+  attr :asset_id, :string, required: true, doc: "route id; the rail patches relative to it"
+  attr :runs, :list, default: [], doc: "newest first; see `FavnView.UI.Data.run_timeline/1`"
+  attr :relation, :map, default: nil, doc: "the four address levels the asset declares"
+  attr :cadence_label, :string, default: nil, doc: "how often it runs, in plain words"
+  attr :type, :string, default: nil, doc: "`\"sql\"`, `\"elixir\"`, or `\"source\"`"
+  attr :upstream, :list, default: [], doc: "assets this one reads"
+  attr :downstream, :list, default: [], doc: "assets that read this one"
+  attr :selected_run_id, :string, default: nil
+
+  attr :selected_run, :any,
+    default: nil,
+    doc: "`{:ok, detail}`, `{:not_found, id}`, `{:error, reason}`, or nil when none is selected"
+
+  attr :documentation, :any,
+    default: nil,
+    doc: "`{:ok, docs}` or `{:error, reason}`; nil until the documentation page opens"
+
   attr :coverage_plan, :map, default: nil
   attr :coverage_action_error, :string, default: nil
   attr :planning_coverage?, :boolean, default: false
   attr :submitting_coverage?, :boolean, default: false
-  attr :selected_window, :map, default: nil
-  attr :run_config_open?, :boolean, default: false
-  attr :run_config, :map, default: %{dependencies: "all", refresh: "auto"}
-  attr :run_config_valid?, :boolean, default: true
   attr :submitting_window_run?, :boolean, default: false
-  attr :selected_window_error, :string, default: nil
-  attr :submitted_run_id, :string, default: nil
   attr :can_submit_runs?, :boolean, default: false
 
   def central_view(assigns) do
     ~H"""
-    <.compatibility_panel
-      :if={@active_mode == :timeline && @compatibility}
+    <.asset_overview
+      :if={@active_mode == :overview}
+      title={@title}
+      asset_id={@asset_id}
+      relation={@relation}
+      freshness={@freshness}
+      runs={@runs}
+      upstream={@upstream}
+      downstream={@downstream}
+      cadence_label={@cadence_label}
+      type={@type}
+      run_contexts={@run_contexts}
+      selected_run_context={@selected_run_context}
+      run_context_status={@run_context_status}
+      can_run_asset?={@can_run_asset?}
+      can_submit_runs?={@can_submit_runs?}
+      submitting_window_run?={@submitting_window_run?}
+      problems={asset_problems(assigns)}
+    />
+
+    <div
+      :if={@active_mode == :runs}
+      class="flex min-h-0 w-full flex-1 flex-col-reverse gap-4 lg:flex-row"
+    >
+      <div class="min-h-0 flex-1 overflow-y-auto lg:pr-2">
+        <.run_detail_panel
+          :if={match?({:ok, _run}, @selected_run)}
+          run={elem(@selected_run, 1)}
+          asset_id={@asset_id}
+        />
+
+        <.error_state
+          :if={match?({:error, _reason}, @selected_run)}
+          title="This run cannot be read"
+          description="The control plane did not return the run. Try again, or open it from the runs screen."
+          data-testid="asset-run-error-state"
+        />
+
+        <.empty_state
+          :if={match?({:not_found, _id}, @selected_run)}
+          title="Run not found"
+          description="No run of this asset matches that id."
+          icon="hero-question-mark-circle"
+          data-testid="asset-run-not-found-state"
+        />
+
+        <div :if={is_nil(@selected_run)} class="space-y-6">
+          <.notice tone={:info} icon="hero-cursor-arrow-rays">
+            Pick a run to see what it observed against the contract below.
+          </.notice>
+
+          <.assurance_panel :if={@assurance} assurance={@assurance} />
+
+          <.empty_state
+            :if={is_nil(@assurance)}
+            title="This asset declares no contract"
+            description="Add a contract or checks to compare what a run produced against what it promised."
+            icon="hero-document-text"
+          />
+        </div>
+      </div>
+
+      <.run_timeline
+        runs={@runs}
+        selected_id={@selected_run_id}
+        empty_label="This asset has not run yet."
+        class="favn-surface-list rounded-box max-h-72 shrink-0 p-3 lg:max-h-none lg:w-80"
+        data-testid="asset-run-timeline"
+      />
+    </div>
+
+    <.asset_documentation
+      :if={@active_mode == :docs}
+      title={@title}
+      documentation={@documentation}
+    />
+
+    <.diagnostics_panel
+      :if={@active_mode == :diagnostics}
       compatibility={@compatibility}
+      coverage={@coverage}
+      coverage_policy={@coverage_policy}
+      manifest_version_id={@manifest_version_id}
       rebuild_target_id={@rebuild_target_id}
     />
-    <.coverage_summary_panel
-      :if={@active_mode == :timeline && @coverage}
+
+    <.coverage_panel
+      :if={@active_mode == :coverage && @coverage}
       coverage={@coverage}
-      policy={@coverage_policy}
-      gaps={@coverage_gaps}
-      pagination={@coverage_pagination}
-      page_cursor={@coverage_page_cursor}
+      calendar={@coverage_calendar}
+      navigation={@coverage_navigation}
       plan={@coverage_plan}
       action_error={@coverage_action_error}
       planning?={@planning_coverage?}
@@ -191,146 +315,182 @@ defmodule FavnView.Components.AssetDetailPage do
       can_plan?={@can_submit_runs? && @can_run_asset?}
       command_resource={@rebuild_target_id}
     />
-    <.window_timeline_panel
-      :if={@active_mode == :timeline}
-      window_kind_label={@window_kind_label}
-      refresh_timeline_label={@refresh_timeline_label}
-      refresh_cadence_label={@refresh_cadence_label}
-      freshness_timeline_label={@freshness_timeline_label}
-      freshness_cadence_label={@freshness_cadence_label}
-      data_coverage_timeline_label={@data_coverage_timeline_label}
-      window_range={@window_range}
-      refresh_window_range={@refresh_window_range}
-      freshness_window_range={@freshness_window_range}
-      data_coverage_window_range={@data_coverage_window_range}
-      active_timeline={@active_timeline}
-      has_freshness_timeline?={@has_freshness_timeline?}
-      has_data_windows?={@has_data_windows?}
-      can_run_asset?={@can_run_asset?}
-      run_contexts={@run_contexts}
-      selected_run_context={@selected_run_context}
-      run_context_status={@run_context_status}
-      refresh_timeline={@refresh_timeline}
-      freshness_timeline={@freshness_timeline}
-      data_coverage_timeline={@data_coverage_timeline}
-      freshness={@freshness}
-      selected_window={@selected_window}
-      run_config_open?={@run_config_open?}
-      run_config={@run_config}
-      run_config_valid?={@run_config_valid?}
-      submitting_window_run?={@submitting_window_run?}
-      selected_window_error={@selected_window_error}
-      submitted_run_id={@submitted_run_id}
-      can_submit_runs?={@can_submit_runs?}
-      command_resource={@rebuild_target_id}
-    />
-    <div :if={@active_mode == :details} class="mx-auto w-full max-w-6xl space-y-6">
-      <.assurance_panel :if={@assurance} assurance={@assurance} />
-      <.freshness_detail_panel freshness={@freshness} />
-    </div>
     """
   end
 
-  attr :compatibility, :map, required: true
+  @doc """
+  Everything wrong with this asset, worst first.
+
+  Built here rather than in each panel so the overview can say nothing at all when
+  nothing is wrong. A page that renders a panel per topic has to fill each one, which
+  is how the old screen ended up explaining that freshness was fine twice.
+  """
+  @spec asset_problems(map()) :: [map()]
+  def asset_problems(assigns) do
+    [
+      compatibility_problem(assigns),
+      run_context_problem(assigns),
+      failed_run_problem(assigns),
+      stale_problem(assigns),
+      coverage_problem(assigns)
+    ]
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp compatibility_problem(%{compatibility: compatibility, asset_id: asset_id})
+       when is_map(compatibility) do
+    if field(compatibility, :blocks_writes?, false) do
+      %{
+        tone: :error,
+        title: "Runs are blocked",
+        detail: blocked_reason(field(compatibility, :status)),
+        action: "See what to do",
+        href: ~p"/assets/#{asset_id}/diagnostics"
+      }
+    end
+  end
+
+  defp compatibility_problem(_assigns), do: nil
+
+  defp blocked_reason(:rebuild_required),
+    do: "The table Favn writes to no longer matches what this asset produces."
+
+  defp blocked_reason(:unexpected_drift),
+    do: "The table changed outside Favn, so writing to it could lose data."
+
+  defp blocked_reason(:operator_decision),
+    do: "Favn cannot tell whether it owns this table, so it will not write to it."
+
+  defp blocked_reason(_status), do: "Favn cannot write to this asset's table right now."
+
+  defp run_context_problem(%{run_context_status: :ambiguous, asset_id: asset_id}) do
+    %{
+      tone: :error,
+      title: "More than one pipeline could run this",
+      detail: "Favn will not guess which one owns it. Choose one before running it.",
+      action: "Choose a pipeline",
+      href: ~p"/assets/#{asset_id}/diagnostics"
+    }
+  end
+
+  defp run_context_problem(_assigns), do: nil
+
+  defp failed_run_problem(%{runs: [%{status_tone: :error} = run | _rest], asset_id: asset_id}) do
+    %{
+      tone: :error,
+      title: "The last run failed",
+      detail: "Nothing new was written.",
+      action: "See what broke",
+      href: ~p"/assets/#{asset_id}/runs/#{run.id}"
+    }
+  end
+
+  defp failed_run_problem(_assigns), do: nil
+
+  defp stale_problem(%{freshness: %{state: :stale} = freshness}) do
+    %{
+      tone: :warning,
+      title: "The data is out of date",
+      detail: freshness[:explanation] || "This asset has not run recently enough.",
+      action: nil,
+      href: nil
+    }
+  end
+
+  defp stale_problem(_assigns), do: nil
+
+  defp coverage_problem(%{coverage: coverage, has_data_windows?: true, asset_id: asset_id})
+       when is_map(coverage) do
+    missing = field(coverage, :missing_count, 0)
+
+    if field(coverage, :status) == :incomplete and missing > 0 do
+      %{
+        tone: :warning,
+        title: "#{missing} #{(missing == 1 && "period has") || "periods have"} no data",
+        detail: "Some periods this asset should cover were never written.",
+        action: "See which ones",
+        href: ~p"/assets/#{asset_id}/coverage"
+      }
+    end
+  end
+
+  defp coverage_problem(_assigns), do: nil
+
+  @doc """
+  Whether anything is wrong with the table this asset writes, and how to fix it.
+
+  The page leads with a verdict in one sentence, because the operator's question is
+  "can this asset run" and the screen used to answer it with four hashes and the
+  phrase "the desired descriptor and active physical target are compatible". The fix
+  is a button beside the verdict rather than a page away.
+
+  What changed is named in the asset's own terms — the period shape, the way it is
+  built, the table itself — and the identifiers those verdicts were computed from are
+  one disclosure down. They matter when someone is comparing two deployments by hand,
+  and never before that.
+  """
+  attr :compatibility, :map, default: nil
+  attr :coverage, :any, default: nil
+  attr :coverage_policy, :map, default: nil
+  attr :manifest_version_id, :string, default: nil
   attr :rebuild_target_id, :string, default: nil
 
-  def compatibility_panel(assigns) do
+  def diagnostics_panel(assigns) do
+    assigns = assign(assigns, :changes, compatibility_changes(assigns.compatibility))
+
     ~H"""
-    <.panel
-      :if={field(@compatibility, :persisted?, false)}
-      padding={:none}
-      class={[
-        "mx-auto mb-6 w-full max-w-[120rem] border p-5 sm:p-6",
-        compatibility_panel_class(field(@compatibility, :status))
-      ]}
-      data-testid="asset-compatibility-panel"
-    >
-      <div class="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
-        <div class="min-w-0">
-          <div class="flex flex-wrap items-center gap-2">
-            <p class="text-xs uppercase tracking-[0.18em] favn-text-subtle">
-              Target compatibility
-            </p>
+    <div class="mx-auto w-full max-w-3xl space-y-6" data-testid="asset-diagnostics">
+      <.panel
+        padding={:none}
+        class={["border p-6 sm:p-8", compatibility_panel_class(field(@compatibility, :status))]}
+        data-testid="asset-compatibility-panel"
+      >
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <h2 class="text-sm uppercase tracking-[0.18em] favn-text-subtle">
+            The table it writes
+          </h2>
 
-            <span class={compatibility_badge_class(field(@compatibility, :status))}>
-              {compatibility_status_label(field(@compatibility, :status))}
-            </span>
-          </div>
-
-          <p class="mt-2 text-sm favn-text-muted">
-            {compatibility_explanation(@compatibility)}
-          </p>
+          <span
+            :if={field(@compatibility, :persisted?, false)}
+            class={compatibility_badge_class(field(@compatibility, :status))}
+          >
+            {compatibility_status_label(field(@compatibility, :status))}
+          </span>
         </div>
 
-        <dl class="grid min-w-0 gap-x-6 gap-y-2 text-xs favn-text-muted sm:grid-cols-2 xl:max-w-3xl">
-          <div>
-            <dt class="favn-text-subtle">Active generation</dt>
+        <p class="mt-3 max-w-2xl">{compatibility_explanation(@compatibility)}</p>
 
-            <dd class="break-all font-mono">
-              {coverage_generation_label(field(@compatibility, :active_generation_id))}
-            </dd>
-          </div>
-
-          <div>
-            <dt class="favn-text-subtle">Reason</dt>
-
-            <dd>{humanize(field(@compatibility, :reason_code))}</dd>
-          </div>
-
-          <div>
-            <dt class="favn-text-subtle">Desired descriptor</dt>
-
-            <dd class="break-all font-mono">
-              {field(@compatibility, :desired_descriptor_hash) || "-"}
-            </dd>
-          </div>
-
-          <div>
-            <dt class="favn-text-subtle">Physical fingerprint</dt>
-
-            <dd class="break-all font-mono">
-              {field(@compatibility, :physical_fingerprint) || "-"}
-            </dd>
-          </div>
-        </dl>
-      </div>
-
-      <div
-        :if={compatibility_diff_entries(field(@compatibility, :diff, %{})) != []}
-        class="mt-4 rounded-box border border-base-content/10 bg-base-content/[0.03] p-4"
-      >
-        <p class="text-xs font-medium uppercase tracking-[0.14em] favn-text-subtle">
-          Compatibility differences
+        <p
+          :if={field(@compatibility, :blocks_writes?, false)}
+          class="mt-2 max-w-2xl font-medium text-error"
+          data-testid="asset-compatibility-blocked"
+        >
+          Nothing can run until this is resolved.
         </p>
 
-        <dl class="mt-2 grid gap-2 text-xs sm:grid-cols-2">
-          <div :for={{name, change} <- compatibility_diff_entries(field(@compatibility, :diff, %{}))}>
-            <dt class="favn-text-subtle">{humanize(name)}</dt>
+        <section :if={@changes != []} class="mt-6">
+          <h3 class="text-sm favn-text-subtle">What changed</h3>
 
-            <dd class="break-all font-mono favn-text-muted">
-              {compatibility_change_label(change)}
-            </dd>
-          </div>
-        </dl>
-      </div>
+          <dl class="mt-2 space-y-2 text-sm">
+            <div :for={change <- @changes} class="sm:flex sm:gap-4">
+              <dt class="shrink-0 font-medium sm:w-40">{change.label}</dt>
 
-      <div
-        :if={field(@compatibility, :blocks_writes?, false)}
-        class="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"
-        data-testid="asset-compatibility-blocked"
-      >
-        <p class="text-sm font-medium text-error">
-          Runs and backfills are blocked until this target is resolved.
-        </p>
+              <dd class="min-w-0 break-words favn-text-muted">{change.detail}</dd>
+            </div>
+          </dl>
+        </section>
 
-        <div :if={@rebuild_target_id} class="flex flex-wrap gap-2">
+        <div
+          :if={@rebuild_target_id && compatibility_actionable?(@compatibility)}
+          class="mt-6 flex flex-wrap gap-2 border-t border-base-content/10 pt-5"
+        >
           <.link
             :if={field(@compatibility, :reason_code) == "unmanaged_physical_relation"}
             navigate={~p"/recoveries?#{[target_id: @rebuild_target_id]}"}
             class="btn btn-warning btn-sm"
             data-testid="recover-asset-ownership"
           >
-            Recover ownership
+            Take ownership of this table
           </.link>
 
           <.link
@@ -338,19 +498,148 @@ defmodule FavnView.Components.AssetDetailPage do
             class="btn btn-outline btn-sm"
             data-testid="plan-asset-rebuild"
           >
-            Plan rebuild
+            Rebuild the table
           </.link>
         </div>
-      </div>
-    </.panel>
+      </.panel>
+
+      <.panel padding={:none} class="p-6 sm:p-8" data-testid="asset-diagnostics-detail">
+        <h2 class="text-sm uppercase tracking-[0.18em] favn-text-subtle">Under the hood</h2>
+
+        <p class="mt-2 text-sm favn-text-muted">
+          Worth opening when two deployments disagree, or when a rule above needs
+          checking against what the asset declared.
+        </p>
+
+        <details :if={@coverage_policy} class="mt-5 border-t border-base-content/10 pt-4">
+          <summary class="cursor-pointer font-medium">How periods are counted</summary>
+
+          <.fact_list class="mt-3" columns={2} facts={coverage_rule_facts(assigns)} />
+        </details>
+
+        <!-- Rows rather than a fact grid, because a fingerprint truncated to fit a
+        column is useless for the one thing this disclosure is for: telling two
+        deployments apart. -->
+        <details class="mt-4 border-t border-base-content/10 pt-4">
+          <summary class="cursor-pointer font-medium">Identifiers Favn matched on</summary>
+
+          <div class="mt-2 divide-y divide-base-content/5">
+            <.field_row :for={fact <- identity_facts(assigns)} label={fact.label}>
+              <.mono :if={fact[:mono]} value={fact.value} />
+              <span :if={!fact[:mono]}>{fact.value}</span>
+            </.field_row>
+          </div>
+        </details>
+      </.panel>
+    </div>
     """
   end
 
+  # A verdict with no action is not actionable. `:ready` and `:uninitialized` both
+  # describe a table nobody has to touch, and offering a rebuild there invites one.
+  defp compatibility_actionable?(compatibility) do
+    field(compatibility, :persisted?, false) and
+      field(compatibility, :status) not in [:ready, :uninitialized, nil]
+  end
+
+  defp coverage_rule_facts(assigns) do
+    [
+      %{
+        label: "Periods are in",
+        value: field(assigns.coverage_policy, :timezone) || "Not declared"
+      },
+      %{label: "Counted from", value: coverage_start_label(assigns.coverage_policy)},
+      %{
+        label: "A period counts once",
+        value: availability_label(field(assigns.coverage_policy, :availability_delay_seconds, 0))
+      },
+      %{
+        label: "Expected through",
+        value: coverage_window_label(field(assigns.coverage, :last_expected_window))
+      }
+    ]
+  end
+
+  defp identity_facts(assigns) do
+    [
+      %{
+        label: "Manifest version",
+        value: assigns.manifest_version_id || "Unknown",
+        mono: true
+      },
+      %{
+        label: "Active generation",
+        value: coverage_generation_label(field(assigns.compatibility, :active_generation_id)),
+        mono: true
+      },
+      %{
+        label: "Table Favn wants",
+        value: field(assigns.compatibility, :desired_descriptor_hash) || "Not recorded",
+        mono: true
+      },
+      %{
+        label: "Table Favn found",
+        value: field(assigns.compatibility, :physical_fingerprint) || "Not recorded",
+        mono: true
+      },
+      %{
+        label: "Coverage last checked",
+        value: coverage_time(field(assigns.coverage, :evaluated_at))
+      },
+      %{label: "Verdict code", value: humanize(field(assigns.compatibility, :reason_code))}
+    ]
+  end
+
+  # A diff is keyed by what Favn compares, which is not what an operator calls it, and
+  # a `descriptor` key holds a list of per-field changes rather than one change. Both
+  # flatten into rows named after the thing that moved.
+  defp compatibility_changes(compatibility) do
+    compatibility
+    |> field(:diff, %{})
+    |> compatibility_diff_entries()
+    |> Enum.flat_map(&compatibility_change_rows/1)
+    |> Enum.take(50)
+  end
+
+  defp compatibility_change_rows({_name, changes}) when is_list(changes) do
+    Enum.map(changes, fn change ->
+      %{label: change_label(field(change, :field)), detail: compatibility_change_label(change)}
+    end)
+  end
+
+  defp compatibility_change_rows({name, change}) do
+    [%{label: change_label(name), detail: compatibility_change_label(change)}]
+  end
+
+  defp change_label(:window_identity), do: "Period shape"
+  defp change_label(:execution_package_hash), do: "How it is built"
+  defp change_label(:contract_fingerprint), do: "Promised columns"
+  defp change_label(:physical_fingerprint), do: "The table itself"
+  defp change_label(:relation), do: "Where it lands"
+  defp change_label(:write_mode), do: "How it writes"
+  defp change_label(name), do: humanize(name)
+
+  @doc """
+  Which periods hold data, and a way to fill the ones that do not.
+
+  One sentence answers the question and the calendar shows where, because the shape
+  of a gap is the useful part: one bad week and every Sunday need different fixes and
+  a count of six cannot tell them apart.
+
+  What the periods are is a fact about this asset's configuration rather than about
+  its data, so the timezone, the start date, and the availability delay are on
+  Diagnostics and not here.
+  """
   attr :coverage, :any, required: true
-  attr :policy, :map, default: nil
-  attr :gaps, :list, default: []
-  attr :pagination, :map, default: %{limit: 100, has_more: false, next_cursor: nil}
-  attr :page_cursor, :string, default: nil
+
+  attr :calendar, :map,
+    required: true,
+    doc: "a `FavnView.CoverageCalendar.build/1` result"
+
+  attr :navigation, :map,
+    default: %{previous: nil, next: nil, jumps: []},
+    doc: "a `FavnView.CoverageCalendar.navigation/1` result"
+
   attr :plan, :map, default: nil
   attr :action_error, :string, default: nil
   attr :planning?, :boolean, default: false
@@ -358,363 +647,198 @@ defmodule FavnView.Components.AssetDetailPage do
   attr :can_plan?, :boolean, default: false
   attr :command_resource, :string, required: true
 
-  def coverage_summary_panel(assigns) do
+  def coverage_panel(assigns) do
     ~H"""
     <.panel
       padding={:none}
-      class="mx-auto mb-6 w-full max-w-[120rem] p-6 sm:p-8"
-      data-testid="asset-coverage-summary"
+      class="mx-auto w-full max-w-5xl p-6 sm:p-8"
+      data-testid="asset-coverage"
     >
-      <div class="flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
-        <div class="min-w-0 space-y-3">
-          <div class="flex flex-wrap items-center gap-2">
-            <p class="text-xs uppercase tracking-[0.18em] favn-text-subtle">Coverage</p>
+      <div class="flex flex-wrap items-center justify-between gap-3">
+        <h2 class="text-sm uppercase tracking-[0.18em] favn-text-subtle">Coverage</h2>
 
-            <span class={coverage_badge_class(field(@coverage, :status))}>
-              {coverage_status_label(field(@coverage, :status))}
-            </span>
-          </div>
-
-          <p class="text-sm favn-text-muted">
-            {coverage_explanation(@coverage)}
-          </p>
-
-          <dl :if={field(@coverage, :status) != :unknown} class="grid gap-3 sm:grid-cols-3">
-            <.coverage_metric label="Expected" value={field(@coverage, :expected_count, 0)} />
-            <.coverage_metric label="Covered" value={field(@coverage, :covered_count, 0)} />
-            <.coverage_metric label="Missing" value={field(@coverage, :missing_count, 0)} />
-          </dl>
-
-          <dl class="grid gap-x-6 gap-y-2 text-xs favn-text-muted sm:grid-cols-2">
-            <div>
-              <dt class="favn-text-subtle">Evaluated at</dt>
-
-              <dd>{coverage_time(field(@coverage, :evaluated_at))}</dd>
-            </div>
-
-            <div>
-              <dt class="favn-text-subtle">Active target generation</dt>
-
-              <dd class="break-all font-mono">
-                {coverage_generation_label(field(@coverage, :active_target_generation_id))}
-              </dd>
-            </div>
-          </dl>
-
-          <dl :if={@policy} class="grid gap-x-6 gap-y-2 text-xs favn-text-muted sm:grid-cols-2">
-            <div>
-              <dt class="favn-text-subtle">Timezone</dt>
-
-              <dd class="font-mono">
-                {field(@policy, :timezone)} ({humanize(field(@policy, :timezone_source))})
-              </dd>
-            </div>
-
-            <div>
-              <dt class="favn-text-subtle">Coverage starts</dt>
-
-              <dd>
-                {coverage_time(field(@policy, :declared_from))} declared · {coverage_time(
-                  field(@policy, :effective_from)
-                )} effective
-              </dd>
-            </div>
-
-            <div>
-              <dt class="favn-text-subtle">Expected through</dt>
-
-              <dd>{coverage_window_label(field(@coverage, :last_expected_window))}</dd>
-            </div>
-
-            <div>
-              <dt class="favn-text-subtle">Availability</dt>
-
-              <dd>{availability_label(field(@policy, :availability_delay_seconds, 0))}</dd>
-            </div>
-          </dl>
-        </div>
-
-        <div class="w-full space-y-3 xl:max-w-xl">
-          <div
-            :if={field(@coverage, :status) == :incomplete}
-            class="rounded-box border border-warning/20 bg-warning/5 p-4"
-          >
-            <p class="text-xs font-medium uppercase tracking-[0.16em] text-warning">Exact gaps</p>
-
-            <div class="mt-2 max-h-32 space-y-1 overflow-y-auto font-mono text-xs favn-text-muted">
-              <p :for={gap <- @gaps}>{field(gap, :window_key)}</p>
-
-              <p :if={@gaps == []} class="font-sans favn-text-subtle">
-                No missing windows in this page.
-              </p>
-            </div>
-
-            <div
-              :if={@page_cursor || field(@pagination, :has_more, false)}
-              class="mt-3 flex items-center justify-between gap-3"
-              data-testid="coverage-gap-pagination"
-            >
-              <button
-                type="button"
-                class="btn btn-ghost btn-xs"
-                phx-click="page_missing_coverage"
-                phx-value-direction="previous"
-                disabled={is_nil(@page_cursor)}
-                data-testid="previous-coverage-gap-page"
-              >
-                Previous
-              </button>
-
-              <span class="text-center font-sans text-xs favn-text-subtle">
-                {length(@gaps)} gaps on this page
-              </span>
-
-              <button
-                type="button"
-                class="btn btn-ghost btn-xs"
-                phx-click="page_missing_coverage"
-                phx-value-direction="next"
-                disabled={!field(@pagination, :has_more, false)}
-                data-testid="next-coverage-gap-page"
-              >
-                Next
-              </button>
-            </div>
-          </div>
-
-          <button
-            :if={field(@coverage, :status) == :incomplete && @gaps != [] && is_nil(@plan)}
-            type="button"
-            class="btn btn-warning btn-soft btn-sm"
-            phx-click="plan_missing_coverage"
-            disabled={!@can_plan? || @planning?}
-            data-testid="plan-missing-coverage"
-          >
-            <span :if={@planning?} class="loading loading-spinner loading-xs"></span>
-            Review missing-window backfill
-          </button>
-
-          <div
-            :if={@plan}
-            class="rounded-box border border-primary/25 bg-primary/5 p-4"
-            data-testid="coverage-plan-review"
-          >
-            <p class="text-sm font-medium">Review immutable plan</p>
-
-            <p class="mt-1 break-all font-mono text-xs favn-text-muted">
-              {field(@plan, :plan_hash)}
-            </p>
-
-            <div class="mt-3 max-h-36 space-y-1 overflow-y-auto font-mono text-xs favn-text-muted">
-              <p :for={window <- field(@plan, :windows, [])}>{field(window, :window_key)}</p>
-            </div>
-
-            <button
-              type="button"
-              class="btn btn-primary btn-sm mt-4"
-              phx-click="submit_missing_coverage"
-              data-command-operation="coverage_backfill_submit"
-              data-command-resource={@command_resource}
-              disabled={@submitting?}
-              data-testid="submit-missing-coverage"
-            >
-              <span :if={@submitting?} class="loading loading-spinner loading-xs"></span>
-              Submit exact {field(@plan, :window_count, 0)} windows
-            </button>
-          </div>
-
-          <p
-            :if={!@can_plan? && field(@coverage, :status) == :incomplete}
-            class="text-xs text-warning"
-          >
-            Select a valid run context and use an operator account to plan this backfill.
-          </p>
-
-          <p :if={@action_error} class="text-sm text-error" data-testid="coverage-action-error">
-            {@action_error}
-          </p>
-        </div>
+        <span class={coverage_badge_class(field(@coverage, :status))}>
+          {coverage_status_label(field(@coverage, :status))}
+        </span>
       </div>
+
+      <p class="mt-3 max-w-2xl">{coverage_answer(@coverage, @calendar)}</p>
+
+      <.calendar_navigator
+        :if={@calendar.unit_label}
+        class="mt-6"
+        label={@calendar.unit_label}
+        previous={@navigation.previous}
+        next={@navigation.next}
+        jumps={@navigation.jumps}
+        on_step="show_coverage_period"
+        on_jump="jump_coverage_period"
+        data-testid="coverage-navigator"
+      />
+
+      <.coverage_calendar
+        :if={@calendar.layout != :empty}
+        class="mt-4"
+        layout={@calendar.layout}
+        cells={@calendar.cells}
+        blanks={@calendar.blanks}
+        columns={@calendar.columns}
+        column_labels={@calendar.column_labels}
+        on_select={(@can_plan? && "toggle_coverage_window") || nil}
+        data-testid="asset-coverage-calendar"
+      />
+
+      <p :if={coverage_caption(@calendar)} class="mt-4 text-sm favn-text-subtle">
+        {coverage_caption(@calendar)}
+      </p>
+
+      <div
+        :if={coverage_backfillable?(@coverage) && is_nil(@plan)}
+        class="mt-6 flex flex-wrap items-center gap-3 border-t border-base-content/10 pt-5"
+      >
+        <button
+          type="button"
+          class="btn btn-warning btn-soft btn-sm"
+          phx-click="plan_missing_coverage"
+          disabled={!@can_plan? || @planning?}
+          data-testid="plan-missing-coverage"
+        >
+          <span :if={@planning?} class="loading loading-spinner loading-xs"></span>
+          {coverage_backfill_label(@coverage, @calendar)}
+        </button>
+
+        <button
+          :if={@calendar.selected_count > 0}
+          type="button"
+          class="btn btn-ghost btn-sm"
+          phx-click="clear_coverage_selection"
+          data-testid="clear-coverage-selection"
+        >
+          Clear selection
+        </button>
+
+        <p :if={!@can_plan?} class="text-sm text-warning">
+          Backfilling needs an operator account and a working target.
+        </p>
+      </div>
+
+      <div
+        :if={@plan}
+        class="mt-6 border-t border-base-content/10 pt-5"
+        data-testid="coverage-plan-review"
+      >
+        <p class="font-medium">
+          Ready to backfill {field(@plan, :window_count, 0)} {CoverageCalendar.period_noun(
+            @calendar.kind,
+            field(@plan, :window_count, 0)
+          )}
+        </p>
+
+        <ul class="mt-2 max-h-40 space-y-0.5 overflow-y-auto text-sm favn-text-muted">
+          <li :for={window <- field(@plan, :windows, [])}>{coverage_plan_window_label(window)}</li>
+        </ul>
+
+        <button
+          type="button"
+          class="btn btn-primary btn-sm mt-4"
+          phx-click="submit_missing_coverage"
+          data-command-operation="coverage_backfill_submit"
+          data-command-resource={@command_resource}
+          disabled={@submitting?}
+          data-testid="submit-missing-coverage"
+        >
+          <span :if={@submitting?} class="loading loading-spinner loading-xs"></span>
+          Start the backfill
+        </button>
+      </div>
+
+      <p :if={@action_error} class="mt-4 text-sm text-error" data-testid="coverage-action-error">
+        {@action_error}
+      </p>
     </.panel>
     """
   end
 
-  attr :label, :string, required: true
-  attr :value, :integer, required: true
+  # Coverage the operator can act on: incomplete, with at least one period named.
+  defp coverage_backfillable?(coverage),
+    do: field(coverage, :status) == :incomplete and field(coverage, :missing_count, 0) > 0
 
-  defp coverage_metric(assigns) do
-    ~H"""
-    <div class="rounded-box border border-base-content/10 bg-base-content/[0.03] p-3">
-      <dt class="text-xs uppercase tracking-[0.14em] favn-text-subtle">{@label}</dt>
-
-      <dd class="mt-1 text-xl font-medium">{@value}</dd>
-    </div>
-    """
+  defp coverage_backfill_label(_coverage, %{selected_count: selected} = calendar)
+       when selected > 0 do
+    "Backfill #{selected} selected #{CoverageCalendar.period_noun(calendar.kind, selected)}"
   end
 
-  attr :window_range, :string, required: true
-  attr :window_kind_label, :string, default: "Windows"
-  attr :refresh_timeline_label, :string, default: "Refresh periods"
-  attr :refresh_cadence_label, :string, default: "Refresh cadence"
-  attr :freshness_timeline_label, :string, default: "Freshness periods"
-  attr :freshness_cadence_label, :string, default: "Freshness cadence"
-  attr :data_coverage_timeline_label, :string, default: "Data windows"
-  attr :refresh_window_range, :string, default: "No windows"
-  attr :freshness_window_range, :string, default: "No windows"
-  attr :data_coverage_window_range, :string, default: "No windows"
-  attr :active_timeline, :atom, default: :refresh
-  attr :has_freshness_timeline?, :boolean, default: false
-  attr :has_data_windows?, :boolean, default: false
-  attr :can_run_asset?, :boolean, default: true
-  attr :run_contexts, :list, default: []
-  attr :selected_run_context, :map, default: nil
-  attr :run_context_status, :atom, default: :unavailable
-  attr :refresh_timeline, :list, default: []
-  attr :freshness_timeline, :list, default: nil
-  attr :data_coverage_timeline, :list, default: nil
-  attr :freshness, :map, default: nil
-  attr :selected_window, :map, default: nil
-  attr :run_config_open?, :boolean, default: false
-  attr :run_config, :map, default: %{dependencies: "all", refresh: "auto"}
-  attr :run_config_valid?, :boolean, default: true
-  attr :submitting_window_run?, :boolean, default: false
-  attr :selected_window_error, :string, default: nil
-  attr :submitted_run_id, :string, default: nil
-  attr :can_submit_runs?, :boolean, default: false
-  attr :command_resource, :string, required: true
+  defp coverage_backfill_label(coverage, calendar) do
+    missing = field(coverage, :missing_count, 0)
+    "Backfill all #{missing} missing #{CoverageCalendar.period_noun(calendar.kind, missing)}"
+  end
 
-  def window_timeline_panel(assigns) do
-    assigns = assign(assigns, :timeline, active_timeline(assigns))
-    assigns = assign(assigns, :timeline_range, active_timeline_range(assigns))
-    assigns = assign(assigns, :timeline_label, active_timeline_label(assigns))
-    assigns = assign(assigns, :timeline_kind_label, active_timeline_kind_label(assigns))
+  defp coverage_answer(coverage, calendar) do
+    expected = field(coverage, :expected_count, 0)
+    missing = field(coverage, :missing_count, 0)
+    periods = CoverageCalendar.period_noun(calendar.kind, expected)
 
-    ~H"""
-    <.panel
-      padding={:none}
-      id="window-timeline"
-      class="mx-auto w-full max-w-[120rem] p-6 sm:p-8 lg:p-10"
-      data-testid="window-timeline-panel"
-    >
-      <div class="flex flex-col gap-10">
-        <.run_context_selector
-          :if={@run_contexts != []}
-          contexts={@run_contexts}
-          selected={@selected_run_context}
-          status={@run_context_status}
-        />
-        <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-          <div>
-            <h2 class="text-xl font-medium tracking-tight">{@timeline_label}</h2>
+    case field(coverage, :status) do
+      :complete when expected == 0 ->
+        "No period is due yet, so nothing is missing."
 
-            <p class="mt-2 text-sm favn-text-muted">{@timeline_kind_label}</p>
-          </div>
+      :complete ->
+        "All #{expected} #{periods} that should hold data do."
 
-          <div class="join self-start text-sm favn-text-muted">
-            <button
-              :if={@has_data_windows? or @has_freshness_timeline?}
-              type="button"
-              class={[
-                "btn btn-sm join-item",
-                @active_timeline == :refresh && "btn-primary btn-soft",
-                @active_timeline != :refresh && "btn-ghost"
-              ]}
-              phx-click="set_timeline"
-              phx-value-timeline="refresh"
-              data-testid="refresh-timeline-toggle"
-            >
-              Run
-            </button>
+      :incomplete ->
+        "#{missing} of #{expected} #{periods} have no data."
 
-            <button
-              :if={@has_freshness_timeline?}
-              type="button"
-              class={[
-                "btn btn-sm join-item",
-                @active_timeline == :freshness && "btn-primary btn-soft",
-                @active_timeline != :freshness && "btn-ghost"
-              ]}
-              phx-click="set_timeline"
-              phx-value-timeline="freshness"
-              data-testid="freshness-timeline-toggle"
-            >
-              Freshness
-            </button>
+      _unknown ->
+        coverage_unknown_answer(field(coverage, :unknown_reason))
+    end
+  end
 
-            <button
-              :if={@has_data_windows?}
-              type="button"
-              class={[
-                "btn btn-sm join-item",
-                @active_timeline == :data_coverage && "btn-primary btn-soft",
-                @active_timeline != :data_coverage && "btn-ghost"
-              ]}
-              phx-click="set_timeline"
-              phx-value-timeline="data_coverage"
-              data-testid="data-coverage-timeline-toggle"
-            >
-              Data
-            </button>
+  defp coverage_unknown_answer(:coverage_not_declared),
+    do: "This asset does not say which periods it should cover, so there is nothing to check."
 
-            <button
-              type="button"
-              class="btn btn-ghost btn-sm join-item"
-              aria-label="Previous window range"
-            >
-              <.icon name="hero-chevron-left" class="size-4" />
-            </button>
+  defp coverage_unknown_answer(:non_windowed_asset),
+    do: "This asset rewrites its whole table every run, so it has no periods to cover."
 
-            <span class="btn btn-ghost btn-sm join-item pointer-events-none normal-case">
-              {@timeline_range}
-            </span>
+  defp coverage_unknown_answer(:target_generation_uninitialized),
+    do: "This asset has never been built, so there is nothing to compare against yet."
 
-            <button
-              type="button"
-              class="btn btn-ghost btn-sm join-item"
-              aria-label="Next window range"
-            >
-              <.icon name="hero-chevron-right" class="size-4" />
-            </button>
+  defp coverage_unknown_answer(_reason),
+    do: "Favn could not read coverage just now. Reload the page to try again."
 
-            <button
-              type="button"
-              class="btn btn-ghost btn-square btn-sm join-item"
-              aria-label="Calendar placeholder"
-            >
-              <.icon name="hero-calendar-days" class="size-4" />
-            </button>
-          </div>
-        </div>
-        <.freshness_summary freshness={@freshness} />
-        <div class="overflow-x-auto pb-2">
-          <div class="flex min-w-[58rem] items-end justify-between gap-3 pt-3">
-            <.timeline_window
-              :for={window <- @timeline}
-              window={window}
-              selected={selected_window?(@selected_window, window)}
-              selectable?={@active_timeline != :freshness}
-            />
-          </div>
-        </div>
+  defp coverage_caption(%{layout: :empty}), do: nil
 
-        <SelectedWindowActions.selected_window_actions
-          :if={@active_timeline != :freshness}
-          selected_window={@selected_window}
-          can_run_asset?={@can_run_asset?}
-          has_data_windows?={@has_data_windows?}
-          active_timeline={@active_timeline}
-          run_config_open?={@run_config_open?}
-          run_config={@run_config}
-          run_config_valid?={@run_config_valid?}
-          submitting_window_run?={@submitting_window_run?}
-          selected_window_error={@selected_window_error}
-          submitted_run_id={@submitted_run_id}
-          can_submit_runs?={@can_submit_runs?}
-          command_resource={@command_resource}
-        />
-      </div>
-    </.panel>
-    """
+  # Which grain the cells are and which clock they are read against. The screen shows
+  # numbers in a grid, and neither fact is guessable from them.
+  defp coverage_caption(calendar) do
+    grain = CoverageCalendar.period_noun(calendar.kind, calendar.period_count)
+
+    case calendar.timezone do
+      nil -> "#{calendar.period_count} #{grain}."
+      timezone -> "#{calendar.period_count} #{grain}, in #{timezone}."
+    end
+  end
+
+  # Coverage starts at the later of what the author declared and when the target was
+  # first built, so the two only need telling apart when they disagree.
+  defp coverage_start_label(policy) do
+    declared = field(policy, :declared_from)
+    effective = field(policy, :effective_from)
+
+    if declared && effective && declared != effective do
+      "#{coverage_time(effective)}, declared #{coverage_time(declared)}"
+    else
+      coverage_time(effective)
+    end
+  end
+
+  defp coverage_plan_window_label(window) do
+    case field(window, :start_at) do
+      %DateTime{} = start_at ->
+        CoverageCalendar.period_label(field(window, :kind), start_at)
+
+      _absent ->
+        field(window, :window_key)
+    end
   end
 
   attr :contexts, :list, required: true
@@ -729,26 +853,29 @@ defmodule FavnView.Components.AssetDetailPage do
     >
       <div class="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <div>
-          <p class="text-xs uppercase tracking-[0.18em] favn-text-subtle">Run context</p>
+          <p class="text-sm uppercase tracking-[0.18em] favn-text-subtle">Run context</p>
 
           <p class="mt-1 text-sm favn-text-muted">
-            Choose the pipeline policy used for run anchors and freshness evaluation.
+            Which pipeline's schedule this asset follows. It decides the periods below
+            and how freshness is judged.
           </p>
         </div>
 
-        <div class="flex flex-wrap gap-2">
+        <div class="flex min-w-0 flex-wrap gap-2">
           <.link
             :for={context <- @contexts}
             patch={context.href}
             class={[
-              "btn btn-sm",
+              "btn btn-sm h-auto min-h-8 max-w-full flex-col items-start whitespace-normal py-1.5 text-left",
               selected_run_context?(@selected, context) && "btn-primary btn-soft",
               !selected_run_context?(@selected, context) && "btn-ghost"
             ]}
             data-testid={"asset-run-context-#{context.id}"}
           >
-            {context.label}
-            <span class="text-xs opacity-60">{run_context_policy_label(context)}</span>
+            <span class="max-w-full break-words">{context.label}</span>
+            <span class="max-w-full break-words text-sm opacity-60">
+              {run_context_policy_label(context)}
+            </span>
           </.link>
         </div>
       </div>
@@ -764,34 +891,351 @@ defmodule FavnView.Components.AssetDetailPage do
     """
   end
 
-  attr :freshness, :map, default: nil
+  @doc """
+  What the asset is and how it is written.
 
-  def freshness_summary(assigns) do
+  The top half reads the same whatever the asset is: the author's own documentation,
+  its tags, its full address. The bottom half is the source, and that genuinely
+  differs — a SQL asset has a query and the tables it reads, an Elixir asset has a
+  module and a function. Showing one layout for both would mean showing empty fields
+  half the time.
+  """
+  attr :documentation, :any,
+    default: nil,
+    doc: "`{:ok, docs}`, `{:error, reason}`, or nil while the page has not opened"
+
+  attr :title, :string, required: true
+
+  def asset_documentation(assigns) do
+    docs = documentation_or_nil(assigns.documentation)
+
+    assigns =
+      assigns
+      |> assign(:docs, docs)
+      |> assign(:sql, docs && docs[:sql])
+
     ~H"""
-    <div
-      :if={@freshness}
-      class={[
-        "rounded-box border p-4",
-        freshness_panel_class(@freshness[:state])
-      ]}
-      data-testid="asset-freshness-summary"
-    >
-      <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div class="min-w-0">
-          <p class="text-xs uppercase tracking-[0.18em] favn-text-subtle">Freshness</p>
+    <div class="mx-auto w-full max-w-5xl space-y-6" data-testid="asset-documentation">
+      <.error_state
+        :if={match?({:error, _reason}, @documentation)}
+        title="Documentation cannot be read"
+        description="The control plane did not return this asset's definition."
+        data-testid="asset-documentation-error"
+      />
 
-          <div class="mt-1 flex flex-wrap items-center gap-2">
-            <span class={freshness_badge_class(@freshness[:state])}>
-              {freshness_state_label(@freshness[:state])}
-            </span>
-            <span class="text-xs favn-text-muted">{freshness_policy_label(@freshness)}</span>
-          </div>
+      <.panel :if={@docs} padding={:none} class="p-6 sm:p-8">
+        <h2 class="text-sm uppercase tracking-[0.18em] favn-text-subtle">What this is</h2>
 
-          <p class="mt-2 text-sm favn-text-muted">{@freshness[:explanation]}</p>
+        <p :if={@docs[:description]} class="mt-3 max-w-3xl whitespace-pre-line">
+          {@docs.description}
+        </p>
+
+        <p :if={is_nil(@docs[:description])} class="mt-3 text-sm favn-text-muted">
+          This asset has no documentation. Add a <code class="font-mono">@doc</code> to the
+          module and it appears here.
+        </p>
+
+        <dl :if={@docs[:metadata] != []} class="mt-6 space-y-2" data-testid="asset-tags">
+          <.field_row :for={entry <- @docs.metadata} label={humanize(entry.key)}>
+            {entry.value}
+          </.field_row>
+        </dl>
+
+        <div class="mt-6 flex flex-wrap items-baseline gap-x-3 border-t border-base-content/10 pt-4">
+          <span class="text-sm favn-text-subtle">Full address</span>
+          <.mono value={full_relation_address(@docs[:relation])} />
         </div>
-      </div>
+      </.panel>
+
+      <.panel :if={@sql} padding={:none} class="p-6 sm:p-8" data-testid="asset-sql">
+        <div class="flex flex-wrap items-baseline justify-between gap-2">
+          <h2 class="text-sm uppercase tracking-[0.18em] favn-text-subtle">The query</h2>
+          <span class="text-sm favn-text-subtle">{sql_line_count(@sql.sql)}</span>
+        </div>
+
+        <.fact_list
+          class="mt-4"
+          columns={2}
+          facts={
+            [
+              %{label: "Reads", value: reads_label(@sql.reads)},
+              @sql[:resolver] &&
+                %{label: "Input resolver", value: @sql.resolver, mono: true}
+            ]
+            |> Enum.filter(& &1)
+          }
+        />
+
+        <div :if={@sql[:fragments] != []} class="mt-4 flex flex-wrap items-baseline gap-2">
+          <span class="text-sm favn-text-subtle">Built from</span>
+          <.badge :for={fragment <- @sql.fragments} variant={:outline}>{fragment.name}</.badge>
+        </div>
+
+        <pre class="favn-surface-control mt-4 overflow-x-auto rounded-box p-4 text-sm"><code class="font-mono">{@sql.sql}</code></pre>
+      </.panel>
+
+      <.panel
+        :if={@docs && @docs[:entrypoint]}
+        padding={:none}
+        class="p-6 sm:p-8"
+        data-testid="asset-entrypoint"
+      >
+        <h2 class="text-sm uppercase tracking-[0.18em] favn-text-subtle">The code that runs</h2>
+
+        <.mono value={entrypoint_label(@docs.entrypoint)} class="mt-3 block text-base" />
+
+        <p class="mt-2 text-sm favn-text-muted">
+          Favn calls this function for every run. Its source lives in your project, not here.
+        </p>
+      </.panel>
+
+      <.empty_state
+        :if={@docs && is_nil(@sql) && is_nil(@docs[:entrypoint])}
+        title="No source to show"
+        description="This asset declares neither a query nor an entrypoint."
+        icon="hero-document"
+      />
     </div>
     """
+  end
+
+  defp documentation_or_nil({:ok, docs}), do: docs
+  defp documentation_or_nil(_documentation), do: nil
+
+  # Every level, unlike the overview's queryable address: this page is where someone
+  # checks how the asset is addressed, including the connection Favn reaches it over.
+  defp full_relation_address(nil), do: "Not declared"
+
+  defp full_relation_address(relation) do
+    [:connection, :catalog, :schema, :name]
+    |> Enum.map(&field(relation, &1))
+    |> Enum.reject(&(&1 in [nil, ""]))
+    |> case do
+      [] -> "Not declared"
+      levels -> Enum.join(levels, ".")
+    end
+  end
+
+  defp sql_line_count(sql) when is_binary(sql) do
+    case length(String.split(sql, "\n")) do
+      1 -> "1 line"
+      count -> "#{count} lines"
+    end
+  end
+
+  defp sql_line_count(_sql), do: nil
+
+  defp reads_label([]), do: "Nothing. It reads its source directly."
+
+  defp reads_label(reads),
+    do: Enum.map_join(reads, ", ", &(&1[:name] || &1[:asset_ref] || "unknown"))
+
+  defp entrypoint_label(%{module: module, function: function, arity: arity})
+       when is_integer(arity),
+       do: "#{module}.#{function}/#{arity}"
+
+  defp entrypoint_label(%{module: module, function: function}), do: "#{module}.#{function}"
+  defp entrypoint_label(_entrypoint), do: "Not declared"
+
+  @doc """
+  The asset in one screen: what state it is in, what is wrong, and what feeds it.
+
+  Facts first, then problems, then lineage, then the one action. Nothing here is
+  configuration — this page answers "is it working", and every panel that answered
+  "how is it set up" moved to Documentation or Diagnostics. A healthy asset shows no
+  problem panel at all rather than a green one saying nothing is wrong.
+  """
+  attr :freshness, :map, default: nil
+  attr :relation, :map, default: nil
+  attr :runs, :list, default: []
+  attr :upstream, :list, default: []
+  attr :downstream, :list, default: []
+  attr :title, :string, required: true
+  attr :asset_id, :string, required: true
+  attr :type, :string, default: nil
+  attr :cadence_label, :string, default: nil
+  attr :problems, :list, default: []
+  attr :run_contexts, :list, default: []
+  attr :selected_run_context, :map, default: nil
+  attr :run_context_status, :atom, default: :unavailable
+  attr :can_run_asset?, :boolean, default: true
+  attr :can_submit_runs?, :boolean, default: false
+  attr :submitting_window_run?, :boolean, default: false
+
+  def asset_overview(assigns) do
+    assigns = assign(assigns, :latest, List.first(assigns.runs))
+
+    ~H"""
+    <div class="mx-auto w-full max-w-[120rem] space-y-6" data-testid="asset-overview">
+      <.panel padding={:none} class="p-6 sm:p-8">
+        <!-- The one thing an operator comes here to do sits where an action belongs, not
+        at the bottom of a strip of run anchors. Which period it runs for is the dialog's
+        business; filling gaps is Coverage's. -->
+        <div class="mb-5 flex flex-wrap items-start justify-between gap-3">
+          <div class="min-w-0">
+            <p class="text-sm uppercase tracking-[0.18em] favn-text-subtle">This asset</p>
+          </div>
+
+          <.button
+            icon="hero-play"
+            phx-click="open_run_config"
+            loading={@submitting_window_run?}
+            disabled={!@can_submit_runs? || !@can_run_asset? || @submitting_window_run?}
+            title={run_disabled_title(assigns)}
+            data-testid="run-this-asset"
+          >
+            Run this asset
+          </.button>
+        </div>
+
+        <.fact_list columns={3} facts={overview_facts(assigns)} />
+
+        <div class="mt-5 flex flex-wrap items-baseline gap-x-3 gap-y-1 border-t border-base-content/10 pt-4">
+          <span class="text-sm favn-text-subtle">Lands in</span>
+          <.mono value={relation_address(@relation)} class="min-w-0 flex-1" />
+
+          <.link
+            :if={@latest}
+            patch={~p"/assets/#{@asset_id}/runs/#{@latest.id}"}
+            class="shrink-0 text-sm underline decoration-dotted hover:text-primary"
+          >
+            Open the last run
+          </.link>
+        </div>
+      </.panel>
+
+      <!-- Only where the choice is real. One pipeline owns most assets, and a selector
+      holding one option is a control that cannot change anything. -->
+      <.panel
+        :if={length(@run_contexts) > 1 || @run_context_status == :ambiguous}
+        padding={:none}
+        class="p-6 sm:p-8"
+      >
+        <.run_context_selector
+          contexts={@run_contexts}
+          selected={@selected_run_context}
+          status={@run_context_status}
+        />
+      </.panel>
+
+      <.notice
+        :for={problem <- @problems}
+        tone={problem.tone}
+        class="mx-auto w-full"
+        data-testid="asset-overview-problem"
+      >
+        <p class="font-medium">{problem.title}</p>
+        <p class="mt-0.5">{problem.detail}</p>
+        <.link
+          :if={problem[:href]}
+          patch={problem.href}
+          class="mt-1 inline-flex text-sm underline decoration-dotted"
+        >
+          {problem.action}
+        </.link>
+      </.notice>
+
+      <.panel padding={:none} class="p-6 sm:p-8" data-testid="asset-lineage">
+        <h2 class="text-sm uppercase tracking-[0.18em] favn-text-subtle">Lineage</h2>
+
+        <.lineage_graph
+          class="mt-4"
+          centre={%{label: @title, icon: asset_type_icon(@type)}}
+          inputs={Enum.map(@upstream, &lineage_node/1)}
+          outputs={Enum.map(@downstream, &lineage_node/1)}
+          inputs_empty="Nothing. This asset reads its source directly."
+          outputs_empty="Nothing yet. No other asset reads this one."
+        />
+      </.panel>
+    </div>
+    """
+  end
+
+  # A dependency this deployment does not carry gets no link and says so, rather than
+  # being dropped: a silently shorter list reads as a complete one.
+  defp lineage_node(%{target_id: target_id} = asset) when is_binary(target_id) do
+    %{
+      label: asset[:name] || asset[:asset_ref],
+      title: asset[:asset_ref],
+      icon: asset_type_icon(asset[:type]),
+      navigate: ~p"/assets/#{AssetRoute.to_param(target_id)}"
+    }
+  end
+
+  defp lineage_node(asset) do
+    %{
+      label: asset[:name] || asset[:asset_ref],
+      title: asset[:asset_ref],
+      icon: asset_type_icon(asset[:type]),
+      note: "not in this deployment"
+    }
+  end
+
+  # A disabled control has to say why, and the two reasons are different problems: one
+  # is the operator's role, the other is the asset's own state.
+  defp run_disabled_title(%{can_submit_runs?: false}),
+    do: "Running an asset needs an operator account"
+
+  defp run_disabled_title(%{can_run_asset?: false}),
+    do: "This asset cannot run until the problems above are resolved"
+
+  defp run_disabled_title(_assigns), do: nil
+
+  defp asset_type_icon(type) when type in ["sql", :sql], do: "hero-table-cells"
+  defp asset_type_icon(type) when type in ["elixir", :elixir], do: "hero-code-bracket"
+  defp asset_type_icon(type) when type in ["source", :source], do: "hero-cloud-arrow-down"
+  defp asset_type_icon(_type), do: "hero-cube"
+
+  defp overview_facts(assigns) do
+    [
+      %{
+        label: "Freshness",
+        value: freshness_state_label(assigns.freshness[:state]),
+        tone: freshness_tone(assigns.freshness[:state])
+      },
+      %{
+        label: "Last run",
+        value: last_run_value(assigns.latest),
+        tone: last_run_tone(assigns.latest)
+      },
+      %{label: "Runs", value: assigns.cadence_label || "On request"}
+    ]
+  end
+
+  defp last_run_value(nil), do: "Never"
+
+  defp last_run_value(run) do
+    [run[:day_label], run[:time_label]]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join(" ")
+    |> case do
+      "" -> run[:status_label] || "Unknown"
+      when_label -> "#{when_label} · #{run[:status_label]}"
+    end
+  end
+
+  defp last_run_tone(nil), do: :neutral
+  defp last_run_tone(run), do: run[:status_tone] || :neutral
+
+  defp freshness_tone(:fresh), do: :success
+  defp freshness_tone(:stale), do: :warning
+  defp freshness_tone(:always_run), do: :info
+  defp freshness_tone(_state), do: :neutral
+
+  # The address someone would type into a query, so the connection is left off: that
+  # names how Favn reaches the database, not where the table is inside it. The full
+  # four levels belong on Documentation. Declared levels are reported as they are and
+  # missing ones are never padded, so this cannot imply a depth the asset lacks.
+  defp relation_address(nil), do: "Not declared"
+
+  defp relation_address(relation) do
+    [:catalog, :schema, :name]
+    |> Enum.map(&field(relation, &1))
+    |> Enum.reject(&(&1 in [nil, ""]))
+    |> case do
+      [] -> "Not declared"
+      levels -> Enum.join(levels, ".")
+    end
   end
 
   attr :freshness, :map, default: nil
@@ -809,7 +1253,7 @@ defmodule FavnView.Components.AssetDetailPage do
 
       <div :if={@freshness} class="space-y-6">
         <div>
-          <p class="text-xs uppercase tracking-[0.18em] favn-text-subtle">Freshness detail</p>
+          <p class="text-sm uppercase tracking-[0.18em] favn-text-subtle">Freshness detail</p>
 
           <div class="mt-2 flex flex-wrap items-center gap-2">
             <span class={freshness_badge_class(@freshness[:state])}>
@@ -823,25 +1267,25 @@ defmodule FavnView.Components.AssetDetailPage do
 
         <dl :if={freshness_latest_success(@freshness)} class="grid gap-3 sm:grid-cols-3">
           <div class="rounded-box border border-base-content/10 bg-base-content/[0.03] p-3">
-            <dt class="text-xs uppercase tracking-[0.16em] favn-text-subtle">Latest success</dt>
+            <dt class="text-sm uppercase tracking-[0.16em] favn-text-subtle">Latest success</dt>
 
-            <dd class="mt-1 break-words font-mono text-xs favn-text-muted">
+            <dd class="mt-1 break-words font-mono text-sm favn-text-muted">
               {freshness_latest_success(@freshness)[:run_id]}
             </dd>
           </div>
 
           <div class="rounded-box border border-base-content/10 bg-base-content/[0.03] p-3">
-            <dt class="text-xs uppercase tracking-[0.16em] favn-text-subtle">Freshness key</dt>
+            <dt class="text-sm uppercase tracking-[0.16em] favn-text-subtle">Freshness key</dt>
 
-            <dd class="mt-1 break-words font-mono text-xs favn-text-muted">
+            <dd class="mt-1 break-words font-mono text-sm favn-text-muted">
               {freshness_latest_success(@freshness)[:freshness_key]}
             </dd>
           </div>
 
           <div class="rounded-box border border-base-content/10 bg-base-content/[0.03] p-3">
-            <dt class="text-xs uppercase tracking-[0.16em] favn-text-subtle">At</dt>
+            <dt class="text-sm uppercase tracking-[0.16em] favn-text-subtle">At</dt>
 
-            <dd class="mt-1 text-xs favn-text-muted">
+            <dd class="mt-1 text-sm favn-text-muted">
               {freshness_time(freshness_latest_success(@freshness)[:at])}
             </dd>
           </div>
@@ -857,14 +1301,14 @@ defmodule FavnView.Components.AssetDetailPage do
             >
               <div class="flex flex-wrap items-center gap-2">
                 <span class="badge badge-ghost badge-sm">{reason[:kind]}</span>
-                <span :if={reason[:upstream_ref]} class="font-mono text-xs favn-text-subtle">
+                <span :if={reason[:upstream_ref]} class="font-mono text-sm favn-text-subtle">
                   {reason[:upstream_ref]}
                 </span>
               </div>
 
               <p class="mt-2 text-sm favn-text-muted">{reason[:message]}</p>
 
-              <dl class="mt-3 grid gap-2 text-xs favn-text-muted sm:grid-cols-3">
+              <dl class="mt-3 grid gap-2 text-sm favn-text-muted sm:grid-cols-3">
                 <div :if={reason[:previous_version]}>
                   <dt class="uppercase tracking-[0.14em] favn-text-subtle">Previous</dt>
 
@@ -891,368 +1335,545 @@ defmodule FavnView.Components.AssetDetailPage do
     """
   end
 
+  @doc """
+  What one run promised to produce, and what it actually produced.
+
+  Two tables rather than a wall of cards. Every check is a row in one table —
+  contract row-count claims and hand-written checks alike — because a card each
+  stops working at the third check and an asset can declare a dozen. Columns are a
+  second table that stays shut when every column matched, so the reader opens it
+  only when there is a difference to look at.
+  """
   attr :assurance, :map, required: true
 
   def assurance_panel(assigns) do
+    validation = assigns.assurance[:contract_validation]
+    contract = assigns.assurance[:contract]
+    columns = column_rows(contract, validation)
+
     assigns =
       assigns
-      |> assign(:contract, assigns.assurance[:contract])
-      |> assign(:checks, assigns.assurance[:checks] || [])
-      |> assign(:validation, assigns.assurance[:contract_validation])
-      |> assign(:observed_by_name, observed_by_name(assigns.assurance[:contract_validation]))
+      |> assign(:contract, contract)
+      |> assign(:validation, validation)
+      |> assign(:check_rows, check_rows(assigns.assurance))
+      |> assign(:columns, columns)
+      |> assign(:observed?, is_map(validation))
+      |> assign(:mismatched, Enum.count(columns, & &1.mismatch))
 
     ~H"""
     <.panel padding={:none} class="p-6 sm:p-8" data-testid="asset-assurance-panel">
-      <div class="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-        <div>
-          <p class="text-xs uppercase tracking-[0.18em] favn-text-subtle">Data assurance</p>
-
-          <h2 class="mt-1 text-xl font-medium tracking-tight">Contract and quality checks</h2>
-
-          <p class="mt-2 max-w-3xl text-sm favn-text-muted">
-            Authored expectations, observed candidate evidence, and the latest generated and custom check outcomes.
-          </p>
-        </div>
+      <div class="flex flex-wrap items-start justify-between gap-3">
+        <h2 class="text-xl font-medium tracking-tight">Data quality</h2>
 
         <div class="flex flex-wrap gap-2">
-          <span
+          <.status_badge
             :if={@assurance[:quality_status]}
-            class={assurance_status_badge(@assurance[:quality_status])}
-          >
-            Quality {humanize(@assurance[:quality_status])}
-          </span>
-
-          <span :if={@assurance[:write_outcome]} class="badge badge-outline badge-sm">
-            Write {humanize(@assurance[:write_outcome])}
-          </span>
+            tone={quality_tone(@assurance[:quality_status])}
+            label={quality_label(@assurance[:quality_status])}
+          />
+          <.badge :if={@assurance[:write_outcome]} variant={:outline}>
+            {write_label(@assurance[:write_outcome])}
+          </.badge>
         </div>
       </div>
 
-      <section :if={@contract} class="mt-8 space-y-5" data-testid="asset-output-contract">
-        <div class="grid gap-3 md:grid-cols-3">
-          <.assurance_fact label="Grain" value={grain_label(@contract[:grain])} />
-          <.assurance_fact label="Unique keys" value={unique_keys_label(@contract[:unique_keys])} />
-          <.assurance_fact
-            label="Row count claims"
-            value={row_counts_label(@contract[:row_counts])}
-          />
-        </div>
+      <.fact_list
+        :if={@contract}
+        class="mt-5"
+        columns={2}
+        facts={[
+          %{label: "One row per", value: grain_label(@contract[:grain])},
+          %{label: "Must be unique", value: unique_keys_label(@contract[:unique_keys])}
+        ]}
+      />
 
-        <div
-          :if={List.wrap(@contract[:row_counts]) != []}
-          class="grid gap-3 lg:grid-cols-2"
-          data-testid="contract-row-count-claims"
-        >
-          <article
-            :for={{row_count, index} <- Enum.with_index(List.wrap(@contract[:row_counts]), 1)}
-            class="rounded-box border border-base-content/10 bg-base-content/[0.03] p-4"
-            data-testid="contract-row-count-claim"
-            data-claim-id={row_count[:claim_id]}
-          >
-            <div class="flex flex-wrap items-start justify-between gap-2">
-              <div>
-                <p class="text-xs uppercase tracking-[0.14em] favn-text-subtle">
-                  Row count claim {index}
-                </p>
-
-                <p class="mt-1 text-sm font-medium">{row_count_constraint_label(row_count)}</p>
-
-                <p class="mt-1 font-mono text-[0.7rem] favn-text-subtle">
-                  {row_count[:claim_id]}
-                </p>
-              </div>
-
-              <span class={check_result_badge(row_count[:latest_result])}>
-                {check_result_label(row_count[:latest_result])}
-              </span>
-            </div>
-
-            <p class="mt-2 text-xs favn-text-muted">
-              On violation {humanize(row_count[:on_violation])}
-              <span :if={row_count[:when]}> · when {humanize(row_count[:when])}</span>
-            </p>
-          </article>
-        </div>
-
-        <div
-          :if={List.wrap(@contract[:compositions]) != []}
-          class="flex flex-wrap items-center gap-2 text-xs"
-          data-testid="contract-compositions"
-        >
-          <span class="favn-text-subtle">Composed fragments</span>
-          <span
-            :for={composition <- List.wrap(@contract[:compositions])}
-            class="badge badge-outline badge-sm font-mono"
-          >
-            {inspect(composition[:module])}
+      <section :if={@check_rows != []} class="mt-8" data-testid="asset-quality-checks">
+        <div class="flex flex-wrap items-baseline justify-between gap-2">
+          <h3 class="font-medium">Checks</h3>
+          <span class={["text-sm", Tokens.text_class(checks_tone(@check_rows))]}>
+            {checks_summary(@check_rows)}
           </span>
         </div>
 
-        <div class="overflow-x-auto rounded-box border border-base-content/10">
-          <table class="table table-sm min-w-[52rem]">
+        <div class="mt-3 overflow-x-auto">
+          <table class="table w-full min-w-[44rem]">
             <thead>
-              <tr>
-                <th>Column</th>
+              <tr class="border-base-content/10 favn-text-muted">
+                <th>Check</th>
 
-                <th>Expected</th>
+                <th>When</th>
 
-                <th>Observed</th>
+                <th>Expects</th>
 
-                <th>Lineage</th>
+                <th>Found</th>
+
+                <th>Result</th>
               </tr>
             </thead>
 
             <tbody>
-              <tr :for={column <- @contract[:columns]} data-testid="contract-column">
+              <tr
+                :for={row <- @check_rows}
+                class="border-base-content/10"
+                data-testid="asset-quality-check"
+              >
                 <td>
-                  <p class="font-mono text-xs font-semibold">{column[:name]}</p>
-
-                  <span
-                    :if={column[:origin]}
-                    class="mt-1 inline-flex max-w-xs break-all rounded border border-base-content/10 px-1.5 py-0.5 font-mono text-[0.65rem] favn-text-subtle"
-                    data-testid="contract-column-origin"
-                    data-origin={column[:origin][:kind]}
-                  >
-                    {column_origin_label(column[:origin])}
-                  </span>
-
-                  <p :if={column[:description]} class="mt-1 max-w-xs text-xs favn-text-muted">
-                    {column[:description]}
-                  </p>
-
-                  <div :if={column[:tags] != []} class="mt-1 flex flex-wrap gap-1">
-                    <span :for={tag <- column[:tags]} class="badge badge-ghost badge-xs">{tag}</span>
-                  </div>
+                  <.stacked_cell
+                    primary={row.name}
+                    secondary={row.detail}
+                    mono={:primary}
+                    class="max-w-[16rem]"
+                  />
                 </td>
 
-                <td class="text-xs">
-                  <span class="font-mono">{column[:type]}</span>
-                  <span class="favn-text-subtle"> · {nullability_label(column[:nullable?])}</span>
-                </td>
+                <td class="favn-text-muted">{row.when}</td>
 
-                <td class="text-xs">
-                  <span :if={@observed_by_name[to_string(column[:name])]}>
-                    <span class="font-mono">
-                      {observed_type(@observed_by_name[to_string(column[:name])])}
-                    </span>
+                <td class="favn-text-muted">{row.expects}</td>
 
-                    <span class="favn-text-subtle">
-                      · {observed_nullability(@observed_by_name[to_string(column[:name])])}
-                    </span>
-                  </span>
+                <td class={row.found_tone && Tokens.text_class(row.found_tone)}>{row.found}</td>
 
-                  <span
-                    :if={!@observed_by_name[to_string(column[:name])]}
-                    class="favn-text-subtle"
-                  >
-                    Not observed
-                  </span>
-                </td>
-
-                <td class="text-xs">
-                  <div :if={column[:sources] != []} class="space-y-1">
-                    <p :for={source <- column[:sources]} class="font-mono text-[0.7rem]">
-                      {lineage_label(source)}
-                    </p>
-
-                    <span :if={column[:via]} class="badge badge-outline badge-xs">
-                      {column[:via]}
-                    </span>
-                  </div>
-                  <span :if={column[:sources] == []} class="favn-text-subtle">Not declared</span>
+                <td class="text-center">
+                  <.status_icon
+                    tone={row.tone}
+                    icon={row.result_icon}
+                    label={row.result}
+                    tooltip={:left}
+                  />
                 </td>
               </tr>
             </tbody>
           </table>
         </div>
+      </section>
 
-        <div
-          :if={@validation && @validation[:differences] != []}
-          class="rounded-box border border-error/25 bg-error/10 p-4"
-          data-testid="contract-schema-differences"
-        >
-          <h3 class="text-sm font-medium text-error">Schema differences</h3>
-
-          <ul class="mt-2 space-y-1 text-xs favn-text-muted">
-            <li :for={difference <- @validation[:differences]}>{difference_label(difference)}</li>
-          </ul>
-        </div>
-
-        <p
-          :if={@validation && @validation[:observed_truncated?]}
-          class="text-xs text-warning"
-        >
-          Candidate schema evidence is bounded to the first {length(@validation[:observed_columns])} of {@validation[
-            :observed_column_count
-          ]} columns.
+      <section :if={@columns != []} class="mt-8" data-testid="asset-output-contract">
+        <p :if={!@observed?} class="text-sm favn-text-muted">
+          This run did not record the table's actual columns, so only what the asset
+          promises is shown.
         </p>
+
+        <details open={@mismatched > 0}>
+          <summary class="flex cursor-pointer flex-wrap items-baseline justify-between gap-2">
+            <span class="font-medium">Columns</span>
+            <span class={["text-sm", Tokens.text_class(columns_tone(@mismatched, @observed?))]}>
+              {columns_summary(@columns, @mismatched, @observed?)}
+            </span>
+          </summary>
+
+          <div class="mt-3 overflow-x-auto">
+            <table class="table w-full min-w-[40rem]">
+              <thead>
+                <tr class="border-base-content/10 favn-text-muted">
+                  <th>Column</th>
+
+                  <th>Type</th>
+
+                  <th :if={@observed?}>Found</th>
+
+                  <th>Comes from</th>
+                </tr>
+              </thead>
+
+              <tbody>
+                <tr
+                  :for={column <- @columns}
+                  class="border-base-content/10"
+                  data-testid="contract-column"
+                >
+                  <td class="font-mono">{column.name}</td>
+
+                  <td class="favn-text-muted">{column.expected}</td>
+
+                  <td
+                    :if={@observed?}
+                    class={(column.mismatch && Tokens.text_class(:error)) || "favn-text-muted"}
+                  >
+                    {column.found}
+                  </td>
+
+                  <td class="favn-text-subtle">{column.source}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </details>
       </section>
 
-      <section :if={@checks != []} class="mt-8" data-testid="asset-quality-checks">
-        <div class="flex items-center justify-between gap-3">
-          <h3 class="text-sm font-medium">Checks</h3>
+      <.notice
+        :if={@validation && @validation[:differences] != []}
+        tone={:error}
+        class="mt-6"
+        data-testid="contract-schema-differences"
+      >
+        <p class="font-medium">The table does not match what the asset promises</p>
+        <ul class="mt-1 list-disc space-y-0.5 pl-4">
+          <li :for={difference <- @validation[:differences]}>{difference_label(difference)}</li>
+        </ul>
+      </.notice>
 
-          <span :if={@assurance[:latest_run_id]} class="font-mono text-xs favn-text-subtle">
-            {@assurance[:latest_run_id]}
-          </span>
-        </div>
-
-        <div class="mt-3 grid gap-3 lg:grid-cols-2">
-          <article
-            :for={check <- @checks}
-            class="rounded-box border border-base-content/10 bg-base-content/[0.03] p-4"
-            data-testid="asset-quality-check"
-            data-check-origin={check[:origin]}
-          >
-            <div class="flex flex-wrap items-start justify-between gap-2">
-              <div>
-                <div class="flex flex-wrap items-center gap-2">
-                  <span class={origin_badge(check[:origin])}>{origin_label(check[:origin])}</span>
-                  <p class="font-mono text-xs font-semibold">{check[:name]}</p>
-                </div>
-
-                <p :if={check[:claim_id]} class="mt-1 font-mono text-[0.7rem] favn-text-subtle">
-                  {check[:claim_id]}
-                </p>
-              </div>
-
-              <span class={check_result_badge(check[:latest_result])}>
-                {check_result_label(check[:latest_result])}
-              </span>
-            </div>
-
-            <p class="mt-2 text-xs favn-text-muted">
-              {humanize(check[:phase])} · on violation {humanize(check[:on_violation])}
-              <span :if={check[:when]}> · when {humanize(check[:when])}</span>
-            </p>
-
-            <p :if={check[:message]} class="mt-2 text-xs favn-text-muted">{check[:message]}</p>
-
-            <dl :if={check_metrics(check) != []} class="mt-3 grid gap-1 text-xs">
-              <div :for={{key, value} <- check_metrics(check)} class="flex justify-between gap-3">
-                <dt class="favn-text-subtle">{key}</dt>
-
-                <dd class="font-mono">{value}</dd>
-              </div>
-            </dl>
-          </article>
-        </div>
-      </section>
+      <p :if={@validation && @validation[:observed_truncated?]} class="mt-4 text-sm text-warning">
+        Only the first {length(@validation[:observed_columns])} of {@validation[
+          :observed_column_count
+        ]} columns were read.
+      </p>
     </.panel>
     """
   end
 
-  attr :label, :string, required: true
-  attr :value, :string, required: true
+  # Row-count claims and hand-written checks are the same thing to a reader: a rule
+  # that either held or did not. They were two different card layouts, so a contract
+  # claim looked unlike a check even when both had just passed.
+  defp check_rows(assurance) do
+    claim_rows =
+      assurance
+      |> get_in([Access.key(:contract, %{}), Access.key(:row_counts, [])])
+      |> List.wrap()
+      |> Enum.map(&row_count_check_row/1)
 
-  defp assurance_fact(assigns) do
-    ~H"""
-    <div class="rounded-box border border-base-content/10 bg-base-content/[0.03] p-3">
-      <p class="text-xs uppercase tracking-[0.14em] favn-text-subtle">{@label}</p>
+    check_rows =
+      assurance
+      |> Map.get(:checks, [])
+      |> List.wrap()
+      |> Enum.reject(&(&1[:origin] == :contract and is_binary(&1[:claim_id])))
+      |> Enum.map(&declared_check_row/1)
 
-      <p class="mt-1 text-sm favn-text-muted">{@value}</p>
-    </div>
-    """
+    claim_rows ++ check_rows
   end
 
-  attr :window, :map, required: true
-  attr :selected, :boolean, default: false
-  attr :selectable?, :boolean, default: true
+  defp row_count_check_row(row_count) do
+    result = row_count[:latest_result]
 
-  def timeline_window(assigns) do
-    ~H"""
-    <div class="flex flex-col items-center gap-4">
-      <button
-        type="button"
-        phx-click={@selectable? && "select_window"}
-        phx-value-window-id={@window.id}
-        disabled={!@selectable?}
-        data-testid={"timeline-window-#{@window.id}"}
-        class={[
-          "flex h-32 w-9 items-center justify-center rounded-box border backdrop-blur-sm transition hover:border-primary/50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-primary",
-          timeline_window_class(@window),
-          @selected && "ring-2 ring-primary shadow-primary/40 shadow-lg"
-        ]}
-        aria-label={"#{@window.date_label}: #{timeline_label(@window.status)}"}
-        aria-pressed={to_string(@selected)}
-      >
-        <.icon name={timeline_icon(@window.status)} class="size-4" />
-      </button>
-
-      <div class={[
-        "text-center text-xs leading-tight favn-text-muted",
-        @selected && "text-primary"
-      ]}>
-        <div class="max-w-16 text-balance">{@window.label}</div>
-      </div>
-      <span :if={@selected} class="status status-primary favn-status-glow"></span>
-    </div>
-    """
+    %{
+      name: "Row count",
+      detail: row_count[:claim_id],
+      when: "After writing",
+      expects: row_count_constraint_label(row_count),
+      found: metric_value(result, [:actual, :row_count, :count]),
+      found_tone: nil,
+      result: check_result_label(result),
+      result_icon: check_result_icon(result),
+      tone: check_result_tone(result),
+      on_violation: row_count[:on_violation]
+    }
   end
 
-  def sample_nav_items, do: Navigation.items(:assets)
+  defp declared_check_row(check) do
+    result = check[:latest_result]
 
-  def sample_timeline do
-    [
-      %{day: "24", month: "May", status: :success},
-      %{day: "25", month: "May", status: :success},
-      %{day: "26", month: "May", status: :success},
-      %{day: "27", month: "May", status: :success},
-      %{day: "28", month: "May", status: :warning},
-      %{day: "29", month: "May", status: :muted},
-      %{day: "30", month: "May", status: :muted},
-      %{day: "31", month: "May", status: :success},
-      %{day: "1", month: "Jun", status: :success},
-      %{day: "2", month: "Jun", status: :warning},
-      %{day: "3", month: "Jun", status: :success},
-      %{day: "4", month: "Jun", status: :success},
-      %{day: "5", month: "Jun", status: :success},
-      %{day: "6", month: "Jun", status: :success},
-      %{day: "7", month: "Jun", status: :muted},
-      %{day: "8", month: "Jun", status: :muted},
-      %{day: "9", month: "Jun", status: :success},
-      %{day: "10", month: "Jun", status: :success},
-      %{day: "11", month: "Jun", status: :success},
-      %{day: "12", month: "Jun", status: :success, current: true},
-      %{day: "13", month: "Jun", status: :success},
-      %{day: "14", month: "Jun", status: :success},
-      %{day: "15", month: "Jun", status: :success},
-      %{day: "16", month: "Jun", status: :success},
-      %{day: "17", month: "Jun", status: :success},
-      %{day: "18", month: "Jun", status: :success},
-      %{day: "19", month: "Jun", status: :success},
-      %{day: "20", month: "Jun", status: :muted},
-      %{day: "21", month: "Jun", status: :muted},
-      %{day: "22", month: "Jun", status: :success}
-    ]
-    |> Enum.map(&sample_window/1)
+    %{
+      name: to_string(check[:name]),
+      detail: check[:claim_id] || violation_label(check[:on_violation]),
+      when: phase_label(check[:phase]),
+      expects: check[:message] || violation_label(check[:on_violation]),
+      found: metric_value(result, [:actual, :count, :rows]),
+      found_tone: nil,
+      result: check_result_label(result),
+      result_icon: check_result_icon(result),
+      tone: check_result_tone(result),
+      on_violation: check[:on_violation]
+    }
   end
 
-  def muted_timeline do
-    sample_timeline()
-    |> Enum.map(&(&1 |> Map.put(:status, :muted) |> Map.delete(:current)))
-    |> List.update_at(20, &Map.put(&1, :current, true))
-  end
+  # Contract claims already appear as their own rows, so a generated check that
+  # restates one would be the same rule twice under two names.
+  defp column_rows(nil, _validation), do: []
 
-  def selected_sample_window do
-    Enum.find(sample_timeline(), & &1[:current])
-  end
+  defp column_rows(contract, validation) do
+    observed = observed_by_name(validation)
 
-  def selected_muted_window do
-    Enum.find(muted_timeline(), & &1[:current])
-  end
+    contract
+    |> Map.get(:columns, [])
+    |> List.wrap()
+    |> Enum.map(fn column ->
+      found = Map.get(observed, to_string(column[:name]))
 
-  def non_runnable_timeline do
-    Enum.map(sample_timeline(), fn window ->
-      window
-      |> Map.put(:run_enabled?, false)
-      |> Map.put(:run_disabled_reason, :asset_has_no_window_policy)
+      %{
+        name: to_string(column[:name]),
+        expected: column_type_label(column),
+        found: (found && observed_column_label(found)) || "not found",
+        mismatch: is_map(validation) and column_mismatch?(column, found),
+        source: column_source_label(column)
+      }
     end)
   end
 
-  def selected_non_runnable_window do
-    Enum.find(non_runnable_timeline(), & &1[:current])
+  defp column_mismatch?(_column, nil), do: true
+
+  defp column_mismatch?(column, found) do
+    to_string(value(found, :type)) != to_string(column[:type])
   end
+
+  defp column_type_label(column) do
+    "#{column[:type]} · #{requirement_label(column[:nullable?])}"
+  end
+
+  defp observed_column_label(found) do
+    "#{observed_type(found)} · #{observed_requirement_label(found)}"
+  end
+
+  defp requirement_label(true), do: "optional"
+  defp requirement_label(_nullable), do: "required"
+
+  defp observed_requirement_label(column) do
+    if value(column, :nullability_observed?) in [true, "true"] do
+      requirement_label(value(column, :nullable?))
+    else
+      "requirement not read"
+    end
+  end
+
+  # The fragment a column came from is context, not the answer, so it reads as a
+  # quiet source rather than a badge shouting over the column name.
+  defp column_source_label(column) do
+    case column[:origin] do
+      %{kind: :fragment, module: module} -> "shared: #{inspect(module)}"
+      _other -> lineage_source_label(column[:sources])
+    end
+  end
+
+  defp lineage_source_label([]), do: "this asset"
+  defp lineage_source_label(nil), do: "this asset"
+  defp lineage_source_label(sources), do: Enum.map_join(sources, ", ", &lineage_label/1)
+
+  defp phase_label(phase) when phase in [:after_materialize, "after_materialize"],
+    do: "After writing"
+
+  defp phase_label(phase) when phase in [:before_materialize, "before_materialize"],
+    do: "Before writing"
+
+  defp phase_label(nil), do: "-"
+  defp phase_label(phase), do: humanize(phase)
+
+  defp violation_label(violation) when violation in [:fail, "fail"], do: "fails the run"
+  defp violation_label(violation) when violation in [:warn, "warn"], do: "warns only"
+
+  defp violation_label(violation)
+       when violation in [:skip_materialization, "skip_materialization"],
+       do: "skips writing"
+
+  defp violation_label(nil), do: nil
+  defp violation_label(violation), do: humanize(violation)
+
+  defp metric_value(nil, _keys), do: "-"
+
+  defp metric_value(result, keys) do
+    metrics = value(result, :metrics, %{})
+
+    Enum.find_value(keys, "-", fn key ->
+      case value(metrics, key) do
+        nil -> nil
+        found -> format_metric(found)
+      end
+    end)
+  end
+
+  defp format_metric(found) when is_integer(found), do: delimited(found)
+  defp format_metric(found) when is_binary(found) or is_atom(found), do: to_string(found)
+  defp format_metric(found), do: inspect(found)
+
+  defp delimited(value) do
+    value
+    |> Integer.to_string()
+    |> String.reverse()
+    |> String.replace(~r/(\d{3})(?=\d)/, "\\1,")
+    |> String.reverse()
+  end
+
+  defp checks_summary(rows) do
+    passed = Enum.count(rows, &(&1.tone == :success))
+    "#{passed} of #{length(rows)} passed"
+  end
+
+  defp checks_tone(rows) do
+    cond do
+      Enum.any?(rows, &(&1.tone == :error)) -> :error
+      Enum.any?(rows, &(&1.tone == :warning)) -> :warning
+      Enum.all?(rows, &(&1.tone == :success)) -> :success
+      true -> :neutral
+    end
+  end
+
+  defp columns_summary(columns, _mismatched, false), do: "#{length(columns)} promised"
+  defp columns_summary(columns, 0, true), do: "#{length(columns)} of #{length(columns)} matched"
+
+  defp columns_summary(columns, mismatched, true),
+    do: "#{length(columns) - mismatched} of #{length(columns)} matched"
+
+  defp columns_tone(_mismatched, false), do: :neutral
+  defp columns_tone(0, true), do: :success
+  defp columns_tone(_mismatched, true), do: :error
+
+  defp quality_tone(status) when status in [:passed, "passed"], do: :success
+  defp quality_tone(status) when status in [:warning, "warning"], do: :warning
+  defp quality_tone(_status), do: :error
+
+  defp quality_label(status) when status in [:passed, "passed"], do: "All checks passed"
+  defp quality_label(status) when status in [:warning, "warning"], do: "Checks warned"
+  defp quality_label(_status), do: "Checks failed"
+
+  defp write_label(outcome) when outcome in [:written, "written"], do: "Table written"
+  defp write_label(outcome) when outcome in [:no_op, "no_op"], do: "Nothing to write"
+  defp write_label(outcome) when outcome in [:rolled_back, "rolled_back"], do: "Rolled back"
+  defp write_label(outcome) when outcome in [:not_started, "not_started"], do: "Never started"
+  defp write_label(outcome), do: humanize(outcome)
+
+  @doc """
+  One run's result for one asset, ordered by how likely each part is to be the answer.
+
+  The outcome comes first, then the failure if there was one, then the contract and
+  check evidence, and only then the inputs and metadata. A run that succeeded renders
+  short: the sections that hold nothing surprising are `details` the reader opens,
+  not panels they scroll past.
+  """
+  attr :run, :map, required: true, doc: "see `FavnOrchestrator.asset_run_detail/0`"
+  attr :asset_id, :string, required: true
+
+  def run_detail_panel(assigns) do
+    result = assigns.run[:asset_result]
+    meta = (result && result[:meta]) || %{}
+
+    assigns =
+      assigns
+      |> assign(:failed?, run_failed?(assigns.run))
+      |> assign(:result, result)
+      |> assign(:meta, meta)
+      |> assign(:write, OutputMetadata.outcome(meta, result && result[:status]))
+      |> assign(:inputs, List.wrap(assigns.run[:runtime_inputs]))
+
+    ~H"""
+    <div class="space-y-6" data-testid="asset-run-detail">
+      <.panel padding={:none} class="p-6 sm:p-8">
+        <div class="flex flex-wrap items-start justify-between gap-3">
+          <div class="min-w-0">
+            <p class="text-sm uppercase tracking-[0.18em] favn-text-subtle">Run</p>
+            <.mono value={@run.run_id} class="mt-1 block text-base" />
+          </div>
+
+          <.status_badge
+            tone={LogsViewModel.status_tone(@run.status)}
+            label={LogsViewModel.status_label(@run.status)}
+          />
+        </div>
+
+        <p :if={@write} class={["mt-4 text-lg font-light", Tokens.text_class(@write.tone)]}>
+          {@write.headline}
+          <span :if={@write.target} class="font-mono text-sm favn-text-subtle">
+            → {@write.target}
+          </span>
+        </p>
+
+        <.fact_list class="mt-6" columns={3} facts={run_facts(@run, @result)} />
+
+        <.notice
+          :if={@failed?}
+          tone={:error}
+          icon="hero-exclamation-triangle"
+          class="mt-6"
+          data-testid="asset-run-failure"
+        >
+          <p class="font-medium">{run_error_label(@run, @result)}</p>
+          <.link
+            navigate={~p"/runs/#{@run.run_id}"}
+            class="mt-1 inline-flex text-sm underline decoration-dotted"
+          >
+            Open the full run
+          </.link>
+        </.notice>
+      </.panel>
+
+      <.assurance_panel :if={@run[:assurance]} assurance={@run.assurance} />
+
+      <.panel :if={@inputs != []} padding={:none} class="p-6 sm:p-8">
+        <details>
+          <summary class="cursor-pointer text-sm font-medium">
+            Resolved inputs <span class="favn-text-subtle">({length(@inputs)})</span>
+          </summary>
+
+          <p class="mt-2 max-w-3xl text-sm favn-text-muted">
+            Which payload each resolver selected for this run. Values are not shown; a
+            resolver can declare its parameters sensitive, so the identity and the
+            fingerprint are what can be reported.
+          </p>
+
+          <div class="mt-4 space-y-3" data-testid="asset-run-inputs">
+            <div
+              :for={input <- @inputs}
+              class="rounded-box border border-base-content/10 bg-base-content/[0.03] p-4"
+            >
+              <p class="font-mono text-sm font-semibold">{inspect(input[:resolver])}</p>
+
+              <.field_row label="Input identity">
+                <.mono value={to_string(input[:input_identity])} />
+              </.field_row>
+              <.field_row label="Payload fingerprint">
+                <.mono value={to_string(input[:payload_fingerprint])} />
+              </.field_row>
+              <.field_row :if={input[:source_run_id]} label="Inherited from run">
+                <.link navigate={~p"/assets/#{@asset_id}/runs/#{input[:source_run_id]}"}>
+                  <.mono value={input[:source_run_id]} />
+                </.link>
+              </.field_row>
+            </div>
+          </div>
+        </details>
+      </.panel>
+
+      <OutputMetadata.output_metadata
+        :if={@meta != %{}}
+        id={"asset-run-metadata-#{@run.run_id}"}
+        metadata={@meta}
+        status={@result && @result[:status]}
+      />
+    </div>
+    """
+  end
+
+  defp run_facts(run, result) do
+    [
+      %{label: "Started", value: LogsViewModel.timestamp_label(run[:started_at])},
+      %{label: "Duration", value: duration_fact(run[:duration_ms])},
+      %{label: "Window", value: run_window_label(run[:window])},
+      %{label: "Trigger", value: LogsViewModel.trigger_label(run[:submit_kind]) || "Unknown"},
+      %{label: "Attempts", value: attempts_label(result)}
+    ]
+  end
+
+  defp run_failed?(run) do
+    LogsViewModel.status_tone(run[:status]) == :error or
+      (run[:asset_result] && LogsViewModel.status_tone(run.asset_result[:status]) == :error)
+  end
+
+  defp run_error_label(run, result) do
+    error = (result && result[:error]) || run[:error]
+
+    case error do
+      nil -> "This run failed after its asset step finished."
+      %{message: message} when is_binary(message) -> message
+      error when is_binary(error) -> error
+      error -> inspect(error)
+    end
+  end
+
+  defp duration_fact(nil), do: "Not finished"
+  defp duration_fact(ms) when ms < 1_000, do: "#{ms} ms"
+
+  defp duration_fact(ms) when ms < 60_000,
+    do: "#{:erlang.float_to_binary(ms / 1_000, decimals: 1)} s"
+
+  defp duration_fact(ms), do: "#{div(ms, 60_000)}m #{rem(div(ms, 1_000), 60)}s"
+
+  defp run_window_label(%{label: label}) when is_binary(label), do: label
+  defp run_window_label(%{value: value}) when is_binary(value), do: value
+  defp run_window_label(_window), do: "Full refresh"
+
+  defp attempts_label(%{attempt_count: count, max_attempts: max})
+       when is_integer(count) and is_integer(max),
+       do: "#{count} of #{max}"
+
+  defp attempts_label(%{attempt_count: count}) when is_integer(count), do: to_string(count)
+  defp attempts_label(_result), do: "Not reported"
+
+  def sample_nav_items, do: Navigation.items(:assets)
 
   def sample_freshness(:fresh) do
     %{
@@ -1331,11 +1952,45 @@ defmodule FavnView.Components.AssetDetailPage do
     }
   end
 
-  def detail_modes do
+  @doc """
+  Returns the rail destinations for one asset, newest question first.
+
+  Coverage answers whether data exists for every period the asset is expected to
+  cover, which is only a question for an asset that runs per window. A full-refresh
+  asset replaces its whole relation on every run, so the rail leaves the destination
+  out rather than offering a page with nothing to say.
+  """
+  @spec detail_modes(String.t(), boolean()) :: [map()]
+  def detail_modes(asset_id, has_data_windows?) do
     [
-      %{id: :timeline, label: "Timeline", icon: "hero-calendar-days"},
-      %{id: :details, label: "Details", icon: "hero-document-text"}
+      %{
+        id: :overview,
+        label: "Overview",
+        icon: "hero-squares-2x2",
+        patch: ~p"/assets/#{asset_id}"
+      },
+      %{id: :runs, label: "Runs", icon: "hero-clock", patch: ~p"/assets/#{asset_id}/runs"},
+      has_data_windows? &&
+        %{
+          id: :coverage,
+          label: "Coverage",
+          icon: "hero-calendar-days",
+          patch: ~p"/assets/#{asset_id}/coverage"
+        },
+      %{
+        id: :docs,
+        label: "Documentation",
+        icon: "hero-book-open",
+        patch: ~p"/assets/#{asset_id}/docs"
+      },
+      %{
+        id: :diagnostics,
+        label: "Diagnostics",
+        icon: "hero-wrench-screwdriver",
+        patch: ~p"/assets/#{asset_id}/diagnostics"
+      }
     ]
+    |> Enum.filter(& &1)
   end
 
   defp observed_by_name(%{observed_columns: columns}) when is_list(columns),
@@ -1357,12 +2012,6 @@ defmodule FavnView.Components.AssetDetailPage do
   defp unique_keys_label(keys),
     do: Enum.map_join(keys, " · ", &Enum.map_join(&1, ", ", fn name -> to_string(name) end))
 
-  defp row_counts_label([]), do: "Not declared"
-  defp row_counts_label(nil), do: "Not declared"
-
-  defp row_counts_label([_row_count]), do: "1 ordered claim"
-  defp row_counts_label(row_counts), do: "#{length(row_counts)} ordered claims"
-
   defp row_count_constraint_label(%{equals: %{source: :param, name: name}}),
     do: "Exactly @#{name}"
 
@@ -1377,27 +2026,8 @@ defmodule FavnView.Components.AssetDetailPage do
   defp row_count_constraint_label(%{max: max}) when is_integer(max), do: "At most #{max}"
   defp row_count_constraint_label(_row_count), do: "Constraint unavailable"
 
-  defp nullability_label(true), do: "nullable"
-  defp nullability_label(false), do: "required"
-
-  defp column_origin_label(%{kind: :fragment, module: module}), do: inspect(module)
-  defp column_origin_label(%{kind: :local}), do: "Local"
-  defp column_origin_label(origin), do: inspect(origin)
-
   defp observed_type(column),
     do: value(column, :native_type) || value(column, :type) || "unknown"
-
-  defp observed_nullability(column) do
-    if value(column, :nullability_observed?) in [true, "true"] do
-      case value(column, :nullable?) do
-        true -> "nullable"
-        false -> "required"
-        _other -> "nullability unknown"
-      end
-    else
-      "nullability unverified"
-    end
-  end
 
   defp lineage_label(%{kind: :asset, asset_ref: {module, name}, column: column}),
     do: "#{inspect(module)}.#{name}.#{column}"
@@ -1423,28 +2053,80 @@ defmodule FavnView.Components.AssetDetailPage do
     |> Enum.join(" · ")
   end
 
-  defp assurance_status_badge(status) when status in [:passed, "passed"],
-    do: "badge badge-success badge-soft badge-sm"
+  defp check_result_label(nil), do: "not run"
 
-  defp assurance_status_badge(status) when status in [:warning, "warning"],
-    do: "badge badge-warning badge-soft badge-sm"
-
-  defp assurance_status_badge(_status), do: "badge badge-error badge-soft badge-sm"
-
-  defp origin_badge(:contract), do: "badge badge-info badge-soft badge-xs"
-  defp origin_badge(_origin), do: "badge badge-ghost badge-xs"
-  defp origin_label(:contract), do: "Contract"
-  defp origin_label(_origin), do: "Custom"
-
-  defp check_result_label(nil), do: "Not run"
-  defp check_result_label(result), do: result |> value(:outcome) |> humanize()
-
-  defp check_result_badge(nil), do: "badge badge-ghost badge-sm"
-
-  defp check_result_badge(result) do
+  defp check_result_label(result) do
     case value(result, :outcome) do
-      outcome when outcome in [:passed, "passed", :condition_skipped, "condition_skipped"] ->
-        "badge badge-success badge-soft badge-sm"
+      outcome when outcome in [:passed, "passed"] ->
+        "passed"
+
+      outcome when outcome in [:warned, "warned"] ->
+        "warned"
+
+      outcome when outcome in [:failed, "failed"] ->
+        "failed"
+
+      outcome when outcome in [:errored, "errored"] ->
+        "could not run"
+
+      outcome when outcome in [:not_run, "not_run"] ->
+        "not run"
+
+      # The check's own condition was not met, so there was nothing to check. That is
+      # not a pass and not a failure, and "condition skipped" said neither.
+      outcome when outcome in [:condition_skipped, "condition_skipped"] ->
+        "not needed"
+
+      outcome when outcome in [:materialization_skipped, "materialization_skipped"] ->
+        "blocked the write"
+
+      outcome ->
+        humanize(outcome)
+    end
+  end
+
+  # One icon per outcome, not per tone: "not needed" and "not run" are both neutral and
+  # mean different things, and "blocked the write" shares its tone with a warning. The
+  # shape carries the state and the colour only reinforces it, which is also what keeps
+  # the cell readable for anyone who cannot separate the hues.
+  defp check_result_icon(nil), do: "hero-question-mark-circle"
+
+  defp check_result_icon(result) do
+    case value(result, :outcome) do
+      outcome when outcome in [:passed, "passed"] ->
+        "hero-check-circle"
+
+      outcome when outcome in [:warned, "warned"] ->
+        "hero-exclamation-triangle"
+
+      outcome when outcome in [:failed, "failed"] ->
+        "hero-x-circle"
+
+      outcome when outcome in [:errored, "errored"] ->
+        "hero-exclamation-circle"
+
+      outcome when outcome in [:not_run, "not_run"] ->
+        "hero-question-mark-circle"
+
+      outcome when outcome in [:condition_skipped, "condition_skipped"] ->
+        "hero-minus-circle"
+
+      outcome when outcome in [:materialization_skipped, "materialization_skipped"] ->
+        "hero-no-symbol"
+
+      _outcome ->
+        "hero-information-circle"
+    end
+  end
+
+  # A skipped check is not a pass. Both used to render green, so a run whose checks
+  # never executed looked exactly like a run whose checks all held.
+  defp check_result_tone(nil), do: :neutral
+
+  defp check_result_tone(result) do
+    case value(result, :outcome) do
+      outcome when outcome in [:passed, "passed"] ->
+        :success
 
       outcome
       when outcome in [
@@ -1453,24 +2135,21 @@ defmodule FavnView.Components.AssetDetailPage do
              :materialization_skipped,
              "materialization_skipped"
            ] ->
-        "badge badge-warning badge-soft badge-sm"
+        :warning
 
-      outcome when outcome in [:not_run, "not_run"] ->
-        "badge badge-ghost badge-sm"
+      outcome
+      when outcome in [
+             :not_run,
+             "not_run",
+             :condition_skipped,
+             "condition_skipped"
+           ] ->
+        :neutral
 
       _outcome ->
-        "badge badge-error badge-soft badge-sm"
+        :error
     end
   end
-
-  defp check_metrics(%{latest_result: result}) when is_map(result) do
-    result
-    |> value(:metrics, %{})
-    |> Enum.map(fn {key, metric_value} -> {to_string(key), inspect(metric_value)} end)
-    |> Enum.sort_by(&elem(&1, 0))
-  end
-
-  defp check_metrics(_check), do: []
 
   defp humanize(nil), do: "unknown"
 
@@ -1488,22 +2167,6 @@ defmodule FavnView.Components.AssetDetailPage do
   defp coverage_status_label(:incomplete), do: "Incomplete"
   defp coverage_status_label(_status), do: "Unknown"
 
-  defp coverage_explanation(coverage) do
-    case field(coverage, :status) do
-      :complete ->
-        "Every window expected at this evaluation time has successful evidence."
-
-      :incomplete ->
-        "Some expected windows do not have successful evidence in the active generation."
-
-      :unknown ->
-        "Coverage is unavailable: #{humanize(field(coverage, :unknown_reason))}."
-
-      _other ->
-        "Coverage is unavailable."
-    end
-  end
-
   defp coverage_time(%DateTime{} = value),
     do: Calendar.strftime(value, "%b %-d, %Y %H:%M %Z")
 
@@ -1520,8 +2183,10 @@ defmodule FavnView.Components.AssetDetailPage do
     end
   end
 
+  # An absent generation means the table was never built, which is a state with its own
+  # meaning rather than a value that failed to load.
   defp coverage_generation_label(value) when is_binary(value), do: value
-  defp coverage_generation_label(_value), do: "No persisted generation"
+  defp coverage_generation_label(_value), do: "Never built"
 
   defp compatibility_panel_class(status)
        when status in [:rebuild_required, :unexpected_drift, :operator_decision],
@@ -1548,17 +2213,47 @@ defmodule FavnView.Components.AssetDetailPage do
   defp compatibility_status_label(:operator_decision), do: "Operator decision"
   defp compatibility_status_label(_status), do: "Unknown"
 
+  # Plain sentences, because the operator's question is whether the asset can run. The
+  # words these replaced — "the desired descriptor and active physical target are
+  # compatible" — named Favn's internals and answered a question nobody asked.
   defp compatibility_explanation(compatibility) do
-    case field(compatibility, :status) do
-      :ready -> "The desired descriptor and active physical target are compatible."
-      :uninitialized -> "The first successful materialization will initialize this target."
-      :rebuild_available -> "Transformation semantics changed; ordinary writes remain allowed."
-      :rebuild_required -> "The desired target is incompatible with the active generation."
-      :unexpected_drift -> "The physical target changed outside the recorded generation."
-      :operator_decision -> "Favn cannot prove target ownership or safe compatibility."
-      _other -> "Target compatibility is unavailable."
+    cond do
+      !field(compatibility, :persisted?, false) ->
+        "This asset does not manage a table of its own, so there is nothing to check here."
+
+      true ->
+        compatibility_verdict(field(compatibility, :status))
     end
   end
+
+  defp compatibility_verdict(:ready),
+    do: "The table Favn wants is the table it has. Nothing needs doing."
+
+  defp compatibility_verdict(:uninitialized),
+    do: "This table does not exist yet. The first successful run creates it."
+
+  defp compatibility_verdict(:rebuild_available),
+    do:
+      "The way this asset builds its table changed. Runs still work, and rebuilding " <>
+        "brings the existing rows in line with the new definition."
+
+  defp compatibility_verdict(:rebuild_required),
+    do:
+      "The table Favn wants no longer fits the one it has, so writing to it would " <>
+        "corrupt what is there. Rebuilding replaces it."
+
+  defp compatibility_verdict(:unexpected_drift),
+    do:
+      "Something changed this table outside Favn. Favn will not write over a change " <>
+        "it cannot account for."
+
+  defp compatibility_verdict(:operator_decision),
+    do:
+      "Favn cannot tell whether it owns this table, so it will not write to it. " <>
+        "Taking ownership says the table is Favn's to manage."
+
+  defp compatibility_verdict(_status),
+    do: "Favn could not read the state of this table just now."
 
   defp compatibility_diff_entries(diff) when is_map(diff) do
     diff
@@ -1573,6 +2268,9 @@ defmodule FavnView.Components.AssetDetailPage do
     desired = field(change, :desired, field(change, :observed))
 
     cond do
+      is_map(previous) and is_map(desired) ->
+        changed_side_by_side(previous, desired)
+
       !is_nil(previous) or !is_nil(desired) ->
         "#{bounded_value(previous)} → #{bounded_value(desired)}"
 
@@ -1583,9 +2281,42 @@ defmodule FavnView.Components.AssetDetailPage do
 
   defp compatibility_change_label(change), do: bounded_value(change)
 
+  # Only the keys that moved. Both sides of a window identity carry the timezone even
+  # when the timezone is not what changed, and printing it twice buried the one field
+  # that did — the row read `%{kind: :day, timezone: "Europe/Oslo"} → %{kind: :month,
+  # timezone: "Europe/Oslo"}` where it should read `day → month`.
+  defp changed_side_by_side(previous, desired) do
+    keys =
+      (Map.keys(previous) ++ Map.keys(desired))
+      |> Enum.uniq()
+      |> Enum.filter(&(Map.get(previous, &1) != Map.get(desired, &1)))
+      |> Enum.sort_by(&to_string/1)
+
+    case keys do
+      [] -> "unchanged"
+      keys -> "#{side_values(previous, keys)} → #{side_values(desired, keys)}"
+    end
+  end
+
+  defp side_values(side, keys),
+    do: Enum.map_join(keys, ", ", &bounded_value(Map.get(side, &1)))
+
   defp bounded_value(nil), do: "-"
-  defp bounded_value(value) when is_binary(value), do: String.slice(value, 0, 200)
+
+  # Long enough to be a hash, and the whole value is in the identifiers disclosure, so
+  # a prefix is all a difference needs to be visible.
+  defp bounded_value(value) when is_binary(value) and byte_size(value) > 24,
+    do: String.slice(value, 0, 12) <> "…"
+
+  defp bounded_value(value) when is_binary(value), do: value
   defp bounded_value(value) when is_atom(value) or is_number(value), do: to_string(value)
+
+  defp bounded_value(value) when is_map(value),
+    do:
+      Enum.map_join(Enum.sort_by(Map.to_list(value), &to_string(elem(&1, 0))), ", ", fn
+        {key, inner} -> "#{key}: #{bounded_value(inner)}"
+      end)
+
   defp bounded_value(value), do: inspect(value, limit: 10, printable_limit: 200)
 
   defp availability_label(0), do: "Available at the window boundary"
@@ -1608,9 +2339,6 @@ defmodule FavnView.Components.AssetDetailPage do
   defp value(map, key, default \\ nil) when is_map(map),
     do: Map.get(map, key, Map.get(map, Atom.to_string(key), default))
 
-  defp selected_window?(nil, _window), do: false
-  defp selected_window?(selected_window, window), do: selected_window.id == window.id
-
   defp selected_run_context?(%{id: id}, %{id: id}), do: true
   defp selected_run_context?(_selected, _context), do: false
 
@@ -1619,91 +2347,6 @@ defmodule FavnView.Components.AssetDetailPage do
   end
 
   defp run_context_policy_label(%{timezone: timezone}), do: timezone
-
-  defp active_timeline(%{active_timeline: :data_coverage, data_coverage_timeline: timeline})
-       when is_list(timeline), do: timeline
-
-  defp active_timeline(%{active_timeline: :freshness, freshness_timeline: timeline})
-       when is_list(timeline), do: timeline
-
-  defp active_timeline(%{refresh_timeline: timeline}), do: timeline
-
-  defp active_timeline_range(%{
-         active_timeline: :data_coverage,
-         data_coverage_window_range: range
-       }),
-       do: range
-
-  defp active_timeline_range(%{
-         active_timeline: :freshness,
-         freshness_window_range: range
-       }),
-       do: range
-
-  defp active_timeline_range(%{refresh_window_range: range}), do: range
-
-  defp active_timeline_label(%{active_timeline: :data_coverage}), do: "Data coverage timeline"
-  defp active_timeline_label(%{active_timeline: :freshness}), do: "Freshness timeline"
-  defp active_timeline_label(_assigns), do: "Run anchor timeline"
-
-  defp active_timeline_kind_label(%{
-         active_timeline: :data_coverage,
-         data_coverage_timeline_label: label
-       }),
-       do: label
-
-  defp active_timeline_kind_label(%{
-         active_timeline: :freshness,
-         freshness_cadence_label: label
-       }),
-       do: label
-
-  defp active_timeline_kind_label(%{refresh_cadence_label: label}), do: label
-
-  defp sample_window(%{month: month, day: day} = window) do
-    year = if month == "May", do: 2026, else: 2026
-    date_label = "#{month} #{day}, #{year}"
-
-    window
-    |> Map.put(:id, "#{String.downcase(month)}-#{day}-#{year}")
-    |> Map.put(:label, day)
-    |> Map.put(:date_label, date_label)
-    |> Map.put(:range_label, date_label)
-    |> Map.put(:run_enabled?, true)
-    |> Map.put(:run_disabled_reason, nil)
-    |> Map.put(:run_label, "Run this window")
-  end
-
-  # A window's border is the boundary that says which state it is in, so it owes
-  # 3:1 against the wash behind it, in both themes. The opacities are measured,
-  # not chosen, and the light theme sets them: its tone colours sit much closer in
-  # luminance to a pale wash than the dark theme's do. At the values these
-  # replaced, all four measured under 2.6.
-  defp timeline_window_class(%{status: :success}) do
-    "border-success/90 bg-success/15 text-success"
-  end
-
-  defp timeline_window_class(%{status: :warning}) do
-    "border-warning/90 bg-warning/15 text-warning"
-  end
-
-  defp timeline_window_class(%{status: :error}) do
-    "border-error/80 bg-error/15 text-error"
-  end
-
-  defp timeline_window_class(%{status: :muted}) do
-    "border-base-content/60 bg-base-content/10 favn-text-subtle"
-  end
-
-  defp timeline_icon(:success), do: "hero-check-circle"
-  defp timeline_icon(:warning), do: "hero-clock"
-  defp timeline_icon(:error), do: "hero-x-circle"
-  defp timeline_icon(:muted), do: "hero-minus-circle"
-
-  defp timeline_label(:success), do: "fresh"
-  defp timeline_label(:warning), do: "running"
-  defp timeline_label(:error), do: "failed"
-  defp timeline_label(:muted), do: "unknown"
 
   defp freshness_state_label(:fresh), do: "Fresh"
   defp freshness_state_label(:stale), do: "Stale"
@@ -1714,11 +2357,6 @@ defmodule FavnView.Components.AssetDetailPage do
   defp freshness_badge_class(:stale), do: "badge badge-warning badge-soft badge-sm"
   defp freshness_badge_class(:always_run), do: "badge badge-info badge-soft badge-sm"
   defp freshness_badge_class(_state), do: "badge badge-neutral badge-soft badge-sm"
-
-  defp freshness_panel_class(:fresh), do: "border-success/20 bg-success/10"
-  defp freshness_panel_class(:stale), do: "border-warning/25 bg-warning/10"
-  defp freshness_panel_class(:always_run), do: "border-info/20 bg-info/10"
-  defp freshness_panel_class(_state), do: "border-base-content/10 bg-base-content/[0.035]"
 
   defp freshness_policy_label(%{policy: %{label: label}}) when is_binary(label), do: label
   defp freshness_policy_label(%{"policy" => %{"label" => label}}) when is_binary(label), do: label

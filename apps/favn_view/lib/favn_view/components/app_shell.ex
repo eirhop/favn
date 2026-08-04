@@ -53,6 +53,18 @@ defmodule FavnView.Components.AppShell do
   slot :mode_rail, doc: "page-local mode controls; see `FavnView.Components.ModeRail`"
   slot :actions, doc: "screen-level actions, rendered in the toolbar"
 
+  slot :overlay,
+    doc: """
+    dialogs and anything else that must cover the whole screen.
+
+    Not `inner_block`, because content sits inside a `z-10` wrapper and the mobile mode
+    dock is a `z-30` sibling of it: a modal rendered in the content cannot rise above
+    the dock however high its own `z-index`, since that only ranks it inside the
+    wrapper. Content is also inside a panel most of the time, and a panel's
+    `backdrop-filter` makes it the containing block for `position: fixed`, which clips
+    a modal to the card. This slot is outside both.
+    """
+
   def app_shell(assigns) do
     assigns = assign(assigns, :admin?, Scope.has_role?(assigns.current_scope, :admin))
 
@@ -145,6 +157,7 @@ defmodule FavnView.Components.AppShell do
       </div>
 
       {render_slot(@mode_rail)}
+      {render_slot(@overlay)}
       <.flash_group flash={@flash} />
     </div>
     """

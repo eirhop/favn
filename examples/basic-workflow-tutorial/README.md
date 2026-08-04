@@ -2,7 +2,7 @@
 
 A complete, runnable Favn project you can read in one sitting and copy as a
 starting point. It lands data from a stand-in CRM API and publishes it through
-three warehouse layers into a DuckDB file.
+three warehouse layers, one DuckDB catalog per layer.
 
 Everything runs locally with no external services beyond the PostgreSQL control
 plane, and every setting has a working default.
@@ -17,9 +17,10 @@ plane, and every setting has a working default.
 | Runtime inputs: binding a file list chosen at run time | `lib/crm_demo/warehouse/source/crm/inputs.ex` |
 | SQL output contracts, grain, and row-count reconciliation | `lib/crm_demo/warehouse/source/crm/events/deal.ex` |
 | Reusable contract fragments and matching SQL projection helpers | `lib/crm_demo/contracts/`, `lib/crm_demo/sql/` |
-| Namespace inheritance for connection, schema, window, and coverage | `lib/crm_demo/warehouse/` |
+| Namespace inheritance for connection, catalog, schema, window, and coverage | `lib/crm_demo/warehouse/` |
 | Full refresh, daily windows, incremental writes, and views | the Source, Core, and Mart assets |
 | Custom transactional checks | `lib/crm_demo/warehouse/mart/sales/account_health.ex` |
+| Trusted DuckDB session scripts, one catalog per phase | `priv/duckdb/`, `config/config.exs` |
 | Retry, cancellation, and schedule behavior | `lib/crm_demo/lifecycle/` |
 | Elastic runner scale-up and self-exit | `lib/crm_demo/lifecycle/elastic_scale_probe/` |
 
@@ -28,6 +29,7 @@ plane, and every setting has a working default.
 Folder paths mirror module namespaces, and each folder has one job.
 
 ```text
+priv/duckdb/                        trusted ATTACH script per phase
 lib/crm_demo/
 ├── connections/warehouse.ex        the DuckDB connection
 ├── integrations/crm/client.ex      HTTP-shaped transport, nothing else
@@ -50,11 +52,16 @@ contract's column order and the query's projection order are the same.
 
 ```text
 CRM API  ──►  landing/crm       ──►  warehouse/source/crm  ──►  warehouse/core/sales  ──►  warehouse/mart/sales
-             .jsonl parts +          source.account             core.customer              mart.account_health
-             _manifest.json          source.contact             core.opportunity           mart.pipeline_daily
-                                     source.deal                core.engagement            mart.executive_overview
-                                     source.activity
+             .jsonl parts +          source.crm.account         core.sales.customer        mart.sales.account_health
+             _manifest.json          source.crm.contact         core.sales.opportunity     mart.sales.pipeline_daily
+                                     source.crm.deal            core.sales.engagement      mart.sales.executive_overview
+                                     source.crm.activity
 ```
+
+A relation address is `catalog.schema.name`: the catalog is the warehouse phase
+and the schema is the business domain, which is the split
+`Favn.RelationRef` describes. Each phase is its own attached DuckDB catalog, so
+the addresses above are the real ones an operator or a report can query.
 
 Landing is the only layer that talks to the source system. Source reads only the
 files one completed manifest listed. Core reads only persisted relations. A
@@ -68,7 +75,7 @@ mix deps.get && mix compile && mix test
 ```
 
 The tests cover the client, the landing contract, the runtime-input resolver,
-the compiled manifest, and a full materialization against a real DuckDB file.
+the compiled manifest, and a full materialization against real DuckDB files.
 
 ## Run it
 
@@ -102,11 +109,17 @@ The fixture contains events on 2026-07-22 and 2026-07-23 only. Without
 but produces empty marts. Use `mix favn.backfill` for a range.
 
 Inspect the result with any DuckDB client, after stopping the stack - the
-running example owns its single file-backed session:
+running example owns its file-backed session. Each phase is its own database
+file, so attach the one you want exactly as `priv/duckdb/mart_catalog.sql` does:
 
 ```sql
-select * from mart.executive_overview;
+ATTACH 'crm_demo_mart.duckdb' AS mart;
+select * from mart.sales.executive_overview;
 ```
+
+The alias has to be `mart`. A stored view holds the address it was created with,
+so opening `crm_demo_mart.duckdb` directly and querying `sales.executive_overview`
+fails to bind - the view is looking for `mart.sales.*`.
 
 ## Configuration
 
@@ -117,12 +130,15 @@ select * from mart.executive_overview;
 | `CRM_API_BASE_URL` | unset | Declared as optional runtime config; the stand-in client records it. |
 | `CRM_API_TOKEN` | unset | Declared as an optional secret so redaction is visible in the UI. |
 
-The warehouse file is `crm_demo.duckdb`, tests use `crm_demo_test.duckdb`, and
-landed files go under `.data/landing/`. All three are configured in
-`config/config.exs`.
+The connection opens an in-memory database and attaches one catalog per warehouse
+phase - `crm_demo_source.duckdb`, `crm_demo_core.duckdb`, and
+`crm_demo_mart.duckdb` - through the trusted `ATTACH` scripts in `priv/duckdb/`.
+Every asset lives in one of those three, so the connection needs no file of its
+own. Tests use the same layout under a `crm_demo_test` prefix, and landed files
+go under `.data/landing/`. All of it is configured in `config/config.exs`.
 
 Every DuckDB-writing asset uses the one-slot `duckdb` execution pool, which
-serializes writes to the single file-backed catalog.
+serializes writes across those file-backed catalogs.
 
 ## Lifecycle probes
 

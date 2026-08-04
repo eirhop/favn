@@ -29,8 +29,9 @@ defmodule FavnView.Components.RunDetailPage.Failures do
       <p class="font-medium">
         {@total} window {if(@total == 1, do: "run", else: "runs")} failed without running assets
       </p>
+
       <ul class="mt-2 space-y-1">
-        <li :for={failure <- @failures} class="text-xs" data-testid="window-failure-row">
+        <li :for={failure <- @failures} class="text-sm" data-testid="window-failure-row">
           <span class="font-medium">{failure.window_label}</span>
           <span class="favn-text-muted">— {failure.error_summary}</span>
           <.link
@@ -42,7 +43,8 @@ defmodule FavnView.Components.RunDetailPage.Failures do
           </.link>
         </li>
       </ul>
-      <p :if={@total > length(@failures)} class="mt-2 text-xs favn-text-muted">
+
+      <p :if={@total > length(@failures)} class="mt-2 text-sm favn-text-muted">
         Showing {length(@failures)} of {@total}.
       </p>
     </.notice>

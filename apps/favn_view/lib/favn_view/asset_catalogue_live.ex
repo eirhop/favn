@@ -29,14 +29,15 @@ defmodule FavnView.AssetCatalogueLive do
         lineage_selected_kind: nil,
         lineage_loading: false,
         lineage_error: nil,
-        lineage_search: "",
         lineage_zoom: 62,
         lineage_inspector_open?: true,
         loading: false,
         error: error,
+        filters_open?: false,
         nav_items: AssetCataloguePage.nav_items(),
         connection_options: AssetCatalogueFilters.connection_options(assets),
-        catalogue_options: AssetCatalogueFilters.catalogue_options(assets, "all"),
+        catalogue_options: AssetCatalogueFilters.catalogue_options(assets, @default_filters),
+        schema_options: AssetCatalogueFilters.schema_options(assets, @default_filters),
         scope_choices: AssetCatalogueFilters.scope_choices(assets, @default_filters)
       )
 
@@ -60,7 +61,7 @@ defmodule FavnView.AssetCatalogueLive do
       params
       |> Map.put("scope", socket.assigns.filters.scope)
       |> AssetCatalogueFilters.normalize()
-      |> AssetCatalogueFilters.reconcile_catalogue(socket.assigns.all_assets)
+      |> AssetCatalogueFilters.reconcile_namespace(socket.assigns.all_assets)
 
     {:noreply, apply_filters(socket, filters)}
   end
@@ -71,6 +72,10 @@ defmodule FavnView.AssetCatalogueLive do
 
   def handle_event("clear_filters", _params, socket) do
     {:noreply, apply_filters(socket, @default_filters)}
+  end
+
+  def handle_event("toggle_filters", _params, socket) do
+    {:noreply, update(socket, :filters_open?, &(not &1))}
   end
 
   def handle_event("set_mode", %{"mode" => mode}, socket) when mode in @valid_modes do
@@ -139,12 +144,13 @@ defmodule FavnView.AssetCatalogueLive do
       flash={@flash}
       connection_options={@connection_options}
       catalogue_options={@catalogue_options}
+      schema_options={@schema_options}
       scope_choices={@scope_choices}
+      filters_open?={@filters_open?}
       lineage_graph={@lineage_graph}
       lineage_inspector={@lineage_inspector}
       lineage_loading={@lineage_loading}
       lineage_error={@lineage_error}
-      lineage_search={@lineage_search}
       lineage_zoom={@lineage_zoom}
       lineage_inspector_open?={@lineage_inspector_open?}
     />
@@ -270,7 +276,8 @@ defmodule FavnView.AssetCatalogueLive do
     assign(socket,
       filters: filters,
       assets: AssetCatalogueFilters.filter(all_assets, filters),
-      catalogue_options: AssetCatalogueFilters.catalogue_options(all_assets, filters.connection),
+      catalogue_options: AssetCatalogueFilters.catalogue_options(all_assets, filters),
+      schema_options: AssetCatalogueFilters.schema_options(all_assets, filters),
       scope_choices: AssetCatalogueFilters.scope_choices(all_assets, filters)
     )
   end
@@ -293,15 +300,22 @@ defmodule FavnView.AssetCatalogueLive do
     end
   end
 
+  # The relation levels are reported as they are, never padded out with
+  # "unknown" — that read as populated levels and hid the ones that do exist.
+  # `module_path` stays a separate key rather than standing in for the levels: it
+  # is what an asset owning no relation can be *shown* as, but it addresses
+  # nothing, so it must not become a filter option an operator can pick.
   defp asset_from_entry(entry) do
     relation = Map.get(entry, :relation) || %{}
 
     %{
       id: Map.fetch!(entry, :target_id),
       route_id: entry |> Map.fetch!(:target_id) |> AssetRoute.to_param(),
-      name: relation_field(relation, :name) || asset_name(entry),
-      connection: relation_field(relation, :connection) || "unknown",
-      catalogue: relation_field(relation, :catalog) || "uncatalogued",
+      name: entry[:name] || relation_field(relation, :name) || asset_name(entry),
+      connection: relation_field(relation, :connection),
+      catalogue: relation_field(relation, :catalog),
+      schema: relation_field(relation, :schema),
+      module_path: Map.get(entry, :module_path) || [],
       type: entry[:type] || "asset",
       status: entry[:status] || :unknown,
       coverage_status: get_in(entry, [:coverage, Access.key(:status)]) || :unknown,

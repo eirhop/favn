@@ -99,15 +99,19 @@ defmodule FavnView.Components.ScheduleUi do
     >
       <:col :let={occurrence} label="Due at" class="whitespace-nowrap">
         <p class="font-medium text-base-content">{occurrence.due_label}</p>
-        <p class="text-xs favn-text-subtle">{occurrence.timezone}</p>
+
+        <p class="text-sm favn-text-subtle">{occurrence.timezone}</p>
       </:col>
-      <:col :let={occurrence} label="Window" class="min-w-48 text-xs favn-text-muted">
+
+      <:col :let={occurrence} label="Window" class="min-w-48 text-sm favn-text-muted">
         {occurrence.window_label}
       </:col>
+
       <:col :let={occurrence} label="Status">
         <.occurrence_status_badge status={occurrence.status} label={occurrence.status_label} />
       </:col>
-      <:col :let={occurrence} label="Notes" class="min-w-48 text-xs favn-text-muted">
+
+      <:col :let={occurrence} label="Notes" class="min-w-48 text-sm favn-text-muted">
         <span :if={occurrence.notes == []}>-</span>
         <span :for={note <- occurrence.notes} class="mr-2 inline-block">{note}</span>
       </:col>

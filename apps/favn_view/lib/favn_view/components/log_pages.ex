@@ -136,8 +136,7 @@ defmodule FavnView.Components.LogPages do
         class="mx-auto mb-3 w-full max-w-[120rem]"
         metadata={@output_metadata}
         status={@output_status}
-      />
-      <.viewer assigns={assigns} />
+      /> <.viewer assigns={assigns} />
     </AppShell.app_shell>
     """
   end
@@ -169,7 +168,7 @@ defmodule FavnView.Components.LogPages do
       >
         <.status_dot tone={step.status_tone} label={step.status} glow={step.status_tone == :error} />
         <span class="max-w-[16rem] truncate font-medium">{step.display_name}</span>
-        <span class="favn-text-muted text-xs">{step.status} · {step.duration}</span>
+        <span class="favn-text-muted text-sm">{step.status} · {step.duration}</span>
       </.link>
     </nav>
     """

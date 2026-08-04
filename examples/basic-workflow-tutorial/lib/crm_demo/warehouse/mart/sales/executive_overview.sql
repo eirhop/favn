@@ -5,12 +5,12 @@ select
   health.customer_count,
   health.engaged_count
 
-from mart.pipeline_daily as pipeline
+from mart.sales.pipeline_daily as pipeline
 cross join (
   select
     count(*) as customer_count,
     count(*) filter (where health_status = 'engaged') as engaged_count
-  from mart.account_health
+  from mart.sales.account_health
 ) as health
 group by
   pipeline.snapshot_date,

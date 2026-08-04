@@ -1,21 +1,23 @@
 defmodule FavnView.Dev.DesignSystem.Fixtures.AssetDetail do
   @moduledoc """
-  View models for the asset detail page and its timeline panel.
+  View models for the asset detail page.
 
-  The asset detail screen is the densest surface Favn has: a refresh timeline, a
-  freshness timeline, a data-coverage timeline, coverage evidence, target
-  compatibility, a contract, and a run-config form, each with its own states. The
-  states are the point — `:rebuild_required` and `:unexpected_drift` must not
-  look alike, and `:unknown` coverage must not look like complete coverage — so
-  every one of them is a fixture rather than a variation of prose.
+  The asset detail screen is the densest surface Favn has: a run history, coverage
+  evidence, target compatibility, a contract, documentation, and a run dialog, each
+  with its own states. The states are the point — `:rebuild_required` and
+  `:unexpected_drift` must not look alike, and `:unknown` coverage must not look like
+  complete coverage — so every one of them is a fixture rather than a variation of
+  prose.
 
   `base_attrs/0` is the healthy screen. Every other fixture is that map with the
   one thing under test changed, so a diff between two examples is the difference
   being demonstrated.
   """
 
+  alias FavnView.AssetDetailLive
   alias FavnView.Components.AssetDetailPage
-  alias FavnView.Dev.DesignSystem.Fixtures.Timeline
+  alias FavnView.CoverageCalendar
+  alias FavnView.Dev.DesignSystem.Fixtures.RunConfig
 
   @hash_a String.duplicate("a", 64)
   @hash_b String.duplicate("b", 64)
@@ -32,87 +34,393 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.AssetDetail do
       title: "customer_orders_daily",
       status: "Healthy",
       status_tone: :success,
-      window_range: "May 14 - Jun 12",
-      refresh_window_range: "May 14 - Jun 12",
-      freshness_window_range: "May 14 - Jun 12",
-      data_coverage_window_range: "May 14 - Jun 12",
-      refresh_timeline_label: "Monthly run anchors",
-      refresh_cadence_label: "Monthly run anchors Europe/Oslo",
-      freshness_timeline_label: "Daily freshness periods",
-      freshness_cadence_label: "Daily freshness Europe/Oslo",
-      data_coverage_timeline_label: "Daily data windows",
-      active_timeline: :refresh,
-      has_freshness_timeline?: true,
       has_data_windows?: true,
       can_run_asset?: true,
+      # An operator, because the screens exist to be acted on. A viewer sees the same
+      # facts with the controls explained away, and that is its own fixture rather
+      # than the default every example inherits.
+      can_submit_runs?: true,
       run_contexts: [List.last(run_contexts())],
       selected_run_context: List.last(run_contexts()),
       run_context_status: :selected,
       nav_items: AssetDetailPage.sample_nav_items(),
-      refresh_timeline: Timeline.refresh_timeline(),
-      freshness_timeline: Timeline.freshness_timeline(),
-      data_coverage_timeline: Timeline.data_coverage_timeline(),
       freshness: AssetDetailPage.sample_freshness(:fresh),
       coverage: coverage(:complete),
       coverage_policy: coverage_policy(),
-      coverage_gaps: [],
-      coverage_pagination: coverage_pagination(false),
+      coverage_calendar: coverage_calendar([]),
+      coverage_navigation: coverage_navigation(),
       compatibility: compatibility(:ready),
-      active_mode: :timeline,
-      selected_window: nil,
+      manifest_version_id: "mv_9f2c41b8",
+      rebuild_target_id: "asset:customer_orders_daily",
+      active_mode: :overview,
+      asset_id: "customer_orders_daily",
+      runs: runs(),
+      relation: relation(),
+      type: "sql",
+      cadence_label: "Monthly · Europe/Oslo",
+      upstream: upstream(),
+      downstream: downstream(),
+      selected_run_id: nil,
+      selected_run: nil,
       run_config_open?: false,
       command_resource: "asset:customer_orders_daily",
-      run_config: Timeline.default_run_config()
+      run_config: RunConfig.default_run_config()
+    }
+  end
+
+  @doc """
+  The documentation page for one asset kind.
+
+  `:sql` and `:elixir` are separate fixtures rather than one with a flag, because the
+  bottom half of the page is genuinely different for each and a shared fixture would
+  let one of them render half-empty without anyone noticing.
+  """
+  @spec documentation_attrs(:sql | :elixir | :undocumented | :error) :: map()
+  def documentation_attrs(kind) do
+    attrs(%{active_mode: :docs, documentation: documentation(kind)})
+  end
+
+  defp documentation(:error), do: {:error, :backend_unavailable}
+
+  defp documentation(:sql) do
+    {:ok,
+     %{
+       description:
+         "One row per customer order, joined to the customer dimension.\n" <>
+           "Cancelled orders are excluded.",
+       type: "sql",
+       metadata: [
+         %{key: "owner", value: "data-platform@efb.no"},
+         %{key: "tags", value: "finance, daily, gdpr-personal"}
+       ],
+       relation: relation(),
+       entrypoint: nil,
+       sql: %{
+         sql: """
+         select
+             o.order_id,
+             o.customer_id,
+             o.placed_at,
+             sum(l.line_total) as order_total
+         from {{ ref(:stg_orders) }} as o
+         join {{ ref(:stg_customers) }} as c on c.customer_id = o.customer_id
+         where o.status <> 'cancelled'
+         group by 1, 2, 3
+         """,
+         reads: [
+           %{name: "stg_orders", asset_ref: "Elixir.MyApp.Staging.Orders:asset"},
+           %{name: "stg_customers", asset_ref: "Elixir.MyApp.Staging.Customers:asset"}
+         ],
+         fragments: [%{name: "audit_metadata", kind: "fragment"}],
+         resolver: "MyApp.Resolvers.LandedOrders"
+       }
+     }}
+  end
+
+  defp documentation(:elixir) do
+    {:ok,
+     %{
+       description: "Loads the daily order extract from the finance SFTP drop.",
+       type: "elixir",
+       metadata: [%{key: "owner", value: "data-platform@efb.no"}],
+       relation: %{connection: "warehouse", catalog: "source", schema: nil, name: "raw_orders"},
+       entrypoint: %{module: "MyApp.Sources.RawOrders", function: "load", arity: 1},
+       sql: nil
+     }}
+  end
+
+  defp documentation(:undocumented) do
+    {:ok,
+     %{
+       description: nil,
+       type: "elixir",
+       metadata: [],
+       relation: nil,
+       entrypoint: nil,
+       sql: nil
+     }}
+  end
+
+  @doc """
+  A fully qualified four-level relation address.
+  """
+  @spec relation() :: map()
+  def relation do
+    %{
+      connection: "warehouse",
+      catalog: "mart",
+      schema: "customer",
+      name: "customer_orders_daily"
+    }
+  end
+
+  @doc """
+  Two assets read, one asset reading, and one dependency this deployment lost.
+  """
+  @spec upstream() :: [map()]
+  def upstream do
+    [
+      %{
+        type: "source",
+        name: "stg_customers",
+        asset_ref: "Elixir.MyApp.Staging.Customers:asset",
+        target_id: "asset:stg_customers"
+      },
+      %{
+        type: "sql",
+        name: "stg_orders",
+        asset_ref: "Elixir.MyApp.Staging.Orders:asset",
+        target_id: "asset:stg_orders"
+      },
+      %{
+        type: nil,
+        name: "legacy_pricing",
+        asset_ref: "Elixir.MyApp.Legacy.Pricing:asset",
+        target_id: nil
+      }
+    ]
+  end
+
+  @spec downstream() :: [map()]
+  def downstream do
+    [
+      %{
+        type: "sql",
+        name: "customer_summary",
+        asset_ref: "Elixir.MyApp.Marts.CustomerSummary:asset",
+        target_id: "asset:customer_summary"
+      }
+    ]
+  end
+
+  @doc """
+  Four runs across three days, so the spine shows a repeated day and a gap.
+  """
+  @spec runs() :: [map()]
+  def runs do
+    [
+      run("run-d", "Jun 12", "10:25", :success, "Daily Jun 12", "4.2s"),
+      run("run-c", "Jun 12", "04:10", :success, "Daily Jun 12", "3.9s"),
+      run("run-b", "Jun 11", "10:25", :error, "Daily Jun 11", "1.1s"),
+      run("run-a", "Jun 9", "10:25", :success, "Daily Jun 9", "4.0s")
+    ]
+  end
+
+  @doc """
+  One selected run: a succeeded one whose contract and checks all held.
+  """
+  @spec selected_run() :: {:ok, map()}
+  def selected_run do
+    {:ok,
+     %{
+       run_id: "run-d",
+       target_id: "asset:customer_orders_daily",
+       status: :ok,
+       submit_kind: :schedule,
+       trigger: %{},
+       started_at: ~U[2026-06-12 10:25:04Z],
+       finished_at: ~U[2026-06-12 10:25:08Z],
+       duration_ms: 4_210,
+       window: %{kind: :day, value: "2026-06-12", label: "Daily Jun 12", range: "Jun 12, 2026"},
+       error: nil,
+       assurance: assurance(),
+       asset_result: %{
+         status: :ok,
+         stage: 0,
+         started_at: ~U[2026-06-12 10:25:04Z],
+         finished_at: ~U[2026-06-12 10:25:08Z],
+         duration_ms: 4_210,
+         attempt_count: 1,
+         max_attempts: 3,
+         error: nil,
+         meta: %{
+           "rows_written" => 1_284,
+           "relation" => "mart.customer_orders_daily",
+           "write_outcome" => "written",
+           "quality_status" => "passed"
+         }
+       },
+       runtime_inputs: [
+         %{
+           node_key: {{CrmDemo.Assets.CustomerOrdersDaily, :asset}, nil},
+           resolver: CrmDemo.Resolvers.LandedOrders,
+           input_identity: "landing/orders/2026-06-12.csv",
+           payload_fingerprint: @hash_a,
+           source_run_id: "run-c",
+           source_node_key: nil,
+           source_payload_fingerprint: @hash_b
+         }
+       ]
+     }}
+  end
+
+  defp run(id, day_label, time_label, tone, window_label, duration_label) do
+    %{
+      id: id,
+      patch: "/assets/customer_orders_daily/runs/#{id}",
+      status: (tone == :error && :error) || :ok,
+      status_tone: tone,
+      status_label: (tone == :error && "Failed") || "Succeeded",
+      trigger_label: "Schedule",
+      started_at: ~U[2026-06-12 10:25:04Z],
+      day_label: day_label,
+      time_label: time_label,
+      duration_label: duration_label,
+      window_label: window_label
     }
   end
 
   @doc """
   `base_attrs/0` with the given keys replaced.
+
+  The headline is then derived the way production derives it, unless the caller set
+  one deliberately. A fixture that kept the base "Healthy" while overriding freshness
+  or coverage showed a state the product cannot produce — "Healthy" printed directly
+  above a panel saying the data was stale — and these examples exist to catch exactly
+  that.
   """
   @spec attrs(map()) :: map()
-  def attrs(overrides) when is_map(overrides), do: Map.merge(base_attrs(), overrides)
+  def attrs(overrides) when is_map(overrides) do
+    merged = Map.merge(base_attrs(), overrides)
+
+    if Map.has_key?(overrides, :status) do
+      merged
+    else
+      headline =
+        AssetDetailLive.headline_status(%{
+          status: :healthy,
+          coverage: merged.coverage,
+          compatibility: merged.compatibility,
+          freshness: merged.freshness
+        })
+
+      %{merged | status: headline.label, status_tone: headline.tone}
+    end
+  end
 
   @doc """
-  The details mode showing one freshness state.
+  `base_attrs/0` on the coverage page, with the given keys replaced.
+
+  Coverage evidence only renders there, so a fixture that changed `:coverage` while
+  staying on the overview would demonstrate nothing.
+
+  The calendar is derived from `:coverage_missing` (day numbers) and
+  `:coverage_selected` the way the LiveView derives it, so an example cannot show two
+  missing days in the summary and a full month in the grid. Coverage that is
+  `:unknown` gets no windows at all, because a calendar drawn from invented ones
+  would read as tracked coverage.
   """
-  @spec freshness_attrs(atom()) :: map()
-  def freshness_attrs(state) do
-    attrs(%{
-      active_mode: :details,
-      selected_window: List.last(Timeline.refresh_timeline()),
-      freshness: AssetDetailPage.sample_freshness(state)
+  @spec coverage_attrs(map()) :: map()
+  def coverage_attrs(overrides) when is_map(overrides) do
+    missing = Map.get(overrides, :coverage_missing, [])
+    selected = Map.get(overrides, :coverage_selected, [])
+    merged = Map.merge(base_attrs(), Map.drop(overrides, [:coverage_missing, :coverage_selected]))
+    tracked? = merged.coverage[:status] != :unknown
+
+    merged
+    |> Map.put(:active_mode, :coverage)
+    |> Map.put(:coverage_calendar, coverage_calendar(missing, selected, tracked?))
+    |> Map.put(:coverage_navigation, coverage_navigation_for(overrides, tracked?))
+    |> attrs()
+  end
+
+  # A fixture may set its own navigation to place the screen at an edge of the range.
+  # Untracked coverage has no range at all, so it gets the empty shape rather than a
+  # navigator pointing at months that were never expected.
+  defp coverage_navigation_for(_overrides, false), do: CoverageCalendar.navigation(%{})
+
+  defp coverage_navigation_for(overrides, true),
+    do: Map.get(overrides, :coverage_navigation) || coverage_navigation()
+
+  @doc """
+  One month of daily windows: July 2026, with the named days missing.
+
+  July 2026 opens on a Wednesday, so the weekday padding is exercised by every
+  example rather than only by one that happens to start on a Monday.
+  """
+  @spec coverage_windows([integer()]) :: [map()]
+  def coverage_windows(missing_days \\ []) do
+    missing = MapSet.new(missing_days)
+
+    Enum.map(1..31, fn day ->
+      date = Date.new!(2026, 7, day)
+
+      %{
+        window_key: "day:Europe/Oslo:" <> Date.to_iso8601(date),
+        kind: :day,
+        timezone: "Europe/Oslo",
+        start_at: DateTime.new!(date, ~T[00:00:00], "Etc/UTC"),
+        end_at: DateTime.new!(date, ~T[00:00:00], "Etc/UTC"),
+        covered?: not MapSet.member?(missing, day)
+      }
+    end)
+  end
+
+  @doc """
+  The window keys of the given days, for a fixture that pre-selects them.
+  """
+  @spec coverage_selection([integer()]) :: [String.t()]
+  def coverage_selection(days) do
+    Enum.map(days, &("day:Europe/Oslo:2026-07-" <> String.pad_leading("#{&1}", 2, "0")))
+  end
+
+  @doc """
+  The calendar the coverage page renders, built the way the LiveView builds it.
+  """
+  @spec coverage_calendar([integer()], [String.t()], boolean()) :: map()
+  def coverage_calendar(missing_days, selected \\ [], tracked? \\ true) do
+    CoverageCalendar.build(%{
+      kind: (tracked? && :day) || nil,
+      timezone: (tracked? && "Europe/Oslo") || nil,
+      windows: (tracked? && coverage_windows(missing_days)) || [],
+      selected: selected
     })
   end
 
   @doc """
-  The window timeline panel on its own, with both timelines available.
+  A month with coverage either side of it, so both steps and both selects are live.
   """
-  @spec window_timeline_panel_attrs() :: map()
-  def window_timeline_panel_attrs do
-    base_attrs()
-    |> Map.take([
-      :window_range,
-      :refresh_window_range,
-      :freshness_window_range,
-      :data_coverage_window_range,
-      :refresh_timeline_label,
-      :refresh_cadence_label,
-      :freshness_timeline_label,
-      :freshness_cadence_label,
-      :data_coverage_timeline_label,
-      :active_timeline,
-      :has_freshness_timeline?,
-      :has_data_windows?,
-      :can_run_asset?,
-      :refresh_timeline,
-      :freshness_timeline,
-      :data_coverage_timeline,
-      :freshness,
-      :selected_window,
-      :run_config_open?,
-      :command_resource,
-      :run_config
-    ])
+  @spec coverage_navigation() :: map()
+  def coverage_navigation do
+    CoverageCalendar.navigation(%{
+      kind: :day,
+      at: ~U[2026-07-01 00:00:00Z],
+      first_expected_at: ~U[2025-11-01 00:00:00Z],
+      last_expected_at: ~U[2026-09-30 00:00:00Z]
+    })
+  end
+
+  @doc """
+  The first month coverage has, so there is nowhere earlier to step.
+  """
+  @spec coverage_navigation_at_start() :: map()
+  def coverage_navigation_at_start do
+    CoverageCalendar.navigation(%{
+      kind: :day,
+      at: ~U[2026-07-01 00:00:00Z],
+      first_expected_at: ~U[2026-07-01 00:00:00Z],
+      last_expected_at: ~U[2026-09-30 00:00:00Z]
+    })
+  end
+
+  @doc """
+  `base_attrs/0` on the diagnostics page, with the given keys replaced.
+
+  Compatibility renders in full only there. The overview shows it just when it
+  blocks writes, so a `:rebuild_available` fixture left on the overview would be a
+  page with nothing on it.
+  """
+  @spec diagnostics_attrs(map()) :: map()
+  def diagnostics_attrs(overrides) when is_map(overrides) do
+    attrs(Map.put(overrides, :active_mode, :diagnostics))
+  end
+
+  @doc """
+  The overview mode showing one freshness state.
+  """
+  @spec freshness_attrs(atom()) :: map()
+  def freshness_attrs(state) do
+    attrs(%{active_mode: :overview, freshness: AssetDetailPage.sample_freshness(state)})
   end
 
   @doc """
@@ -126,22 +434,25 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.AssetDetail do
   def coverage(:complete) do
     %{
       status: :complete,
-      evaluated_at: ~U[2026-07-22 12:00:00Z],
-      expected_count: 22,
-      covered_count: 22,
+      evaluated_at: ~U[2026-09-30 12:00:00Z],
+      expected_count: 334,
+      covered_count: 334,
       missing_count: 0,
-      last_expected_window: %{start_at: ~U[2026-07-21 00:00:00Z]}
+      last_expected_window: %{start_at: ~U[2026-09-30 00:00:00Z]}
     }
   end
 
+  # The counts span the whole range the navigator can reach, not the month on screen.
+  # Twenty-two expected beside a calendar of thirty-one days was a fixture claiming a
+  # range the page then contradicted.
   def coverage(:incomplete) do
     %{
       status: :incomplete,
-      evaluated_at: ~U[2026-07-22 12:00:00Z],
-      expected_count: 22,
-      covered_count: 20,
+      evaluated_at: ~U[2026-09-30 12:00:00Z],
+      expected_count: 334,
+      covered_count: 332,
       missing_count: 2,
-      last_expected_window: %{start_at: ~U[2026-07-21 00:00:00Z]}
+      last_expected_window: %{start_at: ~U[2026-09-30 00:00:00Z]}
     }
   end
 
@@ -162,34 +473,16 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.AssetDetail do
   end
 
   @doc """
-  Two missing windows.
-  """
-  @spec coverage_gaps() :: [map()]
-  def coverage_gaps do
-    [
-      %{window_key: "day:Europe/Oslo:2026-07-08"},
-      %{window_key: "day:Europe/Oslo:2026-07-15"}
-    ]
-  end
-
-  @doc """
-  Coverage-gap pagination, with or without a further page.
-  """
-  @spec coverage_pagination(boolean()) :: map()
-  def coverage_pagination(has_more) do
-    %{
-      limit: 100,
-      has_more: has_more,
-      next_cursor: if(has_more, do: "opaque-next-page-cursor")
-    }
-  end
-
-  @doc """
-  A backfill plan awaiting review.
+  A backfill plan awaiting review, for the two missing days a week apart.
   """
   @spec coverage_plan() :: map()
   def coverage_plan do
-    %{plan_hash: @hash_a, window_count: 2, windows: coverage_gaps()}
+    windows =
+      [8, 15]
+      |> coverage_windows()
+      |> Enum.filter(&(not &1.covered?))
+
+    %{plan_hash: @hash_a, window_count: length(windows), windows: windows}
   end
 
   @doc """
@@ -243,6 +536,16 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.AssetDetail do
     })
   end
 
+  def compatibility(:unmanaged) do
+    Map.merge(compatibility(:ready), %{
+      reason_code: "no_managed_target",
+      active_generation_id: nil,
+      desired_descriptor_hash: nil,
+      physical_fingerprint: nil,
+      persisted?: false
+    })
+  end
+
   def compatibility(:operator_decision) do
     Map.merge(compatibility(:ready), %{
       status: :operator_decision,
@@ -278,54 +581,197 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.AssetDetail do
   end
 
   @doc """
-  The details mode showing a contract with a parameterised row-count claim.
+  The runs mode with nothing selected, showing the contract on its own.
   """
   @spec assurance_attrs() :: map()
-  def assurance_attrs do
-    fragment = MyApp.Contracts.AuditMetadata
+  def assurance_attrs, do: attrs(%{active_mode: :runs, assurance: assurance()})
+
+  @doc """
+  The runs mode with one succeeded run open beside the spine.
+  """
+  @spec selected_run_attrs() :: map()
+  def selected_run_attrs do
+    attrs(%{
+      active_mode: :runs,
+      assurance: assurance(),
+      selected_run_id: "run-d",
+      selected_run: selected_run()
+    })
+  end
+
+  @doc """
+  The runs mode with a failed run open: a check broke and the table drifted.
+  """
+  @spec failed_run_attrs() :: map()
+  def failed_run_attrs do
+    {:ok, run} = selected_run()
+
+    failed =
+      {:ok,
+       %{
+         run
+         | run_id: "run-b",
+           status: :error,
+           started_at: ~U[2026-06-11 10:25:04Z],
+           finished_at: ~U[2026-06-11 10:25:05Z],
+           duration_ms: 1_100,
+           window: %{
+             kind: :day,
+             value: "2026-06-11",
+             label: "Daily Jun 11",
+             range: "Jun 11, 2026"
+           },
+           error: %{message: "check orders_have_customer failed: 17 orders name no customer"},
+           assurance: assurance(:mismatch),
+           asset_result: %{
+             run.asset_result
+             | status: :error,
+               meta: %{"write_outcome" => "rolled_back", "quality_status" => "failed"}
+           }
+       }}
 
     attrs(%{
-      active_mode: :details,
-      assurance: %{
-        quality_status: :passed,
-        write_outcome: :written,
-        latest_run_id: "run_customer_orders_daily",
-        contract_validation: nil,
-        checks: [],
-        contract: %{
-          grain: %{by: [:order_id], description: "one customer order"},
-          unique_keys: [[:order_id]],
-          row_counts: [
-            %{
-              claim_id: "row_count.equals.param.expected_rows",
-              equals: %{source: :param, name: :expected_rows},
-              min: nil,
-              max: nil,
-              when: nil,
-              on_violation: :fail,
-              latest_result: %{outcome: :passed}
-            },
-            %{
-              claim_id: "row_count.min.1",
-              equals: nil,
-              min: 1,
-              max: nil,
-              when: :target_exists,
-              on_violation: :skip_materialization,
-              latest_result: %{outcome: :condition_skipped}
-            }
-          ],
-          compositions: [
-            %{module: fragment, start_index: 1, columns: [:processed_at, :favn_run_id]}
-          ],
-          columns: [
-            contract_column(:order_id, :integer, %{kind: :local}),
-            contract_column(:processed_at, :datetime, %{kind: :fragment, module: fragment}),
-            contract_column(:favn_run_id, :string, %{kind: :fragment, module: fragment})
-          ]
-        }
-      }
+      active_mode: :runs,
+      assurance: assurance(:mismatch),
+      selected_run_id: "run-b",
+      selected_run: failed
     })
+  end
+
+  @doc """
+  Assurance evidence for one run.
+
+  `:passed` carries four checks rather than the two generated row-count claims,
+  because the checks table has to be shown holding hand-written checks too — with
+  only claims in it, a layout that cannot scale past two rows looks fine.
+  """
+  @spec assurance(:passed | :mismatch) :: map()
+  def assurance(state \\ :passed)
+
+  def assurance(:passed) do
+    %{
+      quality_status: :passed,
+      write_outcome: :written,
+      latest_run_id: "run-d",
+      contract_validation: contract_validation(:matched),
+      checks: [
+        declared_check(:orders_have_customer, :passed),
+        declared_check(:no_future_dates, :passed)
+      ],
+      contract: contract()
+    }
+  end
+
+  def assurance(:mismatch) do
+    %{
+      quality_status: :failed,
+      write_outcome: :rolled_back,
+      latest_run_id: "run-b",
+      contract_validation: contract_validation(:mismatch),
+      checks: [
+        declared_check(:orders_have_customer, :failed),
+        declared_check(:no_future_dates, :passed)
+      ],
+      contract: contract()
+    }
+  end
+
+  defp contract do
+    fragment = MyApp.Contracts.AuditMetadata
+
+    %{
+      grain: %{by: [:order_id], description: "one customer order"},
+      unique_keys: [[:order_id]],
+      row_counts: [
+        %{
+          claim_id: "row_count.equals.param.expected_rows",
+          equals: %{source: :param, name: :expected_rows},
+          min: nil,
+          max: nil,
+          when: nil,
+          on_violation: :fail,
+          latest_result: %{outcome: :passed, metrics: %{actual: 1_284}}
+        },
+        %{
+          claim_id: "row_count.min.1",
+          equals: nil,
+          min: 1,
+          max: nil,
+          when: :target_exists,
+          on_violation: :skip_materialization,
+          latest_result: %{outcome: :condition_skipped, metrics: %{}}
+        }
+      ],
+      compositions: [
+        %{module: fragment, start_index: 1, columns: [:processed_at, :favn_run_id]}
+      ],
+      columns: [
+        contract_column(:order_id, :integer, %{kind: :local}),
+        contract_column(:processed_at, :datetime, %{kind: :fragment, module: fragment}),
+        contract_column(:favn_run_id, :string, %{kind: :fragment, module: fragment})
+      ]
+    }
+  end
+
+  defp declared_check(name, outcome) do
+    %{
+      name: name,
+      origin: :asset,
+      claim_id: nil,
+      phase: :after_materialize,
+      when: nil,
+      on_violation: :fail,
+      message: check_message(name),
+      latest_result: %{outcome: outcome, metrics: %{actual: check_actual(name, outcome)}}
+    }
+  end
+
+  defp check_message(:orders_have_customer), do: "every order names a customer"
+  defp check_message(:no_future_dates), do: "no order is dated in the future"
+
+  defp check_actual(_name, :passed), do: 0
+  defp check_actual(_name, _outcome), do: 17
+
+  defp contract_validation(:matched) do
+    %{
+      status: :passed,
+      expected_columns: [:order_id, :processed_at, :favn_run_id],
+      observed_columns: [
+        observed_column(:order_id, :integer),
+        observed_column(:processed_at, :datetime),
+        observed_column(:favn_run_id, :string)
+      ],
+      differences: [],
+      observed_column_count: 3,
+      observed_truncated?: false
+    }
+  end
+
+  defp contract_validation(:mismatch) do
+    %{
+      status: :failed,
+      expected_columns: [:order_id, :processed_at, :favn_run_id],
+      observed_columns: [
+        observed_column(:order_id, :integer),
+        observed_column(:processed_at, :string)
+      ],
+      differences: [
+        %{kind: :type_mismatch, column: :processed_at, expected: :datetime, observed: :string},
+        %{kind: :missing_column, column: :favn_run_id}
+      ],
+      observed_column_count: 2,
+      observed_truncated?: false
+    }
+  end
+
+  defp observed_column(name, type) do
+    %{
+      name: name,
+      type: type,
+      native_type: to_string(type),
+      nullable?: false,
+      nullability_observed?: true
+    }
   end
 
   defp contract_column(name, type, origin) do

@@ -60,21 +60,50 @@ defmodule Favn.Coverage.Expected do
 
   def page(%{first_window: first, last_expected_window: last}, after_key, limit)
       when is_integer(limit) and limit in 1..500 do
-    with {:ok, start_at} <- page_start(first, last, after_key),
-         {:ok, anchors} <- collect(start_at, first.kind, first.timezone, last, limit + 1, []) do
-      has_more? = length(anchors) > limit
-      items = Enum.take(anchors, limit)
-
-      {:ok,
-       %{
-         items: items,
-         has_more?: has_more?,
-         next_after: if(has_more?, do: List.last(items).key, else: nil)
-       }}
+    with {:ok, start_at} <- page_start(first, last, after_key) do
+      collect_page(start_at, first, last, limit)
     end
   end
 
   def page(_evaluation, _after_key, _limit), do: {:error, :invalid_coverage_page}
+
+  @doc """
+  Returns every expected period from the one containing `from` up to `until`.
+
+  `page/3` can only walk forward from a key it already has, which is all cursor
+  paging needs. Addressing a range directly — the month an operator asked to look
+  at — needs bounds rather than a predecessor, and an instant inside a period is the
+  only handle a caller has before knowing the period exists.
+
+  `until` is exclusive and may be `nil` to read to the end of coverage. Both bounds
+  are instants rather than counts because a count cannot name a calendar unit: a
+  month holds 28 to 31 days and a day holds 23, 24, or 25 hours, so "31 days from
+  1 February" is three days of March. A caller that wants one unit passes that
+  unit's own bounds and gets exactly the periods inside it.
+
+  `from` is floored to its period and clamped into the expected range, so a request
+  before coverage begins starts at the beginning and one past the end returns
+  nothing. `limit` is a safety cap, not the shape of the answer; `has_more?` reports
+  that the range was truncated by it.
+  """
+  @spec page_between(evaluation(), DateTime.t(), DateTime.t() | nil, 1..500) ::
+          {:ok, page()} | {:error, term()}
+  def page_between(evaluation, from, until \\ nil, limit \\ 500)
+
+  def page_between(
+        %{first_window: first, last_expected_window: last},
+        %DateTime{} = from,
+        until,
+        limit
+      )
+      when is_integer(limit) and limit in 1..500 and
+             (is_nil(until) or is_struct(until, DateTime)) do
+    with {:ok, start_at} <- clamped_start(first, last, from) do
+      collect_page(start_at, first, last, until, limit)
+    end
+  end
+
+  def page_between(_evaluation, _from, _until, _limit), do: {:error, :invalid_coverage_page}
 
   @doc "Returns the hard expected-window safety limit."
   @spec max_windows() :: pos_integer()
@@ -123,6 +152,38 @@ defmodule Favn.Coverage.Expected do
     end
   end
 
+  defp collect_page(start_at, first, last, limit),
+    do: collect_page(start_at, first, last, nil, limit)
+
+  defp collect_page(start_at, first, last, until, limit) do
+    with {:ok, anchors} <-
+           collect(start_at, first.kind, first.timezone, last, until, limit + 1, []) do
+      has_more? = length(anchors) > limit
+      items = Enum.take(anchors, limit)
+
+      {:ok,
+       %{
+         items: items,
+         has_more?: has_more?,
+         next_after: if(has_more?, do: List.last(items).key, else: nil)
+       }}
+    end
+  end
+
+  # Nothing is expected yet, so no instant addresses a period.
+  defp clamped_start(_first, nil, _at), do: {:ok, nil}
+
+  defp clamped_start(first, last, at) do
+    with {:ok, local} <- DateTime.shift_zone(at, first.timezone, Favn.Timezone.database!()),
+         {:ok, floored} <- TimePeriod.floor(local, first.kind, first.timezone) do
+      cond do
+        DateTime.compare(floored, first.start_at) == :lt -> {:ok, first.start_at}
+        DateTime.compare(floored, last.start_at) == :gt -> {:ok, nil}
+        true -> {:ok, floored}
+      end
+    end
+  end
+
   defp page_start(_first, nil, _after_key), do: {:ok, nil}
   defp page_start(first, _last, nil), do: {:ok, first.start_at}
 
@@ -143,18 +204,26 @@ defmodule Favn.Coverage.Expected do
     end
   end
 
-  defp collect(nil, _kind, _timezone, _last, _remaining, acc), do: {:ok, Enum.reverse(acc)}
-  defp collect(_cursor, _kind, _timezone, _last, 0, acc), do: {:ok, Enum.reverse(acc)}
+  defp collect(nil, _kind, _timezone, _last, _until, _remaining, acc),
+    do: {:ok, Enum.reverse(acc)}
 
-  defp collect(cursor, kind, timezone, last, remaining, acc) do
-    if DateTime.compare(cursor, last.start_at) == :gt do
+  defp collect(_cursor, _kind, _timezone, _last, _until, 0, acc), do: {:ok, Enum.reverse(acc)}
+
+  defp collect(cursor, kind, timezone, last, until, remaining, acc) do
+    if past_range?(cursor, last) or reached?(cursor, until) do
       {:ok, Enum.reverse(acc)}
     else
       end_at = TimePeriod.shift!(cursor, kind, 1)
       anchor = Anchor.new!(kind, cursor, end_at, timezone: timezone)
-      collect(end_at, kind, timezone, last, remaining - 1, [anchor | acc])
+      collect(end_at, kind, timezone, last, until, remaining - 1, [anchor | acc])
     end
   end
+
+  defp past_range?(cursor, last), do: DateTime.compare(cursor, last.start_at) == :gt
+
+  # `until` is exclusive, so a period starting exactly on it belongs to the next unit.
+  defp reached?(_cursor, nil), do: false
+  defp reached?(cursor, until), do: DateTime.compare(cursor, until) != :lt
 
   defp checksum(evaluation) do
     payload = %{

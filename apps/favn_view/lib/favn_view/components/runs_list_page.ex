@@ -111,7 +111,6 @@ defmodule FavnView.Components.RunsListPage do
     <.table_toolbar
       on_change="filter_runs"
       filters_id="runs-filters"
-      on_toggle="toggle_filters"
       filters_open?={@filters_open?}
       on_clear="clear_filters"
       adjusted?={RunsFilters.narrowed?(@filters) or RunsFilters.adjusted?(@filters)}
@@ -142,7 +141,7 @@ defmodule FavnView.Components.RunsListPage do
             label="From date"
             value={@filters.from}
             class="min-w-0 flex-1 sm:w-36 sm:flex-none"
-          /> <span class="shrink-0 text-xs favn-text-subtle">to</span>
+          /> <span class="shrink-0 text-sm favn-text-subtle">to</span>
           <.date_input
             name="filters[to]"
             label="To date"
@@ -181,9 +180,9 @@ defmodule FavnView.Components.RunsListPage do
   def runs_table(assigns) do
     ~H"""
     <div class="hidden lg:block">
-      <table class="w-full table table-sm" data-testid="runs-table">
+      <table class="w-full table" data-testid="runs-table">
         <thead class="sticky top-0 z-10 bg-base-100/85 backdrop-blur">
-          <tr class="border-base-content/10 text-xs favn-text-muted">
+          <tr class="border-base-content/10 favn-text-muted">
             <th class="w-64 font-medium">Run</th>
 
             <th class="font-medium">Target</th>
@@ -204,7 +203,7 @@ defmodule FavnView.Components.RunsListPage do
 
         <tbody :for={day <- day_groups(@listing)} id={day.id} data-testid="runs-day-group">
           <tr :if={day.kind == :gap} class="border-base-content/10" data-testid="runs-day-gap">
-            <td colspan="5" class="py-1.5 text-xs favn-text-subtle">
+            <td colspan="5" class="py-1.5 text-sm favn-text-subtle">
               <.gap_heading day={day} />
             </td>
           </tr>
@@ -297,19 +296,19 @@ defmodule FavnView.Components.RunsListPage do
   def day_heading(assigns) do
     ~H"""
     <div class="flex flex-wrap items-center gap-x-3 gap-y-1">
-      <span class="text-xs font-semibold uppercase tracking-[0.14em] text-base-content">
+      <span class="text-sm font-semibold uppercase tracking-[0.14em] text-base-content">
         {@day.label}
       </span>
 
-      <span :if={@day.total > 0} class="text-xs font-normal favn-text-muted">
+      <span :if={@day.total > 0} class="text-sm font-normal favn-text-muted">
         {@day.total} {if(@day.total == 1, do: "run", else: "runs")}
       </span>
 
-      <span :if={@day.failed > 0} class="text-xs font-normal text-error">
+      <span :if={@day.failed > 0} class="text-sm font-normal text-error">
         {@day.failed} failed
       </span>
 
-      <span :if={@day.active > 0} class="text-xs font-normal text-info">
+      <span :if={@day.active > 0} class="text-sm font-normal text-info">
         {@day.active} in flight
       </span>
     </div>
@@ -322,7 +321,7 @@ defmodule FavnView.Components.RunsListPage do
     ~H"""
     <tr
       id={"run-row-#{@run.id}"}
-      class="group border-base-content/10 text-sm transition hover:bg-primary/10 focus-within:bg-primary/10"
+      class="group border-base-content/10 transition hover:bg-primary/10 focus-within:bg-primary/10"
       data-testid="run-row"
       data-run-id={@run.id}
     >
@@ -330,13 +329,13 @@ defmodule FavnView.Components.RunsListPage do
 
       <td class="max-w-64 align-middle"><.run_target run={@run} /></td>
 
-      <td class="whitespace-nowrap align-middle text-xs" title={@run.started_at_title}>
+      <td class="whitespace-nowrap align-middle" title={@run.started_at_title}>
         <p class="favn-text-muted">{@run.started_at}</p>
 
-        <p :if={@run.started_on} class="text-[0.68rem] favn-text-subtle">{@run.started_on}</p>
+        <p :if={@run.started_on} class="favn-text-subtle">{@run.started_on}</p>
       </td>
 
-      <td class="whitespace-nowrap align-middle text-xs favn-text-muted">{@run.duration}</td>
+      <td class="whitespace-nowrap align-middle favn-text-muted">{@run.duration}</td>
 
       <td class="text-right align-middle">
         <.icon_button
@@ -359,14 +358,14 @@ defmodule FavnView.Components.RunsListPage do
       <div class="min-w-0 flex-1">
         <.link
           navigate={~p"/runs/#{@run.id}"}
-          class="block truncate font-mono text-xs font-medium text-base-content hover:text-primary"
+          class="block truncate font-mono text-sm font-medium text-base-content hover:text-primary"
           title={@run.id}
           data-testid="run-link"
         >
           {@run.short_id}
         </.link>
 
-        <p class="truncate text-[0.68rem] favn-text-subtle">
+        <p class="truncate text-sm favn-text-subtle">
           {@run.status_label} · {@run.trigger}
         </p>
       </div>
@@ -388,7 +387,7 @@ defmodule FavnView.Components.RunsListPage do
     <div class="min-w-0">
       <p class="truncate font-medium text-base-content" title={@run.target_title}>{@run.target}</p>
 
-      <p class="flex min-w-0 items-center gap-1.5 text-[0.68rem]">
+      <p class="flex min-w-0 items-center gap-1.5 text-sm">
         <span :if={@run.assets} class="truncate favn-text-subtle">{@run.assets}</span>
         <span :if={!@run.assets && @run.target_detail} class="truncate favn-text-subtle">
           {@run.target_detail} planned
@@ -409,7 +408,7 @@ defmodule FavnView.Components.RunsListPage do
     <div class="space-y-2.5 p-3 lg:hidden" data-testid="runs-card-list">
       <.run_card :for={run <- flat_runs(@listing)} run={run} />
       <div :for={day <- day_groups(@listing)} class="space-y-2.5" id={"card-#{day.id}"}>
-        <p :if={day.kind == :gap} class="pl-1 text-xs favn-text-subtle">
+        <p :if={day.kind == :gap} class="pl-1 text-sm favn-text-subtle">
           <.gap_heading day={day} />
         </p>
         <.day_heading :if={day.kind == :day} day={day} />
@@ -431,10 +430,10 @@ defmodule FavnView.Components.RunsListPage do
             {@run.target}
           </p>
 
-          <p class="truncate font-mono text-[0.68rem] favn-text-subtle">{@run.short_id}</p>
+          <p class="truncate font-mono text-sm favn-text-subtle">{@run.short_id}</p>
         </div>
 
-        <div class="shrink-0 text-right text-xs favn-text-muted">
+        <div class="shrink-0 text-right text-sm favn-text-muted">
           <p :if={@run.started_on} class="favn-text-subtle">{@run.started_on}</p>
 
           <p>{@run.started_at}</p>
@@ -443,7 +442,7 @@ defmodule FavnView.Components.RunsListPage do
         </div>
       </div>
 
-      <p class="flex items-center gap-1.5 text-[0.68rem]">
+      <p class="flex items-center gap-1.5 text-sm">
         <span :if={@run.assets} class="truncate favn-text-subtle">{@run.assets}</span>
         <span :if={@run.assets_failed > 0} class="shrink-0 text-error">
           {@run.assets_failed} failed

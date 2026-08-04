@@ -8,8 +8,8 @@ select
 
   core_metadata(@favn_run_started_at)
 
-from source.deal as deal
-inner join source.account as account
+from source.crm.deal as deal
+inner join source.crm.account as account
   on account.account_id = deal.account_id
 where deal.occurred_at >= @window_start
   and deal.occurred_at < @window_end

@@ -13,6 +13,7 @@ defmodule FavnView.UI.Data do
   | `stacked_cell/1` | a table cell whose value needs a qualifier under it |
   | `metric/1` | one number that the operator watches |
   | `mono/1` | ids, fingerprints, and anything copied verbatim |
+  | `coverage_calendar/1` | which periods of a range hold data and which do not |
 
   A table is a desktop affordance. On mobile the same rows should render as
   `FavnView.UI.Surface.list_card/1`; do not shrink a table to fit a phone.
@@ -29,6 +30,14 @@ defmodule FavnView.UI.Data do
   scrolling ancestor with a bounded height, so `fill?` makes the table's own
   wrapper that ancestor: put it in a `flex min-h-0 flex-1` panel and the header
   pins to the top of the rows rather than to the page.
+
+  Two more rules hold on every list screen, and both are the element's rather
+  than a caller's because the screens that skipped them each looked reasonable in
+  isolation: `desktop_only?` on the table, so its rows and the cards below `lg`
+  are never both showing, and the filters as a narrow-screen disclosure in
+  `table_toolbar/1`, so the scope rail and the rows keep the width a phone has.
+  `test/favn_view/components/list_screen_standard_test.exs` asserts both for all
+  of them at once.
 
   ## Examples
 
@@ -48,6 +57,7 @@ defmodule FavnView.UI.Data do
   import FavnView.UI.Button
   import FavnView.UI.Field, only: [search_field: 1]
   import FavnView.UI.Icon
+  import FavnView.UI.State, only: [empty_state: 1]
   import FavnView.UI.Surface
 
   alias FavnView.UI.Tokens
@@ -67,7 +77,7 @@ defmodule FavnView.UI.Data do
     assigns = assign(assigns, :grid_class, grid_class(assigns.columns))
 
     ~H"""
-    <dl class={["grid gap-3 text-xs sm:gap-4", @grid_class, @class]} {@rest}>
+    <dl class={["grid gap-3 text-sm sm:gap-4", @grid_class, @class]} {@rest}>
       <div :for={fact <- @facts} class="min-w-0">
         <dt class="favn-text-subtle">{fact.label}</dt>
 
@@ -86,6 +96,22 @@ defmodule FavnView.UI.Data do
     """
   end
 
+  @doc """
+  The standard list-screen table.
+
+  Carries no size modifier, because DaisyUI's bare `.table` is already the Favn
+  body size — 0.875rem, with `table-md` a synonym for it. Each modifier sets a
+  font size *and* its matching cell padding as one pair with no variable between
+  them, so the size class is the whole decision: `table-sm` drops rows to
+  0.75rem, and its `:not(thead, tfoot) tr` selector outranks a `text-sm`
+  utility in the same layer, so adding one back does nothing.
+
+  A table is not the right shape for a phone, so a list screen pairs this with
+  `card_list/1` and sets `desktop_only?`. That flag lives here rather than in a
+  `class` a caller passes, because a screen that forgot it rendered every row
+  twice on a phone — once as a row and once as a card — and nothing about the
+  markup said which of the two was supposed to be showing.
+  """
   attr :id, :string, required: true
   attr :rows, :list, required: true
   attr :row_id, :any, default: nil, doc: "function returning the DOM id for a row"
@@ -106,6 +132,12 @@ defmodule FavnView.UI.Data do
     default: true,
     doc: "set false only where the header would pin against a second one"
 
+  attr :desktop_only?, :boolean,
+    default: false,
+    doc:
+      "hide below `lg`, where a `card_list/1` renders the same rows instead; every list " <>
+        "screen sets it, and a table without a card alternative does not"
+
   attr :class, :any, default: nil
   attr :rest, :global
 
@@ -119,10 +151,14 @@ defmodule FavnView.UI.Data do
 
   def data_table(assigns) do
     ~H"""
-    <div class={[(@fill? && "min-h-0 flex-1 overflow-auto") || "overflow-x-auto", @class]}>
-      <table class="table table-sm w-full text-sm" id={@id}>
+    <div class={[
+      (@fill? && "min-h-0 flex-1 overflow-auto") || "overflow-x-auto",
+      @desktop_only? && "hidden lg:block",
+      @class
+    ]}>
+      <table class="table w-full" id={@id}>
         <thead class={@sticky_header? && "sticky top-0 z-10 bg-base-100/85 backdrop-blur"}>
-          <tr class="border-base-content/10 text-xs favn-text-muted">
+          <tr class="border-base-content/10 favn-text-muted">
             <th :for={col <- @col} class={["font-medium", align_class(col[:align]), col[:class]]}>
               {col.label}
             </th>
@@ -227,7 +263,7 @@ defmodule FavnView.UI.Data do
       >
         <div class="flex min-w-0 flex-wrap items-center gap-2">{render_slot(@footer)}</div>
 
-        <p :if={@count} class="shrink-0 text-xs favn-text-subtle" data-testid="table-count">
+        <p :if={@count} class="shrink-0 text-sm favn-text-subtle" data-testid="table-count">
           {@count} {@count_label}
         </p>
       </div>
@@ -250,13 +286,21 @@ defmodule FavnView.UI.Data do
   what made `/schedules` look like a different application from `/runs`.
 
   Passing `on_change` renders the form, so filtering works with and without
-  JavaScript without each page wiring its own. Passing `on_toggle` collapses the
-  filters behind one control below `lg`, for a screen whose scopes must stay
-  visible on a phone; without it the filters are always shown.
+  JavaScript without each page wiring its own.
+
+  ## Below `lg` the filters are always a disclosure
+
+  Not a per-screen choice. A phone has room for the scope rail or the filters,
+  not both, so the filters collapse behind one control and the scopes — whose
+  counts are the answer rather than a way to look for it — stay visible. A screen
+  therefore assigns `filters_open?` and handles `on_toggle`, which defaults to
+  `"toggle_filters"`. The collapsed control carries a dot while anything is set,
+  so a filter is never in force with no sign of it.
 
       <.table_toolbar
         on_change="filter_schedules"
         filters_id="schedule-filters"
+        filters_open?={@filters_open?}
         search_name="filters[search]"
         search_label="Search schedules"
         search_value={@filters["search"]}
@@ -283,8 +327,14 @@ defmodule FavnView.UI.Data do
   """
   attr :on_change, :string, default: nil, doc: "LiveView event; renders the form around `filters`"
   attr :filters_id, :string, default: nil
-  attr :on_toggle, :string, default: nil, doc: "event that collapses the filters below `lg`"
-  attr :filters_open?, :boolean, default: false, doc: "only meaningful with `on_toggle`"
+
+  attr :on_toggle, :string,
+    default: "toggle_filters",
+    doc: "event that opens and closes the filters below `lg`; every list screen handles it"
+
+  attr :filters_open?, :boolean,
+    default: false,
+    doc: "whether the narrow-screen disclosure is open; `lg` and up ignores it"
 
   attr :search_name, :string, default: nil, doc: "form field name; renders the search when set"
   attr :search_label, :string, default: "Search", doc: "screen-reader name and placeholder"
@@ -312,7 +362,7 @@ defmodule FavnView.UI.Data do
         <div :if={@scopes != []} class="w-full sm:w-auto">{render_slot(@scopes)}</div>
 
         <.button
-          :if={@on_toggle}
+          :if={@search_name || @filters != []}
           variant={:ghost}
           icon="hero-adjustments-horizontal"
           class="ml-auto shrink-0 lg:hidden"
@@ -331,7 +381,7 @@ defmodule FavnView.UI.Data do
           phx-change={@on_change}
           phx-submit={@on_change}
           class={[
-            "items-stretch gap-2 sm:flex-row sm:flex-wrap sm:items-center lg:ml-auto lg:flex-nowrap",
+            "items-stretch gap-2 sm:flex-row sm:flex-wrap sm:items-center lg:ml-auto",
             filters_class(assigns)
           ]}
           data-testid="table-filters"
@@ -354,9 +404,11 @@ defmodule FavnView.UI.Data do
               [
                 "contents sm:flex sm:flex-wrap sm:items-center sm:gap-2",
                 # One width for every select, so a row of them lines up across
-                # screens, and `nowrap` so two of them never stack into a column
-                # while there is still room beside them.
-                "sm:[&>label]:w-44 lg:flex-nowrap"
+                # screens. Wrapping is left to flexbox rather than forced off at
+                # `lg`: it only breaks a line that is genuinely full, and three
+                # selects beside a scope rail and a search field overflowed a
+                # 1024px viewport while `nowrap` held them on one line.
+                "sm:[&>label]:w-44"
               ]
             }
           >
@@ -508,7 +560,7 @@ defmodule FavnView.UI.Data do
         navigate={@navigate}
         class={[
           "block truncate font-medium hover:text-primary",
-          mono?(@mono, :primary) && "font-mono text-xs",
+          mono?(@mono, :primary) && "font-mono text-sm",
           (@tone && Tokens.text_class(Tokens.tone(@tone))) || "text-base-content"
         ]}
         title={@title || @primary}
@@ -520,7 +572,7 @@ defmodule FavnView.UI.Data do
         :if={!@navigate}
         class={[
           "truncate font-medium",
-          mono?(@mono, :primary) && "font-mono text-xs",
+          mono?(@mono, :primary) && "font-mono text-sm",
           (@tone && Tokens.text_class(Tokens.tone(@tone))) || "text-base-content"
         ]}
         title={@title || @primary}
@@ -531,7 +583,7 @@ defmodule FavnView.UI.Data do
       <p
         :if={@secondary}
         class={[
-          "truncate text-[0.68rem] favn-text-subtle",
+          "truncate text-sm favn-text-subtle",
           mono?(@mono, :secondary) && "font-mono"
         ]}
         title={@secondary_title || @secondary}
@@ -558,7 +610,7 @@ defmodule FavnView.UI.Data do
 
     ~H"""
     <div class={["min-w-0", @class]} {@rest}>
-      <div class="flex items-center gap-2 text-xs favn-text-subtle">
+      <div class="flex items-center gap-2 text-sm favn-text-subtle">
         <.icon :if={@icon} name={@icon} size={:xs} /> {@label}
       </div>
 
@@ -566,7 +618,7 @@ defmodule FavnView.UI.Data do
         {@value}
       </div>
 
-      <p :if={@hint} class="mt-0.5 truncate text-xs favn-text-subtle">{@hint}</p>
+      <p :if={@hint} class="mt-0.5 truncate text-sm favn-text-subtle">{@hint}</p>
     </div>
     """
   end
@@ -631,7 +683,7 @@ defmodule FavnView.UI.Data do
 
       <p
         :if={@legend? and @present != []}
-        class="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs favn-text-muted"
+        class="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm favn-text-muted"
       >
         <span :if={@summary} class="font-medium text-base-content">{@summary}</span>
         <span :for={segment <- @present} class="inline-flex items-center gap-1.5">
@@ -657,10 +709,502 @@ defmodule FavnView.UI.Data do
   def mono(assigns) do
     ~H"""
     <span
-      class={["font-mono text-xs", (@truncate && "block truncate") || "break-all", @class]}
+      class={["font-mono text-sm", (@truncate && "block truncate") || "break-all", @class]}
       title={@value}
     >
       {@value}
+    </span>
+    """
+  end
+
+  @doc """
+  One node, what flows into it, and what flows out, wired together.
+
+  The connectors are real: each input is joined to the centre and the centre to each
+  output, drawn as elbows in an SVG that spans the gap between the columns. Two lists
+  either side of a label are not a graph — the reader has to infer the edges — and
+  inferring them is the whole job this component exists to do.
+
+  The SVG uses a `0 0 100 100` box with `preserveAspectRatio="none"`, so it stretches
+  to whatever the gap is. Every segment is axis-aligned, which stretches without
+  distorting, and `vector-effect` keeps the stroke one weight in both directions.
+  Each list is spaced with `justify-around`, so node `i` of `n` sits at
+  `(i + 0.5) / n` of the height and the paths can be computed without measuring
+  anything in the browser.
+
+  Below `md` the columns stack and the connectors are replaced by a single arrow,
+  because a wiring diagram three nodes wide does not fit a phone.
+
+      <.lineage_graph
+        centre={%{label: "customer_orders_daily", icon: "hero-table-cells"}}
+        inputs={[%{label: "stg_orders", navigate: ~p"/assets/stg_orders"}]}
+        outputs={[]}
+        outputs_empty="Nothing reads this yet."
+      />
+  """
+  attr :centre, :map, required: true, doc: "maps with `:label` and optional `:icon`"
+
+  attr :inputs, :list,
+    default: [],
+    doc: "maps with `:label`, and optional `:icon`, `:navigate`, `:note`, `:title`"
+
+  attr :outputs, :list, default: [], doc: "same shape as `inputs`"
+  attr :inputs_label, :string, default: "Reads from"
+  attr :outputs_label, :string, default: "Feeds"
+  attr :inputs_empty, :string, default: "Nothing."
+  attr :outputs_empty, :string, default: "Nothing."
+  attr :class, :any, default: nil
+  attr :rest, :global
+
+  def lineage_graph(assigns) do
+    ~H"""
+    <div class={["flex flex-col gap-3 md:flex-row md:items-stretch md:gap-0", @class]} {@rest}>
+      <.lineage_column label={@inputs_label} nodes={@inputs} empty={@inputs_empty} />
+
+      <.lineage_wires count={length(@inputs)} direction={:in} />
+      <.lineage_stack_arrow />
+
+      <div class="flex shrink-0 flex-col md:px-1">
+        <.lineage_heading />
+
+        <div class="flex flex-1 items-center justify-center">
+          <div
+            class="flex min-w-0 items-center gap-2 rounded-box border border-primary/40 bg-primary/10 px-3 py-2"
+            data-testid="lineage-centre"
+          >
+            <.icon
+              :if={@centre[:icon]}
+              name={@centre.icon}
+              size={:sm}
+              class="shrink-0 text-primary"
+            />
+            <span class="truncate font-medium text-primary" title={@centre.label}>
+              {@centre.label}
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <.lineage_stack_arrow />
+      <.lineage_wires count={length(@outputs)} direction={:out} />
+
+      <.lineage_column label={@outputs_label} nodes={@outputs} empty={@outputs_empty} />
+    </div>
+    """
+  end
+
+  attr :label, :string, required: true
+  attr :nodes, :list, required: true
+  attr :empty, :string, required: true
+
+  defp lineage_column(assigns) do
+    ~H"""
+    <div class="flex min-w-0 flex-1 flex-col">
+      <.lineage_heading label={@label} />
+
+      <p :if={@nodes == []} class="text-sm favn-text-muted">{@empty}</p>
+
+      <!-- `auto-rows-fr` is `minmax(0, 1fr)`, so slot `i` of `n` centres exactly at
+      `(i + 0.5) / n` however tall a node turns out to be — which is what the drawn
+      wires assume. Neither `justify-around` nor `flex-1` slots manage that: a node
+      that wraps to two lines takes more than its share and pulls its neighbours off
+      the line drawn to meet them, because a percentage flex basis resolves against a
+      height this container does not definitely have. No gap for the same reason;
+      the separation is the slack inside each slot. -->
+      <ul :if={@nodes != []} class="grid min-h-fit flex-1 auto-rows-fr">
+        <li :for={node <- @nodes} class="flex min-w-0 items-center py-1">
+          <.lineage_node node={node} />
+        </li>
+      </ul>
+    </div>
+    """
+  end
+
+  # Every column carries this row, the wires and the centre included, so all four
+  # measure their vertical space from the same origin. Without it the SVG spanned
+  # heading-plus-list while the nodes were spread over the list alone, and every wire
+  # met its node half a heading too high. The invisible copy is a zero-width space
+  # rather than a fixed height, so it cannot drift from the real one.
+  attr :label, :string, default: nil
+
+  defp lineage_heading(assigns) do
+    ~H"""
+    <p :if={@label} class="mb-2 text-sm favn-text-subtle">{@label}</p>
+    <p :if={is_nil(@label)} class="mb-2 hidden text-sm md:block" aria-hidden="true">&#8203;</p>
+    """
+  end
+
+  attr :node, :map, required: true
+
+  defp lineage_node(assigns) do
+    ~H"""
+    <.link
+      :if={@node[:navigate]}
+      navigate={@node.navigate}
+      class="favn-surface-control flex min-w-0 flex-1 items-center gap-2 rounded-box px-3 py-2 transition-colors hover:border-primary/40"
+      title={@node[:title] || @node.label}
+    >
+      <.icon :if={@node[:icon]} name={@node.icon} size={:sm} class="shrink-0 favn-text-subtle" />
+      <span class="truncate font-medium">{@node.label}</span>
+    </.link>
+
+    <div
+      :if={is_nil(@node[:navigate])}
+      class="favn-surface-control min-w-0 flex-1 rounded-box border-dashed px-3 py-2"
+      title={@node[:title] || @node.label}
+    >
+      <div class="flex min-w-0 items-center gap-2">
+        <.icon :if={@node[:icon]} name={@node.icon} size={:sm} class="shrink-0 favn-text-subtle" />
+        <span class="truncate favn-text-muted">{@node.label}</span>
+      </div>
+
+      <p :if={@node[:note]} class="mt-0.5 truncate text-sm favn-text-subtle">{@node.note}</p>
+    </div>
+    """
+  end
+
+  attr :count, :integer, required: true
+  attr :direction, :atom, required: true
+
+  defp lineage_wires(assigns) do
+    assigns = assign(assigns, :paths, lineage_paths(assigns.count, assigns.direction))
+
+    ~H"""
+    <div class="hidden w-10 shrink-0 flex-col md:flex">
+      <.lineage_heading />
+
+      <svg
+        :if={@paths != []}
+        class="w-full flex-1 favn-text-subtle"
+        viewBox="0 0 100 100"
+        preserveAspectRatio="none"
+        aria-hidden="true"
+      >
+        <path
+          :for={path <- @paths}
+          d={path}
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1"
+          vector-effect="non-scaling-stroke"
+        />
+      </svg>
+    </div>
+    """
+  end
+
+  defp lineage_stack_arrow(assigns) do
+    ~H"""
+    <div class="flex justify-center md:hidden">
+      <.icon name="hero-arrow-down" size={:sm} class="favn-text-subtle" />
+    </div>
+    """
+  end
+
+  # A single node is joined by one straight line; several fan into a shared bus
+  # halfway across the gap, which is what makes the edges legible when there are five.
+  defp lineage_paths(0, _direction), do: []
+
+  defp lineage_paths(count, direction) do
+    Enum.map(0..(count - 1), fn index ->
+      y = Float.round((index + 0.5) / count * 100, 2)
+
+      case direction do
+        :in -> "M 0,#{y} H 50 V 50 H 100"
+        :out -> "M 0,50 H 50 V #{y} H 100"
+      end
+    end)
+  end
+
+  @doc """
+  A run history as a vertical spine, newest at the top.
+
+  Use this instead of a table when the reader is picking one entry to inspect
+  rather than comparing a page of them. A table answers "which of these is worst";
+  a spine answers "what happened, and when did the rhythm break" — the gaps between
+  entries are the point, so the dates carry the column and each entry stays one
+  glance wide.
+
+  Entries are grouped by day, and the day appears once as a heading rather than on
+  every row, so a day with six runs reads as one day.
+
+      <.run_timeline
+        runs={@runs}
+        selected_id={@selected_run_id}
+        empty_label="This asset has not run yet."
+      />
+  """
+  attr :runs, :list,
+    required: true,
+    doc:
+      "newest first; maps with `:id`, `:patch`, `:status_tone`, `:status_label`, " <>
+        "`:day_label`, `:time_label`, and optional `:window_label`, `:duration_label`, " <>
+        "and `:trigger_label`"
+
+  attr :selected_id, :string, default: nil
+  attr :label, :string, default: "Runs", doc: "names the region for assistive technology"
+  attr :empty_label, :string, default: "No runs yet."
+  attr :class, :any, default: nil
+  attr :rest, :global
+
+  def run_timeline(assigns) do
+    assigns = assign(assigns, :days, group_runs_by_day(assigns.runs))
+
+    ~H"""
+    <div
+      class={["min-h-0 overflow-y-auto", @class]}
+      role="navigation"
+      aria-label={@label}
+      {@rest}
+    >
+      <.empty_state :if={@runs == []} title={@empty_label} icon="hero-clock" />
+
+      <ol :if={@runs != []} class="relative space-y-4">
+        <li :for={day <- @days}>
+          <!-- Indented to the spine column plus a row's own padding, so the date starts
+          on the same x as the times under it. The heading stays full width, because it
+          is the sticky backdrop the rows scroll behind. -->
+          <p class="sticky top-0 z-10 bg-base-100/85 py-1 pl-[2.125rem] pr-2.5 text-xs font-medium uppercase tracking-wide backdrop-blur favn-text-subtle">
+            {day.label}
+          </p>
+
+          <ol class="mt-1 space-y-1">
+            <li :for={run <- day.runs} class="relative pl-6">
+              <span
+                class="absolute left-[7px] top-0 h-full w-px bg-base-content/10"
+                aria-hidden="true"
+              ></span>
+              <!-- The dot is centred by the flex box rather than by insets. `.status`
+              declares its own `width` and `height`, which over-constrains `inset-3` —
+              `left` and `width` win, `right` is dropped — so the dot sat half a pixel
+              up and left of the ring it is supposed to be inside. -->
+              <span
+                class={[
+                  "absolute left-0 top-3 flex size-[15px] items-center justify-center",
+                  "rounded-full ring-3 ring-base-100",
+                  Tokens.surface_class(run.status_tone)
+                ]}
+                aria-hidden="true"
+              >
+                <span class={["rounded-full", Tokens.dot_class(run.status_tone), "status"]}></span>
+              </span>
+
+              <.link
+                patch={run.patch}
+                aria-current={(run.id == @selected_id && "true") || nil}
+                class={[
+                  "block rounded-field px-2.5 py-2 transition-colors",
+                  (run.id == @selected_id && "favn-mode-item-active") ||
+                    "hover:bg-base-content/5"
+                ]}
+              >
+                <span class="flex items-baseline justify-between gap-2">
+                  <span class="font-mono text-sm text-base-content">{run.time_label}</span>
+                  <span class={["truncate text-sm", Tokens.text_class(run.status_tone)]}>
+                    {run.status_label}
+                  </span>
+                </span>
+
+                <span
+                  :if={run[:window_label] || run[:duration_label] || run[:trigger_label]}
+                  class="mt-0.5 flex items-baseline gap-2 truncate text-sm favn-text-subtle"
+                >
+                  <span :if={run[:window_label]} class="truncate">{run.window_label}</span>
+                  <span :if={run[:duration_label]}>{run.duration_label}</span>
+                  <span :if={run[:trigger_label]} class="truncate">{run.trigger_label}</span>
+                </span>
+              </.link>
+            </li>
+          </ol>
+        </li>
+      </ol>
+    </div>
+    """
+  end
+
+  @doc """
+  One screen of the periods a windowed asset should hold data for.
+
+  `FavnView.CoverageCalendar.build/1` decides the shape — which unit fills a screen at
+  each grain, how the cells align, and why — and this renders it. One grid rather than
+  four components, because the differences are all in that result.
+
+  Missing cells are buttons when `on_select` is set, so the operator can pick the
+  periods to backfill. Covered cells are inert, because there is nothing to do with one.
+
+      <.coverage_calendar
+        layout={@calendar.layout}
+        cells={@calendar.cells}
+        blanks={@calendar.blanks}
+        columns={@calendar.columns}
+        column_labels={@calendar.column_labels}
+        on_select="toggle_coverage_window"
+      />
+  """
+  attr :cells, :list,
+    required: true,
+    doc: "maps with `:id`, `:label`, `:title`, `:state`, `:selected?`, and `:key`"
+
+  attr :layout, :atom, default: :grid, doc: "`:grid` or `:empty`"
+  attr :blanks, :integer, default: 0, doc: "leading cells that pad the first period into place"
+  attr :columns, :integer, default: 7
+  attr :column_labels, :list, default: []
+  attr :on_select, :string, default: nil, doc: "LiveView event; omit for a read-only calendar"
+  attr :empty_label, :string, default: "No periods to show here."
+  attr :class, :any, default: nil
+  attr :rest, :global
+
+  def coverage_calendar(assigns) do
+    ~H"""
+    <div class={["space-y-1.5", @class]} {@rest}>
+      <.empty_state :if={@layout == :empty} title={@empty_label} icon="hero-calendar-days" />
+
+      <div
+        :if={@layout == :grid && @column_labels != []}
+        class={["grid max-w-sm gap-1", calendar_columns_class(@columns)]}
+        aria-hidden="true"
+      >
+        <span :for={label <- @column_labels} class="text-center text-xs favn-text-subtle">
+          {label}
+        </span>
+      </div>
+
+      <!-- Bounded, so a cell stays roughly square whatever the panel is wide. A grid
+      that filled a desktop panel gave each day 140px and read as a row of buttons
+      rather than a month. -->
+      <div
+        :if={@layout == :grid}
+        class={["grid max-w-sm gap-1", calendar_columns_class(@columns)]}
+      >
+        <span :for={_blank <- calendar_blanks(@blanks)} class="h-9" aria-hidden="true"></span>
+        <.calendar_cell :for={cell <- @cells} cell={cell} on_select={@on_select} />
+      </div>
+    </div>
+    """
+  end
+
+  @doc """
+  Steps one screen of a calendar back and forward, bounded by what exists.
+
+  A control that cannot go anywhere does not ship, so `previous`/`next` are absent
+  rather than permanently disabled when there is nothing either side, and the whole bar
+  disappears when the range fits on one screen. The jump selects list only units inside
+  the range, which is what stops an operator asking for a month coverage never had.
+  """
+  attr :label, :string, required: true, doc: "the unit on screen, e.g. \"July 2026\""
+
+  attr :previous, :string,
+    default: nil,
+    doc: "value for `phx-value-at` on the step back; omit when there is nothing earlier"
+
+  attr :next, :string, default: nil, doc: "same, forward"
+  attr :on_step, :string, required: true
+  attr :on_jump, :string, default: nil, doc: "event for the selects; omit to offer no jump"
+
+  attr :jumps, :list,
+    default: [],
+    doc:
+      "maps with `:name`, `:label`, `:value` and `:options` (`{label, value}` pairs); " <>
+        "rendered left to right, coarsest first"
+
+  attr :class, :any, default: nil
+  attr :rest, :global
+
+  def calendar_navigator(assigns) do
+    ~H"""
+    <div
+      :if={@previous || @next || @jumps != []}
+      class={["flex flex-wrap items-center gap-3", @class]}
+      {@rest}
+    >
+      <!-- The unit's name is a heading, not a third control. Painted as a button
+      between two real ones it read as clickable and did nothing, which the rule
+      against dead affordances covers whether or not the paint is convincing. -->
+      <div class="flex items-center gap-2">
+        <.icon_button
+          :if={@previous}
+          icon="hero-chevron-left"
+          label="Earlier"
+          size={:sm}
+          phx-click={@on_step}
+          phx-value-at={@previous}
+          data-testid="coverage-step-previous"
+        />
+        <p class="min-w-32 text-center text-sm font-medium">{@label}</p>
+
+        <.icon_button
+          :if={@next}
+          icon="hero-chevron-right"
+          label="Later"
+          size={:sm}
+          phx-click={@on_step}
+          phx-value-at={@next}
+          data-testid="coverage-step-next"
+        />
+      </div>
+
+      <form :if={@on_jump && @jumps != []} phx-change={@on_jump} class="flex flex-wrap gap-2">
+        <label :for={jump <- @jumps} class="contents">
+          <span class="sr-only">{jump.label}</span>
+          <select
+            name={jump.name}
+            class="select select-sm w-auto"
+            data-testid={"coverage-jump-#{jump.name}"}
+          >
+            <option :for={{label, value} <- jump.options} value={value} selected={value == jump.value}>
+              {label}
+            </option>
+          </select>
+        </label>
+      </form>
+    </div>
+    """
+  end
+
+  attr :cell, :map, required: true
+  attr :on_select, :string, default: nil
+
+  defp calendar_cell(%{cell: %{state: :missing}, on_select: on_select} = assigns)
+       when is_binary(on_select) do
+    ~H"""
+    <button
+      type="button"
+      id={@cell.id}
+      phx-click={@on_select}
+      phx-value-key={@cell.key}
+      aria-pressed={to_string(@cell.selected?)}
+      title={@cell.title}
+      class={[
+        "h-9 rounded-field border px-1.5 text-center text-sm",
+        (@cell.selected? && "border-primary bg-primary/15 font-medium text-base-content") ||
+          "border-warning/35 bg-warning/10 text-warning hover:bg-warning/20"
+      ]}
+    >
+      {@cell.label}
+    </button>
+    """
+  end
+
+  defp calendar_cell(%{cell: %{state: :missing}} = assigns) do
+    ~H"""
+    <span
+      id={@cell.id}
+      title={@cell.title}
+      class="flex h-9 items-center justify-center rounded-field border border-warning/35 bg-warning/10 px-1.5 text-sm text-warning"
+    >
+      {@cell.label}
+    </span>
+    """
+  end
+
+  defp calendar_cell(assigns) do
+    ~H"""
+    <span
+      id={@cell.id}
+      title={@cell.title}
+      class="flex h-9 items-center justify-center rounded-field bg-base-content/5 px-1.5 text-sm favn-text-subtle"
+    >
+      {@cell.label}
     </span>
     """
   end
@@ -675,10 +1219,18 @@ defmodule FavnView.UI.Data do
   def field_row(assigns) do
     ~H"""
     <div class={["flex flex-col gap-0.5 py-1.5 sm:flex-row sm:items-baseline sm:gap-4", @class]}>
-      <span class="shrink-0 text-xs favn-text-subtle sm:w-44">{@label}</span>
+      <span class="shrink-0 text-sm favn-text-subtle sm:w-44">{@label}</span>
       <span class="min-w-0 text-sm favn-text-muted">{render_slot(@inner_block)}</span>
     </div>
     """
+  end
+
+  # `Enum.chunk_by/2` rather than `group_by`, so the caller's newest-first order
+  # survives; grouping would reorder the days by however the map hashed them.
+  defp group_runs_by_day(runs) do
+    runs
+    |> Enum.chunk_by(& &1[:day_label])
+    |> Enum.map(&%{label: List.first(&1)[:day_label] || "Unknown date", runs: &1})
   end
 
   defp align_class(:end), do: "text-right"
@@ -700,9 +1252,10 @@ defmodule FavnView.UI.Data do
   defp count_tone(%{count: 0}), do: :neutral
   defp count_tone(%{tone: tone}), do: tone
 
-  # Without a toggle the filters are always laid out; with one they are a
-  # narrow-screen disclosure that `lg` reopens for good.
-  defp filters_class(%{on_toggle: nil}), do: "flex w-full flex-col lg:w-auto"
+  # Below `lg` the filters are a disclosure, on every list screen rather than on
+  # the ones that opted in: a phone has room for the scope rail or the filters,
+  # not both, and a screen that laid them out inline pushed its rows off-screen.
+  # `lg` and up reopens them for good.
   defp filters_class(%{filters_open?: true}), do: "flex w-full flex-col lg:w-auto"
   defp filters_class(_assigns), do: "hidden w-full flex-col lg:flex lg:w-auto"
 
@@ -731,6 +1284,17 @@ defmodule FavnView.UI.Data do
     parts = Enum.map_join(segments, ", ", &"#{&1.count} #{&1.label}")
     if summary, do: "#{summary}: #{parts}", else: parts
   end
+
+  defp calendar_blanks(blanks) when is_integer(blanks) and blanks > 0,
+    do: List.duplicate(nil, blanks)
+
+  defp calendar_blanks(_blanks), do: []
+
+  defp calendar_columns_class(4), do: "grid-cols-4"
+  defp calendar_columns_class(5), do: "grid-cols-5"
+  defp calendar_columns_class(6), do: "grid-cols-6"
+  defp calendar_columns_class(7), do: "grid-cols-7"
+  defp calendar_columns_class(_columns), do: "grid-cols-6"
 
   defp grid_class(1), do: "sm:grid-cols-1"
   defp grid_class(2), do: "sm:grid-cols-2"

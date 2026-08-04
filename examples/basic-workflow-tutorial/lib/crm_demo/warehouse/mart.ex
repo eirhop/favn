@@ -8,6 +8,6 @@ defmodule CrmDemo.Warehouse.Mart do
 
   use Favn.Namespace
 
-  relation(schema: "mart")
+  relation(catalog: "mart")
   meta(tags: [:mart])
 end

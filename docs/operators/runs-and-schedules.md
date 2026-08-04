@@ -150,7 +150,13 @@ or `unknown` independently from run health and freshness. Unknown responses name
 the reason: coverage is undeclared, the asset is not windowed, a persisted target
 has no active generation, or authoritative state is unavailable. The detail page
 shows the declared and environment-effective start, expected-through boundary,
-availability delay, counts, and a bounded page of exact gaps.
+availability delay, and counts.
+
+Its Coverage page draws one calendar unit at a time — a day of hours, a month of
+days, a year of months, or every year at once — with each expected period marked
+covered or missing, and steps back through the range to where coverage starts.
+Selecting missing periods there plans a backfill over exactly those, which is the
+same operation the CLI performs below.
 
 To repair gaps from the CLI:
 

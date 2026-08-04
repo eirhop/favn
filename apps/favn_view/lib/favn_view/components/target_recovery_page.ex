@@ -198,7 +198,7 @@ defmodule FavnView.Components.TargetRecoveryPage do
   defp item(assigns) do
     ~H"""
     <div :if={not is_nil(@value)}>
-      <dt class="text-xs favn-text-subtle">{@label}</dt>
+      <dt class="text-sm favn-text-subtle">{@label}</dt>
 
       <dd class="mt-1"><.mono value={format_value(@value)} /></dd>
     </div>

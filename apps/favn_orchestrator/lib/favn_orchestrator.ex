@@ -89,12 +89,17 @@ defmodule FavnOrchestrator do
   @type pipeline_catalogue_entry :: Catalogue.pipeline_catalogue_entry()
   @type pipeline_run_history_entry :: Catalogue.pipeline_run_history_entry()
   @type pipeline_detail :: Catalogue.pipeline_detail()
-  @type asset_timeline_window :: Catalogue.asset_timeline_window()
+  @type asset_run_config :: Catalogue.asset_run_config()
   @type asset_detail :: Catalogue.asset_detail()
+  @type asset_dependency :: Catalogue.asset_dependency()
+  @type asset_documentation :: Catalogue.asset_documentation()
+  @type asset_run_history_entry :: Catalogue.asset_run_history_entry()
+  @type asset_run_detail :: Catalogue.asset_run_detail()
   @type asset_freshness_reason :: Catalogue.asset_freshness_reason()
   @type asset_freshness_detail :: Catalogue.asset_freshness_detail()
   @type coverage_summary :: Favn.Coverage.Summary.t()
   @type missing_coverage_page :: Coverage.missing_page()
+  @type coverage_window_states :: Coverage.window_states()
 
   @doc "Returns a customer-visible lineage graph after operator reauthorization."
   @spec get_operator_lineage_graph(OperatorContext.t(), keyword()) ::
@@ -443,6 +448,39 @@ defmodule FavnOrchestrator do
     end
   end
 
+  @doc """
+  Returns what one asset is and how it is written, for an operator workspace.
+
+  Answers "what does this thing do" — the author's own documentation, its tags and
+  owner, where it lands, and then whichever source it has: the query text for a SQL
+  asset, the module and function for an Elixir one.
+  """
+  @spec active_asset_documentation(OperatorContext.t(), String.t()) ::
+          {:ok, asset_documentation()} | {:error, term()}
+  def active_asset_documentation(%OperatorContext{} = operator_context, target_id)
+      when is_binary(target_id) do
+    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer) do
+      Catalogue.active_asset_documentation(context, target_id)
+    end
+  end
+
+  @doc """
+  Returns one asset's view of one of its runs for an operator workspace.
+
+  Answers "what did this run actually produce for this asset" — the manifest-pinned
+  data contract and checks beside the results that run recorded for them, the
+  asset's own step outcome, the run metadata, and the runtime inputs the run pinned.
+  A run belonging to another asset reads as `:not_found`.
+  """
+  @spec active_asset_run_detail(OperatorContext.t(), String.t(), run_id()) ::
+          {:ok, asset_run_detail()} | {:error, term()}
+  def active_asset_run_detail(%OperatorContext{} = operator_context, target_id, run_id)
+      when is_binary(target_id) and is_binary(run_id) do
+    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer) do
+      Catalogue.active_asset_run_detail(context, target_id, run_id)
+    end
+  end
+
   @doc "Returns generation-aware coverage for one active asset after reauthorization."
   @spec get_asset_coverage(OperatorContext.t(), String.t()) ::
           {:ok, coverage_summary()} | {:error, term()}
@@ -450,6 +488,22 @@ defmodule FavnOrchestrator do
       when is_binary(target_id) do
     with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer) do
       Coverage.summary(context, target_id)
+    end
+  end
+
+  @doc """
+  Returns every expected coverage window in one addressed range after reauthorization.
+
+  Pass `:from` and `:until` as local dates in the asset's own coverage timezone,
+  `:until` exclusive, to name the range. Unlike `page_asset_missing_coverage/3` this
+  reports covered windows too, which is what a calendar of the range needs.
+  """
+  @spec active_asset_coverage_windows(OperatorContext.t(), String.t(), keyword()) ::
+          {:ok, coverage_window_states()} | {:error, term()}
+  def active_asset_coverage_windows(%OperatorContext{} = operator_context, target_id, opts \\ [])
+      when is_binary(target_id) and is_list(opts) do
+    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer) do
+      Coverage.window_states(context, target_id, opts)
     end
   end
 
@@ -463,7 +517,12 @@ defmodule FavnOrchestrator do
     end
   end
 
-  @doc "Plans an exact backfill for all or one page of missing windows."
+  @doc """
+  Plans an exact backfill of missing windows.
+
+  Pass `:window_keys` to plan named windows, `:cursor`/`:limit` to plan one page,
+  or neither to plan every missing window.
+  """
   @spec plan_missing_coverage_backfill(OperatorContext.t(), String.t(), keyword()) ::
           {:ok, map()} | {:error, term()}
   def plan_missing_coverage_backfill(%OperatorContext{} = operator_context, target_id, opts \\ [])

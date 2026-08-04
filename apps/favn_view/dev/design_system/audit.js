@@ -258,11 +258,45 @@
   function clippedPixels(element, style) {
     if (style.textOverflow === "ellipsis") return 0;
     if (visuallyHidden(element, style)) return 0;
+    if (selfScrolling(element)) return 0;
 
-    var horizontal = clips(style.overflowX) ? element.scrollWidth - element.clientWidth : 0;
-    var vertical = clips(style.overflowY) ? element.scrollHeight - element.clientHeight : 0;
+    var box = element.getBoundingClientRect();
+
+    var horizontal = clips(style.overflowX)
+      ? element.scrollWidth - element.clientWidth - roundingSlack(box.width)
+      : 0;
+
+    var vertical = clips(style.overflowY)
+      ? element.scrollHeight - element.clientHeight - roundingSlack(box.height)
+      : 0;
 
     return Math.max(0, horizontal, vertical);
+  }
+
+  // A text field's own value is reachable through the field: the caret scrolls it,
+  // which is the same reason an `overflow-x: auto` container is not a failure. The
+  // guard above cannot see that, because browsers force `overflow: clip` on form
+  // controls rather than `auto`, so every input long enough to scroll read as clipped.
+  //
+  // `select` is deliberately not here. Its options live in a popup the box never
+  // scrolls, so a selected value too wide for it really is cut off.
+  var SELF_SCROLLING = { INPUT: true, TEXTAREA: true };
+
+  function selfScrolling(element) {
+    return SELF_SCROLLING[element.tagName] === true;
+  }
+
+  // `clientWidth` and `scrollWidth` are integers over a layout that is not: a flex
+  // child 624.36px wide floors to 624 and ceils to 625, and that difference is the
+  // rounding rather than a pixel of hidden content. One pixel of slack is allowed per
+  // axis, and only where that axis is genuinely fractional — a real 1px clip on a
+  // whole-pixel box still fails, and a fractional width grants nothing to the height.
+  function roundingSlack(size) {
+    return isWhole(size) ? 0 : 1;
+  }
+
+  function isWhole(value) {
+    return Math.abs(value - Math.round(value)) < 0.001;
   }
 
   // `sr-only` is a 1x1 box with `overflow: hidden` holding a full label, so by

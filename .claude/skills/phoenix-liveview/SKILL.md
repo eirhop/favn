@@ -40,6 +40,13 @@ reuse it, and only then write something new.
   internals. Runtime inspection does not relax this.
 - Mutating events authorise server-side. Hiding or disabling a control is
   presentation only.
+- A route added to, removed from, or renamed in `router.ex` is catalogued in
+  `deployment/docker-compose/security/catalog.json` in the same change, or a
+  required CI job fails. Sub-routes of one screen each need their own entry.
+  Follow
+  [`docs/production/security_qualification.md`](../../../docs/production/security_qualification.md#add-or-change-a-route)
+  — it also states the behaviour a catalogued route must have, including
+  answering 200 for an id that does not exist.
 - Reusable components declare explicit `attr` and `slot`, and keep stable DOM ids
   and `data-testid` selectors.
 - Every page component covers content, loading, empty, and error.

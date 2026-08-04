@@ -26,6 +26,11 @@ defmodule FavnOrchestrator.Coverage do
   alias Favn.Window.Key, as: WindowKey
 
   @default_page 100
+
+  # One calendar unit is at most 31 days, 25 hours, or 12 months. Year grain has no
+  # unit above it, so its screen is every year in coverage — this bounds that, and
+  # anything else is a caller asking for a range no screen was going to draw.
+  @window_states_cap 500
   @max_page 500
   @max_backfill_windows 10_000
 
@@ -37,6 +42,39 @@ defmodule FavnOrchestrator.Coverage do
             required(:has_more) => boolean(),
             required(:next_cursor) => String.t() | nil
           }
+        }
+
+  @typedoc """
+  One expected window and whether the pinned generation has evidence for it.
+  """
+  @type window_state :: %{
+          required(:window_key) => String.t(),
+          required(:kind) => atom(),
+          required(:timezone) => String.t(),
+          required(:start_at) => DateTime.t(),
+          required(:end_at) => DateTime.t(),
+          required(:covered?) => boolean()
+        }
+
+  @typedoc """
+  Every expected window in one addressed range, plus the bounds of the whole range.
+
+  `missing_windows/3` answers "what is missing", which is what a backfill needs. A
+  calendar needs the complement as well — a period with no evidence and a period
+  nobody looked at must not draw the same — and it cannot work the difference out
+  itself: an hour-grained day has 23, 24, or 25 hours depending on daylight saving,
+  and only the evaluator knows which.
+
+  `first_expected_at` and `last_expected_at` bound navigation, so a caller can offer
+  to step back exactly as far as coverage goes and no further.
+  """
+  @type window_states :: %{
+          required(:summary) => Summary.t(),
+          required(:kind) => atom() | nil,
+          required(:timezone) => String.t() | nil,
+          required(:windows) => [window_state()],
+          required(:first_expected_at) => DateTime.t() | nil,
+          required(:last_expected_at) => DateTime.t() | nil
         }
 
   @doc "Returns a bounded coverage summary for one active asset target."
@@ -99,12 +137,138 @@ defmodule FavnOrchestrator.Coverage do
     end)
   end
 
-  @doc "Builds an immutable exact backfill plan from all or one page of missing windows."
+  @doc """
+  Returns every expected window in one addressed range, covered or not.
+
+  `:from` and `:until` name the range as local dates in the asset's own coverage
+  timezone, `:until` exclusive. Dates rather than instants because midnight is not
+  guaranteed to exist — a clock change can skip it — and resolving that is this
+  layer's job, not a caller's. `:from` is floored to its period and clamped into
+  coverage, so a caller may ask for a month without checking that the month is inside
+  the range; omitting both reads from the start of coverage to the safety cap.
+
+  A range rather than a count because a count cannot name a calendar unit: a month
+  holds 28 to 31 days and a day holds 23, 24, or 25 hours. A caller drawing one
+  unit passes that unit's bounds and gets exactly the periods inside it.
+  """
+  @spec window_states(WorkspaceContext.t(), String.t(), keyword()) ::
+          {:ok, window_states()} | {:error, term()}
+  def window_states(%WorkspaceContext{} = context, target_id, opts \\ [])
+      when is_binary(target_id) and is_list(opts) do
+    timed_query(context, target_id, :window_states, fn ->
+      with :ok <- validate_options(opts, [:evaluated_at, :from, :until]),
+           :ok <- validate_optional_date(Keyword.get(opts, :from)),
+           :ok <- validate_optional_date(Keyword.get(opts, :until)),
+           evaluated_at <- Keyword.get(opts, :evaluated_at, DateTime.utc_now()),
+           :ok <- validate_datetime(evaluated_at),
+           {:ok, snapshot} <- active_asset(context, target_id),
+           {:ok, summary} <- summarize(context, snapshot, evaluated_at) do
+        addressed_states(context, snapshot, summary, opts)
+      end
+    end)
+  end
+
+  defp validate_optional_date(nil), do: :ok
+  defp validate_optional_date(%Date{}), do: :ok
+  defp validate_optional_date(_other), do: {:error, :invalid_coverage_options}
+
+  # No range asked for reads from the start of coverage.
+  defp range_start(nil, _timezone, evaluation), do: {:ok, evaluation.first_window.start_at}
+  defp range_start(%Date{} = date, timezone, _evaluation), do: local_start(date, timezone)
+
+  defp range_end(nil, _timezone), do: {:ok, nil}
+  defp range_end(%Date{} = date, timezone), do: local_start(date, timezone)
+
+  # A date names a period, not an instant, and in some zones its midnight does not
+  # exist — 1970-01-01 in Asia/Ho_Chi_Minh, a spring-forward day in a zone that
+  # shifts at midnight. `:gap` gives the first instant that does exist, which is the
+  # start of that period; `:ambiguous` takes the earlier of the two.
+  defp local_start(%Date{} = date, timezone) do
+    case DateTime.new(date, ~T[00:00:00], timezone, Favn.Timezone.database!()) do
+      {:ok, instant} -> {:ok, instant}
+      {:ambiguous, earlier, _later} -> {:ok, earlier}
+      {:gap, _before, first_after} -> {:ok, first_after}
+      {:error, _reason} -> {:error, :invalid_coverage_options}
+    end
+  end
+
+  # Coverage that cannot be evaluated has no windows to draw, and inventing a range
+  # for it would put an empty calendar on screen where an explanation belongs.
+  defp addressed_states(_context, _snapshot, %Summary{status: :unknown} = summary, _opts),
+    do: {:ok, unknown_window_states(summary)}
+
+  defp addressed_states(context, snapshot, summary, opts) do
+    identity = %{
+      evidence_generation_id: summary.evidence_generation_id,
+      target_generation_id: summary.active_target_generation_id
+    }
+
+    with {:ok, evaluation} <- Expected.evaluate(snapshot.asset.coverage, summary.evaluated_at),
+         timezone <- evaluation.coverage.timezone,
+         {:ok, from} <- range_start(Keyword.get(opts, :from), timezone, evaluation),
+         {:ok, until} <- range_end(Keyword.get(opts, :until), timezone),
+         {:ok, page} <- Expected.page_between(evaluation, from, until, @window_states_cap) do
+      case successful_keys(context, snapshot, identity, page) do
+        {:ok, keys} ->
+          {:ok, addressed_window_states(summary, evaluation, page.items, keys)}
+
+        # The counts came back but the exact keys did not, so which periods are
+        # covered is unknown. Reporting them all as missing would draw a calendar of
+        # gaps that may not exist, and keeping the counted summary beside no windows
+        # would say two contradictory things at once.
+        {:error, _reason} ->
+          with {:ok, unknown} <-
+                 unknown_summary(snapshot, summary.evaluated_at, :authoritative_state_unavailable) do
+            {:ok, unknown_window_states(unknown)}
+          end
+      end
+    end
+  end
+
+  defp addressed_window_states(summary, evaluation, anchors, successful_keys) do
+    covered = MapSet.new(successful_keys)
+
+    %{
+      summary: summary,
+      kind: evaluation.coverage.kind,
+      timezone: evaluation.coverage.timezone,
+      first_expected_at: evaluation.first_window.start_at,
+      last_expected_at:
+        evaluation.last_expected_window && evaluation.last_expected_window.start_at,
+      windows: Enum.map(anchors, &window_state(&1, covered))
+    }
+  end
+
+  defp window_state(anchor, covered) do
+    anchor
+    |> missing_window()
+    |> Map.put(:covered?, MapSet.member?(covered, storage_window_key(anchor)))
+  end
+
+  defp unknown_window_states(summary) do
+    %{
+      summary: summary,
+      kind: nil,
+      timezone: nil,
+      windows: [],
+      first_expected_at: nil,
+      last_expected_at: nil
+    }
+  end
+
+  @doc """
+  Builds an immutable exact backfill plan from missing windows.
+
+  Three selections, in order of precedence: `:window_keys` plans exactly the named
+  windows, `:cursor`/`:limit` plans one page, and neither plans every missing
+  window. The selection is part of the plan hash, so a plan reviewed as three days
+  cannot be submitted as a whole year.
+  """
   @spec plan_missing_backfill(WorkspaceContext.t(), String.t(), keyword()) ::
           {:ok, map()} | {:error, term()}
   def plan_missing_backfill(%WorkspaceContext{} = context, target_id, opts \\ [])
       when is_binary(target_id) and is_list(opts) do
-    with :ok <- validate_options(opts, [:evaluated_at, :cursor, :limit]),
+    with :ok <- validate_options(opts, [:evaluated_at, :cursor, :limit, :window_keys]),
          evaluated_at <- Keyword.get(opts, :evaluated_at, DateTime.utc_now()),
          :ok <- validate_datetime(evaluated_at),
          {:ok, selection} <- backfill_selection(opts),
@@ -132,6 +296,22 @@ defmodule FavnOrchestrator.Coverage do
     end
   end
 
+  defp missing_selection(context, target_id, evaluated_at, %{mode: :explicit} = selection) do
+    with {:ok, summary, missing} <-
+           missing_selection(context, target_id, evaluated_at, %{mode: :all}) do
+      requested = MapSet.new(selection.window_keys)
+      selected = Enum.filter(missing, &MapSet.member?(requested, &1.window_key))
+
+      # Every named window has to still be missing. One of them being covered since
+      # the operator selected it means the plan they are about to review is not the
+      # one they built, and silently planning the remainder would run something
+      # other than what was asked for.
+      if length(selected) == MapSet.size(requested),
+        do: {:ok, summary, selected},
+        else: {:error, :coverage_selection_stale}
+    end
+  end
+
   defp missing_selection(context, target_id, evaluated_at, selection) do
     page_opts =
       [evaluated_at: evaluated_at, limit: selection.limit]
@@ -145,15 +325,39 @@ defmodule FavnOrchestrator.Coverage do
   end
 
   defp backfill_selection(opts) do
-    if Keyword.has_key?(opts, :cursor) or Keyword.has_key?(opts, :limit) do
-      with {:ok, limit} <- page_limit(Keyword.get(opts, :limit, @max_page)),
-           {:ok, cursor} <- optional_cursor(Keyword.get(opts, :cursor)) do
-        {:ok, %{mode: :page, cursor: cursor, limit: limit}}
-      end
-    else
-      {:ok, %{mode: :all}}
+    cond do
+      Keyword.has_key?(opts, :window_keys) and
+          (Keyword.has_key?(opts, :cursor) or Keyword.has_key?(opts, :limit)) ->
+        {:error, :invalid_coverage_options}
+
+      Keyword.has_key?(opts, :window_keys) ->
+        explicit_selection(Keyword.fetch!(opts, :window_keys))
+
+      Keyword.has_key?(opts, :cursor) or Keyword.has_key?(opts, :limit) ->
+        with {:ok, limit} <- page_limit(Keyword.get(opts, :limit, @max_page)),
+             {:ok, cursor} <- optional_cursor(Keyword.get(opts, :cursor)) do
+          {:ok, %{mode: :page, cursor: cursor, limit: limit}}
+        end
+
+      true ->
+        {:ok, %{mode: :all}}
     end
   end
+
+  # Sorted, so the plan hash depends on which windows were chosen and not on the
+  # order they were clicked in.
+  defp explicit_selection(keys) when is_list(keys) and keys != [] do
+    unique = Enum.uniq(keys)
+
+    if length(unique) == length(keys) and length(keys) <= @max_backfill_windows and
+         Enum.all?(keys, &(is_binary(&1) and byte_size(&1) in 1..255)) do
+      {:ok, %{mode: :explicit, window_keys: Enum.sort(keys)}}
+    else
+      {:error, :invalid_coverage_window_selection}
+    end
+  end
+
+  defp explicit_selection(_keys), do: {:error, :invalid_coverage_window_selection}
 
   defp optional_cursor(nil), do: {:ok, nil}
 
@@ -692,6 +896,12 @@ defmodule FavnOrchestrator.Coverage do
   defp normalize_selection(%{mode: :all}), do: {:ok, %{mode: :all}}
   defp normalize_selection(%{"mode" => "all"}), do: {:ok, %{mode: :all}}
 
+  defp normalize_selection(%{mode: mode} = selection) when mode in [:explicit, "explicit"],
+    do: explicit_selection(field(selection, :window_keys))
+
+  defp normalize_selection(%{"mode" => "explicit"} = selection),
+    do: explicit_selection(field(selection, :window_keys))
+
   defp normalize_selection(selection) when is_map(selection) do
     with mode when mode in [:page, "page"] <- field(selection, :mode),
          {:ok, limit} <- page_limit(field(selection, :limit)),
@@ -705,6 +915,7 @@ defmodule FavnOrchestrator.Coverage do
   defp normalize_selection(_selection), do: {:error, :invalid_coverage_backfill_plan}
 
   defp selection_options(%{mode: :all}), do: []
+  defp selection_options(%{mode: :explicit, window_keys: keys}), do: [window_keys: keys]
   defp selection_options(%{mode: :page, cursor: nil, limit: limit}), do: [limit: limit]
 
   defp selection_options(%{mode: :page, cursor: cursor, limit: limit}),

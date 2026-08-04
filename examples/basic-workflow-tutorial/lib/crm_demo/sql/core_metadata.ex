@@ -8,7 +8,7 @@ defmodule CrmDemo.SQL.CoreMetadata do
       select
         deal.deal_id as opportunity_id,
         core_metadata(@favn_run_started_at)
-      from source.deal as deal
+      from source.crm.deal as deal
 
   The projected order matches `CrmDemo.Contracts.CoreMetadata`.
   """

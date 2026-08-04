@@ -1,20 +1,32 @@
 defmodule FavnOrchestrator.Operator.Catalogue.Timeline do
   @moduledoc """
-  Builds the bounded refresh and data-coverage timelines for an asset detail.
+  Resolves an asset's periods, and answers the two questions a detail read has
+  about them.
 
-  Timeline values are derived from validated manifest policy and backend state.
-  Invalid persisted kinds or timezones fall back to the explicit daily UTC
-  policy instead of crashing an operator read.
+  Nothing renders a strip of periods any more, so none is published. What is left
+  needs the same walk: the period an asset is currently due for, which prefills its
+  run dialog, and the period each of its recent runs wrote, which labels that run.
+
+  Two walks answer both — the asset's own data windows and the run anchors it is
+  refreshed on — plus a direct read of calendar-period freshness evidence, whose grain
+  is its own and which neither walk enumerates.
+
+  A third *walk* over those calendar periods used to draw its own strip, computing per
+  period whether every window expanded into it had succeeded. That is gone: it cost a
+  plan per period to produce a status nothing rendered. Whether a calendar period is
+  fully fresh is `FavnOrchestrator.Operator.Catalogue.AssetFreshness`'s answer, which
+  is where the header reads it.
+
+  Values are derived from validated manifest policy and backend state. An invalid
+  persisted kind or timezone falls back to the explicit daily UTC policy rather
+  than crashing an operator read.
   """
 
-  alias Favn.Assets.Planner
   alias Favn.Freshness.Key, as: FreshnessKey
-  alias Favn.Freshness.Policy, as: FreshnessPolicy
   alias Favn.Manifest.Asset
   alias Favn.Manifest.Version
   alias Favn.TimePeriod
   alias Favn.Timezone
-  alias Favn.Window.Key, as: WindowKey
   alias Favn.Window.Policy
   alias Favn.Window.Spec, as: WindowSpec
   alias FavnOrchestrator.AssetFreshnessState
@@ -29,7 +41,19 @@ defmodule FavnOrchestrator.Operator.Catalogue.Timeline do
   @default_kind :day
   @default_timezone "Etc/UTC"
 
-  @doc "Builds timeline fields merged into an operator asset-detail DTO."
+  @typedoc """
+  What a detail read needs from an asset's periods.
+
+  `run_windows` is keyed by run id and is not part of the DTO; the caller uses it to
+  label each run entry with the period that run wrote.
+  """
+  @type resolved :: %{
+          required(:has_data_windows?) => boolean(),
+          required(:default_run_config) => map() | nil,
+          required(:run_windows) => %{optional(String.t()) => map()}
+        }
+
+  @doc "Resolves the periods behind an operator asset-detail read."
   @spec build(
           Version.t(),
           Asset.t(),
@@ -39,7 +63,7 @@ defmodule FavnOrchestrator.Operator.Catalogue.Timeline do
           [AssetWindowState.t()],
           %{optional(String.t()) => map()},
           keyword()
-        ) :: map()
+        ) :: resolved()
   def build(
         %Version{} = version,
         %Asset{} = asset,
@@ -53,9 +77,6 @@ defmodule FavnOrchestrator.Operator.Catalogue.Timeline do
       when is_list(freshness_states) and is_list(asset_window_states) and is_map(runs_by_id) and
              is_list(opts) do
     opts = normalize_run_context_opts(version, asset, opts)
-    {refresh_kind, refresh_timezone} = refresh_policy(opts)
-    {coverage_kind, _coverage_timezone} = coverage_policy(asset)
-    freshness_policy = timeline_freshness_policy(asset)
 
     refresh_timeline =
       if opts[:run_context_status] == :ambiguous do
@@ -82,41 +103,89 @@ defmodule FavnOrchestrator.Operator.Catalogue.Timeline do
         opts
       )
 
-    freshness_timeline =
-      freshness_timeline(
-        version,
-        asset,
-        latest_freshness,
-        latest_run,
-        freshness_states,
-        freshness_policy,
-        opts
-      )
-
-    {freshness_timeline_label, freshness_cadence_label} =
-      freshness_labels(freshness_policy)
-
-    {refresh_timeline_label, refresh_cadence_label} =
-      if opts[:run_context_status] == :ambiguous do
-        {"Run context required", "Select a pipeline context"}
-      else
-        {kind_label(refresh_kind, "run anchors"),
-         "#{kind_label(refresh_kind, "run anchors")} #{refresh_timezone}"}
-      end
-
     %{
-      refresh_timeline_label: refresh_timeline_label,
-      refresh_cadence_label: refresh_cadence_label,
-      freshness_timeline_label: freshness_timeline_label,
-      freshness_cadence_label: freshness_cadence_label,
-      data_coverage_timeline_label: kind_label(coverage_kind, "data windows"),
-      refresh_timeline: refresh_timeline,
-      freshness_timeline: freshness_timeline,
-      data_coverage_timeline: data_coverage_timeline,
-      has_freshness_timeline?: not is_nil(freshness_timeline),
       has_data_windows?: not is_nil(data_coverage_timeline),
-      timeline: data_coverage_timeline || refresh_timeline
+      default_run_config: due_run_config(refresh_timeline),
+      run_windows:
+        run_windows([
+          data_coverage_timeline,
+          refresh_timeline,
+          calendar_freshness_windows(asset, freshness_states)
+        ])
     }
+  end
+
+  # Evidence a calendar-period freshness policy records under its own grain, which
+  # neither walk above enumerates: an asset with a monthly window and `freshness
+  # :daily` persists `calendar:day:<tz>:<date>`, so a walk of months matches none of
+  # it. Without this, only that asset's most recent run carried a period — the walks
+  # reach the latest one through `maybe_put_latest_run/5` and no earlier one at all.
+  #
+  # The label is the period the asset *writes*, not the day its freshness happened to
+  # be evaluated on: a monthly asset's run wrote July, so it reads "Jul 2026" like
+  # every other run of that asset, rather than "Jul 16" beside them.
+  #
+  # Read straight from the states rather than by walking periods. Only the run each one
+  # points at is wanted; whether such a period is *fully* fresh is
+  # `FavnOrchestrator.Operator.Catalogue.AssetFreshness`'s answer, and computing it
+  # here cost a plan per period to produce a status nothing read.
+  defp calendar_freshness_windows(asset, freshness_states) do
+    asset_ref_string = Targets.ref_string(asset.ref)
+    {written_kind, _timezone} = coverage_policy(asset)
+
+    Enum.flat_map(freshness_states, fn
+      %AssetFreshnessState{} = state ->
+        with ^asset_ref_string <- AssetFreshness.ref_string(state),
+             {:ok, {:calendar, kind, _timezone, value}} <-
+               FreshnessKey.parse(state.freshness_key),
+             run_id when is_binary(run_id) <- Status.latest_run_id(state, nil),
+             {:ok, written} <- written_value(written_kind, kind, value) do
+          [
+            %{
+              latest_run_id: run_id,
+              kind: written_kind,
+              value: written,
+              label: window_label(written_kind, written),
+              range: window_range(written_kind, written)
+            }
+          ]
+        else
+          _other -> []
+        end
+
+      _state ->
+        []
+    end)
+  end
+
+  defp written_value(written_kind, key_kind, value) do
+    {:ok, value_from_date(written_kind, value_date(key_kind, value))}
+  rescue
+    # A key whose value does not parse as its own kind is corrupt, and an operator read
+    # drops the label rather than failing the whole screen over one run.
+    _error -> :error
+  end
+
+  # The last period of the refresh walk is offset zero: the anchor the asset is due
+  # for right now. That is what a run dialog should open on.
+  defp due_run_config(refresh_timeline) do
+    case List.last(refresh_timeline) do
+      %{} = window -> Map.get(window, :latest_run_config) || Map.get(window, :default_run_config)
+      nil -> nil
+    end
+  end
+
+  # Data windows are read first so a windowed asset labels a run with the window it
+  # wrote rather than the refresh period it happened to land in.
+  defp run_windows(timelines) do
+    timelines
+    |> Enum.flat_map(&List.wrap/1)
+    |> Enum.reduce(%{}, fn window, acc ->
+      case window.latest_run_id do
+        nil -> acc
+        run_id -> Map.put_new(acc, run_id, Map.take(window, [:kind, :value, :label, :range]))
+      end
+    end)
   end
 
   defp data_coverage_timeline(
@@ -239,70 +308,6 @@ defmodule FavnOrchestrator.Operator.Catalogue.Timeline do
     end
   end
 
-  defp freshness_timeline(
-         _version,
-         _asset,
-         _latest_freshness,
-         _latest_run,
-         _freshness_states,
-         nil,
-         _opts
-       ),
-       do: nil
-
-  defp freshness_timeline(
-         version,
-         asset,
-         latest_freshness,
-         latest_run,
-         freshness_states,
-         %{kind: kind, timezone: timezone} = freshness_policy,
-         opts
-       ) do
-    states_by_value =
-      freshness_states_by_calendar_value(asset, freshness_states, kind, timezone)
-
-    for value <- freshness_period_values(kind, timezone, latest_freshness, latest_run, opts) do
-      states_by_identity = Map.get(states_by_value, value, %{})
-
-      {status, states} =
-        freshness_period_evidence(
-          version,
-          asset,
-          freshness_policy,
-          value,
-          states_by_identity,
-          opts
-        )
-
-      latest_state =
-        Enum.max_by(
-          states,
-          &DateTime.to_unix(&1.updated_at, :microsecond),
-          &>=/2,
-          fn -> nil end
-        )
-
-      %{
-        id: "freshness:#{kind}:#{value}",
-        source: :freshness_timeline,
-        kind: kind,
-        value: value,
-        timezone: timezone,
-        label: window_label(kind, value),
-        date: value_date(kind, value),
-        range: window_range(kind, value),
-        status: status,
-        latest_run_id: Status.latest_run_id(latest_state, nil),
-        latest_run_status: Status.latest_run_status(latest_state, nil),
-        latest_run_at: Status.latest_run_at(latest_state, nil),
-        run_enabled?: false,
-        run_disabled_reason: :freshness_period_not_runnable,
-        run_label: nil
-      }
-    end
-  end
-
   defp refresh_policy(opts) do
     case Keyword.get(opts, :asset_run_context) do
       %AssetRunContext{policy: %Policy{kind: kind}, timezone: timezone} ->
@@ -332,32 +337,6 @@ defmodule FavnOrchestrator.Operator.Catalogue.Timeline do
           |> Keyword.put(:run_context_status, :unavailable)
       end
     end
-  end
-
-  defp timeline_freshness_policy(%Asset{
-         freshness: %FreshnessPolicy{mode: :window_success},
-         window: %WindowSpec{
-           refresh_from: kind,
-           timezone: timezone
-         }
-       })
-       when not is_nil(kind),
-       do: %{kind: kind, timezone: timezone, identity: :window_refresh}
-
-  defp timeline_freshness_policy(%Asset{
-         freshness: %FreshnessPolicy{mode: :calendar_period, kind: kind, timezone: timezone}
-       }),
-       do: %{kind: kind, timezone: timezone, identity: :calendar}
-
-  defp timeline_freshness_policy(_asset), do: nil
-
-  defp freshness_labels(nil), do: {nil, nil}
-
-  defp freshness_labels(%{kind: kind, timezone: timezone}) do
-    {
-      kind_label(kind, "freshness periods"),
-      "#{kind_label(kind, "freshness")} #{timezone}"
-    }
   end
 
   defp coverage_policy(%{window: %WindowSpec{kind: kind, timezone: timezone}}),
@@ -390,11 +369,6 @@ defmodule FavnOrchestrator.Operator.Catalogue.Timeline do
 
   defp normalize_policy(_kind, _timezone), do: default_policy()
   defp default_policy, do: {@default_kind, @default_timezone}
-
-  defp kind_label(:hour, suffix), do: "Hourly #{suffix}"
-  defp kind_label(:day, suffix), do: "Daily #{suffix}"
-  defp kind_label(:month, suffix), do: "Monthly #{suffix}"
-  defp kind_label(:year, suffix), do: "Yearly #{suffix}"
 
   defp refresh_status(
          %AssetFreshnessState{status: :ok},
@@ -550,36 +524,6 @@ defmodule FavnOrchestrator.Operator.Catalogue.Timeline do
     end)
   end
 
-  defp freshness_states_by_calendar_value(
-         asset,
-         freshness_states,
-         timeline_kind,
-         timeline_timezone
-       ) do
-    asset_ref_string = Targets.ref_string(asset.ref)
-
-    freshness_states
-    |> Enum.reduce(%{}, fn
-      %AssetFreshnessState{} = state, acc ->
-        with ^asset_ref_string <- AssetFreshness.ref_string(state),
-             {:ok, {value, identity}} <-
-               calendar_value(
-                 state.freshness_key,
-                 timeline_kind,
-                 timeline_timezone
-               ) do
-          Map.update(acc, value, %{identity => state}, fn states ->
-            Map.update(states, identity, state, &newer_state(&1, state))
-          end)
-        else
-          _other -> acc
-        end
-
-      _state, acc ->
-        acc
-    end)
-  end
-
   defp timeline_value(freshness_key, timeline_kind, timeline_timezone) do
     case FreshnessKey.parse(freshness_key) do
       {:ok, {:window, %{kind: ^timeline_kind} = window_key}} ->
@@ -599,19 +543,6 @@ defmodule FavnOrchestrator.Operator.Catalogue.Timeline do
     end
   end
 
-  defp calendar_value(freshness_key, timeline_kind, timeline_timezone) do
-    case FreshnessKey.parse(freshness_key) do
-      {:ok, {:calendar, ^timeline_kind, ^timeline_timezone, value}} ->
-        {:ok, {value, :calendar}}
-
-      {:ok, {:window_refresh, window_key, ^timeline_kind, ^timeline_timezone, value}} ->
-        {:ok, {value, WindowKey.encode(window_key)}}
-
-      _other ->
-        :error
-    end
-  end
-
   defp window_key_value(%{start_at_us: start_at_us}, kind, timezone) do
     start_at_us
     |> DateTime.from_unix!(:microsecond)
@@ -620,159 +551,6 @@ defmodule FavnOrchestrator.Operator.Catalogue.Timeline do
 
   defp newer_state(%AssetFreshnessState{} = left, %AssetFreshnessState{} = right) do
     if DateTime.compare(left.updated_at, right.updated_at) == :lt, do: right, else: left
-  end
-
-  defp freshness_period_evidence(
-         version,
-         asset,
-         freshness_policy,
-         value,
-         states_by_identity,
-         opts
-       ) do
-    cond do
-      freshness_policy.identity == :window_refresh and
-          opts[:run_context_status] == :ambiguous ->
-        {:unknown, []}
-
-      map_size(states_by_identity) == 0 ->
-        {:missing, []}
-
-      true ->
-        case expected_freshness_identities(
-               version,
-               asset,
-               freshness_policy,
-               value,
-               opts[:asset_run_context]
-             ) do
-          {:ok, expected_identities} ->
-            expected_count = MapSet.size(expected_identities)
-
-            if expected_count > 0 do
-              states =
-                expected_identities
-                |> Enum.map(&Map.get(states_by_identity, &1))
-                |> Enum.reject(&is_nil/1)
-
-              {freshness_period_status(states, expected_count), states}
-            else
-              {:unknown, []}
-            end
-
-          _error ->
-            {:unknown, []}
-        end
-    end
-  end
-
-  defp expected_freshness_identities(
-         _version,
-         _asset,
-         %{identity: :calendar},
-         _value,
-         _run_context
-       ),
-       do: {:ok, MapSet.new([:calendar])}
-
-  defp expected_freshness_identities(
-         _version,
-         asset,
-         %{identity: :window_refresh, kind: kind, timezone: timezone},
-         value,
-         %AssetRunContext{} = run_context
-       ) do
-    with {:ok, period} <- calendar_period(kind, value, timezone),
-         {:ok, selection} <- AssetRunContext.selection(run_context, period.start_at),
-         {:ok, plan} <-
-           Planner.plan(asset.ref,
-             dependencies: :none,
-             planning_index: run_context.index.planning_index,
-             anchor_windows: selection.effective_anchors
-           ) do
-      identities =
-        Enum.reduce(plan.target_node_keys, MapSet.new(), fn
-          {ref, window_key}, acc when ref == asset.ref and is_map(window_key) ->
-            case WindowKey.validate(window_key) do
-              :ok -> MapSet.put(acc, WindowKey.encode(window_key))
-              {:error, _reason} -> acc
-            end
-
-          _node_key, acc ->
-            acc
-        end)
-
-      if MapSet.size(identities) > 0,
-        do: {:ok, identities},
-        else: {:error, :freshness_target_windows_not_found}
-    else
-      _error -> {:error, :freshness_target_windows_not_found}
-    end
-  end
-
-  defp expected_freshness_identities(
-         _version,
-         _asset,
-         %{identity: :window_refresh},
-         _value,
-         _run_context
-       ),
-       do: {:error, :asset_run_context_required}
-
-  defp freshness_period_values(kind, timezone, latest_freshness, latest_run, opts) do
-    {:ok, selected_period} = selected_period(kind, timezone, latest_freshness, latest_run, opts)
-
-    for offset <- -(@period_count - 1)..0 do
-      {:ok, start_at} = TimePeriod.shift(selected_period.start_at, kind, offset)
-      calendar_period_value(kind, timezone, start_at)
-    end
-  end
-
-  defp selected_period(kind, timezone, latest_freshness, latest_run, opts) do
-    case {opts[:now], opts[:today], Status.latest_run_at(latest_freshness, latest_run)} do
-      {%DateTime{} = now, _today, _latest_run_at} ->
-        TimePeriod.current(kind, now, timezone)
-
-      {_now, %Date{} = date, _latest_run_at} ->
-        TimePeriod.bounds(kind, value_from_date(kind, date), timezone)
-
-      {_now, _today, %DateTime{} = datetime} ->
-        TimePeriod.current(kind, datetime, timezone)
-
-      _other ->
-        TimePeriod.bounds(kind, value_from_date(kind, Date.utc_today()), timezone)
-    end
-  end
-
-  defp calendar_period_value(kind, timezone, %DateTime{} = datetime) do
-    {:ok, {:calendar, ^kind, ^timezone, value}} =
-      kind
-      |> FreshnessKey.calendar!(timezone, datetime)
-      |> FreshnessKey.parse()
-
-    value
-  end
-
-  defp calendar_period(:hour, <<local_hour::binary-size(13), offset::binary>>, timezone)
-       when byte_size(offset) > 0 do
-    with {:ok, datetime, _utc_offset} <-
-           DateTime.from_iso8601(local_hour <> ":00:00" <> offset) do
-      TimePeriod.current(:hour, datetime, timezone)
-    end
-  end
-
-  defp calendar_period(kind, value, timezone), do: TimePeriod.bounds(kind, value, timezone)
-
-  defp freshness_period_status(states, expected_window_count) do
-    statuses = Enum.map(states, &Status.catalogue(&1, nil))
-
-    cond do
-      :failed in statuses -> :failed
-      :running in statuses -> :running
-      length(states) < expected_window_count -> :missing
-      Enum.all?(statuses, &(&1 == :healthy)) -> :fresh
-      true -> :unknown
-    end
   end
 
   defp window_states_by_value(asset, asset_window_states, timeline_kind, timezone) do

@@ -9,6 +9,8 @@ defmodule CrmDemo.Warehouse.Source.Crm do
 
   use Favn.Namespace
 
+  relation(schema: "crm")
+
   runtime_inputs(CrmDemo.Warehouse.Source.Crm.Inputs)
   meta(tags: [:crm])
 end

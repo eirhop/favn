@@ -4,7 +4,7 @@ select
   count(*) as deal_count,
   sum(amount_cents) as pipeline_amount_cents
 
-from core.opportunity
+from core.sales.opportunity
 where occurred_at >= @window_start
   and occurred_at < @window_end
 group by

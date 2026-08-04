@@ -158,15 +158,20 @@ operator contract is [`production/postgresql_operator_runbook.md`](production/po
 - Workspace-scoped live updates reread durable state after notification.
 - Asset and run detail distinguish requested anchors from exact effective runtime
   windows and use compact projections; event payloads load only on the Events view.
+- Asset detail has five working sub-pages: an overview, run history with per-run
+  detail, a coverage calendar for a windowed asset, documentation, and diagnostics.
+  Each loads only what it renders. One dialog submits a run, prefilled from the
+  period the orchestrator reports the asset is due for.
 - The asset catalogue and detail page show persisted target compatibility apart
-  from health, freshness, and coverage. Blocking states include a stable reason,
-  bounded structured diff, active generation, and desired/physical fingerprints.
+  from health, freshness, and coverage. Diagnostics names the verdict and the fix in
+  operator words; the stable reason, bounded structured diff, active generation, and
+  desired/physical fingerprints stay reachable behind disclosures.
 - Rebuild pages enforce plan/review/start separation, page bounded operation and
   item histories, show progress and unknown outcomes, and render only
   server-authorized cancellation, retry, and reconciliation actions.
-- The UI remains a prototype: some asset-detail modes are placeholders and
-  visual/manual accessibility qualification remains. Actor, session, audit, and
-  credential administration are implemented. A Playwright/axe HTTP-boundary
+- The UI remains a prototype: visual and manual accessibility qualification
+  remains. Actor, session, audit, and credential administration are
+  implemented. A Playwright/axe HTTP-boundary
   suite now checks anonymous and administrator navigation for every catalogued
   browser GET route, CSRF rejection for every browser mutation route, secure
   cookies, session revocation, HTTPS/proxy headers, and serious or critical

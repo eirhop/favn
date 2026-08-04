@@ -31,9 +31,9 @@ defmodule FavnView.UI.Typography do
     page_title: "text-xl font-light tracking-tight sm:text-2xl lg:text-3xl",
     compact_title: "text-base font-light tracking-tight md:text-lg lg:text-xl",
     section_title: "text-base font-medium tracking-tight",
-    eyebrow: "text-xs uppercase tracking-[0.18em] favn-text-subtle",
+    eyebrow: "text-sm uppercase tracking-[0.18em] favn-text-subtle",
     body: "text-sm favn-text-muted",
-    meta: "text-xs favn-text-muted"
+    meta: "text-sm favn-text-muted"
   }
 
   @doc """

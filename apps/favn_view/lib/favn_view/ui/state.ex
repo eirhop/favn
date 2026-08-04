@@ -60,8 +60,11 @@ defmodule FavnView.UI.State do
       <span class="inline-flex size-14 items-center justify-center rounded-box bg-base-content/5 favn-text-subtle">
         <.icon name={@icon} size={:lg} />
       </span>
+
       <h2 class="mt-4 text-lg font-medium tracking-tight">{@title}</h2>
+
       <p :if={@description} class="mt-2 text-sm favn-text-muted">{@description}</p>
+
       <div :if={@action != []} class="mt-5 flex justify-center">{render_slot(@action)}</div>
     </.panel>
     """
@@ -85,8 +88,11 @@ defmodule FavnView.UI.State do
       ]}>
         <.icon name="hero-exclamation-triangle" size={:lg} />
       </span>
+
       <h2 class="mt-4 text-lg font-medium tracking-tight" role="alert">{@title}</h2>
+
       <p :if={@description} class="mt-2 text-sm favn-text-muted">{@description}</p>
+
       <div :if={@action != []} class="mt-5 flex justify-center">{render_slot(@action)}</div>
     </.panel>
     """
@@ -104,11 +110,10 @@ defmodule FavnView.UI.State do
   def inline_loading(assigns) do
     ~H"""
     <span
-      class={["inline-flex items-center gap-2 text-xs favn-text-muted", @class]}
+      class={["inline-flex items-center gap-2 text-sm favn-text-muted", @class]}
       role="status"
     >
-      <span class="loading loading-spinner loading-xs" aria-hidden="true"></span>
-      {@label}
+      <span class="loading loading-spinner loading-xs" aria-hidden="true"></span> {@label}
     </span>
     """
   end

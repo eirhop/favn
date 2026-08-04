@@ -53,11 +53,11 @@ defmodule FavnView.Components.PipelineDetailPage do
     <.panel padding={:none} class="p-6 sm:p-8" data-testid="pipeline-summary-panel">
       <div class="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
         <div class="min-w-0">
-          <p class="text-xs uppercase tracking-[0.2em] favn-text-subtle">Pipeline</p>
+          <p class="text-sm uppercase tracking-[0.2em] favn-text-subtle">Pipeline</p>
 
           <h2 class="mt-2 text-2xl font-medium tracking-tight">{@pipeline.name}</h2>
 
-          <p class="mt-2 break-words font-mono text-xs favn-text-muted">{@pipeline.label}</p>
+          <p class="mt-2 break-words font-mono text-sm favn-text-muted">{@pipeline.label}</p>
         </div>
 
         <div class="flex flex-wrap gap-2">
@@ -74,7 +74,7 @@ defmodule FavnView.Components.PipelineDetailPage do
       </div>
 
       <div class="mt-6">
-        <p class="text-xs uppercase tracking-[0.18em] favn-text-subtle">Selected assets</p>
+        <p class="text-sm uppercase tracking-[0.18em] favn-text-subtle">Selected assets</p>
 
         <div class="mt-3 flex flex-wrap gap-2">
           <span :for={asset <- @pipeline.selected_assets} class="badge badge-soft badge-info">
@@ -96,7 +96,7 @@ defmodule FavnView.Components.PipelineDetailPage do
   def summary_stat(assigns) do
     ~H"""
     <div class="rounded-box border border-base-content/10 bg-base-content/[0.03] p-4">
-      <p class="text-xs uppercase tracking-[0.16em] favn-text-subtle">{@label}</p>
+      <p class="text-sm uppercase tracking-[0.16em] favn-text-subtle">{@label}</p>
 
       <p class="mt-1 text-sm font-medium text-base-content">{@value}</p>
     </div>
@@ -114,7 +114,7 @@ defmodule FavnView.Components.PipelineDetailPage do
     <.panel padding={:none} class="p-6 sm:p-8" data-testid="pipeline-actions-panel">
       <div class="grid gap-6 lg:grid-cols-[1fr_1.4fr]">
         <div>
-          <p class="text-xs uppercase tracking-[0.2em] favn-text-subtle">Run pipeline</p>
+          <p class="text-sm uppercase tracking-[0.2em] favn-text-subtle">Run pipeline</p>
 
           <p class="mt-2 text-sm favn-text-muted">
             Submit the active manifest pipeline, equivalent to <code class="font-mono">mix favn.run</code>.
@@ -159,7 +159,7 @@ defmodule FavnView.Components.PipelineDetailPage do
         </div>
 
         <div>
-          <p class="text-xs uppercase tracking-[0.2em] favn-text-subtle">Backfill</p>
+          <p class="text-sm uppercase tracking-[0.2em] favn-text-subtle">Backfill</p>
 
           <p class="mt-2 text-sm favn-text-muted">
             Submit an explicit range, equivalent to <code class="font-mono">mix favn.backfill submit</code>.
@@ -174,7 +174,7 @@ defmodule FavnView.Components.PipelineDetailPage do
           >
             <input type="hidden" name="backfill[timezone]" value={@backfill_config.timezone} />
             <label class="form-control">
-              <span class="label-text text-xs">From</span>
+              <span class="label-text text-sm">From</span>
               <input
                 name="backfill[from]"
                 value={@backfill_config.from}
@@ -185,7 +185,7 @@ defmodule FavnView.Components.PipelineDetailPage do
             </label>
 
             <label class="form-control">
-              <span class="label-text text-xs">To</span>
+              <span class="label-text text-sm">To</span>
               <input
                 name="backfill[to]"
                 value={@backfill_config.to}
@@ -196,7 +196,7 @@ defmodule FavnView.Components.PipelineDetailPage do
             </label>
 
             <label class="form-control">
-              <span class="label-text text-xs">Kind</span>
+              <span class="label-text text-sm">Kind</span>
               <select
                 name="backfill[kind]"
                 class="select select-sm favn-surface-control"
@@ -213,7 +213,7 @@ defmodule FavnView.Components.PipelineDetailPage do
             </label>
 
             <label class="form-control">
-              <span class="label-text text-xs">Refresh</span>
+              <span class="label-text text-sm">Refresh</span>
               <select
                 name="backfill[refresh]"
                 class="select select-sm favn-surface-control"
@@ -242,7 +242,7 @@ defmodule FavnView.Components.PipelineDetailPage do
 
           <p
             :if={@pipeline.can_backfill?}
-            class="mt-2 text-xs favn-text-muted"
+            class="mt-2 text-sm favn-text-muted"
             data-testid="pipeline-backfill-defaults"
           >
             Defaults to {@backfill_config.kind} windows in {@backfill_config.timezone} with {@backfill_config.refresh} refresh.
@@ -250,7 +250,7 @@ defmodule FavnView.Components.PipelineDetailPage do
 
           <p
             :if={!@pipeline.can_backfill?}
-            class="mt-2 text-xs favn-text-muted"
+            class="mt-2 text-sm favn-text-muted"
             data-testid="pipeline-backfill-disabled-help"
           >
             Backfill requires a windowed pipeline.
@@ -311,7 +311,7 @@ defmodule FavnView.Components.PipelineDetailPage do
               data-testid="pipeline-run-row"
             >
               <td>
-                <.link navigate={~p"/runs/#{run.id}"} class="link link-hover font-mono text-xs">
+                <.link navigate={~p"/runs/#{run.id}"} class="link link-hover font-mono text-sm">
                   {run.short_id}
                 </.link>
               </td>

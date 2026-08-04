@@ -8,6 +8,7 @@ defmodule FavnView.Dev.DesignSystemTest do
   alias FavnView.Dev.DesignSystem.Catalogue
   alias FavnView.Dev.DesignSystem.Entry
   alias FavnView.Dev.DesignSystem.Example
+  alias FavnView.Dev.DesignSystem.Examples
   alias FavnView.Dev.DesignSystem.Generated
   alias FavnView.Dev.DesignSystem.Query
   alias FavnView.Dev.DesignSystem.Render
@@ -66,6 +67,21 @@ defmodule FavnView.Dev.DesignSystemTest do
         end
 
       assert failures == [], "these examples raised:\n\n" <> Enum.join(failures, "\n\n")
+    end
+
+    # The catalogue drops an example key that names no component, so deleting a
+    # component leaves its examples behind with nothing to say they are orphaned.
+    test "every curated example key names a component that exists" do
+      ids = DesignSystem.entries() |> Enum.map(& &1.id) |> MapSet.new()
+
+      orphans =
+        Examples.covered()
+        |> MapSet.difference(ids)
+        |> MapSet.to_list()
+        |> Enum.sort()
+
+      assert orphans == [],
+             "these example keys name no component:\n\n" <> Enum.join(orphans, "\n")
     end
 
     test "the element library is covered" do
@@ -304,6 +320,33 @@ defmodule FavnView.Dev.DesignSystemTest do
 
       assert js =~ "window.favn.audit"
       assert js =~ "window.favn.summary"
+    end
+
+    # Both guards below fixed a clipping verdict that was noise, and neither has an
+    # execution harness here: the metric is measured in a browser and only its source
+    # is reachable from ExUnit. Asserting on the source is weak, so these say why, and
+    # a change that drops one should explain itself rather than quietly restore five
+    # failures nobody can act on.
+    test "does not count a text field's own value as clipped" do
+      js = FavnView.Dev.DesignSystem.AuditScript.js()
+
+      # Browsers force `overflow: clip` on form controls, so without this every input
+      # holding more than it can show read as a layout failure. The caret scrolls it.
+      assert js =~ "SELF_SCROLLING"
+      assert js =~ "selfScrolling"
+
+      # `select` must stay out: its options are in a popup the box never scrolls, so a
+      # value too wide for it really is cut off.
+      refute js =~ "SELECT: true"
+    end
+
+    test "allows one pixel of slack per fractional axis and no more" do
+      js = FavnView.Dev.DesignSystem.AuditScript.js()
+
+      # `clientWidth` is an integer over a layout that is not: a flex child 624.36px
+      # wide floors to 624 and ceils to 625, which is rounding rather than lost content.
+      assert js =~ "roundingSlack"
+      assert js =~ "isWhole"
     end
   end
 end

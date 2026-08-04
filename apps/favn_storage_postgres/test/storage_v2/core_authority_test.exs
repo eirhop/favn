@@ -3448,6 +3448,157 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     refute Map.has_key?(summary, :run)
   end
 
+  test "asset detail names what it reads and what reads it", fixture do
+    ref = {MyApp.Asset, :asset}
+    private_ref = {MyApp.PrivateAsset, :private}
+
+    # MyApp.Asset reads MyApp.PrivateAsset. Nothing reads MyApp.Asset, so the two
+    # directions must not come back the same.
+    manifest =
+      fixture.version.manifest
+      |> Map.update!(:assets, fn assets ->
+        Enum.map(assets, fn
+          %{ref: ^ref} = asset -> %{asset | depends_on: [private_ref]}
+          asset -> asset
+        end)
+      end)
+      |> FavnTestSupport.with_manifest_contract()
+      |> FavnTestSupport.with_manifest_graph()
+
+    {:ok, version} =
+      Version.new(manifest, manifest_version_id: "mv-deps-" <> fixture.deployment_id)
+
+    private_target_id = TargetStatus.target_id_for_asset(private_ref)
+
+    deps =
+      provision_deploy_fixture(version, [
+        %DeploymentTarget{
+          target_kind: :asset,
+          target_id: private_target_id,
+          selection_source: :dependency,
+          customer_visible: true,
+          descriptor: %{"target_id" => private_target_id, "label" => private_target_id}
+        }
+      ])
+
+    now = DateTime.utc_now()
+
+    assert {:ok, detail} =
+             Catalogue.active_asset_detail(deps.workspace_context, deps.target_id, now: now)
+
+    assert [%{asset_ref: "Elixir.MyApp.PrivateAsset:private", target_id: ^private_target_id}] =
+             detail.upstream
+
+    assert detail.downstream == []
+
+    # The reverse edge is recorded nowhere, so it is found by asking every other
+    # asset who it reads. That is the half most likely to come back empty.
+    assert {:ok, upstream_detail} =
+             Catalogue.active_asset_detail(deps.workspace_context, private_target_id, now: now)
+
+    assert upstream_detail.upstream == []
+    assert [%{asset_ref: "Elixir.MyApp.Asset:asset"}] = upstream_detail.downstream
+  end
+
+  test "asset detail lists its own runs and reads one run's recorded result", fixture do
+    {command, run} = create_run_command(fixture)
+
+    run =
+      run
+      |> Map.put(:status, :ok)
+      |> Map.put(:result, %{
+        asset_results: [
+          %{
+            ref: {MyApp.Asset, :asset},
+            status: :ok,
+            duration_ms: 1_250,
+            attempt_count: 1,
+            meta: %{rows_written: 4_096, quality_status: :passed}
+          }
+        ]
+      })
+      |> RunState.with_snapshot_hash()
+
+    assert {:ok, _created} = RunStore.create_run(%{command | run: run})
+
+    assert {:ok, detail} =
+             Catalogue.active_asset_detail(fixture.workspace_context, fixture.target_id,
+               now: DateTime.utc_now()
+             )
+
+    # A compact history row carries no asset ref, so the ref filter this replaced
+    # matched nothing and the asset reported no runs however many it had.
+    assert [%{id: run_id, status: :ok}] = detail.runs
+    assert run_id == run.id
+
+    assert {:ok, run_detail} =
+             Catalogue.active_asset_run_detail(
+               fixture.workspace_context,
+               fixture.target_id,
+               run.id
+             )
+
+    assert run_detail.run_id == run.id
+    assert run_detail.target_id == fixture.target_id
+
+    # Proves the snapshot is read rather than the compact row, which carries no
+    # result at all and would leave every recorded value nil. Meta comes back with
+    # string keys, which is why it is handed to the UI whole rather than picked at.
+    assert run_detail.asset_result.meta == %{
+             "rows_written" => 4_096,
+             "quality_status" => "passed"
+           }
+
+    assert run_detail.asset_result.duration_ms == 1_250
+  end
+
+  test "asset run detail rejects a run belonging to another asset", fixture do
+    other_ref = {MyApp.PrivateAsset, :private}
+    other_target_id = TargetStatus.target_id_for_asset(other_ref)
+
+    other =
+      provision_deploy_fixture(fixture.version, [
+        %DeploymentTarget{
+          target_kind: :asset,
+          target_id: other_target_id,
+          selection_source: :explicit,
+          customer_visible: true,
+          descriptor: %{"target_id" => other_target_id, "label" => other_target_id}
+        }
+      ])
+
+    {command, run} = create_run_command(other)
+
+    command = %{
+      command
+      | targets: [
+          %RunTarget{
+            target_kind: :asset,
+            target_id: other_target_id,
+            target_module: "MyApp.PrivateAsset",
+            target_name: "private",
+            is_primary: true
+          }
+        ],
+        run:
+          run
+          |> Map.put(:asset_ref, other_ref)
+          |> Map.put(:target_refs, [other_ref])
+          |> RunState.with_snapshot_hash()
+    }
+
+    assert {:ok, _created} = RunStore.create_run(command)
+
+    # A run id is a URL parameter, so one asset's page must not render another
+    # asset's result just because both runs live in the same workspace.
+    assert {:error, :not_found} =
+             Catalogue.active_asset_run_detail(
+               other.workspace_context,
+               other.target_id,
+               run.id
+             )
+  end
+
   test "run history pages never select or decode authoritative snapshots", fixture do
     {command, run} = create_run_command(fixture)
     assert {:ok, _created} = RunStore.create_run(command)

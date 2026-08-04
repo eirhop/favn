@@ -16,6 +16,7 @@ defmodule FavnView.Dev.DesignSystem.Examples.Elements do
 
   use FavnView, :html
 
+  alias FavnView.CoverageCalendar
   alias FavnView.Dev.DesignSystem.Example
 
   @doc """
@@ -245,6 +246,12 @@ defmodule FavnView.Dev.DesignSystem.Examples.Elements do
           :with_scopes,
           &table_toolbar_scopes_example/1,
           "A scope rail carrying counts goes at the start, as on /runs."
+        ),
+        Example.render(
+          :filters_open,
+          &table_toolbar_open_example/1,
+          "The narrow-screen disclosure opened. Below `lg` the filters are always " <>
+            "behind the Filters control, so this is the only way to see them there."
         )
       ],
       "data/stacked_cell" => [
@@ -354,9 +361,324 @@ defmodule FavnView.Dev.DesignSystem.Examples.Elements do
       ],
       "data/mono" => [
         Example.attrs(:identifier, %{value: "run_2026_06_12"}, "Identifiers are monospaced.")
+      ],
+      "data/lineage_graph" => [
+        Example.attrs(
+          :fan_in,
+          %{
+            centre: %{label: "customer_orders_daily", icon: "hero-table-cells"},
+            inputs: lineage_nodes(3),
+            outputs: lineage_nodes(1)
+          },
+          "Three inputs fan into a shared bus. The edges are drawn, not implied."
+        ),
+        Example.attrs(
+          :one_to_one,
+          %{
+            centre: %{label: "customer_orders_daily", icon: "hero-table-cells"},
+            inputs: lineage_nodes(1),
+            outputs: lineage_nodes(1)
+          },
+          "A single input on each side is one straight line rather than an elbow."
+        ),
+        Example.attrs(
+          :fan_out,
+          %{
+            centre: %{label: "stg_orders", icon: "hero-cloud-arrow-down"},
+            inputs: [],
+            outputs: lineage_nodes(4),
+            inputs_empty: "Nothing. This asset reads its source directly."
+          },
+          "A source asset: nothing upstream, and four assets reading it."
+        ),
+        Example.attrs(
+          :isolated,
+          %{
+            centre: %{label: "scratch_table", icon: "hero-table-cells"},
+            inputs: [],
+            outputs: [],
+            inputs_empty: "Nothing. This asset reads its source directly.",
+            outputs_empty: "Nothing yet. No other asset reads this one."
+          },
+          "Both sides empty. The node still reads as a node rather than a bare label."
+        ),
+        Example.attrs(
+          :undeployed_input,
+          %{
+            centre: %{label: "customer_orders_daily", icon: "hero-table-cells"},
+            inputs: [
+              %{label: "stg_orders", icon: "hero-table-cells", navigate: "/assets/stg_orders"},
+              %{
+                label: "legacy_pricing_with_a_long_name",
+                icon: "hero-cube",
+                note: "not in this deployment"
+              }
+            ],
+            outputs: lineage_nodes(1)
+          },
+          "A declared input this deployment does not carry: dashed, unlinked, and " <>
+            "named, because a silently shorter list reads as a complete one."
+        )
+      ],
+      "data/run_timeline" => [
+        Example.attrs(
+          :selected,
+          %{
+            runs: run_timeline_runs(),
+            selected_id: "run-b",
+            class: "favn-surface-list rounded-box max-h-96 w-80 p-3"
+          },
+          "A day heading appears once however many runs it holds, and the selected " <>
+            "run is the one in the address bar rather than one the rail remembers."
+        ),
+        Example.attrs(
+          :unselected,
+          %{
+            runs: run_timeline_runs(),
+            class: "favn-surface-list rounded-box max-h-96 w-80 p-3"
+          },
+          "Nothing selected: the failure still reads as the one entry worth opening."
+        ),
+        Example.attrs(
+          :empty,
+          %{
+            runs: [],
+            empty_label: "This asset has not run yet.",
+            class: "favn-surface-list rounded-box w-80 p-3"
+          },
+          "An asset with no history says so instead of showing an empty rail."
+        )
+      ],
+      "data/coverage_calendar" => [
+        Example.attrs(
+          :daily_scattered_gaps,
+          day_calendar_attrs(~w(8 15 22), []),
+          "A daily asset. Three missing days, one a week apart — the pattern is what a " <>
+            "list of window keys cannot show."
+        ),
+        Example.attrs(
+          :daily_consecutive_gaps,
+          day_calendar_attrs(~w(13 14 15 16), []),
+          "A four-day outage. One more missing day than the example above and an " <>
+            "entirely different cause."
+        ),
+        Example.attrs(
+          :daily_selected,
+          day_calendar_attrs(~w(8 15), ~w(day:Europe/Oslo:2026-07-08)),
+          "One of two missing days picked for backfill. Selection has to beat the " <>
+            "missing wash without becoming the loudest thing on the page."
+        ),
+        Example.attrs(
+          :daily_complete,
+          day_calendar_attrs([], []),
+          "Every expected day has data. The grid is deliberately quiet, so the eye " <>
+            "goes to a gap the moment one appears."
+        ),
+        Example.attrs(
+          :daily_read_only,
+          Map.put(day_calendar_attrs(~w(8), []), :on_select, nil),
+          "Without an event, missing days are marked but not selectable — the state " <>
+            "for a viewer who cannot submit a backfill."
+        ),
+        Example.attrs(
+          :hourly,
+          calendar_attrs(:hour, hourly_windows(), []),
+          "An hourly asset. One day of hours, not a month of them, and the count comes " <>
+            "from the backend so a clock-change day is 23 or 25 rather than a wrong 24."
+        ),
+        Example.attrs(
+          :monthly,
+          calendar_attrs(:month, monthly_windows(), []),
+          "A monthly asset. Cells are months in one year and there are no weekday " <>
+            "columns, so the grid never implies a week that does not exist."
+        ),
+        Example.attrs(
+          :yearly,
+          calendar_attrs(:year, yearly_windows(), []),
+          "A yearly asset. Every year at once, because there is no unit above a year " <>
+            "to page through."
+        ),
+        Example.attrs(
+          :empty,
+          %{layout: :empty, cells: [], empty_label: "Coverage is not tracked here."},
+          "Nothing to draw. An empty grid would read as complete coverage, so there " <>
+            "is no grid."
+        )
+      ],
+      "data/calendar_navigator" => [
+        Example.attrs(
+          :mid_range,
+          %{
+            label: "July 2026",
+            previous: "2026-06-01",
+            next: "2026-08-01",
+            on_step: "show_coverage_period",
+            on_jump: "jump_coverage_period",
+            jumps: [
+              %{
+                name: "year",
+                label: "Year",
+                value: "2026",
+                options: [{"2025", "2025"}, {"2026", "2026"}]
+              },
+              %{
+                name: "month",
+                label: "Month",
+                value: "7",
+                options:
+                  Enum.map(1..12, &{Calendar.strftime(Date.new!(2000, &1, 1), "%B"), "#{&1}"})
+              }
+            ]
+          },
+          "A month with coverage either side of it."
+        ),
+        Example.attrs(
+          :at_the_start,
+          %{
+            label: "January 2025",
+            next: "2025-02-01",
+            on_step: "show_coverage_period",
+            on_jump: "jump_coverage_period",
+            jumps: [
+              %{
+                name: "month",
+                label: "Month",
+                value: "1",
+                options:
+                  Enum.map(1..6, &{Calendar.strftime(Date.new!(2000, &1, 1), "%B"), "#{&1}"})
+              }
+            ]
+          },
+          "The first month coverage has. There is no step back rather than a step back " <>
+            "that refuses, and the year select is gone because there is one year."
+        ),
+        Example.attrs(
+          :single_screen,
+          %{label: "2026", on_step: "show_coverage_period"},
+          "Everything fits on one screen, so the whole bar is absent. A navigator with " <>
+            "nothing to navigate is chrome."
+        )
       ]
     }
   end
+
+  # Built through `CoverageCalendar.build/1` rather than hand-written, so an example
+  # cannot show a shape the real derivation never produces.
+  defp calendar_attrs(kind, windows, selected) do
+    calendar =
+      CoverageCalendar.build(%{
+        kind: kind,
+        timezone: "Europe/Oslo",
+        windows: windows,
+        selected: selected
+      })
+
+    %{
+      layout: calendar.layout,
+      cells: calendar.cells,
+      blanks: calendar.blanks,
+      columns: calendar.columns,
+      column_labels: calendar.column_labels,
+      on_select: "toggle_coverage_window"
+    }
+  end
+
+  # July 2026 opens on a Wednesday, so the weekday padding is visible in every daily
+  # example rather than only in the one that happens to start on a Monday.
+  defp day_calendar_attrs(missing_days, selected) do
+    missing = MapSet.new(missing_days)
+
+    windows =
+      Enum.map(1..31, fn day ->
+        date = Date.new!(2026, 7, day)
+
+        coverage_window(
+          :day,
+          "day:Europe/Oslo:" <> Date.to_iso8601(date),
+          DateTime.new!(date, ~T[00:00:00], "Etc/UTC"),
+          not MapSet.member?(missing, Integer.to_string(day))
+        )
+      end)
+
+    calendar_attrs(:day, windows, selected)
+  end
+
+  defp hourly_windows do
+    Enum.map(0..23, fn hour ->
+      at = DateTime.new!(~D[2026-07-08], Time.new!(hour, 0, 0), "Etc/UTC")
+
+      coverage_window(
+        :hour,
+        "hour:Europe/Oslo:2026-07-08T#{String.pad_leading("#{hour}", 2, "0")}",
+        at,
+        hour not in [3, 4, 5, 17]
+      )
+    end)
+  end
+
+  defp monthly_windows do
+    Enum.map(1..12, fn month ->
+      at = DateTime.new!(Date.new!(2026, month, 1), ~T[00:00:00], "Etc/UTC")
+      key = "month:Europe/Oslo:2026-#{String.pad_leading("#{month}", 2, "0")}"
+
+      coverage_window(:month, key, at, month not in [2, 11])
+    end)
+  end
+
+  defp yearly_windows do
+    Enum.map(2019..2026, fn year ->
+      at = DateTime.new!(Date.new!(year, 1, 1), ~T[00:00:00], "Etc/UTC")
+
+      coverage_window(:year, "year:Europe/Oslo:#{year}", at, year != 2021)
+    end)
+  end
+
+  defp coverage_window(kind, key, start_at, covered?) do
+    %{
+      window_key: key,
+      kind: kind,
+      timezone: "Europe/Oslo",
+      start_at: start_at,
+      end_at: start_at,
+      covered?: covered?
+    }
+  end
+
+  defp lineage_nodes(count) do
+    names = ~w(stg_orders stg_customers stg_products dim_calendar)
+
+    Enum.map(0..(count - 1), fn index ->
+      name = Enum.at(names, rem(index, length(names)))
+      %{label: name, icon: "hero-table-cells", navigate: "/assets/#{name}"}
+    end)
+  end
+
+  defp run_timeline_runs do
+    [
+      run_timeline_run("run-d", "Aug 3", "10:25", :success, "Daily Aug 3", "4.2s"),
+      run_timeline_run("run-c", "Aug 3", "04:10", :success, "Daily Aug 3", "3.9s"),
+      run_timeline_run("run-b", "Aug 2", "10:25", :error, "Daily Aug 2", "1.1s"),
+      run_timeline_run("run-a", "Jul 31", "10:25", :info, "Daily Jul 31", nil)
+    ]
+  end
+
+  defp run_timeline_run(id, day_label, time_label, tone, window_label, duration_label) do
+    %{
+      id: id,
+      patch: "/assets/orders/runs/#{id}",
+      status_tone: tone,
+      status_label: run_timeline_status_label(tone),
+      trigger_label: "Schedule",
+      day_label: day_label,
+      time_label: time_label,
+      duration_label: duration_label,
+      window_label: window_label
+    }
+  end
+
+  defp run_timeline_status_label(:success), do: "Succeeded"
+  defp run_timeline_status_label(:error), do: "Failed"
+  defp run_timeline_status_label(_tone), do: "Running"
 
   defp fields do
     %{
@@ -774,7 +1096,7 @@ defmodule FavnView.Dev.DesignSystem.Examples.Elements do
           <div class="min-w-0">
             <h2 class="truncate text-base font-medium">mart_daily_sales</h2>
 
-            <p class="mt-0.5 truncate text-xs text-base-content/60">duckdb · sales · table</p>
+            <p class="mt-0.5 truncate text-sm text-base-content/60">duckdb · sales · table</p>
 
             <div class="mt-2"><.status_badge tone={:success} label="Healthy" /></div>
           </div>
@@ -935,12 +1257,35 @@ defmodule FavnView.Dev.DesignSystem.Examples.Elements do
     """
   end
 
+  defp table_toolbar_open_example(assigns) do
+    ~H"""
+    <.table_toolbar
+      on_change="filter_assets"
+      filters_id="toolbar-open-filters"
+      filters_open?={true}
+      search_name="filters[search]"
+      search_label="Search assets"
+      on_clear="clear_filters"
+      adjusted?={true}
+    >
+      <:filters>
+        <.select_field
+          name="filters[catalogue]"
+          label="Catalogue filter"
+          icon="hero-folder"
+          options={[{"Catalogue", "all"}, {"Source", "source"}]}
+          value="all"
+        />
+      </:filters>
+    </.table_toolbar>
+    """
+  end
+
   defp table_toolbar_scopes_example(assigns) do
     ~H"""
     <.table_toolbar
       on_change="filter_runs"
       filters_id="toolbar-scopes-filters"
-      on_toggle="toggle_filters"
       adjusted?={true}
       search_name="filters[q]"
       search_label="Search runs"

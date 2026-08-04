@@ -24,7 +24,6 @@ defmodule FavnView.Components.LineagePage do
   attr :graph, :any, default: nil
   attr :inspector, :any, default: nil
   attr :view_mode, :atom, default: :all
-  attr :search, :string, default: ""
   attr :loading, :boolean, default: false
   attr :error, :any, default: nil
   attr :nav_items, :list, default: []
@@ -54,7 +53,6 @@ defmodule FavnView.Components.LineagePage do
         graph={@graph}
         inspector={@inspector}
         view_mode={@view_mode}
-        search={@search}
         loading={@loading}
         error={@error}
         zoom={@zoom}
@@ -68,7 +66,6 @@ defmodule FavnView.Components.LineagePage do
   attr :graph, :any, default: nil
   attr :inspector, :any, default: nil
   attr :view_mode, :atom, default: :all
-  attr :search, :string, default: ""
   attr :loading, :boolean, default: false
   attr :error, :any, default: nil
   attr :zoom, :integer, default: 62
@@ -101,7 +98,7 @@ defmodule FavnView.Components.LineagePage do
         data-testid="lineage-empty-state"
       />
       <div :if={!@loading && !@error && @graph} class="flex min-h-0 flex-1 flex-col gap-3">
-        <.lineage_toolbar view_mode={@view_mode} search={@search} zoom={@zoom} />
+        <.lineage_toolbar view_mode={@view_mode} zoom={@zoom} />
         <div class={[
           "grid min-h-0 flex-1 gap-3",
           @inspector_open? && "xl:grid-cols-[minmax(0,1fr)_22rem] 2xl:grid-cols-[minmax(0,1fr)_24rem]"
@@ -115,31 +112,14 @@ defmodule FavnView.Components.LineagePage do
   end
 
   attr :view_mode, :atom, required: true
-  attr :search, :string, required: true
   attr :zoom, :integer, required: true
 
   def lineage_toolbar(assigns) do
     ~H"""
     <div
-      class="flex shrink-0 flex-col gap-2 lg:flex-row lg:items-center lg:justify-between"
+      class="flex shrink-0 flex-col gap-2 lg:flex-row lg:items-center"
       data-testid="lineage-toolbar"
     >
-      <div class="flex min-w-0 flex-1 gap-2">
-        <label class="input input-sm favn-surface-control min-w-0 flex-1 gap-3 px-4 focus-within:outline focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-primary">
-          <.icon name="hero-magnifying-glass" class="size-5 shrink-0 favn-text-muted" />
-          <span class="sr-only">Search lineage</span>
-          <input
-            type="search"
-            name="search"
-            value={@search}
-            placeholder="Search lineage coming soon"
-            autocomplete="off"
-            disabled
-          />
-          <kbd class="kbd kbd-xs border-base-content/10 bg-base-100/20 favn-text-subtle">K</kbd>
-        </label>
-      </div>
-
       <div class="flex items-center gap-2 overflow-x-auto pb-1 lg:pb-0">
         <div
           class="join favn-surface-control min-h-0 rounded-box p-1"
@@ -150,7 +130,7 @@ defmodule FavnView.Components.LineagePage do
             :for={mode <- view_modes()}
             type="button"
             class={[
-              "join-item btn btn-ghost btn-xs h-8 rounded-field px-3 text-xs font-normal",
+              "join-item btn btn-ghost btn-xs h-8 rounded-field px-3 text-sm font-normal",
               @view_mode == mode.id && "favn-btn-supporting",
               mode[:disabled] && "opacity-45"
             ]}
@@ -185,7 +165,7 @@ defmodule FavnView.Components.LineagePage do
             <.icon name="hero-minus" class="size-4" />
           </button>
 
-          <span class="join-item flex h-8 min-w-14 items-center justify-center border-x border-base-content/10 px-3 text-xs favn-text-muted">
+          <span class="join-item flex h-8 min-w-14 items-center justify-center border-x border-base-content/10 px-3 text-sm favn-text-muted">
             {@zoom}%
           </span>
 
@@ -309,7 +289,7 @@ defmodule FavnView.Components.LineagePage do
     ~H"""
     <div
       :for={layer <- @layers}
-      class="absolute top-8 z-10 text-xs favn-text-muted"
+      class="absolute top-8 z-10 text-sm favn-text-muted"
       style={"left: #{layer_x(layer)}px; width: 220px;"}
     >
       <div class="flex items-center gap-2">
@@ -351,7 +331,7 @@ defmodule FavnView.Components.LineagePage do
           <div class="min-w-0">
             <h2 class="truncate text-sm font-semibold text-base-content">{@node.label}</h2>
 
-            <p class="mt-0.5 truncate text-[0.68rem] favn-text-muted">
+            <p class="mt-0.5 truncate text-sm favn-text-muted">
               {asset_count_label(@node)}
             </p>
           </div>
@@ -372,7 +352,7 @@ defmodule FavnView.Components.LineagePage do
       <div :if={@node.state != :collapsed} class="mt-3 space-y-1.5">
         <div
           :for={asset <- @node.preview_assets}
-          class="flex items-center gap-2 rounded-field border border-base-content/10 bg-base-100/30 px-2.5 py-1.5 text-xs favn-text-muted"
+          class="flex items-center gap-2 rounded-field border border-base-content/10 bg-base-100/30 px-2.5 py-1.5 text-sm favn-text-muted"
         >
           <.icon name="hero-circle-stack" class="size-4 shrink-0 favn-text-muted" />
           <span class="min-w-0 flex-1 truncate">{asset.label}</span>
@@ -381,7 +361,7 @@ defmodule FavnView.Components.LineagePage do
 
         <div
           :if={@node.hidden_asset_count > 0}
-          class="rounded-field border border-base-content/10 bg-base-100/20 px-2.5 py-1.5 text-xs favn-text-muted"
+          class="rounded-field border border-base-content/10 bg-base-100/20 px-2.5 py-1.5 text-sm favn-text-muted"
         >
           +{@node.hidden_asset_count} more
         </div>
@@ -414,7 +394,7 @@ defmodule FavnView.Components.LineagePage do
       <div class="min-w-0 flex-1">
         <h2 class="truncate text-sm font-semibold text-base-content">{@node.label}</h2>
 
-        <p class="truncate text-[0.68rem] favn-text-subtle">
+        <p class="truncate text-sm favn-text-subtle">
           {@node.schema || @node.layer} · {@node.kind}
         </p>
       </div>
@@ -587,7 +567,7 @@ defmodule FavnView.Components.LineagePage do
         <.inspector_section title="Preview dependencies">
           <div
             :for={dependency <- @inspector.dependencies}
-            class="rounded-field border border-base-content/10 bg-base-100/20 px-3 py-2 text-xs favn-text-muted"
+            class="rounded-field border border-base-content/10 bg-base-100/20 px-3 py-2 text-sm favn-text-muted"
           >
             {dependency.from} -> {dependency.to}
           </div>
@@ -616,7 +596,7 @@ defmodule FavnView.Components.LineagePage do
           <div class="min-w-0">
             <h2 class="truncate text-base font-semibold">{@title}</h2>
 
-            <p :if={@subtitle} class="truncate text-xs favn-text-muted">{@subtitle}</p>
+            <p :if={@subtitle} class="truncate text-sm favn-text-muted">{@subtitle}</p>
           </div>
         </div>
 
@@ -666,7 +646,7 @@ defmodule FavnView.Components.LineagePage do
         Select a group, asset, or dependency edge to inspect health, impact, and downstream relationships.
       </p>
 
-      <p class="mt-4 text-xs favn-text-subtle">
+      <p class="mt-4 text-sm favn-text-subtle">
         {@graph.summary.visible_groups} groups · {@graph.summary.visible_edges} dependencies visible
       </p>
     </div>
@@ -708,7 +688,7 @@ defmodule FavnView.Components.LineagePage do
 
     ~H"""
     <div class="space-y-1.5">
-      <div class="flex items-center justify-between text-xs">
+      <div class="flex items-center justify-between text-sm">
         <span class={status_text_class(@status)}>
           <span class={status_dot_class(@status)}></span> {@count} {@label}
         </span>
@@ -735,7 +715,7 @@ defmodule FavnView.Components.LineagePage do
         class="flex items-center justify-between rounded-field border border-base-content/10 bg-base-100/20 px-3 py-2 text-sm"
       >
         <span class="truncate">{item.label}</span>
-        <span class="shrink-0 text-xs text-success">{item.dependency_count} deps</span>
+        <span class="shrink-0 text-sm text-success">{item.dependency_count} deps</span>
       </div>
     </.inspector_section>
     """
@@ -756,7 +736,7 @@ defmodule FavnView.Components.LineagePage do
   def lineage_hint_strip(assigns) do
     ~H"""
     <div
-      class="absolute bottom-4 left-4 z-40 hidden rounded-box border border-base-content/10 bg-base-100/70 px-4 py-3 text-[0.68rem] favn-text-muted shadow-xl backdrop-blur lg:flex lg:gap-5"
+      class="absolute bottom-4 left-4 z-40 hidden rounded-box border border-base-content/10 bg-base-100/70 px-4 py-3 text-sm favn-text-muted shadow-xl backdrop-blur lg:flex lg:gap-5"
       data-testid="lineage-hint-strip"
     >
       <span class="flex items-center gap-2">

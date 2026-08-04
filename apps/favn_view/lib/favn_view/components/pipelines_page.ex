@@ -16,6 +16,7 @@ defmodule FavnView.Components.PipelinesPage do
   attr :current_scope, :any, default: nil
   attr :operator_workspaces, :list, default: []
   attr :status_options, :list, required: true
+  attr :filters_open?, :boolean, default: false, doc: "narrow screens only; wide ones always show"
 
   def pipelines_page(assigns) do
     ~H"""
@@ -44,7 +45,11 @@ defmodule FavnView.Components.PipelinesPage do
             data-testid="pipelines-panel"
           >
             <:toolbar>
-              <.pipeline_filters filters={@filters} status_options={@status_options} />
+              <.pipeline_filters
+                filters={@filters}
+                status_options={@status_options}
+                filters_open?={@filters_open?}
+              />
             </:toolbar>
 
             <.empty_state
@@ -64,12 +69,14 @@ defmodule FavnView.Components.PipelinesPage do
 
   attr :filters, :map, required: true
   attr :status_options, :list, required: true
+  attr :filters_open?, :boolean, default: false
 
   def pipeline_filters(assigns) do
     ~H"""
     <.table_toolbar
       on_change="filter_pipelines"
       filters_id="pipeline-filters"
+      filters_open?={@filters_open?}
       on_clear="clear_filters"
       adjusted?={narrowed?(@filters)}
       search_name="filters[search]"
@@ -108,6 +115,7 @@ defmodule FavnView.Components.PipelinesPage do
       row_testid="pipeline-row"
       row_navigate={&~p"/pipelines/#{FavnView.AssetRoute.to_param(&1.id)}"}
       fill?
+      desktop_only?
       data-testid="pipelines-table"
     >
       <:col :let={pipeline} label="Pipeline" class="w-72">
@@ -187,13 +195,13 @@ defmodule FavnView.Components.PipelinesPage do
             </div>
           </div>
 
-          <div class="flex flex-wrap items-center gap-3 text-xs favn-text-muted">
+          <div class="flex flex-wrap items-center gap-3 text-sm favn-text-muted">
             <.status_badge tone={@pipeline.status} label={status_label(@pipeline.status)} />
             <span>{@pipeline.last_run_label}</span> <span>{@pipeline.runtime_label}</span>
           </div>
 
           <p
-            class="truncate text-xs favn-text-muted"
+            class="truncate text-sm favn-text-muted"
             title={Enum.join(@pipeline.selected_assets, ", ")}
           >
             {selected_assets_preview(@pipeline)}
@@ -228,7 +236,7 @@ defmodule FavnView.Components.PipelinesPage do
         {List.first(@pipeline.selected_assets)}
       </span>
 
-      <span :if={length(@pipeline.selected_assets) > 1} class="shrink-0 text-xs favn-text-subtle">
+      <span :if={length(@pipeline.selected_assets) > 1} class="shrink-0 text-sm favn-text-subtle">
         +{length(@pipeline.selected_assets) - 1} more
       </span>
     </div>

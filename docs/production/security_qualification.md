@@ -57,6 +57,50 @@ The test catalogue uses stable `WEB-*`, `API-*`, `TOPO-*`, `STATE-*`,
 check fails whenever a production route is added, removed, or changed without
 an explicit security classification.
 
+## Add or change a route
+
+Every production route in `apps/favn_view/lib/favn_view/router.ex` and in the
+orchestrator API router, including the sub-routers it forwards to, must appear in
+`deployment/docker-compose/security/catalog.json` in the same change.
+`security/catalog-check.mjs` parses both routers and fails on any route the
+catalogue does not list, and on any catalogued route the routers no longer serve.
+Splitting one screen into sub-routes counts: each new path is a new entry.
+
+An entry carries a method, a path whose dynamic segments are `{placeholder}`, an
+`access` classification, and a new id. `WEB-*` and `API-*` ids are stable and are
+recorded in the evidence artifact, so append the next number instead of
+renumbering. Every `{placeholder}` must have a value in the catalogue's
+`placeholders` map.
+
+| Surface | `access` values |
+| --- | --- |
+| Browser | `public`, `anonymous`, `anonymous_csrf`, `authenticated_csrf`, `viewer`, `operator`, `admin` |
+| API | `public`, `service`, `platform`, `capacity`, `actor`, `actor_stream` |
+
+Cataloguing a route also asserts how it behaves, because the probes then exercise
+it with those placeholders — and the placeholders deliberately name resources
+that do not exist:
+
+- an authenticated browser `GET` must answer 200 without redirecting to `/login`,
+  and carry no serious or critical axe finding. A screen that raises, or that
+  redirects, on an unknown id fails the gate;
+- a browser route with any other method must reject a request carrying no CSRF
+  token, with 403 or 422; and
+- an API route must answer 401 anonymously and for a forged token, 403 for a
+  valid token of the wrong scope, and anything other than 401 or 403 when
+  authorized. A 404 for the absent placeholder resource passes.
+
+The drift check needs only Node and no stack, so it is the cheap half of this
+gate:
+
+```sh
+node deployment/docker-compose/security/catalog-check.mjs
+```
+
+The Favn dev container has no Node. Run it wherever Node is available, or read
+the failure from the `Production-shaped HTTP boundary` job, whose first step it
+is.
+
 ## Run the gate
 
 From a clean checkout on a Linux Docker host:

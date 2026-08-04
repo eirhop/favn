@@ -3,7 +3,8 @@ defmodule FavnView.AssetDetailHeadlineTest do
 
   alias FavnView.AssetDetailLive
 
-  doctest AssetDetailLive, only: [headline_status: 1, coverage_status: 1, blocks_writes?: 1]
+  doctest AssetDetailLive,
+    only: [headline_status: 1, coverage_status: 1, blocks_writes?: 1, freshness_state: 1]
 
   describe "headline_status/1" do
     test "a failed run outranks everything else the page knows" do
@@ -26,15 +27,36 @@ defmodule FavnView.AssetDetailHeadlineTest do
                AssetDetailLive.headline_status(detail)
     end
 
-    test "blocked writes outrank a healthy last run" do
+    # Nothing can run at all, so this is not the same severity as some data being
+    # missing. It used to rank below incomplete coverage and read as a warning.
+    test "blocked runs outrank incomplete coverage and read as an error" do
       detail = %{
         status: :healthy,
-        coverage: %{status: :complete},
+        coverage: %{status: :incomplete},
         compatibility: %{blocks_writes?: true}
       }
 
-      assert %{label: "Writes blocked", tone: :warning} =
-               AssetDetailLive.headline_status(detail)
+      assert %{label: "Runs blocked", tone: :error} = AssetDetailLive.headline_status(detail)
+    end
+
+    test "stale data outranks a healthy last run" do
+      detail = %{
+        status: :healthy,
+        coverage: %{status: :complete},
+        freshness: %{state: :stale}
+      }
+
+      assert %{label: "Out of date", tone: :warning} = AssetDetailLive.headline_status(detail)
+    end
+
+    test "a fresh asset with complete coverage is healthy" do
+      detail = %{
+        status: :healthy,
+        coverage: %{status: :complete},
+        freshness: %{state: :fresh}
+      }
+
+      assert %{label: "Healthy", tone: :success} = AssetDetailLive.headline_status(detail)
     end
 
     test "healthy with unreported coverage does not claim to be healthy overall" do

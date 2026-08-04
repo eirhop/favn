@@ -35,10 +35,12 @@ defmodule FavnView.Components.RunDetailPage.AttemptDrawer do
             </h2>
             <.status_badge tone={@attempt.status_tone} label={@attempt.status} size={:sm} />
           </div>
-          <p class="mt-1 truncate text-xs favn-text-subtle">
+
+          <p class="mt-1 truncate text-sm favn-text-subtle">
             {attempt_subtitle(@attempt)}
           </p>
         </div>
+
         <.icon_button
           phx-click="close_attempt"
           icon="hero-x-mark"
@@ -60,12 +62,14 @@ defmodule FavnView.Components.RunDetailPage.AttemptDrawer do
           <p class={["text-sm font-medium", Tokens.text_class(@outcome.tone)]}>
             {@outcome.headline}
           </p>
-          <p :if={@outcome.target} class="mt-0.5 truncate font-mono text-xs favn-text-muted">
+
+          <p :if={@outcome.target} class="mt-0.5 truncate font-mono text-sm favn-text-muted">
             {@outcome.target}
           </p>
+
           <p
             :if={@outcome.checks}
-            class={["mt-1 text-xs", Tokens.text_class(@outcome.checks.tone)]}
+            class={["mt-1 text-sm", Tokens.text_class(@outcome.checks.tone)]}
             data-testid="attempt-checks-verdict"
           >
             {@outcome.checks.label}
@@ -90,22 +94,22 @@ defmodule FavnView.Components.RunDetailPage.AttemptDrawer do
             Open that run
           </.link>
         </.notice>
-
         <.fact_list facts={timing_facts(@attempt)} columns={3} />
-
         <OutputMetadata.output_metadata
           id={"output-metadata-#{@attempt.id}"}
           metadata={Map.get(@attempt, :output_metadata)}
           status={@attempt.raw_status}
         />
-
         <details class="rounded-box border border-base-content/10 p-3">
-          <summary class="cursor-pointer text-xs font-medium favn-text-muted">Identifiers</summary>
+          <summary class="cursor-pointer text-sm font-medium favn-text-muted">Identifiers</summary>
+
           <div class="mt-3 space-y-1">
             <.field_row label="Asset key"><.mono value={@attempt.asset_key} /></.field_row>
+
             <.field_row label="Window run">
               <.mono value={@attempt.child_run_id || @attempt.run_id || "-"} />
             </.field_row>
+
             <.field_row label="Run group">
               <.mono value={@attempt.root_execution_group_id || "-"} />
             </.field_row>

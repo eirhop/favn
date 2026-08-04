@@ -7,8 +7,8 @@ select
 
   core_metadata(@favn_run_started_at)
 
-from source.account as account
-left join source.contact as contact
+from source.crm.account as account
+left join source.crm.contact as contact
   on contact.account_id = account.account_id
 group by
   account.account_id,

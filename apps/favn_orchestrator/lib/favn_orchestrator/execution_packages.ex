@@ -51,6 +51,22 @@ defmodule FavnOrchestrator.ExecutionPackages do
     end
   end
 
+  @doc """
+  Fetches and verifies one asset's package so its source can be read.
+
+  Returns `{:ok, nil}` for an asset that has no package, which is every asset that is
+  not SQL — the caller shows what that asset type has instead rather than treating the
+  absence as a failure.
+  """
+  @spec fetch(WorkspaceContext.t(), String.t(), Version.t(), Asset.t()) ::
+          {:ok, ExecutionPackage.t() | nil} | {:error, term()}
+  def fetch(%WorkspaceContext{} = context, deployment_id, %Version{} = version, %Asset{} = asset) do
+    with :ok <- validate_workspace_read(context),
+         {:ok, package} <- fetch_for_asset(context, deployment_id, version, asset) do
+      ExecutionPackage.verify_for_asset(package, asset)
+    end
+  end
+
   defp fetch_for_asset(
          context,
          deployment_id,

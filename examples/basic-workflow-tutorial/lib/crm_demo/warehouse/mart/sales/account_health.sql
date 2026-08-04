@@ -8,4 +8,4 @@ select
     else 'needs_attention'
   end as health_status
 
-from core.customer
+from core.sales.customer

@@ -37,8 +37,10 @@ defmodule FavnView.Components.AdminPage do
         <header class="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
           <div class="min-w-0">
             <.eyebrow>Workspace {@current_scope.workspace_id}</.eyebrow>
+
             <.meta>Changes here apply only to this workspace.</.meta>
           </div>
+
           <.badge variant={:outline} tone={:info} icon="hero-shield-check">
             Administrator access
           </.badge>
@@ -49,7 +51,6 @@ defmodule FavnView.Components.AdminPage do
           choices={admin_tabs(@admin_tab)}
           data-testid="admin-tabs"
         />
-
         <div :if={@admin_tab == :operators} class="space-y-5" data-testid="admin-tab-operators">
           <.panel padding={:none}>
             <:header
@@ -57,14 +58,15 @@ defmodule FavnView.Components.AdminPage do
               subtitle="Create a new identity or attach an existing one to this workspace."
               icon="hero-user-plus"
             />
-
             <div class="p-5 sm:p-6">
               <.columns count={2} gap={:lg}>
                 <form phx-submit="create_actor" class="space-y-3">
                   <div class="space-y-1">
                     <.section_title>New operator</.section_title>
+
                     <.meta>Set credentials and the first workspace role.</.meta>
                   </div>
+
                   <.input
                     name="username"
                     value=""
@@ -101,16 +103,17 @@ defmodule FavnView.Components.AdminPage do
                     placeholder="Confirm password"
                     required
                     class="input input-sm favn-surface-control w-full"
-                  />
-                  <.role_select />
+                  /> <.role_select />
                   <.button type="submit" icon="hero-user-plus">Create operator</.button>
                 </form>
 
                 <form phx-submit="attach_actor" class="space-y-3">
                   <div class="space-y-1">
                     <.section_title>Existing operator</.section_title>
+
                     <.meta>Attach by exact username without exposing other workspaces.</.meta>
                   </div>
+
                   <.input
                     name="username"
                     value=""
@@ -119,8 +122,7 @@ defmodule FavnView.Components.AdminPage do
                     placeholder="Exact username"
                     required
                     class="input input-sm favn-surface-control w-full"
-                  />
-                  <.role_select />
+                  /> <.role_select />
                   <.button type="submit" variant={:secondary} icon="hero-link">
                     Attach operator
                   </.button>
@@ -135,7 +137,6 @@ defmodule FavnView.Components.AdminPage do
               subtitle="Manage roles and membership status for this workspace."
               icon="hero-user-group"
             />
-
             <div class="p-5 sm:p-6">
               <.empty_state
                 :if={@actors == []}
@@ -143,7 +144,6 @@ defmodule FavnView.Components.AdminPage do
                 description="Create or attach an operator above to grant workspace access."
                 icon="hero-user-group"
               />
-
               <.stack :if={@actors != []} gap={:sm}>
                 <.list_card :for={actor <- @actors} class="p-4">
                   <div class="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
@@ -152,8 +152,10 @@ defmodule FavnView.Components.AdminPage do
                         <span class="truncate font-medium">
                           {actor.display_name || actor.username || actor.id}
                         </span>
+
                         <.badge variant={:outline} tone={:neutral}>{actor.status}</.badge>
                       </div>
+
                       <.meta title={actor.username}>{actor.username}</.meta>
                     </div>
 
@@ -191,7 +193,6 @@ defmodule FavnView.Components.AdminPage do
               subtitle="Review sign-ins and revoke sessions that should no longer be trusted."
               icon="hero-arrow-right-on-rectangle"
             />
-
             <div class="p-5 sm:p-6">
               <.empty_state
                 :if={@sessions == []}
@@ -199,7 +200,6 @@ defmodule FavnView.Components.AdminPage do
                 description="There are no session records to display for this workspace."
                 icon="hero-arrow-right-on-rectangle"
               />
-
               <.stack :if={@sessions != []} gap={:sm}>
                 <.list_card :for={session <- @sessions} class="p-4">
                   <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -212,9 +212,11 @@ defmodule FavnView.Components.AdminPage do
                           size={:xs}
                         />
                       </div>
+
                       <.meta>
                         Actor {session.actor_id} · {session.provider || "Unknown provider"}
                       </.meta>
+
                       <.meta :if={session.expires_at}>
                         Expires {format_time(session.expires_at)}
                       </.meta>
@@ -254,7 +256,6 @@ defmodule FavnView.Components.AdminPage do
               subtitle="A redacted record of access and membership changes in this workspace."
               icon="hero-clipboard-document-list"
             />
-
             <div class="p-5 sm:p-6">
               <.empty_state
                 :if={@audit == []}
@@ -262,19 +263,21 @@ defmodule FavnView.Components.AdminPage do
                 description="Security events will appear here as administrators manage access."
                 icon="hero-clipboard-document-list"
               />
-
               <.stack :if={@audit != []} gap={:sm}>
                 <.list_card :for={entry <- @audit} class="p-4">
                   <div class="grid gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] sm:items-center">
                     <div class="min-w-0">
                       <.badge variant={:outline} tone={:neutral}>{entry.action}</.badge>
+
                       <.meta class="mt-1">
                         {entry.subject_kind}: {entry.subject_id}
                       </.meta>
                     </div>
+
                     <.meta>Actor {entry.principal_id}</.meta>
+
                     <time
-                      class="text-xs favn-text-muted"
+                      class="text-sm favn-text-muted"
                       datetime={datetime_attr(entry.occurred_at)}
                     >
                       {format_time(entry.occurred_at)}

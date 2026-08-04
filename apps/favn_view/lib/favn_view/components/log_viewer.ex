@@ -48,6 +48,7 @@ defmodule FavnView.Components.LogViewer do
       <.notice :if={@context_note} class="mb-3" data-testid="log-context-note">
         {@context_note}
       </.notice>
+
       <.notice :if={@warning} class="mb-3" data-testid="log-stream-warning">
         {@warning}
       </.notice>
@@ -69,7 +70,6 @@ defmodule FavnView.Components.LogViewer do
           live?={@live?}
           error_count={@error_count}
         />
-
         <div
           class="favn-terminal min-h-[16rem] flex-1 overflow-auto rounded-box py-2 font-mono text-[0.8125rem] leading-6"
           data-testid="log-terminal-window"
@@ -95,8 +95,7 @@ defmodule FavnView.Components.LogViewer do
             class="favn-log-dim flex h-full min-h-[14rem] flex-col items-center justify-center gap-2 text-sm"
             data-testid="log-empty-state"
           >
-            {@empty_state}
-            <span :if={@live?} class="text-xs">Listening for logs...</span>
+            {@empty_state} <span :if={@live?} class="text-sm">Listening for logs...</span>
           </div>
 
           <div
@@ -137,35 +136,28 @@ defmodule FavnView.Components.LogViewer do
           data-testid="log-search-input"
         />
       </label>
-
       <.level_select selected_level={@selected_level} levels={@levels} testid="log-level-filter" />
       <.source_select
         selected_source={@selected_source}
         sources={@sources}
         testid="log-source-filter"
-      />
-
-      <.error_jump :if={@error_count > 0} error_count={@error_count} />
-
+      /> <.error_jump :if={@error_count > 0} error_count={@error_count} />
       <.toggle_button event="toggle_wrap" label="Wrap" enabled?={@wrap?} testid="log-wrap-toggle" />
       <.toggle_button
         event="toggle_live_tail"
         label="Follow"
         enabled?={@live_tail?}
         testid="log-live-tail-toggle"
-      />
-      <.copy_logs_button />
-
+      /> <.copy_logs_button />
       <span
-        class="favn-text-muted inline-flex items-center gap-1.5 text-xs"
+        class="favn-text-muted inline-flex items-center gap-1.5 text-sm"
         data-testid="log-live-status"
       >
         <.status_dot
           tone={if @live?, do: :success, else: :neutral}
           label={if @live?, do: "Log stream live", else: "Log stream loaded"}
           glow={@live?}
-        />
-        {if @live?, do: "Live", else: "Loaded"}
+        /> {if @live?, do: "Live", else: "Loaded"}
       </span>
     </form>
     """
@@ -179,9 +171,10 @@ defmodule FavnView.Components.LogViewer do
       class="inline-flex items-center gap-1 rounded-box border border-error/40 bg-error/10 py-0.5 pr-0.5 pl-2.5"
       data-testid="log-error-jump"
     >
-      <span class="text-xs font-medium text-error">
+      <span class="text-sm font-medium text-error">
         {@error_count} {if @error_count == 1, do: "error", else: "errors"}
       </span>
+
       <.icon_button
         icon="hero-chevron-up"
         label="Previous error"
@@ -210,6 +203,7 @@ defmodule FavnView.Components.LogViewer do
       <span class="label favn-text-muted">Level</span>
       <select name="filters[level]" data-testid={@testid}>
         <option value="all" selected={@selected_level == "all"}>All</option>
+
         <option
           :for={level <- @levels}
           value={level}
@@ -232,6 +226,7 @@ defmodule FavnView.Components.LogViewer do
       <span class="label favn-text-muted">Source</span>
       <select name="filters[source]" data-testid={@testid}>
         <option value="all" selected={@selected_source == "all"}>All</option>
+
         <option
           :for={source <- @sources}
           value={source}
@@ -302,8 +297,7 @@ defmodule FavnView.Components.LogViewer do
         <.icon
           name="hero-chevron-right"
           class="favn-log-marker favn-log-dim size-3 shrink-0"
-        />
-        <time class="favn-log-dim shrink-0 tabular-nums">{@log.time}</time>
+        /> <time class="favn-log-dim shrink-0 tabular-nums">{@log.time}</time>
         <span class="favn-log-level w-9 shrink-0 font-semibold">{level_tag(@log.level)}</span>
         <span class="favn-log-dim w-28 shrink-0 truncate">{@log.source_label}</span>
         <code class={[
@@ -319,19 +313,24 @@ defmodule FavnView.Components.LogViewer do
         </span>
       </summary>
 
-      <div class="favn-log-expanded text-xs" data-testid="log-details-panel">
+      <div class="favn-log-expanded" data-testid="log-details-panel">
         <dl class="grid gap-x-4 gap-y-1 sm:grid-cols-[6rem_minmax(0,1fr)]">
           <dt class="favn-log-dim">logged</dt>
+
           <dd class="break-all">{@log.timestamp} UTC</dd>
+
           <%= for detail <- @log.details do %>
             <dt class="favn-log-dim">{detail.label}</dt>
+
             <dd class="break-all">{detail.title}</dd>
           <% end %>
         </dl>
+
         <div :if={@log.metadata_text != ""} class="mt-2">
           <p class="favn-log-dim">metadata</p>
           <pre class="mt-1 whitespace-pre-wrap break-words"><code>{@log.metadata_text}</code></pre>
         </div>
+
         <.copy_button
           value={log_copy_text(@log)}
           label="Copy entry"
