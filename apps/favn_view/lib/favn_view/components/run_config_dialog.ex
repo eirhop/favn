@@ -282,8 +282,16 @@ defmodule FavnView.Components.RunConfigDialog do
 
   # The warning is shown only when it applies. A caution that is always on screen is
   # read once and then never again.
-  defp forces_upstream?(%{refresh: refresh}),
-    do: refresh in ["force_selected_upstream", "force_all"]
+  #
+  # "Force everything planned" forces whatever the plan holds, so it reaches upstream
+  # assets only when upstream assets were planned. With dependencies excluded the plan
+  # is this asset alone, and warning about upstream would describe a graph that is not
+  # being run. "Force this asset and what it reads" always plans upstream —
+  # `FavnView.AssetRunConfig` refuses it otherwise.
+  defp forces_upstream?(%{refresh: "force_selected_upstream"}), do: true
+
+  defp forces_upstream?(%{refresh: "force_all"} = run_config),
+    do: Map.get(run_config, :dependencies) == "all"
 
   defp forces_upstream?(_run_config), do: false
 end

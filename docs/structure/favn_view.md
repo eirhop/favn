@@ -74,7 +74,9 @@ Ownership rules:
   only for an asset the orchestrator reports as windowed. When the orchestrator
   reports multiple pipeline run contexts, the view keeps the selected stable context
   id in the asset route and includes it in run requests; run actions stay disabled
-  until one is selected.
+  until one is selected. `FavnView.AssetRunConfig` owns that configuration's two
+  shapes and the rules the dialog refuses on, including whether an end bound was
+  asked for, so validation and the submission branch cannot disagree.
 - Asset coverage renders the orchestrator's expected windows as a calendar whose grain
   and navigation bounds come from `FavnView.CoverageCalendar`. The view owns which
   unit fills one screen per grain; it does not compute which windows exist, how many a

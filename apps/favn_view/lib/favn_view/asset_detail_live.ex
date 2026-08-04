@@ -6,6 +6,7 @@ defmodule FavnView.AssetDetailLive do
   require Logger
 
   alias FavnView.AssetRoute
+  alias FavnView.AssetRunConfig
   alias FavnView.CommandAttempt
   alias FavnView.Components.AssetCataloguePage
   alias FavnView.Components.AssetDetailPage
@@ -13,12 +14,6 @@ defmodule FavnView.AssetDetailLive do
   alias FavnView.Auth.Scope
   alias FavnView.CoverageCalendar
   alias FavnView.LogsViewModel
-
-  @dependency_choices ~w(all none)
-  @refresh_choices ~w(auto missing force_selected force_selected_upstream force_all)
-  @source_choices ~w(refresh_timeline data_coverage_timeline)
-  @window_kind_choices ~w(hour day month year)
-  @timezone_pattern ~r/\A[A-Za-z0-9_+\-\/]{1,64}\z/
 
   @impl true
   def mount(%{"asset_id" => asset_id} = params, _session, socket) do
@@ -39,7 +34,7 @@ defmodule FavnView.AssetDetailLive do
         selected_run: nil,
         documentation: nil,
         run_config_open?: false,
-        run_config: default_run_config(),
+        run_config: AssetRunConfig.default(),
         run_config_valid?: true,
         submitting_window_run?: false,
         run_error: nil,
@@ -76,7 +71,7 @@ defmodule FavnView.AssetDetailLive do
           asset_state: asset_state,
           asset: asset_from_state(asset_state),
           run_config_open?: false,
-          run_config: default_run_config(),
+          run_config: AssetRunConfig.default(),
           run_config_valid?: true,
           submitting_window_run?: false,
           run_error: nil,
@@ -250,8 +245,8 @@ defmodule FavnView.AssetDetailLive do
         {:noreply, assign(socket, :run_error, "This asset cannot be run.")}
 
       true ->
-        run_config = asset_run_config(asset)
-        error = validate_run_config(run_config)
+        run_config = AssetRunConfig.from_asset(asset)
+        error = AssetRunConfig.validate(run_config)
 
         {:noreply,
          assign(socket,
@@ -268,8 +263,8 @@ defmodule FavnView.AssetDetailLive do
   end
 
   def handle_event("change_run_config", params, socket) do
-    run_config = run_config_from_params(params, socket.assigns.run_config)
-    error = validate_run_config(run_config)
+    run_config = AssetRunConfig.from_params(params, socket.assigns.run_config)
+    error = AssetRunConfig.validate(run_config)
 
     {:noreply,
      assign(socket,
@@ -282,7 +277,7 @@ defmodule FavnView.AssetDetailLive do
   def handle_event("submit_run", params, socket) do
     %{asset: asset} = socket.assigns
 
-    run_config = run_config_from_params(params, socket.assigns.run_config)
+    run_config = AssetRunConfig.from_params(params, socket.assigns.run_config)
 
     cond do
       !socket.assigns.can_submit_runs? ->
@@ -295,7 +290,7 @@ defmodule FavnView.AssetDetailLive do
       is_nil(asset) or !asset.can_run_asset? ->
         {:noreply, assign(socket, :run_error, "This asset cannot be run.")}
 
-      error = validate_run_config(run_config) ->
+      error = AssetRunConfig.validate(run_config) ->
         {:noreply,
          assign(socket,
            run_config: run_config,
@@ -355,9 +350,18 @@ defmodule FavnView.AssetDetailLive do
     end
   end
 
-  # A "To" period turns one run into a backfill over the inclusive range.
-  defp submit_asset_window_run(socket, asset, %{to: to} = run_config, idempotency_key)
-       when is_binary(to) and to != "" do
+  # A "To" period turns one run into a backfill over the inclusive range. Blankness is
+  # `AssetRunConfig`'s rule, so a whitespace-only "To" is no range here either — deciding
+  # it here separately let a configuration pass validation and still take this branch.
+  defp submit_asset_window_run(socket, asset, run_config, idempotency_key) do
+    if AssetRunConfig.range_requested?(run_config) do
+      submit_asset_range_run(socket, asset, run_config, idempotency_key)
+    else
+      submit_asset_period_run(socket, asset, run_config, idempotency_key)
+    end
+  end
+
+  defp submit_asset_range_run(socket, asset, run_config, idempotency_key) do
     request = %{
       range: range_request(run_config),
       dependency_mode: run_config.dependencies,
@@ -376,7 +380,7 @@ defmodule FavnView.AssetDetailLive do
     end
   end
 
-  defp submit_asset_window_run(socket, asset, run_config, idempotency_key) do
+  defp submit_asset_period_run(socket, asset, run_config, idempotency_key) do
     request = %{
       run_context_id: asset.selected_run_context && asset.selected_run_context.id,
       selection: timeline_selection(run_config),
@@ -945,58 +949,6 @@ defmodule FavnView.AssetDetailLive do
     end
   end
 
-  # The period the asset is due for, as the backend reports it. Absent when no single
-  # pipeline owns the asset, in which case the dialog opens on its own empty default —
-  # and the action that opens it is disabled anyway. Whether the period *fields* show
-  # is `has_data_windows?`, decided by the page.
-  defp asset_run_config(%{default_run_config: config}) when is_map(config),
-    do: config_from_backend(config)
-
-  defp asset_run_config(_asset), do: default_run_config()
-
-  defp config_from_backend(config) do
-    %{
-      dependencies: config |> Map.get(:dependencies, :all) |> config_atom_value(),
-      refresh: config |> Map.get(:refresh, :auto) |> refresh_config_value(),
-      source: config |> Map.get(:source) |> source_config_value(),
-      kind: config |> Map.get(:kind) |> kind_config_value(),
-      value: config |> Map.get(:value, "") |> to_string(),
-      to: config |> Map.get(:to, "") |> to_string(),
-      timezone: config |> Map.get(:timezone, "Etc/UTC") |> to_string()
-    }
-  end
-
-  defp config_atom_value(value) when is_atom(value), do: Atom.to_string(value)
-  defp config_atom_value(value) when is_binary(value), do: value
-  defp config_atom_value(_value), do: "all"
-
-  defp kind_config_value(value) when value in [:hour, :day, :month, :year],
-    do: Atom.to_string(value)
-
-  defp kind_config_value(value) when value in ["hour", "day", "month", "year"], do: value
-  defp kind_config_value(_value), do: ""
-
-  defp refresh_config_value(value) when value in [:auto, "auto"], do: "auto"
-  defp refresh_config_value(value) when value in [:missing, "missing"], do: "missing"
-
-  defp refresh_config_value(value) when value in [:force, :force_all, "force", "force_all"],
-    do: "force_all"
-
-  defp refresh_config_value(value) when value in [:force_selected, "force_selected"],
-    do: "force_selected"
-
-  defp refresh_config_value(value)
-       when value in [:force_selected_upstream, "force_selected_upstream"],
-       do: "force_selected_upstream"
-
-  defp refresh_config_value(_value), do: "auto"
-
-  defp source_config_value(:refresh_timeline), do: "refresh_timeline"
-  defp source_config_value(:data_coverage_timeline), do: "data_coverage_timeline"
-  defp source_config_value("refresh_timeline"), do: "refresh_timeline"
-  defp source_config_value("data_coverage_timeline"), do: "data_coverage_timeline"
-  defp source_config_value(_source), do: nil
-
   # An asset with no period to run submits no selection, and the backend plans it for
   # whatever period its own policy says is due.
   defp timeline_selection(%{source: source, kind: kind, value: value, timezone: timezone})
@@ -1031,66 +983,6 @@ defmodule FavnView.AssetDetailLive do
       ]
     }
   end
-
-  defp default_run_config,
-    do: %{
-      dependencies: "all",
-      refresh: "auto",
-      source: nil,
-      kind: "",
-      value: "",
-      to: "",
-      timezone: "Etc/UTC"
-    }
-
-  defp run_config_from_params(%{"run_config" => params}, current_config) when is_map(params) do
-    %{
-      dependencies: Map.get(params, "dependencies", "all"),
-      refresh: Map.get(params, "refresh", "auto"),
-      source: Map.get(params, "source", Map.get(current_config, :source)),
-      kind: Map.get(params, "kind", Map.get(current_config, :kind, "")),
-      value: Map.get(params, "value", Map.get(current_config, :value, "")),
-      to: Map.get(params, "to", Map.get(current_config, :to, "")),
-      timezone: Map.get(params, "timezone", Map.get(current_config, :timezone, "Etc/UTC"))
-    }
-  end
-
-  defp run_config_from_params(_params, current_config), do: current_config || default_run_config()
-
-  defp validate_run_config(config) do
-    cond do
-      config.dependencies not in @dependency_choices ->
-        "Dependency choice is invalid."
-
-      config.refresh not in @refresh_choices ->
-        "Refresh choice is invalid."
-
-      config.dependencies == "none" and config.refresh == "force_selected_upstream" ->
-        "force_selected_upstream requires dependencies=all."
-
-      window_context_requested?(config) and config.source not in @source_choices ->
-        "Window source is invalid."
-
-      window_context_requested?(config) and config.kind not in @window_kind_choices ->
-        "Window kind is invalid."
-
-      window_context_requested?(config) and blank?(config.value) ->
-        "Window range start is required."
-
-      window_context_requested?(config) and not valid_timezone?(config.timezone) ->
-        "Timezone is invalid."
-
-      true ->
-        nil
-    end
-  end
-
-  defp window_context_requested?(config),
-    do: not blank?(Map.get(config, :value)) or not blank?(Map.get(config, :to))
-
-  defp blank?(value), do: not is_binary(value) or String.trim(value) == ""
-  defp valid_timezone?(value) when is_binary(value), do: String.match?(value, @timezone_pattern)
-  defp valid_timezone?(_value), do: false
 
   defp asset_error_title({:error, :active_manifest_not_set}), do: "Active manifest not set"
   defp asset_error_title({:error, _reason}), do: "Unable to load asset"

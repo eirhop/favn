@@ -367,6 +367,23 @@ defmodule FavnView.Dev.DesignSystem.Examples.Components do
             "lines above the advanced section already read \"This asset only\" and \"Force\"."
         ),
         Example.attrs(
+          :forces_upstream,
+          Map.put(
+            base,
+            :run_config,
+            RunConfig.run_config(
+              :refresh_timeline,
+              :day,
+              "2026-06-12",
+              "all",
+              "force_selected_upstream"
+            )
+          ),
+          "Forcing upstream assets warns, because it changes their output and can make " <>
+            "assets downstream of them rerun. The warning is tied to what the plan holds: " <>
+            "forcing with dependencies excluded plans one asset and says nothing."
+        ),
+        Example.attrs(
           :submitting,
           Map.put(base, :submitting_window_run?, true),
           "Every control locks while the submission is in flight, so a second click cannot " <>
