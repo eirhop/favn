@@ -184,7 +184,5 @@
   {"lib/favn_view/run_detail_live.ex",
    "Function retry_remaining_partial_label/2 will never be called."},
   {"lib/favn_view/run_detail_live.ex",
-   "The pattern can never match the type :forbidden | :invalid_context | :unauthenticated."},
-  {"lib/mix/tasks/favn.postgres.maintenance.ex", "Function usage!/0 has no local return."},
-  {"lib/mix/tasks/favn.postgres.provision_workspace.ex", "Function usage!/0 has no local return."}
+   "The pattern can never match the type :forbidden | :invalid_context | :unauthenticated."}
 ]

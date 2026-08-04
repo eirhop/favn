@@ -40,6 +40,7 @@ defmodule Mix.Tasks.Favn.Postgres.ProvisionWorkspace do
     end
   end
 
+  @spec usage!() :: no_return()
   defp usage! do
     Mix.raise("usage: mix favn.postgres.provision_workspace --id ID [--slug SLUG] [--name NAME]")
   end

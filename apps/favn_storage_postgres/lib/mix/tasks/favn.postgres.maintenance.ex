@@ -165,6 +165,7 @@ defmodule Mix.Tasks.Favn.Postgres.Maintenance do
     end
   end
 
+  @spec usage!() :: no_return()
   defp usage! do
     Mix.raise("""
     usage:
