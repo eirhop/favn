@@ -1608,8 +1608,13 @@ defmodule FavnView.Components.AssetDetailPage do
 
                 <td class={row.found_tone && Tokens.text_class(row.found_tone)}>{row.found}</td>
 
-                <td>
-                  <.status_badge tone={row.tone} label={row.result} />
+                <td class="text-center">
+                  <.status_icon
+                    tone={row.tone}
+                    icon={row.result_icon}
+                    label={row.result}
+                    tooltip={:left}
+                  />
                 </td>
               </tr>
             </tbody>
@@ -1722,6 +1727,7 @@ defmodule FavnView.Components.AssetDetailPage do
       found: metric_value(result, [:actual, :row_count, :count]),
       found_tone: nil,
       result: check_result_label(result),
+      result_icon: check_result_icon(result),
       tone: check_result_tone(result),
       on_violation: row_count[:on_violation]
     }
@@ -1738,6 +1744,7 @@ defmodule FavnView.Components.AssetDetailPage do
       found: metric_value(result, [:actual, :count, :rows]),
       found_tone: nil,
       result: check_result_label(result),
+      result_icon: check_result_icon(result),
       tone: check_result_tone(result),
       on_violation: check[:on_violation]
     }
@@ -2348,6 +2355,40 @@ defmodule FavnView.Components.AssetDetailPage do
 
       outcome ->
         humanize(outcome)
+    end
+  end
+
+  # One icon per outcome, not per tone: "not needed" and "not run" are both neutral and
+  # mean different things, and "blocked the write" shares its tone with a warning. The
+  # shape carries the state and the colour only reinforces it, which is also what keeps
+  # the cell readable for anyone who cannot separate the hues.
+  defp check_result_icon(nil), do: "hero-question-mark-circle"
+
+  defp check_result_icon(result) do
+    case value(result, :outcome) do
+      outcome when outcome in [:passed, "passed"] ->
+        "hero-check-circle"
+
+      outcome when outcome in [:warned, "warned"] ->
+        "hero-exclamation-triangle"
+
+      outcome when outcome in [:failed, "failed"] ->
+        "hero-x-circle"
+
+      outcome when outcome in [:errored, "errored"] ->
+        "hero-exclamation-circle"
+
+      outcome when outcome in [:not_run, "not_run"] ->
+        "hero-question-mark-circle"
+
+      outcome when outcome in [:condition_skipped, "condition_skipped"] ->
+        "hero-minus-circle"
+
+      outcome when outcome in [:materialization_skipped, "materialization_skipped"] ->
+        "hero-no-symbol"
+
+      _outcome ->
+        "hero-information-circle"
     end
   end
 

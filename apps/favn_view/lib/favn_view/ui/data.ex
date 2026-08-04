@@ -961,7 +961,10 @@ defmodule FavnView.UI.Data do
 
       <ol :if={@runs != []} class="relative space-y-4">
         <li :for={day <- @days}>
-          <p class="sticky top-0 z-10 bg-base-100/85 py-1 text-xs font-medium uppercase tracking-wide backdrop-blur favn-text-subtle">
+          <!-- Indented to the spine column plus a row's own padding, so the date starts
+          on the same x as the times under it. The heading stays full width, because it
+          is the sticky backdrop the rows scroll behind. -->
+          <p class="sticky top-0 z-10 bg-base-100/85 py-1 pl-[2.125rem] pr-2.5 text-xs font-medium uppercase tracking-wide backdrop-blur favn-text-subtle">
             {day.label}
           </p>
 
@@ -971,18 +974,19 @@ defmodule FavnView.UI.Data do
                 class="absolute left-[7px] top-0 h-full w-px bg-base-content/10"
                 aria-hidden="true"
               ></span>
+              <!-- The dot is centred by the flex box rather than by insets. `.status`
+              declares its own `width` and `height`, which over-constrains `inset-3` —
+              `left` and `width` win, `right` is dropped — so the dot sat half a pixel
+              up and left of the ring it is supposed to be inside. -->
               <span
                 class={[
-                  "absolute left-0 top-3 size-[15px] rounded-full ring-3 ring-base-100",
+                  "absolute left-0 top-3 flex size-[15px] items-center justify-center",
+                  "rounded-full ring-3 ring-base-100",
                   Tokens.surface_class(run.status_tone)
                 ]}
                 aria-hidden="true"
               >
-                <span class={[
-                  "absolute inset-[3px] rounded-full",
-                  Tokens.dot_class(run.status_tone),
-                  "status"
-                ]}></span>
+                <span class={["rounded-full", Tokens.dot_class(run.status_tone), "status"]}></span>
               </span>
 
               <.link
