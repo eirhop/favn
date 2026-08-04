@@ -3448,6 +3448,58 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     refute Map.has_key?(summary, :run)
   end
 
+  test "asset detail names what it reads and what reads it", fixture do
+    ref = {MyApp.Asset, :asset}
+    private_ref = {MyApp.PrivateAsset, :private}
+
+    # MyApp.Asset reads MyApp.PrivateAsset. Nothing reads MyApp.Asset, so the two
+    # directions must not come back the same.
+    manifest =
+      fixture.version.manifest
+      |> Map.update!(:assets, fn assets ->
+        Enum.map(assets, fn
+          %{ref: ^ref} = asset -> %{asset | depends_on: [private_ref]}
+          asset -> asset
+        end)
+      end)
+      |> FavnTestSupport.with_manifest_contract()
+      |> FavnTestSupport.with_manifest_graph()
+
+    {:ok, version} =
+      Version.new(manifest, manifest_version_id: "mv-deps-" <> fixture.deployment_id)
+
+    private_target_id = TargetStatus.target_id_for_asset(private_ref)
+
+    deps =
+      provision_deploy_fixture(version, [
+        %DeploymentTarget{
+          target_kind: :asset,
+          target_id: private_target_id,
+          selection_source: :dependency,
+          customer_visible: true,
+          descriptor: %{"target_id" => private_target_id, "label" => private_target_id}
+        }
+      ])
+
+    now = DateTime.utc_now()
+
+    assert {:ok, detail} =
+             Catalogue.active_asset_detail(deps.workspace_context, deps.target_id, now: now)
+
+    assert [%{asset_ref: "Elixir.MyApp.PrivateAsset:private", target_id: ^private_target_id}] =
+             detail.upstream
+
+    assert detail.downstream == []
+
+    # The reverse edge is recorded nowhere, so it is found by asking every other
+    # asset who it reads. That is the half most likely to come back empty.
+    assert {:ok, upstream_detail} =
+             Catalogue.active_asset_detail(deps.workspace_context, private_target_id, now: now)
+
+    assert upstream_detail.upstream == []
+    assert [%{asset_ref: "Elixir.MyApp.Asset:asset"}] = upstream_detail.downstream
+  end
+
   test "asset detail lists its own runs and reads one run's recorded result", fixture do
     {command, run} = create_run_command(fixture)
 

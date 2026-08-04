@@ -5,6 +5,7 @@ defmodule FavnView.Components.AssetDetailPage do
 
   use FavnView, :html
 
+  alias FavnView.AssetRoute
   alias FavnView.Components.AppShell
   alias FavnView.Components.ModeRail
   alias FavnView.Components.Navigation
@@ -53,6 +54,10 @@ defmodule FavnView.Components.AssetDetailPage do
 
   attr :asset_id, :string, required: true, doc: "route id; the rail patches relative to it"
   attr :runs, :list, default: [], doc: "newest first; see `FavnView.UI.Data.run_timeline/1`"
+  attr :relation, :map, default: nil, doc: "the four address levels the asset declares"
+  attr :cadence_label, :string, default: nil, doc: "how often it runs, in plain words"
+  attr :upstream, :list, default: [], doc: "assets this one reads"
+  attr :downstream, :list, default: [], doc: "assets that read this one"
   attr :selected_run_id, :string, default: nil
 
   attr :selected_run, :any,
@@ -120,8 +125,13 @@ defmodule FavnView.Components.AssetDetailPage do
         assurance={@assurance}
         asset_id={@asset_id}
         runs={@runs}
+        relation={@relation}
+        cadence_label={@cadence_label}
+        upstream={@upstream}
+        downstream={@downstream}
         selected_run_id={@selected_run_id}
         selected_run={@selected_run}
+        title={@title}
         coverage_plan={@coverage_plan}
         coverage_action_error={@coverage_action_error}
         planning_coverage?={@planning_coverage?}
@@ -146,6 +156,7 @@ defmodule FavnView.Components.AssetDetailPage do
   end
 
   attr :active_mode, :atom, required: true
+  attr :title, :string, required: true
   attr :window_kind_label, :string, default: "Windows"
   attr :refresh_timeline_label, :string, default: "Refresh periods"
   attr :refresh_cadence_label, :string, default: "Refresh cadence"
@@ -179,6 +190,10 @@ defmodule FavnView.Components.AssetDetailPage do
 
   attr :asset_id, :string, required: true, doc: "route id; the rail patches relative to it"
   attr :runs, :list, default: [], doc: "newest first; see `FavnView.UI.Data.run_timeline/1`"
+  attr :relation, :map, default: nil, doc: "the four address levels the asset declares"
+  attr :cadence_label, :string, default: nil, doc: "how often it runs, in plain words"
+  attr :upstream, :list, default: [], doc: "assets this one reads"
+  attr :downstream, :list, default: [], doc: "assets that read this one"
   attr :selected_run_id, :string, default: nil
 
   attr :selected_run, :any,
@@ -200,13 +215,17 @@ defmodule FavnView.Components.AssetDetailPage do
 
   def central_view(assigns) do
     ~H"""
-    <.compatibility_panel
-      :if={
-        @active_mode == :overview && @compatibility &&
-          Map.get(@compatibility, :blocks_writes?, false)
-      }
-      compatibility={@compatibility}
-      rebuild_target_id={@rebuild_target_id}
+    <.asset_overview
+      :if={@active_mode == :overview}
+      title={@title}
+      asset_id={@asset_id}
+      relation={@relation}
+      freshness={@freshness}
+      runs={@runs}
+      upstream={@upstream}
+      downstream={@downstream}
+      cadence_label={@cadence_label}
+      problems={asset_problems(assigns)}
     />
 
     <div
@@ -280,8 +299,8 @@ defmodule FavnView.Components.AssetDetailPage do
       command_resource={@rebuild_target_id}
     />
     <.window_timeline_panel
-      :if={@active_mode in [:overview, :coverage]}
-      timelines={mode_timelines(@active_mode)}
+      :if={@active_mode == :coverage}
+      timelines={[:data_coverage]}
       window_kind_label={@window_kind_label}
       refresh_timeline_label={@refresh_timeline_label}
       refresh_cadence_label={@refresh_cadence_label}
@@ -313,18 +332,106 @@ defmodule FavnView.Components.AssetDetailPage do
       can_submit_runs?={@can_submit_runs?}
       command_resource={@rebuild_target_id}
     />
-    <div :if={@active_mode == :overview} class="mx-auto mt-6 w-full max-w-[120rem]">
-      <.freshness_detail_panel freshness={@freshness} />
-    </div>
     """
   end
 
-  # Overview asks whether the asset is fresh and ran when it should have; Coverage
-  # asks whether every period it is expected to cover has data. Each page offers only
-  # the timelines that answer its own question, so neither can leave the reader on a
-  # strip about the other.
-  defp mode_timelines(:coverage), do: [:data_coverage]
-  defp mode_timelines(_mode), do: [:refresh, :freshness]
+  @doc """
+  Everything wrong with this asset, worst first.
+
+  Built here rather than in each panel so the overview can say nothing at all when
+  nothing is wrong. A page that renders a panel per topic has to fill each one, which
+  is how the old screen ended up explaining that freshness was fine twice.
+  """
+  @spec asset_problems(map()) :: [map()]
+  def asset_problems(assigns) do
+    [
+      compatibility_problem(assigns),
+      run_context_problem(assigns),
+      failed_run_problem(assigns),
+      stale_problem(assigns),
+      coverage_problem(assigns)
+    ]
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp compatibility_problem(%{compatibility: compatibility, asset_id: asset_id})
+       when is_map(compatibility) do
+    if field(compatibility, :blocks_writes?, false) do
+      %{
+        tone: :error,
+        title: "Runs are blocked",
+        detail: blocked_reason(field(compatibility, :status)),
+        action: "See what to do",
+        href: ~p"/assets/#{asset_id}/diagnostics"
+      }
+    end
+  end
+
+  defp compatibility_problem(_assigns), do: nil
+
+  defp blocked_reason(:rebuild_required),
+    do: "The table Favn writes to no longer matches what this asset produces."
+
+  defp blocked_reason(:unexpected_drift),
+    do: "The table changed outside Favn, so writing to it could lose data."
+
+  defp blocked_reason(:operator_decision),
+    do: "Favn cannot tell whether it owns this table, so it will not write to it."
+
+  defp blocked_reason(_status), do: "Favn cannot write to this asset's table right now."
+
+  defp run_context_problem(%{run_context_status: :ambiguous, asset_id: asset_id}) do
+    %{
+      tone: :error,
+      title: "More than one pipeline could run this",
+      detail: "Favn will not guess which one owns it. Choose one before running it.",
+      action: "Choose a pipeline",
+      href: ~p"/assets/#{asset_id}/diagnostics"
+    }
+  end
+
+  defp run_context_problem(_assigns), do: nil
+
+  defp failed_run_problem(%{runs: [%{status_tone: :error} = run | _rest], asset_id: asset_id}) do
+    %{
+      tone: :error,
+      title: "The last run failed",
+      detail: "Nothing new was written.",
+      action: "See what broke",
+      href: ~p"/assets/#{asset_id}/runs/#{run.id}"
+    }
+  end
+
+  defp failed_run_problem(_assigns), do: nil
+
+  defp stale_problem(%{freshness: %{state: :stale} = freshness}) do
+    %{
+      tone: :warning,
+      title: "The data is out of date",
+      detail: freshness[:explanation] || "This asset has not run recently enough.",
+      action: nil,
+      href: nil
+    }
+  end
+
+  defp stale_problem(_assigns), do: nil
+
+  defp coverage_problem(%{coverage: coverage, has_data_windows?: true, asset_id: asset_id})
+       when is_map(coverage) do
+    missing = field(coverage, :missing_count, 0)
+
+    if field(coverage, :status) == :incomplete and missing > 0 do
+      %{
+        tone: :warning,
+        title: "#{missing} #{(missing == 1 && "period has") || "periods have"} no data",
+        detail: "Some periods this asset should cover were never written.",
+        action: "See which ones",
+        href: ~p"/assets/#{asset_id}/coverage"
+      }
+    end
+  end
+
+  defp coverage_problem(_assigns), do: nil
 
   attr :compatibility, :map, required: true
   attr :rebuild_target_id, :string, default: nil
@@ -808,6 +915,184 @@ defmodule FavnView.Components.AssetDetailPage do
       </p>
     </div>
     """
+  end
+
+  @doc """
+  The asset in one screen: what state it is in, what is wrong, and what feeds it.
+
+  Facts first, then problems, then lineage, then the one action. Nothing here is
+  configuration — this page answers "is it working", and every panel that answered
+  "how is it set up" moved to Documentation or Diagnostics. A healthy asset shows no
+  problem panel at all rather than a green one saying nothing is wrong.
+  """
+  attr :freshness, :map, default: nil
+  attr :relation, :map, default: nil
+  attr :runs, :list, default: []
+  attr :upstream, :list, default: []
+  attr :downstream, :list, default: []
+  attr :title, :string, required: true
+  attr :asset_id, :string, required: true
+  attr :cadence_label, :string, default: nil
+  attr :problems, :list, default: []
+
+  def asset_overview(assigns) do
+    assigns = assign(assigns, :latest, List.first(assigns.runs))
+
+    ~H"""
+    <div class="mx-auto w-full max-w-[120rem] space-y-6" data-testid="asset-overview">
+      <.panel padding={:none} class="p-6 sm:p-8">
+        <.fact_list columns={3} facts={overview_facts(assigns)} />
+
+        <div class="mt-5 flex flex-wrap items-baseline gap-x-3 gap-y-1 border-t border-base-content/10 pt-4">
+          <span class="text-sm favn-text-subtle">Lands in</span>
+          <.mono value={relation_address(@relation)} class="min-w-0 flex-1" />
+
+          <.link
+            :if={@latest}
+            patch={~p"/assets/#{@asset_id}/runs/#{@latest.id}"}
+            class="shrink-0 text-sm underline decoration-dotted hover:text-primary"
+          >
+            Open the last run
+          </.link>
+        </div>
+      </.panel>
+
+      <.notice
+        :for={problem <- @problems}
+        tone={problem.tone}
+        class="mx-auto w-full"
+        data-testid="asset-overview-problem"
+      >
+        <p class="font-medium">{problem.title}</p>
+        <p class="mt-0.5">{problem.detail}</p>
+        <.link
+          :if={problem[:href]}
+          patch={problem.href}
+          class="mt-1 inline-flex text-sm underline decoration-dotted"
+        >
+          {problem.action}
+        </.link>
+      </.notice>
+
+      <.panel padding={:none} class="p-6 sm:p-8" data-testid="asset-lineage">
+        <h2 class="text-sm uppercase tracking-[0.18em] favn-text-subtle">Lineage</h2>
+
+        <div class="mt-4 grid gap-4 lg:grid-cols-[1fr_auto_1fr] lg:items-center">
+          <.dependency_column
+            label="Reads from"
+            assets={@upstream}
+            empty="Nothing. This asset reads its source directly."
+          />
+
+          <!-- Stacked below `lg`, so the flow reads downward there and rightward once
+          the three columns sit side by side. -->
+          <div class="flex flex-col items-center justify-center gap-2 lg:flex-row">
+            <.icon name="hero-arrow-down" class="size-4 favn-text-subtle lg:hidden" />
+            <.icon name="hero-arrow-right" class="hidden size-4 favn-text-subtle lg:block" />
+            <span class="rounded-field bg-primary/10 px-3 py-1.5 text-center text-sm font-medium text-primary">
+              {@title}
+            </span>
+            <.icon name="hero-arrow-down" class="size-4 favn-text-subtle lg:hidden" />
+            <.icon name="hero-arrow-right" class="hidden size-4 favn-text-subtle lg:block" />
+          </div>
+
+          <.dependency_column
+            label="Feeds"
+            assets={@downstream}
+            empty="Nothing yet. No other asset reads this one."
+          />
+        </div>
+      </.panel>
+    </div>
+    """
+  end
+
+  attr :label, :string, required: true
+  attr :assets, :list, required: true
+  attr :empty, :string, required: true
+
+  defp dependency_column(assigns) do
+    ~H"""
+    <div class="min-w-0">
+      <p class="text-sm favn-text-subtle">{@label}</p>
+
+      <p :if={@assets == []} class="mt-1 text-sm favn-text-muted">{@empty}</p>
+
+      <ul :if={@assets != []} class="mt-1 space-y-1">
+        <li :for={asset <- @assets} class="min-w-0">
+          <.link
+            :if={asset[:target_id]}
+            navigate={~p"/assets/#{AssetRoute.to_param(asset.target_id)}"}
+            class="block truncate font-medium hover:text-primary"
+            title={asset[:asset_ref]}
+          >
+            {asset[:name] || asset[:asset_ref]}
+          </.link>
+
+          <p
+            :if={is_nil(asset[:target_id])}
+            class="truncate favn-text-muted"
+            title={asset[:asset_ref]}
+          >
+            {asset[:name] || asset[:asset_ref]}
+            <span class="text-sm favn-text-subtle">· not in this deployment</span>
+          </p>
+        </li>
+      </ul>
+    </div>
+    """
+  end
+
+  defp overview_facts(assigns) do
+    [
+      %{
+        label: "Freshness",
+        value: freshness_state_label(assigns.freshness[:state]),
+        tone: freshness_tone(assigns.freshness[:state])
+      },
+      %{
+        label: "Last run",
+        value: last_run_value(assigns.latest),
+        tone: last_run_tone(assigns.latest)
+      },
+      %{label: "Runs", value: assigns.cadence_label || "On request"}
+    ]
+  end
+
+  defp last_run_value(nil), do: "Never"
+
+  defp last_run_value(run) do
+    [run[:day_label], run[:time_label]]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join(" ")
+    |> case do
+      "" -> run[:status_label] || "Unknown"
+      when_label -> "#{when_label} · #{run[:status_label]}"
+    end
+  end
+
+  defp last_run_tone(nil), do: :neutral
+  defp last_run_tone(run), do: run[:status_tone] || :neutral
+
+  defp freshness_tone(:fresh), do: :success
+  defp freshness_tone(:stale), do: :warning
+  defp freshness_tone(:always_run), do: :info
+  defp freshness_tone(_state), do: :neutral
+
+  # The address someone would type into a query, so the connection is left off: that
+  # names how Favn reaches the database, not where the table is inside it. The full
+  # four levels belong on Documentation. Declared levels are reported as they are and
+  # missing ones are never padded, so this cannot imply a depth the asset lacks.
+  defp relation_address(nil), do: "Not declared"
+
+  defp relation_address(relation) do
+    [:catalog, :schema, :name]
+    |> Enum.map(&field(relation, &1))
+    |> Enum.reject(&(&1 in [nil, ""]))
+    |> case do
+      [] -> "Not declared"
+      levels -> Enum.join(levels, ".")
+    end
   end
 
   attr :freshness, :map, default: nil

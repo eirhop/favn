@@ -64,6 +64,24 @@ defmodule FavnOrchestrator.Operator.Catalogue.Targets do
     }
   end
 
+  @doc """
+  Projects one manifest asset into the little that naming it takes.
+
+  `asset/1` resolves a whole target: its relation, its descriptor, its runtime
+  config. A dependency list needs a name and somewhere to link to, so it takes this
+  instead of paying for all of that once per neighbour.
+  """
+  @spec asset_reference(Asset.t()) :: map()
+  def asset_reference(%Asset{} = asset) do
+    asset_ref = ref_string(asset.ref)
+
+    %{
+      target_id: ManifestTarget.asset_id(asset.ref),
+      asset_ref: asset_ref,
+      name: asset_name(asset_ref, relation_dto(asset.relation))
+    }
+  end
+
   @doc "Returns sorted basic pipeline targets for a manifest version."
   @spec pipelines(Version.t()) :: [map()]
   def pipelines(%Version{} = version) do

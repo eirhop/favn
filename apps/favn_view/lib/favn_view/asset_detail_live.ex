@@ -505,6 +505,10 @@ defmodule FavnView.AssetDetailLive do
       active_mode={active_mode(@live_action)}
       asset_id={@asset_id}
       runs={@asset.runs}
+      relation={@asset.relation}
+      cadence_label={@asset.cadence_label}
+      upstream={@asset.upstream}
+      downstream={@asset.downstream}
       selected_run_id={@selected_run_id}
       selected_run={@selected_run}
       freshness={@asset.freshness}
@@ -698,7 +702,13 @@ defmodule FavnView.AssetDetailLive do
       freshness_timeline: freshness_timeline,
       data_coverage_timeline: data_coverage_timeline,
       timeline: timeline,
-      runs: Enum.map(Map.get(detail, :runs, []), &run_entry(&1, asset_id))
+      runs: Enum.map(Map.get(detail, :runs, []), &run_entry(&1, asset_id)),
+      relation: Map.get(detail, :relation),
+      cadence_label: cadence_label(Map.get(detail, :window)),
+      description: Map.get(detail, :description),
+      metadata: Map.get(detail, :metadata) || %{},
+      upstream: Map.get(detail, :upstream, []),
+      downstream: Map.get(detail, :downstream, [])
     }
   end
 
@@ -722,6 +732,34 @@ defmodule FavnView.AssetDetailLive do
 
   defp window_entry_label(%{label: label}) when is_binary(label), do: label
   defp window_entry_label(_window), do: nil
+
+  # The backend's cadence label reads "Monthly run anchors Europe/Oslo", which names
+  # Favn's scheduling vocabulary rather than answering how often the asset runs.
+  defp cadence_label(nil), do: "Whenever it is asked to"
+
+  defp cadence_label(window) do
+    case window_field(window, :kind) do
+      nil ->
+        "Whenever it is asked to"
+
+      kind ->
+        case window_field(window, :timezone) do
+          nil -> cadence_word(kind)
+          timezone -> "#{cadence_word(kind)} · #{timezone}"
+        end
+    end
+  end
+
+  defp cadence_word(kind) when kind in [:hour, "hour"], do: "Hourly"
+  defp cadence_word(kind) when kind in [:day, "day"], do: "Daily"
+  defp cadence_word(kind) when kind in [:month, "month"], do: "Monthly"
+  defp cadence_word(kind) when kind in [:year, "year"], do: "Yearly"
+  defp cadence_word(kind), do: kind |> to_string() |> String.capitalize()
+
+  defp window_field(window, key) when is_map(window),
+    do: Map.get(window, key) || Map.get(window, Atom.to_string(key))
+
+  defp window_field(_window, _key), do: nil
 
   defp duration_label(nil), do: nil
   defp duration_label(ms) when ms < 1_000, do: "#{ms}ms"
@@ -819,6 +857,17 @@ defmodule FavnView.AssetDetailLive do
       ...> })
       %{label: "Coverage incomplete", tone: :warning}
 
+  Stale data counts too. Freshness was missing from this list, so an asset whose
+  data had gone out of date was announced as "Healthy" directly above the panel
+  saying it was stale:
+
+      iex> FavnView.AssetDetailLive.headline_status(%{
+      ...>   status: :healthy,
+      ...>   coverage: %{status: :complete},
+      ...>   freshness: %{state: :stale}
+      ...> })
+      %{label: "Out of date", tone: :warning}
+
       iex> FavnView.AssetDetailLive.headline_status(%{
       ...>   status: :healthy,
       ...>   coverage: %{status: :complete}
@@ -834,14 +883,18 @@ defmodule FavnView.AssetDetailLive do
       Map.get(detail, :status) == :failed ->
         %{label: "Last run failed", tone: :error}
 
+      # Nothing can run at all, which outranks any amount of missing data.
+      blocks_writes?(detail) ->
+        %{label: "Runs blocked", tone: :error}
+
       Map.get(detail, :status) == :running ->
         %{label: "Running", tone: :warning}
 
+      freshness_state(detail) == :stale ->
+        %{label: "Out of date", tone: :warning}
+
       coverage_status(detail) == :incomplete ->
         %{label: "Coverage incomplete", tone: :warning}
-
-      blocks_writes?(detail) ->
-        %{label: "Writes blocked", tone: :warning}
 
       Map.get(detail, :status) == :healthy and coverage_status(detail) == :complete ->
         %{label: "Healthy", tone: :success}
@@ -882,6 +935,19 @@ defmodule FavnView.AssetDetailLive do
   @spec blocks_writes?(map()) :: boolean()
   def blocks_writes?(detail),
     do: get_in(detail, [:compatibility, Access.key(:blocks_writes?)]) == true
+
+  @doc """
+  The freshness verdict, or `:unknown` when the backend has none.
+
+      iex> FavnView.AssetDetailLive.freshness_state(%{freshness: %{state: :stale}})
+      :stale
+
+      iex> FavnView.AssetDetailLive.freshness_state(%{})
+      :unknown
+  """
+  @spec freshness_state(map()) :: atom()
+  def freshness_state(detail),
+    do: get_in(detail, [:freshness, Access.key(:state)]) || :unknown
 
   defp coverage_error_label(:coverage_selection_stale),
     do: "Coverage changed. Refresh the plan and review it again."

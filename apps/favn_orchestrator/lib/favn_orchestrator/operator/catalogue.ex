@@ -143,6 +143,12 @@ defmodule FavnOrchestrator.Operator.Catalogue do
           required(:run_label) => String.t() | nil
         }
 
+  @type asset_dependency :: %{
+          required(:name) => String.t() | nil,
+          required(:asset_ref) => String.t(),
+          required(:target_id) => String.t() | nil
+        }
+
   @type asset_run_window :: %{
           required(:kind) => :hour | :day | :month | :year,
           required(:value) => String.t(),
@@ -170,6 +176,10 @@ defmodule FavnOrchestrator.Operator.Catalogue do
           required(:module_path) => [String.t()],
           required(:relation) => map() | nil,
           required(:type) => String.t() | nil,
+          required(:description) => String.t() | nil,
+          required(:metadata) => map(),
+          required(:upstream) => [asset_dependency()],
+          required(:downstream) => [asset_dependency()],
           required(:status) => :healthy | :running | :failed | :unknown,
           required(:latest_run_id) => String.t() | nil,
           required(:latest_run_status) => atom() | nil,
@@ -843,8 +853,20 @@ defmodule FavnOrchestrator.Operator.Catalogue do
       run_context_selection.selected && AssetRunContext.descriptor(run_context_selection.selected)
 
     target
-    |> Map.take([:target_id, :label, :asset_ref, :name, :module_path, :relation, :type, :window])
+    |> Map.take([
+      :target_id,
+      :label,
+      :asset_ref,
+      :name,
+      :module_path,
+      :relation,
+      :type,
+      :window,
+      :metadata
+    ])
     |> Map.put(:manifest_version_id, version.manifest_version_id)
+    |> Map.put(:description, asset.description)
+    |> Map.merge(asset_dependencies(version, asset))
     |> Map.put(:canonical_asset_ref, asset.ref)
     |> Status.put(status)
     |> Map.put(:freshness, AssetFreshness.detail(asset, version, freshness_states, context_opts))
@@ -856,6 +878,47 @@ defmodule FavnOrchestrator.Operator.Catalogue do
     |> Map.put(:run_context_status, run_context_selection.status)
     |> Map.put(:can_run_asset?, run_context_selection.status != :ambiguous)
   end
+
+  # Both directions come out of the manifest this call already loaded, so neither
+  # costs a query. Upstream is the asset's own `depends_on`. Downstream has to be
+  # found by asking every other asset who it depends on, because nothing records the
+  # reverse edge.
+  defp asset_dependencies(%Version{} = version, asset) do
+    assets = List.wrap(version.manifest.assets)
+    ref_string = Targets.ref_string(asset.ref)
+    by_ref = Map.new(assets, &{Targets.ref_string(&1.ref), &1})
+
+    upstream =
+      asset.depends_on
+      |> List.wrap()
+      |> Enum.map(&Targets.ref_string/1)
+      |> Enum.uniq()
+      |> Enum.map(&dependency_entry(&1, Map.get(by_ref, &1)))
+      |> Enum.sort_by(& &1.name)
+
+    downstream =
+      assets
+      |> Enum.filter(&depends_on_ref?(&1, ref_string))
+      |> Enum.map(&Targets.asset_reference/1)
+      |> Enum.sort_by(& &1.name)
+
+    %{upstream: upstream, downstream: downstream}
+  end
+
+  defp depends_on_ref?(candidate, ref_string) do
+    candidate.depends_on
+    |> List.wrap()
+    |> Enum.any?(&(Targets.ref_string(&1) == ref_string))
+  end
+
+  # A declared dependency can name an asset this deployment does not carry — one
+  # dropped from the manifest, or one another team owns. It is reported by its ref
+  # with nowhere to link rather than silently left out of the list.
+  defp dependency_entry(ref_string, nil) do
+    %{name: Targets.asset_name(ref_string, nil), asset_ref: ref_string, target_id: nil}
+  end
+
+  defp dependency_entry(_ref_string, asset), do: Targets.asset_reference(asset)
 
   defp freshness_opts(opts, run_context_selection) do
     opts

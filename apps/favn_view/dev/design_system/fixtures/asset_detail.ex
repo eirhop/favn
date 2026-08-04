@@ -14,6 +14,7 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.AssetDetail do
   being demonstrated.
   """
 
+  alias FavnView.AssetDetailLive
   alias FavnView.Components.AssetDetailPage
   alias FavnView.Dev.DesignSystem.Fixtures.Timeline
 
@@ -61,6 +62,10 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.AssetDetail do
       active_mode: :overview,
       asset_id: "customer_orders_daily",
       runs: runs(),
+      relation: relation(),
+      cadence_label: "Monthly · Europe/Oslo",
+      upstream: upstream(),
+      downstream: downstream(),
       selected_run_id: nil,
       selected_run: nil,
       selected_window: nil,
@@ -68,6 +73,50 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.AssetDetail do
       command_resource: "asset:customer_orders_daily",
       run_config: Timeline.default_run_config()
     }
+  end
+
+  @doc """
+  A fully qualified four-level relation address.
+  """
+  @spec relation() :: map()
+  def relation do
+    %{
+      connection: "warehouse",
+      catalog: "mart",
+      schema: "customer",
+      name: "customer_orders_daily"
+    }
+  end
+
+  @doc """
+  Two assets read, one asset reading, and one dependency this deployment lost.
+  """
+  @spec upstream() :: [map()]
+  def upstream do
+    [
+      %{
+        name: "stg_customers",
+        asset_ref: "Elixir.MyApp.Staging.Customers:asset",
+        target_id: "asset:stg_customers"
+      },
+      %{
+        name: "stg_orders",
+        asset_ref: "Elixir.MyApp.Staging.Orders:asset",
+        target_id: "asset:stg_orders"
+      },
+      %{name: "legacy_pricing", asset_ref: "Elixir.MyApp.Legacy.Pricing:asset", target_id: nil}
+    ]
+  end
+
+  @spec downstream() :: [map()]
+  def downstream do
+    [
+      %{
+        name: "customer_summary",
+        asset_ref: "Elixir.MyApp.Marts.CustomerSummary:asset",
+        target_id: "asset:customer_summary"
+      }
+    ]
   end
 
   @doc """
@@ -149,9 +198,31 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.AssetDetail do
 
   @doc """
   `base_attrs/0` with the given keys replaced.
+
+  The headline is then derived the way production derives it, unless the caller set
+  one deliberately. A fixture that kept the base "Healthy" while overriding freshness
+  or coverage showed a state the product cannot produce — "Healthy" printed directly
+  above a panel saying the data was stale — and these examples exist to catch exactly
+  that.
   """
   @spec attrs(map()) :: map()
-  def attrs(overrides) when is_map(overrides), do: Map.merge(base_attrs(), overrides)
+  def attrs(overrides) when is_map(overrides) do
+    merged = Map.merge(base_attrs(), overrides)
+
+    if Map.has_key?(overrides, :status) do
+      merged
+    else
+      headline =
+        AssetDetailLive.headline_status(%{
+          status: :healthy,
+          coverage: merged.coverage,
+          compatibility: merged.compatibility,
+          freshness: merged.freshness
+        })
+
+      %{merged | status: headline.label, status_tone: headline.tone}
+    end
+  end
 
   @doc """
   `base_attrs/0` on the coverage page, with the given keys replaced.
