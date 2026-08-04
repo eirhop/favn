@@ -849,7 +849,7 @@ defmodule FavnView.UI.Data do
 
     <div
       :if={is_nil(@node[:navigate])}
-      class="favn-surface-control min-w-0 rounded-box border-dashed px-3 py-2"
+      class="favn-surface-control min-w-0 flex-1 rounded-box border-dashed px-3 py-2"
       title={@node[:title] || @node.label}
     >
       <div class="flex min-w-0 items-center gap-2">
