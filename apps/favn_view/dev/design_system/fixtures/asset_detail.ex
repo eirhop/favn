@@ -64,6 +64,8 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.AssetDetail do
       coverage_calendar: coverage_calendar([]),
       coverage_pagination: coverage_pagination(false),
       compatibility: compatibility(:ready),
+      manifest_version_id: "mv_9f2c41b8",
+      rebuild_target_id: "asset:customer_orders_daily",
       active_mode: :overview,
       asset_id: "customer_orders_daily",
       runs: runs(),
@@ -555,6 +557,16 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.AssetDetail do
       reason_code: "physical_fingerprint_mismatch",
       diff: %{physical_fingerprint: %{active: @hash_b, observed: @hash_e}},
       blocks_writes?: true
+    })
+  end
+
+  def compatibility(:unmanaged) do
+    Map.merge(compatibility(:ready), %{
+      reason_code: "no_managed_target",
+      active_generation_id: nil,
+      desired_descriptor_hash: nil,
+      physical_fingerprint: nil,
+      persisted?: false
     })
   end
 

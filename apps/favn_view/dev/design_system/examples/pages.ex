@@ -361,7 +361,18 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
         Example.attrs(
           :diagnostics,
           AssetDetail.diagnostics_attrs(%{}),
-          "The diagnostics page on a healthy target."
+          "A healthy target says so in a sentence and offers no rebuild, because " <>
+            "there is nothing to rebuild."
+        ),
+        Example.attrs(
+          :diagnostics_without_a_table,
+          AssetDetail.diagnostics_attrs(%{
+            compatibility: AssetDetail.compatibility(:unmanaged),
+            coverage: AssetDetail.coverage(:unknown),
+            coverage_policy: nil
+          }),
+          "An asset that manages no table of its own. No verdict, no badge, and no " <>
+            "rebuild — the page says why rather than showing an empty one."
         ),
         Example.attrs(
           :rebuild_available,

@@ -66,6 +66,7 @@ defmodule FavnView.Components.AssetDetailPage do
   attr :coverage_page_cursor, :string, default: nil
   attr :compatibility, :map, default: nil
   attr :rebuild_target_id, :string, default: nil
+  attr :manifest_version_id, :string, default: nil
   attr :assurance, :map, default: nil
 
   attr :asset_id, :string, required: true, doc: "route id; the rail patches relative to it"
@@ -143,6 +144,7 @@ defmodule FavnView.Components.AssetDetailPage do
         coverage_page_cursor={@coverage_page_cursor}
         compatibility={@compatibility}
         rebuild_target_id={@rebuild_target_id}
+        manifest_version_id={@manifest_version_id}
         assurance={@assurance}
         asset_id={@asset_id}
         runs={@runs}
@@ -224,6 +226,7 @@ defmodule FavnView.Components.AssetDetailPage do
   attr :coverage_page_cursor, :string, default: nil
   attr :compatibility, :map, default: nil
   attr :rebuild_target_id, :string, default: nil
+  attr :manifest_version_id, :string, default: nil
   attr :assurance, :map, default: nil
 
   attr :asset_id, :string, required: true, doc: "route id; the rail patches relative to it"
@@ -329,19 +332,14 @@ defmodule FavnView.Components.AssetDetailPage do
       documentation={@documentation}
     />
 
-    <div :if={@active_mode == :diagnostics} class="mx-auto w-full max-w-[120rem] space-y-6">
-      <.compatibility_panel
-        :if={@compatibility}
-        compatibility={@compatibility}
-        rebuild_target_id={@rebuild_target_id}
-      />
-
-      <.coverage_rules_panel
-        :if={@coverage_policy}
-        coverage={@coverage}
-        policy={@coverage_policy}
-      />
-    </div>
+    <.diagnostics_panel
+      :if={@active_mode == :diagnostics}
+      compatibility={@compatibility}
+      coverage={@coverage}
+      coverage_policy={@coverage_policy}
+      manifest_version_id={@manifest_version_id}
+      rebuild_target_id={@rebuild_target_id}
+    />
 
     <.coverage_panel
       :if={@active_mode == :coverage && @coverage}
@@ -492,106 +490,81 @@ defmodule FavnView.Components.AssetDetailPage do
 
   defp coverage_problem(_assigns), do: nil
 
-  attr :compatibility, :map, required: true
+  @doc """
+  Whether anything is wrong with the table this asset writes, and how to fix it.
+
+  The page leads with a verdict in one sentence, because the operator's question is
+  "can this asset run" and the screen used to answer it with four hashes and the
+  phrase "the desired descriptor and active physical target are compatible". The fix
+  is a button beside the verdict rather than a page away.
+
+  What changed is named in the asset's own terms — the period shape, the way it is
+  built, the table itself — and the identifiers those verdicts were computed from are
+  one disclosure down. They matter when someone is comparing two deployments by hand,
+  and never before that.
+  """
+  attr :compatibility, :map, default: nil
+  attr :coverage, :any, default: nil
+  attr :coverage_policy, :map, default: nil
+  attr :manifest_version_id, :string, default: nil
   attr :rebuild_target_id, :string, default: nil
 
-  def compatibility_panel(assigns) do
+  def diagnostics_panel(assigns) do
+    assigns = assign(assigns, :changes, compatibility_changes(assigns.compatibility))
+
     ~H"""
-    <.panel
-      :if={field(@compatibility, :persisted?, false)}
-      padding={:none}
-      class={[
-        "mx-auto mb-6 w-full max-w-[120rem] border p-5 sm:p-6",
-        compatibility_panel_class(field(@compatibility, :status))
-      ]}
-      data-testid="asset-compatibility-panel"
-    >
-      <div class="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
-        <div class="min-w-0">
-          <div class="flex flex-wrap items-center gap-2">
-            <p class="text-sm uppercase tracking-[0.18em] favn-text-subtle">
-              Target compatibility
-            </p>
+    <div class="mx-auto w-full max-w-3xl space-y-6" data-testid="asset-diagnostics">
+      <.panel
+        padding={:none}
+        class={["border p-6 sm:p-8", compatibility_panel_class(field(@compatibility, :status))]}
+        data-testid="asset-compatibility-panel"
+      >
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <h2 class="text-sm uppercase tracking-[0.18em] favn-text-subtle">
+            The table it writes
+          </h2>
 
-            <span class={compatibility_badge_class(field(@compatibility, :status))}>
-              {compatibility_status_label(field(@compatibility, :status))}
-            </span>
-          </div>
-
-          <p class="mt-2 text-sm favn-text-muted">
-            {compatibility_explanation(@compatibility)}
-          </p>
+          <span
+            :if={field(@compatibility, :persisted?, false)}
+            class={compatibility_badge_class(field(@compatibility, :status))}
+          >
+            {compatibility_status_label(field(@compatibility, :status))}
+          </span>
         </div>
 
-        <dl class="grid min-w-0 gap-x-6 gap-y-2 text-sm favn-text-muted sm:grid-cols-2 xl:max-w-3xl">
-          <div>
-            <dt class="favn-text-subtle">Active generation</dt>
+        <p class="mt-3 max-w-2xl">{compatibility_explanation(@compatibility)}</p>
 
-            <dd class="break-all font-mono">
-              {coverage_generation_label(field(@compatibility, :active_generation_id))}
-            </dd>
-          </div>
-
-          <div>
-            <dt class="favn-text-subtle">Reason</dt>
-
-            <dd>{humanize(field(@compatibility, :reason_code))}</dd>
-          </div>
-
-          <div>
-            <dt class="favn-text-subtle">Desired descriptor</dt>
-
-            <dd class="break-all font-mono">
-              {field(@compatibility, :desired_descriptor_hash) || "-"}
-            </dd>
-          </div>
-
-          <div>
-            <dt class="favn-text-subtle">Physical fingerprint</dt>
-
-            <dd class="break-all font-mono">
-              {field(@compatibility, :physical_fingerprint) || "-"}
-            </dd>
-          </div>
-        </dl>
-      </div>
-
-      <div
-        :if={compatibility_diff_entries(field(@compatibility, :diff, %{})) != []}
-        class="mt-4 rounded-box border border-base-content/10 bg-base-content/[0.03] p-4"
-      >
-        <p class="text-sm font-medium uppercase tracking-[0.14em] favn-text-subtle">
-          Compatibility differences
+        <p
+          :if={field(@compatibility, :blocks_writes?, false)}
+          class="mt-2 max-w-2xl font-medium text-error"
+          data-testid="asset-compatibility-blocked"
+        >
+          Nothing can run until this is resolved.
         </p>
 
-        <dl class="mt-2 grid gap-2 text-sm sm:grid-cols-2">
-          <div :for={{name, change} <- compatibility_diff_entries(field(@compatibility, :diff, %{}))}>
-            <dt class="favn-text-subtle">{humanize(name)}</dt>
+        <section :if={@changes != []} class="mt-6">
+          <h3 class="text-sm favn-text-subtle">What changed</h3>
 
-            <dd class="break-all font-mono favn-text-muted">
-              {compatibility_change_label(change)}
-            </dd>
-          </div>
-        </dl>
-      </div>
+          <dl class="mt-2 space-y-2 text-sm">
+            <div :for={change <- @changes} class="sm:flex sm:gap-4">
+              <dt class="shrink-0 font-medium sm:w-40">{change.label}</dt>
 
-      <div
-        :if={field(@compatibility, :blocks_writes?, false)}
-        class="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"
-        data-testid="asset-compatibility-blocked"
-      >
-        <p class="text-sm font-medium text-error">
-          Runs and backfills are blocked until this target is resolved.
-        </p>
+              <dd class="min-w-0 break-words favn-text-muted">{change.detail}</dd>
+            </div>
+          </dl>
+        </section>
 
-        <div :if={@rebuild_target_id} class="flex flex-wrap gap-2">
+        <div
+          :if={@rebuild_target_id && compatibility_actionable?(@compatibility)}
+          class="mt-6 flex flex-wrap gap-2 border-t border-base-content/10 pt-5"
+        >
           <.link
             :if={field(@compatibility, :reason_code) == "unmanaged_physical_relation"}
             navigate={~p"/recoveries?#{[target_id: @rebuild_target_id]}"}
             class="btn btn-warning btn-sm"
             data-testid="recover-asset-ownership"
           >
-            Recover ownership
+            Take ownership of this table
           </.link>
 
           <.link
@@ -599,13 +572,126 @@ defmodule FavnView.Components.AssetDetailPage do
             class="btn btn-outline btn-sm"
             data-testid="plan-asset-rebuild"
           >
-            Plan rebuild
+            Rebuild the table
           </.link>
         </div>
-      </div>
-    </.panel>
+      </.panel>
+
+      <.panel padding={:none} class="p-6 sm:p-8" data-testid="asset-diagnostics-detail">
+        <h2 class="text-sm uppercase tracking-[0.18em] favn-text-subtle">Under the hood</h2>
+
+        <p class="mt-2 text-sm favn-text-muted">
+          Worth opening when two deployments disagree, or when a rule above needs
+          checking against what the asset declared.
+        </p>
+
+        <details :if={@coverage_policy} class="mt-5 border-t border-base-content/10 pt-4">
+          <summary class="cursor-pointer font-medium">How periods are counted</summary>
+
+          <.fact_list class="mt-3" columns={2} facts={coverage_rule_facts(assigns)} />
+        </details>
+
+        <!-- Rows rather than a fact grid, because a fingerprint truncated to fit a
+        column is useless for the one thing this disclosure is for: telling two
+        deployments apart. -->
+        <details class="mt-4 border-t border-base-content/10 pt-4">
+          <summary class="cursor-pointer font-medium">Identifiers Favn matched on</summary>
+
+          <div class="mt-2 divide-y divide-base-content/5">
+            <.field_row :for={fact <- identity_facts(assigns)} label={fact.label}>
+              <.mono :if={fact[:mono]} value={fact.value} />
+              <span :if={!fact[:mono]}>{fact.value}</span>
+            </.field_row>
+          </div>
+        </details>
+      </.panel>
+    </div>
     """
   end
+
+  # A verdict with no action is not actionable. `:ready` and `:uninitialized` both
+  # describe a table nobody has to touch, and offering a rebuild there invites one.
+  defp compatibility_actionable?(compatibility) do
+    field(compatibility, :persisted?, false) and
+      field(compatibility, :status) not in [:ready, :uninitialized, nil]
+  end
+
+  defp coverage_rule_facts(assigns) do
+    [
+      %{
+        label: "Periods are in",
+        value: field(assigns.coverage_policy, :timezone) || "Not declared"
+      },
+      %{label: "Counted from", value: coverage_start_label(assigns.coverage_policy)},
+      %{
+        label: "A period counts once",
+        value: availability_label(field(assigns.coverage_policy, :availability_delay_seconds, 0))
+      },
+      %{
+        label: "Expected through",
+        value: coverage_window_label(field(assigns.coverage, :last_expected_window))
+      }
+    ]
+  end
+
+  defp identity_facts(assigns) do
+    [
+      %{
+        label: "Manifest version",
+        value: assigns.manifest_version_id || "Unknown",
+        mono: true
+      },
+      %{
+        label: "Active generation",
+        value: coverage_generation_label(field(assigns.compatibility, :active_generation_id)),
+        mono: true
+      },
+      %{
+        label: "Table Favn wants",
+        value: field(assigns.compatibility, :desired_descriptor_hash) || "Not recorded",
+        mono: true
+      },
+      %{
+        label: "Table Favn found",
+        value: field(assigns.compatibility, :physical_fingerprint) || "Not recorded",
+        mono: true
+      },
+      %{
+        label: "Coverage last checked",
+        value: coverage_time(field(assigns.coverage, :evaluated_at))
+      },
+      %{label: "Verdict code", value: humanize(field(assigns.compatibility, :reason_code))}
+    ]
+  end
+
+  # A diff is keyed by what Favn compares, which is not what an operator calls it, and
+  # a `descriptor` key holds a list of per-field changes rather than one change. Both
+  # flatten into rows named after the thing that moved.
+  defp compatibility_changes(compatibility) do
+    compatibility
+    |> field(:diff, %{})
+    |> compatibility_diff_entries()
+    |> Enum.flat_map(&compatibility_change_rows/1)
+    |> Enum.take(50)
+  end
+
+  defp compatibility_change_rows({_name, changes}) when is_list(changes) do
+    Enum.map(changes, fn change ->
+      %{label: change_label(field(change, :field)), detail: compatibility_change_label(change)}
+    end)
+  end
+
+  defp compatibility_change_rows({name, change}) do
+    [%{label: change_label(name), detail: compatibility_change_label(change)}]
+  end
+
+  defp change_label(:window_identity), do: "Period shape"
+  defp change_label(:execution_package_hash), do: "How it is built"
+  defp change_label(:contract_fingerprint), do: "Promised columns"
+  defp change_label(:physical_fingerprint), do: "The table itself"
+  defp change_label(:relation), do: "Where it lands"
+  defp change_label(:write_mode), do: "How it writes"
+  defp change_label(name), do: humanize(name)
 
   @doc """
   Which periods hold data, and a way to fill the ones that do not.
@@ -835,46 +921,6 @@ defmodule FavnView.Components.AssetDetailPage do
 
   defp coverage_more_sentence(pagination) do
     if field(pagination, :has_more, false), do: "Later periods are on the next page."
-  end
-
-  @doc """
-  How Favn decided which periods this asset owes data for.
-
-  Configuration rather than data, which is why it is here and not on the coverage
-  page: an operator reading the calendar wants to know what is missing, and an
-  operator reading this wants to know why the calendar starts where it does.
-  """
-  attr :coverage, :any, default: nil
-  attr :policy, :map, required: true
-
-  def coverage_rules_panel(assigns) do
-    ~H"""
-    <.panel padding={:none} class="p-6 sm:p-8" data-testid="asset-coverage-rules">
-      <h2 class="text-sm uppercase tracking-[0.18em] favn-text-subtle">Coverage rules</h2>
-
-      <.fact_list
-        class="mt-4"
-        columns={2}
-        facts={[
-          %{label: "Periods are in", value: field(@policy, :timezone) || "Not declared"},
-          %{label: "Counted from", value: coverage_start_label(@policy)},
-          %{
-            label: "A period counts once",
-            value: availability_label(field(@policy, :availability_delay_seconds, 0))
-          },
-          %{
-            label: "Expected through",
-            value: coverage_window_label(field(@coverage, :last_expected_window))
-          },
-          %{label: "Last checked", value: coverage_time(field(@coverage, :evaluated_at))},
-          %{
-            label: "Evidence generation",
-            value: coverage_generation_label(field(@coverage, :active_target_generation_id))
-          }
-        ]}
-      />
-    </.panel>
-    """
   end
 
   # Coverage starts at the later of what the author declared and when the target was
@@ -2397,8 +2443,10 @@ defmodule FavnView.Components.AssetDetailPage do
     end
   end
 
+  # An absent generation means the table was never built, which is a state with its own
+  # meaning rather than a value that failed to load.
   defp coverage_generation_label(value) when is_binary(value), do: value
-  defp coverage_generation_label(_value), do: "No persisted generation"
+  defp coverage_generation_label(_value), do: "Never built"
 
   defp compatibility_panel_class(status)
        when status in [:rebuild_required, :unexpected_drift, :operator_decision],
@@ -2425,17 +2473,47 @@ defmodule FavnView.Components.AssetDetailPage do
   defp compatibility_status_label(:operator_decision), do: "Operator decision"
   defp compatibility_status_label(_status), do: "Unknown"
 
+  # Plain sentences, because the operator's question is whether the asset can run. The
+  # words these replaced — "the desired descriptor and active physical target are
+  # compatible" — named Favn's internals and answered a question nobody asked.
   defp compatibility_explanation(compatibility) do
-    case field(compatibility, :status) do
-      :ready -> "The desired descriptor and active physical target are compatible."
-      :uninitialized -> "The first successful materialization will initialize this target."
-      :rebuild_available -> "Transformation semantics changed; ordinary writes remain allowed."
-      :rebuild_required -> "The desired target is incompatible with the active generation."
-      :unexpected_drift -> "The physical target changed outside the recorded generation."
-      :operator_decision -> "Favn cannot prove target ownership or safe compatibility."
-      _other -> "Target compatibility is unavailable."
+    cond do
+      !field(compatibility, :persisted?, false) ->
+        "This asset does not manage a table of its own, so there is nothing to check here."
+
+      true ->
+        compatibility_verdict(field(compatibility, :status))
     end
   end
+
+  defp compatibility_verdict(:ready),
+    do: "The table Favn wants is the table it has. Nothing needs doing."
+
+  defp compatibility_verdict(:uninitialized),
+    do: "This table does not exist yet. The first successful run creates it."
+
+  defp compatibility_verdict(:rebuild_available),
+    do:
+      "The way this asset builds its table changed. Runs still work, and rebuilding " <>
+        "brings the existing rows in line with the new definition."
+
+  defp compatibility_verdict(:rebuild_required),
+    do:
+      "The table Favn wants no longer fits the one it has, so writing to it would " <>
+        "corrupt what is there. Rebuilding replaces it."
+
+  defp compatibility_verdict(:unexpected_drift),
+    do:
+      "Something changed this table outside Favn. Favn will not write over a change " <>
+        "it cannot account for."
+
+  defp compatibility_verdict(:operator_decision),
+    do:
+      "Favn cannot tell whether it owns this table, so it will not write to it. " <>
+        "Taking ownership says the table is Favn's to manage."
+
+  defp compatibility_verdict(_status),
+    do: "Favn could not read the state of this table just now."
 
   defp compatibility_diff_entries(diff) when is_map(diff) do
     diff
@@ -2450,6 +2528,9 @@ defmodule FavnView.Components.AssetDetailPage do
     desired = field(change, :desired, field(change, :observed))
 
     cond do
+      is_map(previous) and is_map(desired) ->
+        changed_side_by_side(previous, desired)
+
       !is_nil(previous) or !is_nil(desired) ->
         "#{bounded_value(previous)} → #{bounded_value(desired)}"
 
@@ -2460,9 +2541,42 @@ defmodule FavnView.Components.AssetDetailPage do
 
   defp compatibility_change_label(change), do: bounded_value(change)
 
+  # Only the keys that moved. Both sides of a window identity carry the timezone even
+  # when the timezone is not what changed, and printing it twice buried the one field
+  # that did — the row read `%{kind: :day, timezone: "Europe/Oslo"} → %{kind: :month,
+  # timezone: "Europe/Oslo"}` where it should read `day → month`.
+  defp changed_side_by_side(previous, desired) do
+    keys =
+      (Map.keys(previous) ++ Map.keys(desired))
+      |> Enum.uniq()
+      |> Enum.filter(&(Map.get(previous, &1) != Map.get(desired, &1)))
+      |> Enum.sort_by(&to_string/1)
+
+    case keys do
+      [] -> "unchanged"
+      keys -> "#{side_values(previous, keys)} → #{side_values(desired, keys)}"
+    end
+  end
+
+  defp side_values(side, keys),
+    do: Enum.map_join(keys, ", ", &bounded_value(Map.get(side, &1)))
+
   defp bounded_value(nil), do: "-"
-  defp bounded_value(value) when is_binary(value), do: String.slice(value, 0, 200)
+
+  # Long enough to be a hash, and the whole value is in the identifiers disclosure, so
+  # a prefix is all a difference needs to be visible.
+  defp bounded_value(value) when is_binary(value) and byte_size(value) > 24,
+    do: String.slice(value, 0, 12) <> "…"
+
+  defp bounded_value(value) when is_binary(value), do: value
   defp bounded_value(value) when is_atom(value) or is_number(value), do: to_string(value)
+
+  defp bounded_value(value) when is_map(value),
+    do:
+      Enum.map_join(Enum.sort_by(Map.to_list(value), &to_string(elem(&1, 0))), ", ", fn
+        {key, inner} -> "#{key}: #{bounded_value(inner)}"
+      end)
+
   defp bounded_value(value), do: inspect(value, limit: 10, printable_limit: 200)
 
   defp availability_label(0), do: "Available at the window boundary"

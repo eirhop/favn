@@ -553,6 +553,7 @@ defmodule FavnView.AssetDetailLive do
       coverage_page_cursor={@coverage_page_cursor}
       compatibility={@asset.compatibility}
       rebuild_target_id={@asset.target_id}
+      manifest_version_id={@asset.manifest_version_id}
       assurance={@asset.assurance}
       coverage_plan={@coverage_plan}
       coverage_action_error={@coverage_action_error}

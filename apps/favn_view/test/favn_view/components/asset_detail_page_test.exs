@@ -101,9 +101,11 @@ defmodule FavnView.Components.AssetDetailPageTest do
     assert html =~ "run_context=pipeline%3Ascheduled"
   end
 
-  test "renders structured target compatibility and a blocking explanation" do
+  test "names what changed in the asset's own terms and offers the fix beside it" do
     html =
-      render_component(&AssetDetailPage.compatibility_panel/1,
+      render_component(&AssetDetailPage.diagnostics_panel/1,
+        rebuild_target_id: "asset:orders",
+        manifest_version_id: "mv_0001",
         compatibility: %{
           status: :rebuild_required,
           reason_code: "incompatible_descriptor",
@@ -120,21 +122,34 @@ defmodule FavnView.Components.AssetDetailPageTest do
         }
       )
 
-    assert html =~ ~s(data-testid="asset-compatibility-panel")
+    assert html =~ ~s(data-testid="asset-diagnostics")
     assert html =~ "Rebuild required"
-    assert html =~ "generation-orders-v1"
-    assert html =~ "Compatibility differences"
+    assert html =~ "no longer fits the one it has"
     assert html =~ ~s(data-testid="asset-compatibility-blocked")
-    assert html =~ "Runs and backfills are blocked"
+    assert html =~ "Nothing can run until this is resolved."
+
+    # A `descriptor` diff holds a list of per-field changes, and the field name is
+    # Favn's rather than the operator's. Both are translated.
+    assert html =~ "Period shape"
+    refute html =~ "window_identity"
+
+    assert html =~ ~s(data-testid="plan-asset-rebuild")
+
+    # The identifiers the verdict was computed from are still reachable, one
+    # disclosure down, because they are what someone comparing two deployments needs.
+    assert html =~ "Identifiers Favn matched on"
+    assert html =~ "generation-orders-v1"
+    assert html =~ "mv_0001"
   end
 
-  test "keeps ordinary writes available when only a rebuild is optional" do
+  test "an optional rebuild says writes still work and still offers one" do
     html =
-      render_component(&AssetDetailPage.compatibility_panel/1,
+      render_component(&AssetDetailPage.diagnostics_panel/1,
+        rebuild_target_id: "asset:orders",
         compatibility: %{
           status: :rebuild_available,
           reason_code: "execution_package_changed",
-          diff: %{},
+          diff: %{execution_package_hash: %{active: "aaaa", desired: "bbbb"}},
           active_generation_id: "generation-orders-v1",
           persisted?: true,
           blocks_writes?: false
@@ -142,8 +157,66 @@ defmodule FavnView.Components.AssetDetailPageTest do
       )
 
     assert html =~ "Rebuild available"
-    assert html =~ "ordinary writes remain allowed"
+    assert html =~ "Runs still work"
+    assert html =~ "How it is built"
+    assert html =~ ~s(data-testid="plan-asset-rebuild")
     refute html =~ ~s(data-testid="asset-compatibility-blocked")
+  end
+
+  test "a healthy target offers no rebuild, because there is nothing to rebuild" do
+    html =
+      render_component(&AssetDetailPage.diagnostics_panel/1,
+        rebuild_target_id: "asset:orders",
+        compatibility: %{
+          status: :ready,
+          reason_code: "compatible",
+          diff: %{},
+          active_generation_id: "generation-orders-v1",
+          persisted?: true,
+          blocks_writes?: false
+        }
+      )
+
+    assert html =~ "Nothing needs doing."
+    refute html =~ ~s(data-testid="plan-asset-rebuild")
+    refute html =~ "What changed"
+  end
+
+  test "an asset with no table of its own says so instead of showing a verdict" do
+    html =
+      render_component(&AssetDetailPage.diagnostics_panel/1,
+        rebuild_target_id: "asset:orders",
+        compatibility: %{status: :ready, reason_code: "compatible", diff: %{}, persisted?: false}
+      )
+
+    assert html =~ "does not manage a table of its own"
+    refute html =~ "Compatible"
+    refute html =~ ~s(data-testid="plan-asset-rebuild")
+  end
+
+  test "the coverage rules explain where the calendar's range came from" do
+    html =
+      render_component(&AssetDetailPage.diagnostics_panel/1,
+        compatibility: %{status: :ready, reason_code: "compatible", diff: %{}, persisted?: true},
+        coverage: %{
+          evaluated_at: ~U[2026-07-22 12:00:00Z],
+          last_expected_window: %{start_at: ~U[2026-07-21 00:00:00Z]}
+        },
+        coverage_policy: %{
+          timezone: "Europe/Oslo",
+          declared_from: ~U[2026-06-01 00:00:00Z],
+          effective_from: ~U[2026-07-01 00:00:00Z],
+          availability_delay_seconds: 21_600
+        }
+      )
+
+    assert html =~ "How periods are counted"
+    assert html =~ "Europe/Oslo"
+    assert html =~ "Expected 6 hours after the window closes"
+
+    # Coverage starts at the later of the declared date and the first build, so the
+    # two are only told apart when they disagree, and here they do.
+    assert html =~ "declared Jun 1, 2026"
   end
 
   test "contract claims and hand-written checks share one table" do
