@@ -56,6 +56,7 @@ defmodule FavnView.Components.AssetDetailPage do
   attr :runs, :list, default: [], doc: "newest first; see `FavnView.UI.Data.run_timeline/1`"
   attr :relation, :map, default: nil, doc: "the four address levels the asset declares"
   attr :cadence_label, :string, default: nil, doc: "how often it runs, in plain words"
+  attr :type, :string, default: nil, doc: "`\"sql\"`, `\"elixir\"`, or `\"source\"`"
   attr :upstream, :list, default: [], doc: "assets this one reads"
   attr :downstream, :list, default: [], doc: "assets that read this one"
   attr :selected_run_id, :string, default: nil
@@ -127,6 +128,7 @@ defmodule FavnView.Components.AssetDetailPage do
         runs={@runs}
         relation={@relation}
         cadence_label={@cadence_label}
+        type={@type}
         upstream={@upstream}
         downstream={@downstream}
         selected_run_id={@selected_run_id}
@@ -192,6 +194,7 @@ defmodule FavnView.Components.AssetDetailPage do
   attr :runs, :list, default: [], doc: "newest first; see `FavnView.UI.Data.run_timeline/1`"
   attr :relation, :map, default: nil, doc: "the four address levels the asset declares"
   attr :cadence_label, :string, default: nil, doc: "how often it runs, in plain words"
+  attr :type, :string, default: nil, doc: "`\"sql\"`, `\"elixir\"`, or `\"source\"`"
   attr :upstream, :list, default: [], doc: "assets this one reads"
   attr :downstream, :list, default: [], doc: "assets that read this one"
   attr :selected_run_id, :string, default: nil
@@ -225,6 +228,7 @@ defmodule FavnView.Components.AssetDetailPage do
       upstream={@upstream}
       downstream={@downstream}
       cadence_label={@cadence_label}
+      type={@type}
       problems={asset_problems(assigns)}
     />
 
@@ -932,6 +936,7 @@ defmodule FavnView.Components.AssetDetailPage do
   attr :downstream, :list, default: []
   attr :title, :string, required: true
   attr :asset_id, :string, required: true
+  attr :type, :string, default: nil
   attr :cadence_label, :string, default: nil
   attr :problems, :list, default: []
 
@@ -977,71 +982,43 @@ defmodule FavnView.Components.AssetDetailPage do
       <.panel padding={:none} class="p-6 sm:p-8" data-testid="asset-lineage">
         <h2 class="text-sm uppercase tracking-[0.18em] favn-text-subtle">Lineage</h2>
 
-        <div class="mt-4 grid gap-4 lg:grid-cols-[1fr_auto_1fr] lg:items-center">
-          <.dependency_column
-            label="Reads from"
-            assets={@upstream}
-            empty="Nothing. This asset reads its source directly."
-          />
-
-          <!-- Stacked below `lg`, so the flow reads downward there and rightward once
-          the three columns sit side by side. -->
-          <div class="flex flex-col items-center justify-center gap-2 lg:flex-row">
-            <.icon name="hero-arrow-down" class="size-4 favn-text-subtle lg:hidden" />
-            <.icon name="hero-arrow-right" class="hidden size-4 favn-text-subtle lg:block" />
-            <span class="rounded-field bg-primary/10 px-3 py-1.5 text-center text-sm font-medium text-primary">
-              {@title}
-            </span>
-            <.icon name="hero-arrow-down" class="size-4 favn-text-subtle lg:hidden" />
-            <.icon name="hero-arrow-right" class="hidden size-4 favn-text-subtle lg:block" />
-          </div>
-
-          <.dependency_column
-            label="Feeds"
-            assets={@downstream}
-            empty="Nothing yet. No other asset reads this one."
-          />
-        </div>
+        <.lineage_graph
+          class="mt-4"
+          centre={%{label: @title, icon: asset_type_icon(@type)}}
+          inputs={Enum.map(@upstream, &lineage_node/1)}
+          outputs={Enum.map(@downstream, &lineage_node/1)}
+          inputs_empty="Nothing. This asset reads its source directly."
+          outputs_empty="Nothing yet. No other asset reads this one."
+        />
       </.panel>
     </div>
     """
   end
 
-  attr :label, :string, required: true
-  attr :assets, :list, required: true
-  attr :empty, :string, required: true
-
-  defp dependency_column(assigns) do
-    ~H"""
-    <div class="min-w-0">
-      <p class="text-sm favn-text-subtle">{@label}</p>
-
-      <p :if={@assets == []} class="mt-1 text-sm favn-text-muted">{@empty}</p>
-
-      <ul :if={@assets != []} class="mt-1 space-y-1">
-        <li :for={asset <- @assets} class="min-w-0">
-          <.link
-            :if={asset[:target_id]}
-            navigate={~p"/assets/#{AssetRoute.to_param(asset.target_id)}"}
-            class="block truncate font-medium hover:text-primary"
-            title={asset[:asset_ref]}
-          >
-            {asset[:name] || asset[:asset_ref]}
-          </.link>
-
-          <p
-            :if={is_nil(asset[:target_id])}
-            class="truncate favn-text-muted"
-            title={asset[:asset_ref]}
-          >
-            {asset[:name] || asset[:asset_ref]}
-            <span class="text-sm favn-text-subtle">· not in this deployment</span>
-          </p>
-        </li>
-      </ul>
-    </div>
-    """
+  # A dependency this deployment does not carry gets no link and says so, rather than
+  # being dropped: a silently shorter list reads as a complete one.
+  defp lineage_node(%{target_id: target_id} = asset) when is_binary(target_id) do
+    %{
+      label: asset[:name] || asset[:asset_ref],
+      title: asset[:asset_ref],
+      icon: asset_type_icon(asset[:type]),
+      navigate: ~p"/assets/#{AssetRoute.to_param(target_id)}"
+    }
   end
+
+  defp lineage_node(asset) do
+    %{
+      label: asset[:name] || asset[:asset_ref],
+      title: asset[:asset_ref],
+      icon: asset_type_icon(asset[:type]),
+      note: "not in this deployment"
+    }
+  end
+
+  defp asset_type_icon(type) when type in ["sql", :sql], do: "hero-table-cells"
+  defp asset_type_icon(type) when type in ["elixir", :elixir], do: "hero-code-bracket"
+  defp asset_type_icon(type) when type in ["source", :source], do: "hero-cloud-arrow-down"
+  defp asset_type_icon(_type), do: "hero-cube"
 
   defp overview_facts(assigns) do
     [

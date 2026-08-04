@@ -361,6 +361,64 @@ defmodule FavnView.Dev.DesignSystem.Examples.Elements do
       "data/mono" => [
         Example.attrs(:identifier, %{value: "run_2026_06_12"}, "Identifiers are monospaced.")
       ],
+      "data/lineage_graph" => [
+        Example.attrs(
+          :fan_in,
+          %{
+            centre: %{label: "customer_orders_daily", icon: "hero-table-cells"},
+            inputs: lineage_nodes(3),
+            outputs: lineage_nodes(1)
+          },
+          "Three inputs fan into a shared bus. The edges are drawn, not implied."
+        ),
+        Example.attrs(
+          :one_to_one,
+          %{
+            centre: %{label: "customer_orders_daily", icon: "hero-table-cells"},
+            inputs: lineage_nodes(1),
+            outputs: lineage_nodes(1)
+          },
+          "A single input on each side is one straight line rather than an elbow."
+        ),
+        Example.attrs(
+          :fan_out,
+          %{
+            centre: %{label: "stg_orders", icon: "hero-cloud-arrow-down"},
+            inputs: [],
+            outputs: lineage_nodes(4),
+            inputs_empty: "Nothing. This asset reads its source directly."
+          },
+          "A source asset: nothing upstream, and four assets reading it."
+        ),
+        Example.attrs(
+          :isolated,
+          %{
+            centre: %{label: "scratch_table", icon: "hero-table-cells"},
+            inputs: [],
+            outputs: [],
+            inputs_empty: "Nothing. This asset reads its source directly.",
+            outputs_empty: "Nothing yet. No other asset reads this one."
+          },
+          "Both sides empty. The node still reads as a node rather than a bare label."
+        ),
+        Example.attrs(
+          :undeployed_input,
+          %{
+            centre: %{label: "customer_orders_daily", icon: "hero-table-cells"},
+            inputs: [
+              %{label: "stg_orders", icon: "hero-table-cells", navigate: "/assets/stg_orders"},
+              %{
+                label: "legacy_pricing_with_a_long_name",
+                icon: "hero-cube",
+                note: "not in this deployment"
+              }
+            ],
+            outputs: lineage_nodes(1)
+          },
+          "A declared input this deployment does not carry: dashed, unlinked, and " <>
+            "named, because a silently shorter list reads as a complete one."
+        )
+      ],
       "data/run_timeline" => [
         Example.attrs(
           :selected,
@@ -391,6 +449,15 @@ defmodule FavnView.Dev.DesignSystem.Examples.Elements do
         )
       ]
     }
+  end
+
+  defp lineage_nodes(count) do
+    names = ~w(stg_orders stg_customers stg_products dim_calendar)
+
+    Enum.map(0..(count - 1), fn index ->
+      name = Enum.at(names, rem(index, length(names)))
+      %{label: name, icon: "hero-table-cells", navigate: "/assets/#{name}"}
+    end)
   end
 
   defp run_timeline_runs do

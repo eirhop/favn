@@ -78,7 +78,8 @@ defmodule FavnOrchestrator.Operator.Catalogue.Targets do
     %{
       target_id: ManifestTarget.asset_id(asset.ref),
       asset_ref: asset_ref,
-      name: asset_name(asset_ref, relation_dto(asset.relation))
+      name: asset_name(asset_ref, relation_dto(asset.relation)),
+      type: atom_name(asset.type)
     }
   end
 

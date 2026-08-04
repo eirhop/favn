@@ -146,7 +146,8 @@ defmodule FavnOrchestrator.Operator.Catalogue do
   @type asset_dependency :: %{
           required(:name) => String.t() | nil,
           required(:asset_ref) => String.t(),
-          required(:target_id) => String.t() | nil
+          required(:target_id) => String.t() | nil,
+          required(:type) => String.t() | nil
         }
 
   @type asset_run_window :: %{
@@ -915,7 +916,7 @@ defmodule FavnOrchestrator.Operator.Catalogue do
   # dropped from the manifest, or one another team owns. It is reported by its ref
   # with nowhere to link rather than silently left out of the list.
   defp dependency_entry(ref_string, nil) do
-    %{name: Targets.asset_name(ref_string, nil), asset_ref: ref_string, target_id: nil}
+    %{name: Targets.asset_name(ref_string, nil), asset_ref: ref_string, target_id: nil, type: nil}
   end
 
   defp dependency_entry(_ref_string, asset), do: Targets.asset_reference(asset)

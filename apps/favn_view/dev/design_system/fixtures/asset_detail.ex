@@ -63,6 +63,7 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.AssetDetail do
       asset_id: "customer_orders_daily",
       runs: runs(),
       relation: relation(),
+      type: "sql",
       cadence_label: "Monthly · Europe/Oslo",
       upstream: upstream(),
       downstream: downstream(),
@@ -95,16 +96,23 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.AssetDetail do
   def upstream do
     [
       %{
+        type: "source",
         name: "stg_customers",
         asset_ref: "Elixir.MyApp.Staging.Customers:asset",
         target_id: "asset:stg_customers"
       },
       %{
+        type: "sql",
         name: "stg_orders",
         asset_ref: "Elixir.MyApp.Staging.Orders:asset",
         target_id: "asset:stg_orders"
       },
-      %{name: "legacy_pricing", asset_ref: "Elixir.MyApp.Legacy.Pricing:asset", target_id: nil}
+      %{
+        type: nil,
+        name: "legacy_pricing",
+        asset_ref: "Elixir.MyApp.Legacy.Pricing:asset",
+        target_id: nil
+      }
     ]
   end
 
@@ -112,6 +120,7 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.AssetDetail do
   def downstream do
     [
       %{
+        type: "sql",
         name: "customer_summary",
         asset_ref: "Elixir.MyApp.Marts.CustomerSummary:asset",
         target_id: "asset:customer_summary"

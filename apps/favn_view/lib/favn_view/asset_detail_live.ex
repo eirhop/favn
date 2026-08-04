@@ -507,6 +507,7 @@ defmodule FavnView.AssetDetailLive do
       runs={@asset.runs}
       relation={@asset.relation}
       cadence_label={@asset.cadence_label}
+      type={@asset.type}
       upstream={@asset.upstream}
       downstream={@asset.downstream}
       selected_run_id={@selected_run_id}
@@ -704,6 +705,7 @@ defmodule FavnView.AssetDetailLive do
       timeline: timeline,
       runs: Enum.map(Map.get(detail, :runs, []), &run_entry(&1, asset_id)),
       relation: Map.get(detail, :relation),
+      type: Map.get(detail, :type),
       cadence_label: cadence_label(Map.get(detail, :window)),
       description: Map.get(detail, :description),
       metadata: Map.get(detail, :metadata) || %{},
