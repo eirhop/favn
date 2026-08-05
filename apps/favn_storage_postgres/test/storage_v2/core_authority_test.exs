@@ -1846,9 +1846,16 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     evidence_generation_id = evidence_generation_id(fixture)
     unbound_generation_id = "ag_" <> String.duplicate("b", 64)
 
-    window_key =
+    data_window_key =
       Favn.Window.Key.new!(:day, ~U[2026-07-20 00:00:00Z], "Etc/UTC")
-      |> Favn.Freshness.Key.window!()
+
+    freshness_key =
+      Favn.Freshness.Key.window_refresh!(
+        data_window_key,
+        :day,
+        "Etc/UTC",
+        ~D[2026-07-21]
+      )
 
     claim_key = "generation-window:#{run.id}"
 
@@ -1861,7 +1868,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
       target_id: fixture.target_id,
       target_generation_id: nil,
       evidence_generation_id: unbound_generation_id,
-      partition_key: window_key,
+      partition_key: freshness_key,
       run_id: run.id,
       owner_id: "generation-window-worker",
       lease_duration_ms: 30_000,
@@ -1925,6 +1932,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
 
     assert state.evidence_generation_id == evidence_generation_id
     assert state.materialization_id == materialization_id
+    assert state.window_key == Favn.Freshness.Key.window!(data_window_key)
 
     assert {:ok, []} =
              OperatorReadStore.get_asset_window_states(%GetAssetWindowStates{

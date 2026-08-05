@@ -5,6 +5,7 @@ defmodule FavnView.Components.AssetDetailPageTest do
 
   alias FavnView.Components.AssetDetailPage
   alias FavnView.AssetDetailLive
+  alias FavnView.AssetRunConfig
 
   # A disabled button is a hint, not a guard: the event can still arrive from a forged
   # message, so both events check the permission themselves rather than trusting that
@@ -55,6 +56,24 @@ defmodule FavnView.Components.AssetDetailPageTest do
 
     assert {:noreply, ^socket} =
              AssetDetailLive.handle_event("submit_missing_coverage", %{}, socket)
+  end
+
+  test "keeps the advanced run configuration open after a form change" do
+    socket = %Phoenix.LiveView.Socket{
+      assigns: %{
+        __changed__: %{},
+        run_config: AssetRunConfig.default(),
+        run_config_advanced_open?: false
+      }
+    }
+
+    params = %{"run_config" => %{"dependencies" => "none", "refresh" => "missing"}}
+
+    assert {:noreply, changed_socket} =
+             AssetDetailLive.handle_event("change_run_config", params, socket)
+
+    assert changed_socket.assigns.run_config_advanced_open?
+    assert changed_socket.assigns.run_config.dependencies == "none"
   end
 
   test "surfaces ambiguous pipeline context and renders stable selection links" do
