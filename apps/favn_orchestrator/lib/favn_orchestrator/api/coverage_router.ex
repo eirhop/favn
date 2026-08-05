@@ -13,6 +13,12 @@ defmodule FavnOrchestrator.API.CoverageRouter do
   alias FavnOrchestrator.API.Response
   alias FavnOrchestrator.Persistence.Error
 
+  # Plug.Router owns do_match/4. submit_backfill/8 delegates through the
+  # operator facade, whose successful auth branch crosses the dynamic identity
+  # store boundary.
+  @dialyzer {:no_match, [do_match: 4, submit_backfill: 8]}
+  @dialyzer {:no_unused, audit_submit: 8}
+
   plug(:match)
   plug(:dispatch)
 

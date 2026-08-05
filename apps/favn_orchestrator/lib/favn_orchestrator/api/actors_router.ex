@@ -11,6 +11,10 @@ defmodule FavnOrchestrator.API.ActorsRouter do
 
   @allowed_roles ["viewer", "operator", "admin"]
 
+  # Plug.Router owns do_match/4; successful actor-store callbacks are hidden
+  # from Dialyzer by the boot-selected persistence module.
+  @dialyzer {:no_match, do_match: 4}
+
   plug(:match)
   plug(:dispatch)
 

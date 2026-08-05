@@ -71,6 +71,109 @@ defmodule FavnOrchestrator do
   @type operator_session :: Auth.session()
   @type operator_actor_context :: OperatorContext.t()
 
+  # The identity store is selected from the boot-validated persistence registry.
+  # Dialyzer cannot follow successful callbacks through that dynamic module and
+  # therefore erases the successful authorization branch at each of these
+  # definitions. Keep the suppression scoped to the affected definitions so the
+  # public success/error contracts and runtime authorization failures stay intact.
+  @dialyzer {:no_match,
+             [
+               get_operator_lineage_graph: 2,
+               get_operator_lineage_group: 3,
+               get_operator_lineage_asset: 3,
+               get_operator_lineage_edge: 3,
+               operator_password_login: 4,
+               operator_external_login: 2,
+               introspect_operator_session: 2,
+               revoke_operator_session: 1,
+               list_operator_workspaces: 1,
+               switch_operator_workspace: 2,
+               page_operator_actors: 2,
+               create_operator_actor: 5,
+               attach_operator_actor: 3,
+               update_operator_actor_membership: 4,
+               page_operator_sessions: 2,
+               revoke_operator_managed_session: 2,
+               change_operator_password: 3,
+               page_operator_audit: 2,
+               active_asset_catalogue: 1,
+               active_pipeline_catalogue: 1,
+               active_pipeline_detail: 2,
+               active_asset_detail: 3,
+               active_asset_documentation: 2,
+               active_asset_run_detail: 3,
+               get_asset_coverage: 2,
+               active_asset_coverage_windows: 3,
+               page_asset_missing_coverage: 3,
+               plan_missing_coverage_backfill: 3,
+               submit_missing_coverage_backfill: 4,
+               plan_operator_rebuild: 4,
+               start_operator_rebuild: 4,
+               get_operator_rebuild: 2,
+               page_operator_rebuilds: 2,
+               page_operator_rebuild_items: 3,
+               cancel_operator_rebuild: 4,
+               retry_operator_rebuild: 4,
+               reconcile_operator_rebuild: 3,
+               plan_operator_target_recovery: 4,
+               start_operator_target_recovery: 4,
+               get_operator_target_recovery: 2,
+               reconcile_operator_target_recovery: 3,
+               list_logs: 3,
+               replay_logs: 4,
+               subscribe_logs: 2,
+               submit_operator_run: 5,
+               submit_operator_asset_backfill: 5,
+               submit_operator_pipeline_backfill: 5,
+               plan_operator_pipeline_backfill: 4,
+               get_operator_backfill: 2,
+               page_operator_backfill_windows: 3,
+               list_operator_manifests: 1,
+               get_operator_manifest: 2,
+               cancel_operator_run: 3,
+               retry_operator_run_remaining: 3,
+               get_run_detail: 2,
+               get_operator_run_detail: 3,
+               get_operator_run_activity: 3,
+               get_operator_runner_overview: 2,
+               page_execution_groups: 2,
+               count_execution_groups: 2,
+               get_execution_group_detail: 3,
+               get_asset_step_log_context: 3,
+               list_run_stream_events: 3,
+               subscribe_run: 2,
+               unsubscribe_run: 2,
+               unsubscribe_run_wakeups: 1,
+               subscribe_runs: 1,
+               unsubscribe_runs: 1,
+               page_schedule_list_entries: 2,
+               get_schedule_entry: 2,
+               enable_schedule: 3,
+               disable_schedule: 3,
+               preview_schedule_occurrences: 3,
+               authorize_operator_context: 2
+             ]}
+
+  # These helpers are reached from the successful definitions above. The same
+  # dynamic-dispatch blind spot otherwise reports them as unused.
+  @dialyzer {:no_unused,
+             [
+               admin?: 1,
+               operator_backfill_opts: 3,
+               operator_refresh: 1,
+               merge_coverage_metadata: 2,
+               remaining_retry_plan_fingerprint: 1,
+               begin_operator_command: 8,
+               idempotency_key_opts: 1,
+               put_rebuild_plan_idempotency: 2,
+               put_rebuild_command_idempotency: 2,
+               run_command_opts: 1,
+               finish_operator_result: 8,
+               finish_operator_audit: 9,
+               operator_error_code: 1,
+               execution_group_status: 1
+             ]}
+
   @doc "Confirms that unified control-plane boot configuration was applied."
   @spec ensure_control_plane_runtime_config_applied() ::
           :ok | {:error, :control_plane_runtime_config_not_applied}

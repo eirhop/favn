@@ -4,6 +4,7 @@ defmodule FavnOrchestrator.API.RunsRouterServiceAuthTest do
   import Plug.Conn
   import Plug.Test
 
+  alias FavnOrchestrator.API.Router
   alias FavnOrchestrator.API.RunsRouter
   alias FavnOrchestrator.Auth.Session
   alias FavnOrchestrator.Auth.ServiceTokens
@@ -222,6 +223,25 @@ defmodule FavnOrchestrator.API.RunsRouterServiceAuthTest do
 
     assert response.status == 404
     assert get_in(Jason.decode!(response.resp_body), ["error", "code"]) == "not_found"
+  end
+
+  test "operator actor session reaches run submission with a concrete workspace context" do
+    actor = put_actor("workspace-a", "operator", [:customer_operator])
+    response = submit_request(actor)
+
+    assert response.status == 404
+    assert get_in(Jason.decode!(response.resp_body), ["error", "code"]) == "not_found"
+  end
+
+  test "shared API parser rejects malformed rerun JSON before route dispatch" do
+    assert_raise Plug.Parsers.ParseError, fn ->
+      :post
+      |> conn("/api/orchestrator/v1/runs/run-a/rerun", "{")
+      |> put_req_header("content-type", "application/json")
+      |> put_req_header("authorization", "Bearer #{@token}")
+      |> put_req_header("x-favn-workspace-id", "workspace-a")
+      |> Router.call(Router.init([]))
+    end
   end
 
   test "unmapped run submission failures return a redacted stable response" do

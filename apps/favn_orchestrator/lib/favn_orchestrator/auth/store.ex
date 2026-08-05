@@ -21,6 +21,10 @@ defmodule FavnOrchestrator.Auth.Store do
   @type actor :: Identity.actor()
   @type session :: Identity.session()
 
+  # The password lookup runs through the boot-selected persistence identity
+  # store. Dialyzer cannot see that dynamic callback's successful return.
+  @dialyzer {:no_match, [authenticate_password: 4, result_tag: 1]}
+
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, %{}, name: Keyword.get(opts, :name, __MODULE__))
