@@ -329,8 +329,6 @@ defmodule Favn.Freshness.Key do
     "#{sign}#{pad2(div(absolute, 3600))}:#{pad2(div(rem(absolute, 3600), 60))}"
   end
 
-  defp valid_offset?(nil, nil), do: true
-
   defp valid_offset?(hour, minute) do
     with {hour, ""} <- Integer.parse(hour),
          {minute, ""} <- Integer.parse(minute) do

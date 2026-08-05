@@ -186,7 +186,7 @@ defmodule FavnOrchestrator.API.RunsRouter do
   post "/:run_id/rerun" do
     with :ok <- Authentication.ensure_service(conn),
          {:ok, session, actor, context} <- actor_context(conn, :operator) do
-      params = if is_map(conn.body_params), do: conn.body_params, else: %{}
+      params = conn.body_params
 
       idempotent_run(
         conn,
@@ -209,11 +209,9 @@ defmodule FavnOrchestrator.API.RunsRouter do
   end
 
   defp submit(conn, params, session, actor, context, idempotency) do
-    command_context = context || %{actor: actor, session: session}
-
     opts = command_options(context, idempotency)
 
-    case OperatorCommands.submit_run(params, command_context, opts) do
+    case OperatorCommands.submit_run(params, context, opts) do
       {:ok, run_id} ->
         audit(conn, context, "run.submit", run_id, session, actor, idempotency)
         {:ok, 202, %{run: run_summary(context, run_id)}, "run", run_id}

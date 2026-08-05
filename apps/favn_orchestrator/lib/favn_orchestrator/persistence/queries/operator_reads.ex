@@ -343,10 +343,12 @@ defmodule FavnOrchestrator.Persistence.Results.ExecutionGroupOverview do
           queued: non_neg_integer()
         }
 
+  @type status :: :pending | :running | :succeeded | :failed
+
   @type t :: %__MODULE__{
           workspace_id: String.t(),
           root_run_id: String.t(),
-          status: atom(),
+          status: status(),
           run_count: non_neg_integer(),
           pending_count: non_neg_integer(),
           running_count: non_neg_integer(),
@@ -355,7 +357,7 @@ defmodule FavnOrchestrator.Persistence.Results.ExecutionGroupOverview do
           latest_event_id: pos_integer(),
           source_publication_id: pos_integer(),
           updated_at: DateTime.t(),
-          trigger_type: atom() | nil,
+          trigger_type: FavnOrchestrator.Persistence.RunEnum.trigger_type() | nil,
           started_at: DateTime.t() | nil,
           finished_at: DateTime.t() | nil,
           target_refs: [String.t()],
@@ -386,6 +388,7 @@ end
 
 defmodule FavnOrchestrator.Persistence.Results.RunSummary do
   @moduledoc "Compact relational run history row; it never contains a run snapshot."
+
   @enforce_keys [:workspace_id, :run_id, :status, :event_sequence, :inserted_at]
   defstruct [
     :workspace_id,
@@ -417,11 +420,11 @@ defmodule FavnOrchestrator.Persistence.Results.RunSummary do
           deployment_id: String.t(),
           manifest_version_id: String.t(),
           runner_releases: Favn.RunnerPool.releases(),
-          status: atom(),
-          submit_kind: atom(),
-          trigger_type: atom(),
-          submitted_event_id: pos_integer(),
-          latest_event_id: pos_integer(),
+          status: FavnOrchestrator.Persistence.RunEnum.status(),
+          submit_kind: FavnOrchestrator.Persistence.RunEnum.submit_kind(),
+          trigger_type: FavnOrchestrator.Persistence.RunEnum.trigger_type() | nil,
+          submitted_event_id: pos_integer() | nil,
+          latest_event_id: pos_integer() | nil,
           event_sequence: pos_integer(),
           inserted_at: DateTime.t(),
           updated_at: DateTime.t(),
@@ -436,16 +439,18 @@ defmodule FavnOrchestrator.Persistence.Results.ExecutionGroup do
   @moduledoc "One execution-group overview with independently pageable detail slices."
 
   alias FavnOrchestrator.Persistence.Results.CursorPage
+  alias FavnOrchestrator.Persistence.Results.BackfillWindow
   alias FavnOrchestrator.Persistence.Results.ExecutionGroupOverview
+  alias FavnOrchestrator.Persistence.Results.RunSummary
 
   @enforce_keys [:overview, :runs, :windows, :failures]
   defstruct [:overview, :runs, :windows, :failures]
 
   @type t :: %__MODULE__{
           overview: ExecutionGroupOverview.t(),
-          runs: CursorPage.t(),
-          windows: CursorPage.t(),
-          failures: CursorPage.t()
+          runs: CursorPage.t(RunSummary.t()),
+          windows: CursorPage.t(BackfillWindow.t()),
+          failures: CursorPage.t(RunSummary.t())
         }
 end
 
@@ -491,7 +496,7 @@ defmodule FavnOrchestrator.Persistence.Results.AssetAttemptOverview do
           asset_ref: String.t(),
           window_identity: String.t(),
           window: map() | nil,
-          status: atom(),
+          status: FavnOrchestrator.ExecutionStatus.t(),
           stage: non_neg_integer() | nil,
           attempt_number: pos_integer() | nil,
           execution_pool: String.t() | nil,

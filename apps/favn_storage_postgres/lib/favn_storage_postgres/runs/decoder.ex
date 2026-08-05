@@ -104,19 +104,24 @@ defmodule FavnStoragePostgres.Runs.Decoder do
     end
   end
 
-  defp decode(%Run{} = row, %ManifestVersion{} = manifest, run_plan) do
+  defp decode(
+         %Run{manifest_version_id: manifest_version_id} = row,
+         %ManifestVersion{manifest_version_id: manifest_version_id} = manifest,
+         run_plan
+       )
+       when is_binary(manifest_version_id) do
     snapshot = attach_plan(row.snapshot, run_plan)
 
     run_record = %{
       run_blob: Jason.encode!(snapshot),
-      manifest_version_id: row.manifest_version_id
+      manifest_version_id: manifest_version_id
     }
 
     manifest_record = %{
-      manifest_version_id: manifest.manifest_version_id,
+      manifest_version_id: manifest_version_id,
       content_hash: Base.encode16(manifest.content_hash, case: :lower),
       runner_releases: manifest.runner_releases,
-      atom_strings: manifest.atom_strings || legacy_atom_strings(manifest),
+      atom_strings: manifest_atom_strings(manifest),
       manifest_index_json: Jason.encode!(manifest.manifest)
     }
 
@@ -135,6 +140,9 @@ defmodule FavnStoragePostgres.Runs.Decoder do
   defp decode(%Run{}, nil, _run_plan),
     do: {:error, Error.new(:internal, "run references a missing manifest")}
 
+  defp decode(%Run{}, %ManifestVersion{}, _run_plan),
+    do: {:error, Error.new(:internal, "run references a different manifest")}
+
   defp attach_plan(snapshot, %RunPlan{} = plan) do
     expected = Base.encode16(plan.plan_hash, case: :lower)
 
@@ -147,7 +155,11 @@ defmodule FavnStoragePostgres.Runs.Decoder do
 
   defp attach_plan(snapshot, nil), do: snapshot
 
-  defp legacy_atom_strings(%ManifestVersion{} = manifest) do
+  defp manifest_atom_strings(%ManifestVersion{atom_strings: atom_strings})
+       when is_list(atom_strings),
+       do: atom_strings
+
+  defp manifest_atom_strings(%ManifestVersion{} = manifest) do
     record = %{
       content_hash: Base.encode16(manifest.content_hash, case: :lower),
       manifest_index_json: Jason.encode!(manifest.manifest)

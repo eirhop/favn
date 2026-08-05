@@ -110,7 +110,7 @@ defmodule FavnStoragePostgres.Backfills.Store do
         |> order_by([window], asc: window.window_key, asc: window.window_id)
         |> limit(^(page.limit + 1))
 
-      {:ok, window_page(Repo.all(query), page.limit, :forward)}
+      {:ok, window_page(Repo.all(query), page.limit)}
     end
   rescue
     error -> {:error, ErrorMapper.map(error)}
@@ -735,17 +735,14 @@ defmodule FavnStoragePostgres.Backfills.Store do
     }
   end
 
-  defp window_page(rows, limit, direction) do
+  defp window_page(rows, limit) do
     items = rows |> Enum.take(limit) |> Enum.map(&window_result/1)
     has_more? = length(rows) > limit
     last = List.last(items)
 
     next_cursor =
-      cond do
-        not has_more? or is_nil(last) -> nil
-        direction == :forward -> %{window_key: last.window_key, window_id: last.window_id}
-        true -> %{window_start: last.window_start, window_id: last.window_id}
-      end
+      if has_more? and not is_nil(last),
+        do: %{window_key: last.window_key, window_id: last.window_id}
 
     %CursorPage{items: items, limit: limit, has_more?: has_more?, next_cursor: next_cursor}
   end

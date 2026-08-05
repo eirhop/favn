@@ -7,6 +7,8 @@ defmodule FavnView.OperatorSessionController do
   alias FavnView.Auth.AzureContainerAppsEntra
   alias FavnView.ProductionRuntimeConfig
 
+  @dialyzer {:no_match, create_password_session: 2}
+
   def new(conn, params) do
     return_to = Auth.safe_return_to(params["return_to"])
 

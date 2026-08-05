@@ -11,6 +11,20 @@ defmodule FavnOrchestrator.Auth do
   @type actor :: Store.actor()
   @type session :: Store.session()
 
+  # Persistence identity callbacks come from the boot-validated dynamic store.
+  # Dialyzer erases their success branches, so keep the blind-spot suppression
+  # attached only to definitions that consume those callbacks.
+  @dialyzer {:no_match,
+             [
+               password_login: 4,
+               external_login: 2,
+               update_actor_roles: 3,
+               update_actor_membership: 4,
+               actor_from_forwarded_context: 3,
+               bootstrap_workspace_actor: 4,
+               ensure_bootstrap_membership: 3
+             ]}
+
   @spec bootstrap_configured_actor() :: :ok | {:error, term()}
   def bootstrap_configured_actor do
     username = Application.get_env(:favn_orchestrator, :auth_bootstrap_username)

@@ -154,7 +154,9 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
   @type manifest_record :: %{
           required(:manifest_version_id) => String.t(),
           required(:content_hash) => String.t(),
-          required(:manifest_index_json) => String.t()
+          required(:manifest_index_json) => String.t(),
+          optional(:atom_strings) => [String.t()],
+          optional(:runner_releases) => Favn.RunnerPool.releases()
         }
 
   @spec encode_run(RunState.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
@@ -265,8 +267,6 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
         encoded
     end
   end
-
-  defp run_metadata_to_dto(metadata), do: JsonSafe.data(metadata)
 
   defp settings_to_dto(settings) do
     settings
@@ -434,8 +434,6 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
     |> put_encoded_result_list(result, :asset_results, &JsonSafe.data/1)
     |> put_encoded_result_list(result, :node_results, &node_result_to_dto/1)
   end
-
-  defp result_to_dto(result), do: JsonSafe.data(result)
 
   defp put_encoded_result_list(dto, result, key, mapper) when is_map(dto) do
     case Map.get(result, key) || Map.get(result, Atom.to_string(key)) do

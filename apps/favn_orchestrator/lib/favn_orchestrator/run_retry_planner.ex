@@ -189,8 +189,6 @@ defmodule FavnOrchestrator.RunRetryPlanner do
     end
   end
 
-  defp maybe_put_anchor(context, _run), do: context
-
   defp maybe_put_window_selection(context, %RunState{metadata: metadata})
        when is_map(metadata) do
     value =
@@ -211,8 +209,6 @@ defmodule FavnOrchestrator.RunRetryPlanner do
     end
   end
 
-  defp maybe_put_window_selection(context, _run), do: context
-
   defp maybe_put_refresh_policy(context, %RunState{} = run) do
     case refresh_policy(run) do
       nil -> context
@@ -223,8 +219,6 @@ defmodule FavnOrchestrator.RunRetryPlanner do
   defp refresh_policy(%RunState{metadata: metadata}) when is_map(metadata) do
     Map.get(metadata, :refresh_policy) || Map.get(metadata, "refresh_policy")
   end
-
-  defp refresh_policy(_run), do: nil
 
   defp metadata_anchor(metadata) do
     metadata

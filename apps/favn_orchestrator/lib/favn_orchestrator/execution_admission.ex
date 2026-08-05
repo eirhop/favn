@@ -136,7 +136,7 @@ defmodule FavnOrchestrator.ExecutionAdmission do
     end
   end
 
-  @spec cancel_wait(String.t() | Waiter.t()) :: :ok | {:error, term()}
+  @spec cancel_wait(String.t() | Waiter.t()) :: :ok
   def cancel_wait(%Waiter{workspace_id: workspace_id, waiter_id: waiter_id})
       when is_binary(workspace_id) do
     Coordinator.cancel(waiter_id)
@@ -154,33 +154,15 @@ defmodule FavnOrchestrator.ExecutionAdmission do
   defp acquire_after_waiter_registration(%RunState{} = run, entry, %Waiter{} = waiter) do
     case acquire_result(run, entry) do
       {:ok, lease} ->
-        case cancel_wait(waiter) do
-          :ok ->
-            {:ok, lease}
-
-          {:error, reason} ->
-            case release(lease) do
-              :ok ->
-                {:error, {:execution_admission_waiter_cleanup_failed, reason}}
-
-              {:error, release_error} ->
-                {:error,
-                 {:execution_admission_waiter_cleanup_failed, reason,
-                  {:lease_release_failed, release_error}}}
-            end
-        end
+        :ok = cancel_wait(waiter)
+        {:ok, lease}
 
       {:waiting, %Waiter{}} ->
         {:waiting, waiter}
 
       {:error, reason} ->
-        case cancel_wait(waiter) do
-          :ok ->
-            {:error, reason}
-
-          {:error, cleanup_error} ->
-            {:error, {:execution_admission_waiter_cleanup_failed, reason, cleanup_error}}
-        end
+        :ok = cancel_wait(waiter)
+        {:error, reason}
     end
   end
 

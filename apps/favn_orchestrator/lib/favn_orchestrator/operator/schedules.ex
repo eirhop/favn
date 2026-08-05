@@ -418,8 +418,6 @@ defmodule FavnOrchestrator.Operator.Schedules do
     end
   end
 
-  defp occurrence_window(_window, _due_at, _timezone), do: {nil, :invalid_scheduler_window}
-
   defp window_to_map(window) when is_map(window) do
     %{
       kind: Map.get(window, :kind),

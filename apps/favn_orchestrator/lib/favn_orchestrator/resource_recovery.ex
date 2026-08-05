@@ -161,7 +161,7 @@ defmodule FavnOrchestrator.ResourceRecovery do
   defp existing_recovery_run?(context, recovery_run_id, source_run_id, candidate_ids) do
     case Runs.get(context, recovery_run_id) do
       {:ok, run} ->
-        metadata = run.metadata || %{}
+        metadata = run.metadata
 
         field(metadata, :resource_recovery) == true and
           field(metadata, :resource_recovery_source_run_id) == source_run_id and
@@ -182,7 +182,7 @@ defmodule FavnOrchestrator.ResourceRecovery do
            RunSubmissions.get(context, recovery_run_id),
          {:ok, {:rerun, ^source_run_id, opts}} <-
            FavnOrchestrator.RunSubmission.Intent.decode(intent),
-         metadata when is_map(metadata) <- Keyword.get(opts, :metadata, %{}) do
+         metadata <- Keyword.get(opts, :metadata, %{}) do
       Enum.sort(field(metadata, :resource_recovery_candidate_ids, [])) == candidate_ids
     else
       _missing_or_mismatched -> false

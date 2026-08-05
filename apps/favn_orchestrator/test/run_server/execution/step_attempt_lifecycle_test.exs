@@ -110,6 +110,25 @@ defmodule FavnOrchestrator.RunServer.Execution.StepAttemptLifecycleTest do
     assert retry.retry_after_ms == 250
   end
 
+  test "retry builds the same retry contract after eligibility was checked" do
+    lifecycle = %StepAttemptLifecycle{
+      run: run_state(max_attempts: 2, retry_backoff_ms: 25),
+      node_key: {{MyApp.Assets.Lifecycle, :asset}, nil},
+      asset_ref: {MyApp.Assets.Lifecycle, :asset},
+      asset_step_id: "step_lifecycle",
+      stage: 1,
+      attempt: 1,
+      max_attempts: 2,
+      execution_pool: "default"
+    }
+
+    retry = StepAttemptLifecycle.retry(lifecycle)
+
+    assert retry.next_attempt == 2
+    assert retry.max_attempts == 2
+    assert retry.retry_policy.max_attempts == 2
+  end
+
   test "schedule_retry is terminal at max attempts" do
     lifecycle = %StepAttemptLifecycle{
       run: run_state(max_attempts: 1),

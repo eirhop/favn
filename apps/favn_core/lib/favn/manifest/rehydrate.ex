@@ -427,9 +427,9 @@ defmodule Favn.Manifest.Rehydrate do
   end
 
   defp build_runtime_input_ref(value) when is_map(value) do
-    allowed_keys = MapSet.new([:module, "module"])
+    allowed_keys = [:module, "module"]
 
-    if map_size(value) != 1 or Enum.any?(Map.keys(value), &(!MapSet.member?(allowed_keys, &1))) do
+    if map_size(value) != 1 or Enum.any?(Map.keys(value), &(&1 not in allowed_keys)) do
       raise ArgumentError,
             "invalid runtime input resolver reference; expected %{module: MyApp.Inputs}"
     end
@@ -539,21 +539,20 @@ defmodule Favn.Manifest.Rehydrate do
     do: raise(ArgumentError, "invalid SQL output contract #{inspect(other)}")
 
   defp validate_contract_fields!(value) do
-    allowed =
-      MapSet.new([
-        :grain,
-        "grain",
-        :columns,
-        "columns",
-        :compositions,
-        "compositions",
-        :unique_keys,
-        "unique_keys",
-        :row_counts,
-        "row_counts"
-      ])
+    allowed = [
+      :grain,
+      "grain",
+      :columns,
+      "columns",
+      :compositions,
+      "compositions",
+      :unique_keys,
+      "unique_keys",
+      :row_counts,
+      "row_counts"
+    ]
 
-    if Enum.any?(Map.keys(value), &(!MapSet.member?(allowed, &1))) do
+    if Enum.any?(Map.keys(value), &(&1 not in allowed)) do
       raise ArgumentError, "invalid SQL output contract fields"
     end
   end
@@ -597,9 +596,9 @@ defmodule Favn.Manifest.Rehydrate do
     do: Composition.validate!(composition)
 
   defp build_contract_composition(value) when is_map(value) do
-    allowed = MapSet.new([:module, "module", :start_index, "start_index", :columns, "columns"])
+    allowed = [:module, "module", :start_index, "start_index", :columns, "columns"]
 
-    if Enum.any?(Map.keys(value), &(!MapSet.member?(allowed, &1))) do
+    if Enum.any?(Map.keys(value), &(&1 not in allowed)) do
       raise ArgumentError, "invalid SQL contract composition fields"
     end
 
@@ -652,21 +651,20 @@ defmodule Favn.Manifest.Rehydrate do
   defp build_contract_row_count(%RowCount{} = row_count), do: RowCount.validate!(row_count)
 
   defp build_contract_row_count(value) when is_map(value) do
-    allowed =
-      MapSet.new([
-        :equals,
-        "equals",
-        :min,
-        "min",
-        :max,
-        "max",
-        :when,
-        "when",
-        :on_violation,
-        "on_violation"
-      ])
+    allowed = [
+      :equals,
+      "equals",
+      :min,
+      "min",
+      :max,
+      "max",
+      :when,
+      "when",
+      :on_violation,
+      "on_violation"
+    ]
 
-    if Enum.any?(Map.keys(value), &(!MapSet.member?(allowed, &1))) do
+    if Enum.any?(Map.keys(value), &(&1 not in allowed)) do
       raise ArgumentError, "invalid SQL contract row_count fields"
     end
 
@@ -695,9 +693,9 @@ defmodule Favn.Manifest.Rehydrate do
   defp build_contract_row_count_equals(%Param{} = param), do: Param.validate!(param)
 
   defp build_contract_row_count_equals(value) when is_map(value) do
-    allowed = MapSet.new([:name, "name"])
+    allowed = [:name, "name"]
 
-    if map_size(value) != 1 or Enum.any?(Map.keys(value), &(!MapSet.member?(allowed, &1))) do
+    if map_size(value) != 1 or Enum.any?(Map.keys(value), &(&1 not in allowed)) do
       raise ArgumentError, "invalid SQL contract row_count param"
     end
 

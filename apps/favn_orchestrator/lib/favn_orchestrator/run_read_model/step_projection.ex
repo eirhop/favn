@@ -89,7 +89,7 @@ defmodule FavnOrchestrator.RunReadModel.StepProjection do
     total =
       if pipeline_like?(run) and expected > 0,
         do: max(length(steps), expected),
-        else: max(length(steps), length(run.target_refs || []))
+        else: max(length(steps), length(run.target_refs))
 
     %{
       unit: if(pipeline_like?(run) or has_node_results?(run), do: :steps, else: :assets),
@@ -130,8 +130,6 @@ defmodule FavnOrchestrator.RunReadModel.StepProjection do
        do: map_size(nodes)
 
   defp expected_count(%RunState{target_refs: refs}) when is_list(refs), do: length(refs)
-  defp expected_count(_run), do: 0
-
   defp terminal_count(steps), do: Enum.count(steps, &ExecutionStatus.terminal?(&1.status))
 
   defp result_entries(result, field) do

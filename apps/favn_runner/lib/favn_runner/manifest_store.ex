@@ -775,8 +775,6 @@ defmodule FavnRunner.ManifestStore do
     end)
   end
 
-  defp build_runtime_maps(_assets), do: {:error, :invalid_manifest}
-
   defp maybe_put_relation(relations, %Asset{
          module: module,
          relation: %RelationRef{} = relation

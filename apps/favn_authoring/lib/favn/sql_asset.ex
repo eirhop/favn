@@ -2112,6 +2112,7 @@ defmodule Favn.SQLAsset do
     end
   end
 
+  @spec contract_compile_error!(Macro.Env.t(), keyword(), String.t()) :: no_return()
   defp contract_compile_error!(env, meta, message) do
     DSLCompiler.compile_error!(env.file, Keyword.get(meta, :line, env.line), message)
   end

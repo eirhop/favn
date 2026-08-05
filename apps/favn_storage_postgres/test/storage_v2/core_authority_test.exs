@@ -3985,6 +3985,38 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     end
   end
 
+  test "run summary pages tolerate trigger types from a newer release", fixture do
+    {command, run} = create_run_command(fixture)
+    assert {:ok, _created} = RunStore.create_run(command)
+    assert {:ok, publications} = Sequencer.sequence_batch()
+    assert drain_projector("newer-trigger:" <> run.id) >= length(publications)
+
+    SQL.query!(
+      Repo,
+      "UPDATE favn_control.runs SET trigger_type = 'future_trigger' WHERE workspace_id = $1 AND run_id = $2",
+      [fixture.workspace_id, run.id]
+    )
+
+    assert {:ok, %{items: [summary]}} =
+             RunStore.page_run_summaries(%PageRuns{
+               scope: fixture.workspace_context,
+               limit: 10
+             })
+
+    assert summary.run_id == run.id
+    assert is_nil(summary.trigger_type)
+
+    assert {:ok, overview} =
+             OperatorReadStore.get_operator_run_overview(%GetOperatorRunOverview{
+               workspace_context: fixture.workspace_context,
+               run_id: run.id,
+               limit: 10
+             })
+
+    assert is_nil(overview.root_run.trigger_type)
+    assert Enum.all?(overview.runs, &is_nil(&1.trigger_type))
+  end
+
   test "compact run history prefers the persisted pipeline target label", fixture do
     {command, run} = pipeline_run_command(fixture)
 

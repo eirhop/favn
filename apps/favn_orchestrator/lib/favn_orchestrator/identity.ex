@@ -385,10 +385,11 @@ defmodule FavnOrchestrator.Identity do
   end
 
   @doc "Replaces one actor's workspace roles with optimistic concurrency."
-  @spec set_roles(WorkspaceContext.t(), String.t(), [atom() | String.t()], pos_integer()) ::
+  @spec set_roles(WorkspaceContext.t(), String.t(), [atom() | String.t()], non_neg_integer()) ::
           {:ok, actor()} | {:error, term()}
   def set_roles(%WorkspaceContext{} = context, actor_id, roles, expected_version)
-      when is_binary(actor_id) and is_list(roles) and is_integer(expected_version) do
+      when is_binary(actor_id) and is_list(roles) and is_integer(expected_version) and
+             expected_version >= 0 do
     set_membership_access(context, actor_id, roles, :active, expected_version)
   end
 

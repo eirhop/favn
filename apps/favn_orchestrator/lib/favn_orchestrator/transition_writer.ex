@@ -186,6 +186,4 @@ defmodule FavnOrchestrator.TransitionWriter do
   defp data_field(%RunEvent{data: data}, key) when is_map(data) do
     Map.get(data, key) || Map.get(data, Atom.to_string(key))
   end
-
-  defp data_field(%RunEvent{}, _key), do: nil
 end

@@ -6,6 +6,7 @@ defmodule FavnOrchestrator.ExecutionStatus do
   """
 
   @statuses [
+    :planned,
     :pending,
     :queued,
     :running,
@@ -32,9 +33,24 @@ defmodule FavnOrchestrator.ExecutionStatus do
   ]
   @failed_statuses [:error, :timed_out, :cancelled, :blocked]
   @running_statuses [:running, :retrying]
-  @queued_statuses [:pending, :queued, nil]
+  @queued_statuses [:planned, :pending, :queued, nil]
 
-  @type t :: atom() | String.t() | nil
+  @type known ::
+          :planned
+          | :pending
+          | :queued
+          | :running
+          | :retrying
+          | :ok
+          | :partial
+          | :error
+          | :blocked
+          | :cancelled
+          | :timed_out
+          | :skipped
+          | :skipped_fresh
+
+  @type t :: known() | String.t() | nil
 
   @doc "Returns the allowlisted atom for a known persisted status name."
   @spec normalize(t()) :: t()

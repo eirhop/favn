@@ -334,6 +334,8 @@ end
 defmodule FavnOrchestrator.Persistence.Results.BackfillWindow do
   @moduledoc "Authoritative fenced backfill window."
 
+  @type status :: :planned | :ready | :claimed | :running | :succeeded | :failed | :cancelled
+
   @enforce_keys [
     :workspace_id,
     :backfill_id,
@@ -367,7 +369,7 @@ defmodule FavnOrchestrator.Persistence.Results.BackfillWindow do
           window_key: String.t(),
           window_start: DateTime.t(),
           window_end: DateTime.t(),
-          status: atom(),
+          status: status(),
           claim_owner: String.t() | nil,
           fencing_token: non_neg_integer(),
           claim_expires_at: DateTime.t() | nil,

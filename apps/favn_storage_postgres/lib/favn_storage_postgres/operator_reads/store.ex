@@ -716,7 +716,7 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
       runner_releases: row.runner_releases,
       status: RunEnum.decode!(:status, row.status),
       submit_kind: RunEnum.decode!(:submit_kind, row.submit_kind),
-      trigger_type: RunEnum.decode!(:trigger_type, row.trigger_type),
+      trigger_type: RunEnum.decode(:trigger_type, row.trigger_type),
       submitted_event_id: row.submitted_event_id,
       latest_event_id: row.latest_event_id,
       event_sequence: row.event_sequence,

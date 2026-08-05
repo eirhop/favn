@@ -51,6 +51,14 @@ defmodule FavnStoragePostgres.Schemas.Run do
     field(:updated_at, :utc_datetime_usec)
     field(:terminal_at, :utc_datetime_usec)
   end
+
+  @type t :: %__MODULE__{
+          workspace_id: String.t(),
+          run_id: String.t(),
+          deployment_id: String.t(),
+          manifest_version_id: String.t(),
+          snapshot: map()
+        }
 end
 
 defmodule FavnStoragePostgres.Schemas.RunEvent do

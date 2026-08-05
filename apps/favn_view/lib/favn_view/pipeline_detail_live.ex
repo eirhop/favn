@@ -15,6 +15,26 @@ defmodule FavnView.PipelineDetailLive do
   @refresh_choices ~w(missing force auto force_all)
   @window_kind_choices ~w(hour day month year)
   @timezone_pattern ~r/\A[A-Za-z0-9_+\-\/]{1,64}\z/
+  @dialyzer {:no_unused,
+             [
+               normalize_window_kind: 1,
+               pipeline_from_detail: 1,
+               window_kind: 1,
+               window_timezone: 1,
+               pipeline_name: 1,
+               dependencies_label: 1,
+               window_label: 1,
+               window_label: 2,
+               status_label: 1,
+               last_run_label: 1
+             ]}
+  @dialyzer {:no_match,
+             [
+               handle_event: 3,
+               load_pipeline: 2,
+               pipeline_from_state: 1,
+               default_backfill_config: 1
+             ]}
 
   @impl true
   def mount(%{"pipeline_id" => pipeline_id}, _session, socket) do

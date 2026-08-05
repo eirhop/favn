@@ -7,6 +7,11 @@ defmodule Favn.SQLAsset.RelationUsage do
   alias Favn.SQL.Template
   alias Favn.SQL.Template.Call
 
+  @type runtime_relation :: :query | :target
+  @type definition_id :: {module(), atom(), non_neg_integer()}
+  @type definition_catalog :: %{optional({atom(), non_neg_integer()}) => SQLDefinition.t()}
+  @type visited_definitions :: %{optional(definition_id()) => true}
+
   @spec collect(module(), Template.t(), [SQLDefinition.t()]) :: [RelationInput.t()]
   def collect(module, %Template{} = template, sql_definitions \\ []) when is_atom(module) do
     definition_catalog =
@@ -25,16 +30,21 @@ defmodule Favn.SQLAsset.RelationUsage do
   end
 
   @doc false
-  @spec runtime_relations(Template.t(), [SQLDefinition.t()]) :: MapSet.t(:query | :target)
+  @spec runtime_relations(Template.t(), [SQLDefinition.t()]) :: MapSet.t(runtime_relation())
   def runtime_relations(%Template{} = template, sql_definitions \\ []) do
     definition_catalog =
       Map.new(sql_definitions, fn %SQLDefinition{} = definition ->
         {SQLDefinition.key(definition), definition}
       end)
 
-    collect_runtime_relations(template, definition_catalog, MapSet.new())
+    collect_runtime_relations(template, definition_catalog, %{})
   end
 
+  @spec collect_runtime_relations(
+          Template.t(),
+          definition_catalog(),
+          visited_definitions()
+        ) :: MapSet.t(runtime_relation())
   defp collect_runtime_relations(%Template{} = template, definition_catalog, visited) do
     direct = Template.runtime_relations(template)
 
@@ -45,7 +55,7 @@ defmodule Favn.SQLAsset.RelationUsage do
         {:ok, %SQLDefinition{} = definition} ->
           id = {definition.module, definition.name, definition.arity}
 
-          if MapSet.member?(visited, id) do
+          if Map.has_key?(visited, id) do
             acc
           else
             MapSet.union(
@@ -53,7 +63,7 @@ defmodule Favn.SQLAsset.RelationUsage do
               collect_runtime_relations(
                 definition.template,
                 definition_catalog,
-                MapSet.put(visited, id)
+                Map.put(visited, id, true)
               )
             )
           end

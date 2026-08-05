@@ -427,11 +427,7 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
   defp maybe_schedule_retry(state, _asset_ref, node_key, stage, attempt, step_results, failure) do
     if StepAttemptLifecycle.retry_allowed?(state.run, node_key, attempt) do
       lifecycle = StepAttemptLifecycle.new(state.run, state.version, node_key, stage, attempt)
-
-      case StepAttemptLifecycle.schedule_retry(lifecycle, failure) do
-        {:ok, retry} -> schedule_retry(state, retry)
-        :terminal -> terminalize_error(state, step_results)
-      end
+      schedule_retry(state, StepAttemptLifecycle.retry(lifecycle, failure))
     else
       terminalize_error(state, step_results)
     end
