@@ -7,6 +7,10 @@ Pool names are arbitrary logical environment names such as `duckdb`,
 Configure a pool as elastic or resident. An elastic runner claims one task at a
 time, waits the configured idle grace after an empty claim, performs one final
 claim, and exits when that is also empty. A resident runner waits indefinitely.
+Any elastic pool requires a raw
+`FAVN_ORCHESTRATOR_CAPACITY_READER_TOKEN`; resident-only deployments may omit
+it. Favn assigns this credential only the `capacity_reader` role. The general
+`FAVN_ORCHESTRATOR_API_SERVICE_TOKENS` variable cannot grant that role.
 
 External infrastructure reads:
 
@@ -45,8 +49,10 @@ matches the stable DNS host portion of `FAVN_CONTROL_PLANE_NODE`; OTP uses that
 host as TLS SNI. Runner certificates must chain to the trusted CA. Runners start
 as `undefined@<stable-host-alias>` dynamic nodes, connect only to the control
 plane, and do not listen for inbound distribution. Rotate capacity tokens with
-an overlap. Rotate certificates and the cookie by introducing a new release
-partition, draining the old one, and then removing its credentials.
+an overlap through `FAVN_ORCHESTRATOR_CAPACITY_READER_PREVIOUS_TOKEN`, move
+scalers to the new primary value, and then remove the previous value. Rotate
+certificates and the cookie by introducing a new release partition, draining
+the old one, and then removing its credentials.
 
 Reference adapters live in [`deployment/`](../../deployment/README.md).
 Azure Container Apps and Kubernetes are examples, not dependencies or

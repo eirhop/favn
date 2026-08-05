@@ -137,7 +137,9 @@ and audit contract.
 | `FAVN_WORKSPACE_IDS` | Required unique comma-separated IDs; at most 1,000 IDs and 255 bytes per ID. |
 | `FAVN_ORCHESTRATOR_API_BIND_HOST` | IPv4 bind address, default `0.0.0.0`. |
 | `FAVN_ORCHESTRATOR_API_PORT` | `1..65535`, default `4101`. This listener is private. |
-| `FAVN_ORCHESTRATOR_API_SERVICE_TOKENS` | Required bounded set of `versioned_identity[|role+...]:secret` entries. Up to 100 identities may overlap during manual rotation. Only hashes are retained. |
+| `FAVN_ORCHESTRATOR_API_SERVICE_TOKENS` | Required bounded set of general platform `versioned_identity[|role+...]:secret` entries. `capacity_reader` and the identities `capacity-scaler` and `capacity-scaler-overlap` are rejected; use the dedicated variables below. Across this aggregate and the dedicated capacity credentials, at most 100 tokens are accepted and only hashes are retained. |
+| `FAVN_ORCHESTRATOR_CAPACITY_READER_TOKEN` | Raw least-privilege scaler credential. Required when any runner pool is `elastic`; optional for resident-only deployments. Favn assigns the reserved `capacity-scaler` identity and only `capacity_reader`. |
+| `FAVN_ORCHESTRATOR_CAPACITY_READER_PREVIOUS_TOKEN` | Optional raw overlap credential used only during rotation. Requires the primary credential. Favn assigns `capacity-scaler-overlap` and only `capacity_reader`. |
 | `FAVN_ORCHESTRATOR_MANIFEST_COMPRESSED_LIMIT_BYTES` | `1 MiB..32 MiB`, default `8 MiB`. |
 | `FAVN_ORCHESTRATOR_MANIFEST_DECOMPRESSED_LIMIT_BYTES` | At least the compressed limit and at most `128 MiB`, default `64 MiB`. |
 | `FAVN_ORCHESTRATOR_AUTH_SESSION_TTL` | `1..2592000` seconds, default `43200`. |
@@ -149,7 +151,7 @@ and audit contract.
 | `FAVN_RUN_SUBMISSION_WORKSPACE_CONCURRENCY` | Per-workspace worker cap, `1..256`, default `2`; it cannot exceed the global cap. |
 | `FAVN_SHUTDOWN_DRAIN_TIMEOUT_MS` | `1000..3600000`, default `120000`. |
 | `FAVN_CONTROL_PLANE_NODE` | Required long distributed-BEAM node name on private DNS. |
-| `FAVN_RUNNER_POOLS` | JSON object of operator-defined pool names to `elastic` or `resident` lifecycle policy; defaults to one elastic `default` pool with `15000` ms idle grace. |
+| `FAVN_RUNNER_POOLS` | JSON object of operator-defined pool names to `elastic` or `resident` lifecycle policy; defaults to one elastic `default` pool with `15000` ms idle grace. Any elastic pool requires `FAVN_ORCHESTRATOR_CAPACITY_READER_TOKEN`. |
 | `FAVN_DISTRIBUTION_COOKIE` | Required high-entropy secret shared by the control plane and trusted runner releases. |
 | `FAVN_BEAM_DISTRIBUTION_PORT` | Required fixed private control-plane distribution port. |
 | `ERL_EPMD_PORT` | Optional private EPMD port, default `4369`. |
@@ -234,8 +236,9 @@ Long-running release configuration reads secrets only from environment
 variables. It does not read mounted secret files, call Azure Key Vault, or
 hot-reload credentials. Platforms may resolve vault references into environment
 values, but changing a value requires a manually controlled drain and service
-restart. Configure overlapping versioned service-token identities before
-removing an old token. Automatic secret rotation remains future work.
+restart. General platform tokens overlap through versioned aggregate entries;
+capacity-reader tokens overlap through their dedicated primary and previous
+variables. Automatic secret rotation remains future work.
 Administrator bootstrap and recovery are explicit exceptions: their one-off
 commands read the password from protected operator input and persist only its
 password hash. The password is never a control-plane environment variable.
@@ -246,12 +249,17 @@ the affected revision, require readiness, run a smoke execution, and then resume
 admission. Never remove an overlapping credential until its replacement has
 been exercised successfully.
 
-For an orchestrator service token:
+For a general platform service token:
 
 1. Add a new versioned identity beside the old entry in
    `FAVN_ORCHESTRATOR_API_SERVICE_TOKENS` and restart the control plane.
 2. Move clients to the new token and prove an authenticated operation.
 3. Remove the old entry, restart again, and verify the old token is rejected.
+
+Never place `capacity_reader` or either reserved capacity-scaler identity in
+the aggregate variable. The dedicated primary and previous variables provide
+the overlap contract described in the
+[capacity-reader rotation runbook](secret_rotation.md#capacity-reader-token).
 
 For a runtime-input encryption key:
 

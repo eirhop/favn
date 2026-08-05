@@ -173,7 +173,8 @@ services:
       FAVN_DATABASE_SSL_CA_FILE: /etc/favn/tls/ca.crt
       FAVN_RUNTIME_INPUT_PIN_KEYS: ${FAVN_RUNTIME_INPUT_PIN_KEYS}
       FAVN_RUNTIME_INPUT_PIN_KEY_VERSION: "1"
-      FAVN_ORCHESTRATOR_API_SERVICE_TOKENS: platform-v1|platform_operator+platform_reader:${FAVN_PLATFORM_TOKEN},capacity-v1|capacity_reader:${FAVN_CAPACITY_TOKEN}
+      FAVN_ORCHESTRATOR_API_SERVICE_TOKENS: platform-v1|platform_operator+platform_reader:${FAVN_PLATFORM_TOKEN}
+      FAVN_ORCHESTRATOR_CAPACITY_READER_TOKEN: ${FAVN_CAPACITY_TOKEN}
       FAVN_WORKSPACE_IDS: elastic-simulation
       FAVN_SCHEDULER_ENABLED: "false"
       FAVN_CONTROL_PLANE_NODE: favn_control_plane@control-plane.favn.local

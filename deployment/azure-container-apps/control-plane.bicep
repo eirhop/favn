@@ -39,7 +39,9 @@ param runtimeInputPinKeys string
 @secure()
 param platformServiceTokens string
 @secure()
-param capacityReaderToken string
+param capacityReaderToken string = ''
+@secure()
+param capacityReaderPreviousToken string = ''
 @secure()
 param viewSecretKeyBase string
 @secure()
@@ -127,14 +129,21 @@ resource controlPlane 'Microsoft.App/containerApps@2026-01-01' = {
         }
         {
           name: 'api-service-tokens'
-          // Both inputs are secure parameters; interpolation preserves them as
-          // ARM expressions even though the linter cannot propagate that taint.
-          #disable-next-line use-secure-value-for-secure-inputs
-          value: '${platformServiceTokens},capacity-scaler|capacity_reader:${capacityReaderToken}'
+          value: platformServiceTokens
         }
         {
           name: 'view-secret-key-base'
           value: viewSecretKeyBase
+        }
+      ], empty(capacityReaderToken) ? [] : [
+        {
+          name: 'capacity-reader-token'
+          value: capacityReaderToken
+        }
+      ], empty(capacityReaderPreviousToken) ? [] : [
+        {
+          name: 'capacity-reader-previous-token'
+          value: capacityReaderPreviousToken
         }
       ], enableEntraEasyAuth ? [
         {
@@ -148,7 +157,7 @@ resource controlPlane 'Microsoft.App/containerApps@2026-01-01' = {
         {
           name: 'control-plane'
           image: image
-          env: [
+          env: concat([
             {
               name: 'FAVN_DEPLOYMENT_MODE'
               value: 'production'
@@ -265,7 +274,17 @@ resource controlPlane 'Microsoft.App/containerApps@2026-01-01' = {
               name: 'ERL_AFLAGS'
               value: '-proto_dist inet_tls -ssl_dist_optfile /etc/favn/ssl_dist.config -kernel inet_dist_listen_min 9100 inet_dist_listen_max 9100'
             }
-          ]
+          ], empty(capacityReaderToken) ? [] : [
+            {
+              name: 'FAVN_ORCHESTRATOR_CAPACITY_READER_TOKEN'
+              secretRef: 'capacity-reader-token'
+            }
+          ], empty(capacityReaderPreviousToken) ? [] : [
+            {
+              name: 'FAVN_ORCHESTRATOR_CAPACITY_READER_PREVIOUS_TOKEN'
+              secretRef: 'capacity-reader-previous-token'
+            }
+          ])
           resources: {
             cpu: json('0.5')
             memory: '1Gi'

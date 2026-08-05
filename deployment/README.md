@@ -7,7 +7,8 @@ For each exact `{runner_pool, runner_release_id}` partition:
 
 - run one independently scalable job definition;
 - read `GET /internal/runner-demand/<pool>/<release>` with a
-  `capacity_reader` bearer token;
+  `capacity_reader` bearer token supplied to the control plane through
+  `FAVN_ORCHESTRATOR_CAPACITY_READER_TOKEN`;
 - use JSON field `outstanding` and target value `1`;
 - start runners with one slot, outbound access to the control plane, mutual-TLS
   distributed BEAM, and the exact pool/release identity;
@@ -25,7 +26,8 @@ the removal authority for a partition omitted from that overview.
 
 The Azure and Kubernetes files are reviewed reference templates, not a claim of
 managed-platform qualification. Substitute secrets through the platform secret
-store; never commit them.
+store; never commit them. Do not embed `capacity_reader` in
+`FAVN_ORCHESTRATOR_API_SERVICE_TOKENS`.
 
 [`docker-compose/`](docker-compose/README.md) is a local production-shaped
 qualification harness. It runs PostgreSQL, the control plane, and zero-to-three

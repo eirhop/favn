@@ -6,6 +6,8 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
 
   @token "alpha-credential-value-1234567890abcd"
   @token_env "favn_web:#{@token}"
+  @capacity_token "capacity-credential-value-1234567890"
+  @previous_capacity_token "previous-capacity-credential-1234567890"
   @pin_key :binary.copy(<<7>>, 32) |> Base.encode64()
   @old_pin_key :binary.copy(<<6>>, 32) |> Base.encode64()
 
@@ -57,6 +59,12 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
                token_hash: ServiceTokens.hash_token(@token),
                enabled: true,
                platform_roles: []
+             },
+             %{
+               service_identity: "capacity-scaler",
+               token_hash: ServiceTokens.hash_token(@capacity_token),
+               enabled: true,
+               platform_roles: [:capacity_reader]
              }
            ]
 
@@ -85,6 +93,144 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
              mutual_tls?: true,
              cookie_configured?: true
            }
+  end
+
+  test "resident-only deployment keeps existing general platform tokens", %{ca_file: ca_file} do
+    env =
+      ca_file
+      |> base_env()
+      |> Map.delete("FAVN_ORCHESTRATOR_CAPACITY_READER_TOKEN")
+      |> Map.put("FAVN_RUNNER_POOLS", ~s({"default":{"mode":"resident"}}))
+
+    assert {:ok, config} = ProductionRuntimeConfig.validate(env)
+
+    assert [%{service_identity: "favn_web", platform_roles: []}] =
+             config.api_service_tokens
+  end
+
+  test "aggregate capacity authority is rejected without exposing its token", %{ca_file: ca_file} do
+    assert {:error,
+            %{
+              error:
+                {:invalid_env, "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS",
+                 "capacity_reader is reserved; use FAVN_ORCHESTRATOR_CAPACITY_READER_TOKEN"}
+            } = failure} =
+             ca_file
+             |> base_env()
+             |> Map.put(
+               "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS",
+               "#{@token_env},legacy-scaler|capacity_reader:#{@capacity_token}"
+             )
+             |> ProductionRuntimeConfig.validate()
+
+    refute inspect(failure) =~ @capacity_token
+  end
+
+  test "dedicated capacity tokens support bounded rotation overlap", %{ca_file: ca_file} do
+    env =
+      ca_file
+      |> base_env()
+      |> Map.put(
+        "FAVN_ORCHESTRATOR_CAPACITY_READER_PREVIOUS_TOKEN",
+        @previous_capacity_token
+      )
+
+    assert {:ok, config} = ProductionRuntimeConfig.validate(env)
+
+    assert [primary, previous] =
+             Enum.filter(config.api_service_tokens, &(:capacity_reader in &1.platform_roles))
+
+    assert primary.service_identity == "capacity-scaler"
+    assert primary.token_hash == ServiceTokens.hash_token(@capacity_token)
+    assert previous.service_identity == "capacity-scaler-overlap"
+    assert previous.token_hash == ServiceTokens.hash_token(@previous_capacity_token)
+    refute inspect(config) =~ @capacity_token
+    refute inspect(config) =~ @previous_capacity_token
+  end
+
+  test "capacity token presence follows the runner lifecycle policy", %{ca_file: ca_file} do
+    base = base_env(ca_file)
+
+    assert {:error,
+            %{
+              error:
+                {:invalid_env, "FAVN_ORCHESTRATOR_CAPACITY_READER_TOKEN",
+                 "required when FAVN_RUNNER_POOLS contains an elastic pool"}
+            }} =
+             base
+             |> Map.delete("FAVN_ORCHESTRATOR_CAPACITY_READER_TOKEN")
+             |> ProductionRuntimeConfig.validate()
+
+    assert {:error,
+            %{
+              error:
+                {:invalid_env, "FAVN_ORCHESTRATOR_CAPACITY_READER_PREVIOUS_TOKEN",
+                 "requires FAVN_ORCHESTRATOR_CAPACITY_READER_TOKEN"}
+            }} =
+             base
+             |> Map.delete("FAVN_ORCHESTRATOR_CAPACITY_READER_TOKEN")
+             |> Map.put(
+               "FAVN_ORCHESTRATOR_CAPACITY_READER_PREVIOUS_TOKEN",
+               @previous_capacity_token
+             )
+             |> ProductionRuntimeConfig.validate()
+
+    assert {:error,
+            %{
+              error:
+                {:invalid_env, "FAVN_ORCHESTRATOR_CAPACITY_READER_PREVIOUS_TOKEN",
+                 "must differ from FAVN_ORCHESTRATOR_CAPACITY_READER_TOKEN"}
+            }} =
+             base
+             |> Map.put(
+               "FAVN_ORCHESTRATOR_CAPACITY_READER_PREVIOUS_TOKEN",
+               @capacity_token
+             )
+             |> ProductionRuntimeConfig.validate()
+  end
+
+  test "combined service-token set rejects duplicate hashes and more than 100 entries", %{
+    ca_file: ca_file
+  } do
+    base = base_env(ca_file)
+
+    assert {:error,
+            %{
+              error: {:invalid_env, "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS", :duplicate_token}
+            }} =
+             base
+             |> Map.put("FAVN_ORCHESTRATOR_CAPACITY_READER_TOKEN", @token)
+             |> ProductionRuntimeConfig.validate()
+
+    assert {:ok, boundary_config} =
+             base
+             |> Map.put("FAVN_ORCHESTRATOR_API_SERVICE_TOKENS", platform_tokens(99))
+             |> ProductionRuntimeConfig.validate()
+
+    assert length(boundary_config.api_service_tokens) == 100
+
+    assert {:ok, overlap_boundary_config} =
+             base
+             |> Map.put("FAVN_ORCHESTRATOR_API_SERVICE_TOKENS", platform_tokens(98))
+             |> Map.put(
+               "FAVN_ORCHESTRATOR_CAPACITY_READER_PREVIOUS_TOKEN",
+               @previous_capacity_token
+             )
+             |> ProductionRuntimeConfig.validate()
+
+    assert length(overlap_boundary_config.api_service_tokens) == 100
+
+    assert {:error,
+            %{
+              error: {:invalid_env, "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS", :too_many_tokens}
+            }} =
+             base
+             |> Map.put("FAVN_ORCHESTRATOR_API_SERVICE_TOKENS", platform_tokens(99))
+             |> Map.put(
+               "FAVN_ORCHESTRATOR_CAPACITY_READER_PREVIOUS_TOKEN",
+               @previous_capacity_token
+             )
+             |> ProductionRuntimeConfig.validate()
   end
 
   test "legacy bootstrap environment is rejected without exposing its value", %{ca_file: ca_file} do
@@ -142,7 +288,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
     assert config.runtime_input_pin.keys |> Map.keys() |> Enum.sort() == [1, 4]
     assert config.api_server == [enabled: true, host: "0.0.0.0", port: 4444]
     assert config.active_run_plan_max_bytes == 1_073_741_824
-    assert length(config.api_service_tokens) == 2
+    assert length(config.api_service_tokens) == 3
 
     assert config.scheduler == [
              enabled: false,
@@ -545,7 +691,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
     refute inspect(diagnostics) =~ @old_pin_key
     assert diagnostics.runtime_input_pin == %{current_version: 2, retained_versions: [1, 2]}
     assert diagnostics.active_run_plan == %{max_bytes: 512 * 1_024 * 1_024}
-    assert diagnostics.api_service_tokens.ids == ["favn_web"]
+    assert diagnostics.api_service_tokens.ids == ["capacity-scaler", "favn_web"]
 
     assert diagnostics.admin_lifecycle == %{
              bootstrap: :explicit_one_time_command,
@@ -589,11 +735,19 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
       "FAVN_RUNTIME_INPUT_PIN_KEYS" => Jason.encode!(%{"1" => @pin_key}),
       "FAVN_WORKSPACE_IDS" => "salmon-one,salmon-two",
       "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS" => @token_env,
+      "FAVN_ORCHESTRATOR_CAPACITY_READER_TOKEN" => @capacity_token,
       "FAVN_CONTROL_PLANE_NODE" => "control@control-plane.internal",
       "FAVN_DISTRIBUTION_COOKIE" => "bN7!tQ2#vL9@xR4$kM8%pC6&zH3*eW5?",
       "FAVN_BEAM_DISTRIBUTION_PORT" => "9100",
       "FAVN_DISTRIBUTION_TLS_OPTIONS_FILE" => ca_file <> ".dist.config"
     }
+  end
+
+  defp platform_tokens(count) do
+    Enum.map_join(1..count, ",", fn index ->
+      secret = "credential-value-#{String.pad_leading(Integer.to_string(index), 32, "0")}"
+      "platform-#{index}|platform_reader:#{secret}"
+    end)
   end
 
   defp write_tls_options(path, credential) do

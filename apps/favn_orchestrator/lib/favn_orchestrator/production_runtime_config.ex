@@ -9,6 +9,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
 
   alias FavnOrchestrator.Auth.ServiceTokens
   alias FavnOrchestrator.API.ManifestPublication.Config, as: ManifestPublicationConfig
+  alias FavnOrchestrator.RunnerPools
   alias Favn.RuntimeInput.KeyringConfig
   alias Favn.DeploymentMode
 
@@ -29,6 +30,8 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
   @max_http_connections 100_000
   @max_http_request_timeout_ms 120_000
   @max_http_idle_timeout_ms 300_000
+  @capacity_reader_token_env "FAVN_ORCHESTRATOR_CAPACITY_READER_TOKEN"
+  @capacity_reader_previous_token_env "FAVN_ORCHESTRATOR_CAPACITY_READER_PREVIOUS_TOKEN"
   @type runtime_input_pin_config :: %{
           keys: %{pos_integer() => binary()},
           current_version: pos_integer()
@@ -48,7 +51,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
           active_run_plan_max_bytes: pos_integer(),
           scheduler: keyword(),
           run_submissions: keyword(),
-          runner_pools: FavnOrchestrator.RunnerPools.t(),
+          runner_pools: RunnerPools.t(),
           shutdown_drain_timeout_ms: pos_integer(),
           runner: map()
         }
@@ -166,13 +169,13 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
          {:ok, api_server} <- api_server(env),
          {:ok, http_server} <- http_server(env),
          {:ok, manifest_publication} <- manifest_publication(env),
-         {:ok, tokens} <- api_service_tokens(env),
+         {:ok, runner_pools} <- runner_pools(env),
+         {:ok, tokens} <- api_service_tokens(env, runner_pools),
          {:ok, workspace_ids} <- workspace_ids(env),
          {:ok, auth_session_ttl_seconds} <- auth_session_ttl_seconds(env),
          {:ok, active_run_plan_max_bytes} <- active_run_plan_max_bytes(env),
          {:ok, scheduler} <- scheduler(env, workspace_ids),
          {:ok, run_submissions} <- run_submissions(env),
-         {:ok, runner_pools} <- runner_pools(env),
          {:ok, shutdown_drain_timeout_ms} <- shutdown_drain_timeout_ms(env) do
       {:ok,
        %{
@@ -423,11 +426,72 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
     end
   end
 
-  defp api_service_tokens(env) do
-    with {:ok, raw} <- required(env, "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS") do
-      ServiceTokens.from_env_string(raw)
+  defp api_service_tokens(env, runner_pools) do
+    with {:ok, raw} <- required(env, "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS"),
+         {:ok, platform_tokens} <- ServiceTokens.from_env_string(raw),
+         {:ok, primary} <-
+           optional_capacity_reader_token(
+             env,
+             @capacity_reader_token_env,
+             "capacity-scaler"
+           ),
+         {:ok, previous} <-
+           optional_capacity_reader_token(
+             env,
+             @capacity_reader_previous_token_env,
+             "capacity-scaler-overlap"
+           ),
+         :ok <- validate_capacity_reader_contract(primary, previous, runner_pools),
+         tokens = platform_tokens ++ Enum.reject([primary, previous], &is_nil/1),
+         :ok <- ServiceTokens.validate_config(tokens) do
+      {:ok, tokens}
     end
   end
+
+  defp optional_capacity_reader_token(env, name, identity) do
+    case Map.fetch(env, name) do
+      :error ->
+        {:ok, nil}
+
+      {:ok, raw} when is_binary(raw) ->
+        if String.trim(raw) == "" do
+          {:error, {:invalid_secret_env, name, :blank}}
+        else
+          ServiceTokens.from_raw_token(identity, [:capacity_reader], raw, name)
+        end
+
+      {:ok, _other} ->
+        {:error, {:invalid_secret_env, name, :blank}}
+    end
+  end
+
+  defp validate_capacity_reader_contract(nil, previous, _runner_pools)
+       when not is_nil(previous) do
+    {:error,
+     {:invalid_env, @capacity_reader_previous_token_env, "requires #{@capacity_reader_token_env}"}}
+  end
+
+  defp validate_capacity_reader_contract(
+         %{token_hash: token_hash},
+         %{token_hash: token_hash},
+         _runner_pools
+       ) do
+    {:error,
+     {:invalid_env, @capacity_reader_previous_token_env,
+      "must differ from #{@capacity_reader_token_env}"}}
+  end
+
+  defp validate_capacity_reader_contract(nil, nil, runner_pools) do
+    if Enum.any?(runner_pools, fn {_name, policy} -> policy.mode == :elastic end) do
+      {:error,
+       {:invalid_env, @capacity_reader_token_env,
+        "required when FAVN_RUNNER_POOLS contains an elastic pool"}}
+    else
+      :ok
+    end
+  end
+
+  defp validate_capacity_reader_contract(_primary, _previous, _runner_pools), do: :ok
 
   defp auth_session_ttl_seconds(env) do
     int(
@@ -528,7 +592,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
     with {:ok, raw} <- required_or_default(env, "FAVN_RUNNER_POOLS", default),
          true <- byte_size(raw) <= 65_536,
          {:ok, decoded} <- Jason.decode(raw),
-         {:ok, pools} <- FavnOrchestrator.RunnerPools.normalize(decoded) do
+         {:ok, pools} <- RunnerPools.normalize(decoded) do
       {:ok, pools}
     else
       _other ->

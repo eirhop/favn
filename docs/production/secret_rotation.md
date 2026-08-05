@@ -19,10 +19,11 @@ Never pass secrets as command-line arguments or place them in Compose YAML,
 manifests, runner identities, image labels, logs, diagnostics, telemetry,
 support bundles, or shell history.
 
-## Service token
+## General platform service token
 
 `FAVN_ORCHESTRATOR_API_SERVICE_TOKENS` supports overlapping versioned
-identities.
+identities for general platform roles. It rejects `capacity_reader` and the
+reserved `capacity-scaler` identities.
 
 1. Add the new identity/token beside the old value and restart the control
    plane.
@@ -31,6 +32,27 @@ identities.
 
 Do not reuse one identity with two secrets. The versioned identity is the
 observable, non-secret rotation handle.
+
+## Capacity-reader token
+
+`FAVN_ORCHESTRATOR_CAPACITY_READER_TOKEN` is the only primary credential for
+elastic infrastructure demand reads. The optional
+`FAVN_ORCHESTRATOR_CAPACITY_READER_PREVIOUS_TOKEN` provides bounded overlap;
+it is invalid without the primary token. Never add `capacity_reader` to the
+general platform-token variable.
+
+1. Create the new secret version without changing the scaler.
+2. Configure the new version as the primary and the active old version as the
+   previous token, then restart the control plane.
+3. Prove both versions can read one exact runner-demand endpoint.
+4. Move every scaler to the new version and prove another authenticated demand
+   read.
+5. Remove the previous variable, restart the control plane, and verify the old
+   credential is rejected.
+
+The primary and previous values must differ. The control plane retains only
+their hashes and reports only the reserved non-secret identities
+`capacity-scaler` and `capacity-scaler-overlap`.
 
 ## Runtime-input encryption key
 

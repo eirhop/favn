@@ -104,6 +104,7 @@ defmodule Favn.DeploymentReferenceConformanceTest do
           "FAVN_RUNTIME_INPUT_PIN_KEYS",
           "FAVN_RUNTIME_INPUT_PIN_KEY_VERSION",
           "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS",
+          "FAVN_ORCHESTRATOR_CAPACITY_READER_TOKEN",
           "FAVN_WORKSPACE_IDS",
           "FAVN_RUNNER_POOLS",
           "FAVN_VIEW_PUBLIC_ORIGIN",
@@ -117,8 +118,11 @@ defmodule Favn.DeploymentReferenceConformanceTest do
       assert control_plane =~ "name: '#{variable}'"
     end
 
-    assert configuration =~
-             "capacity-scaler|capacity_reader:${capacityReaderToken}"
+    assert configuration =~ "name: 'capacity-reader-token'"
+    assert configuration =~ "value: capacityReaderToken"
+    assert source =~ "empty(capacityReaderToken) ? []"
+    assert source =~ "FAVN_ORCHESTRATOR_CAPACITY_READER_PREVIOUS_TOKEN"
+    refute source =~ "capacity-scaler|capacity_reader:"
 
     assert control_plane =~ "-proto_dist inet_tls"
     refute source =~ "param databaseUrl"
@@ -197,6 +201,12 @@ defmodule Favn.DeploymentReferenceConformanceTest do
 
     assert control_plane["environment"]["FAVN_ORCHESTRATOR_API_SERVICE_TOKENS"] =~
              "platform-v1|platform_operator+platform_reader:"
+
+    refute control_plane["environment"]["FAVN_ORCHESTRATOR_API_SERVICE_TOKENS"] =~
+             "capacity_reader"
+
+    assert control_plane["environment"]["FAVN_ORCHESTRATOR_CAPACITY_READER_TOKEN"] ==
+             "${FAVN_CAPACITY_TOKEN}"
 
     assert "control-plane-certificates:/etc/favn/tls:ro" in control_plane["volumes"]
     refute Enum.any?(control_plane["volumes"], &String.starts_with?(&1, "runner-certificates:"))

@@ -281,8 +281,8 @@ store or external secret.
 
 - [ ] Generate a unique `FAVN_VIEW_SECRET_KEY_BASE` containing at least 64
   random bytes.
-- [ ] Generate unique, high-entropy service tokens and the BEAM distribution
-  cookie.
+- [ ] Generate unique, high-entropy general platform service tokens, a dedicated
+  capacity-reader token for elastic scaling, and the BEAM distribution cookie.
 - [ ] Store database passwords, service tokens, cookies, keys, and
   certificates in a secret manager.
 - [ ] Mount certificate and CA files read-only.

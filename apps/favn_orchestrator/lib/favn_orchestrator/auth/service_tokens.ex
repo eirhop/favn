@@ -10,6 +10,9 @@ defmodule FavnOrchestrator.Auth.ServiceTokens do
   @identity_pattern ~r/\A[A-Za-z0-9][A-Za-z0-9_.-]*\z/
   @service_roles [:capacity_reader, :platform_reader, :platform_operator, :platform_admin]
   @config_keys [:enabled, :platform_roles, :service_identity, :token, :token_hash]
+  @api_tokens_env "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS"
+  @capacity_token_env "FAVN_ORCHESTRATOR_CAPACITY_READER_TOKEN"
+  @reserved_capacity_identities ["capacity-scaler", "capacity-scaler-overlap"]
 
   @type token_config :: %{
           required(:service_identity) => String.t(),
@@ -37,6 +40,24 @@ defmodule FavnOrchestrator.Auth.ServiceTokens do
       end
     else
       too_many_tokens()
+    end
+  end
+
+  @spec from_raw_token(String.t(), [atom()], String.t(), String.t()) ::
+          {:ok, token_config()} | {:error, term()}
+  def from_raw_token(identity, platform_roles, raw, source_env)
+      when is_binary(identity) and is_list(platform_roles) and is_binary(raw) and
+             is_binary(source_env) do
+    with {:ok, identity} <- normalize_identity(identity),
+         {:ok, platform_roles} <- normalize_platform_roles(platform_roles),
+         :ok <- validate_secret(raw, source_env) do
+      {:ok,
+       %{
+         service_identity: identity,
+         token_hash: hash_token(String.trim(raw)),
+         enabled: true,
+         platform_roles: platform_roles
+       }}
     end
   end
 
@@ -136,7 +157,7 @@ defmodule FavnOrchestrator.Auth.ServiceTokens do
     |> Base.url_encode64(padding: false)
   end
 
-  defp ensure_present([]), do: {:error, {:missing_env, "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS"}}
+  defp ensure_present([]), do: {:error, {:missing_env, @api_tokens_env}}
   defp ensure_present(_tokens), do: :ok
 
   defp validate_env_bounds(tokens) do
@@ -148,7 +169,7 @@ defmodule FavnOrchestrator.Auth.ServiceTokens do
   end
 
   defp too_many_tokens,
-    do: {:error, {:invalid_env, "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS", :too_many_tokens}}
+    do: {:error, {:invalid_env, @api_tokens_env, :too_many_tokens}}
 
   defp parse_env_tokens(tokens) do
     tokens
@@ -167,7 +188,8 @@ defmodule FavnOrchestrator.Auth.ServiceTokens do
   defp parse_env_token(entry) do
     with [principal, token] <- String.split(entry, ":", parts: 2),
          {:ok, {identity, platform_roles}} <- normalize_env_principal(principal),
-         :ok <- validate_secret(token) do
+         :ok <- validate_aggregate_authority(identity, platform_roles),
+         :ok <- validate_secret(token, @api_tokens_env) do
       {:ok,
        %{
          service_identity: identity,
@@ -177,12 +199,26 @@ defmodule FavnOrchestrator.Auth.ServiceTokens do
        }}
     else
       [_token_without_identity] ->
-        {:error,
-         {:invalid_env, "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS",
-          "identity[|platform_role+...]:token"}}
+        {:error, {:invalid_env, @api_tokens_env, "identity[|platform_role+...]:token"}}
 
       {:error, reason} ->
         {:error, reason}
+    end
+  end
+
+  defp validate_aggregate_authority(identity, _platform_roles)
+       when identity in @reserved_capacity_identities do
+    {:error,
+     {:invalid_env, @api_tokens_env,
+      "capacity-scaler identities are reserved; use #{@capacity_token_env}"}}
+  end
+
+  defp validate_aggregate_authority(_identity, platform_roles) do
+    if :capacity_reader in platform_roles do
+      {:error,
+       {:invalid_env, @api_tokens_env, "capacity_reader is reserved; use #{@capacity_token_env}"}}
+    else
+      :ok
     end
   end
 
@@ -249,7 +285,7 @@ defmodule FavnOrchestrator.Auth.ServiceTokens do
   end
 
   defp normalize_raw_token(token) when is_binary(token) and token != "" do
-    with :ok <- validate_secret(token) do
+    with :ok <- validate_secret(token, @api_tokens_env) do
       {:ok, hash_token(String.trim(token))}
     end
   end
@@ -267,19 +303,19 @@ defmodule FavnOrchestrator.Auth.ServiceTokens do
   defp normalize_identity(identity) when is_binary(identity) do
     case String.trim(identity) do
       "" ->
-        {:error, {:invalid_env, "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS", :blank_identity}}
+        {:error, {:invalid_env, @api_tokens_env, :blank_identity}}
 
       trimmed ->
         if byte_size(trimmed) <= @max_identity_bytes and Regex.match?(@identity_pattern, trimmed) do
           {:ok, trimmed}
         else
-          {:error, {:invalid_env, "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS", :invalid_identity}}
+          {:error, {:invalid_env, @api_tokens_env, :invalid_identity}}
         end
     end
   end
 
   defp normalize_identity(_identity),
-    do: {:error, {:invalid_env, "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS", :blank_identity}}
+    do: {:error, {:invalid_env, @api_tokens_env, :blank_identity}}
 
   defp normalize_env_principal(principal) do
     case String.split(principal, "|", parts: 2) do
@@ -315,20 +351,20 @@ defmodule FavnOrchestrator.Auth.ServiceTokens do
   defp normalize_platform_roles(_roles), do: invalid_platform_roles()
 
   defp invalid_platform_roles,
-    do: {:error, {:invalid_env, "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS", :invalid_platform_roles}}
+    do: {:error, {:invalid_env, @api_tokens_env, :invalid_platform_roles}}
 
-  defp validate_secret(token) when is_binary(token) do
+  defp validate_secret(token, source_env) when is_binary(token) and is_binary(source_env) do
     trimmed = String.trim(token)
 
     cond do
       byte_size(trimmed) > @max_token_bytes ->
-        {:error, {:invalid_secret_env, "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS", :too_long}}
+        {:error, {:invalid_secret_env, source_env, :too_long}}
 
       byte_size(trimmed) < @min_token_bytes ->
-        {:error, {:invalid_secret_env, "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS", :too_short}}
+        {:error, {:invalid_secret_env, source_env, :too_short}}
 
       weak_token?(trimmed) ->
-        {:error, {:invalid_secret_env, "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS", :weak}}
+        {:error, {:invalid_secret_env, source_env, :weak}}
 
       true ->
         :ok
@@ -357,7 +393,7 @@ defmodule FavnOrchestrator.Auth.ServiceTokens do
     if length(identities) == length(Enum.uniq(identities)) do
       :ok
     else
-      {:error, {:invalid_env, "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS", :duplicate_identity}}
+      {:error, {:invalid_env, @api_tokens_env, :duplicate_identity}}
     end
   end
 
@@ -367,12 +403,13 @@ defmodule FavnOrchestrator.Auth.ServiceTokens do
     if length(hashes) == length(Enum.uniq(hashes)) do
       :ok
     else
-      {:error, {:invalid_env, "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS", :duplicate_token}}
+      {:error, {:invalid_env, @api_tokens_env, :duplicate_token}}
     end
   end
 
   defp validate_normalized_configs(configs) do
-    with :ok <- reject_duplicate_identities(configs),
+    with :ok <- validate_env_bounds(configs),
+         :ok <- reject_duplicate_identities(configs),
          :ok <- reject_duplicate_token_hashes(configs) do
       {:ok, configs}
     end
