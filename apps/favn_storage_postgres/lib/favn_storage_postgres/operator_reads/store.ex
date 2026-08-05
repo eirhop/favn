@@ -51,7 +51,6 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
   alias FavnStoragePostgres.Schemas.Run
   alias FavnStoragePostgres.Schemas.RunTarget
   alias FavnStoragePostgres.Schemas.TargetStatus
-  alias FavnStoragePostgres.Schemas.WorkspaceDeployment
 
   @max_batch 500
   @group_statuses [:pending, :running, :succeeded, :failed]
@@ -335,14 +334,11 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
 
       rows =
         from(status in TargetStatus,
-          join: deployment in WorkspaceDeployment,
-          on:
-            deployment.workspace_id == status.workspace_id and
-              deployment.deployment_id == status.deployment_id,
           where:
             status.workspace_id == ^workspace_id and
-              deployment.manifest_version_id == ^query.manifest_version_id and
               status.target_kind == ^target_kind and status.target_id in ^query.target_ids,
+          distinct: status.target_id,
+          order_by: [asc: status.target_id, desc: status.source_publication_id],
           select: status
         )
         |> Repo.all()
@@ -372,11 +368,10 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
             SELECT root.*
             FROM favn_control.runs AS root
             WHERE root.workspace_id = $1
-              AND root.deployment_id = $2
               AND root.run_id = root.root_execution_group_id
-              AND ($5::bigint IS NULL
-                   OR root.submitted_event_id < $5
-                   OR (root.submitted_event_id = $5 AND root.run_id < $6))
+              AND ($4::bigint IS NULL
+                   OR root.submitted_event_id < $4
+                   OR (root.submitted_event_id = $4 AND root.run_id < $5))
               AND EXISTS (
                 SELECT 1
                 FROM favn_control.runs AS member
@@ -385,12 +380,11 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
                  AND target.run_id = member.run_id
                 WHERE member.workspace_id = root.workspace_id
                   AND member.root_execution_group_id = root.run_id
-                  AND target.deployment_id = $2
-                  AND target.target_kind = $3
-                  AND target.target_id = $4
+                  AND target.target_kind = $2
+                  AND target.target_id = $3
               )
             ORDER BY root.submitted_event_id DESC, root.run_id DESC
-            LIMIT $7
+            LIMIT $6
           )
           SELECT selected.workspace_id,
                  selected.run_id,
@@ -422,9 +416,8 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
              AND target.run_id = member.run_id
             WHERE member.workspace_id = root.workspace_id
               AND member.root_execution_group_id = root.run_id
-              AND target.deployment_id = $2
-              AND target.target_kind = $3
-              AND target.target_id = $4
+              AND target.target_kind = $2
+              AND target.target_id = $3
             ORDER BY (member.run_id <> root.run_id) DESC,
                      target.submitted_event_id DESC,
                      member.run_id DESC
@@ -439,7 +432,6 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
           """,
           [
             page.workspace_context.workspace_id,
-            page.deployment_id,
             Atom.to_string(page.target_kind),
             page.target_id,
             after_event_id,
@@ -1466,7 +1458,7 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
   defp validate_target_statuses(query) do
     ids = query.target_ids
 
-    if workspace_context?(query.workspace_context) and valid_id?(query.manifest_version_id) and
+    if workspace_context?(query.workspace_context) and
          query.target_kind in [:asset, :pipeline] and valid_id_list?(ids),
        do: :ok,
        else: {:error, ErrorMapper.map(:invalid)}
@@ -1481,7 +1473,7 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
           page.after
         )
 
-    if workspace_context?(page.workspace_context) and valid_id?(page.deployment_id) and
+    if workspace_context?(page.workspace_context) and
          page.target_kind in [:asset, :pipeline] and valid_id?(page.target_id) and cursor? and
          valid_limit?(page.limit),
        do: :ok,

@@ -157,28 +157,26 @@ defmodule FavnOrchestrator.Persistence.Queries.PageGroupWindows do
 end
 
 defmodule FavnOrchestrator.Persistence.Queries.GetTargetStatuses do
-  @moduledoc "Batch-fetches exact target status identities for one manifest and kind."
+  @moduledoc "Batch-fetches the latest status for logical targets in one workspace."
 
   alias FavnOrchestrator.Persistence.WorkspaceContext
-  @enforce_keys [:workspace_context, :manifest_version_id, :target_kind, :target_ids]
-  defstruct [:workspace_context, :manifest_version_id, :target_kind, :target_ids]
+  @enforce_keys [:workspace_context, :target_kind, :target_ids]
+  defstruct [:workspace_context, :target_kind, :target_ids]
 
   @type t :: %__MODULE__{
           workspace_context: WorkspaceContext.t(),
-          manifest_version_id: String.t(),
           target_kind: :asset | :pipeline,
           target_ids: [String.t()]
         }
 end
 
 defmodule FavnOrchestrator.Persistence.Queries.PageTargetRuns do
-  @moduledoc "Keyset-pages one representative target run per execution group."
+  @moduledoc "Keyset-pages a logical target's execution groups across deployments."
 
   alias FavnOrchestrator.Persistence.WorkspaceContext
-  @enforce_keys [:workspace_context, :deployment_id, :target_kind, :target_id]
+  @enforce_keys [:workspace_context, :target_kind, :target_id]
   defstruct [
     :workspace_context,
-    :deployment_id,
     :target_kind,
     :target_id,
     :after,
@@ -187,7 +185,6 @@ defmodule FavnOrchestrator.Persistence.Queries.PageTargetRuns do
 
   @type t :: %__MODULE__{
           workspace_context: WorkspaceContext.t(),
-          deployment_id: String.t(),
           target_kind: :asset | :pipeline,
           target_id: String.t(),
           after: %{submitted_event_id: pos_integer(), run_id: String.t()} | nil,
