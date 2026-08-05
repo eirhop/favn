@@ -18,8 +18,20 @@ defmodule FavnOrchestrator.RunReadModel.OperatorRunOverviewTest do
       kind: :day,
       start_at: ~U[2026-06-24 00:00:00Z],
       end_at: ~U[2026-07-02 00:00:00Z],
-      timezone: "Etc/UTC"
+      timezone: "Europe/Oslo"
     }
+
+    july_window = %{
+      key: "runtime:july",
+      label: "Jul 2026",
+      kind: :month,
+      start_at: ~U[2026-07-01 00:00:00Z],
+      end_at: ~U[2026-08-01 00:00:00Z],
+      timezone: "Europe/Oslo"
+    }
+
+    oslo_effective_window = shift_window(effective_window, "Europe/Oslo")
+    oslo_july_window = shift_window(july_window, "Europe/Oslo")
 
     projection = %OperatorRunOverview{
       overview: %ExecutionGroupOverview{
@@ -53,6 +65,18 @@ defmodule FavnOrchestrator.RunReadModel.OperatorRunOverviewTest do
           status: :ok,
           started_at: @started_at,
           finished_at: @finished_at
+        },
+        %AssetAttemptOverview{
+          workspace_id: "workspace",
+          root_run_id: "root",
+          run_id: "child",
+          asset_step_id: "gold-july",
+          asset_ref: "MyApp.Gold:orders",
+          window_identity: july_window.key,
+          window: july_window,
+          status: :skipped_fresh,
+          started_at: @started_at,
+          finished_at: @started_at
         }
       ],
       planned_steps: [
@@ -62,7 +86,16 @@ defmodule FavnOrchestrator.RunReadModel.OperatorRunOverviewTest do
           node_identity: "already-attempted",
           asset_ref: "MyApp.Gold:orders",
           window_identity: "persisted-plan-key",
-          window: effective_window,
+          window: %{oslo_effective_window | key: "plan:june"},
+          stage: 0
+        },
+        %PlannedAssetStep{
+          root_run_id: "root",
+          run_id: "child",
+          node_identity: "already-skipped",
+          asset_ref: "MyApp.Gold:orders",
+          window_identity: "persisted-july-key",
+          window: %{oslo_july_window | key: "plan:july"},
           stage: 0
         },
         %PlannedAssetStep{
@@ -77,12 +110,12 @@ defmodule FavnOrchestrator.RunReadModel.OperatorRunOverviewTest do
       ],
       planned_steps_truncated?: false,
       attempt_counts: %{
-        total: 1,
-        completed: 1,
+        total: 2,
+        completed: 2,
         failed: 0,
         running: 0,
         queued: 0,
-        effective_windows: 1
+        effective_windows: 2
       },
       attempts_truncated?: false,
       runs_truncated?: true,
@@ -92,18 +125,21 @@ defmodule FavnOrchestrator.RunReadModel.OperatorRunOverviewTest do
     detail = RunReadModel.from_operator_run_overview(projection)
 
     assert detail.summary.requested_window_counts == %{total: 1, completed: 1, failed: 0}
-    assert detail.summary.effective_window_count == 1
+    assert detail.summary.effective_window_count == 2
     assert detail.summary.progress.label == "1/1 requested windows complete"
     assert detail.summary.started_at == @started_at
     assert detail.summary.finished_at == @finished_at
     assert detail.summary.duration_ms == 300_000
     assert detail.requested_windows == []
-    assert detail.windows == [effective_window]
-    assert [attempt, planned] = detail.asset_attempts
+    assert detail.windows == [effective_window, july_window]
+    assert detail.has_non_windowed_assets?
+    assert [attempt, skipped, planned] = detail.asset_attempts
     assert attempt.id == "child:gold-expanded"
     assert attempt.asset_step_id == "gold-expanded"
+    assert skipped.id == "child:gold-july"
     assert planned.id == "planned:child:waiting"
     assert planned.status == :planned
+    assert Enum.count(detail.asset_attempts, &(&1.asset_ref == "MyApp.Gold:orders")) == 2
     assert detail.child_run_details_truncated?
 
     assert detail.root_run.runner_releases == %{
@@ -131,5 +167,13 @@ defmodule FavnOrchestrator.RunReadModel.OperatorRunOverviewTest do
       updated_at: @finished_at,
       terminal_at: @finished_at
     }
+  end
+
+  defp shift_window(window, timezone) do
+    database = Favn.Timezone.database!()
+
+    window
+    |> Map.update!(:start_at, &DateTime.shift_zone!(&1, timezone, database))
+    |> Map.update!(:end_at, &DateTime.shift_zone!(&1, timezone, database))
   end
 end

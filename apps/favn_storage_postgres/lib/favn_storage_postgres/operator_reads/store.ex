@@ -6,6 +6,7 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
   import Ecto.Query
 
   alias Ecto.Adapters.SQL
+  alias Favn.Window.Key, as: WindowKey
   alias FavnOrchestrator.Persistence.Error
   alias FavnOrchestrator.Persistence.PlatformContext
   alias FavnOrchestrator.Persistence.Queries.FreshnessIdentity
@@ -37,6 +38,7 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
   alias FavnOrchestrator.Persistence.Results.RunSummary
   alias FavnOrchestrator.Persistence.Results.TargetStatus, as: TargetStatusResult
   alias FavnOrchestrator.Persistence.WorkspaceContext
+  alias FavnOrchestrator.Storage.ExactDateTimeCodec
   alias FavnStoragePostgres.ErrorMapper
   alias FavnStoragePostgres.Repo
   alias FavnStoragePostgres.Schemas.Backfill
@@ -1018,6 +1020,29 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
 
   defp restore_window(nil), do: nil
 
+  defp restore_window(%{"__type__" => "window_runtime"} = window) do
+    with kind when not is_nil(kind) <- known_window_kind(map_field(window, "kind")),
+         timezone when is_binary(timezone) <- map_field(window, "timezone"),
+         {:ok, start_at} <- ExactDateTimeCodec.decode(map_field(window, "start_at")),
+         {:ok, end_at} <- ExactDateTimeCodec.decode(map_field(window, "end_at")),
+         key when is_binary(key) <- encoded_window_key(map_field(window, "key")),
+         {:ok, decoded_key} <- WindowKey.decode(key),
+         {:ok, expected_key} <- WindowKey.new(kind, start_at, timezone),
+         true <- decoded_key == expected_key,
+         :lt <- DateTime.compare(start_at, end_at) do
+      %{
+        key: key,
+        label: nil,
+        kind: kind,
+        start_at: start_at,
+        end_at: end_at,
+        timezone: timezone
+      }
+    else
+      reason -> raise ArgumentError, "invalid persisted runtime window: #{inspect(reason)}"
+    end
+  end
+
   defp restore_window(window) when is_map(window) do
     %{
       key: map_field(window, "key"),
@@ -1028,6 +1053,12 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
       timezone: map_field(window, "timezone")
     }
   end
+
+  defp encoded_window_key(%{"__type__" => "window_key", "value" => value})
+       when is_binary(value),
+       do: value
+
+  defp encoded_window_key(_value), do: nil
 
   defp known_window_kind("hour"), do: :hour
   defp known_window_kind("day"), do: :day

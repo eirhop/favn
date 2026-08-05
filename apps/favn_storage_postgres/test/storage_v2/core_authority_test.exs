@@ -19,6 +19,8 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias Favn.RuntimeInput.Pin
   alias Favn.RuntimeInput.Resolution
   alias Favn.RelationRef
+  alias Favn.Window.Key, as: WindowKey
+  alias Favn.Window.Runtime, as: RuntimeWindow
   alias FavnOrchestrator.Persistence.BackfillPlan
   alias FavnOrchestrator.Persistence.Commands.ActivateBackfillPlan
   alias FavnOrchestrator.Persistence.Commands.ActivateRecoveredTargetGeneration
@@ -3537,6 +3539,38 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert [%{asset_ref: "Elixir.MyApp.Asset:asset", stage: 0}] = overview.planned_steps
     assert overview.attempts == []
     refute overview.planned_steps_truncated?
+  end
+
+  test "operator overview restores typed windows from immutable planned nodes", fixture do
+    timezone = "Europe/Oslo"
+
+    start_at =
+      DateTime.shift_zone!(~U[2026-05-31 22:00:00Z], timezone, Favn.Timezone.database!())
+
+    end_at =
+      DateTime.shift_zone!(~U[2026-06-30 22:00:00Z], timezone, Favn.Timezone.database!())
+
+    anchor_key = WindowKey.new!(:month, start_at, timezone)
+    window = RuntimeWindow.new!(:month, start_at, end_at, anchor_key, timezone: timezone)
+
+    {command, run} = pipeline_run_command(fixture, window)
+    assert {:ok, _created} = RunStore.create_run(command)
+    assert {:ok, publications} = Sequencer.sequence_batch()
+    assert drain_projector("planned-window-overview:" <> run.id) >= length(publications)
+
+    assert {:ok, overview} =
+             OperatorReadStore.get_operator_run_overview(%GetOperatorRunOverview{
+               workspace_context: fixture.workspace_context,
+               run_id: run.id,
+               limit: 10
+             })
+
+    assert [%{window: restored}] = overview.planned_steps
+    assert restored.key == WindowKey.encode(window.key)
+    assert restored.kind == :month
+    assert restored.start_at == start_at
+    assert restored.end_at == end_at
+    assert restored.timezone == timezone
   end
 
   test "asset detail names what it reads and what reads it", fixture do
@@ -8472,10 +8506,12 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     }
   end
 
-  defp pipeline_run_command(fixture) do
+  defp pipeline_run_command(fixture), do: pipeline_run_command(fixture, nil)
+
+  defp pipeline_run_command(fixture, window) do
     run_id = "pipeline-run-#{System.unique_integer([:positive])}"
     ref = {MyApp.Asset, :asset}
-    node_key = {ref, nil}
+    node_key = {ref, window && window.key}
 
     plan = %Favn.Plan{
       target_refs: [ref],
@@ -8485,7 +8521,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
         node_key => %{
           ref: ref,
           node_key: node_key,
-          window: nil,
+          window: window,
           upstream: [],
           downstream: [],
           stage: 0,
