@@ -567,6 +567,7 @@ defmodule FavnOrchestrator.Persistence.Results.OperatorRunOverview do
     :attempts_truncated?,
     :runs_truncated?,
     :target_refs,
+    asset_counts_by_run: %{},
     planned_steps: [],
     planned_steps_truncated?: false
   ]
@@ -583,12 +584,27 @@ defmodule FavnOrchestrator.Persistence.Results.OperatorRunOverview do
             required(:failed) => non_neg_integer()
           },
           attempts: [AssetAttemptOverview.t()],
+          asset_counts_by_run: %{
+            optional(String.t()) => %{
+              required(:total) => non_neg_integer(),
+              required(:completed) => non_neg_integer(),
+              required(:succeeded) => non_neg_integer(),
+              required(:skipped) => non_neg_integer(),
+              required(:failed) => non_neg_integer(),
+              required(:running) => non_neg_integer(),
+              required(:queued) => non_neg_integer(),
+              required(:planned) => non_neg_integer()
+            }
+          },
           attempt_counts: %{
             required(:total) => non_neg_integer(),
             required(:completed) => non_neg_integer(),
+            required(:succeeded) => non_neg_integer(),
+            required(:skipped) => non_neg_integer(),
             required(:failed) => non_neg_integer(),
             required(:running) => non_neg_integer(),
             required(:queued) => non_neg_integer(),
+            required(:planned) => non_neg_integer(),
             required(:effective_windows) => non_neg_integer()
           },
           attempts_truncated?: boolean(),

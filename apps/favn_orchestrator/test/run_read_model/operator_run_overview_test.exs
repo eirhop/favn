@@ -109,12 +109,27 @@ defmodule FavnOrchestrator.RunReadModel.OperatorRunOverviewTest do
         }
       ],
       planned_steps_truncated?: false,
+      asset_counts_by_run: %{
+        "child" => %{
+          total: 3,
+          completed: 2,
+          succeeded: 1,
+          skipped: 1,
+          failed: 0,
+          running: 0,
+          queued: 0,
+          planned: 1
+        }
+      },
       attempt_counts: %{
-        total: 2,
+        total: 3,
         completed: 2,
+        succeeded: 1,
+        skipped: 1,
         failed: 0,
         running: 0,
         queued: 0,
+        planned: 1,
         effective_windows: 2
       },
       attempts_truncated?: false,
@@ -126,6 +141,9 @@ defmodule FavnOrchestrator.RunReadModel.OperatorRunOverviewTest do
 
     assert detail.summary.requested_window_counts == %{total: 1, completed: 1, failed: 0}
     assert detail.summary.effective_window_count == 2
+    assert detail.summary.succeeded_asset_attempts == 1
+    assert detail.summary.skipped_asset_attempts == 1
+    assert detail.summary.planned_asset_attempts == 1
     assert detail.summary.progress.label == "1/1 requested windows complete"
     assert detail.summary.started_at == @started_at
     assert detail.summary.finished_at == @finished_at
@@ -141,6 +159,15 @@ defmodule FavnOrchestrator.RunReadModel.OperatorRunOverviewTest do
     assert planned.status == :planned
     assert Enum.count(detail.asset_attempts, &(&1.asset_ref == "MyApp.Gold:orders")) == 2
     assert detail.child_run_details_truncated?
+    assert [%{asset_counts: %{total: 3, skipped: 1, planned: 1}}] = detail.child_runs
+
+    truncated_detail =
+      projection
+      |> Map.put(:attempts_truncated?, true)
+      |> RunReadModel.from_operator_run_overview()
+
+    assert Enum.all?(truncated_detail.asset_attempts, &(&1.status != :planned))
+    assert truncated_detail.windows == [effective_window, july_window]
 
     assert detail.root_run.runner_releases == %{
              "default" => FavnTestSupport.runner_release_id()

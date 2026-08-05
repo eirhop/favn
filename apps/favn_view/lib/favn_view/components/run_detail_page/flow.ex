@@ -117,22 +117,32 @@ defmodule FavnView.Components.RunDetailPage.Flow do
           phx-value-attempt-id={bar.attempt_id}
           disabled={is_nil(bar.attempt_id)}
           class={[
-            "absolute z-10 flex h-6 min-w-6 items-center overflow-hidden rounded-full border",
-            "px-1.5 text-[0.7rem] leading-none disabled:cursor-default",
+            "absolute z-10 flex h-6 min-w-6 items-center justify-center rounded-full",
+            "text-[0.7rem] leading-none disabled:cursor-default",
             "hover:brightness-125 focus-visible:outline focus-visible:outline-2",
-            bar_class(bar.tone),
+            !bar.marker? && ["overflow-hidden border px-1.5", bar_class(bar.tone)],
+            bar.marker? && "border-0 bg-transparent p-0",
             is_nil(@now_offset) && "transition",
             !is_nil(@now_offset) && "favn-flow-advancing",
             bar.running? && "favn-flow-bar-running",
             bar.attempt_id == @selected_attempt_id &&
               "ring-2 ring-primary ring-offset-1 ring-offset-base-100"
           ]}
-          style={"left: #{bar.left}%; width: #{bar.width}%; top: #{bar_top(bar.track)}rem"}
+          style={bar_style(bar)}
           title={bar.title}
           data-testid="flow-bar"
+          data-visual={if(bar.marker?, do: "marker", else: "duration")}
           data-tone={bar.tone}
           data-track={bar.track}
         >
+          <span
+            :if={bar.marker?}
+            class={[
+              "size-2 rounded-full ring-1 ring-base-content/20",
+              Tokens.fill_class(bar.tone)
+            ]}
+            aria-hidden="true"
+          />
           <span :if={bar.label} class="truncate">{bar.label}</span>
         </button>
       </div>
@@ -167,6 +177,12 @@ defmodule FavnView.Components.RunDetailPage.Flow do
   # one asset then read as two rows rather than one bar with a shadow.
   defp bar_top(track), do: 0.5 + track * 2.0
   defp lane_height(tracks), do: 1.0 + tracks * 2.0
+
+  defp bar_style(%{marker?: true} = bar),
+    do: "left: #{bar.left}%; top: #{bar_top(bar.track)}rem"
+
+  defp bar_style(bar),
+    do: "left: #{bar.left}%; width: #{bar.width}%; top: #{bar_top(bar.track)}rem"
 
   defp bar_class(tone) do
     tone = Tokens.tone(tone)

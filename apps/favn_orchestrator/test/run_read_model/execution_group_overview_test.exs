@@ -29,6 +29,9 @@ defmodule FavnOrchestrator.RunReadModel.ExecutionGroupOverviewTest do
     assert summary.health == :active
     assert summary.active?
     assert summary.completed_asset_attempts == 1
+    assert summary.succeeded_asset_attempts == 1
+    assert summary.skipped_asset_attempts == 0
+    assert summary.planned_asset_attempts == 0
     assert summary.summary_totals.asset_attempts.queued == 1
     assert summary.progress.label == "1 / 3 asset attempts"
     assert summary.last_activity_at == updated_at

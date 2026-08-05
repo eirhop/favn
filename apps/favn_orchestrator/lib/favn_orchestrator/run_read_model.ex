@@ -48,6 +48,17 @@ defmodule FavnOrchestrator.RunReadModel do
 
   @type step_summary :: StepProjection.t()
 
+  @type asset_outcome_counts :: %{
+          required(:total) => non_neg_integer(),
+          required(:completed) => non_neg_integer(),
+          required(:succeeded) => non_neg_integer(),
+          required(:skipped) => non_neg_integer(),
+          required(:failed) => non_neg_integer(),
+          required(:running) => non_neg_integer(),
+          required(:queued) => non_neg_integer(),
+          required(:planned) => non_neg_integer()
+        }
+
   @type run_summary :: %{
           required(:id) => String.t(),
           required(:kind) => run_role(),
@@ -67,7 +78,8 @@ defmodule FavnOrchestrator.RunReadModel do
           required(:started_at) => DateTime.t() | nil,
           required(:finished_at) => DateTime.t() | nil,
           required(:updated_at) => DateTime.t() | nil,
-          required(:duration_ms) => non_neg_integer() | nil
+          required(:duration_ms) => non_neg_integer() | nil,
+          optional(:asset_counts) => asset_outcome_counts()
         }
 
   @type backfill_failure :: %{
@@ -147,9 +159,12 @@ defmodule FavnOrchestrator.RunReadModel do
           required(:failed_windows) => non_neg_integer(),
           required(:total_asset_attempts) => non_neg_integer(),
           required(:completed_asset_attempts) => non_neg_integer(),
+          required(:succeeded_asset_attempts) => non_neg_integer(),
+          required(:skipped_asset_attempts) => non_neg_integer(),
           required(:failed_asset_attempts) => non_neg_integer(),
           required(:running_asset_attempts) => non_neg_integer(),
           required(:queued_asset_attempts) => non_neg_integer(),
+          required(:planned_asset_attempts) => non_neg_integer(),
           required(:failure_count) => non_neg_integer(),
           required(:progress) => progress_summary() | nil,
           required(:summary_totals) => map(),
@@ -231,9 +246,12 @@ defmodule FavnOrchestrator.RunReadModel do
     attempt_counts = %{
       total: group.run_count,
       completed: completed,
+      succeeded: group.succeeded_count,
+      skipped: 0,
       failed: group.failed_count,
       running: group.running_count,
-      queued: group.pending_count
+      queued: group.pending_count,
+      planned: 0
     }
 
     active? =
@@ -260,9 +278,12 @@ defmodule FavnOrchestrator.RunReadModel do
       failed_windows: 0,
       total_asset_attempts: group.run_count,
       completed_asset_attempts: completed,
+      succeeded_asset_attempts: group.succeeded_count,
+      skipped_asset_attempts: 0,
       failed_asset_attempts: group.failed_count,
       running_asset_attempts: group.running_count,
       queued_asset_attempts: group.pending_count,
+      planned_asset_attempts: 0,
       failure_count: failure_count,
       progress: execution_group_progress(attempt_counts),
       summary_totals: %{
@@ -411,17 +432,26 @@ defmodule FavnOrchestrator.RunReadModel do
   @spec from_operator_run_overview(FavnOrchestrator.Persistence.Results.OperatorRunOverview.t()) ::
           operator_run_detail()
   def from_operator_run_overview(projection) do
-    attempts = compact_attempts_with_plan(projection.attempts, projection.planned_steps)
+    planned_steps = if projection.attempts_truncated?, do: [], else: projection.planned_steps
+    attempts = compact_attempts_with_plan(projection.attempts, planned_steps)
     attempt_counts = Map.delete(projection.attempt_counts, :effective_windows)
+    asset_counts_by_run = Map.get(projection, :asset_counts_by_run, %{})
     requested_counts = projection.requested_window_counts
     requested_windows = Enum.map(projection.requested_windows, &persisted_window_summary/1)
     effective_windows = effective_windows(attempts)
-    root_run = compact_run_summary(projection.root_run)
+
+    root_run =
+      compact_run_summary(
+        projection.root_run,
+        Map.get(asset_counts_by_run, projection.root_run.run_id)
+      )
 
     child_runs =
       projection.runs
       |> Enum.reject(&(&1.run_id == projection.root_run.run_id))
-      |> Enum.map(&compact_run_summary/1)
+      |> Enum.map(fn run ->
+        compact_run_summary(run, Map.get(asset_counts_by_run, run.run_id))
+      end)
 
     active? = projection.overview.status in [:pending, :running]
     status = persisted_group_status(projection.overview.status)
@@ -449,9 +479,12 @@ defmodule FavnOrchestrator.RunReadModel do
       effective_window_count: projection.attempt_counts.effective_windows,
       total_asset_attempts: attempt_counts.total,
       completed_asset_attempts: attempt_counts.completed,
+      succeeded_asset_attempts: Map.get(attempt_counts, :succeeded, 0),
+      skipped_asset_attempts: Map.get(attempt_counts, :skipped, 0),
       failed_asset_attempts: attempt_counts.failed,
       running_asset_attempts: attempt_counts.running,
       queued_asset_attempts: attempt_counts.queued,
+      planned_asset_attempts: Map.get(attempt_counts, :planned, 0),
       failure_count: failure_count,
       progress: progress,
       summary_totals: %{windows: requested_counts, asset_attempts: attempt_counts},
@@ -577,10 +610,10 @@ defmodule FavnOrchestrator.RunReadModel do
 
   defp window_instant(_datetime), do: nil
 
-  defp compact_run_summary(run) do
+  defp compact_run_summary(run, asset_counts) do
     status = ExecutionStatus.normalize(run.status)
 
-    %{
+    summary = %{
       id: run.run_id,
       kind: compact_run_role(run),
       role: compact_run_role(run),
@@ -602,6 +635,8 @@ defmodule FavnOrchestrator.RunReadModel do
       duration_ms: duration_ms(run.inserted_at, run.terminal_at),
       event_seq: run.event_sequence
     }
+
+    if is_map(asset_counts), do: Map.put(summary, :asset_counts, asset_counts), else: summary
   end
 
   defp compact_run_role(%{run_id: id, root_run_id: id, submit_kind: :backfill_pipeline}),
@@ -706,9 +741,12 @@ defmodule FavnOrchestrator.RunReadModel do
       failed_windows: window_counts.failed,
       total_asset_attempts: attempt_counts.total,
       completed_asset_attempts: attempt_counts.completed,
+      succeeded_asset_attempts: attempt_counts.succeeded,
+      skipped_asset_attempts: attempt_counts.skipped,
       failed_asset_attempts: attempt_counts.failed,
       running_asset_attempts: attempt_counts.running,
       queued_asset_attempts: attempt_counts.queued,
+      planned_asset_attempts: attempt_counts.planned,
       failure_count: failure_count,
       progress: execution_group_progress(attempt_counts),
       summary_totals: %{
@@ -1241,9 +1279,16 @@ defmodule FavnOrchestrator.RunReadModel do
     %{
       total: length(attempts),
       completed: Enum.count(attempts, &ExecutionStatus.terminal?(&1.status)),
+      succeeded: Enum.count(attempts, &(ExecutionStatus.normalize(&1.status) == :ok)),
+      skipped:
+        Enum.count(
+          attempts,
+          &(ExecutionStatus.normalize(&1.status) in [:skipped, :skipped_fresh])
+        ),
       failed: Enum.count(attempts, &ExecutionStatus.failed?(&1.status)),
       running: Enum.count(attempts, &ExecutionStatus.running?(&1.status)),
-      queued: Enum.count(attempts, &ExecutionStatus.queued?(&1.status))
+      queued: Enum.count(attempts, &ExecutionStatus.queued?(&1.status)),
+      planned: Enum.count(attempts, &(ExecutionStatus.normalize(&1.status) == :planned))
     }
   end
 

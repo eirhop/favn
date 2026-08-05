@@ -377,7 +377,10 @@ defmodule FavnView.RunDetailLive do
     windows = Enum.map(Map.get(detail, :windows, []), &window_from_public/1)
 
     requested_windows =
-      Enum.map(Map.get(detail, :requested_windows, []), &window_from_public/1)
+      detail
+      |> Map.get(:requested_windows, [])
+      |> Enum.map(&window_from_public/1)
+      |> Enum.sort_by(&window_sort_key/1)
 
     events = if active_mode == :events, do: Map.get(detail, :events, []), else: []
 
@@ -395,8 +398,24 @@ defmodule FavnView.RunDetailLive do
     target = target_label(summary.target_assets)
     status = group_status(summary)
 
-    execution_scope =
+    effective_scope =
       execution_scope_label(windows, Map.get(detail, :has_non_windowed_assets?, false))
+
+    requested_scope =
+      requested_scope_label(
+        requested_windows,
+        summary.total_windows,
+        Map.get(detail, :requested_windows_truncated?, false)
+      )
+
+    header_scope = requested_scope || effective_scope
+
+    context_scope =
+      context_scope_label(
+        requested_scope,
+        effective_scope,
+        Map.get(detail, :has_non_windowed_assets?, false)
+      )
 
     %{
       found?: true,
@@ -412,12 +431,12 @@ defmodule FavnView.RunDetailLive do
       retry_remaining_label: retry_remaining_label(summary),
       short_id: short_id(summary.id),
       title: group_title(summary),
-      subtitle: subtitle([target, execution_scope]),
+      subtitle: subtitle([target, header_scope]),
       status: LogsViewModel.status_label(status),
       status_tone: LogsViewModel.status_tone(status),
       target: target || "No target",
       trigger: label(summary.trigger_type),
-      window: execution_scope,
+      window: header_scope,
       started_at: LogsViewModel.timestamp_label(summary.started_at),
       finished_at: LogsViewModel.timestamp_label(summary.finished_at),
       duration: LogsViewModel.duration_ms_label(summary.duration_ms),
@@ -438,10 +457,20 @@ defmodule FavnView.RunDetailLive do
       total_asset_attempts: summary.total_asset_attempts,
       completed_asset_attempts: summary.completed_asset_attempts,
       succeeded_asset_attempts:
-        max(summary.completed_asset_attempts - summary.failed_asset_attempts, 0),
+        Map.get(
+          summary,
+          :succeeded_asset_attempts,
+          max(
+            summary.completed_asset_attempts - summary.failed_asset_attempts -
+              Map.get(summary, :skipped_asset_attempts, 0),
+            0
+          )
+        ),
+      skipped_asset_attempts: Map.get(summary, :skipped_asset_attempts, 0),
       failed_asset_attempts: summary.failed_asset_attempts,
       running_asset_attempts: summary.running_asset_attempts,
       queued_asset_attempts: summary.queued_asset_attempts,
+      planned_asset_attempts: Map.get(summary, :planned_asset_attempts, 0),
       progress_label:
         get_in(summary, [:progress, :label]) ||
           progress_label(summary.completed_asset_attempts, summary.total_asset_attempts),
@@ -460,7 +489,7 @@ defmodule FavnView.RunDetailLive do
       waiting_activity?: events == [] and active_group?(summary),
       current_activity: current_activity(attempts),
       selected_attempt: nil,
-      context: context_items(summary, root_run, target, execution_scope),
+      context: context_items(summary, root_run, target, context_scope),
       back_asset_href:
         existing_back_asset_href ||
           back_asset_href(operator_context, List.first(summary.target_assets)),
@@ -816,14 +845,14 @@ defmodule FavnView.RunDetailLive do
       |> Enum.reject(&is_nil(&1.child_run_id))
       |> Map.new(&{&1.child_run_id, &1})
 
-    Enum.map(child_runs, fn child ->
+    child_runs
+    |> Enum.map(fn child ->
       child_attempts = Map.get(attempts_by_run_id, child.id, [])
 
       window =
         Map.get(windows_by_child_run_id, child.id) || window_from_public(child.window)
 
-      completed = Enum.count(child_attempts, &terminal_status?(&1.raw_status))
-      total = length(child_attempts)
+      counts = child_asset_counts(child, child_attempts)
 
       %{
         id: child.id,
@@ -832,18 +861,64 @@ defmodule FavnView.RunDetailLive do
         status: status_label(child.status),
         raw_status: child.status,
         status_tone: status_tone(child.status),
-        progress: progress_label(completed, total),
+        assets: asset_count_label(counts.total),
+        outcome: asset_outcome_label(counts),
         started_at: LogsViewModel.timestamp_label(child.started_at),
         finished_at: LogsViewModel.timestamp_label(child.finished_at),
         duration: LogsViewModel.duration_ms_label(child.duration_ms),
-        succeeded_count: Enum.count(child_attempts, &(&1.raw_status == :ok)),
-        failed_count: Enum.count(child_attempts, &failed_status?(&1.raw_status)),
-        running_count: Enum.count(child_attempts, &running_status?(&1.raw_status)),
-        queued_count: Enum.count(child_attempts, &queued_status?(&1.raw_status)),
+        succeeded_count: counts.succeeded,
+        skipped_count: counts.skipped,
+        failed_count: counts.failed,
+        running_count: counts.running,
+        queued_count: counts.queued,
+        planned_count: counts.planned,
         attempts: child_attempts
       }
     end)
+    |> Enum.sort_by(&child_run_sort_key/1)
   end
+
+  defp child_asset_counts(%{asset_counts: counts}, _attempts) when is_map(counts), do: counts
+
+  defp child_asset_counts(_child, attempts) do
+    %{
+      total: length(attempts),
+      completed: Enum.count(attempts, &terminal_status?(&1.raw_status)),
+      succeeded: Enum.count(attempts, &(&1.raw_status == :ok)),
+      skipped: Enum.count(attempts, &(&1.raw_status in [:skipped, :skipped_fresh])),
+      failed: Enum.count(attempts, &failed_status?(&1.raw_status)),
+      running: Enum.count(attempts, &running_status?(&1.raw_status)),
+      queued: Enum.count(attempts, &queued_status?(&1.raw_status)),
+      planned: Enum.count(attempts, &(&1.raw_status == :planned))
+    }
+  end
+
+  defp child_run_sort_key(%{window: %{start_at: %DateTime{} = start_at}, id: id}),
+    do: {0, DateTime.to_unix(start_at, :microsecond), id}
+
+  defp child_run_sort_key(%{id: id}), do: {1, 0, id}
+
+  defp asset_count_label(1), do: "1 asset"
+  defp asset_count_label(count), do: "#{count} assets"
+
+  defp asset_outcome_label(counts) do
+    [
+      outcome_part(counts.succeeded, "ran"),
+      outcome_part(counts.skipped, "already fresh"),
+      outcome_part(counts.failed, "failed"),
+      outcome_part(counts.running, "running"),
+      outcome_part(counts.queued, "queued"),
+      outcome_part(counts.planned, "planned")
+    ]
+    |> Enum.reject(&is_nil/1)
+    |> case do
+      [] -> "No asset steps"
+      parts -> Enum.join(parts, " · ")
+    end
+  end
+
+  defp outcome_part(0, _label), do: nil
+  defp outcome_part(count, label), do: "#{count} #{label}"
 
   defp current_activity(attempts) do
     case Enum.find(attempts, &running_status?(&1.raw_status)) do
@@ -930,6 +1005,29 @@ defmodule FavnView.RunDetailLive do
   defp window_range_label([]), do: nil
   defp window_range_label(windows), do: Enum.map(windows, & &1.label) |> Enum.join(" -> ")
 
+  defp requested_scope_label([], _total_windows, _truncated?), do: nil
+
+  defp requested_scope_label(_windows, total_windows, true),
+    do: requested_window_count_label(total_windows)
+
+  defp requested_scope_label([window], _total_windows, false), do: window.label
+
+  defp requested_scope_label(windows, total_windows, false) do
+    first = List.first(windows)
+    last = List.last(windows)
+    "#{total_windows} windows · #{first.label} – #{last.label}"
+  end
+
+  defp requested_window_count_label(1), do: "1 window"
+  defp requested_window_count_label(count), do: "#{count} windows"
+
+  defp context_scope_label(requested_scope, _effective_scope, true)
+       when is_binary(requested_scope),
+       do: requested_scope <> " · includes non-windowed assets"
+
+  defp context_scope_label(requested_scope, effective_scope, _has_non_windowed_assets?),
+    do: requested_scope || effective_scope
+
   defp execution_scope_label(windows, true) do
     case window_range_label(windows) do
       nil -> "No window"
@@ -939,15 +1037,20 @@ defmodule FavnView.RunDetailLive do
 
   defp execution_scope_label(windows, false), do: window_range_label(windows)
 
-  defp context_items(summary, root_run, target, execution_scope) do
+  defp context_items(summary, root_run, target, scope) do
     [
       %{label: "Backfill run", value: summary.id},
       %{label: "Manifest version", value: root_run.manifest_version_id || "Unknown"},
       %{label: "Target", value: target || "No target"},
       %{label: "Trigger", value: label(summary.trigger_type)},
-      %{label: "Execution scope", value: execution_scope || "No window metadata"}
+      %{label: "Execution scope", value: scope || "No window metadata"}
     ]
   end
+
+  defp window_sort_key(%{start_at: %DateTime{} = start_at}),
+    do: {0, DateTime.to_unix(start_at, :microsecond)}
+
+  defp window_sort_key(_window), do: {1, 0}
 
   defp back_asset_href(_operator_context, nil), do: nil
 
@@ -1072,7 +1175,9 @@ defmodule FavnView.RunDetailLive do
         :blocked
       ]
 
-  defp failed_status?(status), do: status in [:error, :failed, :timed_out, :blocked]
+  defp failed_status?(status),
+    do: status in [:error, :failed, :timed_out, :cancelled, :blocked]
+
   defp running_status?(status), do: status in [:running, :retrying]
   defp queued_status?(status), do: status in [:pending, :queued]
   defp status_label(:ok), do: "Succeeded"
@@ -1084,7 +1189,7 @@ defmodule FavnView.RunDetailLive do
   defp status_label(:running), do: "Running"
   defp status_label(:retrying), do: "Retrying"
   defp status_label(:skipped), do: "Skipped"
-  defp status_label(:skipped_fresh), do: "Skipped"
+  defp status_label(:skipped_fresh), do: "Already fresh"
   defp status_label(:blocked), do: "Blocked"
   defp status_label(:partial), do: "Partial"
   defp status_label(nil), do: "Pending"

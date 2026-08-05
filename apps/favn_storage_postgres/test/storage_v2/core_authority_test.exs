@@ -3638,7 +3638,60 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
 
     assert [%{asset_ref: "Elixir.MyApp.Asset:asset", stage: 0}] = overview.planned_steps
     assert overview.attempts == []
+    assert overview.attempt_counts.total == 1
+    assert overview.attempt_counts.planned == 1
+
+    assert overview.asset_counts_by_run[run.id] == %{
+             total: 1,
+             completed: 0,
+             succeeded: 0,
+             skipped: 0,
+             failed: 0,
+             running: 0,
+             queued: 0,
+             planned: 1
+           }
+
     refute overview.planned_steps_truncated?
+  end
+
+  test "operator overview bounds per-run counts while keeping exact group totals", fixture do
+    {root_command, root_run} = pipeline_run_command(fixture)
+    assert {:ok, _created} = RunStore.create_run(root_command)
+
+    for _index <- 1..25 do
+      {child_command, child_run} = pipeline_run_command(fixture)
+
+      child_run = %{
+        child_run
+        | root_run_id: root_run.id,
+          parent_run_id: root_run.id,
+          submit_kind: :backfill_pipeline
+      }
+
+      child_command = %{child_command | run: RunState.with_snapshot_hash(child_run)}
+      assert {:ok, _created} = RunStore.create_run(child_command)
+    end
+
+    assert {:ok, publications} = Sequencer.sequence_batch()
+    assert drain_projector("bounded-run-counts:" <> root_run.id) >= length(publications)
+
+    assert {:ok, overview} =
+             OperatorReadStore.get_operator_run_overview(%GetOperatorRunOverview{
+               workspace_context: fixture.workspace_context,
+               run_id: root_run.id,
+               limit: 3
+             })
+
+    loaded_run_ids =
+      [root_run.id | Enum.map(overview.runs, & &1.run_id)]
+      |> MapSet.new()
+
+    assert MapSet.new(Map.keys(overview.asset_counts_by_run)) == loaded_run_ids
+    assert map_size(overview.asset_counts_by_run) <= 4
+    assert overview.runs_truncated?
+    assert overview.attempt_counts.total == 26
+    assert overview.attempt_counts.planned == 26
   end
 
   test "operator overview restores typed windows from immutable planned nodes", fixture do
@@ -7819,6 +7872,9 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert attempt.window.start_at == ~U[2026-07-13 00:00:00Z]
     assert String.starts_with?(attempt.window_identity, "runtime:")
     assert compact.attempt_counts.total == 1
+    assert compact.attempt_counts.succeeded == 0
+    assert compact.attempt_counts.skipped == 0
+    assert compact.attempt_counts.planned == 0
     assert compact.attempt_counts.running == 1
     assert compact.attempt_counts.effective_windows == 1
     refute compact.attempts_truncated?
@@ -7923,6 +7979,9 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert [%{status: :ok}] = completed_compact.attempts
     assert completed_compact.attempt_counts.total == 1
     assert completed_compact.attempt_counts.completed == 1
+    assert completed_compact.attempt_counts.succeeded == 1
+    assert completed_compact.attempt_counts.skipped == 0
+    assert completed_compact.attempt_counts.planned == 0
     assert completed_compact.attempt_counts.running == 0
 
     assert {:ok, target_runs} =

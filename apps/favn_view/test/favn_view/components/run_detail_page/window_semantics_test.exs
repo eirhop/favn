@@ -31,9 +31,16 @@ defmodule FavnView.Components.RunDetailPage.WindowSemanticsTest do
   test "an outcome that did not occur is absent rather than shown as zero" do
     html = render_page(Runs.single_window())
 
-    assert html =~ "2 succeeded"
+    assert html =~ "2 ran"
     refute html =~ "0 failed"
     refute html =~ "0 running"
+  end
+
+  test "already-fresh work is named separately from work that ran" do
+    html = render_page(Runs.backfill(:ok))
+
+    assert html =~ "already fresh"
+    assert html =~ ~s(data-visual="marker")
   end
 
   test "a bounded detail slice is marked without implying the meters are partial" do
