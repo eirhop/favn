@@ -50,6 +50,7 @@ defmodule FavnOrchestrator.Idempotency do
   defp canonicalize(value) when is_map(value) do
     entries =
       value
+      |> Map.to_list()
       |> Enum.map(fn {key, val} -> [to_string(key), canonicalize(val)] end)
       |> Enum.sort_by(fn [key, _val] -> key end)
 
