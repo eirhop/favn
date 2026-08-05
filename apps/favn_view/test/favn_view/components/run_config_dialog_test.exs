@@ -43,6 +43,16 @@ defmodule FavnView.Components.RunConfigDialogTest do
     end
   end
 
+  describe "the advanced disclosure" do
+    test "is closed before the operator changes the configuration" do
+      refute dialog([]) =~ ~r/<details[^>]*\sopen(?:\s|>)/
+    end
+
+    test "stays open after a configuration change" do
+      assert dialog(advanced_open?: true) =~ ~r/<details[^>]*\sopen(?:\s|>)/
+    end
+  end
+
   describe "the upstream warning" do
     # "Force everything planned" forces whatever the plan holds, so with dependencies
     # included it reaches upstream assets and carries the same consequence as forcing

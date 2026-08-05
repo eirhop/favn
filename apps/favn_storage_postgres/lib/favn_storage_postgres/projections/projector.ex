@@ -13,9 +13,9 @@ defmodule FavnStoragePostgres.Projections.Projector do
   alias FavnOrchestrator.RunReadModel.AssetAttemptProjection
   alias FavnOrchestrator.Storage.JsonSafe
   alias FavnOrchestrator.Storage.RunEventCodec
+  alias Favn.Freshness.Key, as: FreshnessKey
   alias Favn.TimePeriod
   alias Favn.Timezone
-  alias Favn.Window.Key, as: WindowKey
   alias FavnStoragePostgres.CanonicalJSON
   alias FavnStoragePostgres.ErrorMapper
   alias FavnStoragePostgres.Repo
@@ -647,13 +647,14 @@ defmodule FavnStoragePostgres.Projections.Projector do
   defp project_asset_window!(
          event,
          deployment,
-         %{partition_key: "window:" <> encoded_key} = materialization,
+         materialization,
          evidence_generation_id,
          window_start,
          window_end,
          projected_at
        ) do
-    with {:ok, _key} <- WindowKey.decode(encoded_key) do
+    with {:ok, data_window_key} <- data_window_key(materialization.partition_key),
+         {:ok, storage_window_key} <- FreshnessKey.window(data_window_key) do
       SQL.query!(
         Repo,
         """
@@ -677,7 +678,7 @@ defmodule FavnStoragePostgres.Projections.Projector do
           evidence_generation_id,
           deployment.manifest_version_id,
           materialization.target_id,
-          materialization.partition_key,
+          storage_window_key,
           window_start,
           window_end,
           materialization.run_id,
@@ -690,18 +691,9 @@ defmodule FavnStoragePostgres.Projections.Projector do
 
       :ok
     end
-  end
 
-  defp project_asset_window!(
-         _event,
-         _deployment,
-         _materialization,
-         _generation,
-         _start,
-         _end,
-         _at
-       ),
-       do: :ok
+    :ok
+  end
 
   defp evidence_generation_id(%{evidence_generation_id: value}, _deployment)
        when is_binary(value),
@@ -737,8 +729,8 @@ defmodule FavnStoragePostgres.Projections.Projector do
     end
   end
 
-  defp window_from_partition_key(%{partition_key: "window:" <> encoded_key} = materialization) do
-    with {:ok, key} <- WindowKey.decode(encoded_key),
+  defp window_from_partition_key(materialization) do
+    with {:ok, key} <- data_window_key(materialization.partition_key),
          start_at <- DateTime.from_unix!(key.start_at_us, :microsecond),
          {:ok, local_start} <- DateTime.shift_zone(start_at, key.timezone, Timezone.database!()),
          {:ok, local_end} <- TimePeriod.shift(local_start, key.kind, 1),
@@ -749,8 +741,13 @@ defmodule FavnStoragePostgres.Projections.Projector do
     end
   end
 
-  defp window_from_partition_key(materialization),
-    do: fallback_materialization_window(materialization)
+  defp data_window_key(freshness_key) do
+    case FreshnessKey.parse(freshness_key) do
+      {:ok, {:window, window_key}} -> {:ok, window_key}
+      {:ok, {:window_refresh, window_key, _kind, _timezone, _period_start}} -> {:ok, window_key}
+      _other -> :error
+    end
+  end
 
   defp fallback_materialization_window(materialization),
     do: {materialization.inserted_at, DateTime.add(materialization.inserted_at, 1, :microsecond)}

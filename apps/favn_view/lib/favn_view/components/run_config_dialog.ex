@@ -20,6 +20,7 @@ defmodule FavnView.Components.RunConfigDialog do
     doc: "whether the asset runs per window; only then is a run period editable"
 
   attr :run_config, :map, required: true
+  attr :advanced_open?, :boolean, default: false
   attr :run_config_valid?, :boolean, default: true
   attr :submitting_window_run?, :boolean, default: false
   attr :error, :string, default: nil, doc: "why the configuration cannot be submitted"
@@ -53,6 +54,7 @@ defmodule FavnView.Components.RunConfigDialog do
         <.field_row label="Refresh">{refresh_label(@run_config.refresh)}</.field_row>
 
         <details
+          open={@advanced_open?}
           class="rounded-box border border-base-content/10 p-3"
           data-testid="run-config-advanced"
         >

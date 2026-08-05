@@ -34,6 +34,7 @@ defmodule FavnView.AssetDetailLive do
         selected_run: nil,
         documentation: nil,
         run_config_open?: false,
+        run_config_advanced_open?: false,
         run_config: AssetRunConfig.default(),
         run_config_valid?: true,
         submitting_window_run?: false,
@@ -71,6 +72,7 @@ defmodule FavnView.AssetDetailLive do
           asset_state: asset_state,
           asset: asset_from_state(asset_state),
           run_config_open?: false,
+          run_config_advanced_open?: false,
           run_config: AssetRunConfig.default(),
           run_config_valid?: true,
           submitting_window_run?: false,
@@ -251,6 +253,7 @@ defmodule FavnView.AssetDetailLive do
         {:noreply,
          assign(socket,
            run_config_open?: true,
+           run_config_advanced_open?: false,
            run_config: run_config,
            run_config_valid?: is_nil(error),
            run_error: error
@@ -259,7 +262,11 @@ defmodule FavnView.AssetDetailLive do
   end
 
   def handle_event("close_run_config", _params, socket) do
-    {:noreply, assign(socket, :run_config_open?, false)}
+    {:noreply,
+     assign(socket,
+       run_config_open?: false,
+       run_config_advanced_open?: false
+     )}
   end
 
   def handle_event("change_run_config", params, socket) do
@@ -268,6 +275,7 @@ defmodule FavnView.AssetDetailLive do
 
     {:noreply,
      assign(socket,
+       run_config_advanced_open?: true,
        run_config: run_config,
        run_config_valid?: is_nil(error),
        run_error: error
@@ -441,6 +449,7 @@ defmodule FavnView.AssetDetailLive do
       planning_coverage?={@planning_coverage?}
       submitting_coverage?={@submitting_coverage?}
       run_config_open?={@run_config_open?}
+      run_config_advanced_open?={@run_config_advanced_open?}
       run_config={@run_config}
       run_config_valid?={@run_config_valid?}
       submitting_window_run?={@submitting_window_run?}

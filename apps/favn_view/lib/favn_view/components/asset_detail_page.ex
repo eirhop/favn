@@ -82,6 +82,7 @@ defmodule FavnView.Components.AssetDetailPage do
   attr :planning_coverage?, :boolean, default: false
   attr :submitting_coverage?, :boolean, default: false
   attr :run_config_open?, :boolean, default: false
+  attr :run_config_advanced_open?, :boolean, default: false
   attr :run_config, :map, default: %{dependencies: "all", refresh: "auto"}
   attr :run_config_valid?, :boolean, default: true
   attr :submitting_window_run?, :boolean, default: false
@@ -145,6 +146,7 @@ defmodule FavnView.Components.AssetDetailPage do
         <RunConfigDialog.run_config_dialog
           :if={@run_config_open?}
           has_data_windows?={@has_data_windows?}
+          advanced_open?={@run_config_advanced_open?}
           run_config={@run_config}
           run_config_valid?={@run_config_valid?}
           submitting_window_run?={@submitting_window_run?}
