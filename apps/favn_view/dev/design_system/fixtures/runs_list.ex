@@ -213,10 +213,10 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.RunsList do
       status_label: status_label(attrs.status),
       raw_status: raw_status(attrs.status),
       trigger: attrs.trigger,
-      started_at: Calendar.strftime(started_at, "%H:%M:%S"),
-      started_on: Calendar.strftime(started_at, "%-d %b"),
+      started_at: FavnView.Time.format(started_at, "%H:%M:%S"),
+      started_on: FavnView.Time.format(started_at, "%-d %b"),
       started_at_raw: started_at,
-      started_at_title: Calendar.strftime(started_at, "%b %-d, %Y %H:%M:%S UTC"),
+      started_at_title: FavnView.Time.format(started_at, "%b %-d, %Y %H:%M:%S %Z"),
       duration: attrs.duration
     }
   end

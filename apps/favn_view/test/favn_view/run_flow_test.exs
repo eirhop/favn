@@ -47,6 +47,19 @@ defmodule FavnView.RunFlowTest do
       assert [%{id: "stage-unknown", label: "Ungrouped"}] = flow.stages
     end
 
+    test "stage zero is a real stage and unknown stages sort last" do
+      flow =
+        RunFlow.build([
+          attempt(id: "unknown", asset_key: "unknown", stage: nil),
+          attempt(id: "zero", asset_key: "zero", stage: 0)
+        ])
+
+      assert Enum.map(flow.stages, &{&1.id, &1.label}) == [
+               {"stage-0", "Stage 0"},
+               {"stage-unknown", "Ungrouped"}
+             ]
+    end
+
     test "a stage hint counts its failures" do
       flow =
         RunFlow.build([
@@ -66,6 +79,33 @@ defmodule FavnView.RunFlowTest do
   end
 
   describe "lanes" do
+    test "orders lanes by their first actual start within a stage" do
+      flow =
+        RunFlow.build([
+          attempt(
+            id: "later",
+            asset_key: "a.later",
+            short_asset_name: "A later alphabetically first",
+            started_at_raw: DateTime.add(@anchor, 30, :second)
+          ),
+          attempt(
+            id: "first",
+            asset_key: "z.first",
+            short_asset_name: "Z started first",
+            started_at_raw: @anchor
+          ),
+          attempt(
+            id: "planned",
+            asset_key: "b.planned",
+            short_asset_name: "B planned",
+            started_at_raw: nil,
+            finished_at_raw: nil
+          )
+        ])
+
+      assert Enum.map(lanes(flow), & &1.key) == ["z.first", "a.later", "b.planned"]
+    end
+
     test "one lane per asset, whatever its window count" do
       flow =
         RunFlow.build([
@@ -134,6 +174,26 @@ defmodule FavnView.RunFlowTest do
         )
 
       assert [%{bars: [], empty_label: "Waiting to start"}] = lanes(flow)
+    end
+
+    test "a planned DAG node is visible without pretending it was queued" do
+      flow =
+        RunFlow.build(
+          [
+            attempt(
+              id: "planned:run:node",
+              raw_status: :planned,
+              status: "Planned",
+              status_tone: :neutral,
+              started_at_raw: nil,
+              finished_at_raw: nil,
+              duration: "-"
+            )
+          ],
+          active?: true
+        )
+
+      assert [%{bars: [], empty_label: "Planned", status: "Planned"}] = lanes(flow)
     end
 
     test "a settled run's empty lane reports the attempt status rather than waiting" do

@@ -172,7 +172,7 @@ defmodule FavnOrchestrator.Persistence.Queries.GetTargetStatuses do
 end
 
 defmodule FavnOrchestrator.Persistence.Queries.PageTargetRuns do
-  @moduledoc "Keyset-pages target run history in submission order."
+  @moduledoc "Keyset-pages one representative target run per execution group."
 
   alias FavnOrchestrator.Persistence.WorkspaceContext
   @enforce_keys [:workspace_context, :deployment_id, :target_kind, :target_id]
@@ -509,12 +509,40 @@ defmodule FavnOrchestrator.Persistence.Results.AssetAttemptOverview do
         }
 end
 
+defmodule FavnOrchestrator.Persistence.Results.PlannedAssetStep do
+  @moduledoc "Bounded immutable plan node used to show work before an attempt exists."
+
+  @enforce_keys [:root_run_id, :run_id, :node_identity, :asset_ref, :window_identity]
+  defstruct [
+    :root_run_id,
+    :run_id,
+    :node_identity,
+    :asset_ref,
+    :window_identity,
+    :window,
+    :stage,
+    :execution_pool
+  ]
+
+  @type t :: %__MODULE__{
+          root_run_id: String.t(),
+          run_id: String.t(),
+          node_identity: String.t(),
+          asset_ref: String.t(),
+          window_identity: String.t(),
+          window: map() | nil,
+          stage: non_neg_integer() | nil,
+          execution_pool: String.t() | nil
+        }
+end
+
 defmodule FavnOrchestrator.Persistence.Results.OperatorRunOverview do
   @moduledoc "Bounded compact slices required by the run Overview view."
 
   alias FavnOrchestrator.Persistence.Results.AssetAttemptOverview
   alias FavnOrchestrator.Persistence.Results.BackfillWindow
   alias FavnOrchestrator.Persistence.Results.ExecutionGroupOverview
+  alias FavnOrchestrator.Persistence.Results.PlannedAssetStep
   alias FavnOrchestrator.Persistence.Results.RunSummary
 
   @enforce_keys [
@@ -541,7 +569,9 @@ defmodule FavnOrchestrator.Persistence.Results.OperatorRunOverview do
     :attempt_counts,
     :attempts_truncated?,
     :runs_truncated?,
-    :target_refs
+    :target_refs,
+    planned_steps: [],
+    planned_steps_truncated?: false
   ]
 
   @type t :: %__MODULE__{
@@ -565,6 +595,8 @@ defmodule FavnOrchestrator.Persistence.Results.OperatorRunOverview do
             required(:effective_windows) => non_neg_integer()
           },
           attempts_truncated?: boolean(),
+          planned_steps: [PlannedAssetStep.t()],
+          planned_steps_truncated?: boolean(),
           runs_truncated?: boolean(),
           target_refs: [String.t()]
         }

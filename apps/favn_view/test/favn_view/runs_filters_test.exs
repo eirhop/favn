@@ -1,11 +1,26 @@
 defmodule FavnView.RunsFiltersTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias FavnView.RunsFilters
 
   doctest RunsFilters
 
   @now ~U[2026-07-30 14:12:00Z]
+
+  setup do
+    previous = Application.get_env(:favn, :default_timezone)
+    Application.put_env(:favn, :default_timezone, "Etc/UTC")
+
+    on_exit(fn ->
+      if is_nil(previous) do
+        Application.delete_env(:favn, :default_timezone)
+      else
+        Application.put_env(:favn, :default_timezone, previous)
+      end
+    end)
+
+    :ok
+  end
 
   describe "params" do
     test "an empty query string means today" do
@@ -82,6 +97,17 @@ defmodule FavnView.RunsFiltersTest do
 
       assert RunsFilters.window(filters, @now) ==
                {~U[2026-07-27 00:00:00Z], ~U[2026-07-28 00:00:00Z]}
+    end
+
+    test "calendar ranges keep local midnights across a daylight-saving transition" do
+      Application.put_env(:favn, :default_timezone, "Europe/Oslo")
+      now = ~U[2026-03-30 12:00:00Z]
+
+      today = RunsFilters.from_params(%{"range" => "today"})
+      week = RunsFilters.from_params(%{"range" => "week"})
+
+      assert RunsFilters.window(today, now) == {~U[2026-03-29 22:00:00Z], nil}
+      assert RunsFilters.window(week, now) == {~U[2026-03-23 23:00:00Z], nil}
     end
   end
 

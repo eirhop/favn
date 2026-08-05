@@ -15,7 +15,7 @@ defmodule FavnView.RunDays do
   days that have runs appear. A single day is not worth a header, so that case
   returns the runs flat and the caller renders one table.
 
-  Days are UTC, matching `FavnView.RunsFilters`.
+  Days use the configured Favn default timezone, matching `FavnView.RunsFilters`.
 
   ## Examples
 
@@ -73,20 +73,20 @@ defmodule FavnView.RunDays do
         {nil, nil}
 
       {first, last} ->
-        {bound(window, first), DateTime.new!(Date.add(last, 1), ~T[00:00:00], "Etc/UTC")}
+        {bound(window, first), FavnView.Time.beginning_of_day(Date.add(last, 1))}
     end
   end
 
   defp bound({nil, _before_at}, first),
-    do: DateTime.new!(first, ~T[00:00:00], "Etc/UTC")
+    do: FavnView.Time.beginning_of_day(first)
 
   defp bound({after_at, _before_at}, first) do
-    floor = DateTime.new!(first, ~T[00:00:00], "Etc/UTC")
+    floor = FavnView.Time.beginning_of_day(first)
     if DateTime.compare(after_at, floor) == :gt, do: after_at, else: floor
   end
 
   defp days(dates, by_date, now, order) do
-    today = DateTime.to_date(now)
+    today = FavnView.Time.to_date(now)
 
     dates
     |> sort(order)
@@ -144,8 +144,8 @@ defmodule FavnView.RunDays do
   defp dates({nil, _before_at}, by_date, _now), do: Map.keys(by_date)
 
   defp dates({after_at, before_at}, by_date, now) do
-    first = DateTime.to_date(after_at)
-    last = DateTime.to_date(last_instant(before_at, now))
+    first = FavnView.Time.to_date(after_at)
+    last = FavnView.Time.to_date(last_instant(before_at, now))
 
     cond do
       Date.compare(last, first) == :lt -> Map.keys(by_date)
@@ -170,7 +170,7 @@ defmodule FavnView.RunDays do
 
   defp run_date(run) do
     case Map.get(run, :started_at_raw) do
-      %DateTime{} = started_at -> DateTime.to_date(started_at)
+      %DateTime{} = started_at -> FavnView.Time.to_date(started_at)
       _absent -> nil
     end
   end

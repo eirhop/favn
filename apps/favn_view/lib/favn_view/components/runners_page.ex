@@ -242,5 +242,5 @@ defmodule FavnView.Components.RunnersPage do
   defp format_time(nil), do: "-"
 
   defp format_time(%DateTime{} = value),
-    do: Calendar.strftime(value, "%b %-d, %Y %H:%M:%S UTC")
+    do: FavnView.Time.format(value, "%b %-d, %Y %H:%M:%S %Z")
 end

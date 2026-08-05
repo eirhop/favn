@@ -635,8 +635,8 @@ defmodule FavnView.AssetDetailLive do
       status_label: LogsViewModel.status_label(run.status),
       trigger_label: LogsViewModel.trigger_label(Map.get(run, :submit_kind)),
       started_at: started_at,
-      day_label: started_at && Calendar.strftime(started_at, "%b %-d"),
-      time_label: started_at && Calendar.strftime(started_at, "%H:%M"),
+      day_label: started_at && FavnView.Time.format(started_at, "%b %-d"),
+      time_label: started_at && FavnView.Time.format(started_at, "%H:%M"),
       duration_label: duration_label(Map.get(run, :duration_ms)),
       window_label: run |> Map.get(:window) |> window_entry_label()
     }

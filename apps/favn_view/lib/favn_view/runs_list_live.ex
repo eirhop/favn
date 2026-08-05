@@ -371,22 +371,25 @@ defmodule FavnView.RunsListLive do
   defp short_id(id) when is_binary(id), do: id
   defp short_id(_id), do: "unknown"
 
-  defp short_time(%DateTime{} = value), do: Calendar.strftime(value, "%H:%M:%S")
+  defp short_time(%DateTime{} = value), do: FavnView.Time.format(value, "%H:%M:%S")
   defp short_time(_value), do: "-"
 
   # The day headers only group a multi-day range, and a page reached by paging back
   # can start anywhere, so each row carries its own date. The year appears only
   # when it is not this one.
   defp short_date(%DateTime{} = value) do
-    if value.year == DateTime.utc_now().year,
-      do: Calendar.strftime(value, "%-d %b"),
-      else: Calendar.strftime(value, "%-d %b %Y")
+    local = FavnView.Time.shift(value)
+    local_now = FavnView.Time.shift(DateTime.utc_now())
+
+    if local.year == local_now.year,
+      do: Calendar.strftime(local, "%-d %b"),
+      else: Calendar.strftime(local, "%-d %b %Y")
   end
 
   defp short_date(_value), do: nil
 
   defp full_timestamp(%DateTime{} = value),
-    do: Calendar.strftime(value, "%b %-d, %Y %H:%M:%S UTC")
+    do: FavnView.Time.format(value, "%b %-d, %Y %H:%M:%S %Z")
 
   defp full_timestamp(_value), do: "Not started"
 

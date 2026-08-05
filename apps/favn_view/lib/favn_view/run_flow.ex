@@ -104,7 +104,7 @@ defmodule FavnView.RunFlow do
   defp stages(attempts, start_ms, span, active?, now_ms) do
     attempts
     |> Enum.group_by(&stage_key/1)
-    |> Enum.sort_by(fn {stage, _attempts} -> stage end)
+    |> Enum.sort_by(fn {stage, _attempts} -> stage_sort_key(stage) end)
     |> Enum.map(fn {stage, stage_attempts} ->
       lanes = lanes(stage_attempts, start_ms, span, active?, now_ms)
 
@@ -123,7 +123,8 @@ defmodule FavnView.RunFlow do
     |> Enum.map(fn {key, lane_attempts} ->
       lane(key, lane_attempts, start_ms, span, active?, now_ms)
     end)
-    |> Enum.sort_by(& &1.name)
+    |> Enum.sort_by(&lane_sort_key/1)
+    |> Enum.map(&Map.delete(&1, :first_started_at_ms))
   end
 
   defp lane(key, attempts, start_ms, span, active?, now_ms) do
@@ -143,8 +144,20 @@ defmodule FavnView.RunFlow do
       empty_label: empty_label(attempts, active?),
       bars: bars,
       tracks: max(Enum.count(Enum.uniq(Enum.map(bars, & &1.track))), 1),
-      error: error(failed)
+      error: error(failed),
+      first_started_at_ms: earliest_start(attempts)
     }
+  end
+
+  defp lane_sort_key(lane) do
+    {is_nil(lane.first_started_at_ms), lane.first_started_at_ms || 0, lane.name, lane.key}
+  end
+
+  defp earliest_start(attempts) do
+    attempts
+    |> Enum.map(&datetime_ms(Map.get(&1, :started_at_raw)))
+    |> Enum.reject(&is_nil/1)
+    |> Enum.min(fn -> nil end)
   end
 
   defp bar(attempt, start_ms, span, active?, now_ms) do
@@ -332,7 +345,11 @@ defmodule FavnView.RunFlow do
   defp usable(_value), do: nil
 
   defp empty_label(attempts, true) do
-    if Enum.any?(attempts, &(tone(&1) == :error)), do: "Did not start", else: "Waiting to start"
+    cond do
+      Enum.any?(attempts, &(tone(&1) == :error)) -> "Did not start"
+      Enum.all?(attempts, &(Map.get(&1, :raw_status) == :planned)) -> "Planned"
+      true -> "Waiting to start"
+    end
   end
 
   defp empty_label(attempts, false) do
@@ -377,19 +394,20 @@ defmodule FavnView.RunFlow do
   defp stage_key(attempt) do
     case Map.get(attempt, :stage) do
       stage when is_integer(stage) -> stage
-      _absent -> 0
+      _absent -> nil
     end
   end
 
-  defp stage_id(0), do: "stage-unknown"
+  defp stage_sort_key(nil), do: {1, 0}
+  defp stage_sort_key(stage), do: {0, stage}
+
+  defp stage_id(nil), do: "stage-unknown"
   defp stage_id(stage), do: "stage-#{stage}"
 
-  defp stage_label(0), do: "Ungrouped"
+  defp stage_label(nil), do: "Ungrouped"
   defp stage_label(stage), do: "Stage #{stage}"
 
-  # Stage 0 is not a stage: it is the assets whose stage the run did not record.
-  # Saying so stops "Ungrouped" reading like a category the pipeline declared.
-  defp stage_hint(0, lanes), do: lane_hint(lanes) <> " · stage not reported"
+  defp stage_hint(nil, lanes), do: lane_hint(lanes) <> " · stage not reported"
   defp stage_hint(_stage, lanes), do: lane_hint(lanes)
 
   defp lane_hint(lanes) do
@@ -406,7 +424,7 @@ defmodule FavnView.RunFlow do
   defp datetime_ms(_value), do: nil
 
   defp clock_label(ms) do
-    ms |> DateTime.from_unix!(:millisecond) |> Calendar.strftime("%H:%M:%S")
+    ms |> DateTime.from_unix!(:millisecond) |> FavnView.Time.format("%H:%M:%S")
   end
 
   defp title(attempt, elapsed) do

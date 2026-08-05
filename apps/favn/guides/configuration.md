@@ -57,8 +57,9 @@ config :favn,
   default_timezone: "Europe/Oslo"
 ```
 
-The fallback is `"Etc/UTC"`. The value must be a valid IANA timezone; manifest
-construction fails when it is invalid. A timezone declared directly on a
+The fallback is `"Etc/UTC"`. The operator UI also renders timestamps in this
+timezone; persisted instants remain UTC. The value must be a valid IANA timezone;
+manifest construction fails when it is invalid. A timezone declared directly on a
 schedule, pipeline window, asset window, or calendar freshness policy overrides
 the default only for that declaration. These overrides are independent: a
 schedule timezone does not become the pipeline or asset timezone.

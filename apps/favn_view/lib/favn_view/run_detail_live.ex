@@ -110,6 +110,7 @@ defmodule FavnView.RunDetailLive do
 
     attempts_remaining = next_load_attempts(socket.assigns.detail_load_attempts_remaining, run)
     run = Map.put(run, :initializing?, !run.found? and attempts_remaining > 0)
+    run = preserve_selected_attempt(socket.assigns.run, run, socket.assigns.selected_attempt_id)
 
     socket
     |> assign(:run, run)
@@ -238,11 +239,11 @@ defmodule FavnView.RunDetailLive do
   end
 
   def handle_event("select_attempt", %{"attempt-id" => attempt_id}, socket) do
-    {:noreply, assign(socket, :selected_attempt_id, attempt_id)}
+    {:noreply, patch_run_state(socket, selected_attempt_id: attempt_id)}
   end
 
   def handle_event("close_attempt", _params, socket) do
-    {:noreply, assign(socket, :selected_attempt_id, nil)}
+    {:noreply, patch_run_state(socket, selected_attempt_id: nil)}
   end
 
   def handle_event("set_mode", _params, socket), do: {:noreply, socket}
@@ -281,8 +282,13 @@ defmodule FavnView.RunDetailLive do
         )
       end
 
+    run =
+      preserve_selected_attempt(socket.assigns.run, run, selected_attempt_id_from_params(params))
+
     selected_child_run_id =
       selected_child_run_id_from_params(params, run, socket.assigns.run_id)
+
+    selected_attempt_id = selected_attempt_id_from_params(params)
 
     active_mode =
       if selected_child_run_id && active_mode == :flow, do: :windows, else: active_mode
@@ -292,7 +298,8 @@ defmodule FavnView.RunDetailLive do
      |> assign(
        run: run,
        active_mode: active_mode,
-       selected_child_run_id: selected_child_run_id
+       selected_child_run_id: selected_child_run_id,
+       selected_attempt_id: selected_attempt_id
      )
      |> assign_flow()}
   end
@@ -555,7 +562,7 @@ defmodule FavnView.RunDetailLive do
   defp timestamp_label(nil), do: nil
 
   defp timestamp_label(%DateTime{} = value),
-    do: Calendar.strftime(value, "%b %-d, %Y %H:%M:%S UTC")
+    do: FavnView.Time.format(value, "%b %-d, %Y %H:%M:%S %Z")
 
   defp subscribe_run(operator_context, run_id) do
     Application.get_env(
@@ -641,11 +648,28 @@ defmodule FavnView.RunDetailLive do
   defp patch_run_state(socket, updates) do
     active_mode = Keyword.get(updates, :active_mode, socket.assigns.active_mode)
 
-    push_patch(socket, to: ~p"/runs/#{socket.assigns.run_id}?#{run_query_params(active_mode)}")
+    selected_attempt_id =
+      Keyword.get(updates, :selected_attempt_id, socket.assigns.selected_attempt_id)
+
+    params =
+      run_query_params(
+        active_mode,
+        socket.assigns.selected_child_run_id,
+        selected_attempt_id
+      )
+
+    push_patch(socket, to: ~p"/runs/#{socket.assigns.run_id}?#{params}")
   end
 
-  defp run_query_params(:flow), do: %{}
-  defp run_query_params(active_mode), do: %{"view" => Atom.to_string(active_mode)}
+  defp run_query_params(active_mode, selected_child_run_id, selected_attempt_id) do
+    %{}
+    |> maybe_put_query("view", active_mode != :flow && Atom.to_string(active_mode))
+    |> maybe_put_query("child_run_id", selected_child_run_id)
+    |> maybe_put_query("attempt", selected_attempt_id)
+  end
+
+  defp maybe_put_query(params, _key, value) when value in [nil, false, ""], do: params
+  defp maybe_put_query(params, key, value), do: Map.put(params, key, value)
 
   defp active_mode_from_params(%{"view" => mode}, _current) when mode in @valid_modes,
     do: String.to_existing_atom(mode)
@@ -666,6 +690,27 @@ defmodule FavnView.RunDetailLive do
         nil
     end
   end
+
+  defp selected_attempt_id_from_params(%{"attempt" => attempt_id})
+       when is_binary(attempt_id) and attempt_id != "",
+       do: attempt_id
+
+  defp selected_attempt_id_from_params(_params), do: nil
+
+  defp preserve_selected_attempt(old_run, new_run, attempt_id) when is_binary(attempt_id) do
+    new_attempts = Map.get(new_run, :attempts, [])
+
+    if Enum.any?(new_attempts, &(&1.id == attempt_id)) do
+      new_run
+    else
+      case Enum.find(Map.get(old_run, :attempts, []), &(&1.id == attempt_id)) do
+        nil -> new_run
+        attempt -> Map.put(new_run, :attempts, new_attempts ++ [attempt])
+      end
+    end
+  end
+
+  defp preserve_selected_attempt(_old_run, new_run, _attempt_id), do: new_run
 
   defp attempt_from_public(attempt) do
     %{
@@ -696,10 +741,15 @@ defmodule FavnView.RunDetailLive do
       window: window_from_public(attempt.window),
       window_id: window_identity(attempt.window),
       window_label: window_label(attempt.window) || "No window",
-      logs_href:
-        ~p"/runs/#{attempt.run_id}/assets/#{Map.get(attempt, :asset_step_id, attempt.id)}/logs"
+      logs_href: attempt_logs_href(attempt)
     }
   end
+
+  defp attempt_logs_href(%{run_id: run_id, asset_step_id: asset_step_id})
+       when is_binary(run_id) and is_binary(asset_step_id),
+       do: ~p"/runs/#{run_id}/assets/#{asset_step_id}/logs"
+
+  defp attempt_logs_href(_attempt), do: nil
 
   defp window_from_public(nil), do: nil
 
@@ -955,16 +1005,38 @@ defmodule FavnView.RunDetailLive do
         &is_binary/1
       ) || "none"
 
-  defp window_label(%{label: label}) when is_binary(label), do: label
-  defp window_label(%{"label" => label}) when is_binary(label), do: label
-  defp window_label(%{key: key}) when is_binary(key), do: key
-  defp window_label(%{"key" => key}) when is_binary(key), do: key
+  defp window_label(window) when is_map(window) do
+    case {Map.get(window, :kind) || Map.get(window, "kind"),
+          Map.get(window, :start_at) || Map.get(window, "start_at")} do
+      {kind, %DateTime{} = start_at} when kind in [:hour, "hour"] ->
+        FavnView.Time.format(start_at, "%b %-d %H:00")
+
+      {kind, %DateTime{} = start_at} when kind in [:day, "day"] ->
+        FavnView.Time.format(start_at, "%b %-d")
+
+      {kind, %DateTime{} = start_at} when kind in [:month, "month"] ->
+        FavnView.Time.format(start_at, "%b %Y")
+
+      {kind, %DateTime{} = start_at} when kind in [:year, "year"] ->
+        FavnView.Time.format(start_at, "%Y")
+
+      _other ->
+        persisted_window_label(window)
+    end
+  end
+
   defp window_label(_window), do: nil
+
+  defp persisted_window_label(%{label: label}) when is_binary(label), do: label
+  defp persisted_window_label(%{"label" => label}) when is_binary(label), do: label
+  defp persisted_window_label(%{key: key}) when is_binary(key), do: key
+  defp persisted_window_label(%{"key" => key}) when is_binary(key), do: key
+  defp persisted_window_label(_window), do: nil
   defp datetime_iso(%DateTime{} = datetime), do: DateTime.to_iso8601(datetime)
   defp datetime_iso(_datetime), do: nil
 
   defp range_label(%DateTime{} = start_at, %DateTime{} = end_at),
-    do: "#{Calendar.strftime(start_at, "%b %-d")} - #{Calendar.strftime(end_at, "%b %-d")}"
+    do: "#{FavnView.Time.format(start_at, "%b %-d")} - #{FavnView.Time.format(end_at, "%b %-d")}"
 
   defp range_label(_start_at, _end_at), do: nil
 
@@ -988,6 +1060,7 @@ defmodule FavnView.RunDetailLive do
   defp status_label(:error), do: "Failed"
   defp status_label(:failed), do: "Failed"
   defp status_label(:pending), do: "Queued"
+  defp status_label(:planned), do: "Planned"
   defp status_label(:queued), do: "Queued"
   defp status_label(:running), do: "Running"
   defp status_label(:retrying), do: "Retrying"

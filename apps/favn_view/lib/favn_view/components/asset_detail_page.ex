@@ -2168,7 +2168,7 @@ defmodule FavnView.Components.AssetDetailPage do
   defp coverage_status_label(_status), do: "Unknown"
 
   defp coverage_time(%DateTime{} = value),
-    do: Calendar.strftime(value, "%b %-d, %Y %H:%M %Z")
+    do: FavnView.Time.format(value, "%b %-d, %Y %H:%M %Z")
 
   defp coverage_time(value) when is_binary(value), do: value
   defp coverage_time(_value), do: "-"
@@ -2376,7 +2376,7 @@ defmodule FavnView.Components.AssetDetailPage do
   defp freshness_reasons(_freshness), do: []
 
   defp freshness_time(%DateTime{} = value),
-    do: Calendar.strftime(value, "%b %-d, %Y %H:%M:%S UTC")
+    do: FavnView.Time.format(value, "%b %-d, %Y %H:%M:%S %Z")
 
   defp freshness_time(_value), do: "-"
 end

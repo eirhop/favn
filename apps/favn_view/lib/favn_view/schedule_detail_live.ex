@@ -258,7 +258,9 @@ defmodule FavnView.ScheduleDetailLive do
   defp activation_tone(:disabled), do: :error
   defp activation_tone(_state), do: :neutral
 
-  defp timestamp_label(%DateTime{} = datetime), do: Calendar.strftime(datetime, "%b %-d %H:%M")
+  defp timestamp_label(%DateTime{} = datetime),
+    do: FavnView.Time.format(datetime, "%b %-d %H:%M")
+
   defp timestamp_label(_value), do: "-"
 
   defp short_id(nil), do: nil
