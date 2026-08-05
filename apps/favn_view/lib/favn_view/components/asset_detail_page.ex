@@ -13,6 +13,7 @@ defmodule FavnView.Components.AssetDetailPage do
   alias FavnView.Components.RunConfigDialog
   alias FavnView.CoverageCalendar
   alias FavnView.LogsViewModel
+  alias FavnView.UI.Typography
 
   attr :title, :string, required: true
   attr :status, :string, required: true
@@ -283,7 +284,7 @@ defmodule FavnView.Components.AssetDetailPage do
         runs={@runs}
         selected_id={@selected_run_id}
         empty_label="This asset has not run yet."
-        class="favn-surface-list rounded-box max-h-72 shrink-0 p-3 lg:max-h-none lg:w-80"
+        class="max-h-72 shrink-0 lg:max-h-none lg:w-80"
         data-testid="asset-run-timeline"
       />
     </div>
@@ -441,12 +442,12 @@ defmodule FavnView.Components.AssetDetailPage do
     ~H"""
     <div class="mx-auto w-full max-w-3xl space-y-6" data-testid="asset-diagnostics">
       <.panel
-        padding={:none}
-        class={["border p-6 sm:p-8", compatibility_panel_class(field(@compatibility, :status))]}
+        padding={:lg}
+        class={["border", compatibility_panel_class(field(@compatibility, :status))]}
         data-testid="asset-compatibility-panel"
       >
         <div class="flex flex-wrap items-center justify-between gap-3">
-          <h2 class="text-sm uppercase tracking-[0.18em] favn-text-subtle">
+          <h2 class={Typography.class(:eyebrow)}>
             The table it writes
           </h2>
 
@@ -484,27 +485,26 @@ defmodule FavnView.Components.AssetDetailPage do
           :if={@rebuild_target_id && compatibility_actionable?(@compatibility)}
           class="mt-6 flex flex-wrap gap-2 border-t border-base-content/10 pt-5"
         >
-          <.link
+          <.button
             :if={field(@compatibility, :reason_code) == "unmanaged_physical_relation"}
             navigate={~p"/recoveries?#{[target_id: @rebuild_target_id]}"}
-            class="btn btn-warning btn-sm"
             data-testid="recover-asset-ownership"
           >
             Take ownership of this table
-          </.link>
+          </.button>
 
-          <.link
+          <.button
+            variant={:secondary}
             navigate={~p"/rebuilds?#{[target_id: @rebuild_target_id]}"}
-            class="btn btn-outline btn-sm"
             data-testid="plan-asset-rebuild"
           >
             Rebuild the table
-          </.link>
+          </.button>
         </div>
       </.panel>
 
-      <.panel padding={:none} class="p-6 sm:p-8" data-testid="asset-diagnostics-detail">
-        <h2 class="text-sm uppercase tracking-[0.18em] favn-text-subtle">Under the hood</h2>
+      <.panel padding={:lg} data-testid="asset-diagnostics-detail">
+        <h2 class={Typography.class(:eyebrow)}>Under the hood</h2>
 
         <p class="mt-2 text-sm favn-text-muted">
           Worth opening when two deployments disagree, or when a rule above needs
@@ -650,12 +650,12 @@ defmodule FavnView.Components.AssetDetailPage do
   def coverage_panel(assigns) do
     ~H"""
     <.panel
-      padding={:none}
-      class="mx-auto w-full max-w-5xl p-6 sm:p-8"
+      padding={:lg}
+      class="mx-auto w-full max-w-5xl"
       data-testid="asset-coverage"
     >
       <div class="flex flex-wrap items-center justify-between gap-3">
-        <h2 class="text-sm uppercase tracking-[0.18em] favn-text-subtle">Coverage</h2>
+        <h2 class={Typography.class(:eyebrow)}>Coverage</h2>
 
         <span class={coverage_badge_class(field(@coverage, :status))}>
           {coverage_status_label(field(@coverage, :status))}
@@ -696,26 +696,23 @@ defmodule FavnView.Components.AssetDetailPage do
         :if={coverage_backfillable?(@coverage) && is_nil(@plan)}
         class="mt-6 flex flex-wrap items-center gap-3 border-t border-base-content/10 pt-5"
       >
-        <button
-          type="button"
-          class="btn btn-warning btn-soft btn-sm"
+        <.button
+          loading={@planning?}
           phx-click="plan_missing_coverage"
           disabled={!@can_plan? || @planning?}
           data-testid="plan-missing-coverage"
         >
-          <span :if={@planning?} class="loading loading-spinner loading-xs"></span>
           {coverage_backfill_label(@coverage, @calendar)}
-        </button>
+        </.button>
 
-        <button
+        <.button
           :if={@calendar.selected_count > 0}
-          type="button"
-          class="btn btn-ghost btn-sm"
+          variant={:ghost}
           phx-click="clear_coverage_selection"
           data-testid="clear-coverage-selection"
         >
           Clear selection
-        </button>
+        </.button>
 
         <p :if={!@can_plan?} class="text-sm text-warning">
           Backfilling needs an operator account and a working target.
@@ -738,18 +735,20 @@ defmodule FavnView.Components.AssetDetailPage do
           <li :for={window <- field(@plan, :windows, [])}>{coverage_plan_window_label(window)}</li>
         </ul>
 
-        <button
-          type="button"
-          class="btn btn-primary btn-sm mt-4"
+        <!-- `:primary`, not `:solid`: this is a page panel, and the filled violet is
+        reserved for a dialog asking for a decision. Planning and submitting never show
+        together, so there is still one action button per view state. -->
+        <.button
+          class="mt-4"
+          loading={@submitting?}
           phx-click="submit_missing_coverage"
           data-command-operation="coverage_backfill_submit"
           data-command-resource={@command_resource}
           disabled={@submitting?}
           data-testid="submit-missing-coverage"
         >
-          <span :if={@submitting?} class="loading loading-spinner loading-xs"></span>
           Start the backfill
-        </button>
+        </.button>
       </div>
 
       <p :if={@action_error} class="mt-4 text-sm text-error" data-testid="coverage-action-error">
@@ -853,7 +852,7 @@ defmodule FavnView.Components.AssetDetailPage do
     >
       <div class="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <div>
-          <p class="text-sm uppercase tracking-[0.18em] favn-text-subtle">Run context</p>
+          <.eyebrow>Run context</.eyebrow>
 
           <p class="mt-1 text-sm favn-text-muted">
             Which pipeline's schedule this asset follows. It decides the periods below
@@ -923,8 +922,8 @@ defmodule FavnView.Components.AssetDetailPage do
         data-testid="asset-documentation-error"
       />
 
-      <.panel :if={@docs} padding={:none} class="p-6 sm:p-8">
-        <h2 class="text-sm uppercase tracking-[0.18em] favn-text-subtle">What this is</h2>
+      <.panel :if={@docs} padding={:lg}>
+        <h2 class={Typography.class(:eyebrow)}>What this is</h2>
 
         <p :if={@docs[:description]} class="mt-3 max-w-3xl whitespace-pre-line">
           {@docs.description}
@@ -947,9 +946,9 @@ defmodule FavnView.Components.AssetDetailPage do
         </div>
       </.panel>
 
-      <.panel :if={@sql} padding={:none} class="p-6 sm:p-8" data-testid="asset-sql">
+      <.panel :if={@sql} padding={:lg} data-testid="asset-sql">
         <div class="flex flex-wrap items-baseline justify-between gap-2">
-          <h2 class="text-sm uppercase tracking-[0.18em] favn-text-subtle">The query</h2>
+          <h2 class={Typography.class(:eyebrow)}>The query</h2>
           <span class="text-sm favn-text-subtle">{sql_line_count(@sql.sql)}</span>
         </div>
 
@@ -976,11 +975,10 @@ defmodule FavnView.Components.AssetDetailPage do
 
       <.panel
         :if={@docs && @docs[:entrypoint]}
-        padding={:none}
-        class="p-6 sm:p-8"
+        padding={:lg}
         data-testid="asset-entrypoint"
       >
-        <h2 class="text-sm uppercase tracking-[0.18em] favn-text-subtle">The code that runs</h2>
+        <h2 class={Typography.class(:eyebrow)}>The code that runs</h2>
 
         <.mono value={entrypoint_label(@docs.entrypoint)} class="mt-3 block text-base" />
 
@@ -1067,13 +1065,13 @@ defmodule FavnView.Components.AssetDetailPage do
 
     ~H"""
     <div class="mx-auto w-full max-w-[120rem] space-y-6" data-testid="asset-overview">
-      <.panel padding={:none} class="p-6 sm:p-8">
+      <.panel padding={:lg}>
         <!-- The one thing an operator comes here to do sits where an action belongs, not
         at the bottom of a strip of run anchors. Which period it runs for is the dialog's
         business; filling gaps is Coverage's. -->
         <div class="mb-5 flex flex-wrap items-start justify-between gap-3">
           <div class="min-w-0">
-            <p class="text-sm uppercase tracking-[0.18em] favn-text-subtle">This asset</p>
+            <.eyebrow>This asset</.eyebrow>
           </div>
 
           <.button
@@ -1108,8 +1106,7 @@ defmodule FavnView.Components.AssetDetailPage do
       holding one option is a control that cannot change anything. -->
       <.panel
         :if={length(@run_contexts) > 1 || @run_context_status == :ambiguous}
-        padding={:none}
-        class="p-6 sm:p-8"
+        padding={:lg}
       >
         <.run_context_selector
           contexts={@run_contexts}
@@ -1135,8 +1132,8 @@ defmodule FavnView.Components.AssetDetailPage do
         </.link>
       </.notice>
 
-      <.panel padding={:none} class="p-6 sm:p-8" data-testid="asset-lineage">
-        <h2 class="text-sm uppercase tracking-[0.18em] favn-text-subtle">Lineage</h2>
+      <.panel padding={:lg} data-testid="asset-lineage">
+        <h2 class={Typography.class(:eyebrow)}>Lineage</h2>
 
         <.lineage_graph
           class="mt-4"
@@ -1243,8 +1240,8 @@ defmodule FavnView.Components.AssetDetailPage do
   def freshness_detail_panel(assigns) do
     ~H"""
     <.panel
-      padding={:none}
-      class="mx-auto w-full max-w-4xl p-6 sm:p-8"
+      padding={:lg}
+      class="mx-auto w-full max-w-4xl"
       data-testid="asset-freshness-detail-panel"
     >
       <div :if={!@freshness} class="text-sm favn-text-muted">
@@ -1253,7 +1250,7 @@ defmodule FavnView.Components.AssetDetailPage do
 
       <div :if={@freshness} class="space-y-6">
         <div>
-          <p class="text-sm uppercase tracking-[0.18em] favn-text-subtle">Freshness detail</p>
+          <.eyebrow>Freshness detail</.eyebrow>
 
           <div class="mt-2 flex flex-wrap items-center gap-2">
             <span class={freshness_badge_class(@freshness[:state])}>
@@ -1267,7 +1264,7 @@ defmodule FavnView.Components.AssetDetailPage do
 
         <dl :if={freshness_latest_success(@freshness)} class="grid gap-3 sm:grid-cols-3">
           <div class="rounded-box border border-base-content/10 bg-base-content/[0.03] p-3">
-            <dt class="text-sm uppercase tracking-[0.16em] favn-text-subtle">Latest success</dt>
+            <dt class={Typography.class(:eyebrow)}>Latest success</dt>
 
             <dd class="mt-1 break-words font-mono text-sm favn-text-muted">
               {freshness_latest_success(@freshness)[:run_id]}
@@ -1275,7 +1272,7 @@ defmodule FavnView.Components.AssetDetailPage do
           </div>
 
           <div class="rounded-box border border-base-content/10 bg-base-content/[0.03] p-3">
-            <dt class="text-sm uppercase tracking-[0.16em] favn-text-subtle">Freshness key</dt>
+            <dt class={Typography.class(:eyebrow)}>Freshness key</dt>
 
             <dd class="mt-1 break-words font-mono text-sm favn-text-muted">
               {freshness_latest_success(@freshness)[:freshness_key]}
@@ -1283,7 +1280,7 @@ defmodule FavnView.Components.AssetDetailPage do
           </div>
 
           <div class="rounded-box border border-base-content/10 bg-base-content/[0.03] p-3">
-            <dt class="text-sm uppercase tracking-[0.16em] favn-text-subtle">At</dt>
+            <dt class={Typography.class(:eyebrow)}>At</dt>
 
             <dd class="mt-1 text-sm favn-text-muted">
               {freshness_time(freshness_latest_success(@freshness)[:at])}
@@ -1310,19 +1307,19 @@ defmodule FavnView.Components.AssetDetailPage do
 
               <dl class="mt-3 grid gap-2 text-sm favn-text-muted sm:grid-cols-3">
                 <div :if={reason[:previous_version]}>
-                  <dt class="uppercase tracking-[0.14em] favn-text-subtle">Previous</dt>
+                  <dt class={Typography.class(:eyebrow)}>Previous</dt>
 
                   <dd class="mt-0.5 break-words font-mono">{reason[:previous_version]}</dd>
                 </div>
 
                 <div :if={reason[:current_version]}>
-                  <dt class="uppercase tracking-[0.14em] favn-text-subtle">Current</dt>
+                  <dt class={Typography.class(:eyebrow)}>Current</dt>
 
                   <dd class="mt-0.5 break-words font-mono">{reason[:current_version]}</dd>
                 </div>
 
                 <div :if={reason[:run_id]}>
-                  <dt class="uppercase tracking-[0.14em] favn-text-subtle">Run</dt>
+                  <dt class={Typography.class(:eyebrow)}>Run</dt>
 
                   <dd class="mt-0.5 break-words font-mono">{reason[:run_id]}</dd>
                 </div>
@@ -1361,7 +1358,7 @@ defmodule FavnView.Components.AssetDetailPage do
       |> assign(:mismatched, Enum.count(columns, & &1.mismatch))
 
     ~H"""
-    <.panel padding={:none} class="p-6 sm:p-8" data-testid="asset-assurance-panel">
+    <.panel padding={:lg} data-testid="asset-assurance-panel">
       <div class="flex flex-wrap items-start justify-between gap-3">
         <h2 class="text-xl font-medium tracking-tight">Data quality</h2>
 
@@ -1742,10 +1739,10 @@ defmodule FavnView.Components.AssetDetailPage do
 
     ~H"""
     <div class="space-y-6" data-testid="asset-run-detail">
-      <.panel padding={:none} class="p-6 sm:p-8">
+      <.panel padding={:lg}>
         <div class="flex flex-wrap items-start justify-between gap-3">
           <div class="min-w-0">
-            <p class="text-sm uppercase tracking-[0.18em] favn-text-subtle">Run</p>
+            <.eyebrow>Run</.eyebrow>
             <.mono value={@run.run_id} class="mt-1 block text-base" />
           </div>
 
@@ -1783,7 +1780,7 @@ defmodule FavnView.Components.AssetDetailPage do
 
       <.assurance_panel :if={@run[:assurance]} assurance={@run.assurance} />
 
-      <.panel :if={@inputs != []} padding={:none} class="p-6 sm:p-8">
+      <.panel :if={@inputs != []} padding={:lg}>
         <details>
           <summary class="cursor-pointer text-sm font-medium">
             Resolved inputs <span class="favn-text-subtle">({length(@inputs)})</span>

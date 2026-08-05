@@ -93,4 +93,22 @@ defmodule FavnView.AuthBoundaryTest do
       refute File.read!(file) =~ term, "#{file} bypasses the orchestrator facade with #{term}"
     end
   end
+
+  test "view code never mints a durable run or backfill id" do
+    files = Path.wildcard(Path.expand("../../lib/favn_view/**/*.{ex,heex}", __DIR__))
+
+    # A run id is a permanent record and the handle a resubmission is recognised by, so
+    # the orchestrator derives it from the operator command. A view that builds one is
+    # deciding an identity whose uniqueness and stability it cannot answer for, and the
+    # facade would then have to choose between its own id and the caller's.
+    minting = [
+      ~r/"(run|bf|bfw)_[a-z_]*"\s*<>/,
+      ~r/"(run|bf|bfw)_[a-z_]*\#\{/
+    ]
+
+    for file <- files, pattern <- minting do
+      refute File.read!(file) =~ pattern,
+             "#{file} builds an orchestrator id; ask the facade for one instead"
+    end
+  end
 end

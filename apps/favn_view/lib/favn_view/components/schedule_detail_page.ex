@@ -77,7 +77,6 @@ defmodule FavnView.Components.ScheduleDetailPage do
             <.status_cards schedule={@schedule} />
             <.panel
               padding={:none}
-              class="p-0"
               data-testid={
                 if(@active_view == :overview,
                   do: "schedule-overview-panel",

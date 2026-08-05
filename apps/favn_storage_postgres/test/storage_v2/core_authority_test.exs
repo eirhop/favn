@@ -6601,7 +6601,15 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
                [fixture.workspace_id, first.operation, first.key_hash, cutoff]
              )
 
-    assert {:error, %Error{kind: :conflict, retryable?: true}} =
+    # A fresh key cannot start a competing command while the first is unresolved, and
+    # the reason code is what a caller distinguishes that from a stale-content
+    # conflict by.
+    assert {:error,
+            %Error{
+              kind: :conflict,
+              retryable?: true,
+              details: %{reason_code: "operator_command_unresolved"}
+            }} =
              OperatorAudit.begin_command(
                replacement_context,
                replacement_operator_context,

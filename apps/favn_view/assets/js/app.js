@@ -60,7 +60,9 @@ const operatorCommandOperation = element => {
   const field = element.dataset.commandOperationPresentField
   const input = field && element.elements?.namedItem(field)
 
-  if (input?.value && element.dataset.commandOperationPresent) {
+  // Trimmed, because the server decides the same question with a trimmed value. An
+  // untrimmed check filed a whitespace-only field under the wrong operation.
+  if (input?.value?.trim() && element.dataset.commandOperationPresent) {
     return element.dataset.commandOperationPresent
   }
 

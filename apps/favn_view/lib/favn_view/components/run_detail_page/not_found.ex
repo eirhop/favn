@@ -5,7 +5,7 @@ defmodule FavnView.Components.RunDetailPage.NotFound do
   def not_found_panel(assigns) do
     ~H"""
     <div class="mx-auto w-full max-w-3xl">
-      <.panel padding={:none} class="p-8 text-center" data-testid="run-not-found-state">
+      <.panel padding={:lg} class="text-center" data-testid="run-not-found-state">
         <span :if={@run[:initializing?]} class="loading loading-ring loading-lg text-primary"></span>
         <h2 class="text-xl font-medium">
           {if(@run[:initializing?], do: "Loading run", else: @run.error || "Run not found")}

@@ -28,10 +28,10 @@ defmodule FavnView.Components.RebuildPage do
         class="mx-auto grid w-full max-w-[120rem] gap-5 xl:grid-cols-[minmax(22rem,0.8fr)_minmax(0,1.7fr)]"
         data-testid="rebuilds-page"
       >
-        <.panel padding={:none} class="p-5 sm:p-6">
-          <p class="text-sm font-semibold uppercase tracking-[0.18em] favn-text-subtle">
+        <.panel>
+          <.eyebrow>
             Plan a rebuild
-          </p>
+          </.eyebrow>
 
           <p class="mt-2 text-sm favn-text-muted">
             Planning is read-only. Review the immutable plan before starting it.
@@ -192,12 +192,12 @@ defmodule FavnView.Components.RebuildPage do
           </div>
         </.panel>
 
-        <.panel padding={:none} class="min-w-0 p-5 sm:p-6">
+        <.panel class="min-w-0">
           <div class="flex items-center justify-between gap-3">
             <div>
-              <p class="text-sm font-semibold uppercase tracking-[0.18em] favn-text-subtle">
+              <.eyebrow>
                 Operations
-              </p>
+              </.eyebrow>
 
               <p class="mt-1 text-sm favn-text-muted">Newest first</p>
             </div>
@@ -282,7 +282,7 @@ defmodule FavnView.Components.RebuildPage do
           {@error}
         </p>
 
-        <.panel padding={:none} class="p-5 sm:p-6">
+        <.panel>
           <div class="grid gap-5 lg:grid-cols-[minmax(0,1fr)_auto]">
             <dl class="grid gap-4 text-sm sm:grid-cols-2 xl:grid-cols-4">
               <.fact label="Phase" value={humanize(field(@operation, :phase))} />
@@ -359,8 +359,7 @@ defmodule FavnView.Components.RebuildPage do
 
         <.panel
           :if={present?(field(@operation, :terminal_error))}
-          padding={:none}
-          class="border border-error/25 p-5 text-sm"
+          class="border border-error/25 text-sm"
         >
           <p class="font-medium text-error">Terminal error</p>
 
@@ -369,8 +368,7 @@ defmodule FavnView.Components.RebuildPage do
 
         <.panel
           :if={present?(field(@operation, :unknown_outcome))}
-          padding={:none}
-          class="border border-warning/30 p-5 text-sm"
+          class="border border-warning/30 text-sm"
         >
           <p class="font-medium text-warning">Outcome needs reconciliation</p>
 
@@ -381,8 +379,7 @@ defmodule FavnView.Components.RebuildPage do
 
         <.panel
           :if={present?(field(@operation, :validation_result))}
-          padding={:none}
-          class="p-5 text-sm"
+          class="text-sm"
         >
           <p class="font-medium">Candidate validation</p>
 
@@ -393,12 +390,11 @@ defmodule FavnView.Components.RebuildPage do
 
         <.panel
           :if={field(@operation, :actions, []) != []}
-          padding={:none}
-          class="min-w-0 p-5 sm:p-6"
+          class="min-w-0"
         >
-          <p class="text-sm font-semibold uppercase tracking-[0.18em] favn-text-subtle">
+          <.eyebrow>
             Downstream actions
-          </p>
+          </.eyebrow>
 
           <div class="mt-4 divide-y divide-base-content/10">
             <div :for={action <- field(@operation, :actions, [])} class="py-4 text-sm">
@@ -420,10 +416,10 @@ defmodule FavnView.Components.RebuildPage do
           </div>
         </.panel>
 
-        <.panel padding={:none} class="min-w-0 p-5 sm:p-6">
-          <p class="text-sm font-semibold uppercase tracking-[0.18em] favn-text-subtle">
+        <.panel class="min-w-0">
+          <.eyebrow>
             Logical work items
-          </p>
+          </.eyebrow>
 
           <div :if={@items == []} class="py-12 text-center text-sm favn-text-muted">
             No logical work items.

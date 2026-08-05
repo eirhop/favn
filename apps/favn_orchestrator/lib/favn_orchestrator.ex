@@ -532,7 +532,14 @@ defmodule FavnOrchestrator do
     end
   end
 
-  @doc "Submits an exact, revalidated missing-window backfill plan."
+  @doc """
+  Submits an exact, revalidated missing-window backfill plan.
+
+  `:idempotency_key` is required. The returned run id is derived here from it, so a
+  caller cannot name the run. Resubmitting the *same* request under the same key
+  resolves to the same run and the same backfill; a changed request under that key is
+  refused, and so is a different key while the first submission is still unresolved.
+  """
   @spec submit_missing_coverage_backfill(
           OperatorContext.t(),
           String.t(),
@@ -581,7 +588,7 @@ defmodule FavnOrchestrator do
          opts <-
            domain_opts
            |> Keyword.put(:idempotency, intent.idempotency)
-           |> Keyword.put_new(
+           |> Keyword.put(
              :root_run_id,
              OperatorAudit.deterministic_id(intent, "run", [target_id])
            ),

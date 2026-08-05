@@ -549,7 +549,9 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.AssetDetail do
   def compatibility(:operator_decision) do
     Map.merge(compatibility(:ready), %{
       status: :operator_decision,
-      reason_code: "unmanaged_physical_target",
+      # The code `Favn.TargetCompatibility` actually emits. Spelled `..._target` here, this
+      # fixture rendered the panel without the "take ownership" action it exists to show.
+      reason_code: "unmanaged_physical_relation",
       active_generation_id: nil,
       physical_fingerprint: nil,
       diff: %{},
