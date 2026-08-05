@@ -426,7 +426,7 @@ defmodule FavnView.Dev.DesignSystem.Examples.Elements do
           %{
             runs: run_timeline_runs(),
             selected_id: "run-b",
-            class: "favn-surface-list rounded-box max-h-96 w-80 p-3"
+            class: "max-h-96 w-80"
           },
           "A day heading appears once however many runs it holds, and the selected " <>
             "run is the one in the address bar rather than one the rail remembers."
@@ -435,7 +435,7 @@ defmodule FavnView.Dev.DesignSystem.Examples.Elements do
           :unselected,
           %{
             runs: run_timeline_runs(),
-            class: "favn-surface-list rounded-box max-h-96 w-80 p-3"
+            class: "max-h-96 w-80"
           },
           "Nothing selected: the failure still reads as the one entry worth opening."
         ),
@@ -444,7 +444,7 @@ defmodule FavnView.Dev.DesignSystem.Examples.Elements do
           %{
             runs: [],
             empty_label: "This asset has not run yet.",
-            class: "favn-surface-list rounded-box w-80 p-3"
+            class: "w-80"
           },
           "An asset with no history says so instead of showing an empty rail."
         )

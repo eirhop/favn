@@ -15,6 +15,23 @@ defmodule FavnView.UI.Surface do
   Do not hand-roll `border`/`background`/`shadow` utility stacks for a container.
   If a surface is missing a variant you need, add the variant here.
 
+  ## Panel padding
+
+  `panel/1` owns its padding through four named steps. Every step that has padding
+  reduces it below the `sm` breakpoint, because a fixed inset costs a phone more of its
+  width than it costs a desktop:
+
+  | Step | Mobile | `sm` and up | Use it for |
+  | --- | --- | --- | --- |
+  | `:none` | none | none | a panel whose child owns its spacing: a scroll region, a table, sectioned content |
+  | `:sm` | 16px | 16px | a compact panel nested inside another container |
+  | `:md` | 20px | 24px | the default, and most panels |
+  | `:lg` | 24px | 32px | the largest panel on a screen, and centred empty and error states |
+
+  Passing `padding={:none}` together with a padding utility in `class` invents an
+  unnamed step and decides in a page what this element owns. Add the step here instead.
+  There is deliberately no step that keeps a desktop inset on a phone.
+
   ## Examples
 
       <.panel>
@@ -31,10 +48,17 @@ defmodule FavnView.UI.Surface do
 
   import FavnView.UI.Icon
 
-  @paddings %{none: nil, sm: "p-4", md: "p-5 sm:p-6", lg: "p-8"}
+  alias FavnView.UI.Typography
+
+  @paddings %{none: nil, sm: "p-4", md: "p-5 sm:p-6", lg: "p-6 sm:p-8"}
 
   attr :id, :string, default: nil
-  attr :padding, :atom, default: :md, values: [:none, :sm, :md, :lg]
+
+  attr :padding, :atom,
+    default: :md,
+    values: [:none, :sm, :md, :lg],
+    doc: "a named step; see the module docs. Never a padding utility in `class`"
+
   attr :class, :any, default: nil
   attr :rest, :global
 
@@ -178,7 +202,7 @@ defmodule FavnView.UI.Surface do
   def surface_divider(assigns) do
     ~H"""
     <div class={["flex items-center gap-3 py-3", @class]}>
-      <span class="text-sm uppercase tracking-[0.18em] favn-text-subtle">{@label}</span>
+      <span class={Typography.class(:eyebrow)}>{@label}</span>
       <span class="h-px flex-1 bg-base-content/10"></span>
     </div>
     """

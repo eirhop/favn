@@ -50,10 +50,10 @@ defmodule FavnView.Components.PipelineDetailPage do
 
   def summary_panel(assigns) do
     ~H"""
-    <.panel padding={:none} class="p-6 sm:p-8" data-testid="pipeline-summary-panel">
+    <.panel padding={:lg} data-testid="pipeline-summary-panel">
       <div class="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
         <div class="min-w-0">
-          <p class="text-sm uppercase tracking-[0.2em] favn-text-subtle">Pipeline</p>
+          <.eyebrow>Pipeline</.eyebrow>
 
           <h2 class="mt-2 text-2xl font-medium tracking-tight">{@pipeline.name}</h2>
 
@@ -74,7 +74,7 @@ defmodule FavnView.Components.PipelineDetailPage do
       </div>
 
       <div class="mt-6">
-        <p class="text-sm uppercase tracking-[0.18em] favn-text-subtle">Selected assets</p>
+        <.eyebrow>Selected assets</.eyebrow>
 
         <div class="mt-3 flex flex-wrap gap-2">
           <span :for={asset <- @pipeline.selected_assets} class="badge badge-soft badge-info">
@@ -96,7 +96,7 @@ defmodule FavnView.Components.PipelineDetailPage do
   def summary_stat(assigns) do
     ~H"""
     <div class="rounded-box border border-base-content/10 bg-base-content/[0.03] p-4">
-      <p class="text-sm uppercase tracking-[0.16em] favn-text-subtle">{@label}</p>
+      <.eyebrow>{@label}</.eyebrow>
 
       <p class="mt-1 text-sm font-medium text-base-content">{@value}</p>
     </div>
@@ -111,10 +111,10 @@ defmodule FavnView.Components.PipelineDetailPage do
 
   def actions_panel(assigns) do
     ~H"""
-    <.panel padding={:none} class="p-6 sm:p-8" data-testid="pipeline-actions-panel">
+    <.panel padding={:lg} data-testid="pipeline-actions-panel">
       <div class="grid gap-6 lg:grid-cols-[1fr_1.4fr]">
         <div>
-          <p class="text-sm uppercase tracking-[0.2em] favn-text-subtle">Run pipeline</p>
+          <.eyebrow>Run pipeline</.eyebrow>
 
           <p class="mt-2 text-sm favn-text-muted">
             Submit the active manifest pipeline, equivalent to <code class="font-mono">mix favn.run</code>.
@@ -159,7 +159,7 @@ defmodule FavnView.Components.PipelineDetailPage do
         </div>
 
         <div>
-          <p class="text-sm uppercase tracking-[0.2em] favn-text-subtle">Backfill</p>
+          <.eyebrow>Backfill</.eyebrow>
 
           <p class="mt-2 text-sm favn-text-muted">
             Submit an explicit range, equivalent to <code class="font-mono">mix favn.backfill submit</code>.

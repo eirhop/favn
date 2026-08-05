@@ -928,10 +928,15 @@ defmodule FavnView.UI.Data do
   Entries are grouped by day, and the day appears once as a heading rather than on
   every row, so a day with six runs reads as one day.
 
+  A spine of rows carries the list surface itself, and an empty one carries none — its
+  empty state is already a panel. Pass only the size the region should occupy; `class` is
+  not where its surface, radius, or padding is decided.
+
       <.run_timeline
         runs={@runs}
         selected_id={@selected_run_id}
         empty_label="This asset has not run yet."
+        class="max-h-72 lg:max-h-none lg:w-80"
       />
   """
   attr :runs, :list,
@@ -952,11 +957,18 @@ defmodule FavnView.UI.Data do
 
     ~H"""
     <div
-      class={["min-h-0 overflow-y-auto", @class]}
+      class={[
+        "min-h-0 overflow-y-auto",
+        @runs != [] && "favn-surface-list rounded-box p-3",
+        @class
+      ]}
       role="navigation"
       aria-label={@label}
       {@rest}
     >
+      <!-- The surface belongs to the rows, not to the region. An empty state is already a
+      panel, and putting it inside a second glass level stacks two cards and two insets
+      around one sentence. -->
       <.empty_state :if={@runs == []} title={@empty_label} icon="hero-clock" />
 
       <ol :if={@runs != []} class="relative space-y-4">

@@ -55,9 +55,9 @@ defmodule FavnView.Components.WorkspaceMenu do
         </summary>
 
         <div class="dropdown-content favn-surface-rail z-50 mt-2 w-64 rounded-box p-2 shadow-xl md:top-0 md:left-full md:mt-0 md:ml-2">
-          <p class="px-2 pb-2 text-sm uppercase tracking-[0.14em] favn-text-subtle">
+          <.eyebrow class="px-2 pb-2">
             Switch workspace
-          </p>
+          </.eyebrow>
 
           <div class="space-y-1">
             <form :for={workspace <- @workspaces} action={~p"/workspaces/switch"} method="post">
