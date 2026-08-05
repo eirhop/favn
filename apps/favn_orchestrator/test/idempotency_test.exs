@@ -1,7 +1,10 @@
 defmodule FavnOrchestrator.IdempotencyTest do
   use ExUnit.Case, async: true
 
+  alias Favn.Backfill.RangeRequest
   alias FavnOrchestrator.Idempotency
+  alias FavnOrchestrator.OperatorCommands.AssetBackfillRequest
+  alias FavnOrchestrator.OperatorCommands.PipelineBackfillRequest
 
   test "request fingerprints preserve JSON value types" do
     refute Idempotency.request_fingerprint(%{value: true}) ==
@@ -23,5 +26,43 @@ defmodule FavnOrchestrator.IdempotencyTest do
                "request" => %{"b" => true, "a" => 1},
                "operation" => "run.submit"
              })
+  end
+
+  test "request HMACs support nested operator command structs" do
+    key = String.duplicate("k", 32)
+
+    range = %RangeRequest{
+      from: "2026-07",
+      to: "2026-07",
+      kind: :month,
+      mode: :explicit,
+      timezone: "Europe/Oslo"
+    }
+
+    pipeline_request = %PipelineBackfillRequest{refresh_mode: :missing, range: range}
+
+    requests = [
+      pipeline_request,
+      %AssetBackfillRequest{
+        dependency_mode: :all,
+        refresh_mode: :missing,
+        range: range
+      }
+    ]
+
+    fingerprint = fn request ->
+      Idempotency.request_hmac(
+        %{operation: "backfill.submit", request: request},
+        key
+      )
+    end
+
+    fingerprints = Enum.map(requests, fingerprint)
+    changed_request = %{pipeline_request | range: %{range | to: "2026-08"}}
+
+    assert Enum.all?(fingerprints, &(byte_size(&1) == 64))
+    assert Enum.uniq(fingerprints) == fingerprints
+    assert Enum.map(requests, fingerprint) == fingerprints
+    refute fingerprint.(changed_request) == fingerprint.(pipeline_request)
   end
 end
