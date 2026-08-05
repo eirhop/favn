@@ -5,7 +5,9 @@ defmodule FavnOrchestrator.Persistence.Results.OperatorRunOverviewNormalizer do
   alias FavnOrchestrator.Persistence.Results.BackfillWindow
   alias FavnOrchestrator.Persistence.Results.ExecutionGroupOverview
   alias FavnOrchestrator.Persistence.Results.OperatorRunOverview
+  alias FavnOrchestrator.Persistence.Results.PlannedAssetStep
   alias FavnOrchestrator.Persistence.Results.RunSummary
+  alias FavnOrchestrator.WindowSummary
 
   @enforce_keys [
     :overview,
@@ -17,6 +19,9 @@ defmodule FavnOrchestrator.Persistence.Results.OperatorRunOverviewNormalizer do
     :attempts,
     :attempt_counts,
     :attempts_truncated?,
+    :planned_steps,
+    :planned_steps_truncated?,
+    :asset_counts_by_run,
     :runs_truncated?,
     :target_refs
   ]
@@ -54,7 +59,7 @@ defmodule FavnOrchestrator.Persistence.Results.OperatorRunOverviewNormalizer do
           required(:run_id) => String.t(),
           required(:asset_step_id) => String.t(),
           required(:asset_ref) => String.t(),
-          required(:window) => map() | nil,
+          required(:window) => WindowSummary.t() | nil,
           required(:status) => FavnOrchestrator.ExecutionStatus.known(),
           required(:stage) => non_neg_integer() | nil,
           required(:attempt_number) => pos_integer() | nil,
@@ -65,6 +70,28 @@ defmodule FavnOrchestrator.Persistence.Results.OperatorRunOverviewNormalizer do
           required(:duration_ms) => non_neg_integer() | nil,
           required(:error) => term(),
           required(:output_metadata) => map() | nil
+        }
+
+  @type normalized_planned_step :: %{
+          required(:root_run_id) => String.t(),
+          required(:run_id) => String.t(),
+          required(:node_identity) => String.t(),
+          required(:asset_ref) => String.t(),
+          required(:window_identity) => String.t(),
+          required(:window) => WindowSummary.t() | nil,
+          required(:stage) => non_neg_integer() | nil,
+          required(:execution_pool) => String.t() | nil
+        }
+
+  @type normalized_asset_counts :: %{
+          required(:total) => non_neg_integer(),
+          required(:completed) => non_neg_integer(),
+          required(:succeeded) => non_neg_integer(),
+          required(:skipped) => non_neg_integer(),
+          required(:failed) => non_neg_integer(),
+          required(:running) => non_neg_integer(),
+          required(:queued) => non_neg_integer(),
+          required(:planned) => non_neg_integer()
         }
 
   @type normalized_t :: %__MODULE__{
@@ -96,6 +123,9 @@ defmodule FavnOrchestrator.Persistence.Results.OperatorRunOverviewNormalizer do
             effective_windows: non_neg_integer()
           },
           attempts_truncated?: boolean(),
+          planned_steps: [normalized_planned_step()],
+          planned_steps_truncated?: boolean(),
+          asset_counts_by_run: %{optional(String.t()) => normalized_asset_counts()},
           runs_truncated?: boolean(),
           target_refs: [String.t()]
         }
@@ -112,8 +142,11 @@ defmodule FavnOrchestrator.Persistence.Results.OperatorRunOverviewNormalizer do
            normalize_requested_window_counts(overview.requested_window_counts),
          {:ok, attempts} <- normalize_attempts(overview.attempts),
          {:ok, attempt_counts} <- normalize_attempt_counts(overview.attempt_counts),
+         {:ok, planned_steps} <- normalize_planned_steps(overview.planned_steps),
+         {:ok, asset_counts_by_run} <- normalize_asset_counts_by_run(overview.asset_counts_by_run),
          true <- is_boolean(overview.requested_windows_truncated?),
          true <- is_boolean(overview.attempts_truncated?),
+         true <- is_boolean(overview.planned_steps_truncated?),
          true <- is_boolean(overview.runs_truncated?),
          {:ok, target_refs} <- normalize_binary_list(overview.target_refs) do
       {:ok,
@@ -127,6 +160,9 @@ defmodule FavnOrchestrator.Persistence.Results.OperatorRunOverviewNormalizer do
          attempts: attempts,
          attempt_counts: attempt_counts,
          attempts_truncated?: overview.attempts_truncated?,
+         planned_steps: planned_steps,
+         planned_steps_truncated?: overview.planned_steps_truncated?,
+         asset_counts_by_run: asset_counts_by_run,
          runs_truncated?: overview.runs_truncated?,
          target_refs: target_refs
        }}
@@ -278,7 +314,7 @@ defmodule FavnOrchestrator.Persistence.Results.OperatorRunOverviewNormalizer do
          {:ok, run_id} <- binary(run_id),
          {:ok, asset_step_id} <- binary(asset_step_id),
          {:ok, asset_ref} <- binary(asset_ref),
-         true <- is_nil(window) or is_map(window),
+         {:ok, window} <- normalize_window_summary(window),
          true <-
            status in [
              :pending,
@@ -366,6 +402,92 @@ defmodule FavnOrchestrator.Persistence.Results.OperatorRunOverviewNormalizer do
 
   defp normalize_attempts(_attempts), do: {:error, :invalid_operator_run_overview}
 
+  @spec normalize_planned_steps([PlannedAssetStep.t()]) ::
+          {:ok, [normalized_planned_step()]} | {:error, :invalid_operator_run_overview}
+  defp normalize_planned_steps([]), do: {:ok, []}
+
+  defp normalize_planned_steps([step | steps]) do
+    with {:ok, normalized} <- normalize_planned_step(step),
+         {:ok, rest} <- normalize_planned_steps(steps) do
+      {:ok, [normalized | rest]}
+    end
+  end
+
+  defp normalize_planned_steps(_steps), do: {:error, :invalid_operator_run_overview}
+
+  defp normalize_planned_step(%PlannedAssetStep{} = step) do
+    with {:ok, root_run_id} <- binary(step.root_run_id),
+         {:ok, run_id} <- binary(step.run_id),
+         {:ok, node_identity} <- binary(step.node_identity),
+         {:ok, asset_ref} <- binary(step.asset_ref),
+         {:ok, window_identity} <- binary(step.window_identity),
+         {:ok, window} <- normalize_window_summary(step.window),
+         true <- is_nil(step.stage) or (is_integer(step.stage) and step.stage >= 0),
+         true <- is_nil(step.execution_pool) or is_binary(step.execution_pool) do
+      {:ok,
+       %{
+         root_run_id: root_run_id,
+         run_id: run_id,
+         node_identity: node_identity,
+         asset_ref: asset_ref,
+         window_identity: window_identity,
+         window: window,
+         stage: step.stage,
+         execution_pool: step.execution_pool
+       }}
+    else
+      _ -> {:error, :invalid_operator_run_overview}
+    end
+  end
+
+  defp normalize_planned_step(_step), do: {:error, :invalid_operator_run_overview}
+
+  defp normalize_window_summary(nil), do: {:ok, nil}
+
+  defp normalize_window_summary(window) when is_map(window) do
+    with {:ok, key} <- fetch_window_field(window, :key),
+         {:ok, label} <- fetch_window_field(window, :label),
+         {:ok, kind} <- fetch_window_field(window, :kind),
+         {:ok, start_at} <- fetch_window_field(window, :start_at),
+         {:ok, end_at} <- fetch_window_field(window, :end_at),
+         {:ok, timezone} <- fetch_window_field(window, :timezone),
+         {:ok, key} <- optional_binary(key),
+         {:ok, label} <- optional_binary(label),
+         {:ok, kind} <- optional_window_kind(kind),
+         {:ok, start_at} <- optional_datetime(start_at),
+         {:ok, end_at} <- optional_datetime(end_at),
+         {:ok, timezone} <- optional_binary(timezone) do
+      {:ok,
+       %{
+         key: key,
+         label: label,
+         kind: kind,
+         start_at: start_at,
+         end_at: end_at,
+         timezone: timezone
+       }}
+    else
+      _ -> {:error, :invalid_operator_run_overview}
+    end
+  end
+
+  defp normalize_window_summary(_window), do: {:error, :invalid_operator_run_overview}
+
+  defp fetch_window_field(window, key) do
+    case Map.fetch(window, key) do
+      {:ok, value} -> {:ok, value}
+      :error -> Map.fetch(window, Atom.to_string(key))
+    end
+  end
+
+  defp optional_window_kind(nil), do: {:ok, nil}
+  defp optional_window_kind(kind) when kind in [:hour, :day, :month, :year], do: {:ok, kind}
+  defp optional_window_kind("hour"), do: {:ok, :hour}
+  defp optional_window_kind("day"), do: {:ok, :day}
+  defp optional_window_kind("month"), do: {:ok, :month}
+  defp optional_window_kind("year"), do: {:ok, :year}
+  defp optional_window_kind(_kind), do: {:error, :invalid_operator_run_overview}
+
   defp normalize_requested_window_counts(%{total: total, completed: completed, failed: failed})
        when is_integer(total) and total >= 0 and is_integer(completed) and completed >= 0 and
               is_integer(failed) and failed >= 0,
@@ -405,10 +527,62 @@ defmodule FavnOrchestrator.Persistence.Results.OperatorRunOverviewNormalizer do
 
   defp normalize_attempt_counts(_counts), do: {:error, :invalid_operator_run_overview}
 
-  defp normalize_runner_releases(releases) when is_map(releases) do
-    releases
+  defp normalize_asset_counts_by_run(counts_by_run) when is_map(counts_by_run) do
+    counts_by_run
     |> Map.to_list()
-    |> normalize_runner_release_pairs()
+    |> normalize_asset_counts_pairs()
+  end
+
+  defp normalize_asset_counts_by_run(_counts_by_run),
+    do: {:error, :invalid_operator_run_overview}
+
+  defp normalize_asset_counts_pairs([]), do: {:ok, %{}}
+
+  defp normalize_asset_counts_pairs([{run_id, counts} | pairs]) do
+    with {:ok, run_id} <- binary(run_id),
+         {:ok, counts} <- normalize_asset_counts(counts),
+         {:ok, rest} <- normalize_asset_counts_pairs(pairs) do
+      {:ok, Map.put(rest, run_id, counts)}
+    end
+  end
+
+  defp normalize_asset_counts(%{
+         total: total,
+         completed: completed,
+         succeeded: succeeded,
+         skipped: skipped,
+         failed: failed,
+         running: running,
+         queued: queued,
+         planned: planned
+       })
+       when is_integer(total) and total >= 0 and is_integer(completed) and completed >= 0 and
+              is_integer(succeeded) and succeeded >= 0 and is_integer(skipped) and skipped >= 0 and
+              is_integer(failed) and failed >= 0 and is_integer(running) and running >= 0 and
+              is_integer(queued) and queued >= 0 and is_integer(planned) and planned >= 0 do
+    {:ok,
+     %{
+       total: total,
+       completed: completed,
+       succeeded: succeeded,
+       skipped: skipped,
+       failed: failed,
+       running: running,
+       queued: queued,
+       planned: planned
+     }}
+  end
+
+  defp normalize_asset_counts(_counts), do: {:error, :invalid_operator_run_overview}
+
+  defp normalize_runner_releases(releases) when is_map(releases) do
+    with :ok <- Favn.RunnerPool.validate_releases(releases) do
+      releases
+      |> Map.to_list()
+      |> normalize_runner_release_pairs()
+    else
+      _ -> {:error, :invalid_operator_run_overview}
+    end
   end
 
   defp normalize_runner_releases(_releases), do: {:error, :invalid_operator_run_overview}

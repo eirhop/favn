@@ -14,7 +14,6 @@ defmodule FavnOrchestrator.RunReadModel do
   alias FavnOrchestrator.Persistence
   alias FavnOrchestrator.Persistence.Queries.GetExecutionGroup
   alias FavnOrchestrator.Persistence.Queries.GetOperatorRunOverview
-  alias FavnOrchestrator.Persistence.Results.PlannedAssetStep
   alias FavnOrchestrator.Persistence.Results.Backfill, as: PersistedBackfill
 
   alias FavnOrchestrator.Persistence.Results.ExecutionGroupOverview,
@@ -103,6 +102,7 @@ defmodule FavnOrchestrator.RunReadModel do
           required(:finished_at) => DateTime.t() | nil,
           required(:updated_at) => DateTime.t(),
           required(:duration_ms) => non_neg_integer() | nil,
+          required(:event_seq) => pos_integer(),
           optional(:asset_counts) => asset_outcome_counts()
         }
 
@@ -137,7 +137,7 @@ defmodule FavnOrchestrator.RunReadModel do
 
   @type asset_attempt_summary :: %{
           required(:id) => String.t(),
-          required(:asset_step_id) => String.t(),
+          required(:asset_step_id) => String.t() | nil,
           required(:root_execution_group_id) => String.t(),
           required(:child_run_id) => String.t() | nil,
           required(:run_id) => String.t(),
@@ -181,6 +181,12 @@ defmodule FavnOrchestrator.RunReadModel do
           required(:total_windows) => non_neg_integer(),
           required(:completed_windows) => non_neg_integer(),
           required(:failed_windows) => non_neg_integer(),
+          optional(:requested_window_counts) => %{
+            required(:total) => non_neg_integer(),
+            required(:completed) => non_neg_integer(),
+            required(:failed) => non_neg_integer()
+          },
+          optional(:effective_window_count) => non_neg_integer(),
           required(:total_asset_attempts) => non_neg_integer(),
           required(:completed_asset_attempts) => non_neg_integer(),
           required(:succeeded_asset_attempts) => non_neg_integer(),
@@ -258,6 +264,7 @@ defmodule FavnOrchestrator.RunReadModel do
           required(:retry) => %{},
           required(:requested_windows) => [map()],
           required(:requested_windows_truncated?) => boolean(),
+          required(:has_non_windowed_assets?) => boolean(),
           required(:child_run_details_truncated?) => boolean(),
           required(:asset_attempts_truncated?) => boolean()
         }
@@ -453,7 +460,7 @@ defmodule FavnOrchestrator.RunReadModel do
                  limit: limit
                }
              ) do
-        from_operator_run_overview(projection)
+        from_operator_run_overview_result(projection)
       end
     else
       {:error, :invalid_opts}
@@ -478,24 +485,33 @@ defmodule FavnOrchestrator.RunReadModel do
 
   @doc "Expands the compact persisted operator overview without loading snapshots or events."
   @spec from_operator_run_overview(FavnOrchestrator.Persistence.Results.OperatorRunOverview.t()) ::
-          {:ok, compact_operator_run_detail()} | {:error, :invalid_operator_run_overview}
+          compact_operator_run_detail() | {:error, :invalid_operator_run_overview}
   def from_operator_run_overview(%OperatorRunOverview{} = projection) do
+    case from_operator_run_overview_result(projection) do
+      {:ok, detail} ->
+        detail
+
+      {:error, :invalid_operator_run_overview} = error ->
+        error
+    end
+  end
+
+  @spec from_operator_run_overview_result(OperatorRunOverview.t()) ::
+          {:ok, compact_operator_run_detail()} | {:error, :invalid_operator_run_overview}
+  defp from_operator_run_overview_result(%OperatorRunOverview{} = projection) do
     case OperatorRunOverviewNormalizer.normalize_operator_overview(projection) do
       {:ok, normalized} ->
-        {:ok,
-         from_normalized_operator_run_overview(
-           normalized,
-           projection.planned_steps,
-           projection.asset_counts_by_run
-         )}
+        {:ok, from_normalized_operator_run_overview(normalized)}
 
       {:error, :invalid_operator_run_overview} ->
         {:error, :invalid_operator_run_overview}
     end
   end
 
-  defp from_normalized_operator_run_overview(projection, planned_steps, asset_counts_by_run) do
-    planned_steps = if projection.attempts_truncated?, do: [], else: planned_steps
+  @spec from_normalized_operator_run_overview(OperatorRunOverviewNormalizer.normalized_t()) ::
+          compact_operator_run_detail()
+  defp from_normalized_operator_run_overview(projection) do
+    planned_steps = if projection.attempts_truncated?, do: [], else: projection.planned_steps
     attempts = compact_attempts_with_plan(projection.attempts, planned_steps)
     attempt_counts = Map.delete(projection.attempt_counts, :effective_windows)
     requested_counts = projection.requested_window_counts
@@ -505,14 +521,14 @@ defmodule FavnOrchestrator.RunReadModel do
     root_run =
       compact_run_summary(
         projection.root_run,
-        Map.get(asset_counts_by_run, projection.root_run.run_id)
+        Map.get(projection.asset_counts_by_run, projection.root_run.run_id)
       )
 
     child_runs =
       compact_child_run_summaries(
         projection.runs,
         projection.root_run.run_id,
-        asset_counts_by_run
+        projection.asset_counts_by_run
       )
 
     active? = projection.overview.status in [:pending, :running]
@@ -609,6 +625,10 @@ defmodule FavnOrchestrator.RunReadModel do
     }
   end
 
+  @spec compact_attempts_with_plan(
+          [OperatorRunOverviewNormalizer.normalized_attempt()],
+          [OperatorRunOverviewNormalizer.normalized_planned_step()]
+        ) :: [asset_attempt_summary()]
   defp compact_attempts_with_plan(attempts, planned_steps) do
     attempts = compact_attempt_summaries(attempts)
     attempted = MapSet.new(attempts, &planned_match_key/1)
@@ -621,7 +641,9 @@ defmodule FavnOrchestrator.RunReadModel do
     attempts ++ planned
   end
 
-  defp compact_planned_step(%PlannedAssetStep{} = step) do
+  @spec compact_planned_step(OperatorRunOverviewNormalizer.normalized_planned_step()) ::
+          asset_attempt_summary()
+  defp compact_planned_step(step) do
     %{
       id: "planned:" <> step.run_id <> ":" <> step.node_identity,
       asset_step_id: nil,
@@ -650,8 +672,6 @@ defmodule FavnOrchestrator.RunReadModel do
     {Map.get(step, :run_id), Map.get(step, :asset_ref), planned_window_key(step)}
   end
 
-  defp planned_window_key(%PlannedAssetStep{} = step), do: window_match_key(step.window)
-
   defp planned_window_key(step), do: window_match_key(Map.get(step, :window))
 
   defp window_match_key(nil), do: :none
@@ -678,6 +698,11 @@ defmodule FavnOrchestrator.RunReadModel do
     [compact_attempt_summary(attempt) | compact_attempt_summaries(attempts)]
   end
 
+  @spec compact_child_run_summaries(
+          [OperatorRunOverviewNormalizer.normalized_run()],
+          String.t(),
+          %{optional(String.t()) => OperatorRunOverviewNormalizer.normalized_asset_counts()}
+        ) :: [compact_run_summary()]
   defp compact_child_run_summaries([], _root_run_id, _asset_counts_by_run), do: []
 
   defp compact_child_run_summaries(
@@ -781,6 +806,7 @@ defmodule FavnOrchestrator.RunReadModel do
   defp compact_run_role(%{submit_kind: :rerun}), do: :rerun
   defp compact_run_role(_run), do: :pipeline
 
+  @spec effective_windows([asset_attempt_summary()]) :: [window_summary()]
   defp effective_windows(attempts) do
     attempts
     |> Enum.map(& &1.window)

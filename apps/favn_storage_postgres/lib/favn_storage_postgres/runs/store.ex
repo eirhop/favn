@@ -1831,7 +1831,7 @@ defmodule FavnStoragePostgres.Runs.Store do
       rerun_of_run_id: row.rerun_of_run_id,
       root_run_id: row.root_execution_group_id,
       deployment_id: row.deployment_id,
-      trigger_type: RunEnum.decode!(:trigger_type, row.trigger_type),
+      trigger_type: RunEnum.decode(:trigger_type, row.trigger_type),
       submitted_event_id: row.submitted_event_id,
       latest_event_id: row.latest_event_id,
       target_label: target.target_label,
