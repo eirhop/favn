@@ -76,6 +76,43 @@ defmodule FavnOrchestrator.Auth.ServiceTokensTest do
              ServiceTokens.from_env_string("publisher|workspace_admin:#{@token_a}")
   end
 
+  test "aggregate tokens reject capacity authority and reserved identities" do
+    assert {:error,
+            {:invalid_env, "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS",
+             "capacity_reader is reserved; use FAVN_ORCHESTRATOR_CAPACITY_READER_TOKEN"}} =
+             ServiceTokens.from_env_string("scaler-v1|capacity_reader:#{@token_a}")
+
+    for identity <- ["capacity-scaler", "capacity-scaler-overlap"] do
+      assert {:error,
+              {:invalid_env, "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS",
+               "capacity-scaler identities are reserved; use FAVN_ORCHESTRATOR_CAPACITY_READER_TOKEN"}} =
+               ServiceTokens.from_env_string("#{identity}|platform_reader:#{@token_a}")
+    end
+  end
+
+  test "dedicated raw tokens use fixed authority and source-aware secret errors" do
+    assert {:ok, config} =
+             ServiceTokens.from_raw_token(
+               "capacity-scaler",
+               [:capacity_reader],
+               @token_a,
+               "FAVN_ORCHESTRATOR_CAPACITY_READER_TOKEN"
+             )
+
+    assert config.service_identity == "capacity-scaler"
+    assert config.platform_roles == [:capacity_reader]
+    assert config.token_hash == ServiceTokens.hash_token(@token_a)
+    refute inspect(config) =~ @token_a
+
+    assert {:error, {:invalid_secret_env, "FAVN_ORCHESTRATOR_CAPACITY_READER_TOKEN", :too_short}} =
+             ServiceTokens.from_raw_token(
+               "capacity-scaler",
+               [:capacity_reader],
+               "short",
+               "FAVN_ORCHESTRATOR_CAPACITY_READER_TOKEN"
+             )
+  end
+
   test "runtime config rejects raw placeholder env values" do
     Application.put_env(:favn_orchestrator, :api_service_tokens, [])
 

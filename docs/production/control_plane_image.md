@@ -105,7 +105,7 @@ The copied `env.example` documents the minimum variables. Important groups are:
 
 - PostgreSQL URL and verified TLS;
 - runtime-input pin keys;
-- Orchestrator service tokens;
+- general Orchestrator service tokens and dedicated capacity-reader tokens;
 - workspace IDs;
 - View public origin, proxy CIDRs, and secret key base;
 - control-plane and runner node names, distribution cookie, and fixed port.

@@ -19,12 +19,16 @@ route to its host alias.
 
 `control-plane.bicep` includes every mandatory production boot input for the
 orchestrator and its same-BEAM web application. Supply `platformServiceTokens`
-without a capacity-reader entry. The template appends
-`capacity-scaler|capacity_reader:<capacityReaderToken>` itself. Deploy every
-runner job with the exact same `capacityReaderToken` secret value (preferably
-the same pinned Key Vault secret version); otherwise KEDA demand reads fail
-closed. `runnerPools` is the JSON lifecycle-policy map and must contain every
-pool deployed as a runner job.
+with general platform entries only; Favn rejects `capacity_reader` in that
+aggregate. The template maps the raw `capacityReaderToken` separately to
+`FAVN_ORCHESTRATOR_CAPACITY_READER_TOKEN`. It may be omitted only when every
+configured pool is resident. Deploy every elastic runner job with the exact
+same raw value, preferably through the same pinned Key Vault secret version;
+otherwise KEDA demand reads fail closed. During rotation, use
+`capacityReaderPreviousToken` as described in the
+[capacity-reader rotation runbook](../../docs/production/secret_rotation.md#capacity-reader-token).
+`runnerPools` is the JSON lifecycle-policy map and must contain every pool
+deployed as a runner job.
 
 The control-plane template uses Azure Database for PostgreSQL managed identity.
 It creates two deterministic, distinct user-assigned identities and derives each

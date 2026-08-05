@@ -12,7 +12,7 @@ defmodule FavnOrchestrator.API.RunnerCapacityRouterTest do
   alias FavnOrchestrator.RunnerDemandLimiter
   alias FavnOrchestrator.RunnerRegistry
 
-  @capacity_token "capacity-reader-token-that-is-long-enough"
+  @capacity_token "capacity-reader-credential-that-is-long-enough"
   @operator_token "platform-operator-token-that-is-long-enough"
   @release "rr_" <> String.duplicate("a", 64)
 
@@ -21,13 +21,16 @@ defmodule FavnOrchestrator.API.RunnerCapacityRouterTest do
     previous_pools = Application.get_env(:favn_orchestrator, :runner_pools)
     previous_demand = Application.get_env(:favn_orchestrator, :test_runner_capacity_demand)
 
+    {:ok, capacity_config} =
+      ServiceTokens.from_raw_token(
+        "capacity-scaler",
+        [:capacity_reader],
+        @capacity_token,
+        "FAVN_ORCHESTRATOR_CAPACITY_READER_TOKEN"
+      )
+
     Application.put_env(:favn_orchestrator, :api_service_tokens, [
-      [
-        service_identity: "scaler",
-        token_hash: ServiceTokens.hash_token(@capacity_token),
-        enabled: true,
-        platform_roles: [:capacity_reader]
-      ],
+      capacity_config,
       [
         service_identity: "operator",
         token_hash: ServiceTokens.hash_token(@operator_token),
@@ -95,6 +98,23 @@ defmodule FavnOrchestrator.API.RunnerCapacityRouterTest do
   test "does not grant capacity reads to general platform operators" do
     response = request("/internal/runner-demand/duckdb/#{@release}", @operator_token)
     assert response.status == 403
+  end
+
+  test "does not grant platform-reader API access to capacity credentials" do
+    response = request("/api/orchestrator/v1/runner-capacity", @capacity_token)
+    assert response.status == 403
+  end
+
+  test "does not grant platform-operator API access to capacity credentials" do
+    response =
+      :get
+      |> conn("/api/orchestrator/v1/bootstrap/active-manifest")
+      |> put_req_header("authorization", "Bearer #{@capacity_token}")
+      |> put_req_header("x-favn-workspace-id", "workspace-a")
+      |> Router.call(Router.init([]))
+
+    assert response.status == 403
+    assert get_in(Jason.decode!(response.resp_body), ["error", "code"]) == "forbidden"
   end
 
   test "unknown release probes do not create unbounded telemetry metadata" do
