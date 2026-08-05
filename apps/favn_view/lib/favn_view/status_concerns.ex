@@ -307,7 +307,9 @@ defmodule FavnView.StatusConcerns do
   defp items(items) when is_list(items), do: items
   defp items(_other), do: []
 
-  defp timestamp_label(%DateTime{} = datetime), do: Calendar.strftime(datetime, "%b %-d %H:%M")
+  defp timestamp_label(%DateTime{} = datetime),
+    do: FavnView.Time.format(datetime, "%b %-d %H:%M")
+
   defp timestamp_label(_value), do: nil
 
   defp short_id(id) when is_binary(id) and byte_size(id) > 12, do: String.slice(id, 0, 12)

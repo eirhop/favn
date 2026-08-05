@@ -33,6 +33,7 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
   alias FavnOrchestrator.Persistence.Results.FreshnessState, as: FreshnessResult
   alias FavnOrchestrator.Persistence.Results.ManifestSummary
   alias FavnOrchestrator.Persistence.Results.OperatorRunOverview, as: OperatorRunOverviewResult
+  alias FavnOrchestrator.Persistence.Results.PlannedAssetStep
   alias FavnOrchestrator.Persistence.Results.RunSummary
   alias FavnOrchestrator.Persistence.Results.TargetStatus, as: TargetStatusResult
   alias FavnOrchestrator.Persistence.WorkspaceContext
@@ -240,6 +241,9 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
       {attempts, attempts_truncated?} =
         compact_attempts(query.workspace_context.workspace_id, root_run_id, query.limit)
 
+      {planned_steps, planned_steps_truncated?} =
+        compact_planned_steps(query.workspace_context.workspace_id, root_run_id, query.limit)
+
       {:ok,
        %OperatorRunOverviewResult{
          overview:
@@ -255,6 +259,8 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
          requested_window_counts:
            requested_window_counts(query.workspace_context.workspace_id, root_run_id),
          attempts: attempts,
+         planned_steps: planned_steps,
+         planned_steps_truncated?: planned_steps_truncated?,
          attempt_counts:
            compact_attempt_counts(query.workspace_context.workspace_id, root_run_id),
          attempts_truncated?: attempts_truncated?,
@@ -353,30 +359,94 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
   @impl true
   def page_target_runs(%PageTargetRuns{} = page) do
     with :ok <- validate_target_runs(page) do
-      workspace_id = page.workspace_context.workspace_id
-      target_kind = Atom.to_string(page.target_kind)
+      after_event_id = page.after && page.after.submitted_event_id
+      after_root_run_id = page.after && page.after.run_id
 
-      query =
-        from(target in RunTarget,
-          join: run in Run,
-          on: run.workspace_id == target.workspace_id and run.run_id == target.run_id,
-          join: manifest in ManifestVersion,
-          on: manifest.manifest_version_id == run.manifest_version_id,
-          where:
-            target.workspace_id == ^workspace_id and
-              target.deployment_id == ^page.deployment_id and
-              target.target_kind == ^target_kind and target.target_id == ^page.target_id,
-          order_by: [desc: target.submitted_event_id, desc: target.run_id],
-          limit: ^(page.limit + 1),
-          select:
-            merge(map(run, ^@run_summary_fields), %{
-              runner_releases: manifest.runner_releases
-            })
+      %{rows: rows} =
+        SQL.query!(
+          Repo,
+          """
+          WITH candidate_roots AS MATERIALIZED (
+            SELECT root.*
+            FROM favn_control.runs AS root
+            WHERE root.workspace_id = $1
+              AND root.deployment_id = $2
+              AND root.run_id = root.root_execution_group_id
+              AND ($5::bigint IS NULL
+                   OR root.submitted_event_id < $5
+                   OR (root.submitted_event_id = $5 AND root.run_id < $6))
+              AND EXISTS (
+                SELECT 1
+                FROM favn_control.runs AS member
+                JOIN favn_control.run_targets AS target
+                  ON target.workspace_id = member.workspace_id
+                 AND target.run_id = member.run_id
+                WHERE member.workspace_id = root.workspace_id
+                  AND member.root_execution_group_id = root.run_id
+                  AND target.deployment_id = $2
+                  AND target.target_kind = $3
+                  AND target.target_id = $4
+              )
+            ORDER BY root.submitted_event_id DESC, root.run_id DESC
+            LIMIT $7
+          )
+          SELECT selected.workspace_id,
+                 selected.run_id,
+                 selected.root_execution_group_id,
+                 selected.parent_run_id,
+                 selected.rerun_of_run_id,
+                 selected.deployment_id,
+                 selected.manifest_version_id,
+                 manifest.runner_releases,
+                 CASE coalesce(overview.status, root.status)
+                   WHEN 'succeeded' THEN 'ok'
+                   WHEN 'failed' THEN 'error'
+                   ELSE coalesce(overview.status, root.status)
+                 END AS status,
+                 root.submit_kind,
+                 root.trigger_type,
+                 selected.event_sequence,
+                 root.submitted_event_id,
+                 coalesce(overview.latest_event_id, root.latest_event_id),
+                 coalesce(overview.started_at, root.inserted_at),
+                 coalesce(overview.updated_at, root.updated_at),
+                 coalesce(overview.finished_at, root.terminal_at)
+          FROM candidate_roots AS root
+          JOIN LATERAL (
+            SELECT member.*
+            FROM favn_control.runs AS member
+            JOIN favn_control.run_targets AS target
+              ON target.workspace_id = member.workspace_id
+             AND target.run_id = member.run_id
+            WHERE member.workspace_id = root.workspace_id
+              AND member.root_execution_group_id = root.run_id
+              AND target.deployment_id = $2
+              AND target.target_kind = $3
+              AND target.target_id = $4
+            ORDER BY (member.run_id <> root.run_id) DESC,
+                     target.submitted_event_id DESC,
+                     member.run_id DESC
+            LIMIT 1
+          ) AS selected ON true
+          JOIN favn_control.manifest_versions AS manifest
+            ON manifest.manifest_version_id = selected.manifest_version_id
+          LEFT JOIN favn_control.execution_group_overviews AS overview
+            ON overview.workspace_id = root.workspace_id
+           AND overview.root_run_id = root.run_id
+          ORDER BY root.submitted_event_id DESC, root.run_id DESC
+          """,
+          [
+            page.workspace_context.workspace_id,
+            page.deployment_id,
+            Atom.to_string(page.target_kind),
+            page.target_id,
+            after_event_id,
+            after_root_run_id,
+            page.limit + 1
+          ]
         )
-        |> after_target_run(page.after)
 
-      rows = Repo.all(query)
-      run_page(rows, page.limit)
+      target_run_page(rows, page.limit)
     end
   rescue
     error -> {:error, ErrorMapper.map(error)}
@@ -526,6 +596,49 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
      }}
   end
 
+  defp target_run_page(rows, limit) do
+    page_rows = Enum.take(rows, limit)
+    has_more? = length(rows) > limit
+
+    items = Enum.map(page_rows, &target_group_run_result/1)
+
+    next_cursor =
+      if has_more? and page_rows != [] do
+        row = List.last(page_rows)
+        %{submitted_event_id: Enum.at(row, 12), run_id: Enum.at(row, 2)}
+      end
+
+    {:ok,
+     %CursorPage{
+       items: items,
+       limit: limit,
+       has_more?: has_more?,
+       next_cursor: next_cursor
+     }}
+  end
+
+  defp target_group_run_result(row) do
+    %RunSummary{
+      workspace_id: Enum.at(row, 0),
+      run_id: Enum.at(row, 1),
+      root_run_id: Enum.at(row, 2),
+      parent_run_id: Enum.at(row, 3),
+      rerun_of_run_id: Enum.at(row, 4),
+      deployment_id: Enum.at(row, 5),
+      manifest_version_id: Enum.at(row, 6),
+      runner_releases: Enum.at(row, 7),
+      status: RunEnum.decode!(:status, Enum.at(row, 8)),
+      submit_kind: RunEnum.decode!(:submit_kind, Enum.at(row, 9)),
+      trigger_type: RunEnum.decode!(:trigger_type, Enum.at(row, 10)),
+      event_sequence: Enum.at(row, 11),
+      submitted_event_id: Enum.at(row, 12),
+      latest_event_id: Enum.at(row, 13),
+      inserted_at: Enum.at(row, 14),
+      updated_at: Enum.at(row, 15),
+      terminal_at: Enum.at(row, 16)
+    }
+  end
+
   defp cursor_page(rows, limit, mapper, cursor) do
     page_rows = Enum.take(rows, limit)
     items = Enum.map(page_rows, mapper)
@@ -664,6 +777,68 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
 
     {rows |> Enum.take(limit) |> Enum.map(&attempt_result/1), length(rows) > limit}
   end
+
+  defp compact_planned_steps(workspace_id, root_run_id, limit) do
+    %{rows: rows} =
+      SQL.query!(
+        Repo,
+        """
+        SELECT plan.run_id, run.root_execution_group_id, node.value
+        FROM favn_control.run_plans AS plan
+        JOIN favn_control.runs AS run
+          ON run.workspace_id = plan.workspace_id
+         AND run.run_id = plan.run_id
+        CROSS JOIN LATERAL jsonb_array_elements(plan.plan->'nodes') AS node(value)
+        WHERE run.workspace_id = $1
+          AND run.root_execution_group_id = $2
+        ORDER BY plan.run_id, node.value->'node_key', node.value->'ref'
+        LIMIT $3
+        """,
+        [workspace_id, root_run_id, limit + 1]
+      )
+
+    page_rows = Enum.take(rows, limit)
+    {Enum.map(page_rows, &planned_step_result/1), length(rows) > limit}
+  end
+
+  defp planned_step_result([run_id, root_run_id, node]) do
+    window = restore_window(Map.get(node, "window"))
+
+    %PlannedAssetStep{
+      root_run_id: root_run_id,
+      run_id: run_id,
+      node_identity: planned_node_identity(Map.get(node, "node_key")),
+      asset_ref: ref_text(Map.get(node, "ref")),
+      window_identity: planned_window_identity(window),
+      window: window,
+      stage: Map.get(node, "stage"),
+      execution_pool: Map.get(node, "execution_pool")
+    }
+  end
+
+  defp planned_node_identity(node_key) do
+    node_key
+    |> Jason.encode!()
+    |> then(&:crypto.hash(:sha256, &1))
+    |> Base.url_encode64(padding: false)
+  end
+
+  defp planned_window_identity(nil), do: "none"
+  defp planned_window_identity(%{key: key}) when is_binary(key), do: key
+
+  defp planned_window_identity(window) do
+    window
+    |> :erlang.term_to_binary([:deterministic])
+    |> then(&:crypto.hash(:sha256, &1))
+    |> Base.url_encode64(padding: false)
+  end
+
+  defp ref_text(%{"module" => module, "name" => name})
+       when is_binary(module) and is_binary(name),
+       do: module <> ":" <> name
+
+  defp ref_text(value) when is_binary(value), do: value
+  defp ref_text(_value), do: "unknown"
 
   defp compact_attempt_counts(workspace_id, root_run_id) do
     from(attempt in AssetAttemptOverview,
@@ -1150,18 +1325,6 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
       [window, _backfill],
       window.window_start < ^cursor.window_start or
         (window.window_start == ^cursor.window_start and window.window_id < ^cursor.window_id)
-    )
-  end
-
-  defp after_target_run(query, nil), do: query
-
-  defp after_target_run(query, cursor) do
-    where(
-      query,
-      [target, _run],
-      target.submitted_event_id < ^cursor.submitted_event_id or
-        (target.submitted_event_id == ^cursor.submitted_event_id and
-           target.run_id < ^cursor.run_id)
     )
   end
 

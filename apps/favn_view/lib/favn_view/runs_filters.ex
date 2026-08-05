@@ -13,8 +13,8 @@ defmodule FavnView.RunsFilters do
   operator can send to someone else. Defaults are omitted from the query string,
   which keeps `/runs` meaning "today".
 
-  Times are UTC, because the timestamps the list shows are UTC. "Today" is the
-  current UTC day.
+  Calendar ranges use `config :favn, :default_timezone`, matching the timestamps
+  the list shows. Persisted instants and store bounds remain UTC.
 
   ## Examples
 
@@ -26,8 +26,9 @@ defmodule FavnView.RunsFilters do
       {nil, nil}
 
       iex> filters = FavnView.RunsFilters.from_params(%{})
-      iex> FavnView.RunsFilters.window(filters, ~U[2026-07-30 10:00:00Z])
-      {~U[2026-07-30 00:00:00Z], nil}
+      iex> {started_at, nil} = FavnView.RunsFilters.window(filters, ~U[2026-07-30 10:00:00Z])
+      iex> FavnView.Time.to_date(started_at)
+      ~D[2026-07-30]
   """
 
   @ranges ~w(hour today week month custom all)a
@@ -437,11 +438,16 @@ defmodule FavnView.RunsFilters do
   defp date(%Date{} = value), do: value
   defp date(_value), do: nil
 
-  defp start_of_day(now), do: now |> DateTime.to_date() |> beginning_of_day()
+  defp start_of_day(now), do: now |> FavnView.Time.to_date() |> beginning_of_day()
 
-  defp days_ago(now, days), do: now |> start_of_day() |> DateTime.add(-days * 86_400, :second)
+  defp days_ago(now, days) do
+    now
+    |> FavnView.Time.to_date()
+    |> Date.add(-days)
+    |> beginning_of_day()
+  end
 
-  defp beginning_of_day(%Date{} = date), do: DateTime.new!(date, ~T[00:00:00], "Etc/UTC")
+  defp beginning_of_day(%Date{} = date), do: FavnView.Time.beginning_of_day(date)
 
   defp beginning_of_next_day(%Date{} = date),
     do: date |> Date.add(1) |> beginning_of_day()

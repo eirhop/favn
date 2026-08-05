@@ -4,6 +4,7 @@ defmodule FavnOrchestrator.RunReadModel.OperatorRunOverviewTest do
   alias FavnOrchestrator.Persistence.Results.AssetAttemptOverview
   alias FavnOrchestrator.Persistence.Results.ExecutionGroupOverview
   alias FavnOrchestrator.Persistence.Results.OperatorRunOverview
+  alias FavnOrchestrator.Persistence.Results.PlannedAssetStep
   alias FavnOrchestrator.Persistence.Results.RunSummary
   alias FavnOrchestrator.RunReadModel
 
@@ -31,6 +32,8 @@ defmodule FavnOrchestrator.RunReadModel.OperatorRunOverviewTest do
         succeeded_count: 2,
         failed_count: 0,
         latest_event_id: 12,
+        started_at: @started_at,
+        finished_at: @finished_at,
         updated_at: @finished_at
       },
       root_run: run("root", "root", :backfill_pipeline),
@@ -52,6 +55,27 @@ defmodule FavnOrchestrator.RunReadModel.OperatorRunOverviewTest do
           finished_at: @finished_at
         }
       ],
+      planned_steps: [
+        %PlannedAssetStep{
+          root_run_id: "root",
+          run_id: "child",
+          node_identity: "already-attempted",
+          asset_ref: "MyApp.Gold:orders",
+          window_identity: "persisted-plan-key",
+          window: effective_window,
+          stage: 0
+        },
+        %PlannedAssetStep{
+          root_run_id: "root",
+          run_id: "child",
+          node_identity: "waiting",
+          asset_ref: "MyApp.Silver:orders",
+          window_identity: "none",
+          window: nil,
+          stage: 0
+        }
+      ],
+      planned_steps_truncated?: false,
       attempt_counts: %{
         total: 1,
         completed: 1,
@@ -70,11 +94,16 @@ defmodule FavnOrchestrator.RunReadModel.OperatorRunOverviewTest do
     assert detail.summary.requested_window_counts == %{total: 1, completed: 1, failed: 0}
     assert detail.summary.effective_window_count == 1
     assert detail.summary.progress.label == "1/1 requested windows complete"
+    assert detail.summary.started_at == @started_at
+    assert detail.summary.finished_at == @finished_at
+    assert detail.summary.duration_ms == 300_000
     assert detail.requested_windows == []
     assert detail.windows == [effective_window]
-    assert [attempt] = detail.asset_attempts
+    assert [attempt, planned] = detail.asset_attempts
     assert attempt.id == "child:gold-expanded"
     assert attempt.asset_step_id == "gold-expanded"
+    assert planned.id == "planned:child:waiting"
+    assert planned.status == :planned
     assert detail.child_run_details_truncated?
 
     assert detail.root_run.runner_releases == %{

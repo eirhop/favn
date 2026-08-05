@@ -22,6 +22,7 @@ defmodule FavnView.Components.RunDetailPage.AttemptDrawer do
     ~H"""
     <div class="fixed inset-0 z-50 bg-base-300/20 backdrop-blur-[1px]" phx-click="close_attempt" />
     <aside
+      id={"asset-attempt-drawer-#{@attempt.id}"}
       class="fixed inset-y-0 right-0 z-50 flex w-full max-w-[30rem] flex-col border-l border-base-content/10 bg-base-100/95 shadow-2xl shadow-primary/20 backdrop-blur-xl lg:max-w-[34rem]"
       data-testid="asset-attempt-drawer"
       role="dialog"

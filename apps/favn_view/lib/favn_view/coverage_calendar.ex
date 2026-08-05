@@ -363,7 +363,7 @@ defmodule FavnView.CoverageCalendar do
 
   defp to_integer(_value), do: nil
 
-  defp to_date(%DateTime{} = at), do: DateTime.to_date(at)
+  defp to_date(%DateTime{} = at), do: FavnView.Time.to_date(at)
   defp to_date(%Date{} = date), do: date
 
   @doc """
@@ -411,23 +411,29 @@ defmodule FavnView.CoverageCalendar do
   """
   @spec period_label(atom() | nil, DateTime.t() | nil) :: String.t() | nil
   def period_label(_kind, nil), do: nil
-  def period_label(:hour, %DateTime{} = at), do: Calendar.strftime(at, "%H:%M on %-d %B %Y")
-  def period_label(:day, %DateTime{} = at), do: Calendar.strftime(at, "%-d %B %Y")
-  def period_label(:month, %DateTime{} = at), do: Calendar.strftime(at, "%B %Y")
-  def period_label(:year, %DateTime{} = at), do: Calendar.strftime(at, "%Y")
-  def period_label(_kind, %DateTime{} = at), do: Calendar.strftime(at, "%-d %B %Y")
+
+  def period_label(:hour, %DateTime{} = at),
+    do: FavnView.Time.format(at, "%H:%M on %-d %B %Y")
+
+  def period_label(:day, %DateTime{} = at), do: FavnView.Time.format(at, "%-d %B %Y")
+  def period_label(:month, %DateTime{} = at), do: FavnView.Time.format(at, "%B %Y")
+  def period_label(:year, %DateTime{} = at), do: FavnView.Time.format(at, "%Y")
+  def period_label(_kind, %DateTime{} = at), do: FavnView.Time.format(at, "%-d %B %Y")
 
   # Hours already read as a clock, days as a date; a month name or a year is the whole
   # cell. Yearly coverage names the span rather than one year, because every year on
   # screen at once has no single unit above it.
   defp unit_label(_kind, []), do: nil
-  defp unit_label(:hour, [first | _rest]), do: Calendar.strftime(first.start_at, "%A %-d %B %Y")
-  defp unit_label(:day, [first | _rest]), do: Calendar.strftime(first.start_at, "%B %Y")
-  defp unit_label(:month, [first | _rest]), do: Calendar.strftime(first.start_at, "%Y")
+
+  defp unit_label(:hour, [first | _rest]),
+    do: FavnView.Time.format(first.start_at, "%A %-d %B %Y")
+
+  defp unit_label(:day, [first | _rest]), do: FavnView.Time.format(first.start_at, "%B %Y")
+  defp unit_label(:month, [first | _rest]), do: FavnView.Time.format(first.start_at, "%Y")
 
   defp unit_label(:year, windows) do
-    first = List.first(windows).start_at
-    last = List.last(windows).start_at
+    first = windows |> List.first() |> Map.fetch!(:start_at) |> FavnView.Time.shift()
+    last = windows |> List.last() |> Map.fetch!(:start_at) |> FavnView.Time.shift()
 
     if first.year == last.year,
       do: Integer.to_string(first.year),
@@ -438,7 +444,9 @@ defmodule FavnView.CoverageCalendar do
 
   # A month rarely starts on a Monday, so its first cell needs padding to land in its
   # own weekday column. Every other grain fills from the left.
-  defp blanks(:day, [first | _rest]), do: Date.day_of_week(DateTime.to_date(first.start_at)) - 1
+  defp blanks(:day, [first | _rest]),
+    do: Date.day_of_week(FavnView.Time.to_date(first.start_at)) - 1
+
   defp blanks(_kind, _windows), do: 0
 
   defp columns(:hour), do: 6
@@ -464,9 +472,15 @@ defmodule FavnView.CoverageCalendar do
     }
   end
 
-  defp cell_label(:hour, at), do: Calendar.strftime(at, "%H:%M")
-  defp cell_label(:day, at), do: Integer.to_string(at.day)
-  defp cell_label(:month, at), do: Calendar.strftime(at, "%b")
-  defp cell_label(:year, at), do: Integer.to_string(at.year)
-  defp cell_label(_kind, at), do: Calendar.strftime(at, "%-d %b")
+  defp cell_label(:hour, at), do: FavnView.Time.format(at, "%H:%M")
+
+  defp cell_label(:day, at),
+    do: at |> FavnView.Time.shift() |> Map.fetch!(:day) |> Integer.to_string()
+
+  defp cell_label(:month, at), do: FavnView.Time.format(at, "%b")
+
+  defp cell_label(:year, at),
+    do: at |> FavnView.Time.shift() |> Map.fetch!(:year) |> Integer.to_string()
+
+  defp cell_label(_kind, at), do: FavnView.Time.format(at, "%-d %b")
 end

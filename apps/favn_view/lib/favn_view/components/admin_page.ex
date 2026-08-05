@@ -401,7 +401,9 @@ defmodule FavnView.Components.AdminPage do
     end
   end
 
-  defp format_time(%DateTime{} = value), do: Calendar.strftime(value, "%Y-%m-%d %H:%M:%S UTC")
+  defp format_time(%DateTime{} = value),
+    do: FavnView.Time.format(value, "%Y-%m-%d %H:%M:%S %Z")
+
   defp format_time(_value), do: "unknown"
 
   defp datetime_attr(%DateTime{} = value), do: DateTime.to_iso8601(value)

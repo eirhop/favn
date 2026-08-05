@@ -317,7 +317,7 @@ defmodule FavnView.Components.LogViewer do
         <dl class="grid gap-x-4 gap-y-1 sm:grid-cols-[6rem_minmax(0,1fr)]">
           <dt class="favn-log-dim">logged</dt>
 
-          <dd class="break-all">{@log.timestamp} UTC</dd>
+          <dd class="break-all">{@log.timestamp}</dd>
 
           <%= for detail <- @log.details do %>
             <dt class="favn-log-dim">{detail.label}</dt>

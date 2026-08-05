@@ -243,7 +243,9 @@ defmodule FavnView.SchedulesLive do
   defp window_option_label(:none), do: "No window"
   defp window_option_label(value), do: humanize(value)
 
-  defp timestamp_label(%DateTime{} = datetime), do: Calendar.strftime(datetime, "%b %-d %H:%M")
+  defp timestamp_label(%DateTime{} = datetime),
+    do: FavnView.Time.format(datetime, "%b %-d %H:%M")
+
   defp timestamp_label(_value), do: "-"
 
   defp short_id(nil), do: nil

@@ -458,13 +458,15 @@ defmodule FavnView.PipelineDetailLive do
       seconds < 60 -> "just now"
       seconds < 3_600 -> "#{div(seconds, 60)}m ago"
       seconds < 86_400 -> "#{div(seconds, 3_600)}h ago"
-      true -> Calendar.strftime(datetime, "%b %-d %H:%M")
+      true -> FavnView.Time.format(datetime, "%b %-d %H:%M")
     end
   end
 
   defp last_run_label(_value), do: "No runs yet"
 
-  defp timestamp_label(%DateTime{} = datetime), do: Calendar.strftime(datetime, "%b %-d %H:%M")
+  defp timestamp_label(%DateTime{} = datetime),
+    do: FavnView.Time.format(datetime, "%b %-d %H:%M")
+
   defp timestamp_label(_value), do: "-"
 
   defp short_id(id) when is_binary(id) and byte_size(id) > 18 do

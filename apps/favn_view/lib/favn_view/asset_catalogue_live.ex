@@ -344,7 +344,7 @@ defmodule FavnView.AssetCatalogueLive do
       seconds < 60 -> "just now"
       seconds < 3_600 -> "#{div(seconds, 60)}m ago"
       seconds < 86_400 -> "#{div(seconds, 3_600)}h ago"
-      true -> Calendar.strftime(datetime, "%b %-d %H:%M")
+      true -> FavnView.Time.format(datetime, "%b %-d %H:%M")
     end
   end
 

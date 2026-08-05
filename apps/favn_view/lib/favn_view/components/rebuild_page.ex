@@ -581,7 +581,9 @@ defmodule FavnView.Components.RebuildPage do
     end
   end
 
-  defp format_time(%DateTime{} = value), do: Calendar.strftime(value, "%Y-%m-%d %H:%M UTC")
+  defp format_time(%DateTime{} = value),
+    do: FavnView.Time.format(value, "%Y-%m-%d %H:%M %Z")
+
   defp format_time(value) when is_binary(value), do: value
   defp format_time(_value), do: "-"
 

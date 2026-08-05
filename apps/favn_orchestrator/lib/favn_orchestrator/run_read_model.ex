@@ -15,6 +15,7 @@ defmodule FavnOrchestrator.RunReadModel do
   alias FavnOrchestrator.Persistence.Queries.GetExecutionGroup
   alias FavnOrchestrator.Persistence.Queries.GetOperatorRunOverview
   alias FavnOrchestrator.Persistence.Results.AssetAttemptOverview
+  alias FavnOrchestrator.Persistence.Results.PlannedAssetStep
   alias FavnOrchestrator.Persistence.Results.Backfill, as: PersistedBackfill
   alias FavnOrchestrator.Persistence.Results.BackfillWindow, as: PersistedBackfillWindow
 
@@ -409,7 +410,7 @@ defmodule FavnOrchestrator.RunReadModel do
   @spec from_operator_run_overview(FavnOrchestrator.Persistence.Results.OperatorRunOverview.t()) ::
           operator_run_detail()
   def from_operator_run_overview(projection) do
-    attempts = Enum.map(projection.attempts, &compact_attempt_summary/1)
+    attempts = compact_attempts_with_plan(projection.attempts, projection.planned_steps)
     attempt_counts = Map.delete(projection.attempt_counts, :effective_windows)
     requested_counts = projection.requested_window_counts
     requested_windows = Enum.map(projection.requested_windows, &persisted_window_summary/1)
@@ -423,6 +424,8 @@ defmodule FavnOrchestrator.RunReadModel do
 
     active? = projection.overview.status in [:pending, :running]
     status = persisted_group_status(projection.overview.status)
+    started_at = projection.overview.started_at || projection.root_run.inserted_at
+    finished_at = projection.overview.finished_at || projection.root_run.terminal_at
     failure_count = attempt_counts.failed + requested_counts.failed
     progress = compact_group_progress(requested_counts, attempt_counts)
 
@@ -435,9 +438,9 @@ defmodule FavnOrchestrator.RunReadModel do
       trigger_type: projection.root_run.trigger_type,
       target_assets: projection.target_refs,
       root_status: status,
-      started_at: projection.root_run.inserted_at,
-      finished_at: if(active?, do: nil, else: projection.root_run.terminal_at),
-      duration_ms: duration_ms(projection.root_run.inserted_at, projection.root_run.terminal_at),
+      started_at: started_at,
+      finished_at: if(active?, do: nil, else: finished_at),
+      duration_ms: duration_ms(started_at, finished_at),
       total_windows: requested_counts.total,
       completed_windows: requested_counts.completed,
       failed_windows: requested_counts.failed,
@@ -471,7 +474,8 @@ defmodule FavnOrchestrator.RunReadModel do
       requested_windows_truncated?: projection.requested_windows_truncated?,
       windows: effective_windows,
       asset_attempts: attempts,
-      asset_attempts_truncated?: projection.attempts_truncated?,
+      asset_attempts_truncated?:
+        projection.attempts_truncated? || projection.planned_steps_truncated?,
       timeline: timeline_entries(attempts),
       steps: [],
       progress: progress,
@@ -507,6 +511,62 @@ defmodule FavnOrchestrator.RunReadModel do
       window: attempt.window,
       window_start_at: attempt.window && attempt.window.start_at,
       window_end_at: attempt.window && attempt.window.end_at
+    }
+  end
+
+  defp compact_attempts_with_plan(attempts, planned_steps) do
+    attempts = Enum.map(attempts, &compact_attempt_summary/1)
+    attempted = MapSet.new(attempts, &planned_match_key/1)
+
+    planned =
+      planned_steps
+      |> Enum.reject(&MapSet.member?(attempted, planned_match_key(&1)))
+      |> Enum.map(&compact_planned_step/1)
+
+    attempts ++ planned
+  end
+
+  defp compact_planned_step(%PlannedAssetStep{} = step) do
+    %{
+      id: "planned:" <> step.run_id <> ":" <> step.node_identity,
+      asset_step_id: nil,
+      root_execution_group_id: step.root_run_id,
+      child_run_id: if(step.run_id == step.root_run_id, do: nil, else: step.run_id),
+      run_id: step.run_id,
+      status: :planned,
+      asset_key: step.asset_ref,
+      asset_ref: step.asset_ref,
+      stage: step.stage,
+      execution_pool: step.execution_pool,
+      queue_reason: nil,
+      attempt_number: nil,
+      started_at: nil,
+      finished_at: nil,
+      duration_ms: nil,
+      error_summary: nil,
+      output_metadata: nil,
+      window: step.window,
+      window_start_at: step.window && step.window.start_at,
+      window_end_at: step.window && step.window.end_at
+    }
+  end
+
+  defp planned_match_key(step) do
+    {Map.get(step, :run_id), Map.get(step, :asset_ref), planned_window_key(step)}
+  end
+
+  defp planned_window_key(%PlannedAssetStep{} = step), do: window_match_key(step.window)
+
+  defp planned_window_key(step), do: window_match_key(Map.get(step, :window))
+
+  defp window_match_key(nil), do: :none
+
+  defp window_match_key(window) do
+    {
+      Map.get(window, :kind),
+      Map.get(window, :start_at),
+      Map.get(window, :end_at),
+      Map.get(window, :timezone)
     }
   end
 

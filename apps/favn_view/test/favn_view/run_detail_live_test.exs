@@ -74,6 +74,14 @@ defmodule FavnView.RunDetailLiveTest do
     refute mounted.assigns.run.initializing?
     assert mounted.assigns.detail_load_attempts_remaining == 0
     assert is_reference(mounted.assigns.fallback_poll_ref)
+
+    assert {:noreply, selected} =
+             RunDetailLive.handle_params(%{"attempt" => "attempt-1"}, "", mounted)
+
+    assert selected.assigns.selected_attempt_id == "attempt-1"
+
+    assert {:noreply, refreshed} = RunDetailLive.handle_info(:refresh_run, selected)
+    assert refreshed.assigns.selected_attempt_id == "attempt-1"
   end
 
   defp restore_env(key, nil), do: Application.delete_env(:favn_view, key)

@@ -3448,6 +3448,97 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     refute Map.has_key?(summary, :run)
   end
 
+  test "target history returns one representative run per execution group", fixture do
+    {root_command, root_run} = create_run_command(fixture)
+    {child_command, child_run} = create_run_command(fixture)
+
+    child_run = %{
+      child_run
+      | root_run_id: root_run.id,
+        parent_run_id: root_run.id,
+        submit_kind: :backfill_pipeline
+    }
+
+    child_command = %{child_command | run: RunState.with_snapshot_hash(child_run)}
+
+    assert {:ok, _created} = RunStore.create_run(root_command)
+    assert {:ok, _created} = RunStore.create_run(child_command)
+
+    assert {:ok, page} =
+             OperatorReadStore.page_target_runs(%PageTargetRuns{
+               workspace_context: fixture.workspace_context,
+               deployment_id: fixture.deployment_id,
+               target_kind: :asset,
+               target_id: fixture.target_id,
+               limit: 10
+             })
+
+    assert [summary] = page.items
+    assert summary.run_id == child_run.id
+    assert summary.root_run_id == root_run.id
+
+    {other_command, other_run} = create_run_command(fixture)
+    assert {:ok, _created} = RunStore.create_run(other_command)
+
+    assert {:ok, first_page} =
+             OperatorReadStore.page_target_runs(%PageTargetRuns{
+               workspace_context: fixture.workspace_context,
+               deployment_id: fixture.deployment_id,
+               target_kind: :asset,
+               target_id: fixture.target_id,
+               limit: 1
+             })
+
+    assert first_page.has_more?
+    assert [%{root_run_id: first_root}] = first_page.items
+
+    {late_child_command, late_child_run} = create_run_command(fixture)
+
+    late_child_run = %{
+      late_child_run
+      | root_run_id: root_run.id,
+        parent_run_id: root_run.id,
+        submit_kind: :backfill_pipeline
+    }
+
+    late_child_command =
+      %{late_child_command | run: RunState.with_snapshot_hash(late_child_run)}
+
+    assert {:ok, _created} = RunStore.create_run(late_child_command)
+
+    assert {:ok, second_page} =
+             OperatorReadStore.page_target_runs(%PageTargetRuns{
+               workspace_context: fixture.workspace_context,
+               deployment_id: fixture.deployment_id,
+               target_kind: :asset,
+               target_id: fixture.target_id,
+               after: first_page.next_cursor,
+               limit: 1
+             })
+
+    assert [%{root_run_id: second_root, run_id: second_representative}] = second_page.items
+    assert MapSet.new([first_root, second_root]) == MapSet.new([root_run.id, other_run.id])
+    assert second_representative == late_child_run.id
+  end
+
+  test "operator overview exposes immutable planned nodes before attempts exist", fixture do
+    {command, run} = pipeline_run_command(fixture)
+    assert {:ok, _created} = RunStore.create_run(command)
+    assert {:ok, publications} = Sequencer.sequence_batch()
+    assert drain_projector("planned-overview:" <> run.id) >= length(publications)
+
+    assert {:ok, overview} =
+             OperatorReadStore.get_operator_run_overview(%GetOperatorRunOverview{
+               workspace_context: fixture.workspace_context,
+               run_id: run.id,
+               limit: 10
+             })
+
+    assert [%{asset_ref: "Elixir.MyApp.Asset:asset", stage: 0}] = overview.planned_steps
+    assert overview.attempts == []
+    refute overview.planned_steps_truncated?
+  end
+
   test "asset detail names what it reads and what reads it", fixture do
     ref = {MyApp.Asset, :asset}
     private_ref = {MyApp.PrivateAsset, :private}

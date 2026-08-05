@@ -133,7 +133,7 @@ defmodule FavnView.LogsViewModel do
     do: kind |> to_string() |> String.replace("_", " ") |> String.capitalize()
 
   def timestamp_label(%DateTime{} = value),
-    do: Calendar.strftime(value, "%b %-d, %Y %H:%M:%S UTC")
+    do: FavnView.Time.format(value, "%b %-d, %Y %H:%M:%S %Z")
 
   def timestamp_label(_value), do: "-"
 
@@ -176,10 +176,12 @@ defmodule FavnView.LogsViewModel do
       {Map.get(entry, :producer_id), Map.get(entry, :producer_sequence)}
   end
 
-  defp time_label(%DateTime{} = value), do: Calendar.strftime(value, "%b %-d %H:%M:%S")
+  defp time_label(%DateTime{} = value),
+    do: FavnView.Time.format(value, "%b %-d %H:%M:%S %Z")
+
   defp time_label(_value), do: "--- -- --:--:--"
 
-  defp time_of_day(%DateTime{} = value), do: Calendar.strftime(value, "%H:%M:%S")
+  defp time_of_day(%DateTime{} = value), do: FavnView.Time.format(value, "%H:%M:%S")
   defp time_of_day(_value), do: "--:--:--"
 
   defp source_label(source), do: source |> normalize_atom() |> String.replace("_", ":")
