@@ -28,6 +28,13 @@ defmodule FavnView.PipelineDetailLive do
                status_label: 1,
                last_run_label: 1
              ]}
+  @dialyzer {:no_match,
+             [
+               handle_event: 3,
+               load_pipeline: 2,
+               pipeline_from_state: 1,
+               default_backfill_config: 1
+             ]}
 
   @impl true
   def mount(%{"pipeline_id" => pipeline_id}, _session, socket) do

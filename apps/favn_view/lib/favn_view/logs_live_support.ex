@@ -15,6 +15,14 @@ defmodule FavnView.LogsLiveSupport do
   @poll_interval_ms 2_000
   @dialyzer {:no_unused,
              [target_label: 1, run_context_from_public: 2, asset_context_from_public: 1]}
+  @dialyzer {:no_match,
+             [
+               run_context: 2,
+               asset_context: 3,
+               load_initial_logs: 2,
+               replay_gap: 1,
+               error_label: 1
+             ]}
 
   def mount_logs(socket, attrs) do
     filter = Filter.normalize(Map.fetch!(attrs, :filter))

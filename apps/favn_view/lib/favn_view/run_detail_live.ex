@@ -20,6 +20,7 @@ defmodule FavnView.RunDetailLive do
   @active_statuses [:pending, :running]
   @valid_modes ~w(flow windows events)
   @dialyzer {:no_unused, [retry_remaining_submitted_label: 2, retry_remaining_partial_label: 2]}
+  @dialyzer {:no_match, [handle_event: 3, back_asset_href: 2, retry_remaining_error_label: 1]}
 
   # A live run's clock has to move on its own. Run events are the only thing that
   # used to advance the axis, so a running bar sat still for however long the
