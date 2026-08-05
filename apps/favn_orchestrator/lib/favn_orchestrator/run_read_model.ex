@@ -197,6 +197,7 @@ defmodule FavnOrchestrator.RunReadModel do
           required(:latest_event) => RunEvent.t() | nil,
           optional(:requested_windows) => [map()],
           optional(:requested_windows_truncated?) => boolean(),
+          optional(:has_non_windowed_assets?) => boolean(),
           optional(:events) => [RunEvent.t()]
         }
 
@@ -472,6 +473,7 @@ defmodule FavnOrchestrator.RunReadModel do
       child_run_details_truncated?: projection.runs_truncated?,
       requested_windows: requested_windows,
       requested_windows_truncated?: projection.requested_windows_truncated?,
+      has_non_windowed_assets?: Enum.any?(attempts, &is_nil(&1.window)),
       windows: effective_windows,
       asset_attempts: attempts,
       asset_attempts_truncated?:
@@ -564,11 +566,16 @@ defmodule FavnOrchestrator.RunReadModel do
   defp window_match_key(window) do
     {
       Map.get(window, :kind),
-      Map.get(window, :start_at),
-      Map.get(window, :end_at),
+      window_instant(Map.get(window, :start_at)),
+      window_instant(Map.get(window, :end_at)),
       Map.get(window, :timezone)
     }
   end
+
+  defp window_instant(%DateTime{} = datetime),
+    do: DateTime.to_unix(datetime, :microsecond)
+
+  defp window_instant(_datetime), do: nil
 
   defp compact_run_summary(run) do
     status = ExecutionStatus.normalize(run.status)
@@ -612,8 +619,13 @@ defmodule FavnOrchestrator.RunReadModel do
     |> Enum.map(& &1.window)
     |> Enum.reject(&is_nil/1)
     |> Enum.uniq_by(&effective_window_identity/1)
-    |> Enum.sort_by(&{&1.start_at || ~U[9999-12-31 00:00:00Z], effective_window_identity(&1)})
+    |> Enum.sort_by(&effective_window_sort_key/1)
   end
+
+  defp effective_window_sort_key(%{start_at: %DateTime{} = start_at} = window),
+    do: {0, DateTime.to_unix(start_at, :microsecond), effective_window_identity(window)}
+
+  defp effective_window_sort_key(window), do: {1, 0, effective_window_identity(window)}
 
   defp effective_window_identity(%{key: key}) when is_binary(key), do: key
   defp effective_window_identity(window), do: {window.start_at, window.end_at, window.timezone}

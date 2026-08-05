@@ -118,6 +118,18 @@ defmodule FavnView.RunFlowTest do
       assert length(lane.bars) == 2
     end
 
+    test "a non-windowed scope is not counted as a third window" do
+      flow =
+        RunFlow.build([
+          attempt(id: "none", window: nil, window_label: "No window"),
+          attempt(id: "june", window: %{key: "june"}, window_label: "Jun 2026"),
+          attempt(id: "july", window: %{key: "july"}, window_label: "Jul 2026")
+        ])
+
+      assert [lane] = lanes(flow)
+      assert lane.detail == "2 windows"
+    end
+
     test "a lane escalates to its worst outcome" do
       flow =
         RunFlow.build([

@@ -380,7 +380,10 @@ defmodule FavnView.RunDetailLive do
       Enum.map(Map.get(detail, :requested_windows, []), &window_from_public/1)
 
     events = if active_mode == :events, do: Map.get(detail, :events, []), else: []
-    child_runs = child_runs_from_public(Map.get(detail, :child_runs, []), attempts, windows)
+
+    child_runs =
+      child_runs_from_public(Map.get(detail, :child_runs, []), attempts, requested_windows)
+
     cancel_target = cancel_target(summary, root_run, child_runs, run_id)
 
     active? = active_group?(summary)
@@ -391,6 +394,9 @@ defmodule FavnView.RunDetailLive do
 
     target = target_label(summary.target_assets)
     status = group_status(summary)
+
+    execution_scope =
+      execution_scope_label(windows, Map.get(detail, :has_non_windowed_assets?, false))
 
     %{
       found?: true,
@@ -406,12 +412,12 @@ defmodule FavnView.RunDetailLive do
       retry_remaining_label: retry_remaining_label(summary),
       short_id: short_id(summary.id),
       title: group_title(summary),
-      subtitle: subtitle([target, window_range_label(windows)]),
+      subtitle: subtitle([target, execution_scope]),
       status: LogsViewModel.status_label(status),
       status_tone: LogsViewModel.status_tone(status),
       target: target || "No target",
       trigger: label(summary.trigger_type),
-      window: window_range_label(windows),
+      window: execution_scope,
       started_at: LogsViewModel.timestamp_label(summary.started_at),
       finished_at: LogsViewModel.timestamp_label(summary.finished_at),
       duration: LogsViewModel.duration_ms_label(summary.duration_ms),
@@ -454,7 +460,7 @@ defmodule FavnView.RunDetailLive do
       waiting_activity?: events == [] and active_group?(summary),
       current_activity: current_activity(attempts),
       selected_attempt: nil,
-      context: context_items(summary, root_run, target, windows),
+      context: context_items(summary, root_run, target, execution_scope),
       back_asset_href:
         existing_back_asset_href ||
           back_asset_href(operator_context, List.first(summary.target_assets)),
@@ -802,9 +808,13 @@ defmodule FavnView.RunDetailLive do
 
   # Both lookups were a scan per child run, so a thirty-window backfill walked
   # every attempt thirty times on every live refresh. One grouping pass each.
-  defp child_runs_from_public(child_runs, attempts, windows) do
+  defp child_runs_from_public(child_runs, attempts, requested_windows) do
     attempts_by_run_id = Enum.group_by(attempts, & &1.run_id)
-    windows_by_child_run_id = Map.new(windows, &{&1.child_run_id, &1})
+
+    windows_by_child_run_id =
+      requested_windows
+      |> Enum.reject(&is_nil(&1.child_run_id))
+      |> Map.new(&{&1.child_run_id, &1})
 
     Enum.map(child_runs, fn child ->
       child_attempts = Map.get(attempts_by_run_id, child.id, [])
@@ -920,13 +930,22 @@ defmodule FavnView.RunDetailLive do
   defp window_range_label([]), do: nil
   defp window_range_label(windows), do: Enum.map(windows, & &1.label) |> Enum.join(" -> ")
 
-  defp context_items(summary, root_run, target, windows) do
+  defp execution_scope_label(windows, true) do
+    case window_range_label(windows) do
+      nil -> "No window"
+      range -> "No window & #{range}"
+    end
+  end
+
+  defp execution_scope_label(windows, false), do: window_range_label(windows)
+
+  defp context_items(summary, root_run, target, execution_scope) do
     [
       %{label: "Backfill run", value: summary.id},
       %{label: "Manifest version", value: root_run.manifest_version_id || "Unknown"},
       %{label: "Target", value: target || "No target"},
       %{label: "Trigger", value: label(summary.trigger_type)},
-      %{label: "Window range", value: window_range_label(windows) || "No window metadata"}
+      %{label: "Execution scope", value: execution_scope || "No window metadata"}
     ]
   end
 

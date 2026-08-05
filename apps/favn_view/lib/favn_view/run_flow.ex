@@ -319,13 +319,30 @@ defmodule FavnView.RunFlow do
   end
 
   defp window_detail(attempts) do
-    windows = attempts |> Enum.map(&Map.get(&1, :window_label)) |> Enum.reject(&is_nil/1)
+    windows =
+      attempts
+      |> Enum.filter(&windowed_attempt?/1)
+      |> Enum.map(&Map.get(&1, :window_label))
+      |> Enum.reject(&is_nil/1)
 
     case Enum.uniq(windows) do
-      [] -> nil
+      [] -> non_window_label(attempts)
       [single] -> single
       many -> "#{length(many)} windows"
     end
+  end
+
+  defp windowed_attempt?(attempt) do
+    case Map.fetch(attempt, :window) do
+      {:ok, nil} -> false
+      {:ok, _window} -> true
+      :error -> Map.get(attempt, :window_label) != "No window"
+    end
+  end
+
+  defp non_window_label(attempts) do
+    if Enum.any?(attempts, &(Map.get(&1, :window_label) == "No window")),
+      do: "No window"
   end
 
   defp finished_duration_detail([attempt]), do: usable(Map.get(attempt, :duration))
