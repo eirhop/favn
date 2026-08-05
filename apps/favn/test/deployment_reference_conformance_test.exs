@@ -327,6 +327,8 @@ defmodule Favn.DeploymentReferenceConformanceTest do
     assert prepare =~ "dirty diagnostic builds require an explicit unique FAVN_IMAGE_TAG"
     assert prepare =~ "favn-compose-runner:$FAVN_SOURCE_REVISION:$FAVN_IMAGE_TAG"
     assert prepare =~ "sha256sum"
+    assert prepare =~ "\"FAVN_PLATFORM_TOKEN=$(random_hex 48)\""
+    assert prepare =~ "\"FAVN_CAPACITY_TOKEN=$(random_hex 48)\""
 
     security_compose = read("deployment/docker-compose/compose.security.yml")
 
