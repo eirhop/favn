@@ -27,6 +27,7 @@ defmodule FavnView.RunFlow do
           width: float(),
           track: non_neg_integer(),
           tone: atom(),
+          marker?: boolean(),
           running?: boolean(),
           label: String.t(),
           title: String.t()
@@ -166,6 +167,7 @@ defmodule FavnView.RunFlow do
         []
 
       bar_start ->
+        marker? = skipped_fresh?(attempt)
         running? = tone(attempt) == :info and is_nil(Map.get(attempt, :finished_at_raw))
 
         bar_end =
@@ -183,9 +185,10 @@ defmodule FavnView.RunFlow do
             width: bar_width,
             track: 0,
             tone: tone(attempt),
+            marker?: marker?,
             running?: running?,
             elapsed_ms: elapsed,
-            label: bar_label(attempt, bar_width, elapsed),
+            label: if(marker?, do: nil, else: bar_label(attempt, bar_width, elapsed)),
             title: title(attempt, elapsed),
             start: bar_start,
             finish: bar_end
@@ -305,11 +308,46 @@ defmodule FavnView.RunFlow do
   # The lane's second line carries the window and the duration, because the bar
   # can carry neither at these widths.
   defp detail(attempts, bars) do
-    case Enum.reject([window_detail(attempts), duration_detail(attempts, bars)], &is_nil/1) do
+    secondary =
+      if Enum.any?(attempts, &skipped_fresh?/1),
+        do: freshness_detail(attempts),
+        else: duration_detail(attempts, bars)
+
+    case Enum.reject([window_detail(attempts), secondary], &is_nil/1) do
       [] -> Map.get(List.first(attempts), :status) || "Unknown"
       parts -> Enum.join(parts, " · ")
     end
   end
+
+  defp freshness_detail(attempts) do
+    [
+      outcome_part(attempts, &succeeded_attempt?/1, "ran"),
+      outcome_part(attempts, &skipped_fresh?/1, "already fresh"),
+      outcome_part(attempts, &failed_attempt?/1, "failed"),
+      outcome_part(attempts, &running_attempt?/1, "running"),
+      outcome_part(attempts, &queued_attempt?/1, "queued"),
+      outcome_part(attempts, &planned_attempt?/1, "planned")
+    ]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join(" · ")
+  end
+
+  defp outcome_part(attempts, predicate, label) do
+    case Enum.count(attempts, predicate) do
+      0 -> nil
+      count -> "#{count} #{label}"
+    end
+  end
+
+  defp succeeded_attempt?(attempt), do: Map.get(attempt, :raw_status) == :ok
+  defp skipped_fresh?(attempt), do: Map.get(attempt, :raw_status) == :skipped_fresh
+
+  defp failed_attempt?(attempt),
+    do: Map.get(attempt, :raw_status) in [:error, :failed, :timed_out, :cancelled, :blocked]
+
+  defp running_attempt?(attempt), do: Map.get(attempt, :raw_status) in [:running, :retrying]
+  defp queued_attempt?(attempt), do: Map.get(attempt, :raw_status) in [:pending, :queued]
+  defp planned_attempt?(attempt), do: Map.get(attempt, :raw_status) == :planned
 
   defp duration_detail(attempts, bars) do
     case Enum.find(bars, &(&1.running? and is_integer(&1.elapsed_ms))) do
@@ -458,5 +496,7 @@ defmodule FavnView.RunFlow do
   defp elapsed_or_duration(_attempt, elapsed) when is_integer(elapsed),
     do: "#{total_duration_label(elapsed)} elapsed"
 
-  defp elapsed_or_duration(attempt, _elapsed), do: Map.get(attempt, :duration)
+  defp elapsed_or_duration(attempt, _elapsed) do
+    if skipped_fresh?(attempt), do: nil, else: Map.get(attempt, :duration)
+  end
 end

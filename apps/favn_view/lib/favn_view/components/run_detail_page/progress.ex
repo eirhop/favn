@@ -22,7 +22,7 @@ defmodule FavnView.Components.RunDetailPage.Progress do
       assigns
       |> assign(:assets, asset_segments(assigns.run))
       |> assign(:windows, window_segments(assigns.run))
-      |> assign(:asset_summary, summary(assigns.run.total_asset_attempts, "asset"))
+      |> assign(:asset_summary, summary(assigns.run.total_asset_attempts, "asset step"))
       |> assign(:window_summary, summary(assigns.run.total_windows, "window"))
 
     ~H"""
@@ -44,10 +44,12 @@ defmodule FavnView.Components.RunDetailPage.Progress do
 
   defp asset_segments(run) do
     [
-      %{tone: :success, count: run.succeeded_asset_attempts, label: "succeeded"},
+      %{tone: :success, count: run.succeeded_asset_attempts, label: "ran"},
+      %{tone: :neutral, count: run.skipped_asset_attempts, label: "already fresh"},
       %{tone: :error, count: run.failed_asset_attempts, label: "failed"},
       %{tone: :info, count: run.running_asset_attempts, label: "running"},
-      %{tone: :neutral, count: run.queued_asset_attempts, label: "queued"}
+      %{tone: :warning, count: run.queued_asset_attempts, label: "queued"},
+      %{tone: :neutral, count: run.planned_asset_attempts, label: "planned"}
     ]
   end
 

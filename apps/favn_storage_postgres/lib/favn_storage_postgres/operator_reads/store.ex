@@ -62,7 +62,16 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
   @completed_asset_statuses ~w(ok error timed_out cancelled skipped_fresh blocked)
   @failed_asset_statuses ~w(error timed_out cancelled blocked)
   @running_asset_statuses ~w(running retrying)
-  @no_asset_counts %{total: 0, completed: 0, failed: 0, running: 0, queued: 0}
+  @no_asset_counts %{
+    total: 0,
+    completed: 0,
+    succeeded: 0,
+    skipped: 0,
+    failed: 0,
+    running: 0,
+    queued: 0,
+    planned: 0
+  }
   @run_summary_fields [
     :workspace_id,
     :run_id,
@@ -239,6 +248,17 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
              root_run_id: root_run_id,
              limit: query.limit
            }) do
+      loaded_run_ids =
+        [root_run_id | Enum.map(runs.items, & &1.run_id)]
+        |> Enum.uniq()
+
+      asset_counts_by_run =
+        compact_asset_counts_by_run(
+          query.workspace_context.workspace_id,
+          root_run_id,
+          loaded_run_ids
+        )
+
       {attempts, attempts_truncated?} =
         compact_attempts(query.workspace_context.workspace_id, root_run_id, query.limit)
 
@@ -260,6 +280,7 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
          requested_window_counts:
            requested_window_counts(query.workspace_context.workspace_id, root_run_id),
          attempts: attempts,
+         asset_counts_by_run: asset_counts_by_run,
          planned_steps: planned_steps,
          planned_steps_truncated?: planned_steps_truncated?,
          attempt_counts:
@@ -834,24 +855,125 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
   defp ref_text(value) when is_binary(value), do: value
   defp ref_text(_value), do: "unknown"
 
+  defp compact_asset_counts_by_run(workspace_id, root_run_id, run_ids) do
+    attempts =
+      from(attempt in AssetAttemptOverview,
+        where:
+          attempt.workspace_id == ^workspace_id and attempt.root_run_id == ^root_run_id and
+            attempt.run_id in ^run_ids,
+        group_by: attempt.run_id,
+        select: %{
+          run_id: attempt.run_id,
+          total: count(attempt.asset_step_id),
+          completed: filter(count(), attempt.status in ^@completed_asset_statuses),
+          succeeded: filter(count(), attempt.status == "ok"),
+          skipped: filter(count(), attempt.status == "skipped_fresh"),
+          failed: filter(count(), attempt.status in ^@failed_asset_statuses),
+          running: filter(count(), attempt.status in ^@running_asset_statuses),
+          queued: filter(count(), attempt.status == "queued")
+        }
+      )
+      |> Repo.all()
+      |> Map.new(fn row -> {row.run_id, Map.delete(row, :run_id)} end)
+
+    %{rows: plan_rows} =
+      SQL.query!(
+        Repo,
+        """
+        SELECT plan.run_id,
+               jsonb_array_length(COALESCE(plan.plan->'nodes', '[]'::jsonb))
+        FROM favn_control.run_plans AS plan
+        JOIN favn_control.runs AS run
+          ON run.workspace_id = plan.workspace_id
+         AND run.run_id = plan.run_id
+        WHERE run.workspace_id = $1
+          AND run.root_execution_group_id = $2
+          AND plan.run_id = ANY($3::text[])
+        """,
+        [workspace_id, root_run_id, run_ids]
+      )
+
+    planned = Map.new(plan_rows, fn [run_id, total] -> {run_id, total} end)
+
+    attempts
+    |> Map.keys()
+    |> Kernel.++(Map.keys(planned))
+    |> Enum.uniq()
+    |> Map.new(fn run_id ->
+      attempted = Map.get(attempts, run_id, Map.delete(@no_asset_counts, :planned))
+      total = max(Map.get(planned, run_id, 0), attempted.total)
+
+      {run_id,
+       attempted
+       |> Map.put(:total, total)
+       |> Map.put(:planned, max(total - attempted.total, 0))}
+    end)
+  end
+
   defp compact_attempt_counts(workspace_id, root_run_id) do
-    from(attempt in AssetAttemptOverview,
-      where: attempt.workspace_id == ^workspace_id and attempt.root_run_id == ^root_run_id,
-      select: %{
-        total: count(attempt.asset_step_id),
-        completed: filter(count(), attempt.status in ^@completed_asset_statuses),
-        failed: filter(count(), attempt.status in ^@failed_asset_statuses),
-        running: filter(count(), attempt.status in ^@running_asset_statuses),
-        queued: filter(count(), attempt.status == "queued"),
-        effective_windows:
-          fragment(
-            "count(DISTINCT ?) FILTER (WHERE ? <> 'none')",
-            attempt.window_identity,
-            attempt.window_identity
-          )
-      }
-    )
-    |> Repo.one!()
+    observed =
+      from(attempt in AssetAttemptOverview,
+        where: attempt.workspace_id == ^workspace_id and attempt.root_run_id == ^root_run_id,
+        select: %{
+          total: count(attempt.asset_step_id),
+          completed: filter(count(), attempt.status in ^@completed_asset_statuses),
+          succeeded: filter(count(), attempt.status == "ok"),
+          skipped: filter(count(), attempt.status == "skipped_fresh"),
+          failed: filter(count(), attempt.status in ^@failed_asset_statuses),
+          running: filter(count(), attempt.status in ^@running_asset_statuses),
+          queued: filter(count(), attempt.status == "queued"),
+          effective_windows:
+            fragment(
+              "count(DISTINCT ?) FILTER (WHERE ? <> 'none')",
+              attempt.window_identity,
+              attempt.window_identity
+            )
+        }
+      )
+      |> Repo.one!()
+
+    planned = remaining_planned_asset_count(workspace_id, root_run_id)
+
+    observed
+    |> Map.put(:planned, planned)
+    |> Map.update!(:total, &(&1 + planned))
+  end
+
+  defp remaining_planned_asset_count(workspace_id, root_run_id) do
+    %{rows: [[count]]} =
+      SQL.query!(
+        Repo,
+        """
+        WITH attempt_counts AS (
+          SELECT attempt.run_id, count(*) AS total
+          FROM favn_control.asset_attempt_overviews AS attempt
+          WHERE attempt.workspace_id = $1
+            AND attempt.root_run_id = $2
+          GROUP BY attempt.run_id
+        )
+        SELECT COALESCE(
+                 sum(
+                   GREATEST(
+                     jsonb_array_length(COALESCE(plan.plan->'nodes', '[]'::jsonb)) -
+                       COALESCE(attempt.total, 0),
+                     0
+                   )
+                 ),
+                 0
+               )::bigint
+        FROM favn_control.run_plans AS plan
+        JOIN favn_control.runs AS run
+          ON run.workspace_id = plan.workspace_id
+         AND run.run_id = plan.run_id
+        LEFT JOIN attempt_counts AS attempt
+          ON attempt.run_id = plan.run_id
+        WHERE run.workspace_id = $1
+          AND run.root_execution_group_id = $2
+        """,
+        [workspace_id, root_run_id]
+      )
+
+    count
   end
 
   defp requested_window_counts(workspace_id, root_run_id) do

@@ -99,74 +99,101 @@ defmodule FavnView.RunDetailLiveTest do
     assert refreshed.assigns.selected_attempt_id == "attempt-1"
   end
 
-  test "uses requested windows for child rows and names mixed execution scope" do
+  test "uses exact child outcomes and only requested windows in the header" do
     started_at = ~U[2026-07-01 08:00:00Z]
     finished_at = ~U[2026-07-01 08:05:00Z]
+    may = window("month:Europe/Oslo:2026-05", ~U[2026-04-30 22:00:00Z])
     june = window("month:Europe/Oslo:2026-06", ~U[2026-05-31 22:00:00Z])
     july = window("month:Europe/Oslo:2026-07", ~U[2026-06-30 22:00:00Z])
+    duplicate_july = %{july | key: "planned:month:Europe/Oslo:2026-07"}
 
-    Application.put_env(:favn_view, :operator_run_activity_fun, fn
-      :operator_context, "root", _opts ->
-        {:ok,
-         %{
-           kind: :run,
-           detail: %{
-             summary: %{
-               id: "root",
-               status: :ok,
-               root_status: :ok,
-               active?: false,
-               trigger_type: :backfill,
-               target_assets: [],
-               started_at: started_at,
-               finished_at: finished_at,
-               duration_ms: 300_000,
-               total_windows: 1,
-               completed_windows: 1,
-               failed_windows: 0,
-               total_asset_attempts: 3,
-               completed_asset_attempts: 3,
-               failed_asset_attempts: 0,
-               running_asset_attempts: 0,
-               queued_asset_attempts: 0,
-               progress: nil
-             },
-             root_run: %{
-               id: "root",
-               status: :ok,
-               submit_kind: :backfill_pipeline,
-               manifest_version_id: "manifest",
-               event_seq: 2
-             },
-             child_runs: [
-               %{
-                 id: "child-july",
-                 status: :ok,
-                 window: nil,
-                 started_at: started_at,
-                 finished_at: finished_at,
-                 duration_ms: 300_000,
-                 event_seq: 4
-               }
-             ],
-             windows: [june, july],
-             requested_windows: [
-               july
-               |> Map.put(:child_run_id, "child-july")
-               |> Map.put(:status, :succeeded)
-             ],
-             has_non_windowed_assets?: true,
-             asset_attempts: [
-               attempt("none", nil, :ok, started_at, finished_at),
-               attempt("june", june, :ok, started_at, finished_at),
-               attempt("july", july, :skipped_fresh, started_at, finished_at)
-             ],
-             backfill_failures: [],
-             backfill_failure_count: 0,
-             root_event_sequence: 2
-           }
-         }}
-    end)
+    detail = %{
+      summary: %{
+        id: "root",
+        status: :ok,
+        root_status: :ok,
+        active?: false,
+        trigger_type: :backfill,
+        target_assets: [],
+        started_at: started_at,
+        finished_at: finished_at,
+        duration_ms: 300_000,
+        total_windows: 3,
+        completed_windows: 3,
+        failed_windows: 0,
+        total_asset_attempts: 270,
+        completed_asset_attempts: 270,
+        succeeded_asset_attempts: 43,
+        skipped_asset_attempts: 227,
+        failed_asset_attempts: 0,
+        running_asset_attempts: 0,
+        queued_asset_attempts: 0,
+        planned_asset_attempts: 0,
+        progress: nil
+      },
+      root_run: %{
+        id: "root",
+        status: :ok,
+        submit_kind: :backfill_pipeline,
+        manifest_version_id: "manifest",
+        event_seq: 2
+      },
+      child_runs: [
+        %{
+          id: "child-july",
+          status: :ok,
+          window: nil,
+          started_at: started_at,
+          finished_at: finished_at,
+          duration_ms: 300_000,
+          event_seq: 4,
+          asset_counts: asset_counts(0, 90)
+        },
+        %{
+          id: "child-may",
+          status: :ok,
+          window: nil,
+          started_at: started_at,
+          finished_at: finished_at,
+          duration_ms: 300_000,
+          event_seq: 4,
+          asset_counts: asset_counts(43, 47)
+        },
+        %{
+          id: "child-june",
+          status: :ok,
+          window: nil,
+          started_at: started_at,
+          finished_at: finished_at,
+          duration_ms: 300_000,
+          event_seq: 4,
+          asset_counts: asset_counts(0, 90)
+        }
+      ],
+      windows: [may, june, july, duplicate_july],
+      requested_windows: [
+        may
+        |> Map.put(:child_run_id, "child-may")
+        |> Map.put(:status, :succeeded),
+        june
+        |> Map.put(:child_run_id, "child-june")
+        |> Map.put(:status, :succeeded),
+        july
+        |> Map.put(:child_run_id, "child-july")
+        |> Map.put(:status, :succeeded)
+      ],
+      has_non_windowed_assets?: true,
+      asset_attempts: [
+        attempt("none", nil, :ok, started_at, finished_at),
+        attempt("june", june, :ok, started_at, finished_at),
+        attempt("july", july, :skipped_fresh, started_at, finished_at)
+      ],
+      backfill_failures: [],
+      backfill_failure_count: 0,
+      root_event_sequence: 2
+    }
+
+    put_run_detail(detail)
 
     socket = %Phoenix.LiveView.Socket{
       transport_pid: self(),
@@ -177,11 +204,52 @@ defmodule FavnView.RunDetailLiveTest do
     }
 
     assert {:ok, mounted} = RunDetailLive.mount(%{"run_id" => "root"}, %{}, socket)
-    assert mounted.assigns.run.subtitle == "No window & Jun 2026 -> Jul 2026"
-    assert mounted.assigns.run.window == "No window & Jun 2026 -> Jul 2026"
 
-    assert [%{window_label: "Jul 2026", progress: "3 / 3"}] =
-             mounted.assigns.run.child_runs
+    assert mounted.assigns.run.subtitle == "3 windows · May 2026 – Jul 2026"
+
+    assert mounted.assigns.run.window == "3 windows · May 2026 – Jul 2026"
+
+    assert Enum.map(mounted.assigns.run.child_runs, & &1.window_label) == [
+             "May 2026",
+             "Jun 2026",
+             "Jul 2026"
+           ]
+
+    assert [
+             %{assets: "90 assets", outcome: "43 ran · 47 already fresh"},
+             %{assets: "90 assets", outcome: "90 already fresh"},
+             %{assets: "90 assets", outcome: "90 already fresh"}
+           ] = mounted.assigns.run.child_runs
+
+    truncated_detail =
+      detail
+      |> put_in([:summary, :total_windows], 1_000)
+      |> Map.put(:requested_windows_truncated?, true)
+
+    put_run_detail(truncated_detail)
+
+    assert {:noreply, refreshed} = RunDetailLive.handle_info(:refresh_run, mounted)
+    assert refreshed.assigns.run.subtitle == "1000 windows"
+    assert refreshed.assigns.run.window == "1000 windows"
+  end
+
+  defp put_run_detail(detail) do
+    Application.put_env(:favn_view, :operator_run_activity_fun, fn
+      :operator_context, "root", _opts -> {:ok, %{kind: :run, detail: detail}}
+    end)
+  end
+
+  defp asset_counts(succeeded, skipped) do
+    %{
+      total: succeeded + skipped,
+      completed: succeeded + skipped,
+      succeeded: succeeded,
+      skipped: skipped,
+      failed: 0,
+      running: 0,
+      queued: 0,
+      planned: 0
+    }
   end
 
   defp window(key, start_at) do

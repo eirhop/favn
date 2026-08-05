@@ -39,15 +39,18 @@ defmodule FavnView.Components.RunDetailPage.WindowRuns do
           <:col :let={child} label="Status">
             <.status_badge tone={child.status_tone} label={child.status} size={:sm} />
           </:col>
-          <:col :let={child} label="Assets">{child.progress}</:col>
+          <:col :let={child} label="Assets">{child.assets}</:col>
           <:col :let={child} label="Duration">{child.duration}</:col>
           <:col :let={child} label="Outcome">
+            <p class="mb-1 text-sm favn-text-subtle">{child.outcome}</p>
             <.outcome_meter
               segments={[
-                %{tone: :success, count: child.succeeded_count, label: "succeeded"},
+                %{tone: :success, count: child.succeeded_count, label: "ran"},
+                %{tone: :neutral, count: child.skipped_count, label: "already fresh"},
                 %{tone: :error, count: child.failed_count, label: "failed"},
                 %{tone: :info, count: child.running_count, label: "running"},
-                %{tone: :neutral, count: child.queued_count, label: "queued"}
+                %{tone: :warning, count: child.queued_count, label: "queued"},
+                %{tone: :neutral, count: child.planned_count, label: "planned"}
               ]}
               size={:sm}
               legend?={false}

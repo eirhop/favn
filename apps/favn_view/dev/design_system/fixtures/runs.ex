@@ -30,21 +30,23 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.Runs do
     run(%{
       id: "run_backfill_8f2c9d1",
       title: "Backfill run",
-      subtitle: "Sales warehouse · Feb 2026 -> Mar 2026",
+      subtitle: "Sales warehouse · 2 windows · Feb 2026 – Mar 2026",
       status: status,
       attempts: attempts,
       total_windows: 2,
       completed_windows: if(status == :running, do: 1, else: 2),
       failed_windows: 0,
       child_runs: [
-        child_run("run_backfill_win_2026_02", "Feb 2026", :ok, 3, 0, 0, 0),
+        child_run("run_backfill_win_2026_02", "Feb 2026", :ok, 3, 0, 0, 0, 0, 0),
         child_run(
           "run_backfill_win_2026_03",
           "Mar 2026",
           child_status(status),
           child_succeeded(status),
+          1,
           child_failed(status),
           child_running(status),
+          0,
           0
         )
       ],
@@ -228,12 +230,14 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.Runs do
       retry_remaining_label: "Retry 1 remaining asset",
       back_asset_href: nil,
       total_asset_attempts: length(attempts),
-      completed_asset_attempts: count_tone(attempts, [:success, :error]),
-      succeeded_asset_attempts: count_tone(attempts, [:success]),
-      failed_asset_attempts: count_tone(attempts, [:error]),
-      running_asset_attempts: count_tone(attempts, [:info]),
-      queued_asset_attempts: count_tone(attempts, [:neutral]),
-      progress_label: "#{count_tone(attempts, [:success])} / #{length(attempts)}",
+      completed_asset_attempts: count_status(attempts, [:ok, :error, :skipped_fresh]),
+      succeeded_asset_attempts: count_status(attempts, [:ok]),
+      skipped_asset_attempts: count_status(attempts, [:skipped_fresh]),
+      failed_asset_attempts: count_status(attempts, [:error]),
+      running_asset_attempts: count_status(attempts, [:running]),
+      queued_asset_attempts: count_status(attempts, [:pending, :queued]),
+      planned_asset_attempts: count_status(attempts, [:planned]),
+      progress_label: "#{count_status(attempts, [:ok])} / #{length(attempts)}",
       windows: [],
       requested_windows: [],
       failures: Enum.filter(attempts, &(&1.status_tone == :error)),
@@ -268,11 +272,11 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.Runs do
         asset: "crm.orders",
         name: "Orders",
         stage: 1,
-        status: :ok,
+        status: :skipped_fresh,
         window: "Mar 2026",
         offset_seconds: 36,
-        duration_seconds: 29,
-        rows: 88_640
+        duration_seconds: 0,
+        rows: nil
       }),
       attempt(%{
         id: "engagement-2026-02",
@@ -381,22 +385,50 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.Runs do
     }
   end
 
-  defp child_run(id, window_label, status, succeeded, failed, running, queued) do
+  defp child_run(
+         id,
+         window_label,
+         status,
+         succeeded,
+         skipped,
+         failed,
+         running,
+         queued,
+         planned
+       ) do
+    total = succeeded + skipped + failed + running + queued + planned
+
     %{
       id: id,
       window_label: window_label,
       status: status_label(status),
       raw_status: status,
       status_tone: tone(status),
-      progress: "#{succeeded + failed} / #{succeeded + failed + running + queued}",
+      assets: "#{total} assets",
+      outcome:
+        [
+          outcome_part(succeeded, "ran"),
+          outcome_part(skipped, "already fresh"),
+          outcome_part(failed, "failed"),
+          outcome_part(running, "running"),
+          outcome_part(queued, "queued"),
+          outcome_part(planned, "planned")
+        ]
+        |> Enum.reject(&is_nil/1)
+        |> Enum.join(" · "),
       duration: "1m 07s",
       succeeded_count: succeeded,
+      skipped_count: skipped,
       failed_count: failed,
       running_count: running,
       queued_count: queued,
+      planned_count: planned,
       attempts: []
     }
   end
+
+  defp outcome_part(0, _label), do: nil
+  defp outcome_part(count, label), do: "#{count} #{label}"
 
   defp child_status(:running), do: :running
   defp child_status(:partial), do: :error
@@ -442,7 +474,7 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.Runs do
     }
   end
 
-  defp count_tone(attempts, tones), do: Enum.count(attempts, &(&1.status_tone in tones))
+  defp count_status(attempts, statuses), do: Enum.count(attempts, &(&1.raw_status in statuses))
 
   defp duration_label(nil), do: "-"
   defp duration_label(seconds) when seconds < 60, do: "#{seconds}s"
@@ -451,6 +483,7 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.Runs do
   defp status_label(:ok), do: "Succeeded"
   defp status_label(:error), do: "Failed"
   defp status_label(:running), do: "Running"
+  defp status_label(:skipped_fresh), do: "Already fresh"
   defp status_label(:partial), do: "Partial"
   defp status_label(:pending), do: "Queued"
   defp status_label(status), do: status |> to_string() |> String.capitalize()

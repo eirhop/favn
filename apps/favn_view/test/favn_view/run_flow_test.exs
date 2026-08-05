@@ -130,6 +130,86 @@ defmodule FavnView.RunFlowTest do
       assert lane.detail == "2 windows"
     end
 
+    test "freshness skips are markers and explain that no execution happened" do
+      flow =
+        RunFlow.build([
+          attempt(id: "may", window_label: "May 2026"),
+          attempt(
+            id: "june",
+            raw_status: :skipped_fresh,
+            status: "Already fresh",
+            status_tone: :neutral,
+            started_at_raw: DateTime.add(@anchor, 31, :second),
+            finished_at_raw: DateTime.add(@anchor, 31, :second),
+            duration: "0 ms",
+            window_label: "Jun 2026"
+          )
+        ])
+
+      assert [lane] = lanes(flow)
+      assert lane.detail == "2 windows · 1 ran · 1 already fresh"
+      assert Enum.count(lane.bars, & &1.marker?) == 1
+      assert Enum.find(lane.bars, & &1.marker?).title == "Orders · Jun 2026 · Already fresh"
+    end
+
+    test "a mixed freshness lane keeps running work distinct from completed work" do
+      flow =
+        RunFlow.build(
+          [
+            attempt(
+              id: "may",
+              raw_status: :skipped_fresh,
+              status: "Already fresh",
+              status_tone: :neutral,
+              finished_at_raw: @anchor,
+              duration: "0 ms",
+              window_label: "May 2026"
+            ),
+            attempt(
+              id: "june",
+              raw_status: :running,
+              status: "Running",
+              status_tone: :info,
+              started_at_raw: DateTime.add(@anchor, 1, :second),
+              finished_at_raw: nil,
+              window_label: "Jun 2026"
+            )
+          ],
+          active?: true,
+          now: DateTime.add(@anchor, 30, :second)
+        )
+
+      assert [lane] = lanes(flow)
+      assert lane.detail == "2 windows · 1 already fresh · 1 running"
+    end
+
+    test "a mixed freshness lane keeps failed work distinct from successful work" do
+      flow =
+        RunFlow.build([
+          attempt(
+            id: "may",
+            raw_status: :skipped_fresh,
+            status: "Already fresh",
+            status_tone: :neutral,
+            finished_at_raw: @anchor,
+            duration: "0 ms",
+            window_label: "May 2026"
+          ),
+          attempt(
+            id: "june",
+            raw_status: :error,
+            status: "Failed",
+            status_tone: :error,
+            started_at_raw: DateTime.add(@anchor, 1, :second),
+            finished_at_raw: DateTime.add(@anchor, 2, :second),
+            window_label: "Jun 2026"
+          )
+        ])
+
+      assert [lane] = lanes(flow)
+      assert lane.detail == "2 windows · 1 already fresh · 1 failed"
+    end
+
     test "a lane escalates to its worst outcome" do
       flow =
         RunFlow.build([
