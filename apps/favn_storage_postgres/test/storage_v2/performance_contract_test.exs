@@ -19,6 +19,7 @@ defmodule FavnStoragePostgres.StorageV2.PerformanceContractTest do
   alias FavnOrchestrator.Persistence.PlatformContext
   alias FavnOrchestrator.Persistence.Queries.ManifestSelector.ByContentHash
   alias FavnOrchestrator.Persistence.Queries.PageBackfillWindows
+  alias FavnOrchestrator.Persistence.Queries.PageTargetRuns
   alias FavnOrchestrator.Persistence.Queries.PageRuns
   alias FavnOrchestrator.Persistence.Queries.GetRun
   alias FavnOrchestrator.Persistence.WorkspaceContext
@@ -26,6 +27,7 @@ defmodule FavnStoragePostgres.StorageV2.PerformanceContractTest do
   alias FavnOrchestrator.TargetStatus
   alias FavnStoragePostgres.Backfills.Store, as: BackfillStore
   alias FavnStoragePostgres.Config
+  alias FavnStoragePostgres.OperatorReads.Store, as: OperatorReadStore
   alias FavnStoragePostgres.Registry.Store, as: RegistryStore
   alias FavnStoragePostgres.Repo
   alias FavnStoragePostgres.Runs.Store, as: RunStore
@@ -198,6 +200,43 @@ defmodule FavnStoragePostgres.StorageV2.PerformanceContractTest do
       )
 
     assert "runs_group_children_idx" in index_names(plan)
+  end
+
+  test "logical target history pages child-only groups by root submission order", fixture do
+    root = create_run!(fixture)
+
+    SQL.query!(
+      Repo,
+      "DELETE FROM favn_control.run_targets WHERE workspace_id = $1 AND run_id = $2",
+      [fixture.workspace_id, root.id]
+    )
+
+    child = create_child_target_run!(fixture, root)
+    SQL.query!(Repo, "ANALYZE favn_control.runs", [])
+    SQL.query!(Repo, "ANALYZE favn_control.run_targets", [])
+
+    {:ok, {result, plan}} =
+      Repo.transaction(fn ->
+        SQL.query!(Repo, "SET LOCAL enable_seqscan = off", [])
+
+        {result, queries} =
+          capture_queries(fn ->
+            OperatorReadStore.page_target_runs(%PageTargetRuns{
+              workspace_context: fixture.workspace_context,
+              target_kind: :asset,
+              target_id: fixture.target_id,
+              limit: 50
+            })
+          end)
+
+        plan = queries |> query_containing!("WITH candidate_roots") |> explain_captured()
+        {result, plan}
+      end)
+
+    assert {:ok, %{items: [%{run_id: child_run_id, root_run_id: root_run_id}]}} = result
+    assert child_run_id == child.id
+    assert root_run_id == root.id
+    assert "runs_root_submission_history_idx" in index_names(plan)
   end
 
   test "status-filtered run history uses its keyset indexes for workspace and platform pages",
@@ -539,6 +578,50 @@ defmodule FavnStoragePostgres.StorageV2.PerformanceContractTest do
         runner_releases: %{"default" => FavnTestSupport.runner_release_id()},
         asset_ref: {MyApp.PerformanceAsset, :asset},
         target_refs: [{MyApp.PerformanceAsset, :asset}]
+      )
+
+    assert {:ok, _created} =
+             RunStore.create_run(%CreateRun{
+               workspace_context: fixture.workspace_context,
+               command_id: "create:" <> run_id,
+               deployment_id: fixture.deployment_id,
+               run: run,
+               targets: [
+                 %RunTarget{
+                   target_kind: :asset,
+                   target_id: fixture.target_id,
+                   target_module: "MyApp.PerformanceAsset",
+                   target_name: "asset",
+                   is_primary: true
+                 }
+               ],
+               event: %{
+                 run_id: run_id,
+                 sequence: 1,
+                 event_type: :run_submitted,
+                 status: :pending,
+                 occurred_at: run.inserted_at
+               }
+             })
+
+    run
+  end
+
+  defp create_child_target_run!(fixture, root) do
+    run_id = "performance-child-#{random_id()}"
+
+    run =
+      RunState.new(
+        id: run_id,
+        workspace_id: fixture.workspace_id,
+        deployment_id: fixture.deployment_id,
+        manifest_version_id: fixture.version.manifest_version_id,
+        manifest_content_hash: fixture.version.content_hash,
+        runner_releases: %{"default" => FavnTestSupport.runner_release_id()},
+        asset_ref: {MyApp.PerformanceAsset, :asset},
+        target_refs: [{MyApp.PerformanceAsset, :asset}],
+        root_run_id: root.id,
+        parent_run_id: root.id
       )
 
     assert {:ok, _created} =

@@ -41,6 +41,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
   alias FavnStoragePostgres.Migrations.OptimizeSchedulerClaimsV2
   alias FavnStoragePostgres.Migrations.OptimizeManifestAndRunPlansV2
   alias FavnStoragePostgres.Migrations.OptimizeExecutionPackageRetentionV2
+  alias FavnStoragePostgres.Migrations.OptimizeLogicalTargetHistoryV2
   alias FavnStoragePostgres.Migrations.OptimizeRunStatusPagingV2
   alias FavnStoragePostgres.Migrations.NormalizeResourceCircuitDefinitionsV2
   alias FavnStoragePostgres.Privileges
@@ -82,7 +83,8 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     {20_260_730_010_000, BindAuthSessionsToWorkspacesV2},
     {20_260_730_020_000, AddOperatorCommandIntentsV2},
     {20_260_730_030_000, AddExternalIdentitiesV2},
-    {20_260_731_000_000, AddRunnerTaskOperatorReadsV2}
+    {20_260_731_000_000, AddRunnerTaskOperatorReadsV2},
+    {20_260_805_000_000, OptimizeLogicalTargetHistoryV2}
   ]
   @required_tables ~w(
     schema_migrations
@@ -177,6 +179,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     runs_plan_manifest_uidx
     runs_workspace_status_recent_idx
     runs_platform_status_recent_idx
+    runs_root_submission_history_idx
     run_submissions_idempotency_uidx
     run_submissions_retry_child_uidx
     run_submissions_claim_idx
@@ -187,6 +190,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     run_submissions_run_idx
     run_submission_commands_retention_idx
     run_targets_history_idx
+    run_targets_logical_history_idx
     run_targets_claim_lineage_uidx
     runtime_input_pins_execution_package_hash_index
     runtime_input_pins_key_version_idx
@@ -262,6 +266,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     execution_group_overviews_platform_started_idx
     backfill_overviews_status_idx
     target_statuses_status_idx
+    target_statuses_logical_latest_idx
     asset_window_states_history_idx
     asset_freshness_states_node_idx
     asset_attempt_overviews_group_idx
@@ -541,7 +546,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
                           Enum.map(@identifier_constraint_tables, &"#{&1}_identifier_lengths_v2") ++
                           Enum.map(@payload_constraint_tables, &"#{&1}_payload_bounds_v2")
   @expected_versions Enum.map(@migrations, fn {version, _module} -> version end)
-  @expected_definition_fingerprint "7042d2d4dd7617ebec5ed5c05817228dc3c0f1e9bc07e87967da609c1c2ea1c4"
+  @expected_definition_fingerprint "8c246f32dd2f48e43c569c2f76cece5b0edfd8647fe064f6b9f03a13dbc3f91b"
 
   @doc "Creates the V2 namespace and applies every known migration."
   @spec migrate!(module()) :: :ok

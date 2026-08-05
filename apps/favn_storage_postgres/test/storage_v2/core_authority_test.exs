@@ -3443,7 +3443,6 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert {:ok, page} =
              OperatorReadStore.page_target_runs(%PageTargetRuns{
                workspace_context: fixture.workspace_context,
-               deployment_id: fixture.deployment_id,
                target_kind: :asset,
                target_id: fixture.target_id,
                limit: 10
@@ -3456,6 +3455,102 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert summary.event_sequence == 1
     assert summary.runner_releases == fixture.version.runner_releases
     refute Map.has_key?(summary, :run)
+  end
+
+  test "target status and run history survive activation of a new deployment", fixture do
+    {command, run} = create_run_command(fixture)
+    {pipeline_command, pipeline_run} = create_pipeline_target_run_command(fixture)
+    assert {:ok, _created} = RunStore.create_run(command)
+    assert {:ok, _created} = RunStore.create_run(pipeline_command)
+    assert {:ok, publications} = Sequencer.sequence_batch()
+    assert drain_projector("target-history-reload:" <> run.id) >= length(publications)
+
+    alternate_manifest =
+      fixture.version.manifest
+      |> FavnTestSupport.with_manifest_contract(FavnTestSupport.runner_release_id(:alternate))
+      |> FavnTestSupport.with_manifest_graph()
+
+    assert {:ok, alternate_version} =
+             Version.new(alternate_manifest,
+               manifest_version_id: fixture.version.manifest_version_id <> "-reload"
+             )
+
+    assert {:ok, ^alternate_version} =
+             RegistryStore.register_manifest(%RegisterManifest{
+               platform_context: fixture.platform_context,
+               version: alternate_version
+             })
+
+    assert {:ok, _runtime} =
+             RegistryStore.deploy_manifest(%{
+               fixture.deploy_command
+               | deployment_id: fixture.deployment_id <> "-reload",
+                 manifest_version_id: alternate_version.manifest_version_id,
+                 occurred_at: DateTime.utc_now()
+             })
+
+    assert {:ok, [status]} =
+             OperatorReadStore.get_target_statuses(%GetTargetStatuses{
+               workspace_context: fixture.workspace_context,
+               target_kind: :asset,
+               target_ids: [fixture.target_id]
+             })
+
+    assert status.run_id == run.id
+    assert status.status == :pending
+
+    assert {:ok, [pipeline_status]} =
+             OperatorReadStore.get_target_statuses(%GetTargetStatuses{
+               workspace_context: fixture.workspace_context,
+               target_kind: :pipeline,
+               target_ids: [fixture.pipeline_target_id]
+             })
+
+    assert pipeline_status.run_id == pipeline_run.id
+    assert pipeline_status.status == :pending
+
+    assert {:ok, page} =
+             OperatorReadStore.page_target_runs(%PageTargetRuns{
+               workspace_context: fixture.workspace_context,
+               target_kind: :asset,
+               target_id: fixture.target_id,
+               limit: 10
+             })
+
+    assert [%{run_id: run_id}] = page.items
+    assert run_id == run.id
+
+    assert {:ok, pipeline_page} =
+             OperatorReadStore.page_target_runs(%PageTargetRuns{
+               workspace_context: fixture.workspace_context,
+               target_kind: :pipeline,
+               target_id: fixture.pipeline_target_id,
+               limit: 10
+             })
+
+    assert [%{run_id: pipeline_run_id}] = pipeline_page.items
+    assert pipeline_run_id == pipeline_run.id
+
+    assert {:ok, detail} =
+             Catalogue.active_asset_detail(fixture.workspace_context, fixture.target_id,
+               now: DateTime.utc_now()
+             )
+
+    assert detail.status == :running
+    assert detail.latest_run_id == run.id
+    assert [%{id: run_id}] = detail.runs
+    assert run_id == run.id
+
+    assert {:ok, pipeline_detail} =
+             Catalogue.active_pipeline_detail(
+               fixture.workspace_context,
+               fixture.pipeline_target_id
+             )
+
+    assert pipeline_detail.status == :running
+    assert pipeline_detail.latest_run_id == pipeline_run.id
+    assert [%{id: pipeline_run_id}] = pipeline_detail.runs
+    assert pipeline_run_id == pipeline_run.id
   end
 
   test "target history returns one representative run per execution group", fixture do
@@ -3477,7 +3572,6 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert {:ok, page} =
              OperatorReadStore.page_target_runs(%PageTargetRuns{
                workspace_context: fixture.workspace_context,
-               deployment_id: fixture.deployment_id,
                target_kind: :asset,
                target_id: fixture.target_id,
                limit: 10
@@ -3493,7 +3587,6 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert {:ok, first_page} =
              OperatorReadStore.page_target_runs(%PageTargetRuns{
                workspace_context: fixture.workspace_context,
-               deployment_id: fixture.deployment_id,
                target_kind: :asset,
                target_id: fixture.target_id,
                limit: 1
@@ -3519,7 +3612,6 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert {:ok, second_page} =
              OperatorReadStore.page_target_runs(%PageTargetRuns{
                workspace_context: fixture.workspace_context,
-               deployment_id: fixture.deployment_id,
                target_kind: :asset,
                target_id: fixture.target_id,
                after: first_page.next_cursor,
@@ -3683,6 +3775,72 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
            }
 
     assert run_detail.asset_result.duration_ms == 1_250
+  end
+
+  test "historical asset run detail uses the run's pinned assurance definition", fixture do
+    historical_contract =
+      Favn.SQL.Contract.new!(columns: [%{name: :historical_id, type: :integer, null: false}])
+
+    historical_manifest =
+      fixture.version.manifest
+      |> put_asset_contract({MyApp.Asset, :asset}, historical_contract)
+      |> FavnTestSupport.with_manifest_contract()
+      |> FavnTestSupport.with_manifest_graph()
+
+    assert {:ok, historical_version} =
+             Version.new(historical_manifest,
+               manifest_version_id: fixture.version.manifest_version_id <> "-assurance-history"
+             )
+
+    historical = provision_deploy_fixture(historical_version)
+    {command, run} = create_run_command(historical)
+    assert {:ok, _created} = RunStore.create_run(command)
+
+    active_contract =
+      Favn.SQL.Contract.new!(columns: [%{name: :active_id, type: :integer, null: false}])
+
+    active_manifest =
+      historical_version.manifest
+      |> put_asset_contract({MyApp.Asset, :asset}, active_contract)
+      |> FavnTestSupport.with_manifest_contract(FavnTestSupport.runner_release_id(:alternate))
+      |> FavnTestSupport.with_manifest_graph()
+
+    assert {:ok, active_version} =
+             Version.new(active_manifest,
+               manifest_version_id: historical_version.manifest_version_id <> "-active"
+             )
+
+    assert {:ok, ^active_version} =
+             RegistryStore.register_manifest(%RegisterManifest{
+               platform_context: historical.platform_context,
+               version: active_version
+             })
+
+    assert {:ok, _runtime} =
+             RegistryStore.deploy_manifest(%{
+               historical.deploy_command
+               | deployment_id: historical.deployment_id <> "-active",
+                 manifest_version_id: active_version.manifest_version_id,
+                 occurred_at: DateTime.utc_now()
+             })
+
+    assert {:ok, run_detail} =
+             Catalogue.active_asset_run_detail(
+               historical.workspace_context,
+               historical.target_id,
+               run.id
+             )
+
+    assert [%{name: :historical_id}] = run_detail.assurance.contract.columns
+    assert run_detail.assurance.latest_run_id == run.id
+
+    assert {:ok, active_detail} =
+             Catalogue.active_asset_detail(historical.workspace_context, historical.target_id,
+               now: DateTime.utc_now()
+             )
+
+    assert [%{name: :active_id}] = active_detail.assurance.contract.columns
+    assert is_nil(active_detail.assurance.latest_run_id)
   end
 
   test "asset run detail rejects a run belonging to another asset", fixture do
@@ -7595,7 +7753,6 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert {:ok, [target_status]} =
              OperatorReadStore.get_target_statuses(%GetTargetStatuses{
                workspace_context: fixture.workspace_context,
-               manifest_version_id: fixture.version.manifest_version_id,
                target_kind: :asset,
                target_ids: [fixture.target_id]
              })
@@ -7771,7 +7928,6 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert {:ok, target_runs} =
              OperatorReadStore.page_target_runs(%PageTargetRuns{
                workspace_context: fixture.workspace_context,
-               deployment_id: fixture.deployment_id,
                target_kind: :asset,
                target_id: fixture.target_id,
                limit: 10
@@ -8125,7 +8281,6 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert {:ok, [target_status]} =
              OperatorReadStore.get_target_statuses(%GetTargetStatuses{
                workspace_context: fixture.workspace_context,
-               manifest_version_id: fixture.version.manifest_version_id,
                target_kind: :asset,
                target_ids: [fixture.target_id]
              })
@@ -8492,6 +8647,44 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     }
 
     {command, run}
+  end
+
+  defp create_pipeline_target_run_command(fixture) do
+    {command, run} = create_run_command(fixture)
+
+    run =
+      run
+      |> Map.put(:submit_kind, :pipeline)
+      |> Map.put(:metadata, %{pipeline_submit_ref: MyApp.Pipeline})
+      |> RunState.with_snapshot_hash()
+
+    command = %{
+      command
+      | run: run,
+        targets: [
+          %RunTarget{
+            target_kind: :pipeline,
+            target_id: fixture.pipeline_target_id,
+            target_module: "MyApp.Pipeline",
+            target_name: "daily",
+            is_primary: true
+          }
+        ]
+    }
+
+    {command, run}
+  end
+
+  defp put_asset_contract(manifest, asset_ref, contract) do
+    Map.update!(manifest, :assets, fn assets ->
+      Enum.map(assets, fn
+        %{ref: ^asset_ref} = asset ->
+          %{asset | assurance: %{contract: contract, checks: []}}
+
+        asset ->
+          asset
+      end)
+    end)
   end
 
   defp schedule_submission(fixture, suffix) do

@@ -83,7 +83,6 @@ defmodule FavnOrchestrator.Operator.Lineage.Projection do
     with {:ok, statuses} <-
            Persistence.stores().operator_reads.get_target_statuses(%GetTargetStatuses{
              workspace_context: context,
-             manifest_version_id: manifest_version_id,
              target_kind: :asset,
              target_ids: target_ids
            }) do

@@ -299,8 +299,8 @@ defmodule FavnOrchestrator.Operator.Catalogue do
     with {:ok, {runtime, grants}} <-
            ManifestStore.get_active_deployment(context, customer_visible_only: true),
          {:ok, target} <- deployment_target_descriptor(grants, :pipeline, target_id),
-         {:ok, status} <- target_status(context, runtime, :pipeline, target_id),
-         {:ok, page} <- target_runs(context, runtime, :pipeline, target_id),
+         {:ok, status} <- target_status(context, :pipeline, target_id),
+         {:ok, page} <- target_runs(context, :pipeline, target_id),
          detail <-
            target
            |> Map.put(:manifest_version_id, runtime.manifest_version_id)
@@ -345,8 +345,8 @@ defmodule FavnOrchestrator.Operator.Catalogue do
              assets_by_ref(version),
              now: now
            ),
-         {:ok, status} <- target_status(context, runtime, :asset, target_id),
-         {:ok, page} <- target_runs(context, runtime, :asset, target_id),
+         {:ok, status} <- target_status(context, :asset, target_id),
+         {:ok, page} <- target_runs(context, :asset, target_id),
          {:ok, run_history} <- asset_run_history(context, page),
          {:ok, projected_window_states} <- asset_window_states(context, asset, target_id),
          {:ok, window_states} <-
@@ -507,12 +507,17 @@ defmodule FavnOrchestrator.Operator.Catalogue do
           {:ok, asset_run_detail()} | {:error, term()}
   def active_asset_run_detail(%WorkspaceContext{} = context, target_id, run_id)
       when is_binary(target_id) and is_binary(run_id) do
-    with {:ok, {runtime, grants}} <-
+    with {:ok, {_runtime, grants}} <-
            ManifestStore.get_active_deployment(context, customer_visible_only: true),
          true <- MapSet.member?(granted_ids(grants, :asset), target_id),
-         {:ok, version} <- ManifestStore.get_manifest(context, runtime.manifest_version_id),
-         {:ok, asset} <- asset_for_target(version, target_id),
          {:ok, run_state} <- Runs.get(context, run_id),
+         {:ok, version} <-
+           ManifestStore.get_deployment_manifest(
+             context,
+             run_state.deployment_id,
+             run_state.manifest_version_id
+           ),
+         {:ok, asset} <- asset_for_target(version, target_id),
          run <- Projector.project_run(run_state),
          true <- run_covers_asset?(run, asset.ref),
          {:ok, pins} <- Runs.get_runtime_inputs(context, run_id) do
@@ -642,7 +647,6 @@ defmodule FavnOrchestrator.Operator.Catalogue do
     with {:ok, statuses} <-
            Persistence.stores().operator_reads.get_target_statuses(%GetTargetStatuses{
              workspace_context: context,
-             manifest_version_id: runtime.manifest_version_id,
              target_kind: target_kind,
              target_ids: target_ids
            }) do
@@ -657,11 +661,10 @@ defmodule FavnOrchestrator.Operator.Catalogue do
     end
   end
 
-  defp target_status(context, runtime, target_kind, target_id) do
+  defp target_status(context, target_kind, target_id) do
     with {:ok, statuses} <-
            Persistence.stores().operator_reads.get_target_statuses(%GetTargetStatuses{
              workspace_context: context,
-             manifest_version_id: runtime.manifest_version_id,
              target_kind: target_kind,
              target_ids: [target_id]
            }) do
@@ -683,10 +686,9 @@ defmodule FavnOrchestrator.Operator.Catalogue do
     }
   end
 
-  defp target_runs(context, runtime, target_kind, target_id) do
+  defp target_runs(context, target_kind, target_id) do
     Persistence.stores().operator_reads.page_target_runs(%PageTargetRuns{
       workspace_context: context,
-      deployment_id: runtime.deployment_id,
       target_kind: target_kind,
       target_id: target_id,
       limit: 50
@@ -996,7 +998,10 @@ defmodule FavnOrchestrator.Operator.Catalogue do
     |> Map.put(:canonical_asset_ref, asset.ref)
     |> Status.put(status)
     |> Map.put(:freshness, AssetFreshness.detail(asset, version, freshness_states, context_opts))
-    |> Map.put(:assurance, Assurance.detail(asset, run_history.latest_snapshot))
+    |> Map.put(
+      :assurance,
+      Assurance.detail(asset, assurance_snapshot(version, run_history))
+    )
     |> Map.merge(Map.take(periods, [:has_data_windows?, :default_run_config]))
     |> Map.put(:runs, asset_run_entries(run_history.items, periods.run_windows))
     |> Map.put(:run_contexts, context_descriptors)
@@ -1100,6 +1105,17 @@ defmodule FavnOrchestrator.Operator.Catalogue do
         error
     end
   end
+
+  # Assurance definitions are manifest-pinned. A logical target's history spans
+  # deployments, but evidence from an older definition must not be presented as
+  # proof for the active definition merely because the target id stayed the same.
+  defp assurance_snapshot(
+         %Version{manifest_version_id: manifest_version_id},
+         %{latest: %{manifest_version_id: manifest_version_id}, latest_snapshot: snapshot}
+       ),
+       do: snapshot
+
+  defp assurance_snapshot(_version, _run_history), do: nil
 
   defp asset_run_entries(runs, windows_by_run) do
     Enum.map(runs, &RunHistory.asset_entry(&1, Map.get(windows_by_run, &1.id)))
