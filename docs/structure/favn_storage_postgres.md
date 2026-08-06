@@ -75,8 +75,11 @@ Favn's PostgreSQL 18 control-plane persistence.
   `favn_control` schema.
 - `FavnStoragePostgres.Release` owns migration, exact-schema verification,
   workspace provisioning, runtime grants, restore verification, key inventory,
-  explicit key compaction, and upgrade preflight behavior. Mix tasks under
-  `lib/mix/` are thin development wrappers.
+  explicit key compaction, and upgrade preflight behavior.
+  `FavnStoragePostgres.DevelopmentUpgrade` composes migration, runtime grants,
+  and runtime-identity verification for the explicit development-only upgrade
+  task. Production keeps those release operations in separate processes. Mix
+  tasks under `lib/mix/` are thin development wrappers.
 - Platform maintenance can remove old execution packages only when no manifest link
   references them; the global content-addressed registry cannot be purged by
   workspace.

@@ -41,6 +41,17 @@ lifecycle decisions remain in `favn_orchestrator`.
 
 ## Development commands
 
+Set `FAVN_DATABASE_URL` to the restricted runtime connection and
+`FAVN_DATABASE_MIGRATOR_URL` to the elevated development connection. The normal
+schema update is one explicit command:
+
+```bash
+mix favn.postgres.upgrade
+```
+
+The individual development wrappers remain available for diagnosis and
+maintenance:
+
 ```bash
 mix favn.postgres.migrate
 mix favn.postgres.verify_schema

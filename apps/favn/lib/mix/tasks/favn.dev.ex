@@ -44,8 +44,16 @@ defmodule Mix.Tasks.Favn.Dev do
   defp error_message({:missing_env, name}),
     do: "missing required environment variable #{name}"
 
-  defp error_message({:postgres_schema_not_ready, command}),
-    do: "PostgreSQL schema is not ready; run #{command}"
+  defp error_message(:postgres_runtime_role_not_ready),
+    do:
+      "FAVN_DATABASE_URL is elevated or does not match FAVN_DATABASE_RUNTIME_ROLE; " <>
+        "use the restricted runtime connection, then run mix favn.postgres.upgrade"
+
+  defp error_message({:postgres_schema_not_ready, summary, command}) when is_binary(command),
+    do: "PostgreSQL schema is not ready: #{summary}; run #{command}"
+
+  defp error_message({:postgres_schema_not_ready, summary, nil}),
+    do: "PostgreSQL schema is not ready: #{summary}; select a compatible Favn version"
 
   defp error_message({:workspace_not_found, workspace_id, command}),
     do: "workspace #{workspace_id} is not provisioned; run #{command}"

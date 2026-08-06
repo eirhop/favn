@@ -24,10 +24,12 @@ mix favn.init --duckdb --sample
 
 ## 2. Provide PostgreSQL and environment variables
 
-Start PostgreSQL using your team's preferred tooling, then export:
+Start PostgreSQL using your team's preferred tooling. Create a schema-owning
+migrator role and a separate restricted runtime role, then export:
 
 ```bash
-export FAVN_DATABASE_URL='ecto://postgres:postgres@127.0.0.1/favn_dev'
+export FAVN_DATABASE_URL='ecto://favn_runtime:runtime-secret@127.0.0.1/favn_dev'
+export FAVN_DATABASE_MIGRATOR_URL='ecto://favn_migrator:migrator-secret@127.0.0.1/favn_dev'
 export FAVN_RUNTIME_INPUT_PIN_KEY="$(openssl rand -base64 32)"
 export DUCKDB_ADBC_DRIVER='/absolute/path/to/libduckdb.so'
 ```
@@ -35,7 +37,8 @@ export DUCKDB_ADBC_DRIVER='/absolute/path/to/libduckdb.so'
 PowerShell:
 
 ```powershell
-$env:FAVN_DATABASE_URL = 'ecto://postgres:postgres@127.0.0.1/favn_dev'
+$env:FAVN_DATABASE_URL = 'ecto://favn_runtime:runtime-secret@127.0.0.1/favn_dev'
+$env:FAVN_DATABASE_MIGRATOR_URL = 'ecto://favn_migrator:migrator-secret@127.0.0.1/favn_dev'
 $env:FAVN_RUNTIME_INPUT_PIN_KEY = '<32-byte value or base64-encoded 32-byte value>'
 $env:DUCKDB_ADBC_DRIVER = 'C:\absolute\path\to\duckdb.dll'
 ```
@@ -46,7 +49,7 @@ already exist in the environment of the `mix` process.
 Initialize the control-plane schema and workspace once:
 
 ```bash
-mix favn.postgres.migrate
+mix favn.postgres.upgrade
 mix favn.postgres.provision_workspace \
   --id local-dev \
   --slug local-dev \

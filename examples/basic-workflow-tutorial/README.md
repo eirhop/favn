@@ -83,7 +83,7 @@ Provide a local PostgreSQL control plane, provision a workspace, then start the
 stack:
 
 ```bash
-mix favn.postgres.migrate
+mix favn.postgres.upgrade
 ```
 
 ```bash

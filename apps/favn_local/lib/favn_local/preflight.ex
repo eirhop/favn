@@ -5,13 +5,20 @@ defmodule FavnLocal.Preflight do
   alias FavnStoragePostgres.Release
 
   @spec run(Config.t()) :: :ok | {:error, term()}
-  def run(%Config{} = config) do
-    with {:ok, %{status: :ok}} <- Release.verify_schema(),
-         {:ok, %{status: :ok}} <- Release.verify_workspace(config.workspace_id) do
+  @spec run(Config.t(), keyword()) :: :ok | {:error, term()}
+  def run(%Config{} = config, opts \\ []) when is_list(opts) do
+    release = Keyword.get(opts, :release, Release)
+
+    with {:ok, %{status: :ok}} <- release.verify_runtime_schema(),
+         {:ok, %{status: :ok}} <- release.verify_workspace(config.workspace_id) do
       :ok
     else
-      {:error, %{code: :schema_not_ready}} ->
-        {:error, {:postgres_schema_not_ready, "mix favn.postgres.migrate"}}
+      {:error, %{code: :runtime_role_not_ready}} ->
+        {:error, :postgres_runtime_role_not_ready}
+
+      {:error, %{code: :schema_not_ready} = failure} ->
+        {summary, command} = schema_remediation(Map.get(failure, :diagnostics, %{}))
+        {:error, {:postgres_schema_not_ready, summary, command}}
 
       {:error, %{code: :workspace_not_found}} ->
         {:error,
@@ -22,4 +29,33 @@ defmodule FavnLocal.Preflight do
         {:error, {:postgres_preflight_failed, Map.get(failure, :code, :unavailable)}}
     end
   end
+
+  defp schema_remediation(%{
+         status: :incompatible,
+         future_migration_versions: versions
+       })
+       when is_list(versions) and versions != [] do
+    {"database has migrations from a newer Favn version (#{format_versions(versions)})", nil}
+  end
+
+  defp schema_remediation(%{
+         status: :incompatible,
+         engine: %{name: :postgresql, version: %{major: major}}
+       })
+       when is_integer(major) and major != 18 do
+    {"PostgreSQL major #{major} is unsupported; Favn requires PostgreSQL 18", nil}
+  end
+
+  defp schema_remediation(%{status: :empty_database}),
+    do: {"database schema is empty", "mix favn.postgres.upgrade"}
+
+  defp schema_remediation(%{missing_migration_versions: versions})
+       when is_list(versions) and versions != [] do
+    {"missing migration #{format_versions(versions)}", "mix favn.postgres.upgrade"}
+  end
+
+  defp schema_remediation(_diagnostics),
+    do: {"schema does not match the selected Favn version", "mix favn.postgres.upgrade"}
+
+  defp format_versions(versions), do: Enum.join(versions, ", ")
 end

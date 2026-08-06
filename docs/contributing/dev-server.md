@@ -18,14 +18,15 @@ the UI behaves and looks right in practice; use the umbrella server to build it.
 
 ```bash
 FAVN_DATABASE_URL=<local-postgres-url> \
+FAVN_DATABASE_MIGRATOR_URL=<local-postgres-migrator-url> \
 FAVN_RUNTIME_INPUT_PIN_KEY=<32-byte-key> \
 FAVN_RUNNER_BUILD_PROFILE=source \
 FAVN_RUNNER_RELEASE_ID=rr_0000000000000000000000000000000000000000000000000000000000000001 \
 mix phx.server
 ```
 
-PostgreSQL must already be running and migrated. Run `mix favn.postgres.migrate`
-first if the schema is behind.
+PostgreSQL must already be running and migrated. Run
+`mix favn.postgres.upgrade` first if the schema is behind.
 
 Once it is listening:
 

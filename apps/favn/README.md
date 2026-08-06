@@ -41,9 +41,11 @@ mix favn.dev
 
 Open the printed local UI URL, usually `http://127.0.0.1:4173`.
 PostgreSQL must already be running, migrated, and provisioned. Export
-`FAVN_DATABASE_URL` and `FAVN_RUNTIME_INPUT_PIN_KEY` before starting. Favn does
-not load `.env` or manage PostgreSQL. Dev runs the View and Orchestrator in the
-current BEAM and a separate runner BEAM; Docker is not involved.
+`FAVN_DATABASE_URL`, `FAVN_DATABASE_MIGRATOR_URL`, and
+`FAVN_RUNTIME_INPUT_PIN_KEY` before starting. When a Favn update requires a new
+schema, run `mix favn.postgres.upgrade`. Favn does not load `.env` or manage
+PostgreSQL. Dev runs the View and Orchestrator in the current BEAM and a
+separate runner BEAM; Docker is not involved.
 
 In another terminal, run the generated sample pipeline:
 

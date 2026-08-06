@@ -35,6 +35,7 @@ Set a test URL for a disposable PostgreSQL 18 database:
 
 ```bash
 export FAVN_DATABASE_URL=ecto://postgres:postgres@127.0.0.1:5432/favn_test
+export FAVN_DATABASE_MIGRATOR_URL=ecto://postgres:postgres@127.0.0.1:5432/favn_test
 export FAVN_RUNTIME_INPUT_PIN_KEY=0123456789abcdef0123456789abcdef
 export FAVN_RUNTIME_INPUT_PIN_KEY_VERSION=1
 ```

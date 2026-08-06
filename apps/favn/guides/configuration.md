@@ -112,10 +112,13 @@ machine without editing committed configuration. Both accept `1..65535`; any
 other value stops startup before the runtime applications start. `mix favn.dev`
 prints the ports it actually used.
 
-Set `FAVN_DATABASE_URL` and `FAVN_RUNTIME_INPUT_PIN_KEY` in the process
-environment. Local tooling generates short-lived process credentials and
-stores the stable local UI password with the connection locator under
-`.favn/local/`.
+Set `FAVN_DATABASE_URL`, `FAVN_DATABASE_MIGRATOR_URL`, and
+`FAVN_RUNTIME_INPUT_PIN_KEY` in the process environment.
+`FAVN_DATABASE_URL` is the restricted runtime connection.
+`FAVN_DATABASE_MIGRATOR_URL` is read only by explicit development PostgreSQL
+tasks such as `mix favn.postgres.upgrade`; `mix favn.dev` never uses it. Local
+tooling generates short-lived process credentials and stores the stable local
+UI password with the connection locator under `.favn/local/`.
 
 `FAVN_LOG_LEVEL` controls both source-development BEAMs. It defaults to `info`;
 set it to `debug`, `notice`, `warning`, `error`, `critical`, `alert`, or

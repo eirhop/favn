@@ -28,12 +28,14 @@ mix compile
 
 Start PostgreSQL however your team normally does it. A local installation,
 shared development server, managed database, or team-owned Compose stack are
-all valid. Favn only needs a connection URL.
+all valid. The database setup must provide a schema-owning migrator role and a
+separate restricted runtime role. Favn needs one connection URL for each.
 
 Load the required variables into the shell:
 
 ```bash
-export FAVN_DATABASE_URL='ecto://postgres:postgres@127.0.0.1/favn_dev'
+export FAVN_DATABASE_URL='ecto://favn_runtime:runtime-secret@127.0.0.1/favn_dev'
+export FAVN_DATABASE_MIGRATOR_URL='ecto://favn_migrator:migrator-secret@127.0.0.1/favn_dev'
 export FAVN_RUNTIME_INPUT_PIN_KEY="$(openssl rand -base64 32)"
 export DUCKDB_ADBC_DRIVER='/absolute/path/to/libduckdb.so'
 ```
@@ -41,7 +43,8 @@ export DUCKDB_ADBC_DRIVER='/absolute/path/to/libduckdb.so'
 PowerShell:
 
 ```powershell
-$env:FAVN_DATABASE_URL = 'ecto://postgres:postgres@127.0.0.1/favn_dev'
+$env:FAVN_DATABASE_URL = 'ecto://favn_runtime:runtime-secret@127.0.0.1/favn_dev'
+$env:FAVN_DATABASE_MIGRATOR_URL = 'ecto://favn_migrator:migrator-secret@127.0.0.1/favn_dev'
 $env:FAVN_RUNTIME_INPUT_PIN_KEY = '<32-byte value or base64-encoded 32-byte value>'
 $env:DUCKDB_ADBC_DRIVER = 'C:\absolute\path\to\duckdb.dll'
 ```
@@ -62,15 +65,18 @@ Do not commit secrets. If `config/runtime.exs` reads variables with
 Apply the schema and explicitly provision the development workspace:
 
 ```bash
-mix favn.postgres.migrate
+mix favn.postgres.upgrade
 mix favn.postgres.provision_workspace \
   --id local-dev \
   --slug local-dev \
   --name "Local Development"
 ```
 
-Both commands are explicit. `mix favn.dev` never migrates or provisions the
-database for you.
+The upgrade command uses the migrator role to apply migrations and runtime
+grants, then reconnects with the runtime role to verify the exact schema. Both
+commands are explicit. `mix favn.dev` never migrates or provisions the database
+for you. If an upgrade stage fails, its changes may be partially applied; read
+the reported failed stage and inspect PostgreSQL before retrying.
 
 ## Normal loop
 
@@ -80,6 +86,10 @@ Start development:
 mix favn.doctor
 mix favn.dev
 ```
+
+After updating Favn, `mix favn.doctor` names any missing migration and tells you
+to run `mix favn.postgres.upgrade`. The upgrade command preserves existing data;
+it does not reset PostgreSQL or provision another workspace.
 
 The command prints the View URL, normally `http://127.0.0.1:4173`, and stores
 local credentials in `.favn/local/credentials.json`. Favn applies owner-only
