@@ -12,7 +12,7 @@ defmodule Mix.Tasks.Favn.Postgres.Migrate do
   def run(_args) do
     Mix.Task.run("app.config")
 
-    Release.migrate()
+    Release.migrate(ReleaseHelpers.migrator_env!())
     |> ReleaseHelpers.report("PostgreSQL Storage V2 schema is current")
   end
 end
@@ -55,21 +55,15 @@ defmodule Mix.Tasks.Favn.Postgres.GrantRuntime do
       Mix.raise("usage: mix favn.postgres.grant_runtime [--role ROLE]")
     end
 
-    previous_role = System.get_env("FAVN_DATABASE_RUNTIME_ROLE")
     requested_role = Keyword.get(options, :role)
+    env = ReleaseHelpers.migrator_env!()
 
-    if requested_role, do: System.put_env("FAVN_DATABASE_RUNTIME_ROLE", requested_role)
+    env =
+      if requested_role, do: Map.put(env, "FAVN_DATABASE_RUNTIME_ROLE", requested_role), else: env
 
-    try do
-      Release.grant_runtime()
-      |> ReleaseHelpers.report("Granted Storage V2 runtime privileges")
-    after
-      restore_role(previous_role)
-    end
+    Release.grant_runtime(env)
+    |> ReleaseHelpers.report("Granted Storage V2 runtime privileges")
   end
-
-  defp restore_role(nil), do: System.delete_env("FAVN_DATABASE_RUNTIME_ROLE")
-  defp restore_role(role), do: System.put_env("FAVN_DATABASE_RUNTIME_ROLE", role)
 end
 
 defmodule Mix.Tasks.Favn.Postgres.Reset do
@@ -80,6 +74,7 @@ defmodule Mix.Tasks.Favn.Postgres.Reset do
   alias Ecto.Adapters.SQL
   alias FavnStoragePostgres.Config
   alias FavnStoragePostgres.Repo
+  alias Mix.Tasks.Favn.Postgres.ReleaseHelpers
 
   @shortdoc "Destroys the PostgreSQL Storage V2 schema"
 
@@ -89,7 +84,7 @@ defmodule Mix.Tasks.Favn.Postgres.Reset do
     {:ok, _applications} = Application.ensure_all_started(:ecto_sql)
     {:ok, _applications} = Application.ensure_all_started(:postgrex)
 
-    {:ok, options} = Config.repo_options_from_env()
+    {:ok, options} = Config.repo_options_from_env(ReleaseHelpers.migrator_env!())
     {:ok, repo} = Repo.start_link(options)
 
     try do

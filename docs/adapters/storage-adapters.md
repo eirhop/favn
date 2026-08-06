@@ -61,7 +61,9 @@ module implements all operations.
 
 Runtime nodes own one Ecto repo and validate the exact `favn_control` schema at
 startup. They never migrate automatically. A separately authorized migration job
-runs `mix favn.postgres.migrate`, then grants the least-privilege runtime role.
+runs the release `migrate` operation, then `grant-runtime` for the
+least-privilege runtime role. Development uses `mix favn.postgres.upgrade` to
+compose those operations and runtime verification explicitly.
 
 Development and CI use live PostgreSQL too. There is no memory or SQLite fallback.
 See `docs/storage/postgresql/architecture.md` for the implementation model and

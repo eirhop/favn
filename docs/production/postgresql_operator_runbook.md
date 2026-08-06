@@ -167,13 +167,16 @@ Use this database procedure together with the immutable runtime sequence in
      verify-schema
    ```
 
-   The equivalent development wrappers are:
+   Development keeps both local URLs in one trusted shell and composes the same
+   three operations explicitly:
 
    ```bash
-   FAVN_DATABASE_URL="$MIGRATOR_DATABASE_URL" mix favn.postgres.migrate
-   FAVN_DATABASE_URL="$MIGRATOR_DATABASE_URL" \
-     mix favn.postgres.grant_runtime --role favn_runtime
+   mix favn.postgres.upgrade
    ```
+
+   Production does not use this convenience task because the migrator and
+   runtime verification identities remain isolated in separate one-off
+   processes.
 
    Provision a workspace before adding it to a runtime's allowed workspace set.
    Production uses the candidate release image with the elevated database
@@ -193,9 +196,8 @@ Use this database procedure together with the immutable runtime sequence in
    The development wrapper is:
 
    ```bash
-   FAVN_DATABASE_URL="$MIGRATOR_DATABASE_URL" \
-     mix favn.postgres.provision_workspace \
-       --id salmon-one --slug salmon-one --name "Salmon One"
+   mix favn.postgres.provision_workspace \
+     --id salmon-one --slug salmon-one --name "Salmon One"
    ```
 
 5. Start one canary and require readiness to report `ready?: true`.

@@ -117,19 +117,22 @@ through the control-plane environment.
 ## Migrations and workspace provisioning
 
 Run storage operations explicitly with an appropriate database identity before
-starting the control plane:
+starting the control plane. The production operations entrypoint uses the
+`FAVN_DATABASE_URL` supplied to each one-off process:
 
 ```bash
-mix favn.postgres.migrate
-mix favn.postgres.grant_runtime --role favn_runtime
-mix favn.postgres.provision_workspace \
-  --id customer \
-  --slug customer \
-  --name "Customer"
-mix favn.postgres.verify_schema
+bin/favn_control_plane_ops migrate
+bin/favn_control_plane_ops grant-runtime
+bin/favn_control_plane_ops provision-workspace
+bin/favn_control_plane_ops verify-schema
 ```
 
-Application startup never migrates or provisions PostgreSQL.
+The first three commands run with the migrator identity; verification runs in a
+separate process with the restricted runtime identity. Workspace values come
+from `FAVN_WORKSPACE_ID`, `FAVN_WORKSPACE_SLUG`, and `FAVN_WORKSPACE_NAME`.
+Application startup never migrates or provisions PostgreSQL. Development uses
+`mix favn.postgres.upgrade`; production does not combine the two identities in
+one process.
 
 ## Maintainer image debugging
 

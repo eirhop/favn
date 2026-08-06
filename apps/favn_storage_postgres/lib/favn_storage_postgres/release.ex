@@ -61,9 +61,10 @@ defmodule FavnStoragePostgres.Release do
 
   @doc "Applies every known Storage V2 migration with an elevated database role."
   @spec migrate() :: result()
-  def migrate do
-    database_operation(:migrate, fn ->
-      with :ok <- require_elevated_role(:migrate),
+  @spec migrate(map()) :: result()
+  def migrate(env \\ System.get_env()) when is_map(env) do
+    database_operation(:migrate, env, fn ->
+      with :ok <- require_elevated_role(:migrate, env),
            :ok <- Migrations.migrate!(Repo) do
         versions = Migrations.expected_versions()
         Logger.info("favn.release.postgres_migrated migration_versions=#{inspect(versions)}")
@@ -74,23 +75,50 @@ defmodule FavnStoragePostgres.Release do
 
   @doc "Verifies the exact PostgreSQL schema, migration, projection, and grant contract."
   @spec verify_schema() :: result()
-  def verify_schema do
-    database_operation(:verify_schema, fn ->
-      case Migrations.diagnostics(Repo) do
-        {:ok, %{ready?: true} = diagnostics} ->
-          ok(:verify_schema,
-            schema: diagnostics.schema,
-            engine: diagnostics.engine,
-            definition_fingerprint: diagnostics.actual_definition_fingerprint
-          )
+  @spec verify_schema(map()) :: result()
+  def verify_schema(env \\ System.get_env()) when is_map(env) do
+    verify_schema(env, false)
+  end
 
+  @doc "Verifies the exact schema through the configured least-privilege runtime role."
+  @spec verify_runtime_schema() :: result()
+  @spec verify_runtime_schema(map()) :: result()
+  def verify_runtime_schema(env \\ System.get_env()) when is_map(env) do
+    verify_schema(env, true)
+  end
+
+  defp verify_schema(env, require_runtime_role?) do
+    database_operation(:verify_schema, env, fn ->
+      case Migrations.diagnostics(Repo) do
         {:ok, diagnostics} ->
-          error(:verify_schema, :schema_not_ready, diagnostics: schema_diagnostics(diagnostics))
+          cond do
+            require_runtime_role? and not runtime_role_ready?(diagnostics, env) ->
+              error(:verify_schema, :runtime_role_not_ready,
+                diagnostics: schema_diagnostics(diagnostics)
+              )
+
+            diagnostics.ready? ->
+              ok(:verify_schema,
+                schema: diagnostics.schema,
+                engine: diagnostics.engine,
+                definition_fingerprint: diagnostics.actual_definition_fingerprint
+              )
+
+            true ->
+              error(:verify_schema, :schema_not_ready,
+                diagnostics: schema_diagnostics(diagnostics)
+              )
+          end
 
         {:error, reason} ->
           database_error(:verify_schema, reason)
       end
     end)
+  end
+
+  defp runtime_role_ready?(diagnostics, env) do
+    expected_role = Map.get(env, "FAVN_DATABASE_RUNTIME_ROLE", @default_runtime_role)
+    diagnostics.runtime_role.safe? and diagnostics.runtime_role.role == expected_role
   end
 
   @doc """
@@ -411,11 +439,12 @@ defmodule FavnStoragePostgres.Release do
 
   @doc "Converges least-privilege grants for the configured runtime role."
   @spec grant_runtime() :: result()
-  def grant_runtime do
-    database_operation(:grant_runtime, fn ->
-      role = System.get_env("FAVN_DATABASE_RUNTIME_ROLE", @default_runtime_role)
+  @spec grant_runtime(map()) :: result()
+  def grant_runtime(env \\ System.get_env()) when is_map(env) do
+    database_operation(:grant_runtime, env, fn ->
+      role = Map.get(env, "FAVN_DATABASE_RUNTIME_ROLE", @default_runtime_role)
 
-      with :ok <- require_elevated_role(:grant_runtime),
+      with :ok <- require_elevated_role(:grant_runtime, env),
            :ok <- validate_role(:grant_runtime, role),
            :ok <- Privileges.grant_runtime!(Repo, role) do
         Logger.info("favn.release.postgres_runtime_granted role=#{role}")
@@ -426,8 +455,12 @@ defmodule FavnStoragePostgres.Release do
 
   @doc "Idempotently provisions one workspace from an atom-keyed map or keyword list."
   @spec provision_workspace(map() | keyword()) :: result()
-  def provision_workspace(input) when is_map(input) or is_list(input) do
-    database_operation(:provision_workspace, fn ->
+  @spec provision_workspace(map() | keyword(), map()) :: result()
+  def provision_workspace(input, env \\ System.get_env())
+
+  def provision_workspace(input, env)
+      when (is_map(input) or is_list(input)) and is_map(env) do
+    database_operation(:provision_workspace, env, fn ->
       with {:ok, workspace} <- normalize_workspace(input),
            {:ok, context} <-
              PlatformContext.new(
@@ -462,7 +495,7 @@ defmodule FavnStoragePostgres.Release do
     end)
   end
 
-  def provision_workspace(_input) do
+  def provision_workspace(_input, _env) do
     release_operation(:provision_workspace, fn ->
       error(:provision_workspace, :invalid_workspace, reason: :map_or_keyword_required)
     end)
@@ -529,6 +562,10 @@ defmodule FavnStoragePostgres.Release do
     release_operation(operation, fn -> with_repo(operation, function) end)
   end
 
+  defp database_operation(operation, env, function) do
+    release_operation(operation, fn -> with_repo(operation, env, function) end)
+  end
+
   defp release_operation(operation, function) do
     started_at = System.monotonic_time(:millisecond)
 
@@ -555,8 +592,12 @@ defmodule FavnStoragePostgres.Release do
   end
 
   defp with_repo(operation, function) do
+    with_repo(operation, System.get_env(), function)
+  end
+
+  defp with_repo(operation, env, function) do
     with :ok <- ensure_dependencies(operation),
-         {:ok, connection_config} <- configured_connection_config(operation),
+         {:ok, connection_config} <- configured_connection_config(operation, env),
          :ok <- ensure_authentication_dependencies(operation, connection_config.authentication),
          {:ok, authentication_state} <-
            start_authentication(operation, connection_config.authentication),
@@ -608,8 +649,8 @@ defmodule FavnStoragePostgres.Release do
     end
   end
 
-  defp configured_connection_config(operation) do
-    case Config.connection_config_from_env() do
+  defp configured_connection_config(operation, env) do
+    case Config.connection_config_from_env(env) do
       {:ok, connection_config} ->
         {:ok, connection_config}
 
@@ -676,9 +717,9 @@ defmodule FavnStoragePostgres.Release do
     if Process.alive?(pid), do: Supervisor.stop(pid)
   end
 
-  defp require_elevated_role(operation) do
+  defp require_elevated_role(operation, env) do
     %{rows: [[current_role]]} = SQL.query!(Repo, "SELECT current_user", [])
-    runtime_role = System.get_env("FAVN_DATABASE_RUNTIME_ROLE", @default_runtime_role)
+    runtime_role = Map.get(env, "FAVN_DATABASE_RUNTIME_ROLE", @default_runtime_role)
 
     if current_role == runtime_role do
       error(operation, :restricted_runtime_role, role: current_role)
@@ -865,6 +906,7 @@ defmodule FavnStoragePostgres.Release do
   defp schema_diagnostics(diagnostics) do
     Map.take(diagnostics, [
       :status,
+      :engine,
       :schema,
       :missing_tables,
       :missing_critical_indexes,

@@ -25,11 +25,14 @@ defmodule Mix.Tasks.Favn.Postgres.ProvisionWorkspace do
     slug = Keyword.get(options, :slug, workspace_id)
     display_name = Keyword.get(options, :name, workspace_id)
 
-    Release.provision_workspace(%{
-      workspace_id: workspace_id,
-      slug: slug,
-      display_name: display_name
-    })
+    Release.provision_workspace(
+      %{
+        workspace_id: workspace_id,
+        slug: slug,
+        display_name: display_name
+      },
+      ReleaseHelpers.migrator_env!()
+    )
     |> ReleaseHelpers.report("Workspace is provisioned")
   end
 

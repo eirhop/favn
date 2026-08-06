@@ -277,13 +277,17 @@ defmodule Favn.AI do
     environment variables, and runs the Orchestrator and View in the current
     BEAM plus one child runner BEAM.
     The public local command surface is `mix favn.init`,
-    `mix favn.doctor`, `mix favn.dev`, `mix favn.run`, `mix favn.backfill`,
+    `mix favn.doctor`, `mix favn.postgres.upgrade`, `mix favn.dev`,
+    `mix favn.run`, `mix favn.backfill`,
     `mix favn.rebuild`, `mix favn.schedules`,
     `mix favn.runs`, `mix favn.inspect`,
     `mix favn.diagnostics`, `mix favn.reload`,
     `mix favn.stop`, `mix favn.init --target deployment`,
     `mix favn.build.manifest`, `mix favn.publish`, `mix favn.activate`, and
-    `mix favn.read_doc`. Favn does not parse `.env` files or manage PostgreSQL.
+    `mix favn.read_doc`. `FAVN_DATABASE_URL` is the restricted runtime
+    connection; `FAVN_DATABASE_MIGRATOR_URL` is used only by explicit
+    development PostgreSQL operations. Favn does not parse `.env` files or
+    manage PostgreSQL.
     The customer owns production Compose/platform configuration and the runner
     image pipeline; `mix favn.init --target deployment` copies a non-overwriting
     example.

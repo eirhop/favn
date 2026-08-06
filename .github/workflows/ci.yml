@@ -109,6 +109,7 @@ jobs:
           --health-retries 30
     env:
       FAVN_DATABASE_URL: ecto://postgres:postgres@127.0.0.1:5432/favn_test
+      FAVN_DATABASE_MIGRATOR_URL: ecto://postgres:postgres@127.0.0.1:5432/favn_test
       FAVN_RUNTIME_INPUT_PIN_KEY: 0123456789abcdef0123456789abcdef
       FAVN_RUNTIME_INPUT_PIN_KEY_VERSION: '1'
       MIX_ENV: test
@@ -222,7 +223,8 @@ jobs:
           --health-timeout 3s
           --health-retries 30
     env:
-      FAVN_DATABASE_URL: ecto://postgres:postgres@127.0.0.1:5432/favn_test
+      FAVN_DATABASE_URL: ecto://favn_runtime:favn_runtime_test@127.0.0.1:5432/favn_test
+      FAVN_DATABASE_MIGRATOR_URL: ecto://postgres:postgres@127.0.0.1:5432/favn_test
       FAVN_RUNTIME_INPUT_PIN_KEY: 0123456789abcdef0123456789abcdef
       FAVN_RUNTIME_INPUT_PIN_KEY_VERSION: '1'
       MIX_ENV: test
@@ -248,8 +250,19 @@ jobs:
       - name: Compile
         run: mix compile --warnings-as-errors
 
+      - name: Create restricted PostgreSQL runtime role
+        env:
+          PGPASSWORD: postgres
+        run: >-
+          psql --host 127.0.0.1 --username postgres --dbname favn_test
+          --set ON_ERROR_STOP=1
+          --command "CREATE ROLE favn_runtime LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT PASSWORD 'favn_runtime_test'"
+
       - name: Migrate PostgreSQL Storage V2
         run: mix favn.postgres.migrate
+
+      - name: Grant restricted PostgreSQL runtime privileges
+        run: mix favn.postgres.grant_runtime
 
       - name: Run favn_local acceptance tests
         run: mix test.acceptance
@@ -275,6 +288,7 @@ jobs:
           --health-retries 30
     env:
       FAVN_DATABASE_URL: ecto://postgres:postgres@127.0.0.1:5432/favn_test
+      FAVN_DATABASE_MIGRATOR_URL: ecto://postgres:postgres@127.0.0.1:5432/favn_test
       FAVN_RUNTIME_INPUT_PIN_KEY: 0123456789abcdef0123456789abcdef
       FAVN_RUNTIME_INPUT_PIN_KEY_VERSION: '1'
       MIX_ENV: test
