@@ -403,25 +403,23 @@ config :favn, :duckdb_adbc,
 
 In source development, the generated sample and the Favn repository read
 `DUCKDB_ADBC_DRIVER` automatically. In a deployment, `driver` is a path inside
-the runner environment. The optional `favn_duckdb_adbc` plugin loads that path.
-Request a supported native driver
-when creating the runner scaffold:
+the runner environment. The `favn_duckdb_adbc` plugin loads that path.
+
+Create the customer-owned deployment template with:
 
 ```bash
-mix favn.init --include duckdb-adbc
-mix favn.init --include duckdb-adbc@1.5.4
+mix favn.init --target deployment
 ```
 
-The first form selects the driver version tested by the installed Favn release;
-the second makes the supported version explicit. The generated customer-owned
-Dockerfile contains the verified download, checksum, container path, and exact
-plugin configuration example. Remove that documented section when removing the
-plugin.
+The generated Dockerfile installs the DuckDB 1.5.5 ADBC driver plus the
+DuckLake, PostgreSQL scanner, and JSON extensions using pinned checksums, then
+loads them with network auto-install disabled during the build. The template
+exports `DUCKDB_ADBC_DRIVER` for the fixed in-image driver path. Keep the pins,
+checksums, and offline load test together when upgrading.
 
-The project remains responsible for choosing a supported driver version and for
-production image qualification. A path that exists on the build host is not
-available inside the runner unless the final image contains it or the deployment
-mounts it.
+The project remains responsible for production image qualification and optional
+extensions. A path that exists on the build host is not available inside the
+runner unless the final image contains it or the deployment mounts it.
 
 ADBC uses the same `open`, native `duckdb.startup/resources/catalogs`, and
 `pool` shape.

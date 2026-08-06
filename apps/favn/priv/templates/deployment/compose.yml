@@ -1,23 +1,32 @@
 services:
   control-plane:
     image: ${FAVN_CONTROL_PLANE_IMAGE:?set FAVN_CONTROL_PLANE_IMAGE to an immutable digest}
+    # The image is immutable. Only /tmp is writable, and the process receives
+    # no Linux capabilities or privilege escalation path.
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m,uid=10001,gid=10001,mode=0700
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     environment:
-      FAVN_DATABASE_URL: ${FAVN_DATABASE_URL}
-      FAVN_DATABASE_SSL_MODE: ${FAVN_DATABASE_SSL_MODE:-disable}
+      FAVN_DATABASE_URL: ${FAVN_DATABASE_URL:?set the PostgreSQL connection URL}
+      FAVN_DATABASE_SSL_MODE: ${FAVN_DATABASE_SSL_MODE:-verify-full}
       FAVN_DATABASE_SSL_CA_FILE: ${FAVN_DATABASE_SSL_CA_FILE:-}
-      FAVN_RUNTIME_INPUT_PIN_KEYS: ${FAVN_RUNTIME_INPUT_PIN_KEYS}
+      FAVN_RUNTIME_INPUT_PIN_KEYS: ${FAVN_RUNTIME_INPUT_PIN_KEYS:?set runtime-input encryption keys}
       FAVN_RUNTIME_INPUT_PIN_KEY_VERSION: ${FAVN_RUNTIME_INPUT_PIN_KEY_VERSION:-1}
-      FAVN_ORCHESTRATOR_API_SERVICE_TOKENS: ${FAVN_ORCHESTRATOR_API_SERVICE_TOKENS}
-      FAVN_WORKSPACE_IDS: ${FAVN_WORKSPACE_IDS}
+      FAVN_ORCHESTRATOR_API_SERVICE_TOKENS: ${FAVN_ORCHESTRATOR_API_SERVICE_TOKENS:?set scoped API service tokens}
+      FAVN_WORKSPACE_IDS: ${FAVN_WORKSPACE_IDS:?set allowed workspace IDs}
       FAVN_CONTROL_PLANE_NODE: favn_control_plane@control-plane
       FAVN_RUNNER_POOLS: '{"default":{"mode":"resident"}}'
-      FAVN_DISTRIBUTION_COOKIE: ${FAVN_DISTRIBUTION_COOKIE}
+      FAVN_DISTRIBUTION_COOKIE: ${FAVN_DISTRIBUTION_COOKIE:?set a high-entropy distribution cookie}
       FAVN_BEAM_DISTRIBUTION_PORT: "9100"
-      FAVN_VIEW_SECRET_KEY_BASE: ${FAVN_VIEW_SECRET_KEY_BASE}
-      FAVN_VIEW_PUBLIC_ORIGIN: ${FAVN_VIEW_PUBLIC_ORIGIN}
+      FAVN_VIEW_SECRET_KEY_BASE: ${FAVN_VIEW_SECRET_KEY_BASE:?set the View secret key base}
+      FAVN_VIEW_PUBLIC_ORIGIN: ${FAVN_VIEW_PUBLIC_ORIGIN:?set the public HTTPS origin}
       FAVN_VIEW_BIND_HOST: 0.0.0.0
       FAVN_VIEW_PORT: "4173"
-      FAVN_VIEW_TRUSTED_PROXY_CIDRS: ${FAVN_VIEW_TRUSTED_PROXY_CIDRS}
+      FAVN_VIEW_TRUSTED_PROXY_CIDRS: ${FAVN_VIEW_TRUSTED_PROXY_CIDRS:?set the exact trusted proxy CIDRs}
       FAVN_VIEW_FORWARDED_FOR_POLICY: ${FAVN_VIEW_FORWARDED_FOR_POLICY:-replace}
     ports:
       - "4173:4173"
@@ -27,12 +36,22 @@ services:
 
   runner:
     image: ${FAVN_RUNNER_IMAGE:?set FAVN_RUNNER_IMAGE to an immutable digest}
+    # Add an explicit volume only when customer assets intentionally write local
+    # files. Keep the release, DuckDB driver, and bundled extensions read-only.
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m,uid=10001,gid=10001,mode=0700
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     environment:
       FAVN_RUNNER_NODE_HOST_ALIAS: runner
       FAVN_RUNNER_POOL: default
       FAVN_CONTROL_PLANE_NODE: favn_control_plane@control-plane
-      FAVN_DISTRIBUTION_COOKIE: ${FAVN_DISTRIBUTION_COOKIE}
+      FAVN_DISTRIBUTION_COOKIE: ${FAVN_DISTRIBUTION_COOKIE:?set a high-entropy distribution cookie}
       FAVN_BEAM_DISTRIBUTION_PORT: "9100"
+      FAVN_LOG_LEVEL: ${FAVN_LOG_LEVEL:-info}
     expose:
       - "4369"
       - "9100"

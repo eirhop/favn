@@ -23,12 +23,37 @@ defmodule Favn.DeploymentArtifactsAcceptanceTest do
     assert dockerfile =~ "ARG FAVN_RUNNER_RELEASE_ID"
     assert dockerfile =~ "ARG FAVN_CUSTOMER_APP"
     assert dockerfile =~ "io.favn.runner-release-id"
+    assert dockerfile =~ "io.favn.duckdb-version"
     assert dockerfile =~ "mix release favn_runner --path /runner-release"
     assert dockerfile =~ ~s(*[!0-9a-f]*)
+    assert dockerfile =~ "DUCKDB_VERSION=1.5.5"
+    assert dockerfile =~ "DUCKDB_ADBC_DRIVER=/opt/duckdb/${DUCKDB_VERSION}/libduckdb.so"
+    assert dockerfile =~ "ducklake.duckdb_extension.gz"
+    assert dockerfile =~ "postgres_scanner.duckdb_extension.gz"
+    assert dockerfile =~ "json.duckdb_extension.gz"
+    assert dockerfile =~ "LOAD ducklake; LOAD postgres; LOAD json"
+    refute dockerfile =~ "FROM --platform"
+    refute dockerfile =~ "--chown=10001:10001"
+    assert dockerfile =~ "--mount=type=bind,source=.,target=/build,rw"
+    assert dockerfile =~ "find / -xdev -type f -perm /6000 -exec chmod a-s"
 
     compose = File.read!(Path.join(deployment.output, "compose.yml"))
     refute compose =~ "./postgres-ca.pem"
-    assert compose =~ "FAVN_DATABASE_SSL_MODE:-disable"
+    assert compose =~ "FAVN_DATABASE_SSL_MODE:-verify-full"
+    assert compose =~ "FAVN_DATABASE_URL:?set the PostgreSQL connection URL"
+    assert compose =~ "FAVN_DISTRIBUTION_COOKIE:?set a high-entropy distribution cookie"
+    assert compose =~ "read_only: true"
+    assert compose =~ "no-new-privileges:true"
+    assert compose =~ "cap_drop:"
+    assert compose =~ "FAVN_LOG_LEVEL:-info"
+
+    image_contract_path = Path.join(deployment.output, "runner-image-contract.sh")
+    image_contract = File.read!(image_contract_path)
+    assert image_contract =~ "EXPECTED_RUNNER_RELEASE_ID"
+    assert image_contract =~ "--read-only"
+    assert image_contract =~ "ducklake.duckdb_extension"
+    assert {usage, 64} = System.cmd(image_contract_path, [], stderr_to_stdout: true)
+    assert usage =~ "EXPECTED_RUNNER_RELEASE_ID"
 
     release_project = File.read!(Path.join(deployment.output, "mix.exs"))
     assert release_project =~ "@customer_app Application.compile_env"

@@ -3,136 +3,6 @@ defmodule Favn.DeploymentReferenceConformanceTest do
 
   @root Path.expand("../../..", __DIR__)
 
-  test "Azure elastic job structurally follows the one-slot demand contract" do
-    source = read("deployment/azure-container-apps/elastic-runner-job.bicep")
-    resource = bicep_block(source, "resource runnerJob ")
-
-    configuration = bicep_block(resource, "configuration:")
-    scale = bicep_block(configuration, "scale:")
-    template = bicep_block(resource, "template:")
-    runner = bicep_block(template, "containers:")
-
-    assert source =~ "resource runnerJob 'Microsoft.App/jobs@2026-01-01'"
-    assert configuration =~ "triggerType: 'Event'"
-    assert configuration =~ "replicaRetryLimit: 0"
-    assert configuration =~ "parallelism: 1"
-    assert configuration =~ "replicaCompletionCount: 1"
-    assert scale =~ "minExecutions: 0"
-    assert scale =~ "maxExecutions: maxExecutions"
-    assert scale =~ "type: 'metrics-api'"
-    assert scale =~ "valueLocation: 'outstanding'"
-    assert scale =~ "targetValue: '1'"
-    assert scale =~ "/internal/runner-demand/${runnerPool}/${runnerReleaseId}"
-    assert runner =~ "name: 'FAVN_RUNNER_LIFECYCLE_MODE'"
-    assert runner =~ "value: 'elastic'"
-    assert runner =~ "name: 'FAVN_RUNNER_NODE_HOST_ALIAS'"
-    assert runner =~ "name: 'FAVN_RUNNER_MAX_UPTIME_MS'"
-  end
-
-  test "Azure control plane uses distinct managed identities and mandatory production inputs" do
-    source = read("deployment/azure-container-apps/control-plane.bicep")
-    resource = bicep_block(source, "resource controlPlane ")
-    configuration = bicep_block(resource, "configuration:")
-    template = bicep_block(resource, "template:")
-    control_plane = bicep_block(template, "containers:")
-    scale = bicep_block(template, "scale:")
-    operations = bicep_block(source, "resource databaseOperations ")
-
-    assert source =~ "resource controlPlane 'Microsoft.App/containerApps@2026-01-01'"
-
-    assert source =~
-             "resource runtimeIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31'"
-
-    assert source =~ "name: '${name}-postgres-runtime'"
-
-    assert source =~
-             "resource migrationIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31'"
-
-    assert source =~ "name: '${name}-postgres-migration'"
-    assert resource =~ "'${runtimeIdentity.id}': {}"
-    assert control_plane =~ "value: runtimeIdentity.properties.clientId"
-
-    assert source =~ "resource databaseOperations 'Microsoft.App/jobs@2026-01-01'"
-    assert operations =~ "'${migrationIdentity.id}': {}"
-    assert operations =~ "triggerType: 'Manual'"
-    assert operations =~ "replicaRetryLimit: 0"
-    assert operations =~ "parallelism: 1"
-    assert operations =~ "replicaCompletionCount: 1"
-    assert operations =~ "'/app/bin/favn_control_plane_ops'"
-    assert operations =~ "value: migrationIdentity.properties.clientId"
-    assert operations =~ "value: migrationDatabaseUsername"
-    assert operations =~ "value: runtimeDatabaseUsername"
-
-    assert source =~
-             "resource easyAuth 'Microsoft.App/containerApps/authConfigs@2026-01-01'"
-
-    easy_auth = bicep_block(source, "resource easyAuth ")
-    assert easy_auth =~ "enabled: enableEntraEasyAuth"
-
-    assert easy_auth =~
-             "unauthenticatedClientAction: enableEntraEasyAuth ? 'RedirectToLoginPage' : 'AllowAnonymous'"
-
-    assert easy_auth =~
-             "redirectToProvider: enableEntraEasyAuth ? 'azureactivedirectory' : ''"
-
-    assert easy_auth =~ "identityProviders: enableEntraEasyAuth ? {"
-    assert easy_auth =~ "clientId: viewEntraClientId"
-    assert easy_auth =~ "clientSecretSettingName: 'entra-client-secret'"
-
-    assert easy_auth =~
-             "openIdIssuer: 'https://login.microsoftonline.com/${viewEntraTenantId}/v2.0'"
-
-    assert source =~
-             "value: enableEntraEasyAuth ? 'azure_container_apps_entra' : 'password'"
-
-    assert configuration =~ "external: false"
-    assert configuration =~ "targetPort: 4369"
-    assert configuration =~ "targetPort: 9100"
-    assert scale =~ "minReplicas: 1"
-    assert scale =~ "maxReplicas: 1"
-
-    for variable <- [
-          "FAVN_DEPLOYMENT_MODE",
-          "FAVN_DATABASE_AUTH_MODE",
-          "FAVN_DATABASE_HOST",
-          "FAVN_DATABASE_PORT",
-          "FAVN_DATABASE_NAME",
-          "FAVN_DATABASE_USERNAME",
-          "FAVN_AZURE_MANAGED_IDENTITY_CLIENT_ID",
-          "FAVN_DATABASE_SSL_MODE",
-          "FAVN_DATABASE_SSL_CA_FILE",
-          "FAVN_RUNTIME_INPUT_PIN_KEYS",
-          "FAVN_RUNTIME_INPUT_PIN_KEY_VERSION",
-          "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS",
-          "FAVN_ORCHESTRATOR_CAPACITY_READER_TOKEN",
-          "FAVN_WORKSPACE_IDS",
-          "FAVN_RUNNER_POOLS",
-          "FAVN_VIEW_PUBLIC_ORIGIN",
-          "FAVN_VIEW_SECRET_KEY_BASE",
-          "FAVN_VIEW_TRUSTED_PROXY_CIDRS",
-          "FAVN_VIEW_FORWARDED_FOR_POLICY",
-          "FAVN_CONTROL_PLANE_NODE",
-          "FAVN_DISTRIBUTION_COOKIE",
-          "FAVN_DISTRIBUTION_TLS_OPTIONS_FILE"
-        ] do
-      assert control_plane =~ "name: '#{variable}'"
-    end
-
-    assert configuration =~ "name: 'capacity-reader-token'"
-    assert configuration =~ "value: capacityReaderToken"
-    assert source =~ "empty(capacityReaderToken) ? []"
-    assert source =~ "FAVN_ORCHESTRATOR_CAPACITY_READER_PREVIOUS_TOKEN"
-    refute source =~ "capacity-scaler|capacity_reader:"
-
-    assert control_plane =~ "-proto_dist inet_tls"
-    refute source =~ "param databaseUrl"
-    refute source =~ "name: 'database-url'"
-    refute source =~ "name: 'FAVN_DATABASE_URL'"
-
-    image_contract = read("scripts/control_plane_image_contract.sh")
-    assert image_contract =~ "-name 'favn_azure-*'"
-  end
-
   test "KEDA resources parse and encode exact authenticated default ScaledJob scaling" do
     documents =
       "deployment/kubernetes/elastic-runner.yaml"
@@ -182,6 +52,15 @@ defmodule Favn.DeploymentReferenceConformanceTest do
     assert get_in(services, ["database-migrate", "command"]) == ["migrate"]
     assert get_in(services, ["database-grant", "command"]) == ["grant-runtime"]
     assert get_in(services, ["database-verify", "command"]) == ["verify-schema"]
+
+    assert get_in(control_plane, ["build", "args", "FAVN_CONTROL_PLANE_VERSION"]) ==
+             "${FAVN_CONTROL_PLANE_VERSION}"
+
+    assert get_in(control_plane, ["build", "args", "FAVN_MANIFEST_SCHEMA_VERSION"]) ==
+             "${FAVN_MANIFEST_SCHEMA_VERSION}"
+
+    assert get_in(control_plane, ["build", "args", "FAVN_RUNNER_CONTRACT_VERSION"]) ==
+             "${FAVN_RUNNER_CONTRACT_VERSION}"
 
     assert control_plane["environment"]["FAVN_DEPLOYMENT_MODE"] == "production"
     assert control_plane["environment"]["FAVN_DATABASE_SSL_MODE"] == "verify-full"
@@ -326,6 +205,10 @@ defmodule Favn.DeploymentReferenceConformanceTest do
     assert prepare =~ "Docker qualification requires a clean checkout"
     assert prepare =~ "dirty diagnostic builds require an explicit unique FAVN_IMAGE_TAG"
     assert prepare =~ "favn-compose-runner:$FAVN_SOURCE_REVISION:$FAVN_IMAGE_TAG"
+    assert prepare =~ "release_metadata=$(\"$repository_root/scripts/release_metadata.sh\")"
+    assert prepare =~ "\"FAVN_CONTROL_PLANE_VERSION=$FAVN_CONTROL_PLANE_VERSION\""
+    assert prepare =~ "\"FAVN_MANIFEST_SCHEMA_VERSION=$FAVN_MANIFEST_SCHEMA_VERSION\""
+    assert prepare =~ "\"FAVN_RUNNER_CONTRACT_VERSION=$FAVN_RUNNER_CONTRACT_VERSION\""
     assert prepare =~ "sha256sum"
     assert prepare =~ "\"FAVN_PLATFORM_TOKEN=$(random_hex 48)\""
     assert prepare =~ "\"FAVN_CAPACITY_TOKEN=$(random_hex 48)\""
@@ -426,29 +309,6 @@ defmodule Favn.DeploymentReferenceConformanceTest do
     refute core =~ "Kubernetes"
     refute core =~ "KEDA"
     refute core =~ "Azure SDK"
-  end
-
-  defp bicep_block(source, marker) do
-    {marker_start, _length} = :binary.match(source, marker)
-    tail = binary_part(source, marker_start, byte_size(source) - marker_start)
-    {open_start, 1} = :binary.match(tail, "{")
-    balanced(tail, open_start, open_start, 0)
-  end
-
-  defp balanced(source, start, cursor, depth) do
-    case :binary.at(source, cursor) do
-      ?{ ->
-        balanced(source, start, cursor + 1, depth + 1)
-
-      ?} when depth == 1 ->
-        binary_part(source, start, cursor - start + 1)
-
-      ?} ->
-        balanced(source, start, cursor + 1, depth - 1)
-
-      _other ->
-        balanced(source, start, cursor + 1, depth)
-    end
   end
 
   defp read(relative), do: @root |> Path.join(relative) |> File.read!()

@@ -4,7 +4,7 @@ defmodule FavnStoragePostgres.MixProject do
   def project do
     [
       app: :favn_storage_postgres,
-      version: "0.5.0-dev",
+      version: "0.5.0-rc.1",
       description: "Postgres storage adapter for orchestrator runtime state",
       build_path: "../../_build",
       config_path: "../../config/config.exs",

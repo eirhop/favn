@@ -7,6 +7,12 @@
 **/doc
 **/*.md
 **/.env*
+**/*.key
+**/*.pem
+**/*.p12
+**/*.pfx
+**/id_rsa
+**/id_ed25519
 deployment/docker-compose/.qualification-active
 deployment/docker-compose/qualification-results
 deployment/docker-compose/proxy-security-results

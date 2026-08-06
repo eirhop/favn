@@ -43,6 +43,16 @@ if ! printf '%s\n' "$image_tag" | grep -Eq '^[a-z0-9][a-z0-9_.-]{0,127}$'; then
 fi
 
 build_timestamp=${FAVN_BUILD_TIMESTAMP:-$(git -C "$repository_root" show -s --format=%cI "$source_revision")}
+release_metadata=$("$repository_root/scripts/release_metadata.sh")
+control_plane_version=$(printf '%s\n' "$release_metadata" | sed -n 's/^FAVN_CONTROL_PLANE_VERSION=//p')
+manifest_schema_version=$(printf '%s\n' "$release_metadata" | sed -n 's/^FAVN_MANIFEST_SCHEMA_VERSION=//p')
+runner_contract_version=$(printf '%s\n' "$release_metadata" | sed -n 's/^FAVN_RUNNER_CONTRACT_VERSION=//p')
+for value in "$control_plane_version" "$manifest_schema_version" "$runner_contract_version"; do
+  if [ -z "$value" ]; then
+    echo "release metadata is incomplete" >&2
+    exit 1
+  fi
+done
 temporary_path="$output_path.tmp"
 umask 077
 trap 'rm -f "$temporary_path"' EXIT HUP INT TERM
@@ -55,6 +65,9 @@ docker run --rm \
   --env FAVN_SOURCE_REVISION="$source_revision" \
   --env FAVN_SHORT_REVISION="$short_revision" \
   --env FAVN_BUILD_TIMESTAMP="$build_timestamp" \
+  --env FAVN_CONTROL_PLANE_VERSION="$control_plane_version" \
+  --env FAVN_MANIFEST_SCHEMA_VERSION="$manifest_schema_version" \
+  --env FAVN_RUNNER_CONTRACT_VERSION="$runner_contract_version" \
   alpine:3.22@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce \
   sh -eu -c '
     random_hex() {
@@ -75,6 +88,9 @@ docker run --rm \
       "FAVN_IMAGE_TAG=$FAVN_IMAGE_TAG" \
       "FAVN_SOURCE_REVISION=$FAVN_SOURCE_REVISION" \
       "FAVN_BUILD_TIMESTAMP=$FAVN_BUILD_TIMESTAMP" \
+      "FAVN_CONTROL_PLANE_VERSION=$FAVN_CONTROL_PLANE_VERSION" \
+      "FAVN_MANIFEST_SCHEMA_VERSION=$FAVN_MANIFEST_SCHEMA_VERSION" \
+      "FAVN_RUNNER_CONTRACT_VERSION=$FAVN_RUNNER_CONTRACT_VERSION" \
       "FAVN_RUNNER_RELEASE_ID=$runner_release_id" \
       "FAVN_MIGRATOR_DATABASE_PASSWORD=$(random_hex 32)" \
       "FAVN_RUNTIME_DATABASE_PASSWORD=$(random_hex 32)" \

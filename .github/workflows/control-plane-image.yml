@@ -17,10 +17,64 @@ permissions:
 env:
   IMAGE_REPOSITORY: ghcr.io/eirhop/favn-control-plane
   LOCAL_IMAGE: favn-control-plane:candidate
+  RUNNER_IMAGE: favn-runner-template:candidate
+  RUNNER_RELEASE_ID: rr_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 
 jobs:
   qualify:
-    name: Build and qualify direct repository image
+    name: Qualify control-plane image without publication
+    if: github.event_name != 'push' || github.ref != 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Compute immutable build metadata
+        id: metadata
+        run: |
+          scripts/release_metadata.sh >> "$GITHUB_OUTPUT"
+          echo "timestamp=$(git show -s --format=%cI HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Build candidate from repository root
+        run: |
+          docker build \
+            --platform linux/amd64 \
+            --file rel/control_plane/Dockerfile \
+            --build-arg FAVN_SOURCE_REVISION="${GITHUB_SHA}" \
+            --build-arg FAVN_BUILD_TIMESTAMP="${{ steps.metadata.outputs.timestamp }}" \
+            --build-arg FAVN_CONTROL_PLANE_VERSION="${{ steps.metadata.outputs.FAVN_CONTROL_PLANE_VERSION }}" \
+            --build-arg FAVN_MANIFEST_SCHEMA_VERSION="${{ steps.metadata.outputs.FAVN_MANIFEST_SCHEMA_VERSION }}" \
+            --build-arg FAVN_RUNNER_CONTRACT_VERSION="${{ steps.metadata.outputs.FAVN_RUNNER_CONTRACT_VERSION }}" \
+            --tag "$LOCAL_IMAGE" \
+            .
+
+      - name: Verify exact image contents and launcher
+        run: >-
+          scripts/control_plane_image_contract.sh
+          "$LOCAL_IMAGE"
+          "${{ steps.metadata.outputs.FAVN_CONTROL_PLANE_VERSION }}"
+          "$GITHUB_SHA"
+
+      - name: Enforce vulnerability-exception review date
+        run: scripts/check_grype_exceptions.sh
+
+      - name: Scan exact image
+        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
+        with:
+          image: ${{ env.LOCAL_IMAGE }}
+          fail-build: true
+          severity-cutoff: high
+          only-fixed: false
+          grype-version: v0.116.0
+          config: security/control-plane-grype.yaml
+
+  publish:
+    name: Build, qualify, and publish main image
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: runner-template
     runs-on: ubuntu-latest
     timeout-minutes: 90
     permissions:
@@ -28,27 +82,62 @@ jobs:
       packages: write
       attestations: write
       id-token: write
+    outputs:
+      digest: ${{ steps.publish.outputs.digest }}
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
-      - name: Compute immutable build timestamp
+      - name: Compute immutable build metadata
         id: metadata
-        run: echo "timestamp=$(git show -s --format=%cI HEAD)" >> "$GITHUB_OUTPUT"
+        run: |
+          scripts/release_metadata.sh >> "$GITHUB_OUTPUT"
+          echo "timestamp=$(git show -s --format=%cI HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Build candidate once from repository root
         run: |
           docker build \
+            --platform linux/amd64 \
             --file rel/control_plane/Dockerfile \
             --build-arg FAVN_SOURCE_REVISION="${GITHUB_SHA}" \
             --build-arg FAVN_BUILD_TIMESTAMP="${{ steps.metadata.outputs.timestamp }}" \
+            --build-arg FAVN_CONTROL_PLANE_VERSION="${{ steps.metadata.outputs.FAVN_CONTROL_PLANE_VERSION }}" \
+            --build-arg FAVN_MANIFEST_SCHEMA_VERSION="${{ steps.metadata.outputs.FAVN_MANIFEST_SCHEMA_VERSION }}" \
+            --build-arg FAVN_RUNNER_CONTRACT_VERSION="${{ steps.metadata.outputs.FAVN_RUNNER_CONTRACT_VERSION }}" \
             --tag "$LOCAL_IMAGE" \
             .
 
+      - name: Verify exact image contents and launcher
+        run: >-
+          scripts/control_plane_image_contract.sh
+          "$LOCAL_IMAGE"
+          "${{ steps.metadata.outputs.FAVN_CONTROL_PLANE_VERSION }}"
+          "$GITHUB_SHA"
+
+      - name: Enforce vulnerability-exception review date
+        run: scripts/check_grype_exceptions.sh
+
+      - name: Scan exact image
+        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
+        with:
+          image: ${{ env.LOCAL_IMAGE }}
+          fail-build: true
+          severity-cutoff: high
+          only-fixed: false
+          grype-version: v0.116.0
+          config: security/control-plane-grype.yaml
+
+      - name: Generate exact image SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          image: ${{ env.LOCAL_IMAGE }}
+          format: spdx-json
+          output-file: control-plane.spdx.json
+          upload-artifact: false
+
       - name: Authenticate to GHCR
-        if: github.event_name != 'pull_request'
         uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
         with:
           registry: ghcr.io
@@ -56,7 +145,6 @@ jobs:
           password: ${{ github.token }}
 
       - name: Push the exact candidate under its immutable commit tag
-        if: github.event_name != 'pull_request'
         id: publish
         run: |
           commit_ref="$IMAGE_REPOSITORY:sha-$GITHUB_SHA"
@@ -65,44 +153,8 @@ jobs:
           digest=$(docker buildx imagetools inspect "$commit_ref" --format '{{json .Manifest.Digest}}' | tr -d '"')
           [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
-          echo "qualified_image=$IMAGE_REPOSITORY@$digest" >> "$GITHUB_OUTPUT"
-
-      - name: Select qualification target
-        id: target
-        env:
-          PUBLISHED_IMAGE: ${{ steps.publish.outputs.qualified_image }}
-        run: |
-          if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
-            image="$LOCAL_IMAGE"
-          else
-            image="$PUBLISHED_IMAGE"
-          fi
-          echo "image=$image" >> "$GITHUB_OUTPUT"
-
-      - name: Verify exact image contents and launcher
-        run: scripts/control_plane_image_contract.sh "${{ steps.target.outputs.image }}"
-
-      - name: Scan exact image
-        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
-        with:
-          image: ${{ steps.target.outputs.image }}
-          fail-build: true
-          severity-cutoff: high
-          only-fixed: false
-          grype-version: v0.116.0
-          config: security/control-plane-grype.yaml
-
-      - name: Generate exact image SBOM
-        if: github.event_name != 'pull_request'
-        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
-        with:
-          image: ${{ steps.target.outputs.image }}
-          format: spdx-json
-          output-file: control-plane.spdx.json
-          upload-artifact: false
 
       - name: Attest exact image build provenance
-        if: github.event_name != 'pull_request'
         uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
         with:
           subject-name: ${{ env.IMAGE_REPOSITORY }}
@@ -111,7 +163,6 @@ jobs:
           create-storage-record: false
 
       - name: Attest exact image SBOM
-        if: github.event_name != 'pull_request'
         uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4.2.0
         with:
           subject-name: ${{ env.IMAGE_REPOSITORY }}
@@ -120,17 +171,112 @@ jobs:
           push-to-registry: true
           create-storage-record: false
 
+      - name: Record deployment reference
+        run: |
+          printf 'Deployment reference: `%s@%s`\n' \
+            "$IMAGE_REPOSITORY" \
+            "${{ steps.publish.outputs.digest }}" >> "$GITHUB_STEP_SUMMARY"
+
+  runner-template:
+    name: Build and qualify generic runner template
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Materialize generic customer fixture
+        run: |
+          install -d apps/favn_local/acceptance/customer_runner_fixture/deploy/favn
+          cp -a apps/favn/priv/templates/deployment/. apps/favn_local/acceptance/customer_runner_fixture/deploy/favn/
+          cp mix.lock apps/favn_local/acceptance/customer_runner_fixture/mix.lock
+
+      - name: Build generic runner template
+        run: |
+          docker build \
+            --platform linux/amd64 \
+            --file apps/favn/priv/templates/deployment/runner.Dockerfile \
+            --build-arg FAVN_CUSTOMER_APP=favn_runner_acceptance_customer \
+            --build-arg FAVN_PROJECT_ROOT=apps/favn_local/acceptance/customer_runner_fixture \
+            --build-arg FAVN_RUNNER_RELEASE_ID="$RUNNER_RELEASE_ID" \
+            --build-arg FAVN_RUNNER_SOURCE="https://github.com/$GITHUB_REPOSITORY" \
+            --build-arg FAVN_SOURCE_REVISION="$GITHUB_SHA" \
+            --build-arg FAVN_BUILD_TIMESTAMP="$(git show -s --format=%cI HEAD)" \
+            --tag "$RUNNER_IMAGE" \
+            .
+
+      - name: Verify runner and DuckDB ADBC contracts
+        run: >-
+          apps/favn/priv/templates/deployment/runner-image-contract.sh
+          "$RUNNER_IMAGE"
+          "$RUNNER_RELEASE_ID"
+
+      - name: Enforce vulnerability-exception review date
+        run: scripts/check_grype_exceptions.sh
+
+      - name: Scan generic runner image
+        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
+        with:
+          image: ${{ env.RUNNER_IMAGE }}
+          fail-build: true
+          severity-cutoff: high
+          only-fixed: false
+          grype-version: v0.116.0
+          config: security/control-plane-grype.yaml
+
+  qualification-gate:
+    name: Build and qualify direct repository image
+    if: always()
+    needs: [qualify, publish, runner-template]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Require both image contracts
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref }}
+          QUALIFY_RESULT: ${{ needs.qualify.result }}
+          PUBLISH_RESULT: ${{ needs.publish.result }}
+          RUNNER_RESULT: ${{ needs.runner-template.result }}
+        run: |
+          test "$RUNNER_RESULT" = success
+          if [[ "$EVENT_NAME" == push && "$REF_NAME" == refs/heads/main ]]; then
+            test "$PUBLISH_RESULT" = success
+            test "$QUALIFY_RESULT" = skipped
+          else
+            test "$QUALIFY_RESULT" = success
+            test "$PUBLISH_RESULT" = skipped
+          fi
+
+  promote-main:
+    name: Promote jointly qualified digest to main
+    if: >-
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main' &&
+      needs.publish.result == 'success' &&
+      needs.runner-template.result == 'success'
+    needs: [publish, runner-template]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
       - name: Promote qualified digest to main
-        if: github.event_name != 'pull_request'
         run: |
           docker buildx imagetools create \
             --prefer-index=false \
             --tag "$IMAGE_REPOSITORY:main" \
-            "$IMAGE_REPOSITORY@${{ steps.publish.outputs.digest }}"
+            "$IMAGE_REPOSITORY@${{ needs.publish.outputs.digest }}"
           main_digest=$(docker buildx imagetools inspect "$IMAGE_REPOSITORY:main" --format '{{json .Manifest.Digest}}' | tr -d '"')
-          test "$main_digest" = "${{ steps.publish.outputs.digest }}"
-
-      - name: Record deployment reference
-        if: github.event_name != 'pull_request'
-        run: |
-          echo "Deployment reference: \`$IMAGE_REPOSITORY@${{ steps.publish.outputs.digest }}\`" >> "$GITHUB_STEP_SUMMARY"
+          test "$main_digest" = "${{ needs.publish.outputs.digest }}"

@@ -24,9 +24,10 @@ defmodule Favn.AI do
   ## Consumer Dependency Shape
 
   A normal consumer project depends on `:favn` for the public DSL, helper
-  functions, and `mix favn.*` tasks. Add `:favn_duckdb_adbc` only when the
-  project executes DuckDB-backed SQL assets or uses DuckDB through
-  `Favn.SQLClient`.
+  functions, and `mix favn.*` tasks. Add `:favn_duckdb_adbc` when the project
+  executes SQL assets or uses DuckDB through `Favn.SQLClient`; DuckDB ADBC is
+  the supported SQL runner path. The generated deployment runner includes its
+  pinned native driver and core extensions.
   Add the optional `:favn_azure` package when runner code or DuckDB session
   scripts need cached Azure CLI or managed-identity access tokens.
 

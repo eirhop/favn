@@ -32,15 +32,15 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
 
   Runner images must have a DuckDB ADBC-capable `libduckdb` installed or use
   the driver installation mechanism supported by the `:adbc` package.
-  `mix favn.init --include duckdb-adbc[@VERSION]` can add the tested
-  download/checksum section to the customer-owned runner Dockerfile. See the
+  `mix favn.init --target deployment` copies a generic customer-owned runner
+  Dockerfile with the tested driver and core extension downloads. See the
   DuckDB ADBC client documentation for supported driver setup:
-  https://duckdb.org/docs/stable/clients/adbc.html
+  https://duckdb.org/docs/current/clients/adbc
 
   To pin a specific DuckDB build, configure the driver path and entrypoint:
 
       config :favn, :duckdb_adbc,
-        driver: "/opt/duckdb/1.5.4/libduckdb.so",
+        driver: "/opt/duckdb/1.5.5/libduckdb.so",
         entrypoint: "duckdb_adbc_init"
 
   The gated integration test also honors `DUCKDB_ADBC_DRIVER` with the

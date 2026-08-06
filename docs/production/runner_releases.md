@@ -41,6 +41,15 @@ mix favn.init --target deployment
 Favn writes `deploy/favn/runner.Dockerfile` and never overwrites it. The
 customer reviews and owns that file.
 
+The starting image contains the pinned DuckDB ADBC driver and preinstalled
+DuckLake, PostgreSQL scanner, and JSON extensions. DuckDB through ADBC is the
+only supported Favn SQL runner path. PostgreSQL scanner is included because the
+standard DuckLake PostgreSQL metadata catalog requires it. Remove any of these
+only after confirming the project does not execute the corresponding SQL. If
+the project uses SQL assets, do not remove the ADBC driver itself. Add optional
+object-store extensions with pinned downloads, checksums, and an offline load
+test.
+
 ```bash
 export FAVN_RUNNER_RELEASE_ID="rr_$(openssl rand -hex 32)"
 
@@ -51,10 +60,16 @@ docker build \
   --file deploy/favn/runner.Dockerfile \
   --tag registry.example/customer-favn-runner:"$FAVN_RUNNER_RELEASE_ID" \
   .
+
+deploy/favn/runner-image-contract.sh \
+  registry.example/customer-favn-runner:"$FAVN_RUNNER_RELEASE_ID" \
+  "$FAVN_RUNNER_RELEASE_ID"
 ```
 
-Customer CI scans, signs, publishes, and records the resulting digest. Deploy
-the digest, not a mutable tag.
+The contract check verifies the unprivileged user, immutable release and driver,
+bundled extensions, labels, and absence of cookie files. Customer CI then scans,
+signs, publishes, and records the resulting digest. Deploy the digest, not a
+mutable tag.
 
 ## Build the aligned manifest
 

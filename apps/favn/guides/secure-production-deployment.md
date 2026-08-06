@@ -106,9 +106,8 @@ Before production, test the exact platform's WebSocket behavior, forwarded
 headers, certificate rotation, secret rotation, runner networking, drain,
 rollback, and database recovery.
 
-The repository includes an Azure Container Apps reference, but it has not had a
-live Azure qualification. Treat it as a starting point, not a production-ready
-claim.
+Favn does not ship an Azure deployment. Operators own and qualify their cloud
+infrastructure against the provider-neutral deployment contract.
 
 For Azure Container Apps, the recommended first authentication option is
 Microsoft Entra through Easy Auth. Container Apps ingress and Easy Auth act as
@@ -455,8 +454,7 @@ Understand these before launch:
 - Secret changes require a controlled restart.
 - The content security policy currently allows inline styles, but not inline
   scripts.
-- The Azure Container Apps reference still requires live environment
-  qualification.
+- Every cloud deployment requires live qualification in its target environment.
 
 These limits do not prevent a controlled single-node deployment. Public direct
 login without MFA, broad proxy trust, plaintext PostgreSQL, exposed internal

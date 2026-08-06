@@ -786,6 +786,10 @@ bicep 0.45.15 build deployment/azure-container-apps/elastic-runner-job.bicep
   # both passed without diagnostics
 ```
 
+The Azure Bicep reference artifacts recorded above were later removed. Favn
+keeps the deployment contract provider-neutral and leaves provider-specific
+infrastructure in operator-owned repositories.
+
 No full umbrella suite was run because the accepted plan reserves that gate for
 Phase 7. No live Azure or managed Kubernetes resources were created; those
 provider qualification gates remain explicitly external.
