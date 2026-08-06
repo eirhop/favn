@@ -12,4 +12,8 @@
 **/tmp
 **/*.key
 **/*.pem
+**/*.p12
+**/*.pfx
+**/id_rsa
+**/id_ed25519
 erl_crash.dump

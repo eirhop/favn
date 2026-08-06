@@ -31,7 +31,7 @@ jobs:
           ref: ${{ github.ref_name }}
           fetch-depth: 0
 
-      - name: Validate release tag and revision
+      - name: Validate signed release tag and revision
         id: release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -39,14 +39,27 @@ jobs:
           version=${GITHUB_REF_NAME#v}
           source_version=$(scripts/release_metadata.sh | sed -n 's/^FAVN_CONTROL_PLANE_VERSION=//p')
           test "$version" = "$source_version"
+
           tagged_sha=$(git rev-parse --verify 'HEAD^{commit}')
           [[ "$tagged_sha" =~ ^[0-9a-f]{40,64}$ ]]
+
+          tag_ref=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$GITHUB_REF_NAME")
+          tag_object_type=$(jq -r '.object.type' <<< "$tag_ref")
+          tag_object_sha=$(jq -r '.object.sha' <<< "$tag_ref")
+          test "$tag_object_type" = tag
+          tag_record=$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$tag_object_sha")
+          test "$(jq -r '.verification.verified' <<< "$tag_record")" = true
+          test "$(jq -r '.object.type' <<< "$tag_record")" = commit
+          test "$(jq -r '.object.sha' <<< "$tag_record")" = "$tagged_sha"
+
           git fetch --no-tags origin main
           git merge-base --is-ancestor "$tagged_sha" origin/main
+
           successful_runs=$(gh run list --workflow CI --branch main --commit "$tagged_sha" --event push --status success --json databaseId --jq 'length')
           test "$successful_runs" -ge 1
           image_runs=$(gh run list --workflow control-plane-image.yml --branch main --commit "$tagged_sha" --event push --status success --json databaseId --jq 'length')
           test "$image_runs" -ge 1
+
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "tagged_sha=$tagged_sha" >> "$GITHUB_OUTPUT"
 
@@ -69,17 +82,41 @@ jobs:
         run: |
           image="$IMAGE_REPOSITORY@${{ steps.candidate.outputs.source_digest }}"
           docker pull "$image"
-          scripts/control_plane_image_contract.sh "$image" "${{ steps.release.outputs.version }}"
+          scripts/control_plane_image_contract.sh \
+            "$image" \
+            "${{ steps.release.outputs.version }}" \
+            "${{ steps.release.outputs.tagged_sha }}"
 
-      - name: Verify provenance
+      - name: Verify provenance identity
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh attestation verify "oci://$IMAGE_REPOSITORY@${{ steps.candidate.outputs.source_digest }}" --repo "${{ github.repository }}" --predicate-type https://slsa.dev/provenance/v1
+          TAGGED_SHA: ${{ steps.release.outputs.tagged_sha }}
+        run: |
+          gh attestation verify \
+            "oci://$IMAGE_REPOSITORY@${{ steps.candidate.outputs.source_digest }}" \
+            --bundle-from-oci \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/control-plane-image.yml" \
+            --source-ref refs/heads/main \
+            --source-digest "$TAGGED_SHA" \
+            --predicate-type https://slsa.dev/provenance/v1
 
-      - name: Verify SBOM attestation
+      - name: Verify SBOM attestation identity
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh attestation verify "oci://$IMAGE_REPOSITORY@${{ steps.candidate.outputs.source_digest }}" --repo "${{ github.repository }}" --predicate-type https://spdx.dev/Document/v2.3
+          TAGGED_SHA: ${{ steps.release.outputs.tagged_sha }}
+        run: |
+          gh attestation verify \
+            "oci://$IMAGE_REPOSITORY@${{ steps.candidate.outputs.source_digest }}" \
+            --bundle-from-oci \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/control-plane-image.yml" \
+            --source-ref refs/heads/main \
+            --source-digest "$TAGGED_SHA" \
+            --predicate-type https://spdx.dev/Document/v2.3
+
+      - name: Enforce vulnerability-exception review date
+        run: scripts/check_grype_exceptions.sh
 
       - name: Scan exact release image
         uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
@@ -91,22 +128,70 @@ jobs:
           grype-version: v0.116.0
           config: security/control-plane-grype.yaml
 
-      - name: Promote qualified commit image without rebuilding
-        id: image
+      - name: Check immutable release destinations
+        id: existing
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
+          expected_digest="${{ steps.candidate.outputs.source_digest }}"
+          expected_reference="$IMAGE_REPOSITORY@$expected_digest"
+          registry_exists=false
+          release_exists=false
+          registry_error="$RUNNER_TEMP/registry-inspect-error"
+          release_error="$RUNNER_TEMP/release-inspect-error"
+
+          if registry_digest=$(docker buildx imagetools inspect "$IMAGE_REPOSITORY:$GITHUB_REF_NAME" --format '{{json .Manifest.Digest}}' 2>"$registry_error" | tr -d '"'); then
+            test "$registry_digest" = "$expected_digest"
+            registry_exists=true
+          elif ! grep -Eqi '(manifest unknown|unexpected status[^[:cntrl:]]*404|:[[:space:]]*not found$)' "$registry_error"; then
+            cat "$registry_error" >&2
+            exit 1
+          fi
+
+          if release_json=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$GITHUB_REF_NAME" 2>"$release_error"); then
+            release_body=$(jq -r .body <<< "$release_json")
+            [[ "$release_body" == *"$expected_reference"* ]]
+            release_exists=true
+          elif ! grep -Eq 'Not Found \(HTTP 404\)' "$release_error"; then
+            cat "$release_error" >&2
+            exit 1
+          fi
+
+          echo "registry_exists=$registry_exists" >> "$GITHUB_OUTPUT"
+          echo "release_exists=$release_exists" >> "$GITHUB_OUTPUT"
+
+      - name: Promote qualified commit image without rebuilding
+        if: steps.existing.outputs.registry_exists != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          remote_tag_object=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$GITHUB_REF_NAME" --jq '.object.type + ":" + .object.sha')
+          [[ "$remote_tag_object" == tag:* ]]
+          tag_object_sha=${remote_tag_object#tag:}
+          tag_record=$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$tag_object_sha")
+          test "$(jq -r '.verification.verified' <<< "$tag_record")" = true
+          test "$(jq -r '.object.sha' <<< "$tag_record")" = "${{ steps.release.outputs.tagged_sha }}"
           docker buildx imagetools create \
             --prefer-index=false \
             --tag "$IMAGE_REPOSITORY:$GITHUB_REF_NAME" \
             "$IMAGE_REPOSITORY@${{ steps.candidate.outputs.source_digest }}"
           digest=$(docker buildx imagetools inspect "$IMAGE_REPOSITORY:$GITHUB_REF_NAME" --format '{{json .Manifest.Digest}}' | tr -d '"')
           test "$digest" = "${{ steps.candidate.outputs.source_digest }}"
-          echo "digest=$digest" >> "$GITHUB_OUTPUT"
 
       - name: Publish GitHub release
+        if: steps.existing.outputs.release_exists != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          notes="Control-plane deployment reference: \`$IMAGE_REPOSITORY@${{ steps.image.outputs.digest }}\`"
+          remote_tag_object=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$GITHUB_REF_NAME" --jq '.object.type + ":" + .object.sha')
+          [[ "$remote_tag_object" == tag:* ]]
+          tag_object_sha=${remote_tag_object#tag:}
+          tag_record=$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$tag_object_sha")
+          test "$(jq -r '.verification.verified' <<< "$tag_record")" = true
+          test "$(jq -r '.object.sha' <<< "$tag_record")" = "${{ steps.release.outputs.tagged_sha }}"
+          printf -v notes 'Control-plane deployment reference: `%s@%s`\n\nFavn control-plane security channel: supported' \
+            "$IMAGE_REPOSITORY" \
+            "${{ steps.candidate.outputs.source_digest }}"
           args=("$GITHUB_REF_NAME" --verify-tag --generate-notes --notes "$notes")
           if [[ "${GITHUB_REF_NAME#v}" == *-* ]]; then args+=(--prerelease); fi
           gh release create "${args[@]}"

@@ -32,8 +32,10 @@ The Dockerfile consumes the repository through a BuildKit bind mount. There is
 no generated build context, build-ID registry, `mix favn.build.control_plane`,
 or maintainer development mode.
 
-CI performs the same root build, validates the image contract, scans it, and
-publishes commit images. Production deployments use the resulting digest:
+Pull-request CI performs a read-only root build, validates both image contracts,
+and scans both images. Only a push to `main` receives registry and attestation
+permissions; that job validates and scans before publishing the commit image.
+Production deployments use the resulting digest:
 
 ```text
 ghcr.io/eirhop/favn-control-plane@sha256:<digest>
@@ -61,7 +63,9 @@ The `Control-plane image` workflow builds, verifies, scans, attests, and
 publishes `sha-<commit>` for every green push to `main`. A version tag promotes
 that exact digest without rebuilding it. The promotion workflow rejects a tag
 unless its version equals the source version and both CI and image qualification
-passed for the tagged commit.
+passed for the tagged commit. It also requires a GitHub-verified signed tag,
+binds both OCI attestations and the image revision label to that commit, and
+refuses to change an existing release tag to another digest.
 
 For `0.5.0-rc.1`, tag the already-qualified `main` commit:
 
@@ -81,7 +85,14 @@ The workflow creates a GitHub prerelease and the
 `ghcr.io/eirhop/favn-control-plane:v0.5.0-rc.1` lookup tag. Deploy the digest
 recorded in the release notes, not that mutable tag. This repository does not
 currently define a Hex publishing workflow; source/Hex packaging is a separate
-release decision.
+release decision. Protect `v*` tags in repository rules as defense in depth;
+the workflow still checks the remote tag, its verified signature, and immutable
+release destinations.
+
+The scheduled security workflow rescans `main` plus every supported
+control-plane digest promoted by this release workflow. Grype exceptions have a
+machine-checked review deadline; CI fails after that date until every exception
+is reviewed or removed.
 
 ## Build the customer runner
 
@@ -143,10 +154,8 @@ ordinary environment variables through `System.get_env/1` and
 `System.fetch_env!/1`; no `.env` loader runs inside the image.
 
 Use the platform's secret store and map each secret to the environment variable
-expected by Favn. For Azure Container Apps, a manual environment value or
-`secretref:<name>` becomes a normal process environment variable at runtime.
-Changing configuration creates a new revision; changing only a referenced
-secret may require a new revision or restart for running replicas to observe it.
+expected by Favn. Follow that platform's restart or revision rules when changing
+configuration or referenced secrets.
 
 The copied `env.example` documents the minimum variables. Important groups are:
 

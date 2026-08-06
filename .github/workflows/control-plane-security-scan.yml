@@ -7,19 +7,59 @@ on:
 
 permissions:
   contents: read
-  packages: read
-  attestations: read
 
 env:
   IMAGE_REPOSITORY: ghcr.io/eirhop/favn-control-plane
 
 jobs:
+  targets:
+    name: Resolve supported image digests
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      images: ${{ steps.images.outputs.images }}
+    steps:
+      - name: Collect main and released deployment digests
+        id: images
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          release_images=$(
+            gh release list --repo "$GITHUB_REPOSITORY" --limit 100 --json tagName,isDraft --jq '.[] | select(.isDraft == false) | .tagName' |
+              while IFS= read -r tag; do
+                body=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json body --jq .body)
+                if grep -Fxq 'Favn control-plane security channel: supported' <<< "$body"; then
+                  grep -Eo 'ghcr\.io/eirhop/favn-control-plane@sha256:[0-9a-f]{64}' <<< "$body" || true
+                fi
+              done |
+              sort -u |
+              jq -Rsc 'split("\n") | map(select(length > 0))'
+          )
+          images=$(jq -cn --arg main "$IMAGE_REPOSITORY:main" --argjson releases "$release_images" '([$main] + $releases) | unique')
+          echo "images=$images" >> "$GITHUB_OUTPUT"
+
   scan:
+    name: Scan ${{ matrix.image }}
+    needs: targets
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ${{ fromJSON(needs.targets.outputs.images) }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: read
+      attestations: read
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Enforce vulnerability-exception review date
+        run: scripts/check_grype_exceptions.sh
+
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
       - uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
         with:
@@ -27,17 +67,33 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ github.token }}
 
-      - name: Resolve current digest
+      - name: Resolve and inspect exact digest
         id: image
+        env:
+          IMAGE: ${{ matrix.image }}
         run: |
-          digest=$(docker buildx imagetools inspect "$IMAGE_REPOSITORY:main" --format '{{json .Manifest.Digest}}' | tr -d '"')
-          test -n "$digest"
+          digest=$(docker buildx imagetools inspect "$IMAGE" --format '{{json .Manifest.Digest}}' | tr -d '"')
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          exact_image="$IMAGE_REPOSITORY@$digest"
+          docker pull "$exact_image"
+          revision=$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$exact_image")
+          [[ "$revision" =~ ^[0-9a-f]{40,64}$ ]]
+          scripts/control_plane_image_contract.sh "$exact_image" "" "$revision"
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "revision=$revision" >> "$GITHUB_OUTPUT"
 
-      - name: Verify provenance
+      - name: Verify provenance identity
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh attestation verify "oci://$IMAGE_REPOSITORY@${{ steps.image.outputs.digest }}" --repo "${{ github.repository }}" --predicate-type https://slsa.dev/provenance/v1
+        run: |
+          gh attestation verify \
+            "oci://$IMAGE_REPOSITORY@${{ steps.image.outputs.digest }}" \
+            --bundle-from-oci \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/control-plane-image.yml" \
+            --source-ref refs/heads/main \
+            --source-digest "${{ steps.image.outputs.revision }}" \
+            --predicate-type https://slsa.dev/provenance/v1
 
       - uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
         with:

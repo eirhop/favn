@@ -39,7 +39,9 @@ defmodule Favn.DeploymentArtifactsAcceptanceTest do
 
     compose = File.read!(Path.join(deployment.output, "compose.yml"))
     refute compose =~ "./postgres-ca.pem"
-    assert compose =~ "FAVN_DATABASE_SSL_MODE:-disable"
+    assert compose =~ "FAVN_DATABASE_SSL_MODE:-verify-full"
+    assert compose =~ "FAVN_DATABASE_URL:?set the PostgreSQL connection URL"
+    assert compose =~ "FAVN_DISTRIBUTION_COOKIE:?set a high-entropy distribution cookie"
     assert compose =~ "read_only: true"
     assert compose =~ "no-new-privileges:true"
     assert compose =~ "cap_drop:"

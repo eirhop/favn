@@ -22,10 +22,11 @@ extension directory writable.
 
 PostgreSQL is intentionally absent. Supply a reachable PostgreSQL service and
 run migration/provisioning as separate operator steps. The portable template
-defaults TLS off because Favn cannot know how your platform mounts secrets.
-For production, set `FAVN_DATABASE_SSL_MODE=verify-full`, mount the CA
-certificate using your platform's secret mechanism, and set
-`FAVN_DATABASE_SSL_CA_FILE` to its in-container path.
+defaults to `FAVN_DATABASE_SSL_MODE=verify-full` and uses system trust when no
+custom CA path is supplied. When the database uses a private CA, mount that CA
+certificate using your platform's secret mechanism and set
+`FAVN_DATABASE_SSL_CA_FILE` to its in-container path. Required values use
+Compose's `:?` form so configuration fails before an invalid deployment starts.
 
 ## Example use
 

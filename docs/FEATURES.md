@@ -192,9 +192,9 @@ operator contract is [`production/postgresql_operator_runbook.md`](production/po
   own actor status, workspace membership, roles, opaque sessions, revocation,
   workspace switching, and redacted audit. Native OIDC, other proxy assertion
   formats, and provider group/role authorization remain out of scope.
-- The Azure Container Apps database reference uses separate user-assigned
-  managed identities and PostgreSQL roles for runtime and migration, without a
-  database URL/password secret. Live Azure qualification remains required.
+- Azure Database for PostgreSQL can use separate user-assigned managed identities
+  and PostgreSQL roles for runtime and migration, without a database URL/password
+  secret. Operators own the Azure deployment and its live qualification.
 - The local production-shaped HTTP-boundary phase catalogues every browser and
   private API route and fails on catalogue or required-evidence drift. It is not
   the complete #578 release verdict. Role/workspace isolation, abuse pressure,

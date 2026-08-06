@@ -51,6 +51,7 @@ test -r /var/lib/favn/.duckdb/extensions/v$duckdb_version/linux_amd64/json.duckd
 test ! -w /opt/favn
 test ! -w /opt/duckdb/$duckdb_version/libduckdb.so
 test ! -w /var/lib/favn/.duckdb/extensions/v$duckdb_version/linux_amd64
+! find /opt/favn /opt/duckdb /var/lib/favn/.duckdb -xdev \( -type f -o -type d \) -perm /0022 | grep -q .
 ! find /opt/favn -type f \( -name COOKIE -o -name .erlang.cookie \) | grep -q .
 ! find / -xdev -type f -perm /6000 -print 2>/dev/null | grep -q .
 SH
@@ -74,7 +75,8 @@ docker run --rm \
   --tmpfs /tmp:rw,noexec,nosuid,size=64m,uid=10001,gid=10001,mode=0700 \
   --cap-drop ALL \
   --security-opt no-new-privileges:true \
+  --env "EXPECTED_DUCKDB_VERSION=$duckdb_version" \
   --env FAVN_RUNNER_NODE_HOST_ALIAS=runner \
   --env FAVN_DISTRIBUTION_COOKIE=favn-runner-contract-7A9c2D4e6F8h0J1k \
   "$image" \
-  eval 'alias Favn.Connection.Resolved; alias Favn.SQL.Adapter.DuckDB.ADBC; resolved = %Resolved{name: :warehouse, adapter: ADBC, module: __MODULE__, config: %{open: [database: ":memory:"]}}; {:ok, conn} = ADBC.connect(resolved, []); for extension <- ["ducklake", "postgres_scanner", "json"], do: ({:ok, _} = ADBC.execute(conn, "INSTALL #{extension}", [])); for extension <- ["ducklake", "postgres", "json"], do: ({:ok, _} = ADBC.execute(conn, "LOAD #{extension}", [])); {:ok, result} = ADBC.query(conn, "SELECT json_valid(?) AS valid", params: ["{}"]); true = result.rows == [%{"valid" => true}]; ADBC.disconnect(conn, []); IO.puts("duckdb-adbc-ok")'
+  eval 'alias Favn.Connection.Resolved; alias Favn.SQL.Adapter.DuckDB.ADBC; resolved = %Resolved{name: :warehouse, adapter: ADBC, module: __MODULE__, config: %{open: [database: ":memory:"]}}; {:ok, conn} = ADBC.connect(resolved, []); {:ok, version} = ADBC.query(conn, "SELECT version() AS version", []); true = version.rows == [%{"version" => "v" <> System.fetch_env!("EXPECTED_DUCKDB_VERSION")}]; for extension <- ["ducklake", "postgres_scanner", "json"], do: ({:ok, _} = ADBC.execute(conn, "INSTALL #{extension}", [])); for extension <- ["ducklake", "postgres", "json"], do: ({:ok, _} = ADBC.execute(conn, "LOAD #{extension}", [])); {:ok, result} = ADBC.query(conn, "SELECT json_valid(?) AS valid", params: ["{}"]); true = result.rows == [%{"valid" => true}]; ADBC.disconnect(conn, []); IO.puts("duckdb-adbc-ok")'

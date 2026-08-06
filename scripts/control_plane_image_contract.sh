@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -lt 1 || $# -gt 2 ]]; then
-  echo "usage: scripts/control_plane_image_contract.sh IMAGE [EXPECTED_VERSION]" >&2
+if [[ $# -lt 1 || $# -gt 3 ]]; then
+  echo "usage: scripts/control_plane_image_contract.sh IMAGE [EXPECTED_VERSION] [EXPECTED_REVISION]" >&2
   exit 64
 fi
 
 image=$1
 expected_version=${2:-}
+expected_revision=${3:-}
 
 inspect() {
   docker image inspect --format "$1" "$image"
@@ -21,12 +22,15 @@ inspect() {
 [[ $(inspect '{{ index .Config.Labels "io.favn.otp-version" }}') == 29.0.4 ]]
 [[ $(inspect '{{ index .Config.Labels "io.favn.target" }}') == linux/amd64 ]]
 label_version=$(inspect '{{ index .Config.Labels "org.opencontainers.image.version" }}')
+label_revision=$(inspect '{{ index .Config.Labels "org.opencontainers.image.revision" }}')
 label_manifest_schema=$(inspect '{{ index .Config.Labels "io.favn.manifest-schema-version" }}')
 label_runner_contract=$(inspect '{{ index .Config.Labels "io.favn.runner-contract-version" }}')
 [[ -n $label_version ]]
+[[ -n $label_revision ]]
 [[ -n $label_manifest_schema ]]
 [[ -n $label_runner_contract ]]
 if [[ -n $expected_version ]]; then [[ $label_version == "$expected_version" ]]; fi
+if [[ -n $expected_revision ]]; then [[ $label_revision == "$expected_revision" ]]; fi
 [[ $(inspect '{{range .Config.Env}}{{println .}}{{end}}' | grep '^LANG=') == LANG=C.UTF-8 ]]
 [[ $(inspect '{{range .Config.Env}}{{println .}}{{end}}' | grep '^LC_ALL=') == LC_ALL=C.UTF-8 ]]
 [[ $(inspect '{{json .Config.Entrypoint}}') == '["/app/bin/favn_control_plane"]' ]]
@@ -74,6 +78,7 @@ find /app/lib -maxdepth 1 -type d -name 'favn_storage_postgres-*' | grep -q .
 ! find /app/lib -path '*/phoenix-*/priv/templates' -type d | grep -q .
 ! find /app -type f -name 'mix.exs' | grep -q .
 ! find /app -type d \( -name deps -o -name _build -o -name .git \) | grep -q .
+! find /app -xdev \( -type f -o -type d \) -perm /0022 | grep -q .
 ! grep -F '/build/' /app/releases/*/sys.config | grep -q .
 ! grep -E '\{(esbuild|tailwind),' /app/releases/*/sys.config | grep -q .
 ! find / -xdev -type f -perm /6000 -print 2>/dev/null | grep -q .

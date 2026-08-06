@@ -275,7 +275,7 @@ channel by itself.
 6. Update focused View tests for trusted, untrusted, replace, append, ignore,
    malformed, oversized, and host-spoof cases.
 7. Replace broad shipped example CIDRs and pass the generic policy through the
-   portable and Azure deployment references.
+   portable deployment example and operator-owned platform guidance.
 8. Add the fixed-proxy/attacker Docker topology and executable assertions.
 9. Update the public HexDocs security guide with simple copyable examples,
    decision guidance, and “when not to use it” warnings.

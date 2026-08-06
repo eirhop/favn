@@ -24,9 +24,10 @@ exact partition as `drained`. The collection endpoint is a bounded operator
 overview and explicitly reports `partition_limit` plus `truncated`; it is not
 the removal authority for a partition omitted from that overview.
 
-The Azure and Kubernetes files are reviewed reference templates, not a claim of
-managed-platform qualification. Substitute secrets through the platform secret
-store; never commit them. Do not embed `capacity_reader` in
+The Kubernetes files are a reviewed example of the provider-neutral contract,
+not a claim of managed-platform qualification. Customer deployment code remains
+outside Favn. Substitute secrets through the platform secret store; never commit
+them. Do not embed `capacity_reader` in
 `FAVN_ORCHESTRATOR_API_SERVICE_TOKENS`.
 
 [`docker-compose/`](docker-compose/README.md) is a local production-shaped

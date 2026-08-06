@@ -54,19 +54,17 @@ scalers to the new primary value, and then remove the previous value. Rotate
 certificates and the cookie by introducing a new release partition, draining
 the old one, and then removing its credentials.
 
-Reference adapters live in [`deployment/`](../../deployment/README.md).
-Azure Container Apps and Kubernetes are examples, not dependencies or
-qualified managed-platform claims. ECS tasks, Nomad batch jobs, VM scalers, and
-ordinary process supervisors can implement the same demand/start/self-exit
-contract. Resident pools map to services or supervised processes; elastic
-pools map to disposable jobs.
+The provider-neutral contract and a Kubernetes example live in
+[`deployment/`](../../deployment/README.md). Favn does not ship cloud-provider
+infrastructure. Azure Container Apps jobs, ECS tasks, Nomad batch jobs, VM
+scalers, and ordinary process supervisors can implement the same
+demand/start/self-exit contract. Resident pools map to services or supervised
+processes; elastic pools map to disposable jobs.
 
-Current implementation references:
+Protocol and operator-platform mapping references:
 
 - [OTP 29 TLS distribution](https://www.erlang.org/doc/apps/ssl/ssl_distribution.html)
 - [Azure Container Apps jobs](https://learn.microsoft.com/en-us/azure/container-apps/jobs)
-- [Microsoft.App jobs resource](https://learn.microsoft.com/en-us/azure/templates/microsoft.app/jobs)
-- [Microsoft.App containerApps resource](https://learn.microsoft.com/en-us/azure/templates/microsoft.app/containerapps)
 - [KEDA 2.20 Metrics API scaler](https://keda.sh/docs/2.20/scalers/metrics-api/)
 - [KEDA 2.20 ScaledJobs](https://keda.sh/docs/2.20/concepts/scaling-jobs/)
 - [Kubernetes Jobs](https://kubernetes.io/docs/concepts/workloads/controllers/job/)

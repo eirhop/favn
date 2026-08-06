@@ -152,11 +152,11 @@ submission can produce many tasks, and only runner tasks create runner demand.
   with executable work must contain every effective pool exactly once.
 - Runner images and infrastructure remain customer-owned.
 - Breaking schema, configuration, API, DSL, and operational changes are allowed.
-- Azure Container Apps Jobs and Kubernetes/KEDA are reference deployments, not
-  runtime dependencies.
-- Under normal available platform capacity, the supported reference deployment
-  must start P95 cold work within five minutes from the runner task becoming
-  durably runnable to its `Started` acknowledgement being persisted.
+- Favn supplies a provider-neutral deployment contract and a Kubernetes/KEDA
+  example, not cloud-provider infrastructure or runtime dependencies.
+- Under normal available platform capacity, a deployment claiming production
+  support must start P95 cold work within five minutes from the runner task
+  becoming durably runnable to its `Started` acknowledgement being persisted.
 
 ### Non-goals for the first version
 
@@ -389,13 +389,10 @@ The one HTTP capacity endpoint exists because no runner process exists at scale
 zero. It is for infrastructure controllers, not communication between live BEAM
 nodes.
 
-For each `{runner_pool, required_runner_release_id}`, infrastructure configures
-one scalable workload:
-
-- Azure: one event-driven Container Apps Job definition;
-- Kubernetes: one KEDA `ScaledJob`;
-- another platform: any job/process controller that can read a numeric metric
-  and treat a clean process exit as completion.
+For each `{runner_pool, required_runner_release_id}`, customer-owned
+infrastructure configures one scalable workload. Kubernetes can use one KEDA
+`ScaledJob`; other platforms can use any job/process controller that reads a
+numeric metric and treats a clean process exit as completion.
 
 Each user-defined pool/release is a separate deployment definition. A pool can
 represent resource size, an executable image and plugin set, network access, or
@@ -1472,7 +1469,7 @@ and drain the previous release using the same release-overlap rules.
 `.favn/local` may record how a runner reaches the control plane. It must not
 become a callable runner address consumed by orchestration.
 
-### 18. Supply provider-neutral and reference deployment contracts
+### 18. Supply a provider-neutral deployment contract and examples
 
 Favn core requires only:
 
@@ -1486,42 +1483,10 @@ Favn core requires only:
 - infrastructure retry and maximum-run-time settings compatible with Favn's
   durable claim and recovery rules.
 
-Favn must not call Azure, Kubernetes, KEDA, VM, or autoscaling APIs.
-
-#### Azure Container Apps reference
-
-Recommend:
-
-- one control-plane Container App with minimum and maximum replicas set to one;
-- private HTTP ingress for the API and fixed private raw TCP ports for EPMD and
-  distributed Erlang;
-- one event-driven Container Apps Job per pool/release, with the pool's CPU and
-  memory allocation;
-- minimum executions zero, job parallelism one, completion count one, and
-  platform retry zero;
-- a job timeout greater than runner maximum uptime plus the maximum supported
-  task duration and drain grace;
-- a KEDA Metrics API rule with target value one that reads the exact
-  pool/release capacity endpoint;
-- an initial five-second polling interval, made deployment-configurable and
-  retained only if the control-plane and managed-scaler load test passes;
-- private networking and independently rotatable capacity-reader and
-  distribution credentials.
-
-Container Apps Jobs have no ingress, which fits the outbound runner-to-control
-plane design. Treat raw TCP routing, EPMD/distribution port pinning, managed
-KEDA `metrics-api` support and authentication, DNS, and TLS certificate rotation
-as acceptance-test items. Record the managed KEDA version observed in the
-test. Do not claim this topology is supported until the real Azure deployment
-test passes.
-
-Create separate old and new job definitions during a runner release rollout.
-Their capacity endpoints remain release-specific. Delete an old definition
-only after Favn reports it drained.
-
-If a pool is intentionally resident on Azure, run it as a separately configured
-Container App with a fixed minimum/maximum replica count and no public ingress,
-not as a never-ending Job.
+Favn must not call Azure, Kubernetes, KEDA, VM, or autoscaling APIs, and it must
+not own provider-specific cloud infrastructure. Operators translate this
+contract into their platform's deployment code and qualify the resulting
+network, scaling, identity, timeout, and credential-rotation behavior.
 
 #### Kubernetes/KEDA reference
 
@@ -2098,19 +2063,16 @@ shortcut.
 Exit gate: production rejects cookie-only/plain distribution and conformance
 tests prove the neutral demand/self-exit contract.
 
-##### Step 21: Add the Azure Container Apps reference
+##### Step 21: Document operator-owned platform mappings
 
-- Add Container App/Jobs, networking, KEDA metric, release-overlap, credential,
-  timeout, and pool-specific reference artifacts.
-- Test artifact generation and scaler/runner behavior locally with fake
-  infrastructure boundaries.
-- A real Azure deployment requires available credentials, an agreed
-  subscription/resource scope, and explicit user authorization for spend. If
-  unavailable, record it as an external production-qualification gate rather
-  than creating resources or blocking code correctness.
+- Document how managed job platforms map to the provider-neutral demand,
+  start, self-exit, release-overlap, credential, and timeout contracts.
+- Keep provider-specific infrastructure in operator-owned repositories.
+- Require live qualification before an operator claims support for a concrete
+  platform topology.
 
-Exit gate: Azure artifacts pass local conformance; any authorized live result
-is recorded, and Favn is not described as Azure-qualified without that result.
+Exit gate: the mapping is clear without making Favn own or claim qualification
+for provider-specific infrastructure.
 
 ##### Step 22: Add Kubernetes/KEDA and other platform references
 
@@ -2203,9 +2165,9 @@ The program is complete only when:
 - unsafe ambiguity becomes an explicit unknown outcome;
 - control-plane readiness does not require a runner;
 - current local development uses the production-shaped protocol;
-- Azure Container Apps and Kubernetes reference-artifact conformance suites
-  pass; a platform is called production-qualified only after its separately
-  authorized live acceptance suite also passes;
+- provider-neutral deployment-contract and Kubernetes-example conformance
+  suites pass; a platform is called production-qualified only after its
+  separately authorized live acceptance suite also passes;
 - old and new runner releases drain concurrently;
 - PostgreSQL recovery, query-plan, and load tests pass;
 - distributed local qualification meets its recorded service level, and any
@@ -2262,13 +2224,6 @@ platform behavior and KEDA versions can change:
   for polling, minimum/maximum scale, running-job deduction, and rollout;
 - [Kubernetes Jobs](https://kubernetes.io/docs/concepts/workloads/controllers/job/)
   for run-to-completion behavior and duplicate-start caveats;
-- [Azure Container Apps Jobs](https://learn.microsoft.com/en-us/azure/container-apps/jobs)
-  for event-driven KEDA scaling, retries, timeouts, networking, and no ingress;
-- [Azure Container Apps scaling](https://learn.microsoft.com/en-us/azure/container-apps/scale-app)
-  for custom ScaledJob-based KEDA rules and scaler authentication;
-- [Azure Container Apps communication](https://learn.microsoft.com/en-us/azure/container-apps/connect-apps)
-  for internal discovery and raw TCP port exposure.
-
-These references justify the topology and acceptance tests. They do not replace
-testing Favn's exact release, network, identity, and scaling configuration on
-each supported platform.
+These references justify the provider-neutral topology and Kubernetes example.
+They do not replace testing Favn's exact release, network, identity, and scaling
+configuration on each operator-owned platform.
