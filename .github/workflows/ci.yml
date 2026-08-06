@@ -109,6 +109,7 @@ jobs:
           --health-retries 30
     env:
       FAVN_DATABASE_URL: ecto://postgres:postgres@127.0.0.1:5432/favn_test
+      FAVN_DATABASE_MIGRATOR_URL: ecto://postgres:postgres@127.0.0.1:5432/favn_test
       FAVN_RUNTIME_INPUT_PIN_KEY: 0123456789abcdef0123456789abcdef
       FAVN_RUNTIME_INPUT_PIN_KEY_VERSION: '1'
       MIX_ENV: test
@@ -223,6 +224,7 @@ jobs:
           --health-retries 30
     env:
       FAVN_DATABASE_URL: ecto://postgres:postgres@127.0.0.1:5432/favn_test
+      FAVN_DATABASE_MIGRATOR_URL: ecto://postgres:postgres@127.0.0.1:5432/favn_test
       FAVN_RUNTIME_INPUT_PIN_KEY: 0123456789abcdef0123456789abcdef
       FAVN_RUNTIME_INPUT_PIN_KEY_VERSION: '1'
       MIX_ENV: test
@@ -275,6 +277,7 @@ jobs:
           --health-retries 30
     env:
       FAVN_DATABASE_URL: ecto://postgres:postgres@127.0.0.1:5432/favn_test
+      FAVN_DATABASE_MIGRATOR_URL: ecto://postgres:postgres@127.0.0.1:5432/favn_test
       FAVN_RUNTIME_INPUT_PIN_KEY: 0123456789abcdef0123456789abcdef
       FAVN_RUNTIME_INPUT_PIN_KEY_VERSION: '1'
       MIX_ENV: test
