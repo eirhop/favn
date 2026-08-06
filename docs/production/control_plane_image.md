@@ -81,6 +81,21 @@ gh run list --workflow control-plane-release.yml --limit 5
 gh run watch <release-workflow-run-id> --exit-status
 ```
 
+If a tag-triggered promotion fails before publishing because the workflow itself
+needs a fix, keep the protected tag unchanged. After the fix reaches `main`, a
+maintainer can run the corrected workflow against that existing tag:
+
+```bash
+gh workflow run control-plane-release.yml \
+  --ref main \
+  -f release_tag=v0.5.0-rc.1
+```
+
+The recovery path applies the same signed-tag, qualified-commit, attestation,
+scan, and immutable-destination checks as the tag-triggered path. Re-running it
+is safe only when any existing image tag and GitHub release already record the
+same qualified digest.
+
 The workflow creates a GitHub prerelease and the
 `ghcr.io/eirhop/favn-control-plane:v0.5.0-rc.1` lookup tag. Deploy the digest
 recorded in the release notes, not that mutable tag. This repository does not

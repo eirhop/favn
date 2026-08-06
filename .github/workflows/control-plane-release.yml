@@ -3,6 +3,12 @@ name: Promote control-plane release
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing GitHub-verified signed release tag to promote
+        required: true
+        type: string
 
 concurrency:
   group: favn-control-plane-registry
@@ -13,6 +19,7 @@ permissions:
 
 env:
   IMAGE_REPOSITORY: ghcr.io/eirhop/favn-control-plane
+  RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
 
 jobs:
   promote:
@@ -26,31 +33,48 @@ jobs:
       attestations: read
 
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.ref_name }}
-          fetch-depth: 0
-
-      - name: Validate signed release tag and revision
-        id: release
+      - name: Validate signed release tag
+        id: release_ref
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          version=${GITHUB_REF_NAME#v}
-          source_version=$(scripts/release_metadata.sh | sed -n 's/^FAVN_CONTROL_PLANE_VERSION=//p')
-          test "$version" = "$source_version"
-
-          tagged_sha=$(git rev-parse --verify 'HEAD^{commit}')
-          [[ "$tagged_sha" =~ ^[0-9a-f]{40,64}$ ]]
-
-          tag_ref=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$GITHUB_REF_NAME")
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?(\+[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]
+          tag_ref=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG")
           tag_object_type=$(jq -r '.object.type' <<< "$tag_ref")
           tag_object_sha=$(jq -r '.object.sha' <<< "$tag_ref")
           test "$tag_object_type" = tag
           tag_record=$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$tag_object_sha")
           test "$(jq -r '.verification.verified' <<< "$tag_record")" = true
           test "$(jq -r '.object.type' <<< "$tag_record")" = commit
-          test "$(jq -r '.object.sha' <<< "$tag_record")" = "$tagged_sha"
+          tagged_sha=$(jq -r '.object.sha' <<< "$tag_record")
+          [[ "$tagged_sha" =~ ^[0-9a-f]{40,64}$ ]]
+
+          echo "release_tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "tagged_sha=$tagged_sha" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.release_ref.outputs.release_tag }}
+          fetch-depth: 0
+
+      - name: Checkout release workflow implementation
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: .release-workflow
+          persist-credentials: false
+
+      - name: Validate release revision and qualification
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=${RELEASE_TAG#v}
+          source_version=$(scripts/release_metadata.sh | sed -n 's/^FAVN_CONTROL_PLANE_VERSION=//p')
+          test "$version" = "$source_version"
+
+          tagged_sha=$(git rev-parse --verify 'HEAD^{commit}')
+          test "$tagged_sha" = "${{ steps.release_ref.outputs.tagged_sha }}"
 
           git fetch --no-tags origin main
           git merge-base --is-ancestor "$tagged_sha" origin/main
@@ -133,39 +157,18 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          expected_digest="${{ steps.candidate.outputs.source_digest }}"
-          expected_reference="$IMAGE_REPOSITORY@$expected_digest"
-          registry_exists=false
-          release_exists=false
-          registry_error="$RUNNER_TEMP/registry-inspect-error"
-          release_error="$RUNNER_TEMP/release-inspect-error"
-
-          if registry_digest=$(docker buildx imagetools inspect "$IMAGE_REPOSITORY:$GITHUB_REF_NAME" --format '{{json .Manifest.Digest}}' 2>"$registry_error" | tr -d '"'); then
-            test "$registry_digest" = "$expected_digest"
-            registry_exists=true
-          elif ! grep -Eqi '(manifest unknown|unexpected status[^[:cntrl:]]*404|:[[:space:]]*not found$)' "$registry_error"; then
-            cat "$registry_error" >&2
-            exit 1
-          fi
-
-          if release_json=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$GITHUB_REF_NAME" 2>"$release_error"); then
-            release_body=$(jq -r .body <<< "$release_json")
-            [[ "$release_body" == *"$expected_reference"* ]]
-            release_exists=true
-          elif ! grep -Eq 'Not Found \(HTTP 404\)' "$release_error"; then
-            cat "$release_error" >&2
-            exit 1
-          fi
-
-          echo "registry_exists=$registry_exists" >> "$GITHUB_OUTPUT"
-          echo "release_exists=$release_exists" >> "$GITHUB_OUTPUT"
+          .release-workflow/scripts/check_control_plane_release_destinations.sh \
+            "$IMAGE_REPOSITORY" \
+            "$RELEASE_TAG" \
+            "${{ steps.candidate.outputs.source_digest }}" \
+            "$GITHUB_REPOSITORY" >> "$GITHUB_OUTPUT"
 
       - name: Promote qualified commit image without rebuilding
         if: steps.existing.outputs.registry_exists != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          remote_tag_object=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$GITHUB_REF_NAME" --jq '.object.type + ":" + .object.sha')
+          remote_tag_object=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" --jq '.object.type + ":" + .object.sha')
           [[ "$remote_tag_object" == tag:* ]]
           tag_object_sha=${remote_tag_object#tag:}
           tag_record=$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$tag_object_sha")
@@ -173,9 +176,9 @@ jobs:
           test "$(jq -r '.object.sha' <<< "$tag_record")" = "${{ steps.release.outputs.tagged_sha }}"
           docker buildx imagetools create \
             --prefer-index=false \
-            --tag "$IMAGE_REPOSITORY:$GITHUB_REF_NAME" \
+            --tag "$IMAGE_REPOSITORY:$RELEASE_TAG" \
             "$IMAGE_REPOSITORY@${{ steps.candidate.outputs.source_digest }}"
-          digest=$(docker buildx imagetools inspect "$IMAGE_REPOSITORY:$GITHUB_REF_NAME" --format '{{json .Manifest.Digest}}' | tr -d '"')
+          digest=$(docker buildx imagetools inspect "$IMAGE_REPOSITORY:$RELEASE_TAG" --format '{{json .Manifest.Digest}}' | tr -d '"')
           test "$digest" = "${{ steps.candidate.outputs.source_digest }}"
 
       - name: Publish GitHub release
@@ -183,7 +186,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          remote_tag_object=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$GITHUB_REF_NAME" --jq '.object.type + ":" + .object.sha')
+          remote_tag_object=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" --jq '.object.type + ":" + .object.sha')
           [[ "$remote_tag_object" == tag:* ]]
           tag_object_sha=${remote_tag_object#tag:}
           tag_record=$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$tag_object_sha")
@@ -192,6 +195,6 @@ jobs:
           printf -v notes 'Control-plane deployment reference: `%s@%s`\n\nFavn control-plane security channel: supported' \
             "$IMAGE_REPOSITORY" \
             "${{ steps.candidate.outputs.source_digest }}"
-          args=("$GITHUB_REF_NAME" --verify-tag --generate-notes --notes "$notes")
-          if [[ "${GITHUB_REF_NAME#v}" == *-* ]]; then args+=(--prerelease); fi
+          args=("$RELEASE_TAG" --verify-tag --generate-notes --notes "$notes")
+          if [[ "${RELEASE_TAG#v}" == *-* ]]; then args+=(--prerelease); fi
           gh release create "${args[@]}"
