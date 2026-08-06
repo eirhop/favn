@@ -63,11 +63,11 @@ example is in `apps/favn/guides/runner-plugins.md`.
 
 ## DuckDB ADBC Installation
 
-This optional plugin requires a compatible DuckDB ADBC driver in the runner
-environment. A project can ask `mix favn.init --include duckdb-adbc[@VERSION]`
-to add Favn's tested download/checksum section to its customer-owned
-Dockerfile. The project still owns production image qualification. Configure
-the driver path from the environment:
+This plugin requires a compatible DuckDB ADBC driver in the runner environment.
+`mix favn.init --target deployment` copies Favn's generic customer-owned
+Dockerfile with the tested DuckDB 1.5.5 driver and DuckLake, PostgreSQL scanner,
+and JSON extension downloads. The project still owns production image
+qualification. Configure the driver path from the environment:
 
 ```elixir
 driver = System.fetch_env!("DUCKDB_ADBC_DRIVER")
@@ -154,7 +154,7 @@ DuckDB ADBC driver is installed or configured:
 
 ```sh
 FAVN_DUCKDB_ADBC_INTEGRATION=1 \
-DUCKDB_ADBC_DRIVER=/opt/duckdb/1.5.4/libduckdb.so \
+DUCKDB_ADBC_DRIVER=/opt/duckdb/1.5.5/libduckdb.so \
 MIX_ENV=test mix test test/sql/adapter/duckdb_adbc_integration_test.exs
 ```
 

@@ -17,6 +17,8 @@ permissions:
 env:
   IMAGE_REPOSITORY: ghcr.io/eirhop/favn-control-plane
   LOCAL_IMAGE: favn-control-plane:candidate
+  RUNNER_IMAGE: favn-runner-template:candidate
+  RUNNER_RELEASE_ID: rr_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 
 jobs:
   qualify:
@@ -36,14 +38,20 @@ jobs:
 
       - name: Compute immutable build timestamp
         id: metadata
-        run: echo "timestamp=$(git show -s --format=%cI HEAD)" >> "$GITHUB_OUTPUT"
+        run: |
+          scripts/release_metadata.sh >> "$GITHUB_OUTPUT"
+          echo "timestamp=$(git show -s --format=%cI HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Build candidate once from repository root
         run: |
           docker build \
+            --platform linux/amd64 \
             --file rel/control_plane/Dockerfile \
             --build-arg FAVN_SOURCE_REVISION="${GITHUB_SHA}" \
             --build-arg FAVN_BUILD_TIMESTAMP="${{ steps.metadata.outputs.timestamp }}" \
+            --build-arg FAVN_CONTROL_PLANE_VERSION="${{ steps.metadata.outputs.FAVN_CONTROL_PLANE_VERSION }}" \
+            --build-arg FAVN_MANIFEST_SCHEMA_VERSION="${{ steps.metadata.outputs.FAVN_MANIFEST_SCHEMA_VERSION }}" \
+            --build-arg FAVN_RUNNER_CONTRACT_VERSION="${{ steps.metadata.outputs.FAVN_RUNNER_CONTRACT_VERSION }}" \
             --tag "$LOCAL_IMAGE" \
             .
 
@@ -80,7 +88,10 @@ jobs:
           echo "image=$image" >> "$GITHUB_OUTPUT"
 
       - name: Verify exact image contents and launcher
-        run: scripts/control_plane_image_contract.sh "${{ steps.target.outputs.image }}"
+        run: >-
+          scripts/control_plane_image_contract.sh
+          "${{ steps.target.outputs.image }}"
+          "${{ steps.metadata.outputs.FAVN_CONTROL_PLANE_VERSION }}"
 
       - name: Scan exact image
         uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
@@ -134,3 +145,49 @@ jobs:
         if: github.event_name != 'pull_request'
         run: |
           echo "Deployment reference: \`$IMAGE_REPOSITORY@${{ steps.publish.outputs.digest }}\`" >> "$GITHUB_STEP_SUMMARY"
+
+  runner-template:
+    name: Build and qualify generic runner template
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Materialize generic customer fixture
+        run: |
+          install -d apps/favn_local/acceptance/customer_runner_fixture/deploy/favn
+          cp -a apps/favn/priv/templates/deployment/. apps/favn_local/acceptance/customer_runner_fixture/deploy/favn/
+          cp mix.lock apps/favn_local/acceptance/customer_runner_fixture/mix.lock
+
+      - name: Build generic runner template
+        run: |
+          docker build \
+            --platform linux/amd64 \
+            --file apps/favn/priv/templates/deployment/runner.Dockerfile \
+            --build-arg FAVN_CUSTOMER_APP=favn_runner_acceptance_customer \
+            --build-arg FAVN_PROJECT_ROOT=apps/favn_local/acceptance/customer_runner_fixture \
+            --build-arg FAVN_RUNNER_RELEASE_ID="$RUNNER_RELEASE_ID" \
+            --build-arg FAVN_RUNNER_SOURCE="https://github.com/$GITHUB_REPOSITORY" \
+            --build-arg FAVN_SOURCE_REVISION="$GITHUB_SHA" \
+            --build-arg FAVN_BUILD_TIMESTAMP="$(git show -s --format=%cI HEAD)" \
+            --tag "$RUNNER_IMAGE" \
+            .
+
+      - name: Verify runner and DuckDB ADBC contracts
+        run: >-
+          apps/favn/priv/templates/deployment/runner-image-contract.sh
+          "$RUNNER_IMAGE"
+          "$RUNNER_RELEASE_ID"
+
+      - name: Scan generic runner image
+        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
+        with:
+          image: ${{ env.RUNNER_IMAGE }}
+          fail-build: true
+          severity-cutoff: high
+          only-fixed: false
+          grype-version: v0.116.0
+          config: security/control-plane-grype.yaml

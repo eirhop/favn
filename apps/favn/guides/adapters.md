@@ -42,7 +42,9 @@ end
 ```
 
 The adapter uses Arrow Database Connectivity and requires a DuckDB
-ADBC-capable shared library in the runner environment.
+ADBC-capable shared library in the runner environment. The generated deployment
+runner includes the tested driver plus DuckLake, PostgreSQL scanner, and JSON;
+the customer still owns and qualifies the resulting image.
 
 Do not add runtime implementation apps directly for DuckDB support.
 

@@ -8,5 +8,5 @@ config :favn,
   runner_plugins: [{FavnDuckdbADBC, execution_mode: :in_process}]
 
 config :favn, :duckdb_adbc,
-  driver: "/opt/duckdb/1.5.4/libduckdb.so",
+  driver: "/opt/duckdb/1.5.5/libduckdb.so",
   entrypoint: "duckdb_adbc_init"

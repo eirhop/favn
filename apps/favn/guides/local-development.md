@@ -251,8 +251,14 @@ To test image changes, build the control-plane image from the Favn repository
 and select it in a customer-owned deployment:
 
 ```bash
+source <(scripts/release_metadata.sh --export)
+
 docker build \
+  --platform linux/amd64 \
   -f rel/control_plane/Dockerfile \
+  --build-arg FAVN_CONTROL_PLANE_VERSION \
+  --build-arg FAVN_MANIFEST_SCHEMA_VERSION \
+  --build-arg FAVN_RUNNER_CONTRACT_VERSION \
   -t favn-control-plane:dev \
   .
 ```

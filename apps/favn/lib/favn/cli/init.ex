@@ -43,7 +43,8 @@ defmodule Favn.CLI.Init do
         target = Path.join(destination, relative)
 
         with :ok <- File.mkdir_p(Path.dirname(target)),
-             {:ok, _bytes} <- File.copy(path, target) do
+             {:ok, _bytes} <- File.copy(path, target),
+             :ok <- preserve_mode(path, target) do
           {:cont, {:ok, [target | copied]}}
         else
           {:error, reason} -> {:halt, {:error, {:deployment_copy_failed, target, reason}}}
@@ -53,6 +54,18 @@ defmodule Favn.CLI.Init do
         {:ok, copied} -> {:ok, Enum.reverse(copied)}
         {:error, reason} -> {:error, reason}
       end
+    end
+  end
+
+  defp preserve_mode(source, target) do
+    case :os.type() do
+      {:unix, _name} ->
+        with {:ok, %{mode: mode}} <- File.stat(source) do
+          File.chmod(target, mode)
+        end
+
+      {:win32, _name} ->
+        :ok
     end
   end
 end

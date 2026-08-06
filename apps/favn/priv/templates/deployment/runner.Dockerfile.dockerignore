@@ -1,11 +1,15 @@
-.git
-.favn
-.data
-.env
-.env.*
-_build
-deps
-cover
-doc
-test
-tmp
+# Keep caches, VCS state, local data, and secrets out of the BuildKit context.
+**/.git
+**/.favn
+**/.data
+**/.env
+**/.env.*
+**/_build
+**/deps
+**/cover
+**/doc
+**/test
+**/tmp
+**/*.key
+**/*.pem
+erl_crash.dump

@@ -1,6 +1,15 @@
 services:
   control-plane:
     image: ${FAVN_CONTROL_PLANE_IMAGE:?set FAVN_CONTROL_PLANE_IMAGE to an immutable digest}
+    # The image is immutable. Only /tmp is writable, and the process receives
+    # no Linux capabilities or privilege escalation path.
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m,uid=10001,gid=10001,mode=0700
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     environment:
       FAVN_DATABASE_URL: ${FAVN_DATABASE_URL}
       FAVN_DATABASE_SSL_MODE: ${FAVN_DATABASE_SSL_MODE:-disable}
@@ -27,12 +36,22 @@ services:
 
   runner:
     image: ${FAVN_RUNNER_IMAGE:?set FAVN_RUNNER_IMAGE to an immutable digest}
+    # Add an explicit volume only when customer assets intentionally write local
+    # files. Keep the release, DuckDB driver, and bundled extensions read-only.
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m,uid=10001,gid=10001,mode=0700
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     environment:
       FAVN_RUNNER_NODE_HOST_ALIAS: runner
       FAVN_RUNNER_POOL: default
       FAVN_CONTROL_PLANE_NODE: favn_control_plane@control-plane
       FAVN_DISTRIBUTION_COOKIE: ${FAVN_DISTRIBUTION_COOKIE}
       FAVN_BEAM_DISTRIBUTION_PORT: "9100"
+      FAVN_LOG_LEVEL: ${FAVN_LOG_LEVEL:-info}
     expose:
       - "4369"
       - "9100"

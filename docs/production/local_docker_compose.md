@@ -8,10 +8,17 @@ The copied files contain:
 
 - `compose.yml` for one control plane and one customer runner;
 - `runner.Dockerfile` for the consumer project;
+- `runner-image-contract.sh` for static image verification;
 - `env.example` listing required deployment variables.
 
 Favn never overwrites the directory. The customer owns changes, extra services,
 volumes, networks, ingress, observability, and registry policy.
+
+Both example services drop all Linux capabilities, disable privilege
+escalation, use a read-only root filesystem, and receive a small writable
+`/tmp`. If customer assets intentionally write local files, add a narrowly
+scoped volume for those files; do not make the release, DuckDB driver, or
+extension directory writable.
 
 PostgreSQL is intentionally absent. Supply a reachable PostgreSQL service and
 run migration/provisioning as separate operator steps. The portable template

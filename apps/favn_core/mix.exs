@@ -4,7 +4,7 @@ defmodule FavnCore.MixProject do
   def project do
     [
       app: :favn_core,
-      version: "0.5.0-dev",
+      version: "0.5.0-rc.1",
       description: "Internal core contracts scaffold for v0.5 migration",
       build_path: "../../_build",
       config_path: "../../config/config.exs",

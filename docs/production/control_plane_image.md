@@ -11,15 +11,26 @@ a separate runner image containing its own project code and plugins.
 From the Favn repository root:
 
 ```bash
+source <(scripts/release_metadata.sh --export)
+
 docker build \
+  --platform linux/amd64 \
   -f rel/control_plane/Dockerfile \
+  --build-arg FAVN_CONTROL_PLANE_VERSION \
+  --build-arg FAVN_MANIFEST_SCHEMA_VERSION \
+  --build-arg FAVN_RUNNER_CONTRACT_VERSION \
   -t favn-control-plane:dev \
   .
 ```
 
-The Dockerfile consumes the repository directly. There is no generated build
-context, build-ID registry, `mix favn.build.control_plane`, or maintainer
-development mode.
+The metadata script reads the version and compatibility contracts from the
+checked-out source. The Docker build verifies those values against the compiled
+release before applying image labels. It has no fallback labels that can drift
+from the executable.
+
+The Dockerfile consumes the repository through a BuildKit bind mount. There is
+no generated build context, build-ID registry, `mix favn.build.control_plane`,
+or maintainer development mode.
 
 CI performs the same root build, validates the image contract, scans it, and
 publishes commit images. Production deployments use the resulting digest:
@@ -31,6 +42,7 @@ ghcr.io/eirhop/favn-control-plane@sha256:<digest>
 The image:
 
 - runs as UID/GID `10001`;
+- keeps the root filesystem and root-owned release code read-only at runtime;
 - contains no Mix, runner, authoring, or local-development application;
 - contains precompiled View assets;
 - requires runtime secrets through the process environment;
@@ -40,8 +52,36 @@ The image:
 Run the static contract locally after building:
 
 ```bash
-scripts/control_plane_image_contract.sh favn-control-plane:dev
+scripts/control_plane_image_contract.sh favn-control-plane:dev "$FAVN_CONTROL_PLANE_VERSION"
 ```
+
+## Promote a release candidate
+
+The `Control-plane image` workflow builds, verifies, scans, attests, and
+publishes `sha-<commit>` for every green push to `main`. A version tag promotes
+that exact digest without rebuilding it. The promotion workflow rejects a tag
+unless its version equals the source version and both CI and image qualification
+passed for the tagged commit.
+
+For `0.5.0-rc.1`, tag the already-qualified `main` commit:
+
+```bash
+git switch main
+git pull --ff-only origin main
+test "$(scripts/release_metadata.sh | sed -n 's/^FAVN_CONTROL_PLANE_VERSION=//p')" = "0.5.0-rc.1"
+gh run list --workflow CI --branch main --commit "$(git rev-parse HEAD)"
+gh run list --workflow control-plane-image.yml --branch main --commit "$(git rev-parse HEAD)"
+git tag -s v0.5.0-rc.1 -m "Favn 0.5.0-rc.1"
+git push origin v0.5.0-rc.1
+gh run list --workflow control-plane-release.yml --limit 5
+gh run watch <release-workflow-run-id> --exit-status
+```
+
+The workflow creates a GitHub prerelease and the
+`ghcr.io/eirhop/favn-control-plane:v0.5.0-rc.1` lookup tag. Deploy the digest
+recorded in the release notes, not that mutable tag. This repository does not
+currently define a Hex publishing workflow; source/Hex packaging is a separate
+release decision.
 
 ## Build the customer runner
 
@@ -58,19 +98,26 @@ to the same ID in the manifest:
 export RUNNER_RELEASE_ID="rr_<64-lowercase-hex-characters>"
 
 docker build \
+  --platform linux/amd64 \
   -f deploy/favn/runner.Dockerfile \
   --build-arg FAVN_CUSTOMER_APP=my_app \
   --build-arg FAVN_RUNNER_RELEASE_ID="$RUNNER_RELEASE_ID" \
   -t registry.example/customer-favn-runner:"$RUNNER_RELEASE_ID" \
   .
 
+deploy/favn/runner-image-contract.sh \
+  registry.example/customer-favn-runner:"$RUNNER_RELEASE_ID" \
+  "$RUNNER_RELEASE_ID"
+
 MIX_ENV=prod mix favn.build.manifest \
   --runner-release "default=$RUNNER_RELEASE_ID"
 ```
 
-The runner image is customer-owned because it contains customer code,
-dependencies, native libraries, and plugins. Favn does not infer how it should
-be built or published.
+The generated runner installs the pinned DuckDB ADBC shared library plus
+DuckLake, PostgreSQL scanner, and JSON extensions. This is the supported Favn
+SQL runtime. The runner image remains customer-owned because it also contains
+customer code, dependencies, and plugins; customer CI owns scanning, signing,
+publication, and its final extension set.
 
 ## Deployment contract
 

@@ -111,11 +111,16 @@ manifest with the same ID:
 export RUNNER_RELEASE_ID="rr_<64-lowercase-hex-characters>"
 
 docker build \
+  --platform linux/amd64 \
   -f deploy/favn/runner.Dockerfile \
   --build-arg FAVN_CUSTOMER_APP=my_app \
   --build-arg FAVN_RUNNER_RELEASE_ID="$RUNNER_RELEASE_ID" \
   -t registry.example/customer-runner:"$RUNNER_RELEASE_ID" \
   .
+
+deploy/favn/runner-image-contract.sh \
+  registry.example/customer-runner:"$RUNNER_RELEASE_ID" \
+  "$RUNNER_RELEASE_ID"
 
 MIX_ENV=prod mix favn.build.manifest \
   --runner-release "default=$RUNNER_RELEASE_ID"

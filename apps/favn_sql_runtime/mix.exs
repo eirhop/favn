@@ -4,7 +4,7 @@ defmodule FavnSQLRuntime.MixProject do
   def project do
     [
       app: :favn_sql_runtime,
-      version: "0.5.0-dev",
+      version: "0.5.0-rc.1",
       description: "Shared SQL runtime contracts and client",
       build_path: "../../_build",
       config_path: "../../config/config.exs",
