@@ -60,7 +60,7 @@ defmodule FavnOrchestrator.API.IdempotentCommandTest do
     )
 
     {:ok, agent} =
-      Agent.start_link(fn ->
+      Agent.start(fn ->
         %{
           reserve: :ok,
           complete: :ok,
@@ -79,6 +79,8 @@ defmodule FavnOrchestrator.API.IdempotentCommandTest do
                options: [],
                stores: struct(Stores, identity: IdentityStore)
              })
+
+    Process.unlink(runtime)
 
     on_exit(fn ->
       if Process.alive?(runtime), do: GenServer.stop(runtime)
