@@ -34,6 +34,7 @@ defmodule FavnStoragePostgres.MixProject do
       internal_dep(:favn_runner, "../favn_runner", only: :test, runtime: false),
       internal_dep(:favn_test_support, "../favn_test_support", only: :test, runtime: false),
       {:ecto_sql, "~> 3.14"},
+      {:jason, "~> 1.4"},
       {:postgrex, "~> 0.22"}
     ]
   end

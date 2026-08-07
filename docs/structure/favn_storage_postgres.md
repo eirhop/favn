@@ -71,15 +71,21 @@ Favn's PostgreSQL 18 control-plane persistence.
 - Immutable deployment-target rows include bounded, fingerprinted JSONB catalogue
   descriptors. Customer catalogue reads use those indexed rows and do not decode a
   full manifest.
-- Reset-baseline migrations live under `migrations/` and create the dedicated
-  `favn_control` schema.
-- `FavnStoragePostgres.Release` owns migration, exact-schema verification,
-  workspace provisioning, runtime grants, restore verification, key inventory,
-  explicit key compaction, and upgrade preflight behavior.
+- Reset-baseline migrations live under `migrations/`. The one-off bootstrap
+  workflow creates and assigns the dedicated `favn_control` schema before the
+  normal NOCREATEROLE migrator applies those migrations.
+- `FavnStoragePostgres.Bootstrap` composes read-only status, idempotent bootstrap,
+  and normal upgrade across explicit bootstrap, migrator, and runtime connection
+  profiles. Provider-neutral role/database policy lives under `bootstrap/`;
+  `RuntimePrivileges` owns only Favn schema grants.
+- `FavnStoragePostgres.Release` implements those composite Jobs plus local/internal
+  transition migration, exact-schema verification, workspace provisioning, restore
+  verification, key inventory, and explicit key compaction operations.
   `FavnStoragePostgres.DevelopmentUpgrade` composes migration, runtime grants,
   and runtime-identity verification for the explicit development-only upgrade
-  task. Production keeps those release operations in separate processes. Mix
-  tasks under `lib/mix/` are thin development wrappers.
+  task. Production uses the composite one-off Job and never starts it from the
+  resident control plane. Mix tasks under `lib/mix/` are thin development
+  wrappers.
 - Platform maintenance can remove old execution packages only when no manifest link
   references them; the global content-addressed registry cannot be purged by
   workspace.

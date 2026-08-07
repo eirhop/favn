@@ -77,19 +77,17 @@ defmodule Favn.Azure.ControlPlanePostgresAuth.Server do
     {:reply, status, state}
   end
 
+  def handle_call({:password_delivery, delivery}, _from, state) do
+    {:reply, :ok, record_delivery(state, delivery)}
+  end
+
   @impl true
   def handle_cast({:password_delivery, :ok}, state) do
-    {:noreply,
-     %{
-       state
-       | successful_password_deliveries: state.successful_password_deliveries + 1,
-         last_password_delivery_monotonic_ms: System.monotonic_time(:millisecond),
-         last_failure_class: nil
-     }}
+    {:noreply, record_delivery(state, :ok)}
   end
 
   def handle_cast({:password_delivery, {:error, class}}, state) when is_atom(class) do
-    {:noreply, %{state | last_failure_class: class}}
+    {:noreply, record_delivery(state, {:error, class})}
   end
 
   @impl true
@@ -104,6 +102,18 @@ defmodule Favn.Azure.ControlPlanePostgresAuth.Server do
       last_failure_class: state.last_failure_class
     }
   end
+
+  defp record_delivery(state, :ok) do
+    %{
+      state
+      | successful_password_deliveries: state.successful_password_deliveries + 1,
+        last_password_delivery_monotonic_ms: System.monotonic_time(:millisecond),
+        last_failure_class: nil
+    }
+  end
+
+  defp record_delivery(state, {:error, class}) when is_atom(class),
+    do: %{state | last_failure_class: class}
 
   defp alive?(pid) when is_pid(pid), do: Process.alive?(pid)
   defp alive?(name), do: not is_nil(Process.whereis(name))

@@ -220,12 +220,14 @@ build_images certificates postgres control-plane security-browser
 
 compose up certificates
 compose up --detach postgres
-for operation in database-migrate database-grant workspace-provision database-verify; do
-  compose --profile operations run --rm "$operation"
-done
+compose --profile operations run --rm database-bootstrap
 
-compose --profile security --profile proxy-security up --detach \
-  control-plane proxy-header-receiver https-proxy
+if ! compose --profile security --profile proxy-security up --detach \
+  control-plane proxy-header-receiver https-proxy; then
+  compose ps --all >&2 || true
+  compose logs --no-color control-plane >&2 || true
+  exit 1
+fi
 
 bootstrap_expression='case FavnStoragePostgres.Release.admin_bootstrap(%{workspace_ids: ["elastic-simulation"], username: "security-admin", display_name: "Security qualification administrator", password: File.read!("/run/secrets/favn-security/admin-password") |> String.trim()}) do {:ok, _result} -> :ok; {:error, failure} -> IO.inspect(failure); System.halt(1) end'
 compose exec -T control-plane //app/bin/favn_control_plane eval "$bootstrap_expression"

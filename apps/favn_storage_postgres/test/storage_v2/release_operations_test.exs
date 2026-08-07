@@ -69,9 +69,23 @@ defmodule FavnStoragePostgres.StorageV2.ReleaseOperationsTest do
 
     on_exit(fn -> :telemetry.detach(telemetry_handler) end)
 
+    connection_options =
+      database_url
+      |> Ecto.Repo.Supervisor.parse_url()
+      |> Keyword.put(:ssl, false)
+
+    connection =
+      start_supervised!({Postgrex, connection_options},
+        id: :release_operation_setup_connection
+      )
+
+    Postgrex.query!(connection, "CREATE SCHEMA IF NOT EXISTS favn_control", [])
+
     log =
       capture_log(fn ->
-        assert {:ok, %{operation: :migrate, status: :ok}} = Release.migrate()
+        assert {:error, %{operation: :migrate, status: :error, code: :unsafe_migrator_authority}} =
+                 Release.migrate()
+
         refute Process.whereis(Repo)
 
         assert {:ok,
@@ -111,16 +125,6 @@ defmodule FavnStoragePostgres.StorageV2.ReleaseOperationsTest do
         assert {:ok, %{operation: :verify_restore, status: :ok, statement_timeout_ms: 600_000}} =
                  Release.verify_restore()
 
-        connection_options =
-          database_url
-          |> Ecto.Repo.Supervisor.parse_url()
-          |> Keyword.put(:ssl, false)
-
-        connection =
-          start_supervised!({Postgrex, connection_options},
-            id: :release_operation_setup_connection
-          )
-
         Postgrex.query!(
           connection,
           """
@@ -158,6 +162,20 @@ defmodule FavnStoragePostgres.StorageV2.ReleaseOperationsTest do
                   requested_versions: [98],
                   removed_versions: [98]
                 }} = Release.compact_runtime_input_keys(98)
+
+        System.delete_env("FAVN_DEPLOYMENT_MODE")
+
+        assert {:error, %{operation: :migrate, status: :error, code: :unsafe_migrator_authority}} =
+                 Release.migrate()
+
+        assert {:error,
+                %{
+                  operation: :grant_runtime,
+                  status: :error,
+                  code: :unsafe_migrator_authority
+                }} = Release.grant_runtime()
+
+        System.put_env("FAVN_DEPLOYMENT_MODE", "production")
 
         %{rows: [[current_role]]} = Postgrex.query!(connection, "SELECT current_user", [])
         System.put_env("FAVN_DATABASE_RUNTIME_ROLE", current_role)

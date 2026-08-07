@@ -95,6 +95,40 @@ docker run --rm \
 docker run --rm --entrypoint /bin/sh "$image" -c \
   "file=\$(find /app/lib -path '*/favn_view-*/priv/static/cache_manifest.json' -type f -print -quit); test -n \"\$file\"; sha256sum \"\$file\" | cut -d ' ' -f 1"
 
+set +e
+status_stdout=$(docker run --rm \
+  --network none \
+  --read-only \
+  --tmpfs /tmp:rw,noexec,nosuid,size=64m,uid=10001,gid=10001,mode=0700 \
+  --cap-drop ALL \
+  --security-opt no-new-privileges:true \
+  --entrypoint /app/bin/favn_control_plane_ops \
+  "$image" status)
+status_exit=$?
+set -e
+if [[ $status_exit -ne 64 ]]; then
+  echo "status contract returned exit $status_exit instead of 64" >&2
+  exit 1
+fi
+status_nonempty_lines=$(printf '%s\n' "$status_stdout" | awk 'NF { count++ } END { print count + 0 }')
+if [[ $status_nonempty_lines -ne 1 ]]; then
+  echo "status contract stdout contained $status_nonempty_lines non-empty lines instead of one" >&2
+  printf '%s\n' "$status_stdout" | sed -n 'l' >&2
+  exit 1
+fi
+if ! grep -Eq '^\{.*\}$' <<< "$status_stdout"; then
+  echo "status contract stdout was not one JSON object" >&2
+  exit 1
+fi
+if ! grep -Fq '"operation":"status"' <<< "$status_stdout"; then
+  echo "status contract stdout omitted the operation" >&2
+  exit 1
+fi
+if ! grep -Fq '"state":"invalid_configuration"' <<< "$status_stdout"; then
+  echo "status contract stdout omitted the invalid configuration state" >&2
+  exit 1
+fi
+
 assert_launcher_rejects() {
   local expected=$1 node=$2 cookie=$3 output status
 
@@ -103,7 +137,7 @@ assert_launcher_rejects() {
     --env "FAVN_CONTROL_PLANE_NODE=$node" \
     --env "FAVN_DISTRIBUTION_COOKIE=$cookie" \
     --env FAVN_BEAM_DISTRIBUTION_PORT=9101 \
-    "$image" eval ':ok' 2>&1)
+    "$image" start 2>&1)
   status=$?
   set -e
 
@@ -122,9 +156,6 @@ utf8_output=$(docker run --rm \
   --tmpfs /tmp:rw,noexec,nosuid,size=64m,uid=10001,gid=10001,mode=0700 \
   --cap-drop ALL \
   --security-opt no-new-privileges:true \
-  --env FAVN_CONTROL_PLANE_NODE=control@control.internal \
-  --env "FAVN_DISTRIBUTION_COOKIE=$valid_cookie" \
-  --env FAVN_BEAM_DISTRIBUTION_PORT=9101 \
   "$image" eval 'true = File.dir?(System.fetch_env!("HOME")); IO.puts("utf8-ok")' 2>&1)
 [[ $utf8_output == *"utf8-ok"* ]]
 [[ $utf8_output != *"native name encoding of latin1"* ]]

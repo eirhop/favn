@@ -37,9 +37,9 @@ databases and does not delete them.
    has a complete runner pool-to-release map.
 3. Stop admission and terminate the current control plane, allowing its bounded
    drain to finish before the platform kills the container.
-4. From the candidate image, run the required external `migrate`,
-   `grant-runtime`, `verify-schema`, and workspace-provisioning operations with
-   the correct database identities. Startup does not run them.
+4. From the candidate image, run `favn_control_plane_ops upgrade` in a no-ingress
+   Job with only the migrator and runtime identities. Require exit `0`, state
+   `ready`, and `runtime_verified: true`. Startup does not run it.
 5. Start the candidate digest with the unchanged runner and runtime environment.
 6. Require full readiness, sign in through View, and execute one SQL plus one
    Elixir smoke run.
@@ -56,6 +56,8 @@ upgrade/rollback drill. Qualify it against the target PostgreSQL service and
 deployment image set before production use. The database-specific commands and
 compatibility checks are in
 [`postgresql_operator_runbook.md`](postgresql_operator_runbook.md).
+The first-install and Job identity contract is in
+[`postgresql_bootstrap.md`](postgresql_bootstrap.md).
 
 ## Runner plus manifest upgrade
 

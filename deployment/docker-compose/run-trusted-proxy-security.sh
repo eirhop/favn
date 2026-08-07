@@ -74,9 +74,7 @@ build_images certificates postgres control-plane
 compose up certificates
 compose up --detach postgres
 
-for operation in database-migrate database-grant workspace-provision database-verify; do
-  compose run --rm "$operation"
-done
+compose run --rm database-bootstrap
 
 compose up --detach control-plane proxy-header-receiver https-proxy
 compose run --rm proxy-security

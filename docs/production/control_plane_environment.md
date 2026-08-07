@@ -47,6 +47,29 @@ identity-provider failures fail closed and enter connection backoff; Favn never
 retries a database write or transaction. Release operations use the same path.
 Use separate managed identities and PostgreSQL roles for runtime and migration.
 
+### One-off database Job profiles
+
+First installation and later upgrades use the same image but a separate
+composite environment contract. Prefix each connection with
+`FAVN_DATABASE_BOOTSTRAP_`, `FAVN_DATABASE_MIGRATOR_`, or
+`FAVN_DATABASE_RUNTIME_`. Each profile selects `password` or
+`azure_managed_identity` and supplies that mode's URL or
+username/client-ID values. Managed migrator/runtime profiles also require their
+exact `*_AZURE_OBJECT_ID`; the bootstrap profile connects through an identity
+the deployment has already authorized.
+
+`bootstrap` requires all three profiles plus `FAVN_WORKSPACE_ID` and optional
+slug/name. `upgrade` rejects the bootstrap profile and requires no workspace.
+`status` accepts the bootstrap profile when the deployment needs inspection of
+missing database/provider state. The ordinary unprefixed `FAVN_DATABASE_URL`
+may serve as the password runtime profile.
+
+Database Jobs run through release `eval` with distributed Erlang disabled. They
+do not require `FAVN_CONTROL_PLANE_NODE`, `FAVN_DISTRIBUTION_COOKIE`,
+`FAVN_BEAM_DISTRIBUTION_PORT`, or `ERL_EPMD_PORT`. See
+[`postgresql_bootstrap.md`](postgresql_bootstrap.md) for the complete variables,
+identity separation, command sequence, and JSON/exit contract.
+
 Production rejects plaintext PostgreSQL, including loopback URLs and unsafe
 interlock variables. Runtime code receives the validated connection and key-ring
 values through frozen application configuration; it does not reread environment

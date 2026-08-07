@@ -11,7 +11,7 @@ UI completion, managed-provider evidence, and data-plane recovery.
 | Area | Status | Production gate |
 | --- | --- | --- |
 | PostgreSQL Storage V2 | Implemented | Prove it against a production-sized restored snapshot and managed-provider PITR. |
-| Azure PostgreSQL managed identity | Connection/reconnect and release operations implemented; infrastructure remains operator-owned | Run #588's passwordless, long-duration reconnect acceptance in the target Azure environment. |
+| PostgreSQL bootstrap Jobs | Provider-neutral password workflow and Azure identity-mapping adapter implemented; infrastructure and temporary authorization remain operator-owned | Qualify first install, existing-install hardening, cleanup, and long-duration reconnect in the target Azure environment. |
 | Workspace isolation, fencing, idempotency, bounded reads | Implemented | Record load, contention, failover, and recovery evidence. |
 | Lifecycle, readiness, bounded drain | Implemented | Owning-layer tests cover policy; real signal, cancellation, and recovery drills remain target-environment evidence. |
 | Control-plane release image | Implemented | CI directly builds, scans, attests, and publishes green commit images. |
@@ -60,6 +60,8 @@ service. Multi-control-plane application failover is a later topology claim.
   operator-owned infrastructure, startup order, and runtime limitations.
 - [`control_plane_image.md`](control_plane_image.md) defines the immutable OCI
   images, direct repository build, publishing, and maintainer candidate path.
+- [`postgresql_bootstrap.md`](postgresql_bootstrap.md) defines one-command
+  database Jobs, identity profiles, provider boundaries, and stable results.
 - [`runner_releases.md`](runner_releases.md) defines runner/manifest identities,
   rebuild classification, customer image ownership, publication, and activation.
 - [`upgrade_and_rollback.md`](upgrade_and_rollback.md) defines control-plane,

@@ -6,8 +6,6 @@ defmodule FavnStoragePostgres.Migrations.CreateStorageV2 do
   @prefix "favn_control"
 
   def up do
-    execute("CREATE SCHEMA IF NOT EXISTS #{@prefix}")
-
     create table(:workspaces, prefix: @prefix, primary_key: false) do
       add(:workspace_id, :text, primary_key: true)
       add(:slug, :text, null: false)

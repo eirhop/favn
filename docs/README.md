@@ -44,6 +44,8 @@ control-plane database. The canonical technical documentation is:
    and clean-build expectations.
 4. [`production/postgresql_operator_runbook.md`](production/postgresql_operator_runbook.md)
    — deployment and operational procedures.
+5. [`production/postgresql_bootstrap.md`](production/postgresql_bootstrap.md) —
+   one-command bootstrap/upgrade Jobs, identity profiles, and result contract.
 
 [`architecture/postgresql-control-plane-storage-v2.md`](architecture/postgresql-control-plane-storage-v2.md)
 is the concise decision record: use it for rationale, rejected alternatives,

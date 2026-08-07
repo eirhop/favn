@@ -11,6 +11,7 @@ defmodule FavnStoragePostgres.Release do
   require Logger
 
   alias Ecto.Adapters.SQL
+  alias Favn.DeploymentMode
   alias Favn.RuntimeInput.KeyringConfig
   alias FavnOrchestrator.AdminLifecycle
   alias FavnOrchestrator.Persistence.Commands.ProvisionWorkspace
@@ -18,11 +19,12 @@ defmodule FavnStoragePostgres.Release do
   alias FavnOrchestrator.Persistence.PlatformContext
   alias FavnOrchestrator.Redaction
   alias FavnStoragePostgres.Authentication
+  alias FavnStoragePostgres.Bootstrap, as: DatabaseBootstrap
   alias FavnStoragePostgres.Config
   alias FavnStoragePostgres.Identity.Store, as: IdentityStore
-  alias FavnStoragePostgres.Privileges
   alias FavnStoragePostgres.Registry.Store
   alias FavnStoragePostgres.Repo
+  alias FavnStoragePostgres.RuntimePrivileges
   alias FavnStoragePostgres.RuntimeInputKeyInventory
   alias FavnStoragePostgres.Schemas.Workspace
   alias FavnStoragePostgres.StorageV2.Migrations
@@ -32,7 +34,10 @@ defmodule FavnStoragePostgres.Release do
   @restore_timeout_ms 600_000
 
   @type operation ::
-          :migrate
+          :bootstrap
+          | :status
+          | :upgrade
+          | :migrate
           | :admin_bootstrap
           | :admin_recover
           | :admin_password_reset
@@ -59,13 +64,28 @@ defmodule FavnStoragePostgres.Release do
         }
   @type result :: {:ok, success()} | {:error, failure()}
 
+  @doc "Inspects current provider and PostgreSQL bootstrap state without writing."
+  @spec database_status(map()) :: DatabaseBootstrap.result()
+  def database_status(env \\ System.get_env()) when is_map(env),
+    do: DatabaseBootstrap.status(env)
+
+  @doc "Creates or safely resumes all Favn-owned PostgreSQL setup."
+  @spec bootstrap(map()) :: DatabaseBootstrap.result()
+  def bootstrap(env \\ System.get_env()) when is_map(env),
+    do: DatabaseBootstrap.bootstrap(env)
+
+  @doc "Migrates, converges runtime grants, and verifies through the runtime identity."
+  @spec upgrade(map()) :: DatabaseBootstrap.result()
+  def upgrade(env \\ System.get_env()) when is_map(env),
+    do: DatabaseBootstrap.upgrade(env)
+
   @doc "Applies every known Storage V2 migration with an elevated database role."
   @spec migrate() :: result()
   @spec migrate(map()) :: result()
   def migrate(env \\ System.get_env()) when is_map(env) do
     database_operation(:migrate, env, fn ->
       with :ok <- require_elevated_role(:migrate, env),
-           :ok <- Migrations.migrate!(Repo) do
+           :ok <- Migrations.migrate_existing_schema!(Repo) do
         versions = Migrations.expected_versions()
         Logger.info("favn.release.postgres_migrated migration_versions=#{inspect(versions)}")
         ok(:migrate, migration_versions: versions)
@@ -437,7 +457,7 @@ defmodule FavnStoragePostgres.Release do
     end
   end
 
-  @doc "Converges least-privilege grants for the configured runtime role."
+  @doc "Converges Favn schema grants for an already-hardened runtime role."
   @spec grant_runtime() :: result()
   @spec grant_runtime(map()) :: result()
   def grant_runtime(env \\ System.get_env()) when is_map(env) do
@@ -446,7 +466,7 @@ defmodule FavnStoragePostgres.Release do
 
       with :ok <- require_elevated_role(:grant_runtime, env),
            :ok <- validate_role(:grant_runtime, role),
-           :ok <- Privileges.grant_runtime!(Repo, role) do
+           :ok <- RuntimePrivileges.grant_runtime!(Repo, role) do
         Logger.info("favn.release.postgres_runtime_granted role=#{role}")
         ok(:grant_runtime, role: role)
       end
@@ -718,18 +738,60 @@ defmodule FavnStoragePostgres.Release do
   end
 
   defp require_elevated_role(operation, env) do
-    %{rows: [[current_role]]} = SQL.query!(Repo, "SELECT current_user", [])
+    case DeploymentMode.from_env(env) do
+      {:ok, :production} -> require_production_migrator(operation, env)
+      {:error, _reason} -> error(operation, :invalid_database_configuration)
+    end
+  end
+
+  defp require_production_migrator(operation, env) do
+    %{
+      rows: [
+        [
+          current_role,
+          superuser?,
+          create_database?,
+          create_role?,
+          inherit?,
+          replication?,
+          bypass_rls?,
+          memberships?
+        ]
+      ]
+    } =
+      SQL.query!(
+        Repo,
+        """
+        SELECT role.rolname, role.rolsuper, role.rolcreatedb, role.rolcreaterole,
+               role.rolinherit, role.rolreplication, role.rolbypassrls,
+               EXISTS (
+                 SELECT 1
+                 FROM pg_catalog.pg_auth_members membership
+                 WHERE membership.member = role.oid
+               )
+        FROM pg_catalog.pg_roles role
+        WHERE role.rolname = CURRENT_USER
+        """,
+        []
+      )
+
     runtime_role = Map.get(env, "FAVN_DATABASE_RUNTIME_ROLE", @default_runtime_role)
 
-    if current_role == runtime_role do
-      error(operation, :restricted_runtime_role, role: current_role)
-    else
-      :ok
+    cond do
+      current_role == runtime_role ->
+        error(operation, :restricted_runtime_role, role: current_role)
+
+      superuser? or create_database? or create_role? or inherit? or replication? or bypass_rls? or
+          memberships? ->
+        error(operation, :unsafe_migrator_authority, role: current_role)
+
+      true ->
+        :ok
     end
   end
 
   defp validate_role(operation, role) do
-    Privileges.quote_identifier!(role)
+    RuntimePrivileges.quote_identifier!(role)
     :ok
   rescue
     ArgumentError -> error(operation, :invalid_runtime_role)

@@ -1,8 +1,8 @@
 # PostgreSQL Control-Plane Operator Runbook
 
-Status: Storage V2 implementation runbook; issue #588's managed-identity path is
-implemented, while its live Azure acceptance remains part of the #523/#578
-production proof.
+Status: Storage V2 implementation runbook; password and managed-identity Job
+paths are implemented, while live Azure bootstrap acceptance remains production
+qualification evidence.
 Scope: Favn-owned `favn_control` schema on PostgreSQL 18
 
 Implementation architecture and ER diagrams live in
@@ -69,12 +69,12 @@ FAVN_DATABASE_SSL_MODE=verify-full
 FAVN_DATABASE_SSL_CA_FILE=/run/secrets/postgresql-ca.pem
 ```
 
-The migration job uses the same variables with its distinct client ID and
-`FAVN_DATABASE_USERNAME=favn_migrator`. PostgreSQL must map the two Entra
-service principals to separate roles before either process starts. A provider
-or token failure prevents new connections and follows connection backoff;
-existing healthy sessions continue. Do not retry an operation whose database
-outcome is unknown.
+The one-off database Job uses distinct bootstrap, migrator, and runtime profiles.
+For Azure, the bootstrap profile maps the two Entra service principals to their
+separate PostgreSQL roles; operators do not run that SQL manually. See
+[PostgreSQL bootstrap](postgresql_bootstrap.md). A provider or token failure
+prevents new connections and follows connection backoff; existing healthy
+sessions continue. Do not retry an operation whose database outcome is unknown.
 
 `FAVN_WORKSPACE_IDS` configures scheduler scope only; it is not an administrator
 bootstrap or run-recovery authority boundary. Administrator bootstrap names its
@@ -111,8 +111,11 @@ Docker and PostgreSQL client tools are prerequisites for the repository scripts.
 scripts/postgres/setup
 ```
 
-This pulls the latest PostgreSQL 18 image, starts the container, migrates `favn_control`,
-grants the runtime role, and provisions the `local-dev` workspace.
+This starts the pinned PostgreSQL 18 container and runs the same idempotent
+bootstrap workflow used by deployments. The container administrator is
+`favn_bootstrap`; bootstrap creates and hardens separate `favn_migrator` and
+`favn_runtime` roles, migrates `favn_control`, grants runtime access, and
+provisions the `local-dev` workspace.
 `scripts/postgres/stop` preserves the volume. The destructive
 reset is explicit:
 
@@ -120,14 +123,19 @@ reset is explicit:
 scripts/postgres/reset
 ```
 
-Developers using another service set `FAVN_DATABASE_MIGRATOR_URL` before setup.
+`scripts/postgres/setup` refuses volumes created before this role split. Because
+the repository database is disposable, use `scripts/postgres/reset` once to
+replace that legacy volume.
+
+The repository scripts own only this disposable local container. Developers
+using another PostgreSQL service follow the bootstrap profile contract below.
 Credentials in `compose.postgres.yml` are local-only.
 
 The repository-only local container does not enable TLS and uses explicit dev/test
 configuration. The production loader always requires verified PostgreSQL TLS and
 has no plaintext interlock.
 
-## Deployment and migrations
+## Deployment, bootstrap, and migrations
 
 Runtime nodes never migrate at boot.
 Use this database procedure together with the immutable runtime sequence in
@@ -138,76 +146,54 @@ Use this database procedure together with the immutable runtime sequence in
    upgrades do not upconvert manifests or runs written by an older schema.
 2. Confirm a current backup/PITR recovery point and recent successful restore drill.
 3. Prevent rollout of runtime code that requires the new schema.
-4. Run the candidate image with the migrator identity to apply migrations and
-   grants:
+4. For a first installation, run one candidate-image Job with temporary
+   bootstrap authority plus the migrator and runtime identities:
 
    ```bash
    docker run --rm \
-     --env-file /secure/favn-migrator.env \
+     --env-file /secure/favn-bootstrap.env \
      --entrypoint /app/bin/favn_control_plane_ops \
      ghcr.io/eirhop/favn-control-plane@sha256:<digest> \
-     migrate
-   docker run --rm \
-     --env-file /secure/favn-migrator.env \
-     --entrypoint /app/bin/favn_control_plane_ops \
-     ghcr.io/eirhop/favn-control-plane@sha256:<digest> \
-     grant-runtime
+     bootstrap
    ```
 
-   Then run exact schema verification from a separate one-off process configured
-   with the runtime database identity. Production verification deliberately
-   rejects a connection whose current database user is not the configured runtime
-   role:
+   Require exit `0`, JSON state `ready`, and `runtime_verified: true`. Only then
+   may deployment automation remove the bootstrap administrator assignment,
+   bootstrap identity attachment, and bootstrap Job. The resident control plane
+   starts with the runtime identity only.
+
+   For a later release, use a Job with only migrator and runtime profiles:
 
    ```bash
    docker run --rm \
-     --env-file /secure/favn-runtime-verify.env \
+     --env-file /secure/favn-upgrade.env \
      --entrypoint /app/bin/favn_control_plane_ops \
      ghcr.io/eirhop/favn-control-plane@sha256:<digest> \
-     verify-schema
+     upgrade
    ```
 
-   Development keeps both local URLs in one trusted shell and composes the same
-   three operations explicitly:
+   Both commands open a new restricted runtime connection for final verification.
+   `upgrade` refuses bootstrap authority and cannot create roles, databases,
+   schemas, or workspaces. Development keeps both local URLs in one trusted shell:
 
    ```bash
    mix favn.postgres.upgrade
    ```
 
-   Production does not use this convenience task because the migrator and
-   runtime verification identities remain isolated in separate one-off
-   processes.
-
-   Provision a workspace before adding it to a runtime's allowed workspace set.
-   Production uses the candidate release image with the elevated database
-   identity:
-
-   Put `FAVN_WORKSPACE_ID=salmon-one`, `FAVN_WORKSPACE_SLUG=salmon-one`, and
-   `FAVN_WORKSPACE_NAME=Salmon One` in the one-off migrator env file, then run:
-
-   ```bash
-   docker run --rm \
-     --env-file /secure/favn-migrator.env \
-     --entrypoint /app/bin/favn_control_plane_ops \
-     ghcr.io/eirhop/favn-control-plane@sha256:<digest> \
-     provision-workspace
-   ```
-
-   The development wrapper is:
-
-   ```bash
-   mix favn.postgres.provision_workspace \
-     --id salmon-one --slug salmon-one --name "Salmon One"
-   ```
+   Existing deployments may retain the low-level transition commands until one
+   successful `bootstrap` has hardened their migrator and verified the current
+   database. New automation follows
+   [`postgresql_bootstrap.md`](postgresql_bootstrap.md), which contains password
+   and Azure variables, Job identity lifetime, status states, and exit codes.
 
 5. Start one canary and require readiness to report `ready?: true`.
 6. Check database errors, lock waits, pool queue time, projection lag, and outbox lag.
 
-Release operations emit start/stop telemetry at
-`[:favn, :storage_postgres, :release_operation, :start | :stop]`. Completion
-events contain a bounded duration measurement and metadata limited to operation,
-status, and a stable error code; logs must never contain database URLs,
-credentials, TLS material, or key values.
+Composite Jobs emit start/stop telemetry at
+`[:favn, :storage_postgres, :database_workflow, :start | :stop]`. Older focused
+operations retain `:release_operation` telemetry. Completion metadata is bounded
+to operation/outcome/state; logs and JSON never contain database URLs,
+credentials, object IDs, TLS material, or key values.
 
 ## Manifest activation and runner release overlap
 
@@ -296,12 +282,12 @@ keyring.
 
 ## Runtime privileges
 
-The runtime role receives schema usage plus required table/sequence DML. The grant
-task removes inherited role memberships and `CREATE` on the current database,
-`public`, and `favn_control`; it also removes DML from
-`favn_control.schema_migrations` and verifies the converged result. Because PostgreSQL
-grants database/schema creation through `PUBLIC`, the task revokes those shared
-defaults for this dedicated Favn database. Re-run it after a migration adds an object.
+The runtime role receives schema usage plus required table/sequence DML. Bootstrap
+administrator policy removes server/database authority, inherited memberships,
+and shared `PUBLIC` creation defaults. The migrator-owned runtime-grant stage then
+handles only `favn_control` object/default privileges, removes DML from
+`favn_control.schema_migrations`, and verifies the converged result. Normal
+migration and grant execution never requires or receives `CREATEROLE`.
 
 ```sql
 SELECT table_name, privilege_type

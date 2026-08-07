@@ -135,8 +135,16 @@ jobs:
       - name: Compile
         run: mix compile --warnings-as-errors
 
+      - name: Create local PostgreSQL control schema
+        env:
+          PGPASSWORD: postgres
+        run: >-
+          psql --host 127.0.0.1 --username postgres --dbname favn_test
+          --set ON_ERROR_STOP=1
+          --command 'CREATE SCHEMA favn_control AUTHORIZATION postgres'
+
       - name: Migrate PostgreSQL Storage V2
-        run: mix favn.postgres.migrate
+        run: mix favn.postgres.test_setup
 
       - name: Build Phoenix assets
         run: |
@@ -258,11 +266,18 @@ jobs:
           --set ON_ERROR_STOP=1
           --command "CREATE ROLE favn_runtime LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT PASSWORD 'favn_runtime_test'"
 
-      - name: Migrate PostgreSQL Storage V2
-        run: mix favn.postgres.migrate
+      - name: Create local PostgreSQL control schema
+        env:
+          PGPASSWORD: postgres
+        run: |
+          psql --host 127.0.0.1 --username postgres --dbname favn_test \
+            --set ON_ERROR_STOP=1 \
+            --command 'CREATE SCHEMA favn_control AUTHORIZATION postgres' \
+            --command 'REVOKE CONNECT, CREATE, TEMPORARY ON DATABASE favn_test FROM PUBLIC' \
+            --command 'GRANT CONNECT ON DATABASE favn_test TO favn_runtime'
 
-      - name: Grant restricted PostgreSQL runtime privileges
-        run: mix favn.postgres.grant_runtime
+      - name: Prepare PostgreSQL Storage V2
+        run: mix favn.postgres.test_setup --runtime-role favn_runtime
 
       - name: Run favn_local acceptance tests
         run: mix test.acceptance
@@ -326,8 +341,16 @@ jobs:
       - name: Compile
         run: mix compile --warnings-as-errors
 
+      - name: Create local PostgreSQL control schema
+        env:
+          PGPASSWORD: postgres
+        run: >-
+          psql --host 127.0.0.1 --username postgres --dbname favn_test
+          --set ON_ERROR_STOP=1
+          --command 'CREATE SCHEMA favn_control AUTHORIZATION postgres'
+
       - name: Migrate PostgreSQL Storage V2
-        run: mix favn.postgres.migrate
+        run: mix favn.postgres.test_setup
 
       - name: Provision local development workspace
         run: >-
