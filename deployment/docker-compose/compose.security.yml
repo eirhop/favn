@@ -6,19 +6,7 @@ services:
     networks: !override
       - security-database
 
-  database-migrate:
-    networks: !override
-      - security-database
-
-  database-grant:
-    networks: !override
-      - security-database
-
-  workspace-provision:
-    networks: !override
-      - security-database
-
-  database-verify:
+  database-bootstrap:
     networks: !override
       - security-database
 

@@ -103,7 +103,7 @@ assert_launcher_rejects() {
     --env "FAVN_CONTROL_PLANE_NODE=$node" \
     --env "FAVN_DISTRIBUTION_COOKIE=$cookie" \
     --env FAVN_BEAM_DISTRIBUTION_PORT=9101 \
-    "$image" eval ':ok' 2>&1)
+    "$image" start 2>&1)
   status=$?
   set -e
 
@@ -122,9 +122,6 @@ utf8_output=$(docker run --rm \
   --tmpfs /tmp:rw,noexec,nosuid,size=64m,uid=10001,gid=10001,mode=0700 \
   --cap-drop ALL \
   --security-opt no-new-privileges:true \
-  --env FAVN_CONTROL_PLANE_NODE=control@control.internal \
-  --env "FAVN_DISTRIBUTION_COOKIE=$valid_cookie" \
-  --env FAVN_BEAM_DISTRIBUTION_PORT=9101 \
   "$image" eval 'true = File.dir?(System.fetch_env!("HOME")); IO.puts("utf8-ok")' 2>&1)
 [[ $utf8_output == *"utf8-ok"* ]]
 [[ $utf8_output != *"native name encoding of latin1"* ]]

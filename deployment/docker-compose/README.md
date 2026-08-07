@@ -61,8 +61,9 @@ environment setting on older Compose releases.
 2. generates a local CA and separate PostgreSQL, control-plane, and runner
    certificates in isolated volumes so no service receives another service's
    private key;
-3. starts PostgreSQL, migrates, grants the runtime role, provisions the
-   `elastic-simulation` workspace, and verifies the schema;
+3. starts PostgreSQL and runs the packaged one-command database bootstrap, which
+   creates and hardens the migrator/runtime roles, migrates, provisions the
+   `elastic-simulation` workspace, and verifies through the runtime role;
 4. starts the control plane with zero runner capacity;
 5. publishes the exact manifest/release pair at zero runner capacity;
 6. activates it with a one-runner bootstrap scaler for target compatibility
@@ -145,10 +146,7 @@ docker compose --env-file .env.local --project-name favn-qualification-images -f
   certificates postgres control-plane operator runner scaler
 docker compose --env-file .env.local --project-name favn-elastic-simulation -f compose.yml up certificates
 docker compose --env-file .env.local --project-name favn-elastic-simulation -f compose.yml up -d postgres
-docker compose --env-file .env.local --project-name favn-elastic-simulation -f compose.yml run --rm database-migrate
-docker compose --env-file .env.local --project-name favn-elastic-simulation -f compose.yml run --rm database-grant
-docker compose --env-file .env.local --project-name favn-elastic-simulation -f compose.yml run --rm workspace-provision
-docker compose --env-file .env.local --project-name favn-elastic-simulation -f compose.yml run --rm database-verify
+docker compose --env-file .env.local --project-name favn-elastic-simulation -f compose.yml run --rm database-bootstrap
 docker compose --env-file .env.local --project-name favn-elastic-simulation -f compose.yml up -d control-plane
 docker compose --env-file .env.local --project-name favn-elastic-simulation -f compose.yml run --rm operator publish
 ```

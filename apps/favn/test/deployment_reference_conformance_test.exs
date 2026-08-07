@@ -48,10 +48,28 @@ defmodule Favn.DeploymentReferenceConformanceTest do
     assert certificates["image"] == "favn-qualification-certificates:${FAVN_IMAGE_TAG}"
     assert postgres["image"] == "favn-qualification-postgres:${FAVN_IMAGE_TAG}"
     assert "ssl=on" in postgres["command"]
+    assert "log_parameter_max_length=0" in postgres["command"]
+    assert "log_parameter_max_length_on_error=0" in postgres["command"]
     assert postgres["healthcheck"]["test"] |> List.last() =~ "sslmode=verify-full"
-    assert get_in(services, ["database-migrate", "command"]) == ["migrate"]
-    assert get_in(services, ["database-grant", "command"]) == ["grant-runtime"]
-    assert get_in(services, ["database-verify", "command"]) == ["verify-schema"]
+    assert postgres["environment"]["POSTGRES_USER"] == "favn_bootstrap"
+
+    database_bootstrap = services["database-bootstrap"]
+    assert database_bootstrap["command"] == ["bootstrap"]
+    assert database_bootstrap["profiles"] == ["operations"]
+    assert database_bootstrap["restart"] == "no"
+
+    assert database_bootstrap["environment"]["FAVN_DATABASE_BOOTSTRAP_URL"] =~
+             "favn_bootstrap:"
+
+    assert database_bootstrap["environment"]["FAVN_DATABASE_MIGRATOR_URL"] =~
+             "favn_migrator:"
+
+    assert database_bootstrap["environment"]["FAVN_DATABASE_RUNTIME_URL"] =~
+             "favn_runtime:"
+
+    refute Map.has_key?(services, "database-migrate")
+    refute Map.has_key?(services, "database-grant")
+    refute Map.has_key?(services, "database-verify")
 
     assert get_in(control_plane, ["build", "args", "FAVN_CONTROL_PLANE_VERSION"]) ==
              "${FAVN_CONTROL_PLANE_VERSION}"
@@ -64,6 +82,8 @@ defmodule Favn.DeploymentReferenceConformanceTest do
 
     assert control_plane["environment"]["FAVN_DEPLOYMENT_MODE"] == "production"
     assert control_plane["environment"]["FAVN_DATABASE_SSL_MODE"] == "verify-full"
+    refute Map.has_key?(control_plane["environment"], "FAVN_DATABASE_BOOTSTRAP_URL")
+    refute Map.has_key?(control_plane["environment"], "FAVN_DATABASE_MIGRATOR_URL")
 
     assert control_plane["environment"]["FAVN_VIEW_TRUSTED_PROXY_CIDRS"] ==
              "172.31.58.2/32"
@@ -181,7 +201,8 @@ defmodule Favn.DeploymentReferenceConformanceTest do
     assert qualification =~ "safe_failure_classification"
     assert qualification =~ "non_reusable_materialization_claim_succeeded"
     assert qualification =~ "final-validation.json"
-    assert qualification =~ "secret_scan_expected=7"
+    assert qualification =~ "secret_scan_expected=8"
+    assert qualification =~ "FAVN_BOOTSTRAP_DATABASE_PASSWORD"
     assert qualification =~ "configured_secret_values_scanned"
     assert qualification =~ "leaked_variable_names"
     refute qualification =~ "mix favn.run"
@@ -195,6 +216,18 @@ defmodule Favn.DeploymentReferenceConformanceTest do
     status = read("deployment/docker-compose/qualification-status.sh")
     assert status =~ "controller.log"
     assert status =~ "final-validation.json"
+  end
+
+  test "production operations wrapper exposes only composed database lifecycle commands" do
+    wrapper = read("rel/control_plane/overlays/bin/favn_control_plane_ops")
+
+    assert wrapper =~ "bootstrap) operation=bootstrap"
+    assert wrapper =~ "status) operation=status"
+    assert wrapper =~ "upgrade) operation=upgrade"
+    refute wrapper =~ "migrate) operation=migrate"
+    refute wrapper =~ "grant-runtime) operation=grant_runtime"
+    refute wrapper =~ "provision-workspace) operation=provision_workspace"
+    refute wrapper =~ "verify-schema) operation=verify_schema"
   end
 
   test "Compose qualification reuses revision images and excludes generated state" do

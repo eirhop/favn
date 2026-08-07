@@ -56,8 +56,10 @@ Provide:
 1. Select the control-plane image by immutable digest.
 2. Build each runner image with its immutable release ID.
 3. Build and publish the manifest with the exact pool-to-release map.
-4. Back up PostgreSQL, migrate with the candidate image, grant the runtime
-   role, and verify the exact schema. Runtime startup never migrates.
+4. Back up PostgreSQL and run the candidate image's one-off `upgrade` Job. For a
+   new environment, authorize and run the one-off `bootstrap` Job instead, then
+   remove its temporary administrator identity. Both commands verify through
+   the runtime identity; runtime startup never migrates.
 5. Start the control plane and verify readiness. Zero runners is valid.
 6. Deploy one scaler/Job or resident definition for each pool/release
    partition.
@@ -69,6 +71,7 @@ During a runner-image or manifest rollback, restore the matching prior
 pool-to-release map and image definition. Keep old and new partitions available
 until the exact old partition reports durably drained.
 
-See [elastic runners](elastic_runners.md),
+See [PostgreSQL bootstrap](postgresql_bootstrap.md),
+[elastic runners](elastic_runners.md),
 [runner releases](runner_releases.md), and
 [network contract](network_and_proxy.md).

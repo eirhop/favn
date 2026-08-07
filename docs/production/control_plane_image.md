@@ -185,25 +185,25 @@ Do not bake values into either image or pass secrets as Docker build arguments.
 Administrator bootstrap is a separate explicit operation; it is never configured
 through the control-plane environment.
 
-## Migrations and workspace provisioning
+## PostgreSQL bootstrap and upgrades
 
-Run storage operations explicitly with an appropriate database identity before
-starting the control plane. The production operations entrypoint uses the
-`FAVN_DATABASE_URL` supplied to each one-off process:
+Run Favn-owned PostgreSQL setup explicitly before starting the control plane:
 
 ```bash
-bin/favn_control_plane_ops migrate
-bin/favn_control_plane_ops grant-runtime
-bin/favn_control_plane_ops provision-workspace
-bin/favn_control_plane_ops verify-schema
+bin/favn_control_plane_ops status
+bin/favn_control_plane_ops bootstrap
+bin/favn_control_plane_ops upgrade
 ```
 
-The first three commands run with the migrator identity; verification runs in a
-separate process with the restricted runtime identity. Workspace values come
-from `FAVN_WORKSPACE_ID`, `FAVN_WORKSPACE_SLUG`, and `FAVN_WORKSPACE_NAME`.
-Application startup never migrates or provisions PostgreSQL. Development uses
-`mix favn.postgres.upgrade`; production does not combine the two identities in
-one process.
+The one-off process switches between explicit bootstrap, migrator, and runtime
+profiles while keeping each connection separate. `bootstrap` finishes only after
+a fresh restricted runtime connection verifies the database and workspace;
+`upgrade` accepts no bootstrap profile. Release `eval` commands disable
+distributed Erlang, so Jobs need no node name, cookie, EPMD, or distribution
+port. Application startup never migrates or provisions PostgreSQL.
+
+See [`postgresql_bootstrap.md`](postgresql_bootstrap.md) for the exact variables,
+Job lifecycle, stable JSON/exit contract, Azure mapping path, and password path.
 
 ## Maintainer image debugging
 

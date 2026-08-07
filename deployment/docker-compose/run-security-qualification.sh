@@ -220,9 +220,7 @@ build_images certificates postgres control-plane security-browser
 
 compose up certificates
 compose up --detach postgres
-for operation in database-migrate database-grant workspace-provision database-verify; do
-  compose --profile operations run --rm "$operation"
-done
+compose --profile operations run --rm database-bootstrap
 
 compose --profile security --profile proxy-security up --detach \
   control-plane proxy-header-receiver https-proxy

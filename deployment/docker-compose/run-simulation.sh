@@ -125,9 +125,7 @@ compose up certificates
 compose up --detach postgres
 wait_healthy postgres
 
-for operation in database-migrate database-grant workspace-provision database-verify; do
-  compose run --rm "$operation"
-done
+compose run --rm database-bootstrap
 
 compose up --detach control-plane
 wait_healthy control-plane

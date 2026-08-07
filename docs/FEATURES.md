@@ -114,14 +114,18 @@ accessibility, and production-provider qualification are unfinished.
   enforces exact schema, constraint, index, identifier, and payload requirements.
 - High-growth reads use keyset pagination and bounded projections. Manifest runtime
   reads fetch compact indexes and selected immutable execution packages.
-- Separate tasks own migration, runtime grants, workspace provisioning, restore
-  verification, projection backfill, and bounded retention. Runtime nodes never
-  migrate automatically.
+- One idempotent `bootstrap` Job owns Favn-specific role/database setup,
+  migrations, grants, initial workspace provisioning, and fresh runtime
+  verification. Read-only `status` and least-privilege `upgrade` use the same
+  immutable image. Runtime nodes never migrate automatically.
 - PostgreSQL supports explicit password and Azure managed-identity modes. Azure
   mode obtains fresh-enough per-connection tokens through its own bounded cache,
   covers notifications and one-off release operations, suppresses ambient
-  PostgreSQL password defaults, and preserves connection backoff on provider
-  failure.
+  PostgreSQL password defaults, maps exact Entra object IDs through the Azure
+  provider adapter, and preserves connection backoff on provider failure.
+- The migrator owns only `favn_control` and runs with `NOCREATEROLE`; bootstrap
+  administrator authority is isolated from the normal control plane and normal
+  upgrades. Password deployments use the same common role policy without Azure.
 - Live PostgreSQL suites cover tenancy, idempotency, concurrency, fencing, claims,
   query plans, restore mechanics, and multi-node database authority.
 

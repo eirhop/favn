@@ -13,10 +13,11 @@ PostgreSQL 18 control-plane persistence.
   materialization, backfills, identity, logs, operator reads, and maintenance.
 - Ecto schemas live under `schemas/`; concurrency-critical mutations use focused
   SQL where row locks, `SKIP LOCKED`, or database-time lease checks are required.
-- Reset-baseline migrations create the dedicated `favn_control` schema.
-- `FavnStoragePostgres.Release` owns release-safe migration, schema/grant
-  verification, workspace provisioning, key inventory/compaction, and restore
-  verification. Mix tasks are development wrappers around that module.
+- The bootstrap workflow creates the dedicated migrator-owned `favn_control`
+  schema before reset-baseline migrations run.
+- `FavnStoragePostgres.Release` owns the composed database Jobs plus local/internal
+  migration, schema/grant verification, workspace provisioning,
+  key inventory/compaction, and restore verification.
 
 The app implements transactional persistence and database invariants. Product
 lifecycle decisions remain in `favn_orchestrator`.
@@ -62,27 +63,19 @@ mix favn.postgres.compact_runtime_input_keys --version 1
 mix favn.postgres.verify_restore
 ```
 
-Production one-off containers call the same operations without Mix:
+Production database lifecycle containers use the fixed wrapper and composed
+workflow:
 
 ```bash
-bin/favn_control_plane eval 'IO.inspect(FavnStoragePostgres.Release.migrate())'
-bin/favn_control_plane eval 'IO.inspect(FavnStoragePostgres.Release.verify_schema())'
-bin/favn_control_plane eval 'IO.inspect(FavnStoragePostgres.Release.grant_runtime())'
-bin/favn_control_plane eval \
-  'IO.inspect(FavnStoragePostgres.Release.provision_workspace(%{workspace_id: "CUSTOMER", slug: "CUSTOMER", display_name: "Customer"}))'
-bin/favn_control_plane eval \
-  'IO.inspect(FavnStoragePostgres.Release.runtime_input_key_inventory())'
-bin/favn_control_plane eval \
-  'IO.inspect(FavnStoragePostgres.Release.compact_runtime_input_keys([1]))'
-bin/favn_control_plane eval 'IO.inspect(FavnStoragePostgres.Release.verify_restore())'
+/app/bin/favn_control_plane_ops status
+/app/bin/favn_control_plane_ops bootstrap
+/app/bin/favn_control_plane_ops upgrade
 ```
 
-All release functions return `{:ok, %{status: :ok, ...}}` or a redacted
-`{:error, %{status: :error, code: ...}}`. Migration and grant operations reject
-the configured restricted runtime role. Every release operation emits bounded
-`[:favn, :storage_postgres, :release_operation, :start | :stop]` telemetry and
-structured lifecycle logs containing only the operation, outcome, duration, and
-stable error code. Normal application startup never invokes migration.
+The wrapper emits one redacted JSON result and stable exit code. See
+[`docs/production/postgresql_bootstrap.md`](../../docs/production/postgresql_bootstrap.md)
+for profiles, lifecycle, cleanup, and failure handling. Normal application
+startup never invokes migration.
 
 Key inventory and compaction parse `FAVN_RUNTIME_INPUT_PIN_KEYS` and
 `FAVN_RUNTIME_INPUT_PIN_KEY_VERSION` directly in the one-off release process;

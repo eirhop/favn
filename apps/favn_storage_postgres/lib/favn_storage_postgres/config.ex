@@ -290,12 +290,13 @@ defmodule FavnStoragePostgres.Config do
              {:ok, username} <- required_database_env(env, "FAVN_DATABASE_USERNAME"),
              {:ok, port} <- env_bounded_integer(env, "FAVN_DATABASE_PORT", 5432, 65_535),
              {:ok, client_id} <-
-               optional_managed_identity_client_id(env) do
+               optional_managed_identity_client_id(env),
+             {:ok, provider_options} <- managed_identity_provider_options(env, client_id) do
           provider = Module.concat([Favn, Azure, ControlPlanePostgresAuth])
 
           {:ok,
            [
-             authentication: {:dynamic, provider, maybe_put([], :client_id, client_id)},
+             authentication: {:dynamic, provider, provider_options},
              hostname: hostname,
              port: port,
              database: database,
@@ -357,6 +358,58 @@ defmodule FavnStoragePostgres.Config do
       _invalid ->
         {:error, {:invalid_database_env, name}}
     end
+  end
+
+  defp managed_identity_provider_options(env, client_id) do
+    base = maybe_put([], :client_id, client_id)
+
+    case Map.get(env, "FAVN_DATABASE_AUTH_PROFILE") do
+      nil ->
+        {:ok, base}
+
+      profile
+      when profile in [
+             "bootstrap_maintenance",
+             "bootstrap_target",
+             "migrator_operation",
+             "migrator_lock",
+             "runtime_operation"
+           ] ->
+        names = authentication_names(profile)
+        {:ok, Keyword.merge(base, names)}
+
+      _invalid ->
+        {:error, {:invalid_database_env, "FAVN_DATABASE_AUTH_PROFILE"}}
+    end
+  end
+
+  defp authentication_names("bootstrap_maintenance") do
+    authentication_names(FavnStoragePostgres.BootstrapMaintenanceAuth)
+  end
+
+  defp authentication_names("bootstrap_target") do
+    authentication_names(FavnStoragePostgres.BootstrapTargetAuth)
+  end
+
+  defp authentication_names("migrator_operation") do
+    authentication_names(FavnStoragePostgres.MigratorOperationAuth)
+  end
+
+  defp authentication_names("migrator_lock") do
+    authentication_names(FavnStoragePostgres.MigratorLockAuth)
+  end
+
+  defp authentication_names("runtime_operation") do
+    authentication_names(FavnStoragePostgres.RuntimeOperationAuth)
+  end
+
+  defp authentication_names(namespace) do
+    [
+      supervisor_name: Module.concat(namespace, Supervisor),
+      server_name: Module.concat(namespace, Server),
+      task_supervisor: Module.concat(namespace, TaskSupervisor),
+      cache_name: Module.concat(namespace, Cache)
+    ]
   end
 
   defp env_ssl_options(env) do

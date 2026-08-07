@@ -17,9 +17,8 @@ services:
       dockerfile: postgres.Dockerfile
     environment:
       POSTGRES_DB: favn
-      POSTGRES_USER: favn_migrator
-      POSTGRES_PASSWORD: ${FAVN_MIGRATOR_DATABASE_PASSWORD:?run prepare.sh first}
-      FAVN_RUNTIME_DATABASE_PASSWORD: ${FAVN_RUNTIME_DATABASE_PASSWORD:?run prepare.sh first}
+      POSTGRES_USER: favn_bootstrap
+      POSTGRES_PASSWORD: ${FAVN_BOOTSTRAP_DATABASE_PASSWORD:?run prepare.sh first}
     command:
       - postgres
       - -c
@@ -32,18 +31,21 @@ services:
       - ssl_ca_file=/var/lib/postgresql/certs/ca.crt
       - -c
       - listen_addresses=*
+      - -c
+      - log_parameter_max_length=0
+      - -c
+      - log_parameter_max_length_on_error=0
     depends_on:
       certificates:
         condition: service_completed_successfully
     volumes:
       - postgres-certificates:/certificates:ro
       - postgres-data:/var/lib/postgresql
-      - ./postgres-init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test:
         [
           "CMD-SHELL",
-          "PGPASSWORD=$$POSTGRES_PASSWORD PGSSLROOTCERT=/var/lib/postgresql/certs/ca.crt psql 'host=postgres dbname=favn user=favn_migrator sslmode=verify-full' --tuples-only --command 'SELECT 1' | grep -q 1",
+          "PGPASSWORD=$$POSTGRES_PASSWORD PGSSLROOTCERT=/var/lib/postgresql/certs/ca.crt psql 'host=postgres dbname=postgres user=favn_bootstrap sslmode=verify-full' --tuples-only --command 'SELECT 1' | grep -q 1",
         ]
       interval: 2s
       timeout: 5s
@@ -53,100 +55,25 @@ services:
       - favn-private
     restart: unless-stopped
 
-  database-migrate:
+  database-bootstrap:
     image: favn-control-plane:${FAVN_IMAGE_TAG}
     entrypoint: ["/app/bin/favn_control_plane_ops"]
-    command: ["migrate"]
+    command: ["bootstrap"]
     hostname: operations
     environment:
       FAVN_DEPLOYMENT_MODE: production
-      FAVN_DATABASE_URL: ecto://favn_migrator:${FAVN_MIGRATOR_DATABASE_PASSWORD}@postgres:5432/favn
+      FAVN_DATABASE_BOOTSTRAP_AUTH_MODE: password
+      FAVN_DATABASE_BOOTSTRAP_URL: ecto://favn_bootstrap:${FAVN_BOOTSTRAP_DATABASE_PASSWORD}@postgres:5432/postgres
+      FAVN_DATABASE_MIGRATOR_AUTH_MODE: password
+      FAVN_DATABASE_MIGRATOR_URL: ecto://favn_migrator:${FAVN_MIGRATOR_DATABASE_PASSWORD}@postgres:5432/favn
+      FAVN_DATABASE_RUNTIME_AUTH_MODE: password
+      FAVN_DATABASE_RUNTIME_URL: ecto://favn_runtime:${FAVN_RUNTIME_DATABASE_PASSWORD}@postgres:5432/favn
+      FAVN_DATABASE_MAINTENANCE_NAME: postgres
       FAVN_DATABASE_SSL_MODE: verify-full
       FAVN_DATABASE_SSL_CA_FILE: /etc/favn/tls/ca.crt
-      FAVN_CONTROL_PLANE_NODE: favn_control_plane_ops@operations
-      FAVN_DISTRIBUTION_COOKIE: ${FAVN_DISTRIBUTION_COOKIE}
-      FAVN_DISTRIBUTION_TLS_OPTIONS_FILE: /etc/favn/tls/control-plane-ssl-dist.config
-      FAVN_BEAM_DISTRIBUTION_PORT: "9200"
-      ERL_AFLAGS: -proto_dist inet_tls -ssl_dist_optfile /etc/favn/tls/control-plane-ssl-dist.config
-    depends_on:
-      postgres:
-        condition: service_healthy
-    volumes:
-      - control-plane-certificates:/etc/favn/tls:ro
-    networks:
-      - favn-private
-    profiles: ["operations"]
-    restart: "no"
-
-  database-grant:
-    image: favn-control-plane:${FAVN_IMAGE_TAG}
-    entrypoint: ["/app/bin/favn_control_plane_ops"]
-    command: ["grant-runtime"]
-    hostname: operations
-    environment:
-      FAVN_DEPLOYMENT_MODE: production
-      FAVN_DATABASE_URL: ecto://favn_migrator:${FAVN_MIGRATOR_DATABASE_PASSWORD}@postgres:5432/favn
-      FAVN_DATABASE_SSL_MODE: verify-full
-      FAVN_DATABASE_SSL_CA_FILE: /etc/favn/tls/ca.crt
-      FAVN_DATABASE_RUNTIME_ROLE: favn_runtime
-      FAVN_CONTROL_PLANE_NODE: favn_control_plane_ops@operations
-      FAVN_DISTRIBUTION_COOKIE: ${FAVN_DISTRIBUTION_COOKIE}
-      FAVN_DISTRIBUTION_TLS_OPTIONS_FILE: /etc/favn/tls/control-plane-ssl-dist.config
-      FAVN_BEAM_DISTRIBUTION_PORT: "9200"
-      ERL_AFLAGS: -proto_dist inet_tls -ssl_dist_optfile /etc/favn/tls/control-plane-ssl-dist.config
-    depends_on:
-      postgres:
-        condition: service_healthy
-    volumes:
-      - control-plane-certificates:/etc/favn/tls:ro
-    networks:
-      - favn-private
-    profiles: ["operations"]
-    restart: "no"
-
-  workspace-provision:
-    image: favn-control-plane:${FAVN_IMAGE_TAG}
-    entrypoint: ["/app/bin/favn_control_plane_ops"]
-    command: ["provision-workspace"]
-    hostname: operations
-    environment:
-      FAVN_DEPLOYMENT_MODE: production
-      FAVN_DATABASE_URL: ecto://favn_migrator:${FAVN_MIGRATOR_DATABASE_PASSWORD}@postgres:5432/favn
-      FAVN_DATABASE_SSL_MODE: verify-full
-      FAVN_DATABASE_SSL_CA_FILE: /etc/favn/tls/ca.crt
-      FAVN_CONTROL_PLANE_NODE: favn_control_plane_ops@operations
-      FAVN_DISTRIBUTION_COOKIE: ${FAVN_DISTRIBUTION_COOKIE}
-      FAVN_DISTRIBUTION_TLS_OPTIONS_FILE: /etc/favn/tls/control-plane-ssl-dist.config
-      FAVN_BEAM_DISTRIBUTION_PORT: "9200"
-      ERL_AFLAGS: -proto_dist inet_tls -ssl_dist_optfile /etc/favn/tls/control-plane-ssl-dist.config
       FAVN_WORKSPACE_ID: elastic-simulation
       FAVN_WORKSPACE_SLUG: elastic-simulation
       FAVN_WORKSPACE_NAME: Elastic runner simulation
-    depends_on:
-      postgres:
-        condition: service_healthy
-    volumes:
-      - control-plane-certificates:/etc/favn/tls:ro
-    networks:
-      - favn-private
-    profiles: ["operations"]
-    restart: "no"
-
-  database-verify:
-    image: favn-control-plane:${FAVN_IMAGE_TAG}
-    entrypoint: ["/app/bin/favn_control_plane_ops"]
-    command: ["verify-schema"]
-    hostname: operations
-    environment:
-      FAVN_DEPLOYMENT_MODE: production
-      FAVN_DATABASE_URL: ecto://favn_runtime:${FAVN_RUNTIME_DATABASE_PASSWORD}@postgres:5432/favn
-      FAVN_DATABASE_SSL_MODE: verify-full
-      FAVN_DATABASE_SSL_CA_FILE: /etc/favn/tls/ca.crt
-      FAVN_CONTROL_PLANE_NODE: favn_control_plane_ops@operations
-      FAVN_DISTRIBUTION_COOKIE: ${FAVN_DISTRIBUTION_COOKIE}
-      FAVN_DISTRIBUTION_TLS_OPTIONS_FILE: /etc/favn/tls/control-plane-ssl-dist.config
-      FAVN_BEAM_DISTRIBUTION_PORT: "9200"
-      ERL_AFLAGS: -proto_dist inet_tls -ssl_dist_optfile /etc/favn/tls/control-plane-ssl-dist.config
     depends_on:
       postgres:
         condition: service_healthy

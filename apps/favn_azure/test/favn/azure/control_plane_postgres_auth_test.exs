@@ -262,6 +262,193 @@ defmodule Favn.Azure.ControlPlanePostgresAuthTest do
     assert inspected =~ "identity: :user_assigned"
   end
 
+  test "identity mapping inspection distinguishes exact, missing, and conflicting principals" do
+    mapping = identity_mapping()
+
+    assert {:ok, :exact} =
+             ControlPlanePostgresAuth.identity_status(
+               fixed_executor([[mapping.role, "service", mapping.object_id, 0]]),
+               [],
+               mapping
+             )
+
+    assert {:ok, :missing} =
+             ControlPlanePostgresAuth.identity_status(fixed_executor([]), [], mapping)
+
+    assert {:ok, :conflict} =
+             ControlPlanePostgresAuth.identity_status(
+               fixed_executor([
+                 [mapping.role, "service", "ffffffff-ffff-ffff-ffff-ffffffffffff", 0]
+               ]),
+               [],
+               mapping
+             )
+
+    assert {:ok, :conflict} =
+             ControlPlanePostgresAuth.identity_status(
+               fixed_executor([["another_role", "service", mapping.object_id, 0]]),
+               [],
+               mapping
+             )
+
+    assert {:ok, :conflict} =
+             ControlPlanePostgresAuth.identity_status(
+               fixed_executor([[mapping.role, "service", mapping.object_id, 1]]),
+               [],
+               mapping
+             )
+  end
+
+  test "identity creation uses the provider function, verifies the result, and does not embed ids in SQL" do
+    mapping = identity_mapping()
+    parent = self()
+
+    {:ok, responses} =
+      Agent.start_link(fn ->
+        [
+          {:ok, %{rows: []}},
+          {:ok, %{rows: [[false]]}},
+          {:ok, %{rows: [[mapping.role]]}},
+          {:ok, %{rows: [[mapping.role, "service", mapping.object_id, 0]]}}
+        ]
+      end)
+
+    executor = fn sql, params ->
+      send(parent, {:identity_sql, sql, params})
+      Agent.get_and_update(responses, fn [response | rest] -> {response, rest} end)
+    end
+
+    assert {:ok, :created} =
+             ControlPlanePostgresAuth.ensure_identity(executor, [], mapping)
+
+    assert_receive {:identity_sql, inspection_sql, [role, search]}
+    assert inspection_sql =~ "pgaadauth_list_principals"
+    refute inspection_sql =~ mapping.object_id
+    assert role == mapping.role
+    assert search == mapping.object_id
+
+    assert_receive {:identity_sql, role_sql, [role]}
+    assert role_sql =~ "pg_roles"
+    assert role == mapping.role
+
+    assert_receive {:identity_sql, create_sql, [role, object_id]}
+    assert create_sql =~ "pgaadauth_create_principal_with_oid"
+    refute create_sql =~ mapping.role
+    refute create_sql =~ mapping.object_id
+    assert role == mapping.role
+    assert object_id == mapping.object_id
+  end
+
+  test "identity mapping refuses to claim an existing plain PostgreSQL role" do
+    mapping = identity_mapping()
+    parent = self()
+
+    {:ok, responses} =
+      Agent.start_link(fn ->
+        [
+          {:ok, %{rows: []}},
+          {:ok, %{rows: [[true]]}}
+        ]
+      end)
+
+    executor = fn sql, params ->
+      send(parent, {:identity_sql, sql, params})
+      Agent.get_and_update(responses, fn [response | rest] -> {response, rest} end)
+    end
+
+    assert {:error, :identity_mapping_conflict} =
+             ControlPlanePostgresAuth.ensure_identity(executor, [], mapping)
+
+    assert_receive {:identity_sql, _inspection_sql, [_role, _object_id]}
+    assert_receive {:identity_sql, _role_sql, [_role]}
+    refute_receive {:identity_sql, _mutation_sql, _params}
+  end
+
+  test "identity creation fails closed on conflicts and reports an unknown post-write outcome" do
+    mapping = identity_mapping()
+
+    assert {:error, :identity_mapping_conflict} =
+             ControlPlanePostgresAuth.ensure_identity(
+               fixed_executor([
+                 [mapping.role, "service", "ffffffff-ffff-ffff-ffff-ffffffffffff", 0]
+               ]),
+               [],
+               mapping
+             )
+
+    {:ok, responses} =
+      Agent.start_link(fn ->
+        [
+          {:ok, %{rows: []}},
+          {:ok, %{rows: [[false]]}},
+          {:error, :connection_lost_after_request}
+        ]
+      end)
+
+    executor = fn _sql, _params ->
+      Agent.get_and_update(responses, fn [response | rest] -> {response, rest} end)
+    end
+
+    assert {:error, :unknown_outcome} =
+             ControlPlanePostgresAuth.ensure_identity(executor, [], mapping)
+
+    {:ok, responses} =
+      Agent.start_link(fn ->
+        [
+          {:ok, %{rows: []}},
+          {:ok, %{rows: [[false]]}},
+          {:ok, %{rows: [[mapping.role]]}},
+          {:error, :connection_lost_during_verification}
+        ]
+      end)
+
+    executor = fn _sql, _params ->
+      Agent.get_and_update(responses, fn [response | rest] -> {response, rest} end)
+    end
+
+    assert {:error, :unknown_outcome} =
+             ControlPlanePostgresAuth.ensure_identity(executor, [], mapping)
+  end
+
+  test "identity provider prerequisites and definite authority rejection remain actionable" do
+    mapping = identity_mapping()
+
+    assert {:error, :identity_provider_prerequisite} =
+             ControlPlanePostgresAuth.identity_status(
+               fn _sql, _params -> {:error, :identity_provider_prerequisite} end,
+               [],
+               mapping
+             )
+
+    {:ok, responses} =
+      Agent.start_link(fn ->
+        [
+          {:ok, %{rows: []}},
+          {:ok, %{rows: [[false]]}},
+          {:error, :identity_mapping_not_authorized}
+        ]
+      end)
+
+    executor = fn _sql, _params ->
+      Agent.get_and_update(responses, fn [response | rest] -> {response, rest} end)
+    end
+
+    assert {:error, :identity_mapping_not_authorized} =
+             ControlPlanePostgresAuth.ensure_identity(executor, [], mapping)
+  end
+
+  defp identity_mapping do
+    %{
+      role: "favn_migrator",
+      object_id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+      purpose: :migrator
+    }
+  end
+
+  defp fixed_executor(rows) do
+    fn _sql, _params -> {:ok, %{rows: rows}} end
+  end
+
   defp provider_options(responses, overrides \\ []) do
     [
       credential_provider: TestProvider,

@@ -6,6 +6,12 @@ cd "$repository_root"
 
 docker compose -f compose.postgres.yml up -d --wait
 
+# Local development owns this disposable administrator step. Production uses
+# the one-off favn_control_plane_ops bootstrap Job instead.
+docker compose -f compose.postgres.yml exec -T postgres \
+  psql --set ON_ERROR_STOP=1 --username favn_migrator --dbname favn_dev \
+  --command 'CREATE SCHEMA IF NOT EXISTS favn_control AUTHORIZATION favn_migrator'
+
 export FAVN_DATABASE_MIGRATOR_URL="${FAVN_DATABASE_MIGRATOR_URL:-ecto://favn_migrator:favn_migrator_local@127.0.0.1:${FAVN_POSTGRES_PORT:-5432}/favn_dev}"
 export FAVN_DATABASE_URL="${FAVN_DATABASE_URL:-ecto://favn_runtime:favn_runtime_local@127.0.0.1:${FAVN_POSTGRES_PORT:-5432}/favn_dev}"
 mix favn.postgres.upgrade

@@ -233,8 +233,11 @@ Production uses PostgreSQL 18 as the durable authority.
 
 - [ ] Use a currently supported PostgreSQL 18 minor release.
 - [ ] Require TLS with hostname verification.
-- [ ] Give migrations a separate DDL-capable identity.
+- [ ] Give migrations a separate schema-owning identity with `NOCREATEROLE` and
+  no database creation or inherited membership.
 - [ ] Give the running control plane the least-privilege runtime identity.
+- [ ] Give only the temporary bootstrap Job administrator authority, and remove
+  it only after Favn reports successful runtime verification.
 - [ ] Enable provider-managed high availability when required.
 - [ ] Enable point-in-time recovery.
 - [ ] Perform and record a restore drill before launch.
@@ -264,8 +267,10 @@ FAVN_DATABASE_SSL_MODE=verify-full
 FAVN_DATABASE_SSL_CA_FILE=/run/secrets/postgresql-ca.pem
 ```
 
-Use a different user-assigned identity and `favn_migrator` PostgreSQL role for
-the one-off migration job. Tokens are requested for each new physical
+Use different user-assigned identities for the temporary bootstrap Job,
+`favn_migrator`, and `favn_runtime`. The bootstrap Job maps the latter two by
+exact Entra object ID and removes unsafe PostgreSQL role attributes. Tokens are
+requested for each new physical
 connection through a bounded cache; they are never placed in application
 configuration, URLs, logs, or diagnostics.
 
@@ -321,13 +326,20 @@ Use this order:
 
 1. Choose and record the exact immutable image digest.
 2. Confirm the database backup and restore point.
-3. Run migrations with the migrator database identity.
-4. Grant the runtime database privileges.
-5. Provision each intended workspace explicitly.
+3. Temporarily authorize the bootstrap identity and start one no-ingress Job
+   running `favn_control_plane_ops bootstrap` with bootstrap, migrator, and
+   runtime profiles.
+4. Require exit `0`, state `ready`, and `runtime_verified: true`.
+5. Remove the temporary administrator assignment, bootstrap identity attachment,
+   and bootstrap Job.
 6. Start one control-plane replica with the runtime database identity.
 7. Require health and readiness before exposing the proxy route.
 8. Create the first platform administrator through the trusted one-off
    bootstrap command.
+
+Normal upgrades run `favn_control_plane_ops upgrade` with only migrator and
+runtime profiles. The full password/Azure profile and result contract is in the
+[PostgreSQL bootstrap runbook](https://github.com/eirhop/favn/blob/main/docs/production/postgresql_bootstrap.md).
 9. When using Entra, link the administrator's immutable tenant and object IDs.
 10. Sign in through the real HTTPS origin.
 11. Run one harmless smoke operation and inspect its audit record.

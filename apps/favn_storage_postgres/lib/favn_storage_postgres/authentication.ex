@@ -6,6 +6,7 @@ defmodule FavnStoragePostgres.Authentication do
   @failure_event [:favn, :storage_postgres, :authentication, :failure]
 
   @type mode :: ConnectionConfig.authentication()
+  @type query_executor :: (String.t(), [term()] -> {:ok, map()} | {:error, term()})
 
   @spec validate(mode()) :: :ok | {:error, term()}
   def validate(:password), do: :ok
@@ -122,6 +123,53 @@ defmodule FavnStoragePostgres.Authentication do
       _invalid -> %{mode: :azure_managed_identity, lifecycle_ready?: false}
     end
   end
+
+  @spec identity_status(mode(), query_executor(), map()) ::
+          {:ok, :not_required | :exact | :missing | :conflict} | {:error, atom()}
+  def identity_status(:password, _executor, _mapping), do: {:ok, :not_required}
+
+  def identity_status({:dynamic, provider, options}, executor, mapping)
+      when is_function(executor, 2) and is_map(mapping) do
+    with :ok <- validate_identity_provider(provider),
+         result <- apply(provider, :identity_status, [executor, options, mapping]) do
+      normalize_identity_status(result)
+    end
+  end
+
+  @spec ensure_identity(mode(), query_executor(), map()) ::
+          {:ok, :not_required | :exact | :created} | {:error, atom()}
+  def ensure_identity(:password, _executor, _mapping), do: {:ok, :not_required}
+
+  def ensure_identity({:dynamic, provider, options}, executor, mapping)
+      when is_function(executor, 2) and is_map(mapping) do
+    with :ok <- validate_identity_provider(provider),
+         result <- apply(provider, :ensure_identity, [executor, options, mapping]) do
+      normalize_identity_result(result)
+    end
+  end
+
+  defp validate_identity_provider(provider) do
+    if Code.ensure_loaded?(provider) and
+         function_exported?(provider, :identity_status, 3) and
+         function_exported?(provider, :ensure_identity, 3) do
+      :ok
+    else
+      {:error, :identity_provider_unsupported}
+    end
+  end
+
+  defp normalize_identity_status({:ok, status})
+       when status in [:exact, :missing, :conflict],
+       do: {:ok, status}
+
+  defp normalize_identity_status({:error, code}) when is_atom(code), do: {:error, code}
+  defp normalize_identity_status(_invalid), do: {:error, :identity_provider_invalid_result}
+
+  defp normalize_identity_result({:ok, status}) when status in [:exact, :created],
+    do: {:ok, status}
+
+  defp normalize_identity_result({:error, code}) when is_atom(code), do: {:error, code}
+  defp normalize_identity_result(_invalid), do: {:error, :identity_provider_invalid_result}
 
   defp emit_failure(reason) do
     :telemetry.execute(

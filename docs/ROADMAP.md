@@ -52,6 +52,11 @@ current limits live in [`FEATURES.md`](FEATURES.md); release gates live in
      reference path with separate runtime/migration managed identities. The
      long-duration live Azure acceptance and managed-service evidence remain a
      #523/#578 release gate.
+   - [#611](https://github.com/eirhop/favn/issues/611) implements one idempotent
+     PostgreSQL bootstrap Job plus read-only status and least-privilege upgrade,
+     including exact Azure identity mapping and a provider-neutral password
+     path. Target-Azure first-install, transition, and temporary-authority cleanup
+     evidence remains part of the same managed-service qualification gate.
 
 Observability and drill tooling from #523 should start alongside #522; #523 closes
 last as release qualification. The initial supported target is one control-plane

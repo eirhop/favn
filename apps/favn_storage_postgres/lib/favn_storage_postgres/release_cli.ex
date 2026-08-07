@@ -8,8 +8,12 @@ defmodule FavnStoragePostgres.ReleaseCLI do
   """
 
   alias FavnStoragePostgres.Release
+  alias FavnStoragePostgres.Bootstrap.Result
 
   @operations [
+    :bootstrap,
+    :status,
+    :upgrade,
     :migrate,
     :verify_schema,
     :verify_restore,
@@ -21,7 +25,10 @@ defmodule FavnStoragePostgres.ReleaseCLI do
   @max_key_versions 100
 
   @type operation ::
-          :migrate
+          :bootstrap
+          | :status
+          | :upgrade
+          | :migrate
           | :verify_schema
           | :verify_restore
           | :grant_runtime
@@ -29,30 +36,54 @@ defmodule FavnStoragePostgres.ReleaseCLI do
           | :runtime_input_key_inventory
           | :compact_runtime_input_keys
 
-  @doc "Runs one fixed release operation and raises only its stable error code on failure."
-  @spec run!(operation()) :: :ok
+  @doc "Runs one fixed release operation and exits with its stable result code."
+  @spec run!(operation()) :: :ok | no_return()
   def run!(operation) when operation in @operations do
-    run!(operation, System.get_env(), Release)
+    with_release_logger(fn ->
+      exit_code = run(operation, System.get_env(), Release)
+      if exit_code == 0, do: :ok, else: System.halt(exit_code)
+    end)
   end
 
   @doc false
-  @spec run!(operation(), map(), module()) :: :ok
-  def run!(operation, env, release) when operation in @operations and is_map(env) do
+  @spec run(operation(), map(), module()) :: non_neg_integer()
+  def run(operation, env, release) when operation in @operations and is_map(env) do
     result = dispatch(operation, env, release)
 
     case result do
-      {:ok, %{operation: ^operation, status: :ok} = details} ->
-        IO.puts("favn.release operation=#{operation} status=ok")
-        IO.puts("result: " <> inspect(details, pretty: false, limit: 100))
-        :ok
-
-      {:error, %{operation: ^operation, status: :error, code: code}} when is_atom(code) ->
-        raise "release operation #{operation} failed: #{code}"
+      {tag, %{operation: ^operation} = details} when tag in [:ok, :error] ->
+        emit_result(details)
 
       _invalid ->
-        raise "release operation #{operation} failed: invalid_result"
+        details = %{
+          contract_version: 1,
+          operation: operation,
+          status: :error,
+          outcome: :failed,
+          state: :operation_failed,
+          code: :invalid_result,
+          safe_to_retry: false,
+          completed_stages: [],
+          findings: [%{code: :invalid_result, stage: :dispatch, details: %{}}],
+          runtime_verified: false
+        }
+
+        emit_result(details)
     end
   end
+
+  @doc false
+  @spec run!(operation(), map(), module()) :: :ok | no_return()
+  def run!(operation, env, release) do
+    with_release_logger(fn ->
+      exit_code = run(operation, env, release)
+      if exit_code == 0, do: :ok, else: raise("release operation failed with exit #{exit_code}")
+    end)
+  end
+
+  defp dispatch(:bootstrap, env, release), do: release.bootstrap(env)
+  defp dispatch(:status, env, release), do: release.database_status(env)
+  defp dispatch(:upgrade, env, release), do: release.upgrade(env)
 
   defp dispatch(:migrate, _env, release), do: release.migrate()
   defp dispatch(:verify_schema, _env, release), do: release.verify_schema()
@@ -125,4 +156,81 @@ defmodule FavnStoragePostgres.ReleaseCLI do
 
   defp operation_error(operation, code),
     do: {:error, %{operation: operation, status: :error, code: code}}
+
+  defp emit_result(details) do
+    exit_code = exit_code(details)
+    state = Map.get(details, :state, Map.get(details, :status, :error))
+
+    IO.puts(
+      :stderr,
+      "favn.release operation=#{details.operation} state=#{state} exit=#{exit_code}"
+    )
+
+    IO.puts(Jason.encode!(details))
+    exit_code
+  end
+
+  defp with_release_logger(function) do
+    case redirect_default_logger() do
+      {:ok, original_handler} ->
+        try do
+          function.()
+        after
+          Logger.flush()
+          replace_default_handler(original_handler)
+        end
+
+      :unavailable ->
+        function.()
+    end
+  end
+
+  defp redirect_default_logger do
+    case :logger.get_handler_config(:default) do
+      {:ok, original_handler} ->
+        redirected = put_in(original_handler, [:config, :type], :standard_error)
+
+        case replace_default_handler(redirected, original_handler) do
+          :ok -> {:ok, original_handler}
+          :error -> :unavailable
+        end
+
+      _missing ->
+        :unavailable
+    end
+  end
+
+  defp replace_default_handler(handler, fallback_handler \\ nil) do
+    module = Map.fetch!(handler, :module)
+    config = Map.drop(handler, [:id, :module])
+
+    case :logger.remove_handler(:default) do
+      :ok ->
+        case :logger.add_handler(:default, module, config) do
+          :ok ->
+            :ok
+
+          _failure ->
+            restore_fallback_handler(fallback_handler)
+            :error
+        end
+
+      _failure ->
+        :error
+    end
+  end
+
+  defp restore_fallback_handler(nil), do: :ok
+
+  defp restore_fallback_handler(handler) do
+    :logger.add_handler(
+      :default,
+      Map.fetch!(handler, :module),
+      Map.drop(handler, [:id, :module])
+    )
+  end
+
+  defp exit_code(%{contract_version: 1} = details), do: Result.exit_code(details)
+  defp exit_code(%{status: :ok}), do: 0
+  defp exit_code(_details), do: 70
 end

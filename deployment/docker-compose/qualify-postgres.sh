@@ -947,12 +947,13 @@ collect_performance_summary() {
 }
 
 scan_evidence_for_secrets() {
-  secret_scan_expected=7
+  secret_scan_expected=8
   secret_scan_count=0
   secret_leak_names='[]'
 
   while IFS='=' read -r name value; do
     case "$name" in
+      FAVN_BOOTSTRAP_DATABASE_PASSWORD|\
       FAVN_MIGRATOR_DATABASE_PASSWORD|\
       FAVN_RUNTIME_DATABASE_PASSWORD|\
       FAVN_RUNTIME_INPUT_PIN_KEYS|\
@@ -1183,7 +1184,7 @@ event scaler_drained "durable demand and runner containers returned to zero"
 phase=final_validation
 sample
 
-if ! compose run --rm --no-deps database-verify >"$run_dir/schema-verification.log" 2>&1; then
+if ! compose run --rm --no-deps database-bootstrap status >"$run_dir/schema-verification.log" 2>&1; then
   fail "final schema verification failed"
 fi
 

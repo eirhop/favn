@@ -6,6 +6,8 @@ CREATE ROLE favn_runtime
   NOINHERIT
   PASSWORD 'favn_runtime_local';
 
+CREATE SCHEMA favn_control AUTHORIZATION favn_migrator;
+
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 REVOKE ALL ON DATABASE favn_dev FROM PUBLIC;
 GRANT CONNECT ON DATABASE favn_dev TO favn_runtime;

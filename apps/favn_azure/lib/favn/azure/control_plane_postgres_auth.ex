@@ -20,6 +20,8 @@ defmodule Favn.Azure.ControlPlanePostgresAuth do
   @max_fetch_timeout 60_000
   @start_event [:favn, :azure, :postgres_auth, :start]
   @stop_event [:favn, :azure, :postgres_auth, :stop]
+  @role_name ~r/\A[a-z_][a-z0-9_]{0,62}\z/
+  @object_id ~r/\A[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\z/
 
   @allowed_options [
     :client_id,
@@ -80,7 +82,7 @@ defmodule Favn.Azure.ControlPlanePostgresAuth do
          :ok <- emit_start(config),
          {:ok, token} <- fetch_token(config),
          true <- Token.valid_for?(token, config.minimum_validity_seconds, config.clock.()) do
-      GenServer.cast(server, {:password_delivery, :ok})
+      record_delivery(reference, :ok)
       emit_stop(started_at, :ok, false, config.user_assigned?)
       {:ok, token.access_token}
     else
@@ -117,6 +119,95 @@ defmodule Favn.Azure.ControlPlanePostgresAuth do
   catch
     :exit, _reason -> %{lifecycle_ready?: false}
   end
+
+  @doc false
+  @spec identity_status((String.t(), [term()] -> term()), keyword(), map()) ::
+          {:ok, :exact | :missing | :conflict} | {:error, atom()}
+  def identity_status(executor, _options, mapping) when is_function(executor, 2) do
+    with {:ok, role, object_id} <- normalize_mapping(mapping),
+         {:ok, %{rows: rows}} <-
+           executor.(
+             """
+             SELECT principal.rolename::text,
+                    principal.principaltype,
+                    principal.objectid,
+                    principal.isadmin
+             FROM pg_catalog.pgaadauth_list_principals(false) principal
+             WHERE principal.rolename = $1 OR principal.objectid = $2
+             ORDER BY principal.rolename
+             LIMIT 4
+             """,
+             [role, object_id]
+           ) do
+      {:ok, classify_mapping(rows, role, object_id)}
+    else
+      {:error, code} when is_atom(code) -> {:error, code}
+      _failure -> {:error, :identity_inspection_failed}
+    end
+  end
+
+  @doc false
+  @spec ensure_identity((String.t(), [term()] -> term()), keyword(), map()) ::
+          {:ok, :exact | :created} | {:error, atom()}
+  def ensure_identity(executor, options, mapping) when is_function(executor, 2) do
+    case identity_status(executor, options, mapping) do
+      {:ok, :exact} ->
+        {:ok, :exact}
+
+      {:ok, :conflict} ->
+        {:error, :identity_mapping_conflict}
+
+      {:ok, :missing} ->
+        with {:ok, role, object_id} <- normalize_mapping(mapping),
+             {:ok, exists?} <- role_exists?(executor, role) do
+          ensure_and_verify_mapping(executor, options, mapping, role, object_id, exists?)
+        else
+          {:error, :invalid_identity_mapping} -> {:error, :invalid_identity_mapping}
+          {:error, :identity_inspection_failed} -> {:error, :identity_inspection_failed}
+        end
+
+      {:error, code} ->
+        {:error, code}
+    end
+  end
+
+  defp ensure_and_verify_mapping(_executor, _options, _mapping, _role, _object_id, true),
+    do: {:error, :identity_mapping_conflict}
+
+  defp ensure_and_verify_mapping(executor, options, mapping, role, object_id, false) do
+    case ensure_mapping(executor, role, object_id, false) do
+      {:ok, _result} ->
+        case identity_status(executor, options, mapping) do
+          {:ok, :exact} -> {:ok, :created}
+          _not_verified -> {:error, :unknown_outcome}
+        end
+
+      {:error, code}
+      when code in [:identity_provider_prerequisite, :identity_mapping_not_authorized] ->
+        {:error, code}
+
+      _write_not_confirmed ->
+        {:error, :unknown_outcome}
+    end
+  end
+
+  defp role_exists?(executor, role) do
+    case executor.(
+           "SELECT EXISTS(SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = $1)",
+           [role]
+         ) do
+      {:ok, %{rows: [[exists?]]}} when is_boolean(exists?) -> {:ok, exists?}
+      _failure -> {:error, :identity_inspection_failed}
+    end
+  end
+
+  defp ensure_mapping(executor, role, object_id, false) do
+    executor.(
+      "SELECT * FROM pg_catalog.pgaadauth_create_principal_with_oid($1, $2, 'service', false, false)",
+      [role, object_id]
+    )
+  end
+
 
   defp normalize_options(options) when is_list(options) do
     with true <- Keyword.keyword?(options),
@@ -157,6 +248,38 @@ defmodule Favn.Azure.ControlPlanePostgresAuth do
   end
 
   defp normalize_options(_options), do: {:error, :invalid_control_plane_postgres_auth_options}
+
+  defp normalize_mapping(mapping) do
+    role = Map.get(mapping, :role)
+    object_id = Map.get(mapping, :object_id)
+    purpose = Map.get(mapping, :purpose)
+
+    if is_binary(role) and Regex.match?(@role_name, role) and is_binary(object_id) and
+         Regex.match?(@object_id, object_id) and purpose in [:migrator, :runtime] do
+      {:ok, role, String.downcase(object_id)}
+    else
+      {:error, :invalid_identity_mapping}
+    end
+  end
+
+  defp classify_mapping(rows, role, object_id) when is_list(rows) do
+    exact? =
+      Enum.any?(rows, fn
+        [^role, type, row_object_id, is_admin]
+        when is_binary(type) and is_binary(row_object_id) ->
+          String.downcase(type) == "service" and
+            String.downcase(row_object_id) == object_id and is_admin in [0, false]
+
+        _row ->
+          false
+      end)
+
+    cond do
+      exact? and length(rows) == 1 -> :exact
+      rows == [] -> :missing
+      true -> :conflict
+    end
+  end
 
   defp normalize_reference(reference) when is_list(reference) do
     case {Keyword.get(reference, :server), Keyword.get(reference, :timeout)} do
@@ -213,18 +336,26 @@ defmodule Favn.Azure.ControlPlanePostgresAuth do
   end
 
   defp record_failure(reference, class) do
+    record_delivery(reference, {:error, class})
+  end
+
+  defp record_delivery(reference, delivery) do
     case normalize_reference(reference) do
       {:ok, server, _timeout} when is_pid(server) ->
-        if Process.alive?(server),
-          do: GenServer.cast(server, {:password_delivery, {:error, class}})
+        if Process.alive?(server), do: call_delivery(server, delivery)
 
       {:ok, server, _timeout} ->
-        if Process.whereis(server),
-          do: GenServer.cast(server, {:password_delivery, {:error, class}})
+        if Process.whereis(server), do: call_delivery(server, delivery)
 
       _invalid ->
         :ok
     end
+  end
+
+  defp call_delivery(server, delivery) do
+    GenServer.call(server, {:password_delivery, delivery}, 1_000)
+  catch
+    :exit, _reason -> :ok
   end
 
   defp emit_start(config) do

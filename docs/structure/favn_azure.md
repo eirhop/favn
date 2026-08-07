@@ -33,7 +33,7 @@ normalization, orchestrator state, or durable credential storage.
 | `apps/favn_azure/lib/favn/azure/credentials/azure_cli.ex` | Azure CLI provider for an arbitrary requested Azure resource. |
 | `apps/favn_azure/lib/favn/azure/credentials/managed_identity.ex` | IMDS and Azure App Service managed-identity provider with bounded transient retry. |
 | `apps/favn_azure/lib/favn/azure/postgres_entra_token.ex` | PostgreSQL resource facade delegating to the shared credential service. |
-| `apps/favn_azure/lib/favn/azure/control_plane_postgres_auth.ex` | Internal provider boundary for control-plane per-connection tokens, safe status, and failure classification. |
+| `apps/favn_azure/lib/favn/azure/control_plane_postgres_auth.ex` | Internal provider boundary for control-plane per-connection tokens, exact Entra-object-ID PostgreSQL role mapping, safe status, and failure classification. |
 | `apps/favn_azure/lib/favn/azure/control_plane_postgres_auth/` | Independently named credential/cache lifecycle for the control plane; it never uses the runner plugin's cache. |
 | `apps/favn_azure/lib/favn/azure/postgres_authentication_error.ex` | Redacted managed-identity failure class returned to PostgreSQL storage. |
 | `apps/favn_azure/lib/favn/azure/token.ex` | Token struct with normalized UTC expiry and always-redacted Inspect output. |
@@ -71,7 +71,9 @@ normalization, orchestrator state, or durable credential storage.
   request, cache key, logs, or Inspect output.
 - The orchestrator owns control-plane state and scheduling. The PostgreSQL
   storage app owns connection normalization and failure transport; this package
-  supplies only the selected Azure credential and lifecycle.
+  supplies only the selected Azure credential/lifecycle and the Azure
+  `pgaadauth_create_principal_with_oid` mapping adapter. Common role hardening,
+  migrations, grants, and verification remain provider-neutral storage concerns.
 
 ## Verification
 
@@ -81,8 +83,9 @@ normalization, orchestrator state, or durable credential storage.
 - `apps/favn_azure/test/favn/azure/runner_plugin_test.exs` covers lifecycle child
   contribution and option validation.
 - `apps/favn_azure/test/favn/azure/control_plane_postgres_auth_test.exs` covers
-  independent lifecycle, validity margins, safe classifications, and process
-  status redaction.
+  independent lifecycle, validity margins, exact/missing/conflicting mappings,
+  unknown post-write outcomes, safe classifications, and process status
+  redaction.
 - `apps/favn_duckdb_adbc/test/sql/adapter/duckdb_adbc_azure_pool_test.exs`
   covers PostgreSQL token reuse, expiry refresh, superseded-session eviction,
   and new ADBC physical-session bootstrap.

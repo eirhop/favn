@@ -44,7 +44,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
   alias FavnStoragePostgres.Migrations.OptimizeLogicalTargetHistoryV2
   alias FavnStoragePostgres.Migrations.OptimizeRunStatusPagingV2
   alias FavnStoragePostgres.Migrations.NormalizeResourceCircuitDefinitionsV2
-  alias FavnStoragePostgres.Privileges
+  alias FavnStoragePostgres.RuntimePrivileges
 
   @prefix "favn_control"
   @migrations [
@@ -548,11 +548,44 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
   @expected_versions Enum.map(@migrations, fn {version, _module} -> version end)
   @expected_definition_fingerprint "8c246f32dd2f48e43c569c2f76cece5b0edfd8647fe064f6b9f03a13dbc3f91b"
 
-  @doc "Creates the V2 namespace and applies every known migration."
+  @doc "Creates the V2 namespace for development/tests and applies every known migration."
   @spec migrate!(module()) :: :ok
   def migrate!(repo) when is_atom(repo) do
     SQL.query!(repo, "CREATE SCHEMA IF NOT EXISTS #{@prefix}", [])
+    run_migrations!(repo)
+  end
 
+  @doc "Applies migrations only when the current role already owns the Favn schema."
+  @spec migrate_existing_schema!(module()) :: :ok
+  def migrate_existing_schema!(repo) when is_atom(repo) do
+    case SQL.query!(
+           repo,
+           """
+           SELECT owner.rolname = current_user
+           FROM pg_catalog.pg_namespace namespace
+           JOIN pg_catalog.pg_roles owner ON owner.oid = namespace.nspowner
+           WHERE namespace.nspname = $1
+           """,
+           [@prefix]
+         ) do
+      %{rows: [[true]]} -> run_migrations!(repo)
+      %{rows: [[false]]} -> raise "favn_control schema is not owned by the migrator"
+      %{rows: []} -> raise "favn_control schema is missing"
+    end
+  end
+
+  @doc "Returns migration versions still required by the current image."
+  @spec pending_versions(module() | pid()) :: {:ok, [pos_integer()]} | {:error, term()}
+  def pending_versions(repo) do
+    with {:ok, applied} <- applied_versions(repo) do
+      case applied -- @expected_versions do
+        [] -> {:ok, @expected_versions -- applied}
+        future -> {:error, {:future_migration_versions, future}}
+      end
+    end
+  end
+
+  defp run_migrations!(repo) do
     {:ok, _migrated, _apps} =
       Ecto.Migrator.with_repo(repo, fn migrator_repo ->
         Ecto.Migrator.run(migrator_repo, @migrations, :up,
@@ -588,7 +621,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
       missing_versions = @expected_versions -- applied_versions
       future_versions = applied_versions -- @expected_versions
       definition_matches? = definition_fingerprint == @expected_definition_fingerprint
-      runtime_role = Privileges.current_role_diagnostics(repo)
+      runtime_role = RuntimePrivileges.current_role_diagnostics(repo)
 
       enforce_runtime_role? =
         Application.get_env(:favn_storage_postgres, :enforce_runtime_role, false)
