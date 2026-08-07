@@ -90,7 +90,7 @@ RUN test "$TARGETARCH" = amd64 \
       -e 's|URIs: http://deb.debian.org/debian-security$|URIs: http://snapshot.debian.org/archive/debian-security/20260713T000000Z|' \
       /etc/apt/sources.list.d/debian.sources \
     && apt-get -o Acquire::Check-Valid-Until=false update \
-    && apt-get install -y --no-install-recommends ca-certificates libstdc++6 \
+    && apt-get install -y --no-install-recommends ca-certificates libsctp1 libstdc++6 \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 10001 favn \
     && useradd --uid 10001 --gid 10001 --no-create-home --home-dir /tmp --shell /usr/sbin/nologin --no-log-init favn \
