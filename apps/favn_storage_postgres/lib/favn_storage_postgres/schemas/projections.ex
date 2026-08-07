@@ -1,21 +1,3 @@
-defmodule FavnStoragePostgres.Schemas.ProjectionCursor do
-  @moduledoc false
-  use Ecto.Schema
-
-  @primary_key false
-  @schema_prefix "favn_control"
-  schema "projection_cursors" do
-    field(:projector_name, :string, primary_key: true)
-    field(:shard_id, :integer, primary_key: true)
-    field(:last_publication_id, :integer)
-    field(:owner_id, :string)
-    field(:fencing_token, :integer)
-    field(:claim_expires_at, :utc_datetime_usec)
-    field(:version, :integer)
-    field(:updated_at, :utc_datetime_usec)
-  end
-end
-
 defmodule FavnStoragePostgres.Schemas.ExecutionGroupOverview do
   @moduledoc false
   use Ecto.Schema

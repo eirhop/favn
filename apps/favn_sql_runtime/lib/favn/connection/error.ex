@@ -47,17 +47,3 @@ defmodule Favn.Connection.ConfigError do
     %__MODULE__{message: message, errors: errors}
   end
 end
-
-defmodule Favn.Connection.NotFoundError do
-  @moduledoc """
-  Raised when `Favn.get_connection!/1` cannot find a named connection.
-  """
-
-  defexception [:message, :name]
-
-  @impl true
-  def exception(opts) do
-    name = Keyword.fetch!(opts, :name)
-    %__MODULE__{name: name, message: "connection not found: #{inspect(name)}"}
-  end
-end
