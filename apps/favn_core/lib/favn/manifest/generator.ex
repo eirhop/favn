@@ -79,18 +79,25 @@ defmodule Favn.Manifest.Generator do
            opts
            |> Keyword.drop([:runner_releases, :environment])
            |> build_catalog(),
-         {:ok, runner_releases} <- fetch_runner_releases(opts, catalog),
-         {:ok, manifest, execution_packages} <-
-           manifest_and_packages_from_catalog(
-             catalog,
-             runner_releases,
-             environment
-           ) do
-      {:ok,
-       Build.new(manifest,
-         diagnostics: catalog.diagnostics ++ Diagnostics.for_manifest(manifest),
-         execution_packages: execution_packages
-       )}
+         {:ok, runner_releases} <- fetch_runner_releases(opts, catalog) do
+      build_from_catalog(catalog, runner_releases, environment)
+    end
+  end
+
+  @doc false
+  @spec build_with_uniform_runner_release(opts(), String.t()) ::
+          {:ok, Build.t()} | {:error, term()}
+  def build_with_uniform_runner_release(opts, runner_release_id)
+      when is_list(opts) and is_binary(runner_release_id) do
+    with {:ok, environment} <- fetch_environment(opts),
+         {:ok, catalog} <-
+           opts
+           |> Keyword.drop([:runner_releases, :environment])
+           |> build_catalog(),
+         runner_releases <- uniform_runner_releases(catalog, runner_release_id),
+         {:ok, runner_releases} <-
+           fetch_runner_releases(Keyword.put(opts, :runner_releases, runner_releases), catalog) do
+      build_from_catalog(catalog, runner_releases, environment)
     end
   end
 
@@ -144,6 +151,17 @@ defmodule Favn.Manifest.Generator do
     with {:ok, manifest, _packages} <-
            manifest_and_packages_from_catalog(catalog, runner_releases, environment) do
       {:ok, manifest}
+    end
+  end
+
+  defp build_from_catalog(%Catalog{} = catalog, runner_releases, %Environment{} = environment) do
+    with {:ok, manifest, execution_packages} <-
+           manifest_and_packages_from_catalog(catalog, runner_releases, environment) do
+      {:ok,
+       Build.new(manifest,
+         diagnostics: catalog.diagnostics ++ Diagnostics.for_manifest(manifest),
+         execution_packages: execution_packages
+       )}
     end
   end
 
@@ -275,6 +293,13 @@ defmodule Favn.Manifest.Generator do
       catalog.pipelines |> Enum.map(&Map.get(&1, :runner_pool)) |> Enum.reject(&is_nil/1)
 
     Enum.uniq(asset_pools ++ pipeline_pools)
+  end
+
+  defp uniform_runner_releases(catalog, runner_release_id) do
+    Map.new(effective_runner_pools(catalog), fn pool ->
+      {:ok, pool_name} = RunnerPool.encode(pool)
+      {pool_name, runner_release_id}
+    end)
   end
 
   defp release_for_asset(asset, releases) do
