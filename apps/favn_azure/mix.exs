@@ -4,7 +4,7 @@ defmodule FavnAzure.MixProject do
   def project do
     [
       app: :favn_azure,
-      version: "0.5.0-rc.1",
+      version: "0.5.0-rc.2",
       description: "Azure integration helpers for Favn adapters",
       build_path: "../../_build",
       config_path: "../../config/config.exs",

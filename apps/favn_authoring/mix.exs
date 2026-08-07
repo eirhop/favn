@@ -4,7 +4,7 @@ defmodule FavnAuthoring.MixProject do
   def project do
     [
       app: :favn_authoring,
-      version: "0.5.0-rc.1",
+      version: "0.5.0-rc.2",
       description: "Internal authoring implementation for Favn public package",
       build_path: "../../_build",
       config_path: "../../config/config.exs",
