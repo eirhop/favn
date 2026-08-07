@@ -269,10 +269,12 @@ jobs:
       - name: Create local PostgreSQL control schema
         env:
           PGPASSWORD: postgres
-        run: >-
-          psql --host 127.0.0.1 --username postgres --dbname favn_test
-          --set ON_ERROR_STOP=1
-          --command 'CREATE SCHEMA favn_control AUTHORIZATION postgres'
+        run: |
+          psql --host 127.0.0.1 --username postgres --dbname favn_test \
+            --set ON_ERROR_STOP=1 \
+            --command 'CREATE SCHEMA favn_control AUTHORIZATION postgres' \
+            --command 'REVOKE CONNECT, CREATE, TEMPORARY ON DATABASE favn_test FROM PUBLIC' \
+            --command 'GRANT CONNECT ON DATABASE favn_test TO favn_runtime'
 
       - name: Migrate PostgreSQL Storage V2
         run: mix favn.postgres.migrate
