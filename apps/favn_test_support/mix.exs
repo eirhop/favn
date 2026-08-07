@@ -4,7 +4,7 @@ defmodule FavnTestSupport.MixProject do
   def project do
     [
       app: :favn_test_support,
-      version: "0.5.0-rc.1",
+      version: "0.5.0-rc.2",
       description: "Internal shared test fixtures and loader helpers for umbrella apps",
       build_path: "../../_build",
       config_path: "../../config/config.exs",
