@@ -110,8 +110,9 @@ if [[ $status_exit -ne 64 ]]; then
   echo "status contract returned exit $status_exit instead of 64" >&2
   exit 1
 fi
-if [[ $(printf '%s\n' "$status_stdout" | wc -l) -ne 1 ]]; then
-  echo "status contract stdout was not exactly one line" >&2
+status_nonempty_lines=$(printf '%s\n' "$status_stdout" | awk 'NF { count++ } END { print count + 0 }')
+if [[ $status_nonempty_lines -ne 1 ]]; then
+  echo "status contract stdout contained $status_nonempty_lines non-empty lines instead of one" >&2
   exit 1
 fi
 if ! grep -Eq '^\{.*\}$' <<< "$status_stdout"; then
