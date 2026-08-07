@@ -277,8 +277,7 @@ defmodule FavnStoragePostgres.Bootstrap.Connection do
     try do
       function.()
     after
-      Process.unlink(watcher)
-      send(watcher, :stop)
+      stop_resource_watcher(watcher)
     end
   end
 
@@ -309,18 +308,50 @@ defmodule FavnStoragePostgres.Bootstrap.Connection do
 
   defp start_resource_watcher(process) do
     caller = self()
+    ready_reference = make_ref()
 
-    spawn_link(fn ->
-      monitor = Process.monitor(process)
+    watcher =
+      spawn(fn ->
+        process_monitor = Process.monitor(process)
+        caller_monitor = Process.monitor(caller)
 
-      receive do
-        :stop ->
-          Process.demonitor(monitor, [:flush])
+        receive do
+          {:DOWN, ^process_monitor, :process, ^process, _reason} ->
+            Process.exit(caller, :kill)
+        after
+          0 ->
+            send(caller, {:resource_watcher_ready, ready_reference, self()})
+            watch_resource(process, process_monitor, caller, caller_monitor)
+        end
+      end)
 
-        {:DOWN, ^monitor, :process, ^process, reason} ->
-          exit({:postgres_connection_lost, caller, reason})
-      end
-    end)
+    receive do
+      {:resource_watcher_ready, ^ready_reference, ^watcher} -> watcher
+    end
+  end
+
+  defp watch_resource(process, process_monitor, caller, caller_monitor) do
+    receive do
+      {:stop_resource_watcher, reference, ^caller} ->
+        Process.demonitor(process_monitor, [:flush])
+        Process.demonitor(caller_monitor, [:flush])
+        send(caller, {:resource_watcher_stopped, reference, self()})
+
+      {:DOWN, ^process_monitor, :process, ^process, _reason} ->
+        Process.exit(caller, :kill)
+
+      {:DOWN, ^caller_monitor, :process, ^caller, _reason} ->
+        :ok
+    end
+  end
+
+  defp stop_resource_watcher(watcher) do
+    reference = make_ref()
+    send(watcher, {:stop_resource_watcher, reference, self()})
+
+    receive do
+      {:resource_watcher_stopped, ^reference, ^watcher} -> :ok
+    end
   end
 
   defp resource_loss(:classify, reason, authentication),
