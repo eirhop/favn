@@ -9,18 +9,9 @@ defmodule FavnLocal.Publication do
 
   @spec build(String.t()) :: {:ok, Publication.t()} | {:error, term()}
   def build(runner_release_id) when is_binary(runner_release_id) do
-    with {:ok, pools} <- effective_runner_pools(),
-         releases = Map.new(pools, &{&1, runner_release_id}),
-         {:ok, build} <- FavnAuthoring.build_manifest(runner_releases: releases) do
+    with {:ok, build} <-
+           FavnAuthoring.build_manifest_with_uniform_runner_release(runner_release_id) do
       FavnAuthoring.prepare_manifest_publication(build)
-    end
-  end
-
-  defp effective_runner_pools do
-    case FavnAuthoring.build_manifest(runner_releases: %{}) do
-      {:ok, _build} -> {:ok, []}
-      {:error, {:runner_release_pool_mismatch, expected, []}} -> {:ok, expected}
-      {:error, reason} -> {:error, reason}
     end
   end
 

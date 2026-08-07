@@ -1670,7 +1670,9 @@ defmodule FavnStoragePostgres.Identity.Store do
 
     from(intent in AuthOperatorCommand,
       where:
-        intent.workspace_id == ^workspace_id and intent.actor_id == ^command.actor_id and
+        intent.workspace_id == ^workspace_id and
+          intent.principal_kind == ^Atom.to_string(command.principal_kind) and
+          intent.principal_id == ^command.principal_id and
           intent.operation == ^command.operation and intent.key_hash == ^command.key_hash,
       lock: "FOR UPDATE"
     )
@@ -1682,7 +1684,9 @@ defmodule FavnStoragePostgres.Identity.Store do
       intent.request_fingerprint != command.request_fingerprint or
         intent.key_hash != command.key_hash or
         intent.resource_type != command.resource_type or
-        intent.resource_id != command.resource_id or intent.actor_id != command.actor_id
+        intent.resource_id != command.resource_id or
+        intent.principal_kind != Atom.to_string(command.principal_kind) or
+        intent.principal_id != command.principal_id
 
     if mismatch? do
       unresolved? = intent.status in ["pending", "unknown"]
@@ -1737,14 +1741,15 @@ defmodule FavnStoragePostgres.Identity.Store do
       Repo,
       """
       UPDATE favn_control.idempotency_records
-      SET expires_at = GREATEST(expires_at, $6), updated_at = clock_timestamp()
-      WHERE workspace_id = $1 AND operation = $2 AND principal_kind = 'actor'
-        AND principal_id = $3 AND key_hash = $4 AND request_fingerprint = $5
+      SET expires_at = GREATEST(expires_at, $7), updated_at = clock_timestamp()
+      WHERE workspace_id = $1 AND operation = $2 AND principal_kind = $3
+        AND principal_id = $4 AND key_hash = $5 AND request_fingerprint = $6
       """,
       [
         intent.workspace_id,
         intent.operation,
-        intent.actor_id,
+        intent.principal_kind,
+        intent.principal_id,
         intent.key_hash,
         intent.request_fingerprint,
         expires_at
@@ -1799,11 +1804,14 @@ defmodule FavnStoragePostgres.Identity.Store do
       intent_id:
         operator_intent_id(
           workspace_id,
-          command.actor_id,
+          command.principal_kind,
+          command.principal_id,
           command.operation,
           command.key_hash
         ),
       workspace_id: workspace_id,
+      principal_kind: Atom.to_string(command.principal_kind),
+      principal_id: command.principal_id,
       actor_id: command.actor_id,
       session_id: command.session_id,
       operation: command.operation,
@@ -1839,8 +1847,10 @@ defmodule FavnStoragePostgres.Identity.Store do
     intent =
       from(intent in AuthOperatorCommand,
         where:
-          intent.workspace_id == ^workspace_id and intent.actor_id == ^command.actor_id and
-            intent.session_id == ^command.session_id and intent.operation == ^command.operation and
+          intent.workspace_id == ^workspace_id and
+            intent.principal_kind == ^Atom.to_string(command.principal_kind) and
+            intent.principal_id == ^command.principal_id and
+            intent.operation == ^command.operation and
             intent.key_hash == ^command.key_hash,
         lock: "FOR UPDATE"
       )
@@ -1917,9 +1927,12 @@ defmodule FavnStoragePostgres.Identity.Store do
     })
   end
 
-  defp operator_intent_id(workspace_id, actor_id, operation, key_hash) do
+  defp operator_intent_id(workspace_id, principal_kind, principal_id, operation, key_hash) do
     digest =
-      :crypto.hash(:sha256, Enum.join([workspace_id, actor_id, operation, key_hash], <<0>>))
+      :crypto.hash(
+        :sha256,
+        Enum.join([workspace_id, principal_kind, principal_id, operation, key_hash], <<0>>)
+      )
       |> Base.encode16(case: :lower)
 
     "operator_intent:" <> digest
@@ -2530,11 +2543,11 @@ defmodule FavnStoragePostgres.Identity.Store do
   defp validate_reserve_operator_command(command) do
     valid? =
       WorkspaceContext.valid?(command.workspace_context) and
-        command.workspace_context.principal_id == command.actor_id and
+        command.workspace_context.principal_id == command.principal_id and
+        valid_command_principal?(command) and
         Enum.all?(
           [
-            command.actor_id,
-            command.session_id,
+            command.principal_id,
             command.operation,
             command.resource_type,
             command.resource_id,
@@ -2552,12 +2565,12 @@ defmodule FavnStoragePostgres.Identity.Store do
   defp validate_complete_operator_command(command) do
     valid? =
       WorkspaceContext.valid?(command.workspace_context) and
-        command.workspace_context.principal_id == command.actor_id and
+        command.workspace_context.principal_id == command.principal_id and
+        valid_command_principal?(command) and
         command.outcome in ["accepted", "partial", "rejected", "unknown"] and
         Enum.all?(
           [
-            command.actor_id,
-            command.session_id,
+            command.principal_id,
             command.operation,
             command.key_hash,
             command.request_fingerprint,
@@ -2570,6 +2583,24 @@ defmodule FavnStoragePostgres.Identity.Store do
 
     if valid?, do: :ok, else: {:error, ErrorMapper.map(:invalid)}
   end
+
+  defp valid_command_principal?(%{
+         principal_kind: :actor,
+         principal_id: principal_id,
+         actor_id: actor_id,
+         session_id: session_id
+       }),
+       do: principal_id == actor_id and valid_id?(actor_id) and valid_id?(session_id)
+
+  defp valid_command_principal?(%{
+         principal_kind: :service,
+         principal_id: principal_id,
+         actor_id: nil,
+         session_id: nil
+       }),
+       do: valid_id?(principal_id)
+
+  defp valid_command_principal?(_command), do: false
 
   defp valid_audit_detail?(detail) do
     case Jason.encode(Redaction.redact(detail)) do

@@ -5,7 +5,6 @@ defmodule FavnOrchestrator.API.TargetRecoveriesRouter do
 
   require Logger
 
-  alias FavnOrchestrator.API.Audit
   alias FavnOrchestrator.API.Authentication
   alias FavnOrchestrator.API.IdempotentCommand
   alias FavnOrchestrator.API.Response
@@ -26,8 +25,8 @@ defmodule FavnOrchestrator.API.TargetRecoveriesRouter do
         conn,
         context,
         "target_recovery.plan",
-        actor.id,
-        session.id,
+        Authentication.command_principal(session, actor),
+        fn idempotency -> {"target_recovery", recovery_operation_id(idempotency)} end,
         conn.body_params,
         fn idempotency ->
           operation_id = recovery_operation_id(idempotency)
@@ -38,36 +37,10 @@ defmodule FavnOrchestrator.API.TargetRecoveriesRouter do
                  session_id: session.id
                ) do
             {:ok, plan} ->
-              audit(
-                conn,
-                context,
-                session,
-                actor,
-                idempotency,
-                "target_recovery.plan",
-                operation_id,
-                %{target_id: target_id, reason: reason, plan_hash: plan.plan_hash},
-                "accepted",
-                plan.idempotency_replay?
-              )
-
               {:ok, 201, %{plan: RecoveryDTO.plan(plan, admin?(context))}, "target_recovery",
                operation_id}
 
             {:error, failure} ->
-              audit(
-                conn,
-                context,
-                session,
-                actor,
-                idempotency,
-                "target_recovery.plan",
-                operation_id,
-                %{target_id: target_id, error_code: error_code(failure)},
-                "rejected",
-                false
-              )
-
               command_error(failure)
           end
         end
@@ -136,75 +109,19 @@ defmodule FavnOrchestrator.API.TargetRecoveriesRouter do
       conn,
       context,
       action,
-      actor.id,
-      session.id,
+      Authentication.command_principal(session, actor),
+      {"target_recovery", operation_id},
       conn.body_params,
       fn idempotency ->
         case execute.(idempotency) do
           {:ok, operation} ->
-            audit(
-              conn,
-              context,
-              session,
-              actor,
-              idempotency,
-              action,
-              operation_id,
-              %{state: operation.state, phase: operation.phase},
-              "accepted",
-              operation.idempotency_replay? == true
-            )
-
             {:ok, 202, %{target_recovery: RecoveryDTO.operation(operation, true)},
              "target_recovery", operation_id}
 
           {:error, failure} ->
-            audit(
-              conn,
-              context,
-              session,
-              actor,
-              idempotency,
-              action,
-              operation_id,
-              %{error_code: error_code(failure)},
-              "rejected",
-              false
-            )
-
             command_error(failure)
         end
       end
-    )
-  end
-
-  defp audit(
-         conn,
-         context,
-         session,
-         actor,
-         idempotency,
-         action,
-         operation_id,
-         detail,
-         outcome,
-         replayed?
-       ) do
-    Audit.put_best_effort(
-      context,
-      Map.merge(
-        %{
-          action: action,
-          actor_id: actor.id,
-          session_id: session.id,
-          resource_type: "target_recovery",
-          resource_id: operation_id,
-          detail: detail,
-          outcome: outcome,
-          service_identity: Authentication.service_identity(conn)
-        },
-        IdempotentCommand.audit_metadata(idempotency, outcome, replayed?)
-      )
     )
   end
 
@@ -262,11 +179,6 @@ defmodule FavnOrchestrator.API.TargetRecoveriesRouter do
     end
 
     Response.error(conn, status, code, message, details)
-  end
-
-  defp error_code(reason) do
-    {_status, code, _message, _details} = error_response(reason)
-    code
   end
 
   @doc false

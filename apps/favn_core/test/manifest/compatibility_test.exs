@@ -3,6 +3,10 @@ defmodule Favn.Manifest.CompatibilityTest do
 
   alias Favn.Manifest.Asset
   alias Favn.Manifest.Compatibility
+  alias Favn.Manifest.Graph
+  alias Favn.Manifest.Pipeline
+  alias Favn.Manifest.Schedule
+  alias Favn.Manifest.Serializer
   alias Favn.SQL.PartitionSpec
 
   test "accepts current schema and runner contract versions" do
@@ -98,6 +102,103 @@ defmodule Favn.Manifest.CompatibilityTest do
   test "rejects non-map compatibility input with tagged error" do
     assert {:error, {:invalid_manifest_input, :invalid}} =
              Compatibility.validate_manifest(:invalid)
+  end
+
+  test "rehydrates valid serialized manifest entries before compatibility validation" do
+    manifest =
+      current_manifest(%{
+        assets: [],
+        pipelines: [Map.from_struct(%Pipeline{module: MyApp.Pipeline, name: :daily})],
+        schedules: [
+          Map.from_struct(%Schedule{
+            module: MyApp.Pipeline,
+            name: :daily,
+            ref: {MyApp.Pipeline, :daily},
+            timezone: "Etc/UTC",
+            timezone_source: :utc_fallback
+          })
+        ]
+      })
+
+    assert :ok = Compatibility.validate_manifest(manifest)
+  end
+
+  test "accepts a serialized SQL asset whose type is encoded as a string" do
+    asset = %Asset{
+      ref: {MyApp.SerializedSQLAsset, :asset},
+      module: MyApp.SerializedSQLAsset,
+      name: :asset,
+      type: :sql,
+      execution_package_hash: String.duplicate("a", 64)
+    }
+
+    assert {:ok, graph} = Graph.build([asset])
+
+    manifest = %Favn.Manifest{
+      assets: [asset],
+      graph: graph,
+      runner_releases: %{"default" => FavnTestSupport.runner_release_id(:primary)}
+    }
+
+    assert {:ok, encoded} = Serializer.encode_manifest(manifest)
+    assert {:ok, decoded} = Jason.decode(encoded)
+    assert get_in(decoded, ["assets", Access.at(0), "type"]) == "sql"
+    assert :ok = Compatibility.validate_manifest(decoded)
+  end
+
+  test "rejects malformed entries instead of silently skipping them" do
+    for {field, malformed} <- [assets: :not_an_asset, pipelines: "not a pipeline", schedules: 42] do
+      manifest = Map.put(current_manifest(), field, [malformed])
+
+      assert {:error, {:invalid_manifest_entry, ^field, 0}} =
+               Compatibility.validate_manifest(manifest)
+    end
+  end
+
+  test "rejects raw assets and pipelines with missing required identities" do
+    for malformed <- [
+          %{},
+          %{
+            "ref" => ["Elixir.MyApp.Asset", "asset"],
+            "module" => "Elixir.MyApp.Asset",
+            "name" => "asset"
+          }
+        ] do
+      manifest = Map.put(current_manifest(), :assets, [malformed])
+
+      assert {:error, {:invalid_manifest_entry, :assets, 0}} =
+               Compatibility.validate_manifest(manifest)
+    end
+
+    for malformed <- [%{}, %{"module" => "Elixir.MyApp.Pipeline"}] do
+      manifest = Map.put(current_manifest(), :pipelines, [malformed])
+
+      assert {:error, {:invalid_manifest_entry, :pipelines, 0}} =
+               Compatibility.validate_manifest(manifest)
+    end
+
+    manifest = Map.put(current_manifest(), :schedules, [%{}])
+
+    assert {:error, {:invalid_manifest_entry, :schedules, 0}} =
+             Compatibility.validate_manifest(manifest)
+  end
+
+  test "rejects canonical assets and pipelines with invalid identities" do
+    assert {:error, {:invalid_manifest_asset, nil, :invalid_asset_identity}} =
+             current_manifest(%{assets: [%Asset{}]})
+             |> Compatibility.validate_manifest()
+
+    assert {:error, {:invalid_manifest_pipeline, nil, :invalid_pipeline_identity}} =
+             current_manifest(%{pipelines: [%Pipeline{}]})
+             |> Compatibility.validate_manifest()
+
+    assert {:error, {:invalid_manifest_schedule, nil, :invalid_schedule_identity}} =
+             current_manifest(%{
+               schedules: [
+                 %Schedule{timezone: "Etc/UTC", timezone_source: :utc_fallback}
+               ]
+             })
+             |> Compatibility.validate_manifest()
   end
 
   test "partition specs require SQL table or incremental assets" do

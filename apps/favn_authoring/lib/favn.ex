@@ -176,6 +176,17 @@ defmodule FavnAuthoring do
     end
   end
 
+  @doc false
+  @spec build_manifest_with_uniform_runner_release(String.t()) ::
+          {:ok, Build.t()} | {:error, term()}
+  def build_manifest_with_uniform_runner_release(runner_release_id)
+      when is_binary(runner_release_id) do
+    with {:ok, opts} <- with_default_manifest_modules([]),
+         {:ok, opts} <- with_manifest_environment(opts) do
+      Generator.build_with_uniform_runner_release(opts, runner_release_id)
+    end
+  end
+
   defp reject_legacy_runner_release_option(opts) do
     if Keyword.has_key?(opts, :runner_release_id),
       do: {:error, {:unknown_opt, :runner_release_id}},

@@ -3,17 +3,18 @@ defmodule FavnOrchestrator.API.AuthRouter do
 
   use Plug.Router
 
-  alias FavnOrchestrator.API.Audit
   alias FavnOrchestrator.API.Authentication
+  alias FavnOrchestrator.API.CommandErrors
   alias FavnOrchestrator.API.DTO
   alias FavnOrchestrator.API.Response
   alias FavnOrchestrator.Auth
+  alias FavnOrchestrator.Persistence.Error
   alias FavnOrchestrator.Persistence.WorkspaceContext
 
   # Plug.Router owns do_match/4. The remaining definitions consume identity
   # callbacks selected dynamically from the validated persistence registry.
   @dialyzer {:no_match, [do_match: 4, password_login: 3, session_context: 2]}
-  @dialyzer {:no_unused, [audit: 5, persistence_roles: 1]}
+  @dialyzer {:no_unused, [persistence_roles: 1]}
 
   plug(:match)
   plug(:dispatch)
@@ -24,9 +25,7 @@ defmodule FavnOrchestrator.API.AuthRouter do
     with :ok <- Authentication.ensure_service(conn),
          {:ok, username} <- required_string(params, "username"),
          {:ok, password} <- required_string(params, "password"),
-         {:ok, session, actor, context} <- password_login(conn, username, password) do
-      audit(conn, context, "auth.password.login", session, actor)
-
+         {:ok, session, actor, _context} <- password_login(conn, username, password) do
       Response.data(conn, 201, %{
         session: DTO.session(session),
         session_token: session.token,
@@ -72,8 +71,6 @@ defmodule FavnOrchestrator.API.AuthRouter do
          {:ok, token} <- session_token(conn),
          {:ok, session, actor, context} <- session_context(conn, token),
          :ok <- revoke_session(context, session.id) do
-      audit(conn, context, "auth.session.revoke_current", session, actor)
-
       Response.data(conn, 200, %{
         revoked: true,
         session: DTO.session(%{session | revoked_at: DateTime.utc_now()}),
@@ -99,17 +96,8 @@ defmodule FavnOrchestrator.API.AuthRouter do
 
   post "/sessions/:session_id/revoke" do
     with :ok <- Authentication.ensure_service(conn),
-         {:ok, session, actor, context} <- admin_context(conn),
+         {:ok, _session, _actor, context} <- admin_context(conn),
          :ok <- revoke_session(context, session_id) do
-      Audit.put_best_effort(context, %{
-        action: "auth.session.revoke",
-        actor_id: actor.id,
-        session_id: session.id,
-        target_session_id: session_id,
-        outcome: "accepted",
-        service_identity: Authentication.service_identity(conn)
-      })
-
       Response.data(conn, 200, %{revoked: true, session_id: session_id})
     else
       {:error, :forbidden} ->
@@ -118,6 +106,9 @@ defmodule FavnOrchestrator.API.AuthRouter do
       {:error, :service_unauthorized} ->
         service_unauthorized(conn)
 
+      {:error, %Error{} = reason} ->
+        CommandErrors.send_infrastructure(conn, reason)
+
       {:error, _reason} ->
         Response.error(conn, 401, "unauthenticated", "Missing or invalid actor context")
     end
@@ -125,16 +116,6 @@ defmodule FavnOrchestrator.API.AuthRouter do
 
   match _ do
     Response.error(conn, 404, "not_found", "Route was not found")
-  end
-
-  defp audit(conn, context, action, session, actor) do
-    Audit.put_best_effort(context, %{
-      action: action,
-      actor_id: actor.id,
-      session_id: session.id,
-      outcome: "accepted",
-      service_identity: Authentication.service_identity(conn)
-    })
   end
 
   defp session_token(conn) do

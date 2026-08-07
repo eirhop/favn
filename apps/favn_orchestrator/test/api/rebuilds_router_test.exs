@@ -5,7 +5,6 @@ defmodule FavnOrchestrator.API.RebuildsRouterTest do
   import Plug.Test
 
   alias FavnOrchestrator.API.RebuildsRouter
-  alias FavnOrchestrator.API.IdempotentCommand
   alias FavnOrchestrator.Auth.Session
   alias FavnOrchestrator.Auth.ServiceTokens
   alias FavnOrchestrator.Idempotency
@@ -130,6 +129,37 @@ defmodule FavnOrchestrator.API.RebuildsRouterTest do
       :ok
     end
 
+    def reserve_operator_command(command) do
+      key = {
+        command.workspace_context.workspace_id,
+        command.operation,
+        command.principal_kind,
+        command.principal_id,
+        command.key_hash
+      }
+
+      intents = Process.get(:router_command_intents, %{})
+      replayed? = Map.has_key?(intents, key)
+      Process.put(:router_command_intents, Map.put_new(intents, key, command))
+
+      {:ok,
+       %{
+         key_hash: command.key_hash,
+         request_fingerprint: command.request_fingerprint,
+         expires_at: command.expires_at,
+         replayed?: replayed?
+       }}
+    end
+
+    def complete_operator_command(command) do
+      Process.put(
+        :router_command_completions,
+        [command | Process.get(:router_command_completions, [])]
+      )
+
+      :ok
+    end
+
     defp fetch(key, identity, label) do
       case Process.get(key, %{}) do
         %{^identity => value} -> {:ok, value}
@@ -172,6 +202,8 @@ defmodule FavnOrchestrator.API.RebuildsRouterTest do
     Process.put(:router_actors, %{})
     Process.put(:router_rebuilds, %{})
     Process.put(:router_audits, %{})
+    Process.put(:router_command_intents, %{})
+    Process.put(:router_command_completions, [])
 
     on_exit(fn ->
       stop_runtime(runtime)
@@ -246,9 +278,9 @@ defmodule FavnOrchestrator.API.RebuildsRouterTest do
     assert first_plan_id == replay_plan_id
     refute first_plan_id == second_plan_id
 
-    plan_audits = Enum.filter(audits(), &(&1.detail.action == "rebuild.plan"))
-    assert MapSet.new(plan_audits, & &1.detail.actor_id) == MapSet.new([first.id, second.id])
-    assert MapSet.size(MapSet.new(plan_audits, & &1.command_id)) == 2
+    plan_intents = Enum.filter(command_intents(), &(&1.operation == "rebuild.plan"))
+    assert MapSet.new(plan_intents, & &1.principal_id) == MapSet.new([first.id, second.id])
+    assert length(plan_intents) == 2
   end
 
   test "persists accepted, replayed, and rejected mutation audit evidence" do
@@ -269,18 +301,12 @@ defmodule FavnOrchestrator.API.RebuildsRouterTest do
     assert request.("rebuild-existing", "cancel-replay").status == 202
     assert request.("rebuild-missing", "cancel-rejected").status == 404
 
-    cancel_audits = Enum.filter(audits(), &(&1.detail.action == "rebuild.cancel"))
+    cancel_intents = Enum.filter(command_intents(), &(&1.operation == "rebuild.cancel"))
+    assert length(cancel_intents) == 2
 
-    assert Enum.any?(cancel_audits, fn audit ->
-             audit.detail.outcome == "accepted" and
-               audit.detail.idempotency.replayed == false
-           end)
-
-    assert Enum.any?(cancel_audits, fn audit ->
-             audit.detail.outcome == "accepted" and audit.detail.idempotency.replayed == true
-           end)
-
-    assert Enum.any?(cancel_audits, &(&1.detail.outcome == "rejected"))
+    cancel_results = Enum.filter(command_completions(), &(&1.operation == "rebuild.cancel"))
+    assert Enum.any?(cancel_results, &(&1.outcome == "accepted"))
+    assert Enum.any?(cancel_results, &(&1.outcome == "rejected"))
   end
 
   test "never reads a rebuild from another workspace" do
@@ -370,13 +396,6 @@ defmodule FavnOrchestrator.API.RebuildsRouterTest do
 
     assert {409, "rebuild_not_supported", _message, %{}} =
              RebuildsRouter.error_response(:rebuild_target_not_supported)
-  end
-
-  test "audit metadata distinguishes initial execution from replay" do
-    idempotency = %{operation: "rebuild.start", key_hash: "hashed-key"}
-
-    refute IdempotentCommand.audit_metadata(idempotency, "accepted", false).idempotency.replayed
-    assert IdempotentCommand.audit_metadata(idempotency, "accepted", true).idempotency.replayed
   end
 
   defp request(method, path, params \\ nil) do
@@ -474,7 +493,8 @@ defmodule FavnOrchestrator.API.RebuildsRouterTest do
     )
   end
 
-  defp audits, do: Process.get(:router_audits) |> Map.values()
+  defp command_intents, do: Process.get(:router_command_intents) |> Map.values()
+  defp command_completions, do: Process.get(:router_command_completions)
   defp json(response), do: Jason.decode!(response.resp_body)
   defp maybe_put_header(conn, _name, nil), do: conn
   defp maybe_put_header(conn, name, value), do: put_req_header(conn, name, value)

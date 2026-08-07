@@ -1,12 +1,13 @@
 defmodule FavnOrchestrator.Operator.Audit do
   @moduledoc """
-  Durable same-BEAM operator command intent.
+  Durable same-BEAM command intent for actor and trusted-service principals.
 
   The intent is committed before the owning domain mutation starts. The
   domain's own PostgreSQL command receipt remains the accepted-result
-  authority, while this record guarantees that no supported browser mutation
-  can run without durable actor, session, workspace, request-fingerprint, and
-  idempotency evidence.
+  authority, while this record guarantees that no supported operator mutation
+  can run without durable principal, workspace, request-fingerprint, and
+  idempotency evidence. Actor principals additionally retain their real
+  session authority; trusted services never borrow actor identity.
   """
 
   alias FavnOrchestrator.Idempotency
@@ -21,14 +22,23 @@ defmodule FavnOrchestrator.Operator.Audit do
   @retention_seconds 7 * 24 * 60 * 60
   @fingerprint_key_context "favn.operator-command-request-fingerprint.v1"
 
-  @enforce_keys [:operation, :key_hash, :request_fingerprint, :idempotency]
-  defstruct [:operation, :key_hash, :request_fingerprint, :idempotency]
+  @enforce_keys [:operation, :key_hash, :request_fingerprint, :idempotency, :principal]
+  defstruct [:operation, :key_hash, :request_fingerprint, :idempotency, :principal]
 
   @type intent :: %__MODULE__{
           operation: String.t(),
           key_hash: String.t(),
           request_fingerprint: String.t(),
-          idempotency: CommandIdempotency.t()
+          idempotency: CommandIdempotency.t(),
+          principal: map()
+        }
+
+  @type principal :: %{
+          required(:kind) => :actor | :service,
+          required(:id) => String.t(),
+          required(:actor_id) => String.t() | nil,
+          required(:session_id) => String.t() | nil,
+          required(:service_identity) => String.t() | nil
         }
 
   @doc "Persists an exact, replay-safe operator intent before mutation."
@@ -54,7 +64,39 @@ defmodule FavnOrchestrator.Operator.Audit do
       )
       when is_binary(actor_id) and is_binary(operation) and is_binary(resource_type) and
              is_binary(resource_id) and is_binary(raw_key) do
-    safe_request = request |> Redaction.redact() |> json_safe()
+    principal = %{
+      kind: :actor,
+      id: actor_id,
+      actor_id: actor_id,
+      session_id: operator_context.session_id,
+      service_identity: "same_beam_operator_ui"
+    }
+
+    begin_command(context, principal, operation, resource_type, resource_id, request, raw_key)
+  end
+
+  @doc "Persists an exact principal-aware intent before an HTTP mutation."
+  @spec begin_command(
+          WorkspaceContext.t(),
+          principal(),
+          String.t(),
+          String.t(),
+          String.t(),
+          term(),
+          String.t()
+        ) :: {:ok, intent()} | {:error, term()}
+  def begin_command(
+        %WorkspaceContext{} = context,
+        %{kind: kind, id: principal_id} = principal,
+        operation,
+        resource_type,
+        resource_id,
+        request,
+        raw_key
+      )
+      when kind in [:actor, :service] and is_binary(principal_id) and is_binary(operation) and
+             is_binary(resource_type) and is_binary(resource_id) and is_binary(raw_key) do
+    safe_request = request |> Redaction.redact_operational_bounded() |> json_safe()
 
     with :ok <- validate_key(raw_key),
          {:ok, fingerprint_key} <- fingerprint_key(),
@@ -66,17 +108,21 @@ defmodule FavnOrchestrator.Operator.Audit do
          {:ok, reservation} <-
            Identity.reserve_operator_command(%ReserveOperatorCommand{
              workspace_context: context,
-             actor_id: actor_id,
-             session_id: operator_context.session_id,
+             principal_kind: kind,
+             principal_id: principal_id,
+             actor_id: principal.actor_id,
+             session_id: principal.session_id,
              operation: operation,
              resource_type: resource_type,
              resource_id: resource_id,
              key_hash: proposed_key_hash,
              request_fingerprint: request_fingerprint,
              detail: %{
-               actor_id: actor_id,
-               session_id: operator_context.session_id,
-               service_identity: "same_beam_operator_ui",
+               principal_kind: kind,
+               principal_id: principal_id,
+               actor_id: principal.actor_id,
+               session_id: principal.session_id,
+               service_identity: principal.service_identity,
                outcome: "requested",
                request: safe_request,
                request_fingerprint: request_fingerprint
@@ -87,8 +133,8 @@ defmodule FavnOrchestrator.Operator.Audit do
          {:ok, idempotency} <-
            CommandIdempotency.new(
              operation,
-             :actor,
-             actor_id,
+             kind,
+             principal_id,
              reservation.key_hash,
              request_fingerprint,
              reservation.expires_at
@@ -98,7 +144,8 @@ defmodule FavnOrchestrator.Operator.Audit do
          operation: operation,
          key_hash: reservation.key_hash,
          request_fingerprint: request_fingerprint,
-         idempotency: idempotency
+         idempotency: idempotency,
+         principal: principal
        }}
     end
   end
@@ -116,9 +163,33 @@ defmodule FavnOrchestrator.Operator.Audit do
         ) :: :ok | {:error, term()}
   def finish_command(
         %WorkspaceContext{} = context,
-        %OperatorContext{} = operator_context,
+        %OperatorContext{session_id: session_id},
         %{id: actor_id},
-        %__MODULE__{} = intent,
+        %__MODULE__{
+          principal: %{kind: :actor, id: actor_id, session_id: session_id}
+        } = intent,
+        outcome,
+        resource_type,
+        resource_id,
+        detail
+      )
+      when outcome in ["accepted", "partial", "rejected", "unknown"] and
+             is_binary(resource_type) and is_binary(resource_id) and is_map(detail) do
+    finish_command(context, intent, outcome, resource_type, resource_id, detail)
+  end
+
+  @doc "Durably records the terminal result of a principal-aware command."
+  @spec finish_command(
+          WorkspaceContext.t(),
+          intent(),
+          String.t(),
+          String.t(),
+          String.t(),
+          map()
+        ) :: :ok | {:error, term()}
+  def finish_command(
+        %WorkspaceContext{} = context,
+        %__MODULE__{principal: principal} = intent,
         outcome,
         resource_type,
         resource_id,
@@ -128,8 +199,10 @@ defmodule FavnOrchestrator.Operator.Audit do
              is_binary(resource_type) and is_binary(resource_id) and is_map(detail) do
     Identity.complete_operator_command(%CompleteOperatorCommand{
       workspace_context: context,
-      actor_id: actor_id,
-      session_id: operator_context.session_id,
+      principal_kind: principal.kind,
+      principal_id: principal.id,
+      actor_id: principal.actor_id,
+      session_id: principal.session_id,
       operation: intent.operation,
       key_hash: intent.key_hash,
       request_fingerprint: intent.request_fingerprint,
@@ -137,9 +210,11 @@ defmodule FavnOrchestrator.Operator.Audit do
       resource_type: resource_type,
       resource_id: resource_id,
       detail: %{
-        actor_id: actor_id,
-        session_id: operator_context.session_id,
-        service_identity: "same_beam_operator_ui",
+        principal_kind: principal.kind,
+        principal_id: principal.id,
+        actor_id: principal.actor_id,
+        session_id: principal.session_id,
+        service_identity: principal.service_identity,
         outcome: outcome,
         result: detail |> Redaction.redact() |> json_safe(),
         request_fingerprint: intent.request_fingerprint
@@ -176,7 +251,7 @@ defmodule FavnOrchestrator.Operator.Audit do
   end
 
   defp validate_key(key) do
-    if byte_size(key) in 16..255,
+    if byte_size(key) in 1..512,
       do: :ok,
       else: {:error, :invalid_idempotency_key}
   end

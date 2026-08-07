@@ -39,8 +39,31 @@ defmodule FavnOrchestrator.RunnerTaskClaimTest do
           )
         end
 
-        {reply, %{state | replies: remaining, claims: [command | state.claims]}}
+        next = %{state | replies: remaining, claims: [command | state.claims]}
+        maybe_restart_registry(reply, state.restart_registry?)
+        {reply, next}
       end)
+    end
+
+    defp maybe_restart_registry({:ok, %RunnerTask{}}, true) do
+      previous = Process.whereis(FavnOrchestrator.RunnerRegistry)
+      GenServer.stop(previous, :normal)
+      await_registry_restart(previous, 100)
+    end
+
+    defp maybe_restart_registry(_reply, _restart?), do: :ok
+
+    defp await_registry_restart(_previous, 0), do: raise("runner registry did not restart")
+
+    defp await_registry_restart(previous, attempts) do
+      case Process.whereis(FavnOrchestrator.RunnerRegistry) do
+        pid when is_pid(pid) and pid != previous ->
+          :ok
+
+        _other ->
+          Process.sleep(5)
+          await_registry_restart(previous, attempts - 1)
+      end
     end
 
     def enqueue(_command), do: unavailable()
@@ -70,7 +93,11 @@ defmodule FavnOrchestrator.RunnerTaskClaimTest do
   end
 
   setup do
-    {:ok, agent} = Agent.start_link(fn -> %{replies: [], claims: [], churn?: true} end)
+    {:ok, agent} =
+      Agent.start_link(fn ->
+        %{replies: [], claims: [], churn?: true, restart_registry?: false}
+      end)
+
     Application.put_env(:favn_orchestrator, :runner_task_claim_test_agent, agent)
 
     previous = Application.get_env(:favn_orchestrator, :runner_pools)
@@ -122,11 +149,54 @@ defmodule FavnOrchestrator.RunnerTaskClaimTest do
     refute_receive {:agent_message, {:favn_runner_task, _wake}}, 50
   end
 
+  test "a registry restart after the durable claim does not lose or duplicate the assignment", %{
+    agent: agent
+  } do
+    session_generation = register("runner-registry-restart")
+    request = claim_request("runner-registry-restart", session_generation, "claim-restart")
+    task = queued_task("rt_registry_restart")
+
+    Agent.update(agent, fn state ->
+      %{state | replies: [{:ok, task}], churn?: false, restart_registry?: true}
+    end)
+
+    assert {:ok, %Assignment{task_id: "rt_registry_restart"} = assignment} =
+             RunnerTasks.claim(request)
+
+    assert [_claim] = Agent.get(agent, & &1.claims)
+    assert RunnerRegistry.list() == []
+
+    registration =
+      registration("runner-registry-restart")
+      |> Map.put(:runner_session_generation, session_generation)
+      |> Map.put(:active_assignment, %{
+        workspace_id: assignment.workspace_id,
+        task_id: assignment.task_id,
+        assignment_generation: assignment.assignment_generation
+      })
+
+    resumed_agent = spawn(fn -> Process.sleep(:infinity) end)
+    on_exit(fn -> Process.exit(resumed_agent, :kill) end)
+
+    assert {:ok, %{status: :accepted}} =
+             RunnerRegistry.register_verified(registration, resumed_agent)
+
+    assert {:ok, %{status: :busy, active_assignment: %{task_id: "rt_registry_restart"}}} =
+             RunnerRegistry.fetch("runner-registry-restart")
+  end
+
   defp register(runner_id) do
     parent = self()
     agent_pid = spawn(fn -> agent_loop(parent) end)
 
-    registration = %Registration{
+    registration = registration(runner_id)
+
+    assert {:ok, %{status: :accepted} = ack} = RunnerRegistry.register(registration, agent_pid)
+    ack.runner_session_generation
+  end
+
+  defp registration(runner_id) do
+    %Registration{
       runner_instance_id: runner_id,
       boot_id: "boot-#{runner_id}",
       beam_node: Atom.to_string(node()),
@@ -136,9 +206,6 @@ defmodule FavnOrchestrator.RunnerTaskClaimTest do
       supported_task_kinds: [:asset_attempt],
       capabilities: ["asset_execution"]
     }
-
-    assert {:ok, %{status: :accepted} = ack} = RunnerRegistry.register(registration, agent_pid)
-    ack.runner_session_generation
   end
 
   defp claim_request(runner_id, session_generation, command_id) do

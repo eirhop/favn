@@ -15,8 +15,11 @@ defmodule FavnOrchestrator.API.IdempotentCommand do
   alias FavnOrchestrator.API.ErrorResponse
   alias FavnOrchestrator.API.Response
   alias FavnOrchestrator.Idempotency
+  alias FavnOrchestrator.Operator.Audit
   alias FavnOrchestrator.Persistence.CommandIdempotency
+  alias FavnOrchestrator.Persistence.Error
   alias FavnOrchestrator.Persistence.WorkspaceContext
+  alias FavnOrchestrator.Redaction
 
   @type idempotency :: %{
           required(:operation) => String.t(),
@@ -33,8 +36,8 @@ defmodule FavnOrchestrator.API.IdempotentCommand do
           Plug.Conn.t(),
           WorkspaceContext.t(),
           String.t(),
-          String.t(),
-          String.t(),
+          Audit.principal(),
+          {String.t(), String.t()} | (idempotency() -> {String.t(), String.t()}),
           term(),
           (idempotency() -> command_result())
         ) :: Plug.Conn.t()
@@ -42,33 +45,38 @@ defmodule FavnOrchestrator.API.IdempotentCommand do
         conn,
         %WorkspaceContext{} = context,
         operation,
-        actor_id,
-        session_id,
+        %{kind: principal_kind, id: principal_id} = principal,
+        resource,
         request_input,
         execute
       )
-      when is_binary(operation) and is_binary(actor_id) and is_binary(session_id) and
-             is_function(execute, 1) do
-    with {:ok, key_hash} <- key_hash(conn),
-         fingerprint <-
-           Idempotency.request_fingerprint(%{operation: operation, request: request_input}),
-         {:ok, command_idempotency} <-
-           CommandIdempotency.new(
-             operation,
-             :actor,
-             actor_id,
-             key_hash,
-             fingerprint,
-             DateTime.add(DateTime.utc_now(), 7 * 24 * 60 * 60, :second)
-           ) do
+      when principal_kind in [:actor, :service] and is_binary(principal_id) and
+             is_binary(operation) and is_function(execute, 1) do
+    with {:ok, raw_key} <- idempotency_key(conn),
+         key_hash <- Idempotency.key_hash(raw_key),
+         run_id <- deterministic_run_id(context.workspace_id, operation, principal_id, key_hash),
+         proposed <- %{operation: operation, key_hash: key_hash, run_id: run_id},
+         {:ok, {resource_type, resource_id}} <- resolve_resource(resource, proposed),
+         {:ok, intent} <-
+           safe_audit(fn ->
+             Audit.begin_command(
+               context,
+               principal,
+               operation,
+               resource_type,
+               resource_id,
+               request_input,
+               raw_key
+             )
+           end) do
       idempotency = %{
         operation: operation,
-        key_hash: key_hash,
-        command_idempotency: command_idempotency,
-        run_id: deterministic_run_id(context.workspace_id, operation, actor_id, key_hash)
+        key_hash: intent.key_hash,
+        command_idempotency: intent.idempotency,
+        run_id: run_id
       }
 
-      execute_atomic(conn, idempotency, execute)
+      execute_audited(conn, context, intent, resource_type, resource_id, idempotency, execute)
     else
       {:error, :missing_idempotency_key} ->
         validation_error(conn, "Missing required Idempotency-Key header")
@@ -78,58 +86,119 @@ defmodule FavnOrchestrator.API.IdempotentCommand do
 
       {:error, :invalid_idempotency_context} ->
         Response.error(conn, 500, "internal_error", "Idempotency context is invalid")
+
+      {:error, :invalid_command_resource} ->
+        Response.error(conn, 500, "internal_error", "Command resource is invalid")
+
+      {:error, %Error{kind: :conflict}} ->
+        Response.error(
+          conn,
+          409,
+          "idempotency_conflict",
+          "The idempotency key is already associated with another command"
+        )
+
+      {:error, %Error{kind: kind}} when kind in [:timeout, :unavailable] ->
+        Response.error(conn, 503, "audit_unavailable", "Command audit is unavailable")
+
+      {:error, reason} ->
+        log_audit_failure(conn, operation, "reservation", reason)
+        Response.error(conn, 500, "internal_error", "Command audit could not be reserved")
     end
   end
 
-  @doc "Returns the redacted idempotency metadata stored with audit entries."
-  @spec audit_metadata(idempotency(), String.t()) :: map()
-  def audit_metadata(idempotency, outcome), do: audit_metadata(idempotency, outcome, false)
-
-  @spec audit_metadata(idempotency(), String.t(), boolean()) :: map()
-  def audit_metadata(%{operation: operation, key_hash: key_hash}, outcome, replayed?)
-      when is_boolean(replayed?) do
-    %{
-      operation: operation,
-      idempotency: %{outcome: outcome, key_hash: key_hash, replayed: replayed?}
-    }
-  end
-
-  defp execute_atomic(conn, idempotency, execute) do
+  defp execute_audited(
+         conn,
+         context,
+         intent,
+         reserved_resource_type,
+         reserved_resource_id,
+         idempotency,
+         execute
+       ) do
     result =
       try do
         execute.(idempotency)
       rescue
-        exception -> {:unknown_outcome, Exception.format(:error, exception, __STACKTRACE__)}
+        exception ->
+          {:unknown_outcome, %{kind: :exception, type: exception.__struct__ |> Atom.to_string()}}
       catch
-        kind, reason -> {:unknown_outcome, Exception.format(kind, reason, __STACKTRACE__)}
+        kind, reason ->
+          {:unknown_outcome, %{kind: kind, reason: Redaction.redact_operational_bounded(reason)}}
       end
 
-    case result do
-      {:ok, status, payload, _resource_type, _resource_id} ->
-        Response.data(conn, status, DTO.normalize(payload))
+    {outcome, resource_type, resource_id, detail} =
+      audit_result(result, reserved_resource_type, reserved_resource_id)
 
-      {:error, status, code, message, details} ->
-        Response.error(conn, status, code, message, details)
+    case safe_audit(fn ->
+           Audit.finish_command(
+             context,
+             intent,
+             outcome,
+             resource_type,
+             resource_id,
+             detail
+           )
+         end) do
+      :ok ->
+        render_result(conn, idempotency, result)
 
-      {:unknown_outcome, formatted} ->
-        Logger.error(
-          "atomic idempotent command failed operation=#{inspect(idempotency.operation)} " <>
-            "request_id=#{inspect(request_id(conn))}\n#{formatted}"
-        )
-
-        error_response(conn, ErrorResponse.response(:idempotency_completion_failed))
-
-      unexpected ->
-        Logger.error(
-          "atomic idempotent command returned invalid result " <>
-            "operation=#{inspect(idempotency.operation)} result=#{inspect(unexpected)}"
-        )
-
+      {:error, reason} ->
+        log_audit_failure(conn, idempotency.operation, "completion", reason)
         error_response(conn, ErrorResponse.response(:idempotency_completion_failed))
     end
   end
 
-  defp key_hash(conn) do
+  defp render_result(conn, _idempotency, {:ok, status, payload, _resource_type, _resource_id}),
+    do: Response.data(conn, status, DTO.normalize(payload))
+
+  defp render_result(conn, _idempotency, {:error, status, code, message, _details})
+       when status >= 500,
+       do:
+         Response.error(conn, status, code, message, %{
+           outcome: "unknown",
+           retry_with_same_idempotency_key: true
+         })
+
+  defp render_result(conn, _idempotency, {:error, status, code, message, details}),
+    do: Response.error(conn, status, code, message, details)
+
+  defp render_result(conn, idempotency, {:unknown_outcome, failure}) do
+    Logger.error(
+      "atomic idempotent command failed operation=#{inspect(idempotency.operation)} " <>
+        "request_id=#{inspect(request_id(conn))} " <>
+        "failure=#{inspect(Redaction.redact_operational_bounded(failure))}"
+    )
+
+    error_response(conn, ErrorResponse.response(:idempotency_completion_failed))
+  end
+
+  defp render_result(conn, idempotency, unexpected) do
+    Logger.error(
+      "atomic idempotent command returned invalid result " <>
+        "operation=#{inspect(idempotency.operation)} " <>
+        "result=#{inspect(Redaction.redact_operational_bounded(unexpected))}"
+    )
+
+    error_response(conn, ErrorResponse.response(:idempotency_completion_failed))
+  end
+
+  defp audit_result({:ok, status, _payload, resource_type, resource_id}, _type, _id)
+       when is_binary(resource_type) and is_binary(resource_id),
+       do: {"accepted", resource_type, resource_id, %{status: status}}
+
+  defp audit_result({:error, status, code, _message, _details}, resource_type, resource_id) do
+    outcome = if status >= 500, do: "unknown", else: "rejected"
+    {outcome, resource_type, resource_id, %{status: status, code: code}}
+  end
+
+  defp audit_result({:unknown_outcome, _formatted}, resource_type, resource_id),
+    do: {"unknown", resource_type, resource_id, %{reason: "command_execution_failed"}}
+
+  defp audit_result(_unexpected, resource_type, resource_id),
+    do: {"unknown", resource_type, resource_id, %{reason: "invalid_command_result"}}
+
+  defp idempotency_key(conn) do
     case header(conn, "idempotency-key") do
       nil ->
         {:error, :missing_idempotency_key}
@@ -137,11 +206,52 @@ defmodule FavnOrchestrator.API.IdempotentCommand do
       value ->
         value = String.trim(value)
 
-        if value != "" and byte_size(value) <= 512,
-          do: {:ok, Idempotency.key_hash(value)},
+        if byte_size(value) in 1..512,
+          do: {:ok, value},
           else: {:error, :invalid_idempotency_key}
     end
   end
+
+  defp resolve_resource({type, id}, _idempotency)
+       when is_binary(type) and type != "" and is_binary(id) and id != "",
+       do: {:ok, {type, id}}
+
+  defp resolve_resource(resource, idempotency) when is_function(resource, 1) do
+    resolve_resource(resource.(idempotency), idempotency)
+  rescue
+    _error -> {:error, :invalid_command_resource}
+  catch
+    _kind, _reason -> {:error, :invalid_command_resource}
+  end
+
+  defp resolve_resource(_resource, _idempotency), do: {:error, :invalid_command_resource}
+
+  defp safe_audit(fun) do
+    fun.()
+  rescue
+    exception ->
+      {:error, {:audit_call_failed, :exception, exception.__struct__ |> Atom.to_string()}}
+  catch
+    kind, reason ->
+      {:error, {:audit_call_failed, kind, Redaction.redact_operational_bounded(reason)}}
+  end
+
+  defp log_audit_failure(conn, operation, stage, reason) do
+    Logger.error(
+      "durable command audit failed operation=#{inspect(operation)} stage=#{stage} " <>
+        "request_id=#{inspect(request_id(conn))} reason=#{inspect(redacted_reason(reason))}"
+    )
+  end
+
+  defp redacted_reason(%Error{} = error),
+    do:
+      Redaction.redact_operational_bounded(%{
+        kind: error.kind,
+        retryable?: error.retryable?,
+        details: error.details
+      })
+
+  defp redacted_reason(reason), do: Redaction.redact_operational_bounded(reason)
 
   defp deterministic_run_id(workspace_id, operation, actor_id, key_hash) do
     digest =

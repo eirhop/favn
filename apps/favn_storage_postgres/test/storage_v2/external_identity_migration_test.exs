@@ -149,10 +149,12 @@ defmodule FavnStoragePostgres.StorageV2.ExternalIdentityMigrationTest do
       """,
       """
       INSERT INTO favn_control.auth_operator_commands
-        (intent_id, workspace_id, actor_id, session_id, operation, resource_type, resource_id,
-         key_hash, request_fingerprint, status, expires_at, inserted_at, updated_at)
+        (intent_id, workspace_id, principal_kind, principal_id, actor_id, session_id,
+         operation, resource_type, resource_id, key_hash, request_fingerprint, status,
+         expires_at, inserted_at, updated_at)
       VALUES
-        ('intent-entra-migration', 'ws-entra-migration', 'act-entra-migration',
+        ('intent-entra-migration', 'ws-entra-migration', 'actor', 'act-entra-migration',
+         'act-entra-migration',
          'ses-entra-migration', 'run.cancel', 'run', 'run-entra-migration',
          'key-entra-migration', 'request-entra-migration', 'pending',
          now() + interval '1 hour', now(), now())

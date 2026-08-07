@@ -1,6 +1,7 @@
 defmodule FavnOrchestrator.API.CommandErrorsTest do
   use ExUnit.Case, async: true
 
+  import Plug.Test
   import ExUnit.CaptureLog
 
   alias FavnOrchestrator.API.CommandErrors
@@ -111,5 +112,43 @@ defmodule FavnOrchestrator.API.CommandErrorsTest do
 
     assert {:error, 404, "not_found", "Run target was not found", %{}} =
              CommandErrors.submission(:manifest_or_target_not_active_in_workspace)
+  end
+
+  test "maps infrastructure submission failures as unknown non-client outcomes" do
+    for {kind, status, code} <- [
+          {:timeout, 503, "service_unavailable"},
+          {:unavailable, 503, "service_unavailable"},
+          {:internal, 500, "internal_error"}
+        ] do
+      secret = "private-#{kind}"
+
+      log =
+        capture_log(fn ->
+          assert {:error, ^status, ^code, "Command outcome is unknown",
+                  %{outcome: "unknown", retry_with_same_idempotency_key: true}} =
+                   CommandErrors.submission(
+                     Error.new(kind, secret, retryable?: true, details: %{password: secret})
+                   )
+        end)
+
+      refute log =~ secret
+      assert log =~ "command persistence failure"
+      assert log =~ "[REDACTED]"
+    end
+  end
+
+  test "maps infrastructure failures consistently outside run submission" do
+    assert {:error, 503, "service_unavailable", "Command outcome is unknown",
+            %{outcome: "unknown", retry_with_same_idempotency_key: true}} =
+             CommandErrors.infrastructure(Error.new(:unavailable, "private"))
+
+    assert CommandErrors.infrastructure(Error.new(:conflict, "not infrastructure")) == nil
+
+    conn = CommandErrors.send_infrastructure(conn(:post, "/"), Error.new(:timeout, "private"))
+    assert conn.status == 503
+    assert Jason.decode!(conn.resp_body)["error"]["details"] == %{"outcome" => "unknown"}
+
+    conn = CommandErrors.send_infrastructure(conn(:post, "/"), Error.new(:conflict, "private"))
+    assert conn.status == 500
   end
 end

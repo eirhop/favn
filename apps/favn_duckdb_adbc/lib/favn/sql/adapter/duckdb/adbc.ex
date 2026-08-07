@@ -160,12 +160,11 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
   @impl true
   @spec connect(Resolved.t(), opts()) :: {:ok, Conn.t()} | {:error, Error.t()}
   def connect(%Resolved{} = resolved, opts) do
-    client = resolve_client(opts)
-    client_opts = Keyword.get(opts, :duckdb_adbc, [])
-    max_rows = max_rows(opts)
-    max_result_bytes = max_result_bytes(opts)
-
-    with :ok <- validate_production_storage(resolved),
+    with {:ok, client} <- resolve_client(opts, resolved),
+         {:ok, client_opts} <- duckdb_adbc_opts(opts, resolved),
+         {:ok, max_rows} <- max_rows(opts, resolved),
+         {:ok, max_result_bytes} <- max_result_bytes(opts, resolved),
+         :ok <- validate_production_storage(resolved),
          {:ok, database} <- Bootstrap.database(resolved),
          {:ok, db_ref} <- client.open(database, client_opts),
          {:ok, conn_ref} <- create_connection(client, db_ref) do
@@ -242,22 +241,21 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
   @spec prepare_pool(Resolved.t(), opts()) ::
           {:ok, map(), SessionScript.Plan.t()} | {:error, Error.t()}
   def prepare_pool(%Resolved{} = resolved, opts) do
-    driver_opts = Keyword.merge(FavnDuckdbADBC.Runtime.driver_opts(), duckdb_adbc_opts(opts))
+    with {:ok, client} <- resolve_client(opts, resolved),
+         {:ok, adbc_opts} <- duckdb_adbc_opts(opts, resolved),
+         driver_opts <- Keyword.merge(FavnDuckdbADBC.Runtime.driver_opts(), adbc_opts),
+         {:ok, %SessionScript.Plan{} = plan} <- SessionScript.plan(resolved, opts) do
+      fingerprint = %{
+        adapter: __MODULE__,
+        client: client,
+        adbc: application_vsn(:adbc),
+        driver: Keyword.get(driver_opts, :driver, :duckdb),
+        entrypoint: Keyword.get(driver_opts, :entrypoint)
+      }
 
-    fingerprint = %{
-      adapter: __MODULE__,
-      client: resolve_client(opts),
-      adbc: application_vsn(:adbc),
-      driver: Keyword.get(driver_opts, :driver, :duckdb),
-      entrypoint: Keyword.get(driver_opts, :entrypoint)
-    }
-
-    case SessionScript.plan(resolved, opts) do
-      {:ok, plan} ->
-        {:ok, Map.put(fingerprint, :session_scripts, plan.fingerprint), plan}
-
-      {:error, %Error{} = error} ->
-        {:error, Error.redact(error)}
+      {:ok, Map.put(fingerprint, :session_scripts, plan.fingerprint), plan}
+    else
+      {:error, %Error{} = error} -> {:error, Error.redact(error)}
     end
   end
 
@@ -1750,9 +1748,14 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
 
     case File.open(path, [:write, :exclusive]) do
       {:ok, io} ->
-        File.close(io)
-        File.rm(path)
-        true
+        case File.close(io) do
+          :ok ->
+            File.rm(path) == :ok
+
+          {:error, _reason} ->
+            _ = File.rm(path)
+            false
+        end
 
       {:error, _reason} ->
         false
@@ -1772,15 +1775,26 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
      }}
   end
 
-  defp resolve_client(opts) do
+  defp resolve_client(opts, resolved) do
     candidate = Keyword.get(opts, :duckdb_adbc_client, Client.default())
-    if is_atom(candidate), do: candidate, else: Client.default()
+
+    if is_atom(candidate) and Code.ensure_loaded?(candidate) and
+         Enum.all?(Client.behaviour_info(:callbacks), fn {name, arity} ->
+           function_exported?(candidate, name, arity)
+         end),
+       do: {:ok, candidate},
+       else: invalid_adapter_option(resolved, :duckdb_adbc_client)
   end
 
-  defp duckdb_adbc_opts(opts) do
+  defp duckdb_adbc_opts(opts, resolved) do
     case Keyword.get(opts, :duckdb_adbc, []) do
-      values when is_list(values) -> values
-      _other -> []
+      values when is_list(values) ->
+        if Keyword.keyword?(values),
+          do: {:ok, values},
+          else: invalid_adapter_option(resolved, :duckdb_adbc)
+
+      _other ->
+        invalid_adapter_option(resolved, :duckdb_adbc)
     end
   end
 
@@ -1791,18 +1805,35 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
     end
   end
 
-  defp max_rows(opts) do
+  defp max_rows(opts, resolved) do
     case Keyword.get(opts, :max_rows, FavnDuckdbADBC.Runtime.default_row_limit()) do
-      limit when is_integer(limit) and limit > 0 -> limit
-      _other -> FavnDuckdbADBC.Runtime.default_row_limit()
+      limit when is_integer(limit) and limit > 0 -> {:ok, limit}
+      _other -> invalid_adapter_option(resolved, :max_rows)
     end
   end
 
-  defp max_result_bytes(opts) do
+  defp max_result_bytes(opts, resolved) do
     case Keyword.get(opts, :max_result_bytes, FavnDuckdbADBC.Runtime.default_result_byte_limit()) do
-      limit when is_integer(limit) and limit > 0 -> limit
-      _other -> FavnDuckdbADBC.Runtime.default_result_byte_limit()
+      limit when is_integer(limit) and limit > 0 -> {:ok, limit}
+      _other -> invalid_adapter_option(resolved, :max_result_bytes)
     end
+  end
+
+  defp invalid_adapter_option(%Resolved{} = resolved, option) do
+    {:error,
+     %Error{
+       type: :invalid_config,
+       message: "invalid explicit DuckDB ADBC adapter option",
+       retryable?: false,
+       adapter: __MODULE__,
+       operation: :connect,
+       connection: resolved.name,
+       details: %{
+         classification: :invalid_config,
+         reason: :invalid_adapter_option,
+         option: option
+       }
+     }}
   end
 
   defp bounded_query_sql(sql, max_rows) do
