@@ -44,7 +44,7 @@ defmodule FavnStoragePostgres.Bootstrap.Connection do
               physical_connection,
               connection_config.authentication,
               resource_loss_mode(config.operation),
-              fn -> DBConnection.run(connection, function, timeout: :infinity) end
+              fn -> function.(connection) end
             )
           after
             stop_process(connection)
@@ -271,7 +271,18 @@ defmodule FavnStoragePostgres.Bootstrap.Connection do
     end
   end
 
-  defp run_while_alive(process, authentication, resource_loss_mode, function) do
+  defp run_while_alive(process, _authentication, :unknown_outcome, function) do
+    watcher = start_resource_watcher(process)
+
+    try do
+      function.()
+    after
+      Process.unlink(watcher)
+      send(watcher, :stop)
+    end
+  end
+
+  defp run_while_alive(process, authentication, :classify, function) do
     caller = self()
     reference = make_ref()
     process_monitor = Process.monitor(process)
@@ -288,7 +299,7 @@ defmodule FavnStoragePostgres.Bootstrap.Connection do
       {:DOWN, ^process_monitor, :process, ^process, reason} ->
         Process.exit(worker, :kill)
         await_worker_down(worker_monitor, worker)
-        resource_loss(resource_loss_mode, reason, authentication)
+        resource_loss(:classify, reason, authentication)
 
       {:DOWN, ^worker_monitor, :process, ^worker, reason} ->
         Process.demonitor(process_monitor, [:flush])
@@ -296,8 +307,21 @@ defmodule FavnStoragePostgres.Bootstrap.Connection do
     end
   end
 
-  defp resource_loss(:unknown_outcome, _reason, _authentication),
-    do: {:error, :unknown_outcome}
+  defp start_resource_watcher(process) do
+    caller = self()
+
+    spawn_link(fn ->
+      monitor = Process.monitor(process)
+
+      receive do
+        :stop ->
+          Process.demonitor(monitor, [:flush])
+
+        {:DOWN, ^monitor, :process, ^process, reason} ->
+          exit({:postgres_connection_lost, caller, reason})
+      end
+    end)
+  end
 
   defp resource_loss(:classify, reason, authentication),
     do: classify_connection_error(reason, authentication)
