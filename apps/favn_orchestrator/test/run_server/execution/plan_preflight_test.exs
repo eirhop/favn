@@ -10,7 +10,8 @@ defmodule FavnOrchestrator.RunServer.Execution.PlanPreflightTest do
   alias FavnOrchestrator.Persistence.Stores
   alias FavnOrchestrator.RunServer.Execution
   alias FavnOrchestrator.RunState
-  alias FavnOrchestrator.Storage.{ManifestCodec, RunSnapshotCodec}
+  alias FavnOrchestrator.Storage.RunSnapshotCodec
+  alias FavnOrchestrator.TestSupport.ManifestRecord, as: ManifestCodec
 
   defmodule FakeStore do
     def get_freshness_many(_command), do: {:ok, []}
