@@ -59,40 +59,6 @@ defmodule FavnOrchestrator.API.CoverageRouterTest do
              CoverageRouter.error_response({:rebuild_required, details})
   end
 
-  test "audit detail identifies the target and bounded immutable plan" do
-    conn =
-      :post
-      |> conn("/assets/asset-a/backfill", "")
-      |> put_req_header("authorization", "Bearer #{@token}")
-
-    idempotency = %{
-      operation: "coverage.backfill.submit",
-      key_hash: String.duplicate("a", 64),
-      request_hash: String.duplicate("b", 64)
-    }
-
-    entry =
-      CoverageRouter.audit_entry(
-        conn,
-        "asset-a",
-        %{plan_id: "coverage-plan-a", plan_hash: String.duplicate("c", 64), window_count: 3},
-        "run-a",
-        %{id: "session-a"},
-        %{id: "actor-a"},
-        idempotency
-      )
-
-    assert entry.target_id == "asset-a"
-
-    assert entry.coverage_plan == %{
-             plan_id: "coverage-plan-a",
-             plan_hash: String.duplicate("c", 64),
-             window_count: 3
-           }
-
-    refute Map.has_key?(entry.coverage_plan, :windows)
-  end
-
   defp request(method, path, params \\ nil) do
     method
     |> conn(path, "")

@@ -188,6 +188,8 @@ defmodule FavnStoragePostgres.Schemas.AuthOperatorCommand do
   @schema_prefix "favn_control"
   schema "auth_operator_commands" do
     field(:workspace_id, :string)
+    field(:principal_kind, :string)
+    field(:principal_id, :string)
     field(:actor_id, :string)
     field(:session_id, :string)
     field(:operation, :string)

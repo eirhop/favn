@@ -5,7 +5,6 @@ defmodule FavnOrchestrator.API.RebuildsRouter do
 
   require Logger
 
-  alias FavnOrchestrator.API.Audit
   alias FavnOrchestrator.API.Authentication
   alias FavnOrchestrator.API.IdempotentCommand
   alias FavnOrchestrator.API.Response
@@ -29,8 +28,8 @@ defmodule FavnOrchestrator.API.RebuildsRouter do
         conn,
         context,
         "rebuild.plan",
-        actor.id,
-        session.id,
+        Authentication.command_principal(session, actor),
+        fn idempotency -> {"rebuild", rebuild_operation_id(idempotency)} end,
         conn.body_params,
         fn idempotency ->
           operation_id = rebuild_operation_id(idempotency)
@@ -41,35 +40,9 @@ defmodule FavnOrchestrator.API.RebuildsRouter do
                  idempotency: idempotency.command_idempotency
                ) do
             {:ok, plan} ->
-              audit(
-                conn,
-                context,
-                session,
-                actor,
-                idempotency,
-                "rebuild.plan",
-                operation_id,
-                %{target_id: target_id, reason: reason, plan_hash: plan.plan_hash},
-                "accepted",
-                plan.idempotency_replay?
-              )
-
               {:ok, 201, %{plan: RebuildDTO.plan(plan, admin?(context))}, "rebuild", operation_id}
 
             {:error, failure} ->
-              audit(
-                conn,
-                context,
-                session,
-                actor,
-                idempotency,
-                "rebuild.plan",
-                operation_id,
-                %{target_id: target_id, reason: reason, error_code: error_code(failure)},
-                "rejected",
-                false
-              )
-
               command_error(failure)
           end
         end
@@ -184,89 +157,23 @@ defmodule FavnOrchestrator.API.RebuildsRouter do
       conn,
       context,
       action,
-      actor.id,
-      session.id,
+      Authentication.command_principal(session, actor),
+      {"rebuild", operation_id},
       conn.body_params,
       fn idempotency ->
         case execute.(idempotency) do
           {:ok, operation} ->
-            audit(
-              conn,
-              context,
-              session,
-              actor,
-              idempotency,
-              action,
-              operation_id,
-              Map.merge(%{state: operation.state, phase: operation.phase}, audit_request(conn)),
-              "accepted",
-              operation.idempotency_replay? == true
-            )
-
             {:ok, 202, %{rebuild: RebuildDTO.operation(operation, true)}, "rebuild", operation_id}
 
           {:error, reason} ->
-            audit(
-              conn,
-              context,
-              session,
-              actor,
-              idempotency,
-              action,
-              operation_id,
-              Map.put(audit_request(conn), :error_code, error_code(reason)),
-              "rejected",
-              false
-            )
-
             command_error(reason)
         end
       end
     )
   end
 
-  defp audit(
-         conn,
-         context,
-         session,
-         actor,
-         idempotency,
-         action,
-         operation_id,
-         detail,
-         outcome,
-         replayed?
-       ) do
-    entry = %{
-      action: action,
-      actor_id: actor.id,
-      session_id: session.id,
-      resource_type: "rebuild",
-      resource_id: operation_id,
-      detail: detail,
-      outcome: outcome,
-      service_identity: Authentication.service_identity(conn)
-    }
-
-    Audit.put_best_effort(
-      context,
-      Map.merge(entry, IdempotentCommand.audit_metadata(idempotency, outcome, replayed?))
-    )
-  end
-
-  defp audit_request(conn) do
-    conn.body_params
-    |> Map.take(["reason", "plan_hash", "approved"])
-    |> Redaction.redact_operational_bounded()
-  end
-
   defp rebuild_operation_id(%{run_id: "run_api_" <> digest}) do
     "rebuild_api_" <> digest
-  end
-
-  defp error_code(reason) do
-    {_status, code, _message, _details} = error_response(reason)
-    code
   end
 
   defp plan_request(params) do

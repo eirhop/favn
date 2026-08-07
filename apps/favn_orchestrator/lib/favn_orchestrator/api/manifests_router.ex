@@ -7,8 +7,8 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
 
   alias Favn.Manifest.Version
   alias FavnOrchestrator
-  alias FavnOrchestrator.API.Audit
   alias FavnOrchestrator.API.Authentication
+  alias FavnOrchestrator.API.CommandErrors
   alias FavnOrchestrator.API.DTO
   alias FavnOrchestrator.API.Filters
   alias FavnOrchestrator.API.IdempotentCommand
@@ -35,7 +35,10 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
         authentication_error(conn, reason)
 
       {:error, reason} ->
-        Logger.error("manifest.list failed: #{inspect(reason)}")
+        Logger.error(
+          "manifest.list failed: #{inspect(Redaction.redact_operational_bounded(reason))}"
+        )
+
         Response.error(conn, 400, "bad_request", "Request failed")
     end
   end
@@ -47,15 +50,6 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
          {:ok, version} <- build_version(conn.body_params),
          {:ok, registration_status, canonical_version} <- publish(platform_context, version),
          summary <- Manifests.summary(canonical_version) do
-      Audit.put_best_effort(platform_context, %{
-        action: "manifest.register",
-        session_id: nil,
-        resource_type: "manifest",
-        resource_id: canonical_version.manifest_version_id,
-        outcome: "accepted",
-        service_identity: Authentication.service_identity(conn)
-      })
-
       Response.data(conn, publish_status(registration_status), %{
         manifest: summary,
         registration: %{
@@ -155,8 +149,14 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
       {:error, :forbidden} ->
         authentication_error(conn, :forbidden)
 
+      {:error, %Error{} = reason} ->
+        CommandErrors.send_infrastructure(conn, reason)
+
       {:error, reason} ->
-        Logger.error("manifest.register failed: #{inspect(reason)}")
+        Logger.error(
+          "manifest.register failed: #{inspect(Redaction.redact_operational_bounded(reason))}"
+        )
+
         Response.error(conn, 400, "bad_request", "Request failed")
     end
   end
@@ -241,7 +241,10 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
         authentication_error(conn, reason)
 
       {:error, reason} ->
-        Logger.error("inspection failed: #{inspect(reason)}")
+        Logger.error(
+          "inspection failed: #{inspect(Redaction.redact_operational_bounded(reason))}"
+        )
+
         Response.error(conn, 400, "bad_request", "Request failed")
     end
   end
@@ -271,20 +274,6 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
        ) do
     case activate_manifest(conn, platform_context, context, manifest_version_id, idempotency) do
       {:ok, runtime} ->
-        %{
-          action: "manifest.activate",
-          actor_id: actor.id,
-          session_id: session.id,
-          resource_type: "manifest",
-          resource_id: manifest_version_id,
-          outcome: "accepted",
-          workspace_id: runtime.workspace_id,
-          runner_releases: runtime.runner_releases,
-          service_identity: Authentication.service_identity(conn)
-        }
-        |> Map.merge(IdempotentCommand.audit_metadata(idempotency, "accepted"))
-        |> then(&Audit.put_best_effort(context, &1))
-
         {:ok, 200,
          %{
            activated: true,
@@ -368,6 +357,21 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
           }
         )
 
+      {:error, %Error{} = reason} ->
+        CommandErrors.infrastructure(reason) ||
+          activation_rejected(
+            conn,
+            context,
+            session,
+            actor,
+            manifest_version_id,
+            idempotency,
+            400,
+            "bad_request",
+            "Request failed",
+            %{}
+          )
+
       {:error, reason} ->
         Logger.error(
           "manifest.activate failed: #{inspect(Redaction.redact_operational_bounded(reason))}"
@@ -416,32 +420,18 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
   end
 
   defp activation_rejected(
-         conn,
-         context,
-         session,
-         actor,
-         manifest_version_id,
-         idempotency,
+         _conn,
+         _context,
+         _session,
+         _actor,
+         _manifest_version_id,
+         _idempotency,
          status,
          code,
          message,
          details,
-         rejection_reason
+         _rejection_reason
        ) do
-    %{
-      action: "manifest.activate",
-      actor_id: actor.id,
-      session_id: session.id,
-      resource_type: "manifest",
-      resource_id: manifest_version_id,
-      outcome: "rejected",
-      rejection_reason: rejection_reason,
-      service_identity: Authentication.service_identity(conn)
-    }
-    |> Map.merge(details)
-    |> Map.merge(IdempotentCommand.audit_metadata(idempotency, "rejected"))
-    |> then(&Audit.put_best_effort(context, &1))
-
     {:error, status, code, message, details}
   end
 
@@ -572,8 +562,8 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
       conn,
       context,
       "manifest.activate",
-      actor.id,
-      session.id,
+      Authentication.command_principal(session, actor),
+      {"manifest", manifest_version_id},
       request,
       execute
     )

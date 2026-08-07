@@ -6,7 +6,6 @@ defmodule FavnOrchestrator.API.BackfillsRouter do
   require Logger
 
   alias FavnOrchestrator
-  alias FavnOrchestrator.API.Audit
   alias FavnOrchestrator.API.Authentication
   alias FavnOrchestrator.API.CommandErrors
   alias FavnOrchestrator.API.DTO
@@ -14,6 +13,7 @@ defmodule FavnOrchestrator.API.BackfillsRouter do
   alias FavnOrchestrator.API.OperatorCommands
   alias FavnOrchestrator.API.Response
   alias FavnOrchestrator.Persistence.Error
+  alias FavnOrchestrator.Redaction
 
   plug(:match)
   plug(:dispatch)
@@ -78,7 +78,11 @@ defmodule FavnOrchestrator.API.BackfillsRouter do
         validation_error(conn, "Invalid pagination parameters")
 
       {:error, {:manifest_filter_lookup_failed, reason}} ->
-        Logger.error("backfill_window.filter_lookup failed: #{inspect(reason)}")
+        Logger.error(
+          "backfill_window.filter_lookup failed: " <>
+            inspect(Redaction.redact_operational_bounded(reason))
+        )
+
         Response.error(conn, 400, "bad_request", "Request failed")
 
       {:error, _reason} ->
@@ -107,7 +111,7 @@ defmodule FavnOrchestrator.API.BackfillsRouter do
     Response.error(conn, 404, "not_found", "Route was not found")
   end
 
-  defp submit_backfill(conn, params, session, actor, context, idempotency) do
+  defp submit_backfill(_conn, params, _session, _actor, context, idempotency) do
     opts = [
       root_run_id: idempotency.run_id,
       idempotency: idempotency.command_idempotency
@@ -115,16 +119,6 @@ defmodule FavnOrchestrator.API.BackfillsRouter do
 
     case OperatorCommands.submit_backfill(params, context, opts) do
       {:ok, backfill} ->
-        audit_command(
-          conn,
-          "backfill.submit",
-          backfill.backfill_id,
-          session,
-          actor,
-          context,
-          idempotency
-        )
-
         {:ok, 202, %{backfill: DTO.backfill(backfill)}, "backfill", backfill.backfill_id}
 
       {:error, :invalid_target} ->
@@ -140,6 +134,10 @@ defmodule FavnOrchestrator.API.BackfillsRouter do
         CommandErrors.admission(reason) || CommandErrors.operator(reason) ||
           CommandErrors.backfill(reason)
 
+      {:error, %Error{} = reason} ->
+        CommandErrors.infrastructure(reason) ||
+          {:error, 400, "bad_request", "Request failed", %{}}
+
       {:error, _reason} ->
         {:error, 400, "bad_request", "Request failed", %{}}
     end
@@ -150,8 +148,8 @@ defmodule FavnOrchestrator.API.BackfillsRouter do
       conn,
       context,
       "backfill.submit",
-      actor.id,
-      session.id,
+      Authentication.command_principal(session, actor),
+      fn idempotency -> {"backfill", idempotency.run_id} end,
       params,
       fn idempotency ->
         submit_backfill(conn, params, session, actor, context, idempotency)
@@ -232,20 +230,6 @@ defmodule FavnOrchestrator.API.BackfillsRouter do
     cursor
     |> Jason.encode!()
     |> Base.url_encode64(padding: false)
-  end
-
-  defp audit_command(conn, action, run_id, session, actor, context, idempotency) do
-    %{
-      action: action,
-      actor_id: actor.id,
-      session_id: session.id,
-      resource_type: "run",
-      resource_id: run_id,
-      outcome: "accepted",
-      service_identity: Authentication.service_identity(conn)
-    }
-    |> Map.merge(IdempotentCommand.audit_metadata(idempotency, "accepted"))
-    |> then(&Audit.put_best_effort(context, &1))
   end
 
   defp send_command_error(conn, nil, reason), do: CommandErrors.send_backfill(conn, reason)

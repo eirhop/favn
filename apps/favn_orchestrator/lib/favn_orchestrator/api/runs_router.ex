@@ -6,7 +6,6 @@ defmodule FavnOrchestrator.API.RunsRouter do
   require Logger
 
   alias FavnOrchestrator
-  alias FavnOrchestrator.API.Audit
   alias FavnOrchestrator.API.Authentication
   alias FavnOrchestrator.API.CommandErrors
   alias FavnOrchestrator.API.DTO
@@ -14,6 +13,8 @@ defmodule FavnOrchestrator.API.RunsRouter do
   alias FavnOrchestrator.API.IdempotentCommand
   alias FavnOrchestrator.API.OperatorCommands
   alias FavnOrchestrator.API.Response
+  alias FavnOrchestrator.Persistence.Error
+  alias FavnOrchestrator.Redaction
   alias FavnOrchestrator.RunEvents.Query, as: RunEventQuery
   alias FavnOrchestrator.Runs, as: RunDomain
   alias Favn.Replay.InputMode
@@ -156,8 +157,8 @@ defmodule FavnOrchestrator.API.RunsRouter do
         conn,
         context,
         "run.submit",
-        actor.id,
-        session.id,
+        Authentication.command_principal(session, actor),
+        fn idempotency -> {"run", idempotency.run_id} end,
         params,
         fn idempotency -> submit(conn, params, session, actor, context, idempotency) end
       )
@@ -173,8 +174,8 @@ defmodule FavnOrchestrator.API.RunsRouter do
         conn,
         context,
         "run.cancel",
-        actor.id,
-        session.id,
+        Authentication.command_principal(session, actor),
+        {"run", run_id},
         %{run_id: run_id},
         fn idempotency -> cancel(conn, run_id, session, actor, context, idempotency) end
       )
@@ -192,8 +193,8 @@ defmodule FavnOrchestrator.API.RunsRouter do
         conn,
         context,
         "run.rerun",
-        actor.id,
-        session.id,
+        Authentication.command_principal(session, actor),
+        {"run", run_id},
         %{run_id: run_id, options: params},
         fn idempotency ->
           rerun(conn, run_id, params, session, actor, context, idempotency)
@@ -208,12 +209,11 @@ defmodule FavnOrchestrator.API.RunsRouter do
     Response.error(conn, 404, "not_found", "Route was not found")
   end
 
-  defp submit(conn, params, session, actor, context, idempotency) do
+  defp submit(_conn, params, _session, _actor, context, idempotency) do
     opts = command_options(context, idempotency)
 
     case OperatorCommands.submit_run(params, context, opts) do
       {:ok, run_id} ->
-        audit(conn, context, "run.submit", run_id, session, actor, idempotency)
         {:ok, 202, %{run: run_summary(context, run_id)}, "run", run_id}
 
       {:error, reason} ->
@@ -221,10 +221,9 @@ defmodule FavnOrchestrator.API.RunsRouter do
     end
   end
 
-  defp cancel(conn, run_id, session, actor, context, idempotency) do
+  defp cancel(_conn, run_id, _session, actor, context, idempotency) do
     case cancel_run(context, run_id, %{actor_id: actor.id}, idempotency) do
       :ok ->
-        audit(conn, context, "run.cancel", run_id, session, actor, idempotency)
         {:ok, 200, %{cancelled: true, run_id: run_id}, "run", run_id}
 
       {:error, :not_found} ->
@@ -239,18 +238,11 @@ defmodule FavnOrchestrator.API.RunsRouter do
          "The idempotency key was already used with different request content", %{}}
 
       {:error, :run_already_terminal} ->
-        audit(
-          conn,
-          context,
-          "run.cancel",
-          run_id,
-          session,
-          actor,
-          idempotency,
-          "already_terminal"
-        )
-
         terminal_cancel_response(context, run_id)
+
+      {:error, %Error{} = reason} ->
+        CommandErrors.infrastructure(reason) ||
+          {:error, 400, "bad_request", "Request failed", %{}}
 
       {:error, _reason} ->
         {:error, 400, "bad_request", "Request failed", %{}}
@@ -273,11 +265,10 @@ defmodule FavnOrchestrator.API.RunsRouter do
     end
   end
 
-  defp rerun(conn, run_id, params, session, actor, context, idempotency) do
+  defp rerun(_conn, run_id, params, _session, _actor, context, idempotency) do
     with {:ok, opts} <- rerun_options(params),
          {:ok, rerun_id} <-
            rerun(context, run_id, opts ++ rerun_command_options(context, idempotency)) do
-      audit(conn, context, "run.rerun", rerun_id, session, actor, idempotency)
       {:ok, 202, %{run: run_summary(context, rerun_id)}, "run", rerun_id}
     else
       {:error, :invalid_input_mode} ->
@@ -292,6 +283,10 @@ defmodule FavnOrchestrator.API.RunsRouter do
       {:error, :backfill_parent_rerun_not_supported} ->
         {:error, 409, "conflict",
          "Backfill parent runs cannot be rerun through generic run rerun", %{}}
+
+      {:error, %Error{} = reason} ->
+        CommandErrors.infrastructure(reason) ||
+          {:error, 400, "bad_request", "Request failed", %{}}
 
       {:error, _reason} ->
         {:error, 400, "bad_request", "Request failed", %{}}
@@ -322,20 +317,6 @@ defmodule FavnOrchestrator.API.RunsRouter do
 
   defp put_optional(opts, _key, nil), do: opts
   defp put_optional(opts, key, value), do: Keyword.put(opts, key, value)
-
-  defp audit(conn, context, action, run_id, session, actor, idempotency, outcome \\ "accepted") do
-    %{
-      action: action,
-      actor_id: actor.id,
-      session_id: session.id,
-      resource_type: "run",
-      resource_id: run_id,
-      outcome: outcome,
-      service_identity: Authentication.service_identity(conn)
-    }
-    |> Map.merge(IdempotentCommand.audit_metadata(idempotency, outcome))
-    |> then(&Audit.put_best_effort(context, &1))
-  end
 
   defp run_summary(context, run_id) do
     case get_run(context, run_id) do
@@ -417,13 +398,13 @@ defmodule FavnOrchestrator.API.RunsRouter do
 
   defp rerun(context, run_id, opts), do: FavnOrchestrator.rerun(context, run_id, opts)
 
-  defp idempotent_run(conn, context, operation, actor_id, session_id, input, execute) do
+  defp idempotent_run(conn, context, operation, principal, resource, input, execute) do
     IdempotentCommand.run(
       conn,
       context,
       operation,
-      actor_id,
-      session_id,
+      principal,
+      resource,
       input,
       execute
     )
@@ -445,7 +426,10 @@ defmodule FavnOrchestrator.API.RunsRouter do
   end
 
   defp fallback_run_summary(run_id, reason) do
-    Logger.warning("run command accepted but summary lookup failed: #{inspect(reason)}")
+    Logger.warning(
+      "run command accepted but summary lookup failed: " <>
+        inspect(Redaction.redact_operational_bounded(reason))
+    )
 
     %{
       id: run_id,

@@ -5,19 +5,18 @@ defmodule FavnOrchestrator.API.CoverageRouter do
 
   require Logger
 
-  alias FavnOrchestrator.API.Audit
   alias FavnOrchestrator.API.Authentication
   alias FavnOrchestrator.API.CommandErrors
   alias FavnOrchestrator.API.DTO
   alias FavnOrchestrator.API.IdempotentCommand
   alias FavnOrchestrator.API.Response
   alias FavnOrchestrator.Persistence.Error
+  alias FavnOrchestrator.Redaction
 
   # Plug.Router owns do_match/4. submit_backfill/8 delegates through the
   # operator facade, whose successful auth branch crosses the dynamic identity
   # store boundary.
   @dialyzer {:no_match, [do_match: 4, submit_backfill: 8]}
-  @dialyzer {:no_unused, audit_submit: 8}
 
   plug(:match)
   plug(:dispatch)
@@ -72,8 +71,8 @@ defmodule FavnOrchestrator.API.CoverageRouter do
         conn,
         context,
         "coverage.backfill.submit",
-        actor.id,
-        session.id,
+        Authentication.command_principal(session, actor),
+        {"asset", target_id},
         conn.body_params,
         fn idempotency ->
           submit_backfill(
@@ -98,13 +97,13 @@ defmodule FavnOrchestrator.API.CoverageRouter do
   end
 
   defp submit_backfill(
-         conn,
+         _conn,
          operator_context,
          target_id,
          plan,
-         session,
-         actor,
-         context,
+         _session,
+         _actor,
+         _context,
          idempotency
        ) do
     opts = [idempotency: idempotency.command_idempotency]
@@ -116,7 +115,6 @@ defmodule FavnOrchestrator.API.CoverageRouter do
            opts
          ) do
       {:ok, run_id} ->
-        audit_submit(conn, target_id, plan, run_id, session, actor, context, idempotency)
         {:ok, 202, %{run_id: run_id}, "run", run_id}
 
       {:error, reason} ->
@@ -159,46 +157,18 @@ defmodule FavnOrchestrator.API.CoverageRouter do
   defp page_cursor(value) when is_binary(value) and byte_size(value) <= 4096, do: {:ok, value}
   defp page_cursor(_value), do: {:error, :invalid_coverage_cursor}
 
-  defp audit_submit(conn, target_id, plan, run_id, session, actor, context, idempotency) do
-    conn
-    |> audit_entry(target_id, plan, run_id, session, actor, idempotency)
-    |> then(&Audit.put_best_effort(context, &1))
-  end
-
-  @doc false
-  @spec audit_entry(Plug.Conn.t(), String.t(), map(), String.t(), map(), map(), map()) :: map()
-  def audit_entry(conn, target_id, plan, run_id, session, actor, idempotency) do
-    %{
-      action: "coverage.backfill.submit",
-      actor_id: actor.id,
-      session_id: session.id,
-      resource_type: "run",
-      resource_id: run_id,
-      target_id: target_id,
-      coverage_plan: %{
-        plan_id: plan_field(plan, :plan_id),
-        plan_hash: plan_field(plan, :plan_hash),
-        window_count: plan_field(plan, :window_count)
-      },
-      outcome: "accepted",
-      service_identity: Authentication.service_identity(conn)
-    }
-    |> Map.merge(IdempotentCommand.audit_metadata(idempotency, "accepted"))
-  end
-
   defp command_error(reason) do
     {status, code, message, details} = error_response(reason)
     {:error, status, code, message, details}
   end
 
-  defp plan_field(plan, field),
-    do: Map.get(plan, field, Map.get(plan, Atom.to_string(field)))
-
   defp respond_error(conn, reason) do
     {status, code, message, details} = error_response(reason)
 
     if status >= 500 do
-      Logger.error("coverage request failed: #{inspect(reason)}")
+      Logger.error(
+        "coverage request failed: #{inspect(Redaction.redact_operational_bounded(reason))}"
+      )
     end
 
     Response.error(conn, status, code, message, details)

@@ -3,11 +3,12 @@ defmodule FavnOrchestrator.API.ActorsRouter do
 
   use Plug.Router
 
-  alias FavnOrchestrator.API.Audit
   alias FavnOrchestrator.API.Authentication
+  alias FavnOrchestrator.API.CommandErrors
   alias FavnOrchestrator.API.DTO
   alias FavnOrchestrator.API.Response
   alias FavnOrchestrator.Auth
+  alias FavnOrchestrator.Persistence.Error
 
   @allowed_roles ["viewer", "operator", "admin"]
 
@@ -40,14 +41,13 @@ defmodule FavnOrchestrator.API.ActorsRouter do
   post "/" do
     params = conn.body_params
 
-    with {:ok, session, actor, context} <- authorize_admin(conn),
+    with {:ok, _session, _actor, context} <- authorize_admin(conn),
          {:ok, username} <- required_string(params, "username"),
          {:ok, password} <- required_string(params, "password"),
          {:ok, display_name} <- display_name(params, username),
          {:ok, roles} <- roles(Map.get(params, "roles", ["viewer"])),
          {:ok, created_actor} <-
            create_actor(context, username, password, display_name, roles) do
-      audit_mutation(conn, context, "actor.create", created_actor.id, session, actor)
       Response.data(conn, 201, %{actor: DTO.actor(created_actor)})
     else
       {:error, {:missing_field, field}} ->
@@ -69,6 +69,9 @@ defmodule FavnOrchestrator.API.ActorsRouter do
       {:error, reason} when reason in [:forbidden, :service_unauthorized, :unauthenticated] ->
         authentication_error(conn, reason)
 
+      {:error, %Error{} = reason} ->
+        CommandErrors.send_infrastructure(conn, reason)
+
       {:error, _reason} ->
         Response.error(conn, 400, "bad_request", "Request failed")
     end
@@ -88,10 +91,9 @@ defmodule FavnOrchestrator.API.ActorsRouter do
   end
 
   put "/:actor_id/roles" do
-    with {:ok, session, actor, context} <- authorize_admin(conn),
+    with {:ok, _session, _actor, context} <- authorize_admin(conn),
          {:ok, role_values} <- required_roles(conn.body_params),
          {:ok, updated_actor} <- update_actor_roles(context, actor_id, role_values) do
-      audit_mutation(conn, context, "actor.roles.update", actor_id, session, actor)
       Response.data(conn, 200, %{actor: DTO.actor(updated_actor)})
     else
       {:error, :actor_not_found} ->
@@ -106,17 +108,19 @@ defmodule FavnOrchestrator.API.ActorsRouter do
       {:error, reason} when reason in [:forbidden, :service_unauthorized, :unauthenticated] ->
         authentication_error(conn, reason)
 
+      {:error, %Error{} = reason} ->
+        CommandErrors.send_infrastructure(conn, reason)
+
       {:error, _reason} ->
         Response.error(conn, 400, "bad_request", "Request failed")
     end
   end
 
   put "/:actor_id/password" do
-    with {:ok, session, actor, context} <- authorize_viewer(conn),
+    with {:ok, _session, _actor, context} <- authorize_viewer(conn),
          {:ok, current_password} <- required_string(conn.body_params, "current_password"),
          {:ok, new_password} <- required_string(conn.body_params, "new_password"),
          :ok <- set_actor_password(context, actor_id, current_password, new_password) do
-      audit_mutation(conn, context, "actor.password.set", actor_id, session, actor)
       Response.data(conn, 200, %{updated: true, actor_id: actor_id})
     else
       {:error, :actor_not_found} ->
@@ -134,6 +138,9 @@ defmodule FavnOrchestrator.API.ActorsRouter do
 
       {:error, reason} when reason in [:forbidden, :service_unauthorized, :unauthenticated] ->
         authentication_error(conn, reason)
+
+      {:error, %Error{} = reason} ->
+        CommandErrors.send_infrastructure(conn, reason)
 
       {:error, _reason} ->
         Response.error(conn, 400, "bad_request", "Request failed")
@@ -168,18 +175,6 @@ defmodule FavnOrchestrator.API.ActorsRouter do
 
   defp set_actor_password(context, actor_id, current_password, new_password),
     do: Auth.set_actor_password(context, actor_id, current_password, new_password)
-
-  defp audit_mutation(conn, context, action, resource_id, session, actor) do
-    Audit.put_best_effort(context, %{
-      action: action,
-      actor_id: actor.id,
-      session_id: session.id,
-      resource_type: "actor",
-      resource_id: resource_id,
-      outcome: "accepted",
-      service_identity: Authentication.service_identity(conn)
-    })
-  end
 
   defp required_string(params, key) do
     case Map.get(params, key) do

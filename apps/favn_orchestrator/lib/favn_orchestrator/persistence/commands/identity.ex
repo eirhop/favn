@@ -603,8 +603,8 @@ defmodule FavnOrchestrator.Persistence.Commands.ReserveOperatorCommand do
 
   @enforce_keys [
     :workspace_context,
-    :actor_id,
-    :session_id,
+    :principal_kind,
+    :principal_id,
     :operation,
     :resource_type,
     :resource_id,
@@ -614,7 +614,7 @@ defmodule FavnOrchestrator.Persistence.Commands.ReserveOperatorCommand do
     :expires_at,
     :occurred_at
   ]
-  defstruct @enforce_keys
+  defstruct @enforce_keys ++ [:actor_id, :session_id]
 
   @type t :: %__MODULE__{}
 end
@@ -626,8 +626,8 @@ defmodule FavnOrchestrator.Persistence.Commands.CompleteOperatorCommand do
 
   @enforce_keys [
     :workspace_context,
-    :actor_id,
-    :session_id,
+    :principal_kind,
+    :principal_id,
     :operation,
     :key_hash,
     :request_fingerprint,
@@ -637,7 +637,7 @@ defmodule FavnOrchestrator.Persistence.Commands.CompleteOperatorCommand do
     :detail,
     :occurred_at
   ]
-  defstruct @enforce_keys
+  defstruct @enforce_keys ++ [:actor_id, :session_id]
 
   @type t :: %__MODULE__{}
 end

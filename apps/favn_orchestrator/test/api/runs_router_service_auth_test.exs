@@ -74,6 +74,23 @@ defmodule FavnOrchestrator.API.RunsRouterServiceAuthTest do
       :ok
     end
 
+    def reserve_operator_command(command) do
+      send(Process.get(:runs_router_test_pid), {:reserve_operator_command, command})
+
+      {:ok,
+       %{
+         key_hash: command.key_hash,
+         request_fingerprint: command.request_fingerprint,
+         expires_at: command.expires_at,
+         replayed?: false
+       }}
+    end
+
+    def complete_operator_command(command) do
+      send(Process.get(:runs_router_test_pid), {:complete_operator_command, command})
+      :ok
+    end
+
     def get_session(%GetSession{
           workspace_context: context,
           selector: %SessionByTokenHash{token_hash: token_hash}
@@ -354,9 +371,9 @@ defmodule FavnOrchestrator.API.RunsRouterServiceAuthTest do
              }
            } = Jason.decode!(response.resp_body)
 
-    assert_received {:record_audit, audit}
-    assert audit.detail.outcome == "already_terminal"
-    assert audit.detail.idempotency.outcome == "already_terminal"
+    assert_received {:complete_operator_command, audit}
+    assert audit.outcome == "accepted"
+    assert audit.detail.result["status"] == 200
   end
 
   test "repeating cancellation for a cancelled run reports the persisted outcome" do

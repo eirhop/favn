@@ -18,6 +18,18 @@ defmodule FavnOrchestrator.API.ManifestsRouterTest do
     def get_manifest(_query), do: {:error, Error.new(:not_found, "manifest not found")}
     def get_runtime_state(_query), do: {:error, :active_manifest_not_set}
     def record_audit(_command), do: :ok
+
+    def reserve_operator_command(command) do
+      {:ok,
+       %{
+         key_hash: command.key_hash,
+         request_fingerprint: command.request_fingerprint,
+         expires_at: command.expires_at,
+         replayed?: false
+       }}
+    end
+
+    def complete_operator_command(_command), do: :ok
   end
 
   setup do

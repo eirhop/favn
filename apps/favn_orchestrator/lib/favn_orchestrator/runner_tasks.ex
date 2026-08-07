@@ -418,7 +418,7 @@ defmodule FavnOrchestrator.RunnerTasks do
   defp finish_assignment(request, task) do
     cancel_wait(request)
     assignment = assignment(request, task)
-    {:ok, _session} = RunnerRegistry.finish_claim(request, assignment)
+    finish_registry_claim(request, assignment)
     {:ok, assignment}
   end
 
@@ -448,8 +448,20 @@ defmodule FavnOrchestrator.RunnerTasks do
       end
 
     no_work = no_work(request, :wait, wait_ms)
-    {:ok, _session} = RunnerRegistry.finish_claim(request, no_work)
+    finish_registry_claim(request, no_work)
     {:ok, no_work}
+  end
+
+  # PostgreSQL owns the assignment. A process-local registry restart after the
+  # store commits must not turn that durable success into a failed claim; the
+  # runner reconciles the assignment when it re-registers.
+  defp finish_registry_claim(request, outcome) do
+    case RunnerRegistry.finish_claim(request, outcome) do
+      {:ok, _session} -> :ok
+      {:error, _stale_or_missing_session} -> :ok
+    end
+  catch
+    :exit, _registry_restart -> :ok
   end
 
   defp assignment(request, task) do

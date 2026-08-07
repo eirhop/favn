@@ -6,6 +6,7 @@ defmodule Favn.Manifest.Compatibility do
   alias Favn.Manifest.ContractVersions
   alias Favn.Manifest.Asset
   alias Favn.Manifest.Pipeline
+  alias Favn.Manifest.Rehydrate
   alias Favn.Manifest.Schedule
   alias Favn.Manifest.TargetDescriptor
   alias Favn.RunnerPool
@@ -26,6 +27,7 @@ defmodule Favn.Manifest.Compatibility do
           | {:duplicate_execution_package_hash, String.t(), [Favn.Ref.t()]}
           | {:missing_execution_package_hash, Favn.Ref.t()}
           | {:unexpected_execution_package_hash, Favn.Ref.t()}
+          | {:invalid_manifest_entry, :assets | :pipelines | :schedules, non_neg_integer()}
           | {:unsupported_schema_version, term(), pos_integer()}
           | {:unsupported_runner_contract_version, term(), pos_integer()}
 
@@ -36,7 +38,28 @@ defmodule Favn.Manifest.Compatibility do
   def current_runner_contract_version, do: @current_runner_contract_version
 
   @spec validate_manifest(term()) :: :ok | {:error, error()}
-  def validate_manifest(manifest) when is_map(manifest) or is_struct(manifest) do
+  def validate_manifest(%Favn.Manifest{} = manifest), do: validate_canonical_manifest(manifest)
+
+  def validate_manifest(manifest) when is_map(manifest) do
+    with {:ok, _schema_version} <- read_required_field(manifest, :schema_version),
+         {:ok, _runner_contract_version} <-
+           read_required_field(manifest, :runner_contract_version),
+         {:ok, _runner_releases} <- read_required_field(manifest, :runner_releases),
+         :ok <- validate_raw_entries(manifest) do
+      if canonical_entries?(manifest) do
+        validate_canonical_manifest(manifest)
+      else
+        with :ok <- validate_execution_package_refs(manifest),
+             {:ok, canonical} <- Rehydrate.manifest(manifest) do
+          validate_canonical_manifest(canonical, true)
+        end
+      end
+    end
+  end
+
+  def validate_manifest(other), do: {:error, {:invalid_manifest_input, other}}
+
+  defp validate_canonical_manifest(manifest, execution_package_refs_validated? \\ false) do
     with {:ok, schema_version} <- read_required_field(manifest, :schema_version),
          {:ok, runner_contract_version} <-
            read_required_field(manifest, :runner_contract_version),
@@ -44,7 +67,11 @@ defmodule Favn.Manifest.Compatibility do
          :ok <- validate_schema_version(schema_version),
          :ok <- validate_runner_contract_version(runner_contract_version),
          :ok <- validate_runner_releases(manifest, runner_releases),
-         :ok <- validate_execution_package_refs(manifest) do
+         :ok <-
+           maybe_validate_execution_package_refs(
+             manifest,
+             execution_package_refs_validated?
+           ) do
       validate_resolved_contracts(
         manifest,
         schema_version,
@@ -54,7 +81,68 @@ defmodule Favn.Manifest.Compatibility do
     end
   end
 
-  def validate_manifest(other), do: {:error, {:invalid_manifest_input, other}}
+  defp maybe_validate_execution_package_refs(_manifest, true), do: :ok
+
+  defp maybe_validate_execution_package_refs(manifest, false),
+    do: validate_execution_package_refs(manifest)
+
+  defp validate_raw_entries(manifest) do
+    with :ok <- validate_raw_entries(manifest, :assets),
+         :ok <- validate_raw_entries(manifest, :pipelines) do
+      validate_raw_entries(manifest, :schedules)
+    end
+  end
+
+  defp validate_raw_entries(manifest, field) do
+    case optional_field(manifest, field, []) do
+      entries when is_list(entries) ->
+        case Enum.find_index(entries, &(not valid_raw_entry?(field, &1))) do
+          nil -> :ok
+          index -> {:error, {:invalid_manifest_entry, field, index}}
+        end
+
+      _other ->
+        {:error, invalid_collection_error(field)}
+    end
+  end
+
+  defp valid_raw_entry?(:assets, %Asset{}), do: true
+
+  defp valid_raw_entry?(:assets, entry) when is_map(entry) do
+    Enum.all?([:ref, :type], &present_field?(entry, &1))
+  end
+
+  defp valid_raw_entry?(:pipelines, %Pipeline{}), do: true
+
+  defp valid_raw_entry?(:pipelines, entry) when is_map(entry) do
+    Enum.all?([:module, :name], &present_field?(entry, &1))
+  end
+
+  defp valid_raw_entry?(:schedules, %Schedule{}), do: true
+
+  defp valid_raw_entry?(:schedules, entry) when is_map(entry) do
+    present_field?(entry, :ref) or
+      Enum.all?([:module, :name], &present_field?(entry, &1))
+  end
+
+  defp valid_raw_entry?(_field, _entry), do: false
+
+  defp present_field?(map, field) do
+    case Map.fetch(map, field) do
+      {:ok, value} -> not is_nil(value)
+      :error -> not is_nil(Map.get(map, Atom.to_string(field)))
+    end
+  end
+
+  defp invalid_collection_error(:assets), do: :invalid_manifest_assets
+  defp invalid_collection_error(:pipelines), do: :invalid_manifest_pipelines
+  defp invalid_collection_error(:schedules), do: :invalid_manifest_schedules
+
+  defp canonical_entries?(manifest) do
+    Enum.all?(optional_field(manifest, :assets, []), &match?(%Asset{}, &1)) and
+      Enum.all?(optional_field(manifest, :pipelines, []), &match?(%Pipeline{}, &1)) and
+      Enum.all?(optional_field(manifest, :schedules, []), &match?(%Schedule{}, &1))
+  end
 
   @spec validate_schema_version(term()) :: :ok | {:error, error()}
   def validate_schema_version(@current_schema_version), do: :ok
@@ -132,7 +220,8 @@ defmodule Favn.Manifest.Compatibility do
     do: {:error, :invalid_manifest_assets}
 
   defp validate_asset(asset, schema_version, runner_contract_version, runner_releases) do
-    with :ok <- validate_asset_window(asset.window),
+    with :ok <- validate_asset_identity(asset),
+         :ok <- validate_asset_window(asset.window),
          :ok <- validate_asset_coverage(asset.coverage, asset.window),
          :ok <- validate_asset_freshness(asset.freshness),
          :ok <- validate_optional_runner_pool(asset.runner_pool),
@@ -145,6 +234,16 @@ defmodule Favn.Manifest.Compatibility do
       )
     end
   end
+
+  defp validate_asset_identity(%Asset{
+         ref: {module, name},
+         type: type
+       })
+       when is_atom(module) and not is_nil(module) and is_atom(name) and not is_nil(name) and
+              type in [:elixir, :sql, :source],
+       do: :ok
+
+  defp validate_asset_identity(_asset), do: {:error, :invalid_asset_identity}
 
   defp validate_asset_window(nil), do: :ok
 
@@ -313,16 +412,21 @@ defmodule Favn.Manifest.Compatibility do
 
   defp validate_pipelines(_pipelines), do: {:error, :invalid_manifest_pipelines}
 
-  defp validate_pipeline(%Pipeline{window: nil, schedule: schedule, runner_pool: pool}) do
-    with :ok <- validate_optional_runner_pool(pool), do: validate_pipeline_schedule(schedule)
+  defp validate_pipeline(%Pipeline{window: nil, schedule: schedule, runner_pool: pool} = pipeline) do
+    with :ok <- validate_pipeline_identity(pipeline),
+         :ok <- validate_optional_runner_pool(pool),
+         do: validate_pipeline_schedule(schedule)
   end
 
-  defp validate_pipeline(%Pipeline{
-         window: %Policy{} = window,
-         schedule: schedule,
-         runner_pool: pool
-       }) do
-    with {:ok, _window} <- Policy.validate(window),
+  defp validate_pipeline(
+         %Pipeline{
+           window: %Policy{} = window,
+           schedule: schedule,
+           runner_pool: pool
+         } = pipeline
+       ) do
+    with :ok <- validate_pipeline_identity(pipeline),
+         {:ok, _window} <- Policy.validate(window),
          true <- is_binary(window.timezone) and not is_nil(window.timezone_source),
          :ok <- validate_optional_runner_pool(pool),
          :ok <- validate_pipeline_schedule(schedule) do
@@ -335,6 +439,12 @@ defmodule Favn.Manifest.Compatibility do
 
   defp validate_pipeline(%Pipeline{window: value}),
     do: {:error, {:invalid_pipeline_window, value}}
+
+  defp validate_pipeline_identity(%Pipeline{module: module, name: name})
+       when is_atom(module) and not is_nil(module) and is_atom(name) and not is_nil(name),
+       do: :ok
+
+  defp validate_pipeline_identity(_pipeline), do: {:error, :invalid_pipeline_identity}
 
   defp validate_pipeline_schedule(nil), do: :ok
   defp validate_pipeline_schedule({:ref, _ref}), do: :ok
@@ -365,8 +475,9 @@ defmodule Favn.Manifest.Compatibility do
 
   defp validate_schedules(_schedules), do: {:error, :invalid_manifest_schedules}
 
-  defp validate_schedule(%Schedule{timezone: timezone, timezone_source: source}) do
-    with :ok <- Favn.Window.Validate.timezone(timezone),
+  defp validate_schedule(%Schedule{timezone: timezone, timezone_source: source} = schedule) do
+    with :ok <- validate_schedule_identity(schedule),
+         :ok <- Favn.Window.Validate.timezone(timezone),
          true <- source in [:local, :application_default, :utc_fallback] do
       :ok
     else
@@ -375,34 +486,48 @@ defmodule Favn.Manifest.Compatibility do
     end
   end
 
+  defp validate_schedule_identity(%Schedule{ref: {module, name}})
+       when is_atom(module) and not is_nil(module) and is_atom(name) and not is_nil(name),
+       do: :ok
+
+  defp validate_schedule_identity(%Schedule{module: module, name: name})
+       when is_atom(module) and not is_nil(module) and is_atom(name) and not is_nil(name),
+       do: :ok
+
+  defp validate_schedule_identity(_schedule), do: {:error, :invalid_schedule_identity}
+
   defp validate_asset_package_refs(assets) do
     Enum.reduce_while(assets, :ok, fn asset, :ok ->
       type = Map.get(asset, :type, Map.get(asset, "type"))
       ref = Map.get(asset, :ref, Map.get(asset, "ref"))
       hash = Map.get(asset, :execution_package_hash, Map.get(asset, "execution_package_hash"))
 
-      case {type, hash} do
-        {:sql, value} when is_binary(value) ->
+      case {sql_type?(type), hash} do
+        {true, value} when is_binary(value) ->
           if canonical_hash?(value) do
             {:cont, :ok}
           else
             {:halt, {:error, {:invalid_execution_package_hash, ref, value}}}
           end
 
-        {:sql, nil} ->
+        {true, nil} ->
           {:halt, {:error, {:missing_execution_package_hash, ref}}}
 
-        {:sql, value} ->
+        {true, value} ->
           {:halt, {:error, {:invalid_execution_package_hash, ref, value}}}
 
-        {_type, nil} ->
+        {false, nil} ->
           {:cont, :ok}
 
-        {_type, _value} ->
+        {false, _value} ->
           {:halt, {:error, {:unexpected_execution_package_hash, ref}}}
       end
     end)
   end
+
+  defp sql_type?(:sql), do: true
+  defp sql_type?("sql"), do: true
+  defp sql_type?(_type), do: false
 
   defp validate_unique_package_hashes(assets) do
     assets

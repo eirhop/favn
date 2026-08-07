@@ -13,7 +13,8 @@ defmodule FavnOrchestrator.API.ErrorResponse do
   """
   @spec response(term()) :: response()
   def response(:idempotency_completion_failed) do
-    {500, "internal_error", "Command outcome is unknown", %{outcome: "unknown"}}
+    {500, "internal_error", "Command outcome is unknown",
+     %{outcome: "unknown", retry_with_same_idempotency_key: true}}
   end
 
   def response(:request_failed), do: {400, "bad_request", "Request failed", %{}}

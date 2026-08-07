@@ -86,12 +86,43 @@ defmodule FavnOrchestrator.API.Authentication do
            WorkspaceContext.new(workspace_id, actor_id, [:workspace_admin],
              request_id: session_id
            ) do
-      {:ok, %{id: session_id}, %{id: actor_id}, context}
+      principal = %{
+        id: actor_id,
+        principal_kind: :service,
+        principal_id: actor_id,
+        service_identity: identity
+      }
+
+      {:ok, Map.put(principal, :id, session_id), principal, context}
     else
       false -> {:error, :forbidden}
       {:error, :invalid_context} -> {:error, :forbidden}
       {:error, _reason} = error -> error
     end
+  end
+
+  @doc false
+  def command_principal(
+        %{principal_kind: :service, principal_id: principal_id} = session,
+        %{principal_kind: :service, principal_id: principal_id} = actor
+      ) do
+    %{
+      kind: :service,
+      id: principal_id,
+      actor_id: nil,
+      session_id: nil,
+      service_identity: actor.service_identity || session.service_identity
+    }
+  end
+
+  def command_principal(%{id: session_id}, %{id: actor_id}) do
+    %{
+      kind: :actor,
+      id: actor_id,
+      actor_id: actor_id,
+      session_id: session_id,
+      service_identity: nil
+    }
   end
 
   @doc "Returns the one explicit workspace selected by the request."

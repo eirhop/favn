@@ -7048,6 +7048,171 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert "accepted" in outcomes
   end
 
+  test "trusted service commands persist service authority without actor or session rows",
+       fixture do
+    service_id = "service:operator-api"
+
+    assert {:ok, context} =
+             WorkspaceContext.new(fixture.workspace_id, service_id, [:workspace_admin],
+               request_id: "api-service:operator-api"
+             )
+
+    principal = %{
+      kind: :service,
+      id: service_id,
+      actor_id: nil,
+      session_id: nil,
+      service_identity: "operator-api"
+    }
+
+    assert {:ok, intent} =
+             OperatorAudit.begin_command(
+               context,
+               principal,
+               "run.cancel",
+               "run",
+               "run-service-audit",
+               %{run_id: "run-service-audit"},
+               "service-command:0123456789abcdef"
+             )
+
+    assert intent.idempotency.principal_kind == :service
+    assert intent.idempotency.principal_id == service_id
+
+    assert :ok =
+             OperatorAudit.finish_command(
+               context,
+               intent,
+               "accepted",
+               "run",
+               "run-service-audit",
+               %{run_id: "run-service-audit"}
+             )
+
+    assert %{rows: [["service", ^service_id, nil, nil, "accepted"]]} =
+             SQL.query!(
+               Repo,
+               """
+               SELECT principal_kind, principal_id, actor_id, session_id, status
+               FROM favn_control.auth_operator_commands
+               WHERE workspace_id = $1 AND key_hash = $2
+               """,
+               [fixture.workspace_id, intent.key_hash]
+             )
+  end
+
+  test "maintenance retains unresolved service idempotency and retires terminal service intents",
+       fixture do
+    service_id = "service:maintenance-api"
+
+    assert {:ok, context} =
+             WorkspaceContext.new(fixture.workspace_id, service_id, [:workspace_admin],
+               request_id: "api-service:maintenance-api"
+             )
+
+    principal = %{
+      kind: :service,
+      id: service_id,
+      actor_id: nil,
+      session_id: nil,
+      service_identity: "maintenance-api"
+    }
+
+    assert {:ok, intent} =
+             OperatorAudit.begin_command(
+               context,
+               principal,
+               "run.cancel",
+               "run",
+               "run-service-maintenance",
+               %{run_id: "run-service-maintenance"},
+               "service-maintenance:0123456789abcdef"
+             )
+
+    expired_at = DateTime.add(DateTime.utc_now(), -3_600, :second)
+    cutoff = DateTime.utc_now()
+
+    SQL.query!(
+      Repo,
+      """
+      UPDATE favn_control.auth_operator_commands
+      SET expires_at = $3
+      WHERE workspace_id = $1 AND key_hash = $2
+      """,
+      [fixture.workspace_id, intent.key_hash, expired_at]
+    )
+
+    SQL.query!(
+      Repo,
+      """
+      INSERT INTO favn_control.idempotency_records (
+        workspace_id, operation, principal_kind, principal_id, key_hash,
+        request_fingerprint, status, expires_at, inserted_at, updated_at
+      )
+      VALUES ($1, $2, 'service', $3, $4, $5, 'started', $6, $6, $6)
+      """,
+      [
+        fixture.workspace_id,
+        intent.operation,
+        service_id,
+        intent.key_hash,
+        intent.request_fingerprint,
+        expired_at
+      ]
+    )
+
+    assert {:ok, %{status: :completed, batch_count: 0}} =
+             MaintenanceStore.purge(%PurgePersistence{
+               platform_context: fixture.platform_context,
+               job_id: "retain-service-idempotency-#{System.unique_integer([:positive])}",
+               target: :idempotency,
+               workspace_id: fixture.workspace_id,
+               cutoff: cutoff,
+               limit: 10
+             })
+
+    assert %{rows: [[1]]} =
+             SQL.query!(
+               Repo,
+               """
+               SELECT count(*) FROM favn_control.idempotency_records
+               WHERE workspace_id = $1 AND operation = $2 AND principal_kind = 'service'
+                 AND principal_id = $3 AND key_hash = $4
+               """,
+               [fixture.workspace_id, intent.operation, service_id, intent.key_hash]
+             )
+
+    assert :ok =
+             OperatorAudit.finish_command(
+               context,
+               intent,
+               "accepted",
+               "run",
+               "run-service-maintenance",
+               %{run_id: "run-service-maintenance"}
+             )
+
+    assert {:ok, %{status: :completed, batch_count: 1}} =
+             MaintenanceStore.purge(%PurgePersistence{
+               platform_context: fixture.platform_context,
+               job_id: "retire-service-intent-#{System.unique_integer([:positive])}",
+               target: :sessions,
+               workspace_id: fixture.workspace_id,
+               cutoff: cutoff,
+               limit: 10
+             })
+
+    assert %{rows: [[0]]} =
+             SQL.query!(
+               Repo,
+               """
+               SELECT count(*) FROM favn_control.auth_operator_commands
+               WHERE workspace_id = $1 AND key_hash = $2
+               """,
+               [fixture.workspace_id, intent.key_hash]
+             )
+  end
+
   test "service-token manifest activation is idempotent and durably audited", fixture do
     Application.put_env(:favn_orchestrator, :api_service_tokens, [
       %{
@@ -7113,9 +7278,13 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
             &1.subject_id == fixture.version.manifest_version_id)
       )
 
-    assert length(matching_audits) == 1
+    assert Enum.map(matching_audits, & &1.detail["outcome"]) |> Enum.sort() ==
+             ["accepted", "requested"]
 
-    assert hd(matching_audits).detail["runner_releases"] == fixture.version.runner_releases
+    accepted = Enum.find(matching_audits, &(&1.detail["outcome"] == "accepted"))
+    assert accepted.detail["principal_kind"] == "service"
+    assert accepted.detail["result"]["status"] == 200
+    refute inspect(matching_audits) =~ "ducklake-metadata"
 
     assert %{rows: [[1]]} =
              SQL.query!(

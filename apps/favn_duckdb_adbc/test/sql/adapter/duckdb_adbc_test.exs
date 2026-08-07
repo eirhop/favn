@@ -206,6 +206,24 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCTest do
     :ok
   end
 
+  test "rejects malformed explicit adapter options instead of silently using defaults" do
+    for {option, value} <- [
+          duckdb_adbc_client: "not-a-module",
+          duckdb_adbc_client: :not_an_adbc_client,
+          duckdb_adbc: %{driver: :duckdb},
+          max_rows: 0,
+          max_result_bytes: "unbounded"
+        ] do
+      assert {:error,
+              %Error{
+                type: :invalid_config,
+                details: %{reason: :invalid_adapter_option, option: ^option}
+              }} = ADBC.connect(resolved(), [{option, value}])
+    end
+
+    assert events() == []
+  end
+
   test "commit failure can retain a bounded checked body result" do
     TestSupport.put_mode(:commit_mode, :error)
     {:ok, conn} = ADBC.connect(resolved(), duckdb_adbc_client: FakeClient)

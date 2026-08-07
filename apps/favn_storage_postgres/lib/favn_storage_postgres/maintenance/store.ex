@@ -295,34 +295,64 @@ defmodule FavnStoragePostgres.Maintenance.Store do
   end
 
   defp purge_batch!(%{target: :sessions} = command) do
-    delete_count(
-      """
-      WITH candidates AS (
-        SELECT session.session_id
-        FROM favn_control.auth_sessions session
-        WHERE (session.status <> 'active' OR session.expires_at < $2)
+    %{num_rows: service_intent_count} =
+      SQL.query!(
+        Repo,
+        """
+        WITH candidates AS (
+          SELECT intent.ctid
+          FROM favn_control.auth_operator_commands intent
+          WHERE intent.principal_kind = 'service'
+            AND intent.status IN ('accepted', 'partial', 'rejected')
+            AND intent.expires_at < $2
+            AND ($1::text IS NULL OR intent.workspace_id = $1)
+          ORDER BY intent.expires_at, intent.workspace_id, intent.key_hash
+          LIMIT $3
+          FOR UPDATE SKIP LOCKED
+        )
+        DELETE FROM favn_control.auth_operator_commands intent USING candidates
+        WHERE intent.ctid = candidates.ctid
+        """,
+        [command.workspace_id, command.cutoff, command.limit]
+      )
+
+    remaining = command.limit - service_intent_count
+
+    session_count =
+      if remaining > 0 do
+        delete_count(
+          """
+          WITH candidates AS (
+          SELECT session.session_id
+          FROM favn_control.auth_sessions session
+          WHERE (session.status <> 'active' OR session.expires_at < $2)
           AND session.updated_at < $2
           AND ($1::text IS NULL OR EXISTS (
             SELECT 1 FROM favn_control.auth_workspace_memberships membership
             WHERE membership.workspace_id = $1 AND membership.actor_id = session.actor_id
-        ))
-        ORDER BY session.session_id LIMIT $3 FOR UPDATE SKIP LOCKED
-      ),
-      deleted_operator_commands AS (
-        DELETE FROM favn_control.auth_operator_commands intent USING candidates
-        WHERE intent.session_id = candidates.session_id
+          ))
+          ORDER BY session.session_id LIMIT $3 FOR UPDATE SKIP LOCKED
+          ),
+          deleted_operator_commands AS (
+          DELETE FROM favn_control.auth_operator_commands intent USING candidates
+          WHERE intent.session_id = candidates.session_id
           AND intent.status IN ('accepted', 'partial', 'rejected')
           AND intent.expires_at < $2
-      )
-      DELETE FROM favn_control.auth_sessions session USING candidates
-      WHERE session.session_id = candidates.session_id
-        AND NOT EXISTS (
+          )
+          DELETE FROM favn_control.auth_sessions session USING candidates
+          WHERE session.session_id = candidates.session_id
+          AND NOT EXISTS (
           SELECT 1 FROM favn_control.auth_operator_commands intent
           WHERE intent.session_id = session.session_id
+          )
+          """,
+          %{command | limit: remaining}
         )
-      """,
-      command
-    )
+      else
+        0
+      end
+
+    service_intent_count + session_count
   end
 
   defp purge_batch!(%{target: :idempotency} = command) do
@@ -337,7 +367,8 @@ defmodule FavnStoragePostgres.Maintenance.Store do
             FROM favn_control.auth_operator_commands intent
             WHERE intent.workspace_id = idempotency_records.workspace_id
               AND intent.operation = idempotency_records.operation
-              AND intent.actor_id = idempotency_records.principal_id
+              AND intent.principal_kind = idempotency_records.principal_kind
+              AND intent.principal_id = idempotency_records.principal_id
               AND convert_to(intent.key_hash, 'UTF8') = idempotency_records.key_hash
               AND intent.status IN ('pending', 'unknown')
           )

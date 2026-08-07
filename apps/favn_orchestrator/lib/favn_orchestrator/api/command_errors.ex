@@ -107,6 +107,39 @@ defmodule FavnOrchestrator.API.CommandErrors do
 
   def idempotency(_reason), do: nil
 
+  @doc "Maps infrastructure failures to explicit unknown-outcome responses."
+  @spec infrastructure(term()) :: command_error() | nil
+  def infrastructure(%Error{kind: kind} = reason)
+      when kind in [:timeout, :unavailable, :internal] do
+    log_infrastructure_failure(reason)
+
+    status = if kind == :internal, do: 500, else: 503
+    code = if kind == :internal, do: "internal_error", else: "service_unavailable"
+
+    {:error, status, code, "Command outcome is unknown",
+     %{outcome: "unknown", retry_with_same_idempotency_key: true}}
+  end
+
+  def infrastructure(_reason), do: nil
+
+  @doc "Sends a non-idempotent infrastructure failure without classifying it as client input."
+  @spec send_infrastructure(Plug.Conn.t(), Error.t()) :: Plug.Conn.t()
+  def send_infrastructure(conn, %Error{kind: kind} = reason)
+      when kind in [:timeout, :unavailable, :internal] do
+    log_infrastructure_failure(reason)
+    status = if kind == :internal, do: 500, else: 503
+    code = if kind == :internal, do: "internal_error", else: "service_unavailable"
+    Response.error(conn, status, code, "Request outcome is unknown", %{outcome: "unknown"})
+  end
+
+  def send_infrastructure(conn, %Error{} = reason) do
+    log_infrastructure_failure(reason)
+
+    Response.error(conn, 500, "internal_error", "Request outcome is unknown", %{
+      outcome: "unknown"
+    })
+  end
+
   @doc """
   Maps every run-submission failure to a stable, redacted API response.
 
@@ -154,7 +187,7 @@ defmodule FavnOrchestrator.API.CommandErrors do
     do: {:error, 404, "not_found", "Run target was not found", %{}}
 
   def submission(%Error{} = reason) do
-    idempotency(reason) || unknown_submission(reason)
+    idempotency(reason) || infrastructure(reason) || unknown_submission(reason)
   end
 
   def submission(reason) when is_tuple(reason) do
@@ -297,6 +330,14 @@ defmodule FavnOrchestrator.API.CommandErrors do
 
   defp validation_error(message),
     do: {:error, 422, "validation_failed", message, %{}}
+
+  defp log_infrastructure_failure(%Error{} = reason) do
+    log_invalid("command persistence failure", %{
+      kind: reason.kind,
+      retryable?: reason.retryable?,
+      details: reason.details
+    })
+  end
 
   defp unknown_submission(reason) do
     log_invalid("unmapped run submission failure", reason)
