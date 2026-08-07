@@ -137,6 +137,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnOrchestrator.Persistence.WorkspaceContext
   alias FavnOrchestrator.Persistence.CommandIdempotency
   alias FavnOrchestrator.Persistence.Error
+  alias FavnOrchestrator.Persistence.Runtime
   alias FavnOrchestrator.Persistence.Stores
   alias FavnOrchestrator.Persistence.Selectors.ActorByUsername
   alias FavnOrchestrator.Persistence.Selectors.ActorByExternalIdentity
@@ -199,6 +200,44 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnStoragePostgres.StorageV2.Migrations
 
   @service_token "B7yN3kQ9wR4mT8xZ2cV6pL1sD5fH0jA7"
+
+  defmodule FailOnceIdentityStore do
+    @behaviour FavnOrchestrator.Persistence.IdentityStore
+
+    @delegate FavnStoragePostgres.Identity.Store
+
+    for {operation, arity} <-
+          FavnOrchestrator.Persistence.IdentityStore.behaviour_info(:callbacks) --
+            [complete_operator_command: 1] do
+      arguments = Macro.generate_arguments(arity, __MODULE__)
+
+      @impl true
+      def unquote(operation)(unquote_splicing(arguments)) do
+        apply(@delegate, unquote(operation), unquote(arguments))
+      end
+    end
+
+    @impl true
+    def complete_operator_command(command) do
+      gate = Application.fetch_env!(:favn_storage_postgres, :http_completion_failure_gate)
+
+      fail? =
+        Agent.get_and_update(gate, fn
+          :fail -> {true, :delegate}
+          :delegate -> {false, :delegate}
+        end)
+
+      if fail? do
+        {:error,
+         FavnOrchestrator.Persistence.Error.new(
+           :unavailable,
+           "injected completion failure"
+         )}
+      else
+        @delegate.complete_operator_command(command)
+      end
+    end
+  end
 
   setup_all do
     url =
@@ -7294,6 +7333,182 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
              )
   end
 
+  test "actor HTTP mutation is replay-safe and durably attributed", fixture do
+    identity = api_identity(fixture, [:operator])
+
+    body = %{
+      "manifest_version_id" => fixture.version.manifest_version_id,
+      "target" => %{"type" => "asset", "id" => fixture.target_id}
+    }
+
+    first =
+      api_request(:post, "/api/orchestrator/v1/runs", body,
+        fixture: fixture,
+        identity: identity,
+        idempotency_key: "actor-run-submit"
+      )
+
+    replay =
+      api_request(:post, "/api/orchestrator/v1/runs", body,
+        fixture: fixture,
+        identity: identity,
+        idempotency_key: "actor-run-submit"
+      )
+
+    assert first.status == 202
+    assert replay.status == 202
+    assert replay.resp_body == first.resp_body
+
+    run_id = Jason.decode!(first.resp_body)["data"]["run"]["id"]
+    assert is_binary(run_id)
+
+    assert {:ok, audit_page} = Identity.page_audit(fixture.workspace_context, limit: 20)
+
+    matching_audits =
+      Enum.filter(
+        audit_page.items,
+        &(&1.action == "run.submit" and &1.subject_id == run_id)
+      )
+
+    assert Enum.map(matching_audits, & &1.detail["outcome"]) |> Enum.sort() ==
+             ["accepted", "requested"]
+
+    accepted = Enum.find(matching_audits, &(&1.detail["outcome"] == "accepted"))
+    assert accepted.detail["principal_kind"] == "actor"
+    assert accepted.detail["actor_id"] == identity.actor.id
+    assert accepted.detail["session_id"] == identity.session.id
+
+    assert %{rows: [[1]]} =
+             SQL.query!(
+               Repo,
+               """
+               SELECT count(*) FROM favn_control.auth_operator_commands
+               WHERE workspace_id = $1 AND operation = 'run.submit'
+                 AND principal_kind = 'actor' AND principal_id = $2
+               """,
+               [fixture.workspace_id, identity.actor.id]
+             )
+
+    assert %{rows: [[1]]} =
+             SQL.query!(
+               Repo,
+               "SELECT count(*) FROM favn_control.run_submissions WHERE workspace_id = $1 AND run_id = $2",
+               [fixture.workspace_id, run_id]
+             )
+  end
+
+  test "service HTTP retry heals a lost audit completion without duplicating deployment",
+       fixture do
+    install_fail_once_identity_store!()
+
+    Application.put_env(:favn_orchestrator, :api_service_tokens, [
+      %{
+        service_identity: "http-boundary",
+        token: @service_token,
+        enabled: true,
+        platform_roles: [:platform_operator]
+      }
+    ])
+
+    key = "activate-after-lost-completion"
+    path = "/api/orchestrator/v1/manifests/#{fixture.version.manifest_version_id}/activate"
+
+    first =
+      api_request(:post, path, activation_body(),
+        fixture: fixture,
+        idempotency_key: key
+      )
+
+    assert first.status == 500
+
+    assert Jason.decode!(first.resp_body)["error"]["details"] == %{
+             "outcome" => "unknown",
+             "retry_with_same_idempotency_key" => true
+           }
+
+    key_hash = FavnOrchestrator.Idempotency.key_hash(key)
+
+    assert %{rows: [[1]]} =
+             SQL.query!(
+               Repo,
+               """
+               SELECT count(*) FROM favn_control.workspace_deployments
+               WHERE workspace_id = $1 AND deployment_id = $2
+               """,
+               [fixture.workspace_id, "deployment:" <> key_hash]
+             )
+
+    assert %{rows: [[1]]} =
+             SQL.query!(
+               Repo,
+               """
+               SELECT count(*) FROM favn_control.idempotency_records
+               WHERE workspace_id = $1 AND operation = 'manifest.activate'
+                 AND principal_kind = 'service' AND key_hash = $2
+               """,
+               [fixture.workspace_id, key_hash]
+             )
+
+    assert %{rows: [["pending"]]} =
+             SQL.query!(
+               Repo,
+               """
+               SELECT status FROM favn_control.auth_operator_commands
+               WHERE workspace_id = $1 AND operation = 'manifest.activate'
+                 AND principal_kind = 'service' AND key_hash = $2
+               """,
+               [fixture.workspace_id, key_hash]
+             )
+
+    retry =
+      api_request(:post, path, activation_body(),
+        fixture: fixture,
+        idempotency_key: key
+      )
+
+    replay =
+      api_request(:post, path, activation_body(),
+        fixture: fixture,
+        idempotency_key: key
+      )
+
+    assert retry.status == 200
+    assert replay.status == 200
+    assert replay.resp_body == retry.resp_body
+
+    assert %{rows: [[1]]} =
+             SQL.query!(
+               Repo,
+               """
+               SELECT count(*) FROM favn_control.workspace_deployments
+               WHERE workspace_id = $1 AND deployment_id = $2
+               """,
+               [fixture.workspace_id, "deployment:" <> key_hash]
+             )
+
+    assert %{rows: [["accepted"]]} =
+             SQL.query!(
+               Repo,
+               """
+               SELECT status FROM favn_control.auth_operator_commands
+               WHERE workspace_id = $1 AND operation = 'manifest.activate'
+                 AND principal_kind = 'service' AND key_hash = $2
+               """,
+               [fixture.workspace_id, key_hash]
+             )
+
+    assert %{rows: [[1]]} =
+             SQL.query!(
+               Repo,
+               """
+               SELECT count(*) FROM favn_control.idempotency_records
+               WHERE workspace_id = $1 AND operation = 'manifest.activate'
+                 AND principal_kind = 'service' AND key_hash = $2
+               """,
+               [fixture.workspace_id, key_hash]
+             )
+  end
+
   test "HTTP manifest activation returns not found for a missing staged manifest", fixture do
     Application.put_env(:favn_orchestrator, :api_service_tokens, [
       %{
@@ -9333,6 +9548,30 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
       end
 
     Router.call(conn, Router.init([]))
+  end
+
+  defp install_fail_once_identity_store! do
+    assert Process.whereis(Runtime) == nil
+    previous_gate = Application.get_env(:favn_storage_postgres, :http_completion_failure_gate)
+    {:ok, gate} = Agent.start_link(fn -> :fail end)
+    Application.put_env(:favn_storage_postgres, :http_completion_failure_gate, gate)
+
+    stores = %{Backend.stores() | identity: FailOnceIdentityStore}
+    {:ok, runtime} = Runtime.start_link(%Runtime{backend: Backend, options: [], stores: stores})
+    Process.unlink(runtime)
+    Process.unlink(gate)
+
+    on_exit(fn ->
+      if Process.alive?(runtime), do: GenServer.stop(runtime)
+      if Process.alive?(gate), do: Agent.stop(gate)
+
+      case previous_gate do
+        nil -> Application.delete_env(:favn_storage_postgres, :http_completion_failure_gate)
+        value -> Application.put_env(:favn_storage_postgres, :http_completion_failure_gate, value)
+      end
+    end)
+
+    :ok
   end
 
   defp restore_env(key, nil), do: Application.delete_env(:favn_storage_postgres, key)
