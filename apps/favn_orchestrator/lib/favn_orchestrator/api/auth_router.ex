@@ -14,7 +14,7 @@ defmodule FavnOrchestrator.API.AuthRouter do
   # Plug.Router owns do_match/4. The remaining definitions consume identity
   # callbacks selected dynamically from the validated persistence registry.
   @dialyzer {:no_match, [do_match: 4, password_login: 3, session_context: 2]}
-  @dialyzer {:no_unused, [audit: 5, persistence_roles: 1]}
+  @dialyzer {:no_unused, [persistence_roles: 1]}
 
   plug(:match)
   plug(:dispatch)
