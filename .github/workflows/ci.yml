@@ -135,6 +135,14 @@ jobs:
       - name: Compile
         run: mix compile --warnings-as-errors
 
+      - name: Create local PostgreSQL control schema
+        env:
+          PGPASSWORD: postgres
+        run: >-
+          psql --host 127.0.0.1 --username postgres --dbname favn_test
+          --set ON_ERROR_STOP=1
+          --command 'CREATE SCHEMA favn_control AUTHORIZATION postgres'
+
       - name: Migrate PostgreSQL Storage V2
         run: mix favn.postgres.migrate
 
@@ -258,6 +266,14 @@ jobs:
           --set ON_ERROR_STOP=1
           --command "CREATE ROLE favn_runtime LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT PASSWORD 'favn_runtime_test'"
 
+      - name: Create local PostgreSQL control schema
+        env:
+          PGPASSWORD: postgres
+        run: >-
+          psql --host 127.0.0.1 --username postgres --dbname favn_test
+          --set ON_ERROR_STOP=1
+          --command 'CREATE SCHEMA favn_control AUTHORIZATION postgres'
+
       - name: Migrate PostgreSQL Storage V2
         run: mix favn.postgres.migrate
 
@@ -325,6 +341,14 @@ jobs:
 
       - name: Compile
         run: mix compile --warnings-as-errors
+
+      - name: Create local PostgreSQL control schema
+        env:
+          PGPASSWORD: postgres
+        run: >-
+          psql --host 127.0.0.1 --username postgres --dbname favn_test
+          --set ON_ERROR_STOP=1
+          --command 'CREATE SCHEMA favn_control AUTHORIZATION postgres'
 
       - name: Migrate PostgreSQL Storage V2
         run: mix favn.postgres.migrate

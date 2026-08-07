@@ -556,25 +556,23 @@ defmodule FavnStoragePostgres.Bootstrap do
     end
   end
 
-  defp identity_status(connection, config, profile) do
-    case profile.authentication_mode do
-      :password ->
-        :ok
-
-      :azure_managed_identity ->
-        with {:ok, authentication} <- authentication(config, profile, :migrator_operation),
-             {:ok, :exact} <-
-               Authentication.identity_status(
-                 authentication,
-                 executor(connection),
-                 identity_mapping(profile)
-               ) do
-          :ok
-        else
-          {:ok, :missing} -> {:error, :identity_mapping_missing}
-          {:ok, :conflict} -> {:error, :identity_mapping_conflict}
-          {:error, code} -> {:error, code}
-        end
+  defp identity_status(
+         connection,
+         config,
+         %Profile{authentication_mode: :azure_managed_identity} = profile
+       ) do
+    with {:ok, authentication} <- authentication(config, profile, :migrator_operation),
+         {:ok, :exact} <-
+           Authentication.identity_status(
+             authentication,
+             executor(connection),
+             identity_mapping(profile)
+           ) do
+      :ok
+    else
+      {:ok, :missing} -> {:error, :identity_mapping_missing}
+      {:ok, :conflict} -> {:error, :identity_mapping_conflict}
+      {:error, code} -> {:error, code}
     end
   end
 

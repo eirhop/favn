@@ -95,6 +95,22 @@ docker run --rm \
 docker run --rm --entrypoint /bin/sh "$image" -c \
   "file=\$(find /app/lib -path '*/favn_view-*/priv/static/cache_manifest.json' -type f -print -quit); test -n \"\$file\"; sha256sum \"\$file\" | cut -d ' ' -f 1"
 
+set +e
+status_stdout=$(docker run --rm \
+  --network none \
+  --read-only \
+  --tmpfs /tmp:rw,noexec,nosuid,size=64m,uid=10001,gid=10001,mode=0700 \
+  --cap-drop ALL \
+  --security-opt no-new-privileges:true \
+  --entrypoint /app/bin/favn_control_plane_ops \
+  "$image" status)
+status_exit=$?
+set -e
+[[ $status_exit -eq 64 ]]
+[[ $(printf '%s\n' "$status_stdout" | wc -l) -eq 1 ]]
+[[ $status_stdout == \{*'"operation":"status"'*\} ]]
+[[ $status_stdout == *'"state":"invalid_configuration"'* ]]
+
 assert_launcher_rejects() {
   local expected=$1 node=$2 cookie=$3 output status
 
