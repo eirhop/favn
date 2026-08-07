@@ -106,10 +106,26 @@ status_stdout=$(docker run --rm \
   "$image" status)
 status_exit=$?
 set -e
-[[ $status_exit -eq 64 ]]
-[[ $(printf '%s\n' "$status_stdout" | wc -l) -eq 1 ]]
-[[ $status_stdout == \{*'"operation":"status"'*\} ]]
-[[ $status_stdout == *'"state":"invalid_configuration"'* ]]
+if [[ $status_exit -ne 64 ]]; then
+  echo "status contract returned exit $status_exit instead of 64" >&2
+  exit 1
+fi
+if [[ $(printf '%s\n' "$status_stdout" | wc -l) -ne 1 ]]; then
+  echo "status contract stdout was not exactly one line" >&2
+  exit 1
+fi
+if ! grep -Eq '^\{.*\}$' <<< "$status_stdout"; then
+  echo "status contract stdout was not one JSON object" >&2
+  exit 1
+fi
+if ! grep -Fq '"operation":"status"' <<< "$status_stdout"; then
+  echo "status contract stdout omitted the operation" >&2
+  exit 1
+fi
+if ! grep -Fq '"state":"invalid_configuration"' <<< "$status_stdout"; then
+  echo "status contract stdout omitted the invalid configuration state" >&2
+  exit 1
+fi
 
 assert_launcher_rejects() {
   local expected=$1 node=$2 cookie=$3 output status
