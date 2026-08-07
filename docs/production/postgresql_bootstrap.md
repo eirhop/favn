@@ -153,9 +153,12 @@ it is sensitive because it permits offline password guessing.
 
 For an existing password-role hardening transition, the deployment temporarily
 grants the bootstrap administrator `ADMIN OPTION` on the configured migrator
-and runtime roles and on every parent role reported by the read-only
-`role_memberships` finding. PostgreSQL authorizes membership removal through
-the parent role; if that option is absent, Favn fails with
+and runtime roles. Every membership reported by the read-only
+`role_memberships` finding must also be revocable by the bootstrap identity.
+On PostgreSQL 18, `ADMIN OPTION` on the parent alone does not necessarily permit
+revoking a membership recorded under another grantor. The deployment must make
+the bootstrap identity the grantor for that transition membership or use
+provider administrator authority that can revoke it. Otherwise Favn fails with
 `role_membership_hardening_not_authorized`. The authorization belongs to the
 disposable bootstrap identity and disappears when the deployment removes it.
 New password roles do not need these transition grants: Favn creates them with

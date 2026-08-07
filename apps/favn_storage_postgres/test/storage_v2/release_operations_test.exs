@@ -26,7 +26,7 @@ defmodule FavnStoragePostgres.StorageV2.ReleaseOperationsTest do
 
     System.put_env("FAVN_DATABASE_AUTH_MODE", "password")
     System.put_env("FAVN_DATABASE_SSL_MODE", "disable")
-    System.put_env("FAVN_DEPLOYMENT_MODE", "development")
+    System.put_env("FAVN_DEPLOYMENT_MODE", "production")
 
     System.put_env(
       "FAVN_RUNTIME_INPUT_PIN_KEYS",
@@ -83,7 +83,9 @@ defmodule FavnStoragePostgres.StorageV2.ReleaseOperationsTest do
 
     log =
       capture_log(fn ->
-        assert {:ok, %{operation: :migrate, status: :ok}} = Release.migrate()
+        assert {:error, %{operation: :migrate, status: :error, code: :unsafe_migrator_authority}} =
+                 Release.migrate()
+
         refute Process.whereis(Repo)
 
         assert {:ok,
@@ -161,7 +163,7 @@ defmodule FavnStoragePostgres.StorageV2.ReleaseOperationsTest do
                   removed_versions: [98]
                 }} = Release.compact_runtime_input_keys(98)
 
-        System.put_env("FAVN_DEPLOYMENT_MODE", "production")
+        System.delete_env("FAVN_DEPLOYMENT_MODE")
 
         assert {:error, %{operation: :migrate, status: :error, code: :unsafe_migrator_authority}} =
                  Release.migrate()
@@ -173,7 +175,7 @@ defmodule FavnStoragePostgres.StorageV2.ReleaseOperationsTest do
                   code: :unsafe_migrator_authority
                 }} = Release.grant_runtime()
 
-        System.put_env("FAVN_DEPLOYMENT_MODE", "development")
+        System.put_env("FAVN_DEPLOYMENT_MODE", "production")
 
         %{rows: [[current_role]]} = Postgrex.query!(connection, "SELECT current_user", [])
         System.put_env("FAVN_DATABASE_RUNTIME_ROLE", current_role)

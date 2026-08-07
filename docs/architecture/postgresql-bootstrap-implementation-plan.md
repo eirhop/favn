@@ -672,8 +672,12 @@ may run `bootstrap` once to remove migrator `CREATEROLE`, correct ownership, and
 move to the new workflow. Exact existing workspaces remain unchanged.
 
 When repairing pre-existing password roles, the deployment gives the temporary
-bootstrap identity `ADMIN OPTION` on those exact roles and every parent role
-reported by status so PostgreSQL 18 permits attribute and membership hardening.
+bootstrap identity `ADMIN OPTION` on those exact roles. Every parent membership
+reported by status must also be revocable by that identity. PostgreSQL 18 tracks
+the membership grantor, so parent-role `ADMIN OPTION` alone may not permit
+revoking a grant recorded under a different grantor; the deployment must make
+the bootstrap identity the transition grantor or use provider administrator
+authority that can revoke it.
 Favn creates a missing control schema by
 temporarily granting database `CREATE` to the migrator, connecting as the
 migrator so it owns the schema naturally, then revoking and verifying the grant.

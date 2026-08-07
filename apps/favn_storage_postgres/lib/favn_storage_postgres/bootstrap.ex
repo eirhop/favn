@@ -681,7 +681,10 @@ defmodule FavnStoragePostgres.Bootstrap do
         [
           role_finding(:role_memberships, purpose, status.role)
           |> put_in([:details, :parent_roles], Enum.take(status.memberships, 8))
-          |> put_in([:details, :required_action], :grant_bootstrap_admin_option_on_parent_roles)
+          |> put_in(
+            [:details, :required_action],
+            :make_parent_memberships_revocable_by_bootstrap
+          )
         ]
 
       {true, code} ->
@@ -1040,8 +1043,22 @@ defmodule FavnStoragePostgres.Bootstrap do
   defp normalize_status_connection({:error, :database_missing}, stage),
     do: Result.status(:status, :database_missing, stage)
 
+  defp normalize_status_connection(
+         {:error, %{operation: :status, status: :error}} = result,
+         _stage
+       ),
+       do: result
+
   defp normalize_status_connection({:error, code}, stage), do: status_result(code, stage)
   defp normalize_status_connection(result, _stage), do: result
+
+  defp normalize_workflow_connection(
+         {:error, %{operation: operation, status: :error}} = result,
+         operation,
+         _stage,
+         _stages
+       ),
+       do: result
 
   defp normalize_workflow_connection({:error, code}, operation, stage, stages),
     do: workflow_error(operation, code, stage, stages)

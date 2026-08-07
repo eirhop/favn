@@ -11,6 +11,7 @@ defmodule FavnStoragePostgres.Release do
   require Logger
 
   alias Ecto.Adapters.SQL
+  alias Favn.DeploymentMode
   alias Favn.RuntimeInput.KeyringConfig
   alias FavnOrchestrator.AdminLifecycle
   alias FavnOrchestrator.Persistence.Commands.ProvisionWorkspace
@@ -737,6 +738,13 @@ defmodule FavnStoragePostgres.Release do
   end
 
   defp require_elevated_role(operation, env) do
+    case DeploymentMode.from_env(env) do
+      {:ok, :production} -> require_production_migrator(operation, env)
+      {:error, _reason} -> error(operation, :invalid_database_configuration)
+    end
+  end
+
+  defp require_production_migrator(operation, env) do
     %{
       rows: [
         [
@@ -773,9 +781,8 @@ defmodule FavnStoragePostgres.Release do
       current_role == runtime_role ->
         error(operation, :restricted_runtime_role, role: current_role)
 
-      Map.get(env, "FAVN_DEPLOYMENT_MODE") == "production" and
-          (superuser? or create_database? or create_role? or inherit? or replication? or
-             bypass_rls? or memberships?) ->
+      superuser? or create_database? or create_role? or inherit? or replication? or bypass_rls? or
+          memberships? ->
         error(operation, :unsafe_migrator_authority, role: current_role)
 
       true ->

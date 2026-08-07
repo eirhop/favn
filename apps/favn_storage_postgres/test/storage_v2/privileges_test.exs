@@ -27,6 +27,35 @@ defmodule FavnStoragePostgres.StorageV2.PrivilegesTest do
       []
     )
 
+    %{rows: [[database]]} = SQL.query!(Repo, "SELECT current_database()", [])
+    quoted_database = RuntimePrivileges.quote_identifier!(database)
+
+    SQL.query!(
+      Repo,
+      "REVOKE CONNECT, CREATE, TEMPORARY ON DATABASE #{quoted_database} FROM PUBLIC",
+      []
+    )
+
+    SQL.query!(Repo, "GRANT CONNECT ON DATABASE #{quoted_database} TO #{quoted_role}", [])
+
+    on_exit(fn ->
+      options = url |> Ecto.Repo.Supervisor.parse_url() |> Keyword.put(:ssl, false)
+      {:ok, cleanup} = Postgrex.start_link(options)
+
+      try do
+        Postgrex.query!(cleanup, "DROP OWNED BY #{quoted_role}", [])
+        Postgrex.query!(cleanup, "DROP ROLE #{quoted_role}", [])
+
+        Postgrex.query!(
+          cleanup,
+          "GRANT CONNECT, TEMPORARY ON DATABASE #{quoted_database} TO PUBLIC",
+          []
+        )
+      after
+        GenServer.stop(cleanup)
+      end
+    end)
+
     :ok = RuntimePrivileges.grant_runtime!(Repo, role)
 
     {:ok, role: role, url: url}
@@ -118,14 +147,7 @@ defmodule FavnStoragePostgres.StorageV2.PrivilegesTest do
     after
       GenServer.stop(connection)
       SQL.query!(Repo, "DROP SEQUENCE IF EXISTS favn_control.runtime_privilege_probe", [])
-      cleanup_role(context.role)
     end
-  end
-
-  defp cleanup_role(role) do
-    quoted_role = RuntimePrivileges.quote_identifier!(role)
-    SQL.query!(Repo, "DROP OWNED BY #{quoted_role}", [])
-    SQL.query!(Repo, "DROP ROLE #{quoted_role}", [])
   end
 
   defp connection_options(url, role) do

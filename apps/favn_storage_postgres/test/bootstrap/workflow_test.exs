@@ -55,15 +55,19 @@ defmodule FavnStoragePostgres.Bootstrap.WorkflowTest do
 
     Postgrex.query!(
       admin,
+      "GRANT #{quote!(migrator_role)}, #{quote!(runtime_role)}, #{quote!(transition_parent_role)} TO #{quoted_bootstrap} WITH ADMIN OPTION",
+      []
+    )
+
+    Postgrex.query!(admin, "SET ROLE #{quoted_bootstrap}", [])
+
+    Postgrex.query!(
+      admin,
       "GRANT #{quote!(transition_parent_role)} TO #{quote!(migrator_role)}",
       []
     )
 
-    Postgrex.query!(
-      admin,
-      "GRANT #{quote!(migrator_role)}, #{quote!(runtime_role)}, #{quote!(transition_parent_role)} TO #{quoted_bootstrap} WITH ADMIN OPTION",
-      []
-    )
+    Postgrex.query!(admin, "RESET ROLE", [])
 
     bootstrap_url = role_url(maintenance_url, "postgres", bootstrap_role, @bootstrap_password)
 
@@ -77,16 +81,18 @@ defmodule FavnStoragePostgres.Bootstrap.WorkflowTest do
       )
 
     on_exit(fn ->
-      Postgrex.query!(
-        admin,
-        "DROP DATABASE IF EXISTS #{quote!(database)} WITH (FORCE)",
-        []
-      )
+      with_cleanup_connection(maintenance_url, fn cleanup ->
+        Postgrex.query!(
+          cleanup,
+          "DROP DATABASE IF EXISTS #{quote!(database)} WITH (FORCE)",
+          []
+        )
 
-      Postgrex.query!(admin, "DROP ROLE IF EXISTS #{quote!(runtime_role)}", [])
-      Postgrex.query!(admin, "DROP ROLE IF EXISTS #{quote!(migrator_role)}", [])
-      Postgrex.query!(admin, "DROP ROLE IF EXISTS #{quote!(transition_parent_role)}", [])
-      Postgrex.query!(admin, "DROP ROLE IF EXISTS #{quoted_bootstrap}", [])
+        Postgrex.query!(cleanup, "DROP ROLE IF EXISTS #{quote!(runtime_role)}", [])
+        Postgrex.query!(cleanup, "DROP ROLE IF EXISTS #{quote!(migrator_role)}", [])
+        Postgrex.query!(cleanup, "DROP ROLE IF EXISTS #{quote!(transition_parent_role)}", [])
+        Postgrex.query!(cleanup, "DROP ROLE IF EXISTS #{quoted_bootstrap}", [])
+      end)
     end)
 
     {:ok,
@@ -118,7 +124,7 @@ defmodule FavnStoragePostgres.Bootstrap.WorkflowTest do
     assert Enum.any?(initial_findings, fn finding ->
              finding.code == :role_memberships and
                finding.details.required_action ==
-                 :grant_bootstrap_admin_option_on_parent_roles
+                 :make_parent_memberships_revocable_by_bootstrap
            end)
 
     assert {:ok,
@@ -383,10 +389,18 @@ defmodule FavnStoragePostgres.Bootstrap.WorkflowTest do
 
   test "repeat bootstrap does not require normal-role access to the maintenance database",
        context do
+    Postgrex.query!(
+      context.admin,
+      "GRANT CONNECT ON DATABASE postgres TO #{quote!(context.bootstrap_role)}",
+      []
+    )
+
     Postgrex.query!(context.admin, "REVOKE CONNECT ON DATABASE postgres FROM PUBLIC", [])
 
     on_exit(fn ->
-      Postgrex.query!(context.admin, "GRANT CONNECT ON DATABASE postgres TO PUBLIC", [])
+      with_cleanup_connection(context.maintenance_url, fn cleanup ->
+        Postgrex.query!(cleanup, "GRANT CONNECT ON DATABASE postgres TO PUBLIC", [])
+      end)
     end)
 
     assert {:ok, %{state: :ready, runtime_verified: true}} = Bootstrap.bootstrap(context.env)
@@ -565,6 +579,16 @@ defmodule FavnStoragePostgres.Bootstrap.WorkflowTest do
     url
     |> Ecto.Repo.Supervisor.parse_url()
     |> Keyword.put(:ssl, false)
+  end
+
+  defp with_cleanup_connection(url, function) do
+    {:ok, connection} = Postgrex.start_link(connection_options(url))
+
+    try do
+      function.(connection)
+    after
+      GenServer.stop(connection)
+    end
   end
 
   defp schema_owner(connection) do

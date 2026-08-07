@@ -27,8 +27,14 @@ defmodule FavnStoragePostgres.Bootstrap.RolePolicyTest do
     Postgrex.query!(connection, "GRANT #{quoted_parent} TO #{quoted_role}", [])
 
     on_exit(fn ->
-      Postgrex.query!(connection, "DROP ROLE IF EXISTS #{quoted_role}", [])
-      Postgrex.query!(connection, "DROP ROLE IF EXISTS #{quoted_parent}", [])
+      {:ok, cleanup} = Postgrex.start_link(options)
+
+      try do
+        Postgrex.query!(cleanup, "DROP ROLE IF EXISTS #{quoted_role}", [])
+        Postgrex.query!(cleanup, "DROP ROLE IF EXISTS #{quoted_parent}", [])
+      after
+        GenServer.stop(cleanup)
+      end
     end)
 
     {:ok, connection: connection, role: role}

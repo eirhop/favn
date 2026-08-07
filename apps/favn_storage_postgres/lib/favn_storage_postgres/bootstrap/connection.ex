@@ -1,6 +1,17 @@
 defmodule FavnStoragePostgres.Bootstrap.Connection do
   @moduledoc false
 
+  defmodule Probe do
+    @moduledoc false
+    @behaviour Postgrex.SimpleConnection
+
+    @impl true
+    def init(state), do: {:ok, state}
+
+    @impl true
+    def notify(_channel, _payload, _state), do: :ok
+  end
+
   alias FavnStoragePostgres.Authentication
   alias FavnStoragePostgres.Bootstrap.{Config, Profile}
   alias FavnStoragePostgres.Config, as: DatabaseConfig
@@ -27,7 +38,11 @@ defmodule FavnStoragePostgres.Bootstrap.Connection do
         with :ok <- authentication_ready(connection_config.authentication),
              {:ok, connection} <- start_connection(connection_config, profile) do
           try do
-            function.(connection)
+            run_while_alive(
+              connection,
+              connection_config.authentication,
+              fn -> function.(connection) end
+            )
           after
             stop_process(connection)
           end
@@ -51,10 +66,12 @@ defmodule FavnStoragePostgres.Bootstrap.Connection do
              {:ok, repo} <-
                start_repo(connection_config.repo_options, connection_config.authentication) do
           try do
-            case verify_repo_connection(connection_config.authentication) do
-              :ok -> function.(Repo)
-              {:error, code} -> {:error, code}
-            end
+            run_while_alive(repo, connection_config.authentication, fn ->
+              case verify_repo_connection(connection_config.authentication) do
+                :ok -> function.(Repo)
+                {:error, code} -> {:error, code}
+              end
+            end)
           after
             stop_process(repo)
           end
@@ -121,27 +138,111 @@ defmodule FavnStoragePostgres.Bootstrap.Connection do
       |> Keyword.drop([:auto_reconnect, :sync_connect])
       |> Keyword.put(:backoff_type, :stop)
 
+    with :ok <- probe_connection(options, connection_config.authentication),
+         {:ok, connection} <- start_postgrex(options, connection_config.authentication) do
+      case run_after_connect(connection, profile, connection_config.authentication) do
+        :ok ->
+          {:ok, connection}
+
+        {:error, code} ->
+          stop_process(connection)
+          {:error, code}
+      end
+    end
+  end
+
+  defp probe_connection(options, authentication) do
+    previous_trap_exit? = Process.flag(:trap_exit, true)
+
+    try do
+      probe_options =
+        options
+        |> Keyword.put(:auto_reconnect, false)
+        |> Keyword.put(:sync_connect, true)
+
+      case Postgrex.SimpleConnection.start_link(Probe, :ok, probe_options) do
+        {:ok, probe} ->
+          Process.unlink(probe)
+          GenServer.stop(probe)
+          :ok
+
+        {:error, reason} ->
+          classify_connection_error(reason, authentication)
+      end
+    after
+      Process.flag(:trap_exit, previous_trap_exit?)
+    end
+  end
+
+  defp start_postgrex(options, authentication) do
     case Postgrex.start_link(options) do
       {:ok, connection} ->
-        try do
-          :ok = DatabaseConfig.after_connect(connection, "bootstrap:#{profile.purpose}")
-          {:ok, connection}
-        rescue
-          exception ->
-            stop_process(connection)
-            classify_connection_error(exception, connection_config.authentication)
-        end
+        Process.unlink(connection)
+        {:ok, connection}
 
       {:error, reason} ->
-        classify_connection_error(reason, connection_config.authentication)
+        classify_connection_error(reason, authentication)
+    end
+  end
+
+  defp run_after_connect(connection, profile, authentication) do
+    case run_while_alive(connection, authentication, fn ->
+           try do
+             DatabaseConfig.after_connect(connection, "bootstrap:#{profile.purpose}")
+           rescue
+             exception -> {:after_connect_error, exception}
+           catch
+             :exit, reason -> {:after_connect_error, reason}
+           end
+         end) do
+      :ok -> :ok
+      {:after_connect_error, reason} -> classify_connection_error(reason, authentication)
+      {:error, code} -> {:error, code}
     end
   end
 
   defp start_repo(options, authentication) do
     case Repo.start_link(options) do
-      {:ok, pid} -> {:ok, pid}
-      {:error, {:already_started, _pid}} -> {:error, :dependency_unavailable}
-      {:error, reason} -> classify_connection_error(reason, authentication)
+      {:ok, pid} ->
+        Process.unlink(pid)
+        {:ok, pid}
+
+      {:error, {:already_started, _pid}} ->
+        {:error, :dependency_unavailable}
+
+      {:error, reason} ->
+        classify_connection_error(reason, authentication)
+    end
+  end
+
+  defp run_while_alive(process, authentication, function) do
+    caller = self()
+    reference = make_ref()
+    process_monitor = Process.monitor(process)
+
+    {worker, worker_monitor} =
+      spawn_monitor(fn -> send(caller, {reference, function.()}) end)
+
+    receive do
+      {^reference, result} ->
+        Process.demonitor(worker_monitor, [:flush])
+        Process.demonitor(process_monitor, [:flush])
+        result
+
+      {:DOWN, ^process_monitor, :process, ^process, reason} ->
+        Process.exit(worker, :kill)
+        await_worker_down(worker_monitor, worker)
+        classify_connection_error(reason, authentication)
+
+      {:DOWN, ^worker_monitor, :process, ^worker, reason} ->
+        Process.demonitor(process_monitor, [:flush])
+        exit(reason)
+    end
+  end
+
+  defp await_worker_down(monitor, worker) do
+    receive do
+      {:DOWN, ^monitor, :process, ^worker, _reason} -> :ok
     end
   end
 

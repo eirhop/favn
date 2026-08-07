@@ -126,7 +126,9 @@ defmodule FavnStoragePostgres.ReleaseCLITest do
     """
 
     script =
-      ~S(MIX_ENV=test "$1" exec -- mix run --no-compile --no-start -e "$FAVN_RELEASE_EXPR" >"$2" 2>"$3")
+      ~S(MIX_ENV=test "$1" run --no-compile --no-start -e "$FAVN_RELEASE_EXPR" >"$2" 2>"$3")
+
+    mix = System.find_executable("mix") || raise "mix executable is required"
 
     assert {_output, 0} =
              System.cmd(
@@ -135,7 +137,7 @@ defmodule FavnStoragePostgres.ReleaseCLITest do
                  "-c",
                  script,
                  "favn-release-cli",
-                 System.find_executable("mise"),
+                 mix,
                  stdout_path,
                  stderr_path
                ],
