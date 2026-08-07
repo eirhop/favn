@@ -44,7 +44,7 @@ defmodule FavnStoragePostgres.Bootstrap.Connection do
               physical_connection,
               connection_config.authentication,
               resource_loss_mode(config.operation),
-              fn -> function.(connection) end
+              fn -> DBConnection.run(connection, function, timeout: :infinity) end
             )
           after
             stop_process(connection)

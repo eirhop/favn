@@ -320,16 +320,18 @@ defmodule FavnStoragePostgres.Bootstrap.WorkflowTest do
     assert Enum.any?(authentication_findings, &(&1.code == :authentication_rejected))
     assert {:ok, %{state: :ready}} = Bootstrap.bootstrap(context.env)
 
-    :ok = Lock.acquire(context.admin, context.database)
+    DBConnection.run(target_admin, fn lock_connection ->
+      :ok = Lock.acquire(lock_connection, context.database)
 
-    assert {:error,
-            %{
-              state: :operation_in_progress,
-              safe_to_retry: true,
-              runtime_verified: false
-            }} = Bootstrap.upgrade(upgrade_env)
+      assert {:error,
+              %{
+                state: :operation_in_progress,
+                safe_to_retry: true,
+                runtime_verified: false
+              }} = Bootstrap.upgrade(upgrade_env)
 
-    :ok = Lock.release(context.admin, context.database)
+      :ok = Lock.release(lock_connection, context.database)
+    end)
 
     assert {:ok,
             %{

@@ -1,7 +1,8 @@
 defmodule FavnStoragePostgres.Bootstrap.Lock do
   @moduledoc false
 
-  @spec acquire(pid(), String.t()) :: :ok | {:error, :operation_in_progress | :lock_failed}
+  @spec acquire(DBConnection.conn(), String.t()) ::
+          :ok | {:error, :operation_in_progress | :lock_failed}
   def acquire(connection, database) do
     key = key(database)
 
@@ -12,12 +13,17 @@ defmodule FavnStoragePostgres.Bootstrap.Lock do
     end
   end
 
-  @spec release(pid(), String.t()) :: :ok
+  @spec release(DBConnection.conn(), String.t()) :: :ok | {:error, :lock_lost}
   def release(connection, database) do
-    _result =
-      Postgrex.query(connection, "SELECT pg_catalog.pg_advisory_unlock($1)", [key(database)])
-
-    :ok
+    case Postgrex.query(
+           connection,
+           "SELECT pg_catalog.pg_advisory_unlock($1)",
+           [key(database)]
+         ) do
+      {:ok, %{rows: [[true]]}} -> :ok
+      {:ok, %{rows: [[false]]}} -> {:error, :lock_lost}
+      {:error, _reason} -> {:error, :lock_lost}
+    end
   end
 
   defp key(database) do

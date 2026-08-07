@@ -262,54 +262,51 @@ defmodule FavnStoragePostgres.Bootstrap do
 
   defp do_bootstrap(config) do
     with_admin_connection(config, fn maintenance ->
-      with :ok <- Lock.acquire(maintenance, config.target_database),
-           {:ok, stages} <-
-             step([], :database, fn ->
-               Database.ensure_exists(maintenance, config.target_database)
-             end),
-           {:ok, stages} <-
-             step(stages, :identities, fn ->
-               with :ok <- preflight_existing_roles(maintenance, config),
-                    :ok <- prepare_existing_roles(maintenance, config) do
-                 ensure_identities(maintenance, config)
-               end
-             end),
-           {:ok, stages} <- step(stages, :roles, fn -> ensure_roles(maintenance, config) end) do
-        try do
-          bootstrap_target(config, stages)
-        after
-          Lock.release(maintenance, config.target_database)
+      with_session_lock(maintenance, config.target_database, :bootstrap, [], fn ->
+        with {:ok, stages} <-
+               step([], :database, fn ->
+                 Database.ensure_exists(maintenance, config.target_database)
+               end) do
+          bootstrap_target(config, maintenance, stages)
+        else
+          {:error, code, stage, stages} ->
+            workflow_error(:bootstrap, code, stage, stages)
         end
-      else
-        {:error, :operation_in_progress} ->
-          Result.error(:bootstrap, :operation_in_progress, :operation_in_progress, :lock)
-
-        {:error, code, stage, stages} ->
-          workflow_error(:bootstrap, code, stage, stages)
-
-        {:error, code} ->
-          workflow_error(:bootstrap, code, :bootstrap, [])
-      end
+      end)
     end)
     |> normalize_workflow_connection(:bootstrap, :bootstrap_connection, [])
   end
 
-  defp bootstrap_target(config, stages) do
+  defp bootstrap_target(config, maintenance, stages) do
     Connection.with_raw(
       config,
       config.bootstrap,
       config.target_database,
       :bootstrap_target,
       fn target ->
-        with {:ok, stages} <-
-               step(stages, :database_policy, fn ->
-                 with {:ok, _schema} <- ensure_control_schema(target, config),
-                      {:ok, _policy} <-
-                        Database.ensure_policy(target, config.migrator.role, config.runtime.role) do
-                   :ok
-                 end
-               end) do
-          with {:ok, stages} <- migrate_and_grant(config, stages),
+        with_session_lock(target, config.target_database, :bootstrap, stages, fn ->
+          with {:ok, stages} <-
+                 step(stages, :identities, fn ->
+                   with :ok <- preflight_existing_roles(maintenance, config),
+                        :ok <- prepare_existing_roles(maintenance, config) do
+                     ensure_identities(maintenance, config)
+                   end
+                 end),
+               {:ok, stages} <-
+                 step(stages, :roles, fn -> ensure_roles(maintenance, config) end),
+               {:ok, stages} <-
+                 step(stages, :database_policy, fn ->
+                   with {:ok, _schema} <- ensure_control_schema(target, config),
+                        {:ok, _policy} <-
+                          Database.ensure_policy(
+                            target,
+                            config.migrator.role,
+                            config.runtime.role
+                          ) do
+                     :ok
+                   end
+                 end),
+               {:ok, stages} <- migrate_and_grant(config, stages),
                {:ok, stages} <- ensure_workspace(config, stages),
                {:ok, stages} <- verify_fresh_runtime(config, stages) do
             Result.ready(:bootstrap, stages)
@@ -317,10 +314,7 @@ defmodule FavnStoragePostgres.Bootstrap do
             {:error, code, stage, completed} ->
               workflow_error(:bootstrap, code, stage, completed)
           end
-        else
-          {:error, code, stage, completed} ->
-            workflow_error(:bootstrap, code, stage, completed)
-        end
+        end)
       end
     )
     |> normalize_workflow_connection(:bootstrap, :bootstrap_target, stages)
@@ -380,32 +374,61 @@ defmodule FavnStoragePostgres.Bootstrap do
       config.target_database,
       :migrator_lock,
       fn connection ->
-        with :ok <- require_upgrade_policy(connection, config),
-             :ok <- Lock.acquire(connection, config.target_database) do
-          try do
+        with :ok <- require_upgrade_policy(connection, config) do
+          with_session_lock(connection, config.target_database, :upgrade, [], fn ->
             with {:ok, stages} <- migrate_and_grant(config, []),
                  {:ok, stages} <- verify_fresh_runtime(config, stages) do
               Result.ready(:upgrade, stages)
             else
               {:error, code, stage, completed} -> workflow_error(:upgrade, code, stage, completed)
             end
-          after
-            Lock.release(connection, config.target_database)
-          end
+          end)
         else
-          {:error, :operation_in_progress} ->
-            Result.error(:upgrade, :operation_in_progress, :operation_in_progress, :lock)
-
           {:error, :bootstrap_required} ->
             Result.error(:upgrade, :bootstrap_required, :bootstrap_required, :preflight)
-
-          {:error, code} ->
-            workflow_error(:upgrade, code, :preflight, [])
         end
       end
     )
     |> normalize_workflow_connection(:upgrade, :migrator_connection, [])
   end
+
+  defp with_session_lock(connection, database, operation, completed_stages, function) do
+    case Lock.acquire(connection, database) do
+      :ok ->
+        try do
+          result = function.()
+
+          case Lock.release(connection, database) do
+            :ok ->
+              result
+
+            {:error, :lock_lost} ->
+              workflow_error(
+                operation,
+                :unknown_outcome,
+                :lock,
+                result_completed_stages(result, completed_stages)
+              )
+          end
+        catch
+          kind, reason ->
+            _release = Lock.release(connection, database)
+            :erlang.raise(kind, reason, __STACKTRACE__)
+        end
+
+      {:error, :operation_in_progress} ->
+        Result.error(operation, :operation_in_progress, :operation_in_progress, :lock)
+
+      {:error, :lock_failed} ->
+        workflow_error(operation, :unknown_outcome, :lock, completed_stages)
+    end
+  end
+
+  defp result_completed_stages({_tag, %{completed_stages: stages}}, _fallback)
+       when is_list(stages),
+       do: stages
+
+  defp result_completed_stages(_result, fallback), do: fallback
 
   defp with_admin_connection(config, function) do
     Connection.with_raw(
