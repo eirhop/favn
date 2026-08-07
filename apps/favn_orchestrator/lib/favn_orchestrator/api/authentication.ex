@@ -11,6 +11,12 @@ defmodule FavnOrchestrator.API.Authentication do
   alias FavnOrchestrator.Persistence.PlatformContext
 
   @type role :: :viewer | :operator | :admin
+  @type service_principal :: %{
+          required(:id) => String.t(),
+          required(:principal_kind) => :service,
+          required(:principal_id) => String.t(),
+          required(:service_identity) => String.t()
+        }
 
   @doc "Validates the request's service bearer token."
   @spec ensure_service(Plug.Conn.t()) :: :ok | {:error, :service_unauthorized}
@@ -59,7 +65,7 @@ defmodule FavnOrchestrator.API.Authentication do
   contract.
   """
   @spec workspace_or_service_context(Plug.Conn.t(), role()) ::
-          {:ok, Auth.session() | %{id: String.t()}, Auth.actor() | %{id: String.t()},
+          {:ok, Auth.session() | service_principal(), Auth.actor() | service_principal(),
            WorkspaceContext.t()}
           | {:error, :forbidden | :service_unauthorized | :unauthenticated | term()}
   def workspace_or_service_context(conn, required_role)
@@ -73,7 +79,7 @@ defmodule FavnOrchestrator.API.Authentication do
 
   @doc "Builds workspace authority for a platform-operator service request."
   @spec service_workspace_context(Plug.Conn.t()) ::
-          {:ok, %{id: String.t()}, %{id: String.t()}, WorkspaceContext.t()}
+          {:ok, service_principal(), service_principal(), WorkspaceContext.t()}
           | {:error, :service_unauthorized | :forbidden | :unauthenticated}
   def service_workspace_context(conn) do
     with {:ok, workspace_id} <- workspace_id(conn),
