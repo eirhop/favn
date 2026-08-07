@@ -71,7 +71,7 @@ defmodule FavnStoragePostgres.StorageV2.PrivilegesTest do
 
     SQL.query!(
       Repo,
-      "GRANT CONNECT ON DATABASE #{quoted_database} TO #{quoted_role} WITH GRANT OPTION",
+      "GRANT CONNECT ON DATABASE #{quoted_database} TO #{quoted_role}",
       []
     )
 

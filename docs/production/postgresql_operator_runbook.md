@@ -111,8 +111,11 @@ Docker and PostgreSQL client tools are prerequisites for the repository scripts.
 scripts/postgres/setup
 ```
 
-This pulls the latest PostgreSQL 18 image, starts the container, migrates `favn_control`,
-grants the runtime role, and provisions the `local-dev` workspace.
+This starts the pinned PostgreSQL 18 container and runs the same idempotent
+bootstrap workflow used by deployments. The container administrator is
+`favn_bootstrap`; bootstrap creates and hardens separate `favn_migrator` and
+`favn_runtime` roles, migrates `favn_control`, grants runtime access, and
+provisions the `local-dev` workspace.
 `scripts/postgres/stop` preserves the volume. The destructive
 reset is explicit:
 
@@ -120,7 +123,12 @@ reset is explicit:
 scripts/postgres/reset
 ```
 
-Developers using another service set `FAVN_DATABASE_MIGRATOR_URL` before setup.
+`scripts/postgres/setup` refuses volumes created before this role split. Because
+the repository database is disposable, use `scripts/postgres/reset` once to
+replace that legacy volume.
+
+The repository scripts own only this disposable local container. Developers
+using another PostgreSQL service follow the bootstrap profile contract below.
 Credentials in `compose.postgres.yml` are local-only.
 
 The repository-only local container does not enable TLS and uses explicit dev/test

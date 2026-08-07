@@ -5,15 +5,20 @@ services:
     image: postgres@sha256:1961f96e6029a02c3812d7cb329a3b03a3ac2bb067058dec17b0f5596aca9296
     environment:
       POSTGRES_DB: favn_dev
-      POSTGRES_USER: favn_migrator
-      POSTGRES_PASSWORD: favn_migrator_local
+      POSTGRES_USER: favn_bootstrap
+      POSTGRES_PASSWORD: favn_bootstrap_local
+    command:
+      - postgres
+      - -c
+      - log_parameter_max_length=0
+      - -c
+      - log_parameter_max_length_on_error=0
     ports:
       - "${FAVN_POSTGRES_PORT:-5432}:5432"
     volumes:
       - favn_postgres_data:/var/lib/postgresql
-      - ./scripts/postgres/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U favn_migrator -d favn_dev"]
+      test: ["CMD-SHELL", "pg_isready -U favn_bootstrap -d postgres"]
       interval: 2s
       timeout: 3s
       retries: 30

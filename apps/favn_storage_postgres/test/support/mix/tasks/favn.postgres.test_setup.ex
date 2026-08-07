@@ -26,7 +26,7 @@ defmodule Mix.Tasks.Favn.Postgres.TestSetup do
     {:ok, repo} = Repo.start_link(repo_options)
 
     try do
-      :ok = Migrations.migrate_existing_schema!(Repo)
+      :ok = Migrations.migrate!(Repo)
 
       if runtime_role = Keyword.get(options, :runtime_role) do
         :ok = RuntimePrivileges.grant_runtime!(Repo, runtime_role)

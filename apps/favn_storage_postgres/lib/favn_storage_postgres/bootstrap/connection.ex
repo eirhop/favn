@@ -37,10 +37,11 @@ defmodule FavnStoragePostgres.Bootstrap.Connection do
          {:ok, authentication_state} <- start_authentication(connection_config.authentication) do
       try do
         with :ok <- authentication_ready(connection_config.authentication),
-             {:ok, connection} <- start_connection(connection_config, profile) do
+             {:ok, connection, physical_connection} <-
+               start_connection(connection_config, profile) do
           try do
             run_while_alive(
-              connection,
+              physical_connection,
               connection_config.authentication,
               resource_loss_mode(config.operation),
               fn -> function.(connection) end
@@ -65,6 +66,11 @@ defmodule FavnStoragePostgres.Bootstrap.Connection do
          {:ok, authentication_state} <- start_authentication(connection_config.authentication) do
       try do
         with :ok <- authentication_ready(connection_config.authentication),
+             :ok <-
+               probe_connection(
+                 connection_config.notification_options,
+                 connection_config.authentication
+               ),
              {:ok, repo} <-
                start_repo(connection_config.repo_options, connection_config.authentication) do
           try do
@@ -146,10 +152,16 @@ defmodule FavnStoragePostgres.Bootstrap.Connection do
       |> Keyword.put(:backoff_type, :stop)
 
     with :ok <- probe_connection(options, connection_config.authentication),
-         {:ok, connection} <- start_postgrex(options, connection_config.authentication) do
-      case run_after_connect(connection, profile, connection_config.authentication) do
+         {:ok, connection, physical_connection} <-
+           start_postgrex(options, connection_config.authentication) do
+      case run_after_connect(
+             connection,
+             physical_connection,
+             profile,
+             connection_config.authentication
+           ) do
         :ok ->
-          {:ok, connection}
+          {:ok, connection, physical_connection}
 
         {:error, code} ->
           stop_process(connection)
@@ -182,18 +194,55 @@ defmodule FavnStoragePostgres.Bootstrap.Connection do
   end
 
   defp start_postgrex(options, authentication) do
+    listener_tag = make_ref()
+
+    options =
+      options
+      |> Keyword.put(:pool_size, 1)
+      |> Keyword.put(:connection_listeners, {[self()], listener_tag})
+
     case Postgrex.start_link(options) do
       {:ok, connection} ->
         Process.unlink(connection)
-        {:ok, connection}
+
+        case await_physical_connection(
+               connection,
+               listener_tag,
+               authentication,
+               Keyword.get(options, :timeout, 15_000)
+             ) do
+          {:ok, physical_connection} ->
+            {:ok, connection, physical_connection}
+
+          {:error, code} ->
+            stop_process(connection)
+            {:error, code}
+        end
 
       {:error, reason} ->
         classify_connection_error(reason, authentication)
     end
   end
 
-  defp run_after_connect(connection, profile, authentication) do
-    case run_while_alive(connection, authentication, :classify, fn ->
+  defp await_physical_connection(connection, listener_tag, authentication, timeout) do
+    monitor = Process.monitor(connection)
+
+    receive do
+      {:connected, physical_connection, ^listener_tag} ->
+        Process.demonitor(monitor, [:flush])
+        {:ok, physical_connection}
+
+      {:DOWN, ^monitor, :process, ^connection, reason} ->
+        classify_connection_error(reason, authentication)
+    after
+      timeout ->
+        Process.demonitor(monitor, [:flush])
+        {:error, :server_unreachable}
+    end
+  end
+
+  defp run_after_connect(connection, physical_connection, profile, authentication) do
+    case run_while_alive(physical_connection, authentication, :classify, fn ->
            try do
              DatabaseConfig.after_connect(connection, "bootstrap:#{profile.purpose}")
            rescue

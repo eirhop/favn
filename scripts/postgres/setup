@@ -6,19 +6,30 @@ cd "$repository_root"
 
 docker compose -f compose.postgres.yml up -d --wait
 
-# Local development owns this disposable administrator step. Production uses
-# the one-off favn_control_plane_ops bootstrap Job instead.
-docker compose -f compose.postgres.yml exec -T postgres \
-  psql --set ON_ERROR_STOP=1 --username favn_migrator --dbname favn_dev \
-  --command 'CREATE SCHEMA IF NOT EXISTS favn_control AUTHORIZATION favn_migrator'
+if ! docker compose -f compose.postgres.yml exec -T postgres \
+  psql --set ON_ERROR_STOP=1 --username favn_bootstrap --dbname postgres \
+  --command 'SELECT 1' >/dev/null 2>&1; then
+  echo "The local PostgreSQL volume predates the bootstrap-role split." >&2
+  echo "Run scripts/postgres/reset to rebuild this disposable local database." >&2
+  exit 1
+fi
 
+export FAVN_DEPLOYMENT_MODE=production
+export FAVN_DATABASE_SSL_MODE=disable
+export FAVN_DATABASE_BOOTSTRAP_AUTH_MODE=password
+export FAVN_DATABASE_BOOTSTRAP_URL="${FAVN_DATABASE_BOOTSTRAP_URL:-ecto://favn_bootstrap:favn_bootstrap_local@127.0.0.1:${FAVN_POSTGRES_PORT:-5432}/postgres}"
+export FAVN_DATABASE_MIGRATOR_AUTH_MODE=password
 export FAVN_DATABASE_MIGRATOR_URL="${FAVN_DATABASE_MIGRATOR_URL:-ecto://favn_migrator:favn_migrator_local@127.0.0.1:${FAVN_POSTGRES_PORT:-5432}/favn_dev}"
+export FAVN_DATABASE_RUNTIME_AUTH_MODE=password
+export FAVN_DATABASE_RUNTIME_URL="${FAVN_DATABASE_RUNTIME_URL:-ecto://favn_runtime:favn_runtime_local@127.0.0.1:${FAVN_POSTGRES_PORT:-5432}/favn_dev}"
+export FAVN_DATABASE_MAINTENANCE_NAME=postgres
 export FAVN_DATABASE_URL="${FAVN_DATABASE_URL:-ecto://favn_runtime:favn_runtime_local@127.0.0.1:${FAVN_POSTGRES_PORT:-5432}/favn_dev}"
-mix favn.postgres.upgrade
-mix favn.postgres.provision_workspace \
-  --id "${FAVN_LOCAL_WORKSPACE_ID:-local-dev}" \
-  --slug "${FAVN_LOCAL_WORKSPACE_SLUG:-local-dev}" \
-  --name "${FAVN_LOCAL_WORKSPACE_NAME:-Local Development}"
+export FAVN_WORKSPACE_ID="${FAVN_LOCAL_WORKSPACE_ID:-local-dev}"
+export FAVN_WORKSPACE_SLUG="${FAVN_LOCAL_WORKSPACE_SLUG:-local-dev}"
+export FAVN_WORKSPACE_NAME="${FAVN_LOCAL_WORKSPACE_NAME:-Local Development}"
+
+mix do --app favn_storage_postgres cmd mix run --no-start \
+  -e 'FavnStoragePostgres.ReleaseCLI.run!(:bootstrap)'
 
 echo "PostgreSQL is ready. Configure the Favn runtime with:"
 echo "FAVN_DATABASE_URL=ecto://favn_runtime:favn_runtime_local@127.0.0.1:${FAVN_POSTGRES_PORT:-5432}/favn_dev"

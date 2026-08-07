@@ -218,6 +218,26 @@ defmodule Favn.DeploymentReferenceConformanceTest do
     assert status =~ "final-validation.json"
   end
 
+  test "local PostgreSQL uses the same bootstrap role separation" do
+    compose = "compose.postgres.yml" |> read() |> YamlElixir.read_from_string!()
+    postgres = compose["services"]["postgres"]
+    setup = read("scripts/postgres/setup")
+    reset = read("scripts/postgres/reset")
+
+    assert postgres["environment"]["POSTGRES_USER"] == "favn_bootstrap"
+    assert "log_parameter_max_length=0" in postgres["command"]
+    assert "log_parameter_max_length_on_error=0" in postgres["command"]
+
+    refute Enum.any?(postgres["volumes"], &String.contains?(&1, "docker-entrypoint-initdb.d"))
+
+    assert setup =~ "FAVN_DATABASE_BOOTSTRAP_URL"
+    assert setup =~ "FAVN_DATABASE_MIGRATOR_URL"
+    assert setup =~ "FAVN_DATABASE_RUNTIME_URL"
+    assert setup =~ "FavnStoragePostgres.ReleaseCLI.run!(:bootstrap)"
+    refute setup =~ "mix favn.postgres.upgrade"
+    assert reset =~ "exec scripts/postgres/setup"
+  end
+
   test "production operations wrapper exposes only composed database lifecycle commands" do
     wrapper = read("rel/control_plane/overlays/bin/favn_control_plane_ops")
 

@@ -399,6 +399,12 @@ defmodule FavnStoragePostgres.Bootstrap.WorkflowTest do
 
     on_exit(fn ->
       with_cleanup_connection(context.maintenance_url, fn cleanup ->
+        Postgrex.query!(
+          cleanup,
+          "REVOKE CONNECT ON DATABASE postgres FROM #{quote!(context.bootstrap_role)}",
+          []
+        )
+
         Postgrex.query!(cleanup, "GRANT CONNECT ON DATABASE postgres TO PUBLIC", [])
       end)
     end)

@@ -43,8 +43,11 @@ export FAVN_RUNTIME_INPUT_PIN_KEY_VERSION=1
 Apply migrations before integration tests:
 
 ```bash
-MIX_ENV=test mix favn.postgres.migrate
+MIX_ENV=test mix favn.postgres.test_setup
 ```
+
+This fixture task exists only in test builds. Production commands intentionally
+reject the disposable PostgreSQL administrator used by the integration suite.
 
 Provision the local-development workspace when exercising the full dev stack:
 
