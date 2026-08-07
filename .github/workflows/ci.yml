@@ -144,7 +144,7 @@ jobs:
           --command 'CREATE SCHEMA favn_control AUTHORIZATION postgres'
 
       - name: Migrate PostgreSQL Storage V2
-        run: mix favn.postgres.migrate
+        run: mix favn.postgres.test_setup
 
       - name: Build Phoenix assets
         run: |
@@ -276,11 +276,8 @@ jobs:
             --command 'REVOKE CONNECT, CREATE, TEMPORARY ON DATABASE favn_test FROM PUBLIC' \
             --command 'GRANT CONNECT ON DATABASE favn_test TO favn_runtime'
 
-      - name: Migrate PostgreSQL Storage V2
-        run: mix favn.postgres.migrate
-
-      - name: Grant restricted PostgreSQL runtime privileges
-        run: mix favn.postgres.grant_runtime
+      - name: Prepare PostgreSQL Storage V2
+        run: mix favn.postgres.test_setup --runtime-role favn_runtime
 
       - name: Run favn_local acceptance tests
         run: mix test.acceptance
@@ -353,7 +350,7 @@ jobs:
           --command 'CREATE SCHEMA favn_control AUTHORIZATION postgres'
 
       - name: Migrate PostgreSQL Storage V2
-        run: mix favn.postgres.migrate
+        run: mix favn.postgres.test_setup
 
       - name: Provision local development workspace
         run: >-

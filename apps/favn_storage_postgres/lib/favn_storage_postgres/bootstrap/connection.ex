@@ -25,6 +25,7 @@ defmodule FavnStoragePostgres.Bootstrap.Connection do
           | :dependency_unavailable
           | :invalid_database_configuration
           | :server_unreachable
+          | :unknown_outcome
 
   @spec with_raw(Config.t(), Profile.t(), String.t(), atom(), (pid() -> result)) ::
           result | {:error, error_code()}
@@ -41,6 +42,7 @@ defmodule FavnStoragePostgres.Bootstrap.Connection do
             run_while_alive(
               connection,
               connection_config.authentication,
+              resource_loss_mode(config.operation),
               fn -> function.(connection) end
             )
           after
@@ -66,12 +68,17 @@ defmodule FavnStoragePostgres.Bootstrap.Connection do
              {:ok, repo} <-
                start_repo(connection_config.repo_options, connection_config.authentication) do
           try do
-            run_while_alive(repo, connection_config.authentication, fn ->
-              case verify_repo_connection(connection_config.authentication) do
-                :ok -> function.(Repo)
-                {:error, code} -> {:error, code}
+            run_while_alive(
+              repo,
+              connection_config.authentication,
+              resource_loss_mode(config.operation),
+              fn ->
+                case verify_repo_connection(connection_config.authentication) do
+                  :ok -> function.(Repo)
+                  {:error, code} -> {:error, code}
+                end
               end
-            end)
+            )
           after
             stop_process(repo)
           end
@@ -186,7 +193,7 @@ defmodule FavnStoragePostgres.Bootstrap.Connection do
   end
 
   defp run_after_connect(connection, profile, authentication) do
-    case run_while_alive(connection, authentication, fn ->
+    case run_while_alive(connection, authentication, :classify, fn ->
            try do
              DatabaseConfig.after_connect(connection, "bootstrap:#{profile.purpose}")
            rescue
@@ -215,7 +222,7 @@ defmodule FavnStoragePostgres.Bootstrap.Connection do
     end
   end
 
-  defp run_while_alive(process, authentication, function) do
+  defp run_while_alive(process, authentication, resource_loss_mode, function) do
     caller = self()
     reference = make_ref()
     process_monitor = Process.monitor(process)
@@ -232,13 +239,24 @@ defmodule FavnStoragePostgres.Bootstrap.Connection do
       {:DOWN, ^process_monitor, :process, ^process, reason} ->
         Process.exit(worker, :kill)
         await_worker_down(worker_monitor, worker)
-        classify_connection_error(reason, authentication)
+        resource_loss(resource_loss_mode, reason, authentication)
 
       {:DOWN, ^worker_monitor, :process, ^worker, reason} ->
         Process.demonitor(process_monitor, [:flush])
         exit(reason)
     end
   end
+
+  defp resource_loss(:unknown_outcome, _reason, _authentication),
+    do: {:error, :unknown_outcome}
+
+  defp resource_loss(:classify, reason, authentication),
+    do: classify_connection_error(reason, authentication)
+
+  defp resource_loss_mode(:status), do: :classify
+
+  defp resource_loss_mode(operation) when operation in [:bootstrap, :upgrade],
+    do: :unknown_outcome
 
   defp await_worker_down(monitor, worker) do
     receive do
