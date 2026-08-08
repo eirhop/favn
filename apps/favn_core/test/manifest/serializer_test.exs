@@ -38,6 +38,17 @@ defmodule Favn.Manifest.SerializerTest do
              Serializer.encode_canonical(%{{:unsupported, :key} => 1})
   end
 
+  test "manifest encoding rejects ambiguous and unsupported values instead of stringifying them" do
+    assert {:error, {:encode_failed, %ArgumentError{}}} =
+             Serializer.encode_manifest(%{metadata: self()})
+
+    assert {:error, {:encode_failed, %ArgumentError{}}} =
+             Serializer.encode_manifest(%{metadata: %{:duplicate => 1, "duplicate" => 2}})
+
+    assert {:error, {:encode_failed, %ArgumentError{}}} =
+             Serializer.encode_manifest(%{metadata: %{{:unsupported, :key} => 1}})
+  end
+
   test "drops build-only keys from encoded payload" do
     manifest =
       FavnTestSupport.with_manifest_contract(%{

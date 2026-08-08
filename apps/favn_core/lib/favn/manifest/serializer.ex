@@ -3,7 +3,8 @@ defmodule Favn.Manifest.Serializer do
   Canonical manifest serialization and deserialization.
 
   The serializer produces stable JSON bytes suitable for content hashing and
-  persistence boundaries.
+  persistence boundaries. Unsupported values and object-key collisions fail
+  encoding instead of being converted into ambiguous strings.
   """
 
   alias Favn.Manifest.Build
@@ -102,10 +103,15 @@ defmodule Favn.Manifest.Serializer do
     |> Enum.reduce(%{}, fn {key, value}, acc ->
       normalized_key = normalize_key(key)
 
-      if normalized_key in dropped_keys do
-        acc
-      else
-        Map.put(acc, normalized_key, normalize_value(value, dropped_keys))
+      cond do
+        normalized_key in dropped_keys ->
+          acc
+
+        Map.has_key?(acc, normalized_key) ->
+          raise ArgumentError, "manifest serialization received a duplicate normalized key"
+
+        true ->
+          Map.put(acc, normalized_key, normalize_value(value, dropped_keys))
       end
     end)
   end
@@ -119,7 +125,11 @@ defmodule Favn.Manifest.Serializer do
   defp normalize_value(false, _dropped_keys), do: false
   defp normalize_value(nil, _dropped_keys), do: nil
   defp normalize_value(value, _dropped_keys) when is_atom(value), do: Atom.to_string(value)
-  defp normalize_value(value, _dropped_keys), do: inspect(value)
+
+  defp normalize_value(_value, _dropped_keys) do
+    raise ArgumentError,
+          "manifest serialization accepts only explicit manifest and JSON-compatible values"
+  end
 
   defp normalize_canonical_value(%DateTime{} = datetime), do: DateTime.to_iso8601(datetime)
 
@@ -158,7 +168,10 @@ defmodule Favn.Manifest.Serializer do
 
   defp normalize_key(key) when is_atom(key), do: Atom.to_string(key)
   defp normalize_key(key) when is_binary(key), do: key
-  defp normalize_key(key), do: inspect(key)
+
+  defp normalize_key(_key) do
+    raise ArgumentError, "manifest object keys must be strings or atoms"
+  end
 
   defp encode_json(map) when is_map(map) do
     body =
