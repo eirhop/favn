@@ -16,7 +16,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
   alias FavnOrchestrator.Projector
   alias FavnOrchestrator.RefreshPolicy
   alias FavnOrchestrator.RunState
-  alias FavnOrchestrator.Storage.ManifestCodec
+  alias FavnOrchestrator.TestSupport.ManifestRecord, as: ManifestCodec
   alias FavnOrchestrator.Storage.RunSnapshotCodec
 
   defmodule UnexpectedRunnerError do

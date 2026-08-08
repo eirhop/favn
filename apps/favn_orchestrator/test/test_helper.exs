@@ -6,6 +6,7 @@ FavnTestSupport.Fixtures.compile_fixtures!([
 ])
 
 Code.require_file("support/runtime.ex", __DIR__)
+Code.require_file("support/manifest_record.ex", __DIR__)
 
 defmodule FavnOrchestrator.TestRunnerTaskStore do
   @behaviour FavnOrchestrator.Persistence.RunnerTaskStore
