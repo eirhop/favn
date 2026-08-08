@@ -119,7 +119,10 @@ defmodule Favn.Manifest.Serializer do
   defp normalize_value(list, dropped_keys) when is_list(list),
     do: Enum.map(list, &normalize_value(&1, dropped_keys))
 
-  defp normalize_value(value, _dropped_keys) when is_binary(value), do: value
+  defp normalize_value(value, _dropped_keys) when is_binary(value) do
+    ensure_valid_utf8!(value, "manifest strings must contain valid UTF-8")
+  end
+
   defp normalize_value(value, _dropped_keys) when is_number(value), do: value
   defp normalize_value(true, _dropped_keys), do: true
   defp normalize_value(false, _dropped_keys), do: false
@@ -138,7 +141,7 @@ defmodule Favn.Manifest.Serializer do
       normalized_key = normalize_canonical_key(key)
 
       if Map.has_key?(acc, normalized_key) do
-        raise ArgumentError, "canonical JSON received duplicate normalized key #{normalized_key}"
+        raise ArgumentError, "canonical JSON received a duplicate normalized key"
       end
 
       Map.put(acc, normalized_key, normalize_canonical_value(value))
@@ -148,7 +151,10 @@ defmodule Favn.Manifest.Serializer do
   defp normalize_canonical_value(list) when is_list(list),
     do: Enum.map(list, &normalize_canonical_value/1)
 
-  defp normalize_canonical_value(value) when is_binary(value), do: value
+  defp normalize_canonical_value(value) when is_binary(value) do
+    ensure_valid_utf8!(value, "canonical JSON strings must contain valid UTF-8")
+  end
+
   defp normalize_canonical_value(value) when is_number(value), do: value
   defp normalize_canonical_value(true), do: true
   defp normalize_canonical_value(false), do: false
@@ -159,7 +165,10 @@ defmodule Favn.Manifest.Serializer do
     raise ArgumentError, "canonical JSON accepts only explicit JSON-compatible values"
   end
 
-  defp normalize_canonical_key(key) when is_binary(key), do: key
+  defp normalize_canonical_key(key) when is_binary(key) do
+    ensure_valid_utf8!(key, "canonical JSON object keys must contain valid UTF-8")
+  end
+
   defp normalize_canonical_key(key) when is_atom(key), do: Atom.to_string(key)
 
   defp normalize_canonical_key(_key) do
@@ -167,10 +176,17 @@ defmodule Favn.Manifest.Serializer do
   end
 
   defp normalize_key(key) when is_atom(key), do: Atom.to_string(key)
-  defp normalize_key(key) when is_binary(key), do: key
+
+  defp normalize_key(key) when is_binary(key) do
+    ensure_valid_utf8!(key, "manifest object keys must contain valid UTF-8")
+  end
 
   defp normalize_key(_key) do
     raise ArgumentError, "manifest object keys must be strings or atoms"
+  end
+
+  defp ensure_valid_utf8!(value, error_message) do
+    if String.valid?(value), do: value, else: raise(ArgumentError, error_message)
   end
 
   defp encode_json(map) when is_map(map) do

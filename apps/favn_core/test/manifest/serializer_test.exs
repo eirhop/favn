@@ -49,6 +49,23 @@ defmodule Favn.Manifest.SerializerTest do
              Serializer.encode_manifest(%{metadata: %{{:unsupported, :key} => 1}})
   end
 
+  test "invalid UTF-8 values and keys fail without exposing their contents" do
+    invalid_utf8 = String.duplicate("SECRET", 1_000) <> <<255>>
+
+    results = [
+      Serializer.encode_manifest(%{metadata: invalid_utf8}),
+      Serializer.encode_manifest(%{invalid_utf8 => true}),
+      Serializer.encode_canonical(%{metadata: invalid_utf8}),
+      Serializer.encode_canonical(%{invalid_utf8 => true})
+    ]
+
+    for result <- results do
+      assert {:error, {:encode_failed, %ArgumentError{} = error}} = result
+      refute Exception.message(error) =~ "SECRET"
+      assert byte_size(Exception.message(error)) < 100
+    end
+  end
+
   test "drops build-only keys from encoded payload" do
     manifest =
       FavnTestSupport.with_manifest_contract(%{
