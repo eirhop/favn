@@ -3,7 +3,8 @@ defmodule Favn.Manifest.Serializer do
   Canonical manifest serialization and deserialization.
 
   The serializer produces stable JSON bytes suitable for content hashing and
-  persistence boundaries.
+  persistence boundaries. Unsupported values and object-key collisions fail
+  encoding instead of being converted into ambiguous strings.
   """
 
   alias Favn.Manifest.Build
@@ -102,10 +103,15 @@ defmodule Favn.Manifest.Serializer do
     |> Enum.reduce(%{}, fn {key, value}, acc ->
       normalized_key = normalize_key(key)
 
-      if normalized_key in dropped_keys do
-        acc
-      else
-        Map.put(acc, normalized_key, normalize_value(value, dropped_keys))
+      cond do
+        normalized_key in dropped_keys ->
+          acc
+
+        Map.has_key?(acc, normalized_key) ->
+          raise ArgumentError, "manifest serialization received a duplicate normalized key"
+
+        true ->
+          Map.put(acc, normalized_key, normalize_value(value, dropped_keys))
       end
     end)
   end
@@ -113,13 +119,20 @@ defmodule Favn.Manifest.Serializer do
   defp normalize_value(list, dropped_keys) when is_list(list),
     do: Enum.map(list, &normalize_value(&1, dropped_keys))
 
-  defp normalize_value(value, _dropped_keys) when is_binary(value), do: value
+  defp normalize_value(value, _dropped_keys) when is_binary(value) do
+    ensure_valid_utf8!(value, "manifest strings must contain valid UTF-8")
+  end
+
   defp normalize_value(value, _dropped_keys) when is_number(value), do: value
   defp normalize_value(true, _dropped_keys), do: true
   defp normalize_value(false, _dropped_keys), do: false
   defp normalize_value(nil, _dropped_keys), do: nil
   defp normalize_value(value, _dropped_keys) when is_atom(value), do: Atom.to_string(value)
-  defp normalize_value(value, _dropped_keys), do: inspect(value)
+
+  defp normalize_value(_value, _dropped_keys) do
+    raise ArgumentError,
+          "manifest serialization accepts only explicit manifest and JSON-compatible values"
+  end
 
   defp normalize_canonical_value(%DateTime{} = datetime), do: DateTime.to_iso8601(datetime)
 
@@ -128,7 +141,7 @@ defmodule Favn.Manifest.Serializer do
       normalized_key = normalize_canonical_key(key)
 
       if Map.has_key?(acc, normalized_key) do
-        raise ArgumentError, "canonical JSON received duplicate normalized key #{normalized_key}"
+        raise ArgumentError, "canonical JSON received a duplicate normalized key"
       end
 
       Map.put(acc, normalized_key, normalize_canonical_value(value))
@@ -138,7 +151,10 @@ defmodule Favn.Manifest.Serializer do
   defp normalize_canonical_value(list) when is_list(list),
     do: Enum.map(list, &normalize_canonical_value/1)
 
-  defp normalize_canonical_value(value) when is_binary(value), do: value
+  defp normalize_canonical_value(value) when is_binary(value) do
+    ensure_valid_utf8!(value, "canonical JSON strings must contain valid UTF-8")
+  end
+
   defp normalize_canonical_value(value) when is_number(value), do: value
   defp normalize_canonical_value(true), do: true
   defp normalize_canonical_value(false), do: false
@@ -149,7 +165,10 @@ defmodule Favn.Manifest.Serializer do
     raise ArgumentError, "canonical JSON accepts only explicit JSON-compatible values"
   end
 
-  defp normalize_canonical_key(key) when is_binary(key), do: key
+  defp normalize_canonical_key(key) when is_binary(key) do
+    ensure_valid_utf8!(key, "canonical JSON object keys must contain valid UTF-8")
+  end
+
   defp normalize_canonical_key(key) when is_atom(key), do: Atom.to_string(key)
 
   defp normalize_canonical_key(_key) do
@@ -157,8 +176,18 @@ defmodule Favn.Manifest.Serializer do
   end
 
   defp normalize_key(key) when is_atom(key), do: Atom.to_string(key)
-  defp normalize_key(key) when is_binary(key), do: key
-  defp normalize_key(key), do: inspect(key)
+
+  defp normalize_key(key) when is_binary(key) do
+    ensure_valid_utf8!(key, "manifest object keys must contain valid UTF-8")
+  end
+
+  defp normalize_key(_key) do
+    raise ArgumentError, "manifest object keys must be strings or atoms"
+  end
+
+  defp ensure_valid_utf8!(value, error_message) do
+    if String.valid?(value), do: value, else: raise(ArgumentError, error_message)
+  end
 
   defp encode_json(map) when is_map(map) do
     body =
