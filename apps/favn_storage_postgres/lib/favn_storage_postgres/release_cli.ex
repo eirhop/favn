@@ -170,15 +170,68 @@ defmodule FavnStoragePostgres.ReleaseCLI do
   defp emit_result(details) do
     exit_code = exit_code(details)
     state = Map.get(details, :state, Map.get(details, :status, :error))
+    diagnostic = diagnostic_summary(details)
 
     IO.puts(
       :stderr,
-      "favn.release operation=#{details.operation} state=#{state} exit=#{exit_code}"
+      "favn.release operation=#{details.operation} state=#{state} exit=#{exit_code} " <>
+        "stage=#{diagnostic.stage} retryability=#{diagnostic.retryability} " <>
+        "failure_class=#{diagnostic.failure_class} diagnostic_id=#{diagnostic.diagnostic_id}"
     )
 
     IO.puts(Jason.encode!(details))
     exit_code
   end
+
+  defp diagnostic_summary(details) do
+    findings =
+      details
+      |> Map.get(:findings, [])
+      |> List.wrap()
+
+    finding =
+      Enum.find(findings, fn
+        %{details: %{diagnostic_id: diagnostic_id}} when not is_nil(diagnostic_id) -> true
+        _finding -> false
+      end) || List.first(findings)
+
+    finding_details =
+      case finding do
+        %{details: value} when is_map(value) -> value
+        _finding -> %{}
+      end
+
+    %{
+      stage: summary_label(map_value(finding, :stage), "none"),
+      retryability: retryability(Map.get(details, :safe_to_retry)),
+      failure_class:
+        summary_label(
+          Map.get(finding_details, :failure_class, map_value(finding, :code)),
+          "none"
+        ),
+      diagnostic_id: summary_label(Map.get(finding_details, :diagnostic_id), "none")
+    }
+  end
+
+  defp map_value(value, key) when is_map(value), do: Map.get(value, key)
+  defp map_value(_value, _key), do: nil
+
+  defp retryability(true), do: "safe_to_retry"
+  defp retryability(false), do: "not_safe_to_retry"
+  defp retryability(_value), do: "not_applicable"
+
+  defp summary_label(value, fallback) when is_atom(value),
+    do: summary_label(Atom.to_string(value), fallback)
+
+  defp summary_label(value, fallback) when is_binary(value) do
+    if String.match?(value, ~r/\A[A-Za-z0-9_.\/:\-]+\z/) do
+      String.slice(value, 0, 120)
+    else
+      fallback
+    end
+  end
+
+  defp summary_label(_value, fallback), do: fallback
 
   defp with_release_logger(function) do
     case redirect_default_logger() do

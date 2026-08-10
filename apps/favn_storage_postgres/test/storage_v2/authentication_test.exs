@@ -131,9 +131,13 @@ defmodule FavnStoragePostgres.StorageV2.AuthenticationTest do
   end
 
   test "readiness fails as retryable unavailable before querying an unavailable provider" do
+    authentication = {:dynamic, UnavailableLifecycleProvider, []}
+
+    assert Authentication.failure_code(authentication) == :authentication_unavailable
+
     assert {:error, error} =
              Backend.readiness(
-               authentication: {:dynamic, UnavailableLifecycleProvider, []},
+               authentication: authentication,
                hostname: "postgres.example",
                database: "favn",
                username: "favn_runtime",

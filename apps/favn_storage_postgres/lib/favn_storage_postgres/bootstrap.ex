@@ -92,33 +92,39 @@ defmodule FavnStoragePostgres.Bootstrap do
   end
 
   defp do_status(%Config{bootstrap: %Profile{}} = config) do
-    with_admin_connection(config, fn maintenance ->
-      with {:ok, database_exists?} <-
-             WorkflowRunner.track_stage(:database, fn ->
-               Database.exists?(maintenance, config.target_database)
-             end),
-           {:ok, identity_findings} <-
-             WorkflowRunner.track_stage(:provider_identity, fn ->
-               identity_findings(maintenance, config)
-             end),
-           {:ok, role_findings} <-
-             WorkflowRunner.track_stage(:role_policy, fn ->
-               roles_findings(maintenance, config.migrator.role, config.runtime.role)
-             end) do
-        findings =
-          database_findings(database_exists?) ++ identity_findings ++ role_findings
+    bootstrap_status =
+      with_admin_connection(config, fn maintenance ->
+        with {:ok, database_exists?} <-
+               WorkflowRunner.track_stage(:database, fn ->
+                 Database.exists?(maintenance, config.target_database)
+               end),
+             {:ok, identity_findings} <-
+               WorkflowRunner.track_stage(:provider_identity, fn ->
+                 identity_findings(maintenance, config)
+               end),
+             {:ok, role_findings} <-
+               WorkflowRunner.track_stage(:role_policy, fn ->
+                 roles_findings(maintenance, config.migrator.role, config.runtime.role)
+               end) do
+          findings =
+            database_findings(database_exists?) ++ identity_findings ++ role_findings
 
-        if status_dependency_blocked?(findings) do
-          Result.status_findings(:status, status_state(findings), findings)
+          if status_dependency_blocked?(findings) do
+            Result.status_findings(:status, status_state(findings), findings)
+          else
+            {:continue_status, findings}
+          end
         else
-          target_status(config, findings)
+          {:error, code} ->
+            status_result(code, :provider_identity)
         end
-      else
-        {:error, code} ->
-          status_result(code, :provider_identity)
-      end
-    end)
-    |> normalize_status_connection(:bootstrap_connection)
+      end)
+      |> normalize_status_connection(:bootstrap_connection)
+
+    case bootstrap_status do
+      {:continue_status, findings} -> target_status(config, findings)
+      result -> result
+    end
   end
 
   defp do_status(%Config{} = config), do: target_status(config, [])
@@ -217,7 +223,7 @@ defmodule FavnStoragePostgres.Bootstrap do
 
     case result do
       :ok when carried_findings == [] ->
-        Result.ready(:status, [:configuration, :database, :roles, :schema, :runtime])
+        Result.ready(:status, [])
 
       :ok ->
         Result.status_findings(:status, status_state(carried_findings), carried_findings)
@@ -841,7 +847,14 @@ defmodule FavnStoragePostgres.Bootstrap do
   end
 
   defp status_error_with_findings(code, stage, findings) do
-    Result.error_findings(:status, state_for(code), code, stage, findings)
+    Result.error_findings(
+      :status,
+      state_for(code),
+      code,
+      stage,
+      findings,
+      WorkflowRunner.diagnostic_details(code)
+    )
   end
 
   defp migrate_and_grant(config, stages) do
@@ -1089,12 +1102,28 @@ defmodule FavnStoragePostgres.Bootstrap do
 
     if state in @status_change_states,
       do: Result.status(:status, state, stage),
-      else: Result.error(:status, state, code, stage)
+      else:
+        Result.error(
+          :status,
+          state,
+          code,
+          stage,
+          [],
+          WorkflowRunner.diagnostic_details(code)
+        )
   end
 
   defp workflow_error(operation, code, stage, stages) do
     state = state_for(code)
-    Result.error(operation, state, code, stage, stages)
+
+    Result.error(
+      operation,
+      state,
+      code,
+      stage,
+      stages,
+      WorkflowRunner.diagnostic_details(code)
+    )
   end
 
   defp state_for(code)

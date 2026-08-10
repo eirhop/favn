@@ -79,13 +79,14 @@ defmodule FavnStoragePostgres.Bootstrap.Result do
   end
 
   @doc false
-  @spec error_findings(operation(), state(), atom(), atom(), [map()]) :: {:error, map()}
-  def error_findings(operation, state, code, stage, findings) when is_list(findings) do
-    {:error, base_result} = error(operation, state, code, stage)
+  @spec error_findings(operation(), state(), atom(), atom(), [map()], map()) :: {:error, map()}
+  def error_findings(operation, state, code, stage, findings, details \\ %{})
+      when is_list(findings) and is_map(details) do
+    {:error, base_result} = error(operation, state, code, stage, [], details)
 
     bounded_findings =
       findings
-      |> Kernel.++([finding(code, stage, %{})])
+      |> Kernel.++([finding(code, stage, details)])
       |> Enum.uniq_by(&{&1.code, &1.stage, &1.details})
       |> Enum.take(32)
       |> Enum.map(fn item ->

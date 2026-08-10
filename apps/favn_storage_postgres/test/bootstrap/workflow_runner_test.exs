@@ -108,6 +108,7 @@ defmodule FavnStoragePostgres.Bootstrap.WorkflowRunnerTest do
               state: :operation_failed,
               code: :unexpected_worker_exit,
               safe_to_retry: true,
+              completed_stages: [],
               findings: [finding]
             }} =
              WorkflowRunner.run(:status, fn ->
