@@ -18,7 +18,8 @@ defmodule FavnStoragePostgres.Bootstrap do
     Lock,
     Profile,
     Result,
-    RolePolicy
+    RolePolicy,
+    WorkflowRunner
   }
 
   alias FavnStoragePostgres.Config, as: DatabaseConfig
@@ -87,37 +88,23 @@ defmodule FavnStoragePostgres.Bootstrap do
   end
 
   defp execute_configured(operation, config, function) do
-    caller = self()
-    result_reference = make_ref()
-
-    {worker, monitor} =
-      spawn_monitor(fn ->
-        Process.put(:favn_postgres_workflow_operation, operation)
-        send(caller, {result_reference, function.(config)})
-      end)
-
-    receive do
-      {^result_reference, result} ->
-        Process.demonitor(monitor, [:flush])
-        result
-
-      {:DOWN, ^monitor, :process, ^worker, _reason} ->
-        unexpected_failure(operation)
-    end
+    WorkflowRunner.run(operation, fn -> function.(config) end)
   end
-
-  defp unexpected_failure(:status),
-    do: Result.error(:status, :operation_failed, :operation_failed, :internal)
-
-  defp unexpected_failure(operation) when operation in [:bootstrap, :upgrade],
-    do: Result.error(operation, :unknown_outcome, :unknown_outcome, :internal)
 
   defp do_status(%Config{bootstrap: %Profile{}} = config) do
     with_admin_connection(config, fn maintenance ->
-      with {:ok, database_exists?} <- Database.exists?(maintenance, config.target_database),
-           {:ok, identity_findings} <- identity_findings(maintenance, config),
+      with {:ok, database_exists?} <-
+             WorkflowRunner.track_stage(:database, fn ->
+               Database.exists?(maintenance, config.target_database)
+             end),
+           {:ok, identity_findings} <-
+             WorkflowRunner.track_stage(:provider_identity, fn ->
+               identity_findings(maintenance, config)
+             end),
            {:ok, role_findings} <-
-             roles_findings(maintenance, config.migrator.role, config.runtime.role) do
+             WorkflowRunner.track_stage(:role_policy, fn ->
+               roles_findings(maintenance, config.migrator.role, config.runtime.role)
+             end) do
         findings =
           database_findings(database_exists?) ++ identity_findings ++ role_findings
 
@@ -144,17 +131,21 @@ defmodule FavnStoragePostgres.Bootstrap do
       :migrator_lock,
       fn connection ->
         with {:ok, role_findings} <-
-               roles_findings(connection, config.migrator.role, config.runtime.role) do
+               WorkflowRunner.track_stage(:role_policy, fn ->
+                 roles_findings(connection, config.migrator.role, config.runtime.role)
+               end) do
           role_findings = merge_findings(carried_findings, role_findings)
 
           if Enum.any?(role_findings, &(&1.code == :role_missing)) do
             Result.status_findings(:status, status_state(role_findings), role_findings)
           else
-            case Database.policy_status(
-                   connection,
-                   config.migrator.role,
-                   config.runtime.role
-                 ) do
+            case WorkflowRunner.track_stage(:database_policy, fn ->
+                   Database.policy_status(
+                     connection,
+                     config.migrator.role,
+                     config.runtime.role
+                   )
+                 end) do
               {:ok, policy} -> policy_status_result(policy, config, role_findings)
               {:error, code} -> status_result(code, :database_policy)
             end
@@ -176,29 +167,33 @@ defmodule FavnStoragePostgres.Bootstrap do
         config.target_database,
         :migrator_operation,
         fn repo ->
-          case Migrations.pending_versions(repo) do
-            {:ok, []} ->
-              privileges = RuntimePrivileges.diagnostics(repo, config.runtime.role)
-              findings = merge_findings(carried_findings, RuntimePrivileges.findings(privileges))
+          WorkflowRunner.track_stage(:schema, fn ->
+            case Migrations.pending_versions(repo) do
+              {:ok, []} ->
+                privileges = RuntimePrivileges.diagnostics(repo, config.runtime.role)
 
-              {:verify_runtime, findings}
+                findings =
+                  merge_findings(carried_findings, RuntimePrivileges.findings(privileges))
 
-            {:ok, _pending} ->
-              findings =
-                merge_findings(carried_findings, [
-                  %{code: :schema_upgrade_required, stage: :migrations, details: %{}}
-                ])
+                {:verify_runtime, findings}
 
-              status_with_findings(status_state(findings), findings, :migrations)
+              {:ok, _pending} ->
+                findings =
+                  merge_findings(carried_findings, [
+                    %{code: :schema_upgrade_required, stage: :migrations, details: %{}}
+                  ])
 
-            {:error, _reason} ->
-              findings =
-                merge_findings(carried_findings, [
-                  %{code: :schema_inspection_failed, stage: :schema, details: %{}}
-                ])
+                status_with_findings(status_state(findings), findings, :migrations)
 
-              status_with_findings(status_state(findings), findings, :schema)
-          end
+              {:error, _reason} ->
+                findings =
+                  merge_findings(carried_findings, [
+                    %{code: :schema_inspection_failed, stage: :schema, details: %{}}
+                  ])
+
+                status_with_findings(status_state(findings), findings, :schema)
+            end
+          end)
         end
       )
 
@@ -215,7 +210,9 @@ defmodule FavnStoragePostgres.Bootstrap do
         config.runtime,
         config.target_database,
         :runtime_operation,
-        fn repo -> verify_runtime(repo, config) end
+        fn repo ->
+          WorkflowRunner.track_stage(:runtime, fn -> verify_runtime(repo, config) end)
+        end
       )
 
     case result do
@@ -374,13 +371,17 @@ defmodule FavnStoragePostgres.Bootstrap do
       config.target_database,
       :migrator_lock,
       fn connection ->
-        with :ok <- require_upgrade_policy(connection, config) do
+        with :ok <-
+               WorkflowRunner.track_stage(:preflight, fn ->
+                 require_upgrade_policy(connection, config)
+               end) do
           with_session_lock(connection, config.target_database, :upgrade, [], fn ->
             with {:ok, stages} <- migrate_and_grant(config, []),
                  {:ok, stages} <- verify_fresh_runtime(config, stages) do
               Result.ready(:upgrade, stages)
             else
-              {:error, code, stage, completed} -> workflow_error(:upgrade, code, stage, completed)
+              {:error, code, stage, completed} ->
+                workflow_error(:upgrade, code, stage, completed)
             end
           end)
         else
@@ -1039,7 +1040,7 @@ defmodule FavnStoragePostgres.Bootstrap do
   end
 
   defp step(stages, stage, function) do
-    case function.() do
+    case WorkflowRunner.track_stage(stage, function) do
       :ok -> complete_stage(stages, stage)
       {:ok, _details} -> complete_stage(stages, stage)
       {:error, code} when is_atom(code) -> {:error, code, stage, stages}
@@ -1048,14 +1049,9 @@ defmodule FavnStoragePostgres.Bootstrap do
   end
 
   defp complete_stage(stages, stage) do
-    emit(
-      :stage,
-      Process.get(:favn_postgres_workflow_operation, :unknown),
-      %{system_time: System.system_time()},
-      %{stage: stage, outcome: :complete}
-    )
-
-    {:ok, stages ++ [stage]}
+    completed_stages = stages ++ [stage]
+    :ok = WorkflowRunner.record_completed(completed_stages)
+    {:ok, completed_stages}
   end
 
   defp normalize_stage_connection({:error, code}, stage, stages),

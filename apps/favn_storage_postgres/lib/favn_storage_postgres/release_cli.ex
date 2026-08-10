@@ -7,6 +7,8 @@ defmodule FavnStoragePostgres.ReleaseCLI do
   other secrets never appear in process arguments.
   """
 
+  require Logger
+
   alias FavnStoragePostgres.Release
   alias FavnStoragePostgres.Bootstrap.Result
 
@@ -40,8 +42,15 @@ defmodule FavnStoragePostgres.ReleaseCLI do
   @spec run!(operation()) :: :ok | no_return()
   def run!(operation) when operation in @operations do
     with_release_logger(fn ->
+      Logger.info("favn.release.operation_started operation=#{operation}")
       exit_code = run(operation, System.get_env(), Release)
-      if exit_code == 0, do: :ok, else: System.halt(exit_code)
+
+      if exit_code == 0 do
+        :ok
+      else
+        Logger.flush()
+        System.halt(exit_code)
+      end
     end)
   end
 
@@ -76,6 +85,7 @@ defmodule FavnStoragePostgres.ReleaseCLI do
   @spec run!(operation(), map(), module()) :: :ok | no_return()
   def run!(operation, env, release) do
     with_release_logger(fn ->
+      Logger.info("favn.release.operation_started operation=#{operation}")
       exit_code = run(operation, env, release)
       if exit_code == 0, do: :ok, else: raise("release operation failed with exit #{exit_code}")
     end)
@@ -173,10 +183,14 @@ defmodule FavnStoragePostgres.ReleaseCLI do
   defp with_release_logger(function) do
     case redirect_default_logger() do
       {:ok, original_handler} ->
+        original_level = primary_logger_level()
+        :ok = :logger.set_primary_config(:level, configured_log_level())
+
         try do
           function.()
         after
           Logger.flush()
+          restore_primary_logger_level(original_level)
           replace_default_handler(original_handler)
         end
 
@@ -228,6 +242,29 @@ defmodule FavnStoragePostgres.ReleaseCLI do
       Map.fetch!(handler, :module),
       Map.drop(handler, [:id, :module])
     )
+  end
+
+  defp primary_logger_level do
+    :logger.get_primary_config()
+    |> Map.get(:level, :info)
+  end
+
+  defp restore_primary_logger_level(level) do
+    :logger.set_primary_config(:level, level)
+  end
+
+  defp configured_log_level do
+    case System.get_env("FAVN_LOG_LEVEL", "info") do
+      "debug" -> :debug
+      "info" -> :info
+      "notice" -> :notice
+      "warning" -> :warning
+      "error" -> :error
+      "critical" -> :critical
+      "alert" -> :alert
+      "emergency" -> :emergency
+      _invalid -> :info
+    end
   end
 
   defp exit_code(%{contract_version: 1} = details), do: Result.exit_code(details)

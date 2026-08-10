@@ -201,7 +201,9 @@ remove administrator assignments.
 
 ## Result contract
 
-The command writes one JSON document to stdout and one short summary to stderr.
+The command writes one JSON document to stdout. Stderr contains a bounded
+operation summary and stage progress at `FAVN_LOG_LEVEL`; release startup
+progress never shares stdout with the JSON result.
 Important fields are `contract_version`, `operation`, `outcome`, `state`,
 `safe_to_retry`, `release.favn_version`, `release.latest_migration_version`,
 `duration_ms`, `completed_stages`, and `runtime_verified`.
@@ -219,6 +221,13 @@ Important fields are `contract_version`, `operation`, `outcome`, `state`,
 Only a verified ready result authorizes deployment cleanup. A failed stage does
 not authorize removal of bootstrap access. An unknown outcome must be reconciled
 with `status`; automation must not blindly retry it.
+
+An unexpected workflow-worker exit keeps the same exit-code and retry-safety
+rules. Its finding and stderr diagnostic identify the operation, active stage,
+completed stages, a correlation ID, the failure kind/class, and a safe
+application frame. They never include the unrestricted exception message,
+database URL, username, token, or provider response. Use the correlation ID to
+match the JSON finding to stderr before reconciling with `status`.
 
 The production image wrapper exposes only `bootstrap`, `status`, and `upgrade`
 for normal database lifecycle work. Older granular Mix/release functions remain

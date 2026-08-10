@@ -190,7 +190,9 @@ Use this database procedure together with the immutable runtime sequence in
 6. Check database errors, lock waits, pool queue time, projection lag, and outbox lag.
 
 Composite Jobs emit start/stop telemetry at
-`[:favn, :storage_postgres, :database_workflow, :start | :stop]`. Older focused
+`[:favn, :storage_postgres, :database_workflow, :start | :stop]`, stage
+started/completed/failed telemetry at `... :stage`, and bounded unexpected-exit
+telemetry at `... :worker_failure`. Older focused
 operations retain `:release_operation` telemetry. Completion metadata is bounded
 to operation/outcome/state; logs and JSON never contain database URLs,
 credentials, object IDs, TLS material, or key values.

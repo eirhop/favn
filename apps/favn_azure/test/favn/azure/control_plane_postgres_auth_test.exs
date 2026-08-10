@@ -297,6 +297,37 @@ defmodule Favn.Azure.ControlPlanePostgresAuthTest do
                [],
                mapping
              )
+
+    assert {:ok, :conflict} =
+             ControlPlanePostgresAuth.identity_status(
+               fixed_executor([[mapping.role, "user", mapping.object_id, 0]]),
+               [],
+               mapping
+             )
+  end
+
+  test "identity inspection assigns stable local names to provider columns by position" do
+    mapping = identity_mapping()
+    parent = self()
+
+    executor = fn sql, params ->
+      send(parent, {:identity_inspection, sql, params})
+      {:ok, %{rows: []}}
+    end
+
+    assert {:ok, :missing} =
+             ControlPlanePostgresAuth.identity_status(executor, [], mapping)
+
+    assert_receive {:identity_inspection, sql, [role, object_id]}
+    assert role == mapping.role
+    assert object_id == mapping.object_id
+
+    assert sql =~
+             "AS principal(role_name, principal_type, object_id, tenant_id, is_mfa, is_admin)"
+
+    assert sql =~ "principal.role_name"
+    refute sql =~ "principal.rolename"
+    refute sql =~ "principal.rolname"
   end
 
   test "identity creation uses the provider function, verifies the result, and does not embed ids in SQL" do
@@ -420,6 +451,13 @@ defmodule Favn.Azure.ControlPlanePostgresAuthTest do
                mapping
              )
 
+    assert {:error, :identity_mapping_not_authorized} =
+             ControlPlanePostgresAuth.identity_status(
+               fn _sql, _params -> {:error, :identity_mapping_not_authorized} end,
+               [],
+               mapping
+             )
+
     {:ok, responses} =
       Agent.start_link(fn ->
         [
@@ -435,6 +473,39 @@ defmodule Favn.Azure.ControlPlanePostgresAuthTest do
 
     assert {:error, :identity_mapping_not_authorized} =
              ControlPlanePostgresAuth.ensure_identity(executor, [], mapping)
+  end
+
+  test "unexpected identity inspection errors remain bounded and redacted" do
+    mapping = identity_mapping()
+
+    result =
+      ControlPlanePostgresAuth.identity_status(
+        fn _sql, _params ->
+          {:error,
+           %{
+             message: "provider-message-canary",
+             username: "database-user-canary",
+             url: "ecto://database-user-canary:database-password-canary@postgres.example/favn",
+             access_token: "access-token-canary"
+           }}
+        end,
+        [],
+        mapping
+      )
+
+    assert result == {:error, :identity_inspection_failed}
+
+    inspected = inspect(result)
+
+    for canary <- [
+          "provider-message-canary",
+          "database-user-canary",
+          "database-password-canary",
+          "postgres.example",
+          "access-token-canary"
+        ] do
+      refute inspected =~ canary
+    end
   end
 
   defp identity_mapping do

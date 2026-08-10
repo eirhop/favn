@@ -148,7 +148,11 @@ defmodule FavnStoragePostgres.Bootstrap.Result do
       :category,
       :expected,
       :actual,
-      :parent_roles
+      :parent_roles,
+      :diagnostic_id,
+      :failure_kind,
+      :failure_class,
+      :failure_location
     ])
     |> Enum.take(8)
     |> Map.new()
