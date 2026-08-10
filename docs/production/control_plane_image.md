@@ -67,16 +67,16 @@ passed for the tagged commit. It also requires a GitHub-verified signed tag,
 binds both OCI attestations and the image revision label to that commit, and
 refuses to change an existing release tag to another digest.
 
-For `0.5.0-rc.2`, tag the already-qualified `main` commit:
+For `0.5.0-rc.3`, tag the already-qualified `main` commit:
 
 ```bash
 git switch main
 git pull --ff-only origin main
-test "$(scripts/release_metadata.sh | sed -n 's/^FAVN_CONTROL_PLANE_VERSION=//p')" = "0.5.0-rc.2"
+test "$(scripts/release_metadata.sh | sed -n 's/^FAVN_CONTROL_PLANE_VERSION=//p')" = "0.5.0-rc.3"
 gh run list --workflow CI --branch main --commit "$(git rev-parse HEAD)"
 gh run list --workflow control-plane-image.yml --branch main --commit "$(git rev-parse HEAD)"
-git tag -s v0.5.0-rc.2 -m "Favn 0.5.0-rc.2"
-git push origin v0.5.0-rc.2
+git tag -s v0.5.0-rc.3 -m "Favn 0.5.0-rc.3"
+git push origin v0.5.0-rc.3
 gh run list --workflow control-plane-release.yml --limit 5
 gh run watch <release-workflow-run-id> --exit-status
 ```
@@ -88,7 +88,7 @@ maintainer can run the corrected workflow against that existing tag:
 ```bash
 gh workflow run control-plane-release.yml \
   --ref main \
-  -f release_tag=v0.5.0-rc.2
+  -f release_tag=v0.5.0-rc.3
 ```
 
 The recovery path applies the same signed-tag, qualified-commit, attestation,
@@ -97,7 +97,7 @@ is safe only when any existing image tag and GitHub release already record the
 same qualified digest.
 
 The workflow creates a GitHub prerelease and the
-`ghcr.io/eirhop/favn-control-plane:v0.5.0-rc.2` lookup tag. Deploy the digest
+`ghcr.io/eirhop/favn-control-plane:v0.5.0-rc.3` lookup tag. Deploy the digest
 recorded in the release notes, not that mutable tag. This repository does not
 currently define a Hex publishing workflow; source/Hex packaging is a separate
 release decision. Protect `v*` tags in repository rules as defense in depth;
