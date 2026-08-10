@@ -133,6 +133,7 @@ defmodule Favn.Azure.ControlPlanePostgresAuth do
              SELECT principal.role_name::text,
                     principal.principal_type,
                     principal.object_id,
+                    principal.is_mfa,
                     principal.is_admin
              FROM pg_catalog.pgaadauth_list_principals(false)
                AS principal(role_name, principal_type, object_id, tenant_id, is_mfa, is_admin)
@@ -271,10 +272,11 @@ defmodule Favn.Azure.ControlPlanePostgresAuth do
   defp classify_mapping(rows, role, object_id) when is_list(rows) do
     exact? =
       Enum.any?(rows, fn
-        [^role, type, row_object_id, is_admin]
+        [^role, type, row_object_id, is_mfa, is_admin]
         when is_binary(type) and is_binary(row_object_id) ->
           String.downcase(type) == "service" and
-            String.downcase(row_object_id) == object_id and is_admin in [0, false]
+            String.downcase(row_object_id) == object_id and is_mfa in [0, false] and
+            is_admin in [0, false]
 
         _row ->
           false

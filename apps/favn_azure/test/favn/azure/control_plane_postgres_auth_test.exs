@@ -422,7 +422,7 @@ defmodule Favn.Azure.ControlPlanePostgresAuthTest do
 
     assert {:ok, :exact} =
              ControlPlanePostgresAuth.identity_status(
-               fixed_executor([[mapping.role, "service", mapping.object_id, 0]]),
+               fixed_executor([[mapping.role, "service", mapping.object_id, 0, 0]]),
                [],
                mapping
              )
@@ -433,7 +433,7 @@ defmodule Favn.Azure.ControlPlanePostgresAuthTest do
     assert {:ok, :conflict} =
              ControlPlanePostgresAuth.identity_status(
                fixed_executor([
-                 [mapping.role, "service", "ffffffff-ffff-ffff-ffff-ffffffffffff", 0]
+                 [mapping.role, "service", "ffffffff-ffff-ffff-ffff-ffffffffffff", 0, 0]
                ]),
                [],
                mapping
@@ -441,21 +441,28 @@ defmodule Favn.Azure.ControlPlanePostgresAuthTest do
 
     assert {:ok, :conflict} =
              ControlPlanePostgresAuth.identity_status(
-               fixed_executor([["another_role", "service", mapping.object_id, 0]]),
+               fixed_executor([["another_role", "service", mapping.object_id, 0, 0]]),
                [],
                mapping
              )
 
     assert {:ok, :conflict} =
              ControlPlanePostgresAuth.identity_status(
-               fixed_executor([[mapping.role, "service", mapping.object_id, 1]]),
+               fixed_executor([[mapping.role, "service", mapping.object_id, 1, 0]]),
                [],
                mapping
              )
 
     assert {:ok, :conflict} =
              ControlPlanePostgresAuth.identity_status(
-               fixed_executor([[mapping.role, "user", mapping.object_id, 0]]),
+               fixed_executor([[mapping.role, "service", mapping.object_id, 0, 1]]),
+               [],
+               mapping
+             )
+
+    assert {:ok, :conflict} =
+             ControlPlanePostgresAuth.identity_status(
+               fixed_executor([[mapping.role, "user", mapping.object_id, 0, 0]]),
                [],
                mapping
              )
@@ -481,6 +488,8 @@ defmodule Favn.Azure.ControlPlanePostgresAuthTest do
              "AS principal(role_name, principal_type, object_id, tenant_id, is_mfa, is_admin)"
 
     assert sql =~ "principal.role_name"
+    assert sql =~ "principal.is_mfa"
+    assert sql =~ "principal.is_admin"
     refute sql =~ "principal.rolename"
     refute sql =~ "principal.rolname"
   end
@@ -495,7 +504,7 @@ defmodule Favn.Azure.ControlPlanePostgresAuthTest do
           {:ok, %{rows: []}},
           {:ok, %{rows: [[false]]}},
           {:ok, %{rows: [[mapping.role]]}},
-          {:ok, %{rows: [[mapping.role, "service", mapping.object_id, 0]]}}
+          {:ok, %{rows: [[mapping.role, "service", mapping.object_id, 0, 0]]}}
         ]
       end)
 
@@ -556,7 +565,7 @@ defmodule Favn.Azure.ControlPlanePostgresAuthTest do
     assert {:error, :identity_mapping_conflict} =
              ControlPlanePostgresAuth.ensure_identity(
                fixed_executor([
-                 [mapping.role, "service", "ffffffff-ffff-ffff-ffff-ffffffffffff", 0]
+                 [mapping.role, "service", "ffffffff-ffff-ffff-ffff-ffffffffffff", 0, 0]
                ]),
                [],
                mapping

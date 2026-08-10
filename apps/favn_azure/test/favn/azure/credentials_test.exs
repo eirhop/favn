@@ -161,7 +161,68 @@ defmodule Favn.Azure.CredentialsTest do
     assert token.access_token == "retry-token"
     assert_received :request
     assert_received :request
-    assert_received {:sleep, 100}
+    assert_received {:sleep, 1_000}
+  end
+
+  test "managed identity follows Azure retry guidance for endpoint updates and server errors" do
+    {:ok, responses} = Agent.start_link(fn -> [410, 501, 200] end)
+    owner = self()
+
+    http_client = fn :get, _request, _http_opts, _opts ->
+      status = Agent.get_and_update(responses, fn [status | rest] -> {status, rest} end)
+
+      case status do
+        200 ->
+          {:ok,
+           {{~c"HTTP/1.1", 200, ~c"OK"}, [],
+            ~s({"access_token":"retry-token","expires_on":"1893456000"})}}
+
+        status ->
+          {:ok, {{~c"HTTP/1.1", status, ~c"Transient"}, [], ""}}
+      end
+    end
+
+    sleeper = fn delay -> send(owner, {:sleep, delay}) end
+
+    assert {:ok, %Token{access_token: "retry-token"}} =
+             Credentials.fetch_token(@postgres_resource,
+               provider: "managed_identity",
+               endpoint: :imds,
+               cache: false,
+               provider_options: [
+                 env: fn _ -> nil end,
+                 http_client: http_client,
+                 sleeper: sleeper
+               ]
+             )
+
+    assert_received {:sleep, 1_000}
+    assert_received {:sleep, 2_000}
+  end
+
+  test "managed identity does not retry other client errors" do
+    owner = self()
+
+    http_client = fn :get, _request, _http_opts, _opts ->
+      send(owner, :request)
+      {:ok, {{~c"HTTP/1.1", 400, ~c"Bad Request"}, [], ""}}
+    end
+
+    assert {:error, %TokenError{type: :authentication_error, retryable?: false}} =
+             Credentials.fetch_token(@postgres_resource,
+               provider: "managed_identity",
+               endpoint: :imds,
+               cache: false,
+               provider_options: [
+                 env: fn _ -> nil end,
+                 http_client: http_client,
+                 sleeper: fn delay -> send(owner, {:sleep, delay}) end
+               ]
+             )
+
+    assert_received :request
+    refute_receive :request
+    refute_receive {:sleep, _delay}
   end
 
   test "built-in provider identifiers are canonical strings" do
