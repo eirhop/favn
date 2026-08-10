@@ -208,6 +208,11 @@ Important fields are `contract_version`, `operation`, `outcome`, `state`,
 `safe_to_retry`, `release.favn_version`, `release.latest_migration_version`,
 `duration_ms`, `completed_stages`, and `runtime_verified`.
 
+`completed_stages` is reserved for stages proved complete by post-write reads.
+Read-only `status` therefore leaves it empty; its bounded stage logs and
+telemetry carry completed-check progress without implying that a write was
+verified.
+
 | Exit | Meaning |
 | --- | --- |
 | `0` | Ready and runtime-verified |

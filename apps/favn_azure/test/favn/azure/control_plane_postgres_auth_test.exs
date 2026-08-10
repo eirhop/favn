@@ -11,7 +11,11 @@ defmodule Favn.Azure.ControlPlanePostgresAuthTest do
     @behaviour Favn.Azure.CredentialProvider
 
     @impl true
-    def fetch_token(_request, options) do
+    def fetch_token(request, options) do
+      if owner = Keyword.get(options, :request_owner) do
+        send(owner, {:credential_request, request.client_id})
+      end
+
       response =
         options
         |> Keyword.fetch!(:responses)
@@ -32,7 +36,13 @@ defmodule Favn.Azure.ControlPlanePostgresAuthTest do
   end
 
   setup do
-    names = [AuthSupervisor, AuthServer, AuthTaskSupervisor, AuthCache]
+    names =
+      [AuthSupervisor, AuthServer, AuthTaskSupervisor, AuthCache] ++
+        Enum.flat_map(
+          [BootstrapLifecycle, MigratorLifecycle, RuntimeLifecycle],
+          &lifecycle_names/1
+        )
+
     Enum.each(names, &stop_named/1)
 
     on_exit(fn -> Enum.each(names, &stop_named/1) end)
@@ -70,6 +80,98 @@ defmodule Favn.Azure.ControlPlanePostgresAuthTest do
     refute inspect(:sys.get_status(AuthServer)) =~ "token-canary"
     refute inspect(:sys.get_status(AuthCache)) =~ "client-id-canary"
     refute inspect(:sys.get_status(AuthCache)) =~ "token-canary"
+  end
+
+  test "three sequential lifecycles request tokens for their exact configured client ids" do
+    profiles = [
+      {BootstrapLifecycle, "11111111-1111-1111-1111-111111111111"},
+      {MigratorLifecycle, "22222222-2222-2222-2222-222222222222"},
+      {RuntimeLifecycle, "33333333-3333-3333-3333-333333333333"}
+    ]
+
+    Enum.each(profiles, fn {namespace, client_id} ->
+      {:ok, token} =
+        Token.new("token-for-#{namespace}", DateTime.add(@now, 3_600, :second))
+
+      {:ok, responses} = Agent.start_link(fn -> [{:ok, token}] end)
+
+      options =
+        provider_options(responses,
+          client_id: client_id,
+          provider_options: [responses: responses, request_owner: self()]
+        )
+        |> Keyword.merge(lifecycle_options(namespace))
+
+      lifecycle = start_isolated_provider!(options)
+
+      try do
+        assert {:ok, reference} = ControlPlanePostgresAuth.connection_reference(options)
+        assert {:ok, _token} = ControlPlanePostgresAuth.connection_password(reference)
+        assert_receive {:credential_request, ^client_id}
+      after
+        Supervisor.stop(lifecycle)
+      end
+    end)
+
+    refute_receive {:credential_request, _unexpected_client_id}
+  end
+
+  test "a migrator token failure remains classified after bootstrap token success" do
+    bootstrap_client_id = "11111111-1111-1111-1111-111111111111"
+    migrator_client_id = "22222222-2222-2222-2222-222222222222"
+
+    {:ok, bootstrap_token} =
+      Token.new("bootstrap-token-canary", DateTime.add(@now, 3_600, :second))
+
+    {:ok, bootstrap_responses} = Agent.start_link(fn -> [{:ok, bootstrap_token}] end)
+
+    bootstrap_options =
+      provider_options(bootstrap_responses,
+        client_id: bootstrap_client_id,
+        provider_options: [responses: bootstrap_responses, request_owner: self()]
+      )
+      |> Keyword.merge(lifecycle_options(BootstrapLifecycle))
+
+    bootstrap_lifecycle = start_isolated_provider!(bootstrap_options)
+    {:ok, bootstrap_reference} = ControlPlanePostgresAuth.connection_reference(bootstrap_options)
+
+    assert {:ok, "bootstrap-token-canary"} =
+             ControlPlanePostgresAuth.connection_password(bootstrap_reference)
+
+    assert_receive {:credential_request, ^bootstrap_client_id}
+    Supervisor.stop(bootstrap_lifecycle)
+
+    provider_failure = %TokenError{
+      type: :connection_error,
+      message: "migrator-provider-detail-canary",
+      retryable?: true,
+      details: %{reason: :provider_timeout, header: "identity-header-canary"}
+    }
+
+    {:ok, migrator_responses} = Agent.start_link(fn -> [{:error, provider_failure}] end)
+
+    migrator_options =
+      provider_options(migrator_responses,
+        client_id: migrator_client_id,
+        provider_options: [responses: migrator_responses, request_owner: self()]
+      )
+      |> Keyword.merge(lifecycle_options(MigratorLifecycle))
+
+    migrator_lifecycle = start_isolated_provider!(migrator_options)
+
+    try do
+      {:ok, migrator_reference} = ControlPlanePostgresAuth.connection_reference(migrator_options)
+
+      assert {:error,
+              %PostgresAuthenticationError{class: :token_timeout, retryable?: true} = error} =
+               ControlPlanePostgresAuth.connection_password(migrator_reference)
+
+      assert_receive {:credential_request, ^migrator_client_id}
+      refute inspect(error) =~ "migrator-provider-detail-canary"
+      refute inspect(error) =~ "identity-header-canary"
+    after
+      Supervisor.stop(migrator_lifecycle)
+    end
   end
 
   test "near-expiry and provider failures remain classified and redacted" do
@@ -538,6 +640,32 @@ defmodule Favn.Azure.ControlPlanePostgresAuthTest do
   defp start_provider!(options) do
     assert {:ok, [child_spec]} = ControlPlanePostgresAuth.child_specs(options)
     start_supervised!(child_spec)
+  end
+
+  defp start_isolated_provider!(options) do
+    assert {:ok, [child_spec]} = ControlPlanePostgresAuth.child_specs(options)
+    assert {:ok, lifecycle} = Supervisor.start_link([child_spec], strategy: :one_for_one)
+    lifecycle
+  end
+
+  defp lifecycle_options(namespace) do
+    [supervisor_name, server_name, task_supervisor, cache_name] = lifecycle_names(namespace)
+
+    [
+      supervisor_name: supervisor_name,
+      server_name: server_name,
+      task_supervisor: task_supervisor,
+      cache_name: cache_name
+    ]
+  end
+
+  defp lifecycle_names(namespace) do
+    [
+      Module.concat(namespace, Supervisor),
+      Module.concat(namespace, Server),
+      Module.concat(namespace, TaskSupervisor),
+      Module.concat(namespace, Cache)
+    ]
   end
 
   defp eventually(function, predicate \\ &settled?/1, attempts \\ 20)

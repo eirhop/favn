@@ -318,6 +318,14 @@ defmodule FavnStoragePostgres.Bootstrap.WorkflowTest do
 
     assert Enum.any?(authentication_findings, &(&1.code == :role_createrole))
     assert Enum.any?(authentication_findings, &(&1.code == :authentication_rejected))
+
+    authentication_finding =
+      Enum.find(authentication_findings, &(&1.code == :authentication_rejected))
+
+    assert authentication_finding.stage == :runtime_connection
+    assert authentication_finding.details.failure_kind == :error
+    assert authentication_finding.details.failure_class == "authentication_rejected"
+    assert authentication_finding.details.diagnostic_id =~ ~r/^diag_[0-9a-f]{16}$/
     assert {:ok, %{state: :ready}} = Bootstrap.bootstrap(context.env)
 
     DBConnection.run(target_admin, fn lock_connection ->
@@ -387,6 +395,36 @@ defmodule FavnStoragePostgres.Bootstrap.WorkflowTest do
 
     assert {:ok, %{safe?: true}} = RolePolicy.status(context.admin, context.migrator_role)
     assert {:ok, %{safe?: true}} = RolePolicy.status(context.admin, context.runtime_role)
+  end
+
+  test "status closes the bootstrap profile before starting the migrator profile", context do
+    assert {:ok, %{state: :ready}} = Bootstrap.bootstrap(context.env)
+
+    handler = "status-profile-order-#{System.unique_integer([:positive])}"
+    parent = self()
+
+    :telemetry.attach(
+      handler,
+      [:favn, :storage_postgres, :database_workflow, :stage],
+      fn _event, _measurements, metadata, _config ->
+        if metadata.operation == :status do
+          send(parent, {:status_stage, metadata.stage, metadata.outcome})
+        end
+      end,
+      nil
+    )
+
+    on_exit(fn -> :telemetry.detach(handler) end)
+
+    assert {:ok, %{state: :ready, completed_stages: []}} = Bootstrap.status(context.env)
+
+    stages = collect_status_stages([])
+    bootstrap_complete = Enum.find_index(stages, &(&1 == {:bootstrap_connection, :complete}))
+    migrator_started = Enum.find_index(stages, &(&1 == {:migrator_connection, :started}))
+
+    assert is_integer(bootstrap_complete)
+    assert is_integer(migrator_started)
+    assert bootstrap_complete < migrator_started
   end
 
   test "repeat bootstrap does not require normal-role access to the maintenance database",
@@ -572,6 +610,14 @@ defmodule FavnStoragePostgres.Bootstrap.WorkflowTest do
       "FAVN_WORKSPACE_SLUG" => workspace_id,
       "FAVN_WORKSPACE_NAME" => "Bootstrap workflow test"
     }
+  end
+
+  defp collect_status_stages(stages) do
+    receive do
+      {:status_stage, stage, outcome} -> collect_status_stages([{stage, outcome} | stages])
+    after
+      0 -> Enum.reverse(stages)
+    end
   end
 
   defp role_url(base_url, database, role, password) do

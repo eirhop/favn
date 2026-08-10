@@ -13,7 +13,7 @@ defmodule FavnStoragePostgres.Bootstrap.Connection do
   end
 
   alias FavnStoragePostgres.Authentication
-  alias FavnStoragePostgres.Bootstrap.{Config, Profile, WorkflowRunner}
+  alias FavnStoragePostgres.Bootstrap.{Config, ConnectionGuard, Profile, WorkflowRunner}
   alias FavnStoragePostgres.Config, as: DatabaseConfig
   alias FavnStoragePostgres.Repo
 
@@ -48,6 +48,7 @@ defmodule FavnStoragePostgres.Bootstrap.Connection do
           try do
             run_while_alive(
               physical_connection,
+              authentication_state,
               connection_config.authentication,
               resource_loss_mode(config.operation),
               fn -> function.(connection) end
@@ -88,6 +89,7 @@ defmodule FavnStoragePostgres.Bootstrap.Connection do
           try do
             run_while_alive(
               repo,
+              authentication_state,
               connection_config.authentication,
               resource_loss_mode(config.operation),
               fn ->
@@ -145,13 +147,41 @@ defmodule FavnStoragePostgres.Bootstrap.Connection do
           {:ok, nil}
 
         specs ->
-          case Supervisor.start_link(specs, strategy: :one_for_one) do
-            {:ok, pid} -> {:ok, pid}
-            {:error, _reason} -> {:error, :authentication_unavailable}
-          end
+          start_unlinked_authentication(specs)
       end
     else
       {:error, _reason} -> {:error, :authentication_unavailable}
+    end
+  end
+
+  defp start_unlinked_authentication(specs) do
+    previous_trap_exit? = Process.flag(:trap_exit, true)
+
+    try do
+      case Supervisor.start_link(specs, strategy: :one_for_one) do
+        {:ok, pid} ->
+          Process.unlink(pid)
+          flush_link_exit(pid)
+
+          if Process.alive?(pid),
+            do: {:ok, pid},
+            else: {:error, :authentication_unavailable}
+
+        {:error, _reason} ->
+          {:error, :authentication_unavailable}
+      end
+    catch
+      :exit, _reason -> {:error, :authentication_unavailable}
+    after
+      Process.flag(:trap_exit, previous_trap_exit?)
+    end
+  end
+
+  defp flush_link_exit(pid) do
+    receive do
+      {:EXIT, ^pid, _reason} -> :ok
+    after
+      0 -> :ok
     end
   end
 
@@ -261,7 +291,7 @@ defmodule FavnStoragePostgres.Bootstrap.Connection do
   end
 
   defp run_after_connect(connection, physical_connection, profile, authentication) do
-    case run_while_alive(physical_connection, authentication, :classify, fn ->
+    case run_while_alive(physical_connection, nil, authentication, :classify, fn ->
            try do
              DatabaseConfig.after_connect(connection, "bootstrap:#{profile.purpose}")
            rescue
@@ -290,151 +320,30 @@ defmodule FavnStoragePostgres.Bootstrap.Connection do
     end
   end
 
-  defp run_while_alive(process, _authentication, :unknown_outcome, function) do
-    watcher = start_resource_watcher(process)
-
-    try do
-      function.()
-    after
-      stop_resource_watcher(watcher)
-    end
-  end
-
-  defp run_while_alive(process, authentication, :classify, function) do
-    caller = self()
-    reference = make_ref()
-    process_monitor = Process.monitor(process)
-    workflow_context = WorkflowRunner.current_context()
-    workflow_reference = WorkflowRunner.context_reference(workflow_context)
-
-    {worker, worker_monitor} =
-      spawn_monitor(fn ->
-        case workflow_context do
-          nil ->
-            send(caller, {reference, :result, function.()})
-
-          workflow_context ->
-            case WorkflowRunner.guarded_result(workflow_context, function) do
-              {:ok, result} -> send(caller, {reference, :result, result})
-              {:error, failure} -> send(caller, {reference, :failure, failure})
-            end
-        end
-      end)
-
-    await_classified_result(
-      process,
-      authentication,
-      reference,
-      process_monitor,
-      worker,
-      worker_monitor,
-      workflow_reference
-    )
-  end
-
-  defp await_classified_result(
+  defp run_while_alive(
          process,
-         authentication,
-         reference,
-         process_monitor,
-         worker,
-         worker_monitor,
-         workflow_reference
+         authentication_process,
+         _authentication,
+         :unknown_outcome,
+         function
        ) do
-    receive do
-      {^reference, :result, result} ->
-        Process.demonitor(worker_monitor, [:flush])
-        Process.demonitor(process_monitor, [:flush])
-        result
+    resources =
+      [process, authentication_process]
+      |> Enum.reject(&is_nil/1)
 
-      {^reference, :failure, failure} ->
-        Process.demonitor(worker_monitor, [:flush])
-        Process.demonitor(process_monitor, [:flush])
-        WorkflowRunner.propagate_failure(failure)
-
-      {:favn_workflow_context, ^workflow_reference, event}
-      when is_reference(workflow_reference) ->
-        WorkflowRunner.absorb_context_event(workflow_reference, event)
-
-        await_classified_result(
-          process,
-          authentication,
-          reference,
-          process_monitor,
-          worker,
-          worker_monitor,
-          workflow_reference
-        )
-
-      {:DOWN, ^process_monitor, :process, ^process, reason} ->
-        Process.exit(worker, :kill)
-        await_worker_down(worker_monitor, worker)
-        absorb_pending_context_events(workflow_reference)
-        resource_loss(:classify, reason, authentication)
-
-      {:DOWN, ^worker_monitor, :process, ^worker, reason} ->
-        Process.demonitor(process_monitor, [:flush])
-        exit(reason)
-    end
+    ConnectionGuard.run_unknown_outcome(resources, function)
   end
 
-  defp absorb_pending_context_events(workflow_reference) do
-    receive do
-      {:favn_workflow_context, ^workflow_reference, event}
-      when is_reference(workflow_reference) ->
-        WorkflowRunner.absorb_context_event(workflow_reference, event)
-        absorb_pending_context_events(workflow_reference)
-    after
-      0 -> :ok
-    end
-  end
-
-  defp start_resource_watcher(process) do
-    caller = self()
-    ready_reference = make_ref()
-
-    watcher =
-      spawn(fn ->
-        process_monitor = Process.monitor(process)
-        caller_monitor = Process.monitor(caller)
-
-        receive do
-          {:DOWN, ^process_monitor, :process, ^process, _reason} ->
-            Process.exit(caller, :kill)
-        after
-          0 ->
-            send(caller, {:resource_watcher_ready, ready_reference, self()})
-            watch_resource(process, process_monitor, caller, caller_monitor)
-        end
-      end)
-
-    receive do
-      {:resource_watcher_ready, ^ready_reference, ^watcher} -> watcher
-    end
-  end
-
-  defp watch_resource(process, process_monitor, caller, caller_monitor) do
-    receive do
-      {:stop_resource_watcher, reference, ^caller} ->
-        Process.demonitor(process_monitor, [:flush])
-        Process.demonitor(caller_monitor, [:flush])
-        send(caller, {:resource_watcher_stopped, reference, self()})
-
-      {:DOWN, ^process_monitor, :process, ^process, _reason} ->
-        Process.exit(caller, :kill)
-
-      {:DOWN, ^caller_monitor, :process, ^caller, _reason} ->
-        :ok
-    end
-  end
-
-  defp stop_resource_watcher(watcher) do
-    reference = make_ref()
-    send(watcher, {:stop_resource_watcher, reference, self()})
-
-    receive do
-      {:resource_watcher_stopped, ^reference, ^watcher} -> :ok
-    end
+  defp run_while_alive(process, authentication_process, authentication, :classify, function) do
+    ConnectionGuard.run(
+      process,
+      authentication_process,
+      fn
+        :authentication, _reason -> {:error, :authentication_unavailable}
+        :connection, reason -> resource_loss(:classify, reason, authentication)
+      end,
+      function
+    )
   end
 
   defp resource_loss(:classify, reason, authentication),
@@ -444,12 +353,6 @@ defmodule FavnStoragePostgres.Bootstrap.Connection do
 
   defp resource_loss_mode(operation) when operation in [:bootstrap, :upgrade],
     do: :unknown_outcome
-
-  defp await_worker_down(monitor, worker) do
-    receive do
-      {:DOWN, ^monitor, :process, ^worker, _reason} -> :ok
-    end
-  end
 
   defp verify_repo_connection(authentication) do
     case Ecto.Adapters.SQL.query(Repo, "SELECT 1", []) do
@@ -461,7 +364,7 @@ defmodule FavnStoragePostgres.Bootstrap.Connection do
   end
 
   defp classify_connection_error(reason, authentication) do
-    case authentication_failure(authentication) do
+    case Authentication.failure_code(authentication) do
       nil -> classify_database_error(reason)
       code -> {:error, code}
     end
@@ -483,27 +386,6 @@ defmodule FavnStoragePostgres.Bootstrap.Connection do
 
   defp classify_database_error(%Postgrex.Error{}), do: {:error, :server_unreachable}
   defp classify_database_error(_reason), do: {:error, :server_unreachable}
-
-  defp authentication_failure(:password), do: nil
-
-  defp authentication_failure(authentication) do
-    case Authentication.status(authentication) do
-      %{last_failure_class: class}
-      when class in [
-             :token_timeout,
-             :identity_unavailable,
-             :provider_unavailable,
-             :insufficient_validity
-           ] ->
-        :authentication_unavailable
-
-      %{last_failure_class: class} when class in [:identity_rejected, :invalid_config] ->
-        :authentication_rejected
-
-      _status ->
-        nil
-    end
-  end
 
   defp stop_authentication(nil), do: :ok
   defp stop_authentication(pid), do: stop_process(pid)

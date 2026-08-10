@@ -49,6 +49,25 @@ defmodule FavnStoragePostgres.Bootstrap.WorkflowRunner do
   def current_context, do: Process.get(@context_key)
 
   @doc false
+  @spec diagnostic_details(atom()) :: map()
+  def diagnostic_details(failure_class) when is_atom(failure_class) do
+    case current_context() do
+      %{diagnostic_id: diagnostic_id} ->
+        %{
+          diagnostic_id: diagnostic_id,
+          failure_kind: :error,
+          failure_class: Atom.to_string(failure_class)
+        }
+
+      _context ->
+        %{
+          failure_kind: :error,
+          failure_class: Atom.to_string(failure_class)
+        }
+    end
+  end
+
+  @doc false
   @spec context_reference(map() | nil) :: reference() | nil
   def context_reference(%{reference: reference}), do: reference
   def context_reference(nil), do: nil

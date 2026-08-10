@@ -41,6 +41,26 @@ defmodule FavnStoragePostgres.ReleaseCLITest do
       do: {:error, %{operation: :verify_schema, status: :error, code: :schema_not_ready}}
   end
 
+  defmodule AuthenticationFailureRelease do
+    alias FavnStoragePostgres.Bootstrap.Result
+
+    def database_status(_env) do
+      Result.error(
+        :status,
+        :authentication_unavailable,
+        :authentication_unavailable,
+        :migrator_connection,
+        [],
+        %{
+          diagnostic_id: "diag_0123456789abcdef",
+          failure_kind: :error,
+          failure_class: "authentication_unavailable",
+          unrestricted_provider_detail: "provider-secret-canary"
+        }
+      )
+    end
+  end
+
   test "emits one JSON document and stable exit codes for composite operations" do
     {0, bootstrap} = run(:bootstrap)
     assert bootstrap["contract_version"] == 1
@@ -88,6 +108,24 @@ defmodule FavnStoragePostgres.ReleaseCLITest do
     {70, missing} = run(:provision_workspace)
     assert missing["code"] == "missing_or_invalid_environment"
     refute inspect(missing) =~ "credential"
+  end
+
+  test "stderr summarizes a normal authentication failure with bounded diagnostics" do
+    {69, result, stderr} = run_with_stderr(:status, %{}, AuthenticationFailureRelease)
+
+    assert result["state"] == "authentication_unavailable"
+    assert result["safe_to_retry"]
+    assert [%{"details" => details}] = result["findings"]
+    assert details["diagnostic_id"] == "diag_0123456789abcdef"
+    assert details["failure_class"] == "authentication_unavailable"
+
+    assert stderr =~ "operation=status"
+    assert stderr =~ "stage=migrator_connection"
+    assert stderr =~ "retryability=safe_to_retry"
+    assert stderr =~ "failure_class=authentication_unavailable"
+    assert stderr =~ "diagnostic_id=diag_0123456789abcdef"
+    refute stderr =~ "provider-secret-canary"
+    refute inspect(result) =~ "provider-secret-canary"
   end
 
   test "result contract reserves unknown outcome as unsafe to retry" do
@@ -240,6 +278,11 @@ defmodule FavnStoragePostgres.ReleaseCLITest do
   end
 
   defp run(operation, env \\ %{}, release \\ FakeRelease) do
+    {exit_code, result, _stderr} = run_with_stderr(operation, env, release)
+    {exit_code, result}
+  end
+
+  defp run_with_stderr(operation, env, release) do
     key = {__MODULE__, make_ref()}
     parent = self()
 
@@ -258,6 +301,6 @@ defmodule FavnStoragePostgres.ReleaseCLITest do
     assert_receive {^key, output}
     assert [json] = String.split(output, "\n", trim: true)
     assert [_summary] = String.split(stderr, "\n", trim: true)
-    {exit_code, Jason.decode!(json)}
+    {exit_code, Jason.decode!(json), stderr}
   end
 end

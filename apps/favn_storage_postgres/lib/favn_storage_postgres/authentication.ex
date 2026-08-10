@@ -124,6 +124,32 @@ defmodule FavnStoragePostgres.Authentication do
     end
   end
 
+  @doc false
+  @spec failure_code(mode()) :: :authentication_rejected | :authentication_unavailable | nil
+  def failure_code(:password), do: nil
+
+  def failure_code(authentication) do
+    case status(authentication) do
+      %{lifecycle_ready?: false} ->
+        :authentication_unavailable
+
+      %{last_failure_class: class}
+      when class in [
+             :token_timeout,
+             :identity_unavailable,
+             :provider_unavailable,
+             :insufficient_validity
+           ] ->
+        :authentication_unavailable
+
+      %{last_failure_class: class} when class in [:identity_rejected, :invalid_config] ->
+        :authentication_rejected
+
+      _status ->
+        nil
+    end
+  end
+
   @spec identity_status(mode(), query_executor(), map()) ::
           {:ok, :not_required | :exact | :missing | :conflict} | {:error, atom()}
   def identity_status(:password, _executor, _mapping), do: {:ok, :not_required}
