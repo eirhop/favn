@@ -246,6 +246,7 @@ defmodule FavnStoragePostgres.Bootstrap do
 
       {:error, code}
       when code in [
+             :authentication_lifecycle_conflict,
              :authentication_rejected,
              :authentication_unavailable,
              :server_unreachable,
@@ -1127,7 +1128,11 @@ defmodule FavnStoragePostgres.Bootstrap do
   end
 
   defp state_for(code)
-       when code in [:authentication_unavailable, :dependency_unavailable],
+       when code in [
+              :authentication_lifecycle_conflict,
+              :authentication_unavailable,
+              :dependency_unavailable
+            ],
        do: :authentication_unavailable
 
   defp state_for(:authentication_rejected), do: :authentication_rejected

@@ -54,9 +54,12 @@ sequence:
 | Migrator | Persistent one-off Job identity | Own only `favn_control`, migrate, and grant Favn objects; never `CREATEROLE` |
 | Runtime | Persistent control-plane identity | Connect and use Favn tables; never own or create objects |
 
-The command starts and stops one connection profile at a time. Credentials are
-read from environment variables, never command arguments, and are omitted from
-Favn JSON, application logs, telemetry, and inspected configuration.
+Read-only status starts and stops one connection profile at a time. Write-enabled
+bootstrap keeps its maintenance connection and advisory lock alive while it opens
+an isolated target-database lifecycle for the same bootstrap identity. Every
+lifecycle has distinct, compile-time process names. Credentials are read from
+environment variables, never command arguments, and are omitted from Favn JSON,
+application logs, telemetry, and inspected configuration.
 
 ### Password authentication
 

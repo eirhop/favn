@@ -9,6 +9,7 @@ defmodule Favn.Azure.ControlPlanePostgresAuth do
 
   alias Favn.Azure.ControlPlanePostgresAuth.Server
   alias Favn.Azure.ControlPlanePostgresAuth.Supervisor, as: AuthSupervisor
+  alias Favn.Azure.Credentials.Supervisor, as: CredentialsSupervisor
   alias Favn.Azure.{PostgresAuthenticationError, PostgresEntraToken, Token, TokenError}
 
   @supervisor AuthSupervisor
@@ -35,6 +36,7 @@ defmodule Favn.Azure.ControlPlanePostgresAuth do
     :max_inflight,
     :max_waiters_per_key,
     :supervisor_name,
+    :credentials_supervisor_name,
     :server_name,
     :task_supervisor,
     :cache_name,
@@ -238,6 +240,10 @@ defmodule Favn.Azure.ControlPlanePostgresAuth do
        |> Keyword.put(:refresh_before_seconds, minimum_validity_seconds)
        |> Keyword.put(:fetch_timeout, fetch_timeout)
        |> Keyword.put(:supervisor_name, Keyword.get(options, :supervisor_name, @supervisor))
+       |> Keyword.put(
+         :credentials_supervisor_name,
+         Keyword.get(options, :credentials_supervisor_name, CredentialsSupervisor)
+       )
        |> Keyword.put(:server_name, Keyword.get(options, :server_name, @server))
        |> Keyword.put(:task_supervisor, Keyword.get(options, :task_supervisor, @task_supervisor))
        |> Keyword.put(:cache_name, Keyword.get(options, :cache_name, @cache))

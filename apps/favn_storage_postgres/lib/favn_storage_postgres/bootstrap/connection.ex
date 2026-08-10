@@ -19,6 +19,7 @@ defmodule FavnStoragePostgres.Bootstrap.Connection do
 
   @type error_code ::
           :authentication_rejected
+          | :authentication_lifecycle_conflict
           | :authentication_unavailable
           | :database_access_rejected
           | :database_missing
@@ -155,23 +156,39 @@ defmodule FavnStoragePostgres.Bootstrap.Connection do
   end
 
   defp start_unlinked_authentication(specs) do
+    case start_unlinked(fn -> Supervisor.start_link(specs, strategy: :one_for_one) end) do
+      {:ok, pid} -> {:ok, pid}
+      {:error, reason} -> {:error, authentication_start_failure(reason)}
+    end
+  end
+
+  @doc false
+  @spec start_unlinked((-> {:ok, pid()} | {:error, term()})) ::
+          {:ok, pid()} | {:error, term()}
+  def start_unlinked(function) when is_function(function, 0) do
     previous_trap_exit? = Process.flag(:trap_exit, true)
 
     try do
-      case Supervisor.start_link(specs, strategy: :one_for_one) do
+      case function.() do
         {:ok, pid} ->
           Process.unlink(pid)
           flush_link_exit(pid)
 
           if Process.alive?(pid),
             do: {:ok, pid},
-            else: {:error, :authentication_unavailable}
+            else: {:error, :process_exited_during_start}
 
-        {:error, _reason} ->
-          {:error, :authentication_unavailable}
+        {:error, reason} ->
+          {:error, reason}
+
+        _invalid ->
+          {:error, :invalid_process_start_result}
       end
+    rescue
+      _exception -> {:error, :process_start_failed}
     catch
-      :exit, _reason -> {:error, :authentication_unavailable}
+      :exit, reason -> {:error, reason}
+      _kind, _reason -> {:error, :process_start_failed}
     after
       Process.flag(:trap_exit, previous_trap_exit?)
     end
@@ -184,6 +201,22 @@ defmodule FavnStoragePostgres.Bootstrap.Connection do
       0 -> :ok
     end
   end
+
+  defp authentication_start_failure(reason) do
+    if lifecycle_start_conflict?(reason),
+      do: :authentication_lifecycle_conflict,
+      else: :authentication_unavailable
+  end
+
+  defp lifecycle_start_conflict?({:already_started, pid}) when is_pid(pid), do: true
+
+  defp lifecycle_start_conflict?({:shutdown, reason}),
+    do: lifecycle_start_conflict?(reason)
+
+  defp lifecycle_start_conflict?({:failed_to_start_child, _child, reason}),
+    do: lifecycle_start_conflict?(reason)
+
+  defp lifecycle_start_conflict?(_reason), do: false
 
   defp authentication_ready(:password), do: :ok
 
@@ -220,25 +253,20 @@ defmodule FavnStoragePostgres.Bootstrap.Connection do
   end
 
   defp probe_connection(options, authentication) do
-    previous_trap_exit? = Process.flag(:trap_exit, true)
+    probe_options =
+      options
+      |> Keyword.put(:auto_reconnect, false)
+      |> Keyword.put(:sync_connect, true)
 
-    try do
-      probe_options =
-        options
-        |> Keyword.put(:auto_reconnect, false)
-        |> Keyword.put(:sync_connect, true)
+    case start_unlinked(fn ->
+           Postgrex.SimpleConnection.start_link(Probe, :ok, probe_options)
+         end) do
+      {:ok, probe} ->
+        stop_process(probe)
+        :ok
 
-      case Postgrex.SimpleConnection.start_link(Probe, :ok, probe_options) do
-        {:ok, probe} ->
-          Process.unlink(probe)
-          GenServer.stop(probe)
-          :ok
-
-        {:error, reason} ->
-          classify_connection_error(reason, authentication)
-      end
-    after
-      Process.flag(:trap_exit, previous_trap_exit?)
+      {:error, reason} ->
+        classify_connection_error(reason, authentication)
     end
   end
 
@@ -250,10 +278,8 @@ defmodule FavnStoragePostgres.Bootstrap.Connection do
       |> Keyword.put(:pool_size, 1)
       |> Keyword.put(:connection_listeners, {[self()], listener_tag})
 
-    case Postgrex.start_link(options) do
+    case start_unlinked(fn -> Postgrex.start_link(options) end) do
       {:ok, connection} ->
-        Process.unlink(connection)
-
         case await_physical_connection(
                connection,
                listener_tag,
@@ -307,9 +333,8 @@ defmodule FavnStoragePostgres.Bootstrap.Connection do
   end
 
   defp start_repo(options, authentication) do
-    case Repo.start_link(options) do
+    case start_unlinked(fn -> Repo.start_link(options) end) do
       {:ok, pid} ->
-        Process.unlink(pid)
         {:ok, pid}
 
       {:error, {:already_started, _pid}} ->

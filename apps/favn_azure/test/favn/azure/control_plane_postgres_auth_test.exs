@@ -39,7 +39,13 @@ defmodule Favn.Azure.ControlPlanePostgresAuthTest do
     names =
       [AuthSupervisor, AuthServer, AuthTaskSupervisor, AuthCache] ++
         Enum.flat_map(
-          [BootstrapLifecycle, MigratorLifecycle, RuntimeLifecycle],
+          [
+            BootstrapLifecycle,
+            BootstrapMaintenanceLifecycle,
+            BootstrapTargetLifecycle,
+            MigratorLifecycle,
+            RuntimeLifecycle
+          ],
           &lifecycle_names/1
         )
 
@@ -114,6 +120,53 @@ defmodule Favn.Azure.ControlPlanePostgresAuthTest do
     end)
 
     refute_receive {:credential_request, _unexpected_client_id}
+  end
+
+  test "bootstrap maintenance and target lifecycles run concurrently and restart cleanly" do
+    for _attempt <- 1..2 do
+      {maintenance_options, maintenance_client_id} =
+        concurrent_lifecycle_options(
+          BootstrapMaintenanceLifecycle,
+          "11111111-1111-1111-1111-111111111111",
+          "maintenance-token-canary",
+          self()
+        )
+
+      {target_options, target_client_id} =
+        concurrent_lifecycle_options(
+          BootstrapTargetLifecycle,
+          "11111111-1111-1111-1111-111111111111",
+          "target-token-canary",
+          self()
+        )
+
+      maintenance_lifecycle = start_isolated_provider!(maintenance_options)
+      target_lifecycle = start_isolated_provider!(target_options)
+
+      assert {:ok, maintenance_reference} =
+               ControlPlanePostgresAuth.connection_reference(maintenance_options)
+
+      assert {:ok, target_reference} =
+               ControlPlanePostgresAuth.connection_reference(target_options)
+
+      assert {:ok, "maintenance-token-canary"} =
+               ControlPlanePostgresAuth.connection_password(maintenance_reference)
+
+      assert {:ok, "target-token-canary"} =
+               ControlPlanePostgresAuth.connection_password(target_reference)
+
+      assert_receive {:credential_request, ^maintenance_client_id}
+      assert_receive {:credential_request, ^target_client_id}
+
+      Supervisor.stop(target_lifecycle)
+      Supervisor.stop(maintenance_lifecycle)
+
+      for name <-
+            lifecycle_names(BootstrapMaintenanceLifecycle) ++
+              lifecycle_names(BootstrapTargetLifecycle) do
+        refute Process.whereis(name)
+      end
+    end
   end
 
   test "a migrator token failure remains classified after bootstrap token success" do
@@ -648,11 +701,32 @@ defmodule Favn.Azure.ControlPlanePostgresAuthTest do
     lifecycle
   end
 
+  defp concurrent_lifecycle_options(namespace, client_id, access_token, owner) do
+    {:ok, token} = Token.new(access_token, DateTime.add(@now, 3_600, :second))
+    {:ok, responses} = Agent.start_link(fn -> [{:ok, token}] end)
+
+    options =
+      provider_options(responses,
+        client_id: client_id,
+        provider_options: [responses: responses, request_owner: owner]
+      )
+      |> Keyword.merge(lifecycle_options(namespace))
+
+    {options, client_id}
+  end
+
   defp lifecycle_options(namespace) do
-    [supervisor_name, server_name, task_supervisor, cache_name] = lifecycle_names(namespace)
+    [
+      supervisor_name,
+      credentials_supervisor_name,
+      server_name,
+      task_supervisor,
+      cache_name
+    ] = lifecycle_names(namespace)
 
     [
       supervisor_name: supervisor_name,
+      credentials_supervisor_name: credentials_supervisor_name,
       server_name: server_name,
       task_supervisor: task_supervisor,
       cache_name: cache_name
@@ -662,6 +736,7 @@ defmodule Favn.Azure.ControlPlanePostgresAuthTest do
   defp lifecycle_names(namespace) do
     [
       Module.concat(namespace, Supervisor),
+      Module.concat(namespace, CredentialsSupervisor),
       Module.concat(namespace, Server),
       Module.concat(namespace, TaskSupervisor),
       Module.concat(namespace, Cache)
