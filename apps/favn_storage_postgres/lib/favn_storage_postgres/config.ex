@@ -406,6 +406,7 @@ defmodule FavnStoragePostgres.Config do
   defp authentication_names(namespace) do
     [
       supervisor_name: Module.concat(namespace, Supervisor),
+      credentials_supervisor_name: Module.concat(namespace, CredentialsSupervisor),
       server_name: Module.concat(namespace, Server),
       task_supervisor: Module.concat(namespace, TaskSupervisor),
       cache_name: Module.concat(namespace, Cache)

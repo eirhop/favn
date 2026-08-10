@@ -427,6 +427,58 @@ defmodule FavnStoragePostgres.Bootstrap.WorkflowTest do
     assert bootstrap_complete < migrator_started
   end
 
+  test "managed identity bootstrap opens target auth while maintenance auth remains alive",
+       context do
+    {endpoint, endpoint_server} = start_identity_endpoint(@bootstrap_password, self())
+    on_exit(fn -> stop_identity_endpoint(endpoint_server) end)
+
+    azure_env = managed_identity_bootstrap_env(context)
+
+    with_identity_endpoint(endpoint, fn ->
+      for _attempt <- 1..2 do
+        assert {:error,
+                %{
+                  state: :bootstrap_required,
+                  code: :identity_provider_prerequisite,
+                  completed_stages: [:database],
+                  findings: [finding]
+                } = result} = Bootstrap.bootstrap(azure_env)
+
+        assert finding.stage == :identities
+        refute inspect(result) =~ "authentication_lifecycle_conflict"
+
+        for _request <- 1..2 do
+          assert_receive {:identity_endpoint_request, request}, 2_000
+          assert request =~ "client_id=11111111-1111-1111-1111-111111111111"
+        end
+      end
+    end)
+  end
+
+  test "runtime lifecycle conflicts remain authentication errors", context do
+    assert {:ok, %{state: :ready}} = Bootstrap.bootstrap(context.env)
+
+    credentials_supervisor =
+      FavnStoragePostgres.RuntimeOperationAuth.CredentialsSupervisor
+
+    assert {:ok, occupied} = Agent.start_link(fn -> :occupied end, name: credentials_supervisor)
+    on_exit(fn -> if Process.alive?(occupied), do: Agent.stop(occupied) end)
+
+    assert {:error,
+            %{
+              state: :authentication_unavailable,
+              code: :authentication_lifecycle_conflict,
+              completed_stages: [],
+              findings: findings
+            } = result} = Bootstrap.status(runtime_managed_identity_status_env(context))
+
+    finding = Enum.find(findings, &(&1.code == :authentication_lifecycle_conflict))
+    assert finding.stage == :runtime_connection
+    assert finding.details.failure_class == "authentication_lifecycle_conflict"
+    assert finding.details.diagnostic_id =~ ~r/^diag_[0-9a-f]{16}$/
+    refute inspect(result) =~ "credential-canary"
+  end
+
   test "repeat bootstrap does not require normal-role access to the maintenance database",
        context do
     Postgrex.query!(
@@ -610,6 +662,129 @@ defmodule FavnStoragePostgres.Bootstrap.WorkflowTest do
       "FAVN_WORKSPACE_SLUG" => workspace_id,
       "FAVN_WORKSPACE_NAME" => "Bootstrap workflow test"
     }
+  end
+
+  defp managed_identity_bootstrap_env(context) do
+    uri = URI.parse(context.maintenance_url)
+
+    %{
+      "FAVN_DEPLOYMENT_MODE" => "production",
+      "FAVN_DATABASE_SSL_MODE" => "disable",
+      "FAVN_DATABASE_HOST" => uri.host,
+      "FAVN_DATABASE_PORT" => Integer.to_string(uri.port || 5432),
+      "FAVN_DATABASE_NAME" => context.database,
+      "FAVN_DATABASE_MAINTENANCE_NAME" => "postgres",
+      "FAVN_DATABASE_BOOTSTRAP_AUTH_MODE" => "azure_managed_identity",
+      "FAVN_DATABASE_BOOTSTRAP_USERNAME" => context.bootstrap_role,
+      "FAVN_DATABASE_BOOTSTRAP_AZURE_MANAGED_IDENTITY_CLIENT_ID" =>
+        "11111111-1111-1111-1111-111111111111",
+      "FAVN_DATABASE_MIGRATOR_AUTH_MODE" => "azure_managed_identity",
+      "FAVN_DATABASE_MIGRATOR_USERNAME" => context.migrator_role,
+      "FAVN_DATABASE_MIGRATOR_AZURE_MANAGED_IDENTITY_CLIENT_ID" =>
+        "22222222-2222-2222-2222-222222222222",
+      "FAVN_DATABASE_MIGRATOR_AZURE_OBJECT_ID" => "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+      "FAVN_DATABASE_RUNTIME_AUTH_MODE" => "azure_managed_identity",
+      "FAVN_DATABASE_RUNTIME_USERNAME" => context.runtime_role,
+      "FAVN_DATABASE_RUNTIME_AZURE_MANAGED_IDENTITY_CLIENT_ID" =>
+        "33333333-3333-3333-3333-333333333333",
+      "FAVN_DATABASE_RUNTIME_AZURE_OBJECT_ID" => "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+      "FAVN_WORKSPACE_ID" => "managed-identity-workflow",
+      "FAVN_WORKSPACE_SLUG" => "managed-identity-workflow",
+      "FAVN_WORKSPACE_NAME" => "Managed identity workflow"
+    }
+  end
+
+  defp runtime_managed_identity_status_env(context) do
+    uri = URI.parse(context.maintenance_url)
+
+    context.env
+    |> Map.drop([
+      "FAVN_DATABASE_BOOTSTRAP_AUTH_MODE",
+      "FAVN_DATABASE_BOOTSTRAP_URL",
+      "FAVN_DATABASE_RUNTIME_URL"
+    ])
+    |> Map.merge(%{
+      "FAVN_DATABASE_HOST" => uri.host,
+      "FAVN_DATABASE_PORT" => Integer.to_string(uri.port || 5432),
+      "FAVN_DATABASE_NAME" => context.database,
+      "FAVN_DATABASE_RUNTIME_AUTH_MODE" => "azure_managed_identity",
+      "FAVN_DATABASE_RUNTIME_USERNAME" => context.runtime_role,
+      "FAVN_DATABASE_RUNTIME_AZURE_MANAGED_IDENTITY_CLIENT_ID" =>
+        "33333333-3333-3333-3333-333333333333",
+      "FAVN_DATABASE_RUNTIME_AZURE_OBJECT_ID" => "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+    })
+  end
+
+  defp start_identity_endpoint(password, owner) do
+    {:ok, listener} =
+      :gen_tcp.listen(0, [:binary, active: false, packet: :raw, reuseaddr: true])
+
+    {:ok, {_address, port}} = :inet.sockname(listener)
+
+    server =
+      spawn(fn -> identity_endpoint_accept(listener, password, owner) end)
+
+    {"http://127.0.0.1:#{port}/token", {listener, server}}
+  end
+
+  defp identity_endpoint_accept(listener, password, owner) do
+    case :gen_tcp.accept(listener) do
+      {:ok, socket} ->
+        serve_identity_token(socket, password, owner)
+        identity_endpoint_accept(listener, password, owner)
+
+      {:error, :closed} ->
+        :ok
+
+      {:error, _reason} ->
+        :ok
+    end
+  end
+
+  defp serve_identity_token(socket, password, owner) do
+    with {:ok, request} <- :gen_tcp.recv(socket, 0, 5_000) do
+      send(owner, {:identity_endpoint_request, request})
+
+      body =
+        Jason.encode!(%{
+          "access_token" => password,
+          "expires_on" =>
+            DateTime.utc_now()
+            |> DateTime.add(3_600, :second)
+            |> DateTime.to_unix()
+            |> Integer.to_string()
+        })
+
+      :ok =
+        :gen_tcp.send(
+          socket,
+          "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: #{byte_size(body)}\r\nconnection: close\r\n\r\n#{body}"
+        )
+    end
+
+    :gen_tcp.close(socket)
+  end
+
+  defp with_identity_endpoint(endpoint, function) do
+    names = ["IDENTITY_ENDPOINT", "IDENTITY_HEADER"]
+    previous = Map.new(names, &{&1, System.get_env(&1)})
+
+    System.put_env("IDENTITY_ENDPOINT", endpoint)
+    System.put_env("IDENTITY_HEADER", "test-header")
+
+    try do
+      function.()
+    after
+      Enum.each(previous, fn
+        {name, nil} -> System.delete_env(name)
+        {name, value} -> System.put_env(name, value)
+      end)
+    end
+  end
+
+  defp stop_identity_endpoint({listener, server}) do
+    :gen_tcp.close(listener)
+    if Process.alive?(server), do: Process.exit(server, :kill)
   end
 
   defp collect_status_stages(stages) do

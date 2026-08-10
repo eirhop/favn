@@ -54,9 +54,12 @@ sequence:
 | Migrator | Persistent one-off Job identity | Own only `favn_control`, migrate, and grant Favn objects; never `CREATEROLE` |
 | Runtime | Persistent control-plane identity | Connect and use Favn tables; never own or create objects |
 
-The command starts and stops one connection profile at a time. Credentials are
-read from environment variables, never command arguments, and are omitted from
-Favn JSON, application logs, telemetry, and inspected configuration.
+Read-only status starts and stops one connection profile at a time. Write-enabled
+bootstrap keeps its maintenance connection and advisory lock alive while it opens
+an isolated target-database lifecycle for the same bootstrap identity. Every
+lifecycle has distinct, compile-time process names. Credentials are read from
+environment variables, never command arguments, and are omitted from Favn JSON,
+application logs, telemetry, and inspected configuration.
 
 ### Password authentication
 
@@ -136,9 +139,15 @@ FAVN_DATABASE_RUNTIME_AZURE_OBJECT_ID=<runtime-object-id>
 Client IDs select which assigned identity obtains a token. Object IDs are the
 stable principals that Azure PostgreSQL maps to roles. Favn uses Azure's
 `pgaadauth_create_principal_with_oid` provider adapter, then applies the same
-PostgreSQL role policy as password deployments. The common workflow is therefore
-PostgreSQL-specific but not Azure-Job-specific; Kubernetes Jobs, Docker, CI, and
-other PostgreSQL providers use the same commands.
+PostgreSQL role policy as password deployments. An exact application mapping is
+a non-admin `service` principal with the configured object ID and MFA disabled.
+The common workflow is therefore PostgreSQL-specific but not Azure-Job-specific;
+Kubernetes Jobs, Docker, CI, and other PostgreSQL providers use the same
+commands.
+
+The built-in Entra token provider currently targets Azure public cloud with the
+`https://ossrdbms-aad.database.windows.net` resource. Sovereign Azure clouds use
+a different resource value and are not supported by this workflow yet.
 
 Favn never claims an existing plain PostgreSQL role for Entra authentication.
 An existing role must already have the exact object-ID mapping; otherwise the
@@ -179,6 +188,12 @@ restart:    never
 timeout:    deployment-defined and bounded
 identity:   bootstrap + migrator + runtime identities
 ```
+
+Each identity used by the command must be available to the Job's main
+container. If the Container Apps Job sets `identitySettings`, use lifecycle
+`Main` or `All` for these identities; `Init` and `None` make the token endpoint
+unavailable to the Favn process. See Microsoft's
+[managed-identity availability contract](https://learn.microsoft.com/azure/container-apps/managed-identity#control-managed-identity-availability).
 
 The release `eval` entrypoint disables distributed Erlang, so this Job needs no
 BEAM node name, cookie, EPMD port, or distribution port. It also needs no HTTP

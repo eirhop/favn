@@ -16,6 +16,7 @@ defmodule Favn.Azure.ControlPlanePostgresAuth.Supervisor do
   def init(options) do
     task_supervisor = Keyword.fetch!(options, :task_supervisor)
     cache_name = Keyword.fetch!(options, :cache_name)
+    credentials_supervisor_name = Keyword.fetch!(options, :credentials_supervisor_name)
     server_name = Keyword.fetch!(options, :server_name)
 
     credential_options =
@@ -28,7 +29,11 @@ defmodule Favn.Azure.ControlPlanePostgresAuth.Supervisor do
         :max_waiters_per_key,
         :clock
       ])
-      |> Keyword.merge(task_supervisor: task_supervisor, cache_name: cache_name)
+      |> Keyword.merge(
+        supervisor_name: credentials_supervisor_name,
+        task_supervisor: task_supervisor,
+        cache_name: cache_name
+      )
 
     server_options =
       options

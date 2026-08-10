@@ -53,8 +53,14 @@ defmodule FavnStoragePostgres.Bootstrap.ConfigTest do
     bootstrap_env =
       Config.connection_env(config, config.bootstrap, "postgres", :bootstrap_maintenance)
 
+    bootstrap_target_env =
+      Config.connection_env(config, config.bootstrap, "favn", :bootstrap_target)
+
     migrator_env =
       Config.connection_env(config, config.migrator, "favn", :migrator_operation)
+
+    migrator_lock_env =
+      Config.connection_env(config, config.migrator, "favn", :migrator_lock)
 
     assert migrator_env["FAVN_DATABASE_USERNAME"] == "favn_migrator"
     assert migrator_env["FAVN_DATABASE_AUTH_PROFILE"] == "migrator_operation"
@@ -66,21 +72,58 @@ defmodule FavnStoragePostgres.Bootstrap.ConfigTest do
     assert {:ok, bootstrap_connection} =
              DatabaseConfig.connection_config_from_env(bootstrap_env)
 
+    assert {:ok, bootstrap_target_connection} =
+             DatabaseConfig.connection_config_from_env(bootstrap_target_env)
+
     assert {:ok, migrator_connection} =
              DatabaseConfig.connection_config_from_env(migrator_env)
+
+    assert {:ok, migrator_lock_connection} =
+             DatabaseConfig.connection_config_from_env(migrator_lock_env)
 
     assert {:ok, runtime_connection} =
              DatabaseConfig.connection_config_from_env(runtime_env)
 
     {:dynamic, _bootstrap_provider, bootstrap_options} = bootstrap_connection.authentication
+
+    {:dynamic, _bootstrap_target_provider, bootstrap_target_options} =
+      bootstrap_target_connection.authentication
+
     {:dynamic, _migrator_provider, migrator_options} = migrator_connection.authentication
+
+    {:dynamic, _migrator_lock_provider, migrator_lock_options} =
+      migrator_lock_connection.authentication
+
     {:dynamic, _runtime_provider, runtime_options} = runtime_connection.authentication
 
     assert bootstrap_options[:client_id] == "11111111-1111-1111-1111-111111111111"
     assert migrator_options[:client_id] == "22222222-2222-2222-2222-222222222222"
     assert runtime_options[:client_id] == "33333333-3333-3333-3333-333333333333"
-    refute migrator_options[:server_name] == runtime_options[:server_name]
-    refute migrator_options[:cache_name] == runtime_options[:cache_name]
+
+    lifecycle_options = [
+      bootstrap_options,
+      bootstrap_target_options,
+      migrator_options,
+      migrator_lock_options,
+      runtime_options
+    ]
+
+    for name <- [
+          :supervisor_name,
+          :credentials_supervisor_name,
+          :server_name,
+          :task_supervisor,
+          :cache_name
+        ] do
+      values = Enum.map(lifecycle_options, &Keyword.fetch!(&1, name))
+      assert length(Enum.uniq(values)) == 5
+    end
+
+    assert bootstrap_options[:credentials_supervisor_name] ==
+             FavnStoragePostgres.BootstrapMaintenanceAuth.CredentialsSupervisor
+
+    assert bootstrap_target_options[:credentials_supervisor_name] ==
+             FavnStoragePostgres.BootstrapTargetAuth.CredentialsSupervisor
 
     inspected = inspect(config)
     refute inspected =~ "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"

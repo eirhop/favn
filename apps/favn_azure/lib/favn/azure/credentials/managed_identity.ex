@@ -15,8 +15,7 @@ defmodule Favn.Azure.Credentials.ManagedIdentity do
   @imds_endpoint "http://169.254.169.254/metadata/identity/oauth2/token"
   @imds_api_version "2018-02-01"
   @azure_app_service_api_version "2019-08-01"
-  @retry_statuses [404, 429, 500, 502, 503, 504]
-  @retry_delays [100, 200, 400]
+  @retry_delays [1_000, 2_000, 4_000]
   @max_response_bytes 1_048_576
 
   @impl true
@@ -144,13 +143,18 @@ defmodule Favn.Azure.Credentials.ManagedIdentity do
   end
 
   defp http_error(status) do
+    retryable? = transient_status?(status)
+
     %TokenError{
-      type: if(status in @retry_statuses, do: :connection_error, else: :authentication_error),
+      type: if(retryable?, do: :connection_error, else: :authentication_error),
       message: "managed identity token request failed",
-      retryable?: status in @retry_statuses,
+      retryable?: retryable?,
       details: %{status: status}
     }
   end
+
+  defp transient_status?(status),
+    do: status in [404, 410, 429] or status in 500..599
 
   defp timeout_error do
     %TokenError{

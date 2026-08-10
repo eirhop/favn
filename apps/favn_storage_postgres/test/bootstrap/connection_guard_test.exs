@@ -123,7 +123,7 @@ defmodule FavnStoragePostgres.Bootstrap.ConnectionGuardTest do
         send(test_process, {:unknown_outcome_guard_result, result})
       end)
 
-    assert_receive :unknown_outcome_guard_ready
+    assert_receive :unknown_outcome_guard_ready, 1_000
     assert_receive {:unknown_outcome_guard_result, :ok}
     assert_receive {:DOWN, ^owner_monitor, :process, ^owner, :normal}
     assert Process.alive?(connection)

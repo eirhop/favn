@@ -9,6 +9,7 @@ defmodule Favn.Azure.ControlPlanePostgresAuth do
 
   alias Favn.Azure.ControlPlanePostgresAuth.Server
   alias Favn.Azure.ControlPlanePostgresAuth.Supervisor, as: AuthSupervisor
+  alias Favn.Azure.Credentials.Supervisor, as: CredentialsSupervisor
   alias Favn.Azure.{PostgresAuthenticationError, PostgresEntraToken, Token, TokenError}
 
   @supervisor AuthSupervisor
@@ -35,6 +36,7 @@ defmodule Favn.Azure.ControlPlanePostgresAuth do
     :max_inflight,
     :max_waiters_per_key,
     :supervisor_name,
+    :credentials_supervisor_name,
     :server_name,
     :task_supervisor,
     :cache_name,
@@ -131,6 +133,7 @@ defmodule Favn.Azure.ControlPlanePostgresAuth do
              SELECT principal.role_name::text,
                     principal.principal_type,
                     principal.object_id,
+                    principal.is_mfa,
                     principal.is_admin
              FROM pg_catalog.pgaadauth_list_principals(false)
                AS principal(role_name, principal_type, object_id, tenant_id, is_mfa, is_admin)
@@ -238,6 +241,10 @@ defmodule Favn.Azure.ControlPlanePostgresAuth do
        |> Keyword.put(:refresh_before_seconds, minimum_validity_seconds)
        |> Keyword.put(:fetch_timeout, fetch_timeout)
        |> Keyword.put(:supervisor_name, Keyword.get(options, :supervisor_name, @supervisor))
+       |> Keyword.put(
+         :credentials_supervisor_name,
+         Keyword.get(options, :credentials_supervisor_name, CredentialsSupervisor)
+       )
        |> Keyword.put(:server_name, Keyword.get(options, :server_name, @server))
        |> Keyword.put(:task_supervisor, Keyword.get(options, :task_supervisor, @task_supervisor))
        |> Keyword.put(:cache_name, Keyword.get(options, :cache_name, @cache))
@@ -265,10 +272,11 @@ defmodule Favn.Azure.ControlPlanePostgresAuth do
   defp classify_mapping(rows, role, object_id) when is_list(rows) do
     exact? =
       Enum.any?(rows, fn
-        [^role, type, row_object_id, is_admin]
+        [^role, type, row_object_id, is_mfa, is_admin]
         when is_binary(type) and is_binary(row_object_id) ->
           String.downcase(type) == "service" and
-            String.downcase(row_object_id) == object_id and is_admin in [0, false]
+            String.downcase(row_object_id) == object_id and is_mfa in [0, false] and
+            is_admin in [0, false]
 
         _row ->
           false

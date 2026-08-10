@@ -708,20 +708,21 @@ deterministic key derived from the validated target database name. Do not use a
 Favn table because the database/schema may not exist.
 
 - Lock acquisition has a bounded wait and no retry loop.
-- PostgreSQL advisory locks are cluster-wide, so `bootstrap` holds one session
-  lock from the maintenance connection across database creation and every
-  target-database stage. A second lock from the target connection would contend
-  with the bootstrap process itself.
-- `upgrade` takes the same key from its migrator connection, so bootstrap and
-  upgrade serialize even though they connect to different databases/profiles.
+- PostgreSQL advisory locks are scoped to the database of the locking session.
+  `bootstrap` therefore holds the maintenance-database lock across database
+  creation and also takes the target-database lock before target writes. The
+  maintenance lock serializes bootstrap Jobs; the target lock serializes an
+  active bootstrap with upgrade.
+- `upgrade` takes the same target-database key from its migrator connection. It
+  contends with bootstrap's target lock, not the maintenance-database lock.
 - `status` remains lock-free and returns available read evidence.
 - A second writer exits `75` without making a change.
 - Connections own locks. Connection loss releases the lock but may also create
   an unknown write outcome, which must be reported as such.
 
-PostgreSQL integration tests must prove that the same key contends across the
-maintenance and target database connections and that releasing or losing the
-owning connection makes it available again.
+PostgreSQL integration tests must prove contention within both lock domains,
+that maintenance and target locks do not self-contend, and that releasing or
+losing an owning connection makes its lock available again.
 
 ## 12. Transaction and unknown-outcome rules
 
