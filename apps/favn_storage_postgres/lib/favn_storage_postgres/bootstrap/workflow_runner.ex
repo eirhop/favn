@@ -383,8 +383,6 @@ defmodule FavnStoragePostgres.Bootstrap.WorkflowRunner do
     end)
   end
 
-  defp safe_failure_location(_stacktrace), do: "application"
-
   defp application_module?(module_name) do
     String.starts_with?(module_name, [
       "Elixir.Favn",
