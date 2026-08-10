@@ -4,7 +4,7 @@ defmodule FavnOrchestrator.MixProject do
   def project do
     [
       app: :favn_orchestrator,
-      version: "0.5.0-rc.4",
+      version: "0.5.0-rc.5",
       description: "Internal orchestrator runtime scaffold for v0.5 migration",
       build_path: "../../_build",
       config_path: "../../config/config.exs",
