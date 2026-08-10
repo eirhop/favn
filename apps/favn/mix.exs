@@ -4,7 +4,7 @@ defmodule Favn.MixProject do
   def project do
     [
       app: :favn,
-      version: "0.5.0-rc.3",
+      version: "0.5.0-rc.4",
       description: "Public Favn package wrapper",
       build_path: "../../_build",
       config_path: "../../config/config.exs",
