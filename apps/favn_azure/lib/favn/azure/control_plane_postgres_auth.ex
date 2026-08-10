@@ -128,13 +128,14 @@ defmodule Favn.Azure.ControlPlanePostgresAuth do
          {:ok, %{rows: rows}} <-
            executor.(
              """
-             SELECT principal.rolename::text,
-                    principal.principaltype,
-                    principal.objectid,
-                    principal.isadmin
-             FROM pg_catalog.pgaadauth_list_principals(false) principal
-             WHERE principal.rolename = $1 OR principal.objectid = $2
-             ORDER BY principal.rolename
+             SELECT principal.role_name::text,
+                    principal.principal_type,
+                    principal.object_id,
+                    principal.is_admin
+             FROM pg_catalog.pgaadauth_list_principals(false)
+               AS principal(role_name, principal_type, object_id, tenant_id, is_mfa, is_admin)
+             WHERE principal.role_name = $1 OR principal.object_id = $2
+             ORDER BY principal.role_name
              LIMIT 4
              """,
              [role, object_id]
@@ -207,7 +208,6 @@ defmodule Favn.Azure.ControlPlanePostgresAuth do
       [role, object_id]
     )
   end
-
 
   defp normalize_options(options) when is_list(options) do
     with true <- Keyword.keyword?(options),

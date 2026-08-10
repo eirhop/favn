@@ -9,6 +9,8 @@ fi
 image=$1
 expected_version=${2:-}
 expected_revision=${3:-}
+status_stderr_file=$(mktemp)
+trap 'rm -f "$status_stderr_file"' EXIT
 
 inspect() {
   docker image inspect --format "$1" "$image"
@@ -97,15 +99,19 @@ docker run --rm --entrypoint /bin/sh "$image" -c \
 
 set +e
 status_stdout=$(docker run --rm \
+  --env FAVN_LOG_LEVEL=info \
+  --env FAVN_DATABASE_BOOTSTRAP_URL=ecto://image-user-canary:image-password-canary@postgres.example/favn \
+  --env FAVN_TEST_ACCESS_TOKEN=access-token-canary \
   --network none \
   --read-only \
   --tmpfs /tmp:rw,noexec,nosuid,size=64m,uid=10001,gid=10001,mode=0700 \
   --cap-drop ALL \
   --security-opt no-new-privileges:true \
   --entrypoint /app/bin/favn_control_plane_ops \
-  "$image" status)
+  "$image" status 2>"$status_stderr_file")
 status_exit=$?
 set -e
+status_stderr=$(<"$status_stderr_file")
 if [[ $status_exit -ne 64 ]]; then
   echo "status contract returned exit $status_exit instead of 64" >&2
   exit 1
@@ -126,6 +132,19 @@ if ! grep -Fq '"operation":"status"' <<< "$status_stdout"; then
 fi
 if ! grep -Fq '"state":"invalid_configuration"' <<< "$status_stdout"; then
   echo "status contract stdout omitted the invalid configuration state" >&2
+  exit 1
+fi
+if ! grep -Fq 'favn.release.operation_started operation=status' <<< "$status_stderr"; then
+  echo "status contract did not restore configured release logging on stderr" >&2
+  exit 1
+fi
+if ! grep -Fq 'favn.release operation=status state=invalid_configuration exit=64' <<< "$status_stderr"; then
+  echo "status contract omitted its bounded stderr summary" >&2
+  exit 1
+fi
+if grep -Eq 'image-user-canary|image-password-canary|postgres\.example|access-token-canary' \
+  <<< "$status_stdout$status_stderr"; then
+  echo "status contract disclosed a diagnostic canary" >&2
   exit 1
 fi
 

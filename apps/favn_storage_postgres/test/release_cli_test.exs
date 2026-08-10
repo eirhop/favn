@@ -141,7 +141,11 @@ defmodule FavnStoragePostgres.ReleaseCLITest do
                  stdout_path,
                  stderr_path
                ],
-               env: [{"FAVN_RELEASE_EXPR", expression}]
+               env: [
+                 {"ERL_AFLAGS", "-kernel logger_level none"},
+                 {"FAVN_LOG_LEVEL", "warning"},
+                 {"FAVN_RELEASE_EXPR", expression}
+               ]
              )
 
     stdout = File.read!(stdout_path)
@@ -150,6 +154,89 @@ defmodule FavnStoragePostgres.ReleaseCLITest do
     assert Jason.decode!(json)["state"] == "ready"
     assert stderr =~ "bootstrap progress belongs on stderr"
     assert stderr =~ "favn.release operation=bootstrap state=ready exit=0"
+  end
+
+  test "release entrypoint emits one redacted JSON result for a bootstrap worker exception" do
+    suffix = System.unique_integer([:positive])
+    stdout_path = Path.join(System.tmp_dir!(), "favn-release-crash-stdout-#{suffix}")
+    stderr_path = Path.join(System.tmp_dir!(), "favn-release-crash-stderr-#{suffix}")
+    on_exit(fn -> Enum.each([stdout_path, stderr_path], &File.rm/1) end)
+
+    expression = """
+    defmodule FavnReleaseCLICrashFixture do
+      alias FavnStoragePostgres.Bootstrap.WorkflowRunner
+
+      def bootstrap(_env) do
+        WorkflowRunner.run(:bootstrap, fn ->
+          WorkflowRunner.track_stage(:provider_identity, fn ->
+            raise RuntimeError,
+                  "database-user-canary database-password-canary " <>
+                    "postgres.example access-token-canary arbitrary-message-canary"
+          end)
+        end)
+      end
+    end
+
+    try do
+      FavnStoragePostgres.ReleaseCLI.run!(:bootstrap, %{}, FavnReleaseCLICrashFixture)
+    rescue
+      RuntimeError -> System.halt(76)
+    end
+    """
+
+    script =
+      ~S(MIX_ENV=test "$1" run --no-compile --no-start -e "$FAVN_RELEASE_EXPR" >"$2" 2>"$3")
+
+    mix = System.find_executable("mix") || raise "mix executable is required"
+
+    assert {_output, 76} =
+             System.cmd(
+               "sh",
+               [
+                 "-c",
+                 script,
+                 "favn-release-cli-crash",
+                 mix,
+                 stdout_path,
+                 stderr_path
+               ],
+               env: [
+                 {"ERL_AFLAGS", "-kernel logger_level none"},
+                 {"FAVN_LOG_LEVEL", "info"},
+                 {"FAVN_RELEASE_EXPR", expression}
+               ]
+             )
+
+    stdout = File.read!(stdout_path)
+    stderr = File.read!(stderr_path)
+    assert [json] = String.split(stdout, "\n", trim: true)
+    result = Jason.decode!(json)
+
+    assert result["state"] == "unknown_outcome"
+    assert result["code"] == "unexpected_worker_exit"
+    refute result["safe_to_retry"]
+    assert [%{"stage" => "provider_identity", "details" => details}] = result["findings"]
+    assert details["failure_kind"] == "error"
+    assert details["failure_class"] == "RuntimeError"
+    assert details["diagnostic_id"] =~ ~r/^diag_[0-9a-f]{16}$/
+
+    assert stderr =~ "favn.release.operation_started operation=bootstrap"
+    assert stderr =~ "stage=provider_identity"
+    assert stderr =~ "failure_kind=error"
+    assert stderr =~ "failure_class=RuntimeError"
+    assert stderr =~ "diagnostic_id=#{details["diagnostic_id"]}"
+    assert stderr =~ "favn.release operation=bootstrap state=unknown_outcome exit=76"
+
+    for canary <- [
+          "database-user-canary",
+          "database-password-canary",
+          "postgres.example",
+          "access-token-canary",
+          "arbitrary-message-canary"
+        ] do
+      refute stdout =~ canary
+      refute stderr =~ canary
+    end
   end
 
   defp run(operation, env \\ %{}, release \\ FakeRelease) do

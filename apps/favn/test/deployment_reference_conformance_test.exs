@@ -240,6 +240,7 @@ defmodule Favn.DeploymentReferenceConformanceTest do
 
   test "production operations wrapper exposes only composed database lifecycle commands" do
     wrapper = read("rel/control_plane/overlays/bin/favn_control_plane_ops")
+    image_contract = read("scripts/control_plane_image_contract.sh")
 
     assert wrapper =~ "bootstrap) operation=bootstrap"
     assert wrapper =~ "status) operation=status"
@@ -248,6 +249,11 @@ defmodule Favn.DeploymentReferenceConformanceTest do
     refute wrapper =~ "grant-runtime) operation=grant_runtime"
     refute wrapper =~ "provision-workspace) operation=provision_workspace"
     refute wrapper =~ "verify-schema) operation=verify_schema"
+
+    assert image_contract =~ "--entrypoint /app/bin/favn_control_plane_ops"
+    assert image_contract =~ "favn.release.operation_started operation=status"
+    assert image_contract =~ "status contract stdout contained"
+    assert image_contract =~ "status contract disclosed a diagnostic canary"
   end
 
   test "Compose qualification reuses revision images and excludes generated state" do

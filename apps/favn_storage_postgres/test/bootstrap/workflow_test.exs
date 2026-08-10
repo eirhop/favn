@@ -529,7 +529,8 @@ defmodule FavnStoragePostgres.Bootstrap.WorkflowTest do
       handler,
       [:favn, :storage_postgres, :database_workflow, :stage],
       fn _event, _measurements, metadata, _config ->
-        if metadata.operation == :bootstrap and metadata.stage == :database do
+        if metadata.operation == :bootstrap and metadata.stage == :database and
+             metadata.outcome == :complete do
           result =
             Postgrex.query!(
               context.admin,

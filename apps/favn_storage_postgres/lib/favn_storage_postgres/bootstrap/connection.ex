@@ -13,7 +13,7 @@ defmodule FavnStoragePostgres.Bootstrap.Connection do
   end
 
   alias FavnStoragePostgres.Authentication
-  alias FavnStoragePostgres.Bootstrap.{Config, Profile}
+  alias FavnStoragePostgres.Bootstrap.{Config, Profile, WorkflowRunner}
   alias FavnStoragePostgres.Config, as: DatabaseConfig
   alias FavnStoragePostgres.Repo
 
@@ -32,6 +32,12 @@ defmodule FavnStoragePostgres.Bootstrap.Connection do
         when result: term()
   def with_raw(config, profile, database, lifecycle, function)
       when is_function(function, 1) do
+    WorkflowRunner.track_stage(connection_stage(lifecycle), fn ->
+      do_with_raw(config, profile, database, lifecycle, function)
+    end)
+  end
+
+  defp do_with_raw(config, profile, database, lifecycle, function) do
     with {:ok, connection_config} <- connection_config(config, profile, database, lifecycle),
          :ok <- ensure_dependencies(connection_config.authentication),
          {:ok, authentication_state} <- start_authentication(connection_config.authentication) do
@@ -61,6 +67,12 @@ defmodule FavnStoragePostgres.Bootstrap.Connection do
         when result: term()
   def with_repo(config, profile, database, lifecycle, function)
       when is_function(function, 1) do
+    WorkflowRunner.track_stage(connection_stage(lifecycle), fn ->
+      do_with_repo(config, profile, database, lifecycle, function)
+    end)
+  end
+
+  defp do_with_repo(config, profile, database, lifecycle, function) do
     with {:ok, connection_config} <- connection_config(config, profile, database, lifecycle),
          :ok <- ensure_dependencies(connection_config.authentication),
          {:ok, authentication_state} <- start_authentication(connection_config.authentication) do
@@ -94,6 +106,13 @@ defmodule FavnStoragePostgres.Bootstrap.Connection do
       end
     end
   end
+
+  defp connection_stage(:bootstrap_maintenance), do: :bootstrap_connection
+  defp connection_stage(:bootstrap_target), do: :bootstrap_target
+  defp connection_stage(:migrator_lock), do: :migrator_connection
+  defp connection_stage(:migrator_operation), do: :migrator_connection
+  defp connection_stage(:runtime_operation), do: :runtime_connection
+  defp connection_stage(lifecycle), do: lifecycle
 
   defp connection_config(config, profile, database, lifecycle) do
     env = Config.connection_env(config, profile, database, lifecycle)
@@ -285,24 +304,88 @@ defmodule FavnStoragePostgres.Bootstrap.Connection do
     caller = self()
     reference = make_ref()
     process_monitor = Process.monitor(process)
+    workflow_context = WorkflowRunner.current_context()
+    workflow_reference = WorkflowRunner.context_reference(workflow_context)
 
     {worker, worker_monitor} =
-      spawn_monitor(fn -> send(caller, {reference, function.()}) end)
+      spawn_monitor(fn ->
+        case workflow_context do
+          nil ->
+            send(caller, {reference, :result, function.()})
 
+          workflow_context ->
+            case WorkflowRunner.guarded_result(workflow_context, function) do
+              {:ok, result} -> send(caller, {reference, :result, result})
+              {:error, failure} -> send(caller, {reference, :failure, failure})
+            end
+        end
+      end)
+
+    await_classified_result(
+      process,
+      authentication,
+      reference,
+      process_monitor,
+      worker,
+      worker_monitor,
+      workflow_reference
+    )
+  end
+
+  defp await_classified_result(
+         process,
+         authentication,
+         reference,
+         process_monitor,
+         worker,
+         worker_monitor,
+         workflow_reference
+       ) do
     receive do
-      {^reference, result} ->
+      {^reference, :result, result} ->
         Process.demonitor(worker_monitor, [:flush])
         Process.demonitor(process_monitor, [:flush])
         result
 
+      {^reference, :failure, failure} ->
+        Process.demonitor(worker_monitor, [:flush])
+        Process.demonitor(process_monitor, [:flush])
+        WorkflowRunner.propagate_failure(failure)
+
+      {:favn_workflow_context, ^workflow_reference, event}
+      when is_reference(workflow_reference) ->
+        WorkflowRunner.absorb_context_event(workflow_reference, event)
+
+        await_classified_result(
+          process,
+          authentication,
+          reference,
+          process_monitor,
+          worker,
+          worker_monitor,
+          workflow_reference
+        )
+
       {:DOWN, ^process_monitor, :process, ^process, reason} ->
         Process.exit(worker, :kill)
         await_worker_down(worker_monitor, worker)
+        absorb_pending_context_events(workflow_reference)
         resource_loss(:classify, reason, authentication)
 
       {:DOWN, ^worker_monitor, :process, ^worker, reason} ->
         Process.demonitor(process_monitor, [:flush])
         exit(reason)
+    end
+  end
+
+  defp absorb_pending_context_events(workflow_reference) do
+    receive do
+      {:favn_workflow_context, ^workflow_reference, event}
+      when is_reference(workflow_reference) ->
+        WorkflowRunner.absorb_context_event(workflow_reference, event)
+        absorb_pending_context_events(workflow_reference)
+    after
+      0 -> :ok
     end
   end
 
