@@ -35,6 +35,7 @@ defmodule FavnLocal.ConfigTest do
     assert config.log_level == :info
     assert config.runtime_input_pin_key == String.duplicate("k", 32)
     assert config.runner_release_id =~ ~r/^rr_[0-9a-f]{64}$/
+    assert config.distribution_cookie =~ ~r/\A[0-9a-f]{96}\z/
   end
 
   test "loads an explicit source-development log level and rejects invalid values" do

@@ -97,7 +97,7 @@ defmodule FavnLocal.Config do
          log_level: log_level,
          operator_node: String.to_atom("favn_local_operator_#{suffix}@127.0.0.1"),
          runner_node: String.to_atom("favn_local_runner_#{suffix}@127.0.0.1"),
-         distribution_cookie: random_secret(48),
+         distribution_cookie: random_hex(48),
          service_token: random_secret(48),
          view_secret_key_base: view_credentials.secret_key_base,
          bootstrap_password: view_credentials.password,
