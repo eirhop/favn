@@ -531,7 +531,8 @@ and [secret references](https://learn.microsoft.com/en-us/azure/container-apps/m
 Map sensitive values such as `FAVN_DATABASE_URL`,
 `FAVN_RUNTIME_INPUT_PIN_KEYS`, general platform service tokens, dedicated
 capacity-reader tokens, distribution cookies, and `FAVN_VIEW_SECRET_KEY_BASE`
-from the platform secret store. Configuration changes generally create a new
+plus the Orchestrator-only `FAVN_OPERATOR_COMMAND_HMAC_SECRET` from the platform
+secret store. Configuration changes generally create a new
 deployment revision. Restart or replace running replicas when a platform does
 not automatically refresh a changed secret.
 

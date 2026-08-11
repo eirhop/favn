@@ -3,6 +3,7 @@ defmodule FavnView.SchedulesLive do
 
   use FavnView, :live_view
 
+  alias FavnView.Orchestrator
   alias FavnView.Components.SchedulesPage
   alias FavnView.OperatorErrorLabels
   alias FavnView.ScheduleFilters
@@ -111,7 +112,7 @@ defmodule FavnView.SchedulesLive do
       Application.get_env(
         :favn_view,
         :page_schedule_list_entries_fun,
-        &FavnOrchestrator.page_schedule_list_entries/2
+        &Orchestrator.page_schedule_list_entries/2
       )
 
     if is_function(fun, 2), do: fun.(operator_context, opts), else: fun.(opts)

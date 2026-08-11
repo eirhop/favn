@@ -91,7 +91,7 @@ defmodule FavnView.WebReadinessTest do
              json_response(response, 200)
   end
 
-  test "web readiness succeeds through the same-BEAM orchestrator facade", %{conn: conn} do
+  test "web readiness succeeds through the location-adapted orchestrator facade", %{conn: conn} do
     response = get(conn, ~p"/api/web/v1/health/ready")
 
     assert %{"data" => %{"status" => "ready", "checks" => checks}} = json_response(response, 200)
@@ -130,7 +130,7 @@ defmodule FavnView.WebReadinessTest do
     refute response.resp_body =~ "secret-token-value"
   end
 
-  test "web readiness reports same-BEAM orchestrator timeout", %{conn: conn} do
+  test "web readiness reports a bounded orchestrator timeout", %{conn: conn} do
     Application.put_env(:favn_view, :orchestrator_facade, SlowOrchestrator)
     Application.put_env(:favn_view, :orchestrator_readiness_timeout_ms, 1)
 
@@ -189,6 +189,14 @@ defmodule FavnView.WebReadinessTest do
     assert config.port == 4_000
     assert length(config.trusted_proxy_cidrs) == 2
     assert config.forwarded_for_policy == :replace
+
+    assert {:error, %{error: {:invalid_env, "FAVN_VIEW_BIND_HOST", "0.0.0.0"}}} =
+             ProductionRuntimeConfig.validate(%{
+               "FAVN_VIEW_PUBLIC_ORIGIN" => "https://favn.example.com",
+               "FAVN_VIEW_SECRET_KEY_BASE" => @secret_key_base,
+               "FAVN_VIEW_TRUSTED_PROXY_CIDRS" => "10.42.0.5/32",
+               "FAVN_VIEW_BIND_HOST" => "10.42.0.7"
+             })
 
     assert {:error, %{error: {:invalid_env, "FAVN_VIEW_PUBLIC_ORIGIN", _expected}}} =
              ProductionRuntimeConfig.validate(%{

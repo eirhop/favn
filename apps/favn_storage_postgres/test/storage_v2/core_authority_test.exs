@@ -6739,7 +6739,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
       session_id: identity.session.id,
       resource_type: "run",
       resource_id: "run-audit-replay",
-      service_identity: "same_beam_operator_ui",
+      service_identity: "operator_ui",
       outcome: "requested",
       detail: %{request: %{run_id: "run-audit-replay"}},
       idempotency: %{

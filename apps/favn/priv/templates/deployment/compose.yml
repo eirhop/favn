@@ -11,6 +11,7 @@ services:
     security_opt:
       - no-new-privileges:true
     environment:
+      FAVN_CONTROL_PLANE_ROLE: orchestrator
       FAVN_DATABASE_URL: ${FAVN_DATABASE_URL:?set the PostgreSQL connection URL}
       FAVN_DATABASE_SSL_MODE: ${FAVN_DATABASE_SSL_MODE:-verify-full}
       FAVN_DATABASE_SSL_CA_FILE: ${FAVN_DATABASE_SSL_CA_FILE:-}
@@ -21,7 +22,37 @@ services:
       FAVN_CONTROL_PLANE_NODE: favn_control_plane@control-plane
       FAVN_RUNNER_POOLS: '{"default":{"mode":"resident"}}'
       FAVN_DISTRIBUTION_COOKIE: ${FAVN_DISTRIBUTION_COOKIE:?set a high-entropy distribution cookie}
+      FAVN_OPERATOR_COMMAND_HMAC_SECRET: ${FAVN_OPERATOR_COMMAND_HMAC_SECRET:?set the operator command HMAC secret}
+      FAVN_DISTRIBUTION_TLS_OPTIONS_FILE: /etc/favn/tls/ssl-dist.config
       FAVN_BEAM_DISTRIBUTION_PORT: "9100"
+      ERL_AFLAGS: -proto_dist inet_tls -ssl_dist_optfile /etc/favn/tls/ssl-dist.config
+    expose:
+      - "4101"
+      - "4369"
+      - "9100"
+    networks:
+      - favn-private
+    volumes:
+      - ${FAVN_ORCHESTRATOR_DISTRIBUTION_TLS_DIR:?set the Orchestrator distribution TLS directory}:/etc/favn/tls:ro
+    restart: unless-stopped
+
+  view:
+    image: ${FAVN_CONTROL_PLANE_IMAGE:?set FAVN_CONTROL_PLANE_IMAGE to an immutable digest}
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m,uid=10001,gid=10001,mode=0700
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      FAVN_CONTROL_PLANE_ROLE: view
+      FAVN_VIEW_NODE: favn_view@view
+      FAVN_CONTROL_PLANE_NODE: favn_control_plane@control-plane
+      FAVN_DISTRIBUTION_COOKIE: ${FAVN_DISTRIBUTION_COOKIE:?set a high-entropy distribution cookie}
+      FAVN_DISTRIBUTION_TLS_OPTIONS_FILE: /etc/favn/tls/ssl-dist.config
+      FAVN_BEAM_DISTRIBUTION_PORT: "9101"
+      ERL_AFLAGS: -proto_dist inet_tls -ssl_dist_optfile /etc/favn/tls/ssl-dist.config
       FAVN_VIEW_SECRET_KEY_BASE: ${FAVN_VIEW_SECRET_KEY_BASE:?set the View secret key base}
       FAVN_VIEW_PUBLIC_ORIGIN: ${FAVN_VIEW_PUBLIC_ORIGIN:?set the public HTTPS origin}
       FAVN_VIEW_BIND_HOST: 0.0.0.0
@@ -30,8 +61,13 @@ services:
       FAVN_VIEW_FORWARDED_FOR_POLICY: ${FAVN_VIEW_FORWARDED_FOR_POLICY:-replace}
     ports:
       - "4173:4173"
+    depends_on:
+      control-plane:
+        condition: service_healthy
     networks:
       - favn-private
+    volumes:
+      - ${FAVN_VIEW_DISTRIBUTION_TLS_DIR:?set the View distribution TLS directory}:/etc/favn/tls:ro
     restart: unless-stopped
 
   runner:
@@ -50,7 +86,9 @@ services:
       FAVN_RUNNER_POOL: default
       FAVN_CONTROL_PLANE_NODE: favn_control_plane@control-plane
       FAVN_DISTRIBUTION_COOKIE: ${FAVN_DISTRIBUTION_COOKIE:?set a high-entropy distribution cookie}
+      FAVN_DISTRIBUTION_TLS_OPTIONS_FILE: /etc/favn/tls/ssl-dist.config
       FAVN_BEAM_DISTRIBUTION_PORT: "9100"
+      ERL_AFLAGS: -proto_dist inet_tls -ssl_dist_optfile /etc/favn/tls/ssl-dist.config
       FAVN_LOG_LEVEL: ${FAVN_LOG_LEVEL:-info}
     expose:
       - "4369"
@@ -68,6 +106,8 @@ services:
       retries: 20
     networks:
       - favn-private
+    volumes:
+      - ${FAVN_RUNNER_DISTRIBUTION_TLS_DIR:?set the runner distribution TLS directory}:/etc/favn/tls:ro
     restart: unless-stopped
 
 networks:

@@ -100,9 +100,9 @@ Non-terminal run states are `:pending` and `:running`. Terminal run states are
 
 ## Schedule Lifecycle
 
-Schedules come from the active manifest. In the first supported production
-topology, the single control-plane container owns one scheduler runtime that
-evaluates them and submits due work through orchestrator run admission.
+Schedules come from the active manifest. The single always-on Orchestrator role
+owns one scheduler runtime that evaluates them and submits due work through
+orchestrator run admission; scaling View to zero does not affect scheduling.
 
 Schedule activation state means:
 

@@ -9,6 +9,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
 
   alias FavnOrchestrator.Auth.ServiceTokens
   alias FavnOrchestrator.API.ManifestPublication.Config, as: ManifestPublicationConfig
+  alias FavnOrchestrator.Operator.Audit
   alias FavnOrchestrator.RunnerPools
   alias Favn.RuntimeInput.KeyringConfig
   alias Favn.DeploymentMode
@@ -52,6 +53,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
           scheduler: keyword(),
           run_submissions: keyword(),
           runner_pools: RunnerPools.t(),
+          operator_command_hmac_key: binary(),
           shutdown_drain_timeout_ms: pos_integer(),
           runner: map()
         }
@@ -149,6 +151,12 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
 
     Application.put_env(
       :favn_orchestrator,
+      :operator_command_hmac_key,
+      config.operator_command_hmac_key
+    )
+
+    Application.put_env(
+      :favn_orchestrator,
       :production_runtime_diagnostics,
       diagnostics(config)
     )
@@ -176,6 +184,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
          {:ok, active_run_plan_max_bytes} <- active_run_plan_max_bytes(env),
          {:ok, scheduler} <- scheduler(env, workspace_ids),
          {:ok, run_submissions} <- run_submissions(env),
+         {:ok, operator_command_hmac_key} <- operator_command_hmac_key(env),
          {:ok, shutdown_drain_timeout_ms} <- shutdown_drain_timeout_ms(env) do
       {:ok,
        %{
@@ -193,6 +202,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
          scheduler: scheduler,
          run_submissions: run_submissions,
          runner_pools: runner_pools,
+         operator_command_hmac_key: operator_command_hmac_key,
          shutdown_drain_timeout_ms: shutdown_drain_timeout_ms,
          runner: runner
        }}
@@ -241,6 +251,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
       scheduler: Map.new(config.scheduler),
       run_submissions: Map.new(config.run_submissions),
       runner_pools: config.runner_pools,
+      operator_commands: %{hmac_key_configured?: true, redacted: true},
       shutdown: %{drain_timeout_ms: config.shutdown_drain_timeout_ms},
       runner: config.runner
     }
@@ -248,6 +259,17 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
 
   @spec postgres_backend() :: module()
   def postgres_backend, do: @postgres_backend
+
+  @doc "Confirms that role-owned production configuration was applied before startup."
+  @spec ensure_applied() :: :ok | {:error, :orchestrator_runtime_config_not_applied}
+  def ensure_applied do
+    if Application.get_env(:favn_orchestrator, :production_runtime_config, false) and
+         is_nil(Application.get_env(:favn_orchestrator, :production_runtime_diagnostics)) do
+      {:error, :orchestrator_runtime_config_not_applied}
+    else
+      :ok
+    end
+  end
 
   defp database_authentication_mode(postgres) do
     case Keyword.get(postgres, :authentication, :password) do
@@ -675,6 +697,20 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
       1_000,
       @max_shutdown_drain_timeout_ms
     )
+  end
+
+  defp operator_command_hmac_key(env) do
+    with {:ok, secret} <- required_secret(env, "FAVN_OPERATOR_COMMAND_HMAC_SECRET"),
+         true <- byte_size(secret) >= 32 do
+      {:ok, Audit.derive_command_hmac_key(secret)}
+    else
+      {:error, _reason} = error ->
+        error
+
+      false ->
+        {:error,
+         {:invalid_secret_env, "FAVN_OPERATOR_COMMAND_HMAC_SECRET", "at least 32 characters"}}
+    end
   end
 
   defp runner(env) do

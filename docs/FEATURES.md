@@ -48,8 +48,9 @@ runtime inputs, and SQL integrations remain pre-v1 and may change.
 
 - `favn_orchestrator` owns manifests, deployments, runs, events, schedules, logs,
   backfills, admission, circuits, auth, audit, idempotency, and operator read models.
-- View and Orchestrator run in one control-plane BEAM. One boot loader validates
-  their environment together before supervision starts; PostgreSQL is the fixed
+- View and Orchestrator are separate OTP releases in one immutable image. View
+  can scale `0..1`; Orchestrator stays at exactly one replica. Each validates
+  only its role-owned environment; PostgreSQL is the fixed
   production backend, deployment settings are runtime-only, forwarded headers are
   accepted only from private allowlisted proxies, and diagnostics redact secrets.
 - Every customer operation carries explicit workspace authority. Platform actions
@@ -89,13 +90,14 @@ runtime inputs, and SQL integrations remain pre-v1 and may change.
   successful materialization, historical descriptor, fresh physical fingerprint,
   and exact pre-existing table-bound marker; arbitrary, replaced, or unbound
   relations cannot be adopted.
-- Both runtime BEAMs expose monotonic lifecycle state and reject new mutation or
-  execution admission while draining. Readiness flips before bounded shutdown;
+- Orchestrator exposes monotonic lifecycle state and rejects new mutation or
+  execution admission while draining. View shutdown is independent. Readiness
+  flips before bounded Orchestrator shutdown;
   admitted work may settle until the configured deadline, after which ordinary
   durable cancellation/result paths preserve honest recovery state.
-- The production control plane is an immutable Linux amd64 OTP release containing
-  only View, Orchestrator, PostgreSQL storage, Core, Azure credential support,
-  and runtime dependencies. It
+- The production control plane is one immutable Linux amd64 image containing
+  separate View and Orchestrator releases plus PostgreSQL storage, Core, Azure
+  credential support, and runtime dependencies. It
   runs as non-root, supports a read-only root filesystem, and has fixed health and
   release-operation entrypoints.
 

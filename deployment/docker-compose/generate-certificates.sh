@@ -4,10 +4,11 @@ set -eu
 root=/certificates
 postgres_output="$root/postgres"
 control_plane_output="$root/control-plane"
+view_output="$root/view"
 runner_output="$root/runner"
 umask 077
 
-mkdir -p "$postgres_output" "$control_plane_output" "$runner_output"
+mkdir -p "$postgres_output" "$control_plane_output" "$view_output" "$runner_output"
 
 required_files="
 $postgres_output/ca.crt
@@ -17,6 +18,10 @@ $control_plane_output/ca.crt
 $control_plane_output/control-plane.crt
 $control_plane_output/control-plane.key
 $control_plane_output/control-plane-ssl-dist.config
+$view_output/ca.crt
+$view_output/view.crt
+$view_output/view.key
+$view_output/view-ssl-dist.config
 $runner_output/ca.crt
 $runner_output/runner.crt
 $runner_output/runner.key
@@ -90,6 +95,12 @@ issue_certificate \
   DNS:control-plane,DNS:control-plane.favn.local \
   serverAuth,clientAuth
 issue_certificate \
+  "$view_output" \
+  view \
+  view.favn.local \
+  DNS:view,DNS:view.favn.local \
+  serverAuth,clientAuth
+issue_certificate \
   "$runner_output" \
   runner \
   runner.favn.local \
@@ -132,18 +143,40 @@ cat >"$runner_output/runner-ssl-dist.config" <<'EOF'
 ].
 EOF
 
+cat >"$view_output/view-ssl-dist.config" <<'EOF'
+[
+  {server, [
+    {certfile, "/etc/favn/tls/view.crt"},
+    {keyfile, "/etc/favn/tls/view.key"},
+    {cacertfile, "/etc/favn/tls/ca.crt"},
+    {verify, verify_peer},
+    {fail_if_no_peer_cert, true}
+  ]},
+  {client, [
+    {certfile, "/etc/favn/tls/view.crt"},
+    {keyfile, "/etc/favn/tls/view.key"},
+    {cacertfile, "/etc/favn/tls/ca.crt"},
+    {verify, verify_peer}
+  ]}
+].
+EOF
+
 chmod 0600 "$postgres_output/postgres.key"
 chown 10001:10001 \
   "$control_plane_output/control-plane.key" \
+  "$view_output/view.key" \
   "$runner_output/runner.key"
 chmod 0400 \
   "$control_plane_output/control-plane.key" \
+  "$view_output/view.key" \
   "$runner_output/runner.key"
 chmod 0444 \
   "$postgres_output/postgres.crt" \
   "$control_plane_output/control-plane.crt" \
+  "$view_output/view.crt" \
   "$runner_output/runner.crt" \
   "$control_plane_output/control-plane-ssl-dist.config" \
+  "$view_output/view-ssl-dist.config" \
   "$runner_output/runner-ssl-dist.config"
 
 trap - EXIT HUP INT TERM

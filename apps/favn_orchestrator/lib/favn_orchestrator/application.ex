@@ -7,7 +7,6 @@ defmodule FavnOrchestrator.Application do
   alias FavnOrchestrator.Auth.Store, as: AuthStore
   alias FavnOrchestrator.BackfillDispatcher
   alias FavnOrchestrator.BoundedDispatcher
-  alias FavnOrchestrator.ControlPlaneRuntimeConfig
   alias FavnOrchestrator.ExecutionAdmission.Coordinator, as: AdmissionCoordinator
   alias FavnOrchestrator.Lifecycle
   alias FavnOrchestrator.ManifestIndexCache
@@ -48,7 +47,7 @@ defmodule FavnOrchestrator.Application do
   end
 
   defp start_runtime(environment) do
-    with :ok <- ControlPlaneRuntimeConfig.apply_from_env_if_configured(environment),
+    with :ok <- FavnOrchestrator.ProductionRuntimeConfig.apply_from_env_if_configured(environment),
          _timezone_database <- Favn.Timezone.database!(),
          :ok <- APIConfig.validate(),
          runtime_config <- RuntimeConfig.from_app_env(),

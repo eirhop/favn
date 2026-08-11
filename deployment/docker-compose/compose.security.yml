@@ -15,14 +15,26 @@ services:
     volumes:
       - control-plane-certificates:/etc/favn/tls:ro
       - ./security/secrets:/run/secrets/favn-security:ro
-    environment:
-      FAVN_VIEW_TRUSTED_PROXY_CIDRS: 172.31.59.2/32
     networks: !override
       security-database:
       security-operator-api:
       security-runner-control:
         aliases:
           - control-plane.favn.local
+      security-view-control:
+        aliases:
+          - control-plane.favn.local
+
+  view:
+    ports: !reset []
+    volumes:
+      - view-certificates:/etc/favn/tls:ro
+    environment:
+      FAVN_VIEW_TRUSTED_PROXY_CIDRS: 172.31.59.2/32
+    networks: !override
+      security-view-control:
+        aliases:
+          - view.favn.local
       security-view-upstream:
         ipv4_address: 172.31.59.3
 
@@ -152,6 +164,8 @@ networks:
   security-operator-api:
     internal: true
   security-runner-control:
+    internal: true
+  security-view-control:
     internal: true
   security-database:
     internal: true

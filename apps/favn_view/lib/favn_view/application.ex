@@ -5,49 +5,44 @@ defmodule FavnView.Application do
 
   use Application
 
+  alias FavnView.Orchestrator
+
   @impl true
   def start(_type, _args) do
+    environment = System.get_env()
+
     with :ok <- FavnView.ApplicationConfig.configure(),
-         :ok <- ensure_runtime_config() do
-      children = [
-        FavnView.Telemetry,
-        {Phoenix.PubSub, name: FavnView.PubSub},
-        {Task.Supervisor, name: FavnView.ReadinessTaskSupervisor},
-        # Start to serve requests, typically the last entry
-        FavnView.Endpoint
-      ]
+         :ok <- FavnView.ProductionRuntimeConfig.apply_from_env_if_configured(environment),
+         :ok <- Orchestrator.configure_from_env_if_configured(environment) do
+      children =
+        [FavnView.Telemetry] ++
+          orchestrator_connection_children() ++
+          [
+            {Phoenix.PubSub, name: FavnView.PubSub},
+            {Task.Supervisor, name: FavnView.ReadinessTaskSupervisor},
+            FavnView.Endpoint
+          ]
 
       # See https://hexdocs.pm/elixir/Supervisor.html
       # for other strategies and supported options
       opts = [strategy: :one_for_one, name: FavnView.Supervisor]
 
       with {:ok, supervisor} <- Supervisor.start_link(children, opts) do
-        {:ok, supervisor, %{runtime?: true, drain: control_plane_drain_callback()}}
+        {:ok, supervisor, %{runtime?: true}}
       end
     end
   end
 
-  @impl true
-  def prep_stop(%{runtime?: true, drain: drain} = state) when is_function(drain, 0) do
-    _ = drain.()
-    state
-  end
+  defp orchestrator_connection_children do
+    case Orchestrator.target_node() do
+      nil ->
+        []
 
-  def prep_stop(state), do: state
-
-  defp control_plane_drain_callback do
-    if Application.get_env(:favn_view, :production_runtime_config, false) do
-      &FavnOrchestrator.drain/0
-    else
-      fn -> :ok end
-    end
-  end
-
-  defp ensure_runtime_config do
-    if Application.get_env(:favn_view, :production_runtime_config, false) do
-      FavnOrchestrator.ensure_control_plane_runtime_config_applied()
-    else
-      :ok
+      target_node ->
+        [
+          {Phoenix.PubSub, name: FavnOrchestrator.PubSub},
+          {FavnView.OrchestratorConnector, target_node: target_node}
+        ]
     end
   end
 

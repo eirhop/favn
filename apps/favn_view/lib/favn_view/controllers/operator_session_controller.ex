@@ -3,6 +3,7 @@ defmodule FavnView.OperatorSessionController do
 
   use FavnView, :controller
 
+  alias FavnView.Orchestrator
   alias FavnView.Auth
   alias FavnView.Auth.AzureContainerAppsEntra
   alias FavnView.ProductionRuntimeConfig
@@ -63,7 +64,7 @@ defmodule FavnView.OperatorSessionController do
     password = Map.get(operator_params, "password", "")
     return_to = Auth.safe_return_to(Map.get(operator_params, "return_to"))
 
-    case FavnOrchestrator.operator_password_login(workspace_id, username, password,
+    case Orchestrator.operator_password_login(workspace_id, username, password,
            remote_identity: remote_ip(conn)
          ) do
       {:ok, session, _actor} ->
@@ -74,6 +75,13 @@ defmodule FavnView.OperatorSessionController do
         |> put_status(:unauthorized)
         |> put_flash(:error, "Invalid username or password")
         |> render_login(workspace_id, username, return_to)
+
+      {:error, reason}
+      when reason in [:orchestrator_unavailable, :orchestrator_outcome_unknown] ->
+        conn
+        |> put_status(:service_unavailable)
+        |> put_flash(:error, "Sign-in service is temporarily unavailable")
+        |> render_login(workspace_id, username, return_to)
     end
   end
 
@@ -82,7 +90,7 @@ defmodule FavnView.OperatorSessionController do
       %{workspace_id: workspace_id, username: username, capability: capability}
       when is_binary(workspace_id) and workspace_id != "" and is_binary(username) and
              username != "" and is_binary(capability) and capability != "" ->
-        case FavnOrchestrator.trusted_local_development_login(
+        case Orchestrator.trusted_local_development_login(
                workspace_id,
                username,
                capability
@@ -114,7 +122,12 @@ defmodule FavnView.OperatorSessionController do
            operator_external_login(config.workspace_id, identity) do
       Auth.log_in_operator(conn, config.workspace_id, session, return_to)
     else
-      _denied -> access_denied(conn)
+      {:error, reason}
+      when reason in [:orchestrator_unavailable, :orchestrator_outcome_unknown] ->
+        service_unavailable(conn)
+
+      _denied ->
+        access_denied(conn)
     end
   end
 
@@ -123,7 +136,7 @@ defmodule FavnView.OperatorSessionController do
       Application.get_env(
         :favn_view,
         :operator_external_login_fun,
-        &FavnOrchestrator.operator_external_login/2
+        &Orchestrator.operator_external_login/2
       )
 
     login_fun.(workspace_id, identity)
@@ -134,6 +147,13 @@ defmodule FavnView.OperatorSessionController do
     |> put_status(:forbidden)
     |> put_resp_content_type("text/plain")
     |> send_resp(403, "Access denied")
+  end
+
+  defp service_unavailable(conn) do
+    conn
+    |> put_status(:service_unavailable)
+    |> put_resp_content_type("text/plain")
+    |> send_resp(503, "Sign-in service unavailable")
   end
 
   defp remote_ip(conn), do: conn.remote_ip |> :inet.ntoa() |> to_string()

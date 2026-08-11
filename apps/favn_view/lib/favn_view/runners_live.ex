@@ -5,6 +5,7 @@ defmodule FavnView.RunnersLive do
 
   require Logger
 
+  alias FavnView.Orchestrator
   alias FavnView.Components.RunnersPage
   alias FavnView.LiveRefresh
 
@@ -88,7 +89,7 @@ defmodule FavnView.RunnersLive do
     Application.get_env(
       :favn_view,
       :operator_runner_overview_fun,
-      &FavnOrchestrator.get_operator_runner_overview/2
+      &Orchestrator.get_operator_runner_overview/2
     ).(operator_context, opts)
   end
 end

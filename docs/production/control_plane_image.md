@@ -2,9 +2,10 @@
 
 Images are production artifacts, not a source-development requirement.
 
-Favn ships one reusable control-plane image containing the Orchestrator, View,
-PostgreSQL storage adapter, and their runtime dependencies. Each customer builds
-a separate runner image containing its own project code and plugins.
+Favn ships one reusable control-plane image containing separate Orchestrator and
+View OTP releases. Deploy the exact same image digest twice and select
+`FAVN_CONTROL_PLANE_ROLE=orchestrator` or `view`. Each customer builds a separate
+runner image containing its own project code and plugins.
 
 ## Build the control plane
 
@@ -48,7 +49,9 @@ The image:
 - contains no Mix, runner, authoring, or local-development application;
 - contains precompiled View assets;
 - requires runtime secrets through the process environment;
-- exposes View on `4000` and the Orchestrator API on `4101`;
+- contains `/app/releases/orchestrator` and `/app/releases/view`;
+- exposes View on `4000` only in the View role and the private API on `4101`
+  only in the Orchestrator role;
 - uses fixed BEAM distribution ports supplied by the deployment.
 
 Run the static contract locally after building:
@@ -149,7 +152,8 @@ publication, and its final extension set.
 
 The supported first topology is:
 
-- one control-plane container;
+- one Orchestrator container, fixed at one replica;
+- zero or one View container, independently scalable to zero;
 - zero to N customer runner processes across user-defined logical pools;
 - one externally supplied PostgreSQL database;
 - a private network path from runners to the control plane;
@@ -158,6 +162,15 @@ The supported first topology is:
 The control-plane, runner, manifest, and PostgreSQL schema must come from one
 coherent release candidate. Never combine a manifest with a runner release ID
 different from the ID baked into the runner image.
+
+The View and Orchestrator use the existing public `FavnOrchestrator` facade over
+bounded distributed Erlang. They do not add an HTTP client/service layer. The
+View has no database configuration or managed identity. Distributed Erlang is a
+full-trust boundary, however: a compromised View can execute code on the
+Orchestrator. Network isolation, mutual TLS, the shared cookie, Easy Auth, and
+the View ingress allowlist must therefore protect it as trusted control-plane
+code; managed-identity separation prevents direct or accidental View database
+access, not remote-code containment.
 
 Use immutable digests for both images. Tags are lookup aids, not deployment
 identity.
@@ -178,8 +191,10 @@ The copied `env.example` documents the minimum variables. Important groups are:
 - runtime-input pin keys;
 - general Orchestrator service tokens and dedicated capacity-reader tokens;
 - workspace IDs;
-- View public origin, proxy CIDRs, and secret key base;
-- control-plane and runner node names, distribution cookie, and fixed port.
+- role selection plus View public origin, proxy CIDRs, and secret key base;
+- separate View and Orchestrator node names, their fixed ports, and the shared
+  distribution cookie;
+- the Orchestrator-owned operator-command HMAC secret.
 
 Do not bake values into either image or pass secrets as Docker build arguments.
 Administrator bootstrap is a separate explicit operation; it is never configured

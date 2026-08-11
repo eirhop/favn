@@ -136,7 +136,6 @@ defmodule FavnLocal.Config do
 
     Application.put_env(:favn_orchestrator, :start_runtime, true)
     Application.put_env(:favn_orchestrator, :production_runtime_config, false)
-    Application.put_env(:favn_orchestrator, :control_plane_runtime_config, false)
     Application.put_env(:favn_orchestrator, :persistence_backend, FavnStoragePostgres.Backend)
     Application.put_env(:favn_orchestrator, :persistence_options, config.postgres_options)
     Application.put_env(:favn_orchestrator, :instance_id, Atom.to_string(config.operator_node))

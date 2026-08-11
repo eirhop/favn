@@ -91,7 +91,7 @@ do
       --header 'X-Forwarded-Proto: https' \
       --output "$body_file" \
       --write-out '%{http_code}' \
-      "http://control-plane:4000$direct_path"
+      "http://view:4000$direct_path"
   )
 
   [ "$direct_status" = "301" ] ||

@@ -1,12 +1,14 @@
 # Control-plane environment contract
 
-The production control plane is one BEAM containing Favn View and Favn
-Orchestrator. `FavnOrchestrator.ControlPlaneRuntimeConfig` reads the process
-environment once, validates both applications without mutation, applies both
-validated configs together, and retains only a redacted boot summary. A failed
-validation starts neither supervision tree. The release evaluates
-`config/runtime.exs` to enable this loader; that file does not parse deployment
-values itself.
+The production control plane uses one immutable image with separate View and
+Orchestrator OTP releases. `FAVN_CONTROL_PLANE_ROLE` selects the release. Each
+role validates only its own process environment before starting its supervision
+tree and retains only redacted diagnostics. The View role needs no database
+configuration or managed identity.
+
+Every long-running container requires `FAVN_CONTROL_PLANE_ROLE`. The fixed
+`favn_control_plane_ops` database entrypoint selects the Orchestrator release
+directly and remains distribution-free, so one-off database Jobs need no role.
 
 PostgreSQL is the only production persistence composition; the runtime exposes
 no storage selector.
@@ -166,6 +168,7 @@ and audit contract.
 | `FAVN_ORCHESTRATOR_MANIFEST_COMPRESSED_LIMIT_BYTES` | `1 MiB..32 MiB`, default `8 MiB`. |
 | `FAVN_ORCHESTRATOR_MANIFEST_DECOMPRESSED_LIMIT_BYTES` | At least the compressed limit and at most `128 MiB`, default `64 MiB`. |
 | `FAVN_ORCHESTRATOR_AUTH_SESSION_TTL` | `1..2592000` seconds, default `43200`. |
+| `FAVN_OPERATOR_COMMAND_HMAC_SECRET` | Required Orchestrator-only secret of at least 32 bytes. It derives stable audit/idempotency fingerprints and is never supplied to View. |
 | `FAVN_ORCHESTRATOR_ACTIVE_RUN_PLAN_MAX_BYTES` | `64 MiB..8 GiB`, default `512 MiB`. |
 | `FAVN_SCHEDULER_ENABLED` | Strict `true` or `false`, default `true`. |
 | `FAVN_SCHEDULER_TICK_MS` | `100..86400000`, default `15000`. |
@@ -175,23 +178,24 @@ and audit contract.
 | `FAVN_SHUTDOWN_DRAIN_TIMEOUT_MS` | `1000..3600000`, default `120000`. |
 | `FAVN_CONTROL_PLANE_NODE` | Required long distributed-BEAM node name on private DNS. |
 | `FAVN_RUNNER_POOLS` | JSON object of operator-defined pool names to `elastic` or `resident` lifecycle policy; defaults to one elastic `default` pool with `15000` ms idle grace. Any elastic pool requires `FAVN_ORCHESTRATOR_CAPACITY_READER_TOKEN`. |
-| `FAVN_DISTRIBUTION_COOKIE` | Required high-entropy secret shared by the control plane and trusted runner releases. |
-| `FAVN_BEAM_DISTRIBUTION_PORT` | Required fixed private control-plane distribution port. |
+| `FAVN_DISTRIBUTION_COOKIE` | Required high-entropy secret shared by View, Orchestrator, and trusted runner releases. |
+| `FAVN_BEAM_DISTRIBUTION_PORT` | Required fixed private port for the selected resident role. |
 | `ERL_EPMD_PORT` | Optional private EPMD port, default `4369`. |
 
 ## Lifecycle, readiness, and shutdown
 
-Each BEAM owns an in-memory lifecycle authority with monotonic states:
+Orchestrator owns an in-memory lifecycle authority with monotonic states:
 `starting`, `accepting`, `draining`, and `stopping`. This state is not durable;
 PostgreSQL ownership and fencing remain the recovery authority after a crash.
 Readiness is true only in `accepting`. Liveness remains true while draining so
 the platform can distinguish an orderly drain from a failed process.
 
-Control-plane readiness checks configuration, API/View, storage/schema,
+Orchestrator readiness checks configuration, API, storage/schema,
 scheduler, lifecycle, active manifest pool bindings, and durable runner
 queue/counter health. Zero registered runners is healthy and expected when
-elastic pools have no work. HTTP readiness reads bounded state and never starts
-infrastructure or performs runner work.
+elastic pools have no work. View readiness separately checks its web
+configuration and one bounded public-facade readiness call to Orchestrator.
+HTTP readiness never starts infrastructure or performs runner work.
 
 On `SIGTERM`, the application callback enters `draining` before OTP stops the
 supervision tree. New HTTP mutations, run/rerun and backfill submissions,
@@ -210,9 +214,10 @@ Configure the container platform's termination grace period longer than the
 drain timeout. Allow at least an additional 50 seconds for the control plane's
 single 30-second post-drain cancellation/settlement budget, bounded listener
 shutdown, repository teardown, and a small platform safety margin. The drain
-election is process-local and idempotent, so the View and
-Orchestrator application callbacks share one long drain window. After it, each
-HTTP listener and worker child has a separate five-second teardown bound.
+election is process-local and idempotent. Scaling or stopping View does not
+drain Orchestrator; it closes only browser connections and the View HTTP
+listener. After the Orchestrator drain, each HTTP listener and worker child has
+a separate five-second teardown bound.
 Production upgrades are drain-first; zero-downtime rolling replacement is not
 supported by this release.
 
@@ -220,9 +225,11 @@ supported by this release.
 
 | Variable | Contract |
 | --- | --- |
+| `FAVN_CONTROL_PLANE_ROLE` | Required image role: `view` for this process or `orchestrator` for the resident control plane. |
+| `FAVN_VIEW_NODE` | Required long private-DNS node name for the View release; it must differ from `FAVN_CONTROL_PLANE_NODE`. |
 | `FAVN_VIEW_PUBLIC_ORIGIN` | Required absolute HTTPS origin. The production loader has no plaintext HTTP interlock. |
 | `FAVN_VIEW_SECRET_KEY_BASE` | Required secret of at least 64 bytes. |
-| `FAVN_VIEW_BIND_HOST` | IPv4 bind address, default `0.0.0.0`. Unified boot freezes this address for container health probes; wildcard maps to loopback. |
+| `FAVN_VIEW_BIND_HOST` | Fixed `0.0.0.0`; this keeps the container listener reachable while its self-readiness request remains an exact loopback peer. |
 | `FAVN_VIEW_PORT` | `1..65535`, default `4000`. |
 | `FAVN_VIEW_TRUSTED_PROXY_CIDRS` | Required comma-separated canonical private IPv4/IPv6 proxy allowlist, maximum 32 entries. Prefer exact `/32` or `/128` peers; wider subnets emit a startup warning. |
 | `FAVN_VIEW_FORWARDED_FOR_POLICY` | `replace`, `append`, or `ignore`; default `replace`. Describes how an authorized proxy represents the client address. |
@@ -230,6 +237,7 @@ supported by this release.
 | `FAVN_VIEW_ENTRA_TENANT_ID` | Required UUID in Entra mode. Only principals from this immutable tenant are accepted; diagnostics redact it. |
 | `FAVN_VIEW_ENTRA_WORKSPACE_ID` | Required Favn workspace for initial Entra sign-in; diagnostics redact it. |
 | `FAVN_VIEW_ORCHESTRATOR_READINESS_TIMEOUT_MS` | `100..30000`, default `1000`. |
+| `FAVN_VIEW_ORCHESTRATOR_CALL_TIMEOUT_MS` | `100..120000`, default `30000`; bounds each public-facade `:erpc` call. Calls are never retried. |
 | `FAVN_HTTP_MAX_CONNECTIONS` | Exact per-listener connection ceiling `1..100000`, default `1024`. |
 | `FAVN_HTTP_REQUEST_TIMEOUT_MS` | Request-body read deadline `1000..120000`, default `30000`; configure an equal or shorter total deadline at the reverse proxy. |
 | `FAVN_HTTP_IDLE_TIMEOUT_MS` | Idle connection deadline `1000..300000`, default `60000`. |
@@ -296,7 +304,7 @@ For a runtime-input encryption key:
    [`postgresql_operator_runbook.md`](postgresql_operator_runbook.md) for
    compaction and retirement commands.
 
-Changing `FAVN_VIEW_SECRET_KEY_BASE` requires a control-plane restart and
+Changing `FAVN_VIEW_SECRET_KEY_BASE` requires a View restart and
 invalidates all existing browser sessions. Operators must announce that users
 will sign in again; PostgreSQL application state is unaffected.
 

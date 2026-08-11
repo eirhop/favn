@@ -72,18 +72,28 @@ their hashes and reports only the reserved non-secret identities
 Removing a referenced old key makes readiness fail closed and can make durable
 runtime inputs unreadable. Never skip the inventory gate.
 
+## Operator command fingerprint key
+
+`FAVN_OPERATOR_COMMAND_HMAC_SECRET` must remain stable so persisted command and
+idempotency fingerprints remain comparable. When upgrading from the former
+single-BEAM release, set it initially to the previous
+`FAVN_VIEW_SECRET_KEY_BASE` value; the domain-separated derived key is then
+unchanged. Do not rotate it as routine hygiene. A forced rotation requires a
+maintenance window and makes retries of commands fingerprinted with the prior
+key conflict rather than replay.
+
 ## Browser session signing key
 
 Changing `FAVN_VIEW_SECRET_KEY_BASE` invalidates all existing browser sessions.
-Announce the maintenance, drain and restart the control plane, then require every
+Announce the maintenance, replace the View revision, then require every
 operator to sign in again. PostgreSQL application state is not removed.
 
 ## Distribution cookie and database credentials
 
-The distribution cookie must match on both nodes. Rotate it only during a full
-two-node maintenance stop: drain the control plane, stop both services, update
-both environments, start the runner, then start the control plane and require
-full readiness. There is no cookie-overlap mode.
+The distribution cookie must match on View, Orchestrator, and every runner.
+Rotate it only during a full cluster maintenance stop: drain Orchestrator, stop
+all roles, update every environment, start Orchestrator, then View and runners,
+and require full readiness. There is no cookie-overlap mode.
 
 Database credential rotation follows the database provider's overlap/revocation
 procedure. Update the runtime and one-off-operation environments, restart the

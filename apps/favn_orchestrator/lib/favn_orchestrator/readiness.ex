@@ -8,11 +8,11 @@ defmodule FavnOrchestrator.Readiness do
   prerequisite.
   """
 
-  alias FavnOrchestrator.ControlPlaneRuntimeConfig
   alias FavnOrchestrator.Lifecycle
   alias FavnOrchestrator.Persistence
   alias FavnOrchestrator.Persistence.PlatformContext
   alias FavnOrchestrator.Persistence.Queries.GetRunnerCapacityHealth
+  alias FavnOrchestrator.ProductionRuntimeConfig
   alias FavnOrchestrator.Redaction
   alias FavnOrchestrator.RunnerRegistry
   alias FavnOrchestrator.RuntimeConfig
@@ -33,7 +33,6 @@ defmodule FavnOrchestrator.Readiness do
     checks = [
       safe_check(:config, &config_check/0),
       safe_check(:api, &api_check/0),
-      safe_check(:view, &view_check/0),
       safe_check(:storage, fn -> storage_check(storage_snapshot) end),
       safe_check(:schema, fn -> schema_check(storage_snapshot) end),
       safe_check(:scheduler, &scheduler_check/0),
@@ -56,7 +55,7 @@ defmodule FavnOrchestrator.Readiness do
   end
 
   defp config_check do
-    case ControlPlaneRuntimeConfig.ensure_applied() do
+    case ProductionRuntimeConfig.ensure_applied() do
       :ok -> ok(:config, %{validated?: true, frozen?: true})
       {:error, reason} -> error(:config, reason)
     end
@@ -65,14 +64,6 @@ defmodule FavnOrchestrator.Readiness do
   defp api_check do
     api_opts = RuntimeConfig.current().api_server
     ok(:api, %{enabled: Keyword.get(api_opts, :enabled, false), frozen?: true})
-  end
-
-  defp view_check do
-    case ControlPlaneRuntimeConfig.diagnostics() do
-      %{view: %{status: :ok} = diagnostics} -> ok(:view, diagnostics)
-      %{view: diagnostics} -> error(:view, diagnostics)
-      nil -> ok(:view, %{unified_runtime_config?: false})
-    end
   end
 
   defp storage_check(storage_snapshot) do

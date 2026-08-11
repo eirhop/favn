@@ -1,6 +1,6 @@
 defmodule FavnOrchestrator.Operator.Lineage do
   @moduledoc """
-  Public same-BEAM facade for bounded operator asset lineage views.
+  Public facade for bounded operator asset lineage views.
 
   Each query projects one pinned manifest version with current target statuses.
   Browser-facing callers receive explicit DTOs and never access persistence or

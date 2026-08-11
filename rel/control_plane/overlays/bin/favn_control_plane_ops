@@ -14,4 +14,4 @@ case "${1:-}" in
     ;;
 esac
 
-exec /app/bin/favn_control_plane eval "FavnStoragePostgres.ReleaseCLI.run!(:$operation)"
+exec /app/releases/orchestrator/bin/favn_orchestrator eval "FavnStoragePostgres.ReleaseCLI.run!(:$operation)"

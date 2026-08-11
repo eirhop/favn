@@ -3,6 +3,7 @@ defmodule FavnView.PipelinesLive do
 
   use FavnView, :live_view
 
+  alias FavnView.Orchestrator
   alias FavnView.Components.PipelinesPage
   alias FavnView.LogsViewModel
   alias FavnView.OperatorErrorLabels
@@ -77,7 +78,7 @@ defmodule FavnView.PipelinesLive do
       Application.get_env(
         :favn_view,
         :active_pipeline_catalogue_fun,
-        &FavnOrchestrator.active_pipeline_catalogue/1
+        &Orchestrator.active_pipeline_catalogue/1
       )
 
     if is_function(fun, 1), do: fun.(operator_context), else: fun.()

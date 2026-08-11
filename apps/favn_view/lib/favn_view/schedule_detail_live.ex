@@ -3,6 +3,7 @@ defmodule FavnView.ScheduleDetailLive do
 
   use FavnView, :live_view
 
+  alias FavnView.Orchestrator
   alias FavnView.CommandAttempt
   alias FavnView.Components.ScheduleDetailPage
   alias FavnView.OperatorErrorLabels
@@ -125,7 +126,7 @@ defmodule FavnView.ScheduleDetailLive do
   end
 
   defp get_schedule_entry(operator_context, schedule_id) do
-    facade(:get_schedule_entry_fun, &FavnOrchestrator.get_schedule_entry/2).(
+    facade(:get_schedule_entry_fun, &Orchestrator.get_schedule_entry/2).(
       operator_context,
       schedule_id
     )
@@ -139,7 +140,10 @@ defmodule FavnView.ScheduleDetailLive do
   end
 
   defp preview_schedule_occurrences(operator_context, schedule_id, opts) do
-    facade(:preview_schedule_occurrences_fun, &FavnOrchestrator.preview_schedule_occurrences/3).(
+    facade(
+      :preview_schedule_occurrences_fun,
+      &Orchestrator.preview_schedule_occurrences/3
+    ).(
       operator_context,
       schedule_id,
       opts
@@ -147,7 +151,7 @@ defmodule FavnView.ScheduleDetailLive do
   end
 
   defp enable_schedule(operator_context, schedule_id, command_id) do
-    facade(:enable_schedule_fun, &FavnOrchestrator.enable_schedule/3).(
+    facade(:enable_schedule_fun, &Orchestrator.enable_schedule/3).(
       operator_context,
       schedule_id,
       command_id: command_id
@@ -155,7 +159,7 @@ defmodule FavnView.ScheduleDetailLive do
   end
 
   defp disable_schedule(operator_context, schedule_id, command_id) do
-    facade(:disable_schedule_fun, &FavnOrchestrator.disable_schedule/3).(
+    facade(:disable_schedule_fun, &Orchestrator.disable_schedule/3).(
       operator_context,
       schedule_id,
       command_id: command_id

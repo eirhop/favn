@@ -7,6 +7,7 @@ defmodule FavnView.LogsLiveSupport do
   require Logger
 
   alias Favn.Log.Filter
+  alias FavnView.Orchestrator
   alias FavnView.Components.AssetCataloguePage
   alias FavnView.LogsViewModel
 
@@ -78,14 +79,14 @@ defmodule FavnView.LogsLiveSupport do
   end
 
   def unsubscribe(%{assigns: %{log_subscription: subscription}}) when not is_nil(subscription) do
-    _ = FavnOrchestrator.unsubscribe_logs(subscription)
+    _ = Orchestrator.unsubscribe_logs(subscription)
     :ok
   end
 
   def unsubscribe(_socket), do: :ok
 
   def run_context(operator_context, run_id) do
-    case FavnOrchestrator.get_run_detail(operator_context, run_id) do
+    case Orchestrator.get_run_detail(operator_context, run_id) do
       {:ok, %{summary: summary} = detail} ->
         run_context_from_public(summary, Map.get(detail, :steps, []))
 
@@ -104,7 +105,7 @@ defmodule FavnView.LogsLiveSupport do
   end
 
   def asset_context(operator_context, run_id, asset_step_id) do
-    case FavnOrchestrator.get_asset_step_log_context(operator_context, run_id, asset_step_id) do
+    case Orchestrator.get_asset_step_log_context(operator_context, run_id, asset_step_id) do
       {:ok, context} -> asset_context_from_public(context)
       {:error, _reason} -> missing_asset_context(operator_context, run_id, asset_step_id)
     end
@@ -139,7 +140,7 @@ defmodule FavnView.LogsLiveSupport do
   end
 
   defp load_initial_logs(operator_context, filter) do
-    case FavnOrchestrator.list_logs(operator_context, filter, limit: @fetch_limit) do
+    case Orchestrator.list_logs(operator_context, filter, limit: @fetch_limit) do
       {:ok, %{items: items}} ->
         %{status: :ready, logs: LogsViewModel.trim_latest(items, @initial_limit)}
 
@@ -169,7 +170,7 @@ defmodule FavnView.LogsLiveSupport do
 
   defp replay_gap(socket) do
     # Initial load happens before subscription; replay closes that small handoff gap.
-    case FavnOrchestrator.replay_logs(
+    case Orchestrator.replay_logs(
            socket.assigns.operator_context,
            socket.assigns.next_cursor,
            socket.assigns.filter,
@@ -202,7 +203,7 @@ defmodule FavnView.LogsLiveSupport do
       Application.get_env(
         :favn_view,
         :log_subscribe_fun,
-        &FavnOrchestrator.subscribe_logs/2
+        &Orchestrator.subscribe_logs/2
       )
 
     if is_function(fun, 2), do: fun.(operator_context, filter), else: fun.(filter)

@@ -3,6 +3,7 @@ defmodule FavnView.TargetRecoveryLive do
 
   use FavnView, :live_view
 
+  alias FavnView.Orchestrator
   alias FavnView.CommandAttempt
   alias FavnView.Components.TargetRecoveryPage
 
@@ -151,7 +152,7 @@ defmodule FavnView.TargetRecoveryLive do
     Application.get_env(
       :favn_view,
       :plan_operator_target_recovery_fun,
-      &FavnOrchestrator.plan_operator_target_recovery/4
+      &Orchestrator.plan_operator_target_recovery/4
     ).(
       context,
       target_id,
@@ -165,7 +166,7 @@ defmodule FavnView.TargetRecoveryLive do
     Application.get_env(
       :favn_view,
       :start_operator_target_recovery_fun,
-      &FavnOrchestrator.start_operator_target_recovery/4
+      &Orchestrator.start_operator_target_recovery/4
     ).(context, plan_id, plan_hash, idempotency_key: idempotency_key)
   end
 
@@ -173,7 +174,7 @@ defmodule FavnView.TargetRecoveryLive do
     Application.get_env(
       :favn_view,
       :reconcile_operator_target_recovery_fun,
-      &FavnOrchestrator.reconcile_operator_target_recovery/3
+      &Orchestrator.reconcile_operator_target_recovery/3
     ).(context, operation_id, idempotency_key: idempotency_key)
   end
 
@@ -190,7 +191,7 @@ defmodule FavnView.TargetRecoveryLive do
     Application.get_env(
       :favn_view,
       :get_operator_target_recovery_fun,
-      &FavnOrchestrator.get_operator_target_recovery/2
+      &Orchestrator.get_operator_target_recovery/2
     ).(context, operation_id)
   end
 

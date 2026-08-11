@@ -5,6 +5,7 @@ defmodule FavnView.RunsListLive do
 
   require Logger
 
+  alias FavnView.Orchestrator
   alias FavnView.Components.RunsListPage
   alias FavnView.LiveRefresh
   alias FavnView.LogsViewModel
@@ -226,7 +227,7 @@ defmodule FavnView.RunsListLive do
     Application.get_env(
       :favn_view,
       :page_execution_groups_fun,
-      &FavnOrchestrator.page_execution_groups/2
+      &Orchestrator.page_execution_groups/2
     ).(operator_context, opts)
   end
 
@@ -234,7 +235,7 @@ defmodule FavnView.RunsListLive do
     Application.get_env(
       :favn_view,
       :count_execution_groups_fun,
-      &FavnOrchestrator.count_execution_groups/2
+      &Orchestrator.count_execution_groups/2
     ).(operator_context, opts)
   end
 
@@ -242,11 +243,11 @@ defmodule FavnView.RunsListLive do
     Application.get_env(
       :favn_view,
       :runs_subscribe_fun,
-      &FavnOrchestrator.subscribe_runs/1
+      &Orchestrator.subscribe_runs/1
     ).(operator_context)
   end
 
-  defp unsubscribe_runs(operator_context), do: FavnOrchestrator.unsubscribe_runs(operator_context)
+  defp unsubscribe_runs(operator_context), do: Orchestrator.unsubscribe_runs(operator_context)
 
   defp run_from_public(group) do
     target = target(group)

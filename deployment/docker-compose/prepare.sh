@@ -99,6 +99,7 @@ docker run --rm \
       "FAVN_PLATFORM_TOKEN=$(random_hex 48)" \
       "FAVN_CAPACITY_TOKEN=$(random_hex 48)" \
       "FAVN_DISTRIBUTION_COOKIE=$(random_base64 48)" \
+      "FAVN_OPERATOR_COMMAND_HMAC_SECRET=$(random_hex 48)" \
       "FAVN_VIEW_SECRET_KEY_BASE=$(random_base64 64)" \
       "FAVN_VIEW_HOST_PORT=4173" \
       "FAVN_PROXY_HOST_PORT=4443" \

@@ -5,9 +5,10 @@ production.
 
 The short version is:
 
-- run one control-plane container;
-- keep it on a private network;
-- put one trusted HTTPS ingress in front of it;
+- run one always-on Orchestrator container and a View container that may scale
+  to zero, both from the same immutable image digest;
+- keep both on a private network;
+- put one trusted HTTPS ingress in front of View only;
 - use PostgreSQL with verified TLS, backups, and a separate runtime account;
 - use Azure Container Apps Easy Auth with Microsoft Entra for SSO and MFA, or
   let operators reach a trusted proxy through an equivalent identity-aware
@@ -23,8 +24,10 @@ HexDocs readers.
 
 ## Is the supported shape right for you?
 
-The first supported production shape has one control-plane BEAM. That BEAM
-contains the web application and the orchestrator.
+The first supported production shape has one Orchestrator BEAM and zero or one
+View BEAM. View calls the existing public Orchestrator facade over mutual-TLS
+distributed Erlang. Orchestrator is fixed at one replica; View may scale to
+zero when no operator is using it.
 
 Use this shape when:
 
@@ -41,7 +44,8 @@ Do not deploy yet when:
   MFA-capable access layer; or
 - you cannot isolate the internal ports from untrusted networks.
 
-Multi-node control-plane failover is not part of the current security contract.
+Multiple Orchestrator replicas and control-plane failover are not part of the
+current security contract.
 Login throttling and immediate LiveView disconnect are node-local. Durable
 authorization remains in PostgreSQL, but that does not make an unsupported
 multi-node deployment safe.
@@ -58,7 +62,11 @@ Trusted HTTPS ingress
    |
    | private HTTP and LiveView WebSocket
    v
-One Favn control-plane container
+Favn View container (0..1)
+   |
+   | private mutual-TLS BEAM
+   v
+Favn Orchestrator container (1)
    |                         ^
    | verified PostgreSQL TLS | private mutual-TLS BEAM
    v                         |
@@ -77,7 +85,8 @@ production qualification.
 Use:
 
 - one hardened Linux host or VM;
-- one rootless or otherwise restricted control-plane container;
+- one rootless Orchestrator container and one independently scalable View
+  container from the same digest;
 - Caddy, Nginx, HAProxy, or a managed edge proxy;
 - a private firewall between the proxy, control plane, runners, and database;
   and
@@ -95,7 +104,7 @@ the same topology.
 
 Configure:
 
-- exactly one control-plane replica;
+- exactly one Orchestrator replica and `0..1` View replicas;
 - private container ingress;
 - one managed HTTPS ingress or reverse proxy;
 - secrets from the platform's secret store;
@@ -108,6 +117,12 @@ rollback, and database recovery.
 
 Favn does not ship an Azure deployment. Operators own and qualify their cloud
 infrastructure against the provider-neutral deployment contract.
+
+Distributed Erlang is a full-trust code-execution boundary. Giving View no
+database managed identity prevents direct database access, but does not contain
+a compromised View from invoking code on Orchestrator. Protect View with the
+same private-network, mutual-TLS, cookie, ingress allowlist, SSO, and MFA trust
+assumptions as the rest of the control plane.
 
 For Azure Container Apps, the recommended first authentication option is
 Microsoft Entra through Easy Auth. Container Apps ingress and Easy Auth act as
@@ -134,8 +149,8 @@ Complete every item:
   actually does.
 - [ ] PostgreSQL accepts connections only from the control plane and trusted
   one-off database operations.
-- [ ] EPMD and BEAM distribution accept connections only from the private
-  runner network.
+- [ ] EPMD and BEAM distribution accept connections only from View and trusted
+  runners on their explicit private control networks.
 - [ ] The private orchestrator API is not routed through public ingress.
 - [ ] Runners have no public inbound listener.
 
@@ -218,9 +233,12 @@ A simple firewall model is:
 
 ```text
 Internet or company network -> proxy:443            allow
-Proxy                       -> control-plane:4000   allow
-Control plane               -> PostgreSQL:5432     allow
-Runners                     -> private BEAM ports  allow
+Proxy                       -> View:4000            allow
+View                        -> Orchestrator EPMD    allow
+View                        -> Orchestrator BEAM    allow
+Orchestrator                -> PostgreSQL:5432      allow
+Runners                     -> Orchestrator EPMD    allow
+Runners                     -> Orchestrator BEAM    allow
 Everything else                                      deny
 ```
 
@@ -285,6 +303,8 @@ store or external secret.
 
 - [ ] Generate a unique `FAVN_VIEW_SECRET_KEY_BASE` containing at least 64
   random bytes.
+- [ ] Generate a separate `FAVN_OPERATOR_COMMAND_HMAC_SECRET` containing at
+  least 32 random bytes and supply it only to Orchestrator.
 - [ ] Generate unique, high-entropy general platform service tokens, a dedicated
   capacity-reader token for elastic scaling, and the BEAM distribution cookie.
 - [ ] Store database passwords, service tokens, cookies, keys, and
@@ -444,9 +464,9 @@ Review redacted authorization audit records during incidents. Record image
 digests, schema versions, configuration changes, and operator actions so a
 rollback or investigation does not depend on memory.
 
-Production upgrades are drain-first. Do not run two active control-plane
-revisions as a zero-downtime strategy; that would create an unsupported
-multi-node topology.
+Production upgrades are drain-first. Do not overlap two active Orchestrator
+revisions or two active View revisions under the same fixed node name. Stop the
+old role before starting its replacement.
 
 ## Current limitations
 
@@ -456,9 +476,10 @@ Understand these before launch:
   Auth. Native OIDC, other identity providers, and Entra group/role
   authorization are not implemented. This is separate from managed-identity
   authentication to Azure Database for PostgreSQL.
-- Only one control-plane BEAM is supported.
-- Zero-downtime control-plane replacement is not supported.
-- Login throttling and immediate PubSub disconnect are node-local.
+- Exactly one Orchestrator BEAM and zero or one View BEAM are supported.
+- Zero-downtime Orchestrator or View replacement is not supported.
+- Login throttling is Orchestrator-process local and live subscriptions are
+  View-process local; clustered invalidations cross the trusted roles.
 - A release command running in a separate VM cannot immediately publish to the
   running node. Durable authorization blocks new reads and mutations
   immediately, while an idle LiveView may remain visible for at most 30
@@ -468,9 +489,10 @@ Understand these before launch:
   scripts.
 - Every cloud deployment requires live qualification in its target environment.
 
-These limits do not prevent a controlled single-node deployment. Public direct
+These limits do not prevent a controlled split-role deployment. Public direct
 login without MFA, broad proxy trust, plaintext PostgreSQL, exposed internal
-ports, or an unsupported multi-replica topology are deployment blockers.
+ports, or an unsupported overlapping/multi-replica topology are deployment
+blockers.
 
 ## Detailed runbooks
 

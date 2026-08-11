@@ -7,6 +7,7 @@ services:
     volumes:
       - postgres-certificates:/certificates/postgres
       - control-plane-certificates:/certificates/control-plane
+      - view-certificates:/certificates/view
       - runner-certificates:/certificates/runner
     restart: "no"
 
@@ -97,6 +98,7 @@ services:
         FAVN_MANIFEST_SCHEMA_VERSION: ${FAVN_MANIFEST_SCHEMA_VERSION}
         FAVN_RUNNER_CONTRACT_VERSION: ${FAVN_RUNNER_CONTRACT_VERSION}
     environment:
+      FAVN_CONTROL_PLANE_ROLE: orchestrator
       FAVN_DEPLOYMENT_MODE: production
       FAVN_DATABASE_URL: ecto://favn_runtime:${FAVN_RUNTIME_DATABASE_PASSWORD}@postgres:5432/favn
       FAVN_DATABASE_SSL_MODE: verify-full
@@ -110,9 +112,38 @@ services:
       FAVN_CONTROL_PLANE_NODE: favn_control_plane@control-plane.favn.local
       FAVN_RUNNER_POOLS: '{"default":{"mode":"elastic","idle_grace_ms":5000}}'
       FAVN_DISTRIBUTION_COOKIE: ${FAVN_DISTRIBUTION_COOKIE}
+      FAVN_OPERATOR_COMMAND_HMAC_SECRET: ${FAVN_OPERATOR_COMMAND_HMAC_SECRET}
       FAVN_DISTRIBUTION_TLS_OPTIONS_FILE: /etc/favn/tls/control-plane-ssl-dist.config
       FAVN_BEAM_DISTRIBUTION_PORT: "9100"
       ERL_AFLAGS: -proto_dist inet_tls -ssl_dist_optfile /etc/favn/tls/control-plane-ssl-dist.config
+    depends_on:
+      certificates:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+    volumes:
+      - control-plane-certificates:/etc/favn/tls:ro
+    ports:
+      - "127.0.0.1:${FAVN_API_HOST_PORT:-4101}:4101"
+    networks:
+      favn-private:
+        aliases:
+          - control-plane.favn.local
+    stop_grace_period: 190s
+    restart: unless-stopped
+
+  view:
+    image: favn-control-plane:${FAVN_IMAGE_TAG}
+    hostname: view.favn.local
+    environment:
+      FAVN_CONTROL_PLANE_ROLE: view
+      FAVN_DEPLOYMENT_MODE: production
+      FAVN_VIEW_NODE: favn_view@view.favn.local
+      FAVN_CONTROL_PLANE_NODE: favn_control_plane@control-plane.favn.local
+      FAVN_DISTRIBUTION_COOKIE: ${FAVN_DISTRIBUTION_COOKIE}
+      FAVN_DISTRIBUTION_TLS_OPTIONS_FILE: /etc/favn/tls/view-ssl-dist.config
+      FAVN_BEAM_DISTRIBUTION_PORT: "9101"
+      ERL_AFLAGS: -proto_dist inet_tls -ssl_dist_optfile /etc/favn/tls/view-ssl-dist.config
       FAVN_VIEW_SECRET_KEY_BASE: ${FAVN_VIEW_SECRET_KEY_BASE}
       FAVN_VIEW_PUBLIC_ORIGIN: https://favn.localhost
       FAVN_VIEW_BIND_HOST: 0.0.0.0
@@ -122,26 +153,25 @@ services:
     depends_on:
       certificates:
         condition: service_completed_successfully
-      postgres:
+      control-plane:
         condition: service_healthy
     volumes:
-      - control-plane-certificates:/etc/favn/tls:ro
+      - view-certificates:/etc/favn/tls:ro
     ports:
       - "127.0.0.1:${FAVN_VIEW_HOST_PORT:-4173}:4000"
-      - "127.0.0.1:${FAVN_API_HOST_PORT:-4101}:4101"
     networks:
       favn-private:
         aliases:
-          - control-plane.favn.local
+          - view.favn.local
       favn-edge:
         ipv4_address: 172.31.58.3
-    stop_grace_period: 190s
+    stop_grace_period: 30s
     restart: unless-stopped
 
   https-proxy:
     image: caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
     depends_on:
-      control-plane:
+      view:
         condition: service_healthy
     ports:
       - "127.0.0.1:${FAVN_PROXY_HOST_PORT:-4443}:443"
@@ -312,5 +342,6 @@ networks:
 volumes:
   postgres-certificates:
   control-plane-certificates:
+  view-certificates:
   runner-certificates:
   postgres-data:

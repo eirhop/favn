@@ -947,7 +947,7 @@ collect_performance_summary() {
 }
 
 scan_evidence_for_secrets() {
-  secret_scan_expected=8
+  secret_scan_expected=9
   secret_scan_count=0
   secret_leak_names='[]'
 
@@ -960,6 +960,7 @@ scan_evidence_for_secrets() {
       FAVN_PLATFORM_TOKEN|\
       FAVN_CAPACITY_TOKEN|\
       FAVN_DISTRIBUTION_COOKIE|\
+      FAVN_OPERATOR_COMMAND_HMAC_SECRET|\
       FAVN_VIEW_SECRET_KEY_BASE)
         secret_scan_count=$(( secret_scan_count + 1 ))
 

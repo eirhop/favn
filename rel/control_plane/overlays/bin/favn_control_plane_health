@@ -1,4 +1,19 @@
 #!/bin/sh
 set -eu
 
-exec /app/bin/favn_control_plane rpc 'FavnOrchestrator.ReleaseHealth.run!()'
+case "${FAVN_CONTROL_PLANE_ROLE:-}" in
+  orchestrator)
+    release=/app/releases/orchestrator/bin/favn_orchestrator
+    health_module=FavnOrchestrator.ReleaseHealth
+    ;;
+  view)
+    release=/app/releases/view/bin/favn_view
+    health_module=FavnView.ReleaseHealth
+    ;;
+  *)
+    echo "FAVN_CONTROL_PLANE_ROLE must be orchestrator or view" >&2
+    exit 64
+    ;;
+esac
+
+exec "$release" rpc "$health_module.run!()"

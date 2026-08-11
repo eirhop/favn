@@ -5,6 +5,7 @@ defmodule FavnView.RebuildDetailLive do
 
   require Logger
 
+  alias FavnView.Orchestrator
   alias FavnView.Components.RebuildPage
   alias FavnView.Components.AppShell
   alias FavnView.CommandAttempt
@@ -231,7 +232,7 @@ defmodule FavnView.RebuildDetailLive do
 
   defp get_rebuild(context, operation_id),
     do:
-      configured(:get_operator_rebuild_fun, &FavnOrchestrator.get_operator_rebuild/2).(
+      configured(:get_operator_rebuild_fun, &Orchestrator.get_operator_rebuild/2).(
         context,
         operation_id
       )
@@ -240,7 +241,7 @@ defmodule FavnView.RebuildDetailLive do
     do:
       configured(
         :page_operator_rebuild_items_fun,
-        &FavnOrchestrator.page_operator_rebuild_items/3
+        &Orchestrator.page_operator_rebuild_items/3
       ).(
         context,
         operation_id,
@@ -249,7 +250,7 @@ defmodule FavnView.RebuildDetailLive do
 
   defp start_rebuild(context, operation_id, plan_hash, idempotency_key),
     do:
-      configured(:start_operator_rebuild_fun, &FavnOrchestrator.start_operator_rebuild/4).(
+      configured(:start_operator_rebuild_fun, &Orchestrator.start_operator_rebuild/4).(
         context,
         operation_id,
         plan_hash,
@@ -258,7 +259,7 @@ defmodule FavnView.RebuildDetailLive do
 
   defp cancel_rebuild(context, operation_id, reason, idempotency_key),
     do:
-      configured(:cancel_operator_rebuild_fun, &FavnOrchestrator.cancel_operator_rebuild/4).(
+      configured(:cancel_operator_rebuild_fun, &Orchestrator.cancel_operator_rebuild/4).(
         context,
         operation_id,
         reason,
@@ -267,7 +268,7 @@ defmodule FavnView.RebuildDetailLive do
 
   defp retry_rebuild(context, operation_id, plan_hash, idempotency_key),
     do:
-      configured(:retry_operator_rebuild_fun, &FavnOrchestrator.retry_operator_rebuild/4).(
+      configured(:retry_operator_rebuild_fun, &Orchestrator.retry_operator_rebuild/4).(
         context,
         operation_id,
         plan_hash,
@@ -276,7 +277,10 @@ defmodule FavnView.RebuildDetailLive do
 
   defp reconcile_rebuild(context, operation_id, idempotency_key),
     do:
-      configured(:reconcile_operator_rebuild_fun, &FavnOrchestrator.reconcile_operator_rebuild/3).(
+      configured(
+        :reconcile_operator_rebuild_fun,
+        &Orchestrator.reconcile_operator_rebuild/3
+      ).(
         context,
         operation_id,
         idempotency_key: idempotency_key

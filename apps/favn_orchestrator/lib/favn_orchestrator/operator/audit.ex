@@ -1,6 +1,6 @@
 defmodule FavnOrchestrator.Operator.Audit do
   @moduledoc """
-  Durable same-BEAM command intent for actor and trusted-service principals.
+  Durable operator command intent for actor and trusted-service principals.
 
   The intent is committed before the owning domain mutation starts. The
   domain's own PostgreSQL command receipt remains the accepted-result
@@ -69,7 +69,7 @@ defmodule FavnOrchestrator.Operator.Audit do
       id: actor_id,
       actor_id: actor_id,
       session_id: operator_context.session_id,
-      service_identity: "same_beam_operator_ui"
+      service_identity: "operator_ui"
     }
 
     begin_command(context, principal, operation, resource_type, resource_id, request, raw_key)
@@ -224,16 +224,16 @@ defmodule FavnOrchestrator.Operator.Audit do
   end
 
   @doc """
-  Derives the operator command HMAC key from a deployment's secret key base.
+  Derives the operator command HMAC key from the Orchestrator deployment secret.
 
   Every boot path that configures `:operator_command_hmac_key` must derive it
   through this function, so request fingerprints stay comparable across
   restarts of the same deployment.
   """
   @spec derive_command_hmac_key(String.t()) :: binary()
-  def derive_command_hmac_key(secret_key_base)
-      when is_binary(secret_key_base) and byte_size(secret_key_base) >= 32 do
-    :crypto.mac(:hmac, :sha256, secret_key_base, @fingerprint_key_context)
+  def derive_command_hmac_key(secret)
+      when is_binary(secret) and byte_size(secret) >= 32 do
+    :crypto.mac(:hmac, :sha256, secret, @fingerprint_key_context)
   end
 
   @doc "Builds a stable, bounded resource ID from a persisted operator intent."

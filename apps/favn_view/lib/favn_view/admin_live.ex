@@ -9,6 +9,7 @@ defmodule FavnView.AdminLive do
 
   use FavnView, :live_view
 
+  alias FavnView.Orchestrator
   alias FavnView.Auth.Scope
   alias FavnView.Components.AdminPage
   alias FavnView.Components.Navigation
@@ -36,7 +37,7 @@ defmodule FavnView.AdminLive do
          {:ok, _actor} <-
            call(
              :create_operator_actor_fun,
-             &FavnOrchestrator.create_operator_actor/5,
+             &Orchestrator.create_operator_actor/5,
              [
                operator_context(socket),
                Map.get(params, "username", ""),
@@ -56,7 +57,7 @@ defmodule FavnView.AdminLive do
          {:ok, _actor} <-
            call(
              :attach_operator_actor_fun,
-             &FavnOrchestrator.attach_operator_actor/3,
+             &Orchestrator.attach_operator_actor/3,
              [
                operator_context(socket),
                Map.get(params, "username", ""),
@@ -76,7 +77,7 @@ defmodule FavnView.AdminLive do
          {:ok, _actor} <-
            call(
              :update_operator_actor_membership_fun,
-             &FavnOrchestrator.update_operator_actor_membership/4,
+             &Orchestrator.update_operator_actor_membership/4,
              [operator_context(socket), actor_id, roles, status]
            ) do
       {:noreply, socket |> put_flash(:info, "Membership updated") |> load_initial()}
@@ -99,7 +100,7 @@ defmodule FavnView.AdminLive do
     else
       case call(
              :revoke_operator_managed_session_fun,
-             &FavnOrchestrator.revoke_operator_managed_session/2,
+             &Orchestrator.revoke_operator_managed_session/2,
              [operator_context(socket), session_id]
            ) do
         :ok ->
@@ -197,21 +198,21 @@ defmodule FavnView.AdminLive do
   defp page_assigns(:audit), do: {:audit, :audit_next_cursor, :audit_has_more?}
 
   defp page(:actors, context, cursor) do
-    call(:page_operator_actors_fun, &FavnOrchestrator.page_operator_actors/2, [
+    call(:page_operator_actors_fun, &Orchestrator.page_operator_actors/2, [
       context,
       page_opts(cursor)
     ])
   end
 
   defp page(:sessions, context, cursor) do
-    call(:page_operator_sessions_fun, &FavnOrchestrator.page_operator_sessions/2, [
+    call(:page_operator_sessions_fun, &Orchestrator.page_operator_sessions/2, [
       context,
       page_opts(cursor)
     ])
   end
 
   defp page(:audit, context, cursor) do
-    call(:page_operator_audit_fun, &FavnOrchestrator.page_operator_audit/2, [
+    call(:page_operator_audit_fun, &Orchestrator.page_operator_audit/2, [
       context,
       page_opts(cursor)
     ])

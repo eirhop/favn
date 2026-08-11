@@ -148,7 +148,7 @@ For break-glass recovery:
 2. change Container Apps authentication so the recovery request may reach
    Favn;
 3. set `FAVN_VIEW_AUTH_MODE=password`;
-4. restart the single control-plane replica;
+4. replace or restart the View role without starting an overlapping View node;
 5. use the local administrator credential;
 6. restore Entra Easy Auth and `azure_container_apps_entra` mode; and
 7. verify sign-in and audit records.

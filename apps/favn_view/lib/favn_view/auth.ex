@@ -11,6 +11,7 @@ defmodule FavnView.Auth do
   import Phoenix.Controller
   import Plug.Conn
 
+  alias FavnView.Orchestrator
   alias FavnView.Auth.Scope
   alias FavnView.Endpoint
   alias FavnView.ProductionRuntimeConfig
@@ -114,7 +115,7 @@ defmodule FavnView.Auth do
 
     case scope do
       %Scope{} ->
-        _ = FavnOrchestrator.revoke_operator_session(scope.operator_context)
+        _ = Orchestrator.revoke_operator_session(scope.operator_context)
 
       _other ->
         :ok
@@ -145,7 +146,7 @@ defmodule FavnView.Auth do
         %Scope{} ->
           call(
             :switch_operator_workspace_fun,
-            &FavnOrchestrator.switch_operator_workspace/2,
+            &Orchestrator.switch_operator_workspace/2,
             [scope.operator_context, String.trim(target_workspace_id)]
           )
 
@@ -195,7 +196,7 @@ defmodule FavnView.Auth do
          {:ok, orchestrator_session, actor} <-
            call(
              :introspect_operator_session_fun,
-             &FavnOrchestrator.introspect_operator_session/2,
+             &Orchestrator.introspect_operator_session/2,
              [workspace_id, token]
            ) do
       scope = Scope.new(workspace_id, actor, orchestrator_session)
@@ -247,7 +248,7 @@ defmodule FavnView.Auth do
          {:ok, session, actor} <-
            call(
              :introspect_operator_session_fun,
-             &FavnOrchestrator.introspect_operator_session/2,
+             &Orchestrator.introspect_operator_session/2,
              [workspace_id, token]
            ) do
       {:ok, Scope.new(workspace_id, actor, session)}
@@ -257,7 +258,7 @@ defmodule FavnView.Auth do
   defp active_workspaces(%Scope{} = scope) do
     case call(
            :list_operator_workspaces_fun,
-           &FavnOrchestrator.list_operator_workspaces/1,
+           &Orchestrator.list_operator_workspaces/1,
            [scope.operator_context]
          ) do
       {:ok, workspaces} when is_list(workspaces) ->
@@ -272,13 +273,13 @@ defmodule FavnView.Auth do
     if Phoenix.LiveView.connected?(socket) do
       case call(
              :subscribe_operator_identity_fun,
-             &FavnOrchestrator.subscribe_operator_identity/1,
+             &Orchestrator.subscribe_operator_identity/1,
              [scope.operator_context]
            ) do
         :ok ->
           case call(
                  :introspect_operator_session_fun,
-                 &FavnOrchestrator.introspect_operator_session/2,
+                 &Orchestrator.introspect_operator_session/2,
                  [workspace_id, token]
                ) do
             {:ok, session, actor} ->
@@ -341,7 +342,7 @@ defmodule FavnView.Auth do
        ) do
     case call(
            :introspect_operator_session_fun,
-           &FavnOrchestrator.introspect_operator_session/2,
+           &Orchestrator.introspect_operator_session/2,
            [workspace_id, token]
          ) do
       {:ok, session, actor} ->
