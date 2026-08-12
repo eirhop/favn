@@ -45,10 +45,17 @@ Ownership rules:
 - `favn_view` must call backend behavior only through the public orchestrator
   facade. It must not depend on storage, scheduler, runner, persistence, repo,
   manifest compiler, plugin, adapter, or low-level orchestrator internals.
-- Production web readiness calls the public `FavnOrchestrator` facade in the same
-  BEAM. It must not use orchestrator HTTP, service-token shortcuts, storage
-  access, scheduler runtime access, or runner internals.
-- Production View configuration is applied by the unified control-plane loader.
+- `FavnView.Orchestrator` is the location adapter: it calls the public facade in
+  the current BEAM for development and through bounded `:erpc` in the production
+  View release. Commands are never retried after a transport failure.
+- Live wake-up subscriptions use a two-step facade contract: Orchestrator
+  reauthorizes and returns a bounded subscription grant, then the View activates
+  that grant in the caller's local clustered PubSub. Grants authorize wake-ups
+  only; every durable replay or reload is reauthorized by Orchestrator.
+- Production web readiness uses that adapter. It must not use orchestrator HTTP,
+  service-token shortcuts, storage access, scheduler runtime access, or runner
+  internals.
+- Production View configuration is applied by the View-owned loader.
   View has no storage-adapter dependency. It trusts forwarded scheme, host, port,
   and client IP only from the configured private proxy CIDRs, uses the public
   origin as URL authority, and applies boot-frozen listener and body-read limits.

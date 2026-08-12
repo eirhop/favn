@@ -60,12 +60,42 @@ defmodule FavnOrchestrator.Logs do
   @doc "Subscribes to workspace-isolated log wakeups after authorization."
   @spec subscribe_logs(WorkspaceContext.t(), term()) :: {:ok, term()} | {:error, term()}
   def subscribe_logs(%WorkspaceContext{} = context, filter) do
-    with {:ok, normalized_filter} <- normalize_filter(filter),
-         topics <- subscription_topics(context.workspace_id, normalized_filter),
-         {:ok, subscription} <- start_subscription_forwarder(self(), topics, normalized_filter) do
+    with {:ok, grant} <- prepare_subscription(context, filter) do
+      subscribe_prepared(grant)
+    end
+  end
+
+  @doc false
+  @spec prepare_subscription(WorkspaceContext.t(), term()) ::
+          {:ok, map()} | {:error, term()}
+  def prepare_subscription(%WorkspaceContext{} = context, filter) do
+    with {:ok, normalized_filter} <- normalize_filter(filter) do
+      {:ok,
+       %{
+         kind: :logs,
+         workspace_id: context.workspace_id,
+         filter: normalized_filter
+       }}
+    end
+  end
+
+  @doc false
+  @spec subscribe_prepared(map()) :: {:ok, term()} | {:error, term()}
+  def subscribe_prepared(%{
+        kind: :logs,
+        workspace_id: workspace_id,
+        filter: normalized_filter
+      })
+      when is_binary(workspace_id) and workspace_id != "" and is_map(normalized_filter) do
+    topics = subscription_topics(workspace_id, normalized_filter)
+
+    with {:ok, subscription} <-
+           start_subscription_forwarder(self(), topics, normalized_filter) do
       {:ok, Map.merge(subscription, %{topics: topics, filter: normalized_filter})}
     end
   end
+
+  def subscribe_prepared(_grant), do: {:error, :invalid_log_subscription}
 
   @spec unsubscribe_logs(term()) :: :ok | {:error, :invalid_log_subscription}
   def unsubscribe_logs(%{pid: pid, stop_ref: stop_ref})

@@ -54,7 +54,7 @@ service. Multi-control-plane application failover is a later topology claim.
   durable demand, elastic self-exit, mutual-TLS distribution, and
   infrastructure-neutral scaling.
 - [`control_plane_environment.md`](control_plane_environment.md) defines the
-  implemented same-BEAM environment, proxy, HTTP, lifecycle, shutdown, and secret
+  implemented two-role environment, proxy, HTTP, lifecycle, shutdown, and secret
   contract.
 - [`deployment_topology.md`](deployment_topology.md) defines artifact ownership,
   operator-owned infrastructure, startup order, and runtime limitations.

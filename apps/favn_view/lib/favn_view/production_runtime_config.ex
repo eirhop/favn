@@ -2,9 +2,9 @@ defmodule FavnView.ProductionRuntimeConfig do
   @moduledoc """
   Production runtime configuration for the Phoenix web boundary.
 
-  `favn_view` runs in the same BEAM as the orchestrator for the current
-  production target, so readiness does not require orchestrator URLs or service
-  tokens. This module validates web-owned operator settings only.
+  The View release owns only HTTP, browser authentication, and session
+  configuration. Its Orchestrator node contract is validated separately by
+  `FavnView.Orchestrator`.
   """
 
   @default_timeout_ms 1_000
@@ -22,7 +22,6 @@ defmodule FavnView.ProductionRuntimeConfig do
   require Logger
 
   alias Favn.DeploymentMode
-  alias FavnOrchestrator.Operator.Audit
 
   @type config :: %{
           deployment_mode: DeploymentMode.t(),
@@ -90,6 +89,7 @@ defmodule FavnView.ProductionRuntimeConfig do
     warn_trusted_proxy_subnets(config.trusted_proxy_cidrs)
     Application.put_env(:favn_view, :public_origin, config.public_origin)
     configure_endpoint(config)
+    :ok = FavnView.ReleaseHealth.configure(%{bind_host: config.bind_host, port: config.port})
 
     Application.put_env(
       :favn_view,
@@ -98,12 +98,6 @@ defmodule FavnView.ProductionRuntimeConfig do
     )
 
     put_endpoint_secret_key_base(config.secret_key_base)
-
-    Application.put_env(
-      :favn_orchestrator,
-      :operator_command_hmac_key,
-      Audit.derive_command_hmac_key(config.secret_key_base)
-    )
 
     Application.put_env(:favn_view, :production_runtime_diagnostics, diagnostics(config))
     :persistent_term.put(@persistent_key, runtime_config(config))
@@ -171,7 +165,7 @@ defmodule FavnView.ProductionRuntimeConfig do
       http_server: config.http_server,
       shutdown: %{drain_timeout_ms: config.shutdown_drain_timeout_ms},
       orchestrator: %{
-        boundary: :same_beam_facade,
+        boundary: :distributed_erlang,
         readiness_timeout_ms: config.orchestrator_readiness_timeout_ms
       },
       authentication: auth_diagnostics(config.auth)
@@ -363,10 +357,9 @@ defmodule FavnView.ProductionRuntimeConfig do
 
   defp bind_host(env) do
     with {:ok, host} <- required_or_default(env, "FAVN_VIEW_BIND_HOST", "0.0.0.0") do
-      case :inet.parse_ipv4_address(String.to_charlist(host)) do
-        {:ok, ip} -> {:ok, {host, ip}}
-        {:error, _reason} -> {:error, {:invalid_env, "FAVN_VIEW_BIND_HOST", "IPv4 address"}}
-      end
+      if host == "0.0.0.0",
+        do: {:ok, {host, {0, 0, 0, 0}}},
+        else: {:error, {:invalid_env, "FAVN_VIEW_BIND_HOST", "0.0.0.0"}}
     end
   end
 

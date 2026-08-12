@@ -142,6 +142,26 @@ defmodule FavnView.EntraEasyAuthTest do
     refute response.resp_body =~ @object_id
   end
 
+  test "Orchestrator transport loss reports temporary sign-in unavailability" do
+    Application.put_env(:favn_view, :operator_auth, %{
+      mode: :azure_container_apps_entra,
+      tenant_id: @tenant_id,
+      workspace_id: "workspace-1"
+    })
+
+    Application.put_env(:favn_view, :operator_external_login_fun, fn _workspace, _identity ->
+      {:error, :orchestrator_outcome_unknown}
+    end)
+
+    response =
+      build_conn()
+      |> put_req_header("x-ms-client-principal", principal_header())
+      |> get("/login")
+
+    assert response.status == 503
+    assert response.resp_body == "Sign-in service unavailable"
+  end
+
   test "Entra mode disables password login and signs out through Easy Auth" do
     Application.put_env(:favn_view, :operator_auth, %{
       mode: :azure_container_apps_entra,

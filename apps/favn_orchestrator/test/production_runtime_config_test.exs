@@ -10,6 +10,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
   @previous_capacity_token "previous-capacity-credential-1234567890"
   @pin_key :binary.copy(<<7>>, 32) |> Base.encode64()
   @old_pin_key :binary.copy(<<6>>, 32) |> Base.encode64()
+  @operator_hmac_secret "operator-command-hmac-secret-value-1234567890"
 
   setup do
     ca_file =
@@ -51,6 +52,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
            }
 
     assert config.shutdown_drain_timeout_ms == 120_000
+    assert is_binary(config.operator_command_hmac_key)
     assert config.active_run_plan_max_bytes == 512 * 1_024 * 1_024
 
     assert config.api_service_tokens == [
@@ -414,6 +416,25 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
     assert config.postgres[:url] == "ecto://favn:secret@postgres.example/favn"
   end
 
+  test "operator command HMAC secret is Orchestrator-owned and required", %{ca_file: ca_file} do
+    assert {:error, %{error: {:missing_env, "FAVN_OPERATOR_COMMAND_HMAC_SECRET"}}} =
+             ca_file
+             |> base_env()
+             |> Map.delete("FAVN_OPERATOR_COMMAND_HMAC_SECRET")
+             |> ProductionRuntimeConfig.validate()
+
+    assert {:error,
+            %{
+              error:
+                {:invalid_secret_env, "FAVN_OPERATOR_COMMAND_HMAC_SECRET",
+                 "at least 32 characters"}
+            }} =
+             ca_file
+             |> base_env()
+             |> Map.put("FAVN_OPERATOR_COMMAND_HMAC_SECRET", "too-short")
+             |> ProductionRuntimeConfig.validate()
+  end
+
   test "shared and release config defer deployment parsing to the typed loader" do
     root = Path.expand("../../..", __DIR__)
     shared_config = File.read!(Path.join(root, "config/config.exs"))
@@ -423,7 +444,8 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
     refute shared_config =~ "System.fetch_env("
     refute runtime_config =~ "System.get_env("
     refute runtime_config =~ "System.fetch_env("
-    assert runtime_config =~ "control_plane_runtime_config: true"
+    assert runtime_config =~ "production_runtime_config: true"
+    refute runtime_config =~ "control_plane_runtime_config"
   end
 
   test "validate/1 rejects unsafe PostgreSQL configuration", %{ca_file: ca_file} do
@@ -605,6 +627,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
       :active_run_plan_max_bytes,
       :scheduler,
       :runner_pools,
+      :operator_command_hmac_key,
       :production_runtime_diagnostics,
       :auth_bootstrap_username,
       :auth_bootstrap_password,
@@ -669,6 +692,9 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
     assert Application.get_env(:favn_orchestrator, :runner_pools) == %{
              "default" => %{mode: :elastic, idle_grace_ms: 15_000}
            }
+
+    assert Application.get_env(:favn_orchestrator, :operator_command_hmac_key) ==
+             config.operator_command_hmac_key
 
     assert Application.get_env(:favn_orchestrator, :workspace_ids) == ["salmon-one", "salmon-two"]
     assert Application.get_env(:favn_orchestrator, :allow_automatic_admin_bootstrap) == false
@@ -738,6 +764,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
       "FAVN_ORCHESTRATOR_CAPACITY_READER_TOKEN" => @capacity_token,
       "FAVN_CONTROL_PLANE_NODE" => "control@control-plane.internal",
       "FAVN_DISTRIBUTION_COOKIE" => "bN7!tQ2#vL9@xR4$kM8%pC6&zH3*eW5?",
+      "FAVN_OPERATOR_COMMAND_HMAC_SECRET" => @operator_hmac_secret,
       "FAVN_BEAM_DISTRIBUTION_PORT" => "9100",
       "FAVN_DISTRIBUTION_TLS_OPTIONS_FILE" => ca_file <> ".dist.config"
     }

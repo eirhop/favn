@@ -59,18 +59,26 @@ RUN --mount=type=bind,source=.,target=/build,rw \
     test "$(cat /runtime-versions/FAVN_VERSION)" = "$FAVN_CONTROL_PLANE_VERSION"; \
     test "$(cat /runtime-versions/MANIFEST_SCHEMA_VERSION)" = "$FAVN_MANIFEST_SCHEMA_VERSION"; \
     test "$(cat /runtime-versions/RUNNER_CONTRACT_VERSION)" = "$FAVN_RUNNER_CONTRACT_VERSION"; \
-    mix release favn_control_plane --overwrite --path /control-plane-release; \
-    test -d "/control-plane-release/releases/$FAVN_CONTROL_PLANE_VERSION"; \
-    elixir rel/control_plane/sanitize_sys_config.exs /control-plane-release; \
-    rm -f /control-plane-release/releases/COOKIE; \
-    find /control-plane-release -type f -name '*.map' -delete; \
-    for templates in /control-plane-release/lib/phoenix-*/priv/templates; do \
+    mix release favn_orchestrator --overwrite --path /control-plane-releases/orchestrator; \
+    mix release favn_view --overwrite --path /control-plane-releases/view; \
+    test -d "/control-plane-releases/orchestrator/releases/$FAVN_CONTROL_PLANE_VERSION"; \
+    test -d "/control-plane-releases/view/releases/$FAVN_CONTROL_PLANE_VERSION"; \
+    elixir rel/control_plane/sanitize_sys_config.exs /control-plane-releases/orchestrator; \
+    elixir rel/control_plane/sanitize_sys_config.exs /control-plane-releases/view; \
+    rm -f /control-plane-releases/orchestrator/releases/COOKIE; \
+    rm -f /control-plane-releases/view/releases/COOKIE; \
+    find /control-plane-releases -type f -name '*.map' -delete; \
+    for templates in /control-plane-releases/*/lib/phoenix-*/priv/templates; do \
       if [ -e "$templates" ]; then rm -rf "$templates"; fi; \
     done; \
-    chmod 0555 /control-plane-release/bin/favn_control_plane_health /control-plane-release/bin/favn_control_plane_ops; \
+    install -d -m 0755 /runtime-bin; \
+    install -m 0555 rel/control_plane/overlays/bin/favn_control_plane /runtime-bin/favn_control_plane; \
+    install -m 0555 rel/control_plane/overlays/bin/favn_control_plane_health /runtime-bin/favn_control_plane_health; \
+    install -m 0555 rel/control_plane/overlays/bin/favn_control_plane_ops /runtime-bin/favn_control_plane_ops; \
     cp /usr/local/lib/erlang/releases/29/OTP_VERSION /runtime-versions/OTP_VERSION; \
     elixir -e 'IO.write(System.version())' > /runtime-versions/ELIXIR_VERSION; \
-    test ! -e /control-plane-release/releases/COOKIE
+    test ! -e /control-plane-releases/orchestrator/releases/COOKIE; \
+    test ! -e /control-plane-releases/view/releases/COOKIE
 
 FROM debian:trixie-slim@sha256:020c0d20b9880058cbe785a9db107156c3c75c2ac944a6aa7ab59f2add76a7bd AS runtime
 
@@ -97,11 +105,12 @@ RUN test "$TARGETARCH" = amd64 \
     && find / -xdev -type f -perm /6000 -exec chmod a-s {} +
 
 WORKDIR /app
-COPY --link --from=builder /control-plane-release/ /app/
+COPY --link --from=builder /control-plane-releases/ /app/releases/
+COPY --link --from=builder /runtime-bin/ /app/bin/
 COPY --link --from=builder /runtime-versions/ /app/runtime-versions/
 
-LABEL org.opencontainers.image.title="Favn control plane" \
-      org.opencontainers.image.description="Favn View and Orchestrator production control plane" \
+LABEL org.opencontainers.image.title="Favn control plane roles" \
+      org.opencontainers.image.description="One immutable image with separate Favn View and Orchestrator releases" \
       org.opencontainers.image.source="https://github.com/eirhop/favn" \
       org.opencontainers.image.licenses="Apache-2.0" \
       org.opencontainers.image.revision="$FAVN_SOURCE_REVISION" \
@@ -117,8 +126,7 @@ ENV HOME=/tmp \
     RELEASE_TMP=/tmp \
     ERL_CRASH_DUMP=/tmp/erl_crash.dump \
     LANG=C.UTF-8 \
-    LC_ALL=C.UTF-8 \
-    FAVN_VIEW_PORT=4000
+    LC_ALL=C.UTF-8
 
 EXPOSE 4000 4101
 USER 10001:10001

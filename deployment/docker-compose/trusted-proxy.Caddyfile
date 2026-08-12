@@ -24,7 +24,7 @@ https://favn.localhost {
 		}
 	}
 
-	reverse_proxy http://control-plane:4000 {
+	reverse_proxy http://view:4000 {
 		import sanitized_proxy_headers
 
 		# Bandit closes some rejected-request connections after sending the

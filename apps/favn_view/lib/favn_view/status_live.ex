@@ -3,6 +3,7 @@ defmodule FavnView.StatusLive do
 
   use FavnView, :live_view
 
+  alias FavnView.Orchestrator
   alias FavnView.Components.Navigation
   alias FavnView.Components.StatusPage
   alias FavnView.StatusConcerns
@@ -48,21 +49,25 @@ defmodule FavnView.StatusLive do
   defp read_sources(operator_context) do
     %{
       runs:
-        call(:page_execution_groups_fun, &FavnOrchestrator.page_execution_groups/2, [
+        call(:page_execution_groups_fun, &Orchestrator.page_execution_groups/2, [
           operator_context,
           [limit: @per_group, only_failed: true]
         ]),
       assets:
-        call(:active_asset_catalogue_fun, &FavnOrchestrator.active_asset_catalogue/1, [
+        call(:active_asset_catalogue_fun, &Orchestrator.active_asset_catalogue/1, [
           operator_context
         ]),
       schedules:
-        call(:page_schedule_list_entries_fun, &FavnOrchestrator.page_schedule_list_entries/2, [
-          operator_context,
-          [limit: 500]
-        ]),
+        call(
+          :page_schedule_list_entries_fun,
+          &Orchestrator.page_schedule_list_entries/2,
+          [
+            operator_context,
+            [limit: 500]
+          ]
+        ),
       rebuilds:
-        call(:page_operator_rebuilds_fun, &FavnOrchestrator.page_operator_rebuilds/2, [
+        call(:page_operator_rebuilds_fun, &Orchestrator.page_operator_rebuilds/2, [
           operator_context,
           [limit: @per_group]
         ])

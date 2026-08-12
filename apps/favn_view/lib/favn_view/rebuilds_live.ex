@@ -5,6 +5,7 @@ defmodule FavnView.RebuildsLive do
 
   require Logger
 
+  alias FavnView.Orchestrator
   alias FavnView.Components.RebuildPage
   alias FavnView.CommandAttempt
 
@@ -131,7 +132,7 @@ defmodule FavnView.RebuildsLive do
     Application.get_env(
       :favn_view,
       :page_operator_rebuilds_fun,
-      &FavnOrchestrator.page_operator_rebuilds/2
+      &Orchestrator.page_operator_rebuilds/2
     ).(context, opts)
   end
 
@@ -139,7 +140,7 @@ defmodule FavnView.RebuildsLive do
     Application.get_env(
       :favn_view,
       :plan_operator_rebuild_fun,
-      &FavnOrchestrator.plan_operator_rebuild/4
+      &Orchestrator.plan_operator_rebuild/4
     ).(context, target_id, reason, idempotency_key: idempotency_key)
   end
 
@@ -147,7 +148,7 @@ defmodule FavnView.RebuildsLive do
     Application.get_env(
       :favn_view,
       :start_operator_rebuild_fun,
-      &FavnOrchestrator.start_operator_rebuild/4
+      &Orchestrator.start_operator_rebuild/4
     ).(context, plan_id, plan_hash, idempotency_key: idempotency_key)
   end
 

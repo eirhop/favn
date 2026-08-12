@@ -58,31 +58,38 @@ test -x /app/bin/favn_control_plane_health
 test -x /app/bin/favn_control_plane_ops
 test "$(cat /app/runtime-versions/ELIXIR_VERSION)" = 1.20.2
 test "$(cat /app/runtime-versions/OTP_VERSION)" = 29.0.4
-test ! -e /app/releases/COOKIE
+test -x /app/releases/orchestrator/bin/favn_orchestrator
+test -x /app/releases/view/bin/favn_view
+test ! -e /app/releases/orchestrator/releases/COOKIE
+test ! -e /app/releases/view/releases/COOKIE
 ! find /app -user 10001 | grep -q .
 ! find /app -group 10001 | grep -q .
 ! find /app -type f \( -name COOKIE -o -name .erlang.cookie \) | grep -q .
-find /app/lib -maxdepth 1 -type d -name 'favn_core-*' | grep -q .
-find /app/lib -maxdepth 1 -type d -name 'favn_azure-*' | grep -q .
-find /app/lib -maxdepth 1 -type d -name 'favn_view-*' | grep -q .
-find /app/lib -maxdepth 1 -type d -name 'favn_orchestrator-*' | grep -q .
-find /app/lib -maxdepth 1 -type d -name 'favn_storage_postgres-*' | grep -q .
-! find /app/lib -maxdepth 1 -type d -name 'favn_runner-*' | grep -q .
-! find /app/lib -maxdepth 1 -type d -name 'favn_local-*' | grep -q .
-! find /app/lib -maxdepth 1 -type d -name 'favn_authoring-*' | grep -q .
-! find /app/lib -maxdepth 1 -type d -name 'favn_test_support-*' | grep -q .
-! find /app/lib -maxdepth 1 -type d -name 'mix-*' | grep -q .
+find /app/releases/orchestrator/lib -maxdepth 1 -type d -name 'favn_core-*' | grep -q .
+find /app/releases/orchestrator/lib -maxdepth 1 -type d -name 'favn_azure-*' | grep -q .
+find /app/releases/orchestrator/lib -maxdepth 1 -type d -name 'favn_orchestrator-*' | grep -q .
+find /app/releases/orchestrator/lib -maxdepth 1 -type d -name 'favn_storage_postgres-*' | grep -q .
+! find /app/releases/orchestrator/lib -maxdepth 1 -type d -name 'favn_view-*' | grep -q .
+find /app/releases/view/lib -maxdepth 1 -type d -name 'favn_view-*' | grep -q .
+find /app/releases/view/lib -maxdepth 1 -type d -name 'favn_orchestrator-*' | grep -q .
+! find /app/releases/view/lib -maxdepth 1 -type d -name 'favn_storage_postgres-*' | grep -q .
+! find /app/releases/view/lib -maxdepth 1 -type d -name 'favn_azure-*' | grep -q .
+! find /app -path '*/lib/favn_runner-*' | grep -q .
+! find /app -path '*/lib/favn_local-*' | grep -q .
+! find /app -path '*/lib/favn_authoring-*' | grep -q .
+! find /app -path '*/lib/favn_test_support-*' | grep -q .
+! find /app -path '*/lib/mix-*' | grep -q .
 ! find /app -type f -name '*.ex' | grep -q .
-! find /app -type f -name '*.exs' ! -path '/app/releases/*/runtime.exs' | grep -q .
+! find /app -type f -name '*.exs' ! -path '/app/releases/*/releases/*/runtime.exs' | grep -q .
 ! find /app -type f \( -name '*.eex' -o -name '*.heex' \) | grep -q .
 ! find /app -type f -name '*.map' | grep -q .
 ! grep -R -l '"sourcesContent"' /app | grep -q .
-! find /app/lib -path '*/phoenix-*/priv/templates' -type d | grep -q .
+! find /app -path '*/phoenix-*/priv/templates' -type d | grep -q .
 ! find /app -type f -name 'mix.exs' | grep -q .
 ! find /app -type d \( -name deps -o -name _build -o -name .git \) | grep -q .
 ! find /app -xdev \( -type f -o -type d \) -perm /0022 | grep -q .
-! grep -F '/build/' /app/releases/*/sys.config | grep -q .
-! grep -E '\{(esbuild|tailwind),' /app/releases/*/sys.config | grep -q .
+! grep -F '/build/' /app/releases/*/releases/*/sys.config | grep -q .
+! grep -E '\{(esbuild|tailwind),' /app/releases/*/releases/*/sys.config | grep -q .
 ! find / -xdev -type f -perm /6000 -print 2>/dev/null | grep -q .
 SH
 )
@@ -95,7 +102,7 @@ docker run --rm \
   -c "$contract"
 
 docker run --rm --entrypoint /bin/sh "$image" -c \
-  "file=\$(find /app/lib -path '*/favn_view-*/priv/static/cache_manifest.json' -type f -print -quit); test -n \"\$file\"; sha256sum \"\$file\" | cut -d ' ' -f 1"
+  "file=\$(find /app/releases/view/lib -path '*/favn_view-*/priv/static/cache_manifest.json' -type f -print -quit); test -n \"\$file\"; sha256sum \"\$file\" | cut -d ' ' -f 1"
 
 set +e
 status_stdout=$(docker run --rm \
@@ -153,6 +160,7 @@ assert_launcher_rejects() {
 
   set +e
   output=$(docker run --rm \
+    --env FAVN_CONTROL_PLANE_ROLE=orchestrator \
     --env "FAVN_CONTROL_PLANE_NODE=$node" \
     --env "FAVN_DISTRIBUTION_COOKIE=$cookie" \
     --env FAVN_BEAM_DISTRIBUTION_PORT=9101 \
@@ -170,6 +178,7 @@ assert_launcher_rejects "invalid FAVN_CONTROL_PLANE_NODE" "control@@internal" "$
 assert_launcher_rejects "invalid FAVN_DISTRIBUTION_COOKIE" "control@control.internal" "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
 utf8_output=$(docker run --rm \
+  --env FAVN_CONTROL_PLANE_ROLE=orchestrator \
   --network none \
   --read-only \
   --tmpfs /tmp:rw,noexec,nosuid,size=64m,uid=10001,gid=10001,mode=0700 \

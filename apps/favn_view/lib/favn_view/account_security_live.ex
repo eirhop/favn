@@ -8,6 +8,7 @@ defmodule FavnView.AccountSecurityLive do
 
   use FavnView, :live_view
 
+  alias FavnView.Orchestrator
   alias FavnView.Components.AccountSecurityPage
   alias FavnView.Components.Navigation
 
@@ -24,7 +25,7 @@ defmodule FavnView.AccountSecurityLive do
          :ok <-
            call(
              :change_operator_password_fun,
-             &FavnOrchestrator.change_operator_password/3,
+             &Orchestrator.change_operator_password/3,
              [socket.assigns.current_scope.operator_context, current_password, new_password]
            ) do
       {:noreply,

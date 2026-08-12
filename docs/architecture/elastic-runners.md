@@ -126,8 +126,8 @@ submission can produce many tasks, and only runner tasks create runner demand.
 
 - PostgreSQL 18 remains mandatory and is the only durable coordination
   authority.
-- The first supported control-plane topology is exactly one control-plane BEAM
-  node.
+- The first supported topology is exactly one Orchestrator BEAM node; the
+  separate View role may scale between zero and one replica.
 - A runner has one execution slot in the first version.
 - Every task is pinned to one logical runner pool and one exact immutable runner
   release ID.

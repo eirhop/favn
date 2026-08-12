@@ -3,6 +3,7 @@ defmodule FavnView.RunDetailLive do
 
   use FavnView, :live_view
 
+  alias FavnView.Orchestrator
   alias FavnView.AssetRoute
   alias FavnView.Auth.Scope
   alias FavnView.Components.AssetCataloguePage
@@ -165,7 +166,7 @@ defmodule FavnView.RunDetailLive do
 
         socket = assign(socket, :cancel_attempt, attempt)
 
-        case FavnOrchestrator.cancel_operator_run(
+        case Orchestrator.cancel_operator_run(
                actor_context(socket),
                run_id,
                idempotency_key: attempt.key
@@ -205,7 +206,7 @@ defmodule FavnView.RunDetailLive do
 
         socket = assign(socket, :retry_attempt, attempt)
 
-        case FavnOrchestrator.retry_operator_run_remaining(
+        case Orchestrator.retry_operator_run_remaining(
                actor_context(socket),
                socket.assigns.run_id,
                idempotency_key: attempt.key
@@ -310,7 +311,7 @@ defmodule FavnView.RunDetailLive do
   def terminate(_reason, socket) do
     operator_context = operator_context(socket)
     RunEventRefresh.unsubscribe_all(socket, &unsubscribe_run(operator_context, &1))
-    _ = FavnOrchestrator.unsubscribe_run_wakeups(operator_context)
+    _ = Orchestrator.unsubscribe_run_wakeups(operator_context)
 
     :ok
   end
@@ -590,7 +591,7 @@ defmodule FavnView.RunDetailLive do
       Application.get_env(
         :favn_view,
         :operator_run_activity_fun,
-        &FavnOrchestrator.get_operator_run_activity/3
+        &Orchestrator.get_operator_run_activity/3
       )
 
     if is_function(fun, 3), do: fun.(operator_context, run_id, opts), else: fun.(run_id, opts)
@@ -605,19 +606,19 @@ defmodule FavnView.RunDetailLive do
     Application.get_env(
       :favn_view,
       :run_subscribe_fun,
-      &FavnOrchestrator.subscribe_run/2
+      &Orchestrator.subscribe_run/2
     ).(operator_context, run_id)
   end
 
   defp unsubscribe_run(operator_context, run_id),
-    do: FavnOrchestrator.unsubscribe_run(operator_context, run_id)
+    do: Orchestrator.unsubscribe_run(operator_context, run_id)
 
   defp list_run_stream_events(operator_context, run_id, opts) do
     fun =
       Application.get_env(
         :favn_view,
         :run_stream_events_fun,
-        &FavnOrchestrator.list_run_stream_events/3
+        &Orchestrator.list_run_stream_events/3
       )
 
     if is_function(fun, 3), do: fun.(operator_context, run_id, opts), else: fun.(run_id, opts)
@@ -1059,7 +1060,7 @@ defmodule FavnView.RunDetailLive do
   defp back_asset_href(operator_context, ref) do
     ref_string = LogsViewModel.ref_label(ref)
 
-    with {:ok, entries} <- FavnOrchestrator.active_asset_catalogue(operator_context),
+    with {:ok, entries} <- Orchestrator.active_asset_catalogue(operator_context),
          entry when not is_nil(entry) <-
            Enum.find(entries, fn entry ->
              LogsViewModel.ref_label(Map.get(entry, :asset_ref)) == ref_string

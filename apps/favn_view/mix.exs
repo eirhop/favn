@@ -72,12 +72,12 @@ defmodule FavnView.MixProject do
       {:telemetry_poller, "~> 1.0"},
       {:gettext, "~> 1.0"},
       {:jason, "~> 1.2"},
-      internal_dep(:favn_orchestrator, "../favn_orchestrator"),
+      internal_dep(:favn_orchestrator, "../favn_orchestrator", runtime: false),
       {:bandit, "~> 1.5"}
     ]
   end
 
-  defp internal_dep(app, relative_path) do
+  defp internal_dep(app, relative_path, opts) do
     source =
       if Mix.Project.umbrella?() do
         [in_umbrella: true]
@@ -85,7 +85,7 @@ defmodule FavnView.MixProject do
         [path: relative_path]
       end
 
-    {app, source}
+    {app, Keyword.merge(source, opts)}
   end
 
   # Aliases are shortcuts or tasks specific to the current project.

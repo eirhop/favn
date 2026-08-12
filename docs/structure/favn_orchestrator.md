@@ -6,8 +6,11 @@ operator APIs.
 
 ## Boundaries
 
-- `FavnOrchestrator` is the public same-BEAM facade used by `favn_view` and
-  local/operator workflows.
+- `FavnOrchestrator` is the public facade used locally and by the remote View
+  role through bounded distributed Erlang calls.
+- Subscription grants are non-authoritative wake-up descriptors. The View owns
+  the local subscriber process; every durable read following a wake-up passes
+  through the facade and is reauthorized against PostgreSQL.
 - Private HTTP routes expose versioned JSON-safe control-plane and scaler
   contracts.
 - Persistence behaviours live under `FavnOrchestrator.Persistence`; concrete

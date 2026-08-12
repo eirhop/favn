@@ -127,8 +127,9 @@ wait_healthy postgres
 
 compose run --rm database-bootstrap
 
-compose up --detach control-plane
+compose up --detach control-plane view
 wait_healthy control-plane
+wait_healthy view
 publication_output=$(compose run --rm operator publish)
 printf '%s\n' "$publication_output"
 manifest_version_id=$(

@@ -1,11 +1,13 @@
 # Network and reverse-proxy contract
 
-The control plane and runners are trusted distributed-BEAM cluster members.
+View, Orchestrator, and runners are trusted distributed-BEAM cluster members.
 Production requires both mutual-TLS distribution and a high-entropy cookie.
 A private address or cookie alone is not sufficient.
 
-The control plane has one stable long node name and one fixed private
-distribution port. Each runner starts as a hidden dynamic node named
+View and Orchestrator each have a stable long node name and fixed private
+distribution port. View connects to Orchestrator and uses the public facade
+through bounded `:erpc`; Phoenix PubSub uses the same cluster connection. Each
+runner starts as a hidden dynamic node named
 `undefined@<stable-host-alias>`, connects outbound to the control plane, and
 does not listen for inbound distribution. Runner host aliases need not be
 predeclared in the control plane.
@@ -15,6 +17,13 @@ certificate SAN must match the host portion of `FAVN_CONTROL_PLANE_NODE`
 because OTP uses it for TLS SNI. Both sides verify peers, and the control-plane
 server requires runner client certificates.
 
+Distributed Erlang provides code-execution trust, not a narrow RPC sandbox. A
+compromised View can invoke code on Orchestrator. The View's missing database
+identity blocks direct database connections but is not containment against that
+remote execution authority. Keep View ingress authenticated and allowlisted,
+keep both distribution listeners private, require mutual TLS and the cookie,
+and treat both roles as one security trust zone.
+
 ## Exposure matrix
 
 | Listener | Allowed peers | Public exposure |
@@ -22,15 +31,17 @@ server requires runner client certificates.
 | View HTTPS origin | Authenticated operators through VPN, reverse proxy, or Container Apps Easy Auth | Trusted ingress only |
 | View container HTTP port | Trusted ingress and private health system | Never directly |
 | Private orchestrator API | Scalers and trusted operator tooling | Never |
-| Control-plane EPMD | Trusted runner network only | Never |
-| Control-plane BEAM distribution port | Trusted dynamic runners only | Never |
+| Control-plane EPMD | View and trusted dynamic runners | Never |
+| Orchestrator BEAM distribution port | View and trusted dynamic runners | Never |
+| View BEAM distribution port | Orchestrator on the private control network | Never |
 | PostgreSQL | Control plane and one-off database operations | Never |
 | Runner | No inbound application listener required | Never |
 
-Runners require outbound access to the control-plane EPMD/distribution
-listeners and any explicitly configured data-plane services. The control plane
-requires PostgreSQL and API ingress from the trusted scaler/operator network.
-Use explicit rules; do not rely on a container runtime's default bridge policy.
+View and runners require outbound access to the control-plane
+EPMD/distribution listeners. Runners additionally need access to any explicitly
+configured data-plane services. The control plane requires PostgreSQL and API
+ingress from the trusted scaler/operator network. Use explicit rules; do not
+rely on a container runtime's default bridge policy.
 
 ## Reverse proxy
 

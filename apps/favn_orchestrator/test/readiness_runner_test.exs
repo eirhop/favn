@@ -37,7 +37,6 @@ defmodule FavnOrchestrator.ReadinessRunnerTest do
            |> Enum.map(& &1.name) == [
              :config,
              :api,
-             :view,
              :storage,
              :schema,
              :scheduler,

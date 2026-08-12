@@ -1,18 +1,19 @@
 defmodule FavnView.ApplicationTest do
   use ExUnit.Case, async: true
 
-  test "prep_stop drains the control plane before the View supervisor stops" do
-    parent = self()
+  test "View shutdown is independent from Orchestrator draining" do
+    source = File.read!(Path.expand("../lib/favn_view/application.ex", __DIR__))
 
-    state = %{
-      runtime?: true,
-      drain: fn ->
-        send(parent, :drained)
-        {:ok, %{}}
-      end
-    }
+    refute source =~ "FavnOrchestrator.drain"
+    refute function_exported?(FavnView.Application, :prep_stop, 1)
+  end
 
-    assert ^state = FavnView.Application.prep_stop(state)
-    assert_receive :drained
+  test "View and Orchestrator PubSub children have distinct supervisor ids" do
+    view = FavnView.Application.pubsub_child_spec(FavnView.PubSub)
+    orchestrator = FavnView.Application.pubsub_child_spec(FavnOrchestrator.PubSub)
+
+    assert view.id == FavnView.PubSub
+    assert orchestrator.id == FavnOrchestrator.PubSub
+    refute view.id == orchestrator.id
   end
 end

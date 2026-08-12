@@ -1,0 +1,13 @@
+#!/bin/sh
+set -eu
+
+case "${FAVN_CONTROL_PLANE_ROLE:-}" in
+  orchestrator) release=/app/releases/orchestrator/bin/favn_orchestrator ;;
+  view) release=/app/releases/view/bin/favn_view ;;
+  *)
+    echo "FAVN_CONTROL_PLANE_ROLE must be orchestrator or view" >&2
+    exit 64
+    ;;
+esac
+
+exec "$release" "$@"

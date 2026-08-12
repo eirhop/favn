@@ -41,6 +41,7 @@ defmodule Favn.DeploymentReferenceConformanceTest do
     postgres = services["postgres"]
     certificates = services["certificates"]
     control_plane = services["control-plane"]
+    view = services["view"]
     runner = services["runner"]
     scaler_service = services["scaler"]
     qualification_service = services["qualification"]
@@ -81,14 +82,21 @@ defmodule Favn.DeploymentReferenceConformanceTest do
              "${FAVN_RUNNER_CONTRACT_VERSION}"
 
     assert control_plane["environment"]["FAVN_DEPLOYMENT_MODE"] == "production"
+    assert control_plane["environment"]["FAVN_CONTROL_PLANE_ROLE"] == "orchestrator"
     assert control_plane["environment"]["FAVN_DATABASE_SSL_MODE"] == "verify-full"
     refute Map.has_key?(control_plane["environment"], "FAVN_DATABASE_BOOTSTRAP_URL")
     refute Map.has_key?(control_plane["environment"], "FAVN_DATABASE_MIGRATOR_URL")
 
-    assert control_plane["environment"]["FAVN_VIEW_TRUSTED_PROXY_CIDRS"] ==
+    assert view["image"] == control_plane["image"]
+    assert view["environment"]["FAVN_CONTROL_PLANE_ROLE"] == "view"
+    assert view["environment"]["FAVN_VIEW_NODE"] =~ "view.favn.local"
+    refute Map.has_key?(view["environment"], "FAVN_DATABASE_URL")
+    refute Map.has_key?(view["environment"], "FAVN_OPERATOR_COMMAND_HMAC_SECRET")
+
+    assert view["environment"]["FAVN_VIEW_TRUSTED_PROXY_CIDRS"] ==
              "172.31.58.2/32"
 
-    assert control_plane["environment"]["FAVN_VIEW_FORWARDED_FOR_POLICY"] == "replace"
+    assert view["environment"]["FAVN_VIEW_FORWARDED_FOR_POLICY"] == "replace"
 
     assert control_plane["environment"]["FAVN_DISTRIBUTION_TLS_OPTIONS_FILE"] ==
              "/etc/favn/tls/control-plane-ssl-dist.config"
@@ -107,7 +115,11 @@ defmodule Favn.DeploymentReferenceConformanceTest do
     assert control_plane["environment"]["FAVN_ORCHESTRATOR_CAPACITY_READER_TOKEN"] ==
              "${FAVN_CAPACITY_TOKEN}"
 
+    assert control_plane["environment"]["FAVN_OPERATOR_COMMAND_HMAC_SECRET"] ==
+             "${FAVN_OPERATOR_COMMAND_HMAC_SECRET}"
+
     assert "control-plane-certificates:/etc/favn/tls:ro" in control_plane["volumes"]
+    assert "view-certificates:/etc/favn/tls:ro" in view["volumes"]
     refute Enum.any?(control_plane["volumes"], &String.starts_with?(&1, "runner-certificates:"))
 
     assert runner["profiles"] == ["runner"]
@@ -164,6 +176,8 @@ defmodule Favn.DeploymentReferenceConformanceTest do
     assert proxy_check =~ "X-Forwarded-For: 172\\.31\\.58\\.4"
     assert proxy_check =~ "X-Forwarded-Proto: https"
     assert proxy_check =~ "https://favn.localhost/api/web/v1/health/ready"
+    assert proxy_check =~ "http://view:4000"
+    refute proxy_check =~ "http://control-plane:4000"
 
     scaler = read("deployment/docker-compose/scale-runners.sh")
     assert scaler =~ "outstanding - running"
@@ -201,7 +215,8 @@ defmodule Favn.DeploymentReferenceConformanceTest do
     assert qualification =~ "safe_failure_classification"
     assert qualification =~ "non_reusable_materialization_claim_succeeded"
     assert qualification =~ "final-validation.json"
-    assert qualification =~ "secret_scan_expected=8"
+    assert qualification =~ "secret_scan_expected=9"
+    assert qualification =~ "FAVN_OPERATOR_COMMAND_HMAC_SECRET"
     assert qualification =~ "FAVN_BOOTSTRAP_DATABASE_PASSWORD"
     assert qualification =~ "configured_secret_values_scanned"
     assert qualification =~ "leaked_variable_names"

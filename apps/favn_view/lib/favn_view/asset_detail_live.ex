@@ -5,6 +5,7 @@ defmodule FavnView.AssetDetailLive do
 
   require Logger
 
+  alias FavnView.Orchestrator
   alias FavnView.AssetRoute
   alias FavnView.AssetRunConfig
   alias FavnView.CommandAttempt
@@ -169,7 +170,7 @@ defmodule FavnView.AssetDetailLive do
             coverage_plan: nil
           )
 
-        case FavnOrchestrator.plan_missing_coverage_backfill(
+        case Orchestrator.plan_missing_coverage_backfill(
                actor_context(socket),
                asset.target_id,
                coverage_plan_options(asset, socket.assigns.coverage_selection)
@@ -233,7 +234,7 @@ defmodule FavnView.AssetDetailLive do
             coverage_attempt: attempt
           )
 
-        case FavnOrchestrator.submit_missing_coverage_backfill(
+        case Orchestrator.submit_missing_coverage_backfill(
                actor_context(socket),
                socket.assigns.asset.target_id,
                plan,
@@ -402,7 +403,7 @@ defmodule FavnView.AssetDetailLive do
       refresh_mode: run_config.refresh
     }
 
-    case FavnOrchestrator.submit_operator_asset_backfill(
+    case Orchestrator.submit_operator_asset_backfill(
            actor_context(socket),
            asset.manifest_version_id,
            asset.target_id,
@@ -422,7 +423,7 @@ defmodule FavnView.AssetDetailLive do
       refresh_mode: run_config.refresh
     }
 
-    case FavnOrchestrator.submit_operator_run(
+    case Orchestrator.submit_operator_run(
            actor_context(socket),
            asset.manifest_version_id,
            %{type: :asset, id: asset.target_id},
@@ -533,7 +534,7 @@ defmodule FavnView.AssetDetailLive do
   defp load_selected_run(socket, run_id) do
     target_id = AssetRoute.from_param(socket.assigns.asset_id)
 
-    case FavnOrchestrator.active_asset_run_detail(actor_context(socket), target_id, run_id) do
+    case Orchestrator.active_asset_run_detail(actor_context(socket), target_id, run_id) do
       {:ok, run} ->
         {:ok, run}
 
@@ -568,7 +569,7 @@ defmodule FavnView.AssetDetailLive do
     target_id = AssetRoute.from_param(socket.assigns.asset_id)
 
     result =
-      case FavnOrchestrator.active_asset_documentation(actor_context(socket), target_id) do
+      case Orchestrator.active_asset_documentation(actor_context(socket), target_id) do
         {:ok, documentation} ->
           {:ok, documentation}
 
@@ -590,7 +591,7 @@ defmodule FavnView.AssetDetailLive do
     target_id = AssetRoute.from_param(asset_id)
     opts = if run_context_id, do: [run_context_id: run_context_id], else: []
 
-    case FavnOrchestrator.active_asset_detail(operator_context, target_id, opts) do
+    case Orchestrator.active_asset_detail(operator_context, target_id, opts) do
       {:ok, detail} ->
         {:ok, asset_from_detail(detail, asset_id)}
 
@@ -875,7 +876,7 @@ defmodule FavnView.AssetDetailLive do
   defp load_coverage_window(socket, date) do
     asset = socket.assigns.asset
 
-    case FavnOrchestrator.active_asset_coverage_windows(
+    case Orchestrator.active_asset_coverage_windows(
            actor_context(socket),
            asset.target_id,
            coverage_window_options(socket, date)

@@ -3,6 +3,7 @@ defmodule FavnView.AssetCatalogueLive do
 
   use FavnView, :live_view
 
+  alias FavnView.Orchestrator
   alias FavnView.AssetCatalogueFilters
   alias FavnView.AssetRoute
   alias FavnView.Components.AssetCataloguePage
@@ -236,7 +237,7 @@ defmodule FavnView.AssetCatalogueLive do
   defp mode_query(mode), do: %{mode: mode}
 
   defp get_graph(socket, opts) do
-    configured_fun(:lineage_get_graph_fun, &FavnOrchestrator.get_operator_lineage_graph/2).(
+    configured_fun(:lineage_get_graph_fun, &Orchestrator.get_operator_lineage_graph/2).(
       socket.assigns.current_scope.operator_context,
       opts
     )
@@ -244,7 +245,7 @@ defmodule FavnView.AssetCatalogueLive do
 
   defp get_group(socket, id, opts),
     do:
-      configured_fun(:lineage_get_group_fun, &FavnOrchestrator.get_operator_lineage_group/3).(
+      configured_fun(:lineage_get_group_fun, &Orchestrator.get_operator_lineage_group/3).(
         socket.assigns.current_scope.operator_context,
         id,
         opts
@@ -252,7 +253,7 @@ defmodule FavnView.AssetCatalogueLive do
 
   defp get_asset(socket, id, opts),
     do:
-      configured_fun(:lineage_get_asset_fun, &FavnOrchestrator.get_operator_lineage_asset/3).(
+      configured_fun(:lineage_get_asset_fun, &Orchestrator.get_operator_lineage_asset/3).(
         socket.assigns.current_scope.operator_context,
         id,
         opts
@@ -260,7 +261,7 @@ defmodule FavnView.AssetCatalogueLive do
 
   defp get_edge(socket, id, opts),
     do:
-      configured_fun(:lineage_get_edge_fun, &FavnOrchestrator.get_operator_lineage_edge/3).(
+      configured_fun(:lineage_get_edge_fun, &Orchestrator.get_operator_lineage_edge/3).(
         socket.assigns.current_scope.operator_context,
         id,
         opts
@@ -286,7 +287,7 @@ defmodule FavnView.AssetCatalogueLive do
     fun =
       configured_fun(
         :active_asset_catalogue_fun,
-        &FavnOrchestrator.active_asset_catalogue/1
+        &Orchestrator.active_asset_catalogue/1
       )
 
     result = if is_function(fun, 1), do: fun.(operator_context), else: fun.()

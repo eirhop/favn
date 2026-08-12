@@ -2,12 +2,13 @@ defmodule FavnView.Readiness do
   @moduledoc """
   Web liveness and readiness checks for the Phoenix boundary.
 
-  The web app talks to the orchestrator through the public `FavnOrchestrator`
-  facade because the supported production web placement runs in the same BEAM as
-  the backend apps.
+  The web app always talks through `FavnView.Orchestrator`, which calls the
+  public `FavnOrchestrator` facade locally in development and over bounded
+  distributed Erlang in the production View release.
   """
 
   alias FavnView.ProductionRuntimeConfig
+  alias FavnView.Orchestrator
 
   @type check :: %{
           required(:name) => atom(),
@@ -62,7 +63,7 @@ defmodule FavnView.Readiness do
           redacted: true
         },
         orchestrator: %{
-          boundary: :same_beam_facade,
+          boundary: Orchestrator.boundary(),
           readiness_timeout_ms: ProductionRuntimeConfig.configured_timeout_ms()
         }
       })
@@ -82,7 +83,7 @@ defmodule FavnView.Readiness do
   defp orchestrator_check(opts) do
     orchestrator =
       Keyword.get(opts, :orchestrator) ||
-        Application.get_env(:favn_view, :orchestrator_facade, FavnOrchestrator)
+        Application.get_env(:favn_view, :orchestrator_facade, Orchestrator)
 
     timeout_ms = Keyword.get(opts, :timeout_ms, ProductionRuntimeConfig.configured_timeout_ms())
 
@@ -93,12 +94,15 @@ defmodule FavnView.Readiness do
 
     case Task.yield(task, timeout_ms) || Task.shutdown(task, :brutal_kill) do
       {:ok, {:ok, %{status: :ready} = readiness}} ->
-        ok(:orchestrator, %{boundary: :same_beam_facade, upstream: upstream_summary(readiness)})
+        ok(:orchestrator, %{
+          boundary: Orchestrator.boundary(),
+          upstream: upstream_summary(readiness)
+        })
 
       {:ok, {:ok, %{status: :not_ready} = readiness}} ->
         error(:orchestrator, %{
           kind: :orchestrator_not_ready,
-          boundary: :same_beam_facade,
+          boundary: Orchestrator.boundary(),
           upstream: upstream_summary(readiness)
         })
 
@@ -114,7 +118,7 @@ defmodule FavnView.Readiness do
       nil ->
         error(:orchestrator, %{
           kind: :timeout,
-          boundary: :same_beam_facade,
+          boundary: Orchestrator.boundary(),
           timeout_ms: timeout_ms
         })
     end

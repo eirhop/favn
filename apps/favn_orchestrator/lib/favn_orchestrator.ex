@@ -3,8 +3,9 @@ defmodule FavnOrchestrator do
   Runtime orchestrator control-plane facade for manifest-pinned operations.
 
   `FavnOrchestrator` is the boundary used by runtime apps, operator tooling, and
-  the thin `Favn` runtime helpers. Same-BEAM operator UI code uses the operator
-  wrappers here, including run submission, backfill submission, and
+  the thin `Favn` runtime helpers. Operator UI code uses the operator wrappers
+  here locally or through the View's distributed-Erlang adapter, including run
+  submission, backfill submission, and
   `cancel_operator_run/2`, so authz stays in the control plane. It is not the
   stable authoring-time API that most application code should build against.
   """
@@ -14,7 +15,6 @@ defmodule FavnOrchestrator do
   alias Favn.Manifest.Version
   alias Favn.RuntimeInput.Pin
   alias FavnOrchestrator.Auth
-  alias FavnOrchestrator.ControlPlaneRuntimeConfig
   alias FavnOrchestrator.Coverage
   alias FavnOrchestrator.Diagnostics
   alias FavnOrchestrator.Events
@@ -121,6 +121,7 @@ defmodule FavnOrchestrator do
                reconcile_operator_target_recovery: 3,
                list_logs: 3,
                replay_logs: 4,
+               authorize_logs_subscription: 2,
                subscribe_logs: 2,
                submit_operator_run: 5,
                submit_operator_asset_backfill: 5,
@@ -141,9 +142,11 @@ defmodule FavnOrchestrator do
                get_execution_group_detail: 3,
                get_asset_step_log_context: 3,
                list_run_stream_events: 3,
+               authorize_run_subscription: 2,
                subscribe_run: 2,
                unsubscribe_run: 2,
                unsubscribe_run_wakeups: 1,
+               authorize_runs_subscription: 1,
                subscribe_runs: 1,
                unsubscribe_runs: 1,
                page_schedule_list_entries: 2,
@@ -173,11 +176,6 @@ defmodule FavnOrchestrator do
                operator_error_code: 1,
                execution_group_status: 1
              ]}
-
-  @doc "Confirms that unified control-plane boot configuration was applied."
-  @spec ensure_control_plane_runtime_config_applied() ::
-          :ok | {:error, :control_plane_runtime_config_not_applied}
-  def ensure_control_plane_runtime_config_applied, do: ControlPlaneRuntimeConfig.ensure_applied()
 
   @doc "Builds browser-safe, non-authoritative operator identity hints."
   @spec operator_context(String.t(), operator_actor(), operator_session()) ::
@@ -1145,10 +1143,23 @@ defmodule FavnOrchestrator do
   @doc "Subscribes to workspace-isolated log wakeups after reauthorization."
   @spec subscribe_logs(OperatorContext.t(), term()) :: {:ok, term()} | {:error, term()}
   def subscribe_logs(%OperatorContext{} = operator_context, filter) do
-    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer) do
-      Logs.subscribe_logs(context, filter)
+    with {:ok, grant} <- authorize_logs_subscription(operator_context, filter) do
+      activate_logs_subscription(grant)
     end
   end
+
+  @doc "Authorizes and normalizes a caller-owned log subscription without subscribing the caller."
+  @spec authorize_logs_subscription(OperatorContext.t(), term()) ::
+          {:ok, map()} | {:error, term()}
+  def authorize_logs_subscription(%OperatorContext{} = operator_context, filter) do
+    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer) do
+      Logs.prepare_subscription(context, filter)
+    end
+  end
+
+  @doc "Activates a previously authorized log subscription in the calling process."
+  @spec activate_logs_subscription(map()) :: {:ok, term()} | {:error, term()}
+  def activate_logs_subscription(grant), do: Logs.subscribe_prepared(grant)
 
   @doc """
   Unsubscribes the caller from a prior backend log subscription.
@@ -1404,7 +1415,7 @@ defmodule FavnOrchestrator do
   @doc """
   Submits one pipeline backfill command for an authenticated operator actor context.
 
-  This is the same-BEAM boundary for browser, API, and CLI operator actions.
+  This is the public facade boundary for browser, API, and CLI operator actions.
   Callers pass operator intent for the range and refresh mode. The orchestrator
   validates and translates that intent before submitting the runtime backfill.
 
@@ -1413,7 +1424,7 @@ defmodule FavnOrchestrator do
   `{:error, :forbidden}`.
 
   TODO: add a narrow audit event for accepted LiveView operator commands once the
-  audit shape for same-BEAM browser actions is finalized.
+  browser command audit shape is finalized.
   """
   @spec submit_operator_pipeline_backfill(
           operator_actor_context(),
@@ -1608,7 +1619,7 @@ defmodule FavnOrchestrator do
   @doc """
   Requests cancellation for one run on behalf of an authenticated operator.
 
-  This is the same-BEAM boundary for browser operator actions. The orchestrator
+  This is the public facade boundary for browser operator actions. The orchestrator
   validates the actor/session context before forwarding cancellation to the
   run-manager lifecycle contract.
   """
@@ -2126,13 +2137,34 @@ defmodule FavnOrchestrator do
   """
   @spec subscribe_run(OperatorContext.t(), run_id()) :: :ok | {:error, term()}
   def subscribe_run(%OperatorContext{} = operator_context, run_id) when is_binary(run_id) do
-    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer),
-         {:ok, _run} <- Runs.get(context, run_id) do
-      Events.subscribe_run(context.workspace_id, run_id)
+    with {:ok, grant} <- authorize_run_subscription(operator_context, run_id) do
+      activate_run_subscription(grant)
     end
   end
 
   def subscribe_run(_operator_context, _run_id), do: {:error, :invalid_run_subscription}
+
+  @doc "Authorizes one run subscription without subscribing the authorization process."
+  @spec authorize_run_subscription(OperatorContext.t(), run_id()) ::
+          {:ok, map()} | {:error, term()}
+  def authorize_run_subscription(%OperatorContext{} = operator_context, run_id)
+      when is_binary(run_id) do
+    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer),
+         {:ok, _run} <- Runs.get(context, run_id) do
+      {:ok, %{kind: :run, workspace_id: context.workspace_id, run_id: run_id}}
+    end
+  end
+
+  def authorize_run_subscription(_operator_context, _run_id),
+    do: {:error, :invalid_run_subscription}
+
+  @doc "Activates a previously authorized run subscription in the calling process."
+  @spec activate_run_subscription(map()) :: :ok | {:error, term()}
+  def activate_run_subscription(%{kind: :run, workspace_id: workspace_id, run_id: run_id}) do
+    Events.subscribe_run(workspace_id, run_id)
+  end
+
+  def activate_run_subscription(_grant), do: {:error, :invalid_run_subscription}
 
   @doc """
   Unsubscribes the current process from one run-scoped live event stream.
@@ -2146,6 +2178,15 @@ defmodule FavnOrchestrator do
 
   def unsubscribe_run(_operator_context, _run_id), do: :ok
 
+  @doc "Removes the calling process's local run subscription without a persistence lookup."
+  @spec deactivate_run_subscription(OperatorContext.t(), run_id()) :: :ok
+  def deactivate_run_subscription(%OperatorContext{workspace_id: workspace_id}, run_id)
+      when is_binary(run_id) do
+    Events.unsubscribe_run(workspace_id, run_id)
+  end
+
+  def deactivate_run_subscription(_operator_context, _run_id), do: :ok
+
   @doc "Unsubscribes the current process from cross-node durable run wake-ups."
   @spec unsubscribe_run_wakeups(OperatorContext.t()) :: :ok | {:error, term()}
   def unsubscribe_run_wakeups(%OperatorContext{} = operator_context) do
@@ -2154,15 +2195,35 @@ defmodule FavnOrchestrator do
     end
   end
 
+  @doc "Removes the calling process's local durable-publication wake-up subscription."
+  @spec deactivate_run_wakeups() :: :ok
+  def deactivate_run_wakeups, do: Events.unsubscribe_persistence_publications()
+
   @doc """
   Subscribes the current process to the global runs live event stream.
   """
   @spec subscribe_runs(OperatorContext.t()) :: :ok | {:error, term()}
   def subscribe_runs(%OperatorContext{} = operator_context) do
-    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer) do
-      Events.subscribe_runs(context.workspace_id)
+    with {:ok, grant} <- authorize_runs_subscription(operator_context) do
+      activate_runs_subscription(grant)
     end
   end
+
+  @doc "Authorizes a workspace runs subscription without subscribing the authorization process."
+  @spec authorize_runs_subscription(OperatorContext.t()) :: {:ok, map()} | {:error, term()}
+  def authorize_runs_subscription(%OperatorContext{} = operator_context) do
+    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer) do
+      {:ok, %{kind: :runs, workspace_id: context.workspace_id}}
+    end
+  end
+
+  @doc "Activates a previously authorized workspace runs subscription in the calling process."
+  @spec activate_runs_subscription(map()) :: :ok | {:error, term()}
+  def activate_runs_subscription(%{kind: :runs, workspace_id: workspace_id}) do
+    Events.subscribe_runs(workspace_id)
+  end
+
+  def activate_runs_subscription(_grant), do: {:error, :invalid_run_subscription}
 
   @doc """
   Unsubscribes the current process from the global runs live event stream.
@@ -2172,6 +2233,12 @@ defmodule FavnOrchestrator do
     with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer) do
       Events.unsubscribe_runs(context.workspace_id)
     end
+  end
+
+  @doc "Removes the calling process's local workspace runs subscription without persistence."
+  @spec deactivate_runs_subscription(OperatorContext.t()) :: :ok
+  def deactivate_runs_subscription(%OperatorContext{workspace_id: workspace_id}) do
+    Events.unsubscribe_runs(workspace_id)
   end
 
   @doc "Returns active-deployment schedules for one reauthorized operator workspace."

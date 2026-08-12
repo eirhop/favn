@@ -6,7 +6,8 @@ environment.
 
 The copied files contain:
 
-- `compose.yml` for one control plane and one customer runner;
+- `compose.yml` for separate Orchestrator and View roles from one image plus one
+  customer runner;
 - `runner.Dockerfile` for the consumer project;
 - `runner-image-contract.sh` for static image verification;
 - `env.example` listing required deployment variables.
@@ -27,6 +28,12 @@ custom CA path is supplied. When the database uses a private CA, mount that CA
 certificate using your platform's secret mechanism and set
 `FAVN_DATABASE_SSL_CA_FILE` to its in-container path. Required values use
 Compose's `:?` form so configuration fails before an invalid deployment starts.
+
+Distributed Erlang is mutual-TLS only. The three TLS directory variables in
+`env.example` must point to separate node-specific directories containing
+`ssl-dist.config` plus the certificate, private key, and CA files referenced by
+that config. Both client and server sections must use `verify_peer`, and server
+sections must use `fail_if_no_peer_cert`. Do not share node private keys.
 
 ## Example use
 

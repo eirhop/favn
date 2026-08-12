@@ -5,6 +5,7 @@ defmodule FavnView.PipelineDetailLive do
 
   require Logger
 
+  alias FavnView.Orchestrator
   alias FavnView.AssetRoute
   alias FavnView.CommandAttempt
   alias FavnView.Components.ErrorPage
@@ -70,7 +71,7 @@ defmodule FavnView.PipelineDetailLive do
 
     socket = assign(socket, :run_attempt, attempt)
 
-    case facade(:submit_operator_run_fun, &FavnOrchestrator.submit_operator_run/5).(
+    case facade(:submit_operator_run_fun, &Orchestrator.submit_operator_run/5).(
            actor_context(socket),
            pipeline.manifest_version_id,
            %{type: :pipeline, id: pipeline.id},
@@ -120,7 +121,7 @@ defmodule FavnView.PipelineDetailLive do
     with true <- pipeline.can_backfill?,
          nil <- validate_backfill_config(config),
          {:ok, run_id} <-
-           FavnOrchestrator.submit_operator_pipeline_backfill(
+           Orchestrator.submit_operator_pipeline_backfill(
              actor_context(socket),
              pipeline.manifest_version_id,
              pipeline.id,
@@ -210,7 +211,7 @@ defmodule FavnView.PipelineDetailLive do
   defp load_pipeline(operator_context, pipeline_id) do
     target_id = AssetRoute.from_param(pipeline_id)
 
-    case FavnOrchestrator.active_pipeline_detail(operator_context, target_id) do
+    case Orchestrator.active_pipeline_detail(operator_context, target_id) do
       {:ok, detail} ->
         {:ok, pipeline_from_detail(detail)}
 

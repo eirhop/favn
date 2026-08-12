@@ -223,9 +223,10 @@ compose up --detach postgres
 compose --profile operations run --rm database-bootstrap
 
 if ! compose --profile security --profile proxy-security up --detach \
-  control-plane proxy-header-receiver https-proxy; then
+  control-plane view proxy-header-receiver https-proxy; then
   compose ps --all >&2 || true
   compose logs --no-color control-plane >&2 || true
+  compose logs --no-color view >&2 || true
   exit 1
 fi
 
@@ -237,16 +238,17 @@ api_network="${project_name}_security-operator-api"
 database_network="${project_name}_security-database"
 runner_network="${project_name}_security-runner-control"
 view_network="${project_name}_security-view-upstream"
+view_control_network="${project_name}_security-view-control"
 instrumentation_network="${project_name}_security-proxy-instrumentation"
 
-assert_equal TOPO-001 "$database_network $api_network $runner_network $view_network" \
+assert_equal TOPO-001 "$database_network $api_network $runner_network $view_control_network" \
   "$(container_networks control-plane)" "control plane has only its four explicit trust networks"
 assert_equal TOPO-002 "$instrumentation_network $public_network $view_network" \
   "$(container_networks https-proxy)" \
   "reverse proxy is the only bridge between public edge, View, and test instrumentation"
 assert_equal TOPO-003 "$database_network" \
   "$(container_networks postgres)" "PostgreSQL is isolated on the database network"
-assert_equal TOPO-004 "" "$(published_port control-plane 4000)" \
+assert_equal TOPO-004 "" "$(published_port view 4000)" \
   "View has no direct host publication"
 assert_equal TOPO-005 "" "$(published_port control-plane 4101)" \
   "private API has no direct host publication"

@@ -4,7 +4,8 @@ This example proves Favn's production deployment contracts on one Docker host:
 
 - PostgreSQL 18 uses a separate migrator and least-privilege runtime role over
   verified TLS;
-- one production control-plane image starts and remains ready with zero runners;
+- one immutable control-plane image starts separate View and Orchestrator roles
+  and remains ready with zero runners;
 - the CRM tutorial is packaged as an immutable customer runner release;
 - manifest publication and activation use the same exact runner release ID;
 - a bounded local scaler reads authenticated demand and starts one-slot,
@@ -58,13 +59,13 @@ environment setting on older Compose releases.
 
 1. builds the certificate, PostgreSQL, control-plane, operator, and runner
    images;
-2. generates a local CA and separate PostgreSQL, control-plane, and runner
+2. generates a local CA and separate PostgreSQL, Orchestrator, View, and runner
    certificates in isolated volumes so no service receives another service's
    private key;
 3. starts PostgreSQL and runs the packaged one-command database bootstrap, which
    creates and hardens the migrator/runtime roles, migrates, provisions the
    `elastic-simulation` workspace, and verifies through the runtime role;
-4. starts the control plane with zero runner capacity;
+4. starts the Orchestrator and View roles with zero runner capacity;
 5. publishes the exact manifest/release pair at zero runner capacity;
 6. activates it with a one-runner bootstrap scaler for target compatibility
    inspection, then returns to zero runners;

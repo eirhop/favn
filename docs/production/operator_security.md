@@ -184,9 +184,10 @@ redirected to HTTPS.
   is network authorization, not cryptographic proxy authentication. Use an
   isolated hop, a local sidecar, or authenticated transport for deployments
   where other workloads could enter the trusted network.
-- The supported topology is one control-plane BEAM. Login throttling and
-  immediate PubSub disconnect are node-local; the durable authorization check
-  remains PostgreSQL-backed.
+- The supported topology is exactly one Orchestrator BEAM plus zero or one View
+  BEAM. Login throttling is Orchestrator-process local and each live subscriber
+  is View-process local; clustered invalidations cross the trusted roles, while
+  the durable authorization check remains PostgreSQL-backed.
 - CSP permits inline styles for the current component stack, but not inline
   scripts. Removing `style-src 'unsafe-inline'` is defense-in-depth rather than
   an executable-script exposure.
