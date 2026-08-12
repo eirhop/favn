@@ -213,13 +213,13 @@ defmodule FavnView.Orchestrator do
   defp transport_error(:read), do: {:error, :orchestrator_unavailable}
   defp transport_error(:command), do: {:error, :orchestrator_outcome_unknown}
 
+  # This creates one validated, deployment-owned node name frozen once at boot.
+  # sobelow_skip ["DOS.StringToAtom"]
   defp node_name(env, name) do
     with {:ok, value} <- required(env, name),
          [local_name, host] <- String.split(value, "@", parts: 2),
          true <- valid_node_part?(local_name),
          true <- valid_node_host?(host) do
-      # This is one validated, deployment-owned node name frozen once at boot.
-      # sobelow_skip ["DOS.StringToAtom"]
       {:ok, String.to_atom(value)}
     else
       {:error, _reason} = error -> error
