@@ -218,6 +218,8 @@ defmodule FavnView.Orchestrator do
          [local_name, host] <- String.split(value, "@", parts: 2),
          true <- valid_node_part?(local_name),
          true <- valid_node_host?(host) do
+      # This is one validated, deployment-owned node name frozen once at boot.
+      # sobelow_skip ["DOS.StringToAtom"]
       {:ok, String.to_atom(value)}
     else
       {:error, _reason} = error -> error

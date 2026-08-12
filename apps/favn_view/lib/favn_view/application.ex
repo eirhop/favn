@@ -18,7 +18,7 @@ defmodule FavnView.Application do
         [FavnView.Telemetry] ++
           orchestrator_connection_children() ++
           [
-            {Phoenix.PubSub, name: FavnView.PubSub},
+            pubsub_child_spec(FavnView.PubSub),
             {Task.Supervisor, name: FavnView.ReadinessTaskSupervisor},
             FavnView.Endpoint
           ]
@@ -40,10 +40,16 @@ defmodule FavnView.Application do
 
       target_node ->
         [
-          {Phoenix.PubSub, name: FavnOrchestrator.PubSub},
+          pubsub_child_spec(FavnOrchestrator.PubSub),
           {FavnView.OrchestratorConnector, target_node: target_node}
         ]
     end
+  end
+
+  @doc false
+  @spec pubsub_child_spec(atom()) :: Supervisor.child_spec()
+  def pubsub_child_spec(name) do
+    Supervisor.child_spec({Phoenix.PubSub, name: name}, id: name)
   end
 
   # Tell Phoenix to update the endpoint configuration

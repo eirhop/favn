@@ -7,4 +7,13 @@ defmodule FavnView.ApplicationTest do
     refute source =~ "FavnOrchestrator.drain"
     refute function_exported?(FavnView.Application, :prep_stop, 1)
   end
+
+  test "View and Orchestrator PubSub children have distinct supervisor ids" do
+    view = FavnView.Application.pubsub_child_spec(FavnView.PubSub)
+    orchestrator = FavnView.Application.pubsub_child_spec(FavnOrchestrator.PubSub)
+
+    assert view.id == FavnView.PubSub
+    assert orchestrator.id == FavnOrchestrator.PubSub
+    refute view.id == orchestrator.id
+  end
 end
