@@ -72,6 +72,8 @@ services:
       FAVN_DATABASE_MAINTENANCE_NAME: postgres
       FAVN_DATABASE_SSL_MODE: verify-full
       FAVN_DATABASE_SSL_CA_FILE: /etc/favn/tls/ca.crt
+      FAVN_OPERATOR_COMMAND_HMAC_SECRET: ${FAVN_OPERATOR_COMMAND_HMAC_SECRET}
+      FAVN_WORKSPACE_PROVISIONING_CONFIG_FILE: /run/favn/workspace-bootstrap.json
       FAVN_WORKSPACE_ID: elastic-simulation
       FAVN_WORKSPACE_SLUG: elastic-simulation
       FAVN_WORKSPACE_NAME: Elastic runner simulation
@@ -80,6 +82,7 @@ services:
         condition: service_healthy
     volumes:
       - control-plane-certificates:/etc/favn/tls:ro
+      - ./workspace-bootstrap.entra.json:/run/favn/workspace-bootstrap.json:ro
     networks:
       - favn-private
     profiles: ["operations"]

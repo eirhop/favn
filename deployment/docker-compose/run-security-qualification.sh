@@ -230,9 +230,6 @@ if ! compose --profile security --profile proxy-security up --detach \
   exit 1
 fi
 
-bootstrap_expression='case FavnStoragePostgres.Release.admin_bootstrap(%{workspace_ids: ["elastic-simulation"], username: "security-admin", display_name: "Security qualification administrator", password: File.read!("/run/secrets/favn-security/admin-password") |> String.trim()}) do {:ok, _result} -> :ok; {:error, failure} -> IO.inspect(failure); System.halt(1) end'
-compose exec -T control-plane //app/bin/favn_control_plane eval "$bootstrap_expression"
-
 public_network="${project_name}_security-public-edge"
 api_network="${project_name}_security-operator-api"
 database_network="${project_name}_security-database"

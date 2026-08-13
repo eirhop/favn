@@ -7,6 +7,12 @@ services:
       - security-database
 
   database-bootstrap:
+    environment:
+      FAVN_WORKSPACE_ADMIN_PASSWORD_FILE: /run/secrets/favn-security/admin-password
+    volumes: !override
+      - control-plane-certificates:/etc/favn/tls:ro
+      - ./security/workspace-bootstrap.password.json:/run/favn/workspace-bootstrap.json:ro
+      - ./security/secrets:/run/secrets/favn-security:ro
     networks: !override
       - security-database
 
