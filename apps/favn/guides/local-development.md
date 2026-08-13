@@ -67,10 +67,12 @@ Apply the schema and explicitly provision the development workspace:
 ```bash
 mix favn.postgres.upgrade
 mix favn.postgres.provision_workspace \
-  --id local-dev \
-  --slug local-dev \
-  --name "Local Development"
+  --config .favn/workspace-bootstrap.json
 ```
+
+The JSON explicitly selects the initial Entra or local-password administrator;
+password material is read from protected stdin or `--password-file`, never from
+the JSON. See [Operator Authentication](operator-authentication.md).
 
 The upgrade command uses the migrator role to apply migrations and runtime
 grants, then reconnects with the runtime role to verify the exact schema. Both

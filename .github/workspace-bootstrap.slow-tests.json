@@ -1,0 +1,16 @@
+{
+  "contract_version": 1,
+  "operation_id": "ci-slow-tests-local-dev-v1",
+  "workspace": {
+    "id": "local-dev",
+    "slug": "local-dev",
+    "display_name": "Local Development"
+  },
+  "administrator": {
+    "mode": "entra",
+    "username": "ci-local-admin",
+    "display_name": "CI local administrator",
+    "tenant_id": "33333333-3333-4333-8333-333333333333",
+    "object_id": "44444444-4444-4444-8444-444444444444"
+  }
+}

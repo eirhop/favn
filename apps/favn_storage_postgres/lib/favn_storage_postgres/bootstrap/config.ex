@@ -4,6 +4,8 @@ defmodule FavnStoragePostgres.Bootstrap.Config do
   alias FavnStoragePostgres.Bootstrap.Profile
   alias FavnStoragePostgres.Bootstrap.Scram
   alias FavnStoragePostgres.Config, as: DatabaseConfig
+  alias FavnStoragePostgres.WorkspaceProvisioning.Config, as: WorkspaceProvisioningConfig
+  alias FavnOrchestrator.Operator.Audit
 
   @profile_lifecycles [
     :bootstrap_maintenance,
@@ -33,7 +35,9 @@ defmodule FavnStoragePostgres.Bootstrap.Config do
     :bootstrap,
     :migrator,
     :runtime,
-    :workspace
+    :workspace,
+    :workspace_provisioning,
+    :workspace_provisioning_key
   ]
 
   @type operation :: :status | :bootstrap | :upgrade
@@ -45,7 +49,9 @@ defmodule FavnStoragePostgres.Bootstrap.Config do
           bootstrap: Profile.t() | nil,
           migrator: Profile.t(),
           runtime: Profile.t(),
-          workspace: workspace() | nil
+          workspace: workspace() | nil,
+          workspace_provisioning: map() | nil,
+          workspace_provisioning_key: String.t() | nil
         }
 
   @spec from_env(operation(), map()) :: {:ok, t()} | {:error, atom()}
@@ -57,7 +63,9 @@ defmodule FavnStoragePostgres.Bootstrap.Config do
          {:ok, target_database} <- target_database(env, runtime, migrator),
          {:ok, maintenance_database} <-
            database_name(env, "FAVN_DATABASE_MAINTENANCE_NAME", "postgres"),
-         {:ok, workspace} <- workspace(operation, env),
+         {:ok, workspace_provisioning} <- workspace_provisioning(operation, env),
+         {:ok, workspace} <- workspace(operation, env, workspace_provisioning),
+         {:ok, workspace_provisioning_key} <- workspace_provisioning_key(operation, env),
          :ok <- distinct_roles(bootstrap, migrator, runtime),
          :ok <- safe_target_roles(migrator, runtime),
          :ok <- distinct_objects(migrator, runtime),
@@ -68,7 +76,9 @@ defmodule FavnStoragePostgres.Bootstrap.Config do
            bootstrap: bootstrap,
            migrator: migrator,
            runtime: runtime,
-           workspace: workspace
+           workspace: workspace,
+           workspace_provisioning: workspace_provisioning,
+           workspace_provisioning_key: workspace_provisioning_key
          },
          :ok <- validate_maintenance(config),
          :ok <- validate_topology(config),
@@ -192,12 +202,26 @@ defmodule FavnStoragePostgres.Bootstrap.Config do
     end
   end
 
-  defp workspace(:upgrade, _env), do: {:ok, nil}
+  defp workspace(:upgrade, _env, _workspace_provisioning), do: {:ok, nil}
 
-  defp workspace(operation, env) when operation in [:bootstrap, :status] do
+  defp workspace(:bootstrap, _env, input) do
+    with %{} = workspace <- Map.get(input, "workspace"),
+         id when is_binary(id) <- Map.get(workspace, "id"),
+         slug when is_binary(slug) <- Map.get(workspace, "slug", id),
+         display_name when is_binary(display_name) <- Map.get(workspace, "display_name", slug),
+         true <- valid_workspace_value?(id),
+         true <- valid_workspace_slug?(slug),
+         true <- valid_workspace_value?(display_name) do
+      {:ok, %{workspace_id: id, slug: slug, display_name: display_name}}
+    else
+      _invalid -> {:error, :invalid_workspace}
+    end
+  end
+
+  defp workspace(:status, env, _workspace_provisioning) do
     id = Map.get(env, "FAVN_WORKSPACE_ID")
 
-    if operation == :status and is_nil(id) do
+    if is_nil(id) do
       {:ok, nil}
     else
       slug = Map.get(env, "FAVN_WORKSPACE_SLUG", id)
@@ -211,6 +235,27 @@ defmodule FavnStoragePostgres.Bootstrap.Config do
       end
     end
   end
+
+  defp workspace_provisioning(:bootstrap, env), do: WorkspaceProvisioningConfig.load(env)
+  defp workspace_provisioning(_operation, _env), do: {:ok, nil}
+
+  defp workspace_provisioning_key(:bootstrap, env) do
+    case Application.get_env(:favn_orchestrator, :operator_command_hmac_key) do
+      key when is_binary(key) and byte_size(key) >= 32 ->
+        {:ok, key}
+
+      _missing ->
+        case Map.get(env, "FAVN_OPERATOR_COMMAND_HMAC_SECRET") do
+          value when is_binary(value) and byte_size(value) >= 32 ->
+            {:ok, Audit.derive_command_hmac_key(value)}
+
+          _invalid ->
+            {:error, :invalid_workspace_provisioning_key}
+        end
+    end
+  end
+
+  defp workspace_provisioning_key(_operation, _env), do: {:ok, nil}
 
   defp distinct_roles(nil, migrator, runtime), do: distinct?([migrator.role, runtime.role])
 
@@ -372,4 +417,25 @@ defmodule FavnStoragePostgres.Bootstrap.Config do
 
   defp valid_workspace_slug?(value),
     do: is_binary(value) and Regex.match?(~r/\A[a-z0-9][a-z0-9-]{0,62}\z/, value)
+end
+
+defimpl Inspect, for: FavnStoragePostgres.Bootstrap.Config do
+  import Inspect.Algebra
+
+  def inspect(config, opts) do
+    concat([
+      "#FavnStoragePostgres.Bootstrap.Config<",
+      to_doc(
+        %{
+          operation: config.operation,
+          target_database: config.target_database,
+          maintenance_database: config.maintenance_database,
+          workspace: config.workspace,
+          workspace_provisioning_configured?: is_map(config.workspace_provisioning)
+        },
+        opts
+      ),
+      ">"
+    ])
+  end
 end

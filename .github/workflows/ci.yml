@@ -353,9 +353,11 @@ jobs:
         run: mix favn.postgres.test_setup
 
       - name: Provision local development workspace
+        env:
+          FAVN_OPERATOR_COMMAND_HMAC_SECRET: ci-workspace-provisioning-hmac-secret-v1
         run: >-
           mix favn.postgres.provision_workspace
-          --id local-dev --slug local-dev --name "Local Development"
+          --config .github/workspace-bootstrap.slow-tests.json
 
       - name: Run non-acceptance slow tests
         run: mix test.slow

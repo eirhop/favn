@@ -6,10 +6,44 @@ case "${1:-}" in
   status) operation=status ;;
   upgrade) operation=upgrade ;;
   verify-restore) operation=verify_restore ;;
+  provision-workspace)
+    shift
+    config_file=""
+    password_file=""
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --config)
+          [ "$#" -ge 2 ] || { echo "--config requires a path" >&2; exit 64; }
+          config_file=$2
+          shift 2
+          ;;
+        --password-file)
+          [ "$#" -ge 2 ] || { echo "--password-file requires a path" >&2; exit 64; }
+          password_file=$2
+          shift 2
+          ;;
+        *) echo "unknown provision-workspace option: $1" >&2; exit 64 ;;
+      esac
+    done
+    [ -n "$config_file" ] || { echo "provision-workspace requires --config PATH" >&2; exit 64; }
+    export FAVN_WORKSPACE_PROVISIONING_CONFIG_FILE=$config_file
+    if [ -n "$password_file" ]; then
+      export FAVN_WORKSPACE_ADMIN_PASSWORD_FILE=$password_file
+    fi
+    operation=provision_workspace
+    ;;
+  workspace-status)
+    [ "${2:-}" = "--workspace" ] && [ -n "${3:-}" ] && [ "$#" -eq 3 ] || {
+      echo "workspace-status requires --workspace ID" >&2
+      exit 64
+    }
+    export FAVN_WORKSPACE_ID=$3
+    operation=workspace_status
+    ;;
   runtime-input-key-inventory) operation=runtime_input_key_inventory ;;
   compact-runtime-input-keys) operation=compact_runtime_input_keys ;;
   *)
-    echo "usage: favn_control_plane_ops {bootstrap|status|upgrade|verify-restore|runtime-input-key-inventory|compact-runtime-input-keys}" >&2
+    echo "usage: favn_control_plane_ops {bootstrap|status|upgrade|provision-workspace --config PATH [--password-file PATH]|workspace-status --workspace ID|verify-restore|runtime-input-key-inventory|compact-runtime-input-keys}" >&2
     exit 64
     ;;
 esac

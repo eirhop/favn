@@ -14,18 +14,19 @@ defmodule FavnStoragePostgres.Release do
   alias Favn.DeploymentMode
   alias Favn.RuntimeInput.KeyringConfig
   alias FavnOrchestrator.AdminLifecycle
-  alias FavnOrchestrator.Persistence.Commands.ProvisionWorkspace
+  alias FavnOrchestrator.Operator.Audit
   alias FavnOrchestrator.Persistence.Error, as: PersistenceError
-  alias FavnOrchestrator.Persistence.PlatformContext
   alias FavnOrchestrator.Redaction
+  alias FavnOrchestrator.WorkspaceProvisioning
   alias FavnStoragePostgres.Authentication
   alias FavnStoragePostgres.Bootstrap, as: DatabaseBootstrap
   alias FavnStoragePostgres.Config
   alias FavnStoragePostgres.Identity.Store, as: IdentityStore
-  alias FavnStoragePostgres.Registry.Store
+  alias FavnStoragePostgres.Instrumented.WorkspaceProvisioning, as: WorkspaceProvisioningStore
   alias FavnStoragePostgres.Repo
   alias FavnStoragePostgres.RuntimePrivileges
   alias FavnStoragePostgres.RuntimeInputKeyInventory
+  alias FavnStoragePostgres.Bootstrap.Result, as: OperationResult
   alias FavnStoragePostgres.Schemas.Workspace
   alias FavnStoragePostgres.StorageV2.Migrations
 
@@ -48,6 +49,7 @@ defmodule FavnStoragePostgres.Release do
           | :verify_restore
           | :grant_runtime
           | :provision_workspace
+          | :workspace_status
           | :runtime_input_key_inventory
           | :compact_runtime_input_keys
 
@@ -473,52 +475,84 @@ defmodule FavnStoragePostgres.Release do
     end)
   end
 
-  @doc "Idempotently provisions one workspace from an atom-keyed map or keyword list."
-  @spec provision_workspace(map() | keyword()) :: result()
-  @spec provision_workspace(map() | keyword(), map()) :: result()
-  def provision_workspace(input, env \\ System.get_env())
+  @doc "Atomically provisions one workspace with its selected initial administrator."
+  @spec provision_workspace_administrator(map(), map()) :: result()
+  def provision_workspace_administrator(input, env \\ System.get_env())
 
-  def provision_workspace(input, env)
-      when (is_map(input) or is_list(input)) and is_map(env) do
+  def provision_workspace_administrator(input, env) when is_map(input) and is_map(env) do
     database_operation(:provision_workspace, env, fn ->
-      with {:ok, workspace} <- normalize_workspace(input),
-           {:ok, context} <-
-             PlatformContext.new(
-               "release:workspace-provisioner",
-               "release:workspace-provisioner",
-               [:platform_admin]
-             ),
-           :ok <-
-             Store.provision_workspace(%ProvisionWorkspace{
-               platform_context: context,
-               workspace_id: workspace.workspace_id,
-               slug: workspace.slug,
-               display_name: workspace.display_name,
-               occurred_at: DateTime.utc_now()
-             }) do
-        Logger.info("favn.release.workspace_provisioned workspace_id=#{workspace.workspace_id}")
-
-        ok(:provision_workspace,
-          workspace_id: workspace.workspace_id,
-          slug: workspace.slug
+      with {:ok, fingerprint_key} <- workspace_provisioning_fingerprint_key(env),
+           {:ok, result} <-
+             WorkspaceProvisioning.provision(input,
+               store: WorkspaceProvisioningStore,
+               fingerprint_key: fingerprint_key
+             ) do
+        Logger.info(
+          "favn.release.workspace_administrator_provisioned workspace_id=#{result.workspace_id} authentication_mode=#{result.authentication_mode}"
         )
+
+        OperationResult.ready(:provision_workspace, provisioning_stages(result))
+        |> merge_operation_fields(provisioning_fields(result))
       else
         {:error, %PersistenceError{} = failure} ->
-          persistence_error(:provision_workspace, failure)
-
-        {:error, %{operation: :provision_workspace} = failure} ->
-          {:error, failure}
+          provisioning_failure(:provision_workspace, failure)
 
         {:error, reason} ->
-          error(:provision_workspace, :invalid_workspace, reason: safe_reason(reason))
+          OperationResult.error(
+            :provision_workspace,
+            :invalid_configuration,
+            :invalid_workspace_provisioning,
+            :configuration,
+            [],
+            %{failure_kind: safe_reason(reason)}
+          )
       end
     end)
   end
 
-  def provision_workspace(_input, _env) do
-    release_operation(:provision_workspace, fn ->
-      error(:provision_workspace, :invalid_workspace, reason: :map_or_keyword_required)
+  def provision_workspace_administrator(_input, _env) do
+    OperationResult.error(
+      :provision_workspace,
+      :invalid_configuration,
+      :invalid_workspace_provisioning,
+      :configuration
+    )
+  end
+
+  @doc "Returns authoritative readiness for one provisioned workspace administrator."
+  @spec workspace_status(String.t(), map()) :: result()
+  def workspace_status(workspace_id, env \\ System.get_env())
+
+  def workspace_status(workspace_id, env) when is_binary(workspace_id) and is_map(env) do
+    database_operation(:workspace_status, env, fn ->
+      case WorkspaceProvisioning.status(workspace_id, store: WorkspaceProvisioningStore) do
+        {:ok, result} ->
+          OperationResult.ready(:workspace_status, [:workspace_administrator_verification])
+          |> merge_operation_fields(provisioning_fields(result))
+
+        {:error, %PersistenceError{kind: kind} = failure}
+        when kind in [:not_found, :constraint] ->
+          OperationResult.status(
+            :workspace_status,
+            :workspace_administrator_missing,
+            :workspace_administrator,
+            [],
+            Map.put(failure.details, :workspace_id, workspace_id)
+          )
+
+        {:error, %PersistenceError{} = failure} ->
+          provisioning_failure(:workspace_status, failure)
+      end
     end)
+  end
+
+  def workspace_status(_workspace_id, _env) do
+    OperationResult.error(
+      :workspace_status,
+      :invalid_configuration,
+      :invalid_workspace,
+      :configuration
+    )
   end
 
   @doc "Lists persisted key versions, pin counts, and redacted configured-version metadata."
@@ -797,23 +831,6 @@ defmodule FavnStoragePostgres.Release do
     ArgumentError -> error(operation, :invalid_runtime_role)
   end
 
-  defp normalize_workspace(input) do
-    values = if is_list(input), do: Map.new(input), else: input
-    workspace_id = Map.get(values, :workspace_id)
-    slug = Map.get(values, :slug, workspace_id)
-    display_name = Map.get(values, :display_name, workspace_id)
-
-    if valid_identifier?(workspace_id) and valid_identifier?(slug) and
-         valid_identifier?(display_name) do
-      {:ok, %{workspace_id: workspace_id, slug: slug, display_name: display_name}}
-    else
-      error(:provision_workspace, :invalid_workspace, reason: :invalid_identifier)
-    end
-  end
-
-  defp valid_identifier?(value),
-    do: is_binary(value) and value != "" and byte_size(value) <= 255
-
   defp fetch_string(input, key) do
     case Map.get(input, key, Map.get(input, Atom.to_string(key))) do
       value when is_binary(value) and value != "" -> {:ok, value}
@@ -982,6 +999,67 @@ defmodule FavnStoragePostgres.Release do
       :actual_definition_fingerprint,
       :runtime_role
     ])
+  end
+
+  defp workspace_provisioning_fingerprint_key(env) do
+    case Application.get_env(:favn_orchestrator, :operator_command_hmac_key) do
+      key when is_binary(key) and byte_size(key) >= 32 ->
+        {:ok, key}
+
+      _missing ->
+        case Map.get(env, "FAVN_OPERATOR_COMMAND_HMAC_SECRET") do
+          secret when is_binary(secret) and byte_size(secret) >= 32 ->
+            {:ok, Audit.derive_command_hmac_key(secret)}
+
+          _invalid ->
+            {:error, :operator_command_hmac_key_unavailable}
+        end
+    end
+  end
+
+  defp provisioning_stages(%{authentication_mode: mode}) do
+    [:workspace, :actor, :membership, :platform_grant, mode, :audit, :receipt]
+  end
+
+  defp provisioning_fields(result) do
+    %{
+      actor_id: result.actor_id,
+      authentication_mode: result.authentication_mode,
+      operation_id: result.operation_id,
+      platform_roles: result.platform_roles,
+      replayed: result.replayed?,
+      slug: result.slug,
+      username: result.username,
+      workspace_id: result.workspace_id,
+      workspace_name: result.workspace_name,
+      workspace_roles: result.workspace_roles
+    }
+  end
+
+  defp merge_operation_fields({tag, details}, fields), do: {tag, Map.merge(details, fields)}
+
+  defp provisioning_failure(operation, %PersistenceError{} = failure) do
+    details = Redaction.redact_operational_bounded(failure.details)
+
+    if failure.kind in [:timeout, :unavailable, :internal] do
+      OperationResult.error(
+        operation,
+        :unknown_outcome,
+        :workspace_provisioning_outcome_unknown,
+        :workspace_administrator,
+        [],
+        Map.put(details, :failure_kind, failure.kind)
+      )
+    else
+      OperationResult.error(
+        operation,
+        :operation_failed,
+        failure.kind,
+        :workspace_administrator,
+        [],
+        details
+      )
+    end
   end
 
   defp read_password(prompt) do

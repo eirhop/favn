@@ -29,6 +29,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
   alias FavnStoragePostgres.Migrations.AddScheduleActivationsV2
   alias FavnStoragePostgres.Migrations.AddTargetGenerationFoundationV2
   alias FavnStoragePostgres.Migrations.AddTargetRecoveryV2
+  alias FavnStoragePostgres.Migrations.AddWorkspaceProvisioningOperationsV2
   alias FavnStoragePostgres.Migrations.BindAuthSessionsToWorkspacesV2
   alias FavnStoragePostgres.Migrations.CompleteRebuildOrchestrationV2
   alias FavnStoragePostgres.Migrations.CreateStorageV2
@@ -86,7 +87,8 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     {20_260_730_030_000, AddExternalIdentitiesV2},
     {20_260_731_000_000, AddRunnerTaskOperatorReadsV2},
     {20_260_805_000_000, OptimizeLogicalTargetHistoryV2},
-    {20_260_807_000_000, GeneralizeOperatorCommandPrincipalsV2}
+    {20_260_807_000_000, GeneralizeOperatorCommandPrincipalsV2},
+    {20_260_813_000_000, AddWorkspaceProvisioningOperationsV2}
   ]
   @required_tables ~w(
     schema_migrations
@@ -160,6 +162,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     auth_audit_entries
     auth_platform_audit_entries
     auth_operator_commands
+    workspace_provisioning_operations
     idempotency_records
     maintenance_jobs
   )
@@ -222,6 +225,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     auth_sessions_workspace_page_idx
     auth_sessions_workspace_actor_session_uidx
     auth_external_identities_actor_uidx
+    workspace_provisioning_operations_workspace_uidx
     materialization_claims_retention_idx
     projection_failures_retention_idx
     log_entries_retention_idx
@@ -426,7 +430,9 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
       ~w(workspace_id deployment_id manifest_version_id configuration configuration_fingerprint target_catalog_fingerprint configuration_version deployed_by_actor_id inserted_at),
     "workspace_runtime_state" =>
       ~w(workspace_id active_deployment_id revision activated_by_actor_id activated_at updated_at),
-    "workspaces" => ~w(workspace_id slug display_name status version inserted_at updated_at)
+    "workspaces" => ~w(workspace_id slug display_name status version inserted_at updated_at),
+    "workspace_provisioning_operations" =>
+      ~w(operation_id workspace_id request_fingerprint actor_id username authentication_mode tenant_fingerprint object_fingerprint status inserted_at updated_at)
   }
   @identifier_constraint_tables ~w(
     workspaces manifest_versions execution_packages manifest_execution_packages
@@ -544,11 +550,13 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     auth_workspace_memberships_actor_fk
     auth_operator_commands_workspace_fk auth_operator_commands_actor_fk
     auth_operator_commands_session_authority_fk auth_operator_commands_values_valid
+    workspace_provisioning_operations_workspace_fk workspace_provisioning_operations_actor_fk
+    workspace_provisioning_operations_values_valid
   ) ++
                           Enum.map(@identifier_constraint_tables, &"#{&1}_identifier_lengths_v2") ++
                           Enum.map(@payload_constraint_tables, &"#{&1}_payload_bounds_v2")
   @expected_versions Enum.map(@migrations, fn {version, _module} -> version end)
-  @expected_definition_fingerprint "a6018938576fce9f45b6325804217fd029720b2b3524a69921baa48c8894d185"
+  @expected_definition_fingerprint "fd9aaf29e13f6a037f0e0c4df23d30e3b3af14176df1b3f7fbc0706e1be9b6ea"
 
   @doc "Creates the V2 namespace for development/tests and applies every known migration."
   @spec migrate!(module()) :: :ok

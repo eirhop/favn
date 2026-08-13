@@ -289,6 +289,7 @@ defmodule FavnStoragePostgres.Bootstrap.ConfigTest do
       "FAVN_WORKSPACE_SLUG" => "primary",
       "FAVN_WORKSPACE_NAME" => "Primary workspace"
     }
+    |> with_workspace_provisioning("primary", "Primary workspace")
   end
 
   defp azure_env do
@@ -313,5 +314,35 @@ defmodule FavnStoragePostgres.Bootstrap.ConfigTest do
       "FAVN_DATABASE_RUNTIME_AZURE_OBJECT_ID" => "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
       "FAVN_WORKSPACE_ID" => "primary"
     }
+    |> with_workspace_provisioning("primary", "primary")
+  end
+
+  defp with_workspace_provisioning(env, workspace_id, workspace_name) do
+    path =
+      Path.join(
+        System.tmp_dir!(),
+        "favn-bootstrap-config-#{System.unique_integer([:positive])}.json"
+      )
+
+    File.write!(
+      path,
+      Jason.encode!(%{
+        contract_version: 1,
+        operation_id: "bootstrap-#{workspace_id}",
+        workspace: %{id: workspace_id, slug: workspace_id, display_name: workspace_name},
+        administrator: %{
+          mode: "entra",
+          username: "admin-#{workspace_id}",
+          display_name: "Initial administrator",
+          tenant_id: "11111111-1111-1111-1111-111111111111",
+          object_id: "22222222-2222-2222-2222-222222222222"
+        }
+      })
+    )
+
+    Map.merge(env, %{
+      "FAVN_WORKSPACE_PROVISIONING_CONFIG_FILE" => path,
+      "FAVN_OPERATOR_COMMAND_HMAC_SECRET" => "bootstrap-test-hmac-secret-00000001"
+    })
   end
 end

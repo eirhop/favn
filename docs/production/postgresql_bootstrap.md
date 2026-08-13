@@ -1,7 +1,7 @@
 # PostgreSQL bootstrap and upgrade Jobs
 
 Favn owns its PostgreSQL roles, database policy, `favn_control` schema,
-migrations, runtime grants, and initial workspace. A deployment owns the
+migrations, runtime grants, and initial workspace administrator. A deployment owns the
 PostgreSQL server, networking, TLS, backups, identities or passwords, temporary
 bootstrap authorization, and the Job that runs Favn's command.
 
@@ -31,12 +31,13 @@ already-bootstrapped target through the migrator and runtime identities.
    role attributes;
 5. creates `favn_control` with the migrator as its only owner;
 6. runs pending migrations and exact runtime grants;
-7. creates the initial workspace only when it is absent; and
+7. atomically creates the initial workspace, actor, workspace membership,
+   platform grant, and selected Entra link or password credential; and
 8. opens a new runtime connection and verifies the completed result.
 
 Every stage first inspects durable PostgreSQL/provider state. Running
 `bootstrap` again after success therefore verifies or skips exact state instead
-of creating a second database, role, or workspace.
+of creating a second database, role, workspace, or administrator.
 
 `upgrade` is the normal later-deployment command. It accepts only migrator and
 runtime profiles, refuses bootstrap authority, applies pending migrations and
@@ -77,9 +78,8 @@ FAVN_DATABASE_MIGRATOR_URL=ecto://favn_migrator:<secret>@<host>/favn
 FAVN_DATABASE_RUNTIME_AUTH_MODE=password
 FAVN_DATABASE_RUNTIME_URL=ecto://favn_runtime:<secret>@<host>/favn
 
-FAVN_WORKSPACE_ID=salmon-one
-FAVN_WORKSPACE_SLUG=salmon-one
-FAVN_WORKSPACE_NAME=Salmon One
+FAVN_WORKSPACE_PROVISIONING_CONFIG_FILE=/run/config/workspace-bootstrap.json
+FAVN_OPERATOR_COMMAND_HMAC_SECRET=<deployment-stable-secret-at-least-32-bytes>
 ```
 
 `FAVN_DATABASE_URL` may replace `FAVN_DATABASE_RUNTIME_URL`, allowing the Job and
@@ -199,6 +199,65 @@ The release `eval` entrypoint disables distributed Erlang, so this Job needs no
 BEAM node name, cookie, EPMD port, or distribution port. It also needs no HTTP
 ingress or Easy Auth.
 
+## Initial workspace administrator
+
+`bootstrap` and the standalone `provision-workspace` operation use the same
+provider-neutral transaction. The JSON file contains an explicit operation ID
+and exactly one tagged administrator mode. For Entra:
+
+```json
+{
+  "contract_version": 1,
+  "operation_id": "install-salmon-one-v1",
+  "workspace": {
+    "id": "salmon-one",
+    "slug": "salmon-one",
+    "display_name": "Salmon One"
+  },
+  "administrator": {
+    "mode": "entra",
+    "username": "salmon-admin",
+    "display_name": "Salmon administrator",
+    "tenant_id": "11111111-1111-4111-8111-111111111111",
+    "object_id": "22222222-2222-4222-8222-222222222222"
+  }
+}
+```
+
+For a local administrator, set `mode` to `password`, omit the Entra IDs, and
+supply the username and display name. Password material never belongs in JSON,
+an argument, or an environment variable. Provide it through protected stdin or
+a private regular file:
+
+```text
+/app/bin/favn_control_plane_ops provision-workspace \
+  --config /run/config/workspace-bootstrap.json \
+  --password-file /run/secrets/initial-admin-password
+```
+
+The file must be readable only by its owner on Unix. `bootstrap` uses the same
+`FAVN_WORKSPACE_ADMIN_PASSWORD_FILE` input when password mode is selected.
+Windows callers must use protected stdin because portable ACL verification is
+unavailable.
+
+`FAVN_OPERATOR_COMMAND_HMAC_SECRET` binds operation identity to the complete
+request, including protected password input, without persisting the password.
+It must remain stable for exact retries. A repeated operation with identical
+input returns the existing redacted ready result; changed input returns a
+bounded conflict without changing authorization state.
+
+If the client loses the result after commit, reconcile without retrying a
+possibly completed write:
+
+```text
+/app/bin/favn_control_plane_ops workspace-status --workspace salmon-one
+```
+
+The readiness result includes the workspace, actor, username, authentication
+mode, and assigned roles. It never contains password material, password hashes,
+provider claims, tokens, or raw Entra identifiers. No browser visitor is ever
+promoted automatically.
+
 The deployment sequence is:
 
 1. create PostgreSQL, networking, identities/secrets, and a recovery point;
@@ -249,8 +308,9 @@ application frame. They never include the unrestricted exception message,
 database URL, username, token, or provider response. Use the correlation ID to
 match the JSON finding to stderr before reconciling with `status`.
 
-The production image wrapper exposes only `bootstrap`, `status`, and `upgrade`
-for normal database lifecycle work. Older granular Mix/release functions remain
+The production image wrapper exposes `bootstrap`, `status`, `upgrade`,
+`provision-workspace`, and `workspace-status` for normal database/workspace
+lifecycle work. Older granular Mix/release functions remain
 for local development and transition code, but production mode rejects a
 superuser, `CREATEDB`, `CREATEROLE`, inherited, replication, bypass-RLS, or
 member role before those functions can write. Production automation uses the

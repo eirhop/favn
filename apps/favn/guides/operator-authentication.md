@@ -93,34 +93,23 @@ The deployment still needs the normal production web settings, including
 `FAVN_VIEW_PUBLIC_ORIGIN`, secure cookie configuration, and the exact private
 Container Apps proxy CIDRs in `FAVN_VIEW_TRUSTED_PROXY_CIDRS`.
 
-## Link an operator
+## Provision the initial operator
 
-First create or bootstrap the Favn actor and its workspace membership. Then
-link the Entra directory object ID to that exact global username:
-
-```console
-mix favn.admin.entra \
-  --username USERNAME \
-  --tenant-id 11111111-1111-4111-8111-111111111111 \
-  --object-id 22222222-2222-4222-8222-222222222222 \
-  --action link
-```
-
-Use the object ID from Entra, not an email address. The database enforces that
-one provider subject belongs to only one Favn actor and that one actor has at
-most one object ID in a tenant.
-
-For a packaged release:
+Provision the workspace and its first administrator in one supported operation.
+Put the immutable Entra tenant and object IDs in the tagged configuration and
+run:
 
 ```console
-bin/favn_control_plane eval \
-  'IO.inspect(FavnStoragePostgres.Release.admin_entra_identity(%{username: "USERNAME", tenant_id: "TENANT_UUID", object_id: "OBJECT_UUID", action: "link"}))'
+/app/bin/favn_control_plane_ops provision-workspace \
+  --config /run/config/workspace-bootstrap.json
 ```
 
-Unlink with `--action unlink`. Unlinking also revokes the actor's active Favn
-sessions issued through that provider. Link and unlink operations are
-platform-audited; audit details contain bounded fingerprints rather than raw
-tenant or object IDs.
+Use the Entra object ID, not an email address, display name, group, or provider
+role. The transaction creates the workspace, actor, membership, platform grant,
+and provider link together. See the
+[PostgreSQL bootstrap guide](../../../docs/production/postgresql_bootstrap.md#initial-workspace-administrator)
+for the complete Entra/password configuration, retry, and reconciliation
+contract. Later link changes remain explicit audited administrator operations.
 
 ## Denial and logout
 
