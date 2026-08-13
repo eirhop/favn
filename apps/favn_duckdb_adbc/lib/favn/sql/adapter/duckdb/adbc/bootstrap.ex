@@ -92,7 +92,7 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC.Bootstrap do
         error
         | retryable?: true,
           details:
-            Map.merge(error.details || %{}, %{
+            Map.merge(error.details, %{
               classification: :conflict,
               reason: :ducklake_metadata_initialization_race
             })
