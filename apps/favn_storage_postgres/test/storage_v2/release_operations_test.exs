@@ -209,6 +209,8 @@ defmodule FavnStoragePostgres.StorageV2.ReleaseOperationsTest do
         refute Process.whereis(Repo)
       end)
 
+    cleanup_provisioned_administrator!(connection, workspace_id)
+
     refute log =~ database_url
 
     if database_userinfo = URI.parse(database_url).userinfo do
@@ -230,5 +232,34 @@ defmodule FavnStoragePostgres.StorageV2.ReleaseOperationsTest do
                     %{operation: :migrate, status: :error, code: :restricted_runtime_role}}
 
     assert is_integer(failed_duration_ms) and failed_duration_ms >= 0
+  end
+
+  defp cleanup_provisioned_administrator!(connection, workspace_id) do
+    %{rows: [[operation_id, actor_id]]} =
+      Postgrex.query!(
+        connection,
+        """
+        SELECT operation_id, actor_id
+        FROM favn_control.workspace_provisioning_operations
+        WHERE workspace_id = $1
+        """,
+        [workspace_id]
+      )
+
+    statements = [
+      {"DELETE FROM favn_control.workspace_provisioning_operations WHERE operation_id = $1",
+       [operation_id]},
+      {"DELETE FROM favn_control.auth_audit_entries WHERE command_id = $1", [operation_id]},
+      {"DELETE FROM favn_control.auth_platform_audit_entries WHERE command_id = $1",
+       [operation_id]},
+      {"DELETE FROM favn_control.auth_external_identities WHERE actor_id = $1", [actor_id]},
+      {"DELETE FROM favn_control.auth_workspace_memberships WHERE actor_id = $1", [actor_id]},
+      {"DELETE FROM favn_control.auth_platform_grants WHERE actor_id = $1", [actor_id]},
+      {"DELETE FROM favn_control.auth_actors WHERE actor_id = $1", [actor_id]}
+    ]
+
+    Enum.each(statements, fn {statement, params} ->
+      Postgrex.query!(connection, statement, params)
+    end)
   end
 end
