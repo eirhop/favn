@@ -1,12 +1,13 @@
 defmodule Mix.Tasks.Favn.Postgres.ProvisionWorkspace do
-  @moduledoc "Provisions an idempotent Storage V2 workspace with platform authority."
+  @moduledoc "Atomically provisions a workspace and its initial administrator."
 
   use Mix.Task
 
   alias FavnStoragePostgres.Release
+  alias FavnStoragePostgres.WorkspaceProvisioning.Config
   alias Mix.Tasks.Favn.Postgres.ReleaseHelpers
 
-  @shortdoc "Provisions a PostgreSQL Storage V2 workspace"
+  @shortdoc "Provisions a workspace and initial administrator"
 
   @impl true
   def run(args) do
@@ -14,26 +15,25 @@ defmodule Mix.Tasks.Favn.Postgres.ProvisionWorkspace do
 
     {options, positional, invalid} =
       OptionParser.parse(args,
-        strict: [id: :string, slug: :string, name: :string]
+        strict: [config: :string, password_file: :string]
       )
 
     if positional != [] or invalid != [] do
       usage!()
     end
 
-    workspace_id = required_option!(options, :id)
-    slug = Keyword.get(options, :slug, workspace_id)
-    display_name = Keyword.get(options, :name, workspace_id)
+    config_path = required_option!(options, :config)
 
-    Release.provision_workspace(
-      %{
-        workspace_id: workspace_id,
-        slug: slug,
-        display_name: display_name
-      },
-      ReleaseHelpers.migrator_env!()
-    )
-    |> ReleaseHelpers.report("Workspace is provisioned")
+    env =
+      System.get_env()
+      |> Map.merge(ReleaseHelpers.migrator_env!())
+      |> Map.put("FAVN_WORKSPACE_PROVISIONING_CONFIG_FILE", config_path)
+      |> maybe_put_password_file(options)
+
+    with {:ok, input} <- Config.load(env) do
+      Release.provision_workspace_administrator(input, env)
+    end
+    |> ReleaseHelpers.report("Workspace and initial administrator are ready")
   end
 
   defp required_option!(options, key) do
@@ -43,8 +43,15 @@ defmodule Mix.Tasks.Favn.Postgres.ProvisionWorkspace do
     end
   end
 
+  defp maybe_put_password_file(env, options) do
+    case Keyword.get(options, :password_file) do
+      nil -> env
+      path -> Map.put(env, "FAVN_WORKSPACE_ADMIN_PASSWORD_FILE", path)
+    end
+  end
+
   @spec usage!() :: no_return()
   defp usage! do
-    Mix.raise("usage: mix favn.postgres.provision_workspace --id ID [--slug SLUG] [--name NAME]")
+    Mix.raise("usage: mix favn.postgres.provision_workspace --config PATH [--password-file PATH]")
   end
 end

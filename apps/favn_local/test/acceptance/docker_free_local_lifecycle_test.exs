@@ -66,11 +66,27 @@ defmodule FavnLocal.DockerFreeLocalLifecycleAcceptanceTest do
       restore_handler_level(previous_handler_level)
     end)
 
+    provisioning_env =
+      System.get_env()
+      |> Map.put("FAVN_OPERATOR_COMMAND_HMAC_SECRET", "local-acceptance-hmac-secret-0001")
+
     assert {:ok, %{status: :ok}} =
-             Release.provision_workspace(
-               workspace_id: workspace_id,
-               slug: workspace_id,
-               display_name: "Source Development Acceptance"
+             Release.provision_workspace_administrator(
+               %{
+                 "operation_id" => "local-acceptance-#{workspace_id}",
+                 "workspace" => %{
+                   "id" => workspace_id,
+                   "slug" => workspace_id,
+                   "display_name" => "Source Development Acceptance"
+                 },
+                 "administrator" => %{
+                   "mode" => "password",
+                   "username" => "admin-#{workspace_id}",
+                   "display_name" => "Source development administrator",
+                   "password" => "local-acceptance-password-634"
+                 }
+               },
+               provisioning_env
              )
 
     Application.put_env(:favn, :dev,

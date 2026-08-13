@@ -611,6 +611,22 @@ erDiagram
         text algorithm
         bigint version
     }
+    AUTH_EXTERNAL_IDENTITIES {
+        text provider PK
+        uuid tenant_id PK
+        uuid subject_id PK
+        text actor_id FK
+    }
+    WORKSPACE_PROVISIONING_OPERATIONS {
+        text operation_id PK
+        text workspace_id FK, UK
+        bytea request_fingerprint
+        text actor_id FK
+        text authentication_mode
+        bytea tenant_fingerprint
+        bytea object_fingerprint
+        text status
+    }
     AUTH_SESSIONS {
         text session_id PK
         text actor_id FK
@@ -708,10 +724,13 @@ erDiagram
     }
 
     AUTH_ACTORS ||--o| AUTH_CREDENTIALS : authenticates
+    AUTH_ACTORS ||--o{ AUTH_EXTERNAL_IDENTITIES : links
     AUTH_ACTORS ||--o{ AUTH_SESSIONS : opens
     AUTH_ACTORS ||--o{ AUTH_WORKSPACE_MEMBERSHIPS : receives
     WORKSPACES ||--o{ AUTH_WORKSPACE_MEMBERSHIPS : grants
     AUTH_ACTORS ||--o| AUTH_PLATFORM_GRANTS : receives
+    WORKSPACES ||--o| WORKSPACE_PROVISIONING_OPERATIONS : records
+    AUTH_ACTORS ||--o| WORKSPACE_PROVISIONING_OPERATIONS : administers
     WORKSPACES ||..o{ AUTH_AUDIT_ENTRIES : scopes
     AUTH_ACTORS ||..o{ AUTH_AUDIT_ENTRIES : acts
     AUTH_ACTORS ||..o{ AUTH_PLATFORM_AUDIT_ENTRIES : acts
@@ -730,6 +749,13 @@ Platform grants are separate from workspace membership so cross-workspace access
 is explicit. Projection tables are derived, bounded read models and can be
 repaired from authoritative publications.
 
+`workspace_provisioning_operations` is the durable reconciliation receipt for
+the atomic first-administrator transaction. Its keyed request fingerprint binds
+the operation ID to exact input while the row stores no password, password hash,
+raw provider claim, token, tenant ID, or object ID. A ready receipt is valid only
+while the referenced active workspace, actor, membership, platform grant, and
+tagged password credential or Entra link all exist.
+
 ## Complete table catalog
 
 | Domain | Tables | Authority |
@@ -744,13 +770,13 @@ repaired from authoritative publications.
 | Materialization | `materialization_claims`, `materializations`, `coverage_baselines` | Authoritative |
 | Backfills | `backfills`, `backfill_plan_batches`, `backfill_windows` | Authoritative |
 | Logs | `log_batches`, `log_entries` | Authoritative operational history subject to retention |
-| Identity and audit | `auth_actors`, `auth_credentials`, `auth_external_identities`, `auth_sessions`, `auth_workspace_memberships`, `auth_platform_grants`, `auth_audit_entries`, `auth_platform_audit_entries` | Authoritative |
+| Identity and audit | `auth_actors`, `auth_credentials`, `auth_external_identities`, `auth_sessions`, `auth_workspace_memberships`, `auth_platform_grants`, `auth_audit_entries`, `auth_platform_audit_entries`, `auth_operator_commands`, `workspace_provisioning_operations` | Authoritative |
 | API/maintenance | `idempotency_records`, `maintenance_jobs` | Authoritative coordination |
 | Projection infrastructure | `projection_cursors`, `projection_failures` | Durable projector state |
 | Read projections | `execution_group_overviews`, `backfill_overviews`, `target_statuses`, `asset_window_states`, `asset_freshness_states`, `asset_attempt_overviews` | Derived and repairable |
 | Ecto | `schema_migrations` | Migration bookkeeping |
 
-There are 62 application/schema tables including `schema_migrations`. Tables
+There are 74 application/schema tables including `schema_migrations`. Tables
 without direct foreign keys still require workspace-scoped application contracts;
 their lack of an FK is not permission to perform unscoped reads.
 

@@ -21,8 +21,20 @@ defmodule FavnStoragePostgres.ReleaseCLITest do
     def grant_runtime, do: ok(:grant_runtime)
     def runtime_input_key_inventory, do: ok(:runtime_input_key_inventory)
 
-    def provision_workspace(workspace),
-      do: {:ok, Map.merge(%{operation: :provision_workspace, status: :ok}, workspace)}
+    def provision_workspace_administrator(input, _env) do
+      workspace = input["workspace"]
+
+      {:ok,
+       %{
+         operation: :provision_workspace,
+         status: :ok,
+         workspace_id: workspace["id"],
+         display_name: workspace["display_name"]
+       }}
+    end
+
+    def workspace_status(workspace_id, _env),
+      do: {:ok, %{operation: :workspace_status, status: :ok, workspace_id: workspace_id}}
 
     def compact_runtime_input_keys(versions),
       do:
@@ -79,16 +91,19 @@ defmodule FavnStoragePostgres.ReleaseCLITest do
     assert upgrade["code"] == "operation_in_progress"
   end
 
-  test "reads workspace and key versions from environment instead of arguments" do
+  test "reads workspace configuration and key versions outside command arguments" do
+    config_path = workspace_config_file()
+
     workspace_env = %{
-      "FAVN_WORKSPACE_ID" => "workspace-1",
-      "FAVN_WORKSPACE_SLUG" => "workspace-one",
-      "FAVN_WORKSPACE_NAME" => "Workspace One"
+      "FAVN_WORKSPACE_PROVISIONING_CONFIG_FILE" => config_path
     }
 
     {0, workspace} = run(:provision_workspace, workspace_env)
     assert workspace["workspace_id"] == "workspace-1"
     assert workspace["display_name"] == "Workspace One"
+
+    {0, status} = run(:workspace_status, %{"FAVN_WORKSPACE_ID" => "workspace-1"})
+    assert status["workspace_id"] == "workspace-1"
 
     {0, compaction} =
       run(:compact_runtime_input_keys, %{"FAVN_RUNTIME_INPUT_KEY_VERSIONS" => "3,1,3"})
@@ -302,5 +317,28 @@ defmodule FavnStoragePostgres.ReleaseCLITest do
     assert [json] = String.split(output, "\n", trim: true)
     assert [_summary] = String.split(stderr, "\n", trim: true)
     {exit_code, Jason.decode!(json), stderr}
+  end
+
+  defp workspace_config_file do
+    path =
+      Path.join(System.tmp_dir!(), "favn-workspace-#{System.unique_integer([:positive])}.json")
+
+    File.write!(
+      path,
+      Jason.encode!(%{
+        contract_version: 1,
+        operation_id: "operation-workspace-1",
+        workspace: %{id: "workspace-1", slug: "workspace-one", display_name: "Workspace One"},
+        administrator: %{
+          mode: "entra",
+          username: "workspace-admin",
+          display_name: "Workspace administrator",
+          tenant_id: "11111111-1111-1111-1111-111111111111",
+          object_id: "22222222-2222-2222-2222-222222222222"
+        }
+      })
+    )
+
+    path
   end
 end

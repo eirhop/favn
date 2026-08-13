@@ -6,7 +6,8 @@ defmodule FavnStoragePostgres.Bootstrap.Result do
 
   @contract_version 1
 
-  @type operation :: :status | :bootstrap | :upgrade
+  @type operation ::
+          :status | :bootstrap | :upgrade | :provision_workspace | :workspace_status
   @type state ::
           :ready
           | :invalid_configuration
@@ -22,6 +23,7 @@ defmodule FavnStoragePostgres.Bootstrap.Result do
           | :runtime_grants_missing
           | :workspace_missing
           | :workspace_conflict
+          | :workspace_administrator_missing
           | :operation_in_progress
           | :bootstrap_required
           | :unknown_outcome
@@ -102,7 +104,11 @@ defmodule FavnStoragePostgres.Bootstrap.Result do
 
   @spec exit_code(map()) :: non_neg_integer()
   def exit_code(%{state: :ready}), do: 0
-  def exit_code(%{operation: :status, outcome: :changes_required}), do: 2
+
+  def exit_code(%{operation: operation, outcome: :changes_required})
+      when operation in [:status, :workspace_status],
+      do: 2
+
   def exit_code(%{state: :invalid_configuration}), do: 64
 
   def exit_code(%{state: state})
@@ -153,7 +159,8 @@ defmodule FavnStoragePostgres.Bootstrap.Result do
       :diagnostic_id,
       :failure_kind,
       :failure_class,
-      :failure_location
+      :failure_location,
+      :reason_code
     ])
     |> Enum.take(8)
     |> Map.new()

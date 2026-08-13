@@ -68,6 +68,33 @@ defmodule Favn.DeploymentReferenceConformanceTest do
     assert database_bootstrap["environment"]["FAVN_DATABASE_RUNTIME_URL"] =~
              "favn_runtime:"
 
+    assert database_bootstrap["environment"]["FAVN_OPERATOR_COMMAND_HMAC_SECRET"] ==
+             "${FAVN_OPERATOR_COMMAND_HMAC_SECRET}"
+
+    assert database_bootstrap["environment"]["FAVN_WORKSPACE_PROVISIONING_CONFIG_FILE"] ==
+             "/run/favn/workspace-bootstrap.json"
+
+    assert Enum.member?(
+             database_bootstrap["volumes"],
+             "./workspace-bootstrap.entra.json:/run/favn/workspace-bootstrap.json:ro"
+           )
+
+    assert %{
+             "contract_version" => 1,
+             "workspace" => %{"id" => "elastic-simulation"},
+             "administrator" => %{
+               "mode" => "entra",
+               "tenant_id" => tenant_id,
+               "object_id" => object_id
+             }
+           } =
+             "deployment/docker-compose/workspace-bootstrap.entra.json"
+             |> read()
+             |> Jason.decode!()
+
+    assert String.match?(tenant_id, ~r/^[0-9a-f-]{36}$/)
+    assert String.match?(object_id, ~r/^[0-9a-f-]{36}$/)
+
     refute Map.has_key?(services, "database-migrate")
     refute Map.has_key?(services, "database-grant")
     refute Map.has_key?(services, "database-verify")
@@ -253,6 +280,24 @@ defmodule Favn.DeploymentReferenceConformanceTest do
     assert reset =~ "exec scripts/postgres/setup"
   end
 
+  test "slow CI provisioning uses the tagged administrator contract" do
+    workflow = read(".github/workflows/ci.yml")
+
+    assert workflow =~ "mix favn.postgres.provision_workspace"
+    assert workflow =~ "--config .github/workspace-bootstrap.slow-tests.json"
+
+    refute workflow =~ "--id local-dev --slug local-dev"
+
+    assert %{
+             "contract_version" => 1,
+             "workspace" => %{"id" => "local-dev"},
+             "administrator" => %{"mode" => "entra", "username" => "ci-local-admin"}
+           } =
+             ".github/workspace-bootstrap.slow-tests.json"
+             |> read()
+             |> Jason.decode!()
+  end
+
   test "production operations wrapper exposes only composed database lifecycle commands" do
     wrapper = read("rel/control_plane/overlays/bin/favn_control_plane_ops")
     image_contract = read("scripts/control_plane_image_contract.sh")
@@ -314,6 +359,29 @@ defmodule Favn.DeploymentReferenceConformanceTest do
     security_runner = read("deployment/docker-compose/run-security-qualification.sh")
     assert security_runner =~ "certificates postgres control-plane security-browser"
     refute security_runner =~ "control-plane security-browser security-api"
+    refute security_runner =~ "Release.admin_bootstrap"
+    assert security_runner =~ "chown 10001:10001 /secrets/admin-password"
+    assert security_runner =~ "chmod 0400 /secrets/admin-password"
+    assert security_runner =~ "cp /secrets/admin-password /secrets/probe-admin-password"
+
+    assert security_compose =~
+             "FAVN_WORKSPACE_ADMIN_PASSWORD_FILE: /run/secrets/favn-security/admin-password"
+
+    assert length(
+             Regex.scan(
+               ~r{FAVN_SECURITY_ADMIN_PASSWORD_FILE: /run/secrets/favn-security/probe-admin-password},
+               security_compose
+             )
+           ) == 2
+
+    assert %{
+             "contract_version" => 1,
+             "workspace" => %{"id" => "elastic-simulation"},
+             "administrator" => %{"mode" => "password", "username" => "security-admin"}
+           } =
+             "deployment/docker-compose/security/workspace-bootstrap.password.json"
+             |> read()
+             |> Jason.decode!()
 
     for path <- [
           "rel/control_plane/Dockerfile.dockerignore",

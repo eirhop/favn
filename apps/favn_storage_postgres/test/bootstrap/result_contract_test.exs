@@ -83,4 +83,16 @@ defmodule FavnStoragePostgres.Bootstrap.ResultContractTest do
     conflict = Error.new(:conflict, "workspace already exists")
     assert Bootstrap.classify_workspace_failure(conflict) == :workspace_conflict
   end
+
+  test "workspace status reports changes required with the read-only exit code" do
+    assert {:ok, result} =
+             Result.status(
+               :workspace_status,
+               :workspace_administrator_missing,
+               :workspace_administrator
+             )
+
+    assert result.outcome == :changes_required
+    assert Result.exit_code(result) == 2
+  end
 end

@@ -57,7 +57,7 @@ maintenance:
 mix favn.postgres.migrate
 mix favn.postgres.verify_schema
 mix favn.postgres.grant_runtime --role favn_runtime
-mix favn.postgres.provision_workspace --id CUSTOMER --slug CUSTOMER --name "Customer"
+mix favn.postgres.provision_workspace --config /run/config/workspace-bootstrap.json
 mix favn.postgres.runtime_input_key_inventory
 mix favn.postgres.compact_runtime_input_keys --version 1
 mix favn.postgres.verify_restore
@@ -70,6 +70,8 @@ workflow:
 /app/bin/favn_control_plane_ops status
 /app/bin/favn_control_plane_ops bootstrap
 /app/bin/favn_control_plane_ops upgrade
+/app/bin/favn_control_plane_ops provision-workspace --config /run/config/workspace-bootstrap.json
+/app/bin/favn_control_plane_ops workspace-status --workspace CUSTOMER
 ```
 
 The wrapper emits one redacted JSON result and stable exit code. See

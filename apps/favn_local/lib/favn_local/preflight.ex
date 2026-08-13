@@ -10,7 +10,7 @@ defmodule FavnLocal.Preflight do
     release = Keyword.get(opts, :release, Release)
 
     with {:ok, %{status: :ok}} <- release.verify_runtime_schema(),
-         {:ok, %{status: :ok}} <- release.verify_workspace(config.workspace_id) do
+         {:ok, %{state: :ready}} <- release.workspace_status(config.workspace_id) do
       :ok
     else
       {:error, %{code: :runtime_role_not_ready}} ->
@@ -20,10 +20,10 @@ defmodule FavnLocal.Preflight do
         {summary, command} = schema_remediation(Map.get(failure, :diagnostics, %{}))
         {:error, {:postgres_schema_not_ready, summary, command}}
 
-      {:error, %{code: :workspace_not_found}} ->
+      {:ok, %{state: :workspace_administrator_missing}} ->
         {:error,
          {:workspace_not_found, config.workspace_id,
-          "mix favn.postgres.provision_workspace --id #{config.workspace_id} --slug #{config.workspace_id} --name \"Local Development\""}}
+          "mix favn.postgres.provision_workspace --config .favn/workspace-bootstrap.json"}}
 
       {:error, failure} ->
         {:error, {:postgres_preflight_failed, Map.get(failure, :code, :unavailable)}}

@@ -64,7 +64,8 @@ environment setting on older Compose releases.
    private key;
 3. starts PostgreSQL and runs the packaged one-command database bootstrap, which
    creates and hardens the migrator/runtime roles, migrates, provisions the
-   `elastic-simulation` workspace, and verifies through the runtime role;
+   `elastic-simulation` workspace with its explicitly configured initial
+   administrator, and verifies through the runtime role;
 4. starts the Orchestrator and View roles with zero runner capacity;
 5. publishes the exact manifest/release pair at zero runner capacity;
 6. activates it with a one-runner bootstrap scaler for target compatibility
