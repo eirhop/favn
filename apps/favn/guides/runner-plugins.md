@@ -309,6 +309,18 @@ ATTACH 'ducklake:postgres:sslmode=require' AS source (
 );
 ```
 
+Create the PostgreSQL metadata database and intended schema before starting the
+runners. The managed identity must have `CONNECT` on the database, `USAGE` and
+`CREATE` on that schema, and ownership or update privileges for the DuckLake
+metadata objects it creates. Favn does not create the database, schema, role, or
+grants.
+
+Several fresh runner replicas may attach the same empty catalog at once. Favn
+recognizes DuckLake's known PostgreSQL metadata-type creation conflict and
+retries session bootstrap with a finite backoff. Other duplicate-key failures
+remain non-retryable. A persistent failure therefore indicates permissions,
+configuration, or catalog damage and must be fixed rather than retried blindly.
+
 This works with both in-process DuckDB and DuckDB ADBC. Favn asks the Azure
 cache for the current token while preparing each checkout. A compatible pooled
 session is reused without rerunning the SQL. After refresh changes the token

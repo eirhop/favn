@@ -73,6 +73,18 @@ compatibility fields still decide `ready`, `rebuild_available`, or
 `rebuild_required`. Missing, malformed, or mismatched historical descriptor
 evidence remains `operator_decision`.
 
+When physical inspection is temporarily unavailable, activation persists the
+bounded `physical_inspection_unavailable` decision and returns an unresolved
+inspection summary. After correcting runner or data-system availability, the
+operator repeats manifest activation with a new idempotency key. Reusing the
+old key intentionally replays the old audited command result. The repeated
+activation reuses the durable inspection-task identity, reads its live state,
+and safely requeues a terminal `safe_to_retry` failure.
+
+A target without an active generation has nothing to rebuild. Operator views
+must offer activation/inspection retry guidance for that state, not a rebuild
+action. Rebuild remains available only when an active generation exists.
+
 ## Interrupted initial-generation recovery
 
 An initial materialization can commit in the data system while its control-plane

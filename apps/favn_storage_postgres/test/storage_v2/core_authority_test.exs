@@ -7,6 +7,8 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias Ecto.Adapters.SQL
   alias Ecto.Adapters.SQL.Sandbox
   alias Favn.Contracts.GenerationCapabilitiesRequest
+  alias Favn.Contracts.RelationInspectionResult
+  alias Favn.Contracts.RunnerError
   alias Favn.Manifest
   alias Favn.Manifest.ExecutionPackage
   alias Favn.Manifest.Graph
@@ -24,12 +26,14 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnOrchestrator.Persistence.BackfillPlan
   alias FavnOrchestrator.Persistence.Commands.ActivateBackfillPlan
   alias FavnOrchestrator.Persistence.Commands.ActivateRecoveredTargetGeneration
+  alias FavnOrchestrator.Persistence.Commands.AbandonManifestDeployment
   alias FavnOrchestrator.Persistence.Commands.AuthorizeScheduleOccurrenceDispatch
   alias FavnOrchestrator.Persistence.Commands.AcquireTargetOperationLocks
   alias FavnOrchestrator.Persistence.Commands.BackfillMissingProjection
   alias FavnOrchestrator.Persistence.Commands.AppendBackfillPlanBatch
   alias FavnOrchestrator.Persistence.Commands.BackfillPlanWindow
   alias FavnOrchestrator.Persistence.Commands.BeginRebuildPlan
+  alias FavnOrchestrator.Persistence.Commands.BeginManifestDeployment
   alias FavnOrchestrator.Persistence.Commands.CommitRunTransition
   alias FavnOrchestrator.Persistence.Commands.ClaimRun
   alias FavnOrchestrator.Persistence.Commands.ClaimRebuildItems
@@ -155,6 +159,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnOrchestrator.Identity
   alias FavnOrchestrator.Lifecycle
   alias FavnOrchestrator.Manifests
+  alias FavnOrchestrator.ManifestDeploymentReservation
   alias FavnOrchestrator.Operator.Catalogue
   alias FavnOrchestrator.Operator.Audit, as: OperatorAudit
   alias FavnOrchestrator.OperatorContext
@@ -7331,6 +7336,344 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
                "SELECT count(*) FROM favn_control.idempotency_records WHERE workspace_id = $1 AND operation = 'manifest.activate'",
                [fixture.workspace_id]
              )
+
+    assert %{rows: [[receipt_diagnostics]]} =
+             SQL.query!(
+               Repo,
+               """
+               SELECT response->'activation_diagnostics'
+               FROM favn_control.idempotency_records
+               WHERE workspace_id = $1 AND operation = 'manifest.activate'
+               """,
+               [fixture.workspace_id]
+             )
+
+    assert receipt_diagnostics ==
+             get_in(JSON.decode!(first.resp_body), ["data", "diagnostics"])
+
+    assert %{rows: [[^receipt_diagnostics]]} =
+             SQL.query!(
+               Repo,
+               """
+               SELECT payload->'activation_diagnostics'
+               FROM favn_control.outbox_events
+               WHERE workspace_id = $1 AND event_kind = 'workspace.deployment.activated'
+               ORDER BY outbox_event_id DESC
+               LIMIT 1
+               """,
+               [fixture.workspace_id]
+             )
+  end
+
+  test "concurrent activation with one key plans and commits at most once", fixture do
+    key = "activate-concurrently-#{System.unique_integer([:positive])}"
+    key_hash = FavnOrchestrator.Idempotency.key_hash(key)
+    body = activation_body()
+
+    request_fingerprint =
+      FavnOrchestrator.Idempotency.request_fingerprint(%{
+        manifest_version_id: fixture.version.manifest_version_id,
+        selection: body["selection"],
+        configuration: body["configuration"]
+      })
+
+    assert {:ok, idempotency} =
+             CommandIdempotency.new(
+               "manifest.activate",
+               :service,
+               "concurrent-activation-test",
+               key_hash,
+               request_fingerprint,
+               DateTime.add(DateTime.utc_now(), 3_600, :second)
+             )
+
+    deploy = fn ->
+      Manifests.deploy(
+        fixture.platform_context,
+        fixture.workspace_context,
+        fixture.version.manifest_version_id,
+        body["selection"],
+        deployment_id: "deployment:" <> key_hash,
+        configuration: body["configuration"],
+        idempotency: idempotency
+      )
+    end
+
+    parent = self()
+
+    requests =
+      for _index <- 1..2 do
+        Task.async(fn ->
+          send(parent, {:activation_ready, self()})
+
+          receive do
+            :activate -> :ok
+          end
+
+          deploy.()
+        end)
+      end
+
+    request_pids =
+      for _index <- 1..2 do
+        assert_receive {:activation_ready, request_pid}, 5_000
+        request_pid
+      end
+
+    Enum.each(request_pids, &send(&1, :activate))
+    results = Task.await_many(requests, 30_000)
+    successful = Enum.filter(results, &match?({:ok, _runtime}, &1))
+    conflicts = Enum.filter(results, &match?({:error, %Error{kind: :conflict}}, &1))
+    assert length(successful) in 1..2
+    assert length(successful) + length(conflicts) == 2
+
+    assert {:ok, replayed} = deploy.()
+    assert Enum.any?(successful, fn {:ok, runtime} -> runtime == replayed end)
+
+    assert %{rows: [[1]]} =
+             SQL.query!(
+               Repo,
+               """
+               SELECT count(*) FROM favn_control.idempotency_records
+               WHERE workspace_id = $1 AND operation = 'manifest.activate' AND key_hash = $2
+               """,
+               [fixture.workspace_id, key_hash]
+             )
+
+    assert %{rows: [[1]]} =
+             SQL.query!(
+               Repo,
+               """
+               SELECT count(*) FROM favn_control.outbox_events
+               WHERE workspace_id = $1 AND command_id = $2
+               """,
+               [fixture.workspace_id, "workspace.deploy:deployment:" <> key_hash]
+             )
+  end
+
+  test "stale activation planning reservations are generation-fenced and recoverable", fixture do
+    key_hash = FavnOrchestrator.Idempotency.key_hash("stale-activation-reservation")
+
+    assert {:ok, idempotency} =
+             CommandIdempotency.new(
+               "manifest.activate",
+               :service,
+               "stale-activation-test",
+               key_hash,
+               FavnOrchestrator.Idempotency.request_fingerprint(%{manifest: "stale"}),
+               DateTime.add(DateTime.utc_now(), 3_600, :second)
+             )
+
+    begin_command = %BeginManifestDeployment{
+      workspace_context: fixture.workspace_context,
+      idempotency: idempotency
+    }
+
+    assert {:ok, {:new, first}} = RegistryStore.begin_manifest_deployment(begin_command)
+    assert first.reservation_generation == 1
+
+    assert %{num_rows: 1} =
+             SQL.query!(
+               Repo,
+               """
+               UPDATE favn_control.idempotency_records
+               SET updated_at = clock_timestamp() - interval '2 minutes'
+               WHERE workspace_id = $1 AND operation = 'manifest.activate' AND key_hash = $2
+               """,
+               [fixture.workspace_id, key_hash]
+             )
+
+    assert {:ok, {:new, second}} = RegistryStore.begin_manifest_deployment(begin_command)
+    assert second.reservation_generation == 2
+
+    assert :ok =
+             RegistryStore.abandon_manifest_deployment(%AbandonManifestDeployment{
+               workspace_context: fixture.workspace_context,
+               idempotency: first
+             })
+
+    assert %{rows: [[2]]} =
+             SQL.query!(
+               Repo,
+               """
+               SELECT reservation_generation FROM favn_control.idempotency_records
+               WHERE workspace_id = $1 AND operation = 'manifest.activate' AND key_hash = $2
+               """,
+               [fixture.workspace_id, key_hash]
+             )
+
+    assert :ok =
+             RegistryStore.abandon_manifest_deployment(%AbandonManifestDeployment{
+               workspace_context: fixture.workspace_context,
+               idempotency: second
+             })
+
+    assert %{rows: [[0]]} =
+             SQL.query!(
+               Repo,
+               """
+               SELECT count(*) FROM favn_control.idempotency_records
+               WHERE workspace_id = $1 AND operation = 'manifest.activate' AND key_hash = $2
+               """,
+               [fixture.workspace_id, key_hash]
+             )
+  end
+
+  test "active deployment planning heartbeats prevent takeover and release on return", fixture do
+    share_repo_sandbox!()
+    key_hash = FavnOrchestrator.Idempotency.key_hash("heartbeat-activation-reservation")
+
+    assert {:ok, idempotency} =
+             CommandIdempotency.new(
+               "manifest.activate",
+               :service,
+               "heartbeat-activation-test",
+               key_hash,
+               FavnOrchestrator.Idempotency.request_fingerprint(%{manifest: "heartbeat"}),
+               DateTime.add(DateTime.utc_now(), 3_600, :second)
+             )
+
+    begin_command = %BeginManifestDeployment{
+      workspace_context: fixture.workspace_context,
+      idempotency: idempotency
+    }
+
+    assert {:ok, {:new, prepared}} = RegistryStore.begin_manifest_deployment(begin_command)
+    parent = self()
+
+    planning =
+      Task.async(fn ->
+        ManifestDeploymentReservation.run(
+          fixture.workspace_context,
+          prepared,
+          fn ->
+            send(parent, :planning_started)
+
+            receive do
+              :finish_planning -> {:error, :planning_stopped}
+            end
+          end,
+          heartbeat_interval_ms: 10
+        )
+      end)
+
+    assert_receive :planning_started, 1_000
+
+    assert %{num_rows: 1} =
+             SQL.query!(
+               Repo,
+               """
+               UPDATE favn_control.idempotency_records
+               SET updated_at = clock_timestamp() - interval '2 minutes'
+               WHERE workspace_id = $1 AND operation = 'manifest.activate' AND key_hash = $2
+               """,
+               [fixture.workspace_id, key_hash]
+             )
+
+    await_activation_reservation_heartbeat!(fixture.workspace_id, key_hash)
+
+    assert {:error, %Error{kind: :conflict, details: %{reason: :command_in_progress}}} =
+             RegistryStore.begin_manifest_deployment(begin_command)
+
+    send(planning.pid, :finish_planning)
+    assert {:error, :planning_stopped} = Task.await(planning, 5_000)
+
+    assert {:ok, {:new, replacement}} = RegistryStore.begin_manifest_deployment(begin_command)
+
+    assert :ok =
+             RegistryStore.abandon_manifest_deployment(%AbandonManifestDeployment{
+               workspace_context: fixture.workspace_context,
+               idempotency: replacement
+             })
+  end
+
+  test "repeated activation replaces a failed inspection decision after a safe retry", fixture do
+    share_repo_sandbox!()
+    start_supervised!({Task.Supervisor, name: FavnOrchestrator.RunnerClaimSupervisor})
+    start_supervised!({Task.Supervisor, name: FavnOrchestrator.RunnerTaskWaitSupervisor})
+    start_supervised!({RunnerTaskResultRouter, []})
+    fixture = recoverable_activation_fixture(fixture)
+    selection = activation_body()["selection"]
+
+    first_activation =
+      Task.async(fn ->
+        activate_manifest(fixture, selection, "inspection-failed")
+      end)
+
+    first_assignment = claim_relation_inspection_task!(fixture, "inspection-failed")
+    assert :ok = start_runner_task(first_assignment)
+    await_runner_task_waiter!(first_assignment)
+
+    inspection_error =
+      RunnerError.new(
+        type: :physical_inspection_unavailable,
+        message: "temporary inspection failure",
+        retryable?: true,
+        outcome: :safe_failure
+      )
+
+    assert :ok =
+             finish_runner_task(first_assignment,
+               outcome: :failed,
+               retry_class: :safe_to_retry,
+               error: inspection_error
+             )
+
+    assert {:ok, failed_runtime} = Task.await(first_activation, 30_000)
+    assert failed_runtime.activation_diagnostics.unresolved_inspection_count == 1
+
+    assert {:ok, failed_binding} =
+             TargetGenerationStore.get_binding(%GetTargetBinding{
+               workspace_context: fixture.workspace_context,
+               target_id: fixture.target_id
+             })
+
+    assert failed_binding.compatibility_status == :operator_decision
+    assert failed_binding.reason_code == "physical_inspection_unavailable"
+
+    recovered_activation =
+      Task.async(fn ->
+        activate_manifest(fixture, selection, "inspection-recovered")
+      end)
+
+    recovered_assignment = claim_relation_inspection_task!(fixture, "inspection-recovered")
+    assert recovered_assignment.task_id == first_assignment.task_id
+
+    assert recovered_assignment.assignment_generation ==
+             first_assignment.assignment_generation + 1
+
+    assert :ok = start_runner_task(recovered_assignment)
+    await_runner_task_waiter!(recovered_assignment)
+
+    inspection = %RelationInspectionResult{
+      asset_ref: {MyApp.Asset, :asset},
+      required_runner_release_id: fixture.version.runner_releases["default"],
+      relation: nil,
+      columns: [],
+      table_metadata: %{},
+      inspected_at: DateTime.utc_now()
+    }
+
+    assert :ok =
+             finish_runner_task(recovered_assignment,
+               outcome: :succeeded,
+               retry_class: :terminal,
+               result: inspection
+             )
+
+    assert {:ok, recovered_runtime} = Task.await(recovered_activation, 30_000)
+
+    assert {:ok, recovered_binding} =
+             TargetGenerationStore.get_binding(%GetTargetBinding{
+               workspace_context: fixture.workspace_context,
+               target_id: fixture.target_id
+             })
+
+    assert recovered_binding.compatibility_status == :uninitialized
+    assert recovered_binding.reason_code == "no_active_generation"
+    assert recovered_binding.version == failed_binding.version + 1
+    assert recovered_runtime.activation_diagnostics.unresolved_inspections == []
+    assert recovered_runtime.activation_diagnostics.unresolved_inspection_count == 0
   end
 
   test "actor HTTP mutation is replay-safe and durably attributed", fixture do
@@ -7531,6 +7874,33 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
 
     assert response.status == 404
     assert %{"error" => %{"code" => "not_found"}} = JSON.decode!(response.resp_body)
+
+    replay =
+      api_request(
+        :post,
+        "/api/orchestrator/v1/manifests/mv_missing/activate",
+        activation_body(),
+        fixture: fixture,
+        identity: api_identity(fixture, [:admin]),
+        idempotency_key: "activate-missing-manifest"
+      )
+
+    assert replay.status == 404
+    assert %{"error" => %{"code" => "not_found"}} = JSON.decode!(replay.resp_body)
+
+    assert %{rows: [[0]]} =
+             SQL.query!(
+               Repo,
+               """
+               SELECT count(*) FROM favn_control.idempotency_records
+               WHERE workspace_id = $1 AND operation = 'manifest.activate'
+                 AND key_hash = $2 AND status = 'started'
+               """,
+               [
+                 fixture.workspace_id,
+                 FavnOrchestrator.Idempotency.key_hash("activate-missing-manifest")
+               ]
+             )
   end
 
   test "HTTP manifest activation is independent of live runner availability",
@@ -8928,6 +9298,192 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
 
     assert length(page.items) == 1
     assert page.has_more?
+  end
+
+  defp activate_manifest(fixture, selection, suffix) do
+    key_hash =
+      FavnOrchestrator.Idempotency.key_hash(
+        "activation-recovery:#{fixture.workspace_id}:#{suffix}"
+      )
+
+    request_fingerprint =
+      FavnOrchestrator.Idempotency.request_fingerprint(%{
+        manifest_version_id: fixture.version.manifest_version_id,
+        selection: selection,
+        configuration: activation_body()["configuration"]
+      })
+
+    assert {:ok, idempotency} =
+             CommandIdempotency.new(
+               "manifest.activate",
+               :service,
+               "activation-recovery-test",
+               key_hash,
+               request_fingerprint,
+               DateTime.add(DateTime.utc_now(), 3_600, :second)
+             )
+
+    Manifests.deploy(
+      fixture.platform_context,
+      fixture.workspace_context,
+      fixture.version.manifest_version_id,
+      selection,
+      deployment_id: "deployment:recovery:#{suffix}:#{fixture.workspace_id}",
+      configuration: activation_body()["configuration"],
+      idempotency: idempotency
+    )
+  end
+
+  defp recoverable_activation_fixture(fixture) do
+    descriptor = target_descriptor(fixture)
+
+    manifest =
+      Map.update!(fixture.version.manifest, :assets, fn assets ->
+        Enum.map(assets, fn
+          %{ref: {MyApp.Asset, :asset}} = asset ->
+            %{
+              asset
+              | relation:
+                  RelationRef.new!(
+                    connection: :warehouse,
+                    schema: "analytics",
+                    name: "asset"
+                  ),
+                materialization: :table,
+                target_descriptor: descriptor,
+                semantic_generation_id: nil
+            }
+
+          asset ->
+            asset
+        end)
+      end)
+
+    assert {:ok, version} =
+             Version.new(manifest,
+               manifest_version_id: "mv_activation_recovery_#{System.unique_integer([:positive])}"
+             )
+
+    assert {:ok, ^version} =
+             RegistryStore.register_manifest(%RegisterManifest{
+               platform_context: fixture.platform_context,
+               version: version
+             })
+
+    %{fixture | version: version}
+  end
+
+  defp claim_relation_inspection_task!(fixture, suffix, remaining \\ 200)
+
+  defp claim_relation_inspection_task!(_fixture, suffix, 0),
+    do: flunk("relation inspection task was not claimable for #{suffix}")
+
+  defp claim_relation_inspection_task!(fixture, suffix, remaining) do
+    now = DateTime.utc_now()
+
+    command = %ClaimRunnerTask{
+      platform_context: fixture.platform_context,
+      command_id: "claim:#{suffix}:#{System.unique_integer([:positive, :monotonic])}",
+      runner_instance_id: "runner:#{fixture.workspace_id}:#{suffix}",
+      runner_session_generation: 1,
+      runner_pool: "default",
+      required_runner_release_id: fixture.version.runner_releases["default"],
+      supported_task_kinds: [:relation_inspection],
+      capabilities: ["relation_inspection"],
+      lease_duration_ms: 30_000,
+      issued_at: now,
+      occurred_at: now
+    }
+
+    case RunnerTaskStore.claim(command) do
+      {:ok, nil} ->
+        Process.sleep(10)
+        claim_relation_inspection_task!(fixture, suffix, remaining - 1)
+
+      {:ok, task} ->
+        task
+
+      {:error, reason} ->
+        flunk("relation inspection claim failed: #{inspect(reason)}")
+    end
+  end
+
+  defp start_runner_task(task) do
+    now = DateTime.utc_now()
+
+    case RunnerTasks.started(%Favn.Contracts.RunnerTask.Started{
+           workspace_id: task.workspace_id,
+           task_id: task.task_id,
+           runner_instance_id: task.assigned_runner_instance_id,
+           runner_session_generation: task.assigned_runner_session_generation,
+           assignment_generation: task.assignment_generation,
+           issued_at: now,
+           occurred_at: now
+         }) do
+      {:ok, _task} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp finish_runner_task(task, opts) do
+    case RunnerTasks.complete(%Favn.Contracts.RunnerTask.Result{
+           workspace_id: task.workspace_id,
+           task_id: task.task_id,
+           task_kind: task.task_kind,
+           runner_instance_id: task.assigned_runner_instance_id,
+           runner_session_generation: task.assigned_runner_session_generation,
+           assignment_generation: task.assignment_generation,
+           outcome: Keyword.fetch!(opts, :outcome),
+           retry_class: Keyword.fetch!(opts, :retry_class),
+           result: Keyword.get(opts, :result),
+           error: Keyword.get(opts, :error),
+           finished_at: DateTime.utc_now()
+         }) do
+      {:ok, _ack} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp await_runner_task_waiter!(task, remaining \\ 200)
+
+  defp await_runner_task_waiter!(_task, 0),
+    do: flunk("runner task waiter did not finish its durable subscription check")
+
+  defp await_runner_task_waiter!(task, remaining) do
+    state = :sys.get_state(RunnerTaskResultRouter)
+    waiters = Map.get(state.waiters, {task.workspace_id, task.task_id}, [])
+
+    if Enum.any?(waiters, &is_nil(&1.check_ref)) do
+      :ok
+    else
+      Process.sleep(10)
+      await_runner_task_waiter!(task, remaining - 1)
+    end
+  end
+
+  defp await_activation_reservation_heartbeat!(workspace_id, key_hash, remaining \\ 200)
+
+  defp await_activation_reservation_heartbeat!(_workspace_id, _key_hash, 0),
+    do: flunk("deployment planning reservation heartbeat did not arrive")
+
+  defp await_activation_reservation_heartbeat!(workspace_id, key_hash, remaining) do
+    %{rows: [[fresh?]]} =
+      SQL.query!(
+        Repo,
+        """
+        SELECT updated_at > clock_timestamp() - interval '1 second'
+        FROM favn_control.idempotency_records
+        WHERE workspace_id = $1 AND operation = 'manifest.activate' AND key_hash = $2
+        """,
+        [workspace_id, key_hash]
+      )
+
+    if fresh? do
+      :ok
+    else
+      Process.sleep(10)
+      await_activation_reservation_heartbeat!(workspace_id, key_hash, remaining - 1)
+    end
   end
 
   defp provision_deploy_fixture(version \\ nil, extra_targets \\ []) do

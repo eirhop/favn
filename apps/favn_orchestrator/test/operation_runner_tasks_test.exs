@@ -19,9 +19,9 @@ defmodule FavnOrchestrator.OperationRunnerTasksTest do
 
     def enqueue(command) do
       Agent.get_and_update(agent(), fn state ->
-        case Map.fetch(state.tasks, command.task_id) do
-          {:ok, task} ->
-            {{:ok, task}, %{state | commands: [command | state.commands]}}
+        case Map.fetch(state.enqueue_receipts, command.task_id) do
+          {:ok, receipt} ->
+            {{:ok, receipt}, %{state | commands: [command | state.commands]}}
 
           :error ->
             task = %RunnerTask{
@@ -45,6 +45,7 @@ defmodule FavnOrchestrator.OperationRunnerTasksTest do
             next = %{
               state
               | tasks: Map.put(state.tasks, task.task_id, task),
+                enqueue_receipts: Map.put(state.enqueue_receipts, task.task_id, task),
                 commands: [command | state.commands]
             }
 
@@ -143,7 +144,15 @@ defmodule FavnOrchestrator.OperationRunnerTasksTest do
   setup do
     {:ok, agent} =
       Agent.start_link(fn ->
-        %{commands: [], retries: [], cancellations: [], tasks: %{}, rebuilds: %{}, reads: 0}
+        %{
+          commands: [],
+          retries: [],
+          cancellations: [],
+          tasks: %{},
+          enqueue_receipts: %{},
+          rebuilds: %{},
+          reads: 0
+        }
       end)
 
     Application.put_env(:favn_orchestrator, :operation_runner_tasks_test_agent, agent)
@@ -278,6 +287,7 @@ defmodule FavnOrchestrator.OperationRunnerTasksTest do
 
     assert retried.status == :queued
     assert retried.assignment_generation == 1
+    assert Agent.get(fixture.agent, & &1.enqueue_receipts[task.task_id].status) == :queued
     assert [retry] = Agent.get(fixture.agent, & &1.retries)
     assert retry.expected_assignment_generation == 1
     assert retry.expected_result_version == 1

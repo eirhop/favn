@@ -16,6 +16,9 @@ defmodule FavnOrchestrator.API.ManifestsRouterTest do
     alias FavnOrchestrator.Persistence.Error
 
     def get_manifest(_query), do: {:error, Error.new(:not_found, "manifest not found")}
+    def begin_manifest_deployment(query), do: {:ok, {:new, query.idempotency}}
+    def heartbeat_manifest_deployment(_command), do: :ok
+    def abandon_manifest_deployment(_command), do: :ok
     def get_runtime_state(_query), do: {:error, :active_manifest_not_set}
     def record_audit(_command), do: :ok
 
@@ -26,6 +29,90 @@ defmodule FavnOrchestrator.API.ManifestsRouterTest do
          request_fingerprint: command.request_fingerprint,
          expires_at: command.expires_at,
          replayed?: false
+       }}
+    end
+
+    def complete_operator_command(_command), do: :ok
+  end
+
+  defmodule SuccessfulManifestStore do
+    alias FavnOrchestrator.Persistence.Results.RuntimeState
+
+    def get_manifest(_query),
+      do: {:ok, Application.fetch_env!(:favn_orchestrator, :manifest_router_test_version)}
+
+    def begin_manifest_deployment(query), do: {:ok, {:new, query.idempotency}}
+    def heartbeat_manifest_deployment(_command), do: :ok
+    def abandon_manifest_deployment(_command), do: :ok
+
+    def deploy_manifest(command) do
+      {:ok,
+       %RuntimeState{
+         workspace_id: command.workspace_context.workspace_id,
+         deployment_id: command.deployment_id,
+         manifest_version_id: command.manifest_version_id,
+         revision: 1,
+         runner_releases: %{}
+       }}
+    end
+
+    def record_audit(_command), do: :ok
+
+    def reserve_operator_command(command) do
+      {:ok,
+       %{
+         key_hash: command.key_hash,
+         request_fingerprint: command.request_fingerprint,
+         expires_at: command.expires_at,
+         replayed?: false
+       }}
+    end
+
+    def complete_operator_command(_command), do: :ok
+  end
+
+  defmodule ReplayedManifestStore do
+    alias FavnOrchestrator.ManifestActivationDiagnostics
+    alias FavnOrchestrator.Persistence.Results.RuntimeState
+
+    def begin_manifest_deployment(query) do
+      diagnostics = %ManifestActivationDiagnostics{
+        unresolved_inspection_count: 1,
+        unresolved_inspections: [
+          %{
+            target_id: "asset:historical",
+            reason_code: "physical_inspection_unavailable"
+          }
+        ],
+        truncated?: false,
+        recovery: %{
+          action: :repeat_manifest_activation,
+          requires_new_idempotency_key: true,
+          message: "Use a new key after recovery."
+        }
+      }
+
+      {:ok,
+       {:replay,
+        %RuntimeState{
+          workspace_id: query.workspace_context.workspace_id,
+          deployment_id: "deployment:historical",
+          manifest_version_id: "mv_historical",
+          revision: 7,
+          activation_diagnostics: diagnostics
+        }}}
+    end
+
+    def get_manifest(_query), do: raise("replayed activation must not load or plan a manifest")
+    def record_audit(_command), do: :ok
+
+    def reserve_operator_command(command) do
+      {:ok,
+       %{
+         key_hash: command.key_hash,
+         request_fingerprint: command.request_fingerprint,
+         expires_at: command.expires_at,
+         replayed?: true
        }}
     end
 
@@ -116,6 +203,82 @@ defmodule FavnOrchestrator.API.ManifestsRouterTest do
 
     assert response.status == 404
     assert get_in(Jason.decode!(response.resp_body), ["error", "code"]) == "not_found"
+  end
+
+  test "successful activation returns bounded inspection diagnostics" do
+    {:ok, version} = ManifestsRouter.build_version(valid_envelope())
+    Application.put_env(:favn_orchestrator, :manifest_router_test_version, version)
+    on_exit(fn -> Application.delete_env(:favn_orchestrator, :manifest_router_test_version) end)
+    start_manifest_runtime(SuccessfulManifestStore)
+
+    response =
+      :post
+      |> conn("/#{version.manifest_version_id}/activate", "")
+      |> put_req_header("authorization", "Bearer #{@token}")
+      |> put_req_header("x-favn-workspace-id", "workspace-a")
+      |> put_req_header("idempotency-key", "service-activation-success")
+      |> Map.put(:body_params, %{
+        "selection" => %{
+          "common_assets" => "all",
+          "common_pipelines" => "all",
+          "workspace_assets" => [],
+          "workspace_pipelines" => []
+        },
+        "configuration" => %{}
+      })
+      |> ManifestsRouter.call(ManifestsRouter.init([]))
+
+    assert response.status == 200
+
+    assert %{
+             "data" => %{
+               "activated" => true,
+               "diagnostics" => %{
+                 "unresolved_inspection_count" => 0,
+                 "unresolved_inspections" => [],
+                 "truncated" => false,
+                 "recovery" => nil
+               }
+             }
+           } = Jason.decode!(response.resp_body)
+  end
+
+  test "idempotent activation replay returns durable diagnostics without replanning" do
+    start_manifest_runtime(ReplayedManifestStore)
+
+    response =
+      :post
+      |> conn("/mv_historical/activate", "")
+      |> put_req_header("authorization", "Bearer #{@token}")
+      |> put_req_header("x-favn-workspace-id", "workspace-a")
+      |> put_req_header("idempotency-key", "service-activation-replay")
+      |> Map.put(:body_params, %{
+        "selection" => %{
+          "common_assets" => "all",
+          "common_pipelines" => "all",
+          "workspace_assets" => [],
+          "workspace_pipelines" => []
+        },
+        "configuration" => %{}
+      })
+      |> ManifestsRouter.call(ManifestsRouter.init([]))
+
+    assert response.status == 200
+
+    assert %{
+             "data" => %{
+               "revision" => 7,
+               "diagnostics" => %{
+                 "unresolved_inspection_count" => 1,
+                 "unresolved_inspections" => [
+                   %{
+                     "target_id" => "asset:historical",
+                     "reason_code" => "physical_inspection_unavailable"
+                   }
+                 ]
+               }
+             }
+           } = Jason.decode!(response.resp_body)
   end
 
   test "platform operator service token can read the active manifest without actor headers" do

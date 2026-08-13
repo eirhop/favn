@@ -10,6 +10,7 @@ defmodule FavnOrchestrator.ManifestStore do
   alias FavnOrchestrator.Persistence.Commands.ProvisionWorkspace
   alias FavnOrchestrator.Persistence.Commands.RegisterManifest
   alias FavnOrchestrator.Persistence.CapacityConfiguration
+  alias FavnOrchestrator.Persistence.CommandIdempotency
   alias FavnOrchestrator.Persistence.DeploymentSchedules
   alias FavnOrchestrator.Persistence.DeploymentPlanner
   alias FavnOrchestrator.Persistence.Error
@@ -172,6 +173,56 @@ defmodule FavnOrchestrator.ManifestStore do
     Persistence.stores().registry.deploy_manifest(command)
   end
 
+  @doc "Reserves deployment planning or replays its exact committed result."
+  @spec begin_manifest_deployment(WorkspaceContext.t(), CommandIdempotency.t() | nil) ::
+          {:ok,
+           {:new, CommandIdempotency.t() | nil}
+           | {:replay, FavnOrchestrator.Persistence.Results.RuntimeState.t()}}
+          | {:error, term()}
+  def begin_manifest_deployment(_context, nil), do: {:ok, {:new, nil}}
+
+  def begin_manifest_deployment(
+        %WorkspaceContext{} = context,
+        %CommandIdempotency{} = idempotency
+      ) do
+    Persistence.stores().registry.begin_manifest_deployment(
+      %FavnOrchestrator.Persistence.Commands.BeginManifestDeployment{
+        workspace_context: context,
+        idempotency: idempotency
+      }
+    )
+  end
+
+  @doc "Renews the current generation-fenced deployment-planning lease."
+  @spec heartbeat_manifest_deployment(WorkspaceContext.t(), CommandIdempotency.t()) ::
+          :ok | {:error, term()}
+  def heartbeat_manifest_deployment(
+        %WorkspaceContext{} = context,
+        %CommandIdempotency{} = idempotency
+      ) do
+    Persistence.stores().registry.heartbeat_manifest_deployment(
+      %FavnOrchestrator.Persistence.Commands.HeartbeatManifestDeployment{
+        workspace_context: context,
+        idempotency: idempotency
+      }
+    )
+  end
+
+  @doc "Releases the current uncommitted deployment-planning reservation."
+  @spec abandon_manifest_deployment(WorkspaceContext.t(), CommandIdempotency.t()) ::
+          :ok | {:error, term()}
+  def abandon_manifest_deployment(
+        %WorkspaceContext{} = context,
+        %CommandIdempotency{} = idempotency
+      ) do
+    Persistence.stores().registry.abandon_manifest_deployment(
+      %FavnOrchestrator.Persistence.Commands.AbandonManifestDeployment{
+        workspace_context: context,
+        idempotency: idempotency
+      }
+    )
+  end
+
   @doc "Plans, creates, and activates one exact workspace deployment."
   @spec deploy_manifest(
           PlatformContext.t(),
@@ -196,6 +247,7 @@ defmodule FavnOrchestrator.ManifestStore do
       :schedules,
       :capacity_scopes,
       :target_compatibilities,
+      :activation_diagnostics,
       :idempotency,
       :occurred_at
     ]
@@ -222,6 +274,7 @@ defmodule FavnOrchestrator.ManifestStore do
             Keyword.get(opts, :capacity_scopes, [])
           ),
         target_compatibilities: Keyword.get(opts, :target_compatibilities, []),
+        activation_diagnostics: Keyword.get(opts, :activation_diagnostics),
         idempotency: Keyword.get(opts, :idempotency),
         occurred_at: occurred_at
       }

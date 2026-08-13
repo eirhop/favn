@@ -2,9 +2,9 @@ defmodule FavnStoragePostgres.Idempotency.Transaction do
   @moduledoc """
   Commits an API idempotency record and its database-local mutation atomically.
 
-  This module is deliberately not a persistence capability. Stores invoke it
-  inside their own transaction so no caller can reserve a key separately from
-  the authoritative write.
+  Stores normally reserve and commit inside one transaction. A command whose
+  planning phase performs durable work may reserve first, then present the
+  returned generation when committing its authoritative result.
   """
 
   alias Ecto.Adapters.SQL
@@ -13,6 +13,7 @@ defmodule FavnStoragePostgres.Idempotency.Transaction do
   alias FavnStoragePostgres.Repo
 
   @max_response_bytes 65_536
+  @preparation_lease_seconds 60
 
   @type encoded_result :: %{
           required(:response) => map(),
@@ -66,10 +67,114 @@ defmodule FavnStoragePostgres.Idempotency.Transaction do
              is_function(decode, 1) do
     validate_context!(workspace_id, context)
 
-    if reserve(context, workspace_id) do
-      {:new, commit_new!(context, workspace_id, mutation, encode)}
+    if is_integer(context.reservation_generation) do
+      {:new, commit_prepared!(context, workspace_id, mutation, encode)}
     else
-      replay_or_replace_expired!(context, workspace_id, mutation, encode, decode)
+      execute_unprepared!(workspace_id, context, mutation, encode, decode)
+    end
+  end
+
+  @doc "Reserves a multi-stage command or returns its exact committed result."
+  @spec prepare!(
+          String.t(),
+          CommandIdempotency.t(),
+          (encoded_result() -> {:ok, result} | {:error, term()})
+        ) :: {:new, pos_integer()} | {:replay, result}
+        when result: term()
+  def prepare!(workspace_id, %CommandIdempotency{} = context, decode)
+      when is_binary(workspace_id) and is_function(decode, 1) do
+    validate_context!(workspace_id, context)
+
+    if reserve(context, workspace_id) do
+      {:new, 1}
+    else
+      prepare_existing!(context, workspace_id, decode)
+    end
+  end
+
+  @doc "Renews one current generation-fenced multi-stage command reservation."
+  @spec heartbeat!(String.t(), CommandIdempotency.t()) :: :ok
+  def heartbeat!(workspace_id, %CommandIdempotency{reservation_generation: generation} = context)
+      when is_binary(workspace_id) and is_integer(generation) and generation > 0 do
+    validate_context!(workspace_id, context)
+
+    result =
+      SQL.query!(
+        Repo,
+        """
+        UPDATE favn_control.idempotency_records
+        SET updated_at = clock_timestamp()
+        WHERE workspace_id = $1 AND operation = $2 AND principal_kind = $3
+          AND principal_id = $4 AND key_hash = $5 AND request_fingerprint = $6
+          AND reservation_generation = $7 AND status = 'started'
+        """,
+        identity_params(workspace_id, context) ++
+          [context.request_fingerprint, generation]
+      )
+
+    if result.num_rows != 1 do
+      Repo.rollback(Error.new(:conflict, "deployment-planning reservation is no longer current"))
+    end
+
+    :ok
+  end
+
+  @doc "Releases one current uncommitted multi-stage command reservation."
+  @spec abandon!(String.t(), CommandIdempotency.t()) :: :ok
+  def abandon!(workspace_id, %CommandIdempotency{reservation_generation: generation} = context)
+      when is_binary(workspace_id) and is_integer(generation) and generation > 0 do
+    validate_context!(workspace_id, context)
+
+    SQL.query!(
+      Repo,
+      """
+      DELETE FROM favn_control.idempotency_records
+      WHERE workspace_id = $1 AND operation = $2 AND principal_kind = $3
+        AND principal_id = $4 AND key_hash = $5 AND request_fingerprint = $6
+        AND reservation_generation = $7 AND status = 'started'
+      """,
+      identity_params(workspace_id, context) ++
+        [context.request_fingerprint, generation]
+    )
+
+    :ok
+  end
+
+  defp execute_unprepared!(workspace_id, context, mutation, encode, decode) do
+    if reserve(context, workspace_id),
+      do: {:new, commit_new!(context, workspace_id, mutation, encode)},
+      else: replay_or_replace_expired!(context, workspace_id, mutation, encode, decode)
+  end
+
+  defp prepare_existing!(context, workspace_id, decode) do
+    row = lock_record!(workspace_id, context)
+
+    cond do
+      row.expired? ->
+        generation = row.reservation_generation + 1
+        replace_expired!(workspace_id, context, generation)
+        {:new, generation}
+
+      row.request_fingerprint != context.request_fingerprint ->
+        Repo.rollback(
+          Error.new(:conflict, "idempotency key was reused with different command content")
+        )
+
+      row.status == "committed" ->
+        decode_replay!(row, decode)
+
+      row.stale? ->
+        generation = row.reservation_generation + 1
+        take_over_stale!(workspace_id, context, row.reservation_generation, generation)
+        {:new, generation}
+
+      true ->
+        Repo.rollback(
+          Error.new(:conflict, "deployment command is already in progress",
+            retryable?: true,
+            details: %{reason: :command_in_progress}
+          )
+        )
     end
   end
 
@@ -100,7 +205,7 @@ defmodule FavnStoragePostgres.Idempotency.Transaction do
 
     cond do
       row.expired? ->
-        replace_expired!(workspace_id, context, row.reservation_generation)
+        replace_expired!(workspace_id, context, row.reservation_generation + 1)
         {:new, commit_new!(context, workspace_id, mutation, encode)}
 
       row.request_fingerprint != context.request_fingerprint ->
@@ -109,21 +214,25 @@ defmodule FavnStoragePostgres.Idempotency.Transaction do
         )
 
       row.status == "committed" ->
-        encoded = %{
-          response: row.response || %{},
-          response_status: row.response_status,
-          resource_kind: row.resource_kind,
-          resource_id: row.resource_id
-        }
-
-        case decode.(encoded) do
-          {:ok, result} -> {:replay, result}
-          {:error, %Error{} = error} -> Repo.rollback(error)
-          {:error, reason} -> Repo.rollback(internal_error("decode", reason))
-        end
+        decode_replay!(row, decode)
 
       true ->
         Repo.rollback(Error.new(:internal, "committed idempotency record is incomplete"))
+    end
+  end
+
+  defp decode_replay!(row, decode) do
+    encoded = %{
+      response: row.response || %{},
+      response_status: row.response_status,
+      resource_kind: row.resource_kind,
+      resource_id: row.resource_id
+    }
+
+    case decode.(encoded) do
+      {:ok, result} -> {:replay, result}
+      {:error, %Error{} = error} -> Repo.rollback(error)
+      {:error, reason} -> Repo.rollback(internal_error("decode", reason))
     end
   end
 
@@ -166,6 +275,53 @@ defmodule FavnStoragePostgres.Idempotency.Transaction do
     result
   end
 
+  defp commit_prepared!(context, workspace_id, mutation, encode) do
+    row = lock_record!(workspace_id, context)
+
+    unless row.status == "started" and
+             row.request_fingerprint == context.request_fingerprint and
+             row.reservation_generation == context.reservation_generation do
+      Repo.rollback(Error.new(:conflict, "prepared idempotency reservation is no longer current"))
+    end
+
+    result = mutation.()
+
+    encoded =
+      case encode.(result) do
+        {:ok, encoded} when is_map(encoded) -> validate_encoded!(encoded)
+        {:error, %Error{} = error} -> Repo.rollback(error)
+        {:error, reason} -> Repo.rollback(internal_error("encode", reason))
+        unexpected -> Repo.rollback(internal_error("encode", unexpected))
+      end
+
+    update =
+      SQL.query!(
+        Repo,
+        """
+        UPDATE favn_control.idempotency_records
+        SET status = 'committed', response = $8, response_status = $9,
+            resource_kind = $10, resource_id = $11, updated_at = clock_timestamp()
+        WHERE workspace_id = $1 AND operation = $2 AND principal_kind = $3
+          AND principal_id = $4 AND key_hash = $5 AND request_fingerprint = $6
+          AND reservation_generation = $7 AND status = 'started'
+        """,
+        identity_params(workspace_id, context) ++
+          [
+            context.request_fingerprint,
+            context.reservation_generation,
+            encoded.response,
+            Map.get(encoded, :response_status),
+            Map.get(encoded, :resource_kind),
+            Map.get(encoded, :resource_id)
+          ]
+      )
+
+    if update.num_rows != 1,
+      do: Repo.rollback(Error.new(:internal, "prepared idempotency result was not committed"))
+
+    result
+  end
+
   defp lock_record!(workspace_id, context) do
     result =
       SQL.query!(
@@ -173,7 +329,9 @@ defmodule FavnStoragePostgres.Idempotency.Transaction do
         """
         SELECT request_fingerprint, status, response, response_status,
                resource_kind, resource_id, expires_at, reservation_generation,
-               expires_at <= clock_timestamp() AS expired
+               expires_at <= clock_timestamp() AS expired,
+               updated_at <= clock_timestamp() - interval '#{@preparation_lease_seconds} seconds'
+                 AS stale
         FROM favn_control.idempotency_records
         WHERE workspace_id = $1 AND operation = $2 AND principal_kind = $3
           AND principal_id = $4 AND key_hash = $5
@@ -193,7 +351,8 @@ defmodule FavnStoragePostgres.Idempotency.Transaction do
           resource_id,
           expires_at,
           generation,
-          expired?
+          expired?,
+          stale?
         ]
       ] ->
         %{
@@ -205,7 +364,8 @@ defmodule FavnStoragePostgres.Idempotency.Transaction do
           resource_id: resource_id,
           expires_at: expires_at,
           reservation_generation: generation,
-          expired?: expired?
+          expired?: expired?,
+          stale?: stale?
         }
 
       [] ->
@@ -213,7 +373,7 @@ defmodule FavnStoragePostgres.Idempotency.Transaction do
     end
   end
 
-  defp replace_expired!(workspace_id, context, generation) do
+  defp replace_expired!(workspace_id, context, next_generation) do
     result =
       SQL.query!(
         Repo,
@@ -227,11 +387,37 @@ defmodule FavnStoragePostgres.Idempotency.Transaction do
           AND expires_at <= clock_timestamp()
         """,
         identity_params(workspace_id, context) ++
-          [context.request_fingerprint, generation + 1, context.expires_at]
+          [context.request_fingerprint, next_generation, context.expires_at]
       )
 
     if result.num_rows != 1,
       do: Repo.rollback(Error.new(:internal, "expired idempotency record was not replaced"))
+  end
+
+  defp take_over_stale!(workspace_id, context, previous_generation, next_generation) do
+    result =
+      SQL.query!(
+        Repo,
+        """
+        UPDATE favn_control.idempotency_records
+        SET reservation_generation = $7, expires_at = $8, updated_at = clock_timestamp()
+        WHERE workspace_id = $1 AND operation = $2 AND principal_kind = $3
+          AND principal_id = $4 AND key_hash = $5 AND request_fingerprint = $6
+          AND reservation_generation = $9 AND status = 'started'
+          AND updated_at <= clock_timestamp() - interval '#{@preparation_lease_seconds} seconds'
+        """,
+        identity_params(workspace_id, context) ++
+          [
+            context.request_fingerprint,
+            next_generation,
+            context.expires_at,
+            previous_generation
+          ]
+      )
+
+    if result.num_rows != 1 do
+      Repo.rollback(Error.new(:conflict, "deployment-planning reservation was renewed"))
+    end
   end
 
   defp validate_context!(workspace_id, context) do

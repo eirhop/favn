@@ -189,6 +189,27 @@ defmodule FavnView.Components.AssetDetailPageTest do
     refute html =~ "What changed"
   end
 
+  test "a failed first inspection offers activation retry guidance instead of rebuild" do
+    html =
+      render_component(&AssetDetailPage.diagnostics_panel/1,
+        rebuild_target_id: "asset:orders",
+        compatibility: %{
+          status: :operator_decision,
+          reason_code: "physical_inspection_unavailable",
+          diff: %{inspection: %{status: :unavailable}},
+          active_generation_id: nil,
+          persisted?: true,
+          blocks_writes?: true
+        }
+      )
+
+    assert html =~ "could not inspect this table during activation"
+    assert html =~ ~s(data-testid="retry-asset-inspection")
+    assert html =~ "activate the manifest again"
+    refute html =~ ~s(data-testid="plan-asset-rebuild")
+    refute html =~ ~s(data-testid="recover-asset-ownership")
+  end
+
   test "an asset with no table of its own says so instead of showing a verdict" do
     html =
       render_component(&AssetDetailPage.diagnostics_panel/1,

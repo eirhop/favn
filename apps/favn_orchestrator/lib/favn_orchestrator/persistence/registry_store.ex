@@ -3,10 +3,14 @@ defmodule FavnOrchestrator.Persistence.RegistryStore do
 
   alias Favn.Manifest.TargetDescriptor
   alias Favn.Manifest.Version
+  alias FavnOrchestrator.Persistence.Commands.AbandonManifestDeployment
+  alias FavnOrchestrator.Persistence.Commands.BeginManifestDeployment
   alias FavnOrchestrator.Persistence.Commands.DeployManifest
+  alias FavnOrchestrator.Persistence.Commands.HeartbeatManifestDeployment
   alias FavnOrchestrator.Persistence.Commands.ProvisionWorkspace
   alias FavnOrchestrator.Persistence.Commands.RegisterManifest
   alias FavnOrchestrator.Persistence.Commands.RegisterExecutionPackages
+  alias FavnOrchestrator.Persistence.CommandIdempotency
   alias FavnOrchestrator.Persistence.Error
   alias FavnOrchestrator.Persistence.Queries.GetDeploymentTargets
   alias FavnOrchestrator.Persistence.Queries.GetDeploymentManifest
@@ -35,6 +39,13 @@ defmodule FavnOrchestrator.Persistence.RegistryStore do
   @callback page_workspaces(PageWorkspaces.t()) ::
               {:ok, CursorPage.t(String.t())} | {:error, Error.t()}
   @callback deploy_manifest(DeployManifest.t()) :: {:ok, RuntimeState.t()} | {:error, Error.t()}
+  @callback begin_manifest_deployment(BeginManifestDeployment.t()) ::
+              {:ok, {:new, CommandIdempotency.t()} | {:replay, RuntimeState.t()}}
+              | {:error, Error.t()}
+  @callback heartbeat_manifest_deployment(HeartbeatManifestDeployment.t()) ::
+              :ok | {:error, Error.t()}
+  @callback abandon_manifest_deployment(AbandonManifestDeployment.t()) ::
+              :ok | {:error, Error.t()}
   @callback get_runtime_state(GetRuntimeState.t()) ::
               {:ok, RuntimeState.t()} | {:error, Error.t()}
   @callback get_deployment_targets(GetDeploymentTargets.t()) ::

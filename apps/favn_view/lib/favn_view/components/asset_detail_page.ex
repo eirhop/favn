@@ -464,6 +464,14 @@ defmodule FavnView.Components.AssetDetailPage do
         <p class="mt-3 max-w-2xl">{compatibility_explanation(@compatibility)}</p>
 
         <p
+          :if={inspection_retry_required?(@compatibility)}
+          class="mt-2 max-w-2xl text-sm favn-text-muted"
+          data-testid="retry-asset-inspection"
+        >
+          Correct the runner or data-system problem, then activate the manifest again.
+        </p>
+
+        <p
           :if={field(@compatibility, :blocks_writes?, false)}
           class="mt-2 max-w-2xl font-medium text-error"
           data-testid="asset-compatibility-blocked"
@@ -496,6 +504,7 @@ defmodule FavnView.Components.AssetDetailPage do
           </.button>
 
           <.button
+            :if={rebuild_available?(@compatibility)}
             variant={:secondary}
             navigate={~p"/rebuilds?#{[target_id: @rebuild_target_id]}"}
             data-testid="plan-asset-rebuild"
@@ -541,7 +550,18 @@ defmodule FavnView.Components.AssetDetailPage do
   # describe a table nobody has to touch, and offering a rebuild there invites one.
   defp compatibility_actionable?(compatibility) do
     field(compatibility, :persisted?, false) and
+      (field(compatibility, :reason_code) == "unmanaged_physical_relation" or
+         rebuild_available?(compatibility))
+  end
+
+  defp rebuild_available?(compatibility) do
+    is_binary(field(compatibility, :active_generation_id)) and
       field(compatibility, :status) not in [:ready, :uninitialized, nil]
+  end
+
+  defp inspection_retry_required?(compatibility) do
+    field(compatibility, :persisted?, false) and
+      field(compatibility, :reason_code) == "physical_inspection_unavailable"
   end
 
   defp coverage_rule_facts(assigns) do
@@ -2221,37 +2241,48 @@ defmodule FavnView.Components.AssetDetailPage do
         "This asset does not manage a table of its own, so there is nothing to check here."
 
       true ->
-        compatibility_verdict(field(compatibility, :status))
+        compatibility_verdict(compatibility)
     end
   end
 
-  defp compatibility_verdict(:ready),
+  defp compatibility_verdict(%{reason_code: "physical_inspection_unavailable"}),
+    do:
+      "Favn could not inspect this table during activation, so it will not write until inspection succeeds."
+
+  defp compatibility_verdict(%{"reason_code" => "physical_inspection_unavailable"}),
+    do:
+      "Favn could not inspect this table during activation, so it will not write until inspection succeeds."
+
+  defp compatibility_verdict(compatibility),
+    do: compatibility_status_verdict(field(compatibility, :status))
+
+  defp compatibility_status_verdict(:ready),
     do: "The table Favn wants is the table it has. Nothing needs doing."
 
-  defp compatibility_verdict(:uninitialized),
+  defp compatibility_status_verdict(:uninitialized),
     do: "This table does not exist yet. The first successful run creates it."
 
-  defp compatibility_verdict(:rebuild_available),
+  defp compatibility_status_verdict(:rebuild_available),
     do:
       "The way this asset builds its table changed. Runs still work, and rebuilding " <>
         "brings the existing rows in line with the new definition."
 
-  defp compatibility_verdict(:rebuild_required),
+  defp compatibility_status_verdict(:rebuild_required),
     do:
       "The table Favn wants no longer fits the one it has, so writing to it would " <>
         "corrupt what is there. Rebuilding replaces it."
 
-  defp compatibility_verdict(:unexpected_drift),
+  defp compatibility_status_verdict(:unexpected_drift),
     do:
       "Something changed this table outside Favn. Favn will not write over a change " <>
         "it cannot account for."
 
-  defp compatibility_verdict(:operator_decision),
+  defp compatibility_status_verdict(:operator_decision),
     do:
       "Favn cannot tell whether it owns this table, so it will not write to it. " <>
         "Taking ownership says the table is Favn's to manage."
 
-  defp compatibility_verdict(_status),
+  defp compatibility_status_verdict(_status),
     do: "Favn could not read the state of this table just now."
 
   defp compatibility_diff_entries(diff) when is_map(diff) do
