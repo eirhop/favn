@@ -719,11 +719,6 @@ defmodule FavnRunner.RunnerAgentTest do
       {:reply, {:ok, ack}, state}
     end
 
-    def handle_call({:request, %RunnerTask.Result{} = result}, _from, state) do
-      send(state.owner, {:result_delivery_blocked, result})
-      {:noreply, state}
-    end
-
     @impl true
     def handle_cast(
           :release_registration,
@@ -1607,6 +1602,7 @@ defmodule FavnRunner.RunnerAgentTest do
   end
 
   test "lease deadline wins a late active-assignment registration acknowledgement" do
+    :ok = FavnRunner.TaskResultBuffer.reset()
     {:ok, control_plane} = start_supervised({BlockingReregistrationControlPlane, self()})
     {:ok, executor} = start_supervised({FakeExecutor, self()})
 
@@ -1657,8 +1653,6 @@ defmodule FavnRunner.RunnerAgentTest do
     assert :sys.get_state(agent).phase == :lease_lost
 
     BlockingReregistrationControlPlane.release_registration(control_plane)
-
-    assert_receive {:result_delivery_blocked, %RunnerTask.Result{}}, 1_000
 
     assert_eventually(fn ->
       state = :sys.get_state(agent)
