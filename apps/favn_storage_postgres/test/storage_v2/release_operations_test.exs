@@ -50,7 +50,12 @@ defmodule FavnStoragePostgres.StorageV2.ReleaseOperationsTest do
 
   test "one-off operations own and stop their validated Repo" do
     database_url = System.fetch_env!("FAVN_DATABASE_URL")
-    workspace_id = "release-operation-#{System.unique_integer([:positive])}"
+    unique = System.unique_integer([:positive])
+    workspace_id = "release-operation-#{unique}"
+
+    object_suffix =
+      unique |> :erlang.phash2(0xFFFFFFFF) |> Integer.to_string(16) |> String.pad_leading(12, "0")
+
     telemetry_handler = "release-operation-#{System.unique_integer([:positive])}"
     parent = self()
 
@@ -108,19 +113,33 @@ defmodule FavnStoragePostgres.StorageV2.ReleaseOperationsTest do
                 }} = Release.verify_workspace(workspace_id)
 
         workspace = %{
-          workspace_id: workspace_id,
-          slug: workspace_id,
-          display_name: "Release operation test"
+          "operation_id" => "release-operation-#{workspace_id}",
+          "workspace" => %{
+            "id" => workspace_id,
+            "slug" => workspace_id,
+            "display_name" => "Release operation test"
+          },
+          "administrator" => %{
+            "mode" => "entra",
+            "username" => "admin-#{workspace_id}",
+            "display_name" => "Release administrator",
+            "tenant_id" => "11111111-1111-1111-1111-111111111111",
+            "object_id" => "22222222-2222-4222-8222-#{object_suffix}"
+          }
         }
 
-        assert {:ok, %{operation: :provision_workspace, status: :ok, workspace_id: ^workspace_id}} =
-                 Release.provision_workspace(workspace)
-
-        assert {:ok, %{operation: :verify_workspace, status: :ok, workspace_id: ^workspace_id}} =
-                 Release.verify_workspace(workspace_id)
+        provisioning_env =
+          System.get_env()
+          |> Map.put("FAVN_OPERATOR_COMMAND_HMAC_SECRET", "release-operation-hmac-secret-0001")
 
         assert {:ok, %{operation: :provision_workspace, status: :ok, workspace_id: ^workspace_id}} =
-                 Release.provision_workspace(workspace)
+                 Release.provision_workspace_administrator(workspace, provisioning_env)
+
+        assert {:ok, %{operation: :workspace_status, state: :ready, workspace_id: ^workspace_id}} =
+                 Release.workspace_status(workspace_id, provisioning_env)
+
+        assert {:ok, %{operation: :provision_workspace, status: :ok, workspace_id: ^workspace_id}} =
+                 Release.provision_workspace_administrator(workspace, provisioning_env)
 
         assert {:ok, %{operation: :verify_restore, status: :ok, statement_timeout_ms: 600_000}} =
                  Release.verify_restore()

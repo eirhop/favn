@@ -117,8 +117,8 @@ accessibility, and production-provider qualification are unfinished.
 - High-growth reads use keyset pagination and bounded projections. Manifest runtime
   reads fetch compact indexes and selected immutable execution packages.
 - One idempotent `bootstrap` Job owns Favn-specific role/database setup,
-  migrations, grants, initial workspace provisioning, and fresh runtime
-  verification. Read-only `status` and least-privilege `upgrade` use the same
+  migrations, grants, atomic initial workspace/administrator provisioning, and
+  fresh runtime verification. Read-only `status` and least-privilege `upgrade` use the same
   immutable image. Runtime nodes never migrate automatically.
 - PostgreSQL supports explicit password and Azure managed-identity modes. Azure
   mode obtains fresh-enough per-connection tokens through its own bounded cache,

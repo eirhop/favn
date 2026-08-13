@@ -11,6 +11,7 @@ defmodule FavnStoragePostgres.ReleaseCLI do
 
   alias FavnStoragePostgres.Release
   alias FavnStoragePostgres.Bootstrap.Result
+  alias FavnStoragePostgres.WorkspaceProvisioning.Config, as: WorkspaceProvisioningConfig
 
   @operations [
     :bootstrap,
@@ -21,6 +22,7 @@ defmodule FavnStoragePostgres.ReleaseCLI do
     :verify_restore,
     :grant_runtime,
     :provision_workspace,
+    :workspace_status,
     :runtime_input_key_inventory,
     :compact_runtime_input_keys
   ]
@@ -35,6 +37,7 @@ defmodule FavnStoragePostgres.ReleaseCLI do
           | :verify_restore
           | :grant_runtime
           | :provision_workspace
+          | :workspace_status
           | :runtime_input_key_inventory
           | :compact_runtime_input_keys
 
@@ -101,8 +104,19 @@ defmodule FavnStoragePostgres.ReleaseCLI do
   defp dispatch(:grant_runtime, _env, release), do: release.grant_runtime()
 
   defp dispatch(:provision_workspace, env, release) do
-    with {:ok, workspace} <- workspace(env) do
-      release.provision_workspace(workspace)
+    case WorkspaceProvisioningConfig.load(env) do
+      {:ok, input} ->
+        release.provision_workspace_administrator(input, env)
+
+      {:error, reason} ->
+        operation_error(:provision_workspace, reason)
+    end
+  end
+
+  defp dispatch(:workspace_status, env, release) do
+    case WorkspaceProvisioningConfig.workspace_id(env) do
+      {:ok, workspace_id} -> release.workspace_status(workspace_id, env)
+      {:error, reason} -> operation_error(:workspace_status, reason)
     end
   end
 
@@ -112,16 +126,6 @@ defmodule FavnStoragePostgres.ReleaseCLI do
   defp dispatch(:compact_runtime_input_keys, env, release) do
     with {:ok, versions} <- key_versions(env) do
       release.compact_runtime_input_keys(versions)
-    end
-  end
-
-  defp workspace(env) do
-    with {:ok, workspace_id} <- required(env, "FAVN_WORKSPACE_ID"),
-         {:ok, slug} <- optional(env, "FAVN_WORKSPACE_SLUG", workspace_id),
-         {:ok, display_name} <- optional(env, "FAVN_WORKSPACE_NAME", slug) do
-      {:ok, %{workspace_id: workspace_id, slug: slug, display_name: display_name}}
-    else
-      {:error, code} -> operation_error(:provision_workspace, code)
     end
   end
 
@@ -152,13 +156,6 @@ defmodule FavnStoragePostgres.ReleaseCLI do
 
   defp required(env, name) do
     case Map.get(env, name) do
-      value when is_binary(value) and value != "" and byte_size(value) <= 255 -> {:ok, value}
-      _invalid -> {:error, :missing_or_invalid_environment}
-    end
-  end
-
-  defp optional(env, name, default) do
-    case Map.get(env, name, default) do
       value when is_binary(value) and value != "" and byte_size(value) <= 255 -> {:ok, value}
       _invalid -> {:error, :missing_or_invalid_environment}
     end

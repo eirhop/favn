@@ -51,10 +51,12 @@ Initialize the control-plane schema and workspace once:
 ```bash
 mix favn.postgres.upgrade
 mix favn.postgres.provision_workspace \
-  --id local-dev \
-  --slug local-dev \
-  --name "Local Development"
+  --config .favn/workspace-bootstrap.json
 ```
+
+The configuration explicitly selects an Entra or local-password initial
+administrator. See [Operator Authentication](operator-authentication.md) for
+the tagged JSON and protected password-input contract.
 
 ## 3. Start Favn
 

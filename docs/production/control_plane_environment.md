@@ -60,8 +60,10 @@ username/client-ID values. Managed migrator/runtime profiles also require their
 exact `*_AZURE_OBJECT_ID`; the bootstrap profile connects through an identity
 the deployment has already authorized.
 
-`bootstrap` requires all three profiles plus `FAVN_WORKSPACE_ID` and optional
-slug/name. `upgrade` rejects the bootstrap profile and requires no workspace.
+`bootstrap` requires all three profiles,
+`FAVN_WORKSPACE_PROVISIONING_CONFIG_FILE`, and the stable operator-command HMAC
+secret. The tagged JSON selects exactly one Entra or password administrator.
+`upgrade` rejects the bootstrap profile and requires no workspace.
 `status` accepts the bootstrap profile when the deployment needs inspection of
 missing database/provider state. The ordinary unprefixed `FAVN_DATABASE_URL`
 may serve as the password runtime profile.
@@ -80,31 +82,22 @@ variables.
 ## Initial administrator and break-glass recovery
 
 Production startup never creates or changes an administrator. After migrations
-and workspace provisioning, but before the initial control-plane start, run the
-bootstrap operation once from a trusted operator shell:
+and before the initial control-plane start, the one-off database `bootstrap`
+Job atomically creates the workspace and its explicitly selected first
+administrator. Additional workspaces use the same operation from a trusted
+operator shell:
 
 ```console
-mix favn.admin.bootstrap --workspace WORKSPACE --username USERNAME
+/app/bin/favn_control_plane_ops provision-workspace \
+  --config /run/config/workspace-bootstrap.json
 ```
 
-Repeat `--workspace` to grant the first administrator access to more than one
-workspace. The command reads the password without echo. A protected Unix file
-may be used with `--password-file`; it must be a regular file with no
-group/other permission bits. Windows uses stdin because portable ACL
-verification is unavailable.
-
-A packaged release does not include Mix. Run its equivalent with an attached
-interactive stdin:
-
-```console
-bin/favn_control_plane eval 'IO.inspect(FavnStoragePostgres.Release.admin_bootstrap_from_stdin(["WORKSPACE"], "USERNAME", "Favn Admin"))'
-```
-
-Bootstrap is serialized in PostgreSQL and succeeds only when no administrator
-role exists. It creates one global actor, grants platform administration, adds
-workspace-administrator membership to every listed workspace, and records
-durable audit entries. Normal startup contains no bootstrap secret and cannot
-repeat this action.
+The command reads password mode from protected stdin or a private Unix file and
+never accepts a password argument or environment value. Entra mode uses only
+immutable tenant and object IDs. The transaction commits the workspace, actor,
+workspace membership, platform grant, selected credential/link, audits, and
+durable replay receipt together. See
+[`postgresql_bootstrap.md`](postgresql_bootstrap.md#initial-workspace-administrator).
 
 If an existing administrator loses access, use the explicit recovery operation:
 

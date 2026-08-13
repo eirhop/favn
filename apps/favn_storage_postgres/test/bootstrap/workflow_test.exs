@@ -140,7 +140,7 @@ defmodule FavnStoragePostgres.Bootstrap.WorkflowTest do
                 :database_policy,
                 :migrations,
                 :runtime_grants,
-                :workspace,
+                :workspace_administrator,
                 :runtime_verification
               ]
             }} = Bootstrap.bootstrap(context.env)
@@ -382,9 +382,20 @@ defmodule FavnStoragePostgres.Bootstrap.WorkflowTest do
                 :roles,
                 :database_policy,
                 :migrations,
-                :runtime_grants
+                :runtime_grants,
+                :workspace_administrator
               ]
             }} = Bootstrap.bootstrap(context.env)
+  end
+
+  test "fresh bootstrap supports protected local-password administrator input", context do
+    if match?({:unix, _name}, :os.type()) do
+      password = "bootstrap-local-admin-password-634"
+      env = with_password_workspace_provisioning(context.env, password)
+
+      assert {:ok, %{state: :ready, runtime_verified: true}} = Bootstrap.bootstrap(env)
+      assert {:ok, %{state: :ready, runtime_verified: true}} = Bootstrap.status(env)
+    end
   end
 
   test "one command creates missing password roles from SCRAM verifiers", context do
@@ -662,6 +673,7 @@ defmodule FavnStoragePostgres.Bootstrap.WorkflowTest do
       "FAVN_WORKSPACE_SLUG" => workspace_id,
       "FAVN_WORKSPACE_NAME" => "Bootstrap workflow test"
     }
+    |> with_workspace_provisioning(workspace_id, "Bootstrap workflow test")
   end
 
   defp managed_identity_bootstrap_env(context) do
@@ -692,6 +704,69 @@ defmodule FavnStoragePostgres.Bootstrap.WorkflowTest do
       "FAVN_WORKSPACE_SLUG" => "managed-identity-workflow",
       "FAVN_WORKSPACE_NAME" => "Managed identity workflow"
     }
+    |> with_workspace_provisioning(
+      "managed-identity-workflow",
+      "Managed identity workflow"
+    )
+  end
+
+  defp with_workspace_provisioning(env, workspace_id, workspace_name) do
+    path =
+      Path.join(
+        System.tmp_dir!(),
+        "favn-bootstrap-workflow-#{System.unique_integer([:positive])}.json"
+      )
+
+    File.write!(
+      path,
+      Jason.encode!(%{
+        contract_version: 1,
+        operation_id: "bootstrap-#{workspace_id}",
+        workspace: %{id: workspace_id, slug: workspace_id, display_name: workspace_name},
+        administrator: %{
+          mode: "entra",
+          username: "admin-#{workspace_id}",
+          display_name: "Initial administrator",
+          tenant_id: "11111111-1111-1111-1111-111111111111",
+          object_id: "22222222-2222-2222-2222-222222222222"
+        }
+      })
+    )
+
+    Map.merge(env, %{
+      "FAVN_WORKSPACE_PROVISIONING_CONFIG_FILE" => path,
+      "FAVN_OPERATOR_COMMAND_HMAC_SECRET" => "bootstrap-test-hmac-secret-00000001"
+    })
+  end
+
+  defp with_password_workspace_provisioning(env, password) do
+    workspace_id = Map.fetch!(env, "FAVN_WORKSPACE_ID")
+    workspace_name = Map.fetch!(env, "FAVN_WORKSPACE_NAME")
+    directory = Path.join(System.tmp_dir!(), "favn-password-bootstrap-#{random_id()}")
+    File.mkdir_p!(directory)
+    config_path = Path.join(directory, "workspace-bootstrap.json")
+    password_path = Path.join(directory, "initial-admin-password")
+    File.write!(password_path, password)
+    File.chmod!(password_path, 0o600)
+
+    File.write!(
+      config_path,
+      Jason.encode!(%{
+        contract_version: 1,
+        operation_id: "password-bootstrap-#{workspace_id}",
+        workspace: %{id: workspace_id, slug: workspace_id, display_name: workspace_name},
+        administrator: %{
+          mode: "password",
+          username: "local-admin-#{random_id()}",
+          display_name: "Local administrator"
+        }
+      })
+    )
+
+    Map.merge(env, %{
+      "FAVN_WORKSPACE_PROVISIONING_CONFIG_FILE" => config_path,
+      "FAVN_WORKSPACE_ADMIN_PASSWORD_FILE" => password_path
+    })
   end
 
   defp runtime_managed_identity_status_env(context) do

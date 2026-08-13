@@ -53,7 +53,7 @@ Provision the local-development workspace when exercising the full dev stack:
 
 ```bash
 MIX_ENV=test mix favn.postgres.provision_workspace \
-  --id local-dev --slug local-dev --name "Local Development"
+  --config .favn/workspace-bootstrap.json
 ```
 
 ## Focused verification

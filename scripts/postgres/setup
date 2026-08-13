@@ -24,9 +24,52 @@ export FAVN_DATABASE_RUNTIME_AUTH_MODE=password
 export FAVN_DATABASE_RUNTIME_URL="${FAVN_DATABASE_RUNTIME_URL:-ecto://favn_runtime:favn_runtime_local@127.0.0.1:${FAVN_POSTGRES_PORT:-5432}/favn_dev}"
 export FAVN_DATABASE_MAINTENANCE_NAME=postgres
 export FAVN_DATABASE_URL="${FAVN_DATABASE_URL:-ecto://favn_runtime:favn_runtime_local@127.0.0.1:${FAVN_POSTGRES_PORT:-5432}/favn_dev}"
-export FAVN_WORKSPACE_ID="${FAVN_LOCAL_WORKSPACE_ID:-local-dev}"
-export FAVN_WORKSPACE_SLUG="${FAVN_LOCAL_WORKSPACE_SLUG:-local-dev}"
-export FAVN_WORKSPACE_NAME="${FAVN_LOCAL_WORKSPACE_NAME:-Local Development}"
+workspace_id="${FAVN_LOCAL_WORKSPACE_ID:-local-dev}"
+workspace_slug="${FAVN_LOCAL_WORKSPACE_SLUG:-local-dev}"
+workspace_name="${FAVN_LOCAL_WORKSPACE_NAME:-Local Development}"
+workspace_name_pattern='^[A-Za-z0-9._ -]{1,255}$'
+
+if [[ ! "$workspace_id" =~ ^[A-Za-z0-9_.@-]+$ ]] ||
+   [[ ! "$workspace_slug" =~ ^[a-z0-9][a-z0-9-]{0,62}$ ]] ||
+   [[ ! "$workspace_name" =~ $workspace_name_pattern ]]; then
+  echo "Local workspace ID, slug, or display name is invalid." >&2
+  exit 1
+fi
+
+local_credentials_dir="$repository_root/.favn/local"
+password_file="${FAVN_LOCAL_ADMIN_PASSWORD_FILE:-$local_credentials_dir/initial-admin-password}"
+mkdir -p "$local_credentials_dir"
+
+if [ ! -f "$password_file" ]; then
+  umask 077
+  openssl rand -base64 32 >"$password_file"
+fi
+
+chmod 600 "$password_file"
+provisioning_dir="$(mktemp -d)"
+trap 'rm -rf "$provisioning_dir"' EXIT
+provisioning_config="$provisioning_dir/workspace-bootstrap.json"
+
+cat >"$provisioning_config" <<JSON
+{
+  "contract_version": 1,
+  "operation_id": "local-bootstrap-${workspace_id}-v1",
+  "workspace": {
+    "id": "$workspace_id",
+    "slug": "$workspace_slug",
+    "display_name": "$workspace_name"
+  },
+  "administrator": {
+    "mode": "password",
+    "username": "local-admin",
+    "display_name": "Local administrator"
+  }
+}
+JSON
+
+export FAVN_WORKSPACE_PROVISIONING_CONFIG_FILE="$provisioning_config"
+export FAVN_WORKSPACE_ADMIN_PASSWORD_FILE="$password_file"
+export FAVN_OPERATOR_COMMAND_HMAC_SECRET="favn-local-workspace-bootstrap-hmac-v1"
 
 mix do --app favn_storage_postgres cmd mix run --no-start \
   -e 'FavnStoragePostgres.ReleaseCLI.run!(:bootstrap)'
@@ -34,4 +77,5 @@ mix do --app favn_storage_postgres cmd mix run --no-start \
 echo "PostgreSQL is ready. Configure the Favn runtime with:"
 echo "FAVN_DATABASE_URL=ecto://favn_runtime:favn_runtime_local@127.0.0.1:${FAVN_POSTGRES_PORT:-5432}/favn_dev"
 echo "FAVN_RUNTIME_INPUT_PIN_KEY=<base64-encoded-32-byte-key>"
-echo "FAVN_WORKSPACE_IDS=${FAVN_LOCAL_WORKSPACE_ID:-local-dev}"
+echo "FAVN_WORKSPACE_IDS=$workspace_id"
+echo "Initial local administrator password file: $password_file"

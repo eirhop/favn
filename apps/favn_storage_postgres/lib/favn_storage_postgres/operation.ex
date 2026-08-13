@@ -238,6 +238,14 @@ defmodule FavnStoragePostgres.Instrumented.Identity do
     store: :identity
 end
 
+defmodule FavnStoragePostgres.Instrumented.WorkspaceProvisioning do
+  @moduledoc false
+  use FavnStoragePostgres.InstrumentedStore,
+    behaviour: FavnOrchestrator.Persistence.WorkspaceProvisioningStore,
+    implementation: FavnStoragePostgres.WorkspaceProvisioning.Store,
+    store: :workspace_provisioning
+end
+
 defmodule FavnStoragePostgres.Instrumented.Maintenance do
   @moduledoc false
   use FavnStoragePostgres.InstrumentedStore,

@@ -18,7 +18,7 @@ defmodule FavnLocal.PreflightTest do
        }}
     end
 
-    def verify_workspace(_workspace_id), do: {:ok, %{operation: :verify_workspace, status: :ok}}
+    def workspace_status(_workspace_id), do: {:ok, %{operation: :workspace_status, state: :ready}}
   end
 
   defmodule IncompatibleRelease do
@@ -35,7 +35,7 @@ defmodule FavnLocal.PreflightTest do
        }}
     end
 
-    def verify_workspace(_workspace_id), do: {:ok, %{operation: :verify_workspace, status: :ok}}
+    def workspace_status(_workspace_id), do: {:ok, %{operation: :workspace_status, state: :ready}}
   end
 
   defmodule UnsupportedPostgresRelease do
@@ -52,7 +52,7 @@ defmodule FavnLocal.PreflightTest do
        }}
     end
 
-    def verify_workspace(_workspace_id), do: {:ok, %{operation: :verify_workspace, status: :ok}}
+    def workspace_status(_workspace_id), do: {:ok, %{operation: :workspace_status, state: :ready}}
   end
 
   defmodule ElevatedRuntimeRelease do
@@ -61,7 +61,20 @@ defmodule FavnLocal.PreflightTest do
        %{operation: :verify_schema, status: :error, code: :runtime_role_not_ready}}
     end
 
-    def verify_workspace(_workspace_id), do: raise("workspace verification must not run")
+    def workspace_status(_workspace_id), do: raise("workspace verification must not run")
+  end
+
+  defmodule MissingAdministratorRelease do
+    def verify_runtime_schema, do: {:ok, %{operation: :verify_schema, status: :ok}}
+
+    def workspace_status(_workspace_id) do
+      {:ok,
+       %{
+         operation: :workspace_status,
+         state: :workspace_administrator_missing,
+         status: :ok
+       }}
+    end
   end
 
   test "reports the exact missing migration and one development upgrade command" do
@@ -96,5 +109,14 @@ defmodule FavnLocal.PreflightTest do
 
     assert {:error, :postgres_runtime_role_not_ready} =
              Preflight.run(config, release: ElevatedRuntimeRelease)
+  end
+
+  test "requires a ready workspace administrator receipt" do
+    config = struct(Config, workspace_id: "local-dev")
+
+    assert {:error,
+            {:workspace_not_found, "local-dev",
+             "mix favn.postgres.provision_workspace --config .favn/workspace-bootstrap.json"}} =
+             Preflight.run(config, release: MissingAdministratorRelease)
   end
 end

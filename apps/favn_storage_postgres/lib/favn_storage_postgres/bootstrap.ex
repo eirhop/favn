@@ -6,9 +6,8 @@ defmodule FavnStoragePostgres.Bootstrap do
   the exact bootstrap, migrator, or runtime identity configured for that stage.
   """
 
-  alias FavnOrchestrator.Persistence.Commands.ProvisionWorkspace
   alias FavnOrchestrator.Persistence.Error, as: PersistenceError
-  alias FavnOrchestrator.Persistence.PlatformContext
+  alias FavnOrchestrator.WorkspaceProvisioning
   alias FavnStoragePostgres.Authentication
 
   alias FavnStoragePostgres.Bootstrap.{
@@ -23,9 +22,8 @@ defmodule FavnStoragePostgres.Bootstrap do
   }
 
   alias FavnStoragePostgres.Config, as: DatabaseConfig
-  alias FavnStoragePostgres.Registry.Store
   alias FavnStoragePostgres.RuntimePrivileges
-  alias FavnStoragePostgres.Schemas.Workspace
+  alias FavnStoragePostgres.Instrumented.WorkspaceProvisioning, as: WorkspaceProvisioningStore
   alias FavnStoragePostgres.StorageV2.Migrations
 
   @type operation :: :status | :bootstrap | :upgrade
@@ -39,6 +37,7 @@ defmodule FavnStoragePostgres.Bootstrap do
     :schema_upgrade_required,
     :runtime_grants_missing,
     :workspace_missing,
+    :workspace_administrator_missing,
     :workspace_conflict,
     :bootstrap_required
   ]
@@ -228,7 +227,8 @@ defmodule FavnStoragePostgres.Bootstrap do
       :ok ->
         Result.status_findings(:status, status_state(carried_findings), carried_findings)
 
-      {:error, code} when code in [:workspace_missing, :workspace_conflict] ->
+      {:error, code}
+      when code in [:workspace_missing, :workspace_administrator_missing, :workspace_conflict] ->
         findings =
           merge_findings(carried_findings, [
             %{code: code, stage: :workspace, details: %{}}
@@ -311,7 +311,7 @@ defmodule FavnStoragePostgres.Bootstrap do
                    end
                  end),
                {:ok, stages} <- migrate_and_grant(config, stages),
-               {:ok, stages} <- ensure_workspace(config, stages),
+               {:ok, stages} <- provision_workspace_administrator(config, stages),
                {:ok, stages} <- verify_fresh_runtime(config, stages) do
             Result.ready(:bootstrap, stages)
           else
@@ -794,6 +794,9 @@ defmodule FavnStoragePostgres.Bootstrap do
       :workspace_conflict in codes ->
         :workspace_conflict
 
+      :workspace_administrator_missing in codes ->
+        :workspace_administrator_missing
+
       :workspace_missing in codes ->
         :workspace_missing
 
@@ -819,6 +822,7 @@ defmodule FavnStoragePostgres.Bootstrap do
       :schema_inspection_failed,
       :runtime_grants_missing,
       :workspace_missing,
+      :workspace_administrator_missing,
       :workspace_conflict
     ]
   end
@@ -892,38 +896,29 @@ defmodule FavnStoragePostgres.Bootstrap do
     |> normalize_stage_connection(:migrator_connection, stages)
   end
 
-  defp ensure_workspace(config, stages) do
+  defp provision_workspace_administrator(config, stages) do
     Connection.with_repo(
       config,
       config.runtime,
       config.target_database,
       :runtime_operation,
-      fn repo ->
-        step(stages, :workspace, fn -> ensure_workspace_row(repo, config.workspace) end)
+      fn _repo ->
+        step(stages, :workspace_administrator, fn ->
+          provision_workspace_administrator(config)
+        end)
       end
     )
     |> normalize_stage_connection(:runtime_connection, stages)
   end
 
-  defp ensure_workspace_row(repo, workspace) do
-    try do
-      case repo.get(Workspace, workspace.workspace_id) do
-        nil ->
-          provision_workspace(workspace)
-
-        %Workspace{} = existing ->
-          if existing.slug == workspace.slug and
-               existing.display_name == workspace.display_name and
-               existing.status == "active" do
-            {:ok, :exact}
-          else
-            {:error, :workspace_conflict}
-          end
-      end
-    rescue
-      _exception -> {:error, :unknown_outcome}
-    catch
-      _kind, _reason -> {:error, :unknown_outcome}
+  defp provision_workspace_administrator(config) do
+    case WorkspaceProvisioning.provision(config.workspace_provisioning,
+           store: WorkspaceProvisioningStore,
+           fingerprint_key: config.workspace_provisioning_key
+         ) do
+      {:ok, _result} -> {:ok, :ready}
+      {:error, %PersistenceError{} = failure} -> {:error, classify_workspace_failure(failure)}
+      {:error, _reason} -> {:error, :workspace_provision_failed}
     end
   end
 
@@ -942,27 +937,6 @@ defmodule FavnStoragePostgres.Bootstrap do
     case Migrations.pending_versions(repo) do
       {:ok, []} -> {:ok, :migrated}
       _not_verified -> {:error, :unknown_outcome}
-    end
-  end
-
-  defp provision_workspace(workspace) do
-    with {:ok, context} <-
-           PlatformContext.new(
-             "release:database-bootstrap",
-             "release:database-bootstrap",
-             [:platform_admin]
-           ),
-         :ok <-
-           Store.provision_workspace(%ProvisionWorkspace{
-             platform_context: context,
-             workspace_id: workspace.workspace_id,
-             slug: workspace.slug,
-             display_name: workspace.display_name,
-             occurred_at: DateTime.utc_now()
-           }) do
-      {:ok, :created}
-    else
-      {:error, %PersistenceError{} = failure} -> {:error, classify_workspace_failure(failure)}
     end
   end
 
@@ -991,7 +965,7 @@ defmodule FavnStoragePostgres.Bootstrap do
     with %{rows: [[current_role]]} <- Ecto.Adapters.SQL.query!(repo, "SELECT current_user", []),
          true <- current_role == config.runtime.role,
          {:ok, %{ready?: true, runtime_role: %{safe?: true}}} <- Migrations.diagnostics(repo),
-         :ok <- verify_workspace(repo, config.workspace) do
+         :ok <- verify_workspace_administrator(config.workspace) do
       :ok
     else
       false -> {:error, :runtime_role_mismatch}
@@ -1001,18 +975,25 @@ defmodule FavnStoragePostgres.Bootstrap do
     end
   end
 
-  defp verify_workspace(_repo, nil), do: :ok
+  defp verify_workspace_administrator(nil), do: :ok
 
-  defp verify_workspace(repo, workspace) do
-    case repo.get(Workspace, workspace.workspace_id) do
-      nil ->
-        {:error, :workspace_missing}
+  defp verify_workspace_administrator(workspace) do
+    case WorkspaceProvisioning.status(workspace.workspace_id, store: WorkspaceProvisioningStore) do
+      {:ok, result}
+      when result.slug == workspace.slug and result.workspace_name == workspace.display_name ->
+        :ok
 
-      %Workspace{} = existing ->
-        if existing.slug == workspace.slug and existing.display_name == workspace.display_name and
-             existing.status == "active",
-           do: :ok,
-           else: {:error, :workspace_conflict}
+      {:ok, _different} ->
+        {:error, :workspace_conflict}
+
+      {:error, %PersistenceError{kind: :not_found}} ->
+        {:error, :workspace_administrator_missing}
+
+      {:error, %PersistenceError{kind: :constraint}} ->
+        {:error, :workspace_administrator_missing}
+
+      {:error, _failure} ->
+        {:error, :unknown_outcome}
     end
   end
 
@@ -1148,6 +1129,7 @@ defmodule FavnStoragePostgres.Bootstrap do
   defp state_for(:role_hardening_required), do: :role_hardening_required
   defp state_for(:unsafe_authority), do: :unsafe_authority
   defp state_for(:workspace_conflict), do: :workspace_conflict
+  defp state_for(:workspace_administrator_missing), do: :workspace_administrator_missing
   defp state_for(:workspace_missing), do: :workspace_missing
   defp state_for(:operation_in_progress), do: :operation_in_progress
   defp state_for(:bootstrap_required), do: :bootstrap_required

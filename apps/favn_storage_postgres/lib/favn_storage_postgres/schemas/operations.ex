@@ -58,6 +58,25 @@ defmodule FavnStoragePostgres.Schemas.AuthActor do
   end
 end
 
+defmodule FavnStoragePostgres.Schemas.WorkspaceProvisioningOperation do
+  @moduledoc false
+  use Ecto.Schema
+
+  @primary_key {:operation_id, :string, autogenerate: false}
+  @schema_prefix "favn_control"
+  schema "workspace_provisioning_operations" do
+    field(:workspace_id, :string)
+    field(:request_fingerprint, :binary)
+    field(:actor_id, :string)
+    field(:username, :string)
+    field(:authentication_mode, :string)
+    field(:tenant_fingerprint, :binary)
+    field(:object_fingerprint, :binary)
+    field(:status, :string)
+    timestamps(type: :utc_datetime_usec)
+  end
+end
+
 defmodule FavnStoragePostgres.Schemas.AuthCredential do
   @moduledoc false
   use Ecto.Schema
