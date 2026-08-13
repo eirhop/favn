@@ -9,6 +9,7 @@ env_file="$script_dir/.env.local"
 results_dir="$script_dir/security-results"
 secrets_dir="$script_dir/security/secrets"
 admin_password_file="$secrets_dir/admin-password"
+probe_admin_password_file="$secrets_dir/probe-admin-password"
 owns_generated_state=0
 
 cleanup() {
@@ -24,7 +25,7 @@ cleanup() {
       --volumes --remove-orphans --rmi local >/dev/null 2>&1 || true
   fi
   sh "$script_dir/prune-qualification-images.sh" "$env_file" || true
-  rm -f "$admin_password_file" "$env_file"
+  rm -f "$admin_password_file" "$probe_admin_password_file" "$env_file"
 }
 
 trap cleanup EXIT HUP INT TERM
@@ -209,8 +210,11 @@ MSYS_NO_PATHCONV=1 docker run --rm \
   sh -eu -c '
     umask 027
     head -c 48 /dev/urandom | base64 | tr -d "\n" >/secrets/admin-password
-    chown 0:10001 /secrets/admin-password
-    chmod 0440 /secrets/admin-password
+    cp /secrets/admin-password /secrets/probe-admin-password
+    chown 10001:10001 /secrets/admin-password
+    chmod 0400 /secrets/admin-password
+    chown 0:10001 /secrets/probe-admin-password
+    chmod 0440 /secrets/probe-admin-password
   '
 
 compose config --quiet

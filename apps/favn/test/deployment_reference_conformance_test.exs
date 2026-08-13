@@ -360,9 +360,19 @@ defmodule Favn.DeploymentReferenceConformanceTest do
     assert security_runner =~ "certificates postgres control-plane security-browser"
     refute security_runner =~ "control-plane security-browser security-api"
     refute security_runner =~ "Release.admin_bootstrap"
+    assert security_runner =~ "chown 10001:10001 /secrets/admin-password"
+    assert security_runner =~ "chmod 0400 /secrets/admin-password"
+    assert security_runner =~ "cp /secrets/admin-password /secrets/probe-admin-password"
 
     assert security_compose =~
              "FAVN_WORKSPACE_ADMIN_PASSWORD_FILE: /run/secrets/favn-security/admin-password"
+
+    assert length(
+             Regex.scan(
+               ~r{FAVN_SECURITY_ADMIN_PASSWORD_FILE: /run/secrets/favn-security/probe-admin-password},
+               security_compose
+             )
+           ) == 2
 
     assert %{
              "contract_version" => 1,

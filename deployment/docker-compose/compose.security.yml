@@ -92,7 +92,7 @@ services:
       FAVN_SECURITY_BASE_URL: https://favn.localhost
       FAVN_SECURITY_WORKSPACE_ID: elastic-simulation
       FAVN_SECURITY_ADMIN_USERNAME: security-admin
-      FAVN_SECURITY_ADMIN_PASSWORD_FILE: /run/secrets/favn-security/admin-password
+      FAVN_SECURITY_ADMIN_PASSWORD_FILE: /run/secrets/favn-security/probe-admin-password
       FAVN_SECURITY_EVIDENCE_DIR: /results/browser
       FAVN_SECURITY_BROWSER_DIAGNOSTICS: ${FAVN_SECURITY_BROWSER_DIAGNOSTICS:-0}
     depends_on:
@@ -126,7 +126,7 @@ services:
       FAVN_SECURITY_CAPACITY_TOKEN: ${FAVN_CAPACITY_TOKEN}
       FAVN_SECURITY_WORKSPACE_ID: elastic-simulation
       FAVN_SECURITY_ADMIN_USERNAME: security-admin
-      FAVN_SECURITY_ADMIN_PASSWORD_FILE: /run/secrets/favn-security/admin-password
+      FAVN_SECURITY_ADMIN_PASSWORD_FILE: /run/secrets/favn-security/probe-admin-password
       FAVN_SECURITY_EVIDENCE_DIR: /results/api
       FAVN_SECURITY_COMPOSE_ENV_FILE: /run/favn-security-compose-env
       FAVN_SECURITY_SOURCE_STATE: ${FAVN_SECURITY_SOURCE_STATE}
