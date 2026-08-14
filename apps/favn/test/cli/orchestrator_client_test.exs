@@ -224,7 +224,11 @@ defmodule Favn.CLI.OrchestratorClientTest do
              )
 
     assert_receive {:request_path, "/api/orchestrator/v1/manifests/mv_service/activate"}
-    assert_receive {:request_body, _body}
+    assert_receive {:request_body, body}
+
+    assert get_in(Jason.decode!(body), ["execution_pool_policy", "approve_manifest_defaults"]) ==
+             true
+
     assert_receive {:request_headers, headers}
     assert headers["x-favn-workspace-id"] == "workspace-service"
     assert headers["authorization"] == "Bearer service-token"

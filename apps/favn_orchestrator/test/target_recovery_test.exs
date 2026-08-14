@@ -30,6 +30,7 @@ defmodule FavnOrchestrator.TargetRecoveryTest do
     def get_runtime_state(_query), do: {:ok, Process.get(:recovery_runtime)}
     def get_deployment_targets(_query), do: {:ok, Process.get(:recovery_grants)}
     def get_deployment_manifest(_query), do: {:ok, Process.get(:recovery_version)}
+    def get_deployment_configuration(_query), do: {:ok, %{}}
     def get_manifest(_query), do: {:ok, Process.get(:recovery_version)}
 
     def create_intent(command) do

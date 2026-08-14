@@ -13,6 +13,8 @@ defmodule FavnOrchestrator.Persistence.RegistryStore do
   alias FavnOrchestrator.Persistence.CommandIdempotency
   alias FavnOrchestrator.Persistence.Error
   alias FavnOrchestrator.Persistence.Queries.GetDeploymentTargets
+  alias FavnOrchestrator.Persistence.Queries.GetDeploymentConfiguration
+  alias FavnOrchestrator.Persistence.Queries.GetActiveDeploymentConfiguration
   alias FavnOrchestrator.Persistence.Queries.GetDeploymentManifest
   alias FavnOrchestrator.Persistence.Queries.GetRuntimeState
   alias FavnOrchestrator.Persistence.Queries.GetExecutionPackage
@@ -36,6 +38,10 @@ defmodule FavnOrchestrator.Persistence.RegistryStore do
               {:ok, [TargetDescriptor.t()]} | {:error, Error.t()}
   @callback get_deployment_manifest(GetDeploymentManifest.t()) ::
               {:ok, Version.t()} | {:error, Error.t()}
+  @callback get_deployment_configuration(GetDeploymentConfiguration.t()) ::
+              {:ok, map()} | {:error, Error.t()}
+  @callback get_active_deployment_configuration(GetActiveDeploymentConfiguration.t()) ::
+              {:ok, {String.t(), map()}} | {:error, Error.t()}
   @callback page_workspaces(PageWorkspaces.t()) ::
               {:ok, CursorPage.t(String.t())} | {:error, Error.t()}
   @callback deploy_manifest(DeployManifest.t()) :: {:ok, RuntimeState.t()} | {:error, Error.t()}

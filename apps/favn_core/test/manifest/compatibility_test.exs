@@ -15,17 +15,61 @@ defmodule Favn.Manifest.CompatibilityTest do
   end
 
   test "rejects the previous schema version" do
-    manifest = current_manifest(%{schema_version: 13})
+    manifest = current_manifest(%{schema_version: 14})
 
-    assert {:error, {:unsupported_schema_version, 13, 14}} =
+    assert {:error, {:unsupported_schema_version, 14, 15}} =
              Compatibility.validate_manifest(manifest)
   end
 
   test "rejects unsupported schema version" do
-    manifest = current_manifest(%{schema_version: 15})
+    manifest = current_manifest(%{schema_version: 16})
 
-    assert {:error, {:unsupported_schema_version, 15, 14}} =
+    assert {:error, {:unsupported_schema_version, 16, 15}} =
              Compatibility.validate_manifest(manifest)
+  end
+
+  test "requires execution-pool policy in the manifest contract" do
+    manifest = Map.delete(current_manifest(), :execution_pools)
+
+    assert {:error, {:missing_manifest_field, :execution_pools}} =
+             Compatibility.validate_manifest(manifest)
+  end
+
+  test "rejects asset references to pools absent from the policy catalogue" do
+    ref = {MyApp.PooledAsset, :asset}
+
+    asset = %Asset{
+      ref: ref,
+      module: MyApp.PooledAsset,
+      name: :asset,
+      type: :elixir,
+      execution_pool: :partner_api
+    }
+
+    assert {:error, {:unknown_execution_pool_reference, "partner_api"}} =
+             current_manifest(%{assets: [asset]})
+             |> Compatibility.validate_manifest()
+
+    assert :ok =
+             current_manifest(%{
+               assets: [asset],
+               execution_pools: %{partner_api: %{max_concurrency: 3}}
+             })
+             |> Compatibility.validate_manifest()
+  end
+
+  test "rejects malformed execution-pool references with a tagged error" do
+    asset = %Asset{
+      ref: {MyApp.MalformedPooledAsset, :asset},
+      module: MyApp.MalformedPooledAsset,
+      name: :asset,
+      type: :elixir,
+      execution_pool: {:not, :a_pool}
+    }
+
+    assert {:error, {:invalid_execution_pool_reference, {:not, :a_pool}}} =
+             current_manifest(%{assets: [asset]})
+             |> Compatibility.validate_manifest()
   end
 
   test "rejects unsupported runner contract version" do

@@ -22,6 +22,7 @@ defmodule FavnOrchestrator.ExecutionAdmission do
   alias FavnOrchestrator.Persistence.Results.ExecutionLease
   alias FavnOrchestrator.Persistence.SystemContext
   alias FavnOrchestrator.RunState
+  alias Favn.ExecutionPool.PolicySet
 
   @default_lease_ttl_ms 300_000
   @lease_timeout_buffer_ms 60_000
@@ -81,7 +82,7 @@ defmodule FavnOrchestrator.ExecutionAdmission do
 
   defp acquire_result(%RunState{} = run, entry) when is_map(entry) do
     with :ok <- validate_run_admissible(run),
-         :ok <- validate_execution_pool(entry) do
+         :ok <- validate_execution_pool(run, entry) do
       acquire_v2(run, entry)
     end
   end
@@ -170,8 +171,8 @@ defmodule FavnOrchestrator.ExecutionAdmission do
   def admission_scopes(%RunState{} = run, entry) when is_map(entry) do
     []
     |> maybe_add_run_scope(run)
-    |> maybe_add_pool_scope(entry)
-    |> maybe_add_global_scope()
+    |> maybe_add_pool_scope(run, entry)
+    |> maybe_add_global_scope(run)
     |> Enum.reverse()
   end
 
@@ -185,17 +186,17 @@ defmodule FavnOrchestrator.ExecutionAdmission do
     end
   end
 
-  defp maybe_add_pool_scope(scopes, entry) do
+  defp maybe_add_pool_scope(scopes, run, entry) do
     pool = Map.get(entry, :execution_pool) || Map.get(entry, "execution_pool")
 
-    case pool_limit(pool) do
+    case pool_limit(run, pool) do
       {:ok, key, limit} -> [%{kind: :pool, key: key, limit: limit} | scopes]
       :none -> scopes
     end
   end
 
-  defp maybe_add_global_scope(scopes) do
-    case pool_limit(:global) do
+  defp maybe_add_global_scope(scopes, run) do
+    case pool_limit(run, :global) do
       {:ok, key, limit} -> [%{kind: :global, key: key, limit: limit} | scopes]
       :none -> scopes
     end
@@ -218,56 +219,39 @@ defmodule FavnOrchestrator.ExecutionAdmission do
 
   defp pipeline_max_concurrency(%RunState{}), do: nil
 
-  defp validate_execution_pool(entry) do
+  defp validate_execution_pool(run, entry) do
     case Map.get(entry, :execution_pool) || Map.get(entry, "execution_pool") do
       nil ->
         :ok
 
       pool ->
-        case pool_limit(pool) do
+        case pool_limit(run, pool) do
           {:ok, _key, _limit} -> :ok
           :none -> {:error, {:unknown_execution_pool, pool}}
         end
     end
   end
 
-  defp pool_limit(nil), do: :none
+  defp pool_limit(_run, nil), do: :none
 
-  defp pool_limit(pool) when is_atom(pool) or is_binary(pool) do
+  defp pool_limit(%RunState{} = run, pool) when is_atom(pool) or is_binary(pool) do
     key = to_string(pool)
 
-    case Map.get(execution_pools(), key) do
-      limit when is_integer(limit) and limit > 0 -> {:ok, key, limit}
+    case Map.get(execution_pools(run), key) do
+      %{max_concurrency: limit} when is_integer(limit) and limit > 0 -> {:ok, key, limit}
       _other -> :none
     end
   end
 
-  defp execution_pools do
-    case Application.get_env(:favn, :execution_pools, []) do
-      pools when is_list(pools) or is_map(pools) ->
-        Enum.reduce(pools, %{}, fn
-          {name, opts}, acc when is_atom(name) or is_binary(name) ->
-            case execution_pool_limit(opts) do
-              limit when is_integer(limit) and limit > 0 -> Map.put(acc, to_string(name), limit)
-              _other -> acc
-            end
+  defp execution_pools(%RunState{metadata: metadata}) when is_map(metadata) do
+    value =
+      Map.get(metadata, :execution_pool_policy, Map.get(metadata, "execution_pool_policy", %{}))
 
-          _invalid, acc ->
-            acc
-        end)
-
-      _invalid ->
-        %{}
+    case PolicySet.new(value) do
+      {:ok, policies} -> policies
+      {:error, _reason} -> %{}
     end
   end
-
-  defp execution_pool_limit(limit) when is_integer(limit), do: limit
-  defp execution_pool_limit(opts) when is_list(opts), do: Keyword.get(opts, :max_concurrency)
-
-  defp execution_pool_limit(opts) when is_map(opts),
-    do: Map.get(opts, :max_concurrency) || Map.get(opts, "max_concurrency")
-
-  defp execution_pool_limit(_opts), do: nil
 
   defp execution_lease_ttl_ms do
     :favn
@@ -288,8 +272,8 @@ defmodule FavnOrchestrator.ExecutionAdmission do
   defp v2_admission_scopes(%RunState{} = run, entry) do
     []
     |> maybe_add_v2_run_scope(run)
-    |> maybe_add_v2_configured_scope(run.workspace_id, Map.get(entry, :execution_pool))
-    |> maybe_add_v2_configured_scope(run.workspace_id, :global)
+    |> maybe_add_v2_configured_scope(run, Map.get(entry, :execution_pool))
+    |> maybe_add_v2_configured_scope(run, :global)
     |> Enum.reverse()
     |> Enum.uniq_by(& &1.scope_id)
   end
@@ -312,8 +296,12 @@ defmodule FavnOrchestrator.ExecutionAdmission do
     end
   end
 
-  defp maybe_add_v2_configured_scope(scopes, workspace_id, pool) do
-    case CapacityConfiguration.execution_scope(workspace_id, pool) do
+  defp maybe_add_v2_configured_scope(scopes, %RunState{} = run, pool) do
+    case CapacityConfiguration.execution_scope(
+           run.workspace_id,
+           pool,
+           execution_pools(run)
+         ) do
       {:ok, scope} -> [scope | scopes]
       :unlimited -> scopes
     end

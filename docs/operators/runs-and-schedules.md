@@ -43,12 +43,48 @@ Expected result: the orchestrator has a persisted manifest version and an active
 manifest selection. The runner may also know the manifest for execution, but the
 orchestrator remains the source of truth.
 
+If the manifest contains execution-pool defaults, activation must explicitly
+approve them. `mix favn.activate` is an explicit activation command and sends
+that approval. API callers use the `execution_pool_policy` object:
+
+```json
+{
+  "execution_pool_policy": {
+    "approve_manifest_defaults": true,
+    "overrides": {"partner_api": {"max_concurrency": 4}},
+    "reset": ["warehouse"],
+    "discard_orphaned": ["retired_pool"]
+  }
+}
+```
+
+`overrides` replaces the manifest default for named active pools. `reset`
+removes an existing override so the manifest default applies. When a later
+manifest removes a pool, its override becomes inactive and does not silently
+return if that pool is reintroduced; `discard_orphaned` permanently removes
+such an inactive override. Omit fields that are not part of the change.
+
+Activation creates one immutable deployment configuration. A concurrent
+activation is replanned against the winner so an operator override is not lost.
+Lowering concurrency below the number of active leases returns a conflict and
+leaves the previous deployment active; wait for work to drain, then retry with
+the same intended policy. Circuit policy changes serialize with admission, so
+overlapping old and new runs use the active policy for a pool that still exists.
+Lowering a failure threshold immediately opens a closed circuit whose retained
+failure count already meets the new threshold. Changing the probe delay
+recomputes the next probe time for an open circuit; a live half-open probe keeps
+its current lease. Disabling a circuit stops using it but retains its health
+state, which is reconciled against the policy if the circuit is enabled again.
+
 Common failures:
 
 | Failure | Action |
 | --- | --- |
 | Manifest validation error | Rebuild the manifest from authoring code and inspect diagnostics. |
 | Manifest version conflict | Check the version id and content hash. Do not reuse one version id for different content. |
+| Pool defaults not approved | Approve the manifest defaults explicitly, then activate the same reviewed manifest. |
+| Invalid pool override | Use only pools present in the manifest and provide a complete valid policy for each override. |
+| Capacity decrease conflict | Wait until active leases are at or below the requested limit, then retry activation. |
 | Persistence failure | Check orchestrator readiness, storage readiness, and diagnostics before retrying. |
 | Runner registration failure | Fix runner availability, then retry the supported registration action. Do not edit runner memory or files directly. |
 

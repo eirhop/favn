@@ -1261,6 +1261,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
 
   defp manifest_version(manifest_version_id, module) do
     manifest = %Manifest{
+      execution_pools: %{warehouse: %{max_concurrency: 1}},
       assets: [
         %Asset{
           ref: {module, :asset},
@@ -1284,6 +1285,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
 
   defp pipeline_manifest_version(manifest_version_id, settings, window, schedule) do
     manifest = %Manifest{
+      execution_pools: %{warehouse: %{max_concurrency: 1}},
       assets: [
         %Asset{
           ref: {__MODULE__.Asset, :asset},
@@ -1333,6 +1335,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
 
   defp multi_asset_manifest_version(manifest_version_id) do
     manifest = %Manifest{
+      execution_pools: %{warehouse: %{max_concurrency: 1}},
       assets: [
         %Asset{
           ref: {__MODULE__.AssetA, :asset},

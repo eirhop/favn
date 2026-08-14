@@ -247,12 +247,13 @@ defmodule Favn.AI do
     `Favn.Manifest.Generator` if you need internal compilation details. For
     deployment, call `Favn.build_manifest/1` with the exact operator-supplied
     `runner_releases` pool map, followed by
-    `Favn.prepare_manifest_publication/2`: schema 14 has one compact manifest
-    index bound to exact releases per pool and immutable content-addressed SQL
-    execution packages, with no inline SQL manifest form or compatibility
-    fallback. Default manifest version IDs are `mv_` plus the full canonical
-    index content hash. Publication still deduplicates by `content_hash` and may
-    return an older persisted ID for identical content.
+    `Favn.prepare_manifest_publication/2`: schema 15 has one compact manifest
+    index bound to exact releases per runner pool, validated execution-pool
+    defaults, and immutable content-addressed SQL execution packages. Consumer
+    `config :favn, execution_pools: [...]` is manifest input, not Orchestrator or
+    runner environment configuration. Default manifest version IDs are `mv_`
+    plus the full canonical index content hash. Publication still deduplicates
+    by `content_hash` and may return an older persisted ID for identical content.
   - To resolve pipeline targets, read `Favn resolve_pipeline`, then
     `Favn.Pipeline.Resolver` if needed.
   - To plan execution order, read `Favn plan_asset_run`, then

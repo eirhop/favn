@@ -88,6 +88,14 @@ Manifest versions carry an arbitrary logical pool-to-release map. Publication
 and activation do not require a live runner, so the control plane remains
 ready at zero runners.
 
+Schema-15 manifests also carry validated execution-pool defaults. Activation
+requires explicit operator approval, resolves those defaults with any persisted
+workspace overrides, and stores the effective policy and provenance in the
+immutable deployment configuration. Each run snapshots that deployment policy;
+admission and pool circuits never reread consumer or Orchestrator application
+environment. Matching PostgreSQL capacity scopes are active before the
+deployment is published.
+
 Physical relation inspection and generation operations are durable runner
 tasks. They use the same exact pool/release selection, claim, fencing, result,
 and acknowledgement protocol as asset attempts.

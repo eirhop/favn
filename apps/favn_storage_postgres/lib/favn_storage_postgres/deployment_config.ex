@@ -3,12 +3,14 @@ defmodule FavnStoragePostgres.DeploymentConfig do
 
   @max_bytes 262_144
   @max_resources 1_000
-  @top_level_keys ~w(schema_version secret_store_url resources)
+  @top_level_keys ~w(schema_version secret_store_url resources execution_pool_policy)
   @resource_keys ~w(type endpoint secret_ref catalog database container account region schema read_only ssl_mode)
   @string_resource_keys ~w(type secret_ref catalog database container account region schema)
   @safe_ssl_modes ~w(verify-full require)
   @resource_name ~r/\A[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\z/
   @safe_string ~r/\A[^\x00-\x1F\x7F]{1,1024}\z/u
+  @policy_keys ~w(schema_version manifest_fingerprint effective_fingerprint operator_overrides orphaned_overrides effective sources)
+  @fingerprint ~r/\A[0-9a-f]{64}\z/
 
   @spec validate(map()) :: {:ok, map()} | {:error, term()}
   def validate(configuration) when is_map(configuration) do
@@ -16,6 +18,7 @@ defmodule FavnStoragePostgres.DeploymentConfig do
          :ok <- validate_schema_version(configuration),
          :ok <- validate_optional_url(configuration, "secret_store_url", []),
          :ok <- validate_resources(value(configuration, "resources", %{})),
+         :ok <- validate_execution_pool_policy(value(configuration, "execution_pool_policy", nil)),
          {:ok, encoded} <- Jason.encode(configuration),
          :ok <- validate_size(encoded) do
       {:ok, configuration}
@@ -50,6 +53,81 @@ defmodule FavnStoragePostgres.DeploymentConfig do
   end
 
   defp validate_resources(_resources), do: {:error, :invalid_resource_bindings}
+
+  defp validate_execution_pool_policy(nil), do: :ok
+
+  defp validate_execution_pool_policy(policy) when is_map(policy) do
+    with :ok <- validate_keys(policy, @policy_keys, ["execution_pool_policy"]),
+         1 <- value(policy, "schema_version", nil),
+         :ok <- validate_fingerprint(value(policy, "manifest_fingerprint", nil)),
+         :ok <- validate_fingerprint(value(policy, "effective_fingerprint", nil)),
+         {:ok, overrides} <-
+           Favn.ExecutionPool.PolicySet.new(value(policy, "operator_overrides", %{})),
+         {:ok, orphaned} <-
+           Favn.ExecutionPool.PolicySet.new(value(policy, "orphaned_overrides", %{})),
+         {:ok, effective} <- Favn.ExecutionPool.PolicySet.new(value(policy, "effective", %{})),
+         :ok <- validate_effective_fingerprint(policy, effective),
+         :ok <- validate_policy_sets(overrides, orphaned, effective),
+         :ok <- validate_sources(value(policy, "sources", %{}), effective, overrides) do
+      :ok
+    else
+      version when is_integer(version) ->
+        {:error, {:unsupported_execution_pool_policy_version, 1}}
+
+      {:error, _reason} = error ->
+        error
+
+      _invalid ->
+        {:error, :invalid_execution_pool_policy}
+    end
+  end
+
+  defp validate_execution_pool_policy(_policy), do: {:error, :invalid_execution_pool_policy}
+
+  defp validate_fingerprint(value) when is_binary(value) do
+    if Regex.match?(@fingerprint, value), do: :ok, else: {:error, :invalid_policy_fingerprint}
+  end
+
+  defp validate_fingerprint(_value), do: {:error, :invalid_policy_fingerprint}
+
+  defp validate_effective_fingerprint(policy, effective) do
+    if value(policy, "effective_fingerprint", nil) ==
+         Favn.ExecutionPool.PolicySet.fingerprint(effective),
+       do: :ok,
+       else: {:error, :execution_pool_policy_fingerprint_mismatch}
+  end
+
+  defp validate_policy_sets(overrides, orphaned, effective) do
+    active_overrides_valid? =
+      Enum.all?(overrides, fn {name, policy} -> Map.get(effective, name) == policy end)
+
+    orphaned_disjoint? =
+      orphaned
+      |> Map.keys()
+      |> Enum.all?(&(not Map.has_key?(effective, &1)))
+
+    if active_overrides_valid? and orphaned_disjoint?,
+      do: :ok,
+      else: {:error, :inconsistent_execution_pool_policy}
+  end
+
+  defp validate_sources(sources, effective, overrides) when is_map(sources) do
+    with {:ok, normalized} <- normalize_named_map(sources) do
+      valid? =
+        Enum.sort(Map.keys(normalized)) == Enum.sort(Map.keys(effective)) and
+          Enum.all?(normalized, fn {name, source} ->
+            expected =
+              if Map.has_key?(overrides, name), do: "operator_override", else: "manifest"
+
+            source == expected
+          end)
+
+      if valid?, do: :ok, else: {:error, :invalid_execution_pool_policy_sources}
+    end
+  end
+
+  defp validate_sources(_sources, _effective, _overrides),
+    do: {:error, :invalid_execution_pool_policy_sources}
 
   defp validate_resource_descriptor(descriptor, name) do
     with :ok <- validate_keys(descriptor, @resource_keys, ["resources", name]),
@@ -120,13 +198,44 @@ defmodule FavnStoragePostgres.DeploymentConfig do
   end
 
   defp validate_keys(map, allowed, path) do
-    invalid =
-      map
-      |> Map.keys()
-      |> Enum.map(&to_string/1)
-      |> Enum.reject(&(&1 in allowed))
+    with {:ok, normalized} <- normalize_names(Map.keys(map)) do
+      invalid = Enum.reject(normalized, &(&1 in allowed))
 
-    if invalid == [], do: :ok, else: {:error, {:unknown_configuration_keys, path, invalid}}
+      if invalid == [], do: :ok, else: {:error, {:unknown_configuration_keys, path, invalid}}
+    end
+  end
+
+  defp normalize_named_map(map) do
+    Enum.reduce_while(map, {:ok, %{}}, fn
+      {name, item}, {:ok, acc} when is_atom(name) or is_binary(name) ->
+        normalized = to_string(name)
+
+        if Map.has_key?(acc, normalized),
+          do: {:halt, {:error, :duplicate_configuration_keys}},
+          else: {:cont, {:ok, Map.put(acc, normalized, item)}}
+
+      _entry, _acc ->
+        {:halt, {:error, :invalid_configuration_key}}
+    end)
+  end
+
+  defp normalize_names(names) do
+    names
+    |> Enum.reduce_while({:ok, MapSet.new()}, fn
+      name, {:ok, acc} when is_atom(name) or is_binary(name) ->
+        normalized = to_string(name)
+
+        if MapSet.member?(acc, normalized),
+          do: {:halt, {:error, :duplicate_configuration_keys}},
+          else: {:cont, {:ok, MapSet.put(acc, normalized)}}
+
+      _name, _acc ->
+        {:halt, {:error, :invalid_configuration_key}}
+    end)
+    |> case do
+      {:ok, normalized} -> {:ok, normalized |> MapSet.to_list() |> Enum.sort()}
+      {:error, _reason} = error -> error
+    end
   end
 
   defp value(map, key, default) do

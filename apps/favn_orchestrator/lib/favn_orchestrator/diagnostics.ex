@@ -6,6 +6,7 @@ defmodule FavnOrchestrator.Diagnostics do
 
   alias FavnOrchestrator.ManifestStore
   alias FavnOrchestrator.ManifestIndexCache
+  alias FavnOrchestrator.ExecutionPoolPolicy
   alias FavnOrchestrator.OperationalEvents
   alias FavnOrchestrator.Persistence
   alias FavnOrchestrator.Persistence.SystemContext
@@ -137,8 +138,8 @@ defmodule FavnOrchestrator.Diagnostics do
     |> Enum.reduce_while({:ok, []}, fn workspace_id, {:ok, acc} ->
       context = SystemContext.workspace(workspace_id, :diagnostics)
 
-      case ManifestStore.get_active_manifest(context) do
-        {:ok, version} ->
+      case active_manifest_diagnostics(context) do
+        {:ok, version, execution_pools} ->
           item = %{
             workspace_id: workspace_id,
             manifest_version_id: version.manifest_version_id,
@@ -146,7 +147,8 @@ defmodule FavnOrchestrator.Diagnostics do
             runner_releases: version.runner_releases,
             asset_count: length(version.manifest.assets),
             pipeline_count: length(version.manifest.pipelines),
-            schedule_count: length(version.manifest.schedules)
+            schedule_count: length(version.manifest.schedules),
+            execution_pools: execution_pools
           }
 
           {:cont, {:ok, [item | acc]}}
@@ -159,6 +161,21 @@ defmodule FavnOrchestrator.Diagnostics do
       {:ok, []} -> {:error, :workspace_ids_not_configured}
       {:ok, manifests} -> {:ok, Enum.reverse(manifests)}
       {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp active_manifest_diagnostics(context) do
+    with {:ok, runtime} <- ManifestStore.get_runtime_state(context),
+         {:ok, version} <-
+           ManifestStore.get_deployment_manifest(
+             context,
+             runtime.deployment_id,
+             runtime.manifest_version_id
+           ),
+         {:ok, configuration} <-
+           ManifestStore.get_deployment_configuration(context, runtime.deployment_id),
+         {:ok, execution_pools} <- ExecutionPoolPolicy.diagnostics(configuration) do
+      {:ok, version, execution_pools}
     end
   end
 

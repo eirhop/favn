@@ -71,6 +71,11 @@ Favn's PostgreSQL 18 control-plane persistence.
 - Immutable deployment-target rows include bounded, fingerprinted JSONB catalogue
   descriptors. Customer catalogue reads use those indexed rows and do not decode a
   full manifest.
+- Immutable workspace deployment configuration stores the validated effective
+  execution-pool policy, its manifest/effective fingerprints, active operator
+  overrides, inactive removed-pool overrides, and per-pool provenance. Registry
+  deployment rejects policy content or capacity scopes that do not match the
+  activated manifest.
 - Reset-baseline migrations live under `migrations/`. The one-off bootstrap
   workflow creates and assigns the dedicated `favn_control` schema before the
   normal NOCREATEROLE migrator applies those migrations.

@@ -6,7 +6,7 @@ Use `mix favn.dev`, `mix favn.run`, and the UI for normal local development. Use
 the functions in this guide when building tools, debugging discovery, comparing
 versions, or preparing deployment artifacts.
 
-Favn still uses manifests internally. Schema 12 publishes one compact manifest
+Favn still uses manifests internally. Schema 15 publishes one compact manifest
 index plus immutable, content-addressed execution packages. The index describes
 assets, pipelines, schedules, dependencies, and compact runtime metadata. Each
 manifest binds every effective runner pool to its exact operator-supplied
@@ -16,11 +16,13 @@ SQL asset points to exactly one package containing its complete executable SQL p
 Runtime systems then use a pinned manifest version instead of rediscovering your
 modules while runs are in progress.
 
-Manifest construction also freezes `config :favn, :default_timezone` and the
-optional `coverage_scope` floor. Assets, pipelines, and schedules carry concrete
-effective timezones plus provenance, and assets carry both declared and
-environment-effective coverage. Runtime services never reinterpret these values
-from their own boot environment.
+Manifest construction also freezes `config :favn, :default_timezone`, the
+optional `coverage_scope` floor, and validated `execution_pools` defaults.
+Assets, pipelines, and schedules carry concrete effective timezones plus
+provenance, and assets carry both declared and environment-effective coverage.
+Runtime services never reinterpret these values from their own boot environment.
+At workspace activation, the Orchestrator requires operator approval and stores
+the effective pool policy with that immutable deployment.
 
 ## When To Use Manifest Functions
 
@@ -48,6 +50,7 @@ Favn uses this flow:
 
 ```text
 authoring modules
+  + config :favn, execution_pools: [...]
   -> Favn DSL declarations
   -> Favn.build_manifest/1
   -> Favn.prepare_manifest_publication/2
@@ -136,8 +139,9 @@ A manifest can include:
 - effective freshness, window, coverage, timezone provenance, and target descriptors
 - JSON-safe asset and pipeline settings
 - runtime config requirements
-- schema 14 and runner protocol 13 data used by the runtime
+- schema 15 and runner protocol 13 data used by the runtime
 - the exact operator-supplied `runner_releases` pool-to-release map
+- validated execution-pool defaults used by referenced assets and pipelines
 
 Execution packages contain the full SQL templates, runtime-input resolver refs,
 typed output contracts, and executable generated/custom checks. They are not a

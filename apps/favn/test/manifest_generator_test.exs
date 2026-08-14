@@ -30,6 +30,13 @@ defmodule Favn.Manifest.GeneratorTest do
     def asset(_ctx), do: :ok
   end
 
+  defmodule PooledAsset do
+    use Favn.Asset
+
+    execution_pool(:partner_api)
+    def asset(_ctx), do: :ok
+  end
+
   defmodule TestSQLAsset do
     use Favn.SQLAsset
 
@@ -124,7 +131,7 @@ defmodule Favn.Manifest.GeneratorTest do
                runner_releases: runner_releases()
              )
 
-    assert manifest.schema_version == 14
+    assert manifest.schema_version == 15
     assert manifest.runner_contract_version == 13
     assert manifest.runner_releases == runner_releases()
     assert length(manifest.assets) == 2
@@ -159,6 +166,37 @@ defmodule Favn.Manifest.GeneratorTest do
     [schedule] = manifest.schedules
     assert schedule.module == TestSchedules
     assert schedule.name == :daily
+  end
+
+  test "embeds consumer execution-pool configuration in the immutable manifest" do
+    previous = Application.get_env(:favn, :execution_pools)
+
+    on_exit(fn ->
+      if is_nil(previous),
+        do: Application.delete_env(:favn, :execution_pools),
+        else: Application.put_env(:favn, :execution_pools, previous)
+    end)
+
+    Application.put_env(:favn, :execution_pools,
+      partner_api: [
+        max_concurrency: 3,
+        circuit_breaker: [failure_threshold: 4, probe_after_ms: 30_000]
+      ]
+    )
+
+    assert {:ok, manifest} =
+             Favn.generate_manifest(
+               asset_modules: [PooledAsset],
+               runner_releases: runner_releases()
+             )
+
+    assert manifest.execution_pools["partner_api"].max_concurrency == 3
+    assert [asset] = manifest.assets
+    assert asset.execution_pool == :partner_api
+
+    assert {:ok, encoded} = Favn.Manifest.Serializer.encode_manifest(manifest)
+    assert {:ok, decoded} = Jason.decode(encoded)
+    assert get_in(decoded, ["execution_pools", "partner_api", "max_concurrency"]) == 3
   end
 
   test "build returns non-fatal schedule and coverage diagnostics" do

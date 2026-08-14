@@ -275,7 +275,7 @@ defmodule FavnRunner.SQLRuntimePreflightTest do
     refs = Enum.map(assets, & &1.ref)
 
     manifest = %Manifest{
-      schema_version: 14,
+      schema_version: 15,
       runner_contract_version: 13,
       runner_releases: %{"default" => FavnTestSupport.runner_release_id()},
       assets: assets,

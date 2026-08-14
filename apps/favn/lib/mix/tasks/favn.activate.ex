@@ -8,6 +8,10 @@ defmodule Mix.Tasks.Favn.Activate do
   Activates an exact manifest version after the control plane verifies the
   configured runner release. Authentication is accepted only through
   `FAVN_ORCHESTRATOR_SERVICE_TOKEN`.
+
+  Running this explicit activation command also approves the manifest's
+  validated execution-pool defaults for the target workspace. Existing
+  workspace overrides remain in effect.
   """
 
   alias Favn.CLI

@@ -12,6 +12,7 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
   alias Favn.Window.Selection
   alias FavnOrchestrator.ManifestStore
   alias FavnOrchestrator.ManifestIndexCache
+  alias FavnOrchestrator.ExecutionPoolPolicy
   alias FavnOrchestrator.OperatorCommands.ManualWindowResolution
   alias FavnOrchestrator.Persistence.SystemContext
   alias FavnOrchestrator.Persistence.WorkspaceContext
@@ -45,11 +46,12 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
       when target_kind in [:asset, :pipeline] and is_atom(module) and is_atom(name) and
              is_binary(deployment_id) and is_binary(manifest_version_id) and is_binary(run_id) and
              is_list(opts) do
-    frozen_opts = persisted_opts(context, deployment_id, manifest_version_id, run_id, opts)
-
-    case target_kind do
-      :asset -> do_asset(target_ref, frozen_opts)
-      :pipeline -> do_pipeline_ref(target_ref, frozen_opts)
+    with {:ok, frozen_opts} <-
+           persisted_opts(context, deployment_id, manifest_version_id, run_id, opts) do
+      case target_kind do
+        :asset -> do_asset(target_ref, frozen_opts)
+        :pipeline -> do_pipeline_ref(target_ref, frozen_opts)
+      end
     end
   end
 
@@ -72,9 +74,10 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
       )
       when is_list(target_refs) and is_binary(deployment_id) and
              is_binary(manifest_version_id) and is_binary(run_id) and is_list(opts) do
-    context
-    |> persisted_opts(deployment_id, manifest_version_id, run_id, opts)
-    |> then(&do_pipeline(target_refs, &1))
+    with {:ok, frozen_opts} <-
+           persisted_opts(context, deployment_id, manifest_version_id, run_id, opts) do
+      do_pipeline(target_refs, frozen_opts)
+    end
   end
 
   @doc false
@@ -96,9 +99,10 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
       )
       when is_binary(source_run_id) and is_binary(deployment_id) and
              is_binary(manifest_version_id) and is_binary(run_id) and is_list(opts) do
-    context
-    |> persisted_opts(deployment_id, manifest_version_id, run_id, opts)
-    |> then(&do_rerun(source_run_id, &1))
+    with {:ok, frozen_opts} <-
+           persisted_opts(context, deployment_id, manifest_version_id, run_id, opts) do
+      do_rerun(source_run_id, frozen_opts)
+    end
   end
 
   defp do_asset(asset_ref, opts) when is_list(opts) do
@@ -962,14 +966,35 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
   end
 
   defp persisted_opts(context, deployment_id, manifest_version_id, run_id, opts) do
-    opts
-    |> Keyword.put(:run_id, run_id)
-    |> Keyword.put(:manifest_version_id, manifest_version_id)
-    |> Keyword.put(:_workspace_context, context)
-    |> Keyword.put(:_workspace_id, context.workspace_id)
-    |> Keyword.put(:_deployment_id, deployment_id)
-    |> Keyword.put(:_active_manifest_version_id, manifest_version_id)
+    with {:ok, configuration} <-
+           ManifestStore.get_deployment_configuration(context, deployment_id),
+         {:ok, execution_pool_policy} <- ExecutionPoolPolicy.effective(configuration),
+         {:ok, metadata} <-
+           put_execution_pool_policy(Keyword.get(opts, :metadata, %{}), execution_pool_policy) do
+      {:ok,
+       opts
+       |> Keyword.put(:run_id, run_id)
+       |> Keyword.put(:manifest_version_id, manifest_version_id)
+       |> Keyword.put(:metadata, metadata)
+       |> Keyword.put(:_workspace_context, context)
+       |> Keyword.put(:_workspace_id, context.workspace_id)
+       |> Keyword.put(:_deployment_id, deployment_id)
+       |> Keyword.put(:_active_manifest_version_id, manifest_version_id)}
+    end
   end
+
+  defp put_execution_pool_policy(metadata, execution_pool_policy) when is_map(metadata) do
+    {:ok,
+     metadata
+     |> Map.delete("execution_pool_policy")
+     |> Map.put(
+       :execution_pool_policy,
+       Favn.ExecutionPool.PolicySet.to_map(execution_pool_policy)
+     )}
+  end
+
+  defp put_execution_pool_policy(_metadata, _execution_pool_policy),
+    do: {:error, :invalid_run_metadata}
 
   defp get_manifest(opts, manifest_version_id, deployment_id \\ nil) do
     case Keyword.get(opts, :_workspace_context) do

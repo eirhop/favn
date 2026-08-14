@@ -75,7 +75,8 @@ defmodule Favn.CLI.OrchestratorClient do
           workspace_assets: [],
           workspace_pipelines: []
         },
-        configuration: %{}
+        configuration: %{},
+        execution_pool_policy: %{approve_manifest_defaults: true}
       },
       session_context,
       activation_idempotency_key(session_context, input, [])
@@ -113,7 +114,8 @@ defmodule Favn.CLI.OrchestratorClient do
           workspace_assets: [],
           workspace_pipelines: []
         },
-        configuration: %{}
+        configuration: %{},
+        execution_pool_policy: %{approve_manifest_defaults: true}
       },
       context,
       activation_idempotency_key(context, input, opts)

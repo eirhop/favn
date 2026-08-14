@@ -55,7 +55,8 @@ defmodule FavnLocal.Publication do
                 workspace_pipelines: []
               },
               deployment_id: deployment_attempt_id(canonical.manifest_version_id),
-              configuration: %{}
+              configuration: %{},
+              execution_pool_policy: %{approve_manifest_defaults: true}
             )
           end)
 

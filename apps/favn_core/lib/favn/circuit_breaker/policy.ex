@@ -27,9 +27,13 @@ defmodule Favn.CircuitBreaker.Policy do
   def new(%__MODULE__{} = policy), do: validate(policy)
 
   def new(value) when is_list(value) do
-    if Keyword.keyword?(value),
-      do: new(Map.new(value)),
-      else: {:error, {:invalid_circuit_breaker_policy, value}}
+    if Keyword.keyword?(value) do
+      with :ok <- reject_duplicate_keys(Keyword.keys(value)) do
+        new(Map.new(value))
+      end
+    else
+      {:error, {:invalid_circuit_breaker_policy, value}}
+    end
   end
 
   def new(value) when is_map(value) do
@@ -83,9 +87,22 @@ defmodule Favn.CircuitBreaker.Policy do
 
     unknown = value |> Map.keys() |> Enum.reject(&(&1 in allowed))
 
-    if unknown == [],
+    with true <- unknown == [],
+         :ok <- reject_duplicate_keys(Map.keys(value)) do
+      :ok
+    else
+      false -> {:error, {:unknown_circuit_breaker_options, Enum.sort_by(unknown, &inspect/1)}}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp reject_duplicate_keys(keys) do
+    normalized = Enum.map(keys, &to_string/1)
+    duplicates = normalized -- Enum.uniq(normalized)
+
+    if duplicates == [],
       do: :ok,
-      else: {:error, {:unknown_circuit_breaker_options, Enum.sort_by(unknown, &inspect/1)}}
+      else: {:error, {:duplicate_circuit_breaker_options, Enum.sort(Enum.uniq(duplicates))}}
   end
 
   defp valid_threshold?(value),

@@ -657,7 +657,7 @@ defmodule FavnRunner.GenerationOperationsTest do
         connection_definitions: %{
           generation_warehouse: %{adapter: Adapter, module: __MODULE__}
         },
-        manifest_schema_version: 14,
+        manifest_schema_version: 15,
         runner_contract_version: 13
       )
 
@@ -665,7 +665,7 @@ defmodule FavnRunner.GenerationOperationsTest do
 
     manifest =
       %Manifest{
-        schema_version: 14,
+        schema_version: 15,
         runner_contract_version: 13,
         runner_releases: %{"default" => FavnTestSupport.runner_release_id()},
         assets: [asset],
@@ -703,7 +703,7 @@ defmodule FavnRunner.GenerationOperationsTest do
         connection_definitions: %{
           generation_warehouse: %{adapter: Adapter, module: __MODULE__}
         },
-        manifest_schema_version: 14,
+        manifest_schema_version: 15,
         runner_contract_version: 13
       )
 
@@ -728,13 +728,13 @@ defmodule FavnRunner.GenerationOperationsTest do
             connection_definitions: %{
               generation_warehouse: %{adapter: Adapter, module: __MODULE__}
             },
-            manifest_schema_version: 14,
+            manifest_schema_version: 15,
             runner_contract_version: 13
           )
     }
 
     manifest = %Manifest{
-      schema_version: 14,
+      schema_version: 15,
       runner_contract_version: 13,
       runner_releases: %{
         "default" => FavnTestSupport.runner_release_id(:alternate),

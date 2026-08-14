@@ -23,6 +23,7 @@ defmodule FavnOrchestrator.CoverageTest do
     def get_runtime_state(_query), do: {:ok, Process.get(:coverage_runtime)}
     def get_deployment_targets(_query), do: {:ok, Process.get(:coverage_targets)}
     def get_deployment_manifest(_query), do: {:ok, Process.get(:coverage_version)}
+    def get_deployment_configuration(_query), do: {:ok, %{}}
 
     def get_evidence_bindings(query) do
       generation_id =
@@ -569,7 +570,7 @@ defmodule FavnOrchestrator.CoverageTest do
     %Version{
       manifest_version_id: "coverage-manifest",
       content_hash: "sha256:coverage-manifest",
-      schema_version: 14,
+      schema_version: 15,
       runner_contract_version: 13,
       runner_releases: %{"default" => FavnTestSupport.runner_release_id()},
       manifest: %Manifest{
