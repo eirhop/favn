@@ -4525,8 +4525,9 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
       Repo,
       """
       UPDATE favn_control.resource_circuits
-      SET state = 'open', consecutive_failures = 2, opened_at = $3,
-          next_probe_at = $3 + interval '30 seconds'
+      SET state = 'open', consecutive_failures = 2,
+          opened_at = CAST($3 AS timestamp without time zone),
+          next_probe_at = CAST($3 AS timestamp without time zone) + interval '30 seconds'
       WHERE workspace_id = $1 AND resource_kind = 'execution_pool' AND resource_name = $2
       """,
       [fixture.workspace_id, "partner_api", opened_at]
