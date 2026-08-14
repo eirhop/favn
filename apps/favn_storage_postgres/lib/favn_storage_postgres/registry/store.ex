@@ -12,11 +12,16 @@ defmodule FavnStoragePostgres.Registry.Store do
   alias Favn.Manifest.Serializer
   alias Favn.Manifest.TargetDescriptor
   alias Favn.Manifest.Version
+  alias FavnOrchestrator.ManifestActivationDiagnostics
+  alias FavnOrchestrator.Persistence.CommandIdempotency
+  alias FavnOrchestrator.Persistence.Commands.AbandonManifestDeployment
+  alias FavnOrchestrator.Persistence.Commands.BeginManifestDeployment
   alias FavnOrchestrator.Persistence.Commands.DeployManifest
   alias FavnOrchestrator.Persistence.Commands.DeploymentCapacityScope
   alias FavnOrchestrator.Persistence.Commands.DeploymentSchedule
   alias FavnOrchestrator.Persistence.Commands.DeploymentTarget
   alias FavnOrchestrator.Persistence.Commands.DeploymentTargetCompatibility
+  alias FavnOrchestrator.Persistence.Commands.HeartbeatManifestDeployment
   alias FavnOrchestrator.Persistence.Commands.ProvisionWorkspace
   alias FavnOrchestrator.Persistence.Commands.RegisterExecutionPackages
   alias FavnOrchestrator.Persistence.Commands.RegisterManifest
@@ -609,6 +614,75 @@ defmodule FavnStoragePostgres.Registry.Store do
   defp cache_manifest(error), do: error
 
   @impl true
+  def begin_manifest_deployment(%BeginManifestDeployment{} = query) do
+    with :ok <- validate_deployment_begin_query(query),
+         {:ok, result} <-
+           Repo.transaction(fn ->
+             IdempotencyTransaction.prepare!(
+               query.workspace_context.workspace_id,
+               query.idempotency,
+               &decode_idempotent_deployment/1
+             )
+           end) do
+      case result do
+        {:new, generation} ->
+          {:ok,
+           {:new,
+            %CommandIdempotency{
+              query.idempotency
+              | reservation_generation: generation
+            }}}
+
+        {:replay, %RuntimeState{} = runtime} ->
+          {:ok, {:replay, runtime}}
+      end
+    else
+      {:error, %Error{} = error} -> {:error, error}
+      {:error, reason} -> {:error, ErrorMapper.map(reason)}
+    end
+  rescue
+    error -> {:error, ErrorMapper.map(error)}
+  end
+
+  @impl true
+  def heartbeat_manifest_deployment(%HeartbeatManifestDeployment{} = command) do
+    with :ok <- validate_deployment_reservation_command(command),
+         {:ok, :ok} <-
+           Repo.transaction(fn ->
+             IdempotencyTransaction.heartbeat!(
+               command.workspace_context.workspace_id,
+               command.idempotency
+             )
+           end) do
+      :ok
+    else
+      {:error, %Error{} = error} -> {:error, error}
+      {:error, reason} -> {:error, ErrorMapper.map(reason)}
+    end
+  rescue
+    error -> {:error, ErrorMapper.map(error)}
+  end
+
+  @impl true
+  def abandon_manifest_deployment(%AbandonManifestDeployment{} = command) do
+    with :ok <- validate_deployment_reservation_command(command),
+         {:ok, :ok} <-
+           Repo.transaction(fn ->
+             IdempotencyTransaction.abandon!(
+               command.workspace_context.workspace_id,
+               command.idempotency
+             )
+           end) do
+      :ok
+    else
+      {:error, %Error{} = error} -> {:error, error}
+      {:error, reason} -> {:error, ErrorMapper.map(reason)}
+    end
+  rescue
+    error -> {:error, ErrorMapper.map(error)}
+  end
+
+  @impl true
   def deploy_manifest(%DeployManifest{} = command) do
     with :ok <- validate_deploy_command(command),
          {:ok, configuration} <- validate_configuration(command.configuration),
@@ -667,6 +741,35 @@ defmodule FavnStoragePostgres.Registry.Store do
   rescue
     error -> {:error, ErrorMapper.map(error)}
   end
+
+  defp validate_deployment_begin_query(%BeginManifestDeployment{
+         workspace_context: workspace_context,
+         idempotency: %CommandIdempotency{} = idempotency
+       }) do
+    if WorkspaceContext.valid?(workspace_context) and idempotency.operation == "manifest.activate" do
+      :ok
+    else
+      {:error, Error.new(:forbidden, "valid workspace deployment replay context required")}
+    end
+  end
+
+  defp validate_deployment_begin_query(_query),
+    do: {:error, Error.new(:forbidden, "valid workspace deployment replay context required")}
+
+  defp validate_deployment_reservation_command(%{
+         workspace_context: %WorkspaceContext{} = workspace_context,
+         idempotency: %CommandIdempotency{reservation_generation: generation} = idempotency
+       })
+       when is_integer(generation) and generation > 0 do
+    if WorkspaceContext.valid?(workspace_context) and idempotency.operation == "manifest.activate" do
+      :ok
+    else
+      {:error, Error.new(:forbidden, "valid workspace deployment reservation required")}
+    end
+  end
+
+  defp validate_deployment_reservation_command(_command),
+    do: {:error, Error.new(:forbidden, "valid workspace deployment reservation required")}
 
   @impl true
   def get_deployment_targets(%GetDeploymentTargets{} = query) do
@@ -763,12 +866,19 @@ defmodule FavnStoragePostgres.Registry.Store do
           "deployment_id" => deployment.deployment_id,
           "manifest_version_id" => command.manifest_version_id,
           "runtime_revision" => runtime_state.revision,
-          "target_catalog_fingerprint" => Base.encode16(target_fingerprint, case: :lower)
+          "target_catalog_fingerprint" => Base.encode16(target_fingerprint, case: :lower),
+          "activation_diagnostics" =>
+            ManifestActivationDiagnostics.to_map(command.activation_diagnostics)
         }
       })
     end
 
-    runtime_result(runtime_state, command.manifest_version_id, manifest_summary)
+    runtime_result(
+      runtime_state,
+      command.manifest_version_id,
+      manifest_summary,
+      command.activation_diagnostics
+    )
   end
 
   @impl true
@@ -1583,7 +1693,7 @@ defmodule FavnStoragePostgres.Registry.Store do
     end
   end
 
-  defp runtime_result(state, manifest_version_id, manifest_summary) do
+  defp runtime_result(state, manifest_version_id, manifest_summary, activation_diagnostics \\ nil) do
     %RuntimeState{
       workspace_id: state.workspace_id,
       deployment_id: state.active_deployment_id,
@@ -1596,7 +1706,8 @@ defmodule FavnStoragePostgres.Registry.Store do
       runner_releases: manifest_summary_value(manifest_summary, :runner_releases),
       asset_count: manifest_summary_value(manifest_summary, :asset_count),
       pipeline_count: manifest_summary_value(manifest_summary, :pipeline_count),
-      schedule_count: manifest_summary_value(manifest_summary, :schedule_count)
+      schedule_count: manifest_summary_value(manifest_summary, :schedule_count),
+      activation_diagnostics: activation_diagnostics
     }
   end
 
@@ -1636,7 +1747,9 @@ defmodule FavnStoragePostgres.Registry.Store do
          "runner_releases" => result.runner_releases,
          "asset_count" => result.asset_count,
          "pipeline_count" => result.pipeline_count,
-         "schedule_count" => result.schedule_count
+         "schedule_count" => result.schedule_count,
+         "activation_diagnostics" =>
+           ManifestActivationDiagnostics.to_map(result.activation_diagnostics)
        },
        response_status: 200,
        resource_kind: "workspace_deployment",
@@ -1646,6 +1759,8 @@ defmodule FavnStoragePostgres.Registry.Store do
 
   defp decode_idempotent_deployment(%{response: response}) when is_map(response) do
     with {:ok, activated_at} <- decode_optional_datetime(Map.get(response, "activated_at")),
+         {:ok, activation_diagnostics} <-
+           ManifestActivationDiagnostics.from_map(Map.get(response, "activation_diagnostics")),
          workspace_id when is_binary(workspace_id) <- Map.get(response, "workspace_id"),
          deployment_id when is_binary(deployment_id) <- Map.get(response, "deployment_id"),
          manifest_version_id when is_binary(manifest_version_id) <-
@@ -1664,7 +1779,8 @@ defmodule FavnStoragePostgres.Registry.Store do
          runner_releases: Map.get(response, "runner_releases"),
          asset_count: Map.get(response, "asset_count"),
          pipeline_count: Map.get(response, "pipeline_count"),
-         schedule_count: Map.get(response, "schedule_count")
+         schedule_count: Map.get(response, "schedule_count"),
+         activation_diagnostics: activation_diagnostics
        }}
     else
       _other -> {:error, Error.new(:internal, "idempotent deployment replay record is invalid")}

@@ -133,6 +133,7 @@ defmodule FavnOrchestrator.Persistence.Commands.DeployManifest do
     :targets,
     :occurred_at,
     :idempotency,
+    :activation_diagnostics,
     target_compatibilities: [],
     schedules: [],
     capacity_scopes: [],
@@ -153,7 +154,53 @@ defmodule FavnOrchestrator.Persistence.Commands.DeployManifest do
           schedules: [FavnOrchestrator.Persistence.Commands.DeploymentSchedule.t()],
           capacity_scopes: [FavnOrchestrator.Persistence.Commands.DeploymentCapacityScope.t()],
           occurred_at: DateTime.t(),
-          idempotency: CommandIdempotency.t() | nil
+          idempotency: CommandIdempotency.t() | nil,
+          activation_diagnostics: FavnOrchestrator.ManifestActivationDiagnostics.t() | nil
+        }
+end
+
+defmodule FavnOrchestrator.Persistence.Commands.BeginManifestDeployment do
+  @moduledoc "Reserves deployment planning or returns the exact committed command result."
+
+  alias FavnOrchestrator.Persistence.CommandIdempotency
+  alias FavnOrchestrator.Persistence.WorkspaceContext
+
+  @enforce_keys [:workspace_context, :idempotency]
+  defstruct [:workspace_context, :idempotency]
+
+  @type t :: %__MODULE__{
+          workspace_context: WorkspaceContext.t(),
+          idempotency: CommandIdempotency.t()
+        }
+end
+
+defmodule FavnOrchestrator.Persistence.Commands.HeartbeatManifestDeployment do
+  @moduledoc "Renews one generation-fenced deployment-planning lease."
+
+  alias FavnOrchestrator.Persistence.CommandIdempotency
+  alias FavnOrchestrator.Persistence.WorkspaceContext
+
+  @enforce_keys [:workspace_context, :idempotency]
+  defstruct [:workspace_context, :idempotency]
+
+  @type t :: %__MODULE__{
+          workspace_context: WorkspaceContext.t(),
+          idempotency: CommandIdempotency.t()
+        }
+end
+
+defmodule FavnOrchestrator.Persistence.Commands.AbandonManifestDeployment do
+  @moduledoc "Releases an uncommitted generation-fenced deployment-planning reservation."
+
+  alias FavnOrchestrator.Persistence.CommandIdempotency
+  alias FavnOrchestrator.Persistence.WorkspaceContext
+
+  @enforce_keys [:workspace_context, :idempotency]
+  defstruct [:workspace_context, :idempotency]
+
+  @type t :: %__MODULE__{
+          workspace_context: WorkspaceContext.t(),
+          idempotency: CommandIdempotency.t()
         }
 end
 
@@ -343,7 +390,8 @@ defmodule FavnOrchestrator.Persistence.Results.RuntimeState do
     :runner_releases,
     :asset_count,
     :pipeline_count,
-    :schedule_count
+    :schedule_count,
+    :activation_diagnostics
   ]
 
   @type t :: %__MODULE__{
@@ -358,6 +406,7 @@ defmodule FavnOrchestrator.Persistence.Results.RuntimeState do
           runner_releases: Favn.RunnerPool.releases() | nil,
           asset_count: non_neg_integer() | nil,
           pipeline_count: non_neg_integer() | nil,
-          schedule_count: non_neg_integer() | nil
+          schedule_count: non_neg_integer() | nil,
+          activation_diagnostics: FavnOrchestrator.ManifestActivationDiagnostics.t() | nil
         }
 end

@@ -10,6 +10,7 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC.Bootstrap do
   alias Favn.SQL.SessionScript.Step
 
   @old_config_message "DuckDB ADBC connection config uses open: [database: ...] and duckdb: [startup: ..., resources: ..., catalogs: ...]; structured load/settings/secrets/attach/use configuration is not supported"
+  @ducklake_metadata_type_constraint "pg_type_typname_nsp_index"
 
   @spec config_schema_fields() :: [Favn.Connection.Definition.field()]
   def config_schema_fields do
@@ -68,9 +69,37 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC.Bootstrap do
           {:cont, :ok}
 
         {:error, %Error{} = error} ->
-          {:halt, {:error, SessionScript.redact_step_error(error, step)}}
+          error =
+            error
+            |> SessionScript.redact_step_error(step)
+            |> classify_ducklake_metadata_initialization_race(step)
+
+          {:halt, {:error, error}}
       end
     end)
+  end
+
+  defp classify_ducklake_metadata_initialization_race(%Error{} = error, %Step{} = step) do
+    message = String.downcase(error.message)
+    statement = String.upcase(step.safe_statement)
+
+    if step.kind == :resource and
+         String.contains?(statement, "ATTACH") and
+         String.contains?(message, @ducklake_metadata_type_constraint) and
+         (String.contains?(message, "duplicate key") or
+            String.contains?(message, "unique constraint")) do
+      %Error{
+        error
+        | retryable?: true,
+          details:
+            Map.merge(error.details, %{
+              classification: :conflict,
+              reason: :ducklake_metadata_initialization_race
+            })
+      }
+    else
+      error
+    end
   end
 
   defp validate_expected_fingerprint(%Plan{} = plan, resolved, opts) do

@@ -89,6 +89,12 @@ backend connections per admitted DuckLake writer. Observed deployments used abou
 three PostgreSQL backends per concurrent writer, so operators should size
 DuckLake `write_concurrency` with that multiplier and leave headroom for admin
 tools, migrations, monitoring, and other traffic.
+The PostgreSQL metadata database and schema are deployment prerequisites: the
+runner identity must be able to connect, use and create objects in the selected
+schema, and own or update the DuckLake metadata it creates. Favn does not
+provision those grants. Concurrent first attachments can race while DuckLake
+creates PostgreSQL metadata types; the known PostgreSQL system-constraint
+conflict is retryable only inside Favn's bounded session-bootstrap phase.
 DuckDB extension settings are native startup/resource SQL and complement, but
 do not replace, Favn admission. Total metadata pressure is a product of admitted
 Favn work, DuckLake catalog concurrency, DuckDB parallelism, attached

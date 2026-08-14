@@ -705,6 +705,20 @@ defmodule FavnRunner.RunnerAgentTest do
       {:reply, {:ok, %{lease_expires_at: renewal.lease_expires_at}}, state}
     end
 
+    def handle_call({:request, %RunnerTask.LogBatch{} = batch}, _from, state) do
+      ack = %RunnerTask.LogAck{
+        workspace_id: batch.workspace_id,
+        task_id: batch.task_id,
+        runner_instance_id: batch.runner_instance_id,
+        runner_session_generation: batch.runner_session_generation,
+        assignment_generation: batch.assignment_generation,
+        batch_id: batch.batch_id,
+        sequence: batch.sequence
+      }
+
+      {:reply, {:ok, ack}, state}
+    end
+
     @impl true
     def handle_cast(
           :release_registration,
@@ -1588,6 +1602,7 @@ defmodule FavnRunner.RunnerAgentTest do
   end
 
   test "lease deadline wins a late active-assignment registration acknowledgement" do
+    :ok = FavnRunner.TaskResultBuffer.reset()
     {:ok, control_plane} = start_supervised({BlockingReregistrationControlPlane, self()})
     {:ok, executor} = start_supervised({FakeExecutor, self()})
 

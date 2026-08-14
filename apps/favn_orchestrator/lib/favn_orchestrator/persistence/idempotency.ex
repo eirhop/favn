@@ -22,7 +22,8 @@ defmodule FavnOrchestrator.Persistence.CommandIdempotency do
     :principal_id,
     :key_hash,
     :request_fingerprint,
-    :expires_at
+    :expires_at,
+    :reservation_generation
   ]
 
   @type t :: %__MODULE__{
@@ -31,7 +32,8 @@ defmodule FavnOrchestrator.Persistence.CommandIdempotency do
           principal_id: String.t(),
           key_hash: binary(),
           request_fingerprint: binary(),
-          expires_at: DateTime.t()
+          expires_at: DateTime.t(),
+          reservation_generation: pos_integer() | nil
         }
 
   @doc "Builds a validated command identity from already-hashed inputs."

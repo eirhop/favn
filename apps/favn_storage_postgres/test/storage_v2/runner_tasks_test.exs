@@ -1523,8 +1523,25 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
     assert failed.retry_class == :safe_to_retry
   end
 
-  test "terminal safe operation failures requeue with a new assignment generation", fixture do
-    assert {:ok, _queued} = Store.enqueue(enqueue_command(fixture, "safe-operation-retry"))
+  test "operation ensure requeues a live safe failure despite its historical enqueue receipt",
+       fixture do
+    version = manifest_version("mv-safe-operation-retry-#{random_id()}", fixture.runner_pool)
+    asset_ref = {MyApp.DistributedRunnerAsset, :asset}
+    request = inspection_payload()
+    identity = {:safe_operation_retry, random_id()}
+
+    assert {:ok, queued} =
+             OperationRunnerTasks.ensure(
+               fixture.workspace_context,
+               version,
+               asset_ref,
+               :relation_inspection,
+               request,
+               identity,
+               occurred_at: fixture.now
+             )
+
+    assert queued.status == :queued
 
     assert {:ok, assigned} =
              Store.claim(claim_command(fixture, "claim-safe-operation", "runner-safe-operation"))
@@ -1556,21 +1573,40 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
 
     assert {:ok, failed} = Store.complete(first_completion)
 
-    retry = %C.RetryRunnerTask{
-      workspace_context: fixture.workspace_context,
-      command_id: "retry-safe-operation-1",
-      task_id: failed.task_id,
-      expected_assignment_generation: failed.assignment_generation,
-      expected_result_version: failed.result_version,
-      issued_at: DateTime.add(fixture.now, 4, :second),
-      occurred_at: DateTime.add(fixture.now, 4, :second)
-    }
+    assert {:ok, live_failed} =
+             Store.get(%Q.GetRunnerTask{
+               workspace_context: fixture.workspace_context,
+               task_id: failed.task_id
+             })
 
-    assert {:ok, retried} = Store.retry(retry)
+    assert live_failed.status == :failed
+    assert live_failed.result_version == failed.result_version
+
+    assert {:ok, retried} =
+             OperationRunnerTasks.ensure(
+               fixture.workspace_context,
+               version,
+               asset_ref,
+               :relation_inspection,
+               request,
+               identity,
+               occurred_at: DateTime.add(fixture.now, 4, :second)
+             )
+
     assert retried.status == :queued
     assert retried.result_version == nil
     assert retried.error == nil
-    assert {:ok, ^retried} = Store.retry(retry)
+
+    assert {:ok, ^retried} =
+             OperationRunnerTasks.ensure(
+               fixture.workspace_context,
+               version,
+               asset_ref,
+               :relation_inspection,
+               request,
+               identity,
+               occurred_at: DateTime.add(fixture.now, 4, :second)
+             )
 
     assert {:ok, %{outstanding_count: 1, queued_count: 1, active_count: 0}} =
              demand(fixture)

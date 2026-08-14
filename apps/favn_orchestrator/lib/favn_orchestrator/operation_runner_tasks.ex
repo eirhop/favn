@@ -67,7 +67,7 @@ defmodule FavnOrchestrator.OperationRunnerTasks do
              Keyword.get(opts, :orchestration_context, %{})
            ),
          {:ok, required_capability} <- Map.fetch(@capabilities, task_kind) do
-      with {:ok, task} <-
+      with {:ok, _enqueue_receipt} <-
              RunnerTasks.enqueue(%EnqueueRunnerTask{
                workspace_context: context,
                command_id: "enqueue:#{task_id}",
@@ -85,7 +85,8 @@ defmodule FavnOrchestrator.OperationRunnerTasks do
                deadline_at: Keyword.get(opts, :deadline_at),
                issued_at: issued_at,
                occurred_at: occurred_at
-             }) do
+             }),
+           {:ok, task} <- fetch(context, task_id) do
         maybe_retry_safe(context, task)
       end
     else

@@ -14,6 +14,7 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
   alias FavnOrchestrator.API.IdempotentCommand
   alias FavnOrchestrator.API.Response
   alias FavnOrchestrator.Manifests
+  alias FavnOrchestrator.ManifestActivationDiagnostics
   alias FavnOrchestrator.Persistence.Error
   alias FavnOrchestrator.Redaction
 
@@ -280,7 +281,8 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
            manifest_version_id: manifest_version_id,
            deployment_id: runtime.deployment_id,
            runner_releases: runtime.runner_releases,
-           revision: runtime.revision
+           revision: runtime.revision,
+           diagnostics: ManifestActivationDiagnostics.to_map(runtime.activation_diagnostics)
          }, "manifest", manifest_version_id}
 
       {:error, :manifest_version_not_found} ->

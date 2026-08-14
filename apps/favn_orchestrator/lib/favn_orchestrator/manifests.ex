@@ -9,6 +9,8 @@ defmodule FavnOrchestrator.Manifests do
   alias Favn.Manifest.Version
   alias FavnOrchestrator.ManifestStore
   alias FavnOrchestrator.Lifecycle
+  alias FavnOrchestrator.ManifestActivationDiagnostics
+  alias FavnOrchestrator.ManifestDeploymentReservation
   alias FavnOrchestrator.OperationalEvents
   alias FavnOrchestrator.Operator.Catalogue.Targets
   alias FavnOrchestrator.Persistence.DeploymentPlanner
@@ -53,20 +55,23 @@ defmodule FavnOrchestrator.Manifests do
     Lifecycle.with_admission(fn ->
       result =
         with true <- platform_deployer?(platform_context),
-             {:ok, version} <- ManifestStore.get_manifest(platform_context, manifest_version_id),
-             :ok <- validate_configured_pools(version),
-             {:ok, planner} <- deployment_selection(version, selection),
-             {:ok, target_compatibilities} <-
-               TargetCompatibilityPlanner.plan(platform_context, context, version, planner) do
-          ManifestStore.deploy_manifest(
-            platform_context,
-            context,
-            manifest_version_id,
-            planner,
-            opts
-            |> Keyword.put_new(:configuration, %{})
-            |> Keyword.put(:target_compatibilities, target_compatibilities)
-          )
+             {:ok, replay} <-
+               ManifestStore.begin_manifest_deployment(context, Keyword.get(opts, :idempotency)) do
+          case replay do
+            {:replay, %RuntimeState{} = runtime} ->
+              {:ok, runtime}
+
+            {:new, idempotency} ->
+              ManifestDeploymentReservation.run(context, idempotency, fn ->
+                deploy_new_manifest(
+                  platform_context,
+                  context,
+                  manifest_version_id,
+                  selection,
+                  Keyword.put(opts, :idempotency, idempotency)
+                )
+              end)
+          end
         else
           false -> {:error, :platform_operator_required}
           {:error, _reason} = error -> error
@@ -75,6 +80,27 @@ defmodule FavnOrchestrator.Manifests do
       emit_activation_result(context, manifest_version_id, result)
       result
     end)
+  end
+
+  defp deploy_new_manifest(platform_context, context, manifest_version_id, selection, opts) do
+    with {:ok, version} <- ManifestStore.get_manifest(platform_context, manifest_version_id),
+         :ok <- validate_configured_pools(version),
+         {:ok, planner} <- deployment_selection(version, selection),
+         {:ok, target_compatibilities} <-
+           TargetCompatibilityPlanner.plan(platform_context, context, version, planner) do
+      diagnostics = ManifestActivationDiagnostics.from_compatibilities(target_compatibilities)
+
+      ManifestStore.deploy_manifest(
+        platform_context,
+        context,
+        manifest_version_id,
+        planner,
+        opts
+        |> Keyword.put_new(:configuration, %{})
+        |> Keyword.put(:target_compatibilities, target_compatibilities)
+        |> Keyword.put(:activation_diagnostics, diagnostics)
+      )
+    end
   end
 
   defp ensure_runner_capacity_partitions(context, version) do
@@ -293,13 +319,19 @@ defmodule FavnOrchestrator.Manifests do
   end
 
   defp emit_activation_result(context, manifest_version_id, {:ok, runtime}) do
+    diagnostics = ManifestActivationDiagnostics.to_map(runtime.activation_diagnostics)
+
     OperationalEvents.emit(:manifest_activation_succeeded, %{count: 1}, %{
       status: :activated,
       workspace_id: context.workspace_id,
       deployment_id: runtime.deployment_id,
       manifest_version_id: manifest_version_id,
       runner_releases: runtime.runner_releases,
-      revision: runtime.revision
+      revision: runtime.revision,
+      unresolved_inspection_count: diagnostics.unresolved_inspection_count,
+      unresolved_inspections: diagnostics.unresolved_inspections,
+      diagnostics_truncated: diagnostics.truncated,
+      recovery_action: diagnostics.recovery && diagnostics.recovery.action
     })
   end
 

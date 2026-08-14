@@ -142,6 +142,8 @@ defmodule FavnOrchestrator.RebuildExecutionWorkerTest do
                opts
              )
 
+    monitor = Process.monitor(worker)
+
     assert_receive {:execution_started, "rebuild-execution-worker", execution_task}
 
     assert {:ok, ^worker} =
@@ -167,7 +169,6 @@ defmodule FavnOrchestrator.RebuildExecutionWorkerTest do
              fixture.operation.operation_id
            ]
 
-    monitor = Process.monitor(worker)
     send(execution_task, :finish_execution)
     assert_receive {:DOWN, ^monitor, :process, ^worker, :normal}
   end

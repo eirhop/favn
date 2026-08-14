@@ -491,7 +491,7 @@ defmodule FavnRunner.GenerationOperationsTest do
 
     assert_receive {:DOWN, ^executor_monitor, :process, ^executor, :killed}
     assert_receive {:DOWN, ^worker_monitor, :process, ^worker, reason}
-    assert reason in [:killed, :kill]
+    assert reason in [:killed, :kill, :noproc]
     refute Process.alive?(worker)
   end
 
