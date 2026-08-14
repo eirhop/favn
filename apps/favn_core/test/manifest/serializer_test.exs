@@ -16,7 +16,7 @@ defmodule Favn.Manifest.SerializerTest do
     assert {:ok, encoded} = Serializer.encode_manifest(manifest)
 
     assert encoded ==
-             ~s|{"a":2,"runner_contract_version":#{Compatibility.current_runner_contract_version()},"runner_releases":{},"schema_version":#{Compatibility.current_schema_version()},"z":1}|
+             ~s|{"a":2,"execution_pools":{},"runner_contract_version":#{Compatibility.current_runner_contract_version()},"runner_releases":{},"schema_version":#{Compatibility.current_schema_version()},"z":1}|
   end
 
   test "generic canonical encoding preserves non-manifest build metadata" do

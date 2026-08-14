@@ -6,7 +6,7 @@ defmodule FavnOrchestrator.Persistence.Commands.ResourceCircuitRequest do
 
   @type t :: %__MODULE__{
           resource: Favn.Resource.Ref.t(),
-          policy: Favn.CircuitBreaker.Policy.t()
+          policy: Favn.CircuitBreaker.Policy.t() | nil
         }
 end
 

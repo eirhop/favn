@@ -32,6 +32,7 @@ defmodule Favn.Manifest.Generator do
   alias Favn.Manifest.Pipeline, as: ManifestPipeline
   alias Favn.Manifest.PlanningIndex
   alias Favn.Manifest.Schedule, as: ManifestSchedule
+  alias Favn.ExecutionPool.PolicySet
   alias Favn.RunnerPool
 
   @type catalog_opts :: [
@@ -47,6 +48,7 @@ defmodule Favn.Manifest.Generator do
           schedule_modules: [module()],
           connection_modules: [module()],
           environment: Environment.t(),
+          execution_pools: PolicySet.t() | keyword() | map(),
           runner_releases: RunnerPool.releases()
         ]
 
@@ -58,12 +60,13 @@ defmodule Favn.Manifest.Generator do
   @spec generate(opts()) :: {:ok, Manifest.t()} | {:error, term()}
   def generate(opts \\ []) when is_list(opts) do
     with {:ok, environment} <- fetch_environment(opts),
+         {:ok, execution_pools} <- fetch_execution_pools(opts),
          {:ok, catalog} <-
            opts
-           |> Keyword.drop([:runner_releases, :environment])
+           |> Keyword.drop([:runner_releases, :environment, :execution_pools])
            |> build_catalog(),
          {:ok, runner_releases} <- fetch_runner_releases(opts, catalog) do
-      manifest_from_catalog(catalog, runner_releases, environment)
+      manifest_from_catalog(catalog, runner_releases, execution_pools, environment)
     end
   end
 
@@ -75,12 +78,13 @@ defmodule Favn.Manifest.Generator do
   @spec build(opts()) :: {:ok, Build.t()} | {:error, term()}
   def build(opts \\ []) when is_list(opts) do
     with {:ok, environment} <- fetch_environment(opts),
+         {:ok, execution_pools} <- fetch_execution_pools(opts),
          {:ok, catalog} <-
            opts
-           |> Keyword.drop([:runner_releases, :environment])
+           |> Keyword.drop([:runner_releases, :environment, :execution_pools])
            |> build_catalog(),
          {:ok, runner_releases} <- fetch_runner_releases(opts, catalog) do
-      build_from_catalog(catalog, runner_releases, environment)
+      build_from_catalog(catalog, runner_releases, execution_pools, environment)
     end
   end
 
@@ -90,14 +94,15 @@ defmodule Favn.Manifest.Generator do
   def build_with_uniform_runner_release(opts, runner_release_id)
       when is_list(opts) and is_binary(runner_release_id) do
     with {:ok, environment} <- fetch_environment(opts),
+         {:ok, execution_pools} <- fetch_execution_pools(opts),
          {:ok, catalog} <-
            opts
-           |> Keyword.drop([:runner_releases, :environment])
+           |> Keyword.drop([:runner_releases, :environment, :execution_pools])
            |> build_catalog(),
          runner_releases <- uniform_runner_releases(catalog, runner_release_id),
          {:ok, runner_releases} <-
            fetch_runner_releases(Keyword.put(opts, :runner_releases, runner_releases), catalog) do
-      build_from_catalog(catalog, runner_releases, environment)
+      build_from_catalog(catalog, runner_releases, execution_pools, environment)
     end
   end
 
@@ -147,16 +152,31 @@ defmodule Favn.Manifest.Generator do
     end
   end
 
-  defp manifest_from_catalog(%Catalog{} = catalog, runner_releases, environment) do
+  defp manifest_from_catalog(%Catalog{} = catalog, runner_releases, execution_pools, environment) do
     with {:ok, manifest, _packages} <-
-           manifest_and_packages_from_catalog(catalog, runner_releases, environment) do
+           manifest_and_packages_from_catalog(
+             catalog,
+             runner_releases,
+             execution_pools,
+             environment
+           ) do
       {:ok, manifest}
     end
   end
 
-  defp build_from_catalog(%Catalog{} = catalog, runner_releases, %Environment{} = environment) do
+  defp build_from_catalog(
+         %Catalog{} = catalog,
+         runner_releases,
+         execution_pools,
+         %Environment{} = environment
+       ) do
     with {:ok, manifest, execution_packages} <-
-           manifest_and_packages_from_catalog(catalog, runner_releases, environment) do
+           manifest_and_packages_from_catalog(
+             catalog,
+             runner_releases,
+             execution_pools,
+             environment
+           ) do
       {:ok,
        Build.new(manifest,
          diagnostics: catalog.diagnostics ++ Diagnostics.for_manifest(manifest),
@@ -168,6 +188,7 @@ defmodule Favn.Manifest.Generator do
   defp manifest_and_packages_from_catalog(
          %Catalog{} = catalog,
          runner_releases,
+         execution_pools,
          %Environment{} = environment
        ) do
     with {:ok, packages_by_ref} <- execution_packages_from_catalog(catalog) do
@@ -182,18 +203,20 @@ defmodule Favn.Manifest.Generator do
       pipelines = manifest_pipelines_from_catalog(catalog, environment)
       schedules = manifest_schedules_from_catalog(catalog, environment)
 
-      with {:ok, graph} <- Graph.build(assets) do
-        {:ok,
-         %Manifest{
-           schema_version: Compatibility.current_schema_version(),
-           runner_contract_version: Compatibility.current_runner_contract_version(),
-           runner_releases: runner_releases,
-           assets: assets,
-           pipelines: pipelines,
-           schedules: schedules,
-           graph: graph,
-           metadata: %{environment: environment_metadata(environment)}
-         }, packages_by_ref |> Map.values() |> Enum.sort_by(& &1.content_hash)}
+      with {:ok, graph} <- Graph.build(assets),
+           manifest = %Manifest{
+             schema_version: Compatibility.current_schema_version(),
+             runner_contract_version: Compatibility.current_runner_contract_version(),
+             runner_releases: runner_releases,
+             execution_pools: execution_pools,
+             assets: assets,
+             pipelines: pipelines,
+             schedules: schedules,
+             graph: graph,
+             metadata: %{environment: environment_metadata(environment)}
+           },
+           :ok <- Compatibility.validate_manifest(manifest) do
+        {:ok, manifest, packages_by_ref |> Map.values() |> Enum.sort_by(& &1.content_hash)}
       end
     end
   end
@@ -316,6 +339,12 @@ defmodule Favn.Manifest.Generator do
 
   defp normalize_environment(%Environment{} = environment), do: {:ok, environment}
   defp normalize_environment(value), do: Environment.new(value)
+
+  defp fetch_execution_pools(opts) do
+    opts
+    |> Keyword.get(:execution_pools, %{})
+    |> PolicySet.new()
+  end
 
   defp environment_metadata(%Environment{} = environment) do
     %{

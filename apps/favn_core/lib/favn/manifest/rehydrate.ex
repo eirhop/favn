@@ -6,6 +6,7 @@ defmodule Favn.Manifest.Rehydrate do
   alias Favn.Asset.RelationInput
   alias Favn.Coverage.Effective, as: EffectiveCoverage
   alias Favn.Freshness.Policy, as: FreshnessPolicy
+  alias Favn.ExecutionPool.PolicySet
   alias Favn.Manifest
   alias Favn.Manifest.Asset
   alias Favn.Manifest.Build
@@ -78,12 +79,23 @@ defmodule Favn.Manifest.Rehydrate do
       schema_version: field_value(value, :schema_version),
       runner_contract_version: field_value(value, :runner_contract_version),
       runner_releases: value |> field_value(:runner_releases, %{}) |> plain_map(),
+      execution_pools: value |> field_value(:execution_pools, %{}) |> build_execution_pools!(),
       assets: assets,
       pipelines: value |> field_value(:pipelines, []) |> build_pipelines(),
       schedules: value |> field_value(:schedules, []) |> build_schedules(),
       graph: graph,
       metadata: value |> field_value(:metadata, %{}) |> plain_map()
     }
+  end
+
+  defp build_execution_pools!(value) do
+    case PolicySet.new(value) do
+      {:ok, policies} ->
+        policies
+
+      {:error, reason} ->
+        raise ArgumentError, "invalid execution-pool catalogue: #{inspect(reason)}"
+    end
   end
 
   defp build_assets(values) when is_list(values), do: Enum.map(values, &build_asset/1)

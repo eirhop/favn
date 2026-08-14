@@ -156,7 +156,16 @@ defmodule FavnOrchestrator.RunServer.Execution.StepAttemptLifecycleTest do
   end
 
   test "runner work preserves the logical run start across attempts" do
-    run = run_state(max_attempts: 2)
+    run =
+      run_state(max_attempts: 2)
+      |> Map.update!(:metadata, fn metadata ->
+        Map.merge(metadata, %{
+          "execution_pool_policy" => %{"untrusted" => %{"max_concurrency" => 99}},
+          execution_pool_policy: %{"api" => %{"max_concurrency" => 3}},
+          request_id: "request-1"
+        })
+      end)
+
     node_key = {{MyApp.Assets.Lifecycle, :asset}, nil}
 
     assert {:ok, version} =
@@ -170,6 +179,9 @@ defmodule FavnOrchestrator.RunServer.Execution.StepAttemptLifecycleTest do
     assert {:ok, %{work: work}} = StepAttemptLifecycle.build_work(lifecycle, index)
     assert work.run_started_at == run.inserted_at
     assert work.required_runner_release_id == run.runner_releases["default"]
+    assert work.metadata.request_id == "request-1"
+    refute Map.has_key?(work.metadata, :execution_pool_policy)
+    refute Map.has_key?(work.metadata, "execution_pool_policy")
   end
 
   test "runner work returns an explicit error when the compact index lacks the planned asset" do

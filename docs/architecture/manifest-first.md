@@ -4,10 +4,11 @@ Reader: Favn contributors and documentation agents.
 
 Documentation type: explanation.
 
-Favn is manifest-first. Schema 8 has one compact manifest index containing the
+Favn is manifest-first. Schema 15 has one compact manifest index containing the
 saved description of what the user authored: assets, pipelines, schedules,
-dependencies, schema version, runner contract version, and compact runtime
-metadata. SQL assets reference immutable execution packages by content hash.
+dependencies, execution-pool defaults, schema version, runner contract version,
+and compact runtime metadata. SQL assets reference immutable execution packages
+by content hash.
 
 The manifest is the handoff between authoring and runtime. User code creates a
 manifest. Runtime systems use a persisted manifest version. Runtime systems do
@@ -123,6 +124,13 @@ and a set of content-addressed execution artifacts. Schema 7 and inline
 The orchestrator persists manifest versions and chooses which one is active. A
 run should refer to the manifest version id and content hash, not to the latest
 loaded module state.
+
+Execution-pool defaults are immutable manifest facts, but effective policy is a
+workspace deployment decision. Activation requires operator approval, preserves
+explicit workspace overrides across later manifest versions, persists the
+resolved policy beside the deployment, and snapshots it into each run. The
+prebuilt Orchestrator and disposable runners do not need a duplicate consumer
+environment variable.
 
 The content hash is the authoritative deduplication key. Publication looks up
 identical content before registration and returns its persisted canonical

@@ -1,22 +1,37 @@
 defmodule FavnOrchestrator.ResourceConfiguration do
   @moduledoc """
-  Normalizes Favn-owned resource policies from boot-time application config.
+  Normalizes Favn-owned resource circuit policies.
 
-  Circuit-breaker configuration is colocated with execution pools and
-  connections, but it remains an orchestrator policy and never becomes an
-  arbitrary adapter option.
+  Execution-pool policy comes from the persisted workspace deployment.
+  Connection policy remains colocated with boot-time connection configuration.
+  Both remain orchestrator policy and never become arbitrary adapter options.
   """
 
   alias Favn.CircuitBreaker.Policy
+  alias Favn.ExecutionPool.PolicySet
   alias Favn.Resource.Ref
 
   @doc "Returns the configured circuit-breaker policy for a resource."
   @spec circuit_breaker(Ref.t()) :: {:ok, Policy.t() | nil} | {:error, term()}
-  def circuit_breaker(%Ref{kind: :execution_pool, name: name}),
-    do: configured_policy(:execution_pools, name)
+  def circuit_breaker(%Ref{kind: :execution_pool}),
+    do: {:error, :execution_pool_policy_required}
 
   def circuit_breaker(%Ref{kind: :connection, name: name}),
     do: configured_policy(:connections, name)
+
+  @doc "Returns a circuit policy using an explicit deployment execution-pool catalogue."
+  @spec circuit_breaker(Ref.t(), map()) :: {:ok, Policy.t() | nil} | {:error, term()}
+  def circuit_breaker(%Ref{kind: :execution_pool, name: name}, execution_pools) do
+    with {:ok, policies} <- PolicySet.new(execution_pools) do
+      case Map.fetch(policies, name) do
+        {:ok, execution_pool_policy} -> {:ok, execution_pool_policy.circuit_breaker}
+        :error -> {:ok, nil}
+      end
+    end
+  end
+
+  def circuit_breaker(%Ref{kind: :connection} = ref, _execution_pools),
+    do: circuit_breaker(ref)
 
   @doc "Returns a resource only when it has an enabled circuit breaker."
   @spec enabled_resource(Ref.t()) :: {:ok, {Ref.t(), Policy.t()} | nil} | {:error, term()}

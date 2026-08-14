@@ -6,6 +6,7 @@ defmodule FavnStoragePostgres.ResourceCircuits.Store do
   import Ecto.Query
 
   alias Favn.Resource.Ref
+  alias FavnOrchestrator.ExecutionPoolPolicy
   alias FavnOrchestrator.Persistence.Commands.AcquireResourceCircuits
   alias FavnOrchestrator.Persistence.Commands.ClaimResourceRecovery
   alias FavnOrchestrator.Persistence.Commands.CompleteResourceRecovery
@@ -33,6 +34,8 @@ defmodule FavnStoragePostgres.ResourceCircuits.Store do
   alias FavnStoragePostgres.Schemas.ResourceCircuit
   alias FavnStoragePostgres.Schemas.ResourceCircuitOutcome
   alias FavnStoragePostgres.Schemas.ResourceRecoveryCandidate
+  alias FavnStoragePostgres.Schemas.WorkspaceDeployment
+  alias FavnStoragePostgres.Schemas.WorkspaceRuntimeState
 
   @impl true
   def acquire(%AcquireResourceCircuits{} = command) do
@@ -127,7 +130,8 @@ defmodule FavnStoragePostgres.ResourceCircuits.Store do
     workspace_id = command.workspace_context.workspace_id
 
     circuits =
-      command.requests
+      workspace_id
+      |> authoritative_requests!(command.requests)
       |> Enum.sort_by(&resource_identity(&1.resource))
       |> Enum.map(fn request -> ensure_and_lock!(workspace_id, request, command.occurred_at) end)
 
@@ -166,6 +170,57 @@ defmodule FavnStoragePostgres.ResourceCircuits.Store do
     end
   end
 
+  defp authoritative_requests!(workspace_id, requests) do
+    if Enum.any?(requests, &(&1.resource.kind == :execution_pool)) do
+      active = active_execution_pool_policy!(workspace_id)
+
+      Enum.flat_map(requests, fn
+        %ResourceCircuitRequest{resource: %Ref{kind: :execution_pool, name: pool}} = request ->
+          case Map.fetch(active, pool) do
+            {:ok, %{circuit_breaker: nil}} -> []
+            {:ok, %{circuit_breaker: policy}} -> [%{request | policy: policy}]
+            :error when is_nil(request.policy) -> []
+            :error -> [request]
+          end
+
+        request ->
+          [request]
+      end)
+    else
+      requests
+    end
+  end
+
+  defp active_execution_pool_policy!(workspace_id) do
+    query =
+      from(state in WorkspaceRuntimeState,
+        join: deployment in WorkspaceDeployment,
+        on:
+          deployment.workspace_id == state.workspace_id and
+            deployment.deployment_id == state.active_deployment_id,
+        where: state.workspace_id == ^workspace_id,
+        select: deployment.configuration,
+        lock: "FOR SHARE"
+      )
+
+    case Repo.one(query) do
+      configuration when is_map(configuration) ->
+        case ExecutionPoolPolicy.effective(configuration) do
+          {:ok, policies} -> policies
+          {:error, reason} -> Repo.rollback(policy_error(reason))
+        end
+
+      _missing ->
+        Repo.rollback(Error.new(:not_found, "workspace has no active deployment policy"))
+    end
+  end
+
+  defp policy_error(reason) do
+    Error.new(:invalid, "active execution-pool policy is invalid",
+      details: %{reason: inspect(reason)}
+    )
+  end
+
   defp ensure_and_lock!(workspace_id, %ResourceCircuitRequest{} = request, now) do
     resource = request.resource
     policy = request.policy
@@ -191,19 +246,7 @@ defmodule FavnStoragePostgres.ResourceCircuits.Store do
 
     circuit = lock_circuit!(workspace_id, resource)
 
-    if circuit.failure_threshold != policy.failure_threshold or
-         circuit.probe_after_ms != policy.probe_after_ms do
-      circuit
-      |> Ecto.Changeset.change(%{
-        failure_threshold: policy.failure_threshold,
-        probe_after_ms: policy.probe_after_ms,
-        version: circuit.version + 1,
-        updated_at: now
-      })
-      |> Repo.update!()
-    else
-      circuit
-    end
+    circuit
   end
 
   defp blockers(%ResourceCircuit{state: "closed"}, _now, _owner_id), do: []
@@ -693,6 +736,12 @@ defmodule FavnStoragePostgres.ResourceCircuits.Store do
 
     if valid?, do: :ok, else: {:error, ErrorMapper.map(:invalid)}
   end
+
+  defp valid_request?(%ResourceCircuitRequest{
+         resource: %Ref{kind: :execution_pool},
+         policy: nil
+       }),
+       do: true
 
   defp valid_request?(%ResourceCircuitRequest{resource: %Ref{}, policy: policy}),
     do: match?(%Favn.CircuitBreaker.Policy{}, policy)

@@ -7,12 +7,15 @@ defmodule FavnStoragePostgres.Registry.Store do
 
   alias Ecto.Adapters.SQL
   alias Favn.Manifest.Compatibility
+  alias Favn.ExecutionPool.PolicySet
   alias Favn.Manifest.ExecutionPackage
   alias Favn.Manifest.Publication
   alias Favn.Manifest.Serializer
   alias Favn.Manifest.TargetDescriptor
   alias Favn.Manifest.Version
   alias FavnOrchestrator.ManifestActivationDiagnostics
+  alias FavnOrchestrator.ExecutionPoolPolicy
+  alias FavnOrchestrator.Persistence.CapacityConfiguration
   alias FavnOrchestrator.Persistence.CommandIdempotency
   alias FavnOrchestrator.Persistence.Commands.AbandonManifestDeployment
   alias FavnOrchestrator.Persistence.Commands.BeginManifestDeployment
@@ -28,6 +31,8 @@ defmodule FavnStoragePostgres.Registry.Store do
   alias FavnOrchestrator.Persistence.Error
   alias FavnOrchestrator.Persistence.PlatformContext
   alias FavnOrchestrator.Persistence.Queries.GetDeploymentTargets
+  alias FavnOrchestrator.Persistence.Queries.GetDeploymentConfiguration
+  alias FavnOrchestrator.Persistence.Queries.GetActiveDeploymentConfiguration
   alias FavnOrchestrator.Persistence.Queries.GetDeploymentManifest
   alias FavnOrchestrator.Persistence.Queries.GetExecutionPackage
   alias FavnOrchestrator.Persistence.Queries.GetManifestTargetDescriptors
@@ -54,6 +59,7 @@ defmodule FavnStoragePostgres.Registry.Store do
   alias FavnStoragePostgres.Schemas.ExecutionPackage, as: ExecutionPackageRecord
   alias FavnStoragePostgres.Schemas.ManifestExecutionPackage
   alias FavnStoragePostgres.Schemas.ManifestVersion
+  alias FavnStoragePostgres.Schemas.ResourceCircuit
   alias FavnStoragePostgres.Schemas.ScheduleCursor
   alias FavnStoragePostgres.Schemas.Workspace
   alias FavnStoragePostgres.Schemas.WorkspaceDeployment
@@ -72,6 +78,7 @@ defmodule FavnStoragePostgres.Registry.Store do
   @max_deployment_target_catalog_bytes 32 * 1_024 * 1_024
   @max_deployment_schedules 2_000
   @max_capacity_scopes 1_000
+  @max_activation_execution_pool_diagnostics 100
   @bulk_insert_size 500
   @current_manifest_schema Compatibility.current_schema_version()
 
@@ -493,6 +500,50 @@ defmodule FavnStoragePostgres.Registry.Store do
     error -> {:error, ErrorMapper.map(error)}
   end
 
+  @impl true
+  def get_deployment_configuration(%GetDeploymentConfiguration{} = query) do
+    context = query.workspace_context
+
+    with true <- WorkspaceContext.valid?(context),
+         true <- valid_id?(query.deployment_id),
+         %WorkspaceDeployment{configuration: configuration} <-
+           Repo.get_by(WorkspaceDeployment,
+             workspace_id: context.workspace_id,
+             deployment_id: query.deployment_id
+           ) do
+      {:ok, configuration || %{}}
+    else
+      false -> {:error, Error.new(:forbidden, "valid workspace deployment context required")}
+      nil -> {:error, Error.new(:not_found, "workspace deployment configuration not found")}
+    end
+  rescue
+    error -> {:error, ErrorMapper.map(error)}
+  end
+
+  @impl true
+  def get_active_deployment_configuration(%GetActiveDeploymentConfiguration{} = query) do
+    context = query.workspace_context
+
+    with true <- WorkspaceContext.valid?(context),
+         {deployment_id, configuration} when is_binary(deployment_id) and is_map(configuration) <-
+           from(state in WorkspaceRuntimeState,
+             join: deployment in WorkspaceDeployment,
+             on:
+               deployment.workspace_id == state.workspace_id and
+                 deployment.deployment_id == state.active_deployment_id,
+             where: state.workspace_id == ^context.workspace_id,
+             select: {deployment.deployment_id, deployment.configuration}
+           )
+           |> Repo.one() do
+      {:ok, {deployment_id, configuration}}
+    else
+      false -> {:error, Error.new(:forbidden, "valid workspace deployment context required")}
+      nil -> {:error, Error.new(:not_found, "workspace has no active deployment")}
+    end
+  rescue
+    error -> {:error, ErrorMapper.map(error)}
+  end
+
   defp load_manifest(%ById{manifest_version_id: id}) do
     ManifestVersion
     |> Repo.get(id)
@@ -687,6 +738,7 @@ defmodule FavnStoragePostgres.Registry.Store do
     with :ok <- validate_deploy_command(command),
          {:ok, configuration} <- validate_configuration(command.configuration),
          {:ok, manifest} <- get_activatable_manifest(command.manifest_version_id),
+         :ok <- validate_execution_pool_deployment(command, configuration, manifest),
          :ok <- validate_targets(command.targets, manifest),
          :ok <-
            validate_target_compatibilities(
@@ -823,6 +875,7 @@ defmodule FavnStoragePostgres.Registry.Store do
          manifest_summary
        ) do
     locked_runtime_state = lock_runtime_state!(command.workspace_context.workspace_id)
+    verify_expected_active_deployment!(command, locked_runtime_state)
 
     {deployment, deployment_status} =
       insert_or_replay_deployment!(
@@ -835,8 +888,10 @@ defmodule FavnStoragePostgres.Registry.Store do
     unless deployment_status == :content_reuse do
       insert_targets!(command, targets)
       insert_schedules!(command)
-      sync_capacity_scopes!(command, deployment_status == :exact_replay)
     end
+
+    sync_capacity_scopes!(command, deployment_status == :exact_replay)
+    sync_execution_pool_circuits!(command, configuration, deployment_status == :exact_replay)
 
     if deployment_status == :exact_replay and
          locked_runtime_state.active_deployment_id != deployment.deployment_id do
@@ -877,7 +932,8 @@ defmodule FavnStoragePostgres.Registry.Store do
       runtime_state,
       command.manifest_version_id,
       manifest_summary,
-      command.activation_diagnostics
+      command.activation_diagnostics,
+      execution_pool_diagnostics!(configuration)
     )
   end
 
@@ -905,15 +961,21 @@ defmodule FavnStoragePostgres.Registry.Store do
          runner_contract_version, _manifest_payload, runner_releases, asset_count, pipeline_count,
          schedule_count} ->
           {:ok,
-           runtime_result(state, manifest_version_id, %{
-             content_hash: content_hash,
-             schema_version: schema_version,
-             runner_contract_version: runner_contract_version,
-             runner_releases: runner_releases,
-             asset_count: asset_count,
-             pipeline_count: pipeline_count,
-             schedule_count: schedule_count
-           })}
+           runtime_result(
+             state,
+             manifest_version_id,
+             %{
+               content_hash: content_hash,
+               schema_version: schema_version,
+               runner_contract_version: runner_contract_version,
+               runner_releases: runner_releases,
+               asset_count: asset_count,
+               pipeline_count: pipeline_count,
+               schedule_count: schedule_count
+             },
+             nil,
+             %{items: [], count: 0, truncated: false}
+           )}
 
         nil ->
           {:error, Error.new(:not_found, "workspace has no active deployment")}
@@ -974,7 +1036,28 @@ defmodule FavnStoragePostgres.Registry.Store do
   defp valid_deploy_identity?(command) do
     valid_id?(command.deployment_id) and valid_id?(command.manifest_version_id) and
       is_integer(command.configuration_version) and command.configuration_version >= 1 and
-      match?(%DateTime{}, command.occurred_at)
+      match?(%DateTime{}, command.occurred_at) and
+      (command.expected_active_deployment_id in [nil, :unchecked] or
+         valid_id?(command.expected_active_deployment_id))
+  end
+
+  defp verify_expected_active_deployment!(
+         %DeployManifest{expected_active_deployment_id: :unchecked},
+         _runtime_state
+       ),
+       do: :ok
+
+  defp verify_expected_active_deployment!(command, runtime_state) do
+    if runtime_state.active_deployment_id == command.expected_active_deployment_id do
+      :ok
+    else
+      Repo.rollback(
+        Error.new(:conflict, "active deployment changed while activation was planned",
+          retryable?: true,
+          details: %{reason: :active_deployment_changed}
+        )
+      )
+    end
   end
 
   defp valid_deploy_collections?(command) do
@@ -1024,6 +1107,94 @@ defmodule FavnStoragePostgres.Registry.Store do
          Error.new(:invalid, "deployment configuration is invalid",
            details: %{reason: inspect(reason)}
          )}
+    end
+  end
+
+  defp validate_execution_pool_deployment(command, configuration, %Version{} = version) do
+    defaults = version.manifest.execution_pools
+    policy_configuration = config_value(configuration, "execution_pool_policy", nil)
+
+    cond do
+      is_nil(policy_configuration) and map_size(defaults) == 0 ->
+        :ok
+
+      not is_map(policy_configuration) ->
+        {:error, Error.new(:invalid, "execution-pool deployment policy is missing")}
+
+      true ->
+        validate_execution_pool_deployment_policy(command, policy_configuration, defaults)
+    end
+  end
+
+  defp validate_execution_pool_deployment_policy(command, policy_configuration, defaults) do
+    with {:ok, defaults} <- PolicySet.new(defaults),
+         {:ok, overrides} <-
+           policy_configuration
+           |> config_value("operator_overrides", %{})
+           |> PolicySet.new(),
+         true <- Enum.all?(Map.keys(overrides), &Map.has_key?(defaults, &1)),
+         {:ok, orphaned} <-
+           policy_configuration
+           |> config_value("orphaned_overrides", %{})
+           |> PolicySet.new(),
+         true <- Enum.all?(Map.keys(orphaned), &(not Map.has_key?(defaults, &1))),
+         {:ok, effective} <-
+           ExecutionPoolPolicy.effective(%{"execution_pool_policy" => policy_configuration}),
+         true <- effective == Map.merge(defaults, overrides),
+         true <-
+           config_value(policy_configuration, "manifest_fingerprint", nil) ==
+             PolicySet.fingerprint(defaults),
+         true <- capacity_scopes_match?(command, effective) do
+      :ok
+    else
+      false ->
+        {:error, Error.new(:invalid, "execution-pool deployment policy is inconsistent")}
+
+      {:error, %Error{} = error} ->
+        {:error, error}
+
+      {:error, reason} ->
+        {:error,
+         Error.new(:invalid, "execution-pool deployment policy is invalid",
+           details: %{reason: inspect(reason)}
+         )}
+    end
+  end
+
+  defp capacity_scopes_match?(command, effective) do
+    expected =
+      CapacityConfiguration.deployment_scopes(command.workspace_context.workspace_id, effective)
+
+    actual =
+      Enum.filter(command.capacity_scopes, fn scope ->
+        scope.scope_kind == :pool or
+          (scope.scope_kind == :workspace and scope.scope_key == "global")
+      end)
+
+    normalize_policy_scopes(actual) == normalize_policy_scopes(expected)
+  end
+
+  defp normalize_policy_scopes(scopes) do
+    scopes
+    |> Enum.map(&{&1.scope_id, &1.scope_kind, &1.scope_key, &1.capacity_limit})
+    |> Enum.sort()
+  end
+
+  defp config_value(map, key, default) do
+    case Map.fetch(map, key) do
+      {:ok, value} ->
+        value
+
+      :error ->
+        Enum.reduce_while(map, default, fn
+          {candidate, value}, _acc when is_atom(candidate) ->
+            if Atom.to_string(candidate) == key,
+              do: {:halt, value},
+              else: {:cont, default}
+
+          _entry, _acc ->
+            {:cont, default}
+        end)
     end
   end
 
@@ -1675,6 +1846,97 @@ defmodule FavnStoragePostgres.Registry.Store do
     end
   end
 
+  defp sync_execution_pool_circuits!(_command, _configuration, true), do: :ok
+
+  defp sync_execution_pool_circuits!(command, configuration, false) do
+    with {:ok, policies} <- ExecutionPoolPolicy.effective(configuration) do
+      Enum.each(policies, fn
+        {_pool, %{circuit_breaker: nil}} ->
+          :ok
+
+        {pool, %{circuit_breaker: policy}} ->
+          Repo.insert_all(
+            ResourceCircuit,
+            [
+              %{
+                workspace_id: command.workspace_context.workspace_id,
+                resource_kind: "execution_pool",
+                resource_name: pool,
+                state: "closed",
+                consecutive_failures: 0,
+                failure_threshold: policy.failure_threshold,
+                probe_after_ms: policy.probe_after_ms,
+                version: 1,
+                inserted_at: command.occurred_at,
+                updated_at: command.occurred_at
+              }
+            ],
+            on_conflict: :nothing
+          )
+
+          from(circuit in ResourceCircuit,
+            where:
+              circuit.workspace_id == ^command.workspace_context.workspace_id and
+                circuit.resource_kind == "execution_pool" and circuit.resource_name == ^pool and
+                circuit.state == "closed" and
+                circuit.consecutive_failures >= ^policy.failure_threshold
+          )
+          |> Repo.update_all(
+            set: [
+              state: "open",
+              opened_at: command.occurred_at,
+              next_probe_at:
+                DateTime.add(command.occurred_at, policy.probe_after_ms, :millisecond),
+              probe_owner_id: nil,
+              probe_expires_at: nil,
+              updated_at: command.occurred_at
+            ],
+            inc: [version: 1]
+          )
+
+          SQL.query!(
+            Repo,
+            """
+            UPDATE favn_control.resource_circuits
+            SET next_probe_at = opened_at + ($3 * interval '1 millisecond')
+            WHERE workspace_id = $1
+              AND resource_kind = 'execution_pool'
+              AND resource_name = $2
+              AND state = 'open'
+              AND opened_at IS NOT NULL
+              AND probe_after_ms <> $3
+            """,
+            [
+              command.workspace_context.workspace_id,
+              pool,
+              policy.probe_after_ms
+            ]
+          )
+
+          from(circuit in ResourceCircuit,
+            where:
+              circuit.workspace_id == ^command.workspace_context.workspace_id and
+                circuit.resource_kind == "execution_pool" and circuit.resource_name == ^pool
+          )
+          |> Repo.update_all(
+            set: [
+              failure_threshold: policy.failure_threshold,
+              probe_after_ms: policy.probe_after_ms,
+              updated_at: command.occurred_at
+            ],
+            inc: [version: 1]
+          )
+      end)
+    else
+      {:error, reason} ->
+        Repo.rollback(
+          Error.new(:invalid, "execution-pool deployment policy is invalid",
+            details: %{reason: inspect(reason)}
+          )
+        )
+    end
+  end
+
   defp activate_deployment!(command, deployment) do
     state = Repo.get!(WorkspaceRuntimeState, command.workspace_context.workspace_id)
 
@@ -1693,7 +1955,13 @@ defmodule FavnStoragePostgres.Registry.Store do
     end
   end
 
-  defp runtime_result(state, manifest_version_id, manifest_summary, activation_diagnostics \\ nil) do
+  defp runtime_result(
+         state,
+         manifest_version_id,
+         manifest_summary,
+         activation_diagnostics,
+         execution_pool_diagnostics
+       ) do
     %RuntimeState{
       workspace_id: state.workspace_id,
       deployment_id: state.active_deployment_id,
@@ -1707,6 +1975,9 @@ defmodule FavnStoragePostgres.Registry.Store do
       asset_count: manifest_summary_value(manifest_summary, :asset_count),
       pipeline_count: manifest_summary_value(manifest_summary, :pipeline_count),
       schedule_count: manifest_summary_value(manifest_summary, :schedule_count),
+      execution_pools: execution_pool_diagnostics.items,
+      execution_pool_count: execution_pool_diagnostics.count,
+      execution_pools_truncated: execution_pool_diagnostics.truncated,
       activation_diagnostics: activation_diagnostics
     }
   end
@@ -1748,6 +2019,9 @@ defmodule FavnStoragePostgres.Registry.Store do
          "asset_count" => result.asset_count,
          "pipeline_count" => result.pipeline_count,
          "schedule_count" => result.schedule_count,
+         "execution_pools" => result.execution_pools || [],
+         "execution_pool_count" => result.execution_pool_count || 0,
+         "execution_pools_truncated" => result.execution_pools_truncated || false,
          "activation_diagnostics" =>
            ManifestActivationDiagnostics.to_map(result.activation_diagnostics)
        },
@@ -1780,6 +2054,9 @@ defmodule FavnStoragePostgres.Registry.Store do
          asset_count: Map.get(response, "asset_count"),
          pipeline_count: Map.get(response, "pipeline_count"),
          schedule_count: Map.get(response, "schedule_count"),
+         execution_pools: Map.get(response, "execution_pools", []),
+         execution_pool_count: Map.get(response, "execution_pool_count", 0),
+         execution_pools_truncated: Map.get(response, "execution_pools_truncated", false),
          activation_diagnostics: activation_diagnostics
        }}
     else
@@ -1789,6 +2066,24 @@ defmodule FavnStoragePostgres.Registry.Store do
 
   defp decode_idempotent_deployment(_encoded),
     do: {:error, Error.new(:internal, "idempotent deployment replay record is invalid")}
+
+  defp execution_pool_diagnostics!(configuration) do
+    case ExecutionPoolPolicy.diagnostics(configuration) do
+      {:ok, diagnostics} ->
+        %{
+          items: Enum.take(diagnostics, @max_activation_execution_pool_diagnostics),
+          count: length(diagnostics),
+          truncated: length(diagnostics) > @max_activation_execution_pool_diagnostics
+        }
+
+      {:error, reason} ->
+        Repo.rollback(
+          Error.new(:invalid, "execution-pool policy is invalid",
+            details: %{reason: inspect(reason)}
+          )
+        )
+    end
+  end
 
   defp decode_optional_datetime(nil), do: {:ok, nil}
 

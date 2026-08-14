@@ -47,6 +47,8 @@ defmodule FavnOrchestrator.RunManager.RefreshPolicyDependenciesTest do
     def get_deployment_manifest(%GetDeploymentManifest{}),
       do: {:ok, Process.get(:refresh_policy_version)}
 
+    def get_deployment_configuration(_query), do: {:ok, %{}}
+
     def get_evidence_bindings(query),
       do: {:ok, Enum.map(query.target_ids, &%{target_id: &1, evidence_generation_id: "ag_1"})}
   end

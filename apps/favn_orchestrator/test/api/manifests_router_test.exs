@@ -36,6 +36,7 @@ defmodule FavnOrchestrator.API.ManifestsRouterTest do
   end
 
   defmodule SuccessfulManifestStore do
+    alias FavnOrchestrator.Persistence.Error
     alias FavnOrchestrator.Persistence.Results.RuntimeState
 
     def get_manifest(_query),
@@ -44,6 +45,12 @@ defmodule FavnOrchestrator.API.ManifestsRouterTest do
     def begin_manifest_deployment(query), do: {:ok, {:new, query.idempotency}}
     def heartbeat_manifest_deployment(_command), do: :ok
     def abandon_manifest_deployment(_command), do: :ok
+    def get_runtime_state(_query), do: {:error, Error.new(:not_found, "no active deployment")}
+
+    def get_active_deployment_configuration(_query),
+      do: {:error, Error.new(:not_found, "no active deployment")}
+
+    def get_deployment_configuration(_query), do: {:ok, %{}}
 
     def deploy_manifest(command) do
       {:ok,
@@ -104,6 +111,7 @@ defmodule FavnOrchestrator.API.ManifestsRouterTest do
     end
 
     def get_manifest(_query), do: raise("replayed activation must not load or plan a manifest")
+    def get_deployment_configuration(_query), do: {:ok, %{}}
     def record_audit(_command), do: :ok
 
     def reserve_operator_command(command) do
@@ -243,6 +251,50 @@ defmodule FavnOrchestrator.API.ManifestsRouterTest do
            } = Jason.decode!(response.resp_body)
   end
 
+  test "activation requires explicit approval for non-empty manifest pool defaults" do
+    {:ok, base} = ManifestsRouter.build_version(valid_envelope())
+
+    manifest = %{
+      base.manifest
+      | execution_pools: %{
+          "partner_api" => %Favn.ExecutionPool.Policy{max_concurrency: 3}
+        }
+    }
+
+    assert {:ok, version} =
+             Version.new(manifest, manifest_version_id: "mv_router_execution_pool_policy")
+
+    Application.put_env(:favn_orchestrator, :manifest_router_test_version, version)
+    on_exit(fn -> Application.delete_env(:favn_orchestrator, :manifest_router_test_version) end)
+    start_manifest_runtime(SuccessfulManifestStore)
+
+    response = activation_request(version.manifest_version_id, "pool-policy-unapproved", %{})
+    assert response.status == 422
+
+    assert get_in(Jason.decode!(response.resp_body), ["error", "code"]) ==
+             "execution_pool_policy_approval_required"
+
+    response =
+      activation_request(version.manifest_version_id, "pool-policy-approved", %{
+        "execution_pool_policy" => %{"approve_manifest_defaults" => true}
+      })
+
+    assert response.status == 200
+
+    response =
+      activation_request(version.manifest_version_id, "pool-policy-invalid-override", %{
+        "execution_pool_policy" => %{
+          "approve_manifest_defaults" => true,
+          "overrides" => %{"invalid pool name" => %{"max_concurrency" => 4}}
+        }
+      })
+
+    assert response.status == 422
+
+    assert get_in(Jason.decode!(response.resp_body), ["error", "code"]) ==
+             "invalid_execution_pool_policy"
+  end
+
   test "idempotent activation replay returns durable diagnostics without replanning" do
     start_manifest_runtime(ReplayedManifestStore)
 
@@ -346,6 +398,30 @@ defmodule FavnOrchestrator.API.ManifestsRouterTest do
     |> conn("/", "")
     |> put_req_header("authorization", "Bearer #{@token}")
     |> Map.put(:body_params, params)
+    |> ManifestsRouter.call(ManifestsRouter.init([]))
+  end
+
+  defp activation_request(manifest_version_id, idempotency_key, extra_body) do
+    body =
+      Map.merge(
+        %{
+          "selection" => %{
+            "common_assets" => "all",
+            "common_pipelines" => "all",
+            "workspace_assets" => [],
+            "workspace_pipelines" => []
+          },
+          "configuration" => %{}
+        },
+        extra_body
+      )
+
+    :post
+    |> conn("/#{manifest_version_id}/activate", "")
+    |> put_req_header("authorization", "Bearer #{@token}")
+    |> put_req_header("x-favn-workspace-id", "workspace-a")
+    |> put_req_header("idempotency-key", idempotency_key)
+    |> Map.put(:body_params, body)
     |> ManifestsRouter.call(ManifestsRouter.init([]))
   end
 

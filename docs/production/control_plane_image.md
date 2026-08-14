@@ -196,6 +196,12 @@ The copied `env.example` documents the minimum variables. Important groups are:
   distribution cookie;
 - the Orchestrator-owned operator-command HMAC secret.
 
+Execution pools are deliberately not an Orchestrator environment variable.
+Consumer `config :favn, execution_pools: [...]` is validated into the immutable
+manifest; activation stores the operator-approved effective workspace policy in
+PostgreSQL before readiness for that deployment. Do not duplicate the pool
+catalogue in the control-plane or runner environment.
+
 Do not bake values into either image or pass secrets as Docker build arguments.
 Administrator bootstrap is a separate explicit operation; it is never configured
 through the control-plane environment.

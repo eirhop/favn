@@ -14,6 +14,7 @@ defmodule FavnOrchestrator.RunSubmissionsTest do
   alias FavnOrchestrator.Persistence.Runtime
   alias FavnOrchestrator.Persistence.Stores
   alias FavnOrchestrator.Persistence.WorkspaceContext
+  alias FavnOrchestrator.ExecutionPoolPolicy
   alias FavnOrchestrator.RunSubmission.Intent
   alias FavnOrchestrator.RunSubmission.Preparation
   alias FavnOrchestrator.RunManager
@@ -37,6 +38,9 @@ defmodule FavnOrchestrator.RunSubmissionsTest do
 
     def get_deployment_manifest(%GetDeploymentManifest{}),
       do: {:ok, Process.get(:run_submissions_version)}
+
+    def get_deployment_configuration(_query),
+      do: {:ok, Process.get(:run_submissions_configuration)}
 
     def get_evidence_bindings(%GetEvidenceBindings{target_ids: target_ids}) do
       {:ok,
@@ -85,7 +89,15 @@ defmodule FavnOrchestrator.RunSubmissionsTest do
   end
 
   setup do
-    Process.put(:run_submissions_version, manifest_version())
+    version = manifest_version()
+
+    assert {:ok, policy} =
+             ExecutionPoolPolicy.resolve(version.manifest, %{}, %{}, %{
+               approve_manifest_defaults: true
+             })
+
+    Process.put(:run_submissions_version, version)
+    Process.put(:run_submissions_configuration, policy.configuration)
 
     stores =
       struct(Stores,
@@ -119,7 +131,10 @@ defmodule FavnOrchestrator.RunSubmissionsTest do
                run_id: "run-reserved",
                submission_source: :api,
                dependencies: :none,
-               metadata: %{requested_by: :test}
+               metadata: %{
+                 "execution_pool_policy" => %{"untrusted" => %{"max_concurrency" => 99}},
+                 requested_by: :test
+               }
              )
 
     assert %EnqueueRunSubmission{} = command = Process.get(:run_submission_command)
@@ -129,7 +144,17 @@ defmodule FavnOrchestrator.RunSubmissionsTest do
     assert command.manifest_version_id == "run-submissions-manifest"
     target_id = command.target_id
 
-    assert {:ok, {:asset, ^target_id, [dependencies: :none, metadata: %{requested_by: :test}]}} =
+    assert {:ok,
+            {:asset, ^target_id,
+             [
+               dependencies: :none,
+               metadata: %{
+                 "execution_pool_policy" => %{
+                   "untrusted" => %{"max_concurrency" => 99}
+                 },
+                 requested_by: :test
+               }
+             ]}} =
              Intent.decode(command.intent)
 
     assert {:ok, prepared, summary} =
@@ -138,6 +163,15 @@ defmodule FavnOrchestrator.RunSubmissionsTest do
     assert prepared.run_state.id == "run-reserved"
     assert prepared.run_state.deployment_id == "deployment"
     assert prepared.run_state.manifest_version_id == "run-submissions-manifest"
+
+    assert get_in(prepared.run_state.metadata, [
+             :execution_pool_policy,
+             "partner_api",
+             "max_concurrency"
+           ]) == 3
+
+    refute Map.has_key?(prepared.run_state.metadata, "execution_pool_policy")
+
     assert summary["run_id"] == "run-reserved"
   end
 
@@ -201,11 +235,13 @@ defmodule FavnOrchestrator.RunSubmissionsTest do
 
   defp manifest_version do
     manifest = %Manifest{
+      execution_pools: %{partner_api: %{max_concurrency: 3}},
       assets: [
         %Asset{
           ref: @asset_ref,
           module: elem(@asset_ref, 0),
-          name: elem(@asset_ref, 1)
+          name: elem(@asset_ref, 1),
+          execution_pool: :partner_api
         }
       ]
     }

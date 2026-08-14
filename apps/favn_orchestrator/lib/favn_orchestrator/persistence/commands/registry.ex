@@ -134,6 +134,7 @@ defmodule FavnOrchestrator.Persistence.Commands.DeployManifest do
     :occurred_at,
     :idempotency,
     :activation_diagnostics,
+    expected_active_deployment_id: :unchecked,
     target_compatibilities: [],
     schedules: [],
     capacity_scopes: [],
@@ -154,6 +155,7 @@ defmodule FavnOrchestrator.Persistence.Commands.DeployManifest do
           schedules: [FavnOrchestrator.Persistence.Commands.DeploymentSchedule.t()],
           capacity_scopes: [FavnOrchestrator.Persistence.Commands.DeploymentCapacityScope.t()],
           occurred_at: DateTime.t(),
+          expected_active_deployment_id: String.t() | nil | :unchecked,
           idempotency: CommandIdempotency.t() | nil,
           activation_diagnostics: FavnOrchestrator.ManifestActivationDiagnostics.t() | nil
         }
@@ -291,6 +293,31 @@ defmodule FavnOrchestrator.Persistence.Queries.GetDeploymentManifest do
         }
 end
 
+defmodule FavnOrchestrator.Persistence.Queries.GetDeploymentConfiguration do
+  @moduledoc "Fetches one immutable workspace deployment configuration."
+
+  alias FavnOrchestrator.Persistence.WorkspaceContext
+
+  @enforce_keys [:workspace_context, :deployment_id]
+  defstruct [:workspace_context, :deployment_id]
+
+  @type t :: %__MODULE__{
+          workspace_context: WorkspaceContext.t(),
+          deployment_id: String.t()
+        }
+end
+
+defmodule FavnOrchestrator.Persistence.Queries.GetActiveDeploymentConfiguration do
+  @moduledoc "Fetches the active immutable deployment id and configuration for one workspace."
+
+  alias FavnOrchestrator.Persistence.WorkspaceContext
+
+  @enforce_keys [:workspace_context]
+  defstruct [:workspace_context]
+
+  @type t :: %__MODULE__{workspace_context: WorkspaceContext.t()}
+end
+
 defmodule FavnOrchestrator.Persistence.Queries.GetManifestTargetDescriptors do
   @moduledoc """
   Fetches selected standalone target descriptors from one immutable manifest.
@@ -391,6 +418,9 @@ defmodule FavnOrchestrator.Persistence.Results.RuntimeState do
     :asset_count,
     :pipeline_count,
     :schedule_count,
+    :execution_pools,
+    :execution_pool_count,
+    :execution_pools_truncated,
     :activation_diagnostics
   ]
 
@@ -407,6 +437,9 @@ defmodule FavnOrchestrator.Persistence.Results.RuntimeState do
           asset_count: non_neg_integer() | nil,
           pipeline_count: non_neg_integer() | nil,
           schedule_count: non_neg_integer() | nil,
+          execution_pools: [map()] | nil,
+          execution_pool_count: non_neg_integer() | nil,
+          execution_pools_truncated: boolean() | nil,
           activation_diagnostics: FavnOrchestrator.ManifestActivationDiagnostics.t() | nil
         }
 end

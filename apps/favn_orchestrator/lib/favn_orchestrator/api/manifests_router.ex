@@ -281,6 +281,9 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
            manifest_version_id: manifest_version_id,
            deployment_id: runtime.deployment_id,
            runner_releases: runtime.runner_releases,
+           execution_pools: runtime.execution_pools || [],
+           execution_pool_count: runtime.execution_pool_count || 0,
+           execution_pools_truncated: runtime.execution_pools_truncated || false,
            revision: runtime.revision,
            diagnostics: ManifestActivationDiagnostics.to_map(runtime.activation_diagnostics)
          }, "manifest", manifest_version_id}
@@ -357,6 +360,58 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
             required_runner_release_id: required,
             runner_release_id: actual
           }
+        )
+
+      {:error, :execution_pool_policy_approval_required} ->
+        activation_rejected(
+          conn,
+          context,
+          session,
+          actor,
+          manifest_version_id,
+          idempotency,
+          422,
+          "execution_pool_policy_approval_required",
+          "Execution-pool defaults require explicit operator approval",
+          %{}
+        )
+
+      {:error, reason}
+      when is_tuple(reason) and
+             elem(reason, 0) in [
+               :unknown_execution_pool_policy_request_keys,
+               :invalid_execution_pool_policy_request,
+               :invalid_execution_pool_policy_approval,
+               :invalid_execution_pool_policy,
+               :invalid_execution_pool_configuration,
+               :invalid_execution_pool_entry,
+               :invalid_execution_pool_name,
+               :duplicate_execution_pool_name,
+               :too_many_execution_pools,
+               :unknown_execution_pool_policy_keys,
+               :duplicate_execution_pool_policy_keys,
+               :invalid_execution_pool_max_concurrency,
+               :invalid_circuit_breaker_policy,
+               :unknown_circuit_breaker_options,
+               :duplicate_circuit_breaker_options,
+               :invalid_circuit_breaker_failure_threshold,
+               :invalid_circuit_breaker_probe_after_ms,
+               :execution_pool_policy_too_large,
+               :invalid_execution_pool_policy_reset,
+               :unknown_execution_pool_overrides,
+               :unknown_orphaned_execution_pool_overrides
+             ] ->
+        activation_rejected(
+          conn,
+          context,
+          session,
+          actor,
+          manifest_version_id,
+          idempotency,
+          422,
+          "invalid_execution_pool_policy",
+          "Execution-pool policy is invalid",
+          %{reason: reason |> elem(0) |> Atom.to_string()}
         )
 
       {:error, %Error{} = reason} ->
@@ -545,7 +600,8 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
     request = %{
       manifest_version_id: manifest_version_id,
       selection: Map.get(conn.body_params, "selection"),
-      configuration: Map.get(conn.body_params, "configuration", %{})
+      configuration: Map.get(conn.body_params, "configuration", %{}),
+      execution_pool_policy: Map.get(conn.body_params, "execution_pool_policy")
     }
 
     execute = fn idempotency ->
@@ -577,6 +633,7 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
       Manifests.deploy(platform_context, context, manifest_version_id, selection,
         deployment_id: "deployment:" <> idempotency.key_hash,
         configuration: configuration,
+        execution_pool_policy: Map.get(conn.body_params, "execution_pool_policy"),
         idempotency: idempotency.command_idempotency
       )
     else

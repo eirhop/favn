@@ -9,7 +9,6 @@ defmodule FavnOrchestrator.ManifestStore do
   alias FavnOrchestrator.Persistence.Commands.DeployManifest
   alias FavnOrchestrator.Persistence.Commands.ProvisionWorkspace
   alias FavnOrchestrator.Persistence.Commands.RegisterManifest
-  alias FavnOrchestrator.Persistence.CapacityConfiguration
   alias FavnOrchestrator.Persistence.CommandIdempotency
   alias FavnOrchestrator.Persistence.DeploymentSchedules
   alias FavnOrchestrator.Persistence.DeploymentPlanner
@@ -18,6 +17,8 @@ defmodule FavnOrchestrator.ManifestStore do
   alias FavnOrchestrator.Persistence.Queries.GetRuntimeState
   alias FavnOrchestrator.Persistence.Queries.GetManifestTargetDescriptors
   alias FavnOrchestrator.Persistence.Queries.GetDeploymentTargets
+  alias FavnOrchestrator.Persistence.Queries.GetDeploymentConfiguration
+  alias FavnOrchestrator.Persistence.Queries.GetActiveDeploymentConfiguration
   alias FavnOrchestrator.Persistence.Queries.GetDeploymentManifest
   alias FavnOrchestrator.Persistence.Queries.ManifestSelector.ByContentHash
   alias FavnOrchestrator.Persistence.Queries.ManifestSelector.ById
@@ -153,6 +154,30 @@ defmodule FavnOrchestrator.ManifestStore do
     end
   end
 
+  @doc "Returns one immutable deployment's validated non-secret configuration."
+  @spec get_deployment_configuration(WorkspaceContext.t(), String.t()) ::
+          {:ok, map()} | {:error, Error.t()}
+  def get_deployment_configuration(%WorkspaceContext{} = context, deployment_id)
+      when is_binary(deployment_id) do
+    with :ok <- validate_workspace_read_context(context) do
+      Persistence.stores().registry.get_deployment_configuration(%GetDeploymentConfiguration{
+        workspace_context: context,
+        deployment_id: deployment_id
+      })
+    end
+  end
+
+  @doc "Returns the active immutable deployment id and validated non-secret configuration."
+  @spec get_active_deployment_configuration(WorkspaceContext.t()) ::
+          {:ok, {String.t(), map()}} | {:error, Error.t()}
+  def get_active_deployment_configuration(%WorkspaceContext{} = context) do
+    with :ok <- validate_workspace_read_context(context) do
+      Persistence.stores().registry.get_active_deployment_configuration(
+        %GetActiveDeploymentConfiguration{workspace_context: context}
+      )
+    end
+  end
+
   @doc "Fetches an immutable release by canonical content hash."
   @spec get_manifest_by_content_hash(PlatformContext.t(), String.t()) ::
           {:ok, Version.t()} | {:error, Error.t()}
@@ -248,6 +273,7 @@ defmodule FavnOrchestrator.ManifestStore do
       :capacity_scopes,
       :target_compatibilities,
       :activation_diagnostics,
+      :expected_active_deployment_id,
       :idempotency,
       :occurred_at
     ]
@@ -268,13 +294,11 @@ defmodule FavnOrchestrator.ManifestStore do
         configuration_version: Keyword.get(opts, :configuration_version, 1),
         targets: targets,
         schedules: schedules,
-        capacity_scopes:
-          merge_capacity_scopes(
-            CapacityConfiguration.deployment_scopes(context.workspace_id),
-            Keyword.get(opts, :capacity_scopes, [])
-          ),
+        capacity_scopes: merge_capacity_scopes([], Keyword.get(opts, :capacity_scopes, [])),
         target_compatibilities: Keyword.get(opts, :target_compatibilities, []),
         activation_diagnostics: Keyword.get(opts, :activation_diagnostics),
+        expected_active_deployment_id:
+          Keyword.get(opts, :expected_active_deployment_id, :unchecked),
         idempotency: Keyword.get(opts, :idempotency),
         occurred_at: occurred_at
       }

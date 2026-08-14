@@ -56,8 +56,10 @@ defmodule Favn.Pipeline do
 
   `execution_pool` declares the default shared pool for assets in the pipeline.
   Asset-level `execution_pool` declarations override this default for that
-  asset. Pools are configured at runtime with `config :favn, execution_pools:
-  [...]`; the orchestrator owns admission globally, not the runner.
+  asset. Pool defaults come from `config :favn, execution_pools: [...]` and are
+  embedded in the consumer manifest; the orchestrator persists the
+  operator-approved effective policy and owns admission globally, not the
+  runner.
 
       pipeline :raw_github_ingestion do
         assets MyApp.Lakehouse.Raw.GitHub
@@ -477,8 +479,8 @@ defmodule Favn.Pipeline do
   Declares the default shared execution pool for selected pipeline assets.
 
   Asset-level `execution_pool` declarations override this default. The pool must
-  be configured in the orchestrator runtime; unknown pools fail closed instead of
-  running unprotected.
+  be declared in `config :favn, execution_pools: ...` so it is embedded in the
+  manifest; unknown pools fail manifest validation instead of running unprotected.
 
   ## Example
 

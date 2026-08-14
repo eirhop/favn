@@ -38,6 +38,8 @@ defmodule FavnOrchestrator.RunManager.ManualWindowSubmissionTest do
     def get_deployment_manifest(%GetDeploymentManifest{}),
       do: {:ok, Process.get(:manual_window_version)}
 
+    def get_deployment_configuration(_query), do: {:ok, %{}}
+
     def get_run(%GetRun{}), do: {:ok, Process.get(:manual_window_source_run)}
 
     def get_evidence_bindings(query) do

@@ -41,7 +41,7 @@ defmodule FavnOrchestrator.ResourceCircuits do
   @doc "Checks all configured circuits used by one planned node."
   @spec acquire(RunState.t(), RunnerWork.t(), Index.t()) :: admission()
   def acquire(%RunState{} = run, %RunnerWork{} = work, %Index{} = index) do
-    with {:ok, requests} <- requests(work, index) do
+    with {:ok, requests} <- requests(run, work, index) do
       case requests do
         [] ->
           {:ok, []}
@@ -117,25 +117,35 @@ defmodule FavnOrchestrator.ResourceCircuits do
     end
   end
 
-  defp requests(work, index) do
-    work
-    |> resource_refs(index)
-    |> Enum.reduce_while({:ok, []}, fn ref, {:ok, acc} ->
-      case ResourceConfiguration.circuit_breaker(ref) do
-        {:ok, nil} ->
-          {:cont, {:ok, acc}}
+  defp requests(run, work, index) do
+    with {:ok, execution_pools} <- execution_pool_policy(run) do
+      work
+      |> resource_refs(index)
+      |> Enum.reduce_while({:ok, []}, fn ref, {:ok, acc} ->
+        case ResourceConfiguration.circuit_breaker(ref, execution_pools) do
+          {:ok, nil} ->
+            if ref.kind == :execution_pool,
+              do: {:cont, {:ok, [%ResourceCircuitRequest{resource: ref, policy: nil} | acc]}},
+              else: {:cont, {:ok, acc}}
 
-        {:ok, policy} ->
-          {:cont, {:ok, [%ResourceCircuitRequest{resource: ref, policy: policy} | acc]}}
+          {:ok, policy} ->
+            {:cont, {:ok, [%ResourceCircuitRequest{resource: ref, policy: policy} | acc]}}
 
-        {:error, reason} ->
-          {:halt, {:error, reason}}
-      end
-    end)
-    |> then(fn
-      {:ok, requests} -> {:ok, Enum.reverse(requests)}
-      error -> error
-    end)
+          {:error, reason} ->
+            {:halt, {:error, reason}}
+        end
+      end)
+      |> then(fn
+        {:ok, requests} -> {:ok, Enum.reverse(requests)}
+        error -> error
+      end)
+    end
+  end
+
+  defp execution_pool_policy(%RunState{metadata: metadata}) when is_map(metadata) do
+    metadata
+    |> Map.get(:execution_pool_policy, Map.get(metadata, "execution_pool_policy", %{}))
+    |> Favn.ExecutionPool.PolicySet.new()
   end
 
   defp resource_refs(work, index) do

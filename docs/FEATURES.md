@@ -10,8 +10,9 @@ Favn is private pre-v1 software. PostgreSQL 18 is the only control-plane databas
 
 - The `favn` package provides manifest-first asset, SQL-asset, pipeline, schedule,
   window, coverage, freshness, retry, settings, and runtime-input DSLs.
-- Compilation produces a deterministic schema-14 manifest whose user-defined
-  runner pools are bound to exact verified runner releases, with graph metadata,
+- Compilation produces a deterministic schema-15 manifest whose user-defined
+  runner pools are bound to exact verified runner releases and whose referenced
+  execution-pool defaults are strictly validated, with graph metadata,
   compact catalogue/planning indexes, content-addressed SQL execution packages,
   environment-resolved timezones and coverage, provenance, and desired SQL
   target descriptors.
@@ -81,6 +82,11 @@ runtime inputs, and SQL integrations remain pre-v1 and may change.
   records desired, active-generation, and physical compatibility per target.
   Incompatible, drifted, and ownership-unknown targets reject ordinary writes
   on affected dependency paths; compatible and unrelated paths remain runnable.
+- Manifest activation requires explicit approval for non-empty execution-pool
+  defaults, stores the effective policy and provenance in the immutable workspace
+  deployment, and atomically applies matching PostgreSQL capacity scopes.
+  Existing operator overrides survive later manifest deployments; removed-pool
+  overrides become inactive and do not silently revive.
 - Operators can plan, approve, inspect, cancel, safely retry, and reconcile
   immutable generation rebuilds. Rebuilds use isolated candidates, frozen work
   items, sorted target locks, fenced recovery, physical validation, marker-based

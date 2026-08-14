@@ -213,6 +213,26 @@ config :favn,
   ]
 ```
 
+This configuration is read by the consumer project while Favn builds schema-15
+manifest data. The pool catalogue is therefore published once with the assets
+that reference it; it is not copied into the prebuilt Orchestrator environment
+or the runner image.
+
+Manifest activation requires an operator to approve non-empty pool defaults.
+The Orchestrator then stores one immutable effective-policy snapshot with the
+workspace deployment and creates the matching PostgreSQL capacity scopes before
+the deployment becomes active. A later manifest activation preserves an
+existing operator override for a pool; otherwise the new manifest default takes
+effect. An explicit reset returns a pool to its manifest default. Overrides for
+removed pools become inactive and never silently revive.
+
+Pool names are 1 to 63 ASCII letters, digits, `_`, `-`, or `.`, starting with a
+letter or digit. A manifest may define at most 400 pools.
+`max_concurrency` is required and must be between 1 and 1,000,000. Unknown keys,
+duplicate normalized names, unknown pool references, and invalid circuit-breaker
+limits fail manifest construction or activation. Execution-pool policy is
+non-secret and must not contain credentials.
+
 Circuit identity is workspace plus resource kind and name. An open circuit
 blocks only nodes that use that pool or connection. After `probe_after_ms`, one
 normal eligible node receives the exclusive half-open probe; success closes the

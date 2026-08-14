@@ -5,6 +5,7 @@ defmodule Favn.Manifest.Compatibility do
 
   alias Favn.Manifest.ContractVersions
   alias Favn.Manifest.Asset
+  alias Favn.ExecutionPool.PolicySet
   alias Favn.Manifest.Pipeline
   alias Favn.Manifest.Rehydrate
   alias Favn.Manifest.Schedule
@@ -20,7 +21,10 @@ defmodule Favn.Manifest.Compatibility do
   @type error ::
           {:invalid_manifest_input, term()}
           | {:missing_manifest_field,
-             :schema_version | :runner_contract_version | :runner_releases}
+             :schema_version | :runner_contract_version | :runner_releases | :execution_pools}
+          | {:invalid_execution_pools, term()}
+          | {:invalid_execution_pool_reference, term()}
+          | {:unknown_execution_pool_reference, String.t()}
           | {:invalid_runner_releases, term()}
           | {:runner_release_pool_mismatch, [String.t()], [String.t()]}
           | {:invalid_execution_package_hash, Favn.Ref.t(), term()}
@@ -45,6 +49,7 @@ defmodule Favn.Manifest.Compatibility do
          {:ok, _runner_contract_version} <-
            read_required_field(manifest, :runner_contract_version),
          {:ok, _runner_releases} <- read_required_field(manifest, :runner_releases),
+         {:ok, _execution_pools} <- read_required_field(manifest, :execution_pools),
          :ok <- validate_raw_entries(manifest) do
       if canonical_entries?(manifest) do
         validate_canonical_manifest(manifest)
@@ -64,9 +69,11 @@ defmodule Favn.Manifest.Compatibility do
          {:ok, runner_contract_version} <-
            read_required_field(manifest, :runner_contract_version),
          {:ok, runner_releases} <- read_required_field(manifest, :runner_releases),
+         {:ok, execution_pools} <- read_required_field(manifest, :execution_pools),
          :ok <- validate_schema_version(schema_version),
          :ok <- validate_runner_contract_version(runner_contract_version),
          :ok <- validate_runner_releases(manifest, runner_releases),
+         :ok <- validate_execution_pools(manifest, execution_pools),
          :ok <-
            maybe_validate_execution_package_refs(
              manifest,
@@ -168,6 +175,40 @@ defmodule Favn.Manifest.Compatibility do
       if expected == actual,
         do: :ok,
         else: {:error, {:runner_release_pool_mismatch, expected, actual}}
+    end
+  end
+
+  defp validate_execution_pools(manifest, execution_pools) do
+    with {:ok, normalized} <- PolicySet.new(execution_pools),
+         {:ok, references} <- execution_pool_references(manifest) do
+      Enum.reduce_while(references, :ok, fn name, :ok ->
+        if Map.has_key?(normalized, name),
+          do: {:cont, :ok},
+          else: {:halt, {:error, {:unknown_execution_pool_reference, name}}}
+      end)
+    else
+      {:error, {:invalid_execution_pool_reference, _pool} = reason} -> {:error, reason}
+      {:error, reason} -> {:error, {:invalid_execution_pools, reason}}
+    end
+  end
+
+  defp execution_pool_references(manifest) do
+    assets = optional_field(manifest, :assets, [])
+    pipelines = optional_field(manifest, :pipelines, [])
+
+    (Enum.map(assets, &optional_field(&1, :execution_pool, nil)) ++
+       Enum.map(pipelines, &optional_field(&1, :execution_pool, nil)))
+    |> Enum.reject(&is_nil/1)
+    |> Enum.reduce_while({:ok, []}, fn
+      pool, {:ok, acc} when is_atom(pool) or is_binary(pool) ->
+        {:cont, {:ok, [to_string(pool) | acc]}}
+
+      pool, _acc ->
+        {:halt, {:error, {:invalid_execution_pool_reference, pool}}}
+    end)
+    |> case do
+      {:ok, references} -> {:ok, references |> Enum.uniq() |> Enum.sort()}
+      {:error, _reason} = error -> error
     end
   end
 

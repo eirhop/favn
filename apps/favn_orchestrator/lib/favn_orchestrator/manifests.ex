@@ -7,13 +7,16 @@ defmodule FavnOrchestrator.Manifests do
   """
 
   alias Favn.Manifest.Version
+  alias Favn.ExecutionPool.PolicySet
   alias FavnOrchestrator.ManifestStore
   alias FavnOrchestrator.Lifecycle
   alias FavnOrchestrator.ManifestActivationDiagnostics
   alias FavnOrchestrator.ManifestDeploymentReservation
+  alias FavnOrchestrator.ExecutionPoolPolicy
   alias FavnOrchestrator.OperationalEvents
   alias FavnOrchestrator.Operator.Catalogue.Targets
   alias FavnOrchestrator.Persistence.DeploymentPlanner
+  alias FavnOrchestrator.Persistence.CapacityConfiguration
   alias FavnOrchestrator.Persistence
   alias FavnOrchestrator.Persistence.Commands, as: C
   alias FavnOrchestrator.Persistence.PlatformContext
@@ -68,7 +71,8 @@ defmodule FavnOrchestrator.Manifests do
                   context,
                   manifest_version_id,
                   selection,
-                  Keyword.put(opts, :idempotency, idempotency)
+                  Keyword.put(opts, :idempotency, idempotency),
+                  3
                 )
               end)
           end
@@ -82,24 +86,114 @@ defmodule FavnOrchestrator.Manifests do
     end)
   end
 
-  defp deploy_new_manifest(platform_context, context, manifest_version_id, selection, opts) do
+  defp deploy_new_manifest(
+         platform_context,
+         context,
+         manifest_version_id,
+         selection,
+         opts,
+         attempts
+       ) do
     with {:ok, version} <- ManifestStore.get_manifest(platform_context, manifest_version_id),
          :ok <- validate_configured_pools(version),
+         {:ok, expected_active_deployment_id, previous_configuration} <-
+           previous_deployment_configuration(context),
+         {:ok, resolved_policy} <-
+           ExecutionPoolPolicy.resolve(
+             version.manifest,
+             Keyword.get(opts, :configuration, %{}),
+             previous_configuration,
+             Keyword.get(opts, :execution_pool_policy)
+           ),
          {:ok, planner} <- deployment_selection(version, selection),
          {:ok, target_compatibilities} <-
            TargetCompatibilityPlanner.plan(platform_context, context, version, planner) do
       diagnostics = ManifestActivationDiagnostics.from_compatibilities(target_compatibilities)
 
-      ManifestStore.deploy_manifest(
+      capacity_scopes =
+        context.workspace_id
+        |> CapacityConfiguration.deployment_scopes(resolved_policy.effective)
+        |> merge_capacity_scopes(Keyword.get(opts, :capacity_scopes, []))
+
+      result =
+        ManifestStore.deploy_manifest(
+          platform_context,
+          context,
+          manifest_version_id,
+          planner,
+          opts
+          |> Keyword.delete(:execution_pool_policy)
+          |> Keyword.put(:expected_active_deployment_id, expected_active_deployment_id)
+          |> Keyword.put(:configuration, resolved_policy.configuration)
+          |> Keyword.put(:capacity_scopes, capacity_scopes)
+          |> Keyword.put(:target_compatibilities, target_compatibilities)
+          |> Keyword.put(:activation_diagnostics, diagnostics)
+        )
+
+      maybe_retry_stale_activation(
+        result,
         platform_context,
         context,
         manifest_version_id,
-        planner,
-        opts
-        |> Keyword.put_new(:configuration, %{})
-        |> Keyword.put(:target_compatibilities, target_compatibilities)
-        |> Keyword.put(:activation_diagnostics, diagnostics)
+        selection,
+        opts,
+        attempts
       )
+    end
+  end
+
+  defp maybe_retry_stale_activation(
+         {:error,
+          %FavnOrchestrator.Persistence.Error{
+            kind: :conflict,
+            details: %{reason: :active_deployment_changed}
+          }},
+         platform_context,
+         context,
+         manifest_version_id,
+         selection,
+         opts,
+         attempts
+       )
+       when attempts > 1 do
+    deploy_new_manifest(
+      platform_context,
+      context,
+      manifest_version_id,
+      selection,
+      opts,
+      attempts - 1
+    )
+  end
+
+  defp maybe_retry_stale_activation(
+         result,
+         _platform,
+         _context,
+         _manifest,
+         _selection,
+         _opts,
+         _attempts
+       ),
+       do: result
+
+  defp merge_capacity_scopes(configured, explicit) when is_list(explicit) do
+    (configured ++ explicit)
+    |> Map.new(&{&1.scope_id, &1})
+    |> Map.values()
+    |> Enum.sort_by(& &1.scope_id)
+  end
+
+  defp previous_deployment_configuration(context) do
+    case ManifestStore.get_active_deployment_configuration(context) do
+      {:ok, {deployment_id, configuration}} ->
+        {:ok, deployment_id, configuration}
+
+      {:error, %FavnOrchestrator.Persistence.Error{kind: :not_found}} ->
+        {:ok, nil, %{}}
+
+      {:error, _reason} = error ->
+        error
     end
   end
 
@@ -179,6 +273,7 @@ defmodule FavnOrchestrator.Manifests do
       schema_version: version.schema_version,
       runner_contract_version: version.runner_contract_version,
       runner_releases: version.runner_releases,
+      execution_pools: PolicySet.diagnostics(version.manifest.execution_pools),
       asset_count: length(List.wrap(version.manifest.assets)),
       pipeline_count: length(List.wrap(version.manifest.pipelines)),
       schedule_count: length(List.wrap(version.manifest.schedules))

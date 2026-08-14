@@ -45,6 +45,7 @@ defmodule FavnAuthoring do
           pipeline_modules: [module()] | :all,
           schedule_modules: [module()] | :all,
           connection_modules: [module()] | :all,
+          execution_pools: keyword() | map(),
           runner_releases: Favn.RunnerPool.releases()
         ]
 
@@ -157,6 +158,7 @@ defmodule FavnAuthoring do
   def generate_manifest(opts \\ []) when is_list(opts) do
     with :ok <- reject_legacy_runner_release_option(opts),
          {:ok, opts} <- with_default_manifest_modules(opts),
+         {:ok, opts} <- with_execution_pools(opts),
          {:ok, opts} <- with_manifest_environment(opts) do
       Generator.generate(opts)
     end
@@ -171,6 +173,7 @@ defmodule FavnAuthoring do
   def build_manifest(opts \\ []) when is_list(opts) do
     with :ok <- reject_legacy_runner_release_option(opts),
          {:ok, opts} <- with_default_manifest_modules(opts),
+         {:ok, opts} <- with_execution_pools(opts),
          {:ok, opts} <- with_manifest_environment(opts) do
       Generator.build(opts)
     end
@@ -182,6 +185,7 @@ defmodule FavnAuthoring do
   def build_manifest_with_uniform_runner_release(runner_release_id)
       when is_binary(runner_release_id) do
     with {:ok, opts} <- with_default_manifest_modules([]),
+         {:ok, opts} <- with_execution_pools(opts),
          {:ok, opts} <- with_manifest_environment(opts) do
       Generator.build_with_uniform_runner_release(opts, runner_release_id)
     end
@@ -295,6 +299,13 @@ defmodule FavnAuthoring do
       {:ok, environment} -> {:ok, Keyword.put(opts, :environment, environment)}
       {:error, _reason} = error -> error
     end
+  end
+
+  defp with_execution_pools(opts) do
+    {:ok,
+     Keyword.put_new_lazy(opts, :execution_pools, fn ->
+       Application.get_env(:favn, :execution_pools, [])
+     end)}
   end
 
   defp default_modules(config_key, discovery_key) do

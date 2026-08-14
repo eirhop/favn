@@ -20,5 +20,11 @@ defmodule Favn.CircuitBreaker.PolicyTest do
 
     assert {:error, {:invalid_circuit_breaker_probe_after_ms, 0}} =
              Policy.new(failure_threshold: 1, probe_after_ms: 0)
+
+    assert {:error, {:duplicate_circuit_breaker_options, ["failure_threshold"]}} =
+             Policy.new([{:failure_threshold, 1}, {:failure_threshold, 2}, {:probe_after_ms, 10}])
+
+    assert {:error, {:duplicate_circuit_breaker_options, ["probe_after_ms"]}} =
+             Policy.new(%{"probe_after_ms" => 10, probe_after_ms: 20, failure_threshold: 1})
   end
 end

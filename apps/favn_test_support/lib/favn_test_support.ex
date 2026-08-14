@@ -75,7 +75,8 @@ defmodule FavnTestSupport do
       schema_version: apply(Favn.Manifest.Compatibility, :current_schema_version, []),
       runner_contract_version:
         apply(Favn.Manifest.Compatibility, :current_runner_contract_version, []),
-      runner_releases: runner_releases
+      runner_releases: runner_releases,
+      execution_pools: Map.get(manifest, :execution_pools, %{})
     })
   end
 

@@ -8,6 +8,8 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
   and failure-drain behavior.
   """
 
+  require Logger
+
   alias Favn.Contracts.RunnerError
   alias Favn.Contracts.RunnerWork
   alias FavnOrchestrator.CancellationOutcome
@@ -19,6 +21,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
   alias FavnOrchestrator.ExecutionPackages
   alias FavnOrchestrator.MaterializationClaims
   alias FavnOrchestrator.ResourceCircuits
+  alias FavnOrchestrator.Redaction
   alias FavnOrchestrator.RunServer.Cancellation
   alias FavnOrchestrator.RunServer.Execution.ActiveTaskSet
   alias FavnOrchestrator.RunServer.Execution.PreSubmitFailure
@@ -171,6 +174,13 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
         {:error, ctx.current_run, [], attempted_node_keys(ctx)}
 
       {:error, reason} ->
+        Logger.error(
+          "execution admission failed " <>
+            "run_id=#{ctx.current_run.id} " <>
+            "asset_step_id=#{ctx.work.asset_step_id} " <>
+            "reason=#{inspect(Redaction.redact_operational_bounded(reason))}"
+        )
+
         failed = Snapshots.snapshot_update(ctx.current_run, status: :error, error: reason)
         {:error, failed, [], attempted_node_keys(ctx)}
     end

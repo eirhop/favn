@@ -6,10 +6,12 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
 
   alias Ecto.Adapters.SQL
   alias Ecto.Adapters.SQL.Sandbox
+  alias Favn.CircuitBreaker.Policy, as: CircuitBreakerPolicy
   alias Favn.Contracts.GenerationCapabilitiesRequest
   alias Favn.Contracts.RelationInspectionResult
   alias Favn.Contracts.RunnerError
   alias Favn.Manifest
+  alias Favn.ExecutionPool.Policy, as: ExecutionPoolPolicyDefinition
   alias Favn.Manifest.ExecutionPackage
   alias Favn.Manifest.Graph
   alias Favn.Manifest.Serializer
@@ -21,10 +23,12 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias Favn.RuntimeInput.Pin
   alias Favn.RuntimeInput.Resolution
   alias Favn.RelationRef
+  alias Favn.Resource.Ref
   alias Favn.Window.Key, as: WindowKey
   alias Favn.Window.Runtime, as: RuntimeWindow
   alias FavnOrchestrator.Persistence.BackfillPlan
   alias FavnOrchestrator.Persistence.Commands.ActivateBackfillPlan
+  alias FavnOrchestrator.Persistence.Commands.AcquireResourceCircuits
   alias FavnOrchestrator.Persistence.Commands.ActivateRecoveredTargetGeneration
   alias FavnOrchestrator.Persistence.Commands.AbandonManifestDeployment
   alias FavnOrchestrator.Persistence.Commands.AuthorizeScheduleOccurrenceDispatch
@@ -99,6 +103,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnOrchestrator.Persistence.Commands.AdmitExecution
   alias FavnOrchestrator.Persistence.Commands.CapacityRequest
   alias FavnOrchestrator.Persistence.Commands.ReleaseExecutionLease
+  alias FavnOrchestrator.Persistence.Commands.ResourceCircuitRequest
   alias FavnOrchestrator.Persistence.Commands.RenewExecutionLease
   alias FavnOrchestrator.Persistence.PlatformContext
   alias FavnOrchestrator.Persistence.Queries.GetExecutionGroup
@@ -123,6 +128,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnOrchestrator.Persistence.Queries.GetRuntimeState
   alias FavnOrchestrator.Persistence.Queries.MissingExecutionPackageHashes
   alias FavnOrchestrator.Persistence.Queries.GetDeploymentTargets
+  alias FavnOrchestrator.Persistence.Queries.GetDeploymentConfiguration
   alias FavnOrchestrator.Persistence.Queries.CountExecutionGroups
   alias FavnOrchestrator.Persistence.Queries.PageExecutionGroups
   alias FavnOrchestrator.Persistence.Queries.PageManifests
@@ -143,6 +149,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnOrchestrator.Persistence.Error
   alias FavnOrchestrator.Persistence.Runtime
   alias FavnOrchestrator.Persistence.Stores
+  alias FavnOrchestrator.Persistence.CapacityConfiguration
   alias FavnOrchestrator.Persistence.Selectors.ActorByUsername
   alias FavnOrchestrator.Persistence.Selectors.ActorByExternalIdentity
   alias FavnOrchestrator.Persistence.Selectors.SessionByTokenHash
@@ -159,6 +166,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnOrchestrator.Identity
   alias FavnOrchestrator.Lifecycle
   alias FavnOrchestrator.Manifests
+  alias FavnOrchestrator.ExecutionPoolPolicy
   alias FavnOrchestrator.ManifestDeploymentReservation
   alias FavnOrchestrator.Operator.Catalogue
   alias FavnOrchestrator.Operator.Audit, as: OperatorAudit
@@ -187,6 +195,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnStoragePostgres.Maintenance.Store, as: MaintenanceStore
   alias FavnStoragePostgres.Registry.Store, as: RegistryStore
   alias FavnStoragePostgres.Rebuilds.Store, as: RebuildStore
+  alias FavnStoragePostgres.ResourceCircuits.Store, as: ResourceCircuitStore
   alias FavnStoragePostgres.Release
   alias FavnStoragePostgres.Repo
   alias FavnStoragePostgres.RuntimeInputKeyInventory
@@ -2285,7 +2294,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
               details: %{
                 reason: :historical_manifest_not_activatable,
                 schema_version: 9,
-                current_schema_version: 14
+                current_schema_version: 15
               }
             }} =
              RegistryStore.deploy_manifest(%{
@@ -4378,6 +4387,191 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     catalog_by_workspace = Map.new(catalogs, fn [workspace_id, ids] -> {workspace_id, ids} end)
     refute private_target_id in catalog_by_workspace[fixture.workspace_id]
     assert private_target_id in catalog_by_workspace[other.workspace_id]
+  end
+
+  test "persists and returns the exact manifest-backed execution-pool policy", fixture do
+    unique = Integer.to_string(System.unique_integer([:positive]))
+
+    assert {:ok, pool_policy} =
+             ExecutionPoolPolicyDefinition.new(
+               max_concurrency: 3,
+               circuit_breaker: [failure_threshold: 5, probe_after_ms: 60_000]
+             )
+
+    manifest = %{
+      fixture.version.manifest
+      | execution_pools: %{"partner_api" => pool_policy}
+    }
+
+    assert {:ok, version} =
+             Version.new(manifest, manifest_version_id: "mv-pool-policy-#{unique}")
+
+    assert {:ok, ^version} =
+             RegistryStore.register_manifest(%RegisterManifest{
+               platform_context: fixture.platform_context,
+               version: version
+             })
+
+    assert {:ok, resolved} =
+             ExecutionPoolPolicy.resolve(manifest, fixture.deploy_command.configuration, %{}, %{
+               approve_manifest_defaults: true
+             })
+
+    deployment_id = "deploy-pool-policy-#{unique}"
+
+    command = %{
+      fixture.deploy_command
+      | deployment_id: deployment_id,
+        manifest_version_id: version.manifest_version_id,
+        configuration: resolved.configuration,
+        expected_active_deployment_id: fixture.deployment_id,
+        capacity_scopes:
+          CapacityConfiguration.deployment_scopes(
+            fixture.workspace_id,
+            resolved.effective
+          ),
+        occurred_at: DateTime.utc_now()
+    }
+
+    assert {:ok, _runtime} = RegistryStore.deploy_manifest(command)
+
+    assert {:ok, resolved.configuration} ==
+             RegistryStore.get_deployment_configuration(%GetDeploymentConfiguration{
+               workspace_context: fixture.workspace_context,
+               deployment_id: deployment_id
+             })
+
+    assert {:error, %{kind: :invalid}} =
+             RegistryStore.deploy_manifest(%{
+               command
+               | deployment_id: deployment_id <> "-missing-scope",
+                 capacity_scopes: [],
+                 occurred_at: DateTime.utc_now()
+             })
+
+    assert {:ok, changed} =
+             ExecutionPoolPolicy.resolve(
+               manifest,
+               fixture.deploy_command.configuration,
+               resolved.configuration,
+               %{
+                 approve_manifest_defaults: true,
+                 overrides: %{
+                   "partner_api" => %{
+                     max_concurrency: 5,
+                     circuit_breaker: [failure_threshold: 2, probe_after_ms: 30_000]
+                   }
+                 }
+               }
+             )
+
+    stale_request = %AcquireResourceCircuits{
+      workspace_context: SystemContext.workspace(fixture.workspace_id, :resource_circuit_test),
+      command_id: "delayed-old-policy-#{unique}",
+      owner_id: "owner-#{unique}",
+      run_id: "run-#{unique}",
+      asset_step_id: "step-#{unique}",
+      requests: [
+        %ResourceCircuitRequest{
+          resource: Ref.new!(:execution_pool, "partner_api"),
+          policy: CircuitBreakerPolicy.new!(failure_threshold: 5, probe_after_ms: 60_000)
+        }
+      ],
+      probe_lease_ms: 30_000,
+      occurred_at: DateTime.utc_now()
+    }
+
+    SQL.query!(
+      Repo,
+      """
+      DELETE FROM favn_control.resource_circuits
+      WHERE workspace_id = $1 AND resource_kind = 'execution_pool' AND resource_name = $2
+      """,
+      [fixture.workspace_id, "partner_api"]
+    )
+
+    changed_deployment_id = deployment_id <> "-changed"
+
+    changed_command = %{
+      command
+      | deployment_id: changed_deployment_id,
+        configuration: changed.configuration,
+        expected_active_deployment_id: deployment_id,
+        capacity_scopes:
+          CapacityConfiguration.deployment_scopes(fixture.workspace_id, changed.effective),
+        occurred_at: DateTime.utc_now()
+    }
+
+    assert {:ok, _runtime} = RegistryStore.deploy_manifest(changed_command)
+
+    # The request was built under the old policy before activation. Storage
+    # serializes first use with activation and applies the active policy.
+    assert {:ok, %{status: :allowed}} = ResourceCircuitStore.acquire(stale_request)
+
+    assert %{rows: [[2, 30_000]]} =
+             SQL.query!(
+               Repo,
+               """
+               SELECT failure_threshold, probe_after_ms
+               FROM favn_control.resource_circuits
+               WHERE workspace_id = $1 AND resource_kind = 'execution_pool' AND resource_name = $2
+               """,
+               [fixture.workspace_id, "partner_api"]
+             )
+
+    opened_at = DateTime.add(DateTime.utc_now(), -10, :second)
+
+    SQL.query!(
+      Repo,
+      """
+      UPDATE favn_control.resource_circuits
+      SET state = 'open', consecutive_failures = 2,
+          opened_at = CAST($3 AS timestamp without time zone),
+          next_probe_at = CAST($3 AS timestamp without time zone) + interval '30 seconds'
+      WHERE workspace_id = $1 AND resource_kind = 'execution_pool' AND resource_name = $2
+      """,
+      [fixture.workspace_id, "partner_api", opened_at]
+    )
+
+    assert {:error, %{kind: :conflict, details: %{reason: :active_deployment_changed}}} =
+             RegistryStore.deploy_manifest(%{
+               changed_command
+               | deployment_id: changed_deployment_id <> "-stale",
+                 expected_active_deployment_id: deployment_id,
+                 occurred_at: DateTime.utc_now()
+             })
+
+    # Reusing the original immutable deployment after a changed policy must
+    # restore its capacity and circuit policy instead of leaving newer values.
+    assert {:ok, %{deployment_id: ^deployment_id}} =
+             RegistryStore.deploy_manifest(%{
+               command
+               | deployment_id: deployment_id <> "-reuse",
+                 expected_active_deployment_id: changed_deployment_id,
+                 occurred_at: DateTime.utc_now()
+             })
+
+    [pool_scope] =
+      CapacityConfiguration.deployment_scopes(fixture.workspace_id, resolved.effective)
+
+    assert %{rows: [[3]]} =
+             SQL.query!(
+               Repo,
+               "SELECT capacity_limit FROM favn_control.capacity_scopes WHERE scope_id = $1",
+               [pool_scope.scope_id]
+             )
+
+    assert %{rows: [[5, 60_000]]} =
+             SQL.query!(
+               Repo,
+               """
+               SELECT failure_threshold,
+                      round(extract(epoch FROM (next_probe_at - opened_at)) * 1000)::bigint
+               FROM favn_control.resource_circuits
+               WHERE workspace_id = $1 AND resource_kind = 'execution_pool' AND resource_name = $2
+               """,
+               [fixture.workspace_id, "partner_api"]
+             )
   end
 
   test "atomically persists encrypted manifest-bound runtime input pins", fixture do

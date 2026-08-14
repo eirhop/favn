@@ -137,9 +137,11 @@ defmodule Favn.Asset do
       def asset(ctx), do: fetch_from_github(ctx)
 
   Asset-level pools override any pipeline-level default `execution_pool`. The
-  pool itself is configured by the orchestrator runtime with `config :favn,
-  execution_pools: [...]`. SQL/database `write_concurrency` remains separate and
-  protects writer/backend admission only after the asset body has started.
+  pool default is read from `config :favn, execution_pools: [...]` when the
+  consumer manifest is built. The orchestrator persists the operator-approved
+  effective policy with each workspace deployment. SQL/database
+  `write_concurrency` remains separate and protects writer/backend admission
+  only after the asset body has started.
 
   ## Freshness
 
