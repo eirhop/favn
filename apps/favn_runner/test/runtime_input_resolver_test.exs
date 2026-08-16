@@ -265,11 +265,27 @@ defmodule FavnRunner.RuntimeInputResolverTest do
                context()
              )
 
-    assert {:error, %Error{type: :runtime_inputs_invalid_result}} =
+    max_identity = "https://inputs.example/" <> String.duplicate("i", 1_001)
+
+    assert {:ok, %Resolution{identity: ^max_identity}} =
+             resolve_result(%Result{params: %{}, identity: max_identity}, context())
+
+    oversized_identity = max_identity <> "i"
+
+    assert {:error,
+            %Error{
+              type: :runtime_inputs_invalid_result,
+              message: message,
+              details: %{field: :input_identity, limit_bytes: 1_024, reason: :too_large}
+            } = identity_error} =
              resolve_result(
-               %Result{params: %{}, identity: String.duplicate("i", 1_025)},
+               %Result{params: %{}, identity: oversized_identity},
                context()
              )
+
+    assert message =~ "input_identity"
+    assert message =~ "1024"
+    refute inspect(identity_error) =~ oversized_identity
 
     assert {:error, %Error{type: :runtime_inputs_invalid_result}} =
              resolve_result(
