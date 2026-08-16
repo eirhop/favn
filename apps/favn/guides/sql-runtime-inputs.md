@@ -247,7 +247,7 @@ selection under `{run_id, planned_node_key}` before it can dispatch SQL work.
 | resolver duration | 30 seconds or the remaining node deadline, whichever is shorter |
 | parameters | 128 |
 | encoded parameter payload | 4 MiB |
-| identity | 1 KiB |
+| `input_identity` | 1,024 UTF-8 bytes |
 | metadata | 64 KiB and 128 entries |
 
 Timeout and cancellation terminate resolver work through runner-owned process

@@ -7,6 +7,7 @@ defmodule Favn.RuntimeInput.Pin do
   than generic run metadata or event payloads.
   """
 
+  alias Favn.RuntimeInput.Identity
   alias Favn.RuntimeInput.Resolution
 
   @derive {Inspect, except: [:params]}
@@ -100,6 +101,12 @@ defmodule Favn.RuntimeInput.Pin do
       inserted_at: now,
       updated_at: now
     }
+  end
+
+  @doc "Validates the pin's runtime-input identity against the shared boundary."
+  @spec validate_input_identity(t()) :: :ok | {:error, Identity.error()}
+  def validate_input_identity(%__MODULE__{input_identity: input_identity}) do
+    Identity.validate(input_identity)
   end
 
   @doc "Returns safe lineage fields suitable for public run details."

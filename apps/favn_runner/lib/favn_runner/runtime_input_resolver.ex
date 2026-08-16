@@ -2,6 +2,7 @@ defmodule FavnRunner.RuntimeInputResolver do
   @moduledoc false
 
   alias Favn.Run.Context
+  alias Favn.RuntimeInput.Identity
   alias Favn.RuntimeInputResolver.Ref
   alias Favn.SQL.CancelToken
   alias Favn.SQL.Error, as: SQLError
@@ -14,7 +15,6 @@ defmodule FavnRunner.RuntimeInputResolver do
   @default_timeout_ms 30_000
   @max_params 128
   @max_param_payload_bytes 4 * 1_024 * 1_024
-  @max_identity_bytes 1_024
   @max_metadata_bytes 64 * 1_024
   @max_metadata_entries 128
   @max_error_message_bytes 4_096
@@ -384,23 +384,21 @@ defmodule FavnRunner.RuntimeInputResolver do
     end
   end
 
-  defp validate_identity(identity, module)
-       when is_binary(identity) and byte_size(identity) > 0 and
-              byte_size(identity) <= @max_identity_bytes do
-    if String.trim(identity) == "",
-      do: {:error, invalid_identity_error(module, identity)},
-      else: :ok
-  end
-
   defp validate_identity(identity, module) do
-    {:error, invalid_identity_error(module, identity)}
+    case Identity.validate(identity) do
+      :ok ->
+        :ok
+
+      {:error, {:invalid_runtime_input_identity, details}} ->
+        {:error, invalid_identity_error(module, details)}
+    end
   end
 
-  defp invalid_identity_error(module, _identity) do
+  defp invalid_identity_error(module, details) do
     runtime_error(
       :runtime_inputs_invalid_result,
-      "runtime input identity must be a non-empty string of at most #{@max_identity_bytes} bytes",
-      if(module, do: %{resolver: module, limit_bytes: @max_identity_bytes}, else: %{})
+      Identity.error_message(),
+      if(module, do: Map.put(details, :resolver, module), else: details)
     )
   end
 
