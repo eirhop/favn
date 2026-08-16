@@ -199,6 +199,45 @@ defmodule Favn.Manifest.GeneratorTest do
     assert get_in(decoded, ["execution_pools", "partner_api", "max_concurrency"]) == 3
   end
 
+  test "embeds only non-secret connection circuit policy in the immutable manifest" do
+    previous = Application.get_env(:favn, :connections)
+
+    on_exit(fn ->
+      if is_nil(previous),
+        do: Application.delete_env(:favn, :connections),
+        else: Application.put_env(:favn, :connections, previous)
+    end)
+
+    Application.put_env(:favn, :connections,
+      warehouse: [
+        password: Favn.RuntimeConfig.Ref.secret_env!("WAREHOUSE_PASSWORD"),
+        circuit_breaker: [failure_threshold: 5, probe_after_ms: 10_000]
+      ],
+      unused: [
+        password: Favn.RuntimeConfig.Ref.secret_env!("UNUSED_PASSWORD"),
+        circuit_breaker: [failure_threshold: 9, probe_after_ms: 90_000]
+      ]
+    )
+
+    assert {:ok, manifest} =
+             Favn.generate_manifest(
+               asset_modules: [TestAsset],
+               connection_modules: [TestConnection],
+               runner_releases: runner_releases()
+             )
+
+    assert manifest.connection_circuits["warehouse"].failure_threshold == 5
+    refute Map.has_key?(manifest.connection_circuits, "unused")
+
+    assert {:ok, encoded} = Favn.Manifest.Serializer.encode_manifest(manifest)
+    refute encoded =~ "WAREHOUSE_PASSWORD"
+    refute encoded =~ "UNUSED_PASSWORD"
+
+    assert {:ok, decoded} = Jason.decode(encoded)
+    assert get_in(decoded, ["connection_circuits", "warehouse", "probe_after_ms"]) == 10_000
+    refute Map.has_key?(decoded["connection_circuits"], "unused")
+  end
+
   test "build returns non-fatal schedule and coverage diagnostics" do
     assert {:ok, build} =
              Favn.build_manifest(

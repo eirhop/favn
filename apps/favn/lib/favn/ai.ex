@@ -247,11 +247,13 @@ defmodule Favn.AI do
     `Favn.Manifest.Generator` if you need internal compilation details. For
     deployment, call `Favn.build_manifest/1` with the exact operator-supplied
     `runner_releases` pool map, followed by
-    `Favn.prepare_manifest_publication/2`: schema 16 has one compact manifest
-    index bound to exact releases per runner pool, validated execution-pool
-    defaults, and immutable content-addressed SQL execution packages. Consumer
-    `config :favn, execution_pools: [...]` is manifest input, not Orchestrator or
-    runner environment configuration. Default manifest version IDs are `mv_`
+    `Favn.prepare_manifest_publication/2`: schema 17 has one compact manifest
+    index bound to exact releases per runner pool, validated execution-pool and
+    connection-circuit defaults, and immutable content-addressed SQL execution
+    packages. Consumer timezone, coverage, execution-pool, and connection
+    circuit policy are manifest input. Connection credentials, `open`, DuckDB,
+    runtime refs, and runner plugins remain runner-local configuration. Default
+    manifest version IDs are `mv_`
     plus the full canonical index content hash. Publication still deduplicates
     by `content_hash` and may return an older persisted ID for identical content.
   - To resolve pipeline targets, read `Favn resolve_pipeline`, then

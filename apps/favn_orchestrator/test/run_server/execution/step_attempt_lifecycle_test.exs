@@ -161,7 +161,9 @@ defmodule FavnOrchestrator.RunServer.Execution.StepAttemptLifecycleTest do
       |> Map.update!(:metadata, fn metadata ->
         Map.merge(metadata, %{
           "execution_pool_policy" => %{"untrusted" => %{"max_concurrency" => 99}},
+          "connection_circuit_policy" => %{"untrusted" => %{"failure_threshold" => 99}},
           execution_pool_policy: %{"api" => %{"max_concurrency" => 3}},
+          connection_circuit_policy: %{"warehouse" => %{"failure_threshold" => 5}},
           request_id: "request-1"
         })
       end)
@@ -182,6 +184,8 @@ defmodule FavnOrchestrator.RunServer.Execution.StepAttemptLifecycleTest do
     assert work.metadata.request_id == "request-1"
     refute Map.has_key?(work.metadata, :execution_pool_policy)
     refute Map.has_key?(work.metadata, "execution_pool_policy")
+    refute Map.has_key?(work.metadata, :connection_circuit_policy)
+    refute Map.has_key?(work.metadata, "connection_circuit_policy")
   end
 
   test "runner work returns an explicit error when the compact index lacks the planned asset" do

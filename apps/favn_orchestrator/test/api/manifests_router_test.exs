@@ -223,7 +223,14 @@ defmodule FavnOrchestrator.API.ManifestsRouterTest do
 
     manifest = %{
       base.manifest
-      | environment: Environment.new!(default_timezone: "Europe/Oslo")
+      | environment: Environment.new!(default_timezone: "Europe/Oslo"),
+        connection_circuits: %{
+          "warehouse" =>
+            Favn.CircuitBreaker.Policy.new!(
+              failure_threshold: 5,
+              probe_after_ms: 10_000
+            )
+        }
     }
 
     assert {:ok, version} =
@@ -266,6 +273,11 @@ defmodule FavnOrchestrator.API.ManifestsRouterTest do
 
     assert persisted_environment.default_timezone == "Europe/Oslo"
     assert persisted_environment.default_timezone_source == :application_default
+
+    assert {:ok, connection_circuits} =
+             FavnOrchestrator.ConnectionCircuitPolicy.effective(command.configuration)
+
+    assert connection_circuits["warehouse"].failure_threshold == 5
 
     assert %{
              "data" => %{

@@ -13,6 +13,7 @@ defmodule FavnOrchestrator.Manifests do
   alias FavnOrchestrator.ManifestActivationDiagnostics
   alias FavnOrchestrator.ManifestDeploymentReservation
   alias FavnOrchestrator.ExecutionPoolPolicy
+  alias FavnOrchestrator.ConnectionCircuitPolicy
   alias FavnOrchestrator.OperationalEvents
   alias FavnOrchestrator.Operator.Catalogue.Targets
   alias FavnOrchestrator.Persistence.DeploymentPlanner
@@ -108,6 +109,8 @@ defmodule FavnOrchestrator.Manifests do
            ),
          {:ok, deployment_configuration} <-
            WorkspaceConfiguration.put(resolved_policy.configuration, version.manifest),
+         {:ok, deployment_configuration} <-
+           ConnectionCircuitPolicy.put(deployment_configuration, version.manifest),
          {:ok, planner} <- deployment_selection(version, selection),
          {:ok, target_compatibilities} <-
            TargetCompatibilityPlanner.plan(platform_context, context, version, planner) do
@@ -282,6 +285,8 @@ defmodule FavnOrchestrator.Manifests do
         coverage_scope: version.manifest.environment.coverage_scope
       },
       execution_pools: PolicySet.diagnostics(version.manifest.execution_pools),
+      connection_circuits:
+        Favn.Connection.CircuitPolicySet.to_map(version.manifest.connection_circuits),
       asset_count: length(List.wrap(version.manifest.assets)),
       pipeline_count: length(List.wrap(version.manifest.pipelines)),
       schedule_count: length(List.wrap(version.manifest.schedules))

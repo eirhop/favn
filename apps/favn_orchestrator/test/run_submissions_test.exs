@@ -15,6 +15,8 @@ defmodule FavnOrchestrator.RunSubmissionsTest do
   alias FavnOrchestrator.Persistence.Stores
   alias FavnOrchestrator.Persistence.WorkspaceContext
   alias FavnOrchestrator.ExecutionPoolPolicy
+  alias FavnOrchestrator.ConnectionCircuitPolicy
+  alias FavnOrchestrator.WorkspaceConfiguration
   alias FavnOrchestrator.RunSubmission.Intent
   alias FavnOrchestrator.RunSubmission.Preparation
   alias FavnOrchestrator.RunManager
@@ -96,8 +98,14 @@ defmodule FavnOrchestrator.RunSubmissionsTest do
                approve_manifest_defaults: true
              })
 
+    assert {:ok, configuration} =
+             WorkspaceConfiguration.put(policy.configuration, version.manifest)
+
+    assert {:ok, configuration} =
+             ConnectionCircuitPolicy.put(configuration, version.manifest)
+
     Process.put(:run_submissions_version, version)
-    Process.put(:run_submissions_configuration, policy.configuration)
+    Process.put(:run_submissions_configuration, configuration)
 
     stores =
       struct(Stores,
@@ -133,6 +141,9 @@ defmodule FavnOrchestrator.RunSubmissionsTest do
                dependencies: :none,
                metadata: %{
                  "execution_pool_policy" => %{"untrusted" => %{"max_concurrency" => 99}},
+                 "connection_circuit_policy" => %{
+                   "untrusted" => %{"failure_threshold" => 99}
+                 },
                  requested_by: :test
                }
              )
@@ -151,6 +162,9 @@ defmodule FavnOrchestrator.RunSubmissionsTest do
                metadata: %{
                  "execution_pool_policy" => %{
                    "untrusted" => %{"max_concurrency" => 99}
+                 },
+                 "connection_circuit_policy" => %{
+                   "untrusted" => %{"failure_threshold" => 99}
                  },
                  requested_by: :test
                }
@@ -171,6 +185,13 @@ defmodule FavnOrchestrator.RunSubmissionsTest do
            ]) == 3
 
     refute Map.has_key?(prepared.run_state.metadata, "execution_pool_policy")
+    refute Map.has_key?(prepared.run_state.metadata, "connection_circuit_policy")
+
+    assert get_in(prepared.run_state.metadata, [
+             :connection_circuit_policy,
+             "warehouse",
+             "failure_threshold"
+           ]) == 5
 
     assert summary["run_id"] == "run-reserved"
   end
@@ -236,6 +257,9 @@ defmodule FavnOrchestrator.RunSubmissionsTest do
   defp manifest_version do
     manifest = %Manifest{
       execution_pools: %{partner_api: %{max_concurrency: 3}},
+      connection_circuits: %{
+        "warehouse" => %{failure_threshold: 5, probe_after_ms: 10_000}
+      },
       assets: [
         %Asset{
           ref: @asset_ref,

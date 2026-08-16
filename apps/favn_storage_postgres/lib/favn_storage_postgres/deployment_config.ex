@@ -3,7 +3,7 @@ defmodule FavnStoragePostgres.DeploymentConfig do
 
   @max_bytes 262_144
   @max_resources 1_000
-  @top_level_keys ~w(schema_version secret_store_url resources execution_pool_policy workspace_environment)
+  @top_level_keys ~w(schema_version secret_store_url resources execution_pool_policy workspace_environment connection_circuit_policy)
   @resource_keys ~w(type endpoint secret_ref catalog database container account region schema read_only ssl_mode)
   @string_resource_keys ~w(type secret_ref catalog database container account region schema)
   @safe_ssl_modes ~w(verify-full require)
@@ -20,6 +20,7 @@ defmodule FavnStoragePostgres.DeploymentConfig do
          :ok <- validate_resources(value(configuration, "resources", %{})),
          :ok <- validate_execution_pool_policy(value(configuration, "execution_pool_policy", nil)),
          :ok <- validate_workspace_environment(configuration),
+         :ok <- validate_connection_circuit_policy(configuration),
          {:ok, encoded} <- Jason.encode(configuration),
          :ok <- validate_size(encoded) do
       {:ok, configuration}
@@ -32,8 +33,8 @@ defmodule FavnStoragePostgres.DeploymentConfig do
 
   defp validate_schema_version(configuration) do
     case value(configuration, "schema_version", 1) do
-      version when version in [1, 2] -> :ok
-      _version -> {:error, {:unsupported_deployment_configuration_version, 2}}
+      version when version in [1, 2, 3] -> :ok
+      _version -> {:error, {:unsupported_deployment_configuration_version, 3}}
     end
   end
 
@@ -95,9 +96,27 @@ defmodule FavnStoragePostgres.DeploymentConfig do
           _value -> {:error, {:workspace_environment_requires_schema_version, 2}}
         end
 
-      2 ->
+      version when version in [2, 3] ->
         case FavnOrchestrator.WorkspaceConfiguration.from_configuration(configuration) do
           {:ok, _environment} -> :ok
+          {:error, reason} -> {:error, reason}
+        end
+    end
+  end
+
+  defp validate_connection_circuit_policy(configuration) do
+    case value(configuration, "schema_version", 1) do
+      version when version in [1, 2] ->
+        missing = make_ref()
+
+        case value(configuration, "connection_circuit_policy", missing) do
+          ^missing -> :ok
+          _value -> {:error, {:connection_circuit_policy_requires_schema_version, 3}}
+        end
+
+      3 ->
+        case FavnOrchestrator.ConnectionCircuitPolicy.effective(configuration) do
+          {:ok, _policies} -> :ok
           {:error, reason} -> {:error, reason}
         end
     end

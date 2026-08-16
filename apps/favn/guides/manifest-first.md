@@ -6,7 +6,7 @@ Use `mix favn.dev`, `mix favn.run`, and the UI for normal local development. Use
 the functions in this guide when building tools, debugging discovery, comparing
 versions, or preparing deployment artifacts.
 
-Favn still uses manifests internally. Schema 16 publishes one compact manifest
+Favn still uses manifests internally. Schema 17 publishes one compact manifest
 index plus immutable, content-addressed execution packages. The index describes
 assets, pipelines, schedules, dependencies, and compact runtime metadata. Each
 manifest binds every effective runner pool to its exact operator-supplied
@@ -18,12 +18,13 @@ modules while runs are in progress.
 
 Manifest construction also freezes an explicit environment containing
 `config :favn, :default_timezone` and the optional `coverage_scope` floor, plus
-validated `execution_pools` defaults. Assets, pipelines, and schedules carry
-concrete effective timezones plus provenance, and assets carry both declared and
-environment-effective coverage. Runtime services never reinterpret these values
-from their own boot environment. At workspace activation, the Orchestrator stores
-the browser-safe environment and approved effective pool policy with that
-immutable deployment.
+validated `execution_pools` defaults and connection circuit policy. Assets,
+pipelines, and schedules carry concrete effective timezones plus provenance, and
+assets carry both declared and environment-effective coverage. Runtime services
+never reinterpret these values from their own boot environment. At workspace
+activation, the Orchestrator stores the browser-safe environment and effective
+policies with that immutable deployment. Connection credentials and adapter
+options remain runner-local and are never copied into the manifest.
 
 ## When To Use Manifest Functions
 
@@ -52,6 +53,7 @@ Favn uses this flow:
 ```text
 authoring modules
   + config :favn, execution_pools: [...]
+  + config :favn, connections: [..., circuit_breaker: ...]
   -> Favn DSL declarations
   -> Favn.build_manifest/1
   -> Favn.prepare_manifest_publication/2
@@ -140,9 +142,10 @@ A manifest can include:
 - effective freshness, window, coverage, timezone provenance, and target descriptors
 - JSON-safe asset and pipeline settings
 - runtime config requirements
-- schema 16 and runner protocol 13 data used by the runtime
+- schema 17 and runner protocol 13 data used by the runtime
 - the exact operator-supplied `runner_releases` pool-to-release map
 - validated execution-pool defaults used by referenced assets and pipelines
+- validated circuit policy for published connections, without adapter values or secrets
 
 Execution packages contain the full SQL templates, runtime-input resolver refs,
 typed output contracts, and executable generated/custom checks. They are not a

@@ -4,6 +4,7 @@ defmodule Favn.Manifest.Rehydrate do
   """
 
   alias Favn.Asset.RelationInput
+  alias Favn.Connection.CircuitPolicySet
   alias Favn.Coverage.Effective, as: EffectiveCoverage
   alias Favn.Freshness.Policy, as: FreshnessPolicy
   alias Favn.ExecutionPool.PolicySet
@@ -81,6 +82,10 @@ defmodule Favn.Manifest.Rehydrate do
       runner_contract_version: field_value(value, :runner_contract_version),
       runner_releases: value |> field_value(:runner_releases, %{}) |> plain_map(),
       execution_pools: value |> field_value(:execution_pools, %{}) |> build_execution_pools!(),
+      connection_circuits:
+        value
+        |> field_value(:connection_circuits)
+        |> build_connection_circuits!(field_value(value, :schema_version)),
       environment:
         value
         |> field_value(:environment)
@@ -111,6 +116,20 @@ defmodule Favn.Manifest.Rehydrate do
 
       {:error, reason} ->
         raise ArgumentError, "invalid execution-pool catalogue: #{inspect(reason)}"
+    end
+  end
+
+  defp build_connection_circuits!(nil, schema_version)
+       when is_integer(schema_version) and schema_version < 17,
+       do: %{}
+
+  defp build_connection_circuits!(value, _schema_version) do
+    case CircuitPolicySet.new(value) do
+      {:ok, policies} ->
+        policies
+
+      {:error, reason} ->
+        raise ArgumentError, "invalid connection circuit catalogue: #{inspect(reason)}"
     end
   end
 

@@ -2,6 +2,8 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
   use ExUnit.Case, async: false
 
   alias Favn.Backfill.RangeResolver
+  alias Favn.Connection.CircuitPolicySet
+  alias Favn.ExecutionPool.PolicySet
   alias Favn.Manifest
   alias Favn.Manifest.Asset
   alias Favn.Manifest.Pipeline
@@ -30,8 +32,8 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
     assert {:ok, payload} = RunSnapshotCodec.encode_run(run)
     decoded = Jason.decode!(payload)
 
-    assert decoded["format"] == "favn.run_snapshot.storage.v4"
-    assert decoded["schema_version"] == 4
+    assert decoded["format"] == "favn.run_snapshot.storage.v5"
+    assert decoded["schema_version"] == 5
     assert decoded["runner_releases"] == version.runner_releases
 
     assert decoded["asset_ref"] == %{
@@ -55,6 +57,61 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
     assert restored.id == run.id
     assert restored.asset_ref == {__MODULE__.Asset, :asset}
     assert restored.status == :pending
+  end
+
+  test "round-trips complete policy snapshots outside generic metadata bounds" do
+    version = manifest_version("mv_run_policy_snapshot", __MODULE__.Asset)
+
+    execution_pools =
+      Map.new(1..75, fn index ->
+        {"pool_#{index}", %{"max_concurrency" => index, "circuit_breaker" => nil}}
+      end)
+
+    connection_circuits =
+      1..75
+      |> Map.new(fn index ->
+        {"connection_#{index}", %{"failure_threshold" => index, "probe_after_ms" => 10_000}}
+      end)
+      |> Map.put("secret_store", %{"failure_threshold" => 5, "probe_after_ms" => 20_000})
+      |> Map.put("warehouse_url", %{"failure_threshold" => 6, "probe_after_ms" => 30_000})
+
+    assert {:ok, execution_pools} = PolicySet.new(execution_pools)
+    assert {:ok, connection_circuits} = CircuitPolicySet.new(connection_circuits)
+
+    run =
+      "run_policy_snapshot"
+      |> run_state(version, __MODULE__.Asset)
+      |> Map.put(:metadata, %{
+        request_id: "request-policy-snapshot",
+        execution_pool_policy: PolicySet.to_map(execution_pools),
+        connection_circuit_policy: CircuitPolicySet.to_map(connection_circuits)
+      })
+      |> RunState.with_snapshot_hash()
+
+    assert {:ok, payload} = RunSnapshotCodec.encode_run(run)
+    dto = Jason.decode!(payload)
+
+    assert map_size(dto["execution_pool_policy"]) == 75
+    assert map_size(dto["connection_circuit_policy"]) == 77
+    refute Map.has_key?(dto["metadata"], "execution_pool_policy")
+    refute Map.has_key?(dto["metadata"], "connection_circuit_policy")
+    assert dto["connection_circuit_policy"]["secret_store"]["failure_threshold"] == 5
+    assert dto["connection_circuit_policy"]["warehouse_url"]["failure_threshold"] == 6
+
+    assert {:ok, manifest_record} = ManifestCodec.to_record(version)
+
+    assert {:ok, restored} =
+             RunSnapshotCodec.decode_run(
+               %{run_blob: payload, manifest_version_id: version.manifest_version_id},
+               manifest_record
+             )
+
+    assert map_size(restored.metadata.execution_pool_policy) == 75
+    assert map_size(restored.metadata.connection_circuit_policy) == 77
+    assert restored.metadata.connection_circuit_policy["secret_store"]["failure_threshold"] == 5
+    assert restored.metadata.connection_circuit_policy["warehouse_url"]["failure_threshold"] == 6
+    refute Map.has_key?(restored.metadata, "execution_pool_policy")
+    refute Map.has_key?(restored.metadata, "connection_circuit_policy")
   end
 
   test "round-trips canonical refresh policy refs in run metadata" do

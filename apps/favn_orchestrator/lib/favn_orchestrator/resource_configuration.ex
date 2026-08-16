@@ -1,89 +1,70 @@
 defmodule FavnOrchestrator.ResourceConfiguration do
   @moduledoc """
-  Normalizes Favn-owned resource circuit policies.
+  Resolves Favn-owned circuit policy from an explicit run snapshot.
 
-  Execution-pool policy comes from the persisted workspace deployment.
-  Connection policy remains colocated with boot-time connection configuration.
-  Both remain orchestrator policy and never become arbitrary adapter options.
+  Both execution-pool and connection policies originate in immutable workspace
+  deployment configuration. This module never reads the consumer application's
+  local environment.
   """
 
-  alias Favn.CircuitBreaker.Policy
+  alias Favn.Connection.CircuitPolicySet
   alias Favn.ExecutionPool.PolicySet
   alias Favn.Resource.Ref
 
-  @doc "Returns the configured circuit-breaker policy for a resource."
-  @spec circuit_breaker(Ref.t()) :: {:ok, Policy.t() | nil} | {:error, term()}
-  def circuit_breaker(%Ref{kind: :execution_pool}),
-    do: {:error, :execution_pool_policy_required}
+  @enforce_keys [:execution_pools, :connection_circuits]
+  defstruct @enforce_keys
 
-  def circuit_breaker(%Ref{kind: :connection, name: name}),
-    do: configured_policy(:connections, name)
+  @type t :: %__MODULE__{
+          execution_pools: PolicySet.t(),
+          connection_circuits: CircuitPolicySet.t()
+        }
 
-  @doc "Returns a circuit policy using an explicit deployment execution-pool catalogue."
-  @spec circuit_breaker(Ref.t(), map()) :: {:ok, Policy.t() | nil} | {:error, term()}
-  def circuit_breaker(%Ref{kind: :execution_pool, name: name}, execution_pools) do
-    with {:ok, policies} <- PolicySet.new(execution_pools) do
-      case Map.fetch(policies, name) do
-        {:ok, execution_pool_policy} -> {:ok, execution_pool_policy.circuit_breaker}
-        :error -> {:ok, nil}
-      end
+  @doc "Validates one complete run policy snapshot for constant-time resource lookups."
+  @spec new(map()) :: {:ok, t()} | {:error, term()}
+  def new(policies) when is_map(policies) do
+    with {:ok, execution_pools} <-
+           policies |> field(:execution_pools, %{}) |> PolicySet.new(),
+         {:ok, connection_circuits} <-
+           policies |> field(:connection_circuits, %{}) |> CircuitPolicySet.new() do
+      {:ok,
+       %__MODULE__{
+         execution_pools: execution_pools,
+         connection_circuits: connection_circuits
+       }}
     end
   end
 
-  def circuit_breaker(%Ref{kind: :connection} = ref, _execution_pools),
-    do: circuit_breaker(ref)
+  def new(_policies), do: {:error, :invalid_resource_configuration}
 
-  @doc "Returns a resource only when it has an enabled circuit breaker."
-  @spec enabled_resource(Ref.t()) :: {:ok, {Ref.t(), Policy.t()} | nil} | {:error, term()}
-  def enabled_resource(%Ref{} = ref) do
-    case circuit_breaker(ref) do
-      {:ok, %Policy{} = policy} -> {:ok, {ref, policy}}
-      {:ok, nil} -> {:ok, nil}
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  defp configured_policy(root, name) do
-    with {:ok, resources} <- resource_entries(root),
-         {:ok, config} <- fetch_resource(resources, name) do
-      config
-      |> field(:circuit_breaker)
-      |> Policy.new()
-      |> case do
-        {:ok, policy} -> {:ok, policy}
-        {:error, reason} -> {:error, {:invalid_resource_circuit_breaker, root, name, reason}}
-      end
-    else
+  @doc "Returns the snapshotted circuit-breaker policy for a resource."
+  @spec circuit_breaker(Ref.t(), t()) :: {:ok, Favn.CircuitBreaker.Policy.t() | nil}
+  def circuit_breaker(
+        %Ref{kind: :execution_pool, name: name},
+        %__MODULE__{execution_pools: execution_pools}
+      ) do
+    case Map.fetch(execution_pools, name) do
+      {:ok, execution_pool_policy} -> {:ok, execution_pool_policy.circuit_breaker}
       :error -> {:ok, nil}
-      {:error, reason} -> {:error, reason}
     end
   end
 
-  defp resource_entries(root) do
-    case Application.get_env(:favn, root, []) do
-      entries when is_list(entries) or is_map(entries) -> {:ok, entries}
-      value -> {:error, {:invalid_resource_configuration, root, value}}
+  def circuit_breaker(
+        %Ref{kind: :connection, name: name},
+        %__MODULE__{connection_circuits: connections}
+      ) do
+    {:ok, Map.get(connections, to_string(name))}
+  end
+
+  @doc "Returns a resource only when its snapshotted circuit breaker is enabled."
+  @spec enabled_resource(Ref.t(), t()) ::
+          {:ok, {Ref.t(), Favn.CircuitBreaker.Policy.t()} | nil}
+  def enabled_resource(%Ref{} = ref, %__MODULE__{} = configuration) do
+    case circuit_breaker(ref, configuration) do
+      {:ok, %Favn.CircuitBreaker.Policy{} = policy} -> {:ok, {ref, policy}}
+      {:ok, nil} -> {:ok, nil}
     end
   end
 
-  defp fetch_resource(entries, name) do
-    normalized_name = to_string(name)
-
-    Enum.find_value(entries, :error, fn
-      {entry_name, value} when is_atom(entry_name) or is_binary(entry_name) ->
-        if to_string(entry_name) == normalized_name, do: {:ok, value}, else: false
-
-      _invalid ->
-        false
-    end)
-  end
-
-  defp field(value, key) when is_list(value) do
-    if Keyword.keyword?(value), do: Keyword.get(value, key), else: nil
-  end
-
-  defp field(value, key) when is_map(value),
-    do: Map.get(value, key, Map.get(value, Atom.to_string(key)))
-
-  defp field(_value, _key), do: nil
+  defp field(map, key, default) when is_map(map),
+    do: Map.get(map, key, Map.get(map, Atom.to_string(key), default))
 end

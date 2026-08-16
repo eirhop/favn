@@ -15,16 +15,16 @@ defmodule Favn.Manifest.CompatibilityTest do
   end
 
   test "rejects the previous schema version" do
-    manifest = current_manifest(%{schema_version: 15})
+    manifest = current_manifest(%{schema_version: 16})
 
-    assert {:error, {:unsupported_schema_version, 15, 16}} =
+    assert {:error, {:unsupported_schema_version, 16, 17}} =
              Compatibility.validate_manifest(manifest)
   end
 
   test "rejects unsupported schema version" do
-    manifest = current_manifest(%{schema_version: 17})
+    manifest = current_manifest(%{schema_version: 18})
 
-    assert {:error, {:unsupported_schema_version, 17, 16}} =
+    assert {:error, {:unsupported_schema_version, 18, 17}} =
              Compatibility.validate_manifest(manifest)
   end
 
@@ -32,6 +32,13 @@ defmodule Favn.Manifest.CompatibilityTest do
     manifest = Map.delete(current_manifest(), :execution_pools)
 
     assert {:error, {:missing_manifest_field, :execution_pools}} =
+             Compatibility.validate_manifest(manifest)
+  end
+
+  test "requires connection circuit policy in the current manifest contract" do
+    manifest = Map.delete(current_manifest(), :connection_circuits)
+
+    assert {:error, {:missing_manifest_field, :connection_circuits}} =
              Compatibility.validate_manifest(manifest)
   end
 

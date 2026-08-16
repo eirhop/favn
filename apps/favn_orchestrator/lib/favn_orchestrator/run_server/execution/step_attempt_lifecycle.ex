@@ -517,6 +517,8 @@ defmodule FavnOrchestrator.RunServer.Execution.StepAttemptLifecycle do
     |> Map.delete("pipeline_context")
     |> Map.delete(:execution_pool_policy)
     |> Map.delete("execution_pool_policy")
+    |> Map.delete(:connection_circuit_policy)
+    |> Map.delete("connection_circuit_policy")
   end
 
   defp work_started_at(%RunState{metadata: metadata, inserted_at: inserted_at}) do

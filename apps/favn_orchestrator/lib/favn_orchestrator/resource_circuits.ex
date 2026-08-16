@@ -118,11 +118,11 @@ defmodule FavnOrchestrator.ResourceCircuits do
   end
 
   defp requests(run, work, index) do
-    with {:ok, execution_pools} <- execution_pool_policy(run) do
+    with {:ok, policies} <- resource_policies(run) do
       work
       |> resource_refs(index)
       |> Enum.reduce_while({:ok, []}, fn ref, {:ok, acc} ->
-        case ResourceConfiguration.circuit_breaker(ref, execution_pools) do
+        case ResourceConfiguration.circuit_breaker(ref, policies) do
           {:ok, nil} ->
             if ref.kind == :execution_pool,
               do: {:cont, {:ok, [%ResourceCircuitRequest{resource: ref, policy: nil} | acc]}},
@@ -130,9 +130,6 @@ defmodule FavnOrchestrator.ResourceCircuits do
 
           {:ok, policy} ->
             {:cont, {:ok, [%ResourceCircuitRequest{resource: ref, policy: policy} | acc]}}
-
-          {:error, reason} ->
-            {:halt, {:error, reason}}
         end
       end)
       |> then(fn
@@ -142,10 +139,17 @@ defmodule FavnOrchestrator.ResourceCircuits do
     end
   end
 
-  defp execution_pool_policy(%RunState{metadata: metadata}) when is_map(metadata) do
-    metadata
-    |> Map.get(:execution_pool_policy, Map.get(metadata, "execution_pool_policy", %{}))
-    |> Favn.ExecutionPool.PolicySet.new()
+  defp resource_policies(%RunState{metadata: metadata}) when is_map(metadata) do
+    ResourceConfiguration.new(%{
+      execution_pools:
+        Map.get(metadata, :execution_pool_policy, Map.get(metadata, "execution_pool_policy", %{})),
+      connection_circuits:
+        Map.get(
+          metadata,
+          :connection_circuit_policy,
+          Map.get(metadata, "connection_circuit_policy", %{})
+        )
+    })
   end
 
   defp resource_refs(work, index) do

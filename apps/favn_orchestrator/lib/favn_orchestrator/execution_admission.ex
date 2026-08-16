@@ -254,7 +254,7 @@ defmodule FavnOrchestrator.ExecutionAdmission do
   end
 
   defp execution_lease_ttl_ms do
-    :favn
+    :favn_orchestrator
     |> Application.get_env(:execution_lease_ttl_ms, @default_lease_ttl_ms)
     |> case do
       ttl when is_integer(ttl) and ttl > 0 -> ttl
