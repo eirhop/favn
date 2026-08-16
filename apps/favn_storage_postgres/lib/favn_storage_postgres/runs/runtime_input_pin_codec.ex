@@ -1,6 +1,7 @@
 defmodule FavnStoragePostgres.Runs.RuntimeInputPinCodec do
   @moduledoc false
 
+  alias Favn.RuntimeInput.Identity
   alias Favn.RuntimeInput.Pin
   alias FavnOrchestrator.Storage.PayloadCodec
 
@@ -26,7 +27,8 @@ defmodule FavnStoragePostgres.Runs.RuntimeInputPinCodec do
   @spec encode(Pin.t(), scope(), binary()) ::
           {:ok, %{payload: binary(), payload_fingerprint: binary()}} | {:error, term()}
   def encode(%Pin{} = pin, scope, key) when byte_size(key) == 32 do
-    with :ok <- validate_scope(pin, scope),
+    with :ok <- Pin.validate_input_identity(pin),
+         :ok <- validate_scope(pin, scope),
          {:ok, plaintext} <- encode_plaintext(pin),
          :ok <- validate_size(plaintext),
          {:ok, aad} <- aad(scope) do
@@ -117,24 +119,26 @@ defmodule FavnStoragePostgres.Runs.RuntimeInputPinCodec do
          {:ok, source_node_key} <- decode_optional(dto["source_node_key"]),
          {:ok, inserted_at} <- decode_datetime(dto["inserted_at"]),
          {:ok, updated_at} <- decode_datetime(dto["updated_at"]),
-         true <- valid_decoded_fields?(dto, node_key, params, metadata, sensitive_params) do
-      {:ok,
-       %Pin{
-         run_id: dto["run_id"],
-         node_key: node_key,
-         resolver: resolver,
-         params: params,
-         input_identity: dto["input_identity"],
-         metadata: metadata,
-         sensitive_params: sensitive_params,
-         payload_fingerprint: dto["payload_fingerprint"],
-         source_run_id: dto["source_run_id"],
-         source_node_key: source_node_key,
-         source_payload_fingerprint: dto["source_payload_fingerprint"],
-         schema_version: 1,
-         inserted_at: inserted_at,
-         updated_at: updated_at
-       }}
+         true <- valid_decoded_fields?(dto, node_key, params, metadata, sensitive_params),
+         pin =
+           %Pin{
+             run_id: dto["run_id"],
+             node_key: node_key,
+             resolver: resolver,
+             params: params,
+             input_identity: dto["input_identity"],
+             metadata: metadata,
+             sensitive_params: sensitive_params,
+             payload_fingerprint: dto["payload_fingerprint"],
+             source_run_id: dto["source_run_id"],
+             source_node_key: source_node_key,
+             source_payload_fingerprint: dto["source_payload_fingerprint"],
+             schema_version: 1,
+             inserted_at: inserted_at,
+             updated_at: updated_at
+           },
+         :ok <- Identity.validate_stored(pin.input_identity) do
+      {:ok, pin}
     else
       false -> {:error, :invalid_runtime_input_pin_payload}
       {:error, reason} -> {:error, reason}
@@ -173,8 +177,7 @@ defmodule FavnStoragePostgres.Runs.RuntimeInputPinCodec do
   defp valid_decoded_fields?(dto, node_key, params, metadata, sensitive_params) do
     valid_identity?(dto["run_id"]) and is_tuple(node_key) and is_map(params) and is_map(metadata) and
       is_list(sensitive_params) and Enum.all?(sensitive_params, &(is_atom(&1) or is_binary(&1))) and
-      valid_identity?(dto["input_identity"]) and valid_identity?(dto["payload_fingerprint"]) and
-      optional_identity?(dto["source_run_id"]) and
+      valid_identity?(dto["payload_fingerprint"]) and optional_identity?(dto["source_run_id"]) and
       optional_identity?(dto["source_payload_fingerprint"])
   end
 

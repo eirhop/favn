@@ -4631,6 +4631,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert {:ok, _created} = RunStore.create_run(command)
 
     node_key = {{MyApp.Asset, :asset}, nil}
+    input_identity = runtime_input_identity(1_024)
 
     {:ok, resolution} =
       Resolution.new(
@@ -4644,7 +4645,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
           datetime: ~U[2026-07-01 12:34:56.123456Z],
           decimal: Decimal.new(-1, 12_340, -3)
         },
-        input_identity: "input-42",
+        input_identity: input_identity,
         metadata: %{source: :integration_test},
         sensitive_params: [:token]
       )
@@ -4689,6 +4690,26 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
              })
 
     assert fetched == pin
+    assert fetched.input_identity == input_identity
+
+    oversized_identity = runtime_input_identity(1_025)
+    oversized_pin = %{pin | input_identity: oversized_identity}
+
+    assert {:error,
+            %Error{
+              kind: :invalid,
+              message: message,
+              details: %{field: :input_identity, limit_bytes: 1_024, reason: :too_large}
+            } = identity_error} =
+             RunStore.pin_runtime_inputs(%{
+               pin_command
+               | command_id: "pin-oversized:" <> run.id,
+                 pins: [oversized_pin]
+             })
+
+    assert message =~ "input_identity"
+    assert message =~ "1024"
+    refute inspect(identity_error) =~ oversized_identity
 
     row = Repo.one!(from(stored in RuntimeInputPinRow, where: stored.run_id == ^run.id))
     refute row.payload =~ "must-remain-encrypted"
@@ -4836,11 +4857,13 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
         sensitive_params: [:token]
       )
 
+    current_identity = runtime_input_identity(1_024)
+
     {:ok, current_resolution} =
       Resolution.new(
         resolver: MyApp.RuntimeInputResolver,
         params: %{account_id: 2, token: "current-secret"},
-        input_identity: "current-input",
+        input_identity: current_identity,
         sensitive_params: [:token]
       )
 
@@ -4866,6 +4889,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     end
 
     parent = self()
+    current_command = command.(current_assignment, "current", current_pin)
 
     stale =
       Task.async(fn ->
@@ -4888,9 +4912,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
 
         send(parent, :current_started)
 
-        FavnStoragePostgres.RunnerTasks.Store.persist_runtime_inputs(
-          command.(current_assignment, "current", current_pin)
-        )
+        FavnStoragePostgres.RunnerTasks.Store.persist_runtime_inputs(current_command)
       end)
 
     send(stale.pid, :go)
@@ -4904,12 +4926,17 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert persisted_task.runtime_input_payload_fingerprint ==
              Base.decode16!(current_pin.payload_fingerprint, case: :mixed)
 
+    assert {:ok, ^persisted_task} =
+             FavnStoragePostgres.RunnerTasks.Store.persist_runtime_inputs(current_command)
+
     assert {:ok, [^current_pin]} =
              RunStore.get_runtime_inputs(%GetRuntimeInputs{
                workspace_context: fixture.workspace_context,
                run_id: run.id,
                node_keys: [node_key]
              })
+
+    assert current_pin.input_identity == current_identity
 
     # A resolved resolution is pinned and stays protected: the same fenced
     # assignment cannot replace it with different inputs.
@@ -10510,6 +10537,11 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     }
 
     {plan, keys}
+  end
+
+  defp runtime_input_identity(size) do
+    prefix = "https://inputs.example/"
+    prefix <> String.duplicate("i", size - byte_size(prefix))
   end
 
   defp restore_app_env(key, nil), do: Application.delete_env(:favn_orchestrator, key)

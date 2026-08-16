@@ -208,8 +208,10 @@ defmodule FavnRunner.RunnerAgentTest do
       {:reply, {:ok, ack}, %{state | runtime_inputs_seen: state.runtime_inputs_seen + 1}}
     end
 
-    def handle_call({:request, %RunnerTask.Started{}}, _from, state),
-      do: {:reply, {:error, :stop_after_runtime_input_replay}, state}
+    def handle_call({:request, %RunnerTask.Started{} = started}, _from, state) do
+      send(state.owner, {:runtime_input_task_started, started})
+      {:reply, {:ok, %{status: :running}}, state}
+    end
 
     def handle_call({:request, %RunnerTask.Result{} = result}, _from, state) do
       ack = %RunnerTask.ResultAck{
@@ -1664,8 +1666,12 @@ defmodule FavnRunner.RunnerAgentTest do
 
   test "runtime input resolution replays the exact committed payload after a lost acknowledgement" do
     :ok = FavnRunner.TaskResultBuffer.reset()
+    Application.put_env(:favn_runner, :announcing_asset_owner, self())
+    on_exit(fn -> Application.delete_env(:favn_runner, :announcing_asset_owner) end)
+
     {version, work} = runtime_input_version_and_work()
     {:ok, resolver_calls} = Agent.start_link(fn -> 0 end)
+    input_identity = runtime_input_identity(1_024)
 
     resolver = fn _work ->
       call = Agent.get_and_update(resolver_calls, fn count -> {count + 1, count + 1} end)
@@ -1673,7 +1679,7 @@ defmodule FavnRunner.RunnerAgentTest do
       Favn.RuntimeInput.Resolution.new(%{
         resolver: __MODULE__,
         params: %{region: if(call == 1, do: "eu", else: "us")},
-        input_identity: "settings-#{call}",
+        input_identity: input_identity,
         metadata: %{},
         sensitive_params: []
       })
@@ -1708,7 +1714,13 @@ defmodule FavnRunner.RunnerAgentTest do
     assert active.task_id == first.task_id
     assert_receive {:runtime_inputs_replayed, %RunnerTask.RuntimeInputsResolved{} = replay}, 2_000
     assert replay == first
+    assert first.runtime_inputs.input_identity == input_identity
+    assert byte_size(first.runtime_inputs.input_identity) == 1_024
     assert Agent.get(resolver_calls, & &1) == 1
+
+    assert_receive {:runtime_input_task_started, %RunnerTask.Started{}}, 2_000
+    assert_receive {:asset_running, worker}, 2_000
+    assert Process.alive?(worker)
   end
 
   test "real task executor cancellation reaches a valid persisted acknowledgement" do
@@ -2264,8 +2276,8 @@ defmodule FavnRunner.RunnerAgentTest do
 
   defp runtime_input_version_and_work do
     asset = %Favn.Manifest.Asset{
-      ref: {__MODULE__.SlowAsset, :asset},
-      module: __MODULE__.SlowAsset,
+      ref: {__MODULE__.AnnouncingAsset, :asset},
+      module: __MODULE__.AnnouncingAsset,
       name: :asset,
       type: :elixir,
       execution: %{entrypoint: :asset, arity: 1}
@@ -2294,10 +2306,15 @@ defmodule FavnRunner.RunnerAgentTest do
       asset_ref: asset.ref,
       asset_step_id: "step_runtime_input_replay",
       attempt: 1,
-      metadata: %{}
+      metadata: %{node_key: {asset.ref, nil}}
     }
 
     {version, work}
+  end
+
+  defp runtime_input_identity(size) do
+    prefix = "https://inputs.example/"
+    prefix <> String.duplicate("i", size - byte_size(prefix))
   end
 
   defp assert_eventually(fun, attempts \\ 50)

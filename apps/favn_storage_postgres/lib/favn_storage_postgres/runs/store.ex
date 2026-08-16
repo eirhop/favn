@@ -6,6 +6,7 @@ defmodule FavnStoragePostgres.Runs.Store do
   import Ecto.Query
 
   alias Ecto.Adapters.SQL
+  alias Favn.RuntimeInput.Identity
   alias Favn.RuntimeInput.Pin
   alias FavnOrchestrator.Persistence.CapacityIdentity
   alias FavnOrchestrator.Persistence.Commands.CommitRunTransition
@@ -711,6 +712,9 @@ defmodule FavnStoragePostgres.Runs.Store do
         {:error,
          Error.new(:limit_exceeded, "runtime input pin batch must contain 1 to 1000 pins")}
 
+      identity_error = runtime_input_pin_identity_error(command.pins) ->
+        {:error, identity_error}
+
       not Enum.all?(command.pins, &valid_runtime_input_pin?(&1, command.run_id)) ->
         {:error, Error.new(:invalid, "runtime input pin batch is invalid")}
 
@@ -785,12 +789,28 @@ defmodule FavnStoragePostgres.Runs.Store do
   defp valid_runtime_input_pin?(%Favn.RuntimeInput.Pin{} = pin, run_id) do
     pin.run_id == run_id and is_tuple(pin.node_key) and is_atom(pin.resolver) and
       is_map(pin.params) and is_map(pin.metadata) and is_list(pin.sensitive_params) and
-      valid_identity?(pin.input_identity) and valid_identity?(pin.payload_fingerprint) and
-      pin.schema_version == 1 and match?(%DateTime{}, pin.inserted_at) and
+      valid_identity?(pin.payload_fingerprint) and pin.schema_version == 1 and
+      match?(%DateTime{}, pin.inserted_at) and
       match?(%DateTime{}, pin.updated_at)
   end
 
   defp valid_runtime_input_pin?(_pin, _run_id), do: false
+
+  defp runtime_input_pin_identity_error(pins) do
+    Enum.find_value(pins, fn
+      %Pin{} = pin ->
+        case Pin.validate_input_identity(pin) do
+          :ok ->
+            nil
+
+          {:error, {:invalid_runtime_input_identity, details}} ->
+            Error.new(:invalid, Identity.error_message(), details: details)
+        end
+
+      _invalid ->
+        nil
+    end)
+  end
 
   defp duplicate_node_keys?(pins) do
     keys = Enum.map(pins, & &1.node_key)

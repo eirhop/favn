@@ -7,6 +7,8 @@ defmodule Favn.RuntimeInput.Resolution do
   the dedicated runtime-input pin store.
   """
 
+  alias Favn.RuntimeInput.Identity
+
   @derive {Inspect, except: [:params]}
   @enforce_keys [
     :resolver,
@@ -91,8 +93,7 @@ defmodule Favn.RuntimeInput.Resolution do
   defp validate_map(value, _field) when is_map(value), do: :ok
   defp validate_map(_value, field), do: {:error, {:invalid_runtime_input_resolution, field}}
 
-  defp validate_identity(value) when is_binary(value) and value != "", do: :ok
-  defp validate_identity(_value), do: {:error, :invalid_runtime_input_identity}
+  defp validate_identity(value), do: Identity.validate(value)
 
   defp validate_sensitive_params(values) when is_list(values) do
     if Enum.all?(values, &(is_atom(&1) or is_binary(&1))),
