@@ -97,6 +97,7 @@ defmodule FavnOrchestrator do
                revoke_operator_managed_session: 2,
                change_operator_password: 3,
                page_operator_audit: 2,
+               active_workspace_configuration: 1,
                active_asset_catalogue: 1,
                active_pipeline_catalogue: 1,
                active_pipeline_detail: 2,

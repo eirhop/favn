@@ -18,8 +18,8 @@ defmodule FavnView.LogsLiveSupport do
              [target_label: 1, run_context_from_public: 3, asset_context_from_public: 2]}
   @dialyzer {:no_match,
              [
-               run_context: 2,
-               asset_context: 3,
+               run_context: 3,
+               asset_context: 4,
                load_initial_logs: 2,
                replay_gap: 1,
                error_label: 1

@@ -93,8 +93,8 @@ defmodule FavnOrchestrator.ConnectionCircuitPolicy do
   @spec configuration_key() :: String.t()
   def configuration_key, do: @configuration_key
 
-  defp field(map, key) do
-    atom_key = if is_binary(key), do: safe_existing_atom(key), else: key
+  defp field(map, key) when is_binary(key) do
+    atom_key = safe_existing_atom(key)
 
     cond do
       Map.has_key?(map, key) -> Map.get(map, key)
