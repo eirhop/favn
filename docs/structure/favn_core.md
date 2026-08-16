@@ -65,7 +65,7 @@ Integration boundaries opt in explicitly; DuckDB session-script parameters are
 the first consumer. Providers return bounded errors, refs have redacted Inspect
 output, and secret refs are tracked by connection redaction.
 
-Manifest schema 15 and runner contract 13 are the only supported versions.
+Manifest schema 16 and runner contract 13 are the only supported versions.
 Every current manifest includes a canonical `runner_releases` map from
 operator-defined logical pool names to verified immutable runner releases; the
 complete map participates in the manifest content hash. It also contains a

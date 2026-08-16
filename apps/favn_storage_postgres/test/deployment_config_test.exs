@@ -2,6 +2,7 @@ defmodule FavnStoragePostgres.DeploymentConfigTest do
   use ExUnit.Case, async: true
 
   alias Favn.Manifest
+  alias Favn.Manifest.Environment
   alias FavnOrchestrator.ExecutionPoolPolicy
   alias FavnStoragePostgres.DeploymentConfig
 
@@ -37,6 +38,51 @@ defmodule FavnStoragePostgres.DeploymentConfigTest do
   test "rejects atom and string spellings of the same configuration key" do
     assert {:error, :duplicate_configuration_keys} =
              DeploymentConfig.validate(%{"resources" => %{}, resources: %{}})
+  end
+
+  test "version two requires a validated workspace environment" do
+    environment = Environment.new!(default_timezone: "Europe/Oslo")
+
+    assert {:ok, configuration} =
+             FavnOrchestrator.WorkspaceConfiguration.put(%{"resources" => %{}}, %Manifest{
+               environment: environment
+             })
+
+    assert {:ok, ^configuration} = DeploymentConfig.validate(configuration)
+
+    assert {:error, :workspace_environment_required} =
+             DeploymentConfig.validate(%{"schema_version" => 2, "resources" => %{}})
+
+    assert {:error, {:workspace_environment_requires_schema_version, 2}} =
+             DeploymentConfig.validate(%{
+               "schema_version" => 1,
+               "resources" => %{},
+               "workspace_environment" => %{"arbitrary" => "json"}
+             })
+
+    invalid =
+      put_in(
+        configuration,
+        ["workspace_environment", "environment", "default_timezone"],
+        "Invalid/Timezone"
+      )
+
+    assert {:error, {:invalid_timezone, "Invalid/Timezone"}} =
+             DeploymentConfig.validate(invalid)
+  end
+
+  test "workspace environment normalizes an atom schema key before validation" do
+    environment = Environment.new!(default_timezone: "Europe/Oslo")
+
+    assert {:ok, configuration} =
+             FavnOrchestrator.WorkspaceConfiguration.put(
+               %{schema_version: 1, resources: %{}},
+               %Manifest{environment: environment}
+             )
+
+    refute Map.has_key?(configuration, :schema_version)
+    assert configuration["schema_version"] == 2
+    assert {:ok, ^configuration} = DeploymentConfig.validate(configuration)
   end
 
   test "the largest accepted pool catalogue and override set fits durable configuration" do

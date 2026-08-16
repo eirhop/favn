@@ -25,6 +25,7 @@ defmodule FavnOrchestrator.Manifests do
   alias FavnOrchestrator.Persistence.WorkspaceContext
   alias FavnOrchestrator.RuntimeConfig
   alias FavnOrchestrator.TargetCompatibilityPlanner
+  alias FavnOrchestrator.WorkspaceConfiguration
 
   @type details :: %{required(:manifest) => map(), required(:targets) => map()}
 
@@ -105,6 +106,8 @@ defmodule FavnOrchestrator.Manifests do
              previous_configuration,
              Keyword.get(opts, :execution_pool_policy)
            ),
+         {:ok, deployment_configuration} <-
+           WorkspaceConfiguration.put(resolved_policy.configuration, version.manifest),
          {:ok, planner} <- deployment_selection(version, selection),
          {:ok, target_compatibilities} <-
            TargetCompatibilityPlanner.plan(platform_context, context, version, planner) do
@@ -124,7 +127,7 @@ defmodule FavnOrchestrator.Manifests do
           opts
           |> Keyword.delete(:execution_pool_policy)
           |> Keyword.put(:expected_active_deployment_id, expected_active_deployment_id)
-          |> Keyword.put(:configuration, resolved_policy.configuration)
+          |> Keyword.put(:configuration, deployment_configuration)
           |> Keyword.put(:capacity_scopes, capacity_scopes)
           |> Keyword.put(:target_compatibilities, target_compatibilities)
           |> Keyword.put(:activation_diagnostics, diagnostics)
@@ -273,6 +276,11 @@ defmodule FavnOrchestrator.Manifests do
       schema_version: version.schema_version,
       runner_contract_version: version.runner_contract_version,
       runner_releases: version.runner_releases,
+      environment: %{
+        default_timezone: version.manifest.environment.default_timezone,
+        default_timezone_source: version.manifest.environment.default_timezone_source,
+        coverage_scope: version.manifest.environment.coverage_scope
+      },
       execution_pools: PolicySet.diagnostics(version.manifest.execution_pools),
       asset_count: length(List.wrap(version.manifest.assets)),
       pipeline_count: length(List.wrap(version.manifest.pipelines)),

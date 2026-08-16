@@ -209,11 +209,12 @@ defmodule Favn.Manifest.Generator do
              runner_contract_version: Compatibility.current_runner_contract_version(),
              runner_releases: runner_releases,
              execution_pools: execution_pools,
+             environment: environment,
              assets: assets,
              pipelines: pipelines,
              schedules: schedules,
              graph: graph,
-             metadata: %{environment: environment_metadata(environment)}
+             metadata: %{}
            },
            :ok <- Compatibility.validate_manifest(manifest) do
         {:ok, manifest, packages_by_ref |> Map.values() |> Enum.sort_by(& &1.content_hash)}
@@ -345,17 +346,6 @@ defmodule Favn.Manifest.Generator do
     |> Keyword.get(:execution_pools, %{})
     |> PolicySet.new()
   end
-
-  defp environment_metadata(%Environment{} = environment) do
-    %{
-      default_timezone: environment.default_timezone,
-      default_timezone_source: environment.default_timezone_source,
-      coverage_scope: encode_coverage_scope(environment.coverage_scope)
-    }
-  end
-
-  defp encode_coverage_scope(nil), do: nil
-  defp encode_coverage_scope(%{from: %Date{} = from}), do: %{from: Date.to_iso8601(from)}
 
   defp compile_assets(modules) when is_list(modules) do
     modules

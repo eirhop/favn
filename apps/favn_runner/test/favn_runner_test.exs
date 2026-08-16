@@ -222,7 +222,7 @@ defmodule FavnRunnerTest do
     refs = Enum.map(assets, & &1.ref)
 
     %Manifest{
-      schema_version: 15,
+      schema_version: 16,
       runner_contract_version: 13,
       runner_releases: %{"default" => FavnTestSupport.runner_release_id()},
       assets: assets,

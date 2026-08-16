@@ -57,12 +57,18 @@ config :favn,
   default_timezone: "Europe/Oslo"
 ```
 
-The fallback is `"Etc/UTC"`. The operator UI also renders timestamps in this
-timezone; persisted instants remain UTC. The value must be a valid IANA timezone;
-manifest construction fails when it is invalid. A timezone declared directly on a
-schedule, pipeline window, asset window, or calendar freshness policy overrides
-the default only for that declaration. These overrides are independent: a
-schedule timezone does not become the pipeline or asset timezone.
+The fallback is `"Etc/UTC"`. Manifest construction freezes the value and its
+source. Activation copies that non-secret environment into the workspace's
+immutable deployment configuration, and the operator UI reads it through the
+Orchestrator. This matters for prebuilt releases and for one View process serving
+workspaces with different timezones: neither runtime rereads the consumer app's
+local configuration. Persisted instants remain UTC.
+
+The value must be a valid IANA timezone; manifest construction fails when it is
+invalid. A timezone declared directly on a schedule, pipeline window, asset
+window, or calendar freshness policy overrides the default only for that
+declaration. These overrides are independent: a schedule timezone does not
+become the pipeline or asset timezone.
 
 Portable assets can declare their complete history while an environment narrows
 the beginning of expected coverage:
@@ -213,7 +219,7 @@ config :favn,
   ]
 ```
 
-This configuration is read by the consumer project while Favn builds schema-15
+This configuration is read by the consumer project while Favn builds schema-16
 manifest data. The pool catalogue is therefore published once with the assets
 that reference it; it is not copied into the prebuilt Orchestrator environment
 or the runner image.

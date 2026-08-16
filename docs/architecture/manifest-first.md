@@ -4,11 +4,11 @@ Reader: Favn contributors and documentation agents.
 
 Documentation type: explanation.
 
-Favn is manifest-first. Schema 15 has one compact manifest index containing the
+Favn is manifest-first. Schema 16 has one compact manifest index containing the
 saved description of what the user authored: assets, pipelines, schedules,
-dependencies, execution-pool defaults, schema version, runner contract version,
-and compact runtime metadata. SQL assets reference immutable execution packages
-by content hash.
+dependencies, the resolved authoring environment, execution-pool defaults,
+schema version, runner contract version, and compact runtime metadata. SQL assets
+reference immutable execution packages by content hash.
 
 The manifest is the handoff between authoring and runtime. User code creates a
 manifest. Runtime systems use a persisted manifest version. Runtime systems do
@@ -42,6 +42,13 @@ The runner executes work derived from that pinned version and one selected packa
 
 The manifest is data. It is not a scheduler, database, storage adapter, UI model,
 or runner process.
+
+Configuration follows the same handoff. Authoring-only inputs are validated and
+materialized into explicit manifest fields. Activation copies the browser-safe
+workspace environment and operator-approved policies into immutable deployment
+configuration. View reads that configuration through the public Orchestrator
+facade, so a prebuilt release never depends on the consumer application's local
+`Application` environment and one process can serve different workspaces safely.
 
 ## Ownership
 

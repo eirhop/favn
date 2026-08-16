@@ -19,7 +19,7 @@ defmodule FavnView.PipelineDetailLive do
   @dialyzer {:no_unused,
              [
                normalize_window_kind: 1,
-               pipeline_from_detail: 1,
+               pipeline_from_detail: 2,
                window_kind: 1,
                window_timezone: 1,
                pipeline_name: 1,
@@ -27,19 +27,25 @@ defmodule FavnView.PipelineDetailLive do
                window_label: 1,
                window_label: 2,
                status_label: 1,
-               last_run_label: 1
+               last_run_label: 2
              ]}
   @dialyzer {:no_match,
              [
                handle_event: 3,
-               load_pipeline: 2,
+               load_pipeline: 3,
                pipeline_from_state: 1,
                default_backfill_config: 1
              ]}
 
   @impl true
   def mount(%{"pipeline_id" => pipeline_id}, _session, socket) do
-    pipeline_state = load_pipeline(socket.assigns.current_scope.operator_context, pipeline_id)
+    pipeline_state =
+      load_pipeline(
+        socket.assigns.current_scope.operator_context,
+        pipeline_id,
+        socket.assigns.current_scope
+      )
+
     pipeline = pipeline_from_state(pipeline_state)
 
     socket =
@@ -208,12 +214,12 @@ defmodule FavnView.PipelineDetailLive do
     """
   end
 
-  defp load_pipeline(operator_context, pipeline_id) do
+  defp load_pipeline(operator_context, pipeline_id, timezone) do
     target_id = AssetRoute.from_param(pipeline_id)
 
     case Orchestrator.active_pipeline_detail(operator_context, target_id) do
       {:ok, detail} ->
-        {:ok, pipeline_from_detail(detail)}
+        {:ok, pipeline_from_detail(detail, timezone)}
 
       {:error, :not_found} ->
         {:not_found, pipeline_id}
@@ -240,7 +246,7 @@ defmodule FavnView.PipelineDetailLive do
 
   defp facade(key, default), do: Application.get_env(:favn_view, key, default)
 
-  defp pipeline_from_detail(detail) do
+  defp pipeline_from_detail(detail, timezone) do
     selected_assets = Map.get(detail, :selected_assets, [])
     status = Map.get(detail, :status, :unknown)
 
@@ -259,20 +265,20 @@ defmodule FavnView.PipelineDetailLive do
       can_backfill?: Map.get(detail, :can_backfill?, false),
       status: status,
       status_label: status_label(status),
-      last_run_label: last_run_label(Map.get(detail, :latest_run_at)),
+      last_run_label: last_run_label(Map.get(detail, :latest_run_at), timezone),
       runtime_label: LogsViewModel.duration_ms_label(Map.get(detail, :latest_run_duration_ms)),
-      runs: Enum.map(Map.get(detail, :runs, []), &run_from_detail/1)
+      runs: Enum.map(Map.get(detail, :runs, []), &run_from_detail(&1, timezone))
     }
   end
 
-  defp run_from_detail(run) do
+  defp run_from_detail(run, timezone) do
     %{
       id: run.id,
       short_id: short_id(run.id),
       status: run_status(Map.get(run, :status)),
       kind_label: kind_label(Map.get(run, :submit_kind)),
       window_label: scope_label(Map.get(run, :scope) || Map.get(run, :window)),
-      started_at_label: timestamp_label(Map.get(run, :started_at)),
+      started_at_label: timestamp_label(Map.get(run, :started_at), timezone),
       duration_label: LogsViewModel.duration_ms_label(Map.get(run, :duration_ms))
     }
   end
@@ -472,23 +478,23 @@ defmodule FavnView.PipelineDetailLive do
   defp kind_label(nil), do: "Pipeline"
   defp kind_label(kind), do: humanize(kind)
 
-  defp last_run_label(%DateTime{} = datetime) do
+  defp last_run_label(%DateTime{} = datetime, timezone) do
     seconds = DateTime.diff(DateTime.utc_now(), datetime, :second)
 
     cond do
       seconds < 60 -> "just now"
       seconds < 3_600 -> "#{div(seconds, 60)}m ago"
       seconds < 86_400 -> "#{div(seconds, 3_600)}h ago"
-      true -> FavnView.Time.format(datetime, "%b %-d %H:%M")
+      true -> FavnView.Time.format(datetime, "%b %-d %H:%M", timezone)
     end
   end
 
-  defp last_run_label(_value), do: "No runs yet"
+  defp last_run_label(_value, _timezone), do: "No runs yet"
 
-  defp timestamp_label(%DateTime{} = datetime),
-    do: FavnView.Time.format(datetime, "%b %-d %H:%M")
+  defp timestamp_label(%DateTime{} = datetime, timezone),
+    do: FavnView.Time.format(datetime, "%b %-d %H:%M", timezone)
 
-  defp timestamp_label(_value), do: "-"
+  defp timestamp_label(_value, _timezone), do: "-"
 
   defp short_id(id) when is_binary(id) and byte_size(id) > 18 do
     binary_part(id, 0, 9) <> "..." <> binary_part(id, byte_size(id) - 6, 6)

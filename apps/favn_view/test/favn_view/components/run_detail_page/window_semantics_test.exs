@@ -9,7 +9,14 @@ defmodule FavnView.Components.RunDetailPage.WindowSemanticsTest do
   defp render_page(run, opts \\ []) do
     render_component(
       &RunDetailPage.run_detail_page/1,
-      Keyword.merge([run: run, run_id: run.id], opts)
+      Keyword.merge(
+        [
+          run: run,
+          run_id: run.id,
+          current_scope: %{workspace_configuration: %{default_timezone: "Etc/UTC"}}
+        ],
+        opts
+      )
     )
   end
 

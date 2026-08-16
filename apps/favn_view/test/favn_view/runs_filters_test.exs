@@ -1,26 +1,12 @@
 defmodule FavnView.RunsFiltersTest do
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   alias FavnView.RunsFilters
 
   doctest RunsFilters
 
   @now ~U[2026-07-30 14:12:00Z]
-
-  setup do
-    previous = Application.get_env(:favn, :default_timezone)
-    Application.put_env(:favn, :default_timezone, "Etc/UTC")
-
-    on_exit(fn ->
-      if is_nil(previous) do
-        Application.delete_env(:favn, :default_timezone)
-      else
-        Application.put_env(:favn, :default_timezone, previous)
-      end
-    end)
-
-    :ok
-  end
+  @timezone "Etc/UTC"
 
   describe "params" do
     test "an empty query string means today" do
@@ -88,26 +74,25 @@ defmodule FavnView.RunsFiltersTest do
             {"month", ~U[2026-07-01 00:00:00Z]}
           ] do
         filters = RunsFilters.from_params(%{"range" => range})
-        assert RunsFilters.window(filters, @now) == {expected, nil}
+        assert RunsFilters.window(filters, @now, @timezone) == {expected, nil}
       end
     end
 
     test "a custom upper bound is exclusive, so the last day is included" do
       filters = RunsFilters.from_params(%{"from" => "2026-07-27", "to" => "2026-07-27"})
 
-      assert RunsFilters.window(filters, @now) ==
+      assert RunsFilters.window(filters, @now, @timezone) ==
                {~U[2026-07-27 00:00:00Z], ~U[2026-07-28 00:00:00Z]}
     end
 
     test "calendar ranges keep local midnights across a daylight-saving transition" do
-      Application.put_env(:favn, :default_timezone, "Europe/Oslo")
       now = ~U[2026-03-30 12:00:00Z]
 
       today = RunsFilters.from_params(%{"range" => "today"})
       week = RunsFilters.from_params(%{"range" => "week"})
 
-      assert RunsFilters.window(today, now) == {~U[2026-03-29 22:00:00Z], nil}
-      assert RunsFilters.window(week, now) == {~U[2026-03-23 23:00:00Z], nil}
+      assert RunsFilters.window(today, now, "Europe/Oslo") == {~U[2026-03-29 22:00:00Z], nil}
+      assert RunsFilters.window(week, now, "Europe/Oslo") == {~U[2026-03-23 23:00:00Z], nil}
     end
   end
 
@@ -115,7 +100,7 @@ defmodule FavnView.RunsFiltersTest do
     test "\"running or queued\" is one status filter, not two reads" do
       filters = RunsFilters.from_params(%{"status" => "active", "range" => "all"})
 
-      assert Keyword.get(RunsFilters.store_filters(filters, @now), :status) == [
+      assert Keyword.get(RunsFilters.store_filters(filters, @now, @timezone), :status) == [
                :pending,
                :running
              ]
@@ -123,7 +108,7 @@ defmodule FavnView.RunsFiltersTest do
 
     test "a blank search is not a filter" do
       filters = RunsFilters.from_params(%{"q" => "   "})
-      refute Keyword.has_key?(RunsFilters.store_filters(filters, @now), :search)
+      refute Keyword.has_key?(RunsFilters.store_filters(filters, @now, @timezone), :search)
     end
   end
 
@@ -165,8 +150,8 @@ defmodule FavnView.RunsFiltersTest do
     test "they narrow exactly as the page read does, minus the status" do
       filters = RunsFilters.from_params(%{"status" => "failed", "q" => "crm", "range" => "week"})
 
-      count_filters = RunsFilters.count_filters(filters, @now)
-      store_filters = RunsFilters.store_filters(filters, @now)
+      count_filters = RunsFilters.count_filters(filters, @now, @timezone)
+      store_filters = RunsFilters.store_filters(filters, @now, @timezone)
 
       refute Keyword.has_key?(count_filters, :status)
       refute Keyword.has_key?(count_filters, :limit)
@@ -179,7 +164,7 @@ defmodule FavnView.RunsFiltersTest do
     end
 
     test "an unfiltered default asks for nothing but the day" do
-      assert RunsFilters.count_filters(%RunsFilters{}, @now) == [
+      assert RunsFilters.count_filters(%RunsFilters{}, @now, @timezone) == [
                started_after: ~U[2026-07-30 00:00:00Z]
              ]
     end
@@ -212,7 +197,7 @@ defmodule FavnView.RunsFiltersTest do
       filters =
         RunsFilters.next_page(%RunsFilters{}, ~U[2026-07-11 08:30:00Z], "run_crm_daily_9f2")
 
-      store_filters = RunsFilters.store_filters(filters, @now)
+      store_filters = RunsFilters.store_filters(filters, @now, @timezone)
 
       assert Keyword.get(store_filters, :limit) == RunsFilters.page_size()
 
@@ -224,7 +209,7 @@ defmodule FavnView.RunsFiltersTest do
 
     test "the counts ignore the page, because they are of the whole filtered set" do
       filters = RunsFilters.next_page(%RunsFilters{}, ~U[2026-07-11 08:30:00Z], "run_9f2")
-      refute Keyword.has_key?(RunsFilters.count_filters(filters, @now), :after)
+      refute Keyword.has_key?(RunsFilters.count_filters(filters, @now, @timezone), :after)
     end
 
     test "a row with no start instant cannot be paged from" do

@@ -15,16 +15,16 @@ defmodule Favn.Manifest.CompatibilityTest do
   end
 
   test "rejects the previous schema version" do
-    manifest = current_manifest(%{schema_version: 14})
+    manifest = current_manifest(%{schema_version: 15})
 
-    assert {:error, {:unsupported_schema_version, 14, 15}} =
+    assert {:error, {:unsupported_schema_version, 15, 16}} =
              Compatibility.validate_manifest(manifest)
   end
 
   test "rejects unsupported schema version" do
-    manifest = current_manifest(%{schema_version: 16})
+    manifest = current_manifest(%{schema_version: 17})
 
-    assert {:error, {:unsupported_schema_version, 16, 15}} =
+    assert {:error, {:unsupported_schema_version, 17, 16}} =
              Compatibility.validate_manifest(manifest)
   end
 

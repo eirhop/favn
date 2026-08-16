@@ -12,7 +12,8 @@ defmodule FavnView.PipelinesLive do
 
   @impl true
   def mount(_params, _session, socket) do
-    {pipelines, error} = load_pipelines(socket.assigns.current_scope.operator_context)
+    {pipelines, error} =
+      load_pipelines(socket.assigns.current_scope.operator_context, socket.assigns.current_scope)
 
     socket =
       assign(socket,
@@ -66,9 +67,9 @@ defmodule FavnView.PipelinesLive do
     )
   end
 
-  defp load_pipelines(operator_context) do
+  defp load_pipelines(operator_context, timezone) do
     case active_pipeline_catalogue(operator_context) do
-      {:ok, entries} -> {Enum.map(entries, &pipeline_from_entry/1), nil}
+      {:ok, entries} -> {Enum.map(entries, &pipeline_from_entry(&1, timezone)), nil}
       {:error, reason} -> {[], OperatorErrorLabels.collection_load(reason)}
     end
   end
@@ -84,7 +85,7 @@ defmodule FavnView.PipelinesLive do
     if is_function(fun, 1), do: fun.(operator_context), else: fun.()
   end
 
-  defp pipeline_from_entry(entry) do
+  defp pipeline_from_entry(entry, timezone) do
     selected_assets = Map.get(entry, :selected_assets, [])
     status = Map.get(entry, :status, :unknown)
 
@@ -99,7 +100,7 @@ defmodule FavnView.PipelinesLive do
       window_label: window_label(Map.get(entry, :window)),
       status: status,
       status_label: status_label(status),
-      last_run_label: last_run_label(Map.get(entry, :latest_run_at)),
+      last_run_label: last_run_label(Map.get(entry, :latest_run_at), timezone),
       runtime_label: LogsViewModel.duration_ms_label(Map.get(entry, :latest_run_duration_ms))
     }
   end
@@ -174,18 +175,18 @@ defmodule FavnView.PipelinesLive do
   defp status_label(:unknown), do: "Unknown"
   defp status_label(_status), do: "Unknown"
 
-  defp last_run_label(%DateTime{} = datetime) do
+  defp last_run_label(%DateTime{} = datetime, timezone) do
     seconds = DateTime.diff(DateTime.utc_now(), datetime, :second)
 
     cond do
       seconds < 60 -> "just now"
       seconds < 3_600 -> "#{div(seconds, 60)}m ago"
       seconds < 86_400 -> "#{div(seconds, 3_600)}h ago"
-      true -> FavnView.Time.format(datetime, "%b %-d %H:%M")
+      true -> FavnView.Time.format(datetime, "%b %-d %H:%M", timezone)
     end
   end
 
-  defp last_run_label(_value), do: "No runs yet"
+  defp last_run_label(_value, _timezone), do: "No runs yet"
 
   defp humanize(value) do
     value

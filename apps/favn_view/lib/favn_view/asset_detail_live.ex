@@ -18,10 +18,10 @@ defmodule FavnView.AssetDetailLive do
 
   @dialyzer {:no_unused,
              [
-               asset_from_detail: 2,
+               asset_from_detail: 3,
                run_context_path: 2,
                asset_name: 1,
-               run_entry: 2,
+               run_entry: 3,
                window_entry_label: 1,
                cadence_label: 1,
                cadence_word: 1,
@@ -36,7 +36,7 @@ defmodule FavnView.AssetDetailLive do
                submit_asset_range_run: 4,
                load_selected_run: 2,
                maybe_load_documentation: 1,
-               load_asset: 3,
+               load_asset: 4,
                asset_from_state: 1,
                coverage_error_label: 1,
                load_coverage_window: 2
@@ -47,7 +47,12 @@ defmodule FavnView.AssetDetailLive do
     run_context_id = run_context_param(params)
 
     asset_state =
-      load_asset(socket.assigns.current_scope.operator_context, asset_id, run_context_id)
+      load_asset(
+        socket.assigns.current_scope.operator_context,
+        asset_id,
+        run_context_id,
+        socket.assigns.current_scope
+      )
 
     asset = asset_from_state(asset_state)
 
@@ -91,7 +96,13 @@ defmodule FavnView.AssetDetailLive do
       if socket.assigns.asset_id == asset_id and socket.assigns.run_context_id == run_context_id do
         socket
       else
-        asset_state = load_asset(actor_context(socket), asset_id, run_context_id)
+        asset_state =
+          load_asset(
+            actor_context(socket),
+            asset_id,
+            run_context_id,
+            socket.assigns.current_scope
+          )
 
         assign(socket,
           asset_id: asset_id,
@@ -587,13 +598,13 @@ defmodule FavnView.AssetDetailLive do
 
   defp maybe_load_documentation(socket), do: socket
 
-  defp load_asset(operator_context, asset_id, run_context_id) do
+  defp load_asset(operator_context, asset_id, run_context_id, timezone) do
     target_id = AssetRoute.from_param(asset_id)
     opts = if run_context_id, do: [run_context_id: run_context_id], else: []
 
     case Orchestrator.active_asset_detail(operator_context, target_id, opts) do
       {:ok, detail} ->
-        {:ok, asset_from_detail(detail, asset_id)}
+        {:ok, asset_from_detail(detail, asset_id, timezone)}
 
       {:error, :not_found} ->
         {:not_found, asset_id}
@@ -618,7 +629,7 @@ defmodule FavnView.AssetDetailLive do
     scope.operator_context
   end
 
-  defp asset_from_detail(detail, asset_id) do
+  defp asset_from_detail(detail, asset_id, timezone) do
     run_contexts =
       detail
       |> Map.get(:run_contexts, [])
@@ -652,7 +663,7 @@ defmodule FavnView.AssetDetailLive do
       coverage_policy: Map.get(detail, :coverage_policy),
       compatibility: compatibility,
       assurance: Map.get(detail, :assurance),
-      runs: Enum.map(Map.get(detail, :runs, []), &run_entry(&1, asset_id)),
+      runs: Enum.map(Map.get(detail, :runs, []), &run_entry(&1, asset_id, timezone)),
       relation: Map.get(detail, :relation),
       type: Map.get(detail, :type),
       cadence_label: cadence_label(Map.get(detail, :window)),
@@ -663,7 +674,7 @@ defmodule FavnView.AssetDetailLive do
     }
   end
 
-  defp run_entry(run, asset_id) do
+  defp run_entry(run, asset_id, timezone) do
     started_at = Map.get(run, :started_at)
 
     %{
@@ -674,8 +685,8 @@ defmodule FavnView.AssetDetailLive do
       status_label: LogsViewModel.status_label(run.status),
       trigger_label: LogsViewModel.trigger_label(Map.get(run, :submit_kind)),
       started_at: started_at,
-      day_label: started_at && FavnView.Time.format(started_at, "%b %-d"),
-      time_label: started_at && FavnView.Time.format(started_at, "%H:%M"),
+      day_label: started_at && FavnView.Time.format(started_at, "%b %-d", timezone),
+      time_label: started_at && FavnView.Time.format(started_at, "%H:%M", timezone),
       duration_label: duration_label(Map.get(run, :duration_ms)),
       window_label: run |> Map.get(:window) |> window_entry_label()
     }
@@ -964,11 +975,12 @@ defmodule FavnView.AssetDetailLive do
 
   # What the navigator reasons about: the unit on screen and the range it may move in.
   defp coverage_view(%{assigns: %{coverage_windows: nil}}),
-    do: %{kind: nil, at: nil, first_expected_at: nil, last_expected_at: nil}
+    do: %{kind: nil, timezone: nil, at: nil, first_expected_at: nil, last_expected_at: nil}
 
   defp coverage_view(%{assigns: %{coverage_windows: states}}) do
     %{
       kind: states.kind,
+      timezone: states.timezone,
       at: states.windows |> List.first() |> then(&(&1 && &1.start_at)),
       first_expected_at: states.first_expected_at,
       last_expected_at: states.last_expected_at

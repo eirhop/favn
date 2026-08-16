@@ -4,6 +4,7 @@ defmodule Favn.Manifest.Compatibility do
   """
 
   alias Favn.Manifest.ContractVersions
+  alias Favn.Manifest.Environment
   alias Favn.Manifest.Asset
   alias Favn.ExecutionPool.PolicySet
   alias Favn.Manifest.Pipeline
@@ -21,7 +22,11 @@ defmodule Favn.Manifest.Compatibility do
   @type error ::
           {:invalid_manifest_input, term()}
           | {:missing_manifest_field,
-             :schema_version | :runner_contract_version | :runner_releases | :execution_pools}
+             :schema_version
+             | :runner_contract_version
+             | :runner_releases
+             | :execution_pools
+             | :environment}
           | {:invalid_execution_pools, term()}
           | {:invalid_execution_pool_reference, term()}
           | {:unknown_execution_pool_reference, String.t()}
@@ -50,6 +55,7 @@ defmodule Favn.Manifest.Compatibility do
            read_required_field(manifest, :runner_contract_version),
          {:ok, _runner_releases} <- read_required_field(manifest, :runner_releases),
          {:ok, _execution_pools} <- read_required_field(manifest, :execution_pools),
+         {:ok, _environment} <- read_required_field(manifest, :environment),
          :ok <- validate_raw_entries(manifest) do
       if canonical_entries?(manifest) do
         validate_canonical_manifest(manifest)
@@ -70,10 +76,12 @@ defmodule Favn.Manifest.Compatibility do
            read_required_field(manifest, :runner_contract_version),
          {:ok, runner_releases} <- read_required_field(manifest, :runner_releases),
          {:ok, execution_pools} <- read_required_field(manifest, :execution_pools),
+         {:ok, environment} <- read_required_field(manifest, :environment),
          :ok <- validate_schema_version(schema_version),
          :ok <- validate_runner_contract_version(runner_contract_version),
          :ok <- validate_runner_releases(manifest, runner_releases),
          :ok <- validate_execution_pools(manifest, execution_pools),
+         :ok <- validate_environment(environment),
          :ok <-
            maybe_validate_execution_package_refs(
              manifest,
@@ -85,6 +93,13 @@ defmodule Favn.Manifest.Compatibility do
         runner_contract_version,
         runner_releases
       )
+    end
+  end
+
+  defp validate_environment(environment) do
+    case Environment.from_manifest(environment) do
+      {:ok, _environment} -> :ok
+      {:error, reason} -> {:error, {:invalid_manifest_environment, reason}}
     end
   end
 

@@ -11,7 +11,7 @@ defmodule FavnView.StatusConcerns do
 
   ## Partial failure is not failure
 
-  `build/1` takes each source's result, `{:ok, _}` or `{:error, _}`, and reports
+  `build/2` takes each source's result, `{:ok, _}` or `{:error, _}`, and reports
   the sources it could not use in `:unavailable` rather than failing. A broken
   schedule backend must not hide a failing run.
 
@@ -46,23 +46,24 @@ defmodule FavnView.StatusConcerns do
   ## Examples
 
       iex> alias FavnView.StatusConcerns
-      iex> StatusConcerns.build(%{runs: {:ok, %{items: []}}, assets: {:ok, []}, schedules: {:ok, %{items: []}}, rebuilds: {:ok, %{items: []}}})
+      iex> StatusConcerns.build(%{runs: {:ok, %{items: []}}, assets: {:ok, []}, schedules: {:ok, %{items: []}}, rebuilds: {:ok, %{items: []}}}, timezone: "Etc/UTC")
       %{groups: [], unavailable: []}
 
       iex> alias FavnView.StatusConcerns
-      iex> result = StatusConcerns.build(%{runs: {:error, :unavailable}, assets: {:ok, []}, schedules: {:ok, %{items: []}}, rebuilds: {:ok, %{items: []}}})
+      iex> result = StatusConcerns.build(%{runs: {:error, :unavailable}, assets: {:ok, []}, schedules: {:ok, %{items: []}}, rebuilds: {:ok, %{items: []}}}, timezone: "Etc/UTC")
       iex> result.unavailable
       ["Runs"]
   """
   @spec build(source_results(), keyword()) :: result()
   def build(sources, opts \\ []) do
     limit = Keyword.get(opts, :limit, 8)
+    timezone = Keyword.fetch!(opts, :timezone)
 
     [
-      {"Runs", &run_group(&1, limit), Map.get(sources, :runs)},
+      {"Runs", &run_group(&1, limit, timezone), Map.get(sources, :runs)},
       {"Assets", &asset_group(&1, limit), Map.get(sources, :assets)},
       {"Schedules", &schedule_group(&1, limit), Map.get(sources, :schedules)},
-      {"Rebuilds", &rebuild_group(&1, limit), Map.get(sources, :rebuilds)}
+      {"Rebuilds", &rebuild_group(&1, limit, timezone), Map.get(sources, :rebuilds)}
     ]
     |> Enum.reduce(%{groups: [], unavailable: []}, fn {source, builder, result}, acc ->
       case result do
@@ -73,25 +74,25 @@ defmodule FavnView.StatusConcerns do
     |> then(fn result -> %{result | groups: Enum.reject(result.groups, &(&1.concerns == []))} end)
   end
 
-  defp run_group(payload, limit) do
+  defp run_group(payload, limit, timezone) do
     %{
       id: :failing_runs,
       title: "Failing runs",
       description: "A run reached a terminal state with failed work in it.",
       icon: "hero-exclamation-triangle",
       tone: :error,
-      concerns: payload |> items() |> Enum.take(limit) |> Enum.map(&run_concern/1)
+      concerns: payload |> items() |> Enum.take(limit) |> Enum.map(&run_concern(&1, timezone))
     }
   end
 
-  defp run_concern(item) do
+  defp run_concern(item, timezone) do
     id = Map.get(item, :root_run_id) || Map.get(item, :id)
 
     %{
       id: "run-#{id}",
       title: run_title(item, id),
       detail: run_detail(item),
-      meta: timestamp_label(Map.get(item, :started_at) || Map.get(item, :inserted_at)),
+      meta: timestamp_label(Map.get(item, :started_at) || Map.get(item, :inserted_at), timezone),
       action_label: "Open run",
       action_path: "/runs/#{id}"
     }
@@ -257,7 +258,7 @@ defmodule FavnView.StatusConcerns do
 
   defp schedule_detail(_entry), do: "Not currently scheduled to run."
 
-  defp rebuild_group(payload, limit) do
+  defp rebuild_group(payload, limit, timezone) do
     %{
       id: :operations,
       title: "Operations to reconcile",
@@ -269,7 +270,7 @@ defmodule FavnView.StatusConcerns do
         |> items()
         |> Enum.filter(&rebuild_concern?/1)
         |> Enum.take(limit)
-        |> Enum.map(&rebuild_concern/1)
+        |> Enum.map(&rebuild_concern(&1, timezone))
     }
   end
 
@@ -292,12 +293,12 @@ defmodule FavnView.StatusConcerns do
     Map.get(item, :state) in [:unknown, :needs_reconciliation, :reconciling]
   end
 
-  defp rebuild_concern(item) do
+  defp rebuild_concern(item, timezone) do
     %{
       id: "operation-#{item.id}",
       title: "Rebuild #{short_id(item.id)}",
       detail: "State is #{humanize(Map.get(item, :state))}; the outcome is not established.",
-      meta: timestamp_label(Map.get(item, :updated_at) || Map.get(item, :inserted_at)),
+      meta: timestamp_label(Map.get(item, :updated_at) || Map.get(item, :inserted_at), timezone),
       action_label: "Open rebuild",
       action_path: "/rebuilds/#{item.id}"
     }
@@ -307,10 +308,10 @@ defmodule FavnView.StatusConcerns do
   defp items(items) when is_list(items), do: items
   defp items(_other), do: []
 
-  defp timestamp_label(%DateTime{} = datetime),
-    do: FavnView.Time.format(datetime, "%b %-d %H:%M")
+  defp timestamp_label(%DateTime{} = datetime, timezone),
+    do: FavnView.Time.format(datetime, "%b %-d %H:%M", timezone)
 
-  defp timestamp_label(_value), do: nil
+  defp timestamp_label(_value, _timezone), do: nil
 
   defp short_id(id) when is_binary(id) and byte_size(id) > 12, do: String.slice(id, 0, 12)
   defp short_id(id), do: to_string(id)

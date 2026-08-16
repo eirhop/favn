@@ -1,9 +1,15 @@
 defmodule FavnView.RunFlowTest do
   use ExUnit.Case, async: true
 
-  alias FavnView.RunFlow
+  alias FavnView.RunFlow, as: Subject
 
-  doctest RunFlow
+  doctest Subject
+
+  defmodule RunFlow do
+    def build(attempts, opts \\ []) do
+      FavnView.RunFlow.build(attempts, Keyword.put_new(opts, :timezone, "Etc/UTC"))
+    end
+  end
 
   @anchor ~U[2026-07-23 10:00:00Z]
 

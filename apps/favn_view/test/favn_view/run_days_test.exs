@@ -1,9 +1,15 @@
 defmodule FavnView.RunDaysTest do
   use ExUnit.Case, async: true
 
-  alias FavnView.RunDays
+  alias FavnView.RunDays, as: Subject
 
-  doctest RunDays
+  doctest Subject
+
+  defmodule RunDays do
+    def layout(runs, window, now, opts \\ []) do
+      FavnView.RunDays.layout(runs, window, now, Keyword.put_new(opts, :timezone, "Etc/UTC"))
+    end
+  end
 
   @now ~U[2026-07-30 14:12:00Z]
 

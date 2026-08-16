@@ -218,7 +218,7 @@ defmodule FavnView.Components.AdminPage do
                       </.meta>
 
                       <.meta :if={session.expires_at}>
-                        Expires {format_time(session.expires_at)}
+                        Expires {format_time(session.expires_at, @current_scope)}
                       </.meta>
                     </div>
 
@@ -280,7 +280,7 @@ defmodule FavnView.Components.AdminPage do
                       class="text-sm favn-text-muted"
                       datetime={datetime_attr(entry.occurred_at)}
                     >
-                      {format_time(entry.occurred_at)}
+                      {format_time(entry.occurred_at, @current_scope)}
                     </time>
                   </div>
                 </.list_card>
@@ -401,10 +401,10 @@ defmodule FavnView.Components.AdminPage do
     end
   end
 
-  defp format_time(%DateTime{} = value),
-    do: FavnView.Time.format(value, "%Y-%m-%d %H:%M:%S %Z")
+  defp format_time(%DateTime{} = value, timezone),
+    do: FavnView.Time.format(value, "%Y-%m-%d %H:%M:%S %Z", timezone)
 
-  defp format_time(_value), do: "unknown"
+  defp format_time(_value, _timezone), do: "unknown"
 
   defp datetime_attr(%DateTime{} = value), do: DateTime.to_iso8601(value)
   defp datetime_attr(_value), do: nil

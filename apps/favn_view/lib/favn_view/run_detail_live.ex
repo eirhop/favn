@@ -35,7 +35,7 @@ defmodule FavnView.RunDetailLive do
   def mount(%{"run_id" => run_id}, _session, socket) do
     run =
       operator_context(socket)
-      |> load_run(run_id, nil, :flow)
+      |> load_run(run_id, nil, :flow, socket.assigns.current_scope)
       |> mark_initializing()
 
     socket =
@@ -108,7 +108,8 @@ defmodule FavnView.RunDetailLive do
         operator_context(socket),
         socket.assigns.run_id,
         socket.assigns.run[:back_asset_href],
-        socket.assigns.active_mode
+        socket.assigns.active_mode,
+        socket.assigns.current_scope
       )
 
     attempts_remaining = next_load_attempts(socket.assigns.detail_load_attempts_remaining, run)
@@ -133,7 +134,10 @@ defmodule FavnView.RunDetailLive do
 
     socket
     |> assign(:run, run)
-    |> assign(:flow, RunFlow.build(run.attempts, active?: run.active?))
+    |> assign(
+      :flow,
+      RunFlow.build(run.attempts, active?: run.active?, timezone: socket.assigns.current_scope)
+    )
     |> maybe_schedule_flow_tick()
   end
 
@@ -281,7 +285,8 @@ defmodule FavnView.RunDetailLive do
           operator_context(socket),
           socket.assigns.run_id,
           socket.assigns.run[:back_asset_href],
-          active_mode
+          active_mode,
+          socket.assigns.current_scope
         )
       end
 
@@ -316,7 +321,7 @@ defmodule FavnView.RunDetailLive do
     :ok
   end
 
-  defp load_run(operator_context, run_id, existing_back_asset_href, active_mode) do
+  defp load_run(operator_context, run_id, existing_back_asset_href, active_mode, timezone) do
     opts = [view: detail_view(active_mode), limit: 200]
     opts = if active_mode == :events, do: Keyword.put(opts, :include, [:events]), else: opts
 
@@ -327,11 +332,12 @@ defmodule FavnView.RunDetailLive do
           operator_context,
           run_id,
           existing_back_asset_href,
-          active_mode
+          active_mode,
+          timezone
         )
 
       {:ok, %{kind: :submission, submission: submission}} ->
-        submission_from_public(submission)
+        submission_from_public(submission, timezone)
 
       {:error, reason} ->
         %{
@@ -343,7 +349,7 @@ defmodule FavnView.RunDetailLive do
     end
   end
 
-  defp submission_from_public(submission) do
+  defp submission_from_public(submission, timezone) do
     %{
       id: submission.run_id,
       found?: false,
@@ -356,9 +362,9 @@ defmodule FavnView.RunDetailLive do
       target_kind: submission.target_kind,
       target_id: submission.target_id,
       attempt: submission.attempt,
-      enqueued_at: timestamp_label(submission.enqueued_at),
-      updated_at: timestamp_label(submission.updated_at),
-      terminal_at: timestamp_label(submission.terminal_at),
+      enqueued_at: timestamp_label(submission.enqueued_at, timezone),
+      updated_at: timestamp_label(submission.updated_at, timezone),
+      terminal_at: timestamp_label(submission.terminal_at, timezone),
       failure: submission.failure,
       subscribed_run_ids: []
     }
@@ -374,21 +380,27 @@ defmodule FavnView.RunDetailLive do
          operator_context,
          run_id,
          existing_back_asset_href,
-         active_mode
+         active_mode,
+         timezone
        ) do
-    attempts = Enum.map(Map.get(detail, :asset_attempts, []), &attempt_from_public/1)
-    windows = Enum.map(Map.get(detail, :windows, []), &window_from_public/1)
+    attempts = Enum.map(Map.get(detail, :asset_attempts, []), &attempt_from_public(&1, timezone))
+    windows = Enum.map(Map.get(detail, :windows, []), &window_from_public(&1, timezone))
 
     requested_windows =
       detail
       |> Map.get(:requested_windows, [])
-      |> Enum.map(&window_from_public/1)
+      |> Enum.map(&window_from_public(&1, timezone))
       |> Enum.sort_by(&window_sort_key/1)
 
     events = if active_mode == :events, do: Map.get(detail, :events, []), else: []
 
     child_runs =
-      child_runs_from_public(Map.get(detail, :child_runs, []), attempts, requested_windows)
+      child_runs_from_public(
+        Map.get(detail, :child_runs, []),
+        attempts,
+        requested_windows,
+        timezone
+      )
 
     cancel_target = cancel_target(summary, root_run, child_runs, run_id)
 
@@ -396,7 +408,10 @@ defmodule FavnView.RunDetailLive do
     failures = Enum.filter(attempts, &(&1.status_tone == :error))
 
     backfill_failures =
-      Enum.map(Map.get(detail, :backfill_failures, []), &backfill_failure_from_public/1)
+      Enum.map(
+        Map.get(detail, :backfill_failures, []),
+        &backfill_failure_from_public(&1, timezone)
+      )
 
     target = target_label(summary.target_assets)
     status = group_status(summary)
@@ -440,8 +455,8 @@ defmodule FavnView.RunDetailLive do
       target: target || "No target",
       trigger: label(summary.trigger_type),
       window: header_scope,
-      started_at: LogsViewModel.timestamp_label(summary.started_at),
-      finished_at: LogsViewModel.timestamp_label(summary.finished_at),
+      started_at: LogsViewModel.timestamp_label(summary.started_at, timezone),
+      finished_at: LogsViewModel.timestamp_label(summary.finished_at, timezone),
       duration: LogsViewModel.duration_ms_label(summary.duration_ms),
       duration_ms_raw: summary.duration_ms,
       started_at_raw: summary.started_at,
@@ -487,8 +502,8 @@ defmodule FavnView.RunDetailLive do
       backfill_failure_count: Map.get(detail, :backfill_failure_count, length(backfill_failures)),
       child_runs: child_runs,
       child_runs_truncated?: Map.get(detail, :child_run_details_truncated?, false),
-      events: Enum.map(events, &event_from_public/1),
-      latest_event_summary: latest_event_summary(detail, events),
+      events: Enum.map(events, &event_from_public(&1, timezone)),
+      latest_event_summary: latest_event_summary(detail, events, timezone),
       waiting_activity?: events == [] and active_group?(summary),
       current_activity: current_activity(attempts),
       selected_attempt: nil,
@@ -597,10 +612,10 @@ defmodule FavnView.RunDetailLive do
     if is_function(fun, 3), do: fun.(operator_context, run_id, opts), else: fun.(run_id, opts)
   end
 
-  defp timestamp_label(nil), do: nil
+  defp timestamp_label(nil, _timezone), do: nil
 
-  defp timestamp_label(%DateTime{} = value),
-    do: FavnView.Time.format(value, "%b %-d, %Y %H:%M:%S %Z")
+  defp timestamp_label(%DateTime{} = value, timezone),
+    do: FavnView.Time.format(value, "%b %-d, %Y %H:%M:%S %Z", timezone)
 
   defp subscribe_run(operator_context, run_id) do
     Application.get_env(
@@ -750,7 +765,7 @@ defmodule FavnView.RunDetailLive do
 
   defp preserve_selected_attempt(_old_run, new_run, _attempt_id), do: new_run
 
-  defp attempt_from_public(attempt) do
+  defp attempt_from_public(attempt, timezone) do
     %{
       id: attempt.id,
       asset_step_id: Map.get(attempt, :asset_step_id, attempt.id),
@@ -768,17 +783,17 @@ defmodule FavnView.RunDetailLive do
       started_at_raw: attempt.started_at,
       finished_at_raw: attempt.finished_at,
       duration_ms: attempt.duration_ms,
-      started_at: LogsViewModel.timestamp_label(attempt.started_at),
-      finished_at: LogsViewModel.timestamp_label(attempt.finished_at),
+      started_at: LogsViewModel.timestamp_label(attempt.started_at, timezone),
+      finished_at: LogsViewModel.timestamp_label(attempt.finished_at, timezone),
       duration: LogsViewModel.duration_ms_label(attempt.duration_ms),
       status: status_label(attempt.status),
       raw_status: attempt.status,
       status_tone: status_tone(attempt.status),
       error_summary: attempt.error_summary,
       output_metadata: Map.get(attempt, :output_metadata),
-      window: window_from_public(attempt.window),
+      window: window_from_public(attempt.window, timezone),
       window_id: window_identity(attempt.window),
-      window_label: window_label(attempt.window) || "No window",
+      window_label: window_label(attempt.window, timezone) || "No window",
       logs_href: attempt_logs_href(attempt)
     }
   end
@@ -789,29 +804,29 @@ defmodule FavnView.RunDetailLive do
 
   defp attempt_logs_href(_attempt), do: nil
 
-  defp window_from_public(nil), do: nil
+  defp window_from_public(nil, _timezone), do: nil
 
-  defp window_from_public(window) do
+  defp window_from_public(window, timezone) do
     %{
       id: window_identity(window),
       key: Map.get(window, :key),
-      label: window_label(window) || "No window",
+      label: window_label(window, timezone) || "No window",
       start_at: Map.get(window, :start_at),
       end_at: Map.get(window, :end_at),
-      range_label: range_label(Map.get(window, :start_at), Map.get(window, :end_at)),
+      range_label: range_label(Map.get(window, :start_at), Map.get(window, :end_at), timezone),
       status: status_label(Map.get(window, :status)),
       raw_status: Map.get(window, :status),
       status_tone: status_tone(Map.get(window, :status)),
       child_run_id: Map.get(window, :child_run_id),
       attempt_count: Map.get(window, :attempt_count),
-      started_at: LogsViewModel.timestamp_label(Map.get(window, :started_at)),
-      finished_at: LogsViewModel.timestamp_label(Map.get(window, :finished_at)),
+      started_at: LogsViewModel.timestamp_label(Map.get(window, :started_at), timezone),
+      finished_at: LogsViewModel.timestamp_label(Map.get(window, :finished_at), timezone),
       duration: LogsViewModel.duration_ms_label(Map.get(window, :duration_ms))
     }
   end
 
-  defp backfill_failure_from_public(failure) do
-    window = window_from_public(Map.get(failure, :window))
+  defp backfill_failure_from_public(failure, timezone) do
+    window = window_from_public(Map.get(failure, :window), timezone)
     status = Map.get(failure, :status)
     asset_ref = Map.get(failure, :asset_ref)
     child_run_id = Map.get(failure, :child_run_id)
@@ -825,22 +840,22 @@ defmodule FavnView.RunDetailLive do
           "Window run",
       window: window,
       window_id: window_identity(window),
-      window_label: window_label(window) || "No window",
+      window_label: window_label(window, timezone) || "No window",
       status: status_label(status),
       raw_status: status,
       status_tone: status_tone(status),
       error_summary:
         error_summary(Map.get(failure, :error)) || OperatorErrorLabels.run_failure_detail(nil),
       attempt_count: Map.get(failure, :attempt_count),
-      started_at: LogsViewModel.timestamp_label(Map.get(failure, :started_at)),
-      finished_at: LogsViewModel.timestamp_label(Map.get(failure, :finished_at)),
+      started_at: LogsViewModel.timestamp_label(Map.get(failure, :started_at), timezone),
+      finished_at: LogsViewModel.timestamp_label(Map.get(failure, :finished_at), timezone),
       duration: LogsViewModel.duration_ms_label(Map.get(failure, :duration_ms))
     }
   end
 
   # Both lookups were a scan per child run, so a thirty-window backfill walked
   # every attempt thirty times on every live refresh. One grouping pass each.
-  defp child_runs_from_public(child_runs, attempts, requested_windows) do
+  defp child_runs_from_public(child_runs, attempts, requested_windows, timezone) do
     attempts_by_run_id = Enum.group_by(attempts, & &1.run_id)
 
     windows_by_child_run_id =
@@ -853,7 +868,7 @@ defmodule FavnView.RunDetailLive do
       child_attempts = Map.get(attempts_by_run_id, child.id, [])
 
       window =
-        Map.get(windows_by_child_run_id, child.id) || window_from_public(child.window)
+        Map.get(windows_by_child_run_id, child.id) || window_from_public(child.window, timezone)
 
       counts = child_asset_counts(child, child_attempts)
 
@@ -866,8 +881,8 @@ defmodule FavnView.RunDetailLive do
         status_tone: status_tone(child.status),
         assets: asset_count_label(counts.total),
         outcome: asset_outcome_label(counts),
-        started_at: LogsViewModel.timestamp_label(child.started_at),
-        finished_at: LogsViewModel.timestamp_label(child.finished_at),
+        started_at: LogsViewModel.timestamp_label(child.started_at, timezone),
+        finished_at: LogsViewModel.timestamp_label(child.finished_at, timezone),
         duration: LogsViewModel.duration_ms_label(child.duration_ms),
         succeeded_count: counts.succeeded,
         skipped_count: counts.skipped,
@@ -939,11 +954,11 @@ defmodule FavnView.RunDetailLive do
     end
   end
 
-  defp event_from_public(event) do
+  defp event_from_public(event, timezone) do
     %{
       sequence: Map.get(event, :sequence),
       raw_status: Map.get(event, :status),
-      timestamp: LogsViewModel.timestamp_label(Map.get(event, :occurred_at)),
+      timestamp: LogsViewModel.timestamp_label(Map.get(event, :occurred_at), timezone),
       event_type: label(Map.get(event, :event_type)),
       raw_event_type: Map.get(event, :event_type),
       status: LogsViewModel.status_label(Map.get(event, :status)),
@@ -1112,11 +1127,12 @@ defmodule FavnView.RunDetailLive do
   defp short_id(id) when is_binary(id), do: id
   defp short_id(_id), do: "unknown"
 
-  defp latest_event_summary(%{latest_event: latest_event}, _events) when not is_nil(latest_event),
-    do: latest_event |> event_from_public() |> Map.get(:summary)
+  defp latest_event_summary(%{latest_event: latest_event}, _events, timezone)
+       when not is_nil(latest_event),
+       do: latest_event |> event_from_public(timezone) |> Map.get(:summary)
 
-  defp latest_event_summary(_detail, events),
-    do: events |> Enum.map(&event_from_public/1) |> latest_event_summary()
+  defp latest_event_summary(_detail, events, timezone),
+    do: events |> Enum.map(&event_from_public(&1, timezone)) |> latest_event_summary()
 
   defp latest_event_summary([]), do: nil
   defp latest_event_summary(events), do: events |> List.last() |> Map.get(:summary)
@@ -1126,31 +1142,35 @@ defmodule FavnView.RunDetailLive do
   defp window_identity(window),
     do:
       Enum.find(
-        [Map.get(window, :key), datetime_iso(Map.get(window, :start_at)), window_label(window)],
+        [
+          Map.get(window, :key),
+          datetime_iso(Map.get(window, :start_at)),
+          persisted_window_label(window)
+        ],
         &is_binary/1
       ) || "none"
 
-  defp window_label(window) when is_map(window) do
+  defp window_label(window, timezone) when is_map(window) do
     case {Map.get(window, :kind) || Map.get(window, "kind"),
           Map.get(window, :start_at) || Map.get(window, "start_at")} do
       {kind, %DateTime{} = start_at} when kind in [:hour, "hour"] ->
-        FavnView.Time.format(start_at, "%b %-d %H:00")
+        FavnView.Time.format(start_at, "%b %-d %H:00", timezone)
 
       {kind, %DateTime{} = start_at} when kind in [:day, "day"] ->
-        FavnView.Time.format(start_at, "%b %-d")
+        FavnView.Time.format(start_at, "%b %-d", timezone)
 
       {kind, %DateTime{} = start_at} when kind in [:month, "month"] ->
-        FavnView.Time.format(start_at, "%b %Y")
+        FavnView.Time.format(start_at, "%b %Y", timezone)
 
       {kind, %DateTime{} = start_at} when kind in [:year, "year"] ->
-        FavnView.Time.format(start_at, "%Y")
+        FavnView.Time.format(start_at, "%Y", timezone)
 
       _other ->
         persisted_window_label(window)
     end
   end
 
-  defp window_label(_window), do: nil
+  defp window_label(_window, _timezone), do: nil
 
   defp persisted_window_label(%{label: label}) when is_binary(label), do: label
   defp persisted_window_label(%{"label" => label}) when is_binary(label), do: label
@@ -1160,10 +1180,11 @@ defmodule FavnView.RunDetailLive do
   defp datetime_iso(%DateTime{} = datetime), do: DateTime.to_iso8601(datetime)
   defp datetime_iso(_datetime), do: nil
 
-  defp range_label(%DateTime{} = start_at, %DateTime{} = end_at),
-    do: "#{FavnView.Time.format(start_at, "%b %-d")} - #{FavnView.Time.format(end_at, "%b %-d")}"
+  defp range_label(%DateTime{} = start_at, %DateTime{} = end_at, timezone),
+    do:
+      "#{FavnView.Time.format(start_at, "%b %-d", timezone)} - #{FavnView.Time.format(end_at, "%b %-d", timezone)}"
 
-  defp range_label(_start_at, _end_at), do: nil
+  defp range_label(_start_at, _end_at, _timezone), do: nil
 
   defp terminal_status?(status),
     do:

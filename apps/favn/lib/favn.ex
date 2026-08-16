@@ -81,7 +81,7 @@ defmodule Favn do
       {:ok, build} = Favn.build_manifest(runner_releases: runner_releases)
       {:ok, publication} = Favn.prepare_manifest_publication(build)
 
-  `publication.version` is the compact schema-15 manifest index. It binds each
+  `publication.version` is the compact schema-16 manifest index. It binds each
   logical runner pool to an exact image through `runner_releases` and includes
   validated execution-pool defaults from consumer configuration.
   SQL assets point to immutable entries in `publication.execution_packages` by

@@ -160,14 +160,16 @@ defmodule Favn.CoverageDSLTest do
     assert %Effective{scope_source: :environment_floor} = asset.coverage
     assert asset.coverage.declared_from.start_at.year == 2020
     assert asset.coverage.effective_from.start_at.year == 2026
-    assert manifest.schema_version == 15
+    assert manifest.schema_version == 16
     assert manifest.runner_contract_version == 13
 
-    assert manifest.metadata.environment == %{
+    assert manifest.environment == %Favn.Manifest.Environment{
              default_timezone: "Europe/Oslo",
              default_timezone_source: :application_default,
-             coverage_scope: %{from: "2026-07-01"}
+             coverage_scope: %{from: ~D[2026-07-01]}
            }
+
+    refute Map.has_key?(manifest.metadata, :environment)
   end
 
   test "manifest SQL tables receive a desired target descriptor from connection definitions" do

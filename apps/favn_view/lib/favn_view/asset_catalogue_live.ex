@@ -15,7 +15,8 @@ defmodule FavnView.AssetCatalogueLive do
 
   @impl true
   def mount(_params, _session, socket) do
-    {assets, error} = load_assets(socket.assigns.current_scope.operator_context)
+    {assets, error} =
+      load_assets(socket.assigns.current_scope.operator_context, socket.assigns.current_scope)
 
     socket =
       assign(socket,
@@ -283,7 +284,7 @@ defmodule FavnView.AssetCatalogueLive do
     )
   end
 
-  defp load_assets(operator_context) do
+  defp load_assets(operator_context, timezone) do
     fun =
       configured_fun(
         :active_asset_catalogue_fun,
@@ -294,7 +295,7 @@ defmodule FavnView.AssetCatalogueLive do
 
     case result do
       {:ok, entries} ->
-        {Enum.map(entries, &asset_from_entry/1), nil}
+        {Enum.map(entries, &asset_from_entry(&1, timezone)), nil}
 
       {:error, reason} ->
         {[], OperatorErrorLabels.collection_load(reason)}
@@ -306,7 +307,7 @@ defmodule FavnView.AssetCatalogueLive do
   # `module_path` stays a separate key rather than standing in for the levels: it
   # is what an asset owning no relation can be *shown* as, but it addresses
   # nothing, so it must not become a filter option an operator can pick.
-  defp asset_from_entry(entry) do
+  defp asset_from_entry(entry, timezone) do
     relation = Map.get(entry, :relation) || %{}
 
     %{
@@ -322,7 +323,7 @@ defmodule FavnView.AssetCatalogueLive do
       coverage_status: get_in(entry, [:coverage, Access.key(:status)]) || :unknown,
       compatibility_status:
         get_in(entry, [:compatibility, Access.key(:status)]) || :operator_decision,
-      last_run_label: last_run_label(entry[:latest_run_at])
+      last_run_label: last_run_label(entry[:latest_run_at], timezone)
     }
   end
 
@@ -338,16 +339,16 @@ defmodule FavnView.AssetCatalogueLive do
     |> List.last()
   end
 
-  defp last_run_label(%DateTime{} = datetime) do
+  defp last_run_label(%DateTime{} = datetime, timezone) do
     seconds = DateTime.diff(DateTime.utc_now(), datetime, :second)
 
     cond do
       seconds < 60 -> "just now"
       seconds < 3_600 -> "#{div(seconds, 60)}m ago"
       seconds < 86_400 -> "#{div(seconds, 3_600)}h ago"
-      true -> FavnView.Time.format(datetime, "%b %-d %H:%M")
+      true -> FavnView.Time.format(datetime, "%b %-d %H:%M", timezone)
     end
   end
 
-  defp last_run_label(_value), do: "No runs yet"
+  defp last_run_label(_value, _timezone), do: "No runs yet"
 end

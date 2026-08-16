@@ -13,8 +13,8 @@ defmodule FavnView.RunsFilters do
   operator can send to someone else. Defaults are omitted from the query string,
   which keeps `/runs` meaning "today".
 
-  Calendar ranges use `config :favn, :default_timezone`, matching the timestamps
-  the list shows. Persisted instants and store bounds remain UTC.
+  Calendar ranges receive the active workspace timezone explicitly, matching
+  the timestamps the list shows. Persisted instants and store bounds remain UTC.
 
   ## Examples
 
@@ -22,12 +22,12 @@ defmodule FavnView.RunsFilters do
       :failed
 
       iex> filters = FavnView.RunsFilters.from_params(%{"range" => "all"})
-      iex> FavnView.RunsFilters.window(filters, ~U[2026-07-30 10:00:00Z])
+      iex> FavnView.RunsFilters.window(filters, ~U[2026-07-30 10:00:00Z], "Etc/UTC")
       {nil, nil}
 
       iex> filters = FavnView.RunsFilters.from_params(%{})
-      iex> {started_at, nil} = FavnView.RunsFilters.window(filters, ~U[2026-07-30 10:00:00Z])
-      iex> FavnView.Time.to_date(started_at)
+      iex> {started_at, nil} = FavnView.RunsFilters.window(filters, ~U[2026-07-30 10:00:00Z], "Etc/UTC")
+      iex> FavnView.Time.to_date(started_at, "Etc/UTC")
       ~D[2026-07-30]
   """
 
@@ -214,33 +214,39 @@ defmodule FavnView.RunsFilters do
   `nil` means unbounded on that side.
 
       iex> filters = FavnView.RunsFilters.from_params(%{"range" => "hour"})
-      iex> FavnView.RunsFilters.window(filters, ~U[2026-07-30 10:00:00Z])
+      iex> FavnView.RunsFilters.window(filters, ~U[2026-07-30 10:00:00Z], "Etc/UTC")
       {~U[2026-07-30 09:00:00Z], nil}
 
       iex> filters = FavnView.RunsFilters.from_params(%{"from" => "2026-07-01", "to" => "2026-07-31"})
-      iex> FavnView.RunsFilters.window(filters, ~U[2026-07-30 10:00:00Z])
+      iex> FavnView.RunsFilters.window(filters, ~U[2026-07-30 10:00:00Z], "Etc/UTC")
       {~U[2026-07-01 00:00:00Z], ~U[2026-08-01 00:00:00Z]}
   """
-  @spec window(t(), DateTime.t()) :: {DateTime.t() | nil, DateTime.t() | nil}
-  def window(%__MODULE__{range: :all}, _now), do: {nil, nil}
-  def window(%__MODULE__{range: :hour}, now), do: {DateTime.add(now, -3600, :second), nil}
-  def window(%__MODULE__{range: :today}, now), do: {start_of_day(now), nil}
-  def window(%__MODULE__{range: :week}, now), do: {days_ago(now, 6), nil}
-  def window(%__MODULE__{range: :month}, now), do: {days_ago(now, 29), nil}
+  @spec window(t(), DateTime.t(), String.t() | map()) ::
+          {DateTime.t() | nil, DateTime.t() | nil}
+  def window(%__MODULE__{range: :all}, _now, _timezone), do: {nil, nil}
 
-  def window(%__MODULE__{range: :custom, from: from, to: to}, _now),
-    do: {from && beginning_of_day(from), to && beginning_of_next_day(to)}
+  def window(%__MODULE__{range: :hour}, now, _timezone),
+    do: {DateTime.add(now, -3600, :second), nil}
+
+  def window(%__MODULE__{range: :today}, now, timezone),
+    do: {start_of_day(now, timezone), nil}
+
+  def window(%__MODULE__{range: :week}, now, timezone), do: {days_ago(now, 6, timezone), nil}
+  def window(%__MODULE__{range: :month}, now, timezone), do: {days_ago(now, 29, timezone), nil}
+
+  def window(%__MODULE__{range: :custom, from: from, to: to}, _now, timezone),
+    do: {from && beginning_of_day(from, timezone), to && beginning_of_next_day(to, timezone)}
 
   @doc """
   The keyword filters `FavnOrchestrator.page_execution_groups/2` accepts.
 
       iex> filters = FavnView.RunsFilters.from_params(%{"status" => "active", "range" => "all"})
-      iex> FavnView.RunsFilters.store_filters(filters, ~U[2026-07-30 10:00:00Z])
+      iex> FavnView.RunsFilters.store_filters(filters, ~U[2026-07-30 10:00:00Z], "Etc/UTC")
       [status: [:pending, :running], limit: 50, order: :started_desc]
   """
-  @spec store_filters(t(), DateTime.t()) :: keyword()
-  def store_filters(%__MODULE__{} = filters, now) do
-    {started_after, started_before} = window(filters, now)
+  @spec store_filters(t(), DateTime.t(), String.t() | map()) :: keyword()
+  def store_filters(%__MODULE__{} = filters, now, timezone) do
+    {started_after, started_before} = window(filters, now, timezone)
 
     [limit: @page_size, order: filters.order]
     |> put_filter(:status, store_status(filters.status))
@@ -253,24 +259,27 @@ defmodule FavnView.RunsFilters do
   @doc """
   The keyword filters `FavnOrchestrator.count_execution_groups/2` accepts.
 
-  These are `store_filters/2` without the status, the page, or the order, because
+  These are `store_filters/3` without the status, the page, or the order, because
   the counts differ from the list in exactly one way: they are taken once per
   status. Deriving them from the same function is what keeps a count equal to the
   number of rows clicking it produces — and a count is of the whole filtered set,
   not of the page being looked at.
 
       iex> filters = FavnView.RunsFilters.from_params(%{"q" => "orders", "range" => "all"})
-      iex> FavnView.RunsFilters.count_filters(filters, ~U[2026-07-30 10:00:00Z])
+      iex> FavnView.RunsFilters.count_filters(filters, ~U[2026-07-30 10:00:00Z], "Etc/UTC")
       [search: "orders"]
   """
-  @spec count_filters(t(), DateTime.t()) :: keyword()
-  def count_filters(%__MODULE__{} = filters, now),
-    do: filters |> store_filters(now) |> Keyword.drop([:status, :limit, :order, :after])
+  @spec count_filters(t(), DateTime.t(), String.t() | map()) :: keyword()
+  def count_filters(%__MODULE__{} = filters, now, timezone),
+    do:
+      filters
+      |> store_filters(now, timezone)
+      |> Keyword.drop([:status, :limit, :order, :after])
 
   @doc """
   The status axis, as four choices that each carry their own count.
 
-  `counts` is a `count_filters/2` read, or `nil` before one has been taken. A
+  `counts` is a `count_filters/3` read, or `nil` before one has been taken. A
   choice with no count still renders — the filter is worth offering whether or
   not its size is known yet.
 
@@ -438,17 +447,19 @@ defmodule FavnView.RunsFilters do
   defp date(%Date{} = value), do: value
   defp date(_value), do: nil
 
-  defp start_of_day(now), do: now |> FavnView.Time.to_date() |> beginning_of_day()
+  defp start_of_day(now, timezone),
+    do: now |> FavnView.Time.to_date(timezone) |> beginning_of_day(timezone)
 
-  defp days_ago(now, days) do
+  defp days_ago(now, days, timezone) do
     now
-    |> FavnView.Time.to_date()
+    |> FavnView.Time.to_date(timezone)
     |> Date.add(-days)
-    |> beginning_of_day()
+    |> beginning_of_day(timezone)
   end
 
-  defp beginning_of_day(%Date{} = date), do: FavnView.Time.beginning_of_day(date)
+  defp beginning_of_day(%Date{} = date, timezone),
+    do: FavnView.Time.beginning_of_day(date, timezone)
 
-  defp beginning_of_next_day(%Date{} = date),
-    do: date |> Date.add(1) |> beginning_of_day()
+  defp beginning_of_next_day(%Date{} = date, timezone),
+    do: date |> Date.add(1) |> beginning_of_day(timezone)
 end

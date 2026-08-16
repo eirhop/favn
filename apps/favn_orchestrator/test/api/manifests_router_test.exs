@@ -5,6 +5,7 @@ defmodule FavnOrchestrator.API.ManifestsRouterTest do
   import Plug.Test
 
   alias Favn.Manifest.Serializer
+  alias Favn.Manifest.Environment
   alias Favn.Manifest.Version
   alias FavnOrchestrator.API.ManifestsRouter
   alias FavnOrchestrator.Auth.ServiceTokens
@@ -53,6 +54,10 @@ defmodule FavnOrchestrator.API.ManifestsRouterTest do
     def get_deployment_configuration(_query), do: {:ok, %{}}
 
     def deploy_manifest(command) do
+      if test_pid = Application.get_env(:favn_orchestrator, :manifest_router_test_pid) do
+        send(test_pid, {:manifest_deployed, command})
+      end
+
       {:ok,
        %RuntimeState{
          workspace_id: command.workspace_context.workspace_id,
@@ -214,9 +219,24 @@ defmodule FavnOrchestrator.API.ManifestsRouterTest do
   end
 
   test "successful activation returns bounded inspection diagnostics" do
-    {:ok, version} = ManifestsRouter.build_version(valid_envelope())
+    {:ok, base} = ManifestsRouter.build_version(valid_envelope())
+
+    manifest = %{
+      base.manifest
+      | environment: Environment.new!(default_timezone: "Europe/Oslo")
+    }
+
+    assert {:ok, version} =
+             Version.new(manifest, manifest_version_id: "mv_router_workspace_environment")
+
     Application.put_env(:favn_orchestrator, :manifest_router_test_version, version)
-    on_exit(fn -> Application.delete_env(:favn_orchestrator, :manifest_router_test_version) end)
+    Application.put_env(:favn_orchestrator, :manifest_router_test_pid, self())
+
+    on_exit(fn ->
+      Application.delete_env(:favn_orchestrator, :manifest_router_test_version)
+      Application.delete_env(:favn_orchestrator, :manifest_router_test_pid)
+    end)
+
     start_manifest_runtime(SuccessfulManifestStore)
 
     response =
@@ -237,6 +257,15 @@ defmodule FavnOrchestrator.API.ManifestsRouterTest do
       |> ManifestsRouter.call(ManifestsRouter.init([]))
 
     assert response.status == 200
+
+    assert_receive {:manifest_deployed, command}
+    assert command.workspace_context.workspace_id == "workspace-a"
+
+    assert {:ok, persisted_environment} =
+             FavnOrchestrator.WorkspaceConfiguration.from_configuration(command.configuration)
+
+    assert persisted_environment.default_timezone == "Europe/Oslo"
+    assert persisted_environment.default_timezone_source == :application_default
 
     assert %{
              "data" => %{

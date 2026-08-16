@@ -11,6 +11,7 @@ defmodule Favn.Manifest.Rehydrate do
   alias Favn.Manifest.Asset
   alias Favn.Manifest.Build
   alias Favn.Manifest.ExecutionPackage
+  alias Favn.Manifest.Environment
   alias Favn.Manifest.Graph
   alias Favn.Manifest.Labels
   alias Favn.Manifest.Pipeline
@@ -80,12 +81,27 @@ defmodule Favn.Manifest.Rehydrate do
       runner_contract_version: field_value(value, :runner_contract_version),
       runner_releases: value |> field_value(:runner_releases, %{}) |> plain_map(),
       execution_pools: value |> field_value(:execution_pools, %{}) |> build_execution_pools!(),
+      environment:
+        value
+        |> field_value(:environment)
+        |> build_environment!(field_value(value, :schema_version)),
       assets: assets,
       pipelines: value |> field_value(:pipelines, []) |> build_pipelines(),
       schedules: value |> field_value(:schedules, []) |> build_schedules(),
       graph: graph,
       metadata: value |> field_value(:metadata, %{}) |> plain_map()
     }
+  end
+
+  defp build_environment!(nil, schema_version)
+       when is_integer(schema_version) and schema_version < 16,
+       do: Environment.new!()
+
+  defp build_environment!(value, _schema_version) do
+    case Environment.from_manifest(value) do
+      {:ok, environment} -> environment
+      {:error, reason} -> raise ArgumentError, "invalid manifest environment: #{inspect(reason)}"
+    end
   end
 
   defp build_execution_pools!(value) do

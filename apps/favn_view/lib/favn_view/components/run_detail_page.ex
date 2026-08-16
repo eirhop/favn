@@ -48,7 +48,7 @@ defmodule FavnView.Components.RunDetailPage do
     assigns =
       assigns
       |> assign(:run, run)
-      |> assign(:flow, assigns.flow || flow(run))
+      |> assign(:flow, assigns.flow || flow(run, assigns.current_scope))
       |> assign(:selected_attempt, selected_attempt(run, assigns.selected_attempt_id))
 
     ~H"""
@@ -152,10 +152,10 @@ defmodule FavnView.Components.RunDetailPage do
   # The LiveView precomputes the flow so a refresh does not rebuild it inside
   # `render/1`. Every other caller — design-system examples, component tests —
   # only has a run, so derive it here rather than make each of them do it.
-  defp flow(%{found?: true, attempts: attempts, active?: active?}),
-    do: RunFlow.build(attempts, active?: active?)
+  defp flow(%{found?: true, attempts: attempts, active?: active?}, timezone),
+    do: RunFlow.build(attempts, active?: active?, timezone: timezone)
 
-  defp flow(_run), do: nil
+  defp flow(_run, _timezone), do: nil
 
   defp selected_attempt(%{attempts: attempts}, attempt_id) when is_binary(attempt_id),
     do: Enum.find(attempts, &(&1.id == attempt_id))

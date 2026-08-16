@@ -63,6 +63,40 @@ defmodule Favn.Manifest.Environment do
     end
   end
 
+  @doc "Rehydrates the exact environment persisted in a manifest."
+  @spec from_manifest(map() | t()) :: {:ok, t()} | {:error, term()}
+  def from_manifest(%__MODULE__{} = environment) do
+    environment
+    |> Map.from_struct()
+    |> from_manifest()
+  end
+
+  def from_manifest(values) when is_map(values) do
+    with {:ok, values} <- normalize_persisted_keys(values),
+         {:ok, timezone} <- validate_persisted_timezone(Map.get(values, :default_timezone)),
+         {:ok, source} <- validate_persisted_source(Map.get(values, :default_timezone_source)),
+         {:ok, coverage_scope} <- normalize_scope(Map.get(values, :coverage_scope)) do
+      {:ok,
+       %__MODULE__{
+         default_timezone: timezone,
+         default_timezone_source: source,
+         coverage_scope: coverage_scope
+       }}
+    end
+  end
+
+  def from_manifest(value), do: {:error, {:invalid_manifest_environment, value}}
+
+  @doc "Returns the JSON-compatible representation stored at runtime boundaries."
+  @spec to_map(t()) :: map()
+  def to_map(%__MODULE__{} = environment) do
+    %{
+      "default_timezone" => environment.default_timezone,
+      "default_timezone_source" => Atom.to_string(environment.default_timezone_source),
+      "coverage_scope" => encode_scope(environment.coverage_scope)
+    }
+  end
+
   defp normalize_scope(nil), do: {:ok, nil}
 
   defp normalize_scope(scope) when is_list(scope) do
@@ -107,11 +141,64 @@ defmodule Favn.Manifest.Environment do
     end)
   end
 
+  defp normalize_persisted_keys(values) do
+    Enum.reduce_while(values, {:ok, %{}}, fn {key, value}, {:ok, acc} ->
+      normalized_key = normalize_persisted_key(key)
+
+      cond do
+        normalized_key not in [:default_timezone, :default_timezone_source, :coverage_scope] ->
+          {:halt, {:error, {:unsupported_manifest_environment_key, key}}}
+
+        Map.has_key?(acc, normalized_key) ->
+          {:halt, {:error, {:duplicate_manifest_environment_key, normalized_key}}}
+
+        true ->
+          {:cont, {:ok, Map.put(acc, normalized_key, value)}}
+      end
+    end)
+  end
+
   defp normalize_environment_key(:default_timezone), do: :default_timezone
   defp normalize_environment_key("default_timezone"), do: :default_timezone
   defp normalize_environment_key(:coverage_scope), do: :coverage_scope
   defp normalize_environment_key("coverage_scope"), do: :coverage_scope
   defp normalize_environment_key(key), do: key
+
+  defp normalize_persisted_key(:default_timezone), do: :default_timezone
+  defp normalize_persisted_key("default_timezone"), do: :default_timezone
+  defp normalize_persisted_key(:default_timezone_source), do: :default_timezone_source
+  defp normalize_persisted_key("default_timezone_source"), do: :default_timezone_source
+  defp normalize_persisted_key(:coverage_scope), do: :coverage_scope
+  defp normalize_persisted_key("coverage_scope"), do: :coverage_scope
+  defp normalize_persisted_key(key), do: key
+
+  defp normalize_source(:application_default), do: :application_default
+  defp normalize_source("application_default"), do: :application_default
+  defp normalize_source(:utc_fallback), do: :utc_fallback
+  defp normalize_source("utc_fallback"), do: :utc_fallback
+  defp normalize_source(value), do: value
+
+  defp validate_persisted_timezone(nil), do: {:error, :manifest_default_timezone_required}
+
+  defp validate_persisted_timezone(value) when is_binary(value) do
+    case Validate.timezone(value) do
+      :ok -> {:ok, value}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp validate_persisted_timezone(value),
+    do: {:error, {:invalid_manifest_default_timezone, value}}
+
+  defp validate_persisted_source(nil),
+    do: {:error, :manifest_default_timezone_source_required}
+
+  defp validate_persisted_source(value) do
+    case normalize_source(value) do
+      source when source in [:application_default, :utc_fallback] -> {:ok, source}
+      invalid -> {:error, {:invalid_manifest_timezone_source, invalid}}
+    end
+  end
 
   defp duplicate_keys(values) do
     values
@@ -135,4 +222,7 @@ defmodule Favn.Manifest.Environment do
   end
 
   defp normalize_scope_from(value), do: {:error, {:invalid_coverage_scope_from, value}}
+
+  defp encode_scope(nil), do: nil
+  defp encode_scope(%{from: %Date{} = from}), do: %{"from" => Date.to_iso8601(from)}
 end

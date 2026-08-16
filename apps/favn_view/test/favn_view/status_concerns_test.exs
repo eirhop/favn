@@ -9,6 +9,9 @@ defmodule FavnView.StatusConcernsTest do
 
   doctest StatusConcerns
 
+  defp build(sources, opts \\ []),
+    do: StatusConcerns.build(sources, Keyword.put_new(opts, :timezone, "Etc/UTC"))
+
   defp sources(overrides \\ %{}) do
     Map.merge(
       %{
@@ -23,21 +26,19 @@ defmodule FavnView.StatusConcernsTest do
 
   describe "build/2" do
     test "nothing wrong produces no groups, which is a state and not an error" do
-      assert StatusConcerns.build(sources()) == %{groups: [], unavailable: []}
+      assert build(sources()) == %{groups: [], unavailable: []}
     end
 
     test "an empty group is dropped rather than rendered empty" do
       result =
-        StatusConcerns.build(
-          sources(%{rebuilds: {:ok, %{items: [%{id: "rb_1", state: :succeeded}]}}})
-        )
+        build(sources(%{rebuilds: {:ok, %{items: [%{id: "rb_1", state: :succeeded}]}}}))
 
       assert result.groups == []
     end
 
     test "orders groups by severity: failures, then assets, then schedules, then operations" do
       result =
-        StatusConcerns.build(
+        build(
           sources(%{
             runs: {:ok, %{items: [%{id: "run_1", failed_count: 1, total_count: 3}]}},
             assets: {:ok, [%{target_id: "duckdb.s.a", status: :stale}]},
@@ -56,7 +57,7 @@ defmodule FavnView.StatusConcernsTest do
 
     test "an unusable source is named, and the sources that answered still render" do
       result =
-        StatusConcerns.build(
+        build(
           sources(%{
             schedules: {:error, :unavailable},
             rebuilds: {:error, :timeout},
@@ -70,7 +71,7 @@ defmodule FavnView.StatusConcernsTest do
 
     test "caps each group so the page does not become a list view" do
       items = for index <- 1..20, do: %{id: "run_#{index}", failed_count: 1}
-      result = StatusConcerns.build(sources(%{runs: {:ok, %{items: items}}}), limit: 3)
+      result = build(sources(%{runs: {:ok, %{items: items}}}), limit: 3)
 
       assert [%{concerns: concerns}] = result.groups
       assert length(concerns) == 3
@@ -80,7 +81,7 @@ defmodule FavnView.StatusConcernsTest do
   describe "wording" do
     test "a run says how much of it failed" do
       result =
-        StatusConcerns.build(
+        build(
           sources(%{
             runs:
               {:ok,
@@ -99,7 +100,7 @@ defmodule FavnView.StatusConcernsTest do
     end
 
     test "a run with no counts still says something true" do
-      result = StatusConcerns.build(sources(%{runs: {:ok, %{items: [%{id: "run_1"}]}}}))
+      result = build(sources(%{runs: {:ok, %{items: [%{id: "run_1"}]}}}))
 
       assert [%{concerns: [concern]}] = result.groups
       assert concern.detail == "The run finished with failures."
@@ -115,7 +116,7 @@ defmodule FavnView.StatusConcernsTest do
         compatibility: %{status: :rebuild_required}
       }
 
-      result = StatusConcerns.build(sources(%{assets: {:ok, [entry]}}))
+      result = build(sources(%{assets: {:ok, [entry]}}))
 
       assert [%{concerns: [concern]}] = result.groups
       assert concern.title == "mart_daily_sales"
@@ -132,7 +133,7 @@ defmodule FavnView.StatusConcernsTest do
         last_scheduler_error: %{message: "cron expression rejected"}
       }
 
-      result = StatusConcerns.build(sources(%{schedules: {:ok, %{items: [entry]}}}))
+      result = build(sources(%{schedules: {:ok, %{items: [entry]}}}))
 
       assert [%{concerns: [concern]}] = result.groups
       assert concern.title == "Demo.CrmDaily"

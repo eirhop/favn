@@ -18,6 +18,11 @@ defmodule FavnCore.SQLSessionRequirementsTest do
     payload = %{
       "schema_version" => 7,
       "runner_contract_version" => 7,
+      "environment" => %{
+        "default_timezone" => "Etc/UTC",
+        "default_timezone_source" => "utc_fallback",
+        "coverage_scope" => nil
+      },
       "assets" => [
         %{
           "ref" => %{"module" => "Elixir.Example.ResourceAsset", "name" => "asset"},

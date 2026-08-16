@@ -247,7 +247,7 @@ defmodule Favn.AI do
     `Favn.Manifest.Generator` if you need internal compilation details. For
     deployment, call `Favn.build_manifest/1` with the exact operator-supplied
     `runner_releases` pool map, followed by
-    `Favn.prepare_manifest_publication/2`: schema 15 has one compact manifest
+    `Favn.prepare_manifest_publication/2`: schema 16 has one compact manifest
     index bound to exact releases per runner pool, validated execution-pool
     defaults, and immutable content-addressed SQL execution packages. Consumer
     `config :favn, execution_pools: [...]` is manifest input, not Orchestrator or

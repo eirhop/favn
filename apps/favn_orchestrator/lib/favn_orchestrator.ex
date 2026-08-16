@@ -57,6 +57,7 @@ defmodule FavnOrchestrator do
   alias FavnOrchestrator.RunReadModel
   alias FavnOrchestrator.Rebuilds
   alias FavnOrchestrator.TargetRecovery
+  alias FavnOrchestrator.WorkspaceConfiguration
   alias FavnOrchestrator.RunRetryPlanner
   alias FavnOrchestrator.RunSubmission.AssetOptions
   alias FavnOrchestrator.RunSubmissions
@@ -503,6 +504,15 @@ defmodule FavnOrchestrator do
   def get_manifest(%WorkspaceContext{} = context, manifest_version_id)
       when is_binary(manifest_version_id) do
     ManifestStore.get_manifest(context, manifest_version_id)
+  end
+
+  @doc "Returns the active deployment's non-secret workspace configuration."
+  @spec active_workspace_configuration(OperatorContext.t()) ::
+          {:ok, WorkspaceConfiguration.t()} | {:error, term()}
+  def active_workspace_configuration(%OperatorContext{} = operator_context) do
+    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer) do
+      WorkspaceConfiguration.active(context)
+    end
   end
 
   @doc "Returns customer-visible asset catalogue entries for an operator workspace."

@@ -21,6 +21,7 @@ defmodule FavnOrchestrator.Storage.PayloadCodec do
     "Elixir.Favn.Manifest" => :"Elixir.Favn.Manifest",
     "Elixir.Favn.Manifest.Asset" => :"Elixir.Favn.Manifest.Asset",
     "Elixir.Favn.Manifest.Catalog" => :"Elixir.Favn.Manifest.Catalog",
+    "Elixir.Favn.Manifest.Environment" => :"Elixir.Favn.Manifest.Environment",
     "Elixir.Favn.Manifest.Graph" => :"Elixir.Favn.Manifest.Graph",
     "Elixir.Favn.Manifest.Pipeline" => :"Elixir.Favn.Manifest.Pipeline",
     "Elixir.Favn.Manifest.Schedule" => :"Elixir.Favn.Manifest.Schedule",
