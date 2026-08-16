@@ -11,11 +11,30 @@ defmodule FavnView.AssetCoverageTest do
 
   import Phoenix.LiveViewTest
 
-  doctest FavnView.CoverageCalendar, import: true
+  alias FavnView.CoverageCalendar, as: Subject
+
+  doctest Subject, import: true
 
   alias FavnView.Components.AssetDetailPage
-  alias FavnView.CoverageCalendar
   alias FavnView.UI.Data
+
+  defmodule CoverageCalendar do
+    defdelegate build(attrs), to: FavnView.CoverageCalendar
+    defdelegate unit_bounds(kind, date), to: FavnView.CoverageCalendar
+
+    def navigation(attrs),
+      do: FavnView.CoverageCalendar.navigation(Map.put_new(attrs, :timezone, "Etc/UTC"))
+
+    def opening_date(attrs),
+      do: FavnView.CoverageCalendar.opening_date(Map.put_new(attrs, :timezone, "Etc/UTC"))
+
+    def jump_target(attrs, params),
+      do:
+        FavnView.CoverageCalendar.jump_target(
+          Map.put_new(attrs, :timezone, "Etc/UTC"),
+          params
+        )
+  end
 
   describe "the shape of one screen" do
     test "a daily asset shows one month, aligned to its weekdays" do
@@ -40,8 +59,16 @@ defmodule FavnView.AssetCoverageTest do
       # Twenty-three, because the clock went forward. The view is told the hours rather
       # than counting to 24, which is the whole reason it is told them.
       windows =
-        Enum.map([0, 1, 3, 4, 5], fn hour ->
-          window(:hour, "hour:Europe/Oslo:2026-03-29T#{pad(hour)}", hour(hour), hour != 4)
+        Enum.zip([0, 1, 3, 4, 5], [23, 0, 1, 2, 3])
+        |> Enum.map(fn {local_hour, utc_hour} ->
+          date = if utc_hour == 23, do: ~D[2026-03-28], else: ~D[2026-03-29]
+
+          window(
+            :hour,
+            "hour:Europe/Oslo:2026-03-29T#{pad(local_hour)}",
+            DateTime.new!(date, Time.new!(utc_hour, 0, 0), "Etc/UTC"),
+            local_hour != 4
+          )
         end)
 
       calendar = CoverageCalendar.build(%{kind: :hour, timezone: "Europe/Oslo", windows: windows})
@@ -209,6 +236,15 @@ defmodule FavnView.AssetCoverageTest do
   end
 
   describe "which unit opens first" do
+    test "uses the workspace timezone when an instant crosses a local date boundary" do
+      assert Subject.opening_date(%{
+               kind: :hour,
+               timezone: "Europe/Oslo",
+               first_expected_at: ~U[2026-03-28 23:00:00Z],
+               last_expected_at: ~U[2026-03-28 23:00:00Z]
+             }) == ~D[2026-03-29]
+    end
+
     test "the newest one, where there is a unit above the grain" do
       assert CoverageCalendar.opening_date(%{
                kind: :day,
@@ -477,6 +513,7 @@ defmodule FavnView.AssetCoverageTest do
 
       html =
         render_component(&AssetDetailPage.coverage_panel/1,
+          timezone: "Europe/Oslo",
           command_resource: "asset:orders",
           can_plan?: true,
           coverage: %{
@@ -502,6 +539,7 @@ defmodule FavnView.AssetCoverageTest do
     test "a viewer sees the gaps but is told why they cannot fill them" do
       html =
         render_component(&AssetDetailPage.coverage_panel/1,
+          timezone: "Europe/Oslo",
           command_resource: "asset:orders",
           can_plan?: false,
           coverage: %{
@@ -520,6 +558,7 @@ defmodule FavnView.AssetCoverageTest do
 
   defp coverage_panel(coverage, calendar) do
     render_component(&AssetDetailPage.coverage_panel/1,
+      timezone: "Europe/Oslo",
       command_resource: "asset:orders",
       can_plan?: true,
       coverage: coverage,
@@ -563,6 +602,5 @@ defmodule FavnView.AssetCoverageTest do
   defp day_at(day), do: DateTime.new!(Date.new!(2026, 7, day), ~T[00:00:00], "Etc/UTC")
   defp month_at(month), do: DateTime.new!(Date.new!(2026, month, 1), ~T[00:00:00], "Etc/UTC")
   defp year_at(year), do: DateTime.new!(Date.new!(year, 1, 1), ~T[00:00:00], "Etc/UTC")
-  defp hour(hour), do: DateTime.new!(~D[2026-03-29], Time.new!(hour, 0, 0), "Etc/UTC")
   defp pad(value), do: String.pad_leading("#{value}", 2, "0")
 end

@@ -277,7 +277,10 @@ defmodule FavnView.RunsListLiveTest do
     socket = %Phoenix.LiveView.Socket{
       assigns: %{
         __changed__: %{},
-        current_scope: %{operator_context: :operator_context}
+        current_scope: %{
+          operator_context: :operator_context,
+          workspace_configuration: %{default_timezone: "Etc/UTC"}
+        }
       }
     }
 

@@ -19,6 +19,72 @@ defmodule Favn.Manifest.EnvironmentTest do
     assert environment.default_timezone_source == :application_default
   end
 
+  test "round-trips the exact persisted environment including a coverage date" do
+    environment =
+      Environment.new!(
+        default_timezone: "Europe/Oslo",
+        coverage_scope: [from: ~D[2026-07-01]]
+      )
+
+    assert Environment.to_map(environment) == %{
+             "default_timezone" => "Europe/Oslo",
+             "default_timezone_source" => "application_default",
+             "coverage_scope" => %{"from" => "2026-07-01"}
+           }
+
+    assert {:ok, ^environment} =
+             environment |> Environment.to_map() |> Environment.from_manifest()
+  end
+
+  test "rehydration validates structs instead of trusting their fields" do
+    invalid =
+      malformed_environment(
+        default_timezone: "Invalid/Timezone",
+        default_timezone_source: :application_default
+      )
+
+    assert {:error, {:invalid_timezone, "Invalid/Timezone"}} = Environment.from_manifest(invalid)
+
+    assert {:error, :manifest_default_timezone_source_required} =
+             Environment.from_manifest(
+               malformed_environment(
+                 default_timezone: "Etc/UTC",
+                 default_timezone_source: nil
+               )
+             )
+
+    assert {:error, {:invalid_manifest_timezone_source, "local"}} =
+             Environment.from_manifest(
+               malformed_environment(
+                 default_timezone: "Etc/UTC",
+                 default_timezone_source: "local"
+               )
+             )
+
+    assert {:error, {:invalid_coverage_scope_from, :today}} =
+             Environment.from_manifest(
+               malformed_environment(
+                 default_timezone: "Etc/UTC",
+                 default_timezone_source: :utc_fallback,
+                 coverage_scope: %{from: :today}
+               )
+             )
+  end
+
+  test "rehydration reports the exact missing or invalid persisted field" do
+    assert {:error, :manifest_default_timezone_required} =
+             Environment.from_manifest(%{"default_timezone_source" => "utc_fallback"})
+
+    assert {:error, {:invalid_manifest_default_timezone, 123}} =
+             Environment.from_manifest(%{
+               "default_timezone" => 123,
+               "default_timezone_source" => "utc_fallback"
+             })
+
+    assert {:error, :manifest_default_timezone_source_required} =
+             Environment.from_manifest(%{"default_timezone" => "Etc/UTC"})
+  end
+
   test "rejects invalid timezone and coverage scope configuration" do
     assert {:error, {:invalid_timezone, "Invalid/Timezone"}} =
              Environment.new(default_timezone: "Invalid/Timezone")
@@ -54,4 +120,6 @@ defmodule Favn.Manifest.EnvironmentTest do
     assert manifest_schedule.timezone == "America/New_York"
     assert manifest_schedule.timezone_source == :local
   end
+
+  defp malformed_environment(fields), do: struct!(Environment, fields)
 end

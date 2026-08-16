@@ -5,6 +5,7 @@ defmodule FavnOrchestrator.Diagnostics do
   """
 
   alias FavnOrchestrator.ManifestStore
+  alias FavnOrchestrator.ConnectionCircuitPolicy
   alias FavnOrchestrator.ManifestIndexCache
   alias FavnOrchestrator.ExecutionPoolPolicy
   alias FavnOrchestrator.OperationalEvents
@@ -18,6 +19,7 @@ defmodule FavnOrchestrator.Diagnostics do
   alias FavnOrchestrator.Runs
   alias FavnOrchestrator.RuntimeConfig
   alias FavnOrchestrator.Scheduler.Runtime, as: SchedulerRuntime
+  alias FavnOrchestrator.WorkspaceConfiguration
 
   @default_recent_limit 5
   @max_recent_limit 100
@@ -139,16 +141,20 @@ defmodule FavnOrchestrator.Diagnostics do
       context = SystemContext.workspace(workspace_id, :diagnostics)
 
       case active_manifest_diagnostics(context) do
-        {:ok, version, execution_pools} ->
+        {:ok, runtime, version, execution_pools, connection_circuits, environment} ->
           item = %{
             workspace_id: workspace_id,
+            deployment_id: runtime.deployment_id,
             manifest_version_id: version.manifest_version_id,
             content_hash: version.content_hash,
             runner_releases: version.runner_releases,
             asset_count: length(version.manifest.assets),
             pipeline_count: length(version.manifest.pipelines),
             schedule_count: length(version.manifest.schedules),
-            execution_pools: execution_pools
+            default_timezone: environment.default_timezone,
+            default_timezone_source: environment.default_timezone_source,
+            execution_pools: execution_pools,
+            connection_circuits: connection_circuits
           }
 
           {:cont, {:ok, [item | acc]}}
@@ -174,8 +180,10 @@ defmodule FavnOrchestrator.Diagnostics do
            ),
          {:ok, configuration} <-
            ManifestStore.get_deployment_configuration(context, runtime.deployment_id),
-         {:ok, execution_pools} <- ExecutionPoolPolicy.diagnostics(configuration) do
-      {:ok, version, execution_pools}
+         {:ok, execution_pools} <- ExecutionPoolPolicy.diagnostics(configuration),
+         {:ok, connection_circuits} <- ConnectionCircuitPolicy.diagnostics(configuration),
+         {:ok, environment} <- WorkspaceConfiguration.from_configuration(configuration) do
+      {:ok, runtime, version, execution_pools, connection_circuits, environment}
     end
   end
 

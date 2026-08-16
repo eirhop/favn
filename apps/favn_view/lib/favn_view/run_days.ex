@@ -15,12 +15,13 @@ defmodule FavnView.RunDays do
   days that have runs appear. A single day is not worth a header, so that case
   returns the runs flat and the caller renders one table.
 
-  Days use the configured Favn default timezone, matching `FavnView.RunsFilters`.
+  Days use the active workspace timezone supplied by the caller, matching
+  `FavnView.RunsFilters`.
 
   ## Examples
 
       iex> run = %{started_at_raw: ~U[2026-07-30 09:00:00Z], raw_status: :ok}
-      iex> FavnView.RunDays.layout([run], {nil, nil}, ~U[2026-07-30 10:00:00Z])
+      iex> FavnView.RunDays.layout([run], {nil, nil}, ~U[2026-07-30 10:00:00Z], timezone: "Etc/UTC")
       {:flat, [%{started_at_raw: ~U[2026-07-30 09:00:00Z], raw_status: :ok}]}
   """
 
@@ -42,7 +43,7 @@ defmodule FavnView.RunDays do
   @doc """
   Decides whether the list needs day headers, and builds them if it does.
 
-  `window` is a `FavnView.RunsFilters.window/2` result. An unbounded upper end is
+  `window` is a `FavnView.RunsFilters.window/3` result. An unbounded upper end is
   treated as `now`, so "last 30 days" enumerates thirty days rather than none.
 
   Options:
@@ -55,38 +56,44 @@ defmodule FavnView.RunDays do
   @spec layout([map()], {DateTime.t() | nil, DateTime.t() | nil}, DateTime.t(), keyword()) ::
           {:flat, [map()]} | {:days, [day()]}
   def layout(runs, window, now, opts \\ []) when is_list(runs) do
-    by_date = Enum.group_by(runs, &run_date/1)
+    timezone = Keyword.fetch!(opts, :timezone)
+    by_date = Enum.group_by(runs, &run_date(&1, timezone))
     order = Keyword.get(opts, :order, :started_desc)
-    window = if Keyword.get(opts, :complete?, true), do: window, else: clamp(window, by_date)
 
-    case dates(window, by_date, now) do
+    window =
+      if Keyword.get(opts, :complete?, true),
+        do: window,
+        else: clamp(window, by_date, timezone)
+
+    case dates(window, by_date, now, timezone) do
       dates when length(dates) < 2 -> {:flat, runs}
-      dates -> {:days, days(dates, by_date, now, order)}
+      dates -> {:days, days(dates, by_date, now, order, timezone)}
     end
   end
 
   # A truncated page cannot speak for days it never reached, so the range shrinks
   # to what was loaded and the days inside it are still filled in.
-  defp clamp(window, by_date) do
+  defp clamp(window, by_date, timezone) do
     case by_date |> Map.keys() |> Enum.reject(&is_nil/1) |> Enum.min_max(fn -> nil end) do
       nil ->
         {nil, nil}
 
       {first, last} ->
-        {bound(window, first), FavnView.Time.beginning_of_day(Date.add(last, 1))}
+        {bound(window, first, timezone),
+         FavnView.Time.beginning_of_day(Date.add(last, 1), timezone)}
     end
   end
 
-  defp bound({nil, _before_at}, first),
-    do: FavnView.Time.beginning_of_day(first)
+  defp bound({nil, _before_at}, first, timezone),
+    do: FavnView.Time.beginning_of_day(first, timezone)
 
-  defp bound({after_at, _before_at}, first) do
-    floor = FavnView.Time.beginning_of_day(first)
+  defp bound({after_at, _before_at}, first, timezone) do
+    floor = FavnView.Time.beginning_of_day(first, timezone)
     if DateTime.compare(after_at, floor) == :gt, do: after_at, else: floor
   end
 
-  defp days(dates, by_date, now, order) do
-    today = FavnView.Time.to_date(now)
+  defp days(dates, by_date, now, order, timezone) do
+    today = FavnView.Time.to_date(now, timezone)
 
     dates
     |> sort(order)
@@ -141,11 +148,11 @@ defmodule FavnView.RunDays do
 
   # A bounded range enumerates its own days so the empty ones are visible. An
   # unbounded one can only report the days that actually hold runs.
-  defp dates({nil, _before_at}, by_date, _now), do: Map.keys(by_date)
+  defp dates({nil, _before_at}, by_date, _now, _timezone), do: Map.keys(by_date)
 
-  defp dates({after_at, before_at}, by_date, now) do
-    first = FavnView.Time.to_date(after_at)
-    last = FavnView.Time.to_date(last_instant(before_at, now))
+  defp dates({after_at, before_at}, by_date, now, timezone) do
+    first = FavnView.Time.to_date(after_at, timezone)
+    last = FavnView.Time.to_date(last_instant(before_at, now), timezone)
 
     cond do
       Date.compare(last, first) == :lt -> Map.keys(by_date)
@@ -168,9 +175,9 @@ defmodule FavnView.RunDays do
   defp sorter(:started_asc), do: &(Date.compare(&1, &2) != :gt)
   defp sorter(_order), do: &(Date.compare(&1, &2) != :lt)
 
-  defp run_date(run) do
+  defp run_date(run, timezone) do
     case Map.get(run, :started_at_raw) do
-      %DateTime{} = started_at -> FavnView.Time.to_date(started_at)
+      %DateTime{} = started_at -> FavnView.Time.to_date(started_at, timezone)
       _absent -> nil
     end
   end

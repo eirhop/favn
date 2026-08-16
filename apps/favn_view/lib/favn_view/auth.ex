@@ -44,6 +44,12 @@ defmodule FavnView.Auth do
         |> delete_session(@live_socket_key)
         |> assign(:current_scope, nil)
         |> assign(:operator_workspaces, [])
+
+      {:error, {:workspace_configuration_unavailable, reason}} ->
+        conn
+        |> assign(:current_scope, nil)
+        |> assign(:operator_workspaces, [])
+        |> assign(:workspace_configuration_error, reason)
     end
   end
 
@@ -52,8 +58,14 @@ defmodule FavnView.Auth do
   """
   @spec require_operator_authenticated(Plug.Conn.t(), keyword()) :: Plug.Conn.t()
   def require_operator_authenticated(conn, _opts) do
-    case conn.assigns[:current_scope] do
-      %Scope{} = scope ->
+    case {conn.assigns[:current_scope], conn.assigns[:workspace_configuration_error]} do
+      {_scope, reason} when not is_nil(reason) ->
+        conn
+        |> put_status(:service_unavailable)
+        |> send_resp(503, "Workspace configuration unavailable")
+        |> halt()
+
+      {%Scope{} = scope, _error} ->
         if Scope.has_role?(scope, :viewer) do
           conn
         else
@@ -63,7 +75,7 @@ defmodule FavnView.Auth do
           |> halt()
         end
 
-      _other ->
+      {_scope, _error} ->
         conn
         |> put_flash(:error, "Please sign in to continue")
         |> Phoenix.Controller.redirect(to: login_path(conn))
@@ -198,15 +210,17 @@ defmodule FavnView.Auth do
              :introspect_operator_session_fun,
              &Orchestrator.introspect_operator_session/2,
              [workspace_id, token]
-           ) do
-      scope = Scope.new(workspace_id, actor, orchestrator_session)
-
+           ),
+         {:ok, scope} <- configured_scope(workspace_id, actor, orchestrator_session) do
       if Scope.has_role?(scope, required_role) do
         subscribe_live_identity(socket, scope, workspace_id, token, required_role)
       else
         deny_live_scope(socket, scope)
       end
     else
+      {:error, {:workspace_configuration_unavailable, _reason}} ->
+        workspace_configuration_unavailable(socket)
+
       _error ->
         {:halt, Phoenix.LiveView.redirect(socket, to: "/login")}
     end
@@ -250,8 +264,9 @@ defmodule FavnView.Auth do
              :introspect_operator_session_fun,
              &Orchestrator.introspect_operator_session/2,
              [workspace_id, token]
-           ) do
-      {:ok, Scope.new(workspace_id, actor, session)}
+           ),
+         {:ok, scope} <- configured_scope(workspace_id, actor, session) do
+      {:ok, scope}
     end
   end
 
@@ -283,21 +298,24 @@ defmodule FavnView.Auth do
                  [workspace_id, token]
                ) do
             {:ok, session, actor} ->
-              refreshed_scope = Scope.new(workspace_id, actor, session)
+              with {:ok, refreshed_scope} <- configured_scope(workspace_id, actor, session) do
+                if Scope.has_role?(refreshed_scope, required_role) do
+                  schedule_identity_revalidation()
 
-              if Scope.has_role?(refreshed_scope, required_role) do
-                schedule_identity_revalidation()
-
-                {:cont,
-                 socket
-                 |> assign_live_scope(refreshed_scope)
-                 |> Phoenix.LiveView.attach_hook(
-                   :operator_identity_invalidation,
-                   :handle_info,
-                   &handle_identity_message(&1, &2, workspace_id, token, required_role)
-                 )}
+                  {:cont,
+                   socket
+                   |> assign_live_scope(refreshed_scope)
+                   |> Phoenix.LiveView.attach_hook(
+                     :operator_identity_invalidation,
+                     :handle_info,
+                     &handle_identity_message(&1, &2, workspace_id, token, required_role)
+                   )}
+                else
+                  deny_live_scope(socket, refreshed_scope)
+                end
               else
-                deny_live_scope(socket, refreshed_scope)
+                {:error, {:workspace_configuration_unavailable, _reason}} ->
+                  workspace_configuration_unavailable(socket)
               end
 
             {:error, _reason} ->
@@ -316,8 +334,28 @@ defmodule FavnView.Auth do
     socket
     |> Phoenix.Component.assign(:current_scope, scope)
     |> Phoenix.Component.assign(:current_actor, scope.actor)
+    |> Phoenix.Component.assign(:timezone, scope.workspace_configuration.default_timezone)
     |> Phoenix.Component.assign(:can_submit_runs?, Scope.has_role?(scope, :operator))
     |> Phoenix.Component.assign(:operator_workspaces, active_workspaces(scope))
+  end
+
+  defp configured_scope(workspace_id, actor, session) do
+    scope = Scope.new(workspace_id, actor, session)
+
+    case call(
+           :active_workspace_configuration_fun,
+           &Orchestrator.active_workspace_configuration/1,
+           [scope.operator_context]
+         ) do
+      {:ok, configuration} ->
+        case Scope.put_workspace_configuration(scope, configuration) do
+          {:ok, configured_scope} -> {:ok, configured_scope}
+          {:error, reason} -> {:error, {:workspace_configuration_unavailable, reason}}
+        end
+
+      {:error, reason} ->
+        {:error, {:workspace_configuration_unavailable, reason}}
+    end
   end
 
   # Both identity messages are the hook's own, so they halt. Continuing would
@@ -346,13 +384,16 @@ defmodule FavnView.Auth do
            [workspace_id, token]
          ) do
       {:ok, session, actor} ->
-        refreshed_scope = Scope.new(workspace_id, actor, session)
-
-        if Scope.has_role?(refreshed_scope, required_role) do
-          schedule_identity_revalidation()
-          {:halt, assign_live_scope(socket, refreshed_scope)}
+        with {:ok, refreshed_scope} <- configured_scope(workspace_id, actor, session) do
+          if Scope.has_role?(refreshed_scope, required_role) do
+            schedule_identity_revalidation()
+            {:halt, assign_live_scope(socket, refreshed_scope)}
+          else
+            deny_live_scope(socket, refreshed_scope)
+          end
         else
-          deny_live_scope(socket, refreshed_scope)
+          {:error, {:workspace_configuration_unavailable, _reason}} ->
+            workspace_configuration_unavailable(socket)
         end
 
       {:error, _reason} ->
@@ -366,6 +407,13 @@ defmodule FavnView.Auth do
   defp deny_live_scope(socket, scope) do
     destination = if Scope.has_role?(scope, :viewer), do: "/", else: "/login"
     {:halt, Phoenix.LiveView.redirect(socket, to: destination)}
+  end
+
+  defp workspace_configuration_unavailable(socket) do
+    {:halt,
+     socket
+     |> Phoenix.LiveView.put_flash(:error, "Workspace configuration is temporarily unavailable")
+     |> Phoenix.LiveView.redirect(to: "/")}
   end
 
   defp schedule_identity_revalidation do

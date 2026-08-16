@@ -76,7 +76,14 @@ defmodule FavnTestSupport do
       runner_contract_version:
         apply(Favn.Manifest.Compatibility, :current_runner_contract_version, []),
       runner_releases: runner_releases,
-      execution_pools: Map.get(manifest, :execution_pools, %{})
+      execution_pools: Map.get(manifest, :execution_pools, %{}),
+      connection_circuits: Map.get(manifest, :connection_circuits, %{}),
+      environment:
+        Map.get(manifest, :environment, %{
+          default_timezone: "Etc/UTC",
+          default_timezone_source: :utc_fallback,
+          coverage_scope: nil
+        })
     })
   end
 

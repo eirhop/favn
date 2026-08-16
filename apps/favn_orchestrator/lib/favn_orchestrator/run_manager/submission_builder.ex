@@ -12,6 +12,7 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
   alias Favn.Window.Selection
   alias FavnOrchestrator.ManifestStore
   alias FavnOrchestrator.ManifestIndexCache
+  alias FavnOrchestrator.ConnectionCircuitPolicy
   alias FavnOrchestrator.ExecutionPoolPolicy
   alias FavnOrchestrator.OperatorCommands.ManualWindowResolution
   alias FavnOrchestrator.Persistence.SystemContext
@@ -665,7 +666,11 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
       :cancel_forward_error,
       "cancel_forward_error",
       :active_runner_task_ids,
-      "active_runner_task_ids"
+      "active_runner_task_ids",
+      :execution_pool_policy,
+      "execution_pool_policy",
+      :connection_circuit_policy,
+      "connection_circuit_policy"
     ])
   end
 
@@ -969,8 +974,13 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
     with {:ok, configuration} <-
            ManifestStore.get_deployment_configuration(context, deployment_id),
          {:ok, execution_pool_policy} <- ExecutionPoolPolicy.effective(configuration),
+         {:ok, connection_circuit_policy} <- ConnectionCircuitPolicy.effective(configuration),
          {:ok, metadata} <-
-           put_execution_pool_policy(Keyword.get(opts, :metadata, %{}), execution_pool_policy) do
+           put_deployment_policies(
+             Keyword.get(opts, :metadata, %{}),
+             execution_pool_policy,
+             connection_circuit_policy
+           ) do
       {:ok,
        opts
        |> Keyword.put(:run_id, run_id)
@@ -983,17 +993,23 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
     end
   end
 
-  defp put_execution_pool_policy(metadata, execution_pool_policy) when is_map(metadata) do
+  defp put_deployment_policies(metadata, execution_pool_policy, connection_circuit_policy)
+       when is_map(metadata) do
     {:ok,
      metadata
      |> Map.delete("execution_pool_policy")
+     |> Map.delete("connection_circuit_policy")
      |> Map.put(
        :execution_pool_policy,
        Favn.ExecutionPool.PolicySet.to_map(execution_pool_policy)
+     )
+     |> Map.put(
+       :connection_circuit_policy,
+       Favn.Connection.CircuitPolicySet.to_map(connection_circuit_policy)
      )}
   end
 
-  defp put_execution_pool_policy(_metadata, _execution_pool_policy),
+  defp put_deployment_policies(_metadata, _execution_pool_policy, _connection_circuit_policy),
     do: {:error, :invalid_run_metadata}
 
   defp get_manifest(opts, manifest_version_id, deployment_id \\ nil) do

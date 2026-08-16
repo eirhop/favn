@@ -50,6 +50,7 @@ defmodule FavnView.Components.AssetRunTimelineTest do
   test "a run panel leads with the outcome and compares the contract it was given" do
     html =
       render_component(&AssetDetailPage.run_detail_panel/1,
+        timezone: "Etc/UTC",
         asset_id: "orders",
         run: %{
           run_id: "run-b",
@@ -106,6 +107,7 @@ defmodule FavnView.Components.AssetRunTimelineTest do
   test "a failed run leads with the failure and a way out of the panel" do
     html =
       render_component(&AssetDetailPage.run_detail_panel/1,
+        timezone: "Etc/UTC",
         asset_id: "orders",
         run: %{
           run_id: "run-a",
@@ -130,6 +132,7 @@ defmodule FavnView.Components.AssetRunTimelineTest do
   test "resolved inputs report which payload was selected and never its values" do
     html =
       render_component(&AssetDetailPage.run_detail_panel/1,
+        timezone: "Etc/UTC",
         asset_id: "orders",
         run: %{
           run_id: "run-b",

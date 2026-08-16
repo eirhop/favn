@@ -27,6 +27,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias Favn.Window.Key, as: WindowKey
   alias Favn.Window.Runtime, as: RuntimeWindow
   alias FavnOrchestrator.Persistence.BackfillPlan
+  alias FavnOrchestrator.ConnectionCircuitPolicy
   alias FavnOrchestrator.Persistence.Commands.ActivateBackfillPlan
   alias FavnOrchestrator.Persistence.Commands.AcquireResourceCircuits
   alias FavnOrchestrator.Persistence.Commands.ActivateRecoveredTargetGeneration
@@ -145,6 +146,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnOrchestrator.Persistence.Queries.PageRebuildItems
   alias FavnOrchestrator.Persistence.Queries.PageRebuildOperations
   alias FavnOrchestrator.Persistence.WorkspaceContext
+  alias FavnOrchestrator.WorkspaceConfiguration
   alias FavnOrchestrator.Persistence.CommandIdempotency
   alias FavnOrchestrator.Persistence.Error
   alias FavnOrchestrator.Persistence.Runtime
@@ -2294,7 +2296,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
               details: %{
                 reason: :historical_manifest_not_activatable,
                 schema_version: 9,
-                current_schema_version: 15
+                current_schema_version: 17
               }
             }} =
              RegistryStore.deploy_manifest(%{
@@ -4572,6 +4574,56 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
                """,
                [fixture.workspace_id, "partner_api"]
              )
+  end
+
+  test "rejects connection circuit policy from a different manifest", fixture do
+    unique = Integer.to_string(System.unique_integer([:positive]))
+
+    manifest = %{
+      fixture.version.manifest
+      | connection_circuits: %{
+          "warehouse" => CircuitBreakerPolicy.new!(failure_threshold: 5, probe_after_ms: 60_000)
+        }
+    }
+
+    assert {:ok, version} =
+             Version.new(manifest, manifest_version_id: "mv-connection-policy-#{unique}")
+
+    assert {:ok, ^version} =
+             RegistryStore.register_manifest(%RegisterManifest{
+               platform_context: fixture.platform_context,
+               version: version
+             })
+
+    assert {:ok, configuration} =
+             WorkspaceConfiguration.put(fixture.deploy_command.configuration, manifest)
+
+    assert {:ok, correct_configuration} =
+             ConnectionCircuitPolicy.put(configuration, manifest)
+
+    other_manifest = %{
+      manifest
+      | connection_circuits: %{
+          "warehouse" => CircuitBreakerPolicy.new!(failure_threshold: 6, probe_after_ms: 60_000)
+        }
+    }
+
+    assert {:ok, wrong_configuration} =
+             ConnectionCircuitPolicy.put(configuration, other_manifest)
+
+    command = %{
+      fixture.deploy_command
+      | deployment_id: "deploy-connection-policy-#{unique}",
+        manifest_version_id: version.manifest_version_id,
+        expected_active_deployment_id: fixture.deployment_id,
+        occurred_at: DateTime.utc_now()
+    }
+
+    assert {:error, %{kind: :invalid}} =
+             RegistryStore.deploy_manifest(%{command | configuration: wrong_configuration})
+
+    assert {:ok, _runtime} =
+             RegistryStore.deploy_manifest(%{command | configuration: correct_configuration})
   end
 
   test "atomically persists encrypted manifest-bound runtime input pins", fixture do

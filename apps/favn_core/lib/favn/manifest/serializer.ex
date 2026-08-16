@@ -78,6 +78,7 @@ defmodule Favn.Manifest.Serializer do
 
   @spec normalize_value(term(), dropped_keys()) :: term()
   defp normalize_value(%DateTime{} = datetime, _dropped_keys), do: DateTime.to_iso8601(datetime)
+  defp normalize_value(%Date{} = date, _dropped_keys), do: Date.to_iso8601(date)
 
   defp normalize_value(%MapSet{} = set, dropped_keys) do
     set
@@ -135,6 +136,7 @@ defmodule Favn.Manifest.Serializer do
   end
 
   defp normalize_canonical_value(%DateTime{} = datetime), do: DateTime.to_iso8601(datetime)
+  defp normalize_canonical_value(%Date{} = date), do: Date.to_iso8601(date)
 
   defp normalize_canonical_value(map) when is_map(map) and not is_struct(map) do
     Enum.reduce(map, %{}, fn {key, value}, acc ->

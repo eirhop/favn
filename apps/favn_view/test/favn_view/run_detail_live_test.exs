@@ -8,9 +8,7 @@ defmodule FavnView.RunDetailLiveTest do
     previous = Application.get_env(:favn_view, :operator_run_activity_fun)
     previous_subscribe = Application.get_env(:favn_view, :run_subscribe_fun)
     previous_stream = Application.get_env(:favn_view, :run_stream_events_fun)
-    previous_timezone = Application.get_env(:favn, :default_timezone)
     Application.put_env(:favn_view, :run_subscribe_fun, fn _context, _run_id -> :ok end)
-    Application.put_env(:favn, :default_timezone, "Europe/Oslo")
 
     Application.put_env(:favn_view, :run_stream_events_fun, fn _context, _run_id, _opts ->
       {:ok, []}
@@ -20,7 +18,6 @@ defmodule FavnView.RunDetailLiveTest do
       restore_env(:operator_run_activity_fun, previous)
       restore_env(:run_subscribe_fun, previous_subscribe)
       restore_env(:run_stream_events_fun, previous_stream)
-      restore_app_env(:favn, :default_timezone, previous_timezone)
     end)
   end
 
@@ -33,7 +30,7 @@ defmodule FavnView.RunDetailLiveTest do
       transport_pid: self(),
       assigns: %{
         __changed__: %{},
-        current_scope: %Scope{operator_context: :operator_context}
+        current_scope: oslo_scope()
       }
     }
 
@@ -79,7 +76,7 @@ defmodule FavnView.RunDetailLiveTest do
       transport_pid: self(),
       assigns: %{
         __changed__: %{},
-        current_scope: %Scope{operator_context: :operator_context}
+        current_scope: oslo_scope()
       }
     }
 
@@ -199,7 +196,7 @@ defmodule FavnView.RunDetailLiveTest do
       transport_pid: self(),
       assigns: %{
         __changed__: %{},
-        current_scope: %Scope{operator_context: :operator_context}
+        current_scope: oslo_scope()
       }
     }
 
@@ -286,8 +283,18 @@ defmodule FavnView.RunDetailLiveTest do
     }
   end
 
+  defp oslo_scope do
+    %Scope{
+      operator_context: :operator_context,
+      workspace_configuration: %FavnOrchestrator.WorkspaceConfiguration{
+        workspace_id: "workspace-one",
+        deployment_id: "deployment-one",
+        default_timezone: "Europe/Oslo",
+        default_timezone_source: :application_default
+      }
+    }
+  end
+
   defp restore_env(key, nil), do: Application.delete_env(:favn_view, key)
   defp restore_env(key, value), do: Application.put_env(:favn_view, key, value)
-  defp restore_app_env(app, key, nil), do: Application.delete_env(app, key)
-  defp restore_app_env(app, key, value), do: Application.put_env(app, key, value)
 end

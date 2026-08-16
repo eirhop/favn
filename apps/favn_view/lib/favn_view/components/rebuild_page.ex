@@ -83,7 +83,7 @@ defmodule FavnView.Components.RebuildPage do
             <dl class="mt-3 space-y-2 text-sm">
               <.fact label="Plan id" value={field(@plan, :plan_id)} mono? />
               <.fact label="Plan hash" value={field(@plan, :plan_hash)} mono? />
-              <.fact label="Expires" value={format_time(field(@plan, :expires_at))} />
+              <.fact label="Expires" value={format_time(field(@plan, :expires_at), @current_scope)} />
               <.fact
                 label="Root target"
                 value={@plan |> field(:payload, %{}) |> field(:root_target_id)}
@@ -91,11 +91,20 @@ defmodule FavnView.Components.RebuildPage do
               />
               <.fact
                 label="Evaluated"
-                value={@plan |> field(:payload, %{}) |> field(:evaluated_at) |> format_time()}
-              /> <.fact label="Declared coverage" value={plan_coverage(@plan, :declared_from)} />
-              <.fact label="Effective coverage" value={plan_coverage(@plan, :effective_from)} />
-              <.fact label="Coverage through" value={plan_coverage(@plan, :through)} />
-              <.fact label="Evaluated range" value={plan_range(@plan)} />
+                value={
+                  format_time(@plan |> field(:payload, %{}) |> field(:evaluated_at), @current_scope)
+                }
+              />
+              <.fact
+                label="Declared coverage"
+                value={plan_coverage(@plan, :declared_from, @current_scope)}
+              />
+              <.fact
+                label="Effective coverage"
+                value={plan_coverage(@plan, :effective_from, @current_scope)}
+              />
+              <.fact label="Coverage through" value={plan_coverage(@plan, :through, @current_scope)} />
+              <.fact label="Evaluated range" value={plan_range(@plan, @current_scope)} />
               <.fact label="Availability delay" value={plan_availability_delay(@plan)} />
               <.fact
                 label="Active generation"
@@ -233,7 +242,7 @@ defmodule FavnView.Components.RebuildPage do
               <div class="text-left text-sm favn-text-muted sm:text-right">
                 <p>{progress_label(field(operation, :progress, %{}))}</p>
 
-                <p class="mt-1">{format_time(field(operation, :updated_at))}</p>
+                <p class="mt-1">{format_time(field(operation, :updated_at), @current_scope)}</p>
               </div>
             </.link>
           </div>
@@ -295,8 +304,14 @@ defmodule FavnView.Components.RebuildPage do
                 value={field(@operation, :candidate_generation_id)}
                 mono?
               /> <.fact label="Plan hash" value={field(@operation, :plan_hash)} mono? />
-              <.fact label="Started" value={format_time(field(@operation, :started_at))} />
-              <.fact label="Completed" value={format_time(field(@operation, :completed_at))} />
+              <.fact
+                label="Started"
+                value={format_time(field(@operation, :started_at), @current_scope)}
+              />
+              <.fact
+                label="Completed"
+                value={format_time(field(@operation, :completed_at), @current_scope)}
+              />
               <.fact label="Cleanup" value={humanize(field(@operation, :cleanup_state))} />
             </dl>
 
@@ -524,20 +539,20 @@ defmodule FavnView.Components.RebuildPage do
     |> Enum.sort_by(&elem(&1, 0))
   end
 
-  defp plan_coverage(plan, key) do
+  defp plan_coverage(plan, key, timezone) do
     coverage = plan |> field(:payload, %{}) |> field(:coverage, %{})
 
     case field(coverage, key) do
-      period when is_map(period) -> period_range(period)
+      period when is_map(period) -> period_range(period, timezone)
       value -> humanize(value)
     end
   end
 
-  defp plan_range(plan) do
+  defp plan_range(plan, timezone) do
     plan
     |> field(:payload, %{})
     |> field(:evaluated_range, %{})
-    |> period_range()
+    |> period_range(timezone)
   end
 
   defp plan_availability_delay(plan) do
@@ -547,10 +562,13 @@ defmodule FavnView.Components.RebuildPage do
     if is_integer(seconds), do: "#{seconds} seconds", else: "-"
   end
 
-  defp period_range(period) when is_map(period) do
+  defp period_range(period, timezone) when is_map(period) do
     case {field(period, :start_at), field(period, :end_at)} do
-      {nil, nil} -> "-"
-      {start_at, end_at} -> "#{format_time(start_at)} – #{format_time(end_at)}"
+      {nil, nil} ->
+        "-"
+
+      {start_at, end_at} ->
+        "#{format_time(start_at, timezone)} – #{format_time(end_at, timezone)}"
     end
   end
 
@@ -577,11 +595,11 @@ defmodule FavnView.Components.RebuildPage do
     end
   end
 
-  defp format_time(%DateTime{} = value),
-    do: FavnView.Time.format(value, "%Y-%m-%d %H:%M %Z")
+  defp format_time(%DateTime{} = value, timezone),
+    do: FavnView.Time.format(value, "%Y-%m-%d %H:%M %Z", timezone)
 
-  defp format_time(value) when is_binary(value), do: value
-  defp format_time(_value), do: "-"
+  defp format_time(value, _timezone) when is_binary(value), do: value
+  defp format_time(_value, _timezone), do: "-"
 
   defp humanize(nil), do: "-"
 

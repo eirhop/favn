@@ -57,12 +57,18 @@ config :favn,
   default_timezone: "Europe/Oslo"
 ```
 
-The fallback is `"Etc/UTC"`. The operator UI also renders timestamps in this
-timezone; persisted instants remain UTC. The value must be a valid IANA timezone;
-manifest construction fails when it is invalid. A timezone declared directly on a
-schedule, pipeline window, asset window, or calendar freshness policy overrides
-the default only for that declaration. These overrides are independent: a
-schedule timezone does not become the pipeline or asset timezone.
+The fallback is `"Etc/UTC"`. Manifest construction freezes the value and its
+source. Activation copies that non-secret environment into the workspace's
+immutable deployment configuration, and the operator UI reads it through the
+Orchestrator. This matters for prebuilt releases and for one View process serving
+workspaces with different timezones: neither runtime rereads the consumer app's
+local configuration. Persisted instants remain UTC.
+
+The value must be a valid IANA timezone; manifest construction fails when it is
+invalid. A timezone declared directly on a schedule, pipeline window, asset
+window, or calendar freshness policy overrides the default only for that
+declaration. These overrides are independent: a schedule timezone does not
+become the pipeline or asset timezone.
 
 Portable assets can declare their complete history while an environment narrows
 the beginning of expected coverage:
@@ -78,6 +84,24 @@ and this deployment-wide floor. Manifest construction resolves and stores the
 effective timezone, timezone provenance, declared coverage, effective coverage,
 and scope input; runtime code does not reread application or OS environment
 values.
+
+## Configuration Ownership
+
+Classify every new configuration value by where its behavior must remain stable:
+
+| Kind | Examples | Authoritative handoff |
+| --- | --- | --- |
+| Authoring semantics | `default_timezone`, `coverage_scope` | Typed manifest environment, then immutable deployment configuration |
+| Workspace control policy | execution-pool limits, connection circuit breakers | Typed manifest policy, operator-approved deployment policy, then run snapshot |
+| Runner-local adapter values | connection `open`, credentials, DuckDB resources, runtime refs, runner plugins | Runner application environment only |
+| Service operation | Orchestrator, View, and storage ports or credentials | The owning service's boot configuration |
+
+If the same accepted manifest or run must behave identically across workspaces,
+prebuilt releases, or later deployments, model the non-secret value in a typed
+manifest contract and copy it through deployment and run state. Do not hide it
+in free-form metadata or make the Orchestrator or View reread the consumer
+project's application environment. Secrets and machine-specific adapter values
+must never enter the manifest or browser-facing configuration.
 
 ## Local Runtime Config
 
@@ -213,10 +237,11 @@ config :favn,
   ]
 ```
 
-This configuration is read by the consumer project while Favn builds schema-15
-manifest data. The pool catalogue is therefore published once with the assets
-that reference it; it is not copied into the prebuilt Orchestrator environment
-or the runner image.
+The consumer project reads this configuration while Favn builds schema-17
+manifest data. Execution-pool defaults and the non-secret `circuit_breaker`
+entry for each published connection are frozen into typed manifest policy.
+Connection `open`, `pool`, DuckDB, credentials, and runtime refs remain
+runner-local and are not serialized into the manifest.
 
 Manifest activation requires an operator to approve non-empty pool defaults.
 The Orchestrator then stores one immutable effective-policy snapshot with the
@@ -225,6 +250,15 @@ the deployment becomes active. A later manifest activation preserves an
 existing operator override for a pool; otherwise the new manifest default takes
 effect. An explicit reset returns a pool to its manifest default. Overrides for
 removed pools become inactive and never silently revive.
+
+Connection circuit policy follows the same manifest-to-deployment handoff and
+is snapshotted into every run. It has no operator override surface because it
+does not allocate shared capacity. The Orchestrator does not need the consumer
+project's `connections` application environment to enforce it.
+At most 450 published connections may enable circuit policy; this bound keeps a
+maximum connection catalogue and maximum execution-pool catalogue inside the
+durable deployment envelope. Connections without circuit policy do not count
+toward it.
 
 Pool names are 1 to 63 ASCII letters, digits, `_`, `-`, or `.`, starting with a
 letter or digit. A manifest may define at most 400 pools.

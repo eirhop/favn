@@ -349,8 +349,10 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.Runs do
       run_id: "run_backfill_8f2c9d1",
       started_at_raw: started,
       finished_at_raw: finished,
-      started_at: FavnView.Time.format(started, "%b %-d, %Y %H:%M %Z"),
-      finished_at: (finished && FavnView.Time.format(finished, "%b %-d, %Y %H:%M %Z")) || "-",
+      started_at: FavnView.Time.format(started, "%b %-d, %Y %H:%M %Z", "Etc/UTC"),
+      finished_at:
+        (finished && FavnView.Time.format(finished, "%b %-d, %Y %H:%M %Z", "Etc/UTC")) ||
+          "-",
       duration: duration_label(spec.duration_seconds),
       duration_ms: spec.duration_seconds && spec.duration_seconds * 1_000,
       status: status_label(spec.status),

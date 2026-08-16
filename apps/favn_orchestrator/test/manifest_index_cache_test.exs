@@ -2,6 +2,7 @@ defmodule FavnOrchestrator.ManifestIndexCacheTest do
   use ExUnit.Case, async: true
 
   alias Favn.Manifest
+  alias Favn.Manifest.Compatibility
   alias Favn.Manifest.Graph
   alias Favn.Manifest.Version
   alias FavnOrchestrator.ManifestIndexCache
@@ -50,7 +51,7 @@ defmodule FavnOrchestrator.ManifestIndexCacheTest do
 
   defp version!(id, metadata) do
     manifest = %Manifest{
-      schema_version: 15,
+      schema_version: Compatibility.current_schema_version(),
       runner_contract_version: 13,
       runner_releases: %{},
       assets: [],

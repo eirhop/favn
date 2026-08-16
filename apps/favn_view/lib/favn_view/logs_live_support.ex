@@ -15,11 +15,11 @@ defmodule FavnView.LogsLiveSupport do
   @fetch_limit 500
   @poll_interval_ms 2_000
   @dialyzer {:no_unused,
-             [target_label: 1, run_context_from_public: 2, asset_context_from_public: 1]}
+             [target_label: 1, run_context_from_public: 3, asset_context_from_public: 2]}
   @dialyzer {:no_match,
              [
-               run_context: 2,
-               asset_context: 3,
+               run_context: 3,
+               asset_context: 4,
                load_initial_logs: 2,
                replay_gap: 1,
                error_label: 1
@@ -85,10 +85,10 @@ defmodule FavnView.LogsLiveSupport do
 
   def unsubscribe(_socket), do: :ok
 
-  def run_context(operator_context, run_id) do
+  def run_context(operator_context, run_id, timezone) do
     case Orchestrator.get_run_detail(operator_context, run_id) do
       {:ok, %{summary: summary} = detail} ->
-        run_context_from_public(summary, Map.get(detail, :steps, []))
+        run_context_from_public(summary, Map.get(detail, :steps, []), timezone)
 
       {:error, reason} ->
         Logger.error(
@@ -104,10 +104,13 @@ defmodule FavnView.LogsLiveSupport do
     end
   end
 
-  def asset_context(operator_context, run_id, asset_step_id) do
+  def asset_context(operator_context, run_id, asset_step_id, timezone) do
     case Orchestrator.get_asset_step_log_context(operator_context, run_id, asset_step_id) do
-      {:ok, context} -> asset_context_from_public(context)
-      {:error, _reason} -> missing_asset_context(operator_context, run_id, asset_step_id)
+      {:ok, context} ->
+        asset_context_from_public(context, timezone)
+
+      {:error, _reason} ->
+        missing_asset_context(operator_context, run_id, asset_step_id, timezone)
     end
   end
 
@@ -212,7 +215,7 @@ defmodule FavnView.LogsLiveSupport do
   defp assign_visible_logs(socket) do
     visible_logs =
       socket.assigns.logs
-      |> LogsViewModel.entries()
+      |> LogsViewModel.entries(socket.assigns.current_scope)
       |> LogsViewModel.filter_entries(
         socket.assigns.search_query,
         socket.assigns.selected_level,
@@ -225,7 +228,7 @@ defmodule FavnView.LogsLiveSupport do
   defp normalize_choice(value) when value in [nil, "", "all"], do: "all"
   defp normalize_choice(value), do: to_string(value)
 
-  defp run_context_from_public(summary, steps) do
+  defp run_context_from_public(summary, steps, timezone) do
     status = Map.get(summary, :status)
 
     %{
@@ -235,13 +238,13 @@ defmodule FavnView.LogsLiveSupport do
       subtitle: LogsViewModel.short_id(summary.id),
       status: LogsViewModel.status_label(status),
       status_tone: LogsViewModel.status_tone(status),
-      started_at: LogsViewModel.timestamp_label(summary.started_at),
+      started_at: LogsViewModel.timestamp_label(summary.started_at, timezone),
       duration: LogsViewModel.duration_ms_label(summary.duration_ms),
-      asset_results: Enum.map(steps, &step_from_public/1)
+      asset_results: Enum.map(steps, &step_from_public(&1, timezone))
     }
   end
 
-  defp asset_context_from_public(context) do
+  defp asset_context_from_public(context, timezone) do
     step = context[:step]
 
     %{
@@ -253,15 +256,15 @@ defmodule FavnView.LogsLiveSupport do
       output_status: step && step.status,
       output_metadata: step && Map.get(step, :output_metadata),
       status_tone: (step && LogsViewModel.status_tone(step.status)) || :neutral,
-      facts: Enum.map(context[:facts] || [], &fact_from_public/1),
+      facts: Enum.map(context[:facts] || [], &fact_from_public(&1, timezone)),
       log_filter: context[:log_filter],
       note: context[:note]
     }
   end
 
-  defp missing_asset_context(operator_context, run_id, asset_step_id) do
+  defp missing_asset_context(operator_context, run_id, asset_step_id, timezone) do
     %{
-      run: run_context(operator_context, run_id),
+      run: run_context(operator_context, run_id, timezone),
       result: nil,
       title: "Asset logs",
       subtitle: "Run #{LogsViewModel.short_id(run_id)} · Asset step #{asset_step_id}",
@@ -275,26 +278,26 @@ defmodule FavnView.LogsLiveSupport do
     }
   end
 
-  defp step_from_public(step) do
+  defp step_from_public(step, timezone) do
     %{
       id: step.id,
       display_name: LogsViewModel.display_name(step.asset_ref) || step.asset_ref,
       status: LogsViewModel.status_label(step.status),
       status_tone: LogsViewModel.status_tone(step.status),
-      started_at: LogsViewModel.timestamp_label(step.started_at),
+      started_at: LogsViewModel.timestamp_label(step.started_at, timezone),
       duration: LogsViewModel.duration_ms_label(step.duration_ms),
       attempt: step.attempt
     }
   end
 
-  defp fact_from_public(%{label: "Started", value: value}),
-    do: %{label: "Started", value: LogsViewModel.timestamp_label(value)}
+  defp fact_from_public(%{label: "Started", value: value}, timezone),
+    do: %{label: "Started", value: LogsViewModel.timestamp_label(value, timezone)}
 
-  defp fact_from_public(%{label: "Duration", value: value}),
+  defp fact_from_public(%{label: "Duration", value: value}, _timezone),
     do: %{label: "Duration", value: LogsViewModel.duration_ms_label(value)}
 
-  defp fact_from_public(%{label: label, value: nil}), do: %{label: label, value: "-"}
-  defp fact_from_public(fact), do: fact
+  defp fact_from_public(%{label: label, value: nil}, _timezone), do: %{label: label, value: "-"}
+  defp fact_from_public(fact, _timezone), do: fact
 
   defp target_label(%{target_refs: refs}) when is_list(refs) and refs != [] do
     refs |> Enum.map(&LogsViewModel.ref_label/1) |> Enum.join(", ")

@@ -28,10 +28,23 @@ defmodule FavnView.Auth.Scope do
           operator_context: FavnOrchestrator.OperatorContext.t(),
           actor: actor(),
           session: session(),
+          workspace_configuration: FavnOrchestrator.WorkspaceConfiguration.t() | nil,
           roles: [atom()]
         }
 
-  defstruct [:workspace_id, :operator_context, :actor, :session, roles: []]
+  defstruct [
+    :workspace_id,
+    :operator_context,
+    :actor,
+    :session,
+    workspace_configuration: %FavnOrchestrator.WorkspaceConfiguration{
+      workspace_id: nil,
+      deployment_id: nil,
+      default_timezone: "Etc/UTC",
+      default_timezone_source: :no_active_deployment
+    },
+    roles: []
+  ]
 
   @doc """
   Builds a browser-safe scope from orchestrator-owned actor and session data.
@@ -63,9 +76,24 @@ defmodule FavnView.Auth.Scope do
         expires_at: session.expires_at,
         revoked_at: session.revoked_at
       },
+      workspace_configuration:
+        FavnOrchestrator.WorkspaceConfiguration.without_active_deployment(workspace_id),
       roles: roles
     }
   end
+
+  @doc "Attaches the active deployment's browser-safe workspace configuration."
+  @spec put_workspace_configuration(t(), FavnOrchestrator.WorkspaceConfiguration.t()) ::
+          {:ok, t()} | {:error, :workspace_configuration_scope_mismatch}
+  def put_workspace_configuration(
+        %__MODULE__{workspace_id: workspace_id} = scope,
+        %FavnOrchestrator.WorkspaceConfiguration{workspace_id: workspace_id} = configuration
+      ) do
+    {:ok, %{scope | workspace_configuration: configuration}}
+  end
+
+  def put_workspace_configuration(%__MODULE__{}, %FavnOrchestrator.WorkspaceConfiguration{}),
+    do: {:error, :workspace_configuration_scope_mismatch}
 
   @doc """
   Returns whether the scope has at least the required operator role.

@@ -70,7 +70,7 @@ defmodule FavnView.RunFlow do
       ...>     duration: "30s", window_label: "Jul 23", error_summary: nil
       ...>   }
       ...> ]
-      iex> flow = FavnView.RunFlow.build(attempts, active?: false)
+      iex> flow = FavnView.RunFlow.build(attempts, active?: false, timezone: "Etc/UTC")
       iex> [stage] = flow.stages
       iex> stage.label
       "Stage 1"
@@ -84,6 +84,7 @@ defmodule FavnView.RunFlow do
   def build(attempts, opts \\ []) do
     active? = Keyword.get(opts, :active?, false)
     now_ms = Keyword.get(opts, :now_ms, System.system_time(:millisecond))
+    timezone = Keyword.fetch!(opts, :timezone)
 
     attempts = Enum.reject(attempts, &is_nil/1)
     {start_ms, end_ms} = bounds(attempts, active?, now_ms)
@@ -91,7 +92,7 @@ defmodule FavnView.RunFlow do
 
     %{
       axis: %{
-        ticks: ticks(start_ms, span),
+        ticks: ticks(start_ms, span, timezone),
         now_offset: if(active?, do: offset(now_ms - start_ms, span)),
         start_ms: start_ms,
         end_ms: end_ms
@@ -255,12 +256,12 @@ defmodule FavnView.RunFlow do
   defp pad(start_ms, end_ms) when end_ms - start_ms < 2_000, do: {start_ms, start_ms + 2_000}
   defp pad(start_ms, end_ms), do: {start_ms, end_ms}
 
-  defp ticks(start_ms, span) do
+  defp ticks(start_ms, span, timezone) do
     for index <- 0..@tick_count do
       tick_ms = start_ms + div(span * index, @tick_count)
 
       %{
-        label: clock_label(tick_ms),
+        label: clock_label(tick_ms, timezone),
         offset: offset(tick_ms - start_ms, span),
         align: tick_align(index)
       }
@@ -478,8 +479,10 @@ defmodule FavnView.RunFlow do
   defp datetime_ms(%DateTime{} = datetime), do: DateTime.to_unix(datetime, :millisecond)
   defp datetime_ms(_value), do: nil
 
-  defp clock_label(ms) do
-    ms |> DateTime.from_unix!(:millisecond) |> FavnView.Time.format("%H:%M:%S")
+  defp clock_label(ms, timezone) do
+    ms
+    |> DateTime.from_unix!(:millisecond)
+    |> FavnView.Time.format("%H:%M:%S", timezone)
   end
 
   defp title(attempt, elapsed) do

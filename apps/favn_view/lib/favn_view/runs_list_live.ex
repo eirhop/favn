@@ -140,8 +140,12 @@ defmodule FavnView.RunsListLive do
     operator_context = socket.assigns.current_scope.operator_context
 
     socket
-    |> assign_page(page_execution_groups(operator_context, filters, now), filters, now)
-    |> assign(:counts, counts(operator_context, filters, now))
+    |> assign_page(
+      page_execution_groups(operator_context, filters, now, socket.assigns.current_scope),
+      filters,
+      now
+    )
+    |> assign(:counts, counts(operator_context, filters, now, socket.assigns.current_scope))
     |> maybe_schedule_fallback_poll()
   end
 
@@ -150,8 +154,9 @@ defmodule FavnView.RunsListLive do
   # outside the page is unknown rather than empty.
   defp assign_page(socket, {:ok, %{items: runs, has_more?: more?}}, filters, now) do
     listing =
-      RunDays.layout(runs, RunsFilters.window(filters, now), now,
+      RunDays.layout(runs, RunsFilters.window(filters, now, socket.assigns.current_scope), now,
         order: filters.order,
+        timezone: socket.assigns.current_scope,
         complete?: not more? and not RunsFilters.paged?(filters)
       )
 
@@ -169,21 +174,24 @@ defmodule FavnView.RunsListLive do
     )
   end
 
-  defp page_execution_groups(operator_context, filters, now) do
+  defp page_execution_groups(operator_context, filters, now, timezone) do
     case call_page_execution_groups(
            operator_context,
-           RunsFilters.store_filters(filters, now)
+           RunsFilters.store_filters(filters, now, timezone)
          ) do
       {:ok, %{items: items} = page} ->
-        {:ok, %{page | items: Enum.map(items, &run_from_public/1)}}
+        {:ok, %{page | items: Enum.map(items, &run_from_public(&1, timezone))}}
 
       {:error, _reason} = error ->
         error
     end
   end
 
-  defp counts(operator_context, filters, now) do
-    case call_count_execution_groups(operator_context, RunsFilters.count_filters(filters, now)) do
+  defp counts(operator_context, filters, now, timezone) do
+    case call_count_execution_groups(
+           operator_context,
+           RunsFilters.count_filters(filters, now, timezone)
+         ) do
       {:ok, counts} when is_map(counts) ->
         counts
 
@@ -249,7 +257,7 @@ defmodule FavnView.RunsListLive do
 
   defp unsubscribe_runs(operator_context), do: Orchestrator.unsubscribe_runs(operator_context)
 
-  defp run_from_public(group) do
+  defp run_from_public(group, timezone) do
     target = target(group)
     status = display_status(Map.get(group, :status))
     assets = assets(group)
@@ -266,10 +274,10 @@ defmodule FavnView.RunsListLive do
       status_label: status_label(status),
       raw_status: Map.get(group, :status),
       trigger: label(Map.get(group, :trigger_type)),
-      started_at: short_time(Map.get(group, :started_at)),
-      started_on: short_date(Map.get(group, :started_at)),
+      started_at: short_time(Map.get(group, :started_at), timezone),
+      started_on: short_date(Map.get(group, :started_at), timezone),
       started_at_raw: Map.get(group, :started_at),
-      started_at_title: full_timestamp(Map.get(group, :started_at)),
+      started_at_title: full_timestamp(Map.get(group, :started_at), timezone),
       duration: duration_label(group)
     }
   end
@@ -372,27 +380,29 @@ defmodule FavnView.RunsListLive do
   defp short_id(id) when is_binary(id), do: id
   defp short_id(_id), do: "unknown"
 
-  defp short_time(%DateTime{} = value), do: FavnView.Time.format(value, "%H:%M:%S")
-  defp short_time(_value), do: "-"
+  defp short_time(%DateTime{} = value, timezone),
+    do: FavnView.Time.format(value, "%H:%M:%S", timezone)
+
+  defp short_time(_value, _timezone), do: "-"
 
   # The day headers only group a multi-day range, and a page reached by paging back
   # can start anywhere, so each row carries its own date. The year appears only
   # when it is not this one.
-  defp short_date(%DateTime{} = value) do
-    local = FavnView.Time.shift(value)
-    local_now = FavnView.Time.shift(DateTime.utc_now())
+  defp short_date(%DateTime{} = value, timezone) do
+    local = FavnView.Time.shift(value, timezone)
+    local_now = FavnView.Time.shift(DateTime.utc_now(), timezone)
 
     if local.year == local_now.year,
       do: Calendar.strftime(local, "%-d %b"),
       else: Calendar.strftime(local, "%-d %b %Y")
   end
 
-  defp short_date(_value), do: nil
+  defp short_date(_value, _timezone), do: nil
 
-  defp full_timestamp(%DateTime{} = value),
-    do: FavnView.Time.format(value, "%b %-d, %Y %H:%M:%S %Z")
+  defp full_timestamp(%DateTime{} = value, timezone),
+    do: FavnView.Time.format(value, "%b %-d, %Y %H:%M:%S %Z", timezone)
 
-  defp full_timestamp(_value), do: "Not started"
+  defp full_timestamp(_value, _timezone), do: "Not started"
 
   defp label(nil), do: "Unknown"
 

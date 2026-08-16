@@ -10,6 +10,12 @@ defmodule Favn.Connection do
   Runtime values may be literals or `Favn.RuntimeConfig.Ref` values that resolve
   from the runner environment before adapter connection.
 
+  The reserved `:circuit_breaker` entry is different: it is non-secret Favn
+  admission policy. Manifest generation freezes it into the manifest, activation
+  copies it into workspace deployment configuration, and each run receives that
+  immutable snapshot. Adapter options, credentials, and runtime refs remain
+  runner-local and are never copied with the circuit policy.
+
   ## Minimal example
 
       defmodule MyApp.Connections.Warehouse do
@@ -54,6 +60,8 @@ defmodule Favn.Connection do
   backends, and `write_concurrency: :unlimited` for backends that safely support
   parallel writes. DuckDB uses per-catalog `write_concurrency` under
   `duckdb.catalogs.<catalog>` instead of this connection-level key.
+  It reserves `:circuit_breaker` for `failure_threshold` and `probe_after_ms`;
+  this policy is materialized during manifest generation as described above.
 
   DuckDB connections can use adapter-owned schema fields for the DuckDB session
   database and bootstrap SQL:

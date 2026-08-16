@@ -51,13 +51,18 @@ defmodule FavnView.Components.RunnersPage do
         >
           <:action><.button phx-click="reload" icon="hero-arrow-path">Retry</.button></:action>
         </.error_state>
-        <.overview :if={!@loading && !@error && @overview} overview={@overview} />
+        <.overview
+          :if={!@loading && !@error && @overview}
+          overview={@overview}
+          current_scope={@current_scope}
+        />
       </div>
     </AppShell.app_shell>
     """
   end
 
   attr :overview, :map, required: true
+  attr :current_scope, :any, required: true
 
   defp overview(assigns) do
     ~H"""
@@ -88,7 +93,11 @@ defmodule FavnView.Components.RunnersPage do
       </.notice>
 
       <.stack :if={@overview.runners != []} gap={:sm}>
-        <.runner_card :for={runner <- @overview.runners} runner={runner} />
+        <.runner_card
+          :for={runner <- @overview.runners}
+          runner={runner}
+          current_scope={@current_scope}
+        />
       </.stack>
     </.panel>
 
@@ -106,7 +115,11 @@ defmodule FavnView.Components.RunnersPage do
         data-testid="runner-failures-empty-state"
       />
       <.stack :if={failures(@overview) != []} gap={:sm}>
-        <.task_card :for={task <- failures(@overview)} task={task} />
+        <.task_card
+          :for={task <- failures(@overview)}
+          task={task}
+          current_scope={@current_scope}
+        />
       </.stack>
     </.panel>
 
@@ -124,13 +137,18 @@ defmodule FavnView.Components.RunnersPage do
         data-testid="runner-tasks-empty-state"
       />
       <.stack :if={activity_tasks(@overview) != []} gap={:sm}>
-        <.task_card :for={task <- activity_tasks(@overview)} task={task} />
+        <.task_card
+          :for={task <- activity_tasks(@overview)}
+          task={task}
+          current_scope={@current_scope}
+        />
       </.stack>
     </.panel>
     """
   end
 
   attr :runner, :map, required: true
+  attr :current_scope, :any, required: true
 
   defp runner_card(assigns) do
     ~H"""
@@ -149,7 +167,7 @@ defmodule FavnView.Components.RunnersPage do
         facts={[
           %{label: "Task kinds", value: join_values(@runner.supported_task_kinds)},
           %{label: "Capabilities", value: join_values(@runner.capabilities)},
-          %{label: "Registered", value: format_time(@runner.registered_at)}
+          %{label: "Registered", value: format_time(@runner.registered_at, @current_scope)}
         ]}
       />
       <p :if={@runner.active_task_id} class="mt-3 text-sm favn-text-muted">
@@ -160,6 +178,7 @@ defmodule FavnView.Components.RunnersPage do
   end
 
   attr :task, :map, required: true
+  attr :current_scope, :any, required: true
 
   defp task_card(assigns) do
     ~H"""
@@ -193,7 +212,7 @@ defmodule FavnView.Components.RunnersPage do
         facts={[
           %{label: "Pool", value: @task.runner_pool},
           %{label: "Runner", value: @task.assigned_runner_instance_id || "Not assigned", mono: true},
-          %{label: "Queued", value: format_time(@task.enqueued_at)}
+          %{label: "Queued", value: format_time(@task.enqueued_at, @current_scope)}
         ]}
       />
     </.list_card>
@@ -239,8 +258,8 @@ defmodule FavnView.Components.RunnersPage do
     Enum.reject(overview.tasks, &MapSet.member?(failure_ids, &1.task_id))
   end
 
-  defp format_time(nil), do: "-"
+  defp format_time(nil, _timezone), do: "-"
 
-  defp format_time(%DateTime{} = value),
-    do: FavnView.Time.format(value, "%b %-d, %Y %H:%M:%S %Z")
+  defp format_time(%DateTime{} = value, timezone),
+    do: FavnView.Time.format(value, "%b %-d, %Y %H:%M:%S %Z", timezone)
 end

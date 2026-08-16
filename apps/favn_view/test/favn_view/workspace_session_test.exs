@@ -6,6 +6,7 @@ defmodule FavnView.WorkspaceSessionTest do
   alias FavnView.Auth
   alias FavnView.Auth.Scope
   alias FavnView.Components.WorkspaceMenu
+  alias FavnOrchestrator.WorkspaceConfiguration
 
   defmodule IdentityProbeLive do
     use FavnView, :live_view
@@ -56,6 +57,7 @@ defmodule FavnView.WorkspaceSessionTest do
 
   @env_keys [
     :introspect_operator_session_fun,
+    :active_workspace_configuration_fun,
     :list_operator_workspaces_fun,
     :subscribe_operator_identity_fun,
     :switch_operator_workspace_fun
@@ -90,6 +92,10 @@ defmodule FavnView.WorkspaceSessionTest do
        ]}
     end)
 
+    Application.put_env(:favn_view, :active_workspace_configuration_fun, fn context ->
+      {:ok, workspace_configuration(context.workspace_id, "deployment-one", "Europe/Oslo")}
+    end)
+
     conn =
       conn
       |> init_test_session(%{
@@ -98,12 +104,75 @@ defmodule FavnView.WorkspaceSessionTest do
       })
       |> Auth.fetch_current_scope([])
 
-    assert %Scope{workspace_id: "workspace-one"} = conn.assigns.current_scope
+    assert %Scope{
+             workspace_id: "workspace-one",
+             workspace_configuration: %WorkspaceConfiguration{
+               workspace_id: "workspace-one",
+               deployment_id: "deployment-one",
+               default_timezone: "Europe/Oslo",
+               default_timezone_source: :application_default
+             }
+           } = conn.assigns.current_scope
 
     assert Enum.map(conn.assigns.operator_workspaces, & &1.id) == [
              "workspace-one",
              "workspace-two"
            ]
+  end
+
+  test "configuration failure preserves the authenticated session and returns unavailable", %{
+    conn: conn
+  } do
+    {actor, session} = identity("workspace-one", "session-one")
+
+    Application.put_env(:favn_view, :introspect_operator_session_fun, fn
+      "workspace-one", "opaque-token" -> {:ok, session, actor}
+    end)
+
+    Application.put_env(:favn_view, :active_workspace_configuration_fun, fn _context ->
+      {:error, :storage_unavailable}
+    end)
+
+    conn =
+      conn
+      |> init_test_session(%{
+        operator_workspace_id: "workspace-one",
+        operator_session_token: "opaque-token"
+      })
+      |> Auth.fetch_current_scope([])
+
+    assert conn.assigns.current_scope == nil
+    assert conn.assigns.workspace_configuration_error == :storage_unavailable
+    assert get_session(conn, :operator_workspace_id) == "workspace-one"
+    assert get_session(conn, :operator_session_token) == "opaque-token"
+
+    conn = Auth.require_operator_authenticated(conn, [])
+    assert conn.status == 503
+    assert conn.resp_body == "Workspace configuration unavailable"
+  end
+
+  test "scope construction rejects configuration from another workspace", %{conn: conn} do
+    {actor, session} = identity("workspace-one", "session-one")
+
+    Application.put_env(:favn_view, :introspect_operator_session_fun, fn
+      "workspace-one", "opaque-token" -> {:ok, session, actor}
+    end)
+
+    Application.put_env(:favn_view, :active_workspace_configuration_fun, fn _context ->
+      {:ok, workspace_configuration("workspace-two", "deployment-two", "America/New_York")}
+    end)
+
+    conn =
+      conn
+      |> init_test_session(%{
+        operator_workspace_id: "workspace-one",
+        operator_session_token: "opaque-token"
+      })
+      |> Auth.fetch_current_scope([])
+
+    assert conn.assigns.current_scope == nil
+    assert conn.assigns.workspace_configuration_error == :workspace_configuration_scope_mismatch
+    assert get_session(conn, :operator_workspace_id) == "workspace-one"
   end
 
   test "workspace switching replaces the browser session and redirects home", %{conn: conn} do
@@ -368,6 +437,34 @@ defmodule FavnView.WorkspaceSessionTest do
     assert_redirect(view, "/login")
   end
 
+  test "workspace configuration failure does not redirect a valid LiveView session to login", %{
+    conn: conn
+  } do
+    {actor, session} = identity("workspace-one", "session-one")
+    put_live_identity_boundary(actor, session, :ok)
+    {:ok, configuration_available?} = Agent.start_link(fn -> true end)
+
+    Application.put_env(:favn_view, :active_workspace_configuration_fun, fn context ->
+      if Agent.get(configuration_available?, & &1) do
+        {:ok, workspace_configuration(context.workspace_id, "deployment-one", "Europe/Oslo")}
+      else
+        {:error, :storage_unavailable}
+      end
+    end)
+
+    assert {:ok, view, _html} =
+             live_isolated(conn, IdentityProbeLive,
+               session: %{
+                 "operator_workspace_id" => "workspace-one",
+                 "operator_session_token" => "opaque-token"
+               }
+             )
+
+    Agent.update(configuration_available?, fn _ -> false end)
+    send(view.pid, :favn_revalidate_operator_identity)
+    assert_redirect(view, "/")
+  end
+
   test "a successful revalidation refreshes the scope without reaching the page", %{conn: conn} do
     {actor, session} = identity("workspace-one", "session-one")
     {:ok, current_actor} = Agent.start_link(fn -> actor end)
@@ -470,6 +567,15 @@ defmodule FavnView.WorkspaceSessionTest do
     }
 
     {actor, session}
+  end
+
+  defp workspace_configuration(workspace_id, deployment_id, timezone) do
+    %WorkspaceConfiguration{
+      workspace_id: workspace_id,
+      deployment_id: deployment_id,
+      default_timezone: timezone,
+      default_timezone_source: :application_default
+    }
   end
 
   defp put_authenticated_boundary(actor, session) do

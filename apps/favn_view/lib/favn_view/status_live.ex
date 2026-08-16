@@ -18,7 +18,7 @@ defmodule FavnView.StatusLive do
       socket
       |> operator_context()
       |> read_sources()
-      |> StatusConcerns.build(limit: @per_group)
+      |> StatusConcerns.build(limit: @per_group, timezone: socket.assigns.current_scope)
 
     {:ok,
      assign(socket,

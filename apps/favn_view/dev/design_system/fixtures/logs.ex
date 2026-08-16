@@ -141,7 +141,7 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.Logs do
     logs = Map.get(overrides, :logs, mixed())
 
     %{
-      visible_logs: LogsViewModel.entries(logs),
+      visible_logs: LogsViewModel.entries(logs, "Etc/UTC"),
       scope: :global,
       status: :ready,
       live?: true,
@@ -164,7 +164,7 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.Logs do
 
     %{
       logs: logs,
-      visible_logs: LogsViewModel.entries(logs),
+      visible_logs: LogsViewModel.entries(logs, "Etc/UTC"),
       logs_status: :ready,
       live?: true,
       live_tail?: true,
@@ -179,7 +179,7 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.Logs do
       output_status: nil
     }
     |> Map.merge(overrides)
-    |> then(&Map.put(&1, :visible_logs, LogsViewModel.entries(&1.logs)))
+    |> then(&Map.put(&1, :visible_logs, LogsViewModel.entries(&1.logs, "Etc/UTC")))
   end
 
   @doc """

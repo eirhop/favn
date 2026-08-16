@@ -80,14 +80,15 @@ defmodule FavnView.CoverageCalendar do
     kind = Map.get(attrs, :kind)
     windows = Map.get(attrs, :windows) || []
     selected = MapSet.new(Map.get(attrs, :selected) || [])
-    cells = Enum.map(windows, &cell(&1, kind, selected))
+    timezone = Map.get(attrs, :timezone)
+    cells = Enum.map(windows, &cell(&1, kind, selected, timezone))
 
     %{
       layout: if(cells == [], do: :empty, else: :grid),
       kind: kind,
       timezone: Map.get(attrs, :timezone),
-      unit_label: unit_label(kind, windows),
-      blanks: blanks(kind, windows),
+      unit_label: unit_label(kind, windows, timezone),
+      blanks: blanks(kind, windows, timezone),
       columns: columns(kind),
       column_labels: column_labels(kind),
       cells: cells,
@@ -108,8 +109,8 @@ defmodule FavnView.CoverageCalendar do
   Targets are plain dates. The instant inside the period is the caller's to build,
   because only the caller knows the timezone.
 
-  Expects `:kind`, `:at` (the first period on screen), `:first_expected_at` and
-  `:last_expected_at`.
+  Expects `:kind`, `:timezone`, `:at` (the first period on screen),
+  `:first_expected_at` and `:last_expected_at`.
   """
   @spec navigation(map()) :: %{
           previous: String.t() | nil,
@@ -121,11 +122,17 @@ defmodule FavnView.CoverageCalendar do
     at = Map.get(attrs, :at)
     first = Map.get(attrs, :first_expected_at)
     last = Map.get(attrs, :last_expected_at)
+    timezone = Map.get(attrs, :timezone)
 
     if is_nil(unit_noun(kind)) or is_nil(at) or is_nil(first) or is_nil(last) do
       %{previous: nil, next: nil, jumps: []}
     else
-      bounded_navigation(kind, to_date(at), to_date(first), to_date(last))
+      bounded_navigation(
+        kind,
+        FavnView.Time.to_date(at, timezone),
+        FavnView.Time.to_date(first, timezone),
+        FavnView.Time.to_date(last, timezone)
+      )
     end
   end
 
@@ -141,6 +148,7 @@ defmodule FavnView.CoverageCalendar do
 
       iex> FavnView.CoverageCalendar.opening_date(%{
       ...>   kind: :day,
+      ...>   timezone: "Etc/UTC",
       ...>   first_expected_at: ~U[2026-01-05 00:00:00Z],
       ...>   last_expected_at: ~U[2026-07-19 00:00:00Z]
       ...> })
@@ -148,6 +156,7 @@ defmodule FavnView.CoverageCalendar do
 
       iex> FavnView.CoverageCalendar.opening_date(%{
       ...>   kind: :year,
+      ...>   timezone: "Etc/UTC",
       ...>   first_expected_at: ~U[2022-01-01 00:00:00Z],
       ...>   last_expected_at: ~U[2025-01-01 00:00:00Z]
       ...> })
@@ -158,11 +167,12 @@ defmodule FavnView.CoverageCalendar do
     kind = Map.get(attrs, :kind)
     first = Map.get(attrs, :first_expected_at)
     last = Map.get(attrs, :last_expected_at)
+    timezone = Map.get(attrs, :timezone)
 
     cond do
-      is_nil(unit_noun(kind)) -> first && to_date(first)
-      is_nil(last) -> first && to_date(first)
-      true -> unit_start(kind, to_date(last))
+      is_nil(unit_noun(kind)) -> first && FavnView.Time.to_date(first, timezone)
+      is_nil(last) -> first && FavnView.Time.to_date(first, timezone)
+      true -> unit_start(kind, FavnView.Time.to_date(last, timezone))
     end
   end
 
@@ -215,11 +225,12 @@ defmodule FavnView.CoverageCalendar do
     at = Map.get(attrs, :at)
     first = Map.get(attrs, :first_expected_at)
     last = Map.get(attrs, :last_expected_at)
+    timezone = Map.get(attrs, :timezone)
 
     if is_nil(unit_noun(kind)) or is_nil(at) or is_nil(first) or is_nil(last) do
       nil
     else
-      current = to_date(at)
+      current = FavnView.Time.to_date(at, timezone)
 
       year = integer_param(params, "year", current.year)
       month = integer_param(params, "month", current.month)
@@ -227,7 +238,10 @@ defmodule FavnView.CoverageCalendar do
 
       kind
       |> jump_date(year, month, day)
-      |> clamp(unit_start(kind, to_date(first)), unit_start(kind, to_date(last)))
+      |> clamp(
+        unit_start(kind, FavnView.Time.to_date(first, timezone)),
+        unit_start(kind, FavnView.Time.to_date(last, timezone))
+      )
     end
   end
 
@@ -363,9 +377,6 @@ defmodule FavnView.CoverageCalendar do
 
   defp to_integer(_value), do: nil
 
-  defp to_date(%DateTime{} = at), do: FavnView.Time.to_date(at)
-  defp to_date(%Date{} = date), do: date
-
   @doc """
   The unit one screen covers, in the words its navigator uses.
 
@@ -403,51 +414,62 @@ defmodule FavnView.CoverageCalendar do
   @doc """
   Names one period the way a person would write it.
 
-      iex> FavnView.CoverageCalendar.period_label(:day, ~U[2026-07-08 00:00:00Z])
+      iex> FavnView.CoverageCalendar.period_label(:day, ~U[2026-07-08 00:00:00Z], "Etc/UTC")
       "8 July 2026"
 
-      iex> FavnView.CoverageCalendar.period_label(:month, ~U[2026-07-01 00:00:00Z])
+      iex> FavnView.CoverageCalendar.period_label(:month, ~U[2026-07-01 00:00:00Z], "Etc/UTC")
       "July 2026"
   """
-  @spec period_label(atom() | nil, DateTime.t() | nil) :: String.t() | nil
-  def period_label(_kind, nil), do: nil
+  @spec period_label(atom() | nil, DateTime.t() | nil, String.t() | map()) ::
+          String.t() | nil
+  def period_label(_kind, nil, _timezone), do: nil
 
-  def period_label(:hour, %DateTime{} = at),
-    do: FavnView.Time.format(at, "%H:%M on %-d %B %Y")
+  def period_label(:hour, %DateTime{} = at, timezone),
+    do: FavnView.Time.format(at, "%H:%M on %-d %B %Y", timezone)
 
-  def period_label(:day, %DateTime{} = at), do: FavnView.Time.format(at, "%-d %B %Y")
-  def period_label(:month, %DateTime{} = at), do: FavnView.Time.format(at, "%B %Y")
-  def period_label(:year, %DateTime{} = at), do: FavnView.Time.format(at, "%Y")
-  def period_label(_kind, %DateTime{} = at), do: FavnView.Time.format(at, "%-d %B %Y")
+  def period_label(:day, %DateTime{} = at, timezone),
+    do: FavnView.Time.format(at, "%-d %B %Y", timezone)
+
+  def period_label(:month, %DateTime{} = at, timezone),
+    do: FavnView.Time.format(at, "%B %Y", timezone)
+
+  def period_label(:year, %DateTime{} = at, timezone),
+    do: FavnView.Time.format(at, "%Y", timezone)
+
+  def period_label(_kind, %DateTime{} = at, timezone),
+    do: FavnView.Time.format(at, "%-d %B %Y", timezone)
 
   # Hours already read as a clock, days as a date; a month name or a year is the whole
   # cell. Yearly coverage names the span rather than one year, because every year on
   # screen at once has no single unit above it.
-  defp unit_label(_kind, []), do: nil
+  defp unit_label(_kind, [], _timezone), do: nil
 
-  defp unit_label(:hour, [first | _rest]),
-    do: FavnView.Time.format(first.start_at, "%A %-d %B %Y")
+  defp unit_label(:hour, [first | _rest], timezone),
+    do: FavnView.Time.format(first.start_at, "%A %-d %B %Y", timezone)
 
-  defp unit_label(:day, [first | _rest]), do: FavnView.Time.format(first.start_at, "%B %Y")
-  defp unit_label(:month, [first | _rest]), do: FavnView.Time.format(first.start_at, "%Y")
+  defp unit_label(:day, [first | _rest], timezone),
+    do: FavnView.Time.format(first.start_at, "%B %Y", timezone)
 
-  defp unit_label(:year, windows) do
-    first = windows |> List.first() |> Map.fetch!(:start_at) |> FavnView.Time.shift()
-    last = windows |> List.last() |> Map.fetch!(:start_at) |> FavnView.Time.shift()
+  defp unit_label(:month, [first | _rest], timezone),
+    do: FavnView.Time.format(first.start_at, "%Y", timezone)
+
+  defp unit_label(:year, windows, timezone) do
+    first = windows |> List.first() |> Map.fetch!(:start_at) |> FavnView.Time.shift(timezone)
+    last = windows |> List.last() |> Map.fetch!(:start_at) |> FavnView.Time.shift(timezone)
 
     if first.year == last.year,
       do: Integer.to_string(first.year),
       else: "#{first.year} to #{last.year}"
   end
 
-  defp unit_label(_kind, _windows), do: nil
+  defp unit_label(_kind, _windows, _timezone), do: nil
 
   # A month rarely starts on a Monday, so its first cell needs padding to land in its
   # own weekday column. Every other grain fills from the left.
-  defp blanks(:day, [first | _rest]),
-    do: Date.day_of_week(FavnView.Time.to_date(first.start_at)) - 1
+  defp blanks(:day, [first | _rest], timezone),
+    do: Date.day_of_week(FavnView.Time.to_date(first.start_at, timezone)) - 1
 
-  defp blanks(_kind, _windows), do: 0
+  defp blanks(_kind, _windows, _timezone), do: 0
 
   defp columns(:hour), do: 6
   defp columns(:day), do: 7
@@ -457,7 +479,7 @@ defmodule FavnView.CoverageCalendar do
   defp column_labels(:day), do: @weekdays
   defp column_labels(_kind), do: []
 
-  defp cell(window, kind, selected) do
+  defp cell(window, kind, selected, timezone) do
     key = Map.get(window, :window_key)
     covered? = Map.get(window, :covered?) == true
 
@@ -465,22 +487,22 @@ defmodule FavnView.CoverageCalendar do
       # A covered period is not selectable, so it carries no key to select it with.
       key: if(covered?, do: nil, else: key),
       id: "coverage-#{key}",
-      label: cell_label(kind, window.start_at),
-      title: period_label(kind, window.start_at),
+      label: cell_label(kind, window.start_at, timezone),
+      title: period_label(kind, window.start_at, timezone),
       state: if(covered?, do: :covered, else: :missing),
       selected?: not covered? and MapSet.member?(selected, key)
     }
   end
 
-  defp cell_label(:hour, at), do: FavnView.Time.format(at, "%H:%M")
+  defp cell_label(:hour, at, timezone), do: FavnView.Time.format(at, "%H:%M", timezone)
 
-  defp cell_label(:day, at),
-    do: at |> FavnView.Time.shift() |> Map.fetch!(:day) |> Integer.to_string()
+  defp cell_label(:day, at, timezone),
+    do: at |> FavnView.Time.shift(timezone) |> Map.fetch!(:day) |> Integer.to_string()
 
-  defp cell_label(:month, at), do: FavnView.Time.format(at, "%b")
+  defp cell_label(:month, at, timezone), do: FavnView.Time.format(at, "%b", timezone)
 
-  defp cell_label(:year, at),
-    do: at |> FavnView.Time.shift() |> Map.fetch!(:year) |> Integer.to_string()
+  defp cell_label(:year, at, timezone),
+    do: at |> FavnView.Time.shift(timezone) |> Map.fetch!(:year) |> Integer.to_string()
 
-  defp cell_label(_kind, at), do: FavnView.Time.format(at, "%-d %b")
+  defp cell_label(_kind, at, timezone), do: FavnView.Time.format(at, "%-d %b", timezone)
 end

@@ -6,6 +6,7 @@ defmodule FavnStoragePostgres.Registry.Store do
   import Ecto.Query
 
   alias Ecto.Adapters.SQL
+  alias Favn.Connection.CircuitPolicySet
   alias Favn.Manifest.Compatibility
   alias Favn.ExecutionPool.PolicySet
   alias Favn.Manifest.ExecutionPackage
@@ -14,6 +15,7 @@ defmodule FavnStoragePostgres.Registry.Store do
   alias Favn.Manifest.TargetDescriptor
   alias Favn.Manifest.Version
   alias FavnOrchestrator.ManifestActivationDiagnostics
+  alias FavnOrchestrator.ConnectionCircuitPolicy
   alias FavnOrchestrator.ExecutionPoolPolicy
   alias FavnOrchestrator.Persistence.CapacityConfiguration
   alias FavnOrchestrator.Persistence.CommandIdempotency
@@ -739,6 +741,7 @@ defmodule FavnStoragePostgres.Registry.Store do
          {:ok, configuration} <- validate_configuration(command.configuration),
          {:ok, manifest} <- get_activatable_manifest(command.manifest_version_id),
          :ok <- validate_execution_pool_deployment(command, configuration, manifest),
+         :ok <- validate_connection_circuit_deployment(configuration, manifest),
          :ok <- validate_targets(command.targets, manifest),
          :ok <-
            validate_target_compatibilities(
@@ -1156,6 +1159,23 @@ defmodule FavnStoragePostgres.Registry.Store do
       {:error, reason} ->
         {:error,
          Error.new(:invalid, "execution-pool deployment policy is invalid",
+           details: %{reason: inspect(reason)}
+         )}
+    end
+  end
+
+  defp validate_connection_circuit_deployment(configuration, %Version{} = version) do
+    with {:ok, defaults} <- CircuitPolicySet.new(version.manifest.connection_circuits),
+         {:ok, effective} <- ConnectionCircuitPolicy.effective(configuration),
+         true <- effective == defaults do
+      :ok
+    else
+      false ->
+        {:error, Error.new(:invalid, "connection circuit deployment policy is inconsistent")}
+
+      {:error, reason} ->
+        {:error,
+         Error.new(:invalid, "connection circuit deployment policy is invalid",
            details: %{reason: inspect(reason)}
          )}
     end

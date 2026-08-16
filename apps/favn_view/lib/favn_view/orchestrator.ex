@@ -13,6 +13,7 @@ defmodule FavnView.Orchestrator do
   @persistent_key {__MODULE__, :config}
 
   @read_calls [
+    active_workspace_configuration: 1,
     active_asset_catalogue: 1,
     active_asset_coverage_windows: 3,
     active_asset_detail: 3,

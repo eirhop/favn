@@ -9,13 +9,13 @@ defmodule FavnView.LogsViewModel do
   def levels, do: @levels
   def sources, do: @sources
 
-  def entry(entry) do
+  def entry(entry, timezone) do
     %{
       id: entry_id(entry),
       global_sequence: Map.get(entry, :global_sequence),
       occurred_at: Map.get(entry, :occurred_at),
-      timestamp: time_label(Map.get(entry, :occurred_at)),
-      time: time_of_day(Map.get(entry, :occurred_at)),
+      timestamp: time_label(Map.get(entry, :occurred_at), timezone),
+      time: time_of_day(Map.get(entry, :occurred_at), timezone),
       level: normalize_atom(Map.get(entry, :level, :info)),
       level_label: Map.get(entry, :level, :info) |> normalize_atom() |> String.upcase(),
       source: normalize_atom(Map.get(entry, :source, :user_code)),
@@ -33,7 +33,8 @@ defmodule FavnView.LogsViewModel do
     }
   end
 
-  def entries(entries) when is_list(entries), do: Enum.map(entries, &entry/1)
+  def entries(entries, timezone) when is_list(entries),
+    do: Enum.map(entries, &entry(&1, timezone))
 
   def filter_entries(entries, search_query, selected_level, selected_source) do
     query = search_query |> to_string() |> String.trim() |> String.downcase()
@@ -132,10 +133,10 @@ defmodule FavnView.LogsViewModel do
   def trigger_label(kind),
     do: kind |> to_string() |> String.replace("_", " ") |> String.capitalize()
 
-  def timestamp_label(%DateTime{} = value),
-    do: FavnView.Time.format(value, "%b %-d, %Y %H:%M:%S %Z")
+  def timestamp_label(%DateTime{} = value, timezone),
+    do: FavnView.Time.format(value, "%b %-d, %Y %H:%M:%S %Z", timezone)
 
-  def timestamp_label(_value), do: "-"
+  def timestamp_label(_value, _timezone), do: "-"
 
   def duration_label(%DateTime{} = started_at, %DateTime{} = finished_at) do
     DateTime.diff(finished_at, started_at, :millisecond) |> duration_ms_label()
@@ -176,13 +177,15 @@ defmodule FavnView.LogsViewModel do
       {Map.get(entry, :producer_id), Map.get(entry, :producer_sequence)}
   end
 
-  defp time_label(%DateTime{} = value),
-    do: FavnView.Time.format(value, "%b %-d %H:%M:%S %Z")
+  defp time_label(%DateTime{} = value, timezone),
+    do: FavnView.Time.format(value, "%b %-d %H:%M:%S %Z", timezone)
 
-  defp time_label(_value), do: "--- -- --:--:--"
+  defp time_label(_value, _timezone), do: "--- -- --:--:--"
 
-  defp time_of_day(%DateTime{} = value), do: FavnView.Time.format(value, "%H:%M:%S")
-  defp time_of_day(_value), do: "--:--:--"
+  defp time_of_day(%DateTime{} = value, timezone),
+    do: FavnView.Time.format(value, "%H:%M:%S", timezone)
+
+  defp time_of_day(_value, _timezone), do: "--:--:--"
 
   defp source_label(source), do: source |> normalize_atom() |> String.replace("_", ":")
   defp normalize_atom(value) when is_atom(value), do: Atom.to_string(value)

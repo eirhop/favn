@@ -111,6 +111,7 @@ defmodule FavnView.Components.AssetDetailPageTest do
   test "names what changed in the asset's own terms and offers the fix beside it" do
     html =
       render_component(&AssetDetailPage.diagnostics_panel/1,
+        timezone: "Etc/UTC",
         rebuild_target_id: "asset:orders",
         manifest_version_id: "mv_0001",
         compatibility: %{
@@ -152,6 +153,7 @@ defmodule FavnView.Components.AssetDetailPageTest do
   test "an optional rebuild says writes still work and still offers one" do
     html =
       render_component(&AssetDetailPage.diagnostics_panel/1,
+        timezone: "Etc/UTC",
         rebuild_target_id: "asset:orders",
         compatibility: %{
           status: :rebuild_available,
@@ -173,6 +175,7 @@ defmodule FavnView.Components.AssetDetailPageTest do
   test "a healthy target offers no rebuild, because there is nothing to rebuild" do
     html =
       render_component(&AssetDetailPage.diagnostics_panel/1,
+        timezone: "Etc/UTC",
         rebuild_target_id: "asset:orders",
         compatibility: %{
           status: :ready,
@@ -192,6 +195,7 @@ defmodule FavnView.Components.AssetDetailPageTest do
   test "a failed first inspection offers activation retry guidance instead of rebuild" do
     html =
       render_component(&AssetDetailPage.diagnostics_panel/1,
+        timezone: "Etc/UTC",
         rebuild_target_id: "asset:orders",
         compatibility: %{
           status: :operator_decision,
@@ -213,6 +217,7 @@ defmodule FavnView.Components.AssetDetailPageTest do
   test "an asset with no table of its own says so instead of showing a verdict" do
     html =
       render_component(&AssetDetailPage.diagnostics_panel/1,
+        timezone: "Etc/UTC",
         rebuild_target_id: "asset:orders",
         compatibility: %{status: :ready, reason_code: "compatible", diff: %{}, persisted?: false}
       )
@@ -225,6 +230,7 @@ defmodule FavnView.Components.AssetDetailPageTest do
   test "the coverage rules explain where the calendar's range came from" do
     html =
       render_component(&AssetDetailPage.diagnostics_panel/1,
+        timezone: "Etc/UTC",
         compatibility: %{status: :ready, reason_code: "compatible", diff: %{}, persisted?: true},
         coverage: %{
           evaluated_at: ~U[2026-07-22 12:00:00Z],

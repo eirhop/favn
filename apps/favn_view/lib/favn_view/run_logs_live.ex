@@ -9,7 +9,7 @@ defmodule FavnView.RunLogsLive do
   @impl true
   def mount(%{"run_id" => run_id}, _session, socket) do
     operator_context = socket.assigns.current_scope.operator_context
-    run = LogsLiveSupport.run_context(operator_context, run_id)
+    run = LogsLiveSupport.run_context(operator_context, run_id, socket.assigns.current_scope)
 
     socket =
       LogsLiveSupport.mount_logs(socket, %{

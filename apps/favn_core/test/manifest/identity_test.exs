@@ -8,7 +8,9 @@ defmodule Favn.Manifest.IdentityTest do
 
     manifest_b = %{
       assets: [%{name: "a"}],
+      connection_circuits: manifest_a.connection_circuits,
       execution_pools: manifest_a.execution_pools,
+      environment: manifest_a.environment,
       runner_releases: manifest_a.runner_releases,
       runner_contract_version: manifest_a.runner_contract_version,
       schema_version: manifest_a.schema_version

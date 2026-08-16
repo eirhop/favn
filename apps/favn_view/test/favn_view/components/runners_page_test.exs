@@ -25,6 +25,7 @@ defmodule FavnView.Components.RunnersPageTest do
 
     html =
       render_component(&RunnersPage.runners_page/1,
+        current_scope: %{workspace_configuration: %{default_timezone: "Etc/UTC"}},
         overview: %{
           runner_count: 0,
           registry_status: :available,
@@ -49,6 +50,7 @@ defmodule FavnView.Components.RunnersPageTest do
   test "distinguishes an unavailable live registry from zero connected runners" do
     html =
       render_component(&RunnersPage.runners_page/1,
+        current_scope: %{workspace_configuration: %{default_timezone: "Etc/UTC"}},
         overview: %{
           runner_count: 0,
           registry_status: :unavailable,
@@ -70,6 +72,7 @@ defmodule FavnView.Components.RunnersPageTest do
   test "renders loading and error page states" do
     loading =
       render_component(&RunnersPage.runners_page/1,
+        current_scope: %{workspace_configuration: %{default_timezone: "Etc/UTC"}},
         loading: true,
         nav_items: RunnersPage.nav_items()
       )
@@ -78,6 +81,7 @@ defmodule FavnView.Components.RunnersPageTest do
 
     error =
       render_component(&RunnersPage.runners_page/1,
+        current_scope: %{workspace_configuration: %{default_timezone: "Etc/UTC"}},
         error: "Backend unavailable",
         nav_items: RunnersPage.nav_items()
       )

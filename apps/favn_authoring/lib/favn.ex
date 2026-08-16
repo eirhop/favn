@@ -23,6 +23,7 @@ defmodule FavnAuthoring do
   alias Favn.Asset
   alias Favn.Assets.Compiler
   alias Favn.Assets.Planner
+  alias Favn.Connection.CircuitPolicySet
   alias Favn.Manifest
   alias Favn.Manifest.Build
   alias Favn.Manifest.Compatibility
@@ -159,6 +160,7 @@ defmodule FavnAuthoring do
     with :ok <- reject_legacy_runner_release_option(opts),
          {:ok, opts} <- with_default_manifest_modules(opts),
          {:ok, opts} <- with_execution_pools(opts),
+         {:ok, opts} <- with_connection_circuits(opts),
          {:ok, opts} <- with_manifest_environment(opts) do
       Generator.generate(opts)
     end
@@ -174,6 +176,7 @@ defmodule FavnAuthoring do
     with :ok <- reject_legacy_runner_release_option(opts),
          {:ok, opts} <- with_default_manifest_modules(opts),
          {:ok, opts} <- with_execution_pools(opts),
+         {:ok, opts} <- with_connection_circuits(opts),
          {:ok, opts} <- with_manifest_environment(opts) do
       Generator.build(opts)
     end
@@ -186,6 +189,7 @@ defmodule FavnAuthoring do
       when is_binary(runner_release_id) do
     with {:ok, opts} <- with_default_manifest_modules([]),
          {:ok, opts} <- with_execution_pools(opts),
+         {:ok, opts} <- with_connection_circuits(opts),
          {:ok, opts} <- with_manifest_environment(opts) do
       Generator.build_with_uniform_runner_release(opts, runner_release_id)
     end
@@ -306,6 +310,15 @@ defmodule FavnAuthoring do
      Keyword.put_new_lazy(opts, :execution_pools, fn ->
        Application.get_env(:favn, :execution_pools, [])
      end)}
+  end
+
+  defp with_connection_circuits(opts) do
+    with {:ok, policies} <-
+           :favn
+           |> Application.get_env(:connections, [])
+           |> CircuitPolicySet.from_connection_config() do
+      {:ok, Keyword.put(opts, :connection_circuits, policies)}
+    end
   end
 
   defp default_modules(config_key, discovery_key) do

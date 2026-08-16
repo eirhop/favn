@@ -31,6 +31,17 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
   alias FavnView.Dev.DesignSystem.Fixtures.RunsList
   alias FavnView.Dev.DesignSystem.Fixtures.Schedules
 
+  @workspace_scope %Scope{
+    workspace_id: "workspace-one",
+    actor: %{id: "actor-design-system", roles: [:viewer]},
+    workspace_configuration: %FavnOrchestrator.WorkspaceConfiguration{
+      workspace_id: "workspace-one",
+      deployment_id: "deployment-design-system",
+      default_timezone: "Etc/UTC",
+      default_timezone_source: :application_default
+    }
+  }
+
   @doc """
   Every curated page example, keyed by catalogue entry id.
   """
@@ -51,6 +62,22 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
     |> Map.merge(rebuilds())
     |> Map.merge(recovery())
     |> Map.merge(errors())
+    |> put_workspace_scope()
+  end
+
+  defp put_workspace_scope(catalogue) do
+    Map.new(catalogue, fn {entry_id, examples} ->
+      examples =
+        Enum.map(examples, fn
+          %Example{attrs: attrs} = example when is_map(attrs) ->
+            %{example | attrs: Map.put_new(attrs, :current_scope, @workspace_scope)}
+
+          example ->
+            example
+        end)
+
+      {entry_id, examples}
+    end)
   end
 
   defp status do

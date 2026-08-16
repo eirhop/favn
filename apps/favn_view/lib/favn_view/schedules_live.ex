@@ -19,7 +19,8 @@ defmodule FavnView.SchedulesLive do
 
   @impl true
   def mount(_params, _session, socket) do
-    {entries, error} = load_entries(operator_context(socket), @default_filters)
+    {entries, error} =
+      load_entries(operator_context(socket), @default_filters, socket.assigns.current_scope)
 
     socket =
       assign(socket,
@@ -51,7 +52,8 @@ defmodule FavnView.SchedulesLive do
   end
 
   def handle_event("clear_filters", _params, socket) do
-    {entries, error} = load_entries(operator_context(socket), @default_filters)
+    {entries, error} =
+      load_entries(operator_context(socket), @default_filters, socket.assigns.current_scope)
 
     {:noreply,
      assign(socket,
@@ -90,7 +92,8 @@ defmodule FavnView.SchedulesLive do
   # Counts come from every schedule, not the filtered page, so the number on a
   # scope button is the number of rows clicking it produces.
   defp apply_filters(socket, filters) do
-    {entries, error} = load_entries(operator_context(socket), filters)
+    {entries, error} =
+      load_entries(operator_context(socket), filters, socket.assigns.current_scope)
 
     assign(socket,
       schedules: entries,
@@ -100,9 +103,9 @@ defmodule FavnView.SchedulesLive do
     )
   end
 
-  defp load_entries(operator_context, filters) do
+  defp load_entries(operator_context, filters, timezone) do
     case page_schedule_list_entries(operator_context, orchestrator_filters(filters)) do
-      {:ok, %{items: entries}} -> {Enum.map(entries, &schedule_from_public/1), nil}
+      {:ok, %{items: entries}} -> {Enum.map(entries, &schedule_from_public(&1, timezone)), nil}
       {:error, reason} -> {[], OperatorErrorLabels.collection_load(reason)}
     end
   end
@@ -163,7 +166,7 @@ defmodule FavnView.SchedulesLive do
     })
   end
 
-  defp schedule_from_public(entry) do
+  defp schedule_from_public(entry, timezone) do
     %{
       id: entry.id,
       route_id: ScheduleRoute.to_param(entry.id),
@@ -182,12 +185,12 @@ defmodule FavnView.SchedulesLive do
       runtime_state: entry.runtime_state,
       runtime_label: humanize(entry.runtime_state),
       next_due_at: entry.next_due_at,
-      next_due_label: timestamp_label(entry.next_due_at),
-      last_submitted_label: timestamp_label(entry.last_submitted_due_at),
+      next_due_label: timestamp_label(entry.next_due_at, timezone),
+      last_submitted_label: timestamp_label(entry.last_submitted_due_at, timezone),
       in_flight_run_id: entry.in_flight_run_id,
       current_run_label: short_id(entry.in_flight_run_id),
       last_scheduler_error: scheduler_error_from_public(entry.last_scheduler_error),
-      updated_label: timestamp_label(entry.updated_at),
+      updated_label: timestamp_label(entry.updated_at, timezone),
       manifest_active?: entry.manifest_active?,
       effective_enabled?: entry.effective_enabled?
     }
@@ -244,10 +247,10 @@ defmodule FavnView.SchedulesLive do
   defp window_option_label(:none), do: "No window"
   defp window_option_label(value), do: humanize(value)
 
-  defp timestamp_label(%DateTime{} = datetime),
-    do: FavnView.Time.format(datetime, "%b %-d %H:%M")
+  defp timestamp_label(%DateTime{} = datetime, timezone),
+    do: FavnView.Time.format(datetime, "%b %-d %H:%M", timezone)
 
-  defp timestamp_label(_value), do: "-"
+  defp timestamp_label(_value, _timezone), do: "-"
 
   defp short_id(nil), do: nil
   defp short_id(id) when is_binary(id) and byte_size(id) > 12, do: String.slice(id, 0, 12)

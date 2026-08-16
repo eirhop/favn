@@ -8,6 +8,7 @@ defmodule FavnView.Components.RebuildPageTest do
   test "requires separate review and start for a planned rebuild" do
     html =
       render_component(&RebuildPage.rebuilds_page/1,
+        current_scope: %{workspace_configuration: %{default_timezone: "Etc/UTC"}},
         operations: [],
         plan: %{
           plan_id: "rebuild_plan_1",
@@ -75,6 +76,7 @@ defmodule FavnView.Components.RebuildPageTest do
   test "does not render plan approval when the server denies start permission" do
     html =
       render_component(&RebuildPage.rebuilds_page/1,
+        current_scope: %{workspace_configuration: %{default_timezone: "Etc/UTC"}},
         operations: [],
         plan: %{
           plan_id: "rebuild_plan_1",

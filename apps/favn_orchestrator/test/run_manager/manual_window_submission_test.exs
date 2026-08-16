@@ -105,7 +105,16 @@ defmodule FavnOrchestrator.RunManager.ManualWindowSubmissionTest do
              availability_delay_seconds: 3_600
            }
 
-    Process.put(:manual_window_source_run, %{source | status: :ok})
+    legacy_source = %{
+      source
+      | status: :ok,
+        metadata:
+          source.metadata
+          |> Map.put("execution_pool_policy", %{"spoofed" => %{}})
+          |> Map.put("connection_circuit_policy", %{"spoofed" => %{}})
+    }
+
+    Process.put(:manual_window_source_run, legacy_source)
 
     assert {:ok, rerun} =
              SubmissionBuilder.persisted_rerun(
@@ -121,6 +130,11 @@ defmodule FavnOrchestrator.RunManager.ManualWindowSubmissionTest do
 
     assert rerun.run_state.metadata.manual_window_resolution ==
              source.metadata.manual_window_resolution
+
+    assert rerun.run_state.metadata.execution_pool_policy == %{}
+    assert rerun.run_state.metadata.connection_circuit_policy == %{}
+    refute Map.has_key?(rerun.run_state.metadata, "execution_pool_policy")
+    refute Map.has_key?(rerun.run_state.metadata, "connection_circuit_policy")
   end
 
   defp manifest_version do

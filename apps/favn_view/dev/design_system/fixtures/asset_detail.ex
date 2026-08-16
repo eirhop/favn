@@ -384,6 +384,7 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.AssetDetail do
   def coverage_navigation do
     CoverageCalendar.navigation(%{
       kind: :day,
+      timezone: "Europe/Oslo",
       at: ~U[2026-07-01 00:00:00Z],
       first_expected_at: ~U[2025-11-01 00:00:00Z],
       last_expected_at: ~U[2026-09-30 00:00:00Z]
@@ -397,6 +398,7 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.AssetDetail do
   def coverage_navigation_at_start do
     CoverageCalendar.navigation(%{
       kind: :day,
+      timezone: "Europe/Oslo",
       at: ~U[2026-07-01 00:00:00Z],
       first_expected_at: ~U[2026-07-01 00:00:00Z],
       last_expected_at: ~U[2026-09-30 00:00:00Z]

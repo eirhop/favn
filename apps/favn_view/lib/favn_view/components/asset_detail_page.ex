@@ -103,6 +103,7 @@ defmodule FavnView.Components.AssetDetailPage do
       content_scroll?={@active_mode != :runs}
     >
       <.central_view
+        timezone={@current_scope}
         active_mode={@active_mode}
         can_run_asset?={@can_run_asset?}
         run_contexts={@run_contexts}
@@ -160,6 +161,7 @@ defmodule FavnView.Components.AssetDetailPage do
   end
 
   attr :active_mode, :atom, required: true
+  attr :timezone, :any, required: true
   attr :title, :string, required: true
   attr :can_run_asset?, :boolean, default: true
   attr :run_contexts, :list, default: []
@@ -238,6 +240,7 @@ defmodule FavnView.Components.AssetDetailPage do
       can_submit_runs?={@can_submit_runs?}
       submitting_window_run?={@submitting_window_run?}
       problems={asset_problems(assigns)}
+      timezone={@timezone}
     />
 
     <div
@@ -249,6 +252,7 @@ defmodule FavnView.Components.AssetDetailPage do
           :if={match?({:ok, _run}, @selected_run)}
           run={elem(@selected_run, 1)}
           asset_id={@asset_id}
+          timezone={@timezone}
         />
 
         <.error_state
@@ -304,6 +308,7 @@ defmodule FavnView.Components.AssetDetailPage do
       coverage_policy={@coverage_policy}
       manifest_version_id={@manifest_version_id}
       rebuild_target_id={@rebuild_target_id}
+      timezone={@timezone}
     />
 
     <.coverage_panel
@@ -317,6 +322,7 @@ defmodule FavnView.Components.AssetDetailPage do
       submitting?={@submitting_coverage?}
       can_plan?={@can_submit_runs? && @can_run_asset?}
       command_resource={@rebuild_target_id}
+      timezone={@timezone}
     />
     """
   end
@@ -437,6 +443,7 @@ defmodule FavnView.Components.AssetDetailPage do
   attr :coverage_policy, :map, default: nil
   attr :manifest_version_id, :string, default: nil
   attr :rebuild_target_id, :string, default: nil
+  attr :timezone, :any, required: true
 
   def diagnostics_panel(assigns) do
     assigns = assign(assigns, :changes, compatibility_changes(assigns.compatibility))
@@ -570,14 +577,18 @@ defmodule FavnView.Components.AssetDetailPage do
         label: "Periods are in",
         value: field(assigns.coverage_policy, :timezone) || "Not declared"
       },
-      %{label: "Counted from", value: coverage_start_label(assigns.coverage_policy)},
+      %{
+        label: "Counted from",
+        value: coverage_start_label(assigns.coverage_policy, assigns.timezone)
+      },
       %{
         label: "A period counts once",
         value: availability_label(field(assigns.coverage_policy, :availability_delay_seconds, 0))
       },
       %{
         label: "Expected through",
-        value: coverage_window_label(field(assigns.coverage, :last_expected_window))
+        value:
+          coverage_window_label(field(assigns.coverage, :last_expected_window), assigns.timezone)
       }
     ]
   end
@@ -606,7 +617,7 @@ defmodule FavnView.Components.AssetDetailPage do
       },
       %{
         label: "Coverage last checked",
-        value: coverage_time(field(assigns.coverage, :evaluated_at))
+        value: coverage_time(field(assigns.coverage, :evaluated_at), assigns.timezone)
       },
       %{label: "Verdict code", value: humanize(field(assigns.compatibility, :reason_code))}
     ]
@@ -668,6 +679,7 @@ defmodule FavnView.Components.AssetDetailPage do
   attr :submitting?, :boolean, default: false
   attr :can_plan?, :boolean, default: false
   attr :command_resource, :string, required: true
+  attr :timezone, :any, required: true
 
   def coverage_panel(assigns) do
     ~H"""
@@ -754,7 +766,9 @@ defmodule FavnView.Components.AssetDetailPage do
         </p>
 
         <ul class="mt-2 max-h-40 space-y-0.5 overflow-y-auto text-sm favn-text-muted">
-          <li :for={window <- field(@plan, :windows, [])}>{coverage_plan_window_label(window)}</li>
+          <li :for={window <- field(@plan, :windows, [])}>
+            {coverage_plan_window_label(window, @timezone)}
+          </li>
         </ul>
 
         <!-- `:primary`, not `:solid`: this is a page panel, and the filled violet is
@@ -841,21 +855,21 @@ defmodule FavnView.Components.AssetDetailPage do
 
   # Coverage starts at the later of what the author declared and when the target was
   # first built, so the two only need telling apart when they disagree.
-  defp coverage_start_label(policy) do
+  defp coverage_start_label(policy, timezone) do
     declared = field(policy, :declared_from)
     effective = field(policy, :effective_from)
 
     if declared && effective && declared != effective do
-      "#{coverage_time(effective)}, declared #{coverage_time(declared)}"
+      "#{coverage_time(effective, timezone)}, declared #{coverage_time(declared, timezone)}"
     else
-      coverage_time(effective)
+      coverage_time(effective, timezone)
     end
   end
 
-  defp coverage_plan_window_label(window) do
+  defp coverage_plan_window_label(window, timezone) do
     case field(window, :start_at) do
       %DateTime{} = start_at ->
-        CoverageCalendar.period_label(field(window, :kind), start_at)
+        CoverageCalendar.period_label(field(window, :kind), start_at, timezone)
 
       _absent ->
         field(window, :window_key)
@@ -1066,6 +1080,7 @@ defmodule FavnView.Components.AssetDetailPage do
   problem panel at all rather than a green one saying nothing is wrong.
   """
   attr :freshness, :map, default: nil
+  attr :timezone, :any, required: true
   attr :relation, :map, default: nil
   attr :runs, :list, default: []
   attr :upstream, :list, default: []
@@ -1305,7 +1320,7 @@ defmodule FavnView.Components.AssetDetailPage do
             <dt class={Typography.class(:eyebrow)}>At</dt>
 
             <dd class="mt-1 text-sm favn-text-muted">
-              {freshness_time(freshness_latest_success(@freshness)[:at])}
+              {freshness_time(freshness_latest_success(@freshness)[:at], @timezone)}
             </dd>
           </div>
         </dl>
@@ -1746,6 +1761,7 @@ defmodule FavnView.Components.AssetDetailPage do
   """
   attr :run, :map, required: true, doc: "see `FavnOrchestrator.asset_run_detail/0`"
   attr :asset_id, :string, required: true
+  attr :timezone, :any, required: true
 
   def run_detail_panel(assigns) do
     result = assigns.run[:asset_result]
@@ -1756,6 +1772,7 @@ defmodule FavnView.Components.AssetDetailPage do
       |> assign(:failed?, run_failed?(assigns.run))
       |> assign(:result, result)
       |> assign(:meta, meta)
+      |> assign(:facts, run_facts(assigns.run, result, assigns.timezone))
       |> assign(:write, OutputMetadata.outcome(meta, result && result[:status]))
       |> assign(:inputs, List.wrap(assigns.run[:runtime_inputs]))
 
@@ -1781,7 +1798,7 @@ defmodule FavnView.Components.AssetDetailPage do
           </span>
         </p>
 
-        <.fact_list class="mt-6" columns={3} facts={run_facts(@run, @result)} />
+        <.fact_list class="mt-6" columns={3} facts={@facts} />
 
         <.notice
           :if={@failed?}
@@ -1847,9 +1864,9 @@ defmodule FavnView.Components.AssetDetailPage do
     """
   end
 
-  defp run_facts(run, result) do
+  defp run_facts(run, result, timezone) do
     [
-      %{label: "Started", value: LogsViewModel.timestamp_label(run[:started_at])},
+      %{label: "Started", value: LogsViewModel.timestamp_label(run[:started_at], timezone)},
       %{label: "Duration", value: duration_fact(run[:duration_ms])},
       %{label: "Window", value: run_window_label(run[:window])},
       %{label: "Trigger", value: LogsViewModel.trigger_label(run[:submit_kind]) || "Unknown"},
@@ -2186,17 +2203,17 @@ defmodule FavnView.Components.AssetDetailPage do
   defp coverage_status_label(:incomplete), do: "Incomplete"
   defp coverage_status_label(_status), do: "Unknown"
 
-  defp coverage_time(%DateTime{} = value),
-    do: FavnView.Time.format(value, "%b %-d, %Y %H:%M %Z")
+  defp coverage_time(%DateTime{} = value, timezone),
+    do: FavnView.Time.format(value, "%b %-d, %Y %H:%M %Z", timezone)
 
-  defp coverage_time(value) when is_binary(value), do: value
-  defp coverage_time(_value), do: "-"
+  defp coverage_time(value, _timezone) when is_binary(value), do: value
+  defp coverage_time(_value, _timezone), do: "-"
 
-  defp coverage_window_label(nil), do: "No windows expected yet"
+  defp coverage_window_label(nil, _timezone), do: "No windows expected yet"
 
-  defp coverage_window_label(window) do
+  defp coverage_window_label(window, timezone) do
     case field(window, :start_at) do
-      %DateTime{} = start_at -> coverage_time(start_at)
+      %DateTime{} = start_at -> coverage_time(start_at, timezone)
       value when is_binary(value) -> value
       _other -> "-"
     end
@@ -2405,8 +2422,8 @@ defmodule FavnView.Components.AssetDetailPage do
   defp freshness_reasons(%{"reasons" => reasons}) when is_list(reasons), do: reasons
   defp freshness_reasons(_freshness), do: []
 
-  defp freshness_time(%DateTime{} = value),
-    do: FavnView.Time.format(value, "%b %-d, %Y %H:%M:%S %Z")
+  defp freshness_time(%DateTime{} = value, timezone),
+    do: FavnView.Time.format(value, "%b %-d, %Y %H:%M:%S %Z", timezone)
 
-  defp freshness_time(_value), do: "-"
+  defp freshness_time(_value, _timezone), do: "-"
 end

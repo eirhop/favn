@@ -2,6 +2,8 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
   @moduledoc false
 
   alias Favn.Plan
+  alias Favn.Connection.CircuitPolicySet
+  alias Favn.ExecutionPool.PolicySet
   alias Favn.Retry.Policy, as: RetryPolicy
   alias Favn.RelationRef
   alias Favn.Run.AssetResult
@@ -16,7 +18,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
   alias FavnOrchestrator.Storage.RunSnapshotCodec.ManifestAtoms
   alias FavnOrchestrator.Storage.RunStateCodec
 
-  @format "favn.run_snapshot.storage.v4"
+  @format "favn.run_snapshot.storage.v5"
   @max_persisted_bytes 4 * 1_024 * 1_024
   # Favn-owned run snapshot atoms are fixed here; consumer module/name atoms come only from
   # the associated manifest record.
@@ -217,7 +219,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
   defp run_to_dto(%RunState{} = run) do
     %{
       "format" => @format,
-      "schema_version" => 4,
+      "schema_version" => 5,
       "id" => run.id,
       "workspace_id" => run.workspace_id,
       "deployment_id" => run.deployment_id,
@@ -234,6 +236,8 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
       "params" => JsonSafe.data(run.params),
       "trigger" => JsonSafe.data(run.trigger),
       "metadata" => run_metadata_to_dto(run.metadata),
+      "execution_pool_policy" => execution_pool_policy_to_dto(run.metadata),
+      "connection_circuit_policy" => connection_circuit_policy_to_dto(run.metadata),
       "submit_kind" => Atom.to_string(run.submit_kind),
       "rerun_of_run_id" => run.rerun_of_run_id,
       "parent_run_id" => run.parent_run_id,
@@ -251,7 +255,15 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
   end
 
   defp run_metadata_to_dto(metadata) when is_map(metadata) do
-    encoded = JsonSafe.data(metadata)
+    encoded =
+      metadata
+      |> Map.drop([
+        :execution_pool_policy,
+        "execution_pool_policy",
+        :connection_circuit_policy,
+        "connection_circuit_policy"
+      ])
+      |> JsonSafe.data()
 
     case field(metadata, :pipeline_context) do
       context when is_map(context) ->
@@ -265,6 +277,57 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
 
       _other ->
         encoded
+    end
+  end
+
+  defp execution_pool_policy_to_dto(metadata) do
+    case policy_snapshot(metadata, :execution_pool_policy) do
+      :missing ->
+        nil
+
+      {:ok, value} ->
+        encode_execution_pool_policy(value)
+
+      :duplicate ->
+        raise ArgumentError, "duplicate execution-pool policy snapshot"
+    end
+  end
+
+  defp encode_execution_pool_policy(value) do
+    case PolicySet.new(value) do
+      {:ok, policies} -> PolicySet.to_map(policies)
+      {:error, _reason} -> raise ArgumentError, "invalid execution-pool policy snapshot"
+    end
+  end
+
+  defp connection_circuit_policy_to_dto(metadata) do
+    case policy_snapshot(metadata, :connection_circuit_policy) do
+      :missing ->
+        nil
+
+      {:ok, value} ->
+        encode_connection_circuit_policy(value)
+
+      :duplicate ->
+        raise ArgumentError, "duplicate connection circuit policy snapshot"
+    end
+  end
+
+  defp encode_connection_circuit_policy(value) do
+    case CircuitPolicySet.new(value) do
+      {:ok, policies} -> CircuitPolicySet.to_map(policies)
+      {:error, _reason} -> raise ArgumentError, "invalid connection circuit policy snapshot"
+    end
+  end
+
+  defp policy_snapshot(metadata, key) do
+    string_key = Atom.to_string(key)
+
+    case {Map.fetch(metadata, key), Map.fetch(metadata, string_key)} do
+      {{:ok, _atom_value}, {:ok, _string_value}} -> :duplicate
+      {{:ok, value}, :error} -> {:ok, value}
+      {:error, {:ok, value}} -> {:ok, value}
+      {:error, :error} -> :missing
     end
   end
 
@@ -292,10 +355,10 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
   end
 
   defp dto_to_run(
-         %{"format" => @format, "schema_version" => 4} = dto,
+         %{"format" => @format, "schema_version" => 5} = dto,
          allowed_atom_strings
        ) do
-    dto_to_run(dto, allowed_atom_strings, 4)
+    dto_to_run(dto, allowed_atom_strings, 5)
   end
 
   defp dto_to_run(dto, _allowed_atom_strings), do: {:error, {:unsupported_run_snapshot_dto, dto}}
@@ -313,6 +376,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
          {:ok, runner_releases} <- runner_releases_from_dto(dto, schema_version),
          {:ok, metadata} <-
            metadata_from_dto(Map.get(dto, "metadata"), allowed_atom_strings),
+         {:ok, metadata} <- policy_metadata_from_dto(dto, metadata),
          {:ok, result} <- result_from_dto(Map.get(dto, "result"), allowed_atom_strings) do
       {:ok,
        %RunState{
@@ -349,7 +413,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
     end
   end
 
-  defp runner_releases_from_dto(dto, 4) do
+  defp runner_releases_from_dto(dto, 5) do
     releases = Map.get(dto, "runner_releases")
 
     case Favn.RunnerPool.validate_releases(releases) do
@@ -1315,6 +1379,58 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
 
     validate_metadata_refresh_policy(metadata)
   end
+
+  defp policy_metadata_from_dto(dto, metadata) when is_map(metadata) do
+    metadata =
+      Map.drop(metadata, [
+        :execution_pool_policy,
+        "execution_pool_policy",
+        :connection_circuit_policy,
+        "connection_circuit_policy"
+      ])
+
+    with {:ok, metadata} <-
+           put_execution_pool_policy_from_dto(metadata, Map.get(dto, "execution_pool_policy")),
+         {:ok, metadata} <-
+           put_connection_circuit_policy_from_dto(
+             metadata,
+             Map.get(dto, "connection_circuit_policy")
+           ) do
+      {:ok, metadata}
+    end
+  end
+
+  defp policy_metadata_from_dto(_dto, metadata), do: {:ok, metadata}
+
+  defp put_execution_pool_policy_from_dto(metadata, nil), do: {:ok, metadata}
+
+  defp put_execution_pool_policy_from_dto(metadata, encoded) when is_map(encoded) do
+    case PolicySet.new(encoded) do
+      {:ok, policies} ->
+        {:ok, Map.put(metadata, :execution_pool_policy, PolicySet.to_map(policies))}
+
+      {:error, _reason} ->
+        {:error, :invalid_run_policy_snapshot}
+    end
+  end
+
+  defp put_execution_pool_policy_from_dto(_metadata, _encoded),
+    do: {:error, :invalid_run_policy_snapshot}
+
+  defp put_connection_circuit_policy_from_dto(metadata, nil), do: {:ok, metadata}
+
+  defp put_connection_circuit_policy_from_dto(metadata, encoded) when is_map(encoded) do
+    case CircuitPolicySet.new(encoded) do
+      {:ok, policies} ->
+        {:ok, Map.put(metadata, :connection_circuit_policy, CircuitPolicySet.to_map(policies))}
+
+      {:error, _reason} ->
+        {:error, :invalid_run_policy_snapshot}
+    end
+  end
+
+  defp put_connection_circuit_policy_from_dto(_metadata, _encoded),
+    do: {:error, :invalid_run_policy_snapshot}
 
   defp validate_metadata_refresh_policy(%{refresh_policy: policy} = metadata) do
     case RefreshPolicy.from_value(policy) do
