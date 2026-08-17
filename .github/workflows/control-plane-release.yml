@@ -140,7 +140,9 @@ jobs:
             --predicate-type https://spdx.dev/Document/v2.3
 
       - name: Enforce vulnerability-exception review date
-        run: scripts/check_grype_exceptions.sh
+        run: |
+          .release-workflow/scripts/check_grype_exceptions.sh \
+            .release-workflow/security/control-plane-grype.yaml
 
       - name: Scan exact release image
         uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
@@ -150,7 +152,7 @@ jobs:
           severity-cutoff: high
           only-fixed: false
           grype-version: v0.116.0
-          config: security/control-plane-grype.yaml
+          config: .release-workflow/security/control-plane-grype.yaml
 
       - name: Check immutable release destinations
         id: existing

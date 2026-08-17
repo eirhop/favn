@@ -61,6 +61,8 @@ defmodule Favn.ControlPlaneReleaseWorkflowTest do
     assert workflow =~ "ref: ${{ github.sha }}"
     assert workflow =~ "path: .release-workflow"
     assert workflow =~ ".release-workflow/scripts/check_control_plane_release_destinations.sh"
+    assert workflow =~ ".release-workflow/scripts/check_grype_exceptions.sh"
+    assert workflow =~ ".release-workflow/security/control-plane-grype.yaml"
     assert workflow =~ "ref: ${{ steps.release_ref.outputs.release_tag }}"
 
     refute workflow =~
