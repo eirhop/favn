@@ -72,7 +72,7 @@ defmodule Favn.ControlPlaneReleaseWorkflowTest do
 
     System.cmd(
       @script,
-      ["ghcr.io/eirhop/favn-control-plane", "v0.5.0-rc.7", @digest, "eirhop/favn"],
+      ["ghcr.io/eirhop/favn-control-plane", "v0.5.0-rc.8", @digest, "eirhop/favn"],
       env: [
         {"PATH", path},
         {"FAKE_EXPECTED_DIGEST", @digest},
@@ -93,7 +93,7 @@ defmodule Favn.ControlPlaneReleaseWorkflowTest do
 
       case "$FAKE_REGISTRY_MODE" in
         missing)
-          echo "ERROR: ghcr.io/eirhop/favn-control-plane:v0.5.0-rc.7: not found" >&2
+          echo "ERROR: ghcr.io/eirhop/favn-control-plane:v0.5.0-rc.8: not found" >&2
           exit 1
           ;;
         matching)
