@@ -5516,21 +5516,10 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     policies = %{"global" => %{max_concurrency: 1}}
     install_execution_capacity_scope!(fixture, :global, policies)
 
-    {first_command, first_run} = pipeline_run_command(fixture)
+    {first_run, _keys} =
+      create_continuation_pipeline_run!(fixture, 1, policies, timeout_ms: 5_000)
 
-    first_run =
-      %{first_run | timeout_ms: 5_000, metadata: %{execution_pool_policy: policies}}
-      |> RunState.with_snapshot_hash()
-
-    assert {:ok, _created} = RunStore.create_run(%{first_command | run: first_run})
-
-    {second_command, second_run} = pipeline_run_command(fixture)
-
-    second_run =
-      %{second_run | metadata: %{execution_pool_policy: policies}}
-      |> RunState.with_snapshot_hash()
-
-    assert {:ok, _created} = RunStore.create_run(%{second_command | run: second_run})
+    {second_run, _keys} = create_continuation_pipeline_run!(fixture, 1, policies)
 
     start_pipeline_runtime!()
 
@@ -10870,7 +10859,12 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     start_supervised!({RunnerTaskResultRouter, []})
   end
 
-  defp create_continuation_pipeline_run!(fixture, max_concurrency, execution_pools \\ %{}) do
+  defp create_continuation_pipeline_run!(
+         fixture,
+         max_concurrency,
+         execution_pools \\ %{},
+         opts \\ []
+       ) do
     asset = Enum.find(fixture.version.manifest.assets, &(&1.ref == {MyApp.Asset, :asset}))
     {plan, keys} = continuation_regression_plan(asset.semantic_generation_id)
     stage_node_keys = [keys.a, keys.b, keys.c]
@@ -10902,6 +10896,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
         target_refs: original.target_refs,
         submit_kind: :pipeline,
         plan: plan,
+        timeout_ms: Keyword.get(opts, :timeout_ms, original.timeout_ms),
         metadata: %{
           pipeline_execution_policy: %{max_concurrency: max_concurrency},
           execution_pool_policy: execution_pools
