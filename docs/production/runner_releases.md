@@ -96,8 +96,27 @@ mix favn.publish \
 
 mix favn.activate \
   --workspace-id production \
-  --manifest-version <manifest_version_id>
+  --manifest-version <manifest_version_id> \
+  --timeout-ms 180000 \
+  --reconcile-timeout-ms 10000 \
+  --operation-id "$RELEASE_OPERATION_ID"
 ```
+
+Use one stable, non-secret `RELEASE_OPERATION_ID` for every retry of the same
+reviewed activation. The activation request timeout must be between 1 and
+900000 milliseconds; reconciliation must be between 1 and 60000 milliseconds.
+If the POST response is lost or has an unknown gateway outcome, the CLI reads
+the workspace's authoritative active manifest until the reconciliation budget
+expires. It reports success only when the exact requested manifest is active in
+that workspace.
+
+An `activation_outcome_unknown` result means neither success nor rejection was
+proven. A manifest-publisher Job or CI/CD workflow must retry with the same
+operation id. Do not generate a new id, scrape Orchestrator logs, or query the
+control-plane database. A normal validation, compatibility, or authorization
+response remains a definitive error and is not hidden by reconciliation. Use a
+new operation id only after a completed activation returned diagnostics that
+explicitly require a new activation attempt.
 
 Each runner advertises its pool and release ID at boot. Activation is allowed
 with zero runners; durable work waits until a runner with the exact pool/release

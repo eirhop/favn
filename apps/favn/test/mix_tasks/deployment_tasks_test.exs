@@ -39,12 +39,21 @@ defmodule Mix.Tasks.Favn.DeploymentTasksTest do
         "--manifest-version",
         "mv_exact",
         "--workspace-id",
-        "workspace-a"
+        "workspace-a",
+        "--timeout-ms",
+        "180000",
+        "--reconcile-timeout-ms",
+        "10000",
+        "--operation-id",
+        "release-649"
       ])
 
     assert activate[:orchestrator_url] == "http://control.internal"
     assert activate[:workspace_id] == "workspace-a"
     assert activate[:manifest_version_id] == "mv_exact"
+    assert activate[:timeout_ms] == 180_000
+    assert activate[:reconcile_timeout_ms] == 10_000
+    assert activate[:operation_id] == "release-649"
   end
 
   test "service tokens are rejected as command-line arguments" do

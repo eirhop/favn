@@ -110,6 +110,32 @@ defmodule Favn.CLI.HttpClientTest do
     assert Enum.any?(Application.started_applications(), &match?({:ssl, _, _}, &1))
   end
 
+  test "total timeout bounds connect and response time together" do
+    parent = self()
+    {:ok, listen_socket} = :gen_tcp.listen(0, [:binary, active: false, reuseaddr: true])
+    {:ok, {_address, port}} = :inet.sockname(listen_socket)
+
+    server =
+      Task.async(fn ->
+        {:ok, socket} = :gen_tcp.accept(listen_socket)
+        send(parent, {:request, receive_request(socket, "")})
+        Process.sleep(100)
+        _result = :gen_tcp.send(socket, response(200, [], ~s({"ok":true})))
+        :ok = :gen_tcp.close(socket)
+        :ok = :gen_tcp.close(listen_socket)
+      end)
+
+    assert {:error, {:timeout, :request}} =
+             HttpClient.request(:post, "http://127.0.0.1:#{port}/", [], "{}",
+               connect_timeout_ms: 100,
+               timeout_ms: 1_000,
+               total_timeout_ms: 10
+             )
+
+    assert_receive {:request, _request}
+    Task.await(server)
+  end
+
   defp start_server(status, headers, body) do
     parent = self()
     {:ok, listen_socket} = :gen_tcp.listen(0, [:binary, active: false, reuseaddr: true])

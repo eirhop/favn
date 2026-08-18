@@ -295,6 +295,12 @@ defmodule Favn.AI do
     The customer owns production Compose/platform configuration and the runner
     image pipeline; `mix favn.init --target deployment` copies a non-overwriting
     example.
+    `mix favn.activate` accepts bounded request and reconciliation timeouts plus
+    an operator-supplied operation id. A request with an unknown transport or
+    gateway outcome returns success only after the exact workspace manifest is
+    authoritatively proven active; otherwise it returns
+    `activation_outcome_unknown`, which must be retried with the same operation
+    id. Read `Favn.CLI.Activate.run/1` before changing this deployment boundary.
     `mix favn.run` resolves asset and pipeline targets from the active manifest.
     A windowed pipeline without `--window` pins one latest complete period;
     `--window` accepts one exact override, while ranges belong to

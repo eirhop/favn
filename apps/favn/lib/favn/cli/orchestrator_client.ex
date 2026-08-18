@@ -1,12 +1,15 @@
 defmodule Favn.CLI.OrchestratorClient do
   @moduledoc false
 
+  alias Favn.CLI.ActivationReconciler
+  alias Favn.CLI.ActivationOptions
   alias Favn.CLI.ExecutionPackageBatches
   alias Favn.CLI.HttpClient
   alias Favn.Manifest.Publication
   alias Favn.Manifest.Serializer
 
   @manifest_publication_timeout_ms 60_000
+  @definitive_activation_503_codes ["audit_unavailable"]
 
   @type session_context :: %{required(String.t()) => String.t()}
 
@@ -94,32 +97,47 @@ defmodule Favn.CLI.OrchestratorClient do
       )
       when is_binary(base_url) and is_binary(service_token) and is_binary(manifest_version_id) and
              is_binary(workspace_id) and workspace_id != "" and is_list(opts) do
-    context =
-      %{"workspace_id" => workspace_id}
-      |> maybe_put_maintenance_token(Keyword.get(opts, :maintenance_token))
+    with {:ok, activation_options} <-
+           ActivationOptions.new(opts, manifest_version_id, workspace_id) do
+      context =
+        %{"workspace_id" => workspace_id}
+        |> maybe_put_maintenance_token(Keyword.get(opts, :maintenance_token))
 
-    input = %{
-      manifest_version_id: manifest_version_id,
-      workspace_id: workspace_id
-    }
+      url =
+        base_url <> "/api/orchestrator/v1/manifests/#{URI.encode(manifest_version_id)}/activate"
 
-    request_post(
-      :activate_manifest,
-      base_url <> "/api/orchestrator/v1/manifests/#{URI.encode(manifest_version_id)}/activate",
-      service_token,
-      %{
-        selection: %{
-          common_assets: "all",
-          common_pipelines: "all",
-          workspace_assets: [],
-          workspace_pipelines: []
-        },
-        configuration: %{},
-        execution_pool_policy: %{approve_manifest_defaults: true}
-      },
-      context,
-      activation_idempotency_key(context, input, opts)
-    )
+      result =
+        request_post(
+          :activate_manifest,
+          url,
+          service_token,
+          %{
+            selection: %{
+              common_assets: "all",
+              common_pipelines: "all",
+              workspace_assets: [],
+              workspace_pipelines: []
+            },
+            configuration: %{},
+            execution_pool_policy: %{approve_manifest_defaults: true}
+          },
+          context,
+          activation_options.operation_id,
+          connect_timeout_ms: min(activation_options.timeout_ms, 5_000),
+          timeout_ms: activation_options.timeout_ms,
+          total_timeout_ms: activation_options.timeout_ms
+        )
+
+      reconcile_activation_timeout(
+        result,
+        base_url,
+        service_token,
+        context,
+        manifest_version_id,
+        workspace_id,
+        activation_options
+      )
+    end
   end
 
   @spec bootstrap_active_manifest(String.t(), String.t(), session_context()) ::
@@ -845,21 +863,93 @@ defmodule Favn.CLI.OrchestratorClient do
     end
   end
 
+  defp reconcile_activation_timeout(
+         {:error, %{reason: reason}} = result,
+         base_url,
+         service_token,
+         context,
+         manifest_version_id,
+         workspace_id,
+         activation_options
+       ) do
+    if ambiguous_activation_outcome?(reason) do
+      reconciliation_context = Map.delete(context, "maintenance_token")
+
+      read_active = fn request_options ->
+        request_get(
+          :reconcile_manifest_activation,
+          base_url <> "/api/orchestrator/v1/manifests/active",
+          service_token,
+          reconciliation_context,
+          request_options
+        )
+      end
+
+      ActivationReconciler.run(
+        activation_options,
+        manifest_version_id,
+        workspace_id,
+        read_active
+      )
+    else
+      result
+    end
+  end
+
+  defp reconcile_activation_timeout(
+         result,
+         _base_url,
+         _service_token,
+         _context,
+         _manifest_version_id,
+         _workspace_id,
+         _activation_options
+       ),
+       do: result
+
+  defp ambiguous_activation_outcome?({:timeout, :request}), do: true
+  defp ambiguous_activation_outcome?({:request_outcome_unknown, _reason}), do: true
+
+  defp ambiguous_activation_outcome?(
+         {:http_error, _status, %{outcome: "unknown", retry_with_same_idempotency_key: true}}
+       ),
+       do: true
+
+  defp ambiguous_activation_outcome?({:http_error, status, _summary})
+       when status in [502, 504],
+       do: true
+
+  defp ambiguous_activation_outcome?({:http_error, 503, %{error_code: error_code}}),
+    do: error_code not in @definitive_activation_503_codes
+
+  defp ambiguous_activation_outcome?(_reason), do: false
+
   defp request_post(
          operation,
          url,
          service_token,
          payload,
          session_context,
-         idempotency_key \\ nil
+         idempotency_key \\ nil,
+         request_opts \\ []
        ) do
     body = JSON.encode!(payload)
 
-    request(operation, :post, url, service_token, body, session_context, idempotency_key)
+    request(
+      operation,
+      :post,
+      url,
+      service_token,
+      body,
+      session_context,
+      idempotency_key,
+      [],
+      request_opts
+    )
   end
 
-  defp request_get(operation, url, service_token, session_context \\ nil) do
-    request(operation, :get, url, service_token, nil, session_context, nil)
+  defp request_get(operation, url, service_token, session_context \\ nil, request_opts \\ []) do
+    request(operation, :get, url, service_token, nil, session_context, nil, [], request_opts)
   end
 
   defp request_page(operation, url, service_token, session_context) do
@@ -904,8 +994,8 @@ defmodule Favn.CLI.OrchestratorClient do
          body,
          session_context,
          idempotency_key,
-         extra_headers \\ [],
-         request_opts \\ []
+         extra_headers,
+         request_opts
        ) do
     headers =
       [

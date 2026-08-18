@@ -11,6 +11,7 @@ defmodule Favn.CLI.HttpClient do
           | {:error, {:http_error, non_neg_integer(), map()}}
           | {:error, {:connect_failed, term()}}
           | {:error, {:timeout, :request}}
+          | {:error, {:request_outcome_unknown, term()}}
           | {:error, {:invalid_url, term()}}
           | {:error, {:unsupported_url, term()}}
           | {:error, {:invalid_json, map()}}
@@ -54,12 +55,20 @@ defmodule Favn.CLI.HttpClient do
   defp limits(opts) do
     connect_timeout = Keyword.get(opts, :connect_timeout_ms, @default_connect_timeout_ms)
     timeout = Keyword.get(opts, :timeout_ms, @default_timeout_ms)
+
+    total_timeout = Keyword.get(opts, :total_timeout_ms)
     max_bytes = Keyword.get(opts, :max_response_bytes, @default_max_response_bytes)
 
     if positive_integer?(connect_timeout) and positive_integer?(timeout) and
+         (is_nil(total_timeout) or positive_integer?(total_timeout)) and
          max_bytes in 1..@maximum_response_bytes do
       {:ok,
-       %{connect_timeout_ms: connect_timeout, timeout_ms: timeout, max_response_bytes: max_bytes}}
+       %{
+         connect_timeout_ms: connect_timeout,
+         timeout_ms: timeout,
+         total_timeout_ms: total_timeout || connect_timeout + timeout + 1_000,
+         max_response_bytes: max_bytes
+       }}
     else
       {:error, {:invalid_response, :invalid_http_limits}}
     end
@@ -69,9 +78,8 @@ defmodule Favn.CLI.HttpClient do
 
   defp perform(method, uri, headers, body, limits) do
     task = Task.async(fn -> perform_isolated(method, uri, headers, body, limits) end)
-    task_timeout = limits.connect_timeout_ms + limits.timeout_ms + 1_000
 
-    case Task.yield(task, task_timeout) || Task.shutdown(task, :brutal_kill) do
+    case Task.yield(task, limits.total_timeout_ms) || Task.shutdown(task, :brutal_kill) do
       {:ok, result} -> result
       nil -> {:error, {:timeout, :request}}
     end
@@ -143,7 +151,7 @@ defmodule Favn.CLI.HttpClient do
 
       {:error, conn, reason} ->
         _ = Mint.HTTP.close(conn)
-        {:error, {:connect_failed, normalize_transport_error(reason)}}
+        {:error, {:request_outcome_unknown, normalize_transport_error(reason)}}
     end
   end
 
@@ -157,7 +165,7 @@ defmodule Favn.CLI.HttpClient do
             handle_responses(conn, request_ref, deadline, max_bytes, state, responses)
 
           {:error, conn, reason, _responses} ->
-            {{:error, {:connect_failed, normalize_transport_error(reason)}}, conn}
+            {{:error, {:request_outcome_unknown, normalize_transport_error(reason)}}, conn}
 
           :unknown ->
             receive_response(conn, request_ref, deadline, max_bytes, state)
@@ -189,7 +197,7 @@ defmodule Favn.CLI.HttpClient do
         {:halt, {:done, %{status: acc.status, headers: acc.headers, body: body}}}
 
       {:error, ^request_ref, reason}, {:continue, _acc} ->
-        {:halt, {:error, {:connect_failed, normalize_transport_error(reason)}}}
+        {:halt, {:error, {:request_outcome_unknown, normalize_transport_error(reason)}}}
 
       _unrelated, result ->
         {:cont, result}
@@ -221,14 +229,34 @@ defmodule Favn.CLI.HttpClient do
   defp decode_response(_response), do: {:error, {:invalid_response, :missing_status}}
 
   defp error_summary(body) do
-    code =
+    {code, outcome, retry_with_same_idempotency_key} =
       case JSON.decode(body) do
-        {:ok, %{"error" => %{"code" => code}}} when is_binary(code) -> code
-        _other -> nil
+        {:ok, %{"error" => error}} when is_map(error) ->
+          details = Map.get(error, "details", %{})
+
+          {
+            bounded_error_code(Map.get(error, "code")),
+            bounded_outcome(Map.get(details, "outcome")),
+            Map.get(details, "retry_with_same_idempotency_key") == true
+          }
+
+        _other ->
+          {nil, nil, false}
       end
 
-    %{body_size: byte_size(body), error_code: code}
+    %{
+      body_size: byte_size(body),
+      error_code: code,
+      outcome: outcome,
+      retry_with_same_idempotency_key: retry_with_same_idempotency_key
+    }
   end
+
+  defp bounded_error_code(value) when is_binary(value) and byte_size(value) <= 100, do: value
+  defp bounded_error_code(_value), do: nil
+
+  defp bounded_outcome(value) when value in ["unknown", "rejected"], do: value
+  defp bounded_outcome(_value), do: nil
 
   defp response_shape(value) when is_binary(value), do: :string
   defp response_shape(value) when is_number(value), do: :number
