@@ -53,10 +53,7 @@ defmodule FavnSQLRuntime.SQLClientTest do
     :ok = SessionPool.reset()
     {:ok, tracker} = Agent.start_link(fn -> %{query_started?: false, disconnects: 0} end)
 
-    on_exit(fn ->
-      SessionPool.reset()
-      if Process.alive?(tracker), do: Agent.stop(tracker)
-    end)
+    on_exit(fn -> SessionPool.reset() end)
 
     {:ok, tracker: tracker}
   end
