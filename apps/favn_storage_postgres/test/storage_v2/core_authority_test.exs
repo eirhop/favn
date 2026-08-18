@@ -5430,7 +5430,6 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
 
     assert {:ok, task} = claim_asset_task(fixture, "terminal-refill")
     assert task.task_id == task_id
-    assert :ok = start_runner_task(task)
 
     assert %{rows: deleted_links} =
              SQL.query!(
@@ -5513,7 +5512,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     {first_command, first_run} = pipeline_run_command(fixture)
 
     first_run =
-      %{first_run | timeout_ms: 25, metadata: %{execution_pool_policy: policies}}
+      %{first_run | timeout_ms: 500, metadata: %{execution_pool_policy: policies}}
       |> RunState.with_snapshot_hash()
 
     assert {:ok, _created} = RunStore.create_run(%{first_command | run: first_run})

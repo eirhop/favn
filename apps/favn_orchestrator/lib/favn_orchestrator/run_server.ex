@@ -90,6 +90,13 @@ defmodule FavnOrchestrator.RunServer do
         details: details
       })
 
+    confirmed_task_ids =
+      cleanup
+      |> Enum.filter(&(Map.get(&1, :status) in [:acknowledged, :already_completed]))
+      |> Enum.map(&Map.get(&1, :runner_task_id))
+
+    run_state = Snapshots.clear_inflight_tasks(run_state, confirmed_task_ids)
+
     terminal =
       Snapshots.snapshot_update(run_state,
         status: :error,

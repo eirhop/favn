@@ -40,6 +40,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
   alias FavnOrchestrator.RunServer.Execution.StageAdmission
   alias FavnOrchestrator.RunServer.Execution.StageAttemptState
   alias FavnOrchestrator.RunServer.Execution.StageClassifier
+  alias FavnOrchestrator.RunServer.Execution.StageEntry
   alias FavnOrchestrator.RunServer.Execution.StageResult
   alias FavnOrchestrator.RunServer.Execution.StepAttemptLifecycle
   alias FavnOrchestrator.RunServer.Persistence
@@ -585,12 +586,11 @@ defmodule FavnOrchestrator.RunServer.Execution do
   end
 
   defp restore_task_waits(%RunExecutionState{mode: :sequential} = state, [task]) do
-    entry = restored_entry(state, task)
-
-    index =
-      Enum.find_index(state.sequential_refs, fn {_ref, key, _stage} -> key == entry.node_key end)
-
-    if is_integer(index) do
+    with {:ok, entry} <- restored_entry(state, task),
+         index when is_integer(index) <-
+           Enum.find_index(state.sequential_refs, fn {_ref, key, _stage} ->
+             key == entry.node_key
+           end) do
       restored =
         %{state | sequential_index: index, accumulated_results: persisted_node_results(state.run)}
         |> RunExecutionState.add_work(entry)
@@ -598,7 +598,8 @@ defmodule FavnOrchestrator.RunServer.Execution do
 
       {:ok, %{restored | status: :awaiting}}
     else
-      {:error, {:runner_task_continuation_node_missing, task.task_id}}
+      nil -> {:error, {:runner_task_continuation_node_missing, task.task_id}}
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -649,13 +650,11 @@ defmodule FavnOrchestrator.RunServer.Execution do
       else: :ok
   end
 
-  defp restore_entries(state, tasks) do
+  defp restore_entries(%RunExecutionState{} = state, tasks) do
     Enum.reduce_while(tasks, {:ok, []}, fn task, {:ok, entries} ->
-      entry = restored_entry(state, task)
-
-      case ExecutionAdmission.adopt(state.run, entry) do
-        {:ok, lease} -> {:cont, {:ok, [%{entry | lease: lease} | entries]}}
-        {:error, reason} -> {:halt, {:error, {:execution_lease_adoption_failed, reason}}}
+      case restore_entry(state, task) do
+        {:ok, entry} -> {:cont, {:ok, [entry | entries]}}
+        {:error, reason} -> {:halt, {:error, reason}}
       end
     end)
     |> case do
@@ -681,30 +680,77 @@ defmodule FavnOrchestrator.RunServer.Execution do
     end
   end
 
-  defp restored_entry(state, task) do
-    %RunnerWork{} = work = task.payload
-    context = task.orchestration_context
+  @spec restore_entry(RunExecutionState.t(), map()) ::
+          {:ok, StageEntry.t()} | {:error, term()}
+  defp restore_entry(%RunExecutionState{run: %RunState{} = run} = state, task) do
+    with {:ok, entry} <- restored_entry(state, task),
+         {:ok, lease} <-
+           ExecutionAdmission.adopt(run, %{
+             asset_step_id: entry.asset_step_id,
+             execution_pool: entry.execution_pool,
+             stage: entry.stage,
+             attempt: entry.attempt
+           }) do
+      {:ok, %{entry | lease: lease}}
+    else
+      {:error, {:invalid_recovered_runner_task, _task_id} = reason} ->
+        {:error, reason}
 
-    %{
-      run_id: state.run.id,
-      asset_step_id: work.asset_step_id,
-      asset_ref: RunnerWork.asset_ref(work),
-      node_key: RunnerWork.node_key(work),
-      window: RunnerWork.window(work),
-      task_id: task.task_id,
-      assignment_generation: task.assignment_generation,
-      runner_pool: task.runner_pool,
-      required_runner_release_id: task.required_runner_release_id,
-      decision: Map.get(context, :decision, %{}),
-      attempt: work.attempt,
-      stage: work.stage,
-      lease: nil,
-      materialization_claim: Map.get(context, :materialization_claim),
-      execution_pool: RunnerWork.execution_pool(work),
-      resource_circuit_permits: Map.get(context, :resource_circuit_permits, []),
-      freshness_key: Map.get(context, :freshness_key)
-    }
+      {:error, reason} ->
+        {:error, {:execution_lease_adoption_failed, reason}}
+    end
   end
+
+  @spec restored_entry(RunExecutionState.t(), map()) ::
+          {:ok, StageEntry.t()} | {:error, term()}
+  defp restored_entry(
+         %RunExecutionState{run: %RunState{id: run_id}},
+         %{
+           task_id: task_id,
+           payload:
+             %RunnerWork{
+               asset_step_id: asset_step_id,
+               attempt: attempt,
+               stage: stage
+             } = work
+         } = task
+       )
+       when is_binary(task_id) and is_binary(asset_step_id) and is_integer(attempt) and
+              attempt > 0 and is_integer(stage) and stage >= 0 do
+    context = if is_map(task.orchestration_context), do: task.orchestration_context, else: %{}
+    asset_ref = RunnerWork.asset_ref(work)
+    node_key = RunnerWork.node_key(work)
+
+    if is_tuple(asset_ref) and is_tuple(node_key) do
+      {:ok,
+       %{
+         run_id: run_id,
+         asset_step_id: asset_step_id,
+         asset_ref: asset_ref,
+         node_key: node_key,
+         window: RunnerWork.window(work),
+         task_id: task_id,
+         assignment_generation: task.assignment_generation,
+         runner_pool: task.runner_pool,
+         required_runner_release_id: task.required_runner_release_id,
+         decision: Map.get(context, :decision, %{}),
+         attempt: attempt,
+         stage: stage,
+         lease: nil,
+         materialization_claim: Map.get(context, :materialization_claim),
+         execution_pool: RunnerWork.execution_pool(work),
+         resource_circuit_permits: Map.get(context, :resource_circuit_permits, []),
+         freshness_key: Map.get(context, :freshness_key)
+       }}
+    else
+      {:error, {:invalid_recovered_runner_task, task_id}}
+    end
+  end
+
+  defp restored_entry(_state, task) when is_map(task),
+    do: {:error, {:invalid_recovered_runner_task, Map.get(task, :task_id)}}
+
+  defp restored_entry(_state, _task), do: {:error, {:invalid_recovered_runner_task, nil}}
 
   defp handle_await_result(%RunExecutionState{} = state, entry, result, kind) do
     process_await_result(state, entry, result, kind)
