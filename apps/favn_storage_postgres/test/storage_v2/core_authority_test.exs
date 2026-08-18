@@ -5539,7 +5539,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
 
     assert {:ok, failed} = get_run(fixture, first_run.id)
     assert failed.status == :error
-    assert failed.error.type == :runner_await_outcome_unconfirmed
+    assert failed.error["type"] == "runner_await_outcome_unconfirmed"
     assert active_execution_lease_count(fixture.workspace_id, first_run.id) == 1
 
     assert {:ok, second_pid} =

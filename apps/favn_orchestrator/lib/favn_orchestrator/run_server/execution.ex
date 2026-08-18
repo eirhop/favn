@@ -827,12 +827,18 @@ defmodule FavnOrchestrator.RunServer.Execution do
       |> put_cancel_outcome(outcome)
       |> stop_all_awaits(%{kind: :sibling_await_outcome_unconfirmed, task_id: entry.task_id})
 
-    error = %{
-      type: :runner_await_outcome_unconfirmed,
-      runner_task_id: entry.task_id,
-      await_failure: failure,
-      cancellation: CancellationOutcome.to_map(outcome)
-    }
+    error =
+      RunnerError.new(
+        type: :runner_await_outcome_unconfirmed,
+        message: "Runner await outcome remains unconfirmed after cancellation",
+        details: %{
+          runner_task_id: entry.task_id,
+          await_failure: failure,
+          cancellation: CancellationOutcome.to_map(outcome)
+        },
+        retryable?: false,
+        outcome: :unknown
+      )
 
     failed_run =
       Snapshots.snapshot_update(state.run,
@@ -1253,7 +1259,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
 
     case submit_stage_entries(
            state,
-           state.stage_state.run,
+           state.run,
            state.stage_state.deferred_node_keys,
            state.stage_attempt,
            state.stage_state.queued_steps
