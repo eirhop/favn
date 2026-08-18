@@ -339,7 +339,7 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
           actor,
           manifest_version_id,
           idempotency,
-          503,
+          409,
           "runner_protocol_not_activatable",
           "Runner protocol is not yet available for activation",
           %{runner_protocol_version: protocol_version}

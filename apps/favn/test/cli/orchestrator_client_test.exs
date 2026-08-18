@@ -237,6 +237,241 @@ defmodule Favn.CLI.OrchestratorClientTest do
     assert is_binary(headers["idempotency-key"])
   end
 
+  test "activation timeout reconciles an exact manifest committed after the client deadline" do
+    parent = self()
+
+    activation =
+      JSON.encode!(%{
+        data: %{
+          activated: true,
+          manifest_version_id: "mv_delayed",
+          deployment_id: "deployment:delayed",
+          runner_releases: %{"default" => FavnTestSupport.runner_release_id()}
+        }
+      })
+
+    active_manifest =
+      JSON.encode!(%{
+        data: %{
+          manifest: %{
+            manifest_version_id: "mv_delayed",
+            runner_releases: %{"default" => FavnTestSupport.runner_release_id()}
+          },
+          targets: %{assets: [], pipelines: []}
+        }
+      })
+
+    {:ok, base_url, _server} =
+      start_server_sequence(
+        [
+          {activation, 200, 30},
+          {active_manifest, 200, 0}
+        ],
+        parent: parent
+      )
+
+    assert {:ok,
+            %{
+              "data" => %{
+                "activated" => true,
+                "manifest_version_id" => "mv_delayed",
+                "operation_id" => "release-649",
+                "reconciled" => true
+              }
+            }} =
+             OrchestratorClient.activate_manifest_service(
+               base_url,
+               "service-token",
+               "mv_delayed",
+               "workspace-service",
+               timeout_ms: 10,
+               reconcile_timeout_ms: 500,
+               operation_id: "release-649",
+               maintenance_token: "maintenance-secret-not-for-read"
+             )
+
+    assert_receive {:request_path, "/api/orchestrator/v1/manifests/mv_delayed/activate"}
+    assert_receive {:request_headers, activation_headers}
+    assert activation_headers["idempotency-key"] == "release-649"
+    assert activation_headers["x-favn-maintenance-token"] == "maintenance-secret-not-for-read"
+    assert_receive {:request_body, _activation_body}
+    assert_receive {:request_path, "/api/orchestrator/v1/manifests/active"}
+    assert_receive {:request_headers, reconciliation_headers}
+    refute Map.has_key?(reconciliation_headers, "x-favn-maintenance-token")
+  end
+
+  test "activation reconciles when the response connection closes after submission" do
+    active_manifest =
+      JSON.encode!(%{
+        data: %{
+          manifest: %{
+            manifest_version_id: "mv_closed_response",
+            runner_releases: %{"default" => FavnTestSupport.runner_release_id()}
+          }
+        }
+      })
+
+    {:ok, base_url, _server} = start_server_sequence([:close, {active_manifest, 200, 0}])
+
+    assert {:ok, %{"data" => %{"reconciled" => true}}} =
+             OrchestratorClient.activate_manifest_service(
+               base_url,
+               "service-token",
+               "mv_closed_response",
+               "workspace-service",
+               timeout_ms: 500,
+               reconcile_timeout_ms: 500,
+               operation_id: "closed-response-operation"
+             )
+  end
+
+  test "activation reconciles a coded gateway timeout" do
+    active_manifest =
+      JSON.encode!(%{
+        data: %{
+          manifest: %{
+            manifest_version_id: "mv_gateway_timeout",
+            runner_releases: %{"default" => FavnTestSupport.runner_release_id()}
+          }
+        }
+      })
+
+    {:ok, base_url, _server} =
+      start_server_sequence([
+        {~s({"error":{"code":"gateway_timeout","message":"gateway timeout"}}), 504, 0},
+        {active_manifest, 200, 0}
+      ])
+
+    assert {:ok, %{"data" => %{"reconciled" => true}}} =
+             OrchestratorClient.activate_manifest_service(
+               base_url,
+               "service-token",
+               "mv_gateway_timeout",
+               "workspace-service",
+               timeout_ms: 500,
+               reconcile_timeout_ms: 500,
+               operation_id: "gateway-timeout-operation"
+             )
+  end
+
+  test "activation reconciles a structured unknown server outcome" do
+    active_manifest =
+      JSON.encode!(%{
+        data: %{
+          manifest: %{
+            manifest_version_id: "mv_server_unknown",
+            runner_releases: %{"default" => FavnTestSupport.runner_release_id()}
+          }
+        }
+      })
+
+    unknown =
+      JSON.encode!(%{
+        error: %{
+          code: "storage_unavailable",
+          details: %{outcome: "unknown", retry_with_same_idempotency_key: true}
+        }
+      })
+
+    {:ok, base_url, _server} =
+      start_server_sequence([{unknown, 503, 0}, {active_manifest, 200, 0}])
+
+    assert {:ok, %{"data" => %{"reconciled" => true}}} =
+             OrchestratorClient.activate_manifest_service(
+               base_url,
+               "service-token",
+               "mv_server_unknown",
+               "workspace-service",
+               timeout_ms: 500,
+               reconcile_timeout_ms: 500,
+               operation_id: "server-unknown-operation"
+             )
+  end
+
+  test "activation timeout returns a stable unknown outcome when reconciliation cannot prove it" do
+    parent = self()
+
+    {:ok, base_url, _server} =
+      start_server_sequence(
+        [
+          {~s({"data":{"activated":true}}), 200, 20},
+          {~s({"error":{"code":"not_found"}}), 404, 0}
+        ],
+        parent: parent
+      )
+
+    result =
+      OrchestratorClient.activate_manifest_service(
+        base_url,
+        "service-token-do-not-echo",
+        "mv_pending",
+        "workspace-service",
+        timeout_ms: 5,
+        reconcile_timeout_ms: 40,
+        operation_id: "release-pending"
+      )
+
+    assert {:error,
+            {:activation_outcome_unknown,
+             %{
+               manifest_version_id: "mv_pending",
+               workspace_id: "workspace-service",
+               operation_id: "release-pending",
+               request_timeout_ms: 5,
+               reconcile_timeout_ms: 40,
+               retry_safe?: true,
+               retry_guidance: "retry with the same operation_id"
+             }}} = result
+
+    refute inspect(result) =~ "service-token-do-not-echo"
+  end
+
+  test "definitive activation rejection is not hidden by reconciliation" do
+    parent = self()
+
+    {:ok, base_url, _server} =
+      start_server(~s({"error":{"code":"validation_failed"}}), 422, parent: parent)
+
+    assert {:error,
+            %{
+              operation: :activate_manifest,
+              reason: {:http_error, 422, %{error_code: "validation_failed"}}
+            }} =
+             OrchestratorClient.activate_manifest_service(
+               base_url,
+               "service-token",
+               "mv_rejected",
+               "workspace-service",
+               timeout_ms: 100,
+               reconcile_timeout_ms: 100
+             )
+
+    assert_receive {:request_path, "/api/orchestrator/v1/manifests/mv_rejected/activate"}
+    refute_receive {:request_path, "/api/orchestrator/v1/manifests/active"}, 50
+  end
+
+  test "named compatibility unavailability remains a definitive response" do
+    parent = self()
+
+    {:ok, base_url, _server} =
+      start_server(~s({"error":{"code":"runner_protocol_not_activatable"}}), 409, parent: parent)
+
+    assert {:error,
+            %{
+              reason: {:http_error, 409, %{error_code: "runner_protocol_not_activatable"}}
+            }} =
+             OrchestratorClient.activate_manifest_service(
+               base_url,
+               "service-token",
+               "mv_rejected",
+               "workspace-service",
+               timeout_ms: 100,
+               reconcile_timeout_ms: 100
+             )
+
+    refute_receive {:request_path, "/api/orchestrator/v1/manifests/active"}, 50
+  end
+
   test "bootstrap_active_manifest/3 reads the workspace active manifest" do
     parent = self()
 
@@ -720,6 +955,39 @@ defmodule Favn.CLI.OrchestratorClientTest do
     assert first_headers["idempotency-key"] == second_headers["idempotency-key"]
   end
 
+  test "service activation retries use the same explicit operation identity" do
+    parent = self()
+
+    {:ok, first_url, _server} =
+      start_server(~s({"data":{"activated":true}}), 200, parent: parent)
+
+    assert {:ok, _response} =
+             OrchestratorClient.activate_manifest_service(
+               first_url,
+               "token",
+               "mv_retry",
+               "workspace_1",
+               operation_id: "release-retry-1"
+             )
+
+    assert_receive {:request_headers, first_headers}
+
+    {:ok, second_url, _server} =
+      start_server(~s({"data":{"activated":true}}), 200, parent: parent)
+
+    assert {:ok, _response} =
+             OrchestratorClient.activate_manifest_service(
+               second_url,
+               "token",
+               "mv_retry",
+               "workspace_1",
+               operation_id: "release-retry-1"
+             )
+
+    assert_receive {:request_headers, second_headers}
+    assert first_headers["idempotency-key"] == second_headers["idempotency-key"]
+  end
+
   test "cancel_run/4 parses cancel response and encodes run id" do
     parent = self()
 
@@ -926,11 +1194,19 @@ defmodule Favn.CLI.OrchestratorClientTest do
 
     server =
       spawn_link(fn ->
-        Enum.each(responses, fn {body, status, response_delay_ms} ->
+        Enum.each(responses, fn response_spec ->
           {:ok, socket} = :gen_tcp.accept(listen_socket)
           request = receive_request(socket, "")
-          Process.sleep(response_delay_ms)
-          :ok = :gen_tcp.send(socket, response(status, body))
+
+          case response_spec do
+            :close ->
+              :ok
+
+            {body, status, response_delay_ms} ->
+              Process.sleep(response_delay_ms)
+              _result = :gen_tcp.send(socket, response(status, body))
+          end
+
           :ok = :gen_tcp.close(socket)
 
           if parent do

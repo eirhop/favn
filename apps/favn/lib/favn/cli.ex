@@ -13,6 +13,22 @@ defmodule Favn.CLI do
   alias Favn.CLI.Schedules
   alias Favn.CLI.TargetRecovery
 
+  @doc """
+  Activates one exact manifest for one workspace.
+
+  `:timeout_ms` bounds the activation request and defaults to 180 seconds. When
+  that request has an unknown transport or gateway outcome, Favn spends at most
+  `:reconcile_timeout_ms` (10 seconds by default) reading the workspace's
+  authoritative active manifest.
+  A proven exact match returns success with `reconciled?: true`; an unproven
+  result returns `{:error, {:activation_outcome_unknown, details}}`.
+
+  Pass and reuse an explicit non-secret `:operation_id` for deployment retries.
+  If omitted, Favn creates a fresh operation identity and reports it in both
+  success and unknown-outcome results. Use a new operation id only when
+  intentionally starting a new activation.
+  """
+  @spec activate(keyword()) :: {:ok, Activate.summary()} | {:error, term()}
   def activate(opts), do: Activate.run(opts)
   def publish(opts), do: Publish.run(opts)
   def inspect_relation(relation, opts), do: DataInspection.inspect_relation(relation, opts)

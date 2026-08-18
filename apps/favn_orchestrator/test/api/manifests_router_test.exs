@@ -132,6 +132,26 @@ defmodule FavnOrchestrator.API.ManifestsRouterTest do
     def complete_operator_command(_command), do: :ok
   end
 
+  defmodule ProtocolUnavailableManifestStore do
+    def begin_manifest_deployment(_query),
+      do: {:error, {:runner_protocol_not_activatable, 13}}
+
+    def get_manifest(_query), do: raise("protocol rejection must not load the manifest")
+    def record_audit(_command), do: :ok
+
+    def reserve_operator_command(command) do
+      {:ok,
+       %{
+         key_hash: command.key_hash,
+         request_fingerprint: command.request_fingerprint,
+         expires_at: command.expires_at,
+         replayed?: false
+       }}
+    end
+
+    def complete_operator_command(_command), do: :ok
+  end
+
   setup do
     previous_tokens = Application.get_env(:favn_orchestrator, :api_service_tokens)
 
@@ -370,6 +390,21 @@ defmodule FavnOrchestrator.API.ManifestsRouterTest do
                    }
                  ]
                }
+             }
+           } = Jason.decode!(response.resp_body)
+  end
+
+  test "runner protocol compatibility rejection remains a definitive conflict" do
+    start_manifest_runtime(ProtocolUnavailableManifestStore)
+
+    response = activation_request("mv_future_protocol", "future-protocol", %{})
+
+    assert response.status == 409
+
+    assert %{
+             "error" => %{
+               "code" => "runner_protocol_not_activatable",
+               "details" => %{"runner_protocol_version" => 13}
              }
            } = Jason.decode!(response.resp_body)
   end

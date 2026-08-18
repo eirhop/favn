@@ -1,15 +1,32 @@
 defmodule Favn.CLI.Activate do
   @moduledoc "Activates one exact staged manifest for one workspace."
 
+  alias Favn.CLI.ActivationOptions
   alias Favn.CLI.OrchestratorClient
 
   @type summary :: %{
           manifest_version_id: String.t(),
           workspace_id: String.t(),
           activated?: boolean(),
+          reconciled?: boolean(),
+          operation_id: String.t(),
           runner_releases: Favn.RunnerPool.releases()
         }
 
+  @doc """
+  Activates one exact manifest for one workspace.
+
+  `:timeout_ms` bounds the request to 1..900000 milliseconds and defaults to
+  180000. After an unknown request transport or gateway outcome,
+  `:reconcile_timeout_ms` bounds authoritative active-manifest reconciliation
+  to 1..60000 milliseconds and defaults to 10000. Pass and reuse a non-secret
+  `:operation_id` for deployment retries.
+
+  A proven exact active manifest returns `{:ok, summary}` with
+  `reconciled?: true`. If reconciliation cannot prove the outcome, this returns
+  `{:error, {:activation_outcome_unknown, details}}`; retry that exact request
+  only with `details.operation_id`.
+  """
   @spec run(keyword()) :: {:ok, summary()} | {:error, term()}
   def run(opts) when is_list(opts) do
     client = Keyword.get(opts, :client, OrchestratorClient)
@@ -18,6 +35,8 @@ defmodule Favn.CLI.Activate do
     with {:ok, orchestrator_url} <- required(opts, :orchestrator_url),
          {:ok, manifest_version_id} <- required(opts, :manifest_version_id),
          {:ok, workspace_id} <- required(opts, :workspace_id),
+         {:ok, activation_options} <-
+           ActivationOptions.new(opts, manifest_version_id, workspace_id),
          {:ok, service_token} <- required_env(env, "FAVN_ORCHESTRATOR_SERVICE_TOKEN"),
          {:ok, response} <-
            activate_manifest(
@@ -26,6 +45,7 @@ defmodule Favn.CLI.Activate do
              service_token,
              manifest_version_id,
              workspace_id,
+             activation_options,
              Keyword.get(opts, :maintenance_token)
            ),
          {:ok, data} <- activation_data(response, manifest_version_id) do
@@ -34,6 +54,8 @@ defmodule Favn.CLI.Activate do
          manifest_version_id: manifest_version_id,
          workspace_id: workspace_id,
          activated?: true,
+         reconciled?: Map.get(data, "reconciled", false),
+         operation_id: activation_options.operation_id,
          runner_releases: Map.get(data, "runner_releases")
        }}
     end
@@ -55,6 +77,21 @@ defmodule Favn.CLI.Activate do
          manifest_version_id
        )
        when is_binary(deployment_id) and deployment_id != "" do
+    case Favn.Manifest.Compatibility.validate_runner_releases(runner_releases) do
+      :ok -> {:ok, data}
+      {:error, _reason} -> {:error, :invalid_activation_response}
+    end
+  end
+
+  defp validate_activation_data(
+         %{
+           "activated" => true,
+           "manifest_version_id" => manifest_version_id,
+           "reconciled" => true,
+           "runner_releases" => runner_releases
+         } = data,
+         manifest_version_id
+       ) do
     case Favn.Manifest.Compatibility.validate_runner_releases(runner_releases) do
       :ok -> {:ok, data}
       {:error, _reason} -> {:error, :invalid_activation_response}
@@ -84,6 +121,7 @@ defmodule Favn.CLI.Activate do
          service_token,
          manifest_version_id,
          workspace_id,
+         activation_options,
          maintenance_token
        )
        when is_binary(maintenance_token) and maintenance_token != "" do
@@ -92,7 +130,9 @@ defmodule Favn.CLI.Activate do
       service_token,
       manifest_version_id,
       workspace_id,
-      maintenance_token: maintenance_token
+      activation_options
+      |> ActivationOptions.to_keyword()
+      |> Keyword.put(:maintenance_token, maintenance_token)
     )
   end
 
@@ -102,13 +142,15 @@ defmodule Favn.CLI.Activate do
          service_token,
          manifest_version_id,
          workspace_id,
+         activation_options,
          _maintenance_token
        ) do
     client.activate_manifest_service(
       orchestrator_url,
       service_token,
       manifest_version_id,
-      workspace_id
+      workspace_id,
+      ActivationOptions.to_keyword(activation_options)
     )
   end
 end

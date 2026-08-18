@@ -76,6 +76,21 @@ recomputes the next probe time for an open circuit; a live half-open probe keeps
 its current lease. Disabling a circuit stops using it but retains its health
 state, which is reconciled against the policy if the circuit is enabled again.
 
+`mix favn.activate` uses a finite 180-second request timeout by default and then
+spends at most 10 seconds reconciling a lost response or unknown gateway
+outcome against the workspace's authoritative active manifest. Configure those
+budgets with `--timeout-ms` (maximum 900000) and
+`--reconcile-timeout-ms` (maximum 60000).
+Favn creates a fresh operation id when one is omitted. CI/CD should pass an
+explicit non-secret `--operation-id` and must reuse it for retries of that
+activation.
+
+Reconciled success means the exact requested manifest was proven active in the
+exact workspace. `activation_outcome_unknown` means the bounded read could not
+prove success or failure; retry only with the same operation id. Do not treat
+it as a rejection, start a new operation, scrape logs, or read PostgreSQL. A
+normal validation or compatibility response is still a definitive error.
+
 Common failures:
 
 | Failure | Action |
@@ -86,6 +101,7 @@ Common failures:
 | Invalid pool override | Use only pools present in the manifest and provide a complete valid policy for each override. |
 | Capacity decrease conflict | Wait until active leases are at or below the requested limit, then retry activation. |
 | Persistence failure | Check orchestrator readiness, storage readiness, and diagnostics before retrying. |
+| Activation outcome unknown | Retry the exact request with the same operation id; do not start a new activation identity. |
 | Runner registration failure | Fix runner availability, then retry the supported registration action. Do not edit runner memory or files directly. |
 
 ## Submit A Run

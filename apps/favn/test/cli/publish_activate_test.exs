@@ -24,8 +24,8 @@ defmodule Favn.CLI.PublishActivateTest do
        }}
     end
 
-    def activate_manifest_service(url, token, manifest_version_id, workspace_id) do
-      send(self(), {:activated, url, token, manifest_version_id, workspace_id})
+    def activate_manifest_service(url, token, manifest_version_id, workspace_id, opts) do
+      send(self(), {:activated, url, token, manifest_version_id, workspace_id, opts})
 
       {:ok,
        %{
@@ -42,7 +42,7 @@ defmodule Favn.CLI.PublishActivateTest do
   defmodule InvalidClient do
     def publish_manifest(_url, _token, _publication, nil), do: {:ok, %{"data" => %{}}}
 
-    def activate_manifest_service(_url, _token, _manifest_version_id, _workspace_id),
+    def activate_manifest_service(_url, _token, _manifest_version_id, _workspace_id, _opts),
       do: {:ok, %{"data" => %{"activated" => false}}}
   end
 
@@ -81,7 +81,7 @@ defmodule Favn.CLI.PublishActivateTest do
        }}
     end
 
-    def activate_manifest_service(_url, _token, _manifest_version_id, _workspace_id) do
+    def activate_manifest_service(_url, _token, _manifest_version_id, _workspace_id, _opts) do
       {:ok,
        %{
          "data" => %{
@@ -161,10 +161,44 @@ defmodule Favn.CLI.PublishActivateTest do
              )
 
     assert summary.activated?
+    refute summary.reconciled?
     assert summary.manifest_version_id == "mv_exact"
 
     assert_received {:activated, "http://orchestrator.internal", "environment-token", "mv_exact",
-                     "workspace-a"}
+                     "workspace-a", activation_opts}
+
+    assert activation_opts[:timeout_ms] == 180_000
+    assert activation_opts[:reconcile_timeout_ms] == 10_000
+    assert activation_opts[:operation_id] == summary.operation_id
+  end
+
+  test "activate validates bounded timeouts and operation identity before calling the client" do
+    base_opts = [
+      manifest_version_id: "mv_exact",
+      workspace_id: "workspace-a",
+      orchestrator_url: "http://orchestrator.internal",
+      client: Client,
+      env: %{"FAVN_ORCHESTRATOR_SERVICE_TOKEN" => "environment-token"}
+    ]
+
+    assert {:error, {:invalid_option, :timeout_ms}} =
+             Activate.run(Keyword.put(base_opts, :timeout_ms, 900_001))
+
+    assert {:error, {:invalid_option, :reconcile_timeout_ms}} =
+             Activate.run(Keyword.put(base_opts, :reconcile_timeout_ms, 0))
+
+    assert {:error, {:invalid_option, :operation_id}} =
+             Activate.run(Keyword.put(base_opts, :operation_id, ""))
+
+    assert {:error, {:invalid_option, :manifest_version_id}} =
+             Activate.run(
+               Keyword.put(base_opts, :manifest_version_id, String.duplicate("m", 256))
+             )
+
+    assert {:error, {:invalid_option, :workspace_id}} =
+             Activate.run(Keyword.put(base_opts, :workspace_id, String.duplicate("w", 256)))
+
+    refute_received {:activated, _, _, _, _, _}
   end
 
   test "successful HTTP responses must contain successful operation DTOs", context do
