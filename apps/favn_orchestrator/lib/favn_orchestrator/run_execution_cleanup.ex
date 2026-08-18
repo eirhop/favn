@@ -24,6 +24,23 @@ defmodule FavnOrchestrator.RunExecutionCleanup do
 
   @spec release_admission(RunState.t()) :: :ok
   def release_admission(%RunState{} = run) do
+    case ActiveTaskSet.active_runner_task_ids(run) do
+      [] ->
+        release_run_admission(run)
+
+      task_ids ->
+        OperationalEvents.emit(
+          :run_execution_admission_cleanup_deferred,
+          %{active_runner_task_count: length(task_ids)},
+          %{run_id: run.id},
+          level: :warning
+        )
+
+        :ok
+    end
+  end
+
+  defp release_run_admission(run) do
     case ExecutionAdmission.release_run(run) do
       :ok ->
         :ok

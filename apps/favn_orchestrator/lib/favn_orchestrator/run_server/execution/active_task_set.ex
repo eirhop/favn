@@ -63,6 +63,18 @@ defmodule FavnOrchestrator.RunServer.Execution.ActiveTaskSet do
     end
   end
 
+  @doc false
+  @spec retain_task_ids(t(), [term()]) :: t()
+  def retain_task_ids(%__MODULE__{} = work_set, task_ids) when is_list(task_ids) do
+    Enum.reduce(task_ids, work_set, fn task_id, acc ->
+      if is_binary(task_id) and not Map.has_key?(acc.entries, task_id) do
+        add_entry(acc, %{task_id: task_id})
+      else
+        acc
+      end
+    end)
+  end
+
   @doc "Removes completed work by durable task id."
   @spec complete_entry(t(), term()) :: {entry() | nil, t()}
   def complete_entry(%__MODULE__{} = work_set, task_id) when is_binary(task_id) do

@@ -10,6 +10,7 @@ defmodule FavnOrchestrator.RunServer.Recovery do
 
   alias FavnOrchestrator.RunnerTasks
   alias FavnOrchestrator.RunServer.Execution.ActiveTaskSet
+  alias FavnOrchestrator.RunServer.Execution.RecoveryPosition
   alias FavnOrchestrator.RunServer.RetryCheckpoint
   alias FavnOrchestrator.RunState
 
@@ -23,13 +24,17 @@ defmodule FavnOrchestrator.RunServer.Recovery do
         {:ok, assess_checkpoint(run)}
 
       task_ids ->
-        validate_durable_tasks(run.workspace_id, task_ids)
+        if RecoveryPosition.outcome_recorded?(run) do
+          {:ok, uncertain(:active_stage_outcomes_not_resumable, task_ids, false)}
+        else
+          validate_durable_tasks(run, task_ids)
+        end
     end
   end
 
-  defp validate_durable_tasks(workspace_id, task_ids) do
+  defp validate_durable_tasks(run, task_ids) do
     Enum.reduce_while(task_ids, {:ok, []}, fn task_id, {:ok, missing_ids} ->
-      case RunnerTasks.fetch(workspace_id, task_id) do
+      case RunnerTasks.fetch(run.workspace_id, task_id) do
         {:ok, _task} -> {:cont, {:ok, missing_ids}}
         {:error, %{kind: :not_found}} -> {:cont, {:ok, [task_id | missing_ids]}}
         {:error, reason} -> {:halt, {:error, reason}}
@@ -69,12 +74,12 @@ defmodule FavnOrchestrator.RunServer.Recovery do
     end
   end
 
-  defp uncertain(reason, _active, truncated?) do
+  defp uncertain(reason, active, truncated?) do
     {:uncertain,
      %{
        reason: reason,
-       active_runner_task_count: 0,
-       runner_tasks: [],
+       active_runner_task_count: length(active),
+       runner_tasks: Enum.sort(active),
        truncated?: truncated?
      }}
   end

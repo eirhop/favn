@@ -71,6 +71,31 @@ defmodule FavnOrchestrator.RunServer.Execution.ExecutionEventTest do
              )
   end
 
+  test "stale deferred admission refill timers are ignored" do
+    timer_token = make_ref()
+
+    state = %RunExecutionState{
+      status: :admission_wait,
+      awaits: %{"rt_active" => %{}},
+      admission_timers: %{
+        timer_token => %{
+          timer_ref: make_ref(),
+          payload: %{kind: :deferred_refill, stage_index: 1}
+        }
+      }
+    }
+
+    assert {:cont, next} =
+             Execution.handle_event(state, {:stage_admission_timeout, timer_token})
+
+    assert next.status == :admission_wait
+    assert next.awaits == state.awaits
+    assert next.admission_timers == %{}
+
+    assert {:cont, ^next} =
+             Execution.handle_event(next, {:stage_admission_timeout, timer_token})
+  end
+
   test "terminal sibling failure still refills deferred work and schedules safe retries" do
     run =
       RunState.new(

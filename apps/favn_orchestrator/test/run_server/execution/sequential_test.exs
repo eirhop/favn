@@ -6,7 +6,9 @@ defmodule FavnOrchestrator.RunServer.Execution.SequentialTest do
   alias Favn.Plan
   alias Favn.Contracts.RunnerError
   alias Favn.Contracts.RunnerResult
+  alias Favn.Contracts.RunnerWork
   alias FavnOrchestrator.Persistence.Runtime, as: PersistenceRuntime
+  alias FavnOrchestrator.Persistence.Results.RunnerTask
   alias FavnOrchestrator.Persistence.Stores
   alias FavnOrchestrator.RunServer.Execution
   alias FavnOrchestrator.RunServer.Execution.ActiveTaskSet
@@ -238,6 +240,132 @@ defmodule FavnOrchestrator.RunServer.Execution.SequentialTest do
 
     assert_receive {:commit_transition, command}
     assert command.event.event_type == :step_finished
+  end
+
+  test "unconfirmed local await timeout retains the durable task id" do
+    task_id = "rt_unconfirmed_timeout"
+
+    run =
+      RunState.new(
+        id: "run_unconfirmed_timeout",
+        workspace_id: "ws_unconfirmed_timeout",
+        manifest_version_id: "mv_unconfirmed_timeout",
+        manifest_content_hash: "hash_unconfirmed_timeout",
+        runner_releases: %{"default" => FavnTestSupport.runner_release_id()},
+        asset_ref: {__MODULE__.Asset, :orders}
+      )
+
+    entry = %{task_id: task_id, lease: %{lease_id: "lease_unconfirmed_timeout"}}
+    work_set = ActiveTaskSet.from_entries(run, [entry])
+    run = ActiveTaskSet.sync_run_metadata(run, work_set)
+    timeout_token = make_ref()
+
+    state = %RunExecutionState{
+      run: run,
+      mode: :sequential,
+      work_set: work_set,
+      accumulated_results: [],
+      awaits: %{
+        task_id => %{
+          pid: nil,
+          monitor_ref: nil,
+          timeout_token: timeout_token,
+          timeout_ref: make_ref(),
+          entry: entry,
+          kind: :sequential
+        }
+      },
+      await_timers: %{timeout_token => task_id}
+    }
+
+    assert {:terminal, failed} =
+             Execution.handle_event(state, {:attempt_timeout, task_id, timeout_token})
+
+    assert failed.status == :error
+    assert failed.error.type == :runner_await_outcome_unconfirmed
+    assert ActiveTaskSet.active_runner_task_ids(failed) == [task_id]
+  end
+
+  test "local timeout uses an already-completed durable runner result" do
+    task_id = "rt_completed_before_timeout"
+    release_id = FavnTestSupport.runner_release_id()
+    ref = {__MODULE__.Asset, :orders}
+    node_key = {ref, nil}
+
+    run =
+      RunState.new(
+        id: "run_completed_before_timeout",
+        workspace_id: "ws_completed_before_timeout",
+        manifest_version_id: "mv_completed_before_timeout",
+        manifest_content_hash: "hash_completed_before_timeout",
+        runner_releases: %{"default" => release_id},
+        asset_ref: ref
+      )
+
+    result = %RunnerResult{
+      run_id: run.id,
+      manifest_version_id: run.manifest_version_id,
+      manifest_content_hash: run.manifest_content_hash,
+      required_runner_release_id: release_id,
+      status: :ok,
+      asset_results: []
+    }
+
+    task = %RunnerTask{
+      workspace_id: run.workspace_id,
+      task_id: task_id,
+      status: :succeeded,
+      result: result,
+      payload: %RunnerWork{
+        run_id: run.id,
+        manifest_version_id: run.manifest_version_id,
+        manifest_content_hash: run.manifest_content_hash,
+        required_runner_release_id: release_id
+      }
+    }
+
+    Process.put({FavnOrchestrator.TestRunnerTaskStore, :terminal_cancellation_test}, true)
+    Process.put({FavnOrchestrator.TestRunnerTaskStore, task_id}, task)
+
+    entry = %{
+      task_id: task_id,
+      required_runner_release_id: release_id,
+      asset_ref: ref,
+      node_key: node_key,
+      asset_step_id: "step_completed_before_timeout",
+      window: nil,
+      stage: 0,
+      attempt: 1,
+      lease: nil
+    }
+
+    work_set = ActiveTaskSet.from_entries(run, [entry])
+    run = ActiveTaskSet.sync_run_metadata(run, work_set)
+    timeout_token = make_ref()
+
+    state = %RunExecutionState{
+      run: run,
+      mode: :sequential,
+      work_set: work_set,
+      accumulated_results: [],
+      awaits: %{
+        task_id => %{
+          pid: nil,
+          monitor_ref: nil,
+          timeout_token: timeout_token,
+          timeout_ref: make_ref(),
+          entry: entry,
+          kind: :sequential
+        }
+      },
+      await_timers: %{timeout_token => task_id}
+    }
+
+    assert {:persist_retry, _state, %PersistenceRetry{event_type: :step_finished},
+            :forced_failure} =
+             Execution.handle_event(state, {:attempt_timeout, task_id, timeout_token})
+
+    refute_received {:commit_transition, %{event: %{event_type: :step_timed_out}}}
   end
 end
 

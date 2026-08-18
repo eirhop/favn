@@ -13,6 +13,7 @@ defmodule FavnOrchestrator.ExecutionAdmission do
   alias FavnOrchestrator.Persistence.CapacityConfiguration
   alias FavnOrchestrator.Persistence.CapacityIdentity
   alias FavnOrchestrator.Persistence.Commands.AdmitExecution
+  alias FavnOrchestrator.Persistence.Commands.AdoptExecutionLease
   alias FavnOrchestrator.Persistence.Commands.CapacityRequest
   alias FavnOrchestrator.Persistence.Commands.ReleaseExecutionLease
   alias FavnOrchestrator.Persistence.Commands.ReleaseRunLeases
@@ -66,6 +67,37 @@ defmodule FavnOrchestrator.ExecutionAdmission do
 
         {:error, reason} ->
           {:error, reason}
+      end
+    end
+  end
+
+  @doc false
+  @spec adopt(RunState.t(), entry()) :: {:ok, lease() | nil} | {:error, term()}
+  def adopt(%RunState{} = run, entry) when is_map(entry) do
+    with {:ok, entry} <- normalize_entry(entry),
+         :ok <- validate_run_admissible(run),
+         :ok <- validate_execution_pool(run, entry),
+         :ok <- validate_v2_authority(run) do
+      scopes = v2_admission_scopes(run, entry)
+
+      if scopes == [] do
+        {:ok, nil}
+      else
+        command = %AdoptExecutionLease{
+          workspace_context: SystemContext.workspace(run.workspace_id, :admission_adopt),
+          lease_id: Identity.lease_id(run.id, entry.asset_step_id, entry.stage, entry.attempt),
+          run_id: run.id,
+          step_id: entry.asset_step_id,
+          owner_id: run.storage_owner_id,
+          owner_generation: run.storage_fencing_token,
+          lease_duration_ms: lease_ttl_ms(run)
+        }
+
+        with {:ok, %ExecutionLease{} = lease} <-
+               Persistence.stores().admission.adopt_lease(command),
+             :ok <- verify_adopted_scopes(lease, scopes) do
+          {:ok, lease_map(lease, scopes)}
+        end
       end
     end
   end
@@ -350,6 +382,14 @@ defmodule FavnOrchestrator.ExecutionAdmission do
       scopes: scopes,
       expires_at: lease.expires_at
     }
+  end
+
+  defp verify_adopted_scopes(%ExecutionLease{} = lease, scopes) do
+    expected = scopes |> Enum.map(& &1.scope_id) |> Enum.sort()
+
+    if Enum.sort(lease.scope_ids) == expected,
+      do: :ok,
+      else: {:error, :execution_lease_scope_mismatch}
   end
 
   defp waiter_struct(%AdmissionWaiter{} = waiter, scopes, entry) do

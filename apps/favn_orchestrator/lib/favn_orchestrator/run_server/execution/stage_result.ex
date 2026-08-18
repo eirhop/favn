@@ -17,6 +17,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageResult do
   alias FavnOrchestrator.RunServer.Cancellation
   alias FavnOrchestrator.RunServer.Execution.ResultBuilder
   alias FavnOrchestrator.RunServer.Execution.ResultSanitizer
+  alias FavnOrchestrator.RunServer.Execution.RecoveryPosition
   alias FavnOrchestrator.RunServer.Execution.ActiveTaskSet
   alias FavnOrchestrator.RunServer.Execution.StageAttemptState
   alias FavnOrchestrator.RunServer.Execution.StepAttemptLifecycle
@@ -202,6 +203,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageResult do
         metadata: ResultSanitizer.merge_metadata(run_state.metadata, result.metadata),
         runner_task_id: nil
       )
+      |> RecoveryPosition.record_outcome(stage, attempt)
 
     data = %{
       asset_ref: asset_ref,
@@ -260,6 +262,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageResult do
         error: :timeout,
         runner_task_id: nil
       )
+      |> RecoveryPosition.record_outcome(stage, attempt)
 
     data = %{
       asset_ref: asset_ref,
@@ -318,6 +321,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageResult do
         error: reason,
         runner_task_id: nil
       )
+      |> RecoveryPosition.record_outcome(stage, attempt)
 
     data = %{
       asset_ref: asset_ref,
@@ -496,7 +500,12 @@ defmodule FavnOrchestrator.RunServer.Execution.StageResult do
 
   defp reduce_outcome(
          :error,
-         %{state: state, run: %RunState{status: :cancelled} = next_run, results: next_results},
+         %{
+           state: state,
+           run: %RunState{status: :cancelled} = next_run,
+           results: next_results,
+           terminal_failure: nil
+         },
          _context
        ) do
     results = Enum.reverse(next_results)

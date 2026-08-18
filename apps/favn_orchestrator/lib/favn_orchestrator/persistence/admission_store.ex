@@ -2,6 +2,7 @@ defmodule FavnOrchestrator.Persistence.AdmissionStore do
   @moduledoc "Persistence contract for distributed capacity admission and waiters."
 
   alias FavnOrchestrator.Persistence.Commands.AdmitExecution
+  alias FavnOrchestrator.Persistence.Commands.AdoptExecutionLease
   alias FavnOrchestrator.Persistence.Commands.ExpireAdmission
   alias FavnOrchestrator.Persistence.Commands.ReleaseExecutionLease
   alias FavnOrchestrator.Persistence.Commands.ReleaseRunLeases
@@ -12,6 +13,8 @@ defmodule FavnOrchestrator.Persistence.AdmissionStore do
   alias FavnOrchestrator.Persistence.Results.ExecutionLease
 
   @callback admit(AdmitExecution.t()) :: {:ok, Admission.t()} | {:error, Error.t()}
+  @callback adopt_lease(AdoptExecutionLease.t()) ::
+              {:ok, ExecutionLease.t()} | {:error, Error.t()}
   @callback renew_lease(RenewExecutionLease.t()) ::
               {:ok, ExecutionLease.t()} | {:error, Error.t()}
   @callback release_lease(ReleaseExecutionLease.t()) ::

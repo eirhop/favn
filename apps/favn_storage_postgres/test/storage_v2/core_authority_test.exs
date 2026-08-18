@@ -5341,6 +5341,405 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert :ok = ExecutionAdmission.release(second_lease)
   end
 
+  test "slow pipeline admission refills to max concurrency before any result", fixture do
+    {run, _keys} = create_continuation_pipeline_run!(fixture, 3)
+
+    delay_runner_task_inserts!()
+    start_pipeline_runtime!()
+
+    assert {:ok, pid} = RunServer.start_link(%{run_state: run, version: fixture.version})
+    monitor = Process.monitor(pid)
+
+    task_ids = await_runner_task_ids!(fixture.workspace_id, run.id, 3)
+
+    assert length(Enum.uniq(task_ids)) == 3
+    assert active_execution_lease_count(fixture.workspace_id, run.id) == 3
+    assert_runner_demand!(fixture, queued: 3, active: 0, outstanding: 3)
+
+    tasks =
+      Enum.map(1..3, fn runner_number ->
+        assert {:ok, task} = claim_asset_task(fixture, "overlap-#{runner_number}")
+        assert :ok = start_runner_task(task)
+        task
+      end)
+
+    assert tasks |> Enum.map(& &1.task_id) |> Enum.sort() == Enum.sort(task_ids)
+    assert_runner_demand!(fixture, queued: 0, active: 3, outstanding: 3)
+
+    Enum.each(tasks, fn task ->
+      await_runner_task_waiter!(task)
+      :ok = complete_asset_task(task, task.payload, false)
+    end)
+
+    assert_receive {:DOWN, ^monitor, :process, ^pid, :normal}, 5_000
+
+    assert {:ok, finished} = get_run(fixture, run.id)
+    assert finished.status == :ok
+    assert length(finished.result.node_results) == 3
+  end
+
+  test "slow pipeline admission remains serial at max concurrency one", fixture do
+    {run, _keys} = create_continuation_pipeline_run!(fixture, 1)
+
+    delay_runner_task_inserts!()
+    start_pipeline_runtime!()
+
+    assert {:ok, pid} = RunServer.start_link(%{run_state: run, version: fixture.version})
+    assert [_task_id] = await_runner_task_ids!(fixture.workspace_id, run.id, 1)
+
+    Process.sleep(250)
+
+    assert [_task_id] = runner_task_ids(fixture.workspace_id, run.id)
+    assert active_execution_lease_count(fixture.workspace_id, run.id) == 1
+    assert_runner_demand!(fixture, queued: 1, active: 0, outstanding: 1)
+
+    monitor = Process.monitor(pid)
+
+    Enum.each(1..3, fn task_number ->
+      task_ids = await_runner_task_ids!(fixture.workspace_id, run.id, task_number)
+      assert length(task_ids) == task_number
+
+      assert active_execution_lease_count(fixture.workspace_id, run.id) == 1
+      assert {:ok, task} = claim_asset_task(fixture, "serial-#{task_number}")
+      assert :ok = start_runner_task(task)
+      await_runner_task_waiter!(task)
+      :ok = complete_asset_task(task, task.payload, false)
+    end)
+
+    assert_receive {:DOWN, ^monitor, :process, ^pid, :normal}, 5_000
+
+    assert {:ok, finished} = get_run(fixture, run.id)
+    assert finished.status == :ok
+    assert length(finished.result.node_results) == 3
+  end
+
+  test "terminal failure during refill cancels a sibling admitted by an earlier batch",
+       fixture do
+    policies = %{"global" => %{max_concurrency: 1}}
+    install_execution_capacity_scope!(fixture, :global, policies)
+    {run, _keys} = create_continuation_pipeline_run!(fixture, 1, policies)
+    {second_run, _keys} = create_continuation_pipeline_run!(fixture, 1, policies)
+
+    delay_runner_task_inserts!()
+    start_pipeline_runtime!()
+
+    assert {:ok, pid} = RunServer.start_link(%{run_state: run, version: fixture.version})
+    execution_state = await_suspended_deferred_pipeline_state!(pid)
+    assert map_size(execution_state.awaits) == 1
+    assert [task_id] = runner_task_ids(fixture.workspace_id, run.id)
+
+    assert {:ok, task} = claim_asset_task(fixture, "terminal-refill")
+    assert task.task_id == task_id
+    assert :ok = start_runner_task(task)
+
+    assert %{rows: deleted_links} =
+             SQL.query!(
+               Repo,
+               "DELETE FROM favn_control.manifest_execution_packages WHERE manifest_version_id = $1 RETURNING package_hash, asset_module, asset_name",
+               [fixture.version.manifest_version_id]
+             )
+
+    assert deleted_links != []
+
+    monitor = Process.monitor(pid)
+    :ok = :sys.resume(pid)
+
+    assert :cancelling ==
+             await_runner_task_status!(fixture.workspace_id, task_id, :cancelling)
+
+    assert Process.alive?(pid)
+    assert active_execution_lease_count(fixture.workspace_id, run.id) == 1
+
+    Enum.each(deleted_links, fn [package_hash, asset_module, asset_name] ->
+      SQL.query!(
+        Repo,
+        "INSERT INTO favn_control.manifest_execution_packages (manifest_version_id, package_hash, asset_module, asset_name) VALUES ($1, $2, $3, $4)",
+        [fixture.version.manifest_version_id, package_hash, asset_module, asset_name]
+      )
+    end)
+
+    assert {:ok, second_pid} =
+             RunServer.start_link(%{run_state: second_run, version: fixture.version})
+
+    second_monitor = Process.monitor(second_pid)
+    Process.sleep(250)
+
+    assert runner_task_ids(fixture.workspace_id, second_run.id) == []
+    assert active_execution_lease_count(fixture.workspace_id, second_run.id) == 0
+
+    assert :ok =
+             finish_runner_task(task,
+               outcome: :cancelled,
+               retry_class: :terminal,
+               result: nil,
+               error: Favn.Contracts.RunnerError.cancelled(:operator_request)
+             )
+
+    assert_receive {:DOWN, ^monitor, :process, ^pid, :normal}, 5_000
+
+    assert {:ok, finished} = get_run(fixture, run.id)
+    assert finished.status == :error
+    assert active_execution_lease_count(fixture.workspace_id, run.id) == 0
+    assert [_second_task_id] = await_runner_task_ids!(fixture.workspace_id, second_run.id, 1)
+
+    cancel_outcomes =
+      Map.get(finished.metadata, :cancel_outcomes, Map.get(finished.metadata, "cancel_outcomes"))
+
+    assert Enum.any?(cancel_outcomes, fn outcome ->
+             (Map.get(outcome, :task_id) || Map.get(outcome, "task_id")) == task_id and
+               (Map.get(outcome, :status) || Map.get(outcome, "status")) in [
+                 :requested,
+                 "requested"
+               ]
+           end)
+
+    Enum.each(1..3, fn task_number ->
+      assert task_number ==
+               length(await_runner_task_ids!(fixture.workspace_id, second_run.id, task_number))
+
+      assert {:ok, next_task} = claim_asset_task(fixture, "terminal-refill-next-#{task_number}")
+      assert :ok = start_runner_task(next_task)
+      await_runner_task_waiter!(next_task)
+      :ok = complete_asset_task(next_task, next_task.payload, false)
+    end)
+
+    assert_receive {:DOWN, ^second_monitor, :process, ^second_pid, :normal}, 5_000
+  end
+
+  test "unconfirmed runner timeout retains shared capacity after the run fails", fixture do
+    policies = %{"global" => %{max_concurrency: 1}}
+    install_execution_capacity_scope!(fixture, :global, policies)
+
+    {first_command, first_run} = pipeline_run_command(fixture)
+
+    first_run =
+      %{first_run | timeout_ms: 25, metadata: %{execution_pool_policy: policies}}
+      |> RunState.with_snapshot_hash()
+
+    assert {:ok, _created} = RunStore.create_run(%{first_command | run: first_run})
+
+    {second_command, second_run} = pipeline_run_command(fixture)
+
+    second_run =
+      %{second_run | metadata: %{execution_pool_policy: policies}}
+      |> RunState.with_snapshot_hash()
+
+    assert {:ok, _created} = RunStore.create_run(%{second_command | run: second_run})
+
+    start_pipeline_runtime!()
+
+    assert {:ok, first_pid} =
+             RunServer.start_link(%{run_state: first_run, version: fixture.version})
+
+    first_monitor = Process.monitor(first_pid)
+    assert [task_id] = await_runner_task_ids!(fixture.workspace_id, first_run.id, 1)
+    assert {:ok, task} = claim_asset_task(fixture, "unconfirmed-timeout")
+    assert task.task_id == task_id
+    assert :ok = start_runner_task(task)
+
+    assert :cancelling ==
+             await_runner_task_status!(fixture.workspace_id, task_id, :cancelling, 400)
+
+    assert_receive {:DOWN, ^first_monitor, :process, ^first_pid, :normal}, 5_000
+
+    assert {:ok, failed} = get_run(fixture, first_run.id)
+    assert failed.status == :error
+    assert failed.error.type == :runner_await_outcome_unconfirmed
+    assert active_execution_lease_count(fixture.workspace_id, first_run.id) == 1
+
+    assert {:ok, second_pid} =
+             RunServer.start_link(%{run_state: second_run, version: fixture.version})
+
+    Process.sleep(250)
+
+    assert runner_task_ids(fixture.workspace_id, second_run.id) == []
+    assert active_execution_lease_count(fixture.workspace_id, second_run.id) == 0
+
+    GenServer.stop(second_pid, :normal)
+  end
+
+  test "slow pipeline refill respects a stricter global capacity limit", fixture do
+    policies = %{"global" => %{max_concurrency: 2}}
+    install_execution_capacity_scope!(fixture, :global, policies)
+    {run, _keys} = create_continuation_pipeline_run!(fixture, 3, policies)
+
+    delay_runner_task_inserts!()
+    start_pipeline_runtime!()
+
+    assert {:ok, pid} = RunServer.start_link(%{run_state: run, version: fixture.version})
+    assert [_first, _second] = await_runner_task_ids!(fixture.workspace_id, run.id, 2)
+
+    Process.sleep(250)
+
+    assert [_first, _second] = runner_task_ids(fixture.workspace_id, run.id)
+    assert active_execution_lease_count(fixture.workspace_id, run.id) == 2
+    assert_runner_demand!(fixture, queued: 2, active: 0, outstanding: 2)
+
+    monitor = Process.monitor(pid)
+
+    assert {:ok, first_task} = claim_asset_task(fixture, "global-1")
+    assert :ok = start_runner_task(first_task)
+    await_runner_task_waiter!(first_task)
+    :ok = complete_asset_task(first_task, first_task.payload, false)
+
+    assert 3 == length(await_runner_task_ids!(fixture.workspace_id, run.id, 3))
+    assert active_execution_lease_count(fixture.workspace_id, run.id) == 2
+    assert_runner_demand!(fixture, queued: 2, active: 0, outstanding: 2)
+
+    remaining_tasks =
+      Enum.map(2..3, fn runner_number ->
+        assert {:ok, task} = claim_asset_task(fixture, "global-#{runner_number}")
+        assert :ok = start_runner_task(task)
+        task
+      end)
+
+    Enum.each(remaining_tasks, fn task ->
+      await_runner_task_waiter!(task)
+      :ok = complete_asset_task(task, task.payload, false)
+    end)
+
+    assert_receive {:DOWN, ^monitor, :process, ^pid, :normal}, 5_000
+
+    assert {:ok, finished} = get_run(fixture, run.id)
+    assert finished.status == :ok
+    assert length(finished.result.node_results) == 3
+  end
+
+  test "pipeline recovery refills deferred admission without duplicate tasks or leases",
+       fixture do
+    {run, _keys} = create_continuation_pipeline_run!(fixture, 3)
+
+    delay_runner_task_inserts!()
+    start_pipeline_runtime!()
+
+    assert {:ok, first_pid} = RunServer.start_link(%{run_state: run, version: fixture.version})
+    execution_state = await_suspended_deferred_pipeline_state!(first_pid)
+
+    assert map_size(execution_state.awaits) == 1
+    assert length(execution_state.stage_state.deferred_node_keys) == 2
+    assert [_task_id] = runner_task_ids(fixture.workspace_id, run.id)
+    assert active_execution_lease_count(fixture.workspace_id, run.id) == 1
+
+    stop_suspended_run_server!(first_pid, execution_state)
+
+    assert [_task_id] = runner_task_ids(fixture.workspace_id, run.id)
+    assert active_execution_lease_count(fixture.workspace_id, run.id) == 1
+
+    assert {:ok, persisted} = get_run(fixture, run.id)
+
+    assert {:ok, recovered_pid} =
+             RunServer.start_link(%{
+               run_state: persisted,
+               version: fixture.version,
+               recovering?: true
+             })
+
+    task_ids = await_runner_task_ids!(fixture.workspace_id, run.id, 3)
+
+    assert length(Enum.uniq(task_ids)) == 3
+    assert active_execution_lease_count(fixture.workspace_id, run.id) == 3
+    assert_runner_demand!(fixture, queued: 3, active: 0, outstanding: 3)
+
+    monitor = Process.monitor(recovered_pid)
+
+    tasks =
+      Enum.map(1..3, fn runner_number ->
+        assert {:ok, task} = claim_asset_task(fixture, "recovery-#{runner_number}")
+        assert :ok = start_runner_task(task)
+        task
+      end)
+
+    Enum.each(tasks, fn task ->
+      await_runner_task_waiter!(task)
+      :ok = complete_asset_task(task, task.payload, false)
+    end)
+
+    assert_receive {:DOWN, ^monitor, :process, ^recovered_pid, :normal}, 5_000
+
+    assert {:ok, finished} = get_run(fixture, run.id)
+    assert finished.status == :ok
+    assert length(finished.result.node_results) == 3
+  end
+
+  test "pipeline recovery adopts and releases the active lease at max concurrency one",
+       fixture do
+    {run, _keys} = create_continuation_pipeline_run!(fixture, 1)
+
+    delay_runner_task_inserts!()
+    start_pipeline_runtime!()
+
+    assert {:ok, first_pid} = RunServer.start_link(%{run_state: run, version: fixture.version})
+    execution_state = await_suspended_deferred_pipeline_state!(first_pid)
+    assert [_task_id] = runner_task_ids(fixture.workspace_id, run.id)
+    assert active_execution_lease_count(fixture.workspace_id, run.id) == 1
+
+    stop_suspended_run_server!(first_pid, execution_state)
+    assert {:ok, persisted} = get_run(fixture, run.id)
+
+    assert {:ok, recovered_pid} =
+             RunServer.start_link(%{
+               run_state: persisted,
+               version: fixture.version,
+               recovering?: true
+             })
+
+    monitor = Process.monitor(recovered_pid)
+
+    Enum.each(1..3, fn task_number ->
+      task_ids = await_runner_task_ids!(fixture.workspace_id, run.id, task_number)
+      assert length(task_ids) == task_number
+      assert active_execution_lease_count(fixture.workspace_id, run.id) == 1
+
+      assert {:ok, task} = claim_asset_task(fixture, "recovered-serial-#{task_number}")
+      assert :ok = start_runner_task(task)
+      await_runner_task_waiter!(task)
+      :ok = complete_asset_task(task, task.payload, false)
+    end)
+
+    assert_receive {:DOWN, ^monitor, :process, ^recovered_pid, :normal}, 5_000
+
+    assert {:ok, finished} = get_run(fixture, run.id)
+    assert finished.status == :ok
+    assert length(finished.result.node_results) == 3
+  end
+
+  test "pipeline recovery fails closed after a sibling outcome is durable", fixture do
+    {run, _keys} = create_continuation_pipeline_run!(fixture, 3)
+
+    start_pipeline_runtime!()
+
+    assert {:ok, first_pid} = RunServer.start_link(%{run_state: run, version: fixture.version})
+    assert 3 == length(await_runner_task_ids!(fixture.workspace_id, run.id, 3))
+
+    assert {:ok, first_task} = claim_asset_task(fixture, "outcome-before-recovery")
+    assert :ok = start_runner_task(first_task)
+    await_runner_task_waiter!(first_task)
+    :ok = complete_asset_task(first_task, first_task.payload, false)
+
+    persisted = await_pipeline_outcome_snapshot!(fixture, run.id, 2)
+    assert persisted.result == nil
+
+    :ok = :sys.suspend(first_pid)
+    execution_state = :sys.get_state(first_pid).execution_state
+    stop_suspended_run_server!(first_pid, execution_state)
+
+    assert {:ok, recovered_pid} =
+             RunServer.start_link(%{
+               run_state: persisted,
+               version: fixture.version,
+               recovering?: true
+             })
+
+    monitor = Process.monitor(recovered_pid)
+    assert_receive {:DOWN, ^monitor, :process, ^recovered_pid, :normal}, 5_000
+
+    assert {:ok, finished} = get_run(fixture, run.id)
+    assert finished.status == :error
+    assert finished.error["kind"] == "uncertain_runner_recovery"
+    assert length(runner_task_ids(fixture.workspace_id, run.id)) == 3
+    assert active_execution_lease_count(fixture.workspace_id, run.id) == 0
+  end
+
   test "pipeline continues independent branches after a terminal sibling failure", fixture do
     asset = Enum.find(fixture.version.manifest.assets, &(&1.ref == {MyApp.Asset, :asset}))
     {plan, keys} = continuation_regression_plan(asset.semantic_generation_id)
@@ -5477,12 +5876,18 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     end
   end
 
-  defp claim_asset_task(fixture) do
+  defp claim_asset_task(fixture, runner_suffix \\ nil) do
+    runner_instance_id =
+      case runner_suffix do
+        nil -> "pipeline-runner:#{fixture.workspace_id}"
+        suffix -> "pipeline-runner:#{fixture.workspace_id}:#{suffix}"
+      end
+
     FavnStoragePostgres.RunnerTasks.Store.claim(%ClaimRunnerTask{
       platform_context:
         SystemContext.platform(:pipeline_runner_test, roles: [:platform_operator]),
       command_id: "pipeline-claim:#{System.unique_integer([:positive, :monotonic])}",
-      runner_instance_id: "pipeline-runner:#{fixture.workspace_id}",
+      runner_instance_id: runner_instance_id,
       runner_session_generation: 1,
       runner_pool: "default",
       required_runner_release_id: fixture.version.runner_releases["default"],
@@ -10450,6 +10855,287 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   defp share_repo_sandbox! do
     Sandbox.mode(Repo, {:shared, self()})
     on_exit(fn -> Sandbox.mode(Repo, :manual) end)
+  end
+
+  defp start_pipeline_runtime! do
+    share_repo_sandbox!()
+    start_supervised!({FavnOrchestrator.ExecutionAdmission.Coordinator, []})
+    start_supervised!({Task.Supervisor, name: FavnOrchestrator.RunnerClaimSupervisor})
+    start_supervised!({RunnerTaskResultRouter, []})
+  end
+
+  defp create_continuation_pipeline_run!(fixture, max_concurrency, execution_pools \\ %{}) do
+    asset = Enum.find(fixture.version.manifest.assets, &(&1.ref == {MyApp.Asset, :asset}))
+    {plan, keys} = continuation_regression_plan(asset.semantic_generation_id)
+    stage_node_keys = [keys.a, keys.b, keys.c]
+    ref = {MyApp.Asset, :asset}
+
+    plan = %{
+      plan
+      | target_node_keys: stage_node_keys,
+        nodes:
+          Map.new(stage_node_keys, fn node_key ->
+            {node_key, %{Map.fetch!(plan.nodes, node_key) | downstream: []}}
+          end),
+        topo_order: [ref, ref, ref],
+        stages: [[ref, ref, ref]],
+        node_stages: [stage_node_keys]
+    }
+
+    {command, original} = pipeline_run_command(fixture)
+
+    run =
+      RunState.new(
+        id: original.id,
+        workspace_id: fixture.workspace_id,
+        deployment_id: fixture.deployment_id,
+        manifest_version_id: fixture.version.manifest_version_id,
+        manifest_content_hash: fixture.version.content_hash,
+        runner_releases: fixture.version.runner_releases,
+        asset_ref: original.asset_ref,
+        target_refs: original.target_refs,
+        submit_kind: :pipeline,
+        plan: plan,
+        metadata: %{
+          pipeline_execution_policy: %{max_concurrency: max_concurrency},
+          execution_pool_policy: execution_pools
+        }
+      )
+
+    command = %{command | run: run, event: %{command.event | occurred_at: run.inserted_at}}
+    assert {:ok, _created} = RunStore.create_run(command)
+
+    {run, keys}
+  end
+
+  defp install_execution_capacity_scope!(fixture, pool, policies) do
+    assert {:ok, scope} =
+             CapacityConfiguration.execution_scope(fixture.workspace_id, pool, policies)
+
+    SQL.query!(
+      Repo,
+      """
+      INSERT INTO favn_control.capacity_scopes
+        (scope_id, workspace_id, scope_kind, scope_key, capacity_limit,
+         active_count, version, inserted_at, updated_at)
+      VALUES ($1, $2, $3, $4, $5, 0, 1, clock_timestamp(), clock_timestamp())
+      """,
+      [
+        scope.scope_id,
+        fixture.workspace_id,
+        if(scope.kind == :global, do: "workspace", else: Atom.to_string(scope.kind)),
+        scope.key,
+        scope.limit
+      ]
+    )
+  end
+
+  defp delay_runner_task_inserts! do
+    SQL.query!(
+      Repo,
+      """
+      CREATE FUNCTION favn_control.test_delay_runner_task_insert()
+      RETURNS trigger AS $$
+      BEGIN
+        PERFORM pg_sleep(0.04);
+        RETURN NEW;
+      END;
+      $$ LANGUAGE plpgsql
+      """,
+      []
+    )
+
+    SQL.query!(
+      Repo,
+      """
+      CREATE TRIGGER test_delay_runner_task_insert
+      BEFORE INSERT ON favn_control.runner_tasks
+      FOR EACH ROW
+      EXECUTE FUNCTION favn_control.test_delay_runner_task_insert()
+      """,
+      []
+    )
+  end
+
+  defp await_runner_task_ids!(workspace_id, run_id, expected_count, remaining \\ 300)
+
+  defp await_runner_task_ids!(_workspace_id, run_id, _expected_count, 0),
+    do: flunk("runner tasks did not reach the expected count for #{run_id}")
+
+  defp await_runner_task_ids!(workspace_id, run_id, expected_count, remaining) do
+    task_ids = runner_task_ids(workspace_id, run_id)
+
+    cond do
+      length(task_ids) == expected_count ->
+        task_ids
+
+      length(task_ids) > expected_count ->
+        flunk("runner task count exceeded #{expected_count} for #{run_id}")
+
+      true ->
+        Process.sleep(10)
+        await_runner_task_ids!(workspace_id, run_id, expected_count, remaining - 1)
+    end
+  end
+
+  defp await_runner_task_status!(workspace_id, task_id, expected_status, remaining \\ 200)
+
+  defp await_runner_task_status!(_workspace_id, task_id, expected_status, 0),
+    do: flunk("runner task #{task_id} did not reach #{expected_status}")
+
+  defp await_runner_task_status!(workspace_id, task_id, expected_status, remaining) do
+    case RunnerTasks.fetch(workspace_id, task_id) do
+      {:ok, %{status: ^expected_status}} ->
+        expected_status
+
+      _other ->
+        Process.sleep(10)
+        await_runner_task_status!(workspace_id, task_id, expected_status, remaining - 1)
+    end
+  end
+
+  defp runner_task_ids(workspace_id, run_id) do
+    %{rows: rows} =
+      SQL.query!(
+        Repo,
+        """
+        SELECT task_id
+        FROM favn_control.runner_tasks
+        WHERE workspace_id = $1 AND run_id = $2
+        ORDER BY task_id
+        """,
+        [workspace_id, run_id]
+      )
+
+    Enum.map(rows, &List.first/1)
+  end
+
+  defp active_execution_lease_count(workspace_id, run_id) do
+    %{rows: [[count]]} =
+      SQL.query!(
+        Repo,
+        """
+        SELECT count(*)
+        FROM favn_control.execution_leases
+        WHERE workspace_id = $1 AND run_id = $2 AND status = 'active'
+        """,
+        [workspace_id, run_id]
+      )
+
+    count
+  end
+
+  defp assert_runner_demand!(fixture, expected) do
+    %{rows: [[outstanding, queued, active]]} =
+      SQL.query!(
+        Repo,
+        """
+        SELECT outstanding_count, queued_count, active_count
+        FROM favn_control.runner_capacity_demands
+        WHERE runner_pool = 'default' AND required_runner_release_id = $1
+        """,
+        [fixture.version.runner_releases["default"]]
+      )
+
+    assert outstanding == Keyword.fetch!(expected, :outstanding)
+    assert queued == Keyword.fetch!(expected, :queued)
+    assert active == Keyword.fetch!(expected, :active)
+  end
+
+  defp await_pipeline_outcome_snapshot!(fixture, run_id, active_count, remaining \\ 100)
+
+  defp await_pipeline_outcome_snapshot!(_fixture, _run_id, _active_count, 0),
+    do: flunk("pipeline outcome marker was not persisted")
+
+  defp await_pipeline_outcome_snapshot!(fixture, run_id, active_count, remaining) do
+    assert {:ok, run} = get_run(fixture, run_id)
+
+    active_ids =
+      Map.get(
+        run.metadata,
+        :active_runner_task_ids,
+        Map.get(run.metadata, "active_runner_task_ids", [])
+      )
+
+    outcome =
+      Map.get(
+        run.metadata,
+        :pipeline_active_stage_outcome,
+        Map.get(run.metadata, "pipeline_active_stage_outcome")
+      )
+
+    if length(active_ids) == active_count and is_map(outcome) do
+      run
+    else
+      Process.sleep(10)
+      await_pipeline_outcome_snapshot!(fixture, run_id, active_count, remaining - 1)
+    end
+  end
+
+  defp await_suspended_deferred_pipeline_state!(pid, remaining \\ 100)
+
+  defp await_suspended_deferred_pipeline_state!(_pid, 0),
+    do: flunk("run server did not reach a deferred pipeline admission checkpoint")
+
+  defp await_suspended_deferred_pipeline_state!(pid, remaining) do
+    state = :sys.get_state(pid)
+    execution_state = Map.get(state, :execution_state)
+
+    if match?(
+         %{
+           awaits: awaits,
+           admission_timers: timers,
+           stage_state: %{deferred_node_keys: [_ | _]}
+         }
+         when map_size(awaits) > 0 and map_size(timers) > 0,
+         execution_state
+       ) do
+      :ok = :sys.suspend(pid)
+      suspended = :sys.get_state(pid).execution_state
+
+      if match?(
+           %{
+             awaits: awaits,
+             admission_timers: timers,
+             stage_state: %{deferred_node_keys: [_ | _]}
+           }
+           when map_size(awaits) > 0 and map_size(timers) > 0,
+           suspended
+         ) do
+        suspended
+      else
+        :ok = :sys.resume(pid)
+        await_suspended_deferred_pipeline_state!(pid, remaining - 1)
+      end
+    else
+      Process.sleep(5)
+      await_suspended_deferred_pipeline_state!(pid, remaining - 1)
+    end
+  end
+
+  defp stop_suspended_run_server!(pid, execution_state) do
+    execution_state.admission_timers
+    |> Map.values()
+    |> Enum.each(&Process.cancel_timer(&1.timer_ref))
+
+    await_pids =
+      execution_state.awaits
+      |> Map.values()
+      |> Enum.map(& &1.pid)
+      |> Enum.filter(&is_pid/1)
+
+    :ok = :sys.terminate(pid, :normal)
+
+    Enum.each(await_pids, fn await_pid ->
+      if Process.alive?(await_pid), do: Process.exit(await_pid, :kill)
+    end)
+  end
+
+  defp get_run(fixture, run_id) do
+    RunStore.get_run(%GetRun{
+      workspace_context: fixture.workspace_context,
+      run_id: run_id
+    })
   end
 
   defp activation_body do
