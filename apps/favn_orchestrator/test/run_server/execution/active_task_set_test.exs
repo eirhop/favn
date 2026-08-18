@@ -34,6 +34,23 @@ defmodule FavnOrchestrator.RunServer.Execution.ActiveTaskSetTest do
     assert {nil, ^next_work_set} = ActiveTaskSet.complete_entry(next_work_set, "task_a")
   end
 
+  test "retaining metadata-only tasks preserves tracked entries through sibling completion" do
+    run = run_state()
+    tracked = %{task_id: "task_a", lease: %{lease_id: "lease_a"}}
+
+    work_set =
+      run
+      |> ActiveTaskSet.from_entries([tracked])
+      |> ActiveTaskSet.retain_task_ids(["task_a", "task_unknown"])
+
+    assert work_set.entries["task_a"] == tracked
+
+    {^tracked, remaining} = ActiveTaskSet.complete_entry(work_set, "task_a")
+    synced = ActiveTaskSet.sync_run_metadata(run, remaining)
+
+    assert synced.metadata.active_runner_task_ids == ["task_unknown"]
+  end
+
   test "missing cleanup data is already clean" do
     assert :ok = ActiveTaskSet.release_entry(%{})
     assert :ok = ActiveTaskSet.fail_entry_claim(%{}, :cancelled)

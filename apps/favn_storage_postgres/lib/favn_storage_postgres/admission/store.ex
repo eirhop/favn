@@ -7,6 +7,7 @@ defmodule FavnStoragePostgres.Admission.Store do
 
   alias Ecto.Adapters.SQL
   alias FavnOrchestrator.Persistence.Commands.AdmitExecution
+  alias FavnOrchestrator.Persistence.Commands.AdoptExecutionLease
   alias FavnOrchestrator.Persistence.Commands.CapacityRequest
   alias FavnOrchestrator.Persistence.Commands.ExpireAdmission
   alias FavnOrchestrator.Persistence.Commands.ReleaseExecutionLease
@@ -26,6 +27,7 @@ defmodule FavnStoragePostgres.Admission.Store do
   alias FavnStoragePostgres.Schemas.CapacityScope
   alias FavnStoragePostgres.Schemas.ExecutionLease
   alias FavnStoragePostgres.Schemas.ExecutionLeaseScope
+  alias FavnStoragePostgres.Schemas.RunOwnership
 
   @max_requests 32
 
@@ -33,6 +35,13 @@ defmodule FavnStoragePostgres.Admission.Store do
   def admit(%AdmitExecution{} = command) do
     with :ok <- validate_admit(command) do
       transaction(fn -> admit!(command) end)
+    end
+  end
+
+  @impl true
+  def adopt_lease(%AdoptExecutionLease{} = command) do
+    with :ok <- validate_adopt(command) do
+      transaction(fn -> adopt_lease!(command) end)
     end
   end
 
@@ -293,6 +302,64 @@ defmodule FavnStoragePostgres.Admission.Store do
           )
 
         lease_result(row)
+    end
+  end
+
+  defp adopt_lease!(command) do
+    workspace_id = command.workspace_context.workspace_id
+    ownership = lock_run_ownership!(workspace_id, command.run_id)
+    lease = lock_lease!(workspace_id, command.lease_id)
+
+    cond do
+      not current_run_owner?(ownership, command) ->
+        Repo.rollback(
+          Error.new(:fenced, "execution lease adoption requires current run ownership")
+        )
+
+      lease.run_id != command.run_id or lease.step_id != command.step_id or
+        lease.status != "active" or not future?(lease.expires_at) ->
+        Repo.rollback(Error.new(:fenced, "execution lease cannot be adopted"))
+
+      lease.owner_id == command.owner_id and
+          lease.owner_generation == command.owner_generation ->
+        lease_result(lease)
+
+      lease.owner_generation >= command.owner_generation ->
+        Repo.rollback(Error.new(:fenced, "execution lease has a conflicting owner generation"))
+
+      true ->
+        %{rows: [row]} =
+          SQL.query!(
+            Repo,
+            """
+            UPDATE favn_control.execution_leases
+            SET owner_id = $5,
+                owner_generation = $6,
+                last_renewal_id = NULL,
+                expires_at = clock_timestamp() + ($7 * interval '1 millisecond'),
+                updated_at = clock_timestamp()
+            WHERE workspace_id = $1 AND lease_id = $2 AND run_id = $3 AND step_id = $4
+              AND owner_id = $8 AND owner_generation = $9 AND status = 'active'
+              AND expires_at > clock_timestamp()
+            RETURNING workspace_id, lease_id, run_id, step_id, owner_id,
+                      owner_generation, status, expires_at, released_at
+            """,
+            [
+              workspace_id,
+              command.lease_id,
+              command.run_id,
+              command.step_id,
+              command.owner_id,
+              command.owner_generation,
+              command.lease_duration_ms,
+              lease.owner_id,
+              lease.owner_generation
+            ]
+          )
+
+        adopted = lease_result(row)
+        adoption_outbox!(adopted)
+        adopted
     end
   end
 
@@ -597,6 +664,35 @@ defmodule FavnStoragePostgres.Admission.Store do
     end
   end
 
+  defp lock_run_ownership!(workspace_id, run_id) do
+    from(ownership in RunOwnership,
+      where: ownership.workspace_id == ^workspace_id and ownership.run_id == ^run_id,
+      lock: "FOR UPDATE"
+    )
+    |> Repo.one()
+    |> case do
+      nil -> Repo.rollback(Error.new(:not_found, "run ownership not found"))
+      ownership -> ownership
+    end
+  end
+
+  defp adoption_outbox!(lease) do
+    OutboxWriter.insert!(%{
+      workspace_id: lease.workspace_id,
+      command_id: "admission.lease.adopted:#{lease.lease_id}:#{lease.owner_generation}",
+      event_kind: "admission.lease.adopted",
+      aggregate_kind: "execution_lease",
+      aggregate_id: lease.lease_id,
+      aggregate_version: lease.owner_generation,
+      occurred_at: DateTime.utc_now(),
+      payload: %{
+        "lease_id" => lease.lease_id,
+        "run_id" => lease.run_id,
+        "owner_generation" => lease.owner_generation
+      }
+    })
+  end
+
   defp release_outbox!(workspace_id, lease, status, now) do
     OutboxWriter.insert!(%{
       workspace_id: workspace_id,
@@ -706,6 +802,12 @@ defmodule FavnStoragePostgres.Admission.Store do
       lease.owner_id == command.owner_id and
         lease.owner_generation == command.owner_generation
 
+  defp current_run_owner?(ownership, command) do
+    ownership.owner_id == command.owner_id and
+      ownership.fencing_token == command.owner_generation and
+      is_nil(ownership.released_at) and future?(ownership.expires_at)
+  end
+
   defp normalize_requests(requests), do: Enum.sort_by(requests, & &1.scope_id)
 
   defp request_maps(requests),
@@ -806,6 +908,18 @@ defmodule FavnStoragePostgres.Admission.Store do
   defp validate_renew(command) do
     if workspace_context?(command.workspace_context) and
          Enum.all?([command.renewal_id, command.lease_id, command.owner_id], &valid_id?/1) and
+         is_integer(command.owner_generation) and command.owner_generation > 0 and
+         valid_duration?(command.lease_duration_ms),
+       do: :ok,
+       else: {:error, ErrorMapper.map(:invalid)}
+  end
+
+  defp validate_adopt(command) do
+    if workspace_context?(command.workspace_context) and
+         Enum.all?(
+           [command.lease_id, command.run_id, command.step_id, command.owner_id],
+           &valid_id?/1
+         ) and
          is_integer(command.owner_generation) and command.owner_generation > 0 and
          valid_duration?(command.lease_duration_ms),
        do: :ok,

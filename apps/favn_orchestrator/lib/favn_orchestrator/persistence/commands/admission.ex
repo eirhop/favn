@@ -92,6 +92,33 @@ defmodule FavnOrchestrator.Persistence.Commands.RenewExecutionLease do
         }
 end
 
+defmodule FavnOrchestrator.Persistence.Commands.AdoptExecutionLease do
+  @moduledoc "Transfers one active run lease to the run's current fencing generation."
+
+  alias FavnOrchestrator.Persistence.WorkspaceContext
+
+  @enforce_keys [
+    :workspace_context,
+    :lease_id,
+    :run_id,
+    :step_id,
+    :owner_id,
+    :owner_generation,
+    :lease_duration_ms
+  ]
+  defstruct @enforce_keys
+
+  @type t :: %__MODULE__{
+          workspace_context: WorkspaceContext.t(),
+          lease_id: String.t(),
+          run_id: String.t(),
+          step_id: String.t(),
+          owner_id: String.t(),
+          owner_generation: pos_integer(),
+          lease_duration_ms: pos_integer()
+        }
+end
+
 defmodule FavnOrchestrator.Persistence.Commands.ReleaseExecutionLease do
   @moduledoc "Idempotently releases one matching execution lease generation."
 

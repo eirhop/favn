@@ -2,6 +2,7 @@ defmodule FavnOrchestrator.RunServer.RecoveryTest do
   use ExUnit.Case, async: true
 
   alias FavnOrchestrator.RunServer.Recovery
+  alias FavnOrchestrator.RunServer.Execution.RecoveryPosition
   alias FavnOrchestrator.RunState
 
   test "resumes only fresh runs or explicit retry checkpoints" do
@@ -55,6 +56,26 @@ defmodule FavnOrchestrator.RunServer.RecoveryTest do
 
     assert {:ok, {:uncertain, %{reason: :invalid_retry_checkpoint}}} =
              Recovery.disposition(sequential_with_pipeline)
+  end
+
+  test "active recovery fails closed once any node outcome is durable" do
+    run =
+      run_state(
+        metadata: %{active_runner_task_ids: ["rt_active"]},
+        result: %{node_results: [%{node_key: {{__MODULE__, :asset}, nil}, status: :ok}]}
+      )
+      |> RecoveryPosition.record_outcome(0, 1)
+      |> RunState.for_step_persistence()
+
+    assert run.result == nil
+
+    assert {:ok,
+            {:uncertain,
+             %{
+               reason: :active_stage_outcomes_not_resumable,
+               active_runner_task_count: 1,
+               runner_tasks: ["rt_active"]
+             }}} = Recovery.disposition(run)
   end
 
   defp run_state(overrides) do

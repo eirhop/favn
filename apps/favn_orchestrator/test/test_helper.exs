@@ -48,7 +48,18 @@ defmodule FavnOrchestrator.TestRunnerTaskStore do
   def persist_runtime_inputs(_command), do: unavailable()
   def append_log_batch(_command), do: unavailable()
   def complete(_command), do: unavailable()
-  def request_cancellation(_command), do: unavailable()
+
+  def request_cancellation(command) do
+    if Process.get({__MODULE__, :terminal_cancellation_test}) do
+      case Process.get({__MODULE__, command.task_id}) do
+        %RunnerTask{} = task -> {:ok, task}
+        nil -> unavailable()
+      end
+    else
+      unavailable()
+    end
+  end
+
   def acknowledge_cancellation(_command), do: unavailable()
   def release(_command), do: unavailable()
   def retry(_command), do: unavailable()

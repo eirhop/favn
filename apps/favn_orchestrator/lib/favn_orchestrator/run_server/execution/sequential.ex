@@ -528,16 +528,7 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
   end
 
   defp cancel_work(%RunExecutionState{} = state, task_ids, reason) do
-    work_set =
-      Enum.reduce(task_ids, state.work_set, fn task_id, acc ->
-        case Map.get(acc.entries, task_id) do
-          nil ->
-            ActiveTaskSet.add_entry(acc, %{task_id: task_id})
-
-          _entry ->
-            acc
-        end
-      end)
+    work_set = ActiveTaskSet.retain_task_ids(state.work_set, task_ids)
 
     {run, work_set} =
       ActiveTaskSet.cancel_all(state.run, work_set, reason)
