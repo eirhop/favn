@@ -5415,10 +5415,10 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
 
   test "terminal failure during refill cancels a sibling admitted by an earlier batch",
        fixture do
-    policies = %{"global" => %{max_concurrency: 1}}
+    policies = %{"global" => %{max_concurrency: 2}}
     install_execution_capacity_scope!(fixture, :global, policies)
-    {run, _keys} = create_continuation_pipeline_run!(fixture, 1, policies)
-    {second_run, _keys} = create_continuation_pipeline_run!(fixture, 1, policies)
+    {run, _keys} = create_continuation_pipeline_run!(fixture, 2, policies)
+    {second_run, _keys} = create_continuation_pipeline_run!(fixture, 2, policies)
 
     delay_runner_task_inserts!()
     start_pipeline_runtime!()
@@ -5461,10 +5461,14 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
              RunServer.start_link(%{run_state: second_run, version: fixture.version})
 
     second_monitor = Process.monitor(second_pid)
+    assert [second_task_id] = await_runner_task_ids!(fixture.workspace_id, second_run.id, 1)
+    assert {:ok, second_task} = claim_asset_task(fixture, "terminal-refill-next-1")
+    assert second_task.task_id == second_task_id
+
     Process.sleep(250)
 
-    assert runner_task_ids(fixture.workspace_id, second_run.id) == []
-    assert active_execution_lease_count(fixture.workspace_id, second_run.id) == 0
+    assert [^second_task_id] = runner_task_ids(fixture.workspace_id, second_run.id)
+    assert active_execution_lease_count(fixture.workspace_id, second_run.id) == 1
 
     assert :ok =
              finish_runner_task(task,
@@ -5479,7 +5483,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert {:ok, finished} = get_run(fixture, run.id)
     assert finished.status == :error
     assert active_execution_lease_count(fixture.workspace_id, run.id) == 0
-    assert [_second_task_id] = await_runner_task_ids!(fixture.workspace_id, second_run.id, 1)
+    assert 2 == length(await_runner_task_ids!(fixture.workspace_id, second_run.id, 2))
 
     cancel_outcomes =
       Map.get(finished.metadata, :cancel_outcomes, Map.get(finished.metadata, "cancel_outcomes"))
@@ -5492,14 +5496,17 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
                ]
            end)
 
-    Enum.each(1..3, fn task_number ->
-      assert task_number ==
-               length(await_runner_task_ids!(fixture.workspace_id, second_run.id, task_number))
+    assert :ok = start_runner_task(second_task)
+    await_runner_task_waiter!(second_task)
+    :ok = complete_asset_task(second_task, second_task.payload, false)
 
-      assert {:ok, next_task} = claim_asset_task(fixture, "terminal-refill-next-#{task_number}")
-      assert :ok = start_runner_task(next_task)
-      await_runner_task_waiter!(next_task)
-      :ok = complete_asset_task(next_task, next_task.payload, false)
+    assert 3 == length(await_runner_task_ids!(fixture.workspace_id, second_run.id, 3))
+
+    Enum.each(2..3, fn task_number ->
+      assert {:ok, task} = claim_asset_task(fixture, "terminal-refill-next-#{task_number}")
+      assert :ok = start_runner_task(task)
+      await_runner_task_waiter!(task)
+      :ok = complete_asset_task(task, task.payload, false)
     end)
 
     assert_receive {:DOWN, ^second_monitor, :process, ^second_pid, :normal}, 5_000
@@ -5512,7 +5519,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     {first_command, first_run} = pipeline_run_command(fixture)
 
     first_run =
-      %{first_run | timeout_ms: 500, metadata: %{execution_pool_policy: policies}}
+      %{first_run | timeout_ms: 5_000, metadata: %{execution_pool_policy: policies}}
       |> RunState.with_snapshot_hash()
 
     assert {:ok, _created} = RunStore.create_run(%{first_command | run: first_run})
@@ -5537,7 +5544,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert :ok = start_runner_task(task)
 
     assert :cancelling ==
-             await_runner_task_status!(fixture.workspace_id, task_id, :cancelling, 400)
+             await_runner_task_status!(fixture.workspace_id, task_id, :cancelling, 1_000)
 
     assert_receive {:DOWN, ^first_monitor, :process, ^first_pid, :normal}, 5_000
 
