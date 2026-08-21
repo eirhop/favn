@@ -21,7 +21,7 @@ defmodule FavnLocal.DistributionTest do
 
     assert File.read!(path) == """
            {lookup, [file, native]}.
-           {host, {127, 0, 0, 1}, ["favn-local.test"]}.
+           {host, {127, 0, 0, 2}, ["favn-local.test"]}.
            """
   end
 end

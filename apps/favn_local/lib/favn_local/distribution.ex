@@ -1,12 +1,12 @@
 defmodule FavnLocal.Distribution do
   @moduledoc false
 
-  @local_address {127, 0, 0, 1}
+  @local_address {127, 0, 0, 2}
   @local_host_alias "favn-local.test"
   @local_host_alias_chars ~c"favn-local.test"
   @resolver_config """
   {lookup, [file, native]}.
-  {host, {127, 0, 0, 1}, ["favn-local.test"]}.
+  {host, {127, 0, 0, 2}, ["favn-local.test"]}.
   """
 
   @doc false
@@ -34,7 +34,9 @@ defmodule FavnLocal.Distribution do
     end
   end
 
-  defp ensure_local_resolution do
+  @doc false
+  @spec ensure_local_resolution() :: :ok | {:error, term()}
+  def ensure_local_resolution do
     lookup = :inet_db.res_option(:lookup)
 
     with true <- is_list(lookup),
