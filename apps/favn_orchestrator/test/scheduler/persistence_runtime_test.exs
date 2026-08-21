@@ -3,6 +3,7 @@ defmodule FavnOrchestrator.Scheduler.PersistenceRuntimeTest do
 
   alias Favn.Manifest.Schedule
   alias FavnOrchestrator.Lifecycle
+  alias FavnOrchestrator.Persistence.Error
   alias FavnOrchestrator.Persistence.Results.ScheduleClaim
   alias FavnOrchestrator.Persistence.WorkspaceContext
   alias FavnOrchestrator.Scheduler.PersistenceRuntime
@@ -63,6 +64,33 @@ defmodule FavnOrchestrator.Scheduler.PersistenceRuntimeTest do
 
       assert next_cursor["in_flight_run_id"] == "run-queued"
     end
+  end
+
+  test "bounds non-retryable persistence recovery without bounding transient failures" do
+    assert PersistenceRuntime.preserve_occurrence_on_dispatch_error?(
+             Error.new(:unavailable, "database unavailable", retryable?: true),
+             100
+           )
+
+    assert PersistenceRuntime.preserve_occurrence_on_dispatch_error?(
+             Error.new(:constraint, "persistence relationship is invalid"),
+             1
+           )
+
+    assert PersistenceRuntime.preserve_occurrence_on_dispatch_error?(
+             Error.new(:internal, "internal persistence failure"),
+             2
+           )
+
+    refute PersistenceRuntime.preserve_occurrence_on_dispatch_error?(
+             Error.new(:constraint, "persistent relationship failure"),
+             3
+           )
+
+    refute PersistenceRuntime.preserve_occurrence_on_dispatch_error?(
+             Error.new(:invalid, "invalid schedule submission"),
+             1
+           )
   end
 
   defp schedule_claim(now, cursor) do

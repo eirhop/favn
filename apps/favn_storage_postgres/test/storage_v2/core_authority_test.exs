@@ -83,8 +83,11 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnOrchestrator.Persistence.Commands.RenewRebuildOperationLease
   alias FavnOrchestrator.Persistence.Commands.RenewRunOwnership
   alias FavnOrchestrator.Persistence.Commands.ClaimDueSchedules
+  alias FavnOrchestrator.Persistence.Commands.ClaimRunSubmissions
   alias FavnOrchestrator.Persistence.Commands.ClaimScheduleOccurrences
   alias FavnOrchestrator.Persistence.Commands.CommitScheduleEvaluation
+  alias FavnOrchestrator.Persistence.Commands.MarkRunSubmissionAdmitting
+  alias FavnOrchestrator.Persistence.Commands.MarkRunSubmissionSubmitted
   alias FavnOrchestrator.Persistence.Commands.ScheduleOccurrenceIntent
   alias FavnOrchestrator.Persistence.Commands.SetScheduleActivation
   alias FavnOrchestrator.Persistence.Commands.SetActorStatus
@@ -6243,6 +6246,13 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
       occurred_at: DateTime.utc_now()
     }
 
+    assert %{rows: [[0]]} =
+             SQL.query!(
+               Repo,
+               "SELECT count(*) FROM favn_control.runs WHERE workspace_id = $1 AND run_id = $2",
+               [fixture.workspace_id, authorization.submission.run_id]
+             )
+
     assert {:error, %{kind: :fenced}} =
              SchedulerStore.authorize_occurrence_dispatch(%{
                authorization
@@ -6263,6 +6273,68 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
 
     assert queued_submission.status == :queued
     assert queued_submission.run_id == authorization.submission.run_id
+
+    submission_claim = %ClaimRunSubmissions{
+      workspace_context: fixture.workspace_context,
+      command_id: "schedule-submission-claim:" <> fixture.workspace_id,
+      owner_id: "schedule-submission-worker",
+      lease_duration_ms: 30_000,
+      occurred_at: DateTime.utc_now(),
+      limit: 1
+    }
+
+    assert {:ok, [claimed_submission]} = RunSubmissionStore.claim(submission_claim)
+    assert claimed_submission.status == :preparing
+
+    assert {:ok, admitting_submission} =
+             RunSubmissionStore.mark_admitting(%MarkRunSubmissionAdmitting{
+               workspace_context: fixture.workspace_context,
+               command_id: "schedule-submission-admitting:" <> fixture.workspace_id,
+               submission_id: claimed_submission.submission_id,
+               owner_id: claimed_submission.claim_owner,
+               claim_generation: claimed_submission.claim_generation,
+               preparation: %{"kind" => "schedule-test"},
+               occurred_at: DateTime.utc_now()
+             })
+
+    {scheduled_run_command, scheduled_run} =
+      scheduled_pipeline_run_command(fixture, authorization.submission.run_id)
+
+    assert {:ok, created_run} = RunStore.create_run(scheduled_run_command)
+    assert created_run.run.id == scheduled_run.id
+    refute created_run.replayed?
+
+    assert {:ok, replayed_run} = RunStore.create_run(scheduled_run_command)
+    assert replayed_run.replayed?
+    assert replayed_run.event_id == created_run.event_id
+
+    submission_completion = %MarkRunSubmissionSubmitted{
+      workspace_context: fixture.workspace_context,
+      command_id: "schedule-submission-submitted:" <> fixture.workspace_id,
+      submission_id: admitting_submission.submission_id,
+      owner_id: admitting_submission.claim_owner,
+      claim_generation: admitting_submission.claim_generation,
+      run_id: scheduled_run.id,
+      outcome: %{"run_id" => scheduled_run.id},
+      occurred_at: DateTime.utc_now()
+    }
+
+    assert {:ok, submitted} = RunSubmissionStore.mark_submitted(submission_completion)
+    assert submitted.status == :submitted
+    assert {:ok, ^submitted} = RunSubmissionStore.mark_submitted(submission_completion)
+
+    assert %{rows: [[1, 1]]} =
+             SQL.query!(
+               Repo,
+               """
+               SELECT
+                 (SELECT count(*) FROM favn_control.run_submissions
+                  WHERE workspace_id = $1 AND run_id = $2),
+                 (SELECT count(*) FROM favn_control.runs
+                  WHERE workspace_id = $1 AND run_id = $2)
+               """,
+               [fixture.workspace_id, scheduled_run.id]
+             )
 
     deactivation = %SetScheduleActivation{
       activation
@@ -10411,10 +10483,28 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     }
   end
 
-  defp pipeline_run_command(fixture), do: pipeline_run_command(fixture, nil)
+  defp scheduled_pipeline_run_command(fixture, run_id) do
+    {command, run} = pipeline_run_command(fixture, nil, run_id)
 
-  defp pipeline_run_command(fixture, window) do
-    run_id = "pipeline-run-#{System.unique_integer([:positive])}"
+    pipeline_target = %RunTarget{
+      target_kind: :pipeline,
+      target_id: fixture.pipeline_target_id,
+      target_module: "MyApp.Pipeline",
+      target_name: "daily",
+      is_primary: false
+    }
+
+    {%{command | targets: command.targets ++ [pipeline_target]}, run}
+  end
+
+  defp pipeline_run_command(fixture),
+    do: pipeline_run_command(fixture, nil, "pipeline-run-#{System.unique_integer([:positive])}")
+
+  defp pipeline_run_command(fixture, window),
+    do:
+      pipeline_run_command(fixture, window, "pipeline-run-#{System.unique_integer([:positive])}")
+
+  defp pipeline_run_command(fixture, window, run_id) do
     ref = {MyApp.Asset, :asset}
     node_key = {ref, window && window.key}
 

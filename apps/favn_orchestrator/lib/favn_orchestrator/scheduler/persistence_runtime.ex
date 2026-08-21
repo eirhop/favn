@@ -37,6 +37,7 @@ defmodule FavnOrchestrator.Scheduler.PersistenceRuntime do
   @default_tick_ms 15_000
   @max_batch 100
   @max_occurrences 500
+  @max_non_retryable_dispatch_attempts 3
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) when is_list(opts) do
@@ -423,13 +424,30 @@ defmodule FavnOrchestrator.Scheduler.PersistenceRuntime do
         unexpected -> {:error, {:unexpected_schedule_occurrence_status, unexpected}}
       end
     else
-      {:error, %Error{retryable?: true} = error} ->
-        {:error, error}
+      {:error, %Error{} = error} ->
+        error = dispatch_persistence_error(error, occurrence)
+
+        if preserve_occurrence_on_dispatch_error?(error, occurrence.attempt_count) do
+          {:error, error}
+        else
+          complete_occurrence(context, occurrence, nil, JsonSafe.error(error))
+        end
 
       {:error, reason} ->
         complete_occurrence(context, occurrence, nil, JsonSafe.error(reason))
     end
   end
+
+  @doc false
+  @spec preserve_occurrence_on_dispatch_error?(Error.t(), non_neg_integer()) :: boolean()
+  def preserve_occurrence_on_dispatch_error?(%Error{retryable?: true}, _attempt_count), do: true
+
+  def preserve_occurrence_on_dispatch_error?(%Error{kind: kind}, attempt_count)
+      when kind in [:constraint, :internal] and
+             attempt_count < @max_non_retryable_dispatch_attempts,
+      do: true
+
+  def preserve_occurrence_on_dispatch_error?(%Error{}, _attempt_count), do: false
 
   defp authorize_occurrence_dispatch(context, entry, occurrence, submission) do
     Persistence.stores().scheduler.authorize_occurrence_dispatch(
@@ -490,6 +508,17 @@ defmodule FavnOrchestrator.Scheduler.PersistenceRuntime do
       {:ok, %ScheduleOccurrence{}} -> :ok
       {:error, reason} -> {:error, reason}
     end
+  end
+
+  defp dispatch_persistence_error(%Error{} = error, occurrence) do
+    details =
+      Map.merge(error.details, %{
+        occurrence_id: occurrence.occurrence_id,
+        attempt_count: occurrence.attempt_count,
+        max_non_retryable_attempts: @max_non_retryable_dispatch_attempts
+      })
+
+    %{error | details: details}
   end
 
   defp trigger(entry, occurrence) do
