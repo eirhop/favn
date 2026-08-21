@@ -32,6 +32,8 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
 
   @release "rr_" <> String.duplicate("a", 64)
   @other_release "rr_" <> String.duplicate("b", 64)
+  @distributed_test_address {127, 0, 0, 2}
+  @distributed_test_host ~c"control-plane.favn.test"
 
   setup_all do
     url =
@@ -2364,6 +2366,8 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
   end
 
   defp start_actual_runner(peer, control_plane_node, runner_id, runner_pool) do
+    configure_peer_control_plane_host(peer, control_plane_node)
+
     environment = %{
       "FAVN_CONTROL_PLANE_NODE" => Atom.to_string(control_plane_node),
       "FAVN_RUNNER_RELEASE_ID" => @release,
@@ -2377,22 +2381,47 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
     :peer.call(peer, Application, :ensure_all_started, [:favn_runner], 120_000)
   end
 
+  defp configure_peer_control_plane_host(peer, control_plane_node) do
+    [_, host] =
+      control_plane_node
+      |> Atom.to_string()
+      |> String.split("@", parts: 2)
+
+    host = String.to_charlist(host)
+    assert {:ok, address} = :inet.getaddr(host, :inet)
+    lookup = :peer.call(peer, :inet_db, :res_option, [:lookup], 30_000)
+    assert is_list(lookup)
+
+    assert :ok =
+             :peer.call(peer, :inet_db, :set_lookup, [Enum.uniq([:file | lookup])], 30_000)
+
+    assert :ok = :peer.call(peer, :inet_db, :add_host, [address, [host]], 30_000)
+  end
+
   defp with_distribution(fun) do
     started_distribution? = not Node.alive?()
-
-    if started_distribution? do
-      assert {_, 0} = System.cmd("epmd", ["-daemon"], stderr_to_stdout: true)
-
-      client_name =
-        String.to_atom("favn_storage_runner_test_#{System.unique_integer([:positive])}@127.0.0.1")
-
-      assert {:ok, _pid} = Node.start(client_name, name_domain: :longnames)
-    end
+    original_lookup = :inet_db.res_option(:lookup)
 
     try do
+      if started_distribution? do
+        assert {_, 0} = System.cmd("epmd", ["-daemon"], stderr_to_stdout: true)
+
+        assert :ok = :inet_db.set_lookup(Enum.uniq([:file | original_lookup]))
+        assert :ok = :inet_db.add_host(@distributed_test_address, [@distributed_test_host])
+
+        local_name = "favn_storage_runner_test_#{System.unique_integer([:positive])}"
+        client_name = String.to_atom(local_name <> "@" <> List.to_string(@distributed_test_host))
+
+        assert {:ok, _pid} = Node.start(client_name, name_domain: :longnames)
+      end
+
       fun.()
     after
-      if started_distribution?, do: Node.stop()
+      if started_distribution? do
+        if Node.alive?(), do: Node.stop()
+        :ok = :inet_db.del_host(@distributed_test_address)
+        :ok = :inet_db.set_lookup(original_lookup)
+      end
     end
   end
 
