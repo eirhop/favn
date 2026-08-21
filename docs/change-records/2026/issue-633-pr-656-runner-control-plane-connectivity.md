@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Implementing |
+| Status | Implemented |
 | Type | Bug fix |
 | Primary issue | [#633](https://github.com/eirhop/favn/issues/633) |
 | Pull request | [#656](https://github.com/eirhop/favn/pull/656) |
@@ -10,7 +10,8 @@
 | Affected areas | Packaged runner startup, distributed-BEAM connection, registration, lifecycle, readiness, deployment templates, logs, and diagnostics |
 | Approved plan commit | Not available. The temporary plan was reviewed and removed before permanent change records were adopted. |
 | Original code baseline | `87e91127` |
-| Implementation commit before this record | `ed4abc65` |
+| Implementation commit before this record | `ed4abc65`, rewritten as `c8e90e5d` by the required rebase |
+| Post-rebase OTP typing correction | `bd31b906` |
 | Last updated | 2026-08-21 |
 
 ## One-minute summary
@@ -384,6 +385,11 @@ The implementation follows the approved ordering: validate, connect, register,
 then accept work. Disconnect reverses availability and a fresh accepted
 registration is required for recovery.
 
+Post-rebase qualification also removed an impossible four-element success
+match from the EPMD address probe. OTP 29's public type returns either an
+address or an error at that step, so the removed clauses were unreachable. This
+fixed Dialyzer without changing runtime behavior or the approved design.
+
 ```mermaid
 stateDiagram-v2
     [*] --> Starting
@@ -432,7 +438,9 @@ the approved architecture: stale registration acknowledgements are fenced,
 node monitoring is enabled once, duplicate disconnect events are ignored, retry
 counters remain truthful, periodic summaries continue after retry 8, underscore
 hosts are rejected, runner-pool metadata is sanitized, and remote connection and
-registration evidence fails closed within the health-check budget.
+registration evidence fails closed within the health-check budget. Post-rebase
+CI preparation also removed unreachable EPMD return-shape matches reported by
+OTP 29 Dialyzer; this did not change the planned probe behavior.
 
 ## Decision log
 
@@ -442,25 +450,29 @@ registration evidence fails closed within the health-check budget.
 | 2026-08-21 | Use FQDN aliases for every generated BEAM service. | One long-name topology must be internally consistent. | Reviewed and accepted. |
 | 2026-08-21 | Separate transport, subscription, and registration retry ownership. | They can fail independently and need coalesced recovery. | Reviewed and accepted. |
 | 2026-08-21 | Add the permanent change-record standard and record to PR #656. | User requested adoption before the next push. | Reviewed and accepted. |
+| 2026-08-21 | Remove impossible EPMD address-probe return matches. | OTP 29 Dialyzer proved those clauses are unreachable; the supported address and error results were already handled. | Reviewed and accepted; no plan deviation. |
 
 ## Verification evidence
 
 | Check | Result | Evidence boundary |
 | --- | --- | --- |
-| Runner compile with warnings as errors | Passed before this documentation update. | Compile qualification, not runtime proof. |
-| Five affected runner test files | 66 passed after recompiling final source. | Focused deterministic behavior. |
-| Runner fast suite | 238 passed. | Runner regression qualification. |
-| Public `favn` fast suite | 183 passed, 3 excluded. | Public facade regression qualification. |
-| Deployment artifact acceptance test | 1 passed. | Generated Compose contract. |
-| Umbrella compile with warnings as errors | Passed. | Compile qualification across applications. |
-| Test-tier guard | Passed. | CI-routing consistency. |
-| Scoped diff check | Passed. | Patch formatting only. |
+| Repository formatting | Passed after rebase. | Formatting only. |
+| Runner compile with warnings as errors | Passed after rebase and the OTP typing correction. | Compile qualification, not runtime proof. |
+| Five affected runner test files | 67 passed after rebase. | Focused deterministic behavior. |
+| Runner fast suite | 238 passed after rebase. | Runner regression qualification. |
+| Public `favn` fast suite | 183 passed, 3 excluded after rebase. | Public facade regression qualification. |
+| Deployment artifact acceptance test | 1 passed after rebase. | Generated Compose contract. |
+| Umbrella compile with warnings as errors | Passed after rebase. | Compile qualification across applications. |
+| Quick Credo and Sobelow checks | Passed after rebase with no issues. | Static lint and security qualification. |
+| Whole-umbrella Dialyzer | Passed after the OTP typing correction; the configured three known exclusions remained skipped. | Static type qualification. |
+| Test-tier guard | Passed after rebase. | CI-routing consistency. |
+| Diff checks | Passed after the final record update. | Patch formatting only. |
 | Independent implementation review | PR-ready; no P0-P2 findings remained. | Plan-to-code and focused-test comparison. |
 | Initial PR CI | Mixed: fast tests and image qualification passed; quick, Dialyzer, acceptance, and slow jobs failed. | Stale pre-rebase CI; not final evidence for the rebased head. |
 
 ### Not verified
 
-- Post-rebase local checks and CI for the final pushed commit are pending.
+- Post-push CI for the rebased head is pending.
 - No live two-node TLS distribution test was run.
 - Private-DNS routing, certificate SANs, cookie compatibility, and Azure
   deployment were not proven.
@@ -475,6 +487,6 @@ registration evidence fails closed within the health-check budget.
 | Reviewer | Independent sub-agent `change_record_standard_review` |
 | Compared | Approved temporary plan, implementation, tests, diagnostics, canonical docs, and this reconstructed record |
 | Deviations complete | Yes. Six material plan or PR-scope deviations are recorded. |
-| Findings | One P1, five P2, and one P3 accuracy or precision findings in the reconstructed record |
-| Findings addressed and rechecked | Yes. The reviewer rechecked every correction. |
-| Verdict | Record approved with no remaining P0-P3 findings. Recheck after the rebase and final code or evidence updates before setting status to `Implemented`. |
+| Findings | Initial record review: one P1, five P2, and one P3 accuracy or precision findings. Final evidence review: one P3 clarity finding. |
+| Findings addressed and rechecked | Yes. The reviewer rechecked the record, rebased implementation, OTP typing correction, and final evidence. |
+| Verdict | Approved with no remaining P0-P3 findings. The implementation matches the reconstructed plan except for the six recorded and accepted deviations. |
