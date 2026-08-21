@@ -46,6 +46,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
   alias FavnStoragePostgres.Migrations.OptimizeLogicalTargetHistoryV2
   alias FavnStoragePostgres.Migrations.OptimizeRunStatusPagingV2
   alias FavnStoragePostgres.Migrations.NormalizeResourceCircuitDefinitionsV2
+  alias FavnStoragePostgres.Migrations.RebindScheduleOccurrenceRunReferenceV2
   alias FavnStoragePostgres.RuntimePrivileges
 
   @prefix "favn_control"
@@ -88,7 +89,8 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     {20_260_731_000_000, AddRunnerTaskOperatorReadsV2},
     {20_260_805_000_000, OptimizeLogicalTargetHistoryV2},
     {20_260_807_000_000, GeneralizeOperatorCommandPrincipalsV2},
-    {20_260_813_000_000, AddWorkspaceProvisioningOperationsV2}
+    {20_260_813_000_000, AddWorkspaceProvisioningOperationsV2},
+    {20_260_821_000_000, RebindScheduleOccurrenceRunReferenceV2}
   ]
   @required_tables ~w(
     schema_migrations
@@ -527,7 +529,8 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     runner_task_command_tasks_outcome_fkey runner_task_command_tasks_runtime_input_error_fkey
     runner_task_command_tasks_task_fkey
     schedule_activations_workspace_fk schedule_activation_commands_workspace_fk
-    schedule_cursors_target_fk schedule_occurrences_cursor_fk execution_leases_run_fk
+    schedule_cursors_target_fk schedule_occurrences_cursor_fk
+    schedule_occurrences_run_submission_fk execution_leases_run_fk
     execution_lease_scopes_lease_fk execution_lease_scopes_scope_fk admission_waiters_run_fk
     admission_waiters_scope_fk materialization_claims_run_fk materialization_claims_target_fk
     materialization_claims_run_target_fk materializations_run_fk materializations_outbox_fk
@@ -556,7 +559,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
                           Enum.map(@identifier_constraint_tables, &"#{&1}_identifier_lengths_v2") ++
                           Enum.map(@payload_constraint_tables, &"#{&1}_payload_bounds_v2")
   @expected_versions Enum.map(@migrations, fn {version, _module} -> version end)
-  @expected_definition_fingerprint "fd9aaf29e13f6a037f0e0c4df23d30e3b3af14176df1b3f7fbc0706e1be9b6ea"
+  @expected_definition_fingerprint "10fc56c41af9e79145554539a9348dbf14d7de624c72bad2f89eaa00f218e61b"
 
   @doc "Creates the V2 namespace for development/tests and applies every known migration."
   @spec migrate!(module()) :: :ok

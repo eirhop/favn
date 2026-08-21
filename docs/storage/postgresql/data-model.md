@@ -344,6 +344,12 @@ erDiagram
         text workspace_id PK
         text run_id PK
     }
+    RUN_SUBMISSIONS {
+        text workspace_id PK, FK
+        text submission_id PK
+        text run_id UK
+        text status
+    }
     RUN_TARGETS {
         text workspace_id PK
         text run_id PK
@@ -542,7 +548,7 @@ erDiagram
 
     WORKSPACE_DEPLOYMENT_TARGETS ||--o{ SCHEDULE_CURSORS : schedules
     SCHEDULE_CURSORS ||--o{ SCHEDULE_OCCURRENCES : evaluates
-    RUNS o|--o{ SCHEDULE_OCCURRENCES : starts
+    RUN_SUBMISSIONS o|--o{ SCHEDULE_OCCURRENCES : reserves
     WORKSPACES ||--o{ CAPACITY_SCOPES : limits
     RUNS ||--o{ EXECUTION_LEASES : admits
     EXECUTION_LEASES ||--|{ EXECUTION_LEASE_SCOPES : consumes
@@ -575,6 +581,11 @@ claim is reused. Resource circuits use an exclusive expiring half-open probe;
 their outcome ledger prevents duplicate terminal updates. Recovery candidates
 link safe remaining work to an immutable terminal source run and, once claimed,
 to a separate recovery run.
+
+A completed schedule dispatch references the durable run submission by its
+workspace-scoped reserved run ID. The submission exists before asynchronous
+preparation creates the matching run, so schedule dispatch never depends on a
+premature `runs` row.
 
 `rebuild_operations` is the authoritative lifecycle and immutable plan envelope.
 `rebuild_plan_actions` checkpoints ordered target-level work;
