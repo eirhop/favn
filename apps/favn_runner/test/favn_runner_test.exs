@@ -9,6 +9,34 @@ defmodule FavnRunnerTest do
   alias Favn.Manifest.Graph
   alias Favn.Manifest.Version
 
+  defmodule DiagnosticsServer do
+    use GenServer
+
+    def start_link(diagnostics), do: GenServer.start_link(__MODULE__, diagnostics)
+    def put(server, diagnostics), do: GenServer.call(server, {:put, diagnostics})
+
+    @impl true
+    def init(diagnostics), do: {:ok, diagnostics}
+
+    @impl true
+    def handle_call(:diagnostics, _from, diagnostics), do: {:reply, diagnostics, diagnostics}
+
+    def handle_call({:put, diagnostics}, _from, _current),
+      do: {:reply, :ok, diagnostics}
+  end
+
+  defmodule BlockingDiagnosticsServer do
+    use GenServer
+
+    def start_link(_opts), do: GenServer.start_link(__MODULE__, %{})
+
+    @impl true
+    def init(state), do: {:ok, state}
+
+    @impl true
+    def handle_call(:diagnostics, _from, state), do: {:noreply, state}
+  end
+
   setup do
     manifest_version = "mv_" <> Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)
 
@@ -48,7 +76,126 @@ defmodule FavnRunnerTest do
     assert diagnostics.status == :ready
     assert diagnostics.release.runner_release_id == FavnTestSupport.runner_release_id()
     assert diagnostics.release.runner_contract_version == 13
+    assert diagnostics.control_plane.status == :not_configured
+    assert diagnostics.registration.status == :not_required
     assert diagnostics.manifest_cache.count >= 1
+  end
+
+  test "remote readiness requires lifecycle, connection, and accepted registration" do
+    lifecycle = :"runner_diagnostics_lifecycle_#{System.unique_integer([:positive])}"
+
+    start_supervised!({FavnRunner.Lifecycle, name: lifecycle, shutdown_drain_timeout_ms: 2_000})
+
+    :ok = FavnRunner.Lifecycle.mark_connecting(lifecycle)
+
+    connection =
+      start_supervised!(%{
+        id: make_ref(),
+        start:
+          {DiagnosticsServer, :start_link,
+           [
+             %{
+               status: :connected,
+               connected?: true,
+               target_node: "control@control.internal",
+               retry_count: 0,
+               last_failure_class: nil,
+               last_failure_at: nil,
+               connected_at: DateTime.utc_now(),
+               next_retry_ms: nil,
+               next_retry_at: nil
+             }
+           ]}
+      })
+
+    registration =
+      start_supervised!(%{
+        id: make_ref(),
+        start:
+          {DiagnosticsServer, :start_link,
+           [
+             %{
+               status: :connecting,
+               registered?: false,
+               phase: :connecting,
+               retry_count: 1,
+               last_failure_class: :registration_unavailable,
+               last_failure_at: DateTime.utc_now()
+             }
+           ]}
+      })
+
+    opts = [
+      lifecycle: lifecycle,
+      control_plane_required?: true,
+      control_plane_connection: connection,
+      runner_agent: registration
+    ]
+
+    assert {:ok, %{ready?: false, status: :not_ready}} = FavnRunner.diagnostics(opts)
+
+    :ok = FavnRunner.Lifecycle.mark_accepting(lifecycle)
+    assert {:ok, %{ready?: false, status: :not_ready}} = FavnRunner.diagnostics(opts)
+
+    :ok =
+      DiagnosticsServer.put(registration, %{
+        status: :accepted,
+        registered?: true,
+        phase: :idle,
+        retry_count: 0,
+        last_failure_class: nil,
+        last_failure_at: nil
+      })
+
+    assert {:ok, %{ready?: true, status: :ready}} = FavnRunner.diagnostics(opts)
+  end
+
+  test "configured control-plane readiness fails closed while remote children are absent" do
+    previous = Application.get_env(:favn_runner, :production_runtime_config)
+
+    Application.put_env(:favn_runner, :production_runtime_config, %{
+      expected_control_plane_node: "control@control.internal"
+    })
+
+    on_exit(fn ->
+      if is_nil(previous) do
+        Application.delete_env(:favn_runner, :production_runtime_config)
+      else
+        Application.put_env(:favn_runner, :production_runtime_config, previous)
+      end
+    end)
+
+    assert {:ok,
+            %{
+              ready?: false,
+              status: :not_ready,
+              control_plane: %{status: :unavailable, connected?: false},
+              registration: %{status: :unavailable, registered?: false}
+            }} =
+             FavnRunner.diagnostics(
+               control_plane_connection: :missing_issue_633_connection,
+               runner_agent: :missing_issue_633_agent
+             )
+  end
+
+  test "remote diagnostic calls fail closed within the health-check budget" do
+    blocked = start_supervised!(BlockingDiagnosticsServer)
+    started_at = System.monotonic_time(:millisecond)
+
+    assert {:ok,
+            %{
+              ready?: false,
+              control_plane: %{status: :unavailable},
+              registration: %{status: :unavailable}
+            }} =
+             FavnRunner.diagnostics(
+               control_plane_required?: true,
+               control_plane_connection: blocked,
+               runner_agent: blocked
+             )
+
+    elapsed_ms = System.monotonic_time(:millisecond) - started_at
+    assert elapsed_ms < 1_500
   end
 
   test "rejects a different release before manifest or work lookup", %{version: version} do

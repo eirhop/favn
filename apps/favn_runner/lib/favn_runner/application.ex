@@ -25,6 +25,8 @@ defmodule FavnRunner.Application do
     shutdown_drain_timeout_ms =
       Application.get_env(:favn_runner, :shutdown_drain_timeout_ms, 120_000)
 
+    runner_agent_children = runner_agent_children(environment)
+
     children =
       [
         {Lifecycle, shutdown_drain_timeout_ms: shutdown_drain_timeout_ms},
@@ -41,9 +43,9 @@ defmodule FavnRunner.Application do
            FavnRunner.ManifestStore
          )}
       ] ++
-        runner_agent_children(environment) ++
+        runner_agent_children ++
         [
-          {RuntimeBootstrap, []}
+          {RuntimeBootstrap, mark_accepting?: runner_agent_children == []}
         ]
 
     opts = [strategy: :one_for_all, name: FavnRunner.Supervisor]
@@ -111,7 +113,7 @@ defmodule FavnRunner.Application do
   end
 
   defp runner_agent_children(environment) do
-    case Map.get(environment, "FAVN_CONTROL_PLANE_NODE") do
+    case configured_control_plane_node(environment) do
       nil ->
         []
 
@@ -144,10 +146,19 @@ defmodule FavnRunner.Application do
              runner_pool: runner_pool,
              runner_instance_id: Map.get(environment, "FAVN_RUNNER_INSTANCE_ID"),
              lifecycle_mode: lifecycle_mode,
-             max_uptime_ms: max_uptime_ms},
+             max_uptime_ms: max_uptime_ms,
+             connection_notifications?: true,
+             manage_lifecycle?: true},
             restart: :transient
           )
         ]
+    end
+  end
+
+  defp configured_control_plane_node(environment) do
+    case Application.get_env(:favn_runner, :production_runtime_config) do
+      %{expected_control_plane_node: control_plane_node} -> control_plane_node
+      _not_frozen -> Map.get(environment, "FAVN_CONTROL_PLANE_NODE")
     end
   end
 

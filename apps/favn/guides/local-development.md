@@ -16,6 +16,10 @@ You provide:
 Favn does not install or start PostgreSQL, parse `.env` files, build images, or
 run Compose during source development.
 
+The local operator, runner, and command processes communicate through the
+reserved `favn-local.test` alias. Favn maps it to loopback inside each BEAM, so
+source development does not require DNS or hosts-file changes.
+
 ## First-time setup
 
 Add `:favn` and any data-plane plugins to the consumer project, then fetch and

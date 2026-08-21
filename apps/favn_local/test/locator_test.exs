@@ -1,8 +1,11 @@
 defmodule FavnLocal.LocatorTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias FavnLocal.Config
+  alias FavnLocal.Distribution
   alias FavnLocal.Locator
+
+  @local_distribution_address {127, 0, 0, 2}
 
   setup do
     root_dir =
@@ -75,5 +78,33 @@ defmodule FavnLocal.LocatorTest do
     assert {:error, :not_running} = Locator.read(context.root_dir)
 
     assert File.regular?(Path.join([context.root_dir, ".favn", "local", "credentials.json"]))
+  end
+
+  test "an already distributed client installs the local resolver mapping", context do
+    original_lookup = :inet_db.res_option(:lookup)
+    started_distribution? = not Node.alive?()
+
+    if started_distribution? do
+      suffix = System.unique_integer([:positive, :monotonic])
+
+      name =
+        String.to_atom("favn_local_existing_client_#{suffix}@#{Distribution.local_host_alias()}")
+
+      assert :ok = Distribution.start(name, "favn_local_existing_client_test")
+    end
+
+    on_exit(fn ->
+      if started_distribution? and Node.alive?(), do: Node.stop()
+      :ok = :inet_db.del_host(@local_distribution_address)
+      :ok = :inet_db.set_lookup(original_lookup)
+    end)
+
+    assert Node.alive?()
+    assert :ok = :inet_db.del_host(@local_distribution_address)
+    assert :ok = Locator.write(context.config, context.config.runner_release_id)
+    assert {:error, :not_running} = Locator.connect(context.root_dir)
+
+    assert {:ok, @local_distribution_address} =
+             :inet.getaddr(String.to_charlist(Distribution.local_host_alias()), :inet)
   end
 end

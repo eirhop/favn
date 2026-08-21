@@ -42,6 +42,19 @@ For documentation work, follow
 [`docs/DOCUMENTATION_GUIDE.md`](docs/DOCUMENTATION_GUIDE.md). Historical plans and
 reports are not active requirements unless a current document links to them.
 
+## Change records
+
+For substantial code changes—especially cross-app work or changes to public
+contracts, persistence, security, concurrency, lifecycle, recovery, or deployment
+behavior—read [`docs/change-records/README.md`](docs/change-records/README.md)
+before editing implementation code and follow its process. Create and independently
+review the change record first, then push the reviewed plan and open a draft PR
+before implementation. Preserve the approved plan as the baseline. Before final
+review, update the record with the actual outcome, verification evidence, and
+every deviation with its reason. The final reviewer must compare the implementation
+with that baseline. Small localized fixes and documentation-only or test-only
+changes are exempt.
+
 ## Tool routing
 
 - Tidewave and `/design-system` require the umbrella development server. Start it

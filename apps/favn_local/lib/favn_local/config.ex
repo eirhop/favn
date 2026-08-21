@@ -2,6 +2,7 @@ defmodule FavnLocal.Config do
   @moduledoc false
 
   alias Favn.RunnerRelease
+  alias FavnLocal.Distribution
   alias FavnLocal.SourceRelease
   alias FavnOrchestrator.Auth.ServiceTokens
   alias FavnOrchestrator.Operator.Audit
@@ -95,8 +96,10 @@ defmodule FavnLocal.Config do
          orchestrator_port: orchestrator_port,
          view_port: view_port,
          log_level: log_level,
-         operator_node: String.to_atom("favn_local_operator_#{suffix}@127.0.0.1"),
-         runner_node: String.to_atom("favn_local_runner_#{suffix}@127.0.0.1"),
+         operator_node:
+           String.to_atom("favn_local_operator_#{suffix}@#{Distribution.local_host_alias()}"),
+         runner_node:
+           String.to_atom("favn_local_runner_#{suffix}@#{Distribution.local_host_alias()}"),
          distribution_cookie: random_hex(48),
          service_token: random_secret(48),
          view_secret_key_base: view_credentials.secret_key_base,

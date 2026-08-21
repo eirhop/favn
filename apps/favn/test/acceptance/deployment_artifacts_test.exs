@@ -46,6 +46,9 @@ defmodule Favn.DeploymentArtifactsAcceptanceTest do
     assert compose =~ "no-new-privileges:true"
     assert compose =~ "cap_drop:"
     assert compose =~ "FAVN_LOG_LEVEL:-info"
+    assert compose =~ "FAVN_CONTROL_PLANE_NODE: favn_control_plane@control-plane.favn.local"
+    assert compose =~ "FAVN_RUNNER_NODE_HOST_ALIAS: runner.favn.local"
+    assert compose =~ "control-plane.favn.local"
 
     image_contract_path = Path.join(deployment.output, "runner-image-contract.sh")
     image_contract = File.read!(image_contract_path)

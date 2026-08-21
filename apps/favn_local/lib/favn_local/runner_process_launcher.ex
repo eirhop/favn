@@ -2,6 +2,7 @@ defmodule FavnLocal.RunnerProcessLauncher do
   @moduledoc false
 
   alias FavnLocal.Config
+  alias FavnLocal.Distribution
 
   @type child :: %{
           port: port(),
@@ -12,7 +13,8 @@ defmodule FavnLocal.RunnerProcessLauncher do
 
   @spec start(Config.t(), String.t()) :: {:ok, child()} | {:error, term()}
   def start(%Config{} = config, release_id) when is_binary(release_id) do
-    with executable when is_binary(executable) <- System.find_executable("elixir") do
+    with executable when is_binary(executable) <- System.find_executable("elixir"),
+         {:ok, resolver_path} <- Distribution.write_runner_resolver(config.root_dir) do
       runner_instance_id = unique_runner_instance_id(release_id)
       runner_node = dynamic_runner_node(config.runner_node)
 
@@ -39,6 +41,7 @@ defmodule FavnLocal.RunnerProcessLauncher do
             args: args,
             cd: config.root_dir,
             env: [
+              {~c"ERL_INETRC", String.to_charlist(resolver_path)},
               {~c"MIX_ENV", ~c"dev"},
               {~c"FAVN_LOCAL_OPERATOR_NODE",
                config.operator_node |> Atom.to_string() |> String.to_charlist()},
@@ -62,6 +65,7 @@ defmodule FavnLocal.RunnerProcessLauncher do
          runner_instance_id: runner_instance_id
        }}
     else
+      {:error, reason} -> {:error, {:runner_resolver_configuration_failed, reason}}
       _missing -> {:error, {:missing_tool, "elixir"}}
     end
   rescue

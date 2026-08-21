@@ -1,6 +1,7 @@
 services:
   control-plane:
     image: ${FAVN_CONTROL_PLANE_IMAGE:?set FAVN_CONTROL_PLANE_IMAGE to an immutable digest}
+    hostname: control-plane.favn.local
     # The image is immutable. Only /tmp is writable, and the process receives
     # no Linux capabilities or privilege escalation path.
     read_only: true
@@ -19,7 +20,7 @@ services:
       FAVN_RUNTIME_INPUT_PIN_KEY_VERSION: ${FAVN_RUNTIME_INPUT_PIN_KEY_VERSION:-1}
       FAVN_ORCHESTRATOR_API_SERVICE_TOKENS: ${FAVN_ORCHESTRATOR_API_SERVICE_TOKENS:?set scoped API service tokens}
       FAVN_WORKSPACE_IDS: ${FAVN_WORKSPACE_IDS:?set allowed workspace IDs}
-      FAVN_CONTROL_PLANE_NODE: favn_control_plane@control-plane
+      FAVN_CONTROL_PLANE_NODE: favn_control_plane@control-plane.favn.local
       FAVN_RUNNER_POOLS: '{"default":{"mode":"resident"}}'
       FAVN_DISTRIBUTION_COOKIE: ${FAVN_DISTRIBUTION_COOKIE:?set a high-entropy distribution cookie}
       FAVN_OPERATOR_COMMAND_HMAC_SECRET: ${FAVN_OPERATOR_COMMAND_HMAC_SECRET:?set the operator command HMAC secret}
@@ -31,13 +32,16 @@ services:
       - "4369"
       - "9100"
     networks:
-      - favn-private
+      favn-private:
+        aliases:
+          - control-plane.favn.local
     volumes:
       - ${FAVN_ORCHESTRATOR_DISTRIBUTION_TLS_DIR:?set the Orchestrator distribution TLS directory}:/etc/favn/tls:ro
     restart: unless-stopped
 
   view:
     image: ${FAVN_CONTROL_PLANE_IMAGE:?set FAVN_CONTROL_PLANE_IMAGE to an immutable digest}
+    hostname: view.favn.local
     read_only: true
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=64m,uid=10001,gid=10001,mode=0700
@@ -47,8 +51,8 @@ services:
       - no-new-privileges:true
     environment:
       FAVN_CONTROL_PLANE_ROLE: view
-      FAVN_VIEW_NODE: favn_view@view
-      FAVN_CONTROL_PLANE_NODE: favn_control_plane@control-plane
+      FAVN_VIEW_NODE: favn_view@view.favn.local
+      FAVN_CONTROL_PLANE_NODE: favn_control_plane@control-plane.favn.local
       FAVN_DISTRIBUTION_COOKIE: ${FAVN_DISTRIBUTION_COOKIE:?set a high-entropy distribution cookie}
       FAVN_DISTRIBUTION_TLS_OPTIONS_FILE: /etc/favn/tls/ssl-dist.config
       FAVN_BEAM_DISTRIBUTION_PORT: "9101"
@@ -65,13 +69,16 @@ services:
       control-plane:
         condition: service_healthy
     networks:
-      - favn-private
+      favn-private:
+        aliases:
+          - view.favn.local
     volumes:
       - ${FAVN_VIEW_DISTRIBUTION_TLS_DIR:?set the View distribution TLS directory}:/etc/favn/tls:ro
     restart: unless-stopped
 
   runner:
     image: ${FAVN_RUNNER_IMAGE:?set FAVN_RUNNER_IMAGE to an immutable digest}
+    hostname: runner.favn.local
     # Add an explicit volume only when customer assets intentionally write local
     # files. Keep the release, DuckDB driver, and bundled extensions read-only.
     read_only: true
@@ -82,9 +89,9 @@ services:
     security_opt:
       - no-new-privileges:true
     environment:
-      FAVN_RUNNER_NODE_HOST_ALIAS: runner
+      FAVN_RUNNER_NODE_HOST_ALIAS: runner.favn.local
       FAVN_RUNNER_POOL: default
-      FAVN_CONTROL_PLANE_NODE: favn_control_plane@control-plane
+      FAVN_CONTROL_PLANE_NODE: favn_control_plane@control-plane.favn.local
       FAVN_DISTRIBUTION_COOKIE: ${FAVN_DISTRIBUTION_COOKIE:?set a high-entropy distribution cookie}
       FAVN_DISTRIBUTION_TLS_OPTIONS_FILE: /etc/favn/tls/ssl-dist.config
       FAVN_BEAM_DISTRIBUTION_PORT: "9100"

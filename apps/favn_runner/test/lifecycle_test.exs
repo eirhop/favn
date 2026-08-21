@@ -3,6 +3,36 @@ defmodule FavnRunner.LifecycleTest do
 
   alias FavnRunner.Lifecycle
 
+  test "connection loss rejects new work while an existing permit can finish" do
+    name = unique_name()
+    start_supervised!({Lifecycle, name: name, shutdown_drain_timeout_ms: 2_000})
+    assert :ok = Lifecycle.mark_connecting(name)
+    assert {:error, :runtime_connecting} = Lifecycle.with_admission(fn -> :never end, name)
+    assert :ok = Lifecycle.mark_accepting(name)
+    parent = self()
+
+    task =
+      Task.async(fn ->
+        Lifecycle.with_admission(
+          fn ->
+            send(parent, :connected_running)
+            receive do: (:continue_after_disconnect -> :ok)
+            Lifecycle.with_admission(fn -> :nested_after_disconnect end, name)
+          end,
+          name
+        )
+      end)
+
+    assert_receive :connected_running
+    assert :ok = Lifecycle.mark_connecting(name)
+    assert %{status: :connecting, accepting?: false, ready?: false} = Lifecycle.diagnostics(name)
+    assert {:error, :runtime_connecting} = Lifecycle.with_admission(fn -> :never end, name)
+
+    send(task.pid, :continue_after_disconnect)
+    assert :nested_after_disconnect = Task.await(task)
+    assert :ok = Lifecycle.mark_accepting(name)
+  end
+
   test "runner admission is rejected after drain while an existing permit can finish" do
     name = unique_name()
     start_supervised!({Lifecycle, name: name, shutdown_drain_timeout_ms: 2_000})

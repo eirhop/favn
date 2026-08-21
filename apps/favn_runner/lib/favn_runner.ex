@@ -26,6 +26,7 @@ defmodule FavnRunner do
   alias Favn.RuntimeInput.Resolution
   alias Favn.SQLAsset.Runtime, as: SQLAssetRuntime
   alias FavnRunner.ContextBuilder
+  alias FavnRunner.ControlPlaneConnection
   alias FavnRunner.GenerationWork
   alias FavnRunner.GenerationOperations
   alias FavnRunner.Inspection
@@ -33,6 +34,7 @@ defmodule FavnRunner do
   alias FavnRunner.ManifestResolver
   alias FavnRunner.ManifestStore
   alias FavnRunner.ReleaseVerifier
+  alias FavnRunner.RunnerAgent
   alias FavnRunner.RuntimeInputResolver
   alias FavnRunner.SQLRuntimePreflight
   alias FavnRunner.Drain
@@ -67,15 +69,38 @@ defmodule FavnRunner do
     lifecycle = Keyword.get(opts, :lifecycle, Lifecycle)
     manifest_store = Keyword.get(opts, :manifest_store, ManifestStore)
 
+    control_plane_connection =
+      Keyword.get(opts, :control_plane_connection, ControlPlaneConnection)
+
+    runner_agent = Keyword.get(opts, :runner_agent, RunnerAgent)
+
+    control_plane_required? =
+      Keyword.get_lazy(opts, :control_plane_required?, fn ->
+        configured_control_plane?() or server_available?(control_plane_connection) or
+          server_available?(runner_agent)
+      end)
+
     with {:ok, release} <- ReleaseVerifier.release_info() do
-      ready? = Process.whereis(manifest_store) != nil
+      lifecycle_diagnostics = Lifecycle.diagnostics(lifecycle)
+
+      connection_diagnostics =
+        connection_diagnostics(control_plane_required?, control_plane_connection)
+
+      registration_diagnostics = registration_diagnostics(control_plane_required?, runner_agent)
+
+      ready? =
+        server_available?(manifest_store) and lifecycle_diagnostics.accepting? and
+          (not control_plane_required? or
+             (connection_diagnostics.connected? and registration_diagnostics.registered?))
 
       {:ok,
        %{
          ready?: ready?,
          status: if(ready?, do: :ready, else: :not_ready),
          release: release,
-         lifecycle: Lifecycle.diagnostics(lifecycle),
+         lifecycle: lifecycle_diagnostics,
+         control_plane: connection_diagnostics,
+         registration: registration_diagnostics,
          manifest_cache: ManifestStore.diagnostics(server: manifest_store)
        }}
     end
@@ -396,6 +421,56 @@ defmodule FavnRunner do
       end
     end)
   end
+
+  defp connection_diagnostics(false, _connection) do
+    %{
+      status: :not_configured,
+      connected?: true,
+      target_node: nil,
+      retry_count: 0,
+      last_failure_class: nil,
+      last_failure_at: nil,
+      connected_at: nil,
+      next_retry_ms: nil,
+      next_retry_at: nil
+    }
+  end
+
+  defp connection_diagnostics(true, connection),
+    do: ControlPlaneConnection.diagnostics(connection)
+
+  defp registration_diagnostics(false, _runner_agent) do
+    %{
+      status: :not_required,
+      registered?: true,
+      phase: :embedded,
+      retry_count: 0,
+      last_failure_class: nil,
+      last_failure_at: nil,
+      next_retry_ms: nil,
+      next_retry_at: nil
+    }
+  end
+
+  defp registration_diagnostics(true, runner_agent), do: RunnerAgent.diagnostics(runner_agent)
+
+  defp configured_control_plane? do
+    match?(
+      %{expected_control_plane_node: node_name} when is_binary(node_name),
+      Application.get_env(:favn_runner, :production_runtime_config)
+    )
+  end
+
+  defp server_available?(server) when is_pid(server), do: Process.alive?(server)
+
+  defp server_available?(server) when is_atom(server) do
+    case Process.whereis(server) do
+      pid when is_pid(pid) -> Process.alive?(pid)
+      nil -> false
+    end
+  end
+
+  defp server_available?(_server), do: false
 
   defp with_admission(opts, fun) do
     Lifecycle.with_admission(fun, Keyword.get(opts, :lifecycle, Lifecycle))

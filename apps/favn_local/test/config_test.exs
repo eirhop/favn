@@ -36,6 +36,11 @@ defmodule FavnLocal.ConfigTest do
     assert config.runtime_input_pin_key == String.duplicate("k", 32)
     assert config.runner_release_id =~ ~r/^rr_[0-9a-f]{64}$/
     assert config.distribution_cookie =~ ~r/\A[0-9a-f]{96}\z/
+
+    assert Atom.to_string(config.operator_node) =~
+             ~r/^favn_local_operator_[^@]+@favn-local\.test$/
+
+    assert Atom.to_string(config.runner_node) =~ ~r/^favn_local_runner_[^@]+@favn-local\.test$/
   end
 
   test "loads an explicit source-development log level and rejects invalid values" do

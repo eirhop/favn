@@ -76,10 +76,28 @@ defmodule FavnRunner.ProductionRuntimeConfigTest do
     assert {:error,
             %{
               status: :invalid,
-              error: {:invalid_env, "FAVN_CONTROL_PLANE_NODE", "long name@private-dns-name"}
+              error:
+                {:invalid_env, "FAVN_CONTROL_PLANE_NODE",
+                 "long name@fully-qualified-private-dns-name"}
             }} =
              base_env()
              |> Map.put("FAVN_CONTROL_PLANE_NODE", "control@localhost")
+             |> ProductionRuntimeConfig.validate()
+
+    assert {:error,
+            %{
+              status: :invalid,
+              error:
+                {:invalid_env, "FAVN_CONTROL_PLANE_NODE",
+                 "long name@fully-qualified-private-dns-name"}
+            }} =
+             base_env()
+             |> Map.put("FAVN_CONTROL_PLANE_NODE", "control@short-host")
+             |> ProductionRuntimeConfig.validate()
+
+    assert {:error, %{status: :invalid}} =
+             base_env()
+             |> Map.put("FAVN_CONTROL_PLANE_NODE", "control@bad_host.internal")
              |> ProductionRuntimeConfig.validate()
   end
 

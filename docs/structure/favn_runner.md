@@ -92,8 +92,20 @@ DAG readiness remain PostgreSQL authority.
 Production uses mutual-TLS distributed BEAM plus a high-entropy cookie.
 Runners use `FAVN_RUNNER_NODE_HOST_ALIAS` to form an
 `undefined@<host-alias>` dynamic node and `FAVN_CONTROL_PLANE_NODE` as the
-single stable outbound destination. They do not require inbound distribution
+single stable, fully-qualified private-DNS outbound destination. A dotless
+control-plane host is invalid in long-name mode and stops runner startup before
+the supervision tree starts. Runners do not require inbound distribution
 listeners.
+
+The runner lifecycle remains non-accepting until the control-plane connection
+exists and runner registration is accepted. Connection loss makes readiness
+false and requires fresh registration before new work is accepted; work that
+already owns a monitored admission permit keeps the existing fencing, drain,
+and unknown-outcome behavior. `FavnRunner.diagnostics/0` reports bounded
+connection and registration state without cookies, tokens, certificate
+contents, TLS paths, or arbitrary transport errors. When OTP collapses an EPMD
+service failure and an absent node into the same public result, diagnostics use
+the aggregate `epmd_probe_failed` class instead of claiming a false distinction.
 
 The runner can therefore run as a Container Apps Job, Kubernetes Job, ECS
 task, Nomad batch allocation, VM process, or resident service without changing

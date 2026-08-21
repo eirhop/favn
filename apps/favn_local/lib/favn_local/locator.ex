@@ -109,19 +109,26 @@ defmodule FavnLocal.Locator do
   end
 
   defp ensure_client_node(cookie) do
+    case Distribution.ensure_local_resolution() do
+      :ok ->
+        start_or_configure_client_node(cookie)
+
+      {:error, reason} ->
+        {:error, {:client_node_start_failed, reason}}
+    end
+  end
+
+  defp start_or_configure_client_node(cookie) do
     if Node.alive?() do
       Node.set_cookie(String.to_atom(cookie))
       :ok
     else
       suffix = System.unique_integer([:positive, :monotonic])
-      name = String.to_atom("favn_local_client_#{suffix}@127.0.0.1")
+      name = String.to_atom("favn_local_client_#{suffix}@#{Distribution.local_host_alias()}")
 
       case Distribution.start(name, cookie) do
-        :ok ->
-          :ok
-
-        {:error, reason} ->
-          {:error, {:client_node_start_failed, reason}}
+        :ok -> :ok
+        {:error, reason} -> {:error, {:client_node_start_failed, reason}}
       end
     end
   end
