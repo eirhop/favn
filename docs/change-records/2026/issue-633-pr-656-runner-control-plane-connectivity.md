@@ -10,10 +10,10 @@
 | Affected areas | Packaged and source-development runner startup, distributed-BEAM connection, registration, lifecycle, readiness, deployment templates, logs, and diagnostics |
 | Approved plan commit | Not available. The temporary plan was reviewed and removed before permanent change records were adopted. |
 | Original code baseline | `87e91127` |
-| Implementation commit before this record | `ed4abc65`, rewritten as `c8e90e5d` by the required rebase |
-| Post-rebase OTP typing correction | `bd31b906` |
-| Distributed slow-test topology correction | `185b3422` |
-| Docker-free local topology correction | `389a613b`, hardened for already-distributed clients by `8a65a13f` |
+| Implementation commit before this record | `ed4abc65`, rewritten as `38b8be63` by the required rebases |
+| Post-rebase OTP typing correction | `99fcd715` |
+| Distributed slow-test topology correction | `e02472f7`, completed for every peer path by `e2fd8c05` |
+| Docker-free local topology correction | `97c6d731`, hardened for already-distributed clients by `bec560aa` |
 | Last updated | 2026-08-21 |
 
 ## One-minute summary
@@ -406,6 +406,11 @@ reserved `favn-local.test` alias for operator, runner, and client nodes, with a
 loopback mapping installed inside each BEAM. Neither correction weakens
 production validation or requires external DNS changes.
 
+Final slow CI then proved the shared peer resolver setup was still applied only
+before the real-runner path. Lightweight distributed scale agents used the same
+peer but missed the mapping. Commit `e2fd8c05` moves the existing resolver setup
+to peer creation, so every distributed runner path receives it.
+
 ```mermaid
 flowchart TD
     A[Operator BEAM starts] --> B[Install in-memory resolver entry]
@@ -484,7 +489,7 @@ a material deviation.
 | 2026-08-21 | Separate transport, subscription, and registration retry ownership. | They can fail independently and need coalesced recovery. | Reviewed and accepted. |
 | 2026-08-21 | Add the permanent change-record standard and record to PR #656. | User requested adoption before the next push. | Reviewed and accepted. |
 | 2026-08-21 | Remove impossible EPMD address-probe return matches. | OTP 29 Dialyzer proved those clauses are unreachable; the supported address and error results were already handled. | Reviewed and accepted; no plan deviation. |
-| 2026-08-21 | Give the real distributed-runner slow test a process-local FQDN. | Rebased CI proved the old dotless test node no longer met the approved production contract. | Reviewed and accepted as test-contract alignment. |
+| 2026-08-21 | Give every distributed-runner slow-test peer a process-local FQDN mapping. | Rebased CI proved the old dotless node was invalid; final slow CI then proved the mapping must be installed at peer creation for both real and lightweight agents. | Reviewed and accepted as a qualification correction completing commit `e02472f7`. |
 | 2026-08-21 | Give Docker-free source development a reserved process-local FQDN. | Rebased acceptance CI proved the child runner still used an IP-based node that the new contract correctly rejects. | Reviewed and accepted as deviation seven. |
 
 ## Verification evidence
@@ -498,8 +503,9 @@ a material deviation.
 | Public `favn` fast suite | 183 passed, 3 excluded after rebase. | Public facade regression qualification. |
 | Deployment artifact acceptance test | 1 passed after rebase. | Generated Compose contract. |
 | Real distributed-runner storage slow test | 1 passed, 35 excluded, against an isolated PostgreSQL instance after the FQDN fixture correction. | Cross-node connection, registration, lifecycle acceptance, and task start. |
+| Three-pool distributed scale slow test | 1 passed, 35 excluded after commit `e2fd8c05`; 333 agents started with a measured 2,566 ms p95 and empty gateway and registry mailboxes. | Shared peer resolution and distributed scale behavior; not the complete slow suite. |
 | FavnLocal fast suite | 33 passed, 2 excluded after the process-local FQDN correction, including the already-distributed client path. | Local configuration, resolver-file, launcher, client, and lifecycle regression qualification. |
-| Docker-free local lifecycle acceptance test | 1 passed against an isolated PostgreSQL instance after commits `389a613b` and `8a65a13f`; logs show connect, accepted registration, accepting lifecycle, replacement, drain, and recovery through `favn-local.test`. | Real child-BEAM source-development lifecycle; not external DNS or TLS proof. |
+| Docker-free local lifecycle acceptance test | 1 passed against an isolated PostgreSQL instance after commits `97c6d731` and `bec560aa`; logs show connect, accepted registration, accepting lifecycle, replacement, drain, and recovery through `favn-local.test`. | Real child-BEAM source-development lifecycle; not external DNS or TLS proof. |
 | Umbrella compile with warnings as errors | Passed after rebase. | Compile qualification across applications. |
 | Quick Credo and Sobelow checks | Passed after rebase with no issues. | Static lint and security qualification. |
 | Whole-umbrella Dialyzer | Passed after the OTP typing correction; the configured three known exclusions remained skipped. | Static type qualification. |
@@ -507,7 +513,9 @@ a material deviation.
 | Diff checks | Passed after the final record update. | Patch formatting only. |
 | Independent implementation review | PR-ready; no P0-P3 findings remained after corrections. | Plan-to-code and focused-test comparison. |
 | Initial PR CI | Mixed: fast tests and image qualification passed; quick, Dialyzer, acceptance, and slow jobs failed. | Stale pre-rebase CI; not final evidence for the rebased head. |
-| First rebased PR CI | Quick, Dialyzer, fast, and both image qualifications passed. Slow CI exposed an outdated dotless test fixture; acceptance exposed the same contract mismatch in the IP-based Docker-free local topology. | Intermediate CI evidence before commits `185b3422`, `389a613b`, and `8a65a13f`. |
+| First rebased PR CI | Quick, Dialyzer, fast, and both image qualifications passed. Slow CI exposed an outdated dotless test fixture; acceptance exposed the same contract mismatch in the IP-based Docker-free local topology. | Intermediate CI evidence before commits `e02472f7`, `97c6d731`, and `bec560aa`. |
+| First final-head PR CI | Every job except slow tests passed. The slow scale test exposed that the shared peer mapping was initialized only by the real-runner helper. | Intermediate CI evidence before commit `e2fd8c05`; the aggregate CI job failed only because slow tests failed. |
+| Final pre-rewrite PR CI | All required jobs passed, including quick, fast, acceptance, slow, Dialyzer, HTTP-boundary security, and both image qualifications. | Qualification of the equivalent pre-rewrite head `a5b34620`; `main` advanced afterward, so the rewritten head still requires CI. |
 
 ### Not verified
 
@@ -526,6 +534,6 @@ a material deviation.
 | Reviewer | Independent sub-agent `change_record_standard_review` |
 | Compared | Approved temporary plan, implementation, tests, diagnostics, canonical docs, and this reconstructed record |
 | Deviations complete | Yes. Seven material plan or PR-scope deviations are recorded. |
-| Findings | Earlier record reviews found accuracy and precision issues. Final topology review found one P1 plan-integrity issue, one P2 existing-client resolver gap, and two P3 visualization or count issues. |
-| Findings addressed and rechecked | Yes. The approved-plan wording was restored, the existing-client path was implemented and tested, the final topology was visualized, and scope counts were corrected. |
-| Verdict | Approved with no remaining P0-P3 findings. The implementation matches the reconstructed plan except for the seven recorded and accepted deviations. |
+| Findings | Earlier record reviews found accuracy and precision issues. Final topology review found one P1 plan-integrity issue, one P2 existing-client resolver gap, and two P3 visualization or count issues. Final CI found incomplete FQDN setup in a shared test peer. |
+| Findings addressed and rechecked | Yes. The approved-plan wording, existing-client resolver, visualization, counts, and shared distributed-peer fixture were corrected and independently rechecked. |
+| Verdict | Approved with no remaining P0-P3 findings. The implementation matches the reconstructed plan except for the seven recorded and accepted deviations; commit `e2fd8c05` is a qualification correction, not an eighth deviation. |
