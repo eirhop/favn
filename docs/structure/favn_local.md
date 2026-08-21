@@ -12,8 +12,9 @@ Purpose: Docker-free source-development lifecycle behind the public
 - one child runner BEAM using the consumer's compiled code;
 - reload sequencing, maintenance admission, and manifest deployment;
 - building the current dependency-owned View assets before source startup;
-- a small `.favn/local/` locator and owner-only local credentials, including
-  the stable local View key needed to preserve browser sessions across restart.
+- a small `.favn/local/` locator, child-BEAM resolver file, and owner-only local
+  credentials, including the stable local View key needed to preserve browser
+  sessions across restart.
 
 It does not own PostgreSQL lifecycle, migrations, workspace provisioning,
 Docker, Compose, deployment images, dotenv parsing, or deployment scaffolding.
@@ -34,6 +35,8 @@ artifact construction is owned by `FavnAuthoring.Deployment`.
 - development startup never invokes Docker;
 - startup verifies but never mutates PostgreSQL schema/workspace setup;
 - exactly one child runner OS process is owned at a time;
+- local operator, runner, and client nodes use the reserved `favn-local.test`
+  alias; each BEAM maps it to loopback without external DNS or hosts-file changes;
 - reload compiles first and derives the runner release ID from the compiled BEAM
   closure;
 - an unchanged compiled closure and manifest is a no-op only while the expected

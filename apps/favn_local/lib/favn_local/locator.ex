@@ -114,7 +114,7 @@ defmodule FavnLocal.Locator do
       :ok
     else
       suffix = System.unique_integer([:positive, :monotonic])
-      name = String.to_atom("favn_local_client_#{suffix}@127.0.0.1")
+      name = String.to_atom("favn_local_client_#{suffix}@#{Distribution.local_host_alias()}")
 
       case Distribution.start(name, cookie) do
         :ok ->
