@@ -31,11 +31,17 @@ operate or call the documented feature.
 | Deployment and operations | `docs/production/`, `docs/operators/` |
 | Implemented product capability | `docs/FEATURES.md` |
 | Forward work | `docs/ROADMAP.md` and linked GitHub issues |
+| Substantial change plan and implementation history | `docs/change-records/` |
 | Point-in-time findings or completed plans | `docs/report/`, `docs/archive/` |
 
 Overview pages summarize and link; they do not copy reference material. The root
 `README.md` is only a public introduction. Historical plans and reports must be
 marked as such and must not masquerade as current requirements.
+
+Change records are active review context while their PR is open and historical
+evidence after merge. They explain why a change was made and how implementation
+departed from its approved plan. They do not replace canonical product,
+architecture, API, storage, or operator documentation.
 
 When sources disagree, executable contracts and migrations win. Correct the
 canonical document in the same change.

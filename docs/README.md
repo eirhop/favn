@@ -15,6 +15,7 @@ doing instead of searching the entire tree.
 | [`structure/`](structure/) | Ownership maps for each umbrella application. |
 | [`design/`](design/) | Operator UI style guide and component patterns. |
 | [`contributing/`](contributing/) | Contributor workflows, the development server, and documentation rules. |
+| [`change-records/`](change-records/) | Reviewed plans and plan-to-implementation history for substantial changes. |
 | [`FEATURES.md`](FEATURES.md) | Implemented product capability inventory. |
 | [`ROADMAP.md`](ROADMAP.md) | Forward-looking product direction. |
 
