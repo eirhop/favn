@@ -2352,6 +2352,7 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
 
       try do
         assert :ok = :peer.call(peer, :code, :add_paths, [:code.get_path()], 30_000)
+        configure_peer_control_plane_host(peer, node())
         load_remote_module(peer, DistributedRunnerAgent)
         fun.(peer)
       after
@@ -2366,8 +2367,6 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
   end
 
   defp start_actual_runner(peer, control_plane_node, runner_id, runner_pool) do
-    configure_peer_control_plane_host(peer, control_plane_node)
-
     environment = %{
       "FAVN_CONTROL_PLANE_NODE" => Atom.to_string(control_plane_node),
       "FAVN_RUNNER_RELEASE_ID" => @release,
