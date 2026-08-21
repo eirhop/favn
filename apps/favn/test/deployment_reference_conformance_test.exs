@@ -331,6 +331,8 @@ defmodule Favn.DeploymentReferenceConformanceTest do
     assert prepare =~ "sha256sum"
     assert prepare =~ "\"FAVN_PLATFORM_TOKEN=$(random_hex 48)\""
     assert prepare =~ "\"FAVN_CAPACITY_TOKEN=$(random_hex 48)\""
+    assert prepare =~ "\"FAVN_DISTRIBUTION_COOKIE=$(random_hex 48)\""
+    refute prepare =~ "\"FAVN_DISTRIBUTION_COOKIE=$(random_base64 48)\""
 
     security_compose = read("deployment/docker-compose/compose.security.yml")
 

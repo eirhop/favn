@@ -98,7 +98,7 @@ docker run --rm \
       "FAVN_RUNTIME_INPUT_PIN_KEYS={\"1\":\"$pin_key\"}" \
       "FAVN_PLATFORM_TOKEN=$(random_hex 48)" \
       "FAVN_CAPACITY_TOKEN=$(random_hex 48)" \
-      "FAVN_DISTRIBUTION_COOKIE=$(random_base64 48)" \
+      "FAVN_DISTRIBUTION_COOKIE=$(random_hex 48)" \
       "FAVN_OPERATOR_COMMAND_HMAC_SECRET=$(random_hex 48)" \
       "FAVN_VIEW_SECRET_KEY_BASE=$(random_base64 64)" \
       "FAVN_VIEW_HOST_PORT=4173" \
