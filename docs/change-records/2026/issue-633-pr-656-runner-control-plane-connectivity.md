@@ -515,11 +515,10 @@ a material deviation.
 | Initial PR CI | Mixed: fast tests and image qualification passed; quick, Dialyzer, acceptance, and slow jobs failed. | Stale pre-rebase CI; not final evidence for the rebased head. |
 | First rebased PR CI | Quick, Dialyzer, fast, and both image qualifications passed. Slow CI exposed an outdated dotless test fixture; acceptance exposed the same contract mismatch in the IP-based Docker-free local topology. | Intermediate CI evidence before commits `e02472f7`, `97c6d731`, and `bec560aa`. |
 | First final-head PR CI | Every job except slow tests passed. The slow scale test exposed that the shared peer mapping was initialized only by the real-runner helper. | Intermediate CI evidence before commit `e2fd8c05`; the aggregate CI job failed only because slow tests failed. |
-| Final pre-rewrite PR CI | All required jobs passed, including quick, fast, acceptance, slow, Dialyzer, HTTP-boundary security, and both image qualifications. | Qualification of the equivalent pre-rewrite head `a5b34620`; `main` advanced afterward, so the rewritten head still requires CI. |
+| Final rebased PR CI | All required jobs passed, including quick, fast, acceptance, slow, Dialyzer, HTTP-boundary security, and all image qualifications. | Qualification of rebased implementation head `cb902f15` in CI run `32479088824`. |
 
 ### Not verified
 
-- Post-push CI for the rebased head is pending.
 - No live two-node TLS distribution test was run.
 - Private-DNS routing, certificate SANs, cookie compatibility, and Azure
   deployment were not proven.
