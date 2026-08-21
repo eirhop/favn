@@ -54,6 +54,24 @@ scalers to the new primary value, and then remove the previous value. Rotate
 certificates and the cookie by introducing a new release partition, draining
 the old one, and then removing its credentials.
 
+`FAVN_CONTROL_PLANE_NODE` must use a fully-qualified private DNS host, for
+example `favn_control_plane@control-plane.favn.internal`. A dotless host fails
+runner startup. A packaged runner is ready only after it connects and the
+control plane accepts registration; connection loss makes it non-ready until a
+fresh registration succeeds.
+
+Inspect a runner locally with `FavnRunner.diagnostics/0`. The bounded report
+includes lifecycle, connection, registration, target node, retry count, the
+last safe failure class, and the next retry delay. Connection attempts use
+capped exponential backoff. The first failure and rate-limited summaries log at
+warning, recovery logs at info, and individual attempts remain debug-only.
+Diagnostics and logs never include the distribution cookie, service tokens,
+certificate contents, or TLS file paths. OTP does not always distinguish TCP,
+TLS, and cookie handshake failures; when it does not expose a stable reason,
+Favn reports the aggregate `distribution_handshake_failed` class. The EPMD
+client can likewise collapse an unreachable EPMD service and an absent node,
+so those cases use the safe aggregate `epmd_probe_failed` class.
+
 The provider-neutral contract and a Kubernetes example live in
 [`deployment/`](../../deployment/README.md). Favn does not ship cloud-provider
 infrastructure. Azure Container Apps jobs, ECS tasks, Nomad batch jobs, VM

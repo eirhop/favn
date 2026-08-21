@@ -1,9 +1,12 @@
 defmodule FavnRunner.RunnerAgentTest do
   use ExUnit.Case, async: false
 
+  import ExUnit.CaptureLog
+
   alias Favn.Contracts.RunnerError
   alias Favn.Contracts.RunnerTask
   alias Favn.Contracts.RunnerResult
+  alias FavnRunner.Lifecycle
   alias FavnRunner.RunnerAgent
   alias FavnRunner.TaskExecutor
 
@@ -84,6 +87,133 @@ defmodule FavnRunner.RunnerAgentTest do
           reason: :runner_lifecycle_mode_mismatch
         }}, owner}
     end
+  end
+
+  defmodule UnavailableControlPlane do
+    use GenServer
+
+    def start_link(owner), do: GenServer.start_link(__MODULE__, owner)
+
+    @impl true
+    def init(owner), do: {:ok, owner}
+
+    @impl true
+    def handle_call(:gateway, _from, owner) do
+      send(owner, :control_plane_unavailable)
+      {:reply, {:error, :control_plane_unavailable}, owner}
+    end
+
+    @impl true
+    def handle_cast(:connect, owner), do: {:noreply, owner}
+  end
+
+  defmodule ConnectedRegistrationFailureControlPlane do
+    use GenServer
+
+    def start_link(owner), do: GenServer.start_link(__MODULE__, %{owner: owner, subscriber: nil})
+
+    @impl true
+    def init(state), do: {:ok, state}
+
+    @impl true
+    def handle_call({:subscribe, subscriber}, _from, state) do
+      send(subscriber, {:favn_control_plane_connection, %{status: :connected}})
+      {:reply, :ok, %{state | subscriber: subscriber}}
+    end
+
+    def handle_call(:gateway, _from, state), do: {:reply, {:ok, self()}, state}
+
+    def handle_call({:register, _registration, _agent}, _from, state) do
+      send(state.owner, :registration_attempt)
+      {:reply, {:error, :control_plane_unavailable}, state}
+    end
+
+    @impl true
+    def handle_cast(:connect, %{subscriber: subscriber} = state) when is_pid(subscriber) do
+      send(subscriber, {:favn_control_plane_connection, %{status: :connected}})
+      {:noreply, state}
+    end
+  end
+
+  defmodule RecoveringSubscriptionControlPlane do
+    use GenServer
+
+    def start_link(owner),
+      do: GenServer.start_link(__MODULE__, %{owner: owner, subscribe_attempts: 0})
+
+    @impl true
+    def init(state), do: {:ok, state}
+
+    @impl true
+    def handle_call({:subscribe, _subscriber}, _from, %{subscribe_attempts: 0} = state) do
+      send(state.owner, {:subscription_attempt, 1})
+      {:reply, {:error, :control_plane_unavailable}, %{state | subscribe_attempts: 1}}
+    end
+
+    def handle_call({:subscribe, subscriber}, _from, state) do
+      attempt = state.subscribe_attempts + 1
+      send(state.owner, {:subscription_attempt, attempt})
+      send(subscriber, {:favn_control_plane_connection, %{status: :connected}})
+      {:reply, :ok, %{state | subscribe_attempts: attempt}}
+    end
+
+    def handle_call(:gateway, _from, state), do: {:reply, {:ok, self()}, state}
+
+    def handle_call({:register, registration, agent}, _from, state) do
+      send(state.owner, {:subscription_recovered_registration, registration, agent})
+
+      {:reply,
+       {:ok,
+        %RunnerTask.RegistrationAck{
+          runner_instance_id: registration.runner_instance_id,
+          runner_session_generation: max(registration.runner_session_generation, 1),
+          status: :accepted
+        }}, state}
+    end
+
+    def handle_call({:request, %RunnerTask.ClaimRequest{} = request}, _from, state) do
+      {:reply,
+       {:ok,
+        %RunnerTask.NoWork{
+          command_id: request.command_id,
+          runner_instance_id: request.runner_instance_id,
+          runner_session_generation: request.runner_session_generation,
+          action: :wait,
+          wait_ms: 60_000
+        }}, state}
+    end
+  end
+
+  defmodule BlockingBootRegistrationControlPlane do
+    use GenServer
+
+    def start_link(owner), do: GenServer.start_link(__MODULE__, %{owner: owner, from: nil})
+    def release(server), do: GenServer.cast(server, :release)
+
+    @impl true
+    def init(state), do: {:ok, state}
+
+    @impl true
+    def handle_call(:gateway, _from, state), do: {:reply, {:ok, self()}, state}
+
+    def handle_call({:register, registration, agent}, from, state) do
+      send(state.owner, {:boot_registration_blocked, registration, agent})
+      {:noreply, %{state | from: {from, registration}}}
+    end
+
+    @impl true
+    def handle_cast(:release, %{from: {from, registration}} = state) do
+      acknowledgement = %RunnerTask.RegistrationAck{
+        runner_instance_id: registration.runner_instance_id,
+        runner_session_generation: 1,
+        status: :accepted
+      }
+
+      GenServer.reply(from, {:ok, acknowledgement})
+      {:noreply, %{state | from: nil}}
+    end
+
+    def handle_cast(:connect, state), do: {:noreply, state}
   end
 
   defmodule FakeExecutor do
@@ -1067,15 +1197,222 @@ defmodule FavnRunner.RunnerAgentTest do
     assert Process.alive?(agent)
   end
 
-  test "a rejected boot registration exits non-zero" do
+  test "an unavailable control plane keeps the managed lifecycle non-accepting" do
+    lifecycle = unique_name(:unavailable_lifecycle)
+    start_supervised!({Lifecycle, name: lifecycle, shutdown_drain_timeout_ms: 2_000})
+    {:ok, control_plane} = start_supervised({UnavailableControlPlane, self()})
+
+    agent =
+      start_supervised!({
+        RunnerAgent,
+        name: nil,
+        connection: control_plane,
+        lifecycle: lifecycle,
+        manage_lifecycle?: true,
+        runner_pool: :duckdb,
+        lifecycle_mode: :resident,
+        exit_fun: fn _status -> :ok end
+      })
+
+    assert_receive :control_plane_unavailable
+
+    assert %{status: :connecting, accepting?: false, ready?: false} =
+             Lifecycle.diagnostics(lifecycle)
+
+    assert %{status: :connecting, registered?: false} = RunnerAgent.diagnostics(agent)
+  end
+
+  test "an unchanged connected notification does not bypass registration backoff" do
+    {:ok, control_plane} =
+      start_supervised({ConnectedRegistrationFailureControlPlane, self()})
+
+    start_supervised!({
+      RunnerAgent,
+      name: nil,
+      connection: control_plane,
+      connection_notifications?: true,
+      runner_pool: :duckdb,
+      lifecycle_mode: :resident,
+      exit_fun: fn _status -> :ok end
+    })
+
+    assert_receive :registration_attempt
+    refute_receive :registration_attempt, 100
+    assert_receive :registration_attempt, 500
+  end
+
+  test "registration diagnostics retain the truthful retry count beyond the backoff cap" do
+    {:ok, control_plane} =
+      start_supervised({ConnectedRegistrationFailureControlPlane, self()})
+
+    agent =
+      start_supervised!({
+        RunnerAgent,
+        name: nil,
+        connection: control_plane,
+        connection_notifications?: true,
+        registration_retry_delay_fun: fn _attempt -> 5 end,
+        runner_pool: :duckdb,
+        lifecycle_mode: :resident,
+        exit_fun: fn _status -> :ok end
+      })
+
+    assert_eventually(fn -> RunnerAgent.diagnostics(agent).retry_count >= 10 end)
+    assert RunnerAgent.diagnostics(agent).last_failure_class == :registration_unavailable
+  end
+
+  test "registration failure logs replace an invalid runner-pool canary" do
+    canary = "cookie-token/private/tls/client.key"
+    previous_log_level = Logger.level()
+    Logger.configure(level: :warning)
+    on_exit(fn -> Logger.configure(level: previous_log_level) end)
+
+    log =
+      capture_log(fn ->
+        {:ok, control_plane} =
+          start_supervised({ConnectedRegistrationFailureControlPlane, self()})
+
+        agent =
+          start_supervised!({
+            RunnerAgent,
+            name: nil,
+            connection: control_plane,
+            connection_notifications?: true,
+            registration_retry_delay_fun: fn _attempt -> 1_000 end,
+            runner_pool: canary,
+            lifecycle_mode: :resident,
+            exit_fun: fn _status -> :ok end
+          })
+
+        assert_receive :registration_attempt
+
+        assert_eventually(fn ->
+          RunnerAgent.diagnostics(agent).last_failure_class == :registration_unavailable
+        end)
+      end)
+
+    assert log =~ "runner_pool: :invalid"
+    refute log =~ canary
+  end
+
+  test "a failed initial subscription retries and registers after connection recovery" do
+    {:ok, control_plane} = start_supervised({RecoveringSubscriptionControlPlane, self()})
+
+    agent =
+      start_supervised!({
+        RunnerAgent,
+        name: nil,
+        connection: control_plane,
+        connection_notifications?: true,
+        runner_pool: :duckdb,
+        lifecycle_mode: :resident,
+        exit_fun: fn _status -> :ok end
+      })
+
+    assert_receive {:subscription_attempt, 1}
+    assert_receive {:subscription_attempt, 2}, 1_000
+
+    assert_receive {:subscription_recovered_registration, %RunnerTask.Registration{}, ^agent},
+                   1_000
+  end
+
+  test "a late accepted registration cannot restore acceptance after disconnect" do
+    lifecycle = unique_name(:late_registration_lifecycle)
+    start_supervised!({Lifecycle, name: lifecycle, shutdown_drain_timeout_ms: 2_000})
+    {:ok, control_plane} = start_supervised({BlockingBootRegistrationControlPlane, self()})
+
+    agent =
+      start_supervised!({
+        RunnerAgent,
+        name: nil,
+        connection: control_plane,
+        lifecycle: lifecycle,
+        manage_lifecycle?: true,
+        runner_pool: :duckdb,
+        lifecycle_mode: :resident,
+        exit_fun: fn _status -> :ok end
+      })
+
+    assert_receive {:boot_registration_blocked, %RunnerTask.Registration{}, ^agent}
+    send(agent, {:favn_control_plane_connection, %{status: :connecting}})
+
+    assert_eventually(fn -> Lifecycle.diagnostics(lifecycle).status == :connecting end)
+    BlockingBootRegistrationControlPlane.release(control_plane)
+    refute_receive {:claimed, %RunnerTask.ClaimRequest{}}, 100
+    assert %{status: :connecting, accepting?: false} = Lifecycle.diagnostics(lifecycle)
+    assert %{registered?: false, status: :connecting} = RunnerAgent.diagnostics(agent)
+  end
+
+  test "accepted registration is the managed lifecycle acceptance authority" do
+    lifecycle = unique_name(:accepted_lifecycle)
+    start_supervised!({Lifecycle, name: lifecycle, shutdown_drain_timeout_ms: 2_000})
+    {:ok, control_plane} = start_supervised({FakeControlPlane, self()})
+
+    agent =
+      start_supervised!({
+        RunnerAgent,
+        name: nil,
+        connection: control_plane,
+        lifecycle: lifecycle,
+        manage_lifecycle?: true,
+        runner_pool: :duckdb,
+        lifecycle_mode: :resident,
+        exit_fun: fn _status -> :ok end
+      })
+
+    assert_receive {:registered, %RunnerTask.Registration{}, ^agent}
+
+    assert_eventually(fn ->
+      Lifecycle.diagnostics(lifecycle).status == :accepting and
+        RunnerAgent.diagnostics(agent).registered?
+    end)
+  end
+
+  test "connection loss removes acceptance until fresh registration succeeds" do
+    lifecycle = unique_name(:reconnect_lifecycle)
+    start_supervised!({Lifecycle, name: lifecycle, shutdown_drain_timeout_ms: 2_000})
+    {:ok, control_plane} = start_supervised({FakeControlPlane, self()})
+
+    agent =
+      start_supervised!({
+        RunnerAgent,
+        name: nil,
+        connection: control_plane,
+        lifecycle: lifecycle,
+        manage_lifecycle?: true,
+        runner_pool: :duckdb,
+        lifecycle_mode: :resident,
+        exit_fun: fn _status -> :ok end
+      })
+
+    assert_receive {:registered, %RunnerTask.Registration{}, ^agent}
+    assert_eventually(fn -> Lifecycle.diagnostics(lifecycle).status == :accepting end)
+
+    send(agent, {:favn_control_plane_connection, %{status: :connecting}})
+
+    assert_eventually(fn ->
+      Lifecycle.diagnostics(lifecycle).status == :connecting and
+        not RunnerAgent.diagnostics(agent).registered?
+    end)
+
+    send(agent, {:favn_control_plane_connection, %{status: :connected}})
+    assert_receive {:registered, %RunnerTask.Registration{}, ^agent}
+    assert_eventually(fn -> Lifecycle.diagnostics(lifecycle).status == :accepting end)
+  end
+
+  test "a rejected boot registration exits non-zero and never becomes accepting" do
     owner = self()
     {:ok, control_plane} = start_supervised({RejectedControlPlane, owner})
+    lifecycle = unique_name(:rejected_lifecycle)
+    start_supervised!({Lifecycle, name: lifecycle, shutdown_drain_timeout_ms: 2_000})
 
     agent =
       start_supervised!(
         {RunnerAgent,
          name: nil,
          connection: control_plane,
+         lifecycle: lifecycle,
+         manage_lifecycle?: true,
          runner_pool: :duckdb,
          exit_fun: fn status -> send(owner, {:runner_exit, status}) end}
       )
@@ -1083,6 +1420,7 @@ defmodule FavnRunner.RunnerAgentTest do
     assert_receive {:rejected_registration, %RunnerTask.Registration{}, ^agent}
     assert_receive {:runner_exit, 1}, 500
     assert_eventually(fn -> not Process.alive?(agent) end)
+    assert %{status: :connecting, accepting?: false} = Lifecycle.diagnostics(lifecycle)
   end
 
   test "an elastic runner exits at bounded maximum uptime while idle" do
@@ -2316,6 +2654,9 @@ defmodule FavnRunner.RunnerAgentTest do
     prefix = "https://inputs.example/"
     prefix <> String.duplicate("i", size - byte_size(prefix))
   end
+
+  defp unique_name(prefix),
+    do: :"#{prefix}_#{System.unique_integer([:positive, :monotonic])}"
 
   defp assert_eventually(fun, attempts \\ 50)
   defp assert_eventually(_fun, 0), do: flunk("condition did not become true")

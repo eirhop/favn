@@ -120,11 +120,15 @@ defmodule FavnRunner.ProductionRuntimeConfig do
     with {:ok, value} <- required(env, name),
          [local_name, host] <- String.split(value, "@", parts: 2),
          true <- valid_node_part?(local_name),
-         true <- valid_node_host?(host) do
+         true <- valid_node_host?(host),
+         true <- fully_qualified_dns_host?(host) do
       {:ok, local_name <> "@" <> host}
     else
-      {:error, _reason} = error -> error
-      _invalid -> {:error, {:invalid_env, name, "long name@private-dns-name"}}
+      {:error, _reason} = error ->
+        error
+
+      _invalid ->
+        {:error, {:invalid_env, name, "long name@fully-qualified-private-dns-name"}}
     end
   end
 
@@ -157,6 +161,17 @@ defmodule FavnRunner.ProductionRuntimeConfig do
       {:ok, {0, 0, 0, 0, 0, 0, 0, 1}} -> true
       _other -> false
     end
+  end
+
+  defp fully_qualified_dns_host?(host) do
+    labels = String.split(host, ".")
+
+    length(labels) >= 2 and
+      Enum.all?(labels, fn label ->
+        byte_size(label) in 1..63 and
+          Regex.match?(~r/^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$/, label)
+      end) and
+      not match?({:ok, _address}, :inet.parse_address(String.to_charlist(host)))
   end
 
   defp validate_running_dynamic_node(host_alias) do

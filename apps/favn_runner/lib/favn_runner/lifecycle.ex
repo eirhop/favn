@@ -10,8 +10,9 @@ defmodule FavnRunner.Lifecycle do
 
   alias FavnRunner.OperationalEvents
 
-  @type state_name :: :starting | :accepting | :draining | :stopping
-  @type admission_error :: :runtime_starting | :runtime_draining | :runtime_not_accepting
+  @type state_name :: :starting | :connecting | :accepting | :draining | :stopping
+  @type admission_error ::
+          :runtime_starting | :runtime_connecting | :runtime_draining | :runtime_not_accepting
 
   @doc "Starts the lifecycle authority in `:starting`."
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -22,6 +23,10 @@ defmodule FavnRunner.Lifecycle do
   @doc "Marks a successfully booted runner as accepting work."
   @spec mark_accepting(GenServer.server()) :: :ok | {:error, admission_error()}
   def mark_accepting(server \\ __MODULE__), do: GenServer.call(server, :mark_accepting)
+
+  @doc "Marks a configured runner as unavailable while it connects and registers."
+  @spec mark_connecting(GenServer.server()) :: :ok | {:error, admission_error()}
+  def mark_connecting(server \\ __MODULE__), do: GenServer.call(server, :mark_connecting)
 
   @doc "Monotonically enters drain state."
   @spec drain(GenServer.server()) :: :ok
@@ -110,8 +115,9 @@ defmodule FavnRunner.Lifecycle do
   end
 
   @impl true
-  def handle_call(:mark_accepting, _from, %{status: :starting} = state),
-    do: {:reply, :ok, transition(state, :accepting)}
+  def handle_call(:mark_accepting, _from, %{status: status} = state)
+      when status in [:starting, :connecting],
+      do: {:reply, :ok, transition(state, :accepting)}
 
   def handle_call(:mark_accepting, _from, %{status: :accepting} = state),
     do: {:reply, :ok, state}
@@ -119,8 +125,15 @@ defmodule FavnRunner.Lifecycle do
   def handle_call(:mark_accepting, _from, state),
     do: {:reply, admission_error(state.status), state}
 
+  def handle_call(:mark_connecting, _from, %{status: status} = state)
+      when status in [:starting, :connecting, :accepting],
+      do: {:reply, :ok, transition(state, :connecting)}
+
+  def handle_call(:mark_connecting, _from, state),
+    do: {:reply, admission_error(state.status), state}
+
   def handle_call(:drain, _from, %{status: status} = state)
-      when status in [:starting, :accepting],
+      when status in [:starting, :connecting, :accepting],
       do: {:reply, :ok, transition(state, :draining)}
 
   def handle_call(:drain, _from, state), do: {:reply, :ok, state}
@@ -181,6 +194,12 @@ defmodule FavnRunner.Lifecycle do
     if admitted_owner?(state, owner),
       do: admit(owner, state),
       else: {:reply, admission_error(:draining), state}
+  end
+
+  def handle_call({:acquire, owner}, _from, %{status: :connecting} = state) do
+    if admitted_owner?(state, owner),
+      do: admit(owner, state),
+      else: {:reply, admission_error(:connecting), state}
   end
 
   def handle_call({:acquire, _owner}, _from, state),
@@ -276,6 +295,7 @@ defmodule FavnRunner.Lifecycle do
   end
 
   defp admission_error(:starting), do: {:error, :runtime_starting}
+  defp admission_error(:connecting), do: {:error, :runtime_connecting}
   defp admission_error(:draining), do: {:error, :runtime_draining}
   defp admission_error(:stopping), do: {:error, :runtime_draining}
 end

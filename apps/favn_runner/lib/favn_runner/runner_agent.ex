@@ -23,7 +23,9 @@ defmodule FavnRunner.RunnerAgent do
   alias Favn.Contracts.RunnerWork
   alias Favn.RuntimeInput.Pin
   alias FavnRunner.ControlPlaneConnection
+  alias FavnRunner.Lifecycle
   alias FavnRunner.ManifestStore
+  alias FavnRunner.OperationalEvents
   alias FavnRunner.ReleaseVerifier
   alias FavnRunner.TaskExecutor
   alias FavnRunner.TaskExecutor.Result, as: ExecutorResult
@@ -31,6 +33,7 @@ defmodule FavnRunner.RunnerAgent do
 
   @default_max_uptime_ms 3_600_000
   @default_lease_ms 30_000
+  @diagnostics_timeout_ms 250
   @log_flush_ms 1_000
   @mailbox_pressure_threshold 1_000
   @supported_task_kinds Favn.Contracts.RunnerTask.task_kinds()
@@ -65,6 +68,24 @@ defmodule FavnRunner.RunnerAgent do
   @spec drained?(GenServer.server()) :: boolean()
   def drained?(server \\ __MODULE__), do: GenServer.call(server, :drained?, 1_000)
 
+  @doc "Returns bounded runner registration diagnostics."
+  @spec diagnostics(GenServer.server()) :: map()
+  def diagnostics(server \\ __MODULE__) do
+    GenServer.call(server, :diagnostics, @diagnostics_timeout_ms)
+  catch
+    :exit, _reason ->
+      %{
+        status: :unavailable,
+        registered?: false,
+        phase: :unavailable,
+        retry_count: :unknown,
+        last_failure_class: :unknown,
+        last_failure_at: nil,
+        next_retry_ms: :unknown,
+        next_retry_at: nil
+      }
+  end
+
   @impl true
   def init(opts) do
     {:ok, release} = ReleaseVerifier.verified_release()
@@ -72,6 +93,13 @@ defmodule FavnRunner.RunnerAgent do
 
     state = %{
       connection: Keyword.get(opts, :connection, ControlPlaneConnection),
+      connection_notifications?: Keyword.get(opts, :connection_notifications?, false),
+      subscription_retry_timer: nil,
+      subscription_retry_token: nil,
+      subscription_retry_count: 0,
+      connection_status: :unknown,
+      lifecycle: Keyword.get(opts, :lifecycle, Lifecycle),
+      manage_lifecycle?: Keyword.get(opts, :manage_lifecycle?, false),
       gateway: nil,
       runner_instance_id: runner_id,
       boot_id: Keyword.get(opts, :boot_id, random_id("boot")),
@@ -95,7 +123,16 @@ defmodule FavnRunner.RunnerAgent do
       log_sequence: 0,
       pending_log_batch: nil,
       control_operations: %{},
-      reconnect_attempt: 0,
+      registration_retry_count: 0,
+      registration_retry_timer: nil,
+      registration_retry_token: nil,
+      registration_next_retry_ms: nil,
+      registration_next_retry_at: nil,
+      registration_retry_delay_fun:
+        Keyword.get(opts, :registration_retry_delay_fun, &reconnect_delay/1),
+      registration_status: :connecting,
+      last_registration_failure_class: nil,
+      last_registration_failure_at: nil,
       resume_phase: nil,
       draining?: false,
       phase: :connecting
@@ -109,7 +146,15 @@ defmodule FavnRunner.RunnerAgent do
       )
     end
 
-    send(self(), :connect)
+    state = mark_lifecycle_connecting(state)
+
+    state =
+      if state.connection_notifications? do
+        schedule_subscription(state, 0)
+      else
+        schedule_registration(state, 0)
+      end
+
     {:ok, state}
   end
 
@@ -145,14 +190,95 @@ defmodule FavnRunner.RunnerAgent do
     {:reply, drained?, state}
   end
 
-  @impl true
-  def handle_info(:connect, state) do
-    agent_pid = self()
+  def handle_call(:diagnostics, _from, state) do
+    registered? = state.registration_status == :accepted and not is_nil(state.gateway)
 
-    {:noreply,
-     start_control_operation(state, :registration, fn ->
-       register_with_control_plane(state, agent_pid)
-     end)}
+    {:reply,
+     %{
+       status: state.registration_status,
+       registered?: registered?,
+       phase: state.phase,
+       retry_count: state.registration_retry_count,
+       last_failure_class: state.last_registration_failure_class,
+       last_failure_at: state.last_registration_failure_at,
+       next_retry_ms: state.registration_next_retry_ms,
+       next_retry_at: state.registration_next_retry_at
+     }, state}
+  end
+
+  @impl true
+  def handle_info(
+        {:subscribe_control_plane_connection, token},
+        %{subscription_retry_token: token} = state
+      ) do
+    state = clear_subscription_retry(state)
+
+    case ControlPlaneConnection.subscribe(state.connection, self()) do
+      :ok ->
+        {:noreply, %{state | subscription_retry_count: 0}}
+
+      {:error, :control_plane_unavailable} ->
+        retry_count = state.subscription_retry_count + 1
+        delay = reconnect_delay(min(retry_count - 1, 6))
+
+        {:noreply,
+         state
+         |> Map.put(:subscription_retry_count, retry_count)
+         |> schedule_subscription(delay)}
+    end
+  end
+
+  def handle_info({:subscribe_control_plane_connection, _stale_token}, state),
+    do: {:noreply, state}
+
+  def handle_info(
+        {:register_with_control_plane, token},
+        %{registration_retry_token: token} = state
+      ) do
+    state = clear_registration_retry(state)
+
+    if state.connection_notifications? and state.connection_status != :connected do
+      {:noreply, state}
+    else
+      agent_pid = self()
+
+      {:noreply,
+       start_control_operation(state, :registration, fn ->
+         register_with_control_plane(state, agent_pid)
+       end)}
+    end
+  end
+
+  def handle_info({:register_with_control_plane, _stale_token}, state), do: {:noreply, state}
+
+  # Internal tests and assignment-recovery paths may request an immediate
+  # registration; route it through the same tokenized timer as retries.
+  def handle_info(:connect, state) do
+    {:noreply, state |> cancel_registration_retry() |> schedule_registration(0)}
+  end
+
+  def handle_info(
+        {:favn_control_plane_connection, %{status: :connected}},
+        %{gateway: nil, connection_status: connection_status} = state
+      ) do
+    state = %{state | connection_status: :connected}
+
+    if connection_status == :connected do
+      {:noreply, state}
+    else
+      {:noreply, state |> cancel_registration_retry() |> schedule_registration(0)}
+    end
+  end
+
+  def handle_info({:favn_control_plane_connection, %{status: :connected}}, state),
+    do: {:noreply, %{state | connection_status: :connected}}
+
+  def handle_info(
+        {:favn_control_plane_connection, %{status: status}},
+        state
+      )
+      when status in [:connecting, :unavailable] do
+    {:noreply, connection_unavailable(state)}
   end
 
   def handle_info(:claim, %{assignment: nil, phase: phase} = state)
@@ -782,24 +908,50 @@ defmodule FavnRunner.RunnerAgent do
          {:ok, gateway, %RunnerTask.RegistrationAck{status: :accepted} = acknowledgement},
          state
        ) do
+    state = cancel_registration_retry(state)
+
     state = %{
       state
       | gateway: gateway,
         session_generation: acknowledgement.runner_session_generation,
-        reconnect_attempt: 0
+        registration_retry_count: 0,
+        registration_status: :accepted,
+        last_registration_failure_class: nil,
+        last_registration_failure_at: nil
     }
 
-    resume_after_registration(state)
+    OperationalEvents.emit(
+      :control_plane_registration_accepted,
+      %{},
+      %{runner_pool: diagnostic_runner_pool(state.runner_pool)},
+      level: :info
+    )
+
+    case mark_lifecycle_accepting(state) do
+      {:ok, state} -> resume_after_registration(state)
+      {:error, state} -> {:noreply, state}
+    end
   end
 
   defp handle_control_operation_result(
          :registration,
          {:ok, _gateway, %RunnerTask.RegistrationAck{status: :rejected, reason: reason}},
          state
-       ),
-       do: stop_rejected_registration(state, reason)
+       ) do
+    state =
+      state
+      |> mark_lifecycle_connecting()
+      |> Map.merge(%{
+        registration_status: :rejected,
+        last_registration_failure_class: :registration_rejected,
+        last_registration_failure_at: DateTime.utc_now()
+      })
 
-  defp handle_control_operation_result(:registration, _error, state), do: reconnect(state)
+    stop_rejected_registration(state, reason)
+  end
+
+  defp handle_control_operation_result(:registration, _error, state),
+    do: reconnect(%{state | registration_status: :connecting})
 
   defp handle_control_operation_result(
          :preparation,
@@ -1143,9 +1295,8 @@ defmodule FavnRunner.RunnerAgent do
   end
 
   defp reconnect(state) do
+    state = mark_lifecycle_connecting(state)
     ControlPlaneConnection.reconnect(state.connection)
-    delay = reconnect_delay(state.reconnect_attempt)
-    Process.send_after(self(), :connect, delay)
 
     resume_phase =
       cond do
@@ -1154,20 +1305,176 @@ defmodule FavnRunner.RunnerAgent do
         true -> state.phase
       end
 
-    {:noreply,
-     %{
-       state
-       | gateway: nil,
-         phase: :connecting,
-         resume_phase: resume_phase,
-         reconnect_attempt: min(state.reconnect_attempt + 1, 8)
-     }}
+    state = %{
+      state
+      | gateway: nil,
+        phase: :connecting,
+        registration_status: :connecting,
+        resume_phase: resume_phase
+    }
+
+    if is_reference(state.registration_retry_timer) do
+      {:noreply, state}
+    else
+      retry_count = state.registration_retry_count + 1
+      delay = registration_retry_delay(state, retry_count)
+
+      state =
+        state
+        |> Map.put(:registration_retry_count, retry_count)
+        |> record_registration_failure(:registration_unavailable, delay)
+        |> schedule_registration(delay)
+
+      {:noreply, state}
+    end
   end
+
+  defp connection_unavailable(state) do
+    state =
+      state
+      |> stop_control_operation(:registration)
+      |> cancel_registration_retry()
+      |> mark_lifecycle_connecting()
+
+    resume_phase =
+      cond do
+        is_nil(state.assignment) -> nil
+        state.phase == :connecting -> state.resume_phase || infer_resume_phase(state)
+        true -> state.phase
+      end
+
+    %{
+      state
+      | gateway: nil,
+        connection_status: :connecting,
+        phase: :connecting,
+        registration_status: :connecting,
+        resume_phase: resume_phase
+    }
+  end
+
+  defp mark_lifecycle_connecting(%{manage_lifecycle?: false} = state), do: state
+
+  defp mark_lifecycle_connecting(state) do
+    _ = Lifecycle.mark_connecting(state.lifecycle)
+    state
+  catch
+    :exit, _reason -> state
+  end
+
+  defp mark_lifecycle_accepting(%{manage_lifecycle?: false} = state), do: {:ok, state}
+
+  defp mark_lifecycle_accepting(state) do
+    case Lifecycle.mark_accepting(state.lifecycle) do
+      :ok -> {:ok, state}
+      {:error, _reason} -> {:error, %{state | draining?: true, phase: :draining}}
+    end
+  catch
+    :exit, _reason -> {:error, %{state | draining?: true, phase: :draining}}
+  end
+
+  defp record_registration_failure(state, failure_class, next_retry_ms) do
+    retry_count = state.registration_retry_count
+    should_log? = retry_count in [1, 2, 4, 8] or rem(retry_count, 20) == 0
+
+    OperationalEvents.emit(
+      :control_plane_registration_failed,
+      %{retry_count: retry_count, next_retry_ms: next_retry_ms},
+      %{
+        failure_class: failure_class,
+        runner_pool: diagnostic_runner_pool(state.runner_pool)
+      },
+      level: :warning,
+      log?: should_log? or failure_class != state.last_registration_failure_class
+    )
+
+    %{
+      state
+      | last_registration_failure_class: failure_class,
+        last_registration_failure_at: DateTime.utc_now()
+    }
+  end
+
+  defp registration_retry_delay(state, retry_count) do
+    state.registration_retry_delay_fun.(min(retry_count - 1, 8))
+    |> normalize_registration_retry_delay()
+  rescue
+    _exception -> 30_000
+  catch
+    _kind, _reason -> 30_000
+  end
+
+  defp normalize_registration_retry_delay(delay) when is_integer(delay),
+    do: min(max(delay, 1), 30_000)
+
+  defp normalize_registration_retry_delay(_delay), do: 30_000
+
+  defp schedule_subscription(%{subscription_retry_timer: timer} = state, _delay)
+       when is_reference(timer),
+       do: state
+
+  defp schedule_subscription(state, delay) do
+    token = make_ref()
+    timer = Process.send_after(self(), {:subscribe_control_plane_connection, token}, delay)
+    %{state | subscription_retry_timer: timer, subscription_retry_token: token}
+  end
+
+  defp clear_subscription_retry(state) do
+    %{state | subscription_retry_timer: nil, subscription_retry_token: nil}
+  end
+
+  defp schedule_registration(%{registration_retry_timer: timer} = state, _delay)
+       when is_reference(timer),
+       do: state
+
+  defp schedule_registration(state, delay) do
+    token = make_ref()
+    timer = Process.send_after(self(), {:register_with_control_plane, token}, delay)
+
+    %{
+      state
+      | registration_retry_timer: timer,
+        registration_retry_token: token,
+        registration_next_retry_ms: delay,
+        registration_next_retry_at: DateTime.add(DateTime.utc_now(), delay, :millisecond)
+    }
+  end
+
+  defp clear_registration_retry(state) do
+    %{
+      state
+      | registration_retry_timer: nil,
+        registration_retry_token: nil,
+        registration_next_retry_ms: nil,
+        registration_next_retry_at: nil
+    }
+  end
+
+  defp cancel_registration_retry(%{registration_retry_timer: timer} = state)
+       when is_reference(timer) do
+    Process.cancel_timer(timer)
+    clear_registration_retry(state)
+  end
+
+  defp cancel_registration_retry(state), do: clear_registration_retry(state)
 
   defp reconnect_delay(attempt) do
     ceiling = min(250 * round(:math.pow(2, attempt)), 30_000)
     max(1, div(ceiling, 2) + :rand.uniform(max(div(ceiling, 2), 1)))
   end
+
+  defp diagnostic_runner_pool(pool) when is_atom(pool) do
+    pool |> Atom.to_string() |> diagnostic_runner_pool()
+  end
+
+  defp diagnostic_runner_pool(pool) when is_binary(pool) do
+    case Favn.RunnerPool.validate_runtime(pool) do
+      :ok -> pool
+      {:error, _reason} -> :invalid
+    end
+  end
+
+  defp diagnostic_runner_pool(_pool), do: :invalid
 
   # A stale-resume rejection means the control plane has already fenced the
   # assignment this runner was trying to resume: the runner holds nothing it
@@ -1178,18 +1485,30 @@ defmodule FavnRunner.RunnerAgent do
          %{lifecycle_mode: :resident, draining?: false} = state,
          :stale_runner_task_resume = reason
        ) do
-    Logger.warning(
-      "runner registration resume rejected as stale; dropping the fenced assignment",
-      reason: reason
+    OperationalEvents.emit(
+      :control_plane_registration_rejected,
+      %{},
+      %{failure_class: reason},
+      level: :warning
     )
 
-    state = drop_fenced_assignment(state)
-    send(self(), :connect)
-    {:noreply, %{state | phase: :connecting}}
+    state =
+      state
+      |> drop_fenced_assignment()
+      |> Map.put(:phase, :connecting)
+      |> cancel_registration_retry()
+      |> schedule_registration(0)
+
+    {:noreply, state}
   end
 
-  defp stop_rejected_registration(state, reason) do
-    Logger.error("runner registration rejected: #{inspect(reason)}", reason: reason)
+  defp stop_rejected_registration(state, _reason) do
+    OperationalEvents.emit(
+      :control_plane_registration_rejected,
+      %{},
+      %{failure_class: :registration_rejected},
+      level: :error
+    )
 
     if is_pid(state.executor) do
       _ = safe_cancel_executor(state.executor, :stale_runner_task_resume)
@@ -1439,7 +1758,6 @@ defmodule FavnRunner.RunnerAgent do
         log_timer: nil,
         log_sequence: 0,
         pending_log_batch: nil,
-        reconnect_attempt: 0,
         resume_phase: nil,
         final_claim?: false,
         phase: :idle
