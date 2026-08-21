@@ -429,10 +429,8 @@ defmodule FavnRunner.ControlPlaneConnection do
     host = String.to_charlist(host)
 
     case :erl_epmd.address_please(name, host, :inet) do
-      {:ok, _address, _port, _version} -> :ok
       {:ok, _address} -> probe_epmd(name, host)
       {:error, _reason} -> {:error, :dns_resolution_failed}
-      _other -> {:error, :dns_resolution_failed}
     end
   end
 
