@@ -7,11 +7,13 @@
 | Primary issue | [#633](https://github.com/eirhop/favn/issues/633) |
 | Pull request | [#656](https://github.com/eirhop/favn/pull/656) |
 | Related work | The repository change-record standard is introduced in the same PR at the user's request. |
-| Affected areas | Packaged runner startup, distributed-BEAM connection, registration, lifecycle, readiness, deployment templates, logs, and diagnostics |
+| Affected areas | Packaged and source-development runner startup, distributed-BEAM connection, registration, lifecycle, readiness, deployment templates, logs, and diagnostics |
 | Approved plan commit | Not available. The temporary plan was reviewed and removed before permanent change records were adopted. |
 | Original code baseline | `87e91127` |
 | Implementation commit before this record | `ed4abc65`, rewritten as `c8e90e5d` by the required rebase |
 | Post-rebase OTP typing correction | `bd31b906` |
+| Distributed slow-test topology correction | `185b3422` |
+| Docker-free local topology correction | `389a613b`, hardened for already-distributed clients by `8a65a13f` |
 | Last updated | 2026-08-21 |
 
 ## One-minute summary
@@ -26,6 +28,9 @@ The fix rejects an invalid hostname during startup, keeps a remote runner
 non-accepting until connection and registration both succeed, and makes
 readiness depend on that evidence. It also adds capped retry delays, safe
 failure classes, rate-limited logs, telemetry, and redacted diagnostics.
+Generated deployment artifacts and Docker-free source development now both use
+valid FQDN node aliases; the local alias resolves only inside the participating
+BEAM processes and requires no machine-level DNS changes.
 
 This record was made permanent after implementation because the repository
 adopted the change-record process while PR #656 was already open. The known
@@ -47,6 +52,8 @@ After this change:
   new work;
 - diagnostics show which layer is failing and, when available, the connection
   and registration retry schedules; the subscription retry remains internal;
+- Docker-free source development uses a reserved local FQDN automatically,
+  without requiring DNS or hosts-file setup;
 - repeated failures produce useful evidence without flooding logs.
 
 ## Problem analysis
@@ -88,6 +95,7 @@ not enough to establish whether the runner could claim work.
 | Issue #633 and the observed Azure Container Apps failure | A dotless hostname can leave a runner running but unable to register or claim work. | The behavior of every infrastructure provider. |
 | Original source at `87e91127` | Startup marked lifecycle accepting independently of connection and readiness omitted connection and registration. | Live network behavior. |
 | Focused runner tests in PR #656 | Invalid-host, disconnect, retry, registration, readiness, and redaction behavior are deterministic. | A real two-node TLS deployment. |
+| Rebased slow and local-lifecycle tests | Real child runners connect and register through valid process-local FQDN aliases. | External private-DNS or TLS deployment behavior. |
 | Independent plan-to-code review | The implementation preserves the approved invariants and identifies material deviations. | Post-push CI or live deployment proof. |
 
 ## Current behavior before the change
@@ -390,6 +398,26 @@ match from the EPMD address probe. OTP 29's public type returns either an
 address or an error at that step, so the removed clauses were unreachable. This
 fixed Dialyzer without changing runtime behavior or the approved design.
 
+The first rebased CI run then found two remaining IP-based local topologies.
+Production code correctly rejected both. The distributed-runner slow test now
+installs a process-local FQDN resolver entry and starts its control-plane node
+as `control-plane.favn.test`. Docker-free source development now uses the
+reserved `favn-local.test` alias for operator, runner, and client nodes, with a
+loopback mapping installed inside each BEAM. Neither correction weakens
+production validation or requires external DNS changes.
+
+```mermaid
+flowchart TD
+    A[Operator BEAM starts] --> B[Install in-memory resolver entry]
+    C[New or already-distributed client connects] --> D[Install or refresh in-memory resolver entry]
+    E[Runner launcher] --> F[Write .favn/local/inetrc]
+    F --> G[Runner BEAM reads resolver during VM startup]
+    B --> H[favn-local.test resolves to loopback]
+    D --> H
+    G --> H
+    H --> I[Distributed Erlang connects by FQDN]
+```
+
 ```mermaid
 stateDiagram-v2
     [*] --> Starting
@@ -405,22 +433,23 @@ stateDiagram-v2
 
 ### Actual scope and complexity
 
-- Issue implementation: 17 files across runner runtime, tests, deployment
-  artifacts, and canonical documentation.
+- Issue implementation: 27 files across runner runtime, local-development
+  runtime, tests, deployment artifacts, and canonical documentation.
 - Process documentation added at the user's request: `AGENTS.md`, documentation
   routing, the change-record README and template, and this record.
 - Ownership boundaries affected: runner startup, transport connection,
   registration, lifecycle admission, readiness, operational evidence, and
-  deployment generation. Durable orchestrator and storage ownership did not
-  change.
+  deployment and local-development generation. Durable orchestrator and storage
+  ownership did not change.
 - Implementation complexity: **High** — several concurrent state owners, timers,
   disconnect races, readiness composition, redaction, and recovery invariants
   had to agree.
 - Operational complexity: **Moderate** — deployment configuration becomes
   stricter and diagnostics improve, but there is no migration, protocol change,
   or new operator service.
-- Canonical documentation updated: `docs/production/elastic_runners.md` and
-  `docs/structure/favn_runner.md`.
+- Canonical documentation updated: `docs/production/elastic_runners.md`,
+  `docs/structure/favn_runner.md`, `docs/structure/favn_local.md`, and the public
+  local-development guide.
 
 ## Deviations from the approved plan
 
@@ -432,6 +461,7 @@ stateDiagram-v2
 | Make remote diagnostics bounded and require configured connection and registration evidence. | Add short timeouts for connection and registration evidence and derive requiredness from frozen configuration. | Process presence can briefly disappear during one-for-all restart, and default remote calls can exceed the three-second health check. | Remote evidence fails closed quickly; this does not claim a total readiness deadline. | Justified hardening. |
 | Log recovery at info. | Log one initial success and one event per recovery. | Initial positive evidence is useful and does not repeat. | One extra bounded startup event. | Justified; low noise. |
 | Keep the PR limited to issue #633. | Add the repository change-record standard and this permanent record. | The user explicitly adopted the process after implementation and asked to update this PR. | Six documentation files broaden the review but do not alter runtime behavior. | Accepted as an explicit documentation-only scope addition. |
+| Update generated deployment defaults to use a valid FQDN topology. | Also update Docker-free local operator, runner, and client nodes to use the reserved `favn-local.test` alias with process-local loopback resolution. | Rebased acceptance CI proved the real source-development child runner was rejected by the same new production contract. | Nine local runtime, test, and documentation files; no external DNS, machine configuration, protocol, or storage change. | Justified and complete after final plan-to-code review. |
 
 Review also found implementation defects that were corrected without changing
 the approved architecture: stale registration acknowledgements are fenced,
@@ -440,7 +470,10 @@ counters remain truthful, periodic summaries continue after retry 8, underscore
 hosts are rejected, runner-pool metadata is sanitized, and remote connection and
 registration evidence fails closed within the health-check budget. Post-rebase
 CI preparation also removed unreachable EPMD return-shape matches reported by
-OTP 29 Dialyzer; this did not change the planned probe behavior.
+OTP 29 Dialyzer, updated one distributed-runner fixture, and aligned the real
+Docker-free local topology with the required FQDN contract. The first two are
+qualification corrections; the local-topology expansion is recorded above as
+a material deviation.
 
 ## Decision log
 
@@ -451,6 +484,8 @@ OTP 29 Dialyzer; this did not change the planned probe behavior.
 | 2026-08-21 | Separate transport, subscription, and registration retry ownership. | They can fail independently and need coalesced recovery. | Reviewed and accepted. |
 | 2026-08-21 | Add the permanent change-record standard and record to PR #656. | User requested adoption before the next push. | Reviewed and accepted. |
 | 2026-08-21 | Remove impossible EPMD address-probe return matches. | OTP 29 Dialyzer proved those clauses are unreachable; the supported address and error results were already handled. | Reviewed and accepted; no plan deviation. |
+| 2026-08-21 | Give the real distributed-runner slow test a process-local FQDN. | Rebased CI proved the old dotless test node no longer met the approved production contract. | Reviewed and accepted as test-contract alignment. |
+| 2026-08-21 | Give Docker-free source development a reserved process-local FQDN. | Rebased acceptance CI proved the child runner still used an IP-based node that the new contract correctly rejects. | Reviewed and accepted as deviation seven. |
 
 ## Verification evidence
 
@@ -462,13 +497,17 @@ OTP 29 Dialyzer; this did not change the planned probe behavior.
 | Runner fast suite | 238 passed after rebase. | Runner regression qualification. |
 | Public `favn` fast suite | 183 passed, 3 excluded after rebase. | Public facade regression qualification. |
 | Deployment artifact acceptance test | 1 passed after rebase. | Generated Compose contract. |
+| Real distributed-runner storage slow test | 1 passed, 35 excluded, against an isolated PostgreSQL instance after the FQDN fixture correction. | Cross-node connection, registration, lifecycle acceptance, and task start. |
+| FavnLocal fast suite | 33 passed, 2 excluded after the process-local FQDN correction, including the already-distributed client path. | Local configuration, resolver-file, launcher, client, and lifecycle regression qualification. |
+| Docker-free local lifecycle acceptance test | 1 passed against an isolated PostgreSQL instance after commits `389a613b` and `8a65a13f`; logs show connect, accepted registration, accepting lifecycle, replacement, drain, and recovery through `favn-local.test`. | Real child-BEAM source-development lifecycle; not external DNS or TLS proof. |
 | Umbrella compile with warnings as errors | Passed after rebase. | Compile qualification across applications. |
 | Quick Credo and Sobelow checks | Passed after rebase with no issues. | Static lint and security qualification. |
 | Whole-umbrella Dialyzer | Passed after the OTP typing correction; the configured three known exclusions remained skipped. | Static type qualification. |
 | Test-tier guard | Passed after rebase. | CI-routing consistency. |
 | Diff checks | Passed after the final record update. | Patch formatting only. |
-| Independent implementation review | PR-ready; no P0-P2 findings remained. | Plan-to-code and focused-test comparison. |
+| Independent implementation review | PR-ready; no P0-P3 findings remained after corrections. | Plan-to-code and focused-test comparison. |
 | Initial PR CI | Mixed: fast tests and image qualification passed; quick, Dialyzer, acceptance, and slow jobs failed. | Stale pre-rebase CI; not final evidence for the rebased head. |
+| First rebased PR CI | Quick, Dialyzer, fast, and both image qualifications passed. Slow CI exposed an outdated dotless test fixture; acceptance exposed the same contract mismatch in the IP-based Docker-free local topology. | Intermediate CI evidence before commits `185b3422`, `389a613b`, and `8a65a13f`. |
 
 ### Not verified
 
@@ -486,7 +525,7 @@ OTP 29 Dialyzer; this did not change the planned probe behavior.
 | --- | --- |
 | Reviewer | Independent sub-agent `change_record_standard_review` |
 | Compared | Approved temporary plan, implementation, tests, diagnostics, canonical docs, and this reconstructed record |
-| Deviations complete | Yes. Six material plan or PR-scope deviations are recorded. |
-| Findings | Initial record review: one P1, five P2, and one P3 accuracy or precision findings. Final evidence review: one P3 clarity finding. |
-| Findings addressed and rechecked | Yes. The reviewer rechecked the record, rebased implementation, OTP typing correction, and final evidence. |
-| Verdict | Approved with no remaining P0-P3 findings. The implementation matches the reconstructed plan except for the six recorded and accepted deviations. |
+| Deviations complete | Yes. Seven material plan or PR-scope deviations are recorded. |
+| Findings | Earlier record reviews found accuracy and precision issues. Final topology review found one P1 plan-integrity issue, one P2 existing-client resolver gap, and two P3 visualization or count issues. |
+| Findings addressed and rechecked | Yes. The approved-plan wording was restored, the existing-client path was implemented and tested, the final topology was visualized, and scope counts were corrected. |
+| Verdict | Approved with no remaining P0-P3 findings. The implementation matches the reconstructed plan except for the seven recorded and accepted deviations. |
