@@ -1002,7 +1002,7 @@ Acceptance evidence must prove:
 | Field | Result |
 | --- | --- |
 | Requested by | Draft-PR user review on 2026-08-23 |
-| Semantic amendment commit | Recorded in the immediate metadata follow-up after this reviewed amendment is committed |
+| Semantic amendment commit | `05bbe94ae6bd8c5358f6dd1c70e7759232e991ad` |
 | Reviewer | Independent agent `issue_658_plan_review` |
 | Findings | Initial review rejected the amendment because rows above 500 were unreachable, the third append page over-fetched, the proposed keyset used nullable/mutable fields, multi-page delta acknowledgement lacked a frozen watermark, the delta index could scan unloaded rows, aggregate async budgets were missing, Events topic scope was ambiguous, and the Mermaid flow omitted the exhausted branch. Recheck also found that exact live counts lacked a truthful count-index/MVCC budget and the asset-prefix contract did not escape literal SQL pattern characters. |
 | Findings addressed and rechecked | Yes. The record now provides bounded bidirectional browsing, remaining-capacity page limits, immutable canonical order/identity failures, loaded-ID delta joins, frozen atomic acknowledgement, aggregate task budgets, explicit mode topics, an exhausted diagram path, a measured count access path, and cursor-bound literal-prefix escaping. The reviewer rechecked every correction against the issue, baseline, schema, and projector behavior. |
