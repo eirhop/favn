@@ -1,0 +1,310 @@
+# Change Record: Simple run detail reads
+
+| Field | Value |
+| --- | --- |
+| Status | Plan reviewed |
+| Type | Refactor |
+| Primary issue | [#658](https://github.com/eirhop/favn/issues/658) |
+| Pull request | Pending |
+| Related work | [Draft PR #659](https://github.com/eirhop/favn/pull/659), which this simpler approach replaces |
+| Affected areas | Run detail UI, orchestrator operator reads, PostgreSQL operator reads |
+| Approved plan commit | Pending planning commit |
+| Last updated | 2026-08-23 |
+
+## One-minute summary
+
+Opening a run currently loads a broad execution-group view with much more data
+than the page shows. The replacement will load one selected run, at most 1,000
+lean asset rows, and full asset details only on a separate route. Window changes
+navigate to another run ID and repeat the same small read. This record is needed
+because the change crosses the View, orchestrator, and PostgreSQL boundaries.
+
+## Impact
+
+A monthly window run with 90 assets, or a larger run with several hundred assets,
+should open without reading sibling-run assets, complete error payloads, output
+metadata, event payloads, or the full asset catalogue. This reduces work on the
+control plane that also schedules runs and serves runner heartbeats.
+
+## Problem analysis
+
+The run detail page reuses a broad execution-group read originally designed to
+describe a root run and its children. It then reshapes that large response for
+the screen. This makes the UI depend on data it does not display and causes broad
+reloads while a run is active.
+
+The issue's earlier scale direction proposed asset paging and an asset drawer.
+Product review of that prototype replaced both choices with the simpler 1,000-row
+bound and a separate asset detail route recorded here. Issue #658 now reflects
+this decision.
+
+### Assumptions
+
+- Every windowed pipeline run has its own run ID.
+- The page shows one run ID, and therefore one window, at a time.
+- A selected run normally has fewer than 1,000 assets.
+- UI updates may be coalesced and appear within about one second.
+- Window choices are loaded only when the operator opens the selector.
+- An exact-run read from the persisted plan and attempt projection will be fast
+  enough. This must be measured before adding a migration or changing projection
+  writes.
+
+### Evidence
+
+| Evidence | What it proves |
+| --- | --- |
+| `RunDetailLive` calls the operator run activity read with a 200-row limit | The initial page still enters through the broad read contract. |
+| The PostgreSQL activity read loads attempted and planned steps by root run ID | The query can include sibling runs and plan data the selected run does not need. |
+| Asset attempt rows already have stable run and asset-step IDs | A separate asset detail route can use a direct keyed lookup. |
+
+## Current behavior
+
+```mermaid
+flowchart LR
+    Page[Open run page] --> Group[Load execution group]
+    Group --> Children[Load root and child data]
+    Group --> Assets[Load broad asset data]
+    Children --> Render[Render one selected view]
+    Assets --> Render
+```
+
+## Approved plan
+
+The View will use one orchestrator-owned run-view contract. The orchestrator will
+authorize the request and perform a small fixed number of exact-run queries.
+
+```mermaid
+flowchart LR
+    Page[Open selected run ID] --> View[Load run summary and lean assets]
+    View --> Render[Render at most 1000 assets]
+    Render -->|Run changes| Refresh[Coalesce and reload selected run]
+    Render -->|Switch window| Page
+    Render -->|Open asset| Detail[Separate asset detail route]
+```
+
+### Contracts and invariants
+
+- The initial read is scoped by workspace and exact run ID.
+- The run summary contains only the state, timing, target, window, and aggregate
+  counts shown by the page.
+- Each asset row contains only its stable ID, display name, state, start time,
+  and end time. IDs remain within the stored 255-byte limit; display names are
+  safely truncated to 256 bytes at the public boundary.
+- The planned and observed list queries each return at most 1,001 candidates.
+  The merged result renders at most 1,000 and uses the extra candidate only to
+  detect and clearly report overflow.
+- Planned assets come from the selected run's persisted plan. Observed state
+  comes from the selected run's attempt projection. A planned row derives its
+  canonical ID from run ID, decoded node key, and asset reference. Observed state
+  replaces a matching planned row; an observed row absent from the plan is still
+  shown.
+- Rows are ordered by normalized asset reference and canonical asset-step ID
+  before the 1,000-row cut. Aggregate counts cover the complete selected run and
+  remain exact when the visible list overflows.
+- Both sources use that same total order before their 1,001-row cap. Planned IDs
+  are derived before the cap is applied, so repeated references and node-key
+  identities cannot change which merged rows appear.
+- A planned row without an observed attempt is visible but not linked to asset
+  run details because no asset run detail exists yet.
+- Opening the window selector performs a separate bounded read of lean sibling
+  windows: run ID, start, and end only. The orchestrator resolves and authorizes
+  the root, storage returns only rows with a run ID, and choices are newest first
+  with a 1,001-row overflow probe. The selected window remains labeled even when
+  it falls outside the newest 1,000 choices.
+- Window overflow shows a notice that only the newest 1,000 choices are listed.
+  Older runs remain reachable by their direct run URL; adding selector search or
+  paging is future work.
+- Switching windows performs full navigation to the sibling run ID. The old
+  LiveView is not required to preserve or reconcile state across windows.
+- Disconnected mount performs no run read. Connected mount authorizes and
+  activates only the selected run subscription before the first read.
+- This page's subscription listens only to the selected run topic; it does not
+  join the current global persistence topic. Unrelated run or workspace
+  publications perform no read.
+- Each reload is reauthorized, at most one reload is in flight, and bursts
+  coalesce to at most one reload per second. A reconnect or durable sequence gap
+  performs one full selected-screen reload.
+- While the visible run is active, a five-second fallback reload protects
+  against a commit whose final notification was lost. It stops after the page
+  observes a terminal run. No fallback Flow read runs behind Windows or Events.
+- Full navigation unsubscribes the prior run. Flow does not reload while the
+  operator is viewing Windows or Events; only the visible screen reloads.
+- Full error, output, and execution detail is queried by run ID and asset-step ID
+  only on the separate asset detail route.
+- Reserved run IDs that are still queued or preparing keep the existing
+  submission state. Existing cancellation and retry controls keep their current
+  authoritative targets and authorization.
+- Initial, refresh, window-choice, and asset-detail reads authorize independently.
+- The summary, complete counts, planned candidates, and observed candidates are
+  read atomically in one read-only repeatable-read transaction. A failure returns
+  no partial result. The transaction has a two-second timeout and every statement
+  has a one-second timeout.
+- The View calls only the public orchestrator facade. It never queries storage.
+- No duplicate table, asset paging, cursor, delta, retained-range, drawer, or
+  prefix-filter contract is introduced.
+
+### Scope
+
+- Replace the run Flow page's broad activity read with the exact-run view.
+- Add the lean window selector and full navigation between window run IDs.
+- Replace the asset drawer with a separate detail route.
+- Keep Windows and Events data lazy: they load only when their own screen is
+  selected.
+- Reuse the lean contracts elsewhere only when another screen needs exactly the
+  same fields. Do not force unrelated screens onto this model.
+
+### Non-goals
+
+- Browsing more than 1,000 assets in this PR.
+- Live-updating the open window list.
+- Adding a new source-of-truth or projection table.
+- Reworking planning, scheduling, runner heartbeats, or run execution.
+- Refactoring unrelated operator pages without measured evidence.
+
+### Implementation slices
+
+| Slice | Outcome | Owner or area |
+| --- | --- | --- |
+| 1 | Exact-run summary and lean asset read with a 1,000-row display cap | Orchestrator and PostgreSQL |
+| 2 | Run page uses the new contract and coalesces refreshes | View |
+| 3 | Lazy lean window choices navigate to another run ID | Orchestrator, PostgreSQL, and View |
+| 4 | Asset selection navigates to a keyed detail page; drawer code is removed | Orchestrator, PostgreSQL, and View |
+| 5 | Measure query count, selected columns, response size, and 1,000-asset behavior | Tests and PostgreSQL qualification |
+
+### Complexity budget
+
+These are rough Git additions and deletions, not targets to fill. Production and
+supporting files are shown separately so tests cannot hide production complexity.
+Supporting files are tests, fixtures, examples, and canonical documentation. The
+change record itself, generated files, dependency locks, and formatter-only
+changes are excluded.
+
+| Slice | Production added | Production deleted | Supporting added | Supporting deleted | Main reason for the size |
+| --- | ---: | ---: | ---: | ---: | --- |
+| Exact-run read contract and PostgreSQL queries | 400-650 | 0-80 | 350-600 | 0-100 | Public shapes, authorization, deterministic merge, summary, submission state, and storage tests |
+| Run page and coalesced refresh | 220-350 | 120-250 | 220-400 | 50-150 | Zero disconnected reads, exact subscription lifecycle, refresh coalescing, and active-screen loading |
+| Lazy window switching | 120-220 | 0-80 | 120-220 | 0-80 | Authorized bounded window query, selector state, overflow, and full navigation |
+| Separate asset detail route | 130-230 | 160-300 | 130-230 | 100-250 | Keyed read, route, page states, and all drawer removal |
+| Performance proof and shared documentation | 0-50 | 0 | 300-500 | 0-50 | Query-plan, payload, queue, rendering, concurrency, and related-contract checks |
+| **Expected total** | **870-1,500** | **280-710** | **1,120-1,950** | **150-630** | The final production implementation should remain far smaller than the replaced draft |
+
+Before final review, the outcome will show actual additions and deletions for
+each slice. Any category above its upper estimate by more than 25 percent or 100
+lines, whichever is smaller, requires a plain-language explanation and review as
+possible scope creep. Materially fewer deletions also require explanation because
+the replaced path may still exist. A projection migration would be outside this
+budget and must be approved as a plan deviation first.
+
+If one file serves several slices, each diff hunk is assigned once to the slice
+whose behavior it implements. Subscription changes belong to the run-page slice;
+all drawer removal belongs to the asset-detail slice.
+
+### Implementation map
+
+| Area | Responsibility |
+| --- | --- |
+| `favn_orchestrator` | Authorization, bounded public result shapes, and read budgets |
+| `favn_storage_postgres` | Exact-run queries and indexes only when measurements require them |
+| `favn_view` | Route selection, one-second refresh coalescing, and rendering |
+
+## Operational design
+
+The page keeps its existing content if a live refresh fails and shows a retryable
+error. A first-load failure renders the normal page error state. Missing runs or
+asset steps render not found. Queries use a bounded timeout and never retry
+silently.
+
+The orchestrator contract must be deployed before the View that calls it, or both
+must ship in one coordinated release. Rollback removes the new View first and the
+orchestrator contract second. There is no database rollout step unless a reviewed
+deviation adds one.
+
+This plan starts without a schema or projection-write change. If the measured
+exact-run plan query misses its budget, any migration or projection change is a
+plan deviation that must be explained and reviewed before implementation.
+
+### Performance budgets
+
+The values below are acceptance limits for local PostgreSQL qualification, not
+production promises. Statement counts include subscription authorization and
+read authorization because those queries also load the control plane.
+
+| Read | Maximum work and payload | Timing acceptance |
+| --- | --- | --- |
+| Connected open at 90, 1,000, and 1,001 assets | At most 12 total Repo statements: authorize and resolve the exact subscription, then reauthorize and execute at most four read statements in one snapshot; at most 1,001 lean candidates from each source; at most 1,000 public rows and 1 MiB encoded | Each data statement warm p95 at most 50 ms and first observation at most 250 ms; complete open at most 2 s |
+| Selected-run refresh | At most 8 total Repo statements including reauthorization and the four-statement snapshot; at most 1 MiB encoded | Complete refresh at most 2 s; at most one in flight and one started per second |
+| Window choices | At most 6 total Repo statements including reauthorization; at most 1,001 rows containing only run ID, start, and end; at most 512 KiB encoded | Data statements warm p95 at most 50 ms and first observation at most 250 ms; facade at most 1 s |
+| Asset run detail | At most 6 total Repo statements including reauthorization; one exact observed asset; existing stored error, window, and output limits remain; at most 512 KiB encoded | Data statements warm p95 at most 50 ms and first observation at most 250 ms; facade at most 1 s |
+| Database plans | No sibling-run scan; selected-run list plans together touch at most 5,000 buffers; window choices touch at most 2,500 buffers | No statement exceeds its one-second database deadline |
+| Connected page | At most one refresh in flight and one refresh per second; connected diff at most 1 MiB | Server render at most 150 ms for 1,000 rows |
+| Concurrent viewers | 20 viewers opening or refreshing the same 1,000-asset run while heartbeat and scheduler-style control reads continue | No timeout; database queue-time p95 at most 100 ms; every facade call finishes within 2 s; heartbeat and scheduler probe p95 stays below 100 ms and no more than twice its idle baseline |
+
+## Verification plan
+
+| Acceptance criterion | Planned evidence |
+| --- | --- |
+| Initial load reads only the selected run | Storage integration test with sibling window runs |
+| At most 1,000 lean assets are rendered | Storage and LiveView tests at 0, 90, 1,000, and 1,001 assets |
+| Full asset data is lazy and separately routed | LiveView navigation test and keyed storage test |
+| Window switch loads the new run without retained state | LiveView test across two sibling run IDs |
+| Notifications cannot cause unbounded reloads | Coalescing test with a burst of run events |
+| Subscription lifecycle is race-safe | LiveView tests for activate-before-read, teardown, one in-flight refresh, reconnect, sequence gaps, and a lost final event recovered by the active-run fallback |
+| Disconnected mount and unrelated publications cause no reads | LiveView query-count tests, including zero Flow reads while Windows or Events is visible |
+| Planned and observed rows merge deterministically | Orchestrator tests covering repeated references, node-key identity parity, observed-only rows, compatible total ordering, and overlap exactly at the cap |
+| Queued and preparing submissions remain visible | Facade and LiveView state tests |
+| Every read is independently authorized | Boundary tests, including cross-workspace and cross-run keyed-detail rejection |
+| Window choices remain bounded and valid | Tests for a closed selector, nullable run IDs, overflow, and a selected window outside the newest 1,000 |
+| Existing run actions remain correct | LiveView tests proving cancellation and retry keep their authoritative target IDs |
+| Asset detail has complete page states | Component and LiveView tests for loading, content, not found, and backend error |
+| The new browser route is qualified | Security catalog check and authenticated security qualification harness |
+| The read is safe for the control plane | Query-count, selected-column, response-size, and `EXPLAIN ANALYZE` checks |
+| The page remains usable | Design-system examples and browser checks at 390, 768, and 1440 pixels |
+
+The final PR will run focused tests for each owning application, compilation with
+warnings as errors, formatting, the test-tier guard, and the relevant broader
+suite. Live browser checks and database query-plan evidence will be reported
+separately from automated tests.
+
+## Risks and open questions
+
+| Risk or question | Decision |
+| --- | --- |
+| Exact plan JSON reads may still be slow | Benchmark first; add projection work only with evidence and review. |
+| A run or execution group may exceed a 1,000-row bound | Detect with row 1,001 and show an explicit overflow notice rather than silently hiding it. |
+| Events may arrive faster than the page should reload | Coalesce refreshes to at most once per second. |
+| A very large execution group may have more window choices than the selector bound | Apply the same 1,000-choice overflow rule; pagination or search is future work. |
+
+## Plan review
+
+| Field | Result |
+| --- | --- |
+| Reviewer | Independent agent `issue_658_plan_review` |
+| Reviewed against | Issue #658, current code, evidence, and this plan |
+| Findings | Clarify exact-run recovery, bound public fields, make snapshot failure atomic, make performance budgets end-to-end, and cover lifecycle, authorization, window, detail, and security cases. |
+| Findings addressed and rechecked | Issue #658 and the plan now agree; the read, refresh, payload, deadline, and control-plane budgets are explicit; the missing verification cases were added. The reviewer rechecked every correction and `git diff --check`. |
+| Verdict | **READY** — no remaining blockers (2026-08-23) |
+
+## Implementation outcome
+
+Pending implementation.
+
+### Actual scope and complexity
+
+Pending implementation. This section will compare actual changed lines per slice
+with the approved complexity budget above.
+
+## Deviations from the approved plan
+
+Pending implementation.
+
+## Decision log
+
+Pending implementation.
+
+## Verification evidence
+
+Pending implementation.
+
+## Final review
+
+Pending implementation.
