@@ -1044,10 +1044,12 @@ run ID. It appears only when the execution group has more than one window run.
 Non-windowed and single-window runs render no switcher; pagination remains
 available when their exact run exceeds 200 rows.
 
-This amendment supersedes only the asset-prefix portions of amendment 1. The
-approved 200-row page, 500-row retained range, keyed detail, bounded live
-reconciliation, timeout, payload, and on-demand secondary-mode contracts remain
-unchanged.
+This amendment supersedes the asset-prefix portions and the exact-run Flow
+projection-topic topology of amendment 1. Flow now activates one root
+execution-group topic and locally filters its payloads; it does not add a second
+topic or subscribe once per sibling. The approved 200-row page, 500-row retained
+range, keyed detail, bounded live reconciliation, timeout, payload, and
+on-demand secondary-mode contracts remain unchanged.
 
 ### Operator behavior
 
@@ -1122,9 +1124,19 @@ aggregate or payload fields. The View formats the supplied range for the
 operator's timezone and never derives switch membership from attempts or
 labels.
 
+The same public header shape is available as a header-only refresh use case for
+window-membership wakes. It runs the existing one header statement without a
+Flow row statement, returns no attempt summaries, and keeps the 16-KiB header
+and three-second facade deadline. It is not a broad execution-group read.
+
 The switch page does not query options until opened and retains at most one
-50-row page. Next/Previous replaces that page rather than accumulating an
-unbounded list. It has its own public structs, authorization, cursor
+50-row page. Rows are ordered by `(window_start DESC, window_id DESC)`. Next uses
+the last row as an `after` cursor. Previous uses the first row as a `before`
+cursor, executes the inverse ascending `LIMIT 51` query, and reverses the
+at-most-50 returned rows before rendering. A page reports both edge cursors and
+`has_next?`/`has_previous?`; the View retains no unbounded cursor history.
+Next/Previous replaces the current page rather than accumulating a list. It has
+its own public structs, authorization, cursor
 fingerprint, explicit errors, 50-row limit, two-data-statement ceiling, 256-KiB
 payload ceiling, and query/payload telemetry. It is separate from the richer
 Window runs mode, whose status and asset aggregates remain on-demand only in
@@ -1132,13 +1144,20 @@ that mode.
 
 ### UI composition
 
-The page composes existing compact control, button, list-card, loading, error,
-and metadata elements; it does not add a new surface or a page-owned border. On
-desktop the switcher and count share one quiet row above Flow. On mobile the
-switcher is full-width and the count sits below it. The switcher is absent when
-the execution group has zero or one navigable window run; the sole-child action
-preserves reachability from its parent. Loading and failure inside the opened
-picker are local states and do not replace a successfully rendered Flow.
+The page composes the existing compact button, dialog, list-card, loading,
+error, and metadata elements; it does not add a new surface or a page-owned
+border. On desktop the switch button and count share one quiet row above Flow.
+On mobile the button is full-width and the count sits below it. The switcher is
+absent when the execution group has zero or one navigable window run; the
+sole-child action preserves reachability from its parent.
+
+The existing dialog contract supplies labelled modal semantics, focus trapping,
+Escape/cancel handling, and focus restoration. The trigger exposes
+`aria-haspopup="dialog"`, `aria-expanded`, and `aria-controls`; the selected run
+link exposes `aria-current="page"`. Loading, failure/retry, and page changes are
+announced inside the dialog without replacing a successfully rendered Flow.
+Keyboard tests cover trigger activation, initial focus, link navigation,
+Next/Previous, retry, Escape, close, and focus restoration.
 
 Design-system examples cover a selected window below and above 200 rows,
 non-windowed overflow, single-window overflow, picker loading/error, and the
@@ -1163,6 +1182,12 @@ tuples and 100,000 heap visibility tuples, touch at most 2,500 buffers, and run
 at warm p95 at most 50 ms and cold p95 at most 150 ms. MVCC heap visibility is
 allowed and measured; zero heap fetches is not assumed.
 
+The selected-window/navigable-count/sole-child additions are also qualified in
+the existing default Flow statement and connected-open budgets: they add no
+statement, select no payload, keep the 200-row response below 1 MiB, and keep
+the documented concurrent-viewer Flow, Repo queue, lease, scheduler, and
+heartbeat ceilings.
+
 A picker read, paging action, Flow page, delta, or reconciliation uses the same
 generation-tagged socket task slot. Opening while another task owns the slot
 records at most one picker intent; closing clears that intent. Duplicate open or
@@ -1171,6 +1196,60 @@ and advances the generation. A result applies only when its generation, route,
 mode, and open picker state still match; it cannot reopen a closed picker or
 overwrite a new run. Flow wake-ups received during picker work remain coalesced
 in the existing pending watermark and run after the picker settles.
+
+Every initial and subsequent switch page independently reauthorizes the operator
+context. Cursor fingerprints bind workspace and selected execution-group route;
+cross-workspace, cross-group, direction-mismatched, and malformed cursor replay
+fails before storage and cannot reuse a prior authorization.
+
+Flow replaces its exact-run projection grant with one authorized root
+execution-group projection grant while keeping every durable read exact-run.
+Authorization first resolves the selected route run to its authorized root.
+The new root grant is activated before the initial exact-run snapshot. On a
+route, workspace, or mode change, the replacement scope is authorized and
+activated before the old grant is deactivated; leaving run detail deactivates
+the grant during teardown. Activation is idempotent for navigation within the
+same root. Together with the snapshot projection cursor, activate-before-read
+closes the commit race: an earlier commit is in the snapshot and a later commit
+queues a wake.
+
+Root-topic payload classes are explicit. `step` and `header` wakes carry the
+changed exact run ID and are accepted only when it is the selected route run;
+ordinary sibling wakes perform zero facade and database reads.
+`window_run_available` carries the root run ID and is accepted by any selected
+run in that root. Existing projection-repair membership notifications carry the
+changed exact run ID, retain their reconciliation class, and are rejected
+locally for sibling run IDs just like sibling `step` and `header` wakes.
+
+Coalescing keys preserve those semantics. `step`, `header`, and repair-membership
+wakes retain the strongest publication or repair generation per
+`{root_run_id, changed_run_id}`; `window_run_available` retains one strongest
+wake per `root_run_id`. Root-topic fan-in is therefore bounded by the projector
+batch size and its distinct changed runs, without dropping simultaneous changes
+to different children.
+
+The navigable child count can grow while a backfill dispatches. Projection of a
+`backfill.window.*` event resolves the payload's `backfill_id` to its root run,
+rather than treating the event's `backfill_id:window_id` aggregate ID as a
+backfill ID. A projection batch resolves all distinct backfill IDs in one
+bounded query, collapses changes by root, and emits at most one strongest
+post-commit `window_run_available` membership wake per root. It never notifies
+before commit and adds no per-window query or topic.
+
+A selected child receives that membership wake through its root grant and calls
+the independently reauthorized header-only use case. It can change from
+sole-child or no switcher to the multi-window switcher without reading sibling
+Flow rows. Duplicate or stale membership wakes remain coalesced by the existing
+generation and projection-cursor rules.
+
+The ordinary sibling-event budget is strict: rejected sibling `step` and
+`header`, and repair-membership wakes make zero facade calls and zero database
+statements. One accepted `window_run_available` wake performs at most one
+independently authorized header-only facade call, one data statement, 16 KiB of
+encoded payload, and a three-second aggregate deadline. It is acknowledged only
+after success. A failure retains one coalesced membership intent for the
+existing bounded retry path and never broadens into a Flow-page or Window-runs
+read.
 
 A picker read failure leaves Flow usable, closes no existing drawer, and renders
 a retry inside the picker. Navigation tears down the prior run scope through the
@@ -1188,6 +1267,11 @@ Acceptance evidence must prove:
   authorized route contract;
 - navigation discards the prior run's cursors, retained rows, pending tasks, and
   live scope;
+- activation/snapshot race tests inject commits immediately before and after
+  the snapshot, and route/workspace/mode replacement tests prove no missed or
+  double-applied wake while activate-new/deactivate-old runs;
+- teardown proves the prior root topic is no longer active, while same-root
+  child navigation keeps exactly one idempotent root grant;
 - same `asset_step_id` values in two window runs cannot mix because each Flow,
   delta, reconciliation, and drawer read remains exact-run scoped;
 - the selector performs zero window-switch reads while closed, one bounded read
@@ -1210,6 +1294,24 @@ Acceptance evidence must prove:
 - picker close/reopen, duplicate paging, failure/retry, navigation during an
   in-flight read, and Flow wake-up races preserve the single-task invariant and
   reject stale results;
+- every switch page reauthorizes; malformed, direction-mismatched,
+  cross-workspace, and cross-group cursor replay fails closed;
+- a new sibling becoming navigable while a sole child is open produces one root
+  post-commit membership wake, performs one reauthorized header-only statement,
+  and reveals the switcher without a sibling subscription or broad Flow read;
+- Flow activates one root execution-group grant before its exact-run snapshot,
+  deactivates it on route/mode change, processes selected-run wakes, and ignores
+  ordinary sibling wakes with zero facade/database calls;
+- a projection batch with many window transitions resolves backfill roots in
+  one batched query and emits at most one strongest membership wake per root;
+- simultaneous changes to multiple children retain one strongest exact-run wake
+  per `{root_run_id, changed_run_id}`, and sibling repair-membership wakes are
+  rejected locally with zero facade/database calls;
+- the dialog passes keyboard, labelled-modal, current-selection, focus
+  placement/trap/restoration, Escape, retry, and page-change announcement tests;
+- canonical operator, View, and PostgreSQL documentation removes URL-stable
+  asset-prefix filtering and records exact-run navigation, lazy switch reads,
+  the partial index, and zero/one/many root behavior;
 - dark-theme renders at 390, 768, and 1440 widths have no audit, clipping,
   target-size, focus, or accessible-name failures.
 
@@ -1220,9 +1322,9 @@ Acceptance evidence must prove:
 | Requested by | PR user review on 2026-08-23 |
 | Semantic amendment commit | `b388be7338e03709df3a9a69ec5bad1c38b1f977` |
 | Reviewer | Independent agent `issue_658_plan_review` |
-| Findings | Initial review rejected reuse of the richer Window runs page because it includes nullable run IDs and unrendered aggregates; it also found no authoritative selected label/sole-child reachability contract and no picker task lifecycle. |
-| Findings addressed | Added a lean navigable-only switch page, scalar selected/sole-window header data, explicit root states, generation-tagged picker concurrency/recovery, and a matching concurrent partial index with production-shaped page/count budgets. |
-| Verdict | Approved after recheck. No blocking findings remain; amendment 2 may proceed. |
+| Findings | Initial review rejected reuse of the richer Window runs page because it includes nullable run IDs and unrendered aggregates; it also found no authoritative selected label/sole-child reachability contract, no picker task lifecycle, and no matching chronological index. A second independent review required explicit backward paging, dialog accessibility/keyboard semantics, per-page reauthorization and cursor-replay tests, canonical doc updates, default Flow-budget evidence, and explicit ownership for dynamic sibling-count wakes because current Flow uses an exact-run topic and backfill-window aggregate IDs do not resolve as backfill IDs. |
+| Findings addressed | Added a lean navigable-only switch page, scalar selected/sole-window header data, explicit root states, generation-tagged picker concurrency/recovery, a matching concurrent partial index with production-shaped page/count budgets, exact bidirectional semantics, the existing accessible dialog contract, cursor authorization tests, canonical docs, default Flow qualification, and explicitly superseded the exact-run subscription topology with one activate-before-snapshot root projection grant. The amendment now defines payload classes, local zero-read sibling rejection, batched backfill-window-to-root membership notifications, grant replacement/teardown, wake coalescing, a reauthorized header-only refresh, and query/deadline/payload budgets. |
+| Verdict | Approved after independent recheck. No blocking findings remain; implementation may proceed. |
 
 ## Implementation outcome
 
