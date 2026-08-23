@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Implementing |
+| Status | Implemented |
 | Type | Bug fix and cross-application refactor |
 | Primary issue | [#658](https://github.com/eirhop/favn/issues/658) |
 | Pull request | [#659](https://github.com/eirhop/favn/pull/659) |
@@ -1033,3 +1033,92 @@ Acceptance evidence must prove:
 | Semantic effect | None. The diagrams retain the approved data relationships, query boundaries, pagination behavior, and on-demand detail behavior. |
 | Reviewer | Independent GPT-5.6 Sol review |
 | Verdict | Approved. No findings remain; the correction is presentation-only and preserves the approved plan. |
+
+## Implementation outcome
+
+The run route now reads one screen-specific public contract at a time. The
+disconnected mount returns a loading shell, the connected Flow screen reads at
+most 200 lean exact-run step summaries, and operators can retain at most 500
+summaries while continuing forward or backward in 200-row keyset pages. Asset
+prefix filters are URL-stable and explicit. Windows and Events each retain one
+50-row current page. Opening a step reads its complete detail by exact
+`{run_id, asset_step_id}` identity.
+
+The existing `asset_attempt_overviews` projection was evolved in place; no
+duplicate table was added. It now represents planned and observed steps,
+provides scalar summary fields and exact-run paging/count/delta indexes, and is
+repairable from plans plus events. Repair removes stale rows at the first event
+of each exact run and completes a deterministic version-2 workspace readiness
+marker. Browser Flow reads fail explicitly while repair or projection catch-up
+is incomplete. Repair membership notifications carry a durable readiness
+generation rather than relying on the historical replay publication cursor;
+connected pages retain reconciliation intent and retry after readiness returns.
+
+One projected topic is active for the visible mode. Projector batches collapse
+all changes for the same run/root scope to one strongest wake-up class. Flow
+deltas join only the at-most-500 loaded step IDs, and membership changes trigger
+a bounded reconciliation. Page mutations, delta drains, and reconciliations
+share one generation-tagged cancellable task slot, so stale results cannot
+overwrite a newer run, filter, or mode.
+
+```mermaid
+flowchart LR
+    A[Selected run and filter] --> B[Authorize one mode topic]
+    B --> C[Read one bounded screen contract]
+    C --> D[Render current bounded rows]
+    D --> E{Operator action}
+    E -->|Page or filter| C
+    E -->|Open step| F[Read one keyed detail]
+    G[Projected run wake-up] --> H[Loaded-ID delta or bounded reconciliation]
+    H --> D
+    I[Unrelated run wake-up] --> J[No screen read]
+```
+
+### Implementation map
+
+| Area | Implemented behavior |
+| --- | --- |
+| Orchestrator facade and contracts | Stable Flow header/page/delta/detail plus Window and Event page contracts; independent authorization on every read; scalar run/root subscription resolution. |
+| PostgreSQL read store | Exact-run keyset pages, literal prefix filtering, keyed detail, loaded-ID deltas, bounded mode pages, global projection readiness/cursor checks, 750 ms statement and 1,500 ms transaction budgets. |
+| Projection and migration | In-place planned/observed attempt projection, compact scalar fields, concurrent indexes and deferred constraint validation, bounded repair, deterministic readiness and repair generation, and strongest-change notifications. |
+| LiveView | Zero disconnected detail read, mode-first grant activation, 200/500 Flow paging, 50-row mode pages and bounded current-page refresh, lazy drawer, explicit errors, durable repair reconciliation, rebuilt navigation anchors after membership change, cancellable generation-tagged background reads, and encoded connected-diff telemetry. |
+| Canonical documentation | Updated View, PostgreSQL storage, data-model, and operator run documentation with the final read boundaries and failure behavior. |
+
+### Decisions and deviations
+
+| Planned | Implemented | Reason | Reviewer verdict |
+| --- | --- | --- | --- |
+| Recreate derived rows from authoritative plans and events during repair. | Delete an exact run's derived rows when replay reaches its sequence-1 event, then seed its plan and replay its events. | Keeps repair resumable and publication-bounded while removing stale rows without a workspace-wide delete transaction. | Accepted in final review. |
+| Propagate aggregate deadlines through operator reads. | The View owns one monotonic deadline across mode grant, activation, and snapshot and enforces each same-BEAM call with a supervised task; PostgreSQL additionally enforces per-statement and total transaction timeouts. | A local facade call cannot use distributed-call cancellation, so task ownership supplies the same caller-visible deadline and stale-result exclusion. | Accepted in final review. |
+| A page mutation, delta, or reconciliation owns the single socket task slot. | Scope/filter changes cancel the current task, pending watermarks, and scheduled timer tokens and increment its generation; duplicate controls are ignored while a task owns the slot. A projected Window/Event wake received while that task is occupied is retained as one pending bounded refresh. Publication and repair generations are captured by the task that consumes them and acknowledged only after its snapshot succeeds. | Implements the approved invariant directly while coalescing notifications without losing or prematurely acknowledging a wake that races the current read. | Accepted in final review. |
+
+### Verification evidence
+
+| Evidence | Result |
+| --- | --- |
+| `mix compile --warnings-as-errors` | Passed. |
+| `favn_view` fast owning-layer suite | 573 passed, including 105 doctests and the repair-generation, insertion/deletion navigation, bounded non-Flow refresh, projected-wake-during-refresh, repair-wake-during-refresh failure, stale-wake rejection, filter-cancellation, paginated-Window-no-poll, five-to-30-second fallback backoff, and encoded connected-render regressions; 1 excluded by tag. |
+| `favn_orchestrator` fast owning-layer suite | 695 passed, including 6 doctests. |
+| Focused PostgreSQL projection/read tests | Exact-run 501-row paging/delta, observed asset target identity, fail-closed deterministic two-job repair replay, empty-projection repair notification, non-empty and empty Window/Event pages with exactly two data statements (rows plus one exact-total/projection-cursor metadata query), notification commit/rollback, strongest-change grouping, and concurrent Flow-load qualification passed. The repair regression proves a sequence-1 rebuild emits a membership wake with a durable generation even when deletion finds zero derived rows. |
+| Fresh PostgreSQL migration | Applied from an empty temporary PostgreSQL 18 database, including concurrent indexes and deferred validation; temporary database was dropped afterwards. |
+| Schema verification | Exact expected schema fingerprint passed: `92af8a4b9fef90b2e984e7d919f791875abc137a3f7e932b1cb0e24c30d5e23b`. |
+| 100,000-row exact/sibling page plans | Exact count used the count index in 1.946 ms; prefix page used the page index in 0.181 ms. |
+| 10,000-row loaded-ID delta plan | The delta performed exactly 500 exact index probes, did not scan 9,500 unloaded newer rows, used 2,003 hit buffers, and completed in 2.451 ms. |
+| LiveView paging and refresh tests | Proved 200 + 200 + 100 retention, Next to rows 201–700, Previous back to rows 1–500, zero disconnected detail reads, duplicate-action exclusion, stale-generation rejection, bounded Window/Event replacement and current-page refresh with zero broad activity calls, one retained follow-up refresh for a projected wake racing an in-flight task, repair intent retained when that follow-up fails, duplicate/stale publication rejection through snapshot cursors, filter cancellation of old watermarks/timers, five-second fallback growing toward a 30-second cap, no discovery polling solely because a 75-window result has a 50-row current page, exclusive mode errors, stale-publication repair wakes, retained repair retries, and insertion/deletion followed by contiguous Next/Previous navigation. |
+| Connected render qualification | A deterministic connected 90-row mount plus complete server render was usable in 3.993 ms in the full fast-suite run. The browser-safe DTO was 20,234 bytes against 512 KiB and the encoded full-render frame was 121,545 bytes against 1 MiB. The same responsive DOM serves desktop and mobile; the test asserts the breakpoint-specific mobile markup. The production socket serializer emits mode, connected mount kind, render-to-encode duration, encoded diff bytes, and step count for every connected run-detail frame. |
+| Control-plane saturation qualification | On Windows 11, Intel i7-13700F, 15.8 GiB RAM, PostgreSQL 18.4 (`shared_buffers=128MB`), and a 15-connection application pool, 20 concurrent viewers each completed ten connected 90-row Flow opens through public subscription authorization, local subscription activation, independent public Flow reauthorization/read, and browser-safe JSON encoding while 30 run-ownership renewals and 30 scheduler claims all succeeded. Connected-open p95 was 45.261 ms and maximum was 300.442 ms against the 250 ms p95 and 1 s connected-open bounds; Repo queue p95 was 0.614 ms against 50 ms; payload p95 was 23,069 bytes against 512 KiB. Lease p95 moved from 2.662 ms to 5.734 ms and scheduler p95 from 1.946 ms to 3.789 ms, both below the approved 25 ms allowance. The tagged qualification is repeatable. |
+| Static checks | `mix format`, `git diff --check`, and `scripts/check_test_tag_tiers.exs` passed; no irrelevant integration name remains in the record or implementation. |
+| Live development server | Umbrella server started from the worktree root on port 4174; `/design-system` returned 200 and Tidewave returned the expected GET 405 endpoint response. |
+
+Not verified locally: CI-only container/acceptance/browser tiers and production
+traffic. Those remain rollout evidence rather than a reason to weaken the
+implemented query, payload, timeout, or concurrency bounds.
+
+### Final implementation review
+
+| Field | Result |
+| --- | --- |
+| Reviewer | Independent GPT-5.6 Sol agent `final_implementation_review` with xhigh reasoning |
+| Initial findings | Rejected broad subscription authorization, per-change notification fan-out, partial projection visibility, online-migration gaps, per-node projector reads, repair identity gaps, missing total transaction budget, synchronous paging, unbounded secondary-mode state, completed-job readiness replay, stale repair wakes, stale reconciliation anchors, missing saturation qualification, and incomplete final evidence. |
+| Corrections | Replaced heavy grant resolution with a scalar query; activated the new mode scope before its snapshot; collapsed wake-ups by run scope; gated reads on global cursor/readiness; made indexes concurrent; bulk-seeded plan rows; rebuilt canonical identity and removed stale rows; made completed repair replay read-only; added durable repair generations and retrying reconciliation; rebuilt navigation anchors; added transaction and outer deadlines; moved paging to the shared cancellable task; bounded Windows/Events including their live refreshes; returned their projection cursor in the same snapshot, separated their pending/repair state from Flow, captured and acknowledged task generations only on success, rejected stale wakes, fully cleared cancelled scope work, implemented capped fallback backoff, and removed pagination-driven discovery polling; removed duplicate total aggregates; added encoded-diff telemetry; and added focused, connected-render, and concurrent-load evidence. |
+| Final verdict | READY. No blocking findings remain. Window/Event reads meet the two-data-statement budget, and the refresh, repair, cancellation, watermark, pagination, and fallback behavior passed final recheck. |

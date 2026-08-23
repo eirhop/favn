@@ -256,7 +256,7 @@ defmodule FavnView.AssetDetailLive do
              socket
              |> CommandAttempt.acknowledge(attempt)
              |> put_flash(:info, "Missing-window backfill submitted")
-             |> push_navigate(to: ~p"/runs/#{run_id}")}
+             |> push_navigate(to: ~p"/runs/#{run_id}?back_asset_id=#{socket.assigns.asset_id}")}
 
           {:error, reason} ->
             {socket, attempt} = CommandAttempt.settle_failure(socket, attempt, reason)
@@ -374,14 +374,14 @@ defmodule FavnView.AssetDetailLive do
          socket
          |> CommandAttempt.acknowledge(attempt)
          |> put_flash(:info, "Run request queued")
-         |> push_navigate(to: ~p"/runs/#{run_id}")}
+         |> push_navigate(to: ~p"/runs/#{run_id}?back_asset_id=#{socket.assigns.asset_id}")}
 
       {:ok, run_id, :backfill} ->
         {:noreply,
          socket
          |> CommandAttempt.acknowledge(attempt)
          |> put_flash(:info, "Asset backfill submitted")
-         |> push_navigate(to: ~p"/runs/#{run_id}")}
+         |> push_navigate(to: ~p"/runs/#{run_id}?back_asset_id=#{socket.assigns.asset_id}")}
 
       {:error, reason} ->
         Logger.error("asset.run submit failed reason=#{inspect(reason)}")

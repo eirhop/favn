@@ -45,6 +45,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
   alias FavnStoragePostgres.Migrations.OptimizeExecutionPackageRetentionV2
   alias FavnStoragePostgres.Migrations.OptimizeLogicalTargetHistoryV2
   alias FavnStoragePostgres.Migrations.OptimizeRunStatusPagingV2
+  alias FavnStoragePostgres.Migrations.OptimizeRunFlowReadsV2
   alias FavnStoragePostgres.Migrations.NormalizeResourceCircuitDefinitionsV2
   alias FavnStoragePostgres.Migrations.RebindScheduleOccurrenceRunReferenceV2
   alias FavnStoragePostgres.RuntimePrivileges
@@ -90,7 +91,8 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     {20_260_805_000_000, OptimizeLogicalTargetHistoryV2},
     {20_260_807_000_000, GeneralizeOperatorCommandPrincipalsV2},
     {20_260_813_000_000, AddWorkspaceProvisioningOperationsV2},
-    {20_260_821_000_000, RebindScheduleOccurrenceRunReferenceV2}
+    {20_260_821_000_000, RebindScheduleOccurrenceRunReferenceV2},
+    {20_260_823_000_000, OptimizeRunFlowReadsV2}
   ]
   @required_tables ~w(
     schema_migrations
@@ -279,6 +281,9 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     asset_freshness_states_node_idx
     asset_attempt_overviews_group_idx
     asset_attempt_overviews_run_idx
+    asset_attempt_overviews_flow_page_idx
+    asset_attempt_overviews_flow_counts_idx
+    asset_attempt_overviews_flow_delta_idx
     log_entries_recent_idx
     log_entries_run_idx
     auth_actors_username_uidx
@@ -301,7 +306,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     "asset_evidence_bindings" =>
       ~w(workspace_id target_id evidence_generation_id initial_manifest_id created_at),
     "asset_attempt_overviews" =>
-      ~w(workspace_id root_run_id run_id asset_step_id asset_ref window_identity window status stage attempt_number execution_pool queue_reason started_at finished_at duration_ms error output_metadata source_publication_id updated_at),
+      ~w(workspace_id root_run_id run_id asset_step_id asset_ref window_identity window status stage attempt_number execution_pool queue_reason started_at finished_at duration_ms error output_metadata source_publication_id updated_at target_id window_kind window_start_at window_end_at window_timezone failure_summary),
     "asset_window_states" =>
       ~w(workspace_id evidence_generation_id manifest_version_id target_id window_key window_start window_end status run_id materialization_id payload source_publication_id updated_at),
     "asset_target_generations" =>
@@ -559,7 +564,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
                           Enum.map(@identifier_constraint_tables, &"#{&1}_identifier_lengths_v2") ++
                           Enum.map(@payload_constraint_tables, &"#{&1}_payload_bounds_v2")
   @expected_versions Enum.map(@migrations, fn {version, _module} -> version end)
-  @expected_definition_fingerprint "10fc56c41af9e79145554539a9348dbf14d7de624c72bad2f89eaa00f218e61b"
+  @expected_definition_fingerprint "92af8a4b9fef90b2e984e7d919f791875abc137a3f7e932b1cb0e24c30d5e23b"
 
   @doc "Creates the V2 namespace for development/tests and applies every known migration."
   @spec migrate!(module()) :: :ok

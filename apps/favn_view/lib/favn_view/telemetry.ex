@@ -51,6 +51,17 @@ defmodule FavnView.Telemetry do
         tags: [:event],
         unit: {:native, :millisecond}
       ),
+      summary("favn.view.run_detail.render.duration",
+        tags: [:mode, :mount_kind],
+        unit: {:native, :millisecond}
+      ),
+      summary("favn.view.run_detail.render.diff_bytes",
+        tags: [:mode, :mount_kind],
+        unit: :byte
+      ),
+      summary("favn.view.run_detail.render.step_count",
+        tags: [:mode, :mount_kind]
+      ),
 
       # VM Metrics
       summary("vm.memory.total", unit: {:byte, :kilobyte}),

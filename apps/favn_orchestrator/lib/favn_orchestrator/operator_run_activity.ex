@@ -39,7 +39,10 @@ defmodule FavnOrchestrator.OperatorRunActivity do
     end
   end
 
-  defp get_submission(context, run_id) do
+  @doc "Returns only the durable pre-admission state for a reserved run identity."
+  @spec get_submission(WorkspaceContext.t(), String.t()) ::
+          {:ok, activity()} | {:error, term()}
+  def get_submission(%WorkspaceContext{} = context, run_id) when is_binary(run_id) do
     case RunSubmissions.get(context, run_id) do
       {:ok, %RunSubmission{} = submission} ->
         {:ok, %{kind: :submission, submission: project_submission(submission)}}

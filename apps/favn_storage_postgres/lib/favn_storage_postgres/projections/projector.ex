@@ -10,20 +10,27 @@ defmodule FavnStoragePostgres.Projections.Projector do
 
   alias Ecto.Adapters.SQL
   alias FavnOrchestrator.Persistence.Error
+  alias FavnOrchestrator.AssetStepIdentity
   alias FavnOrchestrator.RunReadModel.AssetAttemptProjection
   alias FavnOrchestrator.Storage.JsonSafe
   alias FavnOrchestrator.Storage.RunEventCodec
+  alias FavnOrchestrator.Storage.RunSnapshotCodec
+  alias FavnOrchestrator.WindowSummary
   alias Favn.Freshness.Key, as: FreshnessKey
   alias Favn.TimePeriod
   alias Favn.Timezone
   alias FavnStoragePostgres.CanonicalJSON
   alias FavnStoragePostgres.ErrorMapper
+  alias FavnStoragePostgres.Projections.Readiness
   alias FavnStoragePostgres.Repo
   alias FavnStoragePostgres.Schemas.Backfill
+  alias FavnStoragePostgres.Schemas.AssetAttemptOverview
   alias FavnStoragePostgres.Schemas.Materialization
+  alias FavnStoragePostgres.Schemas.ManifestVersion
   alias FavnStoragePostgres.Schemas.OutboxEvent
   alias FavnStoragePostgres.Schemas.Run
   alias FavnStoragePostgres.Schemas.RunEvent
+  alias FavnStoragePostgres.Schemas.RunPlan
   alias FavnStoragePostgres.Schemas.WorkspaceDeployment
 
   @projector_name "control_plane_v1"
@@ -92,14 +99,17 @@ defmodule FavnStoragePostgres.Projections.Projector do
 
     run_contexts = load_run_projection_contexts!(events)
 
-    Enum.each(events, fn event ->
-      try do
-        project_event!(event, run_contexts)
-      rescue
-        error ->
-          Repo.rollback({:projection_failed, event, error_kind(error)})
-      end
-    end)
+    membership_events =
+      Enum.reduce(events, MapSet.new(), fn event, acc ->
+        try do
+          if project_event!(event, run_contexts) == :membership,
+            do: MapSet.put(acc, event.outbox_event_id),
+            else: acc
+        rescue
+          error ->
+            Repo.rollback({:projection_failed, event, error_kind(error)})
+        end
+      end)
 
     clear_failures!(events)
 
@@ -131,6 +141,8 @@ defmodule FavnStoragePostgres.Projections.Projector do
         ]
       )
 
+    emit_projection_notifications!(events, run_contexts, membership_events, next_publication_id)
+
     %{
       count: length(events),
       last_publication_id: next_publication_id,
@@ -150,6 +162,91 @@ defmodule FavnStoragePostgres.Projections.Projector do
       [@projector_name, @shard_id]
     )
   end
+
+  defp emit_projection_notifications!(events, contexts, membership_events, publication_id) do
+    events
+    |> Enum.flat_map(&projection_notification_scopes(&1, contexts, membership_events))
+    |> strongest_notification_scopes()
+    |> Enum.each(fn scope ->
+      payload =
+        Jason.encode!(%{
+          workspace_id: scope.workspace_id,
+          run_id: scope.run_id,
+          root_run_id: scope.root_run_id,
+          publication_id: publication_id,
+          change: scope.change
+        })
+
+      if byte_size(payload) > 1_024, do: raise("projection notification exceeds 1 KiB")
+      SQL.query!(Repo, "SELECT pg_notify('favn_execution_group_projected', $1)", [payload])
+    end)
+  end
+
+  @doc false
+  @spec strongest_notification_scopes([map()]) :: [map()]
+  def strongest_notification_scopes(scopes) when is_list(scopes) do
+    scopes
+    |> Enum.group_by(fn scope ->
+      {scope.workspace_id, scope.run_id, scope.root_run_id}
+    end)
+    |> Enum.map(fn {_identity, scopes} -> Enum.max_by(scopes, &change_priority(&1.change)) end)
+  end
+
+  defp change_priority("membership"), do: 3
+  defp change_priority(change) when change in ["steps", "windows"], do: 2
+  defp change_priority("header"), do: 1
+
+  defp projection_notification_scopes(
+         %OutboxEvent{event_kind: "run." <> kind} = event,
+         contexts,
+         membership_events
+       ) do
+    {run, _run_event, previous, _new} = Map.fetch!(contexts, event.outbox_event_id)
+
+    change =
+      cond do
+        is_nil(previous) or MapSet.member?(membership_events, event.outbox_event_id) ->
+          "membership"
+
+        String.starts_with?(kind, "step_") ->
+          "steps"
+
+        true ->
+          "header"
+      end
+
+    [
+      %{
+        workspace_id: event.workspace_id,
+        run_id: run.run_id,
+        root_run_id: run.root_execution_group_id,
+        change: change
+      }
+    ]
+  end
+
+  defp projection_notification_scopes(
+         %OutboxEvent{event_kind: "backfill." <> _kind, aggregate_id: backfill_id} = event,
+         _contexts,
+         _membership_events
+       ) do
+    case Repo.get_by(Backfill, workspace_id: event.workspace_id, backfill_id: backfill_id) do
+      %Backfill{root_run_id: root_run_id} ->
+        [
+          %{
+            workspace_id: event.workspace_id,
+            run_id: root_run_id,
+            root_run_id: root_run_id,
+            change: "windows"
+          }
+        ]
+
+      nil ->
+        []
+    end
+  end
+
+  defp projection_notification_scopes(_event, _contexts, _membership_events), do: []
 
   defp claim_cursor!(owner_id, lease_ms) do
     %{rows: rows} =
@@ -182,8 +279,13 @@ defmodule FavnStoragePostgres.Projections.Projector do
   def rebuild_event!(:target_statuses, %OutboxEvent{event_kind: "run." <> _} = event),
     do: event |> run_projection_context!() |> project_target_statuses!(event)
 
-  def rebuild_event!(:asset_attempts, %OutboxEvent{event_kind: "run." <> _} = event),
-    do: event |> run_projection_context!() |> project_asset_attempt!(event)
+  def rebuild_event!(:asset_attempts, %OutboxEvent{event_kind: "run." <> _} = event) do
+    context = run_projection_context!(event)
+    maybe_reset_repaired_run!(context, event)
+    seed_planned_asset_attempts!(context, event, repair?: true)
+    _change = project_asset_attempt!(context, event)
+    :ok
+  end
 
   def rebuild_event!(:backfills, %OutboxEvent{event_kind: "backfill.plan.activated"} = event),
     do: project_backfill_activation!(event)
@@ -196,46 +298,172 @@ defmodule FavnStoragePostgres.Projections.Projector do
 
   def rebuild_event!(_projection, %OutboxEvent{}), do: :ok
 
+  defp maybe_reset_repaired_run!({run, %RunEvent{sequence: 1}, _previous, _new}, event) do
+    {_deleted, _rows} =
+      from(attempt in AssetAttemptOverview,
+        where: attempt.workspace_id == ^run.workspace_id and attempt.run_id == ^run.run_id
+      )
+      |> Repo.delete_all()
+
+    payload =
+      Jason.encode!(%{
+        workspace_id: run.workspace_id,
+        run_id: run.run_id,
+        root_run_id: run.root_execution_group_id,
+        publication_id: event.publication_id,
+        repair_generation: repair_generation!(run.workspace_id),
+        change: "membership"
+      })
+
+    SQL.query!(Repo, "SELECT pg_notify('favn_execution_group_projected', $1)", [payload])
+
+    :ok
+  end
+
+  defp maybe_reset_repaired_run!(_context, _event), do: :ok
+
+  defp repair_generation!(workspace_id) do
+    %{rows: [[generation]]} =
+      SQL.query!(
+        Repo,
+        "SELECT version FROM favn_control.maintenance_jobs WHERE job_id = $1",
+        [Readiness.ready_job_id(workspace_id)]
+      )
+
+    generation
+  end
+
   defp project_event!(%OutboxEvent{event_kind: "run." <> _event_type} = event, contexts),
     do: project_run!(event, Map.fetch!(contexts, event.outbox_event_id))
 
-  defp project_event!(%OutboxEvent{event_kind: "backfill.plan.activated"} = event, _contexts),
-    do: project_backfill_activation!(event)
+  defp project_event!(%OutboxEvent{event_kind: "backfill.plan.activated"} = event, _contexts) do
+    project_backfill_activation!(event)
+    :ok
+  end
 
-  defp project_event!(%OutboxEvent{event_kind: "backfill.window." <> _status} = event, _contexts),
-    do: project_backfill_window!(event)
+  defp project_event!(%OutboxEvent{event_kind: "backfill.window." <> _status} = event, _contexts) do
+    project_backfill_window!(event)
+    :ok
+  end
 
-  defp project_event!(%OutboxEvent{event_kind: "materialization.succeeded"} = event, _contexts),
-    do: project_materialization!(event)
+  defp project_event!(%OutboxEvent{event_kind: "materialization.succeeded"} = event, _contexts) do
+    project_materialization!(event)
+    :ok
+  end
 
   defp project_event!(_event, _contexts), do: :ok
 
   defp project_run!(event, context) do
     project_execution_group!(context, event)
     project_target_statuses!(context, event)
+    seed_planned_asset_attempts!(context, event)
     project_asset_attempt!(context, event)
+  end
+
+  defp seed_planned_asset_attempts!(context, event, opts \\ [])
+
+  defp seed_planned_asset_attempts!(
+         {run, %RunEvent{sequence: 1} = run_event, _, _},
+         event,
+         opts
+       ) do
+    with %RunPlan{} = persisted_plan <-
+           Repo.get_by(RunPlan, workspace_id: run.workspace_id, run_id: run.run_id),
+         %ManifestVersion{} = manifest <- Repo.get(ManifestVersion, run.manifest_version_id),
+         {:ok, plan} <-
+           RunSnapshotCodec.decode_plan(persisted_plan.plan, manifest.atom_strings || []) do
+      rows =
+        Enum.map(plan.nodes, fn {node_key, node} ->
+          planned_asset_attempt_row(run, run_event, event, node_key, node)
+        end)
+
+      on_conflict =
+        if Keyword.get(opts, :repair?, false),
+          do:
+            {:replace,
+             [
+               :asset_ref,
+               :target_id,
+               :window_identity,
+               :window,
+               :window_kind,
+               :window_start_at,
+               :window_end_at,
+               :window_timezone,
+               :stage,
+               :execution_pool
+             ]},
+          else: :nothing
+
+      Repo.insert_all(AssetAttemptOverview, rows,
+        on_conflict: on_conflict,
+        conflict_target: [:workspace_id, :root_run_id, :run_id, :asset_step_id]
+      )
+    else
+      nil -> :ok
+      {:error, reason} -> raise "asset attempt plan seed failed: #{inspect(reason)}"
+    end
+  end
+
+  defp seed_planned_asset_attempts!(_context, _event, _opts), do: :ok
+
+  defp planned_asset_attempt_row(run, run_event, event, node_key, node) do
+    asset_ref = plan_ref_text(Map.get(node, :ref))
+    asset_step_id = AssetStepIdentity.asset_step_id(run.run_id, node_key, Map.get(node, :ref))
+    window = planned_window(Map.get(node, :window))
+
+    %{
+      workspace_id: run.workspace_id,
+      root_run_id: run.root_execution_group_id,
+      run_id: run.run_id,
+      asset_step_id: asset_step_id,
+      asset_ref: asset_ref,
+      target_id: Map.get(node, :target_id),
+      window_identity: planned_window_identity(window),
+      window: json(window),
+      window_kind: window && atom_string(window.kind),
+      window_start_at: window && utc_datetime(window.start_at),
+      window_end_at: window && utc_datetime(window.end_at),
+      window_timezone: window && window.timezone,
+      status: "planned",
+      stage: Map.get(node, :stage),
+      execution_pool: atom_string(Map.get(node, :execution_pool)),
+      source_publication_id: event.publication_id,
+      updated_at: run_event.occurred_at
+    }
   end
 
   defp project_asset_attempt!({run, run_event, _previous_status, _new_status}, event) do
     with {:ok, decoded} <- RunEventCodec.decode(Jason.encode!(run_event.event)),
          {:ok, attempt} <- AssetAttemptProjection.from_event(decoded) do
+      target_id = "asset:" <> attempt.asset_ref
+
       SQL.query!(
         Repo,
         """
         INSERT INTO favn_control.asset_attempt_overviews
-          (workspace_id, root_run_id, run_id, asset_step_id, asset_ref,
-           window_identity, "window", status, stage, attempt_number, execution_pool,
-           queue_reason, started_at, finished_at, duration_ms, error,
+          (workspace_id, root_run_id, run_id, asset_step_id, asset_ref, target_id,
+           window_identity, "window", window_kind, window_start_at, window_end_at,
+           window_timezone, status, stage, attempt_number, execution_pool,
+           queue_reason, started_at, finished_at, duration_ms, error, failure_summary,
            output_metadata, source_publication_id, updated_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11, $12,
-                $13, $14, $15, $16::jsonb, $17::jsonb, $18, $19)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11, $12,
+                $13, $14, $15, $16, $17, $18, $19, $20, $21::jsonb, $22,
+                $23::jsonb, $24, $25)
         ON CONFLICT (workspace_id, root_run_id, run_id, asset_step_id) DO UPDATE
-        SET asset_ref = EXCLUDED.asset_ref,
+        SET target_id = COALESCE(asset_attempt_overviews.target_id, EXCLUDED.target_id),
             window_identity = CASE
               WHEN EXCLUDED."window" IS NULL THEN asset_attempt_overviews.window_identity
               ELSE EXCLUDED.window_identity
             END,
             "window" = COALESCE(EXCLUDED."window", asset_attempt_overviews."window"),
+            window_kind = COALESCE(EXCLUDED.window_kind, asset_attempt_overviews.window_kind),
+            window_start_at = COALESCE(EXCLUDED.window_start_at,
+                                       asset_attempt_overviews.window_start_at),
+            window_end_at = COALESCE(EXCLUDED.window_end_at,
+                                     asset_attempt_overviews.window_end_at),
+            window_timezone = COALESCE(EXCLUDED.window_timezone,
+                                       asset_attempt_overviews.window_timezone),
             status = EXCLUDED.status,
             stage = COALESCE(EXCLUDED.stage, asset_attempt_overviews.stage),
             attempt_number = COALESCE(EXCLUDED.attempt_number,
@@ -261,6 +489,11 @@ defmodule FavnStoragePostgres.Projections.Projector do
               WHEN EXCLUDED.status IN ('queued', 'running', 'retrying') THEN NULL
               ELSE COALESCE(EXCLUDED.error, asset_attempt_overviews.error)
             END,
+            failure_summary = CASE
+              WHEN EXCLUDED.status IN ('queued', 'running', 'retrying') THEN NULL
+              ELSE COALESCE(EXCLUDED.failure_summary,
+                            asset_attempt_overviews.failure_summary)
+            END,
             output_metadata = CASE
               WHEN EXCLUDED.status IN ('queued', 'running', 'retrying') THEN NULL
               ELSE COALESCE(EXCLUDED.output_metadata,
@@ -268,7 +501,9 @@ defmodule FavnStoragePostgres.Projections.Projector do
             END,
             source_publication_id = EXCLUDED.source_publication_id,
             updated_at = EXCLUDED.updated_at
-        WHERE asset_attempt_overviews.source_publication_id < EXCLUDED.source_publication_id
+        WHERE asset_attempt_overviews.source_publication_id <= EXCLUDED.source_publication_id
+          AND asset_attempt_overviews.asset_ref = EXCLUDED.asset_ref
+        RETURNING asset_ref, (xmax = 0) AS inserted
         """,
         [
           event.workspace_id,
@@ -276,8 +511,13 @@ defmodule FavnStoragePostgres.Projections.Projector do
           run.run_id,
           attempt.asset_step_id,
           attempt.asset_ref,
+          target_id,
           attempt.window_identity,
           json(attempt.window),
+          attempt.window && atom_string(attempt.window.kind),
+          attempt.window && utc_datetime(attempt.window.start_at),
+          attempt.window && utc_datetime(attempt.window.end_at),
+          attempt.window && attempt.window.timezone,
           Atom.to_string(attempt.status),
           attempt.stage,
           attempt.attempt_number,
@@ -287,21 +527,94 @@ defmodule FavnStoragePostgres.Projections.Projector do
           attempt.finished_at,
           attempt.duration_ms,
           json(attempt.error),
+          failure_summary(attempt.error),
           json(attempt.output_metadata),
           event.publication_id,
           run_event.occurred_at
         ]
       )
+      |> ensure_asset_ref_unchanged!(event, attempt)
     else
       :ignore -> :ok
       {:error, reason} -> raise "asset attempt projection failed: #{inspect(reason)}"
     end
-
-    :ok
   end
 
   defp json(nil), do: nil
   defp json(value), do: JsonSafe.data(value)
+
+  defp planned_window(nil), do: nil
+  defp planned_window(window), do: WindowSummary.public(window)
+
+  defp planned_window_identity(nil), do: "none"
+  defp planned_window_identity(%{key: key}) when is_binary(key), do: key
+
+  defp planned_window_identity(window) do
+    window
+    |> :erlang.term_to_binary([:deterministic])
+    |> then(&:crypto.hash(:sha256, &1))
+    |> Base.url_encode64(padding: false)
+  end
+
+  defp plan_ref_text({module, name}) when is_atom(module) and is_atom(name),
+    do: Atom.to_string(module) <> ":" <> Atom.to_string(name)
+
+  defp plan_ref_text(value) when is_binary(value), do: value
+  defp plan_ref_text(value), do: inspect(value)
+
+  defp atom_string(nil), do: nil
+  defp atom_string(value) when is_atom(value), do: Atom.to_string(value)
+  defp atom_string(value) when is_binary(value), do: value
+
+  defp utc_datetime(%DateTime{} = value) do
+    value
+    |> DateTime.shift_zone!("Etc/UTC")
+    |> DateTime.add(0, :microsecond)
+  end
+
+  defp failure_summary(nil), do: nil
+
+  defp failure_summary(%{message: message}) when is_binary(message),
+    do: truncate_utf8(message, 1_024)
+
+  defp failure_summary(%{"message" => message}) when is_binary(message),
+    do: truncate_utf8(message, 1_024)
+
+  defp failure_summary(error) when is_binary(error), do: truncate_utf8(error, 1_024)
+  defp failure_summary(_error), do: "Failure details are available in server logs."
+
+  defp truncate_utf8(value, max_bytes) when byte_size(value) <= max_bytes, do: value
+
+  defp truncate_utf8(value, max_bytes),
+    do: value |> String.next_grapheme() |> trim_graphemes(max_bytes, "")
+
+  defp trim_graphemes(nil, _max_bytes, acc), do: acc
+
+  defp trim_graphemes({grapheme, rest}, max_bytes, acc) do
+    if byte_size(acc) + byte_size(grapheme) <= max_bytes,
+      do: trim_graphemes(String.next_grapheme(rest), max_bytes, acc <> grapheme),
+      else: acc
+  end
+
+  defp ensure_asset_ref_unchanged!(%{rows: [[_asset_ref, true]]}, _event, _attempt),
+    do: :membership
+
+  defp ensure_asset_ref_unchanged!(%{rows: [[_asset_ref, false]]}, _event, _attempt), do: :ok
+
+  defp ensure_asset_ref_unchanged!(%{rows: []}, event, attempt) do
+    existing =
+      Repo.get_by(AssetAttemptOverview,
+        workspace_id: event.workspace_id,
+        run_id: event.aggregate_id,
+        asset_step_id: attempt.asset_step_id
+      )
+
+    if existing && existing.asset_ref != attempt.asset_ref do
+      raise "asset attempt identity changed for #{attempt.asset_step_id}"
+    end
+
+    :ok
+  end
 
   defp load_run_projection_contexts!(events) do
     run_events = Enum.filter(events, &match?(%OutboxEvent{event_kind: "run." <> _}, &1))
@@ -333,6 +646,7 @@ defmodule FavnStoragePostgres.Projections.Projector do
 
       Map.new(run_events, fn event ->
         run = Map.fetch!(runs, {event.workspace_id, event.aggregate_id})
+
         run_event = Map.fetch!(persisted_events, event.outbox_event_id)
         previous_status = event.payload["previous_status"]
         new_status = event.payload["status"] || run_event.status || run.status

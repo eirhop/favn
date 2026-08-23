@@ -14,6 +14,7 @@ defmodule FavnStoragePostgres.Maintenance.Store do
   alias FavnOrchestrator.Persistence.Results.MaintenanceOutcome
   alias FavnStoragePostgres.ErrorMapper
   alias FavnStoragePostgres.Projections.MissingRowBackfiller
+  alias FavnStoragePostgres.Projections.Readiness
   alias FavnStoragePostgres.Repo
   alias FavnStoragePostgres.Schemas.MaintenanceJob
 
@@ -34,7 +35,8 @@ defmodule FavnStoragePostgres.Maintenance.Store do
         configuration = %{
           "projection" => Atom.to_string(command.projection),
           "workspace_id" => command.workspace_id,
-          "limit" => command.limit
+          "limit" => command.limit,
+          "version" => projection_version(command.projection)
         }
 
         job = prepare_job!(command, "projection_missing_row_backfill", configuration)
@@ -42,6 +44,8 @@ defmodule FavnStoragePostgres.Maintenance.Store do
         if job.status == "completed" do
           outcome(job, 0, %{})
         else
+          maybe_mark_projection_running!(command)
+
           batch =
             MissingRowBackfiller.backfill(
               command.projection,
@@ -53,11 +57,29 @@ defmodule FavnStoragePostgres.Maintenance.Store do
           status = if batch.count < command.limit, do: "completed", else: "running"
           updated = update_job!(job, status, batch.count, batch.cursor)
 
+          if status == "completed", do: maybe_mark_projection_ready!(command)
+
           outcome(updated, batch.count, %{"projection" => Atom.to_string(command.projection)})
         end
       end)
     end
   end
+
+  defp projection_version(:asset_attempts), do: 2
+  defp projection_version(_projection), do: 1
+
+  defp maybe_mark_projection_ready!(%{projection: :asset_attempts, workspace_id: workspace_id}),
+    do: Readiness.mark_ready!(workspace_id, database_now!())
+
+  defp maybe_mark_projection_ready!(_command), do: :ok
+
+  defp maybe_mark_projection_running!(%{
+         projection: :asset_attempts,
+         workspace_id: workspace_id
+       }),
+       do: Readiness.mark_running!(workspace_id, database_now!())
+
+  defp maybe_mark_projection_running!(_command), do: :ok
 
   @impl true
   def reconcile(%ReconcilePersistence{} = command) do

@@ -16,8 +16,14 @@ defmodule FavnView.Endpoint do
   def session_options, do: FavnView.ProductionRuntimeConfig.session_cookie_options()
 
   socket "/live", Phoenix.LiveView.Socket,
-    websocket: [connect_info: [session: {__MODULE__, :session_options, []}]],
-    longpoll: [connect_info: [session: {__MODULE__, :session_options, []}]]
+    websocket: [
+      connect_info: [session: {__MODULE__, :session_options, []}],
+      serializer: [{FavnView.LiveViewSerializer, "~> 2.0.0"}]
+    ],
+    longpoll: [
+      connect_info: [session: {__MODULE__, :session_options, []}],
+      serializer: [{FavnView.LiveViewSerializer, "~> 2.0.0"}]
+    ]
 
   # Serve at "/" the static files from "priv/static" directory.
   #

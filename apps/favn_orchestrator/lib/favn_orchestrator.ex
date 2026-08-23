@@ -32,6 +32,8 @@ defmodule FavnOrchestrator do
   alias FavnOrchestrator.Operator.Commands, as: OperatorCommands
   alias FavnOrchestrator.OperatorContext
   alias FavnOrchestrator.OperatorRunActivity
+  alias FavnOrchestrator.OperatorRunFlow
+  alias FavnOrchestrator.OperatorRunPages
   alias FavnOrchestrator.Operator.Schedules
   alias FavnOrchestrator.OperatorCommands.AssetBackfillRequest
   alias FavnOrchestrator.OperatorCommands.AssetRunRequest
@@ -45,6 +47,7 @@ defmodule FavnOrchestrator do
   alias FavnOrchestrator.Persistence.Queries.CountExecutionGroups
   alias FavnOrchestrator.Persistence.Queries.GetExecutionGroup
   alias FavnOrchestrator.Persistence.Queries.PageExecutionGroups
+  alias FavnOrchestrator.Persistence.Queries.ResolveRunSubscription
   alias FavnOrchestrator.Persistence.Results.Backfill, as: PersistedBackfill
   alias FavnOrchestrator.Persistence.Results.ExecutionGroupCounts
   alias FavnOrchestrator.Persistence.WorkspaceContext
@@ -1982,6 +1985,73 @@ defmodule FavnOrchestrator do
     end
   end
 
+  @doc "Returns one bounded exact-run Flow page after operator reauthorization."
+  @spec get_operator_run_flow(OperatorContext.t(), run_id(), keyword()) ::
+          {:ok, OperatorRunFlow.Page.t() | OperatorRunActivity.activity()} | {:error, term()}
+  def get_operator_run_flow(%OperatorContext{} = operator_context, run_id, opts)
+      when is_binary(run_id) and is_list(opts) do
+    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer) do
+      case OperatorRunFlow.page(context, run_id, opts) do
+        {:error, :not_found} -> OperatorRunActivity.get_submission(context, run_id)
+        {:ok, page} -> {:ok, page}
+        {:error, _reason} = error -> error
+      end
+    end
+  end
+
+  @doc "Returns changed rows for one bounded exact-run Flow scope after reauthorization."
+  @spec get_operator_run_flow_delta(
+          OperatorContext.t(),
+          run_id(),
+          [String.t()],
+          non_neg_integer(),
+          non_neg_integer(),
+          keyword()
+        ) :: {:ok, OperatorRunFlow.DeltaPage.t()} | {:error, term()}
+  def get_operator_run_flow_delta(
+        %OperatorContext{} = operator_context,
+        run_id,
+        asset_step_ids,
+        acknowledged,
+        through,
+        opts
+      )
+      when is_binary(run_id) and is_list(asset_step_ids) and is_list(opts) do
+    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer) do
+      OperatorRunFlow.delta(context, run_id, asset_step_ids, acknowledged, through, opts)
+    end
+  end
+
+  @doc "Returns one keyed asset-step detail after operator reauthorization."
+  @spec get_operator_run_attempt(OperatorContext.t(), run_id(), String.t()) ::
+          {:ok, OperatorRunFlow.Attempt.t()} | {:error, term()}
+  def get_operator_run_attempt(%OperatorContext{} = operator_context, run_id, asset_step_id)
+      when is_binary(run_id) and is_binary(asset_step_id) do
+    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer) do
+      OperatorRunFlow.attempt(context, run_id, asset_step_id)
+    end
+  end
+
+  @doc "Returns one bounded Window runs page after operator reauthorization."
+  @spec page_operator_run_windows(OperatorContext.t(), run_id(), keyword()) ::
+          {:ok, OperatorRunPages.Page.t()} | {:error, term()}
+  def page_operator_run_windows(%OperatorContext{} = operator_context, run_id, opts)
+      when is_binary(run_id) and is_list(opts) do
+    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer) do
+      OperatorRunPages.windows(context, run_id, opts)
+    end
+  end
+
+  @doc "Returns one bounded payload-free Events page after operator reauthorization."
+  @spec page_operator_run_events(OperatorContext.t(), run_id(), keyword()) ::
+          {:ok, OperatorRunPages.Page.t()} | {:error, term()}
+  def page_operator_run_events(%OperatorContext{} = operator_context, run_id, opts)
+      when is_binary(run_id) and is_list(opts) do
+    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer) do
+      OperatorRunPages.events(context, run_id, opts)
+    end
+  end
+
   @doc "Returns live runner presence and recent durable runner tasks after operator reauthorization."
   @spec get_operator_runner_overview(OperatorContext.t(), keyword()) ::
           {:ok, map()} | {:error, term()}
@@ -2161,8 +2231,11 @@ defmodule FavnOrchestrator do
   def authorize_run_subscription(%OperatorContext{} = operator_context, run_id)
       when is_binary(run_id) do
     with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer),
-         {:ok, _run} <- Runs.get(context, run_id) do
+         {:ok, _identity} <- resolve_run_subscription(context, run_id) do
       {:ok, %{kind: :run, workspace_id: context.workspace_id, run_id: run_id}}
+    else
+      {:error, %PersistenceError{kind: kind}} -> {:error, kind}
+      {:error, _reason} = error -> error
     end
   end
 
@@ -2176,6 +2249,54 @@ defmodule FavnOrchestrator do
   end
 
   def activate_run_subscription(_grant), do: {:error, :invalid_run_subscription}
+
+  @doc "Authorizes a root execution-group projection subscription."
+  @spec authorize_execution_group_subscription(OperatorContext.t(), run_id()) ::
+          {:ok, map()} | {:error, term()}
+  def authorize_execution_group_subscription(%OperatorContext{} = operator_context, run_id)
+      when is_binary(run_id) do
+    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer),
+         {:ok, identity} <- resolve_run_subscription(context, run_id) do
+      {:ok,
+       %{
+         kind: :execution_group,
+         workspace_id: context.workspace_id,
+         root_run_id: identity.root_run_id
+       }}
+    else
+      {:error, %PersistenceError{kind: kind}} -> {:error, kind}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  @doc "Activates a previously authorized root execution-group subscription."
+  @spec activate_execution_group_subscription(map()) :: :ok | {:error, term()}
+  def activate_execution_group_subscription(%{
+        kind: :execution_group,
+        workspace_id: workspace_id,
+        root_run_id: root_run_id
+      }) do
+    Events.subscribe_execution_group(workspace_id, root_run_id)
+  end
+
+  def activate_execution_group_subscription(_grant),
+    do: {:error, :invalid_run_subscription}
+
+  defp resolve_run_subscription(context, run_id) do
+    Persistence.stores().operator_reads.resolve_run_subscription(%ResolveRunSubscription{
+      workspace_context: context,
+      run_id: run_id
+    })
+  end
+
+  @doc "Deactivates one root execution-group subscription."
+  @spec deactivate_execution_group_subscription(OperatorContext.t(), run_id()) :: :ok
+  def deactivate_execution_group_subscription(
+        %OperatorContext{workspace_id: workspace_id},
+        root_run_id
+      ) do
+    Events.unsubscribe_execution_group(workspace_id, root_run_id)
+  end
 
   @doc """
   Unsubscribes the current process from one run-scoped live event stream.

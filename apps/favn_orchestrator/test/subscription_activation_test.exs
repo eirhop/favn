@@ -23,7 +23,7 @@ defmodule FavnOrchestrator.SubscriptionActivationTest do
     assert :ok =
              Phoenix.PubSub.broadcast(
                Events.pubsub_name(),
-               Events.run_topic(workspace_id, run_id),
+               Events.projected_run_topic(workspace_id, run_id),
                :wake
              )
 
@@ -40,7 +40,7 @@ defmodule FavnOrchestrator.SubscriptionActivationTest do
     assert :ok =
              Phoenix.PubSub.broadcast(
                Events.pubsub_name(),
-               Events.run_topic(workspace_id, run_id),
+               Events.projected_run_topic(workspace_id, run_id),
                :stale
              )
 

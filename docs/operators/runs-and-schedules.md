@@ -135,6 +135,12 @@ durable `queued`, `preparing`, or `starting` submission state. A preparation
 failure remains attached to the reserved run id and links to `/runners` instead
 of becoming a not-found page.
 
+For an admitted run, Flow initially loads at most 200 asset rows. Use **Load
+more** to retain up to 500 rows, then **Next** and **Previous** to browse further
+without loading the whole run. The asset-prefix filter is literal and stays in
+the URL. Complete attempt diagnostics are fetched only when an asset row is
+opened; Window runs and Events have their own 50-row continuation controls.
+
 Use `/runners` to inspect two different kinds of evidence:
 
 - connected runners and their current pool, release, capabilities, and live

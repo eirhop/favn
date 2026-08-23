@@ -807,5 +807,11 @@ their lack of an FK is not permission to perform unscoped reads.
   Manifest activation initializes missing bindings but never rotates existing
   freshness or coverage identities.
 - Derived projections retain a source publication cursor and are repairable.
+- `asset_attempt_overviews` is the exact-run asset-step read projection for the
+  operator Flow. It stores planned and observed lifecycle rows together, keeps
+  canonical asset references immutable, and exposes heavy error/output JSON only
+  through a keyed detail read. Interactive pages are keyset-paged at 200 rows;
+  live deltas join only caller-retained ids and use the global committed
+  projection cursor as their acknowledgement watermark.
 - Deletion is conservative: most operational relationships use `RESTRICT` and
   retention runs through explicit maintenance operations.

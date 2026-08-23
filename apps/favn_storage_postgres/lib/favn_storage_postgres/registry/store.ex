@@ -110,6 +110,11 @@ defmodule FavnStoragePostgres.Registry.Store do
                      updated_at: command.occurred_at
                    })
 
+                   FavnStoragePostgres.Projections.Readiness.mark_new_workspace_ready!(
+                     command.workspace_id,
+                     command.occurred_at
+                   )
+
                    OutboxWriter.insert!(%{
                      workspace_id: command.workspace_id,
                      command_id: "workspace.provision:" <> command.workspace_id,

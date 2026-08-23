@@ -8,9 +8,12 @@ defmodule FavnView.Orchestrator do
   transport is reported as an unknown outcome so its idempotency key is kept.
   """
 
+  require Logger
+
   @default_call_timeout_ms 30_000
   @max_call_timeout_ms 120_000
   @persistent_key {__MODULE__, :config}
+  @deadline_key {__MODULE__, :monotonic_deadline_ms}
 
   @read_calls [
     active_workspace_configuration: 1,
@@ -22,6 +25,7 @@ defmodule FavnView.Orchestrator do
     active_pipeline_catalogue: 1,
     active_pipeline_detail: 2,
     authorize_logs_subscription: 2,
+    authorize_execution_group_subscription: 2,
     authorize_run_subscription: 2,
     authorize_runs_subscription: 1,
     count_execution_groups: 2,
@@ -32,6 +36,9 @@ defmodule FavnView.Orchestrator do
     get_operator_lineage_group: 3,
     get_operator_rebuild: 2,
     get_operator_run_activity: 3,
+    get_operator_run_attempt: 3,
+    get_operator_run_flow: 3,
+    get_operator_run_flow_delta: 6,
     get_operator_runner_overview: 2,
     get_operator_target_recovery: 2,
     get_run_detail: 2,
@@ -46,6 +53,8 @@ defmodule FavnView.Orchestrator do
     page_operator_audit: 2,
     page_operator_rebuild_items: 3,
     page_operator_rebuilds: 2,
+    page_operator_run_events: 3,
+    page_operator_run_windows: 3,
     page_operator_sessions: 2,
     page_schedule_list_entries: 2,
     plan_missing_coverage_backfill: 3,
@@ -118,12 +127,54 @@ defmodule FavnView.Orchestrator do
   end
 
   @doc false
+  def activate_run_subscription(grant), do: FavnOrchestrator.activate_run_subscription(grant)
+
+  @doc false
   def unsubscribe_run(operator_context, run_id) do
     FavnOrchestrator.deactivate_run_subscription(operator_context, run_id)
   end
 
   @doc false
+  def deactivate_run_subscription(operator_context, run_id),
+    do: FavnOrchestrator.deactivate_run_subscription(operator_context, run_id)
+
+  @doc false
   def unsubscribe_run_wakeups(_operator_context), do: FavnOrchestrator.deactivate_run_wakeups()
+
+  @doc false
+  def subscribe_projection_listener do
+    if Process.whereis(FavnOrchestrator.PubSub),
+      do: FavnOrchestrator.Events.subscribe_projection_listener(),
+      else: :ok
+  end
+
+  @doc false
+  def unsubscribe_projection_listener,
+    do:
+      if(Process.whereis(FavnOrchestrator.PubSub),
+        do: FavnOrchestrator.Events.unsubscribe_projection_listener(),
+        else: :ok
+      )
+
+  @doc false
+  def subscribe_execution_group(operator_context, run_id) do
+    with {:ok, grant} <- authorize_execution_group_subscription(operator_context, run_id) do
+      FavnOrchestrator.activate_execution_group_subscription(grant)
+    end
+  end
+
+  @doc false
+  def activate_execution_group_subscription(grant),
+    do: FavnOrchestrator.activate_execution_group_subscription(grant)
+
+  @doc false
+  def unsubscribe_execution_group(operator_context, root_run_id) do
+    FavnOrchestrator.deactivate_execution_group_subscription(operator_context, root_run_id)
+  end
+
+  @doc false
+  def deactivate_execution_group_subscription(operator_context, root_run_id),
+    do: FavnOrchestrator.deactivate_execution_group_subscription(operator_context, root_run_id)
 
   @doc false
   def subscribe_runs(operator_context) do
@@ -198,21 +249,105 @@ defmodule FavnView.Orchestrator do
     :ok
   end
 
-  defp call(function, args, kind) do
-    case :persistent_term.get(@persistent_key, :local) do
-      :local -> apply(FavnOrchestrator, function, args)
-      config -> remote_call(config, function, args, kind)
+  @doc false
+  @spec with_read_deadline(pos_integer(), (-> result)) :: result when result: term()
+  def with_read_deadline(timeout_ms, fun)
+      when is_integer(timeout_ms) and timeout_ms > 0 and is_function(fun, 0) do
+    previous = Process.get(@deadline_key)
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+    Process.put(@deadline_key, min_deadline(previous, deadline))
+
+    try do
+      fun.()
+    after
+      if previous, do: Process.put(@deadline_key, previous), else: Process.delete(@deadline_key)
     end
   end
 
+  defp call(function, args, kind) do
+    if remaining_deadline_ms() == 0 do
+      if kind == :read, do: read_timeout(function, 0), else: transport_error(kind)
+    else
+      case :persistent_term.get(@persistent_key, :local) do
+        :local -> local_call(function, args, kind)
+        config -> remote_call(config, function, args, kind)
+      end
+    end
+  end
+
+  defp local_call(function, args, :read) do
+    timeout_ms =
+      [run_read_timeout_ms(function), remaining_deadline_ms()]
+      |> Enum.reject(&is_nil/1)
+      |> Enum.min()
+
+    task = Task.async(fn -> apply(FavnOrchestrator, function, args) end)
+
+    case Task.yield(task, timeout_ms) || Task.shutdown(task, :brutal_kill) do
+      {:ok, result} -> result
+      {:exit, _reason} -> {:error, :orchestrator_unavailable}
+      nil -> read_timeout(function, timeout_ms)
+    end
+  end
+
+  defp local_call(function, args, :command), do: apply(FavnOrchestrator, function, args)
+
   defp remote_call(config, function, args, kind) do
-    :erpc.call(config.target_node, FavnOrchestrator, function, args, config.call_timeout_ms)
+    timeout_ms =
+      [config.call_timeout_ms, run_read_timeout_ms(function), remaining_deadline_ms()]
+      |> Enum.reject(&is_nil/1)
+      |> Enum.min()
+
+    :erpc.call(config.target_node, FavnOrchestrator, function, args, timeout_ms)
   catch
-    :error, {:erpc, reason} when reason in [:noconnection, :timeout] -> transport_error(kind)
+    :error, {:erpc, :timeout} when kind == :read ->
+      read_timeout(function, run_read_timeout_ms(function))
+
+    :error, {:erpc, reason} when reason in [:noconnection, :timeout] ->
+      transport_error(kind)
   end
 
   defp transport_error(:read), do: {:error, :orchestrator_unavailable}
   defp transport_error(:command), do: {:error, :orchestrator_outcome_unknown}
+
+  defp read_timeout(function, budget_ms) do
+    :telemetry.execute(
+      [:favn, :view, :operator_read, :timeout],
+      %{budget_ms: budget_ms},
+      %{use_case: function, retryable?: true}
+    )
+
+    Logger.warning(
+      "operator read timeout use_case=#{function} budget_ms=#{budget_ms} retryable=true"
+    )
+
+    {:error, :timeout}
+  end
+
+  defp run_read_timeout_ms(:get_operator_run_flow_delta), do: 1_500
+
+  defp run_read_timeout_ms(function)
+       when function in [
+              :authorize_execution_group_subscription,
+              :authorize_run_subscription,
+              :get_operator_run_flow,
+              :get_operator_run_attempt,
+              :page_operator_run_windows,
+              :page_operator_run_events
+            ],
+       do: 3_000
+
+  defp run_read_timeout_ms(_function), do: @max_call_timeout_ms
+
+  defp remaining_deadline_ms do
+    case Process.get(@deadline_key) do
+      nil -> nil
+      deadline -> max(deadline - System.monotonic_time(:millisecond), 0)
+    end
+  end
+
+  defp min_deadline(nil, deadline), do: deadline
+  defp min_deadline(previous, deadline), do: min(previous, deadline)
 
   # This creates one validated, deployment-owned node name frozen once at boot.
   # sobelow_skip ["DOS.StringToAtom"]

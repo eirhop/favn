@@ -40,6 +40,14 @@ Ownership rules:
 - Run detail presents requested anchors, permitted expansion, and effective
   asset windows as separate concepts. It asks for compact view-specific data and
   requests the bounded event detail only when the Events tab is active.
+- Run detail Flow mounts disconnected without a data read, then subscribes to
+  one authorized post-projection topic before independently reading an exact-run
+  page. Flow pages contain at most 200 lean rows, the socket retains at most 500,
+  and keyset navigation keeps later rows reachable. Filters are URL-stable;
+  attempt diagnostics, Window runs, and Events are separate on-demand reads.
+- Flow wake-ups carry only committed projection identity and cursors. Loaded-row
+  deltas join at most the 500 retained asset-step ids; membership changes and
+  listener recovery use a bounded, atomic reconciliation of the visible range.
 - Run detail design-system examples name the mode they render, so a heavy
   Timeline example can be requested without rendering the overview.
 - `favn_view` must call backend behavior only through the public orchestrator
@@ -52,6 +60,8 @@ Ownership rules:
   reauthorizes and returns a bounded subscription grant, then the View activates
   that grant in the caller's local clustered PubSub. Grants authorize wake-ups
   only; every durable replay or reload is reauthorized by Orchestrator.
+  Scope changes authorize the new grant, deactivate the old topic, activate the
+  new topic, and only then issue the independently authorized snapshot.
 - Production web readiness uses that adapter. It must not use orchestrator HTTP,
   service-token shortcuts, storage access, scheduler runtime access, or runner
   internals.

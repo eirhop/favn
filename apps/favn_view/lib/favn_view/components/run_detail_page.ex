@@ -40,6 +40,7 @@ defmodule FavnView.Components.RunDetailPage do
 
   attr :selected_child_run_id, :string, default: nil
   attr :selected_attempt_id, :string, default: nil
+  attr :flow_filter_form, :any, default: nil
   attr :flash, :map, default: %{}
 
   def run_detail_page(assigns) do
@@ -103,6 +104,7 @@ defmodule FavnView.Components.RunDetailPage do
         selected_child_run_id={@selected_child_run_id}
         selected_attempt={@selected_attempt}
         selected_attempt_id={@selected_attempt_id}
+        flow_filter_form={@flow_filter_form}
       />
       <:mode_rail :if={@run[:found?]}>
         <ModeRail.mode_rail active={@active_mode} modes={run_modes(@run)} on_select="set_mode" />
@@ -117,11 +119,19 @@ defmodule FavnView.Components.RunDetailPage do
   attr :selected_child_run_id, :string, default: nil
   attr :selected_attempt, :map, default: nil
   attr :selected_attempt_id, :string, default: nil
+  attr :flow_filter_form, :any, default: nil
 
   def execution_group_page(assigns) do
     ~H"""
     <div class="mx-auto flex w-full max-w-[110rem] flex-col gap-4" data-testid="run-detail-page">
       <Progress.run_progress run={@run} />
+      <.notice
+        :if={@run[:mode_error]}
+        tone={:error}
+        icon="hero-exclamation-triangle"
+      >
+        {@run.mode_error}
+      </.notice>
       <.notice
         :if={truncated?(@run)}
         tone={:warning}
@@ -132,19 +142,90 @@ defmodule FavnView.Components.RunDetailPage do
         are omitted.
       </.notice>
       <Failures.window_failures run={@run} />
-      <div data-run-active={to_string(@run.active?)}>
+      <div
+        :if={@active_mode == :flow}
+        class="favn-surface-panel flex flex-wrap items-end gap-3 rounded-box p-3"
+      >
+        <.form
+          :if={@flow_filter_form}
+          for={@flow_filter_form}
+          phx-submit="apply_flow_filter"
+          class="flex flex-1 items-end gap-2"
+        >
+          <.input
+            field={@flow_filter_form[:asset_prefix]}
+            label="Asset prefix"
+            placeholder="MyApp.Assets"
+            maxlength="128"
+          />
+          <.button type="submit">Apply</.button>
+          <.button
+            :if={@run[:flow_asset_prefix]}
+            type="button"
+            variant={:ghost}
+            phx-click="clear_flow_filter"
+          >
+            Clear
+          </.button>
+        </.form>
+        <span class="text-sm favn-text-subtle" data-testid="flow-range-count">
+          {length(@run.attempts)} of {@run[:flow_filtered_total] || @run.total_asset_attempts} assets loaded
+        </span>
+      </div>
+      <div :if={is_nil(@run[:mode_error])} data-run-active={to_string(@run.active?)}>
         <Flow.flow
           :if={@active_mode == :flow and @flow}
           flow={@flow}
           selected_attempt_id={@selected_attempt_id}
         />
+        <div :if={@active_mode == :flow} class="mt-3 flex flex-wrap justify-center gap-2">
+          <.button
+            :if={@run[:flow_has_previous?]}
+            variant={:ghost}
+            phx-click="previous_flow"
+            data-testid="previous-flow-page"
+          >
+            Previous 200
+          </.button>
+          <.button
+            :if={@run[:flow_has_next?] == true and length(@run.attempts) < 500}
+            phx-click="load_more_flow"
+            data-testid="load-more-flow"
+          >
+            Load more
+          </.button>
+          <.button
+            :if={@run[:flow_has_next?] == true and length(@run.attempts) >= 500}
+            phx-click="next_flow"
+            data-testid="next-flow-page"
+          >
+            Next 200
+          </.button>
+        </div>
         <WindowRuns.window_runs_panel
           :if={@active_mode == :windows}
           run={@run}
           selected_child_run_id={@selected_child_run_id}
-        /> <Events.events_panel :if={@active_mode == :events} run={@run} />
+        />
+        <div :if={@active_mode == :windows and @run[:child_runs_truncated?]} class="mt-3 text-center">
+          <.button phx-click="load_more_windows">Next 50 window runs</.button>
+        </div>
+        <Events.events_panel :if={@active_mode == :events} run={@run} />
+        <div :if={@active_mode == :events and @run[:events_truncated?]} class="mt-3 text-center">
+          <.button phx-click="load_more_events">Next 50 events</.button>
+        </div>
       </div>
-      <AttemptDrawer.attempt_drawer :if={@selected_attempt} attempt={@selected_attempt} />
+      <.notice
+        :if={@selected_attempt && @selected_attempt[:detail_error]}
+        tone={:error}
+        icon="hero-exclamation-triangle"
+      >
+        {@selected_attempt.detail_error}
+      </.notice>
+      <AttemptDrawer.attempt_drawer
+        :if={@selected_attempt && !@selected_attempt[:detail_error]}
+        attempt={@selected_attempt}
+      />
     </div>
     """
   end
@@ -157,13 +238,18 @@ defmodule FavnView.Components.RunDetailPage do
 
   defp flow(_run, _timezone), do: nil
 
+  defp selected_attempt(%{selected_attempt: selected}, attempt_id)
+       when is_binary(attempt_id) and is_map(selected),
+       do: selected
+
   defp selected_attempt(%{attempts: attempts}, attempt_id) when is_binary(attempt_id),
     do: Enum.find(attempts, &(&1.id == attempt_id))
 
   defp selected_attempt(_run, _attempt_id), do: nil
 
   defp truncated?(run) do
-    run.asset_attempts_truncated? or run.requested_windows_truncated? or run.child_runs_truncated?
+    run.asset_attempts_truncated? or run.requested_windows_truncated? or
+      run.child_runs_truncated? or run[:events_truncated?] == true
   end
 
   defp normalize_run(run) when is_map(run) do
@@ -175,6 +261,8 @@ defmodule FavnView.Components.RunDetailPage do
     |> Map.put_new(:requested_windows_truncated?, false)
     |> Map.put_new(:asset_attempts_truncated?, false)
     |> Map.put_new(:child_runs_truncated?, false)
+    |> Map.put_new(:events_truncated?, false)
+    |> Map.put_new(:mode_error, nil)
   end
 
   defp run_modes(run) do

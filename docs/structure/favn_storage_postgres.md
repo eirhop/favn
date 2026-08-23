@@ -65,9 +65,14 @@ Favn's PostgreSQL 18 control-plane persistence.
   Window and freshness projections use the evidence generation in their primary
   identity.
 - `asset_attempt_overviews` projects exact run, asset-step, and effective runtime
-  window identities from authoritative run events. It supports bounded operator
-  overview reads without loading run snapshots, plans, or event payloads and is
-  repairable through projection maintenance.
+  window identities from authoritative run events. Planned nodes and browser-safe
+  scalar summaries are seeded in one bulk statement; observed events update the
+  same rows without changing their canonical asset identity. Exact-run Flow
+  pages, counts, loaded-id deltas, and keyed attempt detail use this one existing
+  projection—there is no UI copy table. Page/count/delta indexes support bounded
+  reads without loading run snapshots, plans, event payloads, or heavy diagnostic
+  columns. The projection is repairable and reads fail closed until its versioned
+  repair marker and global publication cursor are current.
 - Immutable deployment-target rows include bounded, fingerprinted JSONB catalogue
   descriptors. Customer catalogue reads use those indexed rows and do not decode a
   full manifest.

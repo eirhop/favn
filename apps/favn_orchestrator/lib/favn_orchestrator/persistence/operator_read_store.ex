@@ -4,6 +4,10 @@ defmodule FavnOrchestrator.Persistence.OperatorReadStore do
   alias FavnOrchestrator.Persistence.Error
   alias FavnOrchestrator.Persistence.Queries.GetExecutionGroup
   alias FavnOrchestrator.Persistence.Queries.GetOperatorRunOverview
+  alias FavnOrchestrator.Persistence.Queries.GetRunAssetAttempt
+  alias FavnOrchestrator.Persistence.Queries.GetRunFlowDelta
+  alias FavnOrchestrator.Persistence.Queries.GetRunFlowPage
+  alias FavnOrchestrator.Persistence.Queries.ResolveRunSubscription
   alias FavnOrchestrator.Persistence.Queries.GetAssetWindowStates
   alias FavnOrchestrator.Persistence.Queries.CountSuccessfulAssetWindows
   alias FavnOrchestrator.Persistence.Queries.GetFreshnessMany
@@ -14,6 +18,8 @@ defmodule FavnOrchestrator.Persistence.OperatorReadStore do
   alias FavnOrchestrator.Persistence.Queries.PageGroupRuns
   alias FavnOrchestrator.Persistence.Queries.PageGroupWindows
   alias FavnOrchestrator.Persistence.Queries.PageManifests
+  alias FavnOrchestrator.Persistence.Queries.PageRunEventSummaries
+  alias FavnOrchestrator.Persistence.Queries.PageRunWindows
   alias FavnOrchestrator.Persistence.Queries.PageTargetRuns
   alias FavnOrchestrator.Persistence.Results.CursorPage
   alias FavnOrchestrator.Persistence.Results.BackfillWindow
@@ -23,7 +29,12 @@ defmodule FavnOrchestrator.Persistence.OperatorReadStore do
   alias FavnOrchestrator.Persistence.Results.FreshnessState
   alias FavnOrchestrator.Persistence.Results.ManifestSummary
   alias FavnOrchestrator.Persistence.Results.OperatorRunOverview
+  alias FavnOrchestrator.Persistence.Results.RunAssetAttempt
+  alias FavnOrchestrator.Persistence.Results.RunFlowPage
+  alias FavnOrchestrator.Persistence.Results.RunFlowDelta
+  alias FavnOrchestrator.Persistence.Results.RunSubscriptionIdentity
   alias FavnOrchestrator.Persistence.Results.RunSummary
+  alias FavnOrchestrator.Persistence.Results.RunSummaryPage
   alias FavnOrchestrator.Persistence.Results.TargetStatus
 
   @callback page_manifests(PageManifests.t()) ::
@@ -36,6 +47,20 @@ defmodule FavnOrchestrator.Persistence.OperatorReadStore do
               {:ok, ExecutionGroup.t()} | {:error, Error.t()}
   @callback get_operator_run_overview(GetOperatorRunOverview.t()) ::
               {:ok, OperatorRunOverview.t()} | {:error, Error.t()}
+  @callback get_run_flow_page(GetRunFlowPage.t()) ::
+              {:ok, RunFlowPage.t()} | {:error, Error.t()}
+  @callback resolve_run_subscription(ResolveRunSubscription.t()) ::
+              {:ok, RunSubscriptionIdentity.t()} | {:error, Error.t()}
+  @callback get_run_flow_delta(GetRunFlowDelta.t()) ::
+              {:ok, RunFlowDelta.t()} | {:error, Error.t()}
+  @callback get_run_asset_attempt(GetRunAssetAttempt.t()) ::
+              {:ok, RunAssetAttempt.t()} | {:error, Error.t()}
+  @callback page_run_windows(PageRunWindows.t()) ::
+              {:ok, RunSummaryPage.t(FavnOrchestrator.Persistence.Results.RunWindowSummary.t())}
+              | {:error, Error.t()}
+  @callback page_run_event_summaries(PageRunEventSummaries.t()) ::
+              {:ok, RunSummaryPage.t(FavnOrchestrator.Persistence.Results.RunEventSummary.t())}
+              | {:error, Error.t()}
   @callback page_group_runs(PageGroupRuns.t()) ::
               {:ok, CursorPage.t(RunSummary.t())} | {:error, Error.t()}
   @callback page_group_windows(PageGroupWindows.t()) ::

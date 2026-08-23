@@ -1809,7 +1809,7 @@ defmodule FavnView.Components.AssetDetailPage do
         >
           <p class="font-medium">{run_error_label(@run, @result)}</p>
           <.link
-            navigate={~p"/runs/#{@run.run_id}"}
+            navigate={~p"/runs/#{@run.run_id}?back_asset_id=#{@asset_id}"}
             class="mt-1 inline-flex text-sm underline decoration-dotted"
           >
             Open the full run

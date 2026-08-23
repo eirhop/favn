@@ -14,6 +14,10 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
   alias FavnOrchestrator.Persistence.Queries.CountSuccessfulAssetWindows
   alias FavnOrchestrator.Persistence.Queries.GetExecutionGroup
   alias FavnOrchestrator.Persistence.Queries.GetOperatorRunOverview
+  alias FavnOrchestrator.Persistence.Queries.GetRunAssetAttempt
+  alias FavnOrchestrator.Persistence.Queries.GetRunFlowDelta
+  alias FavnOrchestrator.Persistence.Queries.GetRunFlowPage
+  alias FavnOrchestrator.Persistence.Queries.ResolveRunSubscription
   alias FavnOrchestrator.Persistence.Queries.GetAssetWindowStates
   alias FavnOrchestrator.Persistence.Queries.GetFreshnessMany
   alias FavnOrchestrator.Persistence.Queries.GetTargetStatuses
@@ -22,6 +26,8 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
   alias FavnOrchestrator.Persistence.Queries.PageGroupRuns
   alias FavnOrchestrator.Persistence.Queries.PageGroupWindows
   alias FavnOrchestrator.Persistence.Queries.PageManifests
+  alias FavnOrchestrator.Persistence.Queries.PageRunEventSummaries
+  alias FavnOrchestrator.Persistence.Queries.PageRunWindows
   alias FavnOrchestrator.Persistence.Queries.PageTargetRuns
   alias FavnOrchestrator.Persistence.RunEnum
   alias FavnOrchestrator.Persistence.Results.BackfillWindow, as: BackfillWindowResult
@@ -34,12 +40,22 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
   alias FavnOrchestrator.Persistence.Results.FreshnessState, as: FreshnessResult
   alias FavnOrchestrator.Persistence.Results.ManifestSummary
   alias FavnOrchestrator.Persistence.Results.OperatorRunOverview, as: OperatorRunOverviewResult
+  alias FavnOrchestrator.Persistence.Results.RunAssetAttempt, as: RunAssetAttemptResult
+  alias FavnOrchestrator.Persistence.Results.RunFlowHeader
+  alias FavnOrchestrator.Persistence.Results.RunFlowDelta
+  alias FavnOrchestrator.Persistence.Results.RunFlowPage
+  alias FavnOrchestrator.Persistence.Results.RunFlowStep
+  alias FavnOrchestrator.Persistence.Results.RunSubscriptionIdentity
   alias FavnOrchestrator.Persistence.Results.PlannedAssetStep
   alias FavnOrchestrator.Persistence.Results.RunSummary
+  alias FavnOrchestrator.Persistence.Results.RunEventSummary
+  alias FavnOrchestrator.Persistence.Results.RunSummaryPage
+  alias FavnOrchestrator.Persistence.Results.RunWindowSummary
   alias FavnOrchestrator.Persistence.Results.TargetStatus, as: TargetStatusResult
   alias FavnOrchestrator.Persistence.WorkspaceContext
   alias FavnOrchestrator.Storage.ExactDateTimeCodec
   alias FavnStoragePostgres.ErrorMapper
+  alias FavnStoragePostgres.Projections.Readiness
   alias FavnStoragePostgres.Repo
   alias FavnStoragePostgres.Schemas.Backfill
   alias FavnStoragePostgres.Schemas.BackfillOverview
@@ -296,6 +312,273 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
     end
   rescue
     error -> {:error, ErrorMapper.map(error)}
+  end
+
+  @impl true
+  def resolve_run_subscription(%ResolveRunSubscription{} = query) do
+    {:ok, result} =
+      run_flow_transaction(fn ->
+        from(run in Run,
+          where:
+            run.workspace_id == ^query.workspace_context.workspace_id and
+              run.run_id == ^query.run_id,
+          select: {run.run_id, run.root_execution_group_id},
+          limit: 1
+        )
+        |> Repo.one()
+      end)
+
+    case result do
+      {run_id, root_run_id} ->
+        {:ok, %RunSubscriptionIdentity{run_id: run_id, root_run_id: root_run_id || run_id}}
+
+      nil ->
+        {:error, Error.new(:not_found, "run not found")}
+    end
+  rescue
+    error -> {:error, ErrorMapper.map(error)}
+  end
+
+  @impl true
+  def get_run_flow_page(%GetRunFlowPage{} = query) do
+    with :ok <- validate_run_flow_page(query),
+         {:ok, result} <- run_flow_transaction(fn -> run_flow_page!(query) end) do
+      {:ok, result}
+    else
+      {:error, %Error{} = error} -> {:error, error}
+      {:error, reason} -> {:error, ErrorMapper.map(reason)}
+    end
+  rescue
+    error -> {:error, ErrorMapper.map(error)}
+  end
+
+  @impl true
+  def get_run_asset_attempt(%GetRunAssetAttempt{} = query) do
+    {:ok, row} =
+      run_flow_transaction(fn ->
+        from(attempt in AssetAttemptOverview,
+          where:
+            attempt.workspace_id == ^query.workspace_context.workspace_id and
+              attempt.run_id == ^query.run_id and attempt.asset_step_id == ^query.asset_step_id,
+          select: attempt,
+          limit: 1
+        )
+        |> Repo.one()
+      end)
+
+    case row do
+      %AssetAttemptOverview{} = attempt ->
+        {:ok,
+         %RunAssetAttemptResult{
+           summary: run_flow_step(attempt),
+           error: attempt.error,
+           output_metadata: attempt.output_metadata,
+           window: restore_window(attempt.window)
+         }}
+
+      nil ->
+        {:error, Error.new(:not_found, "asset attempt not found")}
+    end
+  rescue
+    error -> {:error, ErrorMapper.map(error)}
+  end
+
+  @impl true
+  def get_run_flow_delta(%GetRunFlowDelta{} = query) do
+    with :ok <- validate_run_flow_delta(query),
+         {:ok, result} <- run_flow_transaction(fn -> run_flow_delta!(query) end) do
+      {:ok, result}
+    end
+  rescue
+    error -> {:error, ErrorMapper.map(error)}
+  end
+
+  @impl true
+  def page_run_windows(%PageRunWindows{} = page) do
+    with :ok <- validate_run_summary_page(page),
+         {:ok, {rows, total, projection_cursor}} <-
+           run_flow_transaction(fn ->
+             %{rows: rows} = run_window_rows!(page)
+             {total, projection_cursor} = run_window_metadata!(page)
+             {rows, total, projection_cursor}
+           end) do
+      has_more? = length(rows) > page.limit
+      rows = Enum.take(rows, page.limit)
+
+      items = Enum.map(rows, &run_window_summary/1)
+      next_cursor = if has_more?, do: window_summary_cursor(List.last(items)), else: nil
+
+      {:ok,
+       %RunSummaryPage{
+         items: items,
+         total: total,
+         has_more?: has_more?,
+         next_cursor: next_cursor,
+         projection_cursor: projection_cursor
+       }}
+    end
+  rescue
+    error -> {:error, ErrorMapper.map(error)}
+  end
+
+  defp run_window_metadata!(page) do
+    %{rows: [[total, projection_cursor]]} =
+      SQL.query!(
+        Repo,
+        """
+        SELECT count(*)::bigint,
+               COALESCE((
+                 SELECT last_publication_id
+                 FROM favn_control.projection_cursors
+                 WHERE projector_name = 'control_plane_v1' AND shard_id = 0
+               ), 0)::bigint
+        FROM favn_control.runs AS selected
+        JOIN favn_control.backfills AS backfill
+          ON backfill.workspace_id = selected.workspace_id
+         AND backfill.root_run_id = selected.root_execution_group_id
+        JOIN favn_control.backfill_windows AS run_window
+          ON run_window.workspace_id = backfill.workspace_id
+         AND run_window.backfill_id = backfill.backfill_id
+        WHERE selected.workspace_id = $1 AND selected.run_id = $2
+        """,
+        [page.workspace_context.workspace_id, page.run_id]
+      )
+
+    {total, projection_cursor}
+  end
+
+  defp run_window_rows!(page) do
+    cursor = page.after || %{window_start_at: nil, window_id: nil}
+
+    SQL.query!(
+      Repo,
+      """
+          WITH selected AS MATERIALIZED (
+            SELECT root_execution_group_id
+            FROM favn_control.runs
+            WHERE workspace_id = $1 AND run_id = $2
+          )
+          SELECT run_window.window_id, run_window.run_id, run_window.status,
+                 run_window.window_start, run_window.window_end, backfill.target_id,
+                 CASE WHEN run.terminal_at IS NULL THEN NULL
+                      ELSE GREATEST((extract(epoch FROM (run.terminal_at - run.inserted_at)) * 1000)::bigint, 0)
+                 END AS duration_ms,
+                 COALESCE(counts.total, 0), COALESCE(counts.succeeded, 0),
+                 COALESCE(counts.skipped, 0), COALESCE(counts.failed, 0),
+                 COALESCE(counts.running, 0), COALESCE(counts.queued, 0),
+                 COALESCE(counts.planned, 0)
+          FROM selected
+          JOIN favn_control.backfills AS backfill
+            ON backfill.workspace_id = $1
+           AND backfill.root_run_id = selected.root_execution_group_id
+          JOIN favn_control.backfill_windows AS run_window
+            ON run_window.workspace_id = backfill.workspace_id
+           AND run_window.backfill_id = backfill.backfill_id
+          LEFT JOIN favn_control.runs AS run
+            ON run.workspace_id = run_window.workspace_id AND run.run_id = run_window.run_id
+          LEFT JOIN LATERAL (
+            SELECT count(*)::bigint AS total,
+                   count(*) FILTER (WHERE status = 'ok')::bigint AS succeeded,
+                   count(*) FILTER (WHERE status = 'skipped_fresh')::bigint AS skipped,
+                   count(*) FILTER (WHERE status IN ('error', 'timed_out', 'cancelled', 'blocked'))::bigint AS failed,
+                   count(*) FILTER (WHERE status IN ('running', 'retrying'))::bigint AS running,
+                   count(*) FILTER (WHERE status = 'queued')::bigint AS queued,
+                   count(*) FILTER (WHERE status = 'planned')::bigint AS planned
+            FROM favn_control.asset_attempt_overviews
+            WHERE workspace_id = $1 AND run_id = run_window.run_id
+          ) AS counts ON TRUE
+          WHERE ($3::timestamptz IS NULL OR run_window.window_start < $3 OR
+                 (run_window.window_start = $3 AND run_window.window_id < $4))
+          ORDER BY run_window.window_start DESC, run_window.window_id DESC
+          LIMIT $5
+      """,
+      [
+        page.workspace_context.workspace_id,
+        page.run_id,
+        cursor.window_start_at,
+        cursor.window_id,
+        page.limit + 1
+      ]
+    )
+  end
+
+  @impl true
+  def page_run_event_summaries(%PageRunEventSummaries{} = page) do
+    with :ok <- validate_run_event_summary_page(page),
+         {:ok, {rows, total, projection_cursor}} <-
+           run_flow_transaction(fn ->
+             %{rows: rows} = run_event_summary_rows!(page)
+             {total, projection_cursor} = run_event_summary_metadata!(page)
+             {rows, total, projection_cursor}
+           end) do
+      has_more? = length(rows) > page.limit
+      rows = Enum.take(rows, page.limit)
+
+      items = Enum.map(rows, &run_event_summary/1)
+      next_cursor = if has_more?, do: List.last(items).event_id, else: nil
+
+      {:ok,
+       %RunSummaryPage{
+         items: items,
+         total: total,
+         has_more?: has_more?,
+         next_cursor: next_cursor,
+         projection_cursor: projection_cursor
+       }}
+    end
+  rescue
+    error -> {:error, ErrorMapper.map(error)}
+  end
+
+  defp run_event_summary_metadata!(page) do
+    %{rows: [[total, projection_cursor]]} =
+      SQL.query!(
+        Repo,
+        """
+        SELECT count(*)::bigint,
+               COALESCE((
+                 SELECT last_publication_id
+                 FROM favn_control.projection_cursors
+                 WHERE projector_name = 'control_plane_v1' AND shard_id = 0
+               ), 0)::bigint
+        FROM favn_control.runs AS selected
+        JOIN favn_control.runs AS member
+          ON member.workspace_id = selected.workspace_id
+         AND member.root_execution_group_id = selected.root_execution_group_id
+        JOIN favn_control.run_events AS event
+          ON event.workspace_id = member.workspace_id AND event.run_id = member.run_id
+        WHERE selected.workspace_id = $1 AND selected.run_id = $2
+        """,
+        [page.workspace_context.workspace_id, page.run_id]
+      )
+
+    {total, projection_cursor}
+  end
+
+  defp run_event_summary_rows!(page) do
+    SQL.query!(
+      Repo,
+      """
+          WITH selected AS MATERIALIZED (
+            SELECT root_execution_group_id
+            FROM favn_control.runs
+            WHERE workspace_id = $1 AND run_id = $2
+          )
+          SELECT event.event_id, event.run_id, event.sequence, event.occurred_at,
+                 event.event_type, event.asset_step_id, event.status, event.stage,
+                 concat_ws(' · ', replace(event.event_type, '_', ' '), event.status)
+          FROM selected
+          JOIN favn_control.runs AS member
+            ON member.workspace_id = $1
+           AND member.root_execution_group_id = selected.root_execution_group_id
+          JOIN favn_control.run_events AS event
+            ON event.workspace_id = member.workspace_id AND event.run_id = member.run_id
+          WHERE ($3::bigint IS NULL OR event.event_id < $3)
+          ORDER BY event.event_id DESC
+          LIMIT $4
+      """,
+      [page.workspace_context.workspace_id, page.run_id, page.after_event_id, page.limit + 1]
+    )
   end
 
   @impl true
@@ -784,7 +1067,9 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
   defp compact_attempts(workspace_id, root_run_id, limit) do
     rows =
       from(attempt in AssetAttemptOverview,
-        where: attempt.workspace_id == ^workspace_id and attempt.root_run_id == ^root_run_id,
+        where:
+          attempt.workspace_id == ^workspace_id and attempt.root_run_id == ^root_run_id and
+            attempt.status != "planned",
         order_by: [asc: attempt.window_identity, asc: attempt.asset_ref, asc: attempt.run_id],
         limit: ^(limit + 1)
       )
@@ -860,7 +1145,7 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
       from(attempt in AssetAttemptOverview,
         where:
           attempt.workspace_id == ^workspace_id and attempt.root_run_id == ^root_run_id and
-            attempt.run_id in ^run_ids,
+            attempt.run_id in ^run_ids and attempt.status != "planned",
         group_by: attempt.run_id,
         select: %{
           run_id: attempt.run_id,
@@ -913,7 +1198,9 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
   defp compact_attempt_counts(workspace_id, root_run_id) do
     observed =
       from(attempt in AssetAttemptOverview,
-        where: attempt.workspace_id == ^workspace_id and attempt.root_run_id == ^root_run_id,
+        where:
+          attempt.workspace_id == ^workspace_id and attempt.root_run_id == ^root_run_id and
+            attempt.status != "planned",
         select: %{
           total: count(attempt.asset_step_id),
           completed: filter(count(), attempt.status in ^@completed_asset_statuses),
@@ -949,6 +1236,7 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
           FROM favn_control.asset_attempt_overviews AS attempt
           WHERE attempt.workspace_id = $1
             AND attempt.root_run_id = $2
+            AND attempt.status <> 'planned'
           GROUP BY attempt.run_id
         )
         SELECT COALESCE(
@@ -1471,6 +1759,577 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
       window.window_start < ^cursor.window_start or
         (window.window_start == ^cursor.window_start and window.window_id < ^cursor.window_id)
     )
+  end
+
+  defp run_flow_transaction(fun) do
+    if Repo.in_transaction?() do
+      SQL.query!(Repo, "SET LOCAL statement_timeout = '750ms'")
+      SQL.query!(Repo, "SET LOCAL idle_in_transaction_session_timeout = '1500ms'")
+      {:ok, fun.()}
+    else
+      Repo.transaction(
+        fn ->
+          SQL.query!(Repo, "SET TRANSACTION READ ONLY")
+          SQL.query!(Repo, "SET LOCAL statement_timeout = '750ms'")
+          SQL.query!(Repo, "SET LOCAL transaction_timeout = '1500ms'")
+          SQL.query!(Repo, "SET LOCAL idle_in_transaction_session_timeout = '1500ms'")
+          fun.()
+        end,
+        isolation: :repeatable_read,
+        timeout: 1_500
+      )
+    end
+  end
+
+  defp run_flow_page!(query) do
+    pattern = literal_prefix_pattern(query.asset_prefix)
+    header = run_flow_header!(query, pattern)
+    {items, extra?} = run_flow_rows!(query, pattern)
+
+    {has_previous?, has_next?} =
+      cond do
+        query.before -> {extra?, true}
+        query.after -> {true, extra?}
+        true -> {false, extra?}
+      end
+
+    %RunFlowPage{
+      header: header,
+      items: items,
+      has_previous?: has_previous?,
+      has_next?: has_next?
+    }
+  end
+
+  defp run_flow_delta!(query) do
+    pattern = literal_prefix_pattern(query.asset_prefix)
+
+    header =
+      run_flow_header!(
+        %GetRunFlowPage{
+          workspace_context: query.workspace_context,
+          run_id: query.run_id,
+          asset_prefix: query.asset_prefix
+        },
+        pattern
+      )
+
+    through = min(query.through_publication_id, header.projection_cursor)
+    after_cursor = query.after || %{source_publication_id: 0, asset_step_id: ""}
+
+    %{rows: rows} =
+      SQL.query!(
+        Repo,
+        """
+        SELECT attempt.run_id, attempt.asset_step_id, attempt.target_id, attempt.asset_ref,
+               attempt.status, attempt.stage, attempt.window_kind, attempt.window_start_at,
+               attempt.window_end_at, attempt.window_timezone, attempt.started_at,
+               attempt.finished_at, attempt.duration_ms, attempt.attempt_number,
+               attempt.execution_pool, attempt.queue_reason, attempt.failure_summary,
+               attempt.source_publication_id
+        FROM unnest($3::text[]) AS loaded(asset_step_id)
+        JOIN favn_control.asset_attempt_overviews AS attempt
+          ON attempt.workspace_id = $1
+         AND attempt.run_id = $2
+         AND attempt.asset_step_id = loaded.asset_step_id
+        WHERE attempt.source_publication_id > $4
+          AND attempt.source_publication_id <= $5
+          AND ($6::text IS NULL OR attempt.asset_ref COLLATE "C" LIKE $6 COLLATE "C" ESCAPE '\\')
+          AND (attempt.source_publication_id > $7 OR
+               (attempt.source_publication_id = $7 AND attempt.asset_step_id > $8))
+        ORDER BY attempt.source_publication_id, attempt.asset_step_id
+        LIMIT $9
+        """,
+        [
+          query.workspace_context.workspace_id,
+          query.run_id,
+          query.asset_step_ids,
+          query.after_publication_id,
+          through,
+          pattern,
+          after_cursor.source_publication_id,
+          after_cursor.asset_step_id,
+          query.limit + 1
+        ]
+      )
+
+    has_more? = length(rows) > query.limit
+    rows = Enum.take(rows, query.limit)
+    items = Enum.map(rows, &run_flow_step_row/1)
+
+    next_cursor =
+      case List.last(rows) do
+        nil ->
+          nil
+
+        row ->
+          %{
+            source_publication_id: Enum.at(row, 17),
+            asset_step_id: Enum.at(row, 1)
+          }
+      end
+
+    %RunFlowDelta{
+      header: header,
+      items: items,
+      through_publication_id: through,
+      has_more?: has_more?,
+      next_cursor: next_cursor
+    }
+  end
+
+  defp run_flow_header!(query, pattern) do
+    %{rows: rows} =
+      SQL.query!(
+        Repo,
+        """
+        WITH selected AS MATERIALIZED (
+          SELECT run.run_id, run.root_execution_group_id, run.parent_run_id,
+                 run.rerun_of_run_id, run.manifest_version_id, run.status,
+                 run.trigger_type, run.inserted_at, run.updated_at, run.terminal_at
+          FROM favn_control.runs AS run
+          WHERE run.workspace_id = $1 AND run.run_id = $2
+        ), counts AS (
+          SELECT count(*)::bigint AS unfiltered_total,
+                 count(*) FILTER (
+                   WHERE $3::text IS NULL OR
+                         attempt.asset_ref COLLATE "C" LIKE $3 COLLATE "C" ESCAPE '\\'
+                 )::bigint AS filtered_total,
+                 count(*) FILTER (WHERE attempt.status = 'planned' AND
+                   ($3::text IS NULL OR attempt.asset_ref COLLATE "C" LIKE $3 COLLATE "C" ESCAPE '\\'))::bigint AS planned,
+                 count(*) FILTER (WHERE attempt.status = 'queued' AND
+                   ($3::text IS NULL OR attempt.asset_ref COLLATE "C" LIKE $3 COLLATE "C" ESCAPE '\\'))::bigint AS queued,
+                 count(*) FILTER (WHERE attempt.status IN ('running', 'retrying') AND
+                   ($3::text IS NULL OR attempt.asset_ref COLLATE "C" LIKE $3 COLLATE "C" ESCAPE '\\'))::bigint AS running,
+                 count(*) FILTER (WHERE attempt.status = 'ok' AND
+                   ($3::text IS NULL OR attempt.asset_ref COLLATE "C" LIKE $3 COLLATE "C" ESCAPE '\\'))::bigint AS succeeded,
+                 count(*) FILTER (WHERE attempt.status = 'skipped_fresh' AND
+                   ($3::text IS NULL OR attempt.asset_ref COLLATE "C" LIKE $3 COLLATE "C" ESCAPE '\\'))::bigint AS skipped,
+                 count(*) FILTER (WHERE attempt.status IN ('error', 'timed_out', 'cancelled', 'blocked') AND
+                   ($3::text IS NULL OR attempt.asset_ref COLLATE "C" LIKE $3 COLLATE "C" ESCAPE '\\'))::bigint AS failed,
+                 count(*) FILTER (WHERE attempt.status IN ('ok', 'skipped_fresh', 'error', 'timed_out', 'cancelled', 'blocked') AND
+                   ($3::text IS NULL OR attempt.asset_ref COLLATE "C" LIKE $3 COLLATE "C" ESCAPE '\\'))::bigint AS completed
+          FROM favn_control.asset_attempt_overviews AS attempt
+          WHERE attempt.workspace_id = $1 AND attempt.run_id = $2
+        ), target AS (
+          SELECT target.target_id,
+                 concat_ws(':', target.target_module, target.target_name) AS target_label
+          FROM favn_control.run_targets AS target
+          WHERE target.workspace_id = $1 AND target.run_id = $2
+          ORDER BY target.is_primary DESC, target.submitted_event_id, target.target_id
+          LIMIT 1
+        ), window_stats AS (
+          SELECT count(flow_window.*)::bigint AS total,
+                 count(*) FILTER (WHERE flow_window.status IN ('succeeded', 'failed', 'cancelled'))::bigint AS completed,
+                 count(*) FILTER (WHERE flow_window.status = 'failed')::bigint AS failed,
+                 count(*) FILTER (
+                   WHERE flow_window.status = 'failed' AND NOT EXISTS (
+                     SELECT 1 FROM favn_control.asset_attempt_overviews AS attempted
+                     WHERE attempted.workspace_id = flow_window.workspace_id
+                       AND attempted.run_id = flow_window.run_id
+                       AND attempted.status <> 'planned'
+                   )
+                 )::bigint AS failure_total
+          FROM selected
+          JOIN favn_control.backfills AS backfill
+            ON backfill.workspace_id = $1
+           AND backfill.root_run_id = selected.root_execution_group_id
+          JOIN favn_control.backfill_windows AS flow_window
+            ON flow_window.workspace_id = backfill.workspace_id
+           AND flow_window.backfill_id = backfill.backfill_id
+        ), window_failures AS (
+          SELECT COALESCE(jsonb_agg(failure.summary ORDER BY failure.window_start, failure.window_id), '[]'::jsonb) AS items
+          FROM (
+            SELECT flow_window.window_id, flow_window.run_id AS child_run_id,
+                   flow_window.window_start, flow_window.window_end,
+                   jsonb_build_object(
+                     'window_id', flow_window.window_id,
+                     'child_run_id', flow_window.run_id,
+                     'window_start_at', flow_window.window_start,
+                     'window_end_at', flow_window.window_end,
+                     'error_summary', left(COALESCE(flow_window.last_error->>'message', flow_window.last_error->>'reason', 'Window failed'), 1024)
+                   ) AS summary
+            FROM selected
+            JOIN favn_control.backfills AS backfill
+              ON backfill.workspace_id = $1
+             AND backfill.root_run_id = selected.root_execution_group_id
+            JOIN favn_control.backfill_windows AS flow_window
+              ON flow_window.workspace_id = backfill.workspace_id
+             AND flow_window.backfill_id = backfill.backfill_id
+            WHERE flow_window.status = 'failed'
+              AND NOT EXISTS (
+                SELECT 1 FROM favn_control.asset_attempt_overviews AS attempted
+                WHERE attempted.workspace_id = flow_window.workspace_id
+                  AND attempted.run_id = flow_window.run_id
+                  AND attempted.status <> 'planned'
+              )
+            ORDER BY flow_window.window_start, flow_window.window_id
+            LIMIT 10
+          ) AS failure
+        )
+        SELECT selected.run_id, selected.root_execution_group_id,
+               selected.parent_run_id, selected.rerun_of_run_id,
+               selected.manifest_version_id, selected.status, selected.trigger_type,
+               selected.inserted_at, selected.updated_at, selected.terminal_at,
+               target.target_id, target.target_label,
+               counts.unfiltered_total, counts.filtered_total, counts.planned,
+               counts.queued, counts.running, counts.succeeded, counts.skipped,
+               counts.failed, counts.completed,
+               COALESCE((SELECT last_publication_id
+                         FROM favn_control.projection_cursors
+                         WHERE projector_name = 'control_plane_v1' AND shard_id = 0), 0)::bigint,
+               EXISTS (
+                 SELECT 1 FROM favn_control.maintenance_jobs AS readiness
+                 WHERE readiness.workspace_id = $1
+                   AND readiness.job_id = $4
+                   AND readiness.job_kind = 'projection_missing_row_backfill'
+                   AND readiness.status = 'completed'
+                   AND readiness.configuration->>'projection' = 'asset_attempts'
+                   AND readiness.configuration->>'version' = '2'
+               ) AND NOT EXISTS (
+                 SELECT 1 FROM favn_control.outbox_events AS pending_projection
+                 WHERE pending_projection.workspace_id = $1
+                   AND pending_projection.aggregate_id = $2
+                   AND pending_projection.event_kind LIKE 'run.%'
+                   AND (pending_projection.publication_id IS NULL OR
+                        pending_projection.publication_id > COALESCE((
+                          SELECT last_publication_id
+                          FROM favn_control.projection_cursors
+                          WHERE projector_name = 'control_plane_v1' AND shard_id = 0
+                        ), 0))
+               ),
+               COALESCE(window_stats.total, 0), COALESCE(window_stats.completed, 0),
+               COALESCE(window_stats.failed, 0), COALESCE(window_stats.failure_total, 0),
+               window_failures.items
+        FROM selected CROSS JOIN counts LEFT JOIN target ON TRUE
+        LEFT JOIN window_stats ON TRUE CROSS JOIN window_failures
+        """,
+        [
+          query.workspace_context.workspace_id,
+          query.run_id,
+          pattern,
+          Readiness.ready_job_id(query.workspace_context.workspace_id)
+        ]
+      )
+
+    case rows do
+      [
+        [
+          run_id,
+          root_run_id,
+          parent_run_id,
+          rerun_of_run_id,
+          manifest_version_id,
+          status,
+          trigger_type,
+          started_at,
+          updated_at,
+          finished_at,
+          target_id,
+          target_label,
+          unfiltered_total,
+          filtered_total,
+          planned,
+          queued,
+          running,
+          succeeded,
+          skipped,
+          failed,
+          completed,
+          projection_cursor,
+          projection_ready?,
+          total_windows,
+          completed_windows,
+          failed_windows,
+          window_failure_total,
+          window_failures
+        ]
+      ] ->
+        if not projection_ready? do
+          Repo.rollback(
+            Error.new(:unavailable, "asset attempt projection is not ready", retryable?: true)
+          )
+        end
+
+        %RunFlowHeader{
+          run_id: run_id,
+          root_run_id: root_run_id,
+          parent_run_id: parent_run_id,
+          rerun_of_run_id: rerun_of_run_id,
+          manifest_version_id: manifest_version_id,
+          status: String.to_existing_atom(status),
+          trigger_type: optional_existing_atom(trigger_type),
+          started_at: started_at,
+          updated_at: updated_at,
+          finished_at: finished_at,
+          target_id: target_id,
+          target_label: target_label,
+          unfiltered_total: unfiltered_total,
+          filtered_total: filtered_total,
+          counts: %{
+            total: filtered_total,
+            planned: planned,
+            queued: queued,
+            running: running,
+            succeeded: succeeded,
+            skipped: skipped,
+            failed: failed,
+            completed: completed
+          },
+          projection_cursor: projection_cursor,
+          window_counts: %{
+            total: total_windows,
+            completed: completed_windows,
+            failed: failed_windows
+          },
+          window_failure_total: window_failure_total,
+          window_failures: window_failures
+        }
+
+      [] ->
+        Repo.rollback(Error.new(:not_found, "run not found"))
+    end
+  end
+
+  defp run_flow_rows!(query, pattern) do
+    cursor = query.after || query.before || %{asset_ref: nil, asset_step_id: nil}
+    backward? = not is_nil(query.before)
+    comparator = if backward?, do: "<", else: ">"
+    direction = if backward?, do: "DESC", else: "ASC"
+
+    %{rows: rows} =
+      SQL.query!(
+        Repo,
+        """
+        SELECT run_id, asset_step_id, target_id, asset_ref, status, stage,
+               window_kind, window_start_at, window_end_at, window_timezone,
+               started_at, finished_at, duration_ms, attempt_number,
+               execution_pool, queue_reason, failure_summary, source_publication_id
+        FROM favn_control.asset_attempt_overviews
+        WHERE workspace_id = $1 AND run_id = $2
+          AND ($3::text IS NULL OR asset_ref COLLATE "C" LIKE $3 COLLATE "C" ESCAPE '\\')
+          AND ($4::text IS NULL OR
+               (asset_ref COLLATE "C", asset_step_id COLLATE "C") #{comparator}
+               ($4 COLLATE "C", $5 COLLATE "C"))
+        ORDER BY asset_ref COLLATE "C" #{direction}, asset_step_id COLLATE "C" #{direction}
+        LIMIT $6
+        """,
+        [
+          query.workspace_context.workspace_id,
+          query.run_id,
+          pattern,
+          cursor.asset_ref,
+          cursor.asset_step_id,
+          query.limit + 1
+        ]
+      )
+
+    extra? = length(rows) > query.limit
+    rows = Enum.take(rows, query.limit)
+    rows = if backward?, do: Enum.reverse(rows), else: rows
+    {Enum.map(rows, &run_flow_step_row/1), extra?}
+  end
+
+  defp run_flow_step_row([
+         run_id,
+         asset_step_id,
+         target_id,
+         asset_ref,
+         status,
+         stage,
+         window_kind,
+         window_start_at,
+         window_end_at,
+         window_timezone,
+         started_at,
+         finished_at,
+         duration_ms,
+         attempt_number,
+         execution_pool,
+         queue_reason,
+         failure_summary,
+         source_publication_id
+       ]) do
+    %RunFlowStep{
+      run_id: run_id,
+      asset_step_id: asset_step_id,
+      target_id: target_id,
+      asset_ref: asset_ref,
+      status: String.to_existing_atom(status),
+      stage: stage,
+      window_kind: optional_existing_atom(window_kind),
+      window_start_at: window_start_at,
+      window_end_at: window_end_at,
+      window_timezone: window_timezone,
+      started_at: started_at,
+      finished_at: finished_at,
+      duration_ms: duration_ms,
+      attempt_number: attempt_number,
+      execution_pool: execution_pool,
+      queue_reason: queue_reason,
+      failure_summary: failure_summary,
+      source_publication_id: source_publication_id
+    }
+  end
+
+  defp run_flow_step(attempt) do
+    run_flow_step_row([
+      attempt.run_id,
+      attempt.asset_step_id,
+      attempt.target_id,
+      attempt.asset_ref,
+      attempt.status,
+      attempt.stage,
+      attempt.window_kind,
+      attempt.window_start_at,
+      attempt.window_end_at,
+      attempt.window_timezone,
+      attempt.started_at,
+      attempt.finished_at,
+      attempt.duration_ms,
+      attempt.attempt_number,
+      attempt.execution_pool,
+      attempt.queue_reason,
+      attempt.failure_summary,
+      attempt.source_publication_id
+    ])
+  end
+
+  defp literal_prefix_pattern(nil), do: nil
+  defp literal_prefix_pattern(""), do: nil
+
+  defp literal_prefix_pattern(prefix) do
+    prefix
+    |> String.replace("\\", "\\\\")
+    |> String.replace("%", "\\%")
+    |> String.replace("_", "\\_")
+    |> Kernel.<>("%")
+  end
+
+  defp optional_existing_atom(nil), do: nil
+  defp optional_existing_atom(value), do: String.to_existing_atom(value)
+
+  defp validate_run_flow_page(query) do
+    cursor? =
+      Enum.all?([query.after, query.before], fn
+        nil ->
+          true
+
+        %{asset_ref: asset_ref, asset_step_id: asset_step_id} ->
+          valid_cursor_field?(asset_ref, 1_024) and valid_id?(asset_step_id)
+
+        _other ->
+          false
+      end)
+
+    valid? =
+      workspace_context?(query.workspace_context) and valid_id?(query.run_id) and cursor? and
+        (is_nil(query.after) or is_nil(query.before)) and valid_bound?(query.limit, 1, 200) and
+        (is_nil(query.asset_prefix) or
+           (is_binary(query.asset_prefix) and byte_size(query.asset_prefix) <= 128))
+
+    if valid?, do: :ok, else: {:error, ErrorMapper.map(:invalid)}
+  end
+
+  defp valid_cursor_field?(value, max_bytes),
+    do: is_binary(value) and value != "" and byte_size(value) <= max_bytes
+
+  defp validate_run_flow_delta(query) do
+    valid? =
+      workspace_context?(query.workspace_context) and valid_id?(query.run_id) and
+        is_list(query.asset_step_ids) and length(query.asset_step_ids) <= 500 and
+        Enum.all?(query.asset_step_ids, &valid_id?/1) and
+        (is_nil(query.asset_prefix) or
+           (is_binary(query.asset_prefix) and byte_size(query.asset_prefix) <= 128)) and
+        is_integer(query.after_publication_id) and query.after_publication_id >= 0 and
+        is_integer(query.through_publication_id) and
+        query.through_publication_id >= query.after_publication_id and
+        valid_bound?(query.limit, 1, 200)
+
+    if valid?, do: :ok, else: {:error, ErrorMapper.map(:invalid)}
+  end
+
+  defp run_window_summary([
+         window_id,
+         run_id,
+         status,
+         window_start_at,
+         window_end_at,
+         asset_ref,
+         duration_ms,
+         total,
+         succeeded,
+         skipped,
+         failed,
+         running,
+         queued,
+         planned
+       ]) do
+    %RunWindowSummary{
+      window_id: window_id,
+      run_id: run_id,
+      status: String.to_existing_atom(status),
+      window_start_at: window_start_at,
+      window_end_at: window_end_at,
+      asset_ref: asset_ref,
+      duration_ms: duration_ms,
+      counts: %{
+        total: total,
+        succeeded: succeeded,
+        skipped: skipped,
+        failed: failed,
+        running: running,
+        queued: queued,
+        planned: planned
+      }
+    }
+  end
+
+  defp window_summary_cursor(summary),
+    do: %{window_start_at: summary.window_start_at, window_id: summary.window_id}
+
+  defp run_event_summary([
+         event_id,
+         run_id,
+         sequence,
+         occurred_at,
+         event_type,
+         asset_step_id,
+         status,
+         stage,
+         summary
+       ]) do
+    %RunEventSummary{
+      event_id: event_id,
+      run_id: run_id,
+      sequence: sequence,
+      occurred_at: occurred_at,
+      event_type: event_type,
+      asset_step_id: asset_step_id,
+      status: status,
+      stage: stage,
+      summary: String.slice(summary, 0, 1_024)
+    }
+  end
+
+  defp validate_run_summary_page(page) do
+    cursor? =
+      is_nil(page.after) or
+        match?(%{window_start_at: %DateTime{}, window_id: id} when is_binary(id), page.after)
+
+    if workspace_context?(page.workspace_context) and valid_id?(page.run_id) and cursor? and
+         valid_bound?(page.limit, 1, 50),
+       do: :ok,
+       else: {:error, ErrorMapper.map(:invalid)}
+  end
+
+  defp validate_run_event_summary_page(page) do
+    if workspace_context?(page.workspace_context) and valid_id?(page.run_id) and
+         (is_nil(page.after_event_id) or
+            (is_integer(page.after_event_id) and page.after_event_id > 0)) and
+         valid_bound?(page.limit, 1, 50),
+       do: :ok,
+       else: {:error, ErrorMapper.map(:invalid)}
   end
 
   defp validate_manifest_page(page) do

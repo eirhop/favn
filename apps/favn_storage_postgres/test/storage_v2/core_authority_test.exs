@@ -112,6 +112,9 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnOrchestrator.Persistence.PlatformContext
   alias FavnOrchestrator.Persistence.Queries.GetExecutionGroup
   alias FavnOrchestrator.Persistence.Queries.GetOperatorRunOverview
+  alias FavnOrchestrator.Persistence.Queries.GetRunAssetAttempt
+  alias FavnOrchestrator.Persistence.Queries.GetRunFlowDelta
+  alias FavnOrchestrator.Persistence.Queries.GetRunFlowPage
   alias FavnOrchestrator.Persistence.Queries.GetExecutionPackage
   alias FavnOrchestrator.Persistence.Queries.GetManifestTargetDescriptors
   alias FavnOrchestrator.Persistence.Queries.GetActor
@@ -140,6 +143,8 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnOrchestrator.Persistence.Queries.PageSessions
   alias FavnOrchestrator.Persistence.Queries.PageLogs
   alias FavnOrchestrator.Persistence.Queries.PageRunEvents
+  alias FavnOrchestrator.Persistence.Queries.PageRunEventSummaries
+  alias FavnOrchestrator.Persistence.Queries.PageRunWindows
   alias FavnOrchestrator.Persistence.Queries.PagePublishedRunEvents
   alias FavnOrchestrator.Persistence.Queries.PageTargetRuns
   alias FavnOrchestrator.Persistence.Queries.PageBackfillWindows
@@ -197,6 +202,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnStoragePostgres.Logs.Store, as: LogStore
   alias FavnStoragePostgres.OperatorReads.Store, as: OperatorReadStore
   alias FavnStoragePostgres.Projections.Projector
+  alias FavnStoragePostgres.Projections.Readiness, as: ProjectionReadiness
   alias FavnStoragePostgres.Maintenance.Store, as: MaintenanceStore
   alias FavnStoragePostgres.Registry.Store, as: RegistryStore
   alias FavnStoragePostgres.Rebuilds.Store, as: RebuildStore
@@ -268,7 +274,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
         url: url,
         ssl_mode: :disable,
         pool: Sandbox,
-        pool_size: 4
+        pool_size: 15
       )
 
     start_supervised!({Repo, options})
@@ -4193,6 +4199,272 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
                "SELECT status, source_publication_id FROM favn_control.execution_group_overviews WHERE workspace_id = $1 AND root_run_id = $2",
                [fixture.workspace_id, run.id]
              )
+  end
+
+  test "asset-attempt repair removes stale rows and records deterministic readiness", fixture do
+    {create, run} = create_run_command(fixture)
+    assert {:ok, _created} = RunStore.create_run(create)
+
+    running = RunState.transition(run, status: :running)
+
+    assert {:ok, _committed} =
+             RunStore.commit_transition(%CommitRunTransition{
+               workspace_context: fixture.workspace_context,
+               command_id: "repair-running:" <> run.id,
+               expected_sequence: 1,
+               run: running,
+               event: %{
+                 run_id: run.id,
+                 sequence: 2,
+                 event_type: :run_started,
+                 status: :running,
+                 occurred_at: DateTime.utc_now()
+               }
+             })
+
+    assert {:ok, publications} = Sequencer.sequence_batch()
+    assert drain_projector("repair-readiness") >= length(publications)
+    :ok = ProjectionReadiness.mark_new_workspace_ready!(fixture.workspace_id, DateTime.utc_now())
+
+    SQL.query!(
+      Repo,
+      "DELETE FROM favn_control.asset_attempt_overviews WHERE workspace_id = $1 AND run_id = $2",
+      [fixture.workspace_id, run.id]
+    )
+
+    completed_repair = %BackfillMissingProjection{
+      platform_context: fixture.platform_context,
+      job_id: "completed-asset-repair:#{fixture.workspace_id}",
+      projection: :asset_attempts,
+      workspace_id: fixture.workspace_id,
+      limit: 10
+    }
+
+    handler_id = {__MODULE__, :empty_asset_repair_notification, make_ref()}
+
+    :ok =
+      :telemetry.attach(
+        handler_id,
+        [:favn_storage_postgres, :repo, :query],
+        fn _event, _measurements, metadata, pid ->
+          if metadata.query =~ "pg_notify('favn_execution_group_projected'" do
+            send(pid, {:empty_asset_repair_notification, metadata.params})
+          end
+        end,
+        self()
+      )
+
+    try do
+      assert {:ok, %{status: :completed}} =
+               MaintenanceStore.backfill_missing_projection(completed_repair)
+
+      assert_receive {:empty_asset_repair_notification, [payload]}
+
+      assert %{"change" => "membership", "repair_generation" => generation} =
+               Jason.decode!(payload)
+
+      assert is_integer(generation) and generation > 0
+    after
+      :telemetry.detach(handler_id)
+    end
+
+    SQL.query!(
+      Repo,
+      """
+      INSERT INTO favn_control.asset_attempt_overviews
+        (workspace_id, root_run_id, run_id, asset_step_id, asset_ref,
+         window_identity, status, source_publication_id, updated_at)
+      VALUES ($1, $2, $2, 'stale-step', 'Stale.Asset:asset',
+              'none', 'planned', 0, now())
+      """,
+      [fixture.workspace_id, run.id]
+    )
+
+    repair = %BackfillMissingProjection{
+      platform_context: fixture.platform_context,
+      job_id: "caller-selected-asset-repair:#{fixture.workspace_id}",
+      projection: :asset_attempts,
+      workspace_id: fixture.workspace_id,
+      limit: 1
+    }
+
+    assert {:ok, %{status: :running, batch_count: 1}} =
+             MaintenanceStore.backfill_missing_projection(repair)
+
+    assert %{rows: [["running"]]} =
+             SQL.query!(
+               Repo,
+               "SELECT status FROM favn_control.maintenance_jobs WHERE job_id = $1",
+               [ProjectionReadiness.ready_job_id(fixture.workspace_id)]
+             )
+
+    assert {:ok, %{status: :completed, batch_count: 0}} =
+             MaintenanceStore.backfill_missing_projection(completed_repair)
+
+    assert %{rows: [["running"]]} =
+             SQL.query!(
+               Repo,
+               "SELECT status FROM favn_control.maintenance_jobs WHERE job_id = $1",
+               [ProjectionReadiness.ready_job_id(fixture.workspace_id)]
+             )
+
+    assert {:error, %Error{kind: :unavailable}} =
+             OperatorReadStore.get_run_flow_page(%GetRunFlowPage{
+               workspace_context: fixture.workspace_context,
+               run_id: run.id,
+               limit: 10
+             })
+
+    assert %{rows: [[0]]} =
+             SQL.query!(
+               Repo,
+               """
+               SELECT count(*)
+               FROM favn_control.asset_attempt_overviews
+               WHERE workspace_id = $1 AND run_id = $2 AND asset_step_id = 'stale-step'
+               """,
+               [fixture.workspace_id, run.id]
+             )
+
+    assert {:ok, %{status: :running, batch_count: 1}} =
+             MaintenanceStore.backfill_missing_projection(repair)
+
+    assert {:ok, %{status: :completed, batch_count: 0}} =
+             MaintenanceStore.backfill_missing_projection(repair)
+
+    assert %{rows: [["completed"]]} =
+             SQL.query!(
+               Repo,
+               """
+               SELECT status
+               FROM favn_control.maintenance_jobs
+               WHERE job_id = $1 AND workspace_id = $2
+               """,
+               [ProjectionReadiness.ready_job_id(fixture.workspace_id), fixture.workspace_id]
+             )
+  end
+
+  test "empty Event continuation preserves the exact group total", fixture do
+    {create, run} = create_run_command(fixture)
+    assert {:ok, _created} = RunStore.create_run(create)
+
+    handler_id = {__MODULE__, :event_page_query_shape, make_ref()}
+
+    :ok =
+      :telemetry.attach(
+        handler_id,
+        [:favn_storage_postgres, :repo, :query],
+        fn _event, _measurements, metadata, pid ->
+          if metadata.query =~ "favn_control.run_events" do
+            send(pid, {:event_page_query_shape, metadata.query})
+          end
+        end,
+        self()
+      )
+
+    try do
+      assert {:ok, first_page} =
+               OperatorReadStore.page_run_event_summaries(%PageRunEventSummaries{
+                 workspace_context: fixture.workspace_context,
+                 run_id: run.id,
+                 limit: 50
+               })
+
+      assert length(first_page.items) == 1
+      assert first_page.total == 1
+      assert is_integer(first_page.projection_cursor)
+
+      assert_receive {:event_page_query_shape, first_row_query}
+      assert_receive {:event_page_query_shape, first_metadata_query}
+      refute first_row_query =~ "SELECT count(*)::bigint"
+      assert first_metadata_query =~ "SELECT count(*)::bigint"
+      assert first_metadata_query =~ "projection_cursors"
+      refute_receive {:event_page_query_shape, _query}
+
+      assert {:ok, page} =
+               OperatorReadStore.page_run_event_summaries(%PageRunEventSummaries{
+                 workspace_context: fixture.workspace_context,
+                 run_id: run.id,
+                 after_event_id: 1,
+                 limit: 50
+               })
+
+      assert page.items == []
+      assert page.total == 1
+      assert is_integer(page.projection_cursor)
+
+      assert_receive {:event_page_query_shape, row_query}
+      assert_receive {:event_page_query_shape, total_query}
+      refute row_query =~ "total_selected"
+      refute row_query =~ "SELECT count(*)::bigint"
+      assert total_query =~ "SELECT count(*)::bigint"
+      assert total_query =~ "projection_cursors"
+      refute_receive {:event_page_query_shape, _query}
+    after
+      :telemetry.detach(handler_id)
+    end
+  end
+
+  test "projection notifications are delivered only after transaction commit" do
+    uri = URI.parse(System.fetch_env!("FAVN_DATABASE_URL"))
+    [username, password] = String.split(uri.userinfo, ":", parts: 2)
+
+    notification_options = [
+      hostname: uri.host,
+      port: uri.port || 5432,
+      username: URI.decode(username),
+      password: URI.decode(password),
+      database: uri.path |> String.trim_leading("/") |> URI.decode()
+    ]
+
+    {:ok, notifications} =
+      Postgrex.Notifications.start_link(notification_options)
+
+    {:ok, connection} = Postgrex.start_link(notification_options)
+    Process.unlink(notifications)
+    Process.unlink(connection)
+
+    on_exit(fn ->
+      if Process.alive?(notifications), do: GenServer.stop(notifications)
+      if Process.alive?(connection), do: GenServer.stop(connection)
+    end)
+
+    {:ok, ref} =
+      Postgrex.Notifications.listen(notifications, "favn_execution_group_projected")
+
+    rolled_back_payload = "rolled-back-#{System.unique_integer([:positive])}"
+
+    assert {:error, :rolled_back} =
+             Postgrex.transaction(connection, fn transaction_connection ->
+               Postgrex.query!(
+                 transaction_connection,
+                 "SELECT pg_notify('favn_execution_group_projected', $1)",
+                 [rolled_back_payload]
+               )
+
+               Postgrex.rollback(transaction_connection, :rolled_back)
+             end)
+
+    refute_receive {:notification, ^notifications, ^ref, "favn_execution_group_projected",
+                    ^rolled_back_payload},
+                   100
+
+    committed_payload = "committed-#{System.unique_integer([:positive])}"
+
+    assert {:ok, :ok} =
+             Postgrex.transaction(connection, fn transaction_connection ->
+               Postgrex.query!(
+                 transaction_connection,
+                 "SELECT pg_notify('favn_execution_group_projected', $1)",
+                 [committed_payload]
+               )
+
+               :ok
+             end)
+
+    assert_receive {:notification, ^notifications, ^ref, "favn_execution_group_projected",
+                    ^committed_payload},
+                   1_000
   end
 
   test "cancellation request and API idempotency commit atomically and replay after terminal state",
@@ -9412,6 +9684,17 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     refute compact.runs_truncated?
     refute compact.requested_windows_truncated?
 
+    assert %{rows: [["asset:Elixir.MyApp.Asset:asset"]]} =
+             SQL.query!(
+               Repo,
+               """
+               SELECT target_id
+               FROM favn_control.asset_attempt_overviews
+               WHERE workspace_id = $1 AND run_id = $2 AND asset_step_id = $3
+               """,
+               [fixture.workspace_id, run.id, "step:" <> run.id]
+             )
+
     assert compact.root_run.runner_releases == fixture.version.runner_releases
 
     blocked_progress =
@@ -9540,6 +9823,405 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
              manifests.items,
              &(&1.manifest_version_id == fixture.version.manifest_version_id)
            )
+  end
+
+  test "exact-run Flow pages remain bounded and exclude heavy detail", fixture do
+    {command, run} = create_run_command(fixture)
+    assert {:ok, _created} = RunStore.create_run(command)
+    assert {:ok, publications} = Sequencer.sequence_batch()
+    assert drain_projector("flow-page-readiness") >= length(publications)
+    :ok = ProjectionReadiness.mark_new_workspace_ready!(fixture.workspace_id, DateTime.utc_now())
+
+    assert %{rows: [["completed", configuration]]} =
+             SQL.query!(
+               Repo,
+               "SELECT status, configuration FROM favn_control.maintenance_jobs WHERE workspace_id = $1",
+               [fixture.workspace_id]
+             )
+
+    assert configuration["projection"] == "asset_attempts"
+    assert configuration["version"] == 2
+
+    rows =
+      Enum.map(1..501, fn index ->
+        id = index |> Integer.to_string() |> String.pad_leading(5, "0")
+
+        asset_ref =
+          if index == 1, do: "Example.Special:%_literal", else: "Example.Asset:asset_#{id}"
+
+        [
+          fixture.workspace_id,
+          run.id,
+          run.id,
+          "step-#{id}",
+          asset_ref,
+          fixture.target_id,
+          "none",
+          "planned",
+          0,
+          index,
+          DateTime.utc_now()
+        ]
+      end)
+
+    placeholders =
+      rows
+      |> Enum.with_index()
+      |> Enum.map_join(",", fn {_row, row_index} ->
+        offset = row_index * 11
+        "(" <> Enum.map_join(1..11, ",", &"$#{offset + &1}") <> ")"
+      end)
+
+    SQL.query!(
+      Repo,
+      """
+      INSERT INTO favn_control.asset_attempt_overviews
+        (workspace_id, root_run_id, run_id, asset_step_id, asset_ref, target_id,
+         window_identity, status, stage, source_publication_id, updated_at)
+      VALUES #{placeholders}
+      """,
+      List.flatten(rows)
+    )
+
+    query = %GetRunFlowPage{
+      workspace_context: fixture.workspace_context,
+      run_id: run.id,
+      limit: 200
+    }
+
+    assert {:ok, first} = OperatorReadStore.get_run_flow_page(query)
+    assert length(first.items) == 200
+    assert first.header.filtered_total == 501
+    assert first.header.counts.planned == 501
+    assert first.has_next?
+    refute first.has_previous?
+
+    last = List.last(first.items)
+
+    assert {:ok, second} =
+             OperatorReadStore.get_run_flow_page(%{
+               query
+               | after: %{asset_ref: last.asset_ref, asset_step_id: last.asset_step_id}
+             })
+
+    assert length(second.items) == 200
+    assert second.has_next?
+    assert second.has_previous?
+
+    last = List.last(second.items)
+
+    assert {:ok, final} =
+             OperatorReadStore.get_run_flow_page(%{
+               query
+               | after: %{asset_ref: last.asset_ref, asset_step_id: last.asset_step_id}
+             })
+
+    assert length(final.items) == 101
+    refute final.has_next?
+    assert final.has_previous?
+
+    step = hd(first.items)
+    fields = Map.keys(Map.from_struct(step))
+    refute :window in fields
+    refute :error in fields
+    refute :output_metadata in fields
+
+    assert {:ok, detail} =
+             OperatorReadStore.get_run_asset_attempt(%GetRunAssetAttempt{
+               workspace_context: fixture.workspace_context,
+               run_id: run.id,
+               asset_step_id: step.asset_step_id
+             })
+
+    assert detail.summary.asset_step_id == step.asset_step_id
+
+    assert {:ok, literal_prefix} =
+             OperatorReadStore.get_run_flow_page(%{
+               query
+               | asset_prefix: "Example.Special:%_",
+                 limit: 10
+             })
+
+    assert literal_prefix.header.filtered_total == 1
+    assert [%{asset_ref: "Example.Special:%_literal"}] = literal_prefix.items
+
+    loaded_ids =
+      Enum.map(first.items ++ second.items ++ Enum.take(final.items, 100), & &1.asset_step_id)
+
+    unloaded_id =
+      Enum.find(Enum.map(1..501, &"step-#{String.pad_leading(to_string(&1), 5, "0")}"), fn id ->
+        id not in loaded_ids
+      end)
+
+    SQL.query!(
+      Repo,
+      """
+      UPDATE favn_control.asset_attempt_overviews
+      SET source_publication_id = CASE WHEN asset_step_id = $3 THEN 2000 ELSE 1000 END
+      WHERE workspace_id = $1 AND run_id = $2
+      """,
+      [fixture.workspace_id, run.id, unloaded_id]
+    )
+
+    SQL.query!(
+      Repo,
+      """
+      UPDATE favn_control.projection_cursors
+      SET last_publication_id = GREATEST(last_publication_id, 2000)
+      WHERE projector_name = 'control_plane_v1' AND shard_id = 0
+      """
+    )
+
+    delta_query = %GetRunFlowDelta{
+      workspace_context: fixture.workspace_context,
+      run_id: run.id,
+      asset_step_ids: loaded_ids,
+      asset_prefix: nil,
+      after_publication_id: 501,
+      through_publication_id: 2_000,
+      limit: 200
+    }
+
+    assert {:ok, delta_one} = OperatorReadStore.get_run_flow_delta(delta_query)
+    assert length(delta_one.items) == 200
+    assert delta_one.has_more?
+
+    assert {:ok, delta_two} =
+             OperatorReadStore.get_run_flow_delta(%{delta_query | after: delta_one.next_cursor})
+
+    assert length(delta_two.items) == 200
+    assert delta_two.has_more?
+
+    assert {:ok, delta_three} =
+             OperatorReadStore.get_run_flow_delta(%{delta_query | after: delta_two.next_cursor})
+
+    assert length(delta_three.items) == 100
+    refute delta_three.has_more?
+    assert delta_three.through_publication_id == 2_000
+
+    refute Enum.any?(
+             delta_one.items ++ delta_two.items ++ delta_three.items,
+             &(&1.asset_step_id == unloaded_id)
+           )
+  end
+
+  @tag :slow
+  test "20 concurrent 90-asset Flow readers preserve scheduler and lease latency", _fixture do
+    :ok = Sandbox.checkin(Repo)
+    :ok = Sandbox.mode(Repo, :auto)
+    on_exit(fn -> Sandbox.mode(Repo, :manual) end)
+    on_exit(&truncate_qualification_data!/0)
+
+    if Process.whereis(FavnOrchestrator.PubSub) == nil do
+      assert {:ok, _started} = Application.ensure_all_started(:phoenix_pubsub)
+      start_supervised!({Phoenix.PubSub, name: FavnOrchestrator.PubSub})
+    end
+
+    fixture = provision_deploy_fixture()
+
+    {create, run} = create_run_command(fixture)
+    assert {:ok, _created} = RunStore.create_run(create)
+    assert {:ok, publications} = Sequencer.sequence_batch()
+    assert drain_projector("flow-load-qualification") >= length(publications)
+    :ok = ProjectionReadiness.mark_new_workspace_ready!(fixture.workspace_id, DateTime.utc_now())
+
+    SQL.query!(
+      Repo,
+      "DELETE FROM favn_control.asset_attempt_overviews WHERE workspace_id = $1 AND run_id = $2",
+      [fixture.workspace_id, run.id]
+    )
+
+    SQL.query!(
+      Repo,
+      """
+      INSERT INTO favn_control.asset_attempt_overviews
+        (workspace_id, root_run_id, run_id, asset_step_id, asset_ref, target_id,
+         window_identity, status, stage, source_publication_id, updated_at)
+      SELECT $1, $2, $2,
+             'qualification-step-' || lpad(series::text, 3, '0'),
+             'Qualification.Asset:asset_' || lpad(series::text, 3, '0'),
+             $3, 'none', 'planned', 0, 0, clock_timestamp()
+      FROM generate_series(1, 90) AS series
+      """,
+      [fixture.workspace_id, run.id, fixture.target_id]
+    )
+
+    assert {:ok, ownership} =
+             RunOwnershipStore.claim_run(%ClaimRun{
+               workspace_context: fixture.workspace_context,
+               command_id: "qualification-claim:" <> run.id,
+               run_id: run.id,
+               owner_id: "qualification-owner",
+               lease_duration_ms: 120_000
+             })
+
+    suffix = Integer.to_string(System.unique_integer([:positive]))
+    username = "qualification-viewer-#{suffix}"
+    password = "qualification-password-#{suffix}"
+
+    assert {:ok, actor} =
+             Identity.create_actor(
+               fixture.workspace_context,
+               username,
+               password,
+               "Qualification Viewer",
+               [:viewer]
+             )
+
+    {:ok, login_context} =
+      WorkspaceContext.new(fixture.workspace_id, "auth:qualification", [:customer_reader])
+
+    assert {:ok, authenticated} =
+             Identity.authenticate_password(login_context, username, password)
+
+    assert {:ok, session} =
+             Identity.issue_session(login_context, actor.id,
+               expected_credential_version: authenticated.credential_version
+             )
+
+    assert {:ok, operator_context} =
+             FavnOrchestrator.operator_context(fixture.workspace_id, actor, session)
+
+    probe = fn phase, sample ->
+      started = System.monotonic_time(:microsecond)
+
+      assert {:ok, _renewed} =
+               RunOwnershipStore.renew_run(%RenewRunOwnership{
+                 workspace_context: fixture.workspace_context,
+                 renewal_id: "qualification-#{phase}-renew-#{sample}:#{run.id}",
+                 run_id: run.id,
+                 owner_id: ownership.owner_id,
+                 fencing_token: ownership.fencing_token,
+                 lease_duration_ms: 120_000
+               })
+
+      lease_us = System.monotonic_time(:microsecond) - started
+      started = System.monotonic_time(:microsecond)
+
+      assert {:ok, []} =
+               SchedulerStore.claim_due_schedules(%ClaimDueSchedules{
+                 workspace_context: fixture.workspace_context,
+                 batch_id: "qualification-#{phase}-schedule-#{sample}:#{run.id}",
+                 owner_id: "qualification-scheduler",
+                 lease_duration_ms: 30_000,
+                 limit: 10
+               })
+
+      scheduler_us = System.monotonic_time(:microsecond) - started
+      {lease_us, scheduler_us}
+    end
+
+    percentile_95 = fn samples ->
+      ordered = Enum.sort(samples)
+      Enum.at(ordered, ceil(length(ordered) * 0.95) - 1)
+    end
+
+    baseline = Enum.map(1..30, &probe.(:baseline, &1))
+    parent = self()
+
+    telemetry_handler = {__MODULE__, :flow_load_qualification, make_ref()}
+
+    :ok =
+      :telemetry.attach(
+        telemetry_handler,
+        [:favn_storage_postgres, :repo, :query],
+        fn _event, measurements, _metadata, pid ->
+          if is_integer(measurements[:queue_time]) do
+            queue_us =
+              System.convert_time_unit(measurements.queue_time, :native, :microsecond)
+
+            send(pid, {:qualification_queue_us, queue_us})
+          end
+        end,
+        parent
+      )
+
+    on_exit(fn -> :telemetry.detach(telemetry_handler) end)
+
+    viewers =
+      for _viewer <- 1..20 do
+        Task.async(fn ->
+          send(parent, {:qualification_ready, self()})
+          receive do: (:qualification_go -> :ok)
+
+          for _open <- 1..10 do
+            started = System.monotonic_time(:microsecond)
+
+            result =
+              with {:ok, grant} <-
+                     FavnOrchestrator.authorize_run_subscription(operator_context, run.id),
+                   :ok <- FavnOrchestrator.activate_run_subscription(grant),
+                   {:ok, page} <-
+                     FavnOrchestrator.get_operator_run_flow(
+                       operator_context,
+                       run.id,
+                       limit: 200
+                     ) do
+                payload =
+                  page
+                  |> FavnOrchestrator.Storage.JsonSafe.data()
+                  |> Jason.encode!()
+
+                {:ok, page, byte_size(payload)}
+              end
+
+            {System.monotonic_time(:microsecond) - started, result}
+          end
+        end)
+      end
+
+    viewer_pids =
+      for _viewer <- 1..20 do
+        assert_receive {:qualification_ready, pid}, 5_000
+        pid
+      end
+
+    Enum.each(viewer_pids, &send(&1, :qualification_go))
+    loaded = Enum.map(1..30, &probe.(:loaded, &1))
+
+    viewer_results = Enum.flat_map(viewers, &Task.await(&1, 120_000))
+
+    for {_duration_us, result} <- viewer_results do
+      assert {:ok, %{items: items}, payload_bytes} = result
+      assert length(items) == 90
+      assert payload_bytes > 0
+      assert payload_bytes <= 524_288
+    end
+
+    queue_samples = drain_qualification_queue_samples()
+
+    {baseline_lease, baseline_scheduler} = Enum.unzip(baseline)
+    {loaded_lease, loaded_scheduler} = Enum.unzip(loaded)
+    baseline_lease_p95 = percentile_95.(baseline_lease)
+    baseline_scheduler_p95 = percentile_95.(baseline_scheduler)
+    loaded_lease_p95 = percentile_95.(loaded_lease)
+    loaded_scheduler_p95 = percentile_95.(loaded_scheduler)
+    open_durations = Enum.map(viewer_results, &elem(&1, 0))
+    open_p95 = percentile_95.(open_durations)
+    open_max = Enum.max(open_durations)
+    queue_p95 = percentile_95.(queue_samples)
+
+    payload_p95 =
+      viewer_results
+      |> Enum.map(fn {_duration_us, {:ok, _page, payload_bytes}} -> payload_bytes end)
+      |> percentile_95.()
+
+    IO.puts(
+      "Flow load qualification (microseconds): " <>
+        "lease baseline_p95=#{baseline_lease_p95} loaded_p95=#{loaded_lease_p95}; " <>
+        "scheduler baseline_p95=#{baseline_scheduler_p95} loaded_p95=#{loaded_scheduler_p95}; " <>
+        "connected_open_p95=#{open_p95} connected_open_max=#{open_max}; " <>
+        "repo_queue_p95=#{queue_p95}; payload_p95_bytes=#{payload_p95}"
+    )
+
+    assert loaded_lease_p95 <= baseline_lease_p95 + max(div(baseline_lease_p95, 10), 25_000)
+
+    assert loaded_scheduler_p95 <=
+             baseline_scheduler_p95 + max(div(baseline_scheduler_p95, 10), 25_000)
+
+    assert open_p95 <= 250_000
+    assert open_max <= 1_000_000
+    assert queue_p95 <= 50_000
   end
 
   test "a page of execution groups narrows in the store rather than in the caller", fixture do
@@ -9952,6 +10634,67 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert ready.status == :ready
     assert {:ok, ^ready} = BackfillStore.activate_plan(activate)
 
+    oldest = List.first(windows)
+
+    handler_id = {__MODULE__, :window_page_query_shape, make_ref()}
+
+    :ok =
+      :telemetry.attach(
+        handler_id,
+        [:favn_storage_postgres, :repo, :query],
+        fn _event, _measurements, metadata, pid ->
+          if metadata.query =~ "favn_control.backfill_windows" do
+            send(pid, {:window_page_query_shape, metadata.query})
+          end
+        end,
+        self()
+      )
+
+    try do
+      assert {:ok, first_window_page} =
+               OperatorReadStore.page_run_windows(%PageRunWindows{
+                 workspace_context: fixture.workspace_context,
+                 run_id: run.id,
+                 limit: 50
+               })
+
+      assert length(first_window_page.items) == 2
+      assert first_window_page.total == 2
+      assert is_integer(first_window_page.projection_cursor)
+
+      assert_receive {:window_page_query_shape, first_row_query}
+      assert_receive {:window_page_query_shape, first_metadata_query}
+      assert first_row_query =~ "ORDER BY run_window.window_start"
+      refute first_row_query =~ "projection_cursors"
+      assert first_metadata_query =~ "SELECT count(*)::bigint"
+      assert first_metadata_query =~ "projection_cursors"
+      refute_receive {:window_page_query_shape, _query}
+
+      assert {:ok, empty_window_page} =
+               OperatorReadStore.page_run_windows(%PageRunWindows{
+                 workspace_context: fixture.workspace_context,
+                 run_id: run.id,
+                 after: %{window_start_at: oldest.window_start, window_id: oldest.window_id},
+                 limit: 50
+               })
+
+      assert empty_window_page.items == []
+      assert empty_window_page.total == 2
+      assert is_integer(empty_window_page.projection_cursor)
+
+      assert_receive {:window_page_query_shape, row_query}
+      assert_receive {:window_page_query_shape, total_query}
+      refute row_query =~ "total_selected"
+      refute row_query =~ "total_window"
+      assert row_query =~ "ORDER BY run_window.window_start"
+      refute row_query =~ "projection_cursors"
+      assert total_query =~ "SELECT count(*)::bigint"
+      assert total_query =~ "projection_cursors"
+      refute_receive {:window_page_query_shape, _query}
+    after
+      :telemetry.detach(handler_id)
+    end
+
     claim = %ClaimBackfillWindows{
       workspace_context: fixture.workspace_context,
       batch_id: "backfill-claim:" <> run.id,
@@ -10355,6 +11098,49 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
       capacity_scope_id: "workspace:" <> workspace_id,
       deploy_command: deploy_command
     }
+  end
+
+  defp truncate_qualification_data! do
+    SQL.query!(
+      Repo,
+      """
+      DO $$
+      DECLARE
+        targets text;
+      BEGIN
+        SELECT string_agg(format('%I.%I', schemaname, tablename), ', ')
+        INTO targets
+        FROM pg_tables
+        WHERE schemaname = 'favn_control'
+          AND tablename NOT IN (
+            'schema_migrations',
+            'outbox_publication_state',
+            'projection_cursors',
+            'runtime_input_key_versions'
+          );
+
+        IF targets IS NOT NULL THEN
+          EXECUTE 'TRUNCATE TABLE ' || targets || ' RESTART IDENTITY CASCADE';
+        END IF;
+      END
+      $$
+      """
+    )
+
+    :ok
+  end
+
+  defp drain_qualification_queue_samples(samples \\ []) do
+    receive do
+      {:qualification_queue_us, queue_us} ->
+        drain_qualification_queue_samples([queue_us | samples])
+    after
+      0 ->
+        case samples do
+          [] -> [0]
+          samples -> samples
+        end
+    end
   end
 
   defp admit_command(fixture, run_id, suffix) do

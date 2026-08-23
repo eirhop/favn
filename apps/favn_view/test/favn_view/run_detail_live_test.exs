@@ -38,6 +38,7 @@ defmodule FavnView.RunDetailLiveTest do
     assert mounted.assigns.run.initializing?
     assert mounted.assigns.detail_load_attempts_remaining == 10
     assert is_reference(mounted.assigns.fallback_poll_ref)
+    assert mounted.assigns.fallback_poll_delay_ms == 5_000
 
     assert {:noreply, retried} =
              RunDetailLive.handle_info({:poll_run, mounted.assigns.fallback_poll_ref}, mounted)
@@ -45,6 +46,28 @@ defmodule FavnView.RunDetailLiveTest do
     assert retried.assigns.run.initializing?
     assert retried.assigns.detail_load_attempts_remaining == 9
     assert is_reference(retried.assigns.fallback_poll_ref)
+    assert retried.assigns.fallback_poll_delay_ms == 10_000
+
+    assert {:noreply, twenty_seconds} =
+             RunDetailLive.handle_info({:poll_run, retried.assigns.fallback_poll_ref}, retried)
+
+    assert twenty_seconds.assigns.fallback_poll_delay_ms == 20_000
+
+    assert {:noreply, thirty_seconds} =
+             RunDetailLive.handle_info(
+               {:poll_run, twenty_seconds.assigns.fallback_poll_ref},
+               twenty_seconds
+             )
+
+    assert thirty_seconds.assigns.fallback_poll_delay_ms == 30_000
+
+    assert {:noreply, capped} =
+             RunDetailLive.handle_info(
+               {:poll_run, thirty_seconds.assigns.fallback_poll_ref},
+               thirty_seconds
+             )
+
+    assert capped.assigns.fallback_poll_delay_ms == 30_000
   end
 
   test "keeps a durable queued submission visible and polling" do
