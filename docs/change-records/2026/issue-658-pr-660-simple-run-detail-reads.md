@@ -28,10 +28,17 @@ control plane that also schedules runs and serves runner heartbeats.
 
 ## Problem analysis
 
-The run detail page reuses a broad execution-group read originally designed to
-describe a root run and its children. It then reshapes that large response for
-the screen. This makes the UI depend on data it does not display and causes broad
+The run detail page uses a broad operator execution-group read that describes a
+root run and its children. It then reshapes that large response for one selected
+screen. This makes the UI depend on data it does not display and causes broad
 reloads while a run is active.
+
+Static repository caller inspection shows that the public run-activity entry
+point is used by `RunDetailLive`, not by the scheduler or planner. Its overview
+projection is UI-only, while its group-run and group-window paging helpers also
+serve the separate execution-group operator API. The UI-only stack will be
+deleted; shared paging helpers and persisted projection writers will remain.
+Orchestration decisions and lifecycle behavior must remain unchanged.
 
 The issue's earlier scale direction proposed asset paging and an asset drawer.
 Product review of that prototype replaced both choices with the simpler 1,000-row
@@ -55,6 +62,7 @@ this decision.
 | --- | --- |
 | `RunDetailLive` calls the operator run activity read with a 200-row limit | The initial page still enters through the broad read contract. |
 | The PostgreSQL activity read loads attempted and planned steps by root run ID | The query can include sibling runs and plan data the selected run does not need. |
+| The public run-activity entry point has no repository production caller outside `RunDetailLive` | The UI-specific broad facade can be removed after the page migrates, subject to a transitive caller check. |
 | Asset attempt rows already have stable run and asset-step IDs | A separate asset detail route can use a direct keyed lookup. |
 
 ## Current behavior
@@ -140,12 +148,25 @@ flowchart LR
   no partial result. The transaction has a two-second timeout and every statement
   has a one-second timeout.
 - The View calls only the public orchestrator facade. It never queries storage.
+- The UI-specific overview query, result, normalizer, converter, callback, and
+  tests are removed after Flow, Windows, and Events use their exact readers.
+- `GetExecutionGroup`, `get_execution_group/1`, `page_group_runs/1`,
+  `page_group_windows/1`, their public execution-group facade, and their tests
+  remain unchanged because they form a separate operator contract.
+- Persisted run, plan, event, attempt, execution-group, and backfill tables and
+  their projection writers remain unchanged. This PR adds no projection or
+  migration.
+- A newly discovered orchestration/lifecycle caller or shared-query rewrite is
+  outside this amendment and requires a separately approved deviation.
 - No duplicate table, asset paging, cursor, delta, retained-range, drawer, or
   prefix-filter contract is introduced.
 
 ### Scope
 
 - Replace the run Flow page's broad activity read with the exact-run view.
+- Remove the superseded broad run-activity/detail facade and its UI-only
+  overview/event read-model branches after Flow, Windows, and Events migrate to
+  exact-run contracts.
 - Add the lean window selector and full navigation between window run IDs.
 - Replace the asset drawer with a separate detail route.
 - Keep Windows and Events data lazy: they load only when their own screen is
@@ -158,7 +179,9 @@ flowchart LR
 - Browsing more than 1,000 assets in this PR.
 - Live-updating the open window list.
 - Adding a new source-of-truth or projection table.
-- Reworking planning, scheduling, runner heartbeats, or run execution.
+- Changing planning, scheduling, runner heartbeat, admission, retry,
+  cancellation, run execution, shared execution-group reads, or projection
+  writes.
 - Refactoring unrelated operator pages without measured evidence.
 
 ### Implementation slices
@@ -166,10 +189,20 @@ flowchart LR
 | Slice | Outcome | Owner or area |
 | --- | --- | --- |
 | 1 | Exact-run summary and lean asset read with a 1,000-row display cap | Orchestrator and PostgreSQL |
-| 2 | Run page uses the new contract and coalesces refreshes | View |
-| 3 | Lazy lean window choices navigate to another run ID | Orchestrator, PostgreSQL, and View |
-| 4 | Asset selection navigates to a keyed detail page; drawer code is removed | Orchestrator, PostgreSQL, and View |
-| 5 | Measure query count, selected columns, response size, and 1,000-asset behavior | Tests and PostgreSQL qualification |
+| 2 | Remove the superseded UI-only overview/event stack while retaining shared execution-group reads and all projection writers | Orchestrator and PostgreSQL |
+| 3 | Run page uses the new contract and coalesces refreshes | View |
+| 4 | Lazy lean window choices navigate to another run ID | Orchestrator, PostgreSQL, and View |
+| 5 | Asset selection navigates to a keyed detail page; drawer code is removed | Orchestrator, PostgreSQL, and View |
+| 6 | Events uses an exact selected-run event summary read instead of the execution group | Orchestrator, PostgreSQL, and View |
+| 7 | Measure query count, selected columns, response size, orchestration regression behavior, and 1,000-asset behavior | Tests and PostgreSQL qualification |
+
+### Legacy inventory
+
+| Action | Exact baseline entities |
+| --- | --- |
+| Delete or replace | `FavnOrchestrator.get_operator_run_activity/3`, `get_operator_run_detail/3`, `OperatorRunActivity`, `RunReadModel.get_operator_run_detail/3`, its overview/event loaders and exclusive private converters, `GetOperatorRunOverview`, `OperatorRunOverview`, `OperatorRunOverviewNormalizer`, the `OperatorReadStore.get_operator_run_overview/1` callback, the PostgreSQL implementation and its exclusive private helpers, and their dedicated tests |
+| Retain | `GetExecutionGroup`, `get_execution_group/1`, `page_group_runs/1`, `page_group_windows/1`, `get_execution_group_detail/3`, run/event/attempt/backfill schemas, every projector and projection writer, and their tests |
+| Replace in tests/fixtures | Existing run-detail tests and design-system fixtures move to the exact Flow, window, event, and keyed-detail public shapes; obsolete overview-normalizer tests are deleted |
 
 ### Complexity budget
 
@@ -181,12 +214,14 @@ changes are excluded.
 
 | Slice | Production added | Production deleted | Supporting added | Supporting deleted | Main reason for the size |
 | --- | ---: | ---: | ---: | ---: | --- |
-| Exact-run read contract and PostgreSQL queries | 400-650 | 0-80 | 350-600 | 0-100 | Public shapes, authorization, deterministic merge, summary, submission state, and storage tests |
+| Exact-run read contract and PostgreSQL queries | 450-750 | 0-100 | 400-700 | 0-150 | Public shapes, authorization, deterministic merge, summary, submission state, and storage tests |
+| Legacy broad-read removal | 0-80 | 1,500-2,300 | 100-250 | 550-900 | Delete the 619-line normalizer, its 398-line dedicated test, group-shaped query/result/converter code, and obsolete integration cases without touching shared projections |
 | Run page and coalesced refresh | 220-350 | 120-250 | 220-400 | 50-150 | Zero disconnected reads, exact subscription lifecycle, refresh coalescing, and active-screen loading |
 | Lazy window switching | 120-220 | 0-80 | 120-220 | 0-80 | Authorized bounded window query, selector state, overflow, and full navigation |
 | Separate asset detail route | 130-230 | 160-300 | 130-230 | 100-250 | Keyed read, route, page states, and all drawer removal |
+| Exact lazy event read | 80-160 | 0-80 | 100-200 | 0-80 | Bounded selected-run event fields and removal of the group-event loader |
 | Performance proof and shared documentation | 0-50 | 0 | 300-500 | 0-50 | Query-plan, payload, queue, rendering, concurrency, and related-contract checks |
-| **Expected total** | **870-1,500** | **280-710** | **1,120-1,950** | **150-630** | The final production implementation should remain far smaller than the replaced draft |
+| **Expected total** | **1,000-1,840** | **1,780-3,110** | **1,370-2,500** | **700-1,660** | Additions stay bounded while deletion of the replaced stack makes the production diff net smaller |
 
 Before final review, the outcome will show actual additions and deletions for
 each slice. Any category above its upper estimate by more than 25 percent or 100
@@ -197,14 +232,16 @@ budget and must be approved as a plan deviation first.
 
 If one file serves several slices, each diff hunk is assigned once to the slice
 whose behavior it implements. Subscription changes belong to the run-page slice;
-all drawer removal belongs to the asset-detail slice.
+all drawer removal belongs to the asset-detail slice. Deletions from the old
+Flow read belong to the legacy-cleanup slice only when they are not already part
+of the run-page or asset-detail replacement.
 
 ### Implementation map
 
 | Area | Responsibility |
 | --- | --- |
-| `favn_orchestrator` | Authorization, bounded public result shapes, and read budgets |
-| `favn_storage_postgres` | Exact-run queries and indexes only when measurements require them |
+| `favn_orchestrator` | Authorization, bounded public result shapes, read budgets, caller inventory, and removal of superseded read-model code |
+| `favn_storage_postgres` | Exact-run queries, removal or tightening of superseded callbacks and helpers, and indexes only when measurements require them |
 | `favn_view` | Route selection, one-second refresh coalescing, and rendering |
 
 ## Operational design
@@ -235,6 +272,7 @@ read authorization because those queries also load the control plane.
 | Selected-run refresh | At most 8 total Repo statements including reauthorization and the four-statement snapshot; at most 1 MiB encoded | Complete refresh at most 2 s; at most one in flight and one started per second |
 | Window choices | At most 6 total Repo statements including reauthorization; at most 1,001 rows containing only run ID, start, and end; at most 512 KiB encoded | Data statements warm p95 at most 50 ms and first observation at most 250 ms; facade at most 1 s |
 | Asset run detail | At most 6 total Repo statements including reauthorization; one exact observed asset; existing stored error, window, and output limits remain; at most 512 KiB encoded | Data statements warm p95 at most 50 ms and first observation at most 250 ms; facade at most 1 s |
+| Exact selected-run events | At most 6 total Repo statements including authorization and summary; at most 200 rows with only sequence, time, event type, state, asset label, and summary; at most 512 KiB encoded | Data statements warm p95 at most 50 ms and first observation at most 250 ms; facade at most 1 s |
 | Database plans | No sibling-run scan; selected-run list plans together touch at most 5,000 buffers; window choices touch at most 2,500 buffers | No statement exceeds its one-second database deadline |
 | Connected page | At most one refresh in flight and one refresh per second; connected diff at most 1 MiB | Server render at most 150 ms for 1,000 rows |
 | Concurrent viewers | 20 viewers opening or refreshing the same 1,000-asset run while heartbeat and scheduler-style control reads continue | No timeout; database queue-time p95 at most 100 ms; every facade call finishes within 2 s; heartbeat and scheduler probe p95 stays below 100 ms and no more than twice its idle baseline |
@@ -244,6 +282,9 @@ read authorization because those queries also load the control plane.
 | Acceptance criterion | Planned evidence |
 | --- | --- |
 | Initial load reads only the selected run | Storage integration test with sibling window runs |
+| The broad UI read is actually removed | Repository-wide production caller inventory before migration and an after-migration check proving its facade, unused read-model branches, storage callbacks, queries, tests, and fixtures are gone rather than duplicated |
+| Orchestration behavior does not regress | Existing owning-boundary suites for planning, scheduling, admission, retry, timeout, cancellation, submissions, and projection writes pass unchanged; no production caller is moved onto a UI read |
+| Shared execution-group reads are unchanged | Diff and caller checks show the retained query structs, callbacks, public facade, paging helpers, schemas, and projection writers were not rewritten |
 | At most 1,000 lean assets are rendered | Storage and LiveView tests at 0, 90, 1,000, and 1,001 assets |
 | Full asset data is lazy and separately routed | LiveView navigation test and keyed storage test |
 | Window switch loads the new run without retained state | LiveView test across two sibling run IDs |
@@ -273,6 +314,7 @@ separately from automated tests.
 | A run or execution group may exceed a 1,000-row bound | Detect with row 1,001 and show an explicit overflow notice rather than silently hiding it. |
 | Events may arrive faster than the page should reload | Coalesce refreshes to at most once per second. |
 | A very large execution group may have more window choices than the selector bound | Apply the same 1,000-choice overflow rule; pagination or search is future work. |
+| Removing the broad UI stack could accidentally remove a shared helper | The explicit retain list is checked in the diff; compilation and existing execution-group/projection suites must pass unchanged. |
 
 ## Plan review
 
@@ -283,6 +325,7 @@ separately from automated tests.
 | Findings | Clarify exact-run recovery, bound public fields, make snapshot failure atomic, make performance budgets end-to-end, and cover lifecycle, authorization, window, detail, and security cases. |
 | Findings addressed and rechecked | Issue #658 and the plan now agree; the read, refresh, payload, deadline, and control-plane budgets are explicit; the missing verification cases were added. The reviewer rechecked every correction and `git diff --check`. |
 | Verdict | **READY** — no remaining blockers (2026-08-23) |
+| Amendment decision | User approved implementation without another plan-review cycle on 2026-08-23. The amendment was narrowed after source inspection to UI-only deletion; shared lifecycle and projection queries are explicitly excluded. |
 
 ## Implementation outcome
 
@@ -295,11 +338,21 @@ with the approved complexity budget above.
 
 ## Deviations from the approved plan
 
-Pending implementation.
+On 2026-08-23, before implementation, product review added a required cleanup
+slice. The original baseline replaced the broad Flow read but did not explicitly
+require deleting all UI-only layers behind it or tightening directly shared
+orchestrator queries. The amended plan now requires a transitive caller inventory,
+legacy deletion, exact event/window reads, and proof that retained shared paths
+were not changed. It also adds a dedicated line-count budget so cleanup cannot
+hide inside the new feature's size. After an independent reviewer found the
+first amendment too open-ended, the user asked to proceed without another plan
+review; the implementation scope was narrowed to the exact inventory above.
 
 ## Decision log
 
-Pending implementation.
+- 2026-08-23: Keep orchestration semantics unchanged, but remove the superseded
+  UI-only broad read and reduce unused data in directly related shared queries.
+  Evidence, not assumed code history, decides what is deleted or retained.
 
 ## Verification evidence
 
