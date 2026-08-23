@@ -659,6 +659,17 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
           "The flow is the primary visual: stage order is dependency order."
         ),
         Example.attrs(
+          :filtered_paginated_backfill,
+          %{
+            run: Runs.paginated_backfill(),
+            run_id: "run_backfill_8f2c9d1",
+            nav_items: Runs.nav_items(),
+            flow_filter_form:
+              Phoenix.Component.to_form(%{"asset_prefix" => "crm."}, as: :flow_filter)
+          },
+          "A representative slice of a large run, with the active asset filter and next bounded read visible."
+        ),
+        Example.attrs(
           :failed_backfill,
           %{
             run: Runs.backfill(:partial),

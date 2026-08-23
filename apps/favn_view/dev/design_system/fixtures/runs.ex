@@ -54,6 +54,28 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.Runs do
     })
   end
 
+  @doc "A compact representative slice of a large, filtered backfill run."
+  @spec paginated_backfill() :: map()
+  def paginated_backfill do
+    backfill(:running)
+    |> Map.merge(%{
+      title: "Large backfill run",
+      subtitle: "Sales warehouse · 420 assets · Feb 2026 – Mar 2026",
+      total_asset_attempts: 420,
+      completed_asset_attempts: 4,
+      succeeded_asset_attempts: 3,
+      skipped_asset_attempts: 1,
+      running_asset_attempts: 1,
+      planned_asset_attempts: 415,
+      progress_label: "4 / 420",
+      asset_attempts_truncated?: true,
+      flow_asset_prefix: "crm.",
+      flow_filtered_total: 318,
+      flow_has_previous?: false,
+      flow_has_next?: true
+    })
+  end
+
   @doc "A single-window daily run, which must not read as a backfill."
   @spec single_window() :: map()
   def single_window do
