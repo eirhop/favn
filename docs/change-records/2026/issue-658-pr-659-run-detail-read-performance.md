@@ -1213,6 +1213,13 @@ same root. Together with the snapshot projection cursor, activate-before-read
 closes the commit race: an earlier commit is in the snapshot and a later commit
 queues a wake.
 
+A route or mode generation change rejects old-scope wakes immediately, even
+while replacement setup is pending. If replacement authorization, activation,
+or the initial snapshot fails, the View deactivates both any partially activated
+new grant and the retained old grant before rendering the error state. The same
+cleanup applies to a failed same-root idempotent replacement. No failed
+navigation retains subscription authority from either generation.
+
 Root-topic payload classes are explicit. `step` and `header` wakes carry the
 changed exact run ID and are accepted only when it is the selected route run;
 ordinary sibling wakes perform zero facade and database reads.
@@ -1228,19 +1235,38 @@ wake per `root_run_id`. Root-topic fan-in is therefore bounded by the projector
 batch size and its distinct changed runs, without dropping simultaneous changes
 to different children.
 
-The navigable child count can grow while a backfill dispatches. Projection of a
-`backfill.window.*` event resolves the payload's `backfill_id` to its root run,
+The navigable child count can grow while a backfill dispatches. The durable
+`backfill.window.*` payload adds `previous_run_id`, captured from the locked row
+before update. Only `previous_run_id == nil` and a non-nil current `run_id`
+constitutes first navigability and may emit `window_run_available`; later
+status-only, duplicate, and stale transitions emit no membership wake.
+Projection resolves that qualifying payload's `backfill_id` to its root run,
 rather than treating the event's `backfill_id:window_id` aggregate ID as a
-backfill ID. A projection batch resolves all distinct backfill IDs in one
-bounded query, collapses changes by root, and emits at most one strongest
-post-commit `window_run_available` membership wake per root. It never notifies
-before commit and adds no per-window query or topic.
+backfill ID.
+
+The existing projector batch is capped at 250 events. It collects at most 250
+unique `{workspace_id, backfill_id}` keys, resolves them in one indexed statement
+with a one-second statement timeout inside the existing three-second projector
+transaction, and emits at most one post-commit `window_run_available` wake for
+each distinct root: 250 wakes in the worst case. The lookup returns at most 250
+scalar root tuples, touches at most 512 buffers, and runs at warm p95 at most
+15 ms and cold p95 at most 75 ms on the production-shaped fixture. Each encoded
+notification is at most 1 KiB and the added worst-case batch output is at most
+250 KiB. It never notifies before commit and adds no per-window query or topic.
 
 A selected child receives that membership wake through its root grant and calls
 the independently reauthorized header-only use case. It can change from
 sole-child or no switcher to the multi-window switcher without reading sibling
 Flow rows. Duplicate or stale membership wakes remain coalesced by the existing
 generation and projection-cursor rules.
+
+Membership intent has its own acknowledged publication generation on the
+socket; it never reads or advances Flow's `acknowledged_projection_cursor`.
+Header-refresh success acknowledges only the frozen membership generation.
+Selected-run `step`/`header` work at the same or an earlier publication remains
+pending until its existing delta/reconciliation drain succeeds. Membership
+failure likewise leaves the Flow cursor unchanged and retains one coalesced
+membership intent.
 
 The ordinary sibling-event budget is strict: rejected sibling `step` and
 `header`, and repair-membership wakes make zero facade calls and zero database
@@ -1272,6 +1298,9 @@ Acceptance evidence must prove:
   double-applied wake while activate-new/deactivate-old runs;
 - teardown proves the prior root topic is no longer active, while same-root
   child navigation keeps exactly one idempotent root grant;
+- failed replacement authorization, activation, and initial snapshot each
+  deactivate partial-new and retained-old grants and reject old-generation
+  wakes, including the same-root replacement case;
 - same `asset_step_id` values in two window runs cannot mix because each Flow,
   delta, reconciliation, and drawer read remains exact-run scoped;
 - the selector performs zero window-switch reads while closed, one bounded read
@@ -1299,11 +1328,20 @@ Acceptance evidence must prove:
 - a new sibling becoming navigable while a sole child is open produces one root
   post-commit membership wake, performs one reauthorized header-only statement,
   and reveals the switcher without a sibling subscription or broad Flow read;
+- status-only, duplicate, and stale backfill-window events with an already
+  non-nil `previous_run_id` produce no membership wake and no View read;
+- reordered and same-batch selected-run step plus membership delivery proves
+  membership-first success or failure cannot advance the Flow delta cursor or
+  skip the selected-run change;
 - Flow activates one root execution-group grant before its exact-run snapshot,
   deactivates it on route/mode change, processes selected-run wakes, and ignores
   ordinary sibling wakes with zero facade/database calls;
 - a projection batch with many window transitions resolves backfill roots in
   one batched query and emits at most one strongest membership wake per root;
+- an EXPLAIN-backed 250-event worst case proves the one-statement, 250-tuple,
+  512-buffer, 15-ms warm/75-ms cold, one-second statement/three-second
+  transaction, 250-wake, 1-KiB-per-wake, and 250-KiB batch ceilings under
+  concurrent projection and control-plane work;
 - simultaneous changes to multiple children retain one strongest exact-run wake
   per `{root_run_id, changed_run_id}`, and sibling repair-membership wakes are
   rejected locally with zero facade/database calls;
@@ -1323,8 +1361,8 @@ Acceptance evidence must prove:
 | Semantic amendment commit | `b388be7338e03709df3a9a69ec5bad1c38b1f977` |
 | Reviewer | Independent agent `issue_658_plan_review` |
 | Findings | Initial review rejected reuse of the richer Window runs page because it includes nullable run IDs and unrendered aggregates; it also found no authoritative selected label/sole-child reachability contract, no picker task lifecycle, and no matching chronological index. A second independent review required explicit backward paging, dialog accessibility/keyboard semantics, per-page reauthorization and cursor-replay tests, canonical doc updates, default Flow-budget evidence, and explicit ownership for dynamic sibling-count wakes because current Flow uses an exact-run topic and backfill-window aggregate IDs do not resolve as backfill IDs. |
-| Findings addressed | Added a lean navigable-only switch page, scalar selected/sole-window header data, explicit root states, generation-tagged picker concurrency/recovery, a matching concurrent partial index with production-shaped page/count budgets, exact bidirectional semantics, the existing accessible dialog contract, cursor authorization tests, canonical docs, default Flow qualification, and explicitly superseded the exact-run subscription topology with one activate-before-snapshot root projection grant. The amendment now defines payload classes, local zero-read sibling rejection, batched backfill-window-to-root membership notifications, grant replacement/teardown, wake coalescing, a reauthorized header-only refresh, and query/deadline/payload budgets. |
-| Verdict | Approved after independent recheck. No blocking findings remain; implementation may proceed. |
+| Findings addressed | Added a lean navigable-only switch page, scalar selected/sole-window header data, explicit root states, generation-tagged picker concurrency/recovery, a matching concurrent partial index with production-shaped page/count budgets, exact bidirectional semantics, the existing accessible dialog contract, cursor authorization tests, canonical docs, default Flow qualification, and explicitly superseded the exact-run subscription topology with one activate-before-snapshot root projection grant. The amendment now defines payload classes and per-run/per-root coalescing, local zero-read sibling and repair rejection, first-navigability event semantics, batched backfill-window-to-root membership notifications with numeric critical-path budgets, grant replacement/failure cleanup/teardown, an independent membership acknowledgement, and a reauthorized header-only refresh. |
+| Verdict | Approved after two independent final rechecks. No blocking findings remain; implementation may proceed. |
 
 ## Implementation outcome
 
