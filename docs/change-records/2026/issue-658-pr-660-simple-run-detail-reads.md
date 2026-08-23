@@ -357,23 +357,23 @@ flowchart LR
 
 ### Actual scope and complexity
 
-Git reports 1,861 production lines added and 4,496 deleted. Supporting tests,
-fixtures, and examples add 941 and delete 1,473. The complete implementation is
-therefore 3,167 lines smaller. The table is a manual hunk attribution because
+Git reports 1,946 production lines added and 4,500 deleted. Supporting tests,
+fixtures, and examples add 1,174 and delete 1,472. The complete implementation is
+therefore 2,852 lines smaller. The table is a manual hunk attribution because
 several files implement more than one slice; its totals exactly match Git.
 
 | Slice | Production added | Production deleted | Supporting added | Supporting deleted |
 | --- | ---: | ---: | ---: | ---: |
-| Exact-run Flow contract and PostgreSQL read | 767 | 100 | 300 | 150 |
+| Exact-run Flow contract and PostgreSQL read | 852 | 104 | 393 | 150 |
 | Legacy broad-read removal | 80 | 3,687 | 0 | 900 |
-| Run page and coalesced refresh | 354 | 249 | 222 | 150 |
+| Run page and coalesced refresh | 354 | 249 | 282 | 149 |
 | Lazy window switching | 220 | 80 | 100 | 80 |
 | Separate asset detail route | 230 | 300 | 126 | 193 |
 | Exact lazy event read | 160 | 80 | 39 | 0 |
-| Performance proof | 50 | 0 | 154 | 0 |
-| **Actual total** | **1,861** | **4,496** | **941** | **1,473** |
+| Performance proof | 50 | 0 | 234 | 0 |
+| **Actual total** | **1,946** | **4,500** | **1,174** | **1,472** |
 
-The exact-read addition is 17 lines above its estimate, far below the record's
+The exact-read addition is 102 lines above its estimate, far below the record's
 material-variance threshold. Legacy deletion is 1,387 lines above its estimate:
 source inspection showed that replacing the 1,300-line LiveView and deleting the
 505-line UI Flow converter was simpler than retaining branches from the broad
@@ -400,6 +400,24 @@ before the first exact-run statement; sandbox tests retain their atomic outer
 transaction. This is a test-environment accommodation, not a production contract
 change.
 
+Final review found that two independently capped candidate queries could disagree
+at a repeated-reference boundary because existing plans do not persist the
+observed asset-step ID. The implementation now joins planned and observed
+candidates by normalized reference and occurrence before one 1,001-row cap. This
+is stricter and smaller than the approved two-source transfer: observed IDs remain
+authoritative, observed-only rows remain visible, aggregate counts use the same
+union rule, and no schema or writer changes are needed. Within one selected window,
+repeated planned rows have the same displayed fields, so their private ordering
+does not leak into the UI.
+
+Subscription authorization now authorizes only the workspace-scoped run topic.
+It deliberately does not resolve the run through the old durable `Runs.get/2`
+path, which decoded the complete snapshot, manifest, and plan before the lean
+read. The subscription happens before Flow to avoid a notification gap; the
+independently reauthorized exact read immediately proves whether the run exists.
+An absent run produces no messages on that workspace-scoped topic and reveals no
+cross-workspace data.
+
 ## Decision log
 
 - 2026-08-23: Keep orchestration semantics unchanged, but remove the superseded
@@ -410,9 +428,9 @@ change.
 
 - `mix compile --warnings-as-errors` passes in development and test environments.
 - `favn_orchestrator` fast suite: 695 passed, including 6 doctests.
-- `favn_view` fast suite: 540 passed, including 104 doctests; one unrelated
+- `favn_view` fast suite: 542 passed, including 104 doctests; one unrelated
   pre-existing excluded test remains excluded.
-- PostgreSQL core authority suite: 127 passed.
+- PostgreSQL core authority suite: 129 passed.
 - The umbrella fast command reaches every app, but cannot be green on this
   Windows host: two unchanged `FavnStoragePostgres.ReleaseCLITest` cases invoke
   a Windows `mix.bat` through POSIX `sh`, which exits with status 1 before the
@@ -420,14 +438,19 @@ change.
   by this change pass in the app-scoped suites below.
 - Focused public-model tests cover 0, 90, 1,000, and 1,001 assets, deterministic
   node identity, lean rows, queued submissions, subscription-before-read,
-  disconnected mounts, notification coalescing, refresh failure, lazy windows,
-  lazy events, and separate asset-detail states.
+  disconnected mounts, notification coalescing, failed-event retry, direct Events
+  loads with zero Flow reads, lazy windows, ordinary-run window metadata, exact
+  observed-only counts, repeated-reference cap overlap, and separate asset-detail
+  states.
 - The slow PostgreSQL Flow qualification creates two sibling runs with 1,001
   planned assets each. The selected read returns 1,000 rows and exact total 1,001,
   never returns the sibling run, uses at most seven storage statements, stays
-  below 1 MiB, and uses the run-plan key index. Twenty concurrent viewers finish
-  within two seconds while probe and database queue p95 remain below 100 ms and
-  statement p95 remains below 50 ms.
+  below 1 MiB, and uses the run-plan key index. Subscription authorization plus
+  the public Flow facade stays within the 12-statement connected-open budget and
+  performs no snapshot, manifest, or plan read during subscription. `EXPLAIN
+  ANALYZE` remains below the 5,000-buffer and one-second limits. Twenty concurrent
+  public-facade viewers finish within two seconds while probe and database queue
+  p95 remain below 100 ms and statement p95 remains below 50 ms.
 - Keyed asset detail is tested with the same run ID and asset-step ID in another
   workspace, and with the same asset-step ID in another run.
 - Repository inventory confirms the old activity facade, overview query/result/
@@ -442,4 +465,4 @@ change.
 
 ## Final review
 
-Pending implementation.
+Pending independent recheck of the final-review corrections.

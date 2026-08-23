@@ -3715,6 +3715,67 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     refute flow.overflow?
   end
 
+  test "exact run Flow counts observed-only and repeated-reference rows before the cap",
+       fixture do
+    {command, run} = pipeline_run_command(fixture)
+    assert {:ok, _created} = RunStore.create_run(command)
+
+    SQL.query!(
+      Repo,
+      """
+      UPDATE favn_control.run_plans
+      SET plan = jsonb_build_object(
+        'nodes', (
+          SELECT jsonb_agg(
+            jsonb_build_object(
+              'node_key', jsonb_build_object(
+                'ref', jsonb_build_object('module', 'Elixir.MyApp.Repeated', 'name', 'asset'),
+                'identity', series
+              ),
+              'ref', jsonb_build_object('module', 'Elixir.MyApp.Repeated', 'name', 'asset'),
+              'window', NULL
+            )
+            ORDER BY series
+          )
+          FROM generate_series(1, 3) AS series
+        )
+      )
+      WHERE workspace_id = $1 AND run_id = $2
+      """,
+      [fixture.workspace_id, run.id]
+    )
+
+    SQL.query!(
+      Repo,
+      """
+      INSERT INTO favn_control.asset_attempt_overviews
+        (workspace_id, root_run_id, run_id, asset_step_id, asset_ref, window_identity,
+         status, source_publication_id, updated_at)
+      VALUES
+        ($1, $2, $2, 'observed-a', 'Elixir.MyApp.Repeated:asset', 'none', 'running', 1, now()),
+        ($1, $2, $2, 'observed-b', 'Elixir.MyApp.Repeated:asset', 'none', 'ok', 1, now()),
+        ($1, $2, $2, 'observed-only', 'Elixir.MyApp.ObservedOnly:asset', 'none', 'queued', 1, now())
+      """,
+      [fixture.workspace_id, run.id]
+    )
+
+    assert {:ok, flow} =
+             OperatorReadStore.get_run_flow(%GetRunFlow{
+               workspace_context: fixture.workspace_context,
+               run_id: run.id,
+               limit: 3
+             })
+
+    assert flow.header.counts.total == 4
+    assert flow.header.counts.planned == 1
+    assert flow.header.counts.running == 1
+    assert flow.header.counts.succeeded == 1
+    assert flow.header.counts.queued == 1
+    assert length(flow.observed) == 3
+    assert flow.planned == []
+    assert flow.overflow?
+  end
+
   test "exact run Flow does not load sibling window runs", fixture do
     {root_command, root_run} = pipeline_run_command(fixture)
     assert {:ok, _created} = RunStore.create_run(root_command)
@@ -3775,6 +3836,38 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
 
     assert [%{window_identity: window_identity}] = flow.planned
     assert window_identity == WindowKey.encode(window.key)
+  end
+
+  test "exact run header reads ordinary run window bounds without hydrating the snapshot",
+       fixture do
+    start_at = ~U[2026-07-01 00:00:00Z]
+    end_at = ~U[2026-08-01 00:00:00Z]
+    {command, run} = pipeline_run_command(fixture)
+
+    run =
+      run
+      |> Map.update!(:metadata, fn metadata ->
+        Map.put(metadata, :selected_window, %{
+          key: "month:UTC:2026-07-01",
+          kind: :month,
+          start_at: start_at,
+          end_at: end_at,
+          timezone: "UTC"
+        })
+      end)
+      |> RunState.with_snapshot_hash()
+
+    assert {:ok, _created} = RunStore.create_run(%{command | run: run})
+
+    assert {:ok, flow} =
+             OperatorReadStore.get_run_flow(%GetRunFlow{
+               workspace_context: fixture.workspace_context,
+               run_id: run.id,
+               limit: 10
+             })
+
+    assert DateTime.compare(flow.header.window_start_at, start_at) == :eq
+    assert DateTime.compare(flow.header.window_end_at, end_at) == :eq
   end
 
   test "keyed asset attempt detail is scoped by workspace and exact run", fixture do

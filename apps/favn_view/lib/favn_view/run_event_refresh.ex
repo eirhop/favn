@@ -84,6 +84,13 @@ defmodule FavnView.RunEventRefresh do
     |> assign(:pending_run_event_sequences, %{})
   end
 
+  @spec retry_pending(Phoenix.LiveView.Socket.t(), keyword()) :: Phoenix.LiveView.Socket.t()
+  def retry_pending(socket, opts) do
+    if map_size(Map.get(socket.assigns, :pending_run_event_sequences, %{})) > 0,
+      do: do_schedule_refresh(socket, opts),
+      else: socket
+  end
+
   @spec unsubscribe_all(Phoenix.LiveView.Socket.t(), (run_id() -> term())) :: :ok
   def unsubscribe_all(socket, unsubscribe_fun) when is_function(unsubscribe_fun, 1) do
     socket.assigns

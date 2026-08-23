@@ -236,15 +236,8 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
                exact_run_header(query.workspace_context.workspace_id, query.run_id) do
           counts = exact_run_counts!(query.workspace_context.workspace_id, query.run_id)
 
-          {planned, planned_overflow?} =
-            exact_planned_candidates!(
-              query.workspace_context.workspace_id,
-              query.run_id,
-              query.limit
-            )
-
-          {observed, observed_overflow?} =
-            exact_observed_candidates!(
+          {planned, observed, candidates_overflow?} =
+            exact_flow_candidates!(
               query.workspace_context.workspace_id,
               query.run_id,
               query.limit
@@ -255,7 +248,7 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
              header: %{header | counts: counts},
              planned: planned,
              observed: observed,
-             overflow?: planned_overflow? or observed_overflow? or counts.total > query.limit
+             overflow?: candidates_overflow? or counts.total > query.limit
            }}
         end
       end)
@@ -1320,8 +1313,20 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
                selected_run.terminal_at,
                selected_target.target_id,
                selected_target.target_label,
-               selected_window.window_start,
-               selected_window.window_end
+               COALESCE(
+                 selected_window.window_start,
+                 NULLIF(selected_run.snapshot #>> '{metadata,pipeline_context,anchor_window,start_at}', '')::timestamptz,
+                 NULLIF(selected_run.snapshot #>> '{metadata,selected_window,start_at}', '')::timestamptz,
+                 NULLIF(selected_run.snapshot #>> '{metadata,window,start_at}', '')::timestamptz,
+                 NULLIF(selected_run.snapshot #>> '{params,window,start_at}', '')::timestamptz
+               ),
+               COALESCE(
+                 selected_window.window_end,
+                 NULLIF(selected_run.snapshot #>> '{metadata,pipeline_context,anchor_window,end_at}', '')::timestamptz,
+                 NULLIF(selected_run.snapshot #>> '{metadata,selected_window,end_at}', '')::timestamptz,
+                 NULLIF(selected_run.snapshot #>> '{metadata,window,end_at}', '')::timestamptz,
+                 NULLIF(selected_run.snapshot #>> '{params,window,end_at}', '')::timestamptz
+               )
         FROM favn_control.runs AS selected_run
         LEFT JOIN LATERAL (
           SELECT candidate_target.target_id,
@@ -1396,120 +1401,181 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
   end
 
   defp exact_run_counts!(workspace_id, run_id) do
-    %{rows: [[observed, completed, succeeded, skipped, failed, running, queued, planned_total]]} =
+    %{rows: [[total, completed, succeeded, skipped, failed, running, queued, planned]]} =
       SQL.query!(
         Repo,
         """
-        SELECT count(attempt.asset_step_id)::bigint,
-               count(attempt.asset_step_id) FILTER (
-                 WHERE attempt.status IN ('ok', 'error', 'timed_out', 'cancelled', 'skipped_fresh', 'blocked')
-               )::bigint,
-               count(attempt.asset_step_id) FILTER (WHERE attempt.status = 'ok')::bigint,
-               count(attempt.asset_step_id) FILTER (WHERE attempt.status = 'skipped_fresh')::bigint,
-               count(attempt.asset_step_id) FILTER (
-                 WHERE attempt.status IN ('error', 'timed_out', 'cancelled', 'blocked')
-               )::bigint,
-               count(attempt.asset_step_id) FILTER (
-                 WHERE attempt.status IN ('running', 'retrying')
-               )::bigint,
-               count(attempt.asset_step_id) FILTER (WHERE attempt.status = 'queued')::bigint,
-               COALESCE((
-                 SELECT jsonb_array_length(COALESCE(plan.plan->'nodes', '[]'::jsonb))
-                 FROM favn_control.run_plans AS plan
-                 WHERE plan.workspace_id = $1 AND plan.run_id = $2
-               ), 0)::bigint
-        FROM favn_control.asset_attempt_overviews AS attempt
-        WHERE attempt.workspace_id = $1 AND attempt.run_id = $2
+        WITH planned AS (
+          SELECT concat_ws(':', node.value #>> '{ref,module}', node.value #>> '{ref,name}') AS asset_ref,
+                 count(*)::bigint AS candidate_count
+          FROM favn_control.run_plans AS plan
+          CROSS JOIN LATERAL jsonb_array_elements(COALESCE(plan.plan->'nodes', '[]'::jsonb)) AS node(value)
+          WHERE plan.workspace_id = $1 AND plan.run_id = $2
+          GROUP BY 1
+        ),
+        observed AS (
+          SELECT attempt.asset_ref,
+                 count(*)::bigint AS candidate_count
+          FROM favn_control.asset_attempt_overviews AS attempt
+          WHERE attempt.workspace_id = $1 AND attempt.run_id = $2
+          GROUP BY attempt.asset_ref
+        ),
+        union_counts AS (
+          SELECT COALESCE(sum(GREATEST(
+                   COALESCE(planned.candidate_count, 0),
+                   COALESCE(observed.candidate_count, 0)
+                 )), 0)::bigint AS total,
+                 COALESCE(sum(GREATEST(
+                   COALESCE(planned.candidate_count, 0) - COALESCE(observed.candidate_count, 0),
+                   0
+                 )), 0)::bigint AS planned
+          FROM planned
+          FULL OUTER JOIN observed USING (asset_ref)
+        ),
+        observed_status AS (
+          SELECT count(*) FILTER (
+                   WHERE attempt.status IN ('ok', 'error', 'timed_out', 'cancelled', 'skipped_fresh', 'blocked')
+                 )::bigint AS completed,
+                 count(*) FILTER (WHERE attempt.status = 'ok')::bigint AS succeeded,
+                 count(*) FILTER (WHERE attempt.status = 'skipped_fresh')::bigint AS skipped,
+                 count(*) FILTER (
+                   WHERE attempt.status IN ('error', 'timed_out', 'cancelled', 'blocked')
+                 )::bigint AS failed,
+                 count(*) FILTER (WHERE attempt.status IN ('running', 'retrying'))::bigint AS running,
+                 count(*) FILTER (WHERE attempt.status = 'queued')::bigint AS queued
+          FROM favn_control.asset_attempt_overviews AS attempt
+          WHERE attempt.workspace_id = $1 AND attempt.run_id = $2
+        )
+        SELECT union_counts.total,
+               observed_status.completed,
+               observed_status.succeeded,
+               observed_status.skipped,
+               observed_status.failed,
+               observed_status.running,
+               observed_status.queued,
+               union_counts.planned
+        FROM union_counts
+        CROSS JOIN observed_status
         """,
         [workspace_id, run_id],
         timeout: 1_000
       )
 
     %{
-      total: max(observed, planned_total),
+      total: total,
       completed: completed,
       succeeded: succeeded,
       skipped: skipped,
       failed: failed,
       running: running,
       queued: queued,
-      planned: max(planned_total - observed, 0)
+      planned: planned
     }
   end
 
-  defp exact_planned_candidates!(workspace_id, run_id, limit) do
+  defp exact_flow_candidates!(workspace_id, run_id, limit) do
     %{rows: rows} =
       SQL.query!(
         Repo,
         """
-        SELECT node.value->'node_key',
-               concat_ws(':', node.value #>> '{ref,module}', node.value #>> '{ref,name}'),
-               node.value->'window',
-               'planned:' || md5(
-                 $2 || ':' || (node.value->'node_key')::text || ':' || (node.value->'ref')::text
-               ) AS planned_id
-        FROM favn_control.run_plans AS plan
-        CROSS JOIN LATERAL jsonb_array_elements(COALESCE(plan.plan->'nodes', '[]'::jsonb)) AS node(value)
-        WHERE plan.workspace_id = $1 AND plan.run_id = $2
-        ORDER BY 2, planned_id
+        WITH planned_base AS (
+          SELECT node.value->'node_key' AS node_key,
+                 concat_ws(':', node.value #>> '{ref,module}', node.value #>> '{ref,name}') AS asset_ref,
+                 node.value->'window' AS window_value,
+                 'planned:' || md5(
+                   $2 || ':' || (node.value->'node_key')::text || ':' || (node.value->'ref')::text
+                 ) AS planned_id
+          FROM favn_control.run_plans AS plan
+          CROSS JOIN LATERAL jsonb_array_elements(COALESCE(plan.plan->'nodes', '[]'::jsonb)) AS node(value)
+          WHERE plan.workspace_id = $1 AND plan.run_id = $2
+        ),
+        planned AS (
+          SELECT planned_base.*,
+                 row_number() OVER (
+                   PARTITION BY asset_ref
+                   ORDER BY planned_id
+                 ) AS occurrence
+          FROM planned_base
+        ),
+        observed AS (
+          SELECT attempt.asset_step_id,
+                 attempt.asset_ref,
+                 attempt.window_identity,
+                 attempt.status,
+                 attempt.started_at,
+                 attempt.finished_at,
+                 row_number() OVER (
+                   PARTITION BY attempt.asset_ref
+                   ORDER BY attempt.asset_step_id
+                 ) AS occurrence
+          FROM favn_control.asset_attempt_overviews AS attempt
+          WHERE attempt.workspace_id = $1 AND attempt.run_id = $2
+        )
+        SELECT planned.node_key,
+               COALESCE(observed.asset_ref, planned.asset_ref),
+               planned.window_value,
+               planned.planned_id,
+               observed.asset_step_id,
+               observed.window_identity,
+               observed.status,
+               observed.started_at,
+               observed.finished_at,
+               COALESCE(observed.occurrence, planned.occurrence)
+        FROM planned
+        FULL OUTER JOIN observed
+          ON observed.asset_ref = planned.asset_ref
+         AND observed.occurrence = planned.occurrence
+        ORDER BY 2, 10
         LIMIT $3
         """,
         [workspace_id, run_id, limit + 1],
         timeout: 1_000
       )
 
-    items =
+    {planned, observed} =
       rows
       |> Enum.take(limit)
-      |> Enum.map(fn [node_key, asset_ref, window, planned_id] ->
-        restored_window = restore_window(window)
+      |> Enum.reduce({[], []}, fn
+        [node_key, asset_ref, window, planned_id, nil, nil, nil, nil, nil, _occurrence],
+        {planned, observed} ->
+          candidate = %RunFlowCandidate{
+            run_id: run_id,
+            planned_id: planned_id,
+            node_key: node_key,
+            asset_ref: asset_ref,
+            window_identity: planned_window_identity(restore_window(window)),
+            status: :planned
+          }
 
-        %RunFlowCandidate{
-          run_id: run_id,
-          planned_id: planned_id,
-          node_key: node_key,
-          asset_ref: asset_ref,
-          window_identity: planned_window_identity(restored_window),
-          status: :planned
-        }
+          {[candidate | planned], observed}
+
+        [
+          _node_key,
+          asset_ref,
+          _window,
+          _planned_id,
+          asset_step_id,
+          window_identity,
+          status,
+          started_at,
+          finished_at,
+          _occurrence
+        ],
+        {planned, observed} ->
+          candidate = %RunFlowCandidate{
+            run_id: run_id,
+            asset_step_id: asset_step_id,
+            asset_ref: asset_ref,
+            window_identity: window_identity,
+            status: decode_operator_status(status),
+            started_at: started_at,
+            finished_at: finished_at
+          }
+
+          {planned, [candidate | observed]}
       end)
 
-    {items, length(rows) > limit}
-  end
-
-  defp exact_observed_candidates!(workspace_id, run_id, limit) do
-    rows =
-      from(attempt in AssetAttemptOverview,
-        where: attempt.workspace_id == ^workspace_id and attempt.run_id == ^run_id,
-        order_by: [asc: attempt.asset_ref, asc: attempt.asset_step_id],
-        limit: ^(limit + 1),
-        select: {
-          attempt.asset_step_id,
-          attempt.asset_ref,
-          attempt.window_identity,
-          attempt.status,
-          attempt.started_at,
-          attempt.finished_at
-        }
-      )
-      |> Repo.all(timeout: 1_000)
-
-    items =
-      rows
-      |> Enum.take(limit)
-      |> Enum.map(fn {asset_step_id, asset_ref, window_identity, status, started_at, finished_at} ->
-        %RunFlowCandidate{
-          run_id: run_id,
-          asset_step_id: asset_step_id,
-          asset_ref: asset_ref,
-          window_identity: window_identity,
-          status: decode_operator_status(status),
-          started_at: started_at,
-          finished_at: finished_at
-        }
-      end)
-
-    {items, length(rows) > limit}
+    {Enum.reverse(planned), Enum.reverse(observed), length(rows) > limit}
   end
 
   defp run_window_choice([run_id, window_start_at, window_end_at]) do

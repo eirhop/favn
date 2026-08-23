@@ -168,6 +168,66 @@ defmodule FavnView.RunDetailLiveTest do
     assert events_socket.assigns.run.assets == []
   end
 
+  test "direct Events connection never loads Flow" do
+    caller = self()
+
+    Application.put_env(:favn_view, :operator_run_flow_fun, fn _context, _run_id ->
+      send(caller, :unexpected_flow_read)
+      {:error, :unexpected_flow_read}
+    end)
+
+    Application.put_env(:favn_view, :operator_run_events_fun, fn _context, run_id ->
+      send(caller, :events_read)
+      {:ok, %{kind: :run, header: header(run_id, :ok), events: []}}
+    end)
+
+    assert {:ok, mounted} =
+             RunDetailLive.mount(
+               %{"run_id" => "run-one", "view" => "events"},
+               %{},
+               connected_socket()
+             )
+
+    assert_receive :events_read
+    refute_receive :unexpected_flow_read
+    assert mounted.assigns.active_mode == :events
+    assert mounted.assigns.run.assets == []
+  end
+
+  test "failed Events refresh retains the pending sequence and retries" do
+    Application.put_env(:favn_view, :operator_run_events_fun, fn _context, run_id ->
+      {:ok, %{kind: :run, header: header(run_id, :running), events: []}}
+    end)
+
+    assert {:ok, mounted} =
+             RunDetailLive.mount(
+               %{"run_id" => "run-one", "view" => "events"},
+               %{},
+               connected_socket()
+             )
+
+    assert {:noreply, pending} =
+             RunDetailLive.handle_info(
+               {:favn_run_event, %{run_id: "run-one", sequence: 3}},
+               mounted
+             )
+
+    first_timer = pending.assigns.refresh_timer_ref
+
+    Application.put_env(:favn_view, :operator_run_events_fun, fn _context, _run_id ->
+      {:error, :unavailable}
+    end)
+
+    assert {:noreply, retrying} =
+             RunDetailLive.handle_info({:refresh_run, first_timer}, pending)
+
+    assert retrying.assigns.pending_run_event_sequences == %{"run-one" => 3}
+    assert is_reference(retrying.assigns.refresh_timer_ref)
+    refute retrying.assigns.refresh_timer_ref == first_timer
+    assert retrying.assigns.run.found?
+    assert retrying.assigns.run.refresh_error == "Run could not be loaded"
+  end
+
   test "loads window choices only on request and restricts navigation to those choices" do
     Application.put_env(:favn_view, :operator_run_flow_fun, fn _context, run_id ->
       {:ok, %{kind: :run, detail: flow(run_id, :ok)}}

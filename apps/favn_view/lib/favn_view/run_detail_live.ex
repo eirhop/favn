@@ -19,13 +19,15 @@ defmodule FavnView.RunDetailLive do
   @valid_modes ~w(flow events)
 
   @impl true
-  def mount(%{"run_id" => run_id}, _session, socket) do
+  def mount(%{"run_id" => run_id} = params, _session, socket) do
+    active_mode = active_mode_from_params(params)
+
     socket =
       socket
       |> assign(
         run_id: run_id,
         run: loading_run(run_id),
-        active_mode: :flow,
+        active_mode: active_mode,
         windows: nil,
         windows_loading?: false,
         windows_error: nil,
@@ -238,16 +240,22 @@ defmodule FavnView.RunDetailLive do
   end
 
   defp refresh_run(socket) do
-    run =
-      socket
-      |> load_run(socket.assigns.active_mode)
-      |> preserve_visible_run(socket.assigns.run)
+    {refresh_result, loaded_run} = load_run(socket, socket.assigns.active_mode)
+    run = preserve_visible_run(loaded_run, socket.assigns.run)
 
     socket
     |> assign(:run, run)
-    |> RunEventRefresh.mark_refreshed(run_event_sequences(run))
+    |> record_refresh(refresh_result, loaded_run)
     |> sync_run_subscription()
     |> schedule_fallback()
+  end
+
+  defp record_refresh(socket, :ok, run) do
+    RunEventRefresh.mark_refreshed(socket, run_event_sequences(run))
+  end
+
+  defp record_refresh(socket, :error, _run) do
+    RunEventRefresh.retry_pending(socket, run_event_refresh_opts(socket))
   end
 
   defp preserve_visible_run(
@@ -262,30 +270,31 @@ defmodule FavnView.RunDetailLive do
   defp load_run(socket, :events) do
     case get_run_events(operator_context(socket), socket.assigns.run_id) do
       {:ok, %{kind: :run, header: header, events: events}} ->
-        run_from_header(
-          header,
-          socket,
-          Enum.map(events, &event_row(&1, socket.assigns.current_scope))
-        )
+        {:ok,
+         run_from_header(
+           header,
+           socket,
+           Enum.map(events, &event_row(&1, socket.assigns.current_scope))
+         )}
 
       {:ok, %{kind: :submission, submission: submission}} ->
-        submission_from_public(submission, socket.assigns.current_scope)
+        {:ok, submission_from_public(submission, socket.assigns.current_scope)}
 
       {:error, reason} ->
-        error_run(socket.assigns.run_id, reason)
+        {:error, error_run(socket.assigns.run_id, reason)}
     end
   end
 
   defp load_run(socket, :flow) do
     case get_run_flow(operator_context(socket), socket.assigns.run_id) do
       {:ok, %{kind: :run, detail: flow}} ->
-        flow_from_public(flow, socket)
+        {:ok, flow_from_public(flow, socket)}
 
       {:ok, %{kind: :submission, submission: submission}} ->
-        submission_from_public(submission, socket.assigns.current_scope)
+        {:ok, submission_from_public(submission, socket.assigns.current_scope)}
 
       {:error, reason} ->
-        error_run(socket.assigns.run_id, reason)
+        {:error, error_run(socket.assigns.run_id, reason)}
     end
   end
 

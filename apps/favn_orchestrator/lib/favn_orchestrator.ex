@@ -2209,9 +2209,8 @@ defmodule FavnOrchestrator do
   @spec authorize_run_subscription(OperatorContext.t(), run_id()) ::
           {:ok, map()} | {:error, term()}
   def authorize_run_subscription(%OperatorContext{} = operator_context, run_id)
-      when is_binary(run_id) do
-    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer),
-         {:ok, _run} <- Runs.get(context, run_id) do
+      when is_binary(run_id) and byte_size(run_id) > 0 and byte_size(run_id) <= 255 do
+    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer) do
       {:ok, %{kind: :run, workspace_id: context.workspace_id, run_id: run_id}}
     end
   end

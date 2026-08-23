@@ -27,6 +27,7 @@ defmodule FavnStoragePostgres.StorageV2.PerformanceContractTest do
   alias FavnOrchestrator.OperatorRunView
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.TargetStatus
+  alias FavnOrchestrator.Identity
   alias FavnStoragePostgres.Backfills.Store, as: BackfillStore
   alias FavnStoragePostgres.Config
   alias FavnStoragePostgres.OperatorReads.Store, as: OperatorReadStore
@@ -232,28 +233,49 @@ defmodule FavnStoragePostgres.StorageV2.PerformanceContractTest do
     assert public_flow.overflow?
     assert :erlang.external_size(public_flow) < 1_048_576
 
+    operator_context = performance_operator_context!(fixture)
+
+    {subscription_result, subscription_queries} =
+      capture_queries(fn ->
+        FavnOrchestrator.authorize_run_subscription(operator_context, run.id)
+      end)
+
+    assert {:ok, %{workspace_id: workspace_id, run_id: selected_run_id}} = subscription_result
+    assert workspace_id == fixture.workspace_id
+    assert selected_run_id == run.id
+
+    refute Enum.any?(subscription_queries, fn {sql, _params} ->
+             String.contains?(sql, "run_plans") or String.contains?(sql, "manifest_versions") or
+               String.contains?(sql, "snapshot")
+           end)
+
+    {facade_result, facade_queries} =
+      capture_queries(fn -> FavnOrchestrator.get_operator_run_flow(operator_context, run.id) end)
+
+    assert {:ok, %{kind: :run, detail: %{assets: facade_assets}}} = facade_result
+    assert length(facade_assets) == 1_000
+    assert length(subscription_queries) + length(facade_queries) <= 12
+
     planned_query = query_containing!(queries, "jsonb_array_elements")
 
     {:ok, plan} =
       Repo.transaction(fn ->
         SQL.query!(Repo, "SET LOCAL enable_seqscan = off", [])
-        explain_captured(planned_query)
+        explain_analyze_captured(planned_query)
       end)
 
     assert Enum.any?(index_names(plan), &String.contains?(&1, "run_plans"))
+    assert buffer_blocks(plan) <= 5_000
+    assert execution_time_ms(plan) < 1_000
 
     {elapsed_ms, {concurrent_results, probe_ms}, query_metrics} =
       capture_query_metrics(fn ->
         tasks =
           Enum.map(1..20, fn _viewer ->
             Task.async(fn ->
-              with {:ok, selected_snapshot} <-
-                     OperatorReadStore.get_run_flow(%GetRunFlow{
-                       workspace_context: fixture.workspace_context,
-                       run_id: run.id,
-                       limit: 1_000
-                     }) do
-                {:ok, OperatorRunView.from_snapshot(selected_snapshot)}
+              with {:ok, %{kind: :run, detail: selected_flow}} <-
+                     FavnOrchestrator.get_operator_run_flow(operator_context, run.id) do
+                {:ok, selected_flow}
               end
             end)
           end)
@@ -1011,6 +1033,13 @@ defmodule FavnStoragePostgres.StorageV2.PerformanceContractTest do
 
   defp explain_captured({sql, params}), do: explain(sql, params)
 
+  defp explain_analyze_captured({sql, params}) do
+    %{rows: [[plan]]} =
+      SQL.query!(Repo, "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " <> sql, params, timeout: 1_000)
+
+    plan
+  end
+
   defp collect_query_count(count) do
     receive do
       :storage_query -> collect_query_count(count + 1)
@@ -1037,6 +1066,58 @@ defmodule FavnStoragePostgres.StorageV2.PerformanceContractTest do
   end
 
   defp index_names(_value), do: []
+
+  defp buffer_blocks(value) when is_list(value), do: Enum.sum(Enum.map(value, &buffer_blocks/1))
+
+  defp buffer_blocks(value) when is_map(value) do
+    own =
+      value
+      |> Map.take([
+        "Shared Hit Blocks",
+        "Shared Read Blocks",
+        "Local Hit Blocks",
+        "Local Read Blocks"
+      ])
+      |> Map.values()
+      |> Enum.filter(&is_number/1)
+      |> Enum.sum()
+
+    own + (value |> Map.values() |> Enum.map(&buffer_blocks/1) |> Enum.sum())
+  end
+
+  defp buffer_blocks(_value), do: 0
+
+  defp execution_time_ms([%{"Execution Time" => value} | _rest]) when is_number(value), do: value
+
+  defp performance_operator_context!(fixture) do
+    suffix = random_id()
+    username = "performance-viewer-#{suffix}"
+    password = "performance-password-#{suffix}"
+
+    {:ok, actor} =
+      Identity.create_actor(
+        fixture.workspace_context,
+        username,
+        password,
+        "Performance Viewer",
+        [:viewer]
+      )
+
+    {:ok, login_context} =
+      WorkspaceContext.new(fixture.workspace_id, "performance-login", [:customer_reader])
+
+    {:ok, authenticated} = Identity.authenticate_password(login_context, username, password)
+
+    {:ok, session} =
+      Identity.issue_session(login_context, actor.id,
+        expected_credential_version: authenticated.credential_version
+      )
+
+    {:ok, operator_context} =
+      FavnOrchestrator.operator_context(fixture.workspace_id, actor, session)
+
+    operator_context
+  end
 
   defp manifest_version(manifest_version_id) do
     manifest = %Manifest{
