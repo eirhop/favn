@@ -3,11 +3,15 @@ defmodule FavnOrchestrator.Persistence.OperatorReadStore do
 
   alias FavnOrchestrator.Persistence.Error
   alias FavnOrchestrator.Persistence.Queries.GetExecutionGroup
-  alias FavnOrchestrator.Persistence.Queries.GetOperatorRunOverview
+  alias FavnOrchestrator.Persistence.Queries.GetRunAssetAttempt
+  alias FavnOrchestrator.Persistence.Queries.GetRunFlow
+  alias FavnOrchestrator.Persistence.Queries.GetRunHeader
   alias FavnOrchestrator.Persistence.Queries.GetAssetWindowStates
   alias FavnOrchestrator.Persistence.Queries.CountSuccessfulAssetWindows
   alias FavnOrchestrator.Persistence.Queries.GetFreshnessMany
   alias FavnOrchestrator.Persistence.Queries.GetTargetStatuses
+  alias FavnOrchestrator.Persistence.Queries.ListRunEventSummaries
+  alias FavnOrchestrator.Persistence.Queries.ListRunWindows
   alias FavnOrchestrator.Persistence.Queries.GetSuccessfulAssetWindowKeys
   alias FavnOrchestrator.Persistence.Queries.CountExecutionGroups
   alias FavnOrchestrator.Persistence.Queries.PageExecutionGroups
@@ -22,7 +26,11 @@ defmodule FavnOrchestrator.Persistence.OperatorReadStore do
   alias FavnOrchestrator.Persistence.Results.ExecutionGroupOverview
   alias FavnOrchestrator.Persistence.Results.FreshnessState
   alias FavnOrchestrator.Persistence.Results.ManifestSummary
-  alias FavnOrchestrator.Persistence.Results.OperatorRunOverview
+  alias FavnOrchestrator.Persistence.Results.RunAssetAttempt
+  alias FavnOrchestrator.Persistence.Results.RunEventSummary
+  alias FavnOrchestrator.Persistence.Results.RunFlowSnapshot
+  alias FavnOrchestrator.Persistence.Results.RunWindowChoices
+  alias FavnOrchestrator.Persistence.Results.RunViewHeader
   alias FavnOrchestrator.Persistence.Results.RunSummary
   alias FavnOrchestrator.Persistence.Results.TargetStatus
 
@@ -34,8 +42,16 @@ defmodule FavnOrchestrator.Persistence.OperatorReadStore do
               {:ok, ExecutionGroupCounts.t()} | {:error, Error.t()}
   @callback get_execution_group(GetExecutionGroup.t()) ::
               {:ok, ExecutionGroup.t()} | {:error, Error.t()}
-  @callback get_operator_run_overview(GetOperatorRunOverview.t()) ::
-              {:ok, OperatorRunOverview.t()} | {:error, Error.t()}
+  @callback get_run_flow(GetRunFlow.t()) ::
+              {:ok, RunFlowSnapshot.t()} | {:error, Error.t()}
+  @callback get_run_header(GetRunHeader.t()) ::
+              {:ok, RunViewHeader.t()} | {:error, Error.t()}
+  @callback list_run_windows(ListRunWindows.t()) ::
+              {:ok, RunWindowChoices.t()} | {:error, Error.t()}
+  @callback get_run_asset_attempt(GetRunAssetAttempt.t()) ::
+              {:ok, RunAssetAttempt.t()} | {:error, Error.t()}
+  @callback list_run_event_summaries(ListRunEventSummaries.t()) ::
+              {:ok, [RunEventSummary.t()]} | {:error, Error.t()}
   @callback page_group_runs(PageGroupRuns.t()) ::
               {:ok, CursorPage.t(RunSummary.t())} | {:error, Error.t()}
   @callback page_group_windows(PageGroupWindows.t()) ::

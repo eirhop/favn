@@ -110,22 +110,6 @@ defmodule FavnOrchestrator.Persistence.Queries.GetExecutionGroup do
         }
 end
 
-defmodule FavnOrchestrator.Persistence.Queries.GetOperatorRunOverview do
-  @moduledoc """
-  Fetches a compact run overview without snapshots, plans, or event payloads.
-  """
-
-  alias FavnOrchestrator.Persistence.WorkspaceContext
-  @enforce_keys [:workspace_context, :run_id]
-  defstruct [:workspace_context, :run_id, limit: 200]
-
-  @type t :: %__MODULE__{
-          workspace_context: WorkspaceContext.t(),
-          run_id: String.t(),
-          limit: 1..500
-        }
-end
-
 defmodule FavnOrchestrator.Persistence.Queries.PageGroupRuns do
   @moduledoc "Keyset-pages canonical run summaries in one execution group."
 
@@ -508,115 +492,6 @@ defmodule FavnOrchestrator.Persistence.Results.AssetAttemptOverview do
           output_metadata: map() | nil,
           source_publication_id: pos_integer(),
           updated_at: DateTime.t()
-        }
-end
-
-defmodule FavnOrchestrator.Persistence.Results.PlannedAssetStep do
-  @moduledoc "Bounded immutable plan node used to show work before an attempt exists."
-
-  @enforce_keys [:root_run_id, :run_id, :node_identity, :asset_ref, :window_identity]
-  defstruct [
-    :root_run_id,
-    :run_id,
-    :node_identity,
-    :asset_ref,
-    :window_identity,
-    :window,
-    :stage,
-    :execution_pool
-  ]
-
-  @type t :: %__MODULE__{
-          root_run_id: String.t(),
-          run_id: String.t(),
-          node_identity: String.t(),
-          asset_ref: String.t(),
-          window_identity: String.t(),
-          window: map() | nil,
-          stage: non_neg_integer() | nil,
-          execution_pool: String.t() | nil
-        }
-end
-
-defmodule FavnOrchestrator.Persistence.Results.OperatorRunOverview do
-  @moduledoc "Bounded compact slices required by the run Overview view."
-
-  alias FavnOrchestrator.Persistence.Results.AssetAttemptOverview
-  alias FavnOrchestrator.Persistence.Results.BackfillWindow
-  alias FavnOrchestrator.Persistence.Results.ExecutionGroupOverview
-  alias FavnOrchestrator.Persistence.Results.PlannedAssetStep
-  alias FavnOrchestrator.Persistence.Results.RunSummary
-
-  @enforce_keys [
-    :overview,
-    :root_run,
-    :runs,
-    :requested_windows,
-    :requested_windows_truncated?,
-    :requested_window_counts,
-    :attempts,
-    :attempt_counts,
-    :attempts_truncated?,
-    :runs_truncated?,
-    :target_refs
-  ]
-  defstruct [
-    :overview,
-    :root_run,
-    :runs,
-    :requested_windows,
-    :requested_windows_truncated?,
-    :requested_window_counts,
-    :attempts,
-    :attempt_counts,
-    :attempts_truncated?,
-    :runs_truncated?,
-    :target_refs,
-    asset_counts_by_run: %{},
-    planned_steps: [],
-    planned_steps_truncated?: false
-  ]
-
-  @type t :: %__MODULE__{
-          overview: ExecutionGroupOverview.t(),
-          root_run: RunSummary.t(),
-          runs: [RunSummary.t()],
-          requested_windows: [BackfillWindow.t()],
-          requested_windows_truncated?: boolean(),
-          requested_window_counts: %{
-            required(:total) => non_neg_integer(),
-            required(:completed) => non_neg_integer(),
-            required(:failed) => non_neg_integer()
-          },
-          attempts: [AssetAttemptOverview.t()],
-          asset_counts_by_run: %{
-            optional(String.t()) => %{
-              required(:total) => non_neg_integer(),
-              required(:completed) => non_neg_integer(),
-              required(:succeeded) => non_neg_integer(),
-              required(:skipped) => non_neg_integer(),
-              required(:failed) => non_neg_integer(),
-              required(:running) => non_neg_integer(),
-              required(:queued) => non_neg_integer(),
-              required(:planned) => non_neg_integer()
-            }
-          },
-          attempt_counts: %{
-            required(:total) => non_neg_integer(),
-            required(:completed) => non_neg_integer(),
-            required(:succeeded) => non_neg_integer(),
-            required(:skipped) => non_neg_integer(),
-            required(:failed) => non_neg_integer(),
-            required(:running) => non_neg_integer(),
-            required(:queued) => non_neg_integer(),
-            required(:planned) => non_neg_integer(),
-            required(:effective_windows) => non_neg_integer()
-          },
-          attempts_truncated?: boolean(),
-          planned_steps: [PlannedAssetStep.t()],
-          planned_steps_truncated?: boolean(),
-          runs_truncated?: boolean(),
-          target_refs: [String.t()]
         }
 end
 

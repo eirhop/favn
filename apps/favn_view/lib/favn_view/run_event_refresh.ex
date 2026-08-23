@@ -33,7 +33,11 @@ defmodule FavnView.RunEventRefresh do
         |> Enum.reduce({socket, current}, fn run_id, {acc_socket, acc_subscribed} ->
           case subscribe_fun(opts).(run_id) do
             :ok ->
-              next_socket = replay_gap(acc_socket, run_id, opts)
+              next_socket =
+                if Keyword.get(opts, :replay_on_subscribe?, true),
+                  do: replay_gap(acc_socket, run_id, opts),
+                  else: acc_socket
+
               {next_socket, MapSet.put(acc_subscribed, run_id)}
 
             {:error, _reason} ->

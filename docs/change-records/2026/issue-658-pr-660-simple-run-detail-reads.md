@@ -2,14 +2,14 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Implementing |
+| Status | Final review |
 | Type | Refactor |
 | Primary issue | [#658](https://github.com/eirhop/favn/issues/658) |
 | Pull request | [#660](https://github.com/eirhop/favn/pull/660) |
 | Related work | [Draft PR #659](https://github.com/eirhop/favn/pull/659), which this simpler approach replaces |
 | Affected areas | Run detail UI, orchestrator operator reads, PostgreSQL operator reads |
-| Approved plan commit | [`ce12d5d2`](https://github.com/eirhop/favn/commit/ce12d5d2c7945b92f5b52f1ec699d4c8b1c2c2b6) |
-| Last updated | 2026-08-23 |
+| Approved plan commit | [`0f053c43`](https://github.com/eirhop/favn/commit/0f053c43) |
+| Last updated | 2026-08-24 |
 
 ## One-minute summary
 
@@ -329,12 +329,57 @@ separately from automated tests.
 
 ## Implementation outcome
 
-Pending implementation.
+The run page now reads one exact run. Its first connected Flow load contains a
+lean header, exact aggregate counts, and at most 1,000 asset rows containing only
+the fields the list renders. It subscribes to that run before reading, ignores the
+global persistence topic, coalesces selected-run updates, and keeps the last good
+screen if a refresh fails.
+
+Window choices, event summaries, and complete asset-attempt data are three
+separate reads. Window choices load only after **Switch window** is opened and
+navigate to another persisted run ID. Events load only on the Events screen. An
+observed asset links to a separate keyed detail route; planned assets remain
+unlinked. No table, migration, projector, planner, scheduler, runner, heartbeat,
+retry, or cancellation contract changed.
+
+The old UI-only execution-group overview path was deleted. The separate public
+execution-group API and every projection writer remain in place and pass their
+existing tests.
+
+```mermaid
+flowchart LR
+    Run[Selected run ID] --> Flow[Lean header and assets]
+    Run -->|Open selector| Windows[Lean window choices]
+    Run -->|Open Events| Events[Lean event summaries]
+    Flow -->|Open observed asset| Detail[Separate asset detail]
+    Windows -->|Choose run ID| Run
+```
 
 ### Actual scope and complexity
 
-Pending implementation. This section will compare actual changed lines per slice
-with the approved complexity budget above.
+Git reports 1,861 production lines added and 4,496 deleted. Supporting tests,
+fixtures, and examples add 941 and delete 1,473. The complete implementation is
+therefore 3,167 lines smaller. The table is a manual hunk attribution because
+several files implement more than one slice; its totals exactly match Git.
+
+| Slice | Production added | Production deleted | Supporting added | Supporting deleted |
+| --- | ---: | ---: | ---: | ---: |
+| Exact-run Flow contract and PostgreSQL read | 767 | 100 | 300 | 150 |
+| Legacy broad-read removal | 80 | 3,687 | 0 | 900 |
+| Run page and coalesced refresh | 354 | 249 | 222 | 150 |
+| Lazy window switching | 220 | 80 | 100 | 80 |
+| Separate asset detail route | 230 | 300 | 126 | 193 |
+| Exact lazy event read | 160 | 80 | 39 | 0 |
+| Performance proof | 50 | 0 | 154 | 0 |
+| **Actual total** | **1,861** | **4,496** | **941** | **1,473** |
+
+The exact-read addition is 17 lines above its estimate, far below the record's
+material-variance threshold. Legacy deletion is 1,387 lines above its estimate:
+source inspection showed that replacing the 1,300-line LiveView and deleting the
+505-line UI Flow converter was simpler than retaining branches from the broad
+execution-group shape. This is deletion of replaced UI code, not added scope.
+Supporting additions are lower than estimated because focused public-shape tests
+replaced large converter fixtures.
 
 ## Deviations from the approved plan
 
@@ -348,6 +393,13 @@ hide inside the new feature's size. After an independent reviewer found the
 first amendment too open-ended, the user asked to proceed without another plan
 review; the implementation scope was narrowed to the exact inventory above.
 
+The implementation itself has no product-scope deviation. PostgreSQL tests run
+inside SQL Sandbox's existing outer transaction, whose isolation cannot be
+changed after fixture setup. Normal request pools set `REPEATABLE READ, READ ONLY`
+before the first exact-run statement; sandbox tests retain their atomic outer
+transaction. This is a test-environment accommodation, not a production contract
+change.
+
 ## Decision log
 
 - 2026-08-23: Keep orchestration semantics unchanged, but remove the superseded
@@ -356,7 +408,37 @@ review; the implementation scope was narrowed to the exact inventory above.
 
 ## Verification evidence
 
-Pending implementation.
+- `mix compile --warnings-as-errors` passes in development and test environments.
+- `favn_orchestrator` fast suite: 695 passed, including 6 doctests.
+- `favn_view` fast suite: 540 passed, including 104 doctests; one unrelated
+  pre-existing excluded test remains excluded.
+- PostgreSQL core authority suite: 127 passed.
+- The umbrella fast command reaches every app, but cannot be green on this
+  Windows host: two unchanged `FavnStoragePostgres.ReleaseCLITest` cases invoke
+  a Windows `mix.bat` through POSIX `sh`, which exits with status 1 before the
+  release code runs. The affected test file has no branch diff. All tests owned
+  by this change pass in the app-scoped suites below.
+- Focused public-model tests cover 0, 90, 1,000, and 1,001 assets, deterministic
+  node identity, lean rows, queued submissions, subscription-before-read,
+  disconnected mounts, notification coalescing, refresh failure, lazy windows,
+  lazy events, and separate asset-detail states.
+- The slow PostgreSQL Flow qualification creates two sibling runs with 1,001
+  planned assets each. The selected read returns 1,000 rows and exact total 1,001,
+  never returns the sibling run, uses at most seven storage statements, stays
+  below 1 MiB, and uses the run-plan key index. Twenty concurrent viewers finish
+  within two seconds while probe and database queue p95 remain below 100 ms and
+  statement p95 remains below 50 ms.
+- Keyed asset detail is tested with the same run ID and asset-step ID in another
+  workspace, and with the same asset-step ID in another run.
+- Repository inventory confirms the old activity facade, overview query/result/
+  normalizer, converter, drawer, window list, and dedicated tests are gone. The
+  shared execution-group reads and projection writers remain.
+- The restarted umbrella server serves this branch on port 4175. Design-system
+  audits for the window selector pass with zero contrast, target-size, clipping,
+  or render failures at 390, 768, and 1,440 pixels in dark mode and at 1,440
+  pixels in light mode. The separate asset-detail page passes at 390 dark and
+  1,440 light.
+- No migration or new persistence table was added.
 
 ## Final review
 

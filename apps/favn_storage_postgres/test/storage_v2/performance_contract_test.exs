@@ -22,7 +22,9 @@ defmodule FavnStoragePostgres.StorageV2.PerformanceContractTest do
   alias FavnOrchestrator.Persistence.Queries.PageTargetRuns
   alias FavnOrchestrator.Persistence.Queries.PageRuns
   alias FavnOrchestrator.Persistence.Queries.GetRun
+  alias FavnOrchestrator.Persistence.Queries.GetRunFlow
   alias FavnOrchestrator.Persistence.WorkspaceContext
+  alias FavnOrchestrator.OperatorRunView
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.TargetStatus
   alias FavnStoragePostgres.Backfills.Store, as: BackfillStore
@@ -200,6 +202,74 @@ defmodule FavnStoragePostgres.StorageV2.PerformanceContractTest do
       )
 
     assert "runs_group_children_idx" in index_names(plan)
+  end
+
+  test "exact run Flow caps a 1,001-asset plan without reading sibling runs", fixture do
+    run = create_run!(fixture)
+    sibling = create_child_target_run!(fixture, run)
+    insert_flow_plan!(fixture, run, 1_001)
+    insert_flow_plan!(fixture, sibling, 1_001)
+
+    {result, queries} =
+      capture_queries(fn ->
+        OperatorReadStore.get_run_flow(%GetRunFlow{
+          workspace_context: fixture.workspace_context,
+          run_id: run.id,
+          limit: 1_000
+        })
+      end)
+
+    assert {:ok, snapshot} = result
+    assert length(snapshot.planned) == 1_000
+    assert snapshot.observed == []
+    assert snapshot.header.counts.total == 1_001
+    assert snapshot.overflow?
+    assert Enum.all?(snapshot.planned, &(&1.run_id == run.id))
+    assert length(queries) <= 7
+
+    public_flow = OperatorRunView.from_snapshot(snapshot)
+    assert length(public_flow.assets) == 1_000
+    assert public_flow.overflow?
+    assert :erlang.external_size(public_flow) < 1_048_576
+
+    planned_query = query_containing!(queries, "jsonb_array_elements")
+
+    {:ok, plan} =
+      Repo.transaction(fn ->
+        SQL.query!(Repo, "SET LOCAL enable_seqscan = off", [])
+        explain_captured(planned_query)
+      end)
+
+    assert Enum.any?(index_names(plan), &String.contains?(&1, "run_plans"))
+
+    {elapsed_ms, {concurrent_results, probe_ms}, query_metrics} =
+      capture_query_metrics(fn ->
+        tasks =
+          Enum.map(1..20, fn _viewer ->
+            Task.async(fn ->
+              with {:ok, selected_snapshot} <-
+                     OperatorReadStore.get_run_flow(%GetRunFlow{
+                       workspace_context: fixture.workspace_context,
+                       run_id: run.id,
+                       limit: 1_000
+                     }) do
+                {:ok, OperatorRunView.from_snapshot(selected_snapshot)}
+              end
+            end)
+          end)
+
+        probe_ms =
+          Enum.map(1..20, fn _probe -> timed_ms(fn -> SQL.query!(Repo, "SELECT 1") end) end)
+
+        results = Enum.map(tasks, &Task.await(&1, 2_000))
+        {results, probe_ms}
+      end)
+
+    assert Enum.all?(concurrent_results, &match?({:ok, %{overflow?: true}}, &1))
+    assert elapsed_ms < 2_000
+    assert percentile(probe_ms, 95) < 100
+    assert percentile(Enum.map(query_metrics, & &1.query_ms), 95) < 50
+    assert percentile(Enum.map(query_metrics, & &1.queue_ms), 95) < 100
   end
 
   test "logical target history pages child-only groups by root submission order", fixture do
@@ -695,6 +765,40 @@ defmodule FavnStoragePostgres.StorageV2.PerformanceContractTest do
     )
   end
 
+  defp insert_flow_plan!(fixture, run, count) do
+    SQL.query!(
+      Repo,
+      """
+      INSERT INTO favn_control.run_plans
+        (workspace_id, run_id, manifest_version_id, plan_version, plan_hash, plan, inserted_at)
+      SELECT $1, $2, $3, 1, decode(repeat('00', 32), 'hex'),
+             jsonb_build_object(
+               'nodes',
+               jsonb_agg(
+                 jsonb_build_object(
+                   'node_key', jsonb_build_object(
+                     'ref', jsonb_build_object(
+                       'module', 'Elixir.Performance.Asset' || lpad(series::text, 4, '0'),
+                       'name', 'asset'
+                     ),
+                     'identity', NULL
+                   ),
+                   'ref', jsonb_build_object(
+                     'module', 'Elixir.Performance.Asset' || lpad(series::text, 4, '0'),
+                     'name', 'asset'
+                   ),
+                   'window', NULL
+                 )
+                 ORDER BY series
+               )
+             ),
+             clock_timestamp()
+      FROM generate_series(1, $4) AS series
+      """,
+      [fixture.workspace_id, run.id, fixture.version.manifest_version_id, count]
+    )
+  end
+
   defp insert_status_history_runs!(fixture, root, count) do
     prefix = "status-history-#{random_id()}-"
 
@@ -836,6 +940,56 @@ defmodule FavnStoragePostgres.StorageV2.PerformanceContractTest do
     after
       :telemetry.detach(handler_id)
     end
+  end
+
+  defp capture_query_metrics(function) do
+    handler_id = {__MODULE__, self(), make_ref()}
+
+    :ok =
+      :telemetry.attach(
+        handler_id,
+        [:favn_storage_postgres, :repo, :query],
+        fn _event, measurements, _metadata, pid ->
+          send(pid, {
+            :captured_query_metric,
+            duration_ms(Map.get(measurements, :query_time, 0)),
+            duration_ms(Map.get(measurements, :queue_time, 0))
+          })
+        end,
+        self()
+      )
+
+    try do
+      started_at = System.monotonic_time()
+      result = function.()
+      elapsed_ms = duration_ms(System.monotonic_time() - started_at)
+      {elapsed_ms, result, collect_query_metrics([])}
+    after
+      :telemetry.detach(handler_id)
+    end
+  end
+
+  defp collect_query_metrics(metrics) do
+    receive do
+      {:captured_query_metric, query_ms, queue_ms} ->
+        collect_query_metrics([%{query_ms: query_ms, queue_ms: queue_ms} | metrics])
+    after
+      10 -> metrics
+    end
+  end
+
+  defp timed_ms(function) do
+    started_at = System.monotonic_time()
+    function.()
+    duration_ms(System.monotonic_time() - started_at)
+  end
+
+  defp duration_ms(native_time),
+    do: System.convert_time_unit(native_time, :native, :microsecond) / 1_000
+
+  defp percentile(values, percentile) do
+    index = max(ceil(length(values) * percentile / 100) - 1, 0)
+    values |> Enum.sort() |> Enum.at(index)
   end
 
   defp collect_captured_queries(queries) do

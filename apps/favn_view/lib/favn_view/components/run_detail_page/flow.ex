@@ -1,204 +1,123 @@
 defmodule FavnView.Components.RunDetailPage.Flow do
   @moduledoc """
-  The run as work flowing through assets over time.
+  The bounded asset list for one exact run.
 
-  One lane per asset, lanes grouped by execution stage, every lane sharing one
-  time axis. Stage order is dependency order, so a failure in an early stage sits
-  directly above the empty lanes it blocked — the question an operator asks
-  straight after "what failed?".
-
-  The axis always fits the run. There is no zoom and no horizontal scroll: a
-  chart wider than the viewport asks the operator to pan a canvas to answer a
-  question the detail panel answers exactly. Bars keep a minimum width so a
-  hundred-millisecond attempt stays visible and clickable.
+  Rows intentionally contain only the name, state, start, and end values shown
+  here. Observed rows link to their separate detail route; planned rows are
+  inert because an attempt does not exist yet.
   """
 
   use FavnView, :html
 
-  alias FavnView.UI.Tokens
-
-  attr :flow, :map, required: true, doc: "see `FavnView.RunFlow.build/2`"
-  attr :selected_attempt_id, :string, default: nil
-  attr :class, :any, default: nil
+  attr :assets, :list, required: true
 
   def flow(assigns) do
     ~H"""
-    <section class={["min-w-0", @class]} data-testid="run-flow">
+    <section data-testid="run-flow">
       <.empty_state
-        :if={@flow.stages == []}
+        :if={@assets == []}
         icon="hero-square-3-stack-3d"
         title="No asset work yet"
-        description="This run has been accepted. Lanes appear as the runner reports each asset."
+        description="Assets appear when the persisted run plan is available."
       />
-      <div :if={@flow.stages != []} class="favn-surface-panel overflow-hidden rounded-box">
-        <.axis axis={@flow.axis} />
-        <div :for={stage <- @flow.stages} data-testid="flow-stage" data-stage={stage.id}>
-          <div class="flex items-baseline gap-2 border-b border-base-content/10 bg-base-content/[0.03] px-3 py-1.5">
-            <span class="text-sm font-medium">{stage.label}</span>
-            <span class="text-sm favn-text-subtle">{stage.hint}</span>
-          </div>
 
-          <.lane
-            :for={lane <- stage.lanes}
-            id={"flow-lane-#{stage.id}-#{lane.id}"}
-            lane={lane}
-            now_offset={@flow.axis.now_offset}
-            selected_attempt_id={@selected_attempt_id}
-          />
-        </div>
-      </div>
+      <.panel :if={@assets != []} padding={:none}>
+        <:header title="Assets" subtitle="Only data shown in this list is loaded." />
+        <:actions>
+          <.count_badge count={length(@assets)} label="assets" />
+        </:actions>
+
+        <.data_table
+          id="run-assets"
+          rows={@assets}
+          row_testid="run-asset-row"
+          desktop_only?
+        >
+          <:col :let={asset} label="Asset">
+            <.link
+              :if={asset.detail?}
+              navigate={~p"/runs/#{asset.run_id}/assets/#{asset.id}"}
+              class="font-medium link link-hover"
+            >
+              {asset.name}
+            </.link>
+            <span :if={!asset.detail?} class="font-medium">{asset.name}</span>
+            <.mono value={asset.asset_ref} truncate class="mt-0.5 text-sm favn-text-subtle" />
+          </:col>
+          <:col :let={asset} label="State" class="w-32">
+            <.status_badge
+              tone={status_tone(asset.state)}
+              label={status_label(asset.state)}
+              size={:sm}
+            />
+          </:col>
+          <:col :let={asset} label="Started" class="w-44 favn-text-subtle">
+            {asset.started_at || "-"}
+          </:col>
+          <:col :let={asset} label="Finished" class="w-44 favn-text-subtle">
+            {asset.finished_at || "-"}
+          </:col>
+        </.data_table>
+
+        <.stack gap={:sm} class="p-3 lg:hidden" data-testid="run-asset-card-list">
+          <.asset_card :for={asset <- @assets} asset={asset} />
+        </.stack>
+      </.panel>
     </section>
     """
   end
 
-  attr :axis, :map, required: true
+  attr :asset, :map, required: true
 
-  defp axis(assigns) do
+  defp asset_card(%{asset: %{detail?: true}} = assigns) do
     ~H"""
-    <div class="grid grid-cols-[minmax(9rem,14rem)_minmax(0,1fr)] border-b border-base-content/10 text-sm favn-text-subtle">
-      <div class="border-r border-base-content/10 px-3 py-1.5">Asset</div>
-
-      <div class="relative h-7">
-        <span
-          :for={tick <- @axis.ticks}
-          class={tick_class(tick.align)}
-          style={"left: #{tick.offset}%"}
-        >
-          {tick.label}
-        </span>
-      </div>
-    </div>
+    <.list_card
+      navigate={~p"/runs/#{@asset.run_id}/assets/#{@asset.id}"}
+      data-testid="run-asset-card"
+    >
+      <.asset_card_content asset={@asset} />
+    </.list_card>
     """
   end
 
-  attr :id, :string, required: true
-  attr :lane, :map, required: true
-  attr :now_offset, :any, required: true
-  attr :selected_attempt_id, :string, required: true
-
-  defp lane(assigns) do
+  defp asset_card(assigns) do
     ~H"""
-    <div
-      id={@id}
-      class="grid grid-cols-[minmax(9rem,14rem)_minmax(0,1fr)] border-b border-base-content/10 last:border-b-0"
-      data-testid="flow-lane"
-      data-asset-key={@lane.key}
-      data-status={@lane.raw_status}
-    >
-      <div class="min-w-0 border-r border-base-content/10 px-3 py-2">
-        <div class="flex min-w-0 items-center gap-1.5">
-          <.status_dot tone={@lane.tone} label={@lane.status} />
-          <p class="truncate text-sm font-medium" title={@lane.key}>{@lane.name}</p>
-        </div>
-
-        <p class="mt-0.5 truncate text-sm favn-text-subtle">{@lane.detail}</p>
-      </div>
-
-      <div class="relative py-2 pr-3" style={"min-height: #{lane_height(@lane.tracks)}rem"}>
-        <span
-          :if={!is_nil(@now_offset)}
-          class="pointer-events-none absolute inset-y-0 z-0 w-px bg-info/50 favn-flow-advancing"
-          style={"left: #{@now_offset}%"}
-          aria-hidden="true"
-        />
-        <p
-          :if={@lane.bars == []}
-          class="px-3 py-1 text-sm favn-text-subtle"
-          data-testid="flow-lane-empty"
-        >
-          {@lane.empty_label}
-        </p>
-
-        <button
-          :for={bar <- @lane.bars}
-          id={"flow-bar-#{@id}-#{bar.id}"}
-          type="button"
-          phx-click={bar.attempt_id && "select_attempt"}
-          phx-value-attempt-id={bar.attempt_id}
-          disabled={is_nil(bar.attempt_id)}
-          class={[
-            "absolute z-10 flex h-6 min-w-6 items-center justify-center rounded-full",
-            "text-[0.7rem] leading-none disabled:cursor-default",
-            "hover:brightness-125 focus-visible:outline focus-visible:outline-2",
-            !bar.marker? && ["overflow-hidden border px-1.5", bar_class(bar.tone)],
-            bar.marker? && "border-0 bg-transparent p-0",
-            is_nil(@now_offset) && "transition",
-            !is_nil(@now_offset) && "favn-flow-advancing",
-            bar.running? && "favn-flow-bar-running",
-            bar.attempt_id == @selected_attempt_id &&
-              "ring-2 ring-primary ring-offset-1 ring-offset-base-100"
-          ]}
-          style={bar_style(bar)}
-          title={bar.title}
-          data-testid="flow-bar"
-          data-visual={if(bar.marker?, do: "marker", else: "duration")}
-          data-tone={bar.tone}
-          data-track={bar.track}
-        >
-          <span
-            :if={bar.marker?}
-            class={[
-              "size-2 rounded-full ring-1 ring-base-content/20",
-              Tokens.fill_class(bar.tone)
-            ]}
-            aria-hidden="true"
-          />
-          <span :if={bar.label} class="truncate">{bar.label}</span>
-        </button>
-      </div>
-    </div>
-
-    <div
-      :if={@lane.error}
-      class="grid grid-cols-[minmax(9rem,14rem)_minmax(0,1fr)] border-b border-base-content/10 bg-error/[0.07]"
-      data-testid="flow-lane-error"
-    >
-      <div class="border-r border-base-content/10" />
-      <div class="min-w-0 px-3 py-2">
-        <p class="text-sm text-error">{@lane.error.summary}</p>
-
-        <button
-          :if={@lane.error.attempt_id}
-          type="button"
-          phx-click="select_attempt"
-          phx-value-attempt-id={@lane.error.attempt_id}
-          class="mt-1 text-sm font-medium text-error underline-offset-2 hover:underline"
-        >
-          Open failed attempt
-        </button>
-      </div>
-    </div>
+    <.list_card data-testid="run-asset-card">
+      <.asset_card_content asset={@asset} />
+    </.list_card>
     """
   end
 
-  # Bars are 1.5rem tall on a 2rem pitch: 24px is the smallest target the design
-  # system's audit accepts, and a bar can be as narrow as its minimum width, so
-  # the height is what has to carry the target size. Two concurrent windows for
-  # one asset then read as two rows rather than one bar with a shadow.
-  defp bar_top(track), do: 0.5 + track * 2.0
-  defp lane_height(tracks), do: 1.0 + tracks * 2.0
+  attr :asset, :map, required: true
 
-  defp bar_style(%{marker?: true} = bar),
-    do: "left: #{bar.left}%; top: #{bar_top(bar.track)}rem"
-
-  defp bar_style(bar),
-    do: "left: #{bar.left}%; width: #{bar.width}%; top: #{bar_top(bar.track)}rem"
-
-  defp bar_class(tone) do
-    tone = Tokens.tone(tone)
-
-    [
-      Tokens.border_class(tone),
-      Tokens.surface_class(tone),
-      Tokens.text_class(tone)
-    ]
+  defp asset_card_content(assigns) do
+    ~H"""
+    <div class="flex items-start justify-between gap-3">
+      <div class="min-w-0">
+        <.section_title>{@asset.name}</.section_title>
+        <.mono value={@asset.asset_ref} truncate class="mt-1 text-sm favn-text-subtle" />
+      </div>
+      <.status_badge
+        tone={status_tone(@asset.state)}
+        label={status_label(@asset.state)}
+        size={:sm}
+      />
+    </div>
+    <.inline gap={:sm} class="mt-2 text-sm favn-text-subtle">
+      <span>Started {@asset.started_at || "-"}</span>
+      <span>Finished {@asset.finished_at || "-"}</span>
+    </.inline>
+    """
   end
 
-  defp tick_class(:start), do: "absolute top-1/2 left-0 -translate-y-1/2 whitespace-nowrap pl-3"
+  defp status_tone(status) when status in [:ok, :succeeded, :skipped_fresh], do: :success
+  defp status_tone(status) when status in [:error, :failed, :timed_out, :blocked], do: :error
+  defp status_tone(status) when status in [:running, :retrying], do: :info
+  defp status_tone(status) when status in [:queued, :planned, :pending], do: :warning
+  defp status_tone(_status), do: :neutral
 
-  defp tick_class(:end),
-    do: "absolute top-1/2 -translate-x-full -translate-y-1/2 whitespace-nowrap pr-3"
+  defp status_label(:skipped_fresh), do: "Skipped"
 
-  defp tick_class(_align),
-    do: "absolute top-1/2 -translate-x-1/2 -translate-y-1/2 whitespace-nowrap"
+  defp status_label(status),
+    do: status |> to_string() |> String.replace("_", " ") |> String.capitalize()
 end

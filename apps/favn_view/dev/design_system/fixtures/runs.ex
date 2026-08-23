@@ -18,7 +18,7 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.Runs do
   def nav_items, do: FavnView.Components.AssetCataloguePage.nav_items(:runs)
 
   @doc """
-  A two-stage backfill over two windows.
+  One persisted window run from a larger backfill.
 
   `status` picks the shape: `:running` leaves the last stage in flight,
   `:partial` fails one asset, `:ok` finishes everything.
@@ -30,26 +30,12 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.Runs do
     run(%{
       id: "run_backfill_8f2c9d1",
       title: "Backfill run",
-      subtitle: "Sales warehouse · 2 windows · Feb 2026 – Mar 2026",
+      subtitle: "Sales warehouse · Feb 2026",
       status: status,
       attempts: attempts,
-      total_windows: 2,
-      completed_windows: if(status == :running, do: 1, else: 2),
-      failed_windows: 0,
-      child_runs: [
-        child_run("run_backfill_win_2026_02", "Feb 2026", :ok, 3, 0, 0, 0, 0, 0),
-        child_run(
-          "run_backfill_win_2026_03",
-          "Mar 2026",
-          child_status(status),
-          child_succeeded(status),
-          1,
-          child_failed(status),
-          child_running(status),
-          0,
-          0
-        )
-      ],
+      total_windows: 1,
+      completed_windows: if(status == :running, do: 0, else: 1),
+      failed_windows: if(status == :partial, do: 1, else: 0),
       events: events(status)
     })
   end
@@ -62,23 +48,17 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.Runs do
         id: "orders-2026-07-23",
         asset: "crm.orders",
         name: "Orders",
-        stage: 1,
         status: :ok,
-        window: "Jul 23",
         offset_seconds: 0,
-        duration_seconds: 42,
-        rows: 18_402
+        duration_seconds: 42
       }),
       attempt(%{
         id: "daily_revenue-2026-07-23",
         asset: "crm.daily_revenue",
         name: "Daily revenue",
-        stage: 2,
         status: :ok,
-        window: "Jul 23",
         offset_seconds: 45,
-        duration_seconds: 12,
-        rows: 1_204
+        duration_seconds: 12
       })
     ]
 
@@ -91,7 +71,6 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.Runs do
       total_windows: 1,
       completed_windows: 1,
       failed_windows: 0,
-      child_runs: [],
       events: events(:ok)
     })
   end
@@ -107,12 +86,9 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.Runs do
           id: "#{asset}-full-refresh",
           asset: "crm.#{asset}",
           name: String.capitalize(String.replace(asset, "_", " ")),
-          stage: 1,
           status: if(index == 3, do: :running, else: :ok),
-          window: nil,
           offset_seconds: index * 20,
-          duration_seconds: if(index == 3, do: nil, else: 18),
-          rows: 4_000 + index * 311
+          duration_seconds: if(index == 3, do: nil, else: 18)
         })
       end)
 
@@ -122,10 +98,9 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.Runs do
       subtitle: "Sales warehouse · No window",
       status: :running,
       attempts: attempts,
-      total_windows: 1,
+      total_windows: 0,
       completed_windows: 0,
       failed_windows: 0,
-      child_runs: [],
       events: events(:running)
     })
   end
@@ -139,23 +114,10 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.Runs do
       subtitle: "Sales warehouse · Feb 2026",
       status: :error,
       attempts: [],
-      total_windows: 2,
-      completed_windows: 2,
-      failed_windows: 2,
-      child_runs: [],
-      events: events(:error),
-      backfill_failures: [
-        %{
-          window_label: "Feb 2026",
-          error_summary: "No runner accepted the pool \"warehouse_large\"",
-          child_run_id: "run_backfill_win_2026_02"
-        },
-        %{
-          window_label: "Mar 2026",
-          error_summary: "No runner accepted the pool \"warehouse_large\"",
-          child_run_id: "run_backfill_win_2026_03"
-        }
-      ]
+      total_windows: 1,
+      completed_windows: 1,
+      failed_windows: 1,
+      events: events(:error)
     })
   end
 
@@ -215,42 +177,27 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.Runs do
       raw_status: status,
       status: status_label(status),
       status_tone: tone(status),
-      short_id: Map.fetch!(overrides, :id),
-      target: "Sales warehouse",
       trigger: "Schedule",
       window: Map.get(overrides, :subtitle),
       started_at: "Jul 23, 2026 10:00 UTC",
-      finished_at: if(status == :running, do: "-", else: "Jul 23, 2026 10:02 UTC"),
-      duration: "2m 14s",
       elapsed_duration: "2m 14s",
-      manifest_version_id: "mv_35f422a2964c16946f340eea20c5a414",
       cancellable?: status == :running,
       cancel_label: "Cancel run",
       retry_remaining?: status in [:error, :partial],
       retry_remaining_label: "Retry 1 remaining asset",
       back_asset_href: nil,
       total_asset_attempts: length(attempts),
-      completed_asset_attempts: count_status(attempts, [:ok, :error, :skipped_fresh]),
       succeeded_asset_attempts: count_status(attempts, [:ok]),
       skipped_asset_attempts: count_status(attempts, [:skipped_fresh]),
       failed_asset_attempts: count_status(attempts, [:error]),
       running_asset_attempts: count_status(attempts, [:running]),
       queued_asset_attempts: count_status(attempts, [:pending, :queued]),
       planned_asset_attempts: count_status(attempts, [:planned]),
-      progress_label: "#{count_status(attempts, [:ok])} / #{length(attempts)}",
-      windows: [],
-      requested_windows: [],
-      failures: Enum.filter(attempts, &(&1.status_tone == :error)),
-      backfill_failures: Map.get(overrides, :backfill_failures, []),
-      backfill_failure_count: length(Map.get(overrides, :backfill_failures, [])),
-      latest_event_summary: "Run #{status_label(status)}",
-      waiting_activity?: false,
-      current_activity: nil,
+      assets: Enum.map(attempts, &asset_row/1),
       asset_attempts_truncated?: false,
-      requested_windows_truncated?: false,
-      child_runs_truncated?: false
+      events: Map.get(overrides, :events, [])
     }
-    |> Map.merge(Map.take(overrides, [:id, :title, :subtitle, :attempts, :child_runs, :events]))
+    |> Map.merge(Map.take(overrides, [:id, :title, :subtitle]))
     |> Map.merge(Map.take(overrides, [:total_windows, :completed_windows, :failed_windows]))
   end
 
@@ -260,71 +207,36 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.Runs do
         id: "orders-2026-02",
         asset: "crm.orders",
         name: "Orders",
-        stage: 1,
         status: :ok,
-        window: "Feb 2026",
         offset_seconds: 0,
-        duration_seconds: 34,
-        rows: 82_101
-      }),
-      attempt(%{
-        id: "orders-2026-03",
-        asset: "crm.orders",
-        name: "Orders",
-        stage: 1,
-        status: :skipped_fresh,
-        window: "Mar 2026",
-        offset_seconds: 36,
-        duration_seconds: 0,
-        rows: nil
+        duration_seconds: 34
       }),
       attempt(%{
         id: "engagement-2026-02",
         asset: "crm.engagement",
         name: "Engagement",
-        stage: 1,
         status: :ok,
-        window: "Feb 2026",
         offset_seconds: 2,
-        duration_seconds: 51,
-        rows: 12_900
+        duration_seconds: 51
       }),
       attempt(%{
         id: "revenue_metrics-2026-02",
         asset: "crm.revenue_metrics",
         name: "Revenue metrics",
-        stage: 2,
         status: revenue_status(status),
-        window: "Feb 2026",
         offset_seconds: 60,
-        duration_seconds: revenue_duration(status),
-        rows: if(revenue_status(status) == :ok, do: 1_204, else: nil),
-        error: revenue_error(status)
-      }),
-      attempt(%{
-        id: "revenue_metrics-2026-03",
-        asset: "crm.revenue_metrics",
-        name: "Revenue metrics",
-        stage: 2,
-        status: if(status == :running, do: :running, else: :ok),
-        window: "Mar 2026",
-        offset_seconds: 66,
-        duration_seconds: if(status == :running, do: nil, else: 22),
-        rows: 1_311
+        duration_seconds: revenue_duration(status)
       })
     ]
   end
 
+  defp revenue_status(:running), do: :running
   defp revenue_status(:partial), do: :error
   defp revenue_status(_status), do: :ok
 
+  defp revenue_duration(:running), do: nil
   defp revenue_duration(:partial), do: 8
   defp revenue_duration(_status), do: 19
-
-  defp revenue_error(:partial),
-    do: "Contract check \"revenue_not_negative\" failed on 3 rows; the write was rolled back"
-
-  defp revenue_error(_status), do: nil
 
   defp attempt(spec) do
     started = DateTime.add(@anchor, spec.offset_seconds, :second)
@@ -336,119 +248,21 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.Runs do
       end
 
     %{
-      id: spec.id,
       asset_step_id: spec.id,
-      asset_key: spec.asset,
       asset_ref: spec.asset,
-      short_asset_name: spec.name,
-      stage: spec.stage,
-      stage_label: "Stage #{spec.stage}",
-      attempt_number: 1,
-      root_execution_group_id: "run_backfill_8f2c9d1",
-      child_run_id: nil,
+      name: spec.name,
       run_id: "run_backfill_8f2c9d1",
-      started_at_raw: started,
-      finished_at_raw: finished,
       started_at: FavnView.Time.format(started, "%b %-d, %Y %H:%M %Z", "Etc/UTC"),
       finished_at:
         (finished && FavnView.Time.format(finished, "%b %-d, %Y %H:%M %Z", "Etc/UTC")) ||
           "-",
-      duration: duration_label(spec.duration_seconds),
-      duration_ms: spec.duration_seconds && spec.duration_seconds * 1_000,
-      status: status_label(spec.status),
-      raw_status: spec.status,
-      status_tone: tone(spec.status),
-      window_label: spec.window || "No window",
-      window_id: spec.window || "none",
-      error_summary: Map.get(spec, :error),
-      output_metadata: output_metadata(spec),
-      logs_href: "/runs/run_backfill_8f2c9d1/assets/#{spec.id}/logs"
+      state: spec.status
     }
   end
-
-  defp output_metadata(%{rows: nil}), do: %{}
-
-  defp output_metadata(spec) do
-    %{
-      "rows_written" => spec.rows,
-      "relation" => "warehouse.#{String.replace(spec.asset, ".", "_")}",
-      "write_outcome" => "committed",
-      "quality_status" => if(Map.get(spec, :error), do: "failed", else: "passed"),
-      "partition_month" => spec.window,
-      "check_results" => [
-        %{
-          "name" => "row_count_positive",
-          "origin" => "contract",
-          "outcome" => "passed",
-          "phase" => "post_write",
-          "duration_ms" => 4
-        }
-      ]
-    }
-  end
-
-  defp child_run(
-         id,
-         window_label,
-         status,
-         succeeded,
-         skipped,
-         failed,
-         running,
-         queued,
-         planned
-       ) do
-    total = succeeded + skipped + failed + running + queued + planned
-
-    %{
-      id: id,
-      window_label: window_label,
-      status: status_label(status),
-      raw_status: status,
-      status_tone: tone(status),
-      assets: "#{total} assets",
-      outcome:
-        [
-          outcome_part(succeeded, "ran"),
-          outcome_part(skipped, "already fresh"),
-          outcome_part(failed, "failed"),
-          outcome_part(running, "running"),
-          outcome_part(queued, "queued"),
-          outcome_part(planned, "planned")
-        ]
-        |> Enum.reject(&is_nil/1)
-        |> Enum.join(" · "),
-      duration: "1m 07s",
-      succeeded_count: succeeded,
-      skipped_count: skipped,
-      failed_count: failed,
-      running_count: running,
-      queued_count: queued,
-      planned_count: planned,
-      attempts: []
-    }
-  end
-
-  defp outcome_part(0, _label), do: nil
-  defp outcome_part(count, label), do: "#{count} #{label}"
-
-  defp child_status(:running), do: :running
-  defp child_status(:partial), do: :error
-  defp child_status(_status), do: :ok
-
-  defp child_succeeded(:running), do: 1
-  defp child_succeeded(:partial), do: 2
-  defp child_succeeded(_status), do: 3
-
-  defp child_failed(:partial), do: 1
-  defp child_failed(_status), do: 0
-
-  defp child_running(:running), do: 1
-  defp child_running(_status), do: 0
 
   defp events(status) do
     [
-      event(1, "Run accepted", "Backfill accepted for 2 windows", nil),
+      event(1, "Run accepted", "Window run accepted", nil),
       event(2, "Step submitted", "crm.orders submitted to pool default", "crm.orders"),
       event(3, "Step succeeded", "crm.orders wrote 82,101 rows", "crm.orders"),
       event(4, event_type(status), event_summary(status), "crm.revenue_metrics")
@@ -476,11 +290,20 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.Runs do
     }
   end
 
-  defp count_status(attempts, statuses), do: Enum.count(attempts, &(&1.raw_status in statuses))
+  defp count_status(attempts, statuses), do: Enum.count(attempts, &(&1.state in statuses))
 
-  defp duration_label(nil), do: "-"
-  defp duration_label(seconds) when seconds < 60, do: "#{seconds}s"
-  defp duration_label(seconds), do: "#{div(seconds, 60)}m #{rem(seconds, 60)}s"
+  defp asset_row(attempt) do
+    %{
+      id: attempt.asset_step_id,
+      run_id: attempt.run_id,
+      name: attempt.name,
+      asset_ref: attempt.asset_ref,
+      state: attempt.state,
+      started_at: attempt.started_at,
+      finished_at: attempt.finished_at,
+      detail?: true
+    }
+  end
 
   defp status_label(:ok), do: "Succeeded"
   defp status_label(:error), do: "Failed"

@@ -3,93 +3,77 @@ defmodule FavnView.RunDetailLive do
 
   use FavnView, :live_view
 
-  alias FavnView.Orchestrator
   alias FavnView.AssetRoute
   alias FavnView.Auth.Scope
+  alias FavnView.CommandAttempt
   alias FavnView.Components.AssetCataloguePage
   alias FavnView.Components.RunDetailPage
-  alias FavnView.CommandAttempt
   alias FavnView.LiveRefresh
   alias FavnView.LogsViewModel
   alias FavnView.OperatorErrorLabels
+  alias FavnView.Orchestrator
   alias FavnView.RunEventRefresh
-  alias FavnView.RunFlow
 
-  @refresh_interval_ms 1_500
-  @initial_load_retry_count 10
-  @coalesce_refresh_ms 100
-  @active_statuses [:pending, :running]
-  @valid_modes ~w(flow windows events)
-  @dialyzer {:no_unused, [retry_remaining_submitted_label: 2, retry_remaining_partial_label: 2]}
-  @dialyzer {:no_match, [handle_event: 3, back_asset_href: 2, retry_remaining_error_label: 1]}
-
-  # A live run's clock has to move on its own. Run events are the only thing that
-  # used to advance the axis, so a running bar sat still for however long the
-  # runner was quiet and then jumped — which reads as the UI lagging rather than
-  # as the asset taking a while. This re-projects the flow on a fixed tick with no
-  # facade call, and the bars interpolate between ticks in CSS, so the timeline
-  # advances smoothly whether or not anything is happening.
-  @flow_tick_ms 1_000
+  @fallback_refresh_ms 5_000
+  @coalesce_refresh_ms 1_000
+  @valid_modes ~w(flow events)
 
   @impl true
   def mount(%{"run_id" => run_id}, _session, socket) do
-    run =
-      operator_context(socket)
-      |> load_run(run_id, nil, :flow, socket.assigns.current_scope)
-      |> mark_initializing()
-
     socket =
-      assign(socket,
+      socket
+      |> assign(
         run_id: run_id,
-        run: run,
+        run: loading_run(run_id),
         active_mode: :flow,
-        selected_child_run_id: nil,
-        selected_attempt_id: nil,
+        windows: nil,
+        windows_loading?: false,
+        windows_error: nil,
         cancel_attempt: nil,
         retry_attempt: nil,
-        detail_load_attempts_remaining: initial_load_attempts(run),
         nav_items: AssetCataloguePage.nav_items(:runs)
       )
-      |> RunEventRefresh.init([:refresh_timer_ref, :fallback_poll_ref, :flow_tick_ref])
-      |> assign_flow()
-      |> sync_run_event_refresh()
-      |> maybe_schedule_fallback_poll()
+      |> RunEventRefresh.init([:refresh_timer_ref, :fallback_poll_ref])
+
+    socket =
+      if connected?(socket) do
+        socket
+        |> sync_run_subscription()
+        |> refresh_run()
+      else
+        socket
+      end
 
     {:ok, socket}
   end
 
   @impl true
+  def handle_params(params, _uri, socket) do
+    active_mode = active_mode_from_params(params)
+
+    socket =
+      if connected?(socket) and active_mode != socket.assigns.active_mode do
+        socket
+        |> assign(:active_mode, active_mode)
+        |> refresh_run()
+      else
+        assign(socket, :active_mode, active_mode)
+      end
+
+    {:noreply, socket}
+  end
+
+  @impl true
   def handle_info({:refresh_run, token}, socket) do
     case LiveRefresh.take(socket, :refresh_timer_ref, token) do
-      {:ok, socket} ->
-        {:noreply, refresh_run(socket)}
-
-      {:stale, socket} ->
-        {:noreply, socket}
+      {:ok, socket} -> {:noreply, refresh_run(socket)}
+      {:stale, socket} -> {:noreply, socket}
     end
   end
 
   def handle_info({:poll_run, token}, socket) do
     case LiveRefresh.take(socket, :fallback_poll_ref, token) do
-      {:ok, socket} ->
-        {:noreply, socket |> refresh_run() |> maybe_schedule_fallback_poll()}
-
-      {:stale, socket} ->
-        {:noreply, socket}
-    end
-  end
-
-  def handle_info(:refresh_run, socket) do
-    {:noreply, refresh_run(socket)}
-  end
-
-  def handle_info(:poll_run, socket) do
-    {:noreply, socket |> refresh_run() |> maybe_schedule_fallback_poll()}
-  end
-
-  def handle_info({:tick_flow, token}, socket) do
-    case LiveRefresh.take(socket, :flow_tick_ref, token) do
-      {:ok, socket} -> {:noreply, assign_flow(socket)}
+      {:ok, socket} -> {:noreply, refresh_run(socket)}
       {:stale, socket} -> {:noreply, socket}
     end
   end
@@ -98,81 +82,58 @@ defmodule FavnView.RunDetailLive do
     {:noreply, RunEventRefresh.handle_event(socket, event, run_event_refresh_opts(socket))}
   end
 
-  def handle_info(:favn_persistence_published, socket) do
-    {:noreply, RunEventRefresh.schedule_refresh(socket, run_event_refresh_opts(socket))}
-  end
-
-  defp refresh_run(socket) do
-    run =
-      load_run(
-        operator_context(socket),
-        socket.assigns.run_id,
-        socket.assigns.run[:back_asset_href],
-        socket.assigns.active_mode,
-        socket.assigns.current_scope
-      )
-
-    attempts_remaining = next_load_attempts(socket.assigns.detail_load_attempts_remaining, run)
-    run = Map.put(run, :initializing?, !run.found? and attempts_remaining > 0)
-    run = preserve_selected_attempt(socket.assigns.run, run, socket.assigns.selected_attempt_id)
-
-    socket
-    |> assign(:run, run)
-    |> assign(:detail_load_attempts_remaining, attempts_remaining)
-    |> assign_flow()
-    |> RunEventRefresh.mark_refreshed(run_event_sequences(run))
-    |> sync_run_event_refresh()
-    |> maybe_schedule_fallback_poll()
-  end
-
-  # The flow is geometry over the attempts and the clock. Recomputing it here
-  # rather than in `render/1` keeps it out of the diff when nothing moved, and
-  # lets the tick advance the axis without refetching the run. The header's
-  # elapsed duration shares the tick so both clocks read the same now.
-  defp assign_flow(%{assigns: %{run: %{found?: true} = run}} = socket) do
-    run = Map.put(run, :elapsed_duration, duration_or_elapsed(run_timing(run)))
-
-    socket
-    |> assign(:run, run)
-    |> assign(
-      :flow,
-      RunFlow.build(run.attempts, active?: run.active?, timezone: socket.assigns.current_scope)
-    )
-    |> maybe_schedule_flow_tick()
-  end
-
-  defp assign_flow(socket) do
-    socket
-    |> assign(:flow, nil)
-    |> maybe_schedule_flow_tick()
-  end
-
-  defp maybe_schedule_flow_tick(%{assigns: %{run: %{active?: true}}} = socket) do
-    if connected?(socket) do
-      LiveRefresh.schedule_once(socket, :flow_tick_ref, :tick_flow, @flow_tick_ms)
-    else
-      socket
-    end
-  end
-
-  defp maybe_schedule_flow_tick(socket), do: socket
+  # The run page deliberately does not subscribe to the global persistence topic.
+  def handle_info(:favn_persistence_published, socket), do: {:noreply, socket}
 
   @impl true
   def handle_event("set_mode", %{"mode" => mode}, socket) when mode in @valid_modes do
-    {:noreply, patch_run_state(socket, active_mode: String.to_existing_atom(mode))}
+    {:noreply, push_patch(socket, to: ~p"/runs/#{socket.assigns.run_id}?view=#{mode}")}
+  end
+
+  def handle_event("load_windows", _params, socket) do
+    socket = assign(socket, windows_loading?: true, windows_error: nil)
+
+    case list_run_windows(operator_context(socket), socket.assigns.run_id) do
+      {:ok, %{items: items, overflow?: overflow?}} ->
+        windows = Enum.map(items, &window_choice(&1, socket.assigns.current_scope))
+
+        windows_error =
+          if overflow?, do: "Only the newest 1,000 window runs are available in this selector."
+
+        {:noreply,
+         assign(socket,
+           windows: windows,
+           windows_loading?: false,
+           windows_error: windows_error
+         )}
+
+      {:error, _reason} ->
+        {:noreply,
+         assign(socket,
+           windows: nil,
+           windows_loading?: false,
+           windows_error: "Window runs could not be loaded. Try again."
+         )}
+    end
+  end
+
+  def handle_event("switch_window", %{"run_id" => run_id}, socket) do
+    allowed? = Enum.any?(socket.assigns.windows || [], &(&1.run_id == run_id))
+
+    if allowed? do
+      {:noreply, push_navigate(socket, to: ~p"/runs/#{run_id}")}
+    else
+      {:noreply, put_flash(socket, :error, "That window run is not available")}
+    end
   end
 
   def handle_event("cancel_run", params, socket) do
     case socket.assigns.run do
       %{cancellable?: true, cancel_run_id: run_id} when is_binary(run_id) ->
-        attempt =
-          CommandAttempt.next(socket.assigns.cancel_attempt, "run_cancel", run_id, params)
-
+        attempt = CommandAttempt.next(socket.assigns.cancel_attempt, "run_cancel", run_id, params)
         socket = assign(socket, :cancel_attempt, attempt)
 
-        case Orchestrator.cancel_operator_run(
-               actor_context(socket),
-               run_id,
+        case Orchestrator.cancel_operator_run(actor_context(socket), run_id,
                idempotency_key: attempt.key
              ) do
           :ok ->
@@ -189,7 +150,7 @@ defmodule FavnView.RunDetailLive do
             {:noreply,
              socket
              |> assign(:cancel_attempt, attempt)
-             |> put_flash(:error, cancel_error_label(reason))}
+             |> put_flash(:error, OperatorErrorLabels.run_cancel(reason))}
         end
 
       _run ->
@@ -220,15 +181,18 @@ defmodule FavnView.RunDetailLive do
              socket
              |> CommandAttempt.acknowledge(attempt)
              |> assign(:retry_attempt, nil)
-             |> put_flash(:info, retry_remaining_submitted_label(run_ids, asset_count))
+             |> put_flash(:info, retry_success_label(run_ids, asset_count))
              |> refresh_run()}
 
-          {:partial, %{run_ids: run_ids, reason: reason}} ->
+          {:partial, %{run_ids: run_ids}} ->
             {:noreply,
              socket
              |> CommandAttempt.acknowledge(attempt)
              |> assign(:retry_attempt, nil)
-             |> put_flash(:error, retry_remaining_partial_label(run_ids, reason))
+             |> put_flash(
+               :error,
+               "Submitted #{length(run_ids)} retry runs before a later retry failed"
+             )
              |> refresh_run()}
 
           {:error, reason} ->
@@ -237,20 +201,12 @@ defmodule FavnView.RunDetailLive do
             {:noreply,
              socket
              |> assign(:retry_attempt, attempt)
-             |> put_flash(:error, retry_remaining_error_label(reason))}
+             |> put_flash(:error, retry_error_label(reason))}
         end
 
       _run ->
         {:noreply, socket}
     end
-  end
-
-  def handle_event("select_attempt", %{"attempt-id" => attempt_id}, socket) do
-    {:noreply, patch_run_state(socket, selected_attempt_id: attempt_id)}
-  end
-
-  def handle_event("close_attempt", _params, socket) do
-    {:noreply, patch_run_state(socket, selected_attempt_id: nil)}
   end
 
   def handle_event("set_mode", _params, socket), do: {:noreply, socket}
@@ -265,88 +221,138 @@ defmodule FavnView.RunDetailLive do
       current_scope={@current_scope}
       operator_workspaces={@operator_workspaces}
       active_mode={@active_mode}
-      flow={@flow}
-      selected_child_run_id={@selected_child_run_id}
-      selected_attempt_id={@selected_attempt_id}
+      windows={@windows}
+      windows_loading?={@windows_loading?}
+      windows_error={@windows_error}
       flash={@flash}
     />
     """
   end
 
   @impl true
-  def handle_params(params, _uri, socket) do
-    active_mode = active_mode_from_params(params, socket.assigns.active_mode)
-
-    run =
-      if active_mode == socket.assigns.active_mode do
-        socket.assigns.run
-      else
-        load_run(
-          operator_context(socket),
-          socket.assigns.run_id,
-          socket.assigns.run[:back_asset_href],
-          active_mode,
-          socket.assigns.current_scope
-        )
-      end
-
-    run =
-      preserve_selected_attempt(socket.assigns.run, run, selected_attempt_id_from_params(params))
-
-    selected_child_run_id =
-      selected_child_run_id_from_params(params, run, socket.assigns.run_id)
-
-    selected_attempt_id = selected_attempt_id_from_params(params)
-
-    active_mode =
-      if selected_child_run_id && active_mode == :flow, do: :windows, else: active_mode
-
-    {:noreply,
-     socket
-     |> assign(
-       run: run,
-       active_mode: active_mode,
-       selected_child_run_id: selected_child_run_id,
-       selected_attempt_id: selected_attempt_id
-     )
-     |> assign_flow()}
-  end
-
-  @impl true
   def terminate(_reason, socket) do
     operator_context = operator_context(socket)
-    RunEventRefresh.unsubscribe_all(socket, &unsubscribe_run(operator_context, &1))
+    RunEventRefresh.unsubscribe_all(socket, &Orchestrator.unsubscribe_run(operator_context, &1))
     _ = Orchestrator.unsubscribe_run_wakeups(operator_context)
-
     :ok
   end
 
-  defp load_run(operator_context, run_id, existing_back_asset_href, active_mode, timezone) do
-    opts = [view: detail_view(active_mode), limit: 200]
-    opts = if active_mode == :events, do: Keyword.put(opts, :include, [:events]), else: opts
+  defp refresh_run(socket) do
+    run =
+      socket
+      |> load_run(socket.assigns.active_mode)
+      |> preserve_visible_run(socket.assigns.run)
 
-    case get_operator_run_activity(operator_context, run_id, opts) do
-      {:ok, %{kind: :run, detail: detail}} ->
-        detail_from_execution_group(
-          detail,
-          operator_context,
-          run_id,
-          existing_back_asset_href,
-          active_mode,
-          timezone
+    socket
+    |> assign(:run, run)
+    |> RunEventRefresh.mark_refreshed(run_event_sequences(run))
+    |> sync_run_subscription()
+    |> schedule_fallback()
+  end
+
+  defp preserve_visible_run(
+         %{found?: false, submission?: false, initializing?: false, error: error},
+         %{found?: true} = visible_run
+       ) do
+    Map.put(visible_run, :refresh_error, error)
+  end
+
+  defp preserve_visible_run(loaded_run, _previous_run), do: Map.delete(loaded_run, :refresh_error)
+
+  defp load_run(socket, :events) do
+    case get_run_events(operator_context(socket), socket.assigns.run_id) do
+      {:ok, %{kind: :run, header: header, events: events}} ->
+        run_from_header(
+          header,
+          socket,
+          Enum.map(events, &event_row(&1, socket.assigns.current_scope))
         )
 
       {:ok, %{kind: :submission, submission: submission}} ->
-        submission_from_public(submission, timezone)
+        submission_from_public(submission, socket.assigns.current_scope)
 
       {:error, reason} ->
-        %{
-          id: run_id,
-          found?: false,
-          not_found?: reason == :not_found,
-          error: error_label(reason)
-        }
+        error_run(socket.assigns.run_id, reason)
     end
+  end
+
+  defp load_run(socket, :flow) do
+    case get_run_flow(operator_context(socket), socket.assigns.run_id) do
+      {:ok, %{kind: :run, detail: flow}} ->
+        flow_from_public(flow, socket)
+
+      {:ok, %{kind: :submission, submission: submission}} ->
+        submission_from_public(submission, socket.assigns.current_scope)
+
+      {:error, reason} ->
+        error_run(socket.assigns.run_id, reason)
+    end
+  end
+
+  defp flow_from_public(%{header: header, assets: assets, overflow?: overflow?}, socket) do
+    run = run_from_header(header, socket, [])
+
+    assets =
+      Enum.map(assets, fn asset ->
+        asset
+        |> Map.from_struct()
+        |> Map.update!(:started_at, &timestamp_label(&1, socket.assigns.current_scope))
+        |> Map.update!(:finished_at, &timestamp_label(&1, socket.assigns.current_scope))
+      end)
+
+    %{run | assets: assets, asset_attempts_truncated?: overflow?}
+  end
+
+  defp run_from_header(header, socket, events) do
+    counts = header.counts
+    duration_ms = duration_ms(header.started_at, header.finished_at)
+
+    window_label =
+      window_label(header.window_start_at, header.window_end_at, socket.assigns.current_scope)
+
+    total_windows = if header.window_start_at, do: 1, else: 0
+    completed_windows = if total_windows == 1 and not header.active?, do: 1, else: 0
+    failed_windows = if total_windows == 1 and counts.failed > 0, do: 1, else: 0
+
+    %{
+      id: header.run_id,
+      found?: true,
+      submission?: false,
+      active?: header.active?,
+      raw_status: header.status,
+      status: LogsViewModel.status_label(header.status),
+      status_tone: LogsViewModel.status_tone(header.status),
+      cancellable?: header.cancellable?,
+      cancel_run_id: header.run_id,
+      cancel_label: "Cancel run",
+      retry_remaining?: header.retry_remaining?,
+      retry_remaining_label: retry_label(counts.failed),
+      title: if(header.trigger_type == :backfill, do: "Backfill run", else: "Run"),
+      subtitle: [header.target_label, window_label] |> Enum.reject(&is_nil/1) |> Enum.join(" · "),
+      target: header.target_label || "No target",
+      trigger: label(header.trigger_type),
+      window: window_label,
+      started_at: timestamp_label(header.started_at, socket.assigns.current_scope),
+      finished_at: timestamp_label(header.finished_at, socket.assigns.current_scope),
+      elapsed_duration: LogsViewModel.duration_ms_label(duration_ms),
+      total_windows: total_windows,
+      completed_windows: completed_windows,
+      failed_windows: failed_windows,
+      total_asset_attempts: counts.total,
+      completed_asset_attempts: counts.completed,
+      succeeded_asset_attempts: counts.succeeded,
+      skipped_asset_attempts: counts.skipped,
+      failed_asset_attempts: counts.failed,
+      running_asset_attempts: counts.running,
+      queued_asset_attempts: counts.queued,
+      planned_asset_attempts: counts.planned,
+      assets: [],
+      asset_attempts_truncated?: false,
+      events: events,
+      subscribed_run_ids: [header.run_id],
+      run_event_sequences: %{header.run_id => header.event_sequence},
+      back_asset_href: back_asset_href(header.target_id)
+    }
   end
 
   defp submission_from_public(submission, timezone) do
@@ -354,7 +360,6 @@ defmodule FavnView.RunDetailLive do
       id: submission.run_id,
       found?: false,
       submission?: true,
-      initializing?: false,
       active?: submission.active?,
       raw_status: submission.status,
       status: submission.status_label,
@@ -366,863 +371,156 @@ defmodule FavnView.RunDetailLive do
       updated_at: timestamp_label(submission.updated_at, timezone),
       terminal_at: timestamp_label(submission.terminal_at, timezone),
       failure: submission.failure,
-      subscribed_run_ids: []
+      subscribed_run_ids: [submission.run_id],
+      run_event_sequences: %{}
     }
   end
 
-  # The facade view values predate the flow, and `:overview`, `:timeline`, and
-  # `:failures` all resolve to the same read there. The flow needs that read.
-  defp detail_view(:flow), do: :overview
-  defp detail_view(active_mode), do: active_mode
-
-  defp detail_from_execution_group(
-         %{summary: summary, root_run: root_run} = detail,
-         operator_context,
-         run_id,
-         existing_back_asset_href,
-         active_mode,
-         timezone
-       ) do
-    attempts = Enum.map(Map.get(detail, :asset_attempts, []), &attempt_from_public(&1, timezone))
-    windows = Enum.map(Map.get(detail, :windows, []), &window_from_public(&1, timezone))
-
-    requested_windows =
-      detail
-      |> Map.get(:requested_windows, [])
-      |> Enum.map(&window_from_public(&1, timezone))
-      |> Enum.sort_by(&window_sort_key/1)
-
-    events = if active_mode == :events, do: Map.get(detail, :events, []), else: []
-
-    child_runs =
-      child_runs_from_public(
-        Map.get(detail, :child_runs, []),
-        attempts,
-        requested_windows,
-        timezone
-      )
-
-    cancel_target = cancel_target(summary, root_run, child_runs, run_id)
-
-    active? = active_group?(summary)
-    failures = Enum.filter(attempts, &(&1.status_tone == :error))
-
-    backfill_failures =
-      Enum.map(
-        Map.get(detail, :backfill_failures, []),
-        &backfill_failure_from_public(&1, timezone)
-      )
-
-    target = target_label(summary.target_assets)
-    status = group_status(summary)
-
-    effective_scope =
-      execution_scope_label(windows, Map.get(detail, :has_non_windowed_assets?, false))
-
-    requested_scope =
-      requested_scope_label(
-        requested_windows,
-        summary.total_windows,
-        Map.get(detail, :requested_windows_truncated?, false)
-      )
-
-    header_scope = requested_scope || effective_scope
-
-    context_scope =
-      context_scope_label(
-        requested_scope,
-        effective_scope,
-        Map.get(detail, :has_non_windowed_assets?, false)
-      )
-
+  defp loading_run(run_id) do
     %{
-      found?: true,
-      id: summary.id,
-      subscribed_run_id: root_run.id,
-      subscribed_run_ids: subscribed_run_ids(root_run, child_runs),
-      raw_status: status,
-      active?: active?,
-      cancellable?: !is_nil(cancel_target),
-      cancel_run_id: cancel_target && cancel_target.id,
-      cancel_label: cancel_target && cancel_target.label,
-      retry_remaining?: retry_remaining?(summary),
-      retry_remaining_label: retry_remaining_label(summary),
-      short_id: short_id(summary.id),
-      title: group_title(summary),
-      subtitle: subtitle([target, header_scope]),
-      status: LogsViewModel.status_label(status),
-      status_tone: LogsViewModel.status_tone(status),
-      target: target || "No target",
-      trigger: label(summary.trigger_type),
-      window: header_scope,
-      started_at: LogsViewModel.timestamp_label(summary.started_at, timezone),
-      finished_at: LogsViewModel.timestamp_label(summary.finished_at, timezone),
-      duration: LogsViewModel.duration_ms_label(summary.duration_ms),
-      duration_ms_raw: summary.duration_ms,
-      started_at_raw: summary.started_at,
-      elapsed_duration: duration_or_elapsed(summary),
-      manifest_version_id: root_run.manifest_version_id || "Unknown",
-      total_windows: summary.total_windows,
-      completed_windows: summary.completed_windows,
-      failed_windows: summary.failed_windows,
-      requested_window_counts:
-        Map.get(summary, :requested_window_counts, %{
-          total: summary.total_windows,
-          completed: summary.completed_windows,
-          failed: summary.failed_windows
-        }),
-      effective_window_count: Map.get(summary, :effective_window_count, length(windows)),
-      total_asset_attempts: summary.total_asset_attempts,
-      completed_asset_attempts: summary.completed_asset_attempts,
-      succeeded_asset_attempts:
-        Map.get(
-          summary,
-          :succeeded_asset_attempts,
-          max(
-            summary.completed_asset_attempts - summary.failed_asset_attempts -
-              Map.get(summary, :skipped_asset_attempts, 0),
-            0
-          )
-        ),
-      skipped_asset_attempts: Map.get(summary, :skipped_asset_attempts, 0),
-      failed_asset_attempts: summary.failed_asset_attempts,
-      running_asset_attempts: summary.running_asset_attempts,
-      queued_asset_attempts: summary.queued_asset_attempts,
-      planned_asset_attempts: Map.get(summary, :planned_asset_attempts, 0),
-      progress_label:
-        get_in(summary, [:progress, :label]) ||
-          progress_label(summary.completed_asset_attempts, summary.total_asset_attempts),
-      windows: windows,
-      requested_windows: requested_windows,
-      requested_windows_truncated?: Map.get(detail, :requested_windows_truncated?, false),
-      attempts: attempts,
-      asset_attempts_truncated?: Map.get(detail, :asset_attempts_truncated?, false),
-      failures: failures,
-      backfill_failures: backfill_failures,
-      backfill_failure_count: Map.get(detail, :backfill_failure_count, length(backfill_failures)),
-      child_runs: child_runs,
-      child_runs_truncated?: Map.get(detail, :child_run_details_truncated?, false),
-      events: Enum.map(events, &event_from_public(&1, timezone)),
-      latest_event_summary: latest_event_summary(detail, events, timezone),
-      waiting_activity?: events == [] and active_group?(summary),
-      current_activity: current_activity(attempts),
-      selected_attempt: nil,
-      context: context_items(summary, root_run, target, context_scope),
-      back_asset_href:
-        existing_back_asset_href ||
-          back_asset_href(operator_context, List.first(summary.target_assets)),
-      raw_run: nil,
-      raw_events: nil,
-      root_event_sequence: Map.get(detail, :root_event_sequence),
-      run_event_sequences: run_event_sequences_from_public(root_run, child_runs, events, detail)
+      id: run_id,
+      found?: false,
+      submission?: false,
+      initializing?: true,
+      active?: false,
+      status: "Loading",
+      status_tone: :neutral,
+      error: nil,
+      subscribed_run_ids: [run_id],
+      run_event_sequences: %{}
     }
   end
 
-  defp maybe_schedule_fallback_poll(
-         %{assigns: %{run: %{submission?: true, active?: true}}} = socket
-       ) do
-    if connected?(socket) do
-      LiveRefresh.schedule_once(socket, :fallback_poll_ref, :poll_run, @refresh_interval_ms)
-    else
-      socket
-    end
+  defp error_run(run_id, reason) do
+    %{
+      id: run_id,
+      found?: false,
+      submission?: false,
+      initializing?: false,
+      active?: false,
+      not_found?: reason == :not_found,
+      error: if(reason == :not_found, do: "Run not found", else: "Run could not be loaded"),
+      subscribed_run_ids: [run_id],
+      run_event_sequences: %{}
+    }
   end
 
-  defp maybe_schedule_fallback_poll(
-         %{
-           assigns: %{
-             run: %{found?: false},
-             detail_load_attempts_remaining: attempts_remaining
-           }
-         } = socket
-       )
-       when attempts_remaining > 0 do
-    if connected?(socket) do
-      LiveRefresh.schedule_once(socket, :fallback_poll_ref, :poll_run, @refresh_interval_ms)
-    else
-      socket
-    end
-  end
-
-  defp maybe_schedule_fallback_poll(
-         %{assigns: %{run_events_live?: false, run: %{active?: true}}} = socket
-       ) do
-    if connected?(socket) do
-      LiveRefresh.schedule_once(socket, :fallback_poll_ref, :poll_run, @refresh_interval_ms)
-    else
-      socket
-    end
-  end
-
-  defp maybe_schedule_fallback_poll(%{assigns: %{run: %{active?: true}}} = socket) do
-    if connected?(socket) and needs_discovery_poll?(socket.assigns.run) do
-      LiveRefresh.schedule_once(socket, :fallback_poll_ref, :poll_run, @refresh_interval_ms)
-    else
-      socket
-    end
-  end
-
-  defp maybe_schedule_fallback_poll(socket), do: socket
-
-  defp mark_initializing(%{submission?: true} = run), do: Map.put(run, :initializing?, false)
-  defp mark_initializing(%{found?: false} = run), do: Map.put(run, :initializing?, true)
-  defp mark_initializing(run), do: Map.put(run, :initializing?, false)
-
-  defp initial_load_attempts(%{submission?: true}), do: 0
-  defp initial_load_attempts(%{found?: false}), do: @initial_load_retry_count
-  defp initial_load_attempts(_run), do: 0
-
-  defp next_load_attempts(_remaining, %{submission?: true}), do: 0
-  defp next_load_attempts(_remaining, %{found?: true}), do: 0
-  defp next_load_attempts(remaining, _run) when remaining > 0, do: remaining - 1
-  defp next_load_attempts(_remaining, _run), do: 0
-
-  defp sync_run_event_refresh(%{assigns: %{run: run}} = socket) do
+  defp sync_run_subscription(socket) do
     RunEventRefresh.sync_subscriptions(
       socket,
-      Map.get(run, :subscribed_run_ids, []),
-      run_event_sequences(run),
+      [socket.assigns.run_id],
+      run_event_sequences(socket.assigns.run),
       run_event_refresh_opts(socket)
     )
   end
 
-  defp sync_run_event_refresh(socket), do: socket
-
-  defp needs_discovery_poll?(%{total_windows: total, child_runs: child_runs})
-       when is_integer(total) and is_list(child_runs),
-       do: total > length(child_runs)
-
-  defp needs_discovery_poll?(_run), do: false
-
-  defp actor_context(socket) do
-    %Scope{} = scope = socket.assigns.current_scope
-    scope.operator_context
-  end
-
-  defp operator_context(socket), do: actor_context(socket)
-
-  defp get_operator_run_activity(operator_context, run_id, opts) do
-    fun =
-      Application.get_env(
-        :favn_view,
-        :operator_run_activity_fun,
-        &Orchestrator.get_operator_run_activity/3
+  defp schedule_fallback(socket) do
+    if connected?(socket) and socket.assigns.active_mode == :flow and socket.assigns.run.active? do
+      LiveRefresh.schedule_once(
+        socket,
+        :fallback_poll_ref,
+        :poll_run,
+        @fallback_refresh_ms
       )
-
-    if is_function(fun, 3), do: fun.(operator_context, run_id, opts), else: fun.(run_id, opts)
+    else
+      assign(socket, :fallback_poll_ref, nil)
+    end
   end
-
-  defp timestamp_label(nil, _timezone), do: nil
-
-  defp timestamp_label(%DateTime{} = value, timezone),
-    do: FavnView.Time.format(value, "%b %-d, %Y %H:%M:%S %Z", timezone)
-
-  defp subscribe_run(operator_context, run_id) do
-    Application.get_env(
-      :favn_view,
-      :run_subscribe_fun,
-      &Orchestrator.subscribe_run/2
-    ).(operator_context, run_id)
-  end
-
-  defp unsubscribe_run(operator_context, run_id),
-    do: Orchestrator.unsubscribe_run(operator_context, run_id)
-
-  defp list_run_stream_events(operator_context, run_id, opts) do
-    fun =
-      Application.get_env(
-        :favn_view,
-        :run_stream_events_fun,
-        &Orchestrator.list_run_stream_events/3
-      )
-
-    if is_function(fun, 3), do: fun.(operator_context, run_id, opts), else: fun.(run_id, opts)
-  end
-
-  defp subscribed_run_ids(root_run, child_runs) do
-    [root_run.id | Enum.map(child_runs, & &1.id)]
-    |> Enum.filter(&(is_binary(&1) and &1 != ""))
-    |> Enum.uniq()
-  end
-
-  defp run_event_sequences(%{run_event_sequences: sequences}) when is_map(sequences),
-    do: sequences
-
-  defp run_event_sequences(_run), do: %{}
-
-  defp run_event_sequences_from_public(root_run, child_runs, events, detail) do
-    event_sequences =
-      events
-      |> Enum.reduce(%{}, fn event, acc ->
-        run_id = Map.get(event, :run_id)
-        sequence = Map.get(event, :sequence)
-
-        if is_binary(run_id) and is_integer(sequence) do
-          Map.update(acc, run_id, sequence, &max(&1, sequence))
-        else
-          acc
-        end
-      end)
-
-    child_sequences =
-      child_runs
-      |> Enum.reduce(%{}, fn child, acc ->
-        if is_integer(Map.get(child, :event_seq)) do
-          Map.put(acc, child.id, child.event_seq)
-        else
-          acc
-        end
-      end)
-
-    event_sequences
-    |> Map.merge(child_sequences, fn _run_id, left, right -> max(left, right) end)
-    |> maybe_put_sequence(root_run.id, Map.get(detail, :root_event_sequence))
-  end
-
-  defp maybe_put_sequence(sequences, run_id, sequence)
-       when is_binary(run_id) and is_integer(sequence),
-       do: Map.update(sequences, run_id, sequence, &max(&1, sequence))
-
-  defp maybe_put_sequence(sequences, _run_id, _sequence), do: sequences
 
   defp run_event_refresh_opts(socket) do
-    operator_context = operator_context(socket)
+    context = operator_context(socket)
 
     [
-      subscribe_fun: &subscribe_run(operator_context, &1),
-      unsubscribe_fun: &unsubscribe_run(operator_context, &1),
-      list_events_fun: &list_run_stream_events(operator_context, &1, &2),
+      subscribe_fun: &subscribe_run(context, &1),
+      unsubscribe_fun: &Orchestrator.unsubscribe_run(context, &1),
+      replay_on_subscribe?: false,
       refresh_key: :refresh_timer_ref,
       refresh_message: :refresh_run,
       coalesce_ms: @coalesce_refresh_ms
     ]
   end
 
-  defp patch_run_state(socket, updates) do
-    active_mode = Keyword.get(updates, :active_mode, socket.assigns.active_mode)
-
-    selected_attempt_id =
-      Keyword.get(updates, :selected_attempt_id, socket.assigns.selected_attempt_id)
-
-    params =
-      run_query_params(
-        active_mode,
-        socket.assigns.selected_child_run_id,
-        selected_attempt_id
-      )
-
-    push_patch(socket, to: ~p"/runs/#{socket.assigns.run_id}?#{params}")
+  defp get_run_flow(context, run_id) do
+    Application.get_env(:favn_view, :operator_run_flow_fun, &Orchestrator.get_operator_run_flow/2)
+    |> then(fn fun -> if is_function(fun, 2), do: fun.(context, run_id), else: fun.(run_id) end)
   end
 
-  defp run_query_params(active_mode, selected_child_run_id, selected_attempt_id) do
-    %{}
-    |> maybe_put_query("view", active_mode != :flow && Atom.to_string(active_mode))
-    |> maybe_put_query("child_run_id", selected_child_run_id)
-    |> maybe_put_query("attempt", selected_attempt_id)
+  defp get_run_events(context, run_id) do
+    Application.get_env(
+      :favn_view,
+      :operator_run_events_fun,
+      &Orchestrator.get_operator_run_events/2
+    )
+    |> then(fn fun -> if is_function(fun, 2), do: fun.(context, run_id), else: fun.(run_id) end)
   end
 
-  defp maybe_put_query(params, _key, value) when value in [nil, false, ""], do: params
-  defp maybe_put_query(params, key, value), do: Map.put(params, key, value)
+  defp list_run_windows(context, run_id) do
+    Application.get_env(
+      :favn_view,
+      :operator_run_windows_fun,
+      &Orchestrator.list_operator_run_windows/2
+    )
+    |> then(fn fun -> if is_function(fun, 2), do: fun.(context, run_id), else: fun.(run_id) end)
+  end
 
-  defp active_mode_from_params(%{"view" => mode}, _current) when mode in @valid_modes,
+  defp subscribe_run(context, run_id) do
+    Application.get_env(:favn_view, :run_subscribe_fun, &Orchestrator.subscribe_run/2).(
+      context,
+      run_id
+    )
+  end
+
+  defp window_choice(choice, timezone) do
+    %{
+      run_id: choice.run_id,
+      label: window_label(choice.window_start_at, choice.window_end_at, timezone)
+    }
+  end
+
+  defp event_row(event, timezone) do
+    %{
+      sequence: event.sequence,
+      timestamp: timestamp_label(event.occurred_at, timezone),
+      event_type: label(event.event_type),
+      asset: event.asset_ref,
+      summary: event.summary || event.asset_ref || LogsViewModel.status_label(event.status)
+    }
+  end
+
+  defp window_label(nil, nil, _timezone), do: nil
+
+  defp window_label(start_at, end_at, timezone) do
+    "#{timestamp_label(start_at, timezone)} – #{timestamp_label(end_at, timezone)}"
+  end
+
+  defp back_asset_href(target_id) when is_binary(target_id),
+    do: "/assets/#{AssetRoute.to_param(target_id)}"
+
+  defp back_asset_href(_target_id), do: nil
+
+  defp run_event_sequences(%{run_event_sequences: sequences}) when is_map(sequences),
+    do: sequences
+
+  defp run_event_sequences(_run), do: %{}
+
+  defp active_mode_from_params(%{"view" => mode}) when mode in @valid_modes,
     do: String.to_existing_atom(mode)
 
-  defp active_mode_from_params(_params, _current), do: :flow
+  defp active_mode_from_params(_params), do: :flow
 
-  defp selected_child_run_id_from_params(params, run, requested_run_id) do
-    child_ids = MapSet.new(Enum.map(run[:child_runs] || [], & &1.id))
+  defp timestamp_label(nil, _timezone), do: nil
 
-    cond do
-      MapSet.member?(child_ids, Map.get(params, "child_run_id")) ->
-        Map.get(params, "child_run_id")
+  defp timestamp_label(%DateTime{} = value, timezone),
+    do: FavnView.Time.format(value, "%b %-d, %Y %H:%M:%S %Z", timezone)
 
-      MapSet.member?(child_ids, requested_run_id) ->
-        requested_run_id
+  defp duration_ms(%DateTime{} = started_at, %DateTime{} = finished_at),
+    do: max(DateTime.diff(finished_at, started_at, :millisecond), 0)
 
-      true ->
-        nil
-    end
-  end
+  defp duration_ms(%DateTime{} = started_at, nil),
+    do: max(DateTime.diff(DateTime.utc_now(), started_at, :millisecond), 0)
 
-  defp selected_attempt_id_from_params(%{"attempt" => attempt_id})
-       when is_binary(attempt_id) and attempt_id != "",
-       do: attempt_id
+  defp duration_ms(_started_at, _finished_at), do: nil
 
-  defp selected_attempt_id_from_params(_params), do: nil
-
-  defp preserve_selected_attempt(old_run, new_run, attempt_id) when is_binary(attempt_id) do
-    new_attempts = Map.get(new_run, :attempts, [])
-
-    if Enum.any?(new_attempts, &(&1.id == attempt_id)) do
-      new_run
-    else
-      case Enum.find(Map.get(old_run, :attempts, []), &(&1.id == attempt_id)) do
-        nil -> new_run
-        attempt -> Map.put(new_run, :attempts, new_attempts ++ [attempt])
-      end
-    end
-  end
-
-  defp preserve_selected_attempt(_old_run, new_run, _attempt_id), do: new_run
-
-  defp attempt_from_public(attempt, timezone) do
-    %{
-      id: attempt.id,
-      asset_step_id: Map.get(attempt, :asset_step_id, attempt.id),
-      root_execution_group_id: attempt.root_execution_group_id,
-      child_run_id: attempt.child_run_id,
-      run_id: attempt.run_id,
-      asset_key: attempt.asset_key,
-      asset_ref: attempt.asset_ref,
-      short_asset_name: LogsViewModel.display_name(attempt.asset_ref) || attempt.asset_ref,
-      stage: attempt.stage,
-      stage_label: stage_label(attempt.stage),
-      execution_pool: Map.get(attempt, :execution_pool),
-      queue_reason: Map.get(attempt, :queue_reason),
-      attempt_number: attempt.attempt_number,
-      started_at_raw: attempt.started_at,
-      finished_at_raw: attempt.finished_at,
-      duration_ms: attempt.duration_ms,
-      started_at: LogsViewModel.timestamp_label(attempt.started_at, timezone),
-      finished_at: LogsViewModel.timestamp_label(attempt.finished_at, timezone),
-      duration: LogsViewModel.duration_ms_label(attempt.duration_ms),
-      status: status_label(attempt.status),
-      raw_status: attempt.status,
-      status_tone: status_tone(attempt.status),
-      error_summary: attempt.error_summary,
-      output_metadata: Map.get(attempt, :output_metadata),
-      window: window_from_public(attempt.window, timezone),
-      window_id: window_identity(attempt.window),
-      window_label: window_label(attempt.window, timezone) || "No window",
-      logs_href: attempt_logs_href(attempt)
-    }
-  end
-
-  defp attempt_logs_href(%{run_id: run_id, asset_step_id: asset_step_id})
-       when is_binary(run_id) and is_binary(asset_step_id),
-       do: ~p"/runs/#{run_id}/assets/#{asset_step_id}/logs"
-
-  defp attempt_logs_href(_attempt), do: nil
-
-  defp window_from_public(nil, _timezone), do: nil
-
-  defp window_from_public(window, timezone) do
-    %{
-      id: window_identity(window),
-      key: Map.get(window, :key),
-      label: window_label(window, timezone) || "No window",
-      start_at: Map.get(window, :start_at),
-      end_at: Map.get(window, :end_at),
-      range_label: range_label(Map.get(window, :start_at), Map.get(window, :end_at), timezone),
-      status: status_label(Map.get(window, :status)),
-      raw_status: Map.get(window, :status),
-      status_tone: status_tone(Map.get(window, :status)),
-      child_run_id: Map.get(window, :child_run_id),
-      attempt_count: Map.get(window, :attempt_count),
-      started_at: LogsViewModel.timestamp_label(Map.get(window, :started_at), timezone),
-      finished_at: LogsViewModel.timestamp_label(Map.get(window, :finished_at), timezone),
-      duration: LogsViewModel.duration_ms_label(Map.get(window, :duration_ms))
-    }
-  end
-
-  defp backfill_failure_from_public(failure, timezone) do
-    window = window_from_public(Map.get(failure, :window), timezone)
-    status = Map.get(failure, :status)
-    asset_ref = Map.get(failure, :asset_ref)
-    child_run_id = Map.get(failure, :child_run_id)
-
-    %{
-      id: child_run_id || "backfill-window-#{window_identity(window)}",
-      child_run_id: child_run_id,
-      asset_ref: asset_ref,
-      short_asset_name:
-        LogsViewModel.display_name(asset_ref) || LogsViewModel.ref_label(asset_ref) ||
-          "Window run",
-      window: window,
-      window_id: window_identity(window),
-      window_label: window_label(window, timezone) || "No window",
-      status: status_label(status),
-      raw_status: status,
-      status_tone: status_tone(status),
-      error_summary:
-        error_summary(Map.get(failure, :error)) || OperatorErrorLabels.run_failure_detail(nil),
-      attempt_count: Map.get(failure, :attempt_count),
-      started_at: LogsViewModel.timestamp_label(Map.get(failure, :started_at), timezone),
-      finished_at: LogsViewModel.timestamp_label(Map.get(failure, :finished_at), timezone),
-      duration: LogsViewModel.duration_ms_label(Map.get(failure, :duration_ms))
-    }
-  end
-
-  # Both lookups were a scan per child run, so a thirty-window backfill walked
-  # every attempt thirty times on every live refresh. One grouping pass each.
-  defp child_runs_from_public(child_runs, attempts, requested_windows, timezone) do
-    attempts_by_run_id = Enum.group_by(attempts, & &1.run_id)
-
-    windows_by_child_run_id =
-      requested_windows
-      |> Enum.reject(&is_nil(&1.child_run_id))
-      |> Map.new(&{&1.child_run_id, &1})
-
-    child_runs
-    |> Enum.map(fn child ->
-      child_attempts = Map.get(attempts_by_run_id, child.id, [])
-
-      window =
-        Map.get(windows_by_child_run_id, child.id) || window_from_public(child.window, timezone)
-
-      counts = child_asset_counts(child, child_attempts)
-
-      %{
-        id: child.id,
-        window: window,
-        window_label: (window && window.label) || "No window",
-        status: status_label(child.status),
-        raw_status: child.status,
-        status_tone: status_tone(child.status),
-        assets: asset_count_label(counts.total),
-        outcome: asset_outcome_label(counts),
-        started_at: LogsViewModel.timestamp_label(child.started_at, timezone),
-        finished_at: LogsViewModel.timestamp_label(child.finished_at, timezone),
-        duration: LogsViewModel.duration_ms_label(child.duration_ms),
-        succeeded_count: counts.succeeded,
-        skipped_count: counts.skipped,
-        failed_count: counts.failed,
-        running_count: counts.running,
-        queued_count: counts.queued,
-        planned_count: counts.planned,
-        attempts: child_attempts
-      }
-    end)
-    |> Enum.sort_by(&child_run_sort_key/1)
-  end
-
-  defp child_asset_counts(%{asset_counts: counts}, _attempts) when is_map(counts), do: counts
-
-  defp child_asset_counts(_child, attempts) do
-    %{
-      total: length(attempts),
-      completed: Enum.count(attempts, &terminal_status?(&1.raw_status)),
-      succeeded: Enum.count(attempts, &(&1.raw_status == :ok)),
-      skipped: Enum.count(attempts, &(&1.raw_status in [:skipped, :skipped_fresh])),
-      failed: Enum.count(attempts, &failed_status?(&1.raw_status)),
-      running: Enum.count(attempts, &running_status?(&1.raw_status)),
-      queued: Enum.count(attempts, &queued_status?(&1.raw_status)),
-      planned: Enum.count(attempts, &(&1.raw_status == :planned))
-    }
-  end
-
-  defp child_run_sort_key(%{window: %{start_at: %DateTime{} = start_at}, id: id}),
-    do: {0, DateTime.to_unix(start_at, :microsecond), id}
-
-  defp child_run_sort_key(%{id: id}), do: {1, 0, id}
-
-  defp asset_count_label(1), do: "1 asset"
-  defp asset_count_label(count), do: "#{count} assets"
-
-  defp asset_outcome_label(counts) do
-    [
-      outcome_part(counts.succeeded, "ran"),
-      outcome_part(counts.skipped, "already fresh"),
-      outcome_part(counts.failed, "failed"),
-      outcome_part(counts.running, "running"),
-      outcome_part(counts.queued, "queued"),
-      outcome_part(counts.planned, "planned")
-    ]
-    |> Enum.reject(&is_nil/1)
-    |> case do
-      [] -> "No asset steps"
-      parts -> Enum.join(parts, " · ")
-    end
-  end
-
-  defp outcome_part(0, _label), do: nil
-  defp outcome_part(count, label), do: "#{count} #{label}"
-
-  defp current_activity(attempts) do
-    case Enum.find(attempts, &running_status?(&1.raw_status)) do
-      nil ->
-        nil
-
-      attempt ->
-        %{
-          asset: attempt.short_asset_name,
-          window: attempt.window_label,
-          started_at: attempt.started_at,
-          duration: attempt.duration,
-          attempt: attempt
-        }
-    end
-  end
-
-  defp event_from_public(event, timezone) do
-    %{
-      sequence: Map.get(event, :sequence),
-      raw_status: Map.get(event, :status),
-      timestamp: LogsViewModel.timestamp_label(Map.get(event, :occurred_at), timezone),
-      event_type: label(Map.get(event, :event_type)),
-      raw_event_type: Map.get(event, :event_type),
-      status: LogsViewModel.status_label(Map.get(event, :status)),
-      status_tone: LogsViewModel.status_tone(Map.get(event, :status)),
-      asset: LogsViewModel.ref_label(Map.get(event, :asset_ref)),
-      summary: event_summary(event)
-    }
-  end
-
-  defp group_title(%{trigger_type: :backfill}), do: "Backfill run"
-  defp group_title(_summary), do: "Run"
-
-  defp group_status(summary) do
-    cond do
-      summary.failed_asset_attempts > 0 or summary.failed_windows > 0 -> :error
-      summary.running_asset_attempts > 0 or summary.root_status == :running -> :running
-      summary.queued_asset_attempts > 0 or summary.root_status == :pending -> :pending
-      summary.root_status == :ok -> :ok
-      true -> summary.root_status
-    end
-  end
-
-  defp retry_remaining?(%{status: status, failed_asset_attempts: failed})
-       when status in [:error, :partial] and failed > 0,
-       do: true
-
-  defp retry_remaining?(_summary), do: false
-
-  defp retry_remaining_label(%{failed_asset_attempts: 1}), do: "Retry 1 remaining asset"
-
-  defp retry_remaining_label(%{failed_asset_attempts: count}),
-    do: "Retry #{count} remaining assets"
-
-  defp active_group?(summary), do: Map.get(summary, :active?, false)
-
-  defp cancel_target(summary, root_run, child_runs, run_id) do
-    cond do
-      active_child = active_child_run(child_runs, run_id) ->
-        %{id: active_child.id, label: "Cancel window run"}
-
-      active_group?(summary) and Map.get(root_run, :submit_kind) != :backfill_pipeline ->
-        %{id: root_run.id, label: "Cancel run"}
-
-      true ->
-        nil
-    end
-  end
-
-  defp active_child_run(child_runs, run_id) do
-    Enum.find(child_runs, fn child ->
-      child.id == run_id and child.raw_status in @active_statuses
-    end)
-  end
-
-  defp target_label([single]), do: LogsViewModel.ref_label(single)
-
-  defp target_label(targets) when is_list(targets) and targets != [],
-    do: "#{length(targets)} selected assets"
-
-  defp target_label(_targets), do: nil
-
-  defp window_range_label([]), do: nil
-  defp window_range_label(windows), do: Enum.map(windows, & &1.label) |> Enum.join(" -> ")
-
-  defp requested_scope_label([], _total_windows, _truncated?), do: nil
-
-  defp requested_scope_label(_windows, total_windows, true),
-    do: requested_window_count_label(total_windows)
-
-  defp requested_scope_label([window], _total_windows, false), do: window.label
-
-  defp requested_scope_label(windows, total_windows, false) do
-    first = List.first(windows)
-    last = List.last(windows)
-    "#{total_windows} windows · #{first.label} – #{last.label}"
-  end
-
-  defp requested_window_count_label(1), do: "1 window"
-  defp requested_window_count_label(count), do: "#{count} windows"
-
-  defp context_scope_label(requested_scope, _effective_scope, true)
-       when is_binary(requested_scope),
-       do: requested_scope <> " · includes non-windowed assets"
-
-  defp context_scope_label(requested_scope, effective_scope, _has_non_windowed_assets?),
-    do: requested_scope || effective_scope
-
-  defp execution_scope_label(windows, true) do
-    case window_range_label(windows) do
-      nil -> "No window"
-      range -> "No window & #{range}"
-    end
-  end
-
-  defp execution_scope_label(windows, false), do: window_range_label(windows)
-
-  defp context_items(summary, root_run, target, scope) do
-    [
-      %{label: "Backfill run", value: summary.id},
-      %{label: "Manifest version", value: root_run.manifest_version_id || "Unknown"},
-      %{label: "Target", value: target || "No target"},
-      %{label: "Trigger", value: label(summary.trigger_type)},
-      %{label: "Execution scope", value: scope || "No window metadata"}
-    ]
-  end
-
-  defp window_sort_key(%{start_at: %DateTime{} = start_at}),
-    do: {0, DateTime.to_unix(start_at, :microsecond)}
-
-  defp window_sort_key(_window), do: {1, 0}
-
-  defp back_asset_href(_operator_context, nil), do: nil
-
-  defp back_asset_href(operator_context, ref) do
-    ref_string = LogsViewModel.ref_label(ref)
-
-    with {:ok, entries} <- Orchestrator.active_asset_catalogue(operator_context),
-         entry when not is_nil(entry) <-
-           Enum.find(entries, fn entry ->
-             LogsViewModel.ref_label(Map.get(entry, :asset_ref)) == ref_string
-           end),
-         target_id when is_binary(target_id) <- Map.get(entry, :target_id) do
-      "/assets/#{AssetRoute.to_param(target_id)}"
-    else
-      _other -> nil
-    end
-  end
-
-  defp cancel_error_label(reason), do: OperatorErrorLabels.run_cancel(reason)
-
-  defp retry_remaining_submitted_label(run_ids, asset_count) do
-    run_label = if(length(run_ids) == 1, do: "1 retry run", else: "#{length(run_ids)} retry runs")
-    asset_label = if(asset_count == 1, do: "1 asset", else: "#{asset_count} assets")
-    "Submitted #{run_label} for #{asset_label}"
-  end
-
-  defp retry_remaining_partial_label(run_ids, _reason) do
-    run_label =
-      if(length(run_ids) == 1, do: "1 retry run was", else: "#{length(run_ids)} retry runs were")
-
-    "Retry submission partially succeeded: #{run_label} submitted before a later retry failed"
-  end
-
-  defp retry_remaining_error_label(:no_remaining_work), do: "No remaining assets to retry"
-  defp retry_remaining_error_label({:run_not_retryable, _status}), do: "Run is not retryable"
-  defp retry_remaining_error_label(_reason), do: "Remaining assets could not be retried"
-
-  defp duration_or_elapsed(%{duration_ms: duration_ms}) when is_integer(duration_ms),
-    do: LogsViewModel.duration_ms_label(duration_ms)
-
-  defp duration_or_elapsed(%{started_at: %DateTime{} = started_at}),
-    do:
-      LogsViewModel.duration_ms_label(DateTime.diff(DateTime.utc_now(), started_at, :millisecond))
-
-  defp duration_or_elapsed(_summary), do: "-"
-
-  defp run_timing(run),
-    do: %{duration_ms: Map.get(run, :duration_ms_raw), started_at: Map.get(run, :started_at_raw)}
-
-  defp progress_label(_done, 0), do: "0 / 0"
-  defp progress_label(done, total), do: "#{done} / #{total}"
-  defp stage_label(nil), do: nil
-  defp stage_label(stage), do: "Stage #{stage}"
-  defp subtitle(parts), do: parts |> Enum.reject(&is_nil/1) |> Enum.join(" · ")
-  defp short_id(id) when is_binary(id) and byte_size(id) > 18, do: String.slice(id, 0, 18)
-  defp short_id(id) when is_binary(id), do: id
-  defp short_id(_id), do: "unknown"
-
-  defp latest_event_summary(%{latest_event: latest_event}, _events, timezone)
-       when not is_nil(latest_event),
-       do: latest_event |> event_from_public(timezone) |> Map.get(:summary)
-
-  defp latest_event_summary(_detail, events, timezone),
-    do: events |> Enum.map(&event_from_public(&1, timezone)) |> latest_event_summary()
-
-  defp latest_event_summary([]), do: nil
-  defp latest_event_summary(events), do: events |> List.last() |> Map.get(:summary)
-
-  defp window_identity(nil), do: "none"
-
-  defp window_identity(window),
-    do:
-      Enum.find(
-        [
-          Map.get(window, :key),
-          datetime_iso(Map.get(window, :start_at)),
-          persisted_window_label(window)
-        ],
-        &is_binary/1
-      ) || "none"
-
-  defp window_label(window, timezone) when is_map(window) do
-    case {Map.get(window, :kind) || Map.get(window, "kind"),
-          Map.get(window, :start_at) || Map.get(window, "start_at")} do
-      {kind, %DateTime{} = start_at} when kind in [:hour, "hour"] ->
-        FavnView.Time.format(start_at, "%b %-d %H:00", timezone)
-
-      {kind, %DateTime{} = start_at} when kind in [:day, "day"] ->
-        FavnView.Time.format(start_at, "%b %-d", timezone)
-
-      {kind, %DateTime{} = start_at} when kind in [:month, "month"] ->
-        FavnView.Time.format(start_at, "%b %Y", timezone)
-
-      {kind, %DateTime{} = start_at} when kind in [:year, "year"] ->
-        FavnView.Time.format(start_at, "%Y", timezone)
-
-      _other ->
-        persisted_window_label(window)
-    end
-  end
-
-  defp window_label(_window, _timezone), do: nil
-
-  defp persisted_window_label(%{label: label}) when is_binary(label), do: label
-  defp persisted_window_label(%{"label" => label}) when is_binary(label), do: label
-  defp persisted_window_label(%{key: key}) when is_binary(key), do: key
-  defp persisted_window_label(%{"key" => key}) when is_binary(key), do: key
-  defp persisted_window_label(_window), do: nil
-  defp datetime_iso(%DateTime{} = datetime), do: DateTime.to_iso8601(datetime)
-  defp datetime_iso(_datetime), do: nil
-
-  defp range_label(%DateTime{} = start_at, %DateTime{} = end_at, timezone),
-    do:
-      "#{FavnView.Time.format(start_at, "%b %-d", timezone)} - #{FavnView.Time.format(end_at, "%b %-d", timezone)}"
-
-  defp range_label(_start_at, _end_at, _timezone), do: nil
-
-  defp terminal_status?(status),
-    do:
-      status in [
-        :ok,
-        :error,
-        :partial,
-        :cancelled,
-        :timed_out,
-        :skipped,
-        :skipped_fresh,
-        :blocked
-      ]
-
-  defp failed_status?(status),
-    do: status in [:error, :failed, :timed_out, :cancelled, :blocked]
-
-  defp running_status?(status), do: status in [:running, :retrying]
-  defp queued_status?(status), do: status in [:pending, :queued]
-  defp status_label(:ok), do: "Succeeded"
-  defp status_label(:error), do: "Failed"
-  defp status_label(:failed), do: "Failed"
-  defp status_label(:pending), do: "Queued"
-  defp status_label(:planned), do: "Planned"
-  defp status_label(:queued), do: "Queued"
-  defp status_label(:running), do: "Running"
-  defp status_label(:retrying), do: "Retrying"
-  defp status_label(:skipped), do: "Skipped"
-  defp status_label(:skipped_fresh), do: "Already fresh"
-  defp status_label(:blocked), do: "Blocked"
-  defp status_label(:partial), do: "Partial"
-  defp status_label(nil), do: "Pending"
-  defp status_label(status), do: LogsViewModel.status_label(status)
-  defp status_tone(status) when status in [:ok], do: :success
-  defp status_tone(status) when status in [:error, :failed, :timed_out, :blocked], do: :error
-  defp status_tone(status) when status in [:running, :retrying], do: :info
-  defp status_tone(status) when status in [:pending, :queued], do: :warning
-  defp status_tone(_status), do: :neutral
   defp label(nil), do: "Unknown"
   defp label(:step_started), do: "Step submitted"
   defp label("step_started"), do: "Step submitted"
@@ -1230,27 +528,23 @@ defmodule FavnView.RunDetailLive do
   defp label("step_running"), do: "Runner started"
   defp label(value), do: value |> to_string() |> String.replace("_", " ") |> String.capitalize()
 
-  defp error_summary(nil), do: nil
-  defp error_summary(%{message: message}) when is_binary(message), do: message
-  defp error_summary(%{"message" => message}) when is_binary(message), do: message
+  defp retry_label(1), do: "Retry 1 remaining asset"
+  defp retry_label(count), do: "Retry #{count} remaining assets"
 
-  defp error_summary(%{reason: reason}), do: error_summary(reason)
-  defp error_summary(%{"reason" => reason}), do: error_summary(reason)
+  defp retry_success_label(run_ids, asset_count) do
+    run_label = if length(run_ids) == 1, do: "1 retry run", else: "#{length(run_ids)} retry runs"
+    asset_label = if asset_count == 1, do: "1 asset", else: "#{asset_count} assets"
+    "Submitted #{run_label} for #{asset_label}"
+  end
 
-  defp error_summary(reason) when is_binary(reason),
-    do: OperatorErrorLabels.run_failure_detail(reason)
+  defp retry_error_label(:no_remaining_work), do: "No remaining assets to retry"
+  defp retry_error_label({:run_not_retryable, _status}), do: "Run is not retryable"
+  defp retry_error_label(_reason), do: "Remaining assets could not be retried"
 
-  defp error_summary(reason) when is_atom(reason), do: label(reason)
-  defp error_summary(reason), do: OperatorErrorLabels.run_failure_detail(reason)
+  defp actor_context(socket) do
+    %Scope{} = scope = socket.assigns.current_scope
+    scope.operator_context
+  end
 
-  defp event_summary(event),
-    do:
-      Map.get(event.data || %{}, :message) || Map.get(event.data || %{}, "message") ||
-        if(Map.get(event, :asset_ref),
-          do: "Asset #{LogsViewModel.ref_label(Map.get(event, :asset_ref))}",
-          else: LogsViewModel.status_label(Map.get(event, :status))
-        )
-
-  defp error_label(:not_found), do: "Run not found"
-  defp error_label(_reason), do: "Run could not be loaded"
+  defp operator_context(socket), do: actor_context(socket)
 end

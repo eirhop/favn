@@ -1,31 +1,20 @@
 defmodule FavnView.Components.RunDetailPage do
   @moduledoc """
-  Run detail: one flow of work, and a panel for whatever the operator selects.
+  Run detail for one exact run, with lean assets and lazy events.
 
-  This page used to offer five peer modes — overview, timeline, failures, window
-  runs, events — which were five projections of one list of asset attempts. The
-  flow replaces the first three: it keeps time like the timeline did, keeps the
-  dependency order the timeline threw away, and renders each failure in the lane
-  it happened in, so there is nothing left for a failures tab to show.
-
-  Window runs stays because a child run is a different object from an asset
-  attempt. Events stays because a raw stream is sometimes the only way to see what
-  a stuck run last did.
+  Windowed runs are separate run IDs. The page loads their lean choices only
+  when the operator asks to switch, then navigates to the selected run.
   """
 
   use FavnView, :html
 
   alias FavnView.Components.AppShell
   alias FavnView.Components.ModeRail
-  alias FavnView.Components.RunDetailPage.AttemptDrawer
   alias FavnView.Components.RunDetailPage.Events
-  alias FavnView.Components.RunDetailPage.Failures
   alias FavnView.Components.RunDetailPage.Flow
   alias FavnView.Components.RunDetailPage.NotFound
   alias FavnView.Components.RunDetailPage.Progress
   alias FavnView.Components.RunDetailPage.Submission
-  alias FavnView.Components.RunDetailPage.WindowRuns
-  alias FavnView.RunFlow
 
   attr :run, :map, required: true
   attr :run_id, :string, required: true
@@ -34,22 +23,15 @@ defmodule FavnView.Components.RunDetailPage do
   attr :operator_workspaces, :list, default: []
   attr :active_mode, :atom, default: :flow
 
-  attr :flow, :map,
-    default: nil,
-    doc: "a prebuilt `FavnView.RunFlow` projection; derived from the run when absent"
-
-  attr :selected_child_run_id, :string, default: nil
-  attr :selected_attempt_id, :string, default: nil
+  attr :windows, :any, default: nil
+  attr :windows_loading?, :boolean, default: false
+  attr :windows_error, :string, default: nil
   attr :flash, :map, default: %{}
 
   def run_detail_page(assigns) do
     run = normalize_run(assigns.run)
 
-    assigns =
-      assigns
-      |> assign(:run, run)
-      |> assign(:flow, assigns.flow || flow(run, assigns.current_scope))
-      |> assign(:selected_attempt, selected_attempt(run, assigns.selected_attempt_id))
+    assigns = assign(assigns, :run, run)
 
     ~H"""
     <AppShell.app_shell
@@ -93,16 +75,36 @@ defmodule FavnView.Components.RunDetailPage do
           {@run[:retry_remaining_label] || "Retry remaining"}
         </.button>
       </:actions>
+      <:actions :if={@run[:found?] && @run[:window] && is_nil(@windows)}>
+        <.button
+          variant={:secondary}
+          icon="hero-calendar-days"
+          phx-click="load_windows"
+          loading={@windows_loading?}
+          data-testid="load-run-windows"
+        >
+          Switch window
+        </.button>
+      </:actions>
+      <:actions :if={@run[:found?] && is_list(@windows) && length(@windows) > 1}>
+        <form phx-change="switch_window" data-testid="run-window-selector">
+          <.select_field
+            name="run_id"
+            label="Run window"
+            icon="hero-calendar-days"
+            value={@run_id}
+            options={window_options(@windows)}
+            class="min-w-64"
+          />
+        </form>
+      </:actions>
       <Submission.submission_panel :if={@run[:submission?]} run={@run} />
       <NotFound.not_found_panel :if={!@run[:found?] && !@run[:submission?]} run={@run} />
       <.execution_group_page
         :if={@run[:found?]}
         run={@run}
-        flow={@flow}
         active_mode={@active_mode}
-        selected_child_run_id={@selected_child_run_id}
-        selected_attempt={@selected_attempt}
-        selected_attempt_id={@selected_attempt_id}
+        windows_error={@windows_error}
       />
       <:mode_rail :if={@run[:found?]}>
         <ModeRail.mode_rail active={@active_mode} modes={run_modes(@run)} on_select="set_mode" />
@@ -112,109 +114,54 @@ defmodule FavnView.Components.RunDetailPage do
   end
 
   attr :run, :map, required: true
-  attr :flow, :map, default: nil
   attr :active_mode, :atom, required: true
-  attr :selected_child_run_id, :string, default: nil
-  attr :selected_attempt, :map, default: nil
-  attr :selected_attempt_id, :string, default: nil
+  attr :windows_error, :string, default: nil
 
   def execution_group_page(assigns) do
     ~H"""
     <div class="mx-auto flex w-full max-w-[110rem] flex-col gap-4" data-testid="run-detail-page">
       <Progress.run_progress run={@run} />
       <.notice
-        :if={truncated?(@run)}
+        :if={@run.asset_attempts_truncated?}
         tone={:warning}
         icon="hero-scissors"
         data-testid="run-detail-truncated-warning"
       >
-        Showing the first bounded detail slice. The meters above are exact; some detail rows
-        are omitted.
+        This run has more than 1,000 assets. Summary counts remain exact; this page shows the
+        first 1,000 in stable order.
       </.notice>
-      <Failures.window_failures run={@run} />
+      <.notice :if={@run[:refresh_error]} tone={:warning} icon="hero-arrow-path">
+        {@run.refresh_error}. Showing the last successful result; the page will try again.
+      </.notice>
+      <.notice :if={@windows_error} tone={:warning} icon="hero-exclamation-triangle">
+        {@windows_error}
+      </.notice>
       <div data-run-active={to_string(@run.active?)}>
         <Flow.flow
-          :if={@active_mode == :flow and @flow}
-          flow={@flow}
-          selected_attempt_id={@selected_attempt_id}
+          :if={@active_mode == :flow}
+          assets={@run.assets}
         />
-        <WindowRuns.window_runs_panel
-          :if={@active_mode == :windows}
-          run={@run}
-          selected_child_run_id={@selected_child_run_id}
-        /> <Events.events_panel :if={@active_mode == :events} run={@run} />
+        <Events.events_panel :if={@active_mode == :events} run={@run} />
       </div>
-      <AttemptDrawer.attempt_drawer :if={@selected_attempt} attempt={@selected_attempt} />
     </div>
     """
   end
 
-  # The LiveView precomputes the flow so a refresh does not rebuild it inside
-  # `render/1`. Every other caller — design-system examples, component tests —
-  # only has a run, so derive it here rather than make each of them do it.
-  defp flow(%{found?: true, attempts: attempts, active?: active?}, timezone),
-    do: RunFlow.build(attempts, active?: active?, timezone: timezone)
-
-  defp flow(_run, _timezone), do: nil
-
-  defp selected_attempt(%{attempts: attempts}, attempt_id) when is_binary(attempt_id),
-    do: Enum.find(attempts, &(&1.id == attempt_id))
-
-  defp selected_attempt(_run, _attempt_id), do: nil
-
-  defp truncated?(run) do
-    run.asset_attempts_truncated? or run.requested_windows_truncated? or run.child_runs_truncated?
-  end
-
   defp normalize_run(run) when is_map(run) do
     run
-    |> Map.put_new(:failures, [])
-    |> Map.put_new(:backfill_failures, [])
-    |> Map.put_new(:backfill_failure_count, 0)
+    |> Map.put_new(:assets, [])
     |> Map.put_new(:retry_remaining?, false)
-    |> Map.put_new(:requested_windows_truncated?, false)
     |> Map.put_new(:asset_attempts_truncated?, false)
-    |> Map.put_new(:child_runs_truncated?, false)
   end
 
-  defp run_modes(run) do
-    List.flatten([
+  defp run_modes(_run) do
+    [
       %{id: :flow, label: "Flow", icon: "hero-chart-bar"},
-      window_mode(run),
       %{id: :events, label: "Events", icon: "hero-signal"}
-    ])
+    ]
   end
 
-  # A run that executes its assets directly has no child runs, so the mode has
-  # nothing to show. A single-window run has exactly one, which is this page —
-  # offering it invites a click that lands back where it started.
-  defp window_mode(run) do
-    case window_run_count(run) do
-      nil ->
-        []
-
-      count ->
-        [
-          %{
-            id: :windows,
-            label: "Window runs",
-            icon: "hero-rectangle-stack",
-            count: count
-          }
-        ]
-    end
-  end
-
-  defp window_run_count(run) do
-    total = Map.get(run, :total_windows)
-    children = length(Map.get(run, :child_runs, []))
-
-    cond do
-      is_integer(total) and total > 1 -> total
-      children > 1 -> children
-      true -> nil
-    end
-  end
+  defp window_options(windows), do: Enum.map(windows, &{&1.label, &1.run_id})
 
   defp run_facts(%{found?: true} = run) do
     [
