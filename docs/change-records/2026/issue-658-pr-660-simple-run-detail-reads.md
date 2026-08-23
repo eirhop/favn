@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Final review |
+| Status | Implemented |
 | Type | Refactor |
 | Primary issue | [#658](https://github.com/eirhop/favn/issues/658) |
 | Pull request | [#660](https://github.com/eirhop/favn/pull/660) |
@@ -13,8 +13,8 @@
 
 ## One-minute summary
 
-Opening a run currently loads a broad execution-group view with much more data
-than the page shows. The replacement will load one selected run, at most 1,000
+Opening a run previously loaded a broad execution-group view with much more data
+than the page showed. The replacement loads one selected run, at most 1,000
 lean asset rows, and full asset details only on a separate route. Window changes
 navigate to another run ID and repeat the same small read. This record is needed
 because the change crosses the View, orchestrator, and PostgreSQL boundaries.
@@ -472,4 +472,15 @@ cross-workspace data.
 
 ## Final review
 
-Pending independent recheck of the final-review corrections.
+| Field | Result |
+| --- | --- |
+| Reviewer | Independent `gpt-5.6-sol` sub-agent with `xhigh` reasoning |
+| Reviewed implementation | `f8f53175`, `5d79a19f`, and `d396d6ea` against approved baseline `0f053c43` |
+| Verdict | **Approved — no blocking findings** |
+
+The reviewer confirmed the unified refresh cadence, real scheduler and runner
+control-plane probes, corrected complexity variance, exact workspace/run
+isolation, authorization, retry behavior, joined-before-cap counts, lazy reads,
+UI boundaries, and retained orchestrator contracts. The only non-blocking note
+is a theoretical malformed-legacy-data edge outside the current one-window and
+authoritative-attempt product invariants.
