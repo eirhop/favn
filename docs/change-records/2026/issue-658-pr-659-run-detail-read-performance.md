@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Implemented |
+| Status | Plan reviewed |
 | Type | Bug fix and cross-application refactor |
 | Primary issue | [#658](https://github.com/eirhop/favn/issues/658) |
 | Pull request | [#659](https://github.com/eirhop/favn/pull/659) |
@@ -1033,6 +1033,195 @@ Acceptance evidence must prove:
 | Semantic effect | None. The diagrams retain the approved data relationships, query boundaries, pagination behavior, and on-demand detail behavior. |
 | Reviewer | Independent GPT-5.6 Sol review |
 | Verdict | Approved. No findings remain; the correction is presentation-only and preserves the approved plan. |
+
+## Plan amendment 2: exact window-run switching
+
+User review of the implemented design-system state rejected asset-reference
+prefix filtering as the wrong operator concept. Window runs are separate runs in
+persistence, so Flow must continue to show exactly one run at a time. The
+replacement is a compact window-run switcher that navigates to another exact
+run ID. It appears only when the execution group has more than one window run.
+Non-windowed and single-window runs render no switcher; pagination remains
+available when their exact run exceeds 200 rows.
+
+This amendment supersedes only the asset-prefix portions of amendment 1. The
+approved 200-row page, 500-row retained range, keyed detail, bounded live
+reconciliation, timeout, payload, and on-demand secondary-mode contracts remain
+unchanged.
+
+### Operator behavior
+
+- Flow always shows at most 200 rows for the exact run in the route. It never
+  aggregates asset rows from sibling windows.
+- Opening the selector lazily reads a dedicated 50-row window-switch contract.
+  It returns only navigable child run IDs and the scalar window range rendered
+  by the picker. The closed control does not preload option rows. Every
+  navigable window remains reachable through bounded picker pagination.
+- Choosing a window navigates immediately to `/runs/:child_run_id`. There is no
+  Apply button, Clear button, editable technical identifier, or separate filter
+  query parameter.
+- The initial exact-run header supplies the authoritative selected-window range,
+  navigable sibling count, and the sole child summary when exactly one exists.
+  The control can therefore display the selected window after reload even when
+  that run has no attempt rows or lies beyond picker page one.
+- A root with one navigable child shows one `Open window run` action rather than
+  a switcher. A root with several shows `Choose window`; a child in that group
+  shows its selected label. A root with no navigable child keeps its existing
+  empty/preparation state.
+- The toolbar is a quiet control plus exact-run metadata such as
+  `200 of 237 assets loaded`. Normal bounded pagination is not a warning, so the
+  amber truncation notice is removed for Flow pages.
+- `Load more`, Previous, and Next keep their approved behavior. When no window
+  selector is useful, they are the only additional controls.
+
+```mermaid
+flowchart LR
+    A[Open exact window run] --> B[Read 200 exact-run rows]
+    B --> C[Show selected window]
+    C -->|Open switcher| D[Read 50 sibling summaries]
+    D -->|Choose sibling run| E[Navigate to its run URL]
+    E --> B
+```
+
+### Read and persistence contract
+
+The Flow page, count, cursor, delta, reconciliation, and keyed-detail contracts
+remain exact-run contracts. The amendment removes `asset_prefix` without adding
+a replacement Flow filter. Choosing a sibling changes the route run ID, causing
+the existing authorization, subscription activation, and initial exact-run read
+to execute for that run. A stale, missing, or unauthorized child run follows the
+existing explicit route failure behavior and never falls back to another run.
+
+The existing `asset_attempt_overviews` exact-run indexes and scalar projection
+remain unchanged. Cursors are already bound to workspace and exact run ID, and
+loaded live deltas already join only the at-most-500 IDs for that run. No table,
+column, duplicate projection, group Flow query, or composite cross-run live
+identity is added.
+
+The orchestrator adds one `page_operator_run_window_switches` use case over the
+existing `runs`, `backfills`, and `backfill_windows` tables. Its stable result
+contains only `run_id`, `window_start_at`, and `window_end_at`; its cursor uses
+the immutable window start and window ID internally without exposing the window
+ID as a navigation target. Rows and exact total both apply `run_id IS NOT NULL`,
+so the View never filters a partially navigable page or falls back from a missing
+run ID to a window ID. Authorization resolves the selected route run to its
+workspace/root group before the page read.
+
+One online migration adds a concurrent partial switch index ordered by
+`(workspace_id, backfill_id, window_start DESC, window_id DESC)` where
+`run_id IS NOT NULL`, including `run_id` and `window_end`. It matches the exact
+row/count predicate and chronological cursor for every window status, including
+completed, failed, and cancelled runs. Rollback drops only that index
+concurrently; it does not rewrite or remove persistent rows.
+
+The initial Flow header's existing window aggregate also returns a bounded
+selected-window summary for the exact route run, the exact navigable child-run
+count, and at most one sole-child summary. These are scalar additions to the
+same repeatable-read header statement, not another query. They select no asset
+aggregate or payload fields. The View formats the supplied range for the
+operator's timezone and never derives switch membership from attempts or
+labels.
+
+The switch page does not query options until opened and retains at most one
+50-row page. Next/Previous replaces that page rather than accumulating an
+unbounded list. It has its own public structs, authorization, cursor
+fingerprint, explicit errors, 50-row limit, two-data-statement ceiling, 256-KiB
+payload ceiling, and query/payload telemetry. It is separate from the richer
+Window runs mode, whose status and asset aggregates remain on-demand only in
+that mode.
+
+### UI composition
+
+The page composes existing compact control, button, list-card, loading, error,
+and metadata elements; it does not add a new surface or a page-owned border. On
+desktop the switcher and count share one quiet row above Flow. On mobile the
+switcher is full-width and the count sits below it. The switcher is absent when
+the execution group has zero or one navigable window run; the sole-child action
+preserves reachability from its parent. Loading and failure inside the opened
+picker are local states and do not replace a successfully rendered Flow.
+
+Design-system examples cover a selected window below and above 200 rows,
+non-windowed overflow, single-window overflow, picker loading/error, and the
+500-row retained boundary. The temporary asset-prefix example and fixture are
+removed.
+
+### Budgets and failure behavior
+
+Initial Flow keeps the approved grant/snapshot and 200-row/1-MiB budgets. The
+selected/sole-window scalar header fields stay inside its existing header
+statement and payload ceiling. Merely rendering a closed selector adds no
+switch-page query. Opening it performs one authorized window-switch call with a
+two-data-statement, 50-row, 256-KiB ceiling. Selecting a sibling performs
+ordinary LiveView navigation to that run and its existing fresh Flow read under
+the three-second deadline; the old socket and retained rows are discarded.
+
+In a 100,000-window production-shaped fixture, first and later switch pages may
+examine at most 51 matching index tuples, touch at most 128 shared-hit/read
+buffers, run at warm p95 at most 10 ms and cold p95 at most 50 ms, and select no
+heap payload columns. The exact count may examine at most 100,000 matching index
+tuples and 100,000 heap visibility tuples, touch at most 2,500 buffers, and run
+at warm p95 at most 50 ms and cold p95 at most 150 ms. MVCC heap visibility is
+allowed and measured; zero heap fetches is not assumed.
+
+A picker read, paging action, Flow page, delta, or reconciliation uses the same
+generation-tagged socket task slot. Opening while another task owns the slot
+records at most one picker intent; closing clears that intent. Duplicate open or
+page actions do not start duplicate work. Closing an in-flight picker cancels it
+and advances the generation. A result applies only when its generation, route,
+mode, and open picker state still match; it cannot reopen a closed picker or
+overwrite a new run. Flow wake-ups received during picker work remain coalesced
+in the existing pending watermark and run after the picker settles.
+
+A picker read failure leaves Flow usable, closes no existing drawer, and renders
+a retry inside the picker. Navigation tears down the prior run scope through the
+existing LiveView lifecycle. A window removed between option load and selection
+returns the existing not-found/unavailable route state and cannot expose sibling
+data.
+
+### Amendment verification
+
+Acceptance evidence must prove:
+
+- selecting a window navigates to its exact run ID and returns only that run's
+  rows and counts;
+- a cross-workspace, deleted, or malformed run ID fails through the existing
+  authorized route contract;
+- navigation discards the prior run's cursors, retained rows, pending tasks, and
+  live scope;
+- same `asset_step_id` values in two window runs cannot mix because each Flow,
+  delta, reconciliation, and drawer read remains exact-run scoped;
+- the selector performs zero window-switch reads while closed, one bounded read
+  when opened, and bounded replacement paging thereafter; its SQL selects no
+  status, asset-count, duration, attempt, plan, event, or payload fields;
+- no filter is rendered for zero/one-window runs, while their Flow pagination
+  remains reachable;
+- a root with one navigable child exposes `Open window run`; a root with no child
+  retains its empty/preparation state; and a zero-row selected child or a child
+  beyond picker page one reloads with its authoritative selected label;
+- ordinary truncation renders no warning, and the count always describes the
+  exact route run;
+- existing exact-run query-count and plan evidence remains unchanged after
+  removing prefix predicates;
+- switch-option metadata and rows use exactly two data statements, return no
+  non-navigable rows, use one bounded index-backed page, and report a matching
+  navigable total under `EXPLAIN (ANALYZE, BUFFERS)`; first page, a deep later
+  page, and exact count meet the stated tuple, buffer, warm-p95, and cold-p95
+  ceilings with completed, failed, cancelled, and active windows mixed;
+- picker close/reopen, duplicate paging, failure/retry, navigation during an
+  in-flight read, and Flow wake-up races preserve the single-task invariant and
+  reject stale results;
+- dark-theme renders at 390, 768, and 1440 widths have no audit, clipping,
+  target-size, focus, or accessible-name failures.
+
+### Amendment 2 review
+
+| Field | Result |
+| --- | --- |
+| Requested by | PR user review on 2026-08-23 |
+| Reviewer | Independent agent `issue_658_plan_review` |
+| Findings | Initial review rejected reuse of the richer Window runs page because it includes nullable run IDs and unrendered aggregates; it also found no authoritative selected label/sole-child reachability contract and no picker task lifecycle. |
+| Findings addressed | Added a lean navigable-only switch page, scalar selected/sole-window header data, explicit root states, generation-tagged picker concurrency/recovery, and a matching concurrent partial index with production-shaped page/count budgets. |
+| Verdict | Approved after recheck. No blocking findings remain; amendment 2 may proceed. |
 
 ## Implementation outcome
 
