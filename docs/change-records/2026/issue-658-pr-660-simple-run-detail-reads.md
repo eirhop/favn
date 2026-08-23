@@ -357,24 +357,28 @@ flowchart LR
 
 ### Actual scope and complexity
 
-Git reports 1,946 production lines added and 4,500 deleted. Supporting tests,
-fixtures, and examples add 1,174 and delete 1,472. The complete implementation is
-therefore 2,852 lines smaller. The table is a manual hunk attribution because
+Git reports 1,959 production lines added and 4,496 deleted. Supporting tests,
+fixtures, and examples add 1,221 and delete 1,472. The complete implementation is
+therefore 2,788 lines smaller. The table is a manual hunk attribution because
 several files implement more than one slice; its totals exactly match Git.
 
 | Slice | Production added | Production deleted | Supporting added | Supporting deleted |
 | --- | ---: | ---: | ---: | ---: |
 | Exact-run Flow contract and PostgreSQL read | 852 | 104 | 393 | 150 |
 | Legacy broad-read removal | 80 | 3,687 | 0 | 900 |
-| Run page and coalesced refresh | 354 | 249 | 282 | 149 |
+| Run page and coalesced refresh | 367 | 245 | 295 | 149 |
 | Lazy window switching | 220 | 80 | 100 | 80 |
 | Separate asset detail route | 230 | 300 | 126 | 193 |
 | Exact lazy event read | 160 | 80 | 39 | 0 |
-| Performance proof | 50 | 0 | 234 | 0 |
-| **Actual total** | **1,946** | **4,500** | **1,174** | **1,472** |
+| Performance proof | 50 | 0 | 268 | 0 |
+| **Actual total** | **1,959** | **4,496** | **1,221** | **1,472** |
 
-The exact-read addition is 102 lines above its estimate, far below the record's
-material-variance threshold. Legacy deletion is 1,387 lines above its estimate:
+The exact-read slice is 102 lines above its estimate and total production additions
+are 119 lines above theirs. Both cross the record's 100-line review trigger,
+so the final reviewer is explicitly checking them as possible scope creep. The
+overage is the joined-before-cap exact summary/window query and its end-to-end
+performance proof, not another product feature. Legacy deletion is 1,387 lines
+above its estimate:
 source inspection showed that replacing the 1,300-line LiveView and deleting the
 505-line UI Flow converter was simpler than retaining branches from the broad
 execution-group shape. This is deletion of replaced UI code, not added scope.
@@ -449,8 +453,11 @@ cross-workspace data.
   the public Flow facade stays within the 12-statement connected-open budget and
   performs no snapshot, manifest, or plan read during subscription. `EXPLAIN
   ANALYZE` remains below the 5,000-buffer and one-second limits. Twenty concurrent
-  public-facade viewers finish within two seconds while probe and database queue
-  p95 remain below 100 ms and statement p95 remains below 50 ms.
+  public-facade viewers finish within two seconds while real scheduler-page and
+  runner-capacity control reads continue. Their concurrent p95 remains below
+  100 ms and no more than twice a 20-reader idle baseline; database queue p95
+  remains below 100 ms and statement p95 below 50 ms. This qualification passed
+  five consecutive focused runs after the final review correction.
 - Keyed asset detail is tested with the same run ID and asset-step ID in another
   workspace, and with the same asset-step ID in another run.
 - Repository inventory confirms the old activity facade, overview query/result/

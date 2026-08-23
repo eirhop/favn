@@ -23,7 +23,9 @@ defmodule FavnStoragePostgres.StorageV2.PerformanceContractTest do
   alias FavnOrchestrator.Persistence.Queries.PageRuns
   alias FavnOrchestrator.Persistence.Queries.GetRun
   alias FavnOrchestrator.Persistence.Queries.GetRunFlow
+  alias FavnOrchestrator.Persistence.Queries.ListRunnerCapacityDemands
   alias FavnOrchestrator.Persistence.WorkspaceContext
+  alias FavnOrchestrator.Persistence.Queries.PageSchedules
   alias FavnOrchestrator.OperatorRunView
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.TargetStatus
@@ -33,7 +35,9 @@ defmodule FavnStoragePostgres.StorageV2.PerformanceContractTest do
   alias FavnStoragePostgres.OperatorReads.Store, as: OperatorReadStore
   alias FavnStoragePostgres.Registry.Store, as: RegistryStore
   alias FavnStoragePostgres.Repo
+  alias FavnStoragePostgres.RunnerTasks.Store, as: RunnerTaskStore
   alias FavnStoragePostgres.Runs.Store, as: RunStore
+  alias FavnStoragePostgres.Scheduler.Store, as: SchedulerStore
   alias FavnStoragePostgres.StorageV2.Migrations
 
   setup_all do
@@ -268,6 +272,9 @@ defmodule FavnStoragePostgres.StorageV2.PerformanceContractTest do
     assert buffer_blocks(plan) <= 5_000
     assert execution_time_ms(plan) < 1_000
 
+    control_probe_ms(fixture)
+    idle_probe_ms = concurrent_control_probe_ms(fixture, 20)
+
     {elapsed_ms, {concurrent_results, probe_ms}, query_metrics} =
       capture_query_metrics(fn ->
         tasks =
@@ -280,16 +287,20 @@ defmodule FavnStoragePostgres.StorageV2.PerformanceContractTest do
             end)
           end)
 
-        probe_ms =
-          Enum.map(1..20, fn _probe -> timed_ms(fn -> SQL.query!(Repo, "SELECT 1") end) end)
+        probes =
+          Enum.map(1..20, fn _probe ->
+            Task.async(fn -> control_probe_ms(fixture) end)
+          end)
 
         results = Enum.map(tasks, &Task.await(&1, 2_000))
+        probe_ms = Enum.map(probes, &Task.await(&1, 2_000))
         {results, probe_ms}
       end)
 
     assert Enum.all?(concurrent_results, &match?({:ok, %{overflow?: true}}, &1))
     assert elapsed_ms < 2_000
     assert percentile(probe_ms, 95) < 100
+    assert percentile(probe_ms, 95) <= percentile(idle_probe_ms, 95) * 2
     assert percentile(Enum.map(query_metrics, & &1.query_ms), 95) < 50
     assert percentile(Enum.map(query_metrics, & &1.queue_ms), 95) < 100
   end
@@ -651,6 +662,7 @@ defmodule FavnStoragePostgres.StorageV2.PerformanceContractTest do
     %{
       workspace_id: workspace_id,
       workspace_context: workspace_context,
+      platform_context: platform_context,
       deployment_id: deployment_id,
       version: version,
       target_id: target_id
@@ -1004,6 +1016,28 @@ defmodule FavnStoragePostgres.StorageV2.PerformanceContractTest do
     started_at = System.monotonic_time()
     function.()
     duration_ms(System.monotonic_time() - started_at)
+  end
+
+  defp concurrent_control_probe_ms(fixture, count) do
+    1..count
+    |> Enum.map(fn _probe -> Task.async(fn -> control_probe_ms(fixture) end) end)
+    |> Enum.map(&Task.await(&1, 2_000))
+  end
+
+  defp control_probe_ms(fixture) do
+    timed_ms(fn ->
+      assert {:ok, _page} =
+               SchedulerStore.page_schedules(%PageSchedules{
+                 workspace_context: fixture.workspace_context,
+                 limit: 1
+               })
+
+      assert {:ok, _demands} =
+               RunnerTaskStore.list_demands(%ListRunnerCapacityDemands{
+                 platform_context: fixture.platform_context,
+                 limit: 1
+               })
+    end)
   end
 
   defp duration_ms(native_time),

@@ -75,13 +75,29 @@ defmodule FavnView.RunDetailLive do
 
   def handle_info({:poll_run, token}, socket) do
     case LiveRefresh.take(socket, :fallback_poll_ref, token) do
-      {:ok, socket} -> {:noreply, refresh_run(socket)}
-      {:stale, socket} -> {:noreply, socket}
+      {:ok, %{assigns: %{refresh_timer_ref: refresh_ref}} = socket}
+      when not is_nil(refresh_ref) ->
+        {:noreply, socket}
+
+      {:ok, socket} ->
+        {:noreply, refresh_run(socket)}
+
+      {:stale, socket} ->
+        {:noreply, socket}
     end
   end
 
   def handle_info({:favn_run_event, event}, socket) do
-    {:noreply, RunEventRefresh.handle_event(socket, event, run_event_refresh_opts(socket))}
+    socket = RunEventRefresh.handle_event(socket, event, run_event_refresh_opts(socket))
+
+    socket =
+      if socket.assigns.refresh_timer_ref do
+        assign(socket, :fallback_poll_ref, nil)
+      else
+        socket
+      end
+
+    {:noreply, socket}
   end
 
   # The run page deliberately does not subscribe to the global persistence topic.
@@ -424,7 +440,8 @@ defmodule FavnView.RunDetailLive do
   end
 
   defp schedule_fallback(socket) do
-    if connected?(socket) and socket.assigns.active_mode == :flow and socket.assigns.run.active? do
+    if connected?(socket) and socket.assigns.active_mode == :flow and socket.assigns.run.active? and
+         is_nil(socket.assigns.refresh_timer_ref) do
       LiveRefresh.schedule_once(
         socket,
         :fallback_poll_ref,

@@ -87,12 +87,18 @@ defmodule FavnView.RunDetailLiveTest do
   end
 
   test "coalesces a burst of selected-run events into one refresh" do
+    caller = self()
+
     Application.put_env(:favn_view, :operator_run_flow_fun, fn _context, run_id ->
+      send(caller, :flow_read)
       {:ok, %{kind: :run, detail: flow(run_id, :running)}}
     end)
 
     assert {:ok, mounted} =
              RunDetailLive.mount(%{"run_id" => "run-one"}, %{}, connected_socket())
+
+    assert_receive :flow_read
+    fallback_ref = mounted.assigns.fallback_poll_ref
 
     {:noreply, first} =
       RunDetailLive.handle_info(
@@ -107,8 +113,15 @@ defmodule FavnView.RunDetailLiveTest do
       )
 
     assert is_reference(first.assigns.refresh_timer_ref)
+    assert is_nil(first.assigns.fallback_poll_ref)
     assert second.assigns.refresh_timer_ref == first.assigns.refresh_timer_ref
     assert second.assigns.pending_run_event_sequences == %{"run-one" => 4}
+
+    assert {:noreply, unchanged} =
+             RunDetailLive.handle_info({:poll_run, fallback_ref}, second)
+
+    refute_receive :flow_read
+    assert unchanged.assigns.refresh_timer_ref == second.assigns.refresh_timer_ref
   end
 
   test "keeps the last successful Flow when a live refresh fails" do
