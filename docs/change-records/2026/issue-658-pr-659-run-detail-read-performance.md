@@ -102,9 +102,8 @@ screen-specific contracts.
   navigation.
 - Authorization is required on every public read and after every durable
   wake-up. Authorization work is not cached across independent requests.
-- 2Ravens and a running local PostgreSQL/Phoenix stack were unavailable during
-  planning. Static query counts are lower-bound evidence; runtime baselines must
-  be captured before implementation changes the code.
+- Static query counts are lower-bound evidence; runtime baselines must be
+  captured before implementation changes the code.
 - Protecting the control plane means bounding rows, bytes, query time, refresh
   frequency, and concurrent work. Moving operator reads to a second database or
   adding a cache is not assumed necessary.
@@ -135,12 +134,9 @@ flowchart TD
     C --> D
     D --> E[Authorize operator]
     E --> F[Load broad execution group overview]
-    F --> G[Run and group summaries]
-    F --> H[Child runs and requested windows]
-    F --> I[Complete attempt rows]
-    F --> J[Complete planned-node values]
-    F --> K[Optional event page]
-    F --> L[Complete active asset catalogue]
+    F --> G[Run and group summaries<br/>Child runs and requested windows]
+    F --> H[Complete attempt rows<br/>Complete planned-node values]
+    F --> I[Optional event page<br/>Complete active asset catalogue]
     M[Workspace persistence wake-up] --> N[Replay root and child streams]
     N --> O[Reload broad execution group overview]
     O --> F
@@ -152,14 +148,13 @@ JSONB and several unrelated query families are also executed.
 
 ### Current data model
 
+Authoritative run data:
+
 ```mermaid
 erDiagram
     RUNS ||--|| RUN_PLANS : has
     RUNS ||--o{ RUN_EVENTS : records
     RUNS ||--o{ RUN_TARGETS : declares
-    RUNS }o--|| EXECUTION_GROUP_OVERVIEWS : contributes_to
-    RUNS ||--o{ ASSET_ATTEMPT_OVERVIEWS : projects
-    RUNS ||--o{ BACKFILL_WINDOWS : may_request
 
     RUNS {
         text run_id PK
@@ -181,6 +176,21 @@ erDiagram
         text target_id
         text target_kind
         boolean is_primary
+    }
+```
+
+Operator-facing relations:
+
+```mermaid
+erDiagram
+    RUNS }o--|| EXECUTION_GROUP_OVERVIEWS : contributes_to
+    RUNS ||--o{ ASSET_ATTEMPT_OVERVIEWS : projects
+    RUNS ||--o{ BACKFILL_WINDOWS : may_request
+
+    RUNS {
+        text run_id PK
+        text root_execution_group_id
+        text status
     }
     EXECUTION_GROUP_OVERVIEWS {
         text root_run_id PK
@@ -227,8 +237,7 @@ flowchart TD
     Q --> G
     G --> H{Operator action}
     H -->|Open asset step| I[Read one keyed step detail]
-    H -->|Open Window runs| J[Read one bounded window page]
-    H -->|Open Events| K[Read one bounded event page]
+    H -->|Open Windows or Events| J[Read only the selected bounded page]
     L[Root-scoped durable wake-up] --> M[Read changed header or step rows]
     M --> G
     N[Unrelated publication] --> O[No page read]
@@ -744,23 +753,30 @@ pipeline remains outside this PR.
   `{run_id, asset_step_id}` detail read. Only a row in the selected run may be
   opened, including through a direct URL.
 
+Paging and the 500-row live range:
+
 ```mermaid
 flowchart TD
     A[Open exact run route] --> B[Read header and first 200 matching steps]
     B --> C[Show loaded and matching counts plus range controls]
-    C --> D{Operator action}
+    C --> D{Paging action}
     D -->|Load more below 500| E[Read only remaining capacity]
+    D -->|Next or Previous at 500| F[Read up to 200 adjacent rows<br/>Drop the same count from opposite end]
     E --> C
-    D -->|Next at 500| F[Read next 200 and drop same count from start]
     F --> C
-    D -->|Previous| G[Read prior 200 and drop same count from end]
-    G --> C
-    C -->|No next cursor| K[Show end of matching assets]
-    D -->|Choose window run| H[Navigate to child run ID]
-    H --> B
-    D -->|Apply asset prefix| I[Reset cursor and visible live scope]
-    I --> B
-    D -->|Open step| J[Read one exact step detail]
+    C -->|No next cursor| G[Show end of matching assets]
+```
+
+Filtering, window navigation, and on-demand detail:
+
+```mermaid
+flowchart TD
+    A[Displayed run page] --> B{Operator action}
+    B -->|Choose window run| C[Navigate to child run ID]
+    C --> D[Read that run's first matching page]
+    B -->|Apply asset prefix| E[Reset cursor and visible live scope]
+    E --> F[Read the filtered first page]
+    B -->|Open step| G[Read one exact step detail]
 ```
 
 ### Corrected query and cursor contracts
@@ -1007,3 +1023,13 @@ Acceptance evidence must prove:
 | Findings | Initial review rejected the amendment because rows above 500 were unreachable, the third append page over-fetched, the proposed keyset used nullable/mutable fields, multi-page delta acknowledgement lacked a frozen watermark, the delta index could scan unloaded rows, aggregate async budgets were missing, Events topic scope was ambiguous, and the Mermaid flow omitted the exhausted branch. Recheck also found that exact live counts lacked a truthful count-index/MVCC budget and the asset-prefix contract did not escape literal SQL pattern characters. |
 | Findings addressed and rechecked | Yes. The record now provides bounded bidirectional browsing, remaining-capacity page limits, immutable canonical order/identity failures, loaded-ID delta joins, frozen atomic acknowledgement, aggregate task budgets, explicit mode topics, an exhausted diagram path, a measured count access path, and cursor-bound literal-prefix escaping. The reviewer rechecked every correction against the issue, baseline, schema, and projector behavior. |
 | Verdict | Approved. No blocking findings remain; implementation may proceed after the semantic amendment commit is recorded. |
+
+### Presentation correction
+
+| Field | Result |
+| --- | --- |
+| Requested by | Draft-PR user review on 2026-08-23 |
+| Change | Split and reflow wide Mermaid diagrams for GitHub's constrained rich-diff width, and remove an obsolete planning-tool availability sentence. |
+| Semantic effect | None. The diagrams retain the approved data relationships, query boundaries, pagination behavior, and on-demand detail behavior. |
+| Reviewer | Independent GPT-5.6 Sol review |
+| Verdict | Approved. No findings remain; the correction is presentation-only and preserves the approved plan. |
