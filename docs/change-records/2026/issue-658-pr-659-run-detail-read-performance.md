@@ -2,13 +2,13 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Plan reviewed |
+| Status | Implementing |
 | Type | Bug fix and cross-application refactor |
 | Primary issue | [#658](https://github.com/eirhop/favn/issues/658) |
-| Pull request | Pending |
+| Pull request | [#659](https://github.com/eirhop/favn/pull/659) |
 | Related work | None |
 | Affected areas | Operator run reads in `favn_orchestrator`, PostgreSQL operator-read queries in `favn_storage_postgres`, and `/runs/:run_id` in `favn_view` |
-| Approved plan commit | Pending PR-number update |
+| Approved plan commit | `a588ee304fcb0a7af99f5ef853a48bb12694a904` |
 | Last updated | 2026-08-23 |
 
 ## One-minute summary
