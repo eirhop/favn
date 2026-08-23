@@ -684,3 +684,326 @@ After independent approval, the reviewed planning commit becomes the immutable
 baseline. Implementation outcome, deviations, verification evidence, and final
 review sections will be appended during implementation without rewriting this
 approved plan.
+
+## Plan amendment 1: run-scoped paging and bounded live coverage
+
+This amendment was requested during draft-PR review before implementation began.
+It preserves the approved baseline above and supersedes only its assumption that
+200 Flow rows are the terminal visible result and the related Flow row scope,
+filter, cursor, index, wake-up, payload/deadline, and verification contracts.
+Other approved use cases and persistence decisions remain unchanged unless this
+amendment says so explicitly. The change is material and therefore requires
+independent plan re-review before implementation.
+
+### Review finding
+
+A 90-asset Flow is one observed monthly window run, not a reliable upper bound.
+One window run can exceed 200 assets, and an execution group can contain several
+such runs. A fixed 200-row result would improve control-plane load by silently
+hiding valid assets. Loading all execution-group assets would recreate the
+original performance problem at a larger scale.
+
+The corrected rule is: **200 is a page size, 500 is the maximum number of lean
+step summaries retained by one LiveView, and an exact run is the primary Flow
+filter.** The 500-row value is a View/read-model safety bound, not a new planner,
+scheduler, or runner limit. Changing the maximum number of assets allowed in a
+pipeline remains outside this PR.
+
+### Corrected operator behavior
+
+- The route's exact `run_id` scopes the Flow rows. A child window run is already
+  a separate pipeline run, so opening it queries only that window run's asset
+  steps. The Flow header and counts describe that selected run. The root
+  execution-group ID remains available for authorization, breadcrumb/navigation,
+  and the Window Runs mode; it is not the Flow row predicate.
+- A backfill/root page does not flatten asset steps from every child window run.
+  Its lazy Window Runs page lists 50 child summaries at a time and navigates to
+  `/runs/:child_run_id`. A parent with no direct steps shows an explicit empty
+  state and an action to choose a window run.
+- The first Flow read returns at most 200 lean rows, exact filtered and unfiltered
+  totals, forward/backward cursors, and `has_next?`/`has_previous?`. "Load more"
+  appends a keyset page while capacity remains. Its requested page size is
+  `min(200, 500 - retained_count)`, so the normal progression is 200, 400, then
+  500 without querying rows that cannot be appended.
+- The 500-row bound limits retained/live rows, not browse reachability. At 500,
+  "Next 200" reads after the upper cursor and atomically drops the same number
+  of oldest rows; "Previous 200" reads before the lower cursor in reverse and
+  drops the same number from the other end. The retained rows therefore remain
+  one deterministic, contiguous filtered range of at most 500. The UI shows
+  `N loaded · M matching` plus exhausted/previous/next state. Every match,
+  including row 501 and beyond, remains reachable without an offset query.
+- The first-release server-side filters are exact run/window and a bounded
+  asset-reference prefix. Run/window selection is navigation; the asset prefix
+  uses an explicit Apply action so typing does not query the orchestrator.
+  Applying or clearing it resets rows, cursors, drawer detail, and live coverage,
+  then performs one initial page read. Filter values are represented in the URL
+  and bound into the opaque cursor so a cursor cannot be reused with another run
+  or filter. Lifecycle-state filtering is deliberately deferred because status
+  changes would continuously move rows into and out of a live result set.
+- Opening an asset-step drawer still performs one exact
+  `{run_id, asset_step_id}` detail read. Only a row in the selected run may be
+  opened, including through a direct URL.
+
+```mermaid
+flowchart TD
+    A[Open exact run route] --> B[Read header and first 200 matching steps]
+    B --> C[Show loaded and matching counts plus range controls]
+    C --> D{Operator action}
+    D -->|Load more below 500| E[Read only remaining capacity]
+    E --> C
+    D -->|Next at 500| F[Read next 200 and drop same count from start]
+    F --> C
+    D -->|Previous| G[Read prior 200 and drop same count from end]
+    G --> C
+    C -->|No next cursor| K[Show end of matching assets]
+    D -->|Choose window run| H[Navigate to child run ID]
+    H --> B
+    D -->|Apply asset prefix| I[Reset cursor and visible live scope]
+    I --> B
+    D -->|Open step| J[Read one exact step detail]
+```
+
+### Corrected query and cursor contracts
+
+The Flow step page is keyed by authorized workspace, selected `run_id`, normalized
+filters, and the total order
+`(asset_ref COLLATE "C", asset_step_id COLLATE "C")`. Both fields are non-null;
+`asset_step_id` is the existing primary-key identity and tie-breaker. The amended
+projector treats the canonical `asset_ref` written by plan seeding as immutable.
+An event-without-seed sets it once; a later conflicting identity is recorded as
+a projection failure and makes the affected read explicitly unavailable until
+repair rather than moving a row across a cursor or prefix boundary. Nullable or
+mutable `stage`, window, status, and timing fields are never cursor fields.
+
+Every page accepts `requested_limit` in `1..200` and executes
+`LIMIT requested_limit + 1`. Initial and ordinary continuation pages request
+200; when 400 rows are retained, Load more requests 100 and SQL uses `LIMIT 101`.
+Only returned rows are retained/live, and each lower/upper cursor is bound to the
+first/last retained row. Forward queries use `>` in the declared order;
+backward queries use `<`, reverse SQL order, and reverse the bounded result before
+returning it. No offset scan and no per-asset query is permitted. Exact counts
+are calculated independently of the page and remain truthful at 201, 500, and
+well above 500 matches.
+
+The approved initial-page index is corrected to match the exact-run access path:
+
+- initial, prefix-filtered, forward, and backward paging uses
+  `(workspace_id, run_id, asset_ref COLLATE "C", asset_step_id COLLATE "C")`;
+- exact displayed lifecycle counts use the separate narrow index
+  `(workspace_id, run_id, status)`. The aggregate selects only status/count
+  scalars and runs once per initial read or coalesced delta drain, never once per
+  delta page;
+- live deltas join an input array of at most 500 loaded `asset_step_id` values to
+  the existing exact-run/step index, then apply publication bounds. They do not
+  scan the run's unloaded keyspace;
+- root execution-group indexes remain only where aggregate header or
+  notification-root resolution queries actually use them;
+- `EXPLAIN (ANALYZE, BUFFERS)` evidence for unfiltered and asset-prefix pages
+  decides whether a narrowly matched additional index is justified.
+  The implementation must not add a generic index without that evidence.
+
+The asset prefix is a literal, case-sensitive prefix under `COLLATE "C"`. It is
+trimmed and limited to 128 UTF-8 bytes at the public facade. SQL uses a bound
+parameter with `LIKE ... ESCAPE '\\'`; the encoder escapes backslash first, then
+`%` and `_`, before appending the one server-owned `%` suffix. User text is never
+interpolated as a pattern. The cursor fingerprint binds the normalized,
+unescaped literal bytes, not the SQL-escaped representation. The predicate
+applies to the already stored scalar asset reference; it never loads the asset
+catalogue or decodes a plan. Invalid UTF-8, oversized, or
+cursor/literal-mismatched values return a stable invalid-filter/cursor result
+without a page query.
+
+The count index is covering by column shape, but the plan does not claim zero
+heap access: PostgreSQL may perform heap visibility checks while an active run is
+being updated. In a 10,000-row actively updated exact-run fixture, each coalesced
+count aggregate may examine at most 10,000 matching index tuples and 10,000 heap
+tuples, no sibling-run tuples, at most 2,500 total shared-hit/read buffers, warm
+p95 at most 50 ms, and cold p95 at most 150 ms. It must read no snapshot, plan,
+event, error, output-metadata, window JSON, or TOAST payload pages. Exceeding any
+budget blocks rollout and requires a reviewed alternative to per-wake exact
+counts; it cannot be hidden by relaxing the assertion.
+
+The opaque cursor carries direction-safe lower/upper key values plus a versioned
+fingerprint of workspace, selected run, and normalized filter. The facade
+rejects malformed, mismatched, or expired-version cursors before storage. Plan
+repair backfills canonical asset references before the version-2 readiness
+marker is completed and tests that later observed events cannot mutate them.
+
+### Bounded subscription behavior
+
+"Subscribe to the loaded assets" does not create 200 to 500 PubSub topics. The
+page keeps at most one post-projection topic for its active screen. Flow uses the
+exact selected-run topic; the Window Runs screen uses the root execution-group
+topic. Events retains the approved execution-group event contract and therefore
+also uses the root topic. Changing modes authorizes and swaps that one scope
+before reading the new screen.
+
+The projector therefore emits bounded post-commit wake-ups for both affected
+run IDs and their root group, deduplicated inside each projection transaction.
+This is notification routing, not a second data read or a per-asset
+subscription. A sibling window-run publication is never delivered to an exact
+child-run Flow topic, so it causes zero Flow facade or database calls.
+Each payload remains at most 1 KiB and contains IDs, committed cursor, and change
+class only. One transaction emits no more than one run and one root wake-up per
+distinct affected run publication scope, bounded by twice the existing
+250-publication projector batch. Notification count and listener work are part
+of the concurrency qualification; a failing result requires plan re-review, not
+a silent return to root-wide Flow refreshes.
+
+The baseline grant/activate/independent-snapshot race guarantee applies to each
+scope change. The View first obtains a separately authorized grant for the new
+scope, deactivates the old local topic, activates the new one, and then performs
+the independently reauthorized snapshot. The snapshot covers the interval
+before activation; a later commit queues a wake-up. Activation or read failure
+deactivates the new scope and shows the bounded error state rather than restoring
+old authority implicitly.
+
+- The socket stores an explicit loaded scope: selected run, normalized filter,
+  at most 500 `asset_step_id` values, lower/upper browse cursors, retained count,
+  and acknowledged projection cursor. Its encoded request form is capped at
+  160 KiB and validated before storage.
+- The initial page makes only its returned rows live. Append, forward, and
+  backward page reads replace the loaded-ID set and cursor boundaries only after
+  the whole page succeeds. A failed read changes neither rows nor live coverage.
+- A relevant wake-up supplies a candidate publication watermark. The coalesced
+  delta task freezes `through_publication_id` before its first read and joins
+  only the validated loaded IDs against the exact-run/step index. Unloaded rows
+  are not scanned to discover visible step deltas. Exact counts and
+  `has_next?` may still change through the separately budgeted compact header
+  aggregate because those values are displayed; its covering-index tuples,
+  permitted MVCC heap visibility, and buffers are measured independently.
+- Delta paging has three distinct cursors: immutable browse boundaries, the
+  socket's last fully acknowledged publication ID, and a transient composite
+  scan cursor `(source_publication_id, asset_step_id)`. Each delta query applies
+  `acknowledged < source_publication_id <= through`, orders by the composite
+  cursor, and returns at most 200 current rows. This handles 500 rows sharing one
+  publication without skipping ties.
+- The task buffers at most 500 changed summaries outside socket assigns and
+  merges them only after the complete drain succeeds. Only then does the socket
+  atomically advance its acknowledged cursor to `through_publication_id`. A
+  page-2/3 failure discards the buffer, retains the old rows and old
+  acknowledgement, and shows an explicit stale/error state. A newer wake-up
+  observed during the drain is coalesced for a subsequent frozen-watermark
+  drain; it never expands the current drain.
+- Status, timing, and bounded detail-summary changes update a loaded ID in place.
+  A rare projection membership change, including an event-without-seed insert or
+  repair deletion in the retained browse range, is a named wake-up class. A
+  cancellable reconciliation task re-reads from the range's lower anchor in
+  pages of at most 200 until it has the prior retained target count or reaches an
+  exhausted boundary, always at most 500. It atomically replaces the prior range
+  only after every page succeeds, so insertions and deletions cannot create a
+  duplicate, gap, or more than 500 retained rows.
+- Changing run/window or mode drops the old row set, upper cursor, pending delta
+  work, topic grant, and drawer detail before establishing the new bounded
+  scope. Changing only the asset prefix retains the same authorized exact-run
+  topic but drops rows, cursor, pending delta work, and drawer detail before the
+  filtered read.
+- Reconnect and listener-resume reconciliation reload only the currently loaded
+  filtered range with the same bounded task. It never expands the retained target
+  automatically.
+- At most one page mutation, delta drain, or reconciliation task is in flight per
+  socket. Tasks are generation-tagged, cancelled on scope change/termination,
+  and cannot overwrite a newer scope. The LiveView remains responsive while an
+  owned task performs remote calls.
+
+This keeps each page at one active topic, bounds projector notification fan-out
+by its existing batch, and makes database reads and LiveView memory proportional
+to what the operator chose to display.
+
+### Amended budgets
+
+| Interaction | Data-query and payload budget | LiveView state effect |
+| --- | --- | --- |
+| Initial exact-run Flow | Same grant/snapshot call budget as the baseline; at most 200 summaries and 1 MiB, plus exact counts and next cursor | Replaces visible scope with 0–200 rows |
+| Load more below 500 | One reauthorized facade call, one indexed page statement, requested/returned limit `min(200, remaining capacity)`, at most 1 MiB, three-second monotonic deadline | Appends without duplicates; maximum retained total is 500 |
+| Next/Previous retained range | One reauthorized facade call, one indexed forward/reverse page statement, at most 200 summaries and 1 MiB, three-second monotonic deadline | Atomically swaps equal-sized range edges; every match remains browsable while at most 500 stay live |
+| Apply/clear filter or choose run/window | One new initial exact-run Flow read after URL/state validation | Drops the prior rows and restarts at 0–200 |
+| Relevant live delta drain | At most three reauthorized facade calls, three authorization operations, four data statements including one header aggregate, 500 summaries/2.5 MiB total response, and 3 × 160 KiB request input under one five-second monotonic deadline | One task, one frozen watermark, one final merge/ack; a failure commits none of the buffered rows or acknowledgement |
+| Membership/reconnect reconciliation | At most three reauthorized facade calls, three authorization operations, four data statements including the first header aggregate, 500 summaries/2.5 MiB total response under one six-second monotonic deadline | One generation-tagged task atomically replaces at most the prior retained target; failure retains the prior range with an error state |
+| Socket maximum | No single response exceeds the 200-row/1 MiB page budget | At most 500 lean summaries and 2.5 MiB of encoded summary data, excluding one separately bounded drawer detail |
+
+Deadlines above include local queuing, remote facade calls, authorization,
+storage, decoding, and result handoff. Remaining time is propagated to every
+continuation; starting a new per-page timeout cannot extend the aggregate
+deadline. No delta/reconciliation call overlaps another for the same socket.
+Notifications received while work is in flight update one pending maximum
+watermark, not a task queue. Deadline or cancellation returns the same explicit
+stale/error state and never triggers an immediate broad retry.
+
+### Amended implementation and verification
+
+The affected slices gain these requirements without changing their owners:
+
+- Slice 1 records whether the reported 90 assets belong to one exact run and
+  captures group-wide versus exact-run plans and payloads.
+- Slice 4 adds exact-run/filter-bound keyset page and delta contracts rather
+  than a terminal 200-row root-group query, enforces immutable canonical asset
+  references, and uses loaded-ID joins for live deltas.
+- Slice 5 caps every page at 200, validates filters/cursors, returns exact counts,
+  exposes no public option that requests all rows, and supports direction-safe
+  browsing with a caller-requested limit no greater than 200.
+- Slice 6 adds Apply/Clear, Load more, Previous/Next range behavior,
+  `N loaded · M matching`, URL-stable filters, and bounded row retention.
+- Slice 7 limits live deltas and reconciliation to validated loaded IDs, adds
+  frozen-watermark drains with aggregate deadlines, and preserves one active
+  mode-scoped subscription.
+- Slice 8 qualifies 90, 200, 201, 400, 500, 501, and 10,000 matching rows; a
+  group with many 500-asset child window runs; changed unloaded rows; and
+  concurrent operators who browse and update the 500-row live range.
+
+Acceptance evidence must prove:
+
+- opening a child/window run never selects sibling-window asset rows;
+- parent/root Flow never flattens child attempts and provides a clear route to
+  the paginated Window Runs list;
+- page boundaries have no duplicates or gaps with null stages, equal asset
+  references, event-without-seed inserts, repair, and status/timing updates;
+- canonical asset-reference conflicts cannot mutate the browse/filter identity
+  and instead produce explicit projection evidence and read unavailability;
+- Load more performs one constant-count indexed page read and extends live
+  coverage only after success;
+- at 400 retained rows, Load more requests 100, SQL uses `LIMIT 101`, returns no
+  more than 100, and binds the live upper cursor to the last retained row;
+- filter Apply resets the cursor and rejects a cursor issued for another filter;
+- literal prefix tests cover `%`, `_`, backslash, mixed case, and multibyte text;
+  escaped SQL semantics, exact filtered totals, page rows, and cursor fingerprints
+  must agree without interpreting user text as a wildcard;
+- 500 rows are retained as 200 + 200 + 100; row 501 and later rows remain
+  reachable through Next/Previous range navigation in a 10,000-row fixture whose
+  asset references share the same prefix;
+- wake-ups for later unloaded rows in the selected run update exact totals but
+  cause the step-delta query to examine no unloaded attempt rows in
+  `EXPLAIN (ANALYZE, BUFFERS)` evidence, even when thousands of unloaded rows
+  have newer publication IDs; any separately displayed-count aggregate is
+  reported and budgeted as its own covering-index aggregate work with MVCC heap
+  visibility allowed;
+- under active updates to 10,000 exact-run rows, the count plan uses the
+  `(workspace_id, run_id, status)` access path, touches no sibling or detail
+  payload data, and stays within the declared tuple, heap, buffer, warm-p95, and
+  cold-p95 ceilings; zero heap fetches is not assumed;
+- a sibling window-run wake-up performs zero Flow facade and database calls for
+  the selected child run;
+- a burst changing all 500 visible rows drains no more than three 200-row delta
+  pages when all rows share one publication ID; concurrent writes wait for the
+  next frozen drain, and a page-2 failure retains the old acknowledgement;
+- duplicate wakes, overlapping actions, deadline expiry, scope cancellation,
+  and stale async results cannot overlap work or overwrite the current range;
+- membership insertion/deletion rebalances one contiguous retained range to its
+  prior target or an exhausted boundary and atomically exposes no partial set;
+- concurrent 10,000-row exact-run viewers remain within aggregate drain,
+  reconciliation, query-buffer, scheduler, runner-coordination, lease, and
+  heartbeat budgets;
+- maximum socket summary state, rendered DOM/diff size, query time, queue time,
+  and payload bytes remain within the amended bounds at desktop and mobile
+  widths.
+
+### Amendment review
+
+| Field | Result |
+| --- | --- |
+| Requested by | Draft-PR user review on 2026-08-23 |
+| Semantic amendment commit | Recorded in the immediate metadata follow-up after this reviewed amendment is committed |
+| Reviewer | Independent agent `issue_658_plan_review` |
+| Findings | Initial review rejected the amendment because rows above 500 were unreachable, the third append page over-fetched, the proposed keyset used nullable/mutable fields, multi-page delta acknowledgement lacked a frozen watermark, the delta index could scan unloaded rows, aggregate async budgets were missing, Events topic scope was ambiguous, and the Mermaid flow omitted the exhausted branch. Recheck also found that exact live counts lacked a truthful count-index/MVCC budget and the asset-prefix contract did not escape literal SQL pattern characters. |
+| Findings addressed and rechecked | Yes. The record now provides bounded bidirectional browsing, remaining-capacity page limits, immutable canonical order/identity failures, loaded-ID delta joins, frozen atomic acknowledgement, aggregate task budgets, explicit mode topics, an exhausted diagram path, a measured count access path, and cursor-bound literal-prefix escaping. The reviewer rechecked every correction against the issue, baseline, schema, and projector behavior. |
+| Verdict | Approved. No blocking findings remain; implementation may proceed after the semantic amendment commit is recorded. |
