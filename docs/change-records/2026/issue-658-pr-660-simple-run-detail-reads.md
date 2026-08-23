@@ -2,13 +2,13 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Plan reviewed |
+| Status | Implementing |
 | Type | Refactor |
 | Primary issue | [#658](https://github.com/eirhop/favn/issues/658) |
-| Pull request | Pending |
+| Pull request | [#660](https://github.com/eirhop/favn/pull/660) |
 | Related work | [Draft PR #659](https://github.com/eirhop/favn/pull/659), which this simpler approach replaces |
 | Affected areas | Run detail UI, orchestrator operator reads, PostgreSQL operator reads |
-| Approved plan commit | Pending planning commit |
+| Approved plan commit | [`ce12d5d2`](https://github.com/eirhop/favn/commit/ce12d5d2c7945b92f5b52f1ec699d4c8b1c2c2b6) |
 | Last updated | 2026-08-23 |
 
 ## One-minute summary
