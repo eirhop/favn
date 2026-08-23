@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Plan reviewed |
+| Status | Implementing |
 | Type | Bug fix and cross-application refactor |
 | Primary issue | [#658](https://github.com/eirhop/favn/issues/658) |
 | Pull request | [#659](https://github.com/eirhop/favn/pull/659) |
@@ -1218,6 +1218,7 @@ Acceptance evidence must prove:
 | Field | Result |
 | --- | --- |
 | Requested by | PR user review on 2026-08-23 |
+| Semantic amendment commit | `b388be7338e03709df3a9a69ec5bad1c38b1f977` |
 | Reviewer | Independent agent `issue_658_plan_review` |
 | Findings | Initial review rejected reuse of the richer Window runs page because it includes nullable run IDs and unrendered aggregates; it also found no authoritative selected label/sole-child reachability contract and no picker task lifecycle. |
 | Findings addressed | Added a lean navigable-only switch page, scalar selected/sole-window header data, explicit root states, generation-tagged picker concurrency/recovery, and a matching concurrent partial index with production-shaped page/count budgets. |
