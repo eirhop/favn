@@ -2720,7 +2720,7 @@ defmodule FavnStoragePostgres.Registry.Store do
                    |> Repo.update_all(set: changes)
 
                  operation
-                 |> Repo.reload!()
+                 |> struct!(changes)
                  |> manifest_deployment_result()
              end
            end) do
