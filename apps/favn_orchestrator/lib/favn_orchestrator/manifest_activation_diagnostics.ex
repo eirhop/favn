@@ -3,8 +3,8 @@ defmodule FavnOrchestrator.ManifestActivationDiagnostics do
   Bounded operator diagnostics returned with one manifest activation.
 
   Compatibility decisions remain durable target-binding state. This value only
-  summarizes inspection failures that require an operator to repeat activation
-  after correcting a transient runner or data-system problem.
+  summarizes every compatibility result that requires an explicit operator
+  decision before the target path can proceed.
   """
 
   alias FavnOrchestrator.Persistence.Commands.DeploymentTargetCompatibility
@@ -40,12 +40,12 @@ defmodule FavnOrchestrator.ManifestActivationDiagnostics do
           recovery: recovery() | nil
         }
 
-  @doc "Summarizes unresolved physical inspections without exposing unbounded details."
+  @doc "Summarizes unresolved operator decisions without exposing unbounded details."
   @spec from_compatibilities([DeploymentTargetCompatibility.t()]) :: t()
   def from_compatibilities(compatibilities) when is_list(compatibilities) do
     unresolved =
       compatibilities
-      |> Enum.filter(&unresolved_inspection?/1)
+      |> Enum.filter(&operator_decision?/1)
       |> Enum.map(&inspection_summary/1)
       |> Enum.sort_by(& &1.target_id)
 
@@ -100,13 +100,12 @@ defmodule FavnOrchestrator.ManifestActivationDiagnostics do
 
   def from_map(_diagnostics), do: {:error, :invalid_activation_diagnostics}
 
-  defp unresolved_inspection?(%DeploymentTargetCompatibility{
-         compatibility_status: :operator_decision,
-         reason_code: "physical_inspection_unavailable"
+  defp operator_decision?(%DeploymentTargetCompatibility{
+         compatibility_status: :operator_decision
        }),
        do: true
 
-  defp unresolved_inspection?(_compatibility), do: false
+  defp operator_decision?(_compatibility), do: false
 
   defp inspection_summary(%DeploymentTargetCompatibility{} = compatibility) do
     %{
@@ -122,7 +121,7 @@ defmodule FavnOrchestrator.ManifestActivationDiagnostics do
       action: :repeat_manifest_activation,
       requires_new_idempotency_key: true,
       message:
-        "Correct the runner or data-system problem, then repeat manifest activation with a new idempotency key."
+        "Resolve the target decisions, then repeat manifest activation with a new idempotency key."
     }
   end
 
@@ -131,7 +130,7 @@ defmodule FavnOrchestrator.ManifestActivationDiagnostics do
     reason_code = field(summary, :reason_code)
 
     is_binary(target_id) and target_id != "" and byte_size(target_id) <= 512 and
-      reason_code == "physical_inspection_unavailable"
+      is_binary(reason_code) and reason_code != "" and byte_size(reason_code) <= 255
   end
 
   defp valid_inspection_summary?(_summary), do: false

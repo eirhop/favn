@@ -17,14 +17,13 @@ defmodule FavnOrchestrator.API.ManifestDeployment do
   alias FavnOrchestrator.API.ManifestDeploymentArchive
   alias FavnOrchestrator.API.Response
   alias FavnOrchestrator.ManifestDeployments
+  alias FavnOrchestrator.ManifestUploadHeartbeat
   alias FavnOrchestrator.Persistence.Error
   alias FavnOrchestrator.Persistence.Results.ManifestDeployment, as: DeploymentResult
   alias FavnOrchestrator.RuntimeConfig
 
   @operation_pattern ~r/\A[A-Za-z0-9][A-Za-z0-9._-]*\z/
   @sha_pattern ~r/\A[0-9a-f]{64}\z/
-  @upload_lease_renew_ms 30_000
-
   @impl true
   def init(opts), do: opts
 
@@ -94,9 +93,27 @@ defmodule FavnOrchestrator.API.ManifestDeployment do
 
     case ManifestDeployments.acquire_upload(context, lease_id) do
       :ok ->
+        heartbeat =
+          ManifestUploadHeartbeat.start(fn ->
+            ManifestDeployments.renew_upload(context, lease_id)
+          end)
+
         try do
-          receive_archive(conn, context, lease_id, operation_id, archive_sha256)
+          started_at_ms = System.monotonic_time(:millisecond)
+          deadline_ms = started_at_ms + ArchiveLimits.current().upload_timeout_ms
+
+          receive_archive(
+            conn,
+            context,
+            lease_id,
+            operation_id,
+            archive_sha256,
+            heartbeat,
+            started_at_ms,
+            deadline_ms
+          )
         after
+          :ok = ManifestUploadHeartbeat.stop(heartbeat)
           _ = ManifestDeployments.release_upload(context, lease_id)
         end
 
@@ -110,15 +127,32 @@ defmodule FavnOrchestrator.API.ManifestDeployment do
     end
   end
 
-  defp receive_archive(conn, context, lease_id, operation_id, expected_sha256) do
+  defp receive_archive(
+         conn,
+         context,
+         lease_id,
+         operation_id,
+         expected_sha256,
+         heartbeat,
+         started_at_ms,
+         deadline_ms
+       ) do
     parser =
-      ManifestDeploymentArchive.new(fn packages ->
-        ManifestDeployments.register_packages(context, packages)
-      end)
+      ManifestDeploymentArchive.new(
+        fn packages ->
+          with :ok <- ensure_upload_active(heartbeat, deadline_ms),
+               :ok <- ManifestDeployments.register_packages(context, packages) do
+            ensure_upload_active(heartbeat, deadline_ms)
+          end
+        end,
+        started_at_ms: started_at_ms
+      )
 
     try do
-      with {:ok, parser, conn} <- read_archive(conn, context, lease_id, parser),
+      with {:ok, parser, conn} <- read_archive(conn, parser),
+           :ok <- ensure_upload_active(heartbeat, deadline_ms),
            {:ok, parsed} <- ManifestDeploymentArchive.finish(parser),
+           :ok <- ensure_upload_active(heartbeat, deadline_ms),
            :ok <- verify_archive_sha(parsed.archive_sha256, expected_sha256),
            fingerprint <-
              ManifestDeployments.fingerprint(
@@ -131,6 +165,7 @@ defmodule FavnOrchestrator.API.ManifestDeployment do
              ManifestDeployments.accept(
                context,
                operation_id,
+               lease_id,
                expected_sha256,
                fingerprint,
                parsed.version
@@ -177,6 +212,18 @@ defmodule FavnOrchestrator.API.ManifestDeployment do
         {:error, :upload_timeout} ->
           error(conn, 408, "manifest_upload_timeout", "Manifest archive upload timed out")
 
+        {:error, {:upload_lease_lost, _reason}} ->
+          error(conn, 409, "manifest_upload_lease_lost", "Manifest upload lease was lost")
+
+        {:error, {:package_persistence_failed, :upload_timeout}} ->
+          error(conn, 408, "manifest_upload_timeout", "Manifest archive upload timed out")
+
+        {:error, {:package_persistence_failed, {:upload_lease_lost, _reason}}} ->
+          error(conn, 409, "manifest_upload_lease_lost", "Manifest upload lease was lost")
+
+        {:error, %Error{kind: :conflict, details: %{reason: :manifest_upload_lease_lost}}} ->
+          error(conn, 409, "manifest_upload_lease_lost", "Manifest upload lease was lost")
+
         {:error, {:package_persistence_failed, %Error{} = reason}} ->
           infrastructure_error(conn, reason)
 
@@ -192,14 +239,12 @@ defmodule FavnOrchestrator.API.ManifestDeployment do
     catch
       :exit, _reason ->
         error(conn, 400, "invalid_request_body", "Manifest archive body failed")
+    after
+      ManifestDeploymentArchive.discard(parser)
     end
   end
 
-  defp read_archive(conn, context, lease_id, parser) do
-    read_archive(conn, context, lease_id, parser, System.monotonic_time(:millisecond))
-  end
-
-  defp read_archive(conn, context, lease_id, parser, renewed_at) do
+  defp read_archive(conn, parser) do
     limits = ArchiveLimits.current()
 
     case read_body(conn,
@@ -212,14 +257,7 @@ defmodule FavnOrchestrator.API.ManifestDeployment do
 
       {:more, bytes, conn} ->
         feed_archive(parser, bytes, fn parser ->
-          case maybe_renew_upload(context, lease_id, renewed_at) do
-            {:ok, renewed_at} ->
-              read_archive(conn, context, lease_id, parser, renewed_at)
-
-            {:error, _reason} = error ->
-              ManifestDeploymentArchive.discard(parser)
-              error
-          end
+          read_archive(conn, parser)
         end)
 
       {:error, :timeout} ->
@@ -243,17 +281,10 @@ defmodule FavnOrchestrator.API.ManifestDeployment do
     end
   end
 
-  defp maybe_renew_upload(context, lease_id, renewed_at) do
-    now = System.monotonic_time(:millisecond)
-
-    if now - renewed_at >= @upload_lease_renew_ms do
-      case ManifestDeployments.renew_upload(context, lease_id) do
-        :ok -> {:ok, now}
-        {:error, _reason} = error -> error
-      end
-    else
-      {:ok, renewed_at}
-    end
+  defp ensure_upload_active(heartbeat, deadline_ms) do
+    if System.monotonic_time(:millisecond) > deadline_ms,
+      do: {:error, :upload_timeout},
+      else: ManifestUploadHeartbeat.check(heartbeat)
   end
 
   defp get_status(conn, operation_id) do

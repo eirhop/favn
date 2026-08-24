@@ -98,9 +98,17 @@ defmodule FavnOrchestrator.ManifestDeployments do
           String.t(),
           String.t(),
           String.t(),
+          String.t(),
           Version.t()
         ) :: {:ok, :accepted | :replay, ManifestDeployment.t()} | {:error, term()}
-  def accept(context, operation_id, archive_sha256, request_fingerprint, %Version{} = version) do
+  def accept(
+        context,
+        operation_id,
+        upload_lease_id,
+        archive_sha256,
+        request_fingerprint,
+        %Version{} = version
+      ) do
     platform =
       SystemContext.platform(:manifest_deployment_accept,
         roles: [:platform_operator],
@@ -118,6 +126,7 @@ defmodule FavnOrchestrator.ManifestDeployments do
       platform_context: platform,
       workspace_context: workspace,
       operation_id: operation_id,
+      upload_lease_id: upload_lease_id,
       archive_sha256: archive_sha256,
       request_fingerprint: request_fingerprint,
       version: version,

@@ -59,7 +59,7 @@ defmodule FavnAuthoring.Deployment.Artifact do
         bytes = File.read!(path)
 
         %{
-          "executable" => executable?(File.stat!(path).mode),
+          "executable" => false,
           "path" => Path.relative_to(path, directory),
           "sha256" => sha256(bytes),
           "size" => byte_size(bytes)
@@ -139,12 +139,11 @@ defmodule FavnAuthoring.Deployment.Artifact do
 
         {:ok, %{type: :regular}} ->
           bytes = File.read!(path)
-          executable = executable?(File.stat!(path).mode)
 
           {:cont,
            {:ok,
             Map.put(acc, relative, %{
-              executable: executable,
+              executable: false,
               sha256: sha256(bytes),
               size: byte_size(bytes)
             })}}
@@ -167,8 +166,6 @@ defmodule FavnAuthoring.Deployment.Artifact do
   defp valid_digest?(digest) do
     byte_size(digest) == 64 and digest =~ ~r/\A[0-9a-f]{64}\z/
   end
-
-  defp executable?(mode), do: Bitwise.band(mode, 0o111) != 0
 
   defp cleanup_error(temp_dir, reason) do
     _ = File.rm_rf(temp_dir)

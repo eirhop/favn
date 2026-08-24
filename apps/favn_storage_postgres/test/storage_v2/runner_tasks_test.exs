@@ -245,6 +245,51 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
              })
   end
 
+  test "expired inspection work cannot be claimed or completed late", fixture do
+    expired = %{
+      enqueue_command(fixture, "expired-before-claim")
+      | deadline_at: DateTime.add(fixture.now, 1, :second)
+    }
+
+    assert {:ok, %{status: :queued}} = Store.enqueue(expired)
+
+    assert {:ok, nil} =
+             Store.claim(
+               claim_command(fixture, "claim-expired", "runner-expired",
+                 occurred_at: DateTime.add(fixture.now, 2, :second)
+               )
+             )
+
+    assert {:ok, _queued} = Store.enqueue(enqueue_command(fixture, "late-completion"))
+
+    assert {:ok, assigned} =
+             Store.claim(
+               claim_command(fixture, "claim-late", "runner-late",
+                 occurred_at: DateTime.add(fixture.now, 1, :second)
+               )
+             )
+
+    assert {:ok, running} =
+             Store.transition(transition_command(fixture, assigned, "start-late", :running))
+
+    result = %RelationInspectionResult{
+      required_runner_release_id: @release,
+      row_count: 1,
+      inspected_at: DateTime.add(fixture.now, 61, :second)
+    }
+
+    assert {:ok, encoded_result} =
+             Codec.encode_result(:relation_inspection, :succeeded, result)
+
+    late = %{
+      complete_command(fixture, running, "complete-after-deadline", encoded_result)
+      | issued_at: DateTime.add(fixture.now, 61, :second),
+        occurred_at: DateTime.add(fixture.now, 61, :second)
+    }
+
+    assert {:error, %{kind: :invalid}} = Store.complete(late)
+  end
+
   test "concurrent task ids cannot share one durable domain identity", fixture do
     first = enqueue_command(fixture, "domain-race-first")
 

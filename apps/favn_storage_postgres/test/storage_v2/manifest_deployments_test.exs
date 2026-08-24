@@ -3,6 +3,7 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
 
   import Plug.Conn
   import Plug.Test
+  import ExUnit.CaptureLog
 
   alias Ecto.Adapters.SQL
   alias Ecto.Adapters.SQL.Sandbox
@@ -84,13 +85,16 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
     on_exit(fn -> restore_env(:manifest_deployer_tokens, previous_tokens) end)
 
     manifest =
-      FavnTestSupport.with_manifest_contract(%{
-        assets: [],
-        pipelines: [],
-        schedules: [],
-        graph: %{},
-        metadata: %{}
-      })
+      FavnTestSupport.with_manifest_contract(
+        %{
+          assets: [],
+          pipelines: [],
+          schedules: [],
+          graph: %{},
+          metadata: %{}
+        },
+        %{"default" => FavnTestSupport.runner_release_id()}
+      )
 
     {:ok, version} = Version.new(manifest)
 
@@ -249,20 +253,79 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
     assert persisted.inspection_total == 100
   end
 
+  test "operation insert failure rolls back manifest publication atomically", context do
+    command = accept_command(context)
+
+    SQL.query!(Repo, """
+    CREATE FUNCTION pg_temp.reject_manifest_deployment_operation()
+    RETURNS trigger LANGUAGE plpgsql AS $$
+    BEGIN
+      RAISE EXCEPTION 'injected manifest operation failure';
+    END;
+    $$
+    """)
+
+    SQL.query!(Repo, """
+    CREATE TRIGGER reject_manifest_deployment_operation
+    BEFORE INSERT ON favn_control.manifest_deployment_operations
+    FOR EACH ROW EXECUTE FUNCTION pg_temp.reject_manifest_deployment_operation()
+    """)
+
+    assert {:error, _reason} = Store.accept_manifest_deployment(command)
+
+    assert %{rows: [[0]]} =
+             SQL.query!(
+               Repo,
+               "SELECT count(*) FROM favn_control.manifest_versions WHERE manifest_version_id = $1",
+               [command.version.manifest_version_id]
+             )
+
+    assert %{rows: [[0]]} =
+             SQL.query!(
+               Repo,
+               "SELECT count(*) FROM favn_control.manifest_deployment_operations WHERE workspace_id = $1 AND operation_id = $2",
+               [context.workspace_id, command.operation_id]
+             )
+  end
+
   test "HTTP authentication and replay finish before an invalid body is read", context do
     path = "/api/orchestrator/v1/manifest-deployments/deploy-operation"
+    other_workspace = provision_workspace(context, "forbidden-status")
 
-    unauthorized =
-      :put
-      |> conn(path, "not a gzip archive")
-      |> put_req_header("authorization", "Bearer wrong-credential")
-      |> put_req_header("x-favn-workspace-id", context.workspace_id)
-      |> put_req_header("x-favn-archive-sha256", String.duplicate("a", 64))
-      |> put_req_header("content-type", "application/gzip")
-      |> put_req_header("x-request-id", "unauthorized-request")
-      |> ManifestDeployment.call([])
+    sentinel =
+      "token=super-secret-sentinel SELECT * FROM private_table /secret/path RuntimeError"
+
+    log =
+      capture_log(fn ->
+        unauthorized =
+          :put
+          |> conn(path, sentinel)
+          |> put_req_header("authorization", "Bearer wrong-credential")
+          |> put_req_header("x-favn-workspace-id", context.workspace_id)
+          |> put_req_header("x-favn-archive-sha256", String.duplicate("a", 64))
+          |> put_req_header("content-type", "application/gzip")
+          |> put_req_header("x-request-id", "unauthorized-request")
+          |> ManifestDeployment.call([])
+
+        send(self(), {:unauthorized_response, unauthorized})
+      end)
+
+    assert_receive {:unauthorized_response, unauthorized}
 
     assert unauthorized.status == 401
+    refute unauthorized.resp_body =~ sentinel
+    refute log =~ sentinel
+
+    forbidden =
+      :get
+      |> conn(path)
+      |> put_req_header("authorization", "Bearer " <> context.raw_token)
+      |> put_req_header("x-favn-workspace-id", other_workspace)
+      |> put_req_header("x-request-id", "cross-workspace-request")
+      |> ManifestDeployment.call([])
+
+    assert forbidden.status == 403
+    assert get_in(Jason.decode!(forbidden.resp_body), ["error", "code"]) == "forbidden"
 
     assert {:ok, :accepted, _operation} =
              context |> accept_command() |> Store.accept_manifest_deployment()
@@ -323,6 +386,37 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
              })
   end
 
+  test "acceptance rejects an expired lease after upload admission is taken over", context do
+    command = accept_command(context)
+
+    SQL.query!(
+      Repo,
+      "UPDATE favn_control.manifest_deployment_upload_leases SET expires_at = $1 WHERE lease_id = $2",
+      [DateTime.add(command.occurred_at, -1, :second), command.upload_lease_id]
+    )
+
+    takeover_at = DateTime.add(command.occurred_at, 1, :second)
+    takeover_lease_id = "takeover-#{System.unique_integer([:positive])}"
+
+    assert :ok =
+             Store.acquire_manifest_upload_lease(%AcquireManifestUploadLease{
+               context: context.deployment_context,
+               lease_id: takeover_lease_id,
+               occurred_at: takeover_at,
+               expires_at: DateTime.add(takeover_at, 60, :second)
+             })
+
+    assert {:error, %{kind: :conflict, details: %{reason: :manifest_upload_lease_lost}}} =
+             Store.accept_manifest_deployment(command)
+
+    assert {:ok, :accepted, _operation} =
+             Store.accept_manifest_deployment(%{
+               command
+               | upload_lease_id: takeover_lease_id,
+                 occurred_at: takeover_at
+             })
+  end
+
   test "workspace activation leases reject overlap and fence takeover", context do
     now = DateTime.utc_now()
 
@@ -364,15 +458,27 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
   end
 
   defp accept_command(context) do
+    occurred_at = DateTime.utc_now()
+    lease_id = "accept-#{System.unique_integer([:positive])}"
+
+    assert :ok =
+             Store.acquire_manifest_upload_lease(%AcquireManifestUploadLease{
+               context: context.deployment_context,
+               lease_id: lease_id,
+               occurred_at: occurred_at,
+               expires_at: DateTime.add(occurred_at, 60, :second)
+             })
+
     %AcceptManifestDeployment{
       context: context.deployment_context,
       platform_context: context.platform_context,
       workspace_context: context.workspace_context,
       operation_id: "deploy-operation",
+      upload_lease_id: lease_id,
       archive_sha256: String.duplicate("a", 64),
       request_fingerprint: String.duplicate("b", 64),
       version: context.version,
-      occurred_at: DateTime.utc_now()
+      occurred_at: occurred_at
     }
   end
 

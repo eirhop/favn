@@ -22,7 +22,9 @@ defmodule FavnOrchestrator.TargetCompatibilityPlannerTest do
   defmodule RunnerExecutor do
     def inspect_relation(request, opts) do
       send(Keyword.fetch!(opts, :test_pid), {:inspect_relation, request})
-      {:ok, Application.fetch_env!(:favn_orchestrator, :compatibility_test_inspection)}
+
+      inspection = Application.fetch_env!(:favn_orchestrator, :compatibility_test_inspection)
+      {:ok, if(is_function(inspection, 1), do: inspection.(request), else: inspection)}
     end
   end
 
@@ -151,6 +153,74 @@ defmodule FavnOrchestrator.TargetCompatibilityPlannerTest do
 
     assert_received {:progress, 0, 1}
     assert_received {:progress, 1, 1}
+  end
+
+  @tag :slow
+  test "attempts one thousand targets exactly once with bounded fair concurrency", contexts do
+    {version, assets} = large_persisted_version(1_000)
+    put_versions([version])
+    Application.put_env(:favn_orchestrator, :compatibility_test_bindings, [])
+    tracker = start_supervised!({Agent, fn -> %{active: 0, maximum: 0, attempts: %{}} end})
+
+    Application.put_env(
+      :favn_orchestrator,
+      :compatibility_test_inspection,
+      fn request ->
+        Agent.update(tracker, fn state ->
+          active = state.active + 1
+
+          %{
+            state
+            | active: active,
+              maximum: max(state.maximum, active),
+              attempts: Map.update(state.attempts, request.asset_ref, 1, &(&1 + 1))
+          }
+        end)
+
+        Process.sleep(2)
+        Agent.update(tracker, &%{&1 | active: &1.active - 1})
+
+        %RelationInspectionResult{
+          asset_ref: request.asset_ref,
+          required_runner_release_id: request.required_runner_release_id,
+          relation_ref: nil,
+          relation: nil,
+          columns: [],
+          table_metadata: %{},
+          adapter: FavnTestSupport.TargetAdapter,
+          inspected_at: @now
+        }
+      end
+    )
+
+    selection = %DeploymentPlanner{
+      common_assets: Enum.map(assets, & &1.ref),
+      common_pipelines: [],
+      workspace_assets: [],
+      workspace_pipelines: []
+    }
+
+    test_pid = self()
+
+    assert {:ok, decisions} =
+             TargetCompatibilityPlanner.plan(
+               contexts.platform_context,
+               contexts.workspace_context,
+               version,
+               selection,
+               progress: fn completed, total ->
+                 send(test_pid, {:scale_progress, completed, total})
+               end
+             )
+
+    tracker_state = Agent.get(tracker, & &1)
+    assert length(decisions) == 1_000
+    assert Enum.map(decisions, & &1.target_id) == Enum.sort(Enum.map(decisions, & &1.target_id))
+    assert map_size(tracker_state.attempts) == 1_000
+    assert Enum.all?(tracker_state.attempts, fn {_asset_ref, attempts} -> attempts == 1 end)
+    assert tracker_state.maximum in 2..32
+    assert_received {:scale_progress, 0, 1_000}
+    assert_received {:scale_progress, 1_000, 1_000}
   end
 
   test "keeps compatibility inspection inside the caller's maintenance admission", contexts do
@@ -650,6 +720,40 @@ defmodule FavnOrchestrator.TargetCompatibilityPlannerTest do
 
     {:ok, version} = Version.new(manifest, manifest_version_id: manifest_id)
     {version, hd(version.manifest.assets)}
+  end
+
+  defp large_persisted_version(count) do
+    assets =
+      Enum.map(1..count, fn index ->
+        module = Module.concat(__MODULE__, "ScaleAsset#{index}")
+        ref = {module, :asset}
+
+        FavnTestSupport.with_target_descriptor(%Asset{
+          ref: ref,
+          module: module,
+          name: :asset,
+          type: :sql,
+          relation:
+            RelationRef.new!(
+              connection: :warehouse,
+              schema: "scale",
+              name: "asset_#{index}"
+            ),
+          materialization: :table,
+          execution_package_hash:
+            :sha256
+            |> :crypto.hash("scale-package-#{index}")
+            |> Base.encode16(case: :lower)
+        })
+      end)
+
+    manifest =
+      %Manifest{assets: assets}
+      |> FavnTestSupport.with_manifest_graph()
+      |> FavnTestSupport.with_manifest_contract()
+
+    {:ok, version} = Version.new(manifest, manifest_version_id: "manifest-scale-#{count}")
+    {version, version.manifest.assets}
   end
 
   defp inspection(version, opts \\ []) do

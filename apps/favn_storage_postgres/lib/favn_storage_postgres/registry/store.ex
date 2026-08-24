@@ -2597,6 +2597,8 @@ defmodule FavnStoragePostgres.Registry.Store do
                "manifest-deployment:#{command.context.workspace_id}:#{command.operation_id}"
              ])
 
+             require_manifest_upload_lease!(command)
+
              case Repo.get_by(ManifestDeploymentOperation,
                     workspace_id: command.context.workspace_id,
                     operation_id: command.operation_id
@@ -2987,6 +2989,7 @@ defmodule FavnStoragePostgres.Registry.Store do
          true <- :platform_operator in command.workspace_context.roles,
          true <- command.context.workspace_id == command.workspace_context.workspace_id,
          true <- valid_operation_id?(command.operation_id),
+         true <- valid_id?(command.upload_lease_id),
          true <- canonical_hash?(command.archive_sha256),
          true <- canonical_hash?(command.request_fingerprint),
          true <- match?(%DateTime{}, command.occurred_at) do
@@ -2995,6 +2998,30 @@ defmodule FavnStoragePostgres.Registry.Store do
       false -> {:error, Error.new(:invalid, "invalid manifest deployment acceptance")}
       {:error, %Error{} = error} -> {:error, error}
     end
+  end
+
+  defp require_manifest_upload_lease!(command) do
+    lease =
+      ManifestDeploymentUploadLease
+      |> where(
+        [lease],
+        lease.lease_id == ^command.upload_lease_id and
+          lease.workspace_id == ^command.context.workspace_id and
+          lease.service_identity == ^command.context.service_identity and
+          fragment("? > clock_timestamp()", lease.expires_at)
+      )
+      |> lock("FOR UPDATE")
+      |> Repo.one()
+
+    if is_nil(lease) do
+      Repo.rollback(
+        Error.new(:conflict, "manifest upload lease was lost",
+          details: %{reason: :manifest_upload_lease_lost}
+        )
+      )
+    end
+
+    :ok
   end
 
   defp insert_manifest_deployment_operation!(command, version, archive_hash, fingerprint) do

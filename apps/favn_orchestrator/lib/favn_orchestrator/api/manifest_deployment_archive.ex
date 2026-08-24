@@ -18,6 +18,8 @@ defmodule FavnOrchestrator.API.ManifestDeploymentArchive do
     :version,
     :current,
     :started_at_ms,
+    :clock,
+    :upload_timeout_ms,
     compressed_hash: nil,
     compressed_bytes: 0,
     expanded_bytes: 0,
@@ -33,7 +35,9 @@ defmodule FavnOrchestrator.API.ManifestDeploymentArchive do
     package_paths: [],
     package_hashes: MapSet.new(),
     package_batch: [],
-    package_batch_bytes: 0
+    package_batch_bytes: 0,
+    package_batch_count_limit: nil,
+    package_batch_bytes_limit: nil
   ]
 
   @type t :: %__MODULE__{}
@@ -42,12 +46,20 @@ defmodule FavnOrchestrator.API.ManifestDeploymentArchive do
   def new(persist_packages, opts \\ []) when is_function(persist_packages, 1) do
     z = :zlib.open()
     :ok = :zlib.inflateInit(z, -15)
+    limits = ArchiveLimits.current()
+    clock = Keyword.get(opts, :clock, fn -> System.monotonic_time(:millisecond) end)
 
     %__MODULE__{
       z: z,
       persist_packages: persist_packages,
       compressed_hash: :crypto.hash_init(:sha256),
-      started_at_ms: Keyword.get(opts, :started_at_ms, System.monotonic_time(:millisecond))
+      clock: clock,
+      started_at_ms: Keyword.get(opts, :started_at_ms, clock.()),
+      upload_timeout_ms: Keyword.get(opts, :upload_timeout_ms, limits.upload_timeout_ms),
+      package_batch_count_limit:
+        Keyword.get(opts, :package_batch_count, limits.package_batch_count),
+      package_batch_bytes_limit:
+        Keyword.get(opts, :package_batch_bytes, limits.package_batch_bytes)
     }
   end
 
@@ -60,7 +72,7 @@ defmodule FavnOrchestrator.API.ManifestDeploymentArchive do
       compressed_bytes > limits.compressed_bytes ->
         {:error, :compressed_limit_exceeded}
 
-      System.monotonic_time(:millisecond) - state.started_at_ms > limits.upload_timeout_ms ->
+      state.clock.() - state.started_at_ms > state.upload_timeout_ms ->
         {:error, :upload_timeout}
 
       true ->
@@ -70,7 +82,10 @@ defmodule FavnOrchestrator.API.ManifestDeploymentArchive do
             compressed_hash: :crypto.hash_update(state.compressed_hash, bytes)
         }
 
-        feed_gzip(state, bytes)
+        with {:ok, state} <- feed_gzip(state, bytes),
+             :ok <- validate_deadline(state) do
+          {:ok, state}
+        end
     end
   rescue
     _error -> {:error, :malformed_gzip}
@@ -80,7 +95,8 @@ defmodule FavnOrchestrator.API.ManifestDeploymentArchive do
 
   @spec finish(t()) :: {:ok, map()} | {:error, term()}
   def finish(%__MODULE__{} = state) do
-    with true <- byte_size(state.gzip_header) == @gzip_header_bytes,
+    with :ok <- validate_deadline(state),
+         true <- byte_size(state.gzip_header) == @gzip_header_bytes,
          true <- state.deflate_remaining == 0,
          true <- byte_size(state.gzip_pending) == @gzip_footer_bytes,
          {:ok, state} <- finish_inflate(state),
@@ -90,7 +106,8 @@ defmodule FavnOrchestrator.API.ManifestDeploymentArchive do
          true <- state.zero_blocks == 2,
          %Version{} = version <- state.version,
          :ok <- validate_package_inventory(state, version),
-         {:ok, state} <- flush_packages(state) do
+         {:ok, state} <- flush_packages(state),
+         :ok <- validate_deadline(state) do
       close(state)
 
       {:ok,
@@ -410,7 +427,8 @@ defmodule FavnOrchestrator.API.ManifestDeploymentArchive do
          :ok <- verify_declared_file(state.bundle, path, bytes),
          {:ok, decoded} when is_map(decoded) <- Jason.decode(bytes),
          {:ok, package} <- ExecutionPackage.from_published(decoded),
-         true <- package.content_hash == hash do
+         true <- package.content_hash == hash,
+         {:ok, state} <- flush_before_package(state, byte_size(bytes)) do
       state = %{
         state
         | package_paths: [path | state.package_paths],
@@ -433,14 +451,17 @@ defmodule FavnOrchestrator.API.ManifestDeploymentArchive do
       else: {:error, :execution_package_count_exceeded}
   end
 
-  defp validate_bundle(%{
-         "schema_version" => 2,
-         "kind" => "favn_manifest_release",
-         "files" => files,
-         "manifest" => manifest
-       })
+  defp validate_bundle(
+         %{
+           "schema_version" => 2,
+           "kind" => "favn_manifest_release",
+           "files" => files,
+           "manifest" => manifest
+         } = bundle
+       )
        when is_list(files) and is_map(manifest) do
-    with true <-
+    with true <- Map.keys(bundle) |> Enum.sort() == ~w(files kind manifest schema_version),
+         true <-
            Map.keys(manifest) |> Enum.sort() ==
              ~w(content_hash execution_packages_path index_path manifest_version_id runner_contract_version runner_releases schema_version serialization_format),
          true <- manifest["index_path"] == "manifest-index.json",
@@ -458,10 +479,11 @@ defmodule FavnOrchestrator.API.ManifestDeploymentArchive do
 
   defp declared_files(files) do
     Enum.reduce_while(files, {:ok, %{}}, fn
-      %{"executable" => executable, "path" => path, "sha256" => sha, "size" => size}, {:ok, acc}
-      when is_boolean(executable) and is_binary(path) and is_binary(sha) and is_integer(size) and
+      %{"executable" => false, "path" => path, "sha256" => sha, "size" => size} = file, {:ok, acc}
+      when is_binary(path) and is_binary(sha) and is_integer(size) and
              size >= 0 ->
-        if (path == "manifest-index.json" or package_path?(path)) and
+        if Map.keys(file) |> Enum.sort() == ~w(executable path sha256 size) and
+             (path == "manifest-index.json" or package_path?(path)) and
              Regex.match?(~r/\A[0-9a-f]{64}\z/, sha) and not Map.has_key?(acc, path) do
           {:cont, {:ok, Map.put(acc, path, %{sha256: sha, size: size})}}
         else
@@ -509,10 +531,19 @@ defmodule FavnOrchestrator.API.ManifestDeploymentArchive do
   end
 
   defp maybe_flush_packages(state) do
-    limits = ArchiveLimits.current()
+    if length(state.package_batch) >= state.package_batch_count_limit or
+         state.package_batch_bytes >= state.package_batch_bytes_limit do
+      flush_packages(state)
+    else
+      {:ok, state}
+    end
+  end
 
-    if length(state.package_batch) >= limits.package_batch_count or
-         state.package_batch_bytes >= limits.package_batch_bytes do
+  defp flush_before_package(%{package_batch: []} = state, _next_bytes), do: {:ok, state}
+
+  defp flush_before_package(state, next_bytes) do
+    if length(state.package_batch) + 1 > state.package_batch_count_limit or
+         state.package_batch_bytes + next_bytes > state.package_batch_bytes_limit do
       flush_packages(state)
     else
       {:ok, state}
@@ -540,6 +571,12 @@ defmodule FavnOrchestrator.API.ManifestDeploymentArchive do
     else
       {:error, :invalid_gzip_footer}
     end
+  end
+
+  defp validate_deadline(state) do
+    if state.clock.() - state.started_at_ms <= state.upload_timeout_ms,
+      do: :ok,
+      else: {:error, :upload_timeout}
   end
 
   defp nul_string(field) do

@@ -25,23 +25,41 @@ defmodule FavnOrchestrator.ManifestActivationDiagnosticsTest do
              action: :repeat_manifest_activation,
              requires_new_idempotency_key: true,
              message:
-               "Correct the runner or data-system problem, then repeat manifest activation with a new idempotency key."
+               "Resolve the target decisions, then repeat manifest activation with a new idempotency key."
            }
   end
 
-  test "ignores compatibility decisions that are not failed physical inspections" do
+  test "includes every operator decision and ignores non-operator outcomes" do
     diagnostics =
       ManifestActivationDiagnostics.from_compatibilities([
         compatibility("asset:ready", :ready, "compatible"),
         compatibility("asset:rebuild", :rebuild_required, "incompatible_descriptor"),
-        compatibility("asset:ownership", :operator_decision, "unmanaged_physical_relation")
+        compatibility("asset:ownership", :operator_decision, "unmanaged_physical_relation"),
+        compatibility("asset:generation", :operator_decision, "inconsistent_generation_state"),
+        compatibility(
+          "asset:fingerprint",
+          :operator_decision,
+          "active_physical_fingerprint_missing"
+        )
       ])
 
     assert ManifestActivationDiagnostics.to_map(diagnostics) == %{
-             unresolved_inspection_count: 0,
-             unresolved_inspections: [],
+             unresolved_inspection_count: 3,
+             unresolved_inspections: [
+               %{
+                 target_id: "asset:fingerprint",
+                 reason_code: "active_physical_fingerprint_missing"
+               },
+               %{target_id: "asset:generation", reason_code: "inconsistent_generation_state"},
+               %{target_id: "asset:ownership", reason_code: "unmanaged_physical_relation"}
+             ],
              truncated: false,
-             recovery: nil
+             recovery: %{
+               action: :repeat_manifest_activation,
+               requires_new_idempotency_key: true,
+               message:
+                 "Resolve the target decisions, then repeat manifest activation with a new idempotency key."
+             }
            }
   end
 

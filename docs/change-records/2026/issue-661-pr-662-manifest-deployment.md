@@ -544,19 +544,20 @@ assigned to one slice exactly once.
 
 | Slice | Production added | Production deleted | Supporting added | Supporting deleted | Comparison with budget |
 | --- | ---: | ---: | ---: | ---: | --- |
-| Deterministic archive | 343 | 12 | 53 | 0 | Production is 63 lines above the estimate, below the record's material-overrun threshold; tests reuse the existing bundle/publication fixtures |
-| Streaming ingest, admission, and deployment authorization | 1,289 | 0 | 347 | 0 | Production exceeds its estimate because the strict incremental gzip/USTAR parser and pre-body Plug are explicit security boundaries; the combined 1,636 lines remain inside the combined planned range |
-| Durable deployment operation | 1,930 | 11 | 440 | 0 | Production exceeds its estimate because typed commands, three fenced lease lifecycles, migration readiness metadata, and atomic store logic are explicit; the combined 2,370 lines remain inside the combined planned range |
-| Bounded compatibility inspection | 233 | 20 | 65 | 0 | Production is within estimate; focused concurrency/progress tests are smaller than planned and PostgreSQL deadline checks remain in the storage suite |
-| Public workflow and compatibility | 8 | 1 | 227 | 14 | Nearly all work is canonical guidance, deployment templates, and CI test-tier coverage rather than runtime code |
-| **Actual total** | **3,803** | **44** | **1,132** | **14** | **4,935 additions and 58 deletions excluding this record; the combined total is inside the approved 3,790-6,260 range** |
+| Deterministic archive | 341 | 15 | 53 | 0 | Production is 61 lines above the estimate, below the record's material-overrun threshold; archive declarations now force the transport's non-executable mode independently of host filesystem permission behavior |
+| Streaming ingest, admission, and deployment authorization | 1,708 | 1 | 637 | 1 | Production exceeds its estimate because the strict incremental gzip/USTAR parser, pre-body Plug, independent upload heartbeat, and acceptance fence are explicit security boundaries; focused hostile-input and deadline tests account for most supporting growth |
+| Durable deployment operation | 1,714 | 12 | 549 | 0 | Typed commands, three fenced lease lifecycles, migration readiness metadata, atomic rollback injection, and durable recovery are explicit; this slice remains within the combined planned range |
+| Bounded compatibility inspection | 246 | 30 | 239 | 7 | Production is within estimate; supporting evidence now includes all operator-decision classes, 1,000-target fairness/concurrency, expired-claim exclusion, and late-result rejection |
+| Public workflow and compatibility | 9 | 2 | 230 | 15 | Nearly all work is canonical guidance, deployment templates, and CI test-tier coverage rather than runtime code |
+| **Actual total** | **4,018** | **60** | **1,708** | **23** | **5,726 additions and 83 deletions excluding both names of this record; the combined total is inside the approved 3,790-6,260 range** |
 
 The production/supporting split differs materially from the estimate even though
 the combined size is in range. The main reason is that the approved behaviors
-became explicit typed state machines and persistence contracts rather than test
-fixtures. Final review must therefore pay particular attention to parser,
-fencing, recovery, and store correctness; local PostgreSQL execution was not
-available to compensate with runtime evidence.
+became explicit typed state machines and persistence contracts, followed by the
+hostile-input, deadline, concurrency, and rollback evidence requested in final
+review. Final review must therefore pay particular attention to parser, fencing,
+recovery, and store correctness; local PostgreSQL execution was not available,
+so final runtime evidence comes from CI's PostgreSQL service.
 
 ## Deviations from the approved plan
 
@@ -564,6 +565,7 @@ available to compensate with runtime evidence.
 | --- | --- | --- | --- |
 | Fixed Favn-owned gzip metadata | The valid gzip header includes a fixed `FV` extra field containing the exact raw-deflate byte length | Erlang zlib does not report unused compressed input. Recompressing to detect concatenated members would couple uploads to the Orchestrator's local zlib version. The length field lets the streaming receiver place the footer and reject ordinary trailing members without local recompression | Archive bytes remain standard gzip and curl-compatible, but the exact Favn header is intentionally stricter than arbitrary `.tar.gz` input |
 | Existing CI slow-test apps only | `favn_orchestrator` is added to the slow-test alias and tag guard | The 1,001-package archive qualification belongs to the receiver app and must run in CI | Slow CI gains about one minute; no production behavior changes |
+| Chunk-arrival renewal as the only upload heartbeat | A dedicated request-owned process renews throughout reads, decode, and package persistence; acceptance also requires the matching currently unexpired lease in the same PostgreSQL transaction | Final review identified that a slow final read or persistence callback could outlive chunk-driven renewal | Acceptance is fenced after takeover or expiry; immutable package writes completed before lease loss remain retention-safe |
 
 The approved API-only choice, fixed activation selection, limits, durable
 states, credential model, no-volume receiver, retained low-level operations, and
@@ -578,6 +580,8 @@ transport-neutral deployment examples are unchanged.
 | 2026-08-24 | Put exact deflate length in Favn gzip metadata | This rejects normal concatenated members without recompressing with a potentially different zlib implementation |
 | 2026-08-24 | Serialize new and legacy activation with a PostgreSQL lease and commit fence | An in-memory lock would not cover multiple Orchestrator nodes or process loss |
 | 2026-08-24 | Treat missing exact inspection capacity as immediate operator attention | Waiting sequentially would make large deployments unpredictable; activation stays safe and explicit while old runs remain pinned |
+| 2026-08-24 | Count every compatibility `operator_decision` in terminal deployment diagnostics | Final review found that unmanaged relations, inconsistent generation state, and missing active fingerprints could otherwise be reported as `succeeded`; all such active-but-blocked paths now end `needs_attention` |
+| 2026-08-24 | Fence archive acceptance with the live upload lease | An independent heartbeat keeps legitimate long work admitted, while the atomic PostgreSQL check prevents an expired or superseded uploader from accepting intent |
 
 ## Verification evidence
 
@@ -585,27 +589,39 @@ transport-neutral deployment examples are unchanged.
 | --- | --- | --- |
 | `mise exec -- mix format` and `git diff --check` | Passed | Formatting and whitespace |
 | `MIX_ENV=test mise exec -- mix compile --warnings-as-errors` | Passed | Umbrella static compilation |
-| Fast owning-app suites | Passed: Core 437, Authoring 140, Orchestrator 706 with 1 slow test excluded, Runner 238, public `favn` 183 with 3 excluded | Non-database application behavior |
-| Archive parser focused suite | Passed: 5 fast tests | 37-byte streaming, real 101-package batching, digest/footer/header failure, and concatenated-member rejection |
-| `:slow` 1,001-package archive test | Passed: 1 in 59 seconds | One-file transport and eleven internal package batches without caller chunking |
+| Fast owning-app suites | Passed: Core 437, Authoring 140, Orchestrator 714 with 2 slow tests excluded, Runner 238, public `favn` 183 with 3 excluded | Non-database application behavior |
+| Archive parser focused suite | Passed: 11 fast tests | 37-byte streaming, exact/near byte batching, strict metadata, non-regular/path-traversal tar rejection, digest/footer/header/member failures, and deterministic final-read/persistence deadlines |
+| `:slow` 1,001-package archive test | Passed: 1 in 131 seconds | One-file transport and eleven internal package batches without caller chunking |
+| `:slow` 1,000-target inspection test | Passed: 1 in 3.6 seconds | Every target attempted once, deterministic order/progress, and observed concurrency bounded to 32 |
+| Upload-heartbeat and activation-diagnostics suites | Passed: 5 tests | Independent renewal/loss propagation and all bounded operator-decision reason classes |
 | Authoring archive suite | Passed: 2 | Deterministic bytes, stable order, standard extraction, replay, and conflict |
 | Manifest build acceptance test | Passed: 1 | Public build output retains the directory and adds archive path/SHA |
 | `mise exec -- elixir scripts/check_test_tag_tiers.exs` | Passed | The new slow test is covered by CI |
-| PostgreSQL deployment test file with all tests excluded | Compiled successfully | Five database tests are syntactically/type-integrated, but this is not runtime database proof |
+| PostgreSQL deployment and runner-deadline files with database tests excluded locally | Compiled successfully | Seven deployment tests plus expired-claim/late-completion coverage are syntactically/type-integrated; final runtime proof is delegated to CI's PostgreSQL service |
+| CI at repair head `4a13635b` | Acceptance, slow, Dialyzer, quick checks, control-plane image, and HTTP security passed; fast storage failed on the now-corrected empty runner-release fixture plus pre-existing intermittent runner-task races | Intermediate remote proof only; final-head CI remains required |
 | `mise exec -- mix docs --warnings-as-errors` | New guide rendered, command failed on pre-existing broken links in `guides/operator-authentication.md` plus an unrelated `favn_view` development warning | New guide render inspected; repository-wide docs qualification remains incomplete |
 
 Not verified locally:
 
-- PostgreSQL migration and the five deployment persistence tests, because no
+- PostgreSQL migration and the seven deployment persistence tests on the final
+  candidate, because no
   approved `FAVN_DATABASE_URL` is configured in this workspace;
-- multi-node upload admission, worker crash/restart, and live lease takeover;
+- a real multi-node process-loss test and live ingress lease takeover (the
+  PostgreSQL cap, takeover fence, rollback, replay, and worker reclaim paths are
+  covered deterministically);
 - a deployed ingress with the 256 MiB and 15-minute budgets;
 - a real direct-CI or relayed network deployment; and
-- every hostile archive boundary/property case listed in the original
-  verification plan.
+- property-generated archives beyond the focused hostile type, path, metadata,
+  gzip, digest, size, count, and deadline cases.
 
 These limits are explicit review and CI inputs, not claims of live proof.
 
 ## Final review
 
-Pending independent implementation review.
+The requested `gpt-5.6-sol` xhigh reviewer returned `NOT READY` on candidate
+`13f34eb8`. It found incomplete operator-decision diagnostics, a byte-batch
+overshoot, upload-lease expiry during final work, permissive bundle metadata,
+and insufficient focused verification. The implementation now addresses every
+finding with code and regression evidence described above. Re-review of the
+new candidate is pending; the pull request remains draft until it returns
+`READY` and final-head CI passes.
