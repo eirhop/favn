@@ -10,6 +10,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias Favn.Contracts.GenerationCapabilitiesRequest
   alias Favn.Contracts.RelationInspectionResult
   alias Favn.Contracts.RunnerError
+  alias Favn.Contracts.RunnerTask.Registration
   alias Favn.Manifest
   alias Favn.ExecutionPool.Policy, as: ExecutionPoolPolicyDefinition
   alias Favn.Manifest.ExecutionPackage
@@ -185,7 +186,9 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnOrchestrator.RunReadModel
   alias FavnOrchestrator.RunServer
   alias FavnOrchestrator.RunnerTaskResultRouter
+  alias FavnOrchestrator.RunnerRegistry
   alias FavnOrchestrator.RunnerTasks
+  alias FavnOrchestrator.OperationRunnerTasks
   alias FavnOrchestrator.Persistence.Commands.ClaimRunnerTask
   alias FavnOrchestrator.Persistence.SystemContext
   alias FavnOrchestrator.RunServer.Execution.PipelineRetryCheckpoint
@@ -8461,8 +8464,35 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     start_supervised!({Task.Supervisor, name: FavnOrchestrator.RunnerClaimSupervisor})
     start_supervised!({Task.Supervisor, name: FavnOrchestrator.RunnerTaskWaitSupervisor})
     start_supervised!({RunnerTaskResultRouter, []})
+    start_supervised!({RunnerRegistry, []})
     fixture = recoverable_activation_fixture(fixture)
     selection = activation_body()["selection"]
+
+    {:ok, binding} = OperationRunnerTasks.binding(fixture.version, {MyApp.Asset, :asset})
+
+    runner_agent =
+      spawn(fn ->
+        receive do
+          :stop -> :ok
+        end
+      end)
+
+    on_exit(fn -> send(runner_agent, :stop) end)
+
+    assert {:ok, %{status: :accepted}} =
+             RunnerRegistry.register(
+               %Registration{
+                 runner_instance_id: "inspection-capacity:#{fixture.workspace_id}",
+                 boot_id: "inspection-capacity-boot",
+                 beam_node: Atom.to_string(node()),
+                 runner_pool: binding.runner_pool,
+                 required_runner_release_id: binding.required_runner_release_id,
+                 lifecycle_mode: :elastic,
+                 supported_task_kinds: [:relation_inspection],
+                 capabilities: ["relation_inspection"]
+               },
+               runner_agent
+             )
 
     first_activation =
       Task.async(fn ->
@@ -8506,10 +8536,9 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
       end)
 
     recovered_assignment = claim_relation_inspection_task!(fixture, "inspection-recovered")
-    assert recovered_assignment.task_id == first_assignment.task_id
-
-    assert recovered_assignment.assignment_generation ==
-             first_assignment.assignment_generation + 1
+    refute recovered_assignment.task_id == first_assignment.task_id
+    assert first_assignment.assignment_generation == 1
+    assert recovered_assignment.assignment_generation == 1
 
     assert :ok = start_runner_task(recovered_assignment)
     await_runner_task_waiter!(recovered_assignment)

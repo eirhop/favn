@@ -6,6 +6,7 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
   alias Favn.Manifest.Version
   alias Favn.Contracts.RelationInspectionRequest
   alias Favn.Contracts.RelationInspectionResult
+  alias Favn.Contracts.RunnerError
   alias Favn.Contracts.RunnerTask.LeaseRenewal
   alias Favn.Contracts.RunnerTask.Registration
   alias FavnOrchestrator.Persistence.Commands, as: C
@@ -288,6 +289,32 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
     }
 
     assert {:error, %{kind: :invalid}} = Store.complete(late)
+
+    cancellation_at = DateTime.add(fixture.now, 62, :second)
+
+    assert {:ok, %{status: :cancelling}} =
+             Store.request_cancellation(%C.RequestRunnerTaskCancellation{
+               workspace_context: fixture.workspace_context,
+               command_id: "cancel-after-deadline",
+               task_id: running.task_id,
+               reason: :deadline_reached,
+               issued_at: cancellation_at,
+               occurred_at: cancellation_at
+             })
+
+    assert {:error, %{kind: :invalid}} =
+             Store.complete(%{late | command_id: "complete-late-while-cancelling"})
+
+    assert {:ok, %{status: :cancelled}} =
+             Store.complete(%{
+               late
+               | command_id: "complete-cancelled-after-deadline",
+                 outcome: :cancelled,
+                 result: nil,
+                 error: RunnerError.cancelled(:deadline_reached),
+                 issued_at: cancellation_at,
+                 occurred_at: cancellation_at
+             })
   end
 
   test "concurrent task ids cannot share one durable domain identity", fixture do

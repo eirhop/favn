@@ -168,7 +168,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
                 task.status == "queued" and task.runner_pool == ^command.runner_pool and
                   task.required_runner_release_id == ^command.required_runner_release_id and
                   task.task_kind in ^task_kinds and
-                  task.deadline_at > ^command.occurred_at and
+                  (is_nil(task.deadline_at) or task.deadline_at > ^command.occurred_at) and
                   (is_nil(task.required_capability) or
                      task.required_capability in ^command.capabilities),
               order_by: [asc: task.enqueued_at, asc: task.workspace_id, asc: task.task_id],
@@ -1603,12 +1603,20 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
   end
 
   defp validate_completion_deadline(
+         %RunnerTask{task_kind: "relation_inspection", deadline_at: nil},
+         _command
+       ),
+       do: :ok
+
+  defp validate_completion_deadline(
          %RunnerTask{task_kind: "relation_inspection", deadline_at: deadline_at, status: status},
          command
        ) do
-    if status != "cancelling" and DateTime.compare(command.occurred_at, deadline_at) != :gt,
-      do: :ok,
-      else: :error
+    cond do
+      DateTime.compare(command.occurred_at, deadline_at) != :gt -> :ok
+      status == "cancelling" and command.outcome == :cancelled -> :ok
+      true -> :error
+    end
   end
 
   defp validate_completion_deadline(_task, _command), do: :ok
