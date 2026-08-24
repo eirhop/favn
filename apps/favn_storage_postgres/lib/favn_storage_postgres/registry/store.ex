@@ -2842,6 +2842,7 @@ defmodule FavnStoragePostgres.Registry.Store do
                operation.state == "activating" and operation.claim_owner == ^command.owner and
                operation.claim_fence == ^command.fence
            )
+           |> select([operation], operation)
            |> Repo.update_all(
              set: [
                state: Atom.to_string(command.state),
@@ -2852,8 +2853,7 @@ defmodule FavnStoragePostgres.Registry.Store do
                claim_expires_at: nil,
                terminal_at: database_datetime(command.occurred_at),
                updated_at: database_datetime(command.occurred_at)
-             ],
-             returning: true
+             ]
            ) do
       {:ok, manifest_deployment_result(row)}
     else
