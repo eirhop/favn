@@ -8,6 +8,8 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCIntegrationTest do
   alias Favn.SQL.Adapter.DuckDB.ADBC
   alias Favn.SQL.Contract
   alias Favn.SQL.ContractValidation
+  alias Favn.SQL.Relation
+  alias Favn.SQL.WritePlan
   alias Favn.TargetCompatibility.PhysicalFingerprint
   alias Favn.TargetGenerationRelation
 
@@ -21,6 +23,102 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCIntegrationTest do
   }
 
   @moduletag :adbc_integration
+
+  test "atomically replaces multiple composite-key groups including a deletion-only group" do
+    with_memory_connection(fn conn ->
+      assert {:ok, _} =
+               ADBC.execute(
+                 conn,
+                 "CREATE TABLE customer_rows(tenant_id INTEGER, customer_id INTEGER, value VARCHAR)",
+                 []
+               )
+
+      assert {:ok, _} =
+               ADBC.execute(
+                 conn,
+                 "INSERT INTO customer_rows VALUES (1, 10, 'old'), (1, 20, 'remove'), (2, 30, 'keep')",
+                 []
+               )
+
+      assert {:ok, _} =
+               ADBC.execute(
+                 conn,
+                 "CREATE TEMP TABLE replacement_scope AS SELECT * FROM (VALUES (1, 10), (1, 20)) AS scope(tenant_id, customer_id)",
+                 []
+               )
+
+      assert {:ok, _} =
+               ADBC.execute(
+                 conn,
+                 "CREATE TEMP TABLE replacement_candidate AS SELECT * FROM (VALUES (1, 10, 'new-a'), (1, 10, 'new-b')) AS candidate(tenant_id, customer_id, value)",
+                 []
+               )
+
+      plan = group_replacement_plan("replacement_candidate")
+
+      assert {:ok, _result} =
+               ADBC.transaction(
+                 conn,
+                 fn tx -> ADBC.materialize_in_transaction(tx, plan, []) end,
+                 []
+               )
+
+      assert {:ok, result} =
+               ADBC.query(
+                 conn,
+                 "SELECT tenant_id, customer_id, value FROM customer_rows ORDER BY tenant_id, customer_id, value",
+                 []
+               )
+
+      assert result.rows == [
+               %{"tenant_id" => 1, "customer_id" => 10, "value" => "new-a"},
+               %{"tenant_id" => 1, "customer_id" => 10, "value" => "new-b"},
+               %{"tenant_id" => 2, "customer_id" => 30, "value" => "keep"}
+             ]
+    end)
+  end
+
+  test "rolls back group deletion when candidate insertion fails" do
+    with_memory_connection(fn conn ->
+      assert {:ok, _} =
+               ADBC.execute(
+                 conn,
+                 "CREATE TABLE customer_rows(tenant_id INTEGER, customer_id INTEGER, value VARCHAR NOT NULL)",
+                 []
+               )
+
+      assert {:ok, _} =
+               ADBC.execute(conn, "INSERT INTO customer_rows VALUES (1, 10, 'old')", [])
+
+      assert {:ok, _} =
+               ADBC.execute(
+                 conn,
+                 "CREATE TEMP TABLE replacement_scope AS SELECT 1 AS tenant_id, 10 AS customer_id",
+                 []
+               )
+
+      assert {:ok, _} =
+               ADBC.execute(
+                 conn,
+                 "CREATE TEMP TABLE invalid_candidate AS SELECT 1 AS tenant_id, 10 AS customer_id, NULL::VARCHAR AS value",
+                 []
+               )
+
+      assert {:error, _error} =
+               ADBC.transaction(
+                 conn,
+                 fn tx ->
+                   ADBC.materialize_in_transaction(
+                     tx,
+                     group_replacement_plan("invalid_candidate"), params: [])
+                 end,
+                 []
+               )
+
+      assert {:ok, result} = ADBC.query(conn, "SELECT value FROM customer_rows", [])
+      assert result.rows == [%{"value" => "old"}]
+    end)
+  end
 
   test "runs a native multi-statement session script through DuckDB ADBC" do
     script =
@@ -53,6 +151,36 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCIntegrationTest do
     after
       ADBC.disconnect(conn, [])
     end
+  end
+
+  defp with_memory_connection(fun) do
+    resolved = %Resolved{
+      name: :warehouse,
+      adapter: ADBC,
+      module: __MODULE__,
+      config: %{open: [database: ":memory:"]}
+    }
+
+    assert {:ok, conn} = ADBC.connect(resolved, connect_opts())
+
+    try do
+      fun.(conn)
+    after
+      ADBC.disconnect(conn, [])
+    end
+  end
+
+  defp group_replacement_plan(candidate) do
+    %WritePlan{
+      materialization: :incremental,
+      strategy: :replace_groups,
+      mode: :incremental,
+      target: %Relation{name: "customer_rows", type: :table},
+      select_sql: ["SELECT * FROM ", candidate],
+      replacement_scope: %Relation{name: "replacement_scope", type: :table},
+      replacement_key: ["tenant_id", "customer_id"],
+      transactional?: true
+    }
   end
 
   test "binds DateTime parameters through the real DuckDB ADBC client" do

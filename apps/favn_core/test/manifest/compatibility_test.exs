@@ -15,16 +15,16 @@ defmodule Favn.Manifest.CompatibilityTest do
   end
 
   test "rejects the previous schema version" do
-    manifest = current_manifest(%{schema_version: 16})
+    manifest = current_manifest(%{schema_version: 17})
 
-    assert {:error, {:unsupported_schema_version, 16, 17}} =
+    assert {:error, {:unsupported_schema_version, 17, 18}} =
              Compatibility.validate_manifest(manifest)
   end
 
   test "rejects unsupported schema version" do
-    manifest = current_manifest(%{schema_version: 18})
+    manifest = current_manifest(%{schema_version: 19})
 
-    assert {:error, {:unsupported_schema_version, 18, 17}} =
+    assert {:error, {:unsupported_schema_version, 19, 18}} =
              Compatibility.validate_manifest(manifest)
   end
 
@@ -80,9 +80,9 @@ defmodule Favn.Manifest.CompatibilityTest do
   end
 
   test "rejects unsupported runner contract version" do
-    manifest = current_manifest(%{runner_contract_version: 14})
+    manifest = current_manifest(%{runner_contract_version: 15})
 
-    assert {:error, {:unsupported_runner_contract_version, 14, 13}} =
+    assert {:error, {:unsupported_runner_contract_version, 15, 14}} =
              Compatibility.validate_manifest(manifest)
   end
 
@@ -116,9 +116,9 @@ defmodule Favn.Manifest.CompatibilityTest do
   end
 
   test "rejects the previous runner contract version" do
-    manifest = current_manifest(%{runner_contract_version: 12})
+    manifest = current_manifest(%{runner_contract_version: 13})
 
-    assert {:error, {:unsupported_runner_contract_version, 12, 13}} =
+    assert {:error, {:unsupported_runner_contract_version, 13, 14}} =
              Compatibility.validate_manifest(manifest)
   end
 

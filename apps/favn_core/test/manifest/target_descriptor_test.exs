@@ -96,6 +96,56 @@ defmodule Favn.Manifest.TargetDescriptorTest do
              TargetDescriptor.from_asset(partitioned, versions()).descriptor_hash
   end
 
+  test "group replacement key is ordered structural identity" do
+    asset = %{
+      persisted_asset(nil)
+      | materialization:
+          {:incremental, strategy: :replace_groups, replacement_key: [:tenant_id, :customer_id]}
+    }
+
+    descriptor = TargetDescriptor.from_asset(asset, versions())
+
+    assert descriptor.schema_version == 2
+
+    assert descriptor.materialization == %{
+             kind: "incremental",
+             strategy: "replace_groups",
+             unique_key: nil,
+             window_column: nil,
+             replacement_key: ["tenant_id", "customer_id"]
+           }
+
+    reversed =
+      TargetDescriptor.from_asset(
+        %{
+          asset
+          | materialization:
+              {:incremental,
+               strategy: :replace_groups, replacement_key: [:customer_id, :tenant_id]}
+        },
+        versions()
+      )
+
+    refute descriptor.descriptor_hash == reversed.descriptor_hash
+  end
+
+  test "rejects forbidden fields in a reconstructed group replacement descriptor" do
+    asset = %{
+      persisted_asset(nil)
+      | materialization:
+          {:incremental, strategy: :replace_groups, replacement_key: [:customer_id]}
+    }
+
+    descriptor = TargetDescriptor.from_asset(asset, versions())
+
+    invalid = %{
+      descriptor
+      | materialization: %{descriptor.materialization | window_column: "event_day"}
+    }
+
+    assert {:error, :invalid_target_materialization} = TargetDescriptor.validate(invalid)
+  end
+
   test "JSON roundtrip preserves the complete canonical descriptor" do
     window = WindowSpec.new!(:day, timezone: "Europe/Oslo")
 

@@ -330,6 +330,81 @@ Materialization values:
 | `:view` | Create a view. |
 | `{:incremental, strategy: :append}` | Append new rows. Requires `window`. |
 | `{:incremental, strategy: :delete_insert, window_column: :order_date}` | Replace one window by deleting and inserting. Requires `window`. |
+| `{:incremental, strategy: :replace_groups, replacement_key: [:customer_id]}` | Atomically replace complete groups selected by SQL. Does not use a window. |
+
+Choose the replacement boundary that matches what the query can reproduce:
+
+- use `:table` when each run should rebuild the complete target;
+- use `:delete_insert` when one complete time window can be reproduced;
+- use `:replace_groups` when SQL selects complete business-key groups; and
+- do not substitute either replacement strategy for row-level merge or upsert.
+  Favn does not currently offer row-level merge semantics.
+
+### Replace Complete Groups
+
+Use `:replace_groups` when changed data is identified by business keys rather
+than by a time window. The scope query selects the keys that may change. The
+main query must then return the complete replacement rows for those keys.
+
+```elixir
+materialized {:incremental,
+              strategy: :replace_groups,
+              replacement_key: [:tenant_id, :customer_id]}
+
+replacement_scope :incremental do
+  ~SQL"""
+  select distinct tenant_id, customer_id
+  from raw.changed_customers
+  """
+end
+
+replacement_scope :full do
+  ~SQL"""
+  select distinct tenant_id, customer_id
+  from raw.customers
+  """
+end
+
+query do
+  ~SQL"""
+  select source.*
+  from raw.customers as source
+  join replacement_scope() as scope
+    using (tenant_id, customer_id)
+  """
+end
+```
+
+On an ordinary run, Favn evaluates the incremental scope once. On the first
+build or an explicit full rebuild, it evaluates the full scope instead. Favn
+stages that selected scope and the candidate rows, validates their keys, and
+then deletes the selected groups and inserts their complete replacements in one
+checked transaction.
+
+The replacement key may contain one or several columns. Scope keys must be
+unique and non-null. Candidate keys must be non-null and contained in the
+selected scope, but many candidate rows may share one key. A non-empty scope
+with no candidate rows deletes those groups. An empty incremental scope is a
+successful no-op.
+
+The scope queries are deliberately independent: they cannot read `query()`,
+`target()`, or `replacement_scope()`. Changing only a scope query changes the
+execution package but does not itself force a full rebuild. Changing the
+strategy or replacement key does require a rebuild. Direct `render`, `preview`,
+and `explain` operations are not supported for this strategy yet because they
+do not own the staged transactional scope.
+
+Group replacement is currently supported by the DuckDB/DuckLake ADBC adapter.
+Other adapters reject the plan before writing.
+
+Successful run metadata includes a separate `group_replacement` result with
+`scope_group_count`, `candidate_row_count`, `deleted_row_count`,
+`inserted_row_count`, and one exact operation:
+`:replaced`, `:delete_only`, `:empty_scope_no_op`, `:before_check_skipped`,
+`:bootstrap_created`, or `:bootstrap_empty`. Deleted rows are reported as an
+exact non-negative count when the adapter can prove it, otherwise
+`:unavailable`; the DuckDB/DuckLake adapter reports an exact count. This result
+does not change the existing materialization `write_outcome` contract.
 
 ### DuckLake Physical Partitioning
 

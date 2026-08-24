@@ -7,7 +7,7 @@ defmodule Favn.SQLAsset.RelationUsage do
   alias Favn.SQL.Template
   alias Favn.SQL.Template.Call
 
-  @type runtime_relation :: :query | :target
+  @type runtime_relation :: :query | :target | :replacement_scope
   @type definition_id :: {module(), atom(), non_neg_integer()}
   @type definition_catalog :: %{optional({atom(), non_neg_integer()}) => SQLDefinition.t()}
   @type visited_definitions :: %{optional(definition_id()) => true}

@@ -36,6 +36,9 @@ Must not depend on:
 Use `Favn.SQL.Adapter.DuckDB.ADBC` in connection definitions. The adapter exposes
 the DuckDB bootstrap schema helpers used by this adapter.
 
+It supports atomic `:replace_groups` SQL materialization, including composite
+replacement keys and deletion-only groups, inside one checked transaction.
+
 ```elixir
 config :favn, :runner_plugins, [FavnDuckdbADBC]
 ```

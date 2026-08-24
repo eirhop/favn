@@ -73,10 +73,75 @@ defmodule Favn.Manifest.ExecutionPackageTest do
     assert raw_package.content_hash != curated_package.content_hash
   end
 
+  test "replacement scope SQL is immutable execution identity" do
+    ref = {MyApp.CustomerRows, :asset}
+    first = group_execution_package(ref, "SELECT customer_id FROM changed_customers")
+    unchanged = group_execution_package(ref, "SELECT customer_id FROM changed_customers")
+    changed = group_execution_package(ref, "SELECT customer_id FROM recently_changed_customers")
+
+    assert first.content_hash == unchanged.content_hash
+    refute first.content_hash == changed.content_hash
+    assert {:ok, ^first} = ExecutionPackage.verify(first)
+
+    assert {:ok, encoded} = Favn.Manifest.Serializer.encode_manifest(first)
+    assert {:ok, decoded} = Favn.Manifest.Serializer.decode_manifest(encoded)
+    assert {:ok, roundtripped} = ExecutionPackage.from_published(decoded)
+
+    assert roundtripped.sql_execution.incremental_scope_sql ==
+             first.sql_execution.incremental_scope_sql
+
+    assert %Template{} = roundtripped.sql_execution.incremental_scope_template
+    assert roundtripped.sql_execution.full_scope_sql == first.sql_execution.full_scope_sql
+    assert %Template{} = roundtripped.sql_execution.full_scope_template
+  end
+
+  test "rejects replacement_scope usage without immutable scope payloads" do
+    ref = {MyApp.InvalidCustomerRows, :asset}
+    sql = "SELECT customer_id FROM replacement_scope()"
+
+    template =
+      Template.compile!(sql,
+        file: "test/execution_package_test.sql",
+        line: 1,
+        module: __MODULE__,
+        scope: :query,
+        enforce_query_root: true
+      )
+
+    assert {:error, :invalid_execution_package} =
+             ExecutionPackage.new(ref, %SQLExecution{sql: sql, template: template})
+  end
+
+  test "package scopes must match the indexed asset strategy" do
+    ref = {MyApp.CustomerRows, :asset}
+    package = group_execution_package(ref, "SELECT customer_id FROM changed_customers")
+
+    ordinary = %Asset{
+      ref: ref,
+      module: elem(ref, 0),
+      name: :asset,
+      type: :sql,
+      materialization: :table,
+      execution_package_hash: package.content_hash,
+      relation_inputs: []
+    }
+
+    assert {:error, :execution_package_materialization_mismatch} =
+             ExecutionPackage.verify_for_asset(package, ordinary)
+
+    group = %{
+      ordinary
+      | materialization:
+          {:incremental, strategy: :replace_groups, replacement_key: [:customer_id]}
+    }
+
+    assert {:ok, ^package} = ExecutionPackage.verify_for_asset(package, group)
+  end
+
   test "rejects non-current execution-package schemas" do
     package = execution_package({MyApp.Orders, :asset}, "SELECT 1 AS id")
 
-    assert {:error, {:unsupported_execution_package_schema, 1, 3}} =
+    assert {:error, {:unsupported_execution_package_schema, 1, 4}} =
              ExecutionPackage.verify(%{package | schema_version: 1})
   end
 
@@ -146,7 +211,7 @@ defmodule Favn.Manifest.ExecutionPackageTest do
     package = execution_package({MyApp.Orders, :asset}, "SELECT 1 AS id")
 
     invalid = %{package | sql_execution: nil}
-    payload = %{schema_version: 3, asset_ref: invalid.asset_ref, sql_execution: nil}
+    payload = %{schema_version: 4, asset_ref: invalid.asset_ref, sql_execution: nil}
     {:ok, encoded} = Favn.Manifest.Serializer.encode_manifest(payload)
     hash = :crypto.hash(:sha256, encoded) |> Base.encode16(case: :lower)
 
@@ -170,12 +235,12 @@ defmodule Favn.Manifest.ExecutionPackageTest do
     assert {:error, {:invalid_manifest_payload, %ArgumentError{}}} =
              ExecutionPackage.new(ref, execution)
 
-    payload = %{schema_version: 3, asset_ref: ref, sql_execution: execution}
+    payload = %{schema_version: 4, asset_ref: ref, sql_execution: execution}
     {:ok, encoded} = Favn.Manifest.Serializer.encode_manifest(payload)
     hash = :crypto.hash(:sha256, encoded) |> Base.encode16(case: :lower)
 
     package = %ExecutionPackage{
-      schema_version: 3,
+      schema_version: 4,
       content_hash: hash,
       asset_ref: ref,
       sql_execution: execution
@@ -428,6 +493,31 @@ defmodule Favn.Manifest.ExecutionPackageTest do
         sql: sql,
         template: template,
         relation_inputs: relation_inputs
+      })
+
+    package
+  end
+
+  defp group_execution_package(ref, incremental_scope_sql) do
+    sql = "SELECT scope.customer_id FROM replacement_scope() AS scope"
+    full_scope_sql = "SELECT customer_id FROM all_customers"
+
+    template_opts = [
+      file: "test/execution_package_test.sql",
+      line: 1,
+      module: __MODULE__,
+      scope: :query,
+      enforce_query_root: true
+    ]
+
+    {:ok, package} =
+      ExecutionPackage.new(ref, %SQLExecution{
+        sql: sql,
+        template: Template.compile!(sql, template_opts),
+        incremental_scope_sql: incremental_scope_sql,
+        incremental_scope_template: Template.compile!(incremental_scope_sql, template_opts),
+        full_scope_sql: full_scope_sql,
+        full_scope_template: Template.compile!(full_scope_sql, template_opts)
       })
 
     package

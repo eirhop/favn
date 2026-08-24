@@ -42,6 +42,30 @@ defmodule Favn.TargetCompatibilityTest do
              )
   end
 
+  test "classifies a replacement-key change as rebuild required" do
+    active =
+      descriptor(
+        materialization:
+          {:incremental, strategy: :replace_groups, replacement_key: [:tenant_id, :customer_id]}
+      )
+
+    desired =
+      descriptor(
+        materialization:
+          {:incremental, strategy: :replace_groups, replacement_key: [:tenant_id, :account_id]}
+      )
+
+    physical = physical_fingerprint()
+
+    assert %Result{
+             status: :rebuild_required,
+             reason_code: :incompatible_descriptor,
+             diff: %{descriptor: changes}
+           } = classify(desired, active, physical.fingerprint, physical)
+
+    assert Enum.any?(changes, &(&1.field in [:materialization, :write_semantics]))
+  end
+
   test "classifies every structural descriptor category as rebuild required" do
     active = descriptor()
     physical = physical_fingerprint()

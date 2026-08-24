@@ -8,7 +8,7 @@ defmodule Favn.SQL.WritePlan do
   alias Favn.Window.Runtime
 
   @type materialization :: :view | :table | :incremental
-  @type strategy :: :append | :replace | :delete_insert | :merge
+  @type strategy :: :append | :replace | :delete_insert | :merge | :replace_groups
 
   @enforce_keys [:materialization, :target, :select_sql]
   defstruct [
@@ -29,6 +29,8 @@ defmodule Favn.SQL.WritePlan do
     :effective_window,
     :window_column,
     :unique_key,
+    :replacement_key,
+    :replacement_scope,
     :incremental_predicate_sql,
     :partition_spec,
     :bootstrap?,
@@ -56,6 +58,8 @@ defmodule Favn.SQL.WritePlan do
           effective_window: Runtime.t() | nil,
           window_column: String.t() | nil,
           unique_key: [binary()] | nil,
+          replacement_key: [binary()] | nil,
+          replacement_scope: Relation.t() | nil,
           incremental_predicate_sql: iodata() | nil,
           partition_spec: PartitionSpec.t() | nil,
           bootstrap?: boolean() | nil,

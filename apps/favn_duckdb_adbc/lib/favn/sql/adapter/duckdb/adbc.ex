@@ -281,6 +281,7 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
        replace_table: :supported,
        transactions: :supported,
        merge: :unsupported,
+       group_replacement: :supported,
        physical_partitioning: :supported,
        materialized_views: :unsupported,
        relation_comments: :unsupported,
@@ -1474,6 +1475,35 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
     ]
   end
 
+  defp incremental_statements(target, %WritePlan{
+         strategy: :replace_groups,
+         select_sql: sql,
+         replacement_scope: %Relation{} = scope,
+         replacement_key: keys
+       })
+       when is_list(keys) and keys != [] do
+    scope = qualified_relation(scope)
+
+    predicate =
+      keys
+      |> Enum.map(fn key ->
+        ["favn_target.", quote_ident(key), " = favn_scope.", quote_ident(key)]
+      end)
+      |> Enum.intersperse(" AND ")
+
+    [
+      [
+        "DELETE FROM ",
+        target,
+        " AS favn_target USING ",
+        scope,
+        " AS favn_scope WHERE ",
+        predicate
+      ],
+      ["INSERT INTO ", target, " ", sql]
+    ]
+  end
+
   defp incremental_statements(_target, %WritePlan{strategy: strategy}) do
     raise ArgumentError, "unsupported incremental strategy for DuckDB ADBC: #{inspect(strategy)}"
   end
@@ -1489,6 +1519,16 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
          String.starts_with?(statement, "ALTER TABLE"),
        do: [],
        else: params
+  end
+
+  defp statement_params(
+         %WritePlan{materialization: :incremental, strategy: :replace_groups},
+         statement,
+         params
+       ) do
+    if IO.iodata_to_binary(statement) |> String.starts_with?("DELETE FROM"),
+      do: [],
+      else: params
   end
 
   defp statement_params(_plan, statement, params) do
