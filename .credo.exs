@@ -153,7 +153,14 @@
              :attempt,
              :workspace_id,
              :operation_id,
-             :reason
+             :reason,
+             :failure_class,
+             :service_identity,
+             :manifest_version_id,
+             :compressed_bytes,
+             :expanded_bytes,
+             :entry_count,
+             :package_count
            ]},
           {Credo.Check.Warning.OperationOnSameValues, []},
           {Credo.Check.Warning.OperationWithConstantResult, []},

@@ -84,10 +84,13 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
     on_exit(fn -> restore_env(:manifest_deployer_tokens, previous_tokens) end)
 
     manifest =
-      FavnTestSupport.with_manifest_contract(
-        %{assets: [], pipelines: [], schedules: [], graph: %{}, metadata: %{}},
-        %{}
-      )
+      FavnTestSupport.with_manifest_contract(%{
+        assets: [],
+        pipelines: [],
+        schedules: [],
+        graph: %{},
+        metadata: %{}
+      })
 
     {:ok, version} = Version.new(manifest)
 

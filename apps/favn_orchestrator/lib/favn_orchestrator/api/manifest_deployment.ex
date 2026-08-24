@@ -355,8 +355,8 @@ defmodule FavnOrchestrator.API.ManifestDeployment do
         failure_class: operation.failure_class,
         activation_diagnostics: operation.activation_diagnostics,
         progress: %{
-          inspection_completed: operation.inspection_completed || 0,
-          inspection_total: operation.inspection_total || 0
+          inspection_completed: operation.inspection_completed,
+          inspection_total: operation.inspection_total
         },
         accepted_at: operation.accepted_at,
         activating_at: operation.activating_at,

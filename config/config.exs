@@ -90,7 +90,19 @@ config :favn_orchestrator,
 #       metadata: [:user_id]
 config :logger, :default_formatter,
   format: "$time $metadata[$level] $message\n",
-  metadata: [:request_id, :workspace_id, :operation_id, :reason]
+  metadata: [
+    :request_id,
+    :workspace_id,
+    :operation_id,
+    :reason,
+    :failure_class,
+    :service_identity,
+    :manifest_version_id,
+    :compressed_bytes,
+    :expanded_bytes,
+    :entry_count,
+    :package_count
+  ]
 
 # Import environment specific config. This must remain at the bottom
 # of this file so it overrides the configuration defined above.

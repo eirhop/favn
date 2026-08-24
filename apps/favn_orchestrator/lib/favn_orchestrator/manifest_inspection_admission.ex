@@ -14,7 +14,11 @@ defmodule FavnOrchestrator.ManifestInspectionAdmission do
   def with_slot(fun, server \\ __MODULE__) when is_function(fun, 0) do
     case Process.whereis(server) do
       nil ->
-        if Application.get_env(:favn_orchestrator, :test_runner_executor) do
+        if Application.get_env(
+             :favn_orchestrator,
+             :manifest_inspection_admission_fallback?,
+             false
+           ) do
           fun.()
         else
           raise "manifest inspection admission is unavailable"
