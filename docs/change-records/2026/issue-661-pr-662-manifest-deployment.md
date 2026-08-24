@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Implementing |
+| Status | Implemented |
 | Type | Feature |
 | Primary issue | [#661](https://github.com/eirhop/favn/issues/661) |
 | Pull request | [#662](https://github.com/eirhop/favn/pull/662) |
@@ -605,6 +605,7 @@ transport-neutral deployment examples are unchanged.
 | `mise exec -- elixir scripts/check_test_tag_tiers.exs` | Passed | The new slow test is covered by CI |
 | PostgreSQL deployment and changed runner-task test files with database tests excluded locally | Compiled successfully | Eight deployment tests, including two-worker reservation recovery, plus nil/future/expired claim, late-success, cancellation-after-expiry, and operation-scoped retry coverage are syntactically integrated; final runtime proof is delegated to CI's PostgreSQL service |
 | CI at completion-repair head `315a3a05` | Acceptance, slow, Dialyzer, quick checks, control-plane image, and HTTP security passed. All eight deployment tests passed in Fast. Three Fast attempts consistently exposed branch-caused null-deadline claim, cancelling-completion, and obsolete repeated-activation test-contract regressions | This was causal intermediate evidence, not a flaky-gate waiver. Candidate `1003b506` repairs every exposed path; final-head CI remains required |
+| Final implementation CI at `1f83b2a5`: [CI](https://github.com/eirhop/favn/actions/runs/32761043357), [HTTP](https://github.com/eirhop/favn/actions/runs/32761043212), and [images](https://github.com/eirhop/favn/actions/runs/32761043458) | Passed: Fast, Acceptance, Slow, Dialyzer, Quick, aggregate CI, HTTP boundary, and all control-plane image qualification checks; 11 checks succeeded, 2 publication-only checks skipped, and none failed | PostgreSQL runtime proof includes all eight deployment tests and the repaired nil-deadline, cancellation, and operation-scoped retry paths. Live deployment boundaries below remain untested |
 | `mise exec -- mix docs --warnings-as-errors` | New guide rendered, command failed on pre-existing broken links in `guides/operator-authentication.md` plus an unrelated `favn_view` development warning | New guide render inspected; repository-wide docs qualification remains incomplete |
 
 Not verified locally:
@@ -642,5 +643,7 @@ capacity while asserting the old cross-operation task identity. Candidate
 after an expired finite deadline, registers exact test capacity, and asserts a
 fresh operation-scoped retry task. The reviewer found no remaining code or test
 defect in that repair; its final process finding was this stale record, now
-corrected. The pull request remains draft until the updated record is reviewed
-and final-head PostgreSQL CI passes.
+corrected. The reviewer returned `READY` with no P0-P3 findings on final
+candidate `1f83b2a5`, and all final implementation CI checks passed. This
+record-only outcome update still requires final-head CI before the pull request
+is marked ready.
