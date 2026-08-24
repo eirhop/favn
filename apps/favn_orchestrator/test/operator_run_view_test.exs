@@ -6,18 +6,9 @@ defmodule FavnOrchestrator.OperatorRunViewTest do
   alias FavnOrchestrator.Persistence.Results.RunFlowSnapshot
   alias FavnOrchestrator.Persistence.Results.RunSubmission
   alias FavnOrchestrator.Persistence.Results.RunViewHeader
-  alias FavnOrchestrator.Storage.RunSnapshotCodec
 
-  test "observed attempts replace matching planned rows without carrying detail payloads" do
+  test "combines storage-selected observed and planned rows without carrying detail payloads" do
     planned = [
-      %RunFlowCandidate{
-        run_id: "run-one",
-        planned_id: "planned-orders",
-        node_key: %{"ref" => "crm.orders"},
-        asset_ref: "crm.orders",
-        window_identity: "window-one",
-        status: :planned
-      },
       %RunFlowCandidate{
         run_id: "run-one",
         planned_id: "planned-total",
@@ -99,31 +90,6 @@ defmodule FavnOrchestrator.OperatorRunViewTest do
     end
   end
 
-  test "node identity wins over repeated-reference fallback" do
-    first_node_key = {{MyApp.Asset, :asset}, 1}
-    second_node_key = {{MyApp.Asset, :asset}, 2}
-
-    planned = [
-      candidate("planned-a", first_node_key),
-      candidate("planned-b", second_node_key)
-    ]
-
-    observed = [
-      %RunFlowCandidate{
-        run_id: "run-one",
-        asset_step_id: encoded_step_id(second_node_key),
-        asset_ref: "crm.orders",
-        window_identity: "none",
-        status: :running
-      }
-    ]
-
-    merged = OperatorRunView.merge_assets(planned, observed)
-    assert Enum.any?(merged, &(&1.id == "planned-a" and not &1.detail?))
-    assert Enum.any?(merged, &(&1.detail? and &1.id == encoded_step_id(second_node_key)))
-    refute Enum.any?(merged, &(&1.id == "planned-b"))
-  end
-
   defp header(count) do
     %RunViewHeader{
       run_id: "run-one",
@@ -142,22 +108,5 @@ defmodule FavnOrchestrator.OperatorRunViewTest do
         planned: count
       }
     }
-  end
-
-  defp candidate(id, node_key) do
-    %RunFlowCandidate{
-      run_id: "run-one",
-      planned_id: id,
-      node_key: RunSnapshotCodec.node_key_dto(node_key),
-      asset_ref: "crm.orders",
-      window_identity: "none",
-      status: :planned
-    }
-  end
-
-  defp encoded_step_id(node_key) do
-    node_key
-    |> :erlang.term_to_binary()
-    |> Base.url_encode64(padding: false)
   end
 end

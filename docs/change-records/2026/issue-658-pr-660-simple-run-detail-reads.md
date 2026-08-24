@@ -357,28 +357,28 @@ flowchart LR
 
 ### Actual scope and complexity
 
-Git reports 1,959 production lines added and 4,496 deleted. Supporting tests,
-fixtures, and examples add 1,221 and delete 1,472. The complete implementation is
-therefore 2,788 lines smaller. The table is a manual hunk attribution because
+Git reports 1,926 production lines added and 4,499 deleted. Supporting tests,
+fixtures, and examples add 1,170 and delete 1,472. The complete implementation is
+therefore 2,875 lines smaller. The table is a manual hunk attribution because
 several files implement more than one slice; its totals exactly match Git.
 
 | Slice | Production added | Production deleted | Supporting added | Supporting deleted |
 | --- | ---: | ---: | ---: | ---: |
-| Exact-run Flow contract and PostgreSQL read | 852 | 104 | 393 | 150 |
+| Exact-run Flow contract and PostgreSQL read | 815 | 104 | 342 | 150 |
 | Legacy broad-read removal | 80 | 3,687 | 0 | 900 |
 | Run page and coalesced refresh | 367 | 245 | 295 | 149 |
 | Lazy window switching | 220 | 80 | 100 | 80 |
 | Separate asset detail route | 230 | 300 | 126 | 193 |
 | Exact lazy event read | 160 | 80 | 39 | 0 |
 | Performance proof | 50 | 0 | 268 | 0 |
-| **Actual total** | **1,959** | **4,496** | **1,221** | **1,472** |
+| CI security and route-catalog follow-up | 4 | 3 | 0 | 0 |
+| **Actual total** | **1,926** | **4,499** | **1,170** | **1,472** |
 
-The exact-read slice is 102 lines above its estimate and total production additions
-are 119 lines above theirs. Both cross the record's 100-line review trigger,
-so the final reviewer is explicitly checking them as possible scope creep. The
-overage is the joined-before-cap exact summary/window query and its end-to-end
-performance proof, not another product feature. Legacy deletion is 1,387 lines
-above its estimate:
+The exact-read slice is 65 lines above its estimate and total production additions
+are 86 lines above theirs. Both are now below the record's 100-line review trigger.
+The final CI correction removed a redundant in-memory identity merge after storage
+had already joined and capped the rows. Legacy deletion is 1,387 lines above its
+estimate:
 source inspection showed that replacing the 1,300-line LiveView and deleting the
 505-line UI Flow converter was simpler than retaining branches from the broad
 execution-group shape. This is deletion of replaced UI code, not added scope.
@@ -422,6 +422,18 @@ independently reauthorized exact read immediately proves whether the run exists.
 An absent run produces no messages on that workspace-scoped topic and reveals no
 cross-workspace data.
 
+The first complete CI run found three implementation integration gaps: the new
+asset-detail route was absent from the production HTTP security catalog, Sobelow
+rejected a redundant external-term decode in the public Flow conversion, and
+Dialyzer could not see a private submission fallback through the dynamically
+selected persistence store. The route is now catalogued, the decode and its
+duplicate merge code are deleted, and the private helper has the same narrow
+`no_unused` annotation as the other dynamically reached helpers. Separately, the
+repository-wide Grype review window expired on 2026-08-22. The exact pinned image
+was rebuilt and rescanned with Grype v0.116.0; every existing exception still
+matched only `not-fixed` or `wont-fix`, with no unsuppressed high or critical
+finding. Its next machine-enforced review is 2026-09-24.
+
 ## Decision log
 
 - 2026-08-23: Keep orchestration semantics unchanged, but remove the superseded
@@ -431,7 +443,7 @@ cross-workspace data.
 ## Verification evidence
 
 - `mix compile --warnings-as-errors` passes in development and test environments.
-- `favn_orchestrator` fast suite: 695 passed, including 6 doctests.
+- `favn_orchestrator` fast suite: 694 passed, including 6 doctests.
 - `favn_view` fast suite: 542 passed, including 104 doctests; one unrelated
   pre-existing excluded test remains excluded.
 - PostgreSQL core authority suite: 129 passed.
@@ -440,8 +452,8 @@ cross-workspace data.
   a Windows `mix.bat` through POSIX `sh`, which exits with status 1 before the
   release code runs. The affected test file has no branch diff. All tests owned
   by this change pass in the app-scoped suites below.
-- Focused public-model tests cover 0, 90, 1,000, and 1,001 assets, deterministic
-  node identity, lean rows, queued submissions, subscription-before-read,
+- Focused public-model and storage tests cover 0, 90, 1,000, and 1,001 assets,
+  lean rows, queued submissions, subscription-before-read,
   disconnected mounts, notification coalescing, failed-event retry, direct Events
   loads with zero Flow reads, lazy windows, ordinary-run window metadata, exact
   observed-only counts, repeated-reference cap overlap, and separate asset-detail
@@ -469,6 +481,9 @@ cross-workspace data.
   pixels in light mode. The separate asset-detail page passes at 390 dark and
   1,440 light.
 - No migration or new persistence table was added.
+- CI-equivalent Credo, both Sobelow scans, Dialyzer, the 31-browser/66-API route
+  catalog check, the Grype deadline check, and an exact-image Grype scan pass
+  after the CI follow-up.
 
 ## Final review
 

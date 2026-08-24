@@ -20,7 +20,6 @@ defmodule FavnOrchestrator.OperatorRunView do
   alias FavnOrchestrator.Persistence.Results.RunWindowChoices
   alias FavnOrchestrator.Persistence.Results.RunSubmission
   alias FavnOrchestrator.Persistence.WorkspaceContext
-  alias FavnOrchestrator.Storage.RunSnapshotCodec
 
   @max_assets 1_000
   @max_events 200
@@ -270,47 +269,10 @@ defmodule FavnOrchestrator.OperatorRunView do
   @doc false
   @spec merge_assets([RunFlowCandidate.t()], [RunFlowCandidate.t()]) :: [Asset.t()]
   def merge_assets(planned, observed) do
-    planned_by_key = Map.new(planned, &{planned_key(&1), &1})
-    planned_fallbacks = Map.new(planned, &{fallback_key(&1), planned_key(&1)})
-
-    {observed_assets, remaining} =
-      Enum.map_reduce(observed, planned_by_key, fn candidate, remaining ->
-        key = observed_key(candidate)
-
-        key =
-          if Map.has_key?(remaining, key),
-            do: key,
-            else: planned_fallbacks[fallback_key(candidate)]
-
-        {_planned, remaining} = if key, do: Map.pop(remaining, key), else: {nil, remaining}
-        {public_asset(candidate), remaining}
-      end)
-
-    remaining_assets = remaining |> Map.values() |> Enum.map(&public_asset/1)
-
-    (observed_assets ++ remaining_assets)
+    (observed ++ planned)
+    |> Enum.map(&public_asset/1)
     |> Enum.sort_by(&{&1.asset_ref, &1.id})
   end
-
-  defp planned_key(%RunFlowCandidate{node_key: node_key}) do
-    {:node, canonical_json(node_key)}
-  end
-
-  defp observed_key(%RunFlowCandidate{asset_step_id: asset_step_id}) do
-    with {:ok, binary} <- Base.url_decode64(asset_step_id, padding: false),
-         node_key <- :erlang.binary_to_term(binary, [:safe]),
-         %{} = dto <- RunSnapshotCodec.node_key_dto(node_key) do
-      {:node, canonical_json(dto)}
-    else
-      _invalid -> :unmatched
-    end
-  rescue
-    _invalid -> :unmatched
-  end
-
-  defp fallback_key(candidate), do: {candidate.asset_ref, candidate.window_identity}
-
-  defp canonical_json(value), do: Jason.encode!(value)
 
   defp public_asset(%RunFlowCandidate{asset_step_id: asset_step_id} = candidate)
        when is_binary(asset_step_id) do

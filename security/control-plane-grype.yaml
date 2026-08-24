@@ -1,6 +1,6 @@
 # Narrow exceptions for Debian 13 vulnerabilities without an available package fix.
-# reviewed: 2026-07-22
-# review-by: 2026-08-22
+# reviewed: 2026-08-24
+# review-by: 2026-09-24
 # Every rule includes the vendor fix state so it stops matching when a fix appears.
 ignore:
   # OpenSSL rates this Low and it affects only OpenSSL QUIC server listeners.

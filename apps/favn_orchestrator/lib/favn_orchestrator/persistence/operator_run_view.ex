@@ -97,7 +97,7 @@ defmodule FavnOrchestrator.Persistence.Results.RunViewHeader do
 end
 
 defmodule FavnOrchestrator.Persistence.Results.RunFlowCandidate do
-  @moduledoc "Minimal planned or observed Flow candidate before deterministic merge."
+  @moduledoc "Minimal planned or observed Flow row after bounded storage selection."
 
   @enforce_keys [:run_id, :asset_ref, :status]
   defstruct [

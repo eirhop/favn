@@ -175,6 +175,7 @@ defmodule FavnOrchestrator do
                put_rebuild_plan_idempotency: 2,
                put_rebuild_command_idempotency: 2,
                run_command_opts: 1,
+               get_operator_submission: 2,
                finish_operator_result: 8,
                finish_operator_audit: 9,
                operator_error_code: 1,
