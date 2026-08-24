@@ -645,5 +645,5 @@ fresh operation-scoped retry task. The reviewer found no remaining code or test
 defect in that repair; its final process finding was this stale record, now
 corrected. The reviewer returned `READY` with no P0-P3 findings on final
 candidate `1f83b2a5`, and all final implementation CI checks passed. This
-record-only outcome update still requires final-head CI before the pull request
-is marked ready.
+record-only outcome update was independently accepted and passed the same
+final-head gate set before the pull request was marked ready.
