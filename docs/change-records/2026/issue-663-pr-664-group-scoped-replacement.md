@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Implementing |
+| Status | Implemented and independently reviewed |
 | Type | Feature |
 | Primary issue | [#663](https://github.com/sei-no/favn/issues/663) |
 | Pull request | [#664](https://github.com/eirhop/favn/pull/664) |
@@ -266,47 +266,117 @@ Source/static inspection and local automated tests will prove contract and imple
 
 ---
 
-The sections below will be completed during implementation and before final review.
-
 ## Implementation outcome
 
-Pending implementation.
+The implementation follows the approved contract. Authors declare ordered
+replacement keys and separate incremental/full scope SQL. The compiler preserves
+both scope templates in the immutable execution package, while the target
+descriptor treats only the strategy and replacement key as structural rebuild
+identity. The runner chooses one scope from target/generation state, stages the
+scope and candidate once inside the checked transaction, validates their exact
+key contract, and delegates one typed plan to a capable adapter. DuckDB/DuckLake
+then performs the matching delete and candidate insert atomically.
+
+The result keeps the existing write outcome unchanged and adds a separate typed
+group-replacement result. Missing targets, explicit rebuild candidates,
+initialized empty targets, empty scopes, deletion-only scopes, before-check
+skips, after-check rollback, and unknown commit outcomes all retain the approved
+explicit meanings.
 
 ### Actual scope and complexity
 
-- Files and ownership areas changed: Pending.
-- Ownership boundaries affected: Pending.
-- Implementation complexity: Pending.
-- Operational complexity: Pending.
-- Canonical documentation updated: Pending.
-- Actual additions, deletions, and supporting lines per approved complexity-budget slice: Pending.
+- Files and ownership areas changed: 51 implementation/support files across the
+  public authoring surface, Core manifests, Runner, SQL runtime, DuckDB ADBC,
+  version fixtures, and canonical guides. No persistence schema, UI, scheduler,
+  or deployment code changed.
+- Ownership boundaries affected: the public DSL compiles intent; Core owns the
+  versioned package and descriptor; Runner owns staging, validation, checks, and
+  planning; the SQL runtime carries the typed capability/plan; DuckDB ADBC owns
+  concrete delete/insert SQL. Existing application boundaries remain intact.
+- Implementation complexity: medium-high but bounded. The production diff is
+  `+1,499/-138`, inside the approved total production budget.
+- Operational complexity: low. There is no migration or new service/state; an
+  unsupported adapter rejects the capability before the transaction.
+- Canonical documentation updated: SQLAsset moduledoc, authoring guide,
+  `Favn.AI`, feature status, manifest-version guides, public facade docs, and
+  DuckDB ADBC capability README.
+
+| Slice | Production | Supporting | Notes |
+| --- | ---: | ---: | --- |
+| 1. DSL and templates | `+345/-21` | `+182/-2` | Inline/file scopes, candidate-only runtime relation, compile diagnostics |
+| 2. Package and compatibility | `+174/-28` | `+244/-40` | Schema bumps, full JSON round trip, package/materialization validation, structural-key rebuild classification |
+| 3. Runner execution | `+927/-86` | `+751/-33` | One-transaction staging, validation, checks, manifest-first unknown-outcome diagnostics, metrics, bootstrap/rebuild selection |
+| 4. SQL runtime and adapter | `+47/-1` | `+151/-1` | Thin typed plan/capability and DuckDB/DuckLake statements plus real ADBC tests |
+| 5. Lifecycle and docs | `+6/-2` | `+112/-9` | Existing lifecycle reused; public routing/status/result/version fixtures updated |
+| **Total** | **`+1,499/-138`** | **`+1,440/-85`** | Change record excluded |
+
+The Runner slice is 277 production lines above its planned upper range, while
+the adapter slice is 133 lines below its planned lower range. This is an
+ownership shift, not scope growth: adapter-neutral staging, exact relational
+validation, checked-transaction integration, and bounded result diagnostics
+belong in Runner, leaving the adapter with only capability advertisement and
+quoted delete/insert statements. Total production remains near the middle of
+the approved range. Supporting code is below its estimated lower range because
+existing version, lifecycle, checked-write, and unknown-outcome suites were
+extended instead of duplicated.
 
 ## Deviations from the approved plan
 
-Pending implementation.
+No product-scope or contract deviation was required.
+
+- The planned work mentioned new scheduler/freshness integration cases. No
+  scheduler implementation changed: a focused normal `Runtime.run/2` test proves
+  the strategy executes without a window, and the existing generic committed
+  success/freshness path remains unchanged and passed the broader orchestrator
+  suite. This avoids duplicating scheduler tests for a runner-local strategy.
+- Exact deleted-row count is available for the supported DuckDB/DuckLake path
+  and is computed from the staged scope in the same transaction. The result type
+  retains `:unavailable` for a future capable adapter that cannot provide an
+  exact count, as approved.
 
 ## Decision log
 
-Pending implementation.
+- 2026-08-24: Kept scope SQL outside structural target identity, following the
+  user's decision that scope edits should behave like ordinary transformation
+  SQL and not force rebuilds.
+- 2026-08-24: Reused existing target generations for first build/full rebuild;
+  target row count is never used as lifecycle state.
+- 2026-08-24: Kept validation and checked-write sequencing adapter-neutral in
+  Runner; DuckDB ADBC receives a fully typed plan and remains intentionally thin.
+- 2026-08-24: Kept direct render/preview/explain unsupported rather than adding
+  a second staged-session lifecycle in this feature.
 
 ## Verification evidence
 
 | Check | Result | Evidence boundary |
 | --- | --- | --- |
-| Focused tests | Pending | Automated qualification, not live proof |
-| Broader repository checks | Pending | Local and CI qualification, not live deployment proof |
+| Group runtime tests | 16 passed | Composite/multiple keys, both scopes, bootstrap/rebuild, empty/delete-only, checks, validation, unsupported adapter, unknown commit, non-window run |
+| Authoring tests | 146 passed | Includes 8 focused declaration/template cases |
+| Core tests | 445 passed | Includes full materialization JSON round trip, package/hash pairing, Core option invariants, and target compatibility |
+| SQL runtime tests | 126 passed | Shared capability/transaction regression coverage |
+| Runner tests | 254 passed; focused suite 16 passed | Includes passed-check telemetry retention on unknown commit and exactly one write attempt |
+| DuckDB ADBC tests | 52 passed, including 8 real ADBC integration tests | Atomic multiple-group/delete-only execution and rollback proof |
+| Public Favn tests | 183 passed, 3 excluded | Manifest/public contract regression coverage |
+| Orchestrator tests | 694 passed in umbrella fast run | Generic lifecycle/freshness paths; no live scheduler deployment |
+| Warnings-as-errors compile | Passed for every umbrella app | Local static qualification |
+| Umbrella fast suite | All non-PostgreSQL apps passed; PostgreSQL app stopped on missing `FAVN_DATABASE_URL` | No PostgreSQL access was attempted or configured for this SQL data-plane feature |
+| Acceptance suite | Public Favn acceptance passed; local lifecycle/assets cases could not run without PostgreSQL and the environment's esbuild binary | Environment qualification gap, unrelated to the changed owning layers |
+| Diff checks | `git diff --check` passed | Whitespace/static patch check |
 
 ### Not verified
 
 - Live production deployment, external data-system behavior, scale, and performance limits are not planned verification boundaries.
+- PostgreSQL-backed tests were not run because this environment does not provide
+  `FAVN_DATABASE_URL`; the storage app compiles and its only change is a current
+  manifest-version fixture literal.
 
 ## Final review
 
 | Field | Result |
 | --- | --- |
-| Reviewer | Pending independent `gpt-5.6-sol` agent at xhigh reasoning |
+| Reviewer | Independent `gpt-5.6-sol` agent at xhigh reasoning |
 | Compared | Approved plan, implementation, tests, diagnostics, and docs |
-| Deviations complete | Pending |
-| Findings | Pending |
-| Findings addressed and rechecked | Pending |
-| Verdict | Pending |
+| Deviations complete | Yes |
+| Findings | Initial review found manifest enum/key rehydration, unknown-commit tuple diagnostics, package/materialization pairing, Core option-combination validation, and public result-contract evidence gaps |
+| Findings addressed and rechecked | Yes. The same reviewer rechecked package/materialization validation, full JSON rehydration, Core invariants, quoting, public result evidence, and manifest-first unknown-commit check/contract preservation |
+| Verdict | **PASS — no remaining findings** |

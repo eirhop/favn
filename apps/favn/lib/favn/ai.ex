@@ -241,13 +241,17 @@ defmodule Favn.AI do
     the authoring-assets guide. Keep `partitioned_by` separate from incremental
     `window_column`; a changed DuckLake specification affects new files only,
     and a full Favn rebuild is the explicit whole-table rewrite path.
+  - For incremental replacement by one or several business-key columns, read
+    `Favn.SQLAsset` and the authoring-assets guide. Use `:replace_groups` with
+    explicit incremental and full `replacement_scope` queries; do not model it
+    as a time window or invent merge semantics.
   - To compile a manifest, read `Favn generate_manifest`; if the project uses
     `config :favn, discovery: [apps: [...], assets: :all, pipelines: :all,
     schedules: :all, connections: :all]`, also read `Favn.ModuleDiscovery`. Read
     `Favn.Manifest.Generator` if you need internal compilation details. For
     deployment, call `Favn.build_manifest/1` with the exact operator-supplied
     `runner_releases` pool map, followed by
-    `Favn.prepare_manifest_publication/2`: schema 17 has one compact manifest
+    `Favn.prepare_manifest_publication/2`: schema 18 has one compact manifest
     index bound to exact releases per runner pool, validated execution-pool and
     connection-circuit defaults, and immutable content-addressed SQL execution
     packages. Consumer timezone, coverage, execution-pool, and connection

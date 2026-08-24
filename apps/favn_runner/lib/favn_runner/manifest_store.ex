@@ -789,6 +789,10 @@ defmodule FavnRunner.ManifestStore do
        }) do
     templates =
       [execution.template] ++
+        Enum.reject(
+          [execution.incremental_scope_template, execution.full_scope_template],
+          &is_nil/1
+        ) ++
         Enum.map(execution.checks, fn %Check{} = check -> check.template end) ++
         Enum.map(execution.sql_definitions, fn %SQLDefinition{} = definition ->
           definition.template

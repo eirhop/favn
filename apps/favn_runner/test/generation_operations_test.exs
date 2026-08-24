@@ -657,16 +657,16 @@ defmodule FavnRunner.GenerationOperationsTest do
         connection_definitions: %{
           generation_warehouse: %{adapter: Adapter, module: __MODULE__}
         },
-        manifest_schema_version: 17,
-        runner_contract_version: 13
+        manifest_schema_version: 18,
+        runner_contract_version: 14
       )
 
     asset = %{asset | target_descriptor: descriptor}
 
     manifest =
       %Manifest{
-        schema_version: 17,
-        runner_contract_version: 13,
+        schema_version: 18,
+        runner_contract_version: 14,
         runner_releases: %{"default" => FavnTestSupport.runner_release_id()},
         assets: [asset],
         graph: %Graph{nodes: [ref], topo_order: [ref]}
@@ -703,8 +703,8 @@ defmodule FavnRunner.GenerationOperationsTest do
         connection_definitions: %{
           generation_warehouse: %{adapter: Adapter, module: __MODULE__}
         },
-        manifest_schema_version: 17,
-        runner_contract_version: 13
+        manifest_schema_version: 18,
+        runner_contract_version: 14
       )
 
     asset = %{asset | target_descriptor: descriptor}
@@ -728,14 +728,14 @@ defmodule FavnRunner.GenerationOperationsTest do
             connection_definitions: %{
               generation_warehouse: %{adapter: Adapter, module: __MODULE__}
             },
-            manifest_schema_version: 17,
-            runner_contract_version: 13
+            manifest_schema_version: 18,
+            runner_contract_version: 14
           )
     }
 
     manifest = %Manifest{
-      schema_version: 17,
-      runner_contract_version: 13,
+      schema_version: 18,
+      runner_contract_version: 14,
       runner_releases: %{
         "default" => FavnTestSupport.runner_release_id(:alternate),
         "duckdb_image" => FavnTestSupport.runner_release_id()

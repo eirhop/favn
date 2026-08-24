@@ -142,7 +142,7 @@ A manifest can include:
 - effective freshness, window, coverage, timezone provenance, and target descriptors
 - JSON-safe asset and pipeline settings
 - runtime config requirements
-- schema 17 and runner protocol 13 data used by the runtime
+- schema 18 and runner protocol 14 data used by the runtime
 - the exact operator-supplied `runner_releases` pool-to-release map
 - validated execution-pool defaults used by referenced assets and pipelines
 - validated circuit policy for published connections, without adapter values or secrets

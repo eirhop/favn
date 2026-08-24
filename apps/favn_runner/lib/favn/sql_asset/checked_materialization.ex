@@ -1,7 +1,7 @@
 defmodule Favn.SQLAsset.CheckedMaterialization do
   @moduledoc false
 
-  alias Favn.SQL.{CheckResult, Result, WritePlan}
+  alias Favn.SQL.{CheckResult, GroupReplacementResult, Result, WritePlan}
 
   @enforce_keys [:result, :check_results, :write_outcome]
   defstruct [
@@ -9,6 +9,7 @@ defmodule Favn.SQLAsset.CheckedMaterialization do
     :result,
     :reason,
     :contract_validation,
+    :group_replacement,
     check_results: [],
     write_outcome: :written
   ]
@@ -19,6 +20,7 @@ defmodule Favn.SQLAsset.CheckedMaterialization do
           check_results: [CheckResult.t()],
           write_outcome: :written | :no_op,
           reason: atom() | nil,
-          contract_validation: Favn.SQL.ContractValidation.t() | nil
+          contract_validation: Favn.SQL.ContractValidation.t() | nil,
+          group_replacement: GroupReplacementResult.t() | nil
         }
 end

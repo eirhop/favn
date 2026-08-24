@@ -16,7 +16,8 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCTest do
   alias FavnDuckdbADBC.TestSupport
 
   test "declares successful write operations safe for pooled session reuse" do
-    assert {:ok, %Capabilities{extensions: extensions}} = ADBC.capabilities(resolved(), [])
+    assert {:ok, %Capabilities{group_replacement: :supported, extensions: extensions}} =
+             ADBC.capabilities(resolved(), [])
 
     assert extensions.pool_safe_after_success == [
              :materialize,
@@ -28,6 +29,27 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCTest do
     assert extensions.pool_safe_when_requested == [:transaction]
     refute :execute in extensions.pool_safe_after_success
     refute :transaction in extensions.pool_safe_after_success
+  end
+
+  test "builds composite-key group replacement delete and insert statements" do
+    plan = %WritePlan{
+      materialization: :incremental,
+      strategy: :replace_groups,
+      mode: :incremental,
+      target: %Relation{schema: "main", name: "customer_rows", type: :table},
+      select_sql: ~s(SELECT * FROM "favn_candidate"),
+      replacement_scope: %Relation{name: "favn_scope", type: :table},
+      replacement_key: ["tenant_id", "customer\"id"]
+    }
+
+    assert {:ok, [delete, insert]} =
+             ADBC.materialization_statements(plan, %Capabilities{}, [])
+
+    assert IO.iodata_to_binary(delete) ==
+             ~s(DELETE FROM "main"."customer_rows" AS favn_target USING "favn_scope" AS favn_scope WHERE favn_target."tenant_id" = favn_scope."tenant_id" AND favn_target."customer""id" = favn_scope."customer""id")
+
+    assert IO.iodata_to_binary(insert) ==
+             ~s(INSERT INTO "main"."customer_rows" SELECT * FROM "favn_candidate")
   end
 
   defmodule FakeClient do

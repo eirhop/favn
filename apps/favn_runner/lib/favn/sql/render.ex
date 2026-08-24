@@ -119,7 +119,7 @@ defmodule Favn.SQL.MaterializationResult do
   SQL materialization output for one SQL asset.
   """
 
-  alias Favn.SQL.{CheckResult, Render, Result, WritePlan}
+  alias Favn.SQL.{CheckResult, GroupReplacementResult, Render, Result, WritePlan}
 
   @enforce_keys [:render, :result]
   defstruct [
@@ -127,6 +127,7 @@ defmodule Favn.SQL.MaterializationResult do
     :write_plan,
     :result,
     :reason,
+    :group_replacement,
     check_results: [],
     write_outcome: :written
   ]
@@ -137,6 +138,7 @@ defmodule Favn.SQL.MaterializationResult do
           result: Result.t(),
           check_results: [CheckResult.t()],
           write_outcome: :written | :no_op,
-          reason: atom() | nil
+          reason: atom() | nil,
+          group_replacement: GroupReplacementResult.t() | nil
         }
 end

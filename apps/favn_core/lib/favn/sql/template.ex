@@ -179,7 +179,7 @@ defmodule Favn.SQL.Template do
     defstruct [:kind, :span]
 
     @type t :: %__MODULE__{
-            kind: :query | :target,
+            kind: :query | :target | :replacement_scope,
             span: Favn.SQL.Template.Span.t()
           }
   end
@@ -305,7 +305,7 @@ defmodule Favn.SQL.Template do
   @spec calls(t()) :: [Call.t()]
   def calls(%__MODULE__{nodes: nodes}), do: collect_calls(nodes)
 
-  @spec runtime_relations(t()) :: MapSet.t(:query | :target)
+  @spec runtime_relations(t()) :: MapSet.t(:query | :target | :replacement_scope)
   def runtime_relations(%__MODULE__{nodes: nodes}) do
     nodes
     |> collect_runtime_relations()
@@ -1082,7 +1082,7 @@ defmodule Favn.SQL.Template do
   end
 
   defp runtime_relation_candidate?(word, tail),
-    do: word in ["query", "target"] and peek_nonspace_char(tail) == ?(
+    do: word in ["query", "target", "replacement_scope"] and peek_nonspace_char(tail) == ?(
 
   defp visible_arities(word, known_definitions) do
     known_definitions

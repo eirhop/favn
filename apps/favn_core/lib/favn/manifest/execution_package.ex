@@ -16,6 +16,7 @@ defmodule Favn.Manifest.ExecutionPackage do
   alias Favn.SQL.Check
   alias Favn.SQL.Definition
   alias Favn.SQLAsset.Compiler
+  alias Favn.SQLAsset.RelationUsage
   alias Favn.SQL.Template
 
   alias Favn.SQL.Template.{
@@ -31,7 +32,7 @@ defmodule Favn.Manifest.ExecutionPackage do
     Text
   }
 
-  @schema_version 3
+  @schema_version 4
 
   @enforce_keys [:content_hash, :asset_ref, :sql_execution]
   defstruct schema_version: @schema_version,
@@ -126,6 +127,7 @@ defmodule Favn.Manifest.ExecutionPackage do
     with {:ok, canonical} <- from_published(package),
          :ok <- match_asset_ref(canonical.asset_ref, asset.ref),
          :ok <- match_hash(canonical.content_hash, asset.execution_package_hash),
+         :ok <- match_replacement_contract(canonical.sql_execution, asset),
          :ok <-
            match_relation_inputs(
              canonical.sql_execution.relation_inputs,
@@ -212,12 +214,26 @@ defmodule Favn.Manifest.ExecutionPackage do
   defp validate_sql_execution!(%SQLExecution{
          sql: sql,
          template: template,
+         incremental_scope_sql: incremental_scope_sql,
+         incremental_scope_template: incremental_scope_template,
+         full_scope_sql: full_scope_sql,
+         full_scope_template: full_scope_template,
          relation_inputs: relation_inputs,
          sql_definitions: definitions,
          checks: checks
        }) do
     ensure!(is_binary(sql))
     validate_template!(template, sql, :query)
+
+    validate_replacement_scopes!(
+      template,
+      incremental_scope_sql,
+      incremental_scope_template,
+      full_scope_sql,
+      full_scope_template,
+      definitions
+    )
+
     ensure!(is_list(relation_inputs))
     Enum.each(relation_inputs, &validate_relation_input!/1)
     ensure!(is_list(definitions))
@@ -228,11 +244,67 @@ defmodule Favn.Manifest.ExecutionPackage do
     Enum.each(checks, &validate_check!/1)
 
     validate_called_definitions!(
-      [template | Enum.map(definitions, & &1.template)] ++
+      [template] ++
+        Enum.reject([incremental_scope_template, full_scope_template], &is_nil/1) ++
+        Enum.map(definitions, & &1.template) ++
         Enum.map(checks, & &1.template),
       definitions
     )
   end
+
+  defp validate_replacement_scopes!(template, nil, nil, nil, nil, definitions) do
+    ensure!(
+      not MapSet.member?(
+        RelationUsage.runtime_relations(template, definitions),
+        :replacement_scope
+      )
+    )
+  end
+
+  defp validate_replacement_scopes!(
+         _template,
+         incremental_sql,
+         incremental,
+         full_sql,
+         full,
+         definitions
+       ) do
+    ensure!(is_binary(incremental_sql) and is_binary(full_sql))
+    validate_template!(incremental, incremental_sql, :query)
+    validate_template!(full, full_sql, :query)
+    ensure!(RelationUsage.runtime_relations(incremental, definitions) == MapSet.new())
+    ensure!(RelationUsage.runtime_relations(full, definitions) == MapSet.new())
+  end
+
+  defp match_replacement_contract(
+         %SQLExecution{} = execution,
+         %Asset{materialization: {:incremental, opts}}
+       ) do
+    if Keyword.get(opts, :strategy) == :replace_groups do
+      if replacement_scopes_present?(execution), do: :ok, else: replacement_contract_error()
+    else
+      if replacement_scopes_absent?(execution), do: :ok, else: replacement_contract_error()
+    end
+  end
+
+  defp match_replacement_contract(%SQLExecution{} = execution, %Asset{}) do
+    if replacement_scopes_absent?(execution), do: :ok, else: replacement_contract_error()
+  end
+
+  defp replacement_scopes_present?(%SQLExecution{} = execution),
+    do:
+      is_binary(execution.incremental_scope_sql) and
+        is_struct(execution.incremental_scope_template, Template) and
+        is_binary(execution.full_scope_sql) and
+        is_struct(execution.full_scope_template, Template)
+
+  defp replacement_scopes_absent?(%SQLExecution{} = execution),
+    do:
+      is_nil(execution.incremental_scope_sql) and
+        is_nil(execution.incremental_scope_template) and is_nil(execution.full_scope_sql) and
+        is_nil(execution.full_scope_template)
+
+  defp replacement_contract_error(), do: {:error, :execution_package_materialization_mismatch}
 
   defp validate_relation_input!(%RelationInput{
          kind: kind,
@@ -464,7 +536,7 @@ defmodule Favn.Manifest.ExecutionPackage do
   end
 
   defp validate_node!(%RuntimeRelation{kind: kind, span: span}) do
-    ensure!(kind in [:query, :target])
+    ensure!(kind in [:query, :target, :replacement_scope])
     validate_span!(span)
   end
 

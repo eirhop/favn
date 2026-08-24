@@ -6,6 +6,26 @@ defmodule FavnOrchestrator.Storage.JsonSafeTest do
   alias Favn.Window.Selection
   alias FavnOrchestrator.Storage.JsonSafe
 
+  test "keeps group replacement result metadata JSON-safe" do
+    metadata = %{
+      group_replacement: %Favn.SQL.GroupReplacementResult{
+        operation: :delete_only,
+        scope_group_count: 2,
+        candidate_row_count: 0,
+        deleted_row_count: 7,
+        inserted_row_count: 0
+      }
+    }
+
+    assert JsonSafe.output_metadata(metadata)["group_replacement"] == %{
+             "operation" => "delete_only",
+             "scope_group_count" => 2,
+             "candidate_row_count" => 0,
+             "deleted_row_count" => 7,
+             "inserted_row_count" => 0
+           }
+  end
+
   defmodule ArbitraryStruct do
     defstruct [:name, :password, :metadata]
   end

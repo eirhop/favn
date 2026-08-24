@@ -40,6 +40,85 @@ defmodule FavnRunner.SQL.MaterializationPlanner do
     end
   end
 
+  @doc false
+  @spec build_group_replacement(
+          Session.t(),
+          Definition.t(),
+          Render.t(),
+          RelationRef.t(),
+          RelationRef.t(),
+          boolean()
+        ) :: {:ok, WritePlan.t()} | {:error, Error.t()}
+  def build_group_replacement(
+        %Session{} = session,
+        %Definition{materialization: {:incremental, opts}} = definition,
+        %Render{} = render,
+        %RelationRef{} = scope,
+        %RelationRef{} = candidate,
+        target_exists?
+      )
+      when is_boolean(target_exists?) do
+    keys = opts |> Keyword.fetch!(:replacement_key) |> Enum.map(&normalize_column_name/1)
+
+    with :ok <- ensure_group_replacement_support(session, render) do
+      plan =
+        if target_exists? do
+          %WritePlan{
+            asset_ref: render.asset_ref,
+            connection: render.connection,
+            materialization: :incremental,
+            strategy: :replace_groups,
+            mode: :incremental,
+            target: relation(render, :table),
+            query: render,
+            select_sql: render.sql,
+            params: render.params,
+            transactional?: true,
+            replacement_key: keys,
+            replacement_scope: sql_relation(scope),
+            bootstrap?: false,
+            options: %{replacement_key: keys},
+            metadata: %{mode: :incremental, strategy: :replace_groups}
+          }
+        else
+          table_write_plan(render)
+          |> Map.merge(%{
+            materialization: :incremental,
+            strategy: :replace_groups,
+            mode: :bootstrap,
+            transactional?: true,
+            replacement_key: keys,
+            replacement_scope: sql_relation(scope),
+            bootstrap?: true,
+            metadata: %{mode: :bootstrap, strategy: :replace_groups, bootstrap?: true}
+          })
+        end
+
+      with_partition_spec(session, definition, render, {:relation, candidate}, plan)
+    end
+  end
+
+  defp ensure_group_replacement_support(
+         %Session{capabilities: %{transactions: :supported, group_replacement: :supported}},
+         _render
+       ),
+       do: :ok
+
+  defp ensure_group_replacement_support(%Session{} = session, %Render{} = render) do
+    {:error,
+     %Error{
+       type: :unsupported_materialization,
+       phase: :materialize,
+       asset_ref: render.asset_ref,
+       message: "incremental :replace_groups requires atomic group replacement support",
+       details: %{
+         connection: session.resolved.name,
+         transactions: session.capabilities.transactions,
+         group_replacement: session.capabilities.group_replacement
+       }
+     }}
+  end
+
   defp build_incremental(
          %Session{} = session,
          %Definition{} = definition,
@@ -417,6 +496,16 @@ defmodule FavnRunner.SQL.MaterializationPlanner do
       schema: render.relation.schema,
       name: render.relation.name,
       type: type,
+      metadata: %{}
+    }
+  end
+
+  defp sql_relation(%RelationRef{} = ref) do
+    %Favn.SQL.Relation{
+      catalog: ref.catalog,
+      schema: ref.schema,
+      name: ref.name,
+      type: :table,
       metadata: %{}
     }
   end

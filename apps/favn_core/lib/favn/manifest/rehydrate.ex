@@ -350,15 +350,27 @@ defmodule Favn.Manifest.Rehydrate do
   end
 
   defp decode_materialization_opt_key(key),
-    do: decode_known_atom(key, [:strategy, :unique_key, :window_column])
+    do: decode_known_atom(key, [:strategy, :unique_key, :window_column, :replacement_key])
 
   defp decode_materialization_opt_value(key, value) do
     case decode_materialization_opt_key(key) do
-      :strategy -> decode_known_atom(value, [:append, :replace, :delete_insert, :merge])
-      :unique_key when is_list(value) -> Enum.map(value, &decode_atom_optional/1)
-      :window_column when is_binary(value) -> value
-      :window_column -> decode_atom_optional(value)
-      _ -> value
+      :strategy ->
+        decode_known_atom(value, [:append, :replace, :delete_insert, :merge, :replace_groups])
+
+      :unique_key when is_list(value) ->
+        Enum.map(value, &decode_atom_optional/1)
+
+      :replacement_key when is_list(value) ->
+        Enum.map(value, &decode_atom_optional/1)
+
+      :window_column when is_binary(value) ->
+        value
+
+      :window_column ->
+        decode_atom_optional(value)
+
+      _ ->
+        value
     end
   end
 
@@ -450,6 +462,12 @@ defmodule Favn.Manifest.Rehydrate do
     execution = %SQLExecution{
       sql: field_value(value, :sql),
       template: value |> field_value(:template) |> build_template(),
+      incremental_scope_sql: field_value(value, :incremental_scope_sql),
+      incremental_scope_template:
+        value |> field_value(:incremental_scope_template) |> build_optional_template(),
+      full_scope_sql: field_value(value, :full_scope_sql),
+      full_scope_template:
+        value |> field_value(:full_scope_template) |> build_optional_template(),
       runtime_inputs: value |> field_value(:runtime_inputs) |> build_runtime_input_ref(),
       contract: contract,
       relation_inputs: value |> field_value(:relation_inputs, []) |> build_relation_inputs(),
@@ -496,8 +514,13 @@ defmodule Favn.Manifest.Rehydrate do
          template: %Template{} = template,
          sql_definitions: definitions
        }) do
-    case RelationUsage.runtime_relations(template, definitions) |> MapSet.to_list() do
+    case RelationUsage.runtime_relations(template, definitions)
+         |> MapSet.to_list()
+         |> Enum.sort() do
       [] ->
+        :ok
+
+      [:replacement_scope] ->
         :ok
 
       relations ->
@@ -517,7 +540,8 @@ defmodule Favn.Manifest.Rehydrate do
       uses_query? = MapSet.member?(relations, :query)
       uses_target? = MapSet.member?(relations, :target)
 
-      if check.uses_query? != uses_query? or check.uses_target? != uses_target? do
+      if MapSet.member?(relations, :replacement_scope) or check.uses_query? != uses_query? or
+           check.uses_target? != uses_target? do
         raise ArgumentError,
               "SQL check #{inspect(check.name)} runtime relation flags do not match its template"
       end
@@ -826,6 +850,9 @@ defmodule Favn.Manifest.Rehydrate do
 
   defp build_template(other), do: other
 
+  defp build_optional_template(nil), do: nil
+  defp build_optional_template(value), do: build_template(value)
+
   defp build_template_nodes(values) when is_list(values),
     do: Enum.map(values, &build_template_node/1)
 
@@ -875,7 +902,10 @@ defmodule Favn.Manifest.Rehydrate do
 
       template_runtime_relation?(value) ->
         %RuntimeRelation{
-          kind: value |> field_value(:kind) |> decode_known_atom([:query, :target]),
+          kind:
+            value
+            |> field_value(:kind)
+            |> decode_known_atom([:query, :target, :replacement_scope]),
           span: value |> field_value(:span) |> build_template_span()
         }
 

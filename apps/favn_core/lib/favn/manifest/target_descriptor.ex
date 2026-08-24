@@ -14,10 +14,10 @@ defmodule Favn.Manifest.TargetDescriptor do
   alias Favn.TimePeriod
   alias Favn.Window.Spec, as: WindowSpec
 
-  @schema_version 1
+  @schema_version 2
   @hash_pattern ~r/\A[0-9a-f]{64}\z/
   @period_kinds ~w(hour day month year)
-  @strategies ~w(append replace delete_insert merge)
+  @strategies ~w(append replace delete_insert merge replace_groups)
 
   @type t :: %__MODULE__{
           schema_version: pos_integer(),
@@ -330,7 +330,8 @@ defmodule Favn.Manifest.TargetDescriptor do
       kind: "incremental",
       strategy: identifier(Keyword.fetch!(opts, :strategy)),
       unique_key: identifiers(Keyword.get(opts, :unique_key)),
-      window_column: identifier(Keyword.get(opts, :window_column))
+      window_column: identifier(Keyword.get(opts, :window_column)),
+      replacement_key: identifiers(Keyword.get(opts, :replacement_key))
     }
   end
 
@@ -341,7 +342,8 @@ defmodule Favn.Manifest.TargetDescriptor do
       mode: "incremental",
       strategy: identifier(Keyword.fetch!(opts, :strategy)),
       unique_key: identifiers(Keyword.get(opts, :unique_key)),
-      window_column: identifier(Keyword.get(opts, :window_column))
+      window_column: identifier(Keyword.get(opts, :window_column)),
+      replacement_key: identifiers(Keyword.get(opts, :replacement_key))
     }
   end
 
@@ -424,7 +426,14 @@ defmodule Favn.Manifest.TargetDescriptor do
   end
 
   defp canonical_materialization(value) do
-    value = canonical_map(value, [:kind, :strategy, :unique_key, :window_column])
+    value =
+      canonical_map(value, [
+        :kind,
+        :strategy,
+        :unique_key,
+        :window_column,
+        :replacement_key
+      ])
 
     case identifier(value.kind) do
       "table" ->
@@ -435,7 +444,8 @@ defmodule Favn.Manifest.TargetDescriptor do
           kind: "incremental",
           strategy: identifier(value.strategy),
           unique_key: identifiers(value.unique_key),
-          window_column: identifier(value.window_column)
+          window_column: identifier(value.window_column),
+          replacement_key: identifiers(value.replacement_key)
         }
 
       _other ->
@@ -444,7 +454,14 @@ defmodule Favn.Manifest.TargetDescriptor do
   end
 
   defp canonical_write_semantics(value) do
-    value = canonical_map(value, [:mode, :strategy, :unique_key, :window_column])
+    value =
+      canonical_map(value, [
+        :mode,
+        :strategy,
+        :unique_key,
+        :window_column,
+        :replacement_key
+      ])
 
     case identifier(value.mode) do
       "replace" ->
@@ -455,7 +472,8 @@ defmodule Favn.Manifest.TargetDescriptor do
           mode: "incremental",
           strategy: identifier(value.strategy),
           unique_key: identifiers(value.unique_key),
-          window_column: identifier(value.window_column)
+          window_column: identifier(value.window_column),
+          replacement_key: identifiers(value.replacement_key)
         }
 
       _other ->
@@ -532,11 +550,12 @@ defmodule Favn.Manifest.TargetDescriptor do
          kind: "incremental",
          strategy: strategy,
          unique_key: unique_key,
-         window_column: window_column
+         window_column: window_column,
+         replacement_key: replacement_key
        }),
        do:
-         strategy in @strategies and optional_string_list?(unique_key) and
-           optional_string?(window_column)
+         strategy in @strategies and
+           valid_incremental_options?(strategy, unique_key, window_column, replacement_key)
 
   defp valid_materialization?(_value), do: false
 
@@ -546,11 +565,12 @@ defmodule Favn.Manifest.TargetDescriptor do
          mode: "incremental",
          strategy: strategy,
          unique_key: unique_key,
-         window_column: window_column
+         window_column: window_column,
+         replacement_key: replacement_key
        }),
        do:
-         strategy in @strategies and optional_string_list?(unique_key) and
-           optional_string?(window_column)
+         strategy in @strategies and
+           valid_incremental_options?(strategy, unique_key, window_column, replacement_key)
 
   defp valid_write_semantics?(_value), do: false
 
@@ -631,6 +651,18 @@ defmodule Favn.Manifest.TargetDescriptor do
     do: Enum.all?(values, &nonempty_string?/1)
 
   defp optional_string_list?(_value), do: false
+
+  defp valid_incremental_options?("replace_groups", nil, nil, values),
+    do:
+      is_list(values) and values != [] and length(values) == length(Enum.uniq(values)) and
+        Enum.all?(values, &nonempty_string?/1)
+
+  defp valid_incremental_options?(_strategy, unique_key, window_column, nil),
+    do: optional_string_list?(unique_key) and optional_string?(window_column)
+
+  defp valid_incremental_options?(_strategy, _unique_key, _window_column, _replacement_key),
+    do: false
+
   defp optional_hash?(nil), do: true
   defp optional_hash?(value), do: canonical_hash?(value)
   defp canonical_hash?(value) when is_binary(value), do: Regex.match?(@hash_pattern, value)

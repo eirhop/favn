@@ -237,7 +237,7 @@ config :favn,
   ]
 ```
 
-The consumer project reads this configuration while Favn builds schema-17
+The consumer project reads this configuration while Favn builds schema-18
 manifest data. Execution-pool defaults and the non-secret `circuit_breaker`
 entry for each published connection are frozen into typed manifest policy.
 Connection `open`, `pool`, DuckDB, credentials, and runtime refs remain

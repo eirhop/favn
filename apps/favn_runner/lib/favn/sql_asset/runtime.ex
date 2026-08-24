@@ -12,7 +12,16 @@ defmodule Favn.SQLAsset.Runtime do
   alias Favn.SQL.Client, as: SQLClient
   alias Favn.SQL.CancelToken
   alias Favn.SQL.Error, as: SQLError
-  alias Favn.SQL.{Check, CheckResult, Contract, ContractValidation, Result, Session}
+
+  alias Favn.SQL.{
+    Check,
+    CheckResult,
+    Contract,
+    ContractValidation,
+    GroupReplacementResult,
+    Result,
+    Session
+  }
 
   alias Favn.SQL.{Explain, MaterializationResult, Params, Preview, Render}
 
@@ -22,6 +31,7 @@ defmodule Favn.SQLAsset.Runtime do
     Compiler,
     Definition,
     Error,
+    RelationUsage,
     Renderer
   }
 
@@ -248,9 +258,8 @@ defmodule Favn.SQLAsset.Runtime do
 
   defp materialize_definition(%Definition{runtime_inputs: nil} = definition, opts) do
     with :ok <- Renderer.validate_contract_params(definition, opts),
-         {:ok, %Render{} = rendered} <- render_for_materialize(definition, opts),
-         {:ok, %CheckedMaterialization{} = output} <-
-           materialize_render(definition, rendered, opts) do
+         {:ok, %Render{} = rendered, %CheckedMaterialization{} = output} <-
+           execute_materialization(definition, opts) do
       {:ok, materialization_result(rendered, output)}
     else
       {:error, %Error{} = error, _meta} -> {:error, error}
@@ -293,7 +302,8 @@ defmodule Favn.SQLAsset.Runtime do
       result: output.result,
       check_results: output.check_results,
       write_outcome: output.write_outcome,
-      reason: output.reason
+      reason: output.reason,
+      group_replacement: output.group_replacement
     }
   end
 
@@ -312,10 +322,8 @@ defmodule Favn.SQLAsset.Runtime do
       {:ok, resolution, resolved_opts} ->
         result =
           with :ok <- Renderer.validate_contract_params(definition, resolved_opts),
-               {:ok, %Render{} = rendered} <- Renderer.render(definition, resolved_opts),
-               rendered <- maybe_empty_generation_render(rendered, resolved_opts),
-               {:ok, %CheckedMaterialization{} = output} <-
-                 materialize_render(definition, rendered, resolved_opts) do
+               {:ok, %Render{} = rendered, %CheckedMaterialization{} = output} <-
+                 execute_materialization(definition, resolved_opts) do
             {:ok, rendered, output, resolution}
           end
 
@@ -326,10 +334,45 @@ defmodule Favn.SQLAsset.Runtime do
     end
   end
 
+  defp execute_materialization(%Definition{} = definition, opts) do
+    if replace_groups?(definition) do
+      materialize_group_replacement(definition, opts)
+    else
+      with {:ok, %Render{} = rendered} <- Renderer.render(definition, opts),
+           rendered <- maybe_empty_generation_render(rendered, opts),
+           {:ok, %CheckedMaterialization{} = output} <-
+             materialize_render(definition, rendered, opts) do
+        {:ok, rendered, output}
+      end
+    end
+  end
+
   defp finalize_execution_window(
-         %Definition{materialization: {:incremental, _opts}} = definition,
+         %Definition{materialization: {:incremental, opts}} = definition,
+         %Context{} = context,
+         run_opts
+       )
+       when is_list(opts) do
+    if Keyword.fetch!(opts, :strategy) == :replace_groups do
+      {:ok, context, Keyword.put(run_opts, :context, context)}
+    else
+      finalize_windowed_incremental_execution(definition, context, run_opts, opts)
+    end
+  end
+
+  defp finalize_execution_window(
+         %Definition{},
          %Context{} = context,
          opts
+       ) do
+    {:ok, context, Keyword.put(opts, :context, context)}
+  end
+
+  defp finalize_windowed_incremental_execution(
+         %Definition{} = definition,
+         %Context{} = context,
+         opts,
+         materialization_opts
        ) do
     case context.window do
       %Runtime{} = runtime_window ->
@@ -348,7 +391,7 @@ defmodule Favn.SQLAsset.Runtime do
                asset_ref: definition.asset.ref,
                message:
                  "incremental runtime window does not match the asset window specification",
-               details: %{materialization: definition.materialization},
+               details: %{materialization: {:incremental, materialization_opts}},
                cause: reason
              }}
         end
@@ -360,13 +403,10 @@ defmodule Favn.SQLAsset.Runtime do
            phase: :materialize,
            asset_ref: definition.asset.ref,
            message: "incremental materialization requires runtime.window",
-           details: %{materialization: definition.materialization}
+           details: %{materialization: {:incremental, materialization_opts}}
          }}
     end
   end
-
-  defp finalize_execution_window(%Definition{}, %Context{} = context, opts),
-    do: {:ok, context, Keyword.put(opts, :context, context)}
 
   defp resolve_runtime_inputs(%Definition{runtime_inputs: nil}, _context, opts),
     do: {:ok, nil, opts}
@@ -474,8 +514,24 @@ defmodule Favn.SQLAsset.Runtime do
 
   defp render_sql_asset(module, opts) when is_atom(module) and is_list(opts) do
     with {:ok, %Definition{} = definition} <- fetch_definition(module),
+         :ok <- ensure_interactive_render_supported(definition),
          {:ok, %Render{} = rendered} <- Renderer.render(definition, opts) do
       {:ok, definition, rendered}
+    end
+  end
+
+  defp ensure_interactive_render_supported(%Definition{} = definition) do
+    if replace_groups?(definition) do
+      {:error,
+       %Error{
+         type: :unsupported_materialization,
+         phase: :render,
+         asset_ref: definition.asset.ref,
+         message:
+           "render, preview, and explain are not supported for incremental :replace_groups because they require a staged replacement scope"
+       }}
+    else
+      :ok
     end
   end
 
@@ -570,6 +626,637 @@ defmodule Favn.SQLAsset.Runtime do
       end
     )
     |> map_sql_result_error(rendered.asset_ref, :materialize)
+  end
+
+  defp materialize_group_replacement(%Definition{} = definition, opts) do
+    base_render = base_group_render(definition, opts)
+
+    result =
+      with_session(
+        base_render.connection,
+        opts,
+        session_required_catalogs(definition, base_render),
+        session_required_resources(definition),
+        fn session ->
+          with :ok <- ensure_group_replacement_supported(session, base_render),
+               :ok <- ensure_checked_materialization_supported(session, definition, base_render) do
+            SQLClient.transaction(
+              session,
+              fn tx_session -> group_replacement_transaction(tx_session, definition, opts) end,
+              sql_operation_opts(opts)
+              |> Keyword.put(:preserve_body_result_on_commit_error?, true)
+              |> Keyword.put(:pool_safe?, true)
+            )
+          end
+        end
+      )
+
+    case result do
+      {:ok, {%Render{} = rendered, %CheckedMaterialization{} = output}} ->
+        emit_check_telemetry(definition, output.check_results, :committed, output.write_outcome)
+        {:ok, rendered, output}
+
+      {:error, _reason} = error ->
+        map_checked_materialization_result(error, definition, base_render)
+    end
+  end
+
+  defp base_group_render(%Definition{} = definition, opts) do
+    %Render{
+      asset_ref: definition.asset.ref,
+      connection: definition.asset.relation.connection,
+      relation: definition.asset.relation,
+      materialization: definition.materialization,
+      sql: "",
+      params: %Params{format: :positional, bindings: []},
+      runtime: Keyword.get(opts, :runtime),
+      resolved_asset_refs: [],
+      metadata: %{group_replacement?: true}
+    }
+  end
+
+  defp ensure_group_replacement_supported(
+         %Session{capabilities: %{group_replacement: :supported}},
+         _rendered
+       ),
+       do: :ok
+
+  defp ensure_group_replacement_supported(%Session{} = session, %Render{} = rendered) do
+    {:error,
+     %Error{
+       type: :unsupported_materialization,
+       phase: :materialize,
+       asset_ref: rendered.asset_ref,
+       message: "incremental :replace_groups is not supported by this SQL adapter",
+       details: %{
+         connection: session.resolved.name,
+         missing_capability: :group_replacement,
+         group_replacement: session.capabilities.group_replacement
+       }
+     }}
+  end
+
+  defp group_replacement_transaction(%Session{} = session, %Definition{} = definition, opts) do
+    base_render = base_group_render(definition, opts)
+    scope_stage = group_stage(:scope)
+    candidate_stage = group_stage(:candidate)
+
+    with {:ok, target_exists?} <- checked_target(session, base_render),
+         scope_mode <- replacement_scope_mode(target_exists?, opts),
+         {:ok, %Render{} = scope_render} <- render_replacement_scope(definition, scope_mode, opts),
+         :ok <- create_candidate_stage(session, scope_stage, scope_render, opts),
+         {:ok, %Render{} = candidate_render} <-
+           render_group_candidate(definition, scope_stage, opts),
+         candidate_render <- maybe_empty_generation_render(candidate_render, opts),
+         :ok <- create_candidate_stage(session, candidate_stage, candidate_render, opts),
+         {:ok, contract_validation} <-
+           validate_candidate_contract(
+             session,
+             definition,
+             candidate_stage,
+             candidate_render
+           ),
+         {:ok, metrics} <-
+           validate_group_replacement(
+             session,
+             definition,
+             candidate_render,
+             scope_stage,
+             candidate_stage,
+             target_exists?
+           ) do
+      runtime_relations =
+        runtime_relations(candidate_render, candidate_stage)
+        |> Map.put(:replacement_scope, quote_identifier(scope_stage.name))
+
+      result =
+        run_group_checked_body(
+          session,
+          definition,
+          candidate_render,
+          opts,
+          runtime_relations,
+          scope_stage,
+          candidate_stage,
+          target_exists?,
+          metrics
+        )
+        |> put_contract_validation(contract_validation)
+        |> finalize_stage_result(
+          session,
+          candidate_stage,
+          opts,
+          definition,
+          candidate_render
+        )
+        |> finalize_stage_result(
+          session,
+          scope_stage,
+          opts,
+          definition,
+          candidate_render
+        )
+
+      case result do
+        {:ok, %CheckedMaterialization{} = output} -> {:ok, {candidate_render, output}}
+        {:error, _reason} = error -> error
+      end
+    else
+      {:error, reason} ->
+        {:error, checked_transaction_error(reason, definition, base_render, [])}
+    end
+  end
+
+  defp finalize_stage_result(result, session, stage, opts, definition, rendered),
+    do: finalize_candidate_stage(session, stage, result, opts, definition, rendered)
+
+  defp replacement_scope_mode(false, _opts), do: :full
+
+  defp replacement_scope_mode(true, opts),
+    do:
+      if(Keyword.get(opts, :target_operation) == :rebuild_candidate,
+        do: :full,
+        else: :incremental
+      )
+
+  defp render_replacement_scope(%Definition{} = definition, mode, opts)
+       when mode in [:incremental, :full] do
+    {sql, template} =
+      case mode do
+        :incremental -> {definition.incremental_scope_sql, definition.incremental_scope_template}
+        :full -> {definition.full_scope_sql, definition.full_scope_template}
+      end
+
+    Renderer.render(%Definition{definition | sql: sql, template: template}, opts)
+  end
+
+  defp render_group_candidate(%Definition{} = definition, %RelationRef{} = scope_stage, opts) do
+    Renderer.render(
+      definition,
+      Keyword.put(opts, :runtime_relations, %{
+        replacement_scope: quote_identifier(scope_stage.name)
+      })
+    )
+  end
+
+  defp group_stage(kind) when kind in [:scope, :candidate] do
+    RelationRef.new!(
+      name: "favn_replace_groups_#{kind}_#{System.unique_integer([:positive, :monotonic])}"
+    )
+  end
+
+  defp validate_group_replacement(
+         %Session{} = session,
+         %Definition{materialization: {:incremental, opts}},
+         %Render{} = rendered,
+         %RelationRef{} = scope,
+         %RelationRef{} = candidate,
+         target_exists?
+       ) do
+    keys = opts |> Keyword.fetch!(:replacement_key) |> Enum.map(&to_string/1)
+
+    with {:ok, scope_columns} <- group_columns(session, scope, rendered, :scope),
+         {:ok, candidate_columns} <- group_columns(session, candidate, rendered, :candidate),
+         :ok <- validate_scope_columns(scope_columns, keys, rendered),
+         :ok <- validate_candidate_key_columns(candidate_columns, keys, rendered),
+         :ok <- validate_key_types(scope_columns, candidate_columns, keys, rendered, :candidate),
+         :ok <-
+           validate_target_key_columns(
+             session,
+             rendered,
+             scope_columns,
+             keys,
+             target_exists?
+           ),
+         {:ok, scope_count} <- relation_count(session, scope, rendered, :scope),
+         {:ok, candidate_count} <- relation_count(session, candidate, rendered, :candidate),
+         :ok <- reject_null_keys(session, scope, keys, rendered, :scope),
+         :ok <- reject_duplicate_scope(session, scope, keys, rendered),
+         :ok <- reject_null_keys(session, candidate, keys, rendered, :candidate),
+         :ok <- reject_candidate_outside_scope(session, candidate, scope, keys, rendered),
+         {:ok, deleted_count} <-
+           deleted_group_row_count(session, rendered, scope, keys, target_exists?) do
+      {:ok,
+       %{
+         scope_count: scope_count,
+         candidate_count: candidate_count,
+         deleted_count: deleted_count
+       }}
+    end
+  end
+
+  defp group_columns(session, relation, rendered, source) do
+    case SQLClient.columns(session, relation) do
+      {:ok, columns} when is_list(columns) and columns != [] ->
+        {:ok, columns}
+
+      {:ok, _columns} ->
+        {:error, group_validation_error(rendered, source, :columns_unavailable)}
+
+      {:error, reason} ->
+        {:error, group_validation_error(rendered, source, :inspection_failed, reason)}
+    end
+  end
+
+  defp validate_scope_columns(columns, keys, rendered) do
+    names = Enum.map(columns, & &1.name)
+
+    if names == keys,
+      do: :ok,
+      else:
+        {:error,
+         group_validation_error(rendered, :scope, :columns_mismatch, %{
+           expected: keys,
+           actual: names
+         })}
+  end
+
+  defp validate_candidate_key_columns(columns, keys, rendered) do
+    names = MapSet.new(columns, & &1.name)
+    missing = Enum.reject(keys, &MapSet.member?(names, &1))
+
+    if missing == [],
+      do: :ok,
+      else:
+        {:error,
+         group_validation_error(rendered, :candidate, :missing_key_columns, %{columns: missing})}
+  end
+
+  defp validate_key_types(left, right, keys, rendered, source) do
+    left = Map.new(left, &{&1.name, &1.data_type})
+    right = Map.new(right, &{&1.name, &1.data_type})
+
+    mismatch =
+      Enum.find(keys, fn key ->
+        is_nil(left[key]) or is_nil(right[key]) or left[key] != right[key]
+      end)
+
+    if is_nil(mismatch),
+      do: :ok,
+      else:
+        {:error,
+         group_validation_error(rendered, source, :key_type_mismatch, %{column: mismatch})}
+  end
+
+  defp validate_target_key_columns(_session, _rendered, _scope_columns, _keys, false), do: :ok
+
+  defp validate_target_key_columns(session, rendered, scope_columns, keys, true) do
+    case SQLClient.columns(session, target_ref(rendered)) do
+      {:ok, columns} when is_list(columns) ->
+        with :ok <- validate_candidate_key_columns(columns, keys, rendered) do
+          validate_key_types(scope_columns, columns, keys, rendered, :target)
+        end
+
+      {:error, reason} ->
+        {:error, group_validation_error(rendered, :target, :inspection_failed, reason)}
+    end
+  end
+
+  defp relation_count(session, relation, rendered, source) do
+    count_query(
+      session,
+      ["SELECT count(*) AS favn_count FROM ", qualified_relation(relation)],
+      rendered,
+      source,
+      :count_failed
+    )
+  end
+
+  defp reject_null_keys(session, relation, keys, rendered, source) do
+    predicate = keys |> Enum.map(&[quote_identifier(&1), " IS NULL"]) |> Enum.intersperse(" OR ")
+
+    with {:ok, count} <-
+           count_query(
+             session,
+             [
+               "SELECT count(*) AS favn_count FROM ",
+               qualified_relation(relation),
+               " WHERE ",
+               predicate
+             ],
+             rendered,
+             source,
+             :null_check_failed
+           ) do
+      if count == 0,
+        do: :ok,
+        else: {:error, group_validation_error(rendered, source, :null_key, %{row_count: count})}
+    end
+  end
+
+  defp reject_duplicate_scope(session, scope, keys, rendered) do
+    columns = keys |> Enum.map(&quote_identifier/1) |> Enum.intersperse(", ")
+
+    with {:ok, count} <-
+           count_query(
+             session,
+             [
+               "SELECT count(*) AS favn_count FROM (SELECT ",
+               columns,
+               " FROM ",
+               qualified_relation(scope),
+               " GROUP BY ",
+               columns,
+               " HAVING count(*) > 1) AS favn_duplicate_scope"
+             ],
+             rendered,
+             :scope,
+             :duplicate_check_failed
+           ) do
+      if count == 0,
+        do: :ok,
+        else:
+          {:error,
+           group_validation_error(rendered, :scope, :duplicate_key, %{group_count: count})}
+    end
+  end
+
+  defp reject_candidate_outside_scope(session, candidate, scope, keys, rendered) do
+    predicate = group_key_predicate("favn_candidate", "favn_scope", keys)
+
+    with {:ok, count} <-
+           count_query(
+             session,
+             [
+               "SELECT count(*) AS favn_count FROM ",
+               qualified_relation(candidate),
+               " AS favn_candidate WHERE NOT EXISTS (SELECT 1 FROM ",
+               qualified_relation(scope),
+               " AS favn_scope WHERE ",
+               predicate,
+               ")"
+             ],
+             rendered,
+             :candidate,
+             :containment_check_failed
+           ) do
+      if count == 0,
+        do: :ok,
+        else:
+          {:error,
+           group_validation_error(rendered, :candidate, :outside_scope, %{row_count: count})}
+    end
+  end
+
+  defp deleted_group_row_count(_session, _rendered, _scope, _keys, false), do: {:ok, 0}
+
+  defp deleted_group_row_count(session, rendered, scope, keys, true) do
+    predicate = group_key_predicate("favn_target", "favn_scope", keys)
+
+    count_query(
+      session,
+      [
+        "SELECT count(*) AS favn_count FROM ",
+        qualified_relation(target_ref(rendered)),
+        " AS favn_target WHERE EXISTS (SELECT 1 FROM ",
+        qualified_relation(scope),
+        " AS favn_scope WHERE ",
+        predicate,
+        ")"
+      ],
+      rendered,
+      :target,
+      :delete_count_failed
+    )
+  end
+
+  defp group_key_predicate(left, right, keys) do
+    keys
+    |> Enum.map(fn key ->
+      [left, ".", quote_identifier(key), " = ", right, ".", quote_identifier(key)]
+    end)
+    |> Enum.intersperse(" AND ")
+  end
+
+  defp count_query(session, sql, rendered, source, reason) do
+    case SQLClient.query(session, sql, []) do
+      {:ok, %Result{rows: [%{"favn_count" => count}]}} when is_integer(count) and count >= 0 ->
+        {:ok, count}
+
+      {:ok, _result} ->
+        {:error, group_validation_error(rendered, source, reason)}
+
+      {:error, error} ->
+        {:error, group_validation_error(rendered, source, reason, error)}
+    end
+  end
+
+  defp group_validation_error(rendered, source, reason, context \\ nil)
+
+  defp group_validation_error(rendered, source, reason, context)
+       when is_map(context) and not is_struct(context) do
+    %Error{
+      type: :materialization_planning_failed,
+      phase: :before_materialize,
+      asset_ref: rendered.asset_ref,
+      message: "group replacement scope and candidate validation failed",
+      details: Map.merge(%{source: source, reason: reason}, context)
+    }
+  end
+
+  defp group_validation_error(rendered, source, reason, cause) do
+    %Error{
+      type: :materialization_planning_failed,
+      phase: :before_materialize,
+      asset_ref: rendered.asset_ref,
+      message: "group replacement scope and candidate validation failed",
+      details: %{source: source, reason: reason},
+      cause: cause
+    }
+  end
+
+  defp run_group_checked_body(
+         session,
+         definition,
+         rendered,
+         opts,
+         runtime_relations,
+         scope_stage,
+         candidate_stage,
+         target_exists?,
+         metrics
+       ) do
+    case run_check_phase(
+           session,
+           definition,
+           :before_materialize,
+           opts,
+           runtime_relations,
+           target_exists?,
+           []
+         ) do
+      {:ok, before_results} ->
+        run_group_checked_write(
+          session,
+          definition,
+          rendered,
+          opts,
+          runtime_relations,
+          scope_stage,
+          candidate_stage,
+          target_exists?,
+          metrics,
+          before_results
+        )
+
+      {:skip, before_results, check_name} ->
+        results = complete_check_results(definition, before_results, :materialization_skipped)
+
+        {:ok,
+         %CheckedMaterialization{
+           result: no_op_result("GROUP REPLACEMENT SKIPPED"),
+           check_results: results,
+           write_outcome: :no_op,
+           reason: check_name,
+           group_replacement: group_replacement_result(:before_check_skipped, metrics, 0, 0)
+         }}
+
+      {:error, reason, before_results} ->
+        results = complete_check_results(definition, before_results, :check_halted)
+        {:error, checked_transaction_error(reason, definition, rendered, results)}
+    end
+  end
+
+  defp run_group_checked_write(
+         session,
+         definition,
+         rendered,
+         opts,
+         runtime_relations,
+         _scope_stage,
+         _candidate_stage,
+         true,
+         %{scope_count: 0} = metrics,
+         before_results
+       ) do
+    complete_group_after_checks(
+      session,
+      definition,
+      rendered,
+      opts,
+      runtime_relations,
+      before_results,
+      nil,
+      no_op_result("GROUP REPLACEMENT EMPTY SCOPE"),
+      :no_op,
+      group_replacement_result(:empty_scope_no_op, metrics, 0, 0)
+    )
+  end
+
+  defp run_group_checked_write(
+         session,
+         definition,
+         rendered,
+         opts,
+         runtime_relations,
+         scope_stage,
+         candidate_stage,
+         target_exists?,
+         metrics,
+         before_results
+       ) do
+    staged_render = staged_materialization_render(rendered, runtime_relations)
+
+    with {:ok, write_plan} <-
+           MaterializationPlanner.build_group_replacement(
+             session,
+             definition,
+             staged_render,
+             scope_stage,
+             candidate_stage,
+             target_exists?
+           ),
+         {:ok, result} <-
+           SQLClient.materialize_in_transaction(
+             session,
+             write_plan,
+             Keyword.merge(sql_operation_opts(opts),
+               params: adapter_params(staged_render.params)
+             )
+           ) do
+      operation = group_write_operation(target_exists?, metrics.candidate_count)
+
+      complete_group_after_checks(
+        session,
+        definition,
+        rendered,
+        opts,
+        runtime_relations,
+        before_results,
+        write_plan,
+        result,
+        :written,
+        group_replacement_result(
+          operation,
+          metrics,
+          metrics.deleted_count,
+          metrics.candidate_count
+        )
+      )
+    end
+  end
+
+  defp complete_group_after_checks(
+         session,
+         definition,
+         rendered,
+         opts,
+         runtime_relations,
+         before_results,
+         write_plan,
+         result,
+         write_outcome,
+         group_replacement
+       ) do
+    case run_check_phase(
+           session,
+           definition,
+           :after_materialize,
+           opts,
+           runtime_relations,
+           true,
+           before_results
+         ) do
+      {:ok, check_results} ->
+        {:ok,
+         %CheckedMaterialization{
+           write_plan: write_plan,
+           result: result,
+           check_results: order_check_results(definition, check_results),
+           write_outcome: write_outcome,
+           group_replacement: group_replacement
+         }}
+
+      {:skip, check_results, _check_name} ->
+        results = complete_check_results(definition, check_results, :check_halted)
+
+        {:error,
+         checked_transaction_error(
+           invalid_after_skip_error(rendered),
+           definition,
+           rendered,
+           results
+         )}
+
+      {:error, reason, check_results} ->
+        results = complete_check_results(definition, check_results, :check_halted)
+        {:error, checked_transaction_error(reason, definition, rendered, results)}
+    end
+  end
+
+  defp group_write_operation(false, 0), do: :bootstrap_empty
+  defp group_write_operation(false, _candidate_count), do: :bootstrap_created
+  defp group_write_operation(true, 0), do: :delete_only
+  defp group_write_operation(true, _candidate_count), do: :replaced
+
+  defp group_replacement_result(operation, metrics, deleted_count, inserted_count) do
+    %GroupReplacementResult{
+      operation: operation,
+      scope_group_count: metrics.scope_count,
+      candidate_row_count: metrics.candidate_count,
+      inserted_row_count: inserted_count,
+      deleted_row_count: deleted_count
+    }
   end
 
   defp checked_materialize(%Definition{} = definition, %Render{} = rendered, opts) do
@@ -1110,14 +1797,21 @@ defmodule Favn.SQLAsset.Runtime do
 
   defp check_statement(sql), do: "SELECT * FROM (#{trim_sql(sql)}) AS favn_check LIMIT 2"
 
-  defp no_op_result do
+  defp no_op_result, do: no_op_result("CHECKED MATERIALIZATION SKIPPED")
+
+  defp no_op_result(command) when is_binary(command) do
     %Result{
       kind: :materialize,
-      command: "CHECKED MATERIALIZATION SKIPPED",
+      command: command,
       rows_affected: 0,
       metadata: %{write_outcome: :no_op}
     }
   end
+
+  defp replace_groups?(%Definition{materialization: {:incremental, opts}}),
+    do: Keyword.fetch!(opts, :strategy) == :replace_groups
+
+  defp replace_groups?(%Definition{}), do: false
 
   defp invalid_after_skip_error(%Render{} = rendered) do
     %Error{
@@ -1252,6 +1946,10 @@ defmodule Favn.SQLAsset.Runtime do
       {_results, %CheckedMaterialization{check_results: results}} when results != [] ->
         results
 
+      {_results, {_rendered, %CheckedMaterialization{check_results: results}}}
+      when results != [] ->
+        results
+
       _other ->
         checked_error_results(cause)
     end
@@ -1270,6 +1968,11 @@ defmodule Favn.SQLAsset.Runtime do
     find_contract_validation(details || %{}) || find_contract_validation(cause)
   end
 
+  defp find_contract_validation(%CheckedMaterialization{
+         contract_validation: %ContractValidation{} = validation
+       }),
+       do: validation
+
   defp find_contract_validation(%_{}), do: nil
 
   defp find_contract_validation(value) when is_map(value) do
@@ -1279,6 +1982,9 @@ defmodule Favn.SQLAsset.Runtime do
 
   defp find_contract_validation(value) when is_list(value),
     do: Enum.find_value(value, &find_contract_validation/1)
+
+  defp find_contract_validation(value) when is_tuple(value),
+    do: value |> Tuple.to_list() |> Enum.find_value(&find_contract_validation/1)
 
   defp find_contract_validation(_value), do: nil
 
@@ -1460,51 +2166,6 @@ defmodule Favn.SQLAsset.Runtime do
     :ok
   end
 
-  defp render_for_materialize(
-         %Definition{materialization: {:incremental, _opts}} = definition,
-         opts
-       ) do
-    with {:ok, %Render{} = render} <- Renderer.render(definition, opts),
-         {:ok, %Runtime{} = runtime_window} <- runtime_window(render, definition),
-         :ok <- validate_runtime_window(runtime_window, definition.asset.window_spec) do
-      {:ok, render}
-    else
-      {:error, {:runtime_window_mismatch, _runtime, _spec} = reason} ->
-        {:error,
-         %Error{
-           type: :materialization_planning_failed,
-           phase: :materialize,
-           asset_ref: definition.asset.ref,
-           message: "incremental runtime window does not match the asset window specification",
-           details: %{materialization: definition.materialization},
-           cause: reason
-         }}
-
-      other ->
-        other
-    end
-  end
-
-  defp render_for_materialize(%Definition{} = definition, opts),
-    do: Renderer.render(definition, opts)
-
-  defp runtime_window(%Render{} = render, %Definition{} = definition) do
-    case render.runtime do
-      %Runtime{} = window ->
-        {:ok, window}
-
-      _ ->
-        {:error,
-         %Error{
-           type: :materialization_planning_failed,
-           phase: :materialize,
-           asset_ref: render.asset_ref,
-           message: "incremental materialization requires runtime.window",
-           details: %{materialization: definition.materialization}
-         }}
-    end
-  end
-
   defp validate_runtime_window(%Runtime{kind: kind, timezone: timezone}, window_spec)
        when kind == window_spec.kind and timezone == window_spec.timezone,
        do: :ok
@@ -1562,6 +2223,7 @@ defmodule Favn.SQLAsset.Runtime do
     |> maybe_put_runtime_input_pin(work.runtime_input_pin)
     |> maybe_put_timeout(deadline_at)
     |> Keyword.put(:rebuild_empty_generation, work.rebuild_empty_generation)
+    |> Keyword.put(:target_operation, work.target_operation)
     |> Keyword.put(
       :cancel_token,
       CancelToken.new(
@@ -1771,25 +2433,33 @@ defmodule Favn.SQLAsset.Runtime do
       session_requirements: asset.session_requirements
     }
 
-    {:ok,
-     %Definition{
-       module: asset.module,
-       asset: asset_stub,
-       sql: payload.sql,
-       template: payload.template,
-       materialization: asset.materialization,
-       partition_spec: asset.partition_spec,
-       relation_inputs: payload.relation_inputs,
-       sql_definitions: payload.sql_definitions,
-       checks: payload.checks,
-       contract: payload.contract,
-       runtime_inputs: payload.runtime_inputs,
-       session_requirements: asset.session_requirements,
-       raw_asset: %{
-         manifest_relation_by_module: relation_by_module,
-         deferred_resolution: :manifest_only
-       }
-     }}
+    definition =
+      %Definition{
+        module: asset.module,
+        asset: asset_stub,
+        sql: payload.sql,
+        template: payload.template,
+        materialization: asset.materialization,
+        partition_spec: asset.partition_spec,
+        relation_inputs: payload.relation_inputs,
+        sql_definitions: payload.sql_definitions,
+        checks: payload.checks,
+        contract: payload.contract,
+        runtime_inputs: payload.runtime_inputs,
+        incremental_scope_sql: payload.incremental_scope_sql,
+        incremental_scope_template: payload.incremental_scope_template,
+        full_scope_sql: payload.full_scope_sql,
+        full_scope_template: payload.full_scope_template,
+        session_requirements: asset.session_requirements,
+        raw_asset: %{
+          manifest_relation_by_module: relation_by_module,
+          deferred_resolution: :manifest_only
+        }
+      }
+
+    with :ok <- validate_manifest_group_contract(definition) do
+      {:ok, definition}
+    end
   end
 
   defp manifest_definition(%Asset{} = asset, _package, _relation_by_module) do
@@ -1801,6 +2471,40 @@ defmodule Favn.SQLAsset.Runtime do
        message: "manifest SQL execution payload is missing",
        details: %{asset_ref: asset.ref}
      }}
+  end
+
+  defp validate_manifest_group_contract(%Definition{} = definition) do
+    runtime_relations =
+      RelationUsage.runtime_relations(definition.template, definition.sql_definitions)
+
+    scope_fields = [
+      definition.incremental_scope_sql,
+      definition.incremental_scope_template,
+      definition.full_scope_sql,
+      definition.full_scope_template
+    ]
+
+    scopes? = Enum.all?(scope_fields, &(not is_nil(&1)))
+    no_scopes? = Enum.all?(scope_fields, &is_nil/1)
+
+    valid? =
+      if replace_groups?(definition) do
+        scopes? and MapSet.subset?(runtime_relations, MapSet.new([:replacement_scope]))
+      else
+        no_scopes? and not MapSet.member?(runtime_relations, :replacement_scope)
+      end
+
+    if valid? do
+      :ok
+    else
+      {:error,
+       %Error{
+         type: :invalid_sql_asset_definition,
+         phase: :runtime,
+         asset_ref: definition.asset.ref,
+         message: "manifest group replacement contract does not match materialization"
+       }}
+    end
   end
 
   defp relation_map(%Version{manifest: %{assets: assets}}) when is_list(assets) do
@@ -1839,7 +2543,8 @@ defmodule Favn.SQLAsset.Runtime do
       check_results: materialization.check_results,
       quality_status: quality_status,
       write_outcome: materialization.write_outcome,
-      reason: materialization.reason
+      reason: materialization.reason,
+      group_replacement: materialization.group_replacement
     }
 
     output = maybe_put_contract_validation(output, materialization.contract_validation)

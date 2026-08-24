@@ -151,12 +151,16 @@ defmodule Favn.SQLAsset do
   - `:view`
   - `{:incremental, strategy: :append}`
   - `{:incremental, strategy: :delete_insert, window_column: :column_name}`
+  - `{:incremental, strategy: :replace_groups, replacement_key: [:group_id]}`
 
   Incremental rules:
 
-  - incremental materialization requires `window`
+  - `:append` and `:delete_insert` require `window`
   - `:append` does not accept `:window_column`
   - `:delete_insert` requires `:window_column`
+  - `:replace_groups` is non-windowed, requires a non-empty
+    `:replacement_key`, and requires both an `:incremental` and `:full`
+    `replacement_scope` declaration before `query`
   - `:merge`, `:replace`, and `unique_key` are not currently supported
 
   ## DuckLake physical partitioning
@@ -521,6 +525,7 @@ defmodule Favn.SQLAsset do
       Module.register_attribute(__MODULE__, :favn_sql_checks, accumulate: true)
       Module.register_attribute(__MODULE__, :favn_sql_contracts, accumulate: true)
       Module.register_attribute(__MODULE__, :favn_sql_imports, accumulate: true)
+      Module.register_attribute(__MODULE__, :favn_sql_replacement_scopes, accumulate: true)
 
       @on_definition Favn.SQLAsset
       @before_compile Favn.SQLAsset
@@ -553,6 +558,7 @@ defmodule Favn.SQLAsset do
           param: 1,
           partitioned_by: 1,
           query: 1,
+          replacement_scope: 2,
           resources: 1,
           runtime_inputs: 1
         ]
@@ -566,6 +572,60 @@ defmodule Favn.SQLAsset do
     quote do
       Favn.DSL.AssetDeclarations.put(__MODULE__, :materialized, unquote(value))
     end
+  end
+
+  @doc """
+  Declares the group-key scope used by `:replace_groups` materialization.
+
+  Declare exactly one `:incremental` scope and one `:full` scope before
+  `query`. Each scope accepts an inline `~SQL` body or `file: "...sql"`.
+  Scope SQL may use normal declared inputs and parameters, but not runtime SQL
+  relations such as `query()`, `target()`, or `replacement_scope()`.
+  """
+  defmacro replacement_scope(mode, do: body) do
+    mode = normalize_replacement_scope_mode!(mode, __CALLER__)
+    sql = extract_sql!(body, __CALLER__)
+
+    raw = %{
+      mode: mode,
+      sql: sql,
+      file: DSLCompiler.normalize_file(__CALLER__.file),
+      line: __CALLER__.line,
+      sql_file: DSLCompiler.normalize_file(__CALLER__.file),
+      sql_line: __CALLER__.line
+    }
+
+    quote bind_quoted: [raw: Macro.escape(raw)] do
+      @favn_sql_replacement_scopes raw
+      :ok
+    end
+  end
+
+  defmacro replacement_scope(mode, file: path) when is_binary(path) do
+    mode = normalize_replacement_scope_mode!(mode, __CALLER__)
+    source = Source.load_file!(__CALLER__, path, owner: "replacement_scope #{mode}")
+
+    raw = %{
+      mode: mode,
+      sql: source.sql,
+      file: DSLCompiler.normalize_file(__CALLER__.file),
+      line: __CALLER__.line,
+      sql_file: source.sql_file,
+      sql_line: source.sql_line
+    }
+
+    quote bind_quoted: [raw: Macro.escape(raw)] do
+      @favn_sql_replacement_scopes raw
+      :ok
+    end
+  end
+
+  defmacro replacement_scope(mode, opts) do
+    DSLCompiler.compile_error!(
+      __CALLER__.file,
+      __CALLER__.line,
+      "replacement_scope expects :incremental or :full plus a do block or file: \"path.sql\", got: #{Macro.to_string({mode, opts})}"
+    )
   end
 
   @doc """
@@ -926,6 +986,14 @@ defmodule Favn.SQLAsset do
       )
     end
 
+    if DSLCompiler.fetch_accum_attribute(env.module, :favn_sql_replacement_scopes) != [] do
+      DSLCompiler.compile_error!(
+        env.file,
+        env.line,
+        "replacement_scope declarations must appear before query"
+      )
+    end
+
     raw_definition =
       base_definition
       |> Map.put(
@@ -974,6 +1042,13 @@ defmodule Favn.SQLAsset do
     resources = AssetDeclarations.take(env.module, :resources)
     validate_resource_declarations!(resources, env)
 
+    replacement_scopes =
+      env.module
+      |> DSLCompiler.fetch_accum_attribute(:favn_sql_replacement_scopes)
+      |> Enum.reverse()
+
+    Module.delete_attribute(env.module, :favn_sql_replacement_scopes)
+
     declarations = %{
       doc: DSLCompiler.normalize_doc(Module.get_attribute(env.module, :doc)),
       settings: AssetDeclarations.take(env.module, :settings),
@@ -990,7 +1065,8 @@ defmodule Favn.SQLAsset do
       materialized: AssetDeclarations.take(env.module, :materialized),
       partitioned_by: AssetDeclarations.take(env.module, :partitioned_by),
       runtime_inputs: AssetDeclarations.take(env.module, :runtime_inputs),
-      resources: resources
+      resources: resources,
+      replacement_scopes: replacement_scopes
     }
 
     raw = Module.get_attribute(env.module, :favn_sql_asset_raw)
@@ -1115,6 +1191,9 @@ defmodule Favn.SQLAsset do
 
     known_definitions = fetch_sql_definitions!(raw_definition)
 
+    replacement_scopes =
+      compile_replacement_scopes!(raw_definition, known_definitions, materialization)
+
     checks = compile_checks!(raw_definition, known_definitions, contract)
 
     template =
@@ -1129,13 +1208,23 @@ defmodule Favn.SQLAsset do
       )
 
     sql_definitions = Map.values(known_definitions)
-    validate_query_runtime_relations!(template, sql_definitions, raw_definition)
+
+    validate_query_runtime_relations!(
+      template,
+      sql_definitions,
+      materialization,
+      raw_definition
+    )
 
     relation_inputs =
-      RelationUsage.collect(raw_definition.module, template, sql_definitions) ++
-        Enum.flat_map(checks, fn %Check{template: check_template} ->
-          RelationUsage.collect(raw_definition.module, check_template, sql_definitions)
-        end)
+      (RelationUsage.collect(raw_definition.module, template, sql_definitions) ++
+         Enum.flat_map(replacement_scopes, fn {_mode, scope} ->
+           RelationUsage.collect(raw_definition.module, scope.template, sql_definitions)
+         end) ++
+         Enum.flat_map(checks, fn %Check{template: check_template} ->
+           RelationUsage.collect(raw_definition.module, check_template, sql_definitions)
+         end))
+      |> Enum.uniq()
 
     asset = %Asset{
       module: raw_definition.module,
@@ -1173,6 +1262,10 @@ defmodule Favn.SQLAsset do
       runtime_inputs: runtime_inputs,
       session_requirements: session_requirements,
       contract: contract,
+      incremental_scope_sql: get_in(replacement_scopes, [:incremental, :sql]),
+      incremental_scope_template: get_in(replacement_scopes, [:incremental, :template]),
+      full_scope_sql: get_in(replacement_scopes, [:full, :sql]),
+      full_scope_template: get_in(replacement_scopes, [:full, :template]),
       sql_definitions: Map.values(known_definitions),
       checks: checks,
       materialization: materialization,
@@ -1212,6 +1305,14 @@ defmodule Favn.SQLAsset do
           )
 
         usages = RelationUsage.runtime_relations(template, sql_definitions)
+
+        if MapSet.member?(usages, :replacement_scope) do
+          DSLCompiler.compile_error!(
+            raw_check.file,
+            raw_check.line,
+            "replacement_scope() may only be used inside the main query of a :replace_groups SQL asset"
+          )
+        end
 
         Check.new!(%{
           name: raw_check.name,
@@ -1576,7 +1677,7 @@ defmodule Favn.SQLAsset do
        ) do
     strategy = Keyword.fetch!(opts, :strategy)
 
-    if is_nil(window_spec) do
+    if strategy != :replace_groups and is_nil(window_spec) do
       DSLCompiler.compile_error!(
         raw_definition.file,
         raw_definition.line,
@@ -1603,7 +1704,23 @@ defmodule Favn.SQLAsset do
           )
         end
 
+        if Keyword.has_key?(opts, :replacement_key) do
+          DSLCompiler.compile_error!(
+            raw_definition.file,
+            raw_definition.line,
+            "incremental :append does not accept :replacement_key"
+          )
+        end
+
       :delete_insert ->
+        if Keyword.has_key?(opts, :replacement_key) do
+          DSLCompiler.compile_error!(
+            raw_definition.file,
+            raw_definition.line,
+            "incremental :delete_insert does not accept :replacement_key"
+          )
+        end
+
         case Keyword.fetch(opts, :window_column) do
           {:ok, _column} ->
             :ok
@@ -1629,6 +1746,31 @@ defmodule Favn.SQLAsset do
           raw_definition.line,
           "incremental strategy :replace is not currently supported"
         )
+
+      :replace_groups ->
+        if not is_nil(window_spec) do
+          DSLCompiler.compile_error!(
+            raw_definition.file,
+            raw_definition.line,
+            "incremental :replace_groups is non-windowed and does not accept window"
+          )
+        end
+
+        unless Keyword.has_key?(opts, :replacement_key) do
+          DSLCompiler.compile_error!(
+            raw_definition.file,
+            raw_definition.line,
+            "incremental :replace_groups requires :replacement_key"
+          )
+        end
+
+        if Keyword.has_key?(opts, :window_column) do
+          DSLCompiler.compile_error!(
+            raw_definition.file,
+            raw_definition.line,
+            "incremental :replace_groups does not accept :window_column"
+          )
+        end
     end
 
     materialization
@@ -2149,19 +2291,152 @@ defmodule Favn.SQLAsset do
     end)
   end
 
-  defp validate_query_runtime_relations!(template, sql_definitions, raw_definition) do
-    case RelationUsage.runtime_relations(template, sql_definitions) |> MapSet.to_list() do
+  defp validate_query_runtime_relations!(
+         template,
+         sql_definitions,
+         materialization,
+         raw_definition
+       ) do
+    relations = RelationUsage.runtime_relations(template, sql_definitions)
+
+    allowed =
+      case materialization do
+        {:incremental, opts} ->
+          if Keyword.fetch!(opts, :strategy) == :replace_groups,
+            do: MapSet.new([:replacement_scope]),
+            else: MapSet.new()
+
+        _other ->
+          MapSet.new()
+      end
+
+    unexpected = MapSet.difference(relations, allowed) |> MapSet.to_list()
+
+    case unexpected do
       [] ->
         :ok
 
       relations ->
         names = relations |> Enum.sort() |> Enum.map_join(", ", &"#{&1}()")
 
+        message =
+          if Enum.all?(relations, &(&1 in [:query, :target])) do
+            "#{names} may only be used inside SQL check bodies"
+          else
+            "#{names} may only be used inside the main query of an incremental :replace_groups SQL asset"
+          end
+
         DSLCompiler.compile_error!(
           raw_definition.sql_file,
           raw_definition.sql_line,
-          "#{names} may only be used inside SQL check bodies"
+          message
         )
+    end
+  end
+
+  defp compile_replacement_scopes!(raw_definition, known_definitions, materialization) do
+    declarations = Map.get(raw_definition, :replacement_scopes, [])
+
+    case materialization do
+      {:incremental, opts} ->
+        if Keyword.fetch!(opts, :strategy) == :replace_groups,
+          do:
+            compile_required_replacement_scopes!(
+              declarations,
+              raw_definition,
+              known_definitions
+            ),
+          else: reject_replacement_scopes!(declarations)
+
+      _other ->
+        reject_replacement_scopes!(declarations)
+    end
+  end
+
+  defp compile_required_replacement_scopes!(declarations, raw_definition, known_definitions) do
+    declarations
+    |> ensure_replacement_scope_modes!(raw_definition)
+    |> Map.new(fn {mode, raw_scope} ->
+      template =
+        Template.compile!(raw_scope.sql,
+          known_definitions: known_definitions,
+          file: raw_scope.sql_file,
+          line: raw_scope.sql_line,
+          module: raw_definition.module,
+          scope: :query,
+          local_args: [],
+          enforce_query_root: true
+        )
+
+      sql_definitions = Map.values(known_definitions)
+      runtime_relations = RelationUsage.runtime_relations(template, sql_definitions)
+
+      if MapSet.size(runtime_relations) > 0 do
+        names =
+          runtime_relations
+          |> MapSet.to_list()
+          |> Enum.sort()
+          |> Enum.map_join(", ", &"#{&1}()")
+
+        DSLCompiler.compile_error!(
+          raw_scope.sql_file,
+          raw_scope.sql_line,
+          "replacement_scope #{inspect(mode)} may not use runtime SQL relations: #{names}"
+        )
+      end
+
+      {mode, %{sql: raw_scope.sql, template: template}}
+    end)
+  end
+
+  defp reject_replacement_scopes!([]), do: %{}
+
+  defp reject_replacement_scopes!([scope | _rest]) do
+    DSLCompiler.compile_error!(
+      scope.file,
+      scope.line,
+      "replacement_scope declarations require incremental strategy :replace_groups"
+    )
+  end
+
+  defp ensure_replacement_scope_modes!(declarations, raw_definition) do
+    grouped = Enum.group_by(declarations, & &1.mode)
+
+    Enum.each([:incremental, :full], fn mode ->
+      case Map.get(grouped, mode, []) do
+        [_scope] ->
+          :ok
+
+        [] ->
+          DSLCompiler.compile_error!(
+            raw_definition.file,
+            raw_definition.line,
+            "incremental :replace_groups requires exactly one replacement_scope #{inspect(mode)}"
+          )
+
+        [_first, duplicate | _rest] ->
+          DSLCompiler.compile_error!(
+            duplicate.file,
+            duplicate.line,
+            "duplicate replacement_scope #{inspect(mode)} declaration"
+          )
+      end
+    end)
+
+    Map.new(declarations, &{&1.mode, &1})
+  end
+
+  defp normalize_replacement_scope_mode!(mode_ast, env) do
+    mode = Macro.expand(mode_ast, env)
+
+    if mode in [:incremental, :full] do
+      mode
+    else
+      DSLCompiler.compile_error!(
+        env.file,
+        env.line,
+        "replacement_scope mode must be :incremental or :full, got: #{Macro.to_string(mode_ast)}"
+      )
     end
   end
 

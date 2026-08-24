@@ -24,6 +24,10 @@ defmodule Favn.Manifest.SQLExecution do
     :template,
     :runtime_inputs,
     :contract,
+    :incremental_scope_sql,
+    :incremental_scope_template,
+    :full_scope_sql,
+    :full_scope_template,
     relation_inputs: [],
     sql_definitions: [],
     checks: []
@@ -34,6 +38,10 @@ defmodule Favn.Manifest.SQLExecution do
           template: Template.t(),
           runtime_inputs: RuntimeInputResolverRef.t() | nil,
           contract: Contract.t() | nil,
+          incremental_scope_sql: String.t() | nil,
+          incremental_scope_template: Template.t() | nil,
+          full_scope_sql: String.t() | nil,
+          full_scope_template: Template.t() | nil,
           relation_inputs: [RelationInput.t()],
           sql_definitions: [SQLDefinition.t()],
           checks: [Check.t()]
@@ -52,6 +60,10 @@ defmodule Favn.Manifest.SQLExecution do
       template: definition.template,
       runtime_inputs: definition.runtime_inputs,
       contract: definition.contract,
+      incremental_scope_sql: definition.incremental_scope_sql,
+      incremental_scope_template: definition.incremental_scope_template,
+      full_scope_sql: definition.full_scope_sql,
+      full_scope_template: definition.full_scope_template,
       relation_inputs: relation_inputs,
       sql_definitions: definition.sql_definitions,
       checks: definition.checks
