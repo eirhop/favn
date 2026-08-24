@@ -2,13 +2,13 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Plan reviewed |
+| Status | Implementing |
 | Type | Feature |
 | Primary issue | [#661](https://github.com/eirhop/favn/issues/661) |
-| Pull request | Pending |
+| Pull request | [#662](https://github.com/eirhop/favn/pull/662) |
 | Related work | Existing manifest publication, activation, and runner-release contracts |
 | Affected areas | Manifest build artifacts, private Orchestrator API, manifest activation, service authentication, PostgreSQL control-plane state, production deployment workflow |
-| Approved plan commit | Recorded after the first planning commit |
+| Approved plan commit | `2625f8e4` |
 | Last updated | 2026-08-24 |
 
 ## One-minute summary
