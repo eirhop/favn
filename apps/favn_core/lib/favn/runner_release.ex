@@ -15,7 +15,7 @@ defmodule Favn.RunnerRelease do
   @production_build_profile "prod"
   @source_build_profile "source"
   @runner_release_id ~r/\Arr_[0-9a-f]{64}\z/
-  @fallback_favn_version "0.5.0-rc.9"
+  @fallback_favn_version "0.5.0-rc.10"
 
   @enforce_keys [
     :favn_version,
