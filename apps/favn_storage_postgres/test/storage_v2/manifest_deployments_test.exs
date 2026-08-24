@@ -9,8 +9,11 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
   alias Ecto.Adapters.SQL.Sandbox
   alias Favn.Manifest
   alias Favn.Manifest.Asset
+  alias Favn.Manifest.ExecutionPackage
+  alias Favn.Manifest.SQLExecution
   alias Favn.Manifest.Version
   alias Favn.RelationRef
+  alias Favn.SQL.Template
   alias FavnOrchestrator.ManifestDeploymentContext
   alias FavnOrchestrator.ManifestDeploymentDispatcher
   alias FavnOrchestrator.ManifestActivationDiagnostics
@@ -23,6 +26,7 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
   alias FavnOrchestrator.Persistence.Commands.ClaimManifestDeployment
   alias FavnOrchestrator.Persistence.Commands.CompleteManifestDeployment
   alias FavnOrchestrator.Persistence.Commands.ProvisionWorkspace
+  alias FavnOrchestrator.Persistence.Commands.RegisterExecutionPackages
   alias FavnOrchestrator.Persistence.Commands.ReleaseManifestActivationLease
   alias FavnOrchestrator.Persistence.Commands.ReleaseManifestUploadLease
   alias FavnOrchestrator.Persistence.Commands.UpdateManifestDeploymentProgress
@@ -91,6 +95,7 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
     on_exit(fn -> restore_env(:manifest_deployer_tokens, previous_tokens) end)
 
     ref = {MyApp.ManifestDeploymentAsset, :asset}
+    package = execution_package(ref)
 
     asset =
       FavnTestSupport.with_target_descriptor(%Asset{
@@ -101,7 +106,7 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
         relation:
           RelationRef.new!(connection: :warehouse, schema: "manifest", name: "deployment"),
         materialization: :table,
-        execution_package_hash: String.duplicate("a", 64)
+        execution_package_hash: package.content_hash
       })
 
     manifest =
@@ -110,6 +115,12 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
       |> FavnTestSupport.with_manifest_contract()
 
     {:ok, version} = Version.new(manifest)
+
+    :ok =
+      Store.register_execution_packages(%RegisterExecutionPackages{
+        platform_context: platform_context,
+        packages: [package]
+      })
 
     %{
       deployment_context: deployment_context,
@@ -597,6 +608,22 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
       )
 
     idempotency
+  end
+
+  defp execution_package(ref) do
+    sql = "SELECT 1 AS id"
+
+    template =
+      Template.compile!(sql,
+        file: "test/storage_v2/manifest_deployments_test.sql",
+        line: 1,
+        module: __MODULE__,
+        scope: :query,
+        enforce_query_root: true
+      )
+
+    {:ok, package} = ExecutionPackage.new(ref, %SQLExecution{sql: sql, template: template})
+    package
   end
 
   defp provision_workspace(context, suffix) do

@@ -546,10 +546,10 @@ assigned to one slice exactly once.
 | --- | ---: | ---: | ---: | ---: | --- |
 | Deterministic archive | 341 | 15 | 53 | 0 | Production is 61 lines above the estimate, below the record's material-overrun threshold; archive declarations now force the transport's non-executable mode independently of host filesystem permission behavior |
 | Streaming ingest, admission, and deployment authorization | 1,713 | 1 | 674 | 1 | Production exceeds its estimate because the strict incremental gzip/USTAR parser, pre-body Plug, owner-monitored upload heartbeat, and acceptance fence are explicit security boundaries; focused hostile-input, owner-death, and deadline tests account for most supporting growth |
-| Durable deployment operation | 1,761 | 12 | 721 | 0 | Typed commands, claim-loss propagation, three fenced lease lifecycles, migration readiness metadata, atomic rollback injection, and two-worker recovery are explicit; this slice remains within the combined planned range |
+| Durable deployment operation | 1,761 | 12 | 748 | 0 | Typed commands, claim-loss propagation, three fenced lease lifecycles, migration readiness metadata, atomic rollback injection, and two-worker recovery are explicit; this slice remains within the combined planned range |
 | Bounded compatibility inspection | 246 | 30 | 239 | 7 | Production is within estimate; supporting evidence now includes all operator-decision classes, 1,000-target fairness/concurrency, expired-claim exclusion, and late-result rejection |
 | Public workflow and compatibility | 9 | 2 | 230 | 15 | Nearly all work is canonical guidance, deployment templates, and CI test-tier coverage rather than runtime code |
-| **Actual total** | **4,070** | **60** | **1,917** | **23** | **5,987 additions and 83 deletions excluding both names of this record; the combined total is inside the approved 3,790-6,260 range** |
+| **Actual total** | **4,070** | **60** | **1,944** | **23** | **6,014 additions and 83 deletions excluding both names of this record; the combined total is inside the approved 3,790-6,260 range** |
 
 The production/supporting split differs materially from the estimate even though
 the combined size is in range. The main reason is that the approved behaviors
