@@ -2710,16 +2710,18 @@ defmodule FavnStoragePostgres.Registry.Store do
                    updated_at: database_datetime(command.occurred_at)
                  ]
 
-                 {1, [claimed]} =
+                 {1, _rows} =
                    ManifestDeploymentOperation
                    |> where(
                      [row],
                      row.workspace_id == ^operation.workspace_id and
                        row.operation_id == ^operation.operation_id
                    )
-                   |> Repo.update_all(set: changes, returning: true)
+                   |> Repo.update_all(set: changes)
 
-                 manifest_deployment_result(claimed)
+                 operation
+                 |> Repo.reload!()
+                 |> manifest_deployment_result()
              end
            end) do
       {:ok, operation}
@@ -3043,7 +3045,9 @@ defmodule FavnStoragePostgres.Registry.Store do
       updated_at: now
     }
 
-    Repo.insert!(row)
+    row
+    |> Repo.insert!()
+    |> manifest_deployment_result()
   end
 
   defp insert_manifest_deployment_audit!(command, version) do

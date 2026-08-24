@@ -546,10 +546,10 @@ assigned to one slice exactly once.
 | --- | ---: | ---: | ---: | ---: | --- |
 | Deterministic archive | 341 | 15 | 53 | 0 | Production is 61 lines above the estimate, below the record's material-overrun threshold; archive declarations now force the transport's non-executable mode independently of host filesystem permission behavior |
 | Streaming ingest, admission, and deployment authorization | 1,713 | 1 | 674 | 1 | Production exceeds its estimate because the strict incremental gzip/USTAR parser, pre-body Plug, owner-monitored upload heartbeat, and acceptance fence are explicit security boundaries; focused hostile-input, owner-death, and deadline tests account for most supporting growth |
-| Durable deployment operation | 1,761 | 12 | 748 | 0 | Typed commands, claim-loss propagation, three fenced lease lifecycles, migration readiness metadata, atomic rollback injection, and two-worker recovery are explicit; this slice remains within the combined planned range |
+| Durable deployment operation | 1,765 | 12 | 748 | 0 | Typed commands, claim-loss propagation, three fenced lease lifecycles, migration readiness metadata, atomic rollback injection, and two-worker recovery are explicit; this slice remains within the combined planned range |
 | Bounded compatibility inspection | 246 | 30 | 239 | 7 | Production is within estimate; supporting evidence now includes all operator-decision classes, 1,000-target fairness/concurrency, expired-claim exclusion, and late-result rejection |
 | Public workflow and compatibility | 9 | 2 | 230 | 15 | Nearly all work is canonical guidance, deployment templates, and CI test-tier coverage rather than runtime code |
-| **Actual total** | **4,070** | **60** | **1,944** | **23** | **6,014 additions and 83 deletions excluding both names of this record; the combined total is inside the approved 3,790-6,260 range** |
+| **Actual total** | **4,074** | **60** | **1,944** | **23** | **6,018 additions and 83 deletions excluding both names of this record; the combined total is inside the approved 3,790-6,260 range** |
 
 The production/supporting split differs materially from the estimate even though
 the combined size is in range. The main reason is that the approved behaviors
@@ -593,7 +593,7 @@ transport-neutral deployment examples are unchanged.
 | --- | --- | --- |
 | `mise exec -- mix format` and `git diff --check` | Passed | Formatting and whitespace |
 | `MIX_ENV=test mise exec -- mix compile --warnings-as-errors` | Passed | Umbrella static compilation |
-| Fast owning-app suites | Passed: Core 437, Authoring 140, Orchestrator 714 with 2 slow tests excluded, Runner 238, public `favn` 183 with 3 excluded | Non-database application behavior |
+| Fast owning-app suites | Passed: Core 437, Authoring 140, Orchestrator 717 with 2 slow tests excluded, Runner 238, public `favn` 183 with 3 excluded | Non-database application behavior |
 | Archive parser focused suite | Passed: 11 fast tests | 37-byte streaming, exact/near byte batching, strict metadata, non-regular/path-traversal tar rejection, digest/footer/header/member failures, and deterministic final-read/persistence deadlines |
 | `:slow` 1,001-package archive test | Passed: 1 in 131 seconds | One-file transport and eleven internal package batches without caller chunking |
 | `:slow` 1,000-target inspection test | Passed: 1 in 3.6 seconds | Every target attempted once, deterministic order/progress, and observed concurrency bounded to 32 |
@@ -607,7 +607,7 @@ transport-neutral deployment examples are unchanged.
 
 Not verified locally:
 
-- PostgreSQL migration and the seven deployment persistence tests on the final
+- PostgreSQL migration and the eight deployment persistence tests on the final
   candidate, because no
   approved `FAVN_DATABASE_URL` is configured in this workspace;
 - a real multi-node process-loss test and live ingress lease takeover (the
@@ -629,5 +629,6 @@ permissive bundle metadata, and insufficient focused verification. The second
 review confirmed those fixes, then found orphan renewal after request death and
 terminal handling of a recoverable idempotency-reservation overlap. The
 implementation now addresses every finding with code and regression evidence
-described above. Re-review of the new candidate is pending; the pull request
-remains draft until it returns `READY` and final-head CI passes.
+described above. The same reviewer returned `READY` on `d2407f48` with no
+P0-P2 findings; its two P3 bookkeeping corrections are reflected above. The
+pull request remains draft until final-head CI passes.
