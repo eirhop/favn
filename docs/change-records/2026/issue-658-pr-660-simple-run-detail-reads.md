@@ -490,7 +490,7 @@ finding. Its next machine-enforced review is 2026-09-24.
 | Field | Result |
 | --- | --- |
 | Reviewer | Independent `gpt-5.6-sol` sub-agent with `xhigh` reasoning |
-| Reviewed implementation | `f8f53175`, `5d79a19f`, and `d396d6ea` against approved baseline `0f053c43` |
+| Reviewed implementation | `f8f53175`, `5d79a19f`, `d396d6ea`, and CI correction `300d87ff` against approved baseline `0f053c43` |
 | Verdict | **Approved — no blocking findings** |
 
 The reviewer confirmed the unified refresh cadence, real scheduler and runner
@@ -498,4 +498,7 @@ control-plane probes, corrected complexity variance, exact workspace/run
 isolation, authorization, retry behavior, joined-before-cap counts, lazy reads,
 UI boundaries, and retained orchestrator contracts. The only non-blocking note
 is a theoretical malformed-legacy-data edge outside the current one-window and
-authoritative-attempt product invariants.
+authoritative-attempt product invariants. The reviewer separately rechecked the
+CI correction and confirmed that PostgreSQL owns the bounded union semantics,
+the simplified orchestrator conversion preserves them, and the security catalog
+and exception-review updates match the actual routes and verified image scan.
