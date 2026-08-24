@@ -109,6 +109,20 @@ flowchart LR
 | --- | --- | --- | --- |
 | 1 | First independently verifiable outcome | Application or boundary | None |
 
+### Complexity budget
+
+Give rough ranges, not exact promises. Exclude this record, generated files,
+dependency locks, vendored code, and formatter-only changes. Explain why a large
+slice cannot be simpler.
+
+| Slice | Production added | Production deleted | Supporting added | Supporting deleted | Main reason for the size |
+| --- | ---: | ---: | ---: | ---: | --- |
+| 1 | 50-100 | 0-25 | 50-100 | 0-25 | Required contract and behavior proof |
+
+State the variance that requires explanation under the rules in
+[`README.md`](README.md). Keep this approved budget unchanged during
+implementation; report actuals under the outcome.
+
 ### Implementation map
 
 Use this only after the plain-language design is clear.
@@ -198,6 +212,7 @@ flowchart LR
 - Implementation complexity: Low, Moderate, or High — give one plain-language reason.
 - Operational complexity: Low, Moderate, or High — give one plain-language reason.
 - Canonical documentation updated:
+- Actual additions, deletions, and supporting lines per approved complexity-budget slice:
 
 ## Deviations from the approved plan
 

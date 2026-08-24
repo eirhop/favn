@@ -656,7 +656,7 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
             run_id: "run_backfill_8f2c9d1",
             nav_items: Runs.nav_items()
           },
-          "The flow is the primary visual: stage order is dependency order."
+          "One exact window run with only the asset fields rendered by Flow."
         ),
         Example.attrs(
           :failed_backfill,
@@ -665,14 +665,8 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
             run_id: "run_backfill_8f2c9d1",
             nav_items: Runs.nav_items()
           },
-          "A stage-2 failure renders in its own lane, under the stage that fed it."
+          "A failed asset remains visible without loading its detail payload."
         ),
-        Example.attrs(:attempt_selected, %{
-          run: Runs.backfill(:partial),
-          run_id: "run_backfill_8f2c9d1",
-          nav_items: Runs.nav_items(),
-          selected_attempt_id: "revenue_metrics-2026-02"
-        }),
         Example.attrs(
           :single_window,
           %{
@@ -700,11 +694,14 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
           },
           "Rejected before any asset ran, so the failure has no lane and is called out."
         ),
-        Example.attrs(:window_runs, %{
+        Example.attrs(:window_selector, %{
           run: Runs.backfill(:running),
           run_id: "run_backfill_8f2c9d1",
           nav_items: Runs.nav_items(),
-          active_mode: :windows
+          windows: [
+            %{run_id: "run_backfill_8f2c9d1", label: "Feb 1, 2026 – Mar 1, 2026"},
+            %{run_id: "run_backfill_91ac3e2", label: "Mar 1, 2026 – Apr 1, 2026"}
+          ]
         }),
         Example.attrs(:events, %{
           run: Runs.backfill(:running),
@@ -750,6 +747,51 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
           },
           "Preparation failed before admission; the durable failure points to runner diagnostics."
         )
+      ],
+      "run_asset_attempt_page/run_asset_attempt_page" => [
+        Example.attrs(:succeeded, %{
+          run_id: "run_backfill_8f2c9d1",
+          nav_items: Runs.nav_items(),
+          attempt: %{
+            id: "orders-2026-02",
+            name: "Orders",
+            raw_status: :ok,
+            status_label: "Succeeded",
+            status_tone: :success,
+            error_summary: nil,
+            output_metadata: %{
+              "rows_written" => 82_101,
+              "relation" => "warehouse.crm_orders",
+              "write_outcome" => "committed"
+            },
+            facts: [
+              %{label: "Started", value: "Jul 23, 2026 10:00:00 UTC"},
+              %{label: "Finished", value: "Jul 23, 2026 10:00:34 UTC"},
+              %{label: "Duration", value: "34.0 s"}
+            ],
+            execution_facts: [
+              %{label: "Asset", value: "crm.orders"},
+              %{label: "Attempt", value: 1},
+              %{label: "Stage", value: 1},
+              %{label: "Execution pool", value: "default"},
+              %{label: "Queue reason", value: "-"},
+              %{label: "Window", value: "Feb 2026"},
+              %{label: "Run id", value: "run_backfill_8f2c9d1"},
+              %{label: "Asset step id", value: "orders-2026-02"}
+            ],
+            logs_href: "/runs/run_backfill_8f2c9d1/assets/orders-2026-02/logs"
+          }
+        }),
+        Example.attrs(:loading, %{
+          run_id: "run_backfill_8f2c9d1",
+          nav_items: Runs.nav_items(),
+          loading?: true
+        }),
+        Example.attrs(:not_found, %{
+          run_id: "run_backfill_8f2c9d1",
+          nav_items: Runs.nav_items(),
+          error: "Asset run not found."
+        })
       ]
     }
   end

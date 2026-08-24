@@ -31,7 +31,7 @@ defmodule FavnOrchestrator do
   alias FavnOrchestrator.Operator.TargetRecovery, as: OperatorTargetRecovery
   alias FavnOrchestrator.Operator.Commands, as: OperatorCommands
   alias FavnOrchestrator.OperatorContext
-  alias FavnOrchestrator.OperatorRunActivity
+  alias FavnOrchestrator.OperatorRunView
   alias FavnOrchestrator.Operator.Schedules
   alias FavnOrchestrator.OperatorCommands.AssetBackfillRequest
   alias FavnOrchestrator.OperatorCommands.AssetRunRequest
@@ -136,8 +136,10 @@ defmodule FavnOrchestrator do
                cancel_operator_run: 3,
                retry_operator_run_remaining: 3,
                get_run_detail: 2,
-               get_operator_run_detail: 3,
-               get_operator_run_activity: 3,
+               get_operator_run_flow: 2,
+               get_operator_run_events: 2,
+               list_operator_run_windows: 2,
+               get_operator_run_asset_attempt: 3,
                get_operator_runner_overview: 2,
                page_execution_groups: 2,
                count_execution_groups: 2,
@@ -173,6 +175,7 @@ defmodule FavnOrchestrator do
                put_rebuild_plan_idempotency: 2,
                put_rebuild_command_idempotency: 2,
                run_command_opts: 1,
+               get_operator_submission: 2,
                finish_operator_result: 8,
                finish_operator_audit: 9,
                operator_error_code: 1,
@@ -262,7 +265,6 @@ defmodule FavnOrchestrator do
           succeeded: non_neg_integer(),
           total: non_neg_integer()
         }
-  @type operator_run_detail :: RunReadModel.operator_run_detail()
   @type schedule_list_entry :: ScheduleListEntry.t()
   @type schedule_occurrence_preview :: ScheduleOccurrencePreview.t()
 
@@ -1962,23 +1964,72 @@ defmodule FavnOrchestrator do
     end
   end
 
-  @doc "Returns bounded run detail after reauthorizing a browser-safe operator context."
-  @spec get_operator_run_detail(OperatorContext.t(), run_id(), keyword()) ::
-          {:ok, operator_run_detail()} | {:error, term()}
-  def get_operator_run_detail(%OperatorContext{} = operator_context, run_id, opts)
-      when is_binary(run_id) and is_list(opts) do
+  @doc "Returns one exact run's bounded Flow data after operator reauthorization."
+  @spec get_operator_run_flow(OperatorContext.t(), run_id()) ::
+          {:ok,
+           %{kind: :run, detail: OperatorRunView.Flow.t()}
+           | %{kind: :submission, submission: map()}}
+          | {:error, term()}
+  def get_operator_run_flow(%OperatorContext{} = operator_context, run_id)
+      when is_binary(run_id) do
     with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer) do
-      RunReadModel.get_operator_run_detail(context, run_id, opts)
+      case OperatorRunView.flow(context, run_id) do
+        {:ok, flow} -> {:ok, %{kind: :run, detail: flow}}
+        {:error, :not_found} -> get_operator_submission(context, run_id)
+        {:error, _reason} = error -> error
+      end
     end
   end
 
-  @doc "Returns admitted run detail or durable pre-admission state after operator reauthorization."
-  @spec get_operator_run_activity(OperatorContext.t(), run_id(), keyword()) ::
-          {:ok, OperatorRunActivity.activity()} | {:error, term()}
-  def get_operator_run_activity(%OperatorContext{} = operator_context, run_id, opts)
-      when is_binary(run_id) and is_list(opts) do
+  @doc "Returns one exact run's lean header and bounded event rows."
+  @spec get_operator_run_events(OperatorContext.t(), run_id()) ::
+          {:ok,
+           %{kind: :run, header: OperatorRunView.Header.t(), events: [map()]}
+           | %{kind: :submission, submission: map()}}
+          | {:error, term()}
+  def get_operator_run_events(%OperatorContext{} = operator_context, run_id)
+      when is_binary(run_id) do
     with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer) do
-      OperatorRunActivity.get(context, run_id, opts)
+      with {:ok, header} <- OperatorRunView.header(context, run_id),
+           {:ok, events} <- OperatorRunView.events(context, run_id) do
+        {:ok, %{kind: :run, header: header, events: events}}
+      else
+        {:error, :not_found} -> get_operator_submission(context, run_id)
+        {:error, _reason} = error -> error
+      end
+    end
+  end
+
+  @doc "Lists lean sibling window runs only when the operator asks for them."
+  @spec list_operator_run_windows(OperatorContext.t(), run_id()) ::
+          {:ok, FavnOrchestrator.Persistence.Results.RunWindowChoices.t()} | {:error, term()}
+  def list_operator_run_windows(%OperatorContext{} = operator_context, run_id)
+      when is_binary(run_id) do
+    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer) do
+      OperatorRunView.windows(context, run_id)
+    end
+  end
+
+  @doc "Returns one exact observed asset attempt after operator reauthorization."
+  @spec get_operator_run_asset_attempt(OperatorContext.t(), run_id(), String.t()) ::
+          {:ok, FavnOrchestrator.Persistence.Results.RunAssetAttempt.t()} | {:error, term()}
+  def get_operator_run_asset_attempt(%OperatorContext{} = operator_context, run_id, asset_step_id)
+      when is_binary(run_id) and is_binary(asset_step_id) do
+    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer) do
+      OperatorRunView.asset_attempt(context, run_id, asset_step_id)
+    end
+  end
+
+  defp get_operator_submission(context, run_id) do
+    case RunSubmissions.get(context, run_id) do
+      {:ok, submission} ->
+        {:ok, %{kind: :submission, submission: OperatorRunView.project_submission(submission)}}
+
+      {:error, %PersistenceError{kind: :not_found}} ->
+        {:error, :not_found}
+
+      {:error, _reason} = error ->
+        error
     end
   end
 
@@ -2159,9 +2210,8 @@ defmodule FavnOrchestrator do
   @spec authorize_run_subscription(OperatorContext.t(), run_id()) ::
           {:ok, map()} | {:error, term()}
   def authorize_run_subscription(%OperatorContext{} = operator_context, run_id)
-      when is_binary(run_id) do
-    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer),
-         {:ok, _run} <- Runs.get(context, run_id) do
+      when is_binary(run_id) and byte_size(run_id) > 0 and byte_size(run_id) <= 255 do
+    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer) do
       {:ok, %{kind: :run, workspace_id: context.workspace_id, run_id: run_id}}
     end
   end

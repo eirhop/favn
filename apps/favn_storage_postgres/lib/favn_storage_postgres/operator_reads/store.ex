@@ -13,10 +13,14 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
   alias FavnOrchestrator.Persistence.Queries.CountExecutionGroups
   alias FavnOrchestrator.Persistence.Queries.CountSuccessfulAssetWindows
   alias FavnOrchestrator.Persistence.Queries.GetExecutionGroup
-  alias FavnOrchestrator.Persistence.Queries.GetOperatorRunOverview
+  alias FavnOrchestrator.Persistence.Queries.GetRunAssetAttempt
+  alias FavnOrchestrator.Persistence.Queries.GetRunFlow
+  alias FavnOrchestrator.Persistence.Queries.GetRunHeader
   alias FavnOrchestrator.Persistence.Queries.GetAssetWindowStates
   alias FavnOrchestrator.Persistence.Queries.GetFreshnessMany
   alias FavnOrchestrator.Persistence.Queries.GetTargetStatuses
+  alias FavnOrchestrator.Persistence.Queries.ListRunEventSummaries
+  alias FavnOrchestrator.Persistence.Queries.ListRunWindows
   alias FavnOrchestrator.Persistence.Queries.GetSuccessfulAssetWindowKeys
   alias FavnOrchestrator.Persistence.Queries.PageExecutionGroups
   alias FavnOrchestrator.Persistence.Queries.PageGroupRuns
@@ -26,29 +30,33 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
   alias FavnOrchestrator.Persistence.RunEnum
   alias FavnOrchestrator.Persistence.Results.BackfillWindow, as: BackfillWindowResult
   alias FavnOrchestrator.Persistence.Results.AssetWindowState, as: AssetWindowResult
-  alias FavnOrchestrator.Persistence.Results.AssetAttemptOverview, as: AssetAttemptResult
   alias FavnOrchestrator.Persistence.Results.CursorPage
   alias FavnOrchestrator.Persistence.Results.ExecutionGroup
   alias FavnOrchestrator.Persistence.Results.ExecutionGroupCounts
   alias FavnOrchestrator.Persistence.Results.ExecutionGroupOverview, as: GroupOverviewResult
   alias FavnOrchestrator.Persistence.Results.FreshnessState, as: FreshnessResult
   alias FavnOrchestrator.Persistence.Results.ManifestSummary
-  alias FavnOrchestrator.Persistence.Results.OperatorRunOverview, as: OperatorRunOverviewResult
-  alias FavnOrchestrator.Persistence.Results.PlannedAssetStep
+  alias FavnOrchestrator.Persistence.Results.RunAssetAttempt, as: RunAssetAttemptResult
+  alias FavnOrchestrator.Persistence.Results.RunEventSummary
+  alias FavnOrchestrator.Persistence.Results.RunFlowCandidate
+  alias FavnOrchestrator.Persistence.Results.RunFlowSnapshot
   alias FavnOrchestrator.Persistence.Results.RunSummary
+  alias FavnOrchestrator.Persistence.Results.RunViewHeader
+  alias FavnOrchestrator.Persistence.Results.RunWindowChoice
+  alias FavnOrchestrator.Persistence.Results.RunWindowChoices
   alias FavnOrchestrator.Persistence.Results.TargetStatus, as: TargetStatusResult
   alias FavnOrchestrator.Persistence.WorkspaceContext
   alias FavnOrchestrator.Storage.ExactDateTimeCodec
   alias FavnStoragePostgres.ErrorMapper
   alias FavnStoragePostgres.Repo
   alias FavnStoragePostgres.Schemas.Backfill
-  alias FavnStoragePostgres.Schemas.BackfillOverview
   alias FavnStoragePostgres.Schemas.BackfillWindow
   alias FavnStoragePostgres.Schemas.AssetAttemptOverview
   alias FavnStoragePostgres.Schemas.AssetWindowState
   alias FavnStoragePostgres.Schemas.ExecutionGroupOverview
   alias FavnStoragePostgres.Schemas.ManifestVersion
   alias FavnStoragePostgres.Schemas.Run
+  alias FavnStoragePostgres.Schemas.RunEvent
   alias FavnStoragePostgres.Schemas.RunTarget
   alias FavnStoragePostgres.Schemas.TargetStatus
 
@@ -221,78 +229,156 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
   end
 
   @impl true
-  def get_operator_run_overview(%GetOperatorRunOverview{} = query) do
-    with :ok <- validate_operator_run_overview(query),
-         %Run{} = selected <-
-           Repo.get_by(Run,
-             workspace_id: query.workspace_context.workspace_id,
-             run_id: query.run_id
-           ),
-         root_run_id <- selected.root_execution_group_id,
-         %ExecutionGroupOverview{} = overview <-
-           Repo.get_by(ExecutionGroupOverview,
-             workspace_id: query.workspace_context.workspace_id,
-             root_run_id: root_run_id
-           ),
-         %{} = root <-
-           get_run_summary(query.workspace_context.workspace_id, root_run_id),
-         {:ok, runs} <-
-           page_group_runs(%PageGroupRuns{
-             workspace_context: query.workspace_context,
-             root_run_id: root_run_id,
-             limit: query.limit
-           }),
-         {:ok, requested_windows} <-
-           page_group_windows(%PageGroupWindows{
-             workspace_context: query.workspace_context,
-             root_run_id: root_run_id,
-             limit: query.limit
-           }) do
-      loaded_run_ids =
-        [root_run_id | Enum.map(runs.items, & &1.run_id)]
-        |> Enum.uniq()
+  def get_run_flow(%GetRunFlow{} = query) do
+    with :ok <- validate_run_flow(query) do
+      exact_read_transaction(fn ->
+        with {:ok, header} <-
+               exact_run_header(query.workspace_context.workspace_id, query.run_id) do
+          counts = exact_run_counts!(query.workspace_context.workspace_id, query.run_id)
 
-      asset_counts_by_run =
-        compact_asset_counts_by_run(
-          query.workspace_context.workspace_id,
-          root_run_id,
-          loaded_run_ids
+          {planned, observed, candidates_overflow?} =
+            exact_flow_candidates!(
+              query.workspace_context.workspace_id,
+              query.run_id,
+              query.limit
+            )
+
+          {:ok,
+           %RunFlowSnapshot{
+             header: %{header | counts: counts},
+             planned: planned,
+             observed: observed,
+             overflow?: candidates_overflow? or counts.total > query.limit
+           }}
+        end
+      end)
+    end
+  rescue
+    error -> {:error, ErrorMapper.map(error)}
+  end
+
+  @impl true
+  def get_run_header(%GetRunHeader{} = query) do
+    with :ok <- validate_run_header(query) do
+      exact_read_transaction(fn ->
+        with {:ok, header} <-
+               exact_run_header(query.workspace_context.workspace_id, query.run_id) do
+          counts = exact_run_counts!(query.workspace_context.workspace_id, query.run_id)
+          {:ok, %{header | counts: counts}}
+        end
+      end)
+    end
+  rescue
+    error -> {:error, ErrorMapper.map(error)}
+  end
+
+  @impl true
+  def list_run_windows(%ListRunWindows{} = query) do
+    with :ok <- validate_run_windows(query) do
+      %{rows: rows} =
+        SQL.query!(
+          Repo,
+          """
+          WITH selected AS (
+            SELECT COALESCE(root_execution_group_id, run_id) AS root_run_id
+            FROM favn_control.runs
+            WHERE workspace_id = $1 AND run_id = $2
+          )
+          SELECT window_run.run_id, window_run.window_start, window_run.window_end
+          FROM selected
+          JOIN favn_control.backfills AS backfill
+            ON backfill.workspace_id = $1
+           AND backfill.root_run_id = selected.root_run_id
+          JOIN favn_control.backfill_windows AS window_run
+            ON window_run.workspace_id = backfill.workspace_id
+           AND window_run.backfill_id = backfill.backfill_id
+          WHERE window_run.run_id IS NOT NULL
+          ORDER BY (window_run.run_id = $2) DESC,
+                   window_run.window_start DESC,
+                   window_run.window_id DESC
+          LIMIT $3
+          """,
+          [query.workspace_context.workspace_id, query.run_id, query.limit + 1],
+          timeout: 1_000
         )
 
-      {attempts, attempts_truncated?} =
-        compact_attempts(query.workspace_context.workspace_id, root_run_id, query.limit)
+      case rows do
+        [] ->
+          if exact_run_exists?(query.workspace_context.workspace_id, query.run_id) do
+            {:ok, %RunWindowChoices{items: [], overflow?: false}}
+          else
+            {:error, Error.new(:not_found, "run not found")}
+          end
 
-      {planned_steps, planned_steps_truncated?} =
-        compact_planned_steps(query.workspace_context.workspace_id, root_run_id, query.limit)
+        rows ->
+          {:ok,
+           %RunWindowChoices{
+             items: rows |> Enum.take(query.limit) |> Enum.map(&run_window_choice/1),
+             overflow?: length(rows) > query.limit
+           }}
+      end
+    end
+  rescue
+    error -> {:error, ErrorMapper.map(error)}
+  end
 
-      {:ok,
-       %OperatorRunOverviewResult{
-         overview:
-           group_result(
-             overview,
-             target_refs_by_group([overview]),
-             asset_counts_by_group([overview])
-           ),
-         root_run: run_result(root),
-         runs: runs.items,
-         requested_windows: requested_windows.items,
-         requested_windows_truncated?: requested_windows.has_more?,
-         requested_window_counts:
-           requested_window_counts(query.workspace_context.workspace_id, root_run_id),
-         attempts: attempts,
-         asset_counts_by_run: asset_counts_by_run,
-         planned_steps: planned_steps,
-         planned_steps_truncated?: planned_steps_truncated?,
-         attempt_counts:
-           compact_attempt_counts(query.workspace_context.workspace_id, root_run_id),
-         attempts_truncated?: attempts_truncated?,
-         runs_truncated?: runs.has_more?,
-         target_refs: target_refs(query.workspace_context.workspace_id, root_run_id)
-       }}
+  @impl true
+  def get_run_asset_attempt(%GetRunAssetAttempt{} = query) do
+    with :ok <- validate_run_asset_attempt(query) do
+      case Repo.get_by(AssetAttemptOverview,
+             workspace_id: query.workspace_context.workspace_id,
+             run_id: query.run_id,
+             asset_step_id: query.asset_step_id
+           ) do
+        %AssetAttemptOverview{} = attempt -> {:ok, run_asset_attempt(attempt)}
+        nil -> {:error, Error.new(:not_found, "asset attempt not found")}
+      end
+    end
+  rescue
+    error -> {:error, ErrorMapper.map(error)}
+  end
+
+  @impl true
+  def list_run_event_summaries(%ListRunEventSummaries{} = query) do
+    with :ok <- validate_run_event_summaries(query),
+         true <- exact_run_exists?(query.workspace_context.workspace_id, query.run_id) do
+      rows =
+        from(event in RunEvent,
+          where:
+            event.workspace_id == ^query.workspace_context.workspace_id and
+              event.run_id == ^query.run_id,
+          order_by: [desc: event.sequence],
+          limit: ^query.limit,
+          select: {
+            event.run_id,
+            event.sequence,
+            event.occurred_at,
+            event.event_type,
+            event.status,
+            fragment(
+              "COALESCE(? #>> '{asset_ref,module}', ? #>> '{data,asset_ref,module}')",
+              event.event,
+              event.event
+            ),
+            fragment(
+              "COALESCE(? #>> '{asset_ref,name}', ? #>> '{data,asset_ref,name}')",
+              event.event,
+              event.event
+            ),
+            fragment(
+              "left(COALESCE(? #>> '{data,message}', ? #>> '{data,reason}', ''), 1024)",
+              event.event,
+              event.event
+            )
+          }
+        )
+        |> Repo.all(timeout: 1_000)
+        |> Enum.reverse()
+
+      {:ok, Enum.map(rows, &run_event_summary/1)}
     else
-      nil -> {:error, Error.new(:not_found, "execution group not found")}
+      false -> {:error, Error.new(:not_found, "run not found")}
       {:error, %Error{} = error} -> {:error, error}
-      {:error, reason} -> {:error, ErrorMapper.map(reason)}
     end
   rescue
     error -> {:error, ErrorMapper.map(error)}
@@ -727,13 +813,6 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
     }
   end
 
-  defp get_run_summary(workspace_id, run_id) do
-    Run
-    |> where([run], run.workspace_id == ^workspace_id and run.run_id == ^run_id)
-    |> select_run_summary()
-    |> Repo.one()
-  end
-
   defp select_run_summary(query) do
     query
     |> join(:inner, [run], manifest in ManifestVersion,
@@ -781,63 +860,6 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
     }
   end
 
-  defp compact_attempts(workspace_id, root_run_id, limit) do
-    rows =
-      from(attempt in AssetAttemptOverview,
-        where: attempt.workspace_id == ^workspace_id and attempt.root_run_id == ^root_run_id,
-        order_by: [asc: attempt.window_identity, asc: attempt.asset_ref, asc: attempt.run_id],
-        limit: ^(limit + 1)
-      )
-      |> Repo.all()
-
-    {rows |> Enum.take(limit) |> Enum.map(&attempt_result/1), length(rows) > limit}
-  end
-
-  defp compact_planned_steps(workspace_id, root_run_id, limit) do
-    %{rows: rows} =
-      SQL.query!(
-        Repo,
-        """
-        SELECT plan.run_id, run.root_execution_group_id, node.value
-        FROM favn_control.run_plans AS plan
-        JOIN favn_control.runs AS run
-          ON run.workspace_id = plan.workspace_id
-         AND run.run_id = plan.run_id
-        CROSS JOIN LATERAL jsonb_array_elements(plan.plan->'nodes') AS node(value)
-        WHERE run.workspace_id = $1
-          AND run.root_execution_group_id = $2
-        ORDER BY plan.run_id, node.value->'node_key', node.value->'ref'
-        LIMIT $3
-        """,
-        [workspace_id, root_run_id, limit + 1]
-      )
-
-    page_rows = Enum.take(rows, limit)
-    {Enum.map(page_rows, &planned_step_result/1), length(rows) > limit}
-  end
-
-  defp planned_step_result([run_id, root_run_id, node]) do
-    window = restore_window(Map.get(node, "window"))
-
-    %PlannedAssetStep{
-      root_run_id: root_run_id,
-      run_id: run_id,
-      node_identity: planned_node_identity(Map.get(node, "node_key")),
-      asset_ref: ref_text(Map.get(node, "ref")),
-      window_identity: planned_window_identity(window),
-      window: window,
-      stage: Map.get(node, "stage"),
-      execution_pool: Map.get(node, "execution_pool")
-    }
-  end
-
-  defp planned_node_identity(node_key) do
-    node_key
-    |> Jason.encode!()
-    |> then(&:crypto.hash(:sha256, &1))
-    |> Base.url_encode64(padding: false)
-  end
-
   defp planned_window_identity(nil), do: "none"
   defp planned_window_identity(%{key: key}) when is_binary(key), do: key
 
@@ -846,165 +868,6 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
     |> :erlang.term_to_binary([:deterministic])
     |> then(&:crypto.hash(:sha256, &1))
     |> Base.url_encode64(padding: false)
-  end
-
-  defp ref_text(%{"module" => module, "name" => name})
-       when is_binary(module) and is_binary(name),
-       do: module <> ":" <> name
-
-  defp ref_text(value) when is_binary(value), do: value
-  defp ref_text(_value), do: "unknown"
-
-  defp compact_asset_counts_by_run(workspace_id, root_run_id, run_ids) do
-    attempts =
-      from(attempt in AssetAttemptOverview,
-        where:
-          attempt.workspace_id == ^workspace_id and attempt.root_run_id == ^root_run_id and
-            attempt.run_id in ^run_ids,
-        group_by: attempt.run_id,
-        select: %{
-          run_id: attempt.run_id,
-          total: count(attempt.asset_step_id),
-          completed: filter(count(), attempt.status in ^@completed_asset_statuses),
-          succeeded: filter(count(), attempt.status == "ok"),
-          skipped: filter(count(), attempt.status == "skipped_fresh"),
-          failed: filter(count(), attempt.status in ^@failed_asset_statuses),
-          running: filter(count(), attempt.status in ^@running_asset_statuses),
-          queued: filter(count(), attempt.status == "queued")
-        }
-      )
-      |> Repo.all()
-      |> Map.new(fn row -> {row.run_id, Map.delete(row, :run_id)} end)
-
-    %{rows: plan_rows} =
-      SQL.query!(
-        Repo,
-        """
-        SELECT plan.run_id,
-               jsonb_array_length(COALESCE(plan.plan->'nodes', '[]'::jsonb))
-        FROM favn_control.run_plans AS plan
-        JOIN favn_control.runs AS run
-          ON run.workspace_id = plan.workspace_id
-         AND run.run_id = plan.run_id
-        WHERE run.workspace_id = $1
-          AND run.root_execution_group_id = $2
-          AND plan.run_id = ANY($3::text[])
-        """,
-        [workspace_id, root_run_id, run_ids]
-      )
-
-    planned = Map.new(plan_rows, fn [run_id, total] -> {run_id, total} end)
-
-    attempts
-    |> Map.keys()
-    |> Kernel.++(Map.keys(planned))
-    |> Enum.uniq()
-    |> Map.new(fn run_id ->
-      attempted = Map.get(attempts, run_id, Map.delete(@no_asset_counts, :planned))
-      total = max(Map.get(planned, run_id, 0), attempted.total)
-
-      {run_id,
-       attempted
-       |> Map.put(:total, total)
-       |> Map.put(:planned, max(total - attempted.total, 0))}
-    end)
-  end
-
-  defp compact_attempt_counts(workspace_id, root_run_id) do
-    observed =
-      from(attempt in AssetAttemptOverview,
-        where: attempt.workspace_id == ^workspace_id and attempt.root_run_id == ^root_run_id,
-        select: %{
-          total: count(attempt.asset_step_id),
-          completed: filter(count(), attempt.status in ^@completed_asset_statuses),
-          succeeded: filter(count(), attempt.status == "ok"),
-          skipped: filter(count(), attempt.status == "skipped_fresh"),
-          failed: filter(count(), attempt.status in ^@failed_asset_statuses),
-          running: filter(count(), attempt.status in ^@running_asset_statuses),
-          queued: filter(count(), attempt.status == "queued"),
-          effective_windows:
-            fragment(
-              "count(DISTINCT ?) FILTER (WHERE ? <> 'none')",
-              attempt.window_identity,
-              attempt.window_identity
-            )
-        }
-      )
-      |> Repo.one!()
-
-    planned = remaining_planned_asset_count(workspace_id, root_run_id)
-
-    observed
-    |> Map.put(:planned, planned)
-    |> Map.update!(:total, &(&1 + planned))
-  end
-
-  defp remaining_planned_asset_count(workspace_id, root_run_id) do
-    %{rows: [[count]]} =
-      SQL.query!(
-        Repo,
-        """
-        WITH attempt_counts AS (
-          SELECT attempt.run_id, count(*) AS total
-          FROM favn_control.asset_attempt_overviews AS attempt
-          WHERE attempt.workspace_id = $1
-            AND attempt.root_run_id = $2
-          GROUP BY attempt.run_id
-        )
-        SELECT COALESCE(
-                 sum(
-                   GREATEST(
-                     jsonb_array_length(COALESCE(plan.plan->'nodes', '[]'::jsonb)) -
-                       COALESCE(attempt.total, 0),
-                     0
-                   )
-                 ),
-                 0
-               )::bigint
-        FROM favn_control.run_plans AS plan
-        JOIN favn_control.runs AS run
-          ON run.workspace_id = plan.workspace_id
-         AND run.run_id = plan.run_id
-        LEFT JOIN attempt_counts AS attempt
-          ON attempt.run_id = plan.run_id
-        WHERE run.workspace_id = $1
-          AND run.root_execution_group_id = $2
-        """,
-        [workspace_id, root_run_id]
-      )
-
-    count
-  end
-
-  defp requested_window_counts(workspace_id, root_run_id) do
-    row =
-      from(backfill in Backfill,
-        left_join: overview in BackfillOverview,
-        on:
-          overview.workspace_id == backfill.workspace_id and
-            overview.backfill_id == backfill.backfill_id,
-        where: backfill.workspace_id == ^workspace_id and backfill.root_run_id == ^root_run_id,
-        select: {
-          backfill.expected_window_count,
-          overview.succeeded_count,
-          overview.failed_count,
-          overview.cancelled_count
-        },
-        limit: 1
-      )
-      |> Repo.one()
-
-    case row do
-      {total, succeeded, failed, cancelled} ->
-        %{
-          total: total || 0,
-          completed: (succeeded || 0) + (failed || 0) + (cancelled || 0),
-          failed: failed || 0
-        }
-
-      nil ->
-        %{total: 0, completed: 0, failed: 0}
-    end
   end
 
   # One query for a whole page of groups rather than one per row. The `in` pair is
@@ -1087,48 +950,6 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
     {
       groups |> Enum.map(& &1.workspace_id) |> Enum.uniq(),
       groups |> Enum.map(& &1.root_run_id) |> Enum.uniq()
-    }
-  end
-
-  defp target_refs(workspace_id, root_run_id) do
-    from(target in RunTarget,
-      join: run in Run,
-      on: run.workspace_id == target.workspace_id and run.run_id == target.run_id,
-      where:
-        run.workspace_id == ^workspace_id and run.root_execution_group_id == ^root_run_id and
-          target.target_kind == "asset",
-      select: {target.target_module, target.target_name},
-      distinct: true
-    )
-    |> Repo.all()
-    |> Enum.flat_map(fn
-      {module, name} when is_binary(module) and is_binary(name) -> [module <> ":" <> name]
-      _incomplete_identity -> []
-    end)
-    |> Enum.sort()
-  end
-
-  defp attempt_result(attempt) do
-    %AssetAttemptResult{
-      workspace_id: attempt.workspace_id,
-      root_run_id: attempt.root_run_id,
-      run_id: attempt.run_id,
-      asset_step_id: attempt.asset_step_id,
-      asset_ref: attempt.asset_ref,
-      window_identity: attempt.window_identity,
-      window: restore_window(attempt.window),
-      status: String.to_existing_atom(attempt.status),
-      stage: attempt.stage,
-      attempt_number: attempt.attempt_number,
-      execution_pool: attempt.execution_pool,
-      queue_reason: attempt.queue_reason,
-      started_at: attempt.started_at,
-      finished_at: attempt.finished_at,
-      duration_ms: attempt.duration_ms,
-      error: attempt.error,
-      output_metadata: attempt.output_metadata,
-      source_publication_id: attempt.source_publication_id,
-      updated_at: attempt.updated_at
     }
   end
 
@@ -1473,6 +1294,405 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
     )
   end
 
+  defp exact_run_header(workspace_id, run_id) do
+    %{rows: rows} =
+      SQL.query!(
+        Repo,
+        """
+        SELECT selected_run.run_id,
+               COALESCE(selected_run.root_execution_group_id, selected_run.run_id),
+               selected_run.parent_run_id,
+               selected_run.rerun_of_run_id,
+               selected_run.manifest_version_id,
+               selected_run.status,
+               selected_run.submit_kind,
+               selected_run.trigger_type,
+               selected_run.event_sequence,
+               selected_run.inserted_at,
+               selected_run.updated_at,
+               selected_run.terminal_at,
+               selected_target.target_id,
+               selected_target.target_label,
+               COALESCE(
+                 selected_window.window_start,
+                 NULLIF(selected_run.snapshot #>> '{metadata,pipeline_context,anchor_window,start_at}', '')::timestamptz,
+                 NULLIF(selected_run.snapshot #>> '{metadata,selected_window,start_at}', '')::timestamptz,
+                 NULLIF(selected_run.snapshot #>> '{metadata,window,start_at}', '')::timestamptz,
+                 NULLIF(selected_run.snapshot #>> '{params,window,start_at}', '')::timestamptz
+               ),
+               COALESCE(
+                 selected_window.window_end,
+                 NULLIF(selected_run.snapshot #>> '{metadata,pipeline_context,anchor_window,end_at}', '')::timestamptz,
+                 NULLIF(selected_run.snapshot #>> '{metadata,selected_window,end_at}', '')::timestamptz,
+                 NULLIF(selected_run.snapshot #>> '{metadata,window,end_at}', '')::timestamptz,
+                 NULLIF(selected_run.snapshot #>> '{params,window,end_at}', '')::timestamptz
+               )
+        FROM favn_control.runs AS selected_run
+        LEFT JOIN LATERAL (
+          SELECT candidate_target.target_id,
+                 concat_ws(':', candidate_target.target_module, candidate_target.target_name) AS target_label
+          FROM favn_control.run_targets AS candidate_target
+          WHERE candidate_target.workspace_id = selected_run.workspace_id
+            AND candidate_target.run_id = selected_run.run_id
+          ORDER BY candidate_target.is_primary DESC,
+                   candidate_target.submitted_event_id,
+                   candidate_target.target_id
+          LIMIT 1
+        ) AS selected_target ON TRUE
+        LEFT JOIN LATERAL (
+          SELECT candidate_window.window_start, candidate_window.window_end
+          FROM favn_control.backfill_windows AS candidate_window
+          WHERE candidate_window.workspace_id = selected_run.workspace_id
+            AND candidate_window.run_id = selected_run.run_id
+          ORDER BY candidate_window.window_start DESC, candidate_window.window_id DESC
+          LIMIT 1
+        ) AS selected_window ON TRUE
+        WHERE selected_run.workspace_id = $1 AND selected_run.run_id = $2
+        """,
+        [workspace_id, run_id],
+        timeout: 1_000
+      )
+
+    case rows do
+      [
+        [
+          loaded_run_id,
+          root_run_id,
+          parent_run_id,
+          rerun_of_run_id,
+          manifest_version_id,
+          status,
+          submit_kind,
+          trigger_type,
+          event_sequence,
+          started_at,
+          updated_at,
+          finished_at,
+          target_id,
+          target_label,
+          window_start_at,
+          window_end_at
+        ]
+      ] ->
+        {:ok,
+         %RunViewHeader{
+           run_id: loaded_run_id,
+           root_run_id: root_run_id,
+           parent_run_id: parent_run_id,
+           rerun_of_run_id: rerun_of_run_id,
+           manifest_version_id: manifest_version_id,
+           status: decode_operator_status(status),
+           submit_kind: decode_operator_enum(:submit_kind, submit_kind),
+           trigger_type: RunEnum.decode(:trigger_type, trigger_type),
+           event_sequence: event_sequence,
+           started_at: started_at,
+           updated_at: updated_at,
+           finished_at: finished_at,
+           target_id: target_id,
+           target_label: target_label,
+           window_start_at: window_start_at,
+           window_end_at: window_end_at,
+           counts: @no_asset_counts
+         }}
+
+      [] ->
+        {:error, Error.new(:not_found, "run not found")}
+    end
+  end
+
+  defp exact_run_counts!(workspace_id, run_id) do
+    %{rows: [[total, completed, succeeded, skipped, failed, running, queued, planned]]} =
+      SQL.query!(
+        Repo,
+        """
+        WITH planned AS (
+          SELECT concat_ws(':', node.value #>> '{ref,module}', node.value #>> '{ref,name}') AS asset_ref,
+                 count(*)::bigint AS candidate_count
+          FROM favn_control.run_plans AS plan
+          CROSS JOIN LATERAL jsonb_array_elements(COALESCE(plan.plan->'nodes', '[]'::jsonb)) AS node(value)
+          WHERE plan.workspace_id = $1 AND plan.run_id = $2
+          GROUP BY 1
+        ),
+        observed AS (
+          SELECT attempt.asset_ref,
+                 count(*)::bigint AS candidate_count
+          FROM favn_control.asset_attempt_overviews AS attempt
+          WHERE attempt.workspace_id = $1 AND attempt.run_id = $2
+          GROUP BY attempt.asset_ref
+        ),
+        union_counts AS (
+          SELECT COALESCE(sum(GREATEST(
+                   COALESCE(planned.candidate_count, 0),
+                   COALESCE(observed.candidate_count, 0)
+                 )), 0)::bigint AS total,
+                 COALESCE(sum(GREATEST(
+                   COALESCE(planned.candidate_count, 0) - COALESCE(observed.candidate_count, 0),
+                   0
+                 )), 0)::bigint AS planned
+          FROM planned
+          FULL OUTER JOIN observed USING (asset_ref)
+        ),
+        observed_status AS (
+          SELECT count(*) FILTER (
+                   WHERE attempt.status IN ('ok', 'error', 'timed_out', 'cancelled', 'skipped_fresh', 'blocked')
+                 )::bigint AS completed,
+                 count(*) FILTER (WHERE attempt.status = 'ok')::bigint AS succeeded,
+                 count(*) FILTER (WHERE attempt.status = 'skipped_fresh')::bigint AS skipped,
+                 count(*) FILTER (
+                   WHERE attempt.status IN ('error', 'timed_out', 'cancelled', 'blocked')
+                 )::bigint AS failed,
+                 count(*) FILTER (WHERE attempt.status IN ('running', 'retrying'))::bigint AS running,
+                 count(*) FILTER (WHERE attempt.status = 'queued')::bigint AS queued
+          FROM favn_control.asset_attempt_overviews AS attempt
+          WHERE attempt.workspace_id = $1 AND attempt.run_id = $2
+        )
+        SELECT union_counts.total,
+               observed_status.completed,
+               observed_status.succeeded,
+               observed_status.skipped,
+               observed_status.failed,
+               observed_status.running,
+               observed_status.queued,
+               union_counts.planned
+        FROM union_counts
+        CROSS JOIN observed_status
+        """,
+        [workspace_id, run_id],
+        timeout: 1_000
+      )
+
+    %{
+      total: total,
+      completed: completed,
+      succeeded: succeeded,
+      skipped: skipped,
+      failed: failed,
+      running: running,
+      queued: queued,
+      planned: planned
+    }
+  end
+
+  defp exact_flow_candidates!(workspace_id, run_id, limit) do
+    %{rows: rows} =
+      SQL.query!(
+        Repo,
+        """
+        WITH planned_base AS (
+          SELECT node.value->'node_key' AS node_key,
+                 concat_ws(':', node.value #>> '{ref,module}', node.value #>> '{ref,name}') AS asset_ref,
+                 node.value->'window' AS window_value,
+                 'planned:' || md5(
+                   $2 || ':' || (node.value->'node_key')::text || ':' || (node.value->'ref')::text
+                 ) AS planned_id
+          FROM favn_control.run_plans AS plan
+          CROSS JOIN LATERAL jsonb_array_elements(COALESCE(plan.plan->'nodes', '[]'::jsonb)) AS node(value)
+          WHERE plan.workspace_id = $1 AND plan.run_id = $2
+        ),
+        planned AS (
+          SELECT planned_base.*,
+                 row_number() OVER (
+                   PARTITION BY asset_ref
+                   ORDER BY planned_id
+                 ) AS occurrence
+          FROM planned_base
+        ),
+        observed AS (
+          SELECT attempt.asset_step_id,
+                 attempt.asset_ref,
+                 attempt.window_identity,
+                 attempt.status,
+                 attempt.started_at,
+                 attempt.finished_at,
+                 row_number() OVER (
+                   PARTITION BY attempt.asset_ref
+                   ORDER BY attempt.asset_step_id
+                 ) AS occurrence
+          FROM favn_control.asset_attempt_overviews AS attempt
+          WHERE attempt.workspace_id = $1 AND attempt.run_id = $2
+        )
+        SELECT planned.node_key,
+               COALESCE(observed.asset_ref, planned.asset_ref),
+               planned.window_value,
+               planned.planned_id,
+               observed.asset_step_id,
+               observed.window_identity,
+               observed.status,
+               observed.started_at,
+               observed.finished_at,
+               COALESCE(observed.occurrence, planned.occurrence)
+        FROM planned
+        FULL OUTER JOIN observed
+          ON observed.asset_ref = planned.asset_ref
+         AND observed.occurrence = planned.occurrence
+        ORDER BY 2, 10
+        LIMIT $3
+        """,
+        [workspace_id, run_id, limit + 1],
+        timeout: 1_000
+      )
+
+    {planned, observed} =
+      rows
+      |> Enum.take(limit)
+      |> Enum.reduce({[], []}, fn
+        [node_key, asset_ref, window, planned_id, nil, nil, nil, nil, nil, _occurrence],
+        {planned, observed} ->
+          candidate = %RunFlowCandidate{
+            run_id: run_id,
+            planned_id: planned_id,
+            node_key: node_key,
+            asset_ref: asset_ref,
+            window_identity: planned_window_identity(restore_window(window)),
+            status: :planned
+          }
+
+          {[candidate | planned], observed}
+
+        [
+          _node_key,
+          asset_ref,
+          _window,
+          _planned_id,
+          asset_step_id,
+          window_identity,
+          status,
+          started_at,
+          finished_at,
+          _occurrence
+        ],
+        {planned, observed} ->
+          candidate = %RunFlowCandidate{
+            run_id: run_id,
+            asset_step_id: asset_step_id,
+            asset_ref: asset_ref,
+            window_identity: window_identity,
+            status: decode_operator_status(status),
+            started_at: started_at,
+            finished_at: finished_at
+          }
+
+          {planned, [candidate | observed]}
+      end)
+
+    {Enum.reverse(planned), Enum.reverse(observed), length(rows) > limit}
+  end
+
+  defp run_window_choice([run_id, window_start_at, window_end_at]) do
+    %RunWindowChoice{
+      run_id: run_id,
+      window_start_at: window_start_at,
+      window_end_at: window_end_at
+    }
+  end
+
+  defp run_asset_attempt(attempt) do
+    %RunAssetAttemptResult{
+      run_id: attempt.run_id,
+      asset_step_id: attempt.asset_step_id,
+      asset_ref: attempt.asset_ref,
+      status: decode_operator_status(attempt.status),
+      started_at: attempt.started_at,
+      finished_at: attempt.finished_at,
+      duration_ms: attempt.duration_ms,
+      attempt_number: attempt.attempt_number,
+      stage: attempt.stage,
+      execution_pool: attempt.execution_pool,
+      queue_reason: attempt.queue_reason,
+      window: restore_window(attempt.window),
+      error: attempt.error,
+      output_metadata: attempt.output_metadata
+    }
+  end
+
+  defp run_event_summary(
+         {run_id, sequence, occurred_at, event_type, status, module, name, summary}
+       ) do
+    asset_ref = if is_binary(module) and is_binary(name), do: module <> ":" <> name
+
+    %RunEventSummary{
+      run_id: run_id,
+      sequence: sequence,
+      occurred_at: occurred_at,
+      event_type: event_type,
+      status: if(is_binary(status), do: decode_operator_status(status)),
+      asset_ref: asset_ref,
+      summary: if(summary == "", do: nil, else: summary)
+    }
+  end
+
+  defp exact_run_exists?(workspace_id, run_id) do
+    Run
+    |> where([run], run.workspace_id == ^workspace_id and run.run_id == ^run_id)
+    |> Repo.exists?(timeout: 1_000)
+  end
+
+  defp decode_operator_enum(kind, value), do: RunEnum.decode(kind, value) || :unknown
+  defp decode_operator_status("blocked"), do: :blocked
+  defp decode_operator_status(value), do: decode_operator_enum(:status, value)
+
+  defp exact_read_transaction(fun) do
+    # SQL Sandbox hides its outer transaction to mimic production. It cannot
+    # change isolation after fixture setup; normal pools set it before reading.
+    set_transaction_mode? = not Repo.in_transaction?() and not ownership_pool?()
+
+    Repo.transaction(
+      fn ->
+        if set_transaction_mode? do
+          SQL.query!(
+            Repo,
+            "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY",
+            [],
+            timeout: 1_000
+          )
+        end
+
+        fun.()
+      end,
+      timeout: 2_000
+    )
+    |> transaction_result()
+  end
+
+  defp ownership_pool? do
+    Ecto.Adapter.lookup_meta(Repo).opts[:pool] == DBConnection.Ownership
+  end
+
+  defp transaction_result({:ok, {:ok, result}}), do: {:ok, result}
+  defp transaction_result({:ok, {:error, %Error{} = error}}), do: {:error, error}
+  defp transaction_result({:ok, result}), do: {:ok, result}
+  defp transaction_result({:error, %Error{} = error}), do: {:error, error}
+  defp transaction_result({:error, reason}), do: {:error, ErrorMapper.map(reason)}
+
+  defp validate_run_flow(query) do
+    if workspace_context?(query.workspace_context) and valid_id?(query.run_id) and
+         valid_bound?(query.limit, 1, 1_000),
+       do: :ok,
+       else: {:error, ErrorMapper.map(:invalid)}
+  end
+
+  defp validate_run_header(query) do
+    if workspace_context?(query.workspace_context) and valid_id?(query.run_id),
+      do: :ok,
+      else: {:error, ErrorMapper.map(:invalid)}
+  end
+
+  defp validate_run_windows(query), do: validate_run_flow(query)
+
+  defp validate_run_asset_attempt(query) do
+    if workspace_context?(query.workspace_context) and valid_id?(query.run_id) and
+         valid_id?(query.asset_step_id),
+       do: :ok,
+       else: {:error, ErrorMapper.map(:invalid)}
+  end
+
+  defp validate_run_event_summaries(query) do
+    if workspace_context?(query.workspace_context) and valid_id?(query.run_id) and
+         valid_bound?(query.limit, 1, 200),
+       do: :ok,
+       else: {:error, ErrorMapper.map(:invalid)}
+  end
+
   defp validate_manifest_page(page) do
     cursor? =
       is_nil(page.after) or
@@ -1540,13 +1760,6 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
   defp validate_get_group(query) do
     if workspace_context?(query.workspace_context) and valid_id?(query.root_run_id) and
          valid_bound?(query.detail_limit, 1, 200),
-       do: :ok,
-       else: {:error, ErrorMapper.map(:invalid)}
-  end
-
-  defp validate_operator_run_overview(query) do
-    if workspace_context?(query.workspace_context) and valid_id?(query.run_id) and
-         valid_bound?(query.limit, 1, 500),
        do: :ok,
        else: {:error, ErrorMapper.map(:invalid)}
   end

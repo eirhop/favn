@@ -20,46 +20,44 @@ defmodule FavnView.Components.RunDetailPage.WindowSemanticsTest do
     )
   end
 
-  test "a multi-window run reports window progress separately from asset progress" do
-    html = render_page(Runs.backfill(:running))
-
-    assert html =~ ~s(data-testid="asset-progress")
-    assert html =~ ~s(data-testid="window-progress")
-    assert html =~ "2 windows"
-  end
-
-  test "a single-window run says nothing about window progress" do
+  test "Flow renders one exact run as a lean asset list" do
     html = render_page(Runs.single_window())
 
     assert html =~ ~s(data-testid="asset-progress")
+    assert html =~ ~s(data-testid="run-flow")
+    assert html =~ ~s(data-testid="run-asset-row")
+    assert html =~ "Orders"
+    assert html =~ "Started"
+    assert html =~ "Finished"
+    refute html =~ "Output metadata"
     refute html =~ ~s(data-testid="window-progress")
   end
 
-  test "an outcome that did not occur is absent rather than shown as zero" do
+  test "window choices are absent until explicitly loaded" do
     html = render_page(Runs.single_window())
 
-    assert html =~ "2 ran"
-    refute html =~ "0 failed"
-    refute html =~ "0 running"
+    assert html =~ ~s(data-testid="load-run-windows")
+    refute html =~ ~s(data-testid="run-window-selector")
   end
 
-  test "already-fresh work is named separately from work that ran" do
-    html = render_page(Runs.backfill(:ok))
+  test "loaded sibling windows replace the button with one compact selector" do
+    windows = [
+      %{run_id: "run_daily_orders_2026_05_19", label: "Jul 22 – Jul 23"},
+      %{run_id: "run_daily_orders_2026_05_20", label: "Jul 23 – Jul 24"}
+    ]
 
-    assert html =~ "already fresh"
-    assert html =~ ~s(data-visual="marker")
+    html = render_page(Runs.single_window(), windows: windows)
+
+    assert html =~ ~s(data-testid="run-window-selector")
+    assert html =~ "Jul 22 – Jul 23"
+    refute html =~ ~s(data-testid="load-run-windows")
   end
 
-  test "a bounded detail slice is marked without implying the meters are partial" do
-    run = Map.put(Runs.backfill(:running), :asset_attempts_truncated?, true)
+  test "a bounded Flow slice is named precisely" do
+    run = Map.put(Runs.single_window(), :asset_attempts_truncated?, true)
     html = render_page(run)
 
     assert html =~ "run-detail-truncated-warning"
-    assert html =~ "meters above are exact"
-  end
-
-  test "window runs are only counted in the rail when there is more than one" do
-    assert render_page(Runs.backfill(:running)) =~ "Window runs"
-    refute render_page(Runs.single_window()) =~ ~s(data-testid="window-progress")
+    assert html =~ "first 1,000 in stable order"
   end
 end

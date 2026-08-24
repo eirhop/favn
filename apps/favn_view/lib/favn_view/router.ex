@@ -65,6 +65,7 @@ defmodule FavnView.Router do
       live "/runners", RunnersLive, :index
       live "/runs/:run_id", RunDetailLive, :show
       live "/runs/:run_id/logs", RunLogsLive, :show
+      live "/runs/:run_id/assets/:asset_step_id", RunAssetAttemptLive, :show
       live "/runs/:run_id/assets/:asset_step_id/logs", AssetRunLogsLive, :show
       live "/rebuilds", RebuildsLive, :index
       live "/rebuilds/:operation_id", RebuildDetailLive, :show

@@ -195,6 +195,10 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
     error -> {:error, {:run_plan_encode_failed, error}}
   end
 
+  @doc false
+  @spec node_key_dto(term()) :: map() | nil
+  def node_key_dto(node_key), do: node_key_to_dto(node_key)
+
   @spec decode_run(run_record(), manifest_record() | nil) ::
           {:ok, RunState.t()} | {:error, term()}
   def decode_run(%{run_blob: payload, manifest_version_id: manifest_version_id}, manifest_record)

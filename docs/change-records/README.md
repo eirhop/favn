@@ -203,7 +203,9 @@ Before marking the PR ready:
 8. address findings;
 9. ask the reviewer to compare every resulting code or record change again and
    supply the final verdict;
-10. set the status to `Implemented`.
+10. compare the actual diff with the approved complexity budget and explain
+    material overruns;
+11. set the status to `Implemented`.
 
 The final reviewer reports findings and does not edit the record or code.
 
@@ -215,6 +217,8 @@ The reviewer should be able to answer:
 - Do tests prove the important failure and recovery paths?
 - Are logs and diagnostics safe and useful?
 - Is the change record honest about what was not verified?
+- Did each implementation slice stay within its complexity budget, and are any
+  overruns justified by required behavior rather than scope creep?
 
 ## Keep the baseline and outcome separate
 
@@ -241,6 +245,39 @@ over:
 > `RunnerAgent.handle_info/2` calls `Lifecycle.mark_accepting/1`.
 
 Include an implementation map later for reviewers who need code ownership.
+
+## Set a complexity budget
+
+Every implementation plan must include a rough line-count budget for each
+implementation slice. The purpose is not to reward short code. It is to make the
+expected shape of the work visible before implementation and to expose scope
+creep or accidental over-engineering during review.
+
+For each slice, estimate separately:
+
+- production lines added;
+- production lines deleted;
+- test, fixture, example, and canonical-documentation lines added;
+- those supporting lines deleted.
+
+State what is included in the estimate. Do not count the change record itself,
+generated files, dependency locks, vendored code, or formatter-only changes.
+Use ranges rather than false precision. A plan should prefer the smallest design
+that meets the behavior and verification requirements; large estimates must say
+what real constraint drives the size.
+
+During implementation, keep the approved estimate unchanged. Before final
+review, use Git's additions and deletions to report the actual diff size per
+slice. Explain any category that exceeds its upper estimate by more than 25
+percent or 100 lines, whichever is smaller. Also explain materially fewer
+deletions than planned, because that can mean a replaced path was left behind.
+Treat an unexplained variance as a scope or design finding. If new behavior
+caused it, record a plan deviation and obtain review before continuing.
+
+Tests are essential, but their size does not make production complexity
+invisible. Final review compares production code, tests, examples, and deletions
+separately and asks whether a simpler implementation would preserve the same
+behavior.
 
 Use concrete examples, short paragraphs, stable terms, and explicit failure
 behavior. Avoid large code excerpts. Link to code or canonical documentation
@@ -301,6 +338,8 @@ Delete unused prompts from the copied template. Do not keep empty sections.
 
 - [ ] The change qualifies for a record, or the exemption is clear.
 - [ ] The issue, impact, and evidence are understandable without code knowledge.
+- [ ] Each implementation slice has a rough additions and deletions budget for
+      production and supporting files.
 - [ ] Assumptions, non-goals, and affected boundaries are explicit.
 - [ ] Current and proposed Mermaid diagrams render on GitHub before implementation.
 - [ ] An independent reviewer approved the plan before implementation.
@@ -312,4 +351,6 @@ Delete unused prompts from the copied template. Do not keep empty sections.
 - [ ] Verification evidence distinguishes static checks, CI, and live proof.
 - [ ] An independent reviewer compared the final implementation with the plan.
 - [ ] The reviewer rechecked all changes made in response to final findings.
+- [ ] Actual diff size was compared with the approved complexity budget and all
+      material overruns were explained.
 - [ ] No placeholder or `Pending` value remains in the final record.

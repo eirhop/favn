@@ -33,7 +33,11 @@ defmodule FavnView.RunEventRefresh do
         |> Enum.reduce({socket, current}, fn run_id, {acc_socket, acc_subscribed} ->
           case subscribe_fun(opts).(run_id) do
             :ok ->
-              next_socket = replay_gap(acc_socket, run_id, opts)
+              next_socket =
+                if Keyword.get(opts, :replay_on_subscribe?, true),
+                  do: replay_gap(acc_socket, run_id, opts),
+                  else: acc_socket
+
               {next_socket, MapSet.put(acc_subscribed, run_id)}
 
             {:error, _reason} ->
@@ -78,6 +82,13 @@ defmodule FavnView.RunEventRefresh do
     socket
     |> merge_sequences(sequence_by_run_id)
     |> assign(:pending_run_event_sequences, %{})
+  end
+
+  @spec retry_pending(Phoenix.LiveView.Socket.t(), keyword()) :: Phoenix.LiveView.Socket.t()
+  def retry_pending(socket, opts) do
+    if map_size(Map.get(socket.assigns, :pending_run_event_sequences, %{})) > 0,
+      do: do_schedule_refresh(socket, opts),
+      else: socket
   end
 
   @spec unsubscribe_all(Phoenix.LiveView.Socket.t(), (run_id() -> term())) :: :ok

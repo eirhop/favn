@@ -111,7 +111,11 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnOrchestrator.Persistence.Commands.RenewExecutionLease
   alias FavnOrchestrator.Persistence.PlatformContext
   alias FavnOrchestrator.Persistence.Queries.GetExecutionGroup
-  alias FavnOrchestrator.Persistence.Queries.GetOperatorRunOverview
+  alias FavnOrchestrator.Persistence.Queries.GetRunAssetAttempt
+  alias FavnOrchestrator.Persistence.Queries.GetRunFlow
+  alias FavnOrchestrator.Persistence.Queries.GetRunHeader
+  alias FavnOrchestrator.Persistence.Queries.ListRunEventSummaries
+  alias FavnOrchestrator.Persistence.Queries.ListRunWindows
   alias FavnOrchestrator.Persistence.Queries.GetExecutionPackage
   alias FavnOrchestrator.Persistence.Queries.GetManifestTargetDescriptors
   alias FavnOrchestrator.Persistence.Queries.GetActor
@@ -3681,25 +3685,23 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert second_representative == late_child_run.id
   end
 
-  test "operator overview exposes immutable planned nodes before attempts exist", fixture do
+  test "exact run Flow exposes immutable planned nodes before attempts exist", fixture do
     {command, run} = pipeline_run_command(fixture)
     assert {:ok, _created} = RunStore.create_run(command)
     assert {:ok, publications} = Sequencer.sequence_batch()
     assert drain_projector("planned-overview:" <> run.id) >= length(publications)
 
-    assert {:ok, overview} =
-             OperatorReadStore.get_operator_run_overview(%GetOperatorRunOverview{
+    assert {:ok, flow} =
+             OperatorReadStore.get_run_flow(%GetRunFlow{
                workspace_context: fixture.workspace_context,
                run_id: run.id,
                limit: 10
              })
 
-    assert [%{asset_ref: "Elixir.MyApp.Asset:asset", stage: 0}] = overview.planned_steps
-    assert overview.attempts == []
-    assert overview.attempt_counts.total == 1
-    assert overview.attempt_counts.planned == 1
+    assert [%{asset_ref: "Elixir.MyApp.Asset:asset", status: :planned}] = flow.planned
+    assert flow.observed == []
 
-    assert overview.asset_counts_by_run[run.id] == %{
+    assert flow.header.counts == %{
              total: 1,
              completed: 0,
              succeeded: 0,
@@ -3710,10 +3712,71 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
              planned: 1
            }
 
-    refute overview.planned_steps_truncated?
+    refute flow.overflow?
   end
 
-  test "operator overview bounds per-run counts while keeping exact group totals", fixture do
+  test "exact run Flow counts observed-only and repeated-reference rows before the cap",
+       fixture do
+    {command, run} = pipeline_run_command(fixture)
+    assert {:ok, _created} = RunStore.create_run(command)
+
+    SQL.query!(
+      Repo,
+      """
+      UPDATE favn_control.run_plans
+      SET plan = jsonb_build_object(
+        'nodes', (
+          SELECT jsonb_agg(
+            jsonb_build_object(
+              'node_key', jsonb_build_object(
+                'ref', jsonb_build_object('module', 'Elixir.MyApp.Repeated', 'name', 'asset'),
+                'identity', series
+              ),
+              'ref', jsonb_build_object('module', 'Elixir.MyApp.Repeated', 'name', 'asset'),
+              'window', NULL
+            )
+            ORDER BY series
+          )
+          FROM generate_series(1, 3) AS series
+        )
+      )
+      WHERE workspace_id = $1 AND run_id = $2
+      """,
+      [fixture.workspace_id, run.id]
+    )
+
+    SQL.query!(
+      Repo,
+      """
+      INSERT INTO favn_control.asset_attempt_overviews
+        (workspace_id, root_run_id, run_id, asset_step_id, asset_ref, window_identity,
+         status, source_publication_id, updated_at)
+      VALUES
+        ($1, $2, $2, 'observed-a', 'Elixir.MyApp.Repeated:asset', 'none', 'running', 1, now()),
+        ($1, $2, $2, 'observed-b', 'Elixir.MyApp.Repeated:asset', 'none', 'ok', 1, now()),
+        ($1, $2, $2, 'observed-only', 'Elixir.MyApp.ObservedOnly:asset', 'none', 'queued', 1, now())
+      """,
+      [fixture.workspace_id, run.id]
+    )
+
+    assert {:ok, flow} =
+             OperatorReadStore.get_run_flow(%GetRunFlow{
+               workspace_context: fixture.workspace_context,
+               run_id: run.id,
+               limit: 3
+             })
+
+    assert flow.header.counts.total == 4
+    assert flow.header.counts.planned == 1
+    assert flow.header.counts.running == 1
+    assert flow.header.counts.succeeded == 1
+    assert flow.header.counts.queued == 1
+    assert length(flow.observed) == 3
+    assert flow.planned == []
+    assert flow.overflow?
+  end
+
+  test "exact run Flow does not load sibling window runs", fixture do
     {root_command, root_run} = pipeline_run_command(fixture)
     assert {:ok, _created} = RunStore.create_run(root_command)
 
@@ -3734,25 +3797,20 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert {:ok, publications} = Sequencer.sequence_batch()
     assert drain_projector("bounded-run-counts:" <> root_run.id) >= length(publications)
 
-    assert {:ok, overview} =
-             OperatorReadStore.get_operator_run_overview(%GetOperatorRunOverview{
+    assert {:ok, flow} =
+             OperatorReadStore.get_run_flow(%GetRunFlow{
                workspace_context: fixture.workspace_context,
                run_id: root_run.id,
                limit: 3
              })
 
-    loaded_run_ids =
-      [root_run.id | Enum.map(overview.runs, & &1.run_id)]
-      |> MapSet.new()
-
-    assert MapSet.new(Map.keys(overview.asset_counts_by_run)) == loaded_run_ids
-    assert map_size(overview.asset_counts_by_run) <= 4
-    assert overview.runs_truncated?
-    assert overview.attempt_counts.total == 26
-    assert overview.attempt_counts.planned == 26
+    assert Enum.all?(flow.planned, &(&1.run_id == root_run.id))
+    assert Enum.all?(flow.observed, &(&1.run_id == root_run.id))
+    assert flow.header.counts.total == 1
+    refute flow.overflow?
   end
 
-  test "operator overview restores typed windows from immutable planned nodes", fixture do
+  test "exact run Flow preserves planned window identity", fixture do
     timezone = "Europe/Oslo"
 
     start_at =
@@ -3769,19 +3827,87 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert {:ok, publications} = Sequencer.sequence_batch()
     assert drain_projector("planned-window-overview:" <> run.id) >= length(publications)
 
-    assert {:ok, overview} =
-             OperatorReadStore.get_operator_run_overview(%GetOperatorRunOverview{
+    assert {:ok, flow} =
+             OperatorReadStore.get_run_flow(%GetRunFlow{
                workspace_context: fixture.workspace_context,
                run_id: run.id,
                limit: 10
              })
 
-    assert [%{window: restored}] = overview.planned_steps
-    assert restored.key == WindowKey.encode(window.key)
-    assert restored.kind == :month
-    assert restored.start_at == start_at
-    assert restored.end_at == end_at
-    assert restored.timezone == timezone
+    assert [%{window_identity: window_identity}] = flow.planned
+    assert window_identity == WindowKey.encode(window.key)
+  end
+
+  test "exact run header reads ordinary run window bounds without hydrating the snapshot",
+       fixture do
+    start_at = ~U[2026-07-01 00:00:00Z]
+    end_at = ~U[2026-08-01 00:00:00Z]
+    {command, run} = pipeline_run_command(fixture)
+
+    run =
+      run
+      |> Map.update!(:metadata, fn metadata ->
+        Map.put(metadata, :selected_window, %{
+          key: "month:UTC:2026-07-01",
+          kind: :month,
+          start_at: start_at,
+          end_at: end_at,
+          timezone: "UTC"
+        })
+      end)
+      |> RunState.with_snapshot_hash()
+
+    assert {:ok, _created} = RunStore.create_run(%{command | run: run})
+
+    assert {:ok, flow} =
+             OperatorReadStore.get_run_flow(%GetRunFlow{
+               workspace_context: fixture.workspace_context,
+               run_id: run.id,
+               limit: 10
+             })
+
+    assert DateTime.compare(flow.header.window_start_at, start_at) == :eq
+    assert DateTime.compare(flow.header.window_end_at, end_at) == :eq
+  end
+
+  test "keyed asset attempt detail is scoped by workspace and exact run", fixture do
+    other = provision_deploy_fixture(fixture.version)
+    shared_run_id = "shared-detail-#{System.unique_integer([:positive])}"
+    asset_step_id = "shared-step"
+
+    {command, run} = create_run_command(fixture, shared_run_id)
+    {other_command, other_run} = create_run_command(other, shared_run_id)
+    {sibling_command, sibling_run} = create_run_command(fixture)
+
+    assert {:ok, _created} = RunStore.create_run(command)
+    assert {:ok, _created} = RunStore.create_run(other_command)
+    assert {:ok, _created} = RunStore.create_run(sibling_command)
+
+    for {workspace_id, exact_run_id, marker} <- [
+          {fixture.workspace_id, run.id, "selected"},
+          {other.workspace_id, other_run.id, "other-workspace"},
+          {fixture.workspace_id, sibling_run.id, "other-run"}
+        ] do
+      SQL.query!(
+        Repo,
+        """
+        INSERT INTO favn_control.asset_attempt_overviews
+          (workspace_id, root_run_id, run_id, asset_step_id, asset_ref, window_identity,
+           status, output_metadata, source_publication_id, updated_at)
+        VALUES ($1, $2, $2, $3, 'Elixir.MyApp.Asset:asset', 'none', 'ok', $4, 1, now())
+        """,
+        [workspace_id, exact_run_id, asset_step_id, %{"marker" => marker}]
+      )
+    end
+
+    assert {:ok, detail} =
+             OperatorReadStore.get_run_asset_attempt(%GetRunAssetAttempt{
+               workspace_context: fixture.workspace_context,
+               run_id: run.id,
+               asset_step_id: asset_step_id
+             })
+
+    assert detail.output_metadata == %{"marker" => "selected"}
   end
 
   test "asset detail names what it reads and what reads it", fixture do
@@ -4064,15 +4190,13 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert summary.run_id == run.id
     assert is_nil(summary.trigger_type)
 
-    assert {:ok, overview} =
-             OperatorReadStore.get_operator_run_overview(%GetOperatorRunOverview{
+    assert {:ok, header} =
+             OperatorReadStore.get_run_header(%GetRunHeader{
                workspace_context: fixture.workspace_context,
-               run_id: run.id,
-               limit: 10
+               run_id: run.id
              })
 
-    assert is_nil(overview.root_run.trigger_type)
-    assert Enum.all?(overview.runs, &is_nil(&1.trigger_type))
+    assert is_nil(header.trigger_type)
   end
 
   test "compact run history prefers the persisted pipeline target label", fixture do
@@ -9391,28 +9515,32 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert {:ok, [_publication]} = Sequencer.sequence_batch()
     assert drain_projector("node-a") >= 1
 
-    assert {:ok, compact} =
-             OperatorReadStore.get_operator_run_overview(%GetOperatorRunOverview{
+    assert {:ok, flow} =
+             OperatorReadStore.get_run_flow(%GetRunFlow{
                workspace_context: fixture.workspace_context,
                run_id: run.id,
                limit: 10
              })
 
-    assert [attempt] = compact.attempts
+    assert [attempt] = flow.observed
     assert attempt.asset_step_id == "step:" <> run.id
-    assert attempt.window.start_at == ~U[2026-07-13 00:00:00Z]
     assert String.starts_with?(attempt.window_identity, "runtime:")
-    assert compact.attempt_counts.total == 1
-    assert compact.attempt_counts.succeeded == 0
-    assert compact.attempt_counts.skipped == 0
-    assert compact.attempt_counts.planned == 0
-    assert compact.attempt_counts.running == 1
-    assert compact.attempt_counts.effective_windows == 1
-    refute compact.attempts_truncated?
-    refute compact.runs_truncated?
-    refute compact.requested_windows_truncated?
+    assert flow.header.counts.total == 1
+    assert flow.header.counts.succeeded == 0
+    assert flow.header.counts.skipped == 0
+    assert flow.header.counts.planned == 0
+    assert flow.header.counts.running == 1
+    refute flow.overflow?
 
-    assert compact.root_run.runner_releases == fixture.version.runner_releases
+    assert {:ok, event_summaries} =
+             OperatorReadStore.list_run_event_summaries(%ListRunEventSummaries{
+               workspace_context: fixture.workspace_context,
+               run_id: run.id,
+               limit: 10
+             })
+
+    assert Enum.any?(event_summaries, &(&1.event_type == "step_running"))
+    refute Enum.any?(event_summaries, &Map.has_key?(Map.from_struct(&1), :event))
 
     blocked_progress =
       RunState.transition(progressed,
@@ -9442,19 +9570,24 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert {:ok, [_publication]} = Sequencer.sequence_batch()
     assert drain_projector("node-a") >= 1
 
-    assert {:ok, blocked_compact} =
-             OperatorReadStore.get_operator_run_overview(%GetOperatorRunOverview{
+    assert {:ok, blocked_flow} =
+             OperatorReadStore.get_run_flow(%GetRunFlow{
                workspace_context: fixture.workspace_context,
                run_id: run.id,
                limit: 10
              })
 
-    assert [%{status: :blocked, error: "upstream_blocked"}] = blocked_compact.attempts
-    assert blocked_compact.attempt_counts.failed == 1
+    assert [%{status: :blocked}] = blocked_flow.observed
+    assert blocked_flow.header.counts.failed == 1
 
-    assert Enum.all?(compact.runs, fn summary ->
-             summary.runner_releases == fixture.version.runner_releases
-           end)
+    assert {:ok, blocked_attempt} =
+             OperatorReadStore.get_run_asset_attempt(%GetRunAssetAttempt{
+               workspace_context: fixture.workspace_context,
+               run_id: run.id,
+               asset_step_id: "step:" <> run.id
+             })
+
+    assert blocked_attempt.error == "upstream_blocked"
 
     %{rows: [[^status_publication_id]]} =
       SQL.query!(
@@ -9500,20 +9633,20 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert {:ok, [_publication]} = Sequencer.sequence_batch()
     assert drain_projector("node-a") >= 1
 
-    assert {:ok, completed_compact} =
-             OperatorReadStore.get_operator_run_overview(%GetOperatorRunOverview{
+    assert {:ok, completed_flow} =
+             OperatorReadStore.get_run_flow(%GetRunFlow{
                workspace_context: fixture.workspace_context,
                run_id: run.id,
                limit: 10
              })
 
-    assert [%{status: :ok}] = completed_compact.attempts
-    assert completed_compact.attempt_counts.total == 1
-    assert completed_compact.attempt_counts.completed == 1
-    assert completed_compact.attempt_counts.succeeded == 1
-    assert completed_compact.attempt_counts.skipped == 0
-    assert completed_compact.attempt_counts.planned == 0
-    assert completed_compact.attempt_counts.running == 0
+    assert [%{status: :ok}] = completed_flow.observed
+    assert completed_flow.header.counts.total == 1
+    assert completed_flow.header.counts.completed == 1
+    assert completed_flow.header.counts.succeeded == 1
+    assert completed_flow.header.counts.skipped == 0
+    assert completed_flow.header.counts.planned == 0
+    assert completed_flow.header.counts.running == 0
 
     assert {:ok, target_runs} =
              OperatorReadStore.page_target_runs(%PageTargetRuns{
@@ -9981,6 +10114,21 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
 
     assert {:ok, running} = BackfillStore.transition_window(running_command)
     assert running.status == :running
+
+    assert {:ok, choices} =
+             OperatorReadStore.list_run_windows(%ListRunWindows{
+               workspace_context: fixture.workspace_context,
+               run_id: run.id,
+               limit: 10
+             })
+
+    assert [%{run_id: choice_run_id, window_start_at: start_at, window_end_at: end_at}] =
+             choices.items
+
+    assert choice_run_id == run.id
+    assert start_at == claimed.window_start
+    assert end_at == claimed.window_end
+    refute choices.overflow?
 
     SQL.query!(
       Repo,

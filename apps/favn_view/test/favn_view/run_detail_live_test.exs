@@ -1,285 +1,388 @@
 defmodule FavnView.RunDetailLiveTest do
   use ExUnit.Case, async: false
 
+  alias FavnOrchestrator.OperatorRunView.Asset
+  alias FavnOrchestrator.OperatorRunView.Flow
+  alias FavnOrchestrator.OperatorRunView.Header
+  alias FavnOrchestrator.Persistence.Results.RunWindowChoice
+  alias FavnOrchestrator.Persistence.Results.RunWindowChoices
   alias FavnView.Auth.Scope
   alias FavnView.RunDetailLive
 
   setup do
-    previous = Application.get_env(:favn_view, :operator_run_activity_fun)
-    previous_subscribe = Application.get_env(:favn_view, :run_subscribe_fun)
-    previous_stream = Application.get_env(:favn_view, :run_stream_events_fun)
-    Application.put_env(:favn_view, :run_subscribe_fun, fn _context, _run_id -> :ok end)
+    keys = [
+      :operator_run_flow_fun,
+      :operator_run_events_fun,
+      :operator_run_windows_fun,
+      :run_subscribe_fun
+    ]
 
-    Application.put_env(:favn_view, :run_stream_events_fun, fn _context, _run_id, _opts ->
-      {:ok, []}
+    previous = Map.new(keys, &{&1, Application.get_env(:favn_view, &1)})
+
+    Application.put_env(:favn_view, :run_subscribe_fun, fn _context, run_id ->
+      send(self(), {:subscribed, run_id})
+      :ok
     end)
 
-    on_exit(fn ->
-      restore_env(:operator_run_activity_fun, previous)
-      restore_env(:run_subscribe_fun, previous_subscribe)
-      restore_env(:run_stream_events_fun, previous_stream)
-    end)
+    on_exit(fn -> Enum.each(previous, fn {key, value} -> restore_env(key, value) end) end)
   end
 
-  test "retries a committed run while its operator projection is unavailable" do
-    Application.put_env(:favn_view, :operator_run_activity_fun, fn
-      :operator_context, "run-committed", _opts -> {:error, :not_found}
+  test "subscribes to only the selected run before issuing the exact Flow read" do
+    caller = self()
+
+    Application.put_env(:favn_view, :operator_run_flow_fun, fn :operator_context, "run-one" ->
+      send(caller, :flow_read)
+      {:ok, %{kind: :run, detail: flow("run-one", :running)}}
     end)
 
-    socket = %Phoenix.LiveView.Socket{
-      transport_pid: self(),
-      assigns: %{
-        __changed__: %{},
-        current_scope: oslo_scope()
-      }
-    }
+    assert {:ok, mounted} =
+             RunDetailLive.mount(%{"run_id" => "run-one"}, %{}, connected_socket())
 
-    assert {:ok, mounted} = RunDetailLive.mount(%{"run_id" => "run-committed"}, %{}, socket)
+    assert_receive {:subscribed, "run-one"}
+    assert_receive :flow_read
+    assert mounted.assigns.run.found?
+    assert mounted.assigns.run.total_asset_attempts == 2
+    assert Enum.map(mounted.assigns.run.assets, & &1.asset_ref) == ["crm.orders", "crm.total"]
+    assert MapSet.equal?(mounted.assigns.run_event_subscriptions, MapSet.new(["run-one"]))
+    assert is_reference(mounted.assigns.fallback_poll_ref)
+  end
+
+  test "does not issue a read during disconnected rendering" do
+    caller = self()
+
+    Application.put_env(:favn_view, :operator_run_flow_fun, fn _context, _run_id ->
+      send(caller, :unexpected_read)
+      {:ok, %{kind: :run, detail: flow("run-one", :ok)}}
+    end)
+
+    assert {:ok, mounted} =
+             RunDetailLive.mount(%{"run_id" => "run-one"}, %{}, disconnected_socket())
+
+    refute_receive :unexpected_read
     assert mounted.assigns.run.initializing?
-    assert mounted.assigns.detail_load_attempts_remaining == 10
-    assert is_reference(mounted.assigns.fallback_poll_ref)
-
-    assert {:noreply, retried} =
-             RunDetailLive.handle_info({:poll_run, mounted.assigns.fallback_poll_ref}, mounted)
-
-    assert retried.assigns.run.initializing?
-    assert retried.assigns.detail_load_attempts_remaining == 9
-    assert is_reference(retried.assigns.fallback_poll_ref)
   end
 
-  test "keeps a durable queued submission visible and polling" do
-    now = DateTime.utc_now()
+  test "ignores unrelated persistence publications and run events" do
+    caller = self()
 
-    Application.put_env(:favn_view, :operator_run_activity_fun, fn
-      :operator_context, "run-queued", _opts ->
-        {:ok,
-         %{
-           kind: :submission,
-           submission: %{
-             run_id: "run-queued",
-             status: :queued,
-             status_label: "Queued",
-             status_tone: :info,
-             active?: true,
-             target_kind: "pipeline",
-             target_id: "crm_Reference",
-             attempt: 0,
-             enqueued_at: now,
-             updated_at: now,
-             terminal_at: nil,
-             failure: nil
+    Application.put_env(:favn_view, :operator_run_flow_fun, fn _context, run_id ->
+      send(caller, :flow_read)
+      {:ok, %{kind: :run, detail: flow(run_id, :running)}}
+    end)
+
+    assert {:ok, mounted} =
+             RunDetailLive.mount(%{"run_id" => "run-one"}, %{}, connected_socket())
+
+    assert_receive :flow_read
+    assert {:noreply, unchanged} = RunDetailLive.handle_info(:favn_persistence_published, mounted)
+
+    assert {:noreply, unrelated} =
+             RunDetailLive.handle_info(
+               {:favn_run_event, %{run_id: "run-two", sequence: 99}},
+               unchanged
+             )
+
+    refute_receive :flow_read
+    assert is_nil(unrelated.assigns.refresh_timer_ref)
+  end
+
+  test "coalesces a burst of selected-run events into one refresh" do
+    caller = self()
+
+    Application.put_env(:favn_view, :operator_run_flow_fun, fn _context, run_id ->
+      send(caller, :flow_read)
+      {:ok, %{kind: :run, detail: flow(run_id, :running)}}
+    end)
+
+    assert {:ok, mounted} =
+             RunDetailLive.mount(%{"run_id" => "run-one"}, %{}, connected_socket())
+
+    assert_receive :flow_read
+    fallback_ref = mounted.assigns.fallback_poll_ref
+
+    {:noreply, first} =
+      RunDetailLive.handle_info(
+        {:favn_run_event, %{run_id: "run-one", sequence: 3}},
+        mounted
+      )
+
+    {:noreply, second} =
+      RunDetailLive.handle_info(
+        {:favn_run_event, %{run_id: "run-one", sequence: 4}},
+        first
+      )
+
+    assert is_reference(first.assigns.refresh_timer_ref)
+    assert is_nil(first.assigns.fallback_poll_ref)
+    assert second.assigns.refresh_timer_ref == first.assigns.refresh_timer_ref
+    assert second.assigns.pending_run_event_sequences == %{"run-one" => 4}
+
+    assert {:noreply, unchanged} =
+             RunDetailLive.handle_info({:poll_run, fallback_ref}, second)
+
+    refute_receive :flow_read
+    assert unchanged.assigns.refresh_timer_ref == second.assigns.refresh_timer_ref
+  end
+
+  test "keeps the last successful Flow when a live refresh fails" do
+    Application.put_env(:favn_view, :operator_run_flow_fun, fn _context, run_id ->
+      {:ok, %{kind: :run, detail: flow(run_id, :running)}}
+    end)
+
+    assert {:ok, mounted} =
+             RunDetailLive.mount(%{"run_id" => "run-one"}, %{}, connected_socket())
+
+    Application.put_env(:favn_view, :operator_run_flow_fun, fn _context, _run_id ->
+      {:error, :unavailable}
+    end)
+
+    assert {:noreply, refreshed} =
+             RunDetailLive.handle_info(
+               {:poll_run, mounted.assigns.fallback_poll_ref},
+               mounted
+             )
+
+    assert refreshed.assigns.run.found?
+    assert length(refreshed.assigns.run.assets) == 2
+    assert refreshed.assigns.run.refresh_error == "Run could not be loaded"
+  end
+
+  test "loads bounded events only after switching to Events" do
+    Application.put_env(:favn_view, :operator_run_flow_fun, fn _context, run_id ->
+      {:ok, %{kind: :run, detail: flow(run_id, :ok)}}
+    end)
+
+    Application.put_env(:favn_view, :operator_run_events_fun, fn _context, run_id ->
+      {:ok,
+       %{
+         kind: :run,
+         header: header(run_id, :ok),
+         events: [
+           %{
+             sequence: 2,
+             occurred_at: ~U[2026-08-23 10:00:02Z],
+             event_type: :step_finished,
+             status: :ok,
+             asset_ref: "crm.orders",
+             summary: "Wrote 42 rows"
            }
-         }}
+         ]
+       }}
     end)
 
-    socket = %Phoenix.LiveView.Socket{
-      transport_pid: self(),
-      assigns: %{
-        __changed__: %{},
-        current_scope: oslo_scope()
-      }
-    }
+    assert {:ok, mounted} =
+             RunDetailLive.mount(%{"run_id" => "run-one"}, %{}, connected_socket())
 
-    assert {:ok, mounted} = RunDetailLive.mount(%{"run_id" => "run-queued"}, %{}, socket)
+    assert {:noreply, events_socket} =
+             RunDetailLive.handle_params(%{"view" => "events"}, "", mounted)
+
+    assert events_socket.assigns.active_mode == :events
+    assert [%{sequence: 2, asset: "crm.orders"}] = events_socket.assigns.run.events
+    assert events_socket.assigns.run.assets == []
+  end
+
+  test "direct Events connection never loads Flow" do
+    caller = self()
+
+    Application.put_env(:favn_view, :operator_run_flow_fun, fn _context, _run_id ->
+      send(caller, :unexpected_flow_read)
+      {:error, :unexpected_flow_read}
+    end)
+
+    Application.put_env(:favn_view, :operator_run_events_fun, fn _context, run_id ->
+      send(caller, :events_read)
+      {:ok, %{kind: :run, header: header(run_id, :ok), events: []}}
+    end)
+
+    assert {:ok, mounted} =
+             RunDetailLive.mount(
+               %{"run_id" => "run-one", "view" => "events"},
+               %{},
+               connected_socket()
+             )
+
+    assert_receive :events_read
+    refute_receive :unexpected_flow_read
+    assert mounted.assigns.active_mode == :events
+    assert mounted.assigns.run.assets == []
+  end
+
+  test "failed Events refresh retains the pending sequence and retries" do
+    Application.put_env(:favn_view, :operator_run_events_fun, fn _context, run_id ->
+      {:ok, %{kind: :run, header: header(run_id, :running), events: []}}
+    end)
+
+    assert {:ok, mounted} =
+             RunDetailLive.mount(
+               %{"run_id" => "run-one", "view" => "events"},
+               %{},
+               connected_socket()
+             )
+
+    assert {:noreply, pending} =
+             RunDetailLive.handle_info(
+               {:favn_run_event, %{run_id: "run-one", sequence: 3}},
+               mounted
+             )
+
+    first_timer = pending.assigns.refresh_timer_ref
+
+    Application.put_env(:favn_view, :operator_run_events_fun, fn _context, _run_id ->
+      {:error, :unavailable}
+    end)
+
+    assert {:noreply, retrying} =
+             RunDetailLive.handle_info({:refresh_run, first_timer}, pending)
+
+    assert retrying.assigns.pending_run_event_sequences == %{"run-one" => 3}
+    assert is_reference(retrying.assigns.refresh_timer_ref)
+    refute retrying.assigns.refresh_timer_ref == first_timer
+    assert retrying.assigns.run.found?
+    assert retrying.assigns.run.refresh_error == "Run could not be loaded"
+  end
+
+  test "loads window choices only on request and restricts navigation to those choices" do
+    Application.put_env(:favn_view, :operator_run_flow_fun, fn _context, run_id ->
+      {:ok, %{kind: :run, detail: flow(run_id, :ok)}}
+    end)
+
+    Application.put_env(:favn_view, :operator_run_windows_fun, fn _context, "run-one" ->
+      {:ok,
+       %RunWindowChoices{
+         overflow?: false,
+         items: [
+           %RunWindowChoice{
+             run_id: "run-one",
+             window_start_at: ~U[2026-07-01 00:00:00Z],
+             window_end_at: ~U[2026-08-01 00:00:00Z]
+           },
+           %RunWindowChoice{
+             run_id: "run-two",
+             window_start_at: ~U[2026-08-01 00:00:00Z],
+             window_end_at: ~U[2026-09-01 00:00:00Z]
+           }
+         ]
+       }}
+    end)
+
+    assert {:ok, mounted} =
+             RunDetailLive.mount(%{"run_id" => "run-one"}, %{}, connected_socket())
+
+    assert is_nil(mounted.assigns.windows)
+    assert {:noreply, loaded} = RunDetailLive.handle_event("load_windows", %{}, mounted)
+    assert Enum.map(loaded.assigns.windows, & &1.run_id) == ["run-one", "run-two"]
+
+    assert {:noreply, rejected} =
+             RunDetailLive.handle_event("switch_window", %{"run_id" => "run-other"}, loaded)
+
+    assert rejected.assigns.flash["error"] == "That window run is not available"
+
+    assert {:noreply, navigating} =
+             RunDetailLive.handle_event("switch_window", %{"run_id" => "run-two"}, loaded)
+
+    assert {:live, :redirect, %{to: "/runs/run-two"}} = navigating.redirected
+  end
+
+  test "keeps a durable pre-admission submission visible" do
+    Application.put_env(:favn_view, :operator_run_flow_fun, fn _context, "run-queued" ->
+      now = ~U[2026-08-23 10:00:00Z]
+
+      {:ok,
+       %{
+         kind: :submission,
+         submission: %{
+           run_id: "run-queued",
+           status: :queued,
+           status_label: "Queued",
+           status_tone: :info,
+           active?: true,
+           target_kind: "pipeline",
+           target_id: "crm_reference",
+           attempt: 0,
+           enqueued_at: now,
+           updated_at: now,
+           terminal_at: nil,
+           failure: nil
+         }
+       }}
+    end)
+
+    assert {:ok, mounted} =
+             RunDetailLive.mount(%{"run_id" => "run-queued"}, %{}, connected_socket())
+
     assert mounted.assigns.run.submission?
-    assert mounted.assigns.run.raw_status == :queued
-    refute mounted.assigns.run.initializing?
-    assert mounted.assigns.detail_load_attempts_remaining == 0
-    assert is_reference(mounted.assigns.fallback_poll_ref)
-
-    assert {:noreply, selected} =
-             RunDetailLive.handle_params(%{"attempt" => "attempt-1"}, "", mounted)
-
-    assert selected.assigns.selected_attempt_id == "attempt-1"
-
-    assert {:noreply, refreshed} = RunDetailLive.handle_info(:refresh_run, selected)
-    assert refreshed.assigns.selected_attempt_id == "attempt-1"
+    assert mounted.assigns.run.status == "Queued"
   end
 
-  test "uses exact child outcomes and only requested windows in the header" do
-    started_at = ~U[2026-07-01 08:00:00Z]
-    finished_at = ~U[2026-07-01 08:05:00Z]
-    may = window("month:Europe/Oslo:2026-05", ~U[2026-04-30 22:00:00Z])
-    june = window("month:Europe/Oslo:2026-06", ~U[2026-05-31 22:00:00Z])
-    july = window("month:Europe/Oslo:2026-07", ~U[2026-06-30 22:00:00Z])
-    duplicate_july = %{july | key: "planned:month:Europe/Oslo:2026-07"}
-
-    detail = %{
-      summary: %{
-        id: "root",
-        status: :ok,
-        root_status: :ok,
-        active?: false,
-        trigger_type: :backfill,
-        target_assets: [],
-        started_at: started_at,
-        finished_at: finished_at,
-        duration_ms: 300_000,
-        total_windows: 3,
-        completed_windows: 3,
-        failed_windows: 0,
-        total_asset_attempts: 270,
-        completed_asset_attempts: 270,
-        succeeded_asset_attempts: 43,
-        skipped_asset_attempts: 227,
-        failed_asset_attempts: 0,
-        running_asset_attempts: 0,
-        queued_asset_attempts: 0,
-        planned_asset_attempts: 0,
-        progress: nil
-      },
-      root_run: %{
-        id: "root",
-        status: :ok,
-        submit_kind: :backfill_pipeline,
-        manifest_version_id: "manifest",
-        event_seq: 2
-      },
-      child_runs: [
-        %{
-          id: "child-july",
-          status: :ok,
-          window: nil,
-          started_at: started_at,
-          finished_at: finished_at,
-          duration_ms: 300_000,
-          event_seq: 4,
-          asset_counts: asset_counts(0, 90)
+  defp flow(run_id, status) do
+    %Flow{
+      header: header(run_id, status),
+      overflow?: false,
+      assets: [
+        %Asset{
+          id: "step-orders",
+          run_id: run_id,
+          name: "Orders",
+          asset_ref: "crm.orders",
+          state: status,
+          detail?: true,
+          started_at: ~U[2026-08-23 10:00:00Z],
+          finished_at: if(status == :running, do: nil, else: ~U[2026-08-23 10:00:04Z])
         },
-        %{
-          id: "child-may",
-          status: :ok,
-          window: nil,
-          started_at: started_at,
-          finished_at: finished_at,
-          duration_ms: 300_000,
-          event_seq: 4,
-          asset_counts: asset_counts(43, 47)
-        },
-        %{
-          id: "child-june",
-          status: :ok,
-          window: nil,
-          started_at: started_at,
-          finished_at: finished_at,
-          duration_ms: 300_000,
-          event_seq: 4,
-          asset_counts: asset_counts(0, 90)
+        %Asset{
+          id: "planned-total",
+          run_id: run_id,
+          name: "Total",
+          asset_ref: "crm.total",
+          state: :planned,
+          detail?: false,
+          started_at: nil,
+          finished_at: nil
         }
-      ],
-      windows: [may, june, july, duplicate_july],
-      requested_windows: [
-        may
-        |> Map.put(:child_run_id, "child-may")
-        |> Map.put(:status, :succeeded),
-        june
-        |> Map.put(:child_run_id, "child-june")
-        |> Map.put(:status, :succeeded),
-        july
-        |> Map.put(:child_run_id, "child-july")
-        |> Map.put(:status, :succeeded)
-      ],
-      has_non_windowed_assets?: true,
-      asset_attempts: [
-        attempt("none", nil, :ok, started_at, finished_at),
-        attempt("june", june, :ok, started_at, finished_at),
-        attempt("july", july, :skipped_fresh, started_at, finished_at)
-      ],
-      backfill_failures: [],
-      backfill_failure_count: 0,
-      root_event_sequence: 2
+      ]
     }
+  end
 
-    put_run_detail(detail)
+  defp header(run_id, status) do
+    active? = status in [:pending, :running]
 
-    socket = %Phoenix.LiveView.Socket{
-      transport_pid: self(),
-      assigns: %{
-        __changed__: %{},
-        current_scope: oslo_scope()
+    %Header{
+      run_id: run_id,
+      root_run_id: run_id,
+      status: status,
+      active?: active?,
+      cancellable?: active?,
+      retry_remaining?: false,
+      trigger_type: :schedule,
+      event_sequence: 2,
+      started_at: ~U[2026-08-23 10:00:00Z],
+      updated_at: ~U[2026-08-23 10:00:04Z],
+      finished_at: if(active?, do: nil, else: ~U[2026-08-23 10:00:04Z]),
+      target_id: "crm.orders",
+      target_label: "crm.orders",
+      counts: %{
+        total: 2,
+        completed: if(active?, do: 0, else: 1),
+        succeeded: if(active?, do: 0, else: 1),
+        skipped: 0,
+        failed: 0,
+        running: if(active?, do: 1, else: 0),
+        queued: 0,
+        planned: 1
       }
     }
-
-    assert {:ok, mounted} = RunDetailLive.mount(%{"run_id" => "root"}, %{}, socket)
-
-    assert mounted.assigns.run.subtitle == "3 windows · May 2026 – Jul 2026"
-
-    assert mounted.assigns.run.window == "3 windows · May 2026 – Jul 2026"
-
-    assert Enum.map(mounted.assigns.run.child_runs, & &1.window_label) == [
-             "May 2026",
-             "Jun 2026",
-             "Jul 2026"
-           ]
-
-    assert [
-             %{assets: "90 assets", outcome: "43 ran · 47 already fresh"},
-             %{assets: "90 assets", outcome: "90 already fresh"},
-             %{assets: "90 assets", outcome: "90 already fresh"}
-           ] = mounted.assigns.run.child_runs
-
-    truncated_detail =
-      detail
-      |> put_in([:summary, :total_windows], 1_000)
-      |> Map.put(:requested_windows_truncated?, true)
-
-    put_run_detail(truncated_detail)
-
-    assert {:noreply, refreshed} = RunDetailLive.handle_info(:refresh_run, mounted)
-    assert refreshed.assigns.run.subtitle == "1000 windows"
-    assert refreshed.assigns.run.window == "1000 windows"
   end
 
-  defp put_run_detail(detail) do
-    Application.put_env(:favn_view, :operator_run_activity_fun, fn
-      :operator_context, "root", _opts -> {:ok, %{kind: :run, detail: detail}}
-    end)
-  end
-
-  defp asset_counts(succeeded, skipped) do
-    %{
-      total: succeeded + skipped,
-      completed: succeeded + skipped,
-      succeeded: succeeded,
-      skipped: skipped,
-      failed: 0,
-      running: 0,
-      queued: 0,
-      planned: 0
+  defp connected_socket do
+    %Phoenix.LiveView.Socket{
+      transport_pid: self(),
+      assigns: %{__changed__: %{}, current_scope: oslo_scope(), flash: %{}}
     }
   end
 
-  defp window(key, start_at) do
-    %{
-      key: key,
-      label: nil,
-      kind: :month,
-      start_at: start_at,
-      end_at: DateTime.add(start_at, 30, :day),
-      timezone: "Europe/Oslo"
-    }
-  end
-
-  defp attempt(id, window, status, started_at, finished_at) do
-    %{
-      id: id,
-      asset_step_id: id,
-      root_execution_group_id: "root",
-      child_run_id: "child-july",
-      run_id: "child-july",
-      status: status,
-      asset_key: "Asset:#{id}",
-      asset_ref: "Asset:#{id}",
-      stage: 0,
-      execution_pool: nil,
-      queue_reason: nil,
-      attempt_number: 1,
-      started_at: started_at,
-      finished_at: finished_at,
-      duration_ms: 300_000,
-      error_summary: nil,
-      output_metadata: nil,
-      window: window
+  defp disconnected_socket do
+    %Phoenix.LiveView.Socket{
+      assigns: %{__changed__: %{}, current_scope: oslo_scope(), flash: %{}}
     }
   end
 

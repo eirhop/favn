@@ -22,15 +22,22 @@ defmodule FavnStoragePostgres.StorageV2.PerformanceContractTest do
   alias FavnOrchestrator.Persistence.Queries.PageTargetRuns
   alias FavnOrchestrator.Persistence.Queries.PageRuns
   alias FavnOrchestrator.Persistence.Queries.GetRun
+  alias FavnOrchestrator.Persistence.Queries.GetRunFlow
+  alias FavnOrchestrator.Persistence.Queries.ListRunnerCapacityDemands
   alias FavnOrchestrator.Persistence.WorkspaceContext
+  alias FavnOrchestrator.Persistence.Queries.PageSchedules
+  alias FavnOrchestrator.OperatorRunView
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.TargetStatus
+  alias FavnOrchestrator.Identity
   alias FavnStoragePostgres.Backfills.Store, as: BackfillStore
   alias FavnStoragePostgres.Config
   alias FavnStoragePostgres.OperatorReads.Store, as: OperatorReadStore
   alias FavnStoragePostgres.Registry.Store, as: RegistryStore
   alias FavnStoragePostgres.Repo
+  alias FavnStoragePostgres.RunnerTasks.Store, as: RunnerTaskStore
   alias FavnStoragePostgres.Runs.Store, as: RunStore
+  alias FavnStoragePostgres.Scheduler.Store, as: SchedulerStore
   alias FavnStoragePostgres.StorageV2.Migrations
 
   setup_all do
@@ -200,6 +207,102 @@ defmodule FavnStoragePostgres.StorageV2.PerformanceContractTest do
       )
 
     assert "runs_group_children_idx" in index_names(plan)
+  end
+
+  test "exact run Flow caps a 1,001-asset plan without reading sibling runs", fixture do
+    run = create_run!(fixture)
+    sibling = create_child_target_run!(fixture, run)
+    insert_flow_plan!(fixture, run, 1_001)
+    insert_flow_plan!(fixture, sibling, 1_001)
+
+    {result, queries} =
+      capture_queries(fn ->
+        OperatorReadStore.get_run_flow(%GetRunFlow{
+          workspace_context: fixture.workspace_context,
+          run_id: run.id,
+          limit: 1_000
+        })
+      end)
+
+    assert {:ok, snapshot} = result
+    assert length(snapshot.planned) == 1_000
+    assert snapshot.observed == []
+    assert snapshot.header.counts.total == 1_001
+    assert snapshot.overflow?
+    assert Enum.all?(snapshot.planned, &(&1.run_id == run.id))
+    assert length(queries) <= 7
+
+    public_flow = OperatorRunView.from_snapshot(snapshot)
+    assert length(public_flow.assets) == 1_000
+    assert public_flow.overflow?
+    assert :erlang.external_size(public_flow) < 1_048_576
+
+    operator_context = performance_operator_context!(fixture)
+
+    {subscription_result, subscription_queries} =
+      capture_queries(fn ->
+        FavnOrchestrator.authorize_run_subscription(operator_context, run.id)
+      end)
+
+    assert {:ok, %{workspace_id: workspace_id, run_id: selected_run_id}} = subscription_result
+    assert workspace_id == fixture.workspace_id
+    assert selected_run_id == run.id
+
+    refute Enum.any?(subscription_queries, fn {sql, _params} ->
+             String.contains?(sql, "run_plans") or String.contains?(sql, "manifest_versions") or
+               String.contains?(sql, "snapshot")
+           end)
+
+    {facade_result, facade_queries} =
+      capture_queries(fn -> FavnOrchestrator.get_operator_run_flow(operator_context, run.id) end)
+
+    assert {:ok, %{kind: :run, detail: %{assets: facade_assets}}} = facade_result
+    assert length(facade_assets) == 1_000
+    assert length(subscription_queries) + length(facade_queries) <= 12
+
+    planned_query = query_containing!(queries, "jsonb_array_elements")
+
+    {:ok, plan} =
+      Repo.transaction(fn ->
+        SQL.query!(Repo, "SET LOCAL enable_seqscan = off", [])
+        explain_analyze_captured(planned_query)
+      end)
+
+    assert Enum.any?(index_names(plan), &String.contains?(&1, "run_plans"))
+    assert buffer_blocks(plan) <= 5_000
+    assert execution_time_ms(plan) < 1_000
+
+    control_probe_ms(fixture)
+    idle_probe_ms = concurrent_control_probe_ms(fixture, 20)
+
+    {elapsed_ms, {concurrent_results, probe_ms}, query_metrics} =
+      capture_query_metrics(fn ->
+        tasks =
+          Enum.map(1..20, fn _viewer ->
+            Task.async(fn ->
+              with {:ok, %{kind: :run, detail: selected_flow}} <-
+                     FavnOrchestrator.get_operator_run_flow(operator_context, run.id) do
+                {:ok, selected_flow}
+              end
+            end)
+          end)
+
+        probes =
+          Enum.map(1..20, fn _probe ->
+            Task.async(fn -> control_probe_ms(fixture) end)
+          end)
+
+        results = Enum.map(tasks, &Task.await(&1, 2_000))
+        probe_ms = Enum.map(probes, &Task.await(&1, 2_000))
+        {results, probe_ms}
+      end)
+
+    assert Enum.all?(concurrent_results, &match?({:ok, %{overflow?: true}}, &1))
+    assert elapsed_ms < 2_000
+    assert percentile(probe_ms, 95) < 100
+    assert percentile(probe_ms, 95) <= percentile(idle_probe_ms, 95) * 2
+    assert percentile(Enum.map(query_metrics, & &1.query_ms), 95) < 50
+    assert percentile(Enum.map(query_metrics, & &1.queue_ms), 95) < 100
   end
 
   test "logical target history pages child-only groups by root submission order", fixture do
@@ -559,6 +662,7 @@ defmodule FavnStoragePostgres.StorageV2.PerformanceContractTest do
     %{
       workspace_id: workspace_id,
       workspace_context: workspace_context,
+      platform_context: platform_context,
       deployment_id: deployment_id,
       version: version,
       target_id: target_id
@@ -692,6 +796,40 @@ defmodule FavnStoragePostgres.StorageV2.PerformanceContractTest do
       WHERE template.workspace_id = $1 AND template.run_id = $2
       """,
       [fixture.workspace_id, root.id, prefix, count]
+    )
+  end
+
+  defp insert_flow_plan!(fixture, run, count) do
+    SQL.query!(
+      Repo,
+      """
+      INSERT INTO favn_control.run_plans
+        (workspace_id, run_id, manifest_version_id, plan_version, plan_hash, plan, inserted_at)
+      SELECT $1, $2, $3, 1, decode(repeat('00', 32), 'hex'),
+             jsonb_build_object(
+               'nodes',
+               jsonb_agg(
+                 jsonb_build_object(
+                   'node_key', jsonb_build_object(
+                     'ref', jsonb_build_object(
+                       'module', 'Elixir.Performance.Asset' || lpad(series::text, 4, '0'),
+                       'name', 'asset'
+                     ),
+                     'identity', NULL
+                   ),
+                   'ref', jsonb_build_object(
+                     'module', 'Elixir.Performance.Asset' || lpad(series::text, 4, '0'),
+                     'name', 'asset'
+                   ),
+                   'window', NULL
+                 )
+                 ORDER BY series
+               )
+             ),
+             clock_timestamp()
+      FROM generate_series(1, $4) AS series
+      """,
+      [fixture.workspace_id, run.id, fixture.version.manifest_version_id, count]
     )
   end
 
@@ -838,6 +976,78 @@ defmodule FavnStoragePostgres.StorageV2.PerformanceContractTest do
     end
   end
 
+  defp capture_query_metrics(function) do
+    handler_id = {__MODULE__, self(), make_ref()}
+
+    :ok =
+      :telemetry.attach(
+        handler_id,
+        [:favn_storage_postgres, :repo, :query],
+        fn _event, measurements, _metadata, pid ->
+          send(pid, {
+            :captured_query_metric,
+            duration_ms(Map.get(measurements, :query_time, 0)),
+            duration_ms(Map.get(measurements, :queue_time, 0))
+          })
+        end,
+        self()
+      )
+
+    try do
+      started_at = System.monotonic_time()
+      result = function.()
+      elapsed_ms = duration_ms(System.monotonic_time() - started_at)
+      {elapsed_ms, result, collect_query_metrics([])}
+    after
+      :telemetry.detach(handler_id)
+    end
+  end
+
+  defp collect_query_metrics(metrics) do
+    receive do
+      {:captured_query_metric, query_ms, queue_ms} ->
+        collect_query_metrics([%{query_ms: query_ms, queue_ms: queue_ms} | metrics])
+    after
+      10 -> metrics
+    end
+  end
+
+  defp timed_ms(function) do
+    started_at = System.monotonic_time()
+    function.()
+    duration_ms(System.monotonic_time() - started_at)
+  end
+
+  defp concurrent_control_probe_ms(fixture, count) do
+    1..count
+    |> Enum.map(fn _probe -> Task.async(fn -> control_probe_ms(fixture) end) end)
+    |> Enum.map(&Task.await(&1, 2_000))
+  end
+
+  defp control_probe_ms(fixture) do
+    timed_ms(fn ->
+      assert {:ok, _page} =
+               SchedulerStore.page_schedules(%PageSchedules{
+                 workspace_context: fixture.workspace_context,
+                 limit: 1
+               })
+
+      assert {:ok, _demands} =
+               RunnerTaskStore.list_demands(%ListRunnerCapacityDemands{
+                 platform_context: fixture.platform_context,
+                 limit: 1
+               })
+    end)
+  end
+
+  defp duration_ms(native_time),
+    do: System.convert_time_unit(native_time, :native, :microsecond) / 1_000
+
+  defp percentile(values, percentile) do
+    index = max(ceil(length(values) * percentile / 100) - 1, 0)
+    values |> Enum.sort() |> Enum.at(index)
+  end
+
   defp collect_captured_queries(queries) do
     receive do
       {:captured_storage_query, query, params} ->
@@ -856,6 +1066,13 @@ defmodule FavnStoragePostgres.StorageV2.PerformanceContractTest do
   end
 
   defp explain_captured({sql, params}), do: explain(sql, params)
+
+  defp explain_analyze_captured({sql, params}) do
+    %{rows: [[plan]]} =
+      SQL.query!(Repo, "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " <> sql, params, timeout: 1_000)
+
+    plan
+  end
 
   defp collect_query_count(count) do
     receive do
@@ -883,6 +1100,58 @@ defmodule FavnStoragePostgres.StorageV2.PerformanceContractTest do
   end
 
   defp index_names(_value), do: []
+
+  defp buffer_blocks(value) when is_list(value), do: Enum.sum(Enum.map(value, &buffer_blocks/1))
+
+  defp buffer_blocks(value) when is_map(value) do
+    own =
+      value
+      |> Map.take([
+        "Shared Hit Blocks",
+        "Shared Read Blocks",
+        "Local Hit Blocks",
+        "Local Read Blocks"
+      ])
+      |> Map.values()
+      |> Enum.filter(&is_number/1)
+      |> Enum.sum()
+
+    own + (value |> Map.values() |> Enum.map(&buffer_blocks/1) |> Enum.sum())
+  end
+
+  defp buffer_blocks(_value), do: 0
+
+  defp execution_time_ms([%{"Execution Time" => value} | _rest]) when is_number(value), do: value
+
+  defp performance_operator_context!(fixture) do
+    suffix = random_id()
+    username = "performance-viewer-#{suffix}"
+    password = "performance-password-#{suffix}"
+
+    {:ok, actor} =
+      Identity.create_actor(
+        fixture.workspace_context,
+        username,
+        password,
+        "Performance Viewer",
+        [:viewer]
+      )
+
+    {:ok, login_context} =
+      WorkspaceContext.new(fixture.workspace_id, "performance-login", [:customer_reader])
+
+    {:ok, authenticated} = Identity.authenticate_password(login_context, username, password)
+
+    {:ok, session} =
+      Identity.issue_session(login_context, actor.id,
+        expected_credential_version: authenticated.credential_version
+      )
+
+    {:ok, operator_context} =
+      FavnOrchestrator.operator_context(fixture.workspace_id, actor, session)
+
+    operator_context
+  end
 
   defp manifest_version(manifest_version_id) do
     manifest = %Manifest{
