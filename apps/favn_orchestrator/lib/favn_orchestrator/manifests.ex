@@ -11,6 +11,7 @@ defmodule FavnOrchestrator.Manifests do
   alias FavnOrchestrator.ManifestStore
   alias FavnOrchestrator.Lifecycle
   alias FavnOrchestrator.ManifestActivationDiagnostics
+  alias FavnOrchestrator.ManifestActivationLease
   alias FavnOrchestrator.ManifestDeploymentReservation
   alias FavnOrchestrator.ExecutionPoolPolicy
   alias FavnOrchestrator.ConnectionCircuitPolicy
@@ -67,15 +68,23 @@ defmodule FavnOrchestrator.Manifests do
               {:ok, runtime}
 
             {:new, idempotency} ->
+              operation_id =
+                Keyword.get(opts, :activation_operation_id) ||
+                  Keyword.get(opts, :deployment_id) || manifest_version_id
+
               ManifestDeploymentReservation.run(context, idempotency, fn ->
-                deploy_new_manifest(
-                  platform_context,
-                  context,
-                  manifest_version_id,
-                  selection,
-                  Keyword.put(opts, :idempotency, idempotency),
-                  3
-                )
+                ManifestActivationLease.run(context, operation_id, fn activation_lease ->
+                  deploy_new_manifest(
+                    platform_context,
+                    context,
+                    manifest_version_id,
+                    selection,
+                    opts
+                    |> Keyword.put(:idempotency, idempotency)
+                    |> Keyword.put(:activation_lease, activation_lease),
+                    3
+                  )
+                end)
               end)
           end
         else
@@ -113,7 +122,12 @@ defmodule FavnOrchestrator.Manifests do
            ConnectionCircuitPolicy.put(deployment_configuration, version.manifest),
          {:ok, planner} <- deployment_selection(version, selection),
          {:ok, target_compatibilities} <-
-           TargetCompatibilityPlanner.plan(platform_context, context, version, planner) do
+           TargetCompatibilityPlanner.plan(platform_context, context, version, planner,
+             operation_id:
+               Keyword.get(opts, :activation_operation_id) ||
+                 Keyword.get(opts, :deployment_id) || manifest_version_id,
+             progress: Keyword.get(opts, :activation_progress)
+           ) do
       diagnostics = ManifestActivationDiagnostics.from_compatibilities(target_compatibilities)
 
       capacity_scopes =
@@ -129,6 +143,7 @@ defmodule FavnOrchestrator.Manifests do
           planner,
           opts
           |> Keyword.delete(:execution_pool_policy)
+          |> Keyword.delete(:activation_progress)
           |> Keyword.put(:expected_active_deployment_id, expected_active_deployment_id)
           |> Keyword.put(:configuration, deployment_configuration)
           |> Keyword.put(:capacity_scopes, capacity_scopes)

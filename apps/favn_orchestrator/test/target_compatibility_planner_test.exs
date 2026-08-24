@@ -125,6 +125,34 @@ defmodule FavnOrchestrator.TargetCompatibilityPlannerTest do
     assert request.sample_limit == 0
   end
 
+  test "reports deterministic bounded inspection progress", contexts do
+    {version, asset} = persisted_version("manifest-progress")
+    put_versions([version])
+    Application.put_env(:favn_orchestrator, :compatibility_test_bindings, [])
+    Application.put_env(:favn_orchestrator, :compatibility_test_inspection, inspection(version))
+
+    selection = %DeploymentPlanner{
+      common_assets: [asset.ref],
+      common_pipelines: [],
+      workspace_assets: [],
+      workspace_pipelines: []
+    }
+
+    test_pid = self()
+
+    assert {:ok, [_decision]} =
+             TargetCompatibilityPlanner.plan(
+               contexts.platform_context,
+               contexts.workspace_context,
+               version,
+               selection,
+               progress: fn completed, total -> send(test_pid, {:progress, completed, total}) end
+             )
+
+    assert_received {:progress, 0, 1}
+    assert_received {:progress, 1, 1}
+  end
+
   test "keeps compatibility inspection inside the caller's maintenance admission", contexts do
     {version, asset} = persisted_version("manifest-maintenance-inspection")
     put_versions([version])

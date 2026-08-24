@@ -19,6 +19,11 @@ Favn's PostgreSQL 18 control-plane persistence.
   SQL execution artifacts in `execution_packages`, and their exact asset bindings
   in `manifest_execution_packages`. Publication uploads missing packages first;
   manifest registration rejects dangling or asset-mismatched references.
+- `manifest_deployment_operations` permanently binds a caller operation ID to
+  one workspace, archive digest, request fingerprint, manifest, service
+  identity, and durable activation state. Upload and activation lease tables
+  enforce distributed admission, recovery claims, and workspace activation
+  fencing; archive bytes are never stored in PostgreSQL.
 - `manifest_versions` stores non-null scalar catalogue counts and a bounded atom
   inventory, so runtime-state and run decoding do not repeatedly scan or transfer
   the full JSONB release.

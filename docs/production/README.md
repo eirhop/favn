@@ -16,6 +16,7 @@ UI completion, managed-provider evidence, and data-plane recovery.
 | Lifecycle, readiness, bounded drain | Implemented | Owning-layer tests cover policy; real signal, cancellation, and recovery drills remain target-environment evidence. |
 | Control-plane release image | Implemented | CI directly builds, scans, attests, and publishes green commit images. |
 | Customer runner and manifest releases | Implemented boundary | Customer CI and target-environment execution and upgrade/rollback drills remain. |
+| Manifest archive deployment | Deterministic build, streaming private API, durable asynchronous activation, replay, admission, and fencing implemented | Qualify ingress timeouts and the chosen direct or relay network path in the target environment. |
 | Operator UI | Security/admin baseline and HTTP browser smoke gate implemented | Complete #579's role/workspace/Entra matrix plus manual keyboard, screen-reader, visual, and target-Azure qualification. |
 | Security qualification | HTTP-boundary phase implemented | Complete #578's runner, PostgreSQL, abuse-pressure, artifact/secret, and final release-gate phases. |
 | DuckDB/DuckLake data plane | Prototype | Define and verify backup, recovery, cancellation, and failure behavior. |
@@ -58,6 +59,8 @@ service. Multi-control-plane application failover is a later topology claim.
   contract.
 - [`deployment_topology.md`](deployment_topology.md) defines artifact ownership,
   operator-owned infrastructure, startup order, and runtime limitations.
+- The public [manifest deployment guide](../../apps/favn/guides/manifest-deployment.md)
+  defines the archive, upload, replay, status, and optional relay workflow.
 - [`control_plane_image.md`](control_plane_image.md) defines the immutable OCI
   images, direct repository build, publishing, and maintainer candidate path.
 - [`postgresql_bootstrap.md`](postgresql_bootstrap.md) defines one-command

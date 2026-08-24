@@ -84,6 +84,11 @@ overlap.
 
 `Manifests`, `ExecutionPackages`, `ManifestStore`, and
 `ManifestIndexCache` own immutable publication and workspace activation.
+`ManifestDeployments` and `ManifestDeploymentDispatcher` additionally own the
+first-party archive boundary: pre-body authentication/replay/admission,
+streaming validation and bounded package registration, atomic durable
+acceptance, asynchronous fenced activation, and scoped status reads. Archive
+transport never needs a mounted Orchestrator volume.
 Manifest versions carry an arbitrary logical pool-to-release map. Publication
 and activation do not require a live runner, so the control plane remains
 ready at zero runners.

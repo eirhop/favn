@@ -8,6 +8,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
   """
 
   alias FavnOrchestrator.Auth.ServiceTokens
+  alias FavnOrchestrator.Auth.ManifestDeployerTokens
   alias FavnOrchestrator.API.ManifestPublication.Config, as: ManifestPublicationConfig
   alias FavnOrchestrator.Operator.Audit
   alias FavnOrchestrator.RunnerPools
@@ -47,6 +48,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
           http_server: map(),
           manifest_publication: keyword(),
           api_service_tokens: [ServiceTokens.token_config()],
+          manifest_deployer_tokens: [ManifestDeployerTokens.token_config()],
           workspace_ids: [String.t()],
           auth_session_ttl_seconds: pos_integer(),
           active_run_plan_max_bytes: pos_integer(),
@@ -124,6 +126,13 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
     )
 
     Application.put_env(:favn_orchestrator, :api_service_tokens, config.api_service_tokens)
+
+    Application.put_env(
+      :favn_orchestrator,
+      :manifest_deployer_tokens,
+      config.manifest_deployer_tokens
+    )
+
     Application.put_env(:favn_orchestrator, :workspace_ids, config.workspace_ids)
     Application.delete_env(:favn_orchestrator, :api_service_tokens_env)
 
@@ -179,6 +188,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
          {:ok, manifest_publication} <- manifest_publication(env),
          {:ok, runner_pools} <- runner_pools(env),
          {:ok, tokens} <- api_service_tokens(env, runner_pools),
+         {:ok, manifest_deployer_tokens} <- manifest_deployer_tokens(env, tokens),
          {:ok, workspace_ids} <- workspace_ids(env),
          {:ok, auth_session_ttl_seconds} <- auth_session_ttl_seconds(env),
          {:ok, active_run_plan_max_bytes} <- active_run_plan_max_bytes(env),
@@ -196,6 +206,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
          http_server: http_server,
          manifest_publication: ManifestPublicationConfig.to_keyword(manifest_publication),
          api_service_tokens: tokens,
+         manifest_deployer_tokens: manifest_deployer_tokens,
          workspace_ids: workspace_ids,
          auth_session_ttl_seconds: auth_session_ttl_seconds,
          active_run_plan_max_bytes: active_run_plan_max_bytes,
@@ -238,6 +249,11 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
       api_service_tokens: %{
         count: length(config.api_service_tokens),
         ids: config.api_service_tokens |> Enum.map(& &1.service_identity) |> Enum.sort(),
+        redacted: true
+      },
+      manifest_deployer_tokens: %{
+        count: length(config.manifest_deployer_tokens),
+        ids: config.manifest_deployer_tokens |> Enum.map(& &1.service_identity) |> Enum.sort(),
         redacted: true
       },
       workspaces: %{configured_count: length(config.workspace_ids)},
@@ -467,6 +483,25 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
          tokens = platform_tokens ++ Enum.reject([primary, previous], &is_nil/1),
          :ok <- ServiceTokens.validate_config(tokens) do
       {:ok, tokens}
+    end
+  end
+
+  defp manifest_deployer_tokens(env, api_tokens) do
+    with {:ok, configs} <-
+           ManifestDeployerTokens.from_env_string(
+             Map.get(env, "FAVN_ORCHESTRATOR_MANIFEST_DEPLOYER_TOKENS")
+           ),
+         false <-
+           Enum.any?(configs, fn deployer ->
+             Enum.any?(api_tokens, &(&1.token_hash == deployer.token_hash))
+           end) do
+      {:ok, configs}
+    else
+      true ->
+        {:error, {:invalid_manifest_deployer_tokens, :token_conflicts_with_api_service_token}}
+
+      {:error, _reason} = error ->
+        error
     end
   end
 
@@ -915,5 +950,9 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
   defp redact({:invalid_env, name, expected}), do: {:invalid_env, name, expected}
   defp redact({:invalid_env, name, _value, expected}), do: {:invalid_env, name, expected}
   defp redact({:runtime_config_unavailable, name}), do: {:runtime_config_unavailable, name}
+
+  defp redact({:invalid_manifest_deployer_tokens, reason}) when is_atom(reason),
+    do: {:invalid_manifest_deployer_tokens, reason}
+
   defp redact(_reason), do: :invalid_runtime_config
 end

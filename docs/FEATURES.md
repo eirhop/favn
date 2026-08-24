@@ -16,6 +16,10 @@ Favn is private pre-v1 software. PostgreSQL 18 is the only control-plane databas
   compact catalogue/planning indexes, content-addressed SQL execution packages,
   environment-resolved timezones and coverage, provenance, and desired SQL
   target descriptors.
+- Production manifest builds also produce one deterministic `.tar.gz` and
+  SHA-256. Any authorized HTTPS client can upload it unchanged; users do not
+  select compression or package batching and do not rebuild the control-plane
+  image for a manifest-only release.
 - SQL output contracts validate ordered columns/types, lineage, grain, uniqueness,
   nullability, and up to 16 ordered conditional row-count claims.
 - Planning supports asset and pipeline targets, dependency selection, refresh
@@ -82,6 +86,13 @@ runtime inputs, and SQL integrations remain pre-v1 and may change.
   records desired, active-generation, and physical compatibility per target.
   Incompatible, drifted, and ownership-unknown targets reject ordinary writes
   on affected dependency paths; compatible and unrelated paths remain runnable.
+- The private manifest-deployment API authenticates, checks replay/conflict, and
+  acquires distributed upload admission before reading the archive. It validates
+  gzip/tar incrementally without mounted volumes, stores packages in bounded
+  batches, atomically accepts a durable operation, and activates it through
+  recoverable claims and a workspace-wide fence. Status distinguishes
+  `accepted`, `activating`, `succeeded`, `needs_attention`, `failed`, and
+  `unknown` outcomes.
 - Manifest activation requires explicit approval for non-empty execution-pool
   defaults, stores the effective policy and provenance in the immutable workspace
   deployment, and atomically applies matching PostgreSQL capacity scopes.
@@ -160,9 +171,10 @@ operator contract is [`production/postgresql_operator_runbook.md`](production/po
   repository root. CI validates and scans that image and publishes immutable
   commit digests with provenance and SBOM data.
 - Repeated `build.manifest --runner-release POOL=ID` options bind every effective
-  logical pool to an explicit operator-owned runner identity. `publish` stages
-  artifacts and `activate` selects one exact version for one workspace using a
-  service token read only from the environment.
+  logical pool to an explicit operator-owned runner identity and emit a
+  transport-ready archive. The private manifest-deployment API is the preferred
+  production automation boundary; `publish` and `activate` remain available for
+  interactive and local workflows.
 - Images remain deployment artifacts: the reusable control plane is Favn-owned,
   while each runner image and its native dependencies are customer-owned.
 

@@ -95,6 +95,16 @@ hash, but PostgreSQL intentionally does not enforce that formula: imported and
 historical rows may have explicit IDs. Re-publishing their content returns the
 existing row and leaves all deployment and run references unchanged.
 
+First-party archive deployment adds three bounded coordination tables.
+`manifest_deployment_operations` permanently binds a workspace-scoped caller
+operation ID to the archive digest, request fingerprint, accepted manifest,
+deployer identity, asynchronous activation state, claim fence, diagnostics, and
+terminal result. `manifest_deployment_upload_leases` enforces global,
+per-identity, and per-workspace upload admission. `manifest_activation_leases`
+serializes every activation path for one workspace and carries the fencing token
+checked by the activation transaction. These tables store no archive bytes or
+raw bearer tokens.
+
 ## Runs, events, execution, logs, and outbox
 
 ```mermaid
@@ -771,7 +781,7 @@ tagged password credential or Entra link all exist.
 
 | Domain | Tables | Authority |
 | --- | --- | --- |
-| Workspace and registry | `workspaces`, `manifest_versions`, `execution_packages`, `manifest_execution_packages`, `workspace_deployments`, `workspace_deployment_targets`, `workspace_runtime_state` | Authoritative |
+| Workspace and registry | `workspaces`, `manifest_versions`, `execution_packages`, `manifest_execution_packages`, `manifest_deployment_operations`, `manifest_deployment_upload_leases`, `manifest_activation_leases`, `workspace_deployments`, `workspace_deployment_targets`, `workspace_runtime_state` | Authoritative state and coordination |
 | Runs and execution | `run_submissions`, `run_submission_commands`, `runs`, `run_events`, `run_plans`, `run_targets`, `run_ownerships`, `runner_tasks`, `runner_task_commands`, `runner_task_log_batches`, `runner_capacity_demands`, `runtime_input_pins`, `runtime_input_key_versions` | Authoritative |
 | Publication | `outbox_events`, `outbox_publication_state` | Authoritative delivery ledger |
 | Scheduling | `schedule_cursors`, `schedule_occurrences` | Authoritative |
@@ -787,7 +797,7 @@ tagged password credential or Entra link all exist.
 | Read projections | `execution_group_overviews`, `backfill_overviews`, `target_statuses`, `asset_window_states`, `asset_freshness_states`, `asset_attempt_overviews` | Derived and repairable |
 | Ecto | `schema_migrations` | Migration bookkeeping |
 
-There are 74 application/schema tables including `schema_migrations`. Tables
+There are 77 application/schema tables including `schema_migrations`. Tables
 without direct foreign keys still require workspace-scoped application contracts;
 their lack of an FK is not permission to perform unscoped reads.
 

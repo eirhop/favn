@@ -4,12 +4,24 @@ defmodule FavnOrchestrator.Persistence.RegistryStore do
   alias Favn.Manifest.TargetDescriptor
   alias Favn.Manifest.Version
   alias FavnOrchestrator.Persistence.Commands.AbandonManifestDeployment
+  alias FavnOrchestrator.Persistence.Commands.AcceptManifestDeployment
+  alias FavnOrchestrator.Persistence.Commands.AcquireManifestActivationLease
+  alias FavnOrchestrator.Persistence.Commands.AcquireManifestUploadLease
   alias FavnOrchestrator.Persistence.Commands.BeginManifestDeployment
+  alias FavnOrchestrator.Persistence.Commands.ClaimManifestDeployment
+  alias FavnOrchestrator.Persistence.Commands.CompleteManifestDeployment
   alias FavnOrchestrator.Persistence.Commands.DeployManifest
   alias FavnOrchestrator.Persistence.Commands.HeartbeatManifestDeployment
   alias FavnOrchestrator.Persistence.Commands.ProvisionWorkspace
   alias FavnOrchestrator.Persistence.Commands.RegisterManifest
   alias FavnOrchestrator.Persistence.Commands.RegisterExecutionPackages
+  alias FavnOrchestrator.Persistence.Commands.ReleaseManifestActivationLease
+  alias FavnOrchestrator.Persistence.Commands.ReleaseManifestDeploymentClaim
+  alias FavnOrchestrator.Persistence.Commands.ReleaseManifestUploadLease
+  alias FavnOrchestrator.Persistence.Commands.RenewManifestActivationLease
+  alias FavnOrchestrator.Persistence.Commands.RenewManifestDeploymentClaim
+  alias FavnOrchestrator.Persistence.Commands.RenewManifestUploadLease
+  alias FavnOrchestrator.Persistence.Commands.UpdateManifestDeploymentProgress
   alias FavnOrchestrator.Persistence.CommandIdempotency
   alias FavnOrchestrator.Persistence.Error
   alias FavnOrchestrator.Persistence.Queries.GetDeploymentTargets
@@ -19,11 +31,13 @@ defmodule FavnOrchestrator.Persistence.RegistryStore do
   alias FavnOrchestrator.Persistence.Queries.GetRuntimeState
   alias FavnOrchestrator.Persistence.Queries.GetExecutionPackage
   alias FavnOrchestrator.Persistence.Queries.GetManifestTargetDescriptors
+  alias FavnOrchestrator.Persistence.Queries.GetManifestDeployment
   alias FavnOrchestrator.Persistence.Queries.MissingExecutionPackageHashes
   alias FavnOrchestrator.Persistence.Queries.PageWorkspaces
   alias FavnOrchestrator.Persistence.Queries.ManifestSelector
   alias FavnOrchestrator.Persistence.Results.CursorPage
   alias FavnOrchestrator.Persistence.Results.RuntimeState
+  alias FavnOrchestrator.Persistence.Results.ManifestDeployment
 
   @callback provision_workspace(ProvisionWorkspace.t()) :: :ok | {:error, Error.t()}
   @callback register_manifest(RegisterManifest.t()) :: {:ok, Version.t()} | {:error, Error.t()}
@@ -57,4 +71,30 @@ defmodule FavnOrchestrator.Persistence.RegistryStore do
   @callback get_deployment_targets(GetDeploymentTargets.t()) ::
               {:ok, [FavnOrchestrator.Persistence.Commands.DeploymentTarget.t()]}
               | {:error, Error.t()}
+  @callback acquire_manifest_upload_lease(AcquireManifestUploadLease.t()) ::
+              :ok | {:error, Error.t()}
+  @callback renew_manifest_upload_lease(RenewManifestUploadLease.t()) ::
+              :ok | {:error, Error.t()}
+  @callback release_manifest_upload_lease(ReleaseManifestUploadLease.t()) ::
+              :ok | {:error, Error.t()}
+  @callback accept_manifest_deployment(AcceptManifestDeployment.t()) ::
+              {:ok, :accepted | :replay, ManifestDeployment.t()} | {:error, Error.t()}
+  @callback get_manifest_deployment(GetManifestDeployment.t()) ::
+              {:ok, ManifestDeployment.t()} | {:error, Error.t()}
+  @callback claim_manifest_deployment(ClaimManifestDeployment.t()) ::
+              {:ok, ManifestDeployment.t() | nil} | {:error, Error.t()}
+  @callback renew_manifest_deployment_claim(RenewManifestDeploymentClaim.t()) ::
+              :ok | {:error, Error.t()}
+  @callback update_manifest_deployment_progress(UpdateManifestDeploymentProgress.t()) ::
+              :ok | {:error, Error.t()}
+  @callback release_manifest_deployment_claim(ReleaseManifestDeploymentClaim.t()) ::
+              :ok | {:error, Error.t()}
+  @callback complete_manifest_deployment(CompleteManifestDeployment.t()) ::
+              {:ok, ManifestDeployment.t()} | {:error, Error.t()}
+  @callback acquire_manifest_activation_lease(AcquireManifestActivationLease.t()) ::
+              {:ok, pos_integer()} | {:error, Error.t()}
+  @callback renew_manifest_activation_lease(RenewManifestActivationLease.t()) ::
+              :ok | {:error, Error.t()}
+  @callback release_manifest_activation_lease(ReleaseManifestActivationLease.t()) ::
+              :ok | {:error, Error.t()}
 end

@@ -33,6 +33,20 @@ reserved `capacity-scaler` identities.
 Do not reuse one identity with two secrets. The versioned identity is the
 observable, non-secret rotation handle.
 
+## Manifest deployer token
+
+`FAVN_ORCHESTRATOR_MANIFEST_DEPLOYER_TOKENS` is a JSON array whose versioned
+identities each carry an exact workspace allowlist. It grants only manifest
+archive upload and scoped status reads.
+
+1. Add a new object with a new `-vN` identity, a distinct token, and the same
+   intended workspace allowlist, then restart the control plane.
+2. Move the upload client and prove one authenticated deployment status read.
+3. Remove the old object, restart, and verify the old token is rejected.
+
+Do not reuse a token from the general platform set. Favn rejects that ambiguous
+configuration at startup and retains only token hashes.
+
 ## Capacity-reader token
 
 `FAVN_ORCHESTRATOR_CAPACITY_READER_TOKEN` is the only primary credential for

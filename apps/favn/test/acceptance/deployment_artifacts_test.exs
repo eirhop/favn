@@ -73,6 +73,8 @@ defmodule Favn.DeploymentArtifactsAcceptanceTest do
     assert manifest.runner_releases == %{}
     assert manifest.status == :built
     assert File.regular?(manifest.manifest_path)
+    assert File.regular?(manifest.archive_path)
+    assert byte_size(manifest.archive_sha256) == 64
     refute File.exists?(Path.join([root_dir, ".favn", "dist", "manifest", "latest.json"]))
 
     assert {:ok, repeated} =

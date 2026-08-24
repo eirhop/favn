@@ -27,8 +27,11 @@ The public deployment surface is deliberately small:
 `mix favn.init --target deployment` copies the documented customer-owned
 Compose and runner-image example,
 repeated `mix favn.build.manifest --runner-release POOL=ID` options bind every
-effective logical pool to the operator's image identity, and `mix favn.publish`
-plus `mix favn.activate` stage and select immutable manifest releases. Favn
+effective logical pool to the operator's image identity and produce one
+deterministic `.tar.gz` plus SHA-256. Any authorized HTTPS client can upload the
+archive through the private manifest-deployment API without Elixir or Favn
+dependencies. `mix favn.publish` plus `mix favn.activate` remain supported for
+interactive and local workflows. Favn
 publishes the control-plane image; consumer projects build runners from their
 own repository. The operator contract starts at
 `docs/production/deployment_topology.md`.

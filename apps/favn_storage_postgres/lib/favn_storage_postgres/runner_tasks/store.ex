@@ -168,6 +168,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
                 task.status == "queued" and task.runner_pool == ^command.runner_pool and
                   task.required_runner_release_id == ^command.required_runner_release_id and
                   task.task_kind in ^task_kinds and
+                  task.deadline_at > ^command.occurred_at and
                   (is_nil(task.required_capability) or
                      task.required_capability in ^command.capabilities),
               order_by: [asc: task.enqueued_at, asc: task.workspace_id, asc: task.task_id],
@@ -1583,7 +1584,8 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
   defp validate_completion!(task, command) do
     task_kind = task_kind!(task.task_kind)
 
-    with true <- command.outcome in Favn.Contracts.RunnerTask.terminal_outcomes(),
+    with :ok <- validate_completion_deadline(task, command),
+         true <- command.outcome in Favn.Contracts.RunnerTask.terminal_outcomes(),
          true <- command.retry_class in Favn.Contracts.RunnerTask.retry_classes(),
          true <- is_integer(command.result_version) and command.result_version >= 0,
          {:ok, _decoded} <- Codec.decode_result(task_kind, command.outcome, command.result),
@@ -1599,6 +1601,17 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
       _other -> Repo.rollback(Error.new(:invalid, "invalid runner task completion"))
     end
   end
+
+  defp validate_completion_deadline(
+         %RunnerTask{task_kind: "relation_inspection", deadline_at: deadline_at, status: status},
+         command
+       ) do
+    if status != "cancelling" and DateTime.compare(command.occurred_at, deadline_at) != :gt,
+      do: :ok,
+      else: :error
+  end
+
+  defp validate_completion_deadline(_task, _command), do: :ok
 
   defp proven_safe_to_requeue?(%RunnerTask{status: status})
        when status in ~w(assigned preparing),

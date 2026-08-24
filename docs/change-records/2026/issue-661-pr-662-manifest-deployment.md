@@ -512,25 +512,100 @@ transport-neutral API evidence.
 
 ## Implementation outcome
 
-Pending implementation.
+The implementation follows the approved transport-neutral boundary. The build
+task now emits a deterministic Favn gzip/USTAR archive and its SHA-256. A caller
+uses ordinary HTTP to upload that file. The Orchestrator authenticates and
+admits the request before reading it, validates the archive as a bounded stream,
+persists packages in internal batches, and atomically accepts the manifest plus
+its caller-named durable operation. A fenced worker then activates and records a
+terminal status that the same workspace-scoped credential can read.
+
+```mermaid
+flowchart LR
+    Build[Build archive and SHA-256] --> Upload[Authorized HTTP PUT]
+    Upload --> Parse[Bounded gzip and USTAR stream]
+    Parse --> Packages[Content-addressed package batches]
+    Packages --> Accept[Atomic manifest and operation acceptance]
+    Accept --> Worker[Fenced recoverable activation]
+    Worker --> Status[Durable GET status]
+    Worker --> Active[Workspace deployment]
+```
+
+The Orchestrator never writes the uploaded archive to disk and needs no mounted
+volume. The uploader needs no Elixir, Mix, or Favn runtime. The retained
+low-level publish and activate routes use the same workspace activation lease,
+so they cannot race the new worker.
 
 ### Actual scope and complexity
 
-Pending implementation. This section will compare actual changed lines per slice
-with the approved complexity budget above.
+The counts below compare approved baseline `2625f8e4` with the staged final
+implementation. They exclude this record as planned. Every changed line is
+assigned to one slice exactly once.
+
+| Slice | Production added | Production deleted | Supporting added | Supporting deleted | Comparison with budget |
+| --- | ---: | ---: | ---: | ---: | --- |
+| Deterministic archive | 343 | 12 | 53 | 0 | Production is 63 lines above the estimate, below the record's material-overrun threshold; tests reuse the existing bundle/publication fixtures |
+| Streaming ingest, admission, and deployment authorization | 1,289 | 0 | 347 | 0 | Production exceeds its estimate because the strict incremental gzip/USTAR parser and pre-body Plug are explicit security boundaries; the combined 1,636 lines remain inside the combined planned range |
+| Durable deployment operation | 1,930 | 11 | 440 | 0 | Production exceeds its estimate because typed commands, three fenced lease lifecycles, migration readiness metadata, and atomic store logic are explicit; the combined 2,370 lines remain inside the combined planned range |
+| Bounded compatibility inspection | 233 | 20 | 65 | 0 | Production is within estimate; focused concurrency/progress tests are smaller than planned and PostgreSQL deadline checks remain in the storage suite |
+| Public workflow and compatibility | 8 | 1 | 227 | 14 | Nearly all work is canonical guidance, deployment templates, and CI test-tier coverage rather than runtime code |
+| **Actual total** | **3,803** | **44** | **1,132** | **14** | **4,935 additions and 58 deletions excluding this record; the combined total is inside the approved 3,790-6,260 range** |
+
+The production/supporting split differs materially from the estimate even though
+the combined size is in range. The main reason is that the approved behaviors
+became explicit typed state machines and persistence contracts rather than test
+fixtures. Final review must therefore pay particular attention to parser,
+fencing, recovery, and store correctness; local PostgreSQL execution was not
+available to compensate with runtime evidence.
 
 ## Deviations from the approved plan
 
-Pending implementation.
+| Planned | Implemented | Reason | Impact |
+| --- | --- | --- | --- |
+| Fixed Favn-owned gzip metadata | The valid gzip header includes a fixed `FV` extra field containing the exact raw-deflate byte length | Erlang zlib does not report unused compressed input. Recompressing to detect concatenated members would couple uploads to the Orchestrator's local zlib version. The length field lets the streaming receiver place the footer and reject ordinary trailing members without local recompression | Archive bytes remain standard gzip and curl-compatible, but the exact Favn header is intentionally stricter than arbitrary `.tar.gz` input |
+| Existing CI slow-test apps only | `favn_orchestrator` is added to the slow-test alias and tag guard | The 1,001-package archive qualification belongs to the receiver app and must run in CI | Slow CI gains about one minute; no production behavior changes |
+
+The approved API-only choice, fixed activation selection, limits, durable
+states, credential model, no-volume receiver, retained low-level operations, and
+transport-neutral deployment examples are unchanged.
 
 ## Decision log
 
-Pending implementation.
+| Date | Decision | Evidence and reason |
+| --- | --- | --- |
+| 2026-08-24 | Keep deployment API-only and add no `mix favn.deploy` | The issue owner explicitly rejected requiring Favn dependencies in the upload environment; a direct CI client, private relay, and manual upload all use the same PUT/GET contract |
+| 2026-08-24 | Use one archive with internal package batches, not user chunks | A 1,001-package test produces and consumes one archive while the receiver persists ten batches of 100 and one batch of 1 |
+| 2026-08-24 | Put exact deflate length in Favn gzip metadata | This rejects normal concatenated members without recompressing with a potentially different zlib implementation |
+| 2026-08-24 | Serialize new and legacy activation with a PostgreSQL lease and commit fence | An in-memory lock would not cover multiple Orchestrator nodes or process loss |
+| 2026-08-24 | Treat missing exact inspection capacity as immediate operator attention | Waiting sequentially would make large deployments unpredictable; activation stays safe and explicit while old runs remain pinned |
 
 ## Verification evidence
 
-Pending implementation.
+| Evidence | Result | Boundary |
+| --- | --- | --- |
+| `mise exec -- mix format` and `git diff --check` | Passed | Formatting and whitespace |
+| `MIX_ENV=test mise exec -- mix compile --warnings-as-errors` | Passed | Umbrella static compilation |
+| Fast owning-app suites | Passed: Core 437, Authoring 140, Orchestrator 706 with 1 slow test excluded, Runner 238, public `favn` 183 with 3 excluded | Non-database application behavior |
+| Archive parser focused suite | Passed: 5 fast tests | 37-byte streaming, real 101-package batching, digest/footer/header failure, and concatenated-member rejection |
+| `:slow` 1,001-package archive test | Passed: 1 in 59 seconds | One-file transport and eleven internal package batches without caller chunking |
+| Authoring archive suite | Passed: 2 | Deterministic bytes, stable order, standard extraction, replay, and conflict |
+| Manifest build acceptance test | Passed: 1 | Public build output retains the directory and adds archive path/SHA |
+| `mise exec -- elixir scripts/check_test_tag_tiers.exs` | Passed | The new slow test is covered by CI |
+| PostgreSQL deployment test file with all tests excluded | Compiled successfully | Five database tests are syntactically/type-integrated, but this is not runtime database proof |
+| `mise exec -- mix docs --warnings-as-errors` | New guide rendered, command failed on pre-existing broken links in `guides/operator-authentication.md` plus an unrelated `favn_view` development warning | New guide render inspected; repository-wide docs qualification remains incomplete |
+
+Not verified locally:
+
+- PostgreSQL migration and the five deployment persistence tests, because no
+  approved `FAVN_DATABASE_URL` is configured in this workspace;
+- multi-node upload admission, worker crash/restart, and live lease takeover;
+- a deployed ingress with the 256 MiB and 15-minute budgets;
+- a real direct-CI or relayed network deployment; and
+- every hostile archive boundary/property case listed in the original
+  verification plan.
+
+These limits are explicit review and CI inputs, not claims of live proof.
 
 ## Final review
 
-Pending implementation.
+Pending independent implementation review.

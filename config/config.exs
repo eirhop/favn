@@ -71,6 +71,7 @@ config :favn_orchestrator,
     decompressed_limit_bytes: 64 * 1024 * 1024
   ],
   api_service_tokens: [],
+  manifest_deployer_tokens: [],
   api_service_tokens_env: "",
   auth_session_ttl_seconds: 43_200,
   allow_automatic_admin_bootstrap: false,

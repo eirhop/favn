@@ -133,6 +133,7 @@ defmodule FavnOrchestrator.Persistence.Commands.DeployManifest do
     :targets,
     :occurred_at,
     :idempotency,
+    :activation_lease,
     :activation_diagnostics,
     expected_active_deployment_id: :unchecked,
     target_compatibilities: [],
@@ -157,6 +158,7 @@ defmodule FavnOrchestrator.Persistence.Commands.DeployManifest do
           occurred_at: DateTime.t(),
           expected_active_deployment_id: String.t() | nil | :unchecked,
           idempotency: CommandIdempotency.t() | nil,
+          activation_lease: %{owner: String.t(), fence: pos_integer()} | nil,
           activation_diagnostics: FavnOrchestrator.ManifestActivationDiagnostics.t() | nil
         }
 end
