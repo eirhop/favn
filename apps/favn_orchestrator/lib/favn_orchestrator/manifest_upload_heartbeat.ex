@@ -16,7 +16,8 @@ defmodule FavnOrchestrator.ManifestUploadHeartbeat do
 
     {pid, monitor} =
       spawn_monitor(fn ->
-        loop(owner, ref, renew, interval_ms)
+        owner_monitor = Process.monitor(owner)
+        loop(owner, owner_monitor, ref, renew, interval_ms)
       end)
 
     %__MODULE__{pid: pid, monitor: monitor, ref: ref}
@@ -47,14 +48,18 @@ defmodule FavnOrchestrator.ManifestUploadHeartbeat do
     :ok
   end
 
-  defp loop(owner, ref, renew, interval_ms) do
+  defp loop(owner, owner_monitor, ref, renew, interval_ms) do
     receive do
       {:stop, ^ref} ->
+        Process.demonitor(owner_monitor, [:flush])
+        :ok
+
+      {:DOWN, ^owner_monitor, :process, ^owner, _reason} ->
         :ok
     after
       interval_ms ->
         case renew_safely(renew) do
-          :ok -> loop(owner, ref, renew, interval_ms)
+          :ok -> loop(owner, owner_monitor, ref, renew, interval_ms)
           {:error, reason} -> send(owner, {:manifest_upload_lease_lost, ref, reason})
         end
     end

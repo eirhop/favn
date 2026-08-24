@@ -545,11 +545,11 @@ assigned to one slice exactly once.
 | Slice | Production added | Production deleted | Supporting added | Supporting deleted | Comparison with budget |
 | --- | ---: | ---: | ---: | ---: | --- |
 | Deterministic archive | 341 | 15 | 53 | 0 | Production is 61 lines above the estimate, below the record's material-overrun threshold; archive declarations now force the transport's non-executable mode independently of host filesystem permission behavior |
-| Streaming ingest, admission, and deployment authorization | 1,708 | 1 | 637 | 1 | Production exceeds its estimate because the strict incremental gzip/USTAR parser, pre-body Plug, independent upload heartbeat, and acceptance fence are explicit security boundaries; focused hostile-input and deadline tests account for most supporting growth |
-| Durable deployment operation | 1,714 | 12 | 559 | 0 | Typed commands, three fenced lease lifecycles, migration readiness metadata, atomic rollback injection, and durable recovery are explicit; this slice remains within the combined planned range |
+| Streaming ingest, admission, and deployment authorization | 1,713 | 1 | 674 | 1 | Production exceeds its estimate because the strict incremental gzip/USTAR parser, pre-body Plug, owner-monitored upload heartbeat, and acceptance fence are explicit security boundaries; focused hostile-input, owner-death, and deadline tests account for most supporting growth |
+| Durable deployment operation | 1,761 | 12 | 721 | 0 | Typed commands, claim-loss propagation, three fenced lease lifecycles, migration readiness metadata, atomic rollback injection, and two-worker recovery are explicit; this slice remains within the combined planned range |
 | Bounded compatibility inspection | 246 | 30 | 239 | 7 | Production is within estimate; supporting evidence now includes all operator-decision classes, 1,000-target fairness/concurrency, expired-claim exclusion, and late-result rejection |
 | Public workflow and compatibility | 9 | 2 | 230 | 15 | Nearly all work is canonical guidance, deployment templates, and CI test-tier coverage rather than runtime code |
-| **Actual total** | **4,018** | **60** | **1,718** | **23** | **5,736 additions and 83 deletions excluding both names of this record; the combined total is inside the approved 3,790-6,260 range** |
+| **Actual total** | **4,070** | **60** | **1,917** | **23** | **5,987 additions and 83 deletions excluding both names of this record; the combined total is inside the approved 3,790-6,260 range** |
 
 The production/supporting split differs materially from the estimate even though
 the combined size is in range. The main reason is that the approved behaviors
@@ -566,6 +566,8 @@ so final runtime evidence comes from CI's PostgreSQL service.
 | Fixed Favn-owned gzip metadata | The valid gzip header includes a fixed `FV` extra field containing the exact raw-deflate byte length | Erlang zlib does not report unused compressed input. Recompressing to detect concatenated members would couple uploads to the Orchestrator's local zlib version. The length field lets the streaming receiver place the footer and reject ordinary trailing members without local recompression | Archive bytes remain standard gzip and curl-compatible, but the exact Favn header is intentionally stricter than arbitrary `.tar.gz` input |
 | Existing CI slow-test apps only | `favn_orchestrator` is added to the slow-test alias and tag guard | The 1,001-package archive qualification belongs to the receiver app and must run in CI | Slow CI gains about one minute; no production behavior changes |
 | Chunk-arrival renewal as the only upload heartbeat | A dedicated request-owned process renews throughout reads, decode, and package persistence; acceptance also requires the matching currently unexpired lease in the same PostgreSQL transaction | Final review identified that a slow final read or persistence callback could outlive chunk-driven renewal | Acceptance is fenced after takeover or expiry; immutable package writes completed before lease loss remain retention-safe |
+| Unmonitored lease-heartbeat owners | Upload and worker-claim heartbeats monitor their owning process; upload renewal stops on request death, while claim-renewal loss terminates the stale worker | Final review demonstrated that an orphan upload heartbeat could renew forever and that ignored worker-claim loss allowed unfenced work to continue | Process death now converges through lease expiry, and a fenced worker cannot continue activation |
+| Terminal handling of a live idempotency reservation | `command_in_progress` releases the deployment claim instead of completing the operation as failed | A replacement worker may arrive before the crashed worker's 60-second preparation reservation becomes stale | The durable operation remains accepted and retryable until safe reservation takeover |
 
 The approved API-only choice, fixed activation selection, limits, durable
 states, credential model, no-volume receiver, retained low-level operations, and
@@ -582,6 +584,8 @@ transport-neutral deployment examples are unchanged.
 | 2026-08-24 | Treat missing exact inspection capacity as immediate operator attention | Waiting sequentially would make large deployments unpredictable; activation stays safe and explicit while old runs remain pinned |
 | 2026-08-24 | Count every compatibility `operator_decision` in terminal deployment diagnostics | Final review found that unmanaged relations, inconsistent generation state, and missing active fingerprints could otherwise be reported as `succeeded`; all such active-but-blocked paths now end `needs_attention` |
 | 2026-08-24 | Fence archive acceptance with the live upload lease | An independent heartbeat keeps legitimate long work admitted, while the atomic PostgreSQL check prevents an expired or superseded uploader from accepting intent |
+| 2026-08-24 | Monitor every lease heartbeat owner | Renewal work must never outlive the request or worker that owns the lease |
+| 2026-08-24 | Treat `command_in_progress` as crash-recovery backpressure | A live prior reservation is not a terminal activation failure; release and retry after its safe-takeover window |
 
 ## Verification evidence
 
@@ -593,11 +597,11 @@ transport-neutral deployment examples are unchanged.
 | Archive parser focused suite | Passed: 11 fast tests | 37-byte streaming, exact/near byte batching, strict metadata, non-regular/path-traversal tar rejection, digest/footer/header/member failures, and deterministic final-read/persistence deadlines |
 | `:slow` 1,001-package archive test | Passed: 1 in 131 seconds | One-file transport and eleven internal package batches without caller chunking |
 | `:slow` 1,000-target inspection test | Passed: 1 in 3.6 seconds | Every target attempted once, deterministic order/progress, and observed concurrency bounded to 32 |
-| Upload-heartbeat and activation-diagnostics suites | Passed: 5 tests | Independent renewal/loss propagation and all bounded operator-decision reason classes |
+| Upload/claim-heartbeat and activation-diagnostics suites | Passed: 8 tests | Independent renewal, owner-death cleanup, claim-loss worker termination, and all bounded operator-decision reason classes |
 | Authoring archive suite | Passed: 2 | Deterministic bytes, stable order, standard extraction, replay, and conflict |
 | Manifest build acceptance test | Passed: 1 | Public build output retains the directory and adds archive path/SHA |
 | `mise exec -- elixir scripts/check_test_tag_tiers.exs` | Passed | The new slow test is covered by CI |
-| PostgreSQL deployment and runner-deadline files with database tests excluded locally | Compiled successfully | Seven deployment tests plus expired-claim/late-completion coverage are syntactically/type-integrated; final runtime proof is delegated to CI's PostgreSQL service |
+| PostgreSQL deployment and runner-deadline files with database tests excluded locally | Compiled successfully | Eight deployment tests, including two-worker reservation recovery, plus expired-claim/late-completion coverage are syntactically/type-integrated; final runtime proof is delegated to CI's PostgreSQL service |
 | CI at repair head `4a13635b` | Acceptance, slow, Dialyzer, quick checks, control-plane image, and HTTP security passed; fast storage failed on the now-corrected empty runner-release fixture plus pre-existing intermittent runner-task races | Intermediate remote proof only; final-head CI remains required |
 | `mise exec -- mix docs --warnings-as-errors` | New guide rendered, command failed on pre-existing broken links in `guides/operator-authentication.md` plus an unrelated `favn_view` development warning | New guide render inspected; repository-wide docs qualification remains incomplete |
 
@@ -618,10 +622,12 @@ These limits are explicit review and CI inputs, not claims of live proof.
 
 ## Final review
 
-The requested `gpt-5.6-sol` xhigh reviewer returned `NOT READY` on candidate
-`13f34eb8`. It found incomplete operator-decision diagnostics, a byte-batch
-overshoot, upload-lease expiry during final work, permissive bundle metadata,
-and insufficient focused verification. The implementation now addresses every
-finding with code and regression evidence described above. Re-review of the
-new candidate is pending; the pull request remains draft until it returns
-`READY` and final-head CI passes.
+The requested `gpt-5.6-sol` xhigh reviewer returned `NOT READY` on candidates
+`13f34eb8` and `b2d6b68b`. The first review found incomplete operator-decision
+diagnostics, a byte-batch overshoot, upload-lease expiry during final work,
+permissive bundle metadata, and insufficient focused verification. The second
+review confirmed those fixes, then found orphan renewal after request death and
+terminal handling of a recoverable idempotency-reservation overlap. The
+implementation now addresses every finding with code and regression evidence
+described above. Re-review of the new candidate is pending; the pull request
+remains draft until it returns `READY` and final-head CI passes.

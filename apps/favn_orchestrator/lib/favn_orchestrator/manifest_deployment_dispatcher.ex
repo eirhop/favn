@@ -6,10 +6,13 @@ defmodule FavnOrchestrator.ManifestDeploymentDispatcher do
   require Logger
 
   alias FavnOrchestrator.ManifestActivationDiagnostics
+  alias FavnOrchestrator.ManifestDeploymentClaimHeartbeat
   alias FavnOrchestrator.ManifestDeployments
   alias FavnOrchestrator.Manifests
   alias FavnOrchestrator.Persistence.CommandIdempotency
   alias FavnOrchestrator.Persistence.Error
+  alias FavnOrchestrator.Persistence.Results.ManifestDeployment, as: Deployment
+  alias FavnOrchestrator.Persistence.Results.RuntimeState
   alias FavnOrchestrator.Persistence.SystemContext
   alias FavnOrchestrator.RuntimeConfig
 
@@ -90,19 +93,22 @@ defmodule FavnOrchestrator.ManifestDeploymentDispatcher do
   end
 
   defp run_claimed(operation, owner) do
-    caller = self()
-    stop_ref = make_ref()
-
     heartbeat =
-      spawn(fn ->
-        caller_ref = Process.monitor(caller)
-        claim_heartbeat(caller_ref, stop_ref, operation, owner)
-      end)
+      ManifestDeploymentClaimHeartbeat.start(
+        fn ->
+          ManifestDeployments.renew_claim(
+            operation,
+            owner,
+            DateTime.add(DateTime.utc_now(), @claim_seconds, :second)
+          )
+        end,
+        interval_ms: @heartbeat_ms
+      )
 
     try do
       execute(operation, owner)
     after
-      send(heartbeat, {:stop, stop_ref})
+      ManifestDeploymentClaimHeartbeat.stop(heartbeat)
     end
   end
 
@@ -151,7 +157,13 @@ defmodule FavnOrchestrator.ManifestDeploymentDispatcher do
     end
   end
 
-  defp complete_activation(operation, owner, result) do
+  @doc false
+  @spec complete_activation(
+          Deployment.t(),
+          String.t(),
+          {:ok, RuntimeState.t()} | {:error, term()}
+        ) :: :ok | {:ok, Deployment.t()} | {:error, term()}
+  def complete_activation(operation, owner, result) do
     case result do
       {:ok, runtime} ->
         diagnostics = ManifestActivationDiagnostics.to_map(runtime.activation_diagnostics)
@@ -167,6 +179,9 @@ defmodule FavnOrchestrator.ManifestDeploymentDispatcher do
         )
 
       {:error, %Error{kind: :conflict, details: %{reason: :manifest_activation_in_progress}}} ->
+        ManifestDeployments.release_claim(operation, owner)
+
+      {:error, %Error{kind: :conflict, details: %{reason: :command_in_progress}}} ->
         ManifestDeployments.release_claim(operation, owner)
 
       {:error, reason}
@@ -194,27 +209,6 @@ defmodule FavnOrchestrator.ManifestDeploymentDispatcher do
       request_fingerprint,
       DateTime.add(DateTime.utc_now(), 365, :day)
     )
-  end
-
-  defp claim_heartbeat(caller_ref, stop_ref, operation, owner) do
-    receive do
-      {:stop, ^stop_ref} ->
-        Process.demonitor(caller_ref, [:flush])
-        :ok
-
-      {:DOWN, ^caller_ref, :process, _pid, _reason} ->
-        :ok
-    after
-      @heartbeat_ms ->
-        _ =
-          ManifestDeployments.renew_claim(
-            operation,
-            owner,
-            DateTime.add(DateTime.utc_now(), @claim_seconds, :second)
-          )
-
-        claim_heartbeat(caller_ref, stop_ref, operation, owner)
-    end
   end
 
   defp unknown_outcome?(%Error{kind: kind}) when kind in [:internal, :unavailable], do: true

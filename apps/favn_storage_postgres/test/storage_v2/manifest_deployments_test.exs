@@ -12,18 +12,21 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
   alias Favn.Manifest.Version
   alias Favn.RelationRef
   alias FavnOrchestrator.ManifestDeploymentContext
+  alias FavnOrchestrator.ManifestDeploymentDispatcher
   alias FavnOrchestrator.ManifestActivationDiagnostics
   alias FavnOrchestrator.API.ManifestDeployment
   alias FavnOrchestrator.Auth.ManifestDeployerTokens
   alias FavnOrchestrator.Persistence.Commands.AcceptManifestDeployment
   alias FavnOrchestrator.Persistence.Commands.AcquireManifestActivationLease
   alias FavnOrchestrator.Persistence.Commands.AcquireManifestUploadLease
+  alias FavnOrchestrator.Persistence.Commands.BeginManifestDeployment
   alias FavnOrchestrator.Persistence.Commands.ClaimManifestDeployment
   alias FavnOrchestrator.Persistence.Commands.CompleteManifestDeployment
   alias FavnOrchestrator.Persistence.Commands.ProvisionWorkspace
   alias FavnOrchestrator.Persistence.Commands.ReleaseManifestActivationLease
   alias FavnOrchestrator.Persistence.Commands.ReleaseManifestUploadLease
   alias FavnOrchestrator.Persistence.Commands.UpdateManifestDeploymentProgress
+  alias FavnOrchestrator.Persistence.CommandIdempotency
   alias FavnOrchestrator.Persistence.PlatformContext
   alias FavnOrchestrator.Persistence.Queries.GetManifestDeployment
   alias FavnOrchestrator.Persistence.SystemContext
@@ -396,6 +399,94 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
              })
   end
 
+  test "a second worker retries after the crashed worker reservation becomes stale", context do
+    assert {:ok, :accepted, _operation} =
+             context |> accept_command() |> Store.accept_manifest_deployment()
+
+    claimed_at = DateTime.utc_now()
+
+    claim = %ClaimManifestDeployment{
+      platform_context: SystemContext.platform(:manifest_test, roles: [:platform_operator]),
+      owner: "worker-one",
+      occurred_at: claimed_at,
+      expires_at: DateTime.add(claimed_at, 1, :second)
+    }
+
+    assert {:ok, first} = Store.claim_manifest_deployment(claim)
+    idempotency = activation_idempotency(first)
+
+    assert {:ok, {:new, first_reservation}} =
+             Store.begin_manifest_deployment(%BeginManifestDeployment{
+               workspace_context: context.workspace_context,
+               idempotency: idempotency
+             })
+
+    assert first_reservation.reservation_generation == 1
+
+    recovered_at = DateTime.add(claimed_at, 2, :second)
+
+    assert {:ok, recovered} =
+             Store.claim_manifest_deployment(%{
+               claim
+               | owner: "worker-two",
+                 occurred_at: recovered_at,
+                 expires_at: DateTime.add(recovered_at, 45, :second)
+             })
+
+    assert {:error, in_progress} =
+             Store.begin_manifest_deployment(%BeginManifestDeployment{
+               workspace_context: context.workspace_context,
+               idempotency: idempotency
+             })
+
+    assert in_progress.kind == :conflict
+    assert in_progress.details.reason == :command_in_progress
+
+    assert :ok =
+             ManifestDeploymentDispatcher.complete_activation(
+               recovered,
+               "worker-two",
+               {:error, in_progress}
+             )
+
+    SQL.query!(
+      Repo,
+      """
+      UPDATE favn_control.idempotency_records
+      SET updated_at = clock_timestamp() - interval '61 seconds'
+      WHERE workspace_id = $1 AND operation = $2 AND principal_kind = $3
+        AND principal_id = $4 AND key_hash = $5
+      """,
+      [
+        context.workspace_id,
+        idempotency.operation,
+        Atom.to_string(idempotency.principal_kind),
+        idempotency.principal_id,
+        idempotency.key_hash
+      ]
+    )
+
+    retried_at = DateTime.add(recovered_at, 1, :second)
+
+    assert {:ok, retried} =
+             Store.claim_manifest_deployment(%{
+               claim
+               | owner: "worker-two",
+                 occurred_at: retried_at,
+                 expires_at: DateTime.add(retried_at, 45, :second)
+             })
+
+    assert retried.claim_fence == recovered.claim_fence + 1
+
+    assert {:ok, {:new, second_reservation}} =
+             Store.begin_manifest_deployment(%BeginManifestDeployment{
+               workspace_context: context.workspace_context,
+               idempotency: idempotency
+             })
+
+    assert second_reservation.reservation_generation == 2
+  end
+
   test "acceptance rejects an expired lease after upload admission is taken over", context do
     command = accept_command(context)
 
@@ -490,6 +581,22 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
       version: context.version,
       occurred_at: occurred_at
     }
+  end
+
+  defp activation_idempotency(operation) do
+    {:ok, fingerprint} = Base.decode16(operation.request_fingerprint, case: :lower)
+
+    {:ok, idempotency} =
+      CommandIdempotency.new(
+        "manifest.activate",
+        :service,
+        "manifest-deployment:" <> operation.service_identity,
+        :crypto.hash(:sha256, operation.operation_id),
+        fingerprint,
+        DateTime.add(DateTime.utc_now(), 365, :day)
+      )
+
+    idempotency
   end
 
   defp provision_workspace(context, suffix) do
