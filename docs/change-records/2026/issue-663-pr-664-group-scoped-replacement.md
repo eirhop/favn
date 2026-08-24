@@ -2,13 +2,13 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Plan reviewed |
+| Status | Implementing |
 | Type | Feature |
 | Primary issue | [#663](https://github.com/sei-no/favn/issues/663) |
-| Pull request | Pending |
+| Pull request | [#664](https://github.com/eirhop/favn/pull/664) |
 | Related work | [#532](https://github.com/sei-no/favn/issues/532), [#547](https://github.com/sei-no/favn/issues/547) |
 | Affected areas | Public SQLAsset DSL and guides, compiler and manifest contracts, runner materialization planning, SQL runtime adapter contract, DuckDB and DuckLake execution |
-| Approved plan commit | Pending independent review |
+| Approved plan commit | `0118904ffd9eb2b1853b21e7da09aeea911238cd` |
 | Last updated | 2026-08-24 |
 
 ## One-minute summary
