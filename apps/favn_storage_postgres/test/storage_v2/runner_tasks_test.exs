@@ -6,6 +6,7 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
   alias Favn.Manifest.Version
   alias Favn.Contracts.RelationInspectionRequest
   alias Favn.Contracts.RelationInspectionResult
+  alias Favn.Contracts.RunnerError
   alias Favn.Contracts.RunnerTask.LeaseRenewal
   alias Favn.Contracts.RunnerTask.Registration
   alias FavnOrchestrator.Persistence.Commands, as: C
@@ -242,6 +243,77 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
                command
                | command_id: "enqueue-changed-retry-class",
                  retry_class: :unknown_do_not_retry
+             })
+  end
+
+  test "expired inspection work cannot be claimed or completed late", fixture do
+    expired = %{
+      enqueue_command(fixture, "expired-before-claim")
+      | deadline_at: DateTime.add(fixture.now, 1, :second)
+    }
+
+    assert {:ok, %{status: :queued}} = Store.enqueue(expired)
+
+    assert {:ok, nil} =
+             Store.claim(
+               claim_command(fixture, "claim-expired", "runner-expired",
+                 occurred_at: DateTime.add(fixture.now, 2, :second)
+               )
+             )
+
+    assert {:ok, _queued} = Store.enqueue(enqueue_command(fixture, "late-completion"))
+
+    assert {:ok, assigned} =
+             Store.claim(
+               claim_command(fixture, "claim-late", "runner-late",
+                 occurred_at: DateTime.add(fixture.now, 1, :second)
+               )
+             )
+
+    assert {:ok, running} =
+             Store.transition(transition_command(fixture, assigned, "start-late", :running))
+
+    result = %RelationInspectionResult{
+      required_runner_release_id: @release,
+      row_count: 1,
+      inspected_at: DateTime.add(fixture.now, 61, :second)
+    }
+
+    assert {:ok, encoded_result} =
+             Codec.encode_result(:relation_inspection, :succeeded, result)
+
+    late = %{
+      complete_command(fixture, running, "complete-after-deadline", encoded_result)
+      | issued_at: DateTime.add(fixture.now, 61, :second),
+        occurred_at: DateTime.add(fixture.now, 61, :second)
+    }
+
+    assert {:error, %{kind: :invalid}} = Store.complete(late)
+
+    cancellation_at = DateTime.add(fixture.now, 62, :second)
+
+    assert {:ok, %{status: :cancelling}} =
+             Store.request_cancellation(%C.RequestRunnerTaskCancellation{
+               workspace_context: fixture.workspace_context,
+               command_id: "cancel-after-deadline",
+               task_id: running.task_id,
+               reason: :deadline_reached,
+               issued_at: cancellation_at,
+               occurred_at: cancellation_at
+             })
+
+    assert {:error, %{kind: :invalid}} =
+             Store.complete(%{late | command_id: "complete-late-while-cancelling"})
+
+    assert {:ok, %{status: :cancelled}} =
+             Store.complete(%{
+               late
+               | command_id: "complete-cancelled-after-deadline",
+                 outcome: :cancelled,
+                 result: nil,
+                 error: RunnerError.cancelled(:deadline_reached),
+                 issued_at: cancellation_at,
+                 occurred_at: cancellation_at
              })
   end
 

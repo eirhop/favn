@@ -118,6 +118,11 @@ rollback, and database recovery.
 Favn does not ship an Azure deployment. Operators own and qualify their cloud
 infrastructure against the provider-neutral deployment contract.
 
+Consumer CI deploys manifest data independently of the reusable control-plane
+image. See [Deploying A Manifest Archive](manifest-deployment.md) for direct
+private-API and optional blob-relay examples. Neither path rebuilds the
+Orchestrator image or adds Favn dependencies to the uploader.
+
 Distributed Erlang is a full-trust code-execution boundary. Giving View no
 database managed identity prevents direct database access, but does not contain
 a compromised View from invoking code on Orchestrator. Protect View with the

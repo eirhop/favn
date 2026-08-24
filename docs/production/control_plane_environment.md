@@ -156,6 +156,7 @@ and audit contract.
 | `FAVN_ORCHESTRATOR_API_BIND_HOST` | IPv4 bind address, default `0.0.0.0`. |
 | `FAVN_ORCHESTRATOR_API_PORT` | `1..65535`, default `4101`. This listener is private. |
 | `FAVN_ORCHESTRATOR_API_SERVICE_TOKENS` | Required bounded set of general platform `versioned_identity[|role+...]:secret` entries. `capacity_reader` and the identities `capacity-scaler` and `capacity-scaler-overlap` are rejected; use the dedicated variables below. Across this aggregate and the dedicated capacity credentials, at most 100 tokens are accepted and only hashes are retained. |
+| `FAVN_ORCHESTRATOR_MANIFEST_DEPLOYER_TOKENS` | Optional JSON array of exact objects `{"service_identity":"ci-v1","workspace_ids":["workspace"],"token":"..."}`. Identities must end in `-vN`; every non-empty allowlist has at most 100 unique workspace IDs. The complete value is limited to 512 KiB and 100 credentials. Unknown keys, duplicate identities/tokens, and tokens shared with the general API set stop startup. Only hashes are retained. |
 | `FAVN_ORCHESTRATOR_CAPACITY_READER_TOKEN` | Raw least-privilege scaler credential. Required when any runner pool is `elastic`; optional for resident-only deployments. Favn assigns the reserved `capacity-scaler` identity and only `capacity_reader`. |
 | `FAVN_ORCHESTRATOR_CAPACITY_READER_PREVIOUS_TOKEN` | Optional raw overlap credential used only during rotation. Requires the primary credential. Favn assigns `capacity-scaler-overlap` and only `capacity_reader`. |
 | `FAVN_ORCHESTRATOR_MANIFEST_COMPRESSED_LIMIT_BYTES` | `1 MiB..32 MiB`, default `8 MiB`. |
@@ -234,7 +235,7 @@ supported by this release.
 | `FAVN_HTTP_MAX_CONNECTIONS` | Exact per-listener connection ceiling `1..100000`, default `1024`. |
 | `FAVN_HTTP_REQUEST_TIMEOUT_MS` | Request-body read deadline `1000..120000`, default `30000`; configure an equal or shorter total deadline at the reverse proxy. |
 | `FAVN_HTTP_IDLE_TIMEOUT_MS` | Idle connection deadline `1000..300000`, default `60000`. |
-| `FAVN_HTTP_BODY_LIMIT_BYTES` | Ordinary request-body limit `64 KiB..8 MiB`, default `1 MiB`. Manifest publication keeps its separate limits. |
+| `FAVN_HTTP_BODY_LIMIT_BYTES` | Ordinary request-body limit `64 KiB..8 MiB`, default `1 MiB`. Manifest publication and manifest archive deployment keep separate limits. |
 
 Only an immediate peer inside `FAVN_VIEW_TRUSTED_PROXY_CIDRS` may supply
 forwarded client IP or scheme. `replace` requires one exact
@@ -279,6 +280,12 @@ For a general platform service token:
    `FAVN_ORCHESTRATOR_API_SERVICE_TOKENS` and restart the control plane.
 2. Move clients to the new token and prove an authenticated operation.
 3. Remove the old entry, restart again, and verify the old token is rejected.
+
+Rotate a manifest deployer the same way with two differently versioned
+identities in `FAVN_ORCHESTRATOR_MANIFEST_DEPLOYER_TOKENS`. Preserve the exact
+workspace allowlist on the replacement, move upload clients, then remove the
+old object and restart. A deployer credential grants only manifest deployment
+and scoped status access; it does not grant the general platform API.
 
 Never place `capacity_reader` or either reserved capacity-scaler identity in
 the aggregate variable. The dedicated primary and previous variables provide

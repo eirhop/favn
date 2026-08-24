@@ -6,7 +6,9 @@ defmodule FavnOrchestrator.API.Authentication do
   import Plug.Conn, only: [get_req_header: 2]
 
   alias FavnOrchestrator.Auth
+  alias FavnOrchestrator.Auth.ManifestDeployerTokens
   alias FavnOrchestrator.Auth.ServiceTokens
+  alias FavnOrchestrator.ManifestDeploymentContext
   alias FavnOrchestrator.Persistence.WorkspaceContext
   alias FavnOrchestrator.Persistence.PlatformContext
 
@@ -143,6 +145,25 @@ defmodule FavnOrchestrator.API.Authentication do
     end
   end
 
+  @doc "Authenticates a workspace-scoped manifest deployer or platform operator."
+  @spec manifest_deployment_context(Plug.Conn.t()) ::
+          {:ok, ManifestDeploymentContext.t()}
+          | {:error, :service_unauthorized | :forbidden | :unauthenticated}
+  def manifest_deployment_context(conn) do
+    with {:ok, workspace_id} <- workspace_id(conn),
+         {:ok, identity} <- manifest_deployer_identity(conn, workspace_id),
+         request_id when is_binary(request_id) and request_id != "" <-
+           conn.assigns[:request_id] || header(conn, "x-request-id"),
+         {:ok, context} <- ManifestDeploymentContext.new(identity, workspace_id, request_id) do
+      {:ok, context}
+    else
+      {:error, :workspace_forbidden} -> {:error, :forbidden}
+      {:error, :invalid_context} -> {:error, :forbidden}
+      {:error, _reason} = error -> error
+      _missing -> {:error, :unauthenticated}
+    end
+  end
+
   @doc "Builds explicit platform authority from an authenticated internal service."
   @spec platform_context(Plug.Conn.t(), :platform_reader | :platform_operator) ::
           {:ok, PlatformContext.t()} | {:error, :service_unauthorized | :forbidden}
@@ -266,6 +287,31 @@ defmodule FavnOrchestrator.API.Authentication do
 
   defp authenticate_platform_service(conn) do
     authenticate_service(conn)
+  end
+
+  defp manifest_deployer_identity(conn, workspace_id) do
+    token = bearer_token(conn)
+
+    case ManifestDeployerTokens.authenticate(
+           token,
+           workspace_id,
+           ManifestDeployerTokens.configured_tokens()
+         ) do
+      {:ok, identity} ->
+        {:ok, identity}
+
+      {:error, :workspace_forbidden} = error ->
+        error
+
+      {:error, :service_unauthorized} ->
+        with {:ok, principal} <- ServiceTokens.authenticate(token, configured_tokens()),
+             true <- :platform_operator in principal.platform_roles do
+          {:ok, principal.service_identity}
+        else
+          false -> {:error, :forbidden}
+          {:error, _reason} -> {:error, :service_unauthorized}
+        end
+    end
   end
 
   defp bearer_token(conn) do

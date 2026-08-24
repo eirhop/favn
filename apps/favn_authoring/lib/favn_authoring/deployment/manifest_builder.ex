@@ -9,6 +9,7 @@ defmodule FavnAuthoring.Deployment.ManifestBuilder do
   """
 
   alias FavnAuthoring.Deployment.Artifact
+  alias FavnAuthoring.Deployment.ManifestArchive
   alias Favn.Manifest.{Publication, Serializer}
   alias Favn.RunnerPool
 
@@ -19,6 +20,8 @@ defmodule FavnAuthoring.Deployment.ManifestBuilder do
           runner_releases: RunnerPool.releases(),
           dist_dir: Path.t(),
           manifest_path: Path.t(),
+          archive_path: Path.t(),
+          archive_sha256: String.t(),
           status: :built | :already_built
         }
 
@@ -71,6 +74,7 @@ defmodule FavnAuthoring.Deployment.ManifestBuilder do
          {:ok, manifest} <- FavnAuthoring.serialize_manifest(version.manifest),
          :ok <- File.write(Path.join(directory, "manifest-index.json"), manifest <> "\n"),
          :ok <- write_packages(directory, publication.execution_packages),
+         :ok <- normalize_file_modes(directory),
          :ok <-
            Artifact.write_bundle(directory, "favn_manifest_release", %{
              "manifest" => %{
@@ -115,16 +119,32 @@ defmodule FavnAuthoring.Deployment.ManifestBuilder do
         publication.version.manifest_version_id
       ])
 
-    case Artifact.atomic_directory(dist_dir, fn temp_dir ->
-           with :ok <- write_bundle(temp_dir, publication) do
-             {:ok, :built}
-           end
-         end) do
-      {:ok, :built} -> {:ok, result(publication, dist_dir, :built)}
-      {:error, :artifact_already_exists} -> verify_existing(dist_dir, publication)
-      {:error, reason} -> {:error, reason}
+    directory_result =
+      Artifact.atomic_directory(dist_dir, fn temp_dir ->
+        with :ok <- write_bundle(temp_dir, publication) do
+          {:ok, :built}
+        end
+      end)
+
+    with {:ok, directory_status} <- resolve_directory(directory_result, dist_dir, publication),
+         archive_path = dist_dir <> ".tar.gz",
+         {:ok, archive} <- ManifestArchive.write(dist_dir, archive_path) do
+      status =
+        if directory_status == :built or archive.status == :built,
+          do: :built,
+          else: :already_built
+
+      {:ok, result(publication, dist_dir, archive, status)}
     end
   end
+
+  defp resolve_directory({:ok, :built}, _dist_dir, _publication), do: {:ok, :built}
+
+  defp resolve_directory({:error, :artifact_already_exists}, dist_dir, publication) do
+    with :ok <- verify_existing(dist_dir, publication), do: {:ok, :already_built}
+  end
+
+  defp resolve_directory({:error, reason}, _dist_dir, _publication), do: {:error, reason}
 
   defp verify_existing(dist_dir, publication) do
     manifest_version_id = publication.version.manifest_version_id
@@ -144,18 +164,20 @@ defmodule FavnAuthoring.Deployment.ManifestBuilder do
                "execution_packages_path" => "execution-packages"
              }
            }) do
-      {:ok, result(publication, dist_dir, :already_built)}
+      :ok
     else
       _mismatch -> {:error, :manifest_artifact_conflict}
     end
   end
 
-  defp result(publication, dist_dir, status) do
+  defp result(publication, dist_dir, archive, status) do
     %{
       manifest_version_id: publication.version.manifest_version_id,
       runner_releases: publication.version.runner_releases,
       dist_dir: dist_dir,
       manifest_path: Path.join(dist_dir, "manifest-index.json"),
+      archive_path: archive.path,
+      archive_sha256: archive.sha256,
       status: status
     }
   end
@@ -177,6 +199,19 @@ defmodule FavnAuthoring.Deployment.ManifestBuilder do
         end
       end)
     end
+  end
+
+  defp normalize_file_modes(directory) do
+    directory
+    |> Path.join("**/*")
+    |> Path.wildcard()
+    |> Enum.filter(&File.regular?/1)
+    |> Enum.reduce_while(:ok, fn path, :ok ->
+      case File.chmod(path, 0o644) do
+        :ok -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, {:manifest_file_mode_failed, path, reason}}}
+      end
+    end)
   end
 
   defp required_runner_releases(opts) do

@@ -79,8 +79,11 @@ when direct SQL access is required.
 
 The public deployment command surface is `mix favn.init`,
 `mix favn.build.manifest`, `mix favn.publish`, and `mix favn.activate`. Favn
+builds one deterministic manifest archive for upload by any authorized HTTPS
+client; `publish` and `activate` remain the interactive/local path. Favn
 publishes the control-plane image; the customer owns and publishes the runner
-image. Local tooling does not invoke deployment Dockerfiles.
+image. A manifest-only release rebuilds neither image. Local tooling does not
+invoke deployment Dockerfiles.
 The supported production topology and artifact ownership are documented in
 [`deployment_topology.md`](deployment_topology.md) and
 [`runner_releases.md`](runner_releases.md).

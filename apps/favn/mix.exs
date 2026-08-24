@@ -54,6 +54,7 @@ defmodule Favn.MixProject do
         "guides/sql-asset-checks.md",
         "guides/local-development.md",
         "guides/secure-production-deployment.md",
+        "guides/manifest-deployment.md",
         "guides/iex-cheatsheet.cheatmd",
         "guides/configuration.md",
         "guides/sql-client.md",
@@ -83,7 +84,8 @@ defmodule Favn.MixProject do
         "Mix Tasks": ~r/^Mix\.Tasks\.Favn(?:\.|$)/
       ],
       groups_for_extras: [
-        Production: ~r/guides\/(secure-production-deployment|operator-authentication)\.md/,
+        Production:
+          ~r/guides\/(secure-production-deployment|manifest-deployment|operator-authentication)\.md/,
         Cheatsheets: ~r/cheatsheet\.cheatmd/,
         Guides: ~r/guides\//
       ]

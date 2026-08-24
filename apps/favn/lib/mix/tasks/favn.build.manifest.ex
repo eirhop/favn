@@ -5,7 +5,7 @@ defmodule Mix.Tasks.Favn.Build.Manifest do
   @shortdoc "Builds a manifest release aligned with a user-owned runner"
 
   @moduledoc """
-  Builds `.favn/dist/manifest/<manifest_version_id>` for the immutable
+  Builds `.favn/dist/manifest/<manifest_version_id>.tar.gz` for the immutable
   repeated `--runner-release pool=rr_...` mappings selected by the user or CI.
   """
 
@@ -30,7 +30,9 @@ defmodule Mix.Tasks.Favn.Build.Manifest do
         IO.puts("Favn manifest build complete")
         IO.puts("manifest version: #{result.manifest_version_id}")
         IO.puts("runner releases: #{inspect(result.runner_releases)}")
-        IO.puts("dist: #{result.dist_dir}")
+        IO.puts("archive: #{result.archive_path}")
+        IO.puts("archive sha256: #{result.archive_sha256}")
+        IO.puts("verified directory: #{result.dist_dir}")
 
       {:error, reason} ->
         Mix.raise("manifest build failed: #{format_reason(reason)}")

@@ -70,6 +70,8 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
              }
            ]
 
+    assert config.manifest_deployer_tokens == []
+
     assert config.scheduler == [
              enabled: true,
              workspace_ids: ["salmon-one", "salmon-two"],
@@ -95,6 +97,51 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
              mutual_tls?: true,
              cookie_configured?: true
            }
+  end
+
+  test "manifest deployer tokens are workspace scoped and redacted", %{ca_file: ca_file} do
+    deployer_token = "c5f7a83d1b20496e8a3274df1596bc02"
+
+    env =
+      ca_file
+      |> base_env()
+      |> Map.put(
+        "FAVN_ORCHESTRATOR_MANIFEST_DEPLOYER_TOKENS",
+        Jason.encode!([
+          %{
+            "service_identity" => "project-ci-v2",
+            "workspace_ids" => ["salmon-one"],
+            "token" => deployer_token
+          }
+        ])
+      )
+
+    assert {:ok, config} = ProductionRuntimeConfig.validate(env)
+    assert [%{service_identity: "project-ci-v2"} = deployer] = config.manifest_deployer_tokens
+    assert deployer.workspace_ids == MapSet.new(["salmon-one"])
+    refute inspect(config) =~ deployer_token
+    assert ProductionRuntimeConfig.diagnostics(config).manifest_deployer_tokens.count == 1
+  end
+
+  test "manifest deployer and general API tokens cannot share a secret", %{ca_file: ca_file} do
+    env =
+      ca_file
+      |> base_env()
+      |> Map.put(
+        "FAVN_ORCHESTRATOR_MANIFEST_DEPLOYER_TOKENS",
+        Jason.encode!([
+          %{
+            "service_identity" => "project-ci-v1",
+            "workspace_ids" => ["salmon-one"],
+            "token" => @token
+          }
+        ])
+      )
+
+    assert {:error,
+            %{
+              error: {:invalid_manifest_deployer_tokens, :token_conflicts_with_api_service_token}
+            }} = ProductionRuntimeConfig.validate(env)
   end
 
   test "resident-only deployment keeps existing general platform tokens", %{ca_file: ca_file} do

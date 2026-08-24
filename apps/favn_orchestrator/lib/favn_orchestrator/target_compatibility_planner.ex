@@ -16,6 +16,7 @@ defmodule FavnOrchestrator.TargetCompatibilityPlanner do
   alias Favn.TargetCompatibility
   alias Favn.TargetCompatibility.PhysicalFingerprint
   alias FavnOrchestrator.ManifestStore
+  alias FavnOrchestrator.ManifestInspectionAdmission
   alias FavnOrchestrator.ManifestTarget
   alias FavnOrchestrator.OperationRunnerTasks
   alias FavnOrchestrator.Persistence
@@ -25,32 +26,74 @@ defmodule FavnOrchestrator.TargetCompatibilityPlanner do
   alias FavnOrchestrator.Persistence.Queries.GetTargetBindings
   alias FavnOrchestrator.Persistence.WorkspaceContext
   alias FavnOrchestrator.RunnerIdentityVerifier
+  alias FavnOrchestrator.RunnerRegistry
+  alias FavnOrchestrator.RunnerTasks
 
   @binding_batch 500
+  @inspection_concurrency 32
+  @inspection_timeout_ms 15_000
   @doc "Returns one frozen decision for every selected persisted SQL asset."
-  @spec plan(PlatformContext.t(), WorkspaceContext.t(), Version.t(), DeploymentPlanner.t()) ::
+  @spec plan(
+          PlatformContext.t(),
+          WorkspaceContext.t(),
+          Version.t(),
+          DeploymentPlanner.t(),
+          keyword()
+        ) ::
           {:ok, [DeploymentTargetCompatibility.t()]} | {:error, term()}
   def plan(
         %PlatformContext{} = platform_context,
         %WorkspaceContext{} = workspace_context,
         %Version{} = version,
-        %DeploymentPlanner{} = selection
+        %DeploymentPlanner{} = selection,
+        opts \\ []
       ) do
     with {:ok, deployment_targets} <- DeploymentPlanner.plan(version, selection),
          {:ok, persisted} <- persisted_targets(version, deployment_targets),
          {:ok, bindings} <- fetch_bindings(workspace_context, persisted),
          {:ok, {active_versions, historical_descriptors}} <-
            active_versions(platform_context, bindings) do
+      operation_id = Keyword.get(opts, :operation_id, version.manifest_version_id)
+      progress = Keyword.get(opts, :progress)
+      total = length(persisted)
+      report_progress(progress, 0, total)
+
       decisions =
-        Enum.map(persisted, fn target ->
-          classify_target(
-            workspace_context,
-            target,
-            bindings,
-            active_versions,
-            historical_descriptors,
-            version
-          )
+        persisted
+        |> Task.async_stream(
+          fn target ->
+            ManifestInspectionAdmission.with_slot(fn ->
+              classify_target(
+                workspace_context,
+                target,
+                bindings,
+                active_versions,
+                historical_descriptors,
+                version,
+                operation_id
+              )
+            end)
+          end,
+          max_concurrency: @inspection_concurrency,
+          ordered: true,
+          timeout: :infinity
+        )
+        |> Enum.zip(persisted)
+        |> Enum.with_index(1)
+        |> Enum.map(fn {result, completed} ->
+          decision =
+            case result do
+              {{:ok, decision}, _target} ->
+                decision
+
+              {{:exit, _reason}, target} ->
+                inspection_unavailable_decision(target, Map.get(bindings, target.target_id))
+            end
+
+          if rem(completed, 10) == 0 or completed == total,
+            do: report_progress(progress, completed, total)
+
+          decision
         end)
 
       {:ok, decisions}
@@ -174,7 +217,8 @@ defmodule FavnOrchestrator.TargetCompatibilityPlanner do
          bindings,
          active_versions,
          historical_descriptors,
-         desired_version
+         desired_version,
+         operation_id
        ) do
     binding = Map.get(bindings, target.target_id)
 
@@ -196,7 +240,8 @@ defmodule FavnOrchestrator.TargetCompatibilityPlanner do
           binding,
           active_descriptor,
           inspection_target,
-          inspection_version
+          inspection_version,
+          operation_id
         )
 
       {:error, _reason} ->
@@ -210,14 +255,16 @@ defmodule FavnOrchestrator.TargetCompatibilityPlanner do
          binding,
          active_descriptor,
          inspection_target,
-         inspection_version
+         inspection_version,
+         operation_id
        ) do
     case inspect_physical(
            workspace_context,
            inspection_target,
            inspection_version,
            inspection_asset_ref(inspection_target, target.asset.ref),
-           target.target_id
+           target.target_id,
+           operation_id
          ) do
       {:ok, observed} ->
         result =
@@ -346,19 +393,24 @@ defmodule FavnOrchestrator.TargetCompatibilityPlanner do
     end
   end
 
-  defp inspect_physical(workspace_context, target, version, asset_ref, target_id) do
+  defp inspect_physical(workspace_context, target, version, asset_ref, target_id, operation_id) do
     {:ok, binding} = OperationRunnerTasks.binding(version, asset_ref)
     request = inspection_request(target, version, binding.required_runner_release_id)
+    deadline_at = DateTime.add(DateTime.utc_now(), @inspection_timeout_ms, :millisecond)
 
-    with {:ok, %RelationInspectionResult{} = result} <-
-           OperationRunnerTasks.ensure_and_await(
+    with true <- exact_runner_available?(binding),
+         {:ok, task} <-
+           OperationRunnerTasks.ensure(
              workspace_context,
              version,
              asset_ref,
              :relation_inspection,
              request,
-             {:deployment_target_inspection, target_id}
+             {:deployment_target_inspection, operation_id, target_id},
+             deadline_at: deadline_at
            ),
+         {:ok, %RelationInspectionResult{} = result} <-
+           await_inspection(workspace_context, task.task_id),
          :ok <-
            RunnerIdentityVerifier.verify_inspection_result(
              binding.required_runner_release_id,
@@ -367,8 +419,27 @@ defmodule FavnOrchestrator.TargetCompatibilityPlanner do
          {:ok, physical} <- PhysicalFingerprint.from_inspection(result) do
       {:ok, physical}
     else
+      false -> {:error, :inspection_runner_unavailable}
       {:ok, _invalid} -> {:error, :invalid_runner_inspection_result}
       {:error, _reason} = error -> error
+    end
+  end
+
+  defp exact_runner_available?(binding) do
+    Application.get_env(:favn_orchestrator, :test_runner_executor) != nil or
+      RunnerRegistry.count(binding.runner_pool, binding.required_runner_release_id) > 0
+  catch
+    :exit, _reason -> false
+  end
+
+  defp await_inspection(context, task_id) do
+    case OperationRunnerTasks.await(context, task_id, timeout: @inspection_timeout_ms) do
+      {:error, :runner_task_timeout} = error ->
+        _ = RunnerTasks.request_cancellation(context.workspace_id, task_id, :deadline_reached)
+        error
+
+      result ->
+        result
     end
   end
 
@@ -416,4 +487,15 @@ defmodule FavnOrchestrator.TargetCompatibilityPlanner do
       active_physical_fingerprint: binding && binding.active_physical_fingerprint
     }
   end
+
+  defp report_progress(progress, completed, total) when is_function(progress, 2) do
+    _ = progress.(completed, total)
+    :ok
+  rescue
+    _error -> :ok
+  catch
+    _kind, _reason -> :ok
+  end
+
+  defp report_progress(_progress, _completed, _total), do: :ok
 end

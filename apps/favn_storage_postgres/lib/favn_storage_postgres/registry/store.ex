@@ -15,6 +15,7 @@ defmodule FavnStoragePostgres.Registry.Store do
   alias Favn.Manifest.TargetDescriptor
   alias Favn.Manifest.Version
   alias FavnOrchestrator.ManifestActivationDiagnostics
+  alias FavnOrchestrator.ManifestDeploymentContext
   alias FavnOrchestrator.ConnectionCircuitPolicy
   alias FavnOrchestrator.ExecutionPoolPolicy
   alias FavnOrchestrator.Persistence.CapacityConfiguration
@@ -30,6 +31,18 @@ defmodule FavnStoragePostgres.Registry.Store do
   alias FavnOrchestrator.Persistence.Commands.ProvisionWorkspace
   alias FavnOrchestrator.Persistence.Commands.RegisterExecutionPackages
   alias FavnOrchestrator.Persistence.Commands.RegisterManifest
+  alias FavnOrchestrator.Persistence.Commands.AcceptManifestDeployment
+  alias FavnOrchestrator.Persistence.Commands.AcquireManifestUploadLease
+  alias FavnOrchestrator.Persistence.Commands.RenewManifestUploadLease
+  alias FavnOrchestrator.Persistence.Commands.ReleaseManifestUploadLease
+  alias FavnOrchestrator.Persistence.Commands.ClaimManifestDeployment
+  alias FavnOrchestrator.Persistence.Commands.RenewManifestDeploymentClaim
+  alias FavnOrchestrator.Persistence.Commands.UpdateManifestDeploymentProgress
+  alias FavnOrchestrator.Persistence.Commands.ReleaseManifestDeploymentClaim
+  alias FavnOrchestrator.Persistence.Commands.CompleteManifestDeployment
+  alias FavnOrchestrator.Persistence.Commands.AcquireManifestActivationLease
+  alias FavnOrchestrator.Persistence.Commands.RenewManifestActivationLease
+  alias FavnOrchestrator.Persistence.Commands.ReleaseManifestActivationLease
   alias FavnOrchestrator.Persistence.Error
   alias FavnOrchestrator.Persistence.PlatformContext
   alias FavnOrchestrator.Persistence.Queries.GetDeploymentTargets
@@ -44,6 +57,7 @@ defmodule FavnStoragePostgres.Registry.Store do
   alias FavnOrchestrator.Persistence.Queries.ManifestSelector.ByContentHash
   alias FavnOrchestrator.Persistence.Queries.ManifestSelector.ById
   alias FavnOrchestrator.Persistence.Results.RuntimeState
+  alias FavnOrchestrator.Persistence.Results.ManifestDeployment
   alias FavnOrchestrator.Persistence.Results.CursorPage
   alias FavnOrchestrator.Persistence.TargetIdentity
   alias FavnOrchestrator.Persistence.WorkspaceContext
@@ -61,6 +75,9 @@ defmodule FavnStoragePostgres.Registry.Store do
   alias FavnStoragePostgres.Schemas.ExecutionPackage, as: ExecutionPackageRecord
   alias FavnStoragePostgres.Schemas.ManifestExecutionPackage
   alias FavnStoragePostgres.Schemas.ManifestVersion
+  alias FavnStoragePostgres.Schemas.ManifestDeploymentOperation
+  alias FavnStoragePostgres.Schemas.ManifestDeploymentUploadLease
+  alias FavnStoragePostgres.Schemas.ManifestActivationLease
   alias FavnStoragePostgres.Schemas.ResourceCircuit
   alias FavnStoragePostgres.Schemas.ScheduleCursor
   alias FavnStoragePostgres.Schemas.Workspace
@@ -877,6 +894,7 @@ defmodule FavnStoragePostgres.Registry.Store do
          evidence_bindings,
          manifest_summary
        ) do
+    verify_manifest_activation_lease!(command)
     locked_runtime_state = lock_runtime_state!(command.workspace_context.workspace_id)
     verify_expected_active_deployment!(command, locked_runtime_state)
 
@@ -939,6 +957,31 @@ defmodule FavnStoragePostgres.Registry.Store do
       execution_pool_diagnostics!(configuration)
     )
   end
+
+  defp verify_manifest_activation_lease!(%DeployManifest{
+         activation_lease: %{owner: owner, fence: fence},
+         workspace_context: workspace_context,
+         deployment_id: deployment_id
+       }) do
+    case Repo.get(ManifestActivationLease, workspace_context.workspace_id) do
+      %ManifestActivationLease{
+        operation_id: ^deployment_id,
+        owner: ^owner,
+        fencing_token: ^fence,
+        expires_at: expires_at
+      } ->
+        if DateTime.compare(expires_at, DateTime.utc_now()) == :gt do
+          :ok
+        else
+          Repo.rollback(Error.new(:conflict, "manifest activation lease expired"))
+        end
+
+      _missing_or_stale ->
+        Repo.rollback(Error.new(:conflict, "manifest activation lease was lost"))
+    end
+  end
+
+  defp verify_manifest_activation_lease!(%DeployManifest{activation_lease: nil}), do: :ok
 
   @impl true
   def get_runtime_state(%GetRuntimeState{workspace_context: context}) do
@@ -2418,6 +2461,717 @@ defmodule FavnStoragePostgres.Registry.Store do
 
   defp validate_workspace_read(_context),
     do: {:error, Error.new(:forbidden, "workspace read role required")}
+
+  @impl true
+  def acquire_manifest_upload_lease(%AcquireManifestUploadLease{} = command) do
+    with :ok <- validate_deployment_context(command.context),
+         true <- valid_id?(command.lease_id),
+         true <- match?(%DateTime{}, command.expires_at),
+         true <- match?(%DateTime{}, command.occurred_at),
+         {:ok, :ok} <-
+           Repo.transaction(fn ->
+             SQL.query!(Repo, "SELECT pg_advisory_xact_lock(hashtext($1))", [
+               "favn:manifest-upload-admission"
+             ])
+
+             ManifestDeploymentUploadLease
+             |> where([lease], lease.expires_at <= ^command.occurred_at)
+             |> Repo.delete_all()
+
+             global_count = Repo.aggregate(ManifestDeploymentUploadLease, :count)
+
+             identity_count =
+               ManifestDeploymentUploadLease
+               |> where([lease], lease.service_identity == ^command.context.service_identity)
+               |> Repo.aggregate(:count)
+
+             workspace_count =
+               ManifestDeploymentUploadLease
+               |> where([lease], lease.workspace_id == ^command.context.workspace_id)
+               |> Repo.aggregate(:count)
+
+             if global_count < 2 and identity_count < 1 and workspace_count < 1 do
+               now = database_datetime(command.occurred_at)
+
+               Repo.insert!(%ManifestDeploymentUploadLease{
+                 lease_id: command.lease_id,
+                 workspace_id: command.context.workspace_id,
+                 service_identity: command.context.service_identity,
+                 expires_at: database_datetime(command.expires_at),
+                 inserted_at: now,
+                 updated_at: now
+               })
+
+               :ok
+             else
+               Repo.rollback(
+                 Error.new(:limit_exceeded, "manifest deployment upload admission is busy",
+                   details: %{reason: :deployment_upload_busy}
+                 )
+               )
+             end
+           end) do
+      :ok
+    else
+      false -> {:error, Error.new(:invalid, "invalid manifest upload lease")}
+      {:error, %Error{} = error} -> {:error, error}
+      {:error, reason} -> {:error, ErrorMapper.map(reason)}
+    end
+  rescue
+    error -> {:error, ErrorMapper.map(error)}
+  end
+
+  @impl true
+  def renew_manifest_upload_lease(%RenewManifestUploadLease{} = command) do
+    with :ok <- validate_deployment_context(command.context),
+         true <- valid_id?(command.lease_id),
+         true <- match?(%DateTime{}, command.expires_at),
+         {1, _rows} <-
+           ManifestDeploymentUploadLease
+           |> where(
+             [lease],
+             lease.lease_id == ^command.lease_id and
+               lease.workspace_id == ^command.context.workspace_id and
+               lease.service_identity == ^command.context.service_identity
+           )
+           |> Repo.update_all(
+             set: [
+               expires_at: database_datetime(command.expires_at),
+               updated_at: DateTime.utc_now()
+             ]
+           ) do
+      :ok
+    else
+      false -> {:error, Error.new(:invalid, "invalid manifest upload lease")}
+      {0, _rows} -> {:error, Error.new(:conflict, "manifest upload lease was lost")}
+      {:error, %Error{} = error} -> {:error, error}
+    end
+  rescue
+    error -> {:error, ErrorMapper.map(error)}
+  end
+
+  @impl true
+  def release_manifest_upload_lease(%ReleaseManifestUploadLease{} = command) do
+    with :ok <- validate_deployment_context(command.context),
+         true <- valid_id?(command.lease_id) do
+      ManifestDeploymentUploadLease
+      |> where(
+        [lease],
+        lease.lease_id == ^command.lease_id and
+          lease.workspace_id == ^command.context.workspace_id and
+          lease.service_identity == ^command.context.service_identity
+      )
+      |> Repo.delete_all()
+
+      :ok
+    else
+      false -> {:error, Error.new(:invalid, "invalid manifest upload lease")}
+      {:error, %Error{} = error} -> {:error, error}
+    end
+  rescue
+    error -> {:error, ErrorMapper.map(error)}
+  end
+
+  @impl true
+  def accept_manifest_deployment(%AcceptManifestDeployment{} = command) do
+    version = command.version
+
+    with :ok <- validate_manifest_accept(command),
+         {:ok, verified} <- Version.verify(version),
+         :ok <- validate_manifest_identity(verified),
+         :ok <- validate_serialization_format(verified),
+         {:ok, manifest_json} <- Serializer.encode_manifest(verified.manifest),
+         :ok <- validate_manifest_size(manifest_json),
+         {:ok, manifest} <- Jason.decode(manifest_json),
+         {:ok, atom_strings} <-
+           ManifestAtoms.extract(%{
+             content_hash: verified.content_hash,
+             manifest_index_json: manifest_json
+           }),
+         {:ok, hash} <- decode_hash(verified.content_hash),
+         {:ok, archive_hash} <- decode_hash(command.archive_sha256),
+         {:ok, fingerprint} <- decode_hash(command.request_fingerprint),
+         {:ok, {status, operation, stored}} <-
+           Repo.transaction(fn ->
+             SQL.query!(Repo, "SELECT pg_advisory_xact_lock(hashtext($1))", [
+               "manifest-deployment:#{command.context.workspace_id}:#{command.operation_id}"
+             ])
+
+             require_manifest_upload_lease!(command)
+
+             case Repo.get_by(ManifestDeploymentOperation,
+                    workspace_id: command.context.workspace_id,
+                    operation_id: command.operation_id
+                  ) do
+               %ManifestDeploymentOperation{} = existing ->
+                 verify_manifest_deployment_replay!(
+                   existing,
+                   archive_hash,
+                   fingerprint,
+                   verified
+                 )
+
+               nil ->
+                 required_refs = Publication.required_package_refs(verified)
+
+                 with :ok <- validate_execution_package_refs!(required_refs),
+                      {:ok, stored} <-
+                        insert_or_replay_manifest(verified, hash, manifest, atom_strings),
+                      :ok <- link_manifest_execution_packages!(stored, required_refs) do
+                   insert_manifest_audit!(command.platform_context, stored)
+
+                   operation =
+                     insert_manifest_deployment_operation!(
+                       command,
+                       stored,
+                       archive_hash,
+                       fingerprint
+                     )
+
+                   insert_manifest_deployment_audit!(command, stored)
+
+                   {:accepted, operation, stored}
+                 else
+                   {:error, error} -> Repo.rollback(error)
+                 end
+             end
+           end),
+         :ok <- ManifestCache.put(stored) do
+      {:ok, status, operation}
+    else
+      {:error, %Error{} = error} ->
+        {:error, error}
+
+      {:error, reason} ->
+        {:error,
+         Error.new(:invalid, "invalid manifest deployment", details: %{reason: inspect(reason)})}
+    end
+  rescue
+    error -> {:error, ErrorMapper.map(error)}
+  end
+
+  @impl true
+  def get_manifest_deployment(%{context: context, operation_id: operation_id}) do
+    with :ok <- validate_deployment_context(context),
+         true <- valid_operation_id?(operation_id),
+         %ManifestDeploymentOperation{} = row <-
+           Repo.get_by(ManifestDeploymentOperation,
+             workspace_id: context.workspace_id,
+             operation_id: operation_id
+           ) do
+      {:ok, manifest_deployment_result(row)}
+    else
+      false -> {:error, Error.new(:invalid, "invalid manifest deployment identity")}
+      nil -> {:error, Error.new(:not_found, "manifest deployment was not found")}
+      {:error, %Error{} = error} -> {:error, error}
+    end
+  rescue
+    error -> {:error, ErrorMapper.map(error)}
+  end
+
+  @impl true
+  def claim_manifest_deployment(%ClaimManifestDeployment{} = command) do
+    with :ok <- validate_platform_manifest_write(command.platform_context),
+         true <- valid_id?(command.owner),
+         true <- match?(%DateTime{}, command.expires_at),
+         true <- match?(%DateTime{}, command.occurred_at),
+         {:ok, operation} <-
+           Repo.transaction(fn ->
+             query =
+               ManifestDeploymentOperation
+               |> where(
+                 [operation],
+                 (operation.state == "accepted" and
+                    fragment(
+                      "NOT EXISTS (SELECT 1 FROM favn_control.manifest_deployment_operations AS active WHERE active.workspace_id = ? AND active.state = 'activating')",
+                      operation.workspace_id
+                    )) or
+                   (operation.state == "activating" and
+                      operation.claim_expires_at <= ^command.occurred_at)
+               )
+               |> order_by([operation], asc: operation.accepted_at)
+               |> limit(1)
+               |> lock("FOR UPDATE SKIP LOCKED")
+
+             case Repo.one(query) do
+               nil ->
+                 nil
+
+               operation ->
+                 fence = operation.claim_fence + 1
+
+                 changes = [
+                   state: "activating",
+                   claim_owner: command.owner,
+                   claim_fence: fence,
+                   claim_expires_at: database_datetime(command.expires_at),
+                   activating_at:
+                     operation.activating_at || database_datetime(command.occurred_at),
+                   updated_at: database_datetime(command.occurred_at)
+                 ]
+
+                 {1, _rows} =
+                   ManifestDeploymentOperation
+                   |> where(
+                     [row],
+                     row.workspace_id == ^operation.workspace_id and
+                       row.operation_id == ^operation.operation_id
+                   )
+                   |> Repo.update_all(set: changes)
+
+                 operation
+                 |> struct!(changes)
+                 |> manifest_deployment_result()
+             end
+           end) do
+      {:ok, operation}
+    else
+      false -> {:error, Error.new(:invalid, "invalid manifest deployment claim")}
+      {:error, %Error{} = error} -> {:error, error}
+      {:error, reason} -> {:error, ErrorMapper.map(reason)}
+    end
+  rescue
+    error -> {:error, ErrorMapper.map(error)}
+  end
+
+  @impl true
+  def renew_manifest_deployment_claim(%RenewManifestDeploymentClaim{} = command) do
+    with :ok <- validate_platform_manifest_write(command.platform_context),
+         true <- valid_claim_identity?(command),
+         {1, _rows} <-
+           ManifestDeploymentOperation
+           |> where(
+             [operation],
+             operation.workspace_id == ^command.workspace_id and
+               operation.operation_id == ^command.operation_id and
+               operation.state == "activating" and operation.claim_owner == ^command.owner and
+               operation.claim_fence == ^command.fence
+           )
+           |> Repo.update_all(
+             set: [
+               claim_expires_at: database_datetime(command.expires_at),
+               updated_at: DateTime.utc_now()
+             ]
+           ) do
+      :ok
+    else
+      false -> {:error, Error.new(:invalid, "invalid manifest deployment claim")}
+      {0, _rows} -> {:error, Error.new(:conflict, "manifest deployment claim was lost")}
+      {:error, %Error{} = error} -> {:error, error}
+    end
+  rescue
+    error -> {:error, ErrorMapper.map(error)}
+  end
+
+  @impl true
+  def update_manifest_deployment_progress(%UpdateManifestDeploymentProgress{} = command) do
+    with :ok <- validate_platform_manifest_write(command.platform_context),
+         true <- valid_claim_identity?(command),
+         true <- is_integer(command.completed) and is_integer(command.total),
+         true <- command.completed >= 0 and command.completed <= command.total,
+         true <- match?(%DateTime{}, command.occurred_at),
+         {1, _rows} <-
+           ManifestDeploymentOperation
+           |> where(
+             [operation],
+             operation.workspace_id == ^command.workspace_id and
+               operation.operation_id == ^command.operation_id and
+               operation.state == "activating" and operation.claim_owner == ^command.owner and
+               operation.claim_fence == ^command.fence
+           )
+           |> Repo.update_all(
+             set: [
+               inspection_completed: command.completed,
+               inspection_total: command.total,
+               updated_at: database_datetime(command.occurred_at)
+             ]
+           ) do
+      :ok
+    else
+      false -> {:error, Error.new(:invalid, "invalid manifest deployment progress")}
+      {0, _rows} -> {:error, Error.new(:conflict, "manifest deployment claim was lost")}
+      {:error, %Error{} = error} -> {:error, error}
+    end
+  rescue
+    error -> {:error, ErrorMapper.map(error)}
+  end
+
+  @impl true
+  def release_manifest_deployment_claim(%ReleaseManifestDeploymentClaim{} = command) do
+    with :ok <- validate_platform_manifest_write(command.platform_context),
+         true <- valid_claim_identity?(command),
+         {1, _rows} <-
+           ManifestDeploymentOperation
+           |> where(
+             [operation],
+             operation.workspace_id == ^command.workspace_id and
+               operation.operation_id == ^command.operation_id and
+               operation.state == "activating" and operation.claim_owner == ^command.owner and
+               operation.claim_fence == ^command.fence
+           )
+           |> Repo.update_all(
+             set: [
+               state: "accepted",
+               claim_owner: nil,
+               claim_expires_at: nil,
+               updated_at: database_datetime(command.occurred_at)
+             ]
+           ) do
+      :ok
+    else
+      false -> {:error, Error.new(:invalid, "invalid manifest deployment claim")}
+      {0, _rows} -> {:error, Error.new(:conflict, "manifest deployment claim was lost")}
+      {:error, %Error{} = error} -> {:error, error}
+    end
+  rescue
+    error -> {:error, ErrorMapper.map(error)}
+  end
+
+  @impl true
+  def complete_manifest_deployment(%CompleteManifestDeployment{} = command) do
+    with :ok <- validate_platform_manifest_write(command.platform_context),
+         true <- valid_claim_identity?(command),
+         true <- command.state in [:succeeded, :needs_attention, :failed, :unknown],
+         true <- valid_manifest_completion?(command),
+         {1, [row]} <-
+           ManifestDeploymentOperation
+           |> where(
+             [operation],
+             operation.workspace_id == ^command.workspace_id and
+               operation.operation_id == ^command.operation_id and
+               operation.state == "activating" and operation.claim_owner == ^command.owner and
+               operation.claim_fence == ^command.fence
+           )
+           |> select([operation], operation)
+           |> Repo.update_all(
+             set: [
+               state: Atom.to_string(command.state),
+               deployment_id: command.deployment_id,
+               failure_class: command.failure_class,
+               activation_diagnostics: canonical_json_value(command.activation_diagnostics),
+               claim_owner: nil,
+               claim_expires_at: nil,
+               terminal_at: database_datetime(command.occurred_at),
+               updated_at: database_datetime(command.occurred_at)
+             ]
+           ) do
+      {:ok, manifest_deployment_result(row)}
+    else
+      false -> {:error, Error.new(:invalid, "invalid manifest deployment completion")}
+      {0, _rows} -> {:error, Error.new(:conflict, "manifest deployment claim was lost")}
+      {:error, %Error{} = error} -> {:error, error}
+    end
+  rescue
+    error -> {:error, ErrorMapper.map(error)}
+  end
+
+  @impl true
+  def acquire_manifest_activation_lease(%AcquireManifestActivationLease{} = command) do
+    with :ok <- validate_activation_lease_command(command),
+         {:ok, result} <-
+           Repo.transaction(fn ->
+             SQL.query!(Repo, "SELECT pg_advisory_xact_lock(hashtext($1))", [
+               "manifest-activation:#{command.workspace_context.workspace_id}"
+             ])
+
+             existing = Repo.get(ManifestActivationLease, command.workspace_context.workspace_id)
+
+             cond do
+               is_nil(existing) or
+                   DateTime.compare(existing.expires_at, command.occurred_at) != :gt ->
+                 fence = if existing, do: existing.fencing_token + 1, else: 1
+                 now = database_datetime(command.occurred_at)
+
+                 Repo.insert!(
+                   %ManifestActivationLease{
+                     workspace_id: command.workspace_context.workspace_id,
+                     operation_id: command.operation_id,
+                     owner: command.owner,
+                     fencing_token: fence,
+                     expires_at: database_datetime(command.expires_at),
+                     inserted_at: (existing && existing.inserted_at) || now,
+                     updated_at: now
+                   },
+                   on_conflict:
+                     {:replace, [:operation_id, :owner, :fencing_token, :expires_at, :updated_at]},
+                   conflict_target: [:workspace_id]
+                 )
+
+                 {:ok, fence}
+
+               existing.operation_id == command.operation_id and existing.owner == command.owner ->
+                 {:ok, existing.fencing_token}
+
+               true ->
+                 {:error, :busy}
+             end
+           end) do
+      case result do
+        {:ok, fence} ->
+          {:ok, fence}
+
+        {:error, :busy} ->
+          {:error,
+           Error.new(:conflict, "manifest activation is already in progress",
+             details: %{reason: :manifest_activation_in_progress}
+           )}
+      end
+    else
+      {:error, %Error{} = error} -> {:error, error}
+      {:error, reason} -> {:error, ErrorMapper.map(reason)}
+    end
+  rescue
+    error -> {:error, ErrorMapper.map(error)}
+  end
+
+  @impl true
+  def renew_manifest_activation_lease(%RenewManifestActivationLease{} = command) do
+    with :ok <- validate_activation_lease_command(command),
+         true <- is_integer(command.fence) and command.fence > 0,
+         {1, _rows} <-
+           ManifestActivationLease
+           |> where(
+             [lease],
+             lease.workspace_id == ^command.workspace_context.workspace_id and
+               lease.operation_id == ^command.operation_id and lease.owner == ^command.owner and
+               lease.fencing_token == ^command.fence
+           )
+           |> Repo.update_all(
+             set: [
+               expires_at: database_datetime(command.expires_at),
+               updated_at: DateTime.utc_now()
+             ]
+           ) do
+      :ok
+    else
+      false -> {:error, Error.new(:invalid, "invalid manifest activation lease")}
+      {0, _rows} -> {:error, Error.new(:conflict, "manifest activation lease was lost")}
+      {:error, %Error{} = error} -> {:error, error}
+    end
+  rescue
+    error -> {:error, ErrorMapper.map(error)}
+  end
+
+  @impl true
+  def release_manifest_activation_lease(%ReleaseManifestActivationLease{} = command) do
+    with :ok <- validate_activation_lease_identity(command),
+         true <- is_integer(command.fence) and command.fence > 0,
+         {1, _rows} <-
+           ManifestActivationLease
+           |> where(
+             [lease],
+             lease.workspace_id == ^command.workspace_context.workspace_id and
+               lease.operation_id == ^command.operation_id and lease.owner == ^command.owner and
+               lease.fencing_token == ^command.fence
+           )
+           |> Repo.delete_all() do
+      :ok
+    else
+      false -> {:error, Error.new(:invalid, "invalid manifest activation lease")}
+      {0, _rows} -> {:error, Error.new(:conflict, "manifest activation lease was lost")}
+      {:error, %Error{} = error} -> {:error, error}
+    end
+  rescue
+    error -> {:error, ErrorMapper.map(error)}
+  end
+
+  defp validate_deployment_context(%ManifestDeploymentContext{} = context) do
+    if ManifestDeploymentContext.valid?(context),
+      do: :ok,
+      else: {:error, Error.new(:forbidden, "valid manifest deployment authority required")}
+  end
+
+  defp validate_deployment_context(_context),
+    do: {:error, Error.new(:forbidden, "valid manifest deployment authority required")}
+
+  defp validate_manifest_accept(%AcceptManifestDeployment{} = command) do
+    with :ok <- validate_deployment_context(command.context),
+         :ok <- validate_platform_manifest_write(command.platform_context),
+         true <- WorkspaceContext.valid?(command.workspace_context),
+         true <- :platform_operator in command.workspace_context.roles,
+         true <- command.context.workspace_id == command.workspace_context.workspace_id,
+         true <- valid_operation_id?(command.operation_id),
+         true <- valid_id?(command.upload_lease_id),
+         true <- canonical_hash?(command.archive_sha256),
+         true <- canonical_hash?(command.request_fingerprint),
+         true <- match?(%DateTime{}, command.occurred_at) do
+      :ok
+    else
+      false -> {:error, Error.new(:invalid, "invalid manifest deployment acceptance")}
+      {:error, %Error{} = error} -> {:error, error}
+    end
+  end
+
+  defp require_manifest_upload_lease!(command) do
+    lease =
+      ManifestDeploymentUploadLease
+      |> where(
+        [lease],
+        lease.lease_id == ^command.upload_lease_id and
+          lease.workspace_id == ^command.context.workspace_id and
+          lease.service_identity == ^command.context.service_identity and
+          fragment("? > clock_timestamp()", lease.expires_at)
+      )
+      |> lock("FOR UPDATE")
+      |> Repo.one()
+
+    if is_nil(lease) do
+      Repo.rollback(
+        Error.new(:conflict, "manifest upload lease was lost",
+          details: %{reason: :manifest_upload_lease_lost}
+        )
+      )
+    end
+
+    :ok
+  end
+
+  defp insert_manifest_deployment_operation!(command, version, archive_hash, fingerprint) do
+    now = database_datetime(command.occurred_at)
+
+    row = %ManifestDeploymentOperation{
+      workspace_id: command.context.workspace_id,
+      operation_id: command.operation_id,
+      archive_sha256: archive_hash,
+      request_fingerprint: fingerprint,
+      service_identity: command.context.service_identity,
+      manifest_version_id: version.manifest_version_id,
+      manifest_content_hash: Base.decode16!(version.content_hash, case: :lower),
+      runner_releases: canonical_json_value(version.runner_releases),
+      state: "accepted",
+      claim_fence: 0,
+      accepted_at: now,
+      inserted_at: now,
+      updated_at: now
+    }
+
+    row
+    |> Repo.insert!()
+    |> manifest_deployment_result()
+  end
+
+  defp insert_manifest_deployment_audit!(command, version) do
+    command_hash =
+      :crypto.hash(
+        :sha256,
+        command.context.workspace_id <> <<0>> <> command.operation_id
+      )
+      |> Base.encode16(case: :lower)
+
+    now = database_datetime(command.occurred_at)
+
+    Repo.insert!(%AuthPlatformAuditEntry{
+      command_id: "manifest.deploy.accept:" <> command_hash,
+      principal_id: "service:" <> command.context.service_identity,
+      action: "manifest.deployment.accepted",
+      subject_kind: "manifest_deployment",
+      subject_id: command.operation_id,
+      detail: %{
+        "workspace_id" => command.context.workspace_id,
+        "manifest_version_id" => version.manifest_version_id,
+        "content_hash" => version.content_hash,
+        "archive_sha256" => command.archive_sha256
+      },
+      occurred_at: now,
+      inserted_at: now
+    })
+
+    :ok
+  end
+
+  defp verify_manifest_deployment_replay!(existing, archive_hash, fingerprint, version) do
+    if existing.archive_sha256 == archive_hash and existing.request_fingerprint == fingerprint and
+         existing.manifest_version_id == version.manifest_version_id and
+         existing.manifest_content_hash == Base.decode16!(version.content_hash, case: :lower) do
+      {:replay, manifest_deployment_result(existing), version}
+    else
+      Repo.rollback(
+        Error.new(:conflict, "manifest deployment operation id has different content",
+          details: %{reason: :deployment_operation_conflict}
+        )
+      )
+    end
+  end
+
+  defp manifest_deployment_result(row) do
+    %ManifestDeployment{
+      workspace_id: row.workspace_id,
+      operation_id: row.operation_id,
+      archive_sha256: Base.encode16(row.archive_sha256, case: :lower),
+      request_fingerprint: Base.encode16(row.request_fingerprint, case: :lower),
+      service_identity: row.service_identity,
+      manifest_version_id: row.manifest_version_id,
+      manifest_content_hash: Base.encode16(row.manifest_content_hash, case: :lower),
+      runner_releases: row.runner_releases,
+      state: String.to_existing_atom(row.state),
+      deployment_id: row.deployment_id,
+      failure_class: row.failure_class,
+      activation_diagnostics: row.activation_diagnostics,
+      claim_owner: row.claim_owner,
+      claim_fence: if(row.claim_fence > 0, do: row.claim_fence),
+      claim_expires_at: row.claim_expires_at,
+      inspection_total: row.inspection_total,
+      inspection_completed: row.inspection_completed,
+      accepted_at: row.accepted_at,
+      activating_at: row.activating_at,
+      terminal_at: row.terminal_at,
+      inserted_at: row.inserted_at,
+      updated_at: row.updated_at
+    }
+  end
+
+  defp valid_claim_identity?(command) do
+    valid_id?(command.workspace_id) and valid_operation_id?(command.operation_id) and
+      valid_id?(command.owner) and is_integer(command.fence) and command.fence > 0
+  end
+
+  defp valid_manifest_completion?(%{
+         state: state,
+         deployment_id: deployment_id,
+         activation_diagnostics: diagnostics
+       })
+       when state in [:succeeded, :needs_attention] do
+    with true <- valid_id?(deployment_id),
+         {:ok, %ManifestActivationDiagnostics{} = parsed} <-
+           ManifestActivationDiagnostics.from_map(diagnostics) do
+      (state == :succeeded and parsed.unresolved_inspection_count == 0) or
+        (state == :needs_attention and parsed.unresolved_inspection_count > 0)
+    else
+      _invalid -> false
+    end
+  end
+
+  defp valid_manifest_completion?(%{
+         state: state,
+         failure_class: failure_class,
+         activation_diagnostics: nil
+       })
+       when state in [:failed, :unknown],
+       do: valid_id?(failure_class)
+
+  defp validate_activation_lease_command(command) do
+    if validate_activation_lease_identity(command) == :ok and
+         match?(%DateTime{}, command.expires_at) and
+         (not Map.has_key?(command, :occurred_at) or match?(%DateTime{}, command.occurred_at)) do
+      :ok
+    else
+      {:error, Error.new(:forbidden, "valid manifest activation lease authority required")}
+    end
+  end
+
+  defp validate_activation_lease_identity(command) do
+    if WorkspaceContext.valid?(command.workspace_context) and valid_id?(command.operation_id) and
+         valid_id?(command.owner) do
+      :ok
+    else
+      {:error, Error.new(:forbidden, "valid manifest activation lease authority required")}
+    end
+  end
+
+  defp valid_operation_id?(value) do
+    is_binary(value) and byte_size(value) in 1..128 and
+      Regex.match?(~r/\A[A-Za-z0-9][A-Za-z0-9._-]*\z/, value)
+  end
 
   defp database_datetime(%DateTime{} = datetime),
     do: DateTime.add(datetime, 0, :microsecond)

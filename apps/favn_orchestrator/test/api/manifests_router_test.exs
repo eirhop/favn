@@ -18,6 +18,9 @@ defmodule FavnOrchestrator.API.ManifestsRouterTest do
 
     def get_manifest(_query), do: {:error, Error.new(:not_found, "manifest not found")}
     def begin_manifest_deployment(query), do: {:ok, {:new, query.idempotency}}
+    def acquire_manifest_activation_lease(_command), do: {:ok, 1}
+    def renew_manifest_activation_lease(_command), do: :ok
+    def release_manifest_activation_lease(_command), do: :ok
     def heartbeat_manifest_deployment(_command), do: :ok
     def abandon_manifest_deployment(_command), do: :ok
     def get_runtime_state(_query), do: {:error, :active_manifest_not_set}
@@ -44,6 +47,9 @@ defmodule FavnOrchestrator.API.ManifestsRouterTest do
       do: {:ok, Application.fetch_env!(:favn_orchestrator, :manifest_router_test_version)}
 
     def begin_manifest_deployment(query), do: {:ok, {:new, query.idempotency}}
+    def acquire_manifest_activation_lease(_command), do: {:ok, 1}
+    def renew_manifest_activation_lease(_command), do: :ok
+    def release_manifest_activation_lease(_command), do: :ok
     def heartbeat_manifest_deployment(_command), do: :ok
     def abandon_manifest_deployment(_command), do: :ok
     def get_runtime_state(_query), do: {:error, Error.new(:not_found, "no active deployment")}
@@ -152,6 +158,36 @@ defmodule FavnOrchestrator.API.ManifestsRouterTest do
     def complete_operator_command(_command), do: :ok
   end
 
+  defmodule ActivationBusyManifestStore do
+    alias FavnOrchestrator.Persistence.Error
+
+    def begin_manifest_deployment(query), do: {:ok, {:new, query.idempotency}}
+
+    def acquire_manifest_activation_lease(_command) do
+      {:error,
+       Error.new(:conflict, "manifest activation is already in progress",
+         details: %{reason: :manifest_activation_in_progress}
+       )}
+    end
+
+    def heartbeat_manifest_deployment(_command), do: :ok
+    def abandon_manifest_deployment(_command), do: :ok
+
+    def record_audit(_command), do: :ok
+
+    def reserve_operator_command(command) do
+      {:ok,
+       %{
+         key_hash: command.key_hash,
+         request_fingerprint: command.request_fingerprint,
+         expires_at: command.expires_at,
+         replayed?: false
+       }}
+    end
+
+    def complete_operator_command(_command), do: :ok
+  end
+
   setup do
     previous_tokens = Application.get_env(:favn_orchestrator, :api_service_tokens)
 
@@ -236,6 +272,17 @@ defmodule FavnOrchestrator.API.ManifestsRouterTest do
 
     assert response.status == 404
     assert get_in(Jason.decode!(response.resp_body), ["error", "code"]) == "not_found"
+  end
+
+  test "legacy activation reports the workspace activation fence with a stable conflict" do
+    start_manifest_runtime(ActivationBusyManifestStore)
+
+    response = activation_request("mv_busy", "service-activation-busy", %{})
+
+    assert response.status == 409
+
+    assert get_in(Jason.decode!(response.resp_body), ["error", "code"]) ==
+             "manifest_activation_in_progress"
   end
 
   test "successful activation returns bounded inspection diagnostics" do

@@ -273,6 +273,7 @@ defmodule FavnOrchestrator.ManifestStore do
       :capacity_scopes,
       :target_compatibilities,
       :activation_diagnostics,
+      :activation_lease,
       :expected_active_deployment_id,
       :idempotency,
       :occurred_at
@@ -297,6 +298,7 @@ defmodule FavnOrchestrator.ManifestStore do
         capacity_scopes: merge_capacity_scopes([], Keyword.get(opts, :capacity_scopes, [])),
         target_compatibilities: Keyword.get(opts, :target_compatibilities, []),
         activation_diagnostics: Keyword.get(opts, :activation_diagnostics),
+        activation_lease: Keyword.get(opts, :activation_lease),
         expected_active_deployment_id:
           Keyword.get(opts, :expected_active_deployment_id, :unchecked),
         idempotency: Keyword.get(opts, :idempotency),

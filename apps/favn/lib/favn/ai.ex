@@ -295,6 +295,11 @@ defmodule Favn.AI do
     The customer owns production Compose/platform configuration and the runner
     image pipeline; `mix favn.init --target deployment` copies a non-overwriting
     example.
+    `mix favn.build.manifest` also produces one deterministic `.tar.gz` archive
+    and its SHA-256. For production deployment, read the
+    [Deploying A Manifest Archive](manifest-deployment.html) guide. Any
+    authorized HTTPS client may upload that unchanged archive directly or
+    through a private relay; the uploader needs no Favn runtime dependencies.
     `mix favn.activate` accepts bounded request and reconciliation timeouts plus
     an operator-supplied operation id. A request with an unknown transport or
     gateway outcome returns success only after the exact workspace manifest is

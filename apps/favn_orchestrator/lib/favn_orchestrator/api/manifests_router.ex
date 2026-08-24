@@ -376,6 +376,20 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
           %{}
         )
 
+      {:error, %Error{kind: :conflict, details: %{reason: :manifest_activation_in_progress}}} ->
+        activation_rejected(
+          conn,
+          context,
+          session,
+          actor,
+          manifest_version_id,
+          idempotency,
+          409,
+          "manifest_activation_in_progress",
+          "Another manifest activation is already in progress for this workspace",
+          %{}
+        )
+
       {:error, reason}
       when is_tuple(reason) and
              elem(reason, 0) in [

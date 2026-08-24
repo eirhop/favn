@@ -36,7 +36,10 @@ Favn uses this rule:
 
 ```text
 Authoring code produces a compact manifest index and exact execution packages.
-The orchestrator persists packages, then persists and activates index versions.
+The production build packages both into one deterministic manifest archive.
+Any authorized HTTPS client may transport that unchanged archive. The
+orchestrator streams and validates it, persists packages in bounded batches,
+then atomically persists the index version and durable activation intent.
 Runs use one pinned manifest version.
 The runner executes work derived from that pinned version and one selected package.
 ```
@@ -87,6 +90,8 @@ The safe path is:
 User module
   -> public Favn DSL declarations
   -> compact manifest index + immutable execution packages
+  -> deterministic manifest .tar.gz transport artifact
+  -> authorized direct upload or deployment-specific private relay
   -> persisted packages and index version in the orchestrator
   -> active manifest selection or explicit manifest version selection
   -> orchestrator run planning and admission
