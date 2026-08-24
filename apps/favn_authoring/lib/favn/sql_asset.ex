@@ -2303,14 +2303,14 @@ defmodule Favn.SQLAsset do
       case materialization do
         {:incremental, opts} ->
           if Keyword.fetch!(opts, :strategy) == :replace_groups,
-            do: MapSet.new([:replacement_scope]),
-            else: MapSet.new()
+            do: [:replacement_scope],
+            else: []
 
         _other ->
-          MapSet.new()
+          []
       end
 
-    unexpected = MapSet.difference(relations, allowed) |> MapSet.to_list()
+    unexpected = relations |> MapSet.to_list() |> Enum.reject(&(&1 in allowed))
 
     case unexpected do
       [] ->
