@@ -7,7 +7,10 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
 
   alias Ecto.Adapters.SQL
   alias Ecto.Adapters.SQL.Sandbox
+  alias Favn.Manifest
+  alias Favn.Manifest.Asset
   alias Favn.Manifest.Version
+  alias Favn.RelationRef
   alias FavnOrchestrator.ManifestDeploymentContext
   alias FavnOrchestrator.ManifestActivationDiagnostics
   alias FavnOrchestrator.API.ManifestDeployment
@@ -84,17 +87,24 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
 
     on_exit(fn -> restore_env(:manifest_deployer_tokens, previous_tokens) end)
 
+    ref = {MyApp.ManifestDeploymentAsset, :asset}
+
+    asset =
+      FavnTestSupport.with_target_descriptor(%Asset{
+        ref: ref,
+        module: elem(ref, 0),
+        name: elem(ref, 1),
+        type: :sql,
+        relation:
+          RelationRef.new!(connection: :warehouse, schema: "manifest", name: "deployment"),
+        materialization: :table,
+        execution_package_hash: String.duplicate("a", 64)
+      })
+
     manifest =
-      FavnTestSupport.with_manifest_contract(
-        %{
-          assets: [],
-          pipelines: [],
-          schedules: [],
-          graph: %{},
-          metadata: %{}
-        },
-        %{"default" => FavnTestSupport.runner_release_id()}
-      )
+      %Manifest{assets: [asset]}
+      |> FavnTestSupport.with_manifest_graph()
+      |> FavnTestSupport.with_manifest_contract()
 
     {:ok, version} = Version.new(manifest)
 
