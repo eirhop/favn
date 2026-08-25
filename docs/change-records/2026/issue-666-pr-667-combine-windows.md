@@ -2,13 +2,13 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Plan reviewed |
+| Status | Implementing |
 | Type | Feature |
 | Primary issue | [#666](https://github.com/eirhop/favn/issues/666) |
-| Pull request | Pending |
+| Pull request | [#667](https://github.com/eirhop/favn/pull/667) |
 | Related work | [#168](https://github.com/eirhop/favn/issues/168), [#531](https://github.com/eirhop/favn/issues/531), [#532](https://github.com/eirhop/favn/issues/532), [#538](https://github.com/eirhop/favn/issues/538) |
 | Affected areas | Public pipeline DSL and guides, manifest/window contracts, planner, runner execution, freshness and coverage evidence, backfills, rebuilds, operator API/CLI, and View forms |
-| Approved plan commit | Pending independent review |
+| Approved plan commit | `a25e9758` |
 | Last updated | 2026-08-25 |
 
 ## One-minute summary
