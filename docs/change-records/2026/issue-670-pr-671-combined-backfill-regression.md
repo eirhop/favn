@@ -2,13 +2,13 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Plan reviewed |
+| Status | Implementing |
 | Type | Bug fix |
 | Primary issue | [#670](https://github.com/eirhop/favn/issues/670) |
-| Pull request | Pending |
+| Pull request | [#671](https://github.com/eirhop/favn/pull/671) |
 | Related work | [Issue #666](https://github.com/eirhop/favn/issues/666), [PR #667](https://github.com/eirhop/favn/pull/667) |
 | Affected areas | Durable run submissions, backfill recovery, asset coverage backfills, pipeline and asset backfill forms |
-| Approved plan commit | Pending independent review |
+| Approved plan commit | `973f806d` |
 | Last updated | 2026-08-25 |
 
 ## One-minute summary
