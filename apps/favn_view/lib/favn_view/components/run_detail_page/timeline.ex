@@ -129,8 +129,7 @@ defmodule FavnView.Components.RunDetailPage.Timeline do
           data-running={to_string(@lane.bar.running?)}
           title={bar_title(@lane)}
           aria-label={bar_title(@lane)}
-        >
-        </.link>
+        ></.link>
 
         <span
           :if={is_nil(@lane.bar)}
@@ -163,8 +162,7 @@ defmodule FavnView.Components.RunDetailPage.Timeline do
           style={bar_style(@band.summary.bar)}
           data-running={to_string(@band.summary.bar.running?)}
           title={summary_label(@band.summary)}
-        >
-        </span>
+        ></span>
       </div>
     </div>
     """
@@ -180,8 +178,7 @@ defmodule FavnView.Components.RunDetailPage.Timeline do
       style={"left:#{@offset}%"}
       data-testid="run-timeline-now"
       aria-hidden="true"
-    >
-    </span>
+    ></span>
     """
   end
 
