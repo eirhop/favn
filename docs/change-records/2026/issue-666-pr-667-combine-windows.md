@@ -542,7 +542,7 @@ they continue to read exact coverage rows.
   `favn_core`; all durable orchestration remains behind the orchestrator facade
   and persistence behaviours; `favn_view` calls only that facade; SQL execution
   remains runner-local; PostgreSQL owns projection and lock implementation.
-- Implementation complexity: 1,278 production lines added and 173 deleted.
+- Implementation complexity: 1,254 production lines added and 173 deleted.
   The implementation is below the estimated production range because existing
   range expansion, ledger rows, rebuild items/candidates, target locks, and
   checkbox components were reused directly.
@@ -551,18 +551,18 @@ they continue to read exact coverage rows.
   physical-batch table, or new retry lifecycle.
 - Canonical documentation updated: authored window behavior, local CLI use,
   features, rebuild architecture, PostgreSQL test setup, and `Favn.AI` routing.
-- Supporting proof: 1,251 lines added and 128 deleted. Exact allocation by the
+- Supporting proof: 1,244 lines added and 128 deleted. Exact allocation by the
   original eight slices would be artificial because the same planner, rebuild,
   and PostgreSQL integration tests prove several slices; the exact aggregate is
-  2,529 additions and 301 deletions.
+  2,498 additions and 301 deletions.
 
 ## Deviations from the approved plan
 
-- The production implementation is 102 lines below the approved minimum. This
+- The production implementation is 126 lines below the approved minimum. This
   is a favorable simplification: compact range metadata and existing lifecycle
   tables were sufficient, so no new grouped persistence or batching service was
   required.
-- Supporting proof is 939 additions below the approved minimum. Existing
+- Supporting proof is 946 additions below the approved minimum. Existing
   planner, lifecycle, PostgreSQL integration, and LiveView harnesses exercised
   the new paths directly, so the change did not need parallel fixtures or a new
   end-to-end framework.
@@ -614,11 +614,11 @@ they continue to read exact coverage rows.
 | `favn_authoring` fast suite | 148 passed | DSL behavior |
 | `favn_core` fast suite | 452 passed after rebase to `origin/main` | Policy, range identity, planner, daily/monthly/hourly behavior, and current target-descriptor compatibility |
 | `favn` fast suite | 183 passed, 3 excluded | CLI and public boundary |
-| `favn_view` fast suite | 545 passed, 1 excluded | Forms, defaults, events, empty-control state preservation, and curated design-system rendering |
+| `favn_view` fast suite | 551 passed, 1 excluded | Forms, defaults, events, empty-control state preservation, and curated design-system rendering on latest `main` |
 | `favn_runner` fast suite | 254/255 passed in the final full run; the unrelated drain test passed immediately alone | Empty-generation schema/check behavior; one local timing/setup flake remains outside this feature |
-| `favn_orchestrator` fast suite | 727 passed, 2 excluded | Planning, override propagation, shared-child uncertainty, rebuild reconciliation, candidate discard, snapshots, and lifecycle |
+| `favn_orchestrator` fast suite | 731 passed, 2 excluded | Planning, upstream durable-submission recovery, shared-child uncertainty, rebuild reconciliation, candidate discard, snapshots, and lifecycle |
 | PostgreSQL feature tests | 4 passed together against local PostgreSQL 18 in Docker | Lock-expiry exclusion through the live combined claim, exact range coverage with one freshness row, no synthetic empty evidence, HTTP override propagation, grouped ledger persistence, and append rejection before mutation |
-| `favn_storage_postgres` fast suite | 334/335 passed, 18 excluded against the disposable Docker PostgreSQL 18 `favn_test` database | Broad real-PostgreSQL regression evidence after rebase; the existing protected-password bootstrap test remains incompatible with this local temporary-file permission environment |
+| `favn_storage_postgres` fast suite | 333/335 passed, 19 excluded against the disposable Docker PostgreSQL 18 `favn_test` database; the unrelated runner-task timing failure passed immediately alone | Broad real-PostgreSQL regression evidence after migration through `20260825000000`; the existing protected-password bootstrap test remains incompatible with this local temporary-file permission environment |
 
 ### Not verified
 
@@ -630,9 +630,9 @@ they continue to read exact coverage rows.
 
 | Field | Result |
 | --- | --- |
-| Reviewer | Independent `gpt-5.6-sol` agent at extra-high reasoning; approved rebased commit `e5908a95` |
-| Compared | Approved plan, rebased implementation, tests, diagnostics, scope accounting, and docs |
-| Deviations complete | Yes; production is 102 additions below the approved minimum and supporting proof is 939 below, both through reuse rather than omitted behavior |
-| Findings | Reviews found dropped overrides, late append rejection, lock-expiry overlap, permanent shared-ledger divergence under uncertainty, orphaned combined-append cleanup, and rebuild checkbox state loss. |
+| Reviewer | Independent `gpt-5.6-sol` agent at extra-high reasoning; approved latest-main rebased commit `92d863e8` on base `c19f14c5` |
+| Compared | Approved plan, latest-main rebased implementation, PR #669 conflict resolution, tests, diagnostics, scope accounting, and docs |
+| Deviations complete | Yes; production is 126 additions below the approved minimum and supporting proof is 946 below, both through reuse rather than omitted behavior |
+| Findings | Reviews found dropped overrides, late append rejection, lock-expiry overlap, permanent shared-ledger divergence under uncertainty, orphaned combined-append cleanup, and rebuild checkbox state loss. The latest-main review also checked the overlapping durable backfill-submission recovery path. |
 | Findings addressed and rechecked | Yes; every finding is fixed, has focused regression proof, and passed the post-rebase comparison. |
 | Verdict | Approved; no actionable code, integration, persistence, lifecycle, UI, or scope findings remain. |
