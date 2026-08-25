@@ -119,7 +119,12 @@ defmodule FavnOrchestrator.RunServer do
         :renew_storage_ownership,
         %{storage_context: context, storage_ownership: ownership} = state
       ) do
-    case RunOwnership.renew(context, ownership) do
+    result =
+      with :ok <- renew_materialization_locks(state) do
+        RunOwnership.renew(context, ownership)
+      end
+
+    case result do
       {:ok, renewed} ->
         state = Map.put(state, :storage_ownership, renewed)
         {:noreply, schedule_ownership_renewal(state)}
@@ -595,6 +600,13 @@ defmodule FavnOrchestrator.RunServer do
       Process.send_after(self(), :renew_storage_ownership, interval)
     )
   end
+
+  defp renew_materialization_locks(%{execution_state: %{work_set: work_set}})
+       when not is_nil(work_set),
+       do:
+         FavnOrchestrator.RunServer.Execution.ActiveTaskSet.renew_materialization_locks(work_set)
+
+  defp renew_materialization_locks(_state), do: :ok
 
   defp release_storage_ownership(
          %{storage_context: context, storage_ownership: ownership} = state

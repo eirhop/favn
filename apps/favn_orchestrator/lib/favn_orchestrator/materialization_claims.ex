@@ -19,6 +19,9 @@ defmodule FavnOrchestrator.MaterializationClaims do
   alias FavnOrchestrator.Persistence
   alias FavnOrchestrator.Persistence.Commands.ClaimMaterialization
   alias FavnOrchestrator.Persistence.Commands.FinishMaterialization
+  alias FavnOrchestrator.Persistence.Commands.AcquireTargetOperationLocks
+  alias FavnOrchestrator.Persistence.Commands.ReleaseTargetOperationLocks
+  alias FavnOrchestrator.Persistence.Commands.RenewTargetOperationLocks
   alias FavnOrchestrator.Persistence.Results.MaterializationDecision
   alias FavnOrchestrator.Persistence.SystemContext
   alias FavnOrchestrator.Persistence.TargetIdentity
@@ -26,6 +29,7 @@ defmodule FavnOrchestrator.MaterializationClaims do
   alias FavnOrchestrator.Storage.JsonSafe
 
   @materialization_claim_timeout_buffer_ms 60_000
+  @combined_lock_lease_ms 60_000
 
   @type claim :: map()
   @type node_key :: Favn.Plan.node_key()
@@ -64,6 +68,7 @@ defmodule FavnOrchestrator.MaterializationClaims do
            }),
          :ok <- validate_authority(run_state),
          {:ok, generation} <- pinned_generation(node, asset),
+         {:ok, operation_lock} <- acquire_operation_lock(run_state, node, work),
          producer_identity <-
            producer_identity(run_state, version, node_key, decisions) <>
              ":" <> generation.evidence_generation_id,
@@ -85,7 +90,10 @@ defmodule FavnOrchestrator.MaterializationClaims do
            manifest_content_hash: version.content_hash,
            execution_package_hash: work.execution_package && work.execution_package.content_hash,
            runtime_input_lineage: Map.get(work.metadata, :runtime_input_lineage),
+           logical_window_range: logical_window_range(node),
+           empty_generation: work.rebuild_empty_generation,
            target_operation: work.target_operation,
+           target_operation_lock: operation_lock,
            target_generation_id: generation.target_generation_id,
            evidence_generation_id: generation.evidence_generation_id,
            owner_id: run_state.storage_owner_id,
@@ -95,7 +103,7 @@ defmodule FavnOrchestrator.MaterializationClaims do
            expires_at: DateTime.add(now, ttl_ms(run_state), :millisecond)
          },
          {:ok, %MaterializationDecision{} = decision} <-
-           Persistence.stores().materialization.claim(%ClaimMaterialization{
+           claim_materialization(claim, %ClaimMaterialization{
              workspace_context:
                SystemContext.workspace(run_state.workspace_id, :materialization_claim),
              command_id: command_id("claim", claim.claim_key, run_state.id),
@@ -103,7 +111,7 @@ defmodule FavnOrchestrator.MaterializationClaims do
              deployment_id: run_state.deployment_id,
              target_kind: :asset,
              target_id: TargetIdentity.for_asset(node.ref),
-             operation_id: work.rebuild_operation_id,
+             operation_id: operation_id(work, operation_lock),
              target_generation_id: generation.target_generation_id,
              evidence_generation_id: generation.evidence_generation_id,
              partition_key: freshness_key,
@@ -112,7 +120,9 @@ defmodule FavnOrchestrator.MaterializationClaims do
              lease_duration_ms: ttl_ms(run_state),
              occurred_at: now
            }) do
-      classify_claim(decision, claim)
+      decision
+      |> classify_claim(claim)
+      |> retain_or_release_operation_lock(claim)
     end
   end
 
@@ -155,6 +165,8 @@ defmodule FavnOrchestrator.MaterializationClaims do
              "manifest_content_hash" => field(claim, :manifest_content_hash),
              "execution_package_hash" => field(claim, :execution_package_hash),
              "runtime_input_lineage" => claim |> field(:runtime_input_lineage) |> JsonSafe.data(),
+             "logical_window_range" => field(claim, :logical_window_range),
+             "empty_generation" => field(claim, :empty_generation) == true,
              "check_results" => result_check_results(result),
              "contract_validation" => result_contract_validation(result),
              "rows_affected" => result_rows_affected(result),
@@ -162,7 +174,7 @@ defmodule FavnOrchestrator.MaterializationClaims do
              "evidence_generation_id" => field(claim, :evidence_generation_id)
            }
          ) do
-      {:ok, %MaterializationDecision{}} -> :ok
+      {:ok, %MaterializationDecision{}} -> release_operation_lock(claim)
       {:error, reason} -> {:error, {:complete_materialization_claim_failed, reason}}
     end
   end
@@ -178,7 +190,7 @@ defmodule FavnOrchestrator.MaterializationClaims do
     case finish(claim, :failed,
            error: JsonSafe.error(%{status: failure_status(reason), reason: reason})
          ) do
-      {:ok, %MaterializationDecision{}} -> :ok
+      {:ok, %MaterializationDecision{}} -> release_operation_lock(claim)
       {:error, reason} -> {:error, {:fail_materialization_claim_failed, reason}}
     end
   end
@@ -259,6 +271,17 @@ defmodule FavnOrchestrator.MaterializationClaims do
     |> Map.put(:expires_at, persisted.expires_at)
   end
 
+  defp claim_materialization(claim, command) do
+    case Persistence.stores().materialization.claim(command) do
+      {:ok, %MaterializationDecision{}} = result ->
+        result
+
+      {:error, _reason} = error ->
+        _ = release_operation_lock(claim)
+        error
+    end
+  end
+
   defp validate_authority(%RunState{
          workspace_id: workspace_id,
          deployment_id: deployment_id,
@@ -284,6 +307,102 @@ defmodule FavnOrchestrator.MaterializationClaims do
   end
 
   defp field(map, key), do: Map.get(map, key, Map.get(map, Atom.to_string(key)))
+
+  @doc false
+  @spec renew_operation_lock(claim()) :: :ok | {:error, term()}
+  def renew_operation_lock(claim) when is_map(claim) do
+    case field(claim, :target_operation_lock) do
+      nil ->
+        :ok
+
+      lock ->
+        case Persistence.stores().target_operation_locks.renew_many(%RenewTargetOperationLocks{
+               workspace_context:
+                 SystemContext.workspace(field(claim, :workspace_id), :materialization_lock),
+               command_id:
+                 command_id("renew-lock", {key(claim), lock.fencing_token}, lock.version),
+               operation_id: lock.operation_id,
+               lease_owner: lock.lease_owner,
+               locks: [%{target_id: lock.target_id, fencing_token: lock.fencing_token}],
+               lease_duration_ms: @combined_lock_lease_ms,
+               occurred_at: DateTime.utc_now()
+             }) do
+          {:ok, [_renewed]} -> :ok
+          {:error, reason} -> {:error, reason}
+        end
+    end
+  end
+
+  defp acquire_operation_lock(run_state, %{window: %{logical_window_count: count}} = node, work)
+       when is_integer(count) and count > 1 and is_nil(work.rebuild_operation_id) do
+    operation_id = combined_operation_id(run_state, node)
+
+    case Persistence.stores().target_operation_locks.acquire_many(%AcquireTargetOperationLocks{
+           workspace_context:
+             SystemContext.workspace(run_state.workspace_id, :materialization_lock),
+           command_id: command_id("acquire-lock", operation_id, node.target_id),
+           target_ids: [node.target_id],
+           operation_id: operation_id,
+           operation_type: :materialization,
+           lease_owner: run_state.storage_owner_id,
+           lease_duration_ms: @combined_lock_lease_ms,
+           occurred_at: DateTime.utc_now()
+         }) do
+      {:ok, [lock]} -> {:ok, lock}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp acquire_operation_lock(_run_state, _node, _work), do: {:ok, nil}
+
+  defp operation_id(%{rebuild_operation_id: operation_id}, _lock)
+       when is_binary(operation_id),
+       do: operation_id
+
+  defp operation_id(_work, %{operation_id: operation_id}), do: operation_id
+  defp operation_id(_work, nil), do: nil
+
+  defp retain_or_release_operation_lock({:ok, _claim} = result, _requested), do: result
+
+  defp retain_or_release_operation_lock(result, requested) do
+    _ = release_operation_lock(requested)
+    result
+  end
+
+  defp release_operation_lock(claim) do
+    case field(claim, :target_operation_lock) do
+      nil ->
+        :ok
+
+      lock ->
+        Persistence.stores().target_operation_locks.release_many(%ReleaseTargetOperationLocks{
+          workspace_context:
+            SystemContext.workspace(field(claim, :workspace_id), :materialization_lock),
+          command_id: command_id("release-lock", key(claim), lock.fencing_token),
+          operation_id: lock.operation_id,
+          lease_owner: lock.lease_owner,
+          locks: [%{target_id: lock.target_id, fencing_token: lock.fencing_token}],
+          occurred_at: DateTime.utc_now()
+        })
+    end
+  end
+
+  defp combined_operation_id(run_state, node) do
+    "matop:" <> AssetStepIdentity.node_fingerprint({run_state.id, node.ref, node.window.key})
+  end
+
+  defp logical_window_range(%{window: %{logical_window_count: count} = window})
+       when is_integer(count) and count > 1 do
+    %{
+      "kind" => Atom.to_string(window.kind),
+      "timezone" => window.timezone,
+      "start_at" => DateTime.to_iso8601(window.start_at),
+      "end_at" => DateTime.to_iso8601(window.end_at),
+      "count" => count
+    }
+  end
+
+  defp logical_window_range(_node), do: nil
 
   defp input_versions_payload(input_versions) when is_list(input_versions) do
     Enum.map(input_versions, fn input_version ->

@@ -57,10 +57,43 @@ defmodule Favn.WindowTest do
     assert :ok = Key.validate(key)
   end
 
+  test "encodes and decodes physical range keys without colliding with the first window" do
+    exact = Key.new!(:month, ~U[2026-04-01 00:00:00Z], "Etc/UTC")
+
+    range =
+      Key.new_range!(
+        :month,
+        ~U[2026-04-01 00:00:00Z],
+        ~U[2026-07-01 00:00:00Z],
+        "Etc/UTC"
+      )
+
+    refute range == exact
+    assert Key.range?(range)
+    assert {:ok, ^range} = range |> Key.encode() |> Key.decode()
+
+    assert {:ok, runtime} =
+             Runtime.new_range(
+               :month,
+               ~U[2026-04-01 00:00:00Z],
+               ~U[2026-07-01 00:00:00Z],
+               exact,
+               logical_window_count: 3
+             )
+
+    assert runtime.key == range
+    assert runtime.logical_window_count == 3
+    assert :ok = Runtime.validate(runtime)
+  end
+
   test "window validation reports precise errors" do
     assert {:error, {:invalid_kind, :week}} = Spec.new(:week)
     assert {:error, {:unknown_opt, :lookback}} = Spec.new(:day, lookback: -1)
     assert {:error, {:invalid_lookback, -1}} = Policy.new(:daily, lookback: -1)
+
+    assert {:error, {:invalid_boolean, :combine_windows, :yes}} =
+             Policy.new(:daily, combine_windows: :yes)
+
     assert {:error, {:invalid_refresh_from, :day, :month}} = Spec.new(:day, refresh_from: :month)
     assert {:error, {:unknown_opt, :lookbak}} = Spec.new(:day, lookbak: 1)
 
@@ -88,6 +121,15 @@ defmodule Favn.WindowTest do
              )
 
     assert {:error, {:invalid_encoded_key, "not-a-key"}} = Key.decode("not-a-key")
+  end
+
+  test "pipeline window policy defaults combine windows off and round trips an explicit value" do
+    assert {:ok, %Policy{combine_windows: false}} = Policy.new(:monthly)
+
+    assert {:ok, %Policy{combine_windows: true} = policy} =
+             Policy.new(:monthly, combine_windows: true)
+
+    assert {:ok, ^policy} = Policy.from_value(Map.from_struct(policy))
   end
 
   test "bang constructors raise on invalid input" do

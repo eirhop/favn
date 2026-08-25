@@ -11,7 +11,7 @@ defmodule Favn.CLI.Rebuild do
   alias Favn.CLI.OrchestratorClient
   alias Favn.CLI.Run
 
-  @type workflow_opts :: [root_dir: Path.t()]
+  @type workflow_opts :: [root_dir: Path.t(), combine_windows: boolean(), empty: boolean()]
 
   @doc "Plans a rebuild for one asset in the active manifest."
   @spec plan(module() | String.t(), String.t(), workflow_opts()) ::
@@ -28,7 +28,8 @@ defmodule Favn.CLI.Rebuild do
         credentials.service_token,
         context,
         target_id,
-        reason
+        reason,
+        Keyword.take(opts, [:combine_windows, :empty])
       )
     end
   end

@@ -421,6 +421,7 @@ defmodule Favn.Pipeline do
   - `anchor: :previous_complete_period | :current_period`
   - `lookback: non_neg_integer`
   - `timezone: "Etc/UTC"`
+  - `combine_windows: true | false`
   - `allow_full_load: true | false`
   """
   defmacro window(name, opts) do

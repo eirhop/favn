@@ -23,6 +23,10 @@ defmodule Favn.Window.Policy do
   `lookback` expands scheduled selections only; manual and backfill selections
   remain exact.
 
+  `combine_windows` controls physical execution for adjacent effective windows.
+  It defaults to `false`. Coverage remains at the authored grain even when one
+  wider runtime range performs the work.
+
   Windowed pipelines do not allow full-load submissions by default. Set
   `allow_full_load: true` only when a windowed pipeline should explicitly accept
   a no-window run.
@@ -40,6 +44,7 @@ defmodule Favn.Window.Policy do
           timezone: String.t() | nil,
           timezone_source: Favn.Window.Spec.timezone_source(),
           lookback: non_neg_integer(),
+          combine_windows: boolean(),
           allow_full_load: boolean()
         }
 
@@ -49,6 +54,7 @@ defmodule Favn.Window.Policy do
     :timezone_source,
     anchor: :previous_complete_period,
     lookback: 0,
+    combine_windows: false,
     allow_full_load: false
   ]
 
@@ -59,14 +65,20 @@ defmodule Favn.Window.Policy do
   ## Examples
 
       iex> Favn.Window.Policy.new(:monthly)
-      {:ok, %Favn.Window.Policy{kind: :month, anchor: :previous_complete_period, timezone: nil, timezone_source: nil, lookback: 0, allow_full_load: false}}
+      {:ok, %Favn.Window.Policy{kind: :month, anchor: :previous_complete_period, timezone: nil, timezone_source: nil, lookback: 0, combine_windows: false, allow_full_load: false}}
 
       iex> Favn.Window.Policy.new(:daily, timezone: "Europe/Oslo")
-      {:ok, %Favn.Window.Policy{kind: :day, anchor: :previous_complete_period, timezone: "Europe/Oslo", timezone_source: :local, lookback: 0, allow_full_load: false}}
+      {:ok, %Favn.Window.Policy{kind: :day, anchor: :previous_complete_period, timezone: "Europe/Oslo", timezone_source: :local, lookback: 0, combine_windows: false, allow_full_load: false}}
   """
   def new(kind, opts \\ []) when is_list(opts) do
     with :ok <-
-           Validate.strict_keyword_opts(opts, [:anchor, :timezone, :lookback, :allow_full_load]),
+           Validate.strict_keyword_opts(opts, [
+             :anchor,
+             :timezone,
+             :lookback,
+             :combine_windows,
+             :allow_full_load
+           ]),
          {:ok, normalized_kind} <- normalize_kind(kind),
          anchor <- Keyword.get(opts, :anchor, :previous_complete_period),
          :ok <- validate_anchor(anchor),
@@ -74,6 +86,8 @@ defmodule Favn.Window.Policy do
          :ok <- validate_optional_timezone(timezone),
          lookback <- Keyword.get(opts, :lookback, 0),
          :ok <- validate_lookback(lookback),
+         combine_windows <- Keyword.get(opts, :combine_windows, false),
+         :ok <- validate_boolean(:combine_windows, combine_windows),
          allow_full_load <- Keyword.get(opts, :allow_full_load, false),
          :ok <- validate_boolean(:allow_full_load, allow_full_load) do
       {:ok,
@@ -83,6 +97,7 @@ defmodule Favn.Window.Policy do
          timezone: timezone,
          timezone_source: if(is_binary(timezone), do: :local),
          lookback: lookback,
+         combine_windows: combine_windows,
          allow_full_load: allow_full_load
        }}
     end
@@ -115,6 +130,7 @@ defmodule Favn.Window.Policy do
       |> maybe_put(:anchor, field_value(value, :anchor))
       |> maybe_put(:timezone, field_value(value, :timezone))
       |> maybe_put(:lookback, field_value(value, :lookback))
+      |> maybe_put(:combine_windows, field_value(value, :combine_windows))
       |> maybe_put(:allow_full_load, field_value(value, :allow_full_load))
 
     with {:ok, decoded_kind} <- decode_kind(kind),
@@ -142,6 +158,7 @@ defmodule Favn.Window.Policy do
          :ok <- validate_optional_timezone(policy.timezone),
          :ok <- validate_timezone_source(policy.timezone, policy.timezone_source),
          :ok <- validate_lookback(policy.lookback),
+         :ok <- validate_boolean(:combine_windows, policy.combine_windows),
          :ok <- validate_boolean(:allow_full_load, policy.allow_full_load) do
       {:ok, policy}
     end

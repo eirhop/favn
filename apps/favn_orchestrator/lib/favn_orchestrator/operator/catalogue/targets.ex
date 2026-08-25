@@ -309,6 +309,7 @@ defmodule FavnOrchestrator.Operator.Catalogue.Targets do
       kind: Atom.to_string(policy.kind),
       anchor: Atom.to_string(policy.anchor),
       timezone: policy.timezone,
+      combine_windows: policy.combine_windows,
       allow_full_load: policy.allow_full_load
     }
   end

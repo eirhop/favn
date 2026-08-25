@@ -191,6 +191,7 @@ defmodule FavnOrchestrator.API.OperatorCommands do
              :coverage_baseline_id
            ),
          {:ok, retry_policy} <- optional_retry_policy(Map.get(params, "retry_policy")),
+         {:ok, combine_windows} <- optional_boolean(Map.get(params, "combine_windows")),
          {:ok, timeout_ms} <- optional_positive_integer(params, "timeout_ms") do
       {:ok,
        []
@@ -200,9 +201,14 @@ defmodule FavnOrchestrator.API.OperatorCommands do
        |> put_optional(:refresh, Map.get(params, "refresh"))
        |> put_optional(:refresh_policy, Map.get(params, "refresh_policy"))
        |> put_optional(:retry_policy, retry_policy)
+       |> put_optional(:combine_windows, combine_windows)
        |> put_optional(:timeout_ms, timeout_ms)}
     end
   end
+
+  defp optional_boolean(nil), do: {:ok, nil}
+  defp optional_boolean(value) when is_boolean(value), do: {:ok, value}
+  defp optional_boolean(value), do: {:error, {:invalid_combine_windows, value}}
 
   defp optional_positive_integer(params, field) do
     optional_integer(Map.get(params, field), field, &(&1 > 0))

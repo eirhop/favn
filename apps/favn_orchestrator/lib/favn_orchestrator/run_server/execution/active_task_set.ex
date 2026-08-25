@@ -176,6 +176,17 @@ defmodule FavnOrchestrator.RunServer.Execution.ActiveTaskSet do
     :ok
   end
 
+  @doc false
+  @spec renew_materialization_locks(t()) :: :ok | {:error, term()}
+  def renew_materialization_locks(%__MODULE__{} = work_set) do
+    Enum.reduce_while(work_set.materialization_claims, :ok, fn {_task_id, claim}, :ok ->
+      case MaterializationClaims.renew_operation_lock(claim) do
+        :ok -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+  end
+
   @doc "Reads in-flight task ids from run metadata."
   @spec active_runner_task_ids(RunState.t()) :: [task_id()]
   def active_runner_task_ids(%RunState{} = run_state) do

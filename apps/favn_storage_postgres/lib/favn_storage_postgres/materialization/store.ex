@@ -159,19 +159,50 @@ defmodule FavnStoragePostgres.Materialization.Store do
       )
       |> Repo.one()
 
-    if is_nil(operation_lock) or operation_lock.operation_id == command.operation_id do
+    competing_claim = competing_target_claim(command)
+
+    if (is_nil(operation_lock) or operation_lock.operation_id == command.operation_id) and
+         is_nil(competing_claim) do
       :ok
     else
+      operation_id =
+        if operation_lock,
+          do: operation_lock.operation_id,
+          else: competing_claim.operation_id
+
       Repo.rollback(
         Error.new(:conflict, "target operation is in progress",
           details: %{
             reason_code: "target_operation_in_progress",
             target_id: command.target_id,
-            operation_id: operation_lock.operation_id
+            operation_id: operation_id
           }
         )
       )
     end
+  end
+
+  defp competing_target_claim(command) do
+    base =
+      from(claim in MaterializationClaim,
+        where:
+          claim.workspace_id == ^command.workspace_context.workspace_id and
+            claim.target_id == ^command.target_id and claim.status == "claimed" and
+            claim.expires_at > fragment("clock_timestamp()"),
+        limit: 1,
+        lock: "FOR SHARE"
+      )
+
+    query =
+      if is_nil(command.operation_id) do
+        from(claim in base, where: not is_nil(claim.operation_id))
+      else
+        from(claim in base,
+          where: is_nil(claim.operation_id) or claim.operation_id != ^command.operation_id
+        )
+      end
+
+    Repo.one(query)
   end
 
   defp ensure_evidence_binding!(%{target_generation_id: generation_id})
@@ -495,6 +526,18 @@ defmodule FavnStoragePostgres.Materialization.Store do
       status: :failed,
       claim: claim_result(claim)
     }
+
+  defp lookup_decision(_claim_key, %MaterializationClaim{status: "claimed"} = claim, nil) do
+    if future?(claim.expires_at) do
+      claimed_decision(claim)
+    else
+      %MaterializationDecision{
+        claim_key: claim.claim_key,
+        status: :expired,
+        claim: claim |> claim_result() |> Map.put(:status, :expired)
+      }
+    end
+  end
 
   defp lookup_decision(_claim_key, %MaterializationClaim{} = claim, nil),
     do: claimed_decision(claim)

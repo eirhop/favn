@@ -15,6 +15,8 @@ defmodule FavnOrchestrator.API.BackfillsRouter do
   alias FavnOrchestrator.Persistence.Error
   alias FavnOrchestrator.Redaction
 
+  @dialyzer {:no_match, do_match: 4}
+
   plug(:match)
   plug(:dispatch)
 

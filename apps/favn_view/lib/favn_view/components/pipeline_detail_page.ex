@@ -230,6 +230,16 @@ defmodule FavnView.Components.PipelineDetailPage do
               </select>
             </label>
 
+            <.input
+              id="pipeline-backfill-combine-windows"
+              type="checkbox"
+              name="backfill[combine_windows]"
+              label="Combine adjacent windows into one run"
+              checked={@backfill_config.combine_windows}
+              disabled={!@can_submit_runs? || !@pipeline.can_backfill?}
+              data-testid="pipeline-backfill-combine-windows"
+            />
+
             <button
               type="submit"
               class="btn btn-primary btn-soft self-end"

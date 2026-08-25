@@ -102,7 +102,8 @@ defmodule FavnOrchestrator.Rebuilds do
          :ok <- persisted_sql_target(root),
          {:ok, index} <- PlanningIndex.build(version.manifest),
          {:ok, descendants} <- PlanningIndex.transitive_downstream_of(index, root.ref),
-         refs <- affected_refs(index, root.ref, descendants),
+         :ok <- validate_empty_rebuild(root, opts),
+         refs <- rebuild_refs(index, root.ref, descendants, opts),
          {:ok, bindings} <- target_bindings(context, index, refs),
          :ok <- validate_affected_bindings(index, refs, bindings),
          {:ok, root_binding} <- rebuildable_binding(bindings, target_id),
@@ -140,14 +141,17 @@ defmodule FavnOrchestrator.Rebuilds do
       evaluated_at: operation.evaluated_at,
       actor_id: operation.actor_id,
       session_id: operation.session_id,
-      occurred_at: DateTime.utc_now()
+      occurred_at: DateTime.utc_now(),
+      combine_windows: field(operation.plan_payload, :combine_windows, true),
+      empty: field(operation.plan_payload, :empty, false)
     ]
 
     with {:ok, runtime, version, root} <- frozen_planning_asset(context, operation),
          :ok <- persisted_sql_target(root),
          {:ok, index} <- PlanningIndex.build(version.manifest),
          {:ok, descendants} <- PlanningIndex.transitive_downstream_of(index, root.ref),
-         refs <- affected_refs(index, root.ref, descendants),
+         :ok <- validate_empty_rebuild(root, opts),
+         refs <- rebuild_refs(index, root.ref, descendants, opts),
          {:ok, bindings} <- target_bindings(context, index, refs),
          {:ok, identities} <- TargetGenerations.for_reads(context, index.assets_by_ref),
          :ok <- validate_affected_bindings(index, refs, bindings),
@@ -193,22 +197,25 @@ defmodule FavnOrchestrator.Rebuilds do
     requested_evaluated_at = Keyword.get(opts, :evaluated_at)
 
     case store().get(%GetRebuild{workspace_context: context, operation_id: operation_id}) do
-      {:ok, operation}
-      when operation.root_target_id == target_id and operation.reason == reason and
+      {:ok, operation} ->
+        if operation.root_target_id == target_id and operation.reason == reason and
              operation.idempotency_key == requested_idempotency_key and
+             field(operation.plan_payload, :combine_windows, true) ==
+               Keyword.get(opts, :combine_windows, true) and
+             field(operation.plan_payload, :empty, false) == Keyword.get(opts, :empty, false) and
              (is_nil(requested_evaluated_at) or
-                operation.evaluated_at == requested_evaluated_at) ->
-        if operation.state == :planning do
-          {:resume, operation}
+                operation.evaluated_at == requested_evaluated_at) do
+          if operation.state == :planning do
+            {:resume, operation}
+          else
+            {:ok, plan_from_operation(operation, true)}
+          end
         else
-          {:ok, plan_from_operation(operation, true)}
+          {:error,
+           Error.new(:conflict, "rebuild plan identity has different request content",
+             details: %{reason_code: "idempotency_conflict"}
+           )}
         end
-
-      {:ok, _operation} ->
-        {:error,
-         Error.new(:conflict, "rebuild plan identity has different request content",
-           details: %{reason_code: "idempotency_conflict"}
-         )}
 
       {:error, %Error{kind: :not_found}} ->
         :missing
@@ -243,7 +250,9 @@ defmodule FavnOrchestrator.Rebuilds do
         deployment_id: runtime.deployment_id,
         evaluated_at: evaluated_at,
         reason: reason,
-        active_generation_id: root_binding.active_generation_id
+        active_generation_id: root_binding.active_generation_id,
+        combine_windows: Keyword.get(opts, :combine_windows, true),
+        empty: Keyword.get(opts, :empty, false)
       })
 
     store().begin_plan(%BeginRebuildPlan{
@@ -436,6 +445,7 @@ defmodule FavnOrchestrator.Rebuilds do
          :ok <- validate_command_options(opts),
          {:ok, operation} <- get(context, operation_id),
          :ok <- exact_plan(operation, plan_hash),
+         :ok <- reject_combined_append_retry(operation),
          :ok <- revalidate_plan(context, operation) do
       store().retry_operation(%RetryRebuildOperation{
         workspace_context: context,
@@ -494,7 +504,8 @@ defmodule FavnOrchestrator.Rebuilds do
              capabilities,
              refs,
              operation_id,
-             evaluated_at
+             evaluated_at,
+             opts
            ),
          {:ok, execution_index} <- ManifestIndex.build(version.manifest),
          {:ok, items} <-
@@ -521,8 +532,19 @@ defmodule FavnOrchestrator.Rebuilds do
         deployment_id: runtime.deployment_id,
         evaluated_at: evaluated_at,
         reason: reason,
+        combine_windows: Keyword.get(opts, :combine_windows, true),
+        empty: Keyword.get(opts, :empty, false),
+        execution_mode: rebuild_execution_mode(opts),
+        combined_append: combined_append?(index, actions, items),
+        logical_window_count: logical_window_count(root, evaluated_at),
+        physical_execution_count:
+          Enum.count(items, &(&1.target_id == root.target_descriptor.target_id)),
         coverage: coverage_payload(root.coverage),
-        evaluated_range: evaluated_range(items, root.target_descriptor.target_id),
+        evaluated_range:
+          if(Keyword.get(opts, :empty, false),
+            do: %{start_at: nil, end_at: nil},
+            else: evaluated_range(items, root.target_descriptor.target_id)
+          ),
         active_generation_id: root_binding.active_generation_id,
         candidate_generation_id: root_candidate_id(actions, root.target_descriptor.target_id),
         binding_snapshot: binding_snapshot(bindings),
@@ -569,6 +591,52 @@ defmodule FavnOrchestrator.Rebuilds do
 
   defp assurance_expectation(%Asset{}), do: %{contract_required: false, checks: []}
 
+  defp logical_window_count(%Asset{window: nil}, _evaluated_at), do: 1
+
+  defp logical_window_count(%Asset{} = asset, evaluated_at) do
+    case expected_anchors(asset, evaluated_at) do
+      {:ok, anchors} -> length(anchors)
+      {:error, _reason} -> 0
+    end
+  end
+
+  defp combined_append?(index, actions, items) do
+    ranged_targets =
+      items
+      |> Enum.filter(&combined_item?/1)
+      |> MapSet.new(&field(&1, :target_id))
+
+    Enum.any?(actions, fn action ->
+      target_id = field(action, :target_id)
+
+      with true <- MapSet.member?(ranged_targets, target_id),
+           {_ref, asset} <-
+             Enum.find(index.assets_by_ref, fn {_ref, asset} ->
+               asset.target_descriptor && asset.target_descriptor.target_id == target_id
+             end) do
+        field(asset.target_descriptor.write_semantics, :strategy) in [:append, "append"]
+      else
+        _other -> false
+      end
+    end)
+  end
+
+  defp reject_combined_append_retry(operation) do
+    if field(operation.plan_payload, :combined_append, false),
+      do:
+        {:error,
+         Error.new(:conflict, "combined append rebuild requires a new plan and candidate")},
+      else: :ok
+  end
+
+  defp rebuild_execution_mode(opts) do
+    cond do
+      Keyword.get(opts, :empty, false) -> :empty
+      Keyword.get(opts, :combine_windows, true) -> :combined
+      true -> :separate
+    end
+  end
+
   defp build_actions(
          version,
          index,
@@ -578,7 +646,8 @@ defmodule FavnOrchestrator.Rebuilds do
          capabilities,
          refs,
          operation_id,
-         evaluated_at
+         evaluated_at,
+         opts
        ) do
     Enum.reduce_while(Enum.with_index(actionable_refs(index, refs)), {:ok, [], [], identities}, fn
       {ref, ordinal}, {:ok, actions, items, planned_identities} ->
@@ -588,7 +657,7 @@ defmodule FavnOrchestrator.Rebuilds do
         with {:ok, runner_binding} <- OperationRunnerTasks.binding(version, asset.ref),
              {:ok, candidate} <- candidate(action_kind, asset, capabilities, operation_id),
              {:ok, action_items} <-
-               action_items(action_kind, root, asset, candidate, evaluated_at),
+               action_items(action_kind, root, asset, candidate, evaluated_at, opts),
              {:ok, input_pins} <- input_pins(asset, planned_identities, bindings),
              true <- length(action_items) <= Expected.max_windows() do
           action = %RebuildPlanAction{
@@ -662,15 +731,22 @@ defmodule FavnOrchestrator.Rebuilds do
 
   defp candidate(_action, _asset, _capabilities, _operation_id), do: {:ok, nil}
 
-  defp action_items(:no_action, _root, _asset, _candidate, _evaluated_at), do: {:ok, []}
+  defp action_items(:no_action, _root, _asset, _candidate, _evaluated_at, _opts), do: {:ok, []}
 
-  defp action_items(:backfill, root, asset, _candidate, evaluated_at) do
+  defp action_items(:backfill, root, asset, _candidate, evaluated_at, opts) do
     with {:ok, anchors} <- expected_anchors(root, evaluated_at) do
-      {:ok, build_window_items(asset, anchors, nil)}
+      {:ok, build_window_items(asset, anchors, nil, Keyword.get(opts, :combine_windows, true))}
     end
   end
 
-  defp action_items(:rebuild, _root, %Asset{window: nil} = asset, candidate, _evaluated_at) do
+  defp action_items(
+         :rebuild,
+         _root,
+         %Asset{window: nil} = asset,
+         candidate,
+         _evaluated_at,
+         _opts
+       ) do
     {:ok,
      [
        %RebuildPlanItem{
@@ -686,12 +762,23 @@ defmodule FavnOrchestrator.Rebuilds do
      ]}
   end
 
-  defp action_items(:rebuild, _root, asset, candidate, evaluated_at) do
+  defp action_items(:rebuild, root, asset, candidate, evaluated_at, opts) do
     with {:ok, anchors} <- expected_anchors(asset, evaluated_at) do
       items =
-        case anchors do
-          [] -> [empty_generation_item(asset, candidate.target_generation_id)]
-          anchors -> build_window_items(asset, anchors, candidate.target_generation_id)
+        cond do
+          Keyword.get(opts, :empty, false) and asset.ref == root.ref ->
+            [empty_generation_item(asset, candidate.target_generation_id)]
+
+          anchors == [] ->
+            [empty_generation_item(asset, candidate.target_generation_id)]
+
+          true ->
+            build_window_items(
+              asset,
+              anchors,
+              candidate.target_generation_id,
+              Keyword.get(opts, :combine_windows, true)
+            )
         end
 
       {:ok, items}
@@ -717,7 +804,35 @@ defmodule FavnOrchestrator.Rebuilds do
     end
   end
 
-  defp build_window_items(asset, anchors, candidate_generation_id) do
+  defp build_window_items(
+         asset,
+         [_first, _second | _rest] = anchors,
+         candidate_generation_id,
+         true
+       ) do
+    first = hd(anchors)
+    last = List.last(anchors)
+
+    range_key =
+      Favn.Window.Key.new_range!(first.kind, first.start_at, last.end_at, first.timezone)
+
+    window_key = FreshnessKey.window!(range_key)
+
+    [
+      %RebuildPlanItem{
+        target_id: target_id(asset),
+        item_id: item_id(target_id(asset), window_key),
+        ordinal: 0,
+        work_kind: :window,
+        window_key: window_key,
+        window_start: first.start_at,
+        window_end: last.end_at,
+        candidate_generation_id: candidate_generation_id
+      }
+    ]
+  end
+
+  defp build_window_items(asset, anchors, candidate_generation_id, _combine_windows) do
     anchors
     |> Enum.with_index()
     |> Enum.map(fn {anchor, ordinal} ->
@@ -1424,6 +1539,7 @@ defmodule FavnOrchestrator.Rebuilds do
               operation_id <> ":" <> target_id <> ":" <> field(item, :item_id)
             ),
           evaluated_at: evaluated_at,
+          combine_windows: combined_item?(item),
           window_selection: item_window_selection(item, asset),
           runner_binding: %{
             runner_pool: field(action, :runner_pool),
@@ -1486,6 +1602,7 @@ defmodule FavnOrchestrator.Rebuilds do
           else: :normal_materialization
         ),
       empty_generation: field(item, :work_kind) in [:empty_generation, "empty_generation"],
+      allow_combined_append: true,
       final_item: field(item, :ordinal) == total - 1
     }
   end
@@ -1525,12 +1642,15 @@ defmodule FavnOrchestrator.Rebuilds do
     if field(item, :work_kind) in [:full_load, "full_load"] do
       nil
     else
-      {:ok, anchor} =
-        Anchor.new(asset.window.kind, field(item, :window_start), field(item, :window_end),
+      {:ok, anchors} =
+        Anchor.expand_range(
+          asset.window.kind,
+          field(item, :window_start),
+          field(item, :window_end),
           timezone: asset.window.timezone
         )
 
-      {:ok, selection} = Selection.backfill([anchor], asset.window.timezone)
+      {:ok, selection} = Selection.backfill(anchors, asset.window.timezone)
       selection
     end
   end
@@ -1619,11 +1739,21 @@ defmodule FavnOrchestrator.Rebuilds do
   end
 
   defp validate_plan_options(opts) do
-    allowed = [:evaluated_at, :operation_id, :idempotency_key, :occurred_at, :idempotency]
+    allowed = [
+      :evaluated_at,
+      :operation_id,
+      :idempotency_key,
+      :occurred_at,
+      :idempotency,
+      :combine_windows,
+      :empty
+    ]
 
-    if Keyword.keyword?(opts) and Keyword.keys(opts) -- allowed == [],
-      do: :ok,
-      else: {:error, :invalid_rebuild_options}
+    if Keyword.keyword?(opts) and Keyword.keys(opts) -- allowed == [] and
+         Keyword.get(opts, :combine_windows, true) in [true, false] and
+         Keyword.get(opts, :empty, false) in [true, false],
+       do: :ok,
+       else: {:error, :invalid_rebuild_options}
   end
 
   defp validate_command_options(opts) do
@@ -1662,6 +1792,20 @@ defmodule FavnOrchestrator.Rebuilds do
 
   defp item_boundary(nil, _field), do: nil
   defp item_boundary(item, field), do: Map.fetch!(item, field)
+
+  defp validate_empty_rebuild(%Asset{window: %{}}, _opts), do: :ok
+
+  defp validate_empty_rebuild(%Asset{}, opts) do
+    if Keyword.get(opts, :empty, false),
+      do: {:error, :empty_rebuild_requires_windowed_asset},
+      else: :ok
+  end
+
+  defp rebuild_refs(index, root_ref, descendants, opts) do
+    if Keyword.get(opts, :empty, false),
+      do: [root_ref],
+      else: affected_refs(index, root_ref, descendants)
+  end
 
   defp actionable_refs(index, refs) do
     Enum.filter(refs, &(Map.fetch!(index.assets_by_ref, &1).target_descriptor != nil))
@@ -1720,9 +1864,20 @@ defmodule FavnOrchestrator.Rebuilds do
     datetime
   end
 
-  defp field(map, key) when is_map(map) do
-    string_key = if is_atom(key), do: Atom.to_string(key), else: key
-    Map.get(map, key, Map.get(map, string_key))
+  defp field(map, key) when is_map(map) and is_atom(key),
+    do: Map.get(map, key, Map.get(map, Atom.to_string(key)))
+
+  defp field(map, key) when is_map(map) and is_binary(key), do: Map.get(map, key)
+
+  defp field(map, key, default) when is_map(map) and is_atom(key),
+    do: Map.get(map, key, Map.get(map, Atom.to_string(key), default))
+
+  defp combined_item?(item) do
+    with {:ok, {:window, key}} <- FreshnessKey.parse(field(item, :window_key)) do
+      Favn.Window.Key.range?(key)
+    else
+      _other -> false
+    end
   end
 
   defp store, do: Persistence.stores().rebuilds

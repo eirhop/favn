@@ -106,7 +106,7 @@ defmodule FavnView.RebuildsLiveTest do
     Application.put_env(:favn_view, :plan_operator_rebuild_fun, fn
       ^operator_context, "asset:orders", "schema changed", opts ->
         assert is_binary(opts[:idempotency_key])
-        send(test_pid, :mounted_plan)
+        send(test_pid, {:mounted_plan, opts})
 
         {:ok,
          %{
@@ -135,7 +135,9 @@ defmodule FavnView.RebuildsLiveTest do
     )
     |> render_submit()
 
-    assert_receive :mounted_plan
+    assert_receive {:mounted_plan, opts}
+    assert opts[:combine_windows]
+    refute opts[:empty]
     assert has_element?(view, "[data-testid=rebuild-plan]")
     assert has_element?(view, "[data-testid=start-rebuild]")
 
@@ -153,7 +155,7 @@ defmodule FavnView.RebuildsLiveTest do
     Application.put_env(:favn_view, :plan_operator_rebuild_fun, fn
       :operator_context, "asset:orders", "schema changed", opts ->
         assert is_binary(opts[:idempotency_key])
-        send(test_pid, :planned_through_facade)
+        send(test_pid, {:planned_through_facade, opts})
 
         {:ok,
          %{
@@ -181,12 +183,84 @@ defmodule FavnView.RebuildsLiveTest do
                mounted
              )
 
-    assert_received :planned_through_facade
+    assert_received {:planned_through_facade, opts}
+    assert opts[:combine_windows]
+    refute opts[:empty]
     assert planned.assigns.plan.plan_id == "rebuild-plan-1"
 
     assert {:noreply, _started} = RebuildsLive.handle_event("start_rebuild", %{}, planned)
     assert_received {:started_through_facade, plan_hash}
     assert plan_hash == String.duplicate("a", 64)
+  end
+
+  test "empty rebuild disables the irrelevant combine-windows choice", %{conn: conn} do
+    {conn, _operator_context} = authenticated_conn(conn)
+
+    Application.put_env(:favn_view, :page_operator_rebuilds_fun, fn _context, _opts ->
+      {:ok, %{items: [], next_cursor: nil, has_more?: false, limit: 100}}
+    end)
+
+    assert {:ok, view, _html} = live(conn, ~p"/rebuilds")
+    refute has_element?(view, "[data-testid=rebuild-combine-windows][disabled]")
+
+    view
+    |> form("form[phx-submit=plan_rebuild]",
+      rebuild: %{target_id: "asset:orders", reason: "backfill later", empty: "true"}
+    )
+    |> render_change()
+
+    assert has_element?(view, "[data-testid=rebuild-combine-windows][disabled]")
+    assert has_element?(view, "[data-testid=rebuild-combine-windows][checked]")
+    assert has_element?(view, "[data-testid=rebuild-empty][checked]")
+
+    view
+    |> form("form[phx-submit=plan_rebuild]",
+      rebuild: %{target_id: "asset:orders", reason: "backfill later", empty: "false"}
+    )
+    |> render_change()
+
+    refute has_element?(view, "[data-testid=rebuild-combine-windows][disabled]")
+    assert has_element?(view, "[data-testid=rebuild-combine-windows][checked]")
+  end
+
+  test "separate-window choice survives validation and reaches planning", %{conn: conn} do
+    test_pid = self()
+    {conn, operator_context} = authenticated_conn(conn)
+
+    Application.put_env(:favn_view, :page_operator_rebuilds_fun, fn
+      ^operator_context, _opts ->
+        {:ok, %{items: [], next_cursor: nil, has_more?: false, limit: 100}}
+    end)
+
+    Application.put_env(:favn_view, :plan_operator_rebuild_fun, fn
+      ^operator_context, "asset:orders", "separate windows", opts ->
+        send(test_pid, {:separate_plan, opts})
+
+        {:ok,
+         %{
+           plan_id: "separate-window-plan",
+           plan_hash: String.duplicate("a", 64),
+           expires_at: DateTime.add(DateTime.utc_now(), 3_600, :second)
+         }}
+    end)
+
+    assert {:ok, view, _html} = live(conn, ~p"/rebuilds")
+
+    form =
+      form(view, "form[phx-submit=plan_rebuild]",
+        rebuild: %{
+          target_id: "asset:orders",
+          reason: "separate windows",
+          combine_windows: "false"
+        }
+      )
+
+    render_change(form)
+    refute has_element?(view, "[data-testid=rebuild-combine-windows][checked]")
+
+    render_submit(form)
+    assert_receive {:separate_plan, opts}
+    refute opts[:combine_windows]
   end
 
   test "detail workflow delegates mutation permissions and item pagination to the facade" do

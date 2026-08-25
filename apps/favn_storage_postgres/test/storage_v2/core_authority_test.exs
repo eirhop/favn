@@ -169,6 +169,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnOrchestrator.ExecutionAdmission
   alias FavnOrchestrator.Backfills
   alias FavnOrchestrator.API.SSE
+  alias FavnOrchestrator.API.OperatorCommands
   alias FavnOrchestrator.API.Router
   alias FavnOrchestrator.AdminLifecycle
   alias FavnOrchestrator.Auth
@@ -333,7 +334,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
       command_id: "locks:acquire:" <> fixture.workspace_id,
       target_ids: target_ids,
       operation_id: "rebuild-lock-owner",
-      operation_type: :rebuild,
+      operation_type: :materialization,
       lease_owner: "rebuild-lock-owner",
       lease_duration_ms: 30_000,
       occurred_at: occurred_at
@@ -385,11 +386,24 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
       [fixture.workspace_id]
     )
 
+    assert {:error, %{kind: :conflict, details: %{reason_code: "target_operation_in_progress"}}} =
+             MaterializationStore.claim(%{
+               claim
+               | command_id: claim.command_id <> ":exact-after-lock-expiry",
+                 claim_key: claim.claim_key <> ":exact-after-lock-expiry"
+             })
+
     SQL.query!(
       Repo,
       "UPDATE favn_control.materialization_claims SET expires_at = clock_timestamp() - interval '1 second' WHERE workspace_id = $1",
       [fixture.workspace_id]
     )
+
+    assert {:ok, [%{status: :expired, claim: %{status: :expired}}]} =
+             MaterializationStore.get_many(%GetMaterializations{
+               workspace_context: fixture.workspace_context,
+               claim_keys: [claim.claim_key <> ":rebuild"]
+             })
 
     assert {:ok, takeover} =
              TargetOperationLockStore.acquire_many(%{
@@ -1913,16 +1927,21 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     evidence_generation_id = evidence_generation_id(fixture)
     unbound_generation_id = "ag_" <> String.duplicate("b", 64)
 
-    data_window_key =
+    first_window_key =
       Favn.Window.Key.new!(:day, ~U[2026-07-20 00:00:00Z], "Etc/UTC")
 
-    freshness_key =
-      Favn.Freshness.Key.window_refresh!(
-        data_window_key,
+    second_window_key =
+      Favn.Window.Key.new!(:day, ~U[2026-07-21 00:00:00Z], "Etc/UTC")
+
+    range_window_key =
+      Favn.Window.Key.new_range!(
         :day,
-        "Etc/UTC",
-        ~D[2026-07-21]
+        ~U[2026-07-20 00:00:00Z],
+        ~U[2026-07-22 00:00:00Z],
+        "Etc/UTC"
       )
+
+    freshness_key = Favn.Freshness.Key.window!(range_window_key)
 
     claim_key = "generation-window:#{run.id}"
 
@@ -1981,7 +2000,14 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
                  "manifest_version_id" => fixture.version.manifest_version_id,
                  "manifest_content_hash" => fixture.version.content_hash,
                  "target_generation_id" => nil,
-                 "evidence_generation_id" => evidence_generation_id
+                 "evidence_generation_id" => evidence_generation_id,
+                 "logical_window_range" => %{
+                   "kind" => "day",
+                   "timezone" => "Etc/UTC",
+                   "start_at" => "2026-07-20T00:00:00Z",
+                   "end_at" => "2026-07-22T00:00:00Z",
+                   "count" => 2
+                 }
                },
                occurred_at: DateTime.utc_now()
              })
@@ -1989,7 +2015,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert {:ok, _publications} = Sequencer.sequence_batch()
     assert drain_projector("generation-window-projector:" <> run.id) > 0
 
-    assert {:ok, [state]} =
+    assert {:ok, states} =
              OperatorReadStore.get_asset_window_states(%GetAssetWindowStates{
                workspace_context: fixture.workspace_context,
                evidence_generation_id: evidence_generation_id,
@@ -1997,9 +2023,21 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
                limit: 10
              })
 
-    assert state.evidence_generation_id == evidence_generation_id
-    assert state.materialization_id == materialization_id
-    assert state.window_key == Favn.Freshness.Key.window!(data_window_key)
+    assert Enum.all?(states, &(&1.evidence_generation_id == evidence_generation_id))
+    assert Enum.all?(states, &(&1.materialization_id == materialization_id))
+
+    assert states |> Enum.map(& &1.window_key) |> MapSet.new() ==
+             MapSet.new([
+               Favn.Freshness.Key.window!(first_window_key),
+               Favn.Freshness.Key.window!(second_window_key)
+             ])
+
+    assert %{rows: [[^freshness_key]]} =
+             SQL.query!(
+               Repo,
+               "SELECT freshness_key FROM favn_control.asset_freshness_states WHERE workspace_id = $1 AND latest_success_materialization_id = $2",
+               [fixture.workspace_id, materialization_id]
+             )
 
     assert {:ok, []} =
              OperatorReadStore.get_asset_window_states(%GetAssetWindowStates{
@@ -2008,6 +2046,57 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
                target_id: fixture.target_id,
                limit: 10
              })
+
+    empty_claim_key = "empty-generation-window:#{run.id}"
+
+    assert {:ok, %{status: :claimed, claim: empty_claim}} =
+             MaterializationStore.claim(%{
+               claim
+               | command_id: "claim:" <> empty_claim_key,
+                 claim_key: empty_claim_key,
+                 evidence_generation_id: evidence_generation_id,
+                 partition_key: Favn.Freshness.Key.window!(first_window_key)
+             })
+
+    empty_materialization_id = "materialization:" <> empty_claim_key
+
+    assert {:ok, %{status: :materialized}} =
+             MaterializationStore.finish(%FinishMaterialization{
+               workspace_context: fixture.workspace_context,
+               command_id: "finish:" <> empty_claim_key,
+               claim_key: empty_claim_key,
+               owner_id: empty_claim.owner_id,
+               fencing_token: empty_claim.fencing_token,
+               expected_version: empty_claim.version,
+               status: :succeeded,
+               materialization_id: empty_materialization_id,
+               payload: %{
+                 "freshness_version" => evidence_generation_id <> ":empty",
+                 "run_id" => run.id,
+                 "manifest_version_id" => fixture.version.manifest_version_id,
+                 "manifest_content_hash" => fixture.version.content_hash,
+                 "evidence_generation_id" => evidence_generation_id,
+                 "empty_generation" => true
+               },
+               occurred_at: DateTime.utc_now()
+             })
+
+    assert {:ok, _publications} = Sequencer.sequence_batch()
+    assert drain_projector("empty-generation-projector:" <> run.id) > 0
+
+    assert %{rows: [[0]]} =
+             SQL.query!(
+               Repo,
+               "SELECT count(*) FROM favn_control.asset_window_states WHERE workspace_id = $1 AND materialization_id = $2",
+               [fixture.workspace_id, empty_materialization_id]
+             )
+
+    assert %{rows: [[0]]} =
+             SQL.query!(
+               Repo,
+               "SELECT count(*) FROM favn_control.asset_freshness_states WHERE workspace_id = $1 AND latest_success_materialization_id = $2",
+               [fixture.workspace_id, empty_materialization_id]
+             )
   end
 
   test "registers and deploys an immutable exact manifest catalog", fixture do
@@ -2308,7 +2397,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
               details: %{
                 reason: :historical_manifest_not_activatable,
                 schema_version: 9,
-                current_schema_version: 18
+                current_schema_version: 19
               }
             }} =
              RegistryStore.deploy_manifest(%{
@@ -3028,6 +3117,141 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert replayed.backfill_id == backfill.backfill_id
     assert replayed.status == backfill.status
     assert replayed.version == backfill.version
+  end
+
+  test "combined pipeline backfill keeps exact windows in one execution group", fixture do
+    range = %{
+      "kind" => "day",
+      "from" => "2026-07-01",
+      "to" => "2026-07-03",
+      "timezone" => "Europe/Oslo"
+    }
+
+    assert {:ok,
+            %{
+              window_count: 3,
+              combine_windows: true,
+              execution_mode: :combined,
+              physical_execution_count: 1
+            }} =
+             Backfills.plan_pipeline(
+               fixture.workspace_context,
+               fixture.version.manifest_version_id,
+               fixture.pipeline_target_id,
+               range,
+               combine_windows: true
+             )
+
+    assert {:ok, %{combine_windows: true, physical_execution_count: 1}} =
+             OperatorCommands.plan_backfill(
+               %{
+                 "manifest_selection" => %{
+                   "mode" => "version",
+                   "manifest_version_id" => fixture.version.manifest_version_id
+                 },
+                 "target" => %{"type" => "pipeline", "id" => fixture.pipeline_target_id},
+                 "range" => range,
+                 "combine_windows" => true
+               },
+               fixture.workspace_context
+             )
+
+    assert {:ok, backfill} =
+             Backfills.submit_pipeline(
+               fixture.workspace_context,
+               fixture.version.manifest_version_id,
+               fixture.pipeline_target_id,
+               range,
+               root_run_id: "run-combined-backfill-#{System.unique_integer([:positive])}",
+               combine_windows: true
+             )
+
+    assert backfill.expected_window_count == 3
+    assert backfill.metadata["combine_windows"]
+
+    assert {:ok, %{items: windows, has_more?: false}} =
+             Backfills.page_windows(fixture.workspace_context, backfill.backfill_id, limit: 10)
+
+    assert length(windows) == 3
+    assert windows |> Enum.map(& &1.payload["execution_group_id"]) |> Enum.uniq() |> length() == 1
+    assert Enum.count(windows, & &1.payload["execution_group_leader"]) == 1
+  end
+
+  test "combined append backfill is rejected before root or ledger persistence" do
+    unique = Integer.to_string(System.unique_integer([:positive]))
+    {version, packages} = manifest_publication("mv_append_#{unique}", append?: true)
+    append_asset_id = TargetStatus.target_id_for_asset({MyApp.AppendAsset, :asset})
+    append_pipeline_id = TargetStatus.target_id_for_pipeline({MyApp.AppendPipeline, :daily})
+
+    extra_targets = [
+      %DeploymentTarget{
+        target_kind: :asset,
+        target_id: append_asset_id,
+        selection_source: :common,
+        customer_visible: true,
+        descriptor: %{"target_id" => append_asset_id, "label" => append_asset_id}
+      },
+      %DeploymentTarget{
+        target_kind: :pipeline,
+        target_id: append_pipeline_id,
+        selection_source: :common,
+        customer_visible: true,
+        descriptor: %{"target_id" => append_pipeline_id, "label" => append_pipeline_id}
+      }
+    ]
+
+    append_descriptor =
+      version.manifest.assets
+      |> Enum.find(&(&1.ref == {MyApp.AppendAsset, :asset}))
+      |> Map.fetch!(:target_descriptor)
+
+    append_compatibility = %DeploymentTargetCompatibility{
+      target_id: append_asset_id,
+      desired_descriptor_hash: append_descriptor.descriptor_hash,
+      compatibility_status: :uninitialized,
+      reason_code: "no_active_generation",
+      compatibility_diff: %{"physical_relation" => %{"actual" => nil}},
+      expected_binding_version: nil,
+      expected_active_generation_id: nil,
+      active_physical_fingerprint: nil
+    }
+
+    fixture =
+      provision_deploy_fixture({version, packages}, extra_targets, [append_compatibility])
+
+    range = %{
+      "kind" => "day",
+      "from" => "2026-07-01",
+      "to" => "2026-07-03",
+      "timezone" => "Etc/UTC"
+    }
+
+    assert {:error, {:combined_append_not_supported, {MyApp.AppendAsset, :asset}}} =
+             Backfills.plan_pipeline(
+               fixture.workspace_context,
+               version.manifest_version_id,
+               append_pipeline_id,
+               range,
+               combine_windows: true
+             )
+
+    root_run_id = "run-combined-append-rejected-#{unique}"
+
+    assert {:error, {:combined_append_not_supported, {MyApp.AppendAsset, :asset}}} =
+             Backfills.submit_pipeline(
+               fixture.workspace_context,
+               version.manifest_version_id,
+               append_pipeline_id,
+               range,
+               root_run_id: root_run_id,
+               combine_windows: true
+             )
+
+    assert {:error, %{kind: :not_found}} =
+             RunStore.get_run(%GetRun{
+               workspace_context: fixture.workspace_context,
+               run_id: root_run_id
+             })
   end
 
   test "failed pipeline backfill planning marks its committed root as failed", fixture do
@@ -10702,7 +10926,11 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     end
   end
 
-  defp provision_deploy_fixture(version \\ nil, extra_targets \\ []) do
+  defp provision_deploy_fixture(
+         version \\ nil,
+         extra_targets \\ [],
+         target_compatibilities \\ []
+       ) do
     unique = Integer.to_string(System.unique_integer([:positive]))
     workspace_id = "ws-#{unique}"
     deployment_id = "deploy-#{unique}"
@@ -10723,6 +10951,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     {version, packages} =
       case version do
         nil -> manifest_publication("mv_#{unique}")
+        {%Version{} = supplied, packages} when is_list(packages) -> {supplied, packages}
         %Version{} = supplied -> {supplied, []}
       end
 
@@ -10810,6 +11039,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
           capacity_limit: 1
         }
       ],
+      target_compatibilities: target_compatibilities,
       occurred_at: now
     }
 
@@ -11042,38 +11272,91 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     {command, run}
   end
 
-  defp manifest_publication(manifest_version_id) do
+  defp manifest_publication(manifest_version_id, opts \\ []) do
     ref = {MyApp.Asset, :asset}
     package = runtime_input_execution_package(ref)
     private_ref = {MyApp.PrivateAsset, :private}
     private_package = runtime_input_execution_package(private_ref)
+    append? = Keyword.get(opts, :append?, false)
+    append_ref = {MyApp.AppendAsset, :asset}
+    append_package = if append?, do: runtime_input_execution_package(append_ref)
 
-    manifest = %Manifest{
-      assets: [
-        %Favn.Manifest.Asset{
-          ref: ref,
-          module: MyApp.Asset,
+    append_assets =
+      if append? do
+        append_asset = %Favn.Manifest.Asset{
+          ref: append_ref,
+          module: MyApp.AppendAsset,
           name: :asset,
           type: :sql,
-          freshness: Policy.from_value!(max_age: {:days, 1}),
-          execution_package_hash: package.content_hash
-        },
-        %Favn.Manifest.Asset{
-          ref: private_ref,
-          module: MyApp.PrivateAsset,
-          name: :private,
-          type: :sql,
-          execution_package_hash: private_package.content_hash
+          relation:
+            RelationRef.new!(
+              connection: :warehouse,
+              schema: "analytics",
+              name: "append_asset"
+            ),
+          window: Favn.Window.Spec.new!(:day, timezone: "Etc/UTC"),
+          materialization: {:incremental, strategy: :append},
+          execution_package_hash: append_package.content_hash
         }
-      ],
-      pipelines: [
-        %Favn.Manifest.Pipeline{
-          module: MyApp.Pipeline,
-          name: :daily,
-          selectors: [{:asset, {MyApp.Asset, :asset}}],
-          window: Favn.Window.Policy.new!(:day, timezone: "Etc/UTC")
-        }
-      ]
+
+        descriptor =
+          TargetDescriptor.from_asset(Map.from_struct(append_asset),
+            connection_definitions: %{
+              warehouse: %{adapter: FavnTestSupport.TargetAdapter, module: nil}
+            },
+            manifest_schema_version: Favn.Manifest.Compatibility.current_schema_version(),
+            runner_contract_version: Favn.Manifest.Compatibility.current_runner_contract_version()
+          )
+
+        [
+          %{append_asset | target_descriptor: descriptor}
+        ]
+      else
+        []
+      end
+
+    append_pipelines =
+      if append? do
+        [
+          %Favn.Manifest.Pipeline{
+            module: MyApp.AppendPipeline,
+            name: :daily,
+            selectors: [{:asset, append_ref}],
+            window: Favn.Window.Policy.new!(:day, timezone: "Etc/UTC")
+          }
+        ]
+      else
+        []
+      end
+
+    manifest = %Manifest{
+      assets:
+        [
+          %Favn.Manifest.Asset{
+            ref: ref,
+            module: MyApp.Asset,
+            name: :asset,
+            type: :sql,
+            freshness: Policy.from_value!(max_age: {:days, 1}),
+            execution_package_hash: package.content_hash
+          },
+          %Favn.Manifest.Asset{
+            ref: private_ref,
+            module: MyApp.PrivateAsset,
+            name: :private,
+            type: :sql,
+            execution_package_hash: private_package.content_hash
+          }
+        ] ++ append_assets,
+      pipelines:
+        [
+          %Favn.Manifest.Pipeline{
+            module: MyApp.Pipeline,
+            name: :daily,
+            selectors: [{:asset, {MyApp.Asset, :asset}}],
+            window: Favn.Window.Policy.new!(:day, timezone: "Etc/UTC")
+          }
+        ] ++ append_pipelines
     }
 
     {:ok, version} =
@@ -11084,7 +11367,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
         manifest_version_id: manifest_version_id
       )
 
-    {version, [package, private_package]}
+    {version, [package, private_package] ++ List.wrap(append_package)}
   end
 
   defp target_descriptor(fixture, manifest_schema_version \\ nil, materialization \\ :table) do

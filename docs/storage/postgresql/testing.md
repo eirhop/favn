@@ -31,11 +31,31 @@ errors that appear in a clean CI checkout.
 
 ## Local setup
 
-Set a test URL for a disposable PostgreSQL 18 database:
+Start the repository's PostgreSQL 18 container. If port 5432 is already used by
+another project, choose a free port explicitly:
 
 ```bash
-export FAVN_DATABASE_URL=ecto://postgres:postgres@127.0.0.1:5432/favn_test
-export FAVN_DATABASE_MIGRATOR_URL=ecto://postgres:postgres@127.0.0.1:5432/favn_test
+FAVN_POSTGRES_PORT=5433 scripts/postgres/setup
+```
+
+Create a separate disposable `favn_test` database in that container. Its owner
+must be the local bootstrap role because the test suite creates and migrates its
+own schema; the hardened `favn_runtime` and `favn_migrator` roles for `favn_dev`
+intentionally lack that authority. Do not run the integration suite against the
+normal local-development database.
+
+```bash
+docker compose -f compose.postgres.yml exec -T postgres \
+  createdb --username favn_bootstrap --owner favn_bootstrap favn_test
+```
+
+Run that creation command only when `favn_test` does not already exist.
+
+Set the test URL and use the selected port:
+
+```bash
+export FAVN_DATABASE_URL=ecto://favn_bootstrap:favn_bootstrap_local@127.0.0.1:5433/favn_test
+export FAVN_DATABASE_MIGRATOR_URL=$FAVN_DATABASE_URL
 export FAVN_RUNTIME_INPUT_PIN_KEY=0123456789abcdef0123456789abcdef
 export FAVN_RUNTIME_INPUT_PIN_KEY_VERSION=1
 ```

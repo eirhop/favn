@@ -273,6 +273,8 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
          {:ok, version} <- get_manifest(opts, manifest_version_id),
          {:ok, index} <- ManifestIndexCache.fetch(version),
          {:ok, %Pipeline{} = pipeline} <- Index.fetch_pipeline(index, pipeline_ref),
+         {:ok, combine_windows} <- resolve_combine_windows(input.combine_windows, pipeline.window),
+         input <- %{input | combine_windows: combine_windows},
          {:ok, target_refs} <- PipelineResolver.target_refs(index, pipeline),
          {:ok, window_resolution} <-
            resolve_pipeline_window_selection(pipeline, index, target_refs, input, request, opts),
@@ -531,11 +533,27 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
     end
   end
 
-  defp planner_window_options(%SubmissionOptions{window_selection: %Selection{} = selection}),
-    do: [anchor_windows: selection.effective_anchors]
+  defp planner_window_options(
+         %SubmissionOptions{window_selection: %Selection{} = selection} = input
+       ),
+       do: [anchor_windows: selection.effective_anchors] ++ combine_window_options(input)
 
-  defp planner_window_options(%SubmissionOptions{anchor_window: anchor}),
-    do: [anchor_window: anchor]
+  defp planner_window_options(%SubmissionOptions{anchor_window: anchor} = input),
+    do: [anchor_window: anchor] ++ combine_window_options(input)
+
+  defp combine_window_options(%SubmissionOptions{combine_windows: true, rebuild: rebuild}) do
+    [
+      combine_windows: true,
+      allow_combined_append: is_map(rebuild) and Map.get(rebuild, :allow_combined_append) == true
+    ]
+  end
+
+  defp combine_window_options(%SubmissionOptions{}), do: []
+
+  defp resolve_combine_windows(nil, %Policy{combine_windows: value}), do: {:ok, value}
+  defp resolve_combine_windows(nil, nil), do: {:ok, false}
+  defp resolve_combine_windows(value, _policy) when is_boolean(value), do: {:ok, value}
+  defp resolve_combine_windows(value, _policy), do: {:error, {:invalid_combine_windows, value}}
 
   defp put_window_selection(metadata, nil), do: metadata
 

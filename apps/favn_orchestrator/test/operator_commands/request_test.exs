@@ -128,6 +128,7 @@ defmodule FavnOrchestrator.OperatorCommands.RequestTest do
                Map.merge(base, %{
                  retry_policy: %{max_attempts: 2, backoff: 0},
                  timeout_ms: 1_000,
+                 combine_windows: true,
                  coverage_baseline_id: "baseline_1"
                })
              )
@@ -135,6 +136,7 @@ defmodule FavnOrchestrator.OperatorCommands.RequestTest do
     assert request.retry_policy.max_attempts == 2
     assert request.retry_policy.backoff.initial_ms == 0
     assert request.timeout_ms == 1_000
+    assert request.combine_windows
     assert request.coverage_baseline_id == "baseline_1"
 
     assert {:error, {:invalid_operator_retry_policy, {:invalid_retry_max_attempts, 0}}} =
@@ -145,6 +147,9 @@ defmodule FavnOrchestrator.OperatorCommands.RequestTest do
 
     assert {:error, {:invalid_operator_coverage_baseline_id, ""}} =
              PipelineBackfillRequest.from_input(Map.put(base, :coverage_baseline_id, ""))
+
+    assert {:error, {:invalid_combine_windows, "yes"}} =
+             PipelineBackfillRequest.from_input(Map.put(base, :combine_windows, "yes"))
   end
 
   test "asset backfill requests reject removed retry fields consistently" do

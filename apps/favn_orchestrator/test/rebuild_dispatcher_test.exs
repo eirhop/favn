@@ -91,4 +91,38 @@ defmodule FavnOrchestrator.RebuildDispatcherTest do
              } = MaterializationClaims.enrich(%{claim_key: "claim"}, work)
     end
   end
+
+  describe "expired combined append evidence" do
+    test "classifies an orphaned unknown claim for candidate cleanup" do
+      assert :cleanup =
+               RebuildDispatcher.orphaned_claim_disposition(
+                 %{plan_payload: %{combined_append: true}},
+                 :outcome_unknown
+               )
+
+      assert :pending =
+               RebuildDispatcher.orphaned_claim_disposition(
+                 %{plan_payload: %{combined_append: false}},
+                 :outcome_unknown
+               )
+
+      assert :pending =
+               RebuildDispatcher.orphaned_claim_disposition(
+                 %{plan_payload: %{combined_append: true}},
+                 :running
+               )
+    end
+
+    test "makes a combined append action failure eligible for cleanup" do
+      assert :pending =
+               RebuildDispatcher.failed_action_cleanup_state(%{
+                 plan_payload: %{combined_append: true}
+               })
+
+      assert :not_started =
+               RebuildDispatcher.failed_action_cleanup_state(%{
+                 plan_payload: %{combined_append: false}
+               })
+    end
+  end
 end

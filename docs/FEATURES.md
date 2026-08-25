@@ -28,6 +28,9 @@ Favn is private pre-v1 software. PostgreSQL 18 is the only control-plane databas
   one latest complete availability-aware window; explicit manual and backfill
   selections stay exact; and runs persist requested, expansion, and effective
   anchors.
+  Adjacent scheduled or operator-selected windows may execute as one range while
+  coverage remains at the authored grain. Rebuilds combine by default and can
+  explicitly activate an empty replacement for later backfill.
 - Customer-built runners validate and advertise an operator-supplied logical
   pool and immutable release ID together with the running Favn version, runner
   protocol, Elixir, OTP, and target. Favn validates exact task alignment but

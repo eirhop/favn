@@ -128,6 +128,12 @@ the orchestrator revalidates every pinned input and acquires sorted,
 workspace-scoped target locks. Changed inputs return a conflict; Favn never
 silently replaces the reviewed plan.
 
+Windowed rebuild planning combines adjacent expected windows by default. The
+plan still preserves their exact logical coverage, and an operator can request
+separate runs. An explicit empty rebuild creates and activates only a schema-valid
+empty root generation; ordinary backfills then fill the new active generation,
+while retained downstream generations are stale until repaired.
+
 ## Execution and activation
 
 The dispatcher claims one operation with a renewable fencing token. Candidate

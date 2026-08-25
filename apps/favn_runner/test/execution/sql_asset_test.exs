@@ -879,6 +879,42 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     assert telemetry.transaction_outcome == :committed
   end
 
+  test "empty rebuild keeps schema validation and audibly skips data checks" do
+    reload_fake_connection(:runner_sql_runtime, __MODULE__.FakeCheckedExecutionAdapter)
+
+    checks = [
+      checked_check(
+        :candidate_ready,
+        :before_materialize,
+        :fail,
+        "select false as passed from query() /* check:fail */"
+      ),
+      checked_check(
+        :target_warning,
+        :after_materialize,
+        :warn,
+        "select false as passed from target() /* check:warn */"
+      )
+    ]
+
+    contract = Contract.new!(%{columns: [%{name: :id, type: :integer}]})
+    ref = {FavnRunner.ExecutionSQLAssetTest.CheckedSQLAsset, :asset}
+    version = register_checked_sql_manifest!(ref, checks, nil, contract)
+    work = %{work_for(version, ref, "run_empty_rebuild") | rebuild_empty_generation: true}
+
+    assert {:ok, result} = FavnRunner.TestExecution.run(work)
+    assert result.status == :ok
+    assert [asset_result] = result.asset_results
+
+    assert Enum.map(asset_result.meta.check_results, &{&1.name, &1.outcome, &1.reason}) == [
+             {:candidate_ready, :not_run, :empty_generation},
+             {:target_warning, :not_run, :empty_generation}
+           ]
+
+    assert asset_result.meta.contract_validation.status == :passed
+    assert_received :checked_transaction_commit
+  end
+
   test "checked incremental materialization inspects non-empty and empty candidates as relations" do
     reload_fake_connection(:runner_sql_runtime, __MODULE__.FakeCheckedExecutionAdapter)
 
@@ -1574,7 +1610,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
 
     manifest =
       %Manifest{
-        schema_version: 18,
+        schema_version: 19,
         runner_contract_version: 14,
         runner_releases: %{"default" => FavnTestSupport.runner_release_id()},
         assets: [
@@ -1636,7 +1672,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     package = execution_package!(ref, execution)
 
     manifest = %Manifest{
-      schema_version: 18,
+      schema_version: 19,
       runner_contract_version: 14,
       runner_releases: %{"default" => FavnTestSupport.runner_release_id()},
       assets: [
@@ -1706,7 +1742,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     package = execution_package!(ref, execution)
 
     manifest = %Manifest{
-      schema_version: 18,
+      schema_version: 19,
       runner_contract_version: 14,
       runner_releases: %{"default" => FavnTestSupport.runner_release_id()},
       assets: [
@@ -1899,7 +1935,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
 
     manifest =
       %Manifest{
-        schema_version: 18,
+        schema_version: 19,
         runner_contract_version: 14,
         runner_releases: %{"default" => FavnTestSupport.runner_release_id()},
         assets: [
@@ -1933,7 +1969,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
 
   defp register_elixir_manifest!(ref, relation) do
     manifest = %Manifest{
-      schema_version: 18,
+      schema_version: 19,
       runner_contract_version: 14,
       runner_releases: %{"default" => FavnTestSupport.runner_release_id()},
       assets: [

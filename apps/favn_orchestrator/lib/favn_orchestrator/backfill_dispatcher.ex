@@ -117,10 +117,17 @@ defmodule FavnOrchestrator.BackfillDispatcher do
             end
 
           :missing ->
-            _ = transition(context, window, owner_id, :failed, nil, error_payload(reason))
-            :ok
+            case submission_error_disposition(window.payload, :missing) do
+              :retry ->
+                :ok
+
+              :fail ->
+                _ = transition(context, window, owner_id, :failed, nil, error_payload(reason))
+                :ok
+            end
 
           {:unknown, recovery_error} ->
+            :retry = submission_error_disposition(window.payload, :unavailable)
             emit_error(context.workspace_id, :reconcile_submit_error, recovery_error)
         end
     end
@@ -154,10 +161,20 @@ defmodule FavnOrchestrator.BackfillDispatcher do
   defp resolve_submission_result(fun) when is_function(fun, 0), do: fun.()
   defp resolve_submission_result(result), do: result
 
+  @doc false
+  @spec submission_error_disposition(map(), :missing | :unavailable) :: :retry | :fail
+  def submission_error_disposition(payload, :unavailable) when is_map(payload), do: :retry
+
+  def submission_error_disposition(payload, :missing) when is_map(payload) do
+    if is_binary(field(payload, "execution_group_id")),
+      do: :retry,
+      else: :fail
+  end
+
   defp submit_child(context, window, run_id) do
     with {:ok, %Backfill{} = backfill} <- Backfills.get(context, window.backfill_id),
-         {:ok, anchor} <- anchor(window),
-         {:ok, selection} <- Selection.backfill([anchor], anchor.timezone),
+         {:ok, anchors} <- execution_anchors(backfill, window),
+         {:ok, selection} <- Selection.backfill(anchors, hd(anchors).timezone),
          {:ok, opts} <- submission_options(backfill, window, run_id, selection),
          {:ok, ^run_id} <- submit_target(context, backfill, opts) do
       {:ok, run_id}
@@ -181,6 +198,7 @@ defmodule FavnOrchestrator.BackfillDispatcher do
       backfill_id: backfill.backfill_id,
       backfill_window_id: window.window_id,
       backfill_window_key: window.window_key,
+      backfill_execution_group_id: field(window.payload, "execution_group_id"),
       backfill_root_run_id: backfill.root_run_id,
       operator_metadata: field(backfill.metadata, "operator_metadata", %{})
     }
@@ -197,6 +215,7 @@ defmodule FavnOrchestrator.BackfillDispatcher do
          submission_source: :backfill,
          manifest_version_id: backfill.manifest_version_id,
          window_selection: selection,
+         combine_windows: field(backfill.metadata, "combine_windows", false),
          parent_run_id: backfill.root_run_id,
          root_run_id: backfill.root_run_id,
          lineage_depth: 1,
@@ -318,6 +337,23 @@ defmodule FavnOrchestrator.BackfillDispatcher do
     end
   end
 
+  defp execution_anchors(backfill, window) do
+    if field(backfill.metadata, "combine_windows", false) do
+      with {:ok, first} <- anchor(window),
+           {:ok, anchors} <-
+             Anchor.expand_range(first.kind, backfill.range_start, backfill.range_end,
+               timezone: first.timezone
+             ),
+           true <- anchors != [] do
+        {:ok, anchors}
+      else
+        _invalid -> {:error, :invalid_combined_backfill_range}
+      end
+    else
+      with {:ok, anchor} <- anchor(window), do: {:ok, [anchor]}
+    end
+  end
+
   defp known_kind("hour"), do: {:ok, :hour}
   defp known_kind("day"), do: {:ok, :day}
   defp known_kind("month"), do: {:ok, :month}
@@ -398,8 +434,10 @@ defmodule FavnOrchestrator.BackfillDispatcher do
 
   defp decode_required_generation(_other), do: {:error, :invalid_required_generation}
 
-  defp child_run_id(window),
-    do: command_id("run-bfw", window.backfill_id <> ":" <> window.window_id)
+  defp child_run_id(window) do
+    identity = field(window.payload, "execution_group_id") || window.window_id
+    command_id("run-bfw", window.backfill_id <> ":" <> identity)
+  end
 
   defp error_payload({reason, details})
        when reason in [:operator_decision_required, :rebuild_required, :target_drift] and
@@ -437,8 +475,23 @@ defmodule FavnOrchestrator.BackfillDispatcher do
   defp error_kind(%Error{kind: kind}), do: kind
   defp error_kind(_reason), do: :unknown
 
-  defp field(map, key, default \\ nil) when is_map(map),
-    do: Map.get(map, key, Map.get(map, String.to_existing_atom(key), default))
+  defp field(map, key, default \\ nil) when is_map(map) do
+    case Map.fetch(map, key) do
+      {:ok, value} ->
+        value
+
+      :error ->
+        Enum.reduce_while(map, default, fn
+          {candidate, value}, _acc when is_atom(candidate) ->
+            if Atom.to_string(candidate) == key,
+              do: {:halt, value},
+              else: {:cont, default}
+
+          _entry, _acc ->
+            {:cont, default}
+        end)
+    end
+  end
 
   defp maybe_put(opts, _key, nil), do: opts
   defp maybe_put(opts, key, value), do: Keyword.put(opts, key, value)

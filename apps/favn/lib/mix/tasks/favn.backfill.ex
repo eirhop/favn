@@ -25,6 +25,7 @@ defmodule Mix.Tasks.Favn.Backfill do
 
   `submit --refresh force` intentionally recomputes selected windows even when
   stored freshness says they are already successful.
+  Use `--combine-windows` to execute the adjacent range as one run.
   """
 
   alias Favn.CLI
@@ -39,6 +40,7 @@ defmodule Mix.Tasks.Favn.Backfill do
     dry_run: :boolean,
     timezone: :string,
     refresh: :string,
+    combine_windows: :boolean,
     wait: :boolean,
     wait_timeout_ms: :integer,
     run_timeout_ms: :integer,
@@ -354,6 +356,12 @@ defmodule Mix.Tasks.Favn.Backfill do
     IO.puts("kind: #{plan["kind"] || "unknown"}")
     IO.puts("timezone: #{plan["timezone"] || "unknown"}")
     IO.puts("windows: #{plan["window_count"] || 0}")
+    IO.puts("execution_mode: #{plan["execution_mode"] || "separate"}")
+
+    IO.puts(
+      "physical_executions: #{plan["physical_execution_count"] || plan["window_count"] || 0}"
+    )
+
     IO.puts("range_start_at: #{plan["range_start_at"] || "unknown"}")
     IO.puts("range_end_at: #{plan["range_end_at"] || "unknown"}")
 

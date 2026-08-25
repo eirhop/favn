@@ -40,6 +40,7 @@ defmodule Favn.CLI.Backfill do
           run_timeout_ms: pos_integer(),
           poll_interval_ms: pos_integer(),
           refresh: String.t(),
+          combine_windows: boolean(),
           metadata: map()
         ]
 
@@ -256,6 +257,7 @@ defmodule Favn.CLI.Backfill do
      payload
      |> maybe_put(:metadata, Keyword.get(opts, :metadata))
      |> maybe_put(:refresh, Keyword.get(opts, :refresh))
+     |> maybe_put(:combine_windows, Keyword.get(opts, :combine_windows))
      |> maybe_put(:retry_policy, retry_policy(opts))
      |> maybe_put(:timeout_ms, run_timeout_ms(opts))}
   end
@@ -278,6 +280,7 @@ defmodule Favn.CLI.Backfill do
      payload
      |> maybe_put(:metadata, Keyword.get(opts, :metadata))
      |> maybe_put(:refresh, Keyword.get(opts, :refresh))
+     |> maybe_put(:combine_windows, Keyword.get(opts, :combine_windows))
      |> maybe_put(:retry_policy, retry_policy(opts))
      |> maybe_put(:timeout_ms, run_timeout_ms(opts))}
   end

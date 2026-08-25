@@ -581,7 +581,8 @@ defmodule FavnStoragePostgres.Projections.Projector do
         materialization_id: event.aggregate_id
       )
 
-    if materialization.target_kind == "asset" do
+    if materialization.target_kind == "asset" and
+         materialization.payload["empty_generation"] != true do
       deployment =
         Repo.get_by!(WorkspaceDeployment,
           workspace_id: event.workspace_id,
@@ -594,15 +595,18 @@ defmodule FavnStoragePostgres.Projections.Projector do
       projected_at = event.published_at || materialization.inserted_at
       evidence_generation_id = evidence_generation_id(materialization, deployment)
 
-      project_asset_window!(
-        event,
-        deployment,
-        materialization,
-        evidence_generation_id,
-        window_start,
-        window_end,
-        projected_at
-      )
+      Enum.each(materialization_windows(materialization, window_start, window_end), fn window ->
+        project_asset_window!(
+          event,
+          deployment,
+          materialization,
+          evidence_generation_id,
+          window.key,
+          window.start_at,
+          window.end_at,
+          projected_at
+        )
+      end)
 
       SQL.query!(
         Repo,
@@ -649,12 +653,12 @@ defmodule FavnStoragePostgres.Projections.Projector do
          deployment,
          materialization,
          evidence_generation_id,
+         storage_window_key,
          window_start,
          window_end,
          projected_at
        ) do
-    with {:ok, data_window_key} <- data_window_key(materialization.partition_key),
-         {:ok, storage_window_key} <- FreshnessKey.window(data_window_key) do
+    if is_binary(storage_window_key) do
       SQL.query!(
         Repo,
         """
@@ -729,6 +733,51 @@ defmodule FavnStoragePostgres.Projections.Projector do
     end
   end
 
+  defp materialization_windows(materialization, window_start, window_end) do
+    case materialization.payload["logical_window_range"] do
+      %{
+        "kind" => kind,
+        "timezone" => timezone,
+        "start_at" => start,
+        "end_at" => finish,
+        "count" => count
+      }
+      when is_binary(kind) and is_binary(timezone) and is_binary(start) and is_binary(finish) and
+             is_integer(count) and count > 1 ->
+        with {:ok, kind} <- parse_window_kind(kind),
+             {:ok, start_at, _offset} <- DateTime.from_iso8601(start),
+             {:ok, end_at, _offset} <- DateTime.from_iso8601(finish),
+             {:ok, anchors} <-
+               Favn.Window.Anchor.expand_range(kind, start_at, end_at, timezone: timezone),
+             true <- length(anchors) == count do
+          Enum.map(anchors, fn anchor ->
+            %{
+              key: FreshnessKey.window!(anchor.key),
+              start_at: anchor.start_at,
+              end_at: anchor.end_at
+            }
+          end)
+        else
+          _invalid -> []
+        end
+
+      _exact ->
+        case data_window_key(materialization.partition_key) do
+          {:ok, data_window_key} ->
+            [
+              %{
+                key: FreshnessKey.window!(data_window_key),
+                start_at: window_start,
+                end_at: window_end
+              }
+            ]
+
+          :error ->
+            []
+        end
+    end
+  end
+
   defp window_from_partition_key(materialization) do
     with {:ok, key} <- data_window_key(materialization.partition_key),
          start_at <- DateTime.from_unix!(key.start_at_us, :microsecond),
@@ -748,6 +797,12 @@ defmodule FavnStoragePostgres.Projections.Projector do
       _other -> :error
     end
   end
+
+  defp parse_window_kind("hour"), do: {:ok, :hour}
+  defp parse_window_kind("day"), do: {:ok, :day}
+  defp parse_window_kind("month"), do: {:ok, :month}
+  defp parse_window_kind("year"), do: {:ok, :year}
+  defp parse_window_kind(_kind), do: :error
 
   defp fallback_materialization_window(materialization),
     do: {materialization.inserted_at, DateTime.add(materialization.inserted_at, 1, :microsecond)}
