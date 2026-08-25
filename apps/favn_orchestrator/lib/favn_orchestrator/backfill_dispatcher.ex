@@ -475,8 +475,23 @@ defmodule FavnOrchestrator.BackfillDispatcher do
   defp error_kind(%Error{kind: kind}), do: kind
   defp error_kind(_reason), do: :unknown
 
-  defp field(map, key, default \\ nil) when is_map(map),
-    do: Map.get(map, key, Map.get(map, String.to_existing_atom(key), default))
+  defp field(map, key, default \\ nil) when is_map(map) do
+    case Map.fetch(map, key) do
+      {:ok, value} ->
+        value
+
+      :error ->
+        Enum.reduce_while(map, default, fn
+          {candidate, value}, _acc when is_atom(candidate) ->
+            if Atom.to_string(candidate) == key,
+              do: {:halt, value},
+              else: {:cont, default}
+
+          _entry, _acc ->
+            {:cont, default}
+        end)
+    end
+  end
 
   defp maybe_put(opts, _key, nil), do: opts
   defp maybe_put(opts, key, value), do: Keyword.put(opts, key, value)

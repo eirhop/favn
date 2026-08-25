@@ -13,6 +13,7 @@ defmodule FavnView.Components.RebuildPage do
   attr :has_more?, :boolean, default: false
   attr :planning?, :boolean, default: false
   attr :empty?, :boolean, default: false
+  attr :combine_windows?, :boolean, default: true
   attr :current_scope, :any, default: nil
   attr :operator_workspaces, :list, default: []
 
@@ -74,7 +75,7 @@ defmodule FavnView.Components.RebuildPage do
               type="checkbox"
               name="rebuild[combine_windows]"
               label="Combine adjacent windows into one run"
-              checked
+              checked={@combine_windows?}
               disabled={@empty?}
               data-testid="rebuild-combine-windows"
             />

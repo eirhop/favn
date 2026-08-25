@@ -112,5 +112,17 @@ defmodule FavnOrchestrator.RebuildDispatcherTest do
                  :running
                )
     end
+
+    test "makes a combined append action failure eligible for cleanup" do
+      assert :pending =
+               RebuildDispatcher.failed_action_cleanup_state(%{
+                 plan_payload: %{combined_append: true}
+               })
+
+      assert :not_started =
+               RebuildDispatcher.failed_action_cleanup_state(%{
+                 plan_payload: %{combined_append: false}
+               })
+    end
   end
 end

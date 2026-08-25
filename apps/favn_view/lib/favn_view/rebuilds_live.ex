@@ -26,6 +26,7 @@ defmodule FavnView.RebuildsLive do
        start_attempt: nil,
        planning?: false,
        empty?: false,
+       combine_windows?: true,
        error: error
      )}
   end
@@ -35,6 +36,7 @@ defmodule FavnView.RebuildsLive do
     {:noreply,
      assign(socket,
        empty?: Map.get(rebuild, "empty", "false") == "true",
+       combine_windows?: Map.get(rebuild, "combine_windows", "false") == "true",
        target_id: Map.get(rebuild, "target_id", socket.assigns.target_id)
      )}
   end
@@ -124,6 +126,7 @@ defmodule FavnView.RebuildsLive do
       has_more?={@has_more? || false}
       planning?={@planning?}
       empty?={@empty?}
+      combine_windows?={@combine_windows?}
       current_scope={@current_scope}
       operator_workspaces={@operator_workspaces}
     />

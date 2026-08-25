@@ -216,7 +216,8 @@ defmodule FavnOrchestrator.RebuildDispatcher do
           operation,
           locks,
           state,
-          action.terminal_error || %{reason: "action_failed"}
+          action.terminal_error || %{reason: "action_failed"},
+          failed_action_cleanup_state(operation)
         )
 
       %RebuildAction{status: :outcome_unknown} ->
@@ -1577,7 +1578,14 @@ defmodule FavnOrchestrator.RebuildDispatcher do
            transition_action(operation, action, context, state, :failed,
              terminal_error: canonical_error(reason)
            ) do
-      fail_operation(context, operation, locks, state, reason)
+      fail_operation(
+        context,
+        operation,
+        locks,
+        state,
+        reason,
+        failed_action_cleanup_state(operation)
+      )
     end
   end
 
@@ -2077,6 +2085,12 @@ defmodule FavnOrchestrator.RebuildDispatcher do
   end
 
   def orphaned_claim_disposition(_operation, _item_status), do: :pending
+
+  @doc false
+  @spec failed_action_cleanup_state(map()) :: :not_started | :pending
+  def failed_action_cleanup_state(operation) when is_map(operation) do
+    if combined_append?(operation), do: :pending, else: :not_started
+  end
 
   defp emit_error(workspace_id, operation_id, operation, reason) do
     :telemetry.execute(

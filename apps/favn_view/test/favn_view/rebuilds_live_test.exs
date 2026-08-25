@@ -213,6 +213,46 @@ defmodule FavnView.RebuildsLiveTest do
     assert has_element?(view, "[data-testid=rebuild-empty][checked]")
   end
 
+  test "separate-window choice survives validation and reaches planning", %{conn: conn} do
+    test_pid = self()
+    {conn, operator_context} = authenticated_conn(conn)
+
+    Application.put_env(:favn_view, :page_operator_rebuilds_fun, fn
+      ^operator_context, _opts ->
+        {:ok, %{items: [], next_cursor: nil, has_more?: false, limit: 100}}
+    end)
+
+    Application.put_env(:favn_view, :plan_operator_rebuild_fun, fn
+      ^operator_context, "asset:orders", "separate windows", opts ->
+        send(test_pid, {:separate_plan, opts})
+
+        {:ok,
+         %{
+           plan_id: "separate-window-plan",
+           plan_hash: String.duplicate("a", 64),
+           expires_at: DateTime.add(DateTime.utc_now(), 3_600, :second)
+         }}
+    end)
+
+    assert {:ok, view, _html} = live(conn, ~p"/rebuilds")
+
+    form =
+      form(view, "form[phx-submit=plan_rebuild]",
+        rebuild: %{
+          target_id: "asset:orders",
+          reason: "separate windows",
+          combine_windows: "false"
+        }
+      )
+
+    render_change(form)
+    refute has_element?(view, "[data-testid=rebuild-combine-windows][checked]")
+
+    render_submit(form)
+    assert_receive {:separate_plan, opts}
+    refute opts[:combine_windows]
+  end
+
   test "detail workflow delegates mutation permissions and item pagination to the facade" do
     test_pid = self()
     plan_hash = String.duplicate("a", 64)
