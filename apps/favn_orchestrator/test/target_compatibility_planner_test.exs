@@ -4,6 +4,7 @@ defmodule FavnOrchestrator.TargetCompatibilityPlannerTest do
   alias Favn.Contracts.RelationInspectionResult
   alias Favn.Manifest
   alias Favn.Manifest.Asset
+  alias Favn.Manifest.Serializer
   alias Favn.Manifest.TargetDescriptor
   alias Favn.Manifest.Version
   alias Favn.RelationRef
@@ -392,6 +393,9 @@ defmodule FavnOrchestrator.TargetCompatibilityPlannerTest do
         historical_asset,
         historical_asset.target_descriptor.manifest_schema_version + 1
       )
+      |> rc9_descriptor()
+
+    assert historical_descriptor.schema_version == 1
 
     refute historical_descriptor.descriptor_hash ==
              desired_asset.target_descriptor.descriptor_hash
@@ -798,6 +802,28 @@ defmodule FavnOrchestrator.TargetCompatibilityPlannerTest do
       manifest_schema_version: manifest_schema_version,
       runner_contract_version: asset.target_descriptor.runner_contract_version
     )
+  end
+
+  defp rc9_descriptor(descriptor) do
+    descriptor = %{
+      descriptor
+      | schema_version: 1,
+        manifest_schema_version: 17,
+        runner_contract_version: 13,
+        materialization: Map.delete(descriptor.materialization, :replacement_key),
+        write_semantics: Map.delete(descriptor.write_semantics, :replacement_key),
+        descriptor_hash: ""
+    }
+
+    hash =
+      descriptor
+      |> Map.from_struct()
+      |> Map.delete(:descriptor_hash)
+      |> Serializer.encode_manifest!()
+      |> then(&:crypto.hash(:sha256, &1))
+      |> Base.encode16(case: :lower)
+
+    %{descriptor | descriptor_hash: hash}
   end
 
   defp historical_manifest_error do

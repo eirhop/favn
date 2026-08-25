@@ -9,6 +9,8 @@ defmodule Favn.Manifest.TargetDescriptorTest do
   alias Favn.Window.Spec, as: WindowSpec
 
   @package_hash String.duplicate("a", 64)
+  @rc9_incremental_descriptor_hash "25a070c600d723c301784ceed41978ebc119bad62d8391d631f0de0efacc8d96"
+  @rc9_incremental_descriptor_json ~S({"adapter":"Elixir.FavnTestSupport.TargetAdapter","connection_identity":{"definition_module":null,"name":"warehouse"},"contract_fingerprint":null,"coverage":null,"descriptor_hash":"25a070c600d723c301784ceed41978ebc119bad62d8391d631f0de0efacc8d96","execution_package_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","grain_fingerprint":null,"manifest_schema_version":17,"materialization":{"kind":"incremental","strategy":"delete_insert","unique_key":["id"],"window_column":"partition_day"},"relation":{"catalog":null,"connection":"warehouse","name":"asset","schema":"analytics"},"runner_contract_version":13,"schema_version":1,"target_id":"asset:Elixir.MyApp.Asset:asset","window_identity":null,"window_identity_fingerprint":null,"write_semantics":{"mode":"incremental","strategy":"delete_insert","unique_key":["id"],"window_column":"partition_day"}})
 
   test "builds stable compatibility fingerprints for a persisted SQL table" do
     asset = persisted_asset(WindowSpec.new!(:day, timezone: "Europe/Oslo"))
@@ -172,6 +174,53 @@ defmodule Favn.Manifest.TargetDescriptorTest do
     assert {:ok, decoded} = Favn.Manifest.Serializer.decode_manifest(encoded)
     assert {:ok, rehydrated} = TargetDescriptor.from_value(decoded)
     assert rehydrated == descriptor
+  end
+
+  test "persisted schema-1 descriptors retain their original canonical hash" do
+    assert {:ok, decoded} =
+             Favn.Manifest.Serializer.decode_manifest(@rc9_incremental_descriptor_json)
+
+    assert {:error, {:unsupported_target_descriptor_schema, 1}} =
+             TargetDescriptor.from_value(decoded)
+
+    assert {:ok, rehydrated} = TargetDescriptor.from_persisted_value(decoded)
+    assert rehydrated.schema_version == 1
+    assert rehydrated.descriptor_hash == @rc9_incremental_descriptor_hash
+
+    assert rehydrated.materialization == %{
+             kind: "incremental",
+             strategy: "delete_insert",
+             unique_key: ["id"],
+             window_column: "partition_day"
+           }
+
+    assert TargetDescriptor.compatibility_field(rehydrated, :materialization) == %{
+             kind: "incremental",
+             strategy: "delete_insert",
+             unique_key: ["id"],
+             window_column: "partition_day",
+             replacement_key: nil
+           }
+
+    assert Favn.Manifest.Serializer.encode_manifest!(rehydrated) ==
+             @rc9_incremental_descriptor_json
+
+    refute Map.has_key?(rehydrated.materialization, :replacement_key)
+    refute Map.has_key?(rehydrated.write_semantics, :replacement_key)
+
+    assert {:error, {:unsupported_target_descriptor_schema, 1}} =
+             TargetDescriptor.validate(rehydrated)
+  end
+
+  test "persisted descriptors reject unknown schema versions" do
+    descriptor =
+      persisted_asset(nil)
+      |> TargetDescriptor.from_asset(versions())
+      |> Map.from_struct()
+      |> Map.put(:schema_version, 3)
+
+    assert {:error, {:unsupported_target_descriptor_schema, 3}} =
+             TargetDescriptor.from_persisted_value(descriptor)
   end
 
   test "descriptor validation matches contract and grain fingerprints to the asset" do

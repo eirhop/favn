@@ -158,8 +158,8 @@ defmodule Favn.TargetCompatibility do
 
   defp field_diff(desired, active, fields) do
     for field <- fields,
-        active_value = Map.fetch!(active, field),
-        desired_value = Map.fetch!(desired, field),
+        active_value = TargetDescriptor.compatibility_field(active, field),
+        desired_value = TargetDescriptor.compatibility_field(desired, field),
         active_value != desired_value do
       %{field: field, active: active_value, desired: desired_value}
     end
