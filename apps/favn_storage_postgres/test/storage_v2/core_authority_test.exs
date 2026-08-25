@@ -226,6 +226,8 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnStoragePostgres.StorageV2.Migrations
 
   @service_token "B7yN3kQ9wR4mT8xZ2cV6pL1sD5fH0jA7"
+  @rc9_incremental_descriptor_hash "25a070c600d723c301784ceed41978ebc119bad62d8391d631f0de0efacc8d96"
+  @rc9_incremental_descriptor_json ~S({"adapter":"Elixir.FavnTestSupport.TargetAdapter","connection_identity":{"definition_module":null,"name":"warehouse"},"contract_fingerprint":null,"coverage":null,"descriptor_hash":"25a070c600d723c301784ceed41978ebc119bad62d8391d631f0de0efacc8d96","execution_package_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","grain_fingerprint":null,"manifest_schema_version":17,"materialization":{"kind":"incremental","strategy":"delete_insert","unique_key":["id"],"window_column":"partition_day"},"relation":{"catalog":null,"connection":"warehouse","name":"asset","schema":"analytics"},"runner_contract_version":13,"schema_version":1,"target_id":"asset:Elixir.MyApp.Asset:asset","window_identity":null,"window_identity_fingerprint":null,"write_semantics":{"mode":"incremental","strategy":"delete_insert","unique_key":["id"],"window_column":"partition_day"}})
 
   defmodule FailOnceIdentityStore do
     @behaviour FavnOrchestrator.Persistence.IdentityStore
@@ -2339,15 +2341,10 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert %{"error" => %{"code" => "validation_failed"}} = JSON.decode!(response.resp_body)
   end
 
-  test "projects bounded target descriptors without activating the full manifest", fixture do
+  test "projects RC9 target descriptors without activating the full manifest", fixture do
     historical_schema_version = Favn.Manifest.Compatibility.current_schema_version() - 1
-    descriptor = target_descriptor(fixture, historical_schema_version)
-
-    descriptor_value =
-      descriptor
-      |> Map.from_struct()
-      |> Serializer.encode_canonical!()
-      |> Jason.decode!()
+    descriptor = rc9_incremental_descriptor()
+    descriptor_value = Jason.decode!(@rc9_incremental_descriptor_json)
 
     historical_manifest = %{
       "assets" => [%{"target_descriptor" => descriptor_value}],
@@ -2377,6 +2374,36 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
 
     assert {:ok, [persisted]} = RegistryStore.get_manifest_target_descriptors(query)
     assert persisted == descriptor
+    assert persisted.schema_version == 1
+    assert persisted.descriptor_hash == @rc9_incremental_descriptor_hash
+    refute Map.has_key?(persisted.materialization, :replacement_key)
+    refute Map.has_key?(persisted.write_semantics, :replacement_key)
+
+    invalid_manifest =
+      put_in(
+        historical_manifest,
+        ["assets", Access.at(0), "target_descriptor", "schema_version"],
+        99
+      )
+
+    {1, nil} =
+      Repo.update_all(
+        from(manifest in ManifestVersionRow,
+          where: manifest.manifest_version_id == ^fixture.version.manifest_version_id
+        ),
+        set: [manifest: invalid_manifest]
+      )
+
+    assert {:error, %{details: %{reason: :invalid_target_descriptor}}} =
+             RegistryStore.get_manifest_target_descriptors(query)
+
+    {1, nil} =
+      Repo.update_all(
+        from(manifest in ManifestVersionRow,
+          where: manifest.manifest_version_id == ^fixture.version.manifest_version_id
+        ),
+        set: [manifest: historical_manifest]
+      )
 
     assert {:error, %{details: %{reason: :historical_manifest_not_activatable}}} =
              RegistryStore.get_manifest(
@@ -8574,6 +8601,223 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert recovered_runtime.activation_diagnostics.unresolved_inspection_count == 0
   end
 
+  test "RC9 persisted descriptors permit RC10 activation and idempotent replay", fixture do
+    share_repo_sandbox!()
+    start_supervised!({Task.Supervisor, name: FavnOrchestrator.RunnerClaimSupervisor})
+    start_supervised!({Task.Supervisor, name: FavnOrchestrator.RunnerTaskWaitSupervisor})
+    start_supervised!({RunnerTaskResultRouter, []})
+    start_supervised!({RunnerRegistry, []})
+
+    historical =
+      recoverable_activation_fixture(
+        fixture,
+        {:incremental, strategy: :delete_insert, unique_key: [:id], window_column: :partition_day}
+      )
+
+    historical_asset = persisted_asset(historical.version)
+    descriptor = historical_asset.target_descriptor
+    historical_deployment_id = "rc9-active-#{fixture.workspace_id}"
+
+    historical_decision = %DeploymentTargetCompatibility{
+      target_id: fixture.target_id,
+      desired_descriptor_hash: descriptor.descriptor_hash,
+      compatibility_status: :uninitialized,
+      reason_code: "no_active_generation",
+      compatibility_diff: %{},
+      expected_binding_version: nil,
+      expected_active_generation_id: nil,
+      active_physical_fingerprint: nil
+    }
+
+    historical_command = %{
+      fixture.deploy_command
+      | deployment_id: historical_deployment_id,
+        manifest_version_id: historical.version.manifest_version_id,
+        target_compatibilities: [historical_decision],
+        occurred_at: DateTime.utc_now()
+    }
+
+    assert {:ok, _runtime} = RegistryStore.deploy_manifest(historical_command)
+
+    assert {:ok, generation_result} =
+             TargetGenerationStore.ensure_writable(%EnsureWritableTargetGeneration{
+               workspace_context: fixture.workspace_context,
+               command_id: "rc9-generation:#{fixture.workspace_id}",
+               target_id: fixture.target_id,
+               manifest_version_id: historical.version.manifest_version_id,
+               descriptor: descriptor,
+               occurred_at: DateTime.utc_now()
+             })
+
+    inspection = %RelationInspectionResult{
+      asset_ref: nil,
+      required_runner_release_id: historical.version.runner_releases["default"],
+      relation_ref: RelationRef.new!(connection: :warehouse, schema: "analytics", name: "asset"),
+      relation: %{catalog: nil, schema: "analytics", name: "asset", type: :table},
+      columns: [],
+      table_metadata: %{},
+      adapter: FavnTestSupport.TargetAdapter,
+      inspected_at: DateTime.utc_now()
+    }
+
+    assert {:ok, observed} =
+             Favn.TargetCompatibility.PhysicalFingerprint.from_inspection(inspection)
+
+    rc9_descriptor = rc9_incremental_descriptor()
+
+    generation_id = generation_result.generation.target_generation_id
+
+    assert %{num_rows: 1} =
+             SQL.query!(
+               Repo,
+               """
+               UPDATE favn_control.asset_target_generations
+               SET status = 'active', active_descriptor_hash = $4,
+                   physical_schema_fingerprint = $5, activated_at = clock_timestamp(),
+                   version = version + 1, updated_at = clock_timestamp()
+               WHERE workspace_id = $1 AND target_id = $2
+                 AND target_generation_id::text = $3
+               """,
+               [
+                 fixture.workspace_id,
+                 fixture.target_id,
+                 generation_id,
+                 rc9_descriptor.descriptor_hash,
+                 observed.fingerprint
+               ]
+             )
+
+    assert %{num_rows: 1} =
+             SQL.query!(
+               Repo,
+               """
+               UPDATE favn_control.asset_target_bindings
+               SET active_generation_id = $3::text::uuid, desired_descriptor_hash = $4,
+                   compatibility_status = 'ready', reason_code = 'compatible',
+                   compatibility_diff = '{}'::jsonb, active_physical_fingerprint = $5,
+                   version = version + 1, updated_at = clock_timestamp()
+               WHERE workspace_id = $1 AND target_id = $2
+               """,
+               [
+                 fixture.workspace_id,
+                 fixture.target_id,
+                 generation_id,
+                 rc9_descriptor.descriptor_hash,
+                 observed.fingerprint
+               ]
+             )
+
+    historical_manifest =
+      historical.version.manifest
+      |> canonical_json()
+      |> put_target_descriptor(fixture.target_id, rc9_descriptor)
+
+    assert %{num_rows: 1} =
+             SQL.query!(
+               Repo,
+               """
+               UPDATE favn_control.manifest_versions
+               SET schema_version = 17, runner_contract_version = 13, manifest = $2::jsonb
+               WHERE manifest_version_id = $1
+               """,
+               [historical.version.manifest_version_id, historical_manifest]
+             )
+
+    current_manifest =
+      historical.version.manifest
+      |> FavnTestSupport.with_manifest_contract(FavnTestSupport.runner_release_id(:alternate))
+      |> FavnTestSupport.with_manifest_graph()
+
+    assert {:ok, current_version} =
+             Version.new(current_manifest,
+               manifest_version_id: "mv-rc10-upgrade-#{fixture.workspace_id}"
+             )
+
+    assert {:ok, ^current_version} =
+             RegistryStore.register_manifest(%RegisterManifest{
+               platform_context: fixture.platform_context,
+               version: current_version
+             })
+
+    authorize_platform_service_token()
+    current_fixture = %{fixture | version: current_version}
+    {:ok, runner_binding} = OperationRunnerTasks.binding(current_version, historical_asset.ref)
+
+    runner_agent =
+      spawn(fn ->
+        receive do
+          :stop -> :ok
+        end
+      end)
+
+    on_exit(fn -> send(runner_agent, :stop) end)
+
+    assert {:ok, %{status: :accepted}} =
+             RunnerRegistry.register(
+               %Registration{
+                 runner_instance_id: "rc10-upgrade:#{fixture.workspace_id}",
+                 boot_id: "rc10-upgrade-boot",
+                 beam_node: Atom.to_string(node()),
+                 runner_pool: runner_binding.runner_pool,
+                 required_runner_release_id: runner_binding.required_runner_release_id,
+                 lifecycle_mode: :elastic,
+                 supported_task_kinds: [:relation_inspection],
+                 capabilities: ["relation_inspection"]
+               },
+               runner_agent
+             )
+
+    path = "/api/orchestrator/v1/manifests/#{current_version.manifest_version_id}/activate"
+    idempotency_key = "rc9-to-rc10-#{fixture.workspace_id}"
+
+    activation =
+      Task.async(fn ->
+        api_request(:post, path, activation_body(),
+          fixture: current_fixture,
+          idempotency_key: idempotency_key
+        )
+      end)
+
+    assignment = claim_relation_inspection_task!(current_fixture, "rc9-to-rc10")
+    assert :ok = start_runner_task(assignment)
+    await_runner_task_waiter!(assignment)
+
+    assert :ok =
+             finish_runner_task(assignment,
+               outcome: :succeeded,
+               retry_class: :terminal,
+               result: %{
+                 inspection
+                 | required_runner_release_id: runner_binding.required_runner_release_id
+               }
+             )
+
+    first = Task.await(activation, 30_000)
+
+    replay =
+      api_request(:post, path, activation_body(),
+        fixture: current_fixture,
+        idempotency_key: idempotency_key
+      )
+
+    assert first.status == 200
+    assert replay.status == 200
+    assert replay.resp_body == first.resp_body
+
+    assert {:ok, runtime} = Manifests.active_runtime(fixture.workspace_context)
+    assert runtime.manifest_version_id == current_version.manifest_version_id
+
+    assert {:ok, active_binding} =
+             TargetGenerationStore.get_binding(%GetTargetBinding{
+               workspace_context: fixture.workspace_context,
+               target_id: fixture.target_id
+             })
+
+    assert active_binding.active_generation_id == generation_id
+    assert active_binding.compatibility_status == :rebuild_available
+    assert active_binding.reason_code == "transformation_changed"
+  end
+
   test "actor HTTP mutation is replay-safe and durably attributed", fixture do
     identity = api_identity(fixture, [:operator])
 
@@ -10256,8 +10500,8 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     )
   end
 
-  defp recoverable_activation_fixture(fixture) do
-    descriptor = target_descriptor(fixture)
+  defp recoverable_activation_fixture(fixture, materialization \\ :table) do
+    descriptor = target_descriptor(fixture, nil, materialization)
 
     manifest =
       Map.update!(fixture.version.manifest, :assets, fn assets ->
@@ -10271,7 +10515,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
                     schema: "analytics",
                     name: "asset"
                   ),
-                materialization: :table,
+                materialization: materialization,
                 target_descriptor: descriptor,
                 semantic_generation_id: nil
             }
@@ -10793,7 +11037,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     {version, [package, private_package]}
   end
 
-  defp target_descriptor(fixture, manifest_schema_version \\ nil) do
+  defp target_descriptor(fixture, manifest_schema_version \\ nil, materialization \\ :table) do
     asset = Enum.find(fixture.version.manifest.assets, &(&1.ref == {MyApp.Asset, :asset}))
     manifest_schema_version = manifest_schema_version || fixture.version.schema_version
 
@@ -10806,7 +11050,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
           schema: "analytics",
           name: "asset"
         ),
-      materialization: :table
+      materialization: materialization
     })
     |> TargetDescriptor.from_asset(
       connection_definitions: %{
@@ -10815,6 +11059,27 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
       manifest_schema_version: manifest_schema_version,
       runner_contract_version: fixture.version.runner_contract_version
     )
+  end
+
+  defp persisted_asset(version) do
+    Enum.find(version.manifest.assets, &match?(%TargetDescriptor{}, &1.target_descriptor))
+  end
+
+  defp put_target_descriptor(manifest, target_id, descriptor) do
+    Map.update!(manifest, "assets", fn assets ->
+      Enum.map(assets, fn asset ->
+        case get_in(asset, ["target_descriptor", "target_id"]) do
+          ^target_id -> Map.put(asset, "target_descriptor", canonical_json(descriptor))
+          _other -> asset
+        end
+      end)
+    end)
+  end
+
+  defp rc9_incremental_descriptor do
+    {:ok, value} = Serializer.decode_manifest(@rc9_incremental_descriptor_json)
+    {:ok, descriptor} = TargetDescriptor.from_persisted_value(value)
+    descriptor
   end
 
   # A projector claim is deliberately held until its lease expires, and suites

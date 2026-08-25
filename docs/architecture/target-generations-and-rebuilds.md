@@ -67,7 +67,10 @@ The same rule applies when the active generation points to an immutable
 manifest whose full runtime schema is no longer activatable. Compatibility
 planning reads only the selected standalone target descriptors, in bounded
 batches, and requires the persisted descriptor hash to match the active
-binding. It never registers or executes the historical manifest. A complete
+binding. The persisted decoder preserves the original schema-1 canonical shape
+and hash semantics used by RC9 while current manifests still require schema 2;
+unknown descriptor schemas remain invalid. It never registers or executes the
+historical manifest. A complete
 descriptor hash may differ because of non-semantic envelope metadata; the named
 compatibility fields still decide `ready`, `rebuild_available`, or
 `rebuild_required`. Missing, malformed, or mismatched historical descriptor

@@ -15,6 +15,7 @@ defmodule Favn.Manifest.TargetDescriptor do
   alias Favn.Window.Spec, as: WindowSpec
 
   @schema_version 2
+  @historical_schema_versions [1]
   @hash_pattern ~r/\A[0-9a-f]{64}\z/
   @period_kinds ~w(hour day month year)
   @strategies ~w(append replace delete_insert merge replace_groups)
@@ -152,11 +153,79 @@ defmodule Favn.Manifest.TargetDescriptor do
 
   def from_value(value), do: {:error, {:invalid_target_descriptor, value}}
 
+  @doc "Rehydrates a persisted descriptor using its explicit historical schema version."
+  @spec from_persisted_value(term()) :: {:ok, t() | nil} | {:error, term()}
+  def from_persisted_value(nil), do: {:ok, nil}
+
+  def from_persisted_value(%__MODULE__{schema_version: schema_version} = descriptor)
+      when schema_version in @historical_schema_versions,
+      do: validate_for_schema(descriptor, schema_version)
+
+  def from_persisted_value(%__MODULE__{} = descriptor), do: validate(descriptor)
+
+  def from_persisted_value(value) when is_map(value) do
+    case field(value, :schema_version) do
+      @schema_version ->
+        from_value(value)
+
+      schema_version when schema_version in @historical_schema_versions ->
+        from_value(value, schema_version)
+
+      schema_version ->
+        {:error, {:unsupported_target_descriptor_schema, schema_version}}
+    end
+  end
+
+  def from_persisted_value(value), do: {:error, {:invalid_target_descriptor, value}}
+
   @doc "Validates the complete descriptor and its canonical hash."
   @spec validate(t()) :: {:ok, t()} | {:error, term()}
-  def validate(%__MODULE__{} = descriptor) do
+  def validate(%__MODULE__{} = descriptor), do: validate_for_schema(descriptor, @schema_version)
+
+  @doc "Returns one descriptor field normalized for cross-schema compatibility comparison."
+  @spec compatibility_field(t(), atom()) :: term()
+  def compatibility_field(%__MODULE__{schema_version: 1} = descriptor, field)
+      when field in [:materialization, :write_semantics] do
+    case Map.fetch!(descriptor, field) do
+      %{kind: "incremental"} = value -> Map.put(value, :replacement_key, nil)
+      %{mode: "incremental"} = value -> Map.put(value, :replacement_key, nil)
+      value -> value
+    end
+  end
+
+  def compatibility_field(%__MODULE__{} = descriptor, field), do: Map.fetch!(descriptor, field)
+
+  defp from_value(value, schema_version) do
+    with :ok <- reject_unknown_fields(value) do
+      descriptor = %__MODULE__{
+        schema_version: schema_version,
+        target_id: field(value, :target_id),
+        relation: value |> field(:relation) |> canonical_relation(),
+        adapter: field(value, :adapter),
+        connection_identity:
+          value |> field(:connection_identity) |> canonical_connection_identity(),
+        materialization:
+          value |> field(:materialization) |> canonical_materialization(schema_version),
+        write_semantics:
+          value |> field(:write_semantics) |> canonical_write_semantics(schema_version),
+        execution_package_hash: field(value, :execution_package_hash),
+        contract_fingerprint: field(value, :contract_fingerprint),
+        grain_fingerprint: field(value, :grain_fingerprint),
+        window_identity: value |> field(:window_identity) |> canonical_window_identity(),
+        window_identity_fingerprint: field(value, :window_identity_fingerprint),
+        coverage: value |> field(:coverage) |> canonical_coverage(),
+        manifest_schema_version: field(value, :manifest_schema_version),
+        runner_contract_version: field(value, :runner_contract_version),
+        descriptor_hash: field(value, :descriptor_hash)
+      }
+
+      validate_for_schema(descriptor, schema_version)
+    end
+  end
+
+  defp validate_for_schema(%__MODULE__{} = descriptor, schema_version) do
     cond do
-      descriptor.schema_version != @schema_version ->
+      descriptor.schema_version != schema_version ->
         {:error, {:unsupported_target_descriptor_schema, descriptor.schema_version}}
 
       not nonempty_string?(descriptor.target_id) ->
@@ -171,8 +240,8 @@ defmodule Favn.Manifest.TargetDescriptor do
       not valid_connection_identity?(descriptor.connection_identity) ->
         {:error, {:invalid_target_connection_identity, descriptor.connection_identity}}
 
-      not valid_materialization?(descriptor.materialization) or
-          not valid_write_semantics?(descriptor.write_semantics) ->
+      not valid_materialization?(descriptor.materialization, schema_version) or
+          not valid_write_semantics?(descriptor.write_semantics, schema_version) ->
         {:error, :invalid_target_materialization}
 
       not canonical_hash?(descriptor.execution_package_hash) ->
@@ -425,7 +494,29 @@ defmodule Favn.Manifest.TargetDescriptor do
     |> Map.update!(:name, &identifier/1)
   end
 
-  defp canonical_materialization(value) do
+  defp canonical_materialization(value), do: canonical_materialization(value, @schema_version)
+
+  defp canonical_materialization(value, 1) do
+    value = canonical_map(value, [:kind, :strategy, :unique_key, :window_column])
+
+    case identifier(value.kind) do
+      "table" ->
+        %{kind: "table"}
+
+      "incremental" ->
+        %{
+          kind: "incremental",
+          strategy: identifier(value.strategy),
+          unique_key: identifiers(value.unique_key),
+          window_column: identifier(value.window_column)
+        }
+
+      _other ->
+        value
+    end
+  end
+
+  defp canonical_materialization(value, @schema_version) do
     value =
       canonical_map(value, [
         :kind,
@@ -453,7 +544,29 @@ defmodule Favn.Manifest.TargetDescriptor do
     end
   end
 
-  defp canonical_write_semantics(value) do
+  defp canonical_write_semantics(value), do: canonical_write_semantics(value, @schema_version)
+
+  defp canonical_write_semantics(value, 1) do
+    value = canonical_map(value, [:mode, :strategy, :unique_key, :window_column])
+
+    case identifier(value.mode) do
+      "replace" ->
+        %{mode: "replace"}
+
+      "incremental" ->
+        %{
+          mode: "incremental",
+          strategy: identifier(value.strategy),
+          unique_key: identifiers(value.unique_key),
+          window_column: identifier(value.window_column)
+        }
+
+      _other ->
+        value
+    end
+  end
+
+  defp canonical_write_semantics(value, @schema_version) do
     value =
       canonical_map(value, [
         :mode,
@@ -544,35 +657,71 @@ defmodule Favn.Manifest.TargetDescriptor do
       value == canonical_connection_identity(value) and nonempty_string?(value.name) and
         optional_string?(value.definition_module)
 
-  defp valid_materialization?(%{kind: "table"}), do: true
+  defp valid_materialization?(%{kind: "table"}, schema_version)
+       when schema_version in [1, @schema_version],
+       do: true
 
-  defp valid_materialization?(%{
-         kind: "incremental",
-         strategy: strategy,
-         unique_key: unique_key,
-         window_column: window_column,
-         replacement_key: replacement_key
-       }),
+  defp valid_materialization?(
+         %{
+           kind: "incremental",
+           strategy: strategy,
+           unique_key: unique_key,
+           window_column: window_column
+         },
+         1
+       ),
+       do:
+         strategy in ~w(append replace delete_insert merge) and
+           optional_string_list?(unique_key) and optional_string?(window_column)
+
+  defp valid_materialization?(
+         %{
+           kind: "incremental",
+           strategy: strategy,
+           unique_key: unique_key,
+           window_column: window_column,
+           replacement_key: replacement_key
+         },
+         @schema_version
+       ),
        do:
          strategy in @strategies and
            valid_incremental_options?(strategy, unique_key, window_column, replacement_key)
 
-  defp valid_materialization?(_value), do: false
+  defp valid_materialization?(_value, _schema_version), do: false
 
-  defp valid_write_semantics?(%{mode: "replace"}), do: true
+  defp valid_write_semantics?(%{mode: "replace"}, schema_version)
+       when schema_version in [1, @schema_version],
+       do: true
 
-  defp valid_write_semantics?(%{
-         mode: "incremental",
-         strategy: strategy,
-         unique_key: unique_key,
-         window_column: window_column,
-         replacement_key: replacement_key
-       }),
+  defp valid_write_semantics?(
+         %{
+           mode: "incremental",
+           strategy: strategy,
+           unique_key: unique_key,
+           window_column: window_column
+         },
+         1
+       ),
+       do:
+         strategy in ~w(append replace delete_insert merge) and
+           optional_string_list?(unique_key) and optional_string?(window_column)
+
+  defp valid_write_semantics?(
+         %{
+           mode: "incremental",
+           strategy: strategy,
+           unique_key: unique_key,
+           window_column: window_column,
+           replacement_key: replacement_key
+         },
+         @schema_version
+       ),
        do:
          strategy in @strategies and
            valid_incremental_options?(strategy, unique_key, window_column, replacement_key)
 
-  defp valid_write_semantics?(_value), do: false
+  defp valid_write_semantics?(_value, _schema_version), do: false
 
   defp valid_window_identity?(nil), do: true
 

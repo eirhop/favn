@@ -620,7 +620,7 @@ defmodule FavnStoragePostgres.Registry.Store do
         {:cont, {:ok, descriptors}}
 
       [value], {:ok, descriptors} ->
-        case TargetDescriptor.from_value(value) do
+        case TargetDescriptor.from_persisted_value(value) do
           {:ok, %TargetDescriptor{} = descriptor} ->
             cond do
               not MapSet.member?(allowed, descriptor.target_id) ->
