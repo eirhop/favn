@@ -891,7 +891,8 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
       "end_at" => ExactDateTimeCodec.encode(window.end_at),
       "timezone" => window.timezone,
       "key" => window_key_to_dto(window.key),
-      "anchor_key" => window_key_to_dto(window.anchor_key)
+      "anchor_key" => window_key_to_dto(window.anchor_key),
+      "logical_window_count" => window.logical_window_count
     }
   end
 
@@ -914,6 +915,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
 
   defp window_runtime_from_dto(dto) do
     timezone = field(dto, :timezone)
+    logical_window_count = field(dto, :logical_window_count) || 1
 
     with {:ok, kind} <- window_kind_from_dto(field(dto, :kind)),
          true <- valid_persisted_timezone?(timezone),
@@ -922,14 +924,16 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
          {:ok, key} <- window_key_from_dto(field(dto, :key)),
          {:ok, anchor_key} <- window_key_from_dto(field(dto, :anchor_key)),
          :lt <- DateTime.compare(start_at, end_at),
-         true <- key == persisted_window_key(kind, start_at, timezone) do
+         true <- is_integer(logical_window_count) and logical_window_count > 0,
+         true <- key == persisted_window_key(kind, start_at, end_at, timezone, key) do
       window = %WindowRuntime{
         kind: kind,
         start_at: start_at,
         end_at: end_at,
         timezone: timezone,
         key: key,
-        anchor_key: anchor_key
+        anchor_key: anchor_key,
+        logical_window_count: logical_window_count
       }
 
       {:ok, window}
@@ -968,25 +972,57 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
     do: {:error, {:invalid_window_datetime, value}}
 
   defp decode_persisted_window_key(value) when is_binary(value) do
-    case String.split(value, ":", parts: 3) do
-      [kind, timezone, datetime] ->
-        with {:ok, kind} <- window_kind_from_dto(kind),
-             true <- valid_persisted_timezone?(timezone),
-             {:ok, datetime, _offset} <- DateTime.from_iso8601(datetime) do
-          {:ok, persisted_window_key(kind, datetime, timezone)}
-        else
-          _ -> {:error, {:invalid_window_key_dto, value}}
-        end
-
-      _other ->
-        {:error, {:invalid_window_key_dto, value}}
+    with {:ok, key} <- parse_persisted_window_key(value) do
+      {:ok, key}
+    else
+      _invalid -> {:error, {:invalid_window_key_dto, value}}
     end
   end
 
   defp decode_persisted_window_key(value), do: {:error, {:invalid_window_key_dto, value}}
 
+  defp parse_persisted_window_key("range:" <> value) do
+    with [kind, timezone, bounds] <- String.split(value, ":", parts: 3),
+         [start_raw, end_raw] <- String.split(bounds, "/", parts: 2),
+         {:ok, kind} <- window_kind_from_dto(kind),
+         true <- valid_persisted_timezone?(timezone),
+         {:ok, start_at, _offset} <- DateTime.from_iso8601(start_raw),
+         {:ok, end_at, _offset} <- DateTime.from_iso8601(end_raw),
+         :lt <- DateTime.compare(start_at, end_at) do
+      {:ok,
+       %{
+         kind: kind,
+         start_at_us: DateTime.to_unix(start_at, :microsecond),
+         end_at_us: DateTime.to_unix(end_at, :microsecond),
+         timezone: timezone
+       }}
+    else
+      _invalid -> :error
+    end
+  end
+
+  defp parse_persisted_window_key(value) do
+    with [kind, timezone, datetime_raw] <- String.split(value, ":", parts: 3),
+         {:ok, kind} <- window_kind_from_dto(kind),
+         true <- valid_persisted_timezone?(timezone),
+         {:ok, datetime, _offset} <- DateTime.from_iso8601(datetime_raw) do
+      {:ok, persisted_window_key(kind, datetime, timezone)}
+    else
+      _invalid -> :error
+    end
+  end
+
   defp persisted_window_key(kind, datetime, timezone) do
     %{kind: kind, start_at_us: DateTime.to_unix(datetime, :microsecond), timezone: timezone}
+  end
+
+  defp persisted_window_key(kind, start_at, end_at, timezone, key) do
+    if WindowKey.range?(key) do
+      persisted_window_key(kind, start_at, timezone)
+      |> Map.put(:end_at_us, DateTime.to_unix(end_at, :microsecond))
+    else
+      persisted_window_key(kind, start_at, timezone)
+    end
   end
 
   defp valid_persisted_timezone?(timezone) when is_binary(timezone) do

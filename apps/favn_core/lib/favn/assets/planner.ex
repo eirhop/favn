@@ -45,6 +45,8 @@ defmodule Favn.Assets.Planner do
           anchor_windows: [Anchor.t()],
           anchor_ranges: [backfill_anchor_range()],
           exact_windows: %{optional(Ref.t()) => [Runtime.t()]},
+          combine_windows: boolean(),
+          allow_combined_append: boolean(),
           planning_index: PlanningIndex.t() | nil,
           graph_index: GraphIndex.t() | nil,
           asset_modules: [module()]
@@ -57,6 +59,8 @@ defmodule Favn.Assets.Planner do
     anchor_windows = Keyword.get(opts, :anchor_windows, [])
     anchor_ranges = Keyword.get(opts, :anchor_ranges, [])
     exact_windows = Keyword.get(opts, :exact_windows, %{})
+    combine_windows = Keyword.get(opts, :combine_windows, false)
+    allow_combined_append = Keyword.get(opts, :allow_combined_append, false)
     planning_index = Keyword.get(opts, :planning_index)
     graph_index = Keyword.get(opts, :graph_index)
     asset_modules = Keyword.get(opts, :asset_modules)
@@ -65,12 +69,15 @@ defmodule Favn.Assets.Planner do
          :ok <- validate_opts(opts),
          :ok <- validate_dependencies_mode(dependencies),
          {:ok, anchors} <- normalize_anchors(anchor_window, anchor_windows, anchor_ranges),
+         :ok <- validate_combine_anchors(anchors, combine_windows),
          :ok <- validate_exact_windows(exact_windows),
          {:ok, index} <- resolve_index(planning_index, graph_index, asset_modules),
          :ok <- validate_target_refs(index, target_refs),
          {:ok, refs} <- selected_refs(index, target_refs, dependencies),
          {:ok, projected_index} <- projected_index(index, refs),
-         {:ok, graph} <- build_windowed_graph(projected_index, anchors, exact_windows) do
+         :ok <- validate_combined_append(projected_index, combine_windows, allow_combined_append),
+         {:ok, graph} <-
+           build_windowed_graph(projected_index, anchors, exact_windows, combine_windows) do
       stage_map = build_node_stage_map(graph.nodes, projected_index.topo_rank)
       ref_stage_map = build_ref_stage_map(graph.nodes, stage_map)
 
@@ -114,10 +121,63 @@ defmodule Favn.Assets.Planner do
         :anchor_windows,
         :anchor_ranges,
         :exact_windows,
+        :combine_windows,
+        :allow_combined_append,
         :planning_index,
         :graph_index,
         :asset_modules
       ])
+
+  defp validate_combine_anchors(_anchors, false), do: :ok
+  defp validate_combine_anchors([], true), do: {:error, :empty_combined_window_selection}
+
+  defp validate_combine_anchors(anchors, true) do
+    sorted = Enum.sort_by(anchors, &anchor_sort_key/1)
+    first = List.first(sorted)
+
+    cond do
+      Enum.any?(sorted, &(&1.kind != first.kind or &1.timezone != first.timezone)) ->
+        {:error, :incompatible_combined_window_selection}
+
+      not contiguous_anchors?(sorted) ->
+        {:error, :non_contiguous_combined_window_selection}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp validate_combine_anchors(_anchors, value),
+    do: {:error, {:invalid_combine_windows, value}}
+
+  defp contiguous_anchors?([_single]), do: true
+
+  defp contiguous_anchors?([left, right | rest]) do
+    DateTime.compare(left.end_at, right.start_at) == :eq and
+      contiguous_anchors?([right | rest])
+  end
+
+  defp validate_combined_append(_index, false, _allow), do: :ok
+  defp validate_combined_append(_index, true, true), do: :ok
+
+  defp validate_combined_append(index, true, false) do
+    case Enum.find(index.assets_by_ref, fn {_ref, asset} -> append_materialization?(asset) end) do
+      nil -> :ok
+      {ref, _asset} -> {:error, {:combined_append_not_supported, ref}}
+    end
+  end
+
+  defp validate_combined_append(_index, _combine, allow),
+    do: {:error, {:invalid_allow_combined_append, allow}}
+
+  defp append_materialization?(%{materialization: {:incremental, opts}}) when is_list(opts),
+    do: Keyword.get(opts, :strategy) == :append
+
+  defp append_materialization?(%{target_descriptor: %{write_semantics: semantics}})
+       when is_map(semantics),
+       do: Map.get(semantics, :strategy, Map.get(semantics, "strategy")) in [:append, "append"]
+
+  defp append_materialization?(_asset), do: false
 
   defp validate_dependencies_mode(:all), do: :ok
   defp validate_dependencies_mode(:none), do: :ok
@@ -271,8 +331,9 @@ defmodule Favn.Assets.Planner do
     end)
   end
 
-  defp build_windowed_graph(index, anchors, exact_windows) do
-    with {:ok, ref_nodes} <- build_ref_nodes_by_ref(index, anchors, exact_windows) do
+  defp build_windowed_graph(index, anchors, exact_windows, combine_windows) do
+    with {:ok, ref_nodes} <-
+           build_ref_nodes_by_ref(index, anchors, exact_windows, combine_windows) do
       {:ok, %{nodes: build_windowed_nodes(index, ref_nodes), ref_nodes: ref_nodes}}
     end
   end
@@ -287,18 +348,19 @@ defmodule Favn.Assets.Planner do
     end)
   end
 
-  defp build_ref_nodes_by_ref(index, anchors, exact_windows) do
+  defp build_ref_nodes_by_ref(index, anchors, exact_windows, combine_windows) do
     Enum.reduce_while(index.topo_order, {:ok, %{}}, fn ref, {:ok, acc} ->
       asset = Map.fetch!(index.assets_by_ref, ref)
 
-      case build_ref_nodes(ref, asset, anchors, Map.get(exact_windows, ref)) do
+      case build_ref_nodes(ref, asset, anchors, Map.get(exact_windows, ref), combine_windows) do
         {:ok, nodes} -> {:cont, {:ok, Map.put(acc, ref, nodes)}}
         {:error, _reason} = error -> {:halt, error}
       end
     end)
   end
 
-  defp build_ref_nodes(ref, _asset, _anchors, exact) when is_list(exact) and exact != [] do
+  defp build_ref_nodes(ref, _asset, _anchors, exact, _combine)
+       when is_list(exact) and exact != [] do
     nodes =
       exact
       |> Enum.uniq_by(& &1.key)
@@ -310,30 +372,48 @@ defmodule Favn.Assets.Planner do
     {:ok, nodes}
   end
 
-  defp build_ref_nodes(ref, asset, [], _exact) do
+  defp build_ref_nodes(ref, asset, [], _exact, _combine) do
     case asset_window_spec(asset) do
       %Spec{required: true} -> {:error, {:required_window_missing, ref}}
       _other -> {:ok, [%{ref: ref, node_key: {ref, nil}, window: nil}]}
     end
   end
 
-  defp build_ref_nodes(ref, asset, anchors, _exact) when is_list(anchors) do
+  defp build_ref_nodes(ref, asset, anchors, _exact, combine_windows) when is_list(anchors) do
     case asset_window_spec(asset) do
       nil ->
         {:ok, [%{ref: ref, node_key: {ref, nil}, window: nil}]}
 
       %Spec{} = spec ->
-        nodes =
+        runtime_windows =
           anchors
           |> Enum.flat_map(&expand_windows(&1, spec))
           |> Enum.uniq_by(& &1.key)
           |> Enum.sort_by(&window_sort_key/1)
+
+        nodes =
+          runtime_windows
+          |> maybe_combine_runtime_windows(combine_windows)
           |> Enum.map(fn runtime_window ->
             %{ref: ref, node_key: {ref, runtime_window.key}, window: runtime_window}
           end)
 
         {:ok, nodes}
     end
+  end
+
+  defp maybe_combine_runtime_windows(windows, false), do: windows
+  defp maybe_combine_runtime_windows([single], true), do: [single]
+
+  defp maybe_combine_runtime_windows([first | _] = windows, true) do
+    last = List.last(windows)
+
+    [
+      Runtime.new_range!(first.kind, first.start_at, last.end_at, first.anchor_key,
+        timezone: first.timezone,
+        logical_window_count: length(windows)
+      )
+    ]
   end
 
   defp asset_window_spec(%{window_spec: %Spec{} = spec}), do: resolve_authoring_timezone(spec)

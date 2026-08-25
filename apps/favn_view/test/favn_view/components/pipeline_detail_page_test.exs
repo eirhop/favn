@@ -19,7 +19,8 @@ defmodule FavnView.Components.PipelineDetailPageTest do
           to: "",
           kind: "month",
           timezone: "Etc/UTC",
-          refresh: "missing"
+          refresh: "missing",
+          combine_windows: false
         },
         can_submit_runs?: true,
         flash: %{}
@@ -46,7 +47,8 @@ defmodule FavnView.Components.PipelineDetailPageTest do
           to: "",
           kind: "month",
           timezone: "Etc/UTC",
-          refresh: "missing"
+          refresh: "missing",
+          combine_windows: false
         },
         can_submit_runs?: true,
         flash: %{}

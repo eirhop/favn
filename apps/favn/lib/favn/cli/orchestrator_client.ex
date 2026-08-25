@@ -245,9 +245,20 @@ defmodule Favn.CLI.OrchestratorClient do
           {:ok, map()} | {:error, term()}
   def plan_rebuild(base_url, service_token, session_context, target_id, reason)
       when is_binary(base_url) and is_binary(service_token) and is_map(session_context) and
-             is_binary(target_id) and is_binary(reason) do
+             is_binary(target_id) and is_binary(reason),
+      do: plan_rebuild(base_url, service_token, session_context, target_id, reason, [])
+
+  @spec plan_rebuild(String.t(), String.t(), session_context(), String.t(), String.t(), keyword()) ::
+          {:ok, map()} | {:error, term()}
+  def plan_rebuild(base_url, service_token, session_context, target_id, reason, opts)
+      when is_binary(base_url) and is_binary(service_token) and is_map(session_context) and
+             is_binary(target_id) and is_binary(reason) and is_list(opts) do
     url = base_url <> "/api/orchestrator/v1/rebuilds/plan"
-    payload = %{target_id: target_id, reason: reason}
+
+    payload =
+      %{target_id: target_id, reason: reason}
+      |> maybe_put(:combine_windows, Keyword.get(opts, :combine_windows))
+      |> maybe_put(:empty, Keyword.get(opts, :empty))
 
     case request_post(
            :plan_rebuild,
@@ -1282,4 +1293,7 @@ defmodule Favn.CLI.OrchestratorClient do
     |> Serializer.encode_manifest!()
     |> JSON.decode!()
   end
+
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
 end

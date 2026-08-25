@@ -34,7 +34,7 @@ defmodule FavnRunner.ManifestResolverTest do
     asset = %Asset{ref: {MyApp.Asset, :asset}, module: MyApp.Asset, name: :asset}
 
     %Manifest{
-      schema_version: 18,
+      schema_version: 19,
       runner_contract_version: 14,
       runner_releases: %{"default" => FavnTestSupport.runner_release_id()},
       assets: [asset],

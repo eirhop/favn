@@ -13,6 +13,9 @@ defmodule Mix.Tasks.Favn.RebuildTest do
           "plan_hash" => String.duplicate("a", 64),
           "payload" => %{
             "root_target_id" => "asset:orders",
+            "combine_windows" => true,
+            "logical_window_count" => 12,
+            "physical_execution_count" => 1,
             "coverage" => nil,
             "evaluated_range" => %{"start_at" => nil, "end_at" => nil},
             "binding_snapshot" => %{"asset:orders" => %{}},
@@ -23,6 +26,9 @@ defmodule Mix.Tasks.Favn.RebuildTest do
 
     assert output =~ "Plan: rebuild-plan-1"
     assert output =~ "Target: asset:orders"
+    assert output =~ "Window execution: combined"
+    assert output =~ "Logical windows: 12"
+    assert output =~ "Physical executions: 1"
   end
 
   test "formats safe structured rebuild errors" do

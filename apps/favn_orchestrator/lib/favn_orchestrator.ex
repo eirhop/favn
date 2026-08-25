@@ -2449,6 +2449,7 @@ defmodule FavnOrchestrator do
     |> maybe_put_opt(:refresh, operator_refresh(request.refresh_mode))
     |> maybe_put_opt(:retry_policy, request.retry_policy)
     |> maybe_put_opt(:timeout_ms, request.timeout_ms)
+    |> maybe_put_opt(:combine_windows, request.combine_windows)
     |> Keyword.put(
       :metadata,
       Map.merge(request.metadata || %{}, %{

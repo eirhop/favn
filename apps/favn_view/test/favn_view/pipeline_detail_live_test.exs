@@ -4,7 +4,7 @@ defmodule FavnView.PipelineDetailLiveTest do
   alias FavnView.Auth.Scope
   alias FavnView.PipelineDetailLive
 
-  @env_keys [:submit_operator_run_fun]
+  @env_keys [:submit_operator_run_fun, :submit_operator_pipeline_backfill_fun]
 
   setup do
     previous = Map.new(@env_keys, &{&1, Application.get_env(:favn_view, &1)})
@@ -17,6 +17,40 @@ defmodule FavnView.PipelineDetailLiveTest do
     end)
 
     :ok
+  end
+
+  test "pipeline backfill sends the combine-windows choice" do
+    test_pid = self()
+
+    Application.put_env(:favn_view, :submit_operator_pipeline_backfill_fun, fn
+      :operator_context, "mv_1", "pipeline:Example:daily", input, opts ->
+        send(test_pid, {:backfill_submitted, input, opts})
+        {:error, :forbidden}
+    end)
+
+    pipeline = %{
+      id: "pipeline:Example:daily",
+      manifest_version_id: "mv_1",
+      can_backfill?: true
+    }
+
+    params = %{
+      "backfill" => %{
+        "from" => "2026-01-01",
+        "to" => "2026-01-03",
+        "kind" => "day",
+        "timezone" => "Etc/UTC",
+        "refresh" => "missing",
+        "combine_windows" => "true"
+      }
+    }
+
+    assert {:noreply, _socket} =
+             PipelineDetailLive.handle_event("submit_backfill", params, backfill_socket(pipeline))
+
+    assert_received {:backfill_submitted, input, opts}
+    assert input.combine_windows
+    assert is_binary(opts[:idempotency_key])
   end
 
   test "a windowed pipeline submits without a window for latest complete resolution" do
@@ -50,6 +84,18 @@ defmodule FavnView.PipelineDetailLiveTest do
         current_scope: %Scope{operator_context: :operator_context},
         pipeline: pipeline,
         run_attempt: nil
+      }
+    }
+  end
+
+  defp backfill_socket(pipeline) do
+    %Phoenix.LiveView.Socket{
+      transport_pid: self(),
+      assigns: %{
+        __changed__: %{},
+        current_scope: %Scope{operator_context: :operator_context},
+        pipeline: pipeline,
+        backfill_attempt: nil
       }
     }
   end

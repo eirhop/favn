@@ -1466,20 +1466,29 @@ defmodule Favn.SQLAsset.Runtime do
          target_exists?,
          initial_results
        ) do
-    definition.checks
-    |> Enum.filter(&(&1.at == phase))
-    |> Enum.reduce_while({:ok, initial_results}, fn check, {:ok, results} ->
-      case run_check(session, definition, check, opts, runtime_relations, target_exists?) do
-        {:continue, check_result} ->
-          {:cont, {:ok, results ++ [check_result]}}
+    if Keyword.get(opts, :rebuild_empty_generation, false) do
+      skipped =
+        definition.checks
+        |> Enum.filter(&(&1.at == phase))
+        |> Enum.map(&check_result(&1, :not_run, reason: :empty_generation))
 
-        {:skip, check_result} ->
-          {:halt, {:skip, results ++ [check_result], check.name}}
+      {:ok, initial_results ++ skipped}
+    else
+      definition.checks
+      |> Enum.filter(&(&1.at == phase))
+      |> Enum.reduce_while({:ok, initial_results}, fn check, {:ok, results} ->
+        case run_check(session, definition, check, opts, runtime_relations, target_exists?) do
+          {:continue, check_result} ->
+            {:cont, {:ok, results ++ [check_result]}}
 
-        {:error, reason, check_result} ->
-          {:halt, {:error, reason, results ++ [check_result]}}
-      end
-    end)
+          {:skip, check_result} ->
+            {:halt, {:skip, results ++ [check_result], check.name}}
+
+          {:error, reason, check_result} ->
+            {:halt, {:error, reason, results ++ [check_result]}}
+        end
+      end)
+    end
   end
 
   defp run_check(

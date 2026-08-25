@@ -127,11 +127,15 @@ defmodule FavnView.PipelineDetailLive do
     with true <- pipeline.can_backfill?,
          nil <- validate_backfill_config(config),
          {:ok, run_id} <-
-           Orchestrator.submit_operator_pipeline_backfill(
+           submit_pipeline_backfill(
              actor_context(socket),
              pipeline.manifest_version_id,
              pipeline.id,
-             %{range: Map.drop(config, [:refresh]), refresh_mode: config.refresh},
+             %{
+               range: Map.drop(config, [:refresh, :combine_windows]),
+               refresh_mode: config.refresh,
+               combine_windows: config.combine_windows
+             },
              idempotency_key: attempt.key
            ) do
       {:noreply,
@@ -289,7 +293,8 @@ defmodule FavnView.PipelineDetailLive do
       to: params |> Map.get("to", "") |> String.trim(),
       kind: params |> Map.get("kind", "month") |> String.trim(),
       timezone: params |> Map.get("timezone", "Etc/UTC") |> String.trim(),
-      refresh: params |> Map.get("refresh", "missing") |> String.trim()
+      refresh: params |> Map.get("refresh", "missing") |> String.trim(),
+      combine_windows: Map.get(params, "combine_windows", "false") == "true"
     }
   end
 
@@ -341,7 +346,14 @@ defmodule FavnView.PipelineDetailLive do
   defp normalize_window_kind(_kind), do: nil
 
   defp default_backfill_config(nil),
-    do: %{from: "", to: "", kind: "month", timezone: "Etc/UTC", refresh: "missing"}
+    do: %{
+      from: "",
+      to: "",
+      kind: "month",
+      timezone: "Etc/UTC",
+      refresh: "missing",
+      combine_windows: false
+    }
 
   defp default_backfill_config(%{window: nil}), do: default_backfill_config(nil)
 
@@ -351,8 +363,18 @@ defmodule FavnView.PipelineDetailLive do
       to: "",
       kind: window |> window_kind() |> Atom.to_string(),
       timezone: window_timezone(window),
-      refresh: "missing"
+      refresh: "missing",
+      combine_windows:
+        Map.get(window, :combine_windows, Map.get(window, "combine_windows", false))
     }
+  end
+
+  defp submit_pipeline_backfill(context, manifest_version_id, target_id, input, opts) do
+    Application.get_env(
+      :favn_view,
+      :submit_operator_pipeline_backfill_fun,
+      &Orchestrator.submit_operator_pipeline_backfill/5
+    ).(context, manifest_version_id, target_id, input, opts)
   end
 
   defp window_kind(window) do

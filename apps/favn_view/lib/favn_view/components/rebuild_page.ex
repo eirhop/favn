@@ -66,6 +66,23 @@ defmodule FavnView.Components.RebuildPage do
               ></textarea>
             </label>
 
+            <.input
+              id="rebuild-combine-windows"
+              type="checkbox"
+              name="rebuild[combine_windows]"
+              label="Combine adjacent windows into one run"
+              checked
+              data-testid="rebuild-combine-windows"
+            />
+
+            <.input
+              id="rebuild-empty"
+              type="checkbox"
+              name="rebuild[empty]"
+              label="Activate an empty table and backfill it later"
+              data-testid="rebuild-empty"
+            />
+
             <button class="btn btn-primary w-full" disabled={@planning?} data-testid="plan-rebuild">
               {if @planning?, do: "Planning…", else: "Create immutable plan"}
             </button>
@@ -79,6 +96,15 @@ defmodule FavnView.Components.RebuildPage do
             data-testid="rebuild-plan"
           >
             <p class="font-medium">Plan ready for review</p>
+
+            <.notice
+              :if={@plan |> field(:payload, %{}) |> field(:empty, false)}
+              class="mt-3"
+              data-testid="empty-rebuild-warning"
+            >
+              Starting this plan activates an empty root table. Existing downstream tables remain
+              readable but stale until you backfill the affected pipeline.
+            </.notice>
 
             <dl class="mt-3 space-y-2 text-sm">
               <.fact label="Plan id" value={field(@plan, :plan_id)} mono? />
@@ -117,8 +143,16 @@ defmodule FavnView.Components.RebuildPage do
                 mono?
               />
               <.fact
-                label="Logical items"
-                value={@plan |> field(:payload, %{}) |> field(:item_count, 0)}
+                label="Physical executions"
+                value={@plan |> field(:payload, %{}) |> field(:physical_execution_count, 0)}
+              />
+              <.fact
+                label="Root logical windows"
+                value={@plan |> field(:payload, %{}) |> field(:logical_window_count, 0)}
+              />
+              <.fact
+                label="Window execution"
+                value={@plan |> field(:payload, %{}) |> field(:execution_mode, "combined")}
               />
               <.fact
                 label="Items digest"

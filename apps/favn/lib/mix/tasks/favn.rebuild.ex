@@ -15,12 +15,15 @@ defmodule Mix.Tasks.Favn.Rebuild do
 
   Planning does not execute work. Review the returned immutable plan, then pass
   its exact id and hash to `start` to approve it explicitly.
+  Windowed rebuilds combine adjacent windows by default. Use
+  `--no-combine-windows` for separate runs or `--empty` to activate an empty
+  replacement table for later backfill.
   """
 
   alias Favn.CLI
   alias Favn.CLI.Error
 
-  @plan_switches [root_dir: :string, reason: :string]
+  @plan_switches [root_dir: :string, reason: :string, combine_windows: :boolean, empty: :boolean]
   @start_switches [root_dir: :string, plan_hash: :string]
   @reason_switches [root_dir: :string, reason: :string]
   @id_switches [root_dir: :string]
@@ -180,6 +183,9 @@ defmodule Mix.Tasks.Favn.Rebuild do
       {"Coverage timezone", value(coverage, "timezone")},
       {"Availability delay", duration_text(value(coverage, "availability_delay_seconds"))},
       {"Evaluated range", range_text(evaluated_range)},
+      {"Window execution", execution_mode(payload)},
+      {"Logical windows", value(payload, "logical_window_count")},
+      {"Physical executions", value(payload, "physical_execution_count")},
       {"Active generation", value(payload, "active_generation_id")},
       {"Candidate generation", value(payload, "candidate_generation_id")},
       {"Compatibility", value(root_binding, "compatibility_status")},
@@ -211,6 +217,11 @@ defmodule Mix.Tasks.Favn.Rebuild do
       {"Progress", progress_text(progress)},
       {"Error", error_text(value(operation, "terminal_error"))}
     ])
+  end
+
+  defp execution_mode(payload) do
+    value(payload, "execution_mode") ||
+      if(value(payload, "combine_windows", true), do: "combined", else: "separate")
   end
 
   defp print_fields(fields) do

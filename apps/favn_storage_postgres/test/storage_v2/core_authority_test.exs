@@ -333,7 +333,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
       command_id: "locks:acquire:" <> fixture.workspace_id,
       target_ids: target_ids,
       operation_id: "rebuild-lock-owner",
-      operation_type: :rebuild,
+      operation_type: :materialization,
       lease_owner: "rebuild-lock-owner",
       lease_duration_ms: 30_000,
       occurred_at: occurred_at
@@ -1913,16 +1913,21 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     evidence_generation_id = evidence_generation_id(fixture)
     unbound_generation_id = "ag_" <> String.duplicate("b", 64)
 
-    data_window_key =
+    first_window_key =
       Favn.Window.Key.new!(:day, ~U[2026-07-20 00:00:00Z], "Etc/UTC")
 
-    freshness_key =
-      Favn.Freshness.Key.window_refresh!(
-        data_window_key,
+    second_window_key =
+      Favn.Window.Key.new!(:day, ~U[2026-07-21 00:00:00Z], "Etc/UTC")
+
+    range_window_key =
+      Favn.Window.Key.new_range!(
         :day,
-        "Etc/UTC",
-        ~D[2026-07-21]
+        ~U[2026-07-20 00:00:00Z],
+        ~U[2026-07-22 00:00:00Z],
+        "Etc/UTC"
       )
+
+    freshness_key = Favn.Freshness.Key.window!(range_window_key)
 
     claim_key = "generation-window:#{run.id}"
 
@@ -1981,7 +1986,14 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
                  "manifest_version_id" => fixture.version.manifest_version_id,
                  "manifest_content_hash" => fixture.version.content_hash,
                  "target_generation_id" => nil,
-                 "evidence_generation_id" => evidence_generation_id
+                 "evidence_generation_id" => evidence_generation_id,
+                 "logical_window_range" => %{
+                   "kind" => "day",
+                   "timezone" => "Etc/UTC",
+                   "start_at" => "2026-07-20T00:00:00Z",
+                   "end_at" => "2026-07-22T00:00:00Z",
+                   "count" => 2
+                 }
                },
                occurred_at: DateTime.utc_now()
              })
@@ -1989,7 +2001,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert {:ok, _publications} = Sequencer.sequence_batch()
     assert drain_projector("generation-window-projector:" <> run.id) > 0
 
-    assert {:ok, [state]} =
+    assert {:ok, states} =
              OperatorReadStore.get_asset_window_states(%GetAssetWindowStates{
                workspace_context: fixture.workspace_context,
                evidence_generation_id: evidence_generation_id,
@@ -1997,9 +2009,21 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
                limit: 10
              })
 
-    assert state.evidence_generation_id == evidence_generation_id
-    assert state.materialization_id == materialization_id
-    assert state.window_key == Favn.Freshness.Key.window!(data_window_key)
+    assert Enum.all?(states, &(&1.evidence_generation_id == evidence_generation_id))
+    assert Enum.all?(states, &(&1.materialization_id == materialization_id))
+
+    assert states |> Enum.map(& &1.window_key) |> MapSet.new() ==
+             MapSet.new([
+               Favn.Freshness.Key.window!(first_window_key),
+               Favn.Freshness.Key.window!(second_window_key)
+             ])
+
+    assert %{rows: [[^freshness_key]]} =
+             SQL.query!(
+               Repo,
+               "SELECT freshness_key FROM favn_control.asset_freshness_states WHERE workspace_id = $1 AND latest_success_materialization_id = $2",
+               [fixture.workspace_id, materialization_id]
+             )
 
     assert {:ok, []} =
              OperatorReadStore.get_asset_window_states(%GetAssetWindowStates{
@@ -2308,7 +2332,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
               details: %{
                 reason: :historical_manifest_not_activatable,
                 schema_version: 9,
-                current_schema_version: 18
+                current_schema_version: 19
               }
             }} =
              RegistryStore.deploy_manifest(%{
@@ -3028,6 +3052,50 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert replayed.backfill_id == backfill.backfill_id
     assert replayed.status == backfill.status
     assert replayed.version == backfill.version
+  end
+
+  test "combined pipeline backfill keeps exact windows in one execution group", fixture do
+    range = %{
+      "kind" => "day",
+      "from" => "2026-07-01",
+      "to" => "2026-07-03",
+      "timezone" => "Europe/Oslo"
+    }
+
+    assert {:ok,
+            %{
+              window_count: 3,
+              combine_windows: true,
+              execution_mode: :combined,
+              physical_execution_count: 1
+            }} =
+             Backfills.plan_pipeline(
+               fixture.workspace_context,
+               fixture.version.manifest_version_id,
+               fixture.pipeline_target_id,
+               range,
+               combine_windows: true
+             )
+
+    assert {:ok, backfill} =
+             Backfills.submit_pipeline(
+               fixture.workspace_context,
+               fixture.version.manifest_version_id,
+               fixture.pipeline_target_id,
+               range,
+               root_run_id: "run-combined-backfill-#{System.unique_integer([:positive])}",
+               combine_windows: true
+             )
+
+    assert backfill.expected_window_count == 3
+    assert backfill.metadata["combine_windows"]
+
+    assert {:ok, %{items: windows, has_more?: false}} =
+             Backfills.page_windows(fixture.workspace_context, backfill.backfill_id, limit: 10)
+
+    assert length(windows) == 3
+    assert windows |> Enum.map(& &1.payload["execution_group_id"]) |> Enum.uniq() |> length() == 1
+    assert Enum.count(windows, & &1.payload["execution_group_leader"]) == 1
   end
 
   test "failed pipeline backfill planning marks its committed root as failed", fixture do

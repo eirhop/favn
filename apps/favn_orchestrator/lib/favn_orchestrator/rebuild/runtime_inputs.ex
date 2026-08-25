@@ -41,6 +41,7 @@ defmodule FavnOrchestrator.Rebuild.RuntimeInputs do
         manifest_version_id: version.manifest_version_id,
         dependencies: :none,
         rebuild: spec.rebuild,
+        combine_windows: spec.combine_windows,
         refresh: :force,
         metadata: %{
           rebuild_operation_id: spec.rebuild.operation_id,

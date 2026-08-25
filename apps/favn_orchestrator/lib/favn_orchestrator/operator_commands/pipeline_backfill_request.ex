@@ -15,6 +15,7 @@ defmodule FavnOrchestrator.OperatorCommands.PipelineBackfillRequest do
           metadata: map() | nil,
           coverage_baseline_id: String.t() | nil,
           retry_policy: Policy.t() | nil,
+          combine_windows: boolean() | nil,
           timeout_ms: pos_integer() | nil
         }
 
@@ -23,6 +24,7 @@ defmodule FavnOrchestrator.OperatorCommands.PipelineBackfillRequest do
             metadata: nil,
             coverage_baseline_id: nil,
             retry_policy: nil,
+            combine_windows: nil,
             timeout_ms: nil
 
   @doc """
@@ -59,6 +61,7 @@ defmodule FavnOrchestrator.OperatorCommands.PipelineBackfillRequest do
              :coverage_baseline_id
            ),
          {:ok, retry_policy} <- Input.retry_policy(Input.field(input, :retry_policy)),
+         {:ok, combine_windows} <- optional_boolean(Input.field(input, :combine_windows)),
          {:ok, timeout_ms} <- Input.timeout_ms(Input.field(input, :timeout_ms)) do
       {:ok,
        %__MODULE__{
@@ -67,8 +70,15 @@ defmodule FavnOrchestrator.OperatorCommands.PipelineBackfillRequest do
          metadata: metadata,
          coverage_baseline_id: coverage_baseline_id,
          retry_policy: retry_policy,
+         combine_windows: combine_windows,
          timeout_ms: timeout_ms
        }}
     end
   end
+
+  defp optional_boolean(nil), do: {:ok, nil}
+  defp optional_boolean(value) when is_boolean(value), do: {:ok, value}
+  defp optional_boolean("true"), do: {:ok, true}
+  defp optional_boolean("false"), do: {:ok, false}
+  defp optional_boolean(value), do: {:error, {:invalid_combine_windows, value}}
 end

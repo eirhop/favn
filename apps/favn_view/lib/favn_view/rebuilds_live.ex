@@ -32,7 +32,7 @@ defmodule FavnView.RebuildsLive do
   @impl true
   def handle_event(
         "plan_rebuild",
-        %{"rebuild" => %{"target_id" => target_id, "reason" => reason}} = params,
+        %{"rebuild" => %{"target_id" => target_id, "reason" => reason} = rebuild} = params,
         socket
       ) do
     socket = assign(socket, planning?: true, error: nil, plan: nil, target_id: target_id)
@@ -41,13 +41,18 @@ defmodule FavnView.RebuildsLive do
       CommandAttempt.next(
         socket.assigns.plan_attempt,
         "rebuild_plan",
-        {target_id, reason},
+        {target_id, reason, rebuild},
         params
       )
 
     socket = assign(socket, :plan_attempt, attempt)
 
-    case plan_rebuild(context(socket), target_id, reason, attempt.key) do
+    options = [
+      combine_windows: Map.get(rebuild, "combine_windows", "true") == "true",
+      empty: Map.get(rebuild, "empty", "false") == "true"
+    ]
+
+    case plan_rebuild(context(socket), target_id, reason, attempt.key, options) do
       {:ok, plan} ->
         {:noreply,
          socket
@@ -136,12 +141,17 @@ defmodule FavnView.RebuildsLive do
     ).(context, opts)
   end
 
-  defp plan_rebuild(context, target_id, reason, idempotency_key) do
+  defp plan_rebuild(context, target_id, reason, idempotency_key, options) do
     Application.get_env(
       :favn_view,
       :plan_operator_rebuild_fun,
       &Orchestrator.plan_operator_rebuild/4
-    ).(context, target_id, reason, idempotency_key: idempotency_key)
+    ).(
+      context,
+      target_id,
+      reason,
+      Keyword.put(options, :idempotency_key, idempotency_key)
+    )
   end
 
   defp start_rebuild(context, plan_id, plan_hash, idempotency_key) do

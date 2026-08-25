@@ -106,7 +106,7 @@ defmodule FavnView.RebuildsLiveTest do
     Application.put_env(:favn_view, :plan_operator_rebuild_fun, fn
       ^operator_context, "asset:orders", "schema changed", opts ->
         assert is_binary(opts[:idempotency_key])
-        send(test_pid, :mounted_plan)
+        send(test_pid, {:mounted_plan, opts})
 
         {:ok,
          %{
@@ -135,7 +135,9 @@ defmodule FavnView.RebuildsLiveTest do
     )
     |> render_submit()
 
-    assert_receive :mounted_plan
+    assert_receive {:mounted_plan, opts}
+    assert opts[:combine_windows]
+    refute opts[:empty]
     assert has_element?(view, "[data-testid=rebuild-plan]")
     assert has_element?(view, "[data-testid=start-rebuild]")
 
@@ -153,7 +155,7 @@ defmodule FavnView.RebuildsLiveTest do
     Application.put_env(:favn_view, :plan_operator_rebuild_fun, fn
       :operator_context, "asset:orders", "schema changed", opts ->
         assert is_binary(opts[:idempotency_key])
-        send(test_pid, :planned_through_facade)
+        send(test_pid, {:planned_through_facade, opts})
 
         {:ok,
          %{
@@ -181,7 +183,9 @@ defmodule FavnView.RebuildsLiveTest do
                mounted
              )
 
-    assert_received :planned_through_facade
+    assert_received {:planned_through_facade, opts}
+    assert opts[:combine_windows]
+    refute opts[:empty]
     assert planned.assigns.plan.plan_id == "rebuild-plan-1"
 
     assert {:noreply, _started} = RebuildsLive.handle_event("start_rebuild", %{}, planned)

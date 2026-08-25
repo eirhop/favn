@@ -156,8 +156,8 @@ defmodule FavnOrchestrator.BackfillDispatcher do
 
   defp submit_child(context, window, run_id) do
     with {:ok, %Backfill{} = backfill} <- Backfills.get(context, window.backfill_id),
-         {:ok, anchor} <- anchor(window),
-         {:ok, selection} <- Selection.backfill([anchor], anchor.timezone),
+         {:ok, anchors} <- execution_anchors(backfill, window),
+         {:ok, selection} <- Selection.backfill(anchors, hd(anchors).timezone),
          {:ok, opts} <- submission_options(backfill, window, run_id, selection),
          {:ok, ^run_id} <- submit_target(context, backfill, opts) do
       {:ok, run_id}
@@ -181,6 +181,7 @@ defmodule FavnOrchestrator.BackfillDispatcher do
       backfill_id: backfill.backfill_id,
       backfill_window_id: window.window_id,
       backfill_window_key: window.window_key,
+      backfill_execution_group_id: field(window.payload, "execution_group_id"),
       backfill_root_run_id: backfill.root_run_id,
       operator_metadata: field(backfill.metadata, "operator_metadata", %{})
     }
@@ -197,6 +198,7 @@ defmodule FavnOrchestrator.BackfillDispatcher do
          submission_source: :backfill,
          manifest_version_id: backfill.manifest_version_id,
          window_selection: selection,
+         combine_windows: field(backfill.metadata, "combine_windows", false),
          parent_run_id: backfill.root_run_id,
          root_run_id: backfill.root_run_id,
          lineage_depth: 1,
@@ -318,6 +320,23 @@ defmodule FavnOrchestrator.BackfillDispatcher do
     end
   end
 
+  defp execution_anchors(backfill, window) do
+    if field(backfill.metadata, "combine_windows", false) do
+      with {:ok, first} <- anchor(window),
+           {:ok, anchors} <-
+             Anchor.expand_range(first.kind, backfill.range_start, backfill.range_end,
+               timezone: first.timezone
+             ),
+           true <- anchors != [] do
+        {:ok, anchors}
+      else
+        _invalid -> {:error, :invalid_combined_backfill_range}
+      end
+    else
+      with {:ok, anchor} <- anchor(window), do: {:ok, [anchor]}
+    end
+  end
+
   defp known_kind("hour"), do: {:ok, :hour}
   defp known_kind("day"), do: {:ok, :day}
   defp known_kind("month"), do: {:ok, :month}
@@ -398,8 +417,10 @@ defmodule FavnOrchestrator.BackfillDispatcher do
 
   defp decode_required_generation(_other), do: {:error, :invalid_required_generation}
 
-  defp child_run_id(window),
-    do: command_id("run-bfw", window.backfill_id <> ":" <> window.window_id)
+  defp child_run_id(window) do
+    identity = field(window.payload, "execution_group_id") || window.window_id
+    command_id("run-bfw", window.backfill_id <> ":" <> identity)
+  end
 
   defp error_payload({reason, details})
        when reason in [:operator_decision_required, :rebuild_required, :target_drift] and

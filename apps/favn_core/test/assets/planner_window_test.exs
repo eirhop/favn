@@ -166,6 +166,119 @@ defmodule Favn.Assets.PlannerWindowTest do
            ]
   end
 
+  test "combines adjacent anchors into one range node per windowed asset" do
+    daily_ref = {MyApp.CombinedDaily, :asset}
+    monthly_ref = {MyApp.CombinedMonthly, :asset}
+
+    assert {:ok, index} =
+             GraphIndex.build_index([
+               %{
+                 ref: daily_ref,
+                 module: elem(daily_ref, 0),
+                 name: :asset,
+                 depends_on: [],
+                 window_spec: Spec.new!(:day, timezone: "Etc/UTC")
+               },
+               %{
+                 ref: monthly_ref,
+                 module: elem(monthly_ref, 0),
+                 name: :asset,
+                 depends_on: [daily_ref],
+                 window_spec: Spec.new!(:month, timezone: "Etc/UTC")
+               }
+             ])
+
+    {:ok, anchors} =
+      Anchor.expand_range(:month, ~U[2026-06-01 00:00:00Z], ~U[2026-08-01 00:00:00Z])
+
+    assert {:ok, plan} =
+             Planner.plan(monthly_ref,
+               graph_index: index,
+               anchor_windows: anchors,
+               combine_windows: true
+             )
+
+    assert %{window: daily_window, downstream: [{^monthly_ref, _}]} =
+             plan.nodes |> Map.values() |> Enum.find(&(&1.ref == daily_ref))
+
+    assert %{window: monthly_window, upstream: [{^daily_ref, _}]} =
+             plan.nodes |> Map.values() |> Enum.find(&(&1.ref == monthly_ref))
+
+    assert daily_window.start_at == ~U[2026-06-01 00:00:00Z]
+    assert daily_window.end_at == ~U[2026-08-01 00:00:00Z]
+    assert daily_window.logical_window_count == 61
+    assert monthly_window.logical_window_count == 2
+    assert Map.has_key?(daily_window.key, :end_at_us)
+    assert Map.has_key?(monthly_window.key, :end_at_us)
+  end
+
+  test "combined active append is rejected but rebuild-owned append may opt in" do
+    ref = {MyApp.AppendMonthly, :asset}
+
+    assert {:ok, index} =
+             GraphIndex.build_index([
+               %{
+                 ref: ref,
+                 module: elem(ref, 0),
+                 name: :asset,
+                 depends_on: [],
+                 window_spec: Spec.new!(:month, timezone: "Etc/UTC"),
+                 materialization: {:incremental, strategy: :append}
+               }
+             ])
+
+    {:ok, anchors} =
+      Anchor.expand_range(:month, ~U[2026-06-01 00:00:00Z], ~U[2026-08-01 00:00:00Z])
+
+    assert {:error, {:combined_append_not_supported, ^ref}} =
+             Planner.plan(ref,
+               graph_index: index,
+               anchor_windows: anchors,
+               combine_windows: true
+             )
+
+    assert {:ok, plan} =
+             Planner.plan(ref,
+               graph_index: index,
+               anchor_windows: anchors,
+               combine_windows: true,
+               allow_combined_append: true
+             )
+
+    assert [%{window: %{logical_window_count: 2}}] = Map.values(plan.nodes)
+  end
+
+  test "combines both repeated local hours across the autumn DST transition" do
+    ref = {MyApp.CombinedHourly, :asset}
+    policy = Policy.new!(:hourly, anchor: :current_period, timezone: "Europe/Oslo")
+
+    assert {:ok, first} = Policy.resolve_scheduled(policy, ~U[2026-10-25 00:30:00Z], nil)
+    assert {:ok, second} = Policy.resolve_scheduled(policy, ~U[2026-10-25 01:30:00Z], nil)
+
+    assert {:ok, index} =
+             GraphIndex.build_index([
+               %{
+                 ref: ref,
+                 module: elem(ref, 0),
+                 name: :asset,
+                 depends_on: [],
+                 window_spec: Spec.new!(:hour, timezone: "Europe/Oslo")
+               }
+             ])
+
+    assert {:ok, plan} =
+             Planner.plan(ref,
+               graph_index: index,
+               anchor_windows: [first, second],
+               combine_windows: true
+             )
+
+    assert [%{window: window}] = Map.values(plan.nodes)
+    assert window.start_at == first.start_at
+    assert window.end_at == second.end_at
+    assert window.logical_window_count == 2
+  end
+
   test "copies asset execution pool onto planned nodes" do
     ref = {MyApp.ExternalApi, :asset}
 

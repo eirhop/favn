@@ -6,12 +6,15 @@ defmodule FavnOrchestrator.RebuildsTest do
   alias Favn.Manifest.ExecutionPackage
   alias Favn.Manifest.SQLExecution
   alias Favn.Manifest.Version
+  alias Favn.Coverage.Effective
+  alias Favn.Coverage.Spec, as: CoverageSpec
   alias Favn.Contracts.GenerationMarker
   alias Favn.Contracts.RelationInspectionResult
   alias Favn.RelationRef
   alias Favn.RuntimeInputResolver.Ref, as: RuntimeInputResolverRef
   alias Favn.SQL.Template
   alias Favn.TargetCompatibility.PhysicalFingerprint
+  alias Favn.Window.Spec, as: WindowSpec
   alias FavnOrchestrator.Persistence.Commands.DeploymentTarget
   alias FavnOrchestrator.Persistence.Error
   alias FavnOrchestrator.Persistence.Queries.GetRebuild
@@ -247,41 +250,7 @@ defmodule FavnOrchestrator.RebuildsTest do
     start_supervised!({PersistenceRuntime, runtime})
 
     Process.put(:rebuild_test_pid, self())
-    {version, root, downstream, inactive_upstream, packages} = version()
-    runtime = runtime(version)
-
-    bindings = [
-      binding(root, version, 1),
-      binding(downstream, version, 1),
-      uninitialized_binding(inactive_upstream, version)
-    ]
-
-    Process.put(:rebuild_version, version)
-    Process.put(:rebuild_runtime, runtime)
-    Process.put(:rebuild_bindings, bindings)
-    Process.put(:rebuild_packages, Map.new(packages, &{&1.content_hash, &1}))
-
-    Process.put(
-      :rebuild_markers,
-      bindings
-      |> Enum.filter(&is_binary(&1.active_generation_id))
-      |> Map.new(&{asset_ref(version, &1.target_id), marker(&1)})
-    )
-
-    Process.put(
-      :rebuild_inspections,
-      Map.new([root, downstream], &{&1.ref, inspection(&1, version)})
-    )
-
-    Process.put(:rebuild_grants, [
-      %DeploymentTarget{
-        target_kind: :asset,
-        target_id: root.target_descriptor.target_id,
-        selection_source: :explicit,
-        customer_visible: true,
-        descriptor: %{}
-      }
-    ])
+    fixture = install_version_state(version())
 
     on_exit(fn ->
       restore_env(:test_runner_executor, previous_client)
@@ -289,7 +258,102 @@ defmodule FavnOrchestrator.RebuildsTest do
       Application.delete_env(:favn_orchestrator, :rebuild_planning_worker)
     end)
 
-    {:ok, version: version, root: root, downstream: downstream, bindings: bindings}
+    {:ok, fixture}
+  end
+
+  test "windowed rebuild combines by default and separate mode retains exact items", _fixture do
+    fixture = install_version_state(version(windowed: true))
+
+    {:ok, context} =
+      WorkspaceContext.new("workspace-rebuild", "operator", [:customer_operator])
+
+    evaluated_at = ~U[2026-07-05 00:00:00Z]
+
+    assert {:ok, _plan} =
+             Rebuilds.plan(context, fixture.root.target_descriptor.target_id, "combined",
+               operation_id: "rebuild-combined-windows",
+               evaluated_at: evaluated_at
+             )
+
+    assert_received {:create_rebuild_plan, combined}
+    assert combined.plan_payload.combine_windows
+    assert combined.plan_payload.logical_window_count == 3
+    assert combined.plan_payload.physical_execution_count == 1
+
+    assert [combined_root_item] =
+             Enum.filter(
+               combined.items,
+               &(&1.target_id == fixture.root.target_descriptor.target_id)
+             )
+
+    assert combined_root_item.window_start == ~U[2026-07-01 00:00:00Z]
+    assert combined_root_item.window_end == ~U[2026-07-04 00:00:00Z]
+
+    assert {:ok, _plan} =
+             Rebuilds.plan(context, fixture.root.target_descriptor.target_id, "separate",
+               operation_id: "rebuild-separate-windows",
+               evaluated_at: evaluated_at,
+               combine_windows: false
+             )
+
+    assert_received {:create_rebuild_plan, separate}
+    refute separate.plan_payload.combine_windows
+    assert separate.plan_payload.logical_window_count == 3
+    assert separate.plan_payload.physical_execution_count == 3
+
+    assert 3 ==
+             Enum.count(
+               separate.items,
+               &(&1.target_id == fixture.root.target_descriptor.target_id)
+             )
+  end
+
+  test "empty rebuild plans only an empty root generation", _fixture do
+    fixture = install_version_state(version(windowed: true))
+
+    {:ok, context} =
+      WorkspaceContext.new("workspace-rebuild", "operator", [:customer_operator])
+
+    assert {:ok, _plan} =
+             Rebuilds.plan(context, fixture.root.target_descriptor.target_id, "empty root",
+               operation_id: "rebuild-empty-root",
+               evaluated_at: ~U[2026-07-05 00:00:00Z],
+               empty: true
+             )
+
+    assert_received {:create_rebuild_plan, command}
+    assert command.plan_payload.empty
+    assert command.plan_payload.execution_mode == :empty
+    assert length(command.plan_payload.actions) == 1
+    assert command.plan_payload.item_count == 1
+    assert command.plan_payload.evaluated_range == %{start_at: nil, end_at: nil}
+    refute command.plan_payload.combined_append
+
+    assert [item] = command.items
+    assert item.target_id == fixture.root.target_descriptor.target_id
+    assert item.work_kind == :empty_generation
+  end
+
+  test "combined append rebuild is one-shot and cannot retry its candidate", _fixture do
+    fixture =
+      install_version_state(
+        version(windowed: true, root_materialization: {:incremental, strategy: :append})
+      )
+
+    {:ok, context} =
+      WorkspaceContext.new("workspace-rebuild", "admin", [:workspace_admin])
+
+    assert {:ok, plan} =
+             Rebuilds.plan(context, fixture.root.target_descriptor.target_id, "append rebuild",
+               operation_id: "rebuild-combined-append",
+               evaluated_at: ~U[2026-07-05 00:00:00Z]
+             )
+
+    assert_received {:create_rebuild_plan, command}
+    assert command.plan_payload.combined_append
+
+    assert {:error, %Error{kind: :conflict}} =
+             Rebuilds.retry(context, plan.plan_id, plan.plan_hash)
   end
 
   test "freezes an exact downstream rebuild plan and replays its idempotency key", fixture do
@@ -541,7 +605,7 @@ defmodule FavnOrchestrator.RebuildsTest do
     end
   end
 
-  defp version do
+  defp version(opts \\ []) do
     landing_ref = {__MODULE__.Landing, :asset}
     root_ref = {__MODULE__.Root, :asset}
     downstream_ref = {__MODULE__.Downstream, :asset}
@@ -557,10 +621,27 @@ defmodule FavnOrchestrator.RebuildsTest do
       semantic_generation_id: "ag_" <> String.duplicate("a", 64)
     }
 
-    {root, root_package} = persisted_asset(root_ref, "root", [landing_ref])
+    asset_opts = windowed_asset_opts(opts)
+
+    {root, root_package} =
+      persisted_asset(
+        root_ref,
+        "root",
+        [landing_ref],
+        Keyword.put(
+          asset_opts,
+          :materialization,
+          Keyword.get(opts, :root_materialization, :table)
+        )
+      )
 
     {downstream, downstream_package} =
-      persisted_asset(downstream_ref, "downstream", [root_ref], runner_pool: :duckdb_image)
+      persisted_asset(
+        downstream_ref,
+        "downstream",
+        [root_ref],
+        Keyword.put(asset_opts, :runner_pool, :duckdb_image)
+      )
 
     {inactive_upstream, inactive_upstream_package} =
       persisted_asset(inactive_upstream_ref, "inactive_upstream", [])
@@ -602,12 +683,68 @@ defmodule FavnOrchestrator.RebuildsTest do
         runner_pool: Keyword.get(opts, :runner_pool),
         relation:
           RelationRef.new!(connection: :warehouse, schema: "analytics", name: relation_name),
-        materialization: :table,
+        materialization: Keyword.get(opts, :materialization, :table),
+        window: Keyword.get(opts, :window),
+        coverage: Keyword.get(opts, :coverage),
         depends_on: depends_on,
         execution_package_hash: package.content_hash
       })
 
     {asset, package}
+  end
+
+  defp windowed_asset_opts(opts) do
+    if Keyword.get(opts, :windowed, false) do
+      window = WindowSpec.new!(:day, timezone: "Etc/UTC")
+
+      {:ok, coverage} =
+        Effective.resolve(
+          CoverageSpec.new!(from: ~D[2026-07-01], through: ~D[2026-07-03]),
+          window,
+          nil
+        )
+
+      [window: window, coverage: coverage]
+    else
+      []
+    end
+  end
+
+  defp install_version_state({version, root, downstream, inactive_upstream, packages}) do
+    bindings = [
+      binding(root, version, 1),
+      binding(downstream, version, 1),
+      uninitialized_binding(inactive_upstream, version)
+    ]
+
+    Process.put(:rebuild_version, version)
+    Process.put(:rebuild_runtime, runtime(version))
+    Process.put(:rebuild_bindings, bindings)
+    Process.put(:rebuild_packages, Map.new(packages, &{&1.content_hash, &1}))
+
+    Process.put(
+      :rebuild_markers,
+      bindings
+      |> Enum.filter(&is_binary(&1.active_generation_id))
+      |> Map.new(&{asset_ref(version, &1.target_id), marker(&1)})
+    )
+
+    Process.put(
+      :rebuild_inspections,
+      Map.new([root, downstream], &{&1.ref, inspection(&1, version)})
+    )
+
+    Process.put(:rebuild_grants, [
+      %DeploymentTarget{
+        target_kind: :asset,
+        target_id: root.target_descriptor.target_id,
+        selection_source: :explicit,
+        customer_visible: true,
+        descriptor: %{}
+      }
+    ])
+
+    %{version: version, root: root, downstream: downstream, bindings: bindings}
   end
 
   defp runtime(version) do

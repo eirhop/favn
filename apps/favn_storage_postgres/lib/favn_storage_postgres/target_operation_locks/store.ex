@@ -250,7 +250,7 @@ defmodule FavnStoragePostgres.TargetOperationLocks.Store do
   defp validate_acquire(command) do
     if valid_context?(command.workspace_context) and valid_id?(command.command_id) and
          valid_targets?(command.target_ids) and valid_id?(command.operation_id) and
-         command.operation_type in [:rebuild, :target_recovery] and
+         command.operation_type in [:rebuild, :target_recovery, :materialization] and
          valid_id?(command.lease_owner) and
          valid_duration?(command.lease_duration_ms) and match?(%DateTime{}, command.occurred_at),
        do: :ok,

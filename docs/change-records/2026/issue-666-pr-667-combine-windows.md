@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Implementing |
+| Status | Implemented; final review pending |
 | Type | Feature |
 | Primary issue | [#666](https://github.com/eirhop/favn/issues/666) |
 | Pull request | [#667](https://github.com/eirhop/favn/pull/667) |
@@ -505,34 +505,99 @@ The sections below are completed during implementation and before final review.
 
 ## Implementation outcome
 
-Pending.
+The approved feature is implemented without a generic batch model or database
+migration. Pipeline authors can default adjacent windows to one execution,
+operators can override that choice for pipeline backfills, and rebuilds combine
+by default with an explicit separate mode. Successful combined materializations
+publish exact constituent coverage and one range freshness result. Active-table
+append is rejected; rebuild-owned append candidates are one-shot. Explicit empty
+rebuilds activate only an empty root generation and mark data checks as not run
+while retaining schema/contract validation.
+
+The existing pipeline-backfill and rebuild forms expose the choices as
+checkboxes. Operator output reports logical windows, physical executions, and
+combined, separate, or empty execution mode. Daily and monthly coverage views
+remain unchanged because they continue to read exact coverage rows.
 
 ### Actual scope and complexity
 
-- Files and ownership areas changed: Pending.
-- Ownership boundaries affected: Pending.
-- Implementation complexity: Pending.
-- Operational complexity: Pending.
-- Canonical documentation updated: Pending.
-- Actual additions, deletions, and supporting lines per approved complexity-budget slice: Pending.
+- Files and ownership areas changed: 64 files across the public DSL/CLI,
+  authoring and core window contracts, orchestrator planning and lifecycle,
+  runner empty-generation checks, PostgreSQL projection/locking, View forms,
+  tests, canonical docs, and the storage skill.
+- Ownership boundaries affected: public authored defaults stay in `favn` and
+  `favn_core`; all durable orchestration remains behind the orchestrator facade
+  and persistence behaviours; `favn_view` calls only that facade; SQL execution
+  remains runner-local; PostgreSQL owns projection and lock implementation.
+- Implementation complexity: 1,064 production lines added and 159 deleted.
+  The implementation is below the estimated production range because existing
+  range expansion, ledger rows, rebuild items/candidates, target locks, and
+  checkbox components were reused directly.
+- Operational complexity: one boolean execution choice plus explicit empty
+  rebuild. There is no batch count, adaptive splitter, range-lock service,
+  physical-batch table, or new retry lifecycle.
+- Canonical documentation updated: authored window behavior, local CLI use,
+  features, rebuild architecture, PostgreSQL test setup, and `Favn.AI` routing.
+- Supporting proof: 628 lines added and 102 deleted. Exact allocation by the
+  original eight slices would be artificial because the same planner, rebuild,
+  and PostgreSQL integration tests prove several slices; the exact aggregate is
+  1,692 additions and 261 deletions.
 
 ## Deviations from the approved plan
 
-Pending implementation.
+- The production implementation is 316 lines below the approved minimum. This
+  is a favorable simplification: compact range metadata and existing lifecycle
+  tables were sufficient, so no new grouped persistence or batching service was
+  required.
+- Combined backfill rows share one stable execution-group identity and child run,
+  but each exact ledger row reconciles that shared terminal run through the
+  existing idempotent transition command. A new group-transition persistence
+  command was not added. Temporary mixed row statuses are possible while a
+  dispatcher batch catches up; no duplicate child execution is possible.
+- Empty rebuild does not dynamically disable the combine checkbox. The backend
+  ignores that value, the resulting immutable plan reports execution mode
+  `empty`, and the UI warns about the empty root and stale downstream data. This
+  avoids adding client-side state for a choice with no semantic effect.
+- The user requested a durable local PostgreSQL test reminder during
+  implementation. The `ecto-storage` skill and PostgreSQL testing guide now
+  require starting the repository container, using a separate disposable
+  `favn_test` database, and exporting its URL before storage tests.
+- The planned browser audit was not run because the umbrella development server
+  was not started. The design-system curated render suite and all View tests
+  pass; no token, primitive, layout, or JavaScript behavior changed.
 
 ## Decision log
 
-Pending implementation.
+- 2026-08-25: Keep combined append limited to a full rebuild-owned empty
+  candidate. Targeted and scheduled active-generation append remains rejected.
+- 2026-08-25: Keep one range freshness/input-lineage result and fan out only
+  exact coverage after durable success.
+- 2026-08-25: Reuse the target-operation lock with operation type
+  `materialization`; renew it on the existing run ownership heartbeat.
+- 2026-08-25: Represent one combined backfill by exact ledger rows sharing one
+  deterministic child run rather than adding a batch table.
+- 2026-08-25: Report empty rebuild as its own execution mode and keep expected
+  logical window count visible even though the candidate materializes no rows.
 
 ## Verification evidence
 
 | Check | Result | Evidence boundary |
 | --- | --- | --- |
-| Focused tests | Pending | Automated qualification, not live proof |
+| Format, diff check, warnings-as-errors compile | Passed | Static repository qualification |
+| `favn_authoring` fast suite | 148 passed | DSL behavior |
+| `favn_core` fast suite | 449 passed; combined planner file 8 passed after the DST addition | Policy, range identity, planner, daily/monthly/hourly behavior |
+| `favn` fast suite | 183 passed, 3 excluded | CLI and public boundary |
+| `favn_view` fast suite | 543 passed, 1 excluded | Forms, defaults, events, and curated design-system rendering |
+| `favn_runner` fast suite | 254/255 passed in the final full run; the unrelated drain test passed immediately alone | Empty-generation schema/check behavior; one local timing/setup flake remains outside this feature |
+| `favn_orchestrator` fast suite | 721/722 passed; the unrelated 100 ms heartbeat test passed immediately alone; rebuild tests 10 passed | Planning, backfill/rebuild inputs, retries, snapshots, and lifecycle |
+| PostgreSQL feature tests | 3 passed against local PostgreSQL 18 in Docker | Real coarse-lock exclusion, exact coverage fan-out with one range freshness row, and grouped exact backfill ledger |
+| `favn_storage_postgres` fast suite | 332/333 passed, 18 excluded | Broad real-PostgreSQL regression evidence; the existing protected-password bootstrap test is incompatible with this local temporary-file permission environment |
 
 ### Not verified
 
-- Implementation, tests, CI, live scale, and production behavior are not yet verified.
+- PR CI, browser viewport/contrast audit, live scale, DuckDB spill behavior, and
+  production execution are not yet verified. Local tests do not prove that an
+  author-provided query is safe or efficient for an arbitrarily large range.
 
 ## Final review
 

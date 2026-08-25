@@ -220,6 +220,13 @@ connection boundary. Recovery is only for a proven interrupted Favn-owned
 initial generation; it does not adopt arbitrary tables.
 Run `mix help TASK` for their exact options.
 
+Pipeline backfills use the pipeline's authored window-combination choice. Pass
+`--combine-windows` to run one adjacent historical range once instead of one
+run per logical window. Rebuilds combine adjacent windows by default; pass
+`--no-combine-windows` when smaller retry units matter. `mix favn.rebuild plan
+ASSET --empty --reason "..."` explicitly plans an empty active root table for
+later ordinary backfills; retained downstream tables remain stale until then.
+
 When a backfill fails, `mix favn.backfill submit` prints its bounded failure
 summary and the copyable `mix favn.backfill status BACKFILL_ID` inspection
 command. Status output includes the root run, aggregate counts, and at most 20

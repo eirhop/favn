@@ -73,7 +73,8 @@ defmodule FavnOrchestrator.Backfills do
          {:ok, selection} <- Selection.backfill(range.anchors, range.timezone),
          {:ok, _resolution} <- resolve_pipeline(version, pipeline, selection) do
       {:ok,
-       plan_map(runtime.deployment_id, version.manifest_version_id, target_id, range, selection)}
+       plan_map(runtime.deployment_id, version.manifest_version_id, target_id, range, selection)
+       |> put_execution_summary(effective_combine_windows(pipeline, opts))}
     end
   end
 
@@ -136,6 +137,7 @@ defmodule FavnOrchestrator.Backfills do
       when is_binary(manifest_version_id) and is_binary(target_id) and is_list(opts) do
     with :ok <- authorize(context),
          :ok <- validate_options(opts),
+         :ok <- reject_asset_combine(opts),
          {:ok, runtime, _version, _asset} <-
            active_asset(context, manifest_version_id, target_id),
          {:ok, range} <- RangeResolver.resolve(range_request),
@@ -161,6 +163,7 @@ defmodule FavnOrchestrator.Backfills do
     Lifecycle.with_admission(fn ->
       with :ok <- authorize(context),
            :ok <- validate_options(opts),
+           :ok <- reject_asset_combine(opts),
            {:ok, runtime, version, asset} <- active_asset(context, manifest_version_id, target_id),
            {:ok, range} <- RangeResolver.resolve(range_request),
            :ok <- validate_window_count(range.requested_count, opts),
@@ -203,6 +206,7 @@ defmodule FavnOrchestrator.Backfills do
              is_list(opts) do
     with :ok <- authorize(context),
          :ok <- validate_options(opts),
+         :ok <- reject_asset_combine(opts),
          {:ok, runtime, _version, _asset} <-
            active_asset(context, manifest_version_id, target_id),
          {:ok, range} <- exact_range(anchors),
@@ -234,6 +238,7 @@ defmodule FavnOrchestrator.Backfills do
     Lifecycle.with_admission(fn ->
       with :ok <- authorize(context),
            :ok <- validate_options(opts),
+           :ok <- reject_asset_combine(opts),
            {:ok, runtime, version, asset} <- active_asset(context, manifest_version_id, target_id),
            {:ok, range} <- exact_range(anchors),
            :ok <- validate_window_count(range.requested_count, opts),
@@ -333,7 +338,19 @@ defmodule FavnOrchestrator.Backfills do
     {target_kind, target, resolution} = submission_target(target_spec)
     root_run_id = Keyword.get(opts, :root_run_id) || random_id("run_backfill")
     backfill_id = Keyword.get(opts, :backfill_id) || deterministic_id("bf", root_run_id)
-    batches = backfill_id |> plan_windows(range) |> Enum.chunk_every(@batch_size)
+
+    combine_windows =
+      case target_spec do
+        {:pipeline, pipeline, _resolution} -> effective_combine_windows(pipeline, opts)
+        {:asset, _asset} -> false
+      end
+
+    opts = Keyword.put(opts, :combine_windows, combine_windows)
+
+    batches =
+      backfill_id
+      |> plan_windows(range, combine_windows)
+      |> Enum.chunk_every(@batch_size)
 
     %Submission{
       context: context,
@@ -412,6 +429,7 @@ defmodule FavnOrchestrator.Backfills do
       terminal_event_type: :run_finished,
       pipeline_identity_ref: {pipeline.module, pipeline.name},
       backfill_range: range_summary(submission.range),
+      combine_windows: Keyword.fetch!(submission.opts, :combine_windows),
       window_selection: submission.window_selection,
       operator_metadata: Keyword.get(submission.opts, :metadata, %{})
     }
@@ -584,8 +602,13 @@ defmodule FavnOrchestrator.Backfills do
     })
   end
 
-  defp plan_windows(backfill_id, range) do
-    Enum.map(range.anchors, fn anchor ->
+  defp plan_windows(backfill_id, range, combine_windows) do
+    execution_group_id =
+      if combine_windows, do: deterministic_id("bfg", backfill_id), else: nil
+
+    range.anchors
+    |> Enum.with_index()
+    |> Enum.map(fn {anchor, index} ->
       key = Key.encode(anchor.key)
 
       %BackfillPlanWindow{
@@ -595,7 +618,9 @@ defmodule FavnOrchestrator.Backfills do
         window_end: anchor.end_at,
         payload: %{
           "kind" => Atom.to_string(anchor.kind),
-          "timezone" => anchor.timezone
+          "timezone" => anchor.timezone,
+          "execution_group_id" => execution_group_id,
+          "execution_group_leader" => combine_windows and index == 0
         }
       }
     end)
@@ -605,6 +630,7 @@ defmodule FavnOrchestrator.Backfills do
     %{
       "pipeline_module" => Atom.to_string(pipeline.module),
       "pipeline_name" => Atom.to_string(pipeline.name),
+      "combine_windows" => Keyword.fetch!(opts, :combine_windows),
       "refresh" => encode_atom(Keyword.get(opts, :refresh)),
       "retry_policy" => encode_struct(Keyword.get(opts, :retry_policy)),
       "timeout_ms" => Keyword.get(opts, :timeout_ms),
@@ -639,6 +665,14 @@ defmodule FavnOrchestrator.Backfills do
       range_start_at: range.range_start_at,
       range_end_at: range.range_end_at
     }
+  end
+
+  defp put_execution_summary(plan, combine_windows) do
+    Map.merge(plan, %{
+      combine_windows: combine_windows,
+      execution_mode: if(combine_windows, do: :combined, else: :separate),
+      physical_execution_count: if(combine_windows, do: 1, else: plan.window_count)
+    })
   end
 
   defp range_summary(range) do
@@ -722,7 +756,8 @@ defmodule FavnOrchestrator.Backfills do
          :ok <- validate_metadata(Keyword.get(opts, :metadata, %{})),
          :ok <- validate_required_generation(Keyword.get(opts, :required_generation)),
          :ok <- validate_timeout(Keyword.get(opts, :timeout_ms)),
-         :ok <- validate_dependencies(Keyword.get(opts, :dependencies, :all)) do
+         :ok <- validate_dependencies(Keyword.get(opts, :dependencies, :all)),
+         :ok <- validate_combine_windows(Keyword.get(opts, :combine_windows)) do
       validate_retry_policy(Keyword.get(opts, :retry_policy))
     end
   end
@@ -738,7 +773,8 @@ defmodule FavnOrchestrator.Backfills do
       :dependencies,
       :refresh,
       :retry_policy,
-      :timeout_ms
+      :timeout_ms,
+      :combine_windows
     ]
 
     case Keyword.keys(opts) -- allowed do
@@ -782,6 +818,22 @@ defmodule FavnOrchestrator.Backfills do
 
   defp validate_dependencies(value) when value in [:all, :none], do: :ok
   defp validate_dependencies(_value), do: {:error, :invalid_backfill_dependencies}
+
+  defp validate_combine_windows(value) when value in [nil, true, false], do: :ok
+  defp validate_combine_windows(_value), do: {:error, :invalid_combine_windows}
+
+  defp reject_asset_combine(opts) do
+    if Keyword.get(opts, :combine_windows) == true,
+      do: {:error, :combined_asset_backfill_not_supported},
+      else: :ok
+  end
+
+  defp effective_combine_windows(%Pipeline{window: window}, opts) do
+    case Keyword.fetch(opts, :combine_windows) do
+      {:ok, value} when is_boolean(value) -> value
+      :error -> window.combine_windows
+    end
+  end
 
   defp validate_retry_policy(nil), do: :ok
 

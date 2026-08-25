@@ -23,6 +23,7 @@ defmodule FavnOrchestrator.RunManager.SubmissionOptions do
               [
                 :anchor_window,
                 :window_selection,
+                :combine_windows,
                 :parent_run_id,
                 :root_run_id,
                 :workspace_id,
@@ -39,6 +40,7 @@ defmodule FavnOrchestrator.RunManager.SubmissionOptions do
           dependencies: :all | :none,
           anchor_window: Anchor.t() | nil,
           window_selection: Selection.t() | nil,
+          combine_windows: boolean() | nil,
           exact_windows: map(),
           required_generation: map() | nil,
           rebuild: map() | nil,
@@ -72,6 +74,7 @@ defmodule FavnOrchestrator.RunManager.SubmissionOptions do
         dependencies: option(opts, defaults, :dependencies, :all),
         anchor_window: option(opts, defaults, :anchor_window, nil),
         window_selection: window_selection,
+        combine_windows: option(opts, defaults, :combine_windows, nil),
         exact_windows: option(opts, defaults, :exact_windows, %{}),
         required_generation: option(opts, defaults, :required_generation, nil),
         rebuild: option(opts, defaults, :rebuild, nil),
@@ -90,6 +93,7 @@ defmodule FavnOrchestrator.RunManager.SubmissionOptions do
            :ok <- dependencies(values.dependencies),
            :ok <- anchor(values.anchor_window),
            :ok <- window_input(values.anchor_window, values.window_selection),
+           :ok <- optional_boolean(values.combine_windows, :invalid_combine_windows),
            :ok <- map(values.exact_windows, :invalid_exact_windows),
            :ok <- required_generation(values.required_generation),
            :ok <- rebuild(values.rebuild),
@@ -171,6 +175,10 @@ defmodule FavnOrchestrator.RunManager.SubmissionOptions do
 
   defp non_negative_integer(value, _error) when is_integer(value) and value >= 0, do: :ok
   defp non_negative_integer(_value, error), do: {:error, error}
+
+  defp optional_boolean(nil, _error), do: :ok
+  defp optional_boolean(value, _error) when is_boolean(value), do: :ok
+  defp optional_boolean(_value, error), do: {:error, error}
 
   defp dependencies(value) when value in [:all, :none], do: :ok
   defp dependencies(_value), do: {:error, :invalid_dependencies}

@@ -119,7 +119,9 @@ defmodule Favn.AI do
     `Favn.Triggers.Schedules` if schedules are involved. If the pipeline is
     windowed, also read `Favn.Window`, `Favn.Window.Policy`, and
     `Favn.Window.Request`. Pipeline `lookback` expands only scheduled
-    `Favn.Window.Selection` values; manual and backfill selections remain exact.
+    `Favn.Window.Selection` values. `combine_windows` changes adjacent physical
+    execution only; exact logical coverage is retained, and pipeline backfill may
+    override the authored default.
     If the pipeline or its assets touch rate-limited
     source systems or shared infrastructure, read the `max_concurrency` and
     `execution_pool` sections in `Favn.Pipeline` and `Favn.Asset`.
@@ -175,7 +177,9 @@ defmodule Favn.AI do
   - To replace an incompatible managed SQL target, read
     `Mix.Tasks.Favn.Rebuild`, `Favn.CLI.Rebuild`, and the rebuild section of
     [Local Development Commands](local-development.html). Planning is read-only
-    and start requires the exact reviewed plan id and hash. An unknown activation
+    and start requires the exact reviewed plan id and hash. Windowed rebuilds
+    combine by default; explicit empty mode activates a schema-valid empty table
+    for later ordinary backfill. An unknown activation
     outcome must be reconciled; it is never permission for a blind retry.
   - To restore ownership after an interrupted initial materialization, read
     `Mix.Tasks.Favn.Recover`, `Favn.CLI.TargetRecovery`, and

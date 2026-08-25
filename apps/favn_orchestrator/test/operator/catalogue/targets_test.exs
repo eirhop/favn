@@ -5,6 +5,7 @@ defmodule FavnOrchestrator.Operator.Catalogue.TargetsTest do
   alias Favn.Manifest.Pipeline
   alias Favn.RuntimeConfig.Ref, as: RuntimeConfigRef
   alias Favn.SQL.PartitionSpec
+  alias Favn.Window.Policy
   alias FavnOrchestrator.Operator.Catalogue.Targets
 
   doctest Targets
@@ -171,6 +172,17 @@ defmodule FavnOrchestrator.Operator.Catalogue.TargetsTest do
     }
 
     assert Targets.pipeline(pipeline).window == %{"unexpected" => "value"}
+  end
+
+  test "pipeline catalogue exposes the authored combine default" do
+    pipeline = %Pipeline{
+      module: MyApp.Pipelines.Orders,
+      name: :orders,
+      selectors: [],
+      window: Policy.new!(:daily, combine_windows: true)
+    }
+
+    assert Targets.pipeline(pipeline).window.combine_windows
   end
 
   test "descriptor persistence preserves boolean types recursively" do

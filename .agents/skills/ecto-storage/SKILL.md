@@ -27,3 +27,15 @@ SQLite/Postgres storage behavior, and persistence test fixtures.
 - Cover both supported storage adapters when applicable.
 - Use SQL sandbox ownership correctly for repo-backed tests.
 - Prefer shared fixtures and helpers from `apps/favn_test_support` when available.
+- Before running PostgreSQL integration tests locally, ensure the repository's
+  disposable PostgreSQL 18 container is running with `scripts/postgres/setup`.
+  If port 5432 is already owned by another project, choose a free explicit port,
+  for example `FAVN_POSTGRES_PORT=5433 scripts/postgres/setup`.
+- Create a separate disposable `favn_test` database in that container and point
+  both `FAVN_DATABASE_URL` and `FAVN_DATABASE_MIGRATOR_URL` at it with the local
+  bootstrap role. Do not point integration tests at the normal `favn_dev`
+  workspace: the test suite runs its own schema bootstrap and needs database
+  `CREATE` authority that the hardened runtime and migrator roles intentionally
+  lack. Also export the fixed test runtime-input pin key and version documented
+  in `docs/storage/postgresql/testing.md`. Do not report PostgreSQL tests as
+  unavailable until this setup has been attempted.

@@ -753,7 +753,7 @@ Pipeline window policy:
 
 ```elixir
 schedule cron: "0 2 * * *", timezone: "Europe/Oslo"
-window :monthly, anchor: :current_period, lookback: 1
+window :monthly, anchor: :current_period, lookback: 1, combine_windows: true
 ```
 
 Supported kinds: `:hourly`, `:daily`, `:monthly`, `:yearly`, or `:hour`, `:day`,
@@ -766,6 +766,7 @@ Pipeline window options:
 | `:anchor` | `:previous_complete_period` (default) or `:current_period`. |
 | `:timezone` | IANA timezone. |
 | `:lookback` | Non-negative number of prior anchors added to scheduled runs. |
+| `:combine_windows` | Run adjacent selected windows as one wider range. Defaults to `false`. |
 | `:allow_full_load` | Whether an explicit full-load request is allowed. Omission still selects latest-complete. |
 
 Schedule cadence and processing-window granularity are independent. The example
@@ -778,6 +779,11 @@ selects June and July. The automatic latest-complete manual default, explicit
 manual windows, and backfill ranges stay exact. `allow_full_load: true` governs
 only a deliberate explicit full-load request; it does not change the omitted
 manual default.
+
+With `combine_windows: true`, June and July execute once as `[June 1, August 1)`.
+Coverage still records both exact months. A manual pipeline backfill can override
+the authored choice. Combined active-table `append` is rejected; use separate
+windows or a range-replacing write.
 The asset describes only how each supplied anchor maps to its canonical data
 window:
 

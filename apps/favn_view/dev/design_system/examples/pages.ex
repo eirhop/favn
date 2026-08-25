@@ -569,7 +569,8 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
       to: "2026-12",
       kind: "month",
       timezone: "Etc/UTC",
-      refresh: "missing"
+      refresh: "missing",
+      combine_windows: false
     }
 
     %{

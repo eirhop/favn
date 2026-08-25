@@ -23,7 +23,7 @@ defmodule FavnOrchestrator.API.RebuildsRouter do
     with :ok <- Authentication.ensure_service(conn),
          {:ok, session, actor, context} <-
            Authentication.workspace_or_service_context(conn, :operator),
-         {:ok, target_id, reason} <- plan_request(conn.body_params) do
+         {:ok, target_id, reason, plan_opts} <- plan_request(conn.body_params) do
       IdempotentCommand.run(
         conn,
         context,
@@ -34,11 +34,15 @@ defmodule FavnOrchestrator.API.RebuildsRouter do
         fn idempotency ->
           operation_id = rebuild_operation_id(idempotency)
 
-          case Rebuilds.plan(context, target_id, reason,
-                 operation_id: operation_id,
-                 idempotency_key: idempotency.key_hash,
-                 idempotency: idempotency.command_idempotency
-               ) do
+          opts =
+            plan_opts ++
+              [
+                operation_id: operation_id,
+                idempotency_key: idempotency.key_hash,
+                idempotency: idempotency.command_idempotency
+              ]
+
+          case Rebuilds.plan(context, target_id, reason, opts) do
             {:ok, plan} ->
               {:ok, 201, %{plan: RebuildDTO.plan(plan, admin?(context))}, "rebuild", operation_id}
 
@@ -178,8 +182,17 @@ defmodule FavnOrchestrator.API.RebuildsRouter do
 
   defp plan_request(params) do
     with {:ok, target_id} <- required_string(params, "target_id", :invalid_rebuild_target),
-         {:ok, reason} <- required_string(params, "reason", :rebuild_reason_required) do
-      {:ok, target_id, reason}
+         {:ok, reason} <- required_string(params, "reason", :rebuild_reason_required),
+         {:ok, combine_windows} <- optional_boolean(params, "combine_windows", true),
+         {:ok, empty} <- optional_boolean(params, "empty", false) do
+      {:ok, target_id, reason, combine_windows: combine_windows, empty: empty}
+    end
+  end
+
+  defp optional_boolean(params, key, default) do
+    case Map.get(params, key, default) do
+      value when is_boolean(value) -> {:ok, value}
+      _invalid -> {:error, :invalid_rebuild_options}
     end
   end
 
