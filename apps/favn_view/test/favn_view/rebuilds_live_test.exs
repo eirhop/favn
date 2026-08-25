@@ -210,7 +210,17 @@ defmodule FavnView.RebuildsLiveTest do
     |> render_change()
 
     assert has_element?(view, "[data-testid=rebuild-combine-windows][disabled]")
+    assert has_element?(view, "[data-testid=rebuild-combine-windows][checked]")
     assert has_element?(view, "[data-testid=rebuild-empty][checked]")
+
+    view
+    |> form("form[phx-submit=plan_rebuild]",
+      rebuild: %{target_id: "asset:orders", reason: "backfill later", empty: "false"}
+    )
+    |> render_change()
+
+    refute has_element?(view, "[data-testid=rebuild-combine-windows][disabled]")
+    assert has_element?(view, "[data-testid=rebuild-combine-windows][checked]")
   end
 
   test "separate-window choice survives validation and reaches planning", %{conn: conn} do

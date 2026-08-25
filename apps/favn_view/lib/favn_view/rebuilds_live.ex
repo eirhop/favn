@@ -33,10 +33,16 @@ defmodule FavnView.RebuildsLive do
 
   @impl true
   def handle_event("validate_rebuild", %{"rebuild" => rebuild}, socket) do
+    combine_windows? =
+      case Map.fetch(rebuild, "combine_windows") do
+        {:ok, value} -> value == "true"
+        :error -> socket.assigns.combine_windows?
+      end
+
     {:noreply,
      assign(socket,
        empty?: Map.get(rebuild, "empty", "false") == "true",
-       combine_windows?: Map.get(rebuild, "combine_windows", "false") == "true",
+       combine_windows?: combine_windows?,
        target_id: Map.get(rebuild, "target_id", socket.assigns.target_id)
      )}
   end
