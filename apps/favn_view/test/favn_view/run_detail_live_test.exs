@@ -712,6 +712,83 @@ defmodule FavnView.RunDetailLiveTest do
     }
   end
 
+  describe "flow reading controls" do
+    setup do
+      Application.put_env(:favn_view, :operator_run_flow_fun, fn _context, run_id ->
+        {:ok, %{kind: :run, detail: flow(run_id, :running)}}
+      end)
+
+      {:ok, mounted} = RunDetailLive.mount(%{"run_id" => "run-one"}, %{}, connected_socket())
+      %{socket: mounted}
+    end
+
+    test "the chart is built from the loaded rows and keeps its raw timing", %{socket: socket} do
+      chart = socket.assigns.run.chart
+
+      assert chart.lane_count == 2
+      assert chart.ghost_count == 1
+      assert Enum.map(chart.bands, & &1.id) == ["stage-0", "stage-1"]
+
+      # The row keeps both, so the table can print and the chart can measure.
+      assert [%{started_at: %DateTime{}, started_label: label} | _] = socket.assigns.run.assets
+      assert is_binary(label)
+    end
+
+    test "a status filter narrows the chart and nothing else", %{socket: socket} do
+      {:noreply, filtered} =
+        RunDetailLive.handle_event("toggle_flow_filter", %{"outcome" => "running"}, socket)
+
+      assert filtered.assigns.flow_filter == [:running]
+      assert filtered.assigns.run.chart.lane_count == 1
+
+      # The run's own rows and counts are untouched: only the drawing narrowed.
+      assert length(filtered.assigns.run.assets) == 2
+      assert filtered.assigns.run.total_asset_attempts == 2
+
+      {:noreply, cleared} =
+        RunDetailLive.handle_event("toggle_flow_filter", %{"outcome" => "running"}, filtered)
+
+      assert cleared.assigns.flow_filter == []
+      assert cleared.assigns.run.chart.lane_count == 2
+    end
+
+    test "an unknown filter or sort is ignored rather than crashing", %{socket: socket} do
+      assert {:noreply, ^socket} =
+               RunDetailLive.handle_event("toggle_flow_filter", %{"outcome" => "nope"}, socket)
+
+      assert {:noreply, ^socket} =
+               RunDetailLive.handle_event("set_flow_sort", %{"sort" => "nope"}, socket)
+    end
+
+    test "sorting reorders the chart without issuing a read", %{socket: socket} do
+      {:noreply, sorted} =
+        RunDetailLive.handle_event("set_flow_sort", %{"sort" => "name"}, socket)
+
+      assert sorted.assigns.flow_sort == :name
+      assert sorted.assigns.run.chart.lane_count == 2
+    end
+
+    test "expanding a band leaves the others as they were", %{socket: socket} do
+      {:noreply, expanded} =
+        RunDetailLive.handle_event("toggle_flow_band", %{"band" => "stage-1"}, socket)
+
+      assert expanded.assigns.expanded_bands == ["stage-1"]
+
+      {:noreply, collapsed} =
+        RunDetailLive.handle_event("toggle_flow_band", %{"band" => "stage-1"}, expanded)
+
+      assert collapsed.assigns.expanded_bands == []
+    end
+
+    test "chart or table is a reading preference that issues no read", %{socket: socket} do
+      {:noreply, table} =
+        RunDetailLive.handle_event("set_flow_view", %{"view" => "table"}, socket)
+
+      assert table.assigns.flow_view == :table
+      assert table.assigns.run.assets == socket.assigns.run.assets
+    end
+  end
+
   defp flow(run_id, status) do
     %Flow{
       header: header(run_id, status),

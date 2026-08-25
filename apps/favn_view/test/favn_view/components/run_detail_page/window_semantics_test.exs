@@ -21,17 +21,29 @@ defmodule FavnView.Components.RunDetailPage.WindowSemanticsTest do
     )
   end
 
-  test "Flow renders one exact run as a lean asset list" do
+  test "Flow draws one exact run as lanes on its own axis" do
     html = render_page(Runs.single_window())
 
     assert html =~ ~s(data-testid="asset-progress")
     assert html =~ ~s(data-testid="run-flow")
+    assert html =~ ~s(data-testid="run-timeline")
+    assert html =~ ~s(data-testid="run-timeline-bar")
+    assert html =~ "Orders"
+
+    # The chart is the default reading, so the table is not also rendered.
+    refute html =~ ~s(data-testid="run-asset-row")
+    refute html =~ "Output metadata"
+    refute html =~ ~s(data-testid="window-progress")
+  end
+
+  test "Flow keeps the lean asset list one click away" do
+    html = render_page(Runs.single_window(), flow_view: :table)
+
     assert html =~ ~s(data-testid="run-asset-row")
     assert html =~ "Orders"
     assert html =~ "Started"
     assert html =~ "Finished"
-    refute html =~ "Output metadata"
-    refute html =~ ~s(data-testid="window-progress")
+    refute html =~ ~s(data-testid="run-timeline")
   end
 
   test "a run outside a backfill shows no rail and no window controls" do

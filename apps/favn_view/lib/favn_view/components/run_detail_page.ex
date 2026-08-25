@@ -24,6 +24,9 @@ defmodule FavnView.Components.RunDetailPage do
   attr :current_scope, :any, default: nil
   attr :operator_workspaces, :list, default: []
   attr :active_mode, :atom, default: :flow
+  attr :flow_view, :atom, default: :chart
+  attr :flow_filter, :list, default: []
+  attr :flow_sort, :atom, default: :start
 
   attr :rail, :any, default: nil
   attr :windows_error, :string, default: nil
@@ -80,6 +83,9 @@ defmodule FavnView.Components.RunDetailPage do
         :if={@run[:found?]}
         run={@run}
         active_mode={@active_mode}
+        flow_view={@flow_view}
+        flow_filter={@flow_filter}
+        flow_sort={@flow_sort}
         rail={@rail}
         windows_error={@windows_error}
       />
@@ -92,6 +98,9 @@ defmodule FavnView.Components.RunDetailPage do
 
   attr :run, :map, required: true
   attr :active_mode, :atom, required: true
+  attr :flow_view, :atom, default: :chart
+  attr :flow_filter, :list, default: []
+  attr :flow_sort, :atom, default: :start
   attr :rail, :any, default: nil
   attr :windows_error, :string, default: nil
 
@@ -136,6 +145,10 @@ defmodule FavnView.Components.RunDetailPage do
         <Flow.flow
           :if={@active_mode == :flow}
           assets={@run.assets}
+          chart={@run[:chart]}
+          view={@flow_view}
+          filter={@flow_filter}
+          sort={@flow_sort}
           backfill_parent?={@run[:backfill_parent?] || false}
         />
         <Events.events_panel :if={@active_mode == :events} run={@run} />

@@ -12,8 +12,14 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.Runs do
   """
 
   alias FavnView.LogsViewModel
+  alias FavnView.RunTimeline
 
   @anchor ~U[2026-07-23 10:00:00Z]
+
+  # The chart measures a running attempt against now, so the fixture pins now to
+  # the same anchored instant its elapsed duration reports. Real time would draw
+  # a running bar years long.
+  @now DateTime.add(@anchor, 134, :second)
 
   @doc "Navigation items for a run detail example."
   @spec nav_items() :: list()
@@ -172,6 +178,7 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.Runs do
   defp run(overrides) do
     attempts = Map.fetch!(overrides, :attempts)
     status = Map.fetch!(overrides, :status)
+    rows = Enum.map(attempts, &asset_row/1)
 
     %{
       found?: true,
@@ -195,7 +202,8 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.Runs do
       running_asset_attempts: count_status(attempts, [:running]),
       queued_asset_attempts: count_status(attempts, [:pending, :queued]),
       planned_asset_attempts: count_status(attempts, [:planned]),
-      assets: Enum.map(attempts, &asset_row/1),
+      assets: rows,
+      chart: RunTimeline.build(rows, now: @now),
       asset_attempts_truncated?: false,
       events: Map.get(overrides, :events, [])
     }
@@ -254,8 +262,10 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.Runs do
       asset_ref: spec.asset,
       name: spec.name,
       run_id: "run_backfill_8f2c9d1",
-      started_at: FavnView.Time.format(started, "%b %-d, %Y %H:%M %Z", "Etc/UTC"),
-      finished_at:
+      started_at: started,
+      finished_at: finished,
+      started_label: FavnView.Time.format(started, "%b %-d, %Y %H:%M %Z", "Etc/UTC"),
+      finished_label:
         (finished && FavnView.Time.format(finished, "%b %-d, %Y %H:%M %Z", "Etc/UTC")) ||
           "-",
       state: spec.status,
@@ -304,6 +314,8 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.Runs do
       state: attempt.state,
       started_at: attempt.started_at,
       finished_at: attempt.finished_at,
+      started_label: attempt.started_label,
+      finished_label: attempt.finished_label,
       stage: attempt.stage
     }
   end

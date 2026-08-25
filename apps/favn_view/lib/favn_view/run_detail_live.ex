@@ -13,11 +13,15 @@ defmodule FavnView.RunDetailLive do
   alias FavnView.OperatorErrorLabels
   alias FavnView.Orchestrator
   alias FavnView.RunEventRefresh
+  alias FavnView.RunTimeline
   alias FavnView.RunWindowRail
 
   @fallback_refresh_ms 5_000
   @coalesce_refresh_ms 1_000
   @valid_modes ~w(flow events)
+  @valid_flow_views ~w(chart table)
+  @flow_outcomes ~w(succeeded failed running waiting)
+  @flow_sorts ~w(start name)
   @step_keys ~w(ArrowLeft ArrowRight)
   @backfill_submit_kinds [:backfill_asset, :backfill_pipeline]
   @backfill_group_fields [
@@ -56,6 +60,10 @@ defmodule FavnView.RunDetailLive do
         run_id: run_id,
         run: loading_run(run_id),
         active_mode: active_mode,
+        flow_view: :chart,
+        flow_filter: [],
+        flow_sort: :start,
+        expanded_bands: [],
         cancel_attempt: nil,
         retry_attempt: nil,
         nav_items: AssetCataloguePage.nav_items(:runs)
@@ -103,6 +111,7 @@ defmodule FavnView.RunDetailLive do
       run_id: run_id,
       run: loading_run(run_id),
       active_mode: active_mode,
+      expanded_bands: [],
       cancel_attempt: nil,
       retry_attempt: nil
     )
@@ -153,6 +162,45 @@ defmodule FavnView.RunDetailLive do
   def handle_event("set_mode", %{"mode" => mode}, socket) when mode in @valid_modes do
     {:noreply, push_patch(socket, to: ~p"/runs/#{socket.assigns.run_id}?view=#{mode}")}
   end
+
+  # Chart or table is a reading preference, not a different run: it changes no
+  # URL and issues no read, and it survives a run switch the way a zoom level
+  # would.
+  def handle_event("set_flow_view", %{"view" => view}, socket) when view in @valid_flow_views do
+    {:noreply, assign(socket, :flow_view, String.to_existing_atom(view))}
+  end
+
+  def handle_event("set_flow_view", _params, socket), do: {:noreply, socket}
+
+  def handle_event("toggle_flow_filter", %{"outcome" => outcome}, socket)
+      when outcome in @flow_outcomes do
+    outcome = String.to_existing_atom(outcome)
+    filter = socket.assigns.flow_filter
+
+    filter = if outcome in filter, do: List.delete(filter, outcome), else: [outcome | filter]
+
+    {:noreply, socket |> assign(:flow_filter, filter) |> assign_chart()}
+  end
+
+  def handle_event("toggle_flow_filter", _params, socket), do: {:noreply, socket}
+
+  def handle_event("set_flow_sort", %{"sort" => sort}, socket) when sort in @flow_sorts do
+    {:noreply, socket |> assign(:flow_sort, String.to_existing_atom(sort)) |> assign_chart()}
+  end
+
+  def handle_event("set_flow_sort", _params, socket), do: {:noreply, socket}
+
+  # A dense chart collapses its stages. Expanding one leaves the others
+  # collapsed, so a wide run opens the stage in question rather than everything.
+  def handle_event("toggle_flow_band", %{"band" => band}, socket) when is_binary(band) do
+    expanded = socket.assigns.expanded_bands
+
+    expanded = if band in expanded, do: List.delete(expanded, band), else: [band | expanded]
+
+    {:noreply, socket |> assign(:expanded_bands, expanded) |> assign_chart()}
+  end
+
+  def handle_event("toggle_flow_band", _params, socket), do: {:noreply, socket}
 
   def handle_event("select_window", %{"run_id" => run_id}, socket) do
     {:noreply, patch_to_window(socket, run_id)}
@@ -262,6 +310,9 @@ defmodule FavnView.RunDetailLive do
       current_scope={@current_scope}
       operator_workspaces={@operator_workspaces}
       active_mode={@active_mode}
+      flow_view={@flow_view}
+      flow_filter={@flow_filter}
+      flow_sort={@flow_sort}
       rail={@rail}
       windows_error={@windows_error}
       flash={@flash}
@@ -283,11 +334,39 @@ defmodule FavnView.RunDetailLive do
 
     socket
     |> assign(:run, run)
+    |> assign_chart()
     |> record_refresh(refresh_result, loaded_run)
     |> sync_run_subscription()
     |> refresh_windows()
     |> schedule_fallback()
   end
+
+  # The chart is a function of the loaded rows and the reading controls, so it is
+  # rebuilt where either changes and never inside the template.
+  defp assign_chart(socket) do
+    case socket.assigns.run do
+      %{assets: assets} when is_list(assets) ->
+        chart =
+          assets
+          |> filter_assets(socket.assigns.flow_filter)
+          |> RunTimeline.build(
+            expanded: socket.assigns.expanded_bands,
+            sort: socket.assigns.flow_sort
+          )
+
+        assign(socket, :run, Map.put(socket.assigns.run, :chart, chart))
+
+      _other ->
+        socket
+    end
+  end
+
+  # A filter narrows what the chart draws, never what the run did: the counts
+  # above the chart come from the run's own totals and stay whole.
+  defp filter_assets(assets, []), do: assets
+
+  defp filter_assets(assets, outcomes),
+    do: Enum.filter(assets, &(RunTimeline.outcome(Map.get(&1, :state)) in outcomes))
 
   defp record_refresh(socket, :ok, run) do
     RunEventRefresh.mark_refreshed(socket, run_event_sequences(run))
@@ -343,12 +422,17 @@ defmodule FavnView.RunDetailLive do
   defp flow_from_public(%{header: header, assets: assets, overflow?: overflow?}, socket) do
     run = run_from_header(header, socket, [])
 
+    scope = socket.assigns.current_scope
+
+    # The row keeps its raw timing beside the label it renders. The table reads
+    # the label; the chart measures the instants. Formatting in place would have
+    # left the chart parsing its own page's strings back into times.
     assets =
       Enum.map(assets, fn asset ->
         asset
         |> Map.from_struct()
-        |> Map.update!(:started_at, &timestamp_label(&1, socket.assigns.current_scope))
-        |> Map.update!(:finished_at, &timestamp_label(&1, socket.assigns.current_scope))
+        |> Map.put(:started_label, timestamp_label(asset.started_at, scope))
+        |> Map.put(:finished_label, timestamp_label(asset.finished_at, scope))
       end)
 
     %{run | assets: assets, asset_attempts_truncated?: overflow?}
@@ -404,6 +488,7 @@ defmodule FavnView.RunDetailLive do
       queued_asset_attempts: counts.queued,
       planned_asset_attempts: counts.planned,
       assets: [],
+      chart: nil,
       asset_attempts_truncated?: false,
       events: events,
       subscribed_run_ids: [header.run_id],
