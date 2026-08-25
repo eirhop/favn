@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Implementing |
+| Status | Implemented |
 | Type | Bug fix |
 | Primary issue | [#670](https://github.com/eirhop/favn/issues/670) |
 | Pull request | [#671](https://github.com/eirhop/favn/pull/671) |
@@ -328,7 +328,7 @@ None. The implementation matched the approved plan.
 | Formatting and whitespace | Passed | `mix format` and `git diff --check` |
 | Design-system browser audit | 152 broad checks plus 62 corrected-plan checks passed, 0 failed or skipped | Dark/light, desktop/mobile field, pipeline, Coverage, plan-review toggle, and keyboard-focus tooltip behavior |
 | Broad PostgreSQL app suite | 337 of 339 passed, 19 excluded | One unrelated timing failure passed alone and in the 136-test owner file; the existing protected local-password bootstrap test still fails from local configuration |
-| GitHub CI | Pending | Must qualify the final rebased head before the PR becomes ready |
+| GitHub CI | Passed on `8e8ac31c` | Quick, fast, acceptance, Dialyzer, slow, production HTTP, and both image qualifications passed; the slow benchmark passed on one rerun after an unrelated first-attempt 52.596 ms result missed its 50 ms threshold |
 
 ### Not verified
 
@@ -344,9 +344,9 @@ None. The implementation matched the approved plan.
 
 | Field | Result |
 | --- | --- |
-| Reviewer | Pending independent implementation review |
+| Reviewer | Independent `final_regression_review` agent using GPT-5.6-sol with extra-high reasoning |
 | Compared | Approved plan, implementation, tests, diagnostics, docs, and complexity accounting |
 | Deviations complete | Yes |
-| Findings | Pending |
-| Findings addressed and rechecked | Pending |
-| Verdict | Pending |
+| Findings | The first review found an unreachable post-plan mode toggle, incomplete separate/Coverage/append proof, missing old-plan compatibility guidance, and five omitted additions in the accounting |
+| Findings addressed and rechecked | Yes; the exact corrected head `8e8ac31c` was rechecked with no remaining findings |
+| Verdict | Approved |
