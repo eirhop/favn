@@ -534,7 +534,7 @@ they continue to read exact coverage rows.
 
 ### Actual scope and complexity
 
-- Files and ownership areas changed: 71 files across the public DSL/CLI,
+- Files and ownership areas changed: 72 files across the public DSL/CLI,
   authoring and core window contracts, orchestrator planning and lifecycle,
   runner empty-generation checks, PostgreSQL projection/locking, View forms,
   tests, canonical docs, and the storage skill.
@@ -542,7 +542,7 @@ they continue to read exact coverage rows.
   `favn_core`; all durable orchestration remains behind the orchestrator facade
   and persistence behaviours; `favn_view` calls only that facade; SQL execution
   remains runner-local; PostgreSQL owns projection and lock implementation.
-- Implementation complexity: 1,254 production lines added and 173 deleted.
+- Implementation complexity: 1,257 production lines added and 176 deleted.
   The implementation is below the estimated production range because existing
   range expansion, ledger rows, rebuild items/candidates, target locks, and
   checkbox components were reused directly.
@@ -554,11 +554,11 @@ they continue to read exact coverage rows.
 - Supporting proof: 1,244 lines added and 128 deleted. Exact allocation by the
   original eight slices would be artificial because the same planner, rebuild,
   and PostgreSQL integration tests prove several slices; the exact aggregate is
-  2,498 additions and 301 deletions.
+  2,501 additions and 304 deletions.
 
 ## Deviations from the approved plan
 
-- The production implementation is 126 lines below the approved minimum. This
+- The production implementation is 123 lines below the approved minimum. This
   is a favorable simplification: compact range metadata and existing lifecycle
   tables were sufficient, so no new grouped persistence or batching service was
   required.
@@ -610,7 +610,7 @@ they continue to read exact coverage rows.
 
 | Check | Result | Evidence boundary |
 | --- | --- | --- |
-| Format, diff check, warnings-as-errors compile | Passed | Static repository qualification |
+| Format, diff check, warnings-as-errors compile, whole-umbrella Dialyzer | Passed | Static repository qualification, including the narrow Plug route success-typing suppression |
 | `favn_authoring` fast suite | 148 passed | DSL behavior |
 | `favn_core` fast suite | 452 passed after rebase to `origin/main` | Policy, range identity, planner, daily/monthly/hourly behavior, and current target-descriptor compatibility |
 | `favn` fast suite | 183 passed, 3 excluded | CLI and public boundary |
@@ -630,9 +630,9 @@ they continue to read exact coverage rows.
 
 | Field | Result |
 | --- | --- |
-| Reviewer | Independent `gpt-5.6-sol` agent at extra-high reasoning; approved latest-main rebased commit `92d863e8` on base `c19f14c5` |
+| Reviewer | Independent `gpt-5.6-sol` agent at extra-high reasoning; approved latest-main rebased implementation through `60bd2509` on base `c19f14c5` |
 | Compared | Approved plan, latest-main rebased implementation, PR #669 conflict resolution, tests, diagnostics, scope accounting, and docs |
-| Deviations complete | Yes; production is 126 additions below the approved minimum and supporting proof is 946 below, both through reuse rather than omitted behavior |
-| Findings | Reviews found dropped overrides, late append rejection, lock-expiry overlap, permanent shared-ledger divergence under uncertainty, orphaned combined-append cleanup, and rebuild checkbox state loss. The latest-main review also checked the overlapping durable backfill-submission recovery path. |
+| Deviations complete | Yes; production is 123 additions below the approved minimum and supporting proof is 946 below, both through reuse rather than omitted behavior |
+| Findings | Reviews found dropped overrides, late append rejection, lock-expiry overlap, permanent shared-ledger divergence under uncertainty, orphaned combined-append cleanup, rebuild checkbox state loss, and two CI Dialyzer warnings. The latest-main review also checked the overlapping durable backfill-submission recovery path. |
 | Findings addressed and rechecked | Yes; every finding is fixed, has focused regression proof, and passed the post-rebase comparison. |
 | Verdict | Approved; no actionable code, integration, persistence, lifecycle, UI, or scope findings remain. |
