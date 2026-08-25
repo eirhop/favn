@@ -12,17 +12,21 @@ defmodule FavnView.RunDetailLive do
   alias FavnView.LogsViewModel
   alias FavnView.OperatorErrorLabels
   alias FavnView.Orchestrator
+  alias FavnView.RunComparison
   alias FavnView.RunEventRefresh
   alias FavnView.RunTimeline
   alias FavnView.RunWindowRail
 
   @fallback_refresh_ms 5_000
   @coalesce_refresh_ms 1_000
+  @compare_read_timeout_ms 5_000
   @valid_modes ~w(flow events)
   @valid_flow_views ~w(chart table)
   @flow_outcomes ~w(succeeded failed running waiting)
   @flow_sorts ~w(start name)
+  @flow_alignments ~w(window wall_clock)
   @step_keys ~w(ArrowLeft ArrowRight)
+  @compare_limit RunWindowRail.compare_limit()
   @backfill_submit_kinds [:backfill_asset, :backfill_pipeline]
   @backfill_group_fields [
     :active?,
@@ -63,7 +67,13 @@ defmodule FavnView.RunDetailLive do
         flow_view: :chart,
         flow_filter: [],
         flow_sort: :start,
+        flow_alignment: :window,
         expanded_bands: [],
+        compare?: false,
+        compare_run_ids: [],
+        compare_windows: %{},
+        compare_limit_reached?: false,
+        compare_error: nil,
         cancel_attempt: nil,
         retry_attempt: nil,
         nav_items: AssetCataloguePage.nav_items(:runs)
@@ -112,6 +122,10 @@ defmodule FavnView.RunDetailLive do
       run: loading_run(run_id),
       active_mode: active_mode,
       expanded_bands: [],
+      compare_run_ids: if(socket.assigns.compare?, do: [run_id], else: []),
+      compare_windows: %{},
+      compare_limit_reached?: false,
+      compare_error: nil,
       cancel_attempt: nil,
       retry_attempt: nil
     )
@@ -190,6 +204,19 @@ defmodule FavnView.RunDetailLive do
 
   def handle_event("set_flow_sort", _params, socket), do: {:noreply, socket}
 
+  # Alignment is view state over rows the page already holds. Asking for wall
+  # clock across windows too far apart is not refused here; the comparison falls
+  # back and the control says why.
+  def handle_event("set_flow_alignment", %{"alignment" => alignment}, socket)
+      when alignment in @flow_alignments do
+    {:noreply,
+     socket
+     |> assign(:flow_alignment, String.to_existing_atom(alignment))
+     |> assign_comparison()}
+  end
+
+  def handle_event("set_flow_alignment", _params, socket), do: {:noreply, socket}
+
   # A dense chart collapses its stages. Expanding one leaves the others
   # collapsed, so a wide run opens the stage in question rather than everything.
   def handle_event("toggle_flow_band", %{"band" => band}, socket) when is_binary(band) do
@@ -205,6 +232,54 @@ defmodule FavnView.RunDetailLive do
   def handle_event("select_window", %{"run_id" => run_id}, socket) do
     {:noreply, patch_to_window(socket, run_id)}
   end
+
+  # Entering compare mode seeds the comparison with the open run and leaving it
+  # empties the selection, so the page returns to exactly its single-window
+  # behaviour with nothing left subscribed or loaded on its behalf.
+  def handle_event("toggle_compare", _params, socket) do
+    compare? = not socket.assigns.compare?
+
+    {:noreply,
+     socket
+     |> assign(
+       compare?: compare?,
+       compare_run_ids: if(compare?, do: [socket.assigns.run_id], else: []),
+       compare_limit_reached?: false,
+       compare_error: nil
+     )
+     |> build_rail()
+     |> update_comparison()}
+  end
+
+  # The open run anchors its own comparison: dropping it would leave the page
+  # drawing windows it is not on. Every other window toggles, up to the limit,
+  # which refuses rather than silently discarding the click.
+  def handle_event("toggle_compare_window", %{"run_id" => run_id}, socket)
+      when is_binary(run_id) do
+    selected = socket.assigns.compare_run_ids
+
+    cond do
+      not socket.assigns.compare? ->
+        {:noreply, socket}
+
+      run_id == socket.assigns.run_id ->
+        {:noreply, socket}
+
+      run_id in selected ->
+        {:noreply, select_compare(socket, List.delete(selected, run_id))}
+
+      length(selected) >= @compare_limit ->
+        {:noreply, assign(socket, :compare_limit_reached?, true)}
+
+      known_window?(socket, run_id) ->
+        {:noreply, select_compare(socket, [run_id | selected])}
+
+      true ->
+        {:noreply, put_flash(socket, :error, "That window run is not available")}
+    end
+  end
+
+  def handle_event("toggle_compare_window", _params, socket), do: {:noreply, socket}
 
   def handle_event("open_window_bucket", %{"bucket" => bucket}, socket) do
     {:noreply, socket |> assign(:open_bucket, bucket) |> build_rail()}
@@ -314,6 +389,8 @@ defmodule FavnView.RunDetailLive do
       flow_filter={@flow_filter}
       flow_sort={@flow_sort}
       rail={@rail}
+      compare?={@compare?}
+      compare_limit_reached?={@compare_limit_reached?}
       windows_error={@windows_error}
       flash={@flash}
     />
@@ -329,17 +406,36 @@ defmodule FavnView.RunDetailLive do
   end
 
   defp refresh_run(socket) do
+    # The pending sequences name the compared windows that changed. They are
+    # read here, before the cycle marks itself done: marking clears the whole
+    # map, so a later read would no longer know what it was supposed to fetch.
+    pending = pending_sequences(socket)
+
     {refresh_result, loaded_run} = load_run(socket, socket.assigns.active_mode)
     run = preserve_visible_run(loaded_run, socket.assigns.run)
 
     socket
     |> assign(:run, run)
     |> assign_chart()
+    |> refresh_comparison(pending)
+    |> assign_comparison()
     |> record_refresh(refresh_result, loaded_run)
     |> sync_run_subscription()
     |> refresh_windows()
     |> schedule_fallback()
   end
+
+  # An operator changing the selection loads what the selection now needs
+  # without re-reading the open run, which the page has already loaded.
+  defp update_comparison(socket) do
+    socket
+    |> refresh_comparison(pending_sequences(socket))
+    |> assign_comparison()
+    |> sync_run_subscription()
+  end
+
+  defp pending_sequences(socket),
+    do: Map.get(socket.assigns, :pending_run_event_sequences, %{})
 
   # The chart is a function of the loaded rows and the reading controls, so it is
   # rebuilt where either changes and never inside the template.
@@ -361,6 +457,20 @@ defmodule FavnView.RunDetailLive do
     end
   end
 
+  # The comparison is built from the windows the page holds, in the track order
+  # the selection fixed. A comparison of the open window alone is not one, so
+  # the page keeps drawing the single-run chart until a second window loads.
+  defp assign_comparison(socket) do
+    windows = socket.assigns[:compare_windows] || %{}
+
+    comparison =
+      if socket.assigns.compare? and map_size(windows) > 1 do
+        RunComparison.build(Map.values(windows), alignment: socket.assigns.flow_alignment)
+      end
+
+    assign(socket, :run, Map.put(socket.assigns.run, :comparison, comparison))
+  end
+
   # A filter narrows what the chart draws, never what the run did: the counts
   # above the chart come from the run's own totals and stay whole.
   defp filter_assets(assets, []), do: assets
@@ -368,8 +478,174 @@ defmodule FavnView.RunDetailLive do
   defp filter_assets(assets, outcomes),
     do: Enum.filter(assets, &(RunTimeline.outcome(Map.get(&1, :state)) in outcomes))
 
+  # A comparison holds at most the selection limit, and the open run is never one
+  # of the reads: the page has just loaded it. So a cycle issues at most one
+  # fewer read than the limit, however many events arrived to provoke it.
+  defp refresh_comparison(%{assigns: %{compare?: false}} = socket, _pending),
+    do: assign(socket, :compare_windows, %{})
+
+  defp refresh_comparison(socket, pending) do
+    selection = compare_selection(socket)
+    loaded = socket.assigns[:compare_windows] || %{}
+
+    results =
+      selection
+      |> Enum.reject(&(&1 == socket.assigns.run_id))
+      |> Enum.filter(&read_window?(&1, loaded, pending))
+      |> read_windows(socket)
+
+    windows =
+      selection
+      |> Enum.with_index(1)
+      |> Map.new(fn {run_id, track} ->
+        {run_id, compare_window(socket, run_id, track, Map.get(loaded, run_id), results)}
+      end)
+
+    socket |> assign(:compare_windows, windows) |> fall_back_when_lost(windows, loaded)
+  end
+
+  # The bound is applied here, where the reads are issued, and not only in the
+  # rail: a selection that somehow grew past the limit still costs one cycle's
+  # worth of reads.
+  defp compare_selection(socket), do: Enum.take(socket.assigns.compare_run_ids, @compare_limit)
+
+  # A window is re-read when its events moved past what the page holds, and
+  # whenever it is not loaded — which is how a first selection loads and how a
+  # window that failed last cycle gets another attempt.
+  defp read_window?(run_id, loaded, pending) do
+    case Map.get(loaded, run_id) do
+      %{state: :loaded, event_sequence: sequence} ->
+        Map.get(pending, run_id, 0) > (sequence || 0)
+
+      _absent_or_unloaded ->
+        true
+    end
+  end
+
+  defp read_windows([], _socket), do: %{}
+
+  defp read_windows(run_ids, socket) do
+    context = operator_context(socket)
+
+    run_ids
+    |> Task.async_stream(&get_run_flow(context, &1),
+      max_concurrency: @compare_limit,
+      timeout: @compare_read_timeout_ms,
+      on_timeout: :kill_task
+    )
+    |> Enum.zip(run_ids)
+    |> Map.new(fn {outcome, run_id} -> {run_id, outcome} end)
+  end
+
+  # The open run's track is drawn from what the page already loaded rather than
+  # from a second read of the same run.
+  defp compare_window(%{assigns: %{run_id: run_id, run: run}}, run_id, track, _previous, _results) do
+    %{
+      run_id: run_id,
+      track: track,
+      state: :loaded,
+      label: run[:window] || "This run",
+      status: run[:status],
+      assets: Map.get(run, :assets) || [],
+      event_sequence: run |> run_event_sequences() |> Map.get(run_id),
+      reason: nil,
+      selected?: true
+    }
+  end
+
+  defp compare_window(socket, run_id, track, previous, results) do
+    case Map.get(results, run_id) do
+      {:ok, {:ok, %{kind: :run, detail: detail}}} ->
+        loaded_window(socket, run_id, track, detail)
+
+      {:ok, {:ok, %{kind: :submission}}} ->
+        blank_window(run_id, track, :unavailable, :not_started)
+
+      {:ok, {:error, reason}} ->
+        blank_window(run_id, track, :unavailable, reason_class(reason))
+
+      # A read that never answered leaves the last good result standing, exactly
+      # as the single-window view does, and shows loading if there was none.
+      {:exit, _reason} ->
+        previous || blank_window(run_id, track, :loading, nil)
+
+      nil ->
+        %{(previous || blank_window(run_id, track, :loading, nil)) | track: track}
+    end
+  end
+
+  defp loaded_window(socket, run_id, track, %{header: header, assets: assets}) do
+    %{
+      run_id: run_id,
+      track: track,
+      state: :loaded,
+      label:
+        window_label(header.window_start_at, header.window_end_at, socket.assigns.current_scope) ||
+          LogsViewModel.status_label(header.status),
+      status: LogsViewModel.status_label(header.status),
+      assets: Enum.map(assets, &Map.from_struct/1),
+      event_sequence: header.event_sequence,
+      reason: nil,
+      selected?: false
+    }
+  end
+
+  defp blank_window(run_id, track, state, reason) do
+    %{
+      run_id: run_id,
+      track: track,
+      state: state,
+      label: nil,
+      status: nil,
+      assets: [],
+      event_sequence: nil,
+      reason: reason,
+      selected?: false
+    }
+  end
+
+  # A comparison that lost every window it was drawing is no longer a
+  # comparison, so the page says so once and returns to the single-window view
+  # rather than showing one track and a column of apologies. A window that fails
+  # the moment it is added has lost nothing: it is marked unavailable in place,
+  # where the operator can retry it or pick another.
+  defp fall_back_when_lost(socket, windows, previous) do
+    others = Enum.reject(Map.values(windows), & &1.selected?)
+    lost? = Enum.any?(others, &match?(%{state: :loaded}, Map.get(previous, &1.run_id)))
+
+    if lost? and Enum.all?(others, &(&1.state == :unavailable)) do
+      socket
+      |> assign(
+        compare?: false,
+        compare_run_ids: [],
+        compare_windows: %{},
+        compare_error: "No compared window could be read. Showing this window on its own."
+      )
+      |> build_rail()
+    else
+      socket
+    end
+  end
+
+  defp compare_sequences(socket) do
+    socket.assigns
+    |> Map.get(:compare_windows, %{})
+    |> Enum.flat_map(fn
+      {run_id, %{event_sequence: sequence}} when is_integer(sequence) -> [{run_id, sequence}]
+      _unloaded -> []
+    end)
+    |> Map.new()
+  end
+
+  defp reason_class(:not_found), do: :not_found
+  defp reason_class(reason) when is_atom(reason), do: reason
+  defp reason_class(_reason), do: :unavailable
+
   defp record_refresh(socket, :ok, run) do
-    RunEventRefresh.mark_refreshed(socket, run_event_sequences(run))
+    RunEventRefresh.mark_refreshed(
+      socket,
+      Map.merge(run_event_sequences(run), compare_sequences(socket))
+    )
   end
 
   defp record_refresh(socket, :error, _run) do
@@ -489,6 +765,7 @@ defmodule FavnView.RunDetailLive do
       planned_asset_attempts: counts.planned,
       assets: [],
       chart: nil,
+      comparison: nil,
       asset_attempts_truncated?: false,
       events: events,
       subscribed_run_ids: [header.run_id],
@@ -621,10 +898,13 @@ defmodule FavnView.RunDetailLive do
     }
   end
 
+  # A comparison subscribes to the windows it draws, so their tracks stay as live
+  # as the open run's. Leaving compare mode narrows the wanted set back to the
+  # open run, and the sync releases everything it no longer wants.
   defp sync_run_subscription(socket) do
     RunEventRefresh.sync_subscriptions(
       socket,
-      [socket.assigns.run_id],
+      [socket.assigns.run_id | compare_selection(socket)],
       run_event_sequences(socket.assigns.run),
       run_event_refresh_opts(socket)
     )
@@ -770,7 +1050,8 @@ defmodule FavnView.RunDetailLive do
       RunWindowRail.build(windows, socket.assigns.run_id, socket.assigns.current_scope,
         truncated?: socket.assigns[:windows_overflow?] == true,
         backfill_status: socket.assigns[:windows_status],
-        open_bucket: socket.assigns[:open_bucket]
+        open_bucket: socket.assigns[:open_bucket],
+        compare_run_ids: socket.assigns[:compare_run_ids] || []
       )
 
     assign(socket, :rail, rail)
@@ -778,16 +1059,47 @@ defmodule FavnView.RunDetailLive do
 
   defp build_rail(socket), do: assign(socket, :rail, nil)
 
-  defp patch_to_window(socket, run_id) do
-    known? = is_binary(run_id) and Enum.any?(socket.assigns.windows || [], &(&1.run_id == run_id))
+  # Track order is the windows' own calendar order rather than the order the
+  # operator clicked them, so a track position means the same thing in every
+  # lane and adding a window never renumbers the ones already drawn.
+  defp select_compare(socket, run_ids) do
+    run_id = socket.assigns.run_id
+    wanted = MapSet.new([run_id | run_ids])
 
+    ordered =
+      (socket.assigns.windows || [])
+      |> Enum.sort_by(&{DateTime.to_unix(&1.window_start_at, :microsecond), &1.run_id})
+      |> Enum.map(& &1.run_id)
+      |> Enum.uniq()
+      |> Enum.filter(&MapSet.member?(wanted, &1))
+
+    # The window read caps at 1,000 rows, so the open run is not guaranteed to
+    # be among the loaded choices. It anchors the comparison regardless.
+    ordered = if run_id in ordered, do: ordered, else: [run_id | ordered]
+
+    socket
+    |> assign(
+      compare_run_ids: Enum.take(ordered, @compare_limit),
+      compare_limit_reached?: false
+    )
+    |> build_rail()
+    |> update_comparison()
+  end
+
+  defp known_window?(socket, run_id),
+    do: Enum.any?(socket.assigns.windows || [], &(&1.run_id == run_id))
+
+  defp patch_to_window(socket, run_id) do
     cond do
       run_id == socket.assigns.run_id -> socket
-      known? -> push_patch(socket, to: ~p"/runs/#{run_id}?view=#{socket.assigns.active_mode}")
       is_nil(run_id) -> socket
+      known_window?(socket, run_id) -> push_patch(socket, to: window_path(socket, run_id))
       true -> put_flash(socket, :error, "That window run is not available")
     end
   end
+
+  defp window_path(socket, run_id),
+    do: ~p"/runs/#{run_id}?view=#{socket.assigns.active_mode}"
 
   # The ends of the rail are ends, not a loop. `Enum.at/2` counts a negative
   # index from the back, so stepping left off the first cell would otherwise

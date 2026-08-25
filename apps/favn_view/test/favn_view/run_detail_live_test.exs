@@ -10,6 +10,7 @@ defmodule FavnView.RunDetailLiveTest do
   alias FavnOrchestrator.Persistence.Results.RunWindowChoices
   alias FavnView.Auth.Scope
   alias FavnView.RunDetailLive
+  alias FavnView.RunWindowRail
 
   setup do
     keys = [
@@ -787,6 +788,432 @@ defmodule FavnView.RunDetailLiveTest do
       assert table.assigns.flow_view == :table
       assert table.assigns.run.assets == socket.assigns.run.assets
     end
+  end
+
+  describe "window comparison" do
+    setup do
+      Application.put_env(:favn_view, :operator_run_flow_fun, fn _context, run_id ->
+        {:ok, %{kind: :run, detail: backfill_flow(run_id, :ok)}}
+      end)
+
+      Application.put_env(:favn_view, :operator_run_windows_fun, fn _context, _run_id ->
+        {:ok, %{window_choices() | items: month_choices(6)}}
+      end)
+
+      {:ok, mounted} = RunDetailLive.mount(%{"run_id" => "run-1"}, %{}, connected_socket())
+      %{socket: mounted}
+    end
+
+    test "opens on the run the page already shows and empties on exit", %{socket: socket} do
+      refute socket.assigns.compare?
+      assert socket.assigns.compare_run_ids == []
+
+      {:noreply, on} = RunDetailLive.handle_event("toggle_compare", %{}, socket)
+
+      assert on.assigns.compare?
+      assert on.assigns.compare_run_ids == ["run-1"]
+      assert [%{run_id: "run-1", compared?: true, track: 1} | _rest] = on.assigns.rail.cells
+
+      {:noreply, off} = RunDetailLive.handle_event("toggle_compare", %{}, on)
+
+      # Leaving returns the page to exactly its single-window behaviour.
+      refute off.assigns.compare?
+      assert off.assigns.compare_run_ids == []
+      assert Enum.all?(off.assigns.rail.cells, &(&1.compared? == false))
+    end
+
+    test "adds and removes windows, ordered by the calendar rather than by click", %{
+      socket: socket
+    } do
+      compared = compare(socket, ["run-4", "run-2"])
+
+      assert compared.assigns.compare_run_ids == ["run-1", "run-2", "run-4"]
+
+      {:noreply, removed} =
+        RunDetailLive.handle_event("toggle_compare_window", %{"run_id" => "run-2"}, compared)
+
+      assert removed.assigns.compare_run_ids == ["run-1", "run-4"]
+      assert %{track: 2} = Enum.find(removed.assigns.rail.cells, &(&1.run_id == "run-4"))
+    end
+
+    test "refuses past the limit instead of quietly dropping the click", %{socket: socket} do
+      limit = RunWindowRail.compare_limit()
+      full = compare(socket, ["run-2", "run-3", "run-4"])
+
+      assert length(full.assigns.compare_run_ids) == limit
+      assert full.assigns.rail.compare_full?
+      refute full.assigns.compare_limit_reached?
+
+      {:noreply, refused} =
+        RunDetailLive.handle_event("toggle_compare_window", %{"run_id" => "run-5"}, full)
+
+      assert refused.assigns.compare_limit_reached?
+      assert refused.assigns.compare_run_ids == full.assigns.compare_run_ids
+
+      # Removing one clears the refusal and makes room again.
+      {:noreply, freed} =
+        RunDetailLive.handle_event("toggle_compare_window", %{"run_id" => "run-2"}, refused)
+
+      refute freed.assigns.compare_limit_reached?
+      assert length(freed.assigns.compare_run_ids) == limit - 1
+    end
+
+    test "the open run anchors its own comparison", %{socket: socket} do
+      compared = compare(socket, ["run-2"])
+
+      {:noreply, kept} =
+        RunDetailLive.handle_event("toggle_compare_window", %{"run_id" => "run-1"}, compared)
+
+      assert kept.assigns.compare_run_ids == ["run-1", "run-2"]
+    end
+
+    test "an unknown window is refused rather than compared", %{socket: socket} do
+      {:noreply, on} = RunDetailLive.handle_event("toggle_compare", %{}, socket)
+
+      {:noreply, refused} =
+        RunDetailLive.handle_event("toggle_compare_window", %{"run_id" => "run-elsewhere"}, on)
+
+      assert refused.assigns.flash["error"] == "That window run is not available"
+      assert refused.assigns.compare_run_ids == ["run-1"]
+    end
+
+    test "a cell click outside compare mode changes no selection", %{socket: socket} do
+      assert {:noreply, ^socket} =
+               RunDetailLive.handle_event("toggle_compare_window", %{"run_id" => "run-2"}, socket)
+    end
+
+    test "switching runs resets the comparison to the newly opened window", %{socket: socket} do
+      compared = compare(socket, ["run-2", "run-3"])
+
+      {:noreply, switched} =
+        RunDetailLive.handle_params(%{"run_id" => "run-4"}, "/runs/run-4", compared)
+
+      # The previous run's comparison must never render under the new run's URL.
+      assert switched.assigns.compare?
+      assert switched.assigns.compare_run_ids == ["run-4"]
+    end
+  end
+
+  describe "comparison reads" do
+    setup do
+      caller = self()
+
+      Application.put_env(:favn_view, :operator_run_windows_fun, fn _context, _run_id ->
+        {:ok, %{window_choices() | items: month_choices(6)}}
+      end)
+
+      Application.put_env(:favn_view, :run_unsubscribe_fun, fn _context, run_id ->
+        send(caller, {:unsubscribed, run_id})
+        :ok
+      end)
+
+      %{caller: caller}
+    end
+
+    test "reads the windows the selection added and never the open run", %{caller: caller} do
+      socket = mount_comparison(caller)
+      assert_receive {:flow_read, "run-1"}
+
+      compared = compare(socket, ["run-3", "run-5"])
+
+      assert_receive {:flow_read, "run-3"}
+      assert_receive {:flow_read, "run-5"}
+
+      # The open run's track comes from what the page already holds.
+      refute_receive {:flow_read, "run-1"}
+
+      assert Enum.map(Map.values(compared.assigns.compare_windows), & &1.state) == [
+               :loaded,
+               :loaded,
+               :loaded
+             ]
+
+      assert %{track: 1, selected?: true} = compared.assigns.compare_windows["run-1"]
+      assert %{track: 2, label: label} = compared.assigns.compare_windows["run-3"]
+
+      # The track names its own window, read from that window's own header.
+      assert label =~ "Mar"
+    end
+
+    test "a cycle re-reads only the windows whose events moved", %{caller: caller} do
+      socket = mount_comparison(caller)
+      compared = compare(socket, ["run-2", "run-3"])
+      flush()
+
+      {:noreply, evented} =
+        RunDetailLive.handle_info({:favn_run_event, %{run_id: "run-3", sequence: 9}}, compared)
+
+      assert evented.assigns.pending_run_event_sequences == %{"run-3" => 9}
+
+      {:noreply, refreshed} =
+        RunDetailLive.handle_info({:refresh_run, evented.assigns.refresh_timer_ref}, evented)
+
+      # The open run is always re-read; among the compared windows only the one
+      # with a pending sequence is.
+      assert_receive {:flow_read, "run-1"}
+      assert_receive {:flow_read, "run-3"}
+      refute_receive {:flow_read, "run-2"}
+
+      # The cycle consumed the pending sequences before marking itself done.
+      assert refreshed.assigns.pending_run_event_sequences == %{}
+      assert refreshed.assigns.run_event_sequences["run-3"] == 9
+    end
+
+    test "a burst over the coalesce interval is one cycle, not one per window", %{caller: caller} do
+      socket = mount_comparison(caller)
+      compared = compare(socket, ["run-2", "run-3"])
+      flush()
+
+      bursted =
+        Enum.reduce([{"run-2", 5}, {"run-3", 6}, {"run-2", 7}], compared, fn {run_id, seq}, acc ->
+          {:noreply, next} =
+            RunDetailLive.handle_info({:favn_run_event, %{run_id: run_id, sequence: seq}}, acc)
+
+          next
+        end)
+
+      # One coalesced timer for the whole burst, whatever it touched.
+      assert is_reference(bursted.assigns.refresh_timer_ref)
+      assert bursted.assigns.pending_run_event_sequences == %{"run-2" => 7, "run-3" => 6}
+      refute_receive {:flow_read, _run_id}
+
+      {:noreply, _refreshed} =
+        RunDetailLive.handle_info({:refresh_run, bursted.assigns.refresh_timer_ref}, bursted)
+
+      reads = drain_reads()
+      assert Enum.sort(reads) == ["run-1", "run-2", "run-3"]
+      assert length(reads) == length(Enum.uniq(reads))
+    end
+
+    test "one failed window is unavailable and the others still draw", %{caller: caller} do
+      socket = mount_comparison(caller, fn "run-3" -> {:error, :unavailable} end)
+      compared = compare(socket, ["run-3", "run-5"])
+
+      assert %{state: :unavailable, reason: :unavailable, assets: []} =
+               compared.assigns.compare_windows["run-3"]
+
+      assert %{state: :loaded} = compared.assigns.compare_windows["run-5"]
+      assert compared.assigns.compare?
+      refute compared.assigns.compare_error
+    end
+
+    test "a window that fails as it is added is unavailable, not a collapse", %{caller: caller} do
+      socket = mount_comparison(caller, fn "run-3" -> {:error, :unavailable} end)
+      compared = compare(socket, ["run-3"])
+
+      # Nothing was lost: the operator can retry it or pick another window.
+      assert compared.assigns.compare?
+      assert %{state: :unavailable} = compared.assigns.compare_windows["run-3"]
+      refute compared.assigns.compare_error
+    end
+
+    test "a comparison that loses every window falls back with a warning", %{caller: caller} do
+      failing = :counters.new(1, [])
+
+      socket =
+        mount_comparison(caller, fn
+          "run-1" ->
+            nil
+
+          run_id ->
+            if :counters.get(failing, 1) == 0,
+              do: {:ok, %{kind: :run, detail: window_flow(run_id, 3)}},
+              else: {:error, :unavailable}
+        end)
+
+      compared = compare(socket, ["run-3"])
+      assert %{state: :loaded} = compared.assigns.compare_windows["run-3"]
+
+      :counters.add(failing, 1, 1)
+
+      {:noreply, evented} =
+        RunDetailLive.handle_info({:favn_run_event, %{run_id: "run-3", sequence: 9}}, compared)
+
+      {:noreply, lost} =
+        RunDetailLive.handle_info({:refresh_run, evented.assigns.refresh_timer_ref}, evented)
+
+      refute lost.assigns.compare?
+      assert lost.assigns.compare_run_ids == []
+      assert lost.assigns.compare_windows == %{}
+      assert lost.assigns.compare_error =~ "No compared window could be read"
+
+      # The open run is untouched: the page is exactly the single-window view.
+      assert lost.assigns.run.found?
+      assert length(lost.assigns.run.assets) == 2
+    end
+
+    test "an unavailable window is tried again on the next cycle", %{caller: caller} do
+      failing = :counters.new(1, [])
+
+      socket =
+        mount_comparison(caller, fn "run-3" ->
+          if :counters.get(failing, 1) == 0 do
+            :counters.add(failing, 1, 1)
+            {:error, :unavailable}
+          else
+            {:ok, %{kind: :run, detail: window_flow("run-3", 3)}}
+          end
+        end)
+
+      compared = compare(socket, ["run-5", "run-3"])
+      assert %{state: :unavailable} = compared.assigns.compare_windows["run-3"]
+      flush()
+
+      {:noreply, retried} =
+        RunDetailLive.handle_info({:poll_run, compared.assigns.fallback_poll_ref}, compared)
+
+      assert_receive {:flow_read, "run-3"}
+      assert %{state: :loaded} = retried.assigns.compare_windows["run-3"]
+
+      # A loaded window is not re-read merely because a cycle ran.
+      refute_receive {:flow_read, "run-5"}
+    end
+
+    test "the comparison subscribes to its windows and releases them on exit", %{caller: caller} do
+      socket = mount_comparison(caller)
+      compared = compare(socket, ["run-3", "run-5"])
+
+      assert MapSet.equal?(
+               compared.assigns.run_event_subscriptions,
+               MapSet.new(["run-1", "run-3", "run-5"])
+             )
+
+      {:noreply, off} = RunDetailLive.handle_event("toggle_compare", %{}, compared)
+
+      assert_receive {:unsubscribed, "run-3"}
+      assert_receive {:unsubscribed, "run-5"}
+      refute_received {:unsubscribed, "run-1"}
+      assert MapSet.equal?(off.assigns.run_event_subscriptions, MapSet.new(["run-1"]))
+      assert off.assigns.compare_windows == %{}
+    end
+
+    test "the chart becomes a comparison only once a second window is there", %{caller: caller} do
+      socket = mount_comparison(caller)
+
+      {:noreply, alone} = RunDetailLive.handle_event("toggle_compare", %{}, socket)
+
+      # One window is not a comparison, so the single-run chart still stands.
+      assert is_nil(alone.assigns.run.comparison)
+      assert alone.assigns.run.chart
+
+      compared = compare(socket, ["run-3"])
+      comparison = compared.assigns.run.comparison
+
+      assert comparison.track_count == comparison.lane_count * 2
+      assert Enum.map(comparison.tracks, & &1.track) == [1, 2]
+      assert [%{selected?: true}, %{selected?: false}] = comparison.tracks
+
+      # Leaving compare mode puts the single-run chart back.
+      {:noreply, off} = RunDetailLive.handle_event("toggle_compare", %{}, compared)
+      assert is_nil(off.assigns.run.comparison)
+    end
+
+    test "alignment is view state that issues no read", %{caller: caller} do
+      socket = mount_comparison(caller)
+      compared = compare(socket, ["run-2"])
+      flush()
+
+      assert compared.assigns.run.comparison.alignment == :window
+
+      {:noreply, wall_clock} =
+        RunDetailLive.handle_event("set_flow_alignment", %{"alignment" => "wall_clock"}, compared)
+
+      assert wall_clock.assigns.flow_alignment == :wall_clock
+      assert drain_reads() == []
+
+      assert {:noreply, ^wall_clock} =
+               RunDetailLive.handle_event(
+                 "set_flow_alignment",
+                 %{"alignment" => "nope"},
+                 wall_clock
+               )
+    end
+
+    test "a cycle issues at most one read per selected window", %{caller: caller} do
+      socket = mount_comparison(caller)
+      compared = compare(socket, ["run-2", "run-3", "run-4"])
+      flush()
+
+      {:noreply, _refreshed} =
+        RunDetailLive.handle_info({:poll_run, compared.assigns.fallback_poll_ref}, compared)
+
+      # Everything is loaded and nothing has pending events, so the cycle costs
+      # the open run's read alone.
+      assert drain_reads() == ["run-1"]
+      assert length(compared.assigns.compare_run_ids) == RunWindowRail.compare_limit()
+    end
+  end
+
+  defp mount_comparison(caller, overrides \\ fn _run_id -> nil end) do
+    Application.put_env(:favn_view, :operator_run_flow_fun, fn _context, run_id ->
+      send(caller, {:flow_read, run_id})
+      index = run_id |> String.split("-") |> List.last() |> String.to_integer()
+
+      case safe_override(overrides, run_id) do
+        nil -> {:ok, %{kind: :run, detail: window_flow(run_id, index)}}
+        result -> result
+      end
+    end)
+
+    {:ok, mounted} = RunDetailLive.mount(%{"run_id" => "run-1"}, %{}, connected_socket())
+    mounted
+  end
+
+  defp safe_override(overrides, run_id) do
+    overrides.(run_id)
+  rescue
+    FunctionClauseError -> nil
+  end
+
+  # A window run inside a backfill, carrying the window its cell names.
+  defp window_flow(run_id, index) do
+    detail = backfill_flow(run_id, :ok)
+    start_at = DateTime.add(~U[2026-01-01 00:00:00Z], (index - 1) * 31, :day)
+
+    %{
+      detail
+      | header: %{
+          detail.header
+          | window_start_at: start_at,
+            window_end_at: DateTime.add(start_at, 31, :day)
+        }
+    }
+  end
+
+  defp flush, do: drain_reads()
+
+  defp drain_reads(acc \\ []) do
+    receive do
+      {:flow_read, run_id} -> drain_reads([run_id | acc])
+    after
+      0 -> Enum.reverse(acc)
+    end
+  end
+
+  defp compare(socket, run_ids) do
+    {:noreply, on} = RunDetailLive.handle_event("toggle_compare", %{}, socket)
+
+    Enum.reduce(run_ids, on, fn run_id, acc ->
+      {:noreply, next} =
+        RunDetailLive.handle_event("toggle_compare_window", %{"run_id" => run_id}, acc)
+
+      next
+    end)
+  end
+
+  defp month_choices(count) do
+    Enum.map(1..count, fn index ->
+      start_at = DateTime.add(~U[2026-01-01 00:00:00Z], (index - 1) * 31, :day)
+
+      %RunWindowChoice{
+        run_id: "run-#{index}",
+        window_start_at: start_at,
+        window_end_at: DateTime.add(start_at, 31, :day),
+        status: :succeeded,
+        kind: :month,
+        timezone: "Etc/UTC"
+      }
+    end)
   end
 
   defp flow(run_id, status) do

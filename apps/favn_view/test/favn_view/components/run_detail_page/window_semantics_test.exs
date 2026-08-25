@@ -153,6 +153,78 @@ defmodule FavnView.Components.RunDetailPage.WindowSemanticsTest do
     refute html =~ ~s(aria-current="true")
   end
 
+  test "the rail offers a comparison and picks windows instead of opening them" do
+    run = Runs.single_window()
+    windows = compare_windows(run.id)
+
+    off = render_page(run, rail: rail(windows, run.id))
+    assert off =~ ~s(data-testid="window-rail-compare-toggle")
+    assert off =~ ~s(aria-pressed="false")
+    assert count(off, ~s(phx-click="select_window")) == 3
+    refute off =~ ~s(phx-click="toggle_compare_window")
+
+    on =
+      render_page(run,
+        rail: rail(windows, run.id, compare_run_ids: [run.id, "run-later"]),
+        compare?: true
+      )
+
+    # In compare mode a cell picks a window to draw, so nothing in the rail
+    # navigates and every cell reports whether it is in the comparison.
+    assert count(on, ~s(phx-click="toggle_compare_window")) == 3
+    refute on =~ ~s(phx-click="select_window")
+    assert count(on, ~s(data-compared="true")) == 2
+    assert count(on, ~s(data-compared="false")) == 1
+    assert on =~ ~s(data-track="1")
+    assert on =~ ~s(data-track="2")
+  end
+
+  test "the rail explains a full comparison rather than silently ignoring a click" do
+    run = Runs.single_window()
+    windows = compare_windows(run.id)
+
+    html =
+      render_page(run,
+        rail: rail(windows, run.id),
+        compare?: true,
+        compare_limit_reached?: true
+      )
+
+    assert html =~ ~s(data-testid="window-rail-compare-limit")
+    assert html =~ "at most #{RunWindowRail.compare_limit()} windows"
+
+    # The refusal is a response to a click, not a standing part of the rail.
+    refute render_page(run, rail: rail(windows, run.id), compare?: true) =~
+             ~s(data-testid="window-rail-compare-limit")
+  end
+
+  test "a comparison takes the chart's place rather than sitting beside it" do
+    run = Runs.single_window()
+    windows = compare_windows(run.id)
+
+    html =
+      render_page(Map.put(run, :comparison, Runs.comparison()),
+        rail: rail(windows, run.id, compare_run_ids: [run.id, "run-later"]),
+        compare?: true
+      )
+
+    assert html =~ ~s(data-testid="run-comparison")
+    assert html =~ ~s(data-testid="run-comparison-track-head")
+
+    # One chart at a time: the single-run timeline and its filters belong to a
+    # single window and would narrow only one track of the comparison.
+    refute html =~ ~s(data-testid="run-timeline")
+    refute html =~ ~s(data-testid="run-flow-controls")
+  end
+
+  defp compare_windows(run_id) do
+    [
+      window("run-earlier", ~U[2026-07-22 00:00:00Z]),
+      window(run_id, ~U[2026-07-23 00:00:00Z]),
+      window("run-later", ~U[2026-07-24 00:00:00Z])
+    ]
+  end
+
   defp rail(windows, selected_run_id, opts \\ []) do
     RunWindowRail.build(windows, selected_run_id, "Etc/UTC", opts)
   end

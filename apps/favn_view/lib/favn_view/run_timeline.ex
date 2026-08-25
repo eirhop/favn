@@ -211,9 +211,16 @@ defmodule FavnView.RunTimeline do
     if minutes == 0, do: "#{hours}h", else: "#{hours}h #{minutes}m"
   end
 
-  # No attempt has started, so there is no span to draw against and every lane
-  # is a ghost. The chart says so rather than inventing an axis around now.
-  defp axis(rows, now) do
+  @doc """
+  Fits an axis to a set of rows.
+
+  Returns `nil` when no row has started: there is no span to draw against, and
+  an axis invented around now would say something about the clock rather than
+  about the run. Comparison fits one axis across several windows, so this is
+  exposed rather than buried in `build/2`.
+  """
+  @spec axis([map()], DateTime.t()) :: axis() | nil
+  def axis(rows, now) do
     rows
     |> Enum.map(&Map.get(&1, :started_at))
     |> Enum.reject(&is_nil/1)
@@ -309,10 +316,19 @@ defmodule FavnView.RunTimeline do
     }
   end
 
-  defp bar(nil, _finished_at, _axis, _now), do: nil
-  defp bar(_started_at, _finished_at, nil, _now), do: nil
+  @doc """
+  Places one bar on an axis.
 
-  defp bar(started_at, finished_at, axis, now) do
+  A row that has not started has no bar, so it is drawn as a ghost track rather
+  than as a zero-length bar at the origin. A bar keeps a minimum width so a
+  short attempt stays visible and clickable, and shifts back rather than
+  overflowing when that width would carry it past the axis end.
+  """
+  @spec bar(DateTime.t() | nil, DateTime.t() | nil, axis() | nil, DateTime.t()) :: bar() | nil
+  def bar(nil, _finished_at, _axis, _now), do: nil
+  def bar(_started_at, _finished_at, nil, _now), do: nil
+
+  def bar(started_at, finished_at, axis, now) do
     from = offset_of(started_at, axis)
     to = offset_of(finished_at || now, axis)
     width = max(to - from, @min_bar_width)
@@ -342,14 +358,12 @@ defmodule FavnView.RunTimeline do
   defp bands(lanes, sort) do
     lanes
     |> Enum.group_by(& &1.stage)
-    |> Enum.sort_by(fn {stage, _lanes} -> {stage_order(stage), stage} end)
+    |> Enum.sort_by(fn {stage, _lanes} -> band_order(stage) end)
     |> Enum.map(fn {stage, band_lanes} ->
       band(stage, Enum.sort_by(band_lanes, &lane_order(&1, sort)))
     end)
   end
 
-  # Unstaged sorts last: it holds attempts too old to carry a stage, which
-  # belong after the dependency order rather than before it.
   defp stage_order(nil), do: 1
   defp stage_order(_stage), do: 0
 
@@ -360,22 +374,30 @@ defmodule FavnView.RunTimeline do
   defp lane_order(%{started_at: nil, name: name}, _sort), do: {1, 0, name}
   defp lane_order(%{started_at: at, name: name}, _sort), do: {0, unix(at), name}
 
+  @doc """
+  Identity of the band a stage groups into.
+
+  Comparison groups its lanes the same way, so both charts name and order a
+  stage identically and an operator moving between them reads one vocabulary.
+  """
+  @spec band(term()) :: %{id: String.t(), stage: term(), label: String.t()}
+  def band(nil), do: %{id: "unstaged", stage: nil, label: "Unstaged"}
+  def band(stage), do: %{id: "stage-#{stage}", stage: stage, label: "Stage #{stage}"}
+
+  @doc """
+  Sort key placing unstaged lanes after the dependency order.
+
+  Unstaged holds attempts recorded before stage persistence, which belong after
+  the stages rather than before them.
+  """
+  @spec band_order(term()) :: {0 | 1, term()}
+  def band_order(stage), do: {stage_order(stage), stage}
+
   defp band(stage, lanes) do
-    %{
-      id: band_id(stage),
-      stage: stage,
-      label: band_label(stage),
-      lanes: lanes,
-      collapsed?: false,
-      summary: summary(lanes)
-    }
+    stage
+    |> band()
+    |> Map.merge(%{lanes: lanes, collapsed?: false, summary: summary(lanes)})
   end
-
-  defp band_id(nil), do: "unstaged"
-  defp band_id(stage), do: "stage-#{stage}"
-
-  defp band_label(nil), do: "Unstaged"
-  defp band_label(stage), do: "Stage #{stage}"
 
   defp collapse(band, :dense, expanded), do: %{band | collapsed?: band.id not in expanded}
   defp collapse(band, _density, _expanded), do: band

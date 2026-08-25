@@ -550,6 +550,54 @@ summary {
     }
   }
 
+  /* A comparison lane is one asset across several windows: the label column is
+     shared with the single-run chart, and the track column holds one thin track
+     per window, stacked in the fixed order the legend states. Position encodes
+     the window, so the tracks must never reflow. */
+  .favn-comparison-lane {
+    display: grid;
+    grid-template-columns: var(--favn-timeline-label) 1fr;
+    align-items: start;
+    gap: 0.5rem;
+    padding-block: 0.125rem;
+  }
+
+  .favn-comparison-tracks {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+
+  /* Tracks are thinner than lanes: several of them stack inside one lane's
+     worth of vertical attention. */
+  .favn-comparison-track {
+    height: calc(var(--favn-timeline-lane) * 0.7);
+  }
+
+  /* An empty track says which kind of empty it is. Unavailable is the page's
+     own failure, so it is the only one that carries a status colour. */
+  .favn-comparison-blank {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    padding-left: 0.375rem;
+    border-radius: 0.125rem;
+    border: var(--border) dashed color-mix(in oklab, var(--color-base-content) 18%, transparent);
+  }
+
+  .favn-comparison-track[data-presence="unavailable"] .favn-comparison-blank {
+    border-color: color-mix(in oklab, var(--color-error) 45%, transparent);
+    border-style: solid;
+  }
+
+  /* Below comfortable height there is no room for words inside a track, and the
+     dashed outline plus the title carries the meaning. */
+  .favn-comparison[data-density="compact"] .favn-comparison-blank,
+  .favn-comparison[data-density="dense"] .favn-comparison-blank {
+    font-size: 0;
+  }
+
   /* Selection is a state, so it has to be identifiable: an opaque border plus a
      lit edge, rather than a tinted hairline that measured 2.47:1. */
   .favn-list-card-selected {

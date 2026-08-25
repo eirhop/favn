@@ -20,12 +20,18 @@ defmodule FavnView.RunWindowRail do
   A window the backfill has planned but not yet started has no run to navigate
   to and is not a cell, so `in_progress?` reports that the set is still growing
   while the backfill has not finished.
+
+  A cell also reports its place in a comparison. `track` is the fixed position a
+  compared window's bars occupy in every lane, taken from the caller's ordering
+  rather than from this cell's place in the rail, so opening a different band
+  does not renumber the tracks the chart is already drawing.
   """
 
   alias Favn.Timezone
   alias FavnView.Time
 
   @flat_threshold 120
+  @compare_limit 4
   @terminal_backfill_statuses [:completed, :failed, :cancelled]
 
   @type cell :: %{
@@ -33,6 +39,8 @@ defmodule FavnView.RunWindowRail do
           label: String.t(),
           status: atom() | nil,
           selected?: boolean(),
+          compared?: boolean(),
+          track: pos_integer() | nil,
           start_at: DateTime.t(),
           end_at: DateTime.t(),
           window_count: pos_integer()
@@ -51,10 +59,20 @@ defmodule FavnView.RunWindowRail do
           buckets: [bucket()],
           open_bucket: String.t() | nil,
           truncated?: boolean(),
-          in_progress?: boolean()
+          in_progress?: boolean(),
+          compare_run_ids: [String.t()],
+          compare_full?: boolean()
         }
 
-  @enforce_keys [:layout, :cells, :buckets, :truncated?, :in_progress?]
+  @enforce_keys [
+    :layout,
+    :cells,
+    :buckets,
+    :truncated?,
+    :in_progress?,
+    :compare_run_ids,
+    :compare_full?
+  ]
   defstruct @enforce_keys ++ [:open_bucket]
 
   @doc """
@@ -69,17 +87,19 @@ defmodule FavnView.RunWindowRail do
     * `:truncated?` - the window read reported more rows than it returned
     * `:backfill_status` - the owning backfill's status, used for `in_progress?`
     * `:open_bucket` - which coarse band bucket the fine band shows, when banded
+    * `:compare_run_ids` - the compared window runs, in track order
 
   """
   @spec build([map()], String.t() | nil, String.t() | map(), keyword()) :: t()
   def build(choices, selected_run_id, timezone, opts \\ []) when is_list(choices) do
     kind = list_kind(choices)
+    compare_run_ids = Keyword.get(opts, :compare_run_ids, [])
 
     cells =
       choices
       |> Enum.sort_by(&{DateTime.to_unix(&1.window_start_at, :microsecond), &1.run_id})
       |> combine_by_run()
-      |> Enum.map(&cell(&1, kind, selected_run_id, timezone))
+      |> Enum.map(&cell(&1, kind, selected_run_id, compare_run_ids, timezone))
 
     %__MODULE__{
       layout: layout(cells),
@@ -87,7 +107,9 @@ defmodule FavnView.RunWindowRail do
       buckets: [],
       open_bucket: Keyword.get(opts, :open_bucket),
       truncated?: Keyword.get(opts, :truncated?, false),
-      in_progress?: in_progress?(Keyword.get(opts, :backfill_status))
+      in_progress?: in_progress?(Keyword.get(opts, :backfill_status)),
+      compare_run_ids: compare_run_ids,
+      compare_full?: length(compare_run_ids) >= @compare_limit
     }
     |> band(kind, timezone)
   end
@@ -95,6 +117,17 @@ defmodule FavnView.RunWindowRail do
   @doc "Returns the flat-strip cell ceiling, above which the rail bands."
   @spec flat_threshold() :: pos_integer()
   def flat_threshold, do: @flat_threshold
+
+  @doc """
+  Returns the most windows one comparison may hold.
+
+  The bound exists because each compared window costs a separate exact-run read
+  on every refresh cycle, so it belongs to the page's read behaviour rather than
+  to its layout. This module states it once; the page enforces it again where
+  those reads are issued.
+  """
+  @spec compare_limit() :: pos_integer()
+  def compare_limit, do: @compare_limit
 
   defp layout(cells) when length(cells) > @flat_threshold, do: :banded
   defp layout(_cells), do: :flat
@@ -208,12 +241,16 @@ defmodule FavnView.RunWindowRail do
     end)
   end
 
-  defp cell(choice, kind, selected_run_id, timezone) do
+  defp cell(choice, kind, selected_run_id, compare_run_ids, timezone) do
+    track = Enum.find_index(compare_run_ids, &(&1 == choice.run_id))
+
     %{
       run_id: choice.run_id,
       label: cell_label(choice, kind, timezone),
       status: Map.get(choice, :status),
       selected?: choice.run_id == selected_run_id,
+      compared?: not is_nil(track),
+      track: track && track + 1,
       start_at: choice.window_start_at,
       end_at: choice.window_end_at,
       window_count: Map.get(choice, :window_count, 1),

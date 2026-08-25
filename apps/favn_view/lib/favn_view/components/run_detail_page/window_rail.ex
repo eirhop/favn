@@ -9,6 +9,11 @@ defmodule FavnView.Components.RunDetailPage.WindowRail do
 
   Layout comes from `FavnView.RunWindowRail`, which is pure and tested apart
   from this markup.
+
+  In compare mode a cell picks a window to draw rather than a window to open, so
+  the rail stops being navigation for the duration. Arrow keys still move
+  between window runs, which is how the operator changes the open run without
+  leaving the comparison.
   """
 
   use FavnView, :html
@@ -17,14 +22,18 @@ defmodule FavnView.Components.RunDetailPage.WindowRail do
   alias FavnView.UI.Tokens
 
   attr :rail, RunWindowRail, required: true
+  attr :compare?, :boolean, default: false
+  attr :limit_reached?, :boolean, default: false
   attr :on_select, :string, default: "select_window"
   attr :on_open_bucket, :string, default: "open_window_bucket"
   attr :on_step, :string, default: "step_window"
+  attr :on_toggle_compare, :string, default: "toggle_compare"
+  attr :on_toggle_compare_window, :string, default: "toggle_compare_window"
 
   def window_rail(assigns) do
     ~H"""
     <.panel :if={@rail.cells != [] or @rail.buckets != []} padding={:none} data-testid="window-rail">
-      <:header title="Window runs" subtitle={subtitle(@rail)} />
+      <:header title="Window runs" subtitle={subtitle(@rail, @compare?)} />
       <:actions>
         <.status_badge
           :if={@rail.in_progress?}
@@ -34,6 +43,16 @@ defmodule FavnView.Components.RunDetailPage.WindowRail do
           data-testid="window-rail-in-progress"
         />
         <.count_badge count={length(@rail.cells)} label="shown" />
+        <.button
+          size={:sm}
+          variant={if(@compare?, do: :secondary, else: :ghost)}
+          icon="hero-square-2-stack"
+          phx-click={@on_toggle_compare}
+          aria-pressed={to_string(@compare?)}
+          data-testid="window-rail-compare-toggle"
+        >
+          Compare
+        </.button>
       </:actions>
 
       <%!-- Keydown is scoped to the rail, not the window: arrow keys move between
@@ -63,32 +82,52 @@ defmodule FavnView.Components.RunDetailPage.WindowRail do
           </button>
         </div>
 
-        <div class="flex flex-wrap gap-1" role="group" aria-label="Window runs">
+        <div
+          class="flex flex-wrap gap-1"
+          role="group"
+          aria-label={if(@compare?, do: "Windows to compare", else: "Window runs")}
+        >
           <button
             :for={cell <- @rail.cells}
             type="button"
-            phx-click={@on_select}
+            phx-click={if(@compare?, do: @on_toggle_compare_window, else: @on_select)}
             phx-value-run_id={cell.run_id}
             aria-current={cell.selected? && "true"}
-            title={cell_title(cell)}
+            aria-pressed={@compare? && to_string(cell.compared?)}
+            title={cell_title(cell, @compare?)}
             data-testid="window-rail-cell"
             data-window-status={cell.status}
             data-window-count={cell.window_count}
+            data-compared={@compare? && to_string(cell.compared?)}
+            data-track={cell.track}
             class={[
               "min-w-9 rounded-md border px-2 py-1 text-center text-xs tabular-nums transition-colors",
               "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
               Tokens.border_class(tone(cell.status)),
               Tokens.surface_class(tone(cell.status)),
               Tokens.text_class(tone(cell.status)),
-              cell.selected? && "ring-2 ring-primary ring-offset-1 ring-offset-base-100 font-semibold"
+              cell.selected? && "ring-2 ring-primary ring-offset-1 ring-offset-base-100 font-semibold",
+              @compare? && cell.compared? && "outline-2 outline-offset-1 outline-primary"
             ]}
           >
             {cell.label}
             <span :if={cell.window_count > 1} class="ml-1 opacity-70">
               +{cell.window_count - 1}
             </span>
+            <span :if={@compare? && cell.compared?} class="ml-1 font-semibold" aria-hidden="true">
+              T{cell.track}
+            </span>
           </button>
         </div>
+
+        <p
+          :if={@compare? && @limit_reached?}
+          class={["text-xs", Tokens.text_class(:warning)]}
+          data-testid="window-rail-compare-limit"
+        >
+          A comparison holds at most {RunWindowRail.compare_limit()} windows. Remove one to add
+          another.
+        </p>
 
         <p
           :if={@rail.truncated?}
@@ -102,18 +141,33 @@ defmodule FavnView.Components.RunDetailPage.WindowRail do
     """
   end
 
-  defp subtitle(%RunWindowRail{in_progress?: true}),
+  defp subtitle(_rail, true),
+    do: "Pick windows to compare; arrow keys still move between them."
+
+  defp subtitle(%RunWindowRail{in_progress?: true}, _compare?),
     do: "The backfill is still creating window runs."
 
-  defp subtitle(%RunWindowRail{layout: :banded}),
+  defp subtitle(%RunWindowRail{layout: :banded}, _compare?),
     do: "Pick a period, then a window run."
 
-  defp subtitle(_rail), do: "Select a window run to open it."
+  defp subtitle(_rail, _compare?), do: "Select a window run to open it."
 
-  defp cell_title(%{window_count: count} = cell) when count > 1,
+  # The open run is always part of its own comparison, so its cell says why it
+  # cannot be removed rather than looking like a control that failed.
+  defp cell_title(%{selected?: true} = cell, true),
+    do: "#{window_title(cell)} · Track #{cell.track} · The open window always compares"
+
+  defp cell_title(%{compared?: true} = cell, true),
+    do: "#{window_title(cell)} · Track #{cell.track} · Click to remove from the comparison"
+
+  defp cell_title(cell, true), do: "#{window_title(cell)} · Click to add to the comparison"
+
+  defp cell_title(cell, _compare?), do: window_title(cell)
+
+  defp window_title(%{window_count: count} = cell) when count > 1,
     do: "#{cell.label} · #{status_label(cell.status)} · #{count} windows in one run"
 
-  defp cell_title(cell), do: "#{cell.label} · #{status_label(cell.status)}"
+  defp window_title(cell), do: "#{cell.label} · #{status_label(cell.status)}"
 
   # Window run statuses are not run statuses. `ready` means waiting to start
   # rather than finished well, so the shared token mapping is not used here.

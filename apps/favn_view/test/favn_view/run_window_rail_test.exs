@@ -4,6 +4,7 @@ defmodule FavnView.RunWindowRailTest do
   alias FavnView.RunWindowRail
 
   @zone "Etc/UTC"
+  @from ~U[2026-08-01 00:00:00Z]
 
   describe "flat layout" do
     test "sorts window runs into calendar order regardless of read order" do
@@ -237,6 +238,51 @@ defmodule FavnView.RunWindowRailTest do
       refute RunWindowRail.build([], nil, @zone).truncated?
     end
   end
+
+  describe "comparison" do
+    test "marks compared cells with the track their bars occupy" do
+      rail =
+        RunWindowRail.build(day_choices(4, @from), "day-0", @zone, compare_run_ids: compared())
+
+      assert Enum.map(rail.cells, &{&1.run_id, &1.compared?, &1.track}) == [
+               {"day-0", true, 1},
+               {"day-1", false, nil},
+               {"day-2", true, 2},
+               {"day-3", false, nil}
+             ]
+    end
+
+    test "takes track order from the caller, not from the rail's own order" do
+      # The page orders the selection; the rail must not renumber it, or opening
+      # a different band would move a window's bars to another track.
+      rail =
+        RunWindowRail.build(day_choices(3, @from), "day-0", @zone,
+          compare_run_ids: ["day-2", "day-0"]
+        )
+
+      assert %{track: 2} = Enum.find(rail.cells, &(&1.run_id == "day-0"))
+      assert %{track: 1} = Enum.find(rail.cells, &(&1.run_id == "day-2"))
+    end
+
+    test "reports a full comparison at the stated limit" do
+      choices = day_choices(RunWindowRail.compare_limit() + 1, @from)
+      ids = choices |> Enum.map(& &1.run_id) |> Enum.take(RunWindowRail.compare_limit())
+
+      assert RunWindowRail.build(choices, "day-0", @zone, compare_run_ids: ids).compare_full?
+
+      refute RunWindowRail.build(choices, "day-0", @zone, compare_run_ids: tl(ids)).compare_full?
+    end
+
+    test "compares nothing by default" do
+      rail = RunWindowRail.build(day_choices(2, @from), "day-0", @zone)
+
+      assert rail.compare_run_ids == []
+      refute rail.compare_full?
+      assert Enum.all?(rail.cells, &(&1.compared? == false and &1.track == nil))
+    end
+  end
+
+  defp compared, do: ["day-0", "day-2"]
 
   defp choice(run_id, kind, start_at) do
     %{

@@ -10,14 +10,21 @@ defmodule FavnView.Components.RunDetailPage.Flow do
   because a run is a shape in time; the table stays one click away for the exact
   values, and remains the only reading on a narrow screen, where the card list
   takes over from both.
+
+  In compare mode the chart position is taken by the multi-window comparison.
+  The status filter and sort controls belong to the single-run chart and are not
+  shown there: a control that narrowed one window and not the others would make
+  the comparison say something untrue.
   """
 
   use FavnView, :html
 
+  alias FavnView.Components.RunDetailPage.Comparison
   alias FavnView.Components.RunDetailPage.Timeline
 
   attr :assets, :list, required: true
   attr :chart, :any, default: nil
+  attr :comparison, :any, default: nil
   attr :view, :atom, values: [:chart, :table], default: :chart
   attr :filter, :list, default: []
   attr :sort, :atom, values: [:start, :name], default: :start
@@ -76,7 +83,11 @@ defmodule FavnView.Components.RunDetailPage.Flow do
           <.count_badge count={length(@assets)} label="assets" />
         </:actions>
 
-        <div :if={@chart && @view == :chart} class="hidden lg:block">
+        <div :if={@comparison && @view == :chart} class="hidden lg:block">
+          <Comparison.comparison chart={@comparison} />
+        </div>
+
+        <div :if={is_nil(@comparison) && @chart && @view == :chart} class="hidden lg:block">
           <%!-- Both controls are view state. Neither issues a read: they narrow
           and reorder the rows the page already holds, which is what makes a run
           with hundreds of assets readable. --%>

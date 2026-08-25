@@ -29,6 +29,8 @@ defmodule FavnView.Components.RunDetailPage do
   attr :flow_sort, :atom, default: :start
 
   attr :rail, :any, default: nil
+  attr :compare?, :boolean, default: false
+  attr :compare_limit_reached?, :boolean, default: false
   attr :windows_error, :string, default: nil
   attr :flash, :map, default: %{}
 
@@ -87,6 +89,8 @@ defmodule FavnView.Components.RunDetailPage do
         flow_filter={@flow_filter}
         flow_sort={@flow_sort}
         rail={@rail}
+        compare?={@compare?}
+        compare_limit_reached?={@compare_limit_reached?}
         windows_error={@windows_error}
       />
       <:mode_rail :if={@run[:found?]}>
@@ -102,13 +106,20 @@ defmodule FavnView.Components.RunDetailPage do
   attr :flow_filter, :list, default: []
   attr :flow_sort, :atom, default: :start
   attr :rail, :any, default: nil
+  attr :compare?, :boolean, default: false
+  attr :compare_limit_reached?, :boolean, default: false
   attr :windows_error, :string, default: nil
 
   def execution_group_page(assigns) do
     ~H"""
     <div class="mx-auto flex w-full max-w-[110rem] flex-col gap-4" data-testid="run-detail-page">
       <Progress.run_progress run={@run} />
-      <WindowRail.window_rail :if={@rail} rail={@rail} />
+      <WindowRail.window_rail
+        :if={@rail}
+        rail={@rail}
+        compare?={@compare?}
+        limit_reached?={@compare_limit_reached?}
+      />
       <.notice
         :if={@run[:backfill_parent?]}
         tone={:info}
@@ -146,6 +157,7 @@ defmodule FavnView.Components.RunDetailPage do
           :if={@active_mode == :flow}
           assets={@run.assets}
           chart={@run[:chart]}
+          comparison={@run[:comparison]}
           view={@flow_view}
           filter={@flow_filter}
           sort={@flow_sort}

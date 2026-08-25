@@ -628,11 +628,35 @@ The sections below are completed during implementation and before final review.
 
 ## Implementation outcome
 
-Pending.
+All thirteen slices are implemented. The run detail page now loads a backfill's
+window runs eagerly and draws them as a calendar rail; Flow draws the run as a
+stage timeline by default with the table one click away; and the rail's compare
+toggle draws up to four windows as one lane per asset with one thin track per
+window.
+
+Three findings arrived from outside the plan and are fixed here because the
+feature under test depends on them: the combined-backfill projection wrote
+non-UTC anchors and stalled a completed backfill at "Running"; asset attempt
+statuses decoded through the run enum and read back as "Unknown"; and the runs
+list and the run detail page named the same aggregate status differently. Each
+has a decision-log row.
 
 ### Actual scope and complexity
 
-Pending.
+Measured against the working tree, excluding this record and generated assets.
+Slices 8, 9 and 10 share `run_detail_live.ex`, so the split of that file's 324
+added lines across them is apportioned by concern rather than measured.
+
+| Slice | Production added | Budget | Supporting added | Budget |
+| --- | ---: | --- | ---: | --- |
+| 8 | ~170 | 50-90 | ~205 | 60-100 |
+| 9 | ~150 | 80-140 | ~230 | 110-180 |
+| 10 | ~680 | 110-190 | ~470 | 140-240 |
+| 11 | ~235 | 0-20 production, 260-440 supporting | — | — |
+
+Slices 1 through 7 and 12 and 13 are as previously recorded. Slices 8, 9 and 10
+each exceed their estimate; the reasons are in the deviations table below. Slice
+11's fixtures and examples are supporting lines and land inside their estimate.
 
 ## Deviations from the approved plan
 
@@ -645,6 +669,10 @@ Pending.
 | Part 2: assets with no attempt yet render as ghost tracks labelled with their state | Ghost tracks retained, sourced from queued attempts rather than plan nodes | An attempt row exists from the moment a step is queued, so a queued-but-unstarted asset still has no start time and still needs a ghost track | None on the timeline contract. The invariant "a row with no start time renders as a ghost track, never as a zero-length bar at the origin" is unchanged | Pending |
 | Slice 5: 120-180 production lines for lane geometry | 353 lines in `FavnView.RunTimeline` | Roughly 150 of them are the moduledoc, five nested `@type` declarations for the axis, lane, bar, band and summary shapes, three `@doc` blocks and a tick-interval table. The estimate priced the arithmetic, not the published shape of a struct the comparison slices will also build against | Executable geometry is close to the estimate. Explained here because the budget requires it above 25 percent | Pending |
 | Slice 6: 130-200 production lines for timeline rendering | 205 lines of component plus 156 lines of chart CSS | The budget folded chart styles into slice 6 while the implementation map lists them as their own area. The CSS carries the density variables, the bar and ghost geometry, three keyframes and a reduced-motion rule, and it is heavily commented because it is where the "no measurement, no resize handler" claim actually lives | Component markup is inside the estimate; the overage is entirely the stylesheet | Pending |
+| Slice 8: 50-90 production lines for the compare toggle and bounded selection | ~170 lines across `RunWindowRail`, the rail component and the page | The estimate priced selection state and a limit check. It did not price what a cell in compare mode has to say: which track it holds, that the open window cannot be removed, why a click was refused, and a different label, `aria-pressed` and click target from the same markup that still has to navigate when compare is off. The rail component carries most of the overage and it is nearly all conditional labelling | The cell keeps one set of markup for both modes rather than two components that could drift | Pending |
+| Slice 9: 110-180 supporting lines for concurrent reads and failure isolation | ~230 lines | The plan named concurrency and partial failure the risk surface and budgeted the largest test estimate for them. Eight focused tests cover the read set, the coalesced burst, per-window failure, retry after failure, the subscription move, and the fallback; each needs its own stubbed read behaviour, which is what the lines are | Production is just above its estimate; the overage is tests the plan asked for | Pending |
+| Slice 10: 110-190 production lines for multi-track lanes | ~680 lines: `RunComparison` at 363, a `Comparison` component at 244, 48 lines of CSS and ~25 lines of wiring | The slice table has no rendering slice for the comparison at all — slice 6 is "timeline rendering" and slice 10 is described purely as merge, ordering, absent tracks and alignment. A comparison lane is a label column over N stacked tracks, each of which must say which kind of empty it is; that is different markup from a single-run lane, and teaching one component both would have made the single-run chart worse to read. Roughly 130 of `RunComparison`'s lines are its moduledoc and six nested `@type` declarations | The largest overage in the change. The alternative — one component with a mode flag — was rejected as a worse chart, not a smaller one | Pending |
+| Part 3: the comparison would reuse the timeline's geometry | `RunTimeline.axis/2`, `bar/4`, `band/1` and `band_order/1` promoted from private to public | Reuse required the geometry to be callable from outside `build/2`. The alternative was a second axis, tick and bar implementation in `RunComparison`, which would have let the two charts disagree about what a bar means | Four functions gain documented public specs. No behaviour change; `build/2` calls the same functions it always did | Pending |
 
 ## Decision log
 
@@ -663,17 +691,42 @@ Pending.
 | 2026-08-25 | Filter the rows before building the chart, so band summaries describe what is drawn | The alternative kept every band's summary whole while hiding its lanes, which meant a band could read "4 succeeded" with nothing under it. The progress panel above the chart already carries the run's true totals and is untouched by the filter, so nothing is lost by letting the chart describe only what it draws | No |
 | 2026-08-25 | Label axis ticks by elapsed time rather than wall clock | The axis fits the run, so a tick answers "how far into the run", not "what time was it". Elapsed labels also keep the geometry module free of a timezone dependency, which is what lets it stay pure | No |
 | 2026-08-25 | Introduce `RunTimeline.outcome/1` rather than reuse either existing status-tone mapping | A band summary answers whether a stage is done and whether anything in it went wrong, which is a different question from what colour a badge takes. `LogsViewModel.status_tone/1` and the Flow component's private mapping already disagree about `pending`, `queued` and `skipped_fresh`; reconciling badge tones app-wide is a separate change and is not attempted here | Yes — it is a fourth state classification, kept deliberately narrow |
+| 2026-08-25 | Make the open run anchor its own comparison, unremovable | A comparison the page is not part of would draw windows the operator is not on, and leaving compare mode would then change which run the page shows. The anchor is added when compare mode opens and its cell says why it cannot be removed rather than silently ignoring the click | No |
+| 2026-08-25 | Order tracks by the windows' own calendar order, not by the order the operator clicked | A track position has to mean the same window in every lane. Click order would renumber existing tracks when a window is added, and the rail filters its cells by open band, so the rail's own cell order cannot supply the numbering either. The page orders the selection; `RunWindowRail` reports the caller's order rather than deriving one | No |
+| 2026-08-25 | Fall back to the single-window view only when a comparison loses windows it had loaded | The contract says a comparison that loses every window falls back. Applied literally to every cycle, adding one broken window collapsed the whole comparison before the operator could add a second. A window that fails as it is added has lost nothing, so it is marked unavailable in place where it can be retried or replaced | Yes — a narrowing of the stated invariant, made because the literal reading is hostile during selection |
+| 2026-08-25 | Express per-window alignment as a shift applied to each window's instants | Both alignments then run through one axis implementation: wall clock shifts by zero, window alignment shifts each window onto the earliest start in the comparison. The alternative was a second, relative-time axis. The shared axis must measure a running bar against the shifted now of the window furthest into its own span, not against the clock, or the gap between windows re-enters the axis this alignment exists to remove | No |
+| 2026-08-25 | Offer wall-clock alignment only when the combined span is within four times the longest single window | Across windows days apart one real timeline draws every bar as a hairline. The control states the measured ratio rather than simply disappearing, so the operator learns why | No |
+| 2026-08-25 | Never collapse a band in a comparison, though the single-run chart does in dense mode | A collapsed multi-window band would have to summarise across windows, and that summary is the comparison the operator opened the chart to make. Density still selects track height | No |
+| 2026-08-25 | Replace the single-run chart with the comparison rather than showing both, and hide the status filter and sort controls while comparing | Those controls narrow and reorder one window's rows. Applied to a comparison they would either narrow one track and not the others, which is untrue, or need a per-window meaning the plan does not define | No |
 | 2026-08-25 | Convert expanded window anchors to UTC in the materialization projector | Operator testing found a completed combined `Europe/Oslo` backfill stuck at "Running" with "4 running" windows. `Anchor.expand_range/4` returns anchors in the window's own timezone; the two non-combined projection paths convert to UTC explicitly, the combined path did not, and Postgrex refuses a non-UTC `timestamptz` parameter. The batch raised, the cursor never advanced, and no completion projected. Ecto's `:utc_datetime_usec` cast converts, which is why only this raw-SQL path broke | Yes — a backend defect outside this change record's scope, fixed here because it blocks the feature under test |
 
 ## Verification evidence
 
 | Check | Result | Evidence boundary |
 | --- | --- | --- |
-| Pending | Pending | Pending |
+| `mix compile --warnings-as-errors` | Clean | Whole umbrella |
+| `favn_view` suite | 666 passed, 108 doctests, 558 tests, 1 excluded | Excludes the acceptance, container, slow and browser tiers |
+| `mix format --check-formatted` on every changed and added file | Exit 0 | The fifteen files this change touches, after converting the three CRLF HEEx templates to LF; a repo-wide check is not a usable signal on a Windows worktree |
+| `git diff --check` | Clean | Working tree |
+| `mix assets.build` | Tailwind and daisyUI rebuilt | Needed because the compare toggle, the alignment control and the comparison lane introduce classes that did not previously exist in the stylesheet |
 
 ### Not verified
 
-Pending.
+- **The charts have not been looked at.** The suite proves what the markup
+  contains, not that a comparison of four windows reads well, that the track
+  legend is followable, or that a dense chart is legible. That needs the
+  umbrella dev server, `/design-system` and `window.favn.audit()`. The slice 11
+  examples exist for exactly this review and it has not been performed.
+- The umbrella-wide suite is not a usable signal on this workstation: it fails
+  on CRLF assertions in `favn`, on `env: 'bash\r'`, and on
+  `FavnRunner.TestExecution` being undefined after an app-scoped run recompiles
+  dependencies lib-only. None of those touch this change, which is confined to
+  `favn_view` after slice 13. CI is the authority.
+- Compare-mode reads are isolated against a read that returns `{:error, _}` or
+  times out. They are not isolated against a read that raises or exits: those
+  propagate through `Task.async_stream` and take the LiveView down, exactly as a
+  raising single-run read already does. Making compare stricter than the page it
+  lives on was judged inconsistent rather than safer.
 
 ## Final review
 

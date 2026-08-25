@@ -695,15 +695,75 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
           },
           "Rejected before any asset ran, so the failure has no lane and is called out."
         ),
-        Example.attrs(:window_selector, %{
-          run: Runs.backfill(:running),
-          run_id: "run_backfill_8f2c9d1",
-          nav_items: Runs.nav_items(),
-          windows: [
-            %{run_id: "run_backfill_8f2c9d1", label: "Feb 1, 2026 – Mar 1, 2026"},
-            %{run_id: "run_backfill_91ac3e2", label: "Mar 1, 2026 – Apr 1, 2026"}
-          ]
-        }),
+        Example.attrs(
+          :window_rail,
+          %{
+            run: Runs.backfill(:running),
+            run_id: "run_window_4",
+            nav_items: Runs.nav_items(),
+            rail: Runs.rail(:flat)
+          },
+          "A short backfill: one flat strip, one cell per window run."
+        ),
+        Example.attrs(
+          :window_rail_banded,
+          %{
+            run: Runs.backfill(:running),
+            run_id: "run_window_120",
+            nav_items: Runs.nav_items(),
+            rail: Runs.rail(:banded)
+          },
+          "Two hundred hourly windows bucket by day, with the open day expanded."
+        ),
+        Example.attrs(
+          :compare_windows,
+          %{
+            run: Map.put(Runs.backfill(:running), :comparison, Runs.comparison()),
+            run_id: "run_window_4",
+            nav_items: Runs.nav_items(),
+            rail: Runs.rail(:compare),
+            compare?: true
+          },
+          "Three windows as tracks, one of them unreadable, aligned on their own starts."
+        ),
+        Example.attrs(
+          :compare_wall_clock,
+          %{
+            run:
+              Map.put(
+                Runs.backfill(:running),
+                :comparison,
+                Runs.comparison(alignment: :wall_clock)
+              ),
+            run_id: "run_window_4",
+            nav_items: Runs.nav_items(),
+            rail: Runs.rail(:compare),
+            compare?: true
+          },
+          "The same three windows on one real timeline, which the hour between them still allows."
+        ),
+        Example.attrs(
+          :compare_limit_reached,
+          %{
+            run: Map.put(Runs.backfill(:running), :comparison, Runs.comparison()),
+            run_id: "run_window_4",
+            nav_items: Runs.nav_items(),
+            rail: Runs.rail(:compare),
+            compare?: true,
+            compare_limit_reached?: true
+          },
+          "The refusal a fifth window earns, stated on the rail rather than swallowed."
+        ),
+        Example.attrs(
+          :wide_compact,
+          %{run: Runs.wide(120), run_id: "run_wide_pipeline", nav_items: Runs.nav_items()},
+          "One hundred and twenty lanes: shorter rows and truncated labels."
+        ),
+        Example.attrs(
+          :wide_dense,
+          %{run: Runs.wide(260), run_id: "run_wide_pipeline", nav_items: Runs.nav_items()},
+          "Above two hundred lanes the stages collapse to strips and the labels go."
+        ),
         Example.attrs(:events, %{
           run: Runs.backfill(:running),
           run_id: "run_backfill_8f2c9d1",

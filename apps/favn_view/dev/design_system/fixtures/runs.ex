@@ -12,7 +12,9 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.Runs do
   """
 
   alias FavnView.LogsViewModel
+  alias FavnView.RunComparison
   alias FavnView.RunTimeline
+  alias FavnView.RunWindowRail
 
   @anchor ~U[2026-07-23 10:00:00Z]
 
@@ -81,6 +83,89 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.Runs do
       failed_windows: 0,
       events: events(:ok)
     })
+  end
+
+  @doc """
+  A run wide enough to leave comfortable lane height behind.
+
+  `lanes` picks the density the chart lands in: 40 stays comfortable, 120 is
+  compact, 260 is dense with its stages collapsed.
+  """
+  @spec wide(pos_integer()) :: map()
+  def wide(lanes \\ 120) do
+    attempts =
+      Enum.map(1..lanes, fn index ->
+        attempt(%{
+          id: "wide-#{index}",
+          asset: "crm.wide_#{index}",
+          name: "Wide asset #{index}",
+          status: wide_status(index),
+          offset_seconds: rem(index, 40) * 3,
+          duration_seconds: wide_duration(index),
+          stage: div(index - 1, div(lanes, 3) + 1)
+        })
+      end)
+
+    run(%{
+      id: "run_wide_pipeline",
+      title: "Run",
+      subtitle: "Wide pipeline · Jul 23",
+      status: :running,
+      attempts: attempts,
+      total_windows: 1,
+      completed_windows: 0,
+      failed_windows: 1,
+      events: events(:running)
+    })
+  end
+
+  @doc """
+  The calendar rail of a backfill's window runs.
+
+  `layout` picks `:flat`, the strip of one cell per window run, or `:banded`,
+  the coarse period band plus the selected period's cells. `:compare` is the
+  flat rail with three of its windows chosen for comparison.
+  """
+  @spec rail(:flat | :banded | :compare) :: RunWindowRail.t()
+  def rail(layout \\ :flat)
+
+  def rail(:banded) do
+    RunWindowRail.build(window_choices(200), "run_window_120", "Etc/UTC",
+      backfill_status: :running
+    )
+  end
+
+  def rail(:compare) do
+    RunWindowRail.build(window_choices(8), "run_window_4", "Etc/UTC",
+      backfill_status: :completed,
+      compare_run_ids: ["run_window_2", "run_window_4", "run_window_6"]
+    )
+  end
+
+  def rail(:flat) do
+    RunWindowRail.build(window_choices(8), "run_window_4", "Etc/UTC", backfill_status: :completed)
+  end
+
+  @doc """
+  Three window runs drawn as tracks, one of them unreadable.
+
+  The unreadable window is deliberate: an empty track has to say which kind of
+  empty it is, and that is the case a review must be able to see.
+  """
+  @spec comparison(keyword()) :: RunComparison.t()
+  def comparison(opts \\ []) do
+    # The earlier window ran an hour before the open one and never planned the
+    # last asset, so both the alignment and the absent-track cases are visible.
+    earlier = backfill_attempts(:ok) |> Enum.drop(-1)
+
+    RunComparison.build(
+      [
+        compare_window(1, "run_window_2", :loaded, earlier, shift_seconds: -3_600),
+        compare_window(2, "run_window_4", :loaded, backfill_attempts(:running), selected?: true),
+        compare_window(3, "run_window_6", :unavailable, [])
+      ],
+      Keyword.put_new(opts, :now, @now)
+    )
   end
 
   @doc "A full refresh: real work, no window at all."
@@ -219,7 +304,8 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.Runs do
         name: "Orders",
         status: :ok,
         offset_seconds: 0,
-        duration_seconds: 34
+        duration_seconds: 34,
+        stage: 0
       }),
       attempt(%{
         id: "engagement-2026-02",
@@ -227,7 +313,8 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.Runs do
         name: "Engagement",
         status: :ok,
         offset_seconds: 2,
-        duration_seconds: 51
+        duration_seconds: 51,
+        stage: 0
       }),
       attempt(%{
         id: "revenue_metrics-2026-02",
@@ -235,10 +322,73 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.Runs do
         name: "Revenue metrics",
         status: revenue_status(status),
         offset_seconds: 60,
-        duration_seconds: revenue_duration(status)
+        duration_seconds: revenue_duration(status),
+        stage: 1
       })
     ]
   end
+
+  defp wide_status(index) when rem(index, 17) == 0, do: :error
+  defp wide_status(index) when rem(index, 7) == 0, do: :running
+  defp wide_status(index) when rem(index, 11) == 0, do: :pending
+  defp wide_status(_index), do: :ok
+
+  defp wide_duration(index) do
+    case wide_status(index) do
+      :running -> nil
+      :pending -> nil
+      _finished -> 4 + rem(index, 9)
+    end
+  end
+
+  # The window list the rail bands over. A backfill of 200 hourly windows is
+  # what makes the coarse band worth having at all.
+  defp window_choices(count) do
+    Enum.map(1..count, fn index ->
+      start_at = DateTime.add(~U[2026-02-01 00:00:00Z], (index - 1) * 3_600, :second)
+
+      %{
+        run_id: "run_window_#{index}",
+        window_start_at: start_at,
+        window_end_at: DateTime.add(start_at, 3_600, :second),
+        status: window_status(index),
+        kind: :hour,
+        timezone: "Europe/Oslo"
+      }
+    end)
+  end
+
+  defp window_status(index) when rem(index, 13) == 0, do: :failed
+  defp window_status(index) when rem(index, 5) == 0, do: :running
+  defp window_status(_index), do: :succeeded
+
+  defp compare_window(track, run_id, state, attempts, opts \\ []) do
+    shift = Keyword.get(opts, :shift_seconds, 0)
+
+    %{
+      run_id: run_id,
+      track: track,
+      state: state,
+      label: "Feb #{track}, 2026 08:00",
+      reason: if(state == :unavailable, do: :unavailable),
+      selected?: Keyword.get(opts, :selected?, false),
+      assets: Enum.map(attempts, &compare_row(&1, run_id, shift))
+    }
+  end
+
+  defp compare_row(attempt, run_id, shift) do
+    attempt
+    |> asset_row()
+    |> Map.merge(%{
+      run_id: run_id,
+      started_at: shift_at(attempt.started_at, shift),
+      finished_at: shift_at(attempt.finished_at, shift)
+    })
+  end
+
+  defp shift_at(nil, _seconds), do: nil
+  defp shift_at(at, 0), do: at
+  defp shift_at(at, seconds), do: DateTime.add(at, seconds, :second)
 
   defp revenue_status(:running), do: :running
   defp revenue_status(:partial), do: :error
