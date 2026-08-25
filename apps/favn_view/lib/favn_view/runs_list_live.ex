@@ -271,7 +271,7 @@ defmodule FavnView.RunsListLive do
       assets: assets.label,
       assets_failed: assets.failed,
       status: status,
-      status_label: status_label(status),
+      status_label: LogsViewModel.status_label(Map.get(group, :status)),
       raw_status: Map.get(group, :status),
       trigger: label(Map.get(group, :trigger_type)),
       started_at: short_time(Map.get(group, :started_at), timezone),
@@ -332,20 +332,13 @@ defmodule FavnView.RunsListLive do
   defp assets_word(1), do: "asset"
   defp assets_word(_count), do: "assets"
 
+  # Tone only. The label comes from `LogsViewModel.status_label/1` applied to the
+  # group's own status, so this list and the run detail page — which read the same
+  # execution group overview — cannot name one aggregate status two different ways.
   defp display_status(:ok), do: :succeeded
   defp display_status(:error), do: :failed
   defp display_status(:pending), do: :queued
   defp display_status(status), do: status || :unknown
-
-  defp status_label(:succeeded), do: "Succeeded"
-  defp status_label(:failed), do: "Failed"
-  defp status_label(:queued), do: "Queued"
-  defp status_label(:running), do: "Running"
-  defp status_label(:partial), do: "Partial"
-  defp status_label(:incomplete), do: "Incomplete"
-  defp status_label(:cancelled), do: "Cancelled"
-  defp status_label(:timed_out), do: "Timed out"
-  defp status_label(_status), do: "Unknown"
 
   # The group's own duration, which the projection now measures from when the group
   # started to when it settled. This used to compute a span from `last_activity_at`

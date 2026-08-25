@@ -2,9 +2,9 @@ defmodule FavnView.Components.RunDetailPage.Flow do
   @moduledoc """
   The bounded asset list for one exact run.
 
-  Rows intentionally contain only the name, state, start, and end values shown
-  here. Observed rows link to their separate detail route; planned rows are
-  inert because an attempt does not exist yet.
+  Rows are the run's asset attempts, which appear from the moment a step is
+  queued, and contain only the name, state, start, and end values shown here.
+  Every row links to its separate detail route.
   """
 
   use FavnView, :html
@@ -19,7 +19,7 @@ defmodule FavnView.Components.RunDetailPage.Flow do
         :if={@assets == [] && !@backfill_parent?}
         icon="hero-square-3-stack-3d"
         title="No asset work yet"
-        description="Assets appear when the persisted run plan is available."
+        description="Assets appear as the run queues them for execution."
       />
 
       <.empty_state
@@ -43,13 +43,11 @@ defmodule FavnView.Components.RunDetailPage.Flow do
         >
           <:col :let={asset} label="Asset">
             <.link
-              :if={asset.detail?}
               navigate={~p"/runs/#{asset.run_id}/assets/#{asset.id}"}
               class="font-medium link link-hover"
             >
               {asset.name}
             </.link>
-            <span :if={!asset.detail?} class="font-medium">{asset.name}</span>
             <.mono value={asset.asset_ref} truncate class="mt-0.5 text-sm favn-text-subtle" />
           </:col>
           <:col :let={asset} label="State" class="w-32">
@@ -77,44 +75,28 @@ defmodule FavnView.Components.RunDetailPage.Flow do
 
   attr :asset, :map, required: true
 
-  defp asset_card(%{asset: %{detail?: true}} = assigns) do
+  defp asset_card(assigns) do
     ~H"""
     <.list_card
       navigate={~p"/runs/#{@asset.run_id}/assets/#{@asset.id}"}
       data-testid="run-asset-card"
     >
-      <.asset_card_content asset={@asset} />
-    </.list_card>
-    """
-  end
-
-  defp asset_card(assigns) do
-    ~H"""
-    <.list_card data-testid="run-asset-card">
-      <.asset_card_content asset={@asset} />
-    </.list_card>
-    """
-  end
-
-  attr :asset, :map, required: true
-
-  defp asset_card_content(assigns) do
-    ~H"""
-    <div class="flex items-start justify-between gap-3">
-      <div class="min-w-0">
-        <.section_title>{@asset.name}</.section_title>
-        <.mono value={@asset.asset_ref} truncate class="mt-1 text-sm favn-text-subtle" />
+      <div class="flex items-start justify-between gap-3">
+        <div class="min-w-0">
+          <.section_title>{@asset.name}</.section_title>
+          <.mono value={@asset.asset_ref} truncate class="mt-1 text-sm favn-text-subtle" />
+        </div>
+        <.status_badge
+          tone={status_tone(@asset.state)}
+          label={status_label(@asset.state)}
+          size={:sm}
+        />
       </div>
-      <.status_badge
-        tone={status_tone(@asset.state)}
-        label={status_label(@asset.state)}
-        size={:sm}
-      />
-    </div>
-    <.inline gap={:sm} class="mt-2 text-sm favn-text-subtle">
-      <span>Started {@asset.started_at || "-"}</span>
-      <span>Finished {@asset.finished_at || "-"}</span>
-    </.inline>
+      <.inline gap={:sm} class="mt-2 text-sm favn-text-subtle">
+        <span>Started {@asset.started_at || "-"}</span>
+        <span>Finished {@asset.finished_at || "-"}</span>
+      </.inline>
+    </.list_card>
     """
   end
 

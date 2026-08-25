@@ -17,7 +17,8 @@ defmodule FavnView.RunDetailLiveTest do
       :operator_run_events_fun,
       :operator_run_windows_fun,
       :operator_execution_group_fun,
-      :run_subscribe_fun
+      :run_subscribe_fun,
+      :run_unsubscribe_fun
     ]
 
     previous = Map.new(keys, &{&1, Application.get_env(:favn_view, &1)})
@@ -177,7 +178,11 @@ defmodule FavnView.RunDetailLiveTest do
              RunDetailLive.mount(%{"run_id" => "run-one"}, %{}, connected_socket())
 
     assert {:noreply, events_socket} =
-             RunDetailLive.handle_params(%{"view" => "events"}, "", mounted)
+             RunDetailLive.handle_params(
+               %{"run_id" => "run-one", "view" => "events"},
+               "",
+               mounted
+             )
 
     assert events_socket.assigns.active_mode == :events
     assert [%{sequence: 2, asset: "crm.orders"}] = events_socket.assigns.run.events
@@ -244,55 +249,179 @@ defmodule FavnView.RunDetailLiveTest do
     assert retrying.assigns.run.refresh_error == "Run could not be loaded"
   end
 
-  test "loads window choices only on request and restricts navigation to those choices" do
+  test "a run outside a backfill never reads its windows" do
+    caller = self()
+
     Application.put_env(:favn_view, :operator_run_flow_fun, fn _context, run_id ->
       {:ok, %{kind: :run, detail: flow(run_id, :ok)}}
     end)
 
-    Application.put_env(:favn_view, :operator_run_windows_fun, fn _context, "run-one" ->
-      {:ok,
-       %RunWindowChoices{
-         overflow?: false,
-         items: [
-           %RunWindowChoice{
-             run_id: "run-one",
-             window_start_at: ~U[2026-07-01 00:00:00Z],
-             window_end_at: ~U[2026-08-01 00:00:00Z]
-           },
-           %RunWindowChoice{
-             run_id: "run-two",
-             window_start_at: ~U[2026-08-01 00:00:00Z],
-             window_end_at: ~U[2026-09-01 00:00:00Z]
-           }
-         ]
-       }}
+    Application.put_env(:favn_view, :operator_run_windows_fun, fn _context, _run_id ->
+      send(caller, :unexpected_window_read)
+      {:ok, %RunWindowChoices{overflow?: false, items: []}}
     end)
 
     assert {:ok, mounted} =
              RunDetailLive.mount(%{"run_id" => "run-one"}, %{}, connected_socket())
 
+    refute_receive :unexpected_window_read
     assert is_nil(mounted.assigns.windows)
-    assert {:noreply, loaded} = RunDetailLive.handle_event("load_windows", %{}, mounted)
-    assert Enum.map(loaded.assigns.windows, & &1.run_id) == ["run-one", "run-two"]
+    assert is_nil(mounted.assigns.rail)
+  end
 
-    assert {:noreply, self_rejected} =
-             RunDetailLive.handle_event("switch_window", %{"run_id" => "run-one"}, loaded)
+  test "a backfill run loads its rail eagerly and restricts selection to it" do
+    Application.put_env(:favn_view, :operator_run_flow_fun, fn _context, run_id ->
+      {:ok, %{kind: :run, detail: backfill_flow(run_id, :ok)}}
+    end)
 
-    assert self_rejected.assigns.flash["error"] == "That window run is not available"
+    Application.put_env(:favn_view, :operator_run_windows_fun, fn _context, _run_id ->
+      {:ok, window_choices()}
+    end)
+
+    assert {:ok, mounted} =
+             RunDetailLive.mount(%{"run_id" => "run-one"}, %{}, connected_socket())
+
+    # Eager: no button press, no second event.
+    assert Enum.map(mounted.assigns.windows, & &1.run_id) == ["run-one", "run-two"]
+    assert Enum.map(mounted.assigns.rail.cells, & &1.run_id) == ["run-one", "run-two"]
+    assert [%{selected?: true}, %{selected?: false}] = mounted.assigns.rail.cells
 
     assert {:noreply, rejected} =
-             RunDetailLive.handle_event("switch_window", %{"run_id" => "run-other"}, loaded)
+             RunDetailLive.handle_event("select_window", %{"run_id" => "run-other"}, mounted)
 
     assert rejected.assigns.flash["error"] == "That window run is not available"
 
-    assert {:noreply, navigating} =
-             RunDetailLive.handle_event("switch_window", %{"run_id" => "run-two"}, loaded)
+    # Selecting the open window is a no-op, not an error: the rail is a
+    # calendar, so its current cell is still a cell.
+    assert {:noreply, same} =
+             RunDetailLive.handle_event("select_window", %{"run_id" => "run-one"}, mounted)
 
-    assert {:live, :redirect, %{to: "/runs/run-two"}} = navigating.redirected
+    assert is_nil(same.redirected)
+    refute same.assigns.flash["error"]
+
+    assert {:noreply, patching} =
+             RunDetailLive.handle_event("select_window", %{"run_id" => "run-two"}, mounted)
+
+    # Patch, not navigate: the page keeps its process and its subscription.
+    assert {:live, :patch, %{to: "/runs/run-two?view=flow"}} = patching.redirected
+  end
+
+  test "arrow keys step between adjacent window runs and stop at the ends" do
+    Application.put_env(:favn_view, :operator_run_flow_fun, fn _context, run_id ->
+      {:ok, %{kind: :run, detail: backfill_flow(run_id, :ok)}}
+    end)
+
+    Application.put_env(:favn_view, :operator_run_windows_fun, fn _context, _run_id ->
+      {:ok, window_choices()}
+    end)
+
+    assert {:ok, mounted} =
+             RunDetailLive.mount(%{"run_id" => "run-one"}, %{}, connected_socket())
+
+    assert {:noreply, forward} =
+             RunDetailLive.handle_event("step_window", %{"key" => "ArrowRight"}, mounted)
+
+    assert {:live, :patch, %{to: "/runs/run-two?view=flow"}} = forward.redirected
+
+    # run-one is the first cell, so there is nowhere to step back to.
+    assert {:noreply, backward} =
+             RunDetailLive.handle_event("step_window", %{"key" => "ArrowLeft"}, mounted)
+
+    assert is_nil(backward.redirected)
+    refute backward.assigns.flash["error"]
+
+    # Any other key is ignored rather than treated as a step.
+    assert {:noreply, ignored} =
+             RunDetailLive.handle_event("step_window", %{"key" => "Enter"}, mounted)
+
+    assert is_nil(ignored.redirected)
+  end
+
+  test "selecting a window resets the page and moves the subscription exactly once" do
+    caller = self()
+
+    Application.put_env(:favn_view, :run_unsubscribe_fun, fn _context, run_id ->
+      send(caller, {:unsubscribed, run_id})
+      :ok
+    end)
+
+    Application.put_env(:favn_view, :operator_run_flow_fun, fn _context, run_id ->
+      {:ok, %{kind: :run, detail: backfill_flow(run_id, :ok)}}
+    end)
+
+    Application.put_env(:favn_view, :operator_run_windows_fun, fn _context, _run_id ->
+      {:ok, window_choices()}
+    end)
+
+    assert {:ok, mounted} =
+             RunDetailLive.mount(%{"run_id" => "run-one"}, %{}, connected_socket())
+
+    assert_receive {:subscribed, "run-one"}
+
+    assert {:noreply, switched} =
+             RunDetailLive.handle_params(%{"run_id" => "run-two"}, "", mounted)
+
+    assert_receive {:unsubscribed, "run-one"}
+    assert_receive {:subscribed, "run-two"}
+    refute_receive {:unsubscribed, "run-two"}
+
+    assert switched.assigns.run_id == "run-two"
+    assert MapSet.equal?(switched.assigns.run_event_subscriptions, MapSet.new(["run-two"]))
+
+    # The rail follows the newly selected run rather than the old one.
+    assert [%{selected?: false}, %{selected?: true}] = switched.assigns.rail.cells
+  end
+
+  test "a failed window read hides the rail and leaves the run page working" do
+    Application.put_env(:favn_view, :operator_run_flow_fun, fn _context, run_id ->
+      {:ok, %{kind: :run, detail: backfill_flow(run_id, :ok)}}
+    end)
+
+    Application.put_env(:favn_view, :operator_run_windows_fun, fn _context, _run_id ->
+      {:error, :unavailable}
+    end)
+
+    assert {:ok, mounted} =
+             RunDetailLive.mount(%{"run_id" => "run-one"}, %{}, connected_socket())
+
+    assert is_nil(mounted.assigns.rail)
+    assert mounted.assigns.run.found?
+    assert mounted.assigns.run.total_asset_attempts == 2
+  end
+
+  test "a non-terminal backfill keeps polling even when every loaded run is terminal" do
+    Application.put_env(:favn_view, :operator_run_flow_fun, fn _context, run_id ->
+      {:ok, %{kind: :run, detail: backfill_flow(run_id, :ok)}}
+    end)
+
+    Application.put_env(:favn_view, :operator_run_windows_fun, fn _context, _run_id ->
+      {:ok, %{window_choices() | backfill_status: :running}}
+    end)
+
+    assert {:ok, running} =
+             RunDetailLive.mount(%{"run_id" => "run-one"}, %{}, connected_socket())
+
+    refute running.assigns.run.active?
+    assert running.assigns.rail.in_progress?
+    assert is_reference(running.assigns.fallback_poll_ref)
+
+    Application.put_env(:favn_view, :operator_run_windows_fun, fn _context, _run_id ->
+      {:ok, %{window_choices() | backfill_status: :completed}}
+    end)
+
+    assert {:ok, finished} =
+             RunDetailLive.mount(%{"run_id" => "run-one"}, %{}, connected_socket())
+
+    refute finished.assigns.rail.in_progress?
+    assert is_nil(finished.assigns.fallback_poll_ref)
   end
 
   test "a terminal backfill parent renders group progress and keeps refreshing while children run" do
     caller = self()
+
+    Application.put_env(:favn_view, :operator_run_windows_fun, fn _context, _run_id ->
+      {:ok, %RunWindowChoices{overflow?: false, items: [], backfill_status: :running}}
+    end)
 
     Application.put_env(:favn_view, :operator_run_flow_fun, fn _context, run_id ->
       parent_header = %{
@@ -360,7 +489,6 @@ defmodule FavnView.RunDetailLiveTest do
       )
 
     assert html =~ ~s(data-testid="backfill-parent-explanation")
-    assert html =~ ~s(data-testid="load-run-windows")
     assert html =~ "Asset work runs in the windows"
     refute html =~ "No asset work yet"
 
@@ -376,6 +504,10 @@ defmodule FavnView.RunDetailLiveTest do
 
   test "a transient group read failure keeps the last truthful parent progress" do
     {:ok, reads} = Agent.start_link(fn -> 0 end)
+
+    Application.put_env(:favn_view, :operator_run_windows_fun, fn _context, _run_id ->
+      {:ok, %RunWindowChoices{overflow?: false, items: [], backfill_status: :running}}
+    end)
 
     Application.put_env(:favn_view, :operator_run_flow_fun, fn _context, run_id ->
       parent_header = %{
@@ -440,7 +572,7 @@ defmodule FavnView.RunDetailLiveTest do
     assert refreshed.assigns.run.group_error =~ "showing the last update"
   end
 
-  test "a one-window backfill parent exposes a direct child-run link" do
+  test "a one-window backfill parent offers that single child run in its rail" do
     Application.put_env(:favn_view, :operator_run_flow_fun, fn _context, run_id ->
       parent_header = %{
         header(run_id, :ok)
@@ -497,13 +629,14 @@ defmodule FavnView.RunDetailLiveTest do
     assert {:ok, mounted} =
              RunDetailLive.mount(%{"run_id" => "run-parent"}, %{}, connected_socket())
 
-    assert {:noreply, loaded} = RunDetailLive.handle_event("load_windows", %{}, mounted)
-
     html =
-      render_component(&RunDetailLive.render/1, Map.put(loaded.assigns, :operator_workspaces, []))
+      render_component(
+        &RunDetailLive.render/1,
+        Map.put(mounted.assigns, :operator_workspaces, [])
+      )
 
-    assert html =~ ~s(data-testid="open-run-window")
-    assert html =~ ~s(href="/runs/run-child")
+    assert html =~ ~s(data-testid="window-rail")
+    assert html =~ ~s(phx-value-run_id="run-child")
     refute html =~ ~s(data-testid="run-window-selector")
   end
 
@@ -538,6 +671,47 @@ defmodule FavnView.RunDetailLiveTest do
     assert mounted.assigns.run.status == "Queued"
   end
 
+  # A backfill window run, not the parent: its root is the parent's id, so the
+  # page takes the rail path rather than the execution-group path.
+  defp backfill_flow(run_id, status) do
+    detail = flow(run_id, status)
+
+    %{
+      detail
+      | header: %{
+          detail.header
+          | submit_kind: :backfill_pipeline,
+            root_run_id: "run-parent",
+            trigger_type: :backfill
+        }
+    }
+  end
+
+  defp window_choices do
+    %RunWindowChoices{
+      overflow?: false,
+      backfill_status: :completed,
+      items: [
+        %RunWindowChoice{
+          run_id: "run-one",
+          window_start_at: ~U[2026-07-01 00:00:00Z],
+          window_end_at: ~U[2026-08-01 00:00:00Z],
+          status: :succeeded,
+          kind: :month,
+          timezone: "Etc/UTC"
+        },
+        %RunWindowChoice{
+          run_id: "run-two",
+          window_start_at: ~U[2026-08-01 00:00:00Z],
+          window_end_at: ~U[2026-09-01 00:00:00Z],
+          status: :succeeded,
+          kind: :month,
+          timezone: "Etc/UTC"
+        }
+      ]
+    }
+  end
+
   defp flow(run_id, status) do
     %Flow{
       header: header(run_id, status),
@@ -549,17 +723,17 @@ defmodule FavnView.RunDetailLiveTest do
           name: "Orders",
           asset_ref: "crm.orders",
           state: status,
-          detail?: true,
+          stage: 0,
           started_at: ~U[2026-08-23 10:00:00Z],
           finished_at: if(status == :running, do: nil, else: ~U[2026-08-23 10:00:04Z])
         },
         %Asset{
-          id: "planned-total",
+          id: "step-total",
           run_id: run_id,
           name: "Total",
           asset_ref: "crm.total",
-          state: :planned,
-          detail?: false,
+          state: :queued,
+          stage: 1,
           started_at: nil,
           finished_at: nil
         }
@@ -591,8 +765,8 @@ defmodule FavnView.RunDetailLiveTest do
         skipped: 0,
         failed: 0,
         running: if(active?, do: 1, else: 0),
-        queued: 0,
-        planned: 1
+        queued: 1,
+        planned: 0
       }
     }
   end

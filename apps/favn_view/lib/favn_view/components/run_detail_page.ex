@@ -2,8 +2,9 @@ defmodule FavnView.Components.RunDetailPage do
   @moduledoc """
   Run detail for one exact run, with lean assets and lazy events.
 
-  Windowed runs are separate run IDs. The page loads their lean choices only
-  when the operator asks to switch, then navigates to the selected run.
+  Windowed runs are separate run IDs. A run that belongs to a backfill shows a
+  calendar rail of its sibling window runs, loaded with the run rather than
+  behind a button; selecting a cell patches the page to that run in place.
   """
 
   use FavnView, :html
@@ -15,6 +16,7 @@ defmodule FavnView.Components.RunDetailPage do
   alias FavnView.Components.RunDetailPage.NotFound
   alias FavnView.Components.RunDetailPage.Progress
   alias FavnView.Components.RunDetailPage.Submission
+  alias FavnView.Components.RunDetailPage.WindowRail
 
   attr :run, :map, required: true
   attr :run_id, :string, required: true
@@ -23,16 +25,12 @@ defmodule FavnView.Components.RunDetailPage do
   attr :operator_workspaces, :list, default: []
   attr :active_mode, :atom, default: :flow
 
-  attr :windows, :any, default: nil
-  attr :windows_loading?, :boolean, default: false
+  attr :rail, :any, default: nil
   attr :windows_error, :string, default: nil
   attr :flash, :map, default: %{}
 
   def run_detail_page(assigns) do
-    run = normalize_run(assigns.run)
-    navigation_windows = navigation_windows(run, assigns.windows, assigns.run_id)
-
-    assigns = assigns |> assign(:run, run) |> assign(:navigation_windows, navigation_windows)
+    assigns = assign(assigns, :run, normalize_run(assigns.run))
 
     ~H"""
     <AppShell.app_shell
@@ -76,47 +74,13 @@ defmodule FavnView.Components.RunDetailPage do
           {@run[:retry_remaining_label] || "Retry remaining"}
         </.button>
       </:actions>
-      <:actions :if={@run[:found?] && (@run[:window] || @run[:backfill_parent?]) && is_nil(@windows)}>
-        <.button
-          variant={:secondary}
-          icon="hero-calendar-days"
-          phx-click="load_windows"
-          loading={@windows_loading?}
-          data-testid="load-run-windows"
-        >
-          {if(@run[:backfill_parent?], do: "Open window run", else: "Switch window")}
-        </.button>
-      </:actions>
-      <:actions :if={
-        @run[:found?] && is_list(@navigation_windows) && length(@navigation_windows) == 1
-      }>
-        <.button
-          variant={:secondary}
-          icon="hero-arrow-top-right-on-square"
-          navigate={~p"/runs/#{hd(@navigation_windows).run_id}"}
-          data-testid="open-run-window"
-        >
-          Open window run
-        </.button>
-      </:actions>
-      <:actions :if={@run[:found?] && is_list(@navigation_windows) && length(@navigation_windows) > 1}>
-        <form phx-change="switch_window" data-testid="run-window-selector">
-          <.select_field
-            name="run_id"
-            label="Run window"
-            icon="hero-calendar-days"
-            value=""
-            options={window_options(@navigation_windows)}
-            class="min-w-64"
-          />
-        </form>
-      </:actions>
       <Submission.submission_panel :if={@run[:submission?]} run={@run} />
       <NotFound.not_found_panel :if={!@run[:found?] && !@run[:submission?]} run={@run} />
       <.execution_group_page
         :if={@run[:found?]}
         run={@run}
         active_mode={@active_mode}
+        rail={@rail}
         windows_error={@windows_error}
       />
       <:mode_rail :if={@run[:found?]}>
@@ -128,12 +92,14 @@ defmodule FavnView.Components.RunDetailPage do
 
   attr :run, :map, required: true
   attr :active_mode, :atom, required: true
+  attr :rail, :any, default: nil
   attr :windows_error, :string, default: nil
 
   def execution_group_page(assigns) do
     ~H"""
     <div class="mx-auto flex w-full max-w-[110rem] flex-col gap-4" data-testid="run-detail-page">
       <Progress.run_progress run={@run} />
+      <WindowRail.window_rail :if={@rail} rail={@rail} />
       <.notice
         :if={@run[:backfill_parent?]}
         tone={:info}
@@ -143,9 +109,11 @@ defmodule FavnView.Components.RunDetailPage do
         This is the backfill parent run. Asset work is executed by its window runs. Open a
         window run to inspect its assets and results.
       </.notice>
+
       <.notice :if={@run[:group_error]} tone={:warning} icon="hero-arrow-path">
         {@run.group_error}
       </.notice>
+
       <.notice
         :if={@run.asset_attempts_truncated?}
         tone={:warning}
@@ -155,12 +123,15 @@ defmodule FavnView.Components.RunDetailPage do
         This run has more than 1,000 assets. Summary counts remain exact; this page shows the
         first 1,000 in stable order.
       </.notice>
+
       <.notice :if={@run[:refresh_error]} tone={:warning} icon="hero-arrow-path">
         {@run.refresh_error}. Showing the last successful result; the page will try again.
       </.notice>
+
       <.notice :if={@windows_error} tone={:warning} icon="hero-exclamation-triangle">
         {@windows_error}
       </.notice>
+
       <div data-run-active={to_string(@run.active?)}>
         <Flow.flow
           :if={@active_mode == :flow}
@@ -186,18 +157,6 @@ defmodule FavnView.Components.RunDetailPage do
       %{id: :events, label: "Events", icon: "hero-signal"}
     ]
   end
-
-  defp window_options(windows) do
-    [{"Select a window run", ""} | Enum.map(windows, &{&1.label, &1.run_id})]
-  end
-
-  defp navigation_windows(_run, nil, _run_id), do: nil
-
-  defp navigation_windows(%{backfill_parent?: true}, windows, _run_id) when is_list(windows),
-    do: windows
-
-  defp navigation_windows(_run, windows, run_id) when is_list(windows),
-    do: Enum.reject(windows, &(&1.run_id == run_id))
 
   defp run_facts(%{found?: true} = run) do
     [

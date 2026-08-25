@@ -13,10 +13,13 @@ defmodule FavnView.RunDetailLive do
   alias FavnView.OperatorErrorLabels
   alias FavnView.Orchestrator
   alias FavnView.RunEventRefresh
+  alias FavnView.RunWindowRail
 
   @fallback_refresh_ms 5_000
   @coalesce_refresh_ms 1_000
   @valid_modes ~w(flow events)
+  @step_keys ~w(ArrowLeft ArrowRight)
+  @backfill_submit_kinds [:backfill_asset, :backfill_pipeline]
   @backfill_group_fields [
     :active?,
     :raw_status,
@@ -53,13 +56,11 @@ defmodule FavnView.RunDetailLive do
         run_id: run_id,
         run: loading_run(run_id),
         active_mode: active_mode,
-        windows: nil,
-        windows_loading?: false,
-        windows_error: nil,
         cancel_attempt: nil,
         retry_attempt: nil,
         nav_items: AssetCataloguePage.nav_items(:runs)
       )
+      |> reset_windows()
       |> RunEventRefresh.init([:refresh_timer_ref, :fallback_poll_ref])
 
     socket =
@@ -75,19 +76,39 @@ defmodule FavnView.RunDetailLive do
   end
 
   @impl true
-  def handle_params(params, _uri, socket) do
+  def handle_params(%{"run_id" => run_id} = params, _uri, socket) do
     active_mode = active_mode_from_params(params)
 
-    socket =
-      if connected?(socket) and active_mode != socket.assigns.active_mode do
-        socket
-        |> assign(:active_mode, active_mode)
-        |> refresh_run()
-      else
-        assign(socket, :active_mode, active_mode)
-      end
+    cond do
+      not connected?(socket) ->
+        {:noreply, assign(socket, active_mode: active_mode, run_id: run_id)}
 
-    {:noreply, socket}
+      run_id != socket.assigns.run_id ->
+        {:noreply, select_run(socket, run_id, active_mode)}
+
+      active_mode != socket.assigns.active_mode ->
+        {:noreply, socket |> assign(:active_mode, active_mode) |> refresh_run()}
+
+      true ->
+        {:noreply, assign(socket, :active_mode, active_mode)}
+    end
+  end
+
+  # A run switch resets the page. The previous run's data must never render
+  # under the new run's URL, including when the new run's first read fails, so
+  # the keep-last-good behaviour starts over rather than carrying across.
+  defp select_run(socket, run_id, active_mode) do
+    socket
+    |> assign(
+      run_id: run_id,
+      run: loading_run(run_id),
+      active_mode: active_mode,
+      cancel_attempt: nil,
+      retry_attempt: nil
+    )
+    |> reset_windows(keep_loaded: true)
+    |> sync_run_subscription()
+    |> refresh_run()
   end
 
   @impl true
@@ -133,21 +154,19 @@ defmodule FavnView.RunDetailLive do
     {:noreply, push_patch(socket, to: ~p"/runs/#{socket.assigns.run_id}?view=#{mode}")}
   end
 
-  def handle_event("load_windows", _params, socket) do
-    {:noreply, socket |> assign(windows_loading?: true, windows_error: nil) |> load_windows()}
+  def handle_event("select_window", %{"run_id" => run_id}, socket) do
+    {:noreply, patch_to_window(socket, run_id)}
   end
 
-  def handle_event("switch_window", %{"run_id" => run_id}, socket) do
-    allowed? =
-      run_id != socket.assigns.run_id and
-        Enum.any?(socket.assigns.windows || [], &(&1.run_id == run_id))
-
-    if allowed? do
-      {:noreply, push_navigate(socket, to: ~p"/runs/#{run_id}")}
-    else
-      {:noreply, put_flash(socket, :error, "That window run is not available")}
-    end
+  def handle_event("open_window_bucket", %{"bucket" => bucket}, socket) do
+    {:noreply, socket |> assign(:open_bucket, bucket) |> build_rail()}
   end
+
+  def handle_event("step_window", %{"key" => key}, socket) when key in @step_keys do
+    {:noreply, patch_to_window(socket, stepped_run_id(socket, key))}
+  end
+
+  def handle_event("step_window", _params, socket), do: {:noreply, socket}
 
   def handle_event("cancel_run", params, socket) do
     case socket.assigns.run do
@@ -243,8 +262,7 @@ defmodule FavnView.RunDetailLive do
       current_scope={@current_scope}
       operator_workspaces={@operator_workspaces}
       active_mode={@active_mode}
-      windows={@windows}
-      windows_loading?={@windows_loading?}
+      rail={@rail}
       windows_error={@windows_error}
       flash={@flash}
     />
@@ -254,7 +272,7 @@ defmodule FavnView.RunDetailLive do
   @impl true
   def terminate(_reason, socket) do
     operator_context = operator_context(socket)
-    RunEventRefresh.unsubscribe_all(socket, &Orchestrator.unsubscribe_run(operator_context, &1))
+    RunEventRefresh.unsubscribe_all(socket, &unsubscribe_run(operator_context, &1))
     _ = Orchestrator.unsubscribe_run_wakeups(operator_context)
     :ok
   end
@@ -267,8 +285,8 @@ defmodule FavnView.RunDetailLive do
     |> assign(:run, run)
     |> record_refresh(refresh_result, loaded_run)
     |> sync_run_subscription()
+    |> refresh_windows()
     |> schedule_fallback()
-    |> refresh_loaded_windows()
   end
 
   defp record_refresh(socket, :ok, run) do
@@ -527,10 +545,18 @@ defmodule FavnView.RunDetailLive do
     )
   end
 
+  # In a sequential backfill the selected run and every loaded window run can be
+  # terminal while the backfill is still producing more. Polling on the run's
+  # own activity alone would stop across exactly those moments, so a non-terminal
+  # backfill keeps the poll alive.
+  defp poll_worthy?(socket) do
+    socket.assigns.run.active? or match?(%RunWindowRail{in_progress?: true}, socket.assigns.rail)
+  end
+
   defp schedule_fallback(socket) do
     if connected?(socket) and
          (socket.assigns.active_mode == :flow or socket.assigns.run[:backfill_parent?]) and
-         socket.assigns.run.active? and
+         poll_worthy?(socket) and
          is_nil(socket.assigns.refresh_timer_ref) do
       LiveRefresh.schedule_once(
         socket,
@@ -548,7 +574,7 @@ defmodule FavnView.RunDetailLive do
 
     [
       subscribe_fun: &subscribe_run(context, &1),
-      unsubscribe_fun: &Orchestrator.unsubscribe_run(context, &1),
+      unsubscribe_fun: &unsubscribe_run(context, &1),
       replay_on_subscribe?: false,
       refresh_key: :refresh_timer_ref,
       refresh_message: :refresh_run,
@@ -588,34 +614,114 @@ defmodule FavnView.RunDetailLive do
     |> then(fn fun -> fun.(context, root_run_id, limit: 1) end)
   end
 
-  defp refresh_loaded_windows(%{assigns: %{windows: windows}} = socket)
-       when is_list(windows),
-       do: load_windows(socket)
+  defp reset_windows(socket, opts \\ []) do
+    keep? = Keyword.get(opts, :keep_loaded, false)
 
-  defp refresh_loaded_windows(socket), do: socket
+    socket
+    |> assign(
+      windows: if(keep?, do: socket.assigns[:windows]),
+      windows_overflow?: keep? and socket.assigns[:windows_overflow?] == true,
+      windows_status: if(keep?, do: socket.assigns[:windows_status]),
+      windows_read_at: if(keep?, do: socket.assigns[:windows_read_at]),
+      windows_error: nil,
+      open_bucket: nil,
+      rail: nil
+    )
+    |> build_rail()
+  end
 
-  defp load_windows(socket) do
-    case list_run_windows(operator_context(socket), socket.assigns.run_id) do
-      {:ok, %{items: items, overflow?: overflow?}} ->
-        windows = Enum.map(items, &window_choice(&1, socket.assigns.current_scope))
+  # The rail is eager for backfill runs only. A scheduled or manual windowed run
+  # outside a backfill has no sibling windows to navigate to, so it must not pay
+  # for the read.
+  defp backfill_run?(%{submit_kind: kind}) when kind in @backfill_submit_kinds, do: true
 
-        windows_error =
-          if overflow?, do: "Only the newest 1,000 window runs are available in this selector."
+  defp backfill_run?(%{window: window, id: id, root_run_id: root})
+       when not is_nil(window) and is_binary(root),
+       do: root != id
 
-        assign(socket,
-          windows: windows,
-          windows_loading?: false,
-          windows_error: windows_error
-        )
+  defp backfill_run?(_run), do: false
 
-      {:error, _reason} ->
-        assign(socket,
-          windows: nil,
-          windows_loading?: false,
-          windows_error: "Window runs could not be loaded. Try again."
-        )
+  defp refresh_windows(socket) do
+    cond do
+      not backfill_run?(socket.assigns.run) -> socket
+      window_read_due?(socket) -> load_windows(socket)
+      true -> socket
     end
   end
+
+  # Event-driven refreshes can run far faster than the fallback interval. The
+  # window list changes only when the backfill starts another window, so it is
+  # read at most once per fallback interval however often the run refreshes.
+  defp window_read_due?(%{assigns: %{windows_read_at: nil}}), do: true
+
+  defp window_read_due?(%{assigns: %{windows_read_at: read_at}}),
+    do: monotonic_ms() - read_at >= @fallback_refresh_ms
+
+  defp load_windows(socket) do
+    socket = assign(socket, :windows_read_at, monotonic_ms())
+
+    case list_run_windows(operator_context(socket), socket.assigns.run_id) do
+      {:ok, %{items: items, overflow?: overflow?} = result} ->
+        socket
+        |> assign(
+          windows: items,
+          windows_overflow?: overflow?,
+          windows_status: Map.get(result, :backfill_status),
+          windows_error: nil
+        )
+        |> build_rail()
+
+      # A failed window read hides the rail and leaves the run page fully
+      # functional; it is navigation, not run state.
+      {:error, _reason} ->
+        socket
+        |> assign(windows: nil, windows_error: nil, rail: nil)
+        |> build_rail()
+    end
+  end
+
+  defp build_rail(%{assigns: %{windows: windows}} = socket) when is_list(windows) do
+    rail =
+      RunWindowRail.build(windows, socket.assigns.run_id, socket.assigns.current_scope,
+        truncated?: socket.assigns[:windows_overflow?] == true,
+        backfill_status: socket.assigns[:windows_status],
+        open_bucket: socket.assigns[:open_bucket]
+      )
+
+    assign(socket, :rail, rail)
+  end
+
+  defp build_rail(socket), do: assign(socket, :rail, nil)
+
+  defp patch_to_window(socket, run_id) do
+    known? = is_binary(run_id) and Enum.any?(socket.assigns.windows || [], &(&1.run_id == run_id))
+
+    cond do
+      run_id == socket.assigns.run_id -> socket
+      known? -> push_patch(socket, to: ~p"/runs/#{run_id}?view=#{socket.assigns.active_mode}")
+      is_nil(run_id) -> socket
+      true -> put_flash(socket, :error, "That window run is not available")
+    end
+  end
+
+  # The ends of the rail are ends, not a loop. `Enum.at/2` counts a negative
+  # index from the back, so stepping left off the first cell would otherwise
+  # jump to the last one.
+  defp stepped_run_id(%{assigns: %{rail: %RunWindowRail{cells: cells}, run_id: run_id}}, key) do
+    step = if key == "ArrowLeft", do: -1, else: 1
+
+    with index when is_integer(index) <- Enum.find_index(cells, &(&1.run_id == run_id)),
+         target when target >= 0 <- index + step,
+         %{run_id: stepped} <- Enum.at(cells, target) do
+      stepped
+    else
+      _end_of_rail -> nil
+    end
+  end
+
+  defp stepped_run_id(_socket, _key), do: nil
+
+  defp monotonic_ms, do: System.monotonic_time(:millisecond)
 
   defp subscribe_run(context, run_id) do
     Application.get_env(:favn_view, :run_subscribe_fun, &Orchestrator.subscribe_run/2).(
@@ -624,11 +730,13 @@ defmodule FavnView.RunDetailLive do
     )
   end
 
-  defp window_choice(choice, timezone) do
-    %{
-      run_id: choice.run_id,
-      label: window_label(choice.window_start_at, choice.window_end_at, timezone)
-    }
+  # Selecting a window moves the run subscription exactly once. The seam exists
+  # so a test can prove the move happened rather than inferring it.
+  defp unsubscribe_run(context, run_id) do
+    Application.get_env(:favn_view, :run_unsubscribe_fun, &Orchestrator.unsubscribe_run/2).(
+      context,
+      run_id
+    )
   end
 
   defp event_row(event, timezone) do

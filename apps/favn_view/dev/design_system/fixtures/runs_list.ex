@@ -11,6 +11,7 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.RunsList do
   """
 
   alias FavnView.Components.RunsListPage
+  alias FavnView.LogsViewModel
   alias FavnView.RunDays
   alias FavnView.RunsFilters
 
@@ -257,10 +258,9 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.RunsList do
 
   defp short_id(id), do: id
 
-  defp status_label(:succeeded), do: "Succeeded"
-  defp status_label(:failed), do: "Failed"
-  defp status_label(:running), do: "Running"
-  defp status_label(:queued), do: "Queued"
+  # The list labels a status through `LogsViewModel`, so the fixture does too:
+  # a sample that named a status differently would review a page that does not exist.
+  defp status_label(status), do: status |> raw_status() |> LogsViewModel.status_label()
 
   defp raw_status(:succeeded), do: :ok
   defp raw_status(:failed), do: :error

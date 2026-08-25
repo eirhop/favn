@@ -11,6 +11,8 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.Runs do
   flow is the same image tomorrow.
   """
 
+  alias FavnView.LogsViewModel
+
   @anchor ~U[2026-07-23 10:00:00Z]
 
   @doc "Navigation items for a run detail example."
@@ -256,7 +258,8 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.Runs do
       finished_at:
         (finished && FavnView.Time.format(finished, "%b %-d, %Y %H:%M %Z", "Etc/UTC")) ||
           "-",
-      state: spec.status
+      state: spec.status,
+      stage: Map.get(spec, :stage)
     }
   end
 
@@ -301,17 +304,13 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.Runs do
       state: attempt.state,
       started_at: attempt.started_at,
       finished_at: attempt.finished_at,
-      detail?: true
+      stage: attempt.stage
     }
   end
 
-  defp status_label(:ok), do: "Succeeded"
-  defp status_label(:error), do: "Failed"
-  defp status_label(:running), do: "Running"
-  defp status_label(:skipped_fresh), do: "Already fresh"
-  defp status_label(:partial), do: "Partial"
-  defp status_label(:pending), do: "Queued"
-  defp status_label(status), do: status |> to_string() |> String.capitalize()
+  # The page labels a status through `LogsViewModel`, so the fixture does too:
+  # a sample that named a status differently would review a page that does not exist.
+  defp status_label(status), do: LogsViewModel.status_label(status)
 
   defp tone(:ok), do: :success
   defp tone(:error), do: :error

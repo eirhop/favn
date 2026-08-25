@@ -5,6 +5,7 @@ defmodule FavnView.Components.RunDetailPage.WindowSemanticsTest do
 
   alias FavnView.Components.RunDetailPage
   alias FavnView.Dev.DesignSystem.Fixtures.Runs
+  alias FavnView.RunWindowRail
 
   defp render_page(run, opts \\ []) do
     render_component(
@@ -33,38 +34,58 @@ defmodule FavnView.Components.RunDetailPage.WindowSemanticsTest do
     refute html =~ ~s(data-testid="window-progress")
   end
 
-  test "window choices are absent until explicitly loaded" do
+  test "a run outside a backfill shows no rail and no window controls" do
     html = render_page(Runs.single_window())
 
-    assert html =~ ~s(data-testid="load-run-windows")
+    refute html =~ ~s(data-testid="window-rail")
+    refute html =~ ~s(data-testid="load-run-windows")
     refute html =~ ~s(data-testid="run-window-selector")
   end
 
-  test "loaded sibling windows replace the button with one compact selector" do
-    windows = [
-      %{run_id: "run_daily_orders_2026_05_19", label: "Jul 22 – Jul 23"},
-      %{run_id: "run_daily_orders_2026_05_20", label: "Jul 23 – Jul 24"},
-      %{run_id: "run_daily_orders_2026_05_21", label: "Jul 24 – Jul 25"}
-    ]
-
-    html = render_page(Runs.single_window(), windows: windows)
-
-    assert html =~ ~s(data-testid="run-window-selector")
-    assert html =~ "Select a window run"
-    refute html =~ "Jul 22 – Jul 23"
-    assert html =~ "Jul 23 – Jul 24"
-    refute html =~ ~s(data-testid="load-run-windows")
-  end
-
-  test "a one-window child does not link back to itself" do
+  test "sibling window runs render as one selectable calendar rail" do
     run = Runs.single_window()
-    windows = [%{run_id: run.id, label: "Jul 22 – Jul 23"}]
 
-    html = render_page(run, windows: windows)
+    rail =
+      rail(
+        [
+          window("run_daily_orders_2026_07_22", ~U[2026-07-22 00:00:00Z]),
+          window(run.id, ~U[2026-07-23 00:00:00Z]),
+          window("run_daily_orders_2026_07_24", ~U[2026-07-24 00:00:00Z])
+        ],
+        run.id
+      )
 
-    refute html =~ ~s(data-testid="open-run-window")
-    refute html =~ ~s(data-testid="run-window-selector")
-    refute html =~ ~s(data-testid="load-run-windows")
+    html = render_page(run, rail: rail)
+
+    assert html =~ ~s(data-testid="window-rail")
+    assert count(html, ~s(data-testid="window-rail-cell")) == 3
+
+    # Every cell is selectable, including the one already open: the rail is a
+    # calendar, not a list of somewhere-else links.
+    assert count(html, ~s(phx-click="select_window")) == 3
+    assert html =~ ~s(aria-current="true")
+    refute html =~ ~s(data-testid="window-rail-buckets")
+  end
+
+  test "the rail says the set is still growing while the backfill runs" do
+    run = Runs.single_window()
+    windows = [window(run.id, ~U[2026-07-23 00:00:00Z])]
+
+    running = render_page(run, rail: rail(windows, run.id, backfill_status: :running))
+    assert running =~ ~s(data-testid="window-rail-in-progress")
+
+    completed = render_page(run, rail: rail(windows, run.id, backfill_status: :completed))
+    refute completed =~ ~s(data-testid="window-rail-in-progress")
+  end
+
+  test "a truncated window read says so without claiming a total" do
+    run = Runs.single_window()
+    windows = [window(run.id, ~U[2026-07-23 00:00:00Z])]
+
+    html = render_page(run, rail: rail(windows, run.id, truncated?: true))
+
+    assert html =~ ~s(data-testid="window-rail-truncated")
+    assert html =~ "older windows exist"
   end
 
   test "a bounded Flow slice is named precisely" do
@@ -98,26 +119,42 @@ defmodule FavnView.Components.RunDetailPage.WindowSemanticsTest do
 
     assert html =~ ~s(data-testid="backfill-parent-explanation")
     assert html =~ ~s(data-testid="window-progress")
-    assert html =~ ~s(data-testid="load-run-windows")
     assert html =~ "Asset work runs in the windows"
     refute html =~ "No asset work yet"
   end
 
-  test "a multi-window parent starts its selector on an explicit prompt" do
-    run =
-      Runs.single_window()
-      |> Map.merge(%{backfill_parent?: true, window: nil})
+  test "a backfill parent's rail offers its children with none of them current" do
+    run = Map.merge(Runs.single_window(), %{backfill_parent?: true, window: nil})
 
-    windows = [
-      %{run_id: "run-child-one", label: "Jul 1 – Aug 1"},
-      %{run_id: "run-child-two", label: "Aug 1 – Sep 1"}
+    children = [
+      window("run-child-one", ~U[2026-07-01 00:00:00Z]),
+      window("run-child-two", ~U[2026-08-01 00:00:00Z])
     ]
 
-    html = render_page(run, windows: windows)
+    html = render_page(run, rail: rail(children, run.id))
 
-    assert html =~ ~s(data-testid="run-window-selector")
-    assert html =~ "Select a window run"
-    assert html =~ ~s(value="run-child-one")
-    assert html =~ ~s(value="run-child-two")
+    assert count(html, ~s(data-testid="window-rail-cell")) == 2
+    assert html =~ ~s(phx-value-run_id="run-child-one")
+    assert html =~ ~s(phx-value-run_id="run-child-two")
+
+    # The parent is not one of its own windows, so no cell is current.
+    refute html =~ ~s(aria-current="true")
   end
+
+  defp rail(windows, selected_run_id, opts \\ []) do
+    RunWindowRail.build(windows, selected_run_id, "Etc/UTC", opts)
+  end
+
+  defp window(run_id, start_at, opts \\ []) do
+    %{
+      run_id: run_id,
+      window_start_at: start_at,
+      window_end_at: DateTime.add(start_at, 1, :day),
+      status: Keyword.get(opts, :status, :succeeded),
+      kind: :day,
+      timezone: "Etc/UTC"
+    }
+  end
+
+  defp count(html, fragment), do: html |> String.split(fragment) |> length() |> Kernel.-(1)
 end
