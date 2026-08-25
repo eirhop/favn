@@ -419,6 +419,30 @@ defmodule FavnOrchestrator.CoverageTest do
              )
   end
 
+  test "rejects combined coverage for append materialization", fixture do
+    version = Process.get(:coverage_version)
+
+    append_assets =
+      Enum.map(version.manifest.assets, fn
+        %Asset{ref: @asset_ref} = asset ->
+          %{asset | materialization: {:incremental, strategy: :append}}
+
+        asset ->
+          asset
+      end)
+
+    Process.put(
+      :coverage_version,
+      %{version | manifest: %{version.manifest | assets: append_assets}}
+    )
+
+    assert {:error, {:combined_append_not_supported, @asset_ref}} =
+             Coverage.plan_missing_backfill(fixture.context, fixture.target_id,
+               evaluated_at: @evaluated_at,
+               combine_windows: true
+             )
+  end
+
   # Submitting re-plans from the selection it was handed and refuses unless the hash
   # still matches, so an explicit selection has to survive the trip out to a browser and
   # back with its keys intact. If it did not, every backfill an operator picked on the

@@ -549,17 +549,22 @@ defmodule FavnView.AssetCoverageTest do
             missing_count: 1
           },
           calendar: day_calendar([8]),
+          combine_windows?: true,
           plan: %{plan_hash: String.duplicate("a", 64), window_count: 1, windows: windows}
         )
 
+      assert html =~ ~s(data-testid="coverage-backfill-form")
+      assert html =~ ~s(data-testid="coverage-backfill-combine-windows")
+      assert html =~ ~s(checked)
       assert html =~ ~s(data-testid="coverage-plan-review")
       assert html =~ "Ready to backfill 1 day"
       assert html =~ "8 July 2026"
       assert html =~ ~s(data-testid="submit-missing-coverage")
 
-      # The plan is the thing being confirmed, so the button that would build a
-      # different one is gone rather than sitting beside it.
+      # Changing the mode invalidates this plan, but no second plan-submit action
+      # competes with the confirmation while the current plan is under review.
       refute html =~ ~s(data-testid="plan-missing-coverage")
+      refute html =~ ~s(phx-submit="plan_missing_coverage")
     end
 
     test "a viewer sees the gaps but is told why they cannot fill them" do

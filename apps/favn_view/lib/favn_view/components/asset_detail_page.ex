@@ -731,84 +731,87 @@ defmodule FavnView.Components.AssetDetailPage do
         {coverage_caption(@calendar)}
       </p>
 
-      <form
-        :if={coverage_backfillable?(@coverage) && is_nil(@plan)}
-        phx-change="change_coverage_backfill"
-        phx-submit="plan_missing_coverage"
-        class="mt-6 border-t border-base-content/10 pt-5"
-        data-testid="coverage-backfill-form"
-      >
-        <.stack gap={:sm}>
-          <.input
-            id="coverage-backfill-combine-windows"
-            type="checkbox"
-            name="coverage_backfill[combine_windows]"
-            label="Combine windows"
-            tooltip="Run all selected windows in one child run instead of creating one child run per window."
-            checked={@combine_windows?}
-            disabled={!@can_plan? || @planning?}
-            data-testid="coverage-backfill-combine-windows"
-          />
-
-          <.inline gap={:sm}>
-            <.button
-              type="submit"
-              loading={@planning?}
-              disabled={!@can_plan? || @planning?}
-              data-testid="plan-missing-coverage"
-            >
-              {coverage_backfill_label(@coverage, @calendar)}
-            </.button>
-
-            <.button
-              :if={@calendar.selected_count > 0}
-              type="button"
-              variant={:ghost}
-              phx-click="clear_coverage_selection"
-              data-testid="clear-coverage-selection"
-            >
-              Clear selection
-            </.button>
-
-            <p :if={!@can_plan?} class="text-sm text-warning">
-              Backfilling needs an operator account and a working target.
-            </p>
-          </.inline>
-        </.stack>
-      </form>
-
       <div
-        :if={@plan}
+        :if={coverage_backfillable?(@coverage) || !is_nil(@plan)}
         class="mt-6 border-t border-base-content/10 pt-5"
-        data-testid="coverage-plan-review"
       >
-        <p class="font-medium">
-          Ready to backfill {field(@plan, :window_count, 0)} {CoverageCalendar.period_noun(
-            @calendar.kind,
-            field(@plan, :window_count, 0)
-          )}
-        </p>
+        <form
+          phx-change="change_coverage_backfill"
+          phx-submit={if is_nil(@plan), do: "plan_missing_coverage", else: nil}
+          data-testid="coverage-backfill-form"
+        >
+          <.stack gap={:sm}>
+            <.input
+              id="coverage-backfill-combine-windows"
+              type="checkbox"
+              name="coverage_backfill[combine_windows]"
+              label="Combine windows"
+              tooltip="Run all selected windows in one child run instead of creating one child run per window."
+              checked={@combine_windows?}
+              disabled={!@can_plan? || @planning?}
+              data-testid="coverage-backfill-combine-windows"
+            />
 
-        <ul class="mt-2 max-h-40 space-y-0.5 overflow-y-auto text-sm favn-text-muted">
-          <li :for={window <- field(@plan, :windows, [])}>
-            {coverage_plan_window_label(window, @timezone)}
-          </li>
-        </ul>
+            <.inline :if={is_nil(@plan)} gap={:sm}>
+              <.button
+                type="submit"
+                loading={@planning?}
+                disabled={!@can_plan? || @planning?}
+                data-testid="plan-missing-coverage"
+              >
+                {coverage_backfill_label(@coverage, @calendar)}
+              </.button>
 
-        <!-- `:primary`, not `:solid`: this is a page panel, and the filled violet is
+              <.button
+                :if={@calendar.selected_count > 0}
+                type="button"
+                variant={:ghost}
+                phx-click="clear_coverage_selection"
+                data-testid="clear-coverage-selection"
+              >
+                Clear selection
+              </.button>
+
+              <p :if={!@can_plan?} class="text-sm text-warning">
+                Backfilling needs an operator account and a working target.
+              </p>
+            </.inline>
+          </.stack>
+        </form>
+
+        <div
+          :if={@plan}
+          class="mt-2"
+          data-testid="coverage-plan-review"
+        >
+          <p class="font-medium">
+            Ready to backfill {field(@plan, :window_count, 0)} {CoverageCalendar.period_noun(
+              @calendar.kind,
+              field(@plan, :window_count, 0)
+            )}
+          </p>
+
+          <ul class="mt-2 max-h-40 space-y-0.5 overflow-y-auto text-sm favn-text-muted">
+            <li :for={window <- field(@plan, :windows, [])}>
+              {coverage_plan_window_label(window, @timezone)}
+            </li>
+          </ul>
+
+          <!-- `:primary`, not `:solid`: this is a page panel, and the filled violet is
         reserved for a dialog asking for a decision. Planning and submitting never show
         together, so there is still one action button per view state. -->
-        <.button
-          class="mt-4"
-          loading={@submitting?}
-          phx-click="submit_missing_coverage"
-          data-command-operation="coverage_backfill_submit"
-          data-command-resource={@command_resource}
-          disabled={@submitting?}
-          data-testid="submit-missing-coverage"
-        >
-          Start the backfill
-        </.button>
+          <.button
+            class="mt-4"
+            loading={@submitting?}
+            phx-click="submit_missing_coverage"
+            data-command-operation="coverage_backfill_submit"
+            data-command-resource={@command_resource}
+            disabled={@submitting?}
+            data-testid="submit-missing-coverage"
+          >
+            Start the backfill
+          </.button>
+        </div>
       </div>
 
       <p :if={@action_error} class="mt-4 text-sm text-error" data-testid="coverage-action-error">

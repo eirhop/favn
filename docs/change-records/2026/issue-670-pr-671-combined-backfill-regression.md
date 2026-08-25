@@ -204,6 +204,11 @@ allowlist and already exists in current-main backfill metadata. Rollback restore
 the regression, so the safe rollback is the prior release only after outstanding
 backfills are stopped or this fix remains deployed.
 
+Coverage plans created before this repair do not contain the frozen
+`combine_windows` field and are intentionally rejected as invalid. Operators
+must plan those missing windows again after deployment; no submitted backfill or
+durable child identity is changed.
+
 ## Verification plan
 
 | Acceptance criterion | Planned evidence | Owning layer |
@@ -278,15 +283,23 @@ and keyboard focus, and the pipeline form uses a responsive two-column layout.
 | Slice | Production added | Production deleted | Supporting added | Supporting deleted | Budget result |
 | --- | ---: | ---: | ---: | ---: | --- |
 | 1. Durable intent and recovery | 9 | 9 | 27 | 7 | Within budget |
-| 2. Asset Coverage planning | 107 | 14 | 46 | 5 | Within the 25 percent explanation threshold |
-| 3. Shared operator forms | 175 | 98 | 185 | 6 | Addition threshold exceeded by 25 lines; see below |
-| 4. PostgreSQL lifecycle proof | 0 | 0 | 219 | 0 | Within the 25 percent explanation threshold |
+| 2. Asset Coverage planning | 112 | 14 | 70 | 5 | Within the 25 percent explanation threshold |
+| 3. Shared operator forms | 205 | 125 | 192 | 8 | Addition threshold exceeded by 55 lines; see below |
+| 4. PostgreSQL lifecycle proof | 0 | 0 | 252 | 0 | Addition threshold exceeded by 27 lines; see below |
 
-Slice 3 is a net 77-line production change. Its addition count is higher than
+Slice 3 is a net 80-line production change. Its addition count is higher than
 planned because the existing raw 61-line pipeline form was replaced with shared
-fields while the asset LiveView needed explicit state and event plumbing. It did
+fields while the asset LiveView needed explicit state and event plumbing. The
+final review also required the same control to remain reachable during plan
+review, which added explicit conditional rendering but no second action. It did
 not introduce a new form framework or component hierarchy; both screens reuse
 the existing field component.
+
+Slice 4 is test-only. The overrun adds real PostgreSQL proof for four distinct
+outcomes the regression crossed: three separate asset children, one shared
+Coverage child, one shared pipeline child, and terminal grouped failure with no
+reclaim. The tests reuse the existing deployment fixture and one dispatcher
+helper; no new production abstraction or persistence path was added.
 
 ## Deviations from the approved plan
 
@@ -303,9 +316,9 @@ None. The implementation matched the approved plan.
 
 | Check | Result | Evidence boundary |
 | --- | --- | --- |
-| Intent, dispatcher, and Coverage tests | 30 passed | Focused Orchestrator behavior, including both booleans and failure disposition |
+| Intent, dispatcher, and Coverage tests | 31 passed | Focused Orchestrator behavior, including both booleans, append rejection, and failure disposition |
 | Orchestrator fast app suite | 735 passed, 2 excluded | Full owning-app regression suite; one unrelated teardown race on the first run passed alone and on rerun |
-| PostgreSQL feature tests | 4 passed | Real durable child creation, one shared child, terminal grouped failure, and no reclaim |
+| PostgreSQL feature tests | 5 passed | Three separate children, combined Coverage and pipeline children, terminal grouped failure, and no reclaim |
 | PostgreSQL core authority file | 136 passed | Broader real-storage coverage around the changed integration test owner |
 | View focused tests | 58 passed | Both forms, selected values, plan invalidation, and accessible tooltip markup |
 | View full app suite | 557 passed | Full View regression suite |
@@ -313,7 +326,7 @@ None. The implementation matched the approved plan.
 | Dialyzer | Passed | Umbrella test-environment type analysis |
 | Test tag tier guard | Passed | Every tagged tier remains represented in CI |
 | Formatting and whitespace | Passed | `mix format` and `git diff --check` |
-| Design-system browser audit | 152 checks passed, 0 failed or skipped | Dark/light, desktop/mobile field, pipeline, and Coverage examples; keyboard-focus tooltip opacity was `1` |
+| Design-system browser audit | 152 broad checks plus 62 corrected-plan checks passed, 0 failed or skipped | Dark/light, desktop/mobile field, pipeline, Coverage, plan-review toggle, and keyboard-focus tooltip behavior |
 | Broad PostgreSQL app suite | 337 of 339 passed, 19 excluded | One unrelated timing failure passed alone and in the 136-test owner file; the existing protected local-password bootstrap test still fails from local configuration |
 | GitHub CI | Pending | Must qualify the final rebased head before the PR becomes ready |
 
