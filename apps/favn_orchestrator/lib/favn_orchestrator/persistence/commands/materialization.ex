@@ -285,7 +285,7 @@ defmodule FavnOrchestrator.Persistence.Results.MaterializationDecision do
 
   @type t :: %__MODULE__{
           claim_key: String.t(),
-          status: :claimed | :competing | :materialized | :failed | :missing,
+          status: :claimed | :competing | :materialized | :failed | :expired | :missing,
           claim: MaterializationClaim.t() | nil,
           materialization: Materialization.t() | nil
         }

@@ -25,11 +25,20 @@ defmodule FavnView.RebuildsLive do
        plan_attempt: nil,
        start_attempt: nil,
        planning?: false,
+       empty?: false,
        error: error
      )}
   end
 
   @impl true
+  def handle_event("validate_rebuild", %{"rebuild" => rebuild}, socket) do
+    {:noreply,
+     assign(socket,
+       empty?: Map.get(rebuild, "empty", "false") == "true",
+       target_id: Map.get(rebuild, "target_id", socket.assigns.target_id)
+     )}
+  end
+
   def handle_event(
         "plan_rebuild",
         %{"rebuild" => %{"target_id" => target_id, "reason" => reason} = rebuild} = params,
@@ -114,6 +123,7 @@ defmodule FavnView.RebuildsLive do
       error={@error}
       has_more?={@has_more? || false}
       planning?={@planning?}
+      empty?={@empty?}
       current_scope={@current_scope}
       operator_workspaces={@operator_workspaces}
     />

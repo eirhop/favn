@@ -9,6 +9,7 @@ defmodule FavnOrchestrator.Backfills do
   """
 
   alias Favn.Backfill.RangeResolver
+  alias Favn.Assets.Planner
   alias Favn.Manifest.Pipeline
   alias Favn.Manifest.PipelineResolver
   alias Favn.Retry.Policy
@@ -71,10 +72,13 @@ defmodule FavnOrchestrator.Backfills do
          {:ok, range} <- RangeResolver.resolve(range_request),
          :ok <- validate_window_count(range.requested_count, opts),
          {:ok, selection} <- Selection.backfill(range.anchors, range.timezone),
-         {:ok, _resolution} <- resolve_pipeline(version, pipeline, selection) do
+         {:ok, resolution} <- resolve_pipeline(version, pipeline, selection),
+         combine_windows <- effective_combine_windows(pipeline, opts),
+         :ok <-
+           validate_combined_execution(version, resolution, selection, combine_windows) do
       {:ok,
        plan_map(runtime.deployment_id, version.manifest_version_id, target_id, range, selection)
-       |> put_execution_summary(effective_combine_windows(pipeline, opts))}
+       |> put_execution_summary(combine_windows)}
     end
   end
 
@@ -105,6 +109,9 @@ defmodule FavnOrchestrator.Backfills do
            :ok <- validate_window_count(range.requested_count, opts),
            {:ok, selection} <- Selection.backfill(range.anchors, range.timezone),
            {:ok, resolution} <- resolve_pipeline(version, pipeline, selection),
+           combine_windows <- effective_combine_windows(pipeline, opts),
+           :ok <-
+             validate_combined_execution(version, resolution, selection, combine_windows),
            submission <-
              build_submission(
                context,
@@ -322,6 +329,21 @@ defmodule FavnOrchestrator.Backfills do
         params: %{},
         window_selection: selection
       )
+    end
+  end
+
+  defp validate_combined_execution(_version, _resolution, _selection, false), do: :ok
+
+  defp validate_combined_execution(version, resolution, selection, true) do
+    with {:ok, index} <- ManifestIndexCache.fetch(version),
+         {:ok, _plan} <-
+           Planner.plan(resolution.target_refs,
+             planning_index: index.planning_index,
+             dependencies: resolution.dependencies,
+             anchor_windows: selection.effective_anchors,
+             combine_windows: true
+           ) do
+      :ok
     end
   end
 

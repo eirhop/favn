@@ -1534,7 +1534,7 @@ defmodule FavnOrchestrator do
         manifest_version_id,
         target_id,
         request.range,
-        []
+        maybe_put_opt([], :combine_windows, request.combine_windows)
       )
     end
   end

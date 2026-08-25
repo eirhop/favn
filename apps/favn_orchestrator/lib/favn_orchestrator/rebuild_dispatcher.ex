@@ -1102,7 +1102,28 @@ defmodule FavnOrchestrator.RebuildDispatcher do
         end
 
       {:ok, %MaterializationDecision{status: status}}
-      when status in [:claimed, :competing, :missing] ->
+      when status in [:expired, :missing] and item.status == :outcome_unknown ->
+        case orphaned_claim_disposition(operation, item.status) do
+          :cleanup ->
+            transition_item(
+              context,
+              operation,
+              item,
+              state,
+              :failed,
+              item.child_run_id,
+              %{
+                reason: "combined_append_claim_absent_and_candidate_requires_cleanup",
+                materialization_claim_status: status
+              }
+            )
+
+          :pending ->
+            :pending
+        end
+
+      {:ok, %MaterializationDecision{status: status}}
+      when status in [:claimed, :competing, :expired, :missing] ->
         :pending
 
       {:error, reason} ->
@@ -2048,6 +2069,14 @@ defmodule FavnOrchestrator.RebuildDispatcher do
 
   defp combined_append?(operation),
     do: field(operation.plan_payload, :combined_append, false)
+
+  @doc false
+  @spec orphaned_claim_disposition(map(), atom()) :: :cleanup | :pending
+  def orphaned_claim_disposition(operation, :outcome_unknown) when is_map(operation) do
+    if combined_append?(operation), do: :cleanup, else: :pending
+  end
+
+  def orphaned_claim_disposition(_operation, _item_status), do: :pending
 
   defp emit_error(workspace_id, operation_id, operation, reason) do
     :telemetry.execute(

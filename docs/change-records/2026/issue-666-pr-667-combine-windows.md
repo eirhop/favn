@@ -516,14 +516,23 @@ while retaining schema/contract validation. Empty-generation completion is
 explicitly marked so PostgreSQL does not publish synthetic coverage or freshness
 evidence for the range used to create the typed empty table.
 
+Final-review corrections keep that design intact: all operator entry points now
+preserve the nullable override, combined append is rejected during read-only
+planning before persistence, and shared-child lookup uncertainty leaves exact
+ledger rows retryable. PostgreSQL also checks a live coarse-operation claim when
+the companion lock has expired. An expired or absent materialization claim lets
+an unknown combined-append item fail into candidate cleanup instead of waiting
+forever.
+
 The existing pipeline-backfill and rebuild forms expose the choices as
 checkboxes. Operator output reports logical windows, physical executions, and
-combined, separate, or empty execution mode. Daily and monthly coverage views
-remain unchanged because they continue to read exact coverage rows.
+combined, separate, or empty execution mode. Selecting empty rebuild disables
+the irrelevant combine control. Daily and monthly coverage views remain
+unchanged because they continue to read exact coverage rows.
 
 ### Actual scope and complexity
 
-- Files and ownership areas changed: 64 files across the public DSL/CLI,
+- Files and ownership areas changed: 69 files across the public DSL/CLI,
   authoring and core window contracts, orchestrator planning and lifecycle,
   runner empty-generation checks, PostgreSQL projection/locking, View forms,
   tests, canonical docs, and the storage skill.
@@ -531,7 +540,7 @@ remain unchanged because they continue to read exact coverage rows.
   `favn_core`; all durable orchestration remains behind the orchestrator facade
   and persistence behaviours; `favn_view` calls only that facade; SQL execution
   remains runner-local; PostgreSQL owns projection and lock implementation.
-- Implementation complexity: 1,064 production lines added and 159 deleted.
+- Implementation complexity: 1,235 production lines added and 169 deleted.
   The implementation is below the estimated production range because existing
   range expansion, ledger rows, rebuild items/candidates, target locks, and
   checkbox components were reused directly.
@@ -540,14 +549,14 @@ remain unchanged because they continue to read exact coverage rows.
   physical-batch table, or new retry lifecycle.
 - Canonical documentation updated: authored window behavior, local CLI use,
   features, rebuild architecture, PostgreSQL test setup, and `Favn.AI` routing.
-- Supporting proof: 628 lines added and 102 deleted. Exact allocation by the
+- Supporting proof: 910 lines added and 128 deleted. Exact allocation by the
   original eight slices would be artificial because the same planner, rebuild,
   and PostgreSQL integration tests prove several slices; the exact aggregate is
-  1,692 additions and 261 deletions.
+  2,145 additions and 297 deletions.
 
 ## Deviations from the approved plan
 
-- The production implementation is 316 lines below the approved minimum. This
+- The production implementation is 145 lines below the approved minimum. This
   is a favorable simplification: compact range metadata and existing lifecycle
   tables were sufficient, so no new grouped persistence or batching service was
   required.
@@ -555,11 +564,10 @@ remain unchanged because they continue to read exact coverage rows.
   but each exact ledger row reconciles that shared terminal run through the
   existing idempotent transition command. A new group-transition persistence
   command was not added. Temporary mixed row statuses are possible while a
-  dispatcher batch catches up; no duplicate child execution is possible.
-- Empty rebuild does not dynamically disable the combine checkbox. The backend
-  ignores that value, the resulting immutable plan reports execution mode
-  `empty`, and the UI warns about the empty root and stale downstream data. This
-  avoids adding client-side state for a choice with no semantic effect.
+  dispatcher batch catches up. A transient shared-child lookup or enqueue error
+  leaves the affected row retryable, so it cannot become permanently failed
+  while the shared child later succeeds; no duplicate child execution is
+  possible.
 - The user requested a durable local PostgreSQL test reminder during
   implementation. The `ecto-storage` skill and PostgreSQL testing guide now
   require starting the repository container, using a separate disposable
@@ -580,6 +588,13 @@ remain unchanged because they continue to read exact coverage rows.
   deterministic child run rather than adding a batch table.
 - 2026-08-25: Report empty rebuild as its own execution mode and keep expected
   logical window count visible even though the candidate materializes no rows.
+- 2026-08-25: Reject active combined append by invoking the existing asset
+  planner before creating a root run or backfill ledger.
+- 2026-08-25: Preserve target serialization after a coarse lock expires by
+  admitting exact claims only when no live claim from another target operation
+  exists. No new lock kind or persistence table was added.
+- 2026-08-25: Treat a missing or expired materialization claim as fenced evidence
+  for an already-unknown combined append item and proceed to candidate cleanup.
 
 ## Verification evidence
 
@@ -589,11 +604,11 @@ remain unchanged because they continue to read exact coverage rows.
 | `favn_authoring` fast suite | 148 passed | DSL behavior |
 | `favn_core` fast suite | 449 passed; combined planner file 8 passed after the DST addition | Policy, range identity, planner, daily/monthly/hourly behavior |
 | `favn` fast suite | 183 passed, 3 excluded | CLI and public boundary |
-| `favn_view` fast suite | 543 passed, 1 excluded | Forms, defaults, events, and curated design-system rendering |
+| `favn_view` fast suite | 544 passed, 1 excluded | Forms, defaults, events, empty-control disablement, and curated design-system rendering |
 | `favn_runner` fast suite | 254/255 passed in the final full run; the unrelated drain test passed immediately alone | Empty-generation schema/check behavior; one local timing/setup flake remains outside this feature |
-| `favn_orchestrator` fast suite | 721/722 passed; the unrelated 100 ms heartbeat test passed immediately alone; rebuild tests 10 passed | Planning, backfill/rebuild inputs, retries, snapshots, and lifecycle |
-| PostgreSQL feature tests | 3 passed against local PostgreSQL 18 in Docker; the focused empty-generation projection assertion also passed after its final evidence marker was added | Real coarse-lock exclusion, exact coverage fan-out with one range freshness row, no synthetic evidence for an empty generation, and grouped exact backfill ledger |
-| `favn_storage_postgres` fast suite | 332/333 passed, 18 excluded | Broad real-PostgreSQL regression evidence; the existing protected-password bootstrap test is incompatible with this local temporary-file permission environment |
+| `favn_orchestrator` fast suite | 725 passed, 2 excluded | Planning, override propagation, shared-child uncertainty, rebuild reconciliation, snapshots, and lifecycle |
+| PostgreSQL feature tests | 4 passed together against local PostgreSQL 18 in Docker | Lock-expiry exclusion through the live combined claim, exact range coverage with one freshness row, no synthetic empty evidence, HTTP override propagation, grouped ledger persistence, and append rejection before mutation |
+| `favn_storage_postgres` fast suite | 333/334 passed, 18 excluded after recreating the disposable `favn_test` database from the current migrations | Broad real-PostgreSQL regression evidence; the existing protected-password bootstrap test remains incompatible with this local temporary-file permission environment |
 
 ### Not verified
 
@@ -605,9 +620,9 @@ remain unchanged because they continue to read exact coverage rows.
 
 | Field | Result |
 | --- | --- |
-| Reviewer | Pending independent person or agent |
+| Reviewer | Independent `gpt-5.6-sol` agent at extra-high reasoning; re-review pending |
 | Compared | Approved plan, implementation, tests, diagnostics, and docs |
 | Deviations complete | Pending |
-| Findings | Pending |
-| Findings addressed and rechecked | Pending |
+| Findings | First final review stopped on dropped overrides, late append rejection, lock-expiry overlap, permanent shared-ledger divergence under uncertainty, orphaned unknown append cleanup, the enabled empty-mode checkbox, and missing focused proof. |
+| Findings addressed and rechecked | Implementation and focused regression tests now address every finding; independent re-review is pending. |
 | Verdict | Pending |

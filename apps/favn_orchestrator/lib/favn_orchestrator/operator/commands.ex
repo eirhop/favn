@@ -291,6 +291,7 @@ defmodule FavnOrchestrator.Operator.Commands do
        |> maybe_put(:coverage_baseline_id, request.coverage_baseline_id)
        |> maybe_put(:refresh, pipeline_refresh(request.refresh_mode))
        |> maybe_put(:retry_policy, request.retry_policy)
+       |> maybe_put(:combine_windows, request.combine_windows)
        |> maybe_put(:timeout_ms, request.timeout_ms)}
     end
   end

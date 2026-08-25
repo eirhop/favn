@@ -117,10 +117,17 @@ defmodule FavnOrchestrator.BackfillDispatcher do
             end
 
           :missing ->
-            _ = transition(context, window, owner_id, :failed, nil, error_payload(reason))
-            :ok
+            case submission_error_disposition(window.payload, :missing) do
+              :retry ->
+                :ok
+
+              :fail ->
+                _ = transition(context, window, owner_id, :failed, nil, error_payload(reason))
+                :ok
+            end
 
           {:unknown, recovery_error} ->
+            :retry = submission_error_disposition(window.payload, :unavailable)
             emit_error(context.workspace_id, :reconcile_submit_error, recovery_error)
         end
     end
@@ -153,6 +160,16 @@ defmodule FavnOrchestrator.BackfillDispatcher do
 
   defp resolve_submission_result(fun) when is_function(fun, 0), do: fun.()
   defp resolve_submission_result(result), do: result
+
+  @doc false
+  @spec submission_error_disposition(map(), :missing | :unavailable) :: :retry | :fail
+  def submission_error_disposition(payload, :unavailable) when is_map(payload), do: :retry
+
+  def submission_error_disposition(payload, :missing) when is_map(payload) do
+    if is_binary(field(payload, "execution_group_id")),
+      do: :retry,
+      else: :fail
+  end
 
   defp submit_child(context, window, run_id) do
     with {:ok, %Backfill{} = backfill} <- Backfills.get(context, window.backfill_id),

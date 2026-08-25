@@ -193,6 +193,26 @@ defmodule FavnView.RebuildsLiveTest do
     assert plan_hash == String.duplicate("a", 64)
   end
 
+  test "empty rebuild disables the irrelevant combine-windows choice", %{conn: conn} do
+    {conn, _operator_context} = authenticated_conn(conn)
+
+    Application.put_env(:favn_view, :page_operator_rebuilds_fun, fn _context, _opts ->
+      {:ok, %{items: [], next_cursor: nil, has_more?: false, limit: 100}}
+    end)
+
+    assert {:ok, view, _html} = live(conn, ~p"/rebuilds")
+    refute has_element?(view, "[data-testid=rebuild-combine-windows][disabled]")
+
+    view
+    |> form("form[phx-submit=plan_rebuild]",
+      rebuild: %{target_id: "asset:orders", reason: "backfill later", empty: "true"}
+    )
+    |> render_change()
+
+    assert has_element?(view, "[data-testid=rebuild-combine-windows][disabled]")
+    assert has_element?(view, "[data-testid=rebuild-empty][checked]")
+  end
+
   test "detail workflow delegates mutation permissions and item pagination to the facade" do
     test_pid = self()
     plan_hash = String.duplicate("a", 64)

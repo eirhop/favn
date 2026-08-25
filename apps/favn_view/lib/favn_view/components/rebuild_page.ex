@@ -12,6 +12,7 @@ defmodule FavnView.Components.RebuildPage do
   attr :error, :string, default: nil
   attr :has_more?, :boolean, default: false
   attr :planning?, :boolean, default: false
+  attr :empty?, :boolean, default: false
   attr :current_scope, :any, default: nil
   attr :operator_workspaces, :list, default: []
 
@@ -38,8 +39,10 @@ defmodule FavnView.Components.RebuildPage do
           </p>
 
           <.form
+            id="rebuild-plan-form"
             for={%{}}
             as={:rebuild}
+            phx-change="validate_rebuild"
             phx-submit="plan_rebuild"
             class="mt-5 space-y-4"
             data-command-operation="rebuild_plan"
@@ -72,6 +75,7 @@ defmodule FavnView.Components.RebuildPage do
               name="rebuild[combine_windows]"
               label="Combine adjacent windows into one run"
               checked
+              disabled={@empty?}
               data-testid="rebuild-combine-windows"
             />
 
@@ -80,6 +84,7 @@ defmodule FavnView.Components.RebuildPage do
               type="checkbox"
               name="rebuild[empty]"
               label="Activate an empty table and backfill it later"
+              checked={@empty?}
               data-testid="rebuild-empty"
             />
 
