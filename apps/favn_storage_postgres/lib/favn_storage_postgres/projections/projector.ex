@@ -581,7 +581,8 @@ defmodule FavnStoragePostgres.Projections.Projector do
         materialization_id: event.aggregate_id
       )
 
-    if materialization.target_kind == "asset" do
+    if materialization.target_kind == "asset" and
+         materialization.payload["empty_generation"] != true do
       deployment =
         Repo.get_by!(WorkspaceDeployment,
           workspace_id: event.workspace_id,

@@ -512,7 +512,9 @@ by default with an explicit separate mode. Successful combined materializations
 publish exact constituent coverage and one range freshness result. Active-table
 append is rejected; rebuild-owned append candidates are one-shot. Explicit empty
 rebuilds activate only an empty root generation and mark data checks as not run
-while retaining schema/contract validation.
+while retaining schema/contract validation. Empty-generation completion is
+explicitly marked so PostgreSQL does not publish synthetic coverage or freshness
+evidence for the range used to create the typed empty table.
 
 The existing pipeline-backfill and rebuild forms expose the choices as
 checkboxes. Operator output reports logical windows, physical executions, and
@@ -590,7 +592,7 @@ remain unchanged because they continue to read exact coverage rows.
 | `favn_view` fast suite | 543 passed, 1 excluded | Forms, defaults, events, and curated design-system rendering |
 | `favn_runner` fast suite | 254/255 passed in the final full run; the unrelated drain test passed immediately alone | Empty-generation schema/check behavior; one local timing/setup flake remains outside this feature |
 | `favn_orchestrator` fast suite | 721/722 passed; the unrelated 100 ms heartbeat test passed immediately alone; rebuild tests 10 passed | Planning, backfill/rebuild inputs, retries, snapshots, and lifecycle |
-| PostgreSQL feature tests | 3 passed against local PostgreSQL 18 in Docker | Real coarse-lock exclusion, exact coverage fan-out with one range freshness row, and grouped exact backfill ledger |
+| PostgreSQL feature tests | 3 passed against local PostgreSQL 18 in Docker; the focused empty-generation projection assertion also passed after its final evidence marker was added | Real coarse-lock exclusion, exact coverage fan-out with one range freshness row, no synthetic evidence for an empty generation, and grouped exact backfill ledger |
 | `favn_storage_postgres` fast suite | 332/333 passed, 18 excluded | Broad real-PostgreSQL regression evidence; the existing protected-password bootstrap test is incompatible with this local temporary-file permission environment |
 
 ### Not verified

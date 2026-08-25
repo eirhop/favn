@@ -2032,6 +2032,57 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
                target_id: fixture.target_id,
                limit: 10
              })
+
+    empty_claim_key = "empty-generation-window:#{run.id}"
+
+    assert {:ok, %{status: :claimed, claim: empty_claim}} =
+             MaterializationStore.claim(%{
+               claim
+               | command_id: "claim:" <> empty_claim_key,
+                 claim_key: empty_claim_key,
+                 evidence_generation_id: evidence_generation_id,
+                 partition_key: Favn.Freshness.Key.window!(first_window_key)
+             })
+
+    empty_materialization_id = "materialization:" <> empty_claim_key
+
+    assert {:ok, %{status: :materialized}} =
+             MaterializationStore.finish(%FinishMaterialization{
+               workspace_context: fixture.workspace_context,
+               command_id: "finish:" <> empty_claim_key,
+               claim_key: empty_claim_key,
+               owner_id: empty_claim.owner_id,
+               fencing_token: empty_claim.fencing_token,
+               expected_version: empty_claim.version,
+               status: :succeeded,
+               materialization_id: empty_materialization_id,
+               payload: %{
+                 "freshness_version" => evidence_generation_id <> ":empty",
+                 "run_id" => run.id,
+                 "manifest_version_id" => fixture.version.manifest_version_id,
+                 "manifest_content_hash" => fixture.version.content_hash,
+                 "evidence_generation_id" => evidence_generation_id,
+                 "empty_generation" => true
+               },
+               occurred_at: DateTime.utc_now()
+             })
+
+    assert {:ok, _publications} = Sequencer.sequence_batch()
+    assert drain_projector("empty-generation-projector:" <> run.id) > 0
+
+    assert %{rows: [[0]]} =
+             SQL.query!(
+               Repo,
+               "SELECT count(*) FROM favn_control.asset_window_states WHERE workspace_id = $1 AND materialization_id = $2",
+               [fixture.workspace_id, empty_materialization_id]
+             )
+
+    assert %{rows: [[0]]} =
+             SQL.query!(
+               Repo,
+               "SELECT count(*) FROM favn_control.asset_freshness_states WHERE workspace_id = $1 AND latest_success_materialization_id = $2",
+               [fixture.workspace_id, empty_materialization_id]
+             )
   end
 
   test "registers and deploys an immutable exact manifest catalog", fixture do
