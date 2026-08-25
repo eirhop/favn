@@ -72,6 +72,7 @@ defmodule FavnView.AssetDetailLive do
         submitting_window_run?: false,
         run_error: nil,
         coverage_plan: nil,
+        coverage_combine_windows?: false,
         coverage_windows: nil,
         coverage_action_error: nil,
         coverage_selection: MapSet.new(),
@@ -116,6 +117,7 @@ defmodule FavnView.AssetDetailLive do
           submitting_window_run?: false,
           run_error: nil,
           coverage_plan: nil,
+          coverage_combine_windows?: false,
           coverage_windows: nil,
           coverage_action_error: nil,
           coverage_selection: MapSet.new(),
@@ -159,7 +161,28 @@ defmodule FavnView.AssetDetailLive do
      |> assign_coverage_calendar()}
   end
 
-  def handle_event("plan_missing_coverage", _params, socket) do
+  def handle_event(
+        "change_coverage_backfill",
+        %{"coverage_backfill" => params},
+        socket
+      ) do
+    {:noreply,
+     assign(socket,
+       coverage_combine_windows?: combine_windows?(params),
+       coverage_plan: nil,
+       coverage_action_error: nil
+     )}
+  end
+
+  def handle_event("change_coverage_backfill", _params, socket), do: {:noreply, socket}
+
+  def handle_event("plan_missing_coverage", params, socket) do
+    combine_windows =
+      params
+      |> Map.get("coverage_backfill", %{})
+      |> combine_windows?()
+
+    socket = assign(socket, :coverage_combine_windows?, combine_windows)
     asset = socket.assigns.asset
 
     cond do
@@ -181,10 +204,14 @@ defmodule FavnView.AssetDetailLive do
             coverage_plan: nil
           )
 
-        case Orchestrator.plan_missing_coverage_backfill(
+        case plan_missing_coverage_backfill(
                actor_context(socket),
                asset.target_id,
-               coverage_plan_options(asset, socket.assigns.coverage_selection)
+               coverage_plan_options(
+                 asset,
+                 socket.assigns.coverage_selection,
+                 combine_windows
+               )
              ) do
           {:ok, plan} ->
             {:noreply, assign(socket, planning_coverage?: false, coverage_plan: plan)}
@@ -483,6 +510,7 @@ defmodule FavnView.AssetDetailLive do
       manifest_version_id={@asset.manifest_version_id}
       assurance={@asset.assurance}
       coverage_plan={@coverage_plan}
+      coverage_combine_windows?={@coverage_combine_windows?}
       coverage_action_error={@coverage_action_error}
       planning_coverage?={@planning_coverage?}
       submitting_coverage?={@submitting_coverage?}
@@ -989,12 +1017,26 @@ defmodule FavnView.AssetDetailLive do
 
   # No selection means every missing period, which is what the button offers when
   # nothing is picked. A selection plans exactly those periods and nothing else.
-  defp coverage_plan_options(asset, selection) do
-    if MapSet.size(selection) == 0 do
-      [evaluated_at: asset.coverage.evaluated_at]
-    else
-      [evaluated_at: asset.coverage.evaluated_at, window_keys: MapSet.to_list(selection)]
-    end
+  defp coverage_plan_options(asset, selection, combine_windows) do
+    [evaluated_at: asset.coverage.evaluated_at, combine_windows: combine_windows]
+    |> then(fn opts ->
+      if MapSet.size(selection) == 0,
+        do: opts,
+        else: Keyword.put(opts, :window_keys, MapSet.to_list(selection))
+    end)
+  end
+
+  defp combine_windows?(params), do: Map.get(params, "combine_windows", "false") == "true"
+
+  defp plan_missing_coverage_backfill(context, target_id, opts) do
+    callback =
+      Application.get_env(
+        :favn_view,
+        :plan_missing_coverage_backfill_fun,
+        &Orchestrator.plan_missing_coverage_backfill/3
+      )
+
+    callback.(context, target_id, opts)
   end
 
   # An asset with no period to run submits no selection, and the backend plans it for

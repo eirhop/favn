@@ -117,7 +117,7 @@ defmodule FavnOrchestrator.BackfillDispatcher do
             end
 
           :missing ->
-            case submission_error_disposition(window.payload, :missing) do
+            case submission_error_disposition(reason, :missing) do
               :retry ->
                 :ok
 
@@ -127,7 +127,7 @@ defmodule FavnOrchestrator.BackfillDispatcher do
             end
 
           {:unknown, recovery_error} ->
-            :retry = submission_error_disposition(window.payload, :unavailable)
+            :retry = submission_error_disposition(reason, :unavailable)
             emit_error(context.workspace_id, :reconcile_submit_error, recovery_error)
         end
     end
@@ -162,14 +162,11 @@ defmodule FavnOrchestrator.BackfillDispatcher do
   defp resolve_submission_result(result), do: result
 
   @doc false
-  @spec submission_error_disposition(map(), :missing | :unavailable) :: :retry | :fail
-  def submission_error_disposition(payload, :unavailable) when is_map(payload), do: :retry
+  @spec submission_error_disposition(term(), :missing | :unavailable) :: :retry | :fail
+  def submission_error_disposition(_reason, :unavailable), do: :retry
 
-  def submission_error_disposition(payload, :missing) when is_map(payload) do
-    if is_binary(field(payload, "execution_group_id")),
-      do: :retry,
-      else: :fail
-  end
+  def submission_error_disposition(%Error{retryable?: true}, :missing), do: :retry
+  def submission_error_disposition(_reason, :missing), do: :fail
 
   defp submit_child(context, window, run_id) do
     with {:ok, %Backfill{} = backfill} <- Backfills.get(context, window.backfill_id),
@@ -453,6 +450,8 @@ defmodule FavnOrchestrator.BackfillDispatcher do
         |> Map.new(fn {key, value} -> {Atom.to_string(key), bounded_scalar(value)} end)
     }
   end
+
+  defp error_payload(reason) when is_atom(reason), do: %{"reason" => Atom.to_string(reason)}
 
   defp error_payload(reason) do
     %{"reason" => reason |> inspect(limit: 20, printable_limit: 1_000) |> String.slice(0, 2_000)}

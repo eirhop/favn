@@ -89,7 +89,9 @@ runtime inputs, and SQL integrations remain pre-v1 and may change.
   physical generation.
   Catalogue/API reads distinguish complete, incomplete, and explicit unknown
   states; operators can review and manually submit an immutable exact-gap
-  backfill plan, with stale selections rejected before mutation.
+  backfill plan, with stale selections rejected before mutation. Gap plans
+  default to one child run per window; operators may combine a contiguous
+  selection into one child run, and that choice is frozen into the reviewed plan.
 - Manifest activation inspects persisted SQL relations through the runner and
   records desired, active-generation, and physical compatibility per target.
   Incompatible, drifted, and ownership-unknown targets reject ordinary writes

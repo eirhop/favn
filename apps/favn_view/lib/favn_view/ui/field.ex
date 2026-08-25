@@ -148,6 +148,7 @@ defmodule FavnView.UI.Field do
 
   attr :errors, :list, default: []
   attr :checked, :boolean, doc: "the checked flag for checkbox inputs"
+  attr :tooltip, :string, default: nil, doc: "optional help shown on hover and keyboard focus"
   attr :prompt, :string, default: nil, doc: "the prompt for select inputs"
   attr :options, :list, doc: "options passed to `Phoenix.HTML.Form.options_for_select/2`"
   attr :multiple, :boolean, default: false
@@ -177,13 +178,15 @@ defmodule FavnView.UI.Field do
 
   def input(%{type: "checkbox"} = assigns) do
     assigns =
-      assign_new(assigns, :checked, fn ->
+      assigns
+      |> assign_new(:checked, fn ->
         Phoenix.HTML.Form.normalize_value("checkbox", assigns[:value])
       end)
+      |> assign(:tooltip_id, assigns.id && "#{assigns.id}-tooltip")
 
     ~H"""
     <div class="fieldset mb-2">
-      <label for={@id}>
+      <div class="flex min-h-9 items-center gap-2">
         <input
           type="hidden"
           name={@name}
@@ -191,7 +194,8 @@ defmodule FavnView.UI.Field do
           disabled={@rest[:disabled]}
           form={@rest[:form]}
         />
-        <span class="label">
+
+        <label for={@id} class="label min-w-0 cursor-pointer gap-2 py-0 text-sm">
           <input
             type="checkbox"
             id={@id}
@@ -200,9 +204,28 @@ defmodule FavnView.UI.Field do
             checked={@checked}
             class={@class || "checkbox checkbox-sm"}
             {@rest}
-          />{@label}
+          />
+          <span>{@label}</span>
+        </label>
+
+        <span :if={@tooltip} class="tooltip tooltip-top tooltip-start group shrink-0">
+          <span
+            id={@tooltip_id}
+            role="tooltip"
+            class="tooltip-content group-focus-within:opacity-100"
+          >
+            {@tooltip}
+          </span>
+          <button
+            type="button"
+            aria-label={"More information about #{@label}"}
+            aria-describedby={@tooltip_id}
+            class="inline-flex size-8 items-center justify-center rounded-field favn-text-muted transition hover:text-base-content focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+          >
+            <.icon name="hero-information-circle" size={:sm} />
+          </button>
         </span>
-      </label>
+      </div>
 
       <.field_error :for={msg <- @errors}>{msg}</.field_error>
     </div>

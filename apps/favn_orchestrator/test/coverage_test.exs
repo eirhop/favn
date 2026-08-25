@@ -5,6 +5,7 @@ defmodule FavnOrchestrator.CoverageTest do
   alias Favn.Coverage.Spec
   alias Favn.Manifest
   alias Favn.Manifest.Asset
+  alias Favn.Manifest.Graph
   alias Favn.Manifest.Version
   alias Favn.Window.Spec, as: WindowSpec
   alias FavnOrchestrator.Coverage
@@ -373,6 +374,7 @@ defmodule FavnOrchestrator.CoverageTest do
     assert length(plan.windows) == 3
     assert is_binary(plan.plan_id)
     assert is_binary(plan.plan_hash)
+    refute plan.combine_windows
 
     [first | _rest] = plan.windows
     Process.put(:coverage_count_result, {:ok, 1})
@@ -380,6 +382,65 @@ defmodule FavnOrchestrator.CoverageTest do
 
     assert {:error, :coverage_selection_stale} =
              Coverage.submit_missing_backfill(fixture.context, fixture.target_id, plan)
+  end
+
+  test "freezes combined mode into the plan and its hash", fixture do
+    assert {:ok, separate} =
+             Coverage.plan_missing_backfill(fixture.context, fixture.target_id,
+               evaluated_at: @evaluated_at
+             )
+
+    assert {:ok, combined} =
+             Coverage.plan_missing_backfill(fixture.context, fixture.target_id,
+               evaluated_at: @evaluated_at,
+               combine_windows: true
+             )
+
+    refute separate.combine_windows
+    assert combined.combine_windows
+    assert combined.windows == separate.windows
+    assert combined.plan_hash != separate.plan_hash
+    assert combined.plan_id != separate.plan_id
+  end
+
+  test "rejects a non-contiguous combined coverage selection", fixture do
+    assert {:ok, all} =
+             Coverage.plan_missing_backfill(fixture.context, fixture.target_id,
+               evaluated_at: @evaluated_at
+             )
+
+    [first, _second, third] = all.windows
+
+    assert {:error, :non_contiguous_combined_window_selection} =
+             Coverage.plan_missing_backfill(fixture.context, fixture.target_id,
+               evaluated_at: @evaluated_at,
+               window_keys: [first.window_key, third.window_key],
+               combine_windows: true
+             )
+  end
+
+  test "rejects combined coverage for append materialization", fixture do
+    version = Process.get(:coverage_version)
+
+    append_assets =
+      Enum.map(version.manifest.assets, fn
+        %Asset{ref: @asset_ref} = asset ->
+          %{asset | materialization: {:incremental, strategy: :append}}
+
+        asset ->
+          asset
+      end)
+
+    Process.put(
+      :coverage_version,
+      %{version | manifest: %{version.manifest | assets: append_assets}}
+    )
+
+    assert {:error, {:combined_append_not_supported, @asset_ref}} =
+             Coverage.plan_missing_backfill(fixture.context, fixture.target_id,
+               evaluated_at: @evaluated_at,
+               combine_windows: true
+             )
   end
 
   # Submitting re-plans from the selection it was handed and refuses unless the hash
@@ -573,10 +634,12 @@ defmodule FavnOrchestrator.CoverageTest do
       schema_version: 19,
       runner_contract_version: 14,
       runner_releases: %{"default" => FavnTestSupport.runner_release_id()},
-      manifest: %Manifest{
-        runner_releases: %{"default" => FavnTestSupport.runner_release_id()},
-        assets: [asset]
-      }
+      manifest:
+        FavnTestSupport.with_manifest_contract(%Manifest{
+          runner_releases: %{"default" => FavnTestSupport.runner_release_id()},
+          assets: [asset],
+          graph: %Graph{nodes: [@asset_ref], topo_order: [@asset_ref]}
+        })
     }
   end
 end

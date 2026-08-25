@@ -169,85 +169,73 @@ defmodule FavnView.Components.PipelineDetailPage do
             phx-submit="submit_backfill"
             data-command-operation="pipeline_backfill_submit"
             data-command-resource={@pipeline.id}
-            class="mt-4 grid gap-3 sm:grid-cols-[1fr_1fr_8rem_9rem_auto]"
+            class="mt-4 grid gap-3 sm:grid-cols-2"
             data-testid="pipeline-backfill-form"
           >
             <input type="hidden" name="backfill[timezone]" value={@backfill_config.timezone} />
-            <label class="form-control">
-              <span class="label-text text-sm">From</span>
-              <input
-                name="backfill[from]"
-                value={@backfill_config.from}
-                class="input input-sm favn-surface-control"
-                placeholder={backfill_placeholder(@backfill_config.kind)}
-                disabled={!@can_submit_runs? || !@pipeline.can_backfill?}
-              />
-            </label>
 
-            <label class="form-control">
-              <span class="label-text text-sm">To</span>
-              <input
-                name="backfill[to]"
-                value={@backfill_config.to}
-                class="input input-sm favn-surface-control"
-                placeholder={backfill_placeholder(@backfill_config.kind)}
-                disabled={!@can_submit_runs? || !@pipeline.can_backfill?}
-              />
-            </label>
+            <.input
+              id="pipeline-backfill-from"
+              label="From"
+              name="backfill[from]"
+              value={@backfill_config.from}
+              class="input input-sm favn-surface-control"
+              placeholder={backfill_placeholder(@backfill_config.kind)}
+              disabled={!@can_submit_runs? || !@pipeline.can_backfill?}
+            />
 
-            <label class="form-control">
-              <span class="label-text text-sm">Kind</span>
-              <select
-                name="backfill[kind]"
-                class="select select-sm favn-surface-control"
-                disabled={!@can_submit_runs? || !@pipeline.can_backfill?}
-              >
-                <option
-                  :for={kind <- ~w(month day hour year)}
-                  value={kind}
-                  selected={@backfill_config.kind == kind}
-                >
-                  {kind}
-                </option>
-              </select>
-            </label>
+            <.input
+              id="pipeline-backfill-to"
+              label="To"
+              name="backfill[to]"
+              value={@backfill_config.to}
+              class="input input-sm favn-surface-control"
+              placeholder={backfill_placeholder(@backfill_config.kind)}
+              disabled={!@can_submit_runs? || !@pipeline.can_backfill?}
+            />
 
-            <label class="form-control">
-              <span class="label-text text-sm">Refresh</span>
-              <select
-                name="backfill[refresh]"
-                class="select select-sm favn-surface-control"
-                disabled={!@can_submit_runs? || !@pipeline.can_backfill?}
-                data-testid="pipeline-backfill-refresh"
-              >
-                <option value="missing" selected={@backfill_config.refresh == "missing"}>
-                  missing
-                </option>
+            <.input
+              id="pipeline-backfill-kind"
+              type="select"
+              label="Window"
+              name="backfill[kind]"
+              value={@backfill_config.kind}
+              options={Enum.map(~w(month day hour year), &{String.capitalize(&1), &1})}
+              class="select select-sm favn-surface-control"
+              disabled={!@can_submit_runs? || !@pipeline.can_backfill?}
+            />
 
-                <option value="force" selected={@backfill_config.refresh == "force"}>force</option>
-
-                <option value="auto" selected={@backfill_config.refresh == "auto"}>auto</option>
-              </select>
-            </label>
+            <.input
+              id="pipeline-backfill-refresh"
+              type="select"
+              label="Refresh"
+              name="backfill[refresh]"
+              value={@backfill_config.refresh}
+              options={[{"Missing only", "missing"}, {"Force", "force"}, {"Auto", "auto"}]}
+              class="select select-sm favn-surface-control"
+              disabled={!@can_submit_runs? || !@pipeline.can_backfill?}
+              data-testid="pipeline-backfill-refresh"
+            />
 
             <.input
               id="pipeline-backfill-combine-windows"
               type="checkbox"
               name="backfill[combine_windows]"
-              label="Combine adjacent windows into one run"
+              label="Combine windows"
+              tooltip="Run all selected windows in one child run instead of creating one child run per window."
               checked={@backfill_config.combine_windows}
               disabled={!@can_submit_runs? || !@pipeline.can_backfill?}
               data-testid="pipeline-backfill-combine-windows"
             />
 
-            <button
+            <.button
               type="submit"
-              class="btn btn-primary btn-soft self-end"
+              class="self-end justify-self-start"
               disabled={!@can_submit_runs? || !@pipeline.can_backfill?}
               data-testid="submit-backfill-button"
             >
               Backfill
-            </button>
+            </.button>
           </form>
 
           <p

@@ -481,6 +481,32 @@ defmodule FavnView.AssetCoverageTest do
       refute html =~ "Backfill all"
     end
 
+    test "offers the shared combine-windows control before planning" do
+      html =
+        render_component(&AssetDetailPage.coverage_panel/1,
+          timezone: "Europe/Oslo",
+          command_resource: "asset:orders",
+          can_plan?: true,
+          coverage: %{
+            status: :incomplete,
+            expected_count: 31,
+            covered_count: 29,
+            missing_count: 2
+          },
+          calendar: day_calendar([8, 15]),
+          navigation: %{previous: nil, next: nil, jumps: []},
+          combine_windows?: true
+        )
+
+      assert html =~ ~s(data-testid="coverage-backfill-form")
+      assert html =~ ~s(phx-submit="plan_missing_coverage")
+      assert html =~ ~s(data-testid="coverage-backfill-combine-windows")
+      assert html =~ ">Combine windows</span>"
+      assert html =~ "one child run instead of creating one child run per window"
+      assert html =~ ~s(name="coverage_backfill[combine_windows]")
+      assert html =~ ~s(checked)
+    end
+
     test "complete coverage offers no backfill" do
       html =
         coverage_panel(
@@ -523,17 +549,22 @@ defmodule FavnView.AssetCoverageTest do
             missing_count: 1
           },
           calendar: day_calendar([8]),
+          combine_windows?: true,
           plan: %{plan_hash: String.duplicate("a", 64), window_count: 1, windows: windows}
         )
 
+      assert html =~ ~s(data-testid="coverage-backfill-form")
+      assert html =~ ~s(data-testid="coverage-backfill-combine-windows")
+      assert html =~ ~s(checked)
       assert html =~ ~s(data-testid="coverage-plan-review")
       assert html =~ "Ready to backfill 1 day"
       assert html =~ "8 July 2026"
       assert html =~ ~s(data-testid="submit-missing-coverage")
 
-      # The plan is the thing being confirmed, so the button that would build a
-      # different one is gone rather than sitting beside it.
+      # Changing the mode invalidates this plan, but no second plan-submit action
+      # competes with the confirmation while the current plan is under review.
       refute html =~ ~s(data-testid="plan-missing-coverage")
+      refute html =~ ~s(phx-submit="plan_missing_coverage")
     end
 
     test "a viewer sees the gaps but is told why they cannot fill them" do

@@ -10,8 +10,10 @@ defmodule FavnOrchestrator.Backfills do
 
   alias Favn.Backfill.RangeResolver
   alias Favn.Assets.Planner
+  alias Favn.Manifest.Asset
   alias Favn.Manifest.Pipeline
   alias Favn.Manifest.PipelineResolver
+  alias Favn.Manifest.Version
   alias Favn.Retry.Policy
   alias Favn.Window.Key
   alias Favn.Window.Anchor
@@ -213,13 +215,16 @@ defmodule FavnOrchestrator.Backfills do
              is_list(opts) do
     with :ok <- authorize(context),
          :ok <- validate_options(opts),
-         :ok <- reject_asset_combine(opts),
-         {:ok, runtime, _version, _asset} <-
+         {:ok, runtime, version, asset} <-
            active_asset(context, manifest_version_id, target_id),
          {:ok, range} <- exact_range(anchors),
          :ok <- validate_window_count(range.requested_count, opts),
-         {:ok, selection} <- Selection.backfill(range.anchors, range.timezone) do
-      {:ok, plan_map(runtime.deployment_id, manifest_version_id, target_id, range, selection)}
+         {:ok, selection} <- Selection.backfill(range.anchors, range.timezone),
+         combine_windows <- Keyword.get(opts, :combine_windows, false),
+         :ok <- validate_combined_asset_execution(version, asset, selection, opts) do
+      {:ok,
+       plan_map(runtime.deployment_id, manifest_version_id, target_id, range, selection)
+       |> put_execution_summary(combine_windows)}
     end
   end
 
@@ -245,11 +250,11 @@ defmodule FavnOrchestrator.Backfills do
     Lifecycle.with_admission(fn ->
       with :ok <- authorize(context),
            :ok <- validate_options(opts),
-           :ok <- reject_asset_combine(opts),
            {:ok, runtime, version, asset} <- active_asset(context, manifest_version_id, target_id),
            {:ok, range} <- exact_range(anchors),
            :ok <- validate_window_count(range.requested_count, opts),
            {:ok, selection} <- Selection.backfill(range.anchors, range.timezone),
+           :ok <- validate_combined_asset_execution(version, asset, selection, opts),
            submission <-
              build_submission(
                context,
@@ -265,6 +270,28 @@ defmodule FavnOrchestrator.Backfills do
         persist_submission(submission)
       end
     end)
+  end
+
+  @doc false
+  @spec validate_combined_asset_windows(Version.t(), Asset.t(), [Anchor.t()], keyword()) ::
+          :ok | {:error, term()}
+  def validate_combined_asset_windows(
+        %Version{} = version,
+        %Asset{ref: {module, name} = asset_ref},
+        anchors,
+        opts
+      )
+      when is_atom(module) and is_atom(name) and is_list(anchors) and is_list(opts) do
+    with {:ok, index} <- ManifestIndexCache.fetch(version),
+         {:ok, _plan} <-
+           Planner.plan(asset_ref,
+             planning_index: index.planning_index,
+             dependencies: Keyword.get(opts, :dependencies, :all),
+             anchor_windows: anchors,
+             combine_windows: true
+           ) do
+      :ok
+    end
   end
 
   @doc "Fetches one authoritative backfill under its workspace boundary."
@@ -314,7 +341,9 @@ defmodule FavnOrchestrator.Backfills do
          true <- runtime.manifest_version_id == requested_manifest_id,
          true <- Enum.any?(grants, &(&1.target_kind == :asset and &1.target_id == target_id)),
          {:ok, version} <- ManifestStore.get_manifest(context, requested_manifest_id),
-         {:ok, asset} <- ManifestTarget.resolve_asset(version, target_id) do
+         {:ok, %Asset{ref: {module, name}} = asset}
+         when is_atom(module) and is_atom(name) <-
+           ManifestTarget.resolve_asset(version, target_id) do
       {:ok, runtime, version, asset}
     else
       false -> {:error, :manifest_or_target_not_active_in_workspace}
@@ -364,7 +393,7 @@ defmodule FavnOrchestrator.Backfills do
     combine_windows =
       case target_spec do
         {:pipeline, pipeline, _resolution} -> effective_combine_windows(pipeline, opts)
-        {:asset, _asset} -> false
+        {:asset, _asset} -> Keyword.get(opts, :combine_windows, false)
       end
 
     opts = Keyword.put(opts, :combine_windows, combine_windows)
@@ -463,6 +492,7 @@ defmodule FavnOrchestrator.Backfills do
       terminal_event_type: :run_finished,
       asset_identity_ref: asset.ref,
       backfill_range: range_summary(submission.range),
+      combine_windows: Keyword.fetch!(submission.opts, :combine_windows),
       window_selection: submission.window_selection,
       operator_metadata: Keyword.get(submission.opts, :metadata, %{})
     }
@@ -664,6 +694,7 @@ defmodule FavnOrchestrator.Backfills do
     %{
       "asset_module" => asset.ref |> elem(0) |> Atom.to_string(),
       "asset_name" => asset.ref |> elem(1) |> Atom.to_string(),
+      "combine_windows" => Keyword.fetch!(opts, :combine_windows),
       "required_generation" =>
         encode_required_generation(Keyword.get(opts, :required_generation)),
       "dependencies" => encode_atom(Keyword.get(opts, :dependencies, :all)),
@@ -849,6 +880,25 @@ defmodule FavnOrchestrator.Backfills do
       do: {:error, :combined_asset_backfill_not_supported},
       else: :ok
   end
+
+  defp validate_combined_asset_execution(version, asset, selection, opts) do
+    if Keyword.get(opts, :combine_windows, false) do
+      do_validate_combined_asset_execution(version, asset, selection, opts)
+    else
+      :ok
+    end
+  end
+
+  defp do_validate_combined_asset_execution(
+         version,
+         %Asset{} = asset,
+         selection,
+         opts
+       ),
+       do:
+         validate_combined_asset_windows(version, asset, selection.effective_anchors,
+           dependencies: Keyword.get(opts, :dependencies, :all)
+         )
 
   defp effective_combine_windows(%Pipeline{window: window}, opts) do
     case Keyword.fetch(opts, :combine_windows) do
