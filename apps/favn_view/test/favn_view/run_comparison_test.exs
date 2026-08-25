@@ -211,6 +211,44 @@ defmodule FavnView.RunComparisonTest do
       assert running.running? == true
       assert running.width < 60.0
     end
+
+    test "each running track advances across its own remaining axis in real time" do
+      chart =
+        RunComparison.build(
+          [
+            window(1, "run-ahead", [row("orders", started: 0)]),
+            window(2, "run-behind", [row("orders", started: 50)])
+          ],
+          now: at(100)
+        )
+
+      assert [ahead, behind] = track_list(chart, "orders")
+
+      # Both bars end at their own window's now, so the one further behind has
+      # more axis left to cross and must be given proportionally longer to cross
+      # it. Sharing one duration would have made it sweep at several times the
+      # rate of the work it draws.
+      ahead_remaining = 100.0 - ahead.bar.offset - ahead.bar.width
+      behind_remaining = 100.0 - behind.bar.offset - behind.bar.width
+
+      assert behind_remaining > ahead_remaining
+      assert behind.advance_ms > ahead.advance_ms
+
+      # Real time: the same percentage of the axis takes the same milliseconds
+      # on every track, because the axis is milliseconds.
+      assert_in_delta behind_remaining / behind.advance_ms,
+                      ahead_remaining / ahead.advance_ms,
+                      0.0001
+    end
+
+    test "a finished track has nothing left to advance across" do
+      chart =
+        RunComparison.build([window(1, "run-a", [row("orders", started: 0, finished: 10)])],
+          now: at(10)
+        )
+
+      assert [%{advance_ms: nil}] = track_list(chart, "orders")
+    end
   end
 
   describe "bands and density" do

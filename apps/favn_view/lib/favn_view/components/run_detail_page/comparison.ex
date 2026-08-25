@@ -29,7 +29,6 @@ defmodule FavnView.Components.RunDetailPage.Comparison do
       data-testid="run-comparison"
       data-density={@chart.density}
       data-alignment={@chart.alignment}
-      style={@chart.axis && advance_style(@chart.axis)}
     >
       <div class="flex flex-wrap items-center justify-between gap-2">
         <div class="flex flex-wrap gap-1" data-testid="run-comparison-legend">
@@ -77,12 +76,7 @@ defmodule FavnView.Components.RunDetailPage.Comparison do
           <span class="favn-timeline-track"></span>
         </div>
 
-        <.lane
-          :for={lane <- band.lanes}
-          lane={lane}
-          density={@chart.density}
-          now_offset={now_offset(@chart)}
-        />
+        <.lane :for={lane <- band.lanes} lane={lane} density={@chart.density} />
       </div>
     </div>
     """
@@ -130,7 +124,6 @@ defmodule FavnView.Components.RunDetailPage.Comparison do
 
   attr :lane, :map, required: true
   attr :density, :atom, required: true
-  attr :now_offset, :any, required: true
 
   defp lane(assigns) do
     ~H"""
@@ -140,15 +133,18 @@ defmodule FavnView.Components.RunDetailPage.Comparison do
       </span>
 
       <div class="favn-comparison-tracks">
+        <%!-- No now line: on a window-aligned axis each window's now sits at a
+        different offset, so one shared line would mark the wrong instant on
+        every track but the leader. A running bar's own leading edge is that
+        window's now, and it advances at the real-time rate its track sets. --%>
         <div
           :for={track <- @lane.tracks}
           class="favn-timeline-track favn-comparison-track"
+          style={advance_style(track)}
           data-testid="run-comparison-track"
           data-track={track.track}
           data-presence={track.presence}
         >
-          <.now_line offset={@now_offset} />
-
           <.link
             :if={track.bar}
             navigate={~p"/runs/#{track.run_id}/assets/#{track.attempt_id}"}
@@ -174,23 +170,7 @@ defmodule FavnView.Components.RunDetailPage.Comparison do
     """
   end
 
-  attr :offset, :any, required: true
-
-  defp now_line(assigns) do
-    ~H"""
-    <span
-      :if={@offset}
-      class="favn-timeline-now"
-      style={"left:#{@offset}%"}
-      aria-hidden="true"
-    ></span>
-    """
-  end
-
   defp alignments, do: [{:window, "Window start"}, {:wall_clock, "Wall clock"}]
-
-  defp now_offset(%RunComparison{axis: %{now_offset: offset}}), do: offset
-  defp now_offset(_chart), do: nil
 
   defp advance_style(%{advance_ms: nil}), do: nil
   defp advance_style(%{advance_ms: ms}), do: "--favn-timeline-advance:#{ms}ms"

@@ -44,6 +44,7 @@ defmodule FavnView.RunComparison do
           state: atom() | nil,
           outcome: RunTimeline.outcome() | nil,
           bar: RunTimeline.bar() | nil,
+          advance_ms: pos_integer() | nil,
           presence: presence()
         }
 
@@ -307,6 +308,8 @@ defmodule FavnView.RunComparison do
   defp drawn_track(window, row, axis, now) do
     started_at = shift(Map.get(row, :started_at), window.shift_ms)
     finished_at = shift(Map.get(row, :finished_at), window.shift_ms)
+    window_now = shift(now, window.shift_ms)
+    bar = RunTimeline.bar(started_at, finished_at, axis, window_now)
 
     %{
       track: window.track,
@@ -315,10 +318,21 @@ defmodule FavnView.RunComparison do
       attempt_id: Map.get(row, :id),
       state: Map.get(row, :state),
       outcome: RunTimeline.outcome(Map.get(row, :state)),
-      bar: RunTimeline.bar(started_at, finished_at, axis, shift(now, window.shift_ms)),
+      bar: bar,
+      advance_ms: advance_ms(bar, axis, window_now),
       presence: if(started_at, do: :drawn, else: :waiting)
     }
   end
+
+  # A running bar grows across the axis it has left in exactly the real time that
+  # distance represents. On a window-aligned axis each window's bar ends at its
+  # own shifted now, so a window further behind has more axis left and needs
+  # longer to cross it. Sharing the chart's single advance would have made a
+  # lagging window's bar sweep several times faster than the work it draws.
+  defp advance_ms(%{running?: true}, %{end_at: end_at}, window_now),
+    do: max(DateTime.diff(end_at, window_now, :millisecond), 1)
+
+  defp advance_ms(_bar, _axis, _window_now), do: nil
 
   defp blank_track(window, presence) do
     %{
@@ -329,6 +343,7 @@ defmodule FavnView.RunComparison do
       state: nil,
       outcome: nil,
       bar: nil,
+      advance_ms: nil,
       presence: presence
     }
   end

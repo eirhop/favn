@@ -237,6 +237,41 @@ defmodule FavnView.RunWindowRailTest do
       assert RunWindowRail.build([], nil, @zone, truncated?: true).truncated?
       refute RunWindowRail.build([], nil, @zone).truncated?
     end
+
+    test "counts every window the read returned, not the band on screen" do
+      rail =
+        RunWindowRail.build(hour_choices(200, ~U[2026-08-01 00:00:00Z]), "hour-0", @zone,
+          truncated?: true
+        )
+
+      # Banding narrows the cells to one day. The notice speaks for the read, so
+      # a capped backfill cannot claim it returned a day's worth of windows.
+      assert rail.layout == :banded
+      assert length(rail.cells) < 200
+      assert rail.loaded_count == 200
+    end
+  end
+
+  describe "daylight saving" do
+    test "buckets a 25-hour day as one day in the window's own zone" do
+      # Oslo returns to CET at 03:00 on 2026-10-25, so that local day is 25
+      # hours long and spans two UTC dates. The first window starts at local
+      # midnight; 125 of them carry the rail past its flat threshold into bands.
+      choices =
+        Enum.map(0..124, fn index ->
+          start_at = DateTime.add(~U[2026-10-24 22:00:00Z], index * 3_600, :second)
+
+          %{
+            choice("dst-#{index}", :hour, start_at)
+            | timezone: "Europe/Oslo"
+          }
+        end)
+
+      rail = RunWindowRail.build(choices, "dst-0", @zone)
+
+      assert rail.layout == :banded
+      assert %{count: 25} = Enum.find(rail.buckets, &(&1.id == "2026-10-25"))
+    end
   end
 
   describe "comparison" do

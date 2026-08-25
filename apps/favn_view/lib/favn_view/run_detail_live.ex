@@ -391,6 +391,7 @@ defmodule FavnView.RunDetailLive do
       rail={@rail}
       compare?={@compare?}
       compare_limit_reached?={@compare_limit_reached?}
+      compare_error={@compare_error}
       windows_error={@windows_error}
       flash={@flash}
     />
@@ -417,21 +418,26 @@ defmodule FavnView.RunDetailLive do
     socket
     |> assign(:run, run)
     |> assign_chart()
+    |> sync_run_subscription()
     |> refresh_comparison(pending)
     |> assign_comparison()
     |> record_refresh(refresh_result, loaded_run)
-    |> sync_run_subscription()
     |> refresh_windows()
     |> schedule_fallback()
   end
 
   # An operator changing the selection loads what the selection now needs
   # without re-reading the open run, which the page has already loaded.
+  #
+  # The subscription is taken before the read, as it is at mount: an event
+  # emitted between a window's read and its subscription would otherwise be lost,
+  # and nothing replays on subscribe.
   defp update_comparison(socket) do
     socket
+    |> sync_run_subscription()
     |> refresh_comparison(pending_sequences(socket))
     |> assign_comparison()
-    |> sync_run_subscription()
+    |> schedule_fallback()
   end
 
   defp pending_sequences(socket),
@@ -512,15 +518,29 @@ defmodule FavnView.RunDetailLive do
   # A window is re-read when its events moved past what the page holds, and
   # whenever it is not loaded — which is how a first selection loads and how a
   # window that failed last cycle gets another attempt.
+  #
+  # `retry?` covers the case the pending map cannot: a read that never answered
+  # leaves the window loaded and looking current, while `mark_refreshed` folds
+  # the event sequence it was supposed to fetch into the seen map and clears the
+  # pending entry. Without the flag that window would never be read again.
   defp read_window?(run_id, loaded, pending) do
     case Map.get(loaded, run_id) do
-      %{state: :loaded, event_sequence: sequence} ->
+      %{state: :loaded, retry?: false, event_sequence: sequence} ->
         Map.get(pending, run_id, 0) > (sequence || 0)
 
-      _absent_or_unloaded ->
+      _absent_unloaded_or_unserved ->
         true
     end
   end
+
+  # A window the page holds no current answer for, so a cycle owes it a read.
+  defp unserved?(%{state: :loaded, retry?: retry?}), do: retry?
+  defp unserved?(_window), do: true
+
+  # The bound a compare read gets before the cycle gives up on it. It is a seam
+  # so a test can prove the unserved-read path rather than wait out the real one.
+  defp compare_read_timeout_ms,
+    do: Application.get_env(:favn_view, :compare_read_timeout_ms, @compare_read_timeout_ms)
 
   defp read_windows([], _socket), do: %{}
 
@@ -530,7 +550,7 @@ defmodule FavnView.RunDetailLive do
     run_ids
     |> Task.async_stream(&get_run_flow(context, &1),
       max_concurrency: @compare_limit,
-      timeout: @compare_read_timeout_ms,
+      timeout: compare_read_timeout_ms(),
       on_timeout: :kill_task
     )
     |> Enum.zip(run_ids)
@@ -549,6 +569,7 @@ defmodule FavnView.RunDetailLive do
       assets: Map.get(run, :assets) || [],
       event_sequence: run |> run_event_sequences() |> Map.get(run_id),
       reason: nil,
+      retry?: false,
       selected?: true
     }
   end
@@ -565,14 +586,17 @@ defmodule FavnView.RunDetailLive do
         blank_window(run_id, track, :unavailable, reason_class(reason))
 
       # A read that never answered leaves the last good result standing, exactly
-      # as the single-window view does, and shows loading if there was none.
+      # as the single-window view does, and marks the window owed another read so
+      # the last good result cannot become the permanent one.
       {:exit, _reason} ->
-        previous || blank_window(run_id, track, :loading, nil)
+        unserved(previous || blank_window(run_id, track, :loading, nil), track)
 
       nil ->
         %{(previous || blank_window(run_id, track, :loading, nil)) | track: track}
     end
   end
+
+  defp unserved(window, track), do: %{window | track: track, retry?: true}
 
   defp loaded_window(socket, run_id, track, %{header: header, assets: assets}) do
     %{
@@ -586,6 +610,7 @@ defmodule FavnView.RunDetailLive do
       assets: Enum.map(assets, &Map.from_struct/1),
       event_sequence: header.event_sequence,
       reason: nil,
+      retry?: false,
       selected?: false
     }
   end
@@ -600,6 +625,7 @@ defmodule FavnView.RunDetailLive do
       assets: [],
       event_sequence: nil,
       reason: reason,
+      retry?: false,
       selected?: false
     }
   end
@@ -914,9 +940,22 @@ defmodule FavnView.RunDetailLive do
   # terminal while the backfill is still producing more. Polling on the run's
   # own activity alone would stop across exactly those moments, so a non-terminal
   # backfill keeps the poll alive.
+  #
+  # A read this page still owes — a window list that failed, or a compared window
+  # that is unavailable, loading, or was left unserved by a read that never
+  # answered — keeps it alive too. Without that, a page whose run and backfill
+  # are both terminal has no cycle left in which to try again.
   defp poll_worthy?(socket) do
-    socket.assigns.run.active? or match?(%RunWindowRail{in_progress?: true}, socket.assigns.rail)
+    socket.assigns.run.active? or
+      match?(%RunWindowRail{in_progress?: true}, socket.assigns.rail) or
+      not is_nil(socket.assigns[:windows_error]) or
+      comparison_owes_a_read?(socket)
   end
+
+  defp comparison_owes_a_read?(%{assigns: %{compare?: true} = assigns}),
+    do: assigns |> Map.get(:compare_windows, %{}) |> Map.values() |> Enum.any?(&unserved?/1)
+
+  defp comparison_owes_a_read?(_socket), do: false
 
   defp schedule_fallback(socket) do
     if connected?(socket) and
@@ -1037,10 +1076,22 @@ defmodule FavnView.RunDetailLive do
         |> build_rail()
 
       # A failed window read hides the rail and leaves the run page fully
-      # functional; it is navigation, not run state.
+      # functional; it is navigation, not run state. Compare mode is a mode of
+      # the rail, so it closes with it: the toggle that leaves it lives there,
+      # and an operator held inside a comparison with no way out is not a fully
+      # functional page.
       {:error, _reason} ->
         socket
-        |> assign(windows: nil, windows_error: nil, rail: nil)
+        |> assign(
+          windows: nil,
+          windows_error: "Window runs could not be loaded. The page will try again.",
+          compare?: false,
+          compare_run_ids: [],
+          compare_windows: %{},
+          compare_limit_reached?: false,
+          rail: nil
+        )
+        |> assign_comparison()
         |> build_rail()
     end
   end

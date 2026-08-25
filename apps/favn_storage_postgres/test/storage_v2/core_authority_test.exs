@@ -11124,6 +11124,308 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert page.has_more?
   end
 
+  # The run detail rail navigates by these rows, so each one has to name the
+  # window it covers and the run that executed it, and the open window has to
+  # come back whatever its calendar position.
+  test "window choices carry status, kind and timezone, and pin the open window", fixture do
+    %{root: root, children: children} = seed_backfill_windows(fixture, 3)
+
+    open = Enum.at(children, 1)
+
+    assert {:ok, choices} =
+             OperatorReadStore.list_run_windows(%ListRunWindows{
+               workspace_context: fixture.workspace_context,
+               run_id: open,
+               limit: 10
+             })
+
+    assert length(choices.items) == 3
+    assert Enum.map(choices.items, & &1.kind) == [:day, :day, :day]
+    assert Enum.all?(choices.items, &(&1.timezone == "Europe/Oslo"))
+    assert Enum.sort(Enum.map(choices.items, & &1.run_id)) == Enum.sort(children)
+
+    # The open window is pinned first even though it is not the newest, so the
+    # read can never return a page that omits the run the page is showing.
+    assert hd(choices.items).run_id == open
+    refute choices.overflow?
+
+    # Statuses come from the window rows, and the backfill's own status rides
+    # on the result rather than needing a second read.
+    assert Enum.sort(Enum.map(choices.items, & &1.status)) == [:running, :running, :succeeded]
+    assert choices.backfill_status == :ready
+
+    # Reading by the root run id sees the same set, unpinned.
+    assert {:ok, from_root} =
+             OperatorReadStore.list_run_windows(%ListRunWindows{
+               workspace_context: fixture.workspace_context,
+               run_id: root.id,
+               limit: 10
+             })
+
+    assert length(from_root.items) == 3
+  end
+
+  # The existence probe used to be its own statement. Folding it in must keep
+  # three outcomes distinguishable: no such run, a run with no windows, and a
+  # run whose windows overflow the cap.
+  test "the folded window query separates not-found, empty and truncated", fixture do
+    assert {:error, %Error{kind: :not_found}} =
+             OperatorReadStore.list_run_windows(%ListRunWindows{
+               workspace_context: fixture.workspace_context,
+               run_id: "run-that-never-existed",
+               limit: 10
+             })
+
+    {plain_command, plain} = create_run_command(fixture)
+    assert {:ok, _created} = RunStore.create_run(plain_command)
+
+    # A real run with no backfill is empty, not missing: the placeholder row the
+    # outer joins produce proves the run exists and is then dropped.
+    assert {:ok, empty} =
+             OperatorReadStore.list_run_windows(%ListRunWindows{
+               workspace_context: fixture.workspace_context,
+               run_id: plain.id,
+               limit: 10
+             })
+
+    assert empty.items == []
+    refute empty.overflow?
+    assert is_nil(empty.backfill_status)
+
+    %{root: root, children: children} = seed_backfill_windows(fixture, 3)
+
+    assert {:ok, truncated} =
+             OperatorReadStore.list_run_windows(%ListRunWindows{
+               workspace_context: fixture.workspace_context,
+               run_id: root.id,
+               limit: 2
+             })
+
+    assert length(truncated.items) == 2
+    assert truncated.overflow?
+
+    # The placeholder sorts last, so it can never be mistaken for the extra row
+    # that decides overflow: two windows under a limit of three is not overflow.
+    assert {:ok, exact} =
+             OperatorReadStore.list_run_windows(%ListRunWindows{
+               workspace_context: fixture.workspace_context,
+               run_id: Enum.at(children, 0),
+               limit: 3
+             })
+
+    assert length(exact.items) == 3
+    refute exact.overflow?
+  end
+
+  # Two backfills can share one root run. The join matches both, so the one with
+  # no started windows contributes a null row that must not be counted, ordered
+  # ahead of real windows, or allowed to decide the reported backfill status.
+  test "a windowless sibling backfill never corrupts the window list", fixture do
+    %{root: root, children: children} = seed_backfill_windows(fixture, 2)
+
+    sibling_id = "backfill-sibling:" <> root.id
+
+    assert {:ok, _planning} =
+             BackfillStore.start_plan(%StartBackfillPlan{
+               workspace_context: fixture.workspace_context,
+               command_id: "backfill-sibling-start:" <> root.id,
+               backfill_id: sibling_id,
+               root_run_id: root.id,
+               deployment_id: fixture.deployment_id,
+               manifest_version_id: fixture.version.manifest_version_id,
+               target_kind: :asset,
+               target_id: fixture.target_id,
+               range_start: DateTime.utc_now(),
+               range_end: DateTime.add(DateTime.utc_now(), 86_400, :second),
+               expected_window_count: 1,
+               expected_batch_count: 1,
+               plan_hash: BackfillPlan.plan_hash(["sibling"]),
+               occurred_at: DateTime.utc_now()
+             })
+
+    assert {:ok, choices} =
+             OperatorReadStore.list_run_windows(%ListRunWindows{
+               workspace_context: fixture.workspace_context,
+               run_id: root.id,
+               limit: 10
+             })
+
+    assert length(choices.items) == 2
+    assert Enum.sort(Enum.map(choices.items, & &1.run_id)) == Enum.sort(children)
+    refute choices.overflow?
+  end
+
+  # Seeds one backfill of `count` day windows in Europe/Oslo, each executed by
+  # its own child run. The last window succeeds and the rest stay running, so a
+  # caller has more than one status to read.
+  defp seed_backfill_windows(fixture, count) do
+    {root_command, root} = create_run_command(fixture)
+    assert {:ok, _created} = RunStore.create_run(root_command)
+
+    now = DateTime.utc_now()
+    backfill_id = "backfill-windows:" <> root.id
+
+    windows =
+      Enum.map(0..(count - 1), fn index ->
+        start_at = DateTime.add(~U[2026-02-01 00:00:00Z], index * 86_400, :second)
+
+        %BackfillPlanWindow{
+          window_id: "window-#{index}:" <> root.id,
+          window_key: WindowKey.encode(WindowKey.new!(:day, start_at, "Europe/Oslo")),
+          window_start: start_at,
+          window_end: DateTime.add(start_at, 86_400, :second),
+          payload: %{"partition" => "day-#{index}"}
+        }
+      end)
+
+    batch_hash = BackfillPlan.batch_hash(windows)
+
+    assert {:ok, _planning} =
+             BackfillStore.start_plan(%StartBackfillPlan{
+               workspace_context: fixture.workspace_context,
+               command_id: "backfill-windows-start:" <> root.id,
+               backfill_id: backfill_id,
+               root_run_id: root.id,
+               deployment_id: fixture.deployment_id,
+               manifest_version_id: fixture.version.manifest_version_id,
+               target_kind: :asset,
+               target_id: fixture.target_id,
+               range_start: hd(windows).window_start,
+               range_end: List.last(windows).window_end,
+               expected_window_count: count,
+               expected_batch_count: 1,
+               plan_hash: BackfillPlan.plan_hash([batch_hash]),
+               occurred_at: now
+             })
+
+    assert {:ok, appended} =
+             BackfillStore.append_plan_batch(%AppendBackfillPlanBatch{
+               workspace_context: fixture.workspace_context,
+               command_id: "backfill-windows-batch:" <> root.id,
+               backfill_id: backfill_id,
+               batch_index: 0,
+               batch_hash: batch_hash,
+               windows: windows,
+               occurred_at: now
+             })
+
+    assert {:ok, _ready} =
+             BackfillStore.activate_plan(%ActivateBackfillPlan{
+               workspace_context: fixture.workspace_context,
+               command_id: "backfill-windows-activate:" <> root.id,
+               backfill_id: backfill_id,
+               expected_version: appended.version,
+               occurred_at: now
+             })
+
+    assert {:ok, claimed} =
+             BackfillStore.claim_windows(%ClaimBackfillWindows{
+               workspace_context: fixture.workspace_context,
+               batch_id: "backfill-windows-claim:" <> root.id,
+               owner_id: "backfill-worker",
+               lease_duration_ms: 60_000,
+               backfill_id: backfill_id,
+               limit: count
+             })
+
+    assert length(claimed) == count
+
+    children =
+      claimed
+      |> Enum.sort_by(& &1.window_start, DateTime)
+      |> Enum.with_index()
+      |> Enum.map(fn {window, index} ->
+        child_id = seed_window_run(fixture, root, index, now)
+
+        assert {:ok, running} =
+                 BackfillStore.transition_window(%TransitionBackfillWindow{
+                   workspace_context: fixture.workspace_context,
+                   command_id: "backfill-windows-running-#{index}:" <> root.id,
+                   backfill_id: backfill_id,
+                   window_id: window.window_id,
+                   owner_id: window.claim_owner,
+                   fencing_token: window.fencing_token,
+                   expected_version: window.version,
+                   status: :running,
+                   run_id: child_id,
+                   occurred_at: now
+                 })
+
+        if index == count - 1 do
+          assert {:ok, _succeeded} =
+                   BackfillStore.transition_window(%TransitionBackfillWindow{
+                     workspace_context: fixture.workspace_context,
+                     command_id: "backfill-windows-succeeded-#{index}:" <> root.id,
+                     backfill_id: backfill_id,
+                     window_id: window.window_id,
+                     owner_id: window.claim_owner,
+                     fencing_token: window.fencing_token,
+                     expected_version: running.version,
+                     status: :succeeded,
+                     occurred_at: now
+                   })
+        end
+
+        child_id
+      end)
+
+    %{root: root, children: children, backfill_id: backfill_id}
+  end
+
+  # A window points at the submission that carries its work, while the rail looks
+  # the executed run up by the same id, so both rows have to exist — and the
+  # store will only let them coexist through the real admission handshake.
+  defp seed_window_run(fixture, root, index, now) do
+    child_id = "run-window-#{index}:" <> root.id
+    submission_id = "backfill-windows-submission-#{index}:" <> root.id
+
+    assert {:ok, _submission} =
+             RunSubmissionStore.enqueue(%EnqueueRunSubmission{
+               workspace_context: fixture.workspace_context,
+               command_id: submission_id,
+               submission_id: submission_id,
+               source: :backfill,
+               idempotency_key: submission_id,
+               request_hash: :crypto.hash(:sha256, child_id),
+               deployment_id: fixture.deployment_id,
+               manifest_version_id: fixture.version.manifest_version_id,
+               target_kind: "asset",
+               target_id: fixture.target_id,
+               run_id: child_id,
+               intent: %{"format" => "test", "payload" => "backfill"},
+               occurred_at: now
+             })
+
+    assert {:ok, claimed} =
+             RunSubmissionStore.claim(%ClaimRunSubmissions{
+               workspace_context: fixture.workspace_context,
+               command_id: "backfill-windows-claim-submission-#{index}:" <> root.id,
+               owner_id: "backfill-submission-worker",
+               lease_duration_ms: 30_000,
+               occurred_at: now,
+               limit: 10
+             })
+
+    submission = Enum.find(claimed, &(&1.submission_id == submission_id))
+
+    assert {:ok, _admitting} =
+             RunSubmissionStore.mark_admitting(%MarkRunSubmissionAdmitting{
+               workspace_context: fixture.workspace_context,
+               command_id: "backfill-windows-admitting-#{index}:" <> root.id,
+               submission_id: submission_id,
+               owner_id: submission.claim_owner,
+               claim_generation: submission.claim_generation,
+               preparation: %{"kind" => "backfill-window-test"},
+               occurred_at: now
+             })
+
+    {child_command, child} = create_run_command(fixture, child_id)
+    child = %{child | root_run_id: root.id}
+    assert {:ok, _created} = RunStore.create_run(%{child_command | run: child})
+
+    child_id
+  end
+
   defp activate_manifest(fixture, selection, suffix) do
     key_hash =
       FavnOrchestrator.Idempotency.key_hash(

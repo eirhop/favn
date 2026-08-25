@@ -217,6 +217,39 @@ defmodule FavnView.Components.RunDetailPage.WindowSemanticsTest do
     refute html =~ ~s(data-testid="run-flow-controls")
   end
 
+  test "a failed window read is stated on the page, not just absent from it" do
+    run = Runs.single_window()
+
+    html =
+      render_page(run,
+        rail: nil,
+        windows_error: "Window runs could not be loaded. The page will try again."
+      )
+
+    assert html =~ ~s(data-testid="window-read-warning")
+    assert html =~ "could not be loaded"
+
+    # The rail is gone and the rest of the run page is untouched.
+    refute html =~ ~s(data-testid="window-rail")
+    assert html =~ ~s(data-testid="run-flow")
+  end
+
+  test "a comparison that lost every window says so where the chart was" do
+    run = Runs.single_window()
+
+    html =
+      render_page(run,
+        compare_error: "No compared window could be read. Showing this window on its own."
+      )
+
+    assert html =~ ~s(data-testid="compare-warning")
+    assert html =~ "Showing this window on its own"
+
+    # It has fallen back, so the single-run chart is what is drawn.
+    assert html =~ ~s(data-testid="run-timeline")
+    refute html =~ ~s(data-testid="run-comparison")
+  end
+
   defp compare_windows(run_id) do
     [
       window("run-earlier", ~U[2026-07-22 00:00:00Z]),

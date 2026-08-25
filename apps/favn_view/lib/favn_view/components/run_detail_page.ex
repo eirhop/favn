@@ -31,6 +31,7 @@ defmodule FavnView.Components.RunDetailPage do
   attr :rail, :any, default: nil
   attr :compare?, :boolean, default: false
   attr :compare_limit_reached?, :boolean, default: false
+  attr :compare_error, :string, default: nil
   attr :windows_error, :string, default: nil
   attr :flash, :map, default: %{}
 
@@ -91,6 +92,7 @@ defmodule FavnView.Components.RunDetailPage do
         rail={@rail}
         compare?={@compare?}
         compare_limit_reached?={@compare_limit_reached?}
+        compare_error={@compare_error}
         windows_error={@windows_error}
       />
       <:mode_rail :if={@run[:found?]}>
@@ -108,6 +110,7 @@ defmodule FavnView.Components.RunDetailPage do
   attr :rail, :any, default: nil
   attr :compare?, :boolean, default: false
   attr :compare_limit_reached?, :boolean, default: false
+  attr :compare_error, :string, default: nil
   attr :windows_error, :string, default: nil
 
   def execution_group_page(assigns) do
@@ -148,8 +151,22 @@ defmodule FavnView.Components.RunDetailPage do
         {@run.refresh_error}. Showing the last successful result; the page will try again.
       </.notice>
 
-      <.notice :if={@windows_error} tone={:warning} icon="hero-exclamation-triangle">
+      <.notice
+        :if={@windows_error}
+        tone={:warning}
+        icon="hero-exclamation-triangle"
+        data-testid="window-read-warning"
+      >
         {@windows_error}
+      </.notice>
+
+      <.notice
+        :if={@compare_error}
+        tone={:warning}
+        icon="hero-square-2-stack"
+        data-testid="compare-warning"
+      >
+        {@compare_error}
       </.notice>
 
       <div data-run-active={to_string(@run.active?)}>

@@ -19,7 +19,8 @@ defmodule FavnView.RunDetailLiveTest do
       :operator_run_windows_fun,
       :operator_execution_group_fun,
       :run_subscribe_fun,
-      :run_unsubscribe_fun
+      :run_unsubscribe_fun,
+      :compare_read_timeout_ms
     ]
 
     previous = Map.new(keys, &{&1, Application.get_env(:favn_view, &1)})
@@ -1067,6 +1068,86 @@ defmodule FavnView.RunDetailLiveTest do
 
       # A loaded window is not re-read merely because a cycle ran.
       refute_receive {:flow_read, "run-5"}
+    end
+
+    test "a read that never answers keeps the last good result and stays owed", %{caller: caller} do
+      Application.put_env(:favn_view, :compare_read_timeout_ms, 50)
+      hang = :counters.new(1, [])
+
+      socket =
+        mount_comparison(caller, fn
+          "run-3" ->
+            if :counters.get(hang, 1) == 1 do
+              Process.sleep(:infinity)
+            else
+              {:ok, %{kind: :run, detail: window_flow("run-3", 3)}}
+            end
+
+          _run_id ->
+            nil
+        end)
+
+      compared = compare(socket, ["run-3"])
+      assert %{state: :loaded, retry?: false} = compared.assigns.compare_windows["run-3"]
+
+      # The window's own event moves, and the read for it hangs past the bound.
+      :counters.add(hang, 1, 1)
+
+      {:noreply, evented} =
+        RunDetailLive.handle_info({:favn_run_event, %{run_id: "run-3", sequence: 9}}, compared)
+
+      {:noreply, timed_out} =
+        RunDetailLive.handle_info({:refresh_run, evented.assigns.refresh_timer_ref}, evented)
+
+      # The last good result still stands rather than the track blanking...
+      assert %{state: :loaded, retry?: true} = timed_out.assigns.compare_windows["run-3"]
+
+      # ...but marking the refresh done cleared the pending sequence that would
+      # otherwise have been the only reason to read it again, so the window is
+      # explicitly owed a read and the page keeps a cycle alive to make it.
+      assert timed_out.assigns.pending_run_event_sequences == %{}
+      assert is_reference(timed_out.assigns.fallback_poll_ref)
+      flush()
+
+      :counters.sub(hang, 1, 1)
+
+      {:noreply, recovered} =
+        RunDetailLive.handle_info({:poll_run, timed_out.assigns.fallback_poll_ref}, timed_out)
+
+      assert_receive {:flow_read, "run-3"}
+      assert %{state: :loaded, retry?: false} = recovered.assigns.compare_windows["run-3"]
+    end
+
+    test "a failed window read closes compare mode rather than trapping the operator", %{
+      caller: caller
+    } do
+      socket = mount_comparison(caller)
+      compared = compare(socket, ["run-3"])
+      assert compared.assigns.compare?
+
+      Application.put_env(:favn_view, :operator_run_windows_fun, fn _context, _run_id ->
+        {:error, :unavailable}
+      end)
+
+      # The window list is read at most once per fallback interval; clearing the
+      # last-read stamp is how this test reaches the next due read without
+      # waiting one out.
+      compared = put_in(compared.assigns.windows_read_at, nil)
+
+      {:noreply, failed} =
+        RunDetailLive.handle_info({:poll_run, compared.assigns.fallback_poll_ref}, compared)
+
+      assert failed.assigns.windows_error =~ "Window runs could not be loaded"
+      assert is_nil(failed.assigns.rail)
+
+      # The toggle that leaves compare mode lives on the rail, so compare mode
+      # cannot outlive it.
+      refute failed.assigns.compare?
+      assert failed.assigns.compare_windows == %{}
+      assert is_nil(failed.assigns.run.comparison)
+
+      # A read the page still owes keeps a cycle alive to make it.
+      assert is_reference(failed.assigns.fallback_poll_ref)
     end
 
     test "the comparison subscribes to its windows and releases them on exit", %{caller: caller} do

@@ -209,6 +209,28 @@ defmodule FavnStoragePostgres.StorageV2.PerformanceContractTest do
     assert "runs_group_children_idx" in index_names(plan)
   end
 
+  # The run header looks a run's window up on every refresh of the run detail
+  # page, against a table that grows with every backfill ever run. No existing
+  # index covered that lookup.
+  test "the run header's window lookup uses its own index rather than scanning", fixture do
+    run = create_run!(fixture)
+
+    plan =
+      explain(
+        """
+        SELECT candidate_window.window_start, candidate_window.window_end
+        FROM favn_control.backfill_windows AS candidate_window
+        WHERE candidate_window.workspace_id = $1
+          AND candidate_window.run_id = $2
+        ORDER BY candidate_window.window_start DESC, candidate_window.window_id DESC
+        LIMIT 1
+        """,
+        [fixture.workspace_id, run.id]
+      )
+
+    assert "backfill_windows_run_idx" in index_names(plan)
+  end
+
   test "exact run Flow caps 1,001 attempts without reading sibling runs or the plan", fixture do
     run = create_run!(fixture)
     sibling = create_child_target_run!(fixture, run)

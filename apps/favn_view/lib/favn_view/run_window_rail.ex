@@ -43,7 +43,8 @@ defmodule FavnView.RunWindowRail do
           track: pos_integer() | nil,
           start_at: DateTime.t(),
           end_at: DateTime.t(),
-          window_count: pos_integer()
+          window_count: pos_integer(),
+          timezone: String.t() | nil
         }
 
   @type bucket :: %{
@@ -60,6 +61,7 @@ defmodule FavnView.RunWindowRail do
           open_bucket: String.t() | nil,
           truncated?: boolean(),
           in_progress?: boolean(),
+          loaded_count: non_neg_integer(),
           compare_run_ids: [String.t()],
           compare_full?: boolean()
         }
@@ -70,6 +72,7 @@ defmodule FavnView.RunWindowRail do
     :buckets,
     :truncated?,
     :in_progress?,
+    :loaded_count,
     :compare_run_ids,
     :compare_full?
   ]
@@ -108,6 +111,11 @@ defmodule FavnView.RunWindowRail do
       open_bucket: Keyword.get(opts, :open_bucket),
       truncated?: Keyword.get(opts, :truncated?, false),
       in_progress?: in_progress?(Keyword.get(opts, :backfill_status)),
+      # Every window run the read returned, which banding then narrows to one
+      # bucket. The truncation notice counts what was read, not what is on
+      # screen, or a rail showing one day of a capped backfill would claim the
+      # read returned a day's worth.
+      loaded_count: length(cells),
       compare_run_ids: compare_run_ids,
       compare_full?: length(compare_run_ids) >= @compare_limit
     }

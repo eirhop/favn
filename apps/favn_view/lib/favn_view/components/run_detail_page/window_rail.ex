@@ -134,7 +134,7 @@ defmodule FavnView.Components.RunDetailPage.WindowRail do
           class="text-xs favn-text-subtle"
           data-testid="window-rail-truncated"
         >
-          Showing the latest {length(@rail.cells)} window runs; older windows exist.
+          Showing the latest {@rail.loaded_count} window runs; older windows exist.
         </p>
       </div>
     </.panel>

@@ -658,6 +658,10 @@ Slices 1 through 7 and 12 and 13 are as previously recorded. Slices 8, 9 and 10
 each exceed their estimate; the reasons are in the deviations table below. Slice
 11's fixtures and examples are supporting lines and land inside their estimate.
 
+Review fixes added roughly 60 further production lines across slices 3, 9 and
+10, and roughly 400 supporting lines — most of them the three storage tests the
+verification plan had asked for and slices 1 and 12 had not delivered.
+
 ## Deviations from the approved plan
 
 | Planned | Implemented | Reason | Impact | Reviewer verdict |
@@ -698,6 +702,10 @@ each exceed their estimate; the reasons are in the deviations table below. Slice
 | 2026-08-25 | Offer wall-clock alignment only when the combined span is within four times the longest single window | Across windows days apart one real timeline draws every bar as a hairline. The control states the measured ratio rather than simply disappearing, so the operator learns why | No |
 | 2026-08-25 | Never collapse a band in a comparison, though the single-run chart does in dense mode | A collapsed multi-window band would have to summarise across windows, and that summary is the comparison the operator opened the chart to make. Density still selects track height | No |
 | 2026-08-25 | Replace the single-run chart with the comparison rather than showing both, and hide the status filter and sort controls while comparing | Those controls narrow and reorder one window's rows. Applied to a comparison they would either narrow one track and not the others, which is untrue, or need a per-window meaning the plan does not define | No |
+| 2026-08-26 | Mark a compare window whose read never answered as owed another one, rather than relying on its pending event sequence | Independent review found the staleness this invariant could not survive. `mark_refreshed/2` clears the whole pending map, so a read that timed out consumed the very sequence that would have been the only reason to read that window again: the track kept its last good result and could never be corrected. An explicit `retry?` on the window says the page owes it a read, and the fallback poll condition now stays true while any read is owed, so a page whose run and backfill are both terminal still has a cycle in which to make it | Yes — it repairs a stated invariant that the implementation did not hold |
+| 2026-08-26 | Subscribe to a compared window before reading it, as mount already does for the open run | Independent review found the ordering inverted in the selection path. With no replay on subscribe, an event emitted between a window's read and its subscription is lost, and — before the fix above — nothing would ever re-read that window | No |
+| 2026-08-26 | Close compare mode when the window read fails | The rail hides on a failed window read, and the control that leaves compare mode lives on the rail. Leaving the mode open would hold the operator in a comparison with no way out until a later read happened to succeed, which is not the "fully functional" page the contract promises. The same review found `windows_error` had never been assigned anything but `nil`, so the promised warning could not render at all; it now says what failed and that the page will retry | Yes — the fallback is a behaviour the plan did not specify |
+| 2026-08-26 | Give each comparison track its own animation duration and draw no now line | Independent review found that sharing the chart's single advance made a lagging window's bar sweep several times faster than the work it drew, because its bar ends at its own shifted now while the remaining axis runs to the leader's. Each running bar now crosses its own remaining axis in exactly the real time that distance represents. The now line went with it: on a window-aligned axis every window's now sits at a different offset, so one shared line marks the wrong instant on every track but the leader, and a running bar's own leading edge already marks it | No |
 | 2026-08-25 | Convert expanded window anchors to UTC in the materialization projector | Operator testing found a completed combined `Europe/Oslo` backfill stuck at "Running" with "4 running" windows. `Anchor.expand_range/4` returns anchors in the window's own timezone; the two non-combined projection paths convert to UTC explicitly, the combined path did not, and Postgrex refuses a non-UTC `timestamptz` parameter. The batch raised, the cursor never advanced, and no completion projected. Ecto's `:utc_datetime_usec` cast converts, which is why only this raw-SQL path broke | Yes — a backend defect outside this change record's scope, fixed here because it blocks the feature under test |
 
 ## Verification evidence
@@ -706,7 +714,9 @@ each exceed their estimate; the reasons are in the deviations table below. Slice
 | --- | --- | --- |
 | `mix compile --warnings-as-errors` | Clean | Whole umbrella |
 | `favn_view` suite | 666 passed, 108 doctests, 558 tests, 1 excluded | Excludes the acceptance, container, slow and browser tiers |
-| `mix format --check-formatted` on every changed and added file | Exit 0 | The fifteen files this change touches, after converting the three CRLF HEEx templates to LF; a repo-wide check is not a usable signal on a Windows worktree |
+| `mix format --check-formatted` on every changed and added file | Exit 0 | The branch's changed and added Elixir files, after converting them to LF; a repo-wide check is not a usable signal on a Windows worktree, where the whole tree is CRLF |
+| `favn_storage_postgres` suite | 340 passed, 20 excluded | Same exclusions. Covers the window-choice projection, the folded window query and the header-read index contract added after review |
+| Design system: "every curated example renders" | Passes over all 32 entries | Proves the new comparison, banded rail, compact and dense timeline examples render without raising. It does not look at them |
 | `git diff --check` | Clean | Working tree |
 | `mix assets.build` | Tailwind and daisyUI rebuilt | Needed because the compare toggle, the alignment control and the comparison lane introduce classes that did not previously exist in the stylesheet |
 
@@ -716,7 +726,13 @@ each exceed their estimate; the reasons are in the deviations table below. Slice
   contains, not that a comparison of four windows reads well, that the track
   legend is followable, or that a dense chart is legible. That needs the
   umbrella dev server, `/design-system` and `window.favn.audit()`. The slice 11
-  examples exist for exactly this review and it has not been performed.
+  examples exist for exactly this review and it has not been performed. The
+  attempt was blocked by the local environment rather than by this change: the
+  development database's schema predates many migrations, and
+  `mix favn.postgres.migrate` refuses the container's `favn_migrator` role with
+  `unsafe_migrator_authority`, so the orchestrator will not start and the View
+  will not serve. Contrast and target-size verdicts for the new chart classes
+  are therefore unmeasured.
 - The umbrella-wide suite is not a usable signal on this workstation: it fails
   on CRLF assertions in `favn`, on `env: 'bash\r'`, and on
   `FavnRunner.TestExecution` being undefined after an app-scoped run recompiles
@@ -727,14 +743,39 @@ each exceed their estimate; the reasons are in the deviations table below. Slice
   propagate through `Task.async_stream` and take the LiveView down, exactly as a
   raising single-run read already does. Making compare stricter than the page it
   lives on was judged inconsistent rather than safer.
+- The verification plan's "stable element ids across refreshes" row has no test.
+  What it asks — that a running bar's CSS animation is not restarted by a
+  re-render — is a property of LiveView's DOM patching rather than of rendered
+  markup, and no test at this layer can observe it. It belongs to the visual
+  review that has not been performed.
 
 ## Final review
 
 | Field | Result |
 | --- | --- |
-| Reviewer | Pending |
+| Reviewer | Independent review agent, 2026-08-26 |
 | Compared | Approved plan, implementation, tests, diagnostics, and docs |
-| Deviations complete | Pending |
-| Findings | Pending |
-| Findings addressed and rechecked | Pending |
-| Verdict | Pending |
+| Deviations complete | No at review time. Three gaps named: unimplemented verification rows, the unrenderable window-read warning, and the narrowed poll condition. All three are now either fixed or recorded |
+| Findings | No blockers. Six should-fix and five nits. The alignment geometry, the coalescing invariant, the read bound, track ordering, the fallback rule, subscription release and every geometry invariant were traced and confirmed holding |
+| Findings addressed and rechecked | Yes — see the table below |
+| Verdict | Merge after fixes; the fixes are applied and the suites re-run |
+
+| Finding | Severity | Resolution |
+| --- | --- | --- |
+| A timed-out compare read consumed the window's pending sequence, leaving the track stale forever | should-fix | Fixed. `retry?` marks the window owed a read and the poll condition keeps a cycle alive to make it. Covered by a new test that hangs a read past a shortened bound |
+| A newly compared window was read before it was subscribed, losing an event in the gap | should-fix | Fixed. `update_comparison/1` and `refresh_run/1` both subscribe before reading, as mount already did |
+| Three promised verification rows unimplemented, and no storage evidence recorded | should-fix | Fixed. Three storage tests added: the window-choice projection with pinning, the folded query's not-found/empty/truncated separation, and the windowless sibling backfill. A performance-contract assertion now proves the header's window lookup uses `backfill_windows_run_idx`. The storage suite is in the evidence table |
+| `windows_error` was never assigned, so the promised warning could not render | should-fix | Fixed and tested. The failed read now states what happened, and closes compare mode with it |
+| A lagging window's running bar animated several times faster than real time | should-fix | Fixed. Per-track advance duration; the shared now line removed as misleading on a relative axis. Covered by a test asserting equal advance rates across tracks |
+| The banded rail's truncation notice counted the open bucket, not the read | should-fix | Fixed. `loaded_count` on the rail struct, with a test |
+| `{:exit, _}` did not rebind `track` | nit | Fixed by the same change as the staleness finding |
+| The `cell` type omitted `:timezone` | nit | Fixed |
+| An unavailable window was never retried on a fully terminal backfill | nit | Fixed by the poll-condition change |
+| `poll_worthy?` stopped polling after a failed window read | nit | Fixed; the poll now survives a window-read failure |
+| No DST-day bucketing test | nit | Added: 125 hourly Oslo windows across the 25-hour day of 2026-10-25 |
+| No "stable element ids" test | nit | Recorded as not verified; it is not observable at this layer |
+
+One defect the review did not name was found while fixing the fourth finding:
+`compare_error` was assigned by the all-windows-lost fallback and, like
+`windows_error`, never threaded to the page, so that fallback happened silently.
+It is fixed alongside it, with a test.
