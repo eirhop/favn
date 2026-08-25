@@ -25,6 +25,7 @@ defmodule FavnView.Orchestrator do
     authorize_run_subscription: 2,
     authorize_runs_subscription: 1,
     count_execution_groups: 2,
+    get_execution_group_detail: 3,
     get_asset_step_log_context: 3,
     get_operator_lineage_asset: 3,
     get_operator_lineage_edge: 3,

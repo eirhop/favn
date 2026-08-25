@@ -50,6 +50,7 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
   alias FavnStoragePostgres.ErrorMapper
   alias FavnStoragePostgres.Repo
   alias FavnStoragePostgres.Schemas.Backfill
+  alias FavnStoragePostgres.Schemas.BackfillOverview
   alias FavnStoragePostgres.Schemas.BackfillWindow
   alias FavnStoragePostgres.Schemas.AssetAttemptOverview
   alias FavnStoragePostgres.Schemas.AssetWindowState
@@ -146,7 +147,8 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
       groups = Enum.take(rows, page.limit)
       targets = target_refs_by_group(groups)
       assets = asset_counts_by_group(groups)
-      mapper = &group_result(&1, targets, assets)
+      backfills = backfill_counts_by_group(groups)
+      mapper = &group_result(&1, targets, assets, backfills)
 
       {:ok, cursor_page(rows, page.limit, mapper, &group_cursor/1)}
     end
@@ -207,13 +209,16 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
            }),
          {:ok, failures} <-
            failure_page(query.workspace_context, query.root_run_id, query.detail_limit) do
+      backfills = backfill_counts_by_group([overview])
+
       {:ok,
        %ExecutionGroup{
          overview:
            group_result(
              overview,
              target_refs_by_group([overview]),
-             asset_counts_by_group([overview])
+             asset_counts_by_group([overview]),
+             backfills
            ),
          runs: runs,
          windows: windows,
@@ -764,9 +769,10 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
     }
   end
 
-  defp group_result(group, targets, assets) do
+  defp group_result(group, targets, assets, backfills) do
     key = {group.workspace_id, group.root_run_id}
     by_kind = Map.get(targets, key, %{})
+    backfill = Map.get(backfills, key, empty_backfill_counts())
 
     %GroupOverviewResult{
       workspace_id: group.workspace_id,
@@ -785,9 +791,11 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
       trigger_type: RunEnum.decode(:trigger_type, group.trigger_type),
       started_at: group.started_at,
       finished_at: group.finished_at,
+      backfill_status: backfill.status,
       target_refs: Map.get(by_kind, "asset", []),
       pipeline_refs: Map.get(by_kind, "pipeline", []),
-      asset_counts: Map.get(assets, key, @no_asset_counts)
+      asset_counts: Map.get(assets, key, @no_asset_counts),
+      window_counts: Map.delete(backfill, :status)
     }
   end
 
@@ -935,15 +943,90 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
         root_run_id: attempt.root_run_id,
         total: count(),
         completed: filter(count(), attempt.status in ^@completed_asset_statuses),
+        succeeded: filter(count(), attempt.status == "ok"),
+        skipped: filter(count(), attempt.status == "skipped_fresh"),
         failed: filter(count(), attempt.status in ^@failed_asset_statuses),
         running: filter(count(), attempt.status in ^@running_asset_statuses),
-        queued: filter(count(), attempt.status == "queued")
+        queued: filter(count(), attempt.status == "queued"),
+        planned: filter(count(), attempt.status == "planned")
       }
     )
     |> Repo.all()
     |> Map.new(fn row ->
       {{row.workspace_id, row.root_run_id}, Map.drop(row, [:workspace_id, :root_run_id])}
     end)
+  end
+
+  defp backfill_counts_by_group([]), do: %{}
+
+  defp backfill_counts_by_group(groups) do
+    {workspace_ids, root_run_ids} = group_keys(groups)
+
+    from(backfill in Backfill,
+      left_join: overview in BackfillOverview,
+      on:
+        overview.workspace_id == backfill.workspace_id and
+          overview.backfill_id == backfill.backfill_id,
+      where:
+        backfill.workspace_id in ^workspace_ids and
+          backfill.root_run_id in ^root_run_ids,
+      select: %{
+        workspace_id: backfill.workspace_id,
+        root_run_id: backfill.root_run_id,
+        status: coalesce(overview.status, backfill.status),
+        total: coalesce(overview.total_count, backfill.expected_window_count),
+        planned: coalesce(overview.planned_count, 0),
+        ready: coalesce(overview.ready_count, 0),
+        active: coalesce(overview.active_count, 0),
+        succeeded: coalesce(overview.succeeded_count, 0),
+        failed: coalesce(overview.failed_count, 0),
+        cancelled: coalesce(overview.cancelled_count, 0)
+      }
+    )
+    |> Repo.all()
+    |> Enum.reduce(%{}, fn row, acc ->
+      key = {row.workspace_id, row.root_run_id}
+      counts = Map.drop(row, [:workspace_id, :root_run_id]) |> decode_backfill_counts()
+      Map.update(acc, key, counts, &merge_backfill_counts(&1, counts))
+    end)
+  end
+
+  defp decode_backfill_counts(counts) do
+    %{counts | status: String.to_existing_atom(counts.status)}
+  end
+
+  defp merge_backfill_counts(left, right) do
+    counts =
+      empty_backfill_counts()
+      |> Map.keys()
+      |> List.delete(:status)
+      |> Map.new(fn key -> {key, Map.fetch!(left, key) + Map.fetch!(right, key)} end)
+
+    Map.put(counts, :status, dominant_backfill_status(left.status, right.status))
+  end
+
+  defp dominant_backfill_status(left, right) do
+    Enum.max_by([left, right], &backfill_status_rank/1)
+  end
+
+  defp backfill_status_rank(:failed), do: 6
+  defp backfill_status_rank(:running), do: 5
+  defp backfill_status_rank(:ready), do: 4
+  defp backfill_status_rank(:planning), do: 3
+  defp backfill_status_rank(:cancelled), do: 2
+  defp backfill_status_rank(:completed), do: 1
+
+  defp empty_backfill_counts do
+    %{
+      status: nil,
+      total: 0,
+      planned: 0,
+      ready: 0,
+      active: 0,
+      succeeded: 0,
+      failed: 0,
+      cancelled: 0
+    }
   end
 
   defp group_keys(groups) do

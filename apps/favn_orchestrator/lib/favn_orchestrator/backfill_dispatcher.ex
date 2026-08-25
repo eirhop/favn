@@ -107,15 +107,21 @@ defmodule FavnOrchestrator.BackfillDispatcher do
         end
 
       {:error, reason} ->
-        case Runs.get(context, run_id) do
-          {:ok, %RunState{}} ->
+        case reserved_identity_after_submit_error(
+               Runs.get(context, run_id),
+               fn -> RunSubmissions.get(context, run_id) end
+             ) do
+          :reserved ->
             with {:ok, running} <- transition(context, window, owner_id, :running, run_id, nil) do
               reconcile_run(context, running, owner_id)
             end
 
-          {:error, _missing_or_unavailable} ->
+          :missing ->
             _ = transition(context, window, owner_id, :failed, nil, error_payload(reason))
             :ok
+
+          {:unknown, recovery_error} ->
+            emit_error(context.workspace_id, :reconcile_submit_error, recovery_error)
         end
     end
   end
@@ -124,6 +130,29 @@ defmodule FavnOrchestrator.BackfillDispatcher do
     do: reconcile_run(context, window, owner_id)
 
   defp process_window(_context, _window, _owner_id), do: :ok
+
+  @doc false
+  def reserved_identity_after_submit_error(run_result, submission_result)
+
+  def reserved_identity_after_submit_error({:ok, %RunState{}}, _submission_result),
+    do: :reserved
+
+  def reserved_identity_after_submit_error(
+        {:error, %Error{kind: :not_found}},
+        submission_result
+      ) do
+    case resolve_submission_result(submission_result) do
+      {:ok, %RunSubmission{}} -> :reserved
+      {:error, %Error{kind: :not_found}} -> :missing
+      {:error, reason} -> {:unknown, reason}
+    end
+  end
+
+  def reserved_identity_after_submit_error({:error, reason}, _submission_result),
+    do: {:unknown, reason}
+
+  defp resolve_submission_result(fun) when is_function(fun, 0), do: fun.()
+  defp resolve_submission_result(result), do: result
 
   defp submit_child(context, window, run_id) do
     with {:ok, %Backfill{} = backfill} <- Backfills.get(context, window.backfill_id),

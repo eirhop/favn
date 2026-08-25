@@ -47,6 +47,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
   alias FavnStoragePostgres.Migrations.OptimizeLogicalTargetHistoryV2
   alias FavnStoragePostgres.Migrations.OptimizeRunStatusPagingV2
   alias FavnStoragePostgres.Migrations.NormalizeResourceCircuitDefinitionsV2
+  alias FavnStoragePostgres.Migrations.RebindBackfillWindowRunReferenceV2
   alias FavnStoragePostgres.Migrations.RebindScheduleOccurrenceRunReferenceV2
   alias FavnStoragePostgres.RuntimePrivileges
 
@@ -92,7 +93,8 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     {20_260_807_000_000, GeneralizeOperatorCommandPrincipalsV2},
     {20_260_813_000_000, AddWorkspaceProvisioningOperationsV2},
     {20_260_821_000_000, RebindScheduleOccurrenceRunReferenceV2},
-    {20_260_824_000_000, AddManifestDeploymentsV2}
+    {20_260_824_000_000, AddManifestDeploymentsV2},
+    {20_260_825_000_000, RebindBackfillWindowRunReferenceV2}
   ]
   @required_tables ~w(
     schema_migrations
@@ -562,7 +564,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     rebuild_windows_child_run_fk rebuild_windows_materialization_fk
     target_operation_locks_workspace_fk backfills_root_run_fk
     backfills_deployment_manifest_fk backfills_target_fk backfill_plan_batches_backfill_fk
-    backfill_windows_batch_fk backfill_windows_run_fk auth_credentials_actor_fk
+    backfill_windows_batch_fk backfill_windows_run_submission_fk auth_credentials_actor_fk
     auth_sessions_actor_fk auth_sessions_workspace_fk auth_workspace_memberships_workspace_fk
     auth_workspace_memberships_actor_fk
     auth_operator_commands_workspace_fk auth_operator_commands_actor_fk
@@ -577,7 +579,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
                           Enum.map(@identifier_constraint_tables, &"#{&1}_identifier_lengths_v2") ++
                           Enum.map(@payload_constraint_tables, &"#{&1}_payload_bounds_v2")
   @expected_versions Enum.map(@migrations, fn {version, _module} -> version end)
-  @expected_definition_fingerprint "33443c3fb2256b81e0a3bab033d2a3885b557febeb65fbbcb897094c0a156f55"
+  @expected_definition_fingerprint "6379322836abc21ee1e804348704b1146e01a9a1468458ace239605cba6f94ba"
 
   @doc "Creates the V2 namespace for development/tests and applies every known migration."
   @spec migrate!(module()) :: :ok

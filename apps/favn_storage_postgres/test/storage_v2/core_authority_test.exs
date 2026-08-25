@@ -10155,7 +10155,17 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
              })
 
     assert %{asset_counts: counts} = Enum.find(page.items, &(&1.root_run_id == run.id))
-    assert counts == %{total: 3, completed: 2, failed: 1, running: 0, queued: 1}
+
+    assert counts == %{
+             total: 3,
+             completed: 2,
+             succeeded: 1,
+             skipped: 0,
+             failed: 1,
+             running: 0,
+             queued: 1,
+             planned: 0
+           }
 
     # A group whose steps have not been recorded reports nothing rather than
     # borrowing its run count.
@@ -10372,6 +10382,33 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert claimed.fencing_token == 1
     assert {:ok, [^claimed]} = BackfillStore.claim_windows(claim)
 
+    child_run_id = "run-bfw:" <> run.id
+
+    assert {:ok, submission} =
+             RunSubmissionStore.enqueue(%EnqueueRunSubmission{
+               workspace_context: fixture.workspace_context,
+               command_id: "backfill-submission:" <> run.id,
+               submission_id: "backfill-submission:" <> run.id,
+               source: :backfill,
+               idempotency_key: "backfill-submission:" <> run.id,
+               request_hash: :crypto.hash(:sha256, "backfill-submission:" <> run.id),
+               deployment_id: fixture.deployment_id,
+               manifest_version_id: fixture.version.manifest_version_id,
+               target_kind: "asset",
+               target_id: fixture.target_id,
+               run_id: child_run_id,
+               intent: %{"format" => "test", "payload" => "backfill"},
+               occurred_at: now
+             })
+
+    assert submission.run_id == child_run_id
+
+    assert {:error, %Error{kind: :not_found}} =
+             RunStore.get_run(%GetRun{
+               workspace_context: fixture.workspace_context,
+               run_id: child_run_id
+             })
+
     running_command = %TransitionBackfillWindow{
       workspace_context: fixture.workspace_context,
       command_id: "backfill-running:" <> run.id,
@@ -10381,7 +10418,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
       fencing_token: claimed.fencing_token,
       expected_version: claimed.version,
       status: :running,
-      run_id: run.id,
+      run_id: child_run_id,
       occurred_at: now
     }
 
@@ -10398,7 +10435,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert [%{run_id: choice_run_id, window_start_at: start_at, window_end_at: end_at}] =
              choices.items
 
-    assert choice_run_id == run.id
+    assert choice_run_id == child_run_id
     assert start_at == claimed.window_start
     assert end_at == claimed.window_end
     refute choices.overflow?
@@ -10420,32 +10457,45 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     }
 
     assert {:ok, [reclaimed]} = BackfillStore.claim_windows(reclaim)
-    assert reclaimed.status == :claimed
-    assert is_nil(reclaimed.run_id)
+    assert reclaimed.status == :running
+    assert reclaimed.run_id == child_run_id
     assert reclaimed.attempt_count == running.attempt_count + 1
     assert reclaimed.fencing_token == running.fencing_token + 1
-
-    assert {:ok, resumed} =
-             BackfillStore.transition_window(%{
-               running_command
-               | command_id: "backfill-resumed:" <> run.id,
-                 owner_id: reclaimed.claim_owner,
-                 fencing_token: reclaimed.fencing_token,
-                 expected_version: reclaimed.version,
-                 status: :running
-             })
 
     assert {:ok, succeeded} =
              BackfillStore.transition_window(%{
                running_command
                | command_id: "backfill-succeeded:" <> run.id,
-                 owner_id: resumed.claim_owner,
-                 fencing_token: resumed.fencing_token,
-                 expected_version: resumed.version,
+                 owner_id: reclaimed.claim_owner,
+                 fencing_token: reclaimed.fencing_token,
+                 expected_version: reclaimed.version,
                  status: :succeeded
              })
 
     assert succeeded.status == :succeeded
+
+    assert {:ok, publications} = Sequencer.sequence_batch()
+    assert publications != []
+    assert drain_projector("backfill-group-summary") >= length(publications)
+
+    assert {:ok, group_detail} =
+             OperatorReadStore.get_execution_group(%GetExecutionGroup{
+               workspace_context: fixture.workspace_context,
+               root_run_id: run.id,
+               detail_limit: 10
+             })
+
+    assert group_detail.overview.backfill_status == :ready
+
+    assert group_detail.overview.window_counts == %{
+             total: 2,
+             planned: 0,
+             ready: 1,
+             active: 0,
+             succeeded: 1,
+             failed: 0,
+             cancelled: 0
+           }
 
     assert {:ok, fetched} =
              BackfillStore.get_backfill(%GetBackfill{
