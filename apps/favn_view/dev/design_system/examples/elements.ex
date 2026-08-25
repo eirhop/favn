@@ -708,12 +708,19 @@ defmodule FavnView.Dev.DesignSystem.Examples.Elements do
           value: "auto",
           options: [{"Auto", "auto"}, {"Force all", "force_all"}]
         }),
-        Example.attrs(:checkbox, %{
-          name: "deps",
-          label: "Include dependencies",
-          type: "checkbox",
-          value: true
-        }),
+        Example.attrs(
+          :checkbox,
+          %{
+            id: "example-combine-windows",
+            name: "combine_windows",
+            label: "Combine windows",
+            tooltip:
+              "Run all selected windows in one child run instead of creating one child run per window.",
+            type: "checkbox",
+            value: true
+          },
+          "Optional help opens on pointer hover and keyboard focus."
+        ),
         Example.attrs(
           :with_error,
           %{name: "from", label: "From", value: "2026-13-01", errors: ["is not a valid date"]},

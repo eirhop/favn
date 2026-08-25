@@ -135,6 +135,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnOrchestrator.Persistence.Queries.GetTargetRecovery
   alias FavnOrchestrator.Persistence.Queries.GetBackfill
   alias FavnOrchestrator.Persistence.Queries.GetRuntimeState
+  alias FavnOrchestrator.Persistence.Queries.GetRunSubmissionByRunId
   alias FavnOrchestrator.Persistence.Queries.MissingExecutionPackageHashes
   alias FavnOrchestrator.Persistence.Queries.GetDeploymentTargets
   alias FavnOrchestrator.Persistence.Queries.GetDeploymentConfiguration
@@ -164,10 +165,12 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnOrchestrator.Persistence.Selectors.ActorByExternalIdentity
   alias FavnOrchestrator.Persistence.Selectors.SessionByTokenHash
   alias FavnOrchestrator.RunState
+  alias FavnOrchestrator.RunSubmission.Intent
   alias FavnOrchestrator.Rebuild.Plan, as: RebuildPlan
   alias FavnOrchestrator.RunCancellation
   alias FavnOrchestrator.ExecutionAdmission
   alias FavnOrchestrator.Backfills
+  alias FavnOrchestrator.BackfillDispatcher
   alias FavnOrchestrator.API.SSE
   alias FavnOrchestrator.API.OperatorCommands
   alias FavnOrchestrator.API.Router
@@ -3400,6 +3403,206 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
 
     assert Enum.map(page.items, & &1.window_key) ==
              Enum.map(anchors, &Favn.Window.Key.encode(&1.key))
+
+    assert {:error, :non_contiguous_combined_window_selection} =
+             Backfills.plan_asset_windows(
+               fixture.workspace_context,
+               fixture.version.manifest_version_id,
+               fixture.target_id,
+               anchors,
+               dependencies: :none,
+               combine_windows: true
+             )
+  end
+
+  test "asset coverage windows can be frozen into one combined execution", fixture do
+    anchors = [
+      Favn.Window.Anchor.new!(
+        :day,
+        ~U[2026-07-01 00:00:00Z],
+        ~U[2026-07-02 00:00:00Z],
+        timezone: "Etc/UTC"
+      ),
+      Favn.Window.Anchor.new!(
+        :day,
+        ~U[2026-07-02 00:00:00Z],
+        ~U[2026-07-03 00:00:00Z],
+        timezone: "Etc/UTC"
+      )
+    ]
+
+    assert {:ok, %{combine_windows: true, execution_mode: :combined, physical_execution_count: 1}} =
+             Backfills.plan_asset_windows(
+               fixture.workspace_context,
+               fixture.version.manifest_version_id,
+               fixture.target_id,
+               anchors,
+               dependencies: :none,
+               combine_windows: true
+             )
+
+    assert {:ok, backfill} =
+             Backfills.submit_asset_windows(
+               fixture.workspace_context,
+               fixture.version.manifest_version_id,
+               fixture.target_id,
+               anchors,
+               root_run_id: "run-combined-asset-#{System.unique_integer([:positive])}",
+               dependencies: :none,
+               combine_windows: true
+             )
+
+    assert backfill.metadata["combine_windows"]
+
+    assert {:ok, %{items: windows}} =
+             Backfills.page_windows(fixture.workspace_context, backfill.backfill_id, limit: 10)
+
+    assert windows |> Enum.map(& &1.payload["execution_group_id"]) |> Enum.uniq() |> length() ==
+             1
+  end
+
+  test "asset backfill dispatch creates its durable child submission", fixture do
+    range = %{
+      "kind" => "day",
+      "from" => "2026-07-01",
+      "to" => "2026-07-01",
+      "timezone" => "Etc/UTC"
+    }
+
+    assert {:ok, backfill} =
+             Backfills.submit_asset(
+               fixture.workspace_context,
+               fixture.version.manifest_version_id,
+               fixture.target_id,
+               range,
+               root_run_id: "run-asset-dispatch-#{System.unique_integer([:positive])}",
+               dependencies: :none
+             )
+
+    dispatch_backfill_once!(fixture)
+
+    assert {:ok, %{items: [window]}} =
+             Backfills.page_windows(fixture.workspace_context, backfill.backfill_id, limit: 10)
+
+    assert window.status == :running
+    assert is_binary(window.run_id)
+
+    assert {:ok, submission} =
+             RunSubmissionStore.get_by_run_id(%GetRunSubmissionByRunId{
+               workspace_context: fixture.workspace_context,
+               run_id: window.run_id
+             })
+
+    assert submission.source == :backfill
+    assert submission.status == :queued
+    target_id = fixture.target_id
+    assert {:ok, {:asset, ^target_id, opts}} = Intent.decode(submission.intent)
+    refute opts[:combine_windows]
+  end
+
+  test "combined pipeline dispatch creates one shared child submission", fixture do
+    range = %{
+      "kind" => "day",
+      "from" => "2026-07-01",
+      "to" => "2026-07-03",
+      "timezone" => "Etc/UTC"
+    }
+
+    assert {:ok, backfill} =
+             Backfills.submit_pipeline(
+               fixture.workspace_context,
+               fixture.version.manifest_version_id,
+               fixture.pipeline_target_id,
+               range,
+               root_run_id: "run-combined-dispatch-#{System.unique_integer([:positive])}",
+               combine_windows: true
+             )
+
+    dispatch_backfill_once!(fixture)
+
+    assert {:ok, %{items: windows, has_more?: false}} =
+             Backfills.page_windows(fixture.workspace_context, backfill.backfill_id, limit: 10)
+
+    assert length(windows) == 3
+    assert Enum.all?(windows, &(&1.status == :running))
+    assert [run_id] = windows |> Enum.map(& &1.run_id) |> Enum.uniq()
+
+    assert {:ok, submission} =
+             RunSubmissionStore.get_by_run_id(%GetRunSubmissionByRunId{
+               workspace_context: fixture.workspace_context,
+               run_id: run_id
+             })
+
+    pipeline_target_id = fixture.pipeline_target_id
+    assert {:ok, {:pipeline, ^pipeline_target_id, opts}} = Intent.decode(submission.intent)
+    assert opts[:combine_windows]
+
+    assert %{rows: [[1]]} =
+             SQL.query!(
+               Repo,
+               "SELECT count(*) FROM favn_control.run_submissions WHERE workspace_id = $1 AND run_id = $2",
+               [fixture.workspace_id, run_id]
+             )
+  end
+
+  test "deterministic grouped submission failures terminally fail every window", fixture do
+    range = %{
+      "kind" => "day",
+      "from" => "2026-07-01",
+      "to" => "2026-07-03",
+      "timezone" => "Etc/UTC"
+    }
+
+    assert {:ok, backfill} =
+             Backfills.submit_pipeline(
+               fixture.workspace_context,
+               fixture.version.manifest_version_id,
+               fixture.pipeline_target_id,
+               range,
+               root_run_id:
+                 "run-combined-deterministic-failure-#{System.unique_integer([:positive])}",
+               combine_windows: true
+             )
+
+    missing_name = "missing_pipeline_#{System.unique_integer([:positive])}"
+
+    assert %{num_rows: 1} =
+             SQL.query!(
+               Repo,
+               "UPDATE favn_control.backfills SET metadata = jsonb_set(metadata, '{pipeline_name}', $3::jsonb) WHERE workspace_id = $1 AND backfill_id = $2",
+               [fixture.workspace_id, backfill.backfill_id, Jason.encode!(missing_name)]
+             )
+
+    dispatch_backfill_once!(fixture)
+
+    assert {:ok, %{items: windows, has_more?: false}} =
+             Backfills.page_windows(fixture.workspace_context, backfill.backfill_id, limit: 10)
+
+    assert length(windows) == 3
+    assert Enum.all?(windows, &(&1.status == :failed))
+    assert Enum.all?(windows, &is_nil(&1.run_id))
+
+    assert Enum.all?(
+             windows,
+             &(&1.last_error == %{"reason" => "invalid_backfill_pipeline_identity"})
+           )
+
+    assert %{rows: [[0]]} =
+             SQL.query!(
+               Repo,
+               "SELECT count(*) FROM favn_control.run_submissions WHERE workspace_id = $1 AND source = 'backfill'",
+               [fixture.workspace_id]
+             )
+
+    assert {:ok, []} =
+             BackfillStore.claim_windows(%ClaimBackfillWindows{
+               workspace_context: fixture.workspace_context,
+               batch_id: "backfill-no-reclaim:#{backfill.backfill_id}",
+               owner_id: "post-failure-check",
+               lease_duration_ms: 30_000,
+               backfill_id: backfill.backfill_id,
+               limit: 10
+             })
   end
 
   test "reports exact backend capabilities and schema readiness" do
@@ -11715,6 +11918,22 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   defp share_repo_sandbox! do
     Sandbox.mode(Repo, {:shared, self()})
     on_exit(fn -> Sandbox.mode(Repo, :manual) end)
+  end
+
+  defp dispatch_backfill_once!(fixture) do
+    share_repo_sandbox!()
+
+    dispatcher =
+      start_supervised!(
+        {BackfillDispatcher,
+         workspace_ids: [fixture.workspace_id],
+         owner_id: "backfill-dispatch-test",
+         interval_ms: 60_000,
+         lease_duration_ms: 30_000,
+         batch_size: 100}
+      )
+
+    :sys.get_state(dispatcher)
   end
 
   defp start_pipeline_runtime! do

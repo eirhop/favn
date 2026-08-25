@@ -15,6 +15,7 @@ defmodule FavnOrchestrator.RunSubmission.Intent do
   @operations [:asset, :pipeline, :pipeline_assets, :rerun]
   @option_keys [
     :anchor_window,
+    :combine_windows,
     :dependencies,
     :exact_windows,
     :input_mode,

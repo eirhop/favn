@@ -635,7 +635,10 @@ defmodule FavnOrchestrator do
   Plans an exact backfill of missing windows.
 
   Pass `:window_keys` to plan named windows, `:cursor`/`:limit` to plan one page,
-  or neither to plan every missing window.
+  or neither to plan every missing window. `:combine_windows` defaults to
+  `false`. When true, the selected windows must be contiguous and the existing
+  combined-append restrictions apply. The execution mode is frozen into the
+  returned plan.
   """
   @spec plan_missing_coverage_backfill(OperatorContext.t(), String.t(), keyword()) ::
           {:ok, map()} | {:error, term()}
@@ -653,6 +656,8 @@ defmodule FavnOrchestrator do
   caller cannot name the run. Resubmitting the *same* request under the same key
   resolves to the same run and the same backfill; a changed request under that key is
   refused, and so is a different key while the first submission is still unresolved.
+  Combined or separate execution is taken from the immutable plan rather than
+  accepted as a submission-time override.
   """
   @spec submit_missing_coverage_backfill(
           OperatorContext.t(),
@@ -694,7 +699,8 @@ defmodule FavnOrchestrator do
                    :manifest_version_id,
                    :deployment_id,
                    :window_count,
-                   :selection
+                   :selection,
+                   :combine_windows
                  ])
              },
              opts

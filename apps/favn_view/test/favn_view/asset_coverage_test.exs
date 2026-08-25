@@ -481,6 +481,32 @@ defmodule FavnView.AssetCoverageTest do
       refute html =~ "Backfill all"
     end
 
+    test "offers the shared combine-windows control before planning" do
+      html =
+        render_component(&AssetDetailPage.coverage_panel/1,
+          timezone: "Europe/Oslo",
+          command_resource: "asset:orders",
+          can_plan?: true,
+          coverage: %{
+            status: :incomplete,
+            expected_count: 31,
+            covered_count: 29,
+            missing_count: 2
+          },
+          calendar: day_calendar([8, 15]),
+          navigation: %{previous: nil, next: nil, jumps: []},
+          combine_windows?: true
+        )
+
+      assert html =~ ~s(data-testid="coverage-backfill-form")
+      assert html =~ ~s(phx-submit="plan_missing_coverage")
+      assert html =~ ~s(data-testid="coverage-backfill-combine-windows")
+      assert html =~ ">Combine windows</span>"
+      assert html =~ "one child run instead of creating one child run per window"
+      assert html =~ ~s(name="coverage_backfill[combine_windows]")
+      assert html =~ ~s(checked)
+    end
+
     test "complete coverage offers no backfill" do
       html =
         coverage_panel(

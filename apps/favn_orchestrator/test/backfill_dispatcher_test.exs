@@ -27,15 +27,26 @@ defmodule FavnOrchestrator.BackfillDispatcherTest do
              )
   end
 
-  test "shared child uncertainty retries instead of terminally failing an exact row" do
-    payload = %{"execution_group_id" => "group-1"}
-
-    assert BackfillDispatcher.submission_error_disposition(payload, :missing) == :retry
-    assert BackfillDispatcher.submission_error_disposition(payload, :unavailable) == :retry
+  test "unknown recovery state retries regardless of the original error" do
+    assert BackfillDispatcher.submission_error_disposition(
+             :invalid_run_submission_intent,
+             :unavailable
+           ) == :retry
   end
 
-  test "only proven-missing separate-window submissions become terminal" do
-    assert BackfillDispatcher.submission_error_disposition(%{}, :missing) == :fail
-    assert BackfillDispatcher.submission_error_disposition(%{}, :unavailable) == :retry
+  test "proven-missing explicitly retryable submissions retry" do
+    transient = Error.new(:unavailable, "submission unavailable", retryable?: true)
+
+    assert BackfillDispatcher.submission_error_disposition(transient, :missing) == :retry
+  end
+
+  test "proven-missing deterministic submissions fail even for grouped work" do
+    assert BackfillDispatcher.submission_error_disposition(
+             :invalid_run_submission_intent,
+             :missing
+           ) == :fail
+
+    non_retryable = Error.new(:invalid, "invalid submission")
+    assert BackfillDispatcher.submission_error_disposition(non_retryable, :missing) == :fail
   end
 end

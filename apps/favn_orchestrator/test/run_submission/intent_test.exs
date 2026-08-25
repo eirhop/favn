@@ -29,6 +29,15 @@ defmodule FavnOrchestrator.RunSubmission.IntentTest do
     assert {:ok, {:rerun, "source-run", ^opts}} = Intent.decode(intent)
   end
 
+  test "round-trips both combined-window modes" do
+    for combine_windows <- [false, true] do
+      opts = [combine_windows: combine_windows]
+
+      assert {:ok, intent} = Intent.new(:asset, "asset-id", opts)
+      assert {:ok, {:asset, "asset-id", ^opts}} = Intent.decode(intent)
+    end
+  end
+
   test "rejects unknown options and tampered payloads" do
     assert {:error, :invalid_run_submission_intent} =
              Intent.new(:asset, "asset-id", secret_callback: fn -> :unsafe end)

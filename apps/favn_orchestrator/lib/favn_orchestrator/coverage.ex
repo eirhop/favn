@@ -268,15 +268,31 @@ defmodule FavnOrchestrator.Coverage do
           {:ok, map()} | {:error, term()}
   def plan_missing_backfill(%WorkspaceContext{} = context, target_id, opts \\ [])
       when is_binary(target_id) and is_list(opts) do
-    with :ok <- validate_options(opts, [:evaluated_at, :cursor, :limit, :window_keys]),
+    with :ok <-
+           validate_options(opts, [
+             :evaluated_at,
+             :cursor,
+             :limit,
+             :window_keys,
+             :combine_windows
+           ]),
+         combine_windows <- Keyword.get(opts, :combine_windows, false),
+         :ok <- validate_combine_windows(combine_windows),
          evaluated_at <- Keyword.get(opts, :evaluated_at, DateTime.utc_now()),
          :ok <- validate_datetime(evaluated_at),
          {:ok, selection} <- backfill_selection(opts),
          {:ok, summary, items} <-
            missing_selection(context, target_id, evaluated_at, selection),
          {:ok, snapshot} <- active_asset(context, target_id),
-         true <- snapshot.version.manifest_version_id == summary.manifest_version_id do
-      build_backfill_plan(summary, items, snapshot.runtime.deployment_id, selection)
+         true <- snapshot.version.manifest_version_id == summary.manifest_version_id,
+         :ok <- validate_combined_backfill(context, snapshot, items, combine_windows) do
+      build_backfill_plan(
+        summary,
+        items,
+        snapshot.runtime.deployment_id,
+        selection,
+        combine_windows
+      )
     else
       false -> {:error, :coverage_selection_stale}
       {:error, _reason} = error -> error
@@ -385,6 +401,7 @@ defmodule FavnOrchestrator.Coverage do
              target_id,
              selected.selection
              |> selection_options()
+             |> Keyword.put(:combine_windows, selected.combine_windows)
              |> Keyword.put(:evaluated_at, selected.evaluated_at)
            ),
          true <- current.plan_id == selected.plan_id and current.plan_hash == selected.plan_hash,
@@ -603,7 +620,9 @@ defmodule FavnOrchestrator.Coverage do
          true <-
            Enum.any?(grants, &(&1.target_kind == :asset and &1.target_id == target_id)),
          {:ok, version} <- ManifestStore.get_manifest(context, runtime.manifest_version_id),
-         {:ok, asset} <- ManifestTarget.resolve_asset(version, target_id) do
+         {:ok, %Asset{ref: {module, name}} = asset}
+         when is_atom(module) and is_atom(name) <-
+           ManifestTarget.resolve_asset(version, target_id) do
       {:ok, %{runtime: runtime, version: version, asset: asset, target_id: target_id}}
     else
       false -> {:error, :not_found}
@@ -747,6 +766,24 @@ defmodule FavnOrchestrator.Coverage do
   defp validate_datetime(%DateTime{}), do: :ok
   defp validate_datetime(_value), do: {:error, :invalid_coverage_evaluated_at}
 
+  defp validate_combine_windows(value) when is_boolean(value), do: :ok
+  defp validate_combine_windows(_value), do: {:error, :invalid_coverage_options}
+
+  defp validate_combined_backfill(_context, _snapshot, _items, false), do: :ok
+
+  defp validate_combined_backfill(_context, snapshot, items, true) do
+    with {:ok, anchors} <- plan_anchors(items),
+         :ok <-
+           Backfills.validate_combined_asset_windows(
+             snapshot.version,
+             snapshot.asset,
+             anchors,
+             []
+           ) do
+      :ok
+    end
+  end
+
   defp plannable_summary(%Summary{status: :unknown, unknown_reason: reason}),
     do: {:error, {:coverage_unknown, reason}}
 
@@ -771,7 +808,7 @@ defmodule FavnOrchestrator.Coverage do
     end
   end
 
-  defp build_backfill_plan(summary, items, deployment_id, selection) do
+  defp build_backfill_plan(summary, items, deployment_id, selection, combine_windows) do
     plan = %{
       target_id: summary.target_id,
       manifest_version_id: summary.manifest_version_id,
@@ -781,6 +818,7 @@ defmodule FavnOrchestrator.Coverage do
       evaluated_at: summary.evaluated_at,
       evaluation_checksum: summary.evaluation_checksum,
       selection: selection,
+      combine_windows: combine_windows,
       window_count: length(items),
       windows: items
     }
@@ -805,6 +843,7 @@ defmodule FavnOrchestrator.Coverage do
          evaluation_checksum when is_binary(evaluation_checksum) <-
            field(plan, :evaluation_checksum),
          {:ok, selection} <- normalize_selection(field(plan, :selection)),
+         combine_windows when is_boolean(combine_windows) <- field(plan, :combine_windows),
          plan_id when is_binary(plan_id) <- field(plan, :plan_id),
          plan_hash when is_binary(plan_hash) <- field(plan, :plan_hash),
          windows when is_list(windows) and windows != [] <- field(plan, :windows),
@@ -818,6 +857,7 @@ defmodule FavnOrchestrator.Coverage do
            evaluated_at: evaluated_at,
            evaluation_checksum: evaluation_checksum,
            selection: selection,
+           combine_windows: combine_windows,
            window_count: length(windows),
            windows: Enum.map(anchors, &missing_window/1),
            anchors: anchors,
@@ -867,6 +907,7 @@ defmodule FavnOrchestrator.Coverage do
       evaluated_at: DateTime.to_iso8601(plan.evaluated_at),
       evaluation_checksum: plan.evaluation_checksum,
       selection: plan.selection,
+      combine_windows: plan.combine_windows,
       window_count: plan.window_count,
       windows:
         Enum.map(plan.windows, fn window ->
@@ -934,6 +975,7 @@ defmodule FavnOrchestrator.Coverage do
       {:ok,
        opts
        |> Keyword.put(:metadata, Map.merge(metadata, coverage_plan_metadata(plan)))
+       |> Keyword.put(:combine_windows, plan.combine_windows)
        |> Keyword.put(:required_generation, required_generation)}
     else
       {:error, :invalid_coverage_backfill_options}

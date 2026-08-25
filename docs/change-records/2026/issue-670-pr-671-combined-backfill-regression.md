@@ -242,5 +242,98 @@ project. That remains a post-merge deployment check.
 
 ---
 
-The implementation outcome, deviations, verification evidence, and final review
-will be completed before the pull request is marked ready.
+## Implementation outcome
+
+The durable intent now accepts the combined-window boolean, so ordinary and
+combined backfill children can be queued again. After any submission error, the
+dispatcher re-reads both durable child identities. An unavailable read or an
+explicitly retryable persistence error waits for another attempt; a proven
+deterministic failure terminally fails the affected window rows and stores a
+bounded reason.
+
+Asset Coverage now offers the same `Combine windows` checkbox as the pipeline
+form. The default remains separate execution. Combined mode validates the exact
+missing anchors with the existing asset planner and becomes part of the
+immutable plan hash. The shared checkbox exposes concise help on pointer hover
+and keyboard focus, and the pipeline form uses a responsive two-column layout.
+
+### Actual scope and complexity
+
+- Files and ownership areas changed: durable intents and dispatcher recovery in
+  `favn_orchestrator`; exact asset planning and Coverage plans in
+  `favn_orchestrator`; PostgreSQL lifecycle proof in `favn_storage_postgres`;
+  shared fields and the two operator forms in `favn_view`; public behavior in
+  `docs/FEATURES.md` and facade moduledocs.
+- Ownership boundaries affected: Orchestrator, PostgreSQL test storage, and the
+  thin View facade. No View-to-storage dependency was introduced.
+- Implementation complexity: Moderate — the code is small in each owner, but
+  the regression crosses durable submission, planning, persistence proof, and
+  two operator screens.
+- Operational complexity: Low — there is no migration, new service, batching
+  mode, or deployment setting.
+- Canonical documentation updated: `docs/FEATURES.md` and public Coverage facade
+  moduledocs describe the separate default, contiguous combined option, and
+  frozen plan choice.
+
+| Slice | Production added | Production deleted | Supporting added | Supporting deleted | Budget result |
+| --- | ---: | ---: | ---: | ---: | --- |
+| 1. Durable intent and recovery | 9 | 9 | 27 | 7 | Within budget |
+| 2. Asset Coverage planning | 107 | 14 | 46 | 5 | Within the 25 percent explanation threshold |
+| 3. Shared operator forms | 175 | 98 | 185 | 6 | Addition threshold exceeded by 25 lines; see below |
+| 4. PostgreSQL lifecycle proof | 0 | 0 | 219 | 0 | Within the 25 percent explanation threshold |
+
+Slice 3 is a net 77-line production change. Its addition count is higher than
+planned because the existing raw 61-line pipeline form was replaced with shared
+fields while the asset LiveView needed explicit state and event plumbing. It did
+not introduce a new form framework or component hierarchy; both screens reuse
+the existing field component.
+
+## Deviations from the approved plan
+
+None. The implementation matched the approved plan.
+
+## Decision log
+
+| Date | Decision | Reason | Review needed |
+| --- | --- | --- | --- |
+| 2026-08-25 | Validate combined Coverage anchors against the already-resolved manifest asset | Avoid a duplicate active-deployment lookup and make the planner input contract explicit; behavior and safety checks are unchanged | No |
+| 2026-08-25 | Use the existing field component for both checkboxes | Keeps one styled and tested control without adding another UI abstraction | No |
+
+## Verification evidence
+
+| Check | Result | Evidence boundary |
+| --- | --- | --- |
+| Intent, dispatcher, and Coverage tests | 30 passed | Focused Orchestrator behavior, including both booleans and failure disposition |
+| Orchestrator fast app suite | 735 passed, 2 excluded | Full owning-app regression suite; one unrelated teardown race on the first run passed alone and on rerun |
+| PostgreSQL feature tests | 4 passed | Real durable child creation, one shared child, terminal grouped failure, and no reclaim |
+| PostgreSQL core authority file | 136 passed | Broader real-storage coverage around the changed integration test owner |
+| View focused tests | 58 passed | Both forms, selected values, plan invalidation, and accessible tooltip markup |
+| View full app suite | 557 passed | Full View regression suite |
+| Warnings-as-errors compile | Passed | Umbrella static compilation |
+| Dialyzer | Passed | Umbrella test-environment type analysis |
+| Test tag tier guard | Passed | Every tagged tier remains represented in CI |
+| Formatting and whitespace | Passed | `mix format` and `git diff --check` |
+| Design-system browser audit | 152 checks passed, 0 failed or skipped | Dark/light, desktop/mobile field, pipeline, and Coverage examples; keyboard-focus tooltip opacity was `1` |
+| Broad PostgreSQL app suite | 337 of 339 passed, 19 excluded | One unrelated timing failure passed alone and in the 136-test owner file; the existing protected local-password bootstrap test still fails from local configuration |
+| GitHub CI | Pending | Must qualify the final rebased head before the PR becomes ready |
+
+### Not verified
+
+- The user's external project and its deployed runtime were not changed or
+  exercised from this repository checkout.
+- A real runner did not execute the queued child to materialization completion;
+  the PostgreSQL proof covers durable submission identity and backfill-window
+  reconciliation.
+- Large historical data volume and DuckDB/DuckLake throughput remain unchanged
+  and were not load-tested by this repair.
+
+## Final review
+
+| Field | Result |
+| --- | --- |
+| Reviewer | Pending independent implementation review |
+| Compared | Approved plan, implementation, tests, diagnostics, docs, and complexity accounting |
+| Deviations complete | Yes |
+| Findings | Pending |
+| Findings addressed and rechecked | Pending |
+| Verdict | Pending |
