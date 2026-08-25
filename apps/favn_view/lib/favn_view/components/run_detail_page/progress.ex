@@ -54,12 +54,19 @@ defmodule FavnView.Components.RunDetailPage.Progress do
   end
 
   defp window_segments(%{total_windows: total} = run) when is_integer(total) and total > 1 do
-    completed = run.completed_windows - run.failed_windows
+    cancelled = Map.get(run, :cancelled_windows, 0)
+    running = Map.get(run, :running_windows, 0)
+    queued = Map.get(run, :queued_windows, 0)
+    succeeded = max(run.completed_windows - run.failed_windows - cancelled, 0)
+    remaining = max(total - succeeded - run.failed_windows - cancelled - running - queued, 0)
 
     [
-      %{tone: :success, count: max(completed, 0), label: "complete"},
+      %{tone: :success, count: succeeded, label: "complete"},
       %{tone: :error, count: run.failed_windows, label: "failed"},
-      %{tone: :neutral, count: max(total - run.completed_windows, 0), label: "remaining"}
+      %{tone: :neutral, count: cancelled, label: "cancelled"},
+      %{tone: :info, count: running, label: "running"},
+      %{tone: :warning, count: queued, label: "queued"},
+      %{tone: :neutral, count: remaining, label: "remaining"}
     ]
   end
 

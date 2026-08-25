@@ -137,52 +137,53 @@ defmodule FavnOrchestrator.RunReadModel do
   @spec from_execution_group_overview(PersistedExecutionGroupOverview.t()) ::
           execution_group_summary()
   def from_execution_group_overview(%PersistedExecutionGroupOverview{} = group) do
-    status = public_overview_status(group.status)
-    completed = group.succeeded_count + group.failed_count
-
-    attempt_counts = %{
-      total: group.run_count,
-      completed: completed,
-      succeeded: group.succeeded_count,
-      skipped: 0,
-      failed: group.failed_count,
-      running: group.running_count,
-      queued: group.pending_count,
-      planned: 0
-    }
+    root_status = public_overview_status(group.status)
+    window_counts = group.window_counts
+    status = public_backfill_status(group.backfill_status, window_counts) || root_status
+    attempt_counts = execution_group_attempt_counts(group)
 
     active? =
-      status in [:pending, :running] or group.running_count > 0 or group.pending_count > 0
+      status in [:pending, :running] or window_counts.active > 0 or window_counts.ready > 0 or
+        window_counts.planned > 0
 
     %{
       id: group.root_run_id,
       root_execution_group_id: group.root_run_id,
       status: status,
-      health: execution_group_health(status, group.failed_count, active?),
+      health:
+        execution_group_health(status, max(group.failed_count, window_counts.failed), active?),
       active?: active?,
       trigger_type: group.trigger_type,
       target_assets: group.target_refs,
       target_pipelines: group.pipeline_refs,
       asset_counts: asset_counts(group.asset_counts || %{}),
-      root_status: status,
+      root_status: root_status,
       started_at: group.started_at || group.updated_at,
       finished_at: overview_finished_at(group, active?),
-      duration_ms: duration_ms(group.started_at, group.finished_at),
-      total_windows: 0,
-      completed_windows: 0,
-      failed_windows: 0,
-      total_asset_attempts: group.run_count,
-      completed_asset_attempts: completed,
-      succeeded_asset_attempts: group.succeeded_count,
-      skipped_asset_attempts: 0,
-      failed_asset_attempts: group.failed_count,
-      running_asset_attempts: group.running_count,
-      queued_asset_attempts: group.pending_count,
-      planned_asset_attempts: 0,
-      failure_count: group.failed_count,
+      duration_ms: overview_duration_ms(group, active?),
+      total_windows: window_counts.total,
+      completed_windows: window_counts.succeeded + window_counts.failed + window_counts.cancelled,
+      failed_windows: window_counts.failed,
+      total_asset_attempts: attempt_counts.total,
+      completed_asset_attempts: attempt_counts.completed,
+      succeeded_asset_attempts: attempt_counts.succeeded,
+      skipped_asset_attempts: attempt_counts.skipped,
+      failed_asset_attempts: attempt_counts.failed,
+      running_asset_attempts: attempt_counts.running,
+      queued_asset_attempts: attempt_counts.queued,
+      planned_asset_attempts: attempt_counts.planned,
+      failure_count: max(group.failed_count, window_counts.failed),
       progress: execution_group_progress(attempt_counts),
       summary_totals: %{
-        windows: %{total: 0, completed: 0, failed: 0},
+        windows: %{
+          total: window_counts.total,
+          completed: window_counts.succeeded + window_counts.failed + window_counts.cancelled,
+          succeeded: window_counts.succeeded,
+          failed: window_counts.failed,
+          running: window_counts.active,
+          queued: window_counts.ready + window_counts.planned,
+          cancelled: window_counts.cancelled
+        },
         asset_attempts: attempt_counts
       },
       last_activity_at: group.updated_at,
@@ -439,18 +440,72 @@ defmodule FavnOrchestrator.RunReadModel do
     %{
       total: Map.get(counts, :total, 0),
       completed: Map.get(counts, :completed, 0),
+      succeeded: Map.get(counts, :succeeded, 0),
+      skipped: Map.get(counts, :skipped, 0),
       failed: Map.get(counts, :failed, 0),
       running: Map.get(counts, :running, 0),
-      queued: Map.get(counts, :queued, 0)
+      queued: Map.get(counts, :queued, 0),
+      planned: Map.get(counts, :planned, 0)
     }
   end
+
+  defp public_asset_counts(counts) do
+    counts = asset_counts(counts || %{})
+
+    %{
+      total: counts.total,
+      completed: counts.completed,
+      succeeded: counts.succeeded,
+      skipped: counts.skipped,
+      failed: counts.failed,
+      running: counts.running,
+      queued: counts.queued,
+      planned: counts.planned
+    }
+  end
+
+  defp execution_group_attempt_counts(%{backfill_status: nil} = group) do
+    completed = group.succeeded_count + group.failed_count
+
+    %{
+      total: group.run_count,
+      completed: completed,
+      succeeded: group.succeeded_count,
+      skipped: 0,
+      failed: group.failed_count,
+      running: group.running_count,
+      queued: group.pending_count,
+      planned: 0
+    }
+  end
+
+  defp execution_group_attempt_counts(group), do: public_asset_counts(group.asset_counts)
 
   defp public_overview_status(:succeeded), do: :ok
   defp public_overview_status(:failed), do: :error
   defp public_overview_status(status), do: status
 
+  defp public_backfill_status(nil, _counts), do: nil
+
+  defp public_backfill_status(status, _counts) when status in [:planning, :ready], do: :pending
+
+  defp public_backfill_status(:running, _counts), do: :running
+
+  defp public_backfill_status(:completed, %{total: total, cancelled: total}) when total > 0,
+    do: :cancelled
+
+  defp public_backfill_status(:completed, %{cancelled: cancelled}) when cancelled > 0,
+    do: :partial
+
+  defp public_backfill_status(:completed, _counts), do: :ok
+  defp public_backfill_status(:failed, _counts), do: :error
+  defp public_backfill_status(:cancelled, _counts), do: :cancelled
+
   defp overview_finished_at(_group, true), do: nil
   defp overview_finished_at(group, false), do: group.finished_at || group.updated_at
+
+  defp overview_duration_ms(_group, true), do: nil
+  defp overview_duration_ms(group, false), do: duration_ms(group.started_at, group.finished_at)
 
   defp unit_label(:assets, 1), do: "asset"
   defp unit_label(:assets, _total), do: "assets"

@@ -10,15 +10,23 @@ defmodule FavnView.Components.RunDetailPage.Flow do
   use FavnView, :html
 
   attr :assets, :list, required: true
+  attr :backfill_parent?, :boolean, default: false
 
   def flow(assigns) do
     ~H"""
     <section data-testid="run-flow">
       <.empty_state
-        :if={@assets == []}
+        :if={@assets == [] && !@backfill_parent?}
         icon="hero-square-3-stack-3d"
         title="No asset work yet"
         description="Assets appear when the persisted run plan is available."
+      />
+
+      <.empty_state
+        :if={@assets == [] && @backfill_parent?}
+        icon="hero-calendar-days"
+        title="Asset work runs in the windows"
+        description="Open a window run to inspect its exact assets and results."
       />
 
       <.panel :if={@assets != []} padding={:none}>

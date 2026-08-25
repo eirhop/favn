@@ -385,12 +385,18 @@ defmodule FavnStoragePostgres.Backfills.Store do
           FOR UPDATE SKIP LOCKED
         )
         UPDATE favn_control.backfill_windows AS target
-        SET status = 'claimed',
+        SET status = CASE
+              WHEN target.status = 'running' THEN 'running'
+              ELSE 'claimed'
+            END,
             claim_owner = $4,
             fencing_token = target.fencing_token + 1,
             claim_command_id = $5,
             claim_expires_at = clock_timestamp() + ($6 * interval '1 millisecond'),
-            run_id = NULL,
+            run_id = CASE
+              WHEN target.status = 'running' THEN target.run_id
+              ELSE NULL
+            END,
             attempt_count = target.attempt_count + 1,
             version = target.version + 1,
             updated_at = clock_timestamp()

@@ -64,4 +64,106 @@ defmodule FavnOrchestrator.RunReadModel.ExecutionGroupOverviewTest do
     assert summary.failure_count == 1
     assert summary.finished_at == updated_at
   end
+
+  test "uses backfill ledger status, window counts, and child asset attempts for a parent" do
+    updated_at = DateTime.utc_now()
+
+    overview = %ExecutionGroupOverview{
+      workspace_id: "workspace-1",
+      root_run_id: "run-parent",
+      status: :succeeded,
+      run_count: 1,
+      pending_count: 0,
+      running_count: 0,
+      succeeded_count: 1,
+      failed_count: 0,
+      latest_event_id: 30,
+      source_publication_id: 30,
+      updated_at: updated_at,
+      backfill_status: :running,
+      asset_counts: %{
+        total: 5,
+        completed: 2,
+        succeeded: 1,
+        skipped: 1,
+        failed: 0,
+        running: 1,
+        queued: 1,
+        planned: 1
+      },
+      window_counts: %{
+        total: 3,
+        planned: 0,
+        ready: 1,
+        active: 1,
+        succeeded: 1,
+        failed: 0,
+        cancelled: 0
+      }
+    }
+
+    summary = RunReadModel.from_execution_group_overview(overview)
+
+    assert summary.status == :running
+    assert summary.root_status == :ok
+    assert summary.active?
+    assert summary.total_windows == 3
+    assert summary.completed_windows == 1
+    assert summary.running_asset_attempts == 1
+    assert summary.queued_asset_attempts == 1
+    assert summary.skipped_asset_attempts == 1
+    assert summary.planned_asset_attempts == 1
+    assert summary.summary_totals.windows.running == 1
+    assert is_nil(summary.duration_ms)
+  end
+
+  test "distinguishes cancelled and partially cancelled terminal backfills" do
+    base = %ExecutionGroupOverview{
+      workspace_id: "workspace-1",
+      root_run_id: "run-parent",
+      status: :succeeded,
+      run_count: 3,
+      pending_count: 0,
+      running_count: 0,
+      succeeded_count: 3,
+      failed_count: 0,
+      latest_event_id: 40,
+      source_publication_id: 40,
+      updated_at: DateTime.utc_now(),
+      backfill_status: :completed
+    }
+
+    all_cancelled =
+      RunReadModel.from_execution_group_overview(%{
+        base
+        | window_counts: %{
+            total: 2,
+            planned: 0,
+            ready: 0,
+            active: 0,
+            succeeded: 0,
+            failed: 0,
+            cancelled: 2
+          }
+      })
+
+    mixed =
+      RunReadModel.from_execution_group_overview(%{
+        base
+        | window_counts: %{
+            total: 2,
+            planned: 0,
+            ready: 0,
+            active: 0,
+            succeeded: 1,
+            failed: 0,
+            cancelled: 1
+          }
+      })
+
+    assert all_cancelled.status == :cancelled
+    assert all_cancelled.health == :ok
+    assert mixed.status == :partial
+    assert mixed.health == :warning
+  end
 end

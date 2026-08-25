@@ -1,6 +1,8 @@
 defmodule FavnView.RunDetailLiveTest do
   use ExUnit.Case, async: false
 
+  import Phoenix.LiveViewTest
+
   alias FavnOrchestrator.OperatorRunView.Asset
   alias FavnOrchestrator.OperatorRunView.Flow
   alias FavnOrchestrator.OperatorRunView.Header
@@ -14,6 +16,7 @@ defmodule FavnView.RunDetailLiveTest do
       :operator_run_flow_fun,
       :operator_run_events_fun,
       :operator_run_windows_fun,
+      :operator_execution_group_fun,
       :run_subscribe_fun
     ]
 
@@ -272,6 +275,11 @@ defmodule FavnView.RunDetailLiveTest do
     assert {:noreply, loaded} = RunDetailLive.handle_event("load_windows", %{}, mounted)
     assert Enum.map(loaded.assigns.windows, & &1.run_id) == ["run-one", "run-two"]
 
+    assert {:noreply, self_rejected} =
+             RunDetailLive.handle_event("switch_window", %{"run_id" => "run-one"}, loaded)
+
+    assert self_rejected.assigns.flash["error"] == "That window run is not available"
+
     assert {:noreply, rejected} =
              RunDetailLive.handle_event("switch_window", %{"run_id" => "run-other"}, loaded)
 
@@ -281,6 +289,222 @@ defmodule FavnView.RunDetailLiveTest do
              RunDetailLive.handle_event("switch_window", %{"run_id" => "run-two"}, loaded)
 
     assert {:live, :redirect, %{to: "/runs/run-two"}} = navigating.redirected
+  end
+
+  test "a terminal backfill parent renders group progress and keeps refreshing while children run" do
+    caller = self()
+
+    Application.put_env(:favn_view, :operator_run_flow_fun, fn _context, run_id ->
+      parent_header = %{
+        header(run_id, :ok)
+        | submit_kind: :backfill_asset,
+          trigger_type: :backfill
+      }
+
+      {:ok, %{kind: :run, detail: %Flow{header: parent_header, assets: [], overflow?: false}}}
+    end)
+
+    Application.put_env(
+      :favn_view,
+      :operator_execution_group_fun,
+      fn :operator_context, "run-parent", [limit: 1] ->
+        send(caller, :group_read)
+
+        {:ok,
+         %{
+           overview: %{
+             status: :running,
+             active?: true,
+             started_at: DateTime.add(DateTime.utc_now(), -60, :second),
+             finished_at: nil,
+             total_asset_attempts: 3,
+             completed_asset_attempts: 1,
+             succeeded_asset_attempts: 1,
+             skipped_asset_attempts: 0,
+             failed_asset_attempts: 0,
+             running_asset_attempts: 1,
+             queued_asset_attempts: 1,
+             planned_asset_attempts: 0,
+             summary_totals: %{
+               windows: %{
+                 total: 3,
+                 completed: 1,
+                 succeeded: 1,
+                 failed: 0,
+                 running: 1,
+                 queued: 1,
+                 cancelled: 0
+               }
+             }
+           }
+         }}
+      end
+    )
+
+    assert {:ok, mounted} =
+             RunDetailLive.mount(%{"run_id" => "run-parent"}, %{}, connected_socket())
+
+    assert_receive :group_read
+    assert mounted.assigns.run.backfill_parent?
+    assert mounted.assigns.run.status == "Running"
+    assert mounted.assigns.run.total_windows == 3
+    assert mounted.assigns.run.total_asset_attempts == 3
+    assert mounted.assigns.run.elapsed_duration != "4.0 s"
+    assert mounted.assigns.run.elapsed_duration != "-"
+    assert is_reference(mounted.assigns.fallback_poll_ref)
+
+    html =
+      render_component(
+        &RunDetailLive.render/1,
+        Map.put(mounted.assigns, :operator_workspaces, [])
+      )
+
+    assert html =~ ~s(data-testid="backfill-parent-explanation")
+    assert html =~ ~s(data-testid="load-run-windows")
+    assert html =~ "Asset work runs in the windows"
+    refute html =~ "No asset work yet"
+
+    assert {:noreply, refreshed} =
+             RunDetailLive.handle_info(
+               {:poll_run, mounted.assigns.fallback_poll_ref},
+               mounted
+             )
+
+    assert_receive :group_read
+    assert refreshed.assigns.run.active?
+  end
+
+  test "a transient group read failure keeps the last truthful parent progress" do
+    {:ok, reads} = Agent.start_link(fn -> 0 end)
+
+    Application.put_env(:favn_view, :operator_run_flow_fun, fn _context, run_id ->
+      parent_header = %{
+        header(run_id, :ok)
+        | submit_kind: :backfill_asset,
+          trigger_type: :backfill
+      }
+
+      {:ok, %{kind: :run, detail: %Flow{header: parent_header, assets: [], overflow?: false}}}
+    end)
+
+    Application.put_env(:favn_view, :operator_execution_group_fun, fn _, _, _ ->
+      case Agent.get_and_update(reads, fn count -> {count, count + 1} end) do
+        0 ->
+          {:ok,
+           %{
+             overview: %{
+               status: :running,
+               active?: true,
+               total_asset_attempts: 4,
+               completed_asset_attempts: 2,
+               succeeded_asset_attempts: 2,
+               skipped_asset_attempts: 0,
+               failed_asset_attempts: 0,
+               running_asset_attempts: 1,
+               queued_asset_attempts: 1,
+               planned_asset_attempts: 0,
+               summary_totals: %{
+                 windows: %{
+                   total: 4,
+                   completed: 2,
+                   succeeded: 2,
+                   failed: 0,
+                   running: 1,
+                   queued: 1,
+                   cancelled: 0
+                 }
+               }
+             }
+           }}
+
+        _later ->
+          {:error, :temporarily_unavailable}
+      end
+    end)
+
+    assert {:ok, mounted} =
+             RunDetailLive.mount(%{"run_id" => "run-parent"}, %{}, connected_socket())
+
+    assert mounted.assigns.run.status == "Running"
+    assert mounted.assigns.run.total_windows == 4
+
+    assert {:noreply, refreshed} =
+             RunDetailLive.handle_info(
+               {:poll_run, mounted.assigns.fallback_poll_ref},
+               mounted
+             )
+
+    assert refreshed.assigns.run.status == "Running"
+    assert refreshed.assigns.run.total_windows == 4
+    assert refreshed.assigns.run.total_asset_attempts == 4
+    assert refreshed.assigns.run.group_error =~ "showing the last update"
+  end
+
+  test "a one-window backfill parent exposes a direct child-run link" do
+    Application.put_env(:favn_view, :operator_run_flow_fun, fn _context, run_id ->
+      parent_header = %{
+        header(run_id, :ok)
+        | submit_kind: :backfill_asset,
+          trigger_type: :backfill
+      }
+
+      {:ok, %{kind: :run, detail: %Flow{header: parent_header, assets: [], overflow?: false}}}
+    end)
+
+    Application.put_env(:favn_view, :operator_execution_group_fun, fn _, _, _ ->
+      {:ok,
+       %{
+         overview: %{
+           status: :ok,
+           active?: false,
+           total_asset_attempts: 1,
+           completed_asset_attempts: 1,
+           succeeded_asset_attempts: 1,
+           skipped_asset_attempts: 0,
+           failed_asset_attempts: 0,
+           running_asset_attempts: 0,
+           queued_asset_attempts: 0,
+           planned_asset_attempts: 0,
+           summary_totals: %{
+             windows: %{
+               total: 1,
+               completed: 1,
+               succeeded: 1,
+               failed: 0,
+               running: 0,
+               queued: 0,
+               cancelled: 0
+             }
+           }
+         }
+       }}
+    end)
+
+    Application.put_env(:favn_view, :operator_run_windows_fun, fn _, "run-parent" ->
+      {:ok,
+       %RunWindowChoices{
+         overflow?: false,
+         items: [
+           %RunWindowChoice{
+             run_id: "run-child",
+             window_start_at: ~U[2026-07-01 00:00:00Z],
+             window_end_at: ~U[2026-08-01 00:00:00Z]
+           }
+         ]
+       }}
+    end)
+
+    assert {:ok, mounted} =
+             RunDetailLive.mount(%{"run_id" => "run-parent"}, %{}, connected_socket())
+
+    assert {:noreply, loaded} = RunDetailLive.handle_event("load_windows", %{}, mounted)
+
+    html =
+      render_component(&RunDetailLive.render/1, Map.put(loaded.assigns, :operator_workspaces, []))
+
+    assert html =~ ~s(data-testid="open-run-window")
+    assert html =~ ~s(href="/runs/run-child")
+    refute html =~ ~s(data-testid="run-window-selector")
   end
 
   test "keeps a durable pre-admission submission visible" do
@@ -389,6 +613,7 @@ defmodule FavnView.RunDetailLiveTest do
   defp oslo_scope do
     %Scope{
       operator_context: :operator_context,
+      actor: %{id: "actor-one", username: "operator", display_name: "Operator", roles: [:viewer]},
       workspace_configuration: %FavnOrchestrator.WorkspaceConfiguration{
         workspace_id: "workspace-one",
         deployment_id: "deployment-one",

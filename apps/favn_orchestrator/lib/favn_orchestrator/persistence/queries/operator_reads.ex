@@ -297,6 +297,9 @@ defmodule FavnOrchestrator.Persistence.Results.ExecutionGroupOverview do
   step the group has recorded, across every run in it. The group's own counters
   count *runs*, which for a backfill is its windows and for everything else is
   one — a number that answers nothing.
+
+  Backfill window counts and status come from the compact backfill projection.
+  They describe the grouping run even before asynchronous child runs exist.
   """
   @enforce_keys [:workspace_id, :root_run_id, :status, :run_count, :latest_event_id]
   defstruct [
@@ -314,17 +317,39 @@ defmodule FavnOrchestrator.Persistence.Results.ExecutionGroupOverview do
     :trigger_type,
     :started_at,
     :finished_at,
+    :backfill_status,
     target_refs: [],
     pipeline_refs: [],
-    asset_counts: %{total: 0, completed: 0, failed: 0, running: 0, queued: 0}
+    asset_counts: %{
+      total: 0,
+      completed: 0,
+      succeeded: 0,
+      skipped: 0,
+      failed: 0,
+      running: 0,
+      queued: 0,
+      planned: 0
+    },
+    window_counts: %{
+      total: 0,
+      planned: 0,
+      ready: 0,
+      active: 0,
+      succeeded: 0,
+      failed: 0,
+      cancelled: 0
+    }
   ]
 
   @type asset_counts :: %{
           total: non_neg_integer(),
           completed: non_neg_integer(),
+          succeeded: non_neg_integer(),
+          skipped: non_neg_integer(),
           failed: non_neg_integer(),
           running: non_neg_integer(),
-          queued: non_neg_integer()
+          queued: non_neg_integer(),
+          planned: non_neg_integer()
         }
 
   @type status :: :pending | :running | :succeeded | :failed
@@ -344,9 +369,12 @@ defmodule FavnOrchestrator.Persistence.Results.ExecutionGroupOverview do
           trigger_type: FavnOrchestrator.Persistence.RunEnum.trigger_type() | nil,
           started_at: DateTime.t() | nil,
           finished_at: DateTime.t() | nil,
+          backfill_status:
+            :planning | :ready | :running | :completed | :failed | :cancelled | nil,
           target_refs: [String.t()],
           pipeline_refs: [String.t()],
-          asset_counts: asset_counts()
+          asset_counts: asset_counts(),
+          window_counts: map()
         }
 end
 

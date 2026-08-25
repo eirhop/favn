@@ -582,7 +582,7 @@ erDiagram
     RUNS o|--o{ BACKFILLS : roots
     BACKFILLS ||--|{ BACKFILL_PLAN_BATCHES : batches
     BACKFILL_PLAN_BATCHES ||--|{ BACKFILL_WINDOWS : contains
-    RUNS o|--o{ BACKFILL_WINDOWS : executes
+    RUN_SUBMISSIONS o|--o{ BACKFILL_WINDOWS : reserves
 ```
 
 Claims and leases are durable multi-node coordination records. Expiry allows
@@ -596,6 +596,10 @@ A completed schedule dispatch references the durable run submission by its
 workspace-scoped reserved run ID. The submission exists before asynchronous
 preparation creates the matching run, so schedule dispatch never depends on a
 premature `runs` row.
+
+A running backfill window likewise references the durable child submission by
+its reserved run ID. This keeps queued, admitting, failed, and cancelled child
+identities reconcilable before or without creation of a matching `runs` row.
 
 `rebuild_operations` is the authoritative lifecycle and immutable plan envelope.
 `rebuild_plan_actions` checkpoints ordered target-level work;

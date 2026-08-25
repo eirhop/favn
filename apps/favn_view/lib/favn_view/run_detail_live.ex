@@ -17,6 +17,31 @@ defmodule FavnView.RunDetailLive do
   @fallback_refresh_ms 5_000
   @coalesce_refresh_ms 1_000
   @valid_modes ~w(flow events)
+  @backfill_group_fields [
+    :active?,
+    :raw_status,
+    :status,
+    :status_tone,
+    :title,
+    :started_at,
+    :finished_at,
+    :elapsed_duration,
+    :total_windows,
+    :completed_windows,
+    :failed_windows,
+    :running_windows,
+    :queued_windows,
+    :cancelled_windows,
+    :total_asset_attempts,
+    :completed_asset_attempts,
+    :succeeded_asset_attempts,
+    :skipped_asset_attempts,
+    :failed_asset_attempts,
+    :running_asset_attempts,
+    :queued_asset_attempts,
+    :planned_asset_attempts,
+    :group_loaded?
+  ]
 
   @impl true
   def mount(%{"run_id" => run_id} = params, _session, socket) do
@@ -109,34 +134,13 @@ defmodule FavnView.RunDetailLive do
   end
 
   def handle_event("load_windows", _params, socket) do
-    socket = assign(socket, windows_loading?: true, windows_error: nil)
-
-    case list_run_windows(operator_context(socket), socket.assigns.run_id) do
-      {:ok, %{items: items, overflow?: overflow?}} ->
-        windows = Enum.map(items, &window_choice(&1, socket.assigns.current_scope))
-
-        windows_error =
-          if overflow?, do: "Only the newest 1,000 window runs are available in this selector."
-
-        {:noreply,
-         assign(socket,
-           windows: windows,
-           windows_loading?: false,
-           windows_error: windows_error
-         )}
-
-      {:error, _reason} ->
-        {:noreply,
-         assign(socket,
-           windows: nil,
-           windows_loading?: false,
-           windows_error: "Window runs could not be loaded. Try again."
-         )}
-    end
+    {:noreply, socket |> assign(windows_loading?: true, windows_error: nil) |> load_windows()}
   end
 
   def handle_event("switch_window", %{"run_id" => run_id}, socket) do
-    allowed? = Enum.any?(socket.assigns.windows || [], &(&1.run_id == run_id))
+    allowed? =
+      run_id != socket.assigns.run_id and
+        Enum.any?(socket.assigns.windows || [], &(&1.run_id == run_id))
 
     if allowed? do
       {:noreply, push_navigate(socket, to: ~p"/runs/#{run_id}")}
@@ -264,6 +268,7 @@ defmodule FavnView.RunDetailLive do
     |> record_refresh(refresh_result, loaded_run)
     |> sync_run_subscription()
     |> schedule_fallback()
+    |> refresh_loaded_windows()
   end
 
   defp record_refresh(socket, :ok, run) do
@@ -286,12 +291,14 @@ defmodule FavnView.RunDetailLive do
   defp load_run(socket, :events) do
     case get_run_events(operator_context(socket), socket.assigns.run_id) do
       {:ok, %{kind: :run, header: header, events: events}} ->
-        {:ok,
-         run_from_header(
-           header,
-           socket,
-           Enum.map(events, &event_row(&1, socket.assigns.current_scope))
-         )}
+        run =
+          run_from_header(
+            header,
+            socket,
+            Enum.map(events, &event_row(&1, socket.assigns.current_scope))
+          )
+
+        {:ok, maybe_load_backfill_group(run, socket)}
 
       {:ok, %{kind: :submission, submission: submission}} ->
         {:ok, submission_from_public(submission, socket.assigns.current_scope)}
@@ -304,7 +311,8 @@ defmodule FavnView.RunDetailLive do
   defp load_run(socket, :flow) do
     case get_run_flow(operator_context(socket), socket.assigns.run_id) do
       {:ok, %{kind: :run, detail: flow}} ->
-        {:ok, flow_from_public(flow, socket)}
+        run = flow_from_public(flow, socket)
+        {:ok, maybe_load_backfill_group(run, socket)}
 
       {:ok, %{kind: :submission, submission: submission}} ->
         {:ok, submission_from_public(submission, socket.assigns.current_scope)}
@@ -341,6 +349,12 @@ defmodule FavnView.RunDetailLive do
 
     %{
       id: header.run_id,
+      root_run_id: header.root_run_id,
+      parent_run_id: header.parent_run_id,
+      submit_kind: header.submit_kind,
+      backfill_parent?:
+        header.submit_kind in [:backfill_asset, :backfill_pipeline] and
+          header.run_id == header.root_run_id,
       found?: true,
       submission?: false,
       active?: header.active?,
@@ -378,6 +392,80 @@ defmodule FavnView.RunDetailLive do
       run_event_sequences: %{header.run_id => header.event_sequence},
       back_asset_href: back_asset_href(header.target_id)
     }
+  end
+
+  defp maybe_load_backfill_group(%{backfill_parent?: true} = run, socket) do
+    case get_execution_group_detail(operator_context(socket), run.root_run_id) do
+      {:ok, %{overview: overview}} ->
+        windows = overview.summary_totals.windows
+
+        group =
+          %{
+            active?: overview.active?,
+            raw_status: overview.status,
+            status: LogsViewModel.status_label(overview.status),
+            status_tone: LogsViewModel.status_tone(overview.status),
+            title: "Backfill parent",
+            total_windows: windows.total,
+            completed_windows: windows.completed,
+            failed_windows: windows.failed,
+            running_windows: windows.running,
+            queued_windows: windows.queued,
+            cancelled_windows: windows.cancelled,
+            total_asset_attempts: overview.total_asset_attempts,
+            completed_asset_attempts: overview.completed_asset_attempts,
+            succeeded_asset_attempts: overview.succeeded_asset_attempts,
+            skipped_asset_attempts: overview.skipped_asset_attempts,
+            failed_asset_attempts: overview.failed_asset_attempts,
+            running_asset_attempts: overview.running_asset_attempts,
+            queued_asset_attempts: overview.queued_asset_attempts,
+            planned_asset_attempts: overview.planned_asset_attempts,
+            group_loaded?: true,
+            group_error: nil
+          }
+          |> Map.merge(group_timing(overview, socket.assigns.current_scope))
+
+        Map.merge(run, group)
+
+      {:error, _reason} ->
+        preserve_backfill_group(run, socket.assigns.run)
+    end
+  end
+
+  defp maybe_load_backfill_group(run, _socket), do: run
+
+  defp preserve_backfill_group(run, %{backfill_parent?: true, group_loaded?: true} = previous) do
+    run
+    |> Map.merge(Map.take(previous, @backfill_group_fields))
+    |> Map.put(:group_error, "Backfill progress could not be refreshed; showing the last update.")
+  end
+
+  defp preserve_backfill_group(run, _previous) do
+    run
+    |> Map.put(:active?, true)
+    |> Map.put(:title, "Backfill parent")
+    |> Map.put(:raw_status, :pending)
+    |> Map.put(:status, "Planning")
+    |> Map.put(:status_tone, :info)
+    |> Map.put(:finished_at, nil)
+    |> Map.put(:elapsed_duration, "-")
+    |> Map.put(:group_error, "Backfill progress is not available yet; the page will retry.")
+  end
+
+  defp group_timing(overview, timezone) do
+    case Map.get(overview, :started_at) do
+      %DateTime{} = started_at ->
+        finished_at = Map.get(overview, :finished_at)
+
+        %{
+          started_at: timestamp_label(started_at, timezone),
+          finished_at: timestamp_label(finished_at, timezone),
+          elapsed_duration: LogsViewModel.duration_label(started_at, finished_at)
+        }
+
+      _missing ->
+        %{}
+    end
   end
 
   defp submission_from_public(submission, timezone) do
@@ -440,7 +528,9 @@ defmodule FavnView.RunDetailLive do
   end
 
   defp schedule_fallback(socket) do
-    if connected?(socket) and socket.assigns.active_mode == :flow and socket.assigns.run.active? and
+    if connected?(socket) and
+         (socket.assigns.active_mode == :flow or socket.assigns.run[:backfill_parent?]) and
+         socket.assigns.run.active? and
          is_nil(socket.assigns.refresh_timer_ref) do
       LiveRefresh.schedule_once(
         socket,
@@ -487,6 +577,44 @@ defmodule FavnView.RunDetailLive do
       &Orchestrator.list_operator_run_windows/2
     )
     |> then(fn fun -> if is_function(fun, 2), do: fun.(context, run_id), else: fun.(run_id) end)
+  end
+
+  defp get_execution_group_detail(context, root_run_id) do
+    Application.get_env(
+      :favn_view,
+      :operator_execution_group_fun,
+      &Orchestrator.get_execution_group_detail/3
+    )
+    |> then(fn fun -> fun.(context, root_run_id, limit: 1) end)
+  end
+
+  defp refresh_loaded_windows(%{assigns: %{windows: windows}} = socket)
+       when is_list(windows),
+       do: load_windows(socket)
+
+  defp refresh_loaded_windows(socket), do: socket
+
+  defp load_windows(socket) do
+    case list_run_windows(operator_context(socket), socket.assigns.run_id) do
+      {:ok, %{items: items, overflow?: overflow?}} ->
+        windows = Enum.map(items, &window_choice(&1, socket.assigns.current_scope))
+
+        windows_error =
+          if overflow?, do: "Only the newest 1,000 window runs are available in this selector."
+
+        assign(socket,
+          windows: windows,
+          windows_loading?: false,
+          windows_error: windows_error
+        )
+
+      {:error, _reason} ->
+        assign(socket,
+          windows: nil,
+          windows_loading?: false,
+          windows_error: "Window runs could not be loaded. Try again."
+        )
+    end
   end
 
   defp subscribe_run(context, run_id) do
