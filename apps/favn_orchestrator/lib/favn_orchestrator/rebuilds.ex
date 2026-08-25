@@ -1864,15 +1864,13 @@ defmodule FavnOrchestrator.Rebuilds do
     datetime
   end
 
-  defp field(map, key) when is_map(map) do
-    string_key = if is_atom(key), do: Atom.to_string(key), else: key
-    Map.get(map, key, Map.get(map, string_key))
-  end
+  defp field(map, key) when is_map(map) and is_atom(key),
+    do: Map.get(map, key, Map.get(map, Atom.to_string(key)))
 
-  defp field(map, key, default) when is_map(map) do
-    string_key = if is_atom(key), do: Atom.to_string(key), else: key
-    Map.get(map, key, Map.get(map, string_key, default))
-  end
+  defp field(map, key) when is_map(map) and is_binary(key), do: Map.get(map, key)
+
+  defp field(map, key, default) when is_map(map) and is_atom(key),
+    do: Map.get(map, key, Map.get(map, Atom.to_string(key), default))
 
   defp combined_item?(item) do
     with {:ok, {:window, key}} <- FreshnessKey.parse(field(item, :window_key)) do
