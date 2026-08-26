@@ -883,6 +883,42 @@ defmodule FavnView.RunDetailLiveTest do
       assert is_reference(mounted.assigns.fallback_poll_ref)
     end
 
+    test "a ledger error does not outlive the reason to read the ledger" do
+      {:ok, reads} = Agent.start_link(fn -> 0 end)
+
+      Application.put_env(:favn_view, :operator_run_windows_fun, fn _context, _run_id ->
+        {:ok, runless_choices("bf-one")}
+      end)
+
+      # The backfill's failed count drops to zero after the first cycle, which
+      # closes the gate. Without clearing, the error from cycle one would keep
+      # the fallback poll alive forever for a read that will never be issued.
+      Application.put_env(:favn_view, :operator_execution_group_fun, fn _, _, _ ->
+        case Agent.get_and_update(reads, fn count -> {count, count + 1} end) do
+          0 -> {:ok, %{overview: failed_overview(31)}}
+          _later -> {:ok, %{overview: failed_overview(0)}}
+        end
+      end)
+
+      Application.put_env(:favn_view, :operator_backfill_windows_fun, fn _, _, _ ->
+        {:error, :temporarily_unavailable}
+      end)
+
+      assert {:ok, mounted} =
+               RunDetailLive.mount(%{"run_id" => "run-parent"}, %{}, connected_socket())
+
+      assert mounted.assigns.window_failures_error
+
+      aged = put_in(mounted.assigns.windows_read_at, mounted.assigns.windows_read_at - 60_000)
+
+      {:noreply, refreshed} =
+        RunDetailLive.handle_info({:poll_run, aged.assigns.fallback_poll_ref}, aged)
+
+      assert is_nil(refreshed.assigns.window_failures_error)
+      assert is_nil(refreshed.assigns.window_failures)
+      assert is_nil(refreshed.assigns.fallback_poll_ref)
+    end
+
     test "a ledger read that recovers replaces the warning with the reasons" do
       {:ok, reads} = Agent.start_link(fn -> 0 end)
 

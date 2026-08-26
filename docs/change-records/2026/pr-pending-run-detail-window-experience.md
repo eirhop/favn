@@ -808,6 +808,8 @@ operator click through an empty chart to reach any real work.
 | `favn_view` after the addition | 750 passed (119 doctests, 631 tests), 0 failed |
 | `favn_orchestrator` | 738 passed, 0 failed |
 | `favn_storage_postgres` fast tier | 344 passed, 0 failed, with `FAVN_TEST_DATABASE_URL` on the bootstrap role |
+| After the second review's fixes | `favn_view` 753 passed, `favn_orchestrator` 744 passed, storage fast tier 344 passed, all 0 failed |
+| `window_failures_truncated` example | 22 pass / 0 fail at 1440×1000, 9 / 0 at 390×844, no horizontal overflow. Reads "the earliest 500 of 900 failed windows"; the subtitle no longer restates 500 as the failure count |
 
 One defect the suite could not have caught was found by looking: the first
 attempt at opening a backfill parent's earliest window issued the patch from
@@ -906,19 +908,55 @@ One defect the review did not name was found while fixing the fourth finding:
 `windows_error`, never threaded to the page, so that fallback happened silently.
 It is fixed alongside it, with a test.
 
-### Not covered by that review
+## Second review, 2026-08-26
 
-That review compared the implementation with the approved plan as of the review
-date. Everything under "Visual review, 2026-08-26" landed afterwards and has not
-been independently reviewed: the rail rebuild, `FavnView.WindowLabel`, the
-combined-window header fact, the panel header inset, the earliest-window arrival
-patch, the runless-backfill notice and empty state, the labelled outcome meter,
-the flat-rail coverage subtitle, and the whole window-failure surface with its
-persistence-contract change.
+| Field | Result |
+| --- | --- |
+| Reviewer | Independent review agent (Fable 5), 2026-08-26 |
+| Scope | Everything after `129cfe7e`, centred on the window-failure surface, which the approved plan cannot be a baseline for |
+| Findings | No blockers. Four confirmed, three plausible, four nits |
+| Verdict | The bound, the gating, the failure isolation, the SQL change and the boundary all traced holding; three defects in the new surface and two inaccurate comments |
 
-The last of those is the one a reviewer should weigh hardest, because the approved
-plan does not mention it and so cannot be the baseline for it. It needs judging on
-its own terms: whether `backfill_id` belongs on `RunWindowChoices`, whether
-unwrapping an inspected reason in the view is acceptable or should have been fixed
-at the writer, whether piggybacking the window read's cadence is sound, and
-whether the bound and its truncation notice are honest.
+| Finding | Severity | Resolution |
+| --- | --- | --- |
+| The truncation notice stated the backfill's total failed-window count, so it was wrong in every case where it rendered — a 900-window backfill claimed the reasons covered "the earliest 900" when 500 were read | confirmed | Fixed. The notice counts only what the read returned and names the total separately: "the earliest 500 of 900 failed windows, in window order; later windows were not read." The one test that touched this asserted the notice's presence and never its number — the vacuous assertion sat exactly on the defect, and now asserts both numbers and the absence of the wrong one |
+| A failed window read also leaves no rail, so `windows_to_open?/2` reported a backfill whose 31 windows all ran and failed as having produced no run at all — directly above the notice saying the window list could not be loaded | confirmed | Fixed. `windows_to_open?/3` takes `windows_error` and, when the read failed, keeps the claim that is true of every backfill parent rather than asserting one it cannot know. Tested against the exact contradiction |
+| `BackfillDispatcher.error_payload/1` inspected a run's already-JSON-safe error map, so a window that failed because its run failed — the common case — stored a printed multi-key map as its reason. The view cannot unwrap or group those, so one shared failure would read as N blobs | confirmed | Fixed at the writer, which is where it belongs: an error payload that already carries a string `reason` or `message` is recorded as it stands. The submission path already did this, so the run path now agrees. Six tests cover the payload shapes. Rows written earlier keep their blobs; the view shows them as stored rather than guessing |
+| `FavnView.WindowFailures`'s moduledoc named the wrong writer and claimed a binary reason survives as itself, which the real writer does not do. The decision-log rationale for declining a writer fix rested on that | confirmed | Fixed. The moduledoc describes the actual writer, and the writer fix above was made rather than declined — the reviewer was right that it is narrow, being specific to backfill-window transitions |
+| `backfills_root_run_idx` is not unique, so two backfills sharing one root run can make `backfill_id` and `backfill_status` come from different backfills; the new comment claimed every row carries the same one | plausible | Comment corrected to state the ambiguity and what the ordering does guarantee. Not otherwise changed: `backfill_status` carried the same looseness before this change, and whether the product creates sibling backfills today is unresolved. Recorded as an open question below |
+| A stale `window_failures_error` could pin the fallback poll after the gate closed | plausible | Fixed. The gate closing clears the error, since it means there is no read left to retry. Tested by dropping the failed count to zero after a failed read and asserting the poll stops |
+| "in window order" is `window_key` lexicographic order, which is chronological only for a uniform-kind backfill | plausible | Accepted as stated. Uniform kinds are what a backfill produces; a mixed-kind ledger would sort by kind first |
+| Not named by the review, found while fixing the first finding: the panel's subtitle restated the read count as the failure count, so a truncated read said "500 windows failed" under a meter reading 900 | confirmed | Fixed. A truncated read drops the count from the subtitle entirely and lets the notice carry both numbers |
+| `window_failures_read_at` assigned and never read | nit | Removed |
+| `plural/2` duplicated across the two new modules; `short_id/1` truncates without an ellipsis; the ledger read has no statement timeout unlike `list_run_windows` | nit | Not changed. The first two are local and cheap to read; the read is bounded by `@max_plan_windows` and by `status: :failed`, and adding a timeout to it is worth doing with a statement-budget measurement rather than by guess |
+
+### Open question this review raised
+
+Whether two backfills can share one root run in practice. If they can, the failure
+panel reads one backfill's ledger while the meter above it counts windows across
+the root, and the two would disagree. The storage suite seeds the sibling case
+deliberately, so the shape is at least anticipated by the schema. Resolving it
+needs a look at the submission paths that set `root_run_id`, and belongs to
+whoever next touches backfill identity rather than to this change.
+
+### Not covered by either review
+
+The first review compared the implementation with the approved plan as of its own
+date; the second covered everything after `129cfe7e`. Between them the visual-review
+work is now reviewed, with two exceptions the second review did not reach and did
+not claim to: `FavnView.WindowLabel`'s calendar-period detection, and the
+`Surface.panel/1` header inset's effect on the three other pages that use
+`padding={:none}`. Both are covered by tests and by the audit table above, neither
+by an independent reader.
+
+The second review answered the four questions this section previously posed. Its
+answers, condensed: `backfill_id` on `RunWindowChoices` is defensible by
+precedent but `ExecutionGroupOverview` would have been the better home, because
+attaching it to the navigation read is what let a failed window read hide the only
+account of the failure — the first confirmed finding above is the cost of that
+choice, and it is fixed rather than redesigned. Unwrapping in the view is right
+for already-stored rows but was not sufficient, and the writer fix it was thought
+to require turned out to be narrow and was made. Piggybacking the window read's
+cadence is sound, and the reviewer traced why no analogue of the earlier
+compare-read staleness bug exists. The bound is sound and tested; its notice was
+not, and is fixed.

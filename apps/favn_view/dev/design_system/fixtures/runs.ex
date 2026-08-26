@@ -196,10 +196,11 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.Runs do
   Grouped window failures, as the run page receives them.
 
   `shape` picks `:single`, one cause behind every window; `:mixed`, two causes
-  where one of them did reach a run; or `:one`, a single window, which names its
-  window rather than a span.
+  where one of them did reach a run; `:one`, a single window, which names its
+  window rather than a span; or `:truncated`, a bounded read that reached 500 of
+  900 failed windows.
   """
-  @spec window_failures(:single | :mixed | :one) :: [WindowFailures.Group.t()]
+  @spec window_failures(:single | :mixed | :one | :truncated) :: [WindowFailures.Group.t()]
   def window_failures(shape \\ :single)
 
   def window_failures(:single) do
@@ -233,6 +234,19 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.Runs do
         span: "Jan 19 00:00 – Jan 23 00:00, 2026",
         attempts: 1,
         run_ids: ["run_window_19", "run_window_20", "run_window_21"]
+      }
+    ]
+  end
+
+  def window_failures(:truncated) do
+    [
+      %WindowFailures.Group{
+        reason: "no_runner_available",
+        window_count: 500,
+        run_count: 0,
+        span: "Jan 1 00:00 – May 16 00:00, 2026",
+        attempts: 1,
+        run_ids: []
       }
     ]
   end

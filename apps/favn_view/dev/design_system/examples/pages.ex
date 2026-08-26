@@ -751,6 +751,17 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
           "Two causes, one of which did reach runs, so the deeper reading is linked."
         ),
         Example.attrs(
+          :window_failures_truncated,
+          %{
+            run: Runs.runless_backfill(900),
+            run_id: "run_backfill_runless",
+            nav_items: Runs.nav_items(),
+            window_failures: Runs.window_failures(:truncated),
+            window_failures_overflow?: true
+          },
+          "900 windows failed and the read reached 500: the notice counts what it read."
+        ),
+        Example.attrs(
           :window_failures_unreadable,
           %{
             run: Runs.runless_backfill(31),

@@ -27,7 +27,7 @@ defmodule FavnView.Components.RunDetailPage.WindowFailures do
   def window_failures(assigns) do
     ~H"""
     <.panel :if={show?(@groups, @error)} padding={:none} data-testid="window-failures">
-      <:header title="Why the windows failed" subtitle={subtitle(@groups)} />
+      <:header title="Why the windows failed" subtitle={subtitle(@groups, @truncated?)} />
       <:actions>
         <.badge :if={@groups} tone={:error} variant={:outline}>
           {length(@groups)} {plural(length(@groups), "reason")}
@@ -118,8 +118,7 @@ defmodule FavnView.Components.RunDetailPage.WindowFailures do
         class="m-3"
         data-testid="window-failures-truncated"
       >
-        More windows failed than this page reads at once. The reasons above are from the
-        earliest {@failed_windows} in window order.
+        {truncation_note(@groups, @failed_windows)}
       </.notice>
     </.panel>
     """
@@ -129,13 +128,34 @@ defmodule FavnView.Components.RunDetailPage.WindowFailures do
   defp show?([], nil), do: false
   defp show?(_groups, _error), do: true
 
-  defp subtitle(nil), do: "The backfill ledger could not be read."
+  defp subtitle(nil, _truncated?), do: "The backfill ledger could not be read."
 
-  defp subtitle(groups) do
-    windows = Enum.reduce(groups, 0, &(&1.window_count + &2))
+  # A truncated read knows how many windows it grouped but not how many failed,
+  # and the two differ by definition. Stating the smaller number as the failure
+  # count would contradict the meter above; the notice below carries both.
+  defp subtitle(_groups, true), do: "Grouped by the reason each window recorded."
+
+  defp subtitle(groups, _truncated?) do
+    windows = window_total(groups)
 
     "#{windows} #{plural(windows, "window")} failed. Grouped by the reason each one recorded."
   end
+
+  # Every number here counts windows the read actually returned, never the
+  # backfill's own failed-window total. Those differ by definition whenever this
+  # notice renders, and stating the total would claim the reasons account for
+  # windows nothing read.
+  defp truncation_note(groups, failed_windows) do
+    read = window_total(groups)
+    of_total = if failed_windows > read, do: " of #{failed_windows}", else: ""
+
+    "This page reads a bounded page of the backfill ledger. The reasons above come from " <>
+      "the earliest #{read}#{of_total} failed #{plural(read, "window")}, in window order; " <>
+      "later windows were not read."
+  end
+
+  defp window_total(nil), do: 0
+  defp window_total(groups), do: Enum.reduce(groups, 0, &(&1.window_count + &2))
 
   defp plural(1, word), do: word
   defp plural(_count, word), do: word <> "s"

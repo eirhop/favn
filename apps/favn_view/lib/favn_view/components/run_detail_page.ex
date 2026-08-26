@@ -139,7 +139,7 @@ defmodule FavnView.Components.RunDetailPage do
       failed before a run existed has nothing to open, and that is the single
       most useful thing this screen can say. --%>
       <.notice
-        :if={@run[:backfill_parent?] && windows_to_open?(@run, @rail)}
+        :if={@run[:backfill_parent?] && windows_to_open?(@run, @rail, @windows_error)}
         tone={:info}
         icon="hero-calendar-days"
         data-testid="backfill-parent-explanation"
@@ -149,7 +149,7 @@ defmodule FavnView.Components.RunDetailPage do
       </.notice>
 
       <.notice
-        :if={@run[:backfill_parent?] && !windows_to_open?(@run, @rail)}
+        :if={@run[:backfill_parent?] && !windows_to_open?(@run, @rail, @windows_error)}
         tone={no_run_tone(@run)}
         icon="hero-exclamation-triangle"
         data-testid="backfill-parent-no-window-runs"
@@ -215,7 +215,7 @@ defmodule FavnView.Components.RunDetailPage do
           filter={@flow_filter}
           sort={@flow_sort}
           backfill_parent?={@run[:backfill_parent?] || false}
-          windows_to_open?={windows_to_open?(@run, @rail)}
+          windows_to_open?={windows_to_open?(@run, @rail, @windows_error)}
         />
         <Events.events_panel :if={@active_mode == :events} run={@run} />
       </div>
@@ -266,7 +266,14 @@ defmodule FavnView.Components.RunDetailPage do
   # The rail is the only thing that can offer a window run, so it decides
   # whether there is anything to open. A backfill still creating windows has
   # something coming and is not reported as having produced nothing.
-  defp windows_to_open?(run, rail) do
+  #
+  # A failed window read also leaves no rail, and that is not the same fact. The
+  # page does not know what the backfill produced, so it must not assert that
+  # nothing was: it keeps the generic explanation, which is true of every
+  # backfill parent, and the read warning below says the list is missing.
+  defp windows_to_open?(_run, _rail, windows_error) when not is_nil(windows_error), do: true
+
+  defp windows_to_open?(run, rail, _windows_error) do
     cond do
       match?(%RunWindowRail{cells: [_ | _]}, rail) -> true
       match?(%RunWindowRail{combined: %{}}, rail) -> true

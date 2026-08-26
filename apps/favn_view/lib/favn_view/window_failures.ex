@@ -10,17 +10,20 @@ defmodule FavnView.WindowFailures do
 
   ## Reading a stored reason
 
-  `last_error` is redacted and flattened to JSON-safe scalars before it is
-  stored. A reason that was already a binary survives as itself; anything else is
-  `inspect`ed, so a submission that failed with
-  `%{reason: :invalid_backfill_pipeline_identity}` arrives here as the string
-  `%{"reason" => "invalid_backfill_pipeline_identity"}`.
+  A window's `last_error` is written by the backfill dispatcher, which keeps an
+  atom reason and an already-JSON-safe error map as they are and `inspect`s
+  anything else. So a submission that failed with
+  `%{reason: :invalid_backfill_pipeline_identity}` — a bare map, neither of those
+  — arrives here as the string `%{"reason" => "invalid_backfill_pipeline_identity"}`.
 
   `reason/1` therefore unwraps a single-entry inspected map to the value inside
-  it, which is the only shape the control plane produces often enough to be worth
-  naming. It never parses further: an unrecognised payload is shown as stored,
-  because a reason the operator can paste into a search is worth more than a
-  tidier one that has lost a term.
+  it, which is the only shape worth naming. It never parses further: an
+  unrecognised payload is shown as stored, because a reason the operator can
+  paste into a search is worth more than a tidier one that has lost a term.
+
+  Rows written before the dispatcher stopped double-encoding an already-safe
+  error map still hold a printed multi-key map, which this deliberately leaves
+  alone rather than picking one of its entries to show.
 
   ## What a group cannot say
 
@@ -202,9 +205,9 @@ defmodule FavnView.WindowFailures do
   defp normalize(_value), do: nil
 
   # `%{"reason" => "x"}` and `%{reason: :x}` are what an inspected single-key
-  # error map looks like once JsonSafe has been through it. Only that one shape
-  # is unwrapped; a map with more in it is shown whole, because choosing one of
-  # its entries would be choosing what the operator gets to see.
+  # error map looks like. Only that one shape is unwrapped; a map with more in it
+  # is shown whole, because choosing one of its entries would be choosing what
+  # the operator gets to see.
   @single_entry ~r/^%\{(?:"reason"|reason:)\s*(?:=>\s*)?:?"?([A-Za-z0-9_.\-]+)"?\}$/
 
   defp unwrap(value) do

@@ -1069,7 +1069,6 @@ defmodule FavnView.RunDetailLive do
     assign(socket,
       window_failures: if(keep?, do: socket.assigns[:window_failures]),
       window_failures_overflow?: keep? and socket.assigns[:window_failures_overflow?] == true,
-      window_failures_read_at: if(keep?, do: socket.assigns[:window_failures_read_at]),
       window_failures_error: nil
     )
   end
@@ -1188,9 +1187,18 @@ defmodule FavnView.RunDetailLive do
     if window_failures_due?(socket) do
       load_window_failures(socket)
     else
-      socket
+      clear_window_failures(socket)
     end
   end
+
+  # The gate closing means there is nothing left to read here. An error from an
+  # earlier cycle must not survive it: the fallback poll stays alive while that
+  # error is set, so a stale one would keep a terminal page polling for a read
+  # this page will never issue again.
+  defp clear_window_failures(%{assigns: %{window_failures_error: nil}} = socket), do: socket
+
+  defp clear_window_failures(socket),
+    do: assign(socket, window_failures: nil, window_failures_error: nil)
 
   defp window_failures_due?(%{assigns: assigns}) do
     is_binary(assigns[:backfill_id]) and
@@ -1202,8 +1210,6 @@ defmodule FavnView.RunDetailLive do
   # window read does. It states what could not be read rather than letting the
   # page imply that a backfill with failed windows recorded nothing.
   defp load_window_failures(socket) do
-    socket = assign(socket, :window_failures_read_at, monotonic_ms())
-
     case page_backfill_windows(operator_context(socket), socket.assigns.backfill_id) do
       {:ok, %{items: items} = page} ->
         assign(socket,

@@ -1641,9 +1641,14 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
 
   # Placeholder rows carry the backfill status without a window run, so the
   # first row that names one wins whether or not any window has started.
-  # Every row carries the same joined backfill, so the first non-null answers for
-  # all of them. A run with no backfill yields one placeholder row whose backfill
-  # columns are null, and both readers return nil for it.
+  # A run with no backfill yields one placeholder row whose backfill columns are
+  # null, and both readers return nil for it.
+  #
+  # `backfills_root_run_idx` is not unique, so two backfills can share one root
+  # run and the join can return rows from both. Real window rows sort first, so
+  # both readers answer for whichever backfill has started windows — the one the
+  # rail is drawing. They can still disagree if both have windows, which is why
+  # neither is treated as identifying the root's only backfill.
   defp first_backfill_status(rows) do
     Enum.find_value(rows, fn [_, _, _, _, _, status, _] -> decode_backfill_status(status) end)
   end

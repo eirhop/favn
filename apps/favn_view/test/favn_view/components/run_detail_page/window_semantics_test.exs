@@ -300,16 +300,39 @@ defmodule FavnView.Components.RunDetailPage.WindowSemanticsTest do
       refute html =~ ~s(data-testid="window-failure-span")
     end
 
-    test "a bounded read that did not reach every failed window says the list is partial" do
+    test "a bounded read counts what it read, never the backfill's own total" do
+      # 900 windows failed; the read returned 500. Claiming the reasons cover the
+      # earliest 900 would say they account for 400 windows nothing read.
       html =
         render_page(failing_parent(900),
           rail: nil,
-          window_failures: [group([])],
+          window_failures: [group(window_count: 500)],
           window_failures_overflow?: true
         )
 
       assert html =~ ~s(data-testid="window-failures-truncated")
-      assert html =~ "More windows failed than this page reads at once"
+      assert html =~ "the earliest 500 of 900 failed windows"
+      assert html =~ "later windows were not read"
+      refute html =~ "earliest 900"
+
+      # The subtitle must not restate the read count as the failure count: 900
+      # failed, and the meter above says so.
+      refute html =~ "500 windows failed."
+      assert html =~ "Grouped by the reason each window recorded."
+    end
+
+    test "the partial notice states no total it cannot stand behind" do
+      # A truncated read whose failed-window count is not larger than what it
+      # returned has no second number to report, so it reports one.
+      html =
+        render_page(failing_parent(0),
+          rail: nil,
+          window_failures: [group(window_count: 500)],
+          window_failures_overflow?: true
+        )
+
+      assert html =~ "the earliest 500 failed windows"
+      refute html =~ "of 0"
     end
 
     test "a failed ledger read states that rather than implying nothing was recorded" do
@@ -339,6 +362,40 @@ defmodule FavnView.Components.RunDetailPage.WindowSemanticsTest do
 
       refute html =~ ~s(data-testid="window-failures")
     end
+  end
+
+  test "a failed window read is not reported as a backfill that produced no run" do
+    # Every window ran and its run failed, so all 31 have a page to open. One
+    # window read then times out, which also leaves no rail — a different fact
+    # the page must not confuse with "nothing was produced".
+    run =
+      Runs.single_window()
+      |> Map.merge(%{
+        backfill_parent?: true,
+        window: nil,
+        assets: [],
+        active?: false,
+        total_windows: 31,
+        completed_windows: 31,
+        failed_windows: 31
+      })
+
+    html =
+      render_page(run,
+        rail: nil,
+        windows_error: "Window runs could not be loaded. The page will try again."
+      )
+
+    refute html =~ ~s(data-testid="backfill-parent-no-window-runs")
+    refute html =~ "None of the 31 windows produced a run"
+
+    # It keeps the claim that is true of every backfill parent, and the read
+    # warning says why the list is missing.
+    assert html =~ ~s(data-testid="backfill-parent-explanation")
+    assert html =~ ~s(data-testid="window-read-warning")
+
+    # The chart must not claim it either.
+    refute html =~ ~s(data-testid="backfill-parent-no-work")
   end
 
   test "a backfill still creating windows is not reported as having produced none" do
