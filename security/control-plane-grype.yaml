@@ -1,23 +1,14 @@
 # Narrow exceptions for Debian 13 vulnerabilities without an available package fix.
-# reviewed: 2026-08-24
-# review-by: 2026-09-24
+# reviewed: 2026-08-26
+# review-by: 2026-09-26
 # Every rule includes the vendor fix state so it stops matching when a fix appears.
+#
+# The three CVE-2026-14456 exceptions for libssl3t64, openssl, and
+# openssl-provider-legacy were removed on 2026-08-26: Debian shipped the fix as
+# openssl 3.5.7-1~deb13u2, so the images take the upgrade instead of the
+# exception. That is the mechanism working as designed — the rules stopped
+# suppressing the moment a fix existed, and the scan said so.
 ignore:
-  # OpenSSL rates this Low and it affects only OpenSSL QUIC server listeners.
-  # Favn exposes TCP HTTP endpoints and does not initialize an OpenSSL QUIC listener.
-  # Debian 13 has postponed the fix as a minor issue.
-  - vulnerability: CVE-2026-14456
-    fix-state: wont-fix
-    package:
-      name: libssl3t64
-  - vulnerability: CVE-2026-14456
-    fix-state: wont-fix
-    package:
-      name: openssl
-  - vulnerability: CVE-2026-14456
-    fix-state: wont-fix
-    package:
-      name: openssl-provider-legacy
   - vulnerability: CVE-2026-13221
     fix-state: not-fixed
     package:

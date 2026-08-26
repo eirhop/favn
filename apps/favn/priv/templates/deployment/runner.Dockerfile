@@ -101,6 +101,9 @@ RUN --mount=type=bind,source=.,target=/build,rw \
     rm -f /runner-release/releases/COOKIE; \
     test ! -e /runner-release/releases/COOKIE
 
+# The base image lags the security archive: its newest published digest still
+# ships the OpenSSL the archive has already fixed. The digest therefore stays
+# pinned for reproducibility, and the snapshot below supplies the fix.
 FROM debian:trixie-slim@sha256:020c0d20b9880058cbe785a9db107156c3c75c2ac944a6aa7ab59f2add76a7bd AS runtime
 
 ARG TARGETARCH
@@ -125,10 +128,11 @@ RUN test "$TARGETARCH" = amd64 \
       *) ;; \
     esac \
     && sed -i \
-      -e 's|URIs: http://deb.debian.org/debian$|URIs: http://snapshot.debian.org/archive/debian/20260713T000000Z|' \
-      -e 's|URIs: http://deb.debian.org/debian-security$|URIs: http://snapshot.debian.org/archive/debian-security/20260713T000000Z|' \
+      -e 's|URIs: http://deb.debian.org/debian$|URIs: http://snapshot.debian.org/archive/debian/20260826T000000Z|' \
+      -e 's|URIs: http://deb.debian.org/debian-security$|URIs: http://snapshot.debian.org/archive/debian-security/20260826T000000Z|' \
       /etc/apt/sources.list.d/debian.sources \
     && apt-get -o Acquire::Check-Valid-Until=false update \
+    && apt-get -o Acquire::Check-Valid-Until=false upgrade -y \
     && apt-get install -y --no-install-recommends ca-certificates libstdc++6 libgcc-s1 \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 10001 favn \
