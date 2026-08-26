@@ -11321,7 +11321,9 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     %{root: root, backfill_id: backfill_id, claimed: claimed} =
       seed_backfill_plan(fixture, count, "failed")
 
-    Enum.with_index(claimed, fn window, index ->
+    claimed
+    |> Enum.with_index()
+    |> Enum.each(fn {window, index} ->
       assert {:ok, _failed} =
                BackfillStore.transition_window(%TransitionBackfillWindow{
                  workspace_context: fixture.workspace_context,
