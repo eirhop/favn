@@ -394,6 +394,262 @@ summary {
     padding: 0.5rem 0.75rem 0.625rem 2.25rem;
   }
 
+  /* The stage timeline. One lane is one asset and one bar is one attempt, drawn
+     on the run's own axis, so there is nothing to zoom and nothing to scroll.
+     Every offset arrives as a percentage from `FavnView.RunTimeline`, which is
+     why nothing here measures and no resize handler exists. Lane height comes
+     from the lane count, so a wide run stays readable without virtualisation. */
+  .favn-timeline {
+    --favn-timeline-label: 12rem;
+    --favn-timeline-lane: 1.5rem;
+    --favn-timeline-advance: 0ms;
+  }
+
+  .favn-timeline[data-density="compact"] {
+    --favn-timeline-label: 9rem;
+    --favn-timeline-lane: 1.125rem;
+  }
+
+  .favn-timeline[data-density="dense"] {
+    --favn-timeline-label: 6rem;
+    --favn-timeline-lane: 0.5rem;
+  }
+
+  /* A stage expanded out of a dense chart is read one stage at a time, so it
+     takes compact height and gets its labels back while the rest stay strips. */
+  .favn-timeline[data-density="dense"] .favn-timeline-band[data-collapsed="false"] {
+    --favn-timeline-label: 9rem;
+    --favn-timeline-lane: 1.125rem;
+  }
+
+  .favn-timeline-axis,
+  .favn-timeline-band-header,
+  .favn-timeline-lane {
+    display: grid;
+    grid-template-columns: var(--favn-timeline-label) 1fr;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .favn-timeline-band {
+    display: flex;
+    flex-direction: column;
+    gap: 0.125rem;
+    padding-block: 0.25rem;
+  }
+
+  .favn-timeline-band + .favn-timeline-band {
+    border-top: var(--border) solid color-mix(in oklab, var(--color-base-content) 10%, transparent);
+  }
+
+  .favn-timeline-track {
+    position: relative;
+    display: block;
+    height: var(--favn-timeline-lane);
+    border-radius: 0.125rem;
+    background: color-mix(in oklab, var(--color-base-content) 6%, transparent);
+  }
+
+  .favn-timeline-axis .favn-timeline-track,
+  .favn-timeline-band-header .favn-timeline-track {
+    height: 1rem;
+    background: none;
+  }
+
+  .favn-timeline-tick {
+    position: absolute;
+    top: 0;
+    font-size: 0.6875rem;
+    white-space: nowrap;
+    transform: translateX(-50%);
+  }
+
+  /* The first and last ticks sit on the axis ends, so centring them would push
+     them outside the chart. */
+  .favn-timeline-tick:first-child {
+    transform: none;
+  }
+
+  .favn-timeline-tick:last-child {
+    transform: translateX(-100%);
+  }
+
+  .favn-timeline-bar {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    display: block;
+    width: var(--favn-bar-width);
+    min-width: 2px;
+    border-radius: 0.125rem;
+  }
+
+  a.favn-timeline-bar:hover,
+  a.favn-timeline-bar:focus-visible {
+    outline: 2px solid var(--color-primary);
+    outline-offset: 2px;
+  }
+
+  /* A running attempt keeps growing between reads. It pulses so that it reads
+     as live rather than as a bar that happens to end at the axis edge, and it
+     advances into the axis headroom over exactly the time that headroom
+     represents — so the chart stays honest without re-rendering per second. */
+  .favn-timeline-bar[data-running="true"] {
+    animation:
+      favn-timeline-pulse 1.6s ease-in-out infinite,
+      favn-timeline-grow var(--favn-timeline-advance) linear forwards;
+  }
+
+  .favn-timeline-now {
+    position: absolute;
+    top: -1px;
+    bottom: -1px;
+    width: 1px;
+    background: var(--color-primary);
+    animation: favn-timeline-now-advance var(--favn-timeline-advance) linear forwards;
+  }
+
+  /* A row with no attempt yet is a labelled track, never a zero-length bar at
+     the origin: the dashed outline says the lane exists and is empty. */
+  .favn-timeline-ghost {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    padding-left: 0.375rem;
+    border-radius: 0.125rem;
+    border: var(--border) dashed color-mix(in oklab, var(--color-base-content) 22%, transparent);
+  }
+
+  .favn-timeline[data-density="dense"] .favn-timeline-ghost {
+    font-size: 0;
+  }
+
+  @keyframes favn-timeline-pulse {
+    50% {
+      opacity: 0.55;
+    }
+  }
+
+  @keyframes favn-timeline-grow {
+    to {
+      width: calc(var(--favn-bar-width) + var(--favn-bar-remaining));
+    }
+  }
+
+  @keyframes favn-timeline-now-advance {
+    to {
+      left: 100%;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .favn-timeline-bar[data-running="true"],
+    .favn-timeline-now {
+      animation: none;
+    }
+  }
+
+  /* A comparison lane is one asset across several windows: the label column is
+     shared with the single-run chart, and the track column holds one thin track
+     per window, stacked in the fixed order the legend states. Position encodes
+     the window, so the tracks must never reflow. */
+  .favn-comparison-lane {
+    display: grid;
+    grid-template-columns: var(--favn-timeline-label) 1fr;
+    align-items: center;
+    gap: 0.5rem;
+    padding-block: 0.1875rem;
+  }
+
+  /* Two rhythms, far enough apart to read as grouping rather than as an
+     accident: tracks of one asset are 2px apart, assets 8px. A 1px gap inside
+     and a 2px gap between made every lane boundary a guess. */
+  .favn-comparison-tracks {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  /* One row per window: a narrow gutter carrying the window's number, then the
+     track. The axis and the band header repeat the same two columns with an
+     empty gutter, so a tick and a bar at the same instant still line up. */
+  .favn-comparison {
+    --favn-comparison-index: 1rem;
+  }
+
+  .favn-comparison[data-density="dense"] {
+    --favn-comparison-index: 0rem;
+  }
+
+  .favn-comparison-row {
+    display: grid;
+    grid-template-columns: var(--favn-comparison-index) 1fr;
+    align-items: center;
+    gap: 0.375rem;
+  }
+
+  /* The number is what makes a row name its own window, so it is text rather
+     than a colour: four hues stacked in a lane are unreadable to anyone who
+     cannot separate them, and status already owns colour in this chart. */
+  .favn-comparison-index {
+    font-size: 0.75rem;
+    line-height: 1;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    overflow: hidden;
+  }
+
+  .favn-comparison[data-density="dense"] .favn-comparison-index {
+    font-size: 0;
+  }
+
+  /* Tracks are thinner than lanes: several of them stack inside one lane's
+     worth of vertical attention. */
+  .favn-comparison-track {
+    height: calc(var(--favn-timeline-lane) * 0.7);
+  }
+
+  /* The same number where it names a window rather than a row: in the legend,
+     and on a rail cell that is part of the comparison. */
+  .favn-track-index {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 1.125rem;
+    height: 1.125rem;
+    padding-inline: 0.25rem;
+    border-radius: var(--radius-selector);
+    border: var(--border) solid color-mix(in oklab, currentColor 45%, transparent);
+    font-size: 0.75rem;
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* An empty track says which kind of empty it is. Unavailable is the page's
+     own failure, so it is the only one that carries a status colour. */
+  .favn-comparison-blank {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    padding-left: 0.375rem;
+    border-radius: 0.125rem;
+    border: var(--border) dashed color-mix(in oklab, var(--color-base-content) 18%, transparent);
+  }
+
+  .favn-comparison-row[data-presence="unavailable"] .favn-comparison-blank {
+    border-color: color-mix(in oklab, var(--color-error) 45%, transparent);
+    border-style: solid;
+  }
+
+  /* Below comfortable height there is no room for words inside a track, and the
+     dashed outline plus the title carries the meaning. */
+  .favn-comparison[data-density="compact"] .favn-comparison-blank,
+  .favn-comparison[data-density="dense"] .favn-comparison-blank {
+    font-size: 0;
+  }
+
   /* Selection is a state, so it has to be identifiable: an opaque border plus a
      lit edge, rather than a tinted hairline that measured 2.47:1. */
   .favn-list-card-selected {

@@ -3,6 +3,7 @@ defmodule FavnView.RunsListLiveTest do
 
   import Phoenix.LiveViewTest
 
+  alias FavnView.LogsViewModel
   alias FavnView.RunsListLive
 
   @counts %{active: 2, failed: 1, succeeded: 6, total: 148}
@@ -271,6 +272,41 @@ defmodule FavnView.RunsListLiveTest do
 
     assert assigns.error == "Backend unavailable"
     assert render_component(&RunsListLive.render/1, assigns) =~ "Could not load runs"
+  end
+
+  # This list and the run detail page read the same execution group overview, so a
+  # run cannot be "Queued" here and "Pending" there. Both name it through
+  # `LogsViewModel.status_label/1`; this pins the list to that one mapping.
+  test "an aggregate status is named exactly as the run detail page names it" do
+    for status <- [
+          :ok,
+          :error,
+          :running,
+          :pending,
+          :retrying,
+          :partial,
+          :blocked,
+          :cancelled,
+          :timed_out,
+          :skipped_fresh,
+          nil
+        ] do
+      stub_page([%{execution_group() | status: status}])
+
+      assert {:flat, [run]} = load(%{}).assigns.listing
+      assert run.status_label == LogsViewModel.status_label(status)
+    end
+  end
+
+  # The tone atom stays the list's own, because a dot is not a word.
+  test "the status tone survives the label sharing" do
+    for {status, tone} <- [{:ok, :succeeded}, {:error, :failed}, {:pending, :queued}] do
+      stub_page([%{execution_group() | status: status}])
+
+      assert {:flat, [run]} = load(%{}).assigns.listing
+      assert run.status == tone
+      assert run.raw_status == status
+    end
   end
 
   defp load(params) do

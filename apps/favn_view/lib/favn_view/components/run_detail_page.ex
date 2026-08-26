@@ -2,8 +2,9 @@ defmodule FavnView.Components.RunDetailPage do
   @moduledoc """
   Run detail for one exact run, with lean assets and lazy events.
 
-  Windowed runs are separate run IDs. The page loads their lean choices only
-  when the operator asks to switch, then navigates to the selected run.
+  Windowed runs are separate run IDs. A run that belongs to a backfill shows a
+  calendar rail of its sibling window runs, loaded with the run rather than
+  behind a button; selecting a cell patches the page to that run in place.
   """
 
   use FavnView, :html
@@ -15,6 +16,9 @@ defmodule FavnView.Components.RunDetailPage do
   alias FavnView.Components.RunDetailPage.NotFound
   alias FavnView.Components.RunDetailPage.Progress
   alias FavnView.Components.RunDetailPage.Submission
+  alias FavnView.Components.RunDetailPage.WindowFailures
+  alias FavnView.Components.RunDetailPage.WindowRail
+  alias FavnView.RunWindowRail
 
   attr :run, :map, required: true
   attr :run_id, :string, required: true
@@ -22,17 +26,22 @@ defmodule FavnView.Components.RunDetailPage do
   attr :current_scope, :any, default: nil
   attr :operator_workspaces, :list, default: []
   attr :active_mode, :atom, default: :flow
+  attr :flow_view, :atom, default: :chart
+  attr :flow_filter, :list, default: []
+  attr :flow_sort, :atom, default: :start
 
-  attr :windows, :any, default: nil
-  attr :windows_loading?, :boolean, default: false
+  attr :rail, :any, default: nil
+  attr :compare?, :boolean, default: false
+  attr :compare_limit_reached?, :boolean, default: false
+  attr :compare_error, :string, default: nil
   attr :windows_error, :string, default: nil
+  attr :window_failures, :list, default: nil
+  attr :window_failures_overflow?, :boolean, default: false
+  attr :window_failures_error, :string, default: nil
   attr :flash, :map, default: %{}
 
   def run_detail_page(assigns) do
-    run = normalize_run(assigns.run)
-    navigation_windows = navigation_windows(run, assigns.windows, assigns.run_id)
-
-    assigns = assigns |> assign(:run, run) |> assign(:navigation_windows, navigation_windows)
+    assigns = assign(assigns, :run, normalize_run(assigns.run))
 
     ~H"""
     <AppShell.app_shell
@@ -76,48 +85,23 @@ defmodule FavnView.Components.RunDetailPage do
           {@run[:retry_remaining_label] || "Retry remaining"}
         </.button>
       </:actions>
-      <:actions :if={@run[:found?] && (@run[:window] || @run[:backfill_parent?]) && is_nil(@windows)}>
-        <.button
-          variant={:secondary}
-          icon="hero-calendar-days"
-          phx-click="load_windows"
-          loading={@windows_loading?}
-          data-testid="load-run-windows"
-        >
-          {if(@run[:backfill_parent?], do: "Open window run", else: "Switch window")}
-        </.button>
-      </:actions>
-      <:actions :if={
-        @run[:found?] && is_list(@navigation_windows) && length(@navigation_windows) == 1
-      }>
-        <.button
-          variant={:secondary}
-          icon="hero-arrow-top-right-on-square"
-          navigate={~p"/runs/#{hd(@navigation_windows).run_id}"}
-          data-testid="open-run-window"
-        >
-          Open window run
-        </.button>
-      </:actions>
-      <:actions :if={@run[:found?] && is_list(@navigation_windows) && length(@navigation_windows) > 1}>
-        <form phx-change="switch_window" data-testid="run-window-selector">
-          <.select_field
-            name="run_id"
-            label="Run window"
-            icon="hero-calendar-days"
-            value=""
-            options={window_options(@navigation_windows)}
-            class="min-w-64"
-          />
-        </form>
-      </:actions>
       <Submission.submission_panel :if={@run[:submission?]} run={@run} />
       <NotFound.not_found_panel :if={!@run[:found?] && !@run[:submission?]} run={@run} />
       <.execution_group_page
         :if={@run[:found?]}
         run={@run}
         active_mode={@active_mode}
+        flow_view={@flow_view}
+        flow_filter={@flow_filter}
+        flow_sort={@flow_sort}
+        rail={@rail}
+        compare?={@compare?}
+        compare_limit_reached?={@compare_limit_reached?}
+        compare_error={@compare_error}
         windows_error={@windows_error}
+        window_failures={@window_failures}
+        window_failures_overflow?={@window_failures_overflow?}
+        window_failures_error={@window_failures_error}
       />
       <:mode_rail :if={@run[:found?]}>
         <ModeRail.mode_rail active={@active_mode} modes={run_modes(@run)} on_select="set_mode" />
@@ -128,14 +112,34 @@ defmodule FavnView.Components.RunDetailPage do
 
   attr :run, :map, required: true
   attr :active_mode, :atom, required: true
+  attr :flow_view, :atom, default: :chart
+  attr :flow_filter, :list, default: []
+  attr :flow_sort, :atom, default: :start
+  attr :rail, :any, default: nil
+  attr :compare?, :boolean, default: false
+  attr :compare_limit_reached?, :boolean, default: false
+  attr :compare_error, :string, default: nil
   attr :windows_error, :string, default: nil
+  attr :window_failures, :list, default: nil
+  attr :window_failures_overflow?, :boolean, default: false
+  attr :window_failures_error, :string, default: nil
 
   def execution_group_page(assigns) do
     ~H"""
     <div class="mx-auto flex w-full max-w-[110rem] flex-col gap-4" data-testid="run-detail-page">
       <Progress.run_progress run={@run} />
+      <WindowRail.window_rail
+        :if={@rail}
+        rail={@rail}
+        compare?={@compare?}
+        limit_reached?={@compare_limit_reached?}
+      />
+      <%!-- Telling the operator to open a window run when the backfill produced
+      none is the page lying about what it offers. A backfill whose windows all
+      failed before a run existed has nothing to open, and that is the single
+      most useful thing this screen can say. --%>
       <.notice
-        :if={@run[:backfill_parent?]}
+        :if={@run[:backfill_parent?] && windows_to_open?(@run, @rail, @windows_error)}
         tone={:info}
         icon="hero-calendar-days"
         data-testid="backfill-parent-explanation"
@@ -143,9 +147,20 @@ defmodule FavnView.Components.RunDetailPage do
         This is the backfill parent run. Asset work is executed by its window runs. Open a
         window run to inspect its assets and results.
       </.notice>
+
+      <.notice
+        :if={@run[:backfill_parent?] && !windows_to_open?(@run, @rail, @windows_error)}
+        tone={no_run_tone(@run)}
+        icon="hero-exclamation-triangle"
+        data-testid="backfill-parent-no-window-runs"
+      >
+        {no_window_runs_message(@run)}
+      </.notice>
+
       <.notice :if={@run[:group_error]} tone={:warning} icon="hero-arrow-path">
         {@run.group_error}
       </.notice>
+
       <.notice
         :if={@run.asset_attempts_truncated?}
         tone={:warning}
@@ -155,17 +170,52 @@ defmodule FavnView.Components.RunDetailPage do
         This run has more than 1,000 assets. Summary counts remain exact; this page shows the
         first 1,000 in stable order.
       </.notice>
+
       <.notice :if={@run[:refresh_error]} tone={:warning} icon="hero-arrow-path">
         {@run.refresh_error}. Showing the last successful result; the page will try again.
       </.notice>
-      <.notice :if={@windows_error} tone={:warning} icon="hero-exclamation-triangle">
+
+      <.notice
+        :if={@windows_error}
+        tone={:warning}
+        icon="hero-exclamation-triangle"
+        data-testid="window-read-warning"
+      >
         {@windows_error}
       </.notice>
+
+      <.notice
+        :if={@compare_error}
+        tone={:warning}
+        icon="hero-square-2-stack"
+        data-testid="compare-warning"
+      >
+        {@compare_error}
+      </.notice>
+
+      <%!-- The reasons sit above Flow because on a backfill whose windows never
+      ran they are the only account of what happened; Flow below has nothing to
+      show. On a partly failed backfill they read as the exception list under the
+      rail that offers the windows that did run. --%>
+      <WindowFailures.window_failures
+        :if={@run[:backfill_parent?]}
+        groups={@window_failures}
+        truncated?={@window_failures_overflow?}
+        error={@window_failures_error}
+        failed_windows={@run[:failed_windows] || 0}
+      />
+
       <div data-run-active={to_string(@run.active?)}>
         <Flow.flow
           :if={@active_mode == :flow}
           assets={@run.assets}
+          chart={@run[:chart]}
+          comparison={@run[:comparison]}
+          view={@flow_view}
+          filter={@flow_filter}
+          sort={@flow_sort}
           backfill_parent?={@run[:backfill_parent?] || false}
+          windows_to_open?={windows_to_open?(@run, @rail, @windows_error)}
         />
         <Events.events_panel :if={@active_mode == :events} run={@run} />
       </div>
@@ -187,24 +237,15 @@ defmodule FavnView.Components.RunDetailPage do
     ]
   end
 
-  defp window_options(windows) do
-    [{"Select a window run", ""} | Enum.map(windows, &{&1.label, &1.run_id})]
-  end
-
-  defp navigation_windows(_run, nil, _run_id), do: nil
-
-  defp navigation_windows(%{backfill_parent?: true}, windows, _run_id) when is_list(windows),
-    do: windows
-
-  defp navigation_windows(_run, windows, run_id) when is_list(windows),
-    do: Enum.reject(windows, &(&1.run_id == run_id))
-
   defp run_facts(%{found?: true} = run) do
+    # A combined backfill has no window rail to state its coverage, because it
+    # runs every window it covers as one run. The span is a property of the run,
+    # so it belongs beside the run's other properties.
     [
       %{label: "Started", value: run.started_at},
       %{label: "Duration", value: run.elapsed_duration},
       %{label: "Trigger", value: run.trigger}
-    ]
+    ] ++ combined_window_fact(run)
   end
 
   defp run_facts(%{submission?: true} = run) do
@@ -216,6 +257,62 @@ defmodule FavnView.Components.RunDetailPage do
   end
 
   defp run_facts(_run), do: []
+
+  defp combined_window_fact(%{combined_window: %{label: label, window_count: count}}),
+    do: [%{label: "Combined window", value: "#{label} · #{count} windows"}]
+
+  defp combined_window_fact(_run), do: []
+
+  # The rail is the only thing that can offer a window run, so it decides
+  # whether there is anything to open. A backfill still creating windows has
+  # something coming and is not reported as having produced nothing.
+  #
+  # A failed window read also leaves no rail, and that is not the same fact. The
+  # page does not know what the backfill produced, so it must not assert that
+  # nothing was: it keeps the generic explanation, which is true of every
+  # backfill parent, and the read warning below says the list is missing.
+  defp windows_to_open?(_run, _rail, windows_error) when not is_nil(windows_error), do: true
+
+  defp windows_to_open?(run, rail, _windows_error) do
+    cond do
+      match?(%RunWindowRail{cells: [_ | _]}, rail) -> true
+      match?(%RunWindowRail{combined: %{}}, rail) -> true
+      match?(%RunWindowRail{in_progress?: true}, rail) -> true
+      (run[:total_windows] || 0) == 0 -> true
+      run[:active?] -> true
+      true -> false
+    end
+  end
+
+  defp no_run_tone(run) do
+    if (run[:failed_windows] || 0) > 0, do: :error, else: :warning
+  end
+
+  # Says how many windows the backfill planned, because that count is the only
+  # description of the covered range this page holds once no window run exists
+  # to name its own window. It does not send the operator to the per-window
+  # failure reason: that reason is stored, but no operator surface reads it yet,
+  # and pointing at a place the product does not have is worse than silence.
+  defp no_window_runs_message(run) do
+    total = run[:total_windows] || 0
+    failed = run[:failed_windows] || 0
+
+    cond do
+      failed >= total and total > 0 ->
+        "None of the #{total} #{plural(total, "window")} produced a run: every one failed " <>
+          "before a run started, so there is nothing to open."
+
+      total > 0 ->
+        "This backfill planned #{total} #{plural(total, "window")} and none of them has a run " <>
+          "yet, so there is nothing to open."
+
+      true ->
+        "This backfill produced no window runs."
+    end
+  end
+
+  defp plural(1, word), do: word
+  defp plural(_count, word), do: word <> "s"
   defp page_title(%{found?: true, title: title}, _run_id), do: title
   defp page_title(_run, run_id), do: "Run #{short_id(run_id)}"
   defp page_subtitle(%{found?: true, subtitle: subtitle}), do: subtitle

@@ -436,9 +436,11 @@ defmodule FavnOrchestrator.BackfillDispatcher do
     command_id("run-bfw", window.backfill_id <> ":" <> identity)
   end
 
-  defp error_payload({reason, details})
-       when reason in [:operator_decision_required, :rebuild_required, :target_drift] and
-              is_map(details) do
+  @doc false
+  @spec error_payload(term()) :: map()
+  def error_payload({reason, details})
+      when reason in [:operator_decision_required, :rebuild_required, :target_drift] and
+             is_map(details) do
     %{
       "kind" => "admission",
       "type" => "backfill_admission",
@@ -451,9 +453,17 @@ defmodule FavnOrchestrator.BackfillDispatcher do
     }
   end
 
-  defp error_payload(reason) when is_atom(reason), do: %{"reason" => Atom.to_string(reason)}
+  def error_payload(reason) when is_atom(reason), do: %{"reason" => Atom.to_string(reason)}
 
-  defp error_payload(reason) do
+  # A run or submission that already recorded an error stored it string-keyed and
+  # JSON-safe. Inspecting it again would put a printed map where a reason belongs,
+  # which no reader can group or unwrap: every window would carry its own blob and
+  # the identical failure would look like N different ones. The submission path
+  # already passes such a map through; this makes the run path agree.
+  def error_payload(%{"reason" => reason} = error) when is_binary(reason), do: error
+  def error_payload(%{"message" => message} = error) when is_binary(message), do: error
+
+  def error_payload(reason) do
     %{"reason" => reason |> inspect(limit: 20, printable_limit: 1_000) |> String.slice(0, 2_000)}
   end
 

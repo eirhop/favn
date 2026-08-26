@@ -71,6 +71,37 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
   @completed_asset_statuses ~w(ok error timed_out cancelled skipped_fresh blocked)
   @failed_asset_statuses ~w(error timed_out cancelled blocked)
   @running_asset_statuses ~w(running retrying)
+  @attempt_statuses %{
+    "queued" => :queued,
+    "running" => :running,
+    "retrying" => :retrying,
+    "ok" => :ok,
+    "error" => :error,
+    "timed_out" => :timed_out,
+    "cancelled" => :cancelled,
+    "skipped_fresh" => :skipped_fresh,
+    "blocked" => :blocked
+  }
+  # Window and backfill status vocabularies are mapped explicitly rather than
+  # converted, so a value written by a newer release degrades to no status
+  # instead of failing the read or creating an atom.
+  @window_run_statuses %{
+    "planned" => :planned,
+    "ready" => :ready,
+    "claimed" => :claimed,
+    "running" => :running,
+    "succeeded" => :succeeded,
+    "failed" => :failed,
+    "cancelled" => :cancelled
+  }
+  @backfill_statuses %{
+    "planning" => :planning,
+    "ready" => :ready,
+    "running" => :running,
+    "completed" => :completed,
+    "failed" => :failed,
+    "cancelled" => :cancelled
+  }
   @no_asset_counts %{
     total: 0,
     completed: 0,
@@ -241,7 +272,7 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
                exact_run_header(query.workspace_context.workspace_id, query.run_id) do
           counts = exact_run_counts!(query.workspace_context.workspace_id, query.run_id)
 
-          {planned, observed, candidates_overflow?} =
+          {observed, candidates_overflow?} =
             exact_flow_candidates!(
               query.workspace_context.workspace_id,
               query.run_id,
@@ -251,7 +282,6 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
           {:ok,
            %RunFlowSnapshot{
              header: %{header | counts: counts},
-             planned: planned,
              observed: observed,
              overflow?: candidates_overflow? or counts.total > query.limit
            }}
@@ -280,6 +310,12 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
   @impl true
   def list_run_windows(%ListRunWindows{} = query) do
     with :ok <- validate_run_windows(query) do
+      # Outer joins fold the "does this run exist?" probe into this statement. A
+      # run with no backfill, or a backfill that has not started a window yet,
+      # returns exactly one placeholder row whose window columns are null, while
+      # a run that does not exist returns none. Placeholders sort last, so they
+      # can never displace a real window run under the limit - neither the
+      # pinned selected run nor the overflow sentinel.
       %{rows: rows} =
         SQL.query!(
           Repo,
@@ -289,16 +325,23 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
             FROM favn_control.runs
             WHERE workspace_id = $1 AND run_id = $2
           )
-          SELECT window_run.run_id, window_run.window_start, window_run.window_end
+          SELECT window_run.run_id,
+                 window_run.window_start,
+                 window_run.window_end,
+                 window_run.status,
+                 window_run.window_key,
+                 backfill.status,
+                 backfill.backfill_id
           FROM selected
-          JOIN favn_control.backfills AS backfill
+          LEFT JOIN favn_control.backfills AS backfill
             ON backfill.workspace_id = $1
            AND backfill.root_run_id = selected.root_run_id
-          JOIN favn_control.backfill_windows AS window_run
+          LEFT JOIN favn_control.backfill_windows AS window_run
             ON window_run.workspace_id = backfill.workspace_id
            AND window_run.backfill_id = backfill.backfill_id
-          WHERE window_run.run_id IS NOT NULL
-          ORDER BY (window_run.run_id = $2) DESC,
+           AND window_run.run_id IS NOT NULL
+          ORDER BY (window_run.run_id IS NOT NULL) DESC,
+                   (window_run.run_id = $2) DESC,
                    window_run.window_start DESC,
                    window_run.window_id DESC
           LIMIT $3
@@ -309,17 +352,17 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
 
       case rows do
         [] ->
-          if exact_run_exists?(query.workspace_context.workspace_id, query.run_id) do
-            {:ok, %RunWindowChoices{items: [], overflow?: false}}
-          else
-            {:error, Error.new(:not_found, "run not found")}
-          end
+          {:error, Error.new(:not_found, "run not found")}
 
         rows ->
+          window_rows = Enum.reject(rows, fn [run_id | _rest] -> is_nil(run_id) end)
+
           {:ok,
            %RunWindowChoices{
-             items: rows |> Enum.take(query.limit) |> Enum.map(&run_window_choice/1),
-             overflow?: length(rows) > query.limit
+             items: window_rows |> Enum.take(query.limit) |> Enum.map(&run_window_choice/1),
+             overflow?: length(window_rows) > query.limit,
+             backfill_status: first_backfill_status(rows),
+             backfill_id: first_backfill_id(rows)
            }}
       end
     end
@@ -866,16 +909,6 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
       source_publication_id: status.source_publication_id,
       updated_at: status.updated_at
     }
-  end
-
-  defp planned_window_identity(nil), do: "none"
-  defp planned_window_identity(%{key: key}) when is_binary(key), do: key
-
-  defp planned_window_identity(window) do
-    window
-    |> :erlang.term_to_binary([:deterministic])
-    |> then(&:crypto.hash(:sha256, &1))
-    |> Base.url_encode64(padding: false)
   end
 
   # One query for a whole page of groups rather than one per row. The `in` pair is
@@ -1488,57 +1521,24 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
       SQL.query!(
         Repo,
         """
-        WITH planned AS (
-          SELECT concat_ws(':', node.value #>> '{ref,module}', node.value #>> '{ref,name}') AS asset_ref,
-                 count(*)::bigint AS candidate_count
-          FROM favn_control.run_plans AS plan
-          CROSS JOIN LATERAL jsonb_array_elements(COALESCE(plan.plan->'nodes', '[]'::jsonb)) AS node(value)
-          WHERE plan.workspace_id = $1 AND plan.run_id = $2
-          GROUP BY 1
-        ),
-        observed AS (
-          SELECT attempt.asset_ref,
-                 count(*)::bigint AS candidate_count
-          FROM favn_control.asset_attempt_overviews AS attempt
-          WHERE attempt.workspace_id = $1 AND attempt.run_id = $2
-          GROUP BY attempt.asset_ref
-        ),
-        union_counts AS (
-          SELECT COALESCE(sum(GREATEST(
-                   COALESCE(planned.candidate_count, 0),
-                   COALESCE(observed.candidate_count, 0)
-                 )), 0)::bigint AS total,
-                 COALESCE(sum(GREATEST(
-                   COALESCE(planned.candidate_count, 0) - COALESCE(observed.candidate_count, 0),
-                   0
-                 )), 0)::bigint AS planned
-          FROM planned
-          FULL OUTER JOIN observed USING (asset_ref)
-        ),
-        observed_status AS (
-          SELECT count(*) FILTER (
-                   WHERE attempt.status IN ('ok', 'error', 'timed_out', 'cancelled', 'skipped_fresh', 'blocked')
-                 )::bigint AS completed,
-                 count(*) FILTER (WHERE attempt.status = 'ok')::bigint AS succeeded,
-                 count(*) FILTER (WHERE attempt.status = 'skipped_fresh')::bigint AS skipped,
-                 count(*) FILTER (
-                   WHERE attempt.status IN ('error', 'timed_out', 'cancelled', 'blocked')
-                 )::bigint AS failed,
-                 count(*) FILTER (WHERE attempt.status IN ('running', 'retrying'))::bigint AS running,
-                 count(*) FILTER (WHERE attempt.status = 'queued')::bigint AS queued
-          FROM favn_control.asset_attempt_overviews AS attempt
-          WHERE attempt.workspace_id = $1 AND attempt.run_id = $2
-        )
-        SELECT union_counts.total,
-               observed_status.completed,
-               observed_status.succeeded,
-               observed_status.skipped,
-               observed_status.failed,
-               observed_status.running,
-               observed_status.queued,
-               union_counts.planned
-        FROM union_counts
-        CROSS JOIN observed_status
+        -- Counts come from the run's attempts alone. The persisted plan is not
+        -- consulted: expanding its node array to anticipate steps that have not
+        -- been admitted yet cost a deTOAST and parse of the whole plan on every
+        -- refresh, and the execution-group list has always counted this way.
+        SELECT count(*)::bigint AS total,
+               count(*) FILTER (
+                 WHERE attempt.status IN ('ok', 'error', 'timed_out', 'cancelled', 'skipped_fresh', 'blocked')
+               )::bigint AS completed,
+               count(*) FILTER (WHERE attempt.status = 'ok')::bigint AS succeeded,
+               count(*) FILTER (WHERE attempt.status = 'skipped_fresh')::bigint AS skipped,
+               count(*) FILTER (
+                 WHERE attempt.status IN ('error', 'timed_out', 'cancelled', 'blocked')
+               )::bigint AS failed,
+               count(*) FILTER (WHERE attempt.status IN ('running', 'retrying'))::bigint AS running,
+               count(*) FILTER (WHERE attempt.status = 'queued')::bigint AS queued,
+               count(*) FILTER (WHERE attempt.status = 'planned')::bigint AS planned
+        FROM favn_control.asset_attempt_overviews AS attempt
+        WHERE attempt.workspace_id = $1 AND attempt.run_id = $2
         """,
         [workspace_id, run_id],
         timeout: 1_000
@@ -1556,125 +1556,116 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
     }
   end
 
+  # Flow rows are the run's attempts. A step enters this table when it is
+  # queued, so an asset appears here shortly before it runs rather than only
+  # once it has, and the persisted plan is never read.
   defp exact_flow_candidates!(workspace_id, run_id, limit) do
     %{rows: rows} =
       SQL.query!(
         Repo,
         """
-        WITH planned_base AS (
-          SELECT node.value->'node_key' AS node_key,
-                 concat_ws(':', node.value #>> '{ref,module}', node.value #>> '{ref,name}') AS asset_ref,
-                 node.value->'window' AS window_value,
-                 'planned:' || md5(
-                   $2 || ':' || (node.value->'node_key')::text || ':' || (node.value->'ref')::text
-                 ) AS planned_id
-          FROM favn_control.run_plans AS plan
-          CROSS JOIN LATERAL jsonb_array_elements(COALESCE(plan.plan->'nodes', '[]'::jsonb)) AS node(value)
-          WHERE plan.workspace_id = $1 AND plan.run_id = $2
-        ),
-        planned AS (
-          SELECT planned_base.*,
-                 row_number() OVER (
-                   PARTITION BY asset_ref
-                   ORDER BY planned_id
-                 ) AS occurrence
-          FROM planned_base
-        ),
-        observed AS (
-          SELECT attempt.asset_step_id,
-                 attempt.asset_ref,
-                 attempt.window_identity,
-                 attempt.status,
-                 attempt.started_at,
-                 attempt.finished_at,
-                 row_number() OVER (
-                   PARTITION BY attempt.asset_ref
-                   ORDER BY attempt.asset_step_id
-                 ) AS occurrence
-          FROM favn_control.asset_attempt_overviews AS attempt
-          WHERE attempt.workspace_id = $1 AND attempt.run_id = $2
-        )
-        SELECT planned.node_key,
-               COALESCE(observed.asset_ref, planned.asset_ref),
-               planned.window_value,
-               planned.planned_id,
-               observed.asset_step_id,
-               observed.window_identity,
-               observed.status,
-               observed.started_at,
-               observed.finished_at,
-               COALESCE(observed.occurrence, planned.occurrence)
-        FROM planned
-        FULL OUTER JOIN observed
-          ON observed.asset_ref = planned.asset_ref
-         AND observed.occurrence = planned.occurrence
-        ORDER BY 2, 10
+        SELECT attempt.asset_step_id,
+               attempt.asset_ref,
+               attempt.window_identity,
+               attempt.status,
+               attempt.started_at,
+               attempt.finished_at,
+               attempt.stage
+        FROM favn_control.asset_attempt_overviews AS attempt
+        WHERE attempt.workspace_id = $1 AND attempt.run_id = $2
+        ORDER BY attempt.asset_ref, attempt.asset_step_id
         LIMIT $3
         """,
         [workspace_id, run_id, limit + 1],
         timeout: 1_000
       )
 
-    {planned, observed} =
+    observed =
       rows
       |> Enum.take(limit)
-      |> Enum.reduce({[], []}, fn
-        [node_key, asset_ref, window, planned_id, nil, nil, nil, nil, nil, _occurrence],
-        {planned, observed} ->
-          candidate = %RunFlowCandidate{
-            run_id: run_id,
-            planned_id: planned_id,
-            node_key: node_key,
-            asset_ref: asset_ref,
-            window_identity: planned_window_identity(restore_window(window)),
-            status: :planned
-          }
-
-          {[candidate | planned], observed}
-
-        [
-          _node_key,
-          asset_ref,
-          _window,
-          _planned_id,
-          asset_step_id,
-          window_identity,
-          status,
-          started_at,
-          finished_at,
-          _occurrence
-        ],
-        {planned, observed} ->
-          candidate = %RunFlowCandidate{
-            run_id: run_id,
-            asset_step_id: asset_step_id,
-            asset_ref: asset_ref,
-            window_identity: window_identity,
-            status: decode_operator_status(status),
-            started_at: started_at,
-            finished_at: finished_at
-          }
-
-          {planned, [candidate | observed]}
+      |> Enum.map(fn [
+                       asset_step_id,
+                       asset_ref,
+                       window_identity,
+                       status,
+                       started_at,
+                       finished_at,
+                       stage
+                     ] ->
+        %RunFlowCandidate{
+          run_id: run_id,
+          asset_step_id: asset_step_id,
+          asset_ref: asset_ref,
+          window_identity: window_identity,
+          status: decode_attempt_status(status),
+          started_at: started_at,
+          finished_at: finished_at,
+          stage: stage
+        }
       end)
 
-    {Enum.reverse(planned), Enum.reverse(observed), length(rows) > limit}
+    {observed, length(rows) > limit}
   end
 
-  defp run_window_choice([run_id, window_start_at, window_end_at]) do
+  defp run_window_choice([
+         run_id,
+         window_start_at,
+         window_end_at,
+         status,
+         window_key,
+         _backfill_status,
+         _backfill_id
+       ]) do
+    {kind, timezone} = window_key_identity(window_key)
+
     %RunWindowChoice{
       run_id: run_id,
       window_start_at: window_start_at,
-      window_end_at: window_end_at
+      window_end_at: window_end_at,
+      status: decode_window_run_status(status),
+      kind: kind,
+      timezone: timezone
     }
   end
+
+  # A key written before the current encoding still names a real window run. The
+  # choice keeps its timestamps and loses only its calendar labelling.
+  defp window_key_identity(window_key) when is_binary(window_key) do
+    case WindowKey.decode(window_key) do
+      {:ok, %{kind: kind, timezone: timezone}} -> {kind, timezone}
+      {:error, _reason} -> {nil, nil}
+    end
+  end
+
+  defp window_key_identity(_window_key), do: {nil, nil}
+
+  # Placeholder rows carry the backfill status without a window run, so the
+  # first row that names one wins whether or not any window has started.
+  # A run with no backfill yields one placeholder row whose backfill columns are
+  # null, and both readers return nil for it.
+  #
+  # `backfills_root_run_idx` is not unique, so two backfills can share one root
+  # run and the join can return rows from both. Real window rows sort first, so
+  # both readers answer for whichever backfill has started windows — the one the
+  # rail is drawing. They can still disagree if both have windows, which is why
+  # neither is treated as identifying the root's only backfill.
+  defp first_backfill_status(rows) do
+    Enum.find_value(rows, fn [_, _, _, _, _, status, _] -> decode_backfill_status(status) end)
+  end
+
+  defp first_backfill_id(rows) do
+    Enum.find_value(rows, fn [_, _, _, _, _, _, backfill_id] -> backfill_id end)
+  end
+
+  defp decode_window_run_status(value), do: Map.get(@window_run_statuses, value)
+  defp decode_backfill_status(value), do: Map.get(@backfill_statuses, value)
 
   defp run_asset_attempt(attempt) do
     %RunAssetAttemptResult{
       run_id: attempt.run_id,
       asset_step_id: attempt.asset_step_id,
       asset_ref: attempt.asset_ref,
-      status: decode_operator_status(attempt.status),
+      status: decode_attempt_status(attempt.status),
       started_at: attempt.started_at,
       finished_at: attempt.finished_at,
       duration_ms: attempt.duration_ms,
@@ -1698,7 +1689,7 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
       sequence: sequence,
       occurred_at: occurred_at,
       event_type: event_type,
-      status: if(is_binary(status), do: decode_operator_status(status)),
+      status: if(is_binary(status), do: decode_attempt_status(status)),
       asset_ref: asset_ref,
       summary: if(summary == "", do: nil, else: summary)
     }
@@ -1711,8 +1702,19 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
   end
 
   defp decode_operator_enum(kind, value), do: RunEnum.decode(kind, value) || :unknown
-  defp decode_operator_status("blocked"), do: :blocked
   defp decode_operator_status(value), do: decode_operator_enum(:status, value)
+
+  # Asset attempts have their own status vocabulary. It overlaps the run
+  # statuses only where the two mean the same thing; `queued`, `retrying`,
+  # `skipped_fresh` and `blocked` belong to attempts alone, and decoding them
+  # through the run enum turned every one of them into `:unknown`. Falling back
+  # keeps this a superset, so the shared event read still decodes run statuses.
+  defp decode_attempt_status(value) do
+    case Map.fetch(@attempt_statuses, value) do
+      {:ok, status} -> status
+      :error -> decode_operator_status(value)
+    end
+  end
 
   defp exact_read_transaction(fun) do
     # SQL Sandbox hides its outer transaction to mimic production. It cannot

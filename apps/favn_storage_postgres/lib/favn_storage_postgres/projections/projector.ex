@@ -753,8 +753,8 @@ defmodule FavnStoragePostgres.Projections.Projector do
           Enum.map(anchors, fn anchor ->
             %{
               key: FreshnessKey.window!(anchor.key),
-              start_at: anchor.start_at,
-              end_at: anchor.end_at
+              start_at: utc!(anchor.start_at),
+              end_at: utc!(anchor.end_at)
             }
           end)
         else
@@ -777,6 +777,13 @@ defmodule FavnStoragePostgres.Projections.Projector do
         end
     end
   end
+
+  # Expanded anchors carry the window's own timezone, and `timestamptz` params
+  # must be UTC or Postgrex refuses them. A combined backfill in a non-UTC zone
+  # would otherwise raise here, failing the batch and stalling the cursor, so
+  # completion never projected and the parent stayed "running" forever.
+  defp utc!(%DateTime{time_zone: "Etc/UTC"} = at), do: at
+  defp utc!(%DateTime{} = at), do: DateTime.shift_zone!(at, "Etc/UTC")
 
   defp window_from_partition_key(materialization) do
     with {:ok, key} <- data_window_key(materialization.partition_key),

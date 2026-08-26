@@ -97,63 +97,86 @@ defmodule FavnOrchestrator.Persistence.Results.RunViewHeader do
 end
 
 defmodule FavnOrchestrator.Persistence.Results.RunFlowCandidate do
-  @moduledoc "Minimal planned or observed Flow row after bounded storage selection."
+  @moduledoc "Minimal observed Flow row after bounded storage selection."
 
-  @enforce_keys [:run_id, :asset_ref, :status]
-  defstruct [
-    :run_id,
-    :asset_step_id,
-    :planned_id,
-    :node_key,
-    :asset_ref,
-    :window_identity,
-    :status,
-    :started_at,
-    :finished_at
-  ]
+  @enforce_keys [:run_id, :asset_step_id, :asset_ref, :status]
+  defstruct @enforce_keys ++ [:window_identity, :started_at, :finished_at, :stage]
 
   @type t :: %__MODULE__{}
 end
 
 defmodule FavnOrchestrator.Persistence.Results.RunFlowSnapshot do
-  @moduledoc "Atomic exact-run header plus bounded planned and observed candidates."
+  @moduledoc """
+  Atomic exact-run header plus bounded observed candidates.
+
+  Candidates are the run's asset attempts. Steps the plan anticipates but that
+  execution has not admitted yet are absent by design: an attempt row exists
+  from the moment a step is queued, and reading the persisted plan to show the
+  rest cost a full parse of it on every refresh.
+  """
 
   alias FavnOrchestrator.Persistence.Results.RunFlowCandidate
   alias FavnOrchestrator.Persistence.Results.RunViewHeader
 
-  @enforce_keys [:header, :planned, :observed, :overflow?]
+  @enforce_keys [:header, :observed, :overflow?]
   defstruct @enforce_keys
 
   @type t :: %__MODULE__{
           header: RunViewHeader.t(),
-          planned: [RunFlowCandidate.t()],
           observed: [RunFlowCandidate.t()],
           overflow?: boolean()
         }
 end
 
 defmodule FavnOrchestrator.Persistence.Results.RunWindowChoice do
-  @moduledoc "Lean navigation choice for one persisted window run."
+  @moduledoc """
+  Lean navigation choice for one persisted window run.
+
+  `kind` and `timezone` are recovered from the stored window key. A key that
+  predates the current encoding yields `nil` for both; callers must label such a
+  choice by its timestamps rather than by its calendar position.
+  """
+
+  alias Favn.Window.Key, as: WindowKey
 
   @enforce_keys [:run_id, :window_start_at, :window_end_at]
-  defstruct @enforce_keys
+  defstruct @enforce_keys ++ [:status, :kind, :timezone]
 
   @type t :: %__MODULE__{
           run_id: String.t(),
           window_start_at: DateTime.t(),
-          window_end_at: DateTime.t()
+          window_end_at: DateTime.t(),
+          status: atom() | nil,
+          kind: WindowKey.kind() | nil,
+          timezone: String.t() | nil
         }
 end
 
 defmodule FavnOrchestrator.Persistence.Results.RunWindowChoices do
-  @moduledoc "Bounded window choices with an explicit overflow marker."
+  @moduledoc """
+  Bounded window choices with an explicit overflow marker.
+
+  `backfill_status` is the owning backfill's own status, not an aggregate of the
+  returned choices. A non-terminal backfill is still producing window runs, so
+  the choice list is incomplete by design rather than by truncation.
+
+  `backfill_id` identifies the owning backfill, and is the caller's only route
+  from a run to the window ledger. The choices themselves are window *runs*, so a
+  window that failed before a run existed is absent from `items` by design; its
+  recorded failure is reachable only through the ledger, keyed by this id.
+  """
 
   alias FavnOrchestrator.Persistence.Results.RunWindowChoice
 
   @enforce_keys [:items, :overflow?]
-  defstruct @enforce_keys
+  defstruct @enforce_keys ++ [:backfill_status, :backfill_id]
 
-  @type t :: %__MODULE__{items: [RunWindowChoice.t()], overflow?: boolean()}
+  @type t :: %__MODULE__{
+          items: [RunWindowChoice.t()],
+          overflow?: boolean(),
+          backfill_status: atom() | nil,
+          backfill_id: String.t() | nil
+        }
 end
 
 defmodule FavnOrchestrator.Persistence.Results.RunAssetAttempt do

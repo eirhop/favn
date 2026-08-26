@@ -695,15 +695,131 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
           },
           "Rejected before any asset ran, so the failure has no lane and is called out."
         ),
-        Example.attrs(:window_selector, %{
-          run: Runs.backfill(:running),
-          run_id: "run_backfill_8f2c9d1",
-          nav_items: Runs.nav_items(),
-          windows: [
-            %{run_id: "run_backfill_8f2c9d1", label: "Feb 1, 2026 – Mar 1, 2026"},
-            %{run_id: "run_backfill_91ac3e2", label: "Mar 1, 2026 – Apr 1, 2026"}
-          ]
-        }),
+        Example.attrs(
+          :window_rail,
+          %{
+            run: Runs.backfill(:running),
+            run_id: "run_window_4",
+            nav_items: Runs.nav_items(),
+            rail: Runs.rail(:flat)
+          },
+          "A short backfill: one flat strip, one cell per window run."
+        ),
+        Example.attrs(
+          :window_rail_banded,
+          %{
+            run: Runs.backfill(:running),
+            run_id: "run_window_120",
+            nav_items: Runs.nav_items(),
+            rail: Runs.rail(:banded)
+          },
+          "Two hundred hourly windows bucket by day, with the open day expanded."
+        ),
+        Example.attrs(
+          :combined_window,
+          %{
+            run:
+              Map.put(Runs.backfill(:running), :combined_window, %{
+                label: "Feb 1 00:00 – Feb 1 06:00, 2026",
+                window_count: 6
+              }),
+            run_id: "run_window_combined",
+            nav_items: Runs.nav_items(),
+            rail: Runs.rail(:combined)
+          },
+          "Six coverage windows in one run: no rail to navigate, the span in the header instead."
+        ),
+        Example.attrs(
+          :window_failures,
+          %{
+            run: Runs.runless_backfill(),
+            run_id: "run_backfill_runless",
+            nav_items: Runs.nav_items(),
+            window_failures: Runs.window_failures(:single)
+          },
+          "Every window failed before a run existed: the reason is the only reading left."
+        ),
+        Example.attrs(
+          :window_failures_mixed,
+          %{
+            run: Runs.runless_backfill(22),
+            run_id: "run_backfill_partly_failed",
+            nav_items: Runs.nav_items(),
+            rail: Runs.rail(:flat),
+            window_failures: Runs.window_failures(:mixed)
+          },
+          "Two causes, one of which did reach runs, so the deeper reading is linked."
+        ),
+        Example.attrs(
+          :window_failures_truncated,
+          %{
+            run: Runs.runless_backfill(900),
+            run_id: "run_backfill_runless",
+            nav_items: Runs.nav_items(),
+            window_failures: Runs.window_failures(:truncated),
+            window_failures_overflow?: true
+          },
+          "900 windows failed and the read reached 500: the notice counts what it read."
+        ),
+        Example.attrs(
+          :window_failures_unreadable,
+          %{
+            run: Runs.runless_backfill(31),
+            run_id: "run_backfill_runless",
+            nav_items: Runs.nav_items(),
+            window_failures_error: "Why these windows failed could not be loaded."
+          },
+          "The ledger read failed, which is said rather than implied by an empty panel."
+        ),
+        Example.attrs(
+          :compare_windows,
+          %{
+            run: Map.put(Runs.backfill(:running), :comparison, Runs.comparison()),
+            run_id: "run_window_4",
+            nav_items: Runs.nav_items(),
+            rail: Runs.rail(:compare),
+            compare?: true
+          },
+          "Three windows as tracks, one of them unreadable, aligned on their own starts."
+        ),
+        Example.attrs(
+          :compare_wall_clock,
+          %{
+            run:
+              Map.put(
+                Runs.backfill(:running),
+                :comparison,
+                Runs.comparison(alignment: :wall_clock)
+              ),
+            run_id: "run_window_4",
+            nav_items: Runs.nav_items(),
+            rail: Runs.rail(:compare),
+            compare?: true
+          },
+          "The same three windows on one real timeline, which the hour between them still allows."
+        ),
+        Example.attrs(
+          :compare_limit_reached,
+          %{
+            run: Map.put(Runs.backfill(:running), :comparison, Runs.comparison()),
+            run_id: "run_window_4",
+            nav_items: Runs.nav_items(),
+            rail: Runs.rail(:compare),
+            compare?: true,
+            compare_limit_reached?: true
+          },
+          "The refusal a fifth window earns, stated on the rail rather than swallowed."
+        ),
+        Example.attrs(
+          :wide_compact,
+          %{run: Runs.wide(120), run_id: "run_wide_pipeline", nav_items: Runs.nav_items()},
+          "One hundred and twenty lanes: shorter rows and truncated labels."
+        ),
+        Example.attrs(
+          :wide_dense,
+          %{run: Runs.wide(260), run_id: "run_wide_pipeline", nav_items: Runs.nav_items()},
+          "Above two hundred lanes the stages collapse to strips and the labels go."
+        ),
         Example.attrs(:events, %{
           run: Runs.backfill(:running),
           run_id: "run_backfill_8f2c9d1",

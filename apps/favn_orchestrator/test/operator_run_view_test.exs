@@ -7,32 +7,34 @@ defmodule FavnOrchestrator.OperatorRunViewTest do
   alias FavnOrchestrator.Persistence.Results.RunSubmission
   alias FavnOrchestrator.Persistence.Results.RunViewHeader
 
-  test "combines storage-selected observed and planned rows without carrying detail payloads" do
-    planned = [
+  test "orders storage-selected attempts without carrying detail payloads" do
+    observed = [
       %RunFlowCandidate{
         run_id: "run-one",
-        planned_id: "planned-total",
-        node_key: %{"ref" => "crm.total"},
+        asset_step_id: "step-total",
         asset_ref: "crm.total",
         window_identity: "window-one",
-        status: :planned
-      }
-    ]
-
-    observed = [
+        status: :queued,
+        stage: 1
+      },
       %RunFlowCandidate{
         run_id: "run-one",
         asset_step_id: "step-orders",
         asset_ref: "crm.orders",
         window_identity: "window-one",
         status: :running,
-        started_at: ~U[2026-08-23 10:00:00Z]
+        started_at: ~U[2026-08-23 10:00:00Z],
+        stage: 0
       }
     ]
 
-    assert [orders, total] = OperatorRunView.merge_assets(planned, observed)
-    assert %{id: "step-orders", state: :running, detail?: true} = orders
-    assert %{id: "planned-total", state: :planned, detail?: false} = total
+    assert [orders, total] = OperatorRunView.public_assets(observed)
+    assert %{id: "step-orders", state: :running, stage: 0} = orders
+    assert %{id: "step-total", state: :queued, stage: 1} = total
+
+    # A queued step is a real attempt with no start time, not a placeholder.
+    assert total.started_at == nil
+
     refute Map.has_key?(Map.from_struct(orders), :output_metadata)
     refute Map.has_key?(Map.from_struct(orders), :error)
   end
@@ -55,10 +57,10 @@ defmodule FavnOrchestrator.OperatorRunViewTest do
   end
 
   for count <- [0, 90, 1_000, 1_001] do
-    test "Flow returns a bounded lean list for #{count} planned assets" do
+    test "Flow returns a bounded lean list for #{count} attempts" do
       count = unquote(count)
 
-      planned =
+      observed =
         if count == 0 do
           []
         else
@@ -67,11 +69,10 @@ defmodule FavnOrchestrator.OperatorRunViewTest do
 
             %RunFlowCandidate{
               run_id: "run-one",
-              planned_id: "planned-#{padded}",
-              node_key: %{"ordinal" => index},
+              asset_step_id: "step-#{padded}",
               asset_ref: "crm.asset_#{padded}",
               window_identity: "none",
-              status: :planned
+              status: :queued
             }
           end)
         end
@@ -79,14 +80,13 @@ defmodule FavnOrchestrator.OperatorRunViewTest do
       flow =
         OperatorRunView.from_snapshot(%RunFlowSnapshot{
           header: header(count),
-          planned: planned,
-          observed: [],
+          observed: observed,
           overflow?: count > 1_000
         })
 
       assert length(flow.assets) == min(count, 1_000)
       assert flow.overflow? == count > 1_000
-      assert Enum.all?(flow.assets, &(&1.state == :planned and not &1.detail?))
+      assert Enum.all?(flow.assets, &(&1.state == :queued))
     end
   end
 
@@ -104,8 +104,8 @@ defmodule FavnOrchestrator.OperatorRunViewTest do
         skipped: 0,
         failed: 0,
         running: 0,
-        queued: 0,
-        planned: count
+        queued: count,
+        planned: 0
       }
     }
   end

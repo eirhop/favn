@@ -47,6 +47,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
   alias FavnStoragePostgres.Migrations.OptimizeLogicalTargetHistoryV2
   alias FavnStoragePostgres.Migrations.OptimizeRunStatusPagingV2
   alias FavnStoragePostgres.Migrations.NormalizeResourceCircuitDefinitionsV2
+  alias FavnStoragePostgres.Migrations.AddBackfillWindowRunLookupV2
   alias FavnStoragePostgres.Migrations.RebindBackfillWindowRunReferenceV2
   alias FavnStoragePostgres.Migrations.RebindScheduleOccurrenceRunReferenceV2
   alias FavnStoragePostgres.RuntimePrivileges
@@ -94,7 +95,8 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     {20_260_813_000_000, AddWorkspaceProvisioningOperationsV2},
     {20_260_821_000_000, RebindScheduleOccurrenceRunReferenceV2},
     {20_260_824_000_000, AddManifestDeploymentsV2},
-    {20_260_825_000_000, RebindBackfillWindowRunReferenceV2}
+    {20_260_825_000_000, RebindBackfillWindowRunReferenceV2},
+    {20_260_825_010_000, AddBackfillWindowRunLookupV2}
   ]
   @required_tables ~w(
     schema_migrations
@@ -277,6 +279,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     backfill_windows_page_idx
     backfill_windows_claim_idx
     backfill_windows_backfill_claim_idx
+    backfill_windows_run_idx
     projection_failures_event_uidx
     execution_group_overviews_recent_idx
     execution_group_overviews_platform_recent_idx
@@ -579,7 +582,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
                           Enum.map(@identifier_constraint_tables, &"#{&1}_identifier_lengths_v2") ++
                           Enum.map(@payload_constraint_tables, &"#{&1}_payload_bounds_v2")
   @expected_versions Enum.map(@migrations, fn {version, _module} -> version end)
-  @expected_definition_fingerprint "6379322836abc21ee1e804348704b1146e01a9a1468458ace239605cba6f94ba"
+  @expected_definition_fingerprint "b0bd9404ff51e6d2a257adb625b520a5c4ea325b91f5f807536acff4bc96e3bb"
 
   @doc "Creates the V2 namespace for development/tests and applies every known migration."
   @spec migrate!(module()) :: :ok

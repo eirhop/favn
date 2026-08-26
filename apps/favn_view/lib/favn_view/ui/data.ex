@@ -671,12 +671,18 @@ defmodule FavnView.UI.Data do
         ]}
         role="img"
         aria-label={meter_label(@present, @summary)}
+        title={meter_label(@present, @summary)}
         data-testid="outcome-meter"
       >
+        <%!-- Each band carries its own title as well as the bar's: a bar that
+        is entirely one tone is the case where the operator most wants to know
+        what that tone counts, and it is the case where the legend below is
+        least likely to be the thing under the pointer. --%>
         <span
           :for={segment <- @present}
           class={[Tokens.fill_class(Tokens.tone(segment.tone))]}
           style={"width: #{segment.percent}%"}
+          title={"#{segment.count} #{segment.label}"}
           data-tone={segment.tone}
         />
       </div>

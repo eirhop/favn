@@ -209,11 +209,34 @@ defmodule FavnStoragePostgres.StorageV2.PerformanceContractTest do
     assert "runs_group_children_idx" in index_names(plan)
   end
 
-  test "exact run Flow caps a 1,001-asset plan without reading sibling runs", fixture do
+  # The run header looks a run's window up on every refresh of the run detail
+  # page, against a table that grows with every backfill ever run. No existing
+  # index covered that lookup.
+  test "the run header's window lookup uses its own index rather than scanning", fixture do
+    run = create_run!(fixture)
+
+    plan =
+      explain(
+        """
+        SELECT candidate_window.window_start, candidate_window.window_end
+        FROM favn_control.backfill_windows AS candidate_window
+        WHERE candidate_window.workspace_id = $1
+          AND candidate_window.run_id = $2
+        ORDER BY candidate_window.window_start DESC, candidate_window.window_id DESC
+        LIMIT 1
+        """,
+        [fixture.workspace_id, run.id]
+      )
+
+    assert "backfill_windows_run_idx" in index_names(plan)
+  end
+
+  test "exact run Flow caps 1,001 attempts without reading sibling runs or the plan", fixture do
     run = create_run!(fixture)
     sibling = create_child_target_run!(fixture, run)
+    insert_flow_attempts!(fixture, run, run, 1_001)
+    insert_flow_attempts!(fixture, run, sibling, 1_001)
     insert_flow_plan!(fixture, run, 1_001)
-    insert_flow_plan!(fixture, sibling, 1_001)
 
     {result, queries} =
       capture_queries(fn ->
@@ -225,12 +248,15 @@ defmodule FavnStoragePostgres.StorageV2.PerformanceContractTest do
       end)
 
     assert {:ok, snapshot} = result
-    assert length(snapshot.planned) == 1_000
-    assert snapshot.observed == []
+    assert length(snapshot.observed) == 1_000
     assert snapshot.header.counts.total == 1_001
     assert snapshot.overflow?
-    assert Enum.all?(snapshot.planned, &(&1.run_id == run.id))
+    assert Enum.all?(snapshot.observed, &(&1.run_id == run.id))
     assert length(queries) <= 7
+
+    # The run has a 1,001-node plan and the read must never open it. Expanding
+    # it per refresh is what this page stopped doing.
+    refute Enum.any?(queries, fn {sql, _params} -> String.contains?(sql, "run_plans") end)
 
     public_flow = OperatorRunView.from_snapshot(snapshot)
     assert length(public_flow.assets) == 1_000
@@ -260,15 +286,15 @@ defmodule FavnStoragePostgres.StorageV2.PerformanceContractTest do
     assert length(facade_assets) == 1_000
     assert length(subscription_queries) + length(facade_queries) <= 12
 
-    planned_query = query_containing!(queries, "jsonb_array_elements")
+    candidates_query = query_containing!(queries, "ORDER BY attempt.asset_ref")
 
     {:ok, plan} =
       Repo.transaction(fn ->
         SQL.query!(Repo, "SET LOCAL enable_seqscan = off", [])
-        explain_analyze_captured(planned_query)
+        explain_analyze_captured(candidates_query)
       end)
 
-    assert Enum.any?(index_names(plan), &String.contains?(&1, "run_plans"))
+    assert "asset_attempt_overviews_run_idx" in index_names(plan)
     assert buffer_blocks(plan) <= 5_000
     assert execution_time_ms(plan) < 1_000
 
@@ -796,6 +822,23 @@ defmodule FavnStoragePostgres.StorageV2.PerformanceContractTest do
       WHERE template.workspace_id = $1 AND template.run_id = $2
       """,
       [fixture.workspace_id, root.id, prefix, count]
+    )
+  end
+
+  defp insert_flow_attempts!(fixture, root, run, count) do
+    SQL.query!(
+      Repo,
+      """
+      INSERT INTO favn_control.asset_attempt_overviews
+        (workspace_id, root_run_id, run_id, asset_step_id, asset_ref, window_identity,
+         status, stage, source_publication_id, updated_at)
+      SELECT $1, $2, $3,
+             'step-' || lpad(series::text, 4, '0'),
+             'Elixir.Performance.Asset' || lpad(series::text, 4, '0') || ':asset',
+             'none', 'ok', series % 5, 1, clock_timestamp()
+      FROM generate_series(1, $4) AS series
+      """,
+      [fixture.workspace_id, root.id, run.id, count]
     )
   end
 

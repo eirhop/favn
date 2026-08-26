@@ -6,18 +6,23 @@ defmodule FavnView.RunDetailLiveTest do
   alias FavnOrchestrator.OperatorRunView.Asset
   alias FavnOrchestrator.OperatorRunView.Flow
   alias FavnOrchestrator.OperatorRunView.Header
+  alias FavnOrchestrator.Persistence.Results.BackfillWindow
   alias FavnOrchestrator.Persistence.Results.RunWindowChoice
   alias FavnOrchestrator.Persistence.Results.RunWindowChoices
   alias FavnView.Auth.Scope
   alias FavnView.RunDetailLive
+  alias FavnView.RunWindowRail
 
   setup do
     keys = [
       :operator_run_flow_fun,
       :operator_run_events_fun,
       :operator_run_windows_fun,
+      :operator_backfill_windows_fun,
       :operator_execution_group_fun,
-      :run_subscribe_fun
+      :run_subscribe_fun,
+      :run_unsubscribe_fun,
+      :compare_read_timeout_ms
     ]
 
     previous = Map.new(keys, &{&1, Application.get_env(:favn_view, &1)})
@@ -177,7 +182,11 @@ defmodule FavnView.RunDetailLiveTest do
              RunDetailLive.mount(%{"run_id" => "run-one"}, %{}, connected_socket())
 
     assert {:noreply, events_socket} =
-             RunDetailLive.handle_params(%{"view" => "events"}, "", mounted)
+             RunDetailLive.handle_params(
+               %{"run_id" => "run-one", "view" => "events"},
+               "",
+               mounted
+             )
 
     assert events_socket.assigns.active_mode == :events
     assert [%{sequence: 2, asset: "crm.orders"}] = events_socket.assigns.run.events
@@ -244,55 +253,179 @@ defmodule FavnView.RunDetailLiveTest do
     assert retrying.assigns.run.refresh_error == "Run could not be loaded"
   end
 
-  test "loads window choices only on request and restricts navigation to those choices" do
+  test "a run outside a backfill never reads its windows" do
+    caller = self()
+
     Application.put_env(:favn_view, :operator_run_flow_fun, fn _context, run_id ->
       {:ok, %{kind: :run, detail: flow(run_id, :ok)}}
     end)
 
-    Application.put_env(:favn_view, :operator_run_windows_fun, fn _context, "run-one" ->
-      {:ok,
-       %RunWindowChoices{
-         overflow?: false,
-         items: [
-           %RunWindowChoice{
-             run_id: "run-one",
-             window_start_at: ~U[2026-07-01 00:00:00Z],
-             window_end_at: ~U[2026-08-01 00:00:00Z]
-           },
-           %RunWindowChoice{
-             run_id: "run-two",
-             window_start_at: ~U[2026-08-01 00:00:00Z],
-             window_end_at: ~U[2026-09-01 00:00:00Z]
-           }
-         ]
-       }}
+    Application.put_env(:favn_view, :operator_run_windows_fun, fn _context, _run_id ->
+      send(caller, :unexpected_window_read)
+      {:ok, %RunWindowChoices{overflow?: false, items: []}}
     end)
 
     assert {:ok, mounted} =
              RunDetailLive.mount(%{"run_id" => "run-one"}, %{}, connected_socket())
 
+    refute_receive :unexpected_window_read
     assert is_nil(mounted.assigns.windows)
-    assert {:noreply, loaded} = RunDetailLive.handle_event("load_windows", %{}, mounted)
-    assert Enum.map(loaded.assigns.windows, & &1.run_id) == ["run-one", "run-two"]
+    assert is_nil(mounted.assigns.rail)
+  end
 
-    assert {:noreply, self_rejected} =
-             RunDetailLive.handle_event("switch_window", %{"run_id" => "run-one"}, loaded)
+  test "a backfill run loads its rail eagerly and restricts selection to it" do
+    Application.put_env(:favn_view, :operator_run_flow_fun, fn _context, run_id ->
+      {:ok, %{kind: :run, detail: backfill_flow(run_id, :ok)}}
+    end)
 
-    assert self_rejected.assigns.flash["error"] == "That window run is not available"
+    Application.put_env(:favn_view, :operator_run_windows_fun, fn _context, _run_id ->
+      {:ok, window_choices()}
+    end)
+
+    assert {:ok, mounted} =
+             RunDetailLive.mount(%{"run_id" => "run-one"}, %{}, connected_socket())
+
+    # Eager: no button press, no second event.
+    assert Enum.map(mounted.assigns.windows, & &1.run_id) == ["run-one", "run-two"]
+    assert Enum.map(mounted.assigns.rail.cells, & &1.run_id) == ["run-one", "run-two"]
+    assert [%{selected?: true}, %{selected?: false}] = mounted.assigns.rail.cells
 
     assert {:noreply, rejected} =
-             RunDetailLive.handle_event("switch_window", %{"run_id" => "run-other"}, loaded)
+             RunDetailLive.handle_event("select_window", %{"run_id" => "run-other"}, mounted)
 
     assert rejected.assigns.flash["error"] == "That window run is not available"
 
-    assert {:noreply, navigating} =
-             RunDetailLive.handle_event("switch_window", %{"run_id" => "run-two"}, loaded)
+    # Selecting the open window is a no-op, not an error: the rail is a
+    # calendar, so its current cell is still a cell.
+    assert {:noreply, same} =
+             RunDetailLive.handle_event("select_window", %{"run_id" => "run-one"}, mounted)
 
-    assert {:live, :redirect, %{to: "/runs/run-two"}} = navigating.redirected
+    assert is_nil(same.redirected)
+    refute same.assigns.flash["error"]
+
+    assert {:noreply, patching} =
+             RunDetailLive.handle_event("select_window", %{"run_id" => "run-two"}, mounted)
+
+    # Patch, not navigate: the page keeps its process and its subscription.
+    assert {:live, :patch, %{to: "/runs/run-two?view=flow"}} = patching.redirected
+  end
+
+  test "arrow keys step between adjacent window runs and stop at the ends" do
+    Application.put_env(:favn_view, :operator_run_flow_fun, fn _context, run_id ->
+      {:ok, %{kind: :run, detail: backfill_flow(run_id, :ok)}}
+    end)
+
+    Application.put_env(:favn_view, :operator_run_windows_fun, fn _context, _run_id ->
+      {:ok, window_choices()}
+    end)
+
+    assert {:ok, mounted} =
+             RunDetailLive.mount(%{"run_id" => "run-one"}, %{}, connected_socket())
+
+    assert {:noreply, forward} =
+             RunDetailLive.handle_event("step_window", %{"key" => "ArrowRight"}, mounted)
+
+    assert {:live, :patch, %{to: "/runs/run-two?view=flow"}} = forward.redirected
+
+    # run-one is the first cell, so there is nowhere to step back to.
+    assert {:noreply, backward} =
+             RunDetailLive.handle_event("step_window", %{"key" => "ArrowLeft"}, mounted)
+
+    assert is_nil(backward.redirected)
+    refute backward.assigns.flash["error"]
+
+    # Any other key is ignored rather than treated as a step.
+    assert {:noreply, ignored} =
+             RunDetailLive.handle_event("step_window", %{"key" => "Enter"}, mounted)
+
+    assert is_nil(ignored.redirected)
+  end
+
+  test "selecting a window resets the page and moves the subscription exactly once" do
+    caller = self()
+
+    Application.put_env(:favn_view, :run_unsubscribe_fun, fn _context, run_id ->
+      send(caller, {:unsubscribed, run_id})
+      :ok
+    end)
+
+    Application.put_env(:favn_view, :operator_run_flow_fun, fn _context, run_id ->
+      {:ok, %{kind: :run, detail: backfill_flow(run_id, :ok)}}
+    end)
+
+    Application.put_env(:favn_view, :operator_run_windows_fun, fn _context, _run_id ->
+      {:ok, window_choices()}
+    end)
+
+    assert {:ok, mounted} =
+             RunDetailLive.mount(%{"run_id" => "run-one"}, %{}, connected_socket())
+
+    assert_receive {:subscribed, "run-one"}
+
+    assert {:noreply, switched} =
+             RunDetailLive.handle_params(%{"run_id" => "run-two"}, "", mounted)
+
+    assert_receive {:unsubscribed, "run-one"}
+    assert_receive {:subscribed, "run-two"}
+    refute_receive {:unsubscribed, "run-two"}
+
+    assert switched.assigns.run_id == "run-two"
+    assert MapSet.equal?(switched.assigns.run_event_subscriptions, MapSet.new(["run-two"]))
+
+    # The rail follows the newly selected run rather than the old one.
+    assert [%{selected?: false}, %{selected?: true}] = switched.assigns.rail.cells
+  end
+
+  test "a failed window read hides the rail and leaves the run page working" do
+    Application.put_env(:favn_view, :operator_run_flow_fun, fn _context, run_id ->
+      {:ok, %{kind: :run, detail: backfill_flow(run_id, :ok)}}
+    end)
+
+    Application.put_env(:favn_view, :operator_run_windows_fun, fn _context, _run_id ->
+      {:error, :unavailable}
+    end)
+
+    assert {:ok, mounted} =
+             RunDetailLive.mount(%{"run_id" => "run-one"}, %{}, connected_socket())
+
+    assert is_nil(mounted.assigns.rail)
+    assert mounted.assigns.run.found?
+    assert mounted.assigns.run.total_asset_attempts == 2
+  end
+
+  test "a non-terminal backfill keeps polling even when every loaded run is terminal" do
+    Application.put_env(:favn_view, :operator_run_flow_fun, fn _context, run_id ->
+      {:ok, %{kind: :run, detail: backfill_flow(run_id, :ok)}}
+    end)
+
+    Application.put_env(:favn_view, :operator_run_windows_fun, fn _context, _run_id ->
+      {:ok, %{window_choices() | backfill_status: :running}}
+    end)
+
+    assert {:ok, running} =
+             RunDetailLive.mount(%{"run_id" => "run-one"}, %{}, connected_socket())
+
+    refute running.assigns.run.active?
+    assert running.assigns.rail.in_progress?
+    assert is_reference(running.assigns.fallback_poll_ref)
+
+    Application.put_env(:favn_view, :operator_run_windows_fun, fn _context, _run_id ->
+      {:ok, %{window_choices() | backfill_status: :completed}}
+    end)
+
+    assert {:ok, finished} =
+             RunDetailLive.mount(%{"run_id" => "run-one"}, %{}, connected_socket())
+
+    refute finished.assigns.rail.in_progress?
+    assert is_nil(finished.assigns.fallback_poll_ref)
   end
 
   test "a terminal backfill parent renders group progress and keeps refreshing while children run" do
     caller = self()
+
+    Application.put_env(:favn_view, :operator_run_windows_fun, fn _context, _run_id ->
+      {:ok, %RunWindowChoices{overflow?: false, items: [], backfill_status: :running}}
+    end)
 
     Application.put_env(:favn_view, :operator_run_flow_fun, fn _context, run_id ->
       parent_header = %{
@@ -360,7 +493,6 @@ defmodule FavnView.RunDetailLiveTest do
       )
 
     assert html =~ ~s(data-testid="backfill-parent-explanation")
-    assert html =~ ~s(data-testid="load-run-windows")
     assert html =~ "Asset work runs in the windows"
     refute html =~ "No asset work yet"
 
@@ -374,8 +506,70 @@ defmodule FavnView.RunDetailLiveTest do
     assert refreshed.assigns.run.active?
   end
 
+  test "a backfill parent opens its earliest window, once" do
+    Application.put_env(:favn_view, :operator_run_windows_fun, fn _context, _run_id ->
+      {:ok, window_choices()}
+    end)
+
+    Application.put_env(:favn_view, :operator_run_flow_fun, fn _context, run_id ->
+      parent_header = %{
+        header(run_id, :ok)
+        | submit_kind: :backfill_asset,
+          trigger_type: :backfill
+      }
+
+      {:ok, %{kind: :run, detail: %Flow{header: parent_header, assets: [], overflow?: false}}}
+    end)
+
+    Application.put_env(:favn_view, :operator_execution_group_fun, fn _context, _run_id, _opts ->
+      {:error, :unavailable}
+    end)
+
+    assert {:ok, mounted} =
+             RunDetailLive.mount(%{"run_id" => "run-parent"}, %{}, connected_socket())
+
+    # LiveView raises on a live patch issued while mounting, and the rail is
+    # built inside the mount's first read, so the mount itself must not redirect.
+    assert is_nil(mounted.redirected)
+
+    # The parent runs no asset work of its own, so landing on it and finding
+    # nothing drawn is a click the operator always has to make.
+    assert {:noreply, patched} =
+             RunDetailLive.handle_params(
+               %{"run_id" => "run-parent"},
+               "http://localhost/runs/run-parent",
+               mounted
+             )
+
+    assert {:live, :patch, %{to: to}} = patched.redirected
+    assert to =~ "/runs/run-one"
+
+    # Only on arrival. A later refresh must not drag the page back off a window
+    # the operator chose, and neither must coming back to the parent on purpose.
+    # LiveView clears `redirected` between messages, so the test does too.
+    settled = %{patched | redirected: nil}
+
+    {:noreply, refreshed} =
+      RunDetailLive.handle_info({:poll_run, settled.assigns.fallback_poll_ref}, settled)
+
+    assert is_nil(refreshed.redirected)
+
+    assert {:noreply, again} =
+             RunDetailLive.handle_params(
+               %{"run_id" => "run-parent"},
+               "http://localhost/runs/run-parent",
+               settled
+             )
+
+    assert is_nil(again.redirected)
+  end
+
   test "a transient group read failure keeps the last truthful parent progress" do
     {:ok, reads} = Agent.start_link(fn -> 0 end)
+
+    Application.put_env(:favn_view, :operator_run_windows_fun, fn _context, _run_id ->
+      {:ok, %RunWindowChoices{overflow?: false, items: [], backfill_status: :running}}
+    end)
 
     Application.put_env(:favn_view, :operator_run_flow_fun, fn _context, run_id ->
       parent_header = %{
@@ -440,7 +634,7 @@ defmodule FavnView.RunDetailLiveTest do
     assert refreshed.assigns.run.group_error =~ "showing the last update"
   end
 
-  test "a one-window backfill parent exposes a direct child-run link" do
+  test "a one-window backfill parent offers that single child run in its rail" do
     Application.put_env(:favn_view, :operator_run_flow_fun, fn _context, run_id ->
       parent_header = %{
         header(run_id, :ok)
@@ -497,13 +691,14 @@ defmodule FavnView.RunDetailLiveTest do
     assert {:ok, mounted} =
              RunDetailLive.mount(%{"run_id" => "run-parent"}, %{}, connected_socket())
 
-    assert {:noreply, loaded} = RunDetailLive.handle_event("load_windows", %{}, mounted)
-
     html =
-      render_component(&RunDetailLive.render/1, Map.put(loaded.assigns, :operator_workspaces, []))
+      render_component(
+        &RunDetailLive.render/1,
+        Map.put(mounted.assigns, :operator_workspaces, [])
+      )
 
-    assert html =~ ~s(data-testid="open-run-window")
-    assert html =~ ~s(href="/runs/run-child")
+    assert html =~ ~s(data-testid="window-rail")
+    assert html =~ ~s(phx-value-run_id="run-child")
     refute html =~ ~s(data-testid="run-window-selector")
   end
 
@@ -538,6 +733,845 @@ defmodule FavnView.RunDetailLiveTest do
     assert mounted.assigns.run.status == "Queued"
   end
 
+  # A backfill window run, not the parent: its root is the parent's id, so the
+  # page takes the rail path rather than the execution-group path.
+  defp backfill_flow(run_id, status) do
+    detail = flow(run_id, status)
+
+    %{
+      detail
+      | header: %{
+          detail.header
+          | submit_kind: :backfill_pipeline,
+            root_run_id: "run-parent",
+            trigger_type: :backfill
+        }
+    }
+  end
+
+  defp window_choices do
+    %RunWindowChoices{
+      overflow?: false,
+      backfill_status: :completed,
+      items: [
+        %RunWindowChoice{
+          run_id: "run-one",
+          window_start_at: ~U[2026-07-01 00:00:00Z],
+          window_end_at: ~U[2026-08-01 00:00:00Z],
+          status: :succeeded,
+          kind: :month,
+          timezone: "Etc/UTC"
+        },
+        %RunWindowChoice{
+          run_id: "run-two",
+          window_start_at: ~U[2026-08-01 00:00:00Z],
+          window_end_at: ~U[2026-09-01 00:00:00Z],
+          status: :succeeded,
+          kind: :month,
+          timezone: "Etc/UTC"
+        }
+      ]
+    }
+  end
+
+  describe "why a backfill's windows failed" do
+    setup do
+      Application.put_env(:favn_view, :operator_run_flow_fun, fn _context, run_id ->
+        parent_header = %{
+          header(run_id, :error)
+          | submit_kind: :backfill_pipeline,
+            trigger_type: :backfill
+        }
+
+        {:ok, %{kind: :run, detail: %Flow{header: parent_header, assets: [], overflow?: false}}}
+      end)
+
+      Application.put_env(:favn_view, :operator_execution_group_fun, fn _, _, _ ->
+        {:ok, %{overview: failed_overview(31)}}
+      end)
+
+      :ok
+    end
+
+    test "reads the ledger for a parent whose windows failed, and groups by reason" do
+      caller = self()
+
+      Application.put_env(:favn_view, :operator_run_windows_fun, fn _context, _run_id ->
+        {:ok, runless_choices("bf-one")}
+      end)
+
+      Application.put_env(:favn_view, :operator_backfill_windows_fun, fn _context,
+                                                                         backfill_id,
+                                                                         opts ->
+        send(caller, {:ledger_read, backfill_id, Keyword.get(opts, :status)})
+        {:ok, failed_window_page(31, "invalid_backfill_pipeline_identity")}
+      end)
+
+      assert {:ok, mounted} =
+               RunDetailLive.mount(%{"run_id" => "run-parent"}, %{}, connected_socket())
+
+      assert_receive {:ledger_read, "bf-one", :failed}
+
+      # Thirty-one windows failing for one cause is one fact, not thirty-one.
+      assert [group] = mounted.assigns.window_failures
+      assert group.reason == "invalid_backfill_pipeline_identity"
+      assert group.window_count == 31
+      assert group.run_count == 0
+      refute mounted.assigns.window_failures_overflow?
+      assert is_nil(mounted.assigns.window_failures_error)
+    end
+
+    test "does not read the ledger when no window failed" do
+      caller = self()
+
+      Application.put_env(:favn_view, :operator_execution_group_fun, fn _, _, _ ->
+        {:ok, %{overview: failed_overview(0)}}
+      end)
+
+      Application.put_env(:favn_view, :operator_run_windows_fun, fn _context, _run_id ->
+        {:ok, runless_choices("bf-one")}
+      end)
+
+      Application.put_env(:favn_view, :operator_backfill_windows_fun, fn _, _, _ ->
+        send(caller, :unexpected_ledger_read)
+        {:ok, failed_window_page(0, "never")}
+      end)
+
+      assert {:ok, mounted} =
+               RunDetailLive.mount(%{"run_id" => "run-parent"}, %{}, connected_socket())
+
+      refute_receive :unexpected_ledger_read
+      assert is_nil(mounted.assigns.window_failures)
+    end
+
+    test "does not read the ledger when the window read yielded no backfill id" do
+      caller = self()
+
+      Application.put_env(:favn_view, :operator_run_windows_fun, fn _context, _run_id ->
+        {:ok, %RunWindowChoices{overflow?: false, items: [], backfill_status: :failed}}
+      end)
+
+      Application.put_env(:favn_view, :operator_backfill_windows_fun, fn _, _, _ ->
+        send(caller, :unexpected_ledger_read)
+        {:ok, failed_window_page(1, "never")}
+      end)
+
+      assert {:ok, mounted} =
+               RunDetailLive.mount(%{"run_id" => "run-parent"}, %{}, connected_socket())
+
+      refute_receive :unexpected_ledger_read
+      assert is_nil(mounted.assigns.window_failures)
+    end
+
+    test "a failed ledger read states what is missing and keeps polling for it" do
+      Application.put_env(:favn_view, :operator_run_windows_fun, fn _context, _run_id ->
+        {:ok, runless_choices("bf-one")}
+      end)
+
+      Application.put_env(:favn_view, :operator_backfill_windows_fun, fn _, _, _ ->
+        {:error, :temporarily_unavailable}
+      end)
+
+      assert {:ok, mounted} =
+               RunDetailLive.mount(%{"run_id" => "run-parent"}, %{}, connected_socket())
+
+      assert is_nil(mounted.assigns.window_failures)
+      assert mounted.assigns.window_failures_error =~ "could not be loaded"
+
+      # The run and the backfill are both terminal, so without the owed read this
+      # page would have no cycle left in which to try again.
+      assert is_reference(mounted.assigns.fallback_poll_ref)
+    end
+
+    test "a failed re-read drops the truncation marker with the rows it described" do
+      {:ok, reads} = Agent.start_link(fn -> 0 end)
+
+      Application.put_env(:favn_view, :operator_run_windows_fun, fn _context, _run_id ->
+        {:ok, runless_choices("bf-one")}
+      end)
+
+      Application.put_env(:favn_view, :operator_backfill_windows_fun, fn _, _, _ ->
+        case Agent.get_and_update(reads, fn count -> {count, count + 1} end) do
+          0 -> {:ok, %{failed_window_page(2, "no_runner") | has_more?: true}}
+          _later -> {:error, :temporarily_unavailable}
+        end
+      end)
+
+      assert {:ok, mounted} =
+               RunDetailLive.mount(%{"run_id" => "run-parent"}, %{}, connected_socket())
+
+      assert mounted.assigns.window_failures_overflow?
+
+      aged = put_in(mounted.assigns.windows_read_at, mounted.assigns.windows_read_at - 60_000)
+
+      {:noreply, refreshed} =
+        RunDetailLive.handle_info({:poll_run, aged.assigns.fallback_poll_ref}, aged)
+
+      # The marker describes a page of rows. Keeping it after dropping them
+      # would leave the panel calling a list it no longer holds truncated.
+      assert is_nil(refreshed.assigns.window_failures)
+      refute refreshed.assigns.window_failures_overflow?
+      assert refreshed.assigns.window_failures_error
+    end
+
+    test "a ledger error does not outlive the reason to read the ledger" do
+      {:ok, reads} = Agent.start_link(fn -> 0 end)
+
+      Application.put_env(:favn_view, :operator_run_windows_fun, fn _context, _run_id ->
+        {:ok, runless_choices("bf-one")}
+      end)
+
+      # The backfill's failed count drops to zero after the first cycle, which
+      # closes the gate. Without clearing, the error from cycle one would keep
+      # the fallback poll alive forever for a read that will never be issued.
+      Application.put_env(:favn_view, :operator_execution_group_fun, fn _, _, _ ->
+        case Agent.get_and_update(reads, fn count -> {count, count + 1} end) do
+          0 -> {:ok, %{overview: failed_overview(31)}}
+          _later -> {:ok, %{overview: failed_overview(0)}}
+        end
+      end)
+
+      Application.put_env(:favn_view, :operator_backfill_windows_fun, fn _, _, _ ->
+        {:error, :temporarily_unavailable}
+      end)
+
+      assert {:ok, mounted} =
+               RunDetailLive.mount(%{"run_id" => "run-parent"}, %{}, connected_socket())
+
+      assert mounted.assigns.window_failures_error
+
+      aged = put_in(mounted.assigns.windows_read_at, mounted.assigns.windows_read_at - 60_000)
+
+      {:noreply, refreshed} =
+        RunDetailLive.handle_info({:poll_run, aged.assigns.fallback_poll_ref}, aged)
+
+      assert is_nil(refreshed.assigns.window_failures_error)
+      assert is_nil(refreshed.assigns.window_failures)
+      assert is_nil(refreshed.assigns.fallback_poll_ref)
+    end
+
+    test "a ledger read that recovers replaces the warning with the reasons" do
+      {:ok, reads} = Agent.start_link(fn -> 0 end)
+
+      Application.put_env(:favn_view, :operator_run_windows_fun, fn _context, _run_id ->
+        {:ok, runless_choices("bf-one")}
+      end)
+
+      Application.put_env(:favn_view, :operator_backfill_windows_fun, fn _, _, _ ->
+        case Agent.get_and_update(reads, fn count -> {count, count + 1} end) do
+          0 -> {:error, :temporarily_unavailable}
+          _later -> {:ok, failed_window_page(2, "no_runner_available")}
+        end
+      end)
+
+      assert {:ok, mounted} =
+               RunDetailLive.mount(%{"run_id" => "run-parent"}, %{}, connected_socket())
+
+      assert mounted.assigns.window_failures_error
+
+      # The ledger read rides the window read's cadence, so the retry happens on
+      # the first poll after the fallback interval rather than on the next event.
+      aged = put_in(mounted.assigns.windows_read_at, mounted.assigns.windows_read_at - 60_000)
+
+      {:noreply, refreshed} =
+        RunDetailLive.handle_info({:poll_run, aged.assigns.fallback_poll_ref}, aged)
+
+      assert is_nil(refreshed.assigns.window_failures_error)
+
+      assert [%{reason: "no_runner_available", window_count: 2}] =
+               refreshed.assigns.window_failures
+    end
+  end
+
+  describe "flow reading controls" do
+    setup do
+      Application.put_env(:favn_view, :operator_run_flow_fun, fn _context, run_id ->
+        {:ok, %{kind: :run, detail: flow(run_id, :running)}}
+      end)
+
+      {:ok, mounted} = RunDetailLive.mount(%{"run_id" => "run-one"}, %{}, connected_socket())
+      %{socket: mounted}
+    end
+
+    test "the chart is built from the loaded rows and keeps its raw timing", %{socket: socket} do
+      chart = socket.assigns.run.chart
+
+      assert chart.lane_count == 2
+      assert chart.ghost_count == 1
+      assert Enum.map(chart.bands, & &1.id) == ["stage-0", "stage-1"]
+
+      # The row keeps both, so the table can print and the chart can measure.
+      assert [%{started_at: %DateTime{}, started_label: label} | _] = socket.assigns.run.assets
+      assert is_binary(label)
+    end
+
+    test "a status filter narrows the chart and nothing else", %{socket: socket} do
+      {:noreply, filtered} =
+        RunDetailLive.handle_event("toggle_flow_filter", %{"outcome" => "running"}, socket)
+
+      assert filtered.assigns.flow_filter == [:running]
+      assert filtered.assigns.run.chart.lane_count == 1
+
+      # The run's own rows and counts are untouched: only the drawing narrowed.
+      assert length(filtered.assigns.run.assets) == 2
+      assert filtered.assigns.run.total_asset_attempts == 2
+
+      {:noreply, cleared} =
+        RunDetailLive.handle_event("toggle_flow_filter", %{"outcome" => "running"}, filtered)
+
+      assert cleared.assigns.flow_filter == []
+      assert cleared.assigns.run.chart.lane_count == 2
+    end
+
+    test "an unknown filter or sort is ignored rather than crashing", %{socket: socket} do
+      assert {:noreply, ^socket} =
+               RunDetailLive.handle_event("toggle_flow_filter", %{"outcome" => "nope"}, socket)
+
+      assert {:noreply, ^socket} =
+               RunDetailLive.handle_event("set_flow_sort", %{"sort" => "nope"}, socket)
+    end
+
+    test "sorting reorders the chart without issuing a read", %{socket: socket} do
+      {:noreply, sorted} =
+        RunDetailLive.handle_event("set_flow_sort", %{"sort" => "name"}, socket)
+
+      assert sorted.assigns.flow_sort == :name
+      assert sorted.assigns.run.chart.lane_count == 2
+    end
+
+    test "expanding a band leaves the others as they were", %{socket: socket} do
+      {:noreply, expanded} =
+        RunDetailLive.handle_event("toggle_flow_band", %{"band" => "stage-1"}, socket)
+
+      assert expanded.assigns.expanded_bands == ["stage-1"]
+
+      {:noreply, collapsed} =
+        RunDetailLive.handle_event("toggle_flow_band", %{"band" => "stage-1"}, expanded)
+
+      assert collapsed.assigns.expanded_bands == []
+    end
+
+    test "chart or table is a reading preference that issues no read", %{socket: socket} do
+      {:noreply, table} =
+        RunDetailLive.handle_event("set_flow_view", %{"view" => "table"}, socket)
+
+      assert table.assigns.flow_view == :table
+      assert table.assigns.run.assets == socket.assigns.run.assets
+    end
+  end
+
+  describe "window comparison" do
+    setup do
+      Application.put_env(:favn_view, :operator_run_flow_fun, fn _context, run_id ->
+        {:ok, %{kind: :run, detail: backfill_flow(run_id, :ok)}}
+      end)
+
+      Application.put_env(:favn_view, :operator_run_windows_fun, fn _context, _run_id ->
+        {:ok, %{window_choices() | items: month_choices(6)}}
+      end)
+
+      {:ok, mounted} = RunDetailLive.mount(%{"run_id" => "run-1"}, %{}, connected_socket())
+      %{socket: mounted}
+    end
+
+    test "opens on the run the page already shows and empties on exit", %{socket: socket} do
+      refute socket.assigns.compare?
+      assert socket.assigns.compare_run_ids == []
+
+      {:noreply, on} = RunDetailLive.handle_event("toggle_compare", %{}, socket)
+
+      assert on.assigns.compare?
+      assert on.assigns.compare_run_ids == ["run-1"]
+      assert [%{run_id: "run-1", compared?: true, track: 1} | _rest] = on.assigns.rail.cells
+
+      {:noreply, off} = RunDetailLive.handle_event("toggle_compare", %{}, on)
+
+      # Leaving returns the page to exactly its single-window behaviour.
+      refute off.assigns.compare?
+      assert off.assigns.compare_run_ids == []
+      assert Enum.all?(off.assigns.rail.cells, &(&1.compared? == false))
+    end
+
+    test "adds and removes windows, ordered by the calendar rather than by click", %{
+      socket: socket
+    } do
+      compared = compare(socket, ["run-4", "run-2"])
+
+      assert compared.assigns.compare_run_ids == ["run-1", "run-2", "run-4"]
+
+      {:noreply, removed} =
+        RunDetailLive.handle_event("toggle_compare_window", %{"run_id" => "run-2"}, compared)
+
+      assert removed.assigns.compare_run_ids == ["run-1", "run-4"]
+      assert %{track: 2} = Enum.find(removed.assigns.rail.cells, &(&1.run_id == "run-4"))
+    end
+
+    test "refuses past the limit instead of quietly dropping the click", %{socket: socket} do
+      limit = RunWindowRail.compare_limit()
+      full = compare(socket, ["run-2", "run-3", "run-4"])
+
+      assert length(full.assigns.compare_run_ids) == limit
+      assert full.assigns.rail.compare_full?
+      refute full.assigns.compare_limit_reached?
+
+      {:noreply, refused} =
+        RunDetailLive.handle_event("toggle_compare_window", %{"run_id" => "run-5"}, full)
+
+      assert refused.assigns.compare_limit_reached?
+      assert refused.assigns.compare_run_ids == full.assigns.compare_run_ids
+
+      # Removing one clears the refusal and makes room again.
+      {:noreply, freed} =
+        RunDetailLive.handle_event("toggle_compare_window", %{"run_id" => "run-2"}, refused)
+
+      refute freed.assigns.compare_limit_reached?
+      assert length(freed.assigns.compare_run_ids) == limit - 1
+    end
+
+    test "the open run anchors its own comparison", %{socket: socket} do
+      compared = compare(socket, ["run-2"])
+
+      {:noreply, kept} =
+        RunDetailLive.handle_event("toggle_compare_window", %{"run_id" => "run-1"}, compared)
+
+      assert kept.assigns.compare_run_ids == ["run-1", "run-2"]
+    end
+
+    test "an unknown window is refused rather than compared", %{socket: socket} do
+      {:noreply, on} = RunDetailLive.handle_event("toggle_compare", %{}, socket)
+
+      {:noreply, refused} =
+        RunDetailLive.handle_event("toggle_compare_window", %{"run_id" => "run-elsewhere"}, on)
+
+      assert refused.assigns.flash["error"] == "That window run is not available"
+      assert refused.assigns.compare_run_ids == ["run-1"]
+    end
+
+    test "a cell click outside compare mode changes no selection", %{socket: socket} do
+      assert {:noreply, ^socket} =
+               RunDetailLive.handle_event("toggle_compare_window", %{"run_id" => "run-2"}, socket)
+    end
+
+    test "switching runs resets the comparison to the newly opened window", %{socket: socket} do
+      compared = compare(socket, ["run-2", "run-3"])
+
+      {:noreply, switched} =
+        RunDetailLive.handle_params(%{"run_id" => "run-4"}, "/runs/run-4", compared)
+
+      # The previous run's comparison must never render under the new run's URL.
+      assert switched.assigns.compare?
+      assert switched.assigns.compare_run_ids == ["run-4"]
+    end
+  end
+
+  describe "comparison reads" do
+    setup do
+      caller = self()
+
+      Application.put_env(:favn_view, :operator_run_windows_fun, fn _context, _run_id ->
+        {:ok, %{window_choices() | items: month_choices(6)}}
+      end)
+
+      Application.put_env(:favn_view, :run_unsubscribe_fun, fn _context, run_id ->
+        send(caller, {:unsubscribed, run_id})
+        :ok
+      end)
+
+      %{caller: caller}
+    end
+
+    test "reads the windows the selection added and never the open run", %{caller: caller} do
+      socket = mount_comparison(caller)
+      assert_receive {:flow_read, "run-1"}
+
+      compared = compare(socket, ["run-3", "run-5"])
+
+      assert_receive {:flow_read, "run-3"}
+      assert_receive {:flow_read, "run-5"}
+
+      # The open run's track comes from what the page already holds.
+      refute_receive {:flow_read, "run-1"}
+
+      assert Enum.map(Map.values(compared.assigns.compare_windows), & &1.state) == [
+               :loaded,
+               :loaded,
+               :loaded
+             ]
+
+      assert %{track: 1, selected?: true} = compared.assigns.compare_windows["run-1"]
+      assert %{track: 2, label: label} = compared.assigns.compare_windows["run-3"]
+
+      # The track names its own window, read from that window's own header.
+      assert label =~ "Mar"
+    end
+
+    test "a cycle re-reads only the windows whose events moved", %{caller: caller} do
+      socket = mount_comparison(caller)
+      compared = compare(socket, ["run-2", "run-3"])
+      flush()
+
+      {:noreply, evented} =
+        RunDetailLive.handle_info({:favn_run_event, %{run_id: "run-3", sequence: 9}}, compared)
+
+      assert evented.assigns.pending_run_event_sequences == %{"run-3" => 9}
+
+      {:noreply, refreshed} =
+        RunDetailLive.handle_info({:refresh_run, evented.assigns.refresh_timer_ref}, evented)
+
+      # The open run is always re-read; among the compared windows only the one
+      # with a pending sequence is.
+      assert_receive {:flow_read, "run-1"}
+      assert_receive {:flow_read, "run-3"}
+      refute_receive {:flow_read, "run-2"}
+
+      # The cycle consumed the pending sequences before marking itself done.
+      assert refreshed.assigns.pending_run_event_sequences == %{}
+      assert refreshed.assigns.run_event_sequences["run-3"] == 9
+    end
+
+    test "a burst over the coalesce interval is one cycle, not one per window", %{caller: caller} do
+      socket = mount_comparison(caller)
+      compared = compare(socket, ["run-2", "run-3"])
+      flush()
+
+      bursted =
+        Enum.reduce([{"run-2", 5}, {"run-3", 6}, {"run-2", 7}], compared, fn {run_id, seq}, acc ->
+          {:noreply, next} =
+            RunDetailLive.handle_info({:favn_run_event, %{run_id: run_id, sequence: seq}}, acc)
+
+          next
+        end)
+
+      # One coalesced timer for the whole burst, whatever it touched.
+      assert is_reference(bursted.assigns.refresh_timer_ref)
+      assert bursted.assigns.pending_run_event_sequences == %{"run-2" => 7, "run-3" => 6}
+      refute_receive {:flow_read, _run_id}
+
+      {:noreply, _refreshed} =
+        RunDetailLive.handle_info({:refresh_run, bursted.assigns.refresh_timer_ref}, bursted)
+
+      reads = drain_reads()
+      assert Enum.sort(reads) == ["run-1", "run-2", "run-3"]
+      assert length(reads) == length(Enum.uniq(reads))
+    end
+
+    test "one failed window is unavailable and the others still draw", %{caller: caller} do
+      socket = mount_comparison(caller, fn "run-3" -> {:error, :unavailable} end)
+      compared = compare(socket, ["run-3", "run-5"])
+
+      assert %{state: :unavailable, reason: :unavailable, assets: []} =
+               compared.assigns.compare_windows["run-3"]
+
+      assert %{state: :loaded} = compared.assigns.compare_windows["run-5"]
+      assert compared.assigns.compare?
+      refute compared.assigns.compare_error
+    end
+
+    test "a window that fails as it is added is unavailable, not a collapse", %{caller: caller} do
+      socket = mount_comparison(caller, fn "run-3" -> {:error, :unavailable} end)
+      compared = compare(socket, ["run-3"])
+
+      # Nothing was lost: the operator can retry it or pick another window.
+      assert compared.assigns.compare?
+      assert %{state: :unavailable} = compared.assigns.compare_windows["run-3"]
+      refute compared.assigns.compare_error
+    end
+
+    test "a comparison that loses every window falls back with a warning", %{caller: caller} do
+      failing = :counters.new(1, [])
+
+      socket =
+        mount_comparison(caller, fn
+          "run-1" ->
+            nil
+
+          run_id ->
+            if :counters.get(failing, 1) == 0,
+              do: {:ok, %{kind: :run, detail: window_flow(run_id, 3)}},
+              else: {:error, :unavailable}
+        end)
+
+      compared = compare(socket, ["run-3"])
+      assert %{state: :loaded} = compared.assigns.compare_windows["run-3"]
+
+      :counters.add(failing, 1, 1)
+
+      {:noreply, evented} =
+        RunDetailLive.handle_info({:favn_run_event, %{run_id: "run-3", sequence: 9}}, compared)
+
+      {:noreply, lost} =
+        RunDetailLive.handle_info({:refresh_run, evented.assigns.refresh_timer_ref}, evented)
+
+      refute lost.assigns.compare?
+      assert lost.assigns.compare_run_ids == []
+      assert lost.assigns.compare_windows == %{}
+      assert lost.assigns.compare_error =~ "No compared window could be read"
+
+      # The open run is untouched: the page is exactly the single-window view.
+      assert lost.assigns.run.found?
+      assert length(lost.assigns.run.assets) == 2
+    end
+
+    test "an unavailable window is tried again on the next cycle", %{caller: caller} do
+      failing = :counters.new(1, [])
+
+      socket =
+        mount_comparison(caller, fn "run-3" ->
+          if :counters.get(failing, 1) == 0 do
+            :counters.add(failing, 1, 1)
+            {:error, :unavailable}
+          else
+            {:ok, %{kind: :run, detail: window_flow("run-3", 3)}}
+          end
+        end)
+
+      compared = compare(socket, ["run-5", "run-3"])
+      assert %{state: :unavailable} = compared.assigns.compare_windows["run-3"]
+      flush()
+
+      {:noreply, retried} =
+        RunDetailLive.handle_info({:poll_run, compared.assigns.fallback_poll_ref}, compared)
+
+      assert_receive {:flow_read, "run-3"}
+      assert %{state: :loaded} = retried.assigns.compare_windows["run-3"]
+
+      # A loaded window is not re-read merely because a cycle ran.
+      refute_receive {:flow_read, "run-5"}
+    end
+
+    test "a read that never answers keeps the last good result and stays owed", %{caller: caller} do
+      Application.put_env(:favn_view, :compare_read_timeout_ms, 50)
+      hang = :counters.new(1, [])
+
+      socket =
+        mount_comparison(caller, fn
+          "run-3" ->
+            if :counters.get(hang, 1) == 1 do
+              Process.sleep(:infinity)
+            else
+              {:ok, %{kind: :run, detail: window_flow("run-3", 3)}}
+            end
+
+          _run_id ->
+            nil
+        end)
+
+      compared = compare(socket, ["run-3"])
+      assert %{state: :loaded, retry?: false} = compared.assigns.compare_windows["run-3"]
+
+      # The window's own event moves, and the read for it hangs past the bound.
+      :counters.add(hang, 1, 1)
+
+      {:noreply, evented} =
+        RunDetailLive.handle_info({:favn_run_event, %{run_id: "run-3", sequence: 9}}, compared)
+
+      {:noreply, timed_out} =
+        RunDetailLive.handle_info({:refresh_run, evented.assigns.refresh_timer_ref}, evented)
+
+      # The last good result still stands rather than the track blanking...
+      assert %{state: :loaded, retry?: true} = timed_out.assigns.compare_windows["run-3"]
+
+      # ...but marking the refresh done cleared the pending sequence that would
+      # otherwise have been the only reason to read it again, so the window is
+      # explicitly owed a read and the page keeps a cycle alive to make it.
+      assert timed_out.assigns.pending_run_event_sequences == %{}
+      assert is_reference(timed_out.assigns.fallback_poll_ref)
+      flush()
+
+      :counters.sub(hang, 1, 1)
+
+      {:noreply, recovered} =
+        RunDetailLive.handle_info({:poll_run, timed_out.assigns.fallback_poll_ref}, timed_out)
+
+      assert_receive {:flow_read, "run-3"}
+      assert %{state: :loaded, retry?: false} = recovered.assigns.compare_windows["run-3"]
+    end
+
+    test "a failed window read closes compare mode rather than trapping the operator", %{
+      caller: caller
+    } do
+      socket = mount_comparison(caller)
+      compared = compare(socket, ["run-3"])
+      assert compared.assigns.compare?
+
+      Application.put_env(:favn_view, :operator_run_windows_fun, fn _context, _run_id ->
+        {:error, :unavailable}
+      end)
+
+      # The window list is read at most once per fallback interval; clearing the
+      # last-read stamp is how this test reaches the next due read without
+      # waiting one out.
+      compared = put_in(compared.assigns.windows_read_at, nil)
+
+      {:noreply, failed} =
+        RunDetailLive.handle_info({:poll_run, compared.assigns.fallback_poll_ref}, compared)
+
+      assert failed.assigns.windows_error =~ "Window runs could not be loaded"
+      assert is_nil(failed.assigns.rail)
+
+      # The toggle that leaves compare mode lives on the rail, so compare mode
+      # cannot outlive it.
+      refute failed.assigns.compare?
+      assert failed.assigns.compare_windows == %{}
+      assert is_nil(failed.assigns.run.comparison)
+
+      # A read the page still owes keeps a cycle alive to make it.
+      assert is_reference(failed.assigns.fallback_poll_ref)
+    end
+
+    test "the comparison subscribes to its windows and releases them on exit", %{caller: caller} do
+      socket = mount_comparison(caller)
+      compared = compare(socket, ["run-3", "run-5"])
+
+      assert MapSet.equal?(
+               compared.assigns.run_event_subscriptions,
+               MapSet.new(["run-1", "run-3", "run-5"])
+             )
+
+      {:noreply, off} = RunDetailLive.handle_event("toggle_compare", %{}, compared)
+
+      assert_receive {:unsubscribed, "run-3"}
+      assert_receive {:unsubscribed, "run-5"}
+      refute_received {:unsubscribed, "run-1"}
+      assert MapSet.equal?(off.assigns.run_event_subscriptions, MapSet.new(["run-1"]))
+      assert off.assigns.compare_windows == %{}
+    end
+
+    test "the chart becomes a comparison only once a second window is there", %{caller: caller} do
+      socket = mount_comparison(caller)
+
+      {:noreply, alone} = RunDetailLive.handle_event("toggle_compare", %{}, socket)
+
+      # One window is not a comparison, so the single-run chart still stands.
+      assert is_nil(alone.assigns.run.comparison)
+      assert alone.assigns.run.chart
+
+      compared = compare(socket, ["run-3"])
+      comparison = compared.assigns.run.comparison
+
+      assert comparison.track_count == comparison.lane_count * 2
+
+      # Every lane carries both windows in the same order, which is what makes a
+      # track position mean one window across the whole chart.
+      tracks = Enum.flat_map(comparison.bands, fn band -> Enum.map(band.lanes, & &1.tracks) end)
+
+      assert tracks != []
+      assert Enum.all?(tracks, &(Enum.map(&1, fn track -> track.track end) == [1, 2]))
+      assert Enum.all?(tracks, &match?([%{run_id: "run-1"}, %{run_id: "run-3"}], &1))
+
+      # Leaving compare mode puts the single-run chart back.
+      {:noreply, off} = RunDetailLive.handle_event("toggle_compare", %{}, compared)
+      assert is_nil(off.assigns.run.comparison)
+    end
+
+    test "alignment is view state that issues no read", %{caller: caller} do
+      socket = mount_comparison(caller)
+      compared = compare(socket, ["run-2"])
+      flush()
+
+      assert compared.assigns.run.comparison.alignment == :window
+
+      {:noreply, wall_clock} =
+        RunDetailLive.handle_event("set_flow_alignment", %{"alignment" => "wall_clock"}, compared)
+
+      assert wall_clock.assigns.flow_alignment == :wall_clock
+      assert drain_reads() == []
+
+      assert {:noreply, ^wall_clock} =
+               RunDetailLive.handle_event(
+                 "set_flow_alignment",
+                 %{"alignment" => "nope"},
+                 wall_clock
+               )
+    end
+
+    test "a cycle issues at most one read per selected window", %{caller: caller} do
+      socket = mount_comparison(caller)
+      compared = compare(socket, ["run-2", "run-3", "run-4"])
+      flush()
+
+      {:noreply, _refreshed} =
+        RunDetailLive.handle_info({:poll_run, compared.assigns.fallback_poll_ref}, compared)
+
+      # Everything is loaded and nothing has pending events, so the cycle costs
+      # the open run's read alone.
+      assert drain_reads() == ["run-1"]
+      assert length(compared.assigns.compare_run_ids) == RunWindowRail.compare_limit()
+    end
+  end
+
+  defp mount_comparison(caller, overrides \\ fn _run_id -> nil end) do
+    Application.put_env(:favn_view, :operator_run_flow_fun, fn _context, run_id ->
+      send(caller, {:flow_read, run_id})
+      index = run_id |> String.split("-") |> List.last() |> String.to_integer()
+
+      case safe_override(overrides, run_id) do
+        nil -> {:ok, %{kind: :run, detail: window_flow(run_id, index)}}
+        result -> result
+      end
+    end)
+
+    {:ok, mounted} = RunDetailLive.mount(%{"run_id" => "run-1"}, %{}, connected_socket())
+    mounted
+  end
+
+  defp safe_override(overrides, run_id) do
+    overrides.(run_id)
+  rescue
+    FunctionClauseError -> nil
+  end
+
+  # A window run inside a backfill, carrying the window its cell names.
+  defp window_flow(run_id, index) do
+    detail = backfill_flow(run_id, :ok)
+    start_at = DateTime.add(~U[2026-01-01 00:00:00Z], (index - 1) * 31, :day)
+
+    %{
+      detail
+      | header: %{
+          detail.header
+          | window_start_at: start_at,
+            window_end_at: DateTime.add(start_at, 31, :day)
+        }
+    }
+  end
+
+  defp flush, do: drain_reads()
+
+  defp drain_reads(acc \\ []) do
+    receive do
+      {:flow_read, run_id} -> drain_reads([run_id | acc])
+    after
+      0 -> Enum.reverse(acc)
+    end
+  end
+
+  defp compare(socket, run_ids) do
+    {:noreply, on} = RunDetailLive.handle_event("toggle_compare", %{}, socket)
+
+    Enum.reduce(run_ids, on, fn run_id, acc ->
+      {:noreply, next} =
+        RunDetailLive.handle_event("toggle_compare_window", %{"run_id" => run_id}, acc)
+
+      next
+    end)
+  end
+
+  defp month_choices(count) do
+    Enum.map(1..count, fn index ->
+      start_at = DateTime.add(~U[2026-01-01 00:00:00Z], (index - 1) * 31, :day)
+
+      %RunWindowChoice{
+        run_id: "run-#{index}",
+        window_start_at: start_at,
+        window_end_at: DateTime.add(start_at, 31, :day),
+        status: :succeeded,
+        kind: :month,
+        timezone: "Etc/UTC"
+      }
+    end)
+  end
+
   defp flow(run_id, status) do
     %Flow{
       header: header(run_id, status),
@@ -549,17 +1583,17 @@ defmodule FavnView.RunDetailLiveTest do
           name: "Orders",
           asset_ref: "crm.orders",
           state: status,
-          detail?: true,
+          stage: 0,
           started_at: ~U[2026-08-23 10:00:00Z],
           finished_at: if(status == :running, do: nil, else: ~U[2026-08-23 10:00:04Z])
         },
         %Asset{
-          id: "planned-total",
+          id: "step-total",
           run_id: run_id,
           name: "Total",
           asset_ref: "crm.total",
-          state: :planned,
-          detail?: false,
+          state: :queued,
+          stage: 1,
           started_at: nil,
           finished_at: nil
         }
@@ -591,10 +1625,72 @@ defmodule FavnView.RunDetailLiveTest do
         skipped: 0,
         failed: 0,
         running: if(active?, do: 1, else: 0),
-        queued: 0,
-        planned: 1
+        queued: 1,
+        planned: 0
       }
     }
+  end
+
+  # A backfill whose windows all failed before a child run existed. The window
+  # read returns no choices, because there is no window run to navigate to, and
+  # the backfill id is the only route left to the reasons.
+  defp runless_choices(backfill_id) do
+    %RunWindowChoices{
+      overflow?: false,
+      items: [],
+      backfill_status: :failed,
+      backfill_id: backfill_id
+    }
+  end
+
+  defp failed_overview(failed) do
+    %{
+      status: :failed,
+      active?: false,
+      total_asset_attempts: 0,
+      completed_asset_attempts: 0,
+      succeeded_asset_attempts: 0,
+      skipped_asset_attempts: 0,
+      failed_asset_attempts: 0,
+      running_asset_attempts: 0,
+      queued_asset_attempts: 0,
+      planned_asset_attempts: 0,
+      summary_totals: %{
+        windows: %{
+          total: failed,
+          completed: failed,
+          succeeded: 0,
+          failed: failed,
+          running: 0,
+          queued: 0,
+          cancelled: 0
+        }
+      }
+    }
+  end
+
+  defp failed_window_page(count, reason) do
+    items =
+      for index <- 1..count//1 do
+        %BackfillWindow{
+          workspace_id: "workspace-one",
+          backfill_id: "bf-one",
+          window_id: "bfw-#{index}",
+          window_key: "day:Etc/UTC:2026-01-#{String.pad_leading("#{index}", 2, "0")}",
+          window_start: DateTime.new!(Date.new!(2026, 1, index), ~T[00:00:00], "Etc/UTC"),
+          window_end:
+            DateTime.new!(Date.add(Date.new!(2026, 1, index), 1), ~T[00:00:00], "Etc/UTC"),
+          status: :failed,
+          run_id: nil,
+          attempt_count: 1,
+          last_error: %{"reason" => ~s(%{"reason" => "#{reason}"})},
+          fencing_token: 1,
+          payload: %{},
+          version: 3
+        }
+      end
+
+    %{items: items, limit: 500, has_more?: false, next_cursor: nil}
   end
 
   defp connected_socket do

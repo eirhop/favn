@@ -56,15 +56,21 @@ defmodule FavnOrchestrator.OperatorRunView do
   end
 
   defmodule Asset do
-    @moduledoc "Lean Flow row. Full diagnostics are not present."
-    @enforce_keys [:id, :run_id, :name, :asset_ref, :state, :detail?]
-    defstruct @enforce_keys ++ [:started_at, :finished_at]
+    @moduledoc """
+    Lean Flow row for one asset attempt. Full diagnostics are not present.
+
+    `stage` is dependency depth as recorded for the attempt, not execution
+    order: two assets in the same stage may still run at different times. It is
+    `nil` for an attempt that predates stage persistence.
+    """
+    @enforce_keys [:id, :run_id, :name, :asset_ref, :state]
+    defstruct @enforce_keys ++ [:started_at, :finished_at, :stage]
 
     @type t :: %__MODULE__{}
   end
 
   defmodule Flow do
-    @moduledoc "One exact run's header and at most 1,000 lean assets."
+    @moduledoc "One exact run's header and at most 1,000 lean asset attempts."
     @enforce_keys [:header, :assets, :overflow?]
     defstruct @enforce_keys
 
@@ -90,7 +96,7 @@ defmodule FavnOrchestrator.OperatorRunView do
   @doc false
   @spec from_snapshot(RunFlowSnapshot.t()) :: Flow.t()
   def from_snapshot(%RunFlowSnapshot{} = snapshot) do
-    assets = merge_assets(snapshot.planned, snapshot.observed)
+    assets = public_assets(snapshot.observed)
 
     %Flow{
       header: public_header(snapshot.header),
@@ -267,37 +273,23 @@ defmodule FavnOrchestrator.OperatorRunView do
   defp submission_status_tone(status) when status in [:cancelled, :superseded], do: :warning
 
   @doc false
-  @spec merge_assets([RunFlowCandidate.t()], [RunFlowCandidate.t()]) :: [Asset.t()]
-  def merge_assets(planned, observed) do
-    (observed ++ planned)
+  @spec public_assets([RunFlowCandidate.t()]) :: [Asset.t()]
+  def public_assets(observed) do
+    observed
     |> Enum.map(&public_asset/1)
     |> Enum.sort_by(&{&1.asset_ref, &1.id})
   end
 
-  defp public_asset(%RunFlowCandidate{asset_step_id: asset_step_id} = candidate)
-       when is_binary(asset_step_id) do
+  defp public_asset(%RunFlowCandidate{} = candidate) do
     %Asset{
-      id: asset_step_id,
+      id: candidate.asset_step_id,
       run_id: candidate.run_id,
       name: display_name(candidate.asset_ref),
       asset_ref: candidate.asset_ref,
       state: candidate.status,
       started_at: candidate.started_at,
       finished_at: candidate.finished_at,
-      detail?: true
-    }
-  end
-
-  defp public_asset(%RunFlowCandidate{} = candidate) do
-    %Asset{
-      id: candidate.planned_id,
-      run_id: candidate.run_id,
-      name: display_name(candidate.asset_ref),
-      asset_ref: candidate.asset_ref,
-      state: :planned,
-      started_at: nil,
-      finished_at: nil,
-      detail?: false
+      stage: candidate.stage
     }
   end
 
