@@ -682,6 +682,7 @@ verification plan had asked for and slices 1 and 12 had not delivered.
 | Not planned: how the operator reaches a window from the backfill parent | The parent opens its earliest window on arrival | Operator review. The parent runs no asset work of its own — its own page says so — so landing on it always cost a click through an empty chart. Issued from `handle_params`, because a live patch during mount raises | Deliberately returning to the parent still shows the parent; only arrival redirects | Pending |
 | Not planned: `Surface.panel/1` header inset | The header keeps its inset at `padding={:none}` | Operator review found both of this page's panels flush against the card border. `:none` means the body owns its spacing, never that the title sits on the border, and every `padding={:none}` panel in the product had the same defect | An element fix, so `admin_page`, `account_security_page` and `schedule_detail_page` gain the inset too. All audited clean | Pending |
 | Part 1: the backfill parent explains that asset work runs in its window runs | It says so only when a window run exists to open | Operator review on a real failed backfill. Every one of its 31 windows failed before a child run existed, so the parent invited the operator to open a window run and the chart repeated the instruction, on a page that had nothing to open. `windows_to_open?/2` asks the rail, which is the only thing that can offer one, and treats a still-producing backfill as having something coming | Two states where there was one. A backfill whose windows all failed now names that instead of describing navigation it does not have | Pending |
+| Not planned: a flat rail labels a day cell by its day number alone | The rail's subtitle names the period its cells sit inside | Found while verifying on a reset database: three March windows read "1 2 3", and a flat rail has no band header to say which month. The short labels are right — repeating "Mar 1, 2026" into every cell is what the shortening exists to prevent — so the shared context is stated once | A banded rail is untouched: its band header already names the period, and saying it twice would be worse | Pending |
 | Not planned: nothing reads a window's recorded failure reason | A bounded ledger read behind the run page, and a panel that groups failed windows by reason | Operator review on a real failed backfill: "Where do I actually find the error of the run? I dont think any ui in the app actually show it?" — correct. The reason was written to the ledger and no operator surface called for it, so a backfill could report 31 failures and account for none of them | The largest addition beyond the approved plan, and the only one touching a persistence contract: `list_run_windows` returns `backfill_id`, `RunWindowChoices` carries it, and `favn_view` gains `WindowFailures` plus a panel. Folded in at the operator's explicit direction rather than deferred | Pending |
 | Not planned: `Data.outcome_meter/1` is unlabelled | The bar and each segment carry a `title` | Operator review: "it should be possible to hover the red line or the 31 windows text to see what windows it is. Right now this screen gives almost no information". The meter was the only thing on the page stating the failure and it was a band of colour with no accessible name | The meter gains `role="img"` and a name product-wide, so every progress bar that uses it becomes readable | Pending |
 
@@ -787,6 +788,13 @@ operator click through an empty chart to reach any real work.
 | `Surface.panel/1` header inset, product-wide | `admin_page` 99 pass, `account_security_page` 22, `schedule_detail_page` 220, `runs_list_page` 220, all 0 fail |
 | Backfill parent arrival | `/runs/run_api_30660…` patches to its earliest window run; the rail marks that cell current |
 | Rail cell hover | States the full window: `Jul 17, 2026 00:00:00 UTC – Jul 18, 2026 00:00:00 UTC · Succeeded` |
+| `window.favn.audit()` on the three `window_failures` examples | 66 pass / 0 fail (one reason), 22 / 0 (two reasons), 22 / 0 (unreadable ledger), dark and light |
+| Failure panel at 390×844 | 9 pass, 0 fail, no horizontal overflow |
+| Failure panel end to end | `/runs/run_beb3c53b…` named `invalid_backfill_pipeline_identity` across 31 windows, `Covering Jan 2026`, `No run was started` |
+| Flat-rail coverage, on a reset database | `Select a window run to open it. Covering Mar 1 00:00 – Mar 4 00:00, 2026.` above cells reading `1 2 3` |
+| `favn_view` after the addition | 750 passed (119 doctests, 631 tests), 0 failed |
+| `favn_orchestrator` | 738 passed, 0 failed |
+| `favn_storage_postgres` fast tier | 344 passed, 0 failed, with `FAVN_TEST_DATABASE_URL` on the bootstrap role |
 
 One defect the suite could not have caught was found by looking: the first
 attempt at opening a backfill parent's earliest window issued the patch from
@@ -843,6 +851,33 @@ already stored, so it is deliberately not attempted here.
 describe the same ledger and two cadences could show a count and a reason list
 that disagree. A failed ledger read keeps the fallback poll alive, so a page
 whose run and backfill are both terminal still has a cycle in which to retry.
+
+The panel was verified end to end against the real failed backfill that prompted
+it — 31 windows, `invalid_backfill_pipeline_identity`, no run — before the review
+database was reset.
+
+### Correction: the failing backfill was a stale schema, not a regression on main
+
+This record previously reported, from the same review, that every window of every
+pipeline backfill was failing at child submission on current `main`. That was
+wrong. The dev control-plane schema was reset and re-bootstrapped, and an
+identical `ScheduleProbe` day backfill completed with all three windows
+succeeded. Nothing in `BackfillDispatcher` was at fault.
+
+The mistake is worth recording because the evidence looked strong: the stored
+backfill metadata was correct, the same pipeline ran fine outside a backfill, and
+the failure reproduced for two unrelated pipelines. All of those reproductions
+were in the same dirty database, so they were one observation, not three. A
+workload failure that is total and uniform across unrelated targets should send
+you to the database before the dispatcher.
+
+Resetting also surfaced two local-environment facts, neither of them this change:
+the bootstrap policy rejects `favn_migrator` owning **any** database, because its
+`pg_shdepend` check includes shared objects (`dbid = 0`) while the `favn_control`
+exemption does not — so `favn_test` being migrator-owned blocks the bootstrap of
+`favn_dev`; and `FavnStoragePostgres.Bootstrap.WorkflowTest` needs
+`FAVN_TEST_DATABASE_URL` on the bootstrap role, since it creates roles per test
+and the container presets the correctly-NOCREATEROLE migrator.
 
 ## Final review
 
