@@ -4,6 +4,7 @@ defmodule FavnView.Components.RunDetailPage.WindowSemanticsTest do
   import Phoenix.LiveViewTest
 
   alias FavnView.Components.RunDetailPage
+  alias FavnView.Components.RunDetailPage.WindowRail
   alias FavnView.Dev.DesignSystem.Fixtures.Runs
   alias FavnView.RunWindowRail
 
@@ -215,6 +216,70 @@ defmodule FavnView.Components.RunDetailPage.WindowSemanticsTest do
     # single window and would narrow only one track of the comparison.
     refute html =~ ~s(data-testid="run-timeline")
     refute html =~ ~s(data-testid="run-flow-controls")
+  end
+
+  test "the rail is one surface whose cells light up inside it" do
+    run = Runs.single_window()
+
+    # Rendered alone, because the page also carries a mode rail built from the
+    # same element and counting both would say nothing about this one.
+    html =
+      render_component(&WindowRail.window_rail/1, rail: rail(compare_windows(run.id), run.id))
+
+    # A window run is a position on a calendar, so the calendar is the object on
+    # screen. Cells that each carried their own border and status fill read as
+    # three separate controls and drowned the one that was selected.
+    assert html =~ ~s(favn-surface-rail)
+    assert count(html, "favn-mode-item h-9") == 3
+    assert count(html, "favn-mode-item-active") == 1
+    refute html =~ "rounded-md border px-2 py-1 text-center"
+
+    # Status still shows, on a dot, so six statuses cannot fight the selected
+    # state for the same pixels.
+    assert count(html, ~s(class="status status-xs)) == 3
+  end
+
+  test "a compared window is numbered, and the number is what the chart repeats" do
+    run = Runs.single_window()
+
+    html =
+      render_page(Map.put(run, :comparison, Runs.comparison()),
+        rail: rail(compare_windows(run.id), run.id, compare_run_ids: [run.id, "run-later"]),
+        compare?: true
+      )
+
+    # The operator never has to carry an order back to the legend: every track
+    # row states its own number, so the rail, the legend and the chart share one
+    # vocabulary and none of them is a lookup table for the others.
+    heads = count(html, ~s(data-testid="run-comparison-track-head"))
+    compared = count(html, ~s(data-compared="true"))
+
+    assert heads == 3
+    assert compared == 2
+    assert count(html, ~s(class="favn-track-index")) == heads + compared
+    assert html =~ ~s(class="favn-comparison-index favn-text-subtle")
+
+    # "T1" named a track in a vocabulary the page never introduced.
+    refute html =~ "T1"
+  end
+
+  test "compare is offered only where the chart it draws exists" do
+    run = Runs.single_window()
+    html = render_page(run, rail: rail(compare_windows(run.id), run.id))
+
+    # Below `lg` the page shows the card list, so the toggle would enter a mode
+    # that changes nothing. A comparison already open says where its chart went
+    # rather than showing this window's rows as if they were the comparison.
+    assert html =~ ~s(hidden lg:inline-flex)
+
+    comparing =
+      render_page(Map.put(run, :comparison, Runs.comparison()),
+        rail: rail(compare_windows(run.id), run.id, compare_run_ids: [run.id, "run-later"]),
+        compare?: true
+      )
+
+    assert comparing =~ ~s(data-testid="run-comparison-narrow")
+    assert comparing =~ "needs a wider screen"
   end
 
   test "a failed window read is stated on the page, not just absent from it" do

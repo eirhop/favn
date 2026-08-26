@@ -80,12 +80,25 @@ defmodule FavnView.Components.RunDetailPage.Flow do
               {label}
             </button>
           </div>
-          <.count_badge count={length(@assets)} label="assets" />
+          <.badge tone={:neutral} variant={:outline}>{length(@assets)} assets</.badge>
         </:actions>
 
         <div :if={@comparison && @view == :chart} class="hidden lg:block">
           <Comparison.comparison chart={@comparison} />
         </div>
+
+        <%!-- A comparison is several charts side by side, which a phone has no
+        room for. Rather than quietly showing this window's own rows as if they
+        were the comparison, the narrow layout says where the chart went. --%>
+        <.notice
+          :if={@comparison}
+          tone={:info}
+          icon="hero-computer-desktop"
+          class="m-3 lg:hidden"
+          data-testid="run-comparison-narrow"
+        >
+          Comparing windows needs a wider screen. This window's assets are below.
+        </.notice>
 
         <div :if={is_nil(@comparison) && @chart && @view == :chart} class="hidden lg:block">
           <%!-- Both controls are view state. Neither issues a read: they narrow

@@ -16,6 +16,7 @@ defmodule FavnView.RunDetailLive do
   alias FavnView.RunEventRefresh
   alias FavnView.RunTimeline
   alias FavnView.RunWindowRail
+  alias FavnView.WindowLabel
 
   @fallback_refresh_ms 5_000
   @coalesce_refresh_ms 1_000
@@ -565,6 +566,7 @@ defmodule FavnView.RunDetailLive do
       track: track,
       state: :loaded,
       label: run[:window] || "This run",
+      title: run[:window_title],
       status: run[:status],
       assets: Map.get(run, :assets) || [],
       event_sequence: run |> run_event_sequences() |> Map.get(run_id),
@@ -606,6 +608,8 @@ defmodule FavnView.RunDetailLive do
       label:
         window_label(header.window_start_at, header.window_end_at, socket.assigns.current_scope) ||
           LogsViewModel.status_label(header.status),
+      title:
+        window_title(header.window_start_at, header.window_end_at, socket.assigns.current_scope),
       status: LogsViewModel.status_label(header.status),
       assets: Enum.map(assets, &Map.from_struct/1),
       event_sequence: header.event_sequence,
@@ -775,6 +779,8 @@ defmodule FavnView.RunDetailLive do
       target: header.target_label || "No target",
       trigger: label(header.trigger_type),
       window: window_label,
+      window_title:
+        window_title(header.window_start_at, header.window_end_at, socket.assigns.current_scope),
       started_at: timestamp_label(header.started_at, socket.assigns.current_scope),
       finished_at: timestamp_label(header.finished_at, socket.assigns.current_scope),
       elapsed_duration: LogsViewModel.duration_ms_label(duration_ms),
@@ -1197,11 +1203,14 @@ defmodule FavnView.RunDetailLive do
     }
   end
 
-  defp window_label(nil, nil, _timezone), do: nil
+  # A window that covers one whole calendar period is named by that period. The
+  # full bounds stay one hover away, because the compact form is a name and the
+  # range is the definition.
+  defp window_label(start_at, end_at, timezone),
+    do: WindowLabel.compact(start_at, end_at, timezone)
 
-  defp window_label(start_at, end_at, timezone) do
-    "#{timestamp_label(start_at, timezone)} – #{timestamp_label(end_at, timezone)}"
-  end
+  defp window_title(start_at, end_at, timezone),
+    do: WindowLabel.full(start_at, end_at, timezone)
 
   defp back_asset_href(target_id) when is_binary(target_id),
     do: "/assets/#{AssetRoute.to_param(target_id)}"

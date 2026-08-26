@@ -31,22 +31,23 @@ defmodule FavnView.Components.RunDetailPage.Comparison do
       data-alignment={@chart.alignment}
     >
       <div class="flex flex-wrap items-center justify-between gap-2">
+        <%!-- The number is the whole legend: it repeats on every track in every
+        lane, so a row identifies its own window without the operator carrying
+        an order in their head back to this line. --%>
         <div class="flex flex-wrap gap-1" data-testid="run-comparison-legend">
-          <span
+          <.badge
             :for={head <- @chart.tracks}
-            class={[
-              "inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-xs",
-              Tokens.border_class(head_tone(head)),
-              Tokens.text_class(head_tone(head))
-            ]}
+            tone={head_tone(head)}
+            variant={:outline}
             data-testid="run-comparison-track-head"
             data-track={head.track}
             data-state={head.state}
+            title={head.title || head.label}
           >
-            <span class="font-semibold tabular-nums">T{head.track}</span>
+            <span class="favn-track-index">{head.track}</span>
             {head.label || head.run_id}
-            <span :if={head.state != :loaded} class="opacity-70">{head_label(head)}</span>
-          </span>
+            <span :if={head.state != :loaded} class="favn-text-subtle">{head_label(head)}</span>
+          </.badge>
         </div>
 
         <.alignment_control chart={@chart} on_set_alignment={@on_set_alignment} />
@@ -54,13 +55,16 @@ defmodule FavnView.Components.RunDetailPage.Comparison do
 
       <div :if={@chart.axis} class="favn-timeline-axis" data-testid="run-comparison-axis">
         <span class="favn-timeline-label"></span>
-        <span class="favn-timeline-track">
-          <span
-            :for={tick <- @chart.axis.ticks}
-            class="favn-timeline-tick favn-text-subtle"
-            style={"left:#{tick.offset}%"}
-          >
-            {tick.label}
+        <span class="favn-comparison-row">
+          <span class="favn-comparison-index"></span>
+          <span class="favn-timeline-track">
+            <span
+              :for={tick <- @chart.axis.ticks}
+              class="favn-timeline-tick favn-text-subtle"
+              style={"left:#{tick.offset}%"}
+            >
+              {tick.label}
+            </span>
           </span>
         </span>
       </div>
@@ -72,8 +76,11 @@ defmodule FavnView.Components.RunDetailPage.Comparison do
         data-band={band.id}
       >
         <div class="favn-timeline-band-header">
-          <span class="favn-timeline-label truncate text-xs font-medium">{band.label}</span>
-          <span class="favn-timeline-track"></span>
+          <span class="favn-timeline-label truncate text-sm font-medium">{band.label}</span>
+          <span class="favn-comparison-row">
+            <span class="favn-comparison-index"></span>
+            <span class="favn-timeline-track"></span>
+          </span>
         </div>
 
         <.lane :for={lane <- band.lanes} lane={lane} density={@chart.density} />
@@ -87,7 +94,7 @@ defmodule FavnView.Components.RunDetailPage.Comparison do
 
   defp alignment_control(assigns) do
     ~H"""
-    <div class="flex items-center gap-2 text-xs">
+    <div class="flex items-center gap-2 text-sm">
       <span class="favn-text-subtle">Align</span>
 
       <div class="join" role="group" data-testid="run-comparison-alignment">
@@ -101,7 +108,7 @@ defmodule FavnView.Components.RunDetailPage.Comparison do
           data-testid="run-comparison-alignment-option"
           data-alignment={value}
           class={[
-            "btn btn-xs join-item",
+            "btn btn-sm join-item",
             @chart.alignment == value && "btn-active"
           ]}
         >
@@ -128,7 +135,7 @@ defmodule FavnView.Components.RunDetailPage.Comparison do
   defp lane(assigns) do
     ~H"""
     <div class="favn-comparison-lane" data-testid="run-comparison-lane" data-lane={@lane.id}>
-      <span :if={@density != :dense} class="favn-timeline-label truncate text-xs" title={@lane.name}>
+      <span :if={@density != :dense} class="favn-timeline-label truncate text-sm" title={@lane.name}>
         {@lane.name}
       </span>
 
@@ -139,31 +146,36 @@ defmodule FavnView.Components.RunDetailPage.Comparison do
         window's now, and it advances at the real-time rate its track sets. --%>
         <div
           :for={track <- @lane.tracks}
-          class="favn-timeline-track favn-comparison-track"
-          style={advance_style(track)}
+          class="favn-comparison-row"
           data-testid="run-comparison-track"
           data-track={track.track}
           data-presence={track.presence}
         >
-          <.link
-            :if={track.bar}
-            navigate={~p"/runs/#{track.run_id}/assets/#{track.attempt_id}"}
-            class={["favn-timeline-bar", Tokens.fill_class(tone(track.outcome))]}
-            style={bar_style(track.bar)}
-            data-testid="run-comparison-bar"
-            data-running={to_string(track.bar.running?)}
-            title={bar_title(@lane, track)}
-            aria-label={bar_title(@lane, track)}
-          ></.link>
-
-          <span
-            :if={is_nil(track.bar)}
-            class="favn-comparison-blank text-xs favn-text-subtle"
-            data-testid="run-comparison-blank"
-            title={blank_title(@lane, track)}
-          >
-            {presence_label(track.presence)}
+          <span class="favn-comparison-index favn-text-subtle" aria-hidden="true">
+            {track.track}
           </span>
+
+          <div class="favn-timeline-track favn-comparison-track" style={advance_style(track)}>
+            <.link
+              :if={track.bar}
+              navigate={~p"/runs/#{track.run_id}/assets/#{track.attempt_id}"}
+              class={["favn-timeline-bar", Tokens.fill_class(tone(track.outcome))]}
+              style={bar_style(track.bar)}
+              data-testid="run-comparison-bar"
+              data-running={to_string(track.bar.running?)}
+              title={bar_title(@lane, track)}
+              aria-label={bar_title(@lane, track)}
+            ></.link>
+
+            <span
+              :if={is_nil(track.bar)}
+              class="favn-comparison-blank text-sm favn-text-subtle"
+              data-testid="run-comparison-blank"
+              title={blank_title(@lane, track)}
+            >
+              {presence_label(track.presence)}
+            </span>
+          </div>
         </div>
       </div>
     </div>

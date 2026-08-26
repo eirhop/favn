@@ -61,6 +61,7 @@ defmodule FavnView.RunComparison do
           track: pos_integer(),
           run_id: String.t(),
           label: String.t() | nil,
+          title: String.t() | nil,
           state: :loaded | :loading | :unavailable,
           selected?: boolean(),
           reason: atom() | nil
@@ -364,6 +365,7 @@ defmodule FavnView.RunComparison do
       track: window.track,
       run_id: window.run_id,
       label: Map.get(window, :label),
+      title: Map.get(window, :title),
       state: window.state,
       selected?: Map.get(window, :selected?, false),
       reason: Map.get(window, :reason)

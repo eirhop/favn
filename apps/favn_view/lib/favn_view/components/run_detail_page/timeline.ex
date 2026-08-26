@@ -71,19 +71,19 @@ defmodule FavnView.Components.RunDetailPage.Timeline do
             phx-value-band={band.id}
             aria-expanded={to_string(!band.collapsed?)}
             data-testid="run-timeline-band-toggle"
-            class="favn-timeline-label truncate text-left text-xs font-medium link link-hover"
+            class="favn-timeline-label truncate text-left text-sm font-medium link link-hover"
           >
             {band.label}
           </button>
 
           <span
             :if={@chart.density != :dense}
-            class="favn-timeline-label truncate text-xs font-medium"
+            class="favn-timeline-label truncate text-sm font-medium"
           >
             {band.label}
           </span>
 
-          <span class="favn-timeline-track text-xs favn-text-subtle">
+          <span class="favn-timeline-track text-sm favn-text-subtle">
             {summary_label(band.summary)}
           </span>
         </div>
@@ -111,7 +111,7 @@ defmodule FavnView.Components.RunDetailPage.Timeline do
     <div class="favn-timeline-lane" data-testid="run-timeline-lane" data-state={@lane.state}>
       <span
         :if={@density != :dense}
-        class="favn-timeline-label truncate text-xs"
+        class="favn-timeline-label truncate text-sm"
         title={@lane.name}
       >
         {@lane.name}
@@ -133,7 +133,7 @@ defmodule FavnView.Components.RunDetailPage.Timeline do
 
         <span
           :if={is_nil(@lane.bar)}
-          class="favn-timeline-ghost text-xs favn-text-subtle"
+          class="favn-timeline-ghost text-sm favn-text-subtle"
           data-testid="run-timeline-ghost"
         >
           {LogsViewModel.status_label(@lane.state)}
@@ -149,7 +149,7 @@ defmodule FavnView.Components.RunDetailPage.Timeline do
   defp band_strip(assigns) do
     ~H"""
     <div class="favn-timeline-lane" data-testid="run-timeline-band-strip">
-      <span class="favn-timeline-label truncate text-xs favn-text-subtle">
+      <span class="favn-timeline-label truncate text-sm favn-text-subtle">
         {@band.summary.total} assets
       </span>
 

@@ -557,21 +557,73 @@ summary {
   .favn-comparison-lane {
     display: grid;
     grid-template-columns: var(--favn-timeline-label) 1fr;
-    align-items: start;
+    align-items: center;
     gap: 0.5rem;
-    padding-block: 0.125rem;
+    padding-block: 0.1875rem;
   }
 
+  /* Two rhythms, far enough apart to read as grouping rather than as an
+     accident: tracks of one asset are 2px apart, assets 8px. A 1px gap inside
+     and a 2px gap between made every lane boundary a guess. */
   .favn-comparison-tracks {
     display: flex;
     flex-direction: column;
-    gap: 1px;
+    gap: 2px;
+  }
+
+  /* One row per window: a narrow gutter carrying the window's number, then the
+     track. The axis and the band header repeat the same two columns with an
+     empty gutter, so a tick and a bar at the same instant still line up. */
+  .favn-comparison {
+    --favn-comparison-index: 1rem;
+  }
+
+  .favn-comparison[data-density="dense"] {
+    --favn-comparison-index: 0rem;
+  }
+
+  .favn-comparison-row {
+    display: grid;
+    grid-template-columns: var(--favn-comparison-index) 1fr;
+    align-items: center;
+    gap: 0.375rem;
+  }
+
+  /* The number is what makes a row name its own window, so it is text rather
+     than a colour: four hues stacked in a lane are unreadable to anyone who
+     cannot separate them, and status already owns colour in this chart. */
+  .favn-comparison-index {
+    font-size: 0.75rem;
+    line-height: 1;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    overflow: hidden;
+  }
+
+  .favn-comparison[data-density="dense"] .favn-comparison-index {
+    font-size: 0;
   }
 
   /* Tracks are thinner than lanes: several of them stack inside one lane's
      worth of vertical attention. */
   .favn-comparison-track {
     height: calc(var(--favn-timeline-lane) * 0.7);
+  }
+
+  /* The same number where it names a window rather than a row: in the legend,
+     and on a rail cell that is part of the comparison. */
+  .favn-track-index {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 1.125rem;
+    height: 1.125rem;
+    padding-inline: 0.25rem;
+    border-radius: var(--radius-selector);
+    border: var(--border) solid color-mix(in oklab, currentColor 45%, transparent);
+    font-size: 0.75rem;
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
   }
 
   /* An empty track says which kind of empty it is. Unavailable is the page's
@@ -586,7 +638,7 @@ summary {
     border: var(--border) dashed color-mix(in oklab, var(--color-base-content) 18%, transparent);
   }
 
-  .favn-comparison-track[data-presence="unavailable"] .favn-comparison-blank {
+  .favn-comparison-row[data-presence="unavailable"] .favn-comparison-blank {
     border-color: color-mix(in oklab, var(--color-error) 45%, transparent);
     border-style: solid;
   }

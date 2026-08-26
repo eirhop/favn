@@ -42,8 +42,12 @@ defmodule FavnView.Components.RunDetailPage.WindowRail do
           size={:sm}
           data-testid="window-rail-in-progress"
         />
-        <.count_badge count={length(@rail.cells)} label="shown" />
+        <.badge tone={:neutral} variant={:outline}>{length(@rail.cells)} shown</.badge>
+        <%!-- The comparison needs the chart, and the chart is a desktop reading:
+        below `lg` a phone shows the card list, so a compare toggle there would
+        be a control that changes nothing. --%>
         <.button
+          class="hidden lg:inline-flex"
           size={:sm}
           variant={if(@compare?, do: :secondary, else: :ghost)}
           icon="hero-square-2-stack"
@@ -58,9 +62,15 @@ defmodule FavnView.Components.RunDetailPage.WindowRail do
       <%!-- Keydown is scoped to the rail, not the window: arrow keys move between
       window runs only while focus is inside it. --%>
       <div class="flex flex-col gap-2 p-3" phx-keydown={@on_step}>
-        <div
+        <%!-- One continuous rail whose items light up inside it, not a row of
+        separate buttons: a window run is a position on a calendar, and the
+        calendar is the thing on screen. Status rides a dot rather than tinting
+        the whole cell, so six statuses cannot fight the selected state for the
+        operator's attention. --%>
+        <nav
           :if={@rail.layout == :banded}
-          class="flex flex-wrap gap-1"
+          class="favn-surface-rail flex w-fit max-w-full flex-wrap gap-0.5 rounded-box p-1"
+          aria-label="Window periods"
           data-testid="window-rail-buckets"
         >
           <button
@@ -71,20 +81,18 @@ defmodule FavnView.Components.RunDetailPage.WindowRail do
             aria-pressed={to_string(bucket.selected?)}
             data-testid="window-rail-bucket"
             class={[
-              "rounded-md border px-2 py-1 text-xs transition-colors",
-              "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
-              bucket.selected? && "border-primary/60 bg-primary/10 font-medium",
-              !bucket.selected? && "border-base-content/15 hover:bg-base-content/5"
+              "favn-mode-item h-9 gap-1.5 rounded-field px-2.5 text-sm font-medium",
+              "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
+              (bucket.selected? && "favn-mode-item-active") || "favn-text-muted"
             ]}
           >
             {bucket.label}
-            <span class="favn-text-subtle">{bucket.count}</span>
+            <.count_badge count={bucket.count} label="window runs" />
           </button>
-        </div>
+        </nav>
 
-        <div
-          class="flex flex-wrap gap-1"
-          role="group"
+        <nav
+          class="favn-surface-rail flex w-fit max-w-full flex-wrap gap-0.5 rounded-box p-1"
           aria-label={if(@compare?, do: "Windows to compare", else: "Window runs")}
         >
           <button
@@ -101,28 +109,28 @@ defmodule FavnView.Components.RunDetailPage.WindowRail do
             data-compared={@compare? && to_string(cell.compared?)}
             data-track={cell.track}
             class={[
-              "min-w-9 rounded-md border px-2 py-1 text-center text-xs tabular-nums transition-colors",
-              "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
-              Tokens.border_class(tone(cell.status)),
-              Tokens.surface_class(tone(cell.status)),
-              Tokens.text_class(tone(cell.status)),
-              cell.selected? && "ring-2 ring-primary ring-offset-1 ring-offset-base-100 font-semibold",
-              @compare? && cell.compared? && "outline-2 outline-offset-1 outline-primary"
+              "favn-mode-item h-9 gap-1.5 rounded-field px-2.5 text-sm font-medium tabular-nums",
+              "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
+              (highlighted?(cell, @compare?) && "favn-mode-item-active") || "favn-text-muted"
             ]}
           >
+            <span
+              class={["status status-xs", Tokens.dot_class(tone(cell.status))]}
+              aria-hidden="true"
+            ></span>
             {cell.label}
-            <span :if={cell.window_count > 1} class="ml-1 opacity-70">
+            <span :if={cell.window_count > 1} class="favn-text-subtle">
               +{cell.window_count - 1}
             </span>
-            <span :if={@compare? && cell.compared?} class="ml-1 font-semibold" aria-hidden="true">
-              T{cell.track}
+            <span :if={@compare? && cell.compared?} class="favn-track-index" aria-hidden="true">
+              {cell.track}
             </span>
           </button>
-        </div>
+        </nav>
 
         <p
           :if={@compare? && @limit_reached?}
-          class={["text-xs", Tokens.text_class(:warning)]}
+          class={["text-sm", Tokens.text_class(:warning)]}
           data-testid="window-rail-compare-limit"
         >
           A comparison holds at most {RunWindowRail.compare_limit()} windows. Remove one to add
@@ -131,7 +139,7 @@ defmodule FavnView.Components.RunDetailPage.WindowRail do
 
         <p
           :if={@rail.truncated?}
-          class="text-xs favn-text-subtle"
+          class="text-sm favn-text-subtle"
           data-testid="window-rail-truncated"
         >
           Showing the latest {@rail.loaded_count} window runs; older windows exist.
@@ -141,8 +149,7 @@ defmodule FavnView.Components.RunDetailPage.WindowRail do
     """
   end
 
-  defp subtitle(_rail, true),
-    do: "Pick windows to compare; arrow keys still move between them."
+  defp subtitle(_rail, true), do: "Pick the windows to compare."
 
   defp subtitle(%RunWindowRail{in_progress?: true}, _compare?),
     do: "The backfill is still creating window runs."
@@ -151,6 +158,12 @@ defmodule FavnView.Components.RunDetailPage.WindowRail do
     do: "Pick a period, then a window run."
 
   defp subtitle(_rail, _compare?), do: "Select a window run to open it."
+
+  # Out of compare mode the lit cell is the open window. In it, every compared
+  # window is lit: the open one is one of them, and singling it out would say
+  # that one of the tracks on screen is more selected than the others.
+  defp highlighted?(cell, true), do: cell.compared?
+  defp highlighted?(cell, _compare?), do: cell.selected?
 
   # The open run is always part of its own comparison, so its cell says why it
   # cannot be removed rather than looking like a control that failed.
