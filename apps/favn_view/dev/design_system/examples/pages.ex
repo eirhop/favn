@@ -716,6 +716,20 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
           "Two hundred hourly windows bucket by day, with the open day expanded."
         ),
         Example.attrs(
+          :combined_window,
+          %{
+            run:
+              Map.put(Runs.backfill(:running), :combined_window, %{
+                label: "Feb 1 00:00 – Feb 1 06:00, 2026",
+                window_count: 6
+              }),
+            run_id: "run_window_combined",
+            nav_items: Runs.nav_items(),
+            rail: Runs.rail(:combined)
+          },
+          "Six coverage windows in one run: no rail to navigate, the span in the header instead."
+        ),
+        Example.attrs(
           :compare_windows,
           %{
             run: Map.put(Runs.backfill(:running), :comparison, Runs.comparison()),

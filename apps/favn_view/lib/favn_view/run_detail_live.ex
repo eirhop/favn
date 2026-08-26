@@ -75,6 +75,10 @@ defmodule FavnView.RunDetailLive do
         compare_windows: %{},
         compare_limit_reached?: false,
         compare_error: nil,
+        # A backfill parent opens its earliest window once, on arrival. Set here
+        # rather than derived, so navigating deliberately back to the parent
+        # later in the same session shows the parent instead of bouncing.
+        window_opened?: false,
         cancel_attempt: nil,
         retry_attempt: nil,
         nav_items: AssetCataloguePage.nav_items(:runs)
@@ -109,7 +113,7 @@ defmodule FavnView.RunDetailLive do
         {:noreply, socket |> assign(:active_mode, active_mode) |> refresh_run()}
 
       true ->
-        {:noreply, assign(socket, :active_mode, active_mode)}
+        {:noreply, socket |> assign(:active_mode, active_mode) |> open_first_window()}
     end
   end
 
@@ -1111,10 +1115,56 @@ defmodule FavnView.RunDetailLive do
         compare_run_ids: socket.assigns[:compare_run_ids] || []
       )
 
-    assign(socket, :rail, rail)
+    socket
+    |> assign(:rail, rail)
+    |> assign_combined_window(rail)
   end
 
   defp build_rail(socket), do: assign(socket, :rail, nil)
+
+  # A combined backfill has no rail to state its coverage, so the run header
+  # carries the span instead. It is named once, here, rather than derived in the
+  # markup from a rail the markup is not rendering.
+  defp assign_combined_window(socket, %RunWindowRail{combined: %{} = combined}) do
+    label =
+      window_label(combined.start_at, combined.end_at, socket.assigns.current_scope) ||
+        window_title(combined.start_at, combined.end_at, socket.assigns.current_scope)
+
+    assign(
+      socket,
+      :run,
+      Map.put(socket.assigns.run, :combined_window, %{
+        label: label,
+        window_count: combined.window_count
+      })
+    )
+  end
+
+  defp assign_combined_window(socket, _rail), do: socket
+
+  # A backfill parent runs no asset work of its own — its page says so and offers
+  # its windows — so landing on it and finding nothing drawn is a step the
+  # operator always has to take. It opens its earliest window instead.
+  #
+  # Called from `handle_params`, never from the rail build: a live patch issued
+  # while mounting raises, and the rail is built inside the mount's first read.
+  # Only on arrival, too — a later refresh must not drag the page off a window
+  # that was chosen, and neither must coming back to the parent deliberately.
+  defp open_first_window(%{assigns: %{run: %{backfill_parent?: true}, rail: rail}} = socket)
+       when not is_nil(rail) do
+    case {socket.assigns[:window_opened?], rail.cells} do
+      {true, _cells} ->
+        socket
+
+      {_first_arrival, []} ->
+        socket
+
+      {_first_arrival, [%{run_id: run_id} | _rest]} ->
+        socket |> assign(:window_opened?, true) |> patch_to_window(run_id)
+    end
+  end
+
+  defp open_first_window(socket), do: socket
 
   # Track order is the windows' own calendar order rather than the order the
   # operator clicked them, so a track position means the same thing in every

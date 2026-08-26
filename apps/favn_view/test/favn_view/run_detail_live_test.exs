@@ -504,6 +504,64 @@ defmodule FavnView.RunDetailLiveTest do
     assert refreshed.assigns.run.active?
   end
 
+  test "a backfill parent opens its earliest window, once" do
+    Application.put_env(:favn_view, :operator_run_windows_fun, fn _context, _run_id ->
+      {:ok, window_choices()}
+    end)
+
+    Application.put_env(:favn_view, :operator_run_flow_fun, fn _context, run_id ->
+      parent_header = %{
+        header(run_id, :ok)
+        | submit_kind: :backfill_asset,
+          trigger_type: :backfill
+      }
+
+      {:ok, %{kind: :run, detail: %Flow{header: parent_header, assets: [], overflow?: false}}}
+    end)
+
+    Application.put_env(:favn_view, :operator_execution_group_fun, fn _context, _run_id, _opts ->
+      {:error, :unavailable}
+    end)
+
+    assert {:ok, mounted} =
+             RunDetailLive.mount(%{"run_id" => "run-parent"}, %{}, connected_socket())
+
+    # LiveView raises on a live patch issued while mounting, and the rail is
+    # built inside the mount's first read, so the mount itself must not redirect.
+    assert is_nil(mounted.redirected)
+
+    # The parent runs no asset work of its own, so landing on it and finding
+    # nothing drawn is a click the operator always has to make.
+    assert {:noreply, patched} =
+             RunDetailLive.handle_params(
+               %{"run_id" => "run-parent"},
+               "http://localhost/runs/run-parent",
+               mounted
+             )
+
+    assert {:live, :patch, %{to: to}} = patched.redirected
+    assert to =~ "/runs/run-one"
+
+    # Only on arrival. A later refresh must not drag the page back off a window
+    # the operator chose, and neither must coming back to the parent on purpose.
+    # LiveView clears `redirected` between messages, so the test does too.
+    settled = %{patched | redirected: nil}
+
+    {:noreply, refreshed} =
+      RunDetailLive.handle_info({:poll_run, settled.assigns.fallback_poll_ref}, settled)
+
+    assert is_nil(refreshed.redirected)
+
+    assert {:noreply, again} =
+             RunDetailLive.handle_params(
+               %{"run_id" => "run-parent"},
+               "http://localhost/runs/run-parent",
+               settled
+             )
+
+    assert is_nil(again.redirected)
+  end
+
   test "a transient group read failure keeps the last truthful parent progress" do
     {:ok, reads} = Agent.start_link(fn -> 0 end)
 
@@ -1181,8 +1239,14 @@ defmodule FavnView.RunDetailLiveTest do
       comparison = compared.assigns.run.comparison
 
       assert comparison.track_count == comparison.lane_count * 2
-      assert Enum.map(comparison.tracks, & &1.track) == [1, 2]
-      assert [%{selected?: true}, %{selected?: false}] = comparison.tracks
+
+      # Every lane carries both windows in the same order, which is what makes a
+      # track position mean one window across the whole chart.
+      tracks = Enum.flat_map(comparison.bands, fn band -> Enum.map(band.lanes, & &1.tracks) end)
+
+      assert tracks != []
+      assert Enum.all?(tracks, &(Enum.map(&1, fn track -> track.track end) == [1, 2]))
+      assert Enum.all?(tracks, &match?([%{run_id: "run-1"}, %{run_id: "run-3"}], &1))
 
       # Leaving compare mode puts the single-run chart back.
       {:noreply, off} = RunDetailLive.handle_event("toggle_compare", %{}, compared)

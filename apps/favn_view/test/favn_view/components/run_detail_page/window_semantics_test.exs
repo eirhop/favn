@@ -210,7 +210,7 @@ defmodule FavnView.Components.RunDetailPage.WindowSemanticsTest do
       )
 
     assert html =~ ~s(data-testid="run-comparison")
-    assert html =~ ~s(data-testid="run-comparison-track-head")
+    assert html =~ ~s(data-testid="run-comparison-track")
 
     # One chart at a time: the single-run timeline and its filters belong to a
     # single window and would narrow only one track of the comparison.
@@ -248,19 +248,53 @@ defmodule FavnView.Components.RunDetailPage.WindowSemanticsTest do
         compare?: true
       )
 
-    # The operator never has to carry an order back to the legend: every track
-    # row states its own number, so the rail, the legend and the chart share one
-    # vocabulary and none of them is a lookup table for the others.
-    heads = count(html, ~s(data-testid="run-comparison-track-head"))
-    compared = count(html, ~s(data-compared="true"))
-
-    assert heads == 3
-    assert compared == 2
-    assert count(html, ~s(class="favn-track-index")) == heads + compared
+    # The rail is the only list of compared windows: it numbers the two it
+    # picked, and the chart repeats those numbers on every track row. A second
+    # copy of the list inside the chart said nothing the rail did not.
+    assert count(html, ~s(data-compared="true")) == 2
+    assert count(html, ~s(class="favn-track-index")) == 2
+    refute html =~ ~s(data-testid="run-comparison-legend")
     assert html =~ ~s(class="favn-comparison-index favn-text-subtle")
 
     # "T1" named a track in a vocabulary the page never introduced.
     refute html =~ "T1"
+  end
+
+  test "a combined run states its span in its header instead of offering a rail" do
+    run = Runs.single_window()
+
+    combined =
+      Enum.map(0..4, fn index ->
+        window("run-combined", DateTime.add(~U[2026-07-10 00:00:00Z], index, :day))
+      end)
+
+    rail = rail(combined, "run-combined", backfill_status: :completed)
+
+    html =
+      render_page(
+        Map.put(run, :combined_window, %{
+          label: "Jul 10 00:00 – Jul 15 00:00, 2026",
+          window_count: 5
+        }),
+        rail: rail
+      )
+
+    # One run covering five windows has one place to navigate to, and it is this
+    # page. A rail of one cell is not a calendar, so the span is a property of
+    # the run and sits with the run's other properties.
+    refute html =~ ~s(data-testid="window-rail")
+    assert html =~ "Combined window"
+    assert html =~ "Jul 10 00:00 – Jul 15 00:00, 2026 · 5 windows"
+  end
+
+  test "a panel's title keeps its inset even when its body owns the spacing" do
+    run = Runs.single_window()
+    html = render_page(run, rail: rail(compare_windows(run.id), run.id))
+
+    # `padding={:none}` says the body owns its spacing — a chart that wants the
+    # width, a table with its own cells. It never meant the heading should sit
+    # on the card's border.
+    assert html =~ ~s(px-5 pt-5 sm:px-6 sm:pt-6)
   end
 
   test "compare is offered only where the chart it draws exists" do

@@ -13,6 +13,11 @@ defmodule FavnView.RunComparison do
   A window whose read failed draws unavailable tracks for every lane, so a gap
   never reads as "that window skipped this asset".
 
+  The chart carries no legend of its own. The rail that picked the windows lists
+  them with the same track numbers, and every track names its own window in its
+  title, so a second copy of that list would only repeat what is already on
+  screen.
+
   Alignment defaults to each window's own start, which is what makes two runs of
   the same pipeline comparable. Wall-clock alignment shares one real timeline
   and is offered only when the windows ran closely enough together for that
@@ -57,20 +62,9 @@ defmodule FavnView.RunComparison do
 
   @type band :: %{id: String.t(), stage: term(), label: String.t(), lanes: [lane()]}
 
-  @type head :: %{
-          track: pos_integer(),
-          run_id: String.t(),
-          label: String.t() | nil,
-          title: String.t() | nil,
-          state: :loaded | :loading | :unavailable,
-          selected?: boolean(),
-          reason: atom() | nil
-        }
-
   @type t :: %__MODULE__{
           axis: RunTimeline.axis() | nil,
           bands: [band()],
-          tracks: [head()],
           alignment: alignment(),
           wall_clock?: boolean(),
           span_ratio: float() | nil,
@@ -82,7 +76,6 @@ defmodule FavnView.RunComparison do
   @enforce_keys [
     :axis,
     :bands,
-    :tracks,
     :alignment,
     :wall_clock?,
     :span_ratio,
@@ -123,7 +116,6 @@ defmodule FavnView.RunComparison do
     %__MODULE__{
       axis: axis,
       bands: bands(lanes),
-      tracks: Enum.map(prepared, &head/1),
       alignment: alignment,
       wall_clock?: wall_clock?,
       span_ratio: span_ratio,
@@ -358,18 +350,6 @@ defmodule FavnView.RunComparison do
       |> RunTimeline.band()
       |> Map.put(:lanes, Enum.sort_by(band_lanes, & &1.name))
     end)
-  end
-
-  defp head(window) do
-    %{
-      track: window.track,
-      run_id: window.run_id,
-      label: Map.get(window, :label),
-      title: Map.get(window, :title),
-      state: window.state,
-      selected?: Map.get(window, :selected?, false),
-      reason: Map.get(window, :reason)
-    }
   end
 
   defp rows(window), do: Map.get(window, :assets) || []

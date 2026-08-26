@@ -91,7 +91,12 @@ defmodule FavnView.RunComparisonTest do
       assert [%{presence: :drawn}, %{presence: :unavailable, bar: nil}] =
                track_list(chart, "orders")
 
-      assert [_first, %{state: :unavailable, reason: :unavailable}] = chart.tracks
+      # The unreadable window still occupies its track in every lane, so its
+      # position never shifts and the other window's bars are not misread as
+      # belonging to it.
+      assert Enum.all?(chart.bands, fn band ->
+               Enum.all?(band.lanes, &match?([_first, %{presence: :unavailable}], &1.tracks))
+             end)
     end
 
     test "a window still loading says so on every lane" do

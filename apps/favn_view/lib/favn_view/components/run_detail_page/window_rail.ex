@@ -20,6 +20,7 @@ defmodule FavnView.Components.RunDetailPage.WindowRail do
 
   alias FavnView.RunWindowRail
   alias FavnView.UI.Tokens
+  alias FavnView.WindowLabel
 
   attr :rail, RunWindowRail, required: true
   attr :compare?, :boolean, default: false
@@ -32,7 +33,7 @@ defmodule FavnView.Components.RunDetailPage.WindowRail do
 
   def window_rail(assigns) do
     ~H"""
-    <.panel :if={@rail.cells != [] or @rail.buckets != []} padding={:none} data-testid="window-rail">
+    <.panel :if={show?(@rail)} padding={:sm} data-testid="window-rail">
       <:header title="Window runs" subtitle={subtitle(@rail, @compare?)} />
       <:actions>
         <.status_badge
@@ -61,7 +62,7 @@ defmodule FavnView.Components.RunDetailPage.WindowRail do
 
       <%!-- Keydown is scoped to the rail, not the window: arrow keys move between
       window runs only while focus is inside it. --%>
-      <div class="flex flex-col gap-2 p-3" phx-keydown={@on_step}>
+      <div class="flex flex-col gap-2" phx-keydown={@on_step}>
         <%!-- One continuous rail whose items light up inside it, not a row of
         separate buttons: a window run is a position on a calendar, and the
         calendar is the thing on screen. Status rides a dot rather than tinting
@@ -149,6 +150,12 @@ defmodule FavnView.Components.RunDetailPage.WindowRail do
     """
   end
 
+  # A combined backfill runs every window it covers as one run, so the rail
+  # would offer one cell leading to the page the operator is already on. The
+  # coverage span is stated in the run's own header instead.
+  defp show?(%RunWindowRail{combined: combined}) when not is_nil(combined), do: false
+  defp show?(%RunWindowRail{cells: cells, buckets: buckets}), do: cells != [] or buckets != []
+
   defp subtitle(_rail, true), do: "Pick the windows to compare."
 
   defp subtitle(%RunWindowRail{in_progress?: true}, _compare?),
@@ -177,10 +184,16 @@ defmodule FavnView.Components.RunDetailPage.WindowRail do
 
   defp cell_title(cell, _compare?), do: window_title(cell)
 
+  # A cell is labelled by its calendar position — often a bare day number — so
+  # the tooltip is where the window it covers is actually stated.
   defp window_title(%{window_count: count} = cell) when count > 1,
-    do: "#{cell.label} · #{status_label(cell.status)} · #{count} windows in one run"
+    do: "#{window_span(cell)} · #{status_label(cell.status)} · #{count} windows in one run"
 
-  defp window_title(cell), do: "#{cell.label} · #{status_label(cell.status)}"
+  defp window_title(cell), do: "#{window_span(cell)} · #{status_label(cell.status)}"
+
+  defp window_span(cell) do
+    WindowLabel.full(cell.start_at, cell.end_at, cell.timezone || "Etc/UTC") || cell.label
+  end
 
   # Window run statuses are not run statuses. `ready` means waiting to start
   # rather than finished well, so the shared token mapping is not used here.

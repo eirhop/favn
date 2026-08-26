@@ -201,11 +201,14 @@ defmodule FavnView.Components.RunDetailPage do
   end
 
   defp run_facts(%{found?: true} = run) do
+    # A combined backfill has no window rail to state its coverage, because it
+    # runs every window it covers as one run. The span is a property of the run,
+    # so it belongs beside the run's other properties.
     [
       %{label: "Started", value: run.started_at},
       %{label: "Duration", value: run.elapsed_duration},
       %{label: "Trigger", value: run.trigger}
-    ]
+    ] ++ combined_window_fact(run)
   end
 
   defp run_facts(%{submission?: true} = run) do
@@ -217,6 +220,11 @@ defmodule FavnView.Components.RunDetailPage do
   end
 
   defp run_facts(_run), do: []
+
+  defp combined_window_fact(%{combined_window: %{label: label, window_count: count}}),
+    do: [%{label: "Combined window", value: "#{label} · #{count} windows"}]
+
+  defp combined_window_fact(_run), do: []
   defp page_title(%{found?: true, title: title}, _run_id), do: title
   defp page_title(_run, run_id), do: "Run #{short_id(run_id)}"
   defp page_subtitle(%{found?: true, subtitle: subtitle}), do: subtitle

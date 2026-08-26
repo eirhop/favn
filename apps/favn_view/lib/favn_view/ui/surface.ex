@@ -24,6 +24,9 @@ defmodule FavnView.UI.Surface do
   | Step | Mobile | `sm` and up | Use it for |
   | --- | --- | --- | --- |
   | `:none` | none | none | a panel whose child owns its spacing: a scroll region, a table, sectioned content |
+
+  `:none` applies to the body. A header slot keeps its inset at every step, because
+  a title on the card's border is not a layout a page ever wants.
   | `:sm` | 16px | 16px | a compact panel nested inside another container |
   | `:md` | 20px | 24px | the default, and most panels |
   | `:lg` | 24px | 32px | the largest panel on a screen, and centred empty and error states |
@@ -73,13 +76,19 @@ defmodule FavnView.UI.Surface do
   slot :inner_block, required: true
 
   def panel(assigns) do
-    assigns = assign(assigns, :padding_class, Map.fetch!(@paddings, assigns.padding))
+    assigns =
+      assigns
+      |> assign(:padding_class, Map.fetch!(@paddings, assigns.padding))
+      |> assign(:header_padding_class, header_padding_class(assigns.padding))
 
     ~H"""
     <section id={@id} class={["favn-surface-panel rounded-box", @padding_class, @class]} {@rest}>
       <div
         :if={@header != [] || @actions != []}
-        class="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between"
+        class={[
+          "mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between",
+          @header_padding_class
+        ]}
       >
         <div :for={header <- @header} class="flex min-w-0 items-start gap-3">
           <span
@@ -207,6 +216,12 @@ defmodule FavnView.UI.Surface do
     </div>
     """
   end
+
+  # `:none` says the panel's *body* owns its spacing — a scroll region, a table,
+  # a chart that wants the width. It never meant the title should sit on the
+  # card's border, which is what every `:none` panel with a header did.
+  defp header_padding_class(:none), do: "px-5 pt-5 sm:px-6 sm:pt-6"
+  defp header_padding_class(_padding), do: nil
 
   defp link?(rest), do: Enum.any?([:href, :navigate, :patch], &Map.has_key?(rest, &1))
 

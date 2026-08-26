@@ -30,26 +30,11 @@ defmodule FavnView.Components.RunDetailPage.Comparison do
       data-density={@chart.density}
       data-alignment={@chart.alignment}
     >
-      <div class="flex flex-wrap items-center justify-between gap-2">
-        <%!-- The number is the whole legend: it repeats on every track in every
-        lane, so a row identifies its own window without the operator carrying
-        an order in their head back to this line. --%>
-        <div class="flex flex-wrap gap-1" data-testid="run-comparison-legend">
-          <.badge
-            :for={head <- @chart.tracks}
-            tone={head_tone(head)}
-            variant={:outline}
-            data-testid="run-comparison-track-head"
-            data-track={head.track}
-            data-state={head.state}
-            title={head.title || head.label}
-          >
-            <span class="favn-track-index">{head.track}</span>
-            {head.label || head.run_id}
-            <span :if={head.state != :loaded} class="favn-text-subtle">{head_label(head)}</span>
-          </.badge>
-        </div>
-
+      <%!-- No legend: the rail above already lists the compared windows with
+      these numbers on them, and a second copy of the same list said nothing the
+      operator could not see. The number on every track row is what ties a row
+      to its window. --%>
+      <div class="flex flex-wrap items-center justify-end gap-2">
         <.alignment_control chart={@chart} on_set_alignment={@on_set_alignment} />
       </div>
 
@@ -218,15 +203,6 @@ defmodule FavnView.Components.RunDetailPage.Comparison do
   defp presence_label(:unavailable), do: "Unavailable"
   defp presence_label(:loading), do: "Loading"
   defp presence_label(_presence), do: ""
-
-  defp head_label(%{state: :unavailable}), do: "unavailable"
-  defp head_label(%{state: :loading}), do: "loading"
-  defp head_label(_head), do: nil
-
-  defp head_tone(%{state: :unavailable}), do: :error
-  defp head_tone(%{state: :loading}), do: :neutral
-  defp head_tone(%{selected?: true}), do: :info
-  defp head_tone(_head), do: :neutral
 
   defp tone(:succeeded), do: :success
   defp tone(:failed), do: :error

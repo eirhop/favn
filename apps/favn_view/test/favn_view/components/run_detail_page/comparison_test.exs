@@ -8,17 +8,24 @@ defmodule FavnView.Components.RunDetailPage.ComparisonTest do
 
   @start ~U[2026-08-25 10:00:00Z]
 
-  test "draws one track per window in the fixed order the legend states" do
+  test "draws one track per window, each row naming its own window" do
     html = draw(windows())
 
     assert html =~ ~s(data-testid="run-comparison")
-    assert count(html, ~s(data-testid="run-comparison-track-head")) == 2
     assert count(html, ~s(data-testid="run-comparison-lane")) == 2
 
     # Two windows and two lanes: four tracks, whatever each window planned.
     assert count(html, ~s(data-testid="run-comparison-track")) == 4
     assert html =~ ~s(data-track="1")
     assert html =~ ~s(data-track="2")
+
+    # No legend of its own: the rail that picked the windows already lists them
+    # against these numbers, so every row carries its number and its window is
+    # one hover away.
+    refute html =~ ~s(data-testid="run-comparison-legend")
+    assert count(html, ~s(class="favn-comparison-index favn-text-subtle")) == 4
+    assert count(html, ~s(title="orders · Window 1 · Succeeded")) == 1
+    assert count(html, ~s(title="orders · Window 2 · Succeeded")) == 1
   end
 
   test "a bar links to the attempt in its own window's run" do
@@ -39,7 +46,7 @@ defmodule FavnView.Components.RunDetailPage.ComparisonTest do
     assert html =~ "This window did not plan this asset"
   end
 
-  test "an unreadable window is named as unavailable in its head and its tracks" do
+  test "an unreadable window is named as unavailable on every track it owns" do
     html =
       draw([
         window(1, "run-a", [row("orders", started: 0, finished: 10)]),
@@ -56,7 +63,10 @@ defmodule FavnView.Components.RunDetailPage.ComparisonTest do
 
     assert html =~ ~s(data-presence="unavailable")
     assert html =~ "This window could not be read"
-    assert html =~ ~s(data-state="unavailable")
+
+    # The window is named on the track rather than only in a legend, so the
+    # failure says which window failed wherever the operator is looking.
+    assert html =~ ~s(title="orders · Aug 2 · This window could not be read")
   end
 
   test "offers both alignments and disables wall clock when it would show nothing" do

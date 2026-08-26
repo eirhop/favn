@@ -124,9 +124,11 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.Runs do
 
   `layout` picks `:flat`, the strip of one cell per window run, or `:banded`,
   the coarse period band plus the selected period's cells. `:compare` is the
-  flat rail with three of its windows chosen for comparison.
+  flat rail with three of its windows chosen for comparison. `:combined` is the
+  rail that stands down: six coverage windows executed as one run, so there is
+  nothing to navigate between.
   """
-  @spec rail(:flat | :banded | :compare) :: RunWindowRail.t()
+  @spec rail(:flat | :banded | :compare | :combined) :: RunWindowRail.t()
   def rail(layout \\ :flat)
 
   def rail(:banded) do
@@ -144,6 +146,13 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.Runs do
 
   def rail(:flat) do
     RunWindowRail.build(window_choices(8), "run_window_4", "Etc/UTC", backfill_status: :completed)
+  end
+
+  def rail(:combined) do
+    combined =
+      Enum.map(window_choices(6), &%{&1 | run_id: "run_window_combined"})
+
+    RunWindowRail.build(combined, "run_window_combined", "Etc/UTC", backfill_status: :completed)
   end
 
   @doc """

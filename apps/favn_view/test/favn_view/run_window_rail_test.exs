@@ -195,6 +195,47 @@ defmodule FavnView.RunWindowRailTest do
       assert cell.start_at == oslo_month(0)
       assert DateTime.compare(cell.end_at, oslo_month(3)) == :gt
       assert cell.label == "Jan"
+
+      # One cell is one place to navigate to, and it is the page the operator is
+      # already on, so there is no calendar to move through — only a span to
+      # state. The rail reports it and stands down.
+      assert rail.combined == %{
+               start_at: cell.start_at,
+               end_at: cell.end_at,
+               window_count: 4
+             }
+    end
+
+    test "case 3: a combined run still growing keeps its rail" do
+      combined =
+        Enum.map(0..1, fn index ->
+          %{choice("run-combined", :month, oslo_month(index)) | timezone: "Europe/Oslo"}
+        end)
+
+      # A running backfill may yet create another run, and the rail is the only
+      # thing that says the set is still growing.
+      running = RunWindowRail.build(combined, "run-combined", @zone, backfill_status: :running)
+      assert running.combined == nil
+      assert running.in_progress?
+
+      done = RunWindowRail.build(combined, "run-combined", @zone, backfill_status: :completed)
+      assert done.combined
+    end
+
+    test "separate runs are a calendar, so the rail never stands down" do
+      choices = [
+        choice("run-a", :month, ~U[2026-01-01 00:00:00Z]),
+        choice("run-b", :month, ~U[2026-02-01 00:00:00Z])
+      ]
+
+      assert RunWindowRail.build(choices, "run-a", @zone).combined == nil
+    end
+
+    test "one plain window is one window, not a combined span" do
+      rail =
+        RunWindowRail.build([choice("run-a", :day, ~U[2026-08-01 00:00:00Z])], "run-a", @zone)
+
+      assert rail.combined == nil
     end
 
     test "case 3: a combined run mixed with separate runs keeps both readable" do

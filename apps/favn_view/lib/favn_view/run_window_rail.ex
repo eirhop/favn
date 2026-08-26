@@ -54,6 +54,12 @@ defmodule FavnView.RunWindowRail do
           selected?: boolean()
         }
 
+  @type combined :: %{
+          start_at: DateTime.t(),
+          end_at: DateTime.t(),
+          window_count: pos_integer()
+        }
+
   @type t :: %__MODULE__{
           layout: :flat | :banded,
           cells: [cell()],
@@ -63,7 +69,8 @@ defmodule FavnView.RunWindowRail do
           in_progress?: boolean(),
           loaded_count: non_neg_integer(),
           compare_run_ids: [String.t()],
-          compare_full?: boolean()
+          compare_full?: boolean(),
+          combined: combined() | nil
         }
 
   @enforce_keys [
@@ -74,7 +81,8 @@ defmodule FavnView.RunWindowRail do
     :in_progress?,
     :loaded_count,
     :compare_run_ids,
-    :compare_full?
+    :compare_full?,
+    :combined
   ]
   defstruct @enforce_keys ++ [:open_bucket]
 
@@ -117,7 +125,8 @@ defmodule FavnView.RunWindowRail do
       # read returned a day's worth.
       loaded_count: length(cells),
       compare_run_ids: compare_run_ids,
-      compare_full?: length(compare_run_ids) >= @compare_limit
+      compare_full?: length(compare_run_ids) >= @compare_limit,
+      combined: combined(cells, Keyword.get(opts, :backfill_status))
     }
     |> band(kind, timezone)
   end
@@ -139,6 +148,23 @@ defmodule FavnView.RunWindowRail do
 
   defp layout(cells) when length(cells) > @flat_threshold, do: :banded
   defp layout(_cells), do: :flat
+
+  # A combined backfill executes every window it covers in one run, so the whole
+  # rail is one cell: one place to navigate to, which is the place the operator
+  # already is. There is no calendar to move through, only a coverage span to
+  # state, so the rail reports the span and the page says it in one line instead.
+  #
+  # While the backfill is still producing there may yet be another run, so the
+  # rail stays: it is the only thing that says the set is still growing.
+  defp combined([%{window_count: count} = cell], status) when count > 1 do
+    if in_progress?(status) do
+      nil
+    else
+      %{start_at: cell.start_at, end_at: cell.end_at, window_count: count}
+    end
+  end
+
+  defp combined(_cells, _status), do: nil
 
   defp band(%__MODULE__{layout: :flat} = rail, _kind, _timezone), do: rail
 

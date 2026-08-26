@@ -54,7 +54,7 @@ defmodule FavnView.Components.RunDetailPage.Flow do
       />
 
       <.panel :if={@assets != []} padding={:none}>
-        <:header title="Assets" subtitle="Only data shown in this list is loaded." />
+        <:header title="Assets" />
         <:actions>
           <div
             :if={@chart}
