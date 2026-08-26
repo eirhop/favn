@@ -17,6 +17,7 @@ defmodule FavnView.Components.RunDetailPage do
   alias FavnView.Components.RunDetailPage.Progress
   alias FavnView.Components.RunDetailPage.Submission
   alias FavnView.Components.RunDetailPage.WindowRail
+  alias FavnView.RunWindowRail
 
   attr :run, :map, required: true
   attr :run_id, :string, required: true
@@ -123,14 +124,27 @@ defmodule FavnView.Components.RunDetailPage do
         compare?={@compare?}
         limit_reached?={@compare_limit_reached?}
       />
+      <%!-- Telling the operator to open a window run when the backfill produced
+      none is the page lying about what it offers. A backfill whose windows all
+      failed before a run existed has nothing to open, and that is the single
+      most useful thing this screen can say. --%>
       <.notice
-        :if={@run[:backfill_parent?]}
+        :if={@run[:backfill_parent?] && windows_to_open?(@run, @rail)}
         tone={:info}
         icon="hero-calendar-days"
         data-testid="backfill-parent-explanation"
       >
         This is the backfill parent run. Asset work is executed by its window runs. Open a
         window run to inspect its assets and results.
+      </.notice>
+
+      <.notice
+        :if={@run[:backfill_parent?] && !windows_to_open?(@run, @rail)}
+        tone={no_run_tone(@run)}
+        icon="hero-exclamation-triangle"
+        data-testid="backfill-parent-no-window-runs"
+      >
+        {no_window_runs_message(@run)}
       </.notice>
 
       <.notice :if={@run[:group_error]} tone={:warning} icon="hero-arrow-path">
@@ -179,6 +193,7 @@ defmodule FavnView.Components.RunDetailPage do
           filter={@flow_filter}
           sort={@flow_sort}
           backfill_parent?={@run[:backfill_parent?] || false}
+          windows_to_open?={windows_to_open?(@run, @rail)}
         />
         <Events.events_panel :if={@active_mode == :events} run={@run} />
       </div>
@@ -225,6 +240,50 @@ defmodule FavnView.Components.RunDetailPage do
     do: [%{label: "Combined window", value: "#{label} · #{count} windows"}]
 
   defp combined_window_fact(_run), do: []
+
+  # The rail is the only thing that can offer a window run, so it decides
+  # whether there is anything to open. A backfill still creating windows has
+  # something coming and is not reported as having produced nothing.
+  defp windows_to_open?(run, rail) do
+    cond do
+      match?(%RunWindowRail{cells: [_ | _]}, rail) -> true
+      match?(%RunWindowRail{combined: %{}}, rail) -> true
+      match?(%RunWindowRail{in_progress?: true}, rail) -> true
+      (run[:total_windows] || 0) == 0 -> true
+      run[:active?] -> true
+      true -> false
+    end
+  end
+
+  defp no_run_tone(run) do
+    if (run[:failed_windows] || 0) > 0, do: :error, else: :warning
+  end
+
+  # Says how many windows the backfill planned, because that count is the only
+  # description of the covered range this page holds once no window run exists
+  # to name its own window. It does not send the operator to the per-window
+  # failure reason: that reason is stored, but no operator surface reads it yet,
+  # and pointing at a place the product does not have is worse than silence.
+  defp no_window_runs_message(run) do
+    total = run[:total_windows] || 0
+    failed = run[:failed_windows] || 0
+
+    cond do
+      failed >= total and total > 0 ->
+        "None of the #{total} #{plural(total, "window")} produced a run: every one failed " <>
+          "before a run started, so there is nothing to open."
+
+      total > 0 ->
+        "This backfill planned #{total} #{plural(total, "window")} and none of them has a run " <>
+          "yet, so there is nothing to open."
+
+      true ->
+        "This backfill produced no window runs."
+    end
+  end
+
+  defp plural(1, word), do: word
+  defp plural(_count, word), do: word <> "s"
   defp page_title(%{found?: true, title: title}, _run_id), do: title
   defp page_title(_run, run_id), do: "Run #{short_id(run_id)}"
   defp page_subtitle(%{found?: true, subtitle: subtitle}), do: subtitle

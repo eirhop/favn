@@ -128,12 +128,78 @@ defmodule FavnView.Components.RunDetailPage.WindowSemanticsTest do
         planned_asset_attempts: 0
       })
 
-    html = render_page(run)
+    # Three windows that produced runs, so the rail can offer them and the
+    # explanation is the true thing to say.
+    children = [
+      window("run-child-one", ~U[2026-07-01 00:00:00Z]),
+      window("run-child-two", ~U[2026-07-02 00:00:00Z]),
+      window("run-child-three", ~U[2026-07-03 00:00:00Z])
+    ]
+
+    html = render_page(run, rail: rail(children, run.id))
 
     assert html =~ ~s(data-testid="backfill-parent-explanation")
     assert html =~ ~s(data-testid="window-progress")
     assert html =~ "Asset work runs in the windows"
     refute html =~ "No asset work yet"
+    refute html =~ ~s(data-testid="backfill-parent-no-window-runs")
+  end
+
+  test "a backfill parent whose windows produced no run says so instead of offering one" do
+    # Every window failed before a run existed, so there is nothing to open. The
+    # page used to instruct the operator to open a window run anyway, with an
+    # empty rail and an empty chart under it.
+    run =
+      Runs.single_window()
+      |> Map.merge(%{
+        backfill_parent?: true,
+        window: nil,
+        assets: [],
+        active?: false,
+        total_windows: 31,
+        completed_windows: 0,
+        failed_windows: 31
+      })
+
+    html = render_page(run, rail: nil)
+
+    assert html =~ ~s(data-testid="backfill-parent-no-window-runs")
+    assert html =~ "None of the 31 windows produced a run"
+    refute html =~ ~s(data-testid="backfill-parent-explanation")
+
+    # The chart's empty state said the same thing a second time, in the largest
+    # type on the screen.
+    assert html =~ ~s(data-testid="backfill-parent-no-work")
+    refute html =~ "Open a window run to inspect"
+  end
+
+  test "a backfill still creating windows is not reported as having produced none" do
+    run =
+      Runs.single_window()
+      |> Map.merge(%{backfill_parent?: true, window: nil, assets: [], active?: true})
+
+    html = render_page(run, rail: nil)
+
+    assert html =~ ~s(data-testid="backfill-parent-explanation")
+    refute html =~ ~s(data-testid="backfill-parent-no-window-runs")
+  end
+
+  test "the progress meter names what it counts under the pointer" do
+    run =
+      Runs.single_window()
+      |> Map.merge(%{
+        backfill_parent?: true,
+        window: nil,
+        assets: [],
+        total_windows: 31,
+        failed_windows: 31
+      })
+
+    html = render_page(run, rail: nil)
+
+    # A bar that is entirely one tone is exactly where the legend below it is
+    # least likely to be the thing the pointer is on.
+    assert html =~ ~s(title="31 failed")
   end
 
   test "a backfill parent's rail offers its children with none of them current" do

@@ -33,6 +33,10 @@ defmodule FavnView.Components.RunDetailPage.Flow do
   attr :on_set_sort, :string, default: "set_flow_sort"
   attr :backfill_parent?, :boolean, default: false
 
+  attr :windows_to_open?, :boolean,
+    default: true,
+    doc: "false when a backfill parent has no window run to navigate to"
+
   @outcomes [succeeded: "Succeeded", failed: "Failed", running: "Running", waiting: "Waiting"]
   @sorts [start: "Start", name: "Name"]
 
@@ -47,10 +51,21 @@ defmodule FavnView.Components.RunDetailPage.Flow do
       />
 
       <.empty_state
-        :if={@assets == [] && @backfill_parent?}
+        :if={@assets == [] && @backfill_parent? && @windows_to_open?}
         icon="hero-calendar-days"
         title="Asset work runs in the windows"
         description="Open a window run to inspect its exact assets and results."
+      />
+
+      <%!-- The notice above this panel already says why there is nothing to
+      open. Repeating the instruction here would make the page say it twice and
+      be wrong both times. --%>
+      <.empty_state
+        :if={@assets == [] && @backfill_parent? && !@windows_to_open?}
+        icon="hero-exclamation-triangle"
+        title="No asset work ran"
+        description="This backfill produced no window run, so no asset was attempted."
+        data-testid="backfill-parent-no-work"
       />
 
       <.panel :if={@assets != []} padding={:none}>
