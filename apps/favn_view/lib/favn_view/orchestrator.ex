@@ -48,6 +48,7 @@ defmodule FavnView.Orchestrator do
     page_execution_groups: 2,
     page_operator_actors: 2,
     page_operator_audit: 2,
+    page_operator_backfill_windows: 3,
     page_operator_rebuild_items: 3,
     page_operator_rebuilds: 2,
     page_operator_sessions: 2,

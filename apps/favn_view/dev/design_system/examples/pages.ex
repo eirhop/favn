@@ -730,6 +730,37 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
           "Six coverage windows in one run: no rail to navigate, the span in the header instead."
         ),
         Example.attrs(
+          :window_failures,
+          %{
+            run: Runs.runless_backfill(),
+            run_id: "run_backfill_runless",
+            nav_items: Runs.nav_items(),
+            window_failures: Runs.window_failures(:single)
+          },
+          "Every window failed before a run existed: the reason is the only reading left."
+        ),
+        Example.attrs(
+          :window_failures_mixed,
+          %{
+            run: Runs.runless_backfill(22),
+            run_id: "run_backfill_partly_failed",
+            nav_items: Runs.nav_items(),
+            rail: Runs.rail(:flat),
+            window_failures: Runs.window_failures(:mixed)
+          },
+          "Two causes, one of which did reach runs, so the deeper reading is linked."
+        ),
+        Example.attrs(
+          :window_failures_unreadable,
+          %{
+            run: Runs.runless_backfill(31),
+            run_id: "run_backfill_runless",
+            nav_items: Runs.nav_items(),
+            window_failures_error: "Why these windows failed could not be loaded."
+          },
+          "The ledger read failed, which is said rather than implied by an empty panel."
+        ),
+        Example.attrs(
           :compare_windows,
           %{
             run: Map.put(Runs.backfill(:running), :comparison, Runs.comparison()),

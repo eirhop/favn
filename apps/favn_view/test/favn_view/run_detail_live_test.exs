@@ -6,6 +6,7 @@ defmodule FavnView.RunDetailLiveTest do
   alias FavnOrchestrator.OperatorRunView.Asset
   alias FavnOrchestrator.OperatorRunView.Flow
   alias FavnOrchestrator.OperatorRunView.Header
+  alias FavnOrchestrator.Persistence.Results.BackfillWindow
   alias FavnOrchestrator.Persistence.Results.RunWindowChoice
   alias FavnOrchestrator.Persistence.Results.RunWindowChoices
   alias FavnView.Auth.Scope
@@ -17,6 +18,7 @@ defmodule FavnView.RunDetailLiveTest do
       :operator_run_flow_fun,
       :operator_run_events_fun,
       :operator_run_windows_fun,
+      :operator_backfill_windows_fun,
       :operator_execution_group_fun,
       :run_subscribe_fun,
       :run_unsubscribe_fun,
@@ -772,6 +774,148 @@ defmodule FavnView.RunDetailLiveTest do
     }
   end
 
+  describe "why a backfill's windows failed" do
+    setup do
+      Application.put_env(:favn_view, :operator_run_flow_fun, fn _context, run_id ->
+        parent_header = %{
+          header(run_id, :error)
+          | submit_kind: :backfill_pipeline,
+            trigger_type: :backfill
+        }
+
+        {:ok, %{kind: :run, detail: %Flow{header: parent_header, assets: [], overflow?: false}}}
+      end)
+
+      Application.put_env(:favn_view, :operator_execution_group_fun, fn _, _, _ ->
+        {:ok, %{overview: failed_overview(31)}}
+      end)
+
+      :ok
+    end
+
+    test "reads the ledger for a parent whose windows failed, and groups by reason" do
+      caller = self()
+
+      Application.put_env(:favn_view, :operator_run_windows_fun, fn _context, _run_id ->
+        {:ok, runless_choices("bf-one")}
+      end)
+
+      Application.put_env(:favn_view, :operator_backfill_windows_fun, fn _context,
+                                                                         backfill_id,
+                                                                         opts ->
+        send(caller, {:ledger_read, backfill_id, Keyword.get(opts, :status)})
+        {:ok, failed_window_page(31, "invalid_backfill_pipeline_identity")}
+      end)
+
+      assert {:ok, mounted} =
+               RunDetailLive.mount(%{"run_id" => "run-parent"}, %{}, connected_socket())
+
+      assert_receive {:ledger_read, "bf-one", :failed}
+
+      # Thirty-one windows failing for one cause is one fact, not thirty-one.
+      assert [group] = mounted.assigns.window_failures
+      assert group.reason == "invalid_backfill_pipeline_identity"
+      assert group.window_count == 31
+      assert group.run_count == 0
+      refute mounted.assigns.window_failures_overflow?
+      assert is_nil(mounted.assigns.window_failures_error)
+    end
+
+    test "does not read the ledger when no window failed" do
+      caller = self()
+
+      Application.put_env(:favn_view, :operator_execution_group_fun, fn _, _, _ ->
+        {:ok, %{overview: failed_overview(0)}}
+      end)
+
+      Application.put_env(:favn_view, :operator_run_windows_fun, fn _context, _run_id ->
+        {:ok, runless_choices("bf-one")}
+      end)
+
+      Application.put_env(:favn_view, :operator_backfill_windows_fun, fn _, _, _ ->
+        send(caller, :unexpected_ledger_read)
+        {:ok, failed_window_page(0, "never")}
+      end)
+
+      assert {:ok, mounted} =
+               RunDetailLive.mount(%{"run_id" => "run-parent"}, %{}, connected_socket())
+
+      refute_receive :unexpected_ledger_read
+      assert is_nil(mounted.assigns.window_failures)
+    end
+
+    test "does not read the ledger when the window read yielded no backfill id" do
+      caller = self()
+
+      Application.put_env(:favn_view, :operator_run_windows_fun, fn _context, _run_id ->
+        {:ok, %RunWindowChoices{overflow?: false, items: [], backfill_status: :failed}}
+      end)
+
+      Application.put_env(:favn_view, :operator_backfill_windows_fun, fn _, _, _ ->
+        send(caller, :unexpected_ledger_read)
+        {:ok, failed_window_page(1, "never")}
+      end)
+
+      assert {:ok, mounted} =
+               RunDetailLive.mount(%{"run_id" => "run-parent"}, %{}, connected_socket())
+
+      refute_receive :unexpected_ledger_read
+      assert is_nil(mounted.assigns.window_failures)
+    end
+
+    test "a failed ledger read states what is missing and keeps polling for it" do
+      Application.put_env(:favn_view, :operator_run_windows_fun, fn _context, _run_id ->
+        {:ok, runless_choices("bf-one")}
+      end)
+
+      Application.put_env(:favn_view, :operator_backfill_windows_fun, fn _, _, _ ->
+        {:error, :temporarily_unavailable}
+      end)
+
+      assert {:ok, mounted} =
+               RunDetailLive.mount(%{"run_id" => "run-parent"}, %{}, connected_socket())
+
+      assert is_nil(mounted.assigns.window_failures)
+      assert mounted.assigns.window_failures_error =~ "could not be loaded"
+
+      # The run and the backfill are both terminal, so without the owed read this
+      # page would have no cycle left in which to try again.
+      assert is_reference(mounted.assigns.fallback_poll_ref)
+    end
+
+    test "a ledger read that recovers replaces the warning with the reasons" do
+      {:ok, reads} = Agent.start_link(fn -> 0 end)
+
+      Application.put_env(:favn_view, :operator_run_windows_fun, fn _context, _run_id ->
+        {:ok, runless_choices("bf-one")}
+      end)
+
+      Application.put_env(:favn_view, :operator_backfill_windows_fun, fn _, _, _ ->
+        case Agent.get_and_update(reads, fn count -> {count, count + 1} end) do
+          0 -> {:error, :temporarily_unavailable}
+          _later -> {:ok, failed_window_page(2, "no_runner_available")}
+        end
+      end)
+
+      assert {:ok, mounted} =
+               RunDetailLive.mount(%{"run_id" => "run-parent"}, %{}, connected_socket())
+
+      assert mounted.assigns.window_failures_error
+
+      # The ledger read rides the window read's cadence, so the retry happens on
+      # the first poll after the fallback interval rather than on the next event.
+      aged = put_in(mounted.assigns.windows_read_at, mounted.assigns.windows_read_at - 60_000)
+
+      {:noreply, refreshed} =
+        RunDetailLive.handle_info({:poll_run, aged.assigns.fallback_poll_ref}, aged)
+
+      assert is_nil(refreshed.assigns.window_failures_error)
+
+      assert [%{reason: "no_runner_available", window_count: 2}] =
+               refreshed.assigns.window_failures
+    end
+  end
+
   describe "flow reading controls" do
     setup do
       Application.put_env(:favn_view, :operator_run_flow_fun, fn _context, run_id ->
@@ -1418,6 +1562,68 @@ defmodule FavnView.RunDetailLiveTest do
         planned: 0
       }
     }
+  end
+
+  # A backfill whose windows all failed before a child run existed. The window
+  # read returns no choices, because there is no window run to navigate to, and
+  # the backfill id is the only route left to the reasons.
+  defp runless_choices(backfill_id) do
+    %RunWindowChoices{
+      overflow?: false,
+      items: [],
+      backfill_status: :failed,
+      backfill_id: backfill_id
+    }
+  end
+
+  defp failed_overview(failed) do
+    %{
+      status: :failed,
+      active?: false,
+      total_asset_attempts: 0,
+      completed_asset_attempts: 0,
+      succeeded_asset_attempts: 0,
+      skipped_asset_attempts: 0,
+      failed_asset_attempts: 0,
+      running_asset_attempts: 0,
+      queued_asset_attempts: 0,
+      planned_asset_attempts: 0,
+      summary_totals: %{
+        windows: %{
+          total: failed,
+          completed: failed,
+          succeeded: 0,
+          failed: failed,
+          running: 0,
+          queued: 0,
+          cancelled: 0
+        }
+      }
+    }
+  end
+
+  defp failed_window_page(count, reason) do
+    items =
+      for index <- 1..count//1 do
+        %BackfillWindow{
+          workspace_id: "workspace-one",
+          backfill_id: "bf-one",
+          window_id: "bfw-#{index}",
+          window_key: "day:Etc/UTC:2026-01-#{String.pad_leading("#{index}", 2, "0")}",
+          window_start: DateTime.new!(Date.new!(2026, 1, index), ~T[00:00:00], "Etc/UTC"),
+          window_end:
+            DateTime.new!(Date.add(Date.new!(2026, 1, index), 1), ~T[00:00:00], "Etc/UTC"),
+          status: :failed,
+          run_id: nil,
+          attempt_count: 1,
+          last_error: %{"reason" => ~s(%{"reason" => "#{reason}"})},
+          fencing_token: 1,
+          payload: %{},
+          version: 3
+        }
+      end
+
+    %{items: items, limit: 500, has_more?: false, next_cursor: nil}
   end
 
   defp connected_socket do

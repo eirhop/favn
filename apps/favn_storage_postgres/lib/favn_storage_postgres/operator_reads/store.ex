@@ -330,7 +330,8 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
                  window_run.window_end,
                  window_run.status,
                  window_run.window_key,
-                 backfill.status
+                 backfill.status,
+                 backfill.backfill_id
           FROM selected
           LEFT JOIN favn_control.backfills AS backfill
             ON backfill.workspace_id = $1
@@ -360,7 +361,8 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
            %RunWindowChoices{
              items: window_rows |> Enum.take(query.limit) |> Enum.map(&run_window_choice/1),
              overflow?: length(window_rows) > query.limit,
-             backfill_status: first_backfill_status(rows)
+             backfill_status: first_backfill_status(rows),
+             backfill_id: first_backfill_id(rows)
            }}
       end
     end
@@ -1605,7 +1607,15 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
     {observed, length(rows) > limit}
   end
 
-  defp run_window_choice([run_id, window_start_at, window_end_at, status, window_key, _backfill]) do
+  defp run_window_choice([
+         run_id,
+         window_start_at,
+         window_end_at,
+         status,
+         window_key,
+         _backfill_status,
+         _backfill_id
+       ]) do
     {kind, timezone} = window_key_identity(window_key)
 
     %RunWindowChoice{
@@ -1631,8 +1641,15 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
 
   # Placeholder rows carry the backfill status without a window run, so the
   # first row that names one wins whether or not any window has started.
+  # Every row carries the same joined backfill, so the first non-null answers for
+  # all of them. A run with no backfill yields one placeholder row whose backfill
+  # columns are null, and both readers return nil for it.
   defp first_backfill_status(rows) do
-    Enum.find_value(rows, fn row -> decode_backfill_status(List.last(row)) end)
+    Enum.find_value(rows, fn [_, _, _, _, _, status, _] -> decode_backfill_status(status) end)
+  end
+
+  defp first_backfill_id(rows) do
+    Enum.find_value(rows, fn [_, _, _, _, _, _, backfill_id] -> backfill_id end)
   end
 
   defp decode_window_run_status(value), do: Map.get(@window_run_statuses, value)

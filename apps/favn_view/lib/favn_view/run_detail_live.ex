@@ -16,11 +16,13 @@ defmodule FavnView.RunDetailLive do
   alias FavnView.RunEventRefresh
   alias FavnView.RunTimeline
   alias FavnView.RunWindowRail
+  alias FavnView.WindowFailures
   alias FavnView.WindowLabel
 
   @fallback_refresh_ms 5_000
   @coalesce_refresh_ms 1_000
   @compare_read_timeout_ms 5_000
+  @window_failure_limit 500
   @valid_modes ~w(flow events)
   @valid_flow_views ~w(chart table)
   @flow_outcomes ~w(succeeded failed running waiting)
@@ -398,6 +400,9 @@ defmodule FavnView.RunDetailLive do
       compare_limit_reached?={@compare_limit_reached?}
       compare_error={@compare_error}
       windows_error={@windows_error}
+      window_failures={@window_failures}
+      window_failures_overflow?={@window_failures_overflow?}
+      window_failures_error={@window_failures_error}
       flash={@flash}
     />
     """
@@ -959,6 +964,7 @@ defmodule FavnView.RunDetailLive do
     socket.assigns.run.active? or
       match?(%RunWindowRail{in_progress?: true}, socket.assigns.rail) or
       not is_nil(socket.assigns[:windows_error]) or
+      not is_nil(socket.assigns[:window_failures_error]) or
       comparison_owes_a_read?(socket)
   end
 
@@ -1019,6 +1025,19 @@ defmodule FavnView.RunDetailLive do
     |> then(fn fun -> if is_function(fun, 2), do: fun.(context, run_id), else: fun.(run_id) end)
   end
 
+  # Bounded to the failed windows alone. A backfill's ledger can hold thousands
+  # of windows and this read exists to name reasons, not to list coverage.
+  defp page_backfill_windows(context, backfill_id) do
+    Application.get_env(
+      :favn_view,
+      :operator_backfill_windows_fun,
+      &Orchestrator.page_operator_backfill_windows/3
+    )
+    |> then(fn fun ->
+      fun.(context, backfill_id, status: :failed, limit: @window_failure_limit)
+    end)
+  end
+
   defp get_execution_group_detail(context, root_run_id) do
     Application.get_env(
       :favn_view,
@@ -1038,10 +1057,21 @@ defmodule FavnView.RunDetailLive do
       windows_status: if(keep?, do: socket.assigns[:windows_status]),
       windows_read_at: if(keep?, do: socket.assigns[:windows_read_at]),
       windows_error: nil,
+      backfill_id: if(keep?, do: socket.assigns[:backfill_id]),
       open_bucket: nil,
       rail: nil
     )
+    |> reset_window_failures(keep?)
     |> build_rail()
+  end
+
+  defp reset_window_failures(socket, keep?) do
+    assign(socket,
+      window_failures: if(keep?, do: socket.assigns[:window_failures]),
+      window_failures_overflow?: keep? and socket.assigns[:window_failures_overflow?] == true,
+      window_failures_read_at: if(keep?, do: socket.assigns[:window_failures_read_at]),
+      window_failures_error: nil
+    )
   end
 
   # The rail is eager for backfill runs only. A scheduled or manual windowed run
@@ -1081,9 +1111,11 @@ defmodule FavnView.RunDetailLive do
           windows: items,
           windows_overflow?: overflow?,
           windows_status: Map.get(result, :backfill_status),
-          windows_error: nil
+          windows_error: nil,
+          backfill_id: Map.get(result, :backfill_id)
         )
         |> build_rail()
+        |> refresh_window_failures()
 
       # A failed window read hides the rail and leaves the run page fully
       # functional; it is navigation, not run state. Compare mode is a mode of
@@ -1141,6 +1173,57 @@ defmodule FavnView.RunDetailLive do
   end
 
   defp assign_combined_window(socket, _rail), do: socket
+
+  # A window that fails before its child run exists leaves no run to open and no
+  # run page to carry its diagnosis, so the reason it recorded is the only
+  # account of the failure the product has. It lives on the backfill ledger,
+  # which is a different read from the window list: the list returns navigable
+  # window runs, and these windows never became one.
+  #
+  # The read piggybacks the window read rather than taking a timer of its own.
+  # Both describe the same ledger, so a second cadence would only add a second
+  # statement per interval and could show a count and a reason list that
+  # disagree.
+  defp refresh_window_failures(socket) do
+    if window_failures_due?(socket) do
+      load_window_failures(socket)
+    else
+      socket
+    end
+  end
+
+  defp window_failures_due?(%{assigns: assigns}) do
+    is_binary(assigns[:backfill_id]) and
+      assigns.run[:backfill_parent?] == true and
+      (assigns.run[:failed_windows] || 0) > 0
+  end
+
+  # A failed ledger read leaves the rest of the page alone, exactly as a failed
+  # window read does. It states what could not be read rather than letting the
+  # page imply that a backfill with failed windows recorded nothing.
+  defp load_window_failures(socket) do
+    socket = assign(socket, :window_failures_read_at, monotonic_ms())
+
+    case page_backfill_windows(operator_context(socket), socket.assigns.backfill_id) do
+      {:ok, %{items: items} = page} ->
+        assign(socket,
+          window_failures:
+            WindowFailures.group(
+              Enum.map(items, &Map.from_struct/1),
+              socket.assigns.current_scope
+            ),
+          window_failures_overflow?: Map.get(page, :has_more?) == true,
+          window_failures_error: nil
+        )
+
+      {:error, _reason} ->
+        assign(socket,
+          window_failures: nil,
+          window_failures_error:
+            "Why these windows failed could not be loaded. The page will try again."
+        )
+    end
+  end
 
   # A backfill parent runs no asset work of its own — its page says so and offers
   # its windows — so landing on it and finding nothing drawn is a step the

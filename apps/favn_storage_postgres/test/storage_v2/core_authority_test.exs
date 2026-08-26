@@ -121,6 +121,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnOrchestrator.Persistence.Queries.GetRunHeader
   alias FavnOrchestrator.Persistence.Queries.ListRunEventSummaries
   alias FavnOrchestrator.Persistence.Queries.ListRunWindows
+  alias FavnOrchestrator.Persistence.Queries.PageBackfillWindows
   alias FavnOrchestrator.Persistence.Queries.GetExecutionPackage
   alias FavnOrchestrator.Persistence.Queries.GetManifestTargetDescriptors
   alias FavnOrchestrator.Persistence.Queries.GetActor
@@ -11154,6 +11155,11 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert Enum.sort(Enum.map(choices.items, & &1.status)) == [:running, :running, :succeeded]
     assert choices.backfill_status == :ready
 
+    # The choices are window runs, so a window that never produced one is absent
+    # from them by design. The backfill id rides along because it is the only
+    # route from this run to the ledger that recorded why such a window failed.
+    assert choices.backfill_id == "backfill-windows:" <> root.id
+
     # Reading by the root run id sees the same set, unpinned.
     assert {:ok, from_root} =
              OperatorReadStore.list_run_windows(%ListRunWindows{
@@ -11191,6 +11197,10 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert empty.items == []
     refute empty.overflow?
     assert is_nil(empty.backfill_status)
+
+    # The placeholder row's backfill columns are both null, so a run with no
+    # backfill offers no ledger to read rather than a spurious id.
+    assert is_nil(empty.backfill_id)
 
     %{root: root, children: children} = seed_backfill_windows(fixture, 3)
 
@@ -11255,78 +11265,94 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     refute choices.overflow?
   end
 
+  # A backfill that fails at child submission produces no window run at all, so
+  # the run detail page has no window to open and no run page to read a reason
+  # from. The window list is then empty by design and the ledger is the only
+  # account of the failure, which is what makes the id on the empty result the
+  # thing the page depends on.
+  test "a backfill whose windows failed before any run keeps its reasons readable", fixture do
+    %{root: root, backfill_id: backfill_id} = seed_failed_backfill_windows(fixture, 3)
+
+    assert {:ok, choices} =
+             OperatorReadStore.list_run_windows(%ListRunWindows{
+               workspace_context: fixture.workspace_context,
+               run_id: root.id,
+               limit: 10
+             })
+
+    assert choices.items == []
+    refute choices.overflow?
+    assert choices.backfill_id == backfill_id
+
+    assert {:ok, page} =
+             BackfillStore.page_windows(%PageBackfillWindows{
+               workspace_context: fixture.workspace_context,
+               backfill_id: backfill_id,
+               status: :failed,
+               limit: 10
+             })
+
+    assert length(page.items) == 3
+    refute page.has_more?
+    assert Enum.all?(page.items, &is_nil(&1.run_id))
+    assert Enum.all?(page.items, &(&1.status == :failed))
+
+    assert Enum.all?(
+             page.items,
+             &(&1.last_error["reason"] == "invalid_backfill_pipeline_identity")
+           )
+
+    # The status filter is what keeps this read bounded to the exception list,
+    # so it has to actually exclude the windows that did not fail.
+    assert {:ok, succeeded} =
+             BackfillStore.page_windows(%PageBackfillWindows{
+               workspace_context: fixture.workspace_context,
+               backfill_id: backfill_id,
+               status: :succeeded,
+               limit: 10
+             })
+
+    assert succeeded.items == []
+  end
+
+  # Seeds one backfill of `count` day windows that all fail on claim, with no
+  # child run ever created — the shape a submission-time failure leaves behind.
+  defp seed_failed_backfill_windows(fixture, count) do
+    %{root: root, backfill_id: backfill_id, claimed: claimed} =
+      seed_backfill_plan(fixture, count, "failed")
+
+    Enum.with_index(claimed, fn window, index ->
+      assert {:ok, _failed} =
+               BackfillStore.transition_window(%TransitionBackfillWindow{
+                 workspace_context: fixture.workspace_context,
+                 command_id: "backfill-failed-#{index}:" <> root.id,
+                 backfill_id: backfill_id,
+                 window_id: window.window_id,
+                 owner_id: window.claim_owner,
+                 fencing_token: window.fencing_token,
+                 expected_version: window.version,
+                 status: :failed,
+                 error: %{
+                   "kind" => "error",
+                   "type" => "map",
+                   "reason" => "invalid_backfill_pipeline_identity",
+                   "message" => "invalid_backfill_pipeline_identity",
+                   "redacted" => true,
+                   "truncated" => false
+                 },
+                 occurred_at: DateTime.utc_now()
+               })
+    end)
+
+    %{root: root, backfill_id: backfill_id}
+  end
+
   # Seeds one backfill of `count` day windows in Europe/Oslo, each executed by
   # its own child run. The last window succeeds and the rest stay running, so a
   # caller has more than one status to read.
   defp seed_backfill_windows(fixture, count) do
-    {root_command, root} = create_run_command(fixture)
-    assert {:ok, _created} = RunStore.create_run(root_command)
-
-    now = DateTime.utc_now()
-    backfill_id = "backfill-windows:" <> root.id
-
-    windows =
-      Enum.map(0..(count - 1), fn index ->
-        start_at = DateTime.add(~U[2026-02-01 00:00:00Z], index * 86_400, :second)
-
-        %BackfillPlanWindow{
-          window_id: "window-#{index}:" <> root.id,
-          window_key: WindowKey.encode(WindowKey.new!(:day, start_at, "Europe/Oslo")),
-          window_start: start_at,
-          window_end: DateTime.add(start_at, 86_400, :second),
-          payload: %{"partition" => "day-#{index}"}
-        }
-      end)
-
-    batch_hash = BackfillPlan.batch_hash(windows)
-
-    assert {:ok, _planning} =
-             BackfillStore.start_plan(%StartBackfillPlan{
-               workspace_context: fixture.workspace_context,
-               command_id: "backfill-windows-start:" <> root.id,
-               backfill_id: backfill_id,
-               root_run_id: root.id,
-               deployment_id: fixture.deployment_id,
-               manifest_version_id: fixture.version.manifest_version_id,
-               target_kind: :asset,
-               target_id: fixture.target_id,
-               range_start: hd(windows).window_start,
-               range_end: List.last(windows).window_end,
-               expected_window_count: count,
-               expected_batch_count: 1,
-               plan_hash: BackfillPlan.plan_hash([batch_hash]),
-               occurred_at: now
-             })
-
-    assert {:ok, appended} =
-             BackfillStore.append_plan_batch(%AppendBackfillPlanBatch{
-               workspace_context: fixture.workspace_context,
-               command_id: "backfill-windows-batch:" <> root.id,
-               backfill_id: backfill_id,
-               batch_index: 0,
-               batch_hash: batch_hash,
-               windows: windows,
-               occurred_at: now
-             })
-
-    assert {:ok, _ready} =
-             BackfillStore.activate_plan(%ActivateBackfillPlan{
-               workspace_context: fixture.workspace_context,
-               command_id: "backfill-windows-activate:" <> root.id,
-               backfill_id: backfill_id,
-               expected_version: appended.version,
-               occurred_at: now
-             })
-
-    assert {:ok, claimed} =
-             BackfillStore.claim_windows(%ClaimBackfillWindows{
-               workspace_context: fixture.workspace_context,
-               batch_id: "backfill-windows-claim:" <> root.id,
-               owner_id: "backfill-worker",
-               lease_duration_ms: 60_000,
-               backfill_id: backfill_id,
-               limit: count
-             })
+    %{root: root, backfill_id: backfill_id, claimed: claimed, now: now} =
+      seed_backfill_plan(fixture, count, "windows")
 
     assert length(claimed) == count
 
@@ -11370,6 +11396,83 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
       end)
 
     %{root: root, children: children, backfill_id: backfill_id}
+  end
+
+  # The plan-append-activate-claim handshake every backfill fixture needs, up to
+  # the point where the callers diverge on what happens to each window. `tag`
+  # namespaces the command and window ids so two backfills can be seeded in one
+  # test without colliding.
+  defp seed_backfill_plan(fixture, count, tag) do
+    {root_command, root} = create_run_command(fixture)
+    assert {:ok, _created} = RunStore.create_run(root_command)
+
+    now = DateTime.utc_now()
+    backfill_id = "backfill-#{tag}:" <> root.id
+
+    windows =
+      Enum.map(0..(count - 1), fn index ->
+        start_at = DateTime.add(~U[2026-02-01 00:00:00Z], index * 86_400, :second)
+
+        %BackfillPlanWindow{
+          window_id: "window-#{tag}-#{index}:" <> root.id,
+          window_key: WindowKey.encode(WindowKey.new!(:day, start_at, "Europe/Oslo")),
+          window_start: start_at,
+          window_end: DateTime.add(start_at, 86_400, :second),
+          payload: %{"partition" => "day-#{index}"}
+        }
+      end)
+
+    batch_hash = BackfillPlan.batch_hash(windows)
+
+    assert {:ok, _planning} =
+             BackfillStore.start_plan(%StartBackfillPlan{
+               workspace_context: fixture.workspace_context,
+               command_id: "backfill-#{tag}-start:" <> root.id,
+               backfill_id: backfill_id,
+               root_run_id: root.id,
+               deployment_id: fixture.deployment_id,
+               manifest_version_id: fixture.version.manifest_version_id,
+               target_kind: :asset,
+               target_id: fixture.target_id,
+               range_start: hd(windows).window_start,
+               range_end: List.last(windows).window_end,
+               expected_window_count: count,
+               expected_batch_count: 1,
+               plan_hash: BackfillPlan.plan_hash([batch_hash]),
+               occurred_at: now
+             })
+
+    assert {:ok, appended} =
+             BackfillStore.append_plan_batch(%AppendBackfillPlanBatch{
+               workspace_context: fixture.workspace_context,
+               command_id: "backfill-#{tag}-batch:" <> root.id,
+               backfill_id: backfill_id,
+               batch_index: 0,
+               batch_hash: batch_hash,
+               windows: windows,
+               occurred_at: now
+             })
+
+    assert {:ok, _ready} =
+             BackfillStore.activate_plan(%ActivateBackfillPlan{
+               workspace_context: fixture.workspace_context,
+               command_id: "backfill-#{tag}-activate:" <> root.id,
+               backfill_id: backfill_id,
+               expected_version: appended.version,
+               occurred_at: now
+             })
+
+    assert {:ok, claimed} =
+             BackfillStore.claim_windows(%ClaimBackfillWindows{
+               workspace_context: fixture.workspace_context,
+               batch_id: "backfill-#{tag}-claim:" <> root.id,
+               owner_id: "backfill-worker",
+               lease_duration_ms: 60_000,
+               backfill_id: backfill_id,
+               limit: count
+             })
+
+    %{root: root, backfill_id: backfill_id, claimed: claimed, now: now}
   end
 
   # A window points at the submission that carries its work, while the rail looks

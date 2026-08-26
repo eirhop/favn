@@ -15,6 +15,7 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.Runs do
   alias FavnView.RunComparison
   alias FavnView.RunTimeline
   alias FavnView.RunWindowRail
+  alias FavnView.WindowFailures
 
   @anchor ~U[2026-07-23 10:00:00Z]
 
@@ -153,6 +154,101 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.Runs do
       Enum.map(window_choices(6), &%{&1 | run_id: "run_window_combined"})
 
     RunWindowRail.build(combined, "run_window_combined", "Etc/UTC", backfill_status: :completed)
+  end
+
+  @doc """
+  A backfill parent whose windows all failed before any run existed.
+
+  This is the shape a planning or submission failure leaves: windows counted,
+  none of them navigable, and the reason held only on the ledger. The page has no
+  rail, no chart and no run to open, so the failure panel is the whole reading.
+  """
+  @spec runless_backfill(non_neg_integer()) :: map()
+  def runless_backfill(failed \\ 31) do
+    backfill(:running)
+    |> Map.merge(%{
+      backfill_parent?: true,
+      title: "Backfill parent",
+      status: "Failed",
+      status_tone: :error,
+      raw_status: :error,
+      active?: false,
+      cancellable?: false,
+      window: nil,
+      assets: [],
+      chart: nil,
+      total_windows: failed,
+      completed_windows: failed,
+      failed_windows: failed,
+      running_windows: 0,
+      queued_windows: 0,
+      total_asset_attempts: 0,
+      completed_asset_attempts: 0,
+      succeeded_asset_attempts: 0,
+      failed_asset_attempts: 0,
+      running_asset_attempts: 0,
+      queued_asset_attempts: 0,
+      planned_asset_attempts: 0
+    })
+  end
+
+  @doc """
+  Grouped window failures, as the run page receives them.
+
+  `shape` picks `:single`, one cause behind every window; `:mixed`, two causes
+  where one of them did reach a run; or `:one`, a single window, which names its
+  window rather than a span.
+  """
+  @spec window_failures(:single | :mixed | :one) :: [WindowFailures.Group.t()]
+  def window_failures(shape \\ :single)
+
+  def window_failures(:single) do
+    [
+      %WindowFailures.Group{
+        reason: "invalid_backfill_pipeline_identity",
+        window_count: 31,
+        run_count: 0,
+        span: "Jan 1 00:00 – Feb 1 00:00, 2026",
+        attempts: 1,
+        run_ids: []
+      }
+    ]
+  end
+
+  def window_failures(:mixed) do
+    [
+      %WindowFailures.Group{
+        reason: "no_runner_available",
+        detail: "the default runner pool was empty when the window was admitted",
+        window_count: 18,
+        run_count: 0,
+        span: "Jan 1 00:00 – Jan 19 00:00, 2026",
+        attempts: 3,
+        run_ids: []
+      },
+      %WindowFailures.Group{
+        reason: "asset_step_failed",
+        window_count: 4,
+        run_count: 4,
+        span: "Jan 19 00:00 – Jan 23 00:00, 2026",
+        attempts: 1,
+        run_ids: ["run_window_19", "run_window_20", "run_window_21"]
+      }
+    ]
+  end
+
+  def window_failures(:one) do
+    [
+      %WindowFailures.Group{
+        reason: "window_lease_lost",
+        window_count: 1,
+        run_count: 1,
+        span: nil,
+        first_window: "Jan 4, 2026",
+        attempts: 2,
+        run_ids: ["run_window_4"]
+      }
+    ]
   end
 
   @doc """

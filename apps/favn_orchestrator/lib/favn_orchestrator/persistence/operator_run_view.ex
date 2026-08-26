@@ -159,17 +159,23 @@ defmodule FavnOrchestrator.Persistence.Results.RunWindowChoices do
   `backfill_status` is the owning backfill's own status, not an aggregate of the
   returned choices. A non-terminal backfill is still producing window runs, so
   the choice list is incomplete by design rather than by truncation.
+
+  `backfill_id` identifies the owning backfill, and is the caller's only route
+  from a run to the window ledger. The choices themselves are window *runs*, so a
+  window that failed before a run existed is absent from `items` by design; its
+  recorded failure is reachable only through the ledger, keyed by this id.
   """
 
   alias FavnOrchestrator.Persistence.Results.RunWindowChoice
 
   @enforce_keys [:items, :overflow?]
-  defstruct @enforce_keys ++ [:backfill_status]
+  defstruct @enforce_keys ++ [:backfill_status, :backfill_id]
 
   @type t :: %__MODULE__{
           items: [RunWindowChoice.t()],
           overflow?: boolean(),
-          backfill_status: atom() | nil
+          backfill_status: atom() | nil,
+          backfill_id: String.t() | nil
         }
 end
 

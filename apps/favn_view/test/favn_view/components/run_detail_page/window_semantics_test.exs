@@ -173,6 +173,174 @@ defmodule FavnView.Components.RunDetailPage.WindowSemanticsTest do
     refute html =~ "Open a window run to inspect"
   end
 
+  test "a flat rail names the period its bare cell labels sit inside" do
+    run = Map.merge(Runs.single_window(), %{backfill_parent?: true, window: nil})
+
+    children = [
+      window("run-child-one", ~U[2026-03-01 00:00:00Z]),
+      window("run-child-two", ~U[2026-03-02 00:00:00Z]),
+      window("run-child-three", ~U[2026-03-03 00:00:00Z])
+    ]
+
+    html = render_page(run, rail: rail(children, run.id))
+
+    # A day cell is labelled by its day number alone, so three March windows read
+    # "1 2 3" and a flat rail has no band header to say which month.
+    assert html =~ "Covering Mar 1 00:00 – Mar 4 00:00, 2026"
+  end
+
+  test "a banded rail states the period in its bands rather than twice" do
+    run = Map.merge(Runs.single_window(), %{backfill_parent?: true, window: nil})
+
+    html = render_page(run, rail: Runs.rail(:banded))
+
+    assert html =~ ~s(data-testid="window-rail-buckets")
+    refute html =~ "Covering"
+  end
+
+  describe "why the windows failed" do
+    defp failing_parent(failed \\ 31) do
+      Runs.single_window()
+      |> Map.merge(%{
+        backfill_parent?: true,
+        window: nil,
+        assets: [],
+        active?: false,
+        total_windows: failed,
+        completed_windows: 0,
+        failed_windows: failed
+      })
+    end
+
+    defp group(opts) do
+      %FavnView.WindowFailures.Group{
+        reason: Keyword.get(opts, :reason, "invalid_backfill_pipeline_identity"),
+        detail: Keyword.get(opts, :detail),
+        window_count: Keyword.get(opts, :window_count, 31),
+        run_count: Keyword.get(opts, :run_count, 0),
+        span: Keyword.get(opts, :span, "Jan 1 00:00 – Feb 1 00:00, 2026"),
+        first_window: Keyword.get(opts, :first_window),
+        attempts: Keyword.get(opts, :attempts, 1),
+        run_ids: Keyword.get(opts, :run_ids, [])
+      }
+    end
+
+    test "the reason a backfill's windows failed is on the page, once per reason" do
+      html = render_page(failing_parent(), rail: nil, window_failures: [group([])])
+
+      assert html =~ ~s(data-testid="window-failures")
+      assert html =~ "invalid_backfill_pipeline_identity"
+      assert html =~ "31 windows"
+      assert html =~ "Covering Jan 1 00:00 – Feb 1 00:00, 2026"
+      assert count(html, ~s(data-testid="window-failure-row")) == 1
+      assert html =~ ~s(data-testid="window-failure-no-runs")
+    end
+
+    test "the panel counts reasons, not windows, so a shared cause reads as one finding" do
+      groups = [
+        group(reason: "no_runner", window_count: 20),
+        group(reason: "timed_out", window_count: 11)
+      ]
+
+      html = render_page(failing_parent(), rail: nil, window_failures: groups)
+
+      assert count(html, ~s(data-testid="window-failure-row")) == 2
+      assert html =~ "2 reasons"
+      assert html =~ "31 windows failed"
+    end
+
+    test "a reason whose windows did start runs links to them" do
+      groups = [group(run_count: 2, run_ids: ["run_abcdef012345678", "run_b"])]
+
+      html = render_page(failing_parent(), rail: nil, window_failures: groups)
+
+      assert html =~ ~s(data-testid="window-failure-runs")
+      assert html =~ "2 of these started a run"
+      assert html =~ ~s(href="/runs/run_abcdef012345678")
+
+      # The link text is shortened; the full id is what the href carries.
+      assert html =~ "run_abcdef01234"
+      refute html =~ ~s(data-testid="window-failure-no-runs")
+
+      # Two runs and two links leaves nothing unsaid.
+      refute html =~ ~s(data-testid="window-failure-more-runs")
+    end
+
+    test "a group with more runs than links says how many it is not showing" do
+      groups = [group(run_count: 9, run_ids: ["run_a", "run_b", "run_c"])]
+
+      html = render_page(failing_parent(), rail: nil, window_failures: groups)
+
+      assert html =~ ~s(data-testid="window-failure-more-runs")
+      assert html =~ "and 6 more"
+    end
+
+    test "a message that adds to the reason is shown, and a repeat of it is not" do
+      with_detail =
+        render_page(failing_parent(),
+          rail: nil,
+          window_failures: [group(detail: "the runner pool was empty")]
+        )
+
+      assert with_detail =~ ~s(data-testid="window-failure-detail")
+      assert with_detail =~ "the runner pool was empty"
+
+      without = render_page(failing_parent(), rail: nil, window_failures: [group([])])
+      refute without =~ ~s(data-testid="window-failure-detail")
+    end
+
+    test "a group of one names its window rather than a span" do
+      groups = [group(window_count: 1, span: nil, first_window: "Jan 4, 2026")]
+
+      html = render_page(failing_parent(1), rail: nil, window_failures: groups)
+
+      assert html =~ ~s(data-testid="window-failure-window")
+      assert html =~ "Jan 4, 2026"
+      assert html =~ "1 window"
+      refute html =~ ~s(data-testid="window-failure-span")
+    end
+
+    test "a bounded read that did not reach every failed window says the list is partial" do
+      html =
+        render_page(failing_parent(900),
+          rail: nil,
+          window_failures: [group([])],
+          window_failures_overflow?: true
+        )
+
+      assert html =~ ~s(data-testid="window-failures-truncated")
+      assert html =~ "More windows failed than this page reads at once"
+    end
+
+    test "a failed ledger read states that rather than implying nothing was recorded" do
+      html =
+        render_page(failing_parent(),
+          rail: nil,
+          window_failures: nil,
+          window_failures_error: "Why these windows failed could not be loaded."
+        )
+
+      assert html =~ ~s(data-testid="window-failures")
+      assert html =~ ~s(data-testid="window-failures-error")
+      assert html =~ "could not be loaded"
+      refute html =~ ~s(data-testid="window-failure-row")
+    end
+
+    test "the panel stays off a run that is not a backfill parent" do
+      html = render_page(Runs.single_window(), window_failures: [group([])])
+
+      refute html =~ ~s(data-testid="window-failures")
+    end
+
+    test "the panel stays off a backfill parent whose windows all succeeded" do
+      run = Map.merge(Runs.single_window(), %{backfill_parent?: true, window: nil, assets: []})
+
+      html = render_page(run, rail: nil, window_failures: [])
+
+      refute html =~ ~s(data-testid="window-failures")
+    end
+  end
+
   test "a backfill still creating windows is not reported as having produced none" do
     run =
       Runs.single_window()

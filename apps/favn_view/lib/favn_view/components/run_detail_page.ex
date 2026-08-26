@@ -16,6 +16,7 @@ defmodule FavnView.Components.RunDetailPage do
   alias FavnView.Components.RunDetailPage.NotFound
   alias FavnView.Components.RunDetailPage.Progress
   alias FavnView.Components.RunDetailPage.Submission
+  alias FavnView.Components.RunDetailPage.WindowFailures
   alias FavnView.Components.RunDetailPage.WindowRail
   alias FavnView.RunWindowRail
 
@@ -34,6 +35,9 @@ defmodule FavnView.Components.RunDetailPage do
   attr :compare_limit_reached?, :boolean, default: false
   attr :compare_error, :string, default: nil
   attr :windows_error, :string, default: nil
+  attr :window_failures, :list, default: nil
+  attr :window_failures_overflow?, :boolean, default: false
+  attr :window_failures_error, :string, default: nil
   attr :flash, :map, default: %{}
 
   def run_detail_page(assigns) do
@@ -95,6 +99,9 @@ defmodule FavnView.Components.RunDetailPage do
         compare_limit_reached?={@compare_limit_reached?}
         compare_error={@compare_error}
         windows_error={@windows_error}
+        window_failures={@window_failures}
+        window_failures_overflow?={@window_failures_overflow?}
+        window_failures_error={@window_failures_error}
       />
       <:mode_rail :if={@run[:found?]}>
         <ModeRail.mode_rail active={@active_mode} modes={run_modes(@run)} on_select="set_mode" />
@@ -113,6 +120,9 @@ defmodule FavnView.Components.RunDetailPage do
   attr :compare_limit_reached?, :boolean, default: false
   attr :compare_error, :string, default: nil
   attr :windows_error, :string, default: nil
+  attr :window_failures, :list, default: nil
+  attr :window_failures_overflow?, :boolean, default: false
+  attr :window_failures_error, :string, default: nil
 
   def execution_group_page(assigns) do
     ~H"""
@@ -182,6 +192,18 @@ defmodule FavnView.Components.RunDetailPage do
       >
         {@compare_error}
       </.notice>
+
+      <%!-- The reasons sit above Flow because on a backfill whose windows never
+      ran they are the only account of what happened; Flow below has nothing to
+      show. On a partly failed backfill they read as the exception list under the
+      rail that offers the windows that did run. --%>
+      <WindowFailures.window_failures
+        :if={@run[:backfill_parent?]}
+        groups={@window_failures}
+        truncated?={@window_failures_overflow?}
+        error={@window_failures_error}
+        failed_windows={@run[:failed_windows] || 0}
+      />
 
       <div data-run-active={to_string(@run.active?)}>
         <Flow.flow

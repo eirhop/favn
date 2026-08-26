@@ -682,6 +682,7 @@ verification plan had asked for and slices 1 and 12 had not delivered.
 | Not planned: how the operator reaches a window from the backfill parent | The parent opens its earliest window on arrival | Operator review. The parent runs no asset work of its own — its own page says so — so landing on it always cost a click through an empty chart. Issued from `handle_params`, because a live patch during mount raises | Deliberately returning to the parent still shows the parent; only arrival redirects | Pending |
 | Not planned: `Surface.panel/1` header inset | The header keeps its inset at `padding={:none}` | Operator review found both of this page's panels flush against the card border. `:none` means the body owns its spacing, never that the title sits on the border, and every `padding={:none}` panel in the product had the same defect | An element fix, so `admin_page`, `account_security_page` and `schedule_detail_page` gain the inset too. All audited clean | Pending |
 | Part 1: the backfill parent explains that asset work runs in its window runs | It says so only when a window run exists to open | Operator review on a real failed backfill. Every one of its 31 windows failed before a child run existed, so the parent invited the operator to open a window run and the chart repeated the instruction, on a page that had nothing to open. `windows_to_open?/2` asks the rail, which is the only thing that can offer one, and treats a still-producing backfill as having something coming | Two states where there was one. A backfill whose windows all failed now names that instead of describing navigation it does not have | Pending |
+| Not planned: nothing reads a window's recorded failure reason | A bounded ledger read behind the run page, and a panel that groups failed windows by reason | Operator review on a real failed backfill: "Where do I actually find the error of the run? I dont think any ui in the app actually show it?" — correct. The reason was written to the ledger and no operator surface called for it, so a backfill could report 31 failures and account for none of them | The largest addition beyond the approved plan, and the only one touching a persistence contract: `list_run_windows` returns `backfill_id`, `RunWindowChoices` carries it, and `favn_view` gains `WindowFailures` plus a panel. Folded in at the operator's explicit direction rather than deferred | Pending |
 | Not planned: `Data.outcome_meter/1` is unlabelled | The bar and each segment carry a `title` | Operator review: "it should be possible to hover the red line or the 31 windows text to see what windows it is. Right now this screen gives almost no information". The meter was the only thing on the page stating the failure and it was a band of colour with no accessible name | The meter gains `role="img"` and a name product-wide, so every progress bar that uses it becomes readable | Pending |
 
 ## Decision log
@@ -793,30 +794,55 @@ inside the rail build, which runs during `mount`, and LiveView raises on a live
 patch while mounting. The unit test called `mount/3` directly and passed. The
 test now asserts that the mount does not redirect and that `handle_params` does.
 
-### Gap left open: no operator surface reads a window's failure reason
+### Added scope: an operator surface for a window's failure reason
 
-Reviewing a real failed backfill exposed a gap wider than this change. When a
-window fails before its child run exists, the reason is written to
-`favn_control.backfill_windows.last_error` and is readable through the public
-facade as `FavnOrchestrator.page_operator_backfill_windows/3`. Nothing in
-`favn_view` calls it. On the parent run's page the Events tab holds a single row,
-`Backfill started · Succeeded`, and the only surface that states the failure at
-all is the window meter's count. The reason is reachable today only from
-`mix favn.backfill windows BACKFILL_ID` or from SQL.
+Reviewing a real failed backfill exposed a gap wider than the notice wording.
+When a window fails before its child run exists, the reason is written to
+`favn_control.backfill_windows.last_error` and was readable only from
+`mix favn.backfill windows BACKFILL_ID` or from SQL. Nothing in `favn_view`
+called for it. On the parent run's page the Events tab held a single row,
+`Backfill started · Succeeded`, and the only surface that stated the failure at
+all was the window meter's count.
 
-Two contract facts stand between the page and that read:
+Two contract facts stood between the page and that read:
 
 - `OperatorReadStore.list_run_windows/1` filters `window_run.run_id IS NOT NULL`
   by design — it lists navigable window *runs*, so a window that never produced
-  one is invisible to the rail.
+  one is invisible to the rail. That filter is correct and unchanged.
 - `Persistence.Results.ExecutionGroupOverview` carries `backfill_status` and
-  `window_counts` from the compact backfill projection but not `backfill_id`, so
-  the page cannot address `page_operator_backfill_windows/3`.
+  `window_counts` but not `backfill_id`, so the page could not address
+  `FavnOrchestrator.page_operator_backfill_windows/3`, which was already public.
 
-Closing it means returning `backfill_id` from a query that already joins
-`favn_control.backfills`, then a lazy per-window failure read behind the run
-page. That is a persistence-contract change across three apps and belongs to its
-own change record, not to this one.
+The operator chose to close it inside this change rather than in a change record
+of its own, with the baseline consequence stated and accepted. What was built:
+
+| Layer | Change |
+| --- | --- |
+| `favn_storage_postgres` | `list_run_windows` also selects `backfill.backfill_id` from the join it already made. `first_backfill_status/1` read `List.last(row)`, which a trailing column would have silently broken, so both readers now match their position explicitly |
+| `favn_orchestrator` | `RunWindowChoices` gains `backfill_id`, documented as the caller's only route from a run to the ledger |
+| `favn_view` | `FavnView.WindowFailures` groups failed windows by reason; `RunDetailLive` reads the ledger bounded to `status: :failed`, piggybacking the window read's cadence; `RunDetailPage.WindowFailures` renders one row per reason |
+
+Three design decisions inside it are worth naming.
+
+**Rows are reasons, not windows.** A planning or submission failure fails every
+window the backfill planned, for one cause, at one instant. Thirty-one rows
+saying the same thing is how the cause gets lost, so a group states the reason
+once with the coverage it cost.
+
+**The reason is shown as recorded.** It is stored redacted and flattened to
+JSON-safe scalars, and a reason that was not already a binary is `inspect`ed — so
+`%{reason: :invalid_backfill_pipeline_identity}` arrives as the string
+`%{"reason" => "invalid_backfill_pipeline_identity"}`. `WindowFailures.reason/1`
+unwraps that one single-entry shape and nothing else. Prettifying further would
+break the only thing the string is for, which is pasting it into a search. The
+cleaner fix — storing a map reason structurally rather than inspecting it —
+changes what the control plane writes for every error and cannot repair rows
+already stored, so it is deliberately not attempted here.
+
+**The read has no timer of its own.** It rides the window read, because both
+describe the same ledger and two cadences could show a count and a reason list
+that disagree. A failed ledger read keeps the fallback poll alive, so a page
+whose run and backfill are both terminal still has a cycle in which to retry.
 
 ## Final review
 

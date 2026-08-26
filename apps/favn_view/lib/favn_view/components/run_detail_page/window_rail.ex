@@ -156,15 +156,39 @@ defmodule FavnView.Components.RunDetailPage.WindowRail do
   defp show?(%RunWindowRail{combined: combined}) when not is_nil(combined), do: false
   defp show?(%RunWindowRail{cells: cells, buckets: buckets}), do: cells != [] or buckets != []
 
-  defp subtitle(_rail, true), do: "Pick the windows to compare."
+  defp subtitle(rail, true), do: with_coverage(rail, "Pick the windows to compare.")
 
-  defp subtitle(%RunWindowRail{in_progress?: true}, _compare?),
-    do: "The backfill is still creating window runs."
+  defp subtitle(%RunWindowRail{in_progress?: true} = rail, _compare?),
+    do: with_coverage(rail, "The backfill is still creating window runs.")
 
+  # A banded rail names the period in its band header, so the cells under it read
+  # as positions inside a period the operator can already see.
   defp subtitle(%RunWindowRail{layout: :banded}, _compare?),
     do: "Pick a period, then a window run."
 
-  defp subtitle(_rail, _compare?), do: "Select a window run to open it."
+  defp subtitle(rail, _compare?), do: with_coverage(rail, "Select a window run to open it.")
+
+  # A flat rail has no band header, and a cell is labelled by its calendar
+  # position alone: three day windows in March read "1 2 3", with the month
+  # nowhere on screen. The shared context is stated once here rather than
+  # repeated into every cell, which is what the short labels exist to avoid.
+  defp with_coverage(%RunWindowRail{layout: :banded}, sentence), do: sentence
+
+  defp with_coverage(%RunWindowRail{cells: cells}, sentence) do
+    case coverage(cells) do
+      nil -> sentence
+      span -> "#{sentence} Covering #{span}."
+    end
+  end
+
+  defp coverage([]), do: nil
+
+  defp coverage(cells) do
+    first = Enum.min_by(cells, & &1.start_at, DateTime)
+    last = Enum.max_by(cells, & &1.end_at, DateTime)
+
+    WindowLabel.compact(first.start_at, last.end_at, first.timezone || "Etc/UTC")
+  end
 
   # Out of compare mode the lit cell is the open window. In it, every compared
   # window is lit: the open one is one of them, and singling it out would say
