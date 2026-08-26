@@ -677,6 +677,10 @@ verification plan had asked for and slices 1 and 12 had not delivered.
 | Slice 9: 110-180 supporting lines for concurrent reads and failure isolation | ~230 lines | The plan named concurrency and partial failure the risk surface and budgeted the largest test estimate for them. Eight focused tests cover the read set, the coalesced burst, per-window failure, retry after failure, the subscription move, and the fallback; each needs its own stubbed read behaviour, which is what the lines are | Production is just above its estimate; the overage is tests the plan asked for | Pending |
 | Slice 10: 110-190 production lines for multi-track lanes | ~680 lines: `RunComparison` at 363, a `Comparison` component at 244, 48 lines of CSS and ~25 lines of wiring | The slice table has no rendering slice for the comparison at all — slice 6 is "timeline rendering" and slice 10 is described purely as merge, ordering, absent tracks and alignment. A comparison lane is a label column over N stacked tracks, each of which must say which kind of empty it is; that is different markup from a single-run lane, and teaching one component both would have made the single-run chart worse to read. Roughly 130 of `RunComparison`'s lines are its moduledoc and six nested `@type` declarations | The largest overage in the change. The alternative — one component with a mode flag — was rejected as a worse chart, not a smaller one | Pending |
 | Part 3: the comparison would reuse the timeline's geometry | `RunTimeline.axis/2`, `bar/4`, `band/1` and `band_order/1` promoted from private to public | Reuse required the geometry to be callable from outside `build/2`. The alternative was a second axis, tick and bar implementation in `RunComparison`, which would have let the two charts disagree about what a bar means | Four functions gain documented public specs. No behaviour change; `build/2` calls the same functions it always did | Pending |
+| Part 3: "the legend states the track order once" | No legend. The rail lists the compared windows against the same numbers, and every track row carries its number | Operator review: the legend sat directly under a rail that had just listed the same windows, so the page said the same thing twice. Removing it left `RunComparison.tracks` read only by tests, so that field went too | The chart is a chart rather than a chart plus a copy of the control above it. A banded rail can hide a compared window's cell, so every track's `title` names its window | Pending |
+| Part 1: every backfill run shows the window rail | A combined backfill shows no rail; its run header states the coverage span | Operator review. A combined backfill executes every window it covers as one run, so the rail offered one cell leading to the page the operator was already on. `RunWindowRail` reports `combined` and the rail stands down, except while the backfill is still producing, when the rail is the only thing that says the set is still growing | One fewer panel on a combined run, and the span moves to where the run's other properties are | Pending |
+| Not planned: how the operator reaches a window from the backfill parent | The parent opens its earliest window on arrival | Operator review. The parent runs no asset work of its own — its own page says so — so landing on it always cost a click through an empty chart. Issued from `handle_params`, because a live patch during mount raises | Deliberately returning to the parent still shows the parent; only arrival redirects | Pending |
+| Not planned: `Surface.panel/1` header inset | The header keeps its inset at `padding={:none}` | Operator review found both of this page's panels flush against the card border. `:none` means the body owns its spacing, never that the title sits on the border, and every `padding={:none}` panel in the product had the same defect | An element fix, so `admin_page`, `account_security_page` and `schedule_detail_page` gain the inset too. All audited clean | Pending |
 
 ## Decision log
 
@@ -706,6 +710,11 @@ verification plan had asked for and slices 1 and 12 had not delivered.
 | 2026-08-26 | Subscribe to a compared window before reading it, as mount already does for the open run | Independent review found the ordering inverted in the selection path. With no replay on subscribe, an event emitted between a window's read and its subscription is lost, and — before the fix above — nothing would ever re-read that window | No |
 | 2026-08-26 | Close compare mode when the window read fails | The rail hides on a failed window read, and the control that leaves compare mode lives on the rail. Leaving the mode open would hold the operator in a comparison with no way out until a later read happened to succeed, which is not the "fully functional" page the contract promises. The same review found `windows_error` had never been assigned anything but `nil`, so the promised warning could not render at all; it now says what failed and that the page will retry | Yes — the fallback is a behaviour the plan did not specify |
 | 2026-08-26 | Give each comparison track its own animation duration and draw no now line | Independent review found that sharing the chart's single advance made a lagging window's bar sweep several times faster than the work it drew, because its bar ends at its own shifted now while the remaining axis runs to the leader's. Each running bar now crosses its own remaining axis in exactly the real time that distance represents. The now line went with it: on a window-aligned axis every window's now sits at a different offset, so one shared line marks the wrong instant on every track but the leader, and a running bar's own leading edge already marks it | No |
+| 2026-08-26 | Rebuild the rail out of `favn-surface-rail` and `favn-mode-item` rather than bordered chips | Operator review said the page did not look like the product, and the style guide agrees twice: a container must not hand-roll a border and background stack, and "a rail is one continuous rounded card. Its items may light up inside the group, but they are never styled as separate buttons". The cells were also `rounded-md` where the product's controls are `rounded-field`, and 36×26 where the same element elsewhere is 36 tall. Status moved to a dot so six statuses cannot tint every cell against the one that is selected | Yes — the rail was built outside the element library it should have used |
+| 2026-08-26 | Name a window by the calendar period it covers, in a new `FavnView.WindowLabel` | A day window rendered as fifty-eight characters of timestamp that differed from the next window's in two of them. Whole-period detection runs on the display timezone's calendar fields rather than on elapsed seconds, so an Oslo day of 23 or 25 hours across a daylight-saving boundary is still one day and its non-midnight UTC bounds do not defeat it. The full range stays in the `title` | No |
+| 2026-08-26 | Raise the charts onto the type scale | Lane labels, band labels and blank-track text were `text-xs`, below the smallest step `FavnView.UI.Typography` defines. Tick labels stay smaller as chart furniture | No |
+| 2026-08-26 | Drop the "T" from the track marker and repeat the number on every track row | Operator review: "I don't understand what 17T1 means". "T1" named a track in a vocabulary the page never introduced, and it appeared only on the rail cell, so the chart still had to be read against a legend. The number alone, on the cell, and again in each lane's gutter, needs no vocabulary | No |
+| 2026-08-26 | Offer compare only at `lg` and up, and say so when a comparison is already open | The comparison is `hidden lg:block`, so on a phone the toggle entered a mode that changed nothing while the card list below it looked like the answer. The style guide is explicit: a control that does nothing does not ship | Yes — a mode was silently inert on narrow screens |
 | 2026-08-25 | Convert expanded window anchors to UTC in the materialization projector | Operator testing found a completed combined `Europe/Oslo` backfill stuck at "Running" with "4 running" windows. `Anchor.expand_range/4` returns anchors in the window's own timezone; the two non-combined projection paths convert to UTC explicitly, the combined path did not, and Postgrex refuses a non-UTC `timestamptz` parameter. The batch raised, the cursor never advanced, and no completion projected. Ecto's `:utc_datetime_usec` cast converts, which is why only this raw-SQL path broke | Yes — a backend defect outside this change record's scope, fixed here because it blocks the feature under test |
 
 ## Verification evidence
@@ -713,26 +722,19 @@ verification plan had asked for and slices 1 and 12 had not delivered.
 | Check | Result | Evidence boundary |
 | --- | --- | --- |
 | `mix compile --warnings-as-errors` | Clean | Whole umbrella |
-| `favn_view` suite | 666 passed, 108 doctests, 558 tests, 1 excluded | Excludes the acceptance, container, slow and browser tiers |
+| `favn_view` suite | 706 passed, 114 doctests, 592 tests | Excludes the acceptance, container, slow and browser tiers. Run without `--no-compile`: with it, six tests broken by the visual-review changes reported as passing against a stale build |
 | `mix format --check-formatted` on every changed and added file | Exit 0 | The branch's changed and added Elixir files, after converting them to LF; a repo-wide check is not a usable signal on a Windows worktree, where the whole tree is CRLF |
 | `favn_storage_postgres` suite | 340 passed, 20 excluded | Same exclusions. Covers the window-choice projection, the folded window query and the header-read index contract added after review |
-| Design system: "every curated example renders" | Passes over all 32 entries | Proves the new comparison, banded rail, compact and dense timeline examples render without raising. It does not look at them |
+| Design system: "every curated example renders" | Passes over all entries | Proves the new comparison, banded rail, combined-window, compact and dense timeline examples render without raising. Looking at them is the visual review below |
+| `elixir scripts/check_test_tag_tiers.exs` | Test tag tiers are covered by CI | Whole umbrella |
 | `git diff --check` | Clean | Working tree |
 | `mix assets.build` | Tailwind and daisyUI rebuilt | Needed because the compare toggle, the alignment control and the comparison lane introduce classes that did not previously exist in the stylesheet |
 
 ### Not verified
 
-- **The charts have not been looked at.** The suite proves what the markup
-  contains, not that a comparison of four windows reads well, that the track
-  legend is followable, or that a dense chart is legible. That needs the
-  umbrella dev server, `/design-system` and `window.favn.audit()`. The slice 11
-  examples exist for exactly this review and it has not been performed. The
-  attempt was blocked by the local environment rather than by this change: the
-  development database's schema predates many migrations, and
-  `mix favn.postgres.migrate` refuses the container's `favn_migrator` role with
-  `unsafe_migrator_authority`, so the orchestrator will not start and the View
-  will not serve. Contrast and target-size verdicts for the new chart classes
-  are therefore unmeasured.
+- The verification plan's "stable element ids across refreshes" row still has no
+  test, and the visual review below could not observe it either. See the last
+  entry in this list.
 - The umbrella-wide suite is not a usable signal on this workstation: it fails
   on CRLF assertions in `favn`, on `env: 'bash\r'`, and on
   `FavnRunner.TestExecution` being undefined after an app-scoped run recompiles
@@ -746,8 +748,47 @@ verification plan had asked for and slices 1 and 12 had not delivered.
 - The verification plan's "stable element ids across refreshes" row has no test.
   What it asks — that a running bar's CSS animation is not restarted by a
   re-render — is a property of LiveView's DOM patching rather than of rendered
-  markup, and no test at this layer can observe it. It belongs to the visual
-  review that has not been performed.
+  markup, and no test at this layer can observe it. The visual review below ran
+  against a finished backfill, whose bars do not animate, so it did not observe
+  it either.
+
+## Visual review, 2026-08-26
+
+The review recorded above as not performed has now been performed, against the
+`examples/basic-workflow-tutorial` workload and `/design-system`. Two local
+blockers were cleared first, neither of them this change: the development
+database predated the bootstrap-role split, so its `favn_migrator` was still a
+superuser and the migrator refused it — the postgres volume was rebuilt and
+bootstrapped through `ReleaseCLI.run!(:bootstrap)`, leaving the build and deps
+volumes untouched; and every backfill child submission was failing on `main`
+because `combine_windows` reached `RunSubmission.Intent` without being on its
+allowlist, since fixed upstream in
+[`issue-670-pr-671-combined-backfill-regression.md`](issue-670-pr-671-combined-backfill-regression.md),
+which this branch is now rebased onto.
+
+The review found the charts correct and the surface wrong. Everything it found
+is in the deviation and decision tables above; in summary: the rail was built
+outside the element library, at a radius and text size the product does not use;
+the chart carried a second copy of the rail's window list, in timestamps four
+times longer than they needed to be; both panels had their titles on the card
+border; compare mode was inert below `lg`; and a backfill parent made the
+operator click through an empty chart to reach any real work.
+
+| Check | Result |
+| --- | --- |
+| `window.favn.audit()` on `run_detail_page` at 1440×1000 | 22 pass, 0 fail, 0 skipped, 0 render errors, on `compare_windows`, `window_rail_banded` and `combined_window` |
+| `window.favn.audit()` at 390×844 | 9 pass, 0 fail |
+| Horizontal overflow at 1024 wide | None; the legend row and the alignment control wrap rather than push |
+| Dark and light | Both looked at on the running stack; the comparison, the rail and the timeline hold in each |
+| `Surface.panel/1` header inset, product-wide | `admin_page` 99 pass, `account_security_page` 22, `schedule_detail_page` 220, `runs_list_page` 220, all 0 fail |
+| Backfill parent arrival | `/runs/run_api_30660…` patches to its earliest window run; the rail marks that cell current |
+| Rail cell hover | States the full window: `Jul 17, 2026 00:00:00 UTC – Jul 18, 2026 00:00:00 UTC · Succeeded` |
+
+One defect the suite could not have caught was found by looking: the first
+attempt at opening a backfill parent's earliest window issued the patch from
+inside the rail build, which runs during `mount`, and LiveView raises on a live
+patch while mounting. The unit test called `mount/3` directly and passed. The
+test now asserts that the mount does not redirect and that `handle_params` does.
 
 ## Final review
 
