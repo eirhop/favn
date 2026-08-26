@@ -662,6 +662,15 @@ Review fixes added roughly 60 further production lines across slices 3, 9 and
 10, and roughly 400 supporting lines — most of them the three storage tests the
 verification plan had asked for and slices 1 and 12 had not delivered.
 
+The added window-failure scope, which no slice priced, measures ~620 production
+and ~950 supporting lines across four apps. It was estimated at 600-800 total
+before implementation and came to roughly double that. The production half landed
+close: the miss is almost entirely supporting, and two thirds of that is tests
+the surface genuinely needs — a doctested grouping module, five live-read tests
+covering the gating and the isolated failure, ten component tests, and one
+storage test whose fixture required extracting the shared plan-append-activate-
+claim handshake out of `seed_backfill_windows/2`.
+
 ## Deviations from the approved plan
 
 | Planned | Implemented | Reason | Impact | Reviewer verdict |
@@ -719,6 +728,10 @@ verification plan had asked for and slices 1 and 12 had not delivered.
 | 2026-08-26 | Raise the charts onto the type scale | Lane labels, band labels and blank-track text were `text-xs`, below the smallest step `FavnView.UI.Typography` defines. Tick labels stay smaller as chart furniture | No |
 | 2026-08-26 | Drop the "T" from the track marker and repeat the number on every track row | Operator review: "I don't understand what 17T1 means". "T1" named a track in a vocabulary the page never introduced, and it appeared only on the rail cell, so the chart still had to be read against a legend. The number alone, on the cell, and again in each lane's gutter, needs no vocabulary | No |
 | 2026-08-26 | Offer compare only at `lg` and up, and say so when a comparison is already open | The comparison is `hidden lg:block`, so on a phone the toggle entered a mode that changed nothing while the card list below it looked like the answer. The style guide is explicit: a control that does nothing does not ship | Yes — a mode was silently inert on narrow screens |
+| 2026-08-26 | Group failed windows by reason rather than listing them | A planning or submission failure fails every window the backfill planned, for one cause, at one instant. Thirty-one rows saying the same thing is how the cause gets lost, so a group states the reason once, with the coverage it cost and how many of its windows did reach a run and so have a page of their own | Yes — it is the shape of the added surface |
+| 2026-08-26 | Show a stored reason exactly as recorded, unwrapping one shape only | `last_error` is redacted and flattened to JSON-safe scalars, and a reason that was not already a binary is `inspect`ed, so `%{reason: :invalid_backfill_pipeline_identity}` arrives as the string `%{"reason" => "invalid_backfill_pipeline_identity"}`. `WindowFailures.reason/1` unwraps that single-entry shape and nothing else. The string's whole purpose is to be pasted into a search of the logs or the source, so prettifying it further would break the only thing it is for. The cleaner fix — storing a map reason structurally instead of inspecting it — changes what the control plane writes for every error and cannot repair rows already stored, so it is deliberately not attempted here | Yes — it is presentation-layer string handling, and the alternative is named and declined |
+| 2026-08-26 | Give the ledger read no cadence of its own | It rides the window read. Both describe the same ledger, so two cadences could show a window count and a reason list that disagree. A failed ledger read keeps the fallback poll alive, so a page whose run and backfill are both terminal still has a cycle in which to retry — the same rule the compare-window read follows | No |
+| 2026-08-26 | Name the covered period in a flat rail's subtitle rather than in its cells | A day cell is labelled `%-d`, so three March windows read "1 2 3" and a flat rail has no band header to say which month. Lengthening every cell to `Mar 1, 2026` is what the short labels exist to prevent, so the shared context is stated once above them. A banded rail is untouched: its band header already names the period | No |
 | 2026-08-26 | Do not point the operator at the per-window failure reason | The first wording of the no-window-runs notice ended "The backfill records why each window failed", which is true of the ledger and false of the product: `favn_control.backfill_windows.last_error` holds the reason, `FavnOrchestrator.page_operator_backfill_windows/3` returns it, and no operator surface calls it. The parent's Events tab holds one row, "Backfill started · Succeeded". Naming a place the product does not have is worse than silence, so the sentence is gone and the gap is recorded below | Yes — it records a product gap this change does not close |
 | 2026-08-25 | Convert expanded window anchors to UTC in the materialization projector | Operator testing found a completed combined `Europe/Oslo` backfill stuck at "Running" with "4 running" windows. `Anchor.expand_range/4` returns anchors in the window's own timezone; the two non-combined projection paths convert to UTC explicitly, the combined path did not, and Postgrex refuses a non-UTC `timestamptz` parameter. The batch raised, the cursor never advanced, and no completion projected. Ecto's `:utc_datetime_usec` cast converts, which is why only this raw-SQL path broke | Yes — a backend defect outside this change record's scope, fixed here because it blocks the feature under test |
 
@@ -830,27 +843,10 @@ of its own, with the baseline consequence stated and accepted. What was built:
 | `favn_orchestrator` | `RunWindowChoices` gains `backfill_id`, documented as the caller's only route from a run to the ledger |
 | `favn_view` | `FavnView.WindowFailures` groups failed windows by reason; `RunDetailLive` reads the ledger bounded to `status: :failed`, piggybacking the window read's cadence; `RunDetailPage.WindowFailures` renders one row per reason |
 
-Three design decisions inside it are worth naming.
-
-**Rows are reasons, not windows.** A planning or submission failure fails every
-window the backfill planned, for one cause, at one instant. Thirty-one rows
-saying the same thing is how the cause gets lost, so a group states the reason
-once with the coverage it cost.
-
-**The reason is shown as recorded.** It is stored redacted and flattened to
-JSON-safe scalars, and a reason that was not already a binary is `inspect`ed — so
-`%{reason: :invalid_backfill_pipeline_identity}` arrives as the string
-`%{"reason" => "invalid_backfill_pipeline_identity"}`. `WindowFailures.reason/1`
-unwraps that one single-entry shape and nothing else. Prettifying further would
-break the only thing the string is for, which is pasting it into a search. The
-cleaner fix — storing a map reason structurally rather than inspecting it —
-changes what the control plane writes for every error and cannot repair rows
-already stored, so it is deliberately not attempted here.
-
-**The read has no timer of its own.** It rides the window read, because both
-describe the same ledger and two cadences could show a count and a reason list
-that disagree. A failed ledger read keeps the fallback poll alive, so a page
-whose run and backfill are both terminal still has a cycle in which to retry.
+Four decisions inside it carry the design and are in the decision log below:
+grouping by reason rather than by window, showing the reason exactly as stored,
+giving the read no cadence of its own, and naming the coverage a flat rail's bare
+cell labels sit inside.
 
 The panel was verified end to end against the real failed backfill that prompted
 it — 31 windows, `invalid_backfill_pipeline_identity`, no run — before the review
@@ -909,3 +905,20 @@ One defect the review did not name was found while fixing the fourth finding:
 `compare_error` was assigned by the all-windows-lost fallback and, like
 `windows_error`, never threaded to the page, so that fallback happened silently.
 It is fixed alongside it, with a test.
+
+### Not covered by that review
+
+That review compared the implementation with the approved plan as of the review
+date. Everything under "Visual review, 2026-08-26" landed afterwards and has not
+been independently reviewed: the rail rebuild, `FavnView.WindowLabel`, the
+combined-window header fact, the panel header inset, the earliest-window arrival
+patch, the runless-backfill notice and empty state, the labelled outcome meter,
+the flat-rail coverage subtitle, and the whole window-failure surface with its
+persistence-contract change.
+
+The last of those is the one a reviewer should weigh hardest, because the approved
+plan does not mention it and so cannot be the baseline for it. It needs judging on
+its own terms: whether `backfill_id` belongs on `RunWindowChoices`, whether
+unwrapping an inspected reason in the view is acceptable or should have been fixed
+at the writer, whether piggybacking the window read's cadence is sound, and
+whether the bound and its truncation notice are honest.
