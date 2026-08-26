@@ -14,10 +14,12 @@ defmodule FavnView.WindowFailures do
   atom reason and an already-JSON-safe error map as they are and `inspect`s
   anything else. So a submission that failed with
   `%{reason: :invalid_backfill_pipeline_identity}` — a bare map, neither of those
-  — arrives here as the string `%{"reason" => "invalid_backfill_pipeline_identity"}`.
+  — arrives here as the printed form of that map,
+  `%{reason: :invalid_backfill_pipeline_identity}`, stored under `"reason"`.
 
   `reason/1` therefore unwraps a single-entry inspected map to the value inside
-  it, which is the only shape worth naming. It never parses further: an
+  it, in either the atom-key or the string-key printed form, which is the only
+  shape worth naming. It never parses further: an
   unrecognised payload is shown as stored, because a reason the operator can
   paste into a search is worth more than a tidier one that has lost a term.
 

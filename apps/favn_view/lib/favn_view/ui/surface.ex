@@ -24,12 +24,12 @@ defmodule FavnView.UI.Surface do
   | Step | Mobile | `sm` and up | Use it for |
   | --- | --- | --- | --- |
   | `:none` | none | none | a panel whose child owns its spacing: a scroll region, a table, sectioned content |
-
-  `:none` applies to the body. A header slot keeps its inset at every step, because
-  a title on the card's border is not a layout a page ever wants.
   | `:sm` | 16px | 16px | a compact panel nested inside another container |
   | `:md` | 20px | 24px | the default, and most panels |
   | `:lg` | 24px | 32px | the largest panel on a screen, and centred empty and error states |
+
+  Every step describes the body. A header slot keeps its inset at all four,
+  because a title on the card's border is not a layout a page ever wants.
 
   Passing `padding={:none}` together with a padding utility in `class` invents an
   unnamed step and decides in a page what this element owns. Add the step here instead.

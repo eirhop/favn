@@ -809,6 +809,9 @@ operator click through an empty chart to reach any real work.
 | `favn_orchestrator` | 738 passed, 0 failed |
 | `favn_storage_postgres` fast tier | 344 passed, 0 failed, with `FAVN_TEST_DATABASE_URL` on the bootstrap role |
 | After the second review's fixes | `favn_view` 753 passed, `favn_orchestrator` 744 passed, storage fast tier 344 passed, all 0 failed |
+| Re-review, measured independently by the reviewer | `favn_view` 753, `favn_orchestrator` 744, storage 345 after a documented local schema reset, `mix compile --warnings-as-errors` clean. Matches what this record claimed |
+| After the re-review's two fixes | `favn_view` 755 passed, 0 failed; `Credo.Check.Warning.UnusedEnumOperation` clean |
+| CI on `5b4aa577` | Every code check green: the aggregate `CI` gate, Quick checks, Fast, Slow, Acceptance, Dialyzer, Production-shaped HTTP boundary, Changes. The three image-qualification jobs fail on a grype CVE that has failed the scheduled scan on `main` daily since 2026-08-24 and is not reachable from this branch |
 | `window_failures_truncated` example | 22 pass / 0 fail at 1440×1000, 9 / 0 at 390×844, no horizontal overflow. Reads "the earliest 500 of 900 failed windows"; the subtitle no longer restates 500 as the failure count |
 
 One defect the suite could not have caught was found by looking: the first
@@ -929,6 +932,29 @@ It is fixed alongside it, with a test.
 | Not named by the review, found while fixing the first finding: the panel's subtitle restated the read count as the failure count, so a truncated read said "500 windows failed" under a meter reading 900 | confirmed | Fixed. A truncated read drops the count from the subtitle entirely and lets the notice carry both numbers |
 | `window_failures_read_at` assigned and never read | nit | Removed |
 | `plural/2` duplicated across the two new modules; `short_id/1` truncates without an ellipsis; the ledger read has no statement timeout unlike `list_run_windows` | nit | Not changed. The first two are local and cheap to read; the read is bounded by `@max_plan_windows` and by `status: :failed`, and adding a timeout to it is worth doing with a statement-budget measurement rather than by guess |
+
+## Re-review, 2026-08-26
+
+| Field | Result |
+| --- | --- |
+| Reviewer | Independent review agent (Fable 5), 2026-08-26 |
+| Scope | The seven claimed fixes, verified against the pre-fix behaviour, plus the two areas neither earlier review reached |
+| Findings | All seven verified fixed. Every headline replacement test confirmed to fail against the unfixed code, which was the specific risk: the author wrote both the fixes and their tests |
+| New findings | Two low, both fixed below |
+| Verdict | **Approve** |
+
+It confirmed the dispatcher pass-through is safe on boundedness and encodability,
+by tracing that its only string-keyed map input is a Postgres-decoded run error
+already bounded by `JsonSafe` at its original write, and that structs and atoms
+still reach the bounded `inspect` catch-all. `FavnView.WindowLabel` and the
+`Surface.panel/1` header inset — the two areas nothing had reviewed — hold, the
+latter across every `padding={:none}` panel with a header in the product.
+
+| Finding | Severity | Resolution |
+| --- | --- | --- |
+| A truncated read whose next cycle fails keeps `window_failures_overflow?` while dropping its rows, so the notice reads "the earliest 0 of 900 failed windows" above nothing | low | Fixed at both ends: the failed read clears the marker with the rows it described, and the notice is gated on holding rows at all. A notice about a page that is not on screen has nothing to be about, whatever the caller's marker says. Tested in the component and in the live read |
+| The `:none` note was inserted between two rows of the padding table, splitting it in generated docs | low | Fixed. The note follows the table and now says every step describes the body, which is what it always meant |
+| The moduledoc example printed the string-key form of an inspected atom-keyed map | nit | Fixed. It names the form the writer actually produces, and says the unwrap handles both |
 
 ### Open question this review raised
 

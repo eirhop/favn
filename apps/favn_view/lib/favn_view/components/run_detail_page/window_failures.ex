@@ -111,8 +111,11 @@ defmodule FavnView.Components.RunDetailPage.WindowFailures do
       than the bound must say the list is partial. Reasons repeat, so the bound
       almost never bites; when it does, silence would make a partial list look
       complete. --%>
+      <%!-- Gated on the rows as well as the marker: a notice describing a page
+      of reasons that is not on screen has nothing to be about, whatever the
+      caller's marker still says. --%>
       <.notice
-        :if={@truncated?}
+        :if={@truncated? && @groups not in [nil, []]}
         tone={:info}
         icon="hero-scissors"
         class="m-3"

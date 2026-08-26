@@ -335,6 +335,23 @@ defmodule FavnView.Components.RunDetailPage.WindowSemanticsTest do
       refute html =~ "of 0"
     end
 
+    test "a truncation notice needs rows to be about, not just a marker" do
+      # A truncated read whose next cycle failed drops its rows. The marker can
+      # still be set, and a notice trusting it alone would read "the earliest 0
+      # of 900 failed windows" above nothing at all.
+      html =
+        render_page(failing_parent(900),
+          rail: nil,
+          window_failures: nil,
+          window_failures_overflow?: true,
+          window_failures_error: "Why these windows failed could not be loaded."
+        )
+
+      refute html =~ ~s(data-testid="window-failures-truncated")
+      refute html =~ "earliest 0"
+      assert html =~ ~s(data-testid="window-failures-error")
+    end
+
     test "a failed ledger read states that rather than implying nothing was recorded" do
       html =
         render_page(failing_parent(),

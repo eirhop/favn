@@ -1222,9 +1222,12 @@ defmodule FavnView.RunDetailLive do
           window_failures_error: nil
         )
 
+      # The overflow marker describes a page of rows. Dropping the rows without
+      # it would leave the panel saying a list it no longer holds was truncated.
       {:error, _reason} ->
         assign(socket,
           window_failures: nil,
+          window_failures_overflow?: false,
           window_failures_error:
             "Why these windows failed could not be loaded. The page will try again."
         )

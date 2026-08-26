@@ -883,6 +883,37 @@ defmodule FavnView.RunDetailLiveTest do
       assert is_reference(mounted.assigns.fallback_poll_ref)
     end
 
+    test "a failed re-read drops the truncation marker with the rows it described" do
+      {:ok, reads} = Agent.start_link(fn -> 0 end)
+
+      Application.put_env(:favn_view, :operator_run_windows_fun, fn _context, _run_id ->
+        {:ok, runless_choices("bf-one")}
+      end)
+
+      Application.put_env(:favn_view, :operator_backfill_windows_fun, fn _, _, _ ->
+        case Agent.get_and_update(reads, fn count -> {count, count + 1} end) do
+          0 -> {:ok, %{failed_window_page(2, "no_runner") | has_more?: true}}
+          _later -> {:error, :temporarily_unavailable}
+        end
+      end)
+
+      assert {:ok, mounted} =
+               RunDetailLive.mount(%{"run_id" => "run-parent"}, %{}, connected_socket())
+
+      assert mounted.assigns.window_failures_overflow?
+
+      aged = put_in(mounted.assigns.windows_read_at, mounted.assigns.windows_read_at - 60_000)
+
+      {:noreply, refreshed} =
+        RunDetailLive.handle_info({:poll_run, aged.assigns.fallback_poll_ref}, aged)
+
+      # The marker describes a page of rows. Keeping it after dropping them
+      # would leave the panel calling a list it no longer holds truncated.
+      assert is_nil(refreshed.assigns.window_failures)
+      refute refreshed.assigns.window_failures_overflow?
+      assert refreshed.assigns.window_failures_error
+    end
+
     test "a ledger error does not outlive the reason to read the ledger" do
       {:ok, reads} = Agent.start_link(fn -> 0 end)
 
