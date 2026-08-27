@@ -7,8 +7,14 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
 
   alias Ecto.Adapters.SQL
   alias Ecto.Adapters.SQL.Sandbox
+  alias Favn.Contracts.RelationInspectionRequest
   alias Favn.Manifest
   alias Favn.Manifest.Asset
+  alias Favn.Contracts.RelationInspectionResult
+  alias Favn.Contracts.RunnerTask.ClaimRequest
+  alias Favn.Contracts.RunnerTask.Registration
+  alias Favn.Contracts.RunnerTask.Result
+  alias Favn.Contracts.RunnerTask.Started
   alias Favn.Manifest.ExecutionPackage
   alias Favn.Manifest.SQLExecution
   alias Favn.Manifest.Publication
@@ -23,7 +29,10 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
   alias FavnOrchestrator.ManifestActivationDiagnostics
   alias FavnOrchestrator.Manifests
   alias FavnOrchestrator.API.ManifestDeployment
+  alias FavnOrchestrator.API.Router
   alias FavnOrchestrator.Auth.ManifestDeployerTokens
+  alias FavnOrchestrator.Auth.ServiceTokens
+  alias FavnOrchestrator.OperationRunnerTasks
   alias FavnOrchestrator.Persistence.Commands.AcceptManifestDeployment
   alias FavnOrchestrator.Persistence.Commands.AcquireManifestActivationLease
   alias FavnOrchestrator.Persistence.Commands.AcquireManifestUploadLease
@@ -36,15 +45,24 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
   alias FavnOrchestrator.Persistence.Commands.ReleaseManifestUploadLease
   alias FavnOrchestrator.Persistence.Commands.UpdateManifestDeploymentProgress
   alias FavnOrchestrator.Persistence.CommandIdempotency
+  alias FavnOrchestrator.Persistence.DeploymentPlanner
   alias FavnOrchestrator.Persistence.PlatformContext
   alias FavnOrchestrator.Persistence.Queries.GetManifestDeployment
   alias FavnOrchestrator.Persistence.Runtime
   alias FavnOrchestrator.Persistence.SystemContext
+  alias FavnOrchestrator.RunnerDemandLimiter
+  alias FavnOrchestrator.RunnerQueueSupervisor
+  alias FavnOrchestrator.RunnerRegistry
+  alias FavnOrchestrator.RunnerTaskResultRouter
+  alias FavnOrchestrator.RunnerTasks
+  alias FavnOrchestrator.TargetCompatibilityPlanner
   alias FavnStoragePostgres.Backend
   alias FavnStoragePostgres.Config
   alias FavnStoragePostgres.Registry.Store
   alias FavnStoragePostgres.Repo
   alias FavnStoragePostgres.StorageV2.Migrations
+
+  @capacity_token "7b0a9d3f8e2c4615a794b6d1038fce254ec1b73a860d924f11c7e5a098bd6230"
 
   setup_all do
     url =
@@ -392,8 +410,90 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
       {Runtime, %Runtime{backend: Backend, options: [], stores: Backend.stores()}}
     )
 
+    start_runner_control_plane()
     start_supervised!({Task.Supervisor, name: FavnOrchestrator.ManifestDeploymentTaskSupervisor})
     start_supervised!({ManifestDeploymentDispatcher, concurrency: 1})
+
+    asset = hd(context.version.manifest.assets)
+    {:ok, binding} = OperationRunnerTasks.binding(context.version, asset)
+    assert RunnerRegistry.count(binding.runner_pool, binding.required_runner_release_id) == 0
+
+    demand = await_runner_demand(binding, 1)
+    assert demand.status == 200
+    assert Jason.decode!(demand.resp_body) == %{"outstanding" => 1}
+
+    runner_id = "manifest-inspection-runner-#{System.unique_integer([:positive])}"
+
+    runner_agent =
+      spawn_link(fn ->
+        receive do
+          :stop -> :ok
+        end
+      end)
+
+    on_exit(fn -> send(runner_agent, :stop) end)
+
+    registration = %Registration{
+      runner_instance_id: runner_id,
+      boot_id: "manifest-inspection-boot",
+      beam_node: Atom.to_string(node()),
+      runner_pool: binding.runner_pool,
+      required_runner_release_id: binding.required_runner_release_id,
+      lifecycle_mode: :elastic,
+      supported_task_kinds: [:relation_inspection],
+      capabilities: ["relation_inspection"]
+    }
+
+    assert {:ok, %{status: :accepted} = registration_ack} =
+             RunnerRegistry.register(registration, runner_agent)
+
+    assert {:ok, assignment} =
+             RunnerTasks.claim(%ClaimRequest{
+               command_id: "claim-#{runner_id}",
+               issued_at: DateTime.utc_now(),
+               runner_instance_id: runner_id,
+               runner_session_generation: registration_ack.runner_session_generation,
+               runner_pool: binding.runner_pool,
+               required_runner_release_id: binding.required_runner_release_id,
+               supported_task_kinds: [:relation_inspection],
+               capabilities: ["relation_inspection"]
+             })
+
+    now = DateTime.utc_now()
+
+    assert {:ok, _started} =
+             RunnerTasks.started(%Started{
+               workspace_id: assignment.workspace_id,
+               task_id: assignment.task_id,
+               runner_instance_id: runner_id,
+               runner_session_generation: registration_ack.runner_session_generation,
+               assignment_generation: assignment.assignment_generation,
+               issued_at: now,
+               occurred_at: now
+             })
+
+    assert {:ok, _ack} =
+             RunnerTasks.complete(%Result{
+               workspace_id: assignment.workspace_id,
+               task_id: assignment.task_id,
+               task_kind: assignment.task_kind,
+               runner_instance_id: runner_id,
+               runner_session_generation: registration_ack.runner_session_generation,
+               assignment_generation: assignment.assignment_generation,
+               outcome: :succeeded,
+               retry_class: :terminal,
+               result: %RelationInspectionResult{
+                 asset_ref: asset.ref,
+                 required_runner_release_id: binding.required_runner_release_id,
+                 relation_ref: asset.relation,
+                 relation: nil,
+                 columns: [],
+                 table_metadata: %{},
+                 inspected_at: DateTime.utc_now()
+               },
+               error: nil,
+               finished_at: DateTime.utc_now()
+             })
 
     terminal = await_deployment(context, operation_id)
     assert terminal.status == 200
@@ -401,7 +501,7 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
     assert %{
              "data" => %{
                "operation" => %{
-                 "state" => "needs_attention",
+                 "state" => "succeeded",
                  "progress" => %{
                    "inspection_completed" => 1,
                    "inspection_total" => 1
@@ -417,7 +517,7 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
     assert replayed.status == 200
 
     assert get_in(Jason.decode!(replayed.resp_body), ["data", "operation", "state"]) ==
-             "needs_attention"
+             "succeeded"
 
     conflicting =
       upload_archive(context, operation_id, String.duplicate("f", 64), "body is not read")
@@ -426,6 +526,218 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
 
     assert get_in(Jason.decode!(conflicting.resp_body), ["error", "code"]) ==
              "deployment_operation_conflict"
+  end
+
+  test "first-party archive deployment reports a runner-start timeout", context do
+    Sandbox.mode(Repo, {:shared, self()})
+    operation_id = "archive-timeout-#{System.unique_integer([:positive])}"
+    {archive_path, archive_sha256} = build_archive(context)
+    archive_body = File.read!(archive_path)
+    accepted = upload_archive(context, operation_id, archive_sha256, archive_body)
+    assert accepted.status == 202
+
+    start_supervised!(
+      {Runtime, %Runtime{backend: Backend, options: [], stores: Backend.stores()}}
+    )
+
+    start_runner_control_plane()
+    start_supervised!({Task.Supervisor, name: FavnOrchestrator.ManifestDeploymentTaskSupervisor})
+    start_supervised!({ManifestDeploymentDispatcher, concurrency: 1, inspection_timeout_ms: 50})
+
+    terminal = await_deployment(context, operation_id)
+    assert terminal.status == 200
+
+    assert %{
+             "data" => %{
+               "operation" => %{
+                 "state" => "needs_attention",
+                 "progress" => %{
+                   "inspection_completed" => 1,
+                   "inspection_total" => 1
+                 },
+                 "activation_diagnostics" => %{
+                   "unresolved_inspection_count" => 1,
+                   "unresolved_inspections" => [
+                     %{"reason_code" => "physical_inspection_runner_start_timeout"}
+                   ]
+                 }
+               }
+             }
+           } = Jason.decode!(terminal.resp_body)
+
+    asset = hd(context.version.manifest.assets)
+    {:ok, binding} = OperationRunnerTasks.binding(context.version, asset)
+    assert await_runner_demand(binding, 0).status == 200
+
+    replayed = upload_archive(context, operation_id, archive_sha256, archive_body)
+    assert replayed.status == 200
+
+    assert get_in(Jason.decode!(replayed.resp_body), ["data", "operation", "state"]) ==
+             "needs_attention"
+  end
+
+  test "reclaim after the durable deadline cancels existing queued inspection demand", context do
+    Sandbox.mode(Repo, {:shared, self()})
+    operation_id = "expired-reclaim-#{System.unique_integer([:positive])}"
+
+    start_supervised!(
+      {Runtime, %Runtime{backend: Backend, options: [], stores: Backend.stores()}}
+    )
+
+    start_runner_control_plane()
+
+    asset = hd(context.version.manifest.assets)
+    {:ok, binding} = OperationRunnerTasks.binding(context.version, asset)
+    deadline_at = DateTime.add(DateTime.utc_now(), 50, :millisecond)
+
+    request = %RelationInspectionRequest{
+      manifest_version_id: context.version.manifest_version_id,
+      manifest_content_hash: context.version.content_hash,
+      required_runner_release_id: binding.required_runner_release_id,
+      asset_ref: asset.ref,
+      include: [:relation, :columns, :table_metadata],
+      sample_limit: 0
+    }
+
+    assert {:ok, %{status: :queued}} =
+             OperationRunnerTasks.ensure(
+               context.workspace_context,
+               context.version,
+               asset.ref,
+               :relation_inspection,
+               request,
+               {:deployment_target_inspection, operation_id, asset.target_descriptor.target_id},
+               deadline_at: deadline_at
+             )
+
+    assert Jason.decode!(await_runner_demand(binding, 1).resp_body) == %{"outstanding" => 1}
+    Process.sleep(60)
+
+    selection = %DeploymentPlanner{
+      common_assets: [asset.ref],
+      common_pipelines: [],
+      workspace_assets: [],
+      workspace_pipelines: []
+    }
+
+    assert {:ok, [decision]} =
+             TargetCompatibilityPlanner.plan(
+               context.platform_context,
+               context.workspace_context,
+               context.version,
+               selection,
+               operation_id: operation_id,
+               inspection_deadline_at: deadline_at
+             )
+
+    assert decision.reason_code == "physical_inspection_runner_start_timeout"
+    assert Jason.decode!(await_runner_demand(binding, 0).resp_body) == %{"outstanding" => 0}
+  end
+
+  test "an active inspection timeout does not freeze a decision before cancellation is terminal",
+       context do
+    Sandbox.mode(Repo, {:shared, self()})
+    context = with_sibling_asset(context)
+    operation_id = "archive-active-timeout-#{System.unique_integer([:positive])}"
+    {archive_path, archive_sha256} = build_archive(context)
+    archive_body = File.read!(archive_path)
+    assert upload_archive(context, operation_id, archive_sha256, archive_body).status == 202
+
+    start_supervised!(
+      {Runtime, %Runtime{backend: Backend, options: [], stores: Backend.stores()}}
+    )
+
+    start_runner_control_plane()
+    start_supervised!({Task.Supervisor, name: FavnOrchestrator.ManifestDeploymentTaskSupervisor})
+
+    start_supervised!(
+      {ManifestDeploymentDispatcher, concurrency: 1, inspection_timeout_ms: 1_000}
+    )
+
+    asset = hd(context.version.manifest.assets)
+    {:ok, binding} = OperationRunnerTasks.binding(context.version, asset)
+    assert await_runner_demand(binding, 2).status == 200
+
+    runner_id = "manifest-stalled-runner-#{System.unique_integer([:positive])}"
+
+    runner_agent =
+      spawn_link(fn ->
+        receive do
+          :stop -> :ok
+        end
+      end)
+
+    on_exit(fn -> send(runner_agent, :stop) end)
+
+    registration = %Registration{
+      runner_instance_id: runner_id,
+      boot_id: "manifest-stalled-boot",
+      beam_node: Atom.to_string(node()),
+      runner_pool: binding.runner_pool,
+      required_runner_release_id: binding.required_runner_release_id,
+      lifecycle_mode: :elastic,
+      supported_task_kinds: [:relation_inspection],
+      capabilities: ["relation_inspection"]
+    }
+
+    assert {:ok, %{status: :accepted} = registration_ack} =
+             RunnerRegistry.register(registration, runner_agent)
+
+    assert {:ok, assignment} =
+             RunnerTasks.claim(%ClaimRequest{
+               command_id: "claim-#{runner_id}",
+               issued_at: DateTime.utc_now(),
+               runner_instance_id: runner_id,
+               runner_session_generation: registration_ack.runner_session_generation,
+               runner_pool: binding.runner_pool,
+               required_runner_release_id: binding.required_runner_release_id,
+               supported_task_kinds: [:relation_inspection],
+               capabilities: ["relation_inspection"]
+             })
+
+    now = DateTime.utc_now()
+
+    assert {:ok, _started} =
+             RunnerTasks.started(%Started{
+               workspace_id: assignment.workspace_id,
+               task_id: assignment.task_id,
+               runner_instance_id: runner_id,
+               runner_session_generation: registration_ack.runner_session_generation,
+               assignment_generation: assignment.assignment_generation,
+               issued_at: now,
+               occurred_at: now
+             })
+
+    terminal = await_deployment(context, operation_id)
+    assert terminal.status == 200
+
+    assert %{
+             "data" => %{
+               "operation" => %{
+                 "state" => "failed",
+                 "failure_class" => "inspection_timeout_reconciliation_failed"
+               }
+             }
+           } = Jason.decode!(terminal.resp_body)
+
+    assert {:ok, %{status: :cancelling}} =
+             OperationRunnerTasks.fetch(context.workspace_context, assignment.task_id)
+
+    assert %{rows: [["cancelled"], ["cancelling"]]} =
+             SQL.query!(
+               Repo,
+               """
+               SELECT status
+               FROM favn_control.runner_tasks
+               WHERE workspace_id = $1 AND task_kind = 'relation_inspection'
+               ORDER BY status
+               """,
+               [context.workspace_id]
+             )
+
+    assert Jason.decode!(await_runner_demand(binding, 1).resp_body) == %{"outstanding" => 1}
+
+    assert {:error, _reason} = Manifests.active_runtime(context.workspace_context)
   end
 
   test "an expired worker claim is recovered under a new fence", context do
@@ -456,6 +768,10 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
 
     assert recovered.operation_id == first.operation_id
     assert recovered.claim_fence == 2
+    assert recovered.activating_at == first.activating_at
+
+    assert ManifestDeploymentDispatcher.inspection_deadline_at(recovered, 300_000) ==
+             ManifestDeploymentDispatcher.inspection_deadline_at(first, 300_000)
 
     assert {:error, %{kind: :conflict}} =
              Store.update_manifest_deployment_progress(%UpdateManifestDeploymentProgress{
@@ -665,7 +981,8 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
     archive_path = Path.join(root, "manifest.tar.gz")
     on_exit(fn -> File.rm_rf(root) end)
 
-    assert {:ok, publication} = Publication.from_parts(context.version, [context.package])
+    packages = Map.get(context, :packages, [context.package])
+    assert {:ok, publication} = Publication.from_parts(context.version, packages)
     assert :ok = ManifestBuilder.write_bundle(bundle_dir, publication)
     assert {:ok, archive} = ManifestArchive.write(bundle_dir, archive_path)
     {archive_path, archive.sha256}
@@ -680,6 +997,51 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
     |> put_req_header("content-type", "application/gzip")
     |> put_req_header("x-request-id", "request-#{operation_id}")
     |> ManifestDeployment.call([])
+  end
+
+  defp start_runner_control_plane do
+    previous_tokens = Application.get_env(:favn_orchestrator, :api_service_tokens)
+
+    {:ok, capacity_token} =
+      ServiceTokens.from_raw_token(
+        "manifest-capacity-scaler",
+        [:capacity_reader],
+        @capacity_token,
+        "FAVN_ORCHESTRATOR_CAPACITY_READER_TOKEN"
+      )
+
+    Application.put_env(:favn_orchestrator, :api_service_tokens, [capacity_token])
+    on_exit(fn -> restore_env(:api_service_tokens, previous_tokens) end)
+
+    start_supervised!({Task.Supervisor, name: FavnOrchestrator.RunnerClaimSupervisor})
+    start_supervised!({Task.Supervisor, name: FavnOrchestrator.RunnerTaskWaitSupervisor})
+    start_supervised!({RunnerTaskResultRouter, []})
+    start_supervised!({RunnerRegistry, []})
+    start_supervised!({RunnerQueueSupervisor, []})
+    start_supervised!({RunnerDemandLimiter, []})
+  end
+
+  defp await_runner_demand(binding, expected, remaining \\ 300)
+
+  defp await_runner_demand(_binding, expected, 0),
+    do: flunk("runner demand did not reach #{expected}")
+
+  defp await_runner_demand(binding, expected, remaining) do
+    response =
+      :get
+      |> conn(
+        "/internal/runner-demand/#{binding.runner_pool}/#{binding.required_runner_release_id}"
+      )
+      |> put_req_header("authorization", "Bearer " <> @capacity_token)
+      |> Router.call(Router.init([]))
+
+    if response.status == 200 and
+         get_in(Jason.decode!(response.resp_body), ["outstanding"]) == expected do
+      response
+    else
+      Process.sleep(10)
+      await_runner_demand(binding, expected, remaining - 1)
+    end
   end
 
   defp await_deployment(context, operation_id, remaining \\ 300)
@@ -736,6 +1098,39 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
 
     {:ok, package} = ExecutionPackage.new(ref, %SQLExecution{sql: sql, template: template})
     package
+  end
+
+  defp with_sibling_asset(context) do
+    ref = {MyApp.ManifestDeploymentSiblingAsset, :asset}
+    package = execution_package(ref)
+
+    asset =
+      FavnTestSupport.with_target_descriptor(%Asset{
+        ref: ref,
+        module: elem(ref, 0),
+        name: elem(ref, 1),
+        type: :sql,
+        relation: RelationRef.new!(connection: :warehouse, schema: "manifest", name: "sibling"),
+        materialization: :table,
+        execution_package_hash: package.content_hash
+      })
+
+    manifest =
+      %Manifest{assets: context.version.manifest.assets ++ [asset]}
+      |> FavnTestSupport.with_manifest_graph()
+      |> FavnTestSupport.with_manifest_contract()
+
+    {:ok, version} = Version.new(manifest)
+
+    :ok =
+      Store.register_execution_packages(%RegisterExecutionPackages{
+        platform_context: context.platform_context,
+        packages: [package]
+      })
+
+    context
+    |> Map.put(:version, version)
+    |> Map.put(:packages, [context.package, package])
   end
 
   defp provision_workspace(context, suffix) do

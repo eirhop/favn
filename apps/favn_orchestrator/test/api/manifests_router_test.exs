@@ -405,6 +405,8 @@ defmodule FavnOrchestrator.API.ManifestsRouterTest do
                },
                deployment_id: "deployment-option-forwarding",
                activation_operation_id: "activation-option-forwarding",
+               activation_inspection_timeout_ms: 300_000,
+               activation_inspection_deadline_at: ~U[2026-08-27 12:05:00Z],
                activation_progress: progress,
                execution_pool_policy: %{approve_manifest_defaults: true}
              )
@@ -637,7 +639,15 @@ defmodule FavnOrchestrator.API.ManifestsRouterTest do
     assert {:ok, runtime} =
              Runtime.start_link(%Runtime{backend: __MODULE__, options: [], stores: stores})
 
-    on_exit(fn -> if Process.alive?(runtime), do: GenServer.stop(runtime) end)
+    on_exit(fn ->
+      if Process.alive?(runtime) do
+        try do
+          GenServer.stop(runtime)
+        catch
+          :exit, _reason -> :ok
+        end
+      end
+    end)
   end
 
   defp restore_env(key, nil), do: Application.delete_env(:favn_orchestrator, key)

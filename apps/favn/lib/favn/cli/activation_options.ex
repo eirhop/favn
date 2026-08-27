@@ -1,7 +1,7 @@
 defmodule Favn.CLI.ActivationOptions do
   @moduledoc false
 
-  @default_timeout_ms 180_000
+  @default_timeout_ms 360_000
   @maximum_timeout_ms 900_000
   @default_reconcile_timeout_ms 10_000
   @maximum_reconcile_timeout_ms 60_000

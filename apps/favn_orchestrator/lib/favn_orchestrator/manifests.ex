@@ -126,7 +126,14 @@ defmodule FavnOrchestrator.Manifests do
              operation_id:
                Keyword.get(opts, :activation_operation_id) ||
                  Keyword.get(opts, :deployment_id) || manifest_version_id,
-             progress: Keyword.get(opts, :activation_progress)
+             progress: Keyword.get(opts, :activation_progress),
+             inspection_timeout_ms:
+               Keyword.get(
+                 opts,
+                 :activation_inspection_timeout_ms,
+                 TargetCompatibilityPlanner.default_inspection_timeout_ms()
+               ),
+             inspection_deadline_at: Keyword.get(opts, :activation_inspection_deadline_at)
            ) do
       diagnostics = ManifestActivationDiagnostics.from_compatibilities(target_compatibilities)
 
@@ -143,6 +150,8 @@ defmodule FavnOrchestrator.Manifests do
           planner,
           opts
           |> Keyword.delete(:activation_operation_id)
+          |> Keyword.delete(:activation_inspection_timeout_ms)
+          |> Keyword.delete(:activation_inspection_deadline_at)
           |> Keyword.delete(:execution_pool_policy)
           |> Keyword.delete(:activation_progress)
           |> Keyword.put(:expected_active_deployment_id, expected_active_deployment_id)

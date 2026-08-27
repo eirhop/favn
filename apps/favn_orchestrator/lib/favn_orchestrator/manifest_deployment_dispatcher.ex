@@ -15,6 +15,7 @@ defmodule FavnOrchestrator.ManifestDeploymentDispatcher do
   alias FavnOrchestrator.Persistence.Results.RuntimeState
   alias FavnOrchestrator.Persistence.SystemContext
   alias FavnOrchestrator.RuntimeConfig
+  alias FavnOrchestrator.TargetCompatibilityPlanner
 
   @poll_ms 1_000
   @claim_seconds 45
@@ -25,14 +26,26 @@ defmodule FavnOrchestrator.ManifestDeploymentDispatcher do
 
   @impl true
   def init(opts) do
-    state = %{
-      owner: "#{RuntimeConfig.instance_id()}:manifest-deployments",
-      concurrency: Keyword.get(opts, :concurrency, @default_concurrency),
-      active: %{}
-    }
+    inspection_timeout_ms =
+      Keyword.get(
+        opts,
+        :inspection_timeout_ms,
+        TargetCompatibilityPlanner.default_inspection_timeout_ms()
+      )
 
-    send(self(), :poll)
-    {:ok, state}
+    if is_integer(inspection_timeout_ms) and inspection_timeout_ms > 0 do
+      state = %{
+        owner: "#{RuntimeConfig.instance_id()}:manifest-deployments",
+        concurrency: Keyword.get(opts, :concurrency, @default_concurrency),
+        inspection_timeout_ms: inspection_timeout_ms,
+        active: %{}
+      }
+
+      send(self(), :poll)
+      {:ok, state}
+    else
+      {:stop, :invalid_manifest_inspection_timeout}
+    end
   end
 
   @impl true
@@ -78,7 +91,7 @@ defmodule FavnOrchestrator.ManifestDeploymentDispatcher do
         task =
           Task.Supervisor.async_nolink(
             FavnOrchestrator.ManifestDeploymentTaskSupervisor,
-            fn -> run_claimed(operation, state.owner) end
+            fn -> run_claimed(operation, state.owner, state.inspection_timeout_ms) end
           )
 
         fill_capacity(%{state | active: Map.put(state.active, task.ref, operation)})
@@ -92,7 +105,7 @@ defmodule FavnOrchestrator.ManifestDeploymentDispatcher do
     end
   end
 
-  defp run_claimed(operation, owner) do
+  defp run_claimed(operation, owner, inspection_timeout_ms) do
     heartbeat =
       ManifestDeploymentClaimHeartbeat.start(
         fn ->
@@ -106,19 +119,21 @@ defmodule FavnOrchestrator.ManifestDeploymentDispatcher do
       )
 
     try do
-      execute(operation, owner)
+      execute(operation, owner, inspection_timeout_ms)
     after
       ManifestDeploymentClaimHeartbeat.stop(heartbeat)
     end
   end
 
-  defp execute(operation, owner) do
-    result = activate(operation, owner)
+  defp execute(operation, owner, inspection_timeout_ms) do
+    result = activate(operation, owner, inspection_timeout_ms)
 
     reconciled =
       case result do
         {:error, reason} ->
-          if unknown_outcome?(reason), do: activate(operation, owner), else: result
+          if unknown_outcome?(reason),
+            do: activate(operation, owner, inspection_timeout_ms),
+            else: result
 
         {:ok, _runtime} ->
           result
@@ -127,7 +142,7 @@ defmodule FavnOrchestrator.ManifestDeploymentDispatcher do
     complete_activation(operation, owner, reconciled)
   end
 
-  defp activate(operation, owner) do
+  defp activate(operation, owner, inspection_timeout_ms) do
     platform =
       SystemContext.platform(:manifest_deployment_activation,
         roles: [:platform_operator],
@@ -141,6 +156,8 @@ defmodule FavnOrchestrator.ManifestDeploymentDispatcher do
       )
 
     with {:ok, idempotency} <- operation_idempotency(operation) do
+      inspection_deadline_at = inspection_deadline_at(operation, inspection_timeout_ms)
+
       Manifests.deploy(
         platform,
         workspace,
@@ -148,6 +165,8 @@ defmodule FavnOrchestrator.ManifestDeploymentDispatcher do
         ManifestDeployments.fixed_selection(),
         deployment_id: operation.operation_id,
         activation_operation_id: operation.operation_id,
+        activation_inspection_timeout_ms: inspection_timeout_ms,
+        activation_inspection_deadline_at: inspection_deadline_at,
         activation_progress: fn completed, total ->
           ManifestDeployments.update_progress(operation, owner, completed, total)
         end,
@@ -156,6 +175,12 @@ defmodule FavnOrchestrator.ManifestDeploymentDispatcher do
       )
     end
   end
+
+  @doc false
+  @spec inspection_deadline_at(Deployment.t(), pos_integer()) :: DateTime.t()
+  def inspection_deadline_at(%Deployment{activating_at: %DateTime{} = activating_at}, timeout_ms)
+      when is_integer(timeout_ms) and timeout_ms > 0,
+      do: DateTime.add(activating_at, timeout_ms, :millisecond)
 
   @doc false
   @spec complete_activation(

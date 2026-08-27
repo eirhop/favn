@@ -34,6 +34,7 @@ defmodule FavnOrchestrator.OperationRunnerTasksTest do
               required_capability: command.required_capability,
               retry_class: command.retry_class,
               status: :queued,
+              deadline_at: command.deadline_at,
               payload: command.payload,
               payload_hash: command.payload_hash,
               orchestration_context: command.orchestration_context,
@@ -56,13 +57,22 @@ defmodule FavnOrchestrator.OperationRunnerTasksTest do
 
     def get(query) do
       Agent.get_and_update(agent(), fn state ->
-        reply =
-          case Map.fetch(state.tasks, query.task_id) do
-            {:ok, task} -> {:ok, task}
-            :error -> unavailable()
+        {reply, get_error} =
+          case state.get_error do
+            nil ->
+              result =
+                case Map.fetch(state.tasks, query.task_id) do
+                  {:ok, task} -> {:ok, task}
+                  :error -> {:error, Error.new(:not_found, "operation runner task not found")}
+                end
+
+              {result, nil}
+
+            error ->
+              {{:error, error}, nil}
           end
 
-        {reply, %{state | reads: state.reads + 1}}
+        {reply, %{state | reads: state.reads + 1, get_error: get_error}}
       end)
     end
 
@@ -150,6 +160,7 @@ defmodule FavnOrchestrator.OperationRunnerTasksTest do
           cancellations: [],
           tasks: %{},
           enqueue_receipts: %{},
+          get_error: nil,
           rebuilds: %{},
           reads: 0
         }
@@ -206,6 +217,59 @@ defmodule FavnOrchestrator.OperationRunnerTasksTest do
     assert length(commands) == 2
     assert Enum.uniq_by(commands, & &1.task_id) |> length() == 1
     assert Enum.all?(commands, &(&1.runner_pool == "duckdb_image"))
+  end
+
+  test "a reclaimed caller reuses the durable inspection deadline", fixture do
+    first_deadline = DateTime.add(DateTime.utc_now(), 300, :second)
+    later_deadline = DateTime.add(first_deadline, 45, :second)
+    identity = {:target_inspection, "target-reclaimed"}
+
+    assert {:ok, first} =
+             OperationRunnerTasks.ensure(
+               fixture.context,
+               fixture.version,
+               fixture.asset.ref,
+               :relation_inspection,
+               inspection_request(fixture),
+               identity,
+               deadline_at: first_deadline
+             )
+
+    assert {:ok, replay} =
+             OperationRunnerTasks.ensure(
+               fixture.context,
+               fixture.version,
+               fixture.asset.ref,
+               :relation_inspection,
+               inspection_request(fixture),
+               identity,
+               deadline_at: later_deadline
+             )
+
+    assert replay.task_id == first.task_id
+    assert replay.deadline_at == first_deadline
+
+    assert [replay_command, first_command] = Agent.get(fixture.agent, & &1.commands)
+    assert replay_command.deadline_at == first_command.deadline_at
+    assert replay_command.occurred_at == first_command.occurred_at
+  end
+
+  test "a transient replay lookup failure does not submit a conflicting enqueue", fixture do
+    error = Error.new(:unavailable, "runner task lookup unavailable")
+    Agent.update(fixture.agent, &%{&1 | get_error: error})
+
+    assert {:error, ^error} =
+             OperationRunnerTasks.ensure(
+               fixture.context,
+               fixture.version,
+               fixture.asset.ref,
+               :relation_inspection,
+               inspection_request(fixture),
+               {:target_inspection, "target-read-failure"},
+               deadline_at: DateTime.add(DateTime.utc_now(), 300, :second)
+             )
+
+    assert Agent.get(fixture.agent, & &1.commands) == []
   end
 
   test "a later caller resumes from the durable terminal result", fixture do

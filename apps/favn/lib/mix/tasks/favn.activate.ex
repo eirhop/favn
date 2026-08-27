@@ -13,7 +13,7 @@ defmodule Mix.Tasks.Favn.Activate do
   validated execution-pool defaults for the target workspace. Existing
   workspace overrides remain in effect.
 
-  `--timeout-ms` bounds the activation request (default: 180000; maximum:
+  `--timeout-ms` bounds the activation request (default: 360000; maximum:
   900000). If the response is lost or has an unknown gateway outcome, the
   command reconciles the exact active manifest for up to
   `--reconcile-timeout-ms` (default: 10000; maximum: 60000).

@@ -22,16 +22,21 @@ defmodule FavnOrchestrator.TargetCompatibilityPlanner do
   alias FavnOrchestrator.Persistence
   alias FavnOrchestrator.Persistence.Commands.DeploymentTargetCompatibility
   alias FavnOrchestrator.Persistence.DeploymentPlanner
+  alias FavnOrchestrator.Persistence.Error, as: PersistenceError
   alias FavnOrchestrator.Persistence.PlatformContext
   alias FavnOrchestrator.Persistence.Queries.GetTargetBindings
   alias FavnOrchestrator.Persistence.WorkspaceContext
   alias FavnOrchestrator.RunnerIdentityVerifier
-  alias FavnOrchestrator.RunnerRegistry
   alias FavnOrchestrator.RunnerTasks
 
   @binding_batch 500
   @inspection_concurrency 32
-  @inspection_timeout_ms 15_000
+  @inspection_timeout_ms 300_000
+
+  @doc false
+  @spec default_inspection_timeout_ms() :: pos_integer()
+  def default_inspection_timeout_ms, do: @inspection_timeout_ms
+
   @doc "Returns one frozen decision for every selected persisted SQL asset."
   @spec plan(
           PlatformContext.t(),
@@ -48,55 +53,104 @@ defmodule FavnOrchestrator.TargetCompatibilityPlanner do
         %DeploymentPlanner{} = selection,
         opts \\ []
       ) do
-    with {:ok, deployment_targets} <- DeploymentPlanner.plan(version, selection),
+    with {:ok, inspection_deadline_at} <- inspection_deadline_at(opts),
+         {:ok, deployment_targets} <- DeploymentPlanner.plan(version, selection),
          {:ok, persisted} <- persisted_targets(version, deployment_targets),
          {:ok, bindings} <- fetch_bindings(workspace_context, persisted),
          {:ok, {active_versions, historical_descriptors}} <-
            active_versions(platform_context, bindings) do
       operation_id = Keyword.get(opts, :operation_id, version.manifest_version_id)
+
       progress = Keyword.get(opts, :progress)
       total = length(persisted)
       report_progress(progress, 0, total)
 
-      decisions =
-        persisted
-        |> Task.async_stream(
-          fn target ->
-            ManifestInspectionAdmission.with_slot(fn ->
-              classify_target(
-                workspace_context,
-                target,
-                bindings,
-                active_versions,
-                historical_descriptors,
-                version,
-                operation_id
-              )
-            end)
-          end,
-          max_concurrency: @inspection_concurrency,
-          ordered: true,
-          timeout: :infinity
-        )
-        |> Enum.zip(persisted)
-        |> Enum.with_index(1)
-        |> Enum.map(fn {result, completed} ->
-          decision =
-            case result do
-              {{:ok, decision}, _target} ->
-                decision
+      persisted
+      |> Task.async_stream(
+        fn target ->
+          ManifestInspectionAdmission.with_slot(fn ->
+            classify_target(
+              workspace_context,
+              target,
+              bindings,
+              active_versions,
+              historical_descriptors,
+              version,
+              operation_id,
+              inspection_deadline_at
+            )
+          end)
+        end,
+        max_concurrency: @inspection_concurrency,
+        ordered: true,
+        timeout: :infinity
+      )
+      |> Enum.zip(persisted)
+      |> Enum.with_index(1)
+      |> collect_decisions(
+        bindings,
+        progress,
+        total,
+        workspace_context,
+        version,
+        operation_id,
+        active_versions
+      )
+    end
+  end
 
-              {{:exit, _reason}, target} ->
-                inspection_unavailable_decision(target, Map.get(bindings, target.target_id))
+  defp collect_decisions(
+         results,
+         bindings,
+         progress,
+         total,
+         workspace_context,
+         version,
+         operation_id,
+         active_versions
+       ) do
+    results
+    |> Enum.reduce({[], []}, fn {result, completed}, {decisions, errors} ->
+      outcome =
+        case result do
+          {{:ok, {:planner_error, reason}}, _target} ->
+            {:error, reason}
+
+          {{:ok, decision}, _target} ->
+            {:ok, decision}
+
+          {{:exit, _reason}, target} ->
+            case reconcile_exited_inspection(
+                   workspace_context,
+                   version,
+                   operation_id,
+                   target,
+                   Map.get(bindings, target.target_id),
+                   active_versions
+                 ) do
+              :ok ->
+                {:ok,
+                 inspection_unavailable_decision(
+                   target,
+                   Map.get(bindings, target.target_id)
+                 )}
+
+              {:error, reason} ->
+                {:error, reason}
             end
+        end
 
-          if rem(completed, 10) == 0 or completed == total,
-            do: report_progress(progress, completed, total)
+      if rem(completed, 10) == 0 or completed == total,
+        do: report_progress(progress, completed, total)
 
-          decision
-        end)
-
-      {:ok, decisions}
+      case outcome do
+        {:ok, decision} -> {[decision | decisions], errors}
+        {:error, reason} -> {decisions, [reason | errors]}
+      end
+    end)
+    |> case do
+      {decisions, []} -> {:ok, Enum.reverse(decisions)}
+      {_decisions, errors} -> {:error, errors |> Enum.reverse() |> hd()}
     end
   end
 
@@ -218,7 +272,8 @@ defmodule FavnOrchestrator.TargetCompatibilityPlanner do
          active_versions,
          historical_descriptors,
          desired_version,
-         operation_id
+         operation_id,
+         inspection_deadline_at
        ) do
     binding = Map.get(bindings, target.target_id)
 
@@ -241,7 +296,8 @@ defmodule FavnOrchestrator.TargetCompatibilityPlanner do
           active_descriptor,
           inspection_target,
           inspection_version,
-          operation_id
+          operation_id,
+          inspection_deadline_at
         )
 
       {:error, _reason} ->
@@ -256,7 +312,8 @@ defmodule FavnOrchestrator.TargetCompatibilityPlanner do
          active_descriptor,
          inspection_target,
          inspection_version,
-         operation_id
+         operation_id,
+         inspection_deadline_at
        ) do
     case inspect_physical(
            workspace_context,
@@ -264,7 +321,8 @@ defmodule FavnOrchestrator.TargetCompatibilityPlanner do
            inspection_version,
            inspection_asset_ref(inspection_target, target.asset.ref),
            target.target_id,
-           operation_id
+           operation_id,
+           inspection_deadline_at
          ) do
       {:ok, observed} ->
         result =
@@ -277,6 +335,25 @@ defmodule FavnOrchestrator.TargetCompatibilityPlanner do
           )
 
         decision(target, binding, result.status, result.reason_code, result.diff)
+
+      {:error, :inspection_runner_start_timeout} ->
+        inspection_unavailable_decision(
+          target,
+          binding,
+          :physical_inspection_runner_start_timeout,
+          :timed_out
+        )
+
+      {:error, :runner_task_timeout} ->
+        inspection_unavailable_decision(
+          target,
+          binding,
+          :physical_inspection_timeout,
+          :timed_out
+        )
+
+      {:error, {:inspection_timeout_reconciliation_failed, _details} = reason} ->
+        {:planner_error, reason}
 
       {:error, _reason} ->
         inspection_unavailable_decision(target, binding)
@@ -393,24 +470,30 @@ defmodule FavnOrchestrator.TargetCompatibilityPlanner do
     end
   end
 
-  defp inspect_physical(workspace_context, target, version, asset_ref, target_id, operation_id) do
+  defp inspect_physical(
+         workspace_context,
+         target,
+         version,
+         asset_ref,
+         target_id,
+         operation_id,
+         inspection_deadline_at
+       ) do
     {:ok, binding} = OperationRunnerTasks.binding(version, asset_ref)
     request = inspection_request(target, version, binding.required_runner_release_id)
-    deadline_at = DateTime.add(DateTime.utc_now(), @inspection_timeout_ms, :millisecond)
 
-    with true <- exact_runner_available?(binding),
-         {:ok, task} <-
-           OperationRunnerTasks.ensure(
+    with {:ok, task} <-
+           ensure_inspection_task(
              workspace_context,
              version,
              asset_ref,
-             :relation_inspection,
              request,
-             {:deployment_target_inspection, operation_id, target_id},
-             deadline_at: deadline_at
+             operation_id,
+             target_id,
+             inspection_deadline_at
            ),
          {:ok, %RelationInspectionResult{} = result} <-
-           await_inspection(workspace_context, task.task_id),
+           await_inspection(workspace_context, task, inspection_deadline_at),
          :ok <-
            RunnerIdentityVerifier.verify_inspection_result(
              binding.required_runner_release_id,
@@ -419,27 +502,204 @@ defmodule FavnOrchestrator.TargetCompatibilityPlanner do
          {:ok, physical} <- PhysicalFingerprint.from_inspection(result) do
       {:ok, physical}
     else
-      false -> {:error, :inspection_runner_unavailable}
       {:ok, _invalid} -> {:error, :invalid_runner_inspection_result}
       {:error, _reason} = error -> error
     end
   end
 
-  defp exact_runner_available?(binding) do
-    Application.get_env(:favn_orchestrator, :test_runner_executor) != nil or
-      RunnerRegistry.count(binding.runner_pool, binding.required_runner_release_id) > 0
-  catch
-    :exit, _reason -> false
+  defp ensure_inspection_task(
+         context,
+         version,
+         asset_ref,
+         request,
+         operation_id,
+         target_id,
+         deadline_at
+       ) do
+    domain_identity = {:deployment_target_inspection, operation_id, target_id}
+
+    task_id =
+      OperationRunnerTasks.task_id(
+        context.workspace_id,
+        :relation_inspection,
+        domain_identity,
+        version
+      )
+
+    case OperationRunnerTasks.fetch(context, task_id) do
+      {:ok, _existing} ->
+        OperationRunnerTasks.ensure(
+          context,
+          version,
+          asset_ref,
+          :relation_inspection,
+          request,
+          domain_identity,
+          deadline_at: deadline_at
+        )
+
+      {:error, %PersistenceError{kind: :not_found}} ->
+        with :ok <- inspection_deadline_available(deadline_at) do
+          OperationRunnerTasks.ensure(
+            context,
+            version,
+            asset_ref,
+            :relation_inspection,
+            request,
+            domain_identity,
+            deadline_at: deadline_at
+          )
+        end
+
+      {:error, _reason} = error ->
+        error
+    end
   end
 
-  defp await_inspection(context, task_id) do
-    case OperationRunnerTasks.await(context, task_id, timeout: @inspection_timeout_ms) do
-      {:error, :runner_task_timeout} = error ->
-        _ = RunnerTasks.request_cancellation(context.workspace_id, task_id, :deadline_reached)
-        error
+  defp inspection_deadline_available(deadline_at) do
+    if DateTime.compare(deadline_at, DateTime.utc_now()) == :lt,
+      do: {:error, :inspection_runner_start_timeout},
+      else: :ok
+  end
 
-      result ->
-        result
+  defp await_inspection(context, task, fallback_deadline_at) do
+    deadline_at = task.deadline_at || fallback_deadline_at
+
+    remaining_ms =
+      deadline_at
+      |> DateTime.diff(DateTime.utc_now(), :millisecond)
+      |> max(0)
+
+    result =
+      cond do
+        task.status in [:succeeded, :failed, :cancelled, :unknown] ->
+          OperationRunnerTasks.await(context, task.task_id, timeout: 1)
+
+        remaining_ms == 0 ->
+          {:error, :runner_task_timeout}
+
+        true ->
+          OperationRunnerTasks.await(context, task.task_id, timeout: remaining_ms)
+      end
+
+    case result do
+      {:error, :runner_task_timeout} -> reconcile_inspection_timeout(context, task.task_id)
+      other -> other
+    end
+  end
+
+  defp reconcile_inspection_timeout(context, task_id) do
+    with {:ok, task} <- OperationRunnerTasks.fetch(context, task_id) do
+      timeout_reason =
+        if task.status == :queued,
+          do: :inspection_runner_start_timeout,
+          else: :runner_task_timeout
+
+      case cancel_and_confirm(context, task, :deadline_reached) do
+        :ok ->
+          {:error, timeout_reason}
+
+        {:error, details} ->
+          {:error, {:inspection_timeout_reconciliation_failed, details}}
+      end
+    else
+      {:error, reason} ->
+        {:error,
+         {:inspection_timeout_reconciliation_failed, %{task_id: task_id, fetch_error: reason}}}
+    end
+  end
+
+  defp reconcile_exited_inspection(
+         context,
+         desired_version,
+         operation_id,
+         target,
+         binding,
+         active_versions
+       ) do
+    [desired_version, binding && Map.get(active_versions, binding.active_manifest_id)]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq_by(&{&1.manifest_version_id, &1.content_hash})
+    |> Enum.reduce_while(:ok, fn version, :ok ->
+      task_id =
+        OperationRunnerTasks.task_id(
+          context.workspace_id,
+          :relation_inspection,
+          {:deployment_target_inspection, operation_id, target.target_id},
+          version
+        )
+
+      case reconcile_exited_task(context, task_id) do
+        :ok -> {:cont, :ok}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp reconcile_exited_task(context, task_id) do
+    case OperationRunnerTasks.fetch(context, task_id) do
+      {:ok, %{status: status}} when status in [:succeeded, :failed, :cancelled, :unknown] ->
+        :ok
+
+      {:ok, task} ->
+        case cancel_and_confirm(context, task, :inspection_classifier_stopped) do
+          :ok -> :ok
+          {:error, details} -> {:error, {:inspection_timeout_reconciliation_failed, details}}
+        end
+
+      {:error, %PersistenceError{kind: :not_found}} ->
+        :ok
+
+      {:error, reason} ->
+        {:error,
+         {:inspection_timeout_reconciliation_failed, %{task_id: task_id, fetch_error: reason}}}
+    end
+  end
+
+  defp cancel_and_confirm(context, task, reason) do
+    cancellation = RunnerTasks.request_cancellation(context.workspace_id, task.task_id, reason)
+
+    case OperationRunnerTasks.fetch(context, task.task_id) do
+      {:ok, %{status: status}} when status in [:succeeded, :failed, :cancelled, :unknown] ->
+        :ok
+
+      {:ok, pending} ->
+        {:error,
+         %{
+           task_id: task.task_id,
+           task_status: pending.status,
+           cancellation_status: cancellation.status
+         }}
+
+      {:error, fetch_error} ->
+        {:error,
+         %{
+           task_id: task.task_id,
+           cancellation_status: cancellation.status,
+           fetch_error: fetch_error
+         }}
+    end
+  end
+
+  defp inspection_timeout_ms(opts) do
+    case Keyword.get(opts, :inspection_timeout_ms, default_inspection_timeout_ms()) do
+      timeout_ms when is_integer(timeout_ms) and timeout_ms > 0 -> {:ok, timeout_ms}
+      _invalid -> {:error, :invalid_manifest_inspection_timeout}
+    end
+  end
+
+  defp inspection_deadline_at(opts) do
+    case Keyword.get(opts, :inspection_deadline_at) do
+      nil ->
+        with {:ok, timeout_ms} <- inspection_timeout_ms(opts) do
+          {:ok, DateTime.add(DateTime.utc_now(), timeout_ms, :millisecond)}
+        end
+
+      %DateTime{} = deadline_at ->
+        {:ok, deadline_at}
+
+      _invalid ->
+        {:error, :invalid_manifest_inspection_deadline}
     end
   end
 
@@ -466,12 +726,21 @@ defmodule FavnOrchestrator.TargetCompatibilityPlanner do
   end
 
   defp inspection_unavailable_decision(target, binding) do
+    inspection_unavailable_decision(
+      target,
+      binding,
+      :physical_inspection_unavailable,
+      :unavailable
+    )
+  end
+
+  defp inspection_unavailable_decision(target, binding, reason_code, status) do
     decision(
       target,
       binding,
       :operator_decision,
-      :physical_inspection_unavailable,
-      %{inspection: %{status: :unavailable}}
+      reason_code,
+      %{inspection: %{status: status}}
     )
   end
 

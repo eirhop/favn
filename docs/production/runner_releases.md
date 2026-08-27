@@ -97,7 +97,7 @@ mix favn.publish \
 mix favn.activate \
   --workspace-id production \
   --manifest-version <manifest_version_id> \
-  --timeout-ms 180000 \
+  --timeout-ms 360000 \
   --reconcile-timeout-ms 10000 \
   --operation-id "$RELEASE_OPERATION_ID"
 ```

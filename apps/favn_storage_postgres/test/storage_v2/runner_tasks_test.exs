@@ -111,6 +111,14 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
              Codec.decode_payload(:relation_inspection, compressed)
   end
 
+  test "missing runner-task reads return not found", fixture do
+    assert {:error, %{kind: :not_found}} =
+             Store.get(%Q.GetRunnerTask{
+               workspace_context: fixture.workspace_context,
+               task_id: "rt_missing_#{random_id()}"
+             })
+  end
+
   test "known release partitions exist at zero demand before their first task", fixture do
     command = %C.EnsureRunnerCapacityDemand{
       platform_context: fixture.platform_context,
@@ -672,6 +680,42 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
              )
 
     assert issued_at == DateTime.to_naive(first.enqueued_at)
+  end
+
+  test "a reclaimed operation ensure reuses its PostgreSQL deadline receipt", fixture do
+    version = manifest_version("mv-reclaimed-ensure-#{random_id()}", fixture.runner_pool)
+    asset_ref = {MyApp.DistributedRunnerAsset, :asset}
+    request = inspection_payload()
+    identity = {:reclaimed_ensure, random_id()}
+    first_deadline = DateTime.add(fixture.now, 300, :second)
+
+    assert {:ok, first} =
+             OperationRunnerTasks.ensure(
+               fixture.workspace_context,
+               version,
+               asset_ref,
+               :relation_inspection,
+               request,
+               identity,
+               occurred_at: fixture.now,
+               deadline_at: first_deadline
+             )
+
+    assert {:ok, replay} =
+             OperationRunnerTasks.ensure(
+               fixture.workspace_context,
+               version,
+               asset_ref,
+               :relation_inspection,
+               request,
+               identity,
+               occurred_at: DateTime.add(fixture.now, 45, :second),
+               deadline_at: DateTime.add(first_deadline, 45, :second)
+             )
+
+    assert replay == first
+    assert replay.deadline_at == first_deadline
+    assert {:ok, %{outstanding_count: 1, queued_count: 1}} = demand(fixture)
   end
 
   test "large task fields are stored once while command receipts remain bounded", fixture do

@@ -94,6 +94,8 @@ runtime inputs, and SQL integrations remain pre-v1 and may change.
   selection into one child run, and that choice is frozen into the reviewed plan.
 - Manifest activation inspects persisted SQL relations through the runner and
   records desired, active-generation, and physical compatibility per target.
+  Inspection demand is durable before runner availability is checked, so an
+  exact pool/release can cold-start from zero through the runner-demand endpoint.
   Incompatible, drifted, and ownership-unknown targets reject ordinary writes
   on affected dependency paths; compatible and unrelated paths remain runnable.
 - The private manifest-deployment API authenticates, checks replay/conflict, and
