@@ -4,7 +4,7 @@ defmodule FavnLocal.MixProject do
   def project do
     [
       app: :favn_local,
-      version: "0.5.0-rc.10",
+      version: "0.5.0-rc.11",
       description: "Local runtime lifecycle tooling owner for Favn",
       build_path: "../../_build",
       config_path: "../../config/config.exs",
