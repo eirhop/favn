@@ -11,12 +11,17 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
   alias Favn.Manifest.Asset
   alias Favn.Manifest.ExecutionPackage
   alias Favn.Manifest.SQLExecution
+  alias Favn.Manifest.Publication
   alias Favn.Manifest.Version
   alias Favn.RelationRef
   alias Favn.SQL.Template
+  alias FavnAuthoring.Deployment.ManifestArchive
+  alias FavnAuthoring.Deployment.ManifestBuilder
+  alias FavnOrchestrator.Lifecycle
   alias FavnOrchestrator.ManifestDeploymentContext
   alias FavnOrchestrator.ManifestDeploymentDispatcher
   alias FavnOrchestrator.ManifestActivationDiagnostics
+  alias FavnOrchestrator.Manifests
   alias FavnOrchestrator.API.ManifestDeployment
   alias FavnOrchestrator.Auth.ManifestDeployerTokens
   alias FavnOrchestrator.Persistence.Commands.AcceptManifestDeployment
@@ -33,7 +38,9 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
   alias FavnOrchestrator.Persistence.CommandIdempotency
   alias FavnOrchestrator.Persistence.PlatformContext
   alias FavnOrchestrator.Persistence.Queries.GetManifestDeployment
+  alias FavnOrchestrator.Persistence.Runtime
   alias FavnOrchestrator.Persistence.SystemContext
+  alias FavnStoragePostgres.Backend
   alias FavnStoragePostgres.Config
   alias FavnStoragePostgres.Registry.Store
   alias FavnStoragePostgres.Repo
@@ -48,6 +55,8 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
       Config.repo_options(url: url, ssl_mode: :disable, pool: Sandbox, pool_size: 2)
 
     start_supervised!({Repo, options})
+    start_supervised!({Lifecycle, shutdown_drain_timeout_ms: 120_000})
+    :ok = Lifecycle.mark_accepting()
     :ok = Migrations.migrate!(Repo)
     Sandbox.mode(Repo, :manual)
     :ok
@@ -125,6 +134,7 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
     %{
       deployment_context: deployment_context,
       platform_context: platform_context,
+      package: package,
       version: version,
       workspace_context: workspace_context,
       workspace_id: workspace_id,
@@ -368,6 +378,56 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
     assert get_in(Jason.decode!(replay.resp_body), ["data", "operation", "state"]) == "accepted"
   end
 
+  test "first-party archive deployment activates and replays after inspection", context do
+    Sandbox.mode(Repo, {:shared, self()})
+    operation_id = "archive-activation-#{System.unique_integer([:positive])}"
+    {archive_path, archive_sha256} = build_archive(context)
+    archive_body = File.read!(archive_path)
+
+    accepted = upload_archive(context, operation_id, archive_sha256, archive_body)
+    assert accepted.status == 202
+    assert get_in(Jason.decode!(accepted.resp_body), ["data", "operation", "state"]) == "accepted"
+
+    start_supervised!(
+      {Runtime, %Runtime{backend: Backend, options: [], stores: Backend.stores()}}
+    )
+
+    start_supervised!({Task.Supervisor, name: FavnOrchestrator.ManifestDeploymentTaskSupervisor})
+    start_supervised!({ManifestDeploymentDispatcher, concurrency: 1})
+
+    terminal = await_deployment(context, operation_id)
+    assert terminal.status == 200
+
+    assert %{
+             "data" => %{
+               "operation" => %{
+                 "state" => "needs_attention",
+                 "progress" => %{
+                   "inspection_completed" => 1,
+                   "inspection_total" => 1
+                 }
+               }
+             }
+           } = Jason.decode!(terminal.resp_body)
+
+    assert {:ok, active} = Manifests.active_runtime(context.workspace_context)
+    assert active.manifest_version_id == context.version.manifest_version_id
+
+    replayed = upload_archive(context, operation_id, archive_sha256, archive_body)
+    assert replayed.status == 200
+
+    assert get_in(Jason.decode!(replayed.resp_body), ["data", "operation", "state"]) ==
+             "needs_attention"
+
+    conflicting =
+      upload_archive(context, operation_id, String.duplicate("f", 64), "body is not read")
+
+    assert conflicting.status == 409
+
+    assert get_in(Jason.decode!(conflicting.resp_body), ["error", "code"]) ==
+             "deployment_operation_conflict"
+  end
+
   test "an expired worker claim is recovered under a new fence", context do
     assert {:ok, :accepted, _operation} =
              context |> accept_command() |> Store.accept_manifest_deployment()
@@ -592,6 +652,58 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
       version: context.version,
       occurred_at: occurred_at
     }
+  end
+
+  defp build_archive(context) do
+    root =
+      Path.join(
+        System.tmp_dir!(),
+        "favn_manifest_deployment_#{System.unique_integer([:positive])}"
+      )
+
+    bundle_dir = Path.join(root, "bundle")
+    archive_path = Path.join(root, "manifest.tar.gz")
+    on_exit(fn -> File.rm_rf(root) end)
+
+    assert {:ok, publication} = Publication.from_parts(context.version, [context.package])
+    assert :ok = ManifestBuilder.write_bundle(bundle_dir, publication)
+    assert {:ok, archive} = ManifestArchive.write(bundle_dir, archive_path)
+    {archive_path, archive.sha256}
+  end
+
+  defp upload_archive(context, operation_id, archive_sha256, body) do
+    :put
+    |> conn("/api/orchestrator/v1/manifest-deployments/#{operation_id}", body)
+    |> put_req_header("authorization", "Bearer " <> context.raw_token)
+    |> put_req_header("x-favn-workspace-id", context.workspace_id)
+    |> put_req_header("x-favn-archive-sha256", archive_sha256)
+    |> put_req_header("content-type", "application/gzip")
+    |> put_req_header("x-request-id", "request-#{operation_id}")
+    |> ManifestDeployment.call([])
+  end
+
+  defp await_deployment(context, operation_id, remaining \\ 300)
+
+  defp await_deployment(_context, operation_id, 0),
+    do: flunk("manifest deployment #{operation_id} did not reach a terminal state")
+
+  defp await_deployment(context, operation_id, remaining) do
+    response =
+      :get
+      |> conn("/api/orchestrator/v1/manifest-deployments/#{operation_id}")
+      |> put_req_header("authorization", "Bearer " <> context.raw_token)
+      |> put_req_header("x-favn-workspace-id", context.workspace_id)
+      |> put_req_header("x-request-id", "status-#{operation_id}")
+      |> ManifestDeployment.call([])
+
+    state = get_in(Jason.decode!(response.resp_body), ["data", "operation", "state"])
+
+    if state in ["succeeded", "needs_attention", "failed", "unknown"] do
+      response
+    else
+      Process.sleep(10)
+      await_deployment(context, operation_id, remaining - 1)
+    end
   end
 
   defp activation_idempotency(operation) do

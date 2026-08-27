@@ -9,7 +9,9 @@ defmodule FavnOrchestrator.API.ManifestsRouterTest do
   alias Favn.Manifest.Version
   alias FavnOrchestrator.API.ManifestsRouter
   alias FavnOrchestrator.Auth.ServiceTokens
+  alias FavnOrchestrator.Manifests
   alias FavnOrchestrator.Persistence.{Runtime, Stores}
+  alias FavnOrchestrator.Persistence.SystemContext
 
   @token "manifest-router-test-token-with-32-bytes"
 
@@ -47,7 +49,15 @@ defmodule FavnOrchestrator.API.ManifestsRouterTest do
       do: {:ok, Application.fetch_env!(:favn_orchestrator, :manifest_router_test_version)}
 
     def begin_manifest_deployment(query), do: {:ok, {:new, query.idempotency}}
-    def acquire_manifest_activation_lease(_command), do: {:ok, 1}
+
+    def acquire_manifest_activation_lease(command) do
+      if test_pid = Application.get_env(:favn_orchestrator, :manifest_router_test_pid) do
+        send(test_pid, {:activation_lease_acquired, command})
+      end
+
+      {:ok, 1}
+    end
+
     def renew_manifest_activation_lease(_command), do: :ok
     def release_manifest_activation_lease(_command), do: :ok
     def heartbeat_manifest_deployment(_command), do: :ok
@@ -357,6 +367,56 @@ defmodule FavnOrchestrator.API.ManifestsRouterTest do
                }
              }
            } = Jason.decode!(response.resp_body)
+  end
+
+  test "orchestration-only activation options are consumed before persistence" do
+    {:ok, version} = ManifestsRouter.build_version(valid_envelope())
+
+    Application.put_env(:favn_orchestrator, :manifest_router_test_version, version)
+    Application.put_env(:favn_orchestrator, :manifest_router_test_pid, self())
+
+    on_exit(fn ->
+      Application.delete_env(:favn_orchestrator, :manifest_router_test_version)
+      Application.delete_env(:favn_orchestrator, :manifest_router_test_pid)
+    end)
+
+    start_manifest_runtime(SuccessfulManifestStore)
+
+    platform =
+      SystemContext.platform(:manifest_option_forwarding_test, roles: [:platform_operator])
+
+    workspace =
+      SystemContext.workspace("workspace-a", :manifest_option_forwarding_test,
+        roles: [:platform_operator]
+      )
+
+    progress = fn completed, total -> send(self(), {:activation_progress, completed, total}) end
+
+    assert {:ok, runtime} =
+             Manifests.deploy(
+               platform,
+               workspace,
+               version.manifest_version_id,
+               %{
+                 "common_assets" => "all",
+                 "common_pipelines" => "all",
+                 "workspace_assets" => [],
+                 "workspace_pipelines" => []
+               },
+               deployment_id: "deployment-option-forwarding",
+               activation_operation_id: "activation-option-forwarding",
+               activation_progress: progress,
+               execution_pool_policy: %{approve_manifest_defaults: true}
+             )
+
+    assert runtime.deployment_id == "deployment-option-forwarding"
+
+    assert_receive {:activation_lease_acquired, lease}
+    assert lease.operation_id == "activation-option-forwarding"
+    assert_receive {:activation_progress, 0, 0}
+
+    assert_receive {:manifest_deployed, command}
+    assert command.deployment_id == "deployment-option-forwarding"
   end
 
   test "activation requires explicit approval for non-empty manifest pool defaults" do

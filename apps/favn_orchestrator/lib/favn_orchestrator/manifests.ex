@@ -142,6 +142,7 @@ defmodule FavnOrchestrator.Manifests do
           manifest_version_id,
           planner,
           opts
+          |> Keyword.delete(:activation_operation_id)
           |> Keyword.delete(:execution_pool_policy)
           |> Keyword.delete(:activation_progress)
           |> Keyword.put(:expected_active_deployment_id, expected_active_deployment_id)
