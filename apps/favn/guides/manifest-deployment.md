@@ -78,6 +78,14 @@ States are:
 
 While activation runs, `progress.inspection_completed` and
 `progress.inspection_total` report bounded durable target-inspection progress.
+Physical inspections are queued against the manifest's exact runner pool and
+release even when that pool currently has zero runners. The private runner-demand
+endpoint then exposes the work so external scaling can start capacity. Activation
+has one five-minute inspection budget for scaler polling, runner cold start,
+claims, and completion. If no matching runner claims a task in that budget, the
+operation ends as `needs_attention` with
+`physical_inspection_runner_start_timeout`; restore that exact pool/release and
+repeat deployment with a new operation ID.
 
 The same operation ID and archive replay the existing result without reading
 the body. Reusing the ID for different content returns

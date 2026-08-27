@@ -680,9 +680,13 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
   def get(%Q.GetRunnerTask{} = query) do
     read(fn ->
       if bounded_id(query.task_id) == :ok do
-        query.workspace_context.workspace_id
-        |> fetch_task!(query.task_id)
-        |> to_result()
+        case Repo.get_by(RunnerTask,
+               workspace_id: query.workspace_context.workspace_id,
+               task_id: query.task_id
+             ) do
+          nil -> {:error, Error.new(:not_found, "runner task not found")}
+          task -> to_result(task)
+        end
       else
         {:error, Error.new(:invalid, "invalid runner task identity")}
       end

@@ -17,7 +17,7 @@ defmodule Favn.CLI.Activate do
   Activates one exact manifest for one workspace.
 
   `:timeout_ms` bounds the request to 1..900000 milliseconds and defaults to
-  180000. After an unknown request transport or gateway outcome,
+  360000. After an unknown request transport or gateway outcome,
   `:reconcile_timeout_ms` bounds authoritative active-manifest reconciliation
   to 1..60000 milliseconds and defaults to 10000. Pass and reuse a non-secret
   `:operation_id` for deployment retries.

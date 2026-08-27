@@ -83,7 +83,7 @@ defmodule FavnOrchestrator.TestRunnerTaskStore do
   def get(query) do
     case Process.get({__MODULE__, query.task_id}) do
       %RunnerTask{} = task -> {:ok, task}
-      nil -> unavailable()
+      nil -> {:error, Error.new(:not_found, "runner task not found")}
     end
   end
 

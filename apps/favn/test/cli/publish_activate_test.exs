@@ -167,7 +167,7 @@ defmodule Favn.CLI.PublishActivateTest do
     assert_received {:activated, "http://orchestrator.internal", "environment-token", "mv_exact",
                      "workspace-a", activation_opts}
 
-    assert activation_opts[:timeout_ms] == 180_000
+    assert activation_opts[:timeout_ms] == 360_000
     assert activation_opts[:reconcile_timeout_ms] == 10_000
     assert activation_opts[:operation_id] == summary.operation_id
   end

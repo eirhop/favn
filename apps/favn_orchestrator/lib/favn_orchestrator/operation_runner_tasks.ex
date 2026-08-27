@@ -54,44 +54,53 @@ defmodule FavnOrchestrator.OperationRunnerTasks do
       )
       when is_tuple(asset_ref) and is_atom(task_kind) and is_list(opts) do
     task_id = task_id(context.workspace_id, task_kind, domain_identity, version)
-    occurred_at = Keyword.get(opts, :occurred_at, DateTime.utc_now())
-    issued_at = Keyword.get(opts, :issued_at, occurred_at)
 
-    with :ok <- operation_allows_task(context, Keyword.get(opts, :rebuild_operation_id)),
-         {:ok, runner_pool, release_id} <- task_binding(version, asset_ref, opts),
-         :ok <- validate_payload_release(payload, release_id),
-         {:ok, encoded_payload, payload_hash} <-
-           PersistenceCodec.encode_payload(task_kind, payload),
-         {:ok, orchestration_context} <-
-           PersistenceCodec.encode_orchestration_context(
-             Keyword.get(opts, :orchestration_context, %{})
-           ),
-         {:ok, required_capability} <- Map.fetch(@capabilities, task_kind) do
-      with {:ok, _enqueue_receipt} <-
-             RunnerTasks.enqueue(%EnqueueRunnerTask{
-               workspace_context: context,
-               command_id: "enqueue:#{task_id}",
-               task_id: task_id,
-               domain_identity: durable_domain_identity(task_kind, domain_identity, version),
-               task_kind: task_kind,
-               runner_pool: runner_pool,
-               required_runner_release_id: release_id,
-               retry_class: RunnerTask.default_retry_class(task_kind),
-               payload: encoded_payload,
-               payload_hash: payload_hash,
-               orchestration_context: orchestration_context,
-               operation_id: Keyword.get(opts, :operation_id),
-               required_capability: required_capability,
-               deadline_at: Keyword.get(opts, :deadline_at),
-               issued_at: issued_at,
-               occurred_at: occurred_at
-             }),
-           {:ok, task} <- fetch(context, task_id) do
-        maybe_retry_safe(context, task)
+    with {:ok, existing_task} <- existing_task(context, task_id) do
+      occurred_at =
+        (existing_task && existing_task.enqueued_at) ||
+          Keyword.get(opts, :occurred_at, DateTime.utc_now())
+
+      issued_at = Keyword.get(opts, :issued_at, occurred_at)
+
+      deadline_at =
+        (existing_task && existing_task.deadline_at) || Keyword.get(opts, :deadline_at)
+
+      with :ok <- operation_allows_task(context, Keyword.get(opts, :rebuild_operation_id)),
+           {:ok, runner_pool, release_id} <- task_binding(version, asset_ref, opts),
+           :ok <- validate_payload_release(payload, release_id),
+           {:ok, encoded_payload, payload_hash} <-
+             PersistenceCodec.encode_payload(task_kind, payload),
+           {:ok, orchestration_context} <-
+             PersistenceCodec.encode_orchestration_context(
+               Keyword.get(opts, :orchestration_context, %{})
+             ),
+           {:ok, required_capability} <- Map.fetch(@capabilities, task_kind) do
+        with {:ok, _enqueue_receipt} <-
+               RunnerTasks.enqueue(%EnqueueRunnerTask{
+                 workspace_context: context,
+                 command_id: "enqueue:#{task_id}",
+                 task_id: task_id,
+                 domain_identity: durable_domain_identity(task_kind, domain_identity, version),
+                 task_kind: task_kind,
+                 runner_pool: runner_pool,
+                 required_runner_release_id: release_id,
+                 retry_class: RunnerTask.default_retry_class(task_kind),
+                 payload: encoded_payload,
+                 payload_hash: payload_hash,
+                 orchestration_context: orchestration_context,
+                 operation_id: Keyword.get(opts, :operation_id),
+                 required_capability: required_capability,
+                 deadline_at: deadline_at,
+                 issued_at: issued_at,
+                 occurred_at: occurred_at
+               }),
+             {:ok, task} <- fetch(context, task_id) do
+          maybe_retry_safe(context, task)
+        end
+      else
+        :error -> {:error, {:unsupported_runner_task_kind, task_kind}}
+        {:error, _reason} = error -> error
       end
-    else
-      :error -> {:error, {:unsupported_runner_task_kind, task_kind}}
-      {:error, _reason} = error -> error
     end
   end
 
@@ -259,6 +268,14 @@ defmodule FavnOrchestrator.OperationRunnerTasks do
        do: RunnerTasks.retry_safe(context, task)
 
   defp maybe_retry_safe(_context, task), do: {:ok, task}
+
+  defp existing_task(context, task_id) do
+    case fetch(context, task_id) do
+      {:ok, task} -> {:ok, task}
+      {:error, %FavnOrchestrator.Persistence.Error{kind: :not_found}} -> {:ok, nil}
+      {:error, _reason} = error -> error
+    end
+  end
 
   defp operation_allows_task(_context, nil), do: :ok
 
