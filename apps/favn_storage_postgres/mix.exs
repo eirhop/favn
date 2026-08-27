@@ -30,6 +30,7 @@ defmodule FavnStoragePostgres.MixProject do
     [
       internal_dep(:favn_orchestrator, "../favn_orchestrator", runtime: false),
       internal_dep(:favn_core, "../favn_core", runtime: false),
+      internal_dep(:favn_authoring, "../favn_authoring", only: :test, runtime: false),
       internal_dep(:favn_azure, "../favn_azure", only: :test, runtime: false),
       internal_dep(:favn_runner, "../favn_runner", only: :test, runtime: false),
       internal_dep(:favn_test_support, "../favn_test_support", only: :test, runtime: false),
