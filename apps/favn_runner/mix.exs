@@ -4,7 +4,7 @@ defmodule FavnRunner.MixProject do
   def project do
     [
       app: :favn_runner,
-      version: "0.5.0-rc.12",
+      version: "0.5.0-rc.13",
       description: "Internal runner runtime scaffold for v0.5 migration",
       build_path: "../../_build",
       config_path: "../../config/config.exs",
