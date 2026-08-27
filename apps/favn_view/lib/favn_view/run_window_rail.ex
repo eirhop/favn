@@ -21,6 +21,12 @@ defmodule FavnView.RunWindowRail do
   to and is not a cell, so `in_progress?` reports that the set is still growing
   while the backfill has not finished.
 
+  Two clocks meet here and the struct names both. A cell's `timezone` is the
+  window's own — the one its calendar position means something in — and is
+  resolved at build time, so it is always a zone that renders. The rail's
+  `timezone` is the operator's display zone, which is what the exact bounds of a
+  window are stated in, the same as every other instant on the page.
+
   A cell also reports its place in a comparison. `track` is the fixed position a
   compared window's bars occupy in every lane, taken from the caller's ordering
   rather than from this cell's place in the rail, so opening a different band
@@ -57,11 +63,17 @@ defmodule FavnView.RunWindowRail do
   @type combined :: %{
           start_at: DateTime.t(),
           end_at: DateTime.t(),
-          window_count: pos_integer()
+          window_count: pos_integer(),
+          kind: kind(),
+          timezone: String.t()
         }
+
+  @type kind :: :hour | :day | :month | :year | nil
 
   @type t :: %__MODULE__{
           layout: :flat | :banded,
+          kind: kind(),
+          timezone: String.t(),
           cells: [cell()],
           buckets: [bucket()],
           open_bucket: String.t() | nil,
@@ -75,6 +87,8 @@ defmodule FavnView.RunWindowRail do
 
   @enforce_keys [
     :layout,
+    :kind,
+    :timezone,
     :cells,
     :buckets,
     :truncated?,
@@ -104,16 +118,20 @@ defmodule FavnView.RunWindowRail do
   @spec build([map()], String.t() | nil, String.t() | map(), keyword()) :: t()
   def build(choices, selected_run_id, timezone, opts \\ []) when is_list(choices) do
     kind = list_kind(choices)
+    display_timezone = Time.timezone(timezone)
     compare_run_ids = Keyword.get(opts, :compare_run_ids, [])
 
     cells =
       choices
       |> Enum.sort_by(&{DateTime.to_unix(&1.window_start_at, :microsecond), &1.run_id})
       |> combine_by_run()
-      |> Enum.map(&cell(&1, kind, selected_run_id, compare_run_ids, timezone))
+      |> Enum.map(&resolve_timezone(&1, display_timezone))
+      |> Enum.map(&cell(&1, kind, selected_run_id, compare_run_ids))
 
     %__MODULE__{
       layout: layout(cells),
+      kind: kind,
+      timezone: display_timezone,
       cells: cells,
       buckets: [],
       open_bucket: Keyword.get(opts, :open_bucket),
@@ -126,9 +144,9 @@ defmodule FavnView.RunWindowRail do
       loaded_count: length(cells),
       compare_run_ids: compare_run_ids,
       compare_full?: length(compare_run_ids) >= @compare_limit,
-      combined: combined(cells, Keyword.get(opts, :backfill_status))
+      combined: combined(cells, kind, Keyword.get(opts, :backfill_status))
     }
-    |> band(kind, timezone)
+    |> band(kind)
   end
 
   @doc "Returns the flat-strip cell ceiling, above which the rail bands."
@@ -156,44 +174,50 @@ defmodule FavnView.RunWindowRail do
   #
   # While the backfill is still producing there may yet be another run, so the
   # rail stays: it is the only thing that says the set is still growing.
-  defp combined([%{window_count: count} = cell], status) when count > 1 do
+  defp combined([%{window_count: count} = cell], kind, status) when count > 1 do
     if in_progress?(status) do
       nil
     else
-      %{start_at: cell.start_at, end_at: cell.end_at, window_count: count}
+      %{
+        start_at: cell.start_at,
+        end_at: cell.end_at,
+        window_count: count,
+        kind: kind,
+        timezone: cell.timezone
+      }
     end
   end
 
-  defp combined(_cells, _status), do: nil
+  defp combined(_cells, _kind, _status), do: nil
 
-  defp band(%__MODULE__{layout: :flat} = rail, _kind, _timezone), do: rail
+  defp band(%__MODULE__{layout: :flat} = rail, _kind), do: rail
 
-  defp band(%__MODULE__{} = rail, kind, timezone) do
-    case bucket_unit(kind, rail.cells, timezone) do
+  defp band(%__MODULE__{} = rail, kind) do
+    case bucket_unit(kind, rail.cells) do
       nil ->
         # Years have no coarser unit to group by, so a very long year list stays
         # flat rather than collapsing into a single meaningless band.
         %{rail | layout: :flat}
 
       unit ->
-        buckets = buckets(rail.cells, unit, timezone)
+        buckets = buckets(rail.cells, unit)
         selected = open_bucket(buckets, rail.open_bucket)
 
         %{
           rail
           | buckets: Enum.map(buckets, &bucket(&1, selected)),
-            cells: Enum.filter(rail.cells, &(bucket_id(&1, unit, timezone) == selected))
+            cells: Enum.filter(rail.cells, &(bucket_id(&1, unit) == selected))
         }
     end
   end
 
-  defp buckets(cells, unit, timezone) do
+  defp buckets(cells, unit) do
     cells
-    |> Enum.group_by(&bucket_id(&1, unit, timezone))
+    |> Enum.group_by(&bucket_id(&1, unit))
     |> Enum.map(fn {id, grouped} ->
       %{
         id: id,
-        label: bucket_label(hd(grouped), unit, timezone),
+        label: bucket_label(hd(grouped), unit),
         count: length(grouped),
         selected?: Enum.any?(grouped, & &1.selected?)
       }
@@ -217,24 +241,24 @@ defmodule FavnView.RunWindowRail do
   # One calendar unit up from the window kind. A mixed or undecodable list has
   # no single kind, so it takes the smallest unit that keeps the coarse band
   # inside the flat threshold.
-  defp bucket_unit(:hour, _cells, _timezone), do: :day
-  defp bucket_unit(:day, _cells, _timezone), do: :month
-  defp bucket_unit(:month, _cells, _timezone), do: :year
-  defp bucket_unit(:year, _cells, _timezone), do: nil
+  defp bucket_unit(:hour, _cells), do: :day
+  defp bucket_unit(:day, _cells), do: :month
+  defp bucket_unit(:month, _cells), do: :year
+  defp bucket_unit(:year, _cells), do: nil
 
-  defp bucket_unit(nil, cells, timezone) do
+  defp bucket_unit(nil, cells) do
     Enum.find([:day, :month, :year], fn unit ->
       cells
-      |> Enum.map(&bucket_id(&1, unit, timezone))
+      |> Enum.map(&bucket_id(&1, unit))
       |> Enum.uniq()
       |> length()
       |> Kernel.<=(@flat_threshold)
     end) || :year
   end
 
-  defp bucket_id(cell, unit, timezone) do
+  defp bucket_id(cell, unit) do
     cell.start_at
-    |> local(cell, timezone)
+    |> local(cell)
     |> truncate_to(unit)
   end
 
@@ -246,14 +270,11 @@ defmodule FavnView.RunWindowRail do
 
   defp truncate_to(%DateTime{year: year}, :year), do: Integer.to_string(year)
 
-  defp bucket_label(cell, :day, timezone),
-    do: cell.start_at |> local(cell, timezone) |> Calendar.strftime("%b %-d")
+  defp bucket_label(cell, :day), do: cell.start_at |> local(cell) |> Calendar.strftime("%b %-d")
 
-  defp bucket_label(cell, :month, timezone),
-    do: cell.start_at |> local(cell, timezone) |> Calendar.strftime("%b %Y")
+  defp bucket_label(cell, :month), do: cell.start_at |> local(cell) |> Calendar.strftime("%b %Y")
 
-  defp bucket_label(cell, :year, timezone),
-    do: cell.start_at |> local(cell, timezone) |> Calendar.strftime("%Y")
+  defp bucket_label(cell, :year), do: cell.start_at |> local(cell) |> Calendar.strftime("%Y")
 
   # A combined backfill executes several logical coverage windows in one child
   # run. Those are one execution, so they are one cell: rendering a cell per
@@ -275,12 +296,33 @@ defmodule FavnView.RunWindowRail do
     end)
   end
 
-  defp cell(choice, kind, selected_run_id, compare_run_ids, timezone) do
+  # Every cell carries a timezone it can actually be rendered in. A window key
+  # too old to decode one, or naming a zone this build of the timezone database
+  # does not know, falls back to the operator's display timezone — the same
+  # fallback the labels take, so a cell's label and its tooltip can no longer
+  # disagree about which clock they are on.
+  defp resolve_timezone(choice, display_timezone) do
+    zone =
+      case Map.get(choice, :timezone) do
+        zone when is_binary(zone) and zone != "" ->
+          case DateTime.shift_zone(choice.window_start_at, zone, Timezone.database!()) do
+            {:ok, _shifted} -> zone
+            {:error, _reason} -> display_timezone
+          end
+
+        _undecoded ->
+          display_timezone
+      end
+
+    Map.put(choice, :timezone, zone)
+  end
+
+  defp cell(choice, kind, selected_run_id, compare_run_ids) do
     track = Enum.find_index(compare_run_ids, &(&1 == choice.run_id))
 
     %{
       run_id: choice.run_id,
-      label: cell_label(choice, kind, timezone),
+      label: cell_label(choice, kind),
       status: Map.get(choice, :status),
       selected?: choice.run_id == selected_run_id,
       compared?: not is_nil(track),
@@ -288,43 +330,31 @@ defmodule FavnView.RunWindowRail do
       start_at: choice.window_start_at,
       end_at: choice.window_end_at,
       window_count: Map.get(choice, :window_count, 1),
-      timezone: Map.get(choice, :timezone)
+      timezone: choice.timezone
     }
   end
 
   # A cell is labelled by its calendar position, which only means something when
   # every window shares one kind. A mixed list, or a key too old to decode one,
   # falls back to the start timestamp rather than to a misleading calendar word.
-  defp cell_label(choice, nil, timezone),
-    do: choice.window_start_at |> local(choice, timezone) |> Calendar.strftime("%b %-d, %Y %H:%M")
+  defp cell_label(choice, nil),
+    do: choice.window_start_at |> local(choice) |> Calendar.strftime("%b %-d, %Y %H:%M")
 
-  defp cell_label(choice, :hour, timezone),
-    do: choice.window_start_at |> local(choice, timezone) |> Calendar.strftime("%H:%M")
+  defp cell_label(choice, :hour),
+    do: choice.window_start_at |> local(choice) |> Calendar.strftime("%H:%M")
 
-  defp cell_label(choice, :day, timezone),
-    do: choice.window_start_at |> local(choice, timezone) |> Calendar.strftime("%-d")
+  defp cell_label(choice, :day),
+    do: choice.window_start_at |> local(choice) |> Calendar.strftime("%-d")
 
-  defp cell_label(choice, :month, timezone),
-    do: choice.window_start_at |> local(choice, timezone) |> Calendar.strftime("%b")
+  defp cell_label(choice, :month),
+    do: choice.window_start_at |> local(choice) |> Calendar.strftime("%b")
 
-  defp cell_label(choice, :year, timezone),
-    do: choice.window_start_at |> local(choice, timezone) |> Calendar.strftime("%Y")
+  defp cell_label(choice, :year),
+    do: choice.window_start_at |> local(choice) |> Calendar.strftime("%Y")
 
   # Bucketing and labelling both happen in the window's own timezone, so a day
   # cell names the day the operator scheduled rather than its UTC neighbour.
-  defp local(%DateTime{} = at, source, fallback) do
-    case Map.get(source, :timezone) do
-      zone when is_binary(zone) and zone != "" -> shift(at, zone, fallback)
-      _other -> Time.shift(at, fallback)
-    end
-  end
-
-  defp shift(at, zone, fallback) do
-    case DateTime.shift_zone(at, zone, Timezone.database!()) do
-      {:ok, shifted} -> shifted
-      {:error, _reason} -> Time.shift(at, fallback)
-    end
-  end
+  defp local(%DateTime{} = at, source), do: Time.shift(at, source.timezone)
 
   defp list_kind(choices) do
     choices

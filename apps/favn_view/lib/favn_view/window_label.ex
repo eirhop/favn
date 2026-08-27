@@ -20,9 +20,11 @@ defmodule FavnView.WindowLabel do
   away wherever the compact form is shown.
   """
 
+  alias Favn.Timezone
   alias FavnView.Time
 
   @type configuration :: String.t() | map()
+  @type unit :: :hour | :day | :month | :year
 
   @doc """
   Returns the shortest true name for the window, or `nil` when there is none.
@@ -60,6 +62,62 @@ defmodule FavnView.WindowLabel do
   end
 
   def compact(start_at, end_at, configuration), do: full(start_at, end_at, configuration)
+
+  @doc """
+  Names a stretch of contiguous whole periods by its first and last one.
+
+  A combined run and a flat rail both cover many windows at once, and their
+  coverage has the same two ends as a single window: a start bound and an
+  exclusive end bound. `compact/3` can only name that as a period or a range,
+  and twenty-four months is neither — it renders as
+  `Jan 1, 2023 00:00 – Jan 1, 2025 00:00`, which states the boundary between two
+  years twice and never says how much lies between them.
+
+  Given the unit those windows are counted in, this names the first and last
+  period the coverage actually contains, so the same stretch reads
+  `Jan 2023 – Dec 2024`. The exclusive end bound is never named: `Jan 2025` is
+  the bound, not a month the coverage includes.
+
+  Coverage that is not whole periods of the unit, or a unit that is not known,
+  falls back to `compact/3` rather than rounding to a period it does not cover.
+
+  ## Examples
+
+      iex> alias FavnView.WindowLabel
+      iex> WindowLabel.span(~U[2023-01-01 00:00:00Z], ~U[2025-01-01 00:00:00Z], :month, "Etc/UTC")
+      "Jan 2023 – Dec 2024"
+
+      iex> alias FavnView.WindowLabel
+      iex> WindowLabel.span(~U[2026-03-01 00:00:00Z], ~U[2026-03-09 00:00:00Z], :day, "Etc/UTC")
+      "Mar 1, 2026 – Mar 8, 2026"
+
+      iex> alias FavnView.WindowLabel
+      iex> WindowLabel.span(~U[2026-07-01 00:00:00Z], ~U[2026-08-01 00:00:00Z], :month, "Etc/UTC")
+      "Jul 2026"
+
+      iex> alias FavnView.WindowLabel
+      iex> WindowLabel.span(~U[2026-07-17 09:30:00Z], ~U[2026-07-18 11:15:00Z], :day, "Etc/UTC")
+      "Jul 17 09:30 – Jul 18 11:15, 2026"
+  """
+  @spec span(DateTime.t() | nil, DateTime.t() | nil, unit() | nil, configuration()) ::
+          String.t() | nil
+  def span(start_at, end_at, unit, configuration)
+
+  def span(%DateTime{} = start_at, %DateTime{} = end_at, unit, configuration)
+      when unit in [:hour, :day, :month, :year] do
+    start_local = Time.shift(start_at, configuration)
+    end_local = Time.shift(end_at, configuration)
+
+    with true <- boundary?(start_local, unit),
+         true <- boundary?(end_local, unit),
+         true <- DateTime.compare(end_local, start_local) == :gt do
+      name_span(start_local, end_local, unit)
+    else
+      _partial -> compact(start_at, end_at, configuration)
+    end
+  end
+
+  def span(start_at, end_at, _unit, configuration), do: compact(start_at, end_at, configuration)
 
   @doc """
   Returns both bounds in full, for the tooltip behind a compact label.
@@ -100,6 +158,30 @@ defmodule FavnView.WindowLabel do
       true -> nil
     end
   end
+
+  # The last period a stretch covers is found from inside the coverage rather
+  # than by subtracting a calendar unit from the exclusive end: one second back
+  # is always within the final period, whatever that period's length turned out
+  # to be, so a 23-hour daylight-saving day and a 28-day February need no case
+  # of their own.
+  defp name_span(start_local, end_local, unit) do
+    last_local = DateTime.add(end_local, -1, :second, Timezone.database!())
+
+    case {period_name(start_local, unit), period_name(last_local, unit)} do
+      {same, same} -> same
+      {first, last} -> "#{first} – #{last}"
+    end
+  end
+
+  defp period_name(local, :year), do: Calendar.strftime(local, "%Y")
+  defp period_name(local, :month), do: Calendar.strftime(local, "%b %Y")
+  defp period_name(local, :day), do: Calendar.strftime(local, "%b %-d, %Y")
+  defp period_name(local, :hour), do: Calendar.strftime(local, "%b %-d, %H:00")
+
+  defp boundary?(local, :year), do: midnight?(local) and local.month == 1 and local.day == 1
+  defp boundary?(local, :month), do: midnight?(local) and local.day == 1
+  defp boundary?(local, :day), do: midnight?(local)
+  defp boundary?(local, :hour), do: on_the_hour?(local)
 
   defp year?(start_local, end_local) do
     midnight?(start_local) and midnight?(end_local) and

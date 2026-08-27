@@ -199,10 +199,15 @@ defmodule FavnView.RunWindowRailTest do
       # One cell is one place to navigate to, and it is the page the operator is
       # already on, so there is no calendar to move through — only a span to
       # state. The rail reports it and stands down.
+      # It carries the unit those windows were planned in and the zone they were
+      # keyed in, because "four" and a pair of instants cannot be turned into
+      # "Jan 2026 – Apr 2026 · 4 months" without both.
       assert rail.combined == %{
                start_at: cell.start_at,
                end_at: cell.end_at,
-               window_count: 4
+               window_count: 4,
+               kind: :month,
+               timezone: "Europe/Oslo"
              }
     end
 

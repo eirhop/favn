@@ -81,6 +81,10 @@ defmodule FavnView.RunDetailLive do
         # rather than derived, so navigating deliberately back to the parent
         # later in the same session shows the parent instead of bouncing.
         window_opened?: false,
+        # A live patch issued while mounting raises, and the mount's own read
+        # builds the rail. `handle_params` runs immediately after and does the
+        # first open; this only keeps the refresh path from firing one early.
+        mounted?: false,
         cancel_attempt: nil,
         retry_attempt: nil,
         nav_items: AssetCataloguePage.nav_items(:runs)
@@ -109,13 +113,14 @@ defmodule FavnView.RunDetailLive do
         {:noreply, assign(socket, active_mode: active_mode, run_id: run_id)}
 
       run_id != socket.assigns.run_id ->
-        {:noreply, select_run(socket, run_id, active_mode)}
+        {:noreply, socket |> assign(:mounted?, true) |> select_run(run_id, active_mode)}
 
       active_mode != socket.assigns.active_mode ->
-        {:noreply, socket |> assign(:active_mode, active_mode) |> refresh_run()}
+        {:noreply, socket |> assign(active_mode: active_mode, mounted?: true) |> refresh_run()}
 
       true ->
-        {:noreply, socket |> assign(:active_mode, active_mode) |> open_first_window()}
+        {:noreply,
+         socket |> assign(active_mode: active_mode, mounted?: true) |> open_first_window()}
     end
   end
 
@@ -433,6 +438,8 @@ defmodule FavnView.RunDetailLive do
     |> assign_comparison()
     |> record_refresh(refresh_result, loaded_run)
     |> refresh_windows()
+    |> sync_combined_window()
+    |> open_first_window()
     |> schedule_fallback()
   end
 
@@ -1148,30 +1155,44 @@ defmodule FavnView.RunDetailLive do
 
     socket
     |> assign(:rail, rail)
-    |> assign_combined_window(rail)
+    |> sync_combined_window()
   end
 
-  defp build_rail(socket), do: assign(socket, :rail, nil)
+  defp build_rail(socket), do: socket |> assign(:rail, nil) |> sync_combined_window()
 
   # A combined backfill has no rail to state its coverage, so the run header
   # carries the span instead. It is named once, here, rather than derived in the
   # markup from a rail the markup is not rendering.
-  defp assign_combined_window(socket, %RunWindowRail{combined: %{} = combined}) do
+  #
+  # It is re-stated on every refresh rather than only when the rail is rebuilt.
+  # The run map is replaced wholesale by each read, and the window read runs at
+  # most once per fallback interval, so a fact derived from the rail and stored
+  # on the run survives exactly one cycle: opening a window used to drop the one
+  # line saying what the run covered, and nothing brought it back.
+  defp sync_combined_window(
+         %{assigns: %{rail: %RunWindowRail{combined: %{} = combined}}} = socket
+       ) do
     label =
-      window_label(combined.start_at, combined.end_at, socket.assigns.current_scope) ||
-        window_title(combined.start_at, combined.end_at, socket.assigns.current_scope)
+      WindowLabel.span(
+        combined.start_at,
+        combined.end_at,
+        combined.kind,
+        combined.timezone
+      ) || window_title(combined.start_at, combined.end_at, combined.timezone)
 
     assign(
       socket,
       :run,
       Map.put(socket.assigns.run, :combined_window, %{
         label: label,
-        window_count: combined.window_count
+        window_count: combined.window_count,
+        kind: combined.kind
       })
     )
   end
 
-  defp assign_combined_window(socket, _rail), do: socket
+  defp sync_combined_window(socket),
+    do: assign(socket, :run, Map.delete(socket.assigns.run, :combined_window))
 
   # A window that fails before its child run exists leaves no run to open and no
   # run page to carry its diagnosis, so the reason it recorded is the only
@@ -1238,11 +1259,16 @@ defmodule FavnView.RunDetailLive do
   # its windows — so landing on it and finding nothing drawn is a step the
   # operator always has to take. It opens its earliest window instead.
   #
-  # Called from `handle_params`, never from the rail build: a live patch issued
-  # while mounting raises, and the rail is built inside the mount's first read.
-  # Only on arrival, too — a later refresh must not drag the page off a window
-  # that was chosen, and neither must coming back to the parent deliberately.
-  defp open_first_window(%{assigns: %{run: %{backfill_parent?: true}, rail: rail}} = socket)
+  # Only on arrival — a later refresh must not drag the page off a window that
+  # was chosen, and neither must coming back to the parent deliberately. But
+  # arrival is not one moment: a backfill submitted seconds ago has no child run
+  # yet, so the rail the first read builds is empty and there is nothing to open.
+  # The refresh path retries until the first window run exists, which is what
+  # turns "watch the backfill start" from a page the operator has to click into
+  # one that follows the run it just made.
+  defp open_first_window(
+         %{assigns: %{mounted?: true, run: %{backfill_parent?: true}, rail: rail}} = socket
+       )
        when not is_nil(rail) do
     case {socket.assigns[:window_opened?], rail.cells} do
       {true, _cells} ->
