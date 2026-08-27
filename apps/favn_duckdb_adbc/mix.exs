@@ -4,7 +4,7 @@ defmodule FavnDuckdbADBC.MixProject do
   def project do
     [
       app: :favn_duckdb_adbc,
-      version: "0.5.0-rc.11",
+      version: "0.5.0-rc.12",
       description: "DuckDB ADBC SQL adapter and runner plugin for Favn",
       build_path: "../../_build",
       config_path: "../../config/config.exs",
