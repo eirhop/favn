@@ -2,13 +2,13 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Plan reviewed |
+| Status | Implementing |
 | Type | Bug fix and performance improvement |
 | Primary issue | None — the user explicitly requested implementation without a GitHub issue on 2026-08-28 |
-| Pull request | Pending |
+| Pull request | [#682](https://github.com/eirhop/favn/pull/682) |
 | Related work | [#650](https://github.com/eirhop/favn/issues/650) |
 | Affected areas | Orchestrator pipeline result settlement, execution-admission lease release, deferred stage refill, PostgreSQL-backed orchestration tests, elastic-runner architecture documentation |
-| Approved plan commit | Pending reviewed planning commit |
+| Approved plan commit | `f7d9b6b0ff736b56c9aa8ed0e17019d47f5b43e7` |
 | Last updated | 2026-08-28 |
 
 ## One-minute summary
