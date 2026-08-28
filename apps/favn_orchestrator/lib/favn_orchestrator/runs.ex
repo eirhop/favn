@@ -117,7 +117,8 @@ defmodule FavnOrchestrator.Runs do
       query = %GetRun{workspace_context: context, run_id: run_id}
 
       case Keyword.get(opts, :memory_capacity_token) do
-        %MemoryCapacity{} = token -> load_run(query, token)
+        %MemoryCapacity{} = token ->
+          load_run(query, token)
 
         nil ->
           MemoryCapacity.with_lease(16 * 1_024 * 1_024, [kind: :run_decode], fn token ->

@@ -145,8 +145,7 @@ defmodule FavnOrchestrator.MemoryCapacity.ProviderTest do
   test "does not use the configured fallback for malformed cgroup metadata" do
     files = %{
       "/proc/self/cgroup" => "malformed\n",
-      "/proc/self/mountinfo" =>
-        "36 25 0:32 / /sys/fs/cgroup rw - cgroup2 cgroup rw\n",
+      "/proc/self/mountinfo" => "36 25 0:32 / /sys/fs/cgroup rw - cgroup2 cgroup rw\n",
       "/proc/self/status" => "Name:\tbeam.smp\nVmRSS:\t102400 kB\n"
     }
 

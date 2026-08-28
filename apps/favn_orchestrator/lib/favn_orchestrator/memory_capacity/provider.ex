@@ -149,7 +149,8 @@ defmodule FavnOrchestrator.MemoryCapacity.Provider do
       [major, minor] ->
         valid_non_negative_integer?(major) and valid_non_negative_integer?(minor)
 
-      _invalid -> false
+      _invalid ->
+        false
     end
   end
 

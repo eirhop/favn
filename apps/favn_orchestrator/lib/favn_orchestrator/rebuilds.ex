@@ -565,7 +565,7 @@ defmodule FavnOrchestrator.Rebuilds do
              operation_id,
              evaluated_at,
              opts
-         ),
+           ),
          {:ok, items} <-
            freeze_runtime_inputs(
              context,

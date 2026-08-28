@@ -489,9 +489,7 @@ defmodule FavnOrchestrator.RunManager do
         with :ok <- MemoryCapacity.handoff(token, manager),
              :ok <- MemoryCapacity.handoff(handoff_token, manager) do
           {:manager_call,
-           call_manager(
-             {:admit_persisted_submission, submission, replayed?, handoff_token}
-           )}
+           call_manager({:admit_persisted_submission, submission, replayed?, handoff_token})}
         else
           {:error, reason} ->
             MemoryCapacity.release(token)

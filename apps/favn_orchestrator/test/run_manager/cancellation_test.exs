@@ -58,6 +58,7 @@ defmodule FavnOrchestrator.RunManager.CancellationTest do
     end
 
     def get_run_size(_query), do: {:ok, 1_024}
+
     def get_run(_query),
       do: {:ok, Application.fetch_env!(:favn_orchestrator, :run_manager_cancellation_current_run)}
 

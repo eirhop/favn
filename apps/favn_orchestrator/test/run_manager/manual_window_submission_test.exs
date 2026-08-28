@@ -41,6 +41,7 @@ defmodule FavnOrchestrator.RunManager.ManualWindowSubmissionTest do
     def get_deployment_configuration(_query), do: {:ok, %{}}
 
     def get_run_size(%GetRun{}), do: {:ok, 1_024}
+
     def get_run(%GetRun{}),
       do: {:ok, Application.fetch_env!(:favn_orchestrator, :manual_window_source_run)}
 
