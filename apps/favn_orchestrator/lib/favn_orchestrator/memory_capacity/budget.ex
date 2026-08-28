@@ -6,11 +6,13 @@ defmodule FavnOrchestrator.MemoryCapacity.Budget do
   package or batch sizes without new measured evidence.
   """
 
+  alias Favn.Manifest.ArchiveLimits
+
   @mib 1_024 * 1_024
   @manifest_base 256 * @mib
   @index_fixed 128 * @mib
   @index_max 512 * @mib
-  @index_raw_max 64 * @mib
+  @index_raw_max ArchiveLimits.current().manifest_index_bytes
   @retained_term_multiplier 4
   @run_decode_fixed 64 * @mib
   @run_decode_multiplier 16
@@ -31,6 +33,10 @@ defmodule FavnOrchestrator.MemoryCapacity.Budget do
     |> then(&max(@manifest_base, @index_fixed + 6 * &1))
     |> min(@index_max)
   end
+
+  @doc "Reservation for building or verifying an already-decoded manifest term."
+  @spec live_index() :: pos_integer()
+  def live_index, do: @index_max
 
   @doc "Returns the index reservation only when the uncompressed bytes are supported."
   @spec persisted_index(non_neg_integer()) ::

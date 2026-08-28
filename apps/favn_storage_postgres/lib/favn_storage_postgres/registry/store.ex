@@ -7,6 +7,7 @@ defmodule FavnStoragePostgres.Registry.Store do
 
   alias Ecto.Adapters.SQL
   alias Favn.Connection.CircuitPolicySet
+  alias Favn.Manifest.ArchiveLimits
   alias Favn.Manifest.Compatibility
   alias Favn.ExecutionPool.PolicySet
   alias Favn.Manifest.ExecutionPackage
@@ -85,7 +86,7 @@ defmodule FavnStoragePostgres.Registry.Store do
   alias FavnStoragePostgres.Schemas.WorkspaceDeploymentTarget
   alias FavnStoragePostgres.Schemas.WorkspaceRuntimeState
 
-  @max_manifest_bytes 256 * 1_024 * 1_024
+  @max_manifest_bytes ArchiveLimits.current().manifest_index_bytes
   @max_execution_package_bytes 4 * 1_024 * 1_024
   @max_execution_package_batch_bytes 4 * 1_024 * 1_024
   @max_execution_packages_per_command 8
@@ -240,7 +241,13 @@ defmodule FavnStoragePostgres.Registry.Store do
 
              with :ok <- validate_execution_package_refs!(required_refs),
                   {:ok, stored} <-
-                    insert_or_replay_manifest(verified, hash, manifest, atom_strings),
+                    insert_or_replay_manifest(
+                      verified,
+                      hash,
+                      manifest,
+                      atom_strings,
+                      byte_size(manifest_json)
+                    ),
                   :ok <- link_manifest_execution_packages!(stored, required_refs) do
                insert_manifest_audit!(command.platform_context, stored)
                stored
@@ -583,7 +590,7 @@ defmodule FavnStoragePostgres.Registry.Store do
 
   defp manifest_size(query) do
     case query
-         |> select([manifest], fragment("octet_length((?)::text)", manifest.manifest))
+         |> select([manifest], manifest.manifest_index_bytes)
          |> Repo.one() do
       bytes when is_integer(bytes) and bytes >= 0 -> {:ok, bytes}
       nil -> {:error, Error.new(:not_found, "manifest release not found")}
@@ -1140,7 +1147,8 @@ defmodule FavnStoragePostgres.Registry.Store do
   defp validate_manifest_size(manifest_json) when byte_size(manifest_json) <= @max_manifest_bytes,
     do: :ok
 
-  defp validate_manifest_size(_manifest_json), do: {:error, :manifest_payload_too_large}
+  defp validate_manifest_size(manifest_json),
+    do: {:error, manifest_size_error(byte_size(manifest_json), :canonical_json)}
 
   defp validate_configuration(configuration) do
     case DeploymentConfig.validate(configuration) do
@@ -1260,7 +1268,7 @@ defmodule FavnStoragePostgres.Registry.Store do
     end
   end
 
-  defp insert_or_replay_manifest(version, hash, manifest, atom_strings) do
+  defp insert_or_replay_manifest(version, hash, manifest, atom_strings, manifest_index_bytes) do
     row = %{
       manifest_version_id: version.manifest_version_id,
       content_hash: hash,
@@ -1272,14 +1280,34 @@ defmodule FavnStoragePostgres.Registry.Store do
       pipeline_count: length(List.wrap(version.manifest.pipelines)),
       schedule_count: length(List.wrap(version.manifest.schedules)),
       atom_strings: atom_strings |> MapSet.to_list() |> Enum.sort(),
+      manifest_index_bytes: manifest_index_bytes,
       manifest: manifest,
       inserted_at: version.inserted_at || DateTime.utc_now()
     }
 
     case Repo.insert_all(ManifestVersion, [row], on_conflict: :nothing) do
-      {0, _rows} -> manifest_conflict_or_replay(version, hash)
-      {1, _rows} -> {:ok, version}
+      {0, _rows} ->
+        manifest_conflict_or_replay(version, hash)
+
+      {1, _rows} ->
+        {:ok, version}
     end
+  end
+
+  defp validate_persisted_manifest_bytes(bytes) when bytes <= @max_manifest_bytes, do: :ok
+
+  defp validate_persisted_manifest_bytes(bytes),
+    do: {:error, manifest_size_error(bytes, :persisted_index)}
+
+  defp manifest_size_error(bytes, size_kind) do
+    Error.new(:limit_exceeded, "manifest exceeds the 64 MiB persisted-index limit",
+      details: %{
+        reason: :manifest_memory_budget_exceeded,
+        size_kind: size_kind,
+        observed_size_bytes: bytes,
+        limit_bytes: @max_manifest_bytes
+      }
+    )
   end
 
   defp manifest_conflict_or_replay(version, hash) do
@@ -1288,20 +1316,30 @@ defmodule FavnStoragePostgres.Registry.Store do
         where:
           manifest.manifest_version_id == ^version.manifest_version_id or
             manifest.content_hash == ^hash,
+        select: %{
+          manifest_version_id: manifest.manifest_version_id,
+          content_hash: manifest.content_hash,
+          persisted_bytes: manifest.manifest_index_bytes
+        },
         limit: 1
       )
 
-    case Repo.one(query) |> decode_manifest_row() do
-      {:ok, %Version{} = stored}
-      when stored.manifest_version_id == version.manifest_version_id and
-             stored.content_hash == version.content_hash ->
-        {:ok, stored}
+    case Repo.one(query) do
+      %{
+        manifest_version_id: manifest_version_id,
+        content_hash: ^hash,
+        persisted_bytes: persisted_bytes
+      }
+      when manifest_version_id == version.manifest_version_id ->
+        with :ok <- validate_persisted_manifest_bytes(persisted_bytes) do
+          load_manifest(%ById{manifest_version_id: manifest_version_id})
+        end
 
-      {:ok, _stored} ->
+      %{} ->
         {:error, Error.new(:conflict, "manifest identity has different canonical content")}
 
-      {:error, error} ->
-        {:error, error}
+      nil ->
+        {:error, Error.new(:not_found, "manifest release not found")}
     end
   end
 
@@ -2692,7 +2730,13 @@ defmodule FavnStoragePostgres.Registry.Store do
 
                  with :ok <- validate_execution_package_refs!(required_refs),
                       {:ok, stored} <-
-                        insert_or_replay_manifest(verified, hash, manifest, atom_strings),
+                        insert_or_replay_manifest(
+                          verified,
+                          hash,
+                          manifest,
+                          atom_strings,
+                          byte_size(manifest_json)
+                        ),
                       :ok <- link_manifest_execution_packages!(stored, required_refs) do
                    insert_manifest_audit!(command.platform_context, stored)
 

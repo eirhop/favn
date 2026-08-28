@@ -542,11 +542,10 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
   @spec build_version(map()) :: {:ok, Version.t()} | {:error, term()}
   def build_version(params) when is_map(params) do
     with %{} = manifest <- Map.get(params, "manifest"),
-         {:ok, budget} <- Budget.persisted_index(:erlang.external_size(manifest)),
          {:ok, version} <-
            BoundedWorker.run(
              fn -> Version.from_published(manifest, version_options(params)) end,
-             budget
+             build_version_budget()
            ) do
       {:ok, version}
     else
@@ -554,6 +553,10 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
       _missing_or_invalid -> {:error, {:missing_field, "manifest"}}
     end
   end
+
+  @doc false
+  @spec build_version_budget() :: pos_integer()
+  def build_version_budget, do: Budget.live_index()
 
   defp publish(conn, context, %Version{} = version) do
     opts =

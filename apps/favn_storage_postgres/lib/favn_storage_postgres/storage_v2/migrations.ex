@@ -48,6 +48,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
   alias FavnStoragePostgres.Migrations.OptimizeRunStatusPagingV2
   alias FavnStoragePostgres.Migrations.NormalizeResourceCircuitDefinitionsV2
   alias FavnStoragePostgres.Migrations.AddBackfillWindowRunLookupV2
+  alias FavnStoragePostgres.Migrations.AddManifestIndexBytesV2
   alias FavnStoragePostgres.Migrations.RebindBackfillWindowRunReferenceV2
   alias FavnStoragePostgres.Migrations.RebindScheduleOccurrenceRunReferenceV2
   alias FavnStoragePostgres.RuntimePrivileges
@@ -96,7 +97,8 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     {20_260_821_000_000, RebindScheduleOccurrenceRunReferenceV2},
     {20_260_824_000_000, AddManifestDeploymentsV2},
     {20_260_825_000_000, RebindBackfillWindowRunReferenceV2},
-    {20_260_825_010_000, AddBackfillWindowRunLookupV2}
+    {20_260_825_010_000, AddBackfillWindowRunLookupV2},
+    {20_260_828_000_000, AddManifestIndexBytesV2}
   ]
   @required_tables ~w(
     schema_migrations
@@ -364,7 +366,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     "maintenance_jobs" =>
       ~w(job_id job_kind scope_kind workspace_id status cursor configuration owner_id fencing_token claim_expires_at processed_count last_error version inserted_at updated_at),
     "manifest_versions" =>
-      ~w(manifest_version_id content_hash schema_version runner_contract_version runner_releases payload_version asset_count pipeline_count schedule_count atom_strings manifest inserted_at),
+      ~w(manifest_version_id content_hash schema_version runner_contract_version runner_releases payload_version asset_count pipeline_count schedule_count atom_strings manifest_index_bytes manifest inserted_at),
     "manifest_deployment_operations" =>
       ~w(workspace_id operation_id archive_sha256 request_fingerprint service_identity manifest_version_id manifest_content_hash runner_releases state deployment_id failure_class activation_diagnostics claim_owner claim_fence claim_expires_at inspection_total inspection_completed accepted_at activating_at terminal_at inserted_at updated_at),
     "manifest_deployment_upload_leases" =>
@@ -481,7 +483,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
   @critical_constraints ~w(
     workspaces_id_valid workspaces_slug_valid workspaces_display_name_valid workspaces_status_valid
     manifest_versions_id_valid manifest_versions_versions_valid
-    manifest_versions_runner_releases_valid execution_packages_hash_valid
+    manifest_versions_runner_releases_valid manifest_versions_index_bytes_valid execution_packages_hash_valid
     runner_tasks_status_valid runner_tasks_kind_valid runner_tasks_retry_class_valid
     runner_tasks_identity_valid runner_tasks_assignment_valid runner_tasks_payload_valid
     runner_tasks_state_shape_valid runner_tasks_time_valid runner_tasks_runtime_inputs_valid

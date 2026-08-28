@@ -4,6 +4,7 @@ defmodule FavnOrchestrator.ManifestStore do
   """
 
   alias Favn.Manifest.Index
+  alias Favn.Manifest.Serializer
   alias Favn.Manifest.Version
   alias Favn.Manifest.TargetDescriptor
   alias FavnOrchestrator.Persistence
@@ -57,10 +58,20 @@ defmodule FavnOrchestrator.ManifestStore do
 
   defp register_manifest(%PlatformContext{} = context, %Version{} = version) do
     if Enum.any?(context.roles, &(&1 in [:platform_operator, :platform_admin])) do
-      Persistence.stores().registry.register_manifest(%RegisterManifest{
-        platform_context: context,
-        version: version
-      })
+      case Persistence.stores().registry.register_manifest(%RegisterManifest{
+             platform_context: context,
+             version: version
+           }) do
+        {:error,
+         %Error{
+           kind: :limit_exceeded,
+           details: %{reason: :manifest_memory_budget_exceeded}
+         }} ->
+          {:error, :manifest_memory_budget_exceeded}
+
+        result ->
+          result
+      end
     else
       {:error, Error.new(:forbidden, "platform manifest write role required")}
     end
@@ -72,7 +83,8 @@ defmodule FavnOrchestrator.ManifestStore do
   def publish_manifest(%PlatformContext{} = context, %Version{} = version, opts)
       when is_list(opts) do
     with :ok <- require_memory_capacity_token(opts),
-         {:ok, verified} <- Version.verify(version) do
+         %MemoryCapacity{} = token <- Keyword.fetch!(opts, :memory_capacity_token),
+         {:ok, verified} <- verify_publishable_manifest(version, token) do
       with_scoped_token(opts, fn token ->
         result =
           case load_manifest_by_content_hash(context, verified.content_hash, token) do
@@ -95,8 +107,25 @@ defmodule FavnOrchestrator.ManifestStore do
               error
           end
 
-        validate_scoped_result(result, opts)
+        result
       end)
+    end
+  end
+
+  defp verify_publishable_manifest(%Version{} = version, token) do
+    budget = Budget.live_index()
+
+    with :ok <- resize_scoped_working(token, budget) do
+      BoundedWorker.run(
+        fn ->
+          with {:ok, verified} <- Version.verify(version),
+               {:ok, canonical_json} <- Serializer.encode_manifest(verified.manifest),
+               {:ok, _read_budget} <- Budget.persisted_index(byte_size(canonical_json)) do
+            {:ok, verified}
+          end
+        end,
+        budget
+      )
     end
   end
 
@@ -145,7 +174,7 @@ defmodule FavnOrchestrator.ManifestStore do
            {:ok, budget} <- Budget.persisted_index(bytes),
            :ok <- resize_scoped_working(token, budget),
            {:ok, version} <- load_authorized_manifest(context, manifest_version_id) do
-        validate_scoped_result(fun.(version), opts)
+        fun.(version)
       end
     end)
   end
@@ -273,7 +302,7 @@ defmodule FavnOrchestrator.ManifestStore do
            :ok <- resize_scoped_working(token, budget),
            {:ok, version} <-
              load_deployment_manifest(context, deployment_id, manifest_version_id) do
-        validate_scoped_result(fun.(version), opts)
+        fun.(version)
       end
     end)
   end
@@ -290,12 +319,12 @@ defmodule FavnOrchestrator.ManifestStore do
   def with_index(%Version{} = version, opts \\ [], fun)
       when is_list(opts) and is_function(fun, 1) do
     with_scoped_token(opts, fn token ->
-      budget = Budget.index(:erlang.external_size(version.manifest))
+      budget = Budget.live_index()
 
       with :ok <- resize_scoped_working(token, budget),
            {:ok, %Index{} = index} <-
              BoundedWorker.run(fn -> Index.build_from_version(version) end, budget) do
-        validate_scoped_result(fun.(index), opts)
+        fun.(index)
       end
     end)
   end
@@ -567,7 +596,12 @@ defmodule FavnOrchestrator.ManifestStore do
             MemoryCapacity.with_lease(
               @scalar_query_bytes,
               [kind: :manifest_use],
-              fn token -> with_current_scoped_token(token, fn -> fun.(token) end) end
+              fn token ->
+                with_current_scoped_token(token, fn ->
+                  result = fun.(token)
+                  validate_temporary_scoped_result(result)
+                end)
+              end
             )
         end
 
@@ -592,16 +626,10 @@ defmodule FavnOrchestrator.ManifestStore do
   defp restore_process_value(key, nil), do: Process.delete(key)
   defp restore_process_value(key, value), do: Process.put(key, value)
 
-  defp validate_scoped_result(result, opts) do
-    case Keyword.get(opts, :memory_capacity_token) do
-      %MemoryCapacity{} ->
-        result
-
-      nil ->
-        if contains_scoped_value?(result),
-          do: {:error, :scoped_manifest_value_escape},
-          else: result
-    end
+  defp validate_temporary_scoped_result(result) do
+    if contains_scoped_value?(result),
+      do: {:error, :scoped_manifest_value_escape},
+      else: result
   end
 
   defp contains_scoped_value?(%Version{manifest: nil} = version) do

@@ -6,7 +6,7 @@ defmodule FavnOrchestrator.MemoryCapacity.BudgetTest do
   @mib 1_024 * 1_024
 
   test "live index terms clamp to the worker ceiling without widening persisted byte limits" do
-    assert Budget.index(65 * @mib) == Budget.index_max()
+    assert Budget.live_index() == Budget.index_max()
     assert {:error, :manifest_memory_budget_exceeded} = Budget.persisted_index(65 * @mib)
   end
 

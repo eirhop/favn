@@ -10,6 +10,7 @@ defmodule FavnOrchestrator.API.ManifestsRouterTest do
   alias FavnOrchestrator.API.ManifestsRouter
   alias FavnOrchestrator.Auth.ServiceTokens
   alias FavnOrchestrator.Manifests
+  alias FavnOrchestrator.MemoryCapacity.Budget
   alias FavnOrchestrator.Persistence.{Runtime, Stores}
   alias FavnOrchestrator.Persistence.SystemContext
 
@@ -19,6 +20,7 @@ defmodule FavnOrchestrator.API.ManifestsRouterTest do
     alias FavnOrchestrator.Persistence.Error
 
     def get_manifest(_query), do: {:error, Error.new(:not_found, "manifest not found")}
+    def get_manifest_size(_selector), do: {:error, Error.new(:not_found, "manifest not found")}
     def begin_manifest_deployment(query), do: {:ok, {:new, query.idempotency}}
     def acquire_manifest_activation_lease(_command), do: {:ok, 1}
     def renew_manifest_activation_lease(_command), do: :ok
@@ -222,6 +224,10 @@ defmodule FavnOrchestrator.API.ManifestsRouterTest do
 
     assert {:ok, version} = ManifestsRouter.build_version(params)
     assert version.runner_releases == %{}
+  end
+
+  test "budgets decoded manifests as live terms instead of raw protocol bytes" do
+    assert ManifestsRouter.build_version_budget() == Budget.index_max()
   end
 
   test "returns stable validation errors for missing, malformed, and mismatched release maps" do

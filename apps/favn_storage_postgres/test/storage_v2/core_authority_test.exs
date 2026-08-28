@@ -2225,6 +2225,16 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   end
 
   test "registers and deploys an immutable exact manifest catalog", fixture do
+    {:ok, canonical_manifest} = Serializer.encode_manifest(fixture.version.manifest)
+    canonical_bytes = byte_size(canonical_manifest)
+
+    assert {:ok, ^canonical_bytes} =
+             RegistryStore.get_manifest_size(
+               %FavnOrchestrator.Persistence.Queries.ManifestSelector.ById{
+                 manifest_version_id: fixture.version.manifest_version_id
+               }
+             )
+
     assert {:ok, runtime} =
              RegistryStore.get_runtime_state(%GetRuntimeState{
                workspace_context: fixture.workspace_context

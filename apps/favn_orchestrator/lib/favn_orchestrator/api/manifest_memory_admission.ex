@@ -7,13 +7,14 @@ defmodule FavnOrchestrator.API.ManifestMemoryAdmission do
 
   import Plug.Conn
 
+  alias Favn.Manifest.ArchiveLimits
   alias FavnOrchestrator.API.Authentication
   alias FavnOrchestrator.API.Response
   alias FavnOrchestrator.MemoryCapacity
   alias FavnOrchestrator.MemoryCapacity.Budget
   alias FavnOrchestrator.MemoryCapacity.Error
 
-  @manifest_raw_maximum 64 * 1_024 * 1_024
+  @manifest_raw_maximum ArchiveLimits.current().manifest_index_bytes
 
   @impl true
   def init(opts), do: opts

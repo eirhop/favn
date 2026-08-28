@@ -2,6 +2,7 @@ defmodule FavnOrchestrator.ManifestStoreMemoryScopeTest do
   use ExUnit.Case, async: false
 
   alias Favn.Manifest
+  alias Favn.Manifest.ArchiveLimits
   alias Favn.Manifest.Version
   alias FavnOrchestrator.ManifestStore
   alias FavnOrchestrator.MemoryCapacity
@@ -70,6 +71,18 @@ defmodule FavnOrchestrator.ManifestStoreMemoryScopeTest do
              end)
   end
 
+  test "nested scoped work may return the outer manifest while its lease is still live" do
+    version = version()
+
+    assert :ok =
+             ManifestStore.with_index(version, fn _outer_index ->
+               assert {:ok, ^version} =
+                        ManifestStore.with_index(version, fn _inner_index -> {:ok, version} end)
+
+               :ok
+             end)
+  end
+
   test "a compiled index may escape only while an explicit owner token remains live" do
     version = version()
     assert {:ok, token} = MemoryCapacity.acquire(Budget.index_max(), kind: :test_retained_index)
@@ -86,10 +99,12 @@ defmodule FavnOrchestrator.ManifestStoreMemoryScopeTest do
   end
 
   test "persisted index budgets reject uncompressed content above the protocol limit" do
-    assert {:ok, _budget} = Budget.persisted_index(64 * 1_024 * 1_024)
+    limit = ArchiveLimits.current().manifest_index_bytes
+
+    assert {:ok, _budget} = Budget.persisted_index(limit)
 
     assert {:error, :manifest_memory_budget_exceeded} =
-             Budget.persisted_index(64 * 1_024 * 1_024 + 1)
+             Budget.persisted_index(limit + 1)
   end
 
   defp version do

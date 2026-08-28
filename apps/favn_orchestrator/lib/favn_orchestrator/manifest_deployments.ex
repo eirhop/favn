@@ -19,6 +19,7 @@ defmodule FavnOrchestrator.ManifestDeployments do
   alias FavnOrchestrator.Persistence.Commands.ClaimManifestDeployment
   alias FavnOrchestrator.Persistence.Commands.RenewManifestDeploymentClaim
   alias FavnOrchestrator.Persistence.Commands.UpdateManifestDeploymentProgress
+  alias FavnOrchestrator.Persistence.Error
   alias FavnOrchestrator.Persistence.Commands.ReleaseManifestDeploymentClaim
   alias FavnOrchestrator.Persistence.Commands.CompleteManifestDeployment
   alias FavnOrchestrator.Persistence.Queries.GetManifestDeployment
@@ -121,17 +122,27 @@ defmodule FavnOrchestrator.ManifestDeployments do
         request_id: context.request_id
       )
 
-    Persistence.stores().registry.accept_manifest_deployment(%AcceptManifestDeployment{
-      context: context,
-      platform_context: platform,
-      workspace_context: workspace,
-      operation_id: operation_id,
-      upload_lease_id: upload_lease_id,
-      archive_sha256: archive_sha256,
-      request_fingerprint: request_fingerprint,
-      version: version,
-      occurred_at: DateTime.utc_now()
-    })
+    case Persistence.stores().registry.accept_manifest_deployment(%AcceptManifestDeployment{
+           context: context,
+           platform_context: platform,
+           workspace_context: workspace,
+           operation_id: operation_id,
+           upload_lease_id: upload_lease_id,
+           archive_sha256: archive_sha256,
+           request_fingerprint: request_fingerprint,
+           version: version,
+           occurred_at: DateTime.utc_now()
+         }) do
+      {:error,
+       %Error{
+         kind: :limit_exceeded,
+         details: %{reason: :manifest_memory_budget_exceeded}
+       }} ->
+        {:error, :manifest_memory_budget_exceeded}
+
+      result ->
+        result
+    end
   end
 
   @doc "Reads one operation only through its deployment-authorized workspace."

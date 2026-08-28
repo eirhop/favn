@@ -39,6 +39,7 @@ defmodule FavnStoragePostgres.Schemas.ManifestVersion do
     field(:pipeline_count, :integer)
     field(:schedule_count, :integer)
     field(:atom_strings, {:array, :string})
+    field(:manifest_index_bytes, :integer)
     field(:manifest, :map)
     field(:inserted_at, :utc_datetime_usec)
   end
@@ -48,6 +49,7 @@ defmodule FavnStoragePostgres.Schemas.ManifestVersion do
           content_hash: binary(),
           runner_releases: Favn.RunnerPool.releases(),
           atom_strings: [String.t()] | nil,
+          manifest_index_bytes: non_neg_integer(),
           manifest: map()
         }
 end
