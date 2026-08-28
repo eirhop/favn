@@ -87,6 +87,7 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
       start_supervised!(
         {MemoryCapacity.Supervisor,
          provider_opts: [
+           source: :configured_process,
            ceiling_bytes: Application.fetch_env!(:favn_orchestrator, :memory_ceiling_bytes)
          ]}
       )

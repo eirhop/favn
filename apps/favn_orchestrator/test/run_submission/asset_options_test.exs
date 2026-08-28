@@ -4,7 +4,6 @@ defmodule FavnOrchestrator.RunSubmission.AssetOptionsTest do
   alias Favn.Manifest.Asset
   alias Favn.Manifest
   alias Favn.Manifest.Graph
-  alias Favn.Manifest.Index
   alias Favn.Manifest.Pipeline
   alias Favn.Manifest.Version
   alias Favn.Window.Policy
@@ -143,7 +142,6 @@ defmodule FavnOrchestrator.RunSubmission.AssetOptionsTest do
       id: "pipeline:scheduled",
       pipeline_ref: {pipeline.module, pipeline.name},
       pipeline: pipeline,
-      index: %Index{},
       policy: policy,
       schedule_timezone: "Europe/Oslo",
       timezone: "Europe/Oslo"

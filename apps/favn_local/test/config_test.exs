@@ -210,7 +210,8 @@ defmodule FavnLocal.ConfigTest do
                root_dir: root_dir,
                env: %{
                  "FAVN_DATABASE_URL" => "ecto://postgres:postgres@localhost/favn",
-                 "FAVN_RUNTIME_INPUT_PIN_KEY" => @pin_key
+                 "FAVN_RUNTIME_INPUT_PIN_KEY" => @pin_key,
+                 "FAVN_ORCHESTRATOR_MEMORY_CEILING_BYTES" => "8589934592"
                }
              )
 

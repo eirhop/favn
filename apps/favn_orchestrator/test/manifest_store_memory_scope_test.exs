@@ -31,6 +31,15 @@ defmodule FavnOrchestrator.ManifestStoreMemoryScopeTest do
              ManifestStore.with_index(version, fn index -> fn -> index end end)
   end
 
+  test "an ordinary struct may leave a temporary scoped lease" do
+    version = version()
+
+    assert {:ok, %URI{scheme: "https"}} =
+             ManifestStore.with_index(version, fn _index ->
+               {:ok, %URI{scheme: "https"}}
+             end)
+  end
+
   test "nested scoped index work reuses one owner token" do
     version = version()
 

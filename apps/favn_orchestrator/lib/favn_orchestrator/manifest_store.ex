@@ -607,7 +607,9 @@ defmodule FavnOrchestrator.ManifestStore do
   defp contains_scoped_value?(%Index{}), do: true
 
   defp contains_scoped_value?(value) when is_map(value) do
-    Enum.any?(value, fn {key, item} ->
+    value
+    |> Map.to_list()
+    |> Enum.any?(fn {key, item} ->
       contains_scoped_value?(key) or contains_scoped_value?(item)
     end)
   end
