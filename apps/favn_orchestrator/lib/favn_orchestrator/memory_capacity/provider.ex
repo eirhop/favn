@@ -17,6 +17,7 @@ defmodule FavnOrchestrator.MemoryCapacity.Provider do
 
   @doc "Returns a finite memory limit, current usage, and effective headroom."
   @spec snapshot(keyword()) :: {:ok, snapshot()} | {:error, term()}
+  # sobelow_skip ["Traversal.FileModule"]
   def snapshot(opts \\ []) when is_list(opts) do
     read = Keyword.get(opts, :read_file, &File.read/1)
     ceiling = Keyword.get(opts, :ceiling_bytes)

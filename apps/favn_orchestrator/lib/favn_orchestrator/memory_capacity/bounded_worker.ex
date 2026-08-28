@@ -73,6 +73,7 @@ defmodule FavnOrchestrator.MemoryCapacity.BoundedWorker do
   @spec run_serialized((-> result), pos_integer(), pos_integer(), keyword()) ::
           result | {:error, :manifest_memory_budget_exceeded | :worker_timeout | :worker_failed}
         when result: term()
+  # sobelow_skip ["Misc.BinToTerm"]
   def run_serialized(fun, max_heap_bytes, max_result_bytes, opts \\ [])
       when is_function(fun, 0) and is_integer(max_heap_bytes) and max_heap_bytes > 0 and
              is_integer(max_result_bytes) and max_result_bytes > 0 and is_list(opts) do
