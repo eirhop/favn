@@ -961,69 +961,71 @@ defmodule FavnOrchestrator.Rebuilds do
   defp revalidate_plan(context, operation) do
     payload = operation.plan_payload
 
-    with {:ok, runtime} <- ManifestStore.get_runtime_state(context),
-         :ok <-
-           ensure_current(
-             runtime.manifest_version_id == field(payload, :manifest_version_id),
-             :active_manifest
-           ),
-         true <- true do
-      ManifestStore.with_manifest(context, runtime.manifest_version_id, fn version ->
-        with :ok <-
-               ensure_current(
-                 version.content_hash == field(payload, :manifest_content_hash),
-                 :manifest_content
-               ),
-             {:ok, current_bindings} <-
-               target_bindings_by_ids(context, snapshot_target_ids(payload)),
-             :ok <-
-               ensure_current(
-                 binding_snapshot_matches?(current_bindings, payload, operation),
-                 :target_bindings
-               ),
-             {:ok, current_capabilities} <-
-               capabilities_for_payload(context, version, payload, operation.operation_id),
-             :ok <-
-               ensure_current(
-                 canonical(current_capabilities) == field(payload, :capabilities),
-                 :runner_capabilities
-               ) do
-          with_rebuild_indexes(version, fn index, execution_index ->
-            with :ok <-
-                   validate_live_bindings(
-                     context,
-                     version,
-                     index,
-                     payload_refs(index, payload),
-                     current_bindings,
-                     operation.operation_id
-                   ),
-                 {:ok, frozen_items} <- operation_items(context, operation.operation_id),
-                 {:ok, current_items} <-
-                   freeze_runtime_inputs(
-                     context,
-                     runtime,
-                     version,
-                     execution_index,
-                     index,
-                     operation.actions,
-                     frozen_items,
-                     current_bindings,
-                     current_capabilities,
-                     operation.evaluated_at,
-                     operation.operation_id
-                   ),
-                 :ok <-
-                   ensure_current(
-                     ItemDigest.hash(current_items) == field(payload, :items_digest),
-                     :runtime_inputs
-                   ) do
-              :ok
-            end
-          end)
-        end
-      end)
-    else
+    result =
+      with {:ok, runtime} <- ManifestStore.get_runtime_state(context),
+           :ok <-
+             ensure_current(
+               runtime.manifest_version_id == field(payload, :manifest_version_id),
+               :active_manifest
+             ) do
+        ManifestStore.with_manifest(context, runtime.manifest_version_id, fn version ->
+          with :ok <-
+                 ensure_current(
+                   version.content_hash == field(payload, :manifest_content_hash),
+                   :manifest_content
+                 ),
+               {:ok, current_bindings} <-
+                 target_bindings_by_ids(context, snapshot_target_ids(payload)),
+               :ok <-
+                 ensure_current(
+                   binding_snapshot_matches?(current_bindings, payload, operation),
+                   :target_bindings
+                 ),
+               {:ok, current_capabilities} <-
+                 capabilities_for_payload(context, version, payload, operation.operation_id),
+               :ok <-
+                 ensure_current(
+                   canonical(current_capabilities) == field(payload, :capabilities),
+                   :runner_capabilities
+                 ) do
+            with_rebuild_indexes(version, fn index, execution_index ->
+              with :ok <-
+                     validate_live_bindings(
+                       context,
+                       version,
+                       index,
+                       payload_refs(index, payload),
+                       current_bindings,
+                       operation.operation_id
+                     ),
+                   {:ok, frozen_items} <- operation_items(context, operation.operation_id),
+                   {:ok, current_items} <-
+                     freeze_runtime_inputs(
+                       context,
+                       runtime,
+                       version,
+                       execution_index,
+                       index,
+                       operation.actions,
+                       frozen_items,
+                       current_bindings,
+                       current_capabilities,
+                       operation.evaluated_at,
+                       operation.operation_id
+                     ),
+                   :ok <-
+                     ensure_current(
+                       ItemDigest.hash(current_items) == field(payload, :items_digest),
+                       :runtime_inputs
+                     ) do
+                :ok
+              end
+            end)
+          end
+        end)
+      end
+
+    case result do
       {:error, {:stale_rebuild_plan, reason}} ->
         Logger.warning("rebuild plan revalidation failed: #{reason}",
           operation_id: operation.operation_id,
@@ -1034,6 +1036,9 @@ defmodule FavnOrchestrator.Rebuilds do
 
       {:error, %Error{} = error} ->
         {:error, error}
+
+      result ->
+        result
     end
   end
 
