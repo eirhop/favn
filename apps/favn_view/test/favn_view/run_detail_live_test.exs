@@ -564,6 +564,104 @@ defmodule FavnView.RunDetailLiveTest do
     assert is_nil(again.redirected)
   end
 
+  test "a backfill parent opens the first window run as soon as one exists" do
+    {:ok, reads} = Agent.start_link(fn -> 0 end)
+
+    Application.put_env(:favn_view, :operator_run_windows_fun, fn _context, _run_id ->
+      case Agent.get_and_update(reads, &{&1 + 1, &1 + 1}) do
+        1 -> {:ok, %RunWindowChoices{overflow?: false, items: [], backfill_status: :running}}
+        _later -> {:ok, window_choices()}
+      end
+    end)
+
+    parent_flow_fun()
+
+    assert {:ok, mounted} =
+             RunDetailLive.mount(%{"run_id" => "run-parent"}, %{}, connected_socket())
+
+    assert {:noreply, arrived} =
+             RunDetailLive.handle_params(
+               %{"run_id" => "run-parent"},
+               "http://localhost/runs/run-parent",
+               mounted
+             )
+
+    # A backfill submitted a moment ago has planned its windows and started none
+    # of them, so there is nothing to open yet.
+    assert is_nil(arrived.redirected)
+
+    # The window list is read at most once per fallback interval. Age the last
+    # read the way that interval would, so the poll below actually re-reads.
+    aged =
+      Phoenix.Component.assign(
+        %{arrived | redirected: nil},
+        :windows_read_at,
+        arrived.assigns.windows_read_at - 60_000
+      )
+
+    assert {:noreply, followed} =
+             RunDetailLive.handle_info({:poll_run, aged.assigns.fallback_poll_ref}, aged)
+
+    # Arrival is not one moment. Waiting on a parent that has just produced its
+    # first window used to leave the operator on a page with nothing drawn and a
+    # cell to click; now the page follows the run it was already watching.
+    assert {:live, :patch, %{to: to}} = followed.redirected
+    assert to =~ "/runs/run-one"
+  end
+
+  test "a combined run keeps saying what it covered after its window opens" do
+    combined =
+      Enum.map(1..24, fn index ->
+        %RunWindowChoice{
+          run_id: "run-child",
+          window_start_at: combined_month(index - 1),
+          window_end_at: combined_month(index),
+          status: :succeeded,
+          kind: :month,
+          timezone: "Etc/UTC"
+        }
+      end)
+
+    Application.put_env(:favn_view, :operator_run_windows_fun, fn _context, _run_id ->
+      {:ok, %RunWindowChoices{overflow?: false, items: combined, backfill_status: :completed}}
+    end)
+
+    parent_flow_fun(fn run_id -> backfill_flow(run_id, :ok).header end)
+
+    assert {:ok, mounted} =
+             RunDetailLive.mount(%{"run_id" => "run-parent"}, %{}, connected_socket())
+
+    assert mounted.assigns.run.combined_window == %{
+             label: "Jan 2023 – Dec 2024",
+             window_count: 24,
+             kind: :month
+           }
+
+    assert {:noreply, patched} =
+             RunDetailLive.handle_params(
+               %{"run_id" => "run-parent"},
+               "http://localhost/runs/run-parent",
+               mounted
+             )
+
+    assert {:live, :patch, %{to: to}} = patched.redirected
+    assert to =~ "/runs/run-child"
+
+    # Opening the window re-reads the run, and the run map a read returns carries
+    # no combined window. The window list is not re-read in the same breath — it
+    # has a cadence of its own — so a coverage line derived once at rail-build
+    # time vanished exactly when the operator arrived where it mattered.
+    assert {:noreply, opened} =
+             RunDetailLive.handle_params(
+               %{"run_id" => "run-child"},
+               "http://localhost/runs/run-child",
+               %{patched | redirected: nil}
+             )
+
+    assert opened.assigns.run.combined_window.label == "Jan 2023 – Dec 2024"
+    assert opened.assigns.run.combined_window.window_count == 24
+  end
+
   test "a transient group read failure keeps the last truthful parent progress" do
     {:ok, reads} = Agent.start_link(fn -> 0 end)
 
@@ -747,6 +845,33 @@ defmodule FavnView.RunDetailLiveTest do
             trigger_type: :backfill
         }
     }
+  end
+
+  # A parent whose own read says "backfill", with an optional override for the
+  # child runs its rail leads to.
+  defp parent_flow_fun(child \\ nil) do
+    Application.put_env(:favn_view, :operator_run_flow_fun, fn _context, run_id ->
+      header =
+        if run_id == "run-parent" or is_nil(child) do
+          %{header(run_id, :ok) | submit_kind: :backfill_asset, trigger_type: :backfill}
+        else
+          child.(run_id)
+        end
+
+      {:ok, %{kind: :run, detail: %Flow{header: header, assets: [], overflow?: false}}}
+    end)
+
+    Application.put_env(:favn_view, :operator_execution_group_fun, fn _context, _run_id, _opts ->
+      {:error, :unavailable}
+    end)
+  end
+
+  defp combined_month(offset) do
+    DateTime.new!(
+      Date.new!(2023 + div(offset, 12), rem(offset, 12) + 1, 1),
+      ~T[00:00:00],
+      "Etc/UTC"
+    )
   end
 
   defp window_choices do

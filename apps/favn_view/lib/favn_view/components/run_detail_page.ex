@@ -258,10 +258,24 @@ defmodule FavnView.Components.RunDetailPage do
 
   defp run_facts(_run), do: []
 
-  defp combined_window_fact(%{combined_window: %{label: label, window_count: count}}),
-    do: [%{label: "Combined window", value: "#{label} · #{count} windows"}]
+  # Counted in the unit the windows were planned in. "24 windows" is a fact about
+  # the backfill's bookkeeping; "24 months" is the fact about the data, and it is
+  # the one that makes the span beside it checkable at a glance.
+  defp combined_window_fact(%{combined_window: %{label: label, window_count: count} = combined}),
+    do: [
+      %{
+        label: "Combined window",
+        value: "#{label} · #{count} #{plural(count, unit_noun(combined[:kind]))}"
+      }
+    ]
 
   defp combined_window_fact(_run), do: []
+
+  defp unit_noun(:hour), do: "hour"
+  defp unit_noun(:day), do: "day"
+  defp unit_noun(:month), do: "month"
+  defp unit_noun(:year), do: "year"
+  defp unit_noun(_unknown), do: "window"
 
   # The rail is the only thing that can offer a window run, so it decides
   # whether there is anything to open. A backfill still creating windows has

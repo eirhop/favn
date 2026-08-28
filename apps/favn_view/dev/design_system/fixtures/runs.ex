@@ -126,8 +126,8 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.Runs do
   `layout` picks `:flat`, the strip of one cell per window run, or `:banded`,
   the coarse period band plus the selected period's cells. `:compare` is the
   flat rail with three of its windows chosen for comparison. `:combined` is the
-  rail that stands down: six coverage windows executed as one run, so there is
-  nothing to navigate between.
+  rail that stands down: two years of monthly coverage executed as one run, so
+  there is nothing to navigate between and only a span to state.
   """
   @spec rail(:flat | :banded | :compare | :combined) :: RunWindowRail.t()
   def rail(layout \\ :flat)
@@ -151,7 +151,7 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.Runs do
 
   def rail(:combined) do
     combined =
-      Enum.map(window_choices(6), &%{&1 | run_id: "run_window_combined"})
+      Enum.map(month_choices(24), &%{&1 | run_id: "run_window_combined"})
 
     RunWindowRail.build(combined, "run_window_combined", "Etc/UTC", backfill_status: :completed)
   end
@@ -475,6 +475,31 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.Runs do
         timezone: "Europe/Oslo"
       }
     end)
+  end
+
+  # Two calendar years of monthly coverage: the shape a combined backfill takes
+  # when its span is long enough that naming both bounds says nothing useful.
+  defp month_choices(count) do
+    Enum.map(1..count, fn index ->
+      start_at = month_start(index - 1)
+
+      %{
+        run_id: "run_window_#{index}",
+        window_start_at: start_at,
+        window_end_at: month_start(index),
+        status: window_status(index),
+        kind: :month,
+        timezone: "Etc/UTC"
+      }
+    end)
+  end
+
+  defp month_start(offset) do
+    DateTime.new!(
+      Date.new!(2023 + div(offset, 12), rem(offset, 12) + 1, 1),
+      ~T[00:00:00],
+      "Etc/UTC"
+    )
   end
 
   defp window_status(index) when rem(index, 13) == 0, do: :failed

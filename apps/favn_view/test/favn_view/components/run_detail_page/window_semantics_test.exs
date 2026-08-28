@@ -185,8 +185,10 @@ defmodule FavnView.Components.RunDetailPage.WindowSemanticsTest do
     html = render_page(run, rail: rail(children, run.id))
 
     # A day cell is labelled by its day number alone, so three March windows read
-    # "1 2 3" and a flat rail has no band header to say which month.
-    assert html =~ "Covering Mar 1 00:00 – Mar 4 00:00, 2026"
+    # "1 2 3" and a flat rail has no band header to say which month. The coverage
+    # is named by the days it contains, so the exclusive Mar 4 bound — a day the
+    # rail holds no cell for — is never printed.
+    assert html =~ "Covering Mar 1, 2026 – Mar 3, 2026"
   end
 
   test "a banded rail states the period in its bands rather than twice" do
@@ -581,8 +583,9 @@ defmodule FavnView.Components.RunDetailPage.WindowSemanticsTest do
     html =
       render_page(
         Map.put(run, :combined_window, %{
-          label: "Jul 10 00:00 – Jul 15 00:00, 2026",
-          window_count: 5
+          label: "Jul 10, 2026 – Jul 14, 2026",
+          window_count: 5,
+          kind: :day
         }),
         rail: rail
       )
@@ -592,7 +595,99 @@ defmodule FavnView.Components.RunDetailPage.WindowSemanticsTest do
     # the run and sits with the run's other properties.
     refute html =~ ~s(data-testid="window-rail")
     assert html =~ "Combined window"
-    assert html =~ "Jul 10 00:00 – Jul 15 00:00, 2026 · 5 windows"
+
+    # Counted in the unit the windows were planned in: "5 days" can be checked
+    # against the span beside it, and "5 windows" cannot.
+    assert html =~ "Jul 10, 2026 – Jul 14, 2026 · 5 days"
+  end
+
+  test "a combined run of one window still counts in that window's unit" do
+    run = Runs.single_window()
+
+    html =
+      render_page(
+        Map.put(run, :combined_window, %{
+          label: "Jul 2026",
+          window_count: 1,
+          kind: :month
+        })
+      )
+
+    assert html =~ "Jul 2026 · 1 month"
+  end
+
+  test "a combined run whose windows have no decodable unit still says how many" do
+    run = Runs.single_window()
+
+    html =
+      render_page(
+        Map.put(run, :combined_window, %{
+          label: "Jul 10 09:30 – Jul 14 11:15, 2026",
+          window_count: 5,
+          kind: nil
+        })
+      )
+
+    # A window key too old to decode a kind leaves nothing truer to count in than
+    # windows, which is what the page falls back to rather than guessing a unit.
+    assert html =~ "· 5 windows"
+  end
+
+  test "a window's exact bounds are stated on the operator's clock" do
+    run = Runs.single_window()
+
+    # December keyed in UTC, read by an operator whose display timezone is Oslo:
+    # the cell is labelled "Dec" because that is the month the window covers, and
+    # its bounds are 01:00 to 01:00 because that is when they happen in Oslo.
+    december = [
+      %{
+        run_id: "run-december",
+        window_start_at: ~U[2024-12-01 00:00:00Z],
+        window_end_at: ~U[2025-01-01 00:00:00Z],
+        status: :succeeded,
+        kind: :month,
+        timezone: "Etc/UTC"
+      }
+    ]
+
+    html =
+      render_page(run,
+        rail:
+          RunWindowRail.build(december, "run-december", "Europe/Oslo",
+            backfill_status: :completed
+          )
+      )
+
+    assert html =~ "Dec 1, 2024 01:00:00 CET – Jan 1, 2025 01:00:00 CET"
+
+    # Two clocks in one tooltip is a contradiction unless the second one is
+    # named, so the zone the window was keyed in is stated beside the bounds.
+    assert html =~ "Window timezone Etc/UTC"
+  end
+
+  test "a window keyed in the operator's own timezone says nothing about zones" do
+    run = Runs.single_window()
+
+    html =
+      render_page(run,
+        rail: RunWindowRail.build(compare_windows(run.id), run.id, "Etc/UTC")
+      )
+
+    refute html =~ "Window timezone"
+  end
+
+  test "two names for one clock are not reported as a difference" do
+    run = Runs.single_window()
+
+    # A workspace may spell its default timezone "UTC" while the window policy
+    # spells it "Etc/UTC". Nothing on screen disagrees, so there is nothing to
+    # explain, and a note here would invent a discrepancy to worry about.
+    html =
+      render_page(run,
+        rail: RunWindowRail.build(compare_windows(run.id), run.id, "UTC")
+      )
+
+    refute html =~ "Window timezone"
   end
 
   test "a panel's title keeps its inset even when its body owns the spacing" do

@@ -19,6 +19,7 @@ defmodule FavnView.Components.RunDetailPage.WindowRail do
   use FavnView, :html
 
   alias FavnView.RunWindowRail
+  alias FavnView.Time
   alias FavnView.UI.Tokens
   alias FavnView.WindowLabel
 
@@ -103,7 +104,7 @@ defmodule FavnView.Components.RunDetailPage.WindowRail do
             phx-value-run_id={cell.run_id}
             aria-current={cell.selected? && "true"}
             aria-pressed={@compare? && to_string(cell.compared?)}
-            title={cell_title(cell, @compare?)}
+            title={cell_title(cell, @rail.timezone, @compare?)}
             data-testid="window-rail-cell"
             data-window-status={cell.status}
             data-window-count={cell.window_count}
@@ -174,20 +175,22 @@ defmodule FavnView.Components.RunDetailPage.WindowRail do
   # repeated into every cell, which is what the short labels exist to avoid.
   defp with_coverage(%RunWindowRail{layout: :banded}, sentence), do: sentence
 
-  defp with_coverage(%RunWindowRail{cells: cells}, sentence) do
-    case coverage(cells) do
+  defp with_coverage(%RunWindowRail{cells: cells, kind: kind}, sentence) do
+    case coverage(cells, kind) do
       nil -> sentence
       span -> "#{sentence} Covering #{span}."
     end
   end
 
-  defp coverage([]), do: nil
+  defp coverage([], _kind), do: nil
 
-  defp coverage(cells) do
+  # Named in the windows' own timezone, because what this states is a stretch of
+  # calendar periods rather than a pair of instants.
+  defp coverage(cells, kind) do
     first = Enum.min_by(cells, & &1.start_at, DateTime)
     last = Enum.max_by(cells, & &1.end_at, DateTime)
 
-    WindowLabel.compact(first.start_at, last.end_at, first.timezone || "Etc/UTC")
+    WindowLabel.span(first.start_at, last.end_at, kind, first.timezone)
   end
 
   # Out of compare mode the lit cell is the open window. In it, every compared
@@ -198,26 +201,58 @@ defmodule FavnView.Components.RunDetailPage.WindowRail do
 
   # The open run is always part of its own comparison, so its cell says why it
   # cannot be removed rather than looking like a control that failed.
-  defp cell_title(%{selected?: true} = cell, true),
-    do: "#{window_title(cell)} · Track #{cell.track} · The open window always compares"
+  defp cell_title(%{selected?: true} = cell, timezone, true),
+    do: "#{window_title(cell, timezone)} · Track #{cell.track} · The open window always compares"
 
-  defp cell_title(%{compared?: true} = cell, true),
-    do: "#{window_title(cell)} · Track #{cell.track} · Click to remove from the comparison"
+  defp cell_title(%{compared?: true} = cell, timezone, true),
+    do:
+      "#{window_title(cell, timezone)} · Track #{cell.track} · Click to remove from the comparison"
 
-  defp cell_title(cell, true), do: "#{window_title(cell)} · Click to add to the comparison"
+  defp cell_title(cell, timezone, true),
+    do: "#{window_title(cell, timezone)} · Click to add to the comparison"
 
-  defp cell_title(cell, _compare?), do: window_title(cell)
+  defp cell_title(cell, timezone, _compare?), do: window_title(cell, timezone)
 
   # A cell is labelled by its calendar position — often a bare day number — so
   # the tooltip is where the window it covers is actually stated.
-  defp window_title(%{window_count: count} = cell) when count > 1,
-    do: "#{window_span(cell)} · #{status_label(cell.status)} · #{count} windows in one run"
+  defp window_title(%{window_count: count} = cell, timezone) when count > 1,
+    do:
+      "#{window_span(cell, timezone)} · #{status_label(cell.status)} · #{count} windows in one run"
 
-  defp window_title(cell), do: "#{window_span(cell)} · #{status_label(cell.status)}"
+  defp window_title(cell, timezone),
+    do: "#{window_span(cell, timezone)} · #{status_label(cell.status)}"
 
-  defp window_span(cell) do
-    WindowLabel.full(cell.start_at, cell.end_at, cell.timezone || "Etc/UTC") || cell.label
+  # The bounds are two instants, so they are stated on the operator's clock like
+  # every other timestamp on this page. The cell's *label* is a calendar period
+  # and stays in the window's own timezone, which is what makes a window keyed in
+  # one zone and read in another look wrong — a December window opening at 01:00.
+  # So when the two differ, the tooltip names the zone the window was keyed in
+  # and the mismatch stops being a contradiction.
+  defp window_span(cell, timezone) do
+    case WindowLabel.full(cell.start_at, cell.end_at, timezone) do
+      nil -> cell.label
+      bounds -> bounds <> window_timezone_note(cell, timezone)
+    end
   end
+
+  defp window_timezone_note(cell, timezone) do
+    if same_clock?(cell, timezone), do: "", else: " · Window timezone #{cell.timezone}"
+  end
+
+  # Two zone names can be one clock — `UTC` and `Etc/UTC` are, and a workspace
+  # may well spell its default the other way round from the window policy. The
+  # note exists to explain bounds that do not match the label beside them, so it
+  # is worth saying only when the two zones actually render this window
+  # differently.
+  defp same_clock?(%{timezone: zone}, zone), do: true
+
+  defp same_clock?(cell, timezone) do
+    Enum.all?([cell.start_at, cell.end_at], fn at ->
+      wall_clock(at, cell.timezone) == wall_clock(at, timezone)
+    end)
+  end
+
+  defp wall_clock(at, zone), do: at |> Time.shift(zone) |> DateTime.to_naive()
 
   # Window run statuses are not run statuses. `ready` means waiting to start
   # rather than finished well, so the shared token mapping is not used here.
