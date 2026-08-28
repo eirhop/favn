@@ -105,14 +105,8 @@ defmodule FavnStoragePostgres.StorageV2.AssetEvidenceBindingMigrationTest do
     SQL.query!(
       UpgradeRepo,
       """
-      INSERT INTO favn_control.manifest_versions
-        (manifest_version_id, content_hash, schema_version, runner_contract_version,
-         runner_releases, payload_version, asset_count, pipeline_count,
-         schedule_count, atom_strings, manifest, inserted_at)
-      VALUES (
-        $1, $2, 14, 13, jsonb_build_object('default', $3::text),
-        1, 1, 0, 0, ARRAY[]::text[],
-        jsonb_build_object(
+      WITH payload AS (
+        SELECT jsonb_build_object(
           'assets', jsonb_build_array(
             jsonb_build_object(
               'ref', jsonb_build_array('Elixir.Example.Asset', 'orders'),
@@ -123,9 +117,19 @@ defmodule FavnStoragePostgres.StorageV2.AssetEvidenceBindingMigrationTest do
           'pipelines', jsonb_build_array(),
           'schedules', jsonb_build_array(),
           'runner_releases', jsonb_build_object('default', $3::text)
-        ),
-        clock_timestamp()
+        ) AS manifest
       )
+      INSERT INTO favn_control.manifest_versions
+        (manifest_version_id, content_hash, schema_version, runner_contract_version,
+         runner_releases, payload_version, asset_count, pipeline_count,
+         schedule_count, atom_strings, manifest, manifest_index_bytes, inserted_at)
+      SELECT
+        $1, $2, 14, 13, jsonb_build_object('default', $3::text),
+        1, 1, 0, 0, ARRAY[]::text[],
+        payload.manifest,
+        octet_length(payload.manifest::text),
+        clock_timestamp()
+      FROM payload
       """,
       [@manifest_id, hash, @runner_release_id, @evidence_generation_id]
     )

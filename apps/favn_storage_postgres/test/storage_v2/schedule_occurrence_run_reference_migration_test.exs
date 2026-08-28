@@ -93,11 +93,11 @@ defmodule FavnStoragePostgres.StorageV2.ScheduleOccurrenceRunReferenceMigrationT
       INSERT INTO favn_control.manifest_versions
         (manifest_version_id, content_hash, schema_version, runner_contract_version,
          runner_releases, payload_version, manifest, inserted_at,
-         asset_count, pipeline_count, schedule_count)
+         asset_count, pipeline_count, schedule_count, manifest_index_bytes)
       VALUES
         ('schedule-commit-manifest', decode(repeat('11', 32), 'hex'), 1, 1,
          '{"default":"schedule-commit-release"}'::jsonb, 1, '{}'::jsonb,
-         clock_timestamp(), 0, 1, 1)
+         clock_timestamp(), 0, 1, 1, octet_length('{}'::jsonb::text))
       """)
 
       query!("""
