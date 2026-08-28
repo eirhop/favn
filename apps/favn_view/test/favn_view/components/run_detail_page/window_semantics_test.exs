@@ -676,6 +676,20 @@ defmodule FavnView.Components.RunDetailPage.WindowSemanticsTest do
     refute html =~ "Window timezone"
   end
 
+  test "two names for one clock are not reported as a difference" do
+    run = Runs.single_window()
+
+    # A workspace may spell its default timezone "UTC" while the window policy
+    # spells it "Etc/UTC". Nothing on screen disagrees, so there is nothing to
+    # explain, and a note here would invent a discrepancy to worry about.
+    html =
+      render_page(run,
+        rail: RunWindowRail.build(compare_windows(run.id), run.id, "UTC")
+      )
+
+    refute html =~ "Window timezone"
+  end
+
   test "a panel's title keeps its inset even when its body owns the spacing" do
     run = Runs.single_window()
     html = render_page(run, rail: rail(compare_windows(run.id), run.id))

@@ -19,6 +19,7 @@ defmodule FavnView.Components.RunDetailPage.WindowRail do
   use FavnView, :html
 
   alias FavnView.RunWindowRail
+  alias FavnView.Time
   alias FavnView.UI.Tokens
   alias FavnView.WindowLabel
 
@@ -234,8 +235,24 @@ defmodule FavnView.Components.RunDetailPage.WindowRail do
     end
   end
 
-  defp window_timezone_note(%{timezone: zone}, zone), do: ""
-  defp window_timezone_note(%{timezone: zone}, _timezone), do: " · Window timezone #{zone}"
+  defp window_timezone_note(cell, timezone) do
+    if same_clock?(cell, timezone), do: "", else: " · Window timezone #{cell.timezone}"
+  end
+
+  # Two zone names can be one clock — `UTC` and `Etc/UTC` are, and a workspace
+  # may well spell its default the other way round from the window policy. The
+  # note exists to explain bounds that do not match the label beside them, so it
+  # is worth saying only when the two zones actually render this window
+  # differently.
+  defp same_clock?(%{timezone: zone}, zone), do: true
+
+  defp same_clock?(cell, timezone) do
+    Enum.all?([cell.start_at, cell.end_at], fn at ->
+      wall_clock(at, cell.timezone) == wall_clock(at, timezone)
+    end)
+  end
+
+  defp wall_clock(at, zone), do: at |> Time.shift(zone) |> DateTime.to_naive()
 
   # Window run statuses are not run statuses. `ready` means waiting to start
   # rather than finished well, so the shared token mapping is not used here.

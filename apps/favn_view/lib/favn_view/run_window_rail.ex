@@ -50,7 +50,7 @@ defmodule FavnView.RunWindowRail do
           start_at: DateTime.t(),
           end_at: DateTime.t(),
           window_count: pos_integer(),
-          timezone: String.t() | nil
+          timezone: String.t()
         }
 
   @type bucket :: %{
