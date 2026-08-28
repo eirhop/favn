@@ -245,12 +245,16 @@ admission attempts required for three tasks at concurrency one, proving that a
 completion no longer performs an extra blocked refill before its lease release.
 
 Actual diff size, excluding this required outcome update, is 180 production
-lines added and 64 deleted, plus 537 test and canonical-documentation lines
-added and 6 deleted. The approved combined upper estimates were 145 production
-and 440 supporting additions. The respective 35-line/24-percent and
-97-line/22-percent differences remain below the record's material-overrun
-threshold. Most supporting growth is explicit lifecycle construction for the
-review-requested persistence-retry continuation proof.
+lines added and 64 deleted, plus 569 test and canonical-documentation lines
+added and 14 deleted. The approved combined upper estimates were 145 production
+and 440 supporting additions. The production difference is 35 lines/24 percent
+and remains below the record's material-overrun threshold. Supporting additions
+exceed the estimate by 129 lines/29 percent and therefore cross that threshold.
+Most supporting growth is explicit lifecycle construction for the
+review-requested persistence-retry continuation proof. The final 32-added/
+8-deleted correction made the PostgreSQL terminal-refill regression deterministic
+by using a real capacity blocker and a stable active/deferred checkpoint instead
+of depending on the removed 100-millisecond pause or its retry timer.
 
 ## Deviations from the approved plan
 
@@ -259,6 +263,7 @@ review-requested persistence-retry continuation proof.
 | Add focused proof for every listed lifecycle variant | Added direct durable-unknown, successful persistence-retry-to-refill, cleanup-owner, deadline, timer-fence, no-entry/active-await, refill-cause, and PostgreSQL admission-count assertions; retained the existing unconfirmed-timeout, cancellation, terminal-result, limit, and recovery coverage and ran the full owning suites | The exact persistence-retry continuation fixture was added during final review. Mature cancellation, limit, and recovery fixtures were reused; no production scope changed. |
 | Approved plan described a limit of four "admitted" nodes | Preserved the approved wording above and corrected the canonical/outcome terminology to four processed admission candidates | Skipped, reused, or blocked candidates can consume the batch counter without being admitted. This is a documentation precision fix, not a runtime deviation. |
 | Repeat the local benchmark | Recreated the prior temporary harness, corrected two harness-only completion/cleanup defects, recorded one clean comparable run, then removed the harness and all disposable databases | The benchmark remains diagnostic evidence rather than permanent test code, as planned. |
+| Existing terminal-refill regression relied on observing the old delayed continuation window | Made the fixture consume the second global slot with an authoritative lease, suspend the run after one sibling is admitted without requiring its retry timer to remain pending, then release that lease before resuming | The faster zero-delay continuation correctly invalidated the timing assumption. A real capacity blocker and stable active/deferred checkpoint now prove the same terminal-failure cancellation behavior deterministically. This added 32 and deleted 8 supporting lines, causing the documented complexity-budget overrun; production scope did not change. |
 | No other implementation deviation | Production behavior matches the approved settlement, release, refill, deadline, and conservative recovery design | No schema, public API, runner protocol, persistence, or recovery contract changed. |
 
 ## Decision log
@@ -270,6 +275,7 @@ review-requested persistence-retry continuation proof.
 | Cancel existing admission timers before result-driven refill | A newly released lease changes the scheduling fact; stale timers must not race the immediate progress attempt. Token fencing still protects already-delivered messages. |
 | Keep a pure internal wait-policy helper | It gives deterministic coverage for zero delay, bounded delay, and deadline exhaustion without exposing a public API. |
 | Keep the fixed four-node/25-millisecond batch | Zero-delay continuation removes the artificial pause while preserving mailbox fairness and bounded work per turn. |
+| Model blocked capacity explicitly in the terminal-refill regression | The test must observe a scheduling invariant, not win a race against the immediate continuation introduced by this change. |
 
 ## Verification evidence
 
@@ -280,7 +286,7 @@ review-requested persistence-retry continuation proof.
 | Focused Orchestrator lifecycle tests | 17 passed | Durable unknown outcome, successful persistence-retry refill, settlement cleanup, sequential shared cleanup, active-sibling wait, refill cause, deadline policy, stale and duplicate timer fencing |
 | Full Orchestrator fast suite | 751 passed, 2 excluded on the current source | Owning application behavior outside explicit acceptance/container/slow/browser tiers |
 | Focused PostgreSQL admission/recovery group | 7 passed | Capacity fill, concurrency one, global limit, unconfirmed timeout, recovery adoption, duplicate prevention, and fail-closed recovery |
-| Full PostgreSQL authority module | 142 passed on the current source | Real PostgreSQL transactions and the broader control-plane authority contract |
+| Full PostgreSQL authority module | 142 passed on the current source after replacing the timing-dependent terminal-refill fixture with an explicit capacity blocker/release | Real PostgreSQL transactions and the broader control-plane authority contract |
 | Broader fast suites | The current-source View suite passed 754 with 1 excluded. A full umbrella attempt did not qualify as green: the storage slice had unrelated bootstrap/runner-demand timing failures under full load and left later build artifacts incomplete; the owning Orchestrator and PostgreSQL authority suites above were rerun cleanly in isolation. | Broad attempt recorded honestly; explicit acceptance/container/slow/browser tiers remain excluded |
 | Docker PostgreSQL benchmark | 64 tasks completed and 64 unique claims with eight one-slot runners; 90.2% utilization; 0.90 s initial fill; 290 ms p95 completion acknowledgement to replacement claim; 22 ms p95 wake to claim; 144 admission operations; 151.8M RunServer reductions | Local PostgreSQL 18, simulated 1/2/4-second tasks, and `+S 1:1`; directional, not a production 0.5-vCPU cgroup |
 | Benchmark comparison with rc.13 baseline | Duration 23.68 s to 19.30 s; utilization 78.7% to 90.2%; initial fill 1.65 s to 0.90 s; replacement p95 447 ms to 290 ms; admission operations 185 to 144; RunServer reductions 163.8M to 151.8M | One clean comparable local run per revision; useful signal, not a statistical capacity guarantee |
@@ -304,6 +310,6 @@ review-requested persistence-retry continuation proof.
 | Reviewer | Independent sub-agent `/root/plan_review` |
 | Compared | Approved plan, implementation, tests, diagnostics, and docs |
 | Deviations complete | Yes |
-| Findings | Prevent premature finalization while a sibling remains active; add exact successful persistence-retry-to-refill proof; preserve approved wording and refresh complexity/evidence counts |
+| Findings | Prevent premature finalization while a sibling remains active; add exact successful persistence-retry-to-refill proof; preserve approved wording; refresh complexity/evidence counts; replace the terminal-refill timer race with an authoritative capacity blocker and stable checkpoint |
 | Findings addressed and rechecked | Yes — the reviewer rechecked the exact current worktree after all corrections |
 | Verdict | Approved; no findings remain |
