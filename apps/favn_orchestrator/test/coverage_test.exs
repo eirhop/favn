@@ -24,6 +24,7 @@ defmodule FavnOrchestrator.CoverageTest do
     def get_runtime_state(_query), do: {:ok, Process.get(:coverage_runtime)}
     def get_deployment_targets(_query), do: {:ok, Process.get(:coverage_targets)}
     def get_deployment_manifest(_query), do: {:ok, Process.get(:coverage_version)}
+    def get_manifest_size(_selector), do: {:ok, 1_024}
     def get_deployment_configuration(_query), do: {:ok, %{}}
 
     def get_evidence_bindings(query) do

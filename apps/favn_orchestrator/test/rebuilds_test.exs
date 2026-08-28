@@ -51,6 +51,7 @@ defmodule FavnOrchestrator.RebuildsTest do
     def get_runtime_state(_query), do: {:ok, Process.get(:rebuild_runtime)}
     def get_deployment_targets(_query), do: {:ok, Process.get(:rebuild_grants)}
     def get_deployment_manifest(_query), do: {:ok, Process.get(:rebuild_version)}
+    def get_manifest_size(_selector), do: {:ok, 1_024}
     def get_deployment_configuration(_query), do: {:ok, %{}}
 
     def get_execution_package(query) do

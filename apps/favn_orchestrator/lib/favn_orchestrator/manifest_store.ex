@@ -290,8 +290,9 @@ defmodule FavnOrchestrator.ManifestStore do
   def with_index(%Version{} = version, opts \\ [], fun)
       when is_list(opts) and is_function(fun, 1) do
     with_scoped_token(opts, fn token ->
-      with {:ok, budget} <- Budget.persisted_index(:erlang.external_size(version.manifest)),
-           :ok <- resize_scoped_working(token, budget),
+      budget = Budget.index(:erlang.external_size(version.manifest))
+
+      with :ok <- resize_scoped_working(token, budget),
            {:ok, %Index{} = index} <-
              BoundedWorker.run(fn -> Index.build_from_version(version) end, budget) do
         validate_scoped_result(fun.(index), opts)
@@ -603,6 +604,7 @@ defmodule FavnOrchestrator.ManifestStore do
     end
   end
 
+  defp contains_scoped_value?(%Version{manifest: nil}), do: false
   defp contains_scoped_value?(%Version{}), do: true
   defp contains_scoped_value?(%Index{}), do: true
 

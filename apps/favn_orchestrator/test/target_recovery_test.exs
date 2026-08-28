@@ -32,6 +32,7 @@ defmodule FavnOrchestrator.TargetRecoveryTest do
     def get_deployment_manifest(_query), do: {:ok, Process.get(:recovery_version)}
     def get_deployment_configuration(_query), do: {:ok, %{}}
     def get_manifest(_query), do: {:ok, Process.get(:recovery_version)}
+    def get_manifest_size(_selector), do: {:ok, 1_024}
 
     def create_intent(command) do
       send(Process.get(:recovery_test_pid), {:create_recovery_intent, command})

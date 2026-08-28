@@ -41,6 +41,8 @@ defmodule FavnOrchestrator.RunSubmissionsTest do
     def get_deployment_manifest(%GetDeploymentManifest{}),
       do: {:ok, Process.get(:run_submissions_version)}
 
+    def get_manifest_size(_selector), do: {:ok, 1_024}
+
     def get_deployment_configuration(_query),
       do: {:ok, Process.get(:run_submissions_configuration)}
 

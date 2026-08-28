@@ -48,6 +48,8 @@ defmodule FavnOrchestrator.API.ManifestsRouterTest do
     def get_manifest(_query),
       do: {:ok, Application.fetch_env!(:favn_orchestrator, :manifest_router_test_version)}
 
+    def get_manifest_size(_selector), do: {:ok, 1_024}
+
     def begin_manifest_deployment(query), do: {:ok, {:new, query.idempotency}}
 
     def acquire_manifest_activation_lease(command) do

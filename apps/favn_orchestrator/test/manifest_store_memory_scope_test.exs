@@ -40,6 +40,15 @@ defmodule FavnOrchestrator.ManifestStoreMemoryScopeTest do
              end)
   end
 
+  test "a manifest identity may leave a temporary scoped lease" do
+    version = version()
+
+    assert {:ok, %Version{manifest: nil}} =
+             ManifestStore.with_index(version, fn _index ->
+               {:ok, Version.identity(version)}
+             end)
+  end
+
   test "nested scoped index work reuses one owner token" do
     version = version()
 

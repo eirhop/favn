@@ -65,6 +65,8 @@ defmodule FavnOrchestrator.WorkspaceConfigurationTest do
       {:ok, Application.fetch_env!(:favn_orchestrator, :workspace_configuration_test_version)}
     end
 
+    def get_manifest_size(_selector), do: {:ok, 1_024}
+
     def get_deployment_configuration(%{
           workspace_context: %{workspace_id: "workspace-oslo"},
           deployment_id: "deployment-oslo"

@@ -57,6 +57,7 @@ defmodule FavnOrchestrator.RebuildDispatcherCleanupTest do
     end
 
     def get_deployment_manifest(_query), do: {:ok, Agent.get(agent(), & &1.version)}
+    def get_manifest_size(_selector), do: {:ok, 1_024}
 
     defp agent,
       do: Application.fetch_env!(:favn_orchestrator, :rebuild_dispatcher_cleanup_test_agent)

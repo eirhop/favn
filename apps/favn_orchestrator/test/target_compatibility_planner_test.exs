@@ -45,6 +45,8 @@ defmodule FavnOrchestrator.TargetCompatibilityPlannerTest do
       end
     end
 
+    def get_manifest_size(_selector), do: {:ok, 1_024}
+
     def get_manifest_target_descriptors(query) do
       descriptors =
         Application.get_env(
