@@ -14,6 +14,8 @@ defmodule FavnOrchestrator.RunSubmissionsTest do
   alias FavnOrchestrator.Persistence.Runtime
   alias FavnOrchestrator.Persistence.Stores
   alias FavnOrchestrator.Persistence.WorkspaceContext
+  alias FavnOrchestrator.MemoryCapacity
+  alias FavnOrchestrator.MemoryCapacity.Budget
   alias FavnOrchestrator.ExecutionPoolPolicy
   alias FavnOrchestrator.ConnectionCircuitPolicy
   alias FavnOrchestrator.WorkspaceConfiguration
@@ -173,8 +175,13 @@ defmodule FavnOrchestrator.RunSubmissionsTest do
              ]}} =
              Intent.decode(command.intent)
 
+    {:ok, token} = MemoryCapacity.acquire(Budget.index_max(), kind: :test_run_submission)
+    on_exit(fn -> MemoryCapacity.release(token) end)
+
     assert {:ok, prepared, summary} =
-             Preparation.prepare(context, Process.get(:run_submission))
+             Preparation.prepare(context, Process.get(:run_submission),
+               memory_capacity_token: token
+             )
 
     assert prepared.run_state.id == "run-reserved"
     assert prepared.run_state.deployment_id == "deployment"

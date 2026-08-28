@@ -21,6 +21,8 @@ defmodule FavnOrchestrator.RunManager.RefreshPolicyDependenciesTest do
   alias Favn.Manifest.Asset
   alias Favn.Manifest.Version
   alias Favn.Window.Spec, as: WindowSpec
+  alias FavnOrchestrator.MemoryCapacity
+  alias FavnOrchestrator.MemoryCapacity.Budget
   alias FavnOrchestrator.Persistence.Queries.GetDeploymentManifest
   alias FavnOrchestrator.Persistence.Queries.GetRuntimeState
   alias FavnOrchestrator.Persistence.Results.RuntimeState
@@ -111,15 +113,21 @@ defmodule FavnOrchestrator.RunManager.RefreshPolicyDependenciesTest do
   defp force_upstream, do: {:force_assets, [@asset_ref], [include_upstream: true]}
 
   defp build(context, opts) do
-    SubmissionBuilder.persisted_target(
-      context,
-      :asset,
-      @asset_ref,
-      "deployment",
-      "refresh-policy-manifest",
-      "refresh-policy-run-#{System.unique_integer([:positive])}",
-      opts
-    )
+    {:ok, token} = MemoryCapacity.acquire(Budget.index_max(), kind: :test_run_submission)
+
+    try do
+      SubmissionBuilder.persisted_target(
+        context,
+        :asset,
+        @asset_ref,
+        "deployment",
+        "refresh-policy-manifest",
+        "refresh-policy-run-#{System.unique_integer([:positive])}",
+        Keyword.put(opts, :_memory_capacity_token, token)
+      )
+    after
+      MemoryCapacity.release(token)
+    end
   end
 
   defp manifest_version do

@@ -4072,6 +4072,13 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   end
 
   test "submission pins runner release bindings from the active manifest", fixture do
+    {:ok, token} =
+      MemoryCapacity.acquire(FavnOrchestrator.MemoryCapacity.Budget.index_max(),
+        kind: :test_run_submission
+      )
+
+    on_exit(fn -> MemoryCapacity.release(token) end)
+
     assert {:ok, submission} =
              SubmissionBuilder.persisted_target(
                fixture.workspace_context,
@@ -4079,7 +4086,8 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
                {MyApp.Asset, :asset},
                fixture.deployment_id,
                fixture.version.manifest_version_id,
-               "runner-release-submission-#{fixture.workspace_id}"
+               "runner-release-submission-#{fixture.workspace_id}",
+               _memory_capacity_token: token
              )
 
     assert submission.run_state.runner_releases == fixture.version.runner_releases

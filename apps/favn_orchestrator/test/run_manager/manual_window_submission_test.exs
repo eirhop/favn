@@ -9,6 +9,8 @@ defmodule FavnOrchestrator.RunManager.ManualWindowSubmissionTest do
   alias Favn.Manifest.Version
   alias Favn.Window.Policy
   alias Favn.Window.Spec, as: WindowSpec
+  alias FavnOrchestrator.MemoryCapacity
+  alias FavnOrchestrator.MemoryCapacity.Budget
   alias FavnOrchestrator.Persistence.Queries.GetDeploymentManifest
   alias FavnOrchestrator.Persistence.Queries.GetRun
   alias FavnOrchestrator.Persistence.Queries.GetRuntimeState
@@ -90,6 +92,9 @@ defmodule FavnOrchestrator.RunManager.ManualWindowSubmissionTest do
   end
 
   test "builder persists one default selection and rerun preserves it", %{context: context} do
+    {:ok, token} = MemoryCapacity.acquire(Budget.index_max(), kind: :test_run_submission)
+    on_exit(fn -> MemoryCapacity.release(token) end)
+
     assert {:ok, submission} =
              SubmissionBuilder.persisted_target(
                context,
@@ -98,7 +103,8 @@ defmodule FavnOrchestrator.RunManager.ManualWindowSubmissionTest do
                "deployment",
                "manual-window-manifest",
                "manual-window-run",
-               window_evaluated_at: @evaluated_at
+               window_evaluated_at: @evaluated_at,
+               _memory_capacity_token: token
              )
 
     source = submission.run_state
@@ -131,7 +137,8 @@ defmodule FavnOrchestrator.RunManager.ManualWindowSubmissionTest do
                "deployment",
                "manual-window-manifest",
                "manual-window-rerun",
-               window_evaluated_at: ~U[2030-01-01 00:00:00Z]
+               window_evaluated_at: ~U[2030-01-01 00:00:00Z],
+               _memory_capacity_token: token
              )
 
     assert rerun.run_state.metadata.window_selection == selection
