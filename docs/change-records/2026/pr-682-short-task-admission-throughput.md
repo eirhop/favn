@@ -287,6 +287,7 @@ of depending on the removed 100-millisecond pause or its retry timer.
 | Full Orchestrator fast suite | 751 passed, 2 excluded on the current source | Owning application behavior outside explicit acceptance/container/slow/browser tiers |
 | Focused PostgreSQL admission/recovery group | 7 passed | Capacity fill, concurrency one, global limit, unconfirmed timeout, recovery adoption, duplicate prevention, and fail-closed recovery |
 | Full PostgreSQL authority module | 142 passed on the current source after replacing the timing-dependent terminal-refill fixture with an explicit capacity blocker/release | Real PostgreSQL transactions and the broader control-plane authority contract |
+| GitHub qualification | Passed Quick checks, Fast tests, Acceptance tests, Slow tests, Dialyzer, production-shaped HTTP security, generic-runner image qualification, and control-plane image qualification on implementation/test commit `67f57f02` | Exact pushed production and test source; workflow annotations were pre-existing dependency/deprecation notices, not failures |
 | Broader fast suites | The current-source View suite passed 754 with 1 excluded. A full umbrella attempt did not qualify as green: the storage slice had unrelated bootstrap/runner-demand timing failures under full load and left later build artifacts incomplete; the owning Orchestrator and PostgreSQL authority suites above were rerun cleanly in isolation. | Broad attempt recorded honestly; explicit acceptance/container/slow/browser tiers remain excluded |
 | Docker PostgreSQL benchmark | 64 tasks completed and 64 unique claims with eight one-slot runners; 90.2% utilization; 0.90 s initial fill; 290 ms p95 completion acknowledgement to replacement claim; 22 ms p95 wake to claim; 144 admission operations; 151.8M RunServer reductions | Local PostgreSQL 18, simulated 1/2/4-second tasks, and `+S 1:1`; directional, not a production 0.5-vCPU cgroup |
 | Benchmark comparison with rc.13 baseline | Duration 23.68 s to 19.30 s; utilization 78.7% to 90.2%; initial fill 1.65 s to 0.90 s; replacement p95 447 ms to 290 ms; admission operations 185 to 144; RunServer reductions 163.8M to 151.8M | One clean comparable local run per revision; useful signal, not a statistical capacity guarantee |
@@ -295,13 +296,14 @@ of depending on the removed 100-millisecond pause or its retry timer.
 ### Not verified
 
 - Live production runner utilization, CPU saturation, and 0.5-vCPU behavior.
-- The explicit acceptance, container, slow, and browser tiers; this internal
-  Orchestrator change has no container, browser, or external service contract.
+- The explicit container and browser test tiers; this internal Orchestrator
+  change has no browser or external service contract. Image container
+  qualifications passed in GitHub Actions.
 - Statistical repeatability across many benchmark runs or concurrent independent
   pipelines; the local result is a single-run before/after comparison.
-- A green current-source umbrella run. The attempted full run encountered
-  unrelated storage-test timing/configuration failures; this change's owning
-  Orchestrator and PostgreSQL authority suites are green.
+- A second green local umbrella run. The attempted local full run encountered
+  unrelated storage-test timing/configuration failures; the pushed source passed
+  the full required GitHub CI matrix.
 
 ## Final review
 
