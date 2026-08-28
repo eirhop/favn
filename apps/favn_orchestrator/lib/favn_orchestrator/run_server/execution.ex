@@ -223,10 +223,19 @@ defmodule FavnOrchestrator.RunServer.Execution do
       {nil, state} ->
         {:cont, state}
 
-      {%{payload: %{kind: :deferred_refill, stage_index: stage_index}},
+      {%{
+         payload: %{
+           kind: :deferred_refill,
+           stage_index: stage_index,
+           refill_cause: refill_cause
+         }
+       },
        %RunExecutionState{
          stage_index: stage_index,
-         stage_state: %StageAttemptState{deferred_node_keys: [_ | _]}
+         stage_state: %StageAttemptState{
+           deferred_node_keys: [_ | _],
+           deferred_refill_cause: refill_cause
+         }
        } = state} ->
         after_pipeline_progress(state)
 
@@ -438,7 +447,8 @@ defmodule FavnOrchestrator.RunServer.Execution do
        }) do
     state.stage_state
     |> StageResult.resume_persisted(resume)
-    |> handle_pipeline_settlement(state)
+    |> prepare_pipeline_settlement(state)
+    |> continue_pipeline_settlement()
   end
 
   defp resume_persisted(%RunExecutionState{} = state, {:pipeline_retry_checkpoint, resume}) do
@@ -453,14 +463,14 @@ defmodule FavnOrchestrator.RunServer.Execution do
 
   defp resume_persisted(
          %RunExecutionState{stage_state: nil} = state,
-         {:stage_admission, attempt, {:partial_retry, _, _, _, _, _, _, _, _} = result}
+         {:stage_admission, attempt, {:partial_retry, _, _, _, _, _, _, _, _, _} = result}
        ) do
     handle_initial_stage_partial_retry(state, attempt, result)
   end
 
   defp resume_persisted(
          %RunExecutionState{stage_state: %StageAttemptState{}} = state,
-         {:stage_admission, _attempt, {:partial_retry, _, _, _, _, _, _, _, _} = result}
+         {:stage_admission, _attempt, {:partial_retry, _, _, _, _, _, _, _, _, _} = result}
        ) do
     handle_refill_stage_partial_retry(state, result)
   end
@@ -752,8 +762,19 @@ defmodule FavnOrchestrator.RunServer.Execution do
 
   defp restored_entry(_state, _task), do: {:error, {:invalid_recovered_runner_task, nil}}
 
-  defp handle_await_result(%RunExecutionState{} = state, entry, result, kind) do
-    process_await_result(state, entry, result, kind)
+  defp handle_await_result(%RunExecutionState{} = state, entry, result, :pipeline) do
+    settlement =
+      try do
+        process_await_result(state, entry, result, :pipeline)
+      after
+        :ok = ActiveTaskSet.release_entry(entry)
+      end
+
+    continue_pipeline_settlement(settlement)
+  end
+
+  defp handle_await_result(%RunExecutionState{} = state, entry, result, :sequential) do
+    process_await_result(state, entry, result, :sequential)
   after
     :ok = ActiveTaskSet.release_entry(entry)
   end
@@ -1071,7 +1092,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
 
     case submit_stage_entries(state, state.run, node_keys, attempt) do
       {:ok, run_after_submit, entries, deferred_node_keys, queued_steps, waiters,
-       admission_failure} ->
+       admission_failure, deferred_refill_cause} ->
         stage_state =
           StageAttemptState.new(
             run_after_submit,
@@ -1079,7 +1100,8 @@ defmodule FavnOrchestrator.RunServer.Execution do
             entries,
             deferred_node_keys,
             queued_steps,
-            admission_failure
+            admission_failure,
+            deferred_refill_cause
           )
           |> Map.update!(:node_statuses, &Map.merge(completed_node_statuses, &1))
 
@@ -1098,12 +1120,12 @@ defmodule FavnOrchestrator.RunServer.Execution do
         |> after_starting_pipeline_awaits(entries)
 
       {:partial_retry, retry_run, entries, deferred_node_keys, retry_node_key, failure,
-       queued_steps, waiters, admission_failure} ->
+       queued_steps, waiters, admission_failure, deferred_refill_cause} ->
         handle_initial_stage_partial_retry(
           state,
           attempt,
           {:partial_retry, retry_run, entries, deferred_node_keys, retry_node_key, failure,
-           queued_steps, waiters, admission_failure},
+           queued_steps, waiters, admission_failure, deferred_refill_cause},
           completed_node_statuses
         )
 
@@ -1122,7 +1144,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
          state,
          attempt,
          {:partial_retry, retry_run, entries, deferred_node_keys, retry_node_key, failure,
-          queued_steps, waiters, admission_failure},
+          queued_steps, waiters, admission_failure, deferred_refill_cause},
          completed_node_statuses \\ %{}
        ) do
     stage_state =
@@ -1132,7 +1154,8 @@ defmodule FavnOrchestrator.RunServer.Execution do
         entries,
         deferred_node_keys,
         queued_steps,
-        admission_failure
+        admission_failure,
+        deferred_refill_cause
       )
       |> Map.update!(:node_statuses, &Map.merge(completed_node_statuses, &1))
       |> add_admission_retry(retry_run, retry_node_key, attempt, failure)
@@ -1177,15 +1200,13 @@ defmodule FavnOrchestrator.RunServer.Execution do
         attempt: entry.attempt
       }
     )
-    |> handle_pipeline_settlement(state)
+    |> prepare_pipeline_settlement(state)
   end
 
-  defp handle_pipeline_settlement({:cont, next_stage_state}, state) do
-    %{state | run: next_stage_state.run, stage_state: next_stage_state}
-    |> after_pipeline_progress()
-  end
+  defp prepare_pipeline_settlement({:cont, next_stage_state}, state),
+    do: {:pipeline_settled, %{state | run: next_stage_state.run, stage_state: next_stage_state}}
 
-  defp handle_pipeline_settlement(
+  defp prepare_pipeline_settlement(
          {:halt, {:error, failed_run, next_results, _attempted_node_keys}},
          state
        ) do
@@ -1200,12 +1221,20 @@ defmodule FavnOrchestrator.RunServer.Execution do
      )}
   end
 
-  defp handle_pipeline_settlement(
+  defp prepare_pipeline_settlement(
          {:persist_retry, %PersistenceRetry{} = retry, reason},
          state
        ) do
     {:persist_retry, state, retry, reason}
   end
+
+  defp continue_pipeline_settlement({:pipeline_settled, state}) do
+    state
+    |> RunExecutionState.cancel_admission_timers()
+    |> after_pipeline_progress()
+  end
+
+  defp continue_pipeline_settlement(result), do: result
 
   defp after_pipeline_progress(%RunExecutionState{stage_state: nil} = state), do: {:cont, state}
 
@@ -1254,6 +1283,24 @@ defmodule FavnOrchestrator.RunServer.Execution do
     end
   end
 
+  @doc false
+  @spec post_refill_action(
+          [Favn.Plan.node_key()],
+          StageAttemptState.deferred_refill_cause(),
+          non_neg_integer(),
+          non_neg_integer()
+        ) :: :finalize | :continue | :await | :admission_timeout
+  def post_refill_action(deferred_node_keys, refill_cause, await_count, waiter_count) do
+    cond do
+      deferred_node_keys == [] and await_count > 0 -> :await
+      deferred_node_keys == [] -> :finalize
+      refill_cause == :batch_budget -> :continue
+      await_count > 0 -> :await
+      waiter_count > 0 -> :admission_timeout
+      true -> :continue
+    end
+  end
+
   defp refill_or_schedule_admission(%RunExecutionState{} = state) do
     state = clear_admission_waiters(state)
 
@@ -1264,13 +1311,15 @@ defmodule FavnOrchestrator.RunServer.Execution do
            state.stage_attempt,
            state.stage_state.queued_steps
          ) do
-      {:ok, next_run, [], next_deferred_node_keys, next_queued_steps, waiters, admission_failure} ->
+      {:ok, next_run, [], next_deferred_node_keys, next_queued_steps, waiters, admission_failure,
+       deferred_refill_cause} ->
         stage_state =
           StageAttemptState.defer_only(
             state.stage_state,
             next_run,
             next_deferred_node_keys,
-            next_queued_steps
+            next_queued_steps,
+            deferred_refill_cause
           )
           |> StageAttemptState.add_admission_failure(admission_failure)
 
@@ -1278,29 +1327,35 @@ defmodule FavnOrchestrator.RunServer.Execution do
           %{state | run: next_run, stage_state: stage_state}
           |> RunExecutionState.put_admission_waiters(waiters)
 
-        cond do
-          next_deferred_node_keys == [] ->
+        case post_refill_action(
+               next_deferred_node_keys,
+               deferred_refill_cause,
+               map_size(state.awaits),
+               length(waiters)
+             ) do
+          :finalize ->
             finalize_pipeline_stage(state)
 
-          map_size(state.awaits) > 0 ->
+          :continue ->
+            schedule_deferred_refill(state)
+
+          :await ->
             {:cont, %{state | status: :awaiting}}
 
-          waiters != [] ->
+          :admission_timeout ->
             schedule_admission_timeout(state)
-
-          true ->
-            schedule_deferred_retry(state)
         end
 
       {:ok, next_run, entries, next_deferred_node_keys, next_queued_steps, waiters,
-       admission_failure} ->
+       admission_failure, deferred_refill_cause} ->
         stage_state =
           StageAttemptState.add_entries(
             state.stage_state,
             entries,
             next_run,
             next_deferred_node_keys,
-            next_queued_steps
+            next_queued_steps,
+            deferred_refill_cause
           )
           |> StageAttemptState.add_admission_failure(admission_failure)
 
@@ -1310,11 +1365,11 @@ defmodule FavnOrchestrator.RunServer.Execution do
         |> after_starting_pipeline_awaits(entries)
 
       {:partial_retry, retry_run, entries, next_deferred_node_keys, retry_node_key, failure,
-       next_queued_steps, waiters, admission_failure} ->
+       next_queued_steps, waiters, admission_failure, deferred_refill_cause} ->
         handle_refill_stage_partial_retry(
           state,
           {:partial_retry, retry_run, entries, next_deferred_node_keys, retry_node_key, failure,
-           next_queued_steps, waiters, admission_failure}
+           next_queued_steps, waiters, admission_failure, deferred_refill_cause}
         )
 
       {:error, failed_run, step_results, _attempted_node_keys, cleanup_entries} ->
@@ -1331,7 +1386,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
   defp handle_refill_stage_partial_retry(
          state,
          {:partial_retry, retry_run, entries, next_deferred_node_keys, retry_node_key, failure,
-          next_queued_steps, waiters, admission_failure}
+          next_queued_steps, waiters, admission_failure, deferred_refill_cause}
        ) do
     stage_state =
       state.stage_state
@@ -1339,7 +1394,8 @@ defmodule FavnOrchestrator.RunServer.Execution do
         entries,
         retry_run,
         next_deferred_node_keys,
-        next_queued_steps
+        next_queued_steps,
+        deferred_refill_cause
       )
       |> add_admission_retry(retry_run, retry_node_key, state.stage_attempt, failure)
       |> StageAttemptState.add_admission_failure(admission_failure)
@@ -1372,6 +1428,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
         |> Map.put(:run, state.run)
         |> Map.update!(:results, &Enum.reverse(step_results, &1))
         |> Map.put(:deferred_node_keys, [])
+        |> Map.put(:deferred_refill_cause, nil)
         |> Map.put(:retry_refs, [])
         |> Map.put(:retry_ref_set, MapSet.new())
         |> Map.put(:retry_delays, %{})
@@ -1450,7 +1507,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
 
   defp after_starting_pipeline_awaits(%RunExecutionState{} = state, [_ | _]) do
     if state.stage_state.deferred_node_keys != [] and map_size(state.awaits) > 0 do
-      schedule_deferred_retry(state)
+      schedule_deferred_refill(state)
     else
       after_pipeline_progress(state)
     end
@@ -1487,24 +1544,36 @@ defmodule FavnOrchestrator.RunServer.Execution do
     end
   end
 
-  defp schedule_deferred_retry(%RunExecutionState{} = state) do
+  defp schedule_deferred_refill(%RunExecutionState{} = state) do
     now = System.monotonic_time(:millisecond)
     deadline = state.stage_admission_deadline_ms || stage_admission_deadline(state.run.timeout_ms)
-    wait_ms = min(@deferred_stage_retry_ms, max(deadline - now, 0))
+    remaining_ms = max(deadline - now, 0)
 
-    if wait_ms == 0 do
-      timeout_admission_wait(state)
-    else
-      timer_token = make_ref()
-      timer_ref = Process.send_after(self(), {:stage_admission_timeout, timer_token}, wait_ms)
+    case deferred_refill_wait_ms(state.stage_state.deferred_refill_cause, remaining_ms) do
+      :timeout ->
+        timeout_admission_wait(state)
 
-      {:cont,
-       RunExecutionState.put_admission_timer(state, timer_token, timer_ref, %{
-         kind: :deferred_refill,
-         stage_index: state.stage_index
-       })}
+      wait_ms ->
+        timer_token = make_ref()
+        timer_ref = Process.send_after(self(), {:stage_admission_timeout, timer_token}, wait_ms)
+
+        {:cont,
+         RunExecutionState.put_admission_timer(state, timer_token, timer_ref, %{
+           kind: :deferred_refill,
+           stage_index: state.stage_index,
+           refill_cause: state.stage_state.deferred_refill_cause
+         })}
     end
   end
+
+  @doc false
+  @spec deferred_refill_wait_ms(StageAttemptState.deferred_refill_cause(), non_neg_integer()) ::
+          non_neg_integer() | :timeout
+  def deferred_refill_wait_ms(_cause, 0), do: :timeout
+  def deferred_refill_wait_ms(:batch_budget, remaining_ms) when remaining_ms > 0, do: 0
+
+  def deferred_refill_wait_ms(_blocked_or_unknown, remaining_ms) when remaining_ms > 0,
+    do: min(@deferred_stage_retry_ms, remaining_ms)
 
   defp timeout_admission_wait(%RunExecutionState{} = state) do
     state = clear_admission_waiters(state)
