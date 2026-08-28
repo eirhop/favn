@@ -6147,6 +6147,22 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   test "slow pipeline admission remains serial at max concurrency one", fixture do
     {run, _keys} = create_continuation_pipeline_run!(fixture, 1)
 
+    handler_id = {__MODULE__, self(), make_ref()}
+
+    :ok =
+      :telemetry.attach(
+        handler_id,
+        [:favn, :persistence, :operation, :stop],
+        fn _event, _measurements, metadata, pid ->
+          if metadata.store == :admission and metadata.operation == :admit do
+            send(pid, :admission_attempt)
+          end
+        end,
+        self()
+      )
+
+    on_exit(fn -> :telemetry.detach(handler_id) end)
+
     delay_runner_task_inserts!()
     start_pipeline_runtime!()
 
@@ -6177,6 +6193,9 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert {:ok, finished} = get_run(fixture, run.id)
     assert finished.status == :ok
     assert length(finished.result.node_results) == 3
+
+    Enum.each(1..7, fn _attempt -> assert_receive :admission_attempt end)
+    refute_receive :admission_attempt
   end
 
   test "terminal failure during refill cancels a sibling admitted by an earlier batch",

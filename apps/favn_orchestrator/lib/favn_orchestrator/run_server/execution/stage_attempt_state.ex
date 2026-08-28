@@ -13,6 +13,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAttemptState do
 
   @type entry :: map()
   @type node_key :: Favn.Plan.node_key()
+  @type deferred_refill_cause :: :batch_budget | :blocked | nil
   @type terminal_failure :: %{required(:status) => RunState.status(), required(:error) => term()}
 
   @type t :: %__MODULE__{
@@ -24,6 +25,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAttemptState do
           terminal_failure: terminal_failure() | nil,
           pending_ids: MapSet.t(String.t()),
           deferred_node_keys: [node_key()],
+          deferred_refill_cause: deferred_refill_cause(),
           queued_steps: MapSet.t(term()),
           attempted_node_keys: [node_key()],
           attempted_node_key_set: MapSet.t(node_key()),
@@ -38,6 +40,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAttemptState do
             terminal_failure: nil,
             pending_ids: MapSet.new(),
             deferred_node_keys: [],
+            deferred_refill_cause: nil,
             queued_steps: MapSet.new(),
             attempted_node_keys: [],
             attempted_node_key_set: MapSet.new(),
@@ -49,7 +52,8 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAttemptState do
           [entry()],
           [node_key()],
           MapSet.t(term()),
-          terminal_failure() | nil
+          terminal_failure() | nil,
+          deferred_refill_cause()
         ) :: t()
   def new(
         %RunState{} = run,
@@ -57,7 +61,8 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAttemptState do
         entries,
         deferred_node_keys,
         queued_steps,
-        terminal_failure \\ nil
+        terminal_failure \\ nil,
+        deferred_refill_cause \\ :blocked
       )
       when is_list(results) and is_list(entries) and is_list(deferred_node_keys) do
     node_keys = entry_node_keys(entries)
@@ -67,6 +72,8 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAttemptState do
       results: results |> Enum.reverse() |> ResultBuilder.retain_asset_results(),
       pending_ids: pending_task_ids(entries),
       deferred_node_keys: deferred_node_keys,
+      deferred_refill_cause:
+        normalize_deferred_refill_cause(deferred_node_keys, deferred_refill_cause),
       queued_steps: queued_steps,
       attempted_node_keys: Enum.reverse(node_keys),
       attempted_node_key_set: MapSet.new(node_keys)
@@ -88,13 +95,21 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAttemptState do
     }
   end
 
-  @spec add_entries(t(), [entry()], RunState.t(), [node_key()], MapSet.t(term())) :: t()
+  @spec add_entries(
+          t(),
+          [entry()],
+          RunState.t(),
+          [node_key()],
+          MapSet.t(term()),
+          deferred_refill_cause()
+        ) :: t()
   def add_entries(
         %__MODULE__{} = state,
         entries,
         %RunState{} = run,
         deferred_node_keys,
-        queued_steps
+        queued_steps,
+        deferred_refill_cause \\ :blocked
       )
       when is_list(entries) and is_list(deferred_node_keys) do
     state = put_attempted_node_keys(state, entry_node_keys(entries))
@@ -104,14 +119,35 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAttemptState do
       | run: run,
         pending_ids: MapSet.union(state.pending_ids, pending_task_ids(entries)),
         deferred_node_keys: deferred_node_keys,
+        deferred_refill_cause:
+          normalize_deferred_refill_cause(deferred_node_keys, deferred_refill_cause),
         queued_steps: queued_steps
     }
   end
 
-  @spec defer_only(t(), RunState.t(), [node_key()], MapSet.t(term())) :: t()
-  def defer_only(%__MODULE__{} = state, %RunState{} = run, deferred_node_keys, queued_steps)
+  @spec defer_only(
+          t(),
+          RunState.t(),
+          [node_key()],
+          MapSet.t(term()),
+          deferred_refill_cause()
+        ) :: t()
+  def defer_only(
+        %__MODULE__{} = state,
+        %RunState{} = run,
+        deferred_node_keys,
+        queued_steps,
+        deferred_refill_cause \\ :blocked
+      )
       when is_list(deferred_node_keys) do
-    %{state | run: run, deferred_node_keys: deferred_node_keys, queued_steps: queued_steps}
+    %{
+      state
+      | run: run,
+        deferred_node_keys: deferred_node_keys,
+        deferred_refill_cause:
+          normalize_deferred_refill_cause(deferred_node_keys, deferred_refill_cause),
+        queued_steps: queued_steps
+    }
   end
 
   @spec add_admission_retry(t(), node_key(), non_neg_integer()) :: t()
@@ -190,6 +226,12 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAttemptState do
   end
 
   defp entry_node_keys(entries) when is_list(entries), do: Enum.map(entries, & &1.node_key)
+
+  defp normalize_deferred_refill_cause([], _cause), do: nil
+
+  defp normalize_deferred_refill_cause([_ | _], cause)
+       when cause in [:batch_budget, :blocked],
+       do: cause
 
   defp put_retry_node_key(%__MODULE__{} = state, node_key) do
     if MapSet.member?(state.retry_ref_set, node_key) do

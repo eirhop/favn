@@ -41,10 +41,12 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
 
   @type node_key :: Favn.Plan.node_key()
   @type entry :: StageEntry.t()
+  @type deferred_refill_cause :: :batch_budget | :blocked | nil
   @type result ::
-          {:ok, RunState.t(), [entry()], [node_key()], MapSet.t(term()), [map()], map() | nil}
+          {:ok, RunState.t(), [entry()], [node_key()], MapSet.t(term()), [map()], map() | nil,
+           deferred_refill_cause()}
           | {:partial_retry, RunState.t(), [entry()], [node_key()], node_key(), term(),
-             MapSet.t(term()), [map()], map() | nil}
+             MapSet.t(term()), [map()], map() | nil, deferred_refill_cause()}
           | {:error, RunState.t(), [term()], [node_key()]}
           | {:error, RunState.t(), [term()], [node_key()], [entry()]}
           | {:persist_retry, PersistenceRetry.t(), term()}
@@ -93,14 +95,15 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
   end
 
   defp do_submit([], ctx) do
-    {:ok, ctx.current_run, entries(ctx), [], ctx.queued_steps, ctx.waiters, ctx.terminal_failure}
+    {:ok, ctx.current_run, entries(ctx), [], ctx.queued_steps, ctx.waiters, ctx.terminal_failure,
+     nil}
   end
 
   defp do_submit([node_key | rest] = node_keys, ctx) do
     cond do
       yield_batch?(ctx) ->
         {:ok, ctx.current_run, entries(ctx), node_keys, ctx.queued_steps, ctx.waiters,
-         ctx.terminal_failure}
+         ctx.terminal_failure, :batch_budget}
 
       Persistence.externally_cancelled?(ctx.current_run) ->
         {:error, Snapshots.cancelled_snapshot(ctx.current_run), [], attempted_node_keys(ctx)}
@@ -351,11 +354,11 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
          ) do
       {:ok, queued_run, next_queued_steps} when ctx.entries_rev == [] ->
         {:ok, queued_run, [], ctx.node_keys, next_queued_steps, maybe_add_waiter(ctx),
-         ctx.terminal_failure}
+         ctx.terminal_failure, :blocked}
 
       {:ok, queued_run, next_queued_steps} ->
         {:ok, queued_run, entries(ctx), ctx.node_keys, next_queued_steps, maybe_add_waiter(ctx),
-         ctx.terminal_failure}
+         ctx.terminal_failure, :blocked}
 
       {:error, :external_cancel} ->
         {:error, Snapshots.cancelled_snapshot(ctx.current_run), [], attempted_node_keys(ctx)}
@@ -368,6 +371,8 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
 
   defp maybe_add_waiter(%{waiters: waiters, waiter: waiter}), do: waiters ++ [waiter]
   defp maybe_add_waiter(%{waiters: waiters}), do: waiters
+  defp deferred_refill_cause([], _cause), do: nil
+  defp deferred_refill_cause([_ | _], cause), do: cause
   defp entries(%{entries_rev: entries_rev}), do: Enum.reverse(entries_rev)
   defp attempted_node_keys(ctx), do: Enum.map(entries(ctx), & &1.node_key)
 
@@ -552,7 +557,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
 
     result =
       {:partial_retry, failed, entries(ctx), ctx.rest, ctx.node_key, reason, ctx.queued_steps,
-       ctx.waiters, ctx.terminal_failure}
+       ctx.waiters, ctx.terminal_failure, deferred_refill_cause(ctx.rest, :blocked)}
 
     case persist_stage_submit_failure_event(ctx, failed, asset_ref, reason, true, result) do
       :ok ->
@@ -771,7 +776,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
         Map.put(statuses, node_key, :error)
       end)
 
-    {:ok, ctx.current_run, entries(ctx), [], ctx.queued_steps, ctx.waiters, failure}
+    {:ok, ctx.current_run, entries(ctx), [], ctx.queued_steps, ctx.waiters, failure, nil}
   end
 
   defp fail_claim(ctx, reason) do

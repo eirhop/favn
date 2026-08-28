@@ -74,13 +74,40 @@ defmodule FavnOrchestrator.RunServer.Execution.ExecutionEventTest do
   test "stale deferred admission refill timers are ignored" do
     timer_token = make_ref()
 
+    run =
+      RunState.new(
+        id: "stale-deferred-refill",
+        manifest_version_id: "manifest-version",
+        manifest_content_hash: "manifest-hash",
+        runner_releases: %{"default" => FavnTestSupport.runner_release_id()},
+        asset_ref: {__MODULE__, :asset}
+      )
+
+    stage_state =
+      StageAttemptState.new(
+        run,
+        [],
+        [],
+        [{{__MODULE__, :deferred}, nil}],
+        MapSet.new(),
+        nil,
+        :blocked
+      )
+
     state = %RunExecutionState{
       status: :admission_wait,
+      run: run,
+      stage_index: 1,
+      stage_state: stage_state,
       awaits: %{"rt_active" => %{}},
       admission_timers: %{
         timer_token => %{
           timer_ref: make_ref(),
-          payload: %{kind: :deferred_refill, stage_index: 1}
+          payload: %{
+            kind: :deferred_refill,
+            stage_index: 1,
+            refill_cause: :batch_budget
+          }
         }
       }
     }
@@ -90,10 +117,88 @@ defmodule FavnOrchestrator.RunServer.Execution.ExecutionEventTest do
 
     assert next.status == :admission_wait
     assert next.awaits == state.awaits
+    assert next.stage_state == stage_state
     assert next.admission_timers == %{}
 
     assert {:cont, ^next} =
              Execution.handle_event(next, {:stage_admission_timeout, timer_token})
+  end
+
+  test "batch-budget refills are immediate only before the admission deadline" do
+    assert Execution.deferred_refill_wait_ms(:batch_budget, 1_000) == 0
+    assert Execution.deferred_refill_wait_ms(:blocked, 1_000) == 100
+    assert Execution.deferred_refill_wait_ms(:blocked, 25) == 25
+    assert Execution.deferred_refill_wait_ms(nil, 1_000) == 100
+    assert Execution.deferred_refill_wait_ms(:batch_budget, 0) == :timeout
+    assert Execution.deferred_refill_wait_ms(:blocked, 0) == :timeout
+  end
+
+  test "matching deferred refill timers continue through the admission loop" do
+    timer_token = make_ref()
+
+    run =
+      RunState.new(
+        id: "matching-deferred-refill",
+        manifest_version_id: "manifest-version",
+        manifest_content_hash: "manifest-hash",
+        runner_releases: %{"default" => FavnTestSupport.runner_release_id()},
+        asset_ref: {__MODULE__, :asset}
+      )
+
+    stage_state =
+      StageAttemptState.new(
+        run,
+        [],
+        [],
+        [{{__MODULE__, :deferred}, nil}],
+        MapSet.new(),
+        nil,
+        :batch_budget
+      )
+
+    state = %RunExecutionState{
+      status: :admission_wait,
+      run: run,
+      stage_index: 1,
+      stage_state: stage_state,
+      stage_admission_deadline_ms: System.monotonic_time(:millisecond) + 5_000,
+      admission_waiters: %{"waiter" => %{waiter_id: "waiter"}},
+      admission_timers: %{
+        timer_token => %{
+          timer_ref: make_ref(),
+          payload: %{
+            kind: :deferred_refill,
+            stage_index: 1,
+            refill_cause: :batch_budget
+          }
+        }
+      }
+    }
+
+    assert {:cont, next} =
+             Execution.handle_event(state, {:stage_admission_timeout, timer_token})
+
+    assert next.status == :admission_wait
+    refute Map.has_key?(next.admission_timers, timer_token)
+
+    assert [{next_token, %{timer_ref: timer_ref, payload: payload}}] =
+             Map.to_list(next.admission_timers)
+
+    assert is_reference(next_token)
+    assert payload.kind == :admission_retry
+    assert payload.stage_index == 1
+    Process.cancel_timer(timer_ref)
+  end
+
+  test "batch-budget no-entry refills keep yielding even while tasks are active" do
+    deferred = [{{__MODULE__, :deferred}, nil}]
+
+    assert :continue == Execution.post_refill_action(deferred, :batch_budget, 1, 0)
+    assert :await == Execution.post_refill_action(deferred, :blocked, 1, 0)
+    assert :admission_timeout == Execution.post_refill_action(deferred, :blocked, 0, 1)
+    assert :continue == Execution.post_refill_action(deferred, :blocked, 0, 0)
+    assert :await == Execution.post_refill_action([], nil, 1, 0)
+    assert :finalize == Execution.post_refill_action([], nil, 0, 0)
   end
 
   test "terminal sibling failure still refills deferred work and schedules safe retries" do

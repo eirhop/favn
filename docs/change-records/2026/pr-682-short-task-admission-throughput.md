@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Implementing |
+| Status | Implemented |
 | Type | Bug fix and performance improvement |
 | Primary issue | None — the user explicitly requested implementation without a GitHub issue on 2026-08-28 |
 | Pull request | [#682](https://github.com/eirhop/favn/pull/682) |
@@ -205,33 +205,105 @@ Static qualification will run formatter, warnings-as-errors compilation, focused
 
 ## Implementation outcome
 
-Pending.
+The implementation follows the approved ordering. Pipeline result processing now
+returns an internal settled directive before it can continue stage scheduling.
+The existing cleanup owner then attempts the completed entry's idempotent
+execution-lease release. Only a successful settled directive proceeds to stage
+progress and refill; persistence retry and terminal directives do not start new
+work.
+
+`StageAdmission` now reports whether deferred nodes remain because its bounded
+four-candidate/25-millisecond batch yielded or because admission is genuinely
+blocked. The cause is stored with the deferred node set. A batch-budget yield
+uses a token-fenced zero-delay message on the next mailbox turn, while blocked
+work retains the 100-millisecond maximum retry and notification path. Deadline,
+stage, token, and cause checks reject expired, duplicate, or stale messages.
+
+```mermaid
+sequenceDiagram
+    participant Runner
+    participant RunServer
+    participant Store
+    Runner->>Store: Persist terminal task result
+    Store-->>RunServer: Durable result notification
+    RunServer->>Store: Persist stage transition
+    RunServer->>Store: Release completed execution lease
+    RunServer->>Store: Attempt replacement admission
+    alt Compatible capacity exists
+        Store-->>RunServer: Admitted replacement
+    else Only batch budget was reached
+        RunServer-->>RunServer: Zero-delay fenced mailbox continuation
+    else Real blocker remains
+        Store-->>RunServer: Persist waiter
+        RunServer-->>RunServer: Notification or bounded retry
+    end
+```
+
+The canonical elastic-runner documentation now states this ordering. The
+PostgreSQL serial-capacity regression also observes the exact seven authoritative
+admission attempts required for three tasks at concurrency one, proving that a
+completion no longer performs an extra blocked refill before its lease release.
+
+Actual diff size, excluding this required outcome update, is 180 production
+lines added and 64 deleted, plus 537 test and canonical-documentation lines
+added and 6 deleted. The approved combined upper estimates were 145 production
+and 440 supporting additions. The respective 35-line/24-percent and
+97-line/22-percent differences remain below the record's material-overrun
+threshold. Most supporting growth is explicit lifecycle construction for the
+review-requested persistence-retry continuation proof.
 
 ## Deviations from the approved plan
 
-Pending implementation.
+| Planned baseline | Actual result | Reason and impact |
+| --- | --- | --- |
+| Add focused proof for every listed lifecycle variant | Added direct durable-unknown, successful persistence-retry-to-refill, cleanup-owner, deadline, timer-fence, no-entry/active-await, refill-cause, and PostgreSQL admission-count assertions; retained the existing unconfirmed-timeout, cancellation, terminal-result, limit, and recovery coverage and ran the full owning suites | The exact persistence-retry continuation fixture was added during final review. Mature cancellation, limit, and recovery fixtures were reused; no production scope changed. |
+| Approved plan described a limit of four "admitted" nodes | Preserved the approved wording above and corrected the canonical/outcome terminology to four processed admission candidates | Skipped, reused, or blocked candidates can consume the batch counter without being admitted. This is a documentation precision fix, not a runtime deviation. |
+| Repeat the local benchmark | Recreated the prior temporary harness, corrected two harness-only completion/cleanup defects, recorded one clean comparable run, then removed the harness and all disposable databases | The benchmark remains diagnostic evidence rather than permanent test code, as planned. |
+| No other implementation deviation | Production behavior matches the approved settlement, release, refill, deadline, and conservative recovery design | No schema, public API, runner protocol, persistence, or recovery contract changed. |
 
 ## Decision log
 
-Pending implementation.
+| Decision | Reason |
+| --- | --- |
+| Store the closed refill cause beside the deferred node keys | The cause and keys must change together so an old zero-delay message cannot reinterpret genuinely blocked work. |
+| Default reconstructed or unclassified deferred state to `:blocked` | Conservative recovery prevents a hot retry loop when older or incomplete state has no cause. |
+| Cancel existing admission timers before result-driven refill | A newly released lease changes the scheduling fact; stale timers must not race the immediate progress attempt. Token fencing still protects already-delivered messages. |
+| Keep a pure internal wait-policy helper | It gives deterministic coverage for zero delay, bounded delay, and deadline exhaustion without exposing a public API. |
+| Keep the fixed four-node/25-millisecond batch | Zero-delay continuation removes the artificial pause while preserving mailbox fairness and bounded work per turn. |
 
 ## Verification evidence
 
 | Check | Result | Evidence boundary |
 | --- | --- | --- |
-| Focused tests | Pending | Automated qualification, not live proof |
+| Formatting and diff integrity | Passed `mix format` on every changed Elixir file and `git diff --check` | Static repository qualification |
+| Warnings-as-errors compilation | Passed `MIX_ENV=test mix compile --warnings-as-errors` for the umbrella | Compile-time qualification, not runtime load proof |
+| Focused Orchestrator lifecycle tests | 17 passed | Durable unknown outcome, successful persistence-retry refill, settlement cleanup, sequential shared cleanup, active-sibling wait, refill cause, deadline policy, stale and duplicate timer fencing |
+| Full Orchestrator fast suite | 751 passed, 2 excluded on the current source | Owning application behavior outside explicit acceptance/container/slow/browser tiers |
+| Focused PostgreSQL admission/recovery group | 7 passed | Capacity fill, concurrency one, global limit, unconfirmed timeout, recovery adoption, duplicate prevention, and fail-closed recovery |
+| Full PostgreSQL authority module | 142 passed on the current source | Real PostgreSQL transactions and the broader control-plane authority contract |
+| Broader fast suites | The current-source View suite passed 754 with 1 excluded. A full umbrella attempt did not qualify as green: the storage slice had unrelated bootstrap/runner-demand timing failures under full load and left later build artifacts incomplete; the owning Orchestrator and PostgreSQL authority suites above were rerun cleanly in isolation. | Broad attempt recorded honestly; explicit acceptance/container/slow/browser tiers remain excluded |
+| Docker PostgreSQL benchmark | 64 tasks completed and 64 unique claims with eight one-slot runners; 90.2% utilization; 0.90 s initial fill; 290 ms p95 completion acknowledgement to replacement claim; 22 ms p95 wake to claim; 144 admission operations; 151.8M RunServer reductions | Local PostgreSQL 18, simulated 1/2/4-second tasks, and `+S 1:1`; directional, not a production 0.5-vCPU cgroup |
+| Benchmark comparison with rc.13 baseline | Duration 23.68 s to 19.30 s; utilization 78.7% to 90.2%; initial fill 1.65 s to 0.90 s; replacement p95 447 ms to 290 ms; admission operations 185 to 144; RunServer reductions 163.8M to 151.8M | One clean comparable local run per revision; useful signal, not a statistical capacity guarantee |
+| Canonical documentation | Updated `docs/architecture/elastic-runners.md`; the reviewed-plan diagrams rendered in GitHub and the final outcome diagram received local syntax review; final GitHub render remains pending the implementation push | Documentation and render review |
 
 ### Not verified
 
-- Live production runner utilization and 0.5-vCPU behavior.
+- Live production runner utilization, CPU saturation, and 0.5-vCPU behavior.
+- The explicit acceptance, container, slow, and browser tiers; this internal
+  Orchestrator change has no container, browser, or external service contract.
+- Statistical repeatability across many benchmark runs or concurrent independent
+  pipelines; the local result is a single-run before/after comparison.
+- A green current-source umbrella run. The attempted full run encountered
+  unrelated storage-test timing/configuration failures; this change's owning
+  Orchestrator and PostgreSQL authority suites are green.
 
 ## Final review
 
 | Field | Result |
 | --- | --- |
-| Reviewer | Pending independent review |
+| Reviewer | Independent sub-agent `/root/plan_review` |
 | Compared | Approved plan, implementation, tests, diagnostics, and docs |
-| Deviations complete | Pending |
-| Findings | Pending |
-| Findings addressed and rechecked | Pending |
-| Verdict | Pending |
+| Deviations complete | Yes |
+| Findings | Prevent premature finalization while a sibling remains active; add exact successful persistence-retry-to-refill proof; preserve approved wording and refresh complexity/evidence counts |
+| Findings addressed and rechecked | Yes — the reviewer rechecked the exact current worktree after all corrections |
+| Verdict | Approved; no findings remain |

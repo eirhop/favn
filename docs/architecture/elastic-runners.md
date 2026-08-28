@@ -1001,6 +1001,18 @@ Tasks waiting for pipeline `max_concurrency`, an execution pool, a resource
 circuit, or another materialization claim do not count as runner demand. Existing
 admission waiter wakeups promote them when capacity is actually available.
 
+For a durable terminal runner result, pipeline execution persists the stage
+transition, releases the completed task's execution-admission lease, and only
+then refills the stage. This lets a compatible replacement use the newly freed
+capacity without weakening the durable result boundary. Unconfirmed task
+termination retains its task identity and lease.
+
+`StageAdmission` remains bounded to four processed admission candidates or 25 milliseconds per
+run-process mailbox turn. Reaching only that fairness budget schedules a
+token-fenced, zero-delay continuation on the next mailbox turn. Work blocked by
+capacity, materialization, retry, or another real constraint continues to use
+its persisted notification and bounded-retry path.
+
 The current execution lease TTL already expands around an attempt timeout. Keep
 that property and ensure the queue coordinator renews orchestration leases while
 an admitted task waits for a cold runner.

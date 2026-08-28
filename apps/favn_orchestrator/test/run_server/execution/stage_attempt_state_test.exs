@@ -57,4 +57,39 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAttemptStateTest do
     assert next.terminal_failure == first
     assert next.node_statuses == %{first_key => :blocked, second_key => :blocked}
   end
+
+  test "replaces the deferred refill cause whenever deferred work changes" do
+    run =
+      RunState.new(
+        id: "stage-refill-cause",
+        manifest_version_id: "manifest-version",
+        manifest_content_hash: "manifest-hash",
+        runner_releases: %{"default" => FavnTestSupport.runner_release_id()},
+        asset_ref: {MyApp.Assets.StageAttempt, :asset}
+      )
+
+    node_key = {{__MODULE__, :deferred}, nil}
+
+    state =
+      StageAttemptState.new(
+        run,
+        [],
+        [],
+        [node_key],
+        MapSet.new(),
+        nil,
+        :batch_budget
+      )
+
+    assert state.deferred_refill_cause == :batch_budget
+
+    blocked =
+      StageAttemptState.defer_only(state, run, [node_key], MapSet.new(), :blocked)
+
+    assert blocked.deferred_refill_cause == :blocked
+
+    completed = StageAttemptState.defer_only(blocked, run, [], MapSet.new(), :blocked)
+
+    assert completed.deferred_refill_cause == nil
+  end
 end
