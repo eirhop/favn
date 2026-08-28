@@ -28,11 +28,7 @@ defmodule FavnOrchestrator.MemoryCapacity.CoordinatorTest do
     table = unique_name(:table)
 
     children = [
-      %{
-        id: :ledger,
-        start: {Ledger, :start_link, [[name: ledger, table: table]]},
-        restart: :temporary
-      },
+      {Ledger, [name: ledger, table: table]},
       %{
         id: :coordinator,
         start:
@@ -56,6 +52,17 @@ defmodule FavnOrchestrator.MemoryCapacity.CoordinatorTest do
       })
 
     %{provider: provider, coordinator: coordinator, ledger: ledger, supervisor: supervisor}
+  end
+
+  test "ledger child specification is finite and preserves temporary restart" do
+    opts = [name: unique_name(:child_spec_ledger), table: unique_name(:child_spec_table)]
+
+    assert %{
+             id: Ledger,
+             start: {Ledger, :start_link, [^opts]},
+             restart: :temporary,
+             type: :worker
+           } = Ledger.child_spec(opts)
   end
 
   test "accounts nested resize and retained bytes without stacking", context do

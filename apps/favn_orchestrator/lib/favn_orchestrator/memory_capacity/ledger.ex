@@ -67,6 +67,11 @@ defmodule FavnOrchestrator.MemoryCapacity.Ledger do
   end
 
   def child_spec(opts) do
-    Supervisor.child_spec({__MODULE__, opts}, restart: :temporary)
+    %{
+      id: __MODULE__,
+      start: {__MODULE__, :start_link, [opts]},
+      restart: :temporary,
+      type: :worker
+    }
   end
 end

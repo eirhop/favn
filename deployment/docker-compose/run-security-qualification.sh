@@ -234,33 +234,6 @@ if ! compose --profile security --profile proxy-security up --detach \
     docker inspect \
       --format 'control-plane state: oom_killed={{.State.OOMKilled}} exit_code={{.State.ExitCode}} restart_count={{.RestartCount}} memory_limit={{.HostConfig.Memory}} error={{json .State.Error}}' \
       "$control_plane_id" >&2 || true
-
-    timeout 20 docker exec "$control_plane_id" /app/bin/favn_control_plane rpc '
-      names = [
-        FavnOrchestrator.Supervisor,
-        FavnOrchestrator.MemoryCapacity.Supervisor,
-        FavnOrchestrator.MemoryCapacity.Ledger,
-        FavnOrchestrator.MemoryCapacity.Coordinator,
-        FavnOrchestrator.RuntimeBootstrap
-      ]
-
-      Enum.each(names, fn name ->
-        case Process.whereis(name) do
-          nil -> IO.inspect({name, :not_started}, label: "control-plane process")
-          pid ->
-            IO.inspect(
-              {name,
-               Process.info(pid, [
-                 :status,
-                 :current_function,
-                 :current_stacktrace,
-                 :message_queue_len
-               ])},
-              label: "control-plane process"
-            )
-        end
-      end)
-    ' >&2 || true
   fi
   compose logs --no-color control-plane >&2 || true
   compose logs --no-color view >&2 || true
