@@ -720,14 +720,15 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
           %{
             run:
               Map.put(Runs.backfill(:running), :combined_window, %{
-                label: "Feb 1 00:00 – Feb 1 06:00, 2026",
-                window_count: 6
+                label: "Jan 2023 – Dec 2024",
+                window_count: 24,
+                kind: :month
               }),
             run_id: "run_window_combined",
             nav_items: Runs.nav_items(),
             rail: Runs.rail(:combined)
           },
-          "Six coverage windows in one run: no rail to navigate, the span in the header instead."
+          "Two years of monthly coverage in one run: no rail to navigate, the span in the header."
         ),
         Example.attrs(
           :window_failures,
