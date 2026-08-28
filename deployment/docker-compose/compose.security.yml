@@ -17,6 +17,7 @@ services:
       - security-database
 
   control-plane:
+    mem_limit: 1g
     ports: !reset []
     volumes:
       - control-plane-certificates:/etc/favn/tls:ro

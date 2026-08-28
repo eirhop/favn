@@ -22,10 +22,19 @@ defmodule FavnOrchestrator.MemoryCapacity.Provider do
     read = Keyword.get(opts, :read_file, &File.read/1)
     ceiling = Keyword.get(opts, :ceiling_bytes)
 
-    case cgroup_snapshot(read, opts) do
-      {:ok, snapshot} -> {:ok, apply_ceiling(snapshot, ceiling)}
-      {:error, :finite_cgroup_memory_unavailable} -> configured_snapshot(read, ceiling, opts)
-      {:error, _reason} -> {:error, :memory_capacity_unknown}
+    case Keyword.get(opts, :source, :auto) do
+      :auto ->
+        case cgroup_snapshot(read, opts) do
+          {:ok, snapshot} -> {:ok, apply_ceiling(snapshot, ceiling)}
+          {:error, :finite_cgroup_memory_unavailable} -> configured_snapshot(read, ceiling, opts)
+          {:error, _reason} -> {:error, :memory_capacity_unknown}
+        end
+
+      :configured_process ->
+        configured_snapshot(read, ceiling, opts)
+
+      _invalid ->
+        {:error, :memory_capacity_unknown}
     end
   end
 

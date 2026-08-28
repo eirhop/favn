@@ -11,6 +11,7 @@ config :favn_orchestrator,
   operator_command_hmac_key: :crypto.hash(:sha256, "favn-test-operator-command-hmac-key"),
   start_runtime: false,
   memory_ceiling_bytes: 8 * 1_024 * 1_024 * 1_024,
+  memory_capacity_provider_opts: [source: :configured_process],
   runtime_config_dynamic_env?: true,
   manifest_inspection_admission_fallback?: true,
   api_service_tokens_env: "favn_view:favn-view-local-credential-1234567890abcdef"

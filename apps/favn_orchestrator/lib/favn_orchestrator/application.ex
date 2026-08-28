@@ -37,9 +37,9 @@ defmodule FavnOrchestrator.Application do
                [
                  {Lifecycle, shutdown_drain_timeout_ms: timeout_ms},
                  {MemoryCapacity.Supervisor,
-                  provider_opts: [
-                    ceiling_bytes: Application.get_env(:favn_orchestrator, :memory_ceiling_bytes)
-                  ]},
+                  memory_capacity_options(
+                    Application.get_env(:favn_orchestrator, :memory_ceiling_bytes)
+                  )},
                  {RuntimeBootstrap, runtime?: false}
                ],
                strategy: :one_for_all,
@@ -74,7 +74,7 @@ defmodule FavnOrchestrator.Application do
           persistence_children ++
           [
             {MemoryCapacity.Supervisor,
-             provider_opts: [ceiling_bytes: runtime_config.memory_ceiling_bytes]}
+             memory_capacity_options(runtime_config.memory_ceiling_bytes)}
           ] ++
           [
             {AuthStore, []},
@@ -179,4 +179,13 @@ defmodule FavnOrchestrator.Application do
 
   defp api_enabled?(runtime_config),
     do: Keyword.get(runtime_config.api_server, :enabled, false)
+
+  defp memory_capacity_options(ceiling_bytes) do
+    provider_opts =
+      :favn_orchestrator
+      |> Application.get_env(:memory_capacity_provider_opts, [])
+      |> Keyword.put(:ceiling_bytes, ceiling_bytes)
+
+    [provider_opts: provider_opts]
+  end
 end

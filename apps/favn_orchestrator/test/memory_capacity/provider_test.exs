@@ -85,6 +85,24 @@ defmodule FavnOrchestrator.MemoryCapacity.ProviderTest do
     assert snapshot.headroom_bytes == 924 * 1_024 * 1_024
   end
 
+  test "an explicit configured-process source does not depend on host cgroup metadata" do
+    files = %{
+      "/proc/self/cgroup" => "malformed\n",
+      "/proc/self/status" => "Name:\tbeam.smp\nVmRSS:\t102400 kB\n"
+    }
+
+    assert {:ok, snapshot} =
+             Provider.snapshot(
+               read_file: reader(files),
+               ceiling_bytes: @gib,
+               source: :configured_process
+             )
+
+    assert snapshot.source == :configured_process
+    assert snapshot.limit_bytes == @gib
+    assert snapshot.usage_bytes == 100 * 1_024 * 1_024
+  end
+
   test "a configured ceiling only lowers a finite cgroup limit" do
     files =
       v2_files(%{
