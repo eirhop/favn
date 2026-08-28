@@ -28,7 +28,8 @@ defmodule FavnLocal.Config do
     :bootstrap_password,
     :runner_release_id,
     :postgres_options,
-    :runtime_input_pin_key
+    :runtime_input_pin_key,
+    :memory_ceiling_bytes
   ]
   defstruct @enforce_keys ++ [scheduler_enabled?: false]
 
@@ -47,6 +48,7 @@ defmodule FavnLocal.Config do
           runner_release_id: String.t(),
           postgres_options: keyword(),
           runtime_input_pin_key: binary(),
+          memory_ceiling_bytes: pos_integer() | nil,
           scheduler_enabled?: boolean()
         }
 
@@ -60,6 +62,8 @@ defmodule FavnLocal.Config do
     with {:ok, database_url} <- required_env(env, "FAVN_DATABASE_URL"),
          {:ok, pin_key} <- runtime_input_pin_key(env),
          {:ok, log_level} <- log_level(env),
+         {:ok, memory_ceiling_bytes} <-
+           optional_positive_integer(env, "FAVN_ORCHESTRATOR_MEMORY_CEILING_BYTES"),
          {:ok, postgres_options} <-
            PostgresConfig.repo_options(
              url: database_url,
@@ -107,6 +111,7 @@ defmodule FavnLocal.Config do
          runner_release_id: runner_release_id,
          postgres_options: postgres_options,
          runtime_input_pin_key: pin_key,
+         memory_ceiling_bytes: memory_ceiling_bytes,
          scheduler_enabled?:
            Keyword.get(opts, :scheduler, Keyword.get(dev, :scheduler_enabled, false))
        }}
@@ -146,6 +151,16 @@ defmodule FavnLocal.Config do
     Application.put_env(:favn_orchestrator, :api_service_tokens, service_tokens)
     Application.delete_env(:favn_orchestrator, :api_service_tokens_env)
     Application.put_env(:favn_orchestrator, :runner_pools, default: [mode: :resident])
+
+    if config.memory_ceiling_bytes do
+      Application.put_env(
+        :favn_orchestrator,
+        :memory_ceiling_bytes,
+        config.memory_ceiling_bytes
+      )
+    else
+      Application.delete_env(:favn_orchestrator, :memory_ceiling_bytes)
+    end
 
     Application.put_env(
       :favn_orchestrator,
@@ -239,6 +254,19 @@ defmodule FavnLocal.Config do
     case Map.get(env, name) do
       value when is_binary(value) and value != "" -> value
       _missing -> nil
+    end
+  end
+
+  defp optional_positive_integer(env, name) do
+    case optional_env(env, name) do
+      nil ->
+        {:ok, nil}
+
+      value ->
+        case Integer.parse(value) do
+          {integer, ""} when integer > 0 -> {:ok, integer}
+          _invalid -> {:error, {:invalid_env, name, "positive integer"}}
+        end
     end
   end
 

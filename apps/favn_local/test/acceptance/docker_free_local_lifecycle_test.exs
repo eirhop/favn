@@ -106,6 +106,10 @@ defmodule FavnLocal.DockerFreeLocalLifecycleAcceptanceTest do
         "FAVN_ORCHESTRATOR_API_PORT"
       ])
       |> Map.put_new("FAVN_RUNTIME_INPUT_PIN_KEY", Base.encode64(String.duplicate("k", 32)))
+      |> Map.put(
+        "FAVN_ORCHESTRATOR_MEMORY_CEILING_BYTES",
+        Integer.to_string(8 * 1_024 * 1_024 * 1_024)
+      )
 
     assert {:ok, started} =
              FavnLocal.dev(

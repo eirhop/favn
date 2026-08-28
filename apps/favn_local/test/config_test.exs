@@ -58,6 +58,27 @@ defmodule FavnLocal.ConfigTest do
              Config.load(env: valid_env(%{"FAVN_LOG_LEVEL" => "verbose"}))
   end
 
+  test "loads an optional memory ceiling and rejects invalid values" do
+    assert {:ok, config} =
+             Config.load(
+               env:
+                 valid_env(%{
+                   "FAVN_ORCHESTRATOR_MEMORY_CEILING_BYTES" => "8589934592"
+                 })
+             )
+
+    assert config.memory_ceiling_bytes == 8_589_934_592
+
+    assert {:error,
+            {:invalid_env, "FAVN_ORCHESTRATOR_MEMORY_CEILING_BYTES", "positive integer"}} =
+             Config.load(
+               env:
+                 valid_env(%{
+                   "FAVN_ORCHESTRATOR_MEMORY_CEILING_BYTES" => "unlimited"
+                 })
+             )
+  end
+
   test "resolves listener ports from the environment so isolated stacks can coexist" do
     env = valid_env(%{"FAVN_VIEW_PORT" => "4273", "FAVN_ORCHESTRATOR_API_PORT" => "4201"})
 
@@ -127,7 +148,8 @@ defmodule FavnLocal.ConfigTest do
                root_dir: root_dir,
                env: %{
                  "FAVN_DATABASE_URL" => "ecto://postgres:postgres@localhost/favn",
-                 "FAVN_RUNTIME_INPUT_PIN_KEY" => @pin_key
+                 "FAVN_RUNTIME_INPUT_PIN_KEY" => @pin_key,
+                 "FAVN_ORCHESTRATOR_MEMORY_CEILING_BYTES" => "8589934592"
                }
              )
 
@@ -223,6 +245,8 @@ defmodule FavnLocal.ConfigTest do
 
     assert Application.fetch_env!(:favn_orchestrator, :operator_command_hmac_key) ==
              Audit.derive_command_hmac_key(config.view_secret_key_base)
+
+    assert Application.fetch_env!(:favn_orchestrator, :memory_ceiling_bytes) == 8_589_934_592
 
     assert [
              %{
