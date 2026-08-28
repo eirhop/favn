@@ -323,15 +323,22 @@ defmodule FavnOrchestrator.ManifestStore do
       budget = Budget.live_index()
 
       with :ok <- resize_scoped_working(token, budget),
-           {:ok, %Index{} = index} <-
+           {:ok, %Index{} = handoff} <-
              BoundedWorker.run_serialized(
-               fn -> Index.build_from_version(version) end,
+               fn -> build_index_handoff(version) end,
                budget,
                Budget.serialized_result_limit(budget)
              ) do
+        index = Index.restore_worker_handoff(handoff)
         fun.(index)
       end
     end)
+  end
+
+  defp build_index_handoff(version) do
+    with {:ok, %Index{} = index} <- Index.build_from_version(version) do
+      {:ok, Index.prepare_worker_handoff(index)}
+    end
   end
 
   @doc """

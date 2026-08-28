@@ -42,11 +42,14 @@ defmodule FavnStoragePostgres.StorageV2.RestoreDrillTest do
         (manifest_version_id, content_hash, schema_version,
          runner_contract_version, runner_releases,
          payload_version, asset_count, pipeline_count, schedule_count,
-         atom_strings, manifest, inserted_at)
+         atom_strings, manifest, manifest_index_bytes, inserted_at)
       VALUES ($1, $2, 14, 13, $3::jsonb, 1, 0, 0, 0, ARRAY[]::text[],
               jsonb_build_object('assets', jsonb_build_array(),
                                  'pipelines', jsonb_build_array(),
                                  'schedules', jsonb_build_array()),
+              octet_length(jsonb_build_object('assets', jsonb_build_array(),
+                                              'pipelines', jsonb_build_array(),
+                                              'schedules', jsonb_build_array())::text),
               clock_timestamp())
       """,
       [

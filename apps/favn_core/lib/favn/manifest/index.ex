@@ -58,6 +58,23 @@ defmodule Favn.Manifest.Index do
   def build_from_version(%Version{manifest: %Manifest{} = manifest}), do: build(manifest)
   def build_from_version(%Version{}), do: {:error, :invalid_manifest}
 
+  @doc false
+  @spec prepare_worker_handoff(t()) :: t()
+  def prepare_worker_handoff(
+        %__MODULE__{planning_index: %PlanningIndex{} = planning_index} = index
+      ) do
+    %{index | planning_index: %{planning_index | assets_by_ref: %{}}}
+  end
+
+  @doc false
+  @spec restore_worker_handoff(t()) :: t()
+  def restore_worker_handoff(
+        %__MODULE__{assets_by_ref: assets_by_ref, planning_index: %PlanningIndex{} = planning_index} =
+          index
+      ) do
+    %{index | planning_index: %{planning_index | assets_by_ref: assets_by_ref}}
+  end
+
   @spec fetch_asset(t(), ref()) :: {:ok, Asset.t()} | {:error, :asset_not_found}
   def fetch_asset(%__MODULE__{} = index, ref) when is_tuple(ref) do
     case Map.fetch(index.assets_by_ref, ref) do
