@@ -74,42 +74,46 @@ defmodule FavnOrchestrator.RunSubmissions do
           {:ok, String.t()} | {:error, term()}
   def enqueue_asset(%WorkspaceContext{} = context, {module, name} = asset_ref, opts)
       when is_atom(module) and is_atom(name) and is_list(opts) do
-    with {:ok, runtime, version} <- active_release(context, opts),
-         target_id = ManifestTarget.asset_id(asset_ref),
-         {:ok, _asset} <- ManifestTarget.resolve_asset(version, target_id) do
-      enqueue_built(
-        context,
-        source(opts),
-        runtime.deployment_id,
-        version.manifest_version_id,
-        "asset",
-        target_id,
-        :asset,
-        target_id,
-        opts
-      )
-    end
+    with_active_release(context, opts, fn runtime, version ->
+      target_id = ManifestTarget.asset_id(asset_ref)
+
+      with {:ok, _asset} <- ManifestTarget.resolve_asset(version, target_id) do
+        enqueue_built(
+          context,
+          source(opts),
+          runtime.deployment_id,
+          version.manifest_version_id,
+          "asset",
+          target_id,
+          :asset,
+          target_id,
+          opts
+        )
+      end
+    end)
   end
 
   @spec enqueue_pipeline(WorkspaceContext.t(), {module(), atom()}, keyword()) ::
           {:ok, String.t()} | {:error, term()}
   def enqueue_pipeline(%WorkspaceContext{} = context, {module, name} = pipeline_ref, opts)
       when is_atom(module) and is_atom(name) and is_list(opts) do
-    with {:ok, runtime, version} <- active_release(context, opts),
-         target_id = ManifestTarget.pipeline_id(pipeline_ref),
-         {:ok, _pipeline} <- ManifestTarget.resolve_pipeline(version, target_id) do
-      enqueue_built(
-        context,
-        source(opts),
-        runtime.deployment_id,
-        version.manifest_version_id,
-        "pipeline",
-        target_id,
-        :pipeline,
-        target_id,
-        opts
-      )
-    end
+    with_active_release(context, opts, fn runtime, version ->
+      target_id = ManifestTarget.pipeline_id(pipeline_ref)
+
+      with {:ok, _pipeline} <- ManifestTarget.resolve_pipeline(version, target_id) do
+        enqueue_built(
+          context,
+          source(opts),
+          runtime.deployment_id,
+          version.manifest_version_id,
+          "pipeline",
+          target_id,
+          :pipeline,
+          target_id,
+          opts
+        )
+      end
+    end)
   end
 
   @spec enqueue_pipeline_assets(WorkspaceContext.t(), [Favn.Ref.t()], keyword()) ::
@@ -120,22 +124,24 @@ defmodule FavnOrchestrator.RunSubmissions do
         opts
       )
       when is_atom(module) and is_atom(name) and is_list(opts) do
-    with true <- Enum.all?(target_refs, &valid_ref?/1),
-         {:ok, runtime, version} <- active_release(context, opts),
-         :ok <- validate_assets(version, target_refs) do
-      target_id = ManifestTarget.asset_id(hd(target_refs))
+    with true <- Enum.all?(target_refs, &valid_ref?/1) do
+      with_active_release(context, opts, fn runtime, version ->
+        with :ok <- validate_assets(version, target_refs) do
+          target_id = ManifestTarget.asset_id(hd(target_refs))
 
-      enqueue_built(
-        context,
-        source(opts),
-        runtime.deployment_id,
-        version.manifest_version_id,
-        "asset",
-        target_id,
-        :pipeline_assets,
-        target_refs,
-        opts
-      )
+          enqueue_built(
+            context,
+            source(opts),
+            runtime.deployment_id,
+            version.manifest_version_id,
+            "asset",
+            target_id,
+            :pipeline_assets,
+            target_refs,
+            opts
+          )
+        end
+      end)
     else
       false -> {:error, :invalid_run_submission_target}
       {:error, _reason} = error -> error
@@ -147,24 +153,26 @@ defmodule FavnOrchestrator.RunSubmissions do
   def enqueue_rerun(%WorkspaceContext{} = context, source_run_id, opts)
       when is_binary(source_run_id) and is_list(opts) do
     with {:ok, %RunState{} = source_run} <- Runs.get(context, source_run_id),
-         {:ok, target_kind, target_id} <- source_target(source_run),
-         {:ok, version} <-
-           ManifestStore.get_deployment_manifest(
-             context,
-             source_run.deployment_id,
-             source_run.manifest_version_id
-           ),
-         :ok <- validate_target(version, target_kind, target_id) do
-      enqueue_built(
+         {:ok, target_kind, target_id} <- source_target(source_run) do
+      ManifestStore.with_deployment_manifest(
         context,
-        source(opts),
         source_run.deployment_id,
         source_run.manifest_version_id,
-        target_kind,
-        target_id,
-        :rerun,
-        source_run_id,
-        opts
+        fn version ->
+          with :ok <- validate_target(version, target_kind, target_id) do
+            enqueue_built(
+              context,
+              source(opts),
+              source_run.deployment_id,
+              source_run.manifest_version_id,
+              target_kind,
+              target_id,
+              :rerun,
+              source_run_id,
+              opts
+            )
+          end
+        end
       )
     end
   end
@@ -223,26 +231,27 @@ defmodule FavnOrchestrator.RunSubmissions do
       when source in @sources and is_binary(deployment_id) and
              is_binary(manifest_version_id) and target_kind in ["asset", "pipeline"] and
              is_binary(target_id) and operation in [:asset, :pipeline] and is_list(opts) do
-    with {:ok, version} <-
-           ManifestStore.get_deployment_manifest(
+    ManifestStore.with_deployment_manifest(
+      context,
+      deployment_id,
+      manifest_version_id,
+      fn version ->
+        with :ok <- validate_target(version, target_kind, target_id),
+             {:ok, intent} <- Intent.new(operation, selector, semantic_options(opts)) do
+          {:ok,
+           command(
              context,
+             source,
              deployment_id,
-             manifest_version_id
-           ),
-         :ok <- validate_target(version, target_kind, target_id),
-         {:ok, intent} <- Intent.new(operation, selector, semantic_options(opts)) do
-      {:ok,
-       command(
-         context,
-         source,
-         deployment_id,
-         manifest_version_id,
-         target_kind,
-         target_id,
-         intent,
-         opts
-       )}
-    end
+             manifest_version_id,
+             target_kind,
+             target_id,
+             intent,
+             opts
+           )}
+        end
+      end
+    )
   end
 
   defp enqueue_built(
@@ -314,17 +323,16 @@ defmodule FavnOrchestrator.RunSubmissions do
     }
   end
 
-  defp active_release(context, opts) do
+  defp with_active_release(context, opts, fun) do
     with {:ok, runtime} <- ManifestStore.get_runtime_state(context),
          requested = Keyword.get(opts, :manifest_version_id, runtime.manifest_version_id),
-         true <- requested == runtime.manifest_version_id,
-         {:ok, version} <-
-           ManifestStore.get_deployment_manifest(
-             context,
-             runtime.deployment_id,
-             runtime.manifest_version_id
-           ) do
-      {:ok, runtime, version}
+         true <- requested == runtime.manifest_version_id do
+      ManifestStore.with_deployment_manifest(
+        context,
+        runtime.deployment_id,
+        runtime.manifest_version_id,
+        fn version -> fun.(runtime, version) end
+      )
     else
       false ->
         {:error, {:manifest_not_active_in_workspace, Keyword.get(opts, :manifest_version_id)}}

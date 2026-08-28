@@ -6,7 +6,7 @@ defmodule FavnOrchestrator.Diagnostics do
 
   alias FavnOrchestrator.ManifestStore
   alias FavnOrchestrator.ConnectionCircuitPolicy
-  alias FavnOrchestrator.ManifestIndexCache
+  alias FavnOrchestrator.MemoryCapacity
   alias FavnOrchestrator.ExecutionPoolPolicy
   alias FavnOrchestrator.OperationalEvents
   alias FavnOrchestrator.Persistence
@@ -48,7 +48,7 @@ defmodule FavnOrchestrator.Diagnostics do
     checks = [
       safe_check(:storage_readiness, &storage_check/0),
       safe_check(:active_manifest, &active_manifest_check/0),
-      safe_check(:manifest_index_cache, &manifest_index_cache_check/0),
+      safe_check(:memory_capacity, &memory_capacity_check/0),
       safe_check(:active_run_plan_capacity, &active_run_plan_capacity_check/0),
       safe_check(:scheduler, &scheduler_check/0),
       safe_check(:runner, &runner_check/0),
@@ -68,17 +68,17 @@ defmodule FavnOrchestrator.Diagnostics do
     report
   end
 
-  defp manifest_index_cache_check do
-    details = ManifestIndexCache.diagnostics()
+  defp memory_capacity_check do
+    details = MemoryCapacity.diagnostics()
 
-    if details.running? do
-      ok(:manifest_index_cache, "Compiled manifest index cache is available", details)
+    if details.status == :open do
+      ok(:memory_capacity, "Memory capacity is measurable", details)
     else
       warning(
-        :manifest_index_cache,
-        "Compiled manifest index cache is unavailable",
+        :memory_capacity,
+        "Memory capacity cannot admit manifest-heavy work",
         details,
-        :not_running
+        Map.get(details, :reason, :memory_capacity_unknown)
       )
     end
   end
@@ -141,16 +141,16 @@ defmodule FavnOrchestrator.Diagnostics do
       context = SystemContext.workspace(workspace_id, :diagnostics)
 
       case active_manifest_diagnostics(context) do
-        {:ok, runtime, version, execution_pools, connection_circuits, environment} ->
+        {:ok, runtime, manifest, execution_pools, connection_circuits, environment} ->
           item = %{
             workspace_id: workspace_id,
             deployment_id: runtime.deployment_id,
-            manifest_version_id: version.manifest_version_id,
-            content_hash: version.content_hash,
-            runner_releases: version.runner_releases,
-            asset_count: length(version.manifest.assets),
-            pipeline_count: length(version.manifest.pipelines),
-            schedule_count: length(version.manifest.schedules),
+            manifest_version_id: manifest.manifest_version_id,
+            content_hash: manifest.content_hash,
+            runner_releases: manifest.runner_releases,
+            asset_count: manifest.asset_count,
+            pipeline_count: manifest.pipeline_count,
+            schedule_count: manifest.schedule_count,
             default_timezone: environment.default_timezone,
             default_timezone_source: environment.default_timezone_source,
             execution_pools: execution_pools,
@@ -171,19 +171,30 @@ defmodule FavnOrchestrator.Diagnostics do
   end
 
   defp active_manifest_diagnostics(context) do
-    with {:ok, runtime} <- ManifestStore.get_runtime_state(context),
-         {:ok, version} <-
-           ManifestStore.get_deployment_manifest(
-             context,
-             runtime.deployment_id,
-             runtime.manifest_version_id
-           ),
-         {:ok, configuration} <-
-           ManifestStore.get_deployment_configuration(context, runtime.deployment_id),
-         {:ok, execution_pools} <- ExecutionPoolPolicy.diagnostics(configuration),
-         {:ok, connection_circuits} <- ConnectionCircuitPolicy.diagnostics(configuration),
-         {:ok, environment} <- WorkspaceConfiguration.from_configuration(configuration) do
-      {:ok, runtime, version, execution_pools, connection_circuits, environment}
+    with {:ok, runtime} <- ManifestStore.get_runtime_state(context) do
+      ManifestStore.with_deployment_manifest(
+        context,
+        runtime.deployment_id,
+        runtime.manifest_version_id,
+        fn version ->
+          with {:ok, configuration} <-
+                 ManifestStore.get_deployment_configuration(context, runtime.deployment_id),
+               {:ok, execution_pools} <- ExecutionPoolPolicy.diagnostics(configuration),
+               {:ok, connection_circuits} <- ConnectionCircuitPolicy.diagnostics(configuration),
+               {:ok, environment} <- WorkspaceConfiguration.from_configuration(configuration) do
+            manifest = %{
+              manifest_version_id: version.manifest_version_id,
+              content_hash: version.content_hash,
+              runner_releases: version.runner_releases,
+              asset_count: length(version.manifest.assets),
+              pipeline_count: length(version.manifest.pipelines),
+              schedule_count: length(version.manifest.schedules)
+            }
+
+            {:ok, runtime, manifest, execution_pools, connection_circuits, environment}
+          end
+        end
+      )
     end
   end
 

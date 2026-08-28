@@ -24,6 +24,7 @@ defmodule FavnOrchestrator.API.ManifestPublication do
     "/api/orchestrator/v1/execution-packages/missing" => true
   }
   @read_length_bytes 1 * 1024 * 1024
+  @missing_body_limit_bytes 128 * 1024
   @gzip_window_bits 16 + 15
 
   @impl true
@@ -48,7 +49,7 @@ defmodule FavnOrchestrator.API.ManifestPublication do
   def call(conn, _opts), do: conn
 
   defp parse_authenticated(conn) do
-    config = RuntimeConfig.manifest_publication()
+    config = route_config(conn.request_path, RuntimeConfig.manifest_publication())
 
     with :ok <- validate_content_type(conn),
          {:ok, encoding} <- content_encoding(conn),
@@ -218,6 +219,18 @@ defmodule FavnOrchestrator.API.ManifestPublication do
 
   defp encoded_limit_kind(:gzip), do: :compressed
   defp encoded_limit_kind(:identity), do: :uncompressed
+
+  defp route_config(
+         "/api/orchestrator/v1/execution-packages/missing",
+         %Config{} = config
+       ) do
+    %Config{
+      compressed_limit_bytes: min(config.compressed_limit_bytes, @missing_body_limit_bytes),
+      decompressed_limit_bytes: min(config.decompressed_limit_bytes, @missing_body_limit_bytes)
+    }
+  end
+
+  defp route_config(_path, config), do: config
 
   defp decode(body, :identity, limit) when byte_size(body) <= limit, do: {:ok, body}
   defp decode(body, :identity, _limit), do: {:error, {:too_large, byte_size(body)}}

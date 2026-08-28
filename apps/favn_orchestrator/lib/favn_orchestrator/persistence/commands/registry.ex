@@ -30,15 +30,15 @@ end
 defmodule FavnOrchestrator.Persistence.Commands.RegisterExecutionPackages do
   @moduledoc "Registers immutable content-addressed execution packages under platform authority."
 
-  alias Favn.Manifest.ExecutionPackage
   alias FavnOrchestrator.Persistence.PlatformContext
+  alias FavnOrchestrator.Persistence.VerifiedExecutionPackage
 
   @enforce_keys [:platform_context, :packages]
   defstruct [:platform_context, packages: []]
 
   @type t :: %__MODULE__{
           platform_context: PlatformContext.t(),
-          packages: [ExecutionPackage.t()]
+          packages: [VerifiedExecutionPackage.t()]
         }
 end
 

@@ -13,7 +13,7 @@ defmodule FavnOrchestrator.Persistence.DeploymentPlanner do
   alias Favn.Manifest.Pipeline
   alias Favn.Manifest.PipelineResolver
   alias Favn.Manifest.Version
-  alias FavnOrchestrator.ManifestIndexCache
+  alias FavnOrchestrator.ManifestStore
   alias FavnOrchestrator.Operator.Catalogue.Targets
   alias FavnOrchestrator.Persistence.Commands.DeploymentTarget
   alias FavnOrchestrator.Persistence.TargetIdentity
@@ -35,35 +35,46 @@ defmodule FavnOrchestrator.Persistence.DeploymentPlanner do
   @doc "Builds the exact, dependency-closed target catalog for one deployment."
   @spec plan(Version.t(), t()) :: {:ok, [DeploymentTarget.t()]} | {:error, term()}
   def plan(%Version{} = version, %__MODULE__{} = selection) do
-    with :ok <- validate_selection(selection),
-         {:ok, index} <- ManifestIndexCache.fetch(version),
-         :ok <- validate_disjoint(selection.common_assets, selection.workspace_assets, :asset),
-         :ok <-
-           validate_disjoint(
-             selection.common_pipelines,
-             selection.workspace_pipelines,
-             :pipeline
-           ),
-         {:ok, selected_assets} <- selected_assets(index, selection),
-         {:ok, selected_pipelines, pipeline_assets} <- selected_pipelines(index, selection),
-         {:ok, dependency_assets} <-
-           dependency_closure(index, Map.keys(selected_assets) ++ pipeline_assets) do
-      targets =
-        selected_assets
-        |> Map.merge(dependency_targets(index, dependency_assets), fn _ref,
-                                                                      selected,
-                                                                      _dependency ->
-          selected
-        end)
-        |> Map.values()
-        |> Kernel.++(Map.values(selected_pipelines))
-        |> Enum.sort_by(&{&1.target_kind, &1.target_id})
-
-      {:ok, targets}
-    end
+    plan(version, selection, [])
   end
 
   def plan(_version, _selection), do: {:error, :invalid_deployment_selection}
+
+  @doc false
+  @spec plan(Version.t(), t(), keyword()) ::
+          {:ok, [DeploymentTarget.t()]} | {:error, term()}
+  def plan(%Version{} = version, %__MODULE__{} = selection, opts) when is_list(opts) do
+    with :ok <- validate_selection(selection) do
+      ManifestStore.with_index(version, opts, fn index ->
+        with :ok <- validate_disjoint(selection.common_assets, selection.workspace_assets, :asset),
+             :ok <-
+               validate_disjoint(
+                 selection.common_pipelines,
+                 selection.workspace_pipelines,
+                 :pipeline
+               ),
+             {:ok, selected_assets} <- selected_assets(index, selection),
+             {:ok, selected_pipelines, pipeline_assets} <- selected_pipelines(index, selection),
+             {:ok, dependency_assets} <-
+               dependency_closure(index, Map.keys(selected_assets) ++ pipeline_assets) do
+          targets =
+            selected_assets
+            |> Map.merge(dependency_targets(index, dependency_assets), fn _ref,
+                                                                          selected,
+                                                                          _dependency ->
+              selected
+            end)
+            |> Map.values()
+            |> Kernel.++(Map.values(selected_pipelines))
+            |> Enum.sort_by(&{&1.target_kind, &1.target_id})
+
+          {:ok, targets}
+        end
+      end)
+    end
+  end
+
+  def plan(_version, _selection, _opts), do: {:error, :invalid_deployment_selection}
 
   defp selected_assets(index, selection) do
     [

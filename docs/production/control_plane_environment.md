@@ -164,6 +164,7 @@ and audit contract.
 | `FAVN_ORCHESTRATOR_AUTH_SESSION_TTL` | `1..2592000` seconds, default `43200`. |
 | `FAVN_OPERATOR_COMMAND_HMAC_SECRET` | Required Orchestrator-only secret of at least 32 bytes. It derives stable audit/idempotency fingerprints and is never supplied to View. |
 | `FAVN_ORCHESTRATOR_ACTIVE_RUN_PLAN_MAX_BYTES` | `64 MiB..8 GiB`, default `512 MiB`. |
+| `FAVN_ORCHESTRATOR_MEMORY_CEILING_BYTES` | Optional positive byte ceiling. Normally omit it: Favn reads the finite Linux cgroup v2 or v1 limit and current usage automatically. Set it only to lower that detected limit, or to provide a process ceiling on an otherwise unlimited host. It never raises a finite cgroup limit. |
 | `FAVN_SCHEDULER_ENABLED` | Strict `true` or `false`, default `true`. |
 | `FAVN_SCHEDULER_TICK_MS` | `100..86400000`, default `15000`. |
 | `FAVN_SCHEDULER_MAX_MISSED_ALL_OCCURRENCES` | `0..100000`, default `1000`. |
@@ -175,6 +176,14 @@ and audit contract.
 | `FAVN_DISTRIBUTION_COOKIE` | Required high-entropy secret shared by View, Orchestrator, and trusted runner releases. |
 | `FAVN_BEAM_DISTRIBUTION_PORT` | Required fixed private port for the selected resident role. |
 | `ERL_EPMD_PORT` | Optional private EPMD port, default `4369`. |
+
+Manifest-heavy work is admitted from the current Linux cgroup headroom on every
+container platform. Favn keeps a fixed safety reserve and returns retryable
+`429` or `503` errors before reading a publication body when the node cannot fit
+the bounded operation. Package batches remain fixed at eight packages and
+4 MiB on both small and large containers; more RAM does not silently raise the
+protocol limits. An unlimited bare host without the optional ceiling fails
+manifest-heavy admission closed because host RAM is not a process guarantee.
 
 ## Lifecycle, readiness, and shutdown
 

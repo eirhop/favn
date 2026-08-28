@@ -1,9 +1,12 @@
 defmodule FavnLocal.Publication do
   @moduledoc false
 
+  alias Favn.Manifest.ArchiveLimits
   alias Favn.Manifest.Publication
   alias FavnOrchestrator.ExecutionPackages
   alias FavnOrchestrator.Manifests
+  alias FavnOrchestrator.MemoryCapacity
+  alias FavnOrchestrator.MemoryCapacity.Budget
   alias FavnOrchestrator.Persistence.PlatformContext
   alias FavnOrchestrator.Persistence.WorkspaceContext
 
@@ -24,22 +27,31 @@ defmodule FavnLocal.Publication do
          {:ok, workspace} <-
            WorkspaceContext.new(workspace_id, "favn-local", [:platform_operator]),
          {:ok, permit} <- acquire_admission(maintenance_token),
-         result <- deploy_with_permit(platform, workspace, publication) do
+         result <-
+           MemoryCapacity.with_lease(
+             Budget.manifest_base(),
+             [kind: :local_manifest_deployment],
+             &deploy_with_permit(platform, workspace, publication, &1)
+           ) do
       release_admission(permit)
       result
     end
   end
 
-  defp deploy_with_permit(platform, workspace, publication) do
+  defp deploy_with_permit(platform, workspace, publication, memory_token) do
     version = publication.version
     started_at = now_ms()
 
     {execution_packages_ms, package_result} =
-      timed(fn -> register_missing_packages(platform, publication.execution_packages) end)
+      timed(fn ->
+        register_missing_packages(platform, publication.execution_packages, memory_token)
+      end)
 
     with {:ok, package_counts} <- package_result do
       {manifest_publication_ms, publication_result} =
-        timed(fn -> Manifests.publish(platform, version) end)
+        timed(fn ->
+          Manifests.publish(platform, version, memory_capacity_token: memory_token)
+        end)
 
       with {:ok, _status, canonical} <- publication_result do
         {manifest_activation_ms, activation_result} =
@@ -56,7 +68,8 @@ defmodule FavnLocal.Publication do
               },
               deployment_id: deployment_attempt_id(canonical.manifest_version_id),
               configuration: %{},
-              execution_pool_policy: %{approve_manifest_defaults: true}
+              execution_pool_policy: %{approve_manifest_defaults: true},
+              memory_capacity_token: memory_token
             )
           end)
 
@@ -87,10 +100,11 @@ defmodule FavnLocal.Publication do
 
   defp deployment_result({:error, _reason} = error, _package_counts, _phases), do: error
 
-  defp register_missing_packages(platform, packages) do
+  defp register_missing_packages(platform, packages, memory_token) do
     hashes = Enum.map(packages, & &1.content_hash)
 
-    with {:ok, missing_hashes} <- ExecutionPackages.missing_hashes(platform, hashes) do
+    with :ok <- MemoryCapacity.grow(memory_token, Budget.manifest_base()),
+         {:ok, missing_hashes} <- ExecutionPackages.missing_hashes(platform, hashes) do
       missing = MapSet.new(missing_hashes)
       packages_to_register = Enum.filter(packages, &MapSet.member?(missing, &1.content_hash))
 
@@ -101,7 +115,31 @@ defmodule FavnLocal.Publication do
   end
 
   defp register_packages(_platform, []), do: :ok
-  defp register_packages(platform, packages), do: ExecutionPackages.register(platform, packages)
+
+  defp register_packages(platform, packages) do
+    packages
+    |> Enum.chunk_every(ArchiveLimits.current().package_batch_count)
+    |> Enum.reduce_while(:ok, fn batch, :ok ->
+      case register_package_batch(platform, batch) do
+        :ok -> {:cont, :ok}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp register_package_batch(platform, packages) do
+    case ExecutionPackages.register(platform, packages) do
+      {:error, :execution_package_batch_too_large} when length(packages) > 1 ->
+        {left, right} = Enum.split(packages, div(length(packages), 2))
+
+        with :ok <- register_package_batch(platform, left) do
+          register_package_batch(platform, right)
+        end
+
+      result ->
+        result
+    end
+  end
 
   defp timed(fun) do
     started_at = now_ms()

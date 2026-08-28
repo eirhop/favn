@@ -22,6 +22,9 @@ defmodule FavnOrchestrator.Runs do
   alias FavnOrchestrator.Persistence.Queries.PageRuns
   alias FavnOrchestrator.Persistence.TargetIdentity
   alias FavnOrchestrator.Persistence.WorkspaceContext
+  alias FavnOrchestrator.MemoryCapacity
+  alias FavnOrchestrator.MemoryCapacity.BoundedWorker
+  alias FavnOrchestrator.MemoryCapacity.Budget
   alias FavnOrchestrator.RunEvent
   alias FavnOrchestrator.RunState
 
@@ -100,35 +103,30 @@ defmodule FavnOrchestrator.Runs do
 
   @doc "Fetches one run without permitting cross-workspace identity probing."
   @spec get(WorkspaceContext.t(), String.t()) ::
-          {:ok, RunState.t()} | {:error, FavnOrchestrator.Persistence.Error.t()}
+          {:ok, RunState.t()} | {:error, term()}
   def get(%WorkspaceContext{} = context, run_id) when is_binary(run_id) do
-    with :ok <- validate_workspace_read(context) do
-      Persistence.stores().runs.get_run(%GetRun{workspace_context: context, run_id: run_id})
-    end
+    get(context, run_id, [])
   end
 
-  @doc "Returns one bounded keyset page of workspace runs."
-  @spec page(WorkspaceContext.t(), keyword()) ::
-          {:ok, FavnOrchestrator.Persistence.Results.CursorPage.t(RunState.t())}
-          | {:error, term()}
-  def page(%WorkspaceContext{} = context, opts \\ []) when is_list(opts) do
-    with :ok <- validate_workspace_read(context),
-         :ok <-
-           validate_opts(opts, [
-             :after,
-             :manifest_version_id,
-             :root_execution_group_id,
-             :status,
-             :limit
-           ]) do
-      Persistence.stores().runs.page_runs(%PageRuns{
-        scope: context,
-        after: Keyword.get(opts, :after),
-        manifest_version_id: Keyword.get(opts, :manifest_version_id),
-        root_execution_group_id: Keyword.get(opts, :root_execution_group_id),
-        status: Keyword.get(opts, :status),
-        limit: Keyword.get(opts, :limit, 50)
-      })
+  @doc false
+  @spec get(WorkspaceContext.t(), String.t(), keyword()) ::
+          {:ok, RunState.t()} | {:error, term()}
+  def get(%WorkspaceContext{} = context, run_id, opts)
+      when is_binary(run_id) and is_list(opts) do
+    with :ok <- validate_workspace_read(context) do
+      query = %GetRun{workspace_context: context, run_id: run_id}
+
+      case Keyword.get(opts, :memory_capacity_token) do
+        %MemoryCapacity{} = token -> load_run(query, token)
+
+        nil ->
+          MemoryCapacity.with_lease(16 * 1_024 * 1_024, [kind: :run_decode], fn token ->
+            load_run(query, token)
+          end)
+
+        _invalid ->
+          {:error, :invalid_memory_capacity_token}
+      end
     end
   end
 
@@ -275,6 +273,22 @@ defmodule FavnOrchestrator.Runs do
     end
   rescue
     _error -> {:error, :invalid_run_targets}
+  end
+
+  defp active_run_plan_max_bytes do
+    Application.get_env(:favn_orchestrator, :active_run_plan_max_bytes, 512 * 1_024 * 1_024)
+  end
+
+  defp load_run(query, token) do
+    with {:ok, bytes} <- Persistence.stores().runs.get_run_size(query),
+         {:ok, budget} <- Budget.run_decode(bytes, active_run_plan_max_bytes()),
+         :ok <- MemoryCapacity.grow(token, budget.working_bytes) do
+      BoundedWorker.run_serialized(
+        fn -> Persistence.stores().runs.get_run(query) end,
+        budget.working_bytes,
+        budget.result_bytes
+      )
+    end
   end
 
   defp planned_asset_refs(%RunState{target_refs: selected, plan: %Favn.Plan{nodes: nodes}})

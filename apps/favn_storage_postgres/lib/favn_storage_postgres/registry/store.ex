@@ -60,6 +60,7 @@ defmodule FavnStoragePostgres.Registry.Store do
   alias FavnOrchestrator.Persistence.Results.ManifestDeployment
   alias FavnOrchestrator.Persistence.Results.CursorPage
   alias FavnOrchestrator.Persistence.TargetIdentity
+  alias FavnOrchestrator.Persistence.VerifiedExecutionPackage
   alias FavnOrchestrator.Persistence.WorkspaceContext
   alias FavnOrchestrator.Storage.RunSnapshotCodec.ManifestAtoms
   alias FavnStoragePostgres.CanonicalJSON
@@ -67,7 +68,6 @@ defmodule FavnStoragePostgres.Registry.Store do
   alias FavnStoragePostgres.ErrorMapper
   alias FavnStoragePostgres.Idempotency.Transaction, as: IdempotencyTransaction
   alias FavnStoragePostgres.Outbox.Writer, as: OutboxWriter
-  alias FavnStoragePostgres.Registry.ManifestCache
   alias FavnStoragePostgres.Repo
   alias FavnStoragePostgres.Schemas.AuthPlatformAuditEntry
   alias FavnStoragePostgres.Schemas.AssetEvidenceBinding
@@ -87,9 +87,10 @@ defmodule FavnStoragePostgres.Registry.Store do
 
   @max_manifest_bytes 256 * 1_024 * 1_024
   @max_execution_package_bytes 4 * 1_024 * 1_024
-  @max_execution_package_batch_bytes 32 * 1_024 * 1_024
-  @max_execution_packages_per_command 1_000
-  @execution_package_insert_size 100
+  @max_execution_package_batch_bytes 4 * 1_024 * 1_024
+  @max_execution_packages_per_command 8
+  @max_missing_execution_package_hashes 1_000
+  @execution_package_insert_size 8
   @execution_package_validation_batch_size 500
   @max_manifest_target_descriptors 500
   @max_deployment_targets 10_000
@@ -246,8 +247,7 @@ defmodule FavnStoragePostgres.Registry.Store do
              else
                {:error, error} -> Repo.rollback(error)
              end
-           end),
-         :ok <- ManifestCache.put(stored) do
+           end) do
       {:ok, stored}
     else
       {:error, %Error{} = error} ->
@@ -265,22 +265,14 @@ defmodule FavnStoragePostgres.Registry.Store do
   def register_execution_packages(%RegisterExecutionPackages{} = command) do
     with :ok <- validate_platform_manifest_write(command.platform_context),
          {:ok, records} <- encode_execution_packages(command.packages),
-         {:ok, :ok} <-
-           Repo.transaction(fn ->
-             with :ok <- insert_execution_packages(records),
-                  :ok <- verify_execution_packages(records) do
-               insert_execution_package_audit!(command.platform_context, records)
-             else
-               {:error, error} -> Repo.rollback(error)
-             end
-           end) do
+         :ok <- persist_execution_package_records(command.platform_context, records) do
       :ok
     else
       {:error, %Error{} = error} ->
         {:error, error}
 
       {:error, :execution_package_batch_too_large} ->
-        {:error, Error.new(:limit_exceeded, "execution package batch exceeds the 32 MiB limit")}
+        {:error, Error.new(:limit_exceeded, "execution package batch exceeds the 4 MiB limit")}
 
       {:error, reason} ->
         {:error,
@@ -461,12 +453,7 @@ defmodule FavnStoragePostgres.Registry.Store do
 
   @impl true
   def get_manifest(%ById{manifest_version_id: id}) when byte_size(id) in 1..255 do
-    selector = %ById{manifest_version_id: id}
-
-    case ManifestCache.get(selector) do
-      {:ok, version} -> {:ok, version}
-      :miss -> selector |> load_manifest() |> cache_manifest()
-    end
+    load_manifest(%ById{manifest_version_id: id})
   rescue
     error -> {:error, ErrorMapper.map(error)}
   end
@@ -474,11 +461,23 @@ defmodule FavnStoragePostgres.Registry.Store do
   def get_manifest(%ById{}), do: {:error, Error.new(:invalid, "invalid manifest identity")}
 
   def get_manifest(%ByContentHash{content_hash: content_hash}) do
-    selector = %ByContentHash{content_hash: content_hash}
+    load_manifest(%ByContentHash{content_hash: content_hash})
+  rescue
+    error -> {:error, ErrorMapper.map(error)}
+  end
 
-    case ManifestCache.get(selector) do
-      {:ok, version} -> {:ok, version}
-      :miss -> selector |> load_manifest() |> cache_manifest()
+  @impl true
+  def get_manifest_size(%ById{manifest_version_id: id}) when byte_size(id) in 1..255 do
+    manifest_size(where(ManifestVersion, [manifest], manifest.manifest_version_id == ^id))
+  rescue
+    error -> {:error, ErrorMapper.map(error)}
+  end
+
+  def get_manifest_size(%ByContentHash{content_hash: content_hash}) do
+    with {:ok, hash} <- decode_hash(content_hash) do
+      manifest_size(where(ManifestVersion, [manifest], manifest.content_hash == ^hash))
+    else
+      {:error, _reason} -> {:error, Error.new(:invalid, "invalid manifest content hash")}
     end
   rescue
     error -> {:error, ErrorMapper.map(error)}
@@ -582,6 +581,15 @@ defmodule FavnStoragePostgres.Registry.Store do
     end
   end
 
+  defp manifest_size(query) do
+    case query
+         |> select([manifest], fragment("octet_length((?)::text)", manifest.manifest))
+         |> Repo.one() do
+      bytes when is_integer(bytes) and bytes >= 0 -> {:ok, bytes}
+      nil -> {:error, Error.new(:not_found, "manifest release not found")}
+    end
+  end
+
   defp select_manifest_target_descriptors(query) do
     case SQL.query(
            Repo,
@@ -670,18 +678,9 @@ defmodule FavnStoragePostgres.Registry.Store do
          )}
 
       %ManifestVersion{} = row ->
-        row
-        |> decode_manifest_row()
-        |> cache_manifest()
+        decode_manifest_row(row)
     end
   end
-
-  defp cache_manifest({:ok, %Version{} = version} = result) do
-    :ok = ManifestCache.put(version)
-    result
-  end
-
-  defp cache_manifest(error), do: error
 
   @impl true
   def begin_manifest_deployment(%BeginManifestDeployment{} = query) do
@@ -2171,27 +2170,23 @@ defmodule FavnStoragePostgres.Registry.Store do
     packages
     |> Enum.reduce_while({:ok, [], MapSet.new(), 0}, fn package,
                                                         {:ok, records, hashes, total_bytes} ->
-      with %ExecutionPackage{} <- package,
-           {:ok, canonical} <- ExecutionPackage.verify(package),
-           false <- MapSet.member?(hashes, canonical.content_hash),
-           {:ok, encoded} <- Serializer.encode_manifest(canonical),
-           :ok <- validate_execution_package_size(encoded, total_bytes),
-           {:ok, payload} <- Jason.decode(encoded),
-           {:ok, hash} <- decode_hash(canonical.content_hash) do
-        {module, name} = canonical.asset_ref
-
+      with %VerifiedExecutionPackage{} <- package,
+           false <- MapSet.member?(hashes, package.content_hash),
+           :ok <- validate_execution_package_size(package.canonical_json, total_bytes),
+           {:ok, hash} <- decode_hash(package.content_hash),
+           true <- valid_package_identity?(package) do
         record = %{
           content_hash: hash,
-          asset_module: Atom.to_string(module),
-          asset_name: Atom.to_string(name),
-          runtime_input_resolver: runtime_input_resolver(canonical),
-          payload: payload,
+          asset_module: package.asset_module,
+          asset_name: package.asset_name,
+          runtime_input_resolver: package.runtime_input_resolver,
+          canonical_json: package.canonical_json,
           inserted_at: DateTime.utc_now()
         }
 
         {:cont,
-         {:ok, [record | records], MapSet.put(hashes, canonical.content_hash),
-          total_bytes + byte_size(encoded)}}
+         {:ok, [record | records], MapSet.put(hashes, package.content_hash),
+          total_bytes + byte_size(package.canonical_json)}}
       else
         true -> {:halt, {:error, :duplicate_execution_package}}
         {:error, reason} -> {:halt, {:error, reason}}
@@ -2219,18 +2214,70 @@ defmodule FavnStoragePostgres.Registry.Store do
     end
   end
 
-  defp runtime_input_resolver(%ExecutionPackage{
-         sql_execution: %{runtime_inputs: %{module: module}}
-       })
-       when is_atom(module),
-       do: Atom.to_string(module)
+  defp valid_package_identity?(package) do
+    is_binary(package.asset_module) and byte_size(package.asset_module) in 1..255 and
+      is_binary(package.asset_name) and byte_size(package.asset_name) in 1..255 and
+      is_binary(package.canonical_json) and
+      (is_nil(package.runtime_input_resolver) or
+         (is_binary(package.runtime_input_resolver) and
+            byte_size(package.runtime_input_resolver) in 1..255))
+  end
 
-  defp runtime_input_resolver(%ExecutionPackage{}), do: nil
+  defp persist_execution_package_records(context, records) do
+    case Repo.transaction(fn ->
+           with :ok <- insert_execution_packages(records),
+                :ok <- verify_execution_packages(records) do
+             insert_execution_package_audit!(context, records)
+           else
+             {:error, error} -> Repo.rollback(error)
+           end
+         end) do
+      {:ok, :ok} ->
+        :ok
+
+      {:error, error} ->
+        reconcile_execution_package_outcome(records, error)
+    end
+  rescue
+    error ->
+      reconcile_execution_package_outcome(records, ErrorMapper.map(error))
+  catch
+    :exit, reason ->
+      reconcile_execution_package_outcome(records, ErrorMapper.map(reason))
+  end
+
+  defp reconcile_execution_package_outcome(records, original_error) do
+    case verify_execution_packages(records) do
+      :ok -> :ok
+      {:error, _reason} -> {:error, original_error}
+    end
+  rescue
+    _error -> {:error, original_error}
+  catch
+    :exit, _reason -> {:error, original_error}
+  end
 
   defp insert_execution_packages(records) do
     records
     |> Enum.chunk_every(@execution_package_insert_size)
-    |> Enum.each(&Repo.insert_all(ExecutionPackageRecord, &1, on_conflict: :nothing))
+    |> Enum.each(&insert_execution_package_batch/1)
+
+    :ok
+  end
+
+  defp insert_execution_package_batch(records) do
+    {values, parameters} = package_sql_values(records)
+
+    SQL.query!(
+      Repo,
+      """
+      INSERT INTO favn_control.execution_packages
+        (content_hash, asset_module, asset_name, runtime_input_resolver, payload, inserted_at)
+      VALUES #{Enum.join(values, ", ")}
+      ON CONFLICT (content_hash) DO NOTHING
+      """,
+      parameters
+    )
 
     :ok
   end
@@ -2238,33 +2285,62 @@ defmodule FavnStoragePostgres.Registry.Store do
   defp verify_execution_packages([]), do: :ok
 
   defp verify_execution_packages(records) do
-    hashes = Enum.map(records, & &1.content_hash)
+    {values, parameters} = package_sql_values(records)
 
-    stored =
-      ExecutionPackageRecord
-      |> where([package], package.content_hash in ^hashes)
-      |> Repo.all()
-      |> Map.new(&{&1.content_hash, &1})
+    case SQL.query(
+           Repo,
+           """
+           WITH incoming
+             (content_hash, asset_module, asset_name, runtime_input_resolver, payload, inserted_at)
+             AS (VALUES #{Enum.join(values, ", ")})
+           SELECT count(*)::bigint
+           FROM incoming AS expected
+           JOIN favn_control.execution_packages AS stored
+             ON stored.content_hash = expected.content_hash
+            AND stored.asset_module = expected.asset_module
+            AND stored.asset_name = expected.asset_name
+            AND stored.runtime_input_resolver IS NOT DISTINCT FROM expected.runtime_input_resolver
+            AND stored.payload = expected.payload
+           """,
+           parameters
+         ) do
+      {:ok, %{rows: [[count]]}} when count == length(records) ->
+        :ok
 
-    if Enum.all?(records, fn record ->
-         case Map.get(stored, record.content_hash) do
-           %ExecutionPackageRecord{} = row ->
-             row.asset_module == record.asset_module and row.asset_name == record.asset_name and
-               row.runtime_input_resolver == record.runtime_input_resolver and
-               row.payload == record.payload
+      {:ok, _result} ->
+        {:error, Error.new(:conflict, "execution package has different canonical content")}
 
-           nil ->
-             false
-         end
-       end) do
-      :ok
-    else
-      {:error, Error.new(:conflict, "execution package has different canonical content")}
+      {:error, error} ->
+        {:error, ErrorMapper.map(error)}
     end
   end
 
+  defp package_sql_values(records) do
+    records
+    |> Enum.with_index()
+    |> Enum.reduce({[], []}, fn {record, index}, {values, parameters} ->
+      first = index * 6 + 1
+
+      value =
+        "($#{first}::bytea, $#{first + 1}::text, $#{first + 2}::text, " <>
+          "$#{first + 3}::text, $#{first + 4}::text::jsonb, $#{first + 5}::timestamptz)"
+
+      params = [
+        record.content_hash,
+        record.asset_module,
+        record.asset_name,
+        record.runtime_input_resolver,
+        record.canonical_json,
+        record.inserted_at
+      ]
+
+      {[value | values], parameters ++ params}
+    end)
+    |> then(fn {values, parameters} -> {Enum.reverse(values), parameters} end)
+  end
+
   defp normalize_package_hashes(hashes)
-       when is_list(hashes) and length(hashes) <= @max_execution_packages_per_command do
+       when is_list(hashes) and length(hashes) <= @max_missing_execution_package_hashes do
     hashes
     |> Enum.reduce_while({:ok, [], MapSet.new()}, fn hash, {:ok, acc, seen} ->
       with true <- canonical_hash?(hash),
@@ -2591,7 +2667,7 @@ defmodule FavnStoragePostgres.Registry.Store do
          {:ok, hash} <- decode_hash(verified.content_hash),
          {:ok, archive_hash} <- decode_hash(command.archive_sha256),
          {:ok, fingerprint} <- decode_hash(command.request_fingerprint),
-         {:ok, {status, operation, stored}} <-
+         {:ok, {status, operation, _stored}} <-
            Repo.transaction(fn ->
              SQL.query!(Repo, "SELECT pg_advisory_xact_lock(hashtext($1))", [
                "manifest-deployment:#{command.context.workspace_id}:#{command.operation_id}"
@@ -2635,8 +2711,7 @@ defmodule FavnStoragePostgres.Registry.Store do
                    {:error, error} -> Repo.rollback(error)
                  end
              end
-           end),
-         :ok <- ManifestCache.put(stored) do
+           end) do
       {:ok, status, operation}
     else
       {:error, %Error{} = error} ->

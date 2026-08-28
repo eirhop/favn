@@ -144,12 +144,32 @@ defmodule FavnStoragePostgres.Runs.Store do
   end
 
   @impl true
-  def get_run(%GetRun{workspace_context: context, run_id: run_id}) do
+  def get_run_size(%GetRun{workspace_context: context, run_id: run_id}) do
     with :ok <- validate_workspace_read(context),
          true <- valid_identity?(run_id) do
-      case Repo.get_by(Run, workspace_id: context.workspace_id, run_id: run_id) do
+      query =
+        from(run in Run,
+          left_join: plan in RunPlan,
+          on: plan.workspace_id == run.workspace_id and plan.run_id == run.run_id,
+          join: manifest in ManifestVersion,
+          on: manifest.manifest_version_id == run.manifest_version_id,
+          where: run.workspace_id == ^context.workspace_id and run.run_id == ^run_id,
+          select:
+            fragment(
+              "octet_length((?)::text) + COALESCE(octet_length((?)::text), 0) + " <>
+                "CASE WHEN ? IS NULL THEN octet_length((?)::text) " <>
+                "ELSE COALESCE(octet_length(array_to_string(?, '')), 0) END",
+              run.snapshot,
+              plan.plan,
+              manifest.atom_strings,
+              manifest.manifest,
+              manifest.atom_strings
+            )
+        )
+
+      case Repo.one(query) do
+        bytes when is_integer(bytes) and bytes >= 0 -> {:ok, bytes}
         nil -> {:error, Error.new(:not_found, "run not found")}
-        %Run{} = row -> decode_run(row)
       end
     else
       false -> {:error, Error.new(:invalid, "invalid run identity")}
@@ -160,21 +180,15 @@ defmodule FavnStoragePostgres.Runs.Store do
   end
 
   @impl true
-  def page_runs(%PageRuns{} = query) do
-    with :ok <- validate_page_runs(query),
-         ecto_query <- runs_query(query),
-         rows <- Repo.all(ecto_query),
-         page_rows <- Enum.take(rows, query.limit),
-         {:ok, runs} <- Decoder.decode_many(page_rows),
-         has_more? <- length(rows) > query.limit do
-      {:ok,
-       %CursorPage{
-         items: runs,
-         limit: query.limit,
-         has_more?: has_more?,
-         next_cursor: next_run_cursor(List.last(page_rows), query.scope, has_more?)
-       }}
+  def get_run(%GetRun{workspace_context: context, run_id: run_id}) do
+    with :ok <- validate_workspace_read(context),
+         true <- valid_identity?(run_id) do
+      case Repo.get_by(Run, workspace_id: context.workspace_id, run_id: run_id) do
+        nil -> {:error, Error.new(:not_found, "run not found")}
+        %Run{} = row -> decode_run(row)
+      end
     else
+      false -> {:error, Error.new(:invalid, "invalid run identity")}
       {:error, %Error{} = error} -> {:error, error}
     end
   rescue

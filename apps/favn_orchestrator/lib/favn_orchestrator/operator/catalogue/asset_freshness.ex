@@ -18,7 +18,7 @@ defmodule FavnOrchestrator.Operator.Catalogue.AssetFreshness do
   alias Favn.Window.Spec, as: WindowSpec
   alias FavnOrchestrator.AssetFreshnessState
   alias FavnOrchestrator.AssetRunContext
-  alias FavnOrchestrator.ManifestIndexCache
+  alias FavnOrchestrator.ManifestStore
   alias FavnOrchestrator.Freshness.Decider, as: FreshnessDecider
   alias FavnOrchestrator.Operator.Catalogue.Targets
 
@@ -192,7 +192,7 @@ defmodule FavnOrchestrator.Operator.Catalogue.AssetFreshness do
     do: insufficient_state_detail(policy)
 
   defp freshness_plan(asset, version, now, opts) do
-    with {:ok, index} <- ManifestIndexCache.fetch(version) do
+    ManifestStore.with_index(version, fn index ->
       planner_opts = [dependencies: :all, planning_index: index.planning_index]
 
       planner_opts =
@@ -202,7 +202,7 @@ defmodule FavnOrchestrator.Operator.Catalogue.AssetFreshness do
         end
 
       Planner.plan(asset.ref, planner_opts)
-    end
+    end)
   end
 
   defp current_anchor_window(asset, now, opts) do

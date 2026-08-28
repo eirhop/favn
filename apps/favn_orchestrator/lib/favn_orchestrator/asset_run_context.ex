@@ -17,19 +17,18 @@ defmodule FavnOrchestrator.AssetRunContext do
   alias Favn.Window.Anchor
   alias Favn.Window.Policy
   alias Favn.Window.Selection
-  alias FavnOrchestrator.ManifestIndexCache
+  alias FavnOrchestrator.ManifestStore
   alias FavnOrchestrator.ManifestTarget
 
   @default_timezone "Etc/UTC"
 
-  @enforce_keys [:id, :pipeline_ref, :pipeline, :index, :timezone]
-  defstruct [:id, :pipeline_ref, :pipeline, :index, :policy, :schedule_timezone, :timezone]
+  @enforce_keys [:id, :pipeline_ref, :pipeline, :timezone]
+  defstruct [:id, :pipeline_ref, :pipeline, :policy, :schedule_timezone, :timezone]
 
   @type t :: %__MODULE__{
           id: String.t(),
           pipeline_ref: {module(), atom()},
           pipeline: Pipeline.t(),
-          index: Index.t(),
           policy: Policy.t() | nil,
           schedule_timezone: String.t() | nil,
           timezone: String.t()
@@ -47,9 +46,9 @@ defmodule FavnOrchestrator.AssetRunContext do
   def list(%Version{} = version, %Asset{ref: asset_ref}), do: list(version, asset_ref)
 
   def list(%Version{} = version, asset_ref) when is_tuple(asset_ref) do
-    with {:ok, %Index{} = index} <- ManifestIndexCache.fetch(version) do
+    ManifestStore.with_index(version, fn %Index{} = index ->
       build_contexts(index, List.wrap(version.manifest.pipelines), asset_ref)
-    end
+    end)
   end
 
   @doc "Selects an explicit context, auto-selects a unique context, or reports ambiguity."
@@ -128,7 +127,6 @@ defmodule FavnOrchestrator.AssetRunContext do
       id: ManifestTarget.pipeline_id(pipeline_ref),
       pipeline_ref: pipeline_ref,
       pipeline: pipeline,
-      index: index,
       policy: policy,
       schedule_timezone: schedule_timezone,
       timezone: policy_timezone(policy) || schedule_timezone || @default_timezone

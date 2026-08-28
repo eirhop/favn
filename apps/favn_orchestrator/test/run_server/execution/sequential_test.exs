@@ -20,6 +20,7 @@ defmodule FavnOrchestrator.RunServer.Execution.SequentialTest do
   alias FavnOrchestrator.RunState
 
   defmodule FakeStore do
+    def get_run_size(_query), do: {:ok, 1_024}
     def get_run(_query), do: {:error, :forced_missing}
 
     def commit_transition(command) do

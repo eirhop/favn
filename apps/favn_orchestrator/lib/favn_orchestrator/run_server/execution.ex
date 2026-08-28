@@ -19,7 +19,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
   alias Favn.TargetIdentity
   alias FavnOrchestrator.CancellationOutcome
   alias FavnOrchestrator.ExecutionAdmission
-  alias FavnOrchestrator.ManifestIndexCache
+  alias FavnOrchestrator.ManifestStore
   alias FavnOrchestrator.OperationalEvents
   alias FavnOrchestrator.Persistence.SystemContext
   alias FavnOrchestrator.ResourceCircuits
@@ -73,9 +73,15 @@ defmodule FavnOrchestrator.RunServer.Execution do
            schedules_by_ref: %{}
          }
 
-  @spec start_state(RunState.t(), Version.t()) ::
+  @spec start_state(RunState.t(), Version.t(), keyword()) ::
           {:ok, RunExecutionState.t()} | {:terminal, RunState.t()}
-  def start_state(%RunState{submit_kind: submit_kind} = run_state, %Version{} = _version)
+  def start_state(run_state, version, opts \\ [])
+
+  def start_state(
+        %RunState{submit_kind: submit_kind} = run_state,
+        %Version{} = _version,
+        _opts
+      )
       when submit_kind in [:backfill_asset, :backfill_pipeline] do
     {:terminal,
      Snapshots.snapshot_update(run_state,
@@ -86,46 +92,60 @@ defmodule FavnOrchestrator.RunServer.Execution do
      )}
   end
 
-  def start_state(%RunState{} = run_state, %Version{} = version) do
+  def start_state(%RunState{} = run_state, %Version{} = version, opts) when is_list(opts) do
     case RunState.execution_mode(run_state) do
       :pipeline ->
-        with :ok <- RunnerIdentityVerifier.verify_run_manifest(run_state, version),
-             {:ok, manifest_index} <- ManifestIndexCache.fetch(version),
-             execution_index <- compact_execution_index(run_state, manifest_index),
-             {:ok, {freshness_context, freshness_checkpoint}} <-
-               load_freshness_context(run_state, execution_index) do
-          state =
-            RunExecutionState.new(run_state, Version.identity(version),
-              mode: :pipeline,
-              manifest_index: execution_index,
-              manifest_lease_id: nil,
-              stage_groups: pipeline_stage_groups(run_state),
-              freshness_context: freshness_context,
-              freshness_checkpoint: freshness_checkpoint
-            )
+        with :ok <- RunnerIdentityVerifier.verify_run_manifest(run_state, version) do
+          ManifestStore.with_index(version, opts, fn manifest_index ->
+            execution_index = compact_execution_index(run_state, manifest_index)
 
-          case restore_active_tasks(state) do
-            {:ok, restored} -> {:ok, restored}
+            with {:ok, {freshness_context, freshness_checkpoint}} <-
+                   load_freshness_context(run_state, execution_index) do
+              state =
+                RunExecutionState.new(run_state, Version.identity(version),
+                  mode: :pipeline,
+                  manifest_index: execution_index,
+                  manifest_lease_id: nil,
+                  stage_groups: pipeline_stage_groups(run_state),
+                  freshness_context: freshness_context,
+                  freshness_checkpoint: freshness_checkpoint
+                )
+
+              case restore_active_tasks(state) do
+                {:ok, restored} -> {:ok, restored}
+                {:error, reason} -> pipeline_start_failure(run_state, reason)
+              end
+            else
+              {:error, reason} -> pipeline_start_failure(run_state, reason)
+            end
+          end)
+          |> case do
             {:error, reason} -> pipeline_start_failure(run_state, reason)
+            result -> result
           end
         else
           {:error, reason} -> pipeline_start_failure(run_state, reason)
         end
 
       :sequential ->
-        with :ok <- RunnerIdentityVerifier.verify_run_manifest(run_state, version),
-             {:ok, manifest_index} <- ManifestIndexCache.fetch(version) do
-          state =
-            RunExecutionState.new(run_state, Version.identity(version),
-              mode: :sequential,
-              manifest_index: compact_execution_index(run_state, manifest_index),
-              manifest_lease_id: nil,
-              sequential_refs: Sequential.refs(run_state)
-            )
+        with :ok <- RunnerIdentityVerifier.verify_run_manifest(run_state, version) do
+          ManifestStore.with_index(version, opts, fn manifest_index ->
+            state =
+              RunExecutionState.new(run_state, Version.identity(version),
+                mode: :sequential,
+                manifest_index: compact_execution_index(run_state, manifest_index),
+                manifest_lease_id: nil,
+                sequential_refs: Sequential.refs(run_state)
+              )
 
-          case restore_active_tasks(state) do
-            {:ok, restored} -> {:ok, restored}
+            case restore_active_tasks(state) do
+              {:ok, restored} -> {:ok, restored}
+              {:error, reason} -> pipeline_start_failure(run_state, reason)
+            end
+          end)
+          |> case do
             {:error, reason} -> pipeline_start_failure(run_state, reason)
+            result -> result
           end
         else
           {:error, reason} -> pipeline_start_failure(run_state, reason)

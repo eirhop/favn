@@ -3,6 +3,7 @@ defmodule FavnOrchestrator.ManifestStore do
   Manifest persistence and activation facade for orchestrator runtime.
   """
 
+  alias Favn.Manifest.Index
   alias Favn.Manifest.Version
   alias Favn.Manifest.TargetDescriptor
   alias FavnOrchestrator.Persistence
@@ -25,6 +26,13 @@ defmodule FavnOrchestrator.ManifestStore do
   alias FavnOrchestrator.Persistence.Queries.PageWorkspaces
   alias FavnOrchestrator.Persistence.WorkspaceContext
   alias FavnOrchestrator.Persistence.Results.CursorPage
+  alias FavnOrchestrator.MemoryCapacity
+  alias FavnOrchestrator.MemoryCapacity.BoundedWorker
+  alias FavnOrchestrator.MemoryCapacity.Budget
+  alias FavnOrchestrator.ManifestStore.Lease
+
+  @scalar_query_bytes 16 * 1_024 * 1_024
+  @scoped_token_key {__MODULE__, :memory_capacity_token}
 
   @doc "Provisions one customer workspace through explicit platform authority."
   @spec provision_workspace(ProvisionWorkspace.t()) :: :ok | {:error, Error.t()}
@@ -47,10 +55,7 @@ defmodule FavnOrchestrator.ManifestStore do
     end
   end
 
-  @doc "Registers one immutable global manifest release."
-  @spec register_manifest(PlatformContext.t(), Version.t()) ::
-          {:ok, Version.t()} | {:error, Error.t()}
-  def register_manifest(%PlatformContext{} = context, %Version{} = version) do
+  defp register_manifest(%PlatformContext{} = context, %Version{} = version) do
     if Enum.any?(context.roles, &(&1 in [:platform_operator, :platform_admin])) do
       Persistence.stores().registry.register_manifest(%RegisterManifest{
         platform_context: context,
@@ -62,54 +67,240 @@ defmodule FavnOrchestrator.ManifestStore do
   end
 
   @doc "Publishes a release or returns the already-published canonical release."
-  @spec publish_manifest(PlatformContext.t(), Version.t()) ::
+  @spec publish_manifest(PlatformContext.t(), Version.t(), keyword()) ::
           {:ok, :published | :already_published, Version.t()} | {:error, term()}
-  def publish_manifest(%PlatformContext{} = context, %Version{} = version) do
-    with {:ok, verified} <- Version.verify(version) do
-      case get_manifest_by_content_hash(context, verified.content_hash) do
-        {:ok, existing} ->
-          {:ok, :already_published, existing}
+  def publish_manifest(%PlatformContext{} = context, %Version{} = version, opts)
+      when is_list(opts) do
+    with :ok <- require_memory_capacity_token(opts),
+         {:ok, verified} <- Version.verify(version) do
+      with_scoped_token(opts, fn token ->
+        result =
+          case load_manifest_by_content_hash(context, verified.content_hash, token) do
+            {:ok, existing} ->
+              {:ok, :already_published, existing}
 
-        {:error, %Error{kind: :not_found}} ->
-          case register_manifest(context, verified) do
-            {:ok, persisted} -> {:ok, :published, persisted}
-            {:error, %Error{kind: :conflict}} -> resolve_publish_conflict(context, verified)
-            {:error, _reason} = error -> error
+            {:error, %Error{kind: :not_found}} ->
+              case register_manifest(context, verified) do
+                {:ok, persisted} ->
+                  {:ok, :published, persisted}
+
+                {:error, %Error{kind: :conflict}} ->
+                  resolve_publish_conflict(context, verified, token)
+
+                {:error, _reason} = error ->
+                  error
+              end
+
+            {:error, _reason} = error ->
+              error
           end
 
-        {:error, _reason} = error ->
-          error
+        validate_scoped_result(result, opts)
+      end)
+    end
+  end
+
+  defp require_memory_capacity_token(opts) do
+    case Keyword.get(opts, :memory_capacity_token) do
+      %MemoryCapacity{} -> :ok
+      nil -> {:error, :memory_capacity_token_required}
+      _invalid -> {:error, :invalid_memory_capacity_token}
+    end
+  end
+
+  defp load_manifest_by_content_hash(%PlatformContext{} = context, content_hash, token)
+       when is_binary(content_hash) do
+    selector = %ByContentHash{content_hash: content_hash}
+
+    with :ok <- validate_read_context(context),
+         {:ok, bytes} <- Persistence.stores().registry.get_manifest_size(selector),
+         {:ok, budget} <- Budget.persisted_index(bytes),
+         :ok <- resize_scoped_working(token, budget) do
+      Persistence.stores().registry.get_manifest(selector)
+    end
+  end
+
+  defp load_manifest_by_content_hash(_context, _content_hash, _token) do
+    {:error, Error.new(:forbidden, "platform manifest read authority required")}
+  end
+
+  @doc """
+  Loads one immutable manifest only for the duration of the callback.
+
+  The same owner token may be supplied with `:memory_capacity_token` so nested
+  activation and planning resize one reservation instead of stacking leases.
+  Without that token, returning the manifest directly or through a container or
+  closure is rejected. Callbacks must not send or store the scoped value.
+  """
+  @spec with_manifest(
+          WorkspaceContext.t() | PlatformContext.t(),
+          String.t(),
+          keyword(),
+          (Version.t() -> result)
+        ) :: result | {:error, term()}
+        when result: term()
+  def with_manifest(context, manifest_version_id, opts \\ [], fun)
+      when is_binary(manifest_version_id) and is_list(opts) and is_function(fun, 1) do
+    with_scoped_token(opts, fn token ->
+      selector = %ById{manifest_version_id: manifest_version_id}
+
+      with :ok <- authorize_manifest_read(context, manifest_version_id),
+           {:ok, bytes} <- Persistence.stores().registry.get_manifest_size(selector),
+           {:ok, budget} <- Budget.persisted_index(bytes),
+           :ok <- resize_scoped_working(token, budget),
+           {:ok, version} <- load_authorized_manifest(context, manifest_version_id) do
+        validate_scoped_result(fun.(version), opts)
       end
-    end
+    end)
   end
 
-  @doc "Fetches an immutable release under an explicit authority context."
-  @spec get_manifest(WorkspaceContext.t() | PlatformContext.t(), String.t()) ::
-          {:ok, Version.t()} | {:error, Error.t()}
-  def get_manifest(%PlatformContext{} = context, manifest_version_id)
-      when is_binary(manifest_version_id) do
-    with :ok <- validate_read_context(context) do
-      Persistence.stores().registry.get_manifest(%ById{
-        manifest_version_id: manifest_version_id
-      })
-    end
-  end
+  @doc false
+  @spec checkout_manifest(
+          WorkspaceContext.t() | PlatformContext.t(),
+          String.t(),
+          keyword()
+        ) :: {:ok, Lease.t()} | {:error, term()}
+  def checkout_manifest(context, manifest_version_id, opts \\ [])
+      when is_binary(manifest_version_id) and is_list(opts) do
+    copies = Keyword.get(opts, :copies, 0)
+    handoff_to = Keyword.get(opts, :handoff_to)
 
-  def get_manifest(%WorkspaceContext{} = context, manifest_version_id)
-      when is_binary(manifest_version_id) do
-    with {:ok, runtime} <- get_runtime_state(context),
-         true <- runtime.manifest_version_id == manifest_version_id,
-         {:ok, version} <-
-           get_deployment_manifest(
-             context,
-             runtime.deployment_id,
-             runtime.manifest_version_id
-           ) do
-      {:ok, version}
+    with true <- is_integer(copies) and copies >= 0,
+         true <- is_nil(handoff_to) or is_pid(handoff_to),
+         {:ok, token} <- MemoryCapacity.acquire(@scalar_query_bytes, kind: :manifest_retained) do
+      selector = %ById{manifest_version_id: manifest_version_id}
+
+      result =
+        with :ok <- authorize_manifest_read(context, manifest_version_id),
+             {:ok, bytes} <- Persistence.stores().registry.get_manifest_size(selector),
+             {:ok, budget} <- Budget.persisted_index(bytes),
+             :ok <- resize_scoped_working(token, budget),
+             {:ok, version} <- load_authorized_manifest(context, manifest_version_id),
+             {:ok, lease} <- build_manifest_lease(token, version, copies, handoff_to) do
+          {:ok, lease}
+        end
+
+      case result do
+        {:ok, %Lease{}} = success -> success
+        {:error, _reason} = error -> release_manifest(error, token)
+      end
     else
-      false -> {:error, Error.new(:not_found, "manifest is not active in workspace")}
+      false -> {:error, :invalid_manifest_checkout_options}
       {:error, _reason} = error -> error
     end
+  end
+
+  @doc false
+  @spec checkout_deployment_manifest(
+          WorkspaceContext.t(),
+          String.t(),
+          String.t(),
+          keyword()
+        ) :: {:ok, Lease.t()} | {:error, term()}
+  def checkout_deployment_manifest(context, deployment_id, manifest_version_id, opts \\ [])
+      when is_struct(context, WorkspaceContext) and is_binary(deployment_id) and
+             is_binary(manifest_version_id) and is_list(opts) do
+    copies = Keyword.get(opts, :copies, 0)
+    handoff_to = Keyword.get(opts, :handoff_to)
+
+    with true <- is_integer(copies) and copies >= 0,
+         true <- is_nil(handoff_to) or is_pid(handoff_to),
+         {:ok, token} <- MemoryCapacity.acquire(@scalar_query_bytes, kind: :manifest_retained) do
+      selector = %ById{manifest_version_id: manifest_version_id}
+
+      result =
+        with :ok <- validate_workspace_read_context(context),
+             {:ok, bytes} <- Persistence.stores().registry.get_manifest_size(selector),
+             {:ok, budget} <- Budget.persisted_index(bytes),
+             :ok <- resize_scoped_working(token, budget),
+             {:ok, version} <-
+               load_deployment_manifest(context, deployment_id, manifest_version_id),
+             {:ok, lease} <- build_manifest_lease(token, version, copies, handoff_to) do
+          {:ok, lease}
+        end
+
+      case result do
+        {:ok, %Lease{}} = success -> success
+        {:error, _reason} = error -> release_manifest(error, token)
+      end
+    else
+      false -> {:error, :invalid_manifest_checkout_options}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  @doc false
+  @spec release_manifest(Lease.t()) :: :ok
+  def release_manifest(%Lease{capacity_token: token}), do: MemoryCapacity.release(token)
+
+  defp release_manifest(error, token) do
+    :ok = MemoryCapacity.release(token)
+    error
+  end
+
+  defp maybe_handoff(_token, nil), do: :ok
+  defp maybe_handoff(token, owner), do: MemoryCapacity.handoff(token, owner)
+
+  defp build_manifest_lease(token, version, copies, handoff_to) do
+    retained_bytes = Budget.retained_term_bytes(version)
+    reserved_bytes = retained_bytes * (copies + 1)
+
+    with :ok <- MemoryCapacity.transfer(token, retained_bytes, copies * retained_bytes),
+         :ok <- maybe_handoff(token, handoff_to) do
+      {:ok,
+       %Lease{
+         version: version,
+         capacity_token: token,
+         reserved_bytes: reserved_bytes
+       }}
+    end
+  end
+
+  @doc "Uses a manifest through one exact historical or active workspace deployment."
+  @spec with_deployment_manifest(
+          WorkspaceContext.t(),
+          String.t(),
+          String.t(),
+          keyword(),
+          (Version.t() -> result)
+        ) :: result | {:error, term()}
+        when result: term()
+  def with_deployment_manifest(context, deployment_id, manifest_version_id, opts \\ [], fun)
+      when is_struct(context, WorkspaceContext) and is_binary(deployment_id) and
+             is_binary(manifest_version_id) and is_list(opts) and is_function(fun, 1) do
+    with_scoped_token(opts, fn token ->
+      selector = %ById{manifest_version_id: manifest_version_id}
+
+      with :ok <- validate_workspace_read_context(context),
+           {:ok, bytes} <- Persistence.stores().registry.get_manifest_size(selector),
+           {:ok, budget} <- Budget.persisted_index(bytes),
+           :ok <- resize_scoped_working(token, budget),
+           {:ok, version} <-
+             load_deployment_manifest(context, deployment_id, manifest_version_id) do
+        validate_scoped_result(fun.(version), opts)
+      end
+    end)
+  end
+
+  @doc """
+  Loads and compiles an index only for the duration of the callback.
+
+  Without an explicit owner token, returning the index directly or through a
+  container or closure is rejected. Callbacks must not send or store it.
+  """
+  @spec with_index(Version.t(), keyword(), (Index.t() -> result)) ::
+          result | {:error, term()}
+        when result: term()
+  def with_index(%Version{} = version, opts \\ [], fun)
+      when is_list(opts) and is_function(fun, 1) do
+    with_scoped_token(opts, fn token ->
+      with {:ok, budget} <- Budget.persisted_index(:erlang.external_size(version.manifest)),
+           :ok <- resize_scoped_working(token, budget),
+           {:ok, %Index{} = index} <-
+             BoundedWorker.run(fn -> Index.build_from_version(version) end, budget) do
+        validate_scoped_result(fun.(index), opts)
+      end
+    end)
   end
 
   @doc """
@@ -136,15 +327,12 @@ defmodule FavnOrchestrator.ManifestStore do
     })
   end
 
-  @doc "Fetches a manifest through one exact historical or active workspace deployment."
-  @spec get_deployment_manifest(WorkspaceContext.t(), String.t(), String.t()) ::
-          {:ok, Version.t()} | {:error, Error.t()}
-  def get_deployment_manifest(
-        %WorkspaceContext{} = context,
-        deployment_id,
-        manifest_version_id
-      )
-      when is_binary(deployment_id) and is_binary(manifest_version_id) do
+  defp load_deployment_manifest(
+         %WorkspaceContext{} = context,
+         deployment_id,
+         manifest_version_id
+       )
+       when is_binary(deployment_id) and is_binary(manifest_version_id) do
     with :ok <- validate_workspace_read_context(context) do
       Persistence.stores().registry.get_deployment_manifest(%GetDeploymentManifest{
         workspace_context: context,
@@ -177,19 +365,6 @@ defmodule FavnOrchestrator.ManifestStore do
       )
     end
   end
-
-  @doc "Fetches an immutable release by canonical content hash."
-  @spec get_manifest_by_content_hash(PlatformContext.t(), String.t()) ::
-          {:ok, Version.t()} | {:error, Error.t()}
-  def get_manifest_by_content_hash(%PlatformContext{} = context, content_hash)
-      when is_binary(content_hash) do
-    with :ok <- validate_read_context(context) do
-      Persistence.stores().registry.get_manifest(%ByContentHash{content_hash: content_hash})
-    end
-  end
-
-  def get_manifest_by_content_hash(_context, _content_hash),
-    do: {:error, Error.new(:forbidden, "platform manifest read authority required")}
 
   @doc "Atomically creates and activates one immutable workspace deployment."
   @spec deploy_manifest(DeployManifest.t()) ::
@@ -252,7 +427,7 @@ defmodule FavnOrchestrator.ManifestStore do
   @spec deploy_manifest(
           PlatformContext.t(),
           WorkspaceContext.t(),
-          String.t(),
+          Version.t(),
           DeploymentPlanner.t(),
           keyword()
         ) ::
@@ -260,11 +435,11 @@ defmodule FavnOrchestrator.ManifestStore do
   def deploy_manifest(
         %PlatformContext{} = platform_context,
         %WorkspaceContext{} = context,
-        manifest_version_id,
+        %Version{} = version,
         %DeploymentPlanner{} = selection,
         opts
       )
-      when is_binary(manifest_version_id) and is_list(opts) do
+      when is_list(opts) do
     allowed = [
       :deployment_id,
       :configuration,
@@ -276,21 +451,22 @@ defmodule FavnOrchestrator.ManifestStore do
       :activation_lease,
       :expected_active_deployment_id,
       :idempotency,
-      :occurred_at
+      :occurred_at,
+      :memory_capacity_token
     ]
 
     with [] <- Keyword.keys(opts) -- allowed,
          deployment_id when is_binary(deployment_id) and deployment_id != "" <-
            Keyword.get(opts, :deployment_id),
-         {:ok, version} <- get_manifest(platform_context, manifest_version_id),
-         {:ok, targets} <- DeploymentPlanner.plan(version, selection),
+         {:ok, targets} <- DeploymentPlanner.plan(version, selection, capacity_opts(opts)),
          occurred_at <- Keyword.get(opts, :occurred_at, DateTime.utc_now()),
-         {:ok, schedules} <- deployment_schedules(version, targets, occurred_at, opts) do
+         {:ok, schedules} <-
+           deployment_schedules(version, targets, occurred_at, opts, capacity_opts(opts)) do
       command = %DeployManifest{
         platform_context: platform_context,
         workspace_context: context,
         deployment_id: deployment_id,
-        manifest_version_id: manifest_version_id,
+        manifest_version_id: version.manifest_version_id,
         configuration: Keyword.get(opts, :configuration, %{}),
         configuration_version: Keyword.get(opts, :configuration_version, 1),
         targets: targets,
@@ -315,11 +491,18 @@ defmodule FavnOrchestrator.ManifestStore do
     end
   end
 
-  defp deployment_schedules(version, targets, occurred_at, opts) do
+  defp deployment_schedules(version, targets, occurred_at, opts, capacity_opts) do
     case Keyword.fetch(opts, :schedules) do
       {:ok, schedules} when is_list(schedules) -> {:ok, schedules}
       {:ok, _invalid} -> {:error, :invalid_deployment_schedules}
-      :error -> DeploymentSchedules.plan(version, targets, occurred_at)
+      :error -> DeploymentSchedules.plan(version, targets, occurred_at, capacity_opts)
+    end
+  end
+
+  defp capacity_opts(opts) do
+    case Keyword.get(opts, :memory_capacity_token) do
+      nil -> []
+      token -> [memory_capacity_token: token]
     end
   end
 
@@ -373,16 +556,122 @@ defmodule FavnOrchestrator.ManifestStore do
     end
   end
 
-  @doc "Returns the active manifest release for one workspace."
-  @spec get_active_manifest(WorkspaceContext.t()) :: {:ok, Version.t()} | {:error, Error.t()}
-  def get_active_manifest(%WorkspaceContext{} = context) do
-    with {:ok, runtime} <- get_runtime_state(context) do
-      get_manifest(context, runtime.manifest_version_id)
+  defp with_scoped_token(opts, fun) do
+    case Keyword.get(opts, :memory_capacity_token) do
+      %MemoryCapacity{} = token ->
+        with_current_scoped_token(token, fn -> fun.(token) end)
+
+      nil ->
+        case Process.get(@scoped_token_key) do
+          %MemoryCapacity{} = token ->
+            fun.(token)
+
+          nil ->
+            MemoryCapacity.with_lease(
+              @scalar_query_bytes,
+              [kind: :manifest_use],
+              fn token -> with_current_scoped_token(token, fn -> fun.(token) end) end
+            )
+        end
+
+      _invalid ->
+        {:error, :invalid_memory_capacity_token}
     end
   end
 
-  defp resolve_publish_conflict(%PlatformContext{} = context, %Version{} = version) do
-    case get_manifest_by_content_hash(context, version.content_hash) do
+  defp with_current_scoped_token(token, fun) do
+    previous = Process.put(@scoped_token_key, token)
+
+    try do
+      fun.()
+    after
+      restore_process_value(@scoped_token_key, previous)
+    end
+  end
+
+  defp resize_scoped_working(token, requested_bytes),
+    do: MemoryCapacity.grow(token, requested_bytes)
+
+  defp restore_process_value(key, nil), do: Process.delete(key)
+  defp restore_process_value(key, value), do: Process.put(key, value)
+
+  defp validate_scoped_result(result, opts) do
+    case Keyword.get(opts, :memory_capacity_token) do
+      %MemoryCapacity{} ->
+        result
+
+      nil ->
+        if contains_scoped_value?(result),
+          do: {:error, :scoped_manifest_value_escape},
+          else: result
+    end
+  end
+
+  defp contains_scoped_value?(%Version{}), do: true
+  defp contains_scoped_value?(%Index{}), do: true
+
+  defp contains_scoped_value?(value) when is_map(value) do
+    Enum.any?(value, fn {key, item} ->
+      contains_scoped_value?(key) or contains_scoped_value?(item)
+    end)
+  end
+
+  defp contains_scoped_value?(value) when is_tuple(value),
+    do: tuple_contains_scoped_value?(value, tuple_size(value) - 1)
+
+  defp contains_scoped_value?([]), do: false
+
+  defp contains_scoped_value?([head | tail]),
+    do: contains_scoped_value?(head) or contains_scoped_value?(tail)
+
+  defp contains_scoped_value?(value) when is_function(value) do
+    {:env, environment} = :erlang.fun_info(value, :env)
+    contains_scoped_value?(environment)
+  end
+
+  defp contains_scoped_value?(_value), do: false
+
+  defp tuple_contains_scoped_value?(_value, index) when index < 0, do: false
+
+  defp tuple_contains_scoped_value?(value, index) do
+    contains_scoped_value?(elem(value, index)) or
+      tuple_contains_scoped_value?(value, index - 1)
+  end
+
+  defp authorize_manifest_read(%PlatformContext{} = context, _manifest_version_id),
+    do: validate_read_context(context)
+
+  defp authorize_manifest_read(%WorkspaceContext{} = context, manifest_version_id) do
+    with :ok <- validate_workspace_read_context(context),
+         {:ok, runtime} <- get_runtime_state(context),
+         true <- runtime.manifest_version_id == manifest_version_id do
+      :ok
+    else
+      false -> {:error, Error.new(:not_found, "manifest is not active in workspace")}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp load_authorized_manifest(%PlatformContext{}, manifest_version_id) do
+    Persistence.stores().registry.get_manifest(%ById{manifest_version_id: manifest_version_id})
+  end
+
+  defp load_authorized_manifest(%WorkspaceContext{} = context, manifest_version_id) do
+    with {:ok, runtime} <- get_runtime_state(context),
+         true <- runtime.manifest_version_id == manifest_version_id do
+      load_deployment_manifest(context, runtime.deployment_id, manifest_version_id)
+    else
+      false -> {:error, Error.new(:not_found, "manifest is not active in workspace")}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp resolve_publish_conflict(
+         %PlatformContext{} = context,
+         %Version{} = version,
+         token
+       ) do
+    case load_manifest_by_content_hash(context, version.content_hash, token) do
       {:ok, existing} -> {:ok, :already_published, existing}
       {:error, _reason} -> {:error, Error.new(:conflict, "manifest release conflict")}
     end

@@ -6,6 +6,9 @@ defmodule FavnOrchestrator.API.ManifestDeploymentArchive do
   alias Favn.Manifest.Publication
   alias Favn.Manifest.Serializer
   alias Favn.Manifest.Version
+  alias FavnOrchestrator.MemoryCapacity
+  alias FavnOrchestrator.MemoryCapacity.BoundedWorker
+  alias FavnOrchestrator.MemoryCapacity.Budget
 
   @gzip_header_bytes 24
   @tar_block_bytes 512
@@ -20,6 +23,7 @@ defmodule FavnOrchestrator.API.ManifestDeploymentArchive do
     :started_at_ms,
     :clock,
     :upload_timeout_ms,
+    :capacity_token,
     compressed_hash: nil,
     compressed_bytes: 0,
     expanded_bytes: 0,
@@ -56,6 +60,7 @@ defmodule FavnOrchestrator.API.ManifestDeploymentArchive do
       clock: clock,
       started_at_ms: Keyword.get(opts, :started_at_ms, clock.()),
       upload_timeout_ms: Keyword.get(opts, :upload_timeout_ms, limits.upload_timeout_ms),
+      capacity_token: Keyword.get(opts, :capacity_token),
       package_batch_count_limit:
         Keyword.get(opts, :package_batch_count, limits.package_batch_count),
       package_batch_bytes_limit:
@@ -259,6 +264,7 @@ defmodule FavnOrchestrator.API.ManifestDeploymentArchive do
            {:ok, path, size} <- parse_header(header),
            :ok <- validate_next_path(state, path),
            :ok <- validate_entry_limit(path, size),
+           :ok <- reserve_entry(state, path, size),
            :ok <- validate_tar_entry_count(state) do
         current = %{
           path: path,
@@ -402,18 +408,41 @@ defmodule FavnOrchestrator.API.ManifestDeploymentArchive do
   end
 
   defp process_entry(state, "bundle.json", bytes) do
-    with {:ok, bundle} when is_map(bundle) <- Jason.decode(bytes),
-         {:ok, normalized} <- validate_bundle(bundle) do
+    with {:ok, normalized} <-
+           BoundedWorker.run(
+             fn ->
+               with {:ok, bundle} when is_map(bundle) <- Jason.decode(bytes),
+                    {:ok, normalized} <- validate_bundle(bundle) do
+                 {:ok, normalized}
+               else
+                 _invalid -> {:error, :invalid_bundle}
+               end
+             end,
+             Budget.manifest_base()
+           ),
+         :ok <- preflight_declared_capacity(state, normalized) do
       {:ok, %{state | bundle: normalized}}
     else
+      {:error, _reason} = error -> error
       _invalid -> {:error, :invalid_bundle}
     end
   end
 
   defp process_entry(state, "manifest-index.json" = path, bytes) do
-    with :ok <- verify_declared_file(state.bundle, path, bytes),
-         {:ok, manifest} <- Serializer.decode_manifest(bytes),
-         {:ok, version} <- Version.from_published(manifest, version_options(state.bundle)) do
+    budget = Budget.index(byte_size(bytes))
+
+    with {:ok, version} <-
+           BoundedWorker.run(
+             fn ->
+               with :ok <- verify_declared_file(state.bundle, path, bytes),
+                    {:ok, manifest} <- Serializer.decode_manifest(bytes),
+                    {:ok, version} <-
+                      Version.from_published(manifest, version_options(state.bundle)) do
+                 {:ok, version}
+               end
+             end,
+             budget
+           ) do
       {:ok, %{state | version: version}}
     else
       {:error, _reason} = error -> error
@@ -424,10 +453,22 @@ defmodule FavnOrchestrator.API.ManifestDeploymentArchive do
     hash = path |> Path.basename(".json")
 
     with :ok <- validate_package_count(state),
-         :ok <- verify_declared_file(state.bundle, path, bytes),
-         {:ok, decoded} when is_map(decoded) <- Jason.decode(bytes),
-         {:ok, package} <- ExecutionPackage.from_published(decoded),
-         true <- package.content_hash == hash,
+         {:ok, package} <-
+           BoundedWorker.run(
+             fn ->
+               with :ok <- verify_declared_file(state.bundle, path, bytes),
+                    {:ok, decoded} when is_map(decoded) <- Jason.decode(bytes),
+                    {:ok, package} <- ExecutionPackage.from_published(decoded),
+                    true <- package.content_hash == hash do
+                 {:ok, package}
+               else
+                 false -> {:error, :invalid_execution_package_identity}
+                 {:error, _reason} = error -> error
+                 _invalid -> {:error, :invalid_execution_package}
+               end
+             end,
+             Budget.manifest_base()
+           ),
          {:ok, state} <- flush_before_package(state, byte_size(bytes)) do
       state = %{
         state
@@ -439,7 +480,6 @@ defmodule FavnOrchestrator.API.ManifestDeploymentArchive do
 
       maybe_flush_packages(state)
     else
-      false -> {:error, :invalid_execution_package_identity}
       {:error, _reason} = error -> error
       _invalid -> {:error, :invalid_execution_package}
     end
@@ -478,21 +518,44 @@ defmodule FavnOrchestrator.API.ManifestDeploymentArchive do
   defp validate_bundle(_bundle), do: {:error, :invalid_bundle}
 
   defp declared_files(files) do
-    Enum.reduce_while(files, {:ok, %{}}, fn
-      %{"executable" => false, "path" => path, "sha256" => sha, "size" => size} = file, {:ok, acc}
-      when is_binary(path) and is_binary(sha) and is_integer(size) and
-             size >= 0 ->
-        if Map.keys(file) |> Enum.sort() == ~w(executable path sha256 size) and
-             (path == "manifest-index.json" or package_path?(path)) and
-             Regex.match?(~r/\A[0-9a-f]{64}\z/, sha) and not Map.has_key?(acc, path) do
-          {:cont, {:ok, Map.put(acc, path, %{sha256: sha, size: size})}}
-        else
-          {:halt, {:error, :invalid_bundle_file}}
-        end
+    if length(files) <= ArchiveLimits.current().execution_packages + 1 do
+      Enum.reduce_while(files, {:ok, %{}}, fn
+        %{"executable" => false, "path" => path, "sha256" => sha, "size" => size} = file,
+        {:ok, acc}
+        when is_binary(path) and is_binary(sha) and is_integer(size) and size >= 0 ->
+          with true <- Map.keys(file) |> Enum.sort() == ~w(executable path sha256 size),
+               true <- path == "manifest-index.json" or package_path?(path),
+               true <- Regex.match?(~r/\A[0-9a-f]{64}\z/, sha),
+               false <- Map.has_key?(acc, path),
+               :ok <- validate_entry_limit(path, size) do
+            {:cont, {:ok, Map.put(acc, path, %{sha256: sha, size: size})}}
+          else
+            {:error, reason} -> {:halt, {:error, reason}}
+            _invalid -> {:halt, {:error, :invalid_bundle_file}}
+          end
 
-      _entry, _acc ->
-        {:halt, {:error, :invalid_bundle_file}}
-    end)
+        _entry, _acc ->
+          {:halt, {:error, :invalid_bundle_file}}
+      end)
+    else
+      {:error, :invalid_bundle_file}
+    end
+  end
+
+  defp preflight_declared_capacity(%{capacity_token: nil}, _bundle), do: :ok
+
+  defp preflight_declared_capacity(state, %{"files" => files}) do
+    largest_budget =
+      files
+      |> Enum.map(fn
+        {"manifest-index.json", %{size: size}} -> Budget.index(size)
+        {_path, _metadata} -> Budget.manifest_base()
+      end)
+      |> Enum.max(fn -> Budget.manifest_base() end)
+
+    with :ok <- MemoryCapacity.resize(state.capacity_token, largest_budget) do
+      MemoryCapacity.resize(state.capacity_token, Budget.manifest_base())
+    end
   end
 
   defp verify_declared_file(%{"files" => declared}, path, bytes) do
@@ -555,12 +618,23 @@ defmodule FavnOrchestrator.API.ManifestDeploymentArchive do
   defp flush_packages(state) do
     packages = Enum.reverse(state.package_batch)
 
-    case state.persist_packages.(packages) do
-      :ok -> {:ok, %{state | package_batch: [], package_batch_bytes: 0}}
-      {:error, reason} -> {:error, {:package_persistence_failed, reason}}
-      _invalid -> {:error, :package_persistence_failed}
+    with :ok <- reserve_working(state, Budget.manifest_base()) do
+      case state.persist_packages.(packages) do
+        :ok -> {:ok, %{state | package_batch: [], package_batch_bytes: 0}}
+        {:error, reason} -> {:error, {:package_persistence_failed, reason}}
+        _invalid -> {:error, :package_persistence_failed}
+      end
     end
   end
+
+  defp reserve_entry(state, "manifest-index.json", size),
+    do: reserve_working(state, Budget.index(size))
+
+  defp reserve_entry(state, _path, _size),
+    do: reserve_working(state, Budget.manifest_base())
+
+  defp reserve_working(%{capacity_token: nil}, _bytes), do: :ok
+  defp reserve_working(%{capacity_token: token}, bytes), do: MemoryCapacity.resize(token, bytes)
 
   defp validate_gzip_footer(state) do
     <<expected_crc::little-unsigned-32, expected_size::little-unsigned-32>> = state.gzip_pending

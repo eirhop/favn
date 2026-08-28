@@ -10,6 +10,7 @@ defmodule FavnOrchestrator.API.CommandErrors do
 
   alias FavnOrchestrator.API.DTO
   alias FavnOrchestrator.API.Response
+  alias FavnOrchestrator.MemoryCapacity.Error, as: MemoryError
   alias FavnOrchestrator.Persistence.Error
   alias FavnOrchestrator.Redaction
 
@@ -122,6 +123,17 @@ defmodule FavnOrchestrator.API.CommandErrors do
 
   def infrastructure(_reason), do: nil
 
+  @doc "Maps node memory pressure to a retryable command response."
+  @spec memory_capacity(MemoryError.t()) :: command_error()
+  def memory_capacity(%MemoryError{code: :manifest_capacity_busy}) do
+    {:error, 429, "manifest_capacity_busy", "Manifest capacity is busy", %{retry_after: 5}}
+  end
+
+  def memory_capacity(%MemoryError{code: code})
+      when code in [:manifest_capacity_unavailable, :memory_capacity_unknown] do
+    {:error, 503, Atom.to_string(code), "Manifest capacity is unavailable", %{retry_after: 5}}
+  end
+
   @doc "Sends a non-idempotent infrastructure failure without classifying it as client input."
   @spec send_infrastructure(Plug.Conn.t(), Error.t()) :: Plug.Conn.t()
   def send_infrastructure(conn, %Error{kind: kind} = reason)
@@ -185,6 +197,8 @@ defmodule FavnOrchestrator.API.CommandErrors do
 
   def submission(:manifest_or_target_not_active_in_workspace),
     do: {:error, 404, "not_found", "Run target was not found", %{}}
+
+  def submission(%MemoryError{} = reason), do: memory_capacity(reason)
 
   def submission(%Error{} = reason) do
     idempotency(reason) || infrastructure(reason) || unknown_submission(reason)

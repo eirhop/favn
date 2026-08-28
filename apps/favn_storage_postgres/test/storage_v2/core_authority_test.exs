@@ -33,6 +33,8 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnOrchestrator.Persistence.BackfillPlan
   alias FavnOrchestrator.ConnectionCircuitPolicy
   alias FavnOrchestrator.Coverage
+  alias FavnOrchestrator.ExecutionPackages
+  alias FavnOrchestrator.MemoryCapacity
   alias FavnOrchestrator.Persistence.Commands.ActivateBackfillPlan
   alias FavnOrchestrator.Persistence.Commands.AcquireResourceCircuits
   alias FavnOrchestrator.Persistence.Commands.ActivateRecoveredTargetGeneration
@@ -67,7 +69,6 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnOrchestrator.Persistence.Commands.PutRunExecutionCheckpoint
   alias FavnOrchestrator.Persistence.Commands.PurgePersistence
   alias FavnOrchestrator.Persistence.Commands.RegisterManifest
-  alias FavnOrchestrator.Persistence.Commands.RegisterExecutionPackages
   alias FavnOrchestrator.Persistence.Commands.RecoverAdministratorCredential
   alias FavnOrchestrator.Persistence.Commands.RequestRunCancellation
   alias FavnOrchestrator.Persistence.Commands.ReleaseRunOwnership
@@ -291,6 +292,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
 
     start_supervised!({Repo, options})
     start_supervised!({Lifecycle, shutdown_drain_timeout_ms: 120_000})
+    start_memory_capacity_if_needed()
     :ok = Lifecycle.mark_accepting()
     :ok = Migrations.migrate!(Repo)
     Sandbox.mode(Repo, :manual)
@@ -312,6 +314,17 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     end)
 
     :ok
+  end
+
+  defp start_memory_capacity_if_needed do
+    unless Process.whereis(MemoryCapacity.Coordinator) do
+      start_supervised!(
+        {MemoryCapacity.Supervisor,
+         provider_opts: [
+           ceiling_bytes: Application.fetch_env!(:favn_orchestrator, :memory_ceiling_bytes)
+         ]}
+      )
+    end
   end
 
   setup do
@@ -2714,13 +2727,8 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
                version: version
              })
 
-    command = %RegisterExecutionPackages{
-      platform_context: fixture.platform_context,
-      packages: [package]
-    }
-
-    assert :ok = RegistryStore.register_execution_packages(command)
-    assert :ok = RegistryStore.register_execution_packages(command)
+    assert :ok = ExecutionPackages.register(fixture.platform_context, [package])
+    assert :ok = ExecutionPackages.register(fixture.platform_context, [package])
     assert {:ok, []} = RegistryStore.missing_execution_package_hashes(missing_query)
 
     {:ok, package_hash_bytes} = Base.decode16(package_hash, case: :lower)
@@ -2809,11 +2817,9 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   test "manifest package validation is payload-free and batch-bounded", fixture do
     {version, packages} = packaged_manifest_version(501)
 
-    assert :ok =
-             RegistryStore.register_execution_packages(%RegisterExecutionPackages{
-               platform_context: fixture.platform_context,
-               packages: packages
-             })
+    assert Enum.all?(Enum.chunk_every(packages, 8), fn batch ->
+             ExecutionPackages.register(fixture.platform_context, batch) == :ok
+           end)
 
     {result, queries} =
       capture_repo_queries(fn ->
@@ -2839,11 +2845,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     unlinked = execution_package({MyApp.OrphanedPackage, :asset})
     linked = execution_package({MyApp.RetainedPackage, :asset})
 
-    assert :ok =
-             RegistryStore.register_execution_packages(%RegisterExecutionPackages{
-               platform_context: fixture.platform_context,
-               packages: [unlinked, linked]
-             })
+    assert :ok = ExecutionPackages.register(fixture.platform_context, [unlinked, linked])
 
     linked_version = packaged_manifest_version(linked.asset_ref, linked.content_hash)
 
@@ -2896,11 +2898,8 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
         package
       end)
 
-    assert {:error, %{kind: :limit_exceeded}} =
-             RegistryStore.register_execution_packages(%RegisterExecutionPackages{
-               platform_context: fixture.platform_context,
-               packages: packages
-             })
+    assert {:error, :too_many_execution_packages} =
+             ExecutionPackages.register(fixture.platform_context, packages)
 
     assert {:ok, hashes} =
              RegistryStore.missing_execution_package_hashes(%MissingExecutionPackageHashes{
@@ -3074,7 +3073,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert %{
              "data" => %{
                "publication_limits" => %{
-                 "max_packages" => 100,
+                 "max_packages" => 8,
                  "compressed_limit_bytes" => 4_096,
                  "decompressed_limit_bytes" => 16_384
                }
@@ -3094,13 +3093,16 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   end
 
   test "active target lookup rejects targets hidden from the customer", fixture do
-    assert {:ok, _version} =
-             Manifests.get_active_target_release(
+    assert {:ok, manifest_version_id} =
+             Manifests.with_active_target_release(
                fixture.workspace_context,
                fixture.version.manifest_version_id,
                :asset,
-               fixture.target_id
+               fixture.target_id,
+               fn version -> {:ok, version.manifest_version_id} end
              )
+
+    assert manifest_version_id == fixture.version.manifest_version_id
 
     SQL.query!(
       Repo,
@@ -3114,11 +3116,12 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     )
 
     assert {:error, :manifest_or_target_not_active_in_workspace} =
-             Manifests.get_active_target_release(
+             Manifests.with_active_target_release(
                fixture.workspace_context,
                fixture.version.manifest_version_id,
                :asset,
-               fixture.target_id
+               fixture.target_id,
+               fn version -> {:ok, version.manifest_version_id} end
              )
   end
 
@@ -3924,10 +3927,18 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert committed.event.sequence == 2
     assert {:ok, %{replayed?: true}} = RunStore.commit_transition(transition)
 
-    assert {:ok, page} =
-             RunStore.page_runs(%PageRuns{scope: fixture.workspace_context, limit: 1})
+    assert {:ok, persisted_run_bytes} =
+             RunStore.get_run_size(%GetRun{
+               workspace_context: fixture.workspace_context,
+               run_id: run.id
+             })
 
-    assert [%RunState{id: run_id, status: :running}] = page.items
+    assert persisted_run_bytes > 0
+
+    assert {:ok, page} =
+             RunStore.page_run_summaries(%PageRuns{scope: fixture.workspace_context, limit: 1})
+
+    assert [%{run_id: run_id, status: :running}] = page.items
     assert run_id == run.id
 
     assert {:ok, event_page} =
@@ -5752,11 +5763,9 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
         manifest_version_id: "mv-crossed-#{System.unique_integer([:positive])}"
       )
 
-    assert :ok =
-             RegistryStore.register_execution_packages(%RegisterExecutionPackages{
-               platform_context: fixture.platform_context,
-               packages: packages
-             })
+    assert Enum.all?(Enum.chunk_every(packages, 8), fn batch ->
+             ExecutionPackages.register(fixture.platform_context, batch) == :ok
+           end)
 
     assert {:ok, ^version} =
              RegistryStore.register_manifest(%RegisterManifest{
@@ -11747,11 +11756,9 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
       end
 
     if packages != [] do
-      assert :ok =
-               RegistryStore.register_execution_packages(%RegisterExecutionPackages{
-                 platform_context: platform_context,
-                 packages: packages
-               })
+      assert Enum.all?(Enum.chunk_every(packages, 8), fn batch ->
+               ExecutionPackages.register(platform_context, batch) == :ok
+             end)
     end
 
     unless match?(

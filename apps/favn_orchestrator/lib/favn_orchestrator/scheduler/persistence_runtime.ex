@@ -14,7 +14,6 @@ defmodule FavnOrchestrator.Scheduler.PersistenceRuntime do
   alias Favn.Window.Policy
   alias FavnOrchestrator.Lifecycle
   alias FavnOrchestrator.ManifestStore
-  alias FavnOrchestrator.ManifestIndexCache
   alias FavnOrchestrator.Persistence
   alias FavnOrchestrator.Persistence.Commands.ClaimDueSchedules
   alias FavnOrchestrator.Persistence.Commands.AuthorizeScheduleOccurrenceDispatch
@@ -168,16 +167,21 @@ defmodule FavnOrchestrator.Scheduler.PersistenceRuntime do
   end
 
   defp workspace_entries(context) do
-    with {:ok, version} <- ManifestStore.get_active_manifest(context),
-         {:ok, index} <- ManifestIndexCache.fetch(version),
-         {:ok, entries} <- ManifestEntries.discover_all(version, index) do
-      {:ok,
-       Map.new(entries, fn entry ->
-         key =
-           {TargetIdentity.for_pipeline({entry.module, entry.id}), to_string(entry.schedule.name)}
+    with {:ok, runtime} <- ManifestStore.get_runtime_state(context) do
+      ManifestStore.with_manifest(context, runtime.manifest_version_id, fn version ->
+        ManifestStore.with_index(version, fn index ->
+          with {:ok, entries} <- ManifestEntries.discover_all(version, index) do
+            {:ok,
+             Map.new(entries, fn entry ->
+               key =
+                 {TargetIdentity.for_pipeline({entry.module, entry.id}),
+                  to_string(entry.schedule.name)}
 
-         {key, entry}
-       end)}
+               {key, entry}
+             end)}
+          end
+        end)
+      end)
     end
   end
 

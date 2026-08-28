@@ -48,6 +48,8 @@ defmodule FavnOrchestrator.Persistence.RegistryStore do
   @callback get_execution_package(GetExecutionPackage.t()) ::
               {:ok, Favn.Manifest.ExecutionPackage.t()} | {:error, Error.t()}
   @callback get_manifest(ManifestSelector.t()) :: {:ok, Version.t()} | {:error, Error.t()}
+  @callback get_manifest_size(ManifestSelector.t()) ::
+              {:ok, non_neg_integer()} | {:error, Error.t()}
   @callback get_manifest_target_descriptors(GetManifestTargetDescriptors.t()) ::
               {:ok, [TargetDescriptor.t()]} | {:error, Error.t()}
   @callback get_deployment_manifest(GetDeploymentManifest.t()) ::

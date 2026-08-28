@@ -323,56 +323,58 @@ defmodule FavnOrchestrator.Operator.Catalogue do
     with {:ok, opts} <- normalize_asset_detail_opts(opts),
          {:ok, {runtime, grants}} <-
            ManifestStore.get_active_deployment(context, customer_visible_only: true),
-         true <- MapSet.member?(granted_ids(grants, :asset), target_id),
-         {:ok, version} <- ManifestStore.get_manifest(context, runtime.manifest_version_id),
-         {:ok, asset} <- asset_for_target(version, target_id),
-         {:ok, run_context_selection} <-
-           AssetRunContext.select(version, asset, Keyword.get(opts, :run_context_id)),
-         now <- Keyword.get(opts, :now) || DateTime.utc_now(),
-         {:ok, coverage} <- Coverage.summary(context, target_id, evaluated_at: now),
-         :ok <- coverage_snapshot(coverage, runtime.manifest_version_id),
-         {:ok, compatibilities} <-
-           target_compatibilities(context, [
-             %{target_id: target_id, persisted?: not is_nil(asset.target_descriptor)}
-           ]),
-         freshness_opts <- freshness_opts(opts, run_context_selection),
-         {:ok, freshness_plan} <- AssetFreshness.plan(asset, version, now, freshness_opts),
-         {:ok, loaded_freshness} <-
-           StateLoader.load(
-             context,
-             runtime.deployment_id,
-             freshness_plan,
-             assets_by_ref(version),
-             now: now
-           ),
-         {:ok, status} <- target_status(context, :asset, target_id),
-         {:ok, page} <- target_runs(context, :asset, target_id),
-         {:ok, run_history} <- asset_run_history(context, page),
-         {:ok, projected_window_states} <- asset_window_states(context, asset, target_id),
-         {:ok, window_states} <-
-           catalogue_window_states(projected_window_states, asset, version) do
-      detail_opts =
-        opts
-        |> Keyword.put(:now, now)
-        |> Keyword.put(:freshness_plan, freshness_plan)
+         true <- MapSet.member?(granted_ids(grants, :asset), target_id) do
+      ManifestStore.with_manifest(context, runtime.manifest_version_id, fn version ->
+        with {:ok, asset} <- asset_for_target(version, target_id),
+             {:ok, run_context_selection} <-
+               AssetRunContext.select(version, asset, Keyword.get(opts, :run_context_id)),
+             now <- Keyword.get(opts, :now) || DateTime.utc_now(),
+             {:ok, coverage} <- Coverage.summary(context, target_id, evaluated_at: now),
+             :ok <- coverage_snapshot(coverage, runtime.manifest_version_id),
+             {:ok, compatibilities} <-
+               target_compatibilities(context, [
+                 %{target_id: target_id, persisted?: not is_nil(asset.target_descriptor)}
+               ]),
+             freshness_opts <- freshness_opts(opts, run_context_selection),
+             {:ok, freshness_plan} <- AssetFreshness.plan(asset, version, now, freshness_opts),
+             {:ok, loaded_freshness} <-
+               StateLoader.load(
+                 context,
+                 runtime.deployment_id,
+                 freshness_plan,
+                 assets_by_ref(version),
+                 now: now
+               ),
+             {:ok, status} <- target_status(context, :asset, target_id),
+             {:ok, page} <- target_runs(context, :asset, target_id),
+             {:ok, run_history} <- asset_run_history(context, page),
+             {:ok, projected_window_states} <- asset_window_states(context, asset, target_id),
+             {:ok, window_states} <-
+               catalogue_window_states(projected_window_states, asset, version) do
+          detail_opts =
+            opts
+            |> Keyword.put(:now, now)
+            |> Keyword.put(:freshness_plan, freshness_plan)
 
-      detail =
-        asset_detail_entry(
-          version,
-          asset,
-          target_id,
-          status || unknown_status(context, runtime, :asset, target_id),
-          loaded_freshness.states,
-          window_states,
-          run_history,
-          detail_opts,
-          run_context_selection
-        )
-        |> Map.put(:coverage, coverage)
-        |> Map.put(:coverage_policy, coverage_policy(asset.coverage))
-        |> Map.put(:compatibility, Map.fetch!(compatibilities, target_id))
+          detail =
+            asset_detail_entry(
+              version,
+              asset,
+              target_id,
+              status || unknown_status(context, runtime, :asset, target_id),
+              loaded_freshness.states,
+              window_states,
+              run_history,
+              detail_opts,
+              run_context_selection
+            )
+            |> Map.put(:coverage, coverage)
+            |> Map.put(:coverage_policy, coverage_policy(asset.coverage))
+            |> Map.put(:compatibility, Map.fetch!(compatibilities, target_id))
 
-      {:ok, detail}
+          {:ok, detail}
+        end
+      end)
     else
       false -> {:error, :not_found}
       {:error, _reason} = error -> error
@@ -393,12 +395,14 @@ defmodule FavnOrchestrator.Operator.Catalogue do
       when is_binary(target_id) do
     with {:ok, {runtime, grants}} <-
            ManifestStore.get_active_deployment(context, customer_visible_only: true),
-         true <- MapSet.member?(granted_ids(grants, :asset), target_id),
-         {:ok, version} <- ManifestStore.get_manifest(context, runtime.manifest_version_id),
-         {:ok, asset} <- asset_for_target(version, target_id),
-         {:ok, package} <-
-           ExecutionPackages.fetch(context, runtime.deployment_id, version, asset) do
-      {:ok, asset_documentation_entry(asset, package)}
+         true <- MapSet.member?(granted_ids(grants, :asset), target_id) do
+      ManifestStore.with_manifest(context, runtime.manifest_version_id, fn version ->
+        with {:ok, asset} <- asset_for_target(version, target_id),
+             {:ok, package} <-
+               ExecutionPackages.fetch(context, runtime.deployment_id, version, asset) do
+          {:ok, asset_documentation_entry(asset, package)}
+        end
+      end)
     else
       false -> {:error, :not_found}
       {:error, _reason} = error -> error
@@ -510,18 +514,23 @@ defmodule FavnOrchestrator.Operator.Catalogue do
     with {:ok, {_runtime, grants}} <-
            ManifestStore.get_active_deployment(context, customer_visible_only: true),
          true <- MapSet.member?(granted_ids(grants, :asset), target_id),
-         {:ok, run_state} <- Runs.get(context, run_id),
-         {:ok, version} <-
-           ManifestStore.get_deployment_manifest(
-             context,
-             run_state.deployment_id,
-             run_state.manifest_version_id
-           ),
-         {:ok, asset} <- asset_for_target(version, target_id),
-         run <- Projector.project_run(run_state),
-         true <- run_covers_asset?(run, asset.ref),
-         {:ok, pins} <- Runs.get_runtime_inputs(context, run_id) do
-      {:ok, asset_run_detail_entry(asset, target_id, run, pins)}
+         {:ok, run_state} <- Runs.get(context, run_id) do
+      ManifestStore.with_deployment_manifest(
+        context,
+        run_state.deployment_id,
+        run_state.manifest_version_id,
+        fn version ->
+          with {:ok, asset} <- asset_for_target(version, target_id),
+               run <- Projector.project_run(run_state),
+               true <- run_covers_asset?(run, asset.ref),
+               {:ok, pins} <- Runs.get_runtime_inputs(context, run_id) do
+            {:ok, asset_run_detail_entry(asset, target_id, run, pins)}
+          else
+            false -> {:error, :not_found}
+            {:error, _reason} = error -> error
+          end
+        end
+      )
     else
       false -> {:error, :not_found}
       {:error, %PersistenceError{kind: :not_found}} -> {:error, :not_found}

@@ -7,7 +7,7 @@ defmodule FavnOrchestrator.API.IdempotentCommand do
   retry cannot blindly repeat a command that may already have mutated state.
   """
 
-  import Plug.Conn, only: [get_req_header: 2, get_resp_header: 2]
+  import Plug.Conn, only: [get_req_header: 2, get_resp_header: 2, put_resp_header: 3]
 
   require Logger
 
@@ -152,16 +152,21 @@ defmodule FavnOrchestrator.API.IdempotentCommand do
   defp render_result(conn, _idempotency, {:ok, status, payload, _resource_type, _resource_id}),
     do: Response.data(conn, status, DTO.normalize(payload))
 
-  defp render_result(conn, _idempotency, {:error, status, code, message, _details})
-       when status >= 500,
-       do:
-         Response.error(conn, status, code, message, %{
-           outcome: "unknown",
-           retry_with_same_idempotency_key: true
-         })
+  defp render_result(conn, _idempotency, {:error, status, code, message, details})
+       when status >= 500 do
+    conn
+    |> put_retry_after(details)
+    |> Response.error(status, code, message, %{
+      outcome: "unknown",
+      retry_with_same_idempotency_key: true
+    })
+  end
 
-  defp render_result(conn, _idempotency, {:error, status, code, message, details}),
-    do: Response.error(conn, status, code, message, details)
+  defp render_result(conn, _idempotency, {:error, status, code, message, details}) do
+    conn
+    |> put_retry_after(details)
+    |> Response.error(status, code, message, details)
+  end
 
   defp render_result(conn, idempotency, {:unknown_outcome, failure}) do
     Logger.error(
@@ -285,4 +290,16 @@ defmodule FavnOrchestrator.API.IdempotentCommand do
       _other -> nil
     end
   end
+
+  defp put_retry_after(conn, details) when is_map(details) do
+    case Map.get(details, :retry_after) || Map.get(details, "retry_after") do
+      seconds when is_integer(seconds) and seconds > 0 ->
+        put_resp_header(conn, "retry-after", Integer.to_string(seconds))
+
+      _other ->
+        conn
+    end
+  end
+
+  defp put_retry_after(conn, _details), do: conn
 end

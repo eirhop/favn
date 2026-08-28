@@ -54,6 +54,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
     assert config.shutdown_drain_timeout_ms == 120_000
     assert is_binary(config.operator_command_hmac_key)
     assert config.active_run_plan_max_bytes == 512 * 1_024 * 1_024
+    assert config.memory_ceiling_bytes == nil
 
     assert config.api_service_tokens == [
              %{
@@ -97,6 +98,25 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
              mutual_tls?: true,
              cookie_configured?: true
            }
+  end
+
+  test "optional memory ceiling is validated and retained", %{ca_file: ca_file} do
+    env =
+      ca_file
+      |> base_env()
+      |> Map.put("FAVN_ORCHESTRATOR_MEMORY_CEILING_BYTES", "1073741824")
+
+    assert {:ok, config} = ProductionRuntimeConfig.validate(env)
+    assert config.memory_ceiling_bytes == 1_073_741_824
+
+    assert {:error,
+            %{
+              error: {:invalid_env, "FAVN_ORCHESTRATOR_MEMORY_CEILING_BYTES", "not-bytes"}
+            }} =
+             ca_file
+             |> base_env()
+             |> Map.put("FAVN_ORCHESTRATOR_MEMORY_CEILING_BYTES", "not-bytes")
+             |> ProductionRuntimeConfig.validate()
   end
 
   test "manifest deployer tokens are workspace scoped and redacted", %{ca_file: ca_file} do

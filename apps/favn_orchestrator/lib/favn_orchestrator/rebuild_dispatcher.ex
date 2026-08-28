@@ -352,30 +352,34 @@ defmodule FavnOrchestrator.RebuildDispatcher do
 
     with %RebuildAction{} <- action,
          :ok <- validate_candidate_materializations(context, operation, action),
-         {:ok, version, asset} <- version_asset(context, operation, action),
-         {:ok, relation} <- candidate_relation(operation, action, asset),
-         {:ok, fingerprint} <-
-           inspect_candidate(context, operation, action, version, asset, relation),
-         :ok <- validate_candidate_identity(asset, relation, fingerprint),
-         {:ok, checked_action} <-
-           transition_action(operation, action, context, state, :running,
-             validation_result: %{
-               outcome: "succeeded",
-               candidate_fingerprint: fingerprint.fingerprint,
-               inspected_at: DateTime.utc_now()
-             }
-           ),
-         activation_token <- activation_token(operation, action),
-         {:ok, intended_action} <-
-           transition_action(operation, checked_action, context, state, :running,
-             activation_intent: activation_intent(operation, action, activation_token)
-           ),
-         {:ok, current} <- reload(context, operation.operation_id),
-         {:ok, _activating} <-
-           transition_operation(current, context, state, :activating, :activating,
-             activation_token: activation_token,
-             validation_result: intended_action.validation_result
-           ) do
+         {:ok, :ok} <-
+           with_version_asset(context, operation, action, fn version, asset ->
+             with {:ok, relation} <- candidate_relation(operation, action, asset),
+                  {:ok, fingerprint} <-
+                    inspect_candidate(context, operation, action, version, asset, relation),
+                  :ok <- validate_candidate_identity(asset, relation, fingerprint),
+                  {:ok, checked_action} <-
+                    transition_action(operation, action, context, state, :running,
+                      validation_result: %{
+                        outcome: "succeeded",
+                        candidate_fingerprint: fingerprint.fingerprint,
+                        inspected_at: DateTime.utc_now()
+                      }
+                    ),
+                  activation_token <- activation_token(operation, action),
+                  {:ok, intended_action} <-
+                    transition_action(operation, checked_action, context, state, :running,
+                      activation_intent: activation_intent(operation, action, activation_token)
+                    ),
+                  {:ok, current} <- reload(context, operation.operation_id),
+                  {:ok, _activating} <-
+                    transition_operation(current, context, state, :activating, :activating,
+                      activation_token: activation_token,
+                      validation_result: intended_action.validation_result
+                    ) do
+               :ok
+             end
+           end) do
       :ok
     else
       nil ->
@@ -389,62 +393,80 @@ defmodule FavnOrchestrator.RebuildDispatcher do
   defp activate_current_action(context, operation, locks, state) do
     action = current_generation_action(operation)
 
-    with %RebuildAction{} <- action,
-         {:ok, version, asset} <- version_asset(context, operation, action),
-         {:ok, request} <- activation_request(operation, action, version, asset) do
-      case OperationRunnerTasks.ensure_and_await(
-             context,
-             version,
-             asset.ref,
-             :generation_activate,
-             request,
-             {:rebuild_activate, operation.operation_id, action.target_id,
-              request.activation_token},
-             runner_binding: runner_binding(action),
-             operation_id: operation.operation_id,
-             rebuild_operation_id: operation.operation_id
-           ) do
-        {:ok, %GenerationActivationResult{outcome: :succeeded} = result} ->
-          with :ok <- GenerationActivationResult.validate(result, request),
-               {:ok, _action} <-
-                 persist_activation(context, operation, action, request, result, state),
-               {:ok, current} <- reload(context, operation.operation_id) do
-            after_activation(context, current, locks, state)
-          else
-            {:error, reason} -> unknown_activation(context, operation, action, state, reason)
-          end
-
-        {:ok, %GenerationActivationResult{outcome: :safe_failure} = result} ->
-          fail_action(context, operation, action, locks, state, error_payload(result.error))
-
-        {:ok, %GenerationActivationResult{outcome: :outcome_unknown} = result} ->
-          unknown_activation(context, operation, action, state, error_payload(result.error))
-
-        {:error, {:failed, error} = reason} ->
-          if contains_safe_failure?(error) do
-            fail_action(context, operation, action, locks, state, error_payload(error))
-          else
-            unknown_activation(context, operation, action, state, reason)
-          end
+    with %RebuildAction{} <- action do
+      case with_version_asset(context, operation, action, fn version, asset ->
+             with {:ok, request} <- activation_request(operation, action, version, asset) do
+               activate_generation(
+                 context,
+                 operation,
+                 action,
+                 locks,
+                 state,
+                 version,
+                 asset,
+                 request
+               )
+             end
+           end) do
+        {:ok, result} ->
+          result
 
         {:error, reason} ->
           unknown_activation(context, operation, action, state, reason)
-
-        invalid ->
-          unknown_activation(
-            context,
-            operation,
-            action,
-            state,
-            {:invalid_activation_result, invalid}
-          )
       end
     else
       nil ->
         fail_operation(context, operation, locks, state, %{reason: "activation_action_not_found"})
+    end
+  end
+
+  defp activate_generation(context, operation, action, locks, state, version, asset, request) do
+    case OperationRunnerTasks.ensure_and_await(
+           context,
+           version,
+           asset.ref,
+           :generation_activate,
+           request,
+           {:rebuild_activate, operation.operation_id, action.target_id,
+            request.activation_token},
+           runner_binding: runner_binding(action),
+           operation_id: operation.operation_id,
+           rebuild_operation_id: operation.operation_id
+         ) do
+      {:ok, %GenerationActivationResult{outcome: :succeeded} = result} ->
+        with :ok <- GenerationActivationResult.validate(result, request),
+             {:ok, _action} <-
+               persist_activation(context, operation, action, request, result, state),
+             {:ok, current} <- reload(context, operation.operation_id) do
+          after_activation(context, current, locks, state)
+        else
+          {:error, reason} -> unknown_activation(context, operation, action, state, reason)
+        end
+
+      {:ok, %GenerationActivationResult{outcome: :safe_failure} = result} ->
+        fail_action(context, operation, action, locks, state, error_payload(result.error))
+
+      {:ok, %GenerationActivationResult{outcome: :outcome_unknown} = result} ->
+        unknown_activation(context, operation, action, state, error_payload(result.error))
+
+      {:error, {:failed, error} = reason} ->
+        if contains_safe_failure?(error) do
+          fail_action(context, operation, action, locks, state, error_payload(error))
+        else
+          unknown_activation(context, operation, action, state, reason)
+        end
 
       {:error, reason} ->
         unknown_activation(context, operation, action, state, reason)
+
+      invalid ->
+        unknown_activation(
+          context,
+          operation,
+          action,
+          state,
+          {:invalid_activation_result, invalid}
+        )
     end
   end
 
@@ -474,88 +496,115 @@ defmodule FavnOrchestrator.RebuildDispatcher do
   end
 
   defp reconcile_activation_action(context, operation, action, locks, state) do
-    with {:ok, version, asset} <- version_asset(context, operation, action),
-         {:ok, activation} <- activation_request(operation, action, version, asset),
-         request <- %GenerationReconciliationRequest{activation: activation} do
-      case OperationRunnerTasks.ensure_and_await(
-             context,
-             version,
-             asset.ref,
-             :generation_reconcile,
-             request,
-             {:rebuild_reconcile, operation.operation_id, action.target_id, action.version},
-             runner_binding: runner_binding(action),
-             operation_id: operation.operation_id,
-             rebuild_operation_id: operation.operation_id
-           ) do
-        {:ok, %GenerationReconciliationResult{disposition: :candidate_active} = result} ->
-          with :ok <- GenerationReconciliationResult.validate(result, request),
-               {:ok, _action} <-
-                 persist_reconciled_activation(
-                   context,
-                   operation,
-                   action,
-                   activation,
-                   result,
-                   state
-                 ),
-               {:ok, current} <- reload(context, operation.operation_id) do
-            after_activation(context, current, locks, state)
+    case with_version_asset(context, operation, action, fn version, asset ->
+           with {:ok, activation} <- activation_request(operation, action, version, asset) do
+             request = %GenerationReconciliationRequest{activation: activation}
+
+             reconcile_generation_activation(
+               context,
+               operation,
+               action,
+               locks,
+               state,
+               version,
+               asset,
+               activation,
+               request
+             )
+           end
+         end) do
+      {:ok, result} -> result
+      {:error, _reason} -> :ok
+    end
+  end
+
+  defp reconcile_generation_activation(
+         context,
+         operation,
+         action,
+         locks,
+         state,
+         version,
+         asset,
+         activation,
+         request
+       ) do
+    case OperationRunnerTasks.ensure_and_await(
+           context,
+           version,
+           asset.ref,
+           :generation_reconcile,
+           request,
+           {:rebuild_reconcile, operation.operation_id, action.target_id, action.version},
+           runner_binding: runner_binding(action),
+           operation_id: operation.operation_id,
+           rebuild_operation_id: operation.operation_id
+         ) do
+      {:ok, %GenerationReconciliationResult{disposition: :candidate_active} = result} ->
+        with :ok <- GenerationReconciliationResult.validate(result, request),
+             {:ok, _action} <-
+               persist_reconciled_activation(
+                 context,
+                 operation,
+                 action,
+                 activation,
+                 result,
+                 state
+               ),
+             {:ok, current} <- reload(context, operation.operation_id) do
+          after_activation(context, current, locks, state)
+        end
+
+      {:ok,
+       %GenerationReconciliationResult{disposition: :previous_active, candidate_present: true} =
+           result} ->
+        with :ok <- GenerationReconciliationResult.validate(result, request) do
+          case Reconciliation.next(operation.cancel_requested, :activation) do
+            :cancel ->
+              cancel_after_reconciliation(context, operation, action, state)
+
+            :activate ->
+              with {:ok, _running} <-
+                     transition_action(operation, action, context, state, :running,
+                       terminal_error: %{}
+                     ),
+                   {:ok, current} <- reload(context, operation.operation_id),
+                   {:ok, _activating} <-
+                     transition_operation(current, context, state, :activating, :activating,
+                       unknown_outcome: %{},
+                       activation_token: activation.activation_token
+                     ) do
+                :ok
+              end
           end
+        end
 
-        {:ok,
-         %GenerationReconciliationResult{disposition: :previous_active, candidate_present: true} =
-             result} ->
-          with :ok <- GenerationReconciliationResult.validate(result, request) do
-            case Reconciliation.next(operation.cancel_requested, :activation) do
-              :cancel ->
-                cancel_after_reconciliation(context, operation, action, state)
+      {:ok, %GenerationReconciliationResult{disposition: :previous_active}} ->
+        fail_action(context, operation, action, locks, state, %{
+          reason: "candidate_relation_missing"
+        })
 
-              :activate ->
-                with {:ok, _running} <-
-                       transition_action(operation, action, context, state, :running,
-                         terminal_error: %{}
-                       ),
-                     {:ok, current} <- reload(context, operation.operation_id),
-                     {:ok, _activating} <-
-                       transition_operation(current, context, state, :activating, :activating,
-                         unknown_outcome: %{},
-                         activation_token: activation.activation_token
-                       ) do
-                  :ok
-                end
-            end
-          end
+      {:ok, %GenerationReconciliationResult{disposition: :unknown}} ->
+        transition_action(operation, action, context, state, :outcome_unknown,
+          terminal_error: %{
+            reason: "generation_reconciliation_inconclusive",
+            observed_at: DateTime.utc_now()
+          }
+        )
+        |> ok_only()
 
-        {:ok, %GenerationReconciliationResult{disposition: :previous_active}} ->
-          fail_action(context, operation, action, locks, state, %{
-            reason: "candidate_relation_missing"
-          })
+      {:error, reason} ->
+        transition_action(operation, action, context, state, :outcome_unknown,
+          terminal_error: %{
+            reason: "generation_reconciliation_unavailable",
+            detail: error_payload(reason),
+            observed_at: DateTime.utc_now()
+          }
+        )
+        |> ok_only()
 
-        {:ok, %GenerationReconciliationResult{disposition: :unknown}} ->
-          transition_action(operation, action, context, state, :outcome_unknown,
-            terminal_error: %{
-              reason: "generation_reconciliation_inconclusive",
-              observed_at: DateTime.utc_now()
-            }
-          )
-          |> ok_only()
-
-        {:error, reason} ->
-          transition_action(operation, action, context, state, :outcome_unknown,
-            terminal_error: %{
-              reason: "generation_reconciliation_unavailable",
-              detail: error_payload(reason),
-              observed_at: DateTime.utc_now()
-            }
-          )
-          |> ok_only()
-
-        _invalid ->
-          :ok
-      end
-    else
-      _missing -> :ok
+      _invalid ->
+        :ok
     end
   end
 
@@ -727,38 +776,43 @@ defmodule FavnOrchestrator.RebuildDispatcher do
   end
 
   defp discard_candidate(context, operation, action) do
-    with {:ok, version, asset} <- version_asset(context, operation, action),
-         {:ok, candidate} <- candidate_relation(operation, action, asset),
-         request <- %GenerationDiscardRequest{
-           manifest_version_id: version.manifest_version_id,
-           manifest_content_hash: version.content_hash,
-           required_runner_release_id: action.required_runner_release_id,
-           rebuild_operation_id: operation.operation_id,
-           rebuild_action_id: action.target_id,
-           target_id: action.target_id,
-           candidate_generation_id: action.candidate_generation_id,
-           active_relation: RelationRef.new!(asset.relation),
-           candidate_relation: candidate,
-           discard_token: command_id("discard", operation.operation_id <> ":" <> action.target_id)
-         },
-         {:ok, %GenerationDiscardResult{} = result} <-
-           OperationRunnerTasks.ensure_and_await(
-             context,
-             version,
-             asset.ref,
-             :generation_discard,
-             request,
-             {:rebuild_discard_candidate, operation.operation_id, action.target_id,
-              action.candidate_generation_id},
-             runner_binding: runner_binding(action),
-             operation_id: operation.operation_id,
-             rebuild_operation_id: operation.operation_id
-           ),
-         :ok <- GenerationDiscardResult.validate(result, request),
-         true <- result.outcome in [:discarded, :already_absent] do
-      :ok
-    else
-      false -> {:error, :candidate_discard_failed}
+    case with_version_asset(context, operation, action, fn version, asset ->
+           with {:ok, candidate} <- candidate_relation(operation, action, asset),
+                request <- %GenerationDiscardRequest{
+                  manifest_version_id: version.manifest_version_id,
+                  manifest_content_hash: version.content_hash,
+                  required_runner_release_id: action.required_runner_release_id,
+                  rebuild_operation_id: operation.operation_id,
+                  rebuild_action_id: action.target_id,
+                  target_id: action.target_id,
+                  candidate_generation_id: action.candidate_generation_id,
+                  active_relation: RelationRef.new!(asset.relation),
+                  candidate_relation: candidate,
+                  discard_token:
+                    command_id("discard", operation.operation_id <> ":" <> action.target_id)
+                },
+                {:ok, %GenerationDiscardResult{} = result} <-
+                  OperationRunnerTasks.ensure_and_await(
+                    context,
+                    version,
+                    asset.ref,
+                    :generation_discard,
+                    request,
+                    {:rebuild_discard_candidate, operation.operation_id, action.target_id,
+                     action.candidate_generation_id},
+                    runner_binding: runner_binding(action),
+                    operation_id: operation.operation_id,
+                    rebuild_operation_id: operation.operation_id
+                  ),
+                :ok <- GenerationDiscardResult.validate(result, request),
+                true <- result.outcome in [:discarded, :already_absent] do
+             :ok
+           else
+             false -> {:error, :candidate_discard_failed}
+             {:error, _reason} = error -> error
+           end
+         end) do
+      {:ok, result} -> result
       {:error, _reason} = error -> error
     end
   end
@@ -1222,9 +1276,14 @@ defmodule FavnOrchestrator.RebuildDispatcher do
   defp item_partition_key(%RebuildItem{window_key: window_key}), do: window_key
 
   defp submit_item(context, operation, action, item, run_id) do
-    with {:ok, version, asset} <- version_asset(context, operation, action),
-         {:ok, options} <- submission_options(operation, action, item, version, asset, run_id) do
-      RunSubmissions.enqueue_pipeline_assets(context, [asset.ref], options)
+    case with_version_asset(context, operation, action, fn version, asset ->
+           with {:ok, options} <-
+                  submission_options(operation, action, item, version, asset, run_id) do
+             RunSubmissions.enqueue_pipeline_assets(context, [asset.ref], options)
+           end
+         end) do
+      {:ok, result} -> result
+      {:error, _reason} = error -> error
     end
   end
 
@@ -1699,52 +1758,59 @@ defmodule FavnOrchestrator.RebuildDispatcher do
   end
 
   defp discard_retired_relation(context, operation, action) do
-    with {:ok, version, asset} <- version_asset(context, operation, action),
-         previous_generation_id when is_binary(previous_generation_id) <-
-           field(action.activation_intent, :previous_generation_id),
-         max_identifier_bytes when is_integer(max_identifier_bytes) <-
-           capability(operation, action.target_id, :max_identifier_bytes),
-         active <- RelationRef.new!(asset.relation),
-         retired <-
-           TargetGenerationRelation.retired(
-             active,
-             previous_generation_id,
-             max_identifier_bytes
-           ),
-         request <- %GenerationDiscardRequest{
-           manifest_version_id: version.manifest_version_id,
-           manifest_content_hash: version.content_hash,
-           required_runner_release_id: action.required_runner_release_id,
-           rebuild_operation_id: operation.operation_id,
-           rebuild_action_id: action.target_id,
-           target_id: action.target_id,
-           candidate_generation_id: previous_generation_id,
-           active_relation: active,
-           candidate_relation: retired,
-           relation_kind: :retired,
-           discard_token:
-             command_id("cleanup-retired", operation.operation_id <> ":" <> action.target_id)
-         },
-         {:ok, %GenerationDiscardResult{} = result} <-
-           OperationRunnerTasks.ensure_and_await(
-             context,
-             version,
-             asset.ref,
-             :generation_discard,
-             request,
-             {:rebuild_discard_retired, operation.operation_id, action.target_id,
-              previous_generation_id},
-             runner_binding: runner_binding(action),
-             operation_id: operation.operation_id,
-             rebuild_operation_id: operation.operation_id
-           ),
-         :ok <- GenerationDiscardResult.validate(result, request),
-         true <- result.outcome in [:discarded, :already_absent] do
-      :ok
-    else
-      false -> {:error, :retired_relation_cleanup_failed}
+    case with_version_asset(context, operation, action, fn version, asset ->
+           with previous_generation_id when is_binary(previous_generation_id) <-
+                  field(action.activation_intent, :previous_generation_id),
+                max_identifier_bytes when is_integer(max_identifier_bytes) <-
+                  capability(operation, action.target_id, :max_identifier_bytes),
+                active <- RelationRef.new!(asset.relation),
+                retired <-
+                  TargetGenerationRelation.retired(
+                    active,
+                    previous_generation_id,
+                    max_identifier_bytes
+                  ),
+                request <- %GenerationDiscardRequest{
+                  manifest_version_id: version.manifest_version_id,
+                  manifest_content_hash: version.content_hash,
+                  required_runner_release_id: action.required_runner_release_id,
+                  rebuild_operation_id: operation.operation_id,
+                  rebuild_action_id: action.target_id,
+                  target_id: action.target_id,
+                  candidate_generation_id: previous_generation_id,
+                  active_relation: active,
+                  candidate_relation: retired,
+                  relation_kind: :retired,
+                  discard_token:
+                    command_id(
+                      "cleanup-retired",
+                      operation.operation_id <> ":" <> action.target_id
+                    )
+                },
+                {:ok, %GenerationDiscardResult{} = result} <-
+                  OperationRunnerTasks.ensure_and_await(
+                    context,
+                    version,
+                    asset.ref,
+                    :generation_discard,
+                    request,
+                    {:rebuild_discard_retired, operation.operation_id, action.target_id,
+                     previous_generation_id},
+                    runner_binding: runner_binding(action),
+                    operation_id: operation.operation_id,
+                    rebuild_operation_id: operation.operation_id
+                  ),
+                :ok <- GenerationDiscardResult.validate(result, request),
+                true <- result.outcome in [:discarded, :already_absent] do
+             :ok
+           else
+             false -> {:error, :retired_relation_cleanup_failed}
+             {:error, _reason} = error -> error
+             _missing -> {:error, :incomplete_retired_relation_cleanup_checkpoint}
+           end
+         end) do
+      {:ok, result} -> result
       {:error, _reason} = error -> error
-      _missing -> {:error, :incomplete_retired_relation_cleanup_checkpoint}
     end
   rescue
     ArgumentError -> {:error, :invalid_retired_relation_cleanup_checkpoint}
@@ -1954,14 +2020,19 @@ defmodule FavnOrchestrator.RebuildDispatcher do
   defp page_all_items(context, operation_id, status),
     do: ItemPager.all(rebuild_store(), context, operation_id, status: status)
 
-  defp version_asset(context, operation, action) do
-    with {:ok, version} <- ManifestStore.get_manifest(context, operation.manifest_version_id),
-         {:ok, asset} <- ManifestTarget.resolve_asset(version, action.target_id),
-         {:ok, binding} <- OperationRunnerTasks.binding(version, asset.ref),
-         true <- binding == runner_binding(action) do
-      {:ok, version, asset}
-    else
-      false -> {:error, :rebuild_runner_binding_mismatch}
+  defp with_version_asset(context, operation, action, fun) when is_function(fun, 2) do
+    ManifestStore.with_manifest(context, operation.manifest_version_id, fn version ->
+      with {:ok, asset} <- ManifestTarget.resolve_asset(version, action.target_id),
+           {:ok, binding} <- OperationRunnerTasks.binding(version, asset.ref),
+           true <- binding == runner_binding(action) do
+        {:version_asset_result, fun.(version, asset)}
+      else
+        false -> {:error, :rebuild_runner_binding_mismatch}
+        {:error, _reason} = error -> error
+      end
+    end)
+    |> case do
+      {:version_asset_result, result} -> {:ok, result}
       {:error, _reason} = error -> error
     end
   end

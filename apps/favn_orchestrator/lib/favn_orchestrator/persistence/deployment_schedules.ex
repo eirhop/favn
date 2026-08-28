@@ -2,7 +2,7 @@ defmodule FavnOrchestrator.Persistence.DeploymentSchedules do
   @moduledoc "Plans durable schedule cursors for an exact workspace deployment."
 
   alias Favn.Manifest.Version
-  alias FavnOrchestrator.ManifestIndexCache
+  alias FavnOrchestrator.ManifestStore
   alias FavnOrchestrator.Persistence.Commands.DeploymentSchedule
   alias FavnOrchestrator.Persistence.TargetIdentity
   alias FavnOrchestrator.Scheduler.Cron
@@ -12,47 +12,56 @@ defmodule FavnOrchestrator.Persistence.DeploymentSchedules do
   @spec plan(Version.t(), [struct()], DateTime.t()) ::
           {:ok, [DeploymentSchedule.t()]} | {:error, term()}
   def plan(%Version{} = version, targets, %DateTime{} = now) when is_list(targets) do
+    plan(version, targets, now, [])
+  end
+
+  @doc false
+  @spec plan(Version.t(), [struct()], DateTime.t(), keyword()) ::
+          {:ok, [DeploymentSchedule.t()]} | {:error, term()}
+  def plan(%Version{} = version, targets, %DateTime{} = now, opts)
+      when is_list(targets) and is_list(opts) do
     selected =
       targets
       |> Enum.filter(&(&1.target_kind == :pipeline))
       |> MapSet.new(& &1.target_id)
 
-    with {:ok, index} <- ManifestIndexCache.fetch(version),
-         {:ok, entries} <- ManifestEntries.discover_all(version, index) do
-      entries
-      |> Enum.filter(fn entry ->
-        MapSet.member?(selected, TargetIdentity.for_pipeline({entry.module, entry.id}))
-      end)
-      |> Enum.reduce_while({:ok, []}, fn entry, {:ok, acc} ->
-        case Cron.next_due(entry.schedule.cron, entry.schedule.timezone, now) do
-          %DateTime{} = next_due ->
-            schedule = %DeploymentSchedule{
-              pipeline_target_id: TargetIdentity.for_pipeline({entry.module, entry.id}),
-              schedule_id: to_string(entry.schedule.name),
-              schedule_fingerprint: entry.schedule_fingerprint,
-              definition: schedule_definition(entry),
-              next_due_at: next_due,
-              cursor: %{
-                "schedule_fingerprint" => entry.schedule_fingerprint,
-                "in_flight_run_id" => nil,
-                "queued_due_at" => nil
+    ManifestStore.with_index(version, opts, fn index ->
+      with {:ok, entries} <- ManifestEntries.discover_all(version, index) do
+        entries
+        |> Enum.filter(fn entry ->
+          MapSet.member?(selected, TargetIdentity.for_pipeline({entry.module, entry.id}))
+        end)
+        |> Enum.reduce_while({:ok, []}, fn entry, {:ok, acc} ->
+          case Cron.next_due(entry.schedule.cron, entry.schedule.timezone, now) do
+            %DateTime{} = next_due ->
+              schedule = %DeploymentSchedule{
+                pipeline_target_id: TargetIdentity.for_pipeline({entry.module, entry.id}),
+                schedule_id: to_string(entry.schedule.name),
+                schedule_fingerprint: entry.schedule_fingerprint,
+                definition: schedule_definition(entry),
+                next_due_at: next_due,
+                cursor: %{
+                  "schedule_fingerprint" => entry.schedule_fingerprint,
+                  "in_flight_run_id" => nil,
+                  "queued_due_at" => nil
+                }
               }
-            }
 
-            {:cont, {:ok, [schedule | acc]}}
+              {:cont, {:ok, [schedule | acc]}}
 
-          nil ->
-            {:halt, {:error, {:invalid_deployment_schedule, entry.module, entry.id}}}
-        end
-      end)
-      |> then(fn
-        {:ok, schedules} ->
-          {:ok, Enum.sort_by(schedules, &{&1.pipeline_target_id, &1.schedule_id})}
+            nil ->
+              {:halt, {:error, {:invalid_deployment_schedule, entry.module, entry.id}}}
+          end
+        end)
+        |> then(fn
+          {:ok, schedules} ->
+            {:ok, Enum.sort_by(schedules, &{&1.pipeline_target_id, &1.schedule_id})}
 
-        error ->
-          error
-      end)
-    end
+          error ->
+            error
+        end)
+      end
+    end)
   end
 
   defp schedule_definition(entry) do

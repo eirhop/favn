@@ -71,7 +71,8 @@ defmodule FavnOrchestrator.RunnerTasks do
     end
   end
 
-  def fetch_manifest(%Assignment{} = assignment) do
+  @doc false
+  def checkout_manifest(%Assignment{} = assignment, owner) when is_pid(owner) do
     with :ok <- Assignment.validate(assignment),
          {:ok, task} <-
            store().get(%Q.GetRunnerTask{
@@ -83,18 +84,34 @@ defmodule FavnOrchestrator.RunnerTasks do
            manifest_identity(task.task_kind, task.payload),
          true <-
            is_nil(required_runner_release_id) or
-             required_runner_release_id == assignment.required_runner_release_id,
-         {:ok, version} <-
-           FavnOrchestrator.ManifestStore.get_manifest(
+             required_runner_release_id == assignment.required_runner_release_id do
+      case FavnOrchestrator.ManifestStore.checkout_manifest(
              SystemContext.platform(:runner_task_manifest),
-             manifest_version_id
-           ),
-         true <- version.content_hash == manifest_content_hash do
-      {:ok, version}
+             manifest_version_id,
+             copies: 1
+           ) do
+        {:ok, lease} ->
+          if lease.version.content_hash == manifest_content_hash do
+            case FavnOrchestrator.MemoryCapacity.handoff(lease.capacity_token, owner) do
+              :ok -> {:ok, lease}
+              {:error, _reason} -> release_unavailable_manifest(lease)
+            end
+          else
+            release_unavailable_manifest(lease)
+          end
+
+        {:error, _reason} = error ->
+          error
+      end
     else
       false -> {:error, :stale_runner_task_assignment}
       _other -> {:error, :runner_task_manifest_unavailable}
     end
+  end
+
+  defp release_unavailable_manifest(lease) do
+    :ok = FavnOrchestrator.ManifestStore.release_manifest(lease)
+    {:error, :runner_task_manifest_unavailable}
   end
 
   def fetch(workspace_id, task_id) when is_binary(workspace_id) and is_binary(task_id) do

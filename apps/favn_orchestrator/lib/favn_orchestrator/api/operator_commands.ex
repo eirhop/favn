@@ -279,10 +279,13 @@ defmodule FavnOrchestrator.API.OperatorCommands do
 
   defp pipeline_module_target(target, manifest_version_id, context) do
     with module_name when is_binary(module_name) and module_name != "" <-
-           Map.get(target, "module"),
-         {:ok, version} <- get_manifest(context, manifest_version_id),
-         {:ok, pipeline} <- find_pipeline(version.manifest.pipelines, module_name) do
-      {:ok, %{type: "pipeline", id: ManifestTarget.pipeline_id(pipeline.module, pipeline.name)}}
+           Map.get(target, "module") do
+      FavnOrchestrator.with_manifest(context, manifest_version_id, fn version ->
+        with {:ok, pipeline} <- find_pipeline(version.manifest.pipelines, module_name) do
+          {:ok,
+           %{type: "pipeline", id: ManifestTarget.pipeline_id(pipeline.module, pipeline.name)}}
+        end
+      end)
     else
       nil -> {:error, :invalid_target}
       "" -> {:error, :invalid_target}
@@ -320,9 +323,6 @@ defmodule FavnOrchestrator.API.OperatorCommands do
         {:error, :invalid_manifest_selection}
     end
   end
-
-  defp get_manifest(%WorkspaceContext{} = context, manifest_version_id),
-    do: FavnOrchestrator.get_manifest(context, manifest_version_id)
 
   defp active_manifest(%WorkspaceContext{} = context),
     do: FavnOrchestrator.active_manifest(context)

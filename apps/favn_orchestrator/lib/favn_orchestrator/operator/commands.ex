@@ -68,10 +68,12 @@ defmodule FavnOrchestrator.Operator.Commands do
     with :ok <- authorize_operator(context),
          :ok <- validate_command_opts(opts),
          {:ok, descriptor} <- target_descriptor(target),
-         {:ok, request} <- normalize_run_request(descriptor, input),
-         {:ok, version} <- active_target_release(context, manifest_version_id, descriptor),
-         {:ok, resolved_target} <- resolve_run_target(version, descriptor) do
-      submit_resolved_run(context, version, resolved_target, request, opts)
+         {:ok, request} <- normalize_run_request(descriptor, input) do
+      with_active_target_release(context, manifest_version_id, descriptor, fn version ->
+        with {:ok, resolved_target} <- resolve_run_target(version, descriptor) do
+          submit_resolved_run(context, version, resolved_target, request, opts)
+        end
+      end)
     end
   end
 
@@ -97,13 +99,21 @@ defmodule FavnOrchestrator.Operator.Commands do
   def submit_asset_backfill(%WorkspaceContext{} = context, manifest_version_id, target_id, input)
       when is_binary(manifest_version_id) and is_binary(target_id) do
     with :ok <- authorize_operator(context),
-         {:ok, request} <- AssetBackfillRequest.from_input(input),
-         {:ok, version} <- ManifestStore.get_manifest(context, manifest_version_id),
-         {:ok, asset} <- ManifestTarget.resolve_asset(version, target_id),
-         {:ok, opts} <- asset_backfill_options(asset.ref, request),
-         {:ok, backfill} <-
-           Backfills.submit_asset(context, manifest_version_id, target_id, request.range, opts) do
-      {:ok, backfill.root_run_id}
+         {:ok, request} <- AssetBackfillRequest.from_input(input) do
+      ManifestStore.with_manifest(context, manifest_version_id, fn version ->
+        with {:ok, asset} <- ManifestTarget.resolve_asset(version, target_id),
+             {:ok, opts} <- asset_backfill_options(asset.ref, request),
+             {:ok, backfill} <-
+               Backfills.submit_asset(
+                 context,
+                 manifest_version_id,
+                 target_id,
+                 request.range,
+                 opts
+               ) do
+          {:ok, backfill.root_run_id}
+        end
+      end)
     end
   end
 
@@ -122,16 +132,26 @@ defmodule FavnOrchestrator.Operator.Commands do
       )
       when is_binary(manifest_version_id) and is_binary(target_id) do
     with :ok <- authorize_operator(context),
-         {:ok, request} <- PipelineBackfillRequest.from_input(input),
-         {:ok, version} <- ManifestStore.get_manifest(context, manifest_version_id),
-         {:ok, _pipeline} <- ManifestTarget.resolve_pipeline(version, target_id),
-         {:ok, opts} <- pipeline_backfill_options(request),
-         true <- is_nil(request.coverage_baseline_id),
-         {:ok, backfill} <-
-           Backfills.submit_pipeline(context, manifest_version_id, target_id, request.range, opts) do
-      {:ok, backfill.root_run_id}
+         {:ok, request} <- PipelineBackfillRequest.from_input(input) do
+      ManifestStore.with_manifest(context, manifest_version_id, fn version ->
+        with {:ok, _pipeline} <- ManifestTarget.resolve_pipeline(version, target_id),
+             {:ok, opts} <- pipeline_backfill_options(request),
+             true <- is_nil(request.coverage_baseline_id),
+             {:ok, backfill} <-
+               Backfills.submit_pipeline(
+                 context,
+                 manifest_version_id,
+                 target_id,
+                 request.range,
+                 opts
+               ) do
+          {:ok, backfill.root_run_id}
+        else
+          false -> {:error, {:unsupported_backfill_option, :coverage_baseline_id}}
+          {:error, _reason} = error -> error
+        end
+      end)
     else
-      false -> {:error, {:unsupported_backfill_option, :coverage_baseline_id}}
       {:error, _reason} = error -> error
     end
   end
@@ -211,9 +231,15 @@ defmodule FavnOrchestrator.Operator.Commands do
        else: {:error, :forbidden}
   end
 
-  defp active_target_release(context, manifest_version_id, {target_kind, target_id})
+  defp with_active_target_release(context, manifest_version_id, {target_kind, target_id}, fun)
        when target_kind in [:asset, :pipeline] do
-    Manifests.get_active_target_release(context, manifest_version_id, target_kind, target_id)
+    Manifests.with_active_target_release(
+      context,
+      manifest_version_id,
+      target_kind,
+      target_id,
+      fun
+    )
   end
 
   defp submit_asset_run(%WorkspaceContext{} = context, asset_ref, opts),

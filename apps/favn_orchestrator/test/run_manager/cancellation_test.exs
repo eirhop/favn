@@ -57,7 +57,9 @@ defmodule FavnOrchestrator.RunManager.CancellationTest do
       {:ok, Agent.get(agent, & &1.task)}
     end
 
-    def get_run(_query), do: {:ok, Process.get(:run_manager_cancellation_current_run)}
+    def get_run_size(_query), do: {:ok, 1_024}
+    def get_run(_query),
+      do: {:ok, Application.fetch_env!(:favn_orchestrator, :run_manager_cancellation_current_run)}
 
     def commit_transition(%CommitRunTransition{} = command) do
       committed = %RunCommitted{
@@ -109,7 +111,7 @@ defmodule FavnOrchestrator.RunManager.CancellationTest do
     on_exit(fn ->
       Process.delete(:run_manager_cancellation_test_pid)
       Process.delete(:run_manager_cancellation_committed)
-      Process.delete(:run_manager_cancellation_current_run)
+      Application.delete_env(:favn_orchestrator, :run_manager_cancellation_current_run)
       Application.delete_env(:favn_orchestrator, :run_manager_cancellation_test_pid)
       Application.delete_env(:favn_orchestrator, :run_manager_runner_task_agent)
     end)
@@ -123,7 +125,7 @@ defmodule FavnOrchestrator.RunManager.CancellationTest do
     stale = run(:pending)
     current = run(:running)
     put_replayed_commit(stale)
-    Process.put(:run_manager_cancellation_current_run, current)
+    Application.put_env(:favn_orchestrator, :run_manager_cancellation_current_run, current)
 
     test_pid = self()
 
@@ -151,7 +153,7 @@ defmodule FavnOrchestrator.RunManager.CancellationTest do
     stale = run(:pending)
     current = run(:ok)
     put_replayed_commit(stale)
-    Process.put(:run_manager_cancellation_current_run, current)
+    Application.put_env(:favn_orchestrator, :run_manager_cancellation_current_run, current)
 
     test_pid = self()
 
@@ -186,7 +188,7 @@ defmodule FavnOrchestrator.RunManager.CancellationTest do
       |> put_in([Access.key(:metadata), :active_runner_task_ids], [task.task_id])
 
     put_replayed_commit(run(:pending))
-    Process.put(:run_manager_cancellation_current_run, current)
+    Application.put_env(:favn_orchestrator, :run_manager_cancellation_current_run, current)
 
     blackhole = spawn(fn -> Process.sleep(:infinity) end)
 
@@ -209,7 +211,7 @@ defmodule FavnOrchestrator.RunManager.CancellationTest do
       |> put_in([Access.key(:metadata), :active_runner_task_ids], [task.task_id])
 
     put_replayed_commit(run(:pending))
-    Process.put(:run_manager_cancellation_current_run, current)
+    Application.put_env(:favn_orchestrator, :run_manager_cancellation_current_run, current)
 
     assert :ok = RunManager.cancel_run(context, current.id, %{actor_id: "operator"})
     assert_receive {:runner_task_cancellation_requested, _command, %{status: :cancelled}}
@@ -275,7 +277,7 @@ defmodule FavnOrchestrator.RunManager.CancellationTest do
       |> put_in([Access.key(:metadata), :active_runner_task_ids], [task.task_id])
 
     put_replayed_commit(run(:pending))
-    Process.put(:run_manager_cancellation_current_run, current)
+    Application.put_env(:favn_orchestrator, :run_manager_cancellation_current_run, current)
 
     assert :ok = RunManager.cancel_run(context, current.id, %{actor_id: "operator"})
     assert_receive {:runner_acknowledgement, {:ok, _ack}}

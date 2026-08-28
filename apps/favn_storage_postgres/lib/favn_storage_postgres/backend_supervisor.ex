@@ -7,7 +7,6 @@ defmodule FavnStoragePostgres.BackendSupervisor do
   alias FavnStoragePostgres.ConnectionConfig
   alias FavnStoragePostgres.Outbox.Sequencer
   alias FavnStoragePostgres.Projections.Worker
-  alias FavnStoragePostgres.Registry.ManifestCache
   alias FavnStoragePostgres.Repo
   alias FavnStoragePostgres.SchemaGate
 
@@ -24,7 +23,6 @@ defmodule FavnStoragePostgres.BackendSupervisor do
         [
           {Repo, config.repo_options},
           Supervisor.child_spec({SchemaGate, repo: Repo}, restart: :temporary),
-          {ManifestCache, []},
           {Sequencer, []},
           {Worker, []},
           {NotificationListener, config.notification_options}

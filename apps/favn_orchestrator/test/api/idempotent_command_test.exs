@@ -157,13 +157,15 @@ defmodule FavnOrchestrator.API.IdempotentCommandTest do
 
     conn =
       run(fixture, fn _idempotency ->
-        {:error, 503, "service_unavailable", "Command outcome is unknown",
+         {:error, 503, "service_unavailable", "Command outcome is unknown",
          %{
-           password: secret
+           password: secret,
+           retry_after: 5
          }}
       end)
 
     assert conn.status == 503
+    assert get_resp_header(conn, "retry-after") == ["5"]
     response = Jason.decode!(conn.resp_body)
 
     assert response["error"]["details"] == %{

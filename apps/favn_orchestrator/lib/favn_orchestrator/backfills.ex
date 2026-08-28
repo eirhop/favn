@@ -21,7 +21,6 @@ defmodule FavnOrchestrator.Backfills do
   alias FavnOrchestrator.Backfills.Submission
   alias FavnOrchestrator.Lifecycle
   alias FavnOrchestrator.ManifestStore
-  alias FavnOrchestrator.ManifestIndexCache
   alias FavnOrchestrator.ManifestTarget
   alias FavnOrchestrator.Persistence
   alias FavnOrchestrator.Persistence.BackfillPlan
@@ -68,19 +67,28 @@ defmodule FavnOrchestrator.Backfills do
       )
       when is_binary(manifest_version_id) and is_binary(target_id) and is_list(opts) do
     with :ok <- authorize(context),
-         :ok <- validate_options(opts),
-         {:ok, runtime, version, pipeline} <-
-           active_pipeline(context, manifest_version_id, target_id),
-         {:ok, range} <- RangeResolver.resolve(range_request),
-         :ok <- validate_window_count(range.requested_count, opts),
-         {:ok, selection} <- Selection.backfill(range.anchors, range.timezone),
-         {:ok, resolution} <- resolve_pipeline(version, pipeline, selection),
-         combine_windows <- effective_combine_windows(pipeline, opts),
-         :ok <-
-           validate_combined_execution(version, resolution, selection, combine_windows) do
-      {:ok,
-       plan_map(runtime.deployment_id, version.manifest_version_id, target_id, range, selection)
-       |> put_execution_summary(combine_windows)}
+         :ok <- validate_options(opts) do
+      with_active_pipeline(context, manifest_version_id, target_id, fn runtime,
+                                                                       version,
+                                                                       pipeline ->
+        with {:ok, range} <- RangeResolver.resolve(range_request),
+             :ok <- validate_window_count(range.requested_count, opts),
+             {:ok, selection} <- Selection.backfill(range.anchors, range.timezone),
+             {:ok, resolution} <- resolve_pipeline(version, pipeline, selection),
+             combine_windows <- effective_combine_windows(pipeline, opts),
+             :ok <-
+               validate_combined_execution(version, resolution, selection, combine_windows) do
+          {:ok,
+           plan_map(
+             runtime.deployment_id,
+             version.manifest_version_id,
+             target_id,
+             range,
+             selection
+           )
+           |> put_execution_summary(combine_windows)}
+        end
+      end)
     end
   end
 
@@ -104,29 +112,32 @@ defmodule FavnOrchestrator.Backfills do
       when is_binary(manifest_version_id) and is_binary(target_id) and is_list(opts) do
     Lifecycle.with_admission(fn ->
       with :ok <- authorize(context),
-           :ok <- validate_options(opts),
-           {:ok, runtime, version, pipeline} <-
-             active_pipeline(context, manifest_version_id, target_id),
-           {:ok, range} <- RangeResolver.resolve(range_request),
-           :ok <- validate_window_count(range.requested_count, opts),
-           {:ok, selection} <- Selection.backfill(range.anchors, range.timezone),
-           {:ok, resolution} <- resolve_pipeline(version, pipeline, selection),
-           combine_windows <- effective_combine_windows(pipeline, opts),
-           :ok <-
-             validate_combined_execution(version, resolution, selection, combine_windows),
-           submission <-
-             build_submission(
-               context,
-               runtime,
-               version,
-               {:pipeline, pipeline, resolution},
-               target_id,
-               range,
-               selection,
-               opts
-             ),
-           {:ok, _root} <- ensure_root_run(submission) do
-        persist_submission(submission)
+           :ok <- validate_options(opts) do
+        with_active_pipeline(context, manifest_version_id, target_id, fn runtime,
+                                                                         version,
+                                                                         pipeline ->
+          with {:ok, range} <- RangeResolver.resolve(range_request),
+               :ok <- validate_window_count(range.requested_count, opts),
+               {:ok, selection} <- Selection.backfill(range.anchors, range.timezone),
+               {:ok, resolution} <- resolve_pipeline(version, pipeline, selection),
+               combine_windows <- effective_combine_windows(pipeline, opts),
+               :ok <-
+                 validate_combined_execution(version, resolution, selection, combine_windows),
+               submission <-
+                 build_submission(
+                   context,
+                   runtime,
+                   version,
+                   {:pipeline, pipeline, resolution},
+                   target_id,
+                   range,
+                   selection,
+                   opts
+                 ),
+               {:ok, _root} <- ensure_root_run(submission) do
+            persist_submission(submission)
+          end
+        end)
       end
     end)
   end
@@ -146,13 +157,14 @@ defmodule FavnOrchestrator.Backfills do
       when is_binary(manifest_version_id) and is_binary(target_id) and is_list(opts) do
     with :ok <- authorize(context),
          :ok <- validate_options(opts),
-         :ok <- reject_asset_combine(opts),
-         {:ok, runtime, _version, _asset} <-
-           active_asset(context, manifest_version_id, target_id),
-         {:ok, range} <- RangeResolver.resolve(range_request),
-         :ok <- validate_window_count(range.requested_count, opts),
-         {:ok, selection} <- Selection.backfill(range.anchors, range.timezone) do
-      {:ok, plan_map(runtime.deployment_id, manifest_version_id, target_id, range, selection)}
+         :ok <- reject_asset_combine(opts) do
+      with_active_asset(context, manifest_version_id, target_id, fn runtime, _version, _asset ->
+        with {:ok, range} <- RangeResolver.resolve(range_request),
+             :ok <- validate_window_count(range.requested_count, opts),
+             {:ok, selection} <- Selection.backfill(range.anchors, range.timezone) do
+          {:ok, plan_map(runtime.deployment_id, manifest_version_id, target_id, range, selection)}
+        end
+      end)
     end
   end
 
@@ -172,24 +184,26 @@ defmodule FavnOrchestrator.Backfills do
     Lifecycle.with_admission(fn ->
       with :ok <- authorize(context),
            :ok <- validate_options(opts),
-           :ok <- reject_asset_combine(opts),
-           {:ok, runtime, version, asset} <- active_asset(context, manifest_version_id, target_id),
-           {:ok, range} <- RangeResolver.resolve(range_request),
-           :ok <- validate_window_count(range.requested_count, opts),
-           {:ok, selection} <- Selection.backfill(range.anchors, range.timezone),
-           submission <-
-             build_submission(
-               context,
-               runtime,
-               version,
-               {:asset, asset},
-               target_id,
-               range,
-               selection,
-               opts
-             ),
-           {:ok, _root} <- ensure_root_run(submission) do
-        persist_submission(submission)
+           :ok <- reject_asset_combine(opts) do
+        with_active_asset(context, manifest_version_id, target_id, fn runtime, version, asset ->
+          with {:ok, range} <- RangeResolver.resolve(range_request),
+               :ok <- validate_window_count(range.requested_count, opts),
+               {:ok, selection} <- Selection.backfill(range.anchors, range.timezone),
+               submission <-
+                 build_submission(
+                   context,
+                   runtime,
+                   version,
+                   {:asset, asset},
+                   target_id,
+                   range,
+                   selection,
+                   opts
+                 ),
+               {:ok, _root} <- ensure_root_run(submission) do
+            persist_submission(submission)
+          end
+        end)
       end
     end)
   end
@@ -214,17 +228,18 @@ defmodule FavnOrchestrator.Backfills do
       when is_binary(manifest_version_id) and is_binary(target_id) and is_list(anchors) and
              is_list(opts) do
     with :ok <- authorize(context),
-         :ok <- validate_options(opts),
-         {:ok, runtime, version, asset} <-
-           active_asset(context, manifest_version_id, target_id),
-         {:ok, range} <- exact_range(anchors),
-         :ok <- validate_window_count(range.requested_count, opts),
-         {:ok, selection} <- Selection.backfill(range.anchors, range.timezone),
-         combine_windows <- Keyword.get(opts, :combine_windows, false),
-         :ok <- validate_combined_asset_execution(version, asset, selection, opts) do
-      {:ok,
-       plan_map(runtime.deployment_id, manifest_version_id, target_id, range, selection)
-       |> put_execution_summary(combine_windows)}
+         :ok <- validate_options(opts) do
+      with_active_asset(context, manifest_version_id, target_id, fn runtime, version, asset ->
+        with {:ok, range} <- exact_range(anchors),
+             :ok <- validate_window_count(range.requested_count, opts),
+             {:ok, selection} <- Selection.backfill(range.anchors, range.timezone),
+             combine_windows <- Keyword.get(opts, :combine_windows, false),
+             :ok <- validate_combined_asset_execution(version, asset, selection, opts) do
+          {:ok,
+           plan_map(runtime.deployment_id, manifest_version_id, target_id, range, selection)
+           |> put_execution_summary(combine_windows)}
+        end
+      end)
     end
   end
 
@@ -249,25 +264,27 @@ defmodule FavnOrchestrator.Backfills do
              is_list(opts) do
     Lifecycle.with_admission(fn ->
       with :ok <- authorize(context),
-           :ok <- validate_options(opts),
-           {:ok, runtime, version, asset} <- active_asset(context, manifest_version_id, target_id),
-           {:ok, range} <- exact_range(anchors),
-           :ok <- validate_window_count(range.requested_count, opts),
-           {:ok, selection} <- Selection.backfill(range.anchors, range.timezone),
-           :ok <- validate_combined_asset_execution(version, asset, selection, opts),
-           submission <-
-             build_submission(
-               context,
-               runtime,
-               version,
-               {:asset, asset},
-               target_id,
-               range,
-               selection,
-               opts
-             ),
-           {:ok, _root} <- ensure_root_run(submission) do
-        persist_submission(submission)
+           :ok <- validate_options(opts) do
+        with_active_asset(context, manifest_version_id, target_id, fn runtime, version, asset ->
+          with {:ok, range} <- exact_range(anchors),
+               :ok <- validate_window_count(range.requested_count, opts),
+               {:ok, selection} <- Selection.backfill(range.anchors, range.timezone),
+               :ok <- validate_combined_asset_execution(version, asset, selection, opts),
+               submission <-
+                 build_submission(
+                   context,
+                   runtime,
+                   version,
+                   {:asset, asset},
+                   target_id,
+                   range,
+                   selection,
+                   opts
+                 ),
+               {:ok, _root} <- ensure_root_run(submission) do
+            persist_submission(submission)
+          end
+        end)
       end
     end)
   end
@@ -282,16 +299,17 @@ defmodule FavnOrchestrator.Backfills do
         opts
       )
       when is_atom(module) and is_atom(name) and is_list(anchors) and is_list(opts) do
-    with {:ok, index} <- ManifestIndexCache.fetch(version),
-         {:ok, _plan} <-
-           Planner.plan(asset_ref,
-             planning_index: index.planning_index,
-             dependencies: Keyword.get(opts, :dependencies, :all),
-             anchor_windows: anchors,
-             combine_windows: true
-           ) do
-      :ok
-    end
+    ManifestStore.with_index(version, fn index ->
+      with {:ok, _plan} <-
+             Planner.plan(asset_ref,
+               planning_index: index.planning_index,
+               dependencies: Keyword.get(opts, :dependencies, :all),
+               anchor_windows: anchors,
+               combine_windows: true
+             ) do
+        :ok
+      end
+    end)
   end
 
   @doc "Fetches one authoritative backfill under its workspace boundary."
@@ -320,31 +338,35 @@ defmodule FavnOrchestrator.Backfills do
     end
   end
 
-  defp active_pipeline(context, requested_manifest_id, target_id) do
+  defp with_active_pipeline(context, requested_manifest_id, target_id, fun) do
     with {:ok, {runtime, grants}} <-
            ManifestStore.get_active_deployment(context, customer_visible_only: true),
          true <- runtime.manifest_version_id == requested_manifest_id,
          true <-
-           Enum.any?(grants, &(&1.target_kind == :pipeline and &1.target_id == target_id)),
-         {:ok, version} <- ManifestStore.get_manifest(context, requested_manifest_id),
-         {:ok, %Pipeline{} = pipeline} <- ManifestTarget.resolve_pipeline(version, target_id) do
-      {:ok, runtime, version, pipeline}
+           Enum.any?(grants, &(&1.target_kind == :pipeline and &1.target_id == target_id)) do
+      ManifestStore.with_manifest(context, requested_manifest_id, fn version ->
+        with {:ok, %Pipeline{} = pipeline} <- ManifestTarget.resolve_pipeline(version, target_id) do
+          fun.(runtime, version, pipeline)
+        end
+      end)
     else
       false -> {:error, :manifest_or_target_not_active_in_workspace}
       {:error, _reason} = error -> error
     end
   end
 
-  defp active_asset(context, requested_manifest_id, target_id) do
+  defp with_active_asset(context, requested_manifest_id, target_id, fun) do
     with {:ok, {runtime, grants}} <-
            ManifestStore.get_active_deployment(context, customer_visible_only: true),
          true <- runtime.manifest_version_id == requested_manifest_id,
-         true <- Enum.any?(grants, &(&1.target_kind == :asset and &1.target_id == target_id)),
-         {:ok, version} <- ManifestStore.get_manifest(context, requested_manifest_id),
-         {:ok, %Asset{ref: {module, name}} = asset}
-         when is_atom(module) and is_atom(name) <-
-           ManifestTarget.resolve_asset(version, target_id) do
-      {:ok, runtime, version, asset}
+         true <- Enum.any?(grants, &(&1.target_kind == :asset and &1.target_id == target_id)) do
+      ManifestStore.with_manifest(context, requested_manifest_id, fn version ->
+        with {:ok, %Asset{ref: {module, name}} = asset}
+             when is_atom(module) and is_atom(name) <-
+               ManifestTarget.resolve_asset(version, target_id) do
+          fun.(runtime, version, asset)
+        end
+      end)
     else
       false -> {:error, :manifest_or_target_not_active_in_workspace}
       {:error, _reason} = error -> error
@@ -352,28 +374,29 @@ defmodule FavnOrchestrator.Backfills do
   end
 
   defp resolve_pipeline(version, pipeline, %Selection{} = selection) do
-    with {:ok, index} <- ManifestIndexCache.fetch(version) do
+    ManifestStore.with_index(version, fn index ->
       PipelineResolver.resolve(index, pipeline,
         trigger: %{kind: :backfill, phase: :parent},
         params: %{},
         window_selection: selection
       )
-    end
+    end)
   end
 
   defp validate_combined_execution(_version, _resolution, _selection, false), do: :ok
 
   defp validate_combined_execution(version, resolution, selection, true) do
-    with {:ok, index} <- ManifestIndexCache.fetch(version),
-         {:ok, _plan} <-
-           Planner.plan(resolution.target_refs,
-             planning_index: index.planning_index,
-             dependencies: resolution.dependencies,
-             anchor_windows: selection.effective_anchors,
-             combine_windows: true
-           ) do
-      :ok
-    end
+    ManifestStore.with_index(version, fn index ->
+      with {:ok, _plan} <-
+             Planner.plan(resolution.target_refs,
+               planning_index: index.planning_index,
+               dependencies: resolution.dependencies,
+               anchor_windows: selection.effective_anchors,
+               combine_windows: true
+             ) do
+        :ok
+      end
+    end)
   end
 
   defp build_submission(

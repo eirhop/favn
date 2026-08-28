@@ -40,7 +40,9 @@ defmodule FavnOrchestrator.RunManager.ManualWindowSubmissionTest do
 
     def get_deployment_configuration(_query), do: {:ok, %{}}
 
-    def get_run(%GetRun{}), do: {:ok, Process.get(:manual_window_source_run)}
+    def get_run_size(%GetRun{}), do: {:ok, 1_024}
+    def get_run(%GetRun{}),
+      do: {:ok, Application.fetch_env!(:favn_orchestrator, :manual_window_source_run)}
 
     def get_evidence_bindings(query) do
       {:ok, Enum.map(query.target_ids, &evidence_binding/1)}
@@ -55,6 +57,10 @@ defmodule FavnOrchestrator.RunManager.ManualWindowSubmissionTest do
   setup do
     version = manifest_version()
     Process.put(:manual_window_version, version)
+
+    on_exit(fn ->
+      Application.delete_env(:favn_orchestrator, :manual_window_source_run)
+    end)
 
     stores =
       struct(Stores,
@@ -114,7 +120,7 @@ defmodule FavnOrchestrator.RunManager.ManualWindowSubmissionTest do
           |> Map.put("connection_circuit_policy", %{"spoofed" => %{}})
     }
 
-    Process.put(:manual_window_source_run, legacy_source)
+    Application.put_env(:favn_orchestrator, :manual_window_source_run, legacy_source)
 
     assert {:ok, rerun} =
              SubmissionBuilder.persisted_rerun(

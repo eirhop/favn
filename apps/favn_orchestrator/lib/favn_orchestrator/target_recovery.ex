@@ -61,29 +61,33 @@ defmodule FavnOrchestrator.TargetRecovery do
          evaluated_at <- Keyword.get(opts, :evaluated_at, DateTime.utc_now()),
          :ok <- validate_datetime(evaluated_at),
          operation_id <- Keyword.get(opts, :operation_id, recovery_id()),
-         {:ok, durable} <- recovery_context(context, target_id),
-         {:ok, intent} <-
-           store().create_intent(%CreateTargetRecoveryIntent{
-             workspace_context: context,
-             command_id: command_id("plan", operation_id),
-             operation_id: operation_id,
-             target_id: target_id,
-             recovery_kind: :reconcile_initial_generation,
-             desired_manifest_id: durable.version.manifest_version_id,
-             source_manifest_id: durable.candidate.generation.creating_manifest_id,
-             target_generation_id: durable.candidate.generation.target_generation_id,
-             materialization_id: durable.candidate.materialization_id,
-             actor_id: context.principal_id,
-             session_id: Keyword.get(opts, :session_id),
-             reason: reason,
-             idempotency_key: Keyword.get(opts, :idempotency_key, operation_id),
-             expected_binding_version: durable.candidate.binding.version,
-             evaluated_at: evaluated_at,
-             occurred_at: Keyword.get(opts, :occurred_at, evaluated_at)
-           }),
-         {:ok, plan} <-
-           resume_planning(context, intent, durable, opts) do
-      {:ok, plan}
+         {:ok, durable} <- recovery_context(context, target_id) do
+      try do
+        with {:ok, intent} <-
+               store().create_intent(%CreateTargetRecoveryIntent{
+                 workspace_context: context,
+                 command_id: command_id("plan", operation_id),
+                 operation_id: operation_id,
+                 target_id: target_id,
+                 recovery_kind: :reconcile_initial_generation,
+                 desired_manifest_id: durable.version.manifest_version_id,
+                 source_manifest_id: durable.candidate.generation.creating_manifest_id,
+                 target_generation_id: durable.candidate.generation.target_generation_id,
+                 materialization_id: durable.candidate.materialization_id,
+                 actor_id: context.principal_id,
+                 session_id: Keyword.get(opts, :session_id),
+                 reason: reason,
+                 idempotency_key: Keyword.get(opts, :idempotency_key, operation_id),
+                 expected_binding_version: durable.candidate.binding.version,
+                 evaluated_at: evaluated_at,
+                 occurred_at: Keyword.get(opts, :occurred_at, evaluated_at)
+               }),
+             {:ok, plan} <- resume_planning(context, intent, durable, opts) do
+          {:ok, plan}
+        end
+      after
+        release_recovery_context(durable)
+      end
     end
   end
 
@@ -106,11 +110,14 @@ defmodule FavnOrchestrator.TargetRecovery do
              context,
              operation.target_id,
              {:start, operation.operation_id, operation.version}
-           ),
-         :ok <- revalidate_operation(operation, evidence),
-         {:ok, [lock]} <- acquire_lock(context, operation, opts),
-         {:ok, begun} <- begin_recovery_with_release(context, operation, lock, opts) do
-      execute_started(context, begun, evidence, lock, opts)
+           ) do
+      with_recovery_evidence(evidence, fn ->
+        with :ok <- revalidate_operation(operation, evidence),
+             {:ok, [lock]} <- acquire_lock(context, operation, opts),
+             {:ok, begun} <- begin_recovery_with_release(context, operation, lock, opts) do
+          execute_started(context, begun, evidence, lock, opts)
+        end
+      end)
     else
       {:ok, :idempotent_replay} -> {:ok, %{operation | idempotency_replay?: true}}
       {:error, _reason} = error -> error
@@ -145,10 +152,13 @@ defmodule FavnOrchestrator.TargetRecovery do
              context,
              operation.target_id,
              {:reconcile, operation.operation_id, operation.version, occurred_at}
-           ),
-         :ok <- revalidate_operation(operation, evidence),
-         {:ok, [lock]} <- acquire_lock(context, operation, opts) do
-      reconcile_marker(context, operation, evidence, lock, opts)
+           ) do
+      with_recovery_evidence(evidence, fn ->
+        with :ok <- revalidate_operation(operation, evidence),
+             {:ok, [lock]} <- acquire_lock(context, operation, opts) do
+          reconcile_marker(context, operation, evidence, lock, opts)
+        end
+      end)
     end
   end
 
@@ -170,28 +180,45 @@ defmodule FavnOrchestrator.TargetRecovery do
              workspace_context: context,
              target_id: target_id
            }),
-         {:ok, runtime, version, asset} <- active_asset(context, target_id),
-         :ok <- current_binding_matches(candidate, version, asset),
-         {:ok, source_descriptor} <- source_descriptor(candidate),
-         :ok <- source_generation_matches(candidate, source_descriptor),
-         :ok <- recoverable_contract(asset, source_descriptor),
-         :ok <- same_physical_relation(asset, candidate) do
-      {:ok,
-       %{
-         runtime: runtime,
-         version: version,
-         asset: asset,
-         candidate: candidate,
-         source_descriptor: source_descriptor
-       }}
+         {:ok, runtime, version, asset, manifest_lease} <- active_asset(context, target_id) do
+      result =
+        with :ok <- current_binding_matches(candidate, version, asset),
+             {:ok, source_descriptor} <- source_descriptor(candidate),
+             :ok <- source_generation_matches(candidate, source_descriptor),
+             :ok <- recoverable_contract(asset, source_descriptor),
+             :ok <- same_physical_relation(asset, candidate) do
+          {:ok,
+           %{
+             runtime: runtime,
+             version: version,
+             asset: asset,
+             manifest_lease: manifest_lease,
+             candidate: candidate,
+             source_descriptor: source_descriptor
+           }}
+        end
+
+      case result do
+        {:ok, _durable} = success ->
+          success
+
+        {:error, _reason} = error ->
+          release_recovery_context(%{manifest_lease: manifest_lease}, error)
+      end
     end
   end
 
   defp current_recovery_evidence(context, target_id, task_scope) do
     with {:ok, durable} <- recovery_context(context, target_id) do
       case collect_runner_evidence(context, durable, task_scope) do
-        {:error, {:terminal_target_recovery_evidence, reason}} -> {:error, reason}
-        result -> result
+        {:error, {:terminal_target_recovery_evidence, reason}} ->
+          release_recovery_context(durable, {:error, reason})
+
+        {:error, _reason} = error ->
+          release_recovery_context(durable, error)
+
+        result ->
+          result
       end
     end
   end
@@ -357,10 +384,25 @@ defmodule FavnOrchestrator.TargetRecovery do
   defp active_asset(context, target_id) do
     with {:ok, {runtime, grants}} <- ManifestStore.get_active_deployment(context),
          true <- Enum.any?(grants, &(&1.target_kind == :asset and &1.target_id == target_id)),
-         {:ok, version} <- ManifestStore.get_manifest(context, runtime.manifest_version_id),
-         {:ok, %Asset{} = asset} <- ManifestTarget.resolve_asset(version, target_id),
-         %TargetDescriptor{} <- asset.target_descriptor do
-      {:ok, runtime, version, asset}
+         {:ok, lease} <-
+           ManifestStore.checkout_deployment_manifest(
+             context,
+             runtime.deployment_id,
+             runtime.manifest_version_id
+           ) do
+      case ManifestTarget.resolve_asset(lease.version, target_id) do
+        {:ok, %Asset{target_descriptor: %TargetDescriptor{}} = asset} ->
+          {:ok, runtime, lease.version, asset, lease}
+
+        {:ok, %Asset{}} ->
+          release_recovery_context(
+            %{manifest_lease: lease},
+            {:error, Error.new(:conflict, "target is not a persisted SQL asset")}
+          )
+
+        {:error, _reason} = error ->
+          release_recovery_context(%{manifest_lease: lease}, error)
+      end
     else
       false -> {:error, Error.new(:not_found, "target is not in the active deployment")}
       nil -> {:error, Error.new(:conflict, "target is not a persisted SQL asset")}
@@ -369,19 +411,39 @@ defmodule FavnOrchestrator.TargetRecovery do
     end
   end
 
+  defp with_recovery_evidence(evidence, fun) do
+    try do
+      fun.()
+    after
+      release_recovery_context(evidence)
+    end
+  end
+
+  defp release_recovery_context(%{manifest_lease: lease}) do
+    ManifestStore.release_manifest(lease)
+  end
+
+  defp release_recovery_context(context, result) do
+    :ok = release_recovery_context(context)
+    result
+  end
+
   defp source_descriptor(%InitialTargetRecoveryCandidate{} = candidate) do
     platform_context = SystemContext.platform(:target_recovery_historical_descriptor)
     manifest_id = candidate.generation.creating_manifest_id
     target_id = candidate.binding.target_id
 
-    case ManifestStore.get_manifest(platform_context, manifest_id) do
-      {:ok, version} ->
-        with {:ok, asset} <- ManifestTarget.resolve_asset(version, target_id),
-             %TargetDescriptor{} = descriptor <- asset.target_descriptor do
-          {:ok, descriptor}
-        else
-          _invalid -> {:error, Error.new(:conflict, "historical target descriptor is missing")}
-        end
+    case ManifestStore.with_manifest(platform_context, manifest_id, fn version ->
+           with {:ok, asset} <- ManifestTarget.resolve_asset(version, target_id),
+                %TargetDescriptor{} = descriptor <- asset.target_descriptor do
+             {:ok, descriptor}
+           else
+             _invalid ->
+               {:error, Error.new(:conflict, "historical target descriptor is missing")}
+           end
+         end) do
+      {:ok, %TargetDescriptor{} = descriptor} ->
+        {:ok, descriptor}
 
       {:error, %{details: %{reason: :historical_manifest_not_activatable}}} ->
         historical_descriptor(platform_context, manifest_id, target_id)

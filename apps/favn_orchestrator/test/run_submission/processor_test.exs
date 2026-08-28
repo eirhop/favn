@@ -9,6 +9,7 @@ defmodule FavnOrchestrator.RunSubmission.ProcessorTest do
   alias FavnOrchestrator.Persistence.Error
   alias FavnOrchestrator.Persistence.RunSubmissionAuthority
   alias FavnOrchestrator.Persistence.Results.RunSubmission
+  alias FavnOrchestrator.MemoryCapacity.Error, as: MemoryError
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.RunSubmission.Processor
 
@@ -117,6 +118,37 @@ defmodule FavnOrchestrator.RunSubmission.ProcessorTest do
 
     assert_receive {:store_command, %MarkRunSubmissionFailed{failure_kind: :safe}}
     refute_receive {:store_command, %RequeueRunSubmission{}}
+  end
+
+  test "memory pressure keeps deferring after the ordinary retry limit", %{submission: submission} do
+    :persistent_term.put(
+      {Preparation, :result},
+      {:error, %MemoryError{code: :manifest_capacity_unavailable, required_bytes: 1}}
+    )
+
+    exhausted = %{submission | attempt: 100}
+    :persistent_term.put({Store, :submission}, exhausted)
+
+    assert {:ok, %{status: :queued}} =
+             Processor.process(exhausted, processor_options())
+
+    assert_receive {:store_command, %RequeueRunSubmission{}}
+    refute_receive {:store_command, %MarkRunSubmissionFailed{}}
+  end
+
+  test "bounded worker availability keeps deferring after the ordinary retry limit", %{
+    submission: submission
+  } do
+    :persistent_term.put({Preparation, :result}, {:error, :worker_timeout})
+
+    exhausted = %{submission | attempt: 100}
+    :persistent_term.put({Store, :submission}, exhausted)
+
+    assert {:ok, %{status: :queued}} =
+             Processor.process(exhausted, processor_options())
+
+    assert_receive {:store_command, %RequeueRunSubmission{}}
+    refute_receive {:store_command, %MarkRunSubmissionFailed{}}
   end
 
   test "marks an unreconciled ambiguous admission failure unknown", %{submission: submission} do

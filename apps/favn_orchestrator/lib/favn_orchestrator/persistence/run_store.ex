@@ -25,8 +25,8 @@ defmodule FavnOrchestrator.Persistence.RunStore do
               {:ok, RunCommitted.t()} | {:error, Error.t()}
   @callback request_cancellation(RequestRunCancellation.t()) ::
               {:ok, RunCommitted.t()} | {:error, Error.t()}
+  @callback get_run_size(GetRun.t()) :: {:ok, non_neg_integer()} | {:error, Error.t()}
   @callback get_run(GetRun.t()) :: {:ok, RunState.t()} | {:error, Error.t()}
-  @callback page_runs(PageRuns.t()) :: {:ok, CursorPage.t(RunState.t())} | {:error, Error.t()}
   @callback page_run_summaries(PageRuns.t()) ::
               {:ok, CursorPage.t(RunSummary.t())} | {:error, Error.t()}
   @callback page_events(PageRunEvents.t() | PagePublishedRunEvents.t()) ::

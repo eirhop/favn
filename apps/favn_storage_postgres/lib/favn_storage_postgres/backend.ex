@@ -16,7 +16,6 @@ defmodule FavnStoragePostgres.Backend do
   alias FavnStoragePostgres.BackendSupervisor
   alias FavnStoragePostgres.Config
   alias FavnStoragePostgres.ErrorMapper
-  alias FavnStoragePostgres.Registry.ManifestCache
   alias FavnStoragePostgres.Repo
   alias FavnStoragePostgres.RuntimeInputKeys
   alias FavnStoragePostgres.StorageV2.Migrations
@@ -115,8 +114,7 @@ defmodule FavnStoragePostgres.Backend do
          },
          metadata: %{
            authentication: Authentication.status(connection_config.authentication),
-           runtime_input_keys: runtime_input_keys,
-           manifest_cache: ManifestCache.diagnostics()
+           runtime_input_keys: runtime_input_keys
          }
        }}
     else

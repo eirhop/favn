@@ -85,9 +85,8 @@ defmodule FavnOrchestrator.Coverage do
     timed_query(context, target_id, :summary, fn ->
       with :ok <- validate_options(opts, [:evaluated_at]),
            evaluated_at <- Keyword.get(opts, :evaluated_at, DateTime.utc_now()),
-           :ok <- validate_datetime(evaluated_at),
-           {:ok, snapshot} <- active_asset(context, target_id) do
-        summarize(context, snapshot, evaluated_at)
+           :ok <- validate_datetime(evaluated_at) do
+        with_active_asset(context, target_id, &summarize(context, &1, evaluated_at))
       end
     end)
   end
@@ -105,13 +104,15 @@ defmodule FavnOrchestrator.Coverage do
            {:ok, {runtime, grants}} <-
              ManifestStore.get_active_deployment(context, customer_visible_only: true),
            granted <- granted_asset_ids(grants),
-           true <- Enum.all?(target_ids, &MapSet.member?(granted, &1)),
-           {:ok, version} <- ManifestStore.get_manifest(context, runtime.manifest_version_id),
-           {:ok, snapshots} <- asset_snapshots(version, runtime, target_ids),
-           identities <- batch_identities(context, snapshots),
-           {:ok, summaries} <-
-             summarize_snapshots(context, snapshots, identities, evaluated_at) do
-        {:ok, summaries}
+           true <- Enum.all?(target_ids, &MapSet.member?(granted, &1)) do
+        ManifestStore.with_manifest(context, runtime.manifest_version_id, fn version ->
+          with {:ok, snapshots} <- asset_snapshots(version, runtime, target_ids),
+               identities <- batch_identities(context, snapshots),
+               {:ok, summaries} <-
+                 summarize_snapshots(context, snapshots, identities, evaluated_at) do
+            {:ok, summaries}
+          end
+        end)
       else
         false -> {:error, :not_found}
         {:error, _reason} = error -> error
@@ -126,13 +127,15 @@ defmodule FavnOrchestrator.Coverage do
       when is_binary(target_id) and is_list(opts) do
     timed_query(context, target_id, :missing_windows, fn ->
       with :ok <- validate_options(opts, [:evaluated_at, :limit, :cursor]),
-           {:ok, limit} <- page_limit(Keyword.get(opts, :limit, @default_page)),
-           {:ok, snapshot} <- active_asset(context, target_id),
-           {:ok, cursor} <- decode_cursor(Keyword.get(opts, :cursor)),
-           {:ok, evaluated_at, after_key} <- evaluation_position(snapshot, cursor, opts),
-           {:ok, result} <- missing_page(context, snapshot, evaluated_at, after_key, limit),
-           :ok <- validate_cursor_result(cursor, result.summary) do
-        {:ok, result}
+           {:ok, limit} <- page_limit(Keyword.get(opts, :limit, @default_page)) do
+        with_active_asset(context, target_id, fn snapshot ->
+          with {:ok, cursor} <- decode_cursor(Keyword.get(opts, :cursor)),
+               {:ok, evaluated_at, after_key} <- evaluation_position(snapshot, cursor, opts),
+               {:ok, result} <- missing_page(context, snapshot, evaluated_at, after_key, limit),
+               :ok <- validate_cursor_result(cursor, result.summary) do
+            {:ok, result}
+          end
+        end)
       end
     end)
   end
@@ -160,10 +163,12 @@ defmodule FavnOrchestrator.Coverage do
            :ok <- validate_optional_date(Keyword.get(opts, :from)),
            :ok <- validate_optional_date(Keyword.get(opts, :until)),
            evaluated_at <- Keyword.get(opts, :evaluated_at, DateTime.utc_now()),
-           :ok <- validate_datetime(evaluated_at),
-           {:ok, snapshot} <- active_asset(context, target_id),
-           {:ok, summary} <- summarize(context, snapshot, evaluated_at) do
-        addressed_states(context, snapshot, summary, opts)
+           :ok <- validate_datetime(evaluated_at) do
+        with_active_asset(context, target_id, fn snapshot ->
+          with {:ok, summary} <- summarize(context, snapshot, evaluated_at) do
+            addressed_states(context, snapshot, summary, opts)
+          end
+        end)
       end
     end)
   end
@@ -282,17 +287,22 @@ defmodule FavnOrchestrator.Coverage do
          :ok <- validate_datetime(evaluated_at),
          {:ok, selection} <- backfill_selection(opts),
          {:ok, summary, items} <-
-           missing_selection(context, target_id, evaluated_at, selection),
-         {:ok, snapshot} <- active_asset(context, target_id),
-         true <- snapshot.version.manifest_version_id == summary.manifest_version_id,
-         :ok <- validate_combined_backfill(context, snapshot, items, combine_windows) do
-      build_backfill_plan(
-        summary,
-        items,
-        snapshot.runtime.deployment_id,
-        selection,
-        combine_windows
-      )
+           missing_selection(context, target_id, evaluated_at, selection) do
+      with_active_asset(context, target_id, fn snapshot ->
+        with true <- snapshot.version.manifest_version_id == summary.manifest_version_id,
+             :ok <- validate_combined_backfill(context, snapshot, items, combine_windows) do
+          build_backfill_plan(
+            summary,
+            items,
+            snapshot.runtime.deployment_id,
+            selection,
+            combine_windows
+          )
+        else
+          false -> {:error, :coverage_selection_stale}
+          {:error, _reason} = error -> error
+        end
+      end)
     else
       false -> {:error, :coverage_selection_stale}
       {:error, _reason} = error -> error
@@ -405,19 +415,24 @@ defmodule FavnOrchestrator.Coverage do
              |> Keyword.put(:evaluated_at, selected.evaluated_at)
            ),
          true <- current.plan_id == selected.plan_id and current.plan_hash == selected.plan_hash,
-         {:ok, snapshot} <- active_asset(context, target_id),
-         true <- snapshot.version.manifest_version_id == selected.manifest_version_id,
-         true <- snapshot.runtime.deployment_id == selected.deployment_id,
-         {:ok, submit_opts} <- put_coverage_metadata(opts, selected),
-         {:ok, backfill} <-
-           Backfills.submit_asset_windows(
-             context,
-             selected.manifest_version_id,
-             target_id,
-             selected.anchors,
-             submit_opts
-           ) do
-      {:ok, backfill}
+         {:ok, submit_opts} <- put_coverage_metadata(opts, selected) do
+      with_active_asset(context, target_id, fn snapshot ->
+        with true <- snapshot.version.manifest_version_id == selected.manifest_version_id,
+             true <- snapshot.runtime.deployment_id == selected.deployment_id,
+             {:ok, backfill} <-
+               Backfills.submit_asset_windows(
+                 context,
+                 selected.manifest_version_id,
+                 target_id,
+                 selected.anchors,
+                 submit_opts
+               ) do
+          {:ok, backfill}
+        else
+          false -> {:error, :coverage_selection_stale}
+          {:error, reason} -> {:error, reason}
+        end
+      end)
     else
       false ->
         {:error, :coverage_selection_stale}
@@ -614,16 +629,18 @@ defmodule FavnOrchestrator.Coverage do
     end
   end
 
-  defp active_asset(context, target_id) do
+  defp with_active_asset(context, target_id, fun) do
     with {:ok, {runtime, grants}} <-
            ManifestStore.get_active_deployment(context, customer_visible_only: true),
          true <-
-           Enum.any?(grants, &(&1.target_kind == :asset and &1.target_id == target_id)),
-         {:ok, version} <- ManifestStore.get_manifest(context, runtime.manifest_version_id),
-         {:ok, %Asset{ref: {module, name}} = asset}
-         when is_atom(module) and is_atom(name) <-
-           ManifestTarget.resolve_asset(version, target_id) do
-      {:ok, %{runtime: runtime, version: version, asset: asset, target_id: target_id}}
+           Enum.any?(grants, &(&1.target_kind == :asset and &1.target_id == target_id)) do
+      ManifestStore.with_manifest(context, runtime.manifest_version_id, fn version ->
+        with {:ok, %Asset{ref: {module, name}} = asset}
+             when is_atom(module) and is_atom(name) <-
+               ManifestTarget.resolve_asset(version, target_id) do
+          fun.(%{runtime: runtime, version: version, asset: asset, target_id: target_id})
+        end
+      end)
     else
       false -> {:error, :not_found}
       {:error, _reason} = error -> error

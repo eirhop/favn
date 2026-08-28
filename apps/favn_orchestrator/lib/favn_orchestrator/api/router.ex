@@ -16,6 +16,7 @@ defmodule FavnOrchestrator.API.Router do
   alias FavnOrchestrator.API.DTO
   alias FavnOrchestrator.API.ExecutionPackagesRouter
   alias FavnOrchestrator.API.ManifestPublication
+  alias FavnOrchestrator.API.ManifestMemoryAdmission
   alias FavnOrchestrator.API.ManifestDeployment
   alias FavnOrchestrator.API.MutationAdmission
   alias FavnOrchestrator.API.ManifestsRouter
@@ -43,6 +44,8 @@ defmodule FavnOrchestrator.API.Router do
   plug(MutationAdmission)
 
   plug(ManifestDeployment)
+
+  plug(ManifestMemoryAdmission)
 
   plug(ManifestPublication)
 

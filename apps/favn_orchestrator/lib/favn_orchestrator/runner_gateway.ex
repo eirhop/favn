@@ -54,7 +54,7 @@ defmodule FavnOrchestrator.RunnerGateway do
     def request(message),
       do: {:error, {:unsupported_runner_task_message, message.__struct__}}
 
-    def fetch_manifest(assignment), do: RunnerTasks.fetch_manifest(assignment)
+    def fetch_manifest(assignment, owner), do: RunnerTasks.checkout_manifest(assignment, owner)
   end
 
   def start_link(opts) do
@@ -98,7 +98,11 @@ defmodule FavnOrchestrator.RunnerGateway do
   end
 
   def handle_call({:fetch_manifest, assignment}, from, state) do
-    admit(state, from, fn -> state.worker.fetch_manifest(assignment) end)
+    owner = self()
+
+    admit(state, from, fn ->
+      state.worker.fetch_manifest(assignment, owner)
+    end)
   end
 
   @impl true
@@ -110,7 +114,7 @@ defmodule FavnOrchestrator.RunnerGateway do
         {:noreply, state}
 
       {from, pending} ->
-        GenServer.reply(from, result)
+        reply(from, result)
         {:noreply, %{state | pending: pending}}
     end
   end
@@ -134,4 +138,11 @@ defmodule FavnOrchestrator.RunnerGateway do
       {:reply, {:error, :runner_gateway_overloaded}, state}
     end
   end
+
+  defp reply(from, {:ok, %FavnOrchestrator.ManifestStore.Lease{} = lease}) do
+    GenServer.reply(from, {:ok, lease.version})
+    FavnOrchestrator.ManifestStore.release_manifest(lease)
+  end
+
+  defp reply(from, result), do: GenServer.reply(from, result)
 end

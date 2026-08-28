@@ -47,8 +47,10 @@ defmodule FavnOrchestrator.API.RunsRouterServiceAuthTest do
        Error.new(:conflict, "run is already terminal", details: %{reason: :run_already_terminal})}
     end
 
+    def get_run_size(_query), do: {:ok, 1_024}
+
     def get_run(_query) do
-      case Process.get(:runs_router_terminal_run) do
+      case Application.get_env(:favn_orchestrator, :runs_router_terminal_run) do
         nil -> {:error, Error.new(:not_found, "run not found")}
         run -> {:ok, run}
       end
@@ -127,7 +129,7 @@ defmodule FavnOrchestrator.API.RunsRouterServiceAuthTest do
 
     Process.put(:runs_router_actors, %{})
     Process.put(:runs_router_sessions, %{})
-    Process.put(:runs_router_terminal_run, %{status: :ok})
+    Application.put_env(:favn_orchestrator, :runs_router_terminal_run, %{status: :ok})
     Process.put(:runs_router_submission, nil)
     Process.put(:runs_router_submission_stats, submission_stats_fixture())
     Process.put(:runs_router_test_pid, self())
@@ -163,7 +165,7 @@ defmodule FavnOrchestrator.API.RunsRouterServiceAuthTest do
       restore_env(:api_service_tokens, previous_tokens)
       Process.delete(:runs_router_actors)
       Process.delete(:runs_router_sessions)
-      Process.delete(:runs_router_terminal_run)
+      Application.delete_env(:favn_orchestrator, :runs_router_terminal_run)
       Process.delete(:runs_router_submission)
       Process.delete(:runs_router_submission_stats)
       Process.delete(:runs_router_test_pid)
@@ -210,7 +212,7 @@ defmodule FavnOrchestrator.API.RunsRouterServiceAuthTest do
   end
 
   test "viewer endpoints expose queued submissions and run detail during admission delay" do
-    Process.put(:runs_router_terminal_run, nil)
+    Application.put_env(:favn_orchestrator, :runs_router_terminal_run, nil)
     Process.put(:runs_router_submission, submission_fixture())
 
     detail = authenticated_get("/queued-run") |> decoded_data()
@@ -377,7 +379,7 @@ defmodule FavnOrchestrator.API.RunsRouterServiceAuthTest do
   end
 
   test "repeating cancellation for a cancelled run reports the persisted outcome" do
-    Process.put(:runs_router_terminal_run, %{status: :cancelled})
+    Application.put_env(:favn_orchestrator, :runs_router_terminal_run, %{status: :cancelled})
     response = cancel_request("cancelled-run")
 
     assert response.status == 200

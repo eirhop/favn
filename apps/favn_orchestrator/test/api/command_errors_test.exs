@@ -5,6 +5,7 @@ defmodule FavnOrchestrator.API.CommandErrorsTest do
   import ExUnit.CaptureLog
 
   alias FavnOrchestrator.API.CommandErrors
+  alias FavnOrchestrator.MemoryCapacity.Error, as: MemoryError
   alias FavnOrchestrator.Persistence.Error
 
   test "redacts untrusted validation values in diagnostics" do
@@ -150,5 +151,15 @@ defmodule FavnOrchestrator.API.CommandErrorsTest do
 
     conn = CommandErrors.send_infrastructure(conn(:post, "/"), Error.new(:conflict, "private"))
     assert conn.status == 500
+  end
+
+  test "maps memory pressure as retryable capacity instead of bad input" do
+    error = %MemoryError{code: :manifest_capacity_unavailable, required_bytes: 256}
+
+    assert {:error, 503, "manifest_capacity_unavailable", _message, %{retry_after: 5}} =
+             CommandErrors.submission(error)
+
+    assert {:error, 503, "manifest_capacity_unavailable", _message, %{retry_after: 5}} =
+             CommandErrors.memory_capacity(error)
   end
 end

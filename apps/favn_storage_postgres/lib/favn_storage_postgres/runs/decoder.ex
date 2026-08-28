@@ -19,50 +19,6 @@ defmodule FavnStoragePostgres.Runs.Decoder do
     )
   end
 
-  @spec decode_many([Run.t()]) ::
-          {:ok, [FavnOrchestrator.RunState.t()]} | {:error, Error.t()}
-  def decode_many(rows) when is_list(rows) do
-    manifests = load_manifests(rows)
-    plans = load_plans(rows)
-
-    rows
-    |> Enum.reduce_while({:ok, []}, fn row, {:ok, acc} ->
-      case decode(
-             row,
-             Map.get(manifests, row.manifest_version_id),
-             Map.get(plans, {row.workspace_id, row.run_id})
-           ) do
-        {:ok, run} -> {:cont, {:ok, [run | acc]}}
-        {:error, error} -> {:halt, {:error, error}}
-      end
-    end)
-    |> then(fn
-      {:ok, runs} -> {:ok, Enum.reverse(runs)}
-      error -> error
-    end)
-  end
-
-  defp load_manifests(rows) do
-    ids = rows |> Enum.map(& &1.manifest_version_id) |> Enum.uniq()
-
-    manifests =
-      from(manifest in ManifestVersion,
-        where: manifest.manifest_version_id in ^ids,
-        select: %ManifestVersion{
-          manifest_version_id: manifest.manifest_version_id,
-          content_hash: manifest.content_hash,
-          runner_releases: manifest.runner_releases,
-          atom_strings: manifest.atom_strings,
-          manifest: manifest.manifest
-        }
-      )
-      |> Repo.all()
-
-    Map.new(manifests, fn manifest ->
-      {manifest.manifest_version_id, manifest}
-    end)
-  end
-
   defp load_manifest(manifest_version_id) do
     manifest =
       from(manifest in ManifestVersion,
@@ -72,36 +28,17 @@ defmodule FavnStoragePostgres.Runs.Decoder do
           content_hash: manifest.content_hash,
           runner_releases: manifest.runner_releases,
           atom_strings: manifest.atom_strings,
-          manifest: manifest.manifest
+          manifest:
+            fragment(
+              "CASE WHEN ? IS NULL THEN ? ELSE NULL END",
+              manifest.atom_strings,
+              manifest.manifest
+            )
         }
       )
       |> Repo.one()
 
     manifest
-  end
-
-  defp load_plans(rows) do
-    identities = rows |> Enum.map(&{&1.workspace_id, &1.run_id}) |> Enum.uniq()
-
-    case identities do
-      [] ->
-        %{}
-
-      identities ->
-        predicate =
-          Enum.reduce(identities, dynamic(false), fn {workspace_id, run_id}, predicate ->
-            dynamic(
-              [plan],
-              ^predicate or
-                (plan.workspace_id == ^workspace_id and plan.run_id == ^run_id)
-            )
-          end)
-
-        RunPlan
-        |> where(^predicate)
-        |> Repo.all()
-        |> Map.new(&{{&1.workspace_id, &1.run_id}, &1})
-    end
   end
 
   defp decode(
@@ -117,23 +54,38 @@ defmodule FavnStoragePostgres.Runs.Decoder do
       manifest_version_id: manifest_version_id
     }
 
-    manifest_record = %{
-      manifest_version_id: manifest_version_id,
-      content_hash: Base.encode16(manifest.content_hash, case: :lower),
-      runner_releases: manifest.runner_releases,
-      atom_strings: manifest_atom_strings(manifest),
-      manifest_index_json: Jason.encode!(manifest.manifest)
-    }
+    case manifest.atom_strings do
+      atom_strings when is_list(atom_strings) ->
+        manifest_record = %{
+          manifest_version_id: manifest_version_id,
+          content_hash: Base.encode16(manifest.content_hash, case: :lower),
+          runner_releases: manifest.runner_releases,
+          atom_strings: atom_strings
+        }
 
-    case RunSnapshotCodec.decode_run(run_record, manifest_record) do
-      {:ok, run} ->
-        {:ok, %{run | workspace_id: row.workspace_id, deployment_id: row.deployment_id}}
+        case RunSnapshotCodec.decode_run(run_record, manifest_record) do
+          {:ok, run} ->
+            {:ok, %{run | workspace_id: row.workspace_id, deployment_id: row.deployment_id}}
 
-      {:error, reason} ->
-        {:error,
-         Error.new(:internal, "persisted run snapshot is invalid",
-           details: %{reason: inspect(reason)}
-         )}
+          {:error, reason} ->
+            invalid_snapshot(reason)
+        end
+
+      _missing_inventory ->
+        manifest_record = %{
+          manifest_version_id: manifest_version_id,
+          content_hash: Base.encode16(manifest.content_hash, case: :lower),
+          runner_releases: manifest.runner_releases,
+          manifest_index_json: Jason.encode!(manifest.manifest)
+        }
+
+        case RunSnapshotCodec.decode_run(run_record, manifest_record) do
+          {:ok, run} ->
+            {:ok, %{run | workspace_id: row.workspace_id, deployment_id: row.deployment_id}}
+
+          {:error, reason} ->
+            invalid_snapshot(reason)
+        end
     end
   end
 
@@ -155,19 +107,10 @@ defmodule FavnStoragePostgres.Runs.Decoder do
 
   defp attach_plan(snapshot, nil), do: snapshot
 
-  defp manifest_atom_strings(%ManifestVersion{atom_strings: atom_strings})
-       when is_list(atom_strings),
-       do: atom_strings
-
-  defp manifest_atom_strings(%ManifestVersion{} = manifest) do
-    record = %{
-      content_hash: Base.encode16(manifest.content_hash, case: :lower),
-      manifest_index_json: Jason.encode!(manifest.manifest)
-    }
-
-    case FavnOrchestrator.Storage.RunSnapshotCodec.ManifestAtoms.extract(record) do
-      {:ok, atoms} -> MapSet.to_list(atoms)
-      {:error, _reason} -> []
-    end
+  defp invalid_snapshot(reason) do
+    {:error,
+     Error.new(:internal, "persisted run snapshot is invalid",
+       details: %{reason: inspect(reason)}
+     )}
   end
 end

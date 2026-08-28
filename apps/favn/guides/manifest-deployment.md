@@ -122,8 +122,15 @@ Operators configure workspace-scoped deployer credentials through
 One archive may contain at most 10,000 execution packages. The compressed limit
 is 256 MiB, the expanded limit is 1 GiB, the compact index limit is 64 MiB, and
 each package is limited to 4 MiB. The Orchestrator reads at most 1 MiB at a time
-and persists packages in batches of at most 100 or 32 MiB. The total upload
+and persists packages in batches of at most 8 or 4 MiB. The total upload
 budget is 15 minutes. These are Favn protocol details, not uploader settings.
+
+The Orchestrator automatically reads the finite Linux cgroup memory limit and
+current usage on any cgroup-based container platform. If a bounded stage cannot
+fit, it returns a retryable capacity error before reading that stage instead of
+risking the control-plane process. Operators normally do not configure a memory
+size in Favn; the optional ceiling is only for an unlimited host or a stricter
+local policy.
 
 The older `mix favn.publish` and `mix favn.activate` commands remain available
 for interactive and local workflows. Production automation should prefer the

@@ -8,6 +8,7 @@ defmodule FavnOrchestrator.API.RebuildsRouter do
   alias FavnOrchestrator.API.Authentication
   alias FavnOrchestrator.API.IdempotentCommand
   alias FavnOrchestrator.API.Response
+  alias FavnOrchestrator.MemoryCapacity.Error, as: MemoryError
   alias FavnOrchestrator.Operator.Rebuilds, as: RebuildDTO
   alias FavnOrchestrator.Persistence.Error
   alias FavnOrchestrator.Rebuilds
@@ -326,6 +327,12 @@ defmodule FavnOrchestrator.API.RebuildsRouter do
   defp respond_error(conn, reason) do
     {status, code, message, details} = error_response(reason)
 
+    conn =
+      case reason do
+        %MemoryError{} -> put_resp_header(conn, "retry-after", "5")
+        _other -> conn
+      end
+
     if status >= 500 do
       Logger.error("rebuild API failed: #{inspect(Redaction.redact_operational_bounded(reason))}")
     end
@@ -345,6 +352,13 @@ defmodule FavnOrchestrator.API.RebuildsRouter do
 
   def error_response(%Error{kind: :not_found}),
     do: {404, "not_found", "Rebuild was not found", %{}}
+
+  def error_response(%MemoryError{code: :manifest_capacity_busy}),
+    do: {429, "manifest_capacity_busy", "Manifest capacity is busy", %{retry_after: 5}}
+
+  def error_response(%MemoryError{code: code})
+      when code in [:manifest_capacity_unavailable, :memory_capacity_unknown],
+      do: {503, Atom.to_string(code), "Manifest capacity is unavailable", %{retry_after: 5}}
 
   def error_response(:not_found), do: {404, "not_found", "Rebuild was not found", %{}}
 

@@ -9,6 +9,9 @@ defmodule FavnOrchestrator.ManifestDeploymentDispatcher do
   alias FavnOrchestrator.ManifestDeploymentClaimHeartbeat
   alias FavnOrchestrator.ManifestDeployments
   alias FavnOrchestrator.Manifests
+  alias FavnOrchestrator.MemoryCapacity
+  alias FavnOrchestrator.MemoryCapacity.Budget
+  alias FavnOrchestrator.MemoryCapacity.Error, as: MemoryError
   alias FavnOrchestrator.Persistence.CommandIdempotency
   alias FavnOrchestrator.Persistence.Error
   alias FavnOrchestrator.Persistence.Results.ManifestDeployment, as: Deployment
@@ -106,6 +109,20 @@ defmodule FavnOrchestrator.ManifestDeploymentDispatcher do
   end
 
   defp run_claimed(operation, owner, inspection_timeout_ms) do
+    case MemoryCapacity.with_lease(
+           Budget.manifest_base(),
+           [kind: :manifest_activation, exclusive: true],
+           fn token -> run_claimed_with_memory(operation, owner, inspection_timeout_ms, token) end
+         ) do
+      {:error, %MemoryError{}} ->
+        ManifestDeployments.release_claim(operation, owner)
+
+      result ->
+        result
+    end
+  end
+
+  defp run_claimed_with_memory(operation, owner, inspection_timeout_ms, token) do
     heartbeat =
       ManifestDeploymentClaimHeartbeat.start(
         fn ->
@@ -119,30 +136,37 @@ defmodule FavnOrchestrator.ManifestDeploymentDispatcher do
       )
 
     try do
-      execute(operation, owner, inspection_timeout_ms)
+      execute(operation, owner, inspection_timeout_ms, token)
     after
       ManifestDeploymentClaimHeartbeat.stop(heartbeat)
     end
   end
 
-  defp execute(operation, owner, inspection_timeout_ms) do
-    result = activate(operation, owner, inspection_timeout_ms)
+  defp execute(operation, owner, inspection_timeout_ms, token) do
+    case activate(operation, owner, inspection_timeout_ms, token) do
+      {:error, %MemoryError{}} ->
+        ManifestDeployments.release_claim(operation, owner)
 
-    reconciled =
-      case result do
-        {:error, reason} ->
-          if unknown_outcome?(reason),
-            do: activate(operation, owner, inspection_timeout_ms),
-            else: result
+      result ->
+        reconciled =
+          case result do
+            {:error, reason} ->
+              if unknown_outcome?(reason),
+                do: activate(operation, owner, inspection_timeout_ms, token),
+                else: result
 
-        {:ok, _runtime} ->
-          result
-      end
+            {:ok, _runtime} ->
+              result
+          end
 
-    complete_activation(operation, owner, reconciled)
+        case reconciled do
+          {:error, %MemoryError{}} -> ManifestDeployments.release_claim(operation, owner)
+          result -> complete_activation(operation, owner, result)
+        end
+    end
   end
 
-  defp activate(operation, owner, inspection_timeout_ms) do
+  defp activate(operation, owner, inspection_timeout_ms, token) do
     platform =
       SystemContext.platform(:manifest_deployment_activation,
         roles: [:platform_operator],
@@ -170,6 +194,7 @@ defmodule FavnOrchestrator.ManifestDeploymentDispatcher do
         activation_progress: fn completed, total ->
           ManifestDeployments.update_progress(operation, owner, completed, total)
         end,
+        memory_capacity_token: token,
         execution_pool_policy: %{approve_manifest_defaults: true},
         idempotency: idempotency
       )

@@ -31,13 +31,14 @@ defmodule FavnOrchestrator.Manifests do
 
   @type details :: %{required(:manifest) => map(), required(:targets) => map()}
 
-  @doc "Publishes one immutable platform-global manifest release."
-  @spec publish(PlatformContext.t(), Version.t()) ::
+  @doc "Publishes one immutable release under an explicit memory-capacity token."
+  @spec publish(PlatformContext.t(), Version.t(), keyword()) ::
           {:ok, :published | :already_published, Version.t()} | {:error, term()}
-  def publish(%PlatformContext{} = context, %Version{} = version) do
+  def publish(%PlatformContext{} = context, %Version{} = version, opts)
+      when is_list(opts) do
     Lifecycle.with_admission(fn ->
       result =
-        with {:ok, status, published} <- ManifestStore.publish_manifest(context, version),
+        with {:ok, status, published} <- ManifestStore.publish_manifest(context, version, opts),
              :ok <- ensure_runner_capacity_partitions(context, published) do
           {:ok, status, published}
         end
@@ -105,8 +106,35 @@ defmodule FavnOrchestrator.Manifests do
          opts,
          attempts
        ) do
-    with {:ok, version} <- ManifestStore.get_manifest(platform_context, manifest_version_id),
-         :ok <- validate_configured_pools(version),
+    scoped_opts =
+      case Keyword.get(opts, :memory_capacity_token) do
+        nil -> []
+        token -> [memory_capacity_token: token]
+      end
+
+    ManifestStore.with_manifest(platform_context, manifest_version_id, scoped_opts, fn version ->
+      deploy_loaded_manifest(
+        platform_context,
+        context,
+        manifest_version_id,
+        version,
+        selection,
+        opts,
+        attempts
+      )
+    end)
+  end
+
+  defp deploy_loaded_manifest(
+         platform_context,
+         context,
+         manifest_version_id,
+         version,
+         selection,
+         opts,
+         attempts
+       ) do
+    with :ok <- validate_configured_pools(version),
          {:ok, expected_active_deployment_id, previous_configuration} <-
            previous_deployment_configuration(context),
          {:ok, resolved_policy} <-
@@ -146,7 +174,7 @@ defmodule FavnOrchestrator.Manifests do
         ManifestStore.deploy_manifest(
           platform_context,
           context,
-          manifest_version_id,
+          version,
           planner,
           opts
           |> Keyword.delete(:activation_operation_id)
@@ -272,23 +300,24 @@ defmodule FavnOrchestrator.Manifests do
     end
   end
 
-  @doc "Returns the active release only when it grants the exact customer-visible target."
-  @spec get_active_target_release(
+  @doc "Uses the active release only while it grants the exact customer-visible target."
+  @spec with_active_target_release(
           WorkspaceContext.t(),
           String.t(),
           :asset | :pipeline,
-          String.t()
-        ) :: {:ok, Version.t()} | {:error, term()}
-  def get_active_target_release(context, manifest_version_id, target_kind, target_id)
+          String.t(),
+          (Version.t() -> result)
+        ) :: result | {:error, term()}
+        when result: term()
+  def with_active_target_release(context, manifest_version_id, target_kind, target_id, fun)
       when is_struct(context, WorkspaceContext) and is_binary(manifest_version_id) and
-             target_kind in [:asset, :pipeline] and is_binary(target_id) do
+             target_kind in [:asset, :pipeline] and is_binary(target_id) and is_function(fun, 1) do
     with {:ok, {runtime, grants}} <-
            ManifestStore.get_active_deployment(context, customer_visible_only: true),
          true <- runtime.manifest_version_id == manifest_version_id,
          true <-
-           Enum.any?(grants, &(&1.target_kind == target_kind and &1.target_id == target_id)),
-         {:ok, version} <- ManifestStore.get_manifest(context, manifest_version_id) do
-      {:ok, version}
+           Enum.any?(grants, &(&1.target_kind == target_kind and &1.target_id == target_id)) do
+      ManifestStore.with_manifest(context, manifest_version_id, fun)
     else
       false -> {:error, :manifest_or_target_not_active_in_workspace}
       {:error, _reason} = error -> error

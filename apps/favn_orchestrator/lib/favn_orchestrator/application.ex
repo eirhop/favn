@@ -9,7 +9,7 @@ defmodule FavnOrchestrator.Application do
   alias FavnOrchestrator.BoundedDispatcher
   alias FavnOrchestrator.ExecutionAdmission.Coordinator, as: AdmissionCoordinator
   alias FavnOrchestrator.Lifecycle
-  alias FavnOrchestrator.ManifestIndexCache
+  alias FavnOrchestrator.MemoryCapacity
   alias FavnOrchestrator.OperationalEvents
   alias FavnOrchestrator.Persistence
   alias FavnOrchestrator.Persistence.Runtime, as: PersistenceRuntime
@@ -36,6 +36,10 @@ defmodule FavnOrchestrator.Application do
              Supervisor.start_link(
                [
                  {Lifecycle, shutdown_drain_timeout_ms: timeout_ms},
+                 {MemoryCapacity.Supervisor,
+                  provider_opts: [
+                    ceiling_bytes: Application.get_env(:favn_orchestrator, :memory_ceiling_bytes)
+                  ]},
                  {RuntimeBootstrap, runtime?: false}
                ],
                strategy: :one_for_all,
@@ -68,7 +72,10 @@ defmodule FavnOrchestrator.Application do
           [{Lifecycle, shutdown_drain_timeout_ms: runtime_config.shutdown_drain_timeout_ms}] ++
           [{PersistenceRuntime, persistence_runtime}] ++
           persistence_children ++
-          [{ManifestIndexCache, []}] ++
+          [
+            {MemoryCapacity.Supervisor,
+             provider_opts: [ceiling_bytes: runtime_config.memory_ceiling_bytes]}
+          ] ++
           [
             {AuthStore, []},
             {Phoenix.PubSub, name: pubsub_name()},

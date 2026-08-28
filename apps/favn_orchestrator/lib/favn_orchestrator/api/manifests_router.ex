@@ -15,6 +15,9 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
   alias FavnOrchestrator.API.Response
   alias FavnOrchestrator.Manifests
   alias FavnOrchestrator.ManifestActivationDiagnostics
+  alias FavnOrchestrator.MemoryCapacity.BoundedWorker
+  alias FavnOrchestrator.MemoryCapacity.Budget
+  alias FavnOrchestrator.MemoryCapacity.Error, as: MemoryError
   alias FavnOrchestrator.Persistence.Error
   alias FavnOrchestrator.Redaction
 
@@ -35,6 +38,9 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
       {:error, reason} when reason in [:forbidden, :service_unauthorized, :unauthenticated] ->
         authentication_error(conn, reason)
 
+      {:error, %MemoryError{} = reason} ->
+        memory_capacity_error(conn, reason)
+
       {:error, reason} ->
         Logger.error(
           "manifest.list failed: #{inspect(Redaction.redact_operational_bounded(reason))}"
@@ -49,7 +55,7 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
          {:ok, platform_context} <-
            Authentication.platform_context(conn, :platform_operator),
          {:ok, version} <- build_version(conn.body_params),
-         {:ok, registration_status, canonical_version} <- publish(platform_context, version),
+         {:ok, registration_status, canonical_version} <- publish(conn, platform_context, version),
          summary <- Manifests.summary(canonical_version) do
       Response.data(conn, publish_status(registration_status), %{
         manifest: summary,
@@ -91,6 +97,17 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
           "manifest_conflict",
           "Manifest version id already exists with different content"
         )
+
+      {:error, :manifest_memory_budget_exceeded} ->
+        Response.error(
+          conn,
+          413,
+          "manifest_memory_budget_exceeded",
+          "Manifest exceeds the supported memory budget"
+        )
+
+      {:error, reason} when reason in [:worker_failed, :worker_timeout] ->
+        capacity_unavailable_error(conn, "Manifest validation failed")
 
       {:error, {:missing_execution_packages, missing}} ->
         Response.error(
@@ -150,6 +167,9 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
       {:error, :forbidden} ->
         authentication_error(conn, :forbidden)
 
+      {:error, %MemoryError{} = reason} ->
+        memory_capacity_error(conn, reason)
+
       {:error, %Error{} = reason} ->
         CommandErrors.send_infrastructure(conn, reason)
 
@@ -173,6 +193,9 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
       {:error, %Error{kind: :not_found}} ->
         Response.error(conn, 404, "not_found", "Active manifest is not set")
 
+      {:error, %MemoryError{} = reason} ->
+        memory_capacity_error(conn, reason)
+
       {:error, reason} ->
         authentication_error(conn, reason)
     end
@@ -191,6 +214,9 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
 
       {:error, reason} when reason in [:forbidden, :service_unauthorized, :unauthenticated] ->
         authentication_error(conn, reason)
+
+      {:error, %MemoryError{} = reason} ->
+        memory_capacity_error(conn, reason)
 
       {:error, _reason} ->
         Response.error(conn, 400, "bad_request", "Request failed")
@@ -240,6 +266,9 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
 
       {:error, reason} when reason in [:forbidden, :service_unauthorized, :unauthenticated] ->
         authentication_error(conn, reason)
+
+      {:error, %MemoryError{} = reason} ->
+        memory_capacity_error(conn, reason)
 
       {:error, reason} ->
         Logger.error(
@@ -390,6 +419,9 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
           %{}
         )
 
+      {:error, %MemoryError{} = reason} ->
+        CommandErrors.memory_capacity(reason)
+
       {:error, reason}
       when is_tuple(reason) and
              elem(reason, 0) in [
@@ -510,7 +542,12 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
   @spec build_version(map()) :: {:ok, Version.t()} | {:error, term()}
   def build_version(params) when is_map(params) do
     with %{} = manifest <- Map.get(params, "manifest"),
-         {:ok, version} <- Version.from_published(manifest, version_options(params)) do
+         {:ok, budget} <- Budget.persisted_index(:erlang.external_size(manifest)),
+         {:ok, version} <-
+           BoundedWorker.run(
+             fn -> Version.from_published(manifest, version_options(params)) end,
+             budget
+           ) do
       {:ok, version}
     else
       {:error, _reason} = error -> error
@@ -518,8 +555,14 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
     end
   end
 
-  defp publish(context, %Version{} = version) do
-    case Manifests.publish(context, version) do
+  defp publish(conn, context, %Version{} = version) do
+    opts =
+      case conn.private[:favn_manifest_memory_token] do
+        nil -> []
+        token -> [memory_capacity_token: token]
+      end
+
+    case Manifests.publish(context, version, opts) do
       {:ok, :published, %Version{} = canonical} ->
         {:ok, :published, canonical}
 
@@ -565,6 +608,25 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
 
   defp validation_error(conn, message),
     do: Response.error(conn, 422, "validation_failed", message)
+
+  defp memory_capacity_error(conn, %MemoryError{code: :manifest_capacity_busy}) do
+    conn
+    |> put_resp_header("retry-after", "5")
+    |> Response.error(429, "manifest_capacity_busy", "Manifest capacity is busy")
+  end
+
+  defp memory_capacity_error(conn, %MemoryError{code: code})
+       when code in [:manifest_capacity_unavailable, :memory_capacity_unknown] do
+    conn
+    |> put_resp_header("retry-after", "5")
+    |> Response.error(503, Atom.to_string(code), "Manifest capacity is unavailable")
+  end
+
+  defp capacity_unavailable_error(conn, message) do
+    conn
+    |> put_resp_header("retry-after", "5")
+    |> Response.error(503, "manifest_capacity_unavailable", message)
+  end
 
   defp list_manifests(conn) do
     with {:ok, _session, _actor, context} <- Authentication.workspace_context(conn, :viewer),

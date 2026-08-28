@@ -12,6 +12,7 @@ defmodule FavnOrchestrator.API.BackfillsRouter do
   alias FavnOrchestrator.API.IdempotentCommand
   alias FavnOrchestrator.API.OperatorCommands
   alias FavnOrchestrator.API.Response
+  alias FavnOrchestrator.MemoryCapacity.Error, as: MemoryError
   alias FavnOrchestrator.Persistence.Error
   alias FavnOrchestrator.Redaction
 
@@ -58,6 +59,9 @@ defmodule FavnOrchestrator.API.BackfillsRouter do
 
       {:error, reason} when reason in [:forbidden, :service_unauthorized, :unauthenticated] ->
         authentication_error(conn, reason)
+
+      {:error, %MemoryError{} = reason} ->
+        send_command_error(conn, CommandErrors.memory_capacity(reason), reason)
 
       {:error, _reason} ->
         Response.error(conn, 400, "bad_request", "Request failed")
@@ -139,6 +143,9 @@ defmodule FavnOrchestrator.API.BackfillsRouter do
       {:error, %Error{} = reason} ->
         CommandErrors.infrastructure(reason) ||
           {:error, 400, "bad_request", "Request failed", %{}}
+
+      {:error, %MemoryError{} = reason} ->
+        CommandErrors.memory_capacity(reason)
 
       {:error, _reason} ->
         {:error, 400, "bad_request", "Request failed", %{}}
@@ -236,8 +243,17 @@ defmodule FavnOrchestrator.API.BackfillsRouter do
 
   defp send_command_error(conn, nil, reason), do: CommandErrors.send_backfill(conn, reason)
 
-  defp send_command_error(conn, {:error, status, code, message, details}, _reason),
-    do: Response.error(conn, status, code, message, details)
+  defp send_command_error(conn, {:error, status, code, message, details}, _reason) do
+    conn
+    |> put_retry_after(details)
+    |> Response.error(status, code, message, details)
+  end
+
+  defp put_retry_after(conn, %{retry_after: seconds})
+       when is_integer(seconds) and seconds > 0,
+       do: put_resp_header(conn, "retry-after", Integer.to_string(seconds))
+
+  defp put_retry_after(conn, _details), do: conn
 
   defp authentication_error(conn, :forbidden),
     do: Response.error(conn, 403, "forbidden", "Actor does not have access")

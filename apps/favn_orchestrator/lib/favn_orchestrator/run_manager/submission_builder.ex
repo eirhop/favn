@@ -11,7 +11,6 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
   alias Favn.Window.Request, as: WindowRequest
   alias Favn.Window.Selection
   alias FavnOrchestrator.ManifestStore
-  alias FavnOrchestrator.ManifestIndexCache
   alias FavnOrchestrator.ConnectionCircuitPolicy
   alias FavnOrchestrator.ExecutionPoolPolicy
   alias FavnOrchestrator.OperatorCommands.ManualWindowResolution
@@ -217,17 +216,20 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
            |> Map.put(:refresh_policy, refresh_policy)
            |> Map.put(:runtime_input_mode, input_mode)
            |> put_window_selection(input.window_selection),
-         {:ok, manifest_version_id} <- resolve_manifest_version_id(opts),
-         {:ok, version} <- get_manifest(opts, manifest_version_id),
-         {:ok, index} <- ManifestIndexCache.fetch(version),
-         {:ok, _asset} <- Index.fetch_asset(index, asset_ref),
-         {:ok, plan} <- plan(input, index, asset_ref, exact_windows: input.exact_windows),
-         plan <- RetryPolicyResolver.annotate(plan, index, nil, input.retry_policy_override),
-         {:ok, plan} <- pin_plan(input, version, index, plan) do
-      input = %{input | metadata: metadata_with_selection}
-      run_state = new_run_state(input, version, plan, asset_ref, :manual)
+         {:ok, manifest_version_id} <- resolve_manifest_version_id(opts) do
+      with_manifest(opts, manifest_version_id, fn version ->
+        ManifestStore.with_index(version, capacity_opts(opts), fn index ->
+          with {:ok, _asset} <- Index.fetch_asset(index, asset_ref),
+               {:ok, plan} <- plan(input, index, asset_ref, exact_windows: input.exact_windows),
+               plan <- RetryPolicyResolver.annotate(plan, index, nil, input.retry_policy_override),
+               {:ok, plan} <- pin_plan(input, version, index, plan) do
+            input = %{input | metadata: metadata_with_selection}
+            run_state = new_run_state(input, version, plan, asset_ref, :manual)
 
-      {:ok, run_state, version}
+            {:ok, run_state, version}
+          end
+        end)
+      end)
     end
   end
 
@@ -247,13 +249,17 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
              refresh_policy: refresh_policy
            })
            |> put_window_selection(input.window_selection),
-         {:ok, manifest_version_id} <- resolve_manifest_version_id(opts),
-         {:ok, version} <- get_manifest(opts, manifest_version_id),
-         {:ok, index} <- ManifestIndexCache.fetch(version),
-         input <- %{input | metadata: metadata},
-         {:ok, run_state} <-
-           build_pipeline_run_state(target_refs, input, version, index, nil) do
-      {:ok, run_state, version}
+         {:ok, manifest_version_id} <- resolve_manifest_version_id(opts) do
+      with_manifest(opts, manifest_version_id, fn version ->
+        ManifestStore.with_index(version, capacity_opts(opts), fn index ->
+          input = %{input | metadata: metadata}
+
+          with {:ok, run_state} <-
+                 build_pipeline_run_state(target_refs, input, version, index, nil) do
+            {:ok, run_state, version}
+          end
+        end)
+      end)
     end
   end
 
@@ -269,54 +275,66 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
              input.anchor_window,
              window_request
            ),
-         {:ok, manifest_version_id} <- resolve_manifest_version_id(opts),
-         {:ok, version} <- get_manifest(opts, manifest_version_id),
-         {:ok, index} <- ManifestIndexCache.fetch(version),
-         {:ok, %Pipeline{} = pipeline} <- Index.fetch_pipeline(index, pipeline_ref),
-         {:ok, combine_windows} <- resolve_combine_windows(input.combine_windows, pipeline.window),
-         input <- %{input | combine_windows: combine_windows},
-         {:ok, target_refs} <- PipelineResolver.target_refs(index, pipeline),
-         {:ok, window_resolution} <-
-           resolve_pipeline_window_selection(pipeline, index, target_refs, input, request, opts),
-         {:ok, pipeline_resolution} <-
-           PipelineResolver.resolve(index, pipeline,
-             trigger: input.trigger,
-             params: input.params,
-             window_selection: window_resolution.selection
-           ),
-         {:ok, refresh_policy} <-
-           refresh_policy_metadata(opts, pipeline_resolution.dependencies),
-         metadata <-
-           Map.merge(input.metadata, %{
-             submit_kind: :pipeline,
-             pipeline_target_refs: pipeline_resolution.target_refs,
-             pipeline_context: pipeline_resolution.pipeline_ctx,
-             pipeline_dependencies: pipeline_resolution.dependencies,
-             pipeline_submit_ref: pipeline.module,
-             pipeline_identity_ref: pipeline_ref,
-             pipeline_execution_policy: pipeline_execution_policy(pipeline_resolution.pipeline),
-             runtime_input_mode: input_mode,
-             refresh_policy: refresh_policy
-           })
-           |> put_window_selection(window_resolution.selection)
-           |> put_manual_window_resolution(window_resolution),
-         input <-
-           %{
-             input
-             | metadata: metadata,
-               dependencies: pipeline_resolution.dependencies,
-               anchor_window: nil,
-               window_selection: window_resolution.selection
-           },
-         {:ok, run_state} <-
-           build_pipeline_run_state(
-             pipeline_resolution.target_refs,
-             input,
-             version,
-             index,
-             pipeline_resolution.pipeline.retry_policy
-           ) do
-      {:ok, run_state, version}
+         {:ok, manifest_version_id} <- resolve_manifest_version_id(opts) do
+      with_manifest(opts, manifest_version_id, fn version ->
+        ManifestStore.with_index(version, capacity_opts(opts), fn index ->
+          with {:ok, %Pipeline{} = pipeline} <- Index.fetch_pipeline(index, pipeline_ref),
+               {:ok, combine_windows} <-
+                 resolve_combine_windows(input.combine_windows, pipeline.window),
+               input <- %{input | combine_windows: combine_windows},
+               {:ok, target_refs} <- PipelineResolver.target_refs(index, pipeline),
+               {:ok, window_resolution} <-
+                 resolve_pipeline_window_selection(
+                   pipeline,
+                   index,
+                   target_refs,
+                   input,
+                   request,
+                   opts
+                 ),
+               {:ok, pipeline_resolution} <-
+                 PipelineResolver.resolve(index, pipeline,
+                   trigger: input.trigger,
+                   params: input.params,
+                   window_selection: window_resolution.selection
+                 ),
+               {:ok, refresh_policy} <-
+                 refresh_policy_metadata(opts, pipeline_resolution.dependencies),
+               metadata <-
+                 Map.merge(input.metadata, %{
+                   submit_kind: :pipeline,
+                   pipeline_target_refs: pipeline_resolution.target_refs,
+                   pipeline_context: pipeline_resolution.pipeline_ctx,
+                   pipeline_dependencies: pipeline_resolution.dependencies,
+                   pipeline_submit_ref: pipeline.module,
+                   pipeline_identity_ref: pipeline_ref,
+                   pipeline_execution_policy:
+                     pipeline_execution_policy(pipeline_resolution.pipeline),
+                   runtime_input_mode: input_mode,
+                   refresh_policy: refresh_policy
+                 })
+                 |> put_window_selection(window_resolution.selection)
+                 |> put_manual_window_resolution(window_resolution),
+               input <-
+                 %{
+                   input
+                   | metadata: metadata,
+                     dependencies: pipeline_resolution.dependencies,
+                     anchor_window: nil,
+                     window_selection: window_resolution.selection
+                 },
+               {:ok, run_state} <-
+                 build_pipeline_run_state(
+                   pipeline_resolution.target_refs,
+                   input,
+                   version,
+                   index,
+                   pipeline_resolution.pipeline.retry_policy
+                 ) do
+            {:ok, run_state, version}
+          end
+        end)
+      end)
     end
   end
 
@@ -402,55 +420,58 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
              root_run_id: source_run.root_run_id || source_run.id
            ),
          {:ok, refresh_policy} <- refresh_policy_metadata(opts, input.dependencies),
-         :ok <- validate_rerun_manifest_pin(opts, source_run),
-         {:ok, version} <-
-           get_manifest(opts, source_run.manifest_version_id, source_run.deployment_id),
-         {:ok, index} <- ManifestIndexCache.fetch(version),
-         {:ok, _asset} <- Index.fetch_asset(index, rerun_asset_ref),
-         :ok <- ensure_assets_exist(index, rerun_targets),
-         {:ok, plan} <- plan(input, index, rerun_targets),
-         {:ok, plan} <- maybe_filter_replay_plan(plan, Keyword.get(opts, :replay_node_keys)),
-         pipeline_retry_policy <- replay_pipeline_retry_policy(source_run, index),
-         plan <-
-           RetryPolicyResolver.annotate(
-             plan,
-             index,
-             pipeline_retry_policy,
-             input.retry_policy_override
-           ),
-         {:ok, plan} <- pin_plan(input, version, index, plan) do
-      rerun_of_run_id = source_run.rerun_of_run_id || source_run.id
+         :ok <- validate_rerun_manifest_pin(opts, source_run) do
+      with_manifest(opts, source_run.manifest_version_id, source_run.deployment_id, fn version ->
+        ManifestStore.with_index(version, capacity_opts(opts), fn index ->
+          with {:ok, _asset} <- Index.fetch_asset(index, rerun_asset_ref),
+               :ok <- ensure_assets_exist(index, rerun_targets),
+               {:ok, plan} <- plan(input, index, rerun_targets),
+               {:ok, plan} <-
+                 maybe_filter_replay_plan(plan, Keyword.get(opts, :replay_node_keys)),
+               pipeline_retry_policy <- replay_pipeline_retry_policy(source_run, index),
+               plan <-
+                 RetryPolicyResolver.annotate(
+                   plan,
+                   index,
+                   pipeline_retry_policy,
+                   input.retry_policy_override
+                 ),
+               {:ok, plan} <- pin_plan(input, version, index, plan) do
+            rerun_of_run_id = source_run.rerun_of_run_id || source_run.id
 
-      metadata_with_source =
-        input.metadata
-        |> Map.put(:source_run_id, source_run.id)
-        |> Map.put(:runtime_input_mode, input_mode)
-        |> Map.put(:refresh_policy, refresh_policy)
-        |> put_window_selection(input.window_selection)
+            metadata_with_source =
+              input.metadata
+              |> Map.put(:source_run_id, source_run.id)
+              |> Map.put(:runtime_input_mode, input_mode)
+              |> Map.put(:refresh_policy, refresh_policy)
+              |> put_window_selection(input.window_selection)
 
-      metadata_with_replay =
-        if pipeline_origin?(source_run) do
-          Map.merge(metadata_with_source, %{
-            replay_submit_kind: :pipeline,
-            replay_mode: replay_mode,
-            pipeline_target_refs: rerun_targets,
-            pipeline_dependencies: input.dependencies
-          })
-        else
-          Map.merge(metadata_with_source, %{
-            replay_mode: replay_mode,
-            asset_dependencies: input.dependencies
-          })
-        end
+            metadata_with_replay =
+              if pipeline_origin?(source_run) do
+                Map.merge(metadata_with_source, %{
+                  replay_submit_kind: :pipeline,
+                  replay_mode: replay_mode,
+                  pipeline_target_refs: rerun_targets,
+                  pipeline_dependencies: input.dependencies
+                })
+              else
+                Map.merge(metadata_with_source, %{
+                  replay_mode: replay_mode,
+                  asset_dependencies: input.dependencies
+                })
+              end
 
-      input = %{input | metadata: metadata_with_replay}
+            input = %{input | metadata: metadata_with_replay}
 
-      run_state =
-        new_run_state(input, version, plan, rerun_asset_ref, :rerun,
-          rerun_of_run_id: rerun_of_run_id
-        )
+            run_state =
+              new_run_state(input, version, plan, rerun_asset_ref, :rerun,
+                rerun_of_run_id: rerun_of_run_id
+              )
 
-      {:ok, run_state, version}
+            {:ok, run_state, version}
+          end
+        end)
+      end)
     end
   end
 
@@ -975,6 +996,13 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
     end
   end
 
+  defp capacity_opts(opts) do
+    case Keyword.get(opts, :_memory_capacity_token) do
+      nil -> []
+      token -> [memory_capacity_token: token]
+    end
+  end
+
   defp validate_metadata(value) when is_map(value), do: :ok
   defp validate_metadata(_value), do: {:error, :invalid_run_metadata}
 
@@ -1030,13 +1058,15 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
   defp put_deployment_policies(_metadata, _execution_pool_policy, _connection_circuit_policy),
     do: {:error, :invalid_run_metadata}
 
-  defp get_manifest(opts, manifest_version_id, deployment_id \\ nil) do
+  defp with_manifest(opts, manifest_version_id, deployment_id \\ nil, fun) do
     case Keyword.get(opts, :_workspace_context) do
       %WorkspaceContext{} = context ->
-        ManifestStore.get_deployment_manifest(
+        ManifestStore.with_deployment_manifest(
           context,
           deployment_id || Keyword.get(opts, :_deployment_id),
-          manifest_version_id
+          manifest_version_id,
+          capacity_opts(opts),
+          fun
         )
 
       nil ->
@@ -1046,7 +1076,7 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
 
   defp get_run(opts, run_id) do
     case Keyword.get(opts, :_workspace_context) do
-      %WorkspaceContext{} = context -> Runs.get(context, run_id)
+      %WorkspaceContext{} = context -> Runs.get(context, run_id, capacity_opts(opts))
       nil -> {:error, :workspace_context_required}
     end
   end

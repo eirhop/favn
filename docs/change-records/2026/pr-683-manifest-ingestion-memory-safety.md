@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Implementing |
+| Status | Implemented |
 | Type | Bug fix |
 | Primary issue | Not filed. The repository owner authorized this implementation contract without an issue. |
 | Pull request | [PR 683](https://github.com/eirhop/favn/pull/683) |
@@ -326,4 +326,106 @@ proof remains separate evidence.
 
 ## Implementation outcome
 
-Pending.
+Favn now admits manifest-heavy work against the memory limit and current usage
+reported by the container's Linux cgroup hierarchy. The operator does not
+configure the container size in Favn. An optional ceiling can lower that limit
+or define one on an otherwise unlimited host, but cannot raise a detected
+container limit.
+
+Package persistence uses at most 8 packages and 4 MiB of canonical JSON per
+batch. Package, index, and run-plan construction happen in bounded workers.
+The decoded manifest caches were removed; callers instead hold a monitored byte
+lease for the complete load, decode, use, and cross-process handoff. PostgreSQL
+reconciles package conflicts in SQL without returning complete payloads.
+
+If Favn cannot measure safe capacity, or a declared object cannot fit its safe
+budget, it returns a typed retryable or size error before the large allocation.
+Memory pressure defers activation and run recovery rather than making the
+manifest or run terminal.
+
+```mermaid
+flowchart LR
+    A[Read cgroup limit and usage] --> B{Safe capacity available?}
+    B -->|No| C[Return retryable 429 or 503]
+    B -->|Yes| D[Acquire monitored byte lease]
+    D --> E[Process fixed package batch in bounded worker]
+    E -->|More packages| A
+    E --> F[Persist canonical bytes and compare in SQL]
+    F --> G[Load and use index under scoped lease]
+    G --> H[Transfer retained run-plan bytes]
+    H --> I[Release capacity when owner finishes or dies]
+```
+
+### Deviations and implementation decisions
+
+| Approved plan | Implemented | Reason | Reviewer verdict |
+| --- | --- | --- | --- |
+| Malformed cgroup data could fall back to a configured ceiling plus process RSS | A visible but malformed or unreadable cgroup hierarchy fails closed with `memory_capacity_unknown`; process RSS is used only when there is no finite cgroup | Process RSS does not include other processes in the same cgroup and could overstate available capacity when cgroup accounting is broken | Justified; safer than the baseline |
+| Bounded workers returned constructed terms directly | Workers serialize results, terminate, and only then does the lease owner decode the result; temporary handoff copies have explicit reservations | A direct message temporarily retains copies in both processes and made the worker heap limit insufficient for the complete handoff | Justified |
+| Manifest scoping covered publication and index consumers | The same ledger also covers persisted run snapshot load/decode, `RunManager` handoff, recovery, and combined run-plus-version retention | Run startup and recovery otherwise reconstructed equally large terms outside the protected path | Required to satisfy the whole-path invariant |
+| Existing full run paging remained available | Full decoded run paging was removed; compact summaries remain, and single-run recovery loads under an admitted size-derived budget | A page can contain several maximum-size plans and has no safe fixed memory bound | Justified breaking pre-v1 cleanup |
+| The existing active-plan limit was the construction backstop | Persisted run decoding reserves at least 16 times encoded bytes and rejects work whose conservative budget exceeds the configured active-plan ceiling | Encoded JSON size is not retained BEAM-term size; the larger multiplier accounts for decode and handoff amplification | Justified conservative bound |
+| The coordinator could rely on ordinary call completion | Long-lived handoffs transfer token ownership to the receiving process before the caller can time out | Releasing on caller timeout could make a still-running manager operation unaccounted | Required lifecycle correction |
+
+### Complexity comparison
+
+The final code diff contains **5,081 production additions and 2,213 production
+deletions**, compared with approved aggregate upper estimates of 3,380 and 980.
+Supporting code and documentation contain **1,308 additions and 220 deletions**,
+within their aggregate upper estimates of 4,610 and 980.
+
+These totals compare the implementation with approved plan commit `5b636f08`,
+classify tests (including `config/test.exs`), guides, scripts, and canonical docs
+as supporting work, and exclude this change record and the untracked local
+`deps` symlink. Exact per-slice attribution is not reliable because shared
+consumer modules implement admission, scoped use, retry handling, and run-plan
+ownership together. The comparison therefore uses the approved aggregate
+production and supporting ceilings; the material production overrun is
+explained below rather than assigning overlapping lines to one slice.
+
+The production overrun is material. Static review found that protection at the
+upload boundary alone was insufficient: every manifest consumer, persisted run
+decoder, cross-process handoff, recovery path, and retry/error boundary had to
+join the same ownership contract. The deletions are primarily the two decoded
+caches, unsafe full-run paging, and replaced consumer flows. This is required
+whole-path protection rather than an increase in product scope.
+
+### Verification evidence
+
+| Evidence | Result | Boundary |
+| --- | --- | --- |
+| Final `git diff --check` | Pass | Static whitespace/conflict-marker check only |
+| Independent final static review | Pass; no blocker or high-severity findings remain | The reviewer intentionally ran no formatter, compiler, tests, database, container, or measurement process |
+| Focused capacity and run-plan tests | 19 passed | Earlier implementation checkpoint, before the final run-decode and provider corrections |
+| Admission and runtime configuration tests | 25 passed | Earlier implementation checkpoint |
+| Archive parser tests, including 1,001 packages | 12 passed | Earlier implementation checkpoint; the largest case used about 130 MiB during the test |
+| PostgreSQL content-addressed registration test | 1 passed | Earlier implementation checkpoint |
+| Synthetic 1/64/1,024-package measurement | About 90 MB peak RSS and 1,916 KiB growth in that run | Pre-final script and implementation; useful diagnosis, not final qualification |
+
+The last attempted local combined verification is not evidence: its cgroup
+fixture failed, the process grew to roughly 6.3 GiB, and WSL terminated. After
+WSL restarted, no Mix, BEAM, Docker, PostgreSQL, or measurement process was
+started for this work. Consequently the final source has **not** been compiled
+or executed locally.
+
+Still required before the draft PR is ready to merge:
+
+- remote formatter, warnings-as-errors compile, owning-app tests, and umbrella
+  test suites on the final commit;
+- the committed measurement harness on the final release build;
+- repeated upload, activation, replay, and readiness under a 1 GiB cgroup with
+  PostgreSQL, proving `memory.events` `oom_kill` does not increase;
+- the configured fault-injection case for an uncertain PostgreSQL commit;
+- a larger-container run proving automatic adaptation without a Favn memory-size
+  setting.
+
+### Implementation review
+
+| Field | Result |
+| --- | --- |
+| Reviewer | Independent sub-agent `manifest_memory_static_review` |
+| Review configuration | User-requested GPT-5.6-Sol with xhigh reasoning; static-only after the WSL failure |
+| Reviewed against | Approved plan commit `5b636f08`, final source diff, memory ownership and handoff lifecycle, cgroup parsing, persistence decoding, API errors, tests, and canonical documentation |
+| Findings | The review initially rejected escaping scoped terms, encoded-size under-accounting, unsafe malformed-cgroup fallback, terminal memory retries, inconsistent HTTP errors, and a bounded-worker late-result race. Rechecks also found nested-token shrinkage, insufficient retained-term and handoff budgets, direct index bypasses, release races, unbounded run construction/recovery, full manifest loading during run decode, and combined run/version retention. |
+| Findings addressed | All blocker and high-severity findings were corrected and rechecked in the final source. Medium follow-ups were to finalize this record, state the fail-closed cgroup deviation, preserve the corrected `Runs.get/2` typespec, and exclude the local `deps` symlink. |
+| Final verdict | Static implementation approval. No blocker or high-severity issue remains. Merge qualification still requires the runtime and constrained-memory evidence listed above. |

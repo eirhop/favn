@@ -154,7 +154,7 @@ defmodule FavnLocal.DockerFreeLocalLifecycleAcceptanceTest do
                []
              )
 
-    {workspace_context, pinned_run, pinned_version, pinned_ref} =
+    {workspace_context, pinned_run, pinned_manifest, pinned_ref} =
       create_release_pinned_run(workspace_id)
 
     reload_release_id = FavnTestSupport.runner_release_id(:reload)
@@ -195,10 +195,12 @@ defmodule FavnLocal.DockerFreeLocalLifecycleAcceptanceTest do
       enqueue_delayed_release_work(
         workspace_context,
         pinned_run,
-        pinned_version,
+        pinned_manifest.version,
         pinned_ref,
         started.runner_release_id
       )
+
+    :ok = ManifestStore.release_manifest(pinned_manifest)
 
     assert_eventually(fn ->
       match?(
@@ -307,7 +309,10 @@ defmodule FavnLocal.DockerFreeLocalLifecycleAcceptanceTest do
   defp create_release_pinned_run(workspace_id) do
     context = SystemContext.workspace(workspace_id, :local_drain_acceptance)
     {:ok, runtime} = ManifestStore.get_runtime_state(context)
-    {:ok, version} = ManifestStore.get_manifest(context, runtime.manifest_version_id)
+
+    {:ok, manifest} = ManifestStore.checkout_manifest(context, runtime.manifest_version_id)
+    version = manifest.version
+
     ref = version.manifest.assets |> hd() |> Map.fetch!(:ref)
     run_id = "local-drain-#{System.unique_integer([:positive])}"
 
@@ -337,7 +342,7 @@ defmodule FavnLocal.DockerFreeLocalLifecycleAcceptanceTest do
                command_id: "create:#{run.id}"
              )
 
-    {context, committed.run, version, ref}
+    {context, committed.run, manifest, ref}
   end
 
   defp enqueue_delayed_release_work(context, run, version, ref, release_id) do

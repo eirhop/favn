@@ -23,7 +23,9 @@ defmodule FavnOrchestrator.Rebuilds do
   alias Favn.Window.Anchor
   alias Favn.Window.Selection
   alias FavnOrchestrator.ManifestStore
+  alias FavnOrchestrator.ManifestStore.Lease
   alias FavnOrchestrator.ManifestTarget
+  alias FavnOrchestrator.MemoryCapacity.Error, as: MemoryError
   alias FavnOrchestrator.OperationRunnerTasks
   alias FavnOrchestrator.Persistence
   alias FavnOrchestrator.Persistence.CommandIdempotency
@@ -98,27 +100,34 @@ defmodule FavnOrchestrator.Rebuilds do
   defp create_plan(context, target_id, reason, opts) do
     with evaluated_at <- Keyword.get(opts, :evaluated_at, DateTime.utc_now()),
          :ok <- validate_datetime(evaluated_at),
-         {:ok, runtime, version, root} <- active_asset(context, target_id),
-         :ok <- persisted_sql_target(root),
-         {:ok, index} <- PlanningIndex.build(version.manifest),
-         {:ok, descendants} <- PlanningIndex.transitive_downstream_of(index, root.ref),
-         :ok <- validate_empty_rebuild(root, opts),
-         refs <- rebuild_refs(index, root.ref, descendants, opts),
-         {:ok, bindings} <- target_bindings(context, index, refs),
-         :ok <- validate_affected_bindings(index, refs, bindings),
-         {:ok, root_binding} <- rebuildable_binding(bindings, target_id),
-         {:ok, operation} <-
-           persist_planning_continuation(
-             context,
-             runtime,
-             version,
-             root,
-             root_binding,
-             reason,
-             evaluated_at,
-             opts
-           ) do
-      planning_worker().ensure_and_await(context, operation)
+         {:ok, runtime, version, root, lease} <- active_asset(context, target_id) do
+      try do
+        with :ok <- persisted_sql_target(root) do
+          with_rebuild_indexes(version, lease, fn index, _execution_index ->
+            with {:ok, descendants} <- PlanningIndex.transitive_downstream_of(index, root.ref),
+                 :ok <- validate_empty_rebuild(root, opts),
+                 refs <- rebuild_refs(index, root.ref, descendants, opts),
+                 {:ok, bindings} <- target_bindings(context, index, refs),
+                 :ok <- validate_affected_bindings(index, refs, bindings),
+                 {:ok, root_binding} <- rebuildable_binding(bindings, target_id),
+                 {:ok, operation} <-
+                   persist_planning_continuation(
+                     context,
+                     runtime,
+                     version,
+                     root,
+                     root_binding,
+                     reason,
+                     evaluated_at,
+                     opts
+                   ) do
+              planning_worker().ensure_and_await(context, operation)
+            end
+          end)
+        end
+      after
+        ManifestStore.release_manifest(lease)
+      end
     end
   end
 
@@ -146,46 +155,54 @@ defmodule FavnOrchestrator.Rebuilds do
       empty: field(operation.plan_payload, :empty, false)
     ]
 
-    with {:ok, runtime, version, root} <- frozen_planning_asset(context, operation),
-         :ok <- persisted_sql_target(root),
-         {:ok, index} <- PlanningIndex.build(version.manifest),
-         {:ok, descendants} <- PlanningIndex.transitive_downstream_of(index, root.ref),
-         :ok <- validate_empty_rebuild(root, opts),
-         refs <- rebuild_refs(index, root.ref, descendants, opts),
-         {:ok, bindings} <- target_bindings(context, index, refs),
-         {:ok, identities} <- TargetGenerations.for_reads(context, index.assets_by_ref),
-         :ok <- validate_affected_bindings(index, refs, bindings),
-         {:ok, root_binding} <- rebuildable_binding(bindings, operation.root_target_id),
-         :ok <- exact_planning_binding(operation, root_binding),
-         {:ok, capability_snapshots} <-
-           capabilities(context, version, index, refs, operation.operation_id),
-         :ok <-
-           validate_live_bindings(
-             context,
-             version,
-             index,
-             refs,
-             bindings,
-             operation.operation_id
-           ),
-         {:ok, draft} <-
-           build_draft(
-             context,
-             runtime,
-             version,
-             index,
-             root,
-             root_binding,
-             bindings,
-             identities,
-             capability_snapshots,
-             refs,
-             operation.reason,
-             operation.evaluated_at,
-             opts
-           ),
-         {:ok, persisted} <- persist_plan(context, draft, opts) do
-      {:ok, plan_from_operation(persisted, false)}
+    with {:ok, runtime, version, root, lease} <- frozen_planning_asset(context, operation) do
+      try do
+        with :ok <- persisted_sql_target(root) do
+          with_rebuild_indexes(version, lease, fn index, execution_index ->
+            with {:ok, descendants} <- PlanningIndex.transitive_downstream_of(index, root.ref),
+                 :ok <- validate_empty_rebuild(root, opts),
+                 refs <- rebuild_refs(index, root.ref, descendants, opts),
+                 {:ok, bindings} <- target_bindings(context, index, refs),
+                 {:ok, identities} <- TargetGenerations.for_reads(context, index.assets_by_ref),
+                 :ok <- validate_affected_bindings(index, refs, bindings),
+                 {:ok, root_binding} <- rebuildable_binding(bindings, operation.root_target_id),
+                 :ok <- exact_planning_binding(operation, root_binding),
+                 {:ok, capability_snapshots} <-
+                   capabilities(context, version, index, refs, operation.operation_id),
+                 :ok <-
+                   validate_live_bindings(
+                     context,
+                     version,
+                     index,
+                     refs,
+                     bindings,
+                     operation.operation_id
+                   ),
+                 {:ok, draft} <-
+                   build_draft(
+                     context,
+                     runtime,
+                     version,
+                     index,
+                     execution_index,
+                     root,
+                     root_binding,
+                     bindings,
+                     identities,
+                     capability_snapshots,
+                     refs,
+                     operation.reason,
+                     operation.evaluated_at,
+                     opts
+                   ),
+                 {:ok, persisted} <- persist_plan(context, draft, opts) do
+              {:ok, plan_from_operation(persisted, false)}
+            end
+          end)
+        end
+      after
+        ManifestStore.release_manifest(lease)
+      end
     end
   end
 
@@ -278,29 +295,53 @@ defmodule FavnOrchestrator.Rebuilds do
     payload = operation.plan_payload
     deployment_id = field(payload, :deployment_id)
 
-    with true <- is_binary(deployment_id),
-         {:ok, version} <-
-           ManifestStore.get_deployment_manifest(
-             context,
-             deployment_id,
-             operation.manifest_version_id
-           ),
-         true <- version.content_hash == field(payload, :manifest_content_hash),
-         {:ok, root} <- ManifestTarget.resolve_asset(version, operation.root_target_id) do
-      runtime = %RuntimeState{
-        workspace_id: context.workspace_id,
-        deployment_id: deployment_id,
-        manifest_version_id: operation.manifest_version_id,
-        revision: 0,
-        manifest_content_hash: version.content_hash
-      }
+    result =
+      if is_binary(deployment_id) do
+        with {:ok, lease} <-
+               ManifestStore.checkout_deployment_manifest(
+                 context,
+                 deployment_id,
+                 operation.manifest_version_id
+               ) do
+          result =
+            with true <- lease.version.content_hash == field(payload, :manifest_content_hash),
+                 {:ok, root} <-
+                   ManifestTarget.resolve_asset(lease.version, operation.root_target_id) do
+              runtime = %RuntimeState{
+                workspace_id: context.workspace_id,
+                deployment_id: deployment_id,
+                manifest_version_id: operation.manifest_version_id,
+                revision: 0,
+                manifest_content_hash: lease.version.content_hash
+              }
 
-      {:ok, runtime, version, root}
-    else
-      false ->
+              {:ok, runtime, lease.version, root, lease}
+            else
+              false ->
+                {:error,
+                 Error.new(:conflict, "frozen rebuild planning manifest identity changed")}
+
+              {:error, _reason} = error ->
+                error
+            end
+
+          case result do
+            {:ok, _runtime, _version, _root, _lease} = success -> success
+            {:error, _reason} = error -> release_manifest_error(lease, error)
+          end
+        end
+      else
         {:error, Error.new(:conflict, "frozen rebuild planning manifest identity changed")}
+      end
+
+    case result do
+      {:ok, _runtime, _version, _root, _lease} = success ->
+        success
 
       {:error, %Error{} = error} ->
+        {:error, error}
+
+      {:error, %MemoryError{} = error} ->
         {:error, error}
 
       {:error, reason} ->
@@ -476,11 +517,29 @@ defmodule FavnOrchestrator.Rebuilds do
     end
   end
 
+  defp with_rebuild_indexes(version, fun), do: with_rebuild_indexes(version, [], fun)
+
+  defp with_rebuild_indexes(version, %Lease{} = lease, fun) do
+    with_rebuild_indexes(
+      version,
+      [memory_capacity_token: lease.capacity_token],
+      fun
+    )
+  end
+
+  defp with_rebuild_indexes(version, opts, fun) when is_list(opts) do
+    ManifestStore.with_index(version, opts, fn
+      %ManifestIndex{planning_index: %PlanningIndex{} = index} = execution_index ->
+        fun.(index, execution_index)
+    end)
+  end
+
   defp build_draft(
          context,
          runtime,
          version,
          index,
+         execution_index,
          root,
          root_binding,
          bindings,
@@ -506,8 +565,7 @@ defmodule FavnOrchestrator.Rebuilds do
              operation_id,
              evaluated_at,
              opts
-           ),
-         {:ok, execution_index} <- ManifestIndex.build(version.manifest),
+         ),
          {:ok, items} <-
            freeze_runtime_inputs(
              context,
@@ -909,57 +967,62 @@ defmodule FavnOrchestrator.Rebuilds do
              runtime.manifest_version_id == field(payload, :manifest_version_id),
              :active_manifest
            ),
-         {:ok, version} <- ManifestStore.get_manifest(context, runtime.manifest_version_id),
-         :ok <-
-           ensure_current(
-             version.content_hash == field(payload, :manifest_content_hash),
-             :manifest_content
-           ),
-         {:ok, current_bindings} <- target_bindings_by_ids(context, snapshot_target_ids(payload)),
-         :ok <-
-           ensure_current(
-             binding_snapshot_matches?(current_bindings, payload, operation),
-             :target_bindings
-           ),
-         {:ok, current_capabilities} <-
-           capabilities_for_payload(context, version, payload, operation.operation_id),
-         :ok <-
-           ensure_current(
-             canonical(current_capabilities) == field(payload, :capabilities),
-             :runner_capabilities
-           ),
-         {:ok, index} <- PlanningIndex.build(version.manifest),
-         :ok <-
-           validate_live_bindings(
-             context,
-             version,
-             index,
-             payload_refs(index, payload),
-             current_bindings,
-             operation.operation_id
-           ),
-         {:ok, execution_index} <- ManifestIndex.build(version.manifest),
-         {:ok, frozen_items} <- operation_items(context, operation.operation_id),
-         {:ok, current_items} <-
-           freeze_runtime_inputs(
-             context,
-             runtime,
-             version,
-             execution_index,
-             index,
-             operation.actions,
-             frozen_items,
-             current_bindings,
-             current_capabilities,
-             operation.evaluated_at,
-             operation.operation_id
-           ),
-         :ok <-
-           ensure_current(
-             ItemDigest.hash(current_items) == field(payload, :items_digest),
-             :runtime_inputs
-           ) do
-      :ok
+         true <- true do
+      ManifestStore.with_manifest(context, runtime.manifest_version_id, fn version ->
+        with :ok <-
+               ensure_current(
+                 version.content_hash == field(payload, :manifest_content_hash),
+                 :manifest_content
+               ),
+             {:ok, current_bindings} <-
+               target_bindings_by_ids(context, snapshot_target_ids(payload)),
+             :ok <-
+               ensure_current(
+                 binding_snapshot_matches?(current_bindings, payload, operation),
+                 :target_bindings
+               ),
+             {:ok, current_capabilities} <-
+               capabilities_for_payload(context, version, payload, operation.operation_id),
+             :ok <-
+               ensure_current(
+                 canonical(current_capabilities) == field(payload, :capabilities),
+                 :runner_capabilities
+               ) do
+          with_rebuild_indexes(version, fn index, execution_index ->
+            with :ok <-
+                   validate_live_bindings(
+                     context,
+                     version,
+                     index,
+                     payload_refs(index, payload),
+                     current_bindings,
+                     operation.operation_id
+                   ),
+                 {:ok, frozen_items} <- operation_items(context, operation.operation_id),
+                 {:ok, current_items} <-
+                   freeze_runtime_inputs(
+                     context,
+                     runtime,
+                     version,
+                     execution_index,
+                     index,
+                     operation.actions,
+                     frozen_items,
+                     current_bindings,
+                     current_capabilities,
+                     operation.evaluated_at,
+                     operation.operation_id
+                   ),
+                 :ok <-
+                   ensure_current(
+                     ItemDigest.hash(current_items) == field(payload, :items_digest),
+                     :runtime_inputs
+                   ) do
+              :ok
+            end
+          end)
+        end
+      end)
     else
       {:error, {:stale_rebuild_plan, reason}} ->
         Logger.warning("rebuild plan revalidation failed: #{reason}",
@@ -1146,13 +1209,25 @@ defmodule FavnOrchestrator.Rebuilds do
   defp active_asset(context, target_id) do
     with {:ok, {runtime, grants}} <- ManifestStore.get_active_deployment(context),
          true <- Enum.any?(grants, &(&1.target_kind == :asset and &1.target_id == target_id)),
-         {:ok, version} <- ManifestStore.get_manifest(context, runtime.manifest_version_id),
-         {:ok, asset} <- ManifestTarget.resolve_asset(version, target_id) do
-      {:ok, runtime, version, asset}
+         {:ok, lease} <-
+           ManifestStore.checkout_deployment_manifest(
+             context,
+             runtime.deployment_id,
+             runtime.manifest_version_id
+           ) do
+      case ManifestTarget.resolve_asset(lease.version, target_id) do
+        {:ok, asset} -> {:ok, runtime, lease.version, asset, lease}
+        {:error, _reason} = error -> release_manifest_error(lease, error)
+      end
     else
       false -> {:error, :not_found}
       {:error, _reason} = error -> error
     end
+  end
+
+  defp release_manifest_error(lease, error) do
+    :ok = ManifestStore.release_manifest(lease)
+    error
   end
 
   defp persisted_sql_target(%Asset{type: :sql, target_descriptor: %TargetDescriptor{}}), do: :ok

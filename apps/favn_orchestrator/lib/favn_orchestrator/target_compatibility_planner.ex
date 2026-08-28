@@ -30,7 +30,7 @@ defmodule FavnOrchestrator.TargetCompatibilityPlanner do
   alias FavnOrchestrator.RunnerTasks
 
   @binding_batch 500
-  @inspection_concurrency 32
+  @inspection_concurrency 4
   @inspection_timeout_ms 300_000
 
   @doc false
@@ -56,46 +56,80 @@ defmodule FavnOrchestrator.TargetCompatibilityPlanner do
     with {:ok, inspection_deadline_at} <- inspection_deadline_at(opts),
          {:ok, deployment_targets} <- DeploymentPlanner.plan(version, selection),
          {:ok, persisted} <- persisted_targets(version, deployment_targets),
-         {:ok, bindings} <- fetch_bindings(workspace_context, persisted),
-         {:ok, {active_versions, historical_descriptors}} <-
+         {:ok, bindings} <- fetch_bindings(workspace_context, persisted) do
+      with_active_versions(platform_context, bindings, fn active_versions,
+                                                          historical_descriptors ->
+        plan_targets(
+          workspace_context,
+          persisted,
+          bindings,
+          active_versions,
+          historical_descriptors,
+          version,
+          opts,
+          inspection_deadline_at
+        )
+      end)
+    end
+  end
+
+  defp plan_targets(
+         workspace_context,
+         persisted,
+         bindings,
+         active_versions,
+         historical_descriptors,
+         version,
+         opts,
+         inspection_deadline_at
+       ) do
+    operation_id = Keyword.get(opts, :operation_id, version.manifest_version_id)
+
+    progress = Keyword.get(opts, :progress)
+    total = length(persisted)
+    report_progress(progress, 0, total)
+
+    persisted
+    |> Task.async_stream(
+      fn target ->
+        ManifestInspectionAdmission.with_slot(fn ->
+          classify_target(
+            workspace_context,
+            target,
+            bindings,
+            active_versions,
+            historical_descriptors,
+            version,
+            operation_id,
+            inspection_deadline_at
+          )
+        end)
+      end,
+      max_concurrency: @inspection_concurrency,
+      ordered: true,
+      timeout: :infinity
+    )
+    |> Enum.zip(persisted)
+    |> Enum.with_index(1)
+    |> collect_decisions(
+      bindings,
+      progress,
+      total,
+      workspace_context,
+      version,
+      operation_id,
+      active_versions
+    )
+  end
+
+  defp with_active_versions(platform_context, bindings, fun) do
+    with {:ok, {active_versions, historical_descriptors, leases}} <-
            active_versions(platform_context, bindings) do
-      operation_id = Keyword.get(opts, :operation_id, version.manifest_version_id)
-
-      progress = Keyword.get(opts, :progress)
-      total = length(persisted)
-      report_progress(progress, 0, total)
-
-      persisted
-      |> Task.async_stream(
-        fn target ->
-          ManifestInspectionAdmission.with_slot(fn ->
-            classify_target(
-              workspace_context,
-              target,
-              bindings,
-              active_versions,
-              historical_descriptors,
-              version,
-              operation_id,
-              inspection_deadline_at
-            )
-          end)
-        end,
-        max_concurrency: @inspection_concurrency,
-        ordered: true,
-        timeout: :infinity
-      )
-      |> Enum.zip(persisted)
-      |> Enum.with_index(1)
-      |> collect_decisions(
-        bindings,
-        progress,
-        total,
-        workspace_context,
-        version,
-        operation_id,
-        active_versions
-      )
+      try do
+        fun.(active_versions, historical_descriptors)
+      after
+        Enum.each(leases, &ManifestStore.release_manifest/1)
+      end
     end
   end
 
@@ -196,15 +230,16 @@ defmodule FavnOrchestrator.TargetCompatibilityPlanner do
   end
 
   defp active_versions(platform_context, bindings) do
-    with {:ok, {versions, historical_manifest_ids}} <-
-           load_active_versions(platform_context, bindings),
-         {:ok, historical_descriptors} <-
-           historical_target_descriptors(
-             platform_context,
-             bindings,
-             historical_manifest_ids
-           ) do
-      {:ok, {versions, historical_descriptors}}
+    with {:ok, {versions, historical_manifest_ids, leases}} <-
+           load_active_versions(platform_context, bindings) do
+      case historical_target_descriptors(platform_context, bindings, historical_manifest_ids) do
+        {:ok, historical_descriptors} ->
+          {:ok, {versions, historical_descriptors, leases}}
+
+        {:error, _reason} = error ->
+          Enum.each(leases, &ManifestStore.release_manifest/1)
+          error
+      end
     end
   end
 
@@ -214,16 +249,22 @@ defmodule FavnOrchestrator.TargetCompatibilityPlanner do
     |> Enum.map(& &1.active_manifest_id)
     |> Enum.reject(&is_nil/1)
     |> Enum.uniq()
-    |> Enum.reduce_while({:ok, {%{}, MapSet.new()}}, fn
-      manifest_id, {:ok, {versions, historical_manifest_ids}} ->
-        case ManifestStore.get_manifest(platform_context, manifest_id) do
-          {:ok, version} ->
-            {:cont, {:ok, {Map.put(versions, manifest_id, version), historical_manifest_ids}}}
+    |> Enum.reduce_while({:ok, {%{}, MapSet.new(), []}}, fn
+      manifest_id, {:ok, {versions, historical_manifest_ids, leases}} ->
+        case ManifestStore.checkout_manifest(platform_context, manifest_id,
+               copies: @inspection_concurrency
+             ) do
+          {:ok, lease} ->
+            {:cont,
+             {:ok,
+              {Map.put(versions, manifest_id, lease.version), historical_manifest_ids,
+               [lease | leases]}}}
 
           {:error, %{details: %{reason: :historical_manifest_not_activatable}}} ->
-            {:cont, {:ok, {versions, MapSet.put(historical_manifest_ids, manifest_id)}}}
+            {:cont, {:ok, {versions, MapSet.put(historical_manifest_ids, manifest_id), leases}}}
 
           {:error, _reason} = error ->
+            Enum.each(leases, &ManifestStore.release_manifest/1)
             {:halt, error}
         end
     end)

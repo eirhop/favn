@@ -501,12 +501,13 @@ defmodule FavnOrchestrator do
     Auth.has_role?(actor, role)
   end
 
-  @doc "Returns one manifest release through an explicit workspace authority."
-  @spec get_manifest(WorkspaceContext.t(), String.t()) ::
-          {:ok, Version.t()} | {:error, term()}
-  def get_manifest(%WorkspaceContext{} = context, manifest_version_id)
-      when is_binary(manifest_version_id) do
-    ManifestStore.get_manifest(context, manifest_version_id)
+  @doc "Uses one manifest release within a memory-scoped callback."
+  @spec with_manifest(WorkspaceContext.t(), String.t(), (Version.t() -> result)) ::
+          result | {:error, term()}
+        when result: term()
+  def with_manifest(%WorkspaceContext{} = context, manifest_version_id, fun)
+      when is_binary(manifest_version_id) and is_function(fun, 1) do
+    ManifestStore.with_manifest(context, manifest_version_id, fun)
   end
 
   @doc "Returns the active deployment's non-secret workspace configuration."
@@ -1299,62 +1300,64 @@ defmodule FavnOrchestrator do
       )
       when is_list(command_opts) do
     with {:ok, context, actor} <- authorize_operator_context(operator_context, :operator),
-         {:ok, request} <- AssetBackfillRequest.from_input(command_input),
-         {:ok, version} <- ManifestStore.get_manifest(context, manifest_version_id),
-         {:ok, asset} <- ManifestTarget.resolve_asset(version, target_id),
-         {:ok, refresh} <-
-           AssetOptions.operator_refresh(
-             request.refresh_mode,
-             asset.ref,
-             request.dependency_mode
-           ),
-         {:ok, intent} <-
-           begin_operator_command(
-             context,
-             operator_context,
-             actor,
-             "asset.backfill.submit",
-             "asset",
-             target_id,
-             %{
-               manifest_version_id: manifest_version_id,
-               target_id: target_id,
-               request: request
-             },
-             command_opts
-           ),
-         opts <-
-           request
-           |> operator_backfill_opts(actor, operator_context)
-           |> Keyword.put(:dependencies, request.dependency_mode)
-           |> Keyword.put(:refresh, refresh)
-           |> Keyword.put(:idempotency, intent.idempotency)
-           |> Keyword.put(
-             :root_run_id,
-             OperatorAudit.deterministic_id(intent, "run", [target_id])
-           ),
-         result <-
-           FavnOrchestrator.Backfills.submit_asset(
-             context,
-             manifest_version_id,
-             target_id,
-             request.range,
-             opts
-           ) do
-      finish_operator_result(
-        context,
-        operator_context,
-        actor,
-        intent,
-        "backfill",
-        target_id,
-        result,
-        fn backfill ->
-          {backfill.root_run_id,
-           %{backfill_id: backfill.backfill_id, root_run_id: backfill.root_run_id},
-           {:ok, backfill.root_run_id}}
+         {:ok, request} <- AssetBackfillRequest.from_input(command_input) do
+      ManifestStore.with_manifest(context, manifest_version_id, fn version ->
+        with {:ok, asset} <- ManifestTarget.resolve_asset(version, target_id),
+             {:ok, refresh} <-
+               AssetOptions.operator_refresh(
+                 request.refresh_mode,
+                 asset.ref,
+                 request.dependency_mode
+               ),
+             {:ok, intent} <-
+               begin_operator_command(
+                 context,
+                 operator_context,
+                 actor,
+                 "asset.backfill.submit",
+                 "asset",
+                 target_id,
+                 %{
+                   manifest_version_id: manifest_version_id,
+                   target_id: target_id,
+                   request: request
+                 },
+                 command_opts
+               ),
+             opts <-
+               request
+               |> operator_backfill_opts(actor, operator_context)
+               |> Keyword.put(:dependencies, request.dependency_mode)
+               |> Keyword.put(:refresh, refresh)
+               |> Keyword.put(:idempotency, intent.idempotency)
+               |> Keyword.put(
+                 :root_run_id,
+                 OperatorAudit.deterministic_id(intent, "run", [target_id])
+               ),
+             result <-
+               FavnOrchestrator.Backfills.submit_asset(
+                 context,
+                 manifest_version_id,
+                 target_id,
+                 request.range,
+                 opts
+               ) do
+          finish_operator_result(
+            context,
+            operator_context,
+            actor,
+            intent,
+            "backfill",
+            target_id,
+            result,
+            fn backfill ->
+              {backfill.root_run_id,
+               %{backfill_id: backfill.backfill_id, root_run_id: backfill.root_run_id},
+               {:ok, backfill.root_run_id}}
+            end
+          )
         end
-      )
+      end)
     end
   end
 
@@ -1371,16 +1374,13 @@ defmodule FavnOrchestrator do
           {:ok, term()} | {:error, term()}
   def inspect_manifest_asset(%WorkspaceContext{} = context, manifest_version_id, target_id, opts)
       when is_binary(manifest_version_id) and is_binary(target_id) and is_list(opts) do
-    with {:ok, version} <-
-           Manifests.get_active_target_release(
-             context,
-             manifest_version_id,
-             :asset,
-             target_id
-           ),
-         {:ok, result} <- inspect_manifest_asset_version(context, version, target_id, opts) do
-      {:ok, result}
-    end
+    Manifests.with_active_target_release(
+      context,
+      manifest_version_id,
+      :asset,
+      target_id,
+      fn version -> inspect_manifest_asset_version(context, version, target_id, opts) end
+    )
   end
 
   defp inspect_manifest_asset_version(

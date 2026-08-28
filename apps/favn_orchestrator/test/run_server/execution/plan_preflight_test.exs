@@ -8,6 +8,7 @@ defmodule FavnOrchestrator.RunServer.Execution.PlanPreflightTest do
   alias Favn.Plan
   alias FavnOrchestrator.Persistence.Runtime, as: PersistenceRuntime
   alias FavnOrchestrator.Persistence.Stores
+  alias FavnOrchestrator.MemoryCapacity
   alias FavnOrchestrator.RunServer.Execution
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Storage.RunSnapshotCodec
@@ -162,7 +163,7 @@ defmodule FavnOrchestrator.RunServer.Execution.PlanPreflightTest do
         plan: plan
       )
 
-    assert {:ok, _execution_state} = Execution.start_state(run, version)
+    assert {:ok, _execution_state} = start_state(run, version)
 
     refute_receive {:manifest_acquired, _lease_id, _refs, _opts}
 
@@ -228,7 +229,7 @@ defmodule FavnOrchestrator.RunServer.Execution.PlanPreflightTest do
                manifest_record
              )
 
-    assert {:ok, state} = Execution.start_state(restored_run, version)
+    assert {:ok, state} = start_state(restored_run, version)
     assert state.mode == :pipeline
     assert state.stage_groups == [{0, [upstream_node]}, {1, [target_node]}]
 
@@ -299,11 +300,16 @@ defmodule FavnOrchestrator.RunServer.Execution.PlanPreflightTest do
             %RunState{
               status: :error,
               error: {:runner_release_mismatch, actual, required}
-            }} = Execution.start_state(run, version)
+            }} = start_state(run, version)
 
     assert actual == %{"default" => alternate}
     assert required == version.runner_releases
     refute_receive {:manifest_acquired, _lease_id, _refs, _opts}
+  end
+
+  defp start_state(run, version) do
+    {:ok, token} = MemoryCapacity.acquire(16 * 1_024 * 1_024, kind: :run_plan_test)
+    Execution.start_state(run, version, memory_capacity_token: token)
   end
 
   defp restore_env(key, nil), do: Application.delete_env(:favn_orchestrator, key)

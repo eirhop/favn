@@ -13,9 +13,10 @@ defmodule FavnOrchestrator.API.ExecutionPackagesRouter do
   alias FavnOrchestrator.ExecutionPackages
   alias FavnOrchestrator.Persistence.Error
 
-  @max_packages_per_request 100
+  @max_packages_per_request 8
   @max_package_bytes 4 * 1024 * 1024
-  @max_package_batch_bytes 32 * 1024 * 1024
+  @max_package_batch_bytes 4 * 1024 * 1024
+  @missing_body_bytes 128 * 1024
 
   plug(:match)
   plug(:dispatch)
@@ -30,8 +31,8 @@ defmodule FavnOrchestrator.API.ExecutionPackagesRouter do
         missing: missing,
         publication_limits: %{
           max_packages: @max_packages_per_request,
-          compressed_limit_bytes: config.compressed_limit_bytes,
-          decompressed_limit_bytes: min(config.decompressed_limit_bytes, @max_package_batch_bytes)
+          compressed_limit_bytes: min(config.compressed_limit_bytes, @missing_body_bytes),
+          decompressed_limit_bytes: min(config.decompressed_limit_bytes, @missing_body_bytes)
         }
       })
     else
@@ -78,7 +79,24 @@ defmodule FavnOrchestrator.API.ExecutionPackagesRouter do
         validation_error(conn, "Execution package exceeds the per-package size limit")
 
       {:error, :execution_package_batch_too_large} ->
-        validation_error(conn, "Execution package batch exceeds the 32 MiB size limit")
+        validation_error(conn, "Execution package batch exceeds the 4 MiB size limit")
+
+      {:error, :manifest_memory_budget_exceeded} ->
+        Response.error(
+          conn,
+          413,
+          "manifest_memory_budget_exceeded",
+          "Execution package exceeds the supported memory budget"
+        )
+
+      {:error, reason} when reason in [:worker_failed, :worker_timeout] ->
+        conn
+        |> put_resp_header("retry-after", "5")
+        |> Response.error(
+          503,
+          "manifest_capacity_unavailable",
+          "Execution package validation is unavailable"
+        )
 
       {:error, {:missing_field, field}} ->
         Response.error(conn, 422, "validation_failed", "Missing required field", %{field: field})

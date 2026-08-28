@@ -30,6 +30,7 @@ defmodule FavnOrchestrator.RunServer do
           required(:version) => Version.t(),
           optional(:recovering?) => boolean(),
           optional(:capacity_managed?) => boolean(),
+          optional(:memory_capacity_token) => FavnOrchestrator.MemoryCapacity.t(),
           optional(:storage_ownership) => Ownership.t()
         }
 
@@ -281,7 +282,13 @@ defmodule FavnOrchestrator.RunServer do
   end
 
   defp start_execution(state, %RunState{} = running, %Version{} = version) do
-    case Execution.start_state(running, version) do
+    capacity_opts =
+      case Map.get(state, :memory_capacity_token) do
+        %FavnOrchestrator.MemoryCapacity{} = token -> [memory_capacity_token: token]
+        nil -> []
+      end
+
+    case Execution.start_state(running, version, capacity_opts) do
       {:ok, execution_state} ->
         case resize_execution_memory(state, running, execution_state) do
           :ok ->

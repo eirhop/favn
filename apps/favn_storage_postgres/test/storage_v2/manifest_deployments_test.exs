@@ -24,7 +24,9 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
   alias FavnAuthoring.Deployment.ManifestArchive
   alias FavnAuthoring.Deployment.ManifestBuilder
   alias FavnOrchestrator.Lifecycle
+  alias FavnOrchestrator.ExecutionPackages
   alias FavnOrchestrator.ManifestDeploymentContext
+  alias FavnOrchestrator.MemoryCapacity
   alias FavnOrchestrator.ManifestDeploymentDispatcher
   alias FavnOrchestrator.ManifestActivationDiagnostics
   alias FavnOrchestrator.Manifests
@@ -40,7 +42,6 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
   alias FavnOrchestrator.Persistence.Commands.ClaimManifestDeployment
   alias FavnOrchestrator.Persistence.Commands.CompleteManifestDeployment
   alias FavnOrchestrator.Persistence.Commands.ProvisionWorkspace
-  alias FavnOrchestrator.Persistence.Commands.RegisterExecutionPackages
   alias FavnOrchestrator.Persistence.Commands.ReleaseManifestActivationLease
   alias FavnOrchestrator.Persistence.Commands.ReleaseManifestUploadLease
   alias FavnOrchestrator.Persistence.Commands.UpdateManifestDeploymentProgress
@@ -74,10 +75,22 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
 
     start_supervised!({Repo, options})
     start_supervised!({Lifecycle, shutdown_drain_timeout_ms: 120_000})
+    start_memory_capacity_if_needed()
     :ok = Lifecycle.mark_accepting()
     :ok = Migrations.migrate!(Repo)
     Sandbox.mode(Repo, :manual)
     :ok
+  end
+
+  defp start_memory_capacity_if_needed do
+    unless Process.whereis(MemoryCapacity.Coordinator) do
+      start_supervised!(
+        {MemoryCapacity.Supervisor,
+         provider_opts: [
+           ceiling_bytes: Application.fetch_env!(:favn_orchestrator, :memory_ceiling_bytes)
+         ]}
+      )
+    end
   end
 
   setup do
@@ -143,11 +156,7 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
 
     {:ok, version} = Version.new(manifest)
 
-    :ok =
-      Store.register_execution_packages(%RegisterExecutionPackages{
-        platform_context: platform_context,
-        packages: [package]
-      })
+    :ok = ExecutionPackages.register(platform_context, [package])
 
     %{
       deployment_context: deployment_context,
@@ -1122,11 +1131,7 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
 
     {:ok, version} = Version.new(manifest)
 
-    :ok =
-      Store.register_execution_packages(%RegisterExecutionPackages{
-        platform_context: context.platform_context,
-        packages: [package]
-      })
+    :ok = ExecutionPackages.register(context.platform_context, [package])
 
     context
     |> Map.put(:version, version)

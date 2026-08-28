@@ -52,6 +52,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
           workspace_ids: [String.t()],
           auth_session_ttl_seconds: pos_integer(),
           active_run_plan_max_bytes: pos_integer(),
+          memory_ceiling_bytes: pos_integer() | nil,
           scheduler: keyword(),
           run_submissions: keyword(),
           runner_pools: RunnerPools.t(),
@@ -154,6 +155,16 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
       config.active_run_plan_max_bytes
     )
 
+    if config.memory_ceiling_bytes do
+      Application.put_env(
+        :favn_orchestrator,
+        :memory_ceiling_bytes,
+        config.memory_ceiling_bytes
+      )
+    else
+      Application.delete_env(:favn_orchestrator, :memory_ceiling_bytes)
+    end
+
     Application.put_env(:favn_orchestrator, :scheduler, config.scheduler)
     Application.put_env(:favn_orchestrator, :run_submissions, config.run_submissions)
     Application.put_env(:favn_orchestrator, :runner_pools, config.runner_pools)
@@ -192,6 +203,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
          {:ok, workspace_ids} <- workspace_ids(env),
          {:ok, auth_session_ttl_seconds} <- auth_session_ttl_seconds(env),
          {:ok, active_run_plan_max_bytes} <- active_run_plan_max_bytes(env),
+         {:ok, memory_ceiling_bytes} <- memory_ceiling_bytes(env),
          {:ok, scheduler} <- scheduler(env, workspace_ids),
          {:ok, run_submissions} <- run_submissions(env),
          {:ok, operator_command_hmac_key} <- operator_command_hmac_key(env),
@@ -210,6 +222,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
          workspace_ids: workspace_ids,
          auth_session_ttl_seconds: auth_session_ttl_seconds,
          active_run_plan_max_bytes: active_run_plan_max_bytes,
+         memory_ceiling_bytes: memory_ceiling_bytes,
          scheduler: scheduler,
          run_submissions: run_submissions,
          runner_pools: runner_pools,
@@ -260,6 +273,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
       admin_lifecycle: %{bootstrap: :explicit_one_time_command, recovery: :explicit_command},
       auth_session: %{ttl_seconds: config.auth_session_ttl_seconds},
       active_run_plan: %{max_bytes: config.active_run_plan_max_bytes},
+      memory_capacity: %{configured_ceiling_bytes: config.memory_ceiling_bytes},
       runtime_input_pin: %{
         current_version: config.runtime_input_pin.current_version,
         retained_versions: config.runtime_input_pin.keys |> Map.keys() |> Enum.sort()
@@ -585,6 +599,22 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
       @min_active_run_plan_max_bytes,
       @max_active_run_plan_max_bytes
     )
+  end
+
+  defp memory_ceiling_bytes(env) do
+    case Map.get(env, "FAVN_ORCHESTRATOR_MEMORY_CEILING_BYTES") do
+      nil ->
+        {:ok, nil}
+
+      value when is_binary(value) ->
+        case Integer.parse(String.trim(value)) do
+          {bytes, ""} when bytes > 0 -> {:ok, bytes}
+          _invalid -> {:error, {:invalid_env, "FAVN_ORCHESTRATOR_MEMORY_CEILING_BYTES", value}}
+        end
+
+      value ->
+        {:error, {:invalid_env, "FAVN_ORCHESTRATOR_MEMORY_CEILING_BYTES", value}}
+    end
   end
 
   defp scheduler(env, workspace_ids) do

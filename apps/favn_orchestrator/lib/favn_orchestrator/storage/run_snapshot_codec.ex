@@ -156,7 +156,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
   @type manifest_record :: %{
           required(:manifest_version_id) => String.t(),
           required(:content_hash) => String.t(),
-          required(:manifest_index_json) => String.t(),
+          optional(:manifest_index_json) => String.t(),
           optional(:atom_strings) => [String.t()],
           optional(:runner_releases) => Favn.RunnerPool.releases()
         }
@@ -1954,6 +1954,13 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
       if run_releases == manifest_releases,
         do: :ok,
         else: {:error, {:run_manifest_runner_releases_mismatch, manifest_releases, run_releases}}
+    end
+  end
+
+  defp manifest_runner_releases(%{runner_releases: releases}) when is_map(releases) do
+    case Favn.RunnerPool.validate_releases(releases) do
+      :ok -> {:ok, releases}
+      {:error, _reason} -> {:error, :invalid_manifest_runner_releases}
     end
   end
 

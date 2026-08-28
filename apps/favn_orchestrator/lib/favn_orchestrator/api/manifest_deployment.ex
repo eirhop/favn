@@ -18,6 +18,9 @@ defmodule FavnOrchestrator.API.ManifestDeployment do
   alias FavnOrchestrator.API.Response
   alias FavnOrchestrator.ManifestDeployments
   alias FavnOrchestrator.ManifestUploadHeartbeat
+  alias FavnOrchestrator.MemoryCapacity
+  alias FavnOrchestrator.MemoryCapacity.Budget
+  alias FavnOrchestrator.MemoryCapacity.Error, as: MemoryError
   alias FavnOrchestrator.Persistence.Error
   alias FavnOrchestrator.Persistence.Results.ManifestDeployment, as: DeploymentResult
   alias FavnOrchestrator.RuntimeConfig
@@ -88,6 +91,23 @@ defmodule FavnOrchestrator.API.ManifestDeployment do
   end
 
   defp admit_and_upload(conn, context, operation_id, archive_sha256) do
+    case MemoryCapacity.acquire(Budget.manifest_base(),
+           kind: :manifest_archive_upload,
+           exclusive: true
+         ) do
+      {:ok, token} ->
+        try do
+          admit_upload_with_memory(conn, context, operation_id, archive_sha256, token)
+        after
+          :ok = MemoryCapacity.release(token)
+        end
+
+      {:error, %MemoryError{} = error} ->
+        memory_capacity_error(conn, error)
+    end
+  end
+
+  defp admit_upload_with_memory(conn, context, operation_id, archive_sha256, token) do
     lease_id =
       "upload:#{RuntimeConfig.instance_id()}:#{operation_id}:#{System.unique_integer([:positive])}"
 
@@ -110,7 +130,8 @@ defmodule FavnOrchestrator.API.ManifestDeployment do
             archive_sha256,
             heartbeat,
             started_at_ms,
-            deadline_ms
+            deadline_ms,
+            token
           )
         after
           :ok = ManifestUploadHeartbeat.stop(heartbeat)
@@ -135,7 +156,8 @@ defmodule FavnOrchestrator.API.ManifestDeployment do
          expected_sha256,
          heartbeat,
          started_at_ms,
-         deadline_ms
+         deadline_ms,
+         token
        ) do
     parser =
       ManifestDeploymentArchive.new(
@@ -145,7 +167,8 @@ defmodule FavnOrchestrator.API.ManifestDeployment do
             ensure_upload_active(heartbeat, deadline_ms)
           end
         end,
-        started_at_ms: started_at_ms
+        started_at_ms: started_at_ms,
+        capacity_token: token
       )
 
     try do
@@ -200,7 +223,8 @@ defmodule FavnOrchestrator.API.ManifestDeployment do
                :manifest_index_limit_exceeded,
                :execution_package_limit_exceeded,
                :execution_package_count_exceeded,
-               :tar_entry_limit_exceeded
+               :tar_entry_limit_exceeded,
+               :manifest_memory_budget_exceeded
              ] ->
           error(
             conn,
@@ -230,8 +254,16 @@ defmodule FavnOrchestrator.API.ManifestDeployment do
         {:error, :package_persistence_failed} ->
           infrastructure_error(conn, :package_persistence_failed)
 
+        {:error, reason} when reason in [:worker_failed, :worker_timeout] ->
+          conn
+          |> put_resp_header("retry-after", "5")
+          |> error(503, "manifest_capacity_unavailable", "Manifest validation is unavailable")
+
         {:error, %Error{} = reason} ->
           infrastructure_error(conn, reason)
+
+        {:error, %MemoryError{} = reason} ->
+          memory_capacity_error(conn, reason)
 
         {:error, _reason} ->
           error(conn, 422, "invalid_manifest_archive", "Manifest archive is invalid")
@@ -435,7 +467,26 @@ defmodule FavnOrchestrator.API.ManifestDeployment do
   end
 
   defp failure_class(%Error{kind: kind}), do: Atom.to_string(kind)
+  defp failure_class(%MemoryError{code: code}), do: Atom.to_string(code)
   defp failure_class(_reason), do: "unavailable"
+
+  defp memory_capacity_error(conn, %MemoryError{code: :manifest_capacity_busy}) do
+    conn
+    |> put_resp_header("retry-after", "5")
+    |> error(429, "manifest_capacity_busy", "Manifest capacity is busy")
+  end
+
+  defp memory_capacity_error(conn, %MemoryError{code: :manifest_capacity_unavailable}) do
+    conn
+    |> put_resp_header("retry-after", "5")
+    |> error(503, "manifest_capacity_unavailable", "Manifest capacity is unavailable")
+  end
+
+  defp memory_capacity_error(conn, %MemoryError{code: :memory_capacity_unknown}) do
+    conn
+    |> put_resp_header("retry-after", "5")
+    |> error(503, "memory_capacity_unknown", "Memory capacity cannot be measured")
+  end
 
   defp error(conn, status, code, message) do
     conn |> Response.error(status, code, message) |> halt()

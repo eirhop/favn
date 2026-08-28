@@ -25,6 +25,7 @@ defmodule FavnOrchestrator.RuntimeConfig do
           instance_id: String.t(),
           http_server: map(),
           shutdown_drain_timeout_ms: pos_integer(),
+          memory_ceiling_bytes: pos_integer() | nil,
           manifest_publication: ManifestPublicationConfig.t(),
           auth_session_ttl_seconds: pos_integer()
         }
@@ -44,6 +45,7 @@ defmodule FavnOrchestrator.RuntimeConfig do
               body_limit_bytes: 1_048_576
             },
             shutdown_drain_timeout_ms: 120_000,
+            memory_ceiling_bytes: nil,
             manifest_publication: %ManifestPublicationConfig{
               compressed_limit_bytes: 8 * 1_024 * 1_024,
               decompressed_limit_bytes: 64 * 1_024 * 1_024
@@ -109,6 +111,7 @@ defmodule FavnOrchestrator.RuntimeConfig do
       http_server: Application.get_env(:favn_orchestrator, :http_server, %{}),
       shutdown_drain_timeout_ms:
         Application.get_env(:favn_orchestrator, :shutdown_drain_timeout_ms, 120_000),
+      memory_ceiling_bytes: Application.get_env(:favn_orchestrator, :memory_ceiling_bytes),
       manifest_publication: Application.get_env(:favn_orchestrator, :manifest_publication, []),
       auth_session_ttl_seconds:
         Application.get_env(
@@ -140,6 +143,7 @@ defmodule FavnOrchestrator.RuntimeConfig do
     instance_id = Keyword.get(attrs, :instance_id, "local")
     http_server = normalize_http_server(Keyword.get(attrs, :http_server, %{}))
     shutdown_drain_timeout_ms = Keyword.get(attrs, :shutdown_drain_timeout_ms, 120_000)
+    memory_ceiling_bytes = Keyword.get(attrs, :memory_ceiling_bytes)
     manifest_publication = Keyword.get(attrs, :manifest_publication, [])
 
     auth_session_ttl_seconds =
@@ -153,6 +157,7 @@ defmodule FavnOrchestrator.RuntimeConfig do
          :ok <- validate_instance_id(instance_id),
          :ok <- validate_http_server(http_server),
          :ok <- validate_positive_integer(:shutdown_drain_timeout_ms, shutdown_drain_timeout_ms),
+         :ok <- validate_optional_positive_integer(:memory_ceiling_bytes, memory_ceiling_bytes),
          {:ok, manifest_publication} <- normalize_manifest_publication(manifest_publication),
          :ok <- validate_auth_session_ttl(auth_session_ttl_seconds) do
       {:ok,
@@ -166,6 +171,7 @@ defmodule FavnOrchestrator.RuntimeConfig do
          instance_id: instance_id,
          http_server: http_server,
          shutdown_drain_timeout_ms: shutdown_drain_timeout_ms,
+         memory_ceiling_bytes: memory_ceiling_bytes,
          manifest_publication: manifest_publication,
          auth_session_ttl_seconds: auth_session_ttl_seconds
        }}
@@ -197,6 +203,10 @@ defmodule FavnOrchestrator.RuntimeConfig do
   @doc "Returns the boot-frozen graceful drain budget in milliseconds."
   @spec shutdown_drain_timeout_ms() :: pos_integer()
   def shutdown_drain_timeout_ms, do: current().shutdown_drain_timeout_ms
+
+  @doc "Returns the optional boot-frozen policy ceiling for Orchestrator memory."
+  @spec memory_ceiling_bytes() :: pos_integer() | nil
+  def memory_ceiling_bytes, do: current().memory_ceiling_bytes
 
   @doc "Returns the boot-frozen manifest publication limits."
   @spec manifest_publication() :: ManifestPublicationConfig.t()
@@ -309,6 +319,11 @@ defmodule FavnOrchestrator.RuntimeConfig do
 
   defp validate_positive_integer(field, value),
     do: {:error, {:invalid_runtime_config, {field, value}}}
+
+  defp validate_optional_positive_integer(_field, nil), do: :ok
+
+  defp validate_optional_positive_integer(field, value),
+    do: validate_positive_integer(field, value)
 
   defp normalize_manifest_publication(%ManifestPublicationConfig{} = config), do: {:ok, config}
 

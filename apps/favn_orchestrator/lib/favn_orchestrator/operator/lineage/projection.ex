@@ -27,38 +27,31 @@ defmodule FavnOrchestrator.Operator.Lineage.Projection do
   def read(%WorkspaceContext{} = context, %Request{} = request) do
     started_at = System.monotonic_time(:millisecond)
 
-    with {:ok, version, allowed_asset_ids} <-
-           fetch_version(context, request.manifest_version_id),
-         :ok <- check_timeout(started_at, request.limits.timeout_ms),
-         assets =
-           version.manifest.assets
-           |> List.wrap()
-           |> Enum.filter(
-             &MapSet.member?(allowed_asset_ids, TargetStatus.target_id_for_asset(&1.ref))
-           ),
-         targets = Enum.map(assets, &asset_target/1),
-         {:ok, statuses} <- target_statuses(context, version.manifest_version_id, targets),
-         :ok <- check_timeout(started_at, request.limits.timeout_ms),
-         model = build_model(version, assets, targets, statuses, request),
-         :ok <- check_timeout(started_at, request.limits.timeout_ms) do
-      {:ok, model}
-    end
-  end
-
-  defp fetch_version(context, requested_manifest_id) do
     with {:ok, {runtime, grants}} <-
            ManifestStore.get_active_deployment(context, customer_visible_only: true),
-         :ok <- ensure_requested_manifest(requested_manifest_id, runtime.manifest_version_id),
-         {:ok, %Version{} = version} <-
-           ManifestStore.get_manifest(context, runtime.manifest_version_id) do
+         :ok <-
+           ensure_requested_manifest(request.manifest_version_id, runtime.manifest_version_id) do
       allowed_asset_ids =
         grants
         |> Enum.filter(&(&1.target_kind == :asset))
         |> MapSet.new(& &1.target_id)
 
-      {:ok, version, allowed_asset_ids}
-    else
-      {:error, reason} -> {:error, reason}
+      ManifestStore.with_manifest(context, runtime.manifest_version_id, fn %Version{} = version ->
+        with :ok <- check_timeout(started_at, request.limits.timeout_ms),
+             assets =
+               version.manifest.assets
+               |> List.wrap()
+               |> Enum.filter(
+                 &MapSet.member?(allowed_asset_ids, TargetStatus.target_id_for_asset(&1.ref))
+               ),
+             targets = Enum.map(assets, &asset_target/1),
+             {:ok, statuses} <- target_statuses(context, version.manifest_version_id, targets),
+             :ok <- check_timeout(started_at, request.limits.timeout_ms),
+             model = build_model(version, assets, targets, statuses, request),
+             :ok <- check_timeout(started_at, request.limits.timeout_ms) do
+          {:ok, model}
+        end
+      end)
     end
   end
 

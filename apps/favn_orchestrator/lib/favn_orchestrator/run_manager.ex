@@ -11,6 +11,8 @@ defmodule FavnOrchestrator.RunManager do
   alias FavnOrchestrator.OperationalEvents
   alias FavnOrchestrator.ManifestStore
   alias FavnOrchestrator.Lifecycle
+  alias FavnOrchestrator.MemoryCapacity
+  alias FavnOrchestrator.MemoryCapacity.Budget
   alias FavnOrchestrator.Persistence.SystemContext
   alias FavnOrchestrator.Persistence.Error
   alias FavnOrchestrator.Persistence.Results.RunOwnership, as: Ownership
@@ -49,7 +51,14 @@ defmodule FavnOrchestrator.RunManager do
   @doc false
   @spec admit_claimed_submission(Submission.t()) :: {:ok, String.t()} | {:error, term()}
   def admit_claimed_submission(%Submission{} = submission) do
-    persist_and_admit(submission)
+    persist_and_admit(submission, nil)
+  end
+
+  @doc false
+  @spec admit_claimed_submission(Submission.t(), MemoryCapacity.t()) ::
+          {:ok, String.t()} | {:error, term()}
+  def admit_claimed_submission(%Submission{} = submission, %MemoryCapacity{} = handoff_token) do
+    persist_and_admit(submission, handoff_token)
   end
 
   @spec cancel_run(WorkspaceContext.t(), String.t(), map()) :: :ok | {:error, term()}
@@ -83,12 +92,8 @@ defmodule FavnOrchestrator.RunManager do
   @doc false
   @spec recover_run(WorkspaceContext.t(), String.t()) :: {:ok, String.t()} | {:error, term()}
   def recover_run(%WorkspaceContext{} = context, run_id) when is_binary(run_id) do
-    with {:ok, %RunState{} = run} <- Runs.get(context, run_id),
-         true <- retry_wait?(run),
-         {:ok, version} <- load_run_manifest(context, run) do
-      call_manager({:recover_prepared_run, context, run, version})
-    else
-      false -> {:error, :run_not_recoverable}
+    case MemoryCapacity.acquire(16 * 1_024 * 1_024, kind: :run_recovery) do
+      {:ok, recovery_token} -> recover_run_with_capacity(context, run_id, recovery_token)
       {:error, reason} -> {:error, reason}
     end
   end
@@ -98,14 +103,12 @@ defmodule FavnOrchestrator.RunManager do
           {:ok, String.t()} | {:error, term()}
   def recover_claimed_run(%WorkspaceContext{} = context, %Ownership{} = ownership) do
     result =
-      with true <- ownership.workspace_id == context.workspace_id,
-           {:ok, %RunState{} = run} <- Runs.get(context, ownership.run_id),
-           true <- run.status in [:pending, :running],
-           {:ok, version} <- load_run_manifest(context, run) do
-        call_manager({:recover_prepared_claimed_run, context, ownership, run, version})
-      else
-        false -> {:error, :run_not_recoverable}
-        {:error, reason} -> {:error, reason}
+      case MemoryCapacity.acquire(16 * 1_024 * 1_024, kind: :run_recovery) do
+        {:ok, recovery_token} ->
+          recover_claimed_run_with_capacity(context, ownership, recovery_token)
+
+        {:error, reason} ->
+          {:error, reason}
       end
 
     case result do
@@ -115,6 +118,58 @@ defmodule FavnOrchestrator.RunManager do
       {:error, reason} ->
         _release = RunOwnership.release(context, ownership)
         {:error, reason}
+    end
+  end
+
+  defp recover_run_with_capacity(context, run_id, recovery_token) do
+    case Runs.get(context, run_id, memory_capacity_token: recovery_token) do
+      {:ok, %RunState{} = run} ->
+        if retry_wait?(run) do
+          with_run_manifest(context, run, recovery_token, fn version ->
+            retained_bytes = Budget.retained_term_bytes({run, version.version})
+
+            call_manager(
+              {:recover_prepared_run, context, run, version.version, version.capacity_token,
+               retained_bytes, recovery_token}
+            )
+          end)
+        else
+          MemoryCapacity.release(recovery_token)
+          {:error, :run_not_recoverable}
+        end
+
+      {:error, reason} ->
+        MemoryCapacity.release(recovery_token)
+        {:error, reason}
+    end
+  end
+
+  defp recover_claimed_run_with_capacity(context, ownership, recovery_token) do
+    cond do
+      ownership.workspace_id != context.workspace_id ->
+        MemoryCapacity.release(recovery_token)
+        {:error, :run_not_recoverable}
+
+      true ->
+        case Runs.get(context, ownership.run_id, memory_capacity_token: recovery_token) do
+          {:ok, %RunState{status: status} = run} when status in [:pending, :running] ->
+            with_run_manifest(context, run, recovery_token, fn version ->
+              retained_bytes = Budget.retained_term_bytes({run, version.version})
+
+              call_manager(
+                {:recover_prepared_claimed_run, context, ownership, run, version.version,
+                 version.capacity_token, retained_bytes, recovery_token}
+              )
+            end)
+
+          {:ok, %RunState{}} ->
+            MemoryCapacity.release(recovery_token)
+            {:error, :run_not_recoverable}
+
+          {:error, reason} ->
+            MemoryCapacity.release(recovery_token)
+            {:error, reason}
+        end
     end
   end
 
@@ -166,8 +221,21 @@ defmodule FavnOrchestrator.RunManager do
 
         {:reply, {:ok, run_id}, next_state}
 
-      {:error, reason} ->
-        {:reply, {:error, reason}, state}
+      {{:error, reason}, next_state} ->
+        {:reply, {:error, reason}, next_state}
+    end
+  end
+
+  def handle_call(
+        {:admit_persisted_submission, %Submission{} = submission, replayed?,
+         %MemoryCapacity{} = handoff_token},
+        from,
+        state
+      ) do
+    try do
+      handle_call({:admit_persisted_submission, submission, replayed?}, from, state)
+    after
+      MemoryCapacity.release(handoff_token)
     end
   end
 
@@ -220,25 +288,70 @@ defmodule FavnOrchestrator.RunManager do
   end
 
   def handle_call(
-        {:recover_prepared_run, %WorkspaceContext{} = context, %RunState{} = run, version},
+        {:recover_prepared_run, %WorkspaceContext{} = context, %RunState{} = run, version,
+         memory_token, reserved_bytes},
         _from,
         state
       ) do
-    case recover_prepared_run_server(context, run, version, state) do
+    case recover_prepared_run_server(context, run, version, state,
+           memory_capacity_token: memory_token,
+           transferred_retained_bytes: reserved_bytes,
+           preserve_working_memory: true
+         ) do
       {{:ok, run_id}, next_state} -> {:reply, {:ok, run_id}, next_state}
-      {:error, reason} -> {:reply, {:error, reason}, state}
+      {{:error, reason}, next_state} -> {:reply, {:error, reason}, next_state}
+    end
+  end
+
+  def handle_call(
+        {:recover_prepared_run, %WorkspaceContext{} = context, %RunState{} = run, version,
+         memory_token, reserved_bytes, %MemoryCapacity{} = recovery_token},
+        from,
+        state
+      ) do
+    try do
+      handle_call(
+        {:recover_prepared_run, context, run, version, memory_token, reserved_bytes},
+        from,
+        state
+      )
+    after
+      MemoryCapacity.release(recovery_token)
     end
   end
 
   def handle_call(
         {:recover_prepared_claimed_run, %WorkspaceContext{} = context, %Ownership{} = ownership,
-         %RunState{} = run, version},
+         %RunState{} = run, version, memory_token, reserved_bytes},
         _from,
         state
       ) do
-    case recover_prepared_claimed_run_server(context, ownership, run, version, state) do
+    case recover_prepared_claimed_run_server(context, ownership, run, version, state,
+           memory_capacity_token: memory_token,
+           transferred_retained_bytes: reserved_bytes,
+           preserve_working_memory: true
+         ) do
       {{:ok, run_id}, next_state} -> {:reply, {:ok, run_id}, next_state}
-      {:error, reason} -> {:reply, {:error, reason}, state}
+      {{:error, reason}, next_state} -> {:reply, {:error, reason}, next_state}
+    end
+  end
+
+  def handle_call(
+        {:recover_prepared_claimed_run, %WorkspaceContext{} = context, %Ownership{} = ownership,
+         %RunState{} = run, version, memory_token, reserved_bytes,
+         %MemoryCapacity{} = recovery_token},
+        from,
+        state
+      ) do
+    try do
+      handle_call(
+        {:recover_prepared_claimed_run, context, ownership, run, version, memory_token,
+         reserved_bytes},
+        from,
+        state
+      )
+    after
+      MemoryCapacity.release(recovery_token)
     end
   end
 
@@ -298,11 +411,26 @@ defmodule FavnOrchestrator.RunManager do
     end
   end
 
-  defp persist_and_admit(%Submission{run_state: %RunState{} = run_state} = submission) do
-    result =
+  defp persist_and_admit(
+         %Submission{run_state: %RunState{} = run_state} = submission,
+         handoff_token
+       ) do
+    admission =
       with :ok <- call_manager({:validate_submission, run_state}),
            {:ok, replayed?} <- persist_submission(submission) do
-        call_manager({:admit_persisted_submission, submission, replayed?})
+        handoff_and_admit(submission, replayed?, handoff_token)
+      else
+        {:error, _reason} = error -> {:before_manager, error}
+      end
+
+    result =
+      case admission do
+        {:manager_call, result} ->
+          result
+
+        {:before_manager, result} ->
+          release_handoff_token(handoff_token)
+          result
       end
 
     case result do
@@ -321,33 +449,111 @@ defmodule FavnOrchestrator.RunManager do
     end
   end
 
+  defp handoff_and_admit(
+         %Submission{memory_capacity_token: nil} = submission,
+         replayed?,
+         nil
+       ) do
+    {:manager_call, call_manager({:admit_persisted_submission, submission, replayed?})}
+  end
+
+  defp handoff_and_admit(
+         %Submission{memory_capacity_token: %MemoryCapacity{} = token} = submission,
+         replayed?,
+         nil
+       ) do
+    case Process.whereis(__MODULE__) do
+      manager when is_pid(manager) ->
+        case MemoryCapacity.handoff(token, manager) do
+          :ok ->
+            {:manager_call, call_manager({:admit_persisted_submission, submission, replayed?})}
+
+          {:error, reason} ->
+            MemoryCapacity.release(token)
+            {:before_manager, {:error, reason}}
+        end
+
+      nil ->
+        MemoryCapacity.release(token)
+        {:before_manager, {:error, :run_manager_unavailable}}
+    end
+  end
+
+  defp handoff_and_admit(
+         %Submission{memory_capacity_token: %MemoryCapacity{} = token} = submission,
+         replayed?,
+         %MemoryCapacity{} = handoff_token
+       ) do
+    case Process.whereis(__MODULE__) do
+      manager when is_pid(manager) ->
+        with :ok <- MemoryCapacity.handoff(token, manager),
+             :ok <- MemoryCapacity.handoff(handoff_token, manager) do
+          {:manager_call,
+           call_manager(
+             {:admit_persisted_submission, submission, replayed?, handoff_token}
+           )}
+        else
+          {:error, reason} ->
+            MemoryCapacity.release(token)
+            {:before_manager, {:error, reason}}
+        end
+
+      nil ->
+        MemoryCapacity.release(token)
+        {:before_manager, {:error, :run_manager_unavailable}}
+    end
+  end
+
+  defp release_handoff_token(%MemoryCapacity{} = token), do: MemoryCapacity.release(token)
+  defp release_handoff_token(nil), do: :ok
+
   defp admit_persisted_submission(
          %Submission{run_state: %RunState{} = run_state} = submission,
          replayed?,
          state
        ) do
     if replayed? do
+      release_submission_token(submission)
       {{:ok, run_state.id}, state}
     else
-      with :ok <- validate_admission(run_state, state) do
-        case reserve_run_plan(state, run_state) do
-          {:ok, reserved_state} ->
-            case start_run_server(run_state, submission.manifest_version) do
-              {:ok, pid} ->
-                track_run_server(reserved_state, run_state, pid)
+      case validate_admission(run_state, state) do
+        :ok ->
+          case reserve_run_plan(state, run_state,
+                 memory_capacity_token: submission.memory_capacity_token,
+                 transferred_retained_bytes: submission.memory_capacity_bytes
+               ) do
+            {:ok, reserved_state} ->
+              case start_run_server(run_state, submission.manifest_version,
+                     memory_capacity_token:
+                       PlanCapacity.memory_token(reserved_state.plan_capacity, run_key(run_state))
+                   ) do
+                {:ok, pid} ->
+                  track_run_server(reserved_state, run_state, pid)
 
-              {:error, reason} ->
-                schedule_run_server_start_compensation(run_state, reason)
-                {:error, {:run_server_start_failed, JsonSafe.error(reason)}}
-            end
+                {:error, reason} ->
+                  schedule_run_server_start_compensation(run_state, reason)
+                  next_state = release_run_plan(reserved_state, run_state)
 
-          {:error, capacity_error} ->
-            emit_run_plan_capacity_deferred(run_state, capacity_error)
-            {{:ok, run_state.id}, state}
-        end
+                  {{:error, {:run_server_start_failed, JsonSafe.error(reason)}}, next_state}
+              end
+
+            {:error, capacity_error} ->
+              emit_run_plan_capacity_deferred(run_state, capacity_error)
+              release_submission_token(submission)
+              {{:ok, run_state.id}, state}
+          end
+
+        {:error, reason} ->
+          release_submission_token(submission)
+          {{:error, reason}, state}
       end
     end
   end
+
+  defp release_submission_token(%Submission{memory_capacity_token: %MemoryCapacity{} = token}),
+    do: MemoryCapacity.release(token)
+
+  defp release_submission_token(%Submission{}), do: :ok
 
   defp persist_submission(
          %Submission{
@@ -386,19 +592,22 @@ defmodule FavnOrchestrator.RunManager do
          %WorkspaceContext{} = context,
          %RunState{} = run,
          version,
-         state
+         state,
+         capacity_opts
        ) do
     key = {context.workspace_id, run.id}
 
-    with false <- active_run_server?(state, key),
-         true <- retry_wait?(run),
-         {:ok, reserved_state} <- reserve_run_plan(state, run),
-         {:ok, pid} <- start_run_server(run, version, recovering?: true) do
-      track_run_server(reserved_state, key, run.id, pid)
-    else
-      true -> {:error, {:run_already_active, run.id}}
-      false -> {:error, :run_not_recoverable}
-      {:error, reason} -> {:error, reason}
+    cond do
+      active_run_server?(state, key) ->
+        release_recovery_token(capacity_opts)
+        {{:error, {:run_already_active, run.id}}, state}
+
+      not retry_wait?(run) ->
+        release_recovery_token(capacity_opts)
+        {{:error, :run_not_recoverable}, state}
+
+      true ->
+        start_recovered_run(state, run, version, key, capacity_opts, recovering?: true)
     end
   end
 
@@ -407,46 +616,110 @@ defmodule FavnOrchestrator.RunManager do
          %Ownership{} = ownership,
          %RunState{} = run,
          version,
-         state
+         state,
+         capacity_opts
        ) do
     key = {context.workspace_id, ownership.run_id}
 
     if active_run_server?(state, key) do
+      release_recovery_token(capacity_opts)
       {{:ok, run.id}, state}
     else
-      with true <- ownership.workspace_id == context.workspace_id,
-           true <- run.status in [:pending, :running],
-           {:ok, reserved_state} <- reserve_run_plan(state, run),
-           {:ok, pid} <-
-             start_run_server(run, version,
+      if ownership.workspace_id == context.workspace_id and run.status in [:pending, :running] do
+        case start_recovered_run(state, run, version, key, capacity_opts,
                recovering?: true,
                storage_ownership: ownership
              ) do
-        track_run_server(reserved_state, key, run.id, pid)
+          {{:error, capacity_error}, next_state}
+          when is_run_plan_capacity_error(capacity_error) ->
+            emit_run_plan_capacity_deferred(ownership, capacity_error)
+            {{:error, capacity_error}, next_state}
+
+          result ->
+            result
+        end
       else
-        false ->
-          {:error, :run_not_recoverable}
-
-        {:error, capacity_error} when is_run_plan_capacity_error(capacity_error) ->
-          emit_run_plan_capacity_deferred(ownership, capacity_error)
-          {:error, capacity_error}
-
-        {:error, reason} ->
-          {:error, reason}
+        release_recovery_token(capacity_opts)
+        {{:error, :run_not_recoverable}, state}
       end
     end
   end
 
-  defp load_run_manifest(%WorkspaceContext{} = context, %RunState{} = run) do
-    with {:ok, version} <-
-           ManifestStore.get_deployment_manifest(
+  defp start_recovered_run(state, run, version, key, capacity_opts, server_opts) do
+    case reserve_run_plan(state, run, capacity_opts) do
+      {:ok, reserved_state} ->
+        server_opts =
+          Keyword.put(
+            server_opts,
+            :memory_capacity_token,
+            PlanCapacity.memory_token(reserved_state.plan_capacity, key)
+          )
+
+        case start_run_server(run, version, server_opts) do
+          {:ok, pid} ->
+            track_run_server(reserved_state, key, run.id, pid)
+
+          {:error, reason} ->
+            next_state = release_run_plan(reserved_state, run)
+            {{:error, reason}, next_state}
+        end
+
+      {:error, reason} ->
+        release_recovery_token(capacity_opts)
+        {{:error, reason}, state}
+    end
+  end
+
+  defp release_recovery_token(opts) do
+    case Keyword.get(opts, :memory_capacity_token) do
+      %MemoryCapacity{} = token -> MemoryCapacity.release(token)
+      nil -> :ok
+    end
+  end
+
+  defp with_run_manifest(
+         %WorkspaceContext{} = context,
+         %RunState{} = run,
+         %MemoryCapacity{} = recovery_token,
+         fun
+       ) do
+    with manager when is_pid(manager) <- Process.whereis(__MODULE__),
+         {:ok, lease} <-
+           ManifestStore.checkout_deployment_manifest(
              context,
              run.deployment_id,
-             run.manifest_version_id
-           ),
-         :ok <- RunnerIdentityVerifier.verify_run_manifest(run, version) do
-      {:ok, version}
+             run.manifest_version_id,
+             copies: 3
+           ) do
+      case RunnerIdentityVerifier.verify_run_manifest(run, lease.version) do
+        :ok ->
+          with :ok <- MemoryCapacity.handoff(lease.capacity_token, manager),
+               :ok <- MemoryCapacity.handoff(recovery_token, manager) do
+            fun.(lease)
+          else
+            {:error, _reason} = error ->
+              MemoryCapacity.release(recovery_token)
+              release_manifest_lease(lease, error)
+          end
+
+        {:error, _reason} = error ->
+          MemoryCapacity.release(recovery_token)
+          release_manifest_lease(lease, error)
+      end
+    else
+      nil ->
+        MemoryCapacity.release(recovery_token)
+        {:error, :run_manager_unavailable}
+
+      {:error, _reason} = error ->
+        MemoryCapacity.release(recovery_token)
+        error
     end
+  end
+
+  defp release_manifest_lease(lease, result) do
+    :ok = ManifestStore.release_manifest(lease)
+    result
   end
 
   defp retry_wait?(%RunState{status: status, metadata: metadata})
@@ -497,7 +770,7 @@ defmodule FavnOrchestrator.RunManager do
     end
   end
 
-  defp start_run_server(%RunState{} = run_state, version, opts \\ []) when is_list(opts) do
+  defp start_run_server(%RunState{} = run_state, version, opts) when is_list(opts) do
     args =
       %{
         run_state: run_state,
@@ -508,6 +781,12 @@ defmodule FavnOrchestrator.RunManager do
       |> then(fn args ->
         case Keyword.get(opts, :storage_ownership) do
           %Ownership{} = ownership -> Map.put(args, :storage_ownership, ownership)
+          nil -> args
+        end
+      end)
+      |> then(fn args ->
+        case Keyword.get(opts, :memory_capacity_token) do
+          %MemoryCapacity{} = token -> Map.put(args, :memory_capacity_token, token)
           nil -> args
         end
       end)
@@ -591,11 +870,15 @@ defmodule FavnOrchestrator.RunManager do
     end
   end
 
-  defp reserve_run_plan(state, %RunState{} = run) do
-    case PlanCapacity.reserve(state.plan_capacity, run_key(run), run) do
+  defp reserve_run_plan(state, %RunState{} = run, opts) do
+    case PlanCapacity.reserve(state.plan_capacity, run_key(run), run, opts) do
       {:ok, plan_capacity} -> {:ok, %{state | plan_capacity: plan_capacity}}
       {:error, reason} -> {:error, reason}
     end
+  end
+
+  defp release_run_plan(state, %RunState{} = run) do
+    %{state | plan_capacity: PlanCapacity.release(state.plan_capacity, run_key(run))}
   end
 
   defp schedule_crash_recovery(run_key, error, attempt) do

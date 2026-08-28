@@ -11,30 +11,49 @@ defmodule FavnOrchestrator.RunSubmission.Preparation do
 
   @format "favn.run_submission.preparation.v1"
 
-  @spec prepare(WorkspaceContext.t(), RunSubmission.t()) ::
+  @spec prepare(WorkspaceContext.t(), RunSubmission.t(), keyword()) ::
           {:ok, Submission.t(), map()} | {:error, term()}
-  def prepare(%WorkspaceContext{} = context, %RunSubmission{} = submission) do
+  def prepare(%WorkspaceContext{} = context, %RunSubmission{} = submission, runtime_opts \\ []) do
     with true <- context.workspace_id == submission.workspace_id,
-         {:ok, {operation, selector, opts}} <- Intent.decode(submission.intent),
-         {:ok, version} <-
-           ManifestStore.get_deployment_manifest(
-             context,
-             submission.deployment_id,
-             submission.manifest_version_id
-           ),
-         {:ok, prepared} <-
-           prepare_operation(
-             context,
-             version,
-             submission,
-             operation,
-             selector,
-             opts
-           ) do
-      {:ok, prepared, summary(prepared, submission)}
+         {:ok, {operation, selector, opts}} <- Intent.decode(submission.intent) do
+      opts = put_memory_capacity_token(opts, runtime_opts)
+
+      ManifestStore.with_deployment_manifest(
+        context,
+        submission.deployment_id,
+        submission.manifest_version_id,
+        capacity_opts(runtime_opts),
+        fn version ->
+          with {:ok, prepared} <-
+                 prepare_operation(
+                   context,
+                   version,
+                   submission,
+                   operation,
+                   selector,
+                   opts
+                 ) do
+            {:ok, prepared, summary(prepared, submission)}
+          end
+        end
+      )
     else
       false -> {:error, :run_submission_workspace_mismatch}
       {:error, _reason} = error -> error
+    end
+  end
+
+  defp put_memory_capacity_token(opts, runtime_opts) do
+    case Keyword.get(runtime_opts, :memory_capacity_token) do
+      nil -> opts
+      token -> Keyword.put(opts, :_memory_capacity_token, token)
+    end
+  end
+
+  defp capacity_opts(runtime_opts) do
+    case Keyword.get(runtime_opts, :memory_capacity_token) do
+      nil -> []
+      token -> [memory_capacity_token: token]
     end
   end
 
