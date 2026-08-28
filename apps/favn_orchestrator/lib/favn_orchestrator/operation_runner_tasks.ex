@@ -296,19 +296,19 @@ defmodule FavnOrchestrator.OperationRunnerTasks do
     end
   end
 
-  defp pool_release(%Version{} = version, asset_ref) do
-    case Enum.find(version.manifest.assets, &(&1.ref == asset_ref)) do
-      %Asset{} = asset -> pool_release(version, asset)
-      nil -> {:error, :asset_not_found}
-    end
-  end
-
   defp pool_release(%Version{} = version, %Asset{} = asset) do
     pool = asset.runner_pool || Favn.RunnerPool.default()
 
     with {:ok, pool_name} <- Favn.RunnerPool.encode(pool),
          {:ok, release_id} <- Version.release_for_pool(version, pool) do
       {:ok, pool_name, release_id}
+    end
+  end
+
+  defp pool_release(%Version{} = version, asset_ref) do
+    case Enum.find(version.manifest.assets, &(&1.ref == asset_ref)) do
+      %Asset{} = asset -> pool_release(version, asset)
+      nil -> {:error, :asset_not_found}
     end
   end
 
