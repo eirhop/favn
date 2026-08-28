@@ -76,7 +76,17 @@ defmodule FavnView.WindowLabelTest do
       assert span(~U[2020-01-01 00:00:00Z], ~U[2026-01-01 00:00:00Z], :year) == "2020 – 2025"
 
       assert span(~U[2026-07-17 09:00:00Z], ~U[2026-07-17 12:00:00Z], :hour) ==
-               "Jul 17, 09:00 – Jul 17, 11:00"
+               "Jul 17, 2026 09:00 – Jul 17, 2026 11:00"
+    end
+
+    test "of hours carries the year, which one hour on its own does not need" do
+      # A single hour is read beside the day it belongs to, so `compact/3` leaves
+      # its year out and a one-hour span says the same thing. A stretch has two
+      # ends and can cross a year, so both ends name theirs.
+      assert span(~U[2026-07-17 14:00:00Z], ~U[2026-07-17 15:00:00Z], :hour) == "Jul 17, 14:00"
+
+      assert span(~U[2026-12-31 23:00:00Z], ~U[2027-01-01 05:00:00Z], :hour) ==
+               "Dec 31, 2026 23:00 – Jan 1, 2027 04:00"
     end
 
     test "never names the exclusive end bound" do

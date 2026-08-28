@@ -169,9 +169,16 @@ defmodule FavnView.WindowLabel do
 
     case {period_name(start_local, unit), period_name(last_local, unit)} do
       {same, same} -> same
-      {first, last} -> "#{first} – #{last}"
+      {_first, _last} -> "#{ends_name(start_local, unit)} – #{ends_name(last_local, unit)}"
     end
   end
+
+  # Only the hour form leaves its year implicit, because one hour is always read
+  # beside the day it belongs to. The two ends of a stretch are not: an hourly
+  # run can cover a year boundary, and `Dec 31, 23:00 – Jan 1, 05:00` says which
+  # hours without saying which December.
+  defp ends_name(local, :hour), do: Calendar.strftime(local, "%b %-d, %Y %H:00")
+  defp ends_name(local, unit), do: period_name(local, unit)
 
   defp period_name(local, :year), do: Calendar.strftime(local, "%Y")
   defp period_name(local, :month), do: Calendar.strftime(local, "%b %Y")
