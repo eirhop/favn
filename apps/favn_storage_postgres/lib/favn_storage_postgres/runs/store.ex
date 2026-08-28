@@ -156,9 +156,7 @@ defmodule FavnStoragePostgres.Runs.Store do
           where: run.workspace_id == ^context.workspace_id and run.run_id == ^run_id,
           select:
             fragment(
-              "octet_length((?)::text) + COALESCE(octet_length((?)::text), 0) + " <>
-                "CASE WHEN ? IS NULL THEN octet_length((?)::text) " <>
-                "ELSE COALESCE(octet_length(array_to_string(?, '')), 0) END",
+              "octet_length((?)::text) + COALESCE(octet_length((?)::text), 0) + CASE WHEN ? IS NULL THEN octet_length((?)::text) ELSE COALESCE(octet_length(array_to_string(?, '')), 0) END",
               run.snapshot,
               plan.plan,
               manifest.atom_strings,
