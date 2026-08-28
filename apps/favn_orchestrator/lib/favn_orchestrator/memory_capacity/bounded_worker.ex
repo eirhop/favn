@@ -81,6 +81,7 @@ defmodule FavnOrchestrator.MemoryCapacity.BoundedWorker do
       run(
         fn ->
           value = fun.()
+          :erlang.garbage_collect()
 
           if Budget.retained_term_bytes(value) <= max_result_bytes do
             {:serialized_worker_result, :erlang.term_to_binary(value)}

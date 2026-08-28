@@ -116,7 +116,7 @@ defmodule FavnOrchestrator.ManifestStore do
     budget = Budget.live_index()
 
     with :ok <- resize_scoped_working(token, budget) do
-      BoundedWorker.run(
+      BoundedWorker.run_serialized(
         fn ->
           with {:ok, verified} <- Version.verify(version),
                {:ok, canonical_json} <- Serializer.encode_manifest(verified.manifest),
@@ -124,7 +124,8 @@ defmodule FavnOrchestrator.ManifestStore do
             {:ok, verified}
           end
         end,
-        budget
+        budget,
+        Budget.serialized_result_limit(budget)
       )
     end
   end
@@ -323,7 +324,11 @@ defmodule FavnOrchestrator.ManifestStore do
 
       with :ok <- resize_scoped_working(token, budget),
            {:ok, %Index{} = index} <-
-             BoundedWorker.run(fn -> Index.build_from_version(version) end, budget) do
+             BoundedWorker.run_serialized(
+               fn -> Index.build_from_version(version) end,
+               budget,
+               Budget.serialized_result_limit(budget)
+             ) do
         fun.(index)
       end
     end)

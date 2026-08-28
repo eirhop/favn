@@ -409,7 +409,7 @@ defmodule FavnOrchestrator.API.ManifestDeploymentArchive do
 
   defp process_entry(state, "bundle.json", bytes) do
     with {:ok, normalized} <-
-           BoundedWorker.run(
+           BoundedWorker.run_serialized(
              fn ->
                with {:ok, bundle} when is_map(bundle) <- Jason.decode(bytes),
                     {:ok, normalized} <- validate_bundle(bundle) do
@@ -418,7 +418,8 @@ defmodule FavnOrchestrator.API.ManifestDeploymentArchive do
                  _invalid -> {:error, :invalid_bundle}
                end
              end,
-             Budget.manifest_base()
+             Budget.manifest_base(),
+             Budget.serialized_result_limit(Budget.manifest_base())
            ),
          :ok <- preflight_declared_capacity(state, normalized) do
       {:ok, %{state | bundle: normalized}}
@@ -432,7 +433,7 @@ defmodule FavnOrchestrator.API.ManifestDeploymentArchive do
     budget = Budget.index(byte_size(bytes))
 
     with {:ok, version} <-
-           BoundedWorker.run(
+           BoundedWorker.run_serialized(
              fn ->
                with :ok <- verify_declared_file(state.bundle, path, bytes),
                     {:ok, manifest} <- Serializer.decode_manifest(bytes),
@@ -441,7 +442,8 @@ defmodule FavnOrchestrator.API.ManifestDeploymentArchive do
                  {:ok, version}
                end
              end,
-             budget
+             budget,
+             Budget.serialized_result_limit(budget)
            ) do
       {:ok, %{state | version: version}}
     else
@@ -454,7 +456,7 @@ defmodule FavnOrchestrator.API.ManifestDeploymentArchive do
 
     with :ok <- validate_package_count(state),
          {:ok, package} <-
-           BoundedWorker.run(
+           BoundedWorker.run_serialized(
              fn ->
                with :ok <- verify_declared_file(state.bundle, path, bytes),
                     {:ok, decoded} when is_map(decoded) <- Jason.decode(bytes),
@@ -467,7 +469,8 @@ defmodule FavnOrchestrator.API.ManifestDeploymentArchive do
                  _invalid -> {:error, :invalid_execution_package}
                end
              end,
-             Budget.manifest_base()
+             Budget.manifest_base(),
+             Budget.serialized_result_limit(Budget.manifest_base())
            ),
          {:ok, state} <- flush_before_package(state, byte_size(bytes)) do
       state = %{

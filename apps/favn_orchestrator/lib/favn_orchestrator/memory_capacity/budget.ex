@@ -61,6 +61,12 @@ defmodule FavnOrchestrator.MemoryCapacity.Budget do
   def worker_handoff(retained_bytes) when is_integer(retained_bytes) and retained_bytes > 0,
     do: retained_bytes + div(retained_bytes, @retained_term_multiplier)
 
+  @doc "Largest retained result whose term plus encoded handoff fits a working budget."
+  @spec serialized_result_limit(pos_integer()) :: pos_integer()
+  def serialized_result_limit(working_bytes)
+      when is_integer(working_bytes) and working_bytes > 0,
+      do: div(@retained_term_multiplier * working_bytes, @retained_term_multiplier + 1)
+
   @doc "Returns a size-derived persisted-run decode reservation within the run-plan ceiling."
   @spec run_decode(non_neg_integer(), pos_integer()) ::
           {:ok, %{working_bytes: pos_integer(), result_bytes: pos_integer()}}

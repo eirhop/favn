@@ -543,9 +543,10 @@ defmodule FavnOrchestrator.API.ManifestsRouter do
   def build_version(params) when is_map(params) do
     with %{} = manifest <- Map.get(params, "manifest"),
          {:ok, version} <-
-           BoundedWorker.run(
+           BoundedWorker.run_serialized(
              fn -> Version.from_published(manifest, version_options(params)) end,
-             build_version_budget()
+             build_version_budget(),
+             Budget.serialized_result_limit(build_version_budget())
            ) do
       {:ok, version}
     else

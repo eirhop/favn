@@ -25,8 +25,14 @@ defmodule FavnOrchestrator.ExecutionPackages do
   @doc "Registers immutable packages before their compact manifest index."
   @spec register(PlatformContext.t(), [ExecutionPackage.t()]) :: :ok | {:error, term()}
   def register(%PlatformContext{} = context, packages) when is_list(packages) do
+    budget = Budget.manifest_base()
+
     with {:ok, verified} <-
-           BoundedWorker.run(fn -> verify_batch(packages) end, Budget.manifest_base()) do
+           BoundedWorker.run_serialized(
+             fn -> verify_batch(packages) end,
+             budget,
+             Budget.serialized_result_limit(budget)
+           ) do
       Persistence.stores().registry.register_execution_packages(%RegisterExecutionPackages{
         platform_context: context,
         packages: verified

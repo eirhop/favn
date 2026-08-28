@@ -18,6 +18,14 @@ defmodule FavnOrchestrator.MemoryCapacity.BudgetTest do
     assert second == %{result_bytes: 256 * @mib, working_bytes: 320 * @mib}
   end
 
+  test "serialized result limit leaves room for the encoded worker handoff" do
+    working_bytes = 512 * @mib
+    retained_bytes = Budget.serialized_result_limit(working_bytes)
+
+    assert retained_bytes == div(4 * working_bytes, 5)
+    assert Budget.worker_handoff(retained_bytes) <= working_bytes
+  end
+
   test "persisted run decode rejects work above the retained run-plan ceiling" do
     assert {:error, :manifest_memory_budget_exceeded} =
              Budget.run_decode(33 * @mib, 512 * @mib)

@@ -2,8 +2,10 @@ defmodule FavnOrchestrator.ManifestStoreMemoryScopeTest do
   use ExUnit.Case, async: false
 
   alias Favn.Manifest
+  alias Favn.Manifest.Asset
   alias Favn.Manifest.ArchiveLimits
   alias Favn.Manifest.Version
+  alias Favn.RelationRef
   alias FavnOrchestrator.ManifestStore
   alias FavnOrchestrator.MemoryCapacity
   alias FavnOrchestrator.MemoryCapacity.Budget
@@ -107,9 +109,51 @@ defmodule FavnOrchestrator.ManifestStoreMemoryScopeTest do
              Budget.persisted_index(limit + 1)
   end
 
+  @tag :slow
+  test "a one-thousand-asset index crosses the worker boundary within the fixed budget" do
+    version = large_version(1_000)
+
+    assert 1_000 =
+             ManifestStore.with_index(version, fn index -> map_size(index.assets_by_ref) end)
+  end
+
   defp version do
     manifest = FavnTestSupport.with_manifest_contract(%Manifest{})
     {:ok, version} = Version.new(manifest, manifest_version_id: "mv_memory_scope")
+    version
+  end
+
+  defp large_version(count) do
+    assets =
+      Enum.map(1..count, fn index ->
+        module = Module.concat(__MODULE__, "BoundedAsset#{index}")
+        ref = {module, :asset}
+
+        FavnTestSupport.with_target_descriptor(%Asset{
+          ref: ref,
+          module: module,
+          name: :asset,
+          type: :sql,
+          relation:
+            RelationRef.new!(
+              connection: :warehouse,
+              schema: "bounded",
+              name: "asset_#{index}"
+            ),
+          materialization: :table,
+          execution_package_hash:
+            :sha256
+            |> :crypto.hash("bounded-package-#{index}")
+            |> Base.encode16(case: :lower)
+        })
+      end)
+
+    manifest =
+      %Manifest{assets: assets}
+      |> FavnTestSupport.with_manifest_graph()
+      |> FavnTestSupport.with_manifest_contract()
+
+    {:ok, version} = Version.new(manifest, manifest_version_id: "mv_bounded_#{count}")
     version
   end
 
