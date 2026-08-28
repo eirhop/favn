@@ -29,9 +29,7 @@ defmodule FavnStoragePostgres.Migrations.AddManifestIndexBytesV2 do
   end
 
   def down do
-    drop(
-      constraint(:manifest_versions, :manifest_versions_index_bytes_valid, prefix: @prefix)
-    )
+    drop(constraint(:manifest_versions, :manifest_versions_index_bytes_valid, prefix: @prefix))
 
     alter table(:manifest_versions, prefix: @prefix) do
       remove(:manifest_index_bytes)
