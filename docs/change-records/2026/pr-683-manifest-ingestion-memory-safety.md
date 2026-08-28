@@ -2,13 +2,13 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Plan reviewed |
+| Status | Implementing |
 | Type | Bug fix |
 | Primary issue | Not filed. The repository owner authorized this implementation contract without an issue. |
-| Pull request | Pending |
+| Pull request | [PR 683](https://github.com/eirhop/favn/pull/683) |
 | Related work | [Issue 661 manifest deployment](issue-661-pr-662-manifest-deployment.md) |
 | Affected areas | Manifest publication, index validation, activation, scoped manifest use, and decoded-cache removal in `favn_orchestrator`; execution-package persistence and manifest reads in `favn_storage_postgres`; runtime resource configuration and diagnostics |
-| Approved plan commit | Pending commit of this reviewed plan |
+| Approved plan commit | `5b636f08` |
 | Last updated | 2026-08-28 |
 
 Because no issue exists, the filename omits the `issue-<n>-` segment. After a
