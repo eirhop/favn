@@ -405,9 +405,7 @@ defmodule FavnOrchestrator.TargetRecovery do
       end
     else
       false -> {:error, Error.new(:not_found, "target is not in the active deployment")}
-      nil -> {:error, Error.new(:conflict, "target is not a persisted SQL asset")}
       {:error, _reason} = error -> error
-      _invalid -> {:error, Error.new(:conflict, "target is not recoverable")}
     end
   end
 

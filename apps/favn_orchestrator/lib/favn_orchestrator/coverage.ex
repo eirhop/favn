@@ -304,7 +304,6 @@ defmodule FavnOrchestrator.Coverage do
         end
       end)
     else
-      false -> {:error, :coverage_selection_stale}
       {:error, _reason} = error -> error
     end
   end

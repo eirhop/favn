@@ -120,10 +120,6 @@ defmodule FavnOrchestrator.ManifestStore do
     end
   end
 
-  defp load_manifest_by_content_hash(_context, _content_hash, _token) do
-    {:error, Error.new(:forbidden, "platform manifest read authority required")}
-  end
-
   @doc """
   Loads one immutable manifest only for the duration of the callback.
 

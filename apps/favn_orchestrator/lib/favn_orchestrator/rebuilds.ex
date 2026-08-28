@@ -1034,9 +1034,6 @@ defmodule FavnOrchestrator.Rebuilds do
 
       {:error, %Error{} = error} ->
         {:error, error}
-
-      {:error, _reason} ->
-        {:error, stale_plan_error()}
     end
   end
 

@@ -144,7 +144,6 @@ defmodule FavnOrchestrator.RunSubmissions do
       end)
     else
       false -> {:error, :invalid_run_submission_target}
-      {:error, _reason} = error -> error
     end
   end
 

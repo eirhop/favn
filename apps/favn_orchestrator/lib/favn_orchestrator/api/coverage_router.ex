@@ -167,9 +167,12 @@ defmodule FavnOrchestrator.API.CoverageRouter do
     {status, code, message, details} = error_response(reason)
 
     conn =
-      case reason do
-        %MemoryError{} -> put_resp_header(conn, "retry-after", "5")
-        _other -> conn
+      case Map.get(details, :retry_after) do
+        seconds when is_integer(seconds) and seconds > 0 ->
+          put_resp_header(conn, "retry-after", Integer.to_string(seconds))
+
+        _missing ->
+          conn
       end
 
     if status >= 500 do

@@ -229,6 +229,12 @@ compose --profile operations run --rm database-bootstrap
 if ! compose --profile security --profile proxy-security up --detach \
   control-plane view proxy-header-receiver https-proxy; then
   compose ps --all >&2 || true
+  control_plane_id=$(compose ps --all --quiet control-plane || true)
+  if [ -n "$control_plane_id" ]; then
+    docker inspect \
+      --format 'control-plane state: oom_killed={{.State.OOMKilled}} exit_code={{.State.ExitCode}} restart_count={{.RestartCount}} memory_limit={{.HostConfig.Memory}} error={{json .State.Error}}' \
+      "$control_plane_id" >&2 || true
+  fi
   compose logs --no-color control-plane >&2 || true
   compose logs --no-color view >&2 || true
   exit 1
