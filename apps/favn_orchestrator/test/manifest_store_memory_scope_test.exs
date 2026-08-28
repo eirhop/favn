@@ -49,6 +49,16 @@ defmodule FavnOrchestrator.ManifestStoreMemoryScopeTest do
              end)
   end
 
+  test "an identity-shaped version cannot hide a scoped index in another field" do
+    version = version()
+
+    assert {:error, :scoped_manifest_value_escape} =
+             ManifestStore.with_index(version, fn index ->
+               identity = %{Version.identity(version) | runner_releases: %{"default" => index}}
+               {:ok, identity}
+             end)
+  end
+
   test "nested scoped index work reuses one owner token" do
     version = version()
 

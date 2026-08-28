@@ -604,7 +604,13 @@ defmodule FavnOrchestrator.ManifestStore do
     end
   end
 
-  defp contains_scoped_value?(%Version{manifest: nil}), do: false
+  defp contains_scoped_value?(%Version{manifest: nil} = version) do
+    version
+    |> Map.from_struct()
+    |> Map.delete(:manifest)
+    |> contains_scoped_value?()
+  end
+
   defp contains_scoped_value?(%Version{}), do: true
   defp contains_scoped_value?(%Index{}), do: true
 
