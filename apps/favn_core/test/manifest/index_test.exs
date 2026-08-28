@@ -24,15 +24,15 @@ defmodule Favn.Manifest.IndexTest do
     assert index.planning_index.topo_order == [{MyApp.Raw, :asset}, {MyApp.Gold, :asset}]
   end
 
-  test "worker handoff encodes shared asset data once and restores the index" do
+  test "worker handoff omits caller-owned asset data and restores the index" do
     assert {:ok, %Index{} = index} = Index.build(sample_manifest())
 
     handoff = Index.prepare_worker_handoff(index)
 
-    assert handoff.assets_by_ref == index.assets_by_ref
+    assert handoff.assets_by_ref == %{}
     assert handoff.planning_index.assets_by_ref == %{}
     assert :erlang.external_size(handoff) < :erlang.external_size(index)
-    assert Index.restore_worker_handoff(handoff) == index
+    assert Index.restore_worker_handoff(handoff, sample_manifest().assets) == index
   end
 
   test "fails when pipeline refs are duplicated" do

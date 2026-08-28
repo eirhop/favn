@@ -63,16 +63,23 @@ defmodule Favn.Manifest.Index do
   def prepare_worker_handoff(
         %__MODULE__{planning_index: %PlanningIndex{} = planning_index} = index
       ) do
-    %{index | planning_index: %{planning_index | assets_by_ref: %{}}}
+    %{index | assets_by_ref: %{}, planning_index: %{planning_index | assets_by_ref: %{}}}
   end
 
   @doc false
-  @spec restore_worker_handoff(t()) :: t()
+  @spec restore_worker_handoff(t(), [Asset.t()]) :: t()
   def restore_worker_handoff(
-        %__MODULE__{assets_by_ref: assets_by_ref, planning_index: %PlanningIndex{} = planning_index} =
-          index
-      ) do
-    %{index | planning_index: %{planning_index | assets_by_ref: assets_by_ref}}
+        %__MODULE__{planning_index: %PlanningIndex{} = planning_index} = index,
+        assets
+      )
+      when is_list(assets) do
+    assets_by_ref = Map.new(assets, &{&1.ref, &1})
+
+    %{
+      index
+      | assets_by_ref: assets_by_ref,
+        planning_index: %{planning_index | assets_by_ref: assets_by_ref}
+    }
   end
 
   @spec fetch_asset(t(), ref()) :: {:ok, Asset.t()} | {:error, :asset_not_found}

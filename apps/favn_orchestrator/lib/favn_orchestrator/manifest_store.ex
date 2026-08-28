@@ -329,7 +329,7 @@ defmodule FavnOrchestrator.ManifestStore do
                budget,
                Budget.serialized_result_limit(budget)
              ) do
-        index = Index.restore_worker_handoff(handoff)
+        index = Index.restore_worker_handoff(handoff, version.manifest.assets)
         fun.(index)
       end
     end)

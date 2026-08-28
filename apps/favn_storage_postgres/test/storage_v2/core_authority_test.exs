@@ -330,6 +330,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
 
   setup do
     :ok = Sandbox.checkout(Repo)
+    Sandbox.mode(Repo, {:shared, self()})
     previous_tokens = Application.get_env(:favn_orchestrator, :api_service_tokens)
 
     Application.put_env(:favn_orchestrator, :api_service_tokens, [
@@ -342,6 +343,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     ])
 
     on_exit(fn -> restore_app_env(:api_service_tokens, previous_tokens) end)
+    on_exit(fn -> Sandbox.mode(Repo, :manual) end)
 
     fixture = provision_deploy_fixture()
     {:ok, fixture}
