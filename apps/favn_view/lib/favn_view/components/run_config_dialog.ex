@@ -2,10 +2,8 @@ defmodule FavnView.Components.RunConfigDialog do
   @moduledoc """
   The dialog that submits one asset run.
 
-  Render it at page level, through the shell's `:overlay` slot.
-  `.favn-surface-panel` sets a `backdrop-filter`, which makes it the containing block
-  for a `position: fixed` descendant, so a dialog nested inside a panel is clipped to
-  that card rather than covering the page.
+  Render it at page level, through the shell's `:overlay` slot; see
+  `FavnView.UI.Dialog` for why a dialog cannot live inside a panel.
 
   It opens with the period the asset is due for already filled in, so an operator who
   wants that period never opens the advanced section. Editing the period is offered
@@ -53,151 +51,147 @@ defmodule FavnView.Components.RunConfigDialog do
 
         <.field_row label="Refresh">{refresh_label(@run_config.refresh)}</.field_row>
 
-        <details
-          open={@advanced_open?}
-          class="rounded-box border border-base-content/10 p-3"
+        <.disclosure
+          label="Change how it runs"
+          open?={@advanced_open?}
           data-testid="run-config-advanced"
         >
-          <summary class="favn-text-muted cursor-pointer text-sm">Change how it runs</summary>
+          <fieldset class="fieldset">
+            <legend class="fieldset-legend">What else runs</legend>
 
-          <div class="mt-3 space-y-4">
-            <fieldset class="fieldset">
-              <legend class="fieldset-legend">What else runs</legend>
+            <.radio_card
+              name="run_config[dependencies]"
+              value="all"
+              checked?={@run_config.dependencies == "all"}
+              title="This asset and what it reads"
+              description="Default. Plans the assets upstream of this one as well, so it reads current inputs."
+            />
+            <.radio_card
+              name="run_config[dependencies]"
+              value="none"
+              checked?={@run_config.dependencies == "none"}
+              title="Only this asset"
+              description="Plans this asset alone. Its inputs are whatever they already are."
+            />
+          </fieldset>
 
-              <.radio_card
-                name="run_config[dependencies]"
-                value="all"
-                checked?={@run_config.dependencies == "all"}
-                title="This asset and what it reads"
-                description="Default. Plans the assets upstream of this one as well, so it reads current inputs."
-              />
-              <.radio_card
-                name="run_config[dependencies]"
-                value="none"
-                checked?={@run_config.dependencies == "none"}
-                title="Only this asset"
-                description="Plans this asset alone. Its inputs are whatever they already are."
-              />
-            </fieldset>
+          <fieldset :if={@has_data_windows?} class="fieldset">
+            <legend class="fieldset-legend">Run period</legend>
 
-            <fieldset :if={@has_data_windows?} class="fieldset">
-              <legend class="fieldset-legend">Run period</legend>
+            <input
+              type="hidden"
+              name="run_config[source]"
+              value={@run_config.source || "refresh_timeline"}
+            />
+            <div class="grid gap-3 sm:grid-cols-[8rem_1fr_1fr_10rem]">
+              <label class="form-control">
+                <span class="label-text text-sm">Kind</span>
+                <select
+                  name="run_config[kind]"
+                  class="select select-bordered select-sm"
+                  disabled={@submitting_window_run?}
+                  data-testid="run-config-window-kind"
+                >
+                  <option value="hour" selected={@run_config.kind == "hour"}>Hour</option>
 
-              <input
-                type="hidden"
-                name="run_config[source]"
-                value={@run_config.source || "refresh_timeline"}
-              />
-              <div class="grid gap-3 sm:grid-cols-[8rem_1fr_1fr_10rem]">
-                <label class="form-control">
-                  <span class="label-text text-sm">Kind</span>
-                  <select
-                    name="run_config[kind]"
-                    class="select select-bordered select-sm"
-                    disabled={@submitting_window_run?}
-                    data-testid="run-config-window-kind"
-                  >
-                    <option value="hour" selected={@run_config.kind == "hour"}>Hour</option>
+                  <option value="day" selected={@run_config.kind == "day"}>Day</option>
 
-                    <option value="day" selected={@run_config.kind == "day"}>Day</option>
+                  <option value="month" selected={@run_config.kind == "month"}>Month</option>
 
-                    <option value="month" selected={@run_config.kind == "month"}>Month</option>
+                  <option value="year" selected={@run_config.kind == "year"}>Year</option>
+                </select>
+              </label>
 
-                    <option value="year" selected={@run_config.kind == "year"}>Year</option>
-                  </select>
-                </label>
+              <label class="form-control">
+                <span class="label-text text-sm">From</span>
+                <input
+                  type="text"
+                  name="run_config[value]"
+                  value={@run_config.value}
+                  class="input input-bordered input-sm"
+                  placeholder="YYYY-MM-DD, YYYY-MM, or YYYY"
+                  disabled={@submitting_window_run?}
+                  data-testid="run-config-window-value"
+                />
+              </label>
 
-                <label class="form-control">
-                  <span class="label-text text-sm">From</span>
-                  <input
-                    type="text"
-                    name="run_config[value]"
-                    value={@run_config.value}
-                    class="input input-bordered input-sm"
-                    placeholder="YYYY-MM-DD, YYYY-MM, or YYYY"
-                    disabled={@submitting_window_run?}
-                    data-testid="run-config-window-value"
-                  />
-                </label>
+              <label class="form-control">
+                <span class="label-text text-sm">To</span>
+                <input
+                  type="text"
+                  name="run_config[to]"
+                  value={Map.get(@run_config, :to, "")}
+                  class="input input-bordered input-sm"
+                  placeholder="Optional end"
+                  disabled={@submitting_window_run?}
+                  data-testid="run-config-window-to"
+                />
+              </label>
 
-                <label class="form-control">
-                  <span class="label-text text-sm">To</span>
-                  <input
-                    type="text"
-                    name="run_config[to]"
-                    value={Map.get(@run_config, :to, "")}
-                    class="input input-bordered input-sm"
-                    placeholder="Optional end"
-                    disabled={@submitting_window_run?}
-                    data-testid="run-config-window-to"
-                  />
-                </label>
+              <label class="form-control">
+                <span class="label-text text-sm">Timezone</span>
+                <input
+                  type="text"
+                  name="run_config[timezone]"
+                  value={@run_config.timezone || "Etc/UTC"}
+                  class="input input-bordered input-sm"
+                  disabled={@submitting_window_run?}
+                  data-testid="run-config-window-timezone"
+                />
+              </label>
+            </div>
 
-                <label class="form-control">
-                  <span class="label-text text-sm">Timezone</span>
-                  <input
-                    type="text"
-                    name="run_config[timezone]"
-                    value={@run_config.timezone || "Etc/UTC"}
-                    class="input input-bordered input-sm"
-                    disabled={@submitting_window_run?}
-                    data-testid="run-config-window-timezone"
-                  />
-                </label>
-              </div>
+            <p class="mt-2 text-sm favn-text-muted">
+              Prefilled with the period this asset is due for. Leave "To" empty to run that
+              one period, or set it to run every period through to another one.
+            </p>
 
-              <p class="mt-2 text-sm favn-text-muted">
-                Prefilled with the period this asset is due for. Leave "To" empty to run that
-                one period, or set it to run every period through to another one.
-              </p>
+            <p class="mt-1 text-sm favn-text-muted">
+              A range runs only the periods that are missing. Choose a force option below to
+              recompute periods that already succeeded.
+            </p>
+          </fieldset>
 
-              <p class="mt-1 text-sm favn-text-muted">
-                A range runs only the periods that are missing. Choose a force option below to
-                recompute periods that already succeeded.
-              </p>
-            </fieldset>
+          <fieldset class="fieldset">
+            <legend class="fieldset-legend">Whether to rerun what is already current</legend>
 
-            <fieldset class="fieldset">
-              <legend class="fieldset-legend">Whether to rerun what is already current</legend>
-
-              <.radio_card
-                name="run_config[refresh]"
-                value="auto"
-                checked?={@run_config.refresh == "auto"}
-                title="Obey freshness"
-                description="Default. Skips whatever the backend already considers current."
-              />
-              <.radio_card
-                name="run_config[refresh]"
-                value="missing"
-                checked?={@run_config.refresh == "missing"}
-                title="Run missing only"
-                description="Runs the periods that have never succeeded, and nothing else."
-              />
-              <.radio_card
-                name="run_config[refresh]"
-                value="force_selected"
-                checked?={@run_config.refresh == "force_selected"}
-                title="Force this asset"
-                description="Runs this asset even when freshness says it is current. Upstream assets are left alone."
-              />
-              <.radio_card
-                name="run_config[refresh]"
-                value="force_selected_upstream"
-                checked?={@run_config.refresh == "force_selected_upstream"}
-                title="Force this asset and what it reads"
-                description="Also forces the upstream assets. Changing their output can make other assets downstream rerun."
-              />
-              <.radio_card
-                name="run_config[refresh]"
-                value="force_all"
-                checked?={@run_config.refresh == "force_all"}
-                title="Force everything planned"
-                description="Runs every asset in the plan, whatever its freshness says."
-              />
-            </fieldset>
-          </div>
-        </details>
+            <.radio_card
+              name="run_config[refresh]"
+              value="auto"
+              checked?={@run_config.refresh == "auto"}
+              title="Obey freshness"
+              description="Default. Skips whatever the backend already considers current."
+            />
+            <.radio_card
+              name="run_config[refresh]"
+              value="missing"
+              checked?={@run_config.refresh == "missing"}
+              title="Run missing only"
+              description="Runs the periods that have never succeeded, and nothing else."
+            />
+            <.radio_card
+              name="run_config[refresh]"
+              value="force_selected"
+              checked?={@run_config.refresh == "force_selected"}
+              title="Force this asset"
+              description="Runs this asset even when freshness says it is current. Upstream assets are left alone."
+            />
+            <.radio_card
+              name="run_config[refresh]"
+              value="force_selected_upstream"
+              checked?={@run_config.refresh == "force_selected_upstream"}
+              title="Force this asset and what it reads"
+              description="Also forces the upstream assets. Changing their output can make other assets downstream rerun."
+            />
+            <.radio_card
+              name="run_config[refresh]"
+              value="force_all"
+              checked?={@run_config.refresh == "force_all"}
+              title="Force everything planned"
+              description="Runs every asset in the plan, whatever its freshness says."
+            />
+          </fieldset>
+        </.disclosure>
 
         <.notice :if={forces_upstream?(@run_config)} tone={:warning}>
           Forcing upstream assets changes their inputs, so downstream assets in the planned graph can rerun too.
@@ -242,30 +236,6 @@ defmodule FavnView.Components.RunConfigDialog do
         </.button>
       </:actions>
     </.dialog>
-    """
-  end
-
-  attr :name, :string, required: true
-  attr :value, :string, required: true
-  attr :checked?, :boolean, default: false
-  attr :title, :string, required: true
-  attr :description, :string, required: true
-
-  def radio_card(assigns) do
-    ~H"""
-    <label class="mt-2 flex cursor-pointer gap-3 rounded-box border border-base-content/10 bg-base-content/[0.025] p-3 text-sm hover:border-primary/30">
-      <input
-        type="radio"
-        name={@name}
-        value={@value}
-        checked={@checked?}
-        class="radio radio-primary radio-sm mt-0.5"
-      />
-      <span>
-        <span class="block font-medium text-base-content">{@title}</span>
-        <span class="mt-0.5 block text-sm leading-5 favn-text-muted">{@description}</span>
-      </span>
-    </label>
     """
   end
 

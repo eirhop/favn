@@ -236,6 +236,14 @@ defmodule FavnView.UI.Data do
 
   attr :class, :any, default: nil
   attr :rest, :global
+
+  slot :header,
+    doc: "names the rows, for a panel used as a section rather than as a whole screen" do
+    attr :title, :string, required: true
+    attr :subtitle, :string
+    attr :icon, :string
+  end
+
   slot :toolbar, doc: "filters or scope controls that scroll with the panel rather than the rows"
 
   slot :footer,
@@ -254,6 +262,14 @@ defmodule FavnView.UI.Data do
       ]}
       {@rest}
     >
+      <:header
+        :for={header <- @header}
+        title={header.title}
+        subtitle={header[:subtitle]}
+        icon={header[:icon]}
+      >
+      </:header>
+
       <div :if={@toolbar != []} class="shrink-0">{render_slot(@toolbar)}</div>
       {render_slot(@inner_block)}
 
