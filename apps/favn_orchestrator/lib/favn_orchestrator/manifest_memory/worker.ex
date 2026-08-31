@@ -1,9 +1,7 @@
 defmodule FavnOrchestrator.ManifestMemory.Worker do
   @moduledoc """
   Runs one read-only manifest operation in a monitored, heap-bounded process.
-
-  The caller receives control only after both the serialized result and the
-  matching process termination have been observed.
+  The caller resumes only after the serialized result and process termination.
   """
 
   @term_multiplier 4

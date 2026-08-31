@@ -1,9 +1,7 @@
 defmodule FavnOrchestrator.ManifestMemory do
   @moduledoc """
-  Fixed manifest-only memory bounds with adaptive finite-cgroup admission.
-
-  Container size is discovered automatically. More RAM permits work but never
-  increases the archive, worker, result, or batch limits.
+  Fixed manifest-only bounds with automatic finite-cgroup admission.
+  More RAM permits work but never increases archive, worker, result, or batch limits.
   """
 
   alias Favn.Manifest.Version

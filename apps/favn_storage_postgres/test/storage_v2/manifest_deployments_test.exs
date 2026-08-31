@@ -567,8 +567,10 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
     rejected_id = operation_id <> "-oversized"
     assert upload_archive(context, rejected_id, archive_sha256, archive_body).status == 202
     rejected = await_deployment(context, rejected_id).resp_body |> Jason.decode!()
+
     assert get_in(rejected, ["data", "operation", "failure_class"]) ==
              "manifest_memory_budget_exceeded"
+
     assert {:ok, preserved} = Manifests.active_runtime(context.workspace_context)
     assert preserved.deployment_id == active.deployment_id
 
@@ -681,6 +683,7 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
     Sandbox.mode(Repo, {:shared, self()})
     operation_id = "archive-preparation-timeout-#{System.unique_integer([:positive])}"
     {archive_path, archive_sha256} = build_archive(context)
+
     assert upload_archive(context, operation_id, archive_sha256, File.read!(archive_path)).status ==
              202
 

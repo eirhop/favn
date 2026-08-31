@@ -15,10 +15,12 @@ defmodule FavnOrchestrator.ManifestMemory.SlotTest do
 
       holder =
         Task.async(fn ->
-          ManifestMemory.with_phase(first, fn ->
-            send(parent, {:held, first})
-            receive do: (:release -> :ok)
-          end,
+          ManifestMemory.with_phase(
+            first,
+            fn ->
+              send(parent, {:held, first})
+              receive do: (:release -> :ok)
+            end,
             slot: slot,
             capacity_check: fn -> :ok end
           )

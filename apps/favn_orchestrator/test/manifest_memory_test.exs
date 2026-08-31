@@ -109,7 +109,9 @@ defmodule FavnOrchestrator.ManifestMemoryTest do
 
   defp acquire_after_cleanup(slot, worker, attempts) do
     case Slot.acquire(server: slot) do
-      {:ok, _lease} -> Process.alive?(worker)
+      {:ok, _lease} ->
+        Process.alive?(worker)
+
       {:error, :manifest_capacity_busy} ->
         Process.sleep(5)
         acquire_after_cleanup(slot, worker, attempts - 1)

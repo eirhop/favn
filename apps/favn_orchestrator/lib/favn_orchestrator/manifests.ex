@@ -63,7 +63,11 @@ defmodule FavnOrchestrator.Manifests do
 
   @doc false
   @spec deploy_prepared(
-          PlatformContext.t(), WorkspaceContext.t(), Version.t(), map(), keyword()
+          PlatformContext.t(),
+          WorkspaceContext.t(),
+          Version.t(),
+          map(),
+          keyword()
         ) ::
           {:ok, RuntimeState.t()} | {:error, term()}
   def deploy_prepared(platform, context, %Version{} = version, selection, opts)
