@@ -413,8 +413,9 @@ defmodule FavnOrchestrator.API.ManifestDeploymentArchive do
          {:ok, {:ok, normalized}, _retained_bytes} <-
            ManifestMemory.package_worker(
              fn ->
-               with {:ok, bundle} when is_map(bundle) <- Jason.decode(bytes) do
-                 validate_bundle(bundle)
+               with {:ok, bundle} when is_map(bundle) <- Jason.decode(bytes),
+                    {:ok, normalized} <- validate_bundle(bundle) do
+                 {:ok, normalized}
                else
                  _invalid -> {:error, :invalid_bundle}
                end
