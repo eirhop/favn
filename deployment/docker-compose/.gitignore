@@ -2,7 +2,6 @@
 .env.local.tmp
 simulation-results/
 qualification-results/
-manifest-memory-results/
 proxy-security-results/
 security-results/
 security-run-logs/
