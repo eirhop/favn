@@ -46,7 +46,13 @@ accounting.
   healthy, peaked at 318,881,792 bytes, and had no restart or OOM event. The
   harness now uses the endpoint's dedicated workspace-scoped deployer-token
   contract and stops immediately when upload is rejected.
-- No runtime constant is frozen from either pre-import harness attempt.
+- Remote measurement run `33377864530` confirmed that immediate failure and
+  evidence preservation work, but the dedicated token still returned HTTP 401.
+  The Orchestrator stayed healthy, peaked at 311,537,664 bytes, and had no
+  restart or OOM event. The client now reads the credential from its own
+  Compose environment and the harness verifies, without logging it, that this
+  exactly matches the token embedded in the control-plane credential JSON.
+- No runtime constant is frozen from these pre-import harness attempts.
 
 ### Measurement gate
 
@@ -275,4 +281,6 @@ explicit 10,000-package protocol limit; this change does not raise that limit.
 | First remote attempt | Run `33375409205` failed before upload because host curl could not enter the internal Compose network. The Orchestrator stayed healthy at a 310,054,912-byte peak with no restart or OOM event. The client was moved into the private network. |
 | Second remote attempt | Run `33376463744` reached the endpoint but received HTTP 401 before the body was read. The Orchestrator stayed healthy at a 318,881,792-byte peak with no restart or OOM event. The harness now uses a dedicated workspace-scoped manifest deployer token and fails immediately on a rejected PUT. |
 | Authentication correction review | Approved after static review: token generation, exact workspace scope, Compose JSON interpolation, PUT/GET/replay credential use, and rejected-request evidence preservation are coherent. |
+| Third remote attempt | Run `33377864530` failed immediately with HTTP 401. The Orchestrator stayed healthy at a 311,537,664-byte peak with no restart or OOM event. Header construction now happens inside the client container, and a redacted preflight asserts that the client token exactly matches the token in the control-plane credential JSON. |
+| Container-token correction review | Approved after static review: folded JSON, Compose interpolation, in-container header construction, exact redacted token comparison, and failure evidence are coherent. |
 | Slice 0 verdict | Approved for remote measurement with no remaining findings. Runtime guardrails remain blocked until the evidence is recorded and constants are frozen. |

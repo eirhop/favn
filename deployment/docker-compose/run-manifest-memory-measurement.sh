@@ -27,7 +27,6 @@ env_value() {
 project_name=$(env_value FAVN_COMPOSE_PROJECT_NAME)
 image_build_project_name=$(env_value FAVN_IMAGE_BUILD_PROJECT_NAME)
 image_builder_name=$(env_value FAVN_IMAGE_BUILDER_NAME)
-manifest_deployer_token=$(env_value FAVN_MANIFEST_DEPLOYER_TOKEN)
 
 for name in "$project_name" "$image_build_project_name" "$image_builder_name"; do
   case "$name" in
@@ -50,6 +49,32 @@ build_compose() {
     --project-name "$image_build_project_name" \
     --file "$compose_file" \
     "$@"
+}
+
+client_curl() {
+  client_id=$1
+  shift
+
+  docker exec "$client_id" /bin/sh -eu -c '
+    exec curl --header "Authorization: Bearer $FAVN_MANIFEST_DEPLOYER_TOKEN" "$@"
+  ' manifest-memory-curl "$@"
+}
+
+verify_deployer_token_wiring() {
+  control_plane_id=$1
+  client_id=$2
+  configured_token=$(docker exec "$control_plane_id" /bin/sh -eu -c '
+    printf "%s" "$FAVN_ORCHESTRATOR_MANIFEST_DEPLOYER_TOKENS" |
+      sed -n "s/.*\"token\":\"\([^\"]*\)\".*/\1/p"
+  ')
+  client_token=$(docker exec "$client_id" /bin/sh -eu -c '
+    printf "%s" "$FAVN_MANIFEST_DEPLOYER_TOKEN"
+  ')
+
+  if [ -z "$configured_token" ] || [ "$configured_token" != "$client_token" ]; then
+    echo "manifest deployer token wiring does not match" >&2
+    return 1
+  fi
 }
 
 wait_healthy() {
@@ -148,10 +173,9 @@ await_terminal() {
   deadline=$(( $(date +%s) + 120 ))
 
   while [ "$(date +%s)" -lt "$deadline" ]; do
-    if ! docker exec "$client_id" curl --silent --show-error \
+    if ! client_curl "$client_id" --silent --show-error \
       --max-time 5 \
       --output "/results/$output_name" \
-      --header "Authorization: Bearer $manifest_deployer_token" \
       --header 'X-Favn-Workspace-Id: elastic-simulation' \
       "http://control-plane:4101/api/orchestrator/v1/manifest-deployments/$operation_id"; then
       sleep 0.5
@@ -188,6 +212,7 @@ run_fixture() {
   compose up --detach manifest-memory-client
   container_id=$(compose ps --quiet control-plane)
   client_id=$(compose ps --quiet manifest-memory-client)
+  verify_deployer_token_wiring "$container_id" "$client_id"
   limit_bytes=$(memory_value "$container_id" limit)
   if [ "$limit_bytes" != "$expected_limit_bytes" ]; then
     echo "control-plane cgroup limit is $limit_bytes bytes, expected $expected_limit_bytes" >&2
@@ -200,12 +225,11 @@ run_fixture() {
   sampler_pid=$!
   deployment_started_at=$(date +%s)
 
-  http_status=$(docker exec "$client_id" curl --silent --show-error \
+  http_status=$(client_curl "$client_id" --silent --show-error \
     --max-time 900 \
     --output "/results/$(basename "$response")" \
     --write-out '%{http_code}' \
     --request PUT \
-    --header "Authorization: Bearer $manifest_deployer_token" \
     --header 'X-Favn-Workspace-Id: elastic-simulation' \
     --header "X-Favn-Archive-Sha256: $archive_sha256" \
     --header 'Content-Type: application/gzip' \
@@ -227,12 +251,11 @@ run_fixture() {
   deployment_seconds=$(( $(date +%s) - deployment_started_at ))
   replay_status=null
   if [ "$replay" = yes ] && [ "$terminal_ok" = true ]; then
-    replay_status=$(docker exec "$client_id" curl --silent --show-error \
+    replay_status=$(client_curl "$client_id" --silent --show-error \
       --max-time 30 \
       --output "/results/${operation_id}-replay.json" \
       --write-out '%{http_code}' \
       --request PUT \
-      --header "Authorization: Bearer $manifest_deployer_token" \
       --header 'X-Favn-Workspace-Id: elastic-simulation' \
       --header "X-Favn-Archive-Sha256: $archive_sha256" \
       --header 'Content-Type: application/gzip' \
