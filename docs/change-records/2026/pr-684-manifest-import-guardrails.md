@@ -42,12 +42,12 @@ accounting.
 The reviewed plan is implemented in two gates. The first pushed draft contains
 only the committed measurement harness and remote workflow. It measures current
 `main` before any runtime guardrail is added. Ten representative imports and one
-near-limit import must record the peak for upload, package persistence,
-acceptance, activation manifest load, index build, and both existing cache
-handoffs under a 1 GiB cgroup. The record then freezes the index protocol limit,
-worker heaps, returned-result limits, stage budgets, and safety reserve and is
-independently re-reviewed. Runtime implementation cannot begin before that
-second approval.
+1,001-package import must complete under a 1 GiB cgroup. Fixed worker and result
+bounds are selected conservatively from the existing 4 MiB package protocol
+unit, not inferred from noisy per-stage RSS samples. End-to-end constrained
+qualification then proves the bounds, reserve, and admission policy before an
+independent re-review. Runtime implementation cannot begin before that second
+approval.
 
 ## Contract
 
@@ -163,7 +163,7 @@ flowchart LR
 
 | Slice | Outcome | Production add/delete | Supporting add/delete |
 | --- | --- | ---: | ---: |
-| 0 | Current-main remote measurement and frozen constants | 0 / 0 | 200-350 / 0-40 |
+| 0 | Current-main remote survival measurement and frozen constants | 0 / 0 | 350-450 / 0-40 |
 | 1 | Pure cgroup probe, stage budgets, bounded worker, and one monitored slot | 350-550 / 0-50 | 350-500 / 0-50 |
 | 2 | Upload integration and 8-package/4-MiB batching | 180-300 / 0-100 | 250-350 / 0-100 |
 | 3 | Activation deferral, SQL-side package comparison, diagnostics, docs | 150-250 / 0-150 | 150-200 / 0-100 |
@@ -185,8 +185,11 @@ outside the included files or concepts must be recorded before editing.
   unrelated Orchestrator allocations.
 - Bound both the worker heap and the returned term; count every known caller,
   acceptance, and cache copy in the stage budget.
-- Use fixed stage budgets selected by constrained measurement; more container
-  RAM permits admission but does not increase archive or batch limits.
+- Derive fixed worker and result ceilings from the 4 MiB package unit with
+  conservative whole-number multipliers. Use constrained measurement to verify
+  the complete import stays healthy, not to claim exact attribution of shared
+  BEAM or cache memory to individual stages. More container RAM permits
+  admission but does not increase archive or batch limits.
 - Keep memory-pressure errors local to manifest deployment.
 - Prefer rejecting/deferring work over preserving throughput under low headroom.
 
@@ -201,7 +204,7 @@ outside the included files or concepts must be recorded before editing.
 | Safe API behavior | Auth happens before admission; low headroom returns stable 503 and `Retry-After` before body read |
 | Safe activation | Dispatcher concurrency is one; slot contention, low headroom, and preparation timeout release the claim for retry. A bounded read-only preparation covers old accepted operations; deterministic incompatibility fails the operation before activation and preserves the prior deployment. |
 | Storage memory | Conflict verification does not load complete stored package payloads into the Orchestrator |
-| 1 GiB production proof | Ten fresh release-container upload/accept/activate cycles, each with a new Orchestrator process or otherwise proven cold manifest/index caches, plus one separate idempotent replay, one near-limit index/package, and one 1,001-package PostgreSQL deployment within 15 minutes; readiness stays healthy and `memory.events` `oom_kill` does not increase |
+| 1 GiB production proof | Ten fresh release-container upload/accept/terminal-activation cycles, each with a new Orchestrator process, plus one idempotent replay and one 1,001-package PostgreSQL deployment within 15 minutes; the effective cgroup limit is recorded as 1 GiB, readiness stays healthy, the container never restarts, and `memory.events` `oom_kill` does not increase |
 | Adaptive larger container | The same image detects a larger finite cgroup without a required Favn memory setting |
 | Existing deployment safety | An injected capacity rejection leaves the prior active deployment unchanged |
 
@@ -224,7 +227,7 @@ or an isolated remote environment.
 | Risk | Mitigation |
 | --- | --- |
 | Cgroup data is absent, unlimited, or malformed | Fail before body read with a typed 503; never infer safety from host RAM or process RSS |
-| Stage multipliers underestimate BEAM terms | Select them from the committed constrained measurement and keep worker heap limits plus safety headroom |
+| Stage multipliers underestimate BEAM terms | Use conservative multiples of the bounded 4 MiB protocol unit, enforce worker/result ceilings, and prove them under the committed constrained qualification |
 | The local guard restarts during work | Its supervisor must restart the manifest import boundary together or fail closed; it must never reopen while an old owner can continue |
 | PostgreSQL outcome is uncertain | Preserve existing durable operation idempotency and do not blindly retry writes |
 | Activation is delayed by an upload | Release the claim and let the existing durable dispatcher retry later |
@@ -243,7 +246,7 @@ or an isolated remote environment.
 
 Package payload memory is independent of total package count after batching.
 Bundle paths, hashes, and inventory metadata still grow up to the existing,
-explicit 10,000-package protocol limit and are included in near-limit evidence.
+explicit 10,000-package protocol limit; this change does not raise that limit.
 
 ## Plan review
 
@@ -254,4 +257,8 @@ explicit 10,000-package protocol limit and are included in near-limit evidence.
 | Reviewed against | `origin/main` at `852fc1be`, issue 661, draft PR 683 lessons, current upload/activation/cache/storage source, original production evidence, and the explicit complexity ceiling |
 | Initial findings | Worker-return and acceptance copies were not bounded; activation caches were omitted; hierarchical cgroup math and guard restart behavior were underspecified; the complexity budget conflicted; deterministic and transient errors were conflated; legacy accepted operations could bypass validation. |
 | Corrections | Added the measurement gate, end-to-end copy budgets, bounded returned results, upload and activation-index prevalidation, bounded read-only preparation for every activation including legacy rows, finite hierarchical cgroups, root `:one_for_all` failure semantics, exact pressure outcomes, cold-cache qualification, hybrid cgroup coverage, and consistent add/delete ceilings. |
-| Verdict | Approve Slice 0 measurement work. Runtime guardrail implementation remains blocked until measurements freeze constants and the reviewer approves the updated plan. |
+| Plan verdict | Approve Slice 0 measurement work. Runtime guardrail implementation remains blocked until measurements freeze constants and the reviewer approves the updated plan. |
+| Initial Slice 0 review | Rejected the first coarse harness because it did not await terminal activation, prove the effective limit, exercise replay, or provide defensible stage attribution. |
+| Slice 0 correction | Await terminal activation, validate and record the effective cgroup limit, exercise replay, and record restart/OOM evidence. Fixed bounds now come from conservative multiples of the existing 4 MiB protocol unit; cgroup RSS is end-to-end proof rather than false per-stage attribution. |
+| Slice 0 evidence correction | Preserve logs, restart/OOM state, and a summary even when activation polling fails; bound every HTTP call; record and enforce the 15-minute deployment bound; normalize failure evidence as valid JSON; removed the stale near-limit-evidence claim. |
+| Slice 0 verdict | Approved for remote measurement with no remaining findings. Runtime guardrails remain blocked until the evidence is recorded and constants are frozen. |

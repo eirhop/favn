@@ -1,0 +1,4 @@
+services:
+  control-plane:
+    mem_limit: ${FAVN_MANIFEST_MEMORY_LIMIT:-1g}
+    memswap_limit: ${FAVN_MANIFEST_MEMORY_LIMIT:-1g}

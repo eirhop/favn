@@ -1,0 +1,64 @@
+name: Manifest import memory measurement
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/manifest-memory-measurement.yml'
+      - 'apps/favn_core/**'
+      - 'apps/favn_authoring/**'
+      - 'apps/favn_orchestrator/**'
+      - 'apps/favn_storage_postgres/**'
+      - 'config/**'
+      - 'deployment/docker-compose/**'
+      - 'rel/control_plane/**'
+      - 'scripts/build_manifest_import_fixture.exs'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('{0}-pr-{1}', github.workflow, github.event.pull_request.number) || format('{0}-run-{1}', github.workflow, github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  measure:
+    name: Cold-cache import under 1 GiB
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      MIX_ENV: test
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
+        with:
+          elixir-version: '1.20.2'
+          otp-version: '29.0.4'
+
+      - name: Install Hex and Rebar
+        run: |
+          mix local.hex 2.5.1 --force
+          mix local.rebar rebar3 https://github.com/erlang/rebar3/releases/download/3.27.0/rebar3 --sha512 0d00494d849fdc521a55142278d1f6ba552954fbd65b80d40df8022f594f05d6c99ed1d731bc263691a04176e11d4c6e126c56ba20dca19c5e42d4ffab2e7e36 --force
+
+      - name: Build deterministic measurement archives
+        run: |
+          mix deps.get
+          mix compile --warnings-as-errors
+          mkdir -p tmp
+          mix run scripts/build_manifest_import_fixture.exs 90 tmp/manifest-memory-90.tar.gz
+          mix run scripts/build_manifest_import_fixture.exs 1001 tmp/manifest-memory-1001.tar.gz
+
+      - name: Measure production release imports
+        run: sh deployment/docker-compose/run-manifest-memory-measurement.sh
+
+      - name: Upload redacted measurements
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: manifest-memory-${{ github.sha }}
+          path: deployment/docker-compose/manifest-memory-results/**
+          if-no-files-found: warn
+          retention-days: 14
