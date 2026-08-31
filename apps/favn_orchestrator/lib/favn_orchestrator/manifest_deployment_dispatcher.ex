@@ -163,7 +163,9 @@ defmodule FavnOrchestrator.ManifestDeploymentDispatcher do
 
   defp execute(operation, state) do
     case prepare_activation(operation, state) do
-      :ok -> execute_prepared(operation, state)
+      :ok ->
+        execute_prepared(operation, state)
+
       {:error, reason} when reason in [:manifest_worker_timeout, :manifest_worker_failed] ->
         ManifestDeployments.release_claim(operation, state.owner)
 
@@ -205,7 +207,8 @@ defmodule FavnOrchestrator.ManifestDeploymentDispatcher do
 
     case ManifestMemory.manifest_worker(
            fn ->
-             with {:ok, version} <- ManifestStore.get_manifest(platform, operation.manifest_version_id),
+             with {:ok, version} <-
+                    ManifestStore.get_manifest(platform, operation.manifest_version_id),
                   {:ok, index} <- Index.build_from_version(version),
                   true <-
                     version
@@ -228,6 +231,7 @@ defmodule FavnOrchestrator.ManifestDeploymentDispatcher do
   defp activate(operation, state) do
     owner = state.owner
     inspection_timeout_ms = state.inspection_timeout_ms
+
     platform =
       platform_context(operation)
 

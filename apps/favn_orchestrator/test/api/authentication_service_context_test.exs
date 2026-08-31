@@ -12,6 +12,7 @@ defmodule FavnOrchestrator.API.AuthenticationServiceContextTest do
 
   setup do
     previous = Application.get_env(:favn_orchestrator, :api_service_tokens)
+
     previous_deployer_tokens =
       Application.get_env(:favn_orchestrator, :manifest_deployer_tokens)
 
@@ -23,6 +24,7 @@ defmodule FavnOrchestrator.API.AuthenticationServiceContextTest do
         platform_roles: [:platform_operator]
       ]
     ])
+
     Application.put_env(:favn_orchestrator, :manifest_deployer_tokens, [])
 
     on_exit(fn ->
@@ -43,6 +45,7 @@ defmodule FavnOrchestrator.API.AuthenticationServiceContextTest do
 
     assert conn.status == 422
     assert [_request_id] = get_resp_header(conn, "x-request-id")
+
     assert Jason.decode!(conn.resp_body)["error"]["message"] ==
              "X-Favn-Archive-Sha256 is required"
   end

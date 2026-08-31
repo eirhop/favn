@@ -453,6 +453,7 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
 
     start_runner_control_plane()
     start_supervised!({Task.Supervisor, name: FavnOrchestrator.ManifestDeploymentTaskSupervisor})
+
     start_supervised!(
       {ManifestDeploymentDispatcher, concurrency: 1, capacity_check: fn -> :ok end}
     )
@@ -585,6 +586,7 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
 
     start_runner_control_plane()
     start_supervised!({Task.Supervisor, name: FavnOrchestrator.ManifestDeploymentTaskSupervisor})
+
     start_supervised!(
       {ManifestDeploymentDispatcher,
        concurrency: 1, inspection_timeout_ms: 50, capacity_check: fn -> :ok end}

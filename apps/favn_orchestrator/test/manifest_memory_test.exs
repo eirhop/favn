@@ -57,8 +57,7 @@ defmodule FavnOrchestrator.ManifestMemoryTest do
   defp cgroup_options(limit, current) do
     files = %{
       "/proc/cgroup" => "0::/app\n",
-      "/proc/mountinfo" =>
-        "36 25 0:32 / /sys/fs/cgroup rw,nosuid,nodev - cgroup2 cgroup rw\n",
+      "/proc/mountinfo" => "36 25 0:32 / /sys/fs/cgroup rw,nosuid,nodev - cgroup2 cgroup rw\n",
       "/sys/fs/cgroup/app/memory.max" => Integer.to_string(limit),
       "/sys/fs/cgroup/app/memory.current" => Integer.to_string(current),
       "/sys/fs/cgroup/memory.max" => "max"

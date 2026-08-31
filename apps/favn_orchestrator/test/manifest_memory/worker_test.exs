@@ -36,9 +36,7 @@ defmodule FavnOrchestrator.ManifestMemory.WorkerTest do
 
   test "rejects an oversized result without returning it" do
     assert {:error, :manifest_memory_budget_exceeded} =
-             Worker.run(fn -> :too_large end, 1024 * 1024, 10,
-               measure: fn _result -> 11 end
-             )
+             Worker.run(fn -> :too_large end, 1024 * 1024, 10, measure: fn _result -> 11 end)
   end
 
   test "kills and drains a timed-out worker" do

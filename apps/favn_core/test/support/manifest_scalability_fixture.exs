@@ -294,11 +294,15 @@ defmodule FavnTestSupport.ManifestScalabilityFixture do
       case Keyword.get(opts, :runner_release_id, FavnTestSupport.runner_release_id()) do
         value when is_binary(value) ->
           case RunnerRelease.validate_id(value) do
-            :ok -> value
-            {:error, _reason} -> raise ArgumentError, "invalid runner_release_id: #{inspect(value)}"
+            :ok ->
+              value
+
+            {:error, _reason} ->
+              raise ArgumentError, "invalid runner_release_id: #{inspect(value)}"
           end
 
-        value -> raise ArgumentError, "invalid runner_release_id: #{inspect(value)}"
+        value ->
+          raise ArgumentError, "invalid runner_release_id: #{inspect(value)}"
       end
 
     %{
