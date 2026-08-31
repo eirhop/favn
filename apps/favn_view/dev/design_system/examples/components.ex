@@ -17,10 +17,12 @@ defmodule FavnView.Dev.DesignSystem.Examples.Components do
   alias FavnView.Auth.Scope
   alias FavnView.Components.ModeRail
   alias FavnView.Components.Navigation
+  alias FavnView.Components.PipelineDetailPage
   alias FavnView.Dev.DesignSystem.Example
   alias FavnView.Dev.DesignSystem.Fixtures
   alias FavnView.Dev.DesignSystem.Fixtures.RunConfig
   alias FavnView.Dev.DesignSystem.Fixtures.Schedules
+  alias FavnView.PipelineRunConfig
 
   @doc """
   Every curated section example, keyed by catalogue entry id.
@@ -34,6 +36,73 @@ defmodule FavnView.Dev.DesignSystem.Examples.Components do
     |> Map.merge(logs())
     |> Map.merge(schedules())
     |> Map.merge(run_config_dialog())
+    |> Map.merge(pipeline_run_dialog())
+  end
+
+  defp pipeline_run_dialog do
+    pipeline = PipelineDetailPage.sample_pipeline()
+    defaults = PipelineRunConfig.default(pipeline)
+
+    base = %{
+      pipeline: pipeline,
+      run_config: defaults,
+      defaults: defaults,
+      advanced_open?: false,
+      valid?: true,
+      error: nil,
+      can_submit_runs?: true
+    }
+
+    %{
+      "pipeline_run_dialog/pipeline_run_dialog" => [
+        Example.attrs(
+          :declared,
+          base,
+          "What the manifest says, before anything is overridden. Agreeing with it is one click."
+        ),
+        Example.attrs(
+          :unwindowed,
+          %{
+            base
+            | pipeline: PipelineDetailPage.sample_unwindowed_pipeline(),
+              run_config:
+                PipelineRunConfig.default(PipelineDetailPage.sample_unwindowed_pipeline())
+          },
+          "A pipeline with no window policy is offered no period, so no backfill is reachable."
+        ),
+        Example.attrs(
+          :range_and_force,
+          %{
+            base
+            | run_config: %{
+                defaults
+                | from: "2026-01",
+                  to: "2026-08",
+                  refresh: "force_all",
+                  combine_windows: true
+              },
+              advanced_open?: true
+          },
+          "A range makes it a backfill. Every deviation marks its row and the warning states the blast radius."
+        ),
+        Example.attrs(
+          :invalid,
+          %{
+            base
+            | run_config: %{defaults | to: "2026-08"},
+              valid?: false,
+              error: "A range needs a period to start from.",
+              advanced_open?: true
+          },
+          "An unsubmittable configuration says why, and the confirming control refuses."
+        ),
+        Example.attrs(
+          :viewer,
+          %{base | can_submit_runs?: false},
+          "A viewer reads what would run without being able to queue it."
+        )
+      ]
+    }
   end
 
   defp shell do

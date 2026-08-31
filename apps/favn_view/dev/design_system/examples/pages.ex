@@ -30,6 +30,7 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
   alias FavnView.Dev.DesignSystem.Fixtures.Runs
   alias FavnView.Dev.DesignSystem.Fixtures.RunsList
   alias FavnView.Dev.DesignSystem.Fixtures.Schedules
+  alias FavnView.PipelineRunConfig
 
   @workspace_scope %Scope{
     workspace_id: "workspace-one",
@@ -564,14 +565,22 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
       status_options: PipelinesPage.status_options()
     }
 
-    backfill = %{
-      from: "2024-01",
-      to: "2026-12",
-      kind: "month",
-      timezone: "Etc/UTC",
-      refresh: "missing",
-      combine_windows: false
-    }
+    windowed = PipelineDetailPage.sample_pipeline()
+    unwindowed = PipelineDetailPage.sample_unwindowed_pipeline()
+    defaults = PipelineRunConfig.default(windowed)
+
+    detail = fn pipeline, overrides ->
+      Map.merge(
+        %{
+          pipeline: pipeline,
+          nav_items: PipelinesPage.nav_items(:pipelines),
+          run_config: PipelineRunConfig.default(pipeline),
+          run_config_defaults: PipelineRunConfig.default(pipeline),
+          can_submit_runs?: true
+        },
+        overrides
+      )
+    end
 
     %{
       "pipelines_page/pipelines_page" => [
@@ -584,24 +593,53 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
         Example.attrs(:error, Map.merge(base, %{pipelines: [], error: "load_failed"}))
       ],
       "pipeline_detail_page/pipeline_detail_page" => [
-        Example.attrs(:with_history, %{
-          pipeline: PipelineDetailPage.sample_pipeline(),
-          nav_items: PipelinesPage.nav_items(:pipelines),
-          backfill_config: backfill
-        }),
+        Example.attrs(:with_history, detail.(windowed, %{})),
+        Example.attrs(
+          :unwindowed,
+          detail.(unwindowed, %{}),
+          "No window policy, so no period to ask for and no backfill to reach."
+        ),
         Example.attrs(
           :no_history,
-          %{
-            pipeline: %{
-              PipelineDetailPage.sample_pipeline()
-              | runs: [],
-                status: :unknown,
-                status_label: "Unknown"
-            },
-            nav_items: PipelinesPage.nav_items(:pipelines),
-            backfill_config: backfill
-          },
+          detail.(%{windowed | runs: [], status: :unknown, status_label: "Unknown"}, %{}),
           "Declared but never run."
+        ),
+        Example.attrs(
+          :run_dialog,
+          detail.(windowed, %{run_dialog_open?: true}),
+          "What the pipeline declares, before anything is overridden."
+        ),
+        Example.attrs(
+          :run_dialog_backfill,
+          detail.(windowed, %{
+            run_dialog_open?: true,
+            run_advanced_open?: true,
+            run_config: %{
+              defaults
+              | from: "2026-01",
+                to: "2026-08",
+                refresh: "force_all",
+                combine_windows: true
+            }
+          }),
+          "A range and a force: every deviation marks its row, and the warning states the blast radius."
+        ),
+        Example.attrs(
+          :run_dialog_viewer,
+          detail.(windowed, %{run_dialog_open?: true, can_submit_runs?: false}),
+          "A viewer may read what would run without being able to queue it."
+        ),
+        Example.attrs(
+          :many_assets,
+          detail.(
+            %{
+              windowed
+              | selected_assets: Enum.map(1..58, &"production_asset_#{&1}"),
+                asset_count: 58
+            },
+            %{}
+          ),
+          "A long selection shows the first twelve and puts the rest one disclosure away."
         )
       ]
     }

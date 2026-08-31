@@ -682,6 +682,34 @@ defmodule FavnView.Dev.DesignSystem.Examples.Elements do
 
   defp fields do
     %{
+      "field/radio_card" => [
+        Example.attrs(
+          :chosen,
+          %{
+            name: "refresh",
+            value: "auto",
+            checked?: true,
+            title: "Obey freshness",
+            description: "Default. Skips whatever the backend already considers current."
+          },
+          "The consequence of choosing, not a term to recognise."
+        ),
+        Example.attrs(:unchosen, %{
+          name: "refresh",
+          value: "force_all",
+          checked?: false,
+          title: "Force everything planned",
+          description: "Runs every asset in the plan, whatever its freshness says."
+        })
+      ],
+      "field/disclosure" => [
+        Example.render(
+          :closed,
+          &disclosure_closed/1,
+          "Closed by default: an operator who agrees with the summary above it never opens one."
+        ),
+        Example.render(:open, &disclosure_open/1, "Open state is a server assign, not a toggle.")
+      ],
       "field/filter_bar" => [
         Example.render(
           :search_and_selects,
@@ -1319,6 +1347,35 @@ defmodule FavnView.Dev.DesignSystem.Examples.Elements do
       <.stacked_cell primary="0 2 * * *" secondary="Etc/UTC" mono={:primary} tone={:muted} />
       <.stacked_cell primary="mart_daily_sales" secondary="table" navigate="/assets/mart" />
     </.stack>
+    """
+  end
+
+  defp disclosure_closed(assigns) do
+    ~H"""
+    <.disclosure label="Change how it runs">
+      <.radio_card
+        name="example_refresh"
+        value="auto"
+        checked?={true}
+        title="Obey freshness"
+        description="Default. Skips whatever the backend already considers current."
+      />
+    </.disclosure>
+    """
+  end
+
+  defp disclosure_open(assigns) do
+    ~H"""
+    <.disclosure label="Change how it runs" open?={true}>
+      <.input name="from" label="From" value="2026-01" class="w-full input input-sm" />
+      <.radio_card
+        name="example_refresh_open"
+        value="force_all"
+        checked?={true}
+        title="Force everything planned"
+        description="Runs every asset in the plan, whatever its freshness says."
+      />
+    </.disclosure>
     """
   end
 

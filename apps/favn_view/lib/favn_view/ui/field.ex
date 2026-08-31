@@ -292,6 +292,94 @@ defmodule FavnView.UI.Field do
   end
 
   @doc """
+  One choice in a radio group, with the consequence of choosing it.
+
+  A bare radio label has room for two or three words, which is not enough for a
+  choice that changes what a submission does. This carries a title and a
+  sentence, so an operator picks by reading the outcome rather than by
+  recognising a term.
+
+  ## Examples
+
+      <.radio_card
+        name="run_config[refresh]"
+        value="force_all"
+        checked?={@config.refresh == "force_all"}
+        title="Force everything planned"
+        description="Runs every asset in the plan, whatever its freshness says."
+      />
+  """
+  attr :name, :string, required: true
+  attr :value, :string, required: true
+  attr :checked?, :boolean, default: false
+  attr :title, :string, required: true
+  attr :description, :string, required: true
+  attr :class, :any, default: nil
+  attr :rest, :global
+
+  def radio_card(assigns) do
+    ~H"""
+    <label
+      class={[
+        "mt-2 flex cursor-pointer gap-3 rounded-box border border-base-content/10",
+        "bg-base-content/[0.025] p-3 text-sm hover:border-primary/30",
+        @class
+      ]}
+      {@rest}
+    >
+      <input
+        type="radio"
+        name={@name}
+        value={@value}
+        checked={@checked?}
+        class="radio radio-primary radio-sm mt-0.5"
+      />
+      <span>
+        <span class="block font-medium text-base-content">{@title}</span>
+        <span class="mt-0.5 block text-sm leading-5 favn-text-muted">{@description}</span>
+      </span>
+    </label>
+    """
+  end
+
+  @doc """
+  A labelled disclosure holding the controls most operators never open.
+
+  A dialog that states what it will do needs somewhere to put the controls that
+  change it, without those controls competing with the statement. Open state is
+  a server assign rather than the browser's own `<details>` toggle, because a
+  form that re-renders on change would otherwise close itself mid-edit.
+
+  ## Examples
+
+      <.disclosure label="Change how it runs" open?={@advanced_open?}>
+        <.radio_card name="run[refresh]" value="auto" checked?={true} title="Obey freshness" description="…" />
+      </.disclosure>
+  """
+  attr :label, :string, required: true, doc: "the summary line, always visible"
+  attr :open?, :boolean, default: false
+  attr :id, :string, default: nil
+  attr :class, :any, default: nil
+  attr :rest, :global
+
+  slot :inner_block, required: true
+
+  def disclosure(assigns) do
+    ~H"""
+    <details
+      id={@id}
+      open={@open?}
+      class={["rounded-box border border-base-content/10 p-3", @class]}
+      {@rest}
+    >
+      <summary class="cursor-pointer text-sm favn-text-muted">{@label}</summary>
+
+      <div class="mt-3 space-y-4">{render_slot(@inner_block)}</div>
+    </details>
+    """
+  end
+
+  @doc """
   Renders a validation message under a field.
   """
   slot :inner_block, required: true
