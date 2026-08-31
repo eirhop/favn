@@ -61,19 +61,8 @@ client_curl() {
   ' manifest-memory-curl "$@"
 }
 
-verify_http_auth() {
+verify_manifest_http_auth() {
   client_id=$1
-
-  platform_status=$(client_curl "$client_id" --silent --show-error \
-    --max-time 10 \
-    --output /results/platform-auth-preflight.json \
-    --write-out '%{http_code}' \
-    http://control-plane:4101/api/orchestrator/v1/bootstrap/service-token || true)
-
-  if [ "$platform_status" != 200 ]; then
-    echo "platform HTTP authentication preflight returned $platform_status" >&2
-    return 1
-  fi
 
   deployer_status=$(client_curl "$client_id" --silent --show-error \
     --max-time 10 \
@@ -224,7 +213,7 @@ run_fixture() {
   compose up --detach manifest-memory-client
   container_id=$(compose ps --quiet control-plane)
   client_id=$(compose ps --quiet manifest-memory-client)
-  verify_http_auth "$client_id"
+  verify_manifest_http_auth "$client_id"
   limit_bytes=$(memory_value "$container_id" limit)
   if [ "$limit_bytes" != "$expected_limit_bytes" ]; then
     echo "control-plane cgroup limit is $limit_bytes bytes, expected $expected_limit_bytes" >&2

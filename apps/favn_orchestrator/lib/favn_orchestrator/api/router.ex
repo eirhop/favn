@@ -34,7 +34,7 @@ defmodule FavnOrchestrator.API.Router do
   alias FavnOrchestrator.RunnerDemandLimiter
   alias FavnOrchestrator.Runs
 
-  plug(Plug.RequestId)
+  plug(Plug.RequestId, assign_as: :request_id)
 
   if Mix.env() == :dev and Code.ensure_loaded?(Tidewave) do
     plug(Tidewave)
