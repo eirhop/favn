@@ -294,8 +294,6 @@ defmodule FavnView.PipelineDetailLive do
       default_run_label: default_run_label(window),
       max_concurrency: Map.get(detail, :max_concurrency),
       execution_pool: Map.get(detail, :execution_pool),
-      can_run_without_window?: Map.get(detail, :can_run_without_window?, true),
-      can_backfill?: Map.get(detail, :can_backfill?, false),
       status: status,
       status_label: status_label(status),
       last_run_label: last_run_label(Map.get(detail, :latest_run_at), timezone),
@@ -516,6 +514,20 @@ defmodule FavnView.PipelineDetailLive do
 
   defp submit_error_label({:invalid_operator_refresh_mode, _value}),
     do: "Refresh behavior is invalid."
+
+  defp submit_error_label({:invalid_operator_window, _value}),
+    do: "That is not a period this pipeline can run. Check the format in the placeholder."
+
+  defp submit_error_label({:window_kind_mismatch, expected, _actual}),
+    do: "This pipeline runs #{expected} periods."
+
+  # The browser holds one command key per operation and resource until the
+  # command settles, so an earlier submission whose outcome was never known is
+  # replayed here rather than repeated. Saying so is the difference between an
+  # operator retrying and an operator giving up.
+  defp submit_error_label(:idempotency_conflict),
+    do:
+      "An earlier submission for this pipeline is still unresolved. Open its run before submitting a different one."
 
   defp submit_error_label({:missing_window_request, kind}),
     do: "This #{kind} pipeline requires an explicit window request."

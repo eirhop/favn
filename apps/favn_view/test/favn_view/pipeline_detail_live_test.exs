@@ -10,9 +10,7 @@ defmodule FavnView.PipelineDetailLiveTest do
   @pipeline %{
     id: "pipeline:Example:daily",
     manifest_version_id: "mv_1",
-    window: %{"kind" => "day", "timezone" => "Etc/UTC", "combine_windows" => false},
-    can_backfill?: true,
-    can_run_without_window?: false
+    window: %{"kind" => "day", "timezone" => "Etc/UTC", "combine_windows" => false}
   }
 
   setup do

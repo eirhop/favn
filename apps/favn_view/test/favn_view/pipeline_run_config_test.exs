@@ -104,7 +104,14 @@ defmodule FavnView.PipelineRunConfigTest do
       default = PipelineRunConfig.default(nil)
 
       assert PipelineRunConfig.changed_fields(default, default) == []
-      refute PipelineRunConfig.changed?(default, default)
+    end
+
+    test "the declared window kind survives a payload that names another" do
+      current = PipelineRunConfig.default(%{window: %{"kind" => "month"}})
+
+      config = PipelineRunConfig.from_params(%{"run_config" => %{"kind" => "day"}}, current)
+
+      assert config.kind == "month"
     end
 
     test "any period is a change, because the default is to run the latest complete one" do

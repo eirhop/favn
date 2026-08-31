@@ -2,36 +2,31 @@ defmodule FavnView.Components.PipelineRunDialog do
   @moduledoc """
   The dialog that submits one pipeline run.
 
-  Render it at page level, through the shell's `:overlay` slot. A panel sets a
-  `backdrop-filter`, which makes it the containing block for a `position: fixed`
-  descendant, so a dialog nested inside one is clipped to that card rather than
-  covering the page.
+  Render it at page level, through the shell's `:overlay` slot; see
+  `FavnView.UI.Dialog` for why a dialog cannot live inside a panel.
 
-  ## Why running goes through a dialog at all
+  It leads with what the pipeline declares — the period it runs, its dependency
+  mode, its concurrency — because the manifest owns those values and an operator
+  can read them nowhere else in the product. Nothing here edits the pipeline: the
+  disclosure overrides the declared values for one submission, and every override
+  marks its summary row, so a deviation cannot hide inside a closed disclosure.
 
-  Running a pipeline is expensive and a misclick is indistinguishable from an
-  intention, so the button opens this instead of submitting. The dialog leads
-  with what the pipeline declares — its period, its dependency mode, its
-  concurrency — because the manifest owns those values and an operator cannot
-  otherwise see them anywhere in the product.
+  ## Backfilling is a period, not a mode
 
-  ## Declared, and deviated from
+  An empty period asks the control plane for the latest complete one, a single
+  period runs that window, and a range runs every period in it — which is a
+  different command, chosen by the page from
+  `FavnView.PipelineRunConfig.range_requested?/1`. A pipeline that declares no
+  window has no period to override, so it shows no period controls and can reach
+  no backfill.
 
-  Nothing here edits the pipeline. The disclosure overrides the declared values
-  for one submission, and every override marks its summary row, so a deviation
-  cannot hide inside a closed disclosure.
-
-  Backfilling is not a separate mode: it is a period override. An empty period
-  asks the control plane for the latest complete one, a single period runs that
-  window, and a range runs every period in it — which is a different command,
-  chosen by the page from `FavnView.PipelineRunConfig.range_requested?/1`. A
-  pipeline that declares no window has no period to override, so it shows no
-  period controls and can reach no backfill.
+  The period *size* is not offered. A pipeline declares one window kind and the
+  control plane rejects a submission naming another, so a size control could only
+  mislead: discarded when no period was named, refused when one was.
   """
 
   use FavnView, :html
 
-  alias FavnView.Components.RunConfigDialog
   alias FavnView.PipelineRunConfig
 
   attr :pipeline, :map, required: true
@@ -70,7 +65,7 @@ defmodule FavnView.Components.PipelineRunDialog do
         data-command-resource={@pipeline.id}
         data-testid="pipeline-run-form"
       >
-        <div class="border-y border-base-content/10 py-2" data-testid="pipeline-run-summary">
+        <div data-testid="pipeline-run-summary">
           <.field_row label={(@windowed? && "Period") || "Runs"}>
             {period_summary(assigns)}
             <.changed_badge :if={:period in @changed} />
@@ -78,12 +73,12 @@ defmodule FavnView.Components.PipelineRunDialog do
 
           <.field_row label="Assets">{assets_summary(@pipeline)}</.field_row>
 
-          <.field_row label="Freshness">
+          <.field_row label="Refresh">
             {refresh_summary(@run_config.refresh)}
             <.changed_badge :if={:refresh in @changed} />
           </.field_row>
 
-          <.field_row :if={@range?} label="Windows">
+          <.field_row :if={@range?} label="Periods">
             {combine_summary(@run_config.combine_windows)}
             <.changed_badge :if={:combine_windows in @changed} />
           </.field_row>
@@ -93,92 +88,80 @@ defmodule FavnView.Components.PipelineRunDialog do
           </.field_row>
         </div>
 
-        <details
-          open={@advanced_open?}
-          class="mt-4 rounded-box border border-base-content/10 p-3"
+        <.disclosure
+          label="Change how it runs"
+          open?={@advanced_open?}
+          class="mt-4"
           data-testid="pipeline-run-advanced"
         >
-          <summary class="cursor-pointer text-sm favn-text-muted">Change how it runs</summary>
+          <input type="hidden" name="run_config[timezone]" value={@run_config.timezone} />
 
-          <div class="mt-3 space-y-4">
-            <input type="hidden" name="run_config[timezone]" value={@run_config.timezone} />
+          <fieldset :if={@windowed?} class="fieldset" data-testid="pipeline-run-period">
+            <legend class="fieldset-legend">Which {kind_word(@run_config.kind)}s to run</legend>
 
-            <fieldset :if={@windowed?} class="fieldset" data-testid="pipeline-run-period">
-              <legend class="fieldset-legend">Which periods to run</legend>
-
-              <div class="grid gap-3 sm:grid-cols-[8rem_1fr_1fr]">
-                <.input
-                  id="pipeline-run-kind"
-                  type="select"
-                  label="Period size"
-                  name="run_config[kind]"
-                  value={@run_config.kind}
-                  options={Enum.map(~w(hour day month year), &{String.capitalize(&1), &1})}
-                  class="w-full select select-sm favn-surface-control"
-                />
-                <.input
-                  id="pipeline-run-from"
-                  label="From"
-                  name="run_config[from]"
-                  value={@run_config.from}
-                  class="w-full input input-sm favn-surface-control"
-                  placeholder={period_placeholder(@run_config.kind)}
-                />
-                <.input
-                  id="pipeline-run-to"
-                  label="To"
-                  name="run_config[to]"
-                  value={@run_config.to}
-                  class="w-full input input-sm favn-surface-control"
-                  placeholder="Optional end"
-                />
-              </div>
-
-              <p class="mt-1 text-sm favn-text-muted">
-                Leave both empty to run the last complete {kind_word(@run_config.kind)}. Fill
-                <span class="font-mono">From</span>
-                alone to run one, or both to run every {kind_word(@run_config.kind)} between them.
-              </p>
-            </fieldset>
-
-            <fieldset class="fieldset">
-              <legend class="fieldset-legend">Whether to rerun what is already current</legend>
-
-              <RunConfigDialog.radio_card
-                name="run_config[refresh]"
-                value="auto"
-                checked?={@run_config.refresh == "auto"}
-                title="Obey freshness"
-                description="What the pipeline declares. Skips whatever the backend already considers current."
+            <div class="grid gap-3 sm:grid-cols-2">
+              <.input
+                id="pipeline-run-from"
+                label="From"
+                name="run_config[from]"
+                value={@run_config.from}
+                class="w-full input input-sm favn-surface-control"
+                placeholder={period_placeholder(@run_config.kind)}
               />
-              <RunConfigDialog.radio_card
-                name="run_config[refresh]"
-                value="missing"
-                checked?={@run_config.refresh == "missing"}
-                title="Run missing only"
-                description="Runs the periods that have never succeeded, and nothing else."
+              <.input
+                id="pipeline-run-to"
+                label="To"
+                name="run_config[to]"
+                value={@run_config.to}
+                class="w-full input input-sm favn-surface-control"
+                placeholder="Optional end"
               />
-              <RunConfigDialog.radio_card
-                name="run_config[refresh]"
-                value="force_all"
-                checked?={@run_config.refresh == "force_all"}
-                title="Force everything planned"
-                description="Runs every asset in the plan, whatever its freshness says."
-              />
-            </fieldset>
+            </div>
 
-            <.input
-              :if={@range?}
-              id="pipeline-run-combine-windows"
-              type="checkbox"
-              name="run_config[combine_windows]"
-              label="Combine windows"
-              tooltip="Run all selected windows in one child run instead of creating one child run per window."
-              checked={@run_config.combine_windows}
-              data-testid="pipeline-run-combine-windows"
+            <p class="mt-1 text-sm favn-text-muted">
+              Leave both empty to run the last complete {kind_word(@run_config.kind)}. Fill
+              <span class="font-mono">From</span>
+              alone to run one, or both to run every {kind_word(@run_config.kind)} between them.
+            </p>
+          </fieldset>
+
+          <fieldset class="fieldset">
+            <legend class="fieldset-legend">Whether to rerun what is already current</legend>
+
+            <.radio_card
+              name="run_config[refresh]"
+              value="auto"
+              checked?={@run_config.refresh == "auto"}
+              title="Obey freshness"
+              description="What the pipeline declares. Skips whatever the backend already considers current."
             />
-          </div>
-        </details>
+            <.radio_card
+              name="run_config[refresh]"
+              value="missing"
+              checked?={@run_config.refresh == "missing"}
+              title="Run missing only"
+              description="Runs the periods that have never succeeded, and nothing else."
+            />
+            <.radio_card
+              name="run_config[refresh]"
+              value="force_all"
+              checked?={@run_config.refresh == "force_all"}
+              title="Force everything planned"
+              description="Runs every asset in the plan, whatever its freshness says."
+            />
+          </fieldset>
+
+          <.input
+            :if={@range?}
+            id="pipeline-run-combine-windows"
+            type="checkbox"
+            name="run_config[combine_windows]"
+            label="Combine windows"
+            tooltip="Run all selected windows in one child run instead of creating one child run per window."
+            checked={@run_config.combine_windows}
+            data-testid="pipeline-run-combine-windows"
+          />
+        </.disclosure>
 
         <.notice
           :if={PipelineRunConfig.forces?(@run_config)}
@@ -199,9 +182,9 @@ defmodule FavnView.Components.PipelineRunDialog do
           Running a pipeline needs an operator account. You can read what it would run here, but not queue it.
         </p>
 
-        <p :if={@error} class="mt-4 text-sm text-error" data-testid="pipeline-run-error">
+        <.notice :if={@error} tone={:error} class="mt-4" data-testid="pipeline-run-error">
           {@error}
-        </p>
+        </.notice>
       </.form>
 
       <:actions>
@@ -217,12 +200,14 @@ defmodule FavnView.Components.PipelineRunDialog do
         <.button variant={:ghost} phx-click="close_run_dialog" data-testid="close-run-dialog">
           Cancel
         </.button>
+        <!-- `phx-disable-with` repeats the label rather than replacing it, so the
+        button keeps its width while the submission is in flight. -->
         <.button
           variant={:solid}
           type="submit"
           form="pipeline-run-form"
           disabled={!@can_submit_runs? || !@valid?}
-          phx-disable-with="Submitting..."
+          phx-disable-with={submit_label(assigns)}
           data-testid="submit-pipeline-run"
         >
           {submit_label(assigns)}
@@ -292,9 +277,11 @@ defmodule FavnView.Components.PipelineRunDialog do
   defp asset_count_label(%{asset_count: 1}), do: "1 asset"
   defp asset_count_label(%{asset_count: count}), do: "#{count} assets"
 
-  defp refresh_summary("missing"), do: "Missing periods only"
-  defp refresh_summary("force_all"), do: "Forced — everything planned reruns"
-  defp refresh_summary(_refresh), do: "Obeyed — what is already current is skipped"
+  # The same words the radio cards use, so the summary and the control an
+  # operator just changed cannot describe one choice two ways.
+  defp refresh_summary("missing"), do: "Run missing only"
+  defp refresh_summary("force_all"), do: "Force everything planned"
+  defp refresh_summary(_refresh), do: "Obey freshness"
 
   defp combine_summary(true), do: "Combined into one child run"
   defp combine_summary(_combine), do: "One child run per period"

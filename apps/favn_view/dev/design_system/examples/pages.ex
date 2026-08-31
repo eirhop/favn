@@ -20,7 +20,6 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
   alias FavnView.Components.Navigation
   alias FavnView.Components.PipelineDetailPage
   alias FavnView.Components.PipelinesPage
-  alias FavnView.PipelineRunConfig
   alias FavnView.Components.ScheduleDetailPage
   alias FavnView.Components.SchedulesPage
   alias FavnView.Components.RunnersPage
@@ -31,6 +30,7 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
   alias FavnView.Dev.DesignSystem.Fixtures.Runs
   alias FavnView.Dev.DesignSystem.Fixtures.RunsList
   alias FavnView.Dev.DesignSystem.Fixtures.Schedules
+  alias FavnView.PipelineRunConfig
 
   @workspace_scope %Scope{
     workspace_id: "workspace-one",
@@ -628,6 +628,18 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
           :run_dialog_viewer,
           detail.(windowed, %{run_dialog_open?: true, can_submit_runs?: false}),
           "A viewer may read what would run without being able to queue it."
+        ),
+        Example.attrs(
+          :many_assets,
+          detail.(
+            %{
+              windowed
+              | selected_assets: Enum.map(1..58, &"production_asset_#{&1}"),
+                asset_count: 58
+            },
+            %{}
+          ),
+          "A long selection shows the first twelve and puts the rest one disclosure away."
         )
       ]
     }

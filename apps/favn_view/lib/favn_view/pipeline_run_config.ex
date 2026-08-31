@@ -90,11 +90,15 @@ defmodule FavnView.PipelineRunConfig do
   the period controls live behind a disclosure and the combine checkbox appears
   only once a range is asked for, so a payload that omits one of them describes a
   form that did not render it, not an operator who cleared it.
+
+  The window kind is never taken from params. A pipeline declares one, the
+  control plane refuses a submission naming another, and the form offers no way
+  to change it — so a kind arriving in a payload is not an operator's choice.
   """
   @spec from_params(map(), t()) :: t()
   def from_params(%{"run_config" => params}, current) when is_map(params) do
     %{
-      kind: Map.get(params, "kind", current.kind),
+      kind: current.kind,
       from: params |> Map.get("from", current.from) |> trim(),
       to: params |> Map.get("to", current.to) |> trim(),
       refresh: Map.get(params, "refresh", current.refresh),
@@ -190,10 +194,6 @@ defmodule FavnView.PipelineRunConfig do
     ]
     |> Enum.filter(& &1)
   end
-
-  @doc "Whether anything deviates from what the pipeline declares."
-  @spec changed?(t(), t()) :: boolean()
-  def changed?(config, default), do: changed_fields(config, default) != []
 
   @doc "Whether this configuration recomputes periods that already succeeded."
   @spec forces?(map()) :: boolean()

@@ -124,10 +124,10 @@ defmodule FavnView.Components.PipelineDetailPage do
       <:header title="Selected assets" subtitle="What this pipeline's selectors resolve to" />
 
       <div class="flex flex-wrap gap-2">
-        <.badge :for={asset <- @visible} tone={:info}>{asset}</.badge>
+        <.badge :for={asset <- @visible}>{asset}</.badge>
 
         <span :if={@pipeline.selected_assets == []} class="text-sm favn-text-muted">
-          No resolved assets
+          No resolved assets. This pipeline's selectors match nothing in the active manifest.
         </span>
       </div>
 
@@ -137,7 +137,7 @@ defmodule FavnView.Components.PipelineDetailPage do
         </summary>
 
         <div class="mt-3 flex flex-wrap gap-2">
-          <.badge :for={asset <- @hidden} tone={:info}>{asset}</.badge>
+          <.badge :for={asset <- @hidden}>{asset}</.badge>
         </div>
       </details>
     </.panel>
@@ -153,6 +153,8 @@ defmodule FavnView.Components.PipelineDetailPage do
       count_label={run_count_label(@pipeline.runs)}
       data-testid="pipeline-history-panel"
     >
+      <:header title="Run history" subtitle="Pipeline and backfill runs matched to this pipeline." />
+
       <.empty_state
         :if={@pipeline.runs == []}
         title="No runs yet"
@@ -248,8 +250,6 @@ defmodule FavnView.Components.PipelineDetailPage do
       default_run_label: "The last complete month",
       max_concurrency: 4,
       execution_pool: "default",
-      can_run_without_window?: false,
-      can_backfill?: true,
       status: :healthy,
       status_label: "Healthy",
       last_run_label: "12m ago",
@@ -285,21 +285,19 @@ defmodule FavnView.Components.PipelineDetailPage do
         dependencies_label: "Selected only",
         window: nil,
         window_label: "Not windowed",
-        default_run_label: "The whole relation",
-        can_run_without_window?: true,
-        can_backfill?: false
+        default_run_label: "The whole relation"
     }
   end
 
   defp run_count_label([_run]), do: "run"
   defp run_count_label(_runs), do: "runs"
 
+  # The four states `FavnView.PipelineDetailLive` projects a run into, and no
+  # more: a label for a status the view model cannot produce is a label nobody
+  # can see be wrong.
   defp status_label(:healthy), do: "Healthy"
   defp status_label(:running), do: "Running"
-  defp status_label(:succeeded), do: "Succeeded"
-  defp status_label(:queued), do: "Queued"
   defp status_label(:failed), do: "Failed"
-  defp status_label(:cancelled), do: "Cancelled"
   defp status_label(_status), do: "Unknown"
 
   defp status_tone(:healthy), do: :success

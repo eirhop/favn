@@ -12,6 +12,13 @@ defmodule FavnView.UI.Dialog do
   Do not use one to show information. A dialog that only tells is a panel that
   stole the page.
 
+  ## Where to render one
+
+  At page level, through `FavnView.Components.AppShell`'s `:overlay` slot, never
+  inside a panel. `.favn-surface-panel` sets a `backdrop-filter`, which makes it
+  the containing block for a `position: fixed` descendant, so a dialog nested in
+  a panel is clipped to that card rather than covering the page.
+
   ## Behaviour
 
   Open state is a server assign, not browser state, because the action behind it

@@ -65,7 +65,7 @@ defmodule FavnView.Components.PipelineDetailPageTest do
       assert html =~ ~s(data-testid="pipeline-run-dialog")
       assert html =~ "The last complete month, Etc/UTC"
       assert html =~ "2 assets, with what they read"
-      assert html =~ "Obeyed — what is already current is skipped"
+      assert html =~ "Obey freshness"
       assert html =~ "4 at a time, on the default pool"
       assert html =~ "Run the last complete month"
       refute html =~ ~s(data-testid="run-config-changed")
@@ -80,6 +80,13 @@ defmodule FavnView.Components.PipelineDetailPageTest do
       assert html =~ "Run pipeline"
       refute html =~ ~s(data-testid="pipeline-run-period")
       refute html =~ ~s(data-testid="pipeline-run-combine-windows")
+    end
+
+    test "the declared period size is stated, never offered as a choice" do
+      html = render(PipelineDetailPage.sample_pipeline(), run_dialog_open?: true)
+
+      assert html =~ "Which months to run"
+      refute html =~ ~s(name="run_config[kind]")
     end
 
     test "a single period runs that window" do
