@@ -5,7 +5,7 @@
 | Status | Implemented |
 | Type | Bug fix and performance improvement |
 | Primary issue | None — the user requested this record directly on 2026-08-31 |
-| Pull request | Pending |
+| Pull request | [#686](https://github.com/eirhop/favn/pull/686) |
 | Related work | None |
 | Affected areas | PostgreSQL registry and run stores, run snapshot decoding, orchestrator run snapshot codec |
 | Approved plan commit | c7b51ef1 |
