@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Qualification in progress |
+| Status | Implemented and qualified |
 | Type | Bug fix |
 | Pull request | [PR 684](https://github.com/eirhop/favn/pull/684) |
 | Approved plan | Commit `d483fe8c` |
@@ -124,5 +124,8 @@ Implementation deviations from that baseline:
   builder, and recurring multi-cycle gate were removed as outside the focused
   production fix. Focused behavior remains covered by ordinary CI.
 
-Final qualification and the final independent baseline comparison remain
-pending on the final commit.
+Final ordinary CI run `33418906029` passed in 6m08s. Control-plane image run
+`33418906083` passed in 3m21s and HTTP-security run `33418906051` passed in
+3m49s. The final independent GPT-5.6-Sol xhigh static comparison approved the
+implementation with no P1 or P2 findings. It confirmed that removing the
+bespoke measurement infrastructure did not weaken the production guardrails.
