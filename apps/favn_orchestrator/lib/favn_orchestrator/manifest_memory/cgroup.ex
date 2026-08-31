@@ -121,7 +121,7 @@ defmodule FavnOrchestrator.ManifestMemory.Cgroup do
   defp v2_snapshot(cgroups, mounts, read) do
     case Enum.find(cgroups, &(&1.hierarchy == 0 and &1.controllers == [])) do
       %{path: path} ->
-        case Enum.find(mounts, &(&1.filesystem == "cgroup2")) do
+        case matching_mount(mounts, path, &(&1.filesystem == "cgroup2")) do
           nil -> {:error, :cgroup_v2_mount_unavailable}
           mount -> read_hierarchy(:cgroup_v2, mount, path, "memory.max", "memory.current", read)
         end
@@ -134,8 +134,9 @@ defmodule FavnOrchestrator.ManifestMemory.Cgroup do
   defp v1_snapshot(cgroups, mounts, read) do
     case Enum.find(cgroups, &("memory" in &1.controllers)) do
       %{path: path} ->
-        case Enum.find(
+        case matching_mount(
                mounts,
+               path,
                &(&1.filesystem == "cgroup" and "memory" in &1.super_options)
              ) do
           nil ->
@@ -155,6 +156,13 @@ defmodule FavnOrchestrator.ManifestMemory.Cgroup do
       nil ->
         :absent
     end
+  end
+
+  defp matching_mount(mounts, cgroup_path, predicate) do
+    mounts
+    |> Enum.filter(predicate)
+    |> Enum.filter(&match?({:ok, _directory}, mounted_path(&1, cgroup_path)))
+    |> Enum.min_by(&byte_size(Path.expand(&1.root)), fn -> nil end)
   end
 
   defp read_hierarchy(source, mount, cgroup_path, limit_file, usage_file, read) do

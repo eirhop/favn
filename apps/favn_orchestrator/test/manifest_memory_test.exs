@@ -1,6 +1,7 @@
 defmodule FavnOrchestrator.ManifestMemoryTest do
   use ExUnit.Case, async: true
 
+  alias Favn.Manifest.Version
   alias FavnOrchestrator.ManifestMemory
   alias FavnOrchestrator.ManifestMemory.Slot
 
@@ -34,6 +35,30 @@ defmodule FavnOrchestrator.ManifestMemoryTest do
              )
   end
 
+  test "keeps admission closed until a dead phase owner's worker is gone" do
+    slot = start_supervised!({Slot, name: nil})
+    test_pid = self()
+
+    owner =
+      spawn(fn ->
+        ManifestMemory.with_phase(
+          :upload,
+          fn ->
+            ManifestMemory.package_worker(fn ->
+              send(test_pid, {:phase_worker, self()})
+              Process.sleep(:infinity)
+            end)
+          end,
+          slot: slot,
+          capacity_check: fn -> :ok end
+        )
+      end)
+
+    assert_receive {:phase_worker, worker}
+    Process.exit(owner, :kill)
+    assert acquire_after_cleanup(slot, worker) == false
+  end
+
   test "publishes the frozen worker and reserve bounds" do
     mib = 1024 * 1024
     required_headroom = 512 * mib
@@ -54,6 +79,13 @@ defmodule FavnOrchestrator.ManifestMemoryTest do
            } = ManifestMemory.bounds()
   end
 
+  test "rejects a decoded Version above the frozen handoff ceiling" do
+    assert ManifestMemory.valid_version_size?(%Version{})
+
+    oversized = %Version{manifest: :binary.copy(<<0>>, 32 * 1024 * 1024 + 1)}
+    refute ManifestMemory.valid_version_size?(oversized)
+  end
+
   defp cgroup_options(limit, current) do
     files = %{
       "/proc/cgroup" => "0::/app\n",
@@ -68,5 +100,19 @@ defmodule FavnOrchestrator.ManifestMemoryTest do
       mountinfo_path: "/proc/mountinfo",
       read_file: fn path -> Map.fetch(files, path) end
     ]
+  end
+
+  defp acquire_after_cleanup(slot, worker, attempts \\ 50)
+
+  defp acquire_after_cleanup(_slot, _worker, 0),
+    do: flunk("manifest phase slot did not reopen")
+
+  defp acquire_after_cleanup(slot, worker, attempts) do
+    case Slot.acquire(server: slot) do
+      {:ok, _lease} -> Process.alive?(worker)
+      {:error, :manifest_capacity_busy} ->
+        Process.sleep(5)
+        acquire_after_cleanup(slot, worker, attempts - 1)
+    end
   end
 end

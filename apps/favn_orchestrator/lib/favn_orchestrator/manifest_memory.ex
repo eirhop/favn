@@ -6,6 +6,7 @@ defmodule FavnOrchestrator.ManifestMemory do
   increases the archive, worker, result, or batch limits.
   """
 
+  alias Favn.Manifest.Version
   alias FavnOrchestrator.ManifestMemory.Cgroup
   alias FavnOrchestrator.ManifestMemory.Slot
   alias FavnOrchestrator.ManifestMemory.Worker
@@ -19,6 +20,7 @@ defmodule FavnOrchestrator.ManifestMemory do
   @manifest_result 128 * @mib
   @index_result 128 * @mib
   @worker_timeout 30_000
+  @phase_key {__MODULE__, :phase}
 
   @type capacity_error ::
           :manifest_capacity_busy | :manifest_capacity_unavailable | :memory_capacity_unknown
@@ -31,9 +33,12 @@ defmodule FavnOrchestrator.ManifestMemory do
     capacity_check = Keyword.get(opts, :capacity_check, &ensure_headroom/0)
 
     with {:ok, lease} <- Slot.acquire(server: slot) do
+      previous_phase = Process.put(@phase_key, {slot, lease})
+
       try do
         with :ok <- capacity_check.(), do: fun.()
       after
+        restore_phase(previous_phase)
         :ok = Slot.release(lease, server: slot)
       end
     end
@@ -53,7 +58,8 @@ defmodule FavnOrchestrator.ManifestMemory do
   def package_worker(fun, opts \\ []) do
     Worker.run(fun, @package_heap, @package_result,
       timeout: Keyword.get(opts, :timeout, @worker_timeout),
-      measure: Keyword.get(opts, :measure, &Worker.retained_bytes/1)
+      measure: Keyword.get(opts, :measure, &Worker.retained_bytes/1),
+      before_start: &track_phase_worker/1
     )
   end
 
@@ -61,13 +67,19 @@ defmodule FavnOrchestrator.ManifestMemory do
   def manifest_worker(fun, opts \\ []) do
     Worker.run(fun, @manifest_heap, @manifest_result,
       timeout: Keyword.get(opts, :timeout, @worker_timeout),
-      measure: Keyword.get(opts, :measure, &Worker.retained_bytes/1)
+      measure: Keyword.get(opts, :measure, &Worker.retained_bytes/1),
+      before_start: &track_phase_worker/1
     )
   end
 
   @doc false
   def valid_package_batch?(packages) when is_list(packages) do
     Worker.retained_bytes(packages) <= @package_batch_result
+  end
+
+  @doc false
+  def valid_version_size?(%Version{} = version) do
+    Worker.retained_bytes(version) <= @manifest_result
   end
 
   @doc false
@@ -86,4 +98,14 @@ defmodule FavnOrchestrator.ManifestMemory do
       worker_timeout: @worker_timeout
     }
   end
+
+  defp track_phase_worker(worker) do
+    case Process.get(@phase_key) do
+      {slot, lease} -> Slot.track_worker(lease, worker, server: slot)
+      nil -> :ok
+    end
+  end
+
+  defp restore_phase(nil), do: Process.delete(@phase_key)
+  defp restore_phase(previous), do: Process.put(@phase_key, previous)
 end

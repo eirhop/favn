@@ -653,6 +653,44 @@ defmodule FavnStoragePostgres.Registry.Store do
      )}
   end
 
+  defp get_activatable_manifest(%DeployManifest{
+         manifest_version_id: id,
+         prepared_version: %Version{manifest_version_id: id} = version
+       }) do
+    case Repo.one(
+           from(manifest in ManifestVersion,
+             where: manifest.manifest_version_id == ^id,
+             select: {
+               manifest.schema_version,
+               manifest.content_hash,
+               manifest.runner_contract_version,
+               manifest.runner_releases
+             }
+           )
+         ) do
+      {schema, hash, contract, releases}
+      when schema == version.schema_version and contract == version.runner_contract_version and
+             releases == version.runner_releases ->
+        if Base.encode16(hash, case: :lower) == version.content_hash,
+          do: {:ok, version},
+          else: prepared_manifest_mismatch()
+
+      nil ->
+        {:error, Error.new(:not_found, "manifest release not found")}
+
+      _mismatch ->
+        prepared_manifest_mismatch()
+    end
+  end
+
+  defp get_activatable_manifest(%DeployManifest{prepared_version: nil} = command),
+    do: get_activatable_manifest(command.manifest_version_id)
+
+  defp get_activatable_manifest(%DeployManifest{}),
+    do: prepared_manifest_mismatch()
+
+  defp prepared_manifest_mismatch, do: {:error, Error.new(:invalid, "prepared manifest mismatch")}
+
   defp get_activatable_manifest(manifest_version_id) do
     case Repo.get(ManifestVersion, manifest_version_id) do
       nil ->
@@ -756,7 +794,7 @@ defmodule FavnStoragePostgres.Registry.Store do
   def deploy_manifest(%DeployManifest{} = command) do
     with :ok <- validate_deploy_command(command),
          {:ok, configuration} <- validate_configuration(command.configuration),
-         {:ok, manifest} <- get_activatable_manifest(command.manifest_version_id),
+         {:ok, manifest} <- get_activatable_manifest(command),
          :ok <- validate_execution_pool_deployment(command, configuration, manifest),
          :ok <- validate_connection_circuit_deployment(configuration, manifest),
          :ok <- validate_targets(command.targets, manifest),

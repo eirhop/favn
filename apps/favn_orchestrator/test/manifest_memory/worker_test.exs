@@ -34,6 +34,20 @@ defmodule FavnOrchestrator.ManifestMemory.WorkerTest do
     refute settings.error_logger
   end
 
+  test "shared binaries count toward heap termination" do
+    shared = :binary.copy(<<0>>, 1024 * 1024)
+
+    assert {:error, :manifest_memory_budget_exceeded} =
+             Worker.run(
+               fn ->
+                 :erlang.garbage_collect()
+                 shared
+               end,
+               64 * 1024,
+               8 * 1024 * 1024
+             )
+  end
+
   test "rejects an oversized result without returning it" do
     assert {:error, :manifest_memory_budget_exceeded} =
              Worker.run(fn -> :too_large end, 1024 * 1024, 10, measure: fn _result -> 11 end)
@@ -60,5 +74,37 @@ defmodule FavnOrchestrator.ManifestMemory.WorkerTest do
   test "converts callback failures to a typed worker error" do
     assert {:error, :manifest_worker_failed} =
              Worker.run(fn -> raise "failed" end, 1024 * 1024, 1024 * 1024)
+  end
+
+  test "terminates the worker when its caller dies" do
+    test_pid = self()
+
+    caller =
+      spawn(fn ->
+        Worker.run(
+          fn ->
+            send(test_pid, {:orphan_candidate, self()})
+            Process.sleep(:infinity)
+          end,
+          1024 * 1024,
+          1024 * 1024
+        )
+      end)
+
+    assert_receive {:orphan_candidate, worker}
+    Process.exit(caller, :kill)
+    assert_eventually(fn -> not Process.alive?(worker) end)
+  end
+
+  defp assert_eventually(fun, attempts \\ 20)
+  defp assert_eventually(_fun, 0), do: flunk("condition did not become true")
+
+  defp assert_eventually(fun, attempts) do
+    if fun.() do
+      :ok
+    else
+      Process.sleep(5)
+      assert_eventually(fun, attempts - 1)
+    end
   end
 end

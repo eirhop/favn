@@ -39,6 +39,41 @@ defmodule FavnOrchestrator.ManifestMemory.CgroupTest do
     assert {:ok, %{source: :cgroup_v1, headroom_bytes: 300}} = snapshot(files)
   end
 
+  test "uses the smallest finite headroom across cgroup v1 ancestors" do
+    files =
+      proc_files("5:memory:/v1/team/app", v1_mount())
+      |> Map.merge(%{
+        "/sys/fs/cgroup/memory/team/app/memory.limit_in_bytes" => "900\n",
+        "/sys/fs/cgroup/memory/team/app/memory.usage_in_bytes" => "100\n",
+        "/sys/fs/cgroup/memory/team/memory.limit_in_bytes" => "1000\n",
+        "/sys/fs/cgroup/memory/team/memory.usage_in_bytes" => "650\n",
+        "/sys/fs/cgroup/memory/memory.limit_in_bytes" => "9223372036854771712\n"
+      })
+
+    assert {:ok, %{source: :cgroup_v1, headroom_bytes: 350}} = snapshot(files)
+  end
+
+  test "selects the broadest mount so tighter ancestors remain visible" do
+    mounts =
+      "36 25 0:32 /team /sys/fs/cgroup-narrow rw - cgroup2 cgroup rw\n" <>
+        "37 25 0:33 / /sys/fs/cgroup-broad rw - cgroup2 cgroup rw"
+
+    files =
+      proc_files("0::/team/app", mounts)
+      |> Map.merge(%{
+        "/sys/fs/cgroup-narrow/app/memory.max" => "1000\n",
+        "/sys/fs/cgroup-narrow/app/memory.current" => "400\n",
+        "/sys/fs/cgroup-narrow/memory.max" => "max\n",
+        "/sys/fs/cgroup-broad/team/app/memory.max" => "1000\n",
+        "/sys/fs/cgroup-broad/team/app/memory.current" => "400\n",
+        "/sys/fs/cgroup-broad/team/memory.max" => "max\n",
+        "/sys/fs/cgroup-broad/memory.max" => "800\n",
+        "/sys/fs/cgroup-broad/memory.current" => "700\n"
+      })
+
+    assert {:ok, %{source: :cgroup_v2, headroom_bytes: 100}} = snapshot(files)
+  end
+
   test "fails closed for unlimited, malformed, or unreadable hierarchies" do
     unlimited =
       proc_files("0::/", v2_mount())

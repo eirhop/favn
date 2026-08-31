@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Implementation in progress |
+| Status | Qualification in progress |
 | Type | Bug fix |
 | Primary issue | Not filed. The repository owner explicitly authorized this focused replacement without an issue. |
 | Pull request | [PR 684](https://github.com/eirhop/favn/pull/684) |
@@ -14,7 +14,7 @@
 ## Summary
 
 Manifest import must not consume enough memory to terminate the Orchestrator.
-The fix will stay inside the first-party manifest deployment path: one import
+The fix stays inside the first-party manifest deployment path: one import
 phase at a time, smaller package batches, stage-specific memory checks, and
 bounded read-only decoding. Insufficient memory returns a structured retryable
 error or defers activation. It does not introduce general Orchestrator memory
@@ -36,52 +36,6 @@ accounting.
   or v1 memory limit. No cloud-provider API is assumed. Bare or unlimited
   hosts fail closed for manifest import; this focused change adds no RSS or
   operator-configured fallback.
-- Remote measurement run `33375409205` proved the release had an effective
-  1 GiB limit, stayed healthy with zero restarts and zero OOM kills, and peaked
-  at 310,054,912 bytes during startup. It did not exercise import because the
-  host could not enter Compose's intentionally private network. The uploader
-  now runs inside that private network.
-- Remote measurement run `33376463744` reached the exact deployment endpoint
-  but received HTTP 401 before the body was read. The Orchestrator stayed
-  healthy, peaked at 318,881,792 bytes, and had no restart or OOM event. The
-  harness now uses the endpoint's dedicated workspace-scoped deployer-token
-  contract and stops immediately when upload is rejected.
-- Remote measurement run `33377864530` confirmed that immediate failure and
-  evidence preservation work, but the dedicated token still returned HTTP 401.
-  The Orchestrator stayed healthy, peaked at 311,537,664 bytes, and had no
-  restart or OOM event. The client now reads the credential from its own
-  Compose environment and the harness verifies, without logging it, that this
-  exactly matches the token embedded in the control-plane credential JSON.
-- Remote measurement run `33378965142` passed that container-environment check
-  but still returned HTTP 401 before reading the body. The Orchestrator stayed
-  healthy, peaked at 308,379,648 bytes, and had no restart or OOM event. Before
-  another request, the harness now uses the release's existing RPC mechanism
-  to assert the redacted runtime credential shape and authenticate the
-  container credential against the in-memory configuration. It then requires a
-  platform-token GET to succeed and a no-body manifest PUT to pass
-  authentication and reach the expected 422 missing-hash validation before
-  starting measurement.
-- Remote diagnostic run `33380852801` proved the resident node could
-  authenticate its configured dedicated deployer token and the same client
-  could authenticate a general platform-token HTTP request. Both credential
-  kinds nevertheless returned HTTP 401 at the manifest endpoint when the
-  client omitted `X-Request-Id`. The root cause was `Plug.RequestId`: without
-  `assign_as`, its generated ID was only available as a response header, while
-  manifest context construction required a connection assign or caller request
-  header. The router now assigns the generated ID. The harness uses the
-  documented platform-operator credential and retains one exact no-body
-  manifest preflight.
-- Remote run `33382975925` was the first valid body-path measurement. The
-  657,172-byte archive was accepted, parsed to 6,717,440 expanded bytes and 90
-  packages, and activation planning began. The 1 GiB control plane remained
-  healthy with zero restarts and zero cgroup OOM kills; its cgroup peak was
-  821,956,608 bytes. The run timed out waiting for a terminal state because the
-  isolated environment started no runner to complete the 90 physical
-  inspection tasks. The harness now builds the archive for the exact
-  qualification runner release, keeps the repository's ordinary runner
-  resident, and allows the existing five-minute inspection deadline before
-  declaring failure. Runner memory is outside the measured control-plane
-  cgroup.
 - Remote run `33385074306` completed ten fresh representative imports, one
   replay, and one 1,001-package stress import under an effective 1 GiB cgroup.
   Every operation reached `needs_attention` with complete inspection progress;
@@ -114,31 +68,10 @@ permits admission but does not increase them.
 - Upload and activation share one local phase slot. PostgreSQL upload admission
   and the activation dispatcher both have concurrency one.
 
-Every term ceiling above is measured exactly as
-`4 * :erlang.external_size(term)` in bytes. Package batching measures the whole
-prospective package list, Version handoff measures the returned `%Version{}`,
-and index validation measures the cache's exact `{cache_key, index}` retained
-shape through one shared size function. Worker heap ceilings are byte values
-converted to VM words using `:erlang.system_info(:wordsize)`. That word count is
-passed as the `:size` field to `Process.flag(:max_heap_size, %{...})` with
-`kill: true` and `include_shared_binaries: true`.
-The worker handoff does not return to its caller until both the tagged result
-and the matching monitored `:DOWN` have been observed. Package persistence,
-manifest acceptance, cache insertion, and activation therefore cannot overlap
-the bounded worker heap. A focused test must block the caller until worker
-termination and prove that late messages and timeout cleanup are drained.
-
-### Measurement gate
-
-The reviewed plan is implemented in two gates. The first pushed draft contains
-only the committed measurement harness and remote workflow. It measures current
-`main` before any runtime guardrail is added. Ten representative imports and one
-1,001-package import must complete under a 1 GiB cgroup. Fixed worker and result
-bounds are selected conservatively from the existing 4 MiB package protocol
-unit, not inferred from noisy per-stage RSS samples. End-to-end constrained
-qualification then proves the bounds, reserve, and admission policy before an
-independent re-review. Runtime implementation cannot begin before that second
-approval.
+Term ceilings use `4 * :erlang.external_size(term)`. Worker heap byte ceilings
+are converted to VM words and include shared binaries. The caller waits for the
+tagged result and matching worker `:DOWN`, so persistence, acceptance, cache
+insertion, and activation cannot overlap the bounded worker heap.
 
 ## Contract
 
@@ -184,45 +117,20 @@ For supported manifest archives:
     largest qualified value. Favn rejects larger indexes before decoding rather
     than attempting unsafe work.
 11. Before acceptance, upload builds the same compiled activation index in a
-    bounded read-only validation worker, measures it, and returns only a small
-    size summary. A manifest that cannot fit the fixed activation envelope is
-    rejected with 413 before durable acceptance. The side-effecting activation
-    task is never heap-limited; it relies on measured admission because the
-    manifest's deterministic size was already qualified during upload.
+    bounded read-only validation worker and returns the bounded immutable
+    `Version` only after worker termination. A manifest that cannot fit the
+    fixed activation envelope is rejected with 413 before durable acceptance.
 12. Before every activation, including an operation accepted by an older image,
     a bounded read-only preparation worker loads the immutable manifest, builds
-    the compiled index, and returns only a size summary. It performs no write or
-    activation side effect. A deterministic size failure marks that operation
-    failed while leaving the previous deployment active; low current headroom
-    or a preparation timeout releases the claim for retry. Only a successful
-    preparation may enter the existing side-effecting activation path.
+    the compiled index, and returns the bounded `Version` after worker
+    termination. Activation uses that exact value instead of repeating the cold
+    decode. A deterministic size failure preserves the previous deployment;
+    low headroom or timeout releases the claim for retry.
 
 The guarantee is limited to allocations controlled by the manifest importer.
 It cannot prevent node eviction, an external SIGKILL, or unrelated native
 allocator failure. A hard operating-system boundary would require a separately
 limited process and is not part of this fix.
-
-## Proposed flow
-
-```mermaid
-flowchart LR
-    A[Authenticate and preflight] --> B[Acquire existing upload lease]
-    B --> C{Acquire local import slot and safe cgroup headroom}
-    C -->|Slot busy| D[429 retry later]
-    C -->|Low or unknown headroom| M[503 retry later]
-    C -->|Yes| E[Stream gzip and TAR]
-    E --> F[Validate one bounded entry in a worker]
-    F --> G[Persist at most 8 packages or 4 MiB]
-    G -->|More entries| E
-    G --> N[Bounded read-only activation-index validation]
-    N --> H[Accept durable manifest]
-    H --> I[Release upload slot]
-    I --> J{Activation acquires same slot and headroom}
-    J -->|No| K[Release claim and defer]
-    J -->|Yes| O[Bounded read-only activation preparation]
-    O -->|Deterministic size failure| P[Fail operation; preserve prior deployment]
-    O -->|Qualified| L[Activate existing manifest contract]
-```
 
 ## Scope boundaries
 
@@ -268,10 +176,9 @@ outside the included files or concepts must be recorded before editing.
 
 - Reuse the existing PostgreSQL upload lease rather than add distributed
   coordination.
-- Keep the new guard state to one owner monitor and one opaque lease reference.
-  It is a child of the existing root `:one_for_all` supervisor. If the guard
-  dies, Bandit, active upload requests, and deployment tasks terminate before
-  the guard reopens, so an old untracked owner cannot continue.
+- Keep guard state to one owner monitor, one lease, and linked active workers.
+  The slot reopens only after every linked worker has terminated; guard death
+  terminates those workers before restart.
 - Probe current cgroup state directly at each stage; do not estimate or track
   unrelated Orchestrator allocations.
 - Bound both the worker heap and the returned term; count every known caller,
@@ -313,17 +220,6 @@ or an isolated remote environment.
 - Rollback is the previous image; durable upload and activation leases retain
   their existing compatibility.
 
-## Risks
-
-| Risk | Mitigation |
-| --- | --- |
-| Cgroup data is absent, unlimited, or malformed | Fail before body read with a typed 503; never infer safety from host RAM or process RSS |
-| Stage multipliers underestimate BEAM terms | Use conservative multiples of the bounded 4 MiB protocol unit, enforce worker/result ceilings, and prove them under the committed constrained qualification |
-| The local guard restarts during work | Its supervisor must restart the manifest import boundary together or fail closed; it must never reopen while an old owner can continue |
-| PostgreSQL outcome is uncertain | Preserve existing durable operation idempotency and do not blindly retry writes |
-| Activation is delayed by an upload | Release the claim and let the existing durable dispatcher retry later |
-| An old accepted operation bypasses upload validation | Run the same bounded read-only activation preparation for every claimed operation before activation side effects |
-
 ## Stable pressure outcomes
 
 | Condition | Upload outcome | Activation outcome |
@@ -349,18 +245,7 @@ explicit 10,000-package protocol limit; this change does not raise that limit.
 | Initial findings | Worker-return and acceptance copies were not bounded; activation caches were omitted; hierarchical cgroup math and guard restart behavior were underspecified; the complexity budget conflicted; deterministic and transient errors were conflated; legacy accepted operations could bypass validation. |
 | Corrections | Added the measurement gate, end-to-end copy budgets, bounded returned results, upload and activation-index prevalidation, bounded read-only preparation for every activation including legacy rows, finite hierarchical cgroups, root `:one_for_all` failure semantics, exact pressure outcomes, cold-cache qualification, hybrid cgroup coverage, and consistent add/delete ceilings. |
 | Plan verdict | Approved for implementation after the successful 1 GiB measurement and frozen-bounds review. |
-| Initial Slice 0 review | Rejected the first coarse harness because it did not await terminal activation, prove the effective limit, exercise replay, or provide defensible stage attribution. |
-| Slice 0 correction | Await terminal activation, validate and record the effective cgroup limit, exercise replay, and record restart/OOM evidence. Fixed bounds now come from conservative multiples of the existing 4 MiB protocol unit; cgroup RSS is end-to-end proof rather than false per-stage attribution. |
-| Slice 0 evidence correction | Preserve logs, restart/OOM state, and a summary even when activation polling fails; bound every HTTP call; record and enforce the 15-minute deployment bound; normalize failure evidence as valid JSON; removed the stale near-limit-evidence claim. |
-| First remote attempt | Run `33375409205` failed before upload because host curl could not enter the internal Compose network. The Orchestrator stayed healthy at a 310,054,912-byte peak with no restart or OOM event. The client was moved into the private network. |
-| Second remote attempt | Run `33376463744` reached the endpoint but received HTTP 401 before the body was read. The Orchestrator stayed healthy at a 318,881,792-byte peak with no restart or OOM event. The harness now uses a dedicated workspace-scoped manifest deployer token and fails immediately on a rejected PUT. |
-| Authentication correction review | Approved after static review: token generation, exact workspace scope, Compose JSON interpolation, PUT/GET/replay credential use, and rejected-request evidence preservation are coherent. |
-| Third remote attempt | Run `33377864530` failed immediately with HTTP 401. The Orchestrator stayed healthy at a 311,537,664-byte peak with no restart or OOM event. Header construction now happens inside the client container, and a redacted preflight asserts that the client token exactly matches the token in the control-plane credential JSON. |
-| Container-token correction review | Approved after static review: folded JSON, Compose interpolation, in-container header construction, exact redacted token comparison, and failure evidence are coherent. |
-| Fourth remote attempt | Run `33378965142` passed the exact container-token check but still returned HTTP 401 before reading the body. The Orchestrator stayed healthy at a 308,379,648-byte peak with no restart or OOM event. A redacted release-RPC preflight now checks the in-memory credential shape and authenticates the container token before curl runs. |
-| Repeated-401 diagnosis | Static review found no source mismatch between production env application and authentication. The remaining classes are resident application configuration versus inbound header delivery. The approved preflights distinguish them without exposing a credential or mutating runtime state. |
-| Authentication discriminator review | Approved after static review: deterministic curl, resident-node assertions, redacted platform GET, no-body manifest PUT, and artifacts neither expose credentials nor create durable deployment state. |
-| Fifth remote attempt | Run `33380852801` proved credentials and general HTTP bearer delivery were valid but the manifest endpoint still returned HTTP 401. Source inspection found the shared cause: generated request IDs were not assigned, so manifest context construction mislabeled the missing ID as invalid credentials. The router assigns generated IDs and the harness retains one compact exact-endpoint preflight. |
-| Platform-fallback review | Approved after static review: the fallback is an explicit endpoint contract, uses one disposable internal credential, and removes temporary diagnostic machinery without changing post-auth import behavior. |
-| Request-ID root-cause review | Approved after static review: assigning the already-generated bounded request ID fixes context construction without changing authorization, persistence, response headers, or idempotency; the full-router regression test reaches deterministic post-auth validation. |
+| Implementation deviations | Worker ownership is linked to the phase slot so caller or guard death cannot leave an overlapping worker. Activation preparation returns its bounded immutable `Version` into an internal prepared-deploy path because discarding it repeated a large cold decode outside the worker. No cache or global-memory contract changed. |
+| First implementation qualification | Run `33395708343` completed all ten representative cycles at 371-420 MiB sampled peaks with no OOM or restart. The 1,001-package activation safely failed at 813 MiB peak because it repeated a cold decode; this did not satisfy the frozen gate and caused the prepared-deploy correction. |
+| Final qualification | Pending corrected-image CI and full 1 GiB rerun. |
 | Slice 0 verdict | Run `33385074306` completed ten representative cycles, replay, and the 1,001-package stress case with no OOM or restart. Frozen bounds and strict worker-handoff ordering were approved; runtime implementation may begin. |

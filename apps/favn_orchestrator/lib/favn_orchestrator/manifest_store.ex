@@ -275,6 +275,7 @@ defmodule FavnOrchestrator.ManifestStore do
       :activation_diagnostics,
       :activation_lease,
       :expected_active_deployment_id,
+      :prepared_version,
       :idempotency,
       :occurred_at
     ]
@@ -282,7 +283,7 @@ defmodule FavnOrchestrator.ManifestStore do
     with [] <- Keyword.keys(opts) -- allowed,
          deployment_id when is_binary(deployment_id) and deployment_id != "" <-
            Keyword.get(opts, :deployment_id),
-         {:ok, version} <- get_manifest(platform_context, manifest_version_id),
+         {:ok, version} <- deployment_version(platform_context, manifest_version_id, opts),
          {:ok, targets} <- DeploymentPlanner.plan(version, selection),
          occurred_at <- Keyword.get(opts, :occurred_at, DateTime.utc_now()),
          {:ok, schedules} <- deployment_schedules(version, targets, occurred_at, opts) do
@@ -291,6 +292,7 @@ defmodule FavnOrchestrator.ManifestStore do
         workspace_context: context,
         deployment_id: deployment_id,
         manifest_version_id: manifest_version_id,
+        prepared_version: Keyword.get(opts, :prepared_version),
         configuration: Keyword.get(opts, :configuration, %{}),
         configuration_version: Keyword.get(opts, :configuration_version, 1),
         targets: targets,
@@ -312,6 +314,14 @@ defmodule FavnOrchestrator.ManifestStore do
       "" -> {:error, :deployment_id_required}
       {:error, _reason} = error -> error
       _invalid -> {:error, :invalid_deployment_options}
+    end
+  end
+
+  defp deployment_version(platform_context, manifest_version_id, opts) do
+    case Keyword.get(opts, :prepared_version) do
+      %Version{manifest_version_id: ^manifest_version_id} = version -> {:ok, version}
+      nil -> get_manifest(platform_context, manifest_version_id)
+      _mismatch -> {:error, :prepared_manifest_version_mismatch}
     end
   end
 

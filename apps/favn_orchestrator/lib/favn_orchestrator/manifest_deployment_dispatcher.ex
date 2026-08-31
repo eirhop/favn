@@ -6,6 +6,7 @@ defmodule FavnOrchestrator.ManifestDeploymentDispatcher do
   require Logger
 
   alias Favn.Manifest.Index
+  alias Favn.Manifest.Version
   alias FavnOrchestrator.ManifestActivationDiagnostics
   alias FavnOrchestrator.ManifestDeploymentClaimHeartbeat
   alias FavnOrchestrator.ManifestDeployments
@@ -46,6 +47,8 @@ defmodule FavnOrchestrator.ManifestDeploymentDispatcher do
         preparation_timeout_ms:
           Keyword.get(opts, :preparation_timeout_ms, ManifestMemory.bounds().worker_timeout),
         capacity_check: Keyword.get(opts, :capacity_check, &ManifestMemory.ensure_headroom/0),
+        version_size_check:
+          Keyword.get(opts, :version_size_check, &ManifestMemory.valid_version_size?/1),
         manifest_slot: Keyword.get(opts, :manifest_slot, Slot),
         active: %{}
       }
@@ -103,6 +106,7 @@ defmodule FavnOrchestrator.ManifestDeploymentDispatcher do
             :inspection_timeout_ms,
             :preparation_timeout_ms,
             :capacity_check,
+            :version_size_check,
             :manifest_slot
           ])
 
@@ -163,8 +167,8 @@ defmodule FavnOrchestrator.ManifestDeploymentDispatcher do
 
   defp execute(operation, state) do
     case prepare_activation(operation, state) do
-      :ok ->
-        execute_prepared(operation, state)
+      {:ok, version} ->
+        execute_prepared(operation, state, version)
 
       {:error, reason} when reason in [:manifest_worker_timeout, :manifest_worker_failed] ->
         ManifestDeployments.release_claim(operation, state.owner)
@@ -178,14 +182,14 @@ defmodule FavnOrchestrator.ManifestDeploymentDispatcher do
     end
   end
 
-  defp execute_prepared(operation, state) do
-    result = activate(operation, state)
+  defp execute_prepared(operation, state, version) do
+    result = activate(operation, state, version)
 
     reconciled =
       case result do
         {:error, reason} ->
           if unknown_outcome?(reason),
-            do: activate(operation, state),
+            do: activate(operation, state, version),
             else: result
 
         {:ok, _runtime} ->
@@ -209,12 +213,13 @@ defmodule FavnOrchestrator.ManifestDeploymentDispatcher do
            fn ->
              with {:ok, version} <-
                     ManifestStore.get_manifest(platform, operation.manifest_version_id),
+                  true <- state.version_size_check.(version),
                   {:ok, index} <- Index.build_from_version(version),
                   true <-
                     version
                     |> ManifestIndexCache.entry_retained_bytes(index)
                     |> ManifestMemory.valid_index_size?() do
-               :ok
+               version
              else
                false -> {:error, :manifest_memory_budget_exceeded}
                {:error, _reason} = error -> error
@@ -222,13 +227,13 @@ defmodule FavnOrchestrator.ManifestDeploymentDispatcher do
            end,
            timeout: state.preparation_timeout_ms
          ) do
-      {:ok, :ok, _retained_bytes} -> :ok
+      {:ok, %Version{} = version, _retained_bytes} -> {:ok, version}
       {:ok, {:error, reason}, _retained_bytes} -> {:error, reason}
       {:error, reason} -> {:error, reason}
     end
   end
 
-  defp activate(operation, state) do
+  defp activate(operation, state, version) do
     owner = state.owner
     inspection_timeout_ms = state.inspection_timeout_ms
 
@@ -258,6 +263,7 @@ defmodule FavnOrchestrator.ManifestDeploymentDispatcher do
           ManifestDeployments.update_progress(operation, owner, completed, total)
         end,
         execution_pool_policy: %{approve_manifest_defaults: true},
+        prepared_version: version,
         idempotency: idempotency
       )
     end
