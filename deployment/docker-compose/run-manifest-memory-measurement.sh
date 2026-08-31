@@ -140,7 +140,7 @@ cleanup() {
     kill "$sampler_pid" 2>/dev/null || true
     wait "$sampler_pid" 2>/dev/null || true
   fi
-  compose --profile operations down --timeout 10 --volumes --remove-orphans >/dev/null 2>&1 || true
+  compose --profile operations --profile runner down --timeout 10 --volumes --remove-orphans >/dev/null 2>&1 || true
 }
 trap cleanup EXIT HUP INT TERM
 
@@ -153,9 +153,9 @@ sh "$script_dir/verify-image-source.sh" "$env_file" clean
 sh "$script_dir/ensure-image-builder.sh" "$image_builder_name"
 
 if build_compose build --help 2>/dev/null | grep -q -- '--provenance'; then
-  build_compose build --builder "$image_builder_name" --provenance=false certificates postgres control-plane
+  build_compose build --builder "$image_builder_name" --provenance=false certificates postgres control-plane runner
 else
-  BUILDX_NO_DEFAULT_ATTESTATIONS=1 build_compose build --builder "$image_builder_name" certificates postgres control-plane
+  BUILDX_NO_DEFAULT_ATTESTATIONS=1 build_compose build --builder "$image_builder_name" certificates postgres control-plane runner
 fi
 
 initialize_environment() {
@@ -171,7 +171,7 @@ await_terminal() {
   operation_id=$2
   output=$3
   output_name=$(basename "$output")
-  deadline=$(( $(date +%s) + 120 ))
+  deadline=$(( $(date +%s) + 600 ))
 
   while [ "$(date +%s)" -lt "$deadline" ]; do
     if ! client_curl "$client_id" --silent --show-error \
@@ -210,6 +210,7 @@ run_fixture() {
   initialize_environment
   compose up --detach control-plane
   wait_healthy control-plane
+  compose --profile runner up --detach runner
   compose up --detach manifest-memory-client
   container_id=$(compose ps --quiet control-plane)
   client_id=$(compose ps --quiet manifest-memory-client)
@@ -296,7 +297,7 @@ run_fixture() {
     return 1
   fi
 
-  compose --profile operations down --timeout 10 --volumes --remove-orphans >/dev/null
+  compose --profile operations --profile runner down --timeout 10 --volumes --remove-orphans >/dev/null
 }
 
 representative_archive="$repository_root/tmp/manifest-memory-90.tar.gz"

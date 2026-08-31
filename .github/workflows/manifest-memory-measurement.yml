@@ -47,9 +47,11 @@ jobs:
         run: |
           mix deps.get
           mix compile --warnings-as-errors
+          sh deployment/docker-compose/prepare.sh
+          runner_release_id=$(sed -n 's/^FAVN_RUNNER_RELEASE_ID=//p' deployment/docker-compose/.env.local)
           mkdir -p tmp
-          mix run scripts/build_manifest_import_fixture.exs 90 tmp/manifest-memory-90.tar.gz
-          mix run scripts/build_manifest_import_fixture.exs 1001 tmp/manifest-memory-1001.tar.gz
+          mix run scripts/build_manifest_import_fixture.exs 90 tmp/manifest-memory-90.tar.gz "$runner_release_id"
+          mix run scripts/build_manifest_import_fixture.exs 1001 tmp/manifest-memory-1001.tar.gz "$runner_release_id"
 
       - name: Measure production release imports
         run: sh deployment/docker-compose/run-manifest-memory-measurement.sh

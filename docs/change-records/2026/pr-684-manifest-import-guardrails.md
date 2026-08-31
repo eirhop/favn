@@ -71,6 +71,17 @@ accounting.
   header. The router now assigns the generated ID. The harness uses the
   documented platform-operator credential and retains one exact no-body
   manifest preflight.
+- Remote run `33382975925` was the first valid body-path measurement. The
+  657,172-byte archive was accepted, parsed to 6,717,440 expanded bytes and 90
+  packages, and activation planning began. The 1 GiB control plane remained
+  healthy with zero restarts and zero cgroup OOM kills; its cgroup peak was
+  821,956,608 bytes. The run timed out waiting for a terminal state because the
+  isolated environment started no runner to complete the 90 physical
+  inspection tasks. The harness now builds the archive for the exact
+  qualification runner release, keeps the repository's ordinary runner
+  resident, and allows the existing five-minute inspection deadline before
+  declaring failure. Runner memory is outside the measured control-plane
+  cgroup.
 - No runtime constant is frozen from these pre-import harness attempts.
 
 ### Measurement gate

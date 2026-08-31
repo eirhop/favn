@@ -13,6 +13,7 @@ defmodule FavnTestSupport.ManifestScalabilityFixture do
   alias Favn.Manifest.SQLExecution
   alias Favn.Manifest.TargetDescriptor
   alias Favn.RelationRef
+  alias Favn.RunnerRelease
   alias Favn.SQL.Check
   alias Favn.SQL.Contract
   alias Favn.SQL.Contract.Column
@@ -24,11 +25,12 @@ defmodule FavnTestSupport.ManifestScalabilityFixture do
   @default_contract_columns 14
   @maximum_assets 10_000
   @maximum_sql_columns 1_000
-  @allowed_opts [:sql_columns, :contract_columns]
+  @allowed_opts [:sql_columns, :contract_columns, :runner_release_id]
 
   @type option ::
           {:sql_columns, pos_integer()}
           | {:contract_columns, pos_integer()}
+          | {:runner_release_id, String.t()}
 
   @doc "Builds one deterministic SQL-heavy manifest with `asset_count` assets."
   @spec build(pos_integer(), [option()]) :: Manifest.t()
@@ -73,7 +75,7 @@ defmodule FavnTestSupport.ManifestScalabilityFixture do
           contract_columns_per_asset: config.contract_columns
         }
       }
-      |> FavnTestSupport.with_manifest_contract()
+      |> FavnTestSupport.with_manifest_contract(config.runner_release_id)
       |> then(&struct!(Manifest, &1))
 
     {manifest, packages}
@@ -288,7 +290,22 @@ defmodule FavnTestSupport.ManifestScalabilityFixture do
         min(sql_columns, @maximum_sql_columns)
       )
 
-    %{sql_columns: sql_columns, contract_columns: contract_columns}
+    runner_release_id =
+      case Keyword.get(opts, :runner_release_id, FavnTestSupport.runner_release_id()) do
+        value when is_binary(value) ->
+          case RunnerRelease.validate_id(value) do
+            :ok -> value
+            {:error, _reason} -> raise ArgumentError, "invalid runner_release_id: #{inspect(value)}"
+          end
+
+        value -> raise ArgumentError, "invalid runner_release_id: #{inspect(value)}"
+      end
+
+    %{
+      sql_columns: sql_columns,
+      contract_columns: contract_columns,
+      runner_release_id: runner_release_id
+    }
   end
 
   defp positive_bounded!(opts, key, default, maximum) do
