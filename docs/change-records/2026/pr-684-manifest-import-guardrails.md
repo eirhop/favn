@@ -61,6 +61,13 @@ accounting.
   platform-token GET to succeed and a no-body manifest PUT to pass
   authentication and reach the expected 422 missing-hash validation before
   starting measurement.
+- Remote diagnostic run `33380852801` proved the resident node could
+  authenticate its configured dedicated deployer token and the same client
+  could authenticate a general platform-token HTTP request. The dedicated
+  token nevertheless returned HTTP 401 at the manifest endpoint. This is a
+  separate manifest-deployer HTTP-auth defect, not import-memory evidence. The
+  measurement harness now uses the documented platform-operator credential,
+  keeps the HTTP preflights, and removes the temporary deployer diagnostics.
 - No runtime constant is frozen from these pre-import harness attempts.
 
 ### Measurement gate
@@ -295,4 +302,6 @@ explicit 10,000-package protocol limit; this change does not raise that limit.
 | Fourth remote attempt | Run `33378965142` passed the exact container-token check but still returned HTTP 401 before reading the body. The Orchestrator stayed healthy at a 308,379,648-byte peak with no restart or OOM event. A redacted release-RPC preflight now checks the in-memory credential shape and authenticates the container token before curl runs. |
 | Repeated-401 diagnosis | Static review found no source mismatch between production env application and authentication. The remaining classes are resident application configuration versus inbound header delivery. The approved preflights distinguish them without exposing a credential or mutating runtime state. |
 | Authentication discriminator review | Approved after static review: deterministic curl, resident-node assertions, redacted platform GET, no-body manifest PUT, and artifacts neither expose credentials nor create durable deployment state. |
+| Fifth remote attempt | Run `33380852801` proved the resident dedicated credential authenticates in memory and general platform HTTP authentication succeeds, while the dedicated credential still receives HTTP 401 at the manifest endpoint. This separate auth defect is out of scope; the harness uses the documented platform-operator fallback and retains only compact HTTP preflights. |
+| Platform-fallback review | Approved after static review: the fallback is an explicit endpoint contract, uses one disposable internal credential, and removes temporary diagnostic machinery without changing post-auth import behavior. |
 | Slice 0 verdict | Approved for remote measurement with no remaining findings. Runtime guardrails remain blocked until the evidence is recorded and constants are frozen. |

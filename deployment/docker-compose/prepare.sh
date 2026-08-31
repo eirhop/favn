@@ -97,7 +97,6 @@ docker run --rm \
       "FAVN_RUNTIME_DATABASE_PASSWORD=$(random_hex 32)" \
       "FAVN_RUNTIME_INPUT_PIN_KEYS={\"1\":\"$pin_key\"}" \
       "FAVN_PLATFORM_TOKEN=$(random_hex 48)" \
-      "FAVN_MANIFEST_DEPLOYER_TOKEN=$(random_hex 48)" \
       "FAVN_CAPACITY_TOKEN=$(random_hex 48)" \
       "FAVN_DISTRIBUTION_COOKIE=$(random_hex 48)" \
       "FAVN_OPERATOR_COMMAND_HMAC_SECRET=$(random_hex 48)" \
