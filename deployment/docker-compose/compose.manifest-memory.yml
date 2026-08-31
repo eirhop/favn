@@ -2,6 +2,8 @@ services:
   control-plane:
     mem_limit: ${FAVN_MANIFEST_MEMORY_LIMIT:-1g}
     memswap_limit: ${FAVN_MANIFEST_MEMORY_LIMIT:-1g}
+    environment:
+      FAVN_ORCHESTRATOR_MANIFEST_DEPLOYER_TOKENS: '[{"service_identity":"memory-measurement-v1","workspace_ids":["elastic-simulation"],"token":"${FAVN_MANIFEST_DEPLOYER_TOKEN}"}]'
 
   manifest-memory-client:
     image: curlimages/curl:8.16.0@sha256:463eaf6072688fe96ac64fa623fe73e1dbe25d8ad6c34404a669ad3ce1f104b6

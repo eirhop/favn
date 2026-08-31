@@ -27,7 +27,7 @@ env_value() {
 project_name=$(env_value FAVN_COMPOSE_PROJECT_NAME)
 image_build_project_name=$(env_value FAVN_IMAGE_BUILD_PROJECT_NAME)
 image_builder_name=$(env_value FAVN_IMAGE_BUILDER_NAME)
-platform_token=$(env_value FAVN_PLATFORM_TOKEN)
+manifest_deployer_token=$(env_value FAVN_MANIFEST_DEPLOYER_TOKEN)
 
 for name in "$project_name" "$image_build_project_name" "$image_builder_name"; do
   case "$name" in
@@ -151,7 +151,7 @@ await_terminal() {
     if ! docker exec "$client_id" curl --silent --show-error \
       --max-time 5 \
       --output "/results/$output_name" \
-      --header "Authorization: Bearer $platform_token" \
+      --header "Authorization: Bearer $manifest_deployer_token" \
       --header 'X-Favn-Workspace-Id: elastic-simulation' \
       "http://control-plane:4101/api/orchestrator/v1/manifest-deployments/$operation_id"; then
       sleep 0.5
@@ -205,7 +205,7 @@ run_fixture() {
     --output "/results/$(basename "$response")" \
     --write-out '%{http_code}' \
     --request PUT \
-    --header "Authorization: Bearer $platform_token" \
+    --header "Authorization: Bearer $manifest_deployer_token" \
     --header 'X-Favn-Workspace-Id: elastic-simulation' \
     --header "X-Favn-Archive-Sha256: $archive_sha256" \
     --header 'Content-Type: application/gzip' \
@@ -213,12 +213,16 @@ run_fixture() {
     "http://control-plane:4101/api/orchestrator/v1/manifest-deployments/$operation_id" || true)
   [ "$http_status" = 000 ] && http_status=0
 
-  terminal_ok=true
-  if terminal_state=$(await_terminal "$client_id" "$operation_id" "$terminal_response"); then
-    :
+  terminal_ok=false
+  terminal_state=request_rejected
+  if [ "$http_status" = 202 ]; then
+    if terminal_state=$(await_terminal "$client_id" "$operation_id" "$terminal_response"); then
+      terminal_ok=true
+    else
+      terminal_state=wait_failed
+    fi
   else
-    terminal_ok=false
-    terminal_state=wait_failed
+    cp "$response" "$terminal_response" 2>/dev/null || true
   fi
   deployment_seconds=$(( $(date +%s) - deployment_started_at ))
   replay_status=null
@@ -228,7 +232,7 @@ run_fixture() {
       --output "/results/${operation_id}-replay.json" \
       --write-out '%{http_code}' \
       --request PUT \
-      --header "Authorization: Bearer $platform_token" \
+      --header "Authorization: Bearer $manifest_deployer_token" \
       --header 'X-Favn-Workspace-Id: elastic-simulation' \
       --header "X-Favn-Archive-Sha256: $archive_sha256" \
       --header 'Content-Type: application/gzip' \
