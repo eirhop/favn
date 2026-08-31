@@ -52,6 +52,15 @@ accounting.
   restart or OOM event. The client now reads the credential from its own
   Compose environment and the harness verifies, without logging it, that this
   exactly matches the token embedded in the control-plane credential JSON.
+- Remote measurement run `33378965142` passed that container-environment check
+  but still returned HTTP 401 before reading the body. The Orchestrator stayed
+  healthy, peaked at 308,379,648 bytes, and had no restart or OOM event. Before
+  another request, the harness now uses the release's existing RPC mechanism
+  to assert the redacted runtime credential shape and authenticate the
+  container credential against the in-memory configuration. It then requires a
+  platform-token GET to succeed and a no-body manifest PUT to pass
+  authentication and reach the expected 422 missing-hash validation before
+  starting measurement.
 - No runtime constant is frozen from these pre-import harness attempts.
 
 ### Measurement gate
@@ -283,4 +292,7 @@ explicit 10,000-package protocol limit; this change does not raise that limit.
 | Authentication correction review | Approved after static review: token generation, exact workspace scope, Compose JSON interpolation, PUT/GET/replay credential use, and rejected-request evidence preservation are coherent. |
 | Third remote attempt | Run `33377864530` failed immediately with HTTP 401. The Orchestrator stayed healthy at a 311,537,664-byte peak with no restart or OOM event. Header construction now happens inside the client container, and a redacted preflight asserts that the client token exactly matches the token in the control-plane credential JSON. |
 | Container-token correction review | Approved after static review: folded JSON, Compose interpolation, in-container header construction, exact redacted token comparison, and failure evidence are coherent. |
+| Fourth remote attempt | Run `33378965142` passed the exact container-token check but still returned HTTP 401 before reading the body. The Orchestrator stayed healthy at a 308,379,648-byte peak with no restart or OOM event. A redacted release-RPC preflight now checks the in-memory credential shape and authenticates the container token before curl runs. |
+| Repeated-401 diagnosis | Static review found no source mismatch between production env application and authentication. The remaining classes are resident application configuration versus inbound header delivery. The approved preflights distinguish them without exposing a credential or mutating runtime state. |
+| Authentication discriminator review | Approved after static review: deterministic curl, resident-node assertions, redacted platform GET, no-body manifest PUT, and artifacts neither expose credentials nor create durable deployment state. |
 | Slice 0 verdict | Approved for remote measurement with no remaining findings. Runtime guardrails remain blocked until the evidence is recorded and constants are frozen. |

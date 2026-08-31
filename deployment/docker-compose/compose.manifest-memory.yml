@@ -12,6 +12,7 @@ services:
     entrypoint: ["/bin/sh", "-c", "sleep infinity"]
     environment:
       FAVN_MANIFEST_DEPLOYER_TOKEN: ${FAVN_MANIFEST_DEPLOYER_TOKEN}
+      FAVN_PLATFORM_TOKEN: ${FAVN_PLATFORM_TOKEN}
     volumes:
       - ../../tmp:/archives:ro
       - ./manifest-memory-results:/results

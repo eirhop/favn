@@ -56,8 +56,19 @@ client_curl() {
   shift
 
   docker exec "$client_id" /bin/sh -eu -c '
-    exec curl --header "Authorization: Bearer $FAVN_MANIFEST_DEPLOYER_TOKEN" "$@"
+    exec curl --disable --noproxy "*" \
+      --header "Authorization: Bearer $FAVN_MANIFEST_DEPLOYER_TOKEN" "$@"
   ' manifest-memory-curl "$@"
+}
+
+client_platform_curl() {
+  client_id=$1
+  shift
+
+  docker exec "$client_id" /bin/sh -eu -c '
+    exec curl --disable --noproxy "*" \
+      --header "Authorization: Bearer $FAVN_PLATFORM_TOKEN" "$@"
+  ' manifest-platform-curl "$@"
 }
 
 verify_deployer_token_wiring() {
@@ -73,6 +84,73 @@ verify_deployer_token_wiring() {
 
   if [ -z "$configured_token" ] || [ "$configured_token" != "$client_token" ]; then
     echo "manifest deployer token wiring does not match" >&2
+    return 1
+  fi
+}
+
+verify_runtime_deployer_auth() {
+  control_plane_id=$1
+
+  if ! docker exec "$control_plane_id" /app/bin/favn_control_plane rpc '
+    case FavnOrchestrator.Auth.ManifestDeployerTokens.configured_tokens() do
+      [%{service_identity: "memory-measurement-v1", workspace_ids: workspace_ids}] ->
+        if MapSet.member?(workspace_ids, "elastic-simulation"),
+          do: :ok,
+          else: raise("runtime manifest deployer scope mismatch")
+
+      _other ->
+        raise("runtime manifest deployer configuration mismatch")
+    end
+  ' >/dev/null 2>&1; then
+    echo "runtime manifest deployer configuration does not match" >&2
+    return 1
+  fi
+
+  if ! docker exec "$control_plane_id" /app/bin/favn_control_plane rpc '
+    token =
+      case Jason.decode(System.fetch_env!("FAVN_ORCHESTRATOR_MANIFEST_DEPLOYER_TOKENS")) do
+        {:ok, [%{"token" => token}]} when is_binary(token) -> token
+        _other -> raise("runtime manifest deployer token is invalid")
+      end
+
+    case FavnOrchestrator.Auth.ManifestDeployerTokens.authenticate(
+           token,
+           "elastic-simulation",
+           FavnOrchestrator.Auth.ManifestDeployerTokens.configured_tokens()
+         ) do
+      {:ok, "memory-measurement-v1"} -> :ok
+      _other -> raise("runtime manifest deployer authentication mismatch")
+    end
+  ' >/dev/null 2>&1; then
+    echo "runtime manifest deployer authentication does not match" >&2
+    return 1
+  fi
+}
+
+verify_http_auth() {
+  client_id=$1
+
+  platform_status=$(client_platform_curl "$client_id" --silent --show-error \
+    --max-time 10 \
+    --output /results/platform-auth-preflight.json \
+    --write-out '%{http_code}' \
+    http://control-plane:4101/api/orchestrator/v1/bootstrap/service-token || true)
+
+  if [ "$platform_status" != 200 ]; then
+    echo "platform HTTP authentication preflight returned $platform_status" >&2
+    return 1
+  fi
+
+  deployer_status=$(client_curl "$client_id" --silent --show-error \
+    --max-time 10 \
+    --output /results/manifest-auth-preflight.json \
+    --write-out '%{http_code}' \
+    --request PUT \
+    --header 'X-Favn-Workspace-Id: elastic-simulation' \
+    http://control-plane:4101/api/orchestrator/v1/manifest-deployments/memory-auth-preflight || true)
+
+  if [ "$deployer_status" != 422 ]; then
+    echo "manifest HTTP authentication preflight returned $deployer_status" >&2
     return 1
   fi
 }
@@ -213,6 +291,8 @@ run_fixture() {
   container_id=$(compose ps --quiet control-plane)
   client_id=$(compose ps --quiet manifest-memory-client)
   verify_deployer_token_wiring "$container_id" "$client_id"
+  verify_runtime_deployer_auth "$container_id"
+  verify_http_auth "$client_id"
   limit_bytes=$(memory_value "$container_id" limit)
   if [ "$limit_bytes" != "$expected_limit_bytes" ]; then
     echo "control-plane cgroup limit is $limit_bytes bytes, expected $expected_limit_bytes" >&2
