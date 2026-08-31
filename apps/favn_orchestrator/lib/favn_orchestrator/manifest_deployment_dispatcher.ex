@@ -170,11 +170,9 @@ defmodule FavnOrchestrator.ManifestDeploymentDispatcher do
       {:ok, version} ->
         execute_prepared(operation, state, version)
 
-      {:error, reason} when reason in [:manifest_worker_timeout, :manifest_worker_failed] ->
-        ManifestDeployments.release_claim(operation, state.owner)
-
       {:error, reason}
-      when reason in [:manifest_capacity_unavailable, :memory_capacity_unknown] ->
+      when reason in [:manifest_worker_timeout, :manifest_worker_failed] or
+             reason in [:manifest_capacity_unavailable, :memory_capacity_unknown] ->
         ManifestDeployments.release_claim(operation, state.owner)
 
       {:error, reason} ->
@@ -198,7 +196,8 @@ defmodule FavnOrchestrator.ManifestDeploymentDispatcher do
 
     case reconciled do
       {:error, reason}
-      when reason in [:manifest_capacity_unavailable, :memory_capacity_unknown] ->
+      when reason in [:manifest_worker_timeout, :manifest_worker_failed] or
+             reason in [:manifest_capacity_unavailable, :memory_capacity_unknown] ->
         ManifestDeployments.release_claim(operation, state.owner)
 
       result ->
@@ -250,10 +249,10 @@ defmodule FavnOrchestrator.ManifestDeploymentDispatcher do
          {:ok, idempotency} <- operation_idempotency(operation) do
       inspection_deadline_at = inspection_deadline_at(operation, inspection_timeout_ms)
 
-      Manifests.deploy(
+      Manifests.deploy_prepared(
         platform,
         workspace,
-        operation.manifest_version_id,
+        version,
         ManifestDeployments.fixed_selection(),
         deployment_id: operation.operation_id,
         activation_operation_id: operation.operation_id,
@@ -263,7 +262,6 @@ defmodule FavnOrchestrator.ManifestDeploymentDispatcher do
           ManifestDeployments.update_progress(operation, owner, completed, total)
         end,
         execution_pool_policy: %{approve_manifest_defaults: true},
-        prepared_version: version,
         idempotency: idempotency
       )
     end

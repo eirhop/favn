@@ -655,24 +655,17 @@ defmodule FavnStoragePostgres.Registry.Store do
 
   defp get_activatable_manifest(%DeployManifest{
          manifest_version_id: id,
-         prepared_version: %Version{manifest_version_id: id} = version
+         prepared_version: %Version{manifest_version_id: id} = v
        }) do
     case Repo.one(
            from(manifest in ManifestVersion,
              where: manifest.manifest_version_id == ^id,
-             select: {
-               manifest.schema_version,
-               manifest.content_hash,
-               manifest.runner_contract_version,
-               manifest.runner_releases
-             }
+             select: {manifest.schema_version, manifest.content_hash}
            )
          ) do
-      {schema, hash, contract, releases}
-      when schema == version.schema_version and contract == version.runner_contract_version and
-             releases == version.runner_releases ->
-        if Base.encode16(hash, case: :lower) == version.content_hash,
-          do: {:ok, version},
+      {schema, hash} when schema == @current_manifest_schema and schema == v.schema_version ->
+        if Base.encode16(hash, case: :lower) == v.content_hash,
+          do: {:ok, v},
           else: prepared_manifest_mismatch()
 
       nil ->

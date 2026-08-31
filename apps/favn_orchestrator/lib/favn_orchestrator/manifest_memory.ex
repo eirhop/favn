@@ -73,14 +73,12 @@ defmodule FavnOrchestrator.ManifestMemory do
   end
 
   @doc false
-  def valid_package_batch?(packages) when is_list(packages) do
-    Worker.retained_bytes(packages) <= @package_batch_result
-  end
+  def valid_package_batch?(packages) when is_list(packages),
+    do: Worker.retained_bytes(packages) <= @package_batch_result
 
   @doc false
-  def valid_version_size?(%Version{} = version) do
-    Worker.retained_bytes(version) <= @manifest_result
-  end
+  def valid_version_size?(%Version{} = version),
+    do: Worker.retained_bytes(version) <= @manifest_result
 
   @doc false
   def valid_index_size?(bytes), do: is_integer(bytes) and bytes <= @index_result

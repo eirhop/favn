@@ -17,6 +17,7 @@ defmodule FavnOrchestrator.TargetCompatibilityPlanner do
   alias Favn.TargetCompatibility.PhysicalFingerprint
   alias FavnOrchestrator.ManifestStore
   alias FavnOrchestrator.ManifestInspectionAdmission
+  alias FavnOrchestrator.ManifestMemory
   alias FavnOrchestrator.ManifestTarget
   alias FavnOrchestrator.OperationRunnerTasks
   alias FavnOrchestrator.Persistence
@@ -209,6 +210,11 @@ defmodule FavnOrchestrator.TargetCompatibilityPlanner do
   end
 
   defp load_active_versions(platform_context, bindings) do
+    worker = fn -> load_active_versions_bounded(platform_context, bindings) end
+    with {:ok, result, _retained_bytes} <- ManifestMemory.manifest_worker(worker), do: result
+  end
+
+  defp load_active_versions_bounded(platform_context, bindings) do
     bindings
     |> Map.values()
     |> Enum.map(& &1.active_manifest_id)
