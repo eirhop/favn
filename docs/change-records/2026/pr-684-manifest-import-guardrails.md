@@ -36,6 +36,12 @@ accounting.
   or v1 memory limit. No cloud-provider API is assumed. Bare or unlimited
   hosts fail closed for manifest import; this focused change adds no RSS or
   operator-configured fallback.
+- Remote measurement run `33375409205` proved the release had an effective
+  1 GiB limit, stayed healthy with zero restarts and zero OOM kills, and peaked
+  at 310,054,912 bytes during startup. It did not exercise import because the
+  host could not enter Compose's intentionally private network. The uploader
+  now runs inside that private network; no runtime constant is frozen from this
+  failed transport attempt.
 
 ### Measurement gate
 
@@ -261,4 +267,5 @@ explicit 10,000-package protocol limit; this change does not raise that limit.
 | Initial Slice 0 review | Rejected the first coarse harness because it did not await terminal activation, prove the effective limit, exercise replay, or provide defensible stage attribution. |
 | Slice 0 correction | Await terminal activation, validate and record the effective cgroup limit, exercise replay, and record restart/OOM evidence. Fixed bounds now come from conservative multiples of the existing 4 MiB protocol unit; cgroup RSS is end-to-end proof rather than false per-stage attribution. |
 | Slice 0 evidence correction | Preserve logs, restart/OOM state, and a summary even when activation polling fails; bound every HTTP call; record and enforce the 15-minute deployment bound; normalize failure evidence as valid JSON; removed the stale near-limit-evidence claim. |
+| First remote attempt | Run `33375409205` failed before upload because host curl could not enter the internal Compose network. The Orchestrator stayed healthy at a 310,054,912-byte peak with no restart or OOM event. The client was moved into the private network. |
 | Slice 0 verdict | Approved for remote measurement with no remaining findings. Runtime guardrails remain blocked until the evidence is recorded and constants are frozen. |

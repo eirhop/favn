@@ -141,17 +141,19 @@ initialize_environment() {
 }
 
 await_terminal() {
-  operation_id=$1
-  output=$2
+  client_id=$1
+  operation_id=$2
+  output=$3
+  output_name=$(basename "$output")
   deadline=$(( $(date +%s) + 120 ))
 
   while [ "$(date +%s)" -lt "$deadline" ]; do
-    if ! curl --silent --show-error \
+    if ! docker exec "$client_id" curl --silent --show-error \
       --max-time 5 \
+      --output "/results/$output_name" \
       --header "Authorization: Bearer $platform_token" \
       --header 'X-Favn-Workspace-Id: elastic-simulation' \
-      "http://127.0.0.1:4101/api/orchestrator/v1/manifest-deployments/$operation_id" \
-      > "$output"; then
+      "http://control-plane:4101/api/orchestrator/v1/manifest-deployments/$operation_id"; then
       sleep 0.5
       continue
     fi
@@ -183,7 +185,9 @@ run_fixture() {
   initialize_environment
   compose up --detach control-plane
   wait_healthy control-plane
+  compose up --detach manifest-memory-client
   container_id=$(compose ps --quiet control-plane)
+  client_id=$(compose ps --quiet manifest-memory-client)
   limit_bytes=$(memory_value "$container_id" limit)
   if [ "$limit_bytes" != "$expected_limit_bytes" ]; then
     echo "control-plane cgroup limit is $limit_bytes bytes, expected $expected_limit_bytes" >&2
@@ -196,21 +200,21 @@ run_fixture() {
   sampler_pid=$!
   deployment_started_at=$(date +%s)
 
-  http_status=$(curl --silent --show-error \
+  http_status=$(docker exec "$client_id" curl --silent --show-error \
     --max-time 900 \
-    --output "$response" \
+    --output "/results/$(basename "$response")" \
     --write-out '%{http_code}' \
     --request PUT \
     --header "Authorization: Bearer $platform_token" \
     --header 'X-Favn-Workspace-Id: elastic-simulation' \
     --header "X-Favn-Archive-Sha256: $archive_sha256" \
     --header 'Content-Type: application/gzip' \
-    --upload-file "$archive_path" \
-    "http://127.0.0.1:4101/api/orchestrator/v1/manifest-deployments/$operation_id" || true)
+    --upload-file "/archives/$(basename "$archive_path")" \
+    "http://control-plane:4101/api/orchestrator/v1/manifest-deployments/$operation_id" || true)
   [ "$http_status" = 000 ] && http_status=0
 
   terminal_ok=true
-  if terminal_state=$(await_terminal "$operation_id" "$terminal_response"); then
+  if terminal_state=$(await_terminal "$client_id" "$operation_id" "$terminal_response"); then
     :
   else
     terminal_ok=false
@@ -219,17 +223,17 @@ run_fixture() {
   deployment_seconds=$(( $(date +%s) - deployment_started_at ))
   replay_status=null
   if [ "$replay" = yes ] && [ "$terminal_ok" = true ]; then
-    replay_status=$(curl --silent --show-error \
+    replay_status=$(docker exec "$client_id" curl --silent --show-error \
       --max-time 30 \
-      --output "$results_dir/${operation_id}-replay.json" \
+      --output "/results/${operation_id}-replay.json" \
       --write-out '%{http_code}' \
       --request PUT \
       --header "Authorization: Bearer $platform_token" \
       --header 'X-Favn-Workspace-Id: elastic-simulation' \
       --header "X-Favn-Archive-Sha256: $archive_sha256" \
       --header 'Content-Type: application/gzip' \
-      --upload-file "$archive_path" \
-      "http://127.0.0.1:4101/api/orchestrator/v1/manifest-deployments/$operation_id" || true)
+      --upload-file "/archives/$(basename "$archive_path")" \
+      "http://control-plane:4101/api/orchestrator/v1/manifest-deployments/$operation_id" || true)
     [ "$replay_status" = 000 ] && replay_status=0
   fi
 
