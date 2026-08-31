@@ -5,9 +5,15 @@ defmodule FavnOrchestrator.ManifestDeploymentDispatcher do
 
   require Logger
 
+  alias Favn.Manifest.Index
+  alias Favn.Manifest.Version
   alias FavnOrchestrator.ManifestActivationDiagnostics
   alias FavnOrchestrator.ManifestDeploymentClaimHeartbeat
   alias FavnOrchestrator.ManifestDeployments
+  alias FavnOrchestrator.ManifestIndexCache
+  alias FavnOrchestrator.ManifestMemory
+  alias FavnOrchestrator.ManifestMemory.Slot
+  alias FavnOrchestrator.ManifestStore
   alias FavnOrchestrator.Manifests
   alias FavnOrchestrator.Persistence.CommandIdempotency
   alias FavnOrchestrator.Persistence.Error
@@ -20,7 +26,7 @@ defmodule FavnOrchestrator.ManifestDeploymentDispatcher do
   @poll_ms 1_000
   @claim_seconds 45
   @heartbeat_ms 15_000
-  @default_concurrency 4
+  @default_concurrency 1
 
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
 
@@ -38,6 +44,12 @@ defmodule FavnOrchestrator.ManifestDeploymentDispatcher do
         owner: "#{RuntimeConfig.instance_id()}:manifest-deployments",
         concurrency: Keyword.get(opts, :concurrency, @default_concurrency),
         inspection_timeout_ms: inspection_timeout_ms,
+        preparation_timeout_ms:
+          Keyword.get(opts, :preparation_timeout_ms, ManifestMemory.bounds().worker_timeout),
+        capacity_check: Keyword.get(opts, :capacity_check, &ManifestMemory.ensure_headroom/0),
+        version_size_check:
+          Keyword.get(opts, :version_size_check, &ManifestMemory.valid_version_size?/1),
+        manifest_slot: Keyword.get(opts, :manifest_slot, Slot),
         active: %{}
       }
 
@@ -88,10 +100,20 @@ defmodule FavnOrchestrator.ManifestDeploymentDispatcher do
         state
 
       {:ok, operation} ->
+        worker_opts =
+          Map.take(state, [
+            :owner,
+            :inspection_timeout_ms,
+            :preparation_timeout_ms,
+            :capacity_check,
+            :version_size_check,
+            :manifest_slot
+          ])
+
         task =
           Task.Supervisor.async_nolink(
             FavnOrchestrator.ManifestDeploymentTaskSupervisor,
-            fn -> run_claimed(operation, state.owner, state.inspection_timeout_ms) end
+            fn -> run_claimed(operation, worker_opts) end
           )
 
         fill_capacity(%{state | active: Map.put(state.active, task.ref, operation)})
@@ -105,13 +127,31 @@ defmodule FavnOrchestrator.ManifestDeploymentDispatcher do
     end
   end
 
-  defp run_claimed(operation, owner, inspection_timeout_ms) do
+  defp run_claimed(operation, state) do
+    case ManifestMemory.with_phase(
+           :activation,
+           fn -> run_claimed_with_phase(operation, state) end,
+           slot: state.manifest_slot,
+           capacity_check: state.capacity_check
+         ) do
+      {:error, reason} when reason in [:manifest_capacity_busy, :manifest_capacity_unavailable] ->
+        ManifestDeployments.release_claim(operation, state.owner)
+
+      {:error, :memory_capacity_unknown} ->
+        ManifestDeployments.release_claim(operation, state.owner)
+
+      result ->
+        result
+    end
+  end
+
+  defp run_claimed_with_phase(operation, state) do
     heartbeat =
       ManifestDeploymentClaimHeartbeat.start(
         fn ->
           ManifestDeployments.renew_claim(
             operation,
-            owner,
+            state.owner,
             DateTime.add(DateTime.utc_now(), @claim_seconds, :second)
           )
         end,
@@ -119,35 +159,85 @@ defmodule FavnOrchestrator.ManifestDeploymentDispatcher do
       )
 
     try do
-      execute(operation, owner, inspection_timeout_ms)
+      execute(operation, state)
     after
       ManifestDeploymentClaimHeartbeat.stop(heartbeat)
     end
   end
 
-  defp execute(operation, owner, inspection_timeout_ms) do
-    result = activate(operation, owner, inspection_timeout_ms)
+  defp execute(operation, state) do
+    case prepare_activation(operation, state) do
+      {:ok, version} ->
+        execute_prepared(operation, state, version)
+
+      {:error, reason}
+      when reason in [:manifest_worker_timeout, :manifest_worker_failed] or
+             reason in [:manifest_capacity_unavailable, :memory_capacity_unknown] ->
+        ManifestDeployments.release_claim(operation, state.owner)
+
+      {:error, reason} ->
+        complete_activation(operation, state.owner, {:error, reason})
+    end
+  end
+
+  defp execute_prepared(operation, state, version) do
+    result = activate(operation, state, version)
 
     reconciled =
       case result do
         {:error, reason} ->
           if unknown_outcome?(reason),
-            do: activate(operation, owner, inspection_timeout_ms),
+            do: activate(operation, state, version),
             else: result
 
         {:ok, _runtime} ->
           result
       end
 
-    complete_activation(operation, owner, reconciled)
+    case reconciled do
+      {:error, reason}
+      when reason in [:manifest_worker_timeout, :manifest_worker_failed] or
+             reason in [:manifest_capacity_unavailable, :memory_capacity_unknown] ->
+        ManifestDeployments.release_claim(operation, state.owner)
+
+      result ->
+        complete_activation(operation, state.owner, result)
+    end
   end
 
-  defp activate(operation, owner, inspection_timeout_ms) do
+  defp prepare_activation(operation, state) do
+    platform = platform_context(operation)
+
+    case ManifestMemory.manifest_worker(
+           fn ->
+             with {:ok, version} <-
+                    ManifestStore.get_manifest(platform, operation.manifest_version_id),
+                  true <- state.version_size_check.(version),
+                  {:ok, index} <- Index.build_from_version(version),
+                  true <-
+                    version
+                    |> ManifestIndexCache.entry_retained_bytes(index)
+                    |> ManifestMemory.valid_index_size?() do
+               version
+             else
+               false -> {:error, :manifest_memory_budget_exceeded}
+               {:error, _reason} = error -> error
+             end
+           end,
+           timeout: state.preparation_timeout_ms
+         ) do
+      {:ok, %Version{} = version, _retained_bytes} -> {:ok, version}
+      {:ok, {:error, reason}, _retained_bytes} -> {:error, reason}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp activate(operation, state, version) do
+    owner = state.owner
+    inspection_timeout_ms = state.inspection_timeout_ms
+
     platform =
-      SystemContext.platform(:manifest_deployment_activation,
-        roles: [:platform_operator],
-        request_id: operation.operation_id
-      )
+      platform_context(operation)
 
     workspace =
       SystemContext.workspace(operation.workspace_id, :manifest_deployment_activation,
@@ -155,13 +245,14 @@ defmodule FavnOrchestrator.ManifestDeploymentDispatcher do
         request_id: operation.operation_id
       )
 
-    with {:ok, idempotency} <- operation_idempotency(operation) do
+    with :ok <- state.capacity_check.(),
+         {:ok, idempotency} <- operation_idempotency(operation) do
       inspection_deadline_at = inspection_deadline_at(operation, inspection_timeout_ms)
 
-      Manifests.deploy(
+      Manifests.deploy_prepared(
         platform,
         workspace,
-        operation.manifest_version_id,
+        version,
         ManifestDeployments.fixed_selection(),
         deployment_id: operation.operation_id,
         activation_operation_id: operation.operation_id,
@@ -174,6 +265,13 @@ defmodule FavnOrchestrator.ManifestDeploymentDispatcher do
         idempotency: idempotency
       )
     end
+  end
+
+  defp platform_context(operation) do
+    SystemContext.platform(:manifest_deployment_activation,
+      roles: [:platform_operator],
+      request_id: operation.operation_id
+    )
   end
 
   @doc false

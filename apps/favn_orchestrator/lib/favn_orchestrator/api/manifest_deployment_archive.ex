@@ -3,9 +3,13 @@ defmodule FavnOrchestrator.API.ManifestDeploymentArchive do
 
   alias Favn.Manifest.ArchiveLimits
   alias Favn.Manifest.ExecutionPackage
+  alias Favn.Manifest.Index
   alias Favn.Manifest.Publication
   alias Favn.Manifest.Serializer
   alias Favn.Manifest.Version
+  alias FavnOrchestrator.ManifestIndexCache
+  alias FavnOrchestrator.ManifestMemory
+  alias FavnOrchestrator.ManifestMemory.Worker
 
   @gzip_header_bytes 24
   @tar_block_bytes 512
@@ -20,6 +24,7 @@ defmodule FavnOrchestrator.API.ManifestDeploymentArchive do
     :started_at_ms,
     :clock,
     :upload_timeout_ms,
+    :capacity_check,
     compressed_hash: nil,
     compressed_bytes: 0,
     expanded_bytes: 0,
@@ -56,6 +61,7 @@ defmodule FavnOrchestrator.API.ManifestDeploymentArchive do
       clock: clock,
       started_at_ms: Keyword.get(opts, :started_at_ms, clock.()),
       upload_timeout_ms: Keyword.get(opts, :upload_timeout_ms, limits.upload_timeout_ms),
+      capacity_check: Keyword.get(opts, :capacity_check, fn -> :ok end),
       package_batch_count_limit:
         Keyword.get(opts, :package_batch_count, limits.package_batch_count),
       package_batch_bytes_limit:
@@ -259,6 +265,7 @@ defmodule FavnOrchestrator.API.ManifestDeploymentArchive do
            {:ok, path, size} <- parse_header(header),
            :ok <- validate_next_path(state, path),
            :ok <- validate_entry_limit(path, size),
+           :ok <- ensure_capacity(state),
            :ok <- validate_tar_entry_count(state) do
         current = %{
           path: path,
@@ -402,20 +409,52 @@ defmodule FavnOrchestrator.API.ManifestDeploymentArchive do
   end
 
   defp process_entry(state, "bundle.json", bytes) do
-    with {:ok, bundle} when is_map(bundle) <- Jason.decode(bytes),
-         {:ok, normalized} <- validate_bundle(bundle) do
+    with :ok <- ensure_capacity(state),
+         {:ok, {:ok, normalized}, _retained_bytes} <-
+           ManifestMemory.package_worker(
+             fn ->
+               with {:ok, bundle} when is_map(bundle) <- Jason.decode(bytes),
+                    {:ok, normalized} <- validate_bundle(bundle) do
+                 {:ok, normalized}
+               else
+                 _invalid -> {:error, :invalid_bundle}
+               end
+             end,
+             measure: &worker_result_size/1
+           ) do
       {:ok, %{state | bundle: normalized}}
     else
+      {:ok, {:error, reason}, _retained_bytes} -> {:error, reason}
+      {:error, _reason} = error -> error
       _invalid -> {:error, :invalid_bundle}
     end
   end
 
   defp process_entry(state, "manifest-index.json" = path, bytes) do
-    with :ok <- verify_declared_file(state.bundle, path, bytes),
-         {:ok, manifest} <- Serializer.decode_manifest(bytes),
-         {:ok, version} <- Version.from_published(manifest, version_options(state.bundle)) do
+    with :ok <- ensure_capacity(state),
+         {:ok, {:ok, version}, _retained_bytes} <-
+           ManifestMemory.manifest_worker(
+             fn ->
+               with :ok <- verify_declared_file(state.bundle, path, bytes),
+                    {:ok, manifest} <- Serializer.decode_manifest(bytes),
+                    {:ok, version} <-
+                      Version.from_published(manifest, version_options(state.bundle)),
+                    {:ok, index} <- Index.build_from_version(version),
+                    true <-
+                      version
+                      |> ManifestIndexCache.entry_retained_bytes(index)
+                      |> ManifestMemory.valid_index_size?() do
+                 {:ok, version}
+               else
+                 false -> {:error, :manifest_memory_budget_exceeded}
+                 {:error, _reason} = error -> error
+               end
+             end,
+             measure: &worker_result_size/1
+           ) do
       {:ok, %{state | version: version}}
     else
+      {:ok, {:error, reason}, _retained_bytes} -> {:error, reason}
       {:error, _reason} = error -> error
     end
   end
@@ -424,11 +463,25 @@ defmodule FavnOrchestrator.API.ManifestDeploymentArchive do
     hash = path |> Path.basename(".json")
 
     with :ok <- validate_package_count(state),
-         :ok <- verify_declared_file(state.bundle, path, bytes),
-         {:ok, decoded} when is_map(decoded) <- Jason.decode(bytes),
-         {:ok, package} <- ExecutionPackage.from_published(decoded),
-         true <- package.content_hash == hash,
-         {:ok, state} <- flush_before_package(state, byte_size(bytes)) do
+         :ok <- ensure_capacity(state),
+         {:ok, {:ok, package}, _retained_bytes} <-
+           ManifestMemory.package_worker(
+             fn ->
+               with :ok <- verify_declared_file(state.bundle, path, bytes),
+                    {:ok, decoded} when is_map(decoded) <- Jason.decode(bytes),
+                    {:ok, package} <- ExecutionPackage.from_published(decoded),
+                    true <- package.content_hash == hash do
+                 {:ok, package}
+               else
+                 false -> {:error, :invalid_execution_package_identity}
+                 {:error, _reason} = error -> error
+                 _invalid -> {:error, :invalid_execution_package}
+               end
+             end,
+             measure: &worker_result_size/1
+           ),
+         {:ok, state} <- flush_before_package(state, byte_size(bytes), package),
+         true <- ManifestMemory.valid_package_batch?([package | state.package_batch]) do
       state = %{
         state
         | package_paths: [path | state.package_paths],
@@ -439,7 +492,8 @@ defmodule FavnOrchestrator.API.ManifestDeploymentArchive do
 
       maybe_flush_packages(state)
     else
-      false -> {:error, :invalid_execution_package_identity}
+      false -> {:error, :manifest_memory_budget_exceeded}
+      {:ok, {:error, reason}, _retained_bytes} -> {:error, reason}
       {:error, _reason} = error -> error
       _invalid -> {:error, :invalid_execution_package}
     end
@@ -539,11 +593,13 @@ defmodule FavnOrchestrator.API.ManifestDeploymentArchive do
     end
   end
 
-  defp flush_before_package(%{package_batch: []} = state, _next_bytes), do: {:ok, state}
+  defp flush_before_package(%{package_batch: []} = state, _next_bytes, _package),
+    do: {:ok, state}
 
-  defp flush_before_package(state, next_bytes) do
+  defp flush_before_package(state, next_bytes, package) do
     if length(state.package_batch) + 1 > state.package_batch_count_limit or
-         state.package_batch_bytes + next_bytes > state.package_batch_bytes_limit do
+         state.package_batch_bytes + next_bytes > state.package_batch_bytes_limit or
+         not ManifestMemory.valid_package_batch?([package | state.package_batch]) do
       flush_packages(state)
     else
       {:ok, state}
@@ -555,12 +611,19 @@ defmodule FavnOrchestrator.API.ManifestDeploymentArchive do
   defp flush_packages(state) do
     packages = Enum.reverse(state.package_batch)
 
-    case state.persist_packages.(packages) do
-      :ok -> {:ok, %{state | package_batch: [], package_batch_bytes: 0}}
-      {:error, reason} -> {:error, {:package_persistence_failed, reason}}
-      _invalid -> {:error, :package_persistence_failed}
+    with :ok <- ensure_capacity(state) do
+      case state.persist_packages.(packages) do
+        :ok -> {:ok, %{state | package_batch: [], package_batch_bytes: 0}}
+        {:error, reason} -> {:error, {:package_persistence_failed, reason}}
+        _invalid -> {:error, :package_persistence_failed}
+      end
     end
   end
+
+  defp ensure_capacity(state), do: state.capacity_check.()
+
+  defp worker_result_size({:ok, result}), do: Worker.retained_bytes(result)
+  defp worker_result_size(result), do: Worker.retained_bytes(result)
 
   defp validate_gzip_footer(state) do
     <<expected_crc::little-unsigned-32, expected_size::little-unsigned-32>> = state.gzip_pending

@@ -5,12 +5,16 @@ defmodule FavnOrchestrator.API.AuthenticationServiceContextTest do
   import Plug.Test
 
   alias FavnOrchestrator.API.Authentication
+  alias FavnOrchestrator.API.Router
   alias FavnOrchestrator.Auth.ServiceTokens
 
   @token "service-context-test-token-with-32-bytes"
 
   setup do
     previous = Application.get_env(:favn_orchestrator, :api_service_tokens)
+
+    previous_deployer_tokens =
+      Application.get_env(:favn_orchestrator, :manifest_deployer_tokens)
 
     Application.put_env(:favn_orchestrator, :api_service_tokens, [
       [
@@ -21,8 +25,29 @@ defmodule FavnOrchestrator.API.AuthenticationServiceContextTest do
       ]
     ])
 
-    on_exit(fn -> restore_env(:api_service_tokens, previous) end)
+    Application.put_env(:favn_orchestrator, :manifest_deployer_tokens, [])
+
+    on_exit(fn ->
+      restore_env(:api_service_tokens, previous)
+      restore_env(:manifest_deployer_tokens, previous_deployer_tokens)
+    end)
+
     :ok
+  end
+
+  test "generated request IDs are available to manifest deployment authentication" do
+    conn =
+      :put
+      |> conn("/api/orchestrator/v1/manifest-deployments/request-id-test")
+      |> put_req_header("authorization", "Bearer #{@token}")
+      |> put_req_header("x-favn-workspace-id", "workspace-a")
+      |> Router.call(Router.init([]))
+
+    assert conn.status == 422
+    assert [_request_id] = get_resp_header(conn, "x-request-id")
+
+    assert Jason.decode!(conn.resp_body)["error"]["message"] ==
+             "X-Favn-Archive-Sha256 is required"
   end
 
   test "builds bounded workspace-admin authority for a platform operator service" do

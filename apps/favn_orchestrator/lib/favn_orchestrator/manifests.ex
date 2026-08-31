@@ -58,6 +58,24 @@ defmodule FavnOrchestrator.Manifests do
         opts \\ []
       )
       when is_binary(manifest_version_id) and is_map(selection) and is_list(opts) do
+    do_deploy(platform_context, context, manifest_version_id, selection, nil, opts)
+  end
+
+  @doc false
+  @spec deploy_prepared(
+          PlatformContext.t(),
+          WorkspaceContext.t(),
+          Version.t(),
+          map(),
+          keyword()
+        ) ::
+          {:ok, RuntimeState.t()} | {:error, term()}
+  def deploy_prepared(platform, context, %Version{} = version, selection, opts)
+      when is_map(selection) and is_list(opts) do
+    do_deploy(platform, context, version.manifest_version_id, selection, version, opts)
+  end
+
+  defp do_deploy(platform_context, context, manifest_version_id, selection, prepared, opts) do
     Lifecycle.with_admission(fn ->
       result =
         with true <- platform_deployer?(platform_context),
@@ -82,6 +100,7 @@ defmodule FavnOrchestrator.Manifests do
                     opts
                     |> Keyword.put(:idempotency, idempotency)
                     |> Keyword.put(:activation_lease, activation_lease),
+                    prepared,
                     3
                   )
                 end)
@@ -103,9 +122,11 @@ defmodule FavnOrchestrator.Manifests do
          manifest_version_id,
          selection,
          opts,
+         prepared_version,
          attempts
        ) do
-    with {:ok, version} <- ManifestStore.get_manifest(platform_context, manifest_version_id),
+    with {:ok, version} <-
+           deployment_version(platform_context, manifest_version_id, prepared_version),
          :ok <- validate_configured_pools(version),
          {:ok, expected_active_deployment_id, previous_configuration} <-
            previous_deployment_configuration(context),
@@ -154,6 +175,7 @@ defmodule FavnOrchestrator.Manifests do
           |> Keyword.delete(:activation_inspection_deadline_at)
           |> Keyword.delete(:execution_pool_policy)
           |> Keyword.delete(:activation_progress)
+          |> Keyword.put(:prepared_version, version)
           |> Keyword.put(:expected_active_deployment_id, expected_active_deployment_id)
           |> Keyword.put(:configuration, deployment_configuration)
           |> Keyword.put(:capacity_scopes, capacity_scopes)
@@ -168,6 +190,7 @@ defmodule FavnOrchestrator.Manifests do
         manifest_version_id,
         selection,
         opts,
+        prepared_version,
         attempts
       )
     end
@@ -184,6 +207,7 @@ defmodule FavnOrchestrator.Manifests do
          manifest_version_id,
          selection,
          opts,
+         prepared_version,
          attempts
        )
        when attempts > 1 do
@@ -193,6 +217,7 @@ defmodule FavnOrchestrator.Manifests do
       manifest_version_id,
       selection,
       opts,
+      prepared_version,
       attempts - 1
     )
   end
@@ -204,9 +229,15 @@ defmodule FavnOrchestrator.Manifests do
          _manifest,
          _selection,
          _opts,
+         _prepared_version,
          _attempts
        ),
        do: result
+
+  defp deployment_version(platform_context, manifest_version_id, nil),
+    do: ManifestStore.get_manifest(platform_context, manifest_version_id)
+
+  defp deployment_version(_, _, %Version{} = version), do: {:ok, version}
 
   defp merge_capacity_scopes(configured, explicit) when is_list(explicit) do
     (configured ++ explicit)

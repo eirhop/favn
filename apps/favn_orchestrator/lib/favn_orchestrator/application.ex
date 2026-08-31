@@ -10,6 +10,7 @@ defmodule FavnOrchestrator.Application do
   alias FavnOrchestrator.ExecutionAdmission.Coordinator, as: AdmissionCoordinator
   alias FavnOrchestrator.Lifecycle
   alias FavnOrchestrator.ManifestIndexCache
+  alias FavnOrchestrator.ManifestMemory.Slot, as: ManifestMemorySlot
   alias FavnOrchestrator.OperationalEvents
   alias FavnOrchestrator.Persistence
   alias FavnOrchestrator.Persistence.Runtime, as: PersistenceRuntime
@@ -70,6 +71,7 @@ defmodule FavnOrchestrator.Application do
           persistence_children ++
           [{ManifestIndexCache, []}] ++
           [
+            {ManifestMemorySlot, []},
             {AuthStore, []},
             {Phoenix.PubSub, name: pubsub_name()},
             {AdmissionCoordinator, []},
