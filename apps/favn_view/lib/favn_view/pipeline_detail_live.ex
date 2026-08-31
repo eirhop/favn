@@ -12,20 +12,17 @@ defmodule FavnView.PipelineDetailLive do
   alias FavnView.Components.PipelineDetailPage
   alias FavnView.Components.PipelinesPage
   alias FavnView.LogsViewModel
+  alias FavnView.PipelineRunConfig
   alias FavnView.Auth.Scope
-  @refresh_choices ~w(missing force auto force_all)
-  @window_kind_choices ~w(hour day month year)
-  @timezone_pattern ~r/\A[A-Za-z0-9_+\-\/]{1,64}\z/
+
   @dialyzer {:no_unused,
              [
                normalize_window_kind: 1,
                pipeline_from_detail: 2,
-               window_kind: 1,
-               window_timezone: 1,
                pipeline_name: 1,
                dependencies_label: 1,
                window_label: 1,
-               window_label: 2,
+               default_run_label: 1,
                status_label: 1,
                last_run_label: 2
              ]}
@@ -33,8 +30,7 @@ defmodule FavnView.PipelineDetailLive do
              [
                handle_event: 3,
                load_pipeline: 3,
-               pipeline_from_state: 1,
-               default_backfill_config: 1
+               pipeline_from_state: 1
              ]}
 
   @impl true
@@ -47,6 +43,7 @@ defmodule FavnView.PipelineDetailLive do
       )
 
     pipeline = pipeline_from_state(pipeline_state)
+    defaults = PipelineRunConfig.default(pipeline)
 
     socket =
       assign(socket,
@@ -54,10 +51,12 @@ defmodule FavnView.PipelineDetailLive do
         pipeline_state: pipeline_state,
         pipeline: pipeline,
         run_error: nil,
-        backfill_error: nil,
         run_attempt: nil,
-        backfill_attempt: nil,
-        backfill_config: default_backfill_config(pipeline),
+        run_dialog_open?: false,
+        run_advanced_open?: false,
+        run_config: defaults,
+        run_config_defaults: defaults,
+        run_config_valid?: true,
         nav_items: PipelinesPage.nav_items(:pipelines)
       )
 
@@ -65,113 +64,61 @@ defmodule FavnView.PipelineDetailLive do
   end
 
   @impl true
-  def handle_event("run_pipeline", _params, %{assigns: %{pipeline: nil}} = socket) do
-    {:noreply, assign(socket, :run_error, "Pipeline not found.")}
-  end
-
-  def handle_event("run_pipeline", params, socket) do
-    pipeline = socket.assigns.pipeline
-
-    attempt =
-      CommandAttempt.next(socket.assigns.run_attempt, "pipeline_run_submit", pipeline.id, params)
-
-    socket = assign(socket, :run_attempt, attempt)
-
-    case facade(:submit_operator_run_fun, &Orchestrator.submit_operator_run/5).(
-           actor_context(socket),
-           pipeline.manifest_version_id,
-           %{type: :pipeline, id: pipeline.id},
-           %{},
-           idempotency_key: attempt.key
-         ) do
-      {:ok, run_id} ->
-        {:noreply,
-         socket
-         |> CommandAttempt.acknowledge(attempt)
-         |> put_flash(:info, "Run request queued")
-         |> push_navigate(to: ~p"/runs/#{run_id}")}
-
-      {:error, reason} ->
-        Logger.error("pipeline.run submit failed reason=#{inspect(reason)}")
-        {socket, attempt} = CommandAttempt.settle_failure(socket, attempt, reason)
-        {:noreply, assign(socket, run_error: submit_error_label(reason), run_attempt: attempt)}
-    end
-  end
-
-  def handle_event(
-        "submit_backfill",
-        %{"backfill" => params},
-        %{assigns: %{pipeline: nil}} = socket
-      ) do
+  def handle_event("open_run_dialog", _params, socket) do
     {:noreply,
      assign(socket,
-       backfill_config: backfill_config(params),
-       backfill_error: "Pipeline not found."
+       run_dialog_open?: true,
+       run_advanced_open?: false,
+       run_config: socket.assigns.run_config_defaults,
+       run_config_valid?: true,
+       run_error: nil
      )}
   end
 
-  def handle_event("submit_backfill", %{"backfill" => form_params} = params, socket) do
-    config = backfill_config(form_params)
-    pipeline = socket.assigns.pipeline
-
-    attempt =
-      CommandAttempt.next(
-        socket.assigns.backfill_attempt,
-        "pipeline_backfill_submit",
-        {pipeline.id, config},
-        params
-      )
-
-    socket = assign(socket, :backfill_attempt, attempt)
-
-    with true <- pipeline.can_backfill?,
-         nil <- validate_backfill_config(config),
-         {:ok, run_id} <-
-           submit_pipeline_backfill(
-             actor_context(socket),
-             pipeline.manifest_version_id,
-             pipeline.id,
-             %{
-               range: Map.drop(config, [:refresh, :combine_windows]),
-               refresh_mode: config.refresh,
-               combine_windows: config.combine_windows
-             },
-             idempotency_key: attempt.key
-           ) do
-      {:noreply,
-       socket
-       |> CommandAttempt.acknowledge(attempt)
-       |> put_flash(:info, "Pipeline backfill submitted")
-       |> push_navigate(to: ~p"/runs/#{run_id}")}
-    else
-      false ->
-        {:noreply,
-         assign(socket,
-           backfill_config: config,
-           backfill_error: "Backfill requires a windowed pipeline."
-         )}
-
-      error when is_binary(error) ->
-        {:noreply,
-         assign(socket,
-           backfill_config: config,
-           backfill_error: error
-         )}
-
-      {:error, reason} ->
-        Logger.error("pipeline.backfill submit failed reason=#{inspect(reason)}")
-        {socket, attempt} = CommandAttempt.settle_failure(socket, attempt, reason)
-
-        {:noreply,
-         assign(socket,
-           backfill_config: config,
-           backfill_error: submit_error_label(reason),
-           backfill_attempt: attempt
-         )}
-    end
+  def handle_event("close_run_dialog", _params, socket) do
+    {:noreply, assign(socket, run_dialog_open?: false, run_advanced_open?: false)}
   end
 
-  def handle_event("submit_backfill", _params, socket), do: {:noreply, socket}
+  def handle_event("reset_run_config", _params, socket) do
+    {:noreply,
+     assign(socket,
+       run_config: socket.assigns.run_config_defaults,
+       run_config_valid?: true,
+       run_error: nil
+     )}
+  end
+
+  def handle_event("change_run_config", params, socket) do
+    config = PipelineRunConfig.from_params(params, socket.assigns.run_config)
+    error = PipelineRunConfig.validate(config, windowed?(socket.assigns.pipeline))
+
+    {:noreply,
+     assign(socket,
+       run_advanced_open?: true,
+       run_config: config,
+       run_config_valid?: is_nil(error),
+       run_error: error
+     )}
+  end
+
+  def handle_event("submit_pipeline_run", _params, %{assigns: %{pipeline: nil}} = socket) do
+    {:noreply, assign(socket, run_error: "Pipeline not found.")}
+  end
+
+  def handle_event("submit_pipeline_run", params, socket) do
+    pipeline = socket.assigns.pipeline
+    config = PipelineRunConfig.from_params(params, socket.assigns.run_config)
+    socket = assign(socket, run_config: config)
+
+    case PipelineRunConfig.validate(config, windowed?(pipeline)) do
+      nil ->
+        submit_run(socket, pipeline, config, params)
+
+      message ->
+        {:noreply,
+         assign(socket, run_error: message, run_config_valid?: false, run_advanced_open?: true)}
+    end
+  end
 
   @impl true
   def render(assigns) do
@@ -182,9 +129,12 @@ defmodule FavnView.PipelineDetailLive do
       nav_items={@nav_items}
       current_scope={@current_scope}
       operator_workspaces={@operator_workspaces}
+      run_dialog_open?={@run_dialog_open?}
+      run_config={@run_config}
+      run_config_defaults={@run_config_defaults}
+      run_config_valid?={@run_config_valid?}
+      run_advanced_open?={@run_advanced_open?}
       run_error={@run_error}
-      backfill_error={@backfill_error}
-      backfill_config={@backfill_config}
       can_submit_runs?={@can_submit_runs?}
       flash={@flash}
     />
@@ -217,6 +167,81 @@ defmodule FavnView.PipelineDetailLive do
     />
     """
   end
+
+  # A range is a different command from a run, so it is also a different intent
+  # and a different operation name in the browser's command registry. Both are
+  # named here rather than at the call site, so the key an operator's retry
+  # reuses cannot drift from the one their first attempt minted.
+  defp submit_run(socket, pipeline, config, params) do
+    operation =
+      if PipelineRunConfig.range_requested?(config),
+        do: "pipeline_backfill_submit",
+        else: "pipeline_run_submit"
+
+    attempt =
+      CommandAttempt.next(socket.assigns.run_attempt, operation, {pipeline.id, config}, params)
+
+    socket = assign(socket, :run_attempt, attempt)
+
+    case submit_command(actor_context(socket), pipeline, config, attempt) do
+      {:ok, run_id} ->
+        {:noreply,
+         socket
+         |> CommandAttempt.acknowledge(attempt)
+         |> put_flash(:info, submitted_flash(config))
+         |> push_navigate(to: ~p"/runs/#{run_id}")}
+
+      {:error, reason} ->
+        Logger.error("pipeline.run submit failed reason=#{inspect(reason)}")
+        {socket, attempt} = CommandAttempt.settle_failure(socket, attempt, reason)
+
+        {:noreply, assign(socket, run_error: submit_error_label(reason), run_attempt: attempt)}
+    end
+  end
+
+  defp submit_command(context, pipeline, config, attempt) do
+    if PipelineRunConfig.range_requested?(config) do
+      submit_pipeline_backfill(
+        context,
+        pipeline.manifest_version_id,
+        pipeline.id,
+        %{
+          range: PipelineRunConfig.range_request(config),
+          refresh_mode: config.refresh,
+          combine_windows: config.combine_windows
+        },
+        idempotency_key: attempt.key
+      )
+    else
+      facade(:submit_operator_run_fun, &Orchestrator.submit_operator_run/5).(
+        context,
+        pipeline.manifest_version_id,
+        %{type: :pipeline, id: pipeline.id},
+        run_input(config),
+        idempotency_key: attempt.key
+      )
+    end
+  end
+
+  # No window is sent when no period was asked for, because the control plane
+  # resolves the latest complete period after the availability delay its selected
+  # assets declare. A window computed in the browser would ignore that delay.
+  defp run_input(config) do
+    if PipelineRunConfig.period_requested?(config) do
+      %{refresh_mode: config.refresh, window: PipelineRunConfig.window_request(config)}
+    else
+      %{refresh_mode: config.refresh}
+    end
+  end
+
+  defp submitted_flash(config) do
+    if PipelineRunConfig.range_requested?(config),
+      do: "Pipeline backfill submitted",
+      else: "Run request queued"
+  end
+
+  defp windowed?(%{window: window}) when is_map(window), do: true
+  defp windowed?(_pipeline), do: false
 
   defp load_pipeline(operator_context, pipeline_id, timezone) do
     target_id = AssetRoute.from_param(pipeline_id)
@@ -253,6 +278,7 @@ defmodule FavnView.PipelineDetailLive do
   defp pipeline_from_detail(detail, timezone) do
     selected_assets = Map.get(detail, :selected_assets, [])
     status = Map.get(detail, :status, :unknown)
+    window = Map.get(detail, :window)
 
     %{
       id: Map.fetch!(detail, :target_id),
@@ -263,8 +289,11 @@ defmodule FavnView.PipelineDetailLive do
       asset_count: length(selected_assets),
       dependencies: Map.get(detail, :dependencies, :unknown),
       dependencies_label: dependencies_label(Map.get(detail, :dependencies, :unknown)),
-      window: Map.get(detail, :window),
-      window_label: window_label(Map.get(detail, :window)),
+      window: window,
+      window_label: window_label(window),
+      default_run_label: default_run_label(window),
+      max_concurrency: Map.get(detail, :max_concurrency),
+      execution_pool: Map.get(detail, :execution_pool),
       can_run_without_window?: Map.get(detail, :can_run_without_window?, true),
       can_backfill?: Map.get(detail, :can_backfill?, false),
       status: status,
@@ -285,39 +314,6 @@ defmodule FavnView.PipelineDetailLive do
       started_at_label: timestamp_label(Map.get(run, :started_at), timezone),
       duration_label: LogsViewModel.duration_ms_label(Map.get(run, :duration_ms))
     }
-  end
-
-  defp backfill_config(params) do
-    %{
-      from: params |> Map.get("from", "") |> String.trim(),
-      to: params |> Map.get("to", "") |> String.trim(),
-      kind: params |> Map.get("kind", "month") |> String.trim(),
-      timezone: params |> Map.get("timezone", "Etc/UTC") |> String.trim(),
-      refresh: params |> Map.get("refresh", "missing") |> String.trim(),
-      combine_windows: Map.get(params, "combine_windows", "false") == "true"
-    }
-  end
-
-  defp validate_backfill_config(config) do
-    cond do
-      config.kind not in @window_kind_choices ->
-        "Window kind is invalid."
-
-      config.refresh not in @refresh_choices ->
-        "Refresh choice is invalid."
-
-      config.from == "" ->
-        "Backfill range start is required."
-
-      config.to == "" ->
-        "Backfill range end is required."
-
-      not String.match?(config.timezone, @timezone_pattern) ->
-        "Timezone is invalid."
-
-      true ->
-        nil
-    end
   end
 
   defp pipeline_error_title({:error, :active_manifest_not_set}), do: "Active manifest not set"
@@ -345,30 +341,6 @@ defmodule FavnView.PipelineDetailLive do
 
   defp normalize_window_kind(_kind), do: nil
 
-  defp default_backfill_config(nil),
-    do: %{
-      from: "",
-      to: "",
-      kind: "month",
-      timezone: "Etc/UTC",
-      refresh: "missing",
-      combine_windows: false
-    }
-
-  defp default_backfill_config(%{window: nil}), do: default_backfill_config(nil)
-
-  defp default_backfill_config(%{window: window}) do
-    %{
-      from: "",
-      to: "",
-      kind: window |> window_kind() |> Atom.to_string(),
-      timezone: window_timezone(window),
-      refresh: "missing",
-      combine_windows:
-        Map.get(window, :combine_windows, Map.get(window, "combine_windows", false))
-    }
-  end
-
   defp submit_pipeline_backfill(context, manifest_version_id, target_id, input, opts) do
     Application.get_env(
       :favn_view,
@@ -377,18 +349,8 @@ defmodule FavnView.PipelineDetailLive do
     ).(context, manifest_version_id, target_id, input, opts)
   end
 
-  defp window_kind(window) do
-    window
-    |> then(&(Map.get(&1, :kind) || Map.get(&1, "kind")))
-    |> normalize_window_kind()
-    |> case do
-      nil -> :month
-      kind -> kind
-    end
-  end
-
-  defp window_timezone(window),
-    do: Map.get(window, :timezone) || Map.get(window, "timezone") || "Etc/UTC"
+  defp window_field(window, key),
+    do: Map.get(window, key) || Map.get(window, Atom.to_string(key))
 
   defp pipeline_name(label), do: label |> String.split(".") |> List.last()
 
@@ -406,13 +368,34 @@ defmodule FavnView.PipelineDetailLive do
   defp dependencies_label(:none), do: "Selected only"
   defp dependencies_label(_dependencies), do: "Unknown deps"
 
-  defp window_label(nil), do: "No window"
-  defp window_label(%{kind: kind, timezone: timezone}), do: window_label(kind, timezone)
-  defp window_label(%{"kind" => kind, "timezone" => timezone}), do: window_label(kind, timezone)
-  defp window_label(_window), do: "Windowed"
+  defp window_label(window) when is_map(window) do
+    kind = window |> window_field(:kind) |> window_kind_word()
+    timezone = window_field(window, :timezone)
 
-  defp window_label(kind, nil), do: humanize(kind)
-  defp window_label(kind, timezone), do: "#{humanize(kind)} #{timezone}"
+    case timezone do
+      nil -> kind
+      timezone -> "#{kind} · #{timezone}"
+    end
+  end
+
+  defp window_label(_window), do: "Not windowed"
+
+  # Said in words rather than as a date. The control plane resolves the period at
+  # submission, after subtracting the availability delay the selected assets
+  # declare, and a date resolved here would disagree with it on exactly the
+  # pipelines that wait for late-arriving data.
+  defp default_run_label(window) when is_map(window) do
+    "The last complete #{String.downcase(window |> window_field(:kind) |> window_kind_word())}"
+  end
+
+  defp default_run_label(_window), do: "The whole relation"
+
+  defp window_kind_word(kind) do
+    case normalize_window_kind(kind) do
+      nil -> "Windowed"
+      kind -> kind |> Atom.to_string() |> String.capitalize()
+    end
+  end
 
   defp scope_label(nil), do: "-"
   defp scope_label(value) when is_binary(value), do: value
