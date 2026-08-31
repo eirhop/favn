@@ -682,8 +682,6 @@ defmodule FavnStoragePostgres.Registry.Store do
   defp get_activatable_manifest(%DeployManifest{}),
     do: prepared_manifest_mismatch()
 
-  defp prepared_manifest_mismatch, do: {:error, Error.new(:invalid, "prepared manifest mismatch")}
-
   defp get_activatable_manifest(manifest_version_id) do
     case Repo.get(ManifestVersion, manifest_version_id) do
       nil ->
@@ -706,6 +704,8 @@ defmodule FavnStoragePostgres.Registry.Store do
         |> cache_manifest()
     end
   end
+
+  defp prepared_manifest_mismatch, do: {:error, Error.new(:invalid, "prepared manifest mismatch")}
 
   defp cache_manifest({:ok, %Version{} = version} = result) do
     :ok = ManifestCache.put(version)
