@@ -95,12 +95,16 @@ defmodule FavnOrchestrator.API.ManifestDeploymentArchiveTest do
     assert result.package_count == 101
     assert result.entry_count == 103
 
-    assert_receive {:package_batch, first_batch}
-    assert_receive {:package_batch, second_batch}
-    assert length(first_batch) == 100
-    assert length(second_batch) == 1
+    batches =
+      Enum.map(List.duplicate(8, 12) ++ [5], fn expected_size ->
+        assert_receive {:package_batch, batch}
+        assert length(batch) == expected_size
+        batch
+      end)
+
     refute_receive {:package_batch, _extra_batch}
-    assert MapSet.new(first_batch ++ second_batch) == MapSet.new(packages, & &1.content_hash)
+
+    assert MapSet.new(List.flatten(batches)) == MapSet.new(packages, & &1.content_hash)
   end
 
   test "flushes before a package would cross the byte limit" do
@@ -155,7 +159,7 @@ defmodule FavnOrchestrator.API.ManifestDeploymentArchiveTest do
 
     on_exit(fn -> File.rm_rf(root) end)
 
-    assert_package_batches(root, 1_001, List.duplicate(100, 10) ++ [1])
+    assert_package_batches(root, 1_001, List.duplicate(8, 125) ++ [1])
   end
 
   test "rejects a changed gzip footer", context do

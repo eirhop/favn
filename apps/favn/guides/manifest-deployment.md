@@ -90,7 +90,10 @@ repeat deployment with a new operation ID.
 The same operation ID and archive replay the existing result without reading
 the body. Reusing the ID for different content returns
 `409 deployment_operation_conflict`. A busy upload admission returns `429` with
-`Retry-After`; retry that unchanged request later.
+`Retry-After`; retry that unchanged request later. If current manifest memory
+capacity is low or cannot be measured safely, upload returns `503` with
+`Retry-After` before accepting the manifest. Activation waits and retries
+without replacing the currently active deployment.
 
 ## Private relay example
 
@@ -122,8 +125,14 @@ Operators configure workspace-scoped deployer credentials through
 One archive may contain at most 10,000 execution packages. The compressed limit
 is 256 MiB, the expanded limit is 1 GiB, the compact index limit is 64 MiB, and
 each package is limited to 4 MiB. The Orchestrator reads at most 1 MiB at a time
-and persists packages in batches of at most 100 or 32 MiB. The total upload
+and persists packages in batches of at most 8 or 4 MiB. The total upload
 budget is 15 minutes. These are Favn protocol details, not uploader settings.
+
+In Linux containers, the Orchestrator reads the finite cgroup v1 or v2 memory
+limit and current usage automatically. Operators do not configure the
+container's RAM size again in Favn. A larger container is used automatically;
+fixed archive, batch, and worker bounds do not grow with it. Missing, unlimited,
+or unreadable cgroup memory data fails closed for manifest import.
 
 The older `mix favn.publish` and `mix favn.activate` commands remain available
 for interactive and local workflows. Production automation should prefer the

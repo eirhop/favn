@@ -17,6 +17,8 @@ defmodule FavnOrchestrator.API.ManifestDeployment do
   alias FavnOrchestrator.API.ManifestDeploymentArchive
   alias FavnOrchestrator.API.Response
   alias FavnOrchestrator.ManifestDeployments
+  alias FavnOrchestrator.ManifestMemory
+  alias FavnOrchestrator.ManifestMemory.Slot
   alias FavnOrchestrator.ManifestUploadHeartbeat
   alias FavnOrchestrator.Persistence.Error
   alias FavnOrchestrator.Persistence.Results.ManifestDeployment, as: DeploymentResult
@@ -31,10 +33,10 @@ defmodule FavnOrchestrator.API.ManifestDeployment do
   def call(
         %Plug.Conn{path_info: ["api", "orchestrator", "v1", "manifest-deployments", operation_id]} =
           conn,
-        _opts
+        opts
       ) do
     case conn.method do
-      "PUT" -> put_archive(conn, operation_id)
+      "PUT" -> put_archive(conn, operation_id, opts)
       "GET" -> get_status(conn, operation_id)
       _other -> conn
     end
@@ -42,7 +44,7 @@ defmodule FavnOrchestrator.API.ManifestDeployment do
 
   def call(conn, _opts), do: conn
 
-  defp put_archive(conn, operation_id) do
+  defp put_archive(conn, operation_id, opts) do
     with :ok <- validate_operation_id(operation_id),
          {:ok, context} <- Authentication.manifest_deployment_context(conn),
          {:ok, archive_sha256} <- archive_sha256(conn),
@@ -50,7 +52,7 @@ defmodule FavnOrchestrator.API.ManifestDeployment do
          {:ok, preflight} <- ManifestDeployments.preflight(context, operation_id, archive_sha256) do
       case preflight do
         {:replay, operation} -> send_operation(conn, 200, operation)
-        :new -> admit_and_upload(conn, context, operation_id, archive_sha256)
+        :new -> admit_and_upload(conn, context, operation_id, archive_sha256, opts)
       end
     else
       {:error, :invalid_operation_id} ->
@@ -87,7 +89,7 @@ defmodule FavnOrchestrator.API.ManifestDeployment do
     end
   end
 
-  defp admit_and_upload(conn, context, operation_id, archive_sha256) do
+  defp admit_and_upload(conn, context, operation_id, archive_sha256, opts) do
     lease_id =
       "upload:#{RuntimeConfig.instance_id()}:#{operation_id}:#{System.unique_integer([:positive])}"
 
@@ -99,19 +101,29 @@ defmodule FavnOrchestrator.API.ManifestDeployment do
           end)
 
         try do
-          started_at_ms = System.monotonic_time(:millisecond)
-          deadline_ms = started_at_ms + ArchiveLimits.current().upload_timeout_ms
+          case ManifestMemory.with_phase(
+                 :upload,
+                 fn ->
+                   started_at_ms = System.monotonic_time(:millisecond)
+                   deadline_ms = started_at_ms + ArchiveLimits.current().upload_timeout_ms
 
-          receive_archive(
-            conn,
-            context,
-            lease_id,
-            operation_id,
-            archive_sha256,
-            heartbeat,
-            started_at_ms,
-            deadline_ms
-          )
+                   receive_archive(
+                     conn,
+                     context,
+                     lease_id,
+                     operation_id,
+                     archive_sha256,
+                     heartbeat,
+                     started_at_ms,
+                     deadline_ms,
+                     opts
+                   )
+                 end,
+                 memory_opts(opts)
+               ) do
+            %Plug.Conn{} = conn -> conn
+            {:error, reason} -> memory_capacity_error(conn, reason)
+          end
         after
           :ok = ManifestUploadHeartbeat.stop(heartbeat)
           _ = ManifestDeployments.release_upload(context, lease_id)
@@ -135,8 +147,11 @@ defmodule FavnOrchestrator.API.ManifestDeployment do
          expected_sha256,
          heartbeat,
          started_at_ms,
-         deadline_ms
+         deadline_ms,
+         opts
        ) do
+    capacity_check = Keyword.get(opts, :capacity_check, &ManifestMemory.ensure_headroom/0)
+
     parser =
       ManifestDeploymentArchive.new(
         fn packages ->
@@ -145,14 +160,17 @@ defmodule FavnOrchestrator.API.ManifestDeployment do
             ensure_upload_active(heartbeat, deadline_ms)
           end
         end,
-        started_at_ms: started_at_ms
+        started_at_ms: started_at_ms,
+        capacity_check: capacity_check
       )
 
     try do
       with {:ok, parser, conn} <- read_archive(conn, parser),
            :ok <- ensure_upload_active(heartbeat, deadline_ms),
+           :ok <- capacity_check.(),
            {:ok, parsed} <- ManifestDeploymentArchive.finish(parser),
            :ok <- ensure_upload_active(heartbeat, deadline_ms),
+           :ok <- capacity_check.(),
            :ok <- verify_archive_sha(parsed.archive_sha256, expected_sha256),
            fingerprint <-
              ManifestDeployments.fingerprint(
@@ -200,7 +218,8 @@ defmodule FavnOrchestrator.API.ManifestDeployment do
                :manifest_index_limit_exceeded,
                :execution_package_limit_exceeded,
                :execution_package_count_exceeded,
-               :tar_entry_limit_exceeded
+               :tar_entry_limit_exceeded,
+               :manifest_memory_budget_exceeded
              ] ->
           error(
             conn,
@@ -229,6 +248,15 @@ defmodule FavnOrchestrator.API.ManifestDeployment do
 
         {:error, :package_persistence_failed} ->
           infrastructure_error(conn, :package_persistence_failed)
+
+        {:error, reason}
+        when reason in [
+               :manifest_capacity_unavailable,
+               :memory_capacity_unknown,
+               :manifest_worker_timeout,
+               :manifest_worker_failed
+             ] ->
+          memory_capacity_error(conn, reason)
 
         {:error, %Error{} = reason} ->
           infrastructure_error(conn, reason)
@@ -436,6 +464,31 @@ defmodule FavnOrchestrator.API.ManifestDeployment do
 
   defp failure_class(%Error{kind: kind}), do: Atom.to_string(kind)
   defp failure_class(_reason), do: "unavailable"
+
+  defp memory_opts(opts) do
+    [
+      slot: Keyword.get(opts, :manifest_slot, Slot),
+      capacity_check: Keyword.get(opts, :capacity_check, &ManifestMemory.ensure_headroom/0)
+    ]
+  end
+
+  defp memory_capacity_error(conn, :manifest_capacity_busy) do
+    conn
+    |> put_resp_header("retry-after", "5")
+    |> error(429, "manifest_capacity_busy", "Manifest capacity is busy")
+  end
+
+  defp memory_capacity_error(conn, reason)
+       when reason in [
+              :manifest_capacity_unavailable,
+              :memory_capacity_unknown,
+              :manifest_worker_timeout,
+              :manifest_worker_failed
+            ] do
+    conn
+    |> put_resp_header("retry-after", "5")
+    |> error(503, "manifest_capacity_unavailable", "Manifest capacity is unavailable")
+  end
 
   defp error(conn, status, code, message) do
     conn |> Response.error(status, code, message) |> halt()

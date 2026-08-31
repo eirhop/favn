@@ -62,6 +62,12 @@ defmodule FavnOrchestrator.ManifestIndexCache do
     end
   end
 
+  @doc false
+  @spec entry_retained_bytes(Version.t(), Index.t()) :: non_neg_integer()
+  def entry_retained_bytes(%Version{} = version, %Index{} = index) do
+    cache_entry_bytes(cache_key(version), index)
+  end
+
   @impl true
   def init(opts) do
     max_entries = Keyword.get(opts, :max_entries, configured_max_entries())

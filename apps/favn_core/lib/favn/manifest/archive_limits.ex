@@ -13,8 +13,8 @@ defmodule Favn.Manifest.ArchiveLimits do
   @execution_package_bytes 4 * 1_024 * 1_024
   @execution_packages 10_000
   @tar_entries 10_002
-  @package_batch_count 100
-  @package_batch_bytes 32 * 1_024 * 1_024
+  @package_batch_count 8
+  @package_batch_bytes 4 * 1_024 * 1_024
   @read_chunk_bytes 1 * 1_024 * 1_024
   @upload_timeout_ms 15 * 60 * 1_000
 

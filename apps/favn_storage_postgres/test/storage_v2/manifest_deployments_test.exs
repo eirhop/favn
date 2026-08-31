@@ -26,6 +26,7 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
   alias FavnOrchestrator.Lifecycle
   alias FavnOrchestrator.ManifestDeploymentContext
   alias FavnOrchestrator.ManifestDeploymentDispatcher
+  alias FavnOrchestrator.ManifestMemory.Slot, as: ManifestMemorySlot
   alias FavnOrchestrator.ManifestActivationDiagnostics
   alias FavnOrchestrator.Manifests
   alias FavnOrchestrator.API.ManifestDeployment
@@ -74,6 +75,7 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
 
     start_supervised!({Repo, options})
     start_supervised!({Lifecycle, shutdown_drain_timeout_ms: 120_000})
+    start_supervised!({ManifestMemorySlot, []})
     :ok = Lifecycle.mark_accepting()
     :ok = Migrations.migrate!(Repo)
     Sandbox.mode(Repo, :manual)
@@ -201,6 +203,19 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
                  lease_id: "same-workspace"
              })
 
+    assert {:error, %{kind: :limit_exceeded, details: %{reason: :deployment_upload_busy}}} =
+             Store.acquire_manifest_upload_lease(%{
+               acquire
+               | context: second_context,
+                 lease_id: "global-second"
+             })
+
+    assert :ok =
+             Store.release_manifest_upload_lease(%ReleaseManifestUploadLease{
+               context: context.deployment_context,
+               lease_id: "upload-one"
+             })
+
     assert :ok =
              Store.acquire_manifest_upload_lease(%{
                acquire
@@ -213,12 +228,6 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
                acquire
                | context: third_context,
                  lease_id: "global-third"
-             })
-
-    assert :ok =
-             Store.release_manifest_upload_lease(%ReleaseManifestUploadLease{
-               context: context.deployment_context,
-               lease_id: "upload-one"
              })
 
     assert :ok =
@@ -396,6 +405,38 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
     assert get_in(Jason.decode!(replay.resp_body), ["data", "operation", "state"]) == "accepted"
   end
 
+  test "HTTP upload refuses unsafe or busy manifest capacity before parsing the body", context do
+    operation_id = "capacity-guard-#{System.unique_integer([:positive])}"
+
+    unsafe =
+      context
+      |> upload_request(operation_id, "not a gzip archive")
+      |> ManifestDeployment.call(
+        capacity_check: fn -> {:error, :manifest_capacity_unavailable} end
+      )
+
+    assert unsafe.status == 503
+    assert get_resp_header(unsafe, "retry-after") == ["5"]
+
+    assert get_in(Jason.decode!(unsafe.resp_body), ["error", "code"]) ==
+             "manifest_capacity_unavailable"
+
+    assert {:ok, lease} = ManifestMemorySlot.acquire()
+
+    try do
+      busy =
+        context
+        |> upload_request(operation_id <> "-busy", "not a gzip archive")
+        |> ManifestDeployment.call(capacity_check: fn -> :ok end)
+
+      assert busy.status == 429
+      assert get_resp_header(busy, "retry-after") == ["5"]
+      assert get_in(Jason.decode!(busy.resp_body), ["error", "code"]) == "manifest_capacity_busy"
+    after
+      :ok = ManifestMemorySlot.release(lease)
+    end
+  end
+
   test "first-party archive deployment activates and replays after inspection", context do
     Sandbox.mode(Repo, {:shared, self()})
     operation_id = "archive-activation-#{System.unique_integer([:positive])}"
@@ -412,7 +453,9 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
 
     start_runner_control_plane()
     start_supervised!({Task.Supervisor, name: FavnOrchestrator.ManifestDeploymentTaskSupervisor})
-    start_supervised!({ManifestDeploymentDispatcher, concurrency: 1})
+    start_supervised!(
+      {ManifestDeploymentDispatcher, concurrency: 1, capacity_check: fn -> :ok end}
+    )
 
     asset = hd(context.version.manifest.assets)
     {:ok, binding} = OperationRunnerTasks.binding(context.version, asset)
@@ -542,7 +585,10 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
 
     start_runner_control_plane()
     start_supervised!({Task.Supervisor, name: FavnOrchestrator.ManifestDeploymentTaskSupervisor})
-    start_supervised!({ManifestDeploymentDispatcher, concurrency: 1, inspection_timeout_ms: 50})
+    start_supervised!(
+      {ManifestDeploymentDispatcher,
+       concurrency: 1, inspection_timeout_ms: 50, capacity_check: fn -> :ok end}
+    )
 
     terminal = await_deployment(context, operation_id)
     assert terminal.status == 200
@@ -651,7 +697,8 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
     start_supervised!({Task.Supervisor, name: FavnOrchestrator.ManifestDeploymentTaskSupervisor})
 
     start_supervised!(
-      {ManifestDeploymentDispatcher, concurrency: 1, inspection_timeout_ms: 1_000}
+      {ManifestDeploymentDispatcher,
+       concurrency: 1, inspection_timeout_ms: 1_000, capacity_check: fn -> :ok end}
     )
 
     asset = hd(context.version.manifest.assets)
@@ -989,6 +1036,12 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
   end
 
   defp upload_archive(context, operation_id, archive_sha256, body) do
+    context
+    |> upload_request(operation_id, body, archive_sha256)
+    |> ManifestDeployment.call(capacity_check: fn -> :ok end)
+  end
+
+  defp upload_request(context, operation_id, body, archive_sha256 \\ String.duplicate("a", 64)) do
     :put
     |> conn("/api/orchestrator/v1/manifest-deployments/#{operation_id}", body)
     |> put_req_header("authorization", "Bearer " <> context.raw_token)
@@ -996,7 +1049,6 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
     |> put_req_header("x-favn-archive-sha256", archive_sha256)
     |> put_req_header("content-type", "application/gzip")
     |> put_req_header("x-request-id", "request-#{operation_id}")
-    |> ManifestDeployment.call([])
   end
 
   defp start_runner_control_plane do

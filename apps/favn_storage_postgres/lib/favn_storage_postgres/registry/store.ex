@@ -89,7 +89,7 @@ defmodule FavnStoragePostgres.Registry.Store do
   @max_execution_package_bytes 4 * 1_024 * 1_024
   @max_execution_package_batch_bytes 32 * 1_024 * 1_024
   @max_execution_packages_per_command 1_000
-  @execution_package_insert_size 100
+  @execution_package_insert_size 8
   @execution_package_validation_batch_size 500
   @max_manifest_target_descriptors 500
   @max_deployment_targets 10_000
@@ -2176,7 +2176,6 @@ defmodule FavnStoragePostgres.Registry.Store do
            false <- MapSet.member?(hashes, canonical.content_hash),
            {:ok, encoded} <- Serializer.encode_manifest(canonical),
            :ok <- validate_execution_package_size(encoded, total_bytes),
-           {:ok, payload} <- Jason.decode(encoded),
            {:ok, hash} <- decode_hash(canonical.content_hash) do
         {module, name} = canonical.asset_ref
 
@@ -2185,7 +2184,7 @@ defmodule FavnStoragePostgres.Registry.Store do
           asset_module: Atom.to_string(module),
           asset_name: Atom.to_string(name),
           runtime_input_resolver: runtime_input_resolver(canonical),
-          payload: payload,
+          canonical_json: encoded,
           inserted_at: DateTime.utc_now()
         }
 
@@ -2230,7 +2229,24 @@ defmodule FavnStoragePostgres.Registry.Store do
   defp insert_execution_packages(records) do
     records
     |> Enum.chunk_every(@execution_package_insert_size)
-    |> Enum.each(&Repo.insert_all(ExecutionPackageRecord, &1, on_conflict: :nothing))
+    |> Enum.each(&insert_execution_package_batch/1)
+
+    :ok
+  end
+
+  defp insert_execution_package_batch(records) do
+    {values, parameters} = package_sql_values(records)
+
+    SQL.query!(
+      Repo,
+      """
+      INSERT INTO favn_control.execution_packages
+        (content_hash, asset_module, asset_name, runtime_input_resolver, payload, inserted_at)
+      VALUES #{Enum.join(values, ", ")}
+      ON CONFLICT (content_hash) DO NOTHING
+      """,
+      parameters
+    )
 
     :ok
   end
@@ -2238,29 +2254,58 @@ defmodule FavnStoragePostgres.Registry.Store do
   defp verify_execution_packages([]), do: :ok
 
   defp verify_execution_packages(records) do
-    hashes = Enum.map(records, & &1.content_hash)
+    {values, parameters} = package_sql_values(records)
 
-    stored =
-      ExecutionPackageRecord
-      |> where([package], package.content_hash in ^hashes)
-      |> Repo.all()
-      |> Map.new(&{&1.content_hash, &1})
+    case SQL.query(
+           Repo,
+           """
+           WITH incoming
+             (content_hash, asset_module, asset_name, runtime_input_resolver, payload, inserted_at)
+             AS (VALUES #{Enum.join(values, ", ")})
+           SELECT count(*)::bigint
+           FROM incoming AS expected
+           JOIN favn_control.execution_packages AS stored
+             ON stored.content_hash = expected.content_hash
+            AND stored.asset_module = expected.asset_module
+            AND stored.asset_name = expected.asset_name
+            AND stored.runtime_input_resolver IS NOT DISTINCT FROM expected.runtime_input_resolver
+            AND stored.payload = expected.payload
+           """,
+           parameters
+         ) do
+      {:ok, %{rows: [[count]]}} when count == length(records) ->
+        :ok
 
-    if Enum.all?(records, fn record ->
-         case Map.get(stored, record.content_hash) do
-           %ExecutionPackageRecord{} = row ->
-             row.asset_module == record.asset_module and row.asset_name == record.asset_name and
-               row.runtime_input_resolver == record.runtime_input_resolver and
-               row.payload == record.payload
+      {:ok, _result} ->
+        {:error, Error.new(:conflict, "execution package has different canonical content")}
 
-           nil ->
-             false
-         end
-       end) do
-      :ok
-    else
-      {:error, Error.new(:conflict, "execution package has different canonical content")}
+      {:error, error} ->
+        {:error, ErrorMapper.map(error)}
     end
+  end
+
+  defp package_sql_values(records) do
+    records
+    |> Enum.with_index()
+    |> Enum.reduce({[], []}, fn {record, index}, {values, parameters} ->
+      first = index * 6 + 1
+
+      value =
+        "($#{first}::bytea, $#{first + 1}::text, $#{first + 2}::text, " <>
+          "$#{first + 3}::text, $#{first + 4}::text::jsonb, $#{first + 5}::timestamptz)"
+
+      params = [
+        record.content_hash,
+        record.asset_module,
+        record.asset_name,
+        record.runtime_input_resolver,
+        record.canonical_json,
+        record.inserted_at
+      ]
+
+      {[value | values], Enum.reverse(params, parameters)}
+    end)
+    |> then(fn {values, parameters} -> {Enum.reverse(values), Enum.reverse(parameters)} end)
   end
 
   defp normalize_package_hashes(hashes)
@@ -2490,7 +2535,7 @@ defmodule FavnStoragePostgres.Registry.Store do
                |> where([lease], lease.workspace_id == ^command.context.workspace_id)
                |> Repo.aggregate(:count)
 
-             if global_count < 2 and identity_count < 1 and workspace_count < 1 do
+             if global_count < 1 and identity_count < 1 and workspace_count < 1 do
                now = database_datetime(command.occurred_at)
 
                Repo.insert!(%ManifestDeploymentUploadLease{
