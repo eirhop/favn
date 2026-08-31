@@ -2446,6 +2446,37 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert persisted_a.runner_releases == %{"default" => release_a}
   end
 
+  test "decodes runs from stored manifest columns and identically from the legacy document fallback",
+       fixture do
+    {command, run} = create_run_command(fixture, "run-atom-columns-#{fixture.workspace_id}")
+    assert {:ok, _created} = RunStore.create_run(command)
+
+    row = Repo.get!(ManifestVersionRow, fixture.version.manifest_version_id)
+    assert is_list(row.atom_strings) and row.atom_strings != []
+
+    assert {:ok, decoded_from_columns} =
+             RunStore.get_run(%GetRun{
+               workspace_context: fixture.workspace_context,
+               run_id: run.id
+             })
+
+    {1, nil} =
+      Repo.update_all(
+        from(manifest in ManifestVersionRow,
+          where: manifest.manifest_version_id == ^fixture.version.manifest_version_id
+        ),
+        set: [atom_strings: nil]
+      )
+
+    assert {:ok, decoded_from_document} =
+             RunStore.get_run(%GetRun{
+               workspace_context: fixture.workspace_context,
+               run_id: run.id
+             })
+
+    assert decoded_from_document == decoded_from_columns
+  end
+
   test "persists runner release bindings and exposes them through manifest audit reads",
        fixture do
     row = Repo.get!(ManifestVersionRow, fixture.version.manifest_version_id)

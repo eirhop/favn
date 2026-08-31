@@ -1016,8 +1016,15 @@ defmodule FavnStoragePostgres.Runs.Store do
             manifest_version_id: command.run.manifest_version_id
           ) || Repo.rollback(Error.new(:constraint, "run deployment is not available"))
 
-        manifest = Repo.get!(ManifestVersion, deployment.manifest_version_id)
-        manifest_content_hash = Base.encode16(manifest.content_hash, case: :lower)
+        {content_hash, manifest_runner_releases} =
+          Repo.one!(
+            from(manifest in ManifestVersion,
+              where: manifest.manifest_version_id == ^deployment.manifest_version_id,
+              select: {manifest.content_hash, manifest.runner_releases}
+            )
+          )
+
+        manifest_content_hash = Base.encode16(content_hash, case: :lower)
 
         cond do
           command.run.manifest_content_hash != manifest_content_hash ->
@@ -1027,7 +1034,7 @@ defmodule FavnStoragePostgres.Runs.Store do
               )
             )
 
-          command.run.runner_releases != manifest.runner_releases ->
+          command.run.runner_releases != manifest_runner_releases ->
             Repo.rollback(
               Error.new(:constraint, "run runner releases do not match its deployment",
                 details: %{reason: :run_manifest_runner_releases_mismatch}

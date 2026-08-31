@@ -52,8 +52,7 @@ defmodule FavnStoragePostgres.Runs.Decoder do
           manifest_version_id: manifest.manifest_version_id,
           content_hash: manifest.content_hash,
           runner_releases: manifest.runner_releases,
-          atom_strings: manifest.atom_strings,
-          manifest: manifest.manifest
+          atom_strings: manifest.atom_strings
         }
       )
       |> Repo.all()
@@ -64,20 +63,16 @@ defmodule FavnStoragePostgres.Runs.Decoder do
   end
 
   defp load_manifest(manifest_version_id) do
-    manifest =
-      from(manifest in ManifestVersion,
-        where: manifest.manifest_version_id == ^manifest_version_id,
-        select: %ManifestVersion{
-          manifest_version_id: manifest.manifest_version_id,
-          content_hash: manifest.content_hash,
-          runner_releases: manifest.runner_releases,
-          atom_strings: manifest.atom_strings,
-          manifest: manifest.manifest
-        }
-      )
-      |> Repo.one()
-
-    manifest
+    from(manifest in ManifestVersion,
+      where: manifest.manifest_version_id == ^manifest_version_id,
+      select: %ManifestVersion{
+        manifest_version_id: manifest.manifest_version_id,
+        content_hash: manifest.content_hash,
+        runner_releases: manifest.runner_releases,
+        atom_strings: manifest.atom_strings
+      }
+    )
+    |> Repo.one()
   end
 
   defp load_plans(rows) do
@@ -117,15 +112,7 @@ defmodule FavnStoragePostgres.Runs.Decoder do
       manifest_version_id: manifest_version_id
     }
 
-    manifest_record = %{
-      manifest_version_id: manifest_version_id,
-      content_hash: Base.encode16(manifest.content_hash, case: :lower),
-      runner_releases: manifest.runner_releases,
-      atom_strings: manifest_atom_strings(manifest),
-      manifest_index_json: Jason.encode!(manifest.manifest)
-    }
-
-    case RunSnapshotCodec.decode_run(run_record, manifest_record) do
+    case RunSnapshotCodec.decode_run(run_record, manifest_record(manifest)) do
       {:ok, run} ->
         {:ok, %{run | workspace_id: row.workspace_id, deployment_id: row.deployment_id}}
 
@@ -155,19 +142,29 @@ defmodule FavnStoragePostgres.Runs.Decoder do
 
   defp attach_plan(snapshot, nil), do: snapshot
 
-  defp manifest_atom_strings(%ManifestVersion{atom_strings: atom_strings})
-       when is_list(atom_strings),
-       do: atom_strings
-
-  defp manifest_atom_strings(%ManifestVersion{} = manifest) do
-    record = %{
+  defp manifest_record(%ManifestVersion{atom_strings: atom_strings} = manifest)
+       when is_list(atom_strings) do
+    %{
+      manifest_version_id: manifest.manifest_version_id,
       content_hash: Base.encode16(manifest.content_hash, case: :lower),
-      manifest_index_json: Jason.encode!(manifest.manifest)
+      runner_releases: manifest.runner_releases,
+      atom_strings: atom_strings
     }
+  end
 
-    case FavnOrchestrator.Storage.RunSnapshotCodec.ManifestAtoms.extract(record) do
-      {:ok, atoms} -> MapSet.to_list(atoms)
-      {:error, _reason} -> []
-    end
+  defp manifest_record(%ManifestVersion{} = manifest) do
+    document =
+      from(row in ManifestVersion,
+        where: row.manifest_version_id == ^manifest.manifest_version_id,
+        select: row.manifest
+      )
+      |> Repo.one!()
+
+    %{
+      manifest_version_id: manifest.manifest_version_id,
+      content_hash: Base.encode16(manifest.content_hash, case: :lower),
+      runner_releases: manifest.runner_releases,
+      manifest_index_json: Jason.encode!(document)
+    }
   end
 end

@@ -1028,15 +1028,14 @@ defmodule FavnStoragePostgres.Registry.Store do
           where: state.workspace_id == ^context.workspace_id,
           select:
             {state, deployment.manifest_version_id, manifest.content_hash,
-             manifest.schema_version, manifest.runner_contract_version, manifest.manifest,
+             manifest.schema_version, manifest.runner_contract_version,
              manifest.runner_releases, manifest.asset_count, manifest.pipeline_count,
              manifest.schedule_count}
         )
 
       case Repo.one(query) do
         {%WorkspaceRuntimeState{} = state, manifest_version_id, content_hash, schema_version,
-         runner_contract_version, _manifest_payload, runner_releases, asset_count, pipeline_count,
-         schedule_count} ->
+         runner_contract_version, runner_releases, asset_count, pipeline_count, schedule_count} ->
           {:ok,
            runtime_result(
              state,
