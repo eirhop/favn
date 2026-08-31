@@ -2,13 +2,13 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Implementing |
+| Status | Implemented |
 | Type | Bug fix and performance improvement |
 | Primary issue | None — the user requested this record directly on 2026-08-31 |
 | Pull request | Pending |
 | Related work | None |
 | Affected areas | PostgreSQL registry and run stores, run snapshot decoding, orchestrator run snapshot codec |
-| Approved plan commit | Pending independent review |
+| Approved plan commit | c7b51ef1 |
 | Last updated | 2026-08-31 |
 
 ## One-minute summary
@@ -175,8 +175,12 @@ flowchart LR
   guarded control-plane display paths.
 - Result shapes do not change. Workspace runtime state, decoded runs, and run
   creation return exactly what they return today.
-- A legacy row with NULL `atom_strings` decodes exactly as today, including the
-  re-derivation cost. Explicit failure semantics are unchanged: a row with
+- A legacy row with NULL `atom_strings` re-derives the atom allowlist from the
+  document exactly as today, including the re-derivation cost and the
+  publication-time hash re-check. One source changes for those rows: runner
+  releases resolve from the `runner_releases` column (NOT NULL and written from
+  the same verified source in the same transaction) instead of being decoded
+  out of the document. Explicit failure semantics are unchanged: a row with
   neither `atom_strings` nor a decodable document fails the read; nothing is
   retried.
 
@@ -327,13 +331,14 @@ are preserved for both shapes.
 
 | Planned | Implemented | Reason | Impact | Reviewer verdict |
 | --- | --- | --- | --- | --- |
-| The legacy NULL-`atom_strings` fallback preserves today's behavior exactly | Behavior and results are preserved, but in batched decodes the document is now fetched once per run row instead of once per unique manifest version per batch | The batched manifest load no longer selects the document, and the fallback is a per-row branch | Affects only legacy rows, which no current publication path produces; the dominant re-derivation cost was already per row | Pending |
+| The legacy NULL-`atom_strings` fallback preserves today's behavior exactly | Decoded results are identical, but a legacy row now costs one extra document query per decoded run (single and batched reads alike, where the batch previously fetched the document once per unique manifest version), and runner releases resolve from the column instead of the document | The manifest loads no longer select the document, and the fallback is a per-row branch; the column is NOT NULL and written from the same verified source | Affects only legacy rows, which no current publication path produces; the dominant re-derivation cost was already per row | Approved by the final reviewer |
+| The codec keeps a JSON path for resolving runner releases from `manifest_index_json` | The JSON resolution clause was removed after final review; releases resolve only from the record's `runner_releases` field, with an explicit error otherwise | Every caller supplies the NOT NULL column, so the JSON clause was unreachable and untested; the repository prefers removing stale code | A hypothetical record without `runner_releases` now fails decoding explicitly instead of falling back to the document | Proposed as an optional correction by the final reviewer; verified by re-running the codec suite |
 
 ## Decision log
 
 | Date | Decision | Reason | Review needed |
 | --- | --- | --- | --- |
-| 2026-08-31 | `manifest_runner_releases` resolves from the record's `runner_releases` field first, decoding `manifest_index_json` only when the field is absent, with an explicit error for records carrying neither | The column and the document are written from one verified source in one transaction; preferring the field avoids decoding the whole document for one key, and the fallthrough keeps the failure explicit instead of a function clause crash | Yes |
+| 2026-08-31 | `manifest_runner_releases` resolves only from the record's `runner_releases` field, with an explicit error for records without it; the record typespec marks the field required | The column and the document are written from one verified source in one transaction; every caller supplies the NOT NULL column, so a JSON fallback would be unreachable stale code, and the fallthrough keeps the failure explicit instead of a function clause crash | Reviewed and approved by the final reviewer |
 
 ## Verification evidence
 
@@ -361,8 +366,8 @@ are preserved for both shapes.
 
 | Field | Result |
 | --- | --- |
-| Reviewer | Pending |
-| Reviewed against | The approved plan baseline and the implementation diff |
-| Findings | Pending |
-| Findings addressed and rechecked | Pending |
-| Verdict | Pending |
+| Reviewer | Independent Claude review agent, spawned 2026-08-31 with the plan baseline (c7b51ef1) and the implementation diff |
+| Reviewed against | The approved plan baseline, the implementation diff, the current files, and the codebase (clause tracing, delete-path and constraint verification, repository-wide document-read grep) |
+| Findings | Five non-blocking notes: the fallback's `Repo.one!` raise is unreachable in practice and mapped to an error tuple at the store boundary; the release-source change for legacy rows needed stating; the JSON release clause was dead and untested; record metadata needed completion; the deviation wording needed to cover single-run decode |
+| Findings addressed and rechecked | All addressed: invariant and deviation wording corrected, metadata completed, dead clause removed with the codec suite re-run green; the reviewer confirmed the atom gate, both cross-record checks, unchanged result shapes, and that no runtime read path outside publication, cache fill, and the legacy fallback selects the document |
+| Verdict | Approved with corrections, 2026-08-31; corrections applied |

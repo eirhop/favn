@@ -156,9 +156,9 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
   @type manifest_record :: %{
           required(:manifest_version_id) => String.t(),
           required(:content_hash) => String.t(),
+          required(:runner_releases) => Favn.RunnerPool.releases(),
           optional(:manifest_index_json) => String.t(),
-          optional(:atom_strings) => [String.t()],
-          optional(:runner_releases) => Favn.RunnerPool.releases()
+          optional(:atom_strings) => [String.t()]
         }
 
   @spec encode_run(RunState.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
@@ -1961,16 +1961,6 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
     case Favn.RunnerPool.validate_releases(releases) do
       :ok -> {:ok, releases}
       {:error, _reason} -> {:error, :invalid_manifest_runner_releases}
-    end
-  end
-
-  defp manifest_runner_releases(%{manifest_index_json: json}) when is_binary(json) do
-    with {:ok, manifest} <- Jason.decode(json),
-         releases when is_map(releases) <- Map.get(manifest, "runner_releases"),
-         :ok <- Favn.RunnerPool.validate_releases(releases) do
-      {:ok, releases}
-    else
-      _other -> {:error, :invalid_manifest_runner_releases}
     end
   end
 
