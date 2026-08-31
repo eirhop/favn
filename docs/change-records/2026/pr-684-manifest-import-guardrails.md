@@ -5,10 +5,10 @@
 | Status | Plan reviewed |
 | Type | Bug fix |
 | Primary issue | Not filed. The repository owner explicitly authorized this focused replacement without an issue. |
-| Pull request | Pending |
+| Pull request | [PR 684](https://github.com/eirhop/favn/pull/684) |
 | Related work | [Issue 661 manifest deployment](issue-661-pr-662-manifest-deployment.md); draft PR 683 |
 | Affected areas | First-party manifest archive upload, package batching, asynchronous manifest activation, container-memory diagnostics |
-| Approved plan commit | Pending |
+| Approved plan commit | `d483fe8c` |
 | Last updated | 2026-08-31 |
 
 ## Summary
