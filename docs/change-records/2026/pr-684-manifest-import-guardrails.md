@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Plan reviewed |
+| Status | Implementation in progress |
 | Type | Bug fix |
 | Primary issue | Not filed. The repository owner explicitly authorized this focused replacement without an issue. |
 | Pull request | [PR 684](https://github.com/eirhop/favn/pull/684) |
@@ -82,7 +82,51 @@ accounting.
   resident, and allows the existing five-minute inspection deadline before
   declaring failure. Runner memory is outside the measured control-plane
   cgroup.
-- No runtime constant is frozen from these pre-import harness attempts.
+- Remote run `33385074306` completed ten fresh representative imports, one
+  replay, and one 1,001-package stress import under an effective 1 GiB cgroup.
+  Every operation reached `needs_attention` with complete inspection progress;
+  every control plane stayed healthy with zero restarts and zero cgroup OOM
+  kills. Representative peaks ranged from 815,263,744 to 853,360,640 bytes
+  (median 833,114,112), while pre-import current usage ranged from 229,842,944
+  to 257,302,528 bytes. The stress peak was 1,065,549,824 bytes, leaving only
+  8,192,000 bytes of cgroup headroom. This proves both that a 512 MiB gate admits
+  the representative 1 GiB case and that the current path can approach the
+  limit closely enough that a small concurrent allocation can terminate it.
+
+### Frozen implementation bounds
+
+The following bounds are fixed for the implementation gate. More container RAM
+permits admission but does not increase them.
+
+- Every upload or activation phase requires at least 512 MiB of current cgroup
+  headroom before it starts and at every importer stage boundary. At the
+  largest stage this covers a 256 MiB bounded manifest/index worker, a 128 MiB
+  decoded-Version caller result, and 128 MiB for handoff, cache insertion, and
+  emergency headroom. The worker is gone before the normal activation path may
+  build and cache the already-qualified index.
+- Package batches retain at most 8 packages, 4 MiB of canonical package input,
+  and 64 MiB for the prospective decoded package-list envelope.
+- One package decode worker has a 96 MiB heap ceiling including shared binaries,
+  a 64 MiB package-result ceiling, and a 30-second timeout.
+- Manifest decode and activation-index validation use a 256 MiB heap ceiling,
+  an explicit 128 MiB decoded-`Version` result ceiling, a 128 MiB retained-index
+  ceiling, and a 30-second timeout.
+- Upload and activation share one local phase slot. PostgreSQL upload admission
+  and the activation dispatcher both have concurrency one.
+
+Every term ceiling above is measured exactly as
+`4 * :erlang.external_size(term)` in bytes. Package batching measures the whole
+prospective package list, Version handoff measures the returned `%Version{}`,
+and index validation measures the cache's exact `{cache_key, index}` retained
+shape through one shared size function. Worker heap ceilings are byte values
+converted to VM words using `:erlang.system_info(:wordsize)`. That word count is
+passed as the `:size` field to `Process.flag(:max_heap_size, %{...})` with
+`kill: true` and `include_shared_binaries: true`.
+The worker handoff does not return to its caller until both the tagged result
+and the matching monitored `:DOWN` have been observed. Package persistence,
+manifest acceptance, cache insertion, and activation therefore cannot overlap
+the bounded worker heap. A focused test must block the caller until worker
+termination and prove that late messages and timeout cleanup are drained.
 
 ### Measurement gate
 
@@ -304,7 +348,7 @@ explicit 10,000-package protocol limit; this change does not raise that limit.
 | Reviewed against | `origin/main` at `852fc1be`, issue 661, draft PR 683 lessons, current upload/activation/cache/storage source, original production evidence, and the explicit complexity ceiling |
 | Initial findings | Worker-return and acceptance copies were not bounded; activation caches were omitted; hierarchical cgroup math and guard restart behavior were underspecified; the complexity budget conflicted; deterministic and transient errors were conflated; legacy accepted operations could bypass validation. |
 | Corrections | Added the measurement gate, end-to-end copy budgets, bounded returned results, upload and activation-index prevalidation, bounded read-only preparation for every activation including legacy rows, finite hierarchical cgroups, root `:one_for_all` failure semantics, exact pressure outcomes, cold-cache qualification, hybrid cgroup coverage, and consistent add/delete ceilings. |
-| Plan verdict | Approve Slice 0 measurement work. Runtime guardrail implementation remains blocked until measurements freeze constants and the reviewer approves the updated plan. |
+| Plan verdict | Approved for implementation after the successful 1 GiB measurement and frozen-bounds review. |
 | Initial Slice 0 review | Rejected the first coarse harness because it did not await terminal activation, prove the effective limit, exercise replay, or provide defensible stage attribution. |
 | Slice 0 correction | Await terminal activation, validate and record the effective cgroup limit, exercise replay, and record restart/OOM evidence. Fixed bounds now come from conservative multiples of the existing 4 MiB protocol unit; cgroup RSS is end-to-end proof rather than false per-stage attribution. |
 | Slice 0 evidence correction | Preserve logs, restart/OOM state, and a summary even when activation polling fails; bound every HTTP call; record and enforce the 15-minute deployment bound; normalize failure evidence as valid JSON; removed the stale near-limit-evidence claim. |
@@ -319,4 +363,4 @@ explicit 10,000-package protocol limit; this change does not raise that limit.
 | Fifth remote attempt | Run `33380852801` proved credentials and general HTTP bearer delivery were valid but the manifest endpoint still returned HTTP 401. Source inspection found the shared cause: generated request IDs were not assigned, so manifest context construction mislabeled the missing ID as invalid credentials. The router assigns generated IDs and the harness retains one compact exact-endpoint preflight. |
 | Platform-fallback review | Approved after static review: the fallback is an explicit endpoint contract, uses one disposable internal credential, and removes temporary diagnostic machinery without changing post-auth import behavior. |
 | Request-ID root-cause review | Approved after static review: assigning the already-generated bounded request ID fixes context construction without changing authorization, persistence, response headers, or idempotency; the full-router regression test reaches deterministic post-auth validation. |
-| Slice 0 verdict | Approved for remote measurement with no remaining findings. Runtime guardrails remain blocked until the evidence is recorded and constants are frozen. |
+| Slice 0 verdict | Run `33385074306` completed ten representative cycles, replay, and the 1,001-package stress case with no OOM or restart. Frozen bounds and strict worker-handoff ordering were approved; runtime implementation may begin. |
