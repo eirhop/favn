@@ -114,9 +114,7 @@ defmodule FavnOrchestrator.RunServer.Execution.SequentialTest do
     }
 
     runtime = %PersistenceRuntime{backend: __MODULE__, options: [], stores: stores}
-    assert {:ok, pid} = PersistenceRuntime.start_link(runtime)
-
-    on_exit(fn -> Process.exit(pid, :shutdown) end)
+    start_supervised!({PersistenceRuntime, runtime})
 
     :ok
   end

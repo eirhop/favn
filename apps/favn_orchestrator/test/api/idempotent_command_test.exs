@@ -73,17 +73,16 @@ defmodule FavnOrchestrator.API.IdempotentCommandTest do
 
     Application.put_env(:favn_orchestrator, :idempotent_command_test_agent, agent)
 
-    assert {:ok, runtime} =
-             Runtime.start_link(%Runtime{
-               backend: __MODULE__,
-               options: [],
-               stores: struct(Stores, identity: IdentityStore)
-             })
-
-    Process.unlink(runtime)
+    start_supervised!(
+      {Runtime,
+       %Runtime{
+         backend: __MODULE__,
+         options: [],
+         stores: struct(Stores, identity: IdentityStore)
+       }}
+    )
 
     on_exit(fn ->
-      if Process.alive?(runtime), do: GenServer.stop(runtime)
       if Process.alive?(agent), do: Agent.stop(agent)
       Application.delete_env(:favn_orchestrator, :idempotent_command_test_agent)
       restore_env(:operator_command_hmac_key, previous_key)
