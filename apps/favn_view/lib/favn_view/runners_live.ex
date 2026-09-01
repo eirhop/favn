@@ -54,7 +54,7 @@ defmodule FavnView.RunnersLive do
   @impl true
   def handle_event("reload", _params, socket), do: {:noreply, load_overview(socket)}
 
-  def handle_event("set_window", %{"window" => value}, socket) do
+  def handle_event("set_window", %{"scope" => value}, socket) do
     case parse_enum(value, @windows) do
       {:ok, window} -> {:noreply, socket |> assign(window: window) |> load_overview()}
       :error -> {:noreply, socket}

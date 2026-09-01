@@ -148,6 +148,9 @@ defmodule FavnOrchestrator.RunnerOverview do
        else: {:error, :invalid_runner_overview_options}
   end
 
+  # Demand partitions are durable and never pruned, so every historical
+  # release keeps a row; only partitions with demand, a connected runner, or
+  # a health problem say anything about current capacity.
   defp capacity(demands, runners) do
     connected =
       Enum.frequencies_by(runners, &{&1.runner_pool, &1.required_runner_release_id})
@@ -165,7 +168,13 @@ defmodule FavnOrchestrator.RunnerOverview do
         healthy?: demand.healthy?
       }
     end)
+    |> Enum.filter(&relevant_partition?/1)
     |> Enum.sort_by(&{&1.runner_pool, &1.required_runner_release_id})
+  end
+
+  defp relevant_partition?(row) do
+    row.queued_count > 0 or row.active_count > 0 or row.connected_runner_count > 0 or
+      not row.healthy?
   end
 
   defp live_runners(workspace_id) do

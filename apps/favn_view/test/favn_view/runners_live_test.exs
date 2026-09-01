@@ -28,7 +28,7 @@ defmodule FavnView.RunnersLiveTest do
     end)
 
     assert {:noreply, socket} =
-             RunnersLive.handle_event("set_window", %{"window" => "month"}, socket())
+             RunnersLive.handle_event("set_window", %{"scope" => "month"}, socket())
 
     assert socket.assigns.window == :month
     assert_received {:overview, opts}
@@ -36,13 +36,21 @@ defmodule FavnView.RunnersLiveTest do
     assert DateTime.diff(DateTime.utc_now(), opts[:overlapping_after], :day) >= 29
 
     assert {:noreply, socket} =
-             RunnersLive.handle_event("set_window", %{"window" => "all"}, socket)
+             RunnersLive.handle_event("set_window", %{"scope" => "today"}, socket)
+
+    assert socket.assigns.window == :today
+    assert_received {:overview, opts}
+    assert %DateTime{} = opts[:overlapping_after]
+    assert DateTime.diff(DateTime.utc_now(), opts[:overlapping_after], :hour) <= 24
+
+    assert {:noreply, socket} =
+             RunnersLive.handle_event("set_window", %{"scope" => "all"}, socket)
 
     assert_received {:overview, opts}
     assert is_nil(opts[:overlapping_after])
 
     assert {:noreply, unchanged} =
-             RunnersLive.handle_event("set_window", %{"window" => "bogus"}, socket)
+             RunnersLive.handle_event("set_window", %{"scope" => "bogus"}, socket)
 
     assert unchanged.assigns.window == :all
     refute_received {:overview, _opts}

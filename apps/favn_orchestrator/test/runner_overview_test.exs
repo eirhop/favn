@@ -83,6 +83,24 @@ defmodule FavnOrchestrator.RunnerOverviewTest do
         active_count: 1,
         oldest_queued_at: ~U[2026-09-01 07:00:00Z],
         healthy?: true
+      },
+      %RunnerCapacityDemand{
+        runner_pool: "default",
+        required_runner_release_id: "rr_stale_release",
+        outstanding_count: 0,
+        queued_count: 0,
+        active_count: 0,
+        oldest_queued_at: nil,
+        healthy?: true
+      },
+      %RunnerCapacityDemand{
+        runner_pool: "default",
+        required_runner_release_id: "rr_unhealthy_release",
+        outstanding_count: 0,
+        queued_count: 0,
+        active_count: 0,
+        oldest_queued_at: nil,
+        healthy?: false
       }
     ])
 
@@ -95,10 +113,13 @@ defmodule FavnOrchestrator.RunnerOverviewTest do
     assert overview.workspace_tasks.failed_count == 3
     assert overview.workspace_tasks.failed_since == window_start
 
-    assert [capacity] = overview.capacity
+    assert [capacity, unhealthy] = overview.capacity
     assert capacity.runner_pool == "default"
+    assert capacity.required_runner_release_id == "rr_release"
     assert capacity.queued_count == 2
     assert capacity.connected_runner_count == 0
+    assert unhealthy.required_runner_release_id == "rr_unhealthy_release"
+    refute unhealthy.healthy?
 
     assert overview.totals.awake_ms == 10_000
     assert overview.totals.busy_ms == 4_000

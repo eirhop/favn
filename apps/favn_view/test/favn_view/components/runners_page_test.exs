@@ -43,6 +43,7 @@ defmodule FavnView.Components.RunnersPageTest do
     assert html =~ ~s(phx-click="set_window")
     assert html =~ ~s(data-testid="scope-crashed")
     assert html =~ ~s(data-testid="scope-week")
+    assert html =~ ~s(phx-value-scope="week")
 
     assert html =~ ~s(data-testid="runner-session-tasks-toggle")
     assert html =~ ~s(phx-value-instance="runner-crashed")

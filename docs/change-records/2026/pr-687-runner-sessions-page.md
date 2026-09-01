@@ -546,3 +546,18 @@ so the approved-plan diagram stands.
 | Findings | 3 should-fix: the orphaned `page_workspace` storage capability (deleted, with its query struct, tests, and stubs); the unrecorded busy-totals deviation (recorded); a racy lazy mint of the control-plane boot id (now minted synchronously in application start before any child). 7 notes: fallback windows and stats shape and merge key recorded as deviations; connected-state staleness and the clock-skew repair edge recorded under failures and recovery; the fabricated interrupted copy fixed with an explicit interrupted scope (own, foreign, unknown) and tests; untested-path notes recorded under Not verified |
 | Findings addressed and rechecked | All findings addressed; corrections rechecked against commit 45bf4d27 by the reviewer |
 | Verdict | Accept (2026-09-01) |
+
+## Post-acceptance corrections
+
+Two defects surfaced during the operator's live walkthrough on the dev stack
+(2026-09-01), after the final review was accepted. Both are corrected on the
+same branch before merge.
+
+| Defect | Cause | Correction |
+| --- | --- | --- |
+| Clicking any session-window chip crashed the LiveView and rendered the diagnostics-unavailable banner | `set_window` pattern-matched a `"window"` param, but `scope_rail` always pushes the choice id as `"scope"`; the handler test hand-built the params instead of using the shape the component emits, so it passed against markup that could never match | The handler matches `"scope"` (as `set_state` already did); the handler test sends the real param shape and now also covers `:today`; the page test pins `phx-value-scope` in the rendered rail markup |
+| The capacity table listed one all-zero row per historical release | Demand partitions are durable per pool and release and are never pruned; every dev rebuild mints a new release id, so stale partitions accumulate with nothing to say | The read model keeps only partitions with queued or active demand, a connected runner, or an unhealthy flag; starvation detection is unaffected because starved partitions always have queued work |
+
+The same pass silenced the behaviour warnings the new session callbacks
+introduced in the two test-only runner-task store stubs by implementing the
+callbacks as explicit unavailable results.
