@@ -504,16 +504,17 @@ so the approved-plan diagram stands.
 | Full `favn_storage_postgres` fast tier including regenerated schema fingerprint and replay receipts | 363 passed | Automated qualification |
 | Orchestrator lifecycle tests (one open per acceptance, crashed vs shut down vs busy-at-exit classification, raising store never blocks, boot reconcile targeting) and read-model tests (merge, struggling grouping, cross-workspace scrub, option validation, remediation) | Full `favn_orchestrator` fast tier: 789 passed | Automated qualification |
 | View tests (grouped stats, starvation notice, session states and ages, struggling group, expander detail, filters preserved across events, unavailable fetch) | Full `favn_view` fast tier: 824 passed | Automated qualification |
-| Umbrella fast suite, format, compile with warnings as errors, tag-tier guard | Pending | Automated qualification |
-| Live dev-stack pass: runner started, killed, restarted; control-plane restart with surviving runner | Pending | Live proof |
+| Umbrella fast suite, scoped format, compile with warnings as errors, tag-tier guard, `git diff --check` | Passed. Seven failures in `Favn.ControlPlaneReleaseWorkflowTest` and `Favn.DeploymentReferenceConformanceTest` are Windows-checkout CRLF artifacts (`env: 'bash\r'` shebang failures) in files this change does not touch | Automated qualification |
+| Live dev-stack pass (2026-09-01, `mix favn.dev` with the example workload): migration applied to the dev database; a registration opened one row; running the reference pipeline attributed 12–18 succeeded tasks per session with busy totals on the page; `kill -9` of the runner BEAM closed its row as `crashed`; the stack's replacement runner opened a new row; `kill -9` of the control-plane BEAM left the row open, and the next boot's reconciliation closed it as `presumed_dead` while the new boot registered under a new control-plane boot id; `/runners` rendered all sections and the crashed-state filter narrowed the live list | Passed | Live proof |
 
 ### Not verified
 
-- The pending rows above until the umbrella run and the dev-stack pass are
-  recorded.
 - Retention pruning under production-scale row counts.
 - Multi-day busy/idle totals against real workloads (semantics are
   test-proven; magnitudes are not).
+- A crash while a task is mid-execution (`busy_at_exit` with an interrupted
+  task) was proven by orchestrator tests, not reproduced live; the live
+  crashes happened while the runner was idle.
 
 ## Final review
 
