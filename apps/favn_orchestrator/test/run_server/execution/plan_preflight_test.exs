@@ -97,12 +97,11 @@ defmodule FavnOrchestrator.RunServer.Execution.PlanPreflightTest do
     }
 
     runtime = %PersistenceRuntime{backend: __MODULE__, options: [], stores: stores}
-    assert {:ok, persistence_pid} = PersistenceRuntime.start_link(runtime)
+    start_supervised!({PersistenceRuntime, runtime})
 
     on_exit(fn ->
       restore_env(:test_runner_executor, previous_client)
       restore_env(:test_runner_executor_opts, previous_opts)
-      if Process.alive?(persistence_pid), do: GenServer.stop(persistence_pid)
     end)
 
     :ok

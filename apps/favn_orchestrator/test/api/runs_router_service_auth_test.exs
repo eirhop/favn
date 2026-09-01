@@ -156,8 +156,7 @@ defmodule FavnOrchestrator.API.RunsRouterServiceAuthTest do
       maintenance: EmptyRunsStore
     }
 
-    assert {:ok, runtime} =
-             Runtime.start_link(%Runtime{backend: __MODULE__, options: [], stores: stores})
+    start_supervised!({Runtime, %Runtime{backend: __MODULE__, options: [], stores: stores}})
 
     on_exit(fn ->
       restore_env(:api_service_tokens, previous_tokens)
@@ -170,7 +169,6 @@ defmodule FavnOrchestrator.API.RunsRouterServiceAuthTest do
       Process.delete(:runs_router_list_error)
       Process.delete(:runs_router_events_error)
       Process.delete(:runs_router_runtime_state_error)
-      if Process.alive?(runtime), do: GenServer.stop(runtime)
     end)
 
     :ok

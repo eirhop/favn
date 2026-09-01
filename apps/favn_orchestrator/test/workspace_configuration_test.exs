@@ -116,10 +116,7 @@ defmodule FavnOrchestrator.WorkspaceConfigurationTest do
       maintenance: Store
     }
 
-    assert {:ok, runtime} =
-             Runtime.start_link(%Runtime{backend: __MODULE__, options: [], stores: stores})
-
-    on_exit(fn -> if Process.alive?(runtime), do: GenServer.stop(runtime) end)
+    start_supervised!({Runtime, %Runtime{backend: __MODULE__, options: [], stores: stores}})
 
     context = %OperatorContext{
       workspace_id: "workspace-oslo",

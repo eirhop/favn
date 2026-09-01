@@ -102,16 +102,12 @@ defmodule FavnOrchestrator.API.AuthRouterContractTest do
       maintenance: IdentityStore
     }
 
-    assert {:ok, runtime} =
-             Runtime.start_link(%Runtime{backend: __MODULE__, options: [], stores: stores})
-
-    assert {:ok, login_store} = Store.start_link()
+    start_supervised!({Runtime, %Runtime{backend: __MODULE__, options: [], stores: stores}})
+    start_supervised!(Store)
 
     on_exit(fn ->
       restore_env(:api_service_tokens, previous_tokens)
       Process.delete(:auth_router_actor)
-      if Process.alive?(login_store), do: GenServer.stop(login_store)
-      if Process.alive?(runtime), do: GenServer.stop(runtime)
     end)
 
     :ok

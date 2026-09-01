@@ -636,18 +636,9 @@ defmodule FavnOrchestrator.API.ManifestsRouterTest do
       maintenance: MissingManifestStore
     }
 
-    assert {:ok, runtime} =
-             Runtime.start_link(%Runtime{backend: __MODULE__, options: [], stores: stores})
+    start_supervised!({Runtime, %Runtime{backend: __MODULE__, options: [], stores: stores}})
 
-    on_exit(fn ->
-      if Process.alive?(runtime) do
-        try do
-          GenServer.stop(runtime)
-        catch
-          :exit, _reason -> :ok
-        end
-      end
-    end)
+    :ok
   end
 
   defp restore_env(key, nil), do: Application.delete_env(:favn_orchestrator, key)
