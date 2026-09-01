@@ -18,7 +18,10 @@ defmodule FavnOrchestrator.Persistence.RunnerTaskStore do
   alias FavnOrchestrator.Persistence.Results.RunnerCapacityDemand
   alias FavnOrchestrator.Persistence.Results.RunnerCapacityHealth
   alias FavnOrchestrator.Persistence.Results.RunnerReleaseDrain
+  alias FavnOrchestrator.Persistence.Results.RunnerSession
+  alias FavnOrchestrator.Persistence.Results.RunnerSessionWindowTotals
   alias FavnOrchestrator.Persistence.Results.RunnerTask
+  alias FavnOrchestrator.Persistence.Results.WorkspaceRunnerTaskStats
   alias FavnOrchestrator.Persistence.Error
 
   @callback enqueue(C.EnqueueRunnerTask.t()) :: {:ok, RunnerTask.t()} | {:error, Error.t()}
@@ -61,4 +64,20 @@ defmodule FavnOrchestrator.Persistence.RunnerTaskStore do
               {:ok, RunnerCapacityHealth.t()} | {:error, Error.t()}
   @callback list_release_drains(Q.ListRunnerReleaseDrains.t()) ::
               {:ok, [RunnerReleaseDrain.t()]} | {:error, Error.t()}
+  @callback open_session(C.OpenRunnerSession.t()) ::
+              {:ok, RunnerSession.t()} | {:error, Error.t()}
+  @callback close_session(C.CloseRunnerSession.t()) ::
+              {:ok, :closed | :already_closed | :not_found} | {:error, Error.t()}
+  @callback reconcile_sessions(C.ReconcileRunnerSessions.t()) ::
+              {:ok, non_neg_integer()} | {:error, Error.t()}
+  @callback prune_sessions(C.PruneRunnerSessions.t()) ::
+              {:ok, non_neg_integer()} | {:error, Error.t()}
+  @callback page_sessions(Q.PageRunnerSessions.t()) ::
+              {:ok, [RunnerSession.t()]} | {:error, Error.t()}
+  @callback session_window_totals(Q.GetRunnerSessionWindowTotals.t()) ::
+              {:ok, RunnerSessionWindowTotals.t()} | {:error, Error.t()}
+  @callback page_session_tasks(Q.PageRunnerSessionTasks.t()) ::
+              {:ok, [RunnerTask.t()]} | {:error, Error.t()}
+  @callback workspace_task_stats(Q.GetWorkspaceRunnerTaskStats.t()) ::
+              {:ok, WorkspaceRunnerTaskStats.t()} | {:error, Error.t()}
 end

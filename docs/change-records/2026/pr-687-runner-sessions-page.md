@@ -420,3 +420,108 @@ control-plane restart while a runner stays alive.
 | Findings | 3 blocking (close-write ownership contradicted `RunnerTaskRecovery` behavior; session identity broke on control-plane restart vs verified resume; `assigned_at` write-once conflicted with reassignment and attribution was under-specified), 5 should-fix (cross-workspace task exposure, non-existent drain write point, removed failure surface breaking the run-detail link and operator guide, missing design-system/fingerprint scope, timezone and poll/filter interaction), 3 notes (diagram focus, prune wording, registration terminology) |
 | Findings addressed and rechecked | All original findings addressed and rechecked against code by the reviewer. Recheck raised one should-fix (open idempotency key broke on same-boot resume; fixed by minting the row id at gateway acceptance as the idempotency token, with opportunistic close of a prior open row) and two notes (softened the one-open-row invariant for the lost-close window; added presumed dead to the status filter). Corrections applied and confirmed by the reviewer. |
 | Verdict | Approved (2026-09-01) after corrections were applied and confirmed; the reviewer added one implementation-time expectation, recorded in the close-only-if-still-open invariant |
+
+---
+
+The sections below record the implementation outcome for final review.
+
+## Implementation outcome
+
+The implementation matches the approved plan's behavior: a durable
+`runner_sessions` row opens when the registry accepts a registration and closes
+in the registry's DOWN path with a classified reason; boot reconciliation
+closes rows from earlier control-plane boots as presumed dead; the open write
+repairs an orphaned open row for the same instance; and the page was rebuilt
+around the grouped stat header, capacity table, live runners, and the
+filterable session history with busy/idle totals. Two ownership details moved
+during implementation (see deviations); the observable contract is unchanged,
+so the approved-plan diagram stands.
+
+### Actual scope and complexity
+
+- Files and ownership areas changed: `favn_storage_postgres` (migration,
+  schemas, new `RunnerSessions.Store`, `RunnerTasks.Store`, migrations
+  registry, storage tests), `favn_orchestrator` (persistence contracts and
+  behaviour, `RunnerSessions` lifecycle module, registry, application
+  children, `RunnerOverview`, facade, tests), `favn_view` (`RunnersLive`,
+  `RunnersPage`, run-detail link copy, view adapter, design-system fixtures,
+  tests), `docs` (operator guide, FEATURES).
+- Ownership boundaries affected: view continues to use only the public
+  orchestrator facade; sessions are platform-global reads behind operator
+  reauthorization with workspace-scoped task detail, as planned.
+- Implementation complexity: Moderate — three lifecycle write points and one
+  read-model replacement, each individually small.
+- Operational complexity: Low — diagnostics-only writes that log and continue,
+  one additive migration, no operator action.
+- Canonical documentation updated: `docs/operators/runs-and-schedules.md`
+  (`/runners` section), `docs/FEATURES.md`.
+- Actual additions, deletions, and supporting lines per slice, from
+  `git diff --numstat` (excluding this record):
+  - Slice 1 (storage): production +641/−3 (budget 220–350/0–30); supporting
+    +503/−0 (budget 220–380/0–30). The overrun is the sessions store: six
+    operations each carrying context validation, bounded reads, and the
+    clamped aggregate fragments cost more lines than estimated, and the test
+    file covers every operation plus the cross-suite isolation the shared
+    platform-global table required. No scope was added.
+  - Slice 2 (orchestrator): production +704/−25 (budget 250–400/80–160);
+    supporting +460/−42 (budget 250–400/60–150). Additions overrun for the
+    same per-operation-contract reason (four command structs, four query
+    structs, two result structs, and the lifecycle module's log-and-continue
+    wrappers are individually trivial but numerous). Deletions land far under
+    budget because Git matched the retained halves of `RunnerOverview` (task
+    failure projection, live-runner projection) instead of counting the
+    rewrite as delete-plus-add; the old failure/activity listing paths are
+    gone, not left behind.
+  - Slice 3 (view): production +622/−69 (budget 350–550/200–300); supporting
+    +488/−86 (budget 350–550/150–300). Deletions again under budget for the
+    same diff-matching reason: the prior page body was replaced, but its
+    scaffolding lines (shell, loading/error states, task card) survive
+    verbatim and were not double-counted.
+  - Slice 4 (docs): +21/−11 (budget 40–100/20–60), plus the design-system
+    fixture rework counted under slice 3.
+
+## Deviations from the approved plan
+
+| Planned | Implemented | Reason | Impact | Reviewer verdict |
+| --- | --- | --- | --- | --- |
+| Gateway mints the session row id and writes the open | The registry mints the row id inside registration acceptance, stores it on the in-memory session, and both open and close writes are spawned from the registry onto a dedicated task supervisor | A duplicate registration returns the same acknowledgement as the original, so only the registry knows whether a registration created a new session; the DOWN close also needs the row id, which therefore must live on the session | None on invariants: writes stay off the runner-facing critical path (spawned, log-and-continue), idempotency is still the minted row id | Pending |
+| Session persistence contracts implied a dedicated store capability | The `RunnerTaskStore` behaviour gained the session callbacks; the implementation lives in a separate `FavnStoragePostgres.RunnerSessions.Store` module reached by delegation | A new `Stores` capability would amplify every store-registry construction site (fixtures, fakes, backend) for no behavioral gain; sessions share the runner-task domain | None on behavior; the implementation map's module split is preserved | Pending |
+| Read model filters session states server-side | The read model accepts and validates the `states` option (covered by tests), but the page requests `:all` and narrows client-side over the bounded page | The state rail shows counts per state, which requires the unfiltered page anyway; the page is already bounded at 50 entries | None; both layers stay tested | Pending |
+
+## Decision log
+
+| Date | Decision | Reason | Review needed |
+| --- | --- | --- | --- |
+| 2026-09-01 | `assigned_at` is also set when recovery re-fences an expired assignment, not only on a runner claim | The column means "when the latest assignment began"; recovery reassignments carry session generation 0 and are already excluded from attribution and busy totals | No |
+| 2026-09-01 | The replay-receipt snapshot's mutable field list gained `assigned_at` | Idempotent command replays reconstruct task results from receipts; omitting the field made a replayed result differ from the live row | No |
+| 2026-09-01 | The recovery-sweeper notification is left untouched; the registry's DOWN handler notifies it exactly as before | Session closes are a parallel spawned write, so recovery semantics cannot change | No |
+
+## Verification evidence
+
+| Check | Result | Evidence boundary |
+| --- | --- | --- |
+| Storage runner-session tests (open idempotency and orphan repair, close-once, boot reconcile, prune, window/state paging, attribution + busy totals, `assigned_at` claim/requeue, workspace stats) | 8 passed | Automated qualification |
+| Full `favn_storage_postgres` fast tier including regenerated schema fingerprint and replay receipts | 363 passed | Automated qualification |
+| Orchestrator lifecycle tests (one open per acceptance, crashed vs shut down vs busy-at-exit classification, raising store never blocks, boot reconcile targeting) and read-model tests (merge, struggling grouping, cross-workspace scrub, option validation, remediation) | Full `favn_orchestrator` fast tier: 789 passed | Automated qualification |
+| View tests (grouped stats, starvation notice, session states and ages, struggling group, expander detail, filters preserved across events, unavailable fetch) | Full `favn_view` fast tier: 824 passed | Automated qualification |
+| Umbrella fast suite, format, compile with warnings as errors, tag-tier guard | Pending | Automated qualification |
+| Live dev-stack pass: runner started, killed, restarted; control-plane restart with surviving runner | Pending | Live proof |
+
+### Not verified
+
+- The pending rows above until the umbrella run and the dev-stack pass are
+  recorded.
+- Retention pruning under production-scale row counts.
+- Multi-day busy/idle totals against real workloads (semantics are
+  test-proven; magnitudes are not).
+
+## Final review
+
+| Field | Result |
+| --- | --- |
+| Reviewer | Independent agent or person |
+| Compared | Approved plan, implementation, tests, diagnostics, and docs |
+| Deviations complete | Pending |
+| Findings | Pending |
+| Findings addressed and rechecked | Pending |
+| Verdict | Pending |

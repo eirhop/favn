@@ -81,6 +81,12 @@ defmodule FavnOrchestrator.Application do
             {RunManager, []},
             {RunSubmissionSupervisor, config: runtime_config.run_submissions},
             {FavnOrchestrator.ResourceRecovery, []},
+            {Task.Supervisor, name: FavnOrchestrator.RunnerSessionTaskSupervisor},
+            Supervisor.child_spec(
+              {Task, &FavnOrchestrator.RunnerSessions.reconcile_boot/0},
+              id: :runner_session_boot_reconcile,
+              restart: :temporary
+            ),
             {FavnOrchestrator.RunnerRegistry, []},
             {FavnOrchestrator.RunnerDemandLimiter, []},
             {FavnOrchestrator.RunnerQueueSupervisor, []},

@@ -32,7 +32,10 @@ defmodule FavnOrchestrator.RunnerRegistry do
       :status,
       :registered_at
     ]
-    defstruct @enforce_keys ++ [:claim_command_id, :claim_outcome, :active_assignment]
+    defstruct @enforce_keys ++
+                [:session_row_id, :claim_command_id, :claim_outcome, :active_assignment]
+
+    @type t :: %__MODULE__{}
   end
 
   def start_link(opts),
@@ -190,10 +193,14 @@ defmodule FavnOrchestrator.RunnerRegistry do
         state = %{state | monitors: monitors}
 
         case Map.get(state.sessions, runner_id) do
-          %Session{session_generation: ^generation} ->
+          %Session{session_generation: ^generation} = session ->
             if recovery = Process.whereis(FavnOrchestrator.RunnerTaskRecovery) do
               send(recovery, {:runner_down, runner_id, generation, reason})
             end
+
+            spawn_session_write(fn ->
+              FavnOrchestrator.RunnerSessions.close(session, reason, DateTime.utc_now())
+            end)
 
             {:noreply, %{state | sessions: Map.delete(state.sessions, runner_id)}}
 
@@ -273,6 +280,7 @@ defmodule FavnOrchestrator.RunnerRegistry do
         monitor_ref = Process.monitor(agent_pid)
 
         session = %Session{
+          session_row_id: mint_session_row_id(),
           runner_instance_id: registration.runner_instance_id,
           boot_id: registration.boot_id,
           agent_pid: agent_pid,
@@ -298,8 +306,25 @@ defmodule FavnOrchestrator.RunnerRegistry do
             &Map.put(&1, monitor_ref, {session.runner_instance_id, generation})
           )
 
+        spawn_session_write(fn -> FavnOrchestrator.RunnerSessions.open(session) end)
+
         {{:ok, acknowledgement(session)}, state}
     end
+  end
+
+  defp mint_session_row_id,
+    do: "rs_" <> Base.encode16(:crypto.strong_rand_bytes(16), case: :lower)
+
+  defp spawn_session_write(fun) do
+    case Process.whereis(FavnOrchestrator.RunnerSessionTaskSupervisor) do
+      nil ->
+        spawn(fun)
+
+      _supervisor ->
+        Task.Supervisor.start_child(FavnOrchestrator.RunnerSessionTaskSupervisor, fun)
+    end
+
+    :ok
   end
 
   defp acknowledgement(session) do

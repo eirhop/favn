@@ -135,18 +135,25 @@ durable `queued`, `preparing`, or `starting` submission state. A preparation
 failure remains attached to the reserved run id and links to `/runners` instead
 of becoming a not-found page.
 
-Use `/runners` to inspect two different kinds of evidence:
+Use `/runners` to inspect runner health:
 
+- workspace task counters and capacity per pool and release, so queued work
+  with no compatible connected runner is called out directly;
 - connected runners and their current pool, release, capabilities, and live
   state;
-- recent workspace-scoped runner tasks from PostgreSQL, including redacted
-  terminal errors and remediation.
+- durable runner session history: when each runner registered, how long it was
+  awake, what it completed, and whether it shut down, crashed, or is presumed
+  dead after a control-plane restart, with date and state filters and busy/idle
+  totals over the selected window.
 
-Live runner presence is process-local and disappears when a runner disconnects.
-Task history is durable, so the error that caused a runner task to fail remains
-available after the runner exits or restarts. For a missing DuckDB ADBC driver,
-the page preserves the redacted driver error and points local development to
-`DUCKDB_ADBC_DRIVER`.
+Live runner presence is process-local and disappears when a runner disconnects;
+session history is durable and survives runner and control-plane restarts. A
+crashed session records the interrupted task, and expanding a session lists its
+failed tasks from your workspace with the redacted terminal error and
+remediation. For a missing DuckDB ADBC driver, that detail preserves the
+redacted driver error and points local development to `DUCKDB_ADBC_DRIVER`.
+Repeated short-lived sessions that die before claiming work collapse into one
+"struggling to start" entry. Run and asset outcomes stay on the runs pages.
 
 ### Choose Asset Dependency Scope And Refresh
 

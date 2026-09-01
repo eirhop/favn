@@ -13,7 +13,9 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
   alias FavnOrchestrator.Persistence.Results.RunnerCapacityHealth
   alias FavnOrchestrator.Persistence.Results.RunnerReleaseDrain
   alias FavnOrchestrator.Persistence.Results.RunnerTask, as: RunnerTaskResult
+  alias FavnOrchestrator.Persistence.Results.WorkspaceRunnerTaskStats
   alias FavnOrchestrator.Storage.JsonSafe
+  alias FavnStoragePostgres.RunnerSessions.Store, as: SessionsStore
   alias Favn.Contracts.RunnerError
   alias FavnStoragePostgres.CanonicalJSON
   alias FavnStoragePostgres.ErrorMapper
@@ -61,6 +63,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
     :assigned_runner_instance_id,
     :assigned_runner_session_generation,
     :assignment_generation,
+    :assigned_at,
     :assignment_expires_at,
     :cancellation_requested_at,
     :cancellation_acknowledged_at,
@@ -201,6 +204,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
                 assigned_runner_instance_id: command.runner_instance_id,
                 assigned_runner_session_generation: command.runner_session_generation,
                 assignment_generation: task.assignment_generation + 1,
+                assigned_at: command.occurred_at,
                 assignment_expires_at: expires_at,
                 last_command_id: command.command_id,
                 updated_at: command.occurred_at
@@ -544,6 +548,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
               status: "queued",
               assigned_runner_instance_id: nil,
               assigned_runner_session_generation: nil,
+              assigned_at: nil,
               assignment_expires_at: nil
             ]
 
@@ -592,6 +597,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
         status: "queued",
         assigned_runner_instance_id: nil,
         assigned_runner_session_generation: nil,
+        assigned_at: nil,
         assignment_expires_at: nil,
         cancellation_requested_at: nil,
         cancellation_acknowledged_at: nil,
@@ -638,6 +644,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
               assigned_runner_instance_id: command.owner_id,
               assigned_runner_session_generation: 0,
               assignment_generation: task.assignment_generation + 1,
+              assigned_at: command.occurred_at,
               assignment_expires_at: expires_at,
               last_command_id: command.command_id,
               updated_at: command.occurred_at
@@ -767,6 +774,99 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
         base |> Repo.all() |> Enum.map(&to_operator_result/1)
       else
         {:error, Error.new(:invalid, "invalid workspace runner task page query")}
+      end
+    end)
+  end
+
+  @impl true
+  defdelegate open_session(command), to: SessionsStore, as: :open
+
+  @impl true
+  defdelegate close_session(command), to: SessionsStore, as: :close
+
+  @impl true
+  defdelegate reconcile_sessions(command), to: SessionsStore, as: :reconcile_boot
+
+  @impl true
+  defdelegate prune_sessions(command), to: SessionsStore, as: :prune
+
+  @impl true
+  defdelegate page_sessions(query), to: SessionsStore, as: :page
+
+  @impl true
+  defdelegate session_window_totals(query), to: SessionsStore, as: :window_totals
+
+  @impl true
+  def page_session_tasks(%Q.PageRunnerSessionTasks{} = query) do
+    read(fn ->
+      if valid_session_task_query?(query) do
+        statuses = Enum.map(query.statuses, &Atom.to_string/1)
+
+        base =
+          from(task in RunnerTask,
+            where:
+              task.workspace_id == ^query.workspace_context.workspace_id and
+                task.assigned_runner_instance_id == ^query.runner_instance_id and
+                task.assigned_runner_session_generation == ^query.session_generation and
+                not is_nil(task.assigned_at) and task.assigned_at >= ^query.registered_at and
+                task.status in ^statuses,
+            order_by: [desc: task.inserted_at, desc: task.task_id],
+            limit: ^query.limit
+          )
+
+        base =
+          case query.ended_at do
+            nil -> base
+            %DateTime{} = ended_at -> from(task in base, where: task.assigned_at <= ^ended_at)
+          end
+
+        base |> Repo.all() |> Enum.map(&to_operator_result/1)
+      else
+        {:error, Error.new(:invalid, "invalid runner session task page query")}
+      end
+    end)
+  end
+
+  @impl true
+  def workspace_task_stats(%Q.GetWorkspaceRunnerTaskStats{} = query) do
+    read(fn ->
+      if match?(%DateTime{}, query.failed_since) do
+        workspace_id = query.workspace_context.workspace_id
+
+        {queued_count, oldest_queued_at} =
+          Repo.one(
+            from(task in RunnerTask,
+              where: task.workspace_id == ^workspace_id and task.status == "queued",
+              select: {count(task.task_id), min(task.enqueued_at)}
+            )
+          )
+
+        active_count =
+          Repo.one(
+            from(task in RunnerTask,
+              where: task.workspace_id == ^workspace_id and task.status in @active_statuses,
+              select: count(task.task_id)
+            )
+          )
+
+        failed_count =
+          Repo.one(
+            from(task in RunnerTask,
+              where:
+                task.workspace_id == ^workspace_id and task.status in ["failed", "unknown"] and
+                  task.terminal_at >= ^query.failed_since,
+              select: count(task.task_id)
+            )
+          )
+
+        %WorkspaceRunnerTaskStats{
+          queued_count: queued_count,
+          active_count: active_count,
+          failed_count: failed_count,
+          oldest_queued_at: oldest_queued_at
+        }
+      else
+        {:error, Error.new(:invalid, "invalid workspace runner task stats query")}
       end
     end)
   end
@@ -1714,6 +1814,16 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
 
     bounded_id(query.run_id) == :ok and is_integer(query.limit) and query.limit in 1..500 and
       valid_statuses? and valid_page_cursor?(query.cursor)
+  end
+
+  defp valid_session_task_query?(query) do
+    is_binary(query.runner_instance_id) and query.runner_instance_id != "" and
+      is_integer(query.session_generation) and query.session_generation > 0 and
+      match?(%DateTime{}, query.registered_at) and
+      (is_nil(query.ended_at) or match?(%DateTime{}, query.ended_at)) and
+      is_integer(query.limit) and query.limit in 1..200 and
+      is_list(query.statuses) and query.statuses != [] and
+      Enum.all?(query.statuses, &(&1 in Map.values(@status_by_string)))
   end
 
   defp valid_workspace_page_query?(query) do
