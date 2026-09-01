@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Implementing |
+| Status | Implemented |
 | Type | Feature |
 | Primary issue | None (authorized by repository owner; change record only) |
 | Pull request | [#687](https://github.com/eirhop/favn/pull/687) |
@@ -544,5 +544,5 @@ so the approved-plan diagram stands.
 | Compared | Approved baseline commit 37f7e03b, final record, code, tests, diagnostics, and docs |
 | Deviations complete | Three deviations were recorded at review time; the reviewer identified four more (busy totals without a session join, `:all` fallback windows, stats as three bounded queries, generation in the merge key), now in the table |
 | Findings | 3 should-fix: the orphaned `page_workspace` storage capability (deleted, with its query struct, tests, and stubs); the unrecorded busy-totals deviation (recorded); a racy lazy mint of the control-plane boot id (now minted synchronously in application start before any child). 7 notes: fallback windows and stats shape and merge key recorded as deviations; connected-state staleness and the clock-skew repair edge recorded under failures and recovery; the fabricated interrupted copy fixed with an explicit interrupted scope (own, foreign, unknown) and tests; untested-path notes recorded under Not verified |
-| Findings addressed and rechecked | Corrections applied; reviewer recheck pending |
-| Verdict | Accept with corrections (2026-09-01); recheck of the corrections pending |
+| Findings addressed and rechecked | All findings addressed; corrections rechecked against commit 45bf4d27 by the reviewer |
+| Verdict | Accept (2026-09-01) |
