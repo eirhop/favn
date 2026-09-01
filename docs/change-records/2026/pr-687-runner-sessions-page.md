@@ -2,13 +2,13 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Plan reviewed |
+| Status | Implementing |
 | Type | Feature |
 | Primary issue | None (authorized by repository owner; change record only) |
-| Pull request | Pending |
+| Pull request | [#687](https://github.com/eirhop/favn/pull/687) |
 | Related work | None |
 | Affected areas | `favn_storage_postgres` (new table, migration), `favn_orchestrator` (registry lifecycle, persistence contracts, read model, facade), `favn_view` (runners page, run-detail link copy, design-system examples), operator documentation |
-| Approved plan commit | Pending independent review |
+| Approved plan commit | 37f7e03b |
 | Last updated | 2026-09-01 |
 
 ## One-minute summary
