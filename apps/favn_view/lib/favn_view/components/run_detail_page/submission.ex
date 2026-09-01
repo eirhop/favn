@@ -20,7 +20,7 @@ defmodule FavnView.Components.RunDetailPage.Submission do
       >
         <:action>
           <.button navigate={~p"/runners"} icon="hero-server-stack">
-            View runner diagnostics
+            View runner health
           </.button>
         </:action>
       </.error_state>
