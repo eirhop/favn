@@ -20,6 +20,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.TestSupport.ManifestRecord, as: ManifestCodec
   alias FavnOrchestrator.Storage.RunSnapshotCodec
+  alias FavnOrchestrator.Storage.RunSnapshotCodec.ManifestAtoms
 
   defmodule UnexpectedRunnerError do
     defexception [:message, :token]
@@ -290,6 +291,61 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
 
     assert expected == version.runner_releases
     assert actual == %{"default" => alternate}
+  end
+
+  test "decodes a column-backed manifest record identically to the JSON-backed record" do
+    version = manifest_version("mv_column_backed_record", __MODULE__.Asset)
+    run = run_state("run_column_backed_record", version, __MODULE__.Asset)
+    assert {:ok, payload} = RunSnapshotCodec.encode_run(run)
+    assert {:ok, json_record} = ManifestCodec.to_record(version)
+
+    run_record = %{run_blob: payload, manifest_version_id: version.manifest_version_id}
+
+    assert {:ok, from_json} = RunSnapshotCodec.decode_run(run_record, json_record)
+
+    assert {:ok, from_columns} =
+             RunSnapshotCodec.decode_run(run_record, column_backed_record(version))
+
+    assert from_columns == from_json
+  end
+
+  test "rejects a runner release mismatch against a column-backed manifest record" do
+    version = manifest_version("mv_column_backed_release_mismatch", __MODULE__.Asset)
+    run = run_state("run_column_backed_release_mismatch", version, __MODULE__.Asset)
+    assert {:ok, payload} = RunSnapshotCodec.encode_run(run)
+    alternate = FavnTestSupport.runner_release_id(:alternate)
+
+    tampered =
+      payload
+      |> Jason.decode!()
+      |> Map.put("runner_releases", %{"default" => alternate})
+      |> Jason.encode!()
+
+    assert {:error, {:run_manifest_runner_releases_mismatch, expected, actual}} =
+             RunSnapshotCodec.decode_run(
+               %{run_blob: tampered, manifest_version_id: version.manifest_version_id},
+               column_backed_record(version)
+             )
+
+    assert expected == version.runner_releases
+    assert actual == %{"default" => alternate}
+  end
+
+  test "rejects a content hash mismatch against a column-backed manifest record" do
+    version = manifest_version("mv_column_backed_hash_mismatch", __MODULE__.Asset)
+    run = run_state("run_column_backed_hash_mismatch", version, __MODULE__.Asset)
+    assert {:ok, payload} = RunSnapshotCodec.encode_run(run)
+
+    stale_record =
+      version
+      |> column_backed_record()
+      |> Map.put(:content_hash, String.duplicate("0", 64))
+
+    assert {:error, {:run_manifest_content_hash_mismatch, _expected, _actual}} =
+             RunSnapshotCodec.decode_run(
+               %{run_blob: payload, manifest_version_id: version.manifest_version_id},
+               stale_record
+             )
   end
 
   test "does not accept a current snapshot disguised with the legacy schema number" do
@@ -1314,6 +1370,15 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
                  manifest_record
                )
     end
+  end
+
+  defp column_backed_record(version) do
+    {:ok, json_record} = ManifestCodec.to_record(version)
+    {:ok, atoms} = ManifestAtoms.extract(json_record)
+
+    json_record
+    |> Map.delete(:manifest_index_json)
+    |> Map.put(:atom_strings, atoms |> MapSet.to_list() |> Enum.sort())
   end
 
   defp manifest_version(manifest_version_id, module) do
