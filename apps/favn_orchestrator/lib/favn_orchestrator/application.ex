@@ -54,6 +54,10 @@ defmodule FavnOrchestrator.Application do
          runtime_config <- RuntimeConfig.from_app_env(),
          persistence_runtime <- PersistenceRuntime.from_app_env!(),
          {:ok, persistence_children} <- Persistence.child_specs(persistence_runtime) do
+      # Minted before any child starts, so boot reconciliation and the first
+      # registration's open write can never race the id into two values.
+      _control_plane_boot_id = FavnOrchestrator.RunnerSessions.control_plane_boot_id()
+
       OperationalEvents.emit(
         :orchestrator_starting,
         %{persistence_child_count: length(persistence_children)},
@@ -81,6 +85,12 @@ defmodule FavnOrchestrator.Application do
             {RunManager, []},
             {RunSubmissionSupervisor, config: runtime_config.run_submissions},
             {FavnOrchestrator.ResourceRecovery, []},
+            {Task.Supervisor, name: FavnOrchestrator.RunnerSessionTaskSupervisor},
+            Supervisor.child_spec(
+              {Task, &FavnOrchestrator.RunnerSessions.reconcile_boot/0},
+              id: :runner_session_boot_reconcile,
+              restart: :temporary
+            ),
             {FavnOrchestrator.RunnerRegistry, []},
             {FavnOrchestrator.RunnerDemandLimiter, []},
             {FavnOrchestrator.RunnerQueueSupervisor, []},

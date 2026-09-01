@@ -141,6 +141,7 @@ defmodule FavnOrchestrator do
                list_operator_run_windows: 2,
                get_operator_run_asset_attempt: 3,
                get_operator_runner_overview: 2,
+               get_operator_runner_session_tasks: 2,
                page_execution_groups: 2,
                count_execution_groups: 2,
                get_execution_group_detail: 3,
@@ -2039,13 +2040,37 @@ defmodule FavnOrchestrator do
     end
   end
 
-  @doc "Returns live runner presence and recent durable runner tasks after operator reauthorization."
+  @doc """
+  Returns runner health after operator reauthorization: live presence,
+  capacity per pool and release, workspace task stats, durable session
+  history, and busy/idle window totals.
+
+  Runner presence, capacity, and session metadata are platform-global;
+  task-level detail stays scoped to the authorized workspace. See
+  `FavnOrchestrator.RunnerOverview.get/2` for the supported options.
+  """
   @spec get_operator_runner_overview(OperatorContext.t(), keyword()) ::
           {:ok, map()} | {:error, term()}
   def get_operator_runner_overview(%OperatorContext{} = operator_context, opts \\ [])
       when is_list(opts) do
     with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer) do
       RunnerOverview.get(context, opts)
+    end
+  end
+
+  @doc """
+  Pages one runner session's attributed tasks in the authorized workspace.
+
+  Requires `:runner_instance_id`, `:session_generation`, and `:registered_at`
+  from a session returned by `get_operator_runner_overview/2`; accepts
+  `:ended_at`, `:statuses`, and `:limit`.
+  """
+  @spec get_operator_runner_session_tasks(OperatorContext.t(), keyword()) ::
+          {:ok, [map()]} | {:error, term()}
+  def get_operator_runner_session_tasks(%OperatorContext{} = operator_context, opts)
+      when is_list(opts) do
+    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer) do
+      RunnerOverview.session_tasks(context, opts)
     end
   end
 

@@ -36,6 +36,7 @@ defmodule FavnView.Orchestrator do
     get_operator_run_events: 2,
     get_operator_run_flow: 2,
     get_operator_runner_overview: 2,
+    get_operator_runner_session_tasks: 2,
     get_operator_target_recovery: 2,
     get_run_detail: 2,
     get_schedule_entry: 2,
