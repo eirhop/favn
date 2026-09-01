@@ -611,8 +611,11 @@ defmodule FavnView.Components.RunnersPage do
   defp interrupted_label(%{interrupted_task_id: task_id}) when is_binary(task_id),
     do: "1 task interrupted (#{task_id}) — outcome unknown."
 
-  defp interrupted_label(_entry),
+  defp interrupted_label(%{interrupted_scope: :foreign}),
     do: "1 task interrupted in another workspace — outcome unknown."
+
+  defp interrupted_label(_entry),
+    do: "A task may have been interrupted — outcome unknown."
 
   defp expandable?(entry) do
     Map.get(entry.task_counts, :failed, 0) > 0 or Map.get(entry.task_counts, :unknown, 0) > 0 or

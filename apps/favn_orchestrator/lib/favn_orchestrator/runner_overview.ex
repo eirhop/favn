@@ -240,16 +240,20 @@ defmodule FavnOrchestrator.RunnerOverview do
     }
   end
 
-  defp scrub_cross_workspace(
-         %{interrupted_task_workspace_id: workspace_id} = entry,
-         workspace_id
-       ),
-       do: Map.delete(entry, :interrupted_task_workspace_id)
+  defp scrub_cross_workspace(entry, workspace_id) do
+    scope =
+      case entry.interrupted_task_workspace_id do
+        nil -> :unknown
+        ^workspace_id -> :own
+        _other_workspace -> :foreign
+      end
 
-  defp scrub_cross_workspace(entry, _workspace_id) do
     entry
     |> Map.delete(:interrupted_task_workspace_id)
-    |> Map.put(:interrupted_task_id, nil)
+    |> Map.put(:interrupted_scope, scope)
+    |> then(fn scrubbed ->
+      if scope == :own, do: scrubbed, else: Map.put(scrubbed, :interrupted_task_id, nil)
+    end)
   end
 
   defp merge_counts(rows) do

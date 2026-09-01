@@ -52,8 +52,6 @@ defmodule FavnOrchestrator.Persistence.RunnerTaskStore do
   @callback get(Q.GetRunnerTask.t()) :: {:ok, RunnerTask.t()} | {:error, Error.t()}
   @callback page_run(Q.PageRunRunnerTasks.t()) ::
               {:ok, [RunnerTask.t()]} | {:error, Error.t()}
-  @callback page_workspace(Q.PageWorkspaceRunnerTasks.t()) ::
-              {:ok, [RunnerTask.t()]} | {:error, Error.t()}
   @callback demand(Q.GetRunnerCapacityDemand.t()) ::
               {:ok, RunnerCapacityDemand.t()} | {:error, Error.t()}
   @callback list_demands(Q.ListRunnerCapacityDemands.t()) ::

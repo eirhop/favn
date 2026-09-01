@@ -741,44 +741,6 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
   end
 
   @impl true
-  def page_workspace(%Q.PageWorkspaceRunnerTasks{} = query) do
-    read(fn ->
-      if valid_workspace_page_query?(query) do
-        statuses =
-          case query.statuses do
-            :all -> nil
-            values when is_list(values) -> Enum.map(values, &Atom.to_string/1)
-          end
-
-        base =
-          from(task in RunnerTask,
-            where: task.workspace_id == ^query.workspace_context.workspace_id,
-            order_by: [desc: task.inserted_at, desc: task.task_id],
-            limit: ^query.limit
-          )
-
-        base =
-          case query.cursor do
-            nil ->
-              base
-
-            {%DateTime{} = inserted_at, task_id} ->
-              from(task in base,
-                where:
-                  task.inserted_at < ^inserted_at or
-                    (task.inserted_at == ^inserted_at and task.task_id < ^task_id)
-              )
-          end
-
-        base = if statuses, do: from(task in base, where: task.status in ^statuses), else: base
-        base |> Repo.all() |> Enum.map(&to_operator_result/1)
-      else
-        {:error, Error.new(:invalid, "invalid workspace runner task page query")}
-      end
-    end)
-  end
-
-  @impl true
   defdelegate open_session(command), to: SessionsStore, as: :open
 
   @impl true
@@ -1824,16 +1786,6 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
       is_integer(query.limit) and query.limit in 1..200 and
       is_list(query.statuses) and query.statuses != [] and
       Enum.all?(query.statuses, &(&1 in Map.values(@status_by_string)))
-  end
-
-  defp valid_workspace_page_query?(query) do
-    valid_statuses? =
-      query.statuses == :all or
-        (is_list(query.statuses) and
-           Enum.all?(query.statuses, &(&1 in Map.values(@status_by_string))))
-
-    is_integer(query.limit) and query.limit in 1..200 and valid_statuses? and
-      valid_page_cursor?(query.cursor)
   end
 
   defp valid_page_cursor?(nil), do: true

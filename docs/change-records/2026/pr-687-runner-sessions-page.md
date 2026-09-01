@@ -358,7 +358,18 @@ each is individually small and none introduces new abstractions.
 - Classification: normal or shutdown exit reasons close as shut down; any
   other reason closes as crashed; `busy_at_exit` and the interrupted task id
   are recorded independently so a clean-but-busy exit reports the interrupted
-  task with outcome unknown.
+  task with outcome unknown. A busy exit with no observable assignment renders
+  as "a task may have been interrupted" rather than fabricating a count or a
+  workspace.
+- A session whose close write was lost renders as connected in the history
+  until the runner's next registration or the next control-plane boot repairs
+  it; the durable row is the source of truth and is not cross-checked against
+  live registry presence.
+- Orphan repair stamps the orphan's end at the new registration's time; under
+  extreme cross-boot clock skew that could precede the orphan's start, the
+  end-shape constraint rejects the write, and the open is logged and skipped —
+  diagnostics degrade, the runner is unaffected, and the next boot repairs the
+  rows.
 
 ### Logs and diagnostics
 
@@ -486,7 +497,11 @@ so the approved-plan diagram stands.
 | --- | --- | --- | --- | --- |
 | Gateway mints the session row id and writes the open | The registry mints the row id inside registration acceptance, stores it on the in-memory session, and both open and close writes are spawned from the registry onto a dedicated task supervisor | A duplicate registration returns the same acknowledgement as the original, so only the registry knows whether a registration created a new session; the DOWN close also needs the row id, which therefore must live on the session | None on invariants: writes stay off the runner-facing critical path (spawned, log-and-continue), idempotency is still the minted row id | Pending |
 | Session persistence contracts implied a dedicated store capability | The `RunnerTaskStore` behaviour gained the session callbacks; the implementation lives in a separate `FavnStoragePostgres.RunnerSessions.Store` module reached by delegation | A new `Stores` capability would amplify every store-registry construction site (fixtures, fakes, backend) for no behavioral gain; sessions share the runner-task domain | None on behavior; the implementation map's module split is preserved | Pending |
-| Read model filters session states server-side | The read model accepts and validates the `states` option (covered by tests), but the page requests `:all` and narrows client-side over the bounded page | The state rail shows counts per state, which requires the unfiltered page anyway; the page is already bounded at 50 entries | None; both layers stay tested | Pending |
+| Read model filters session states server-side | The read model accepts and validates the `states` option (covered by tests), but the page requests `:all` and narrows client-side over the bounded page | The state rail shows counts per state, which requires the unfiltered page anyway; the page is already bounded at 50 entries | None; both layers stay tested | Accepted by final review |
+| Busy totals attribute tasks by joining to session rows clamped to their interval | The window totals sum all runner-assigned terminal tasks (session generation > 0) clamped only to the window, with no session join; the per-session counts do join and clamp | One aggregate over the task table stays O(window) instead of joining every session row; the result struct's moduledoc states the actual semantics | A task whose session open write was lost still contributes busy time without awake time, so busy can theoretically exceed awake; the view floors idle at zero and the stat is labeled as covering completed final assignments | Recorded at final review |
+| Failure counts and totals windows follow the date filter | With the `:all` filter the read model falls back to a 30-day totals window and a 24-hour failed count, and the UI labels both fallbacks explicitly | An unbounded totals aggregate over all history is not a bounded read | Labels and backend defaults are coupled by convention; a change to either must update the other | Recorded at final review |
+| Header stats are single aggregate queries | The workspace stats read is three bounded aggregate queries (queued, active, windowed failures) sharing the workspace status index | Three simple index-backed aggregates beat one three-way conditional aggregate for readability | None; all reads stay bounded | Recorded at final review |
+| Displayed sessions merge rows sharing runner instance and boot id | The merge key also includes the session generation, so only verified resumes (which preserve the generation) merge; a fresh re-registration of the same runner boot renders as a separate session | The session task expander queries by generation, so merging across generations would silently drop the older generation's tasks from the expander | Slightly more rows in the rare idle-blip case, each individually honest | Recorded at final review |
 
 ## Decision log
 
@@ -515,14 +530,19 @@ so the approved-plan diagram stands.
 - A crash while a task is mid-execution (`busy_at_exit` with an interrupted
   task) was proven by orchestrator tests, not reproduced live; the live
   crashes happened while the runner was idle.
+- Structurally guaranteed but not pinned by a dedicated test: the claim-path
+  requeue of an expired assignment clearing `assigned_at`; the open-write
+  repair skipping an already-closed row for the same instance; generation-0
+  recovery assignments staying out of busy totals; the read model's `:all`
+  fallback windows.
 
 ## Final review
 
 | Field | Result |
 | --- | --- |
-| Reviewer | Independent agent or person |
-| Compared | Approved plan, implementation, tests, diagnostics, and docs |
-| Deviations complete | Pending |
-| Findings | Pending |
-| Findings addressed and rechecked | Pending |
-| Verdict | Pending |
+| Reviewer | Independent agent (general-purpose, 2026-09-01) |
+| Compared | Approved baseline commit 37f7e03b, final record, code, tests, diagnostics, and docs |
+| Deviations complete | Three deviations were recorded at review time; the reviewer identified four more (busy totals without a session join, `:all` fallback windows, stats as three bounded queries, generation in the merge key), now in the table |
+| Findings | 3 should-fix: the orphaned `page_workspace` storage capability (deleted, with its query struct, tests, and stubs); the unrecorded busy-totals deviation (recorded); a racy lazy mint of the control-plane boot id (now minted synchronously in application start before any child). 7 notes: fallback windows and stats shape and merge key recorded as deviations; connected-state staleness and the clock-skew repair edge recorded under failures and recovery; the fabricated interrupted copy fixed with an explicit interrupted scope (own, foreign, unknown) and tests; untested-path notes recorded under Not verified |
+| Findings addressed and rechecked | Corrections applied; reviewer recheck pending |
+| Verdict | Accept with corrections (2026-09-01); recheck of the corrections pending |

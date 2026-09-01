@@ -80,7 +80,6 @@ defmodule FavnOrchestrator.RunnerTaskClaimTest do
     def reconcile_demand(_command), do: unavailable()
     def ensure_demand(_command), do: unavailable()
     def page_run(_query), do: unavailable()
-    def page_workspace(_query), do: unavailable()
     def demand(_query), do: unavailable()
     def list_demands(_query), do: unavailable()
     def release_drain(_query), do: unavailable()

@@ -203,7 +203,9 @@ defmodule FavnOrchestrator.RunnerOverviewTest do
     by_instance = Map.new(sessions, &{&1.runner_instance_id, &1})
 
     assert by_instance["runner-own"].interrupted_task_id == "rt_mine"
+    assert by_instance["runner-own"].interrupted_scope == :own
     assert is_nil(by_instance["runner-foreign"].interrupted_task_id)
+    assert by_instance["runner-foreign"].interrupted_scope == :foreign
     assert by_instance["runner-foreign"].busy_at_exit
     refute Map.has_key?(by_instance["runner-foreign"], :interrupted_task_workspace_id)
   end

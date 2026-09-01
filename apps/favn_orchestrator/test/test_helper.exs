@@ -88,7 +88,6 @@ defmodule FavnOrchestrator.TestRunnerTaskStore do
   end
 
   def page_run(_query), do: unavailable()
-  def page_workspace(_query), do: unavailable()
 
   def demand(query) do
     case Application.get_env(:favn_orchestrator, :test_runner_capacity_demand) do

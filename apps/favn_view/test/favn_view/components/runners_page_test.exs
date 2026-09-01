@@ -53,6 +53,7 @@ defmodule FavnView.Components.RunnersPageTest do
       session_entry(
         runner_instance_id: "runner-foreign",
         interrupted_task_id: nil,
+        interrupted_scope: :foreign,
         busy_at_exit: true
       )
 
@@ -60,6 +61,21 @@ defmodule FavnView.Components.RunnersPageTest do
 
     assert html =~ "1 task interrupted in another workspace — outcome unknown."
     refute html =~ "rt_crash"
+  end
+
+  test "does not fabricate an interruption when the busy exit had no known assignment" do
+    session =
+      session_entry(
+        runner_instance_id: "runner-reserved",
+        interrupted_task_id: nil,
+        interrupted_scope: :unknown,
+        busy_at_exit: true
+      )
+
+    html = render_page(overview: %{overview() | sessions: [session]})
+
+    assert html =~ "A task may have been interrupted — outcome unknown."
+    refute html =~ "another workspace"
   end
 
   test "collapses a crash loop into one struggling group" do

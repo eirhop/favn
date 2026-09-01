@@ -12,13 +12,6 @@ defmodule FavnOrchestrator.Persistence.Queries.PageRunRunnerTasks do
   @type t :: %__MODULE__{}
 end
 
-defmodule FavnOrchestrator.Persistence.Queries.PageWorkspaceRunnerTasks do
-  @moduledoc "Pages the most recent durable runner tasks for one workspace."
-  @enforce_keys [:workspace_context]
-  defstruct @enforce_keys ++ [statuses: :all, limit: 50, cursor: nil]
-  @type t :: %__MODULE__{}
-end
-
 defmodule FavnOrchestrator.Persistence.Queries.GetRunnerCapacityDemand do
   @moduledoc "Reads exact platform-global O(1) demand for one pool and release."
   @enforce_keys [:platform_context, :runner_pool, :required_runner_release_id]
