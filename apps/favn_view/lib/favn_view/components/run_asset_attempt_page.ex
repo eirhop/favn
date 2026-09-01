@@ -34,7 +34,7 @@ defmodule FavnView.Components.RunAssetAttemptPage do
       facts={(@attempt && @attempt.facts) || []}
     >
       <.panel :if={@loading?} padding={:lg} data-testid="asset-attempt-loading">
-        <div class="space-y-3 animate-pulse" aria-label="Loading asset run details">
+        <div class="space-y-3 animate-pulse" role="status" aria-label="Loading asset run details">
           <div class="h-5 w-48 rounded bg-base-content/10"></div>
           <div class="h-20 rounded bg-base-content/10"></div>
         </div>
