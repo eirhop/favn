@@ -944,47 +944,13 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
     assert page_two.task_id == second.task_id
   end
 
-  test "workspace activity paging includes pre-run tasks newest first", fixture do
-    first_command =
-      enqueue_command(fixture, "workspace-page-first",
-        occurred_at: fixture.now,
-        run_id: nil
-      )
-
-    second_command =
-      enqueue_command(fixture, "workspace-page-second",
-        occurred_at: DateTime.add(fixture.now, 1, :microsecond),
-        run_id: nil
-      )
-
-    assert {:ok, first} = Store.enqueue(first_command)
-    assert {:ok, second} = Store.enqueue(second_command)
-
-    query = %Q.PageWorkspaceRunnerTasks{
-      workspace_context: fixture.workspace_context,
-      limit: 1
-    }
-
-    assert {:ok, [page_one]} = Store.page_workspace(query)
-    assert page_one.task_id == second.task_id
-    assert is_nil(page_one.payload)
-    assert is_nil(page_one.orchestration_context)
-
-    assert {:ok, [page_two]} =
-             Store.page_workspace(%{
-               query
-               | cursor: {page_one.inserted_at, page_one.task_id}
-             })
-
-    assert page_two.task_id == first.task_id
-
-    assert {:ok, []} =
-             Store.page_workspace(%{query | statuses: [:failed, :unknown], limit: 20})
-
+  test "runner-task schema diagnostics stay exact" do
     assert {:ok, diagnostics} = Migrations.diagnostics(Repo)
     assert diagnostics.definition_fingerprint_matches?
     refute "runner_tasks_workspace_recent_idx" in diagnostics.missing_critical_indexes
     refute "runner_tasks_workspace_status_recent_idx" in diagnostics.missing_critical_indexes
+    refute "runner_tasks_session_attribution_idx" in diagnostics.missing_critical_indexes
+    refute "runner_sessions_recent_idx" in diagnostics.missing_critical_indexes
   end
 
   test "assignment generations fence stale runners across safe requeue", fixture do

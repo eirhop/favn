@@ -252,8 +252,11 @@ operator contract is [`production/postgresql_operator_runbook.md`](production/po
   Live managed-platform scale, restore/load, and cold-start evidence remain
   production release gates.
 - The operator UI shows durable pre-admission run states and provides a Runners
-  page that combines live runner presence with recent workspace-scoped durable
-  task failures and remediation.
+  page focused on runner health: live presence, capacity per pool and release,
+  and a durable runner session history recording when each runner registered,
+  what it completed, and whether it shut down, crashed, or is presumed dead
+  after a control-plane restart, with date and state filters, busy/idle window
+  totals, and workspace-scoped failed-task detail per session.
 - SQL adapter-native cancellation and broader DuckDB/DuckLake failure-injection
   coverage remain incomplete.
 

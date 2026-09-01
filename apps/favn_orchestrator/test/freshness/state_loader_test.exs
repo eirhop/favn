@@ -46,11 +46,7 @@ defmodule FavnOrchestrator.Freshness.StateLoaderTest do
     }
 
     runtime = %PersistenceRuntime{backend: __MODULE__, options: [], stores: stores}
-    assert {:ok, pid} = PersistenceRuntime.start_link(runtime)
-
-    on_exit(fn ->
-      if Process.alive?(pid), do: GenServer.stop(pid)
-    end)
+    start_supervised!({PersistenceRuntime, runtime})
 
     :ok
   end

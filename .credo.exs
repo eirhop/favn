@@ -166,7 +166,10 @@
           {Credo.Check.Warning.OperationWithConstantResult, []},
           {Credo.Check.Warning.RaiseInsideRescue, []},
           {Credo.Check.Warning.SpecWithStruct, []},
-          {Credo.Check.Warning.StructFieldAmount, max_fields: 34},
+          # Sized to the widest persistence result struct,
+          # FavnOrchestrator.Persistence.Results.RunnerTask, which mirrors the
+          # runner_tasks table column for column.
+          {Credo.Check.Warning.StructFieldAmount, max_fields: 35},
           {Credo.Check.Warning.UnsafeExec, []},
           {Credo.Check.Warning.UnusedEnumOperation, []},
           {Credo.Check.Warning.UnusedFileOperation, []},

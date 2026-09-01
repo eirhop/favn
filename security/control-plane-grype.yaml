@@ -1,7 +1,11 @@
 # Narrow exceptions for Debian 13 vulnerabilities without an available package fix.
-# reviewed: 2026-08-26
-# review-by: 2026-09-26
+# reviewed: 2026-09-01
+# review-by: 2026-10-01
 # Every rule includes the vendor fix state so it stops matching when a fix appears.
+#
+# On 2026-09-01 Debian moved the eight perl-base CVEs from not-fixed to
+# wont-fix, which un-suppressed them and failed every image scan; the rules
+# now pin the new state. A rule still stops matching if a fix ships.
 #
 # The three CVE-2026-14456 exceptions for libssl3t64, openssl, and
 # openssl-provider-legacy were removed on 2026-08-26: Debian shipped the fix as
@@ -10,7 +14,7 @@
 # suppressing the moment a fix existed, and the scan said so.
 ignore:
   - vulnerability: CVE-2026-13221
-    fix-state: not-fixed
+    fix-state: wont-fix
     package:
       name: perl-base
   - vulnerability: CVE-2026-5450
@@ -30,7 +34,7 @@ ignore:
     package:
       name: perl-base
   - vulnerability: CVE-2026-12087
-    fix-state: not-fixed
+    fix-state: wont-fix
     package:
       name: perl-base
   - vulnerability: CVE-2026-9538
@@ -38,7 +42,7 @@ ignore:
     package:
       name: perl-base
   - vulnerability: CVE-2026-57433
-    fix-state: not-fixed
+    fix-state: wont-fix
     package:
       name: perl-base
   - vulnerability: CVE-2025-69720
@@ -58,7 +62,7 @@ ignore:
     package:
       name: perl-base
   - vulnerability: CVE-2026-48959
-    fix-state: not-fixed
+    fix-state: wont-fix
     package:
       name: perl-base
   - vulnerability: CVE-2026-5928
@@ -70,7 +74,7 @@ ignore:
     package:
       name: libc6
   - vulnerability: CVE-2026-48962
-    fix-state: not-fixed
+    fix-state: wont-fix
     package:
       name: perl-base
   - vulnerability: CVE-2026-41992
@@ -78,11 +82,11 @@ ignore:
     package:
       name: gzip
   - vulnerability: CVE-2026-48961
-    fix-state: not-fixed
+    fix-state: wont-fix
     package:
       name: perl-base
   - vulnerability: CVE-2026-7017
-    fix-state: not-fixed
+    fix-state: wont-fix
     package:
       name: perl-base
   - vulnerability: CVE-2026-5435
@@ -94,7 +98,7 @@ ignore:
     package:
       name: libc6
   - vulnerability: CVE-2026-57432
-    fix-state: not-fixed
+    fix-state: wont-fix
     package:
       name: perl-base
   - vulnerability: CVE-2026-11822
