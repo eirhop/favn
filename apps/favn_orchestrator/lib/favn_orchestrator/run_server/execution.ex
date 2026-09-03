@@ -376,13 +376,40 @@ defmodule FavnOrchestrator.RunServer.Execution do
       do: state
 
   def stop_post_step_workers(%RunExecutionState{} = state) do
-    Enum.each(state.post_step_continuations, fn {ref, %{pid: pid}} ->
+    Enum.each(state.post_step_continuations, fn {ref, %{pid: pid, pending: pending}} ->
       Process.demonitor(ref, [:flush])
-      Process.exit(pid, :kill)
+      terminate_post_step_worker(pid)
+      release_pending_permits(state.run, pending)
     end)
 
     %{state | post_step_continuations: %{}}
   end
+
+  # The supervisor shuts the worker down without an error report. If the
+  # supervisor itself is already gone the worker is killed directly.
+  defp terminate_post_step_worker(pid) do
+    case Task.Supervisor.terminate_child(@post_step_supervisor, pid) do
+      :ok -> :ok
+      {:error, :not_found} -> :ok
+    end
+  catch
+    :exit, _reason ->
+      Process.exit(pid, :kill)
+      :ok
+  end
+
+  # The node's permits would otherwise be settled at finish; a dropped
+  # continuation releases them so they do not wait for the probe lease.
+  defp release_pending_permits(%RunState{} = run, %{entry: entry}) do
+    case Map.get(entry, :resource_circuit_permits, []) do
+      [] -> :ok
+      permits -> _ = ResourceCircuits.release(run, permits)
+    end
+
+    :ok
+  end
+
+  defp release_pending_permits(_run, _pending), do: :ok
 
   defp accumulated_results(%RunExecutionState{mode: :sequential} = state),
     do: ResultBuilder.sort_asset_results(state.run, state.accumulated_results)
@@ -1317,10 +1344,14 @@ defmodule FavnOrchestrator.RunServer.Execution do
     {:persist_retry, state, retry, reason}
   end
 
+  # A worker started by this settlement is only in the post-settlement state,
+  # so a terminal result reached in the same dispatch (for example an expired
+  # admission deadline during refill) must stop workers from here as well.
   defp continue_pipeline_settlement({:pipeline_settled, state}) do
     state
     |> RunExecutionState.cancel_admission_timers()
     |> after_pipeline_progress()
+    |> stop_workers_on_terminal(state)
   end
 
   defp continue_pipeline_settlement(result), do: result

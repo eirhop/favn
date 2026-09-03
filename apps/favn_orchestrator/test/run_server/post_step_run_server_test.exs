@@ -387,7 +387,7 @@ defmodule FavnOrchestrator.RunServer.PostStepRunServerTest do
 
     send(pid, {:favn_run_cancel_requested, :operator})
 
-    assert_receive {:DOWN, ^worker_monitor, :process, ^worker, :killed}, 5_000
+    assert_receive {:DOWN, ^worker_monitor, :process, ^worker, :shutdown}, 5_000
     assert_receive {:run_transition_committed, :run_cancelled}, 5_000
     assert_receive {:DOWN, ^monitor, :process, ^pid, :normal}, 5_000
 
@@ -410,7 +410,7 @@ defmodule FavnOrchestrator.RunServer.PostStepRunServerTest do
 
     assert_receive {:ownership_renewal_rejected, @fencing_token}, 1_000
     assert_receive {:DOWN, ^monitor, :process, ^pid, {:shutdown, :run_ownership_lost}}, 5_000
-    assert_receive {:DOWN, ^worker_monitor, :process, ^worker, :killed}, 5_000
+    assert_receive {:DOWN, ^worker_monitor, :process, ^worker, :shutdown}, 5_000
     refute_receive {:reconcile_initial, _generation_id}, 20
   end
 

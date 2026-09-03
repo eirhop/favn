@@ -5,9 +5,11 @@ defmodule FavnOrchestrator.RunServer do
   The server advances the non-blocking execution state machine from runner,
   retry, admission, cancellation, and post-step worker messages. Terminal
   persistence is retried in-process so transient storage failures do not
-  discard the final outcome. A write rejected by the run-ownership fence is
-  never retried: the process stops with `run_ownership_lost` and recovery
-  proceeds under the newer owner.
+  discard the final outcome. A write rejected by the run-ownership fence on the
+  run-start, step, or terminal path is never retried: the process stops with
+  `run_ownership_lost` and recovery proceeds under the newer owner. Stage
+  admission handles its own fenced writes as ordinary failures before the
+  following step write stops the process.
   """
 
   use GenServer

@@ -318,7 +318,7 @@ defmodule FavnOrchestrator.RunServer.Execution.PostStepContinuationTest do
     cancelled = Execution.cancel(pending, :operator)
 
     assert cancelled.status == :cancelled
-    assert_receive {:DOWN, ^worker_monitor, :process, ^worker, :killed}
+    assert_receive {:DOWN, ^worker_monitor, :process, ^worker, :shutdown}
     refute_receive {^ref, _late_reply}, 20
     refute_receive {:materialization_finished, %{status: :failed}}, 20
   end
@@ -340,7 +340,7 @@ defmodule FavnOrchestrator.RunServer.Execution.PostStepContinuationTest do
 
     assert {:terminal, cancelled} = deliver_result(pending, fixture, :b, :ok)
     assert cancelled.status == :cancelled
-    assert_receive {:DOWN, ^worker_monitor, :process, ^worker, :killed}
+    assert_receive {:DOWN, ^worker_monitor, :process, ^worker, :shutdown}
     refute_receive {^ref, _late_reply}, 20
     refute_receive {:materialization_finished, %{status: :failed, claim_key: "claim-a"}}, 20
   end

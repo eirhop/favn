@@ -151,10 +151,17 @@ defmodule FavnOrchestrator.Storage.JsonSafeTest do
     without_message = JsonSafe.error(%{type: :runner_cancel_unconfirmed, outcomes: [%{a: 1}]})
 
     assert without_message["type"] == "runner_cancel_unconfirmed"
-    refute Map.has_key?(without_message, "message")
-    refute Map.has_key?(without_message, "reason")
+    assert without_message["message"] == "runner_cancel_unconfirmed"
+    assert without_message["reason"] == "runner_cancel_unconfirmed"
     assert without_message["details"] == %{"outcomes" => [%{"a" => 1}]}
     assert_json_compatible!(without_message)
+
+    # A stored error must re-encode to itself on the next snapshot write.
+    assert JsonSafe.error(without_message) == without_message
+
+    plain = JsonSafe.error(%{type: :typed, message: "plain message", reason: "plain reason"})
+    assert JsonSafe.error(plain) == plain
+    assert plain["type"] == "typed"
 
     merged = JsonSafe.error(%{type: :typed, details: %{"a" => 1}, extra: 2})
     assert merged["details"] == %{"a" => 1, "extra" => 2}

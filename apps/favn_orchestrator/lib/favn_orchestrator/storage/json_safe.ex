@@ -131,16 +131,16 @@ defmodule FavnOrchestrator.Storage.JsonSafe do
         _none -> extra
       end
 
+    # Every clause emits the same four keys so a stored error re-encodes to
+    # itself on the next snapshot write instead of falling to the catch-all.
     %{
       "kind" => "error",
       "type" => Atom.to_string(type),
-      "message" => if(is_nil(message), do: nil, else: safe_error_message(message)),
-      "reason" => if(is_nil(reason), do: nil, else: safe_error_reason(reason)),
+      "message" => safe_error_message(message || type),
+      "reason" => safe_existing_error_reason(reason || Atom.to_string(type)),
       "redacted" => true,
       "truncated" => false
     }
-    |> Enum.reject(fn {_key, child_value} -> is_nil(child_value) end)
-    |> Map.new()
     |> maybe_put_error_details(if(map_size(details) == 0, do: nil, else: details))
   end
 
