@@ -8,7 +8,7 @@
 | Pull request | [#693](https://github.com/eirhop/favn/pull/693) |
 | Related work | [#508](https://github.com/eirhop/favn/issues/508) (independent-sibling semantics for result failures, which this record extends to admission failures); [#618](https://github.com/eirhop/favn/issues/618) (fail-closed recovery of a draining stage, unchanged here); [#692](https://github.com/eirhop/favn/pull/692), the record `pr-692-run-server-async-initial-generation.md`, whose aborted reconciliation produced the admission conflict that exposed this defect and which lands first |
 | Affected areas | Orchestrator pipeline stage admission and execution persist-retry resume |
-| Approved plan commit | 55e6b0be |
+| Approved plan commit | `0aa4b938`, which is `55e6b0be` rewritten by the rebase onto `main` after [#692](https://github.com/eirhop/favn/pull/692) merged |
 | Last updated | 2026-09-03 |
 
 ## One-minute summary
