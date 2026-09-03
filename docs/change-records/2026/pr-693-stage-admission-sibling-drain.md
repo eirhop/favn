@@ -2,13 +2,13 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Plan reviewed |
+| Status | Implementing |
 | Type | Bug fix |
 | Primary issue | None. The maintainer supplied the defect report directly on 2026-09-03 and exempted this record from the GitHub-issue requirement (see the decision log). |
-| Pull request | Pending |
-| Related work | [#508](https://github.com/eirhop/favn/issues/508) (independent-sibling semantics for result failures, which this record extends to admission failures); [#618](https://github.com/eirhop/favn/issues/618) (fail-closed recovery of a draining stage, unchanged here); the record `pr-pending-run-server-async-initial-generation.md`, whose aborted reconciliation produced the admission conflict that exposed this defect |
+| Pull request | [#693](https://github.com/eirhop/favn/pull/693) |
+| Related work | [#508](https://github.com/eirhop/favn/issues/508) (independent-sibling semantics for result failures, which this record extends to admission failures); [#618](https://github.com/eirhop/favn/issues/618) (fail-closed recovery of a draining stage, unchanged here); [#692](https://github.com/eirhop/favn/pull/692), the record `pr-692-run-server-async-initial-generation.md`, whose aborted reconciliation produced the admission conflict that exposed this defect and which lands first |
 | Affected areas | Orchestrator pipeline stage admission and execution persist-retry resume |
-| Approved plan commit | Pending independent review |
+| Approved plan commit | 55e6b0be |
 | Last updated | 2026-09-03 |
 
 ## One-minute summary
