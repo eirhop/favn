@@ -1,3 +1,8 @@
+defmodule FavnOrchestrator.Storage.JsonSafeTypedException do
+  @moduledoc false
+  defexception [:type, :message]
+end
+
 defmodule FavnOrchestrator.Storage.JsonSafeTest do
   use ExUnit.Case, async: true
 
@@ -126,6 +131,50 @@ defmodule FavnOrchestrator.Storage.JsonSafeTest do
     assert normalized["type"] == "map"
     assert normalized["message"] == "Binder Error: Catalog \"raw\" does not exist!"
     assert_json_compatible!(normalized)
+  end
+
+  test "keeps the class of typed orchestrator error maps out of the inspected message" do
+    normalized =
+      JsonSafe.error(%{
+        type: :post_step_persistence_failed,
+        message: "Post-step reconciliation failed",
+        reason: {:initial_target_generation_binding_failed, %{password: "swordfish"}}
+      })
+
+    assert normalized["kind"] == "error"
+    assert normalized["type"] == "post_step_persistence_failed"
+    assert normalized["message"] == "Post-step reconciliation failed"
+    assert is_binary(normalized["reason"])
+    refute String.contains?(normalized["reason"], "swordfish")
+    assert_json_compatible!(normalized)
+
+    without_message = JsonSafe.error(%{type: :runner_cancel_unconfirmed, outcomes: [%{a: 1}]})
+
+    assert without_message["type"] == "runner_cancel_unconfirmed"
+    assert without_message["message"] == "runner_cancel_unconfirmed"
+    assert without_message["reason"] == "runner_cancel_unconfirmed"
+    assert without_message["details"] == %{"outcomes" => [%{"a" => 1}]}
+    assert_json_compatible!(without_message)
+
+    # A stored error must re-encode to itself on the next snapshot write.
+    assert JsonSafe.error(without_message) == without_message
+
+    plain = JsonSafe.error(%{type: :typed, message: "plain message", reason: "plain reason"})
+    assert JsonSafe.error(plain) == plain
+    assert plain["type"] == "typed"
+
+    merged = JsonSafe.error(%{type: :typed, details: %{"a" => 1}, extra: 2})
+    assert merged["details"] == %{"a" => 1, "extra" => 2}
+
+    exception =
+      JsonSafe.error(%FavnOrchestrator.Storage.JsonSafeTypedException{
+        type: :integer,
+        message: "cast failed"
+      })
+
+    assert exception["type"] == "Elixir.FavnOrchestrator.Storage.JsonSafeTypedException"
+    assert exception["message"] == "cast failed"
+    refute Map.has_key?(exception, "details")
   end
 
   test "normalizes explicit error terms as structured sanitized maps" do

@@ -79,6 +79,7 @@ defmodule FavnOrchestrator.Application do
             {AuthStore, []},
             {Phoenix.PubSub, name: pubsub_name()},
             {AdmissionCoordinator, []},
+            {Task.Supervisor, name: FavnOrchestrator.RunPostStepSupervisor},
             {DynamicSupervisor, strategy: :one_for_one, name: FavnOrchestrator.RunSupervisor},
             {Task.Supervisor, name: FavnOrchestrator.RunManagerTaskSupervisor},
             {Task.Supervisor, name: FavnOrchestrator.ManifestDeploymentTaskSupervisor},

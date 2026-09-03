@@ -3,8 +3,13 @@ defmodule FavnOrchestrator.RunServer do
   Process owner for one manifest-pinned orchestrator run.
 
   The server advances the non-blocking execution state machine from runner,
-  retry, admission, and cancellation messages. Terminal persistence is retried
-  in-process so transient storage failures do not discard the final outcome.
+  retry, admission, cancellation, and post-step worker messages. Terminal
+  persistence is retried in-process so transient storage failures do not
+  discard the final outcome. A write rejected by the run-ownership fence on the
+  run-start, step, or terminal path is never retried: the process stops with
+  `run_ownership_lost` and recovery proceeds under the newer owner. Stage
+  admission handles its own fenced writes as ordinary failures before the
+  following step write stops the process.
   """
 
   use GenServer
@@ -176,6 +181,16 @@ defmodule FavnOrchestrator.RunServer do
       ),
       do: {:noreply, defer_execution_event(state, message)}
 
+  def handle_info(
+        {ref, _result} = message,
+        %{
+          execution_persist_pending: _,
+          execution_state: %RunExecutionState{post_step_continuations: continuations}
+        } = state
+      )
+      when is_reference(ref) and is_map_key(continuations, ref),
+      do: {:noreply, defer_execution_event(state, message)}
+
   def handle_info({:DOWN, _, :process, _, _} = message, %{execution_persist_pending: _} = state),
     do: {:noreply, defer_execution_event(state, message)}
 
@@ -210,15 +225,25 @@ defmodule FavnOrchestrator.RunServer do
       do: handle_execution_event(state, {:runner_task_started, task_id, task})
 
   def handle_info(
+        {ref, result},
+        %{execution_state: %RunExecutionState{post_step_continuations: continuations}} = state
+      )
+      when is_reference(ref) and is_map_key(continuations, ref),
+      do: handle_execution_event(state, {:post_step_reply, ref, result})
+
+  def handle_info(
         {:DOWN, monitor_ref, :process, _pid, reason},
         %{execution_state: %RunExecutionState{} = execution_state} = state
       ) do
-    case Map.get(execution_state.await_monitors, monitor_ref) do
-      nil ->
-        {:noreply, state}
-
-      execution_id ->
+    cond do
+      execution_id = Map.get(execution_state.await_monitors, monitor_ref) ->
         handle_execution_event(state, {:runner_await_down, execution_id, monitor_ref, reason})
+
+      Map.has_key?(execution_state.post_step_continuations, monitor_ref) ->
+        handle_execution_event(state, {:post_step_worker_down, monitor_ref, reason})
+
+      true ->
+        {:noreply, state}
     end
   end
 
@@ -274,6 +299,9 @@ defmodule FavnOrchestrator.RunServer do
       {:error, :external_cancel} ->
         :ok = RunExecutionCleanup.release_admission(running)
         stop_normally(state, Snapshots.cancelled_snapshot(running))
+
+      {:error, :fenced} ->
+        stop_on_fenced_write(state, running, :run_started)
 
       {:error, reason} ->
         schedule_run_start_persist_retry(state, running, version, reason)
@@ -370,6 +398,17 @@ defmodule FavnOrchestrator.RunServer do
   defp handle_execution_result(
          state,
          {:persist_retry, %RunExecutionState{} = execution_state, %PersistenceRetry{} = retry,
+          :fenced}
+       ) do
+    state
+    |> Map.put(:run_state, execution_state.run)
+    |> Map.put(:execution_state, execution_state)
+    |> stop_on_fenced_write(execution_state.run, retry.event_type)
+  end
+
+  defp handle_execution_result(
+         state,
+         {:persist_retry, %RunExecutionState{} = execution_state, %PersistenceRetry{} = retry,
           reason}
        ) do
     token = make_ref()
@@ -399,6 +438,8 @@ defmodule FavnOrchestrator.RunServer do
   end
 
   defp finalize_terminal(state, %RunState{} = terminal) do
+    state = stop_post_step_workers(state)
+
     cond do
       terminal.status == :cancelled and persisted_cancelled?(terminal) ->
         :ok = RunExecutionCleanup.release_admission(terminal)
@@ -435,6 +476,9 @@ defmodule FavnOrchestrator.RunServer do
 
         stop_normally(state, cancelled)
 
+      {:error, :fenced} ->
+        stop_on_fenced_write(state, finalized, terminal_event_type)
+
       {:error, reason} ->
         schedule_terminal_persist_retry(state, finalized, terminal_event_type, data, reason, 1)
     end
@@ -458,6 +502,11 @@ defmodule FavnOrchestrator.RunServer do
         state
         |> Map.delete(:terminal_persist_pending)
         |> stop_normally(cancelled)
+
+      {:error, :fenced} ->
+        state
+        |> Map.delete(:terminal_persist_pending)
+        |> stop_on_fenced_write(finalized, pending.event_type)
 
       {:error, reason} ->
         schedule_terminal_persist_retry(
@@ -502,6 +551,24 @@ defmodule FavnOrchestrator.RunServer do
        attempt: attempt
      })}
   end
+
+  # A fenced write proves a newer owner exists. Retrying could never succeed and
+  # would only delay recovery, so the process stops the way a failed renewal does.
+  defp stop_on_fenced_write(state, %RunState{} = run, event_type) do
+    OperationalEvents.emit(
+      :run_ownership_lost,
+      %{},
+      %{workspace_id: run.workspace_id, run_id: run.id, event_type: event_type, reason: :fenced},
+      level: :error
+    )
+
+    {:stop, {:shutdown, :run_ownership_lost}, Map.put(state, :run_state, run)}
+  end
+
+  defp stop_post_step_workers(%{execution_state: %RunExecutionState{} = execution_state} = state),
+    do: Map.put(state, :execution_state, Execution.stop_post_step_workers(execution_state))
+
+  defp stop_post_step_workers(state), do: state
 
   defp current_run_id(%{run_state: %RunState{id: run_id}}), do: run_id
   defp current_run_id(_state), do: nil
@@ -649,6 +716,7 @@ defmodule FavnOrchestrator.RunServer do
 
   @impl true
   def terminate(_reason, state) do
+    _ = stop_post_step_workers(state)
     release_manifest_lease(state)
     release_storage_ownership(state)
   end

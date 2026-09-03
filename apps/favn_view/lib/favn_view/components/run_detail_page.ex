@@ -175,6 +175,19 @@ defmodule FavnView.Components.RunDetailPage do
         {@run.refresh_error}. Showing the last successful result; the page will try again.
       </.notice>
 
+      <%!-- A terminal run without its reason is a page that says "Failed" and
+      nothing else. The header carries only the stable code and a bounded
+      message, so that is all this notice shows. --%>
+      <.notice
+        :if={@run[:terminal_error]}
+        tone={:error}
+        icon="hero-exclamation-triangle"
+        data-testid="run-terminal-error"
+      >
+        <span class="font-medium">{@run.terminal_error.code}</span>
+        <span>{@run.terminal_error.message}</span>
+      </.notice>
+
       <.notice
         :if={@windows_error}
         tone={:warning}
@@ -204,7 +217,6 @@ defmodule FavnView.Components.RunDetailPage do
         error={@window_failures_error}
         failed_windows={@run[:failed_windows] || 0}
       />
-
       <div data-run-active={to_string(@run.active?)}>
         <Flow.flow
           :if={@active_mode == :flow}

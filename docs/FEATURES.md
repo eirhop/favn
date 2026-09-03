@@ -197,6 +197,8 @@ operator contract is [`production/postgresql_operator_runbook.md`](production/po
 - Workspace-scoped live updates reread durable state after notification.
 - Asset and run detail distinguish requested anchors from exact effective runtime
   windows and use compact projections; event payloads load only on the Events view.
+- Run detail shows a failed run's stable error code and a bounded message; nested
+  reasons and runner payloads stay out of the page.
 - Asset detail has five working sub-pages: an overview, run history with per-run
   detail, a coverage calendar for a windowed asset, documentation, and diagnostics.
   Each loads only what it renders. One dialog submits a run, prefilled from the

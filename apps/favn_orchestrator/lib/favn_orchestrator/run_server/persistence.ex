@@ -3,7 +3,9 @@ defmodule FavnOrchestrator.RunServer.Persistence do
   Durable run-transition boundary for the run server.
 
   Stale or conflicting writes are translated to external cancellation only when
-  the latest stored snapshot contains explicit cancellation evidence.
+  the latest stored snapshot contains explicit cancellation evidence. A write
+  rejected by the run-ownership fence is returned as `{:error, :fenced}`; the
+  run server stops on it instead of retrying, because a newer owner exists.
   """
 
   alias FavnOrchestrator.RunState
@@ -13,13 +15,17 @@ defmodule FavnOrchestrator.RunServer.Persistence do
   alias FavnOrchestrator.TransitionWriter
 
   @doc "Persists one run snapshot and its matching event atomically."
-  @spec persist_run_step(RunState.t(), atom(), map()) :: :ok | {:error, term()}
+  @spec persist_run_step(RunState.t(), atom(), map()) ::
+          :ok | {:error, :external_cancel | :fenced | term()}
   def persist_run_step(%RunState{} = run_state, event_type, data) do
     durable_run = RunState.for_step_persistence(run_state)
 
     case persist_transition(durable_run, event_type, data) do
       :ok ->
         :ok
+
+      {:error, %Error{kind: :fenced}} ->
+        {:error, :fenced}
 
       {:error, reason} when reason in [:stale_write, :conflicting_snapshot] ->
         if externally_cancelled?(run_state) do
