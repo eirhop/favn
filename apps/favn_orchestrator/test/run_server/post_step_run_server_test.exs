@@ -444,10 +444,11 @@ defmodule FavnOrchestrator.RunServer.PostStepRunServerTest do
   end
 
   describe "run server routing" do
-    test "a worker reply is deferred while a persist retry is pending" do
+    test "a worker reply is deferred while a persist retry is pending", %{fixture: fixture} do
       ref = make_ref()
 
       execution_state = %RunExecutionState{
+        run: fixture.run,
         post_step_continuations: %{ref => %{pid: self(), pending: %{}}}
       }
 
@@ -463,10 +464,11 @@ defmodule FavnOrchestrator.RunServer.PostStepRunServerTest do
       assert {:noreply, ^pending} = RunServer.handle_info({unknown, :ok}, pending)
     end
 
-    test "a worker reply for a known reference reaches execution" do
+    test "a worker reply for a known reference reaches execution", %{fixture: fixture} do
       ref = make_ref()
 
       execution_state = %RunExecutionState{
+        run: fixture.run,
         post_step_continuations: %{ref => %{pid: self(), pending: %{}}}
       }
 

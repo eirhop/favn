@@ -1404,8 +1404,8 @@ defmodule FavnOrchestrator.RunServer.Execution do
       :post_step_continuation_orphaned,
       %{},
       %{
-        workspace_id: state.run && state.run.workspace_id,
-        run_id: state.run && state.run.id,
+        workspace_id: state.run.workspace_id,
+        run_id: state.run.id,
         node_key: pending |> Map.get(:entry, %{}) |> Map.get(:node_key)
       },
       level: :warning
