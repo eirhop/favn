@@ -70,7 +70,13 @@ defmodule FavnOrchestrator.Persistence.Queries.ListRunEventSummaries do
 end
 
 defmodule FavnOrchestrator.Persistence.Results.RunViewHeader do
-  @moduledoc "Lean exact-run header and aggregate counts."
+  @moduledoc """
+  Lean exact-run header and aggregate counts.
+
+  `error_code` is the stable error type or kind from the run snapshot and
+  `error_message` its message bounded to 1024 characters. Both are `nil` for
+  a run without a recorded error. Nested reasons are never projected.
+  """
 
   @enforce_keys [:run_id, :root_run_id, :status, :started_at, :updated_at, :counts]
   defstruct [
@@ -90,6 +96,8 @@ defmodule FavnOrchestrator.Persistence.Results.RunViewHeader do
     :target_label,
     :window_start_at,
     :window_end_at,
+    :error_code,
+    :error_message,
     :counts
   ]
 

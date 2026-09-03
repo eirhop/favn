@@ -46,6 +46,16 @@ loads that checkpoint once, rebuilds immutable asset definitions from the
 pinned manifest, and rejects task continuations that name a different
 checkpoint.
 
+No `RunServer` callback waits on a runner task. After a successful asset step
+whose claim pins an uninitialized persisted generation, the step outcome and
+claim completion are persisted first, then the initial-generation reconciler
+runs in a worker under `RunPostStepSupervisor` while the run process keeps
+handling renewals, sibling results, and cancellation. The node settles when the
+worker replies; a pending worker counts as in-flight stage work exactly like a
+runner await, and every terminal transition terminates pending workers. A write
+rejected by the run-ownership fence stops the process with `run_ownership_lost`
+instead of being retried, because a newer owner already exists.
+
 `RunManager` initially admits a run from a conservative decoded-plan estimate,
 then resizes that same node-wide reservation from the measured retained
 execution state after checkpoint recovery. The plan, compact manifest

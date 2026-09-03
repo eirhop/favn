@@ -414,7 +414,24 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
               event.event
             ),
             fragment(
-              "left(COALESCE(? #>> '{data,message}', ? #>> '{data,reason}', ''), 1024)",
+              """
+              left(
+                COALESCE(
+                  ? #>> '{data,message}',
+                  ? #>> '{data,error,message}',
+                  ? #>> '{data,error,type}',
+                  CASE WHEN jsonb_typeof(? #> '{data,error}') = 'string'
+                       THEN ? #>> '{data,error}' END,
+                  ? #>> '{data,reason}',
+                  ''
+                ),
+                1024
+              )
+              """,
+              event.event,
+              event.event,
+              event.event,
+              event.event,
               event.event,
               event.event
             )
@@ -1442,6 +1459,16 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
                  NULLIF(selected_run.snapshot #>> '{metadata,selected_window,end_at}', '')::timestamptz,
                  NULLIF(selected_run.snapshot #>> '{metadata,window,end_at}', '')::timestamptz,
                  NULLIF(selected_run.snapshot #>> '{params,window,end_at}', '')::timestamptz
+               ),
+               selected_run.snapshot #>> '{error,type}',
+               selected_run.snapshot #>> '{error,kind}',
+               left(
+                 COALESCE(
+                   selected_run.snapshot #>> '{error,message}',
+                   CASE WHEN jsonb_typeof(selected_run.snapshot -> 'error') = 'string'
+                        THEN selected_run.snapshot #>> '{error}' END
+                 ),
+                 1024
                )
         FROM favn_control.runs AS selected_run
         LEFT JOIN LATERAL (
@@ -1487,7 +1514,10 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
           target_id,
           target_label,
           window_start_at,
-          window_end_at
+          window_end_at,
+          error_type,
+          error_kind,
+          error_message
         ]
       ] ->
         {:ok,
@@ -1508,6 +1538,8 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
            target_label: target_label,
            window_start_at: window_start_at,
            window_end_at: window_end_at,
+           error_code: error_type || error_kind,
+           error_message: error_message,
            counts: @no_asset_counts
          }}
 

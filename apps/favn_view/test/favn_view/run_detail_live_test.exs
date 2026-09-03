@@ -55,6 +55,90 @@ defmodule FavnView.RunDetailLiveTest do
     assert is_reference(mounted.assigns.fallback_poll_ref)
   end
 
+  test "a failed run shows its bounded error code and message" do
+    Application.put_env(:favn_view, :operator_run_flow_fun, fn _context, run_id ->
+      failed_header = %{
+        header(run_id, :error)
+        | error_code: "uncertain_runner_recovery",
+          error_message: "runner execution outcome is uncertain after recovery"
+      }
+
+      {:ok, %{kind: :run, detail: %Flow{header: failed_header, assets: [], overflow?: false}}}
+    end)
+
+    assert {:ok, mounted} =
+             RunDetailLive.mount(%{"run_id" => "run-failed"}, %{}, connected_socket())
+
+    assert mounted.assigns.run.terminal_error == %{
+             code: "uncertain_runner_recovery",
+             message: "runner execution outcome is uncertain after recovery"
+           }
+
+    html =
+      render_component(
+        &RunDetailLive.render/1,
+        Map.put(mounted.assigns, :operator_workspaces, [])
+      )
+
+    assert html =~ ~s(data-testid="run-terminal-error")
+    assert html =~ "uncertain_runner_recovery"
+    assert html =~ "runner execution outcome is uncertain after recovery"
+  end
+
+  test "a cancelled run shows no terminal error notice for its cancellation term" do
+    Application.put_env(:favn_view, :operator_run_flow_fun, fn _context, run_id ->
+      cancelled_header = %{
+        header(run_id, :cancelled)
+        | error_code: "tuple",
+          error_message: "{:cancelled, :external_cancel_request}"
+      }
+
+      {:ok, %{kind: :run, detail: %Flow{header: cancelled_header, assets: [], overflow?: false}}}
+    end)
+
+    assert {:ok, mounted} =
+             RunDetailLive.mount(%{"run_id" => "run-cancelled"}, %{}, connected_socket())
+
+    assert is_nil(mounted.assigns.run.terminal_error)
+
+    html =
+      render_component(
+        &RunDetailLive.render/1,
+        Map.put(mounted.assigns, :operator_workspaces, [])
+      )
+
+    refute html =~ ~s(data-testid="run-terminal-error")
+  end
+
+  test "an active run and a clean run show no terminal error notice" do
+    Application.put_env(:favn_view, :operator_run_flow_fun, fn _context, run_id ->
+      running_header = %{header(run_id, :running) | error_code: "stale", error_message: "stale"}
+      {:ok, %{kind: :run, detail: %Flow{header: running_header, assets: [], overflow?: false}}}
+    end)
+
+    assert {:ok, running} =
+             RunDetailLive.mount(%{"run_id" => "run-running"}, %{}, connected_socket())
+
+    assert is_nil(running.assigns.run.terminal_error)
+
+    Application.put_env(:favn_view, :operator_run_flow_fun, fn _context, run_id ->
+      {:ok, %{kind: :run, detail: flow(run_id, :ok)}}
+    end)
+
+    assert {:ok, finished} =
+             RunDetailLive.mount(%{"run_id" => "run-ok"}, %{}, connected_socket())
+
+    assert is_nil(finished.assigns.run.terminal_error)
+
+    html =
+      render_component(
+        &RunDetailLive.render/1,
+        Map.put(finished.assigns, :operator_workspaces, [])
+      )
+
+    refute html =~ ~s(data-testid="run-terminal-error")
+  end
+
   test "does not issue a read during disconnected rendering" do
     caller = self()
 

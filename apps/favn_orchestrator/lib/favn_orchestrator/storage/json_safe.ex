@@ -114,6 +114,36 @@ defmodule FavnOrchestrator.Storage.JsonSafe do
     |> maybe_put_error_details(Map.get(value, :details) || Map.get(value, "details"))
   end
 
+  # Orchestrator error maps name their class in `type`. Keeping that class and
+  # any explicit message lets operator reads show a stable code without
+  # inspecting the whole map; the reason and remaining fields stay bounded and
+  # separate so they are never rendered as the message.
+  def error(%{type: type} = value)
+      when is_atom(type) and not is_nil(type) and not is_boolean(type) and
+             not is_map_key(value, :__struct__) do
+    message = Map.get(value, :message)
+    reason = Map.get(value, :reason)
+    extra = Map.drop(value, [:type, :message, :reason, :details])
+
+    details =
+      case Map.get(value, :details) do
+        explicit when is_map(explicit) -> Map.merge(extra, explicit)
+        _none -> extra
+      end
+
+    %{
+      "kind" => "error",
+      "type" => Atom.to_string(type),
+      "message" => if(is_nil(message), do: nil, else: safe_error_message(message)),
+      "reason" => if(is_nil(reason), do: nil, else: safe_error_reason(reason)),
+      "redacted" => true,
+      "truncated" => false
+    }
+    |> Enum.reject(fn {_key, child_value} -> is_nil(child_value) end)
+    |> Map.new()
+    |> maybe_put_error_details(if(map_size(details) == 0, do: nil, else: details))
+  end
+
   def error(%{__exception__: true, __struct__: module} = exception) when is_atom(module) do
     %{
       "kind" => "error",

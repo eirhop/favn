@@ -799,6 +799,7 @@ defmodule FavnView.RunDetailLive do
         window_title(header.window_start_at, header.window_end_at, socket.assigns.current_scope),
       started_at: timestamp_label(header.started_at, socket.assigns.current_scope),
       finished_at: timestamp_label(header.finished_at, socket.assigns.current_scope),
+      terminal_error: terminal_error(header),
       elapsed_duration: LogsViewModel.duration_ms_label(duration_ms),
       total_windows: total_windows,
       completed_windows: completed_windows,
@@ -820,6 +821,27 @@ defmodule FavnView.RunDetailLive do
       run_event_sequences: %{header.run_id => header.event_sequence},
       back_asset_href: back_asset_href(header.target_id)
     }
+  end
+
+  # Only the bounded code and message the header carries are shown. Nested
+  # reasons, cleanup details, and runner payloads never reach the page. A
+  # cancelled run records its cancellation as an error term, which is not a
+  # failure to explain.
+  defp terminal_error(%{active?: true}), do: nil
+  defp terminal_error(%{status: :cancelled}), do: nil
+
+  defp terminal_error(header) do
+    code = Map.get(header, :error_code)
+    message = Map.get(header, :error_message)
+
+    if is_nil(code) and is_nil(message) do
+      nil
+    else
+      %{
+        code: code || "run_failed",
+        message: message || "The run recorded no failure message."
+      }
+    end
   end
 
   defp maybe_load_backfill_group(%{backfill_parent?: true} = run, socket) do

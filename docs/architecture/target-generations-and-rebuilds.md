@@ -90,6 +90,15 @@ action. Rebuild remains available only when an active generation exists.
 
 ## Interrupted initial-generation recovery
 
+Initial activation happens after the first successful write. The run process
+persists the step outcome and the completed materialization claim, then a
+supervised worker inspects the physical relation through runner tasks and asks
+the generation store to record the fingerprint and active binding. The run
+process never blocks on those tasks, so its ownership lease keeps renewing while
+an inspection is queued behind other runner work. If the run is cancelled while
+the worker is pending, the binding stays `uninitialized` and the recovery
+workflow below applies.
+
 An initial materialization can commit in the data system while its control-plane
 binding remains incomplete. Recovery is a separate ownership-restoration
 workflow, not a rebuild and not general table adoption.

@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Implementing |
+| Status | Implemented |
 | Type | Bug fix |
 | Primary issue | None. The maintainer supplied the defect report directly on 2026-09-03 and explicitly exempted this record from the GitHub-issue requirement (see the decision log). |
 | Pull request | [#692](https://github.com/eirhop/favn/pull/692) |
@@ -493,40 +493,178 @@ The sections below are completed during implementation and before final review.
 
 ## Implementation outcome
 
-Pending.
+The run process no longer waits on runner tasks inside a callback. When a
+successful asset step's claim pins an uninitialized persisted generation,
+`StageResult` persists the step outcome and the claim completion as before,
+appends the node result to the stage run, removes the node's task from the
+stage's pending set, and returns `{:post_step_pending, stage_state, pending}`.
+`Execution` starts the unchanged `InitialTargetGenerationReconciler.reconcile/1`
+under a new `Task.Supervisor` named `RunPostStepSupervisor` with
+`async_nolink`, records the continuation under the task's monitor reference in
+`RunExecutionState.post_step_continuations`, and returns to the GenServer loop.
+The worker's reply `{ref, result}` and any `:DOWN` for that reference are routed
+by `RunServer` to two new execution events; both are deferred while a persist
+retry is pending. `StageResult.finish_post_step/3` completes the settlement from
+the current stage state without re-appending the node result, mapping `:ok` to
+the normal outcome and any error or worker exit to `post_step_persistence_failed`.
+Pending continuations are counted with awaits at all five stage-progress sites
+through `RunExecutionState.in_flight_count/1`, so they gate finalization,
+retry, admission time-out, and admission-failure terminalization exactly as
+awaits do; deferred work still refills while either is in flight.
+`Execution.stop_post_step_workers/1` demonitors and kills every pending worker.
+`Execution.handle_event/2` and `Execution.retry_persistence/2` call it whenever
+they return `{:terminal, _}`, `Execution.cancel/2` calls it, and `RunServer`
+calls it in `finalize_terminal/2` and in `terminate/2`. That covers every
+terminal transition and every stop the process performs itself, including
+ownership loss. The process does not trap exits, so a supervisor shutdown or a
+kill skips `terminate/2`; the worker then outlives the run process, which is the
+accepted crash-window behaviour described under failures.
+
+`JsonSafe.error/1` gained a clause for maps whose `type` is an atom: the class
+is kept as `type`, an explicit `message` is kept as the message, and the reason
+and remaining fields are bounded separately. Before, such maps fell to the
+catch-all and were stored with type `map` and the whole inspected map as the
+message. The post-step failure error now carries a fixed message so the run page
+shows a sentence rather than an inspected reason.
+
+`RunServer.Persistence.persist_run_step/3` maps `%Error{kind: :fenced}` to
+`{:error, :fenced}`. `RunServer` stops with `{:shutdown, :run_ownership_lost}`
+on that value on the run-start, execution (persist-retry), and terminal persist
+paths instead of scheduling a retry, emitting the existing `run_ownership_lost`
+event with reason `fenced`.
+
+The lean run header projects `error_code` (snapshot `error.type`, falling back
+to `error.kind`) and `error_message` (bounded to 1024 characters, accepting a
+plain string error). Event summaries additionally read `data.error.message`,
+`data.error.type`, and a plain string `data.error`. The run page renders one
+error notice with the code and message for a run that ended in error or timed
+out; active and cancelled runs show none, because a cancelled run's recorded
+error term is its cancellation, not a failure to explain.
+
+```mermaid
+sequenceDiagram
+    participant Runner
+    participant RS as RunServer process
+    participant W as RunPostStepSupervisor worker
+    participant PG as PostgreSQL
+
+    Runner->>RS: asset task result
+    RS->>PG: step_finished + claim completion (fenced write)
+    alt write fenced
+        RS-->>RS: stop {:shutdown, :run_ownership_lost}, no retry
+    else write ok, claim pins uninitialized generation
+        RS->>W: async_nolink reconcile(entry)
+        Note over RS: continuation keyed by monitor ref; stage counts it as in flight
+        loop every lease/3
+            RS->>PG: renew ownership with original token
+        end
+        Runner->>RS: sibling results settle normally
+        W->>PG: inspection tasks via runner, reconcile_initial
+        W-->>RS: {ref, :ok | {:error, reason}} or :DOWN
+        RS->>RS: finish_post_step, stage progress
+    end
+    opt cancel or any terminal transition while pending
+        RS->>W: demonitor + kill
+        Note over RS: claim untouched, inspection task not cancelled
+    end
+```
 
 ### Actual scope and complexity
 
-- Files and ownership areas changed: Pending
-- Ownership boundaries affected: Pending
-- Implementation complexity: Pending
-- Operational complexity: Pending
-- Canonical documentation updated: Pending
-- Actual additions, deletions, and supporting lines per approved complexity-budget slice: Pending
+- Files and ownership areas changed: `favn_orchestrator` run server
+  (`run_server.ex`, `run_server/execution.ex`, `execution/stage_result.ex`,
+  `execution/run_execution_state.ex`, `run_server/persistence.ex`),
+  `initial_target_generation_reconciler.ex` (`applicable?/1`),
+  `application.ex` (supervisor child), operator run view structs;
+  `favn_storage_postgres` operator reads store (header SQL and summary
+  coalesce); `favn_view` run detail LiveView and page component; tests in all
+  three apps; three canonical docs.
+- Ownership boundaries affected: none crossed. The View reads the new header
+  fields through the existing `OperatorRunView` facade. Storage keeps owning
+  the fence; the orchestrator only maps its error.
+- Implementation complexity: one new process kind (a short-lived worker per
+  reconciling node), one new state map, two new execution events, one new
+  supervisor child, one explicit error mapping. Settlement ordering and
+  recovery rules are unchanged.
+- Operational complexity: three new debug/warning operational events with
+  workspace id, run id, node key, and a bounded reason class. No migration,
+  no configuration, no operator action.
+- Canonical documentation updated: `docs/structure/favn_orchestrator.md` (run
+  server worker and fenced stop), `docs/architecture/target-generations-and-rebuilds.md`
+  (initial activation runs in a worker), `docs/FEATURES.md` (run detail shows
+  the error code and message).
+- Actual additions, deletions, and supporting lines per approved
+  complexity-budget slice (from `git diff --numstat`, tests counted as
+  supporting):
+
+| Slice | Production added | Production deleted | Supporting added | Supporting deleted | Budget | Explanation |
+| --- | ---: | ---: | ---: | ---: | --- | --- |
+| 1 | 411 | 58 | 0 | 0 | 150-250 / 20-50 | Over by about 160 added lines. Roughly 60 lines are moduledoc, typedoc, and `@doc` text on the new contracts; roughly 60 lines are the four operational events with bounded reason classes; about 40 lines are run-server routing (reply, deferral, `:DOWN`, worker stop in `finalize_terminal` and `terminate`) that the budget attributed loosely between slices 1 and 2; and about 35 added and 16 deleted lines come from the final-review fix that wraps `handle_event/2` and `retry_persistence/2` so every `{:terminal, _}` result stops workers, which renamed sixteen clause heads. No production behavior beyond the plan and the reviewed fixes was added. |
+| 2 | 41 | 9 | 0 | 0 | 30-60 / 0-10 | Within budget. |
+| 3 | 104 | 4 | 0 | 0 | 60-110 / 5-20 | Within budget. Includes the 24-line `JsonSafe` clause and the post-step error message added for the redaction finding, and the cancelled-run exclusion on the page. |
+| 4 | 0 | 0 | 1315 | 0 | 20-40 / 550-850 | Production is under budget because the gate lives in the test store rather than a production-visible executor module. Supporting is over by about 465 lines: the plan estimated one harness, and the implementation has two, an execution-level harness (548 lines, fake stores plus a gated binding read, ten tests) and a full run-server harness (561 lines) whose fake store implements nineteen persistence callbacks so a real `RunServer` can resume a recovered run end to end. The storage, LiveView, and JSON-safe tests add 206 lines. |
+| 5 | 0 | 0 | 21 | 0 | 0 / 20-50 | Within budget. |
 
 ## Deviations from the approved plan
 
 | Planned | Implemented | Reason | Impact | Reviewer verdict |
 | --- | --- | --- | --- | --- |
-| No deviation yet | Pending | Pending | Pending | Pending |
+| A gated test runner executor module blocks held task kinds inside the worker, used by an Agent-backed runner-task store | The Agent-backed store itself blocks inside `enqueue/1` for held task kinds and completes the task with a canned inspection or capabilities result when released; no separate executor module | One module instead of two gives the same deterministic control, and the hold happens exactly where the incident queued: at task admission | Test-only; no production change | Pending |
+| Reply deferral during a pending persist retry proven with a run-server harness whose runs store fails once | Proven with a callback-level unit test that calls `RunServer.handle_info/2` on a constructed state with `execution_persist_pending` set and asserts the reply is appended to the deferred events, plus a routing test that a known reference reaches execution and an unknown one is ignored | Reaching that state end to end needs two nodes and a mid-flight store failure timed between a worker start and a sibling persist; the callback test proves the same rule without timing | Weaker end-to-end coverage of the replay step; the replay mechanism itself is pre-existing and unchanged | Pending |
+| "Assert one resource-circuit settlement" for the exactly-once criterion | Asserted that the node result appears once, the stage's pending set and continuation map are cleared once, and a second identical reply or `:DOWN` leaves the state unchanged | Test entries carry no resource-circuit permits, so a store-level count would be vacuous; the state assertions cover the same exactly-once property | None on production | Pending |
+| `reconcile/1` itself unchanged | `reconcile/1` now delegates its applicability decision to the new `applicable?/1`; the reconciliation body is unchanged. A claim whose generation id is present but not a string is now treated as not applicable where `reconcile/1` previously raised | Avoids duplicating the claim-shape logic in two places; a malformed id is a data error that should not crash the settlement path | None on behavior for well-formed claims; the reconciler test suite still passes | Pending |
+| Live proof on the single-runner development stack | Not performed in this change | Requires a runner occupied by a long sibling asset for more than a lease; the run-server harness holds the inspection task and drives renewals deterministically instead | Listed under not verified | Pending |
+| Worker termination on terminal transitions performed only by `RunServer` through one helper | The helper is also called by `Execution.handle_event/2` and `Execution.retry_persistence/2` whenever they return `{:terminal, _}`; `RunServer` still calls it in `finalize_terminal/2` and `terminate/2` | Final-review finding: no test exercised a non-cancel terminal transition with a live worker because the stop lived only in the run server. Enforcing it where the execution state lives makes the rule testable at execution level and removes the dependence on caller discipline | Belt-and-braces double call on the same (already stopped) map is a no-op. New execution-level test: external cancel evidence during a sibling settlement kills the pending worker. New run-server test: a rejected renewal stops the run with `run_ownership_lost` and kills the held worker through `terminate/2` | Pending |
+| Slice 3 confirms the JSON-safe catch-all message shape before claiming the page is redacted | Confirmation was skipped in the first pass; the reviewer found that `%{type: atom}` maps such as `post_step_persistence_failed` were stored with type `map` and the inspected map as message. Fixed with a `JsonSafe.error/1` clause for typed maps and a fixed message on the post-step failure error | The plan's own mitigation, applied late | For legacy tuple- and atom-shaped run errors the header still projects type `tuple` or the atom name and the bounded, key-redacted inspection of the term as the message; listed under not verified and qualified in the record's invariant wording | Pending |
+| The run page shows the terminal error for any terminal failure | Cancelled runs are excluded; error and timed-out runs show the notice | Final-review finding: a cancelled run records `{:cancelled, reason}` as its error, which would have rendered as code `tuple` with an inspected tuple | LiveView test added for the cancelled case | Pending |
+| Reply-deferral test title claimed replay | Test renamed to what it asserts (deferral) | Reviewer finding | None | Pending |
+| Contracts wording "cannot ... refill" | Implemented behaviour is that deferred work refills while a continuation is pending, exactly as it does while awaits are pending; the stage still cannot finalize, retry, time out, or terminalize an admission failure | The plan's wording listed refill among the gated actions, but the pre-existing progress rule refills whenever deferred keys exist regardless of in-flight count, and changing that was never intended | Wording in the outcome, module docs, and structure page made precise; no behaviour change | Pending |
 
 ## Verification evidence
 
 | Check | Result | Evidence boundary |
 | --- | --- | --- |
-| Focused tests | Pending | Automated qualification, not live proof |
+| `mix compile --warnings-as-errors` (umbrella, dev) | Clean | Static |
+| `mix format` on every changed file; `git diff --check` | Clean; a HEEx line-ending artifact from the container formatter was repaired so the page diff contains only the notice | Static |
+| `mix credo --strict` on the changed production files | No new findings; remaining items are pre-existing alias ordering, `with` shape, arity, and Windows line-ending consistency notes | Static |
+| `elixir scripts/check_test_tag_tiers.exs` | Covered | Static |
+| Source inspection: `RunOwnership.default_lease_duration_ms/0` and the renewal interval | Unchanged (30 s, lease/3) | Static |
+| `favn_orchestrator` fast suite (`favn-test`, tiers excluded) | 807 passed, 0 failed, including the 18 new tests | Automated qualification |
+| New `post_step_continuation_test.exs` (execution level) | 10 passed: pending settlement exactly once, interleaved siblings with the draining marker listing only the still-active sibling, two independent continuations, worker error reply, worker crash, cancel while pending, a terminal transition from a sibling settlement (external cancel evidence) killing the pending worker, ignored late reply after stop, admission deadline while pending, admission failure while pending | Automated qualification |
+| New `post_step_run_server_test.exs` (real `RunServer`, fake stores) | 7 passed: three renewals with the original fencing token while the inspection task is held and the run then completes with an active binding; cancel while held kills the worker, leaves the completed claim and the inspection task alone, and terminalizes as cancelled; a rejected renewal stops the run with `run_ownership_lost` and kills the held worker; fenced step write and fenced terminal write each stop with `run_ownership_lost` after exactly one write attempt; reply deferral and routing | Automated qualification |
+| `json_safe_test.exs` | Passes with the new typed-map case: class kept as type, explicit message kept, reason bounded and key-redacted, other fields merged under details, and an exception struct with a `type` field still normalized by the exception clause | Automated qualification |
+| `favn_view` `run_detail_live_test.exs` | 57 passed including the three new notice tests (error shown, cancelled hidden, active and clean hidden); `favn_view` fast suite 827 passed | Automated qualification |
+| `favn_storage_postgres` `core_authority_test.exs` (bootstrap role) | The two new header and summary tests pass; the full file passes 144 of 145 with one unrelated backfill-window seeding failure that passes in isolation (shared-database ordering) | Automated qualification |
 
 ### Not verified
 
-- Pending.
+- Live proof on the development stack (a runner occupied by a long sibling asset
+  while a first-generation target's inspection waits beyond one lease). The
+  run-server harness covers the same control flow with a held task and direct
+  renewal messages.
+- The 300 second per-task deadline expiring inside the worker; the reconciler's
+  timeout path is unchanged and exercised by the existing
+  `OperationRunnerTasks` tests, and the worker error path is tested with a
+  reconciler error reply.
+- Behaviour when `RunPostStepSupervisor` itself is unavailable; `async_nolink`
+  would exit the run process, which then follows the existing crash-recovery
+  rules.
+- Redaction of legacy run errors that are plain tuples or atoms (for example
+  `{:pipeline_freshness_checkpoint_failed, reason}`). Their header message is
+  the bounded, sensitive-key-redacted inspection of the term, which can include
+  nested data. Typed error maps and runner errors carry their class and message
+  separately and are covered by tests.
+- Worker termination when the run process is killed or shut down by its
+  supervisor without `terminate/2` running. The worker then finishes on its own;
+  the effect is the idempotent activation described under failures.
 
 ## Final review
 
 | Field | Result |
 | --- | --- |
-| Reviewer | Independent agent or person |
-| Compared | Approved plan, implementation, tests, diagnostics, and docs |
-| Deviations complete | Pending |
-| Findings | Pending |
-| Findings addressed and rechecked | Pending |
-| Verdict | Pending |
+| Reviewer | Independent agent (general-purpose), 2026-09-03 |
+| Compared | Approved plan at 2c589109, this record, the working-tree diff, the new tests, and the three canonical docs |
+| Deviations complete | Yes after the second pass; the reviewer confirmed the baseline sections are byte-identical to the approved commit |
+| Findings | First pass: no blocking findings. Should-fix: typed error maps such as `post_step_persistence_failed` were stored with type `map` and an inspected message (S1); no test covered a non-cancel terminal transition with a live worker (S2); cancelled runs would have rendered their cancellation term as an error notice (S3). Minor: `terminate/2` coverage overstated, "refill" wording, a test name claiming replay, a silent fallback, and an unmentioned `applicable?/1` edge. Second pass: one should-fix, the new `JsonSafe` typed-map clause matched exception structs that carry a `type` field (N1), and one minor, duplicate `details` puts overwriting each other (N2). |
+| Findings addressed and rechecked | S1-S3 and M1-M5 fixed and confirmed resolved on the second pass. N1 fixed with a struct guard on the clause and an exception-with-type test case; N2 fixed by merging explicit details with the remaining fields once. |
+| Verdict | Approve after fixes (second pass); N1 and N2 applied afterwards as the reviewer specified, with no further re-review requested |

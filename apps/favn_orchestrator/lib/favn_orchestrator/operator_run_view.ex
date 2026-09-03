@@ -46,6 +46,8 @@ defmodule FavnOrchestrator.OperatorRunView do
       :target_label,
       :window_start_at,
       :window_end_at,
+      :error_code,
+      :error_message,
       :counts,
       :active?,
       :cancellable?,

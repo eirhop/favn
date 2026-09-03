@@ -4869,6 +4869,104 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert is_nil(header.trigger_type)
   end
 
+  test "run header and event summaries expose the bounded terminal error", fixture do
+    {command, run} = create_run_command(fixture)
+    assert {:ok, _created} = RunStore.create_run(command)
+
+    assert {:ok, header} =
+             OperatorReadStore.get_run_header(%GetRunHeader{
+               workspace_context: fixture.workspace_context,
+               run_id: run.id
+             })
+
+    assert is_nil(header.error_code)
+    assert is_nil(header.error_message)
+
+    failed =
+      RunState.transition(run,
+        status: :error,
+        error: %{
+          "kind" => "uncertain_runner_recovery",
+          "type" => "uncertain_runner_recovery",
+          "message" => "runner execution outcome is uncertain after recovery",
+          "reason" => %{details: %{secret: "never shown"}}
+        }
+      )
+
+    assert {:ok, _committed} =
+             RunStore.commit_transition(%CommitRunTransition{
+               workspace_context: fixture.workspace_context,
+               command_id: "terminal-error:" <> run.id,
+               expected_sequence: 1,
+               run: failed,
+               event: %{
+                 run_id: run.id,
+                 sequence: 2,
+                 event_type: :run_failed,
+                 status: :error,
+                 data: %{
+                   error: %{
+                     type: :uncertain_runner_recovery,
+                     message: "runner execution outcome is uncertain after recovery"
+                   }
+                 },
+                 occurred_at: DateTime.utc_now()
+               }
+             })
+
+    assert {:ok, header} =
+             OperatorReadStore.get_run_header(%GetRunHeader{
+               workspace_context: fixture.workspace_context,
+               run_id: run.id
+             })
+
+    assert header.error_code == "uncertain_runner_recovery"
+    assert header.error_message == "runner execution outcome is uncertain after recovery"
+
+    assert {:ok, summaries} =
+             OperatorReadStore.list_run_event_summaries(%ListRunEventSummaries{
+               workspace_context: fixture.workspace_context,
+               run_id: run.id,
+               limit: 10
+             })
+
+    failed_summary = Enum.find(summaries, &(&1.sequence == 2))
+    assert failed_summary.summary == "runner execution outcome is uncertain after recovery"
+    refute String.contains?(failed_summary.summary, "never shown")
+  end
+
+  test "event summaries read a plain string error", fixture do
+    {command, run} = create_run_command(fixture)
+    assert {:ok, _created} = RunStore.create_run(command)
+
+    failed = RunState.transition(run, status: :error, error: :timeout)
+
+    assert {:ok, _committed} =
+             RunStore.commit_transition(%CommitRunTransition{
+               workspace_context: fixture.workspace_context,
+               command_id: "string-error:" <> run.id,
+               expected_sequence: 1,
+               run: failed,
+               event: %{
+                 run_id: run.id,
+                 sequence: 2,
+                 event_type: :run_failed,
+                 status: :error,
+                 data: %{error: "timeout"},
+                 occurred_at: DateTime.utc_now()
+               }
+             })
+
+    assert {:ok, summaries} =
+             OperatorReadStore.list_run_event_summaries(%ListRunEventSummaries{
+               workspace_context: fixture.workspace_context,
+               run_id: run.id,
+               limit: 10
+             })
+
+    assert %{summary: "timeout"} = Enum.find(summaries, &(&1.sequence == 2))
+  end
+
   test "compact run history prefers the persisted pipeline target label", fixture do
     {command, run} = pipeline_run_command(fixture)
 
