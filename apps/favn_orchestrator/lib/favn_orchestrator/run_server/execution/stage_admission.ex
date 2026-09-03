@@ -65,16 +65,28 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
   @typedoc """
   Persist-retry resume for a node-specific terminal admission failure.
 
+  This shape is never returned by `submit/1`. It is carried inside the
+  `:persist_retry` result as the resume payload and handed back to execution
+  when the retried write succeeds.
+
   The failed node's outcome is durable once the retried write succeeds. The
   remaining nodes are carried as deferred work with the batch-budget refill
-  cause so submission continues immediately, and the completed node statuses
-  are carried so a retry during a later stage attempt keeps every planned
-  node's downstream classification.
+  cause so submission continues immediately. The completed node statuses are
+  carried so the payload stays correct for a resume that rebuilds stage state
+  from scratch; execution reaches that variant only on a stage's first attempt,
+  where no node has completed yet, because a later attempt resumes through the
+  refill variant and keeps the live stage state.
   """
   @type node_failure_resume ::
           {:node_failed, RunState.t(), [entry()], [node_key()], MapSet.t(term()), [map()],
            map() | nil, deferred_refill_cause(), %{optional(node_key()) => atom()}}
 
+  @typedoc """
+  Outcome of submitting a stage's runnable nodes.
+
+  A `:persist_retry` carries either the partial-retry shape or
+  `t:node_failure_resume/0` as its resume payload.
+  """
   @type result ::
           {:ok, RunState.t(), [entry()], [node_key()], MapSet.t(term()), [map()], map() | nil,
            deferred_refill_cause()}

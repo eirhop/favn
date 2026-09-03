@@ -476,18 +476,24 @@ now distinguishes by an explicit call site.
   retries-and-replay guides already state the contract this restores.
 - Actual lines per approved complexity-budget slice:
 
+Counted with `git diff 0aa4b938 <implementation> --numstat -- apps`, which counts
+blank lines. Non-blank counts are given beside them because the budget was
+estimated in non-blank terms.
+
 | Slice | Production added | Production deleted | Supporting added | Supporting deleted |
 | --- | ---: | ---: | ---: | ---: |
-| 1 (`stage_admission.ex`) | 197 | 12 | 0 | 0 |
-| 2 (`execution.ex`) | 86 | 3 | 0 | 0 |
-| 3 (tests) | 0 | 0 | 625 | 0 |
+| 1 (`stage_admission.ex`) | 200 (169 non-blank) | 12 | 0 | 0 |
+| 2 (`execution.ex`) | 86 (79 non-blank) | 3 | 0 | 0 |
+| 3 (tests) | 0 | 0 | 808 (680 non-blank) | 0 |
 
 ## Deviations from the approved plan
 
 | Planned | Implemented | Reason | Impact | Reviewer verdict |
 | --- | --- | --- | --- | --- |
-| Slice 1: 90-160 production lines added, 20-50 deleted | 197 added, 12 deleted | Additions: the classification table is one clause per error term (~55 lines) and the module, type, and function documentation another ~45, neither of which the budget counted separately. Deletions: nothing was removed outright. Path 1's whole-stage return was wrapped in a classification branch rather than deleted, path 2's `if` became a `cond` with one added branch, and the sibling-cancelling function survives in full, which the plan review's second pass had already predicted would push deletions to the low end | None on behavior; the whole-stage paths are byte-for-byte the same code, only reached through one more branch | Pending |
-| Slice 2: 30-70 production lines added | 86 added | Two resume clauses plus two handlers, each with the comment explaining why the variant exists; the initial-stage handler repeats the stage-state construction of its partial-retry twin rather than sharing a helper, matching the surrounding style | None | Pending |
+| Slice 1: 90-160 production lines added, 20-50 deleted | 200 added (169 non-blank), 12 deleted | Additions: the classification table is one clause per error term (~55 lines) and the module, type, and function documentation another ~45, neither of which the budget counted separately. Deletions: nothing was removed outright. Path 1's whole-stage return was wrapped in a classification branch rather than deleted, path 2's `if` became a `cond` with one added branch, and the sibling-cancelling function survives in full, which the plan review's second pass had already predicted would push deletions to the low end | None on behavior; the whole-stage paths are byte-for-byte the same code, only reached through one more branch | Pending |
+| Slice 2: 30-70 production lines added | 86 added (79 non-blank) | Two resume clauses plus two handlers, each with the comment explaining why the variant exists; the initial-stage handler repeats the stage-state construction of its partial-retry twin rather than sharing a helper, matching the surrounding style | None | Pending |
+| Slice 3: 380-600 supporting lines added | 808 added (680 non-blank) | The execution fixture is one plan of six nodes across two stages with a fake claim store, a fake admission store, and a fake checkpoint store, which is more setup than the estimate assumed; the classification file grew by four cases after the final review (the registry `:not_found` and `:internal` terms, and the sharpened first-failure and package assertions). Non-blank is 680, 13 percent over the top of the range; the raw figure is 35 percent over because the fixture is written with blank lines between its many small maps | None | Pending |
+| Verification plan: "Run-wide failures still stop the stage" to be shown with external cancel during submission | Shown with a `:unavailable` claim-store error instead | The `:unavailable` error exercises the new classification branch directly, which external cancel does not: external cancel is caught before classification, by the existing `externally_cancelled?/1` check and by the `{:error, :external_cancel}` clause of the failure write. The substitution proves the branch that this change added | External cancellation during the per-node write itself is not covered by a test; it returns the cancelled snapshot, as the pre-existing submit-failure path does | Pending |
 | `submit_stage_entries/5` keeps its `queued_steps` default | The default was removed when `completed_node_statuses` was added | With the initial-stage caller now passing six arguments and the refill caller five, arity 4 became unreachable and `--warnings-as-errors` rejected the unused default | None; both call sites pass the argument explicitly | Pending |
 | Node result appended after the failure write, as `StageResult` does | Appended before it | `RunState.for_step_persistence/1` sets `result` to `nil` on every non-terminal write, so neither order changes the durable payload; appending first keeps the failure function a single expression | None | Pending |
 
@@ -500,9 +506,56 @@ now distinguishes by an explicit call site.
 | `mix credo --only warning --strict` | Clean | Static |
 | Whole-umbrella Dialyzer (`mix dialyzer --format dialyzer --quiet-with-result`) | `Total errors: 0, Skipped: 0, Unnecessary Skips: 0` | Static |
 | `elixir scripts/check_test_tag_tiers.exs` | Test tag tiers are covered by CI | Static |
-| Classification unit tests (`stage_admission_classification_test.exs`, 24 tests) | Pass. One test per per-node term and per run-wide term, including the two unrecognized-term defaults | Automated qualification |
-| Execution regression tests (`stage_admission_node_failure_test.exs`, 8 tests) | Pass. Claim conflict fails only `b` with the run left `running` and the error cleared; the held sibling `a` is never cancelled, completes, and the run ends with `b`'s conflict; `e` is persisted `blocked` for `upstream_blocked` while `d` reaches admission; a missing execution package fails only its node and fails its acquired claim; a `:unavailable` claim error still cancels the sibling and writes no per-node failure; a failed failure write resumes and submits the remaining node; the initial-stage resume keeps statuses of nodes completed earlier; the drained-stage recovery disposition is `active_stage_outcomes_not_resumable` listing the sibling's task | Automated qualification, not live proof |
-| `favn_orchestrator` fast suite | 839 passed, 2 excluded (807 before this change, plus the 32 added here) | Automated qualification |
+| Classification unit tests (`stage_admission_classification_test.exs`, 26 tests) | Pass. One test per per-node term and per run-wide term, including the two unrecognized-term defaults and the registry `:not_found` and `:internal` terms recorded under "Known limitation" | Automated qualification |
+| Execution regression tests (`stage_admission_node_failure_test.exs`, 8 tests) | Pass. Claim conflict fails only `b` with the run left `running` and the error cleared; the held sibling `a` is never cancelled, completes, and the run ends with `b`'s conflict; `e` is persisted `blocked` for `upstream_blocked` while `d` reaches admission; a missing execution package fails only its node and fails its acquired claim; a `:unavailable` claim error still cancels the sibling and writes no per-node failure; a failed failure write resumes, submits the remaining node, and writes no second event for the retried node while the earlier node statuses survive; the initial-stage resume rebuilds the stage and its node statuses reach downstream classification; the drained-stage recovery disposition is `active_stage_outcomes_not_resumable` listing the sibling's task | Automated qualification, not live proof |
+| `favn_orchestrator` fast suite | 841 passed, 2 excluded (807 before this change, plus the 34 added here) | Automated qualification |
+
+### Contract corrections found in final review
+
+Two statements in the approved plan were written on assumptions that the code
+does not hold. The implementation matches the plan's intent; the plan's wording
+was too strong.
+
+- **"The initial-stage resume payload also carries the statuses of nodes
+  completed in earlier attempts."** It does carry them, but that clause is
+  reached only on the first attempt of a stage, where the map is always empty.
+  `resume_retry/2` reads `state.stage_state.node_statuses` and does not clear
+  `stage_state` before starting the next attempt, so a persist-retry during
+  attempt two or later dispatches on a live `%StageAttemptState{}` and resumes
+  through the refill clause. That clause keeps the live stage state, which
+  already holds the completed statuses, so downstream classification is intact
+  either way. The payload field is kept because it is correct by construction
+  if that dispatch ever changes, and the test that covers the clause now says
+  what it actually proves.
+- **"No draining marker is written for an admission failure. Result-failure
+  draining markers are unchanged."** The first sentence holds. The second is
+  imprecise: once an admission failure has set the stage's terminal failure, a
+  later result failure with siblings still pending writes no
+  `stage_draining_after_failure` marker either, because `remember_failure/6`
+  only writes one for the first failure. That is the same behavior a
+  resource-circuit block has produced since before this change, and it is what
+  the plan intends, since the admission failure is already the primary failure.
+
+Two follow-ups that this change makes reachable but does not introduce, both
+shared with the pre-existing partial-retry resume and neither in scope here:
+
+- The refill resume variants do not refresh `stage_admission_deadline_ms`.
+  Combined with `resume_retry/2` keeping `stage_state`, a persist retry during
+  a later stage attempt runs against the first attempt's deadline and can time
+  the stage out early.
+- `restore_retry_position` leaves `stage_state` nil, so `resume_retry/2` would
+  raise on a crash-restored pipeline retry. Pre-existing and unrelated to
+  admission.
+
+### Known limitation
+
+A registry error for a package that is not found is node-shaped in nature but
+arrives as a persistence error rather than one of the package terms, so the
+plan's conservative default applies and it still stops the stage. This is
+deliberate and now has its own unit test: the storage integration test
+"terminal failure during refill cancels a sibling admitted by an earlier batch"
+depends on that failure staying whole-stage. Reclassifying it is a separate
+change with its own record.
 
 ### Not verified
 
@@ -522,9 +575,9 @@ now distinguishes by an explicit call site.
 
 | Field | Result |
 | --- | --- |
-| Reviewer | Independent agent or person |
-| Compared | Approved plan, implementation, tests, diagnostics, and docs |
-| Deviations complete | Pending |
-| Findings | Pending |
-| Findings addressed and rechecked | Pending |
-| Verdict | Pending |
+| Reviewer | Independent agent (Fable 5.1, high reasoning), 2026-09-03 |
+| Compared | Approved plan at `0aa4b938`, implementation at `2c5bac7f`, tests, diagnostics, and docs; the reviewer re-ran the two new test files and the `favn_orchestrator` fast suite |
+| Deviations complete | No at first pass. The slice-3 overrun, the corrected line counts, and the verification-plan substitution were missing and have been added |
+| Findings | No blocking findings. Should-fix: the initial-stage resume clause is reachable only on a stage's first attempt because `resume_retry/2` keeps `stage_state`, so the plan's later-attempt claim is too strong (S1); the test for that clause modelled a state that cannot occur (S2); a registry `:not_found` at the package call site is unclassified and still stops the stage (S3); the recorded complexity figures were not reproducible and the slice-3 overrun was unexplained (S4); the verification-plan substitution of a `:unavailable` claim error for external cancel was not listed as a deviation (S5); first-failure-wins was asserted with two indistinguishable errors (S6). Minor: the retry test could not tell a failed write from a durable one; the draining-marker sentence was imprecise; `node_failure_resume` was unreferenced |
+| Findings addressed and rechecked | S1 and the draining-marker wording are corrected under "Contract corrections found in final review", with the deadline and `restore_retry_position` hazards recorded as out-of-scope follow-ups. S2: the test now asserts what the initial-stage clause proves and carries a comment on the real dispatch, and the refill test asserts that completed statuses survive. S3: kept whole-stage per the plan's conservative default, now pinned by two unit tests and recorded under "Known limitation" with the storage integration test that depends on it. S4: figures recounted from `git diff --numstat` with the method stated, and the slice-3 overrun explained. S5: added to the deviations table with the reason the substitution proves more. S6: the second-stage node now fails with a distinguishable conflict, so the terminal error proves first-failure-wins. Minor: the retry test now asserts no further `step_failed` write after the resume; `node_failure_resume` is referenced from the `result` type documentation. Tests after the changes: 34 passed in the two new files |
+| Verdict | Approved with minor findings, all addressed |

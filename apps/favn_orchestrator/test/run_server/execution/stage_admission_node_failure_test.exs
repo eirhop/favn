@@ -40,6 +40,10 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmissionNodeFailureTest do
 
   @unavailable Error.new(:unavailable, "claim store is unavailable", retryable?: true)
 
+  @later_conflict Error.new(:conflict, "a different target operation is in progress",
+                    details: %{reason_code: "target_operation_in_progress"}
+                  )
+
   defmodule FakeStore do
     alias FavnOrchestrator.Persistence.Results.Admission
     alias FavnOrchestrator.Persistence.Results.CapacityRelease
@@ -134,7 +138,8 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmissionNodeFailureTest do
            }
          }}
       else
-        {:error, Process.get({__MODULE__, :claim_error})}
+        errors = Process.get({__MODULE__, :claim_error_by_target}, %{})
+        {:error, Map.get(errors, command.target_id, Process.get({__MODULE__, :claim_error}))}
       end
     end
 
@@ -239,6 +244,10 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmissionNodeFailureTest do
   test "the held sibling completes and the run fails with the admission error", %{
     fixture: fixture
   } do
+    # `d` fails on its own distinguishable conflict in the next stage, so the
+    # terminal error proves the FIRST failure wins rather than the last one.
+    Process.put({FakeStore, :claim_error_by_target}, %{fixture.d_target_id => @later_conflict})
+
     assert {:cont, awaiting} = Execution.handle_event(fixture.state, :continue)
 
     assert {:terminal, failed} =
@@ -250,7 +259,9 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmissionNodeFailureTest do
     refute_received {:runner_task_cancellation_requested, _command}
 
     assert failed.status == :error
-    assert failed.error == @conflict
+
+    assert failed.error == @conflict,
+           "the first terminal failure must stay the run error, not the later one"
 
     statuses = node_statuses(failed)
     assert statuses[fixture.a_key] == :ok
@@ -370,23 +381,32 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmissionNodeFailureTest do
     assert fixture.c_key in failed_node_keys,
            "the remaining node must be submitted after the retry"
 
+    # The refill resume keeps the live stage state, so a sibling that already
+    # settled in this attempt keeps its status and its dependents stay runnable.
+    assert awaiting.stage_state.node_statuses[fixture.b_key] == :error
+    assert awaiting.stage_state.node_statuses[fixture.c_key] == :error
+
+    assert commits(drain_commits(), :step_failed) == [],
+           "the retried write must produce exactly one durable event per node"
+
     refute_received {:runner_task_cancellation_requested, _command}
     assert RunExecutionState.in_flight_count(awaiting) == 1
   end
 
-  test "the initial-stage resume keeps statuses of nodes completed in earlier attempts", %{
+  # `resume_retry/2` leaves `stage_state` set when it starts a later stage
+  # attempt, so this clause is reached only for the first attempt of a stage,
+  # where no node has completed yet. A later attempt resumes through the refill
+  # clause above, which keeps the live stage state and its statuses.
+  test "the initial-stage resume rebuilds the stage and records the node failure", %{
     fixture: fixture
   } do
-    completed = %{fixture.a_key => :ok}
-
     failure = %{
       status: :error,
       error: @conflict,
       node_statuses: %{fixture.b_key => :error}
     }
 
-    resume =
-      {:node_failed, fixture.run, [], [], MapSet.new(), [], failure, nil, completed}
+    resume = {:node_failed, fixture.run, [], [], MapSet.new(), [], failure, nil, %{}}
 
     retry =
       PersistenceRetry.new(
@@ -404,14 +424,15 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmissionNodeFailureTest do
         await_timers: %{}
     }
 
-    assert {:terminal, failed} = Execution.retry_persistence(state, retry)
+    # The rebuilt stage has no deferred work and no awaits, so it finalizes and
+    # runs the next stage's classification before deferring to the run loop.
+    assert {:cont, resumed} = Execution.retry_persistence(state, retry)
+    assert {:terminal, failed} = Execution.handle_event(resumed, :continue)
     assert failed.error == @conflict
 
-    statuses = node_statuses(failed)
-    assert statuses[fixture.e_key] == :blocked
-
-    assert Map.has_key?(statuses, fixture.d_key),
-           "the completed sibling's status must survive the resume so its dependent is not blocked"
+    # The payload's node statuses reached downstream classification: only the
+    # failed node's dependent is blocked.
+    assert node_statuses(failed)[fixture.e_key] == :blocked
   end
 
   defp fixture do
@@ -584,7 +605,8 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmissionNodeFailureTest do
       d_key: d_key,
       e_key: e_key,
       f_key: f_key,
-      f_target_id: TargetIdentity.for_asset(f_ref)
+      f_target_id: TargetIdentity.for_asset(f_ref),
+      d_target_id: TargetIdentity.for_asset(d_ref)
     }
   end
 
