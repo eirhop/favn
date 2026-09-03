@@ -2,13 +2,13 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Plan reviewed |
+| Status | Implementing |
 | Type | Bug fix |
 | Primary issue | None. The maintainer supplied the defect report directly on 2026-09-03 and explicitly exempted this record from the GitHub-issue requirement (see the decision log). |
-| Pull request | Pending |
-| Related work | [#618](https://github.com/eirhop/favn/issues/618) (ownership-boundary concerns during stage recovery; not fixed here). A sibling record for terminal stage-admission failures cancelling independent siblings is planned to follow this one. |
+| Pull request | [#692](https://github.com/eirhop/favn/pull/692) |
+| Related work | [#618](https://github.com/eirhop/favn/issues/618) (ownership-boundary concerns during stage recovery; not fixed here). The sibling record for terminal stage-admission failures cancelling independent siblings is [#693](https://github.com/eirhop/favn/pull/693), sequenced after this one. |
 | Affected areas | Orchestrator run execution and ownership, initial target-generation reconciliation, operator run reads (orchestrator and PostgreSQL), run detail page in the View |
-| Approved plan commit | Pending independent review |
+| Approved plan commit | 2c589109 |
 | Last updated | 2026-09-03 |
 
 ## One-minute summary
