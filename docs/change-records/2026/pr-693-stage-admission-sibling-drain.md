@@ -443,32 +443,80 @@ The sections below are completed during implementation and before final review.
 
 ## Implementation outcome
 
-Pending.
+Both node-specific admission paths now fail only their own node. Stage
+admission gained a public classification function, `node_specific_failure?/2`,
+and a per-node failure function that releases nothing (both call sites already
+released), persists the node's `:step_failed` with the run left `running` and
+the recovery marker set, appends the node's result, records the node status and
+the stage's first terminal failure, and then continues submitting the rest of
+the stage. Execution gained the matching persist-retry resume clause in both
+the initial-stage and refill variants.
+
+Path 1, the claim-acquisition error, now classifies after its existing
+pre-dispatch release. Path 2 no longer reaches the sibling-cancelling function
+for a node-specific package error; that function survives unchanged for the
+run-wide attempt-start persistence failure, which `fail_unsubmitted_entry/4`
+now distinguishes by an explicit call site.
 
 ### Actual scope and complexity
 
-- Files and ownership areas changed: Pending
-- Ownership boundaries affected: Pending
-- Implementation complexity: Pending
-- Operational complexity: Pending
-- Canonical documentation updated: Pending
-- Actual additions, deletions, and supporting lines per approved complexity-budget slice: Pending
+- Files and ownership areas changed:
+  `apps/favn_orchestrator/lib/favn_orchestrator/run_server/execution/stage_admission.ex`,
+  `apps/favn_orchestrator/lib/favn_orchestrator/run_server/execution.ex`,
+  `apps/favn_orchestrator/test/test_helper.exs`, and two new orchestrator test
+  files.
+- Ownership boundaries affected: none. Every change is inside
+  `favn_orchestrator`; no store, runner, view, or core contract changed.
+- Implementation complexity: one new classification function with one clause
+  per error term, one per-node failure function, two resume clauses with two
+  handlers that mirror the existing partial-retry pair.
+- Operational complexity: unchanged. No new log line, event type, payload
+  field, migration, or configuration.
+- Canonical documentation updated: none needed. The runtime-model and
+  retries-and-replay guides already state the contract this restores.
+- Actual lines per approved complexity-budget slice:
+
+| Slice | Production added | Production deleted | Supporting added | Supporting deleted |
+| --- | ---: | ---: | ---: | ---: |
+| 1 (`stage_admission.ex`) | 197 | 12 | 0 | 0 |
+| 2 (`execution.ex`) | 86 | 3 | 0 | 0 |
+| 3 (tests) | 0 | 0 | 625 | 0 |
 
 ## Deviations from the approved plan
 
 | Planned | Implemented | Reason | Impact | Reviewer verdict |
 | --- | --- | --- | --- | --- |
-| No deviation yet | Pending | Pending | Pending | Pending |
+| Slice 1: 90-160 production lines added, 20-50 deleted | 197 added, 12 deleted | Additions: the classification table is one clause per error term (~55 lines) and the module, type, and function documentation another ~45, neither of which the budget counted separately. Deletions: nothing was removed outright. Path 1's whole-stage return was wrapped in a classification branch rather than deleted, path 2's `if` became a `cond` with one added branch, and the sibling-cancelling function survives in full, which the plan review's second pass had already predicted would push deletions to the low end | None on behavior; the whole-stage paths are byte-for-byte the same code, only reached through one more branch | Pending |
+| Slice 2: 30-70 production lines added | 86 added | Two resume clauses plus two handlers, each with the comment explaining why the variant exists; the initial-stage handler repeats the stage-state construction of its partial-retry twin rather than sharing a helper, matching the surrounding style | None | Pending |
+| `submit_stage_entries/5` keeps its `queued_steps` default | The default was removed when `completed_node_statuses` was added | With the initial-stage caller now passing six arguments and the refill caller five, arity 4 became unreachable and `--warnings-as-errors` rejected the unused default | None; both call sites pass the argument explicitly | Pending |
+| Node result appended after the failure write, as `StageResult` does | Appended before it | `RunState.for_step_persistence/1` sets `result` to `nil` on every non-terminal write, so neither order changes the durable payload; appending first keeps the failure function a single expression | None | Pending |
 
 ## Verification evidence
 
 | Check | Result | Evidence boundary |
 | --- | --- | --- |
-| Focused tests | Pending | Automated qualification, not live proof |
+| `mix compile --warnings-as-errors` (umbrella, test env) | Clean | Static |
+| `mix format --check-formatted` (umbrella) | Clean | Static |
+| `mix credo --only warning --strict` | Clean | Static |
+| Whole-umbrella Dialyzer (`mix dialyzer --format dialyzer --quiet-with-result`) | `Total errors: 0, Skipped: 0, Unnecessary Skips: 0` | Static |
+| `elixir scripts/check_test_tag_tiers.exs` | Test tag tiers are covered by CI | Static |
+| Classification unit tests (`stage_admission_classification_test.exs`, 24 tests) | Pass. One test per per-node term and per run-wide term, including the two unrecognized-term defaults | Automated qualification |
+| Execution regression tests (`stage_admission_node_failure_test.exs`, 8 tests) | Pass. Claim conflict fails only `b` with the run left `running` and the error cleared; the held sibling `a` is never cancelled, completes, and the run ends with `b`'s conflict; `e` is persisted `blocked` for `upstream_blocked` while `d` reaches admission; a missing execution package fails only its node and fails its acquired claim; a `:unavailable` claim error still cancels the sibling and writes no per-node failure; a failed failure write resumes and submits the remaining node; the initial-stage resume keeps statuses of nodes completed earlier; the drained-stage recovery disposition is `active_stage_outcomes_not_resumable` listing the sibling's task | Automated qualification, not live proof |
+| `favn_orchestrator` fast suite | 839 passed, 2 excluded (807 before this change, plus the 32 added here) | Automated qualification |
 
 ### Not verified
 
-- Pending.
+- Live proof on the development stack. The planned manual scenario, holding one
+  asset on the runner while forcing a conflicting target operation on another,
+  was not run. The execution-level tests drive the same code path with fake
+  stores.
+- Resource-permit release for the failed node. The fixture's assets request no
+  resource permits, so `ResourceCircuits.release/2` returns early with an empty
+  list. The release call itself is unchanged by this record: both call sites
+  run the same pre-dispatch release they ran before, and only the branch taken
+  after a successful release is new.
+- The umbrella-wide fast, acceptance, and slow suites were not run locally.
+  They run in CI on the pull request.
 
 ## Final review
 

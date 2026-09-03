@@ -6,6 +6,14 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
   leases, materialization claims, queued-step dedupe, `:step_queued`, and
   `:step_started` persistence. It does not await runner results or decide retry
   and failure-drain behavior.
+
+  Nodes in a stage are independent, so a terminal admission failure that belongs
+  to one node fails only that node. `node_specific_failure?/2` decides that by
+  call site and error term; anything it does not recognize keeps the
+  conservative whole-stage behavior. A per-node failure persists the node's
+  `:step_failed` with the run left `running`, remembers it as the stage's first
+  terminal failure, and continues submitting the rest of the stage so
+  already-submitted siblings are never cancelled.
   """
 
   require Logger
@@ -23,10 +31,12 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
   alias FavnOrchestrator.ResourceCircuits
   alias FavnOrchestrator.Redaction
   alias FavnOrchestrator.RunServer.Cancellation
+  alias FavnOrchestrator.Persistence.Error, as: PersistenceError
   alias FavnOrchestrator.RunServer.Execution.ActiveTaskSet
   alias FavnOrchestrator.RunServer.Execution.PreSubmitFailure
   alias FavnOrchestrator.RunServer.Execution.PipelineTaskContinuation
   alias FavnOrchestrator.RunServer.Execution.RecoveryPosition
+  alias FavnOrchestrator.RunServer.Execution.ResultBuilder
   alias FavnOrchestrator.RunServer.Execution.StageClassifier
   alias FavnOrchestrator.RunServer.Execution.StageEntry
   alias FavnOrchestrator.RunServer.Execution.StepAttemptLifecycle
@@ -42,6 +52,29 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
   @type node_key :: Favn.Plan.node_key()
   @type entry :: StageEntry.t()
   @type deferred_refill_cause :: :batch_budget | :blocked | nil
+
+  @typedoc """
+  Call site of a terminal admission failure, used to classify it.
+
+  Only `:materialization_claim` and `:execution_package` can fail one node on
+  their own. `:attempt_start` is a run transition, so its failure means lost
+  ownership or store trouble and always stops the stage.
+  """
+  @type call_site :: :materialization_claim | :execution_package | :attempt_start
+
+  @typedoc """
+  Persist-retry resume for a node-specific terminal admission failure.
+
+  The failed node's outcome is durable once the retried write succeeds. The
+  remaining nodes are carried as deferred work with the batch-budget refill
+  cause so submission continues immediately, and the completed node statuses
+  are carried so a retry during a later stage attempt keeps every planned
+  node's downstream classification.
+  """
+  @type node_failure_resume ::
+          {:node_failed, RunState.t(), [entry()], [node_key()], MapSet.t(term()), [map()],
+           map() | nil, deferred_refill_cause(), %{optional(node_key()) => atom()}}
+
   @type result ::
           {:ok, RunState.t(), [entry()], [node_key()], MapSet.t(term()), [map()], map() | nil,
            deferred_refill_cause()}
@@ -55,6 +88,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
   def submit(request) when is_map(request) do
     request
     |> Map.put_new(:queued_steps, MapSet.new())
+    |> Map.put_new(:completed_node_statuses, %{})
     |> submit_request()
   end
 
@@ -69,10 +103,11 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
          freshness_checkpoint: freshness_checkpoint,
          attempt: attempt,
          manifest_lease_id: manifest_lease_id,
-         queued_steps: %MapSet{} = queued_steps
+         queued_steps: %MapSet{} = queued_steps,
+         completed_node_statuses: completed_node_statuses
        })
        when is_list(node_keys) and is_map(decisions) and is_map(freshness_context) and
-              is_map(freshness_checkpoint) do
+              is_map(freshness_checkpoint) and is_map(completed_node_statuses) do
     ctx = %{
       current_run: run_state,
       version: version,
@@ -88,7 +123,8 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
       waiters: [],
       batch_started_ms: System.monotonic_time(:millisecond),
       batch_count: 0,
-      terminal_failure: nil
+      terminal_failure: nil,
+      completed_node_statuses: completed_node_statuses
     }
 
     do_submit(node_keys, ctx)
@@ -290,8 +326,12 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
       {:error, reason} ->
         case release_pre_dispatch(ctx) do
           :ok ->
-            failed = Snapshots.snapshot_update(current_run, status: :error, error: reason)
-            {:error, failed, [], attempted_node_keys(ctx)}
+            if node_specific_failure?(:materialization_claim, reason) do
+              fail_node_and_continue(ctx, reason)
+            else
+              failed = Snapshots.snapshot_update(current_run, status: :error, error: reason)
+              {:error, failed, [], attempted_node_keys(ctx)}
+            end
 
           {:error, release_reason} ->
             pre_dispatch_release_failed(ctx, release_reason)
@@ -394,7 +434,8 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
           materialization_claim: MaterializationClaims.enrich(ctx.materialization_claim, work)
       })
     else
-      {:error, reason} -> fail_unsubmitted_entry(ctx, ctx.work.asset_ref, reason)
+      {:error, reason} ->
+        fail_unsubmitted_entry(ctx, :execution_package, ctx.work.asset_ref, reason)
     end
   end
 
@@ -433,6 +474,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
       {:error, reason} ->
         fail_unsubmitted_entry(
           %{ctx | current_run: without_inflight_task(ctx.current_run, task_id)},
+          :attempt_start,
           ctx.work.asset_ref,
           reason
         )
@@ -530,7 +572,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
     })
   end
 
-  defp fail_unsubmitted_entry(ctx, asset_ref, reason) do
+  defp fail_unsubmitted_entry(ctx, call_site, asset_ref, reason) do
     with :ok <- release_entry_lease(%{lease: ctx.lease}),
          :ok <-
            ResourceCircuits.release(
@@ -538,11 +580,16 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
              Map.get(ctx, :resource_circuit_permits, [])
            ),
          :ok <- fail_claim(ctx, reason) do
-      if safe_retryable?(reason) and
-           StepAttemptLifecycle.retry_allowed?(ctx.current_run, ctx.node_key, ctx.attempt) do
-        persist_retryable_submit_failure(ctx, asset_ref, reason)
-      else
-        terminalize_unsubmitted_entry(ctx, asset_ref, reason)
+      cond do
+        safe_retryable?(reason) and
+            StepAttemptLifecycle.retry_allowed?(ctx.current_run, ctx.node_key, ctx.attempt) ->
+          persist_retryable_submit_failure(ctx, asset_ref, reason)
+
+        node_specific_failure?(call_site, reason) ->
+          fail_node_and_continue(ctx, reason)
+
+        true ->
+          terminalize_unsubmitted_entry(ctx, asset_ref, reason)
       end
     else
       {:error, release_reason} -> pre_dispatch_release_failed(ctx, release_reason)
@@ -595,6 +642,147 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
       |> RecoveryPosition.record_outcome(ctx.stage, ctx.attempt)
 
     persist_stage_submit_failure(ctx, failed, asset_ref, reason, safe_retryable?(reason))
+  end
+
+  @doc """
+  Returns whether a terminal admission failure belongs to one node alone.
+
+  Classification is by call site and error term together, because the same term
+  can mean different things at different call sites. Every term not listed here
+  keeps the whole-stage behavior, so an unrecognized failure never silently
+  lets a run continue past a run-wide problem.
+  """
+  @spec node_specific_failure?(call_site(), term()) :: boolean()
+  def node_specific_failure?(call_site, reason)
+
+  def node_specific_failure?(:materialization_claim, %PersistenceError{kind: :conflict}), do: true
+
+  def node_specific_failure?(:materialization_claim, {:target_generation_pin_mismatch, _ref}),
+    do: true
+
+  def node_specific_failure?(:materialization_claim, {:target_generation_not_pinned, _ref}),
+    do: true
+
+  def node_specific_failure?(
+        :materialization_claim,
+        {:unexpected_materialization_decision, _status}
+      ),
+      do: true
+
+  # Stage build already rejects an asset missing from the manifest index, so
+  # this is kept only so a future call order cannot turn one node's missing
+  # asset into a run-wide stop.
+  def node_specific_failure?(call_site, :asset_not_found)
+      when call_site in [:materialization_claim, :execution_package],
+      do: true
+
+  def node_specific_failure?(:execution_package, reason),
+    do: execution_package_failure?(reason)
+
+  def node_specific_failure?(_call_site, _reason), do: false
+
+  defp execution_package_failure?(reason)
+       when reason in [
+              :execution_package_required,
+              :execution_package_deployment_required,
+              :execution_package_materialization_mismatch,
+              :invalid_execution_package
+            ],
+       do: true
+
+  defp execution_package_failure?({reason, _detail})
+       when reason in [
+              :execution_package_not_required,
+              :execution_package_relation_inputs_mismatch,
+              :invalid_execution_package_hash
+            ],
+       do: true
+
+  defp execution_package_failure?({reason, _expected, _actual})
+       when reason in [
+              :execution_package_hash_mismatch,
+              :execution_package_asset_mismatch,
+              :unsupported_execution_package_schema
+            ],
+       do: true
+
+  defp execution_package_failure?(_reason), do: false
+
+  # Both call sites release the node's pre-dispatch resources before this runs,
+  # so the failure only has to become durable while the stage keeps going. The
+  # run stays `running` because siblings are still working; the stage's first
+  # terminal failure becomes the run's error when the stage finalizes.
+  defp fail_node_and_continue(ctx, reason) do
+    node_result = failed_node_result(ctx)
+
+    failed_run =
+      ctx.current_run
+      |> RunState.transition(status: :running, error: nil)
+      |> RecoveryPosition.record_outcome(ctx.stage, ctx.attempt)
+      |> ResultBuilder.append_node_result(node_result)
+
+    failure =
+      (ctx.terminal_failure || %{status: :error, error: reason})
+      |> Map.update(:node_statuses, %{ctx.node_key => :error}, fn statuses ->
+        Map.put(statuses, ctx.node_key, :error)
+      end)
+
+    resume =
+      {:node_failed, failed_run, entries(ctx), ctx.rest, ctx.queued_steps, ctx.waiters, failure,
+       deferred_refill_cause(ctx.rest, :batch_budget), ctx.completed_node_statuses}
+
+    retry =
+      PersistenceRetry.new(
+        failed_run,
+        :step_failed,
+        failed_node_event_data(ctx, reason, node_result),
+        {:stage_admission, ctx.attempt, resume}
+      )
+
+    case PersistenceRetry.persist(retry) do
+      :ok ->
+        do_submit(ctx.rest, %{ctx | current_run: failed_run, terminal_failure: failure})
+
+      {:error, :external_cancel} ->
+        {:error, Snapshots.cancelled_snapshot(ctx.current_run), [], attempted_node_keys(ctx)}
+
+      {:error, persist_reason} ->
+        {:persist_retry, retry, persist_reason}
+    end
+  end
+
+  defp failed_node_result(ctx) do
+    ResultBuilder.execution_result(
+      ctx.current_run,
+      %{
+        asset_ref: ctx.work.asset_ref,
+        node_key: ctx.node_key,
+        task_id: nil,
+        execution_pool: RunnerWork.execution_pool(ctx.work),
+        freshness_key: decision_freshness_key(ctx.decisions, ctx.node_key)
+      },
+      ctx.stage,
+      ctx.attempt,
+      :error,
+      []
+    )
+  end
+
+  defp failed_node_event_data(ctx, reason, node_result) do
+    %{
+      asset_ref: ctx.work.asset_ref,
+      error: reason,
+      node_key: RunnerWork.node_key(ctx.work),
+      asset_step_id: ctx.work.asset_step_id,
+      window: RunnerWork.window(ctx.work),
+      stage: ctx.stage,
+      attempt: ctx.attempt,
+      max_attempts: ctx.work.max_attempts,
+      retryable?: false,
+      retry_exhausted?: false,
+      execution_pool: RunnerWork.execution_pool(ctx.work),
+      node_result: node_result
+    }
   end
 
   defp persist_stage_submit_failure(

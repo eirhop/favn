@@ -587,6 +587,20 @@ defmodule FavnOrchestrator.RunServer.Execution do
   end
 
   defp resume_persisted(
+         %RunExecutionState{stage_state: nil} = state,
+         {:stage_admission, attempt, {:node_failed, _, _, _, _, _, _, _, _} = result}
+       ) do
+    handle_initial_stage_node_failure(state, attempt, result)
+  end
+
+  defp resume_persisted(
+         %RunExecutionState{stage_state: %StageAttemptState{}} = state,
+         {:stage_admission, _attempt, {:node_failed, _, _, _, _, _, _, _, _} = result}
+       ) do
+    handle_refill_stage_node_failure(state, result)
+  end
+
+  defp resume_persisted(
          %RunExecutionState{} = state,
          {:stage_admission, _attempt,
           {:error, failed_run, step_results, _attempted_node_keys, cleanup_entries}}
@@ -1201,7 +1215,14 @@ defmodule FavnOrchestrator.RunServer.Execution do
        ) do
     state = %{state | run: RecoveryPosition.clear_outcome(state.run)}
 
-    case submit_stage_entries(state, state.run, node_keys, attempt) do
+    case submit_stage_entries(
+           state,
+           state.run,
+           node_keys,
+           attempt,
+           MapSet.new(),
+           completed_node_statuses
+         ) do
       {:ok, run_after_submit, entries, deferred_node_keys, queued_steps, waiters,
        admission_failure, deferred_refill_cause} ->
         stage_state =
@@ -1282,6 +1303,66 @@ defmodule FavnOrchestrator.RunServer.Execution do
       |> RunExecutionState.put_admission_waiters(waiters)
 
     state
+    |> start_pipeline_awaits(entries)
+    |> after_starting_pipeline_awaits(entries)
+  end
+
+  # A node-specific admission failure is already durable here. The stage keeps
+  # its already-submitted entries, remembers the failure, and refills the rest
+  # of the stage immediately, so no sibling is cancelled by the retry.
+  defp handle_initial_stage_node_failure(
+         state,
+         attempt,
+         {:node_failed, failed_run, entries, deferred_node_keys, queued_steps, waiters,
+          admission_failure, deferred_refill_cause, completed_node_statuses}
+       ) do
+    stage_state =
+      failed_run
+      |> StageAttemptState.new(
+        state.accumulated_results,
+        entries,
+        deferred_node_keys,
+        queued_steps,
+        admission_failure,
+        deferred_refill_cause
+      )
+      |> Map.update!(:node_statuses, &Map.merge(completed_node_statuses, &1))
+
+    state =
+      %{
+        state
+        | run: failed_run,
+          stage_state: stage_state,
+          stage_attempt: attempt,
+          stage_admission_deadline_ms: stage_admission_deadline(failed_run.timeout_ms)
+      }
+      |> RunExecutionState.put_admission_waiters(waiters)
+
+    state
+    |> start_pipeline_awaits(entries)
+    |> after_starting_pipeline_awaits(entries)
+  end
+
+  # The refill variant keeps the live stage state, which already holds the
+  # statuses of nodes completed earlier in this attempt.
+  defp handle_refill_stage_node_failure(
+         state,
+         {:node_failed, failed_run, entries, deferred_node_keys, queued_steps, waiters,
+          admission_failure, deferred_refill_cause, _completed_node_statuses}
+       ) do
+    stage_state =
+      state.stage_state
+      |> StageAttemptState.add_entries(
+        entries,
+        failed_run,
+        deferred_node_keys,
+        queued_steps,
+        deferred_refill_cause
+      )
+      |> StageAttemptState.add_admission_failure(admission_failure)
+
+    %{state | run: failed_run, stage_state: stage_state}
+    |> RunExecutionState.put_admission_waiters(waiters)
     |> start_pipeline_awaits(entries)
     |> after_starting_pipeline_awaits(entries)
   end
@@ -2381,7 +2462,8 @@ defmodule FavnOrchestrator.RunServer.Execution do
          %RunState{} = run_state,
          node_keys,
          attempt,
-         queued_steps \\ MapSet.new()
+         queued_steps,
+         completed_node_statuses \\ %{}
        ) do
     {stage, _node_keys} = Enum.at(state.stage_groups, state.stage_index)
 
@@ -2396,7 +2478,8 @@ defmodule FavnOrchestrator.RunServer.Execution do
       freshness_checkpoint: state.freshness_checkpoint,
       attempt: attempt,
       manifest_lease_id: state.manifest_lease_id,
-      queued_steps: queued_steps
+      queued_steps: queued_steps,
+      completed_node_statuses: completed_node_statuses
     })
   end
 
