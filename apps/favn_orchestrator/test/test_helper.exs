@@ -49,7 +49,18 @@ defmodule FavnOrchestrator.TestRunnerTaskStore do
   def append_log_batch(_command), do: unavailable()
   def complete(_command), do: unavailable()
 
+  @doc """
+  Records cancellation requests when the caller opts in.
+
+  Put `{__MODULE__, :cancellation_recorder}` in the process dictionary to have
+  every request forwarded to that pid, so a test can assert that a healthy
+  sibling was never cancelled.
+  """
   def request_cancellation(command) do
+    if pid = Process.get({__MODULE__, :cancellation_recorder}) do
+      send(pid, {:runner_task_cancellation_requested, command})
+    end
+
     if Process.get({__MODULE__, :terminal_cancellation_test}) do
       case Process.get({__MODULE__, command.task_id}) do
         %RunnerTask{} = task -> {:ok, task}
