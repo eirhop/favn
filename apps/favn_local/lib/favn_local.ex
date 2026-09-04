@@ -12,6 +12,7 @@ defmodule FavnLocal do
   alias FavnLocal.Locator
   alias FavnLocal.Preflight
   alias FavnLocal.Publication
+  alias FavnLocal.ReloadResult
   alias FavnLocal.SourceRelease
 
   @type progress_event ::
@@ -72,7 +73,14 @@ defmodule FavnLocal do
     result
   end
 
-  @spec reload(keyword()) :: {:ok, map()} | {:error, term()}
+  @doc """
+  Builds and reloads local source, returning the change classification and timings.
+
+  Uses `:root_dir` to locate the running operator and `:reload_timeout_ms` (60,000
+  by default) to bound the request. A timeout does not cancel deployment and must
+  not be blindly retried. An unknown deployment outcome requires stop/start.
+  """
+  @spec reload(keyword()) :: {:ok, ReloadResult.t()} | {:error, term()}
   def reload(opts \\ []) when is_list(opts) do
     root_dir = opts |> Keyword.get(:root_dir, File.cwd!()) |> Path.expand()
     started_at = now_ms()

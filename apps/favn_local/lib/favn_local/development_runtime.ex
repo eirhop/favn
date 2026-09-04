@@ -3,7 +3,8 @@ defmodule FavnLocal.DevelopmentRuntime do
   Owns source-development runner processes using the production registration,
   pull, result, and drain protocol.
 
-  Reloads overlap releases: the candidate registers before activation and the
+  Unchanged reloads skip deployment; manifest-only reloads keep the runner.
+  Changed releases overlap: the candidate registers before activation and the
   previous runner remains available until its exact release has no work.
   """
 
@@ -13,6 +14,7 @@ defmodule FavnLocal.DevelopmentRuntime do
   alias FavnLocal.Config
   alias FavnLocal.Locator
   alias FavnLocal.Publication, as: LocalPublication
+  alias FavnLocal.ReloadResult
   alias FavnLocal.RunnerProcessLauncher
   alias FavnOrchestrator.Persistence.Queries, as: Q
   alias FavnOrchestrator.Persistence.Commands, as: C
@@ -36,6 +38,9 @@ defmodule FavnLocal.DevelopmentRuntime do
   def await_ready(timeout_ms \\ @request_timeout_ms),
     do: GenServer.call(__MODULE__, :await_ready, timeout_ms)
 
+  @doc "Reloads within a bounded caller wait; a timeout does not cancel activation."
+  @spec reload(Publication.t(), String.t(), timeout()) ::
+          {:ok, ReloadResult.t()} | {:error, term()}
   def reload(%Publication{} = publication, runner_release_id, timeout_ms \\ @request_timeout_ms)
       when is_binary(runner_release_id),
       do: GenServer.call(__MODULE__, {:reload, publication, runner_release_id}, timeout_ms)
@@ -62,6 +67,7 @@ defmodule FavnLocal.DevelopmentRuntime do
          candidate: nil,
          retiring: nil,
          publication: publication,
+         deployment: nil,
          status: :starting,
          startup_action: :deploy,
          deadline: now_ms() + runner_start_timeout_ms(),
@@ -90,6 +96,29 @@ defmodule FavnLocal.DevelopmentRuntime do
   def handle_call(:await_ready, _from, state),
     do: {:reply, {:error, state.failure || :not_ready}, state}
 
+  def handle_call({:reload, _publication, _release_id}, _from, %{retiring: retiring} = state)
+      when not is_nil(retiring),
+      do: {:reply, {:error, :runner_still_draining}, state}
+
+  def handle_call(
+        {:reload, publication, release_id},
+        from,
+        %{status: :ready, runner: %{release_id: release_id}} = state
+      ) do
+    task =
+      Task.Supervisor.async_nolink(FavnLocal.TaskSupervisor, fn ->
+        LocalPublication.reload(
+          publication,
+          state.publication,
+          state.deployment,
+          state.config.workspace_id
+        )
+      end)
+
+    {:noreply,
+     %{state | status: :reloading, request: {from, publication, release_id}, task: task}}
+  end
+
   def handle_call({:reload, publication, release_id}, from, %{status: :ready} = state) do
     with :ok <- ensure_local_capacity_partition(release_id),
          {:ok, candidate} <- RunnerProcessLauncher.start(state.config, release_id) do
@@ -99,7 +128,6 @@ defmodule FavnLocal.DevelopmentRuntime do
        %{
          state
          | candidate: candidate,
-           publication: publication,
            status: :reloading,
            request: {from, publication, release_id},
            deadline: now_ms() + runner_start_timeout_ms()
@@ -116,6 +144,11 @@ defmodule FavnLocal.DevelopmentRuntime do
   def handle_call(:stop, _from, %{status: :stopping} = state), do: {:reply, :ok, state}
 
   def handle_call(:stop, from, state) do
+    reason =
+      if state.task, do: {:reload_outcome_unknown, :reload_interrupted}, else: :reload_interrupted
+
+    reply_request(state, {:error, reason})
+    state = detach_task(state)
     _ = FavnOrchestrator.drain()
     runners = [state.runner, state.candidate, state.retiring] |> Enum.reject(&is_nil/1)
     Enum.each(runners, &stop_runner/1)
@@ -237,6 +270,12 @@ defmodule FavnLocal.DevelopmentRuntime do
     deployment_finished(%{state | task: nil}, result)
   end
 
+  def handle_info(
+        {:DOWN, ref, :process, _pid, reason},
+        %{status: :reloading, task: %{ref: ref}} = state
+      ),
+      do: abort_candidate(state, {:deployment_task_failed, reason})
+
   def handle_info({:DOWN, ref, :process, _pid, reason}, %{task: %{ref: ref}} = state),
     do: deployment_finished(%{state | task: nil}, {:error, {:deployment_task_failed, reason}})
 
@@ -254,9 +293,15 @@ defmodule FavnLocal.DevelopmentRuntime do
   end
 
   defp start_deployment(state) do
+    publication =
+      case state.request do
+        {_from, publication, _release_id} -> publication
+        _none -> state.publication
+      end
+
     task =
       Task.Supervisor.async_nolink(FavnLocal.TaskSupervisor, fn ->
-        LocalPublication.deploy(state.publication, state.config.workspace_id)
+        LocalPublication.deploy(publication, state.config.workspace_id)
       end)
 
     {:noreply, %{state | task: task}}
@@ -264,15 +309,29 @@ defmodule FavnLocal.DevelopmentRuntime do
 
   defp deployment_finished(%{status: :starting} = state, {:ok, deployment}) do
     :ok = Locator.write(state.config, state.runner.release_id)
-    ready_state = ready_state(state)
+    ready_state = ready_state(%{state | deployment: deployment})
     reply_waiters(state.ready_waiters, {:ok, Map.merge(deployment, summary(ready_state))})
     {:noreply, ready_state}
   end
 
   defp deployment_finished(
+         %{status: :reloading, candidate: nil} = state,
+         {:ok, %{reload_status: classification} = deployment}
+       ) do
+    ready = state |> commit_deployment(deployment) |> ready_state()
+    response = ReloadResult.new(classification, deployment, summary(ready))
+    reply_request(state, {:ok, response})
+    reply_waiters(state.ready_waiters, {:ok, response})
+    {:noreply, ready}
+  end
+
+  defp deployment_finished(
          %{status: :reloading, candidate: candidate, runner: old_runner} = state,
          {:ok, deployment}
-       ) do
+       )
+       when not is_nil(candidate) do
+    state = commit_deployment(state, deployment)
+
     state = %{
       state
       | runner: candidate,
@@ -418,9 +477,7 @@ defmodule FavnLocal.DevelopmentRuntime do
     ready = ready_state(state)
 
     response =
-      (state.pending_deployment || %{})
-      |> Map.put(:old_runner, drain_status)
-      |> Map.merge(summary(ready))
+      ReloadResult.new(:runner_replaced, state.pending_deployment, summary(ready), drain_status)
 
     case state.request do
       {from, %Publication{}, _release_id} -> GenServer.reply(from, {:ok, response})
@@ -442,26 +499,43 @@ defmodule FavnLocal.DevelopmentRuntime do
         do: MapSet.put(state.ignored_ports, state.candidate.port),
         else: state.ignored_ports
 
-    case state.request do
-      {from, %Publication{}, _release_id} -> GenServer.reply(from, {:error, reason})
-      _none -> :ok
-    end
+    unknown? = not is_nil(state.task) or match?({:reload_outcome_unknown, _}, reason)
 
+    reason =
+      if unknown? and not match?({:reload_outcome_unknown, _}, reason),
+        do: {:reload_outcome_unknown, reason},
+        else: reason
+    reply_request(state, {:error, reason})
     reply_waiters(state.ready_waiters, {:error, reason})
+    state = detach_task(state)
 
     {:noreply,
      %{
        state
        | candidate: nil,
-         publication: nil,
-         status: :ready,
+         status: if(unknown?, do: :failed, else: :ready),
          ignored_ports: ignored_ports,
          request: nil,
          deadline: nil,
          ready_waiters: [],
-         failure: nil
+         failure: if(unknown?, do: reason)
      }}
   end
+
+  defp commit_deployment(%{request: {_from, publication, _release_id}} = state, deployment),
+    do: %{state | publication: publication, deployment: deployment}
+
+  defp detach_task(%{task: nil} = state), do: state
+
+  defp detach_task(state) do
+    Process.demonitor(state.task.ref, [:flush])
+    %{state | task: nil}
+  end
+
+  defp reply_request(%{request: {from, %Publication{}, _release_id}}, reply),
+    do: GenServer.reply(from, reply)
+
+  defp reply_request(_state, _reply), do: :ok
 
   defp ready_after_recovery(state) do
     ready = ready_state(state)
@@ -553,6 +627,12 @@ defmodule FavnLocal.DevelopmentRuntime do
   end
 
   defp fail(state, reason) do
+    reason =
+      if state.status == :reloading and state.task,
+        do: {:reload_outcome_unknown, reason},
+        else: reason
+
+    state = detach_task(state)
     reply_waiters(state.ready_waiters, {:error, reason})
 
     case state.request do

@@ -7,9 +7,12 @@ defmodule FavnLocal.DockerFreeLocalLifecycleAcceptanceTest do
   alias FavnLocal.DevelopmentRuntime
   alias FavnLocal.Locator
   alias FavnLocal.Publication, as: LocalPublication
+  alias FavnLocal.TestSupport.ReloadAssets
+  alias FavnOrchestrator.Manifests
   alias FavnOrchestrator.ManifestStore
   alias FavnOrchestrator.Persistence.Commands, as: C
   alias FavnOrchestrator.Persistence.SystemContext
+  alias FavnOrchestrator.Persistence.WorkspaceContext
   alias FavnOrchestrator.RunnerRegistry
   alias FavnOrchestrator.RunnerTasks
   alias FavnOrchestrator.Runs
@@ -18,7 +21,7 @@ defmodule FavnLocal.DockerFreeLocalLifecycleAcceptanceTest do
   alias FavnStoragePostgres.Release
 
   @moduletag :acceptance
-  @moduletag timeout: 180_000
+  @moduletag timeout: 300_000
 
   test "source development overlaps releases and preserves the active runner after reload failure" do
     previous_primary_level = Logger.level()
@@ -39,7 +42,11 @@ defmodule FavnLocal.DockerFreeLocalLifecycleAcceptanceTest do
     )
 
     previous_asset_modules = Application.get_env(:favn, :asset_modules)
-    Application.put_env(:favn, :asset_modules, [FavnLocal.TestSupport.DrainAsset])
+    Application.put_env(:favn, :asset_modules, [ReloadAssets])
+    fixture_file = Path.join(root_dir, "asset-doc.txt")
+    File.write!(fixture_file, "initial documentation")
+    previous_fixture = System.get_env("FAVN_RELOAD_FIXTURE_FILE")
+    System.put_env("FAVN_RELOAD_FIXTURE_FILE", fixture_file)
     previous_endpoint = Application.get_env(:favn_view, FavnView.Endpoint)
     previous_session = Application.get_env(:favn_view, :session_cookie_options)
 
@@ -55,6 +62,10 @@ defmodule FavnLocal.DockerFreeLocalLifecycleAcceptanceTest do
     Application.delete_env(:favn_view, :session_cookie_options)
 
     on_exit(fn ->
+      if previous_fixture,
+        do: System.put_env("FAVN_RELOAD_FIXTURE_FILE", previous_fixture),
+        else: System.delete_env("FAVN_RELOAD_FIXTURE_FILE")
+
       File.rm_rf(root_dir)
       restore_env(FavnView.Endpoint, previous_endpoint)
       restore_env(:session_cookie_options, previous_session)
@@ -154,6 +165,8 @@ defmodule FavnLocal.DockerFreeLocalLifecycleAcceptanceTest do
                []
              )
 
+    started = verify_incremental_commands(started, root_dir, fixture_file, workspace_id, view_url)
+
     {workspace_context, pinned_run, pinned_version, pinned_ref} =
       create_release_pinned_run(workspace_id)
 
@@ -210,6 +223,7 @@ defmodule FavnLocal.DockerFreeLocalLifecycleAcceptanceTest do
     finish_release_pinned_run(workspace_context, pinned_run)
 
     assert {:ok, reloaded} = Task.await(reload, 60_000)
+    assert reloaded.reload_status == :runner_replaced
     assert reloaded.runner_release_id != started.runner_release_id
     assert reloaded.runner_node != started.runner_node
     assert Node.ping(started.runner_node) == :pang
@@ -217,7 +231,11 @@ defmodule FavnLocal.DockerFreeLocalLifecycleAcceptanceTest do
 
     failed_release_id = FavnTestSupport.runner_release_id(:alternate)
     assert {:ok, %Publication{} = publication} = LocalPublication.build(failed_release_id)
-    invalid_publication = %{publication | execution_packages: [%{}]}
+
+    invalid_publication = %{
+      publication
+      | version: %{publication.version | content_hash: "invalid"}
+    }
 
     invalid_reload =
       Task.async(fn ->
@@ -268,8 +286,38 @@ defmodule FavnLocal.DockerFreeLocalLifecycleAcceptanceTest do
     assert {:ok, locator} = Locator.read(root_dir)
     assert locator.runner_release_id == reloaded.runner_release_id
 
+    assert {:ok, unchanged} =
+             FavnLocal.reload(root_dir: root_dir, runner_release_id: reloaded.runner_release_id)
+
+    assert unchanged.reload_status == :unchanged
+    assert unchanged.deployment_id == reloaded.deployment_id
+
     ref = Process.monitor(started.supervisor)
-    assert :ok = FavnLocal.stop(root_dir: root_dir, stop_timeout_ms: 60_000)
+    original_caller = self()
+    original_reply = make_ref()
+
+    :sys.replace_state(DevelopmentRuntime, fn state ->
+      task =
+        Task.Supervisor.async_nolink(FavnLocal.TaskSupervisor, fn ->
+          receive do
+            :complete -> {:ok, %{deployment_id: "late-task-result"}}
+          end
+        end)
+
+      send(original_caller, {:delayed_task, task.pid})
+
+      %{state |
+        status: :reloading,
+        task: task,
+        request: {{original_caller, original_reply}, state.publication, state.runner.release_id}}
+    end)
+
+    assert_receive {:delayed_task, delayed_task}, 5_000
+    stopping = Task.async(fn -> FavnLocal.stop(root_dir: root_dir, stop_timeout_ms: 60_000) end)
+    assert_receive {^original_reply, {:error, {:reload_outcome_unknown, :reload_interrupted}}}, 5_000
+    send(delayed_task, :complete)
+    assert :ok = Task.await(stopping, 60_000)
+    refute_received {^original_reply, _duplicate_reply}
     assert_receive {:DOWN, ^ref, :process, _pid, _reason}, 10_000
     assert {:error, :not_running} = Locator.read(root_dir)
 
@@ -295,6 +343,102 @@ defmodule FavnLocal.DockerFreeLocalLifecycleAcceptanceTest do
     assert :ok = Application.stop(:favn_view)
     assert :ok = Application.stop(:favn_orchestrator)
     assert :ok = Config.clear_source_development_auth()
+  end
+
+  defp verify_incremental_commands(started, root_dir, fixture_file, workspace_id, view_url) do
+    {:ok, context} = WorkspaceContext.new(workspace_id, "favn-local", [:platform_operator])
+    {:ok, initial} = Manifests.active_runtime(context)
+
+    output = reload_command(root_dir)
+    assert output =~ "Favn source unchanged"
+    assert output =~ "packages 0ms, publish 0ms, activate 0ms"
+    assert {:ok, ^initial} = Manifests.active_runtime(context)
+    assert DevelopmentRuntime.status().runner_node == started.runner_node
+    assert_ready(view_url)
+
+    File.write!(fixture_file, "changed documentation")
+    assert reload_command(root_dir) =~ "Favn manifest reloaded"
+    {:ok, changed} = Manifests.active_runtime(context)
+    refute changed.deployment_id == initial.deployment_id
+    refute changed.manifest_version_id == initial.manifest_version_id
+    assert DevelopmentRuntime.status().runner_node == started.runner_node
+    assert_ready(view_url)
+
+    assert {:ok, publication} = LocalPublication.build(started.runner_release_id)
+    File.write!(fixture_file, "external deployment")
+    assert {:ok, external_publication} = LocalPublication.build(started.runner_release_id)
+    assert {:ok, external} = LocalPublication.deploy(external_publication, workspace_id)
+    File.write!(fixture_file, "changed documentation")
+    assert reload_command(root_dir) =~ "Favn manifest reloaded"
+    {:ok, restored} = Manifests.active_runtime(context)
+    refute restored.deployment_id == external.deployment_id
+    assert restored.manifest_version_id == changed.manifest_version_id
+
+    invalid = %{publication | version: %{publication.version | content_hash: "invalid"}}
+    assert {:error, _reason} = DevelopmentRuntime.reload(invalid, started.runner_release_id)
+    assert reload_command(root_dir) =~ "Favn source unchanged"
+    assert {:ok, ^restored} = Manifests.active_runtime(context)
+    assert_ready(view_url)
+
+    beam_dir = Path.join([Mix.Project.build_path(), "lib", "favn_local", "ebin"])
+    module = FavnLocal.TestSupport.ReloadCode
+    beam_path = Path.join(beam_dir, "#{module}.beam")
+    refute File.exists?(beam_path)
+
+    on_exit(fn ->
+      File.rm(beam_path)
+      :code.purge(module)
+      :code.delete(module)
+    end)
+
+    [{^module, bytecode}] =
+      Code.compile_string("defmodule #{inspect(module)} do\n  def value, do: :changed\nend")
+
+    File.write!(beam_path, bytecode)
+    assert reload_command(root_dir) =~ "Favn runner reloaded"
+    current = DevelopmentRuntime.status()
+    refute current.runner_release_id == started.runner_release_id
+    refute current.runner_node == started.runner_node
+    assert Node.ping(started.runner_node) == :pang
+    assert Node.ping(current.runner_node) == :pong
+    assert_ready(view_url)
+    assert reload_command(root_dir) =~ "Favn source unchanged"
+
+    %{started | runner_node: current.runner_node, runner_release_id: current.runner_release_id}
+  end
+
+  defp reload_command(root_dir) do
+    script = """
+    Application.put_env(:favn, :asset_modules, [FavnLocal.TestSupport.ReloadAssets])
+    Mix.Task.run("favn.reload", ["--root-dir", #{inspect(root_dir)}])
+    """
+
+    {output, status} =
+      System.cmd("mix", ["run", "--no-start", "--no-compile", "-e", script],
+        cd: Path.expand("../../../favn", __DIR__),
+        env: [{"MIX_ENV", "test"}, {"ERL_FLAGS", "+S 2:2"}],
+        stderr_to_stdout: true
+      )
+
+    assert status == 0, output
+    assert output =~ "Runner release: rr_"
+    assert output =~ "Manifest: mv_"
+    assert output =~ "Phases: build "
+    assert output =~ "Reload time: "
+    IO.puts(output)
+    output
+  end
+
+  defp assert_ready(view_url) do
+    assert DevelopmentRuntime.status().status == :ready
+
+    assert {:ok, {{_version, 302, _reason}, headers, _body}} =
+             :httpc.request(:get, {String.to_charlist(view_url <> "/login"), []},
+               [autoredirect: false], [])
+
+    cookie = headers |> header("set-cookie") |> cookie_pair() |> String.to_charlist()
+    assert {:ok, {{_version, 200, _reason}, _headers, _body}} =
+             :httpc.request(:get, {String.to_charlist(view_url <> "/assets"), [{~c"cookie", cookie}]}, [], [])
   end
 
   defp free_port do

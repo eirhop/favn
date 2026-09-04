@@ -4,6 +4,7 @@ defmodule FavnLocal.Publication do
   alias Favn.Manifest.Publication
   alias FavnOrchestrator.ExecutionPackages
   alias FavnOrchestrator.Manifests
+  alias FavnOrchestrator.Persistence.Error
   alias FavnOrchestrator.Persistence.PlatformContext
   alias FavnOrchestrator.Persistence.WorkspaceContext
 
@@ -12,6 +13,45 @@ defmodule FavnLocal.Publication do
     with {:ok, build} <-
            FavnAuthoring.build_manifest_with_uniform_runner_release(runner_release_id) do
       FavnAuthoring.prepare_manifest_publication(build)
+    end
+  end
+
+  @spec reload(Publication.t(), Publication.t(), map(), String.t()) ::
+          {:ok, map()} | {:error, term()}
+  def reload(publication, previous, deployment, workspace_id) do
+    with {:ok, unchanged?} <- unchanged?(publication, previous, deployment, workspace_id) do
+      if unchanged? do
+        {:ok,
+         Map.merge(deployment, %{
+           reload_status: :unchanged,
+           execution_packages: %{provided: length(publication.execution_packages), registered: 0},
+           phases: %{
+             execution_packages_ms: 0,
+             manifest_publication_ms: 0,
+             manifest_activation_ms: 0,
+             deployment_ms: 0
+           }
+         })}
+      else
+        with {:ok, result} <- deploy(publication, workspace_id) do
+          {:ok, Map.put(result, :reload_status, :manifest_deployed)}
+        end
+      end
+    end
+  end
+
+  defp unchanged?(publication, previous, deployment, workspace_id) do
+    if publication.version.content_hash == previous.version.content_hash do
+      with {:ok, workspace} <-
+             WorkspaceContext.new(workspace_id, "favn-local", [:platform_operator]),
+           {:ok, runtime} <- Manifests.active_runtime(workspace) do
+        {:ok,
+         runtime.deployment_id == deployment.deployment_id and
+           runtime.manifest_version_id == deployment.manifest_version_id and
+           runtime.runner_releases == deployment.runner_releases}
+      end
+    else
+      {:ok, false}
     end
   end
 
@@ -84,6 +124,10 @@ defmodule FavnLocal.Publication do
        phases: phases
      }}
   end
+
+  defp deployment_result({:error, %Error{kind: kind} = reason}, _package_counts, _phases)
+       when kind in [:internal, :unavailable],
+       do: {:error, {:reload_outcome_unknown, reason}}
 
   defp deployment_result({:error, _reason} = error, _package_counts, _phases), do: error
 

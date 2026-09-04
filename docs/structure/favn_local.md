@@ -25,8 +25,9 @@ artifact construction is owned by `FavnAuthoring.Deployment`.
 ## Primary code
 
 - `apps/favn_local/lib/favn_local/config.ex`
-- `apps/favn_local/lib/favn_local/lifecycle.ex`
-- `apps/favn_local/lib/favn_local/runner_child.ex`
+- `apps/favn_local/lib/favn_local/development_runtime.ex`
+- `apps/favn_local/lib/favn_local/reload_result.ex`
+- `apps/favn_local/lib/favn_local/runner_process_launcher.ex`
 - `apps/favn_local/lib/favn_local/publication.ex`
 - `apps/favn_local/lib/favn_local/locator.ex`
 
@@ -34,7 +35,8 @@ artifact construction is owned by `FavnAuthoring.Deployment`.
 
 - development startup never invokes Docker;
 - startup verifies but never mutates PostgreSQL schema/workspace setup;
-- exactly one child runner OS process is owned at a time;
+- one current child runner is owned; replacement also owns a candidate or a
+  retiring runner until the exact previous release drains;
 - local operator, runner, and client nodes use the reserved `favn-local.test`
   alias; each BEAM maps it to loopback without external DNS or hosts-file changes;
 - reload compiles first and derives the runner release ID from the compiled BEAM
@@ -44,6 +46,10 @@ artifact construction is owned by `FavnAuthoring.Deployment`.
   replacing the runner; changed compiled code replaces the runner;
 - reload registers only execution packages absent from durable storage and emits
   build, package, publication, activation, and total phase timings;
+- `FavnLocal.ReloadResult` defines the successful runtime/caller/CLI result;
+  only successful activation updates the local publication and deployment baseline;
+- retirement blocks further reloads; an interrupted in-flight deployment blocks
+  reloads until stop/start, and late task replies cannot complete another request;
 - environment, dependency, plugin, port, and database changes require a full
   stop/start;
 - normal stop/start preserves the local View password and browser-session key;

@@ -131,6 +131,22 @@ manifest. Reload registers only execution packages that are absent from
 PostgreSQL and prints build, package, publication, activation, and total timings.
 It does not build a container image.
 
+The success banner says `Favn source unchanged`, `Favn manifest reloaded`, or
+`Favn runner reloaded`. Build time measures manifest construction; package time
+measures checking and registering missing execution packages; publish and
+activate measure the corresponding control-plane operations. An unchanged reload
+reports zero package, publish, and activate time. Total reload time also includes
+source identity calculation, durable state checks, and any runner startup/drain;
+it excludes the Mix compilation that runs before reload starts. Timings are
+observations for this invocation, not a fixed performance guarantee.
+
+Only one reload can proceed at a time. If the previous runner is still draining,
+wait until it finishes before reloading again. An interrupted deployment can
+have an unknown outcome: use `mix favn.stop` followed by `mix favn.dev` when the
+command requests it. A caller timeout does not cancel activation; inspect the
+development process before deciding the next action. Reload never retries a
+possibly completed deployment automatically.
+
 Reload also retains existing asset freshness. A runner release, manifest, asset
 implementation, metadata, or dependency declaration change does not by itself
 make previously successful assets stale or schedule them to run. To execute one
