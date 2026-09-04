@@ -2,13 +2,13 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Plan reviewed |
+| Status | Implementing |
 | Type | Bug fix |
 | Primary issue | [#691](https://github.com/eirhop/favn/issues/691) |
-| Pull request | Pending |
+| Pull request | [#698](https://github.com/eirhop/favn/pull/698) |
 | Related work | #648 covers production release planning, outside this change |
 | Affected areas | favn_local lifecycle and favn Mix task |
-| Approved plan commit | Pending independent review |
+| Approved plan commit | `d36081ee160c453b0207d1edab595783d296aa3b` |
 | Last updated | 2026-09-04 |
 
 ## One-minute summary
