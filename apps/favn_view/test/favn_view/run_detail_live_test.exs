@@ -15,6 +15,7 @@ defmodule FavnView.RunDetailLiveTest do
 
   setup do
     keys = [
+      :retry_operator_run_remaining_fun,
       :operator_run_flow_fun,
       :operator_run_events_fun,
       :operator_run_windows_fun,
@@ -913,6 +914,92 @@ defmodule FavnView.RunDetailLiveTest do
 
     assert mounted.assigns.run.submission?
     assert mounted.assigns.run.status == "Queued"
+  end
+
+  for status <- [:queued, :failed] do
+    @retry_status status
+    @tag retry_status: status
+    test "opens the retry submission when it is #{@retry_status}", %{retry_status: status} do
+      key = "run_retry_remaining:browser:regression"
+
+      Application.put_env(:favn_view, :retry_operator_run_remaining_fun, fn
+        :operator_context, "run-original", opts ->
+          assert opts[:idempotency_key] == key
+          {:ok, %{run_ids: ["run-retry"], asset_count: 1}}
+      end)
+
+      Application.put_env(:favn_view, :operator_run_flow_fun, fn
+        _context, "run-original" ->
+          detail = flow("run-original", :error)
+
+          {:ok,
+           %{kind: :run, detail: %{detail | header: %{detail.header | retry_remaining?: true}}}}
+
+        _context, "run-retry" ->
+          now = ~U[2026-08-23 10:00:00Z]
+
+          {:ok,
+           %{
+             kind: :submission,
+             submission: %{
+               run_id: "run-retry",
+               status: status,
+               status_label: if(status == :failed, do: "Failed", else: "Queued"),
+               status_tone: if(status == :failed, do: :error, else: :info),
+               active?: status == :queued,
+               target_kind: "pipeline",
+               target_id: "crm_reference",
+               attempt: 1,
+               enqueued_at: now,
+               updated_at: now,
+               terminal_at: if(status == :failed, do: now),
+               failure:
+                 if(status == :failed,
+                   do: %{
+                     code: "conflict",
+                     title: "Run request failed",
+                     message: "target binding is stale for the selected manifest",
+                     remediation: "Submit a new run with the current configuration."
+                   }
+                 )
+             }
+           }}
+      end)
+
+      assert {:ok, original} =
+               RunDetailLive.mount(%{"run_id" => "run-original"}, %{}, connected_socket())
+
+      assert {:noreply, redirected} =
+               RunDetailLive.handle_event(
+                 "retry_remaining",
+                 %{"idempotency_key" => key},
+                 original
+               )
+
+      assert {:live, :redirect, %{to: "/runs/run-retry"}} = redirected.redirected
+      assert redirected.assigns.retry_attempt == nil
+      assert redirected.assigns.flash["info"] == "Submitted 1 retry run for 1 asset"
+
+      assert {:ok, retry} =
+               RunDetailLive.mount(%{"run_id" => "run-retry"}, %{}, connected_socket())
+
+      assert retry.assigns.run.submission?
+      assert retry.assigns.run.raw_status == status
+
+      html =
+        render_component(
+          &RunDetailLive.render/1,
+          Map.put(retry.assigns, :operator_workspaces, [])
+        )
+
+      if status == :failed do
+        assert html =~ ~s(data-testid="run-submission-failed")
+        assert html =~ "target binding is stale for the selected manifest"
+      else
+        assert html =~ ~s(data-testid="run-submission-active")
+        assert html =~ "Run request queued"
+      end
+    end
   end
 
   # A backfill window run, not the parent: its root is the parent's id, so the

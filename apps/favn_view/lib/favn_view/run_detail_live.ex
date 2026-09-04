@@ -347,7 +347,7 @@ defmodule FavnView.RunDetailLive do
 
         socket = assign(socket, :retry_attempt, attempt)
 
-        case Orchestrator.retry_operator_run_remaining(
+        case retry_run_remaining(
                actor_context(socket),
                socket.assigns.run_id,
                idempotency_key: attempt.key
@@ -358,7 +358,12 @@ defmodule FavnView.RunDetailLive do
              |> CommandAttempt.acknowledge(attempt)
              |> assign(:retry_attempt, nil)
              |> put_flash(:info, retry_success_label(run_ids, asset_count))
-             |> refresh_run()}
+             |> then(fn socket ->
+               case run_ids do
+                 [run_id] -> push_navigate(socket, to: ~p"/runs/#{run_id}")
+                 _run_ids -> refresh_run(socket)
+               end
+             end)}
 
           {:partial, %{run_ids: run_ids}} ->
             {:noreply,
@@ -1029,6 +1034,14 @@ defmodule FavnView.RunDetailLive do
       refresh_message: :refresh_run,
       coalesce_ms: @coalesce_refresh_ms
     ]
+  end
+
+  defp retry_run_remaining(context, run_id, opts) do
+    Application.get_env(
+      :favn_view,
+      :retry_operator_run_remaining_fun,
+      &Orchestrator.retry_operator_run_remaining/3
+    ).(context, run_id, opts)
   end
 
   defp get_run_flow(context, run_id) do
