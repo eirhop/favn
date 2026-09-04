@@ -2,14 +2,14 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Plan reviewed |
+| Status | Implementing |
 | Type | Recovery and persistence bug fix |
 | Primary issue | [#700](https://github.com/eirhop/favn/issues/700) |
-| Pull request | Pending |
+| Pull request | [#703](https://github.com/eirhop/favn/pull/703) (draft; planning only) |
 | Related work | [#699](https://github.com/eirhop/favn/issues/699), whole-submission cancellation |
 | Affected areas | Core task contracts, PostgreSQL task and write-scope storage, orchestrator recovery/admission/settlement, runner claim lifecycle, local startup |
 | Investigated revision | `8a129956b3f571e9db6f8e345b243b14a90b9983` on `origin/main` |
-| Approved plan commit | Recorded in the immediate PR-number update after this baseline commit |
+| Approved plan commit | `82732b32bfd0caa512a8f3cd6534d8d7a10ec5ee` |
 | Last updated | 2026-09-04 |
 
 ## One-minute summary
@@ -528,7 +528,7 @@ without rewriting the approved baseline.
 | --- | --- | --- |
 | Issue and current source inspection | Verified at the revision above | Historical production causality remains limited by discarded claim errors |
 | Separate fresh-VM codec reproduction | Reproduced payload and context failures; unchanged bytes decode after only the two synthetic atoms are introduced | One synthetic kind; supporting Core BEAM files already built; no application startup or database |
-| Documentation links, whitespace, diagrams | All 19 relative links resolve; whitespace check passed; both diagrams parsed and rendered with Mermaid 11.12.0; GitHub render check follows publication | Documentation validation only |
+| Documentation links, whitespace, diagrams | All 19 relative links resolve; whitespace check passed; both diagrams parsed/rendered with Mermaid 11.12.0 and rendered successfully on GitHub in the approved baseline | Documentation validation only; PR-number rename leaves diagram content unchanged |
 
 ### Not verified
 
