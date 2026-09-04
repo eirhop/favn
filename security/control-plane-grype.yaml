@@ -1,4 +1,4 @@
-# Narrow exceptions for Debian 13 vulnerabilities without an available package fix.
+# Narrow reviewed exceptions for Debian 13 image findings.
 # reviewed: 2026-09-01
 # review-by: 2026-10-01
 # Every rule includes the vendor fix state so it stops matching when a fix appears.
@@ -117,3 +117,54 @@ ignore:
     fix-state: wont-fix
     package:
       name: libacl1
+
+  # Reviewed 2026-09-04; deployment conditions and sources: security/README.md.
+  # Closed package-name lists avoid exempting other source-package derivatives.
+  - vulnerability: CVE-2026-76642
+    namespace: debian:distro:debian:13
+    fix-state: wont-fix
+    reason: >-
+      Qualified images exclude privileged mount operations and SUID/SGID tools;
+      see security/README.md for the operational limits.
+    package:
+      name: "^(bsdutils|libblkid1|liblastlog2-2|libmount1|libsmartcols1|libuuid1|login|mount|util-linux)$"
+      type: deb
+  - vulnerability: CVE-2026-78408
+    namespace: debian:distro:debian:13
+    fix-state: wont-fix
+    reason: >-
+      Scope excludes privileged operator nsenter --join-cgroup and inherited
+      root-opened cgroup descriptors; UID/capability controls alone do not prevent
+      this scenario. See security/README.md.
+    package:
+      name: "^(bsdutils|libblkid1|liblastlog2-2|libmount1|libsmartcols1|libuuid1|login|mount|util-linux)$"
+      type: deb
+  - vulnerability: CVE-2026-78409
+    namespace: debian:distro:debian:13
+    fix-state: wont-fix
+    reason: >-
+      Qualified images exclude privileged mount operations and SUID/SGID tools;
+      see security/README.md for the operational limits.
+    package:
+      name: "^(bsdutils|libblkid1|liblastlog2-2|libmount1|libsmartcols1|libuuid1|login|mount|util-linux)$"
+      type: deb
+  - vulnerability: CVE-2026-78410
+    namespace: debian:distro:debian:13
+    fix-state: wont-fix
+    reason: >-
+      Qualified images exclude privileged mount operations and SUID/SGID tools;
+      see security/README.md for the operational limits.
+    package:
+      name: "^(bsdutils|libblkid1|liblastlog2-2|libmount1|libsmartcols1|libuuid1|login|mount|util-linux)$"
+      type: deb
+  - vulnerability: CVE-2026-85091
+    namespace: debian:distro:debian:13
+    fix-state: not-fixed
+    reason: >-
+      Authenticated Debian 1.3.1 source lacks the later gz_vacate path named in
+      the advisory; exact-version assessment and unresolved vendor status are
+      documented in security/README.md.
+    package:
+      name: zlib1g
+      version: 1:1.3.dfsg+really1.3.1-1+b1
+      type: deb

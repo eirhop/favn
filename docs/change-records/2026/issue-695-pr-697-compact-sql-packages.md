@@ -188,7 +188,7 @@ size, crossing, codec, memory, and proof-boundary detail, with raw measurements.
 
 ### Actual scope and complexity
 
-Core owns the only production changes: 57 additions and 4 deletions across the
+For the SQL implementation, Core owns 57 additions and 4 deletions across the
 template, package, and compatibility-version modules. Supporting updates cover
 the compiler/renderer/execution tests, current-version fixtures, generic
 measurements, and manifest-first documentation. Implementation complexity is low
@@ -220,8 +220,10 @@ GitHub before implementation; no diagram corrections were needed.
 
 ## Deviations from the approved plan
 
-None. The implementation matched the approved plan. The 1 MiB goal is qualified
+The SQL implementation matched the approved plan. The 1 MiB goal is qualified
 for ordinary literal SQL, with the measured dynamic-heavy limitation retained.
+The subsequent user-requested CI repair is a separate scope expansion, reviewed
+and recorded in the follow-up section below.
 
 ## Decision log
 
@@ -245,7 +247,7 @@ for ordinary literal SQL, with the measured dynamic-heavy limitation retained.
 | CI fast suite | Passed on integrated `ff2538688`, including 367 PostgreSQL storage tests | Includes upstream's large-SQL database enqueue, claim, wire decode, runner execution, and completion regression; isolated CI PostgreSQL, not production infrastructure |
 | Ordinary PR CI | [Passed on integrated `ff2538688`](https://github.com/eirhop/favn/actions/runs/33848347359) | Quick checks, fast tests, acceptance, Dialyzer, slow tests, and aggregate CI all passed |
 | Production-shaped HTTP boundary | [Passed on integrated `ff2538688`](https://github.com/eirhop/favn/actions/runs/33848347369) | Existing isolated CI qualification, not a live deployment |
-| Image qualification | [Blocked by Grype's high-or-higher vulnerability gate](https://github.com/eirhop/favn/actions/runs/33848347357) | Both PR images built and reached scanning; [current main's runner image fails the same gate](https://github.com/eirhop/favn/actions/runs/33847917496/job/100943893943). No image, dependency, workflow, or security-exception changes belong to this PR |
+| Initial image qualification | [Blocked by Grype's high-or-higher vulnerability gate](https://github.com/eirhop/favn/actions/runs/33848347357) | Both PR images built and reached scanning; [main's runner image failed the same gate](https://github.com/eirhop/favn/actions/runs/33847917496/job/100943893943). The subsequent user-requested repair is recorded below |
 
 ### Not verified
 
@@ -326,3 +328,29 @@ Independent GPT-5.6 xhigh plan review accepted this follow-up on 2026-09-04
 after correcting one P2 finding: non-root/capability hardening does not prevent
 the nsenter inherited-descriptor scenario. The revised operational limitation
 was rechecked and accepted before policy implementation.
+
+### CI repair implementation and evidence
+
+The follow-up plan was committed and pushed as `c74096a8` before implementing
+the policy. Five constrained exception rules and their source-backed rationale
+implement the approved plan, including the distinct nsenter operator restriction.
+The canonical image guide links to [that rationale](../../../security/README.md).
+There are no deviations from this follow-up plan.
+
+The CI slice adds 52 configuration lines and removes one; supporting documentation
+adds 71 lines and removes none. Both categories are within the approved budget.
+
+Local verification used the identical runtime image and Grype database before
+and after the policy change. The new scan exits successfully with `--fail-on high`:
+
+| Assertion | Observed result |
+| --- | --- |
+| Existing ignored findings | All 26 unchanged |
+| Newly ignored findings | Exactly the 37 reviewed CVE/package/version/namespace/type matches |
+| Other findings | All 98 remain unchanged |
+| Unignored High/Critical | Zero |
+| Exception deadline guard | Passed; deadline unchanged at 2026-10-01 |
+
+This proves the scoped policy effect, not package remediation or host safety.
+Full-image CI qualification and independent implementation review follow on the
+new commit before the PR becomes ready.

@@ -111,6 +111,8 @@ The scheduled security workflow rescans `main` plus every supported
 control-plane digest promoted by this release workflow. Grype exceptions have a
 machine-checked review deadline; CI fails after that date until every exception
 is reviewed or removed.
+The [exception rationale](../../security/README.md) records applicability evidence
+and deployment conditions, including host/operator actions outside image proof.
 
 ## Build the customer runner
 
