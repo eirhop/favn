@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Implementing |
+| Status | Implemented |
 | Type | Bug fix and execution-format transition |
 | Primary issue | [#695](https://github.com/eirhop/favn/issues/695) |
 | Pull request | [#697](https://github.com/eirhop/favn/pull/697) |
@@ -255,7 +255,9 @@ Live deployment, historical-work retirement, production SQL adapter execution,
 production rollback, and constrained-container memory survival are not proven.
 The local size fixture only exercises the persistence codec; actual database
 dispatch/persistence and transaction-local SQL execution are covered separately
-by the integrated CI storage suite. Image security qualification remains blocked.
+by the integrated CI storage suite. The follow-up image qualification below uses
+reviewed applicability/residual-risk exceptions; it does not prove host safety or
+remediate the underlying packages.
 
 ## Final review
 
@@ -265,8 +267,9 @@ measurements, canonical docs, and actual complexity, with no actionable findings
 The reviewer independently ran 62 focused Core and 68 Runner tests successfully
 and accepted the integration at `ff2538688` without code changes. All ordinary CI
 and HTTP checks passed on that integrated implementation. The final evidence
-record was accepted on 2026-09-04 with no actionable findings. The PR remains
-draft while image security qualification is blocked.
+record was accepted on 2026-09-04 with no actionable findings. At that checkpoint
+the PR stayed draft because image security qualification was blocked; the
+subsequent repair and review are recorded below.
 
 ## Follow-up: rebase and CI repair
 
@@ -352,5 +355,14 @@ and after the policy change. The new scan exits successfully with `--fail-on hig
 | Exception deadline guard | Passed; deadline unchanged at 2026-10-01 |
 
 This proves the scoped policy effect, not package remediation or host safety.
-Full-image CI qualification and independent implementation review follow on the
-new commit before the PR becomes ready.
+[Full-image qualification at `e6324dd9`](https://github.com/eirhop/favn/actions/runs/33850905249)
+passed for both the generic runner and control-plane images, including their
+runtime contracts, vulnerability scans, and aggregate image gate. The ordinary
+SQL/HTTP evidence above remains applicable: the rebase preserved the source tree
+and this follow-up changes only the scan policy and documentation.
+
+Independent GPT-5.6 xhigh implementation review accepted `e6324dd9` with no
+actionable findings and independently confirmed the scan comparison and unchanged
+SQL implementation. The completed evidence record was accepted on 2026-09-04
+with no actionable findings. PR readiness requires passing checks on the final
+pushed commit.
