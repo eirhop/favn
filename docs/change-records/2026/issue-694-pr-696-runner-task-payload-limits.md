@@ -2,13 +2,13 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Plan reviewed |
+| Status | Implementing |
 | Type | Bug fix and migration |
 | Primary issue | [#694](https://github.com/eirhop/favn/issues/694) |
-| Pull request | Pending |
+| Pull request | [#696](https://github.com/eirhop/favn/pull/696) |
 | Related work | SQL compaction #695 remains separate |
 | Affected areas | Core runner contracts, PostgreSQL storage, runner assignment |
-| Approved plan commit | Pending independent review |
+| Approved plan commit | `d1b36009` |
 | Last updated | 2026-09-04 |
 
 ## One-minute summary
