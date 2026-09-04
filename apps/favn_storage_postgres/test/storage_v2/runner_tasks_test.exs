@@ -86,6 +86,290 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
      now: now}
   end
 
+  defmodule LargeSQLAdapter do
+    @moduledoc false
+    def connect(%Favn.Connection.Resolved{}, _opts), do: {:ok, :postgres_test}
+    def disconnect(:postgres_test, _opts), do: :ok
+    def capabilities(_resolved, _opts), do: {:ok, %Favn.SQL.Capabilities{}}
+
+    def materialize(:postgres_test, plan, _opts) do
+      # Execute the runner-rendered SQL in a transaction-local table. This is
+      # actual SQL execution, with no persistent customer relation or adapter dependency.
+      {:ok, rows} =
+        Repo.transaction(fn ->
+          SQL.query!(
+            Repo,
+            "CREATE TEMP TABLE large_task_result ON COMMIT DROP AS " <>
+              IO.iodata_to_binary(plan.select_sql),
+            []
+          )
+
+          %{rows: rows} = SQL.query!(Repo, "SELECT id FROM large_task_result", [])
+          rows
+        end)
+
+      [[1]] = rows
+      {:ok, %Favn.SQL.Result{kind: :materialize, command: "INSERT", rows_affected: 1}}
+    end
+  end
+
+  test "large SQL work survives storage, real claim, wire decoding, and runner execution",
+       fixture do
+    alias Favn.Contracts.RunnerTask.Assignment
+    alias Favn.Contracts.RunnerWork
+    alias Favn.Manifest.Asset
+    alias Favn.Manifest.ExecutionPackage
+    alias Favn.Manifest.Graph
+    alias Favn.Manifest.SQLExecution
+    alias FavnRunner.ManifestStore
+    alias FavnRunner.TaskExecutor
+
+    fixture = %{fixture | runner_pool: "large_sql_task"}
+
+    Application.put_env(:favn_orchestrator, :runner_pools, %{
+      fixture.runner_pool => %{mode: :elastic}
+    })
+
+    {:ok, _apps} = Application.ensure_all_started(:favn_runner)
+    start_runner_registry()
+    release = FavnTestSupport.runner_release_id()
+    ref = {__MODULE__, :large_sql}
+    sql = "SELECT 1 AS id /*" <> Base.encode16(:crypto.strong_rand_bytes(420_000)) <> "*/"
+
+    template =
+      Favn.SQL.Template.compile!(sql,
+        module: __MODULE__,
+        file: "synthetic.sql",
+        line: 1,
+        scope: :query,
+        enforce_query_root: true
+      )
+
+    {:ok, package} = ExecutionPackage.new(ref, %SQLExecution{sql: sql, template: template})
+    relation = Favn.RelationRef.new!(%{connection: :large_task_sql, name: "large_task_result"})
+
+    asset =
+      %Asset{
+        ref: ref,
+        module: __MODULE__,
+        name: :large_sql,
+        type: :sql,
+        runner_pool: fixture.runner_pool,
+        execution: %{entrypoint: :large_sql, arity: 1},
+        relation: relation,
+        materialization: :table,
+        execution_package_hash: package.content_hash
+      }
+      |> FavnTestSupport.with_target_descriptor()
+
+    manifest = %Manifest{
+      runner_releases: %{fixture.runner_pool => release},
+      assets: [asset],
+      graph: %Graph{nodes: [ref], edges: [], topo_order: [ref]}
+    }
+
+    {:ok, version} = Version.new(manifest, manifest_version_id: "mv_large_" <> random_id())
+    :ok = ManifestStore.register_for_release(version, release)
+
+    :ok =
+      Favn.Connection.Registry.reload(
+        %{
+          large_task_sql: %Favn.Connection.Resolved{
+            name: :large_task_sql,
+            adapter: LargeSQLAdapter,
+            module: __MODULE__,
+            config: %{}
+          }
+        },
+        registry_name: FavnRunner.ConnectionRegistry
+      )
+
+    on_exit(fn ->
+      Favn.Connection.Registry.reload(%{}, registry_name: FavnRunner.ConnectionRegistry)
+    end)
+
+    work = %RunnerWork{
+      runner_pool: :large_sql_task,
+      required_runner_release_id: release,
+      run_id: "run_large_" <> random_id(),
+      asset_ref: ref,
+      asset_step_id: "large-sql-step",
+      attempt: 1,
+      manifest_version_id: version.manifest_version_id,
+      manifest_content_hash: version.content_hash,
+      execution_package: package,
+      target_operation: :normal_materialization,
+      logical_target_id: asset.target_descriptor.target_id,
+      target_descriptor_hash: asset.target_descriptor.descriptor_hash,
+      target_generation_id: "018f47a0-7b0d-4b1a-8d8b-e18a9a987654",
+      active_relation: relation,
+      write_relation: relation
+    }
+
+    assert byte_size(:erlang.term_to_binary(work)) > 1_048_576
+
+    command =
+      enqueue_command(fixture, "large-sql",
+        task_kind: :asset_attempt,
+        payload: work,
+        required_runner_release_id: release
+      )
+
+    assert byte_size(command.payload["payload"]) > 2_097_152
+    assert {:ok, queued} = Store.enqueue(command)
+
+    assert {:ok, %{payload: ^work}} =
+             Store.get(%Q.GetRunnerTask{
+               workspace_context: fixture.workspace_context,
+               task_id: queued.task_id
+             })
+
+    runner = "large-sql-runner-" <> random_id()
+
+    registration = %Registration{
+      runner_instance_id: runner,
+      boot_id: "large-sql-boot",
+      beam_node: Atom.to_string(node()),
+      runner_pool: fixture.runner_pool,
+      required_runner_release_id: release,
+      lifecycle_mode: :elastic,
+      supported_task_kinds: [:asset_attempt],
+      capabilities: ["asset_execution"]
+    }
+
+    {:ok, ack} = RunnerRegistry.register(registration, self())
+
+    claim = %Favn.Contracts.RunnerTask.ClaimRequest{
+      command_id: "large-claim-" <> random_id(),
+      issued_at: DateTime.utc_now(),
+      runner_instance_id: runner,
+      runner_session_generation: ack.runner_session_generation,
+      runner_pool: fixture.runner_pool,
+      required_runner_release_id: release,
+      supported_task_kinds: [:asset_attempt],
+      capabilities: ["asset_execution"]
+    }
+
+    assert {:ok, %Assignment{} = assignment} = RunnerTasks.claim(claim)
+    assert assignment.task_id == queued.task_id
+    assert :ok = Assignment.validate(assignment)
+    assert {:ok, wire} = Assignment.encode(assignment)
+    assert {:ok, decoded} = Assignment.decode(wire)
+    assert decoded == assignment
+    assert decoded.payload.execution_package == package
+
+    assert {:ok, ^package} =
+             ExecutionPackage.verify_for_asset(decoded.payload.execution_package, asset)
+
+    tampered = %{package | content_hash: String.duplicate("0", 64)}
+    assert {:error, _} = ExecutionPackage.verify_for_asset(tampered, asset)
+    assert {:error, _} = Assignment.validate(%{decoded | runner_session_generation: 0})
+
+    assert {:ok, running} =
+             Store.transition(
+               transition_command(
+                 fixture,
+                 %{
+                   queued
+                   | assigned_runner_instance_id: runner,
+                     assigned_runner_session_generation: ack.runner_session_generation,
+                     assignment_generation: assignment.assignment_generation
+                 },
+                 "large-start",
+                 :running
+               )
+             )
+
+    lease_id = "large-lease-" <> random_id()
+
+    :ok =
+      ManifestStore.acquire_registered(
+        version.manifest_version_id,
+        version.content_hash,
+        lease_id,
+        DateTime.add(DateTime.utc_now(), 60, :second)
+      )
+
+    on_exit(fn -> ManifestStore.release(lease_id) end)
+
+    assert {:ok, executor} =
+             TaskExecutor.start_link(
+               assignment: decoded,
+               payload: %{decoded.payload | manifest_lease_id: lease_id},
+               owner: self()
+             )
+
+    assert_receive {:runner_task_finished, ^executor,
+                    %Favn.Contracts.RunnerResult{status: :ok} = result},
+                   10_000
+
+    assert [%{status: :ok}] = result.asset_results
+    assert {:ok, encoded_result} = Codec.encode_result(:asset_attempt, :succeeded, result)
+
+    assert {:ok, completed} =
+             Store.complete(%C.CompleteRunnerTask{
+               workspace_context: fixture.workspace_context,
+               command_id: "large-complete",
+               task_id: running.task_id,
+               runner_instance_id: runner,
+               runner_session_generation: ack.runner_session_generation,
+               assignment_generation: assignment.assignment_generation,
+               result_version: 1,
+               outcome: :succeeded,
+               retry_class: :terminal,
+               result: encoded_result,
+               issued_at: DateTime.utc_now(),
+               occurred_at: DateTime.utc_now()
+             })
+
+    assert completed.status == :succeeded
+  end
+
+  test "PostgreSQL accepts a maximum asset payload and rejects above its JSONB bound", fixture do
+    limit = Favn.Contracts.RunnerTask.Limits.payload_bytes(:asset_attempt)
+
+    work = %Favn.Contracts.RunnerWork{
+      runner_pool: :duckdb,
+      required_runner_release_id: @release,
+      metadata: %{padding: ""}
+    }
+
+    overhead = byte_size(:erlang.term_to_binary(work, [:deterministic]))
+    work = %{work | metadata: %{padding: :crypto.strong_rand_bytes(limit - overhead)}}
+    assert byte_size(:erlang.term_to_binary(work, [:deterministic])) == limit
+
+    assert {:ok, queued} =
+             Store.enqueue(
+               enqueue_command(fixture, "max-payload", task_kind: :asset_attempt, payload: work)
+             )
+
+    assert {:ok, %{payload: ^work}} =
+             Store.get(%Q.GetRunnerTask{
+               workspace_context: fixture.workspace_context,
+               task_id: queued.task_id
+             })
+
+    assert %{rows: [[stored_size]]} =
+             SQL.query!(
+               Repo,
+               "SELECT pg_column_size(payload) FROM favn_control.runner_tasks WHERE workspace_id = $1 AND task_id = $2",
+               [fixture.workspace_id, queued.task_id]
+             )
+
+    assert stored_size > 2_097_152
+    assert stored_size <= 12_582_912
+
+    assert {:error,
+            %Postgrex.Error{
+              postgres: %{code: :check_violation, constraint: "runner_tasks_payload_valid"}
+            }} =
+             SQL.query(
+               Repo,
+               "UPDATE favn_control.runner_tasks SET payload = jsonb_build_object('padding', repeat('x', $3)) WHERE workspace_id = $1 AND task_id = $2",
+               [fixture.workspace_id, queued.task_id, 12_582_912]
+             )
+  end
+
   test "payload codec is typed, bounded, deterministic, and rejects mismatched kinds" do
     payload = inspection_payload()
 

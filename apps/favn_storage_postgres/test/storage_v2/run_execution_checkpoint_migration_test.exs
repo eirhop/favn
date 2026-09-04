@@ -6,8 +6,12 @@ defmodule FavnStoragePostgres.StorageV2.RunExecutionCheckpointMigrationTest do
   alias Ecto.Adapters.SQL
   alias FavnStoragePostgres.Config
   alias FavnStoragePostgres.Migrations.AddRunExecutionCheckpointsV2
+  alias FavnStoragePostgres.Migrations.IncreaseRunnerTaskPayloadBoundV2
   alias FavnStoragePostgres.Migrations.IncreaseRunnerTaskOrchestrationContextBoundV2
   alias FavnStoragePostgres.StorageV2.Migrations
+
+  @payload_migration_version 20_260_904_000_000
+  @payload_migration {@payload_migration_version, IncreaseRunnerTaskPayloadBoundV2}
 
   @migration_version 20_260_729_000_000
   @migration {@migration_version, AddRunExecutionCheckpointsV2}
@@ -58,6 +62,11 @@ defmodule FavnStoragePostgres.StorageV2.RunExecutionCheckpointMigrationTest do
     assert runner_context_bound() == 8 * 1_024 * 1_024
     assert diagnostics_ready?()
 
+    assert runner_bound("payload") == 12 * 1_024 * 1_024
+    assert [@payload_migration_version] = migrate(@payload_migration, :down)
+    assert runner_bound("payload") == 2 * 1_024 * 1_024
+    assert runner_context_bound() == 8 * 1_024 * 1_024
+
     assert [@bound_migration_version] = migrate(@bound_migration, :down)
     assert runner_context_bound() == 2 * 1_024 * 1_024
     assert [@bound_migration_version] = migrate(@bound_migration, :up)
@@ -66,6 +75,9 @@ defmodule FavnStoragePostgres.StorageV2.RunExecutionCheckpointMigrationTest do
     refute table_present?()
 
     assert [@migration_version] = migrate(:up)
+    assert [@payload_migration_version] = migrate(@payload_migration, :up)
+    assert runner_bound("payload") == 12 * 1_024 * 1_024
+    assert runner_context_bound() == 8 * 1_024 * 1_024
     assert table_present?()
     assert diagnostics_ready?()
   end
@@ -82,7 +94,9 @@ defmodule FavnStoragePostgres.StorageV2.RunExecutionCheckpointMigrationTest do
     )
   end
 
-  defp runner_context_bound do
+  defp runner_context_bound, do: runner_bound("orchestration_context")
+
+  defp runner_bound(column) do
     %{rows: [[definition]]} =
       SQL.query!(
         UpgradeRepo,
@@ -100,7 +114,7 @@ defmodule FavnStoragePostgres.StorageV2.RunExecutionCheckpointMigrationTest do
 
     [bound] =
       Regex.run(
-        ~r/pg_column_size\(orchestration_context\) <= ([0-9]+)/,
+        Regex.compile!("pg_column_size\\(#{column}\\) <= ([0-9]+)"),
         definition,
         capture: :all_but_first
       )

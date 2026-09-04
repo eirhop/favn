@@ -496,7 +496,7 @@ end
 defmodule Favn.Contracts.RunnerTask.Codec do
   @moduledoc false
 
-  @max_encoded_bytes 2 * 1_024 * 1_024
+  alias Favn.Contracts.RunnerTask.Limits
 
   def encode(struct, tag, validate) do
     with :ok <- validate.(struct) do
@@ -506,13 +506,19 @@ defmodule Favn.Contracts.RunnerTask.Codec do
         |> :erlang.term_to_binary([:deterministic])
         |> Base.encode64()
 
-      {:ok, %{"type" => tag, "version" => 13, "payload" => payload}}
+      limit = Limits.wire_bytes(struct.__struct__)
+
+      if byte_size(payload) <= limit,
+        do: {:ok, %{"type" => tag, "version" => 13, "payload" => payload}},
+        else: {:error, {:runner_task_encoded_payload_too_large, byte_size(payload), limit}}
     end
   end
 
   def decode_for(module, tag, %{"type" => tag, "version" => 13, "payload" => payload})
-      when is_binary(payload) and byte_size(payload) <= @max_encoded_bytes do
-    with {:ok, binary} <- Base.decode64(payload),
+      when is_binary(payload) do
+    with true <- byte_size(payload) <= Limits.wire_bytes(module),
+         {:ok, binary} <- Base.decode64(payload),
+         true <- byte_size(binary) <= module.payload_size_limit(),
          {:ok, fields} <- decode_uncompressed_term(binary),
          true <- is_map(fields),
          struct <- struct(module, fields),
@@ -705,6 +711,7 @@ end
 defmodule Favn.Contracts.RunnerTask.Assignment do
   use Favn.Contracts.RunnerTask.Message,
     tag: "assignment",
+    limit: Favn.Contracts.RunnerTask.Limits.assignment_bytes(),
     session_fenced: true,
     fields: [
       command_id: nil,
@@ -743,6 +750,11 @@ defmodule Favn.Contracts.RunnerTask.Assignment do
     with :ok <- super(assignment),
          :ok <-
            Favn.Contracts.RunnerTask.validate_payload(
+             assignment.task_kind,
+             assignment.payload
+           ),
+         :ok <-
+           Favn.Contracts.RunnerTask.Limits.validate_payload(
              assignment.task_kind,
              assignment.payload
            ),

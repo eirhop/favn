@@ -21,6 +21,43 @@ This plan covers runner elasticity and dynamic runner membership for one control
 plane. Multi-control-plane availability and rolling mixed-version clusters remain
 separate work.
 
+## Runner task size budgets
+
+Asset tasks support **8 MiB (8,388,608 bytes)** of complete uncompressed,
+deterministic Erlang-term work, including the SQL execution package and task
+metadata. Package publication's 4 MiB JSON budget uses a different representation;
+publication success alone does not guarantee that a task fits this bound.
+
+| Boundary | Budget | Representation |
+| --- | ---: | --- |
+| Asset task payload | 8,388,608 bytes | Complete uncompressed Erlang term |
+| Complete assignment | 8,454,144 bytes | Payload plus 64 KiB reserved for assignment metadata |
+| Assignment wire payload | 11,272,192 bytes | Base64 of the uncompressed assignment field map |
+| Persisted task payload | 12,582,912 bytes | PostgreSQL JSONB envelope, measured by `pg_column_size` |
+
+Base64 requires `4 * ceil(raw_bytes / 3)` bytes. An 8 MiB work item expands to
+11,184,812 bytes before its small persistence envelope; the 12 MiB storage bound
+includes envelope headroom. Assignment validation checks both the nested payload
+budget and the complete assignment. Wire decoding checks encoded and decoded sizes
+before safe term decoding, then validates the reconstructed assignment. Compressed
+terms are rejected. Above-budget encoding reports the actual size and limit.
+
+Non-asset task payloads and results retain their 1 MiB raw bounds. Log messages
+retain their 256 KiB bound; result, error, and orchestration-context storage limits
+are unchanged. These are BEAM task messages, so HTTP request-body limits do not
+apply. Larger tasks consume more memory per active assignment; limits are finite.
+
+Apply migration `20260904000000` before deploying matching updated control-plane
+and runner builds, and before admitting work that requires the larger budget.
+Task wire/persistence shapes remain protocol 13; no payload rewrite is required.
+Old binaries cannot process larger work even though the version is unchanged.
+Rebuild immutable runner release identities and coordinate both sides; mixed
+builds are unsupported for larger tasks. For rollback, drain large assignments
+and resolve every retained task above the old 1 MiB raw limit first. The down
+migration only rejects rows exceeding the old 2 MiB stored-column constraint;
+a successful downgrade does not prove old codecs can read all rows, since raw
+term size, base64 size, and PostgreSQL compression differ. It never truncates data.
+
 ## Decision summary
 
 Implement the multi-runner design directly. Do not build a separate 0-to-1

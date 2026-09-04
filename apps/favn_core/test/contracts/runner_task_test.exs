@@ -554,6 +554,157 @@ defmodule Favn.Contracts.RunnerTaskTest do
     end
   end
 
+  test "asset payload raw and base64 bounds are symmetric at exactly 8 MiB" do
+    alias Favn.Contracts.RunnerTask.Limits
+    alias Favn.Contracts.RunnerTask.PersistenceCodec
+
+    limit = Limits.payload_bytes(:asset_attempt)
+    work = sized_work(limit)
+    assert byte_size(:erlang.term_to_binary(work, [:deterministic])) == limit
+    assert {:ok, envelope, hash} = PersistenceCodec.encode_payload(:asset_attempt, work)
+    assert byte_size(envelope["payload"]) == Limits.encoded_bytes(limit)
+    assert {:ok, ^work} = PersistenceCodec.decode_payload(:asset_attempt, envelope)
+    assert {:ok, ^hash} = PersistenceCodec.payload_hash(envelope)
+
+    oversized = sized_work(limit + 1)
+
+    assert {:error, {:runner_task_payload_too_large, actual, ^limit}} =
+             PersistenceCodec.encode_payload(:asset_attempt, oversized)
+
+    assert actual == limit + 1
+
+    # The extra byte can share the same padded base64 length: check decoded size too.
+    forged =
+      Map.put(envelope, "payload", oversized |> :erlang.term_to_binary() |> Base.encode64())
+
+    assert {:error, :invalid_runner_task_persistence_envelope} =
+             PersistenceCodec.decode_payload(:asset_attempt, forged)
+
+    assert {:error, :invalid_runner_task_persistence_envelope} =
+             PersistenceCodec.decode_payload(
+               :asset_attempt,
+               Map.put(
+                 envelope,
+                 "payload",
+                 String.duplicate("A", Limits.encoded_bytes(limit) + 1)
+               )
+             )
+  end
+
+  test "full-sized work fits assignment envelope and wire round trip with fences intact" do
+    alias Favn.Contracts.RunnerTask.Limits
+    work = sized_work(Limits.payload_bytes(:asset_attempt))
+    message = assignment(:asset_attempt, work)
+    assert :ok = Assignment.validate(message)
+    assert {:ok, encoded} = Assignment.encode(message)
+    assert byte_size(encoded["payload"]) > 2 * 1_048_576
+    assert {:ok, ^message} = Assignment.decode(encoded)
+    assert byte_size(:erlang.term_to_binary(message)) <= Assignment.payload_size_limit()
+
+    assert {:error, {:runner_task_payload_too_large, _, 8_388_608}} =
+             Assignment.validate(%{message | payload: sized_work(8_388_609)})
+
+    assert {:error, :runner_task_asset_binding_mismatch} =
+             Assignment.validate(%{message | runner_pool: "other"})
+
+    assert {:error, _} = Assignment.validate(%{message | runner_session_generation: 0})
+    assert {:error, _} = Assignment.validate(%{message | assignment_generation: 0})
+  end
+
+  test "assignment raw envelope and encoded bounds reject one byte over" do
+    alias Favn.Contracts.RunnerTask.Contract
+    alias Favn.Contracts.RunnerTask.Limits
+
+    limit = Assignment.payload_size_limit()
+    message = assignment(:asset_attempt, sized_work(1_000))
+    overhead = byte_size(:erlang.term_to_binary(message)) - 1_000
+    at_limit = %{message | payload: sized_work(limit - overhead)}
+    assert byte_size(:erlang.term_to_binary(at_limit)) == limit
+    assert :ok = Contract.validate(at_limit, [], [], limit, true)
+    above = %{message | payload: sized_work(limit - overhead + 1)}
+    assert {:error, {:runner_task_payload_too_large, actual, ^limit}} = Assignment.validate(above)
+    assert actual == limit + 1
+
+    assert Limits.wire_bytes(Assignment) == 11_272_192
+
+    for raw <- [limit - 1, limit, limit + 1] do
+      assert byte_size(Base.encode64(:binary.copy(<<0>>, raw))) == Limits.encoded_bytes(raw)
+    end
+
+    assert {:ok, encoded} = Assignment.encode(message)
+
+    assert {:error, :invalid_runner_task_payload} =
+             Assignment.decode(
+               Map.put(
+                 encoded,
+                 "payload",
+                 String.duplicate("A", Limits.wire_bytes(Assignment) + 1)
+               )
+             )
+
+    # Raw map fields must be bounded before decoding, even if unknown fields
+    # would be discarded by struct construction.
+    oversized_fields =
+      message |> Map.from_struct() |> Map.put(:padding, :binary.copy(<<0>>, limit))
+
+    assert {:error, :invalid_runner_task_payload} =
+             Assignment.decode(
+               Map.put(
+                 encoded,
+                 "payload",
+                 oversized_fields |> :erlang.term_to_binary() |> Base.encode64()
+               )
+             )
+
+    assert {:error, {:runner_task_encoded_payload_too_large, _, 11_272_192}} =
+             Favn.Contracts.RunnerTask.Codec.encode(
+               %{message | payload: sized_work(limit + 10)},
+               "assignment",
+               fn _ -> :ok end
+             )
+
+    compressed =
+      message |> Map.from_struct() |> :erlang.term_to_binary([:compressed]) |> Base.encode64()
+
+    assert {:error, :invalid_runner_task_payload} =
+             Assignment.decode(Map.put(encoded, "payload", compressed))
+  end
+
+  test "non-asset payloads, results, and log messages retain their bounds" do
+    alias Favn.Contracts.RunnerTask.Limits
+    alias Favn.Contracts.RunnerTask.PersistenceCodec
+
+    operation = %Favn.Contracts.RelationInspectionRequest{
+      relation: %{padding: :binary.copy(<<0>>, 1_048_576)}
+    }
+
+    assert {:error, {:runner_task_payload_too_large, _, 1_048_576}} =
+             PersistenceCodec.encode_payload(:relation_inspection, operation)
+
+    assert {:error, {:runner_task_payload_too_large, _, 1_048_576}} =
+             Assignment.validate(assignment(:relation_inspection, operation))
+
+    result = %Favn.Contracts.RunnerResult{metadata: %{padding: :binary.copy(<<0>>, 1_048_576)}}
+
+    assert {:error, {:runner_task_payload_too_large, _, 1_048_576}} =
+             PersistenceCodec.encode_result(:asset_attempt, :succeeded, result)
+
+    assert Result.payload_size_limit() == 1_048_576
+    assert Favn.Contracts.RunnerTask.LogBatch.payload_size_limit() == 262_144
+    assert Limits.wire_bytes(Result) == 2_097_152
+  end
+
+  defp sized_work(bytes) do
+    work = %Favn.Contracts.RunnerWork{
+      runner_pool: :duckdb,
+      required_runner_release_id: @release,
+      metadata: %{padding: ""}
+    }
+
+    overhead = byte_size(:erlang.term_to_binary(work, [:deterministic]))
+    %{work | metadata: %{padding: :binary.copy(<<0>>, bytes - overhead)}}
+  end
+
   defp classify(kind, fields) do
     Favn.Contracts.RunnerTask.classify_failure(kind, RunnerError.new(fields))
   end
