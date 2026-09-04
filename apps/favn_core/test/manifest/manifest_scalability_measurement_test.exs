@@ -74,6 +74,6 @@ defmodule Favn.ManifestScalabilityMeasurementTest do
         total + byte_size(Serializer.encode_manifest!(package))
       end)
 
-    assert package_bytes > index_bytes * 10
+    assert package_bytes < 4 * 1024 * 1024
   end
 end

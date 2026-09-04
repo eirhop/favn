@@ -10,6 +10,43 @@ defmodule FavnRunner.SQLRendererTest do
   alias Favn.SQLAsset.Definition
   alias Favn.SQLAsset.Renderer
 
+  test "compact package round trips preserve expanded SQL, bindings, and error locations" do
+    helper = %{
+      reusable_sql_definition(:normalized, [:value], "upper(@value)", %{})
+      | shape: :expression
+    }
+
+    sql = "SELECT 'å' AS label,\n  normalized(@country) AS country FROM external.analytics.orders"
+
+    original =
+      definition(%{connection: :warehouse, schema: "gold", name: "orders"}, sql, [helper])
+
+    execution = Favn.Manifest.SQLExecution.from_definition(original)
+    {:ok, package} = Favn.Manifest.ExecutionPackage.new(original.asset.ref, execution)
+    published = package |> Favn.Manifest.Serializer.encode_manifest!() |> Jason.decode!()
+    assert {:ok, loaded} = Favn.Manifest.ExecutionPackage.from_published(published)
+
+    definition = %{
+      original
+      | template: loaded.sql_execution.template,
+        sql_definitions: loaded.sql_execution.sql_definitions
+    }
+
+    assert {:ok, rendered} = Renderer.render(definition, params: %{"country" => "no"})
+
+    assert rendered.sql ==
+             "SELECT 'å' AS label,\n  upper(?) AS country FROM external.analytics.orders"
+
+    assert [%{name: "country", value: "no", span: span}] = rendered.params.bindings
+    assert {span.start_line, span.start_column, span.start_offset} == {2, 14, 34}
+
+    assert {:error, error} = Renderer.render(definition)
+    assert error.type == :missing_query_param
+    assert error.span == span
+    assert error.line == 2
+    assert error.file == "test/fixtures/renderer_test.sql"
+  end
+
   test "renders binary query params from string keys" do
     assert {:ok, rendered} = Renderer.render(definition(), params: %{"country" => "NO"})
 

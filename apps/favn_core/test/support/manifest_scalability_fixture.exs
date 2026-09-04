@@ -156,7 +156,7 @@ defmodule FavnTestSupport.ManifestScalabilityFixture do
           }
         },
         manifest_schema_version: 19,
-        runner_contract_version: 14
+        runner_contract_version: 15
       )
 
     {%{asset | target_descriptor: descriptor}, package}

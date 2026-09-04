@@ -14,6 +14,62 @@ defmodule Favn.Manifest.ExecutionPackageTest do
   alias Favn.SQL.Template
   alias Favn.SQL.Template.{Call, DefinitionRef, Placeholder, Relation}
 
+  test "old published bytes retain their hash and fail the schema gate before generated checks" do
+    # Fixed schema-4 bytes built with the parser/package code from 5f3c163e.
+    published =
+      __DIR__ |> Path.join("../fixtures/sql_package_v4.json") |> File.read!() |> Jason.decode!()
+
+    original = Favn.Manifest.Serializer.encode_manifest!(published)
+    expected_hash = "6a7ad0e6eb1bcfb0600125f753341b2113a000e6899742438ea3ee8a4291c8b3"
+
+    payload =
+      published |> Map.delete("content_hash") |> Favn.Manifest.Serializer.encode_manifest!()
+
+    assert Base.encode16(:crypto.hash(:sha256, payload), case: :lower) == expected_hash
+    assert published["content_hash"] == expected_hash
+
+    assert {:error, {:unsupported_execution_package_schema, 4, 5}} =
+             ExecutionPackage.from_published(published)
+
+    assert Favn.Manifest.Serializer.encode_manifest!(published) == original
+
+    for schema <- [4, 6] do
+      malformed = %{schema_version: schema, sql_execution: %{checks: :invalid}}
+
+      assert {:error, {:unsupported_execution_package_schema, ^schema, 5}} =
+               ExecutionPackage.from_published(malformed)
+
+      package = %ExecutionPackage{
+        schema_version: schema,
+        asset_ref: {MyApp.Orders, :asset},
+        content_hash: expected_hash,
+        sql_execution: nil
+      }
+
+      assert {:error, {:unsupported_execution_package_schema, ^schema, 5}} =
+               ExecutionPackage.verify(package)
+
+      assert {:error, {:unsupported_execution_package_schema, ^schema, 5}} =
+               ExecutionPackage.from_published(package)
+    end
+  end
+
+  test "compact literal bytes and source positions remain covered by the hash" do
+    package = execution_package({MyApp.Orders, :asset}, "SELECT 1 + 2 AS id")
+    assert [%Favn.SQL.Template.Text{} = text] = package.sql_execution.template.nodes
+
+    for altered <- [
+          %{text | sql: "SELECT 1 + 3 AS id"},
+          %{text | span: %{text.span | end_column: text.span.end_column + 1}}
+        ] do
+      template = %{package.sql_execution.template | nodes: [altered]}
+      tampered = %{package | sql_execution: %{package.sql_execution | template: template}}
+
+      assert {:error, {:execution_package_hash_mismatch, _, _}} =
+               ExecutionPackage.verify(tampered)
+    end
+  end
+
   test "content hash covers the complete execution payload" do
     package = execution_package({MyApp.Orders, :asset}, "SELECT 1 AS id")
     unchanged = execution_package({MyApp.Orders, :asset}, "SELECT 1 AS id")
@@ -141,7 +197,7 @@ defmodule Favn.Manifest.ExecutionPackageTest do
   test "rejects non-current execution-package schemas" do
     package = execution_package({MyApp.Orders, :asset}, "SELECT 1 AS id")
 
-    assert {:error, {:unsupported_execution_package_schema, 1, 4}} =
+    assert {:error, {:unsupported_execution_package_schema, 1, 5}} =
              ExecutionPackage.verify(%{package | schema_version: 1})
   end
 
@@ -211,7 +267,7 @@ defmodule Favn.Manifest.ExecutionPackageTest do
     package = execution_package({MyApp.Orders, :asset}, "SELECT 1 AS id")
 
     invalid = %{package | sql_execution: nil}
-    payload = %{schema_version: 4, asset_ref: invalid.asset_ref, sql_execution: nil}
+    payload = %{schema_version: 5, asset_ref: invalid.asset_ref, sql_execution: nil}
     {:ok, encoded} = Favn.Manifest.Serializer.encode_manifest(payload)
     hash = :crypto.hash(:sha256, encoded) |> Base.encode16(case: :lower)
 
@@ -235,12 +291,12 @@ defmodule Favn.Manifest.ExecutionPackageTest do
     assert {:error, {:invalid_manifest_payload, %ArgumentError{}}} =
              ExecutionPackage.new(ref, execution)
 
-    payload = %{schema_version: 4, asset_ref: ref, sql_execution: execution}
+    payload = %{schema_version: 5, asset_ref: ref, sql_execution: execution}
     {:ok, encoded} = Favn.Manifest.Serializer.encode_manifest(payload)
     hash = :crypto.hash(:sha256, encoded) |> Base.encode16(case: :lower)
 
     package = %ExecutionPackage{
-      schema_version: 4,
+      schema_version: 5,
       content_hash: hash,
       asset_ref: ref,
       sql_execution: execution

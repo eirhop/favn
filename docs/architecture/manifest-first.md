@@ -4,7 +4,7 @@ Reader: Favn contributors and documentation agents.
 
 Documentation type: explanation.
 
-Favn is manifest-first. Schema 17 has one compact manifest index containing the
+Favn is manifest-first. Schema 19 has one compact manifest index containing the
 saved description of what the user authored: assets, pipelines, schedules,
 dependencies, the resolved authoring environment, execution-pool defaults,
 connection circuit policy, schema version, runner contract version, and compact
@@ -131,6 +131,39 @@ identity covers that canonical payload. The authoring publication verifies exact
 coverage, so missing, unexpected, duplicated, mismatched, or modified packages
 fail before upload. At registration, the orchestrator atomically verifies that
 every indexed hash is stored and that its package belongs to the indexed asset.
+
+Execution-package schema 5 retains contiguous literal SQL as maximal text runs.
+Each run stores exact SQL bytes and the enclosing source span. Parameters,
+relations, helper calls, and argument fragments retain explicit nodes and source
+locations, including Unicode codepoint offsets. Checks and replacement scopes
+use the same compiler. This reduces retained objects and serialization overhead;
+the parser still builds its token representation before merging literal runs.
+The SQL engine receives the same rendered SQL and binding order.
+
+### SQL package compatibility
+
+Package schema 5 requires manifest runner contract 15. The manifest index remains
+schema 19 and runner task messages remain protocol 13. Unsupported package schemas
+are rejected before template rehydration; unsupported runner contracts are
+rejected by the existing manifest/release compatibility boundaries. Compiler
+metadata is not a compatibility gate. New package bytes have new hashes; previously
+stored packages are never rewritten.
+
+This is a coordinated pre-v1 breaking upgrade. Deploy matching authoring,
+control-plane, and runner builds, build new runner release identities, and publish
+new manifests. Before upgrading, finish or explicitly retire queued, active,
+deferred, and paused work pinned to the old contract. Schema-4 packages and
+runner-contract-14 manifests remain stored but are unsupported by the new loading
+and execution boundaries, including historical SQL source retrieval, retries,
+replays, and paused backfills. Republishing alone does not migrate those records.
+Rollback requires deliberately restoring a compatible deployment for old work;
+old binaries cannot process new packages. No database migration is required.
+
+Package bytes and complete task bytes have distinct budgets. Literal compaction
+makes large ordinary SQL inexpensive, but many dynamic constructs, checks,
+definitions, or task metadata can still reach a size limit. The reproducible
+[SQL package measurement report](../report/sql_package_compaction.md) describes
+generic scaling and the measured 1 MiB boundary; it is not a universal ceiling.
 
 Packages are not another manifest representation. There is one manifest index
 and a set of content-addressed execution artifacts. Schema 7 and inline

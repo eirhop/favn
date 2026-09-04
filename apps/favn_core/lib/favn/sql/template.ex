@@ -1,6 +1,10 @@
 defmodule Favn.SQL.Template do
   @moduledoc """
   Ordered SQL template IR used by Phase 3 SQL authoring.
+
+  Adjacent literal SQL is retained as one text run with its enclosing source
+  span. Parameters, relations, and helper calls retain individual nodes and
+  source locations. Parsing still tracks each token before compacting its output.
   """
 
   alias Favn.Assets.Compiler
@@ -464,7 +468,8 @@ defmodule Favn.SQL.Template do
   defp first_top_level_token([_char | rest], :code, depth),
     do: first_top_level_token(rest, :code, depth)
 
-  defp parse_nodes([], state, acc), do: {Enum.reverse(acc), state}
+  defp parse_nodes([], state, acc),
+    do: {acc |> Enum.reverse() |> coalesce_text_nodes(), state}
 
   defp parse_nodes([?-, ?- | rest], state, acc) do
     {text, tail, next_pos} = consume_line_comment(rest, state.position, ~c"--")
@@ -1254,6 +1259,53 @@ defmodule Favn.SQL.Template do
 
   defp text_node(text, start_pos, end_pos),
     do: %Text{sql: to_string(text), span: span(start_pos, end_pos)}
+
+  defp coalesce_text_nodes(nodes) do
+    Enum.chunk_while(
+      nodes,
+      [],
+      fn
+        %Text{} = node, [%Text{} = previous | _] = chunk ->
+          if contiguous_spans?(previous.span, node.span) do
+            {:cont, [node | chunk]}
+          else
+            {:cont, join_text_chunk(chunk), [node]}
+          end
+
+        node, [] ->
+          {:cont, [node]}
+
+        node, chunk ->
+          {:cont, join_text_chunk(chunk), [node]}
+      end,
+      fn
+        [] -> {:cont, []}
+        chunk -> {:cont, join_text_chunk(chunk), []}
+      end
+    )
+  end
+
+  defp contiguous_spans?(left, right) do
+    left.end_offset == right.start_offset and left.end_line == right.start_line and
+      left.end_column == right.start_column
+  end
+
+  defp join_text_chunk([node]), do: node
+
+  defp join_text_chunk([%Text{span: last_span} | _] = reversed) do
+    first = List.last(reversed)
+    sql = reversed |> Enum.reverse() |> Enum.map(& &1.sql) |> IO.iodata_to_binary()
+
+    %Text{
+      sql: sql,
+      span: %{
+        first.span
+        | end_offset: last_span.end_offset,
+          end_line: last_span.end_line,
+          end_column: last_span.end_column
+      }
+    }
+  end
 
   defp consume_single_char(char, state) do
     text = <<char::utf8>>

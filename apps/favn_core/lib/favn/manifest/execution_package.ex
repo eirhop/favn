@@ -32,7 +32,7 @@ defmodule Favn.Manifest.ExecutionPackage do
     Text
   }
 
-  @schema_version 4
+  @schema_version 5
 
   @enforce_keys [:content_hash, :asset_ref, :sql_execution]
   defstruct schema_version: @schema_version,
@@ -90,7 +90,8 @@ defmodule Favn.Manifest.ExecutionPackage do
   def from_published(%__MODULE__{} = package), do: verify(package)
 
   def from_published(value) when is_map(value) do
-    with {:ok, published_encoded} <- Serializer.encode_manifest(value),
+    with :ok <- validate_schema(Map.get(value, :schema_version, Map.get(value, "schema_version"))),
+         {:ok, published_encoded} <- Serializer.encode_manifest(value),
          {:ok, package} <- Rehydrate.execution_package(value),
          {:ok, canonical} <- verify(package),
          {:ok, canonical_encoded} <- Serializer.encode_manifest(canonical),

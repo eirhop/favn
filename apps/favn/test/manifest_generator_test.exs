@@ -132,7 +132,7 @@ defmodule Favn.Manifest.GeneratorTest do
              )
 
     assert manifest.schema_version == Favn.Manifest.Compatibility.current_schema_version()
-    assert manifest.runner_contract_version == 14
+    assert manifest.runner_contract_version == 15
     assert manifest.runner_releases == runner_releases()
     assert length(manifest.assets) == 2
     assert length(manifest.pipelines) == 1

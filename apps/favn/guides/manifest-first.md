@@ -142,7 +142,7 @@ A manifest can include:
 - effective freshness, window, coverage, timezone provenance, and target descriptors
 - JSON-safe asset and pipeline settings
 - runtime config requirements
-- schema 18 and runner protocol 14 data used by the runtime
+- schema 19 and runner contract 15 data used by the runtime
 - the exact operator-supplied `runner_releases` pool-to-release map
 - validated execution-pool defaults used by referenced assets and pipelines
 - validated circuit policy for published connections, without adapter values or secrets
@@ -151,6 +151,19 @@ Execution packages contain the full SQL templates, runtime-input resolver refs,
 typed output contracts, and executable generated/custom checks. They are not a
 second manifest format: the compact index is the only manifest, and package
 hashes are its execution-artifact references.
+
+Adjacent literal SQL is stored as compact text runs, preserving formatting and
+diagnostic locations. Parameters, relations, and reusable SQL calls remain
+explicit. This reduces package size without changing query results or requiring
+authors to minify SQL. Large numbers of checks or dynamic calls can still produce
+large packages; the full task also contains runtime metadata.
+
+Package schema 5 is a breaking transition requiring matching authoring,
+control-plane, and runner builds and newly built manifests. Finish or explicitly
+retire old pinned work before upgrading. Stored schema-4 packages remain unchanged
+but cannot be loaded or executed by the new runtime; this includes historical
+source retrieval, retries, replays, and paused backfills. Republishing a manifest
+does not migrate that work. There is no database migration.
 
 The exact struct is managed by Favn. Application code should normally build
 manifests with `Favn.generate_manifest/1`, not by constructing manifest structs

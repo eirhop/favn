@@ -690,6 +690,9 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
 
     assert {:ok, %{status: :ok}} = FavnRunner.TestExecution.run(work)
 
+    assert_received {:checked_query,
+                     "SELECT * FROM (SELECT ? = ? AS passed) AS favn_check LIMIT 2"}
+
     assert_received {:checked_query_params, ["runtime-value", "runtime-value"]}
   end
 
@@ -1611,7 +1614,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     manifest =
       %Manifest{
         schema_version: 19,
-        runner_contract_version: 14,
+        runner_contract_version: 15,
         runner_releases: %{"default" => FavnTestSupport.runner_release_id()},
         assets: [
           %Asset{
@@ -1673,7 +1676,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
 
     manifest = %Manifest{
       schema_version: 19,
-      runner_contract_version: 14,
+      runner_contract_version: 15,
       runner_releases: %{"default" => FavnTestSupport.runner_release_id()},
       assets: [
         %Asset{
@@ -1743,7 +1746,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
 
     manifest = %Manifest{
       schema_version: 19,
-      runner_contract_version: 14,
+      runner_contract_version: 15,
       runner_releases: %{"default" => FavnTestSupport.runner_release_id()},
       assets: [
         %Asset{
@@ -1843,13 +1846,18 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
   end
 
   defp work_for(version, ref, run_id) do
+    original = execution_package_for(version)
+    published = original |> Favn.Manifest.Serializer.encode_manifest!() |> Jason.decode!()
+    assert {:ok, loaded} = ExecutionPackage.from_published(published)
+    assert loaded == original
+
     %RunnerWork{
       required_runner_release_id: FavnTestSupport.runner_release_id(),
       run_id: run_id,
       manifest_version_id: version.manifest_version_id,
       manifest_content_hash: version.content_hash,
       asset_ref: ref,
-      execution_package: execution_package_for(version)
+      execution_package: loaded
     }
     |> generation_work(version, ref)
   end
@@ -1936,7 +1944,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     manifest =
       %Manifest{
         schema_version: 19,
-        runner_contract_version: 14,
+        runner_contract_version: 15,
         runner_releases: %{"default" => FavnTestSupport.runner_release_id()},
         assets: [
           %Asset{
@@ -1970,7 +1978,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
   defp register_elixir_manifest!(ref, relation) do
     manifest = %Manifest{
       schema_version: 19,
-      runner_contract_version: 14,
+      runner_contract_version: 15,
       runner_releases: %{"default" => FavnTestSupport.runner_release_id()},
       assets: [
         %Asset{
