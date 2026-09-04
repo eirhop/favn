@@ -8,7 +8,7 @@
 | Pull request | [Draft PR #702](https://github.com/eirhop/favn/pull/702) |
 | Current plan | Revision 1 below; approved after fresh independent review |
 | Original approved baseline | [`9fa85c38`](https://github.com/eirhop/favn/commit/9fa85c3883ce220cffcdc8551df09cfe4d7d19cc), preserved below |
-| Approved revision commit | Reviewed revision; commit ID recorded in the next bookkeeping update |
+| Approved revision commit | [`2548ae6e`](https://github.com/eirhop/favn/commit/2548ae6ed4ccd4dd79658cf02f8a96e6b5b30737) |
 | Source baseline | `8a129956b3f571e9db6f8e345b243b14a90b9983` |
 | Related work | [#700: persisted task and crash recovery](https://github.com/eirhop/favn/issues/700) |
 | Last updated | 2026-09-04 |
@@ -604,7 +604,7 @@ record actual per-slice complexity, deviations, tests and operational limitation
 | --- | --- | --- |
 | Source/issue comparison | Confirmed scope and admission gaps; inspected automatic recovery source/candidate provenance | Static evidence, no incident reproduction |
 | Original baseline preservation | Original plan and review text retained unchanged below the revision | Historical comparison remains available |
-| Revised links, whitespace and diagrams | All 25 relative links resolve after corrections; `git diff --check` passes; all three diagrams render locally with Mermaid 11 | Documentation only; GitHub rendering follows the reviewed revision push |
+| Revised links, whitespace and diagrams | All 25 relative links resolve after corrections; `git diff --check` passes; all three diagrams render locally with Mermaid 11 and on GitHub at the approved revision, including the preserved diagrams after expanding the baseline | Documentation only; no runtime qualification |
 | Implementation/runtime tests | Not run; no implementation | No release or live recovery qualification |
 
 ## Final implementation review
