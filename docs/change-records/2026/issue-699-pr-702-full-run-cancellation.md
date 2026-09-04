@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Deterministic CI correction under final re-review; release qualification pending |
+| Status | Implementation accepted after complexity reduction and deterministic CI correction; release qualification pending |
 | Type | Bug fix |
 | Primary issue | [#699](https://github.com/eirhop/favn/issues/699) |
 | Pull request | [Draft PR #702](https://github.com/eirhop/favn/pull/702) |
@@ -706,10 +706,10 @@ only control-plane rows or schemas; that can orphan data-plane ownership.
 | Field | Result |
 | --- | --- |
 | Reviewer | Independent agent `/root/review_cancel_revision` |
-| Implementation commit | [`0fa338d1`](https://github.com/eirhop/favn/commit/0fa338d133753318efb80d4d1d6d6cd6bd0c1ca2); subsequent changes address rollout documentation and review bookkeeping only. |
+| Implementation commit | [`ada5bc68`](https://github.com/eirhop/favn/commit/ada5bc68); subsequent changes address review bookkeeping only. |
 | Compared against | Preserved approved revision `2548ae6e`, original baseline `9fa85c38`, issue/source invariants and the complete implementation diff against `origin/main` (`2f26d586`). |
 | Initial findings | Start/terminal cancellation conflicts could retry stale snapshots indefinitely or drop the aggregate result. Uncertainty classification missed valid failed-but-unknown task outcomes and taskless uncertain recovery. |
-| Corrections and recheck | Added start/step recovery handoff, terminal-only rejected-save refresh retaining results/fence, broader durable uncertainty checks and targeted regression tests. Reviewer inspected the fixes and the final outcome/deviation record on 2026-09-04. |
+| Corrections and recheck | Added start/step recovery handoff, terminal-only rejected-save refresh retaining results/fence, broader durable uncertainty checks and targeted regression tests. After CI exposed a timing-dependent recovery fixture, its sleep-based checkpoint was replaced with a durable first-enqueue barrier. Reviewer inspected the fixes and the final outcome/deviation record on 2026-09-04. |
 | Complexity and deviations | The previous reviewer accepted 2,361/351 production and 2,120/115 supporting additions/deletions. User review rejected the compatibility inference; after its removal and the deterministic CI correction, the implementation is now 2,091/351 and 1,851/123. |
 | Complexity recheck | Reviewer first blocked control-plane-only reset wording. Migration diagnostics, the canonical operator guide and rollout record now require a coordinated fresh baseline, preserve paired backups and forbid clearing control-plane state alone. Recheck found no further large simplification that preserves issue #699's required guarantees. |
 | Verdict | **Accepted after complexity reduction and CI recheck; no blocking code findings remain.** Keep the PR draft until #700 fresh-release restart qualification and the full security harness gate pass. |
