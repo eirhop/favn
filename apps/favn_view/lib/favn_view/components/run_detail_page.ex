@@ -65,7 +65,7 @@ defmodule FavnView.Components.RunDetailPage do
           data-command-operation="run_cancel"
           data-command-resource={@run[:cancel_run_id] || @run_id}
           phx-disable-with="Cancelling..."
-          data-confirm="Cancel this run? Active runner work will be asked to stop."
+          data-confirm="Cancel the full submitted run, including all its windows and automatic retries? Completed results will be kept."
           data-testid="cancel-run-button"
         >
           {@run[:cancel_label] || "Cancel run"}
@@ -85,6 +85,13 @@ defmodule FavnView.Components.RunDetailPage do
           {@run[:retry_remaining_label] || "Retry remaining"}
         </.button>
       </:actions>
+      <.notice
+        :if={@run[:cancellation_status]}
+        tone={if(@run[:cancellation_status] == :needs_attention, do: :warning, else: :info)}
+        data-testid="run-cancellation-status"
+      >
+        {cancellation_message(@run[:cancellation_status])}
+      </.notice>
       <Submission.submission_panel :if={@run[:submission?]} run={@run} />
       <NotFound.not_found_panel :if={!@run[:found?] && !@run[:submission?]} run={@run} />
       <.execution_group_page
@@ -350,4 +357,15 @@ defmodule FavnView.Components.RunDetailPage do
 
   defp short_id(id) when is_binary(id) and byte_size(id) > 18, do: String.slice(id, 0, 18)
   defp short_id(id), do: to_string(id)
+
+  defp cancellation_message(:cancelling),
+    do: "Cancelling the full submitted run. Waiting for active work to stop."
+
+  defp cancellation_message(:cancelled), do: "Cancelled. Completed results have been kept."
+
+  defp cancellation_message(:needs_attention),
+    do:
+      "Needs attention. Cancellation was requested, but some work has an uncertain outcome. Check the run diagnostics before retrying."
+
+  defp cancellation_message(_), do: nil
 end

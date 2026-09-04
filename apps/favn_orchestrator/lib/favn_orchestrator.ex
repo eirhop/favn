@@ -1637,11 +1637,13 @@ defmodule FavnOrchestrator do
   end
 
   @doc """
-  Requests cancellation for one run on behalf of an authenticated operator.
+  Requests cancellation of the selected run's full submitted operation.
 
-  This is the public facade boundary for browser operator actions. The orchestrator
-  validates the actor/session context before forwarding cancellation to the
-  run-manager lifecycle contract.
+  The authenticated operator action includes all backfill windows and verified
+  automatic recovery runs. Separately requested reruns stay independent. Scope
+  is resolved again under workspace authority when the action is submitted.
+  `:ok` acknowledges durable intent; background cleanup determines the outcome.
+  `cancel_run/4` retains exact-run targeting for HTTP and CLI callers.
   """
   @spec cancel_operator_run(operator_actor_context(), run_id(), keyword()) ::
           :ok | {:error, term()}
@@ -1660,7 +1662,7 @@ defmodule FavnOrchestrator do
              opts
            ),
          result <-
-           cancel_run(
+           FavnOrchestrator.OperationCancellation.request(
              context,
              run_id,
              %{actor_id: actor.id, requested_by: :operator},
@@ -2030,7 +2032,12 @@ defmodule FavnOrchestrator do
   defp get_operator_submission(context, run_id) do
     case RunSubmissions.get(context, run_id) do
       {:ok, submission} ->
-        {:ok, %{kind: :submission, submission: OperatorRunView.project_submission(submission)}}
+        with {:ok, scope} <- FavnOrchestrator.OperationCancellation.scope(context, run_id) do
+          detail =
+            submission |> OperatorRunView.project_submission() |> Map.put(:cancellation, scope)
+
+          {:ok, %{kind: :submission, submission: detail}}
+        end
 
       {:error, %PersistenceError{kind: :not_found}} ->
         {:error, :not_found}

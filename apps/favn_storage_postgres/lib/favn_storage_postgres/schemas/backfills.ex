@@ -8,6 +8,8 @@ defmodule FavnStoragePostgres.Schemas.Backfill do
     field(:workspace_id, :string, primary_key: true)
     field(:backfill_id, :string, primary_key: true)
     field(:root_run_id, :string)
+    field(:cancellation_requested_at, :utc_datetime_usec)
+    field(:cancellation_reason, :map)
     field(:start_command_id, :string)
     field(:last_command_id, :string)
     field(:request_hash, :binary)

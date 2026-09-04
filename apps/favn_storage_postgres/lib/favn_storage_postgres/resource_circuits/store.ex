@@ -29,6 +29,7 @@ defmodule FavnStoragePostgres.ResourceCircuits.Store do
   alias FavnOrchestrator.Persistence.WorkspaceContext
   alias FavnOrchestrator.Persistence.PlatformContext
   alias FavnOrchestrator.Storage.PayloadCodec
+  alias FavnStoragePostgres.CancellationOwnership
   alias FavnStoragePostgres.ErrorMapper
   alias FavnStoragePostgres.Repo
   alias FavnStoragePostgres.Schemas.ResourceCircuit
@@ -54,8 +55,10 @@ defmodule FavnStoragePostgres.ResourceCircuits.Store do
   @impl true
   def record_recovery_candidate(%RecordResourceRecoveryCandidate{} = command) do
     with :ok <- validate_candidate(command) do
-      insert_recovery_candidate!(command)
-      :ok
+      case transaction(fn -> insert_recovery_candidate!(command) end) do
+        {:ok, :ok} -> :ok
+        error -> error
+      end
     else
       {:error, %Error{} = error} -> {:error, error}
     end
@@ -290,6 +293,12 @@ defmodule FavnStoragePostgres.ResourceCircuits.Store do
 
   defp record_outcomes!(command) do
     workspace_id = command.workspace_context.workspace_id
+
+    lock_candidate_owners!(
+      workspace_id,
+      Enum.map(command.recovery_candidates, & &1.source_run_id)
+    )
+
     permits = Map.new(command.permits, &{resource_identity(&1.resource), &1})
 
     {open_resources, closed_resources} =
@@ -489,6 +498,8 @@ defmodule FavnStoragePostgres.ResourceCircuits.Store do
   end
 
   defp insert_recovery_candidate!(command) do
+    workspace = command.workspace_context.workspace_id
+    CancellationOwnership.lock!(workspace, command.source_run_id)
     {:ok, node_key} = PayloadCodec.encode(command.node_key)
     now = command.occurred_at
 
@@ -500,7 +511,11 @@ defmodule FavnStoragePostgres.ResourceCircuits.Store do
       resource_kind: Atom.to_string(command.resource.kind),
       resource_name: command.resource.name,
       reason: Atom.to_string(command.reason),
-      status: "pending",
+      status:
+        if(CancellationOwnership.cancelled?(workspace, command.source_run_id),
+          do: "cancelled",
+          else: "pending"
+        ),
       expires_at: DateTime.add(now, command.max_age_ms, :millisecond),
       inserted_at: now,
       updated_at: now
@@ -515,29 +530,58 @@ defmodule FavnStoragePostgres.ResourceCircuits.Store do
     resource = command.resource
     now = command.occurred_at
 
+    selected = Repo.all(recovery_candidates(command, workspace_id, resource, now))
+    lock_candidate_owners!(workspace_id, Enum.map(selected, & &1.source_run_id))
     circuit = lock_circuit!(workspace_id, resource)
 
     if circuit.state == "closed" do
-      claim_closed_recovery!(command, workspace_id, resource, now)
+      claim_closed_recovery!(
+        command,
+        workspace_id,
+        resource,
+        now,
+        Enum.map(selected, & &1.candidate_id)
+      )
     else
       %ResourceRecoveryBatch{candidates: []}
     end
   end
 
-  defp claim_closed_recovery!(command, workspace_id, resource, now) do
+  defp recovery_candidates(command, workspace_id, resource, now) do
+    from(candidate in ResourceRecoveryCandidate,
+      where:
+        candidate.workspace_id == ^workspace_id and
+          candidate.resource_kind == ^Atom.to_string(resource.kind) and
+          candidate.resource_name == ^resource.name and candidate.expires_at > ^now and
+          (candidate.status == "pending" or
+             (candidate.status == "claimed" and candidate.claim_expires_at <= ^now)),
+      order_by: [asc: candidate.inserted_at, asc: candidate.candidate_id],
+      limit: ^command.limit
+    )
+  end
+
+  defp claim_closed_recovery!(command, workspace_id, resource, now, selected_ids) do
     candidates =
-      from(candidate in ResourceRecoveryCandidate,
-        where:
-          candidate.workspace_id == ^workspace_id and
-            candidate.resource_kind == ^Atom.to_string(resource.kind) and
-            candidate.resource_name == ^resource.name and candidate.expires_at > ^now and
-            (candidate.status == "pending" or
-               (candidate.status == "claimed" and candidate.claim_expires_at <= ^now)),
-        order_by: [asc: candidate.inserted_at, asc: candidate.candidate_id],
-        limit: ^command.limit,
-        lock: "FOR UPDATE SKIP LOCKED"
-      )
+      recovery_candidates(command, workspace_id, resource, now)
+      |> where([c], c.candidate_id in ^selected_ids)
+      |> lock("FOR UPDATE SKIP LOCKED")
       |> Repo.all()
+      |> Enum.reject(fn candidate ->
+        if CancellationOwnership.cancelled?(workspace_id, candidate.source_run_id) do
+          candidate
+          |> Ecto.Changeset.change(
+            status: "cancelled",
+            claim_owner: nil,
+            claim_expires_at: nil,
+            updated_at: now
+          )
+          |> Repo.update!()
+
+          true
+        else
+          false
+        end
+      end)
 
     candidate_ids = Enum.map(candidates, & &1.candidate_id)
 
@@ -560,41 +604,60 @@ defmodule FavnStoragePostgres.ResourceCircuits.Store do
   end
 
   defp complete_recovery!(command) do
-    status = Atom.to_string(command.status)
+    workspace = command.workspace_context.workspace_id
 
-    updates =
-      if command.status == :submitted do
-        [
-          status: status,
-          recovery_run_id: command.recovery_run_id,
-          claim_expires_at: command.occurred_at,
-          updated_at: command.occurred_at
-        ]
-      else
-        [
-          status: status,
-          claim_owner: nil,
-          claim_expires_at: nil,
-          updated_at: command.occurred_at
-        ]
+    query =
+      from(c in ResourceRecoveryCandidate,
+        where: c.workspace_id == ^workspace and c.candidate_id in ^command.candidate_ids
+      )
+
+    selected = Repo.all(query)
+    lock_candidate_owners!(workspace, Enum.map(selected, & &1.source_run_id))
+    candidates = Repo.all(from(c in query, order_by: [asc: c.candidate_id], lock: "FOR UPDATE"))
+
+    if length(candidates) != length(command.candidate_ids),
+      do: Repo.rollback(Error.new(:conflict, "resource recovery candidates changed"))
+
+    Enum.each(candidates, fn candidate ->
+      cond do
+        CancellationOwnership.cancelled?(workspace, candidate.source_run_id) ->
+          unless candidate.status == "submitted" do
+            candidate
+            |> Ecto.Changeset.change(
+              status: "cancelled",
+              claim_owner: nil,
+              claim_expires_at: nil,
+              updated_at: command.occurred_at
+            )
+            |> Repo.update!()
+          end
+
+        candidate.status == "claimed" and candidate.claim_owner == command.owner_id ->
+          candidate
+          |> Ecto.Changeset.change(
+            status: Atom.to_string(command.status),
+            recovery_run_id: command.recovery_run_id,
+            claim_owner: nil,
+            claim_expires_at: nil,
+            updated_at: command.occurred_at
+          )
+          |> Repo.update!()
+
+        true ->
+          Repo.rollback(
+            Error.new(:conflict, "resource recovery claim ownership changed before completion")
+          )
       end
+    end)
 
-    {updated, nil} =
-      from(candidate in ResourceRecoveryCandidate,
-        where:
-          candidate.workspace_id == ^command.workspace_context.workspace_id and
-            candidate.candidate_id in ^command.candidate_ids and
-            candidate.status == "claimed" and candidate.claim_owner == ^command.owner_id
-      )
-      |> Repo.update_all(set: updates)
+    :ok
+  end
 
-    if updated == length(command.candidate_ids) do
-      :ok
-    else
-      Repo.rollback(
-        Error.new(:conflict, "resource recovery claim ownership changed before completion")
-      )
-    end
+  defp lock_candidate_owners!(workspace, run_ids) do
+    run_ids
+    |> Enum.uniq()
+    |> Enum.sort_by(&{CancellationOwnership.owner!(workspace, &1), &1})
+    |> Enum.each(&CancellationOwnership.lock!(workspace, &1))
   end
 
   defp candidate_result!(candidate) do

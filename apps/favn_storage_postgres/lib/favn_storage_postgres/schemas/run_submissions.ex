@@ -16,6 +16,7 @@ defmodule FavnStoragePostgres.Schemas.RunSubmission do
     field(:target_kind, :string)
     field(:target_id, :string)
     field(:run_id, :string)
+    field(:cancellation_owner_run_id, :string)
     field(:intent, :map)
     field(:status, :string)
     field(:attempt, :integer)

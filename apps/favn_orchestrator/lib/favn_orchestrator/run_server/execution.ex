@@ -340,26 +340,50 @@ defmodule FavnOrchestrator.RunServer.Execution do
 
   defp stop_workers_on_terminal(result, _state), do: result
 
-  @spec cancel(RunExecutionState.t(), term()) :: RunState.t()
+  @doc "Stops future work and drains existing awaits to their durable cancellation outcomes."
+  @spec cancel(RunExecutionState.t(), term()) ::
+          {:cont, RunExecutionState.t()} | {:terminal, RunState.t()}
   def cancel(%RunExecutionState{} = state, reason) do
     reason = %{kind: :external_cancel, reason: reason}
 
     state =
+      if map_size(state.post_step_continuations) > 0 do
+        %{
+          state
+          | run:
+              Snapshots.snapshot_update(state.run,
+                metadata: Map.put(state.run.metadata, "cancellation_needs_attention", true)
+              )
+        }
+      else
+        state
+      end
+
+    Enum.each(state.retry_timers, fn {_ref, timer} -> Process.cancel_timer(timer.timer_ref) end)
+
+    state = state |> stop_post_step_workers() |> clear_admission_waiters()
+    state = %{state | retry_timers: %{}, pipeline_continuation: nil}
+
+    Cancellation.dispatch_runner_tasks(state.run, ActiveTaskSet.task_ids(state.work_set), reason,
+      wait_for_ack: false
+    )
+
+    if map_size(state.awaits) > 0 do
+      {:cont, %{state | status: :awaiting}}
+    else
+      {:terminal, Snapshots.cancelled_terminal(state.run, accumulated_results(state))}
+    end
+  end
+
+  @doc "Stops local waiters while retaining durable tasks, claims and leases for recovery."
+  @spec stop_for_recovery(RunExecutionState.t()) :: RunExecutionState.t()
+  def stop_for_recovery(state),
+    do:
       state
       |> stop_post_step_workers()
       |> stop_await_processes()
+      |> clear_admission_waiters()
       |> RunExecutionState.cancel_timers()
-
-    {cancelled_run, remaining_work_set} =
-      ActiveTaskSet.cancel_all(state.run, state.work_set, reason)
-
-    if ActiveTaskSet.task_ids(remaining_work_set) == [] do
-      :ok = ActiveTaskSet.cleanup_all(state.work_set, reason)
-      :ok = RunExecutionCleanup.release_admission(cancelled_run)
-    end
-
-    cancellation_terminal(cancelled_run, accumulated_results(state))
-  end
 
   @doc """
   Terminates every pending post-step worker and drops its continuation.
@@ -414,29 +438,10 @@ defmodule FavnOrchestrator.RunServer.Execution do
   defp accumulated_results(%RunExecutionState{mode: :sequential} = state),
     do: ResultBuilder.sort_asset_results(state.run, state.accumulated_results)
 
+  defp accumulated_results(%RunExecutionState{stage_state: %StageAttemptState{} = stage}),
+    do: StageAttemptState.settled_results(stage)
+
   defp accumulated_results(%RunExecutionState{} = state), do: state.accumulated_results
-
-  defp cancellation_terminal(%RunState{} = run_state, accumulated_results) do
-    outcomes = Map.get(run_state.metadata, :cancel_outcomes, [])
-
-    cond do
-      outcomes == [] ->
-        Snapshots.cancelled_terminal(run_state, accumulated_results)
-
-      Enum.all?(outcomes, &CancellationOutcome.confirmed?/1) ->
-        Snapshots.cancelled_terminal(run_state, accumulated_results)
-
-      true ->
-        failed =
-          Snapshots.snapshot_update(run_state,
-            status: :error,
-            runner_task_id: nil,
-            error: %{type: :runner_cancel_unconfirmed, outcomes: outcomes}
-          )
-
-        Snapshots.terminalize_failed_run(failed, accumulated_results)
-    end
-  end
 
   defp pipeline_start_failure(%RunState{} = run_state, reason) do
     {:terminal,
@@ -517,6 +522,9 @@ defmodule FavnOrchestrator.RunServer.Execution do
 
   defp put_target_ref(refs, target_id, ref),
     do: Map.update(refs, target_id, MapSet.new([ref]), &MapSet.put(&1, ref))
+
+  defp continue_state(%RunExecutionState{mode: :sequential, status: :awaiting} = state),
+    do: {:cont, state}
 
   defp continue_state(%RunExecutionState{status: :retry_wait} = state), do: {:cont, state}
 
@@ -1537,6 +1545,24 @@ defmodule FavnOrchestrator.RunServer.Execution do
   defp after_pipeline_progress(%RunExecutionState{stage_state: nil} = state), do: {:cont, state}
 
   defp after_pipeline_progress(%RunExecutionState{} = state) do
+    if Persistence.externally_cancelled?(state.run) do
+      state = clear_admission_waiters(state)
+
+      if RunExecutionState.in_flight_count(state) > 0 do
+        {:cont, %{state | status: :awaiting}}
+      else
+        {:terminal,
+         Snapshots.cancelled_terminal(
+           state.run,
+           StageAttemptState.settled_results(state.stage_state)
+         )}
+      end
+    else
+      continue_pipeline_progress(state)
+    end
+  end
+
+  defp continue_pipeline_progress(state) do
     case pipeline_progress_action(
            state.stage_state,
            RunExecutionState.in_flight_count(state),

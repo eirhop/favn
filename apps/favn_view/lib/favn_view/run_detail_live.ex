@@ -791,8 +791,9 @@ defmodule FavnView.RunDetailLive do
       status: LogsViewModel.status_label(header.status),
       status_tone: LogsViewModel.status_tone(header.status),
       cancellable?: header.cancellable?,
-      cancel_run_id: header.run_id,
-      cancel_label: "Cancel run",
+      cancellation_status: header.cancellation && header.cancellation.status,
+      cancel_run_id: if(header.cancellation, do: header.cancellation.run_id, else: header.run_id),
+      cancel_label: if(header.cancellation, do: header.cancellation.label, else: "Cancel run"),
       retry_remaining?: header.retry_remaining?,
       retry_remaining_label: retry_label(counts.failed),
       title: if(header.trigger_type == :backfill, do: "Backfill run", else: "Run"),
@@ -924,10 +925,16 @@ defmodule FavnView.RunDetailLive do
   end
 
   defp submission_from_public(submission, timezone) do
+    cancellation = submission[:cancellation]
+
     %{
       id: submission.run_id,
       found?: false,
       submission?: true,
+      cancellable?: cancellation && cancellation.cancellable?,
+      cancel_run_id: if(cancellation, do: cancellation.run_id, else: submission.run_id),
+      cancel_label: if(cancellation, do: cancellation.label, else: "Cancel run"),
+      cancellation_status: cancellation && cancellation.status,
       active?: submission.active?,
       raw_status: submission.status,
       status: submission.status_label,
@@ -995,7 +1002,7 @@ defmodule FavnView.RunDetailLive do
   # answered — keeps it alive too. Without that, a page whose run and backfill
   # are both terminal has no cycle left in which to try again.
   defp poll_worthy?(socket) do
-    socket.assigns.run.active? or
+    socket.assigns.run[:cancellation_status] == :cancelling or socket.assigns.run.active? or
       match?(%RunWindowRail{in_progress?: true}, socket.assigns.rail) or
       not is_nil(socket.assigns[:windows_error]) or
       not is_nil(socket.assigns[:window_failures_error]) or
@@ -1009,7 +1016,8 @@ defmodule FavnView.RunDetailLive do
 
   defp schedule_fallback(socket) do
     if connected?(socket) and
-         (socket.assigns.active_mode == :flow or socket.assigns.run[:backfill_parent?]) and
+         (socket.assigns.active_mode == :flow or socket.assigns.run[:backfill_parent?] or
+            socket.assigns.run[:cancellation_status] == :cancelling) and
          poll_worthy?(socket) and
          is_nil(socket.assigns.refresh_timer_ref) do
       LiveRefresh.schedule_once(

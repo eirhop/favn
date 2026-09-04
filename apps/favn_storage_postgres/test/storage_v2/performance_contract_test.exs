@@ -284,7 +284,8 @@ defmodule FavnStoragePostgres.StorageV2.PerformanceContractTest do
 
     assert {:ok, %{kind: :run, detail: %{assets: facade_assets}}} = facade_result
     assert length(facade_assets) == 1_000
-    assert length(subscription_queries) + length(facade_queries) <= 12
+    # Cancellation scope adds one indexed read.
+    assert length(subscription_queries) + length(facade_queries) <= 13
 
     candidates_query = query_containing!(queries, "ORDER BY attempt.asset_ref")
 
@@ -546,7 +547,8 @@ defmodule FavnStoragePostgres.StorageV2.PerformanceContractTest do
 
     assert {:ok, claimed} = claim_result
     assert length(claimed) == 100
-    assert claim_queries <= 5
+    # The batch now takes its owner identity lock before claiming member rows.
+    assert claim_queries <= 6
 
     page_plan =
       explain(
@@ -806,12 +808,12 @@ defmodule FavnStoragePostgres.StorageV2.PerformanceContractTest do
       Repo,
       """
       INSERT INTO favn_control.runs
-        (workspace_id, run_id, deployment_id, manifest_version_id,
+        (workspace_id, run_id, cancellation_owner_run_id, deployment_id, manifest_version_id,
          root_execution_group_id, parent_run_id, rerun_of_run_id, submit_kind,
          trigger_type, status, event_sequence, submitted_event_id, latest_event_id,
          snapshot_version, creation_hash, snapshot_hash, snapshot,
          inserted_at, updated_at, terminal_at)
-      SELECT template.workspace_id, $3 || series::text, template.deployment_id,
+      SELECT template.workspace_id, $3 || series::text, $3 || series::text, template.deployment_id,
              template.manifest_version_id, $2, NULL, NULL, template.submit_kind,
              template.trigger_type, template.status, template.event_sequence,
              template.submitted_event_id, template.latest_event_id,
@@ -883,12 +885,12 @@ defmodule FavnStoragePostgres.StorageV2.PerformanceContractTest do
       Repo,
       """
       INSERT INTO favn_control.runs
-        (workspace_id, run_id, deployment_id, manifest_version_id,
+        (workspace_id, run_id, cancellation_owner_run_id, deployment_id, manifest_version_id,
          root_execution_group_id, parent_run_id, rerun_of_run_id, submit_kind,
          trigger_type, status, event_sequence, submitted_event_id, latest_event_id,
          snapshot_version, creation_hash, snapshot_hash, snapshot,
          inserted_at, updated_at, terminal_at)
-      SELECT template.workspace_id, $3 || lpad(series::text, 8, '0'),
+      SELECT template.workspace_id, $3 || lpad(series::text, 8, '0'), $3 || lpad(series::text, 8, '0'),
              template.deployment_id, template.manifest_version_id, template.run_id,
              NULL, NULL, template.submit_kind, template.trigger_type,
              CASE WHEN series % 10 = 0 THEN 'timed_out' ELSE 'ok' END,

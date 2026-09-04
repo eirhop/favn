@@ -34,22 +34,27 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
   @doc "Continues a sequential run from its current index."
   @spec continue(RunExecutionState.t()) :: directive()
   def continue(%RunExecutionState{} = state) do
-    if state.sequential_index >= length(state.sequential_refs) do
-      {:terminal,
-       Snapshots.snapshot_update(state.run,
-         status: :ok,
-         error: nil,
-         runner_task_id: nil,
-         result:
-           ResultBuilder.pipeline_result(
-             state.run,
-             :ok,
-             ResultBuilder.sort_asset_results(state.run, state.accumulated_results)
-           )
-       )}
-    else
-      {asset_ref, node_key, stage} = Enum.at(state.sequential_refs, state.sequential_index)
-      submit_attempt(state, asset_ref, node_key, stage, 1)
+    cond do
+      Persistence.externally_cancelled?(state.run) ->
+        {:terminal, Snapshots.cancelled_terminal(state.run, state.accumulated_results)}
+
+      state.sequential_index >= length(state.sequential_refs) ->
+        {:terminal,
+         Snapshots.snapshot_update(state.run,
+           status: :ok,
+           error: nil,
+           runner_task_id: nil,
+           result:
+             ResultBuilder.pipeline_result(
+               state.run,
+               :ok,
+               ResultBuilder.sort_asset_results(state.run, state.accumulated_results)
+             )
+         )}
+
+      true ->
+        {asset_ref, node_key, stage} = Enum.at(state.sequential_refs, state.sequential_index)
+        submit_attempt(state, asset_ref, node_key, stage, 1)
     end
   end
 
@@ -190,6 +195,13 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
     state = %{state | run: resume.run}
 
     cond do
+      Persistence.externally_cancelled?(state.run) ->
+        {:terminal,
+         Snapshots.cancelled_terminal(
+           state.run,
+           resume.asset_results ++ state.accumulated_results
+         )}
+
       resume.status == :ok ->
         continue(%{
           state

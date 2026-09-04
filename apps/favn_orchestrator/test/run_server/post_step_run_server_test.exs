@@ -82,6 +82,12 @@ defmodule FavnOrchestrator.RunServer.PostStepRunServerTest do
         {:fail, :fenced} ->
           {:error, Error.new(:fenced, "run ownership fencing token is stale")}
 
+        {:fail, :cancel_once} ->
+          {:error, Error.new(:conflict, "cancellation won the snapshot sequence")}
+
+        {:fail, :unavailable_then_cancel} ->
+          {:error, Error.new(:unavailable, "temporary test failure")}
+
         :ok ->
           notify({:run_transition_committed, event_type})
 
@@ -101,8 +107,33 @@ defmodule FavnOrchestrator.RunServer.PostStepRunServerTest do
       commits = [%{event_type: event_type, run: command.run} | state.commits]
 
       case Map.get(state.commit_failures, event_type) do
-        nil -> {:ok, %{state | commits: commits, run: command.run}}
-        failure -> {{:fail, failure}, %{state | commits: commits}}
+        nil ->
+          {:ok, %{state | commits: commits, run: command.run}}
+
+        :cancel_once ->
+          requested =
+            FavnOrchestrator.RunState.transition(state.run,
+              metadata: Map.put(state.run.metadata, :cancel_requested, true)
+            )
+
+          {{:fail, :cancel_once},
+           %{
+             state
+             | commits: commits,
+               run: requested,
+               commit_failures: Map.delete(state.commit_failures, event_type)
+           }}
+
+        :unavailable_then_cancel ->
+          {{:fail, :unavailable_then_cancel},
+           %{
+             state
+             | commits: commits,
+               commit_failures: Map.put(state.commit_failures, event_type, :cancel_once)
+           }}
+
+        failure ->
+          {{:fail, failure}, %{state | commits: commits}}
       end
     end
 
@@ -375,6 +406,21 @@ defmodule FavnOrchestrator.RunServer.PostStepRunServerTest do
     assert [_node_result] = HarnessStore.latest_run().result.node_results
   end
 
+  for failure <- [:cancel_once, :unavailable_then_cancel] do
+    @tag store_opts: [held_task_kinds: [], commit_failures: %{run_finished: failure}]
+    test "terminal persistence retains its completed result after #{failure}", %{fixture: fixture} do
+      {pid, monitor} = start_run(fixture)
+      complete_asset_task(fixture)
+      assert_receive {:run_transition_committed, :run_finished}, 5_000
+      assert_receive {:DOWN, ^monitor, :process, ^pid, :normal}, 5_000
+      assert HarnessStore.latest_run().status == :ok
+      assert [%{status: :ok}] = HarnessStore.latest_run().result.node_results
+      assert HarnessStore.latest_run().metadata[:cancel_requested]
+      assert_receive {:materialization_finished, :succeeded, "claim-asset"}
+      refute_receive {:materialization_finished, _, _}, 20
+    end
+  end
+
   test "cancellation while the inspection task is held terminates the worker and the run", %{
     fixture: fixture
   } do
@@ -392,9 +438,33 @@ defmodule FavnOrchestrator.RunServer.PostStepRunServerTest do
     assert_receive {:DOWN, ^monitor, :process, ^pid, :normal}, 5_000
 
     assert HarnessStore.latest_run().status == :cancelled
+    assert HarnessStore.latest_run().metadata["cancellation_needs_attention"] == true
     refute_receive {:materialization_finished, :failed, _claim_key}, 20
     refute_receive {:runner_task_cancel_requested, _task_id}, 20
     refute_receive {:reconcile_initial, _generation_id}, 20
+  end
+
+  @tag store_opts: [commit_failures: %{run_started: :cancel_once}]
+  test "a cancellation racing run start leaves durable work for recovery", %{fixture: fixture} do
+    {:ok, pid} = RunServer.start_link(%{run_state: fixture.run, version: fixture.version})
+    Process.unlink(pid)
+    monitor = Process.monitor(pid)
+    assert_receive {:DOWN, ^monitor, :process, ^pid, :normal}, 5_000
+    assert HarnessStore.latest_run().metadata[:cancel_requested]
+    refute_receive {:run_transition_committed, :run_cancelled}, 20
+    refute_receive {:materialization_finished, _, _}, 20
+  end
+
+  @tag store_opts: [commit_failures: %{step_finished: :cancel_once}]
+  test "cancellation conflicting with settlement leaves the completed task and claim for recovery",
+       %{fixture: fixture} do
+    {pid, monitor} = start_run(fixture)
+    complete_asset_task(fixture)
+    assert_receive {:DOWN, ^monitor, :process, ^pid, :normal}, 5_000
+    assert HarnessStore.latest_run().metadata[:cancel_requested]
+    assert HarnessStore.latest_run().metadata[:active_runner_task_ids] == [@asset_task_id]
+    refute_receive {:run_transition_committed, :run_cancelled}, 20
+    refute_receive {:materialization_finished, _, _}, 20
   end
 
   @tag store_opts: [renew_result: :fenced]

@@ -56,6 +56,79 @@ defmodule FavnView.RunDetailLiveTest do
     assert is_reference(mounted.assigns.fallback_poll_ref)
   end
 
+  test "a completed selected child offers cancellation of the full backfill" do
+    scope = %FavnOrchestrator.Persistence.Results.CancellationScope{
+      run_id: "backfill-owner",
+      kind: :backfill,
+      cancellable?: true,
+      label: "Cancel full backfill"
+    }
+
+    Application.put_env(:favn_view, :operator_run_flow_fun, fn _context, run_id ->
+      detail = flow(run_id, :ok)
+
+      {:ok,
+       %{
+         kind: :run,
+         detail: %{detail | header: %{detail.header | cancellation: scope, cancellable?: true}}
+       }}
+    end)
+
+    assert {:ok, mounted} =
+             RunDetailLive.mount(%{"run_id" => "completed-child"}, %{}, connected_socket())
+
+    assert mounted.assigns.run.cancel_run_id == "backfill-owner"
+
+    html =
+      render_component(
+        &RunDetailLive.render/1,
+        Map.put(mounted.assigns, :operator_workspaces, [])
+      )
+
+    assert html =~ "Cancel full backfill"
+    assert html =~ "including all its windows and automatic retries"
+    assert html =~ ~s(data-command-resource="backfill-owner")
+  end
+
+  test "operation cancellation shows truthful outcomes and keeps polling a completed child" do
+    for {status, message} <- [
+          cancelling: "Cancelling the full submitted run",
+          cancelled: "Completed results have been kept",
+          needs_attention: "Needs attention"
+        ] do
+      scope = %FavnOrchestrator.Persistence.Results.CancellationScope{
+        run_id: "owner",
+        kind: :run,
+        status: status,
+        cancellable?: false,
+        label: "Cancel run"
+      }
+
+      Application.put_env(:favn_view, :operator_run_flow_fun, fn _context, run_id ->
+        detail = flow(run_id, :ok)
+
+        {:ok,
+         %{
+           kind: :run,
+           detail: %{detail | header: %{detail.header | cancellation: scope, cancellable?: false}}
+         }}
+      end)
+
+      assert {:ok, mounted} =
+               RunDetailLive.mount(%{"run_id" => "completed-child"}, %{}, connected_socket())
+
+      html =
+        render_component(
+          &RunDetailLive.render/1,
+          Map.put(mounted.assigns, :operator_workspaces, [])
+        )
+
+      assert html =~ message
+      refute html =~ ~s(data-testid="cancel-run-button")
+      if status == :cancelling, do: assert(is_reference(mounted.assigns.fallback_poll_ref))
+    end
+  end
+
   test "a failed run shows its bounded error code and message" do
     Application.put_env(:favn_view, :operator_run_flow_fun, fn _context, run_id ->
       failed_header = %{
@@ -894,6 +967,12 @@ defmodule FavnView.RunDetailLiveTest do
          kind: :submission,
          submission: %{
            run_id: "run-queued",
+           cancellation: %FavnOrchestrator.Persistence.Results.CancellationScope{
+             run_id: "run-queued",
+             kind: :run,
+             label: "Cancel run",
+             cancellable?: true
+           },
            status: :queued,
            status_label: "Queued",
            status_tone: :info,
@@ -914,6 +993,13 @@ defmodule FavnView.RunDetailLiveTest do
 
     assert mounted.assigns.run.submission?
     assert mounted.assigns.run.status == "Queued"
+    assert mounted.assigns.run.cancellable?
+    assert mounted.assigns.run.cancel_run_id == "run-queued"
+
+    assert render_component(
+             &RunDetailLive.render/1,
+             Map.put(mounted.assigns, :operator_workspaces, [])
+           ) =~ ~s(data-testid="cancel-run-button")
   end
 
   for status <- [:queued, :failed] do

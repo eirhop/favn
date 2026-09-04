@@ -3,6 +3,7 @@ defmodule FavnOrchestrator.RunRecovery do
 
   use GenServer
 
+  alias FavnOrchestrator.OperationCancellation
   alias FavnOrchestrator.Lifecycle
   alias FavnOrchestrator.OperationalEvents
   alias FavnOrchestrator.ManifestStore
@@ -38,6 +39,8 @@ defmodule FavnOrchestrator.RunRecovery do
   @impl true
   def init(opts) do
     state = %{
+      cancellation_task: nil,
+      cancellation_cursors: %{},
       interval_ms: Keyword.get(opts, :interval_ms, @default_interval_ms),
       batch_size: Keyword.get(opts, :batch_size, @default_batch_size)
     }
@@ -47,7 +50,17 @@ defmodule FavnOrchestrator.RunRecovery do
   end
 
   @impl true
+  def handle_info({ref, cursors}, %{cancellation_task: ref} = state) do
+    Process.demonitor(ref, [:flush])
+    {:noreply, %{state | cancellation_task: nil, cancellation_cursors: cursors}}
+  end
+
+  def handle_info({:DOWN, ref, :process, _pid, _reason}, %{cancellation_task: ref} = state),
+    do: {:noreply, %{state | cancellation_task: nil}}
+
+  @impl true
   def handle_info(:reconcile, state) do
+    state = OperationCancellation.start_cleanup(state, &authoritative_workspace_ids/0)
     _ = Lifecycle.with_admission(fn -> reconcile_workspaces(state.batch_size) end)
     Process.send_after(self(), :reconcile, state.interval_ms)
     {:noreply, state}

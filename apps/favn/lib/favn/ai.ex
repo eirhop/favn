@@ -274,6 +274,9 @@ defmodule Favn.AI do
     [IEx Session Cheatsheet](iex-cheatsheet.html). To inspect relation metadata
     or relation partitions from the shell, read `Favn.CLI.DataInspection` and
     `Mix.Tasks.Favn.Inspect`.
+    For the operator UI's full submitted-operation cancellation, automatic recovery
+    ownership and uncertain outcomes, read the [Runtime Model](runtime-model.html#cancellation-and-retry).
+    Local IEx/HTTP/CLI cancellation targets the supplied run only.
     `mix favn.runs cancel RUN_ID` requests cancellation through the local
     orchestrator HTTP boundary; add `--wait` to poll the run until it is
     terminal. Run summaries use persisted pipeline identity or asset refs for

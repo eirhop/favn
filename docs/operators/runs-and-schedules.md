@@ -120,7 +120,7 @@ submission is committed. A bounded worker plans and admits it asynchronously,
 then the orchestrator dispatches pinned work and records the final run state.
 During that interval, `GET /api/orchestrator/v1/runs/<run-id>` returns the
 accepted run identity together with its submission state instead of reporting
-the run as missing. Cancellation by that id is valid before admission begins.
+the run as missing. Cancellation by that id is valid during preparation and admission.
 
 Submission diagnostics expose total and per-state counts, queued and active
 depth, oldest queued time, retries, pending cancellations, and safe, permanent,
@@ -435,19 +435,21 @@ automation; use the next step for interactive recovery.
 
 ## Cancel A Run
 
-1. Find the run id from run history or the run detail page.
-2. Confirm the run is not already terminal.
-3. Request cancellation through the orchestrator boundary.
-4. Re-read the run detail and events.
-5. If the outcome is unknown or already completed, inspect the final run state
-   before submitting replacement work.
+1. Open the run detail and choose **Cancel run** or **Cancel full backfill**.
+   The action covers the submitted operation even when a completed window is selected.
+2. Confirm the scope and wait for **Cancelling** to finish.
+3. If the page shows **Needs attention**, inspect the preserved diagnostics before
+   submitting replacement work.
 
-Expected result: the orchestrator records cancellation intent and asks the runner
-to stop active work when possible. The run becomes cancelled only when
-cancellation is acknowledged or no active runner work remains.
+The [runtime cancellation contract](../../apps/favn/guides/runtime-model.md#cancellation-and-retry)
+explains ownership, restart cleanup and the narrower exact-run HTTP/CLI commands.
+A request acknowledgement alone does not prove cancellation. Do not change run
+status by editing storage or call runner internals directly.
 
-Do not mark a run cancelled by editing storage. Do not call runner cancellation
-internals directly.
+The first release with full-operation cancellation requires an empty, coordinated
+control-plane and Favn-owned data-plane baseline. A populated deployment cannot
+apply this schema incrementally. Preserve verified paired backups and never clear
+only control-plane rows or schemas, because that can orphan data-plane ownership.
 
 ## Retry Or Rerun Work
 

@@ -188,6 +188,9 @@ defmodule FavnStoragePostgres.Projections.Projector do
   def rebuild_event!(:backfills, %OutboxEvent{event_kind: "backfill.plan.activated"} = event),
     do: project_backfill_activation!(event)
 
+  def rebuild_event!(:backfills, %OutboxEvent{event_kind: "backfill.cancellation." <> _} = event),
+    do: project_backfill_cancellation!(event)
+
   def rebuild_event!(:backfills, %OutboxEvent{event_kind: "backfill.window." <> _} = event),
     do: project_backfill_window!(event)
 
@@ -201,6 +204,9 @@ defmodule FavnStoragePostgres.Projections.Projector do
 
   defp project_event!(%OutboxEvent{event_kind: "backfill.plan.activated"} = event, _contexts),
     do: project_backfill_activation!(event)
+
+  defp project_event!(%OutboxEvent{event_kind: "backfill.cancellation." <> _} = event, _contexts),
+    do: project_backfill_cancellation!(event)
 
   defp project_event!(%OutboxEvent{event_kind: "backfill.window." <> _status} = event, _contexts),
     do: project_backfill_window!(event)
@@ -465,6 +471,25 @@ defmodule FavnStoragePostgres.Projections.Projector do
     )
   end
 
+  defp project_backfill_cancellation!(event) do
+    SQL.query!(
+      Repo,
+      """
+      UPDATE favn_control.backfill_overviews o SET status=b.status,
+        source_publication_id=$3, updated_at=$4
+      FROM favn_control.backfills b WHERE o.workspace_id=$1 AND o.backfill_id=$2
+        AND b.workspace_id=o.workspace_id AND b.backfill_id=o.backfill_id
+        AND o.source_publication_id < $3
+      """,
+      [
+        event.workspace_id,
+        event.payload["backfill_id"],
+        event.publication_id,
+        event.published_at || event.inserted_at
+      ]
+    )
+  end
+
   defp project_backfill_activation!(event) do
     backfill =
       Repo.get_by!(Backfill,
@@ -479,7 +504,7 @@ defmodule FavnStoragePostgres.Projections.Projector do
         (workspace_id, backfill_id, status, total_count, planned_count, ready_count,
          active_count, succeeded_count, failed_count, cancelled_count,
          source_publication_id, updated_at)
-      VALUES ($1, $2, 'ready', $3, 0, $3, 0, 0, 0, 0, $4, $5)
+      VALUES ($1, $2, $6, $3, 0, $3, 0, 0, 0, 0, $4, $5)
       ON CONFLICT (workspace_id, backfill_id) DO UPDATE
       SET status = EXCLUDED.status, total_count = EXCLUDED.total_count,
           planned_count = EXCLUDED.planned_count, ready_count = EXCLUDED.ready_count,
@@ -494,7 +519,8 @@ defmodule FavnStoragePostgres.Projections.Projector do
         backfill.backfill_id,
         backfill.expected_window_count,
         event.publication_id,
-        event.published_at || event.inserted_at
+        event.published_at || event.inserted_at,
+        if(backfill.cancellation_requested_at, do: backfill.status, else: "ready")
       ]
     )
   end
@@ -525,6 +551,8 @@ defmodule FavnStoragePostgres.Projections.Projector do
             source_publication_id = EXCLUDED.source_publication_id,
             updated_at = EXCLUDED.updated_at,
             status = CASE
+              WHEN EXISTS (SELECT 1 FROM favn_control.backfills b WHERE b.workspace_id=$1 AND b.backfill_id=$2 AND b.cancellation_requested_at IS NOT NULL)
+                THEN (SELECT b.status FROM favn_control.backfills b WHERE b.workspace_id=$1 AND b.backfill_id=$2)
               WHEN backfill_overviews.succeeded_count + EXCLUDED.succeeded_count +
                    backfill_overviews.failed_count + EXCLUDED.failed_count +
                    backfill_overviews.cancelled_count + EXCLUDED.cancelled_count =

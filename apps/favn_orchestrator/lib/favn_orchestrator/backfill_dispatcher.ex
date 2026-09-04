@@ -432,8 +432,11 @@ defmodule FavnOrchestrator.BackfillDispatcher do
   defp decode_required_generation(_other), do: {:error, :invalid_required_generation}
 
   defp child_run_id(window) do
-    identity = field(window.payload, "execution_group_id") || window.window_id
-    command_id("run-bfw", window.backfill_id <> ":" <> identity)
+    FavnOrchestrator.Persistence.BackfillPlan.child_run_id(
+      window.backfill_id,
+      window.window_id,
+      window.payload
+    )
   end
 
   @doc false

@@ -159,6 +159,64 @@ defmodule FavnOrchestrator.RunServer.Execution.PostStepContinuationTest do
     :ok
   end
 
+  test "matching deferred refill timers continue through the admission loop" do
+    timer_token = make_ref()
+
+    run =
+      RunState.new(
+        id: "matching-deferred-refill",
+        workspace_id: "workspace-post-step",
+        manifest_version_id: "manifest-version",
+        manifest_content_hash: "manifest-hash",
+        runner_releases: %{"default" => FavnTestSupport.runner_release_id()},
+        asset_ref: {__MODULE__, :asset}
+      )
+
+    stage_state =
+      StageAttemptState.new(
+        run,
+        [],
+        [],
+        [{{__MODULE__, :deferred}, nil}],
+        MapSet.new(),
+        nil,
+        :batch_budget
+      )
+
+    state = %RunExecutionState{
+      status: :admission_wait,
+      run: run,
+      stage_index: 1,
+      stage_state: stage_state,
+      stage_admission_deadline_ms: System.monotonic_time(:millisecond) + 5_000,
+      admission_waiters: %{"waiter" => %{waiter_id: "waiter"}},
+      admission_timers: %{
+        timer_token => %{
+          timer_ref: make_ref(),
+          payload: %{
+            kind: :deferred_refill,
+            stage_index: 1,
+            refill_cause: :batch_budget
+          }
+        }
+      }
+    }
+
+    assert {:cont, next} =
+             Execution.handle_event(state, {:stage_admission_timeout, timer_token})
+
+    assert next.status == :admission_wait
+    refute Map.has_key?(next.admission_timers, timer_token)
+
+    assert [{next_token, %{timer_ref: timer_ref, payload: payload}}] =
+             Map.to_list(next.admission_timers)
+
+    assert is_reference(next_token)
+    assert payload.kind == :admission_retry
+    assert payload.stage_index == 1
+    Process.cancel_timer(timer_ref)
+  end
+
   test "a successful node with a pinned generation settles through a worker exactly once" do
     fixture = fixture([:a])
     state = awaiting_state(fixture, [:a])
@@ -190,6 +248,29 @@ defmodule FavnOrchestrator.RunServer.Execution.PostStepContinuationTest do
     assert {:terminal, finished} = Execution.handle_event(pending, {:post_step_reply, ref, :ok})
     assert finished.status == :ok
     assert node_result_count(finished) == 1
+    refute_receive {:materialization_finished, %{status: :failed}}, 20
+  end
+
+  test "cancel intent preserves completed siblings and suppresses their post-step workers" do
+    fixture = fixture([:a, :b], claims: [:a, :b])
+    state = awaiting_state(fixture, [:a, :b])
+
+    Application.put_env(:favn_orchestrator, :post_step_continuation_test_run, %{
+      state.run
+      | metadata: Map.put(state.run.metadata, :cancel_requested, true)
+    })
+
+    assert {:cont, after_a} = deliver_result(state, fixture, :a, :ok)
+    assert after_a.post_step_continuations == %{}
+    assert after_a.run.metadata["cancellation_needs_attention"]
+    assert map_size(after_a.awaits) == 1
+    assert_receive {:materialization_finished, %{status: :succeeded, claim_key: "claim-a"}}
+
+    assert {:terminal, cancelled} = deliver_result(after_a, fixture, :b, :ok)
+    assert cancelled.status == :cancelled
+    assert node_result_count(cancelled) == 2
+    assert_receive {:materialization_finished, %{status: :succeeded, claim_key: "claim-b"}}
+    refute_receive {:worker_binding_read, _, _}, 20
     refute_receive {:materialization_finished, %{status: :failed}}, 20
   end
 
@@ -315,7 +396,7 @@ defmodule FavnOrchestrator.RunServer.Execution.PostStepContinuationTest do
     [{ref, _continuation}] = Map.to_list(pending.post_step_continuations)
     worker_monitor = Process.monitor(worker)
 
-    cancelled = Execution.cancel(pending, :operator)
+    assert {:terminal, cancelled} = Execution.cancel(pending, :operator)
 
     assert cancelled.status == :cancelled
     assert_receive {:DOWN, ^worker_monitor, :process, ^worker, :shutdown}

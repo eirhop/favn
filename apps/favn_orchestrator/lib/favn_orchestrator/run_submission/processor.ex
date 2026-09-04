@@ -28,8 +28,9 @@ defmodule FavnOrchestrator.RunSubmission.Processor do
     context = SystemContext.workspace(submission.workspace_id, :run_submission_worker)
 
     cond do
-      submission.status == :preparing and not is_nil(submission.cancellation_requested_at) ->
-        acknowledge_cancellation(context, submission, opts)
+      submission.status in [:preparing, :admitting] and
+          not is_nil(submission.cancellation_requested_at) ->
+        reconcile_cancellation(context, submission, opts)
 
       submission.status == :preparing ->
         prepare_and_admit(context, submission, opts)
@@ -44,6 +45,25 @@ defmodule FavnOrchestrator.RunSubmission.Processor do
     error -> fail_before_admission(submission, {:exception, error}, opts)
   catch
     kind, reason -> fail_before_admission(submission, {kind, reason}, opts)
+  end
+
+  defp reconcile_cancellation(context, submission, opts) do
+    case durable_run(context, submission, opts) do
+      {:ok, _run} ->
+        manager = Keyword.get(opts, :run_manager, RunManager)
+
+        case manager.cancel_run(context, submission.run_id, %{reason: :submission_cancelled}) do
+          :ok -> mark_submitted(context, submission, opts)
+          {:error, :run_already_terminal} -> mark_submitted(context, submission, opts)
+          {:error, reason} -> {:retry, reason}
+        end
+
+      {:error, %Error{kind: :not_found}} ->
+        acknowledge_cancellation(context, submission, opts)
+
+      {:error, reason} ->
+        {:retry, {:run_reconciliation_unavailable, redacted(reason)}}
+    end
   end
 
   defp prepare_and_admit(context, submission, opts) do
@@ -179,6 +199,15 @@ defmodule FavnOrchestrator.RunSubmission.Processor do
 
   defp fail_before_admission(submission, reason, _opts),
     do: {:error, {:run_submission_failure_after_admission, submission.status, redacted(reason)}}
+
+  defp fail_admitting_after_reconciliation(
+         context,
+         submission,
+         %Error{details: %{reason: :run_cancelled}},
+         opts
+       ) do
+    acknowledge_cancellation(context, submission, opts)
+  end
 
   defp fail_admitting_after_reconciliation(context, submission, reason, opts) do
     cond do

@@ -101,8 +101,24 @@ still tied to a manifest version.
 
 ## Cancellation And Retry
 
-Cancellation records intent first, then asks in-flight work to stop when possible.
-Already completed work is not changed into a successful cancellation.
+The operator's **Cancel run** (or **Cancel full backfill**) action stops the full
+submitted operation, including every backfill window and automatic recovery run,
+regardless of the selected asset or window. A separately requested rerun is an
+independent operation.
+
+Cancellation saves intent first, prevents new work, and asks active work to stop.
+The page shows **Cancelling** while cleanup is pending, **Cancelled** after owned
+work is resolved, or **Needs attention** when an outcome cannot be confirmed.
+Completed results are kept. Cleanup resumes after restart and does not require
+execution capacity or admission to be enabled. Shared target inspections and
+marker reconciliation keep their own owner; cancelling a run detaches its waiter
+and does not prove that external effects stopped.
+
+The exact-run HTTP API, `Favn.cancel_run/2`, and `mix favn.runs cancel RUN_ID`
+continue to target the supplied run only. Cancellation is accepted during
+submission preparation or admission; a concurrently admitted run is reconciled
+by its reserved identity. A successful request means intent was saved, not that
+all work has stopped.
 
 Retry and rerun operations use recorded run state and the pinned manifest version.
 They do not use UI state as the source of truth.

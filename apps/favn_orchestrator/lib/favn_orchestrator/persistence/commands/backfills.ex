@@ -18,6 +18,18 @@ defmodule FavnOrchestrator.Persistence.BackfillPlan do
 
   alias FavnOrchestrator.Persistence.Commands.BackfillPlanWindow
 
+  @doc "Returns the reserved child identity shared by all windows in an execution group."
+  @spec child_run_id(String.t(), String.t(), map()) :: String.t()
+  def child_run_id(backfill_id, window_id, payload) do
+    identity =
+      Map.get(payload, "execution_group_id") || Map.get(payload, :execution_group_id) || window_id
+
+    hash =
+      :crypto.hash(:sha256, backfill_id <> ":" <> identity) |> Base.url_encode64(padding: false)
+
+    "run-bfw:" <> binary_part(hash, 0, 40)
+  end
+
   @doc "Returns the SHA-256 hash of one exact ordered plan batch."
   @spec batch_hash([BackfillPlanWindow.t()]) :: binary()
   def batch_hash(windows) when is_list(windows) do

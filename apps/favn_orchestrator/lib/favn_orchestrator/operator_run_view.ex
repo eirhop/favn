@@ -10,6 +10,7 @@ defmodule FavnOrchestrator.OperatorRunView do
   alias FavnOrchestrator.Persistence.Error
   alias FavnOrchestrator.Persistence.Queries.GetRunAssetAttempt
   alias FavnOrchestrator.Persistence.Queries.GetRunFlow
+  alias FavnOrchestrator.OperationCancellation
   alias FavnOrchestrator.Persistence.Queries.GetRunHeader
   alias FavnOrchestrator.Persistence.Queries.ListRunEventSummaries
   alias FavnOrchestrator.Persistence.Queries.ListRunWindows
@@ -50,6 +51,7 @@ defmodule FavnOrchestrator.OperatorRunView do
       :error_message,
       :counts,
       :active?,
+      :cancellation,
       :cancellable?,
       :retry_remaining?
     ]
@@ -88,7 +90,10 @@ defmodule FavnOrchestrator.OperatorRunView do
            limit: @max_assets
          }) do
       {:ok, %RunFlowSnapshot{} = snapshot} ->
-        {:ok, from_snapshot(snapshot)}
+        with {:ok, scope} <- OperationCancellation.scope(context, run_id) do
+          flow = from_snapshot(snapshot)
+          {:ok, %{flow | header: with_cancellation(flow.header, scope)}}
+        end
 
       {:error, %Error{kind: kind}} ->
         {:error, kind}
@@ -114,8 +119,12 @@ defmodule FavnOrchestrator.OperatorRunView do
            workspace_context: context,
            run_id: run_id
          }) do
-      {:ok, %RunViewHeader{} = header} -> {:ok, public_header(header)}
-      {:error, %Error{kind: kind}} -> {:error, kind}
+      {:ok, %RunViewHeader{} = header} ->
+        with {:ok, scope} <- OperationCancellation.scope(context, run_id),
+             do: {:ok, with_cancellation(public_header(header), scope)}
+
+      {:error, %Error{kind: kind}} ->
+        {:error, kind}
     end
   end
 
@@ -180,6 +189,9 @@ defmodule FavnOrchestrator.OperatorRunView do
       failure: submission_failure(submission)
     }
   end
+
+  defp with_cancellation(header, scope),
+    do: %{header | cancellation: scope, cancellable?: scope.cancellable?}
 
   defp public_header(header) do
     active? = header.status in [:pending, :running]

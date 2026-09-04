@@ -20,6 +20,17 @@ defmodule FavnOrchestrator.Persistence.RunStore do
   alias FavnOrchestrator.Persistence.Results.RunSummary
   alias FavnOrchestrator.RunState
 
+  alias FavnOrchestrator.Persistence.Queries.PageCancellingOperations
+  alias FavnOrchestrator.Persistence.Results.{CancellationScope, CancellationWork}
+
+  @callback cancellation_scope(GetRun.t()) :: {:ok, CancellationScope.t()} | {:error, Error.t()}
+  @callback request_operation_cancellation(RequestRunCancellation.t()) ::
+              :ok | {:error, Error.t()}
+  @callback page_cancelling_operations(PageCancellingOperations.t()) ::
+              {:ok, CursorPage.t(String.t())} | {:error, Error.t()}
+  @callback reconcile_cancellation(GetRun.t()) ::
+              {:ok, CancellationWork.t()} | {:error, Error.t()}
+
   @callback create_run(CreateRun.t()) :: {:ok, RunCommitted.t()} | {:error, Error.t()}
   @callback commit_transition(CommitRunTransition.t()) ::
               {:ok, RunCommitted.t()} | {:error, Error.t()}

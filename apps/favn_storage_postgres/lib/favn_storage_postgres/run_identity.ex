@@ -18,4 +18,16 @@ defmodule FavnStoragePostgres.RunIdentity do
 
     :ok
   end
+
+  @spec try_lock!(String.t(), String.t()) :: boolean()
+  def try_lock!(workspace_id, run_id) do
+    %{rows: [[locked?]]} =
+      SQL.query!(
+        Repo,
+        "SELECT pg_try_advisory_xact_lock(hashtextextended(jsonb_build_array($1::text, $2::text)::text, 0))",
+        [workspace_id, run_id]
+      )
+
+    locked?
+  end
 end

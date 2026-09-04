@@ -120,6 +120,8 @@ defmodule FavnStoragePostgres.StorageV2.ResourceCircuitsTest do
     assert {:ok, %ResourceCircuitUpdate{}} =
              Store.record_outcomes(%{command | command_id: "same-terminal-identity-new-command"})
 
+    FavnStoragePostgres.TestSupport.RunFixture.create(fixture.workspace_id, ["source-run"])
+
     candidate = %RecordResourceRecoveryCandidate{
       workspace_context: context(fixture),
       candidate_id: "candidate-1",
@@ -308,6 +310,11 @@ defmodule FavnStoragePostgres.StorageV2.ResourceCircuitsTest do
 
   test "safe recovery is recorded atomically only when the failure leaves the circuit open",
        fixture do
+    FavnStoragePostgres.TestSupport.RunFixture.create(fixture.workspace_id, [
+      "run-below-threshold",
+      "run-opens"
+    ])
+
     now = DateTime.utc_now()
     policy = Policy.new!(failure_threshold: 2, probe_after_ms: 1)
 

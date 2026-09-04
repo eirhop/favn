@@ -418,6 +418,8 @@ defmodule FavnStoragePostgres.StorageV2.RunnerSessionsTest do
   end
 
   defp enqueue_command(fixture, suffix) do
+    FavnStoragePostgres.TestSupport.RunFixture.create(fixture.workspace_id, ["run-#{suffix}"])
+
     payload = %RelationInspectionRequest{
       manifest_version_id: "mv_runner_session",
       required_runner_release_id: @release,

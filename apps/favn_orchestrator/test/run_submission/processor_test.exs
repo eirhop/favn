@@ -55,6 +55,11 @@ defmodule FavnOrchestrator.RunSubmission.ProcessorTest do
   end
 
   defmodule RunManager do
+    def cancel_run(_context, run_id, _reason) do
+      send(:persistent_term.get({Store, :test}), {:cancel_durable_run, run_id})
+      :ok
+    end
+
     def admit_claimed_submission(_prepared),
       do: :persistent_term.get({__MODULE__, :result})
   end
@@ -160,6 +165,38 @@ defmodule FavnOrchestrator.RunSubmission.ProcessorTest do
 
     assert_receive {:store_command, %MarkRunSubmissionSubmitted{} = command}
     assert command.run_id == submission.run_id
+  end
+
+  test "cancelled admission after restart reconciles a committed run before acknowledging", %{
+    submission: submission
+  } do
+    cancelling = %{submission | status: :admitting, cancellation_requested_at: DateTime.utc_now()}
+    :persistent_term.put({Store, :submission}, cancelling)
+
+    :persistent_term.put(
+      {Runs, :result},
+      {:ok, %RunState{id: submission.run_id}}
+    )
+
+    assert {:ok, %{status: :submitted}} = Processor.process(cancelling, processor_options())
+    assert_receive {:cancel_durable_run, run_id}
+    assert run_id == submission.run_id
+    assert_receive {:store_command, %MarkRunSubmissionSubmitted{outcome: %{"run_id" => ^run_id}}}
+    refute_received {:store_command, %AcknowledgeRunSubmissionCancellation{}}
+    refute_received {:store_command, %MarkRunSubmissionAdmitting{}}
+  end
+
+  test "cancelled admission with unavailable durable state remains unresolved", %{
+    submission: submission
+  } do
+    cancelling = %{submission | status: :admitting, cancellation_requested_at: DateTime.utc_now()}
+    :persistent_term.put({Store, :submission}, cancelling)
+    :persistent_term.put({Runs, :result}, {:error, Error.new(:unavailable, "unavailable")})
+
+    assert {:retry, {:run_reconciliation_unavailable, _}} =
+             Processor.process(cancelling, processor_options())
+
+    refute_received {:store_command, _}
   end
 
   test "acknowledges cancellation before planning or admission", %{submission: submission} do

@@ -135,7 +135,7 @@ defmodule FavnStoragePostgres.StorageV2.ScheduleOccurrenceRunReferenceMigrationT
       query!("""
       INSERT INTO favn_control.run_submissions
         (workspace_id, submission_id, source, idempotency_key, request_hash, authority,
-         deployment_id, manifest_version_id, target_kind, target_id, run_id, intent,
+         deployment_id, manifest_version_id, target_kind, target_id, run_id, cancellation_owner_run_id, intent,
          status, attempt, claim_generation, retry_root_id, enqueued_at, available_at,
          inserted_at, updated_at)
       VALUES
@@ -143,7 +143,7 @@ defmodule FavnStoragePostgres.StorageV2.ScheduleOccurrenceRunReferenceMigrationT
          'schedule-commit-idempotency', decode(repeat('44', 32), 'hex'),
          '{"workspace_id":"schedule-commit-workspace","principal_id":"scheduler","roles":["customer_operator"],"request_id":null}'::jsonb,
          'schedule-commit-deployment', 'schedule-commit-manifest', 'pipeline',
-         'schedule-commit-pipeline', 'schedule-commit-run', '{}'::jsonb, 'queued',
+         'schedule-commit-pipeline', 'schedule-commit-run', 'schedule-commit-run', '{}'::jsonb, 'queued',
          0, 0, 'schedule-commit-submission', clock_timestamp(), clock_timestamp(),
          clock_timestamp(), clock_timestamp())
       """)

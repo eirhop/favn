@@ -53,6 +53,11 @@ defmodule FavnOrchestrator.RunManager.CancellationTest do
     end
 
     def get(%GetRunnerTask{}) do
+      send(
+        Application.fetch_env!(:favn_orchestrator, :run_manager_cancellation_test_pid),
+        :runner_status_read
+      )
+
       agent = Application.fetch_env!(:favn_orchestrator, :run_manager_runner_task_agent)
       {:ok, Agent.get(agent, & &1.task)}
     end
@@ -281,6 +286,68 @@ defmodule FavnOrchestrator.RunManager.CancellationTest do
     assert_receive {:runner_acknowledgement, {:ok, _ack}}
     assert_receive {:run_transition_committed, command}
     assert command.run.status == :cancelled
+  end
+
+  test "background cancellation sends intent without waiting for runner acknowledgement" do
+    start_runner_registry()
+    {:ok, task_agent} = Agent.start_link(fn -> %{task: durable_task(:running)} end)
+    configure_runner_task_test(task_agent)
+
+    registration = %Favn.Contracts.RunnerTask.Registration{
+      runner_instance_id: "runner-inactive",
+      boot_id: "boot-inactive",
+      beam_node: Atom.to_string(node()),
+      runner_pool: "default",
+      required_runner_release_id: FavnTestSupport.runner_release_id(),
+      lifecycle_mode: :elastic,
+      supported_task_kinds: [:asset_attempt],
+      capabilities: ["asset_execution"]
+    }
+
+    assert {:ok, ack} = RunnerRegistry.register(registration, self())
+
+    Agent.update(task_agent, fn state ->
+      %{
+        state
+        | task: %{state.task | assigned_runner_session_generation: ack.runner_session_generation}
+      }
+    end)
+
+    task = Agent.get(task_agent, & &1.task)
+
+    outcome =
+      RunnerTasks.request_cancellation(task.workspace_id, task.task_id, %{reason: :operator},
+        wait_for_ack: false
+      )
+
+    assert outcome.status == :requested
+    assert_receive {:favn_runner_task, %Favn.Contracts.RunnerTask.Cancellation{}}
+    refute_received :runner_status_read
+    assert Agent.get(task_agent, & &1.task.cancellation_acknowledged_at) == nil
+  end
+
+  test "cancellation discovery runs off the worker mailbox and does not overlap sweeps" do
+    start_supervised!({Task.Supervisor, name: FavnOrchestrator.RunManagerTaskSupervisor})
+    owner = self()
+
+    discover = fn ->
+      send(owner, {:discovering, self()})
+
+      receive do
+        :release_discovery -> []
+      after
+        5_000 -> raise "discovery barrier was not released"
+      end
+    end
+
+    state = %{cancellation_task: nil, cancellation_cursors: %{}}
+    waiting = FavnOrchestrator.OperationCancellation.start_cleanup(state, discover)
+    assert_receive {:discovering, worker}
+    refute worker == self()
+    assert FavnOrchestrator.OperationCancellation.start_cleanup(waiting, discover) == waiting
+    send(worker, :release_discovery)
+    ref = waiting.cancellation_task
+    assert_receive {^ref, %{run: %{}, backfill: %{}}}
   end
 
   defp put_replayed_commit(run) do

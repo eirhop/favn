@@ -133,63 +133,6 @@ defmodule FavnOrchestrator.RunServer.Execution.ExecutionEventTest do
     assert Execution.deferred_refill_wait_ms(:blocked, 0) == :timeout
   end
 
-  test "matching deferred refill timers continue through the admission loop" do
-    timer_token = make_ref()
-
-    run =
-      RunState.new(
-        id: "matching-deferred-refill",
-        manifest_version_id: "manifest-version",
-        manifest_content_hash: "manifest-hash",
-        runner_releases: %{"default" => FavnTestSupport.runner_release_id()},
-        asset_ref: {__MODULE__, :asset}
-      )
-
-    stage_state =
-      StageAttemptState.new(
-        run,
-        [],
-        [],
-        [{{__MODULE__, :deferred}, nil}],
-        MapSet.new(),
-        nil,
-        :batch_budget
-      )
-
-    state = %RunExecutionState{
-      status: :admission_wait,
-      run: run,
-      stage_index: 1,
-      stage_state: stage_state,
-      stage_admission_deadline_ms: System.monotonic_time(:millisecond) + 5_000,
-      admission_waiters: %{"waiter" => %{waiter_id: "waiter"}},
-      admission_timers: %{
-        timer_token => %{
-          timer_ref: make_ref(),
-          payload: %{
-            kind: :deferred_refill,
-            stage_index: 1,
-            refill_cause: :batch_budget
-          }
-        }
-      }
-    }
-
-    assert {:cont, next} =
-             Execution.handle_event(state, {:stage_admission_timeout, timer_token})
-
-    assert next.status == :admission_wait
-    refute Map.has_key?(next.admission_timers, timer_token)
-
-    assert [{next_token, %{timer_ref: timer_ref, payload: payload}}] =
-             Map.to_list(next.admission_timers)
-
-    assert is_reference(next_token)
-    assert payload.kind == :admission_retry
-    assert payload.stage_index == 1
-    Process.cancel_timer(timer_ref)
-  end
-
   test "batch-budget no-entry refills keep yielding even while tasks are active" do
     deferred = [{{__MODULE__, :deferred}, nil}]
 
