@@ -172,7 +172,12 @@ defmodule FavnOrchestrator.RunSubmission.ProcessorTest do
   } do
     cancelling = %{submission | status: :admitting, cancellation_requested_at: DateTime.utc_now()}
     :persistent_term.put({Store, :submission}, cancelling)
-    :persistent_term.put({Runs, :result}, {:ok, RunState.new(id: submission.run_id)})
+
+    :persistent_term.put(
+      {Runs, :result},
+      {:ok, %RunState{id: submission.run_id}}
+    )
+
     assert {:ok, %{status: :submitted}} = Processor.process(cancelling, processor_options())
     assert_receive {:cancel_durable_run, run_id}
     assert run_id == submission.run_id
