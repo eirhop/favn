@@ -227,7 +227,9 @@ minimum; the stale lifecycle and runner ownership statements were still removed.
 
 No behavior deviations. Review refined the explicit unknown-outcome cases and
 made stale-message proof deterministic without changing scope or the approved
-lifecycle policy. The Impact paragraph was reworded after CI rejected a legacy
+lifecycle policy. A later hosted fast-test failure required a test-only correction
+to an existing storage admission fixture, detailed below; production scope remains
+unchanged. The Impact paragraph was reworded after CI rejected a legacy
 phrase in ordinary prose; its meaning and the approved baseline remain unchanged.
 
 ## Decision log
@@ -292,3 +294,37 @@ fixture, not customer-scale performance claims.
 | Findings addressed and rechecked | Both corrections and every prior finding rechecked; stale-result/DOWN callback regression resolves final test finding |
 | Complexity | Production and supporting changes remain within approved budgets |
 | Verdict | Approved; no remaining actionable findings. Approval covers implementation and local verification; hosted CI remains separate qualification |
+
+### CI correction and rebase
+
+The branch was rebased without conflicts onto `origin/main` at `12d82f1c`.
+`git range-diff` confirmed that all four existing patches were preserved.
+The original approved plan `d36081ee` is now `ccdb2009`, and the original
+implementation `397bff4e` is now `db867545`; the approved baseline above is
+preserved as historical evidence.
+
+Hosted run [33880083454](https://github.com/eirhop/favn/actions/runs/33880083454)
+failed only the fast-test job. Its existing terminal-refill cancellation test
+could suspend either before a continuation or after registering a capacity
+waiter. A direct storage lease release relied on a PostgreSQL notification
+inside an uncommitted sandbox transaction, leaving the latter state asleep.
+
+The fixture now explicitly waits for a registered capacity waiter and releases
+the blocker through `ExecutionAdmission.release/1`, with its scope supplied for
+the normal local wake hint. It retains the cancellation and active-lease
+assertions. Other helper callers retain their timer checkpoint. This is a
+post-plan test-only deviation: 18 supporting lines added and 13 deleted in the
+storage test, with no production changes or timeout increases.
+
+With only the deterministic checkpoint applied, seed `250744` reproduced the
+same failure: the sibling never reached `:cancelling`. With the release fix,
+the same targeted test passed in 21.6 seconds. Warnings-as-errors compilation
+after rebase also passed, as did formatting, strict Credo warning checks, and
+diff whitespace checks. The complete storage fast suite passed: 367 tests, 20
+excluded, in 97.9 seconds against a separate disposable PostgreSQL database
+(seed `588243`).
+
+Independent reviewer `review_reload` approved the test correction with no
+findings, confirming the checkpoint, scope-aware wake hint, unchanged helper
+default, and retained cancellation assertions. Hosted qualification must run
+again against the rebased head; earlier results do not qualify it.
