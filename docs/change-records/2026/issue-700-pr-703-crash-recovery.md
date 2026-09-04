@@ -11,7 +11,7 @@
 | Affected areas | Core task contracts; PostgreSQL task/claim/lock storage; orchestrator recovery, admission and settlement; runner claims; local startup |
 | Investigated revision | `8a129956b3f571e9db6f8e345b243b14a90b9983` |
 | Original reviewed baseline | [82732b32](https://github.com/eirhop/favn/blob/82732b32bfd0caa512a8f3cd6534d8d7a10ec5ee/docs/change-records/2026/issue-700-pr-pending-crash-recovery.md), preserved unchanged and superseded by this revision |
-| Revised baseline | Recorded in the immediate follow-up after the reviewed revision commit |
+| Revised baseline | `c6f51b015d4b9f983f5fbe1054aa75086a6619c7`; this follow-up records baseline and publication evidence only |
 | Last updated | 2026-09-04 |
 
 ## One-minute summary
@@ -377,7 +377,7 @@ CI-covered tier and clean up their processes on failure.
 | Revised recommendation review | Independent agent `review_crash_recovery_plan` verified existing-owner reuse, direct-mutation/child-claim cardinality, the original start fence, expiry-independent guards and pre-admitted competitors against source |
 | Revised plan verdict | Revision 2 approved on 2026-09-04 with no remaining findings; estimate uncertainty recorded above. Approval covers the revised plan only |
 | Source and synthetic reproduction | Verified/repeated during the initial investigation; establishes defects, not production restart safety |
-| Current revision doc validation | All 18 relative links resolve; whitespace passes; both Mermaid diagrams parse and render locally. GitHub rendering is checked after publication |
+| Current revision doc validation | All 18 relative links resolve; whitespace passes; both Mermaid diagrams parse and render locally and on GitHub at the revised baseline |
 
 Implementation has not started. No schema change, database reset, live deployment
 or production-shaped crash test has been performed. Final implementation review
