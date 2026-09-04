@@ -6349,7 +6349,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     start_pipeline_runtime!()
 
     assert {:ok, pid} = RunServer.start_link(%{run_state: run, version: fixture.version})
-    execution_state = await_suspended_deferred_pipeline_state!(pid, require_timer?: false)
+    execution_state = await_suspended_deferred_pipeline_state!(pid, require_waiter?: true)
     assert map_size(execution_state.awaits) == 1
     assert [task_id] = runner_task_ids(fixture.workspace_id, run.id)
 
@@ -6365,12 +6365,13 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
 
     assert deleted_links != []
 
-    assert {:ok, _released} =
-             AdmissionStore.release_lease(%ReleaseExecutionLease{
-               workspace_context: fixture.workspace_context,
+    assert :ok =
+             ExecutionAdmission.release(%{
+               workspace_id: fixture.workspace_id,
                lease_id: blocking_lease.lease_id,
                owner_id: blocking_lease.owner_id,
-               owner_generation: blocking_lease.owner_generation
+               owner_generation: blocking_lease.owner_generation,
+               scopes: [global_scope]
              })
 
     monitor = Process.monitor(pid)
@@ -12932,14 +12933,14 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   end
 
   defp await_suspended_deferred_pipeline_state!(pid, options \\ []) do
-    require_timer? = Keyword.get(options, :require_timer?, true)
-    await_suspended_deferred_pipeline_state!(pid, require_timer?, 100)
+    require_waiter? = Keyword.get(options, :require_waiter?, false)
+    await_suspended_deferred_pipeline_state!(pid, require_waiter?, 100)
   end
 
-  defp await_suspended_deferred_pipeline_state!(_pid, _require_timer?, 0),
+  defp await_suspended_deferred_pipeline_state!(_pid, _require_waiter?, 0),
     do: flunk("run server did not reach a deferred pipeline admission checkpoint")
 
-  defp await_suspended_deferred_pipeline_state!(pid, require_timer?, remaining) do
+  defp await_suspended_deferred_pipeline_state!(pid, require_waiter?, remaining) do
     state = :sys.get_state(pid)
     execution_state = Map.get(state, :execution_state)
 
@@ -12947,10 +12948,12 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
          %{
            awaits: awaits,
            admission_timers: timers,
+           admission_waiters: waiters,
            stage_state: %{deferred_node_keys: [_ | _]}
          }
          when map_size(awaits) > 0 and
-                (not require_timer? or map_size(timers) > 0),
+                ((require_waiter? and map_size(waiters) > 0) or
+                   (not require_waiter? and map_size(timers) > 0)),
          execution_state
        ) do
       :ok = :sys.suspend(pid)
@@ -12960,20 +12963,22 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
            %{
              awaits: awaits,
              admission_timers: timers,
+             admission_waiters: waiters,
              stage_state: %{deferred_node_keys: [_ | _]}
            }
            when map_size(awaits) > 0 and
-                  (not require_timer? or map_size(timers) > 0),
+                  ((require_waiter? and map_size(waiters) > 0) or
+                     (not require_waiter? and map_size(timers) > 0)),
            suspended
          ) do
         suspended
       else
         :ok = :sys.resume(pid)
-        await_suspended_deferred_pipeline_state!(pid, require_timer?, remaining - 1)
+        await_suspended_deferred_pipeline_state!(pid, require_waiter?, remaining - 1)
       end
     else
       Process.sleep(5)
-      await_suspended_deferred_pipeline_state!(pid, require_timer?, remaining - 1)
+      await_suspended_deferred_pipeline_state!(pid, require_waiter?, remaining - 1)
     end
   end
 

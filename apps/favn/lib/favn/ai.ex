@@ -300,6 +300,8 @@ defmodule Favn.AI do
     connection; `FAVN_DATABASE_MIGRATOR_URL` is used only by explicit
     development PostgreSQL operations. Favn does not parse `.env` files or
     manage PostgreSQL.
+    For reload classifications, phase timings, and interrupted-deployment
+    recovery, read the reload section of [Local Development Commands](local-development.html).
     The customer owns production Compose/platform configuration and the runner
     image pipeline; `mix favn.init --target deployment` copies a non-overwriting
     example.
