@@ -4,7 +4,7 @@ defmodule Favn.Contracts.RunnerTask.PersistenceCodec do
   alias Favn.Contracts.RunnerTask
 
   @protocol_version RunnerTask.version()
-  @max_term_bytes 1_048_576
+  alias Favn.Contracts.RunnerTask.Limits
   @max_orchestration_context_bytes 4 * 1_048_576
 
   def encode_payload(task_kind, payload),
@@ -101,10 +101,12 @@ defmodule Favn.Contracts.RunnerTask.PersistenceCodec do
     do: {:error, :invalid_runner_task_orchestration_context}
 
   defp encode(tag, task_kind, outcome, value, validate) do
+    limit = term_limit(tag, task_kind)
+
     with :ok <- apply_validation(validate, task_kind, outcome, value) do
       binary = :erlang.term_to_binary(value, [:deterministic])
 
-      if byte_size(binary) <= @max_term_bytes do
+      if byte_size(binary) <= limit do
         envelope =
           %{
             "encoding" => "erlang-term-base64",
@@ -118,12 +120,14 @@ defmodule Favn.Contracts.RunnerTask.PersistenceCodec do
         {:ok, hash} = payload_hash(envelope)
         {:ok, envelope, hash}
       else
-        {:error, {:runner_task_payload_too_large, byte_size(binary), @max_term_bytes}}
+        {:error, {:runner_task_payload_too_large, byte_size(binary), limit}}
       end
     end
   end
 
   defp decode(tag, task_kind, outcome, envelope, validate) when is_map(envelope) do
+    limit = term_limit(tag, task_kind)
+
     expected =
       %{
         "encoding" => "erlang-term-base64",
@@ -135,9 +139,9 @@ defmodule Favn.Contracts.RunnerTask.PersistenceCodec do
 
     with true <- Map.drop(envelope, ["payload"]) == expected,
          payload when is_binary(payload) <- Map.get(envelope, "payload"),
-         true <- byte_size(payload) <= encoded_limit(@max_term_bytes),
+         true <- byte_size(payload) <= encoded_limit(limit),
          {:ok, binary} <- Base.decode64(payload),
-         true <- byte_size(binary) <= @max_term_bytes,
+         true <- byte_size(binary) <= limit,
          {:ok, value} <- decode_uncompressed_term(binary),
          :ok <- apply_validation(validate, task_kind, outcome, value) do
       {:ok, value}
@@ -169,5 +173,8 @@ defmodule Favn.Contracts.RunnerTask.PersistenceCodec do
   defp maybe_put_outcome(envelope, outcome),
     do: Map.put(envelope, "outcome", Atom.to_string(outcome))
 
-  defp encoded_limit(max_bytes), do: div(max_bytes * 4, 3) + 4
+  defp term_limit("runner_task_payload", kind), do: Limits.payload_bytes(kind)
+  defp term_limit("runner_task_result", _kind), do: Limits.result_bytes()
+
+  defp encoded_limit(max_bytes), do: Limits.encoded_bytes(max_bytes)
 end
