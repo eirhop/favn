@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Implementing |
+| Status | Implemented |
 | Type | Bug fix and migration |
 | Primary issue | [#694](https://github.com/eirhop/favn/issues/694) |
 | Pull request | [#696](https://github.com/eirhop/favn/pull/696) |
@@ -136,3 +136,78 @@ transport, budget arithmetic, and this plan. Verdict: accepted with no blocking
 findings. The review confirmed preservation of the latest 8 MiB context bound,
 final struct validation after wire-map decoding, and the real claim-to-execution
 regression requirement. Implementation has not started.
+
+## Implementation outcome
+
+Core now has one internal limits module. Persistence applies an 8 MiB asset-only
+budget in both directions; operations and results keep 1 MiB. Assignments enforce
+the nested kind budget plus 64 KiB envelope headroom. The wire codec checks encoded
+size on both paths and decoded raw bytes before safe term decoding. PostgreSQL
+migration `20260904000000` raises only the payload column bound to 12 MiB; schema
+readiness uses the resulting verified definition fingerprint.
+
+The synthetic SQL regression produces work above 1 MiB and a persistence envelope
+above the old 2 MiB wire/storage budget. It traverses real PostgreSQL enqueue/get,
+`RunnerTasks.claim`, assignment validation/encode/decode, manifest/package
+verification, and `TaskExecutor`. A small test adapter executes the runner-rendered
+SQL against PostgreSQL in a transaction-local table, checks its row, and returns
+through durable task completion. It does not qualify a production SQL adapter.
+The behavior matches the proposed diagram.
+
+### Actual scope and complexity
+
+| Slice | Production added | Production deleted | Supporting added | Supporting deleted |
+| --- | ---: | ---: | ---: | ---: |
+| 1: Core contracts and boundary tests | 64 | 10 | 151 | 0 |
+| 2: Storage migration, claim/execution and migration tests | 31 | 2 | 300 | 2 |
+| 3: Canonical runner size/rollout documentation | 0 | 0 | 37 | 0 |
+
+No category exceeds its approved upper bound. Storage production is slightly
+smaller than estimated because the existing migration replacement pattern and
+diagnostics fingerprint suffice. Implementation complexity is low: explicit
+budgets and one constraint replacement. Operational complexity is moderate:
+matching binaries and migration ordering are required. Canonical documentation
+is in `docs/architecture/elastic-runners.md#runner-task-size-budgets`.
+
+## Deviations and decisions
+
+| Planned | Implemented or clarified | Reason and impact | Reviewer verdict |
+| --- | --- | --- | --- |
+| Down migration refuses incompatible rows | It refuses rows exceeding the old stored-column constraint; operators must separately resolve all tasks above the old raw codec limit before rolling back binaries | JSONB storage size, base64, raw size and TOAST compression differ; no data truncation or new rollback protocol | Reviewer requested this narrower, accurate documentation |
+| Registered migration | Migration also refreshes the schema definition fingerprint | The new constraint must be recognized by readiness diagnostics | Accepted |
+| GitHub diagram rendering before implementation | GitHub Markdown API recognized both Mermaid diagrams before code edits; browser verification using GitHub's Mermaid renderer completed afterward | Verification timing deviation only; diagrams were unchanged and rendered successfully | Accepted |
+
+## Verification evidence
+
+| Check | Result | Evidence boundary |
+| --- | --- | --- |
+| Core runner-task contracts | 21 tests passed | Exact 8 MiB raw boundary, assignment round trip and envelope/raw/encoded rejections; operation/result/log bounds retained |
+| PostgreSQL runner tasks and migration tests | 42 tests passed | Real storage, max raw payload, oversized JSONB rejection, claim/SQL/durable completion, fencing/recovery/logs; empty-database migration down/up and readiness |
+| Orchestrator claim/recovery tests | 9 tests passed | Existing assignment/recovery invariants |
+| Runner agent and SQL execution tests | 84 tests passed | Existing runner lifecycle, package and SQL execution behavior |
+| Test-environment compile | Passed with warnings as errors | Local compilation |
+| Formatting, tag-tier guard and diff whitespace | Passed | Static checks |
+| GitHub Markdown and Mermaid | Both diagrams rendered using GitHub's Markdown API and browser Mermaid renderer | Rendered diagram inspection; no behavioral change |
+| CI | Passed on implementation commit `93886861` | [CI](https://github.com/eirhop/favn/actions/runs/33845900274), [control-plane and runner images](https://github.com/eirhop/favn/actions/runs/33845900273), [HTTP boundary security](https://github.com/eirhop/favn/actions/runs/33845900364) |
+
+The first combined storage run had one existing log test fail in setup with a
+transient database connection-unavailable error. The unchanged full rerun passed
+all 42 tests. CI initially failed an existing consumer-install slow test because
+the npm esbuild download returned HTTP 504 before its assertion. Rerunning only
+failed jobs on the unchanged implementation passed. No unrelated test behavior
+was changed.
+
+### Not verified
+
+No live deployment, production database migration, constrained-memory stress,
+or production SQL adapter was exercised. Migration rollback with retained
+oversized rows was not executed; down/up coverage uses an empty database.
+
+## Final review
+
+Independent agent `/root/review` rechecked the complete implementation against
+approved baseline `d1b36009`, the final record, verified schema fingerprint, test
+evidence, corrected rollback wording and scope budgets. Final verdict: accepted,
+with no remaining actionable findings. All listed deviations are accepted.
+This verdict covers implementation and local evidence; CI completion and live
+deployment are separate proof boundaries.
