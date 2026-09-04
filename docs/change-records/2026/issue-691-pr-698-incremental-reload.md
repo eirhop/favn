@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Implementing |
+| Status | Implemented |
 | Type | Bug fix |
 | Primary issue | [#691](https://github.com/eirhop/favn/issues/691) |
 | Pull request | [#698](https://github.com/eirhop/favn/pull/698) |
@@ -22,7 +22,7 @@ lifecycle decisions across the local runtime and CLI boundary.
 ## Impact
 
 Developers see a failure after a successful state change and pay for unnecessary
-runner replacement and manifest activation. Reload must report what changed
+starting a new runner and manifest activation. Reload must report what changed
 without rerunning assets or discarding the active development session.
 
 ## Problem analysis
@@ -189,16 +189,106 @@ do not claim verification of the user's running workspace.
 
 ## Implementation outcome
 
-Implementation has not started.
+Reload now returns one typed successful map with the expected classification,
+identities, timings, and runtime summary. Unchanged input checks the durable
+active deployment and skips writes. Manifest-only input deploys with the current
+runner, and compiled changes preserve candidate registration and release draining.
+The CLI prints all three outcomes and tolerates the originally reported successful
+map without a classification.
+
+Only successful completion advances the local publication/deployment baseline.
+Retirement blocks reload admission. Interrupted activation, task death, and
+returned unknown activation errors require stop/start. Read-only check errors
+remain ordinary failures. Stale task results cannot complete a later request or
+replace the shutdown task. The resulting flow matches the approved diagram.
+
+### Actual scope and complexity
+
+Production changes are confined to the local runtime/publication/result boundary
+and the public Mix command. Persistence and runner protocol owners are unchanged.
+Implementation complexity is moderate because reload has three paths and must
+preserve asynchronous ownership. Operational complexity is low: no migration,
+new configuration, dependency, or production deployment step is introduced.
+Canonical updates are the local-development guide, its AI router pointer, and
+the local app ownership map.
+
+| Slice | Production added | Production deleted | Supporting added | Supporting deleted |
+| --- | ---: | ---: | ---: | ---: |
+| 1: local runtime/result and focused fixtures | 197 | 16 | 127 | 0 |
+| 2: command and end-to-end acceptance | 20 | 6 | 188 | 4 |
+| 3: canonical documentation and AI pointer | 0 | 0 | 27 | 3 |
+
+Counts are from the implementation diff against baseline, excluding this record.
+All additions are within the approved ranges; no material complexity overrun.
+The documentation needed three deleted lines rather than the estimated five
+minimum; the stale lifecycle and runner ownership statements were still removed.
 
 ## Deviations from the approved plan
 
-None at planning time.
+No behavior deviations. Review refined the explicit unknown-outcome cases and
+made stale-message proof deterministic without changing scope or the approved
+lifecycle policy. The Impact paragraph was reworded after CI rejected a legacy
+phrase in ordinary prose; its meaning and the approved baseline remain unchanged.
+
+## Decision log
+
+| Date | Decision | Reason | Review |
+| --- | --- | --- | --- |
+| 2026-09-04 | Reword the Impact paragraph after the legacy-symbol CI guard matched ordinary prose | Documentation terminology only; no semantic plan change | Confirmed no semantic change |
+| 2026-09-04 | Wrap only activation-stage persistence errors of kind internal/unavailable as unknown | The orchestrator already classifies these errors as unknown; a failed durable read must not imply a write occurred | Independently reviewed |
+| 2026-09-04 | Use a compiled fixture provider reading a text file and compile a separate fixture BEAM for replacement | Proves manifest-only and compiled-runtime changes independently through the actual command | Independently reviewed |
+| 2026-09-04 | Combine real stop/interruption acceptance with direct stale-message callbacks | Supervisor teardown can precede a delayed task reply; callbacks make shutdown task ownership proof deterministic | Independently reviewed |
 
 ## Verification evidence
 
-Source and Git history inspected; runtime tests have not run.
+| Check | Result | Evidence boundary |
+| --- | --- | --- |
+| Format and warnings-as-errors compile | Passed | Local static/build qualification |
+| `favn_local` fast tests | 40 passed, 2 excluded | Includes new lifecycle error, retirement, and shutdown task ownership cases |
+| `favn` fast tests | 184 passed, 3 excluded | Includes exact missing-status success rendering regression |
+| Docker-free lifecycle acceptance | Passed in 44.5 seconds | Real PostgreSQL, runner processes, actual Mix command subprocesses, durable deployment identity, UI HTTP readiness, failed publication recovery, and stop interruption |
+| Credo warning checks, strict | Passed, 1397 files, no issues | Same Credo gate as CI |
+| Test tier and legacy architecture/DSL guards | Passed | Same source guards as CI; new acceptance coverage is in a CI-covered app |
+| Git diff whitespace | Passed | Local diff check |
+| GitHub Mermaid rendering | Both diagrams rendered without errors in the pushed approved plan and renamed record | Browser-verified before implementation |
+| Dialyzer | Passed, exit 0, three configured skips | Local type analysis with cached test PLT; no new unignored errors |
+| GitHub CI and image qualification | Acceptance and generic runner qualification passed for `397bff4e`; Quick checks rejected prose in this record, now corrected locally | Remaining jobs and the final documentation update need their own hosted result |
+
+The test database was disposable and isolated from normal development data.
+Setup used repository PostgreSQL tooling and the restricted runtime grants from
+CI. An initial bootstrap-role acceptance attempt was rejected by runtime
+preflight; applying the CI runtime-role setup resolved that environment mismatch.
+A concurrent build attempt caused transient missing BEAM files; subsequent
+compilation and runtime verification ran sequentially. The local legacy guard
+was checked with two pre-existing ignored crash dumps temporarily moved out of
+its scan roots, then restored; those artifacts are absent from Git and CI.
+
+### Controlled fixture timings
+
+All values are milliseconds from the successful 44.5-second acceptance run.
+Totals exclude the preceding Mix compilation and are observations for a small
+fixture, not customer-scale performance claims.
+
+| Outcome | Build | Packages | Publish | Activate | Total |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Unchanged | 120 | 0 | 0 | 0 | 604 |
+| Manifest deployed | 193 | 3 | 23 | 50 | 839 |
+| Runner replaced | 177 | 3 | 16 | 36 | 2279 |
+
+### Not verified
+
+- The user's running workspace and workload were not changed or rerun.
+- No production deployment, scale benchmark, or asset rematerialization was performed.
+- Hosted CI and container qualification are separate from the completed local checks.
 
 ## Final review
 
-Required after implementation and verification.
+| Field | Result |
+| --- | --- |
+| Reviewer | Independent agent `review_reload` |
+| Compared | Approved baseline `d36081ee160c453b0207d1edab595783d296aa3b`, implementation `397bff4e`, final record, tests, logs, diagnostics, and canonical docs |
+| Deviations complete | Yes; no behavior deviations, nonsemantic Impact wording correction confirmed |
+| Findings | Returned unknown activation errors and deterministic shutdown ownership proof needed correction |
+| Findings addressed and rechecked | Both corrections and every prior finding rechecked; stale-result/DOWN callback regression resolves final test finding |
+| Complexity | Production and supporting changes remain within approved budgets |
+| Verdict | Approved; no remaining actionable findings. Approval covers implementation and local verification; hosted CI remains separate qualification |
