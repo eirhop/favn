@@ -253,6 +253,8 @@ end
 
 defmodule FavnOrchestrator.Persistence.Results.RunnerTask do
   @moduledoc "Durable runner-task state returned by persistence."
+  # Mirrors one durable row so lifecycle fields remain readable when detail hydration fails.
+  # credo:disable-for-next-line Credo.Check.Warning.StructFieldAmount
   defstruct [
     :workspace_id,
     :task_id,

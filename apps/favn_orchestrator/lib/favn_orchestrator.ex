@@ -121,6 +121,7 @@ defmodule FavnOrchestrator do
                start_operator_target_recovery: 4,
                get_operator_target_recovery: 2,
                reconcile_operator_target_recovery: 3,
+               resolve_operator_task_write: 4,
                list_logs: 3,
                replay_logs: 4,
                authorize_logs_subscription: 2,

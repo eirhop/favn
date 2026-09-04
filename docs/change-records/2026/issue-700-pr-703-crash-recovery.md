@@ -513,11 +513,11 @@ to slice 3. The per-file ledger was retained with the verification output.
 
 | Slice | Production added/deleted | Supporting added/deleted | Explanation against the approved range |
 | --- | ---: | ---: | --- |
-| 1: current-format contracts and pins | 1,313 / 103 | 818 / 42 | Closed struct/atom/value coverage across eight request/result types, bounded decoding, exact result identity, context restoration, retained-package verification and pre-activation authorization were substantially underestimated. The old ETF reader is removed; there is no compatibility layer. |
-| 2: scalar recovery and disposition | 1,275 / 262 | 1,823 / 72 | Includes all shared store/DDL integration: immutable pins and hashes, scalar receipts, isolated hydration/quarantine, historical claim fencing and bounded rediscovery. Fresh-process and corruption probes add more fixtures than estimated. Existing lifecycle behavior stays in place and gains explicit validation. |
-| 3: existing owner effect state | 1,145 / 70 | 1,039 / 16 | Exact owner/start settlement, administrator quiescence evidence and audit replay, read-only generation evidence, healthy contention and persisted sequential deadlines require explicit branches and transaction tests. This extends existing owners; it does not add a second lock service or scheduler. |
-| 4: runner and local lifecycle | 195 / 46 | 379 / 18 | Additions remain within budget. Fewer deletions preserve current upstream reload behavior and existing runner state transitions; focused retry, cancellation and long-wait lease tests extend their existing fixtures. |
-| Total | 3,928 / 481 | 4,059 / 148 | Production additions exceed the 1,700 upper estimate by 2,228 (131%); supporting additions exceed 2,200 by 1,859 (85%). Production deletions are within budget; supporting deletions are 22 below its minimum. |
+| 1: current-format contracts and pins | 1,317 / 103 | 818 / 42 | Closed struct/atom/value coverage across eight request/result types, bounded decoding, exact result identity, context restoration, retained-package verification and pre-activation authorization were substantially underestimated. The old ETF reader is removed; there is no compatibility layer. |
+| 2: scalar recovery and disposition | 1,277 / 262 | 1,855 / 120 | Includes all shared store/DDL integration: immutable pins and hashes, scalar receipts, isolated hydration/quarantine, historical claim fencing and bounded rediscovery. Fresh-process and corruption probes add more fixtures than estimated. Existing lifecycle behavior stays in place and gains explicit validation. |
+| 3: existing owner effect state | 1,148 / 71 | 1,039 / 16 | Exact owner/start settlement, administrator quiescence evidence and audit replay, read-only generation evidence, healthy contention and persisted sequential deadlines require explicit branches and transaction tests. This extends existing owners; it does not add a second lock service or scheduler. |
+| 4: runner and local lifecycle | 196 / 46 | 380 / 18 | Additions remain within budget. Fewer deletions preserve current upstream reload behavior and existing runner state transitions; focused retry, cancellation and long-wait lease tests extend their existing fixtures. |
+| Total | 3,938 / 482 | 4,092 / 196 | Production additions exceed the 1,700 upper estimate by 2,238 (132%); supporting additions exceed 2,200 by 1,892 (86%). Production deletions are within budget; supporting deletions are 26 above the estimate's minimum. |
 
 The estimate understated the cost of enforcing the existing safety contract.
 The earlier unformatted production checkpoint already exceeded its upper estimate
@@ -531,6 +531,27 @@ unnecessary subsystem to remove. The reviewer recommended retaining the closed
 validation and evidence checks, and identified two small duplicate/unreachable
 helpers, which were removed. Final acceptance of the recorded variance accompanies
 the implementation verdict below.
+
+The estimate was materially wrong. It was prepared without a prototype or a
+per-file inventory and did not price the closed typed registry, the integration
+through both existing owner stores, or the failure-process fixtures required by
+the approved plan. The author should have stopped when the implementation first
+crossed the review threshold and requested a renewed scope decision. Recording
+and reviewing the overrun after implementation did not substitute for that
+checkpoint.
+
+Implementation also expanded within the crash-recovery problem. Healthy-writer
+waiting, manifest-lease renewal during that wait, one durable admission deadline,
+pre-activation inspection authorization, and stricter payload/context/receipt
+identity checks were added after correctness findings. These are recorded
+decisions with focused tests, but they are real scope growth. The diff does not
+add UI work, a legacy reader, or a replacement exclusion subsystem. About half
+the additions are production code and half are tests and fixtures. The largest
+remaining opportunities to reduce review cost are consolidating repeated crash
+fixtures and organizing the static typed-data registry. The flat 45-field scalar
+lifecycle result also deserves a later design pass, although splitting it may add
+mapping code instead of reducing the system. Removing owner fences, identity
+checks, or unknown-outcome handling would weaken the safety contract.
 
 ## Verification outcome and limits
 
@@ -546,8 +567,9 @@ metadata, exact result identity, corrupt retained packages, scalar receipt repla
 queue quarantine, expiry, stale ownership, administrator authorization/audit,
 claim retention and committed-result settlement after lease expiry.
 
-The SIGKILL process probe (in the CI-covered PostgreSQL slow tier) uses real PostgreSQL lifecycle commands and a durable
-SQL counter outside the killed BEAM. It covers queued, assigned, preparing,
+The SIGKILL process probe in the CI-covered PostgreSQL slow tier uses real
+PostgreSQL lifecycle commands and a durable SQL counter outside the killed BEAM.
+It covers queued, assigned, preparing,
 running, cancelling, external-effect-committed and durable-result-committed phases,
 then performs two fresh-process recoveries. The counter is a controlled effect
 probe; it is not a qualified production data-system adapter.
@@ -574,10 +596,37 @@ an unfinished synthetic drain run and timed out during shutdown. A concurrent
 Mix dependency build also removed test-support modules during an earlier storage
 run; final Mix checks run serially. Neither failed run is counted as a pass.
 
+The first GitHub CI run for implementation head `da8881f7` failed Quick checks,
+Dialyzer, and the slow tier, and the pull request was returned to draft. The
+author had not run the exact whole-umbrella Dialyzer and complete slow-tier gates
+before marking the pull request ready. Quick checks found an unregistered fixed
+logger field and the deliberately flat scalar lifecycle result over the default
+struct-size threshold. Dialyzer found three closed-contract defensive branches,
+one existing dynamic-authorization analysis limitation, and one incomplete retry
+map type. The slow migration test still asserted superseded development bounds
+and attempted to downgrade through the new intentionally irreversible schema.
+The corrections keep the fixed logger field registered, scope the static-analysis
+exceptions to the affected validation module/function and struct, complete the
+retry type, and test the current migration's exact bounds and explicit downgrade
+refusal. Final gate results passed locally as recorded below; independent
+re-review approved the corrections with no findings.
+
+The first local full-slow requalification inherited an absolute isolated Mix
+build path into the nested consumer project, so its asset-location assertion was
+not meaningful. The CI-shaped rerun passed every test except the restore drill,
+where the host's PostgreSQL 16 client correctly refused the PostgreSQL 18 test
+server. A final full run used the repository CI image's PostgreSQL 18 client
+tools but reused the repeatedly exercised database. Favn and Orchestrator passed;
+PostgreSQL was 20/21 because the planner chose the platform status index instead
+of the asserted workspace index after prior suites changed the database state and
+statistics. That result is not counted. The definitive run uses a fresh migrated
+and provisioned database, consistent with the disposable-database test contract,
+and passed all 25 slow tests.
+
 All 18 relative links in this record resolve; the canonical-document links resolve
 including their two generated HexDocs destinations. All three Mermaid diagrams
-render locally and on GitHub. The final static gates and independent implementation review are
-recorded below.
+render locally and on GitHub. The final static gates and independent
+implementation review are recorded below.
 
 
 | Final gate | Actual result |
@@ -586,6 +635,7 @@ recorded below.
 | Final crash/ownership regression run | 29 passed, including missing-owner rejection, all seven SIGKILL phases with two fresh recoveries per phase, payload/context swaps, scalar receipt corruption and sequential deadline restoration/unblock |
 | Final operation fixture check | 6 passed; all required store behavior callbacks are present |
 | Local lifecycle acceptance | 1 passed; separate source BEAM processes and restricted PostgreSQL roles, retained-database restart |
-| Static checks | Repository-wide format check, warnings-as-errors compilation, CI test-tag guard and whitespace check passed |
+| Complete slow tier after CI correction | 25 passed: Favn 2, Orchestrator 2 and PostgreSQL 21, using matching PostgreSQL 18 client/server tools |
+| Static checks | Exact whole-umbrella Dialyzer, CI quick checks, repository-wide format, warnings-as-errors compilation, CI test-tag guard and whitespace check passed after correction |
 | Independent source and scope review | Accepted by `review_crash_recovery_plan` on 2026-09-04. Reported hydration/receipt linkage and long-wait lease findings were corrected and independently rechecked; per-slice budget variance accepted. |
-| Final evidence review | Approved by `review_crash_recovery_plan` on 2026-09-04 against baseline `c6f51b0`, including final error-path correction, documentation cleanup, all recorded deviations and budget variance. No remaining material findings. Approval covers the documented source-process/PostgreSQL behavior; release, real adapter interruption and PITR limits remain unqualified. |
+| Final evidence review | Approved by `review_crash_recovery_plan` on 2026-09-04 against baseline `c6f51b0` after the first CI failure and full correction audit. The reviewer independently reproduced the production/support counts, accepted the existing-owner design and recorded deviations, and verified the captured fresh PostgreSQL 18 slow result. No remaining findings. Approval covers the documented source-process/PostgreSQL behavior; release, real adapter interruption and PITR limits remain unqualified. |

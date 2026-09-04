@@ -5,18 +5,11 @@ defmodule FavnStoragePostgres.StorageV2.RunExecutionCheckpointMigrationTest do
 
   alias Ecto.Adapters.SQL
   alias FavnStoragePostgres.Config
-  alias FavnStoragePostgres.Migrations.AddRunExecutionCheckpointsV2
-  alias FavnStoragePostgres.Migrations.IncreaseRunnerTaskPayloadBoundV2
-  alias FavnStoragePostgres.Migrations.IncreaseRunnerTaskOrchestrationContextBoundV2
+  alias FavnStoragePostgres.Migrations.AddCrashSafeRunnerTasksV2
   alias FavnStoragePostgres.StorageV2.Migrations
 
-  @payload_migration_version 20_260_904_000_000
-  @payload_migration {@payload_migration_version, IncreaseRunnerTaskPayloadBoundV2}
-
-  @migration_version 20_260_729_000_000
-  @migration {@migration_version, AddRunExecutionCheckpointsV2}
-  @bound_migration_version 20_260_729_010_000
-  @bound_migration {@bound_migration_version, IncreaseRunnerTaskOrchestrationContextBoundV2}
+  @current_migration_version 20_260_904_010_000
+  @current_migration {@current_migration_version, AddCrashSafeRunnerTasksV2}
 
   defmodule UpgradeRepo do
     use Ecto.Repo,
@@ -24,7 +17,7 @@ defmodule FavnStoragePostgres.StorageV2.RunExecutionCheckpointMigrationTest do
       adapter: Ecto.Adapters.Postgres
   end
 
-  test "adds the exact checkpoint authority surface and downgrades cleanly" do
+  test "current recovery schema has exact bounds and rejects in-place downgrade" do
     source_url =
       System.get_env("FAVN_DATABASE_URL") ||
         raise "FAVN_DATABASE_URL is required for PostgreSQL migration tests"
@@ -59,44 +52,42 @@ defmodule FavnStoragePostgres.StorageV2.RunExecutionCheckpointMigrationTest do
 
     assert :ok = Migrations.migrate!(UpgradeRepo)
     assert table_present?()
-    assert runner_context_bound() == 8 * 1_024 * 1_024
+    assert runner_context_bound() == 4 * 4 * 1_024 * 1_024 + 8_192
+
+    current_constraint = runner_constraint_definition()
+    assert current_constraint =~ "THEN 33562624"
+    assert current_constraint =~ "ELSE 4202496"
     assert diagnostics_ready?()
 
-    assert runner_bound("payload") == 12 * 1_024 * 1_024
-    assert [@payload_migration_version] = migrate(@payload_migration, :down)
-    assert runner_bound("payload") == 2 * 1_024 * 1_024
-    assert runner_context_bound() == 8 * 1_024 * 1_024
+    assert_raise RuntimeError, ~r/requires a separate compatible development database/, fn ->
+      Ecto.Migrator.run(
+        UpgradeRepo,
+        [@current_migration],
+        :down,
+        all: true,
+        prefix: "favn_control"
+      )
+    end
 
-    assert [@bound_migration_version] = migrate(@bound_migration, :down)
-    assert runner_context_bound() == 2 * 1_024 * 1_024
-    assert [@bound_migration_version] = migrate(@bound_migration, :up)
-
-    assert [@migration_version] = migrate(:down)
-    refute table_present?()
-
-    assert [@migration_version] = migrate(:up)
-    assert [@payload_migration_version] = migrate(@payload_migration, :up)
-    assert runner_bound("payload") == 12 * 1_024 * 1_024
-    assert runner_context_bound() == 8 * 1_024 * 1_024
-    assert table_present?()
     assert diagnostics_ready?()
-  end
-
-  defp migrate(direction), do: migrate(@migration, direction)
-
-  defp migrate(migration, direction) do
-    Ecto.Migrator.run(
-      UpgradeRepo,
-      [migration],
-      direction,
-      all: true,
-      prefix: "favn_control"
-    )
   end
 
   defp runner_context_bound, do: runner_bound("orchestration_context")
 
   defp runner_bound(column) do
+    definition = runner_constraint_definition()
+
+    [bound] =
+      Regex.run(
+        Regex.compile!("pg_column_size\\(#{column}\\) <= ([0-9]+)"),
+        definition,
+        capture: :all_but_first
+      )
+
+    String.to_integer(bound)
+  end
+
+  defp runner_constraint_definition do
     %{rows: [[definition]]} =
       SQL.query!(
         UpgradeRepo,
@@ -112,14 +103,7 @@ defmodule FavnStoragePostgres.StorageV2.RunExecutionCheckpointMigrationTest do
         []
       )
 
-    [bound] =
-      Regex.run(
-        Regex.compile!("pg_column_size\\(#{column}\\) <= ([0-9]+)"),
-        definition,
-        capture: :all_but_first
-      )
-
-    String.to_integer(bound)
+    definition
   end
 
   defp table_present? do

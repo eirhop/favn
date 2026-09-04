@@ -7,6 +7,10 @@ defmodule Favn.Contracts.RunnerTask.PersistenceSchema do
   alias Favn.Manifest.ExecutionPackage
   alias Favn.Plan.NodeIdentity
 
+  # Values are reconstructed from untrusted persisted data. Dialyzer applies the
+  # declared struct field types and cannot see those invalid runtime shapes.
+  @dialyzer :no_match
+
   @work_ids ~w(run_id asset_step_id manifest_lease_id logical_target_id
     target_descriptor_hash target_generation_id rebuild_operation_id rebuild_action_id rebuild_item_id)a
 

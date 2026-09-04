@@ -155,6 +155,7 @@
              :operation_id,
              :reason,
              :failure_class,
+             :failed_count,
              :service_identity,
              :manifest_version_id,
              :compressed_bytes,
