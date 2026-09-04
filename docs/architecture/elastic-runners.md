@@ -33,30 +33,56 @@ publication success alone does not guarantee that a task fits this bound.
 | Asset task payload | 8,388,608 bytes | Complete uncompressed Erlang term |
 | Complete assignment | 8,454,144 bytes | Payload plus 64 KiB reserved for assignment metadata |
 | Assignment wire payload | 11,272,192 bytes | Base64 of the uncompressed assignment field map |
-| Persisted task payload | 12,582,912 bytes | PostgreSQL JSONB envelope, measured by `pg_column_size` |
+| Persisted asset payload | 33,562,624 bytes | PostgreSQL JSONB typed envelope |
 
-Base64 requires `4 * ceil(raw_bytes / 3)` bytes. An 8 MiB work item expands to
-11,184,812 bytes before its small persistence envelope; the 12 MiB storage bound
-includes envelope headroom. Assignment validation checks both the nested payload
-budget and the complete assignment. Wire decoding checks encoded and decoded sizes
-before safe term decoding, then validates the reconstructed assignment. Compressed
-terms are rejected. Above-budget encoding reports the actual size and limit.
+The wire assignment remains protocol 13 and checks encoded and decoded bounds
+before safe term decoding. Task persistence uses a separate current typed format;
+it does not decode stored ETF. Non-asset payloads/results have a 1 MiB semantic
+limit, owner context 4 MiB, and command receipts 256 KiB. Typed encoding is limited
+to four times the semantic budget, depth 64 and 100,000 nodes, with a small
+PostgreSQL envelope allowance. Wire log limits remain 256 KiB.
 
-Non-asset task payloads and results retain their 1 MiB raw bounds. Log messages
-retain their 256 KiB bound; result, error, and orchestration-context storage limits
-are unchanged. These are BEAM task messages, so HTTP request-body limits do not
-apply. Larger tasks consume more memory per active assignment; limits are finite.
+## Crash recovery
 
-Apply migration `20260904000000` before deploying matching updated control-plane
-and runner builds, and before admitting work that requires the larger budget.
-Task wire/persistence shapes remain protocol 13; no payload rewrite is required.
-Old binaries cannot process larger work even though the version is unchanged.
-Rebuild immutable runner release identities and coordinate both sides; mixed
-builds are unsupported for larger tasks. For rollback, drain large assignments
-and resolve every retained task above the old 1 MiB raw limit first. The down
-migration only rejects rows exceeding the old 2 MiB stored-column constraint;
-a successful downgrade does not prove old codecs can read all rows, since raw
-term size, base64 size, and PostgreSQL compression differ. It never truncates data.
+Every task pins its workspace, retained manifest version/content hash, pool and
+runner release independently of executable data. The Core decoder accepts fixed
+contract fields and types; consumer references come only from that verified
+manifest and its exact, separately retained execution package. Arbitrary loaded
+modules cannot authorize atoms. Custom runner error type/phase labels persist
+as bounded strings; fixed labels and retry/outcome classification remain intact.
+
+Lifecycle commands and receipts use bounded scalar state. Detail reads report
+`available` or `unavailable` separately from the task's committed status. Claim
+examines at most 50 candidates, quarantines malformed never-dispatched tasks as
+failed, and continues to healthy candidates. Previously dispatched work with an
+unproved effect becomes unknown. Dependency failures remain retryable and do
+not quarantine valid work. Receipts preserve the original status/fence; a fenced,
+unusable historical claim lets the runner advance with a new claim command.
+
+The runner claims asynchronously with an independent 200 ms to 30 s backoff.
+Registration and wakeups do not reset a failing claim. Uncertain responses reuse
+the same command; successful claims or explicit supersession release that identity.
+Recovery and claim diagnostics report bounded categories without task contents.
+
+Started acknowledgement atomically records the exact task, original assignment
+and owner fence in the existing materialization claim or target-operation lock.
+An in-flight or unknown write blocks every writer to that workspace/logical
+target even after lease expiry. Same-target windows are serialized because window
+labels do not prove that SQL effects are disjoint. Unrelated targets can proceed.
+Cancellation cannot prove a backend writer stopped. Exact durable success or
+proven no-effect resolves ownership; see the
+[operator procedure](../production/elastic_runners.md#resolve-a-held-write).
+
+A healthy writer on the same logical target causes admission to wait while leases
+renew. Sequential waiting retains one absolute deadline across restart and does
+not consume an execution attempt; unknown writes remain blocked for explicit
+recovery. Pre-activation compatibility inspection requires platform deployment
+authority and workspace administration, is read-only, and carries the same exact
+retained manifest and release pin as other tasks.
+
+Adopting this breaking persistence format requires the explicit
+[fresh development database procedure](../production/upgrade_and_rollback.md#task-persistence-format-adoption).
+After adoption, every restart reuses that database and its retained artifacts.
 
 ## Decision summary
 
@@ -849,10 +875,8 @@ fencing. The decoded task-local orchestration context still has a 4 MiB hard
 safety bound; increasing that bound accommodates legitimate high-fan-in
 settlement data but is not the scaling mechanism.
 
-During the checkpoint-schema rollout only, recovery accepts the exact prior
-pipeline continuation shape, verifies that every active task names the same
-embedded freshness context and stage attempt, and seeds revision one from that
-context. Newly created tasks always use the compact reference shape.
+Recovery requires the current compact checkpoint reference. Prior embedded
+continuation shapes are unsupported; there is no checkpoint conversion path.
 
 ### 5. Replace the execution ledger with queue persistence
 

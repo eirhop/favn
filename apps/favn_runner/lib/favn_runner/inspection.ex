@@ -99,7 +99,7 @@ defmodule FavnRunner.Inspection do
       asset_ref: inspection_asset_ref(asset),
       required_runner_release_id: required_runner_release_id,
       relation_ref: relation_ref,
-      adapter: session.adapter,
+      adapter: Atom.to_string(session.adapter),
       inspected_at: DateTime.utc_now()
     }
     |> maybe_relation(session, relation_ref, include)

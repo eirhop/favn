@@ -2078,16 +2078,27 @@ defmodule FavnStoragePostgres.StorageV2.RunSubmissionsTest do
   defp cancellation_task(fixture, run_id) do
     alias FavnStoragePostgres.RunnerTasks.Codec
 
+    runner_pool = "default"
+    release = FavnTestSupport.runner_release_id()
+    now = DateTime.utc_now()
+
     payload = %Favn.Contracts.RelationInspectionRequest{
       manifest_version_id: fixture.version.manifest_version_id,
-      required_runner_release_id: FavnTestSupport.runner_release_id(),
+      required_runner_release_id: release,
       include: [:columns],
       sample_limit: 0
     }
 
+    {payload, version} =
+      FavnStoragePostgres.TestSupport.TaskManifest.prepare(
+        Map.put(fixture, :now, now),
+        payload,
+        runner_pool,
+        release
+      )
+
     {:ok, encoded, hash} = Codec.encode_payload(:relation_inspection, payload)
-    {:ok, context} = Codec.encode_orchestration_context(%{kind: :test})
-    now = DateTime.utc_now()
+    {:ok, context} = Codec.encode_orchestration_context(%{})
 
     %FavnOrchestrator.Persistence.Commands.EnqueueRunnerTask{
       workspace_context: fixture.workspace_context,
@@ -2095,8 +2106,10 @@ defmodule FavnStoragePostgres.StorageV2.RunSubmissionsTest do
       task_id: "rt_#{random_id()}",
       domain_identity: "domain-#{random_id()}",
       task_kind: :relation_inspection,
-      runner_pool: "cancel-" <> fixture.workspace_id,
-      required_runner_release_id: FavnTestSupport.runner_release_id(),
+      manifest_version_id: version.manifest_version_id,
+      manifest_content_hash: version.content_hash,
+      runner_pool: runner_pool,
+      required_runner_release_id: release,
       retry_class: :safe_to_retry,
       payload: encoded,
       payload_hash: hash,

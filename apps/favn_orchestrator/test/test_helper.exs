@@ -33,13 +33,40 @@ defmodule FavnOrchestrator.TestRunnerTaskStore do
 
     with runner when is_atom(runner) and not is_nil(runner) <-
            Application.get_env(:favn_orchestrator, :test_runner_executor),
-         {:ok, payload} <- PersistenceCodec.decode_payload(command.task_kind, command.payload) do
+         {:ok, version} <-
+           FavnOrchestrator.ManifestStore.get_manifest(
+             FavnOrchestrator.Persistence.SystemContext.platform(:test_task),
+             command.manifest_version_id
+           ),
+         {:ok, packages} <- task_packages(command.payload),
+         {:ok, payload} <-
+           PersistenceCodec.decode_payload(command.task_kind, command.payload, version, packages) do
       opts = Application.get_env(:favn_orchestrator, :test_runner_executor_opts, [])
       task = execute(command, runner, opts, payload)
       Process.put({__MODULE__, command.task_id}, task)
       {:ok, task}
     else
+      {:error, _reason} = error -> error
       _missing -> unavailable()
+    end
+  end
+
+  defp task_packages(envelope) do
+    case PersistenceCodec.package_hash(envelope) do
+      {:ok, nil} ->
+        {:ok, []}
+
+      {:ok, hash} ->
+        with {:ok, package} <-
+               FavnOrchestrator.Persistence.stores().registry.get_execution_package(
+                 struct(FavnOrchestrator.Persistence.Queries.GetExecutionPackage,
+                   content_hash: hash
+                 )
+               ),
+             do: {:ok, [package]}
+
+      error ->
+        error
     end
   end
 
@@ -74,6 +101,8 @@ defmodule FavnOrchestrator.TestRunnerTaskStore do
   def acknowledge_cancellation(_command), do: unavailable()
   def release(_command), do: unavailable()
   def retry(_command), do: unavailable()
+  def get_write_resolution(_command), do: {:ok, nil}
+  def resolve_write(_command), do: unavailable()
   def recover_expired(_command), do: unavailable()
   def reconcile_demand(_command), do: unavailable()
   def open_session(_command), do: unavailable()

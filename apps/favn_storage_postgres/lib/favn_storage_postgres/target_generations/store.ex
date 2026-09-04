@@ -442,7 +442,17 @@ defmodule FavnStoragePostgres.TargetGenerations.Store do
         physical_relation: canonical_json_map(generation.physical_relation),
         physical_schema_fingerprint: generation.physical_schema_fingerprint,
         data_plane_marker: canonical_json_map(generation.data_plane_marker),
-        status: String.to_existing_atom(generation.status),
+        status:
+          Map.fetch!(
+            %{
+              "building" => :building,
+              "active" => :active,
+              "retired" => :retired,
+              "failed" => :failed,
+              "discarded" => :discarded
+            },
+            generation.status
+          ),
         rebuild_operation_id: generation.creating_rebuild_operation_id,
         version: generation.version,
         created_at: generation.created_at,
@@ -471,7 +481,18 @@ defmodule FavnStoragePostgres.TargetGenerations.Store do
         active_generation && canonical_json_map(active_generation.data_plane_marker),
       desired_manifest_id: binding.desired_manifest_id,
       desired_descriptor_hash: binding.desired_descriptor_hash,
-      compatibility_status: String.to_existing_atom(binding.compatibility_status),
+      compatibility_status:
+        Map.fetch!(
+          %{
+            "ready" => :ready,
+            "uninitialized" => :uninitialized,
+            "rebuild_available" => :rebuild_available,
+            "rebuild_required" => :rebuild_required,
+            "unexpected_drift" => :unexpected_drift,
+            "operator_decision" => :operator_decision
+          },
+          binding.compatibility_status
+        ),
       reason_code: binding.reason_code,
       compatibility_diff: binding.compatibility_diff,
       active_physical_fingerprint: binding.active_physical_fingerprint,

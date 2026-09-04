@@ -35,8 +35,13 @@ defmodule FavnLocal.DevelopmentRuntime do
 
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
 
-  def await_ready(timeout_ms \\ @request_timeout_ms),
-    do: GenServer.call(__MODULE__, :await_ready, timeout_ms)
+  def await_ready(timeout_ms \\ @request_timeout_ms)
+      when is_integer(timeout_ms) and timeout_ms > 0 do
+    GenServer.call(__MODULE__, {:await_ready, now_ms() + timeout_ms}, timeout_ms + 250)
+  catch
+    :exit, {:timeout, _call} -> {:error, {:startup_timeout, :coordinator}}
+    :exit, _reason -> {:error, {:startup_unavailable, :coordinator}}
+  end
 
   @doc "Reloads within a bounded caller wait; a timeout does not cancel activation."
   @spec reload(Publication.t(), String.t(), timeout()) ::
@@ -59,6 +64,7 @@ defmodule FavnLocal.DevelopmentRuntime do
          :ok <- Locator.write(config, config.runner_release_id),
          {:ok, runner} <- RunnerProcessLauncher.start(config, config.runner_release_id) do
       schedule(:probe_runner, @probe_interval_ms)
+      schedule(:startup_deadline, runner_start_timeout_ms())
 
       {:ok,
        %{
@@ -86,14 +92,17 @@ defmodule FavnLocal.DevelopmentRuntime do
   end
 
   @impl true
-  def handle_call(:await_ready, _from, %{status: :ready} = state),
+  def handle_call({:await_ready, _deadline}, _from, %{status: :ready} = state),
     do: {:reply, {:ok, summary(state)}, state}
 
-  def handle_call(:await_ready, from, %{status: status} = state)
-      when status in [:starting, :reloading],
-      do: {:noreply, %{state | ready_waiters: [from | state.ready_waiters]}}
+  def handle_call({:await_ready, deadline}, from, %{status: status} = state)
+      when status in [:starting, :reloading] do
+    deadline = min(deadline, state.deadline)
+    schedule(:startup_deadline, max(deadline - now_ms(), 0))
+    {:noreply, %{state | deadline: deadline, ready_waiters: [from | state.ready_waiters]}}
+  end
 
-  def handle_call(:await_ready, _from, state),
+  def handle_call({:await_ready, _deadline}, _from, state),
     do: {:reply, {:error, state.failure || :not_ready}, state}
 
   def handle_call({:reload, _publication, _release_id}, _from, %{retiring: retiring} = state)
@@ -164,6 +173,16 @@ defmodule FavnLocal.DevelopmentRuntime do
   def handle_call(:status, _from, state), do: {:reply, summary(state), state}
 
   @impl true
+  def handle_info(:startup_deadline, %{status: status, retiring: nil} = state)
+      when status == :starting do
+    if now_ms() >= state.deadline do
+      phase = if state.task, do: :deployment, else: :registration
+      fail(state, {:startup_timeout, phase})
+    else
+      {:noreply, state}
+    end
+  end
+
   def handle_info(:probe_runner, %{status: :starting} = state) do
     case RunnerProcessLauncher.refresh_registration(state.runner) do
       {:ok, runner} when state.startup_action == :deploy ->
@@ -283,6 +302,8 @@ defmodule FavnLocal.DevelopmentRuntime do
 
   @impl true
   def terminate(_reason, state) do
+    if state.status == :starting, do: stop_deployment(state)
+
     [state.runner, state.candidate, state.retiring]
     |> Enum.reject(&is_nil/1)
     |> Enum.each(&RunnerProcessLauncher.stop/1)
@@ -298,6 +319,8 @@ defmodule FavnLocal.DevelopmentRuntime do
         {_from, publication, _release_id} -> publication
         _none -> state.publication
       end
+
+    schedule(:startup_deadline, max(state.deadline - now_ms(), 0))
 
     task =
       Task.Supervisor.async_nolink(FavnLocal.TaskSupervisor, fn ->
@@ -505,6 +528,7 @@ defmodule FavnLocal.DevelopmentRuntime do
       if unknown? and not match?({:reload_outcome_unknown, _}, reason),
         do: {:reload_outcome_unknown, reason},
         else: reason
+
     reply_request(state, {:error, reason})
     reply_waiters(state.ready_waiters, {:error, reason})
     state = detach_task(state)
@@ -626,13 +650,28 @@ defmodule FavnLocal.DevelopmentRuntime do
     {:noreply, %{state | task: task, request: {:stop, from}}}
   end
 
+  defp stop_deployment(%{task: %Task{} = task} = state) do
+    Task.shutdown(task, :brutal_kill)
+    %{state | task: nil}
+  end
+
+  defp stop_deployment(state), do: state
+
   defp fail(state, reason) do
     reason =
       if state.status == :reloading and state.task,
         do: {:reload_outcome_unknown, reason},
         else: reason
 
-    state = detach_task(state)
+    state =
+      if state.status == :starting do
+        state = stop_deployment(state)
+        Enum.each([state.runner, state.candidate] |> Enum.reject(&is_nil/1), &stop_runner/1)
+        state
+      else
+        detach_task(state)
+      end
+
     reply_waiters(state.ready_waiters, {:error, reason})
 
     case state.request do

@@ -2,6 +2,7 @@ defmodule FavnOrchestrator.AssetRunnerTasks do
   @moduledoc false
 
   alias Favn.Contracts.RunnerTask.PersistenceCodec
+  alias FavnOrchestrator.RunnerTaskContext
   alias Favn.Contracts.RunnerWork
   alias FavnOrchestrator.Persistence.Commands.EnqueueRunnerTask
   alias FavnOrchestrator.Persistence.SystemContext
@@ -27,7 +28,7 @@ defmodule FavnOrchestrator.AssetRunnerTasks do
     with {:ok, runner_pool} <- Favn.RunnerPool.encode(work.runner_pool),
          {:ok, payload, payload_hash} <- PersistenceCodec.encode_payload(:asset_attempt, work),
          {:ok, orchestration_context} <-
-           PersistenceCodec.encode_orchestration_context(context),
+           RunnerTaskContext.encode(context),
          {:ok, task} <-
            RunnerTasks.enqueue(%EnqueueRunnerTask{
              workspace_context:
@@ -36,6 +37,19 @@ defmodule FavnOrchestrator.AssetRunnerTasks do
              task_id: task_id,
              domain_identity: domain_identity(run, work, node_key, attempt),
              task_kind: :asset_attempt,
+             manifest_version_id: work.manifest_version_id,
+             manifest_content_hash: work.manifest_content_hash,
+             write_claim_key: get_in(context, [:materialization_claim, :claim_key]),
+             write_claim_fence: get_in(context, [:materialization_claim, :fencing_token]),
+             write_target_id:
+               if(RunnerWork.runtime_input_resolution_only?(work),
+                 do: nil,
+                 else:
+                   if(context[:materialization_claim],
+                     do: Favn.TargetIdentity.for_asset(work.asset_ref),
+                     else: work.logical_target_id
+                   )
+               ),
              runner_pool: runner_pool,
              required_runner_release_id: work.required_runner_release_id,
              retry_class: :unknown_do_not_retry,

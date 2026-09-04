@@ -76,6 +76,14 @@ defmodule FavnOrchestrator.OperationRunnerTasksTest do
       end)
     end
 
+    def close_session(_command), do: unavailable()
+    def open_session(_command), do: unavailable()
+    def page_session_tasks(_command), do: unavailable()
+    def page_sessions(_command), do: unavailable()
+    def prune_sessions(_command), do: unavailable()
+    def reconcile_sessions(_command), do: unavailable()
+    def session_window_totals(_command), do: unavailable()
+    def workspace_task_stats(_command), do: unavailable()
     def claim(_command), do: unavailable()
     def transition(_command), do: unavailable()
     def persist_runtime_inputs(_command), do: unavailable()
@@ -121,6 +129,8 @@ defmodule FavnOrchestrator.OperationRunnerTasksTest do
       end)
     end
 
+    def resolve_write(_command), do: unavailable()
+    def get_write_resolution(_command), do: unavailable()
     def recover_expired(_command), do: unavailable()
     def reconcile_demand(_command), do: unavailable()
     def ensure_demand(_command), do: unavailable()

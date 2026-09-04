@@ -121,6 +121,7 @@ defmodule FavnOrchestrator do
                start_operator_target_recovery: 4,
                get_operator_target_recovery: 2,
                reconcile_operator_target_recovery: 3,
+               resolve_operator_task_write: 4,
                list_logs: 3,
                replay_logs: 4,
                authorize_logs_subscription: 2,
@@ -1085,6 +1086,58 @@ defmodule FavnOrchestrator do
            {:ok, OperatorTargetRecovery.operation(operation, true)}}
         end
       )
+    end
+  end
+
+  @doc """
+  Resolves one held task write after administrator reauthorization.
+
+  `proof` follows `FavnOrchestrator.TargetRecovery.resolve_task_write/4`.
+  The administrator attests that the runner and backend can no longer write.
+  Required options are `:idempotency_key` and a stable `:issued_at` DateTime;
+  reuse both unchanged when retrying an uncertain response. This records proof
+  and releases only the matching exclusion; it does not retry the task or change
+  its recorded outcome.
+  """
+  @spec resolve_operator_task_write(OperatorContext.t(), String.t(), map(), keyword()) ::
+          {:ok, map()} | {:error, term()}
+  def resolve_operator_task_write(%OperatorContext{} = operator_context, task_id, proof, opts)
+      when is_binary(task_id) and is_list(opts) do
+    with {:ok, context, actor} <- authorize_operator_context(operator_context, :admin),
+         :ok <- TargetRecovery.WriteResolution.validate(proof),
+         %DateTime{} = issued_at <- Keyword.get(opts, :issued_at),
+         {:ok, intent} <-
+           begin_operator_command(
+             context,
+             operator_context,
+             actor,
+             "target_recovery.resolve_write",
+             "runner_task",
+             task_id,
+             %{task_id: task_id, proof: proof, issued_at: issued_at},
+             opts
+           ),
+         result <-
+           TargetRecovery.resolve_task_write(
+             context,
+             task_id,
+             proof,
+             Keyword.put(opts, :command_id, "write-resolution:" <> intent.key_hash)
+           ) do
+      finish_operator_result(
+        context,
+        operator_context,
+        actor,
+        intent,
+        "runner_task",
+        task_id,
+        result,
+        fn resolution -> {task_id, resolution, {:ok, resolution}} end
+      )
+    else
+      nil -> {:error, :write_resolution_command_identity_required}
+      {:error, _reason} = error -> error
+      _invalid -> {:error, :invalid_write_resolution_command}
     end
   end
 

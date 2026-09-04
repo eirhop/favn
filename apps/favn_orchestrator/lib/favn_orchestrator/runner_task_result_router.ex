@@ -106,9 +106,12 @@ defmodule FavnOrchestrator.RunnerTaskResultRouter do
     max_concurrency = Keyword.get(opts, :max_concurrency, @default_max_concurrency)
 
     if is_integer(max_concurrency) and max_concurrency > 0 do
+      Process.send_after(self(), :poll, 1_000)
+
       {:ok,
        %{
          checks: %{},
+         poll_cursor: nil,
          max_concurrency: max_concurrency,
          monitors: %{},
          task_supervisor:
@@ -158,6 +161,11 @@ defmodule FavnOrchestrator.RunnerTaskResultRouter do
   end
 
   @impl true
+  def handle_cast({:notify, %{data_state: :not_loaded}}, state) do
+    send(self(), :check_waiters)
+    {:noreply, state}
+  end
+
   def handle_cast({:notify, %{workspace_id: workspace_id, task_id: task_id} = task}, state) do
     key = {workspace_id, task_id}
     {waiters, remaining} = Map.pop(state.waiters, key, [])
@@ -193,6 +201,50 @@ defmodule FavnOrchestrator.RunnerTaskResultRouter do
   end
 
   @impl true
+  def handle_info(:poll, state) do
+    Process.send_after(self(), :poll, 1_000)
+    handle_info(:check_waiters, state)
+  end
+
+  def handle_info(:check_waiters, state) do
+    candidates =
+      for {key, waiters} <- state.waiters,
+          %{check_ref: nil} = waiter <- waiters,
+          do: {key, waiter}
+
+    {before, after_cursor} =
+      candidates
+      |> Enum.sort_by(fn {key, waiter} -> {key, waiter.monitor_ref} end)
+      |> Enum.split_while(fn {key, waiter} ->
+        state.poll_cursor != nil and {key, waiter.monitor_ref} <= state.poll_cursor
+      end)
+
+    state =
+      (after_cursor ++ before)
+      |> Enum.take(max(state.max_concurrency - map_size(state.checks), 0))
+      |> Enum.reduce(state, fn {{workspace, task_id} = key, waiter}, state ->
+        task =
+          Task.Supervisor.async_nolink(state.task_supervisor, fn ->
+            get_task(workspace, task_id)
+          end)
+
+        state = update_waiter(state, key, waiter.monitor_ref, &%{&1 | check_ref: task.ref})
+
+        %{
+          state
+          | poll_cursor: {key, waiter.monitor_ref},
+            checks:
+              Map.put(state.checks, task.ref, %{
+                key: key,
+                monitor_ref: waiter.monitor_ref,
+                task_pid: task.pid
+              })
+        }
+      end)
+
+    {:noreply, state}
+  end
+
   def handle_info({ref, result}, state) when is_reference(ref) do
     Process.demonitor(ref, [:flush])
 
@@ -233,7 +285,7 @@ defmodule FavnOrchestrator.RunnerTaskResultRouter do
       {waiter, state} ->
         {workspace_id, task_id} = key
         send(waiter.pid, {:runner_task_result, workspace_id, task_id, task})
-        GenServer.reply(waiter.from, :ready)
+        if waiter.from, do: GenServer.reply(waiter.from, :ready)
         demonitor_waiter(state, waiter)
     end
   end
@@ -248,7 +300,7 @@ defmodule FavnOrchestrator.RunnerTaskResultRouter do
         send(waiter.pid, {:runner_task_started, workspace_id, task_id, task})
       end
 
-      GenServer.reply(waiter.from, :waiting)
+      if waiter.from, do: GenServer.reply(waiter.from, :waiting)
       %{waiter | check_ref: nil, from: nil}
     end)
   end
@@ -260,6 +312,13 @@ defmodule FavnOrchestrator.RunnerTaskResultRouter do
     do: fail_check(state, key, monitor_ref, {:invalid_runner_task_read_result, invalid})
 
   defp fail_check(state, key, monitor_ref, reason) do
+    case Enum.find(Map.get(state.waiters, key, []), &(&1.monitor_ref == monitor_ref)) do
+      %{from: nil} -> update_waiter(state, key, monitor_ref, &%{&1 | check_ref: nil})
+      _waiter -> fail_subscription(state, key, monitor_ref, reason)
+    end
+  end
+
+  defp fail_subscription(state, key, monitor_ref, reason) do
     case take_waiter(state, key, monitor_ref) do
       {nil, state} ->
         state

@@ -64,6 +64,116 @@ defmodule FavnRunner.RunnerAgentTest do
     end
   end
 
+  defmodule FailingClaimsControlPlane do
+    use GenServer
+    def start_link(owner), do: GenServer.start_link(__MODULE__, owner)
+    def init(owner), do: {:ok, owner}
+    def handle_call(:gateway, _from, owner), do: {:reply, {:ok, self()}, owner}
+
+    def handle_call({:register, registration, agent}, _from, owner) do
+      send(owner, {:claim_test_registered, agent})
+
+      {:reply,
+       {:ok,
+        %RunnerTask.RegistrationAck{
+          runner_instance_id: registration.runner_instance_id,
+          runner_session_generation: 1,
+          status: :accepted
+        }}, owner}
+    end
+
+    def handle_call(
+          {:request, %RunnerTask.ClaimRequest{} = request},
+          _from,
+          {owner, :superseded} = state
+        ) do
+      send(owner, {:claim_test_request, request})
+
+      {:reply,
+       {:error, %{kind: :fenced, details: %{reason_code: "runner_task_claim_superseded"}}}, state}
+    end
+
+    def handle_call({:request, %RunnerTask.ClaimRequest{} = request}, _from, owner) do
+      send(owner, {:claim_test_request, request})
+      {:reply, {:error, %{kind: :invalid, message: "private task payload"}}, owner}
+    end
+  end
+
+  test "a superseded unusable claim gets a fresh command without reconnecting" do
+    control_plane = start_supervised!({FailingClaimsControlPlane, self()})
+
+    agent =
+      start_supervised!(
+        {RunnerAgent,
+         name: nil,
+         connection: control_plane,
+         runner_pool: :duckdb,
+         lifecycle_mode: :resident,
+         exit_fun: fn _ -> :ok end}
+      )
+
+    assert_receive {:claim_test_registered, ^agent}
+    assert_receive {:claim_test_request, first}
+    assert_eventually(fn -> :sys.get_state(agent).claim_retry_count == 1 end)
+    state = :sys.get_state(agent)
+    Process.cancel_timer(state.claim_retry_timer)
+    # The reply establishes that the previous durable assignment has been fenced.
+    owner = self()
+    :sys.replace_state(control_plane, fn _ -> {owner, :superseded} end)
+    send(agent, {:retry_claim, state.claim_retry_token})
+    assert_receive {:claim_test_request, ^first}
+    assert_eventually(fn -> :sys.get_state(agent).claim_retry_count == 2 end)
+    state = :sys.get_state(agent)
+    assert state.pending_claim == nil
+    Process.cancel_timer(state.claim_retry_timer)
+    send(agent, {:retry_claim, state.claim_retry_token})
+    assert_receive {:claim_test_request, next}
+    refute next.command_id == first.command_id
+    refute_received {:claim_test_registered, ^agent}
+  end
+
+  test "claim failures retain their command and independent backoff across registration and wakes" do
+    previous_level = Logger.level()
+    Logger.configure(level: :warning)
+    on_exit(fn -> Logger.configure(level: previous_level) end)
+    control_plane = start_supervised!({FailingClaimsControlPlane, self()})
+
+    log =
+      capture_log(fn ->
+        agent =
+          start_supervised!(
+            {RunnerAgent,
+             name: nil,
+             connection: control_plane,
+             runner_pool: :duckdb,
+             lifecycle_mode: :resident,
+             exit_fun: fn _ -> :ok end}
+          )
+
+        assert_receive {:claim_test_registered, ^agent}
+        assert_receive {:claim_test_request, first}
+        assert_eventually(fn -> :sys.get_state(agent).claim_retry_count == 1 end)
+        state = :sys.get_state(agent)
+        assert Process.read_timer(state.claim_retry_timer) in 1..240
+        send(agent, :connect)
+        assert_receive {:claim_test_registered, ^agent}
+        assert :sys.get_state(agent).claim_retry_count == 1
+        for _ <- 1..20, do: send(agent, :claim)
+        assert :sys.get_state(agent).claim_retry_token == state.claim_retry_token
+        Process.cancel_timer(state.claim_retry_timer)
+        send(agent, {:retry_claim, state.claim_retry_token})
+        assert_receive {:claim_test_request, ^first}
+        assert_eventually(fn -> :sys.get_state(agent).claim_retry_count == 2 end)
+        state = :sys.get_state(agent)
+        assert Process.read_timer(state.claim_retry_timer) in 241..480
+        GenServer.stop(agent)
+      end)
+
+    assert log =~ "runner_task_claim_failed"
+    refute log =~ "private task payload"
+    assert length(Regex.scan(~r/runner_task_claim_failed/, log)) == 1
+  end
+
   defmodule RejectedControlPlane do
     use GenServer
 
@@ -1076,14 +1186,40 @@ defmodule FavnRunner.RunnerAgentTest do
     def handle_call({:request, %RunnerTask.Started{} = started}, _from, state) do
       send(state.owner, {:started_after_preparation, started})
 
-      if state[:lose_first_started_ack?] and state.started_count == 0 do
-        {:reply, {:error, :control_plane_unavailable}, %{state | started_count: 1}}
-      else
-        {:reply, {:ok, %{status: :running}}, %{state | started_count: state.started_count + 1}}
+      cond do
+        state[:write_busy?] ->
+          {:reply, {:error, %{details: %{reason_code: "target_write_in_progress"}}}, state}
+
+        state[:lose_first_started_ack?] == true and state.started_count == 0 ->
+          {:reply, {:error, :control_plane_unavailable}, %{state | started_count: 1}}
+
+        true ->
+          {:reply, {:ok, %{status: :running}}, %{state | started_count: state.started_count + 1}}
       end
     end
 
+    def handle_call({:request, %RunnerTask.LogBatch{} = batch}, _from, state) do
+      ack = %RunnerTask.LogAck{
+        workspace_id: batch.workspace_id,
+        task_id: batch.task_id,
+        runner_instance_id: batch.runner_instance_id,
+        runner_session_generation: batch.runner_session_generation,
+        assignment_generation: batch.assignment_generation,
+        batch_id: batch.batch_id,
+        sequence: batch.sequence
+      }
+
+      {:reply, {:ok, ack}, state}
+    end
+
+    def handle_call({:request, %RunnerTask.CancellationAck{} = ack}, _from, state) do
+      send(state.owner, {:waiting_cancellation_ack, ack})
+      {:reply, :ok, state}
+    end
+
     def handle_call({:request, %RunnerTask.Result{} = result}, _from, state) do
+      send(state.owner, {:preparation_task_result, result})
+
       ack = %RunnerTask.ResultAck{
         workspace_id: result.workspace_id,
         task_id: result.task_id,
@@ -1109,6 +1245,8 @@ defmodule FavnRunner.RunnerAgentTest do
        |> Map.delete(:fetch_from)
        |> Map.put(:preparation_released?, true)}
     end
+
+    def handle_info(:release_writer, state), do: {:noreply, Map.put(state, :write_busy?, false)}
 
     def handle_info(:release_second_started, %{started_from: from} = state) do
       GenServer.reply(from, {:ok, %{status: :running}})
@@ -1160,6 +1298,94 @@ defmodule FavnRunner.RunnerAgentTest do
     send(control_plane, :release_preparation)
     assert_receive {:started_after_preparation, %RunnerTask.Started{}}, 1_000
     assert Process.alive?(agent)
+  end
+
+  test "waiting for a healthy writer retains Started identity and allows renewal and cancellation" do
+    {version, work} = executable_work("write_admission_wait")
+
+    control_plane =
+      start_supervised!(
+        {BlockingPreparationControlPlane,
+         owner: self(), version: version, work: work, write_busy?: true}
+      )
+
+    agent =
+      start_supervised!(
+        {RunnerAgent,
+         name: nil,
+         connection: control_plane,
+         runner_pool: :duckdb,
+         lifecycle_mode: :resident,
+         exit_fun: fn _ -> :ok end}
+      )
+
+    assert_receive :preparation_blocked, 1_000
+    send(control_plane, :release_preparation)
+    assert_receive {:started_after_preparation, first}, 1_000
+    assert_receive {:started_after_preparation, replay}, 1_000
+    assert first == replay
+    assert_receive {:renewed_during_preparation, %RunnerTask.LeaseRenewal{}}, 1_000
+    state = :sys.get_state(agent)
+    assert state.executor == nil
+    send(agent, {:favn_runner_task, cancellation(state.assignment, "cancel-waiting-writer")})
+    assert_receive {:waiting_cancellation_ack, %{status: :observed}}, 1_000
+    assert Process.alive?(agent)
+    assert :sys.get_state(agent).executor == nil
+  end
+
+  test "manifest lease survives multiple write-wait horizons and then executes once" do
+    previous = Application.get_env(:favn_runner, :runner_task_lease_ms)
+    Application.put_env(:favn_runner, :runner_task_lease_ms, 300)
+
+    on_exit(fn ->
+      if previous,
+        do: Application.put_env(:favn_runner, :runner_task_lease_ms, previous),
+        else: Application.delete_env(:favn_runner, :runner_task_lease_ms)
+    end)
+
+    {version, work} = executable_work("long_write_wait", __MODULE__.CompletingAsset)
+
+    control_plane =
+      start_supervised!(
+        {BlockingPreparationControlPlane,
+         owner: self(), version: version, work: work, write_busy?: true}
+      )
+
+    agent =
+      start_supervised!(
+        {RunnerAgent,
+         name: nil,
+         connection: control_plane,
+         runner_pool: :duckdb,
+         lifecycle_mode: :resident,
+         exit_fun: fn _ -> :ok end}
+      )
+
+    assert_receive :preparation_blocked, 1_000
+    send(control_plane, :release_preparation)
+    assert_receive {:started_after_preparation, first}, 1_000
+    # Three retry barriers span 750 ms, exceeding two 300 ms lease horizons.
+    for _ <- 1..3 do
+      assert_receive {:started_after_preparation, ^first}, 1_000
+    end
+
+    state = :sys.get_state(agent)
+
+    assert {:ok, _, _, _} =
+             FavnRunner.ManifestStore.fetch_execution_bundle(
+               state.manifest_lease_id,
+               version.manifest_version_id,
+               version.content_hash,
+               work.asset_ref,
+               nil
+             )
+
+    send(control_plane, :release_writer)
+    assert_receive {:preparation_task_result, result}, 2_000
+    assert result.outcome == :succeeded
+    assert result.assignment_generation == 1
+    assert hd(result.result.asset_results).attempt_count == 1
+    refute_receive {:preparation_task_result, _}, 100
   end
 
   test "Started preserves its issued-at timestamp after renewal and an acknowledgement loss" do
@@ -2539,10 +2765,10 @@ defmodule FavnRunner.RunnerAgentTest do
     assert Process.alive?(agent)
   end
 
-  defp executable_work(suffix) do
+  defp executable_work(suffix, module \\ __MODULE__.SlowAsset) do
     asset = %Favn.Manifest.Asset{
-      ref: {__MODULE__.SlowAsset, :asset},
-      module: __MODULE__.SlowAsset,
+      ref: {module, :asset},
+      module: module,
       name: :asset,
       type: :elixir,
       execution: %{entrypoint: :asset, arity: 1}
@@ -2668,6 +2894,10 @@ defmodule FavnRunner.RunnerAgentTest do
       Process.sleep(10)
       assert_eventually(fun, attempts - 1)
     end
+  end
+
+  defmodule CompletingAsset do
+    def asset(_context), do: {:ok, %{value: 1}}
   end
 
   defmodule SlowAsset do

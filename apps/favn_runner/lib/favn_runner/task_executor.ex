@@ -77,7 +77,7 @@ defmodule FavnRunner.TaskExecutor do
   end
 
   defp init_asset(assignment, work, owner) do
-    if runtime_input_resolution_only?(work) do
+    if RunnerWork.runtime_input_resolution_only?(work) do
       {:ok,
        %{
          assignment: assignment,
@@ -346,13 +346,6 @@ defmodule FavnRunner.TaskExecutor do
       asset_results: [],
       metadata: RunnerWork.lifecycle_metadata(work)
     }
-  end
-
-  defp runtime_input_resolution_only?(%RunnerWork{metadata: metadata}) do
-    Map.get(metadata, :runner_task_mode, Map.get(metadata, "runner_task_mode")) in [
-      :runtime_input_resolution,
-      "runtime_input_resolution"
-    ]
   end
 
   defp guarded_operation(%Assignment{} = assignment, payload) do

@@ -39,7 +39,8 @@ defmodule FavnOrchestrator.RunServer.Execution.StepAttemptLifecycle do
           required(:retry_after_ms) => non_neg_integer(),
           required(:retry_policy) => Policy.t(),
           required(:retry_policy_source) => Favn.Plan.retry_policy_source(),
-          required(:execution_pool) => atom() | String.t() | nil
+          required(:execution_pool) => atom() | String.t() | nil,
+          optional(:admission_deadline_ms) => integer()
         }
 
   @type t :: %__MODULE__{

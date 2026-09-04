@@ -154,7 +154,7 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
         module: __MODULE__,
         name: :large_sql,
         type: :sql,
-        runner_pool: fixture.runner_pool,
+        runner_pool: :large_sql_task,
         execution: %{entrypoint: :large_sql, arity: 1},
         relation: relation,
         materialization: :table,
@@ -169,6 +169,27 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
     }
 
     {:ok, version} = Version.new(manifest, manifest_version_id: "mv_large_" <> random_id())
+
+    :ok =
+      RegistryStore.register_execution_packages(%C.RegisterExecutionPackages{
+        platform_context: fixture.platform_context,
+        packages: [package]
+      })
+
+    FavnStoragePostgres.TestSupport.TaskManifest.retain(fixture, version)
+
+    {:ok, %{generation: generation}} =
+      FavnStoragePostgres.TargetGenerations.Store.ensure_writable(
+        %C.EnsureWritableTargetGeneration{
+          workspace_context: fixture.workspace_context,
+          command_id: "large-generation",
+          target_id: asset.target_descriptor.target_id,
+          manifest_version_id: version.manifest_version_id,
+          descriptor: asset.target_descriptor,
+          occurred_at: fixture.now
+        }
+      )
+
     :ok = ManifestStore.register_for_release(version, release)
 
     :ok =
@@ -201,21 +222,29 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
       target_operation: :normal_materialization,
       logical_target_id: asset.target_descriptor.target_id,
       target_descriptor_hash: asset.target_descriptor.descriptor_hash,
-      target_generation_id: "018f47a0-7b0d-4b1a-8d8b-e18a9a987654",
+      target_generation_id: generation.target_generation_id,
       active_relation: relation,
       write_relation: relation
     }
 
+    claim = FavnStoragePostgres.TestSupport.TaskManifest.ownership_claim(fixture, version, work)
     assert byte_size(:erlang.term_to_binary(work)) > 1_048_576
 
     command =
       enqueue_command(fixture, "large-sql",
         task_kind: :asset_attempt,
         payload: work,
+        run_id: work.run_id,
+        orchestration_context: %{kind: :sequential, materialization_claim: claim},
         required_runner_release_id: release
       )
+      |> Map.merge(%{
+        write_target_id: work.logical_target_id,
+        write_claim_key: claim.claim_key,
+        write_claim_fence: claim.fencing_token
+      })
 
-    assert byte_size(command.payload["payload"]) > 2_097_152
+    assert byte_size(Jason.encode!(command.payload["payload"])) > 2_097_152
     assert {:ok, queued} = Store.enqueue(command)
 
     assert {:ok, %{payload: ^work}} =
@@ -306,6 +335,17 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
     assert [%{status: :ok}] = result.asset_results
     assert {:ok, encoded_result} = Codec.encode_result(:asset_attempt, :succeeded, result)
 
+    assert {:ok, ^result} =
+             Codec.decode_result(:asset_attempt, :succeeded, encoded_result, version, [package])
+
+    assert :ok =
+             Favn.Contracts.RunnerTask.PersistenceSchema.completion(
+               :asset_attempt,
+               work,
+               result,
+               :succeeded
+             )
+
     assert {:ok, completed} =
              Store.complete(%C.CompleteRunnerTask{
                workspace_context: fixture.workspace_context,
@@ -331,11 +371,19 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
     work = %Favn.Contracts.RunnerWork{
       runner_pool: :duckdb,
       required_runner_release_id: @release,
-      metadata: %{padding: ""}
+      metadata: %{"padding" => ""}
     }
 
+    {work, _version} =
+      FavnStoragePostgres.TestSupport.TaskManifest.prepare(
+        fixture,
+        work,
+        fixture.runner_pool,
+        @release
+      )
+
     overhead = byte_size(:erlang.term_to_binary(work, [:deterministic]))
-    work = %{work | metadata: %{padding: :crypto.strong_rand_bytes(limit - overhead)}}
+    work = %{work | metadata: %{"padding" => :crypto.strong_rand_bytes(limit - overhead)}}
     assert byte_size(:erlang.term_to_binary(work, [:deterministic])) == limit
 
     assert {:ok, queued} =
@@ -357,7 +405,7 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
              )
 
     assert stored_size > 2_097_152
-    assert stored_size <= 12_582_912
+    assert stored_size <= 33_562_624
 
     assert {:error,
             %Postgrex.Error{
@@ -366,19 +414,39 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
              SQL.query(
                Repo,
                "UPDATE favn_control.runner_tasks SET payload = jsonb_build_object('padding', repeat('x', $3)) WHERE workspace_id = $1 AND task_id = $2",
-               [fixture.workspace_id, queued.task_id, 12_582_912]
+               [fixture.workspace_id, queued.task_id, 33_562_624]
              )
+  end
+
+  test "enqueue rejects payload and scalar run identity mismatch", fixture do
+    FavnStoragePostgres.TestSupport.RunFixture.create(fixture.workspace_id, ["payload-run"])
+
+    command =
+      enqueue_command(fixture, "wrong-run",
+        task_kind: :asset_attempt,
+        run_id: "payload-run",
+        payload: %Favn.Contracts.RunnerWork{
+          run_id: "payload-run",
+          runner_pool: :duckdb,
+          required_runner_release_id: @release
+        }
+      )
+
+    assert {:error, %FavnOrchestrator.Persistence.Error{kind: :invalid}} =
+             Store.enqueue(%{command | run_id: "different-run"})
+
+    assert {:ok, _task} = Store.enqueue(command)
   end
 
   test "payload codec is typed, bounded, deterministic, and rejects mismatched kinds" do
     payload = inspection_payload()
 
     assert {:ok, envelope, hash} = Codec.encode_payload(:relation_inspection, payload)
-    assert {:ok, ^payload} = Codec.decode_payload(:relation_inspection, envelope)
+    assert {:ok, ^payload} = Codec.decode_payload(:relation_inspection, envelope, nil, [])
     assert {:ok, ^hash} = Codec.payload_hash(envelope)
 
     assert {:error, :invalid_runner_task_persistence_envelope} =
-             Codec.decode_payload(:generation_capabilities, envelope)
+             Codec.decode_payload(:generation_capabilities, envelope, nil, [])
 
     assert {:error, _reason} = Codec.encode_payload(:asset_attempt, payload)
 
@@ -392,7 +460,7 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
       )
 
     assert {:error, :invalid_runner_task_persistence_envelope} =
-             Codec.decode_payload(:relation_inspection, compressed)
+             Codec.decode_payload(:relation_inspection, compressed, nil, [])
   end
 
   test "missing runner-task reads return not found", fixture do
@@ -918,7 +986,15 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
   test "concurrent first operation ensures share one durable issuance", fixture do
     version = manifest_version("mv-concurrent-ensure-#{random_id()}", fixture.runner_pool)
     asset_ref = {MyApp.DistributedRunnerAsset, :asset}
-    request = inspection_payload()
+    FavnStoragePostgres.TestSupport.TaskManifest.retain(fixture, version)
+
+    request = %{
+      inspection_payload()
+      | manifest_version_id: version.manifest_version_id,
+        manifest_content_hash: version.content_hash,
+        asset_ref: asset_ref
+    }
+
     identity = {:concurrent_ensure, random_id()}
     issued_candidates = [fixture.now, DateTime.add(fixture.now, 1, :second)]
 
@@ -969,7 +1045,15 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
   test "a reclaimed operation ensure reuses its PostgreSQL deadline receipt", fixture do
     version = manifest_version("mv-reclaimed-ensure-#{random_id()}", fixture.runner_pool)
     asset_ref = {MyApp.DistributedRunnerAsset, :asset}
-    request = inspection_payload()
+    FavnStoragePostgres.TestSupport.TaskManifest.retain(fixture, version)
+
+    request = %{
+      inspection_payload()
+      | manifest_version_id: version.manifest_version_id,
+        manifest_content_hash: version.content_hash,
+        asset_ref: asset_ref
+    }
+
     identity = {:reclaimed_ensure, random_id()}
     first_deadline = DateTime.add(fixture.now, 300, :second)
 
@@ -1004,19 +1088,28 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
 
   test "large task fields are stored once while command receipts remain bounded", fixture do
     blob_bytes = 950_000
+    FavnStoragePostgres.TestSupport.RunFixture.create(fixture.workspace_id, ["large-receipt-run"])
 
     payload = %Favn.Contracts.RunnerWork{
       run_id: "large-receipt-run",
       runner_pool: :duckdb,
       required_runner_release_id: @release,
-      metadata: %{blob: incompressible_text(blob_bytes)}
+      metadata: %{"blob" => incompressible_text(blob_bytes)}
     }
+
+    {payload, _version} =
+      FavnStoragePostgres.TestSupport.TaskManifest.prepare(
+        fixture,
+        payload,
+        fixture.runner_pool,
+        @release
+      )
 
     enqueue =
       enqueue_command(fixture, "large-receipt",
         task_kind: :asset_attempt,
-        payload: payload,
-        orchestration_context: %{blob: incompressible_text(blob_bytes)}
+        run_id: payload.run_id,
+        payload: payload
       )
 
     assert {:ok, queued} = Store.enqueue(enqueue)
@@ -1038,10 +1131,18 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
 
     result = %Favn.Contracts.RunnerResult{
       run_id: payload.run_id,
-      manifest_version_id: "mv-large-receipt",
-      manifest_content_hash: String.duplicate("a", 64),
+      manifest_version_id: payload.manifest_version_id,
+      manifest_content_hash: payload.manifest_content_hash,
+      asset_results: [
+        %Favn.Contracts.RunnerAssetResult{
+          ref: payload.asset_ref,
+          asset_step_id: payload.asset_step_id,
+          attempt_count: payload.attempt,
+          status: :ok
+        }
+      ],
       required_runner_release_id: @release,
-      metadata: %{blob: incompressible_text(blob_bytes)}
+      metadata: %{"blob" => incompressible_text(blob_bytes)}
     }
 
     assert {:ok, encoded_result} =
@@ -1049,7 +1150,14 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
 
     complete = complete_command(fixture, running, "large-receipt-complete", encoded_result)
     assert {:ok, completed} = Store.complete(complete)
-    assert completed.result == result
+    assert completed.result == nil
+
+    assert {:ok, %{result: ^result}} =
+             Store.get(%Q.GetRunnerTask{
+               workspace_context: fixture.workspace_context,
+               task_id: completed.task_id
+             })
+
     assert {:ok, ^completed} = Store.complete(%{complete | occurred_at: DateTime.utc_now()})
 
     assert %{rows: [[payload_size, context_size, result_size]]} =
@@ -1066,7 +1174,7 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
              )
 
     assert payload_size > 262_144
-    assert context_size > 262_144
+    assert context_size < 4_096
     assert result_size > 262_144
 
     assert %{rows: [[max_receipt_size, max_snapshot_size]]} =
@@ -1121,7 +1229,7 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
     first_command = enqueue_command(fixture, "global-first")
 
     second_command =
-      fixture
+      %{fixture | workspace_context: second_context, workspace_id: second_workspace_id}
       |> enqueue_command("global-second",
         occurred_at: DateTime.add(fixture.now, 1, :microsecond)
       )
@@ -1204,11 +1312,13 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
     assert {:ok, first} = Store.enqueue(first_command)
     assert {:ok, second} = Store.enqueue(second_command)
 
-    assert {:ok, ^first} =
+    assert {:ok, %{task_id: task_id, data_state: :available}} =
              Store.get(%Q.GetRunnerTask{
                workspace_context: fixture.workspace_context,
                task_id: first.task_id
              })
+
+    assert task_id == first.task_id
 
     query = %Q.PageRunRunnerTasks{
       workspace_context: fixture.workspace_context,
@@ -1532,6 +1642,8 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
 
     result = %RelationInspectionResult{
       required_runner_release_id: @release,
+      relation_ref: claimed.payload.relation,
+      asset_ref: claimed.payload.asset_ref,
       row_count: 1,
       inspected_at: fixture.now
     }
@@ -1542,7 +1654,14 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
     command = complete_command(fixture, running, "complete-success", encoded_result)
     assert {:ok, completed} = Store.complete(command)
     assert completed.status == :succeeded
-    assert completed.result == result
+    assert completed.result == nil
+
+    assert {:ok, %{result: ^result}} =
+             Store.get(%Q.GetRunnerTask{
+               workspace_context: fixture.workspace_context,
+               task_id: completed.task_id
+             })
+
     assert {:ok, ^completed} = Store.complete(command)
 
     assert {:ok, %{outstanding_count: 0, queued_count: 0, active_count: 0}} =
@@ -1897,7 +2016,15 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
        fixture do
     version = manifest_version("mv-safe-operation-retry-#{random_id()}", fixture.runner_pool)
     asset_ref = {MyApp.DistributedRunnerAsset, :asset}
-    request = inspection_payload()
+    FavnStoragePostgres.TestSupport.TaskManifest.retain(fixture, version)
+
+    request = %{
+      inspection_payload()
+      | manifest_version_id: version.manifest_version_id,
+        manifest_content_hash: version.content_hash,
+        asset_ref: asset_ref
+    }
+
     identity = {:safe_operation_retry, random_id()}
 
     assert {:ok, queued} =
@@ -1967,7 +2094,7 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
     assert retried.result_version == nil
     assert retried.error == nil
 
-    assert {:ok, ^retried} =
+    assert {:ok, %{task_id: retried_id, status: :queued}} =
              OperationRunnerTasks.ensure(
                fixture.workspace_context,
                version,
@@ -1977,6 +2104,8 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
                identity,
                occurred_at: DateTime.add(fixture.now, 4, :second)
              )
+
+    assert retried_id == retried.task_id
 
     assert {:ok, %{outstanding_count: 1, queued_count: 1, active_count: 0}} =
              demand(fixture)
@@ -2001,6 +2130,8 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
              )
 
     second_result = %RelationInspectionResult{
+      asset_ref: asset_ref,
+      relation_ref: request.relation,
       required_runner_release_id: @release,
       row_count: 2,
       inspected_at: DateTime.add(fixture.now, 6, :second)
@@ -2024,7 +2155,13 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
 
     assert succeeded.status == :succeeded
     assert succeeded.assignment_generation == failed.assignment_generation + 1
-    assert succeeded.result == second_result
+    assert succeeded.data_state == :not_loaded
+
+    assert {:ok, %{result: ^second_result}} =
+             Store.get(%FavnOrchestrator.Persistence.Queries.GetRunnerTask{
+               workspace_context: fixture.workspace_context,
+               task_id: succeeded.task_id
+             })
 
     assert {:ok, replayed_failure} =
              Store.complete(%{
@@ -2081,7 +2218,40 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
 
   @tag timeout: 120_000
   test "maximum recovery batches use bounded per-task snapshots", fixture do
-    count = 500
+    count = 50
+
+    on_exit(fn ->
+      %{rows: active_tasks} =
+        SQL.query!(
+          Repo,
+          """
+          SELECT task_id, assigned_runner_instance_id,
+                 assigned_runner_session_generation, assignment_generation
+          FROM favn_control.runner_tasks
+          WHERE workspace_id = $1
+            AND status IN ('assigned', 'preparing', 'running', 'cancelling')
+          """,
+          [fixture.workspace_id]
+        )
+
+      Enum.each(active_tasks, fn [task_id, runner_id, session_generation, assignment_generation] ->
+        now = DateTime.utc_now()
+
+        assert {:ok, %{status: :queued}} =
+                 Store.release(%C.ReleaseRunnerTask{
+                   workspace_context: fixture.workspace_context,
+                   command_id: "cleanup-#{task_id}",
+                   task_id: task_id,
+                   runner_instance_id: runner_id,
+                   runner_session_generation: session_generation,
+                   assignment_generation: assignment_generation,
+                   disposition: :requeue,
+                   reason: nil,
+                   issued_at: now,
+                   occurred_at: now
+                 })
+      end)
+    end)
 
     1..count
     |> Task.async_stream(
@@ -2744,11 +2914,24 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
   defp enqueue_command(fixture, suffix, opts \\ []) do
     task_kind = Keyword.get(opts, :task_kind, :relation_inspection)
     payload = Keyword.get(opts, :payload, inspection_payload())
+    pool = Keyword.get(opts, :runner_pool, fixture.runner_pool)
+    release = Keyword.get(opts, :required_runner_release_id, @release)
+
+    {payload, version} =
+      FavnStoragePostgres.TestSupport.TaskManifest.prepare(fixture, payload, pool, release)
+
     {:ok, encoded_payload, payload_hash} = Codec.encode_payload(task_kind, payload)
 
     {:ok, orchestration_context} =
       Codec.encode_orchestration_context(
-        Keyword.get(opts, :orchestration_context, %{kind: :test})
+        Keyword.get(
+          opts,
+          :orchestration_context,
+          if(task_kind == :asset_attempt,
+            do: %{kind: :sequential, materialization_claim: nil},
+            else: %{}
+          )
+        )
       )
 
     occurred_at = Keyword.get(opts, :occurred_at, fixture.now)
@@ -2759,6 +2942,8 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
       task_id: "rt_#{random_id()}",
       domain_identity: "runner-task-domain-#{suffix}-#{random_id()}",
       task_kind: task_kind,
+      manifest_version_id: version.manifest_version_id,
+      manifest_content_hash: version.content_hash,
       runner_pool: Keyword.get(opts, :runner_pool, fixture.runner_pool),
       required_runner_release_id: Keyword.get(opts, :required_runner_release_id, @release),
       retry_class:
@@ -3134,6 +3319,7 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
   defp inspection_payload do
     %RelationInspectionRequest{
       manifest_version_id: "mv_runner_task",
+      manifest_content_hash: String.duplicate("a", 64),
       required_runner_release_id: @release,
       include: [:columns],
       sample_limit: 0

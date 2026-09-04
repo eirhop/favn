@@ -716,6 +716,12 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
     Sandbox.mode(Repo, {:shared, self()})
     operation_id = "expired-reclaim-#{System.unique_integer([:positive])}"
 
+    assert {:ok, :accepted, _} =
+             Store.accept_manifest_deployment(%{
+               accept_command(context)
+               | operation_id: operation_id
+             })
+
     start_supervised!(
       {Runtime, %Runtime{backend: Backend, options: [], stores: Backend.stores()}}
     )
@@ -743,7 +749,8 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
                :relation_inspection,
                request,
                {:deployment_target_inspection, operation_id, asset.target_descriptor.target_id},
-               deadline_at: deadline_at
+               deadline_at: deadline_at,
+               platform_context: context.platform_context
              )
 
     assert Jason.decode!(await_runner_demand(binding, 1).resp_body) == %{"outstanding" => 1}

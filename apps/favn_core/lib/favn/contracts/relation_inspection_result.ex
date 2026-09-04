@@ -17,7 +17,7 @@ defmodule Favn.Contracts.RelationInspectionResult do
           row_count: non_neg_integer() | nil,
           sample: map() | nil,
           table_metadata: map(),
-          adapter: atom() | nil,
+          adapter: String.t() | nil,
           inspected_at: DateTime.t(),
           warnings: [warning()],
           error: map() | nil

@@ -67,7 +67,8 @@ defmodule Favn.Contracts.RunnerTaskTest do
     assert {:ok, ^request} =
              Favn.Contracts.RunnerTask.PersistenceCodec.decode_payload(
                :generation_marker_read,
-               encoded
+               encoded,
+               sized_version()
              )
 
     assert {:error, {:invalid_generation_marker_read_request, _invalid}} =
@@ -236,37 +237,6 @@ defmodule Favn.Contracts.RunnerTaskTest do
     }
 
     assert :ok = Favn.Contracts.RunnerTask.RuntimeInputsAck.validate(acknowledgement)
-  end
-
-  test "private orchestration context round trips without entering the runner payload" do
-    context = %{
-      kind: :pipeline,
-      materialization_claim: %{claim_key: "claim-1", fencing_token: 3},
-      decision: %{status: :stale}
-    }
-
-    assert {:ok, envelope} =
-             Favn.Contracts.RunnerTask.PersistenceCodec.encode_orchestration_context(context)
-
-    assert {:ok, ^context} =
-             Favn.Contracts.RunnerTask.PersistenceCodec.decode_orchestration_context(envelope)
-  end
-
-  test "private orchestration context has a four MiB task-local safety bound" do
-    context = %{kind: :pipeline, task_local_data: :binary.copy("x", 2 * 1_024 * 1_024)}
-
-    assert {:ok, envelope} =
-             Favn.Contracts.RunnerTask.PersistenceCodec.encode_orchestration_context(context)
-
-    assert {:ok, ^context} =
-             Favn.Contracts.RunnerTask.PersistenceCodec.decode_orchestration_context(envelope)
-
-    oversized = %{kind: :pipeline, task_local_data: :binary.copy("x", 4 * 1_024 * 1_024)}
-
-    assert {:error, {:runner_task_orchestration_context_too_large, actual, 4_194_304}} =
-             Favn.Contracts.RunnerTask.PersistenceCodec.encode_orchestration_context(oversized)
-
-    assert actual > 4_194_304
   end
 
   test "every protocol 13 message validates and round trips" do
@@ -554,7 +524,7 @@ defmodule Favn.Contracts.RunnerTaskTest do
     end
   end
 
-  test "asset payload raw and base64 bounds are symmetric at exactly 8 MiB" do
+  test "asset payload semantic and encoded bounds reject excess bytes" do
     alias Favn.Contracts.RunnerTask.Limits
     alias Favn.Contracts.RunnerTask.PersistenceCodec
 
@@ -562,8 +532,11 @@ defmodule Favn.Contracts.RunnerTaskTest do
     work = sized_work(limit)
     assert byte_size(:erlang.term_to_binary(work, [:deterministic])) == limit
     assert {:ok, envelope, hash} = PersistenceCodec.encode_payload(:asset_attempt, work)
-    assert byte_size(envelope["payload"]) == Limits.encoded_bytes(limit)
-    assert {:ok, ^work} = PersistenceCodec.decode_payload(:asset_attempt, envelope)
+    assert byte_size(Jason.encode!(envelope)) <= 4 * limit
+
+    assert {:ok, ^work} =
+             PersistenceCodec.decode_payload(:asset_attempt, envelope, sized_version())
+
     assert {:ok, ^hash} = PersistenceCodec.payload_hash(envelope)
 
     oversized = sized_work(limit + 1)
@@ -675,7 +648,10 @@ defmodule Favn.Contracts.RunnerTaskTest do
     alias Favn.Contracts.RunnerTask.PersistenceCodec
 
     operation = %Favn.Contracts.RelationInspectionRequest{
-      relation: %{padding: :binary.copy(<<0>>, 1_048_576)}
+      manifest_version_id: "mv_sized",
+      manifest_content_hash: String.duplicate("a", 64),
+      required_runner_release_id: @release,
+      relation: %Favn.RelationRef{connection: :default, name: :binary.copy(<<0>>, 1_048_576)}
     }
 
     assert {:error, {:runner_task_payload_too_large, _, 1_048_576}} =
@@ -684,7 +660,13 @@ defmodule Favn.Contracts.RunnerTaskTest do
     assert {:error, {:runner_task_payload_too_large, _, 1_048_576}} =
              Assignment.validate(assignment(:relation_inspection, operation))
 
-    result = %Favn.Contracts.RunnerResult{metadata: %{padding: :binary.copy(<<0>>, 1_048_576)}}
+    result = %Favn.Contracts.RunnerResult{
+      manifest_version_id: "mv_sized",
+      manifest_content_hash: String.duplicate("a", 64),
+      required_runner_release_id: @release,
+      status: :ok,
+      metadata: %{"padding" => :binary.copy(<<0>>, 1_048_576)}
+    }
 
     assert {:error, {:runner_task_payload_too_large, _, 1_048_576}} =
              PersistenceCodec.encode_result(:asset_attempt, :succeeded, result)
@@ -694,15 +676,32 @@ defmodule Favn.Contracts.RunnerTaskTest do
     assert Limits.wire_bytes(Result) == 2_097_152
   end
 
+  defp sized_version,
+    do: %Version{
+      manifest: %Favn.Manifest{
+        assets: [
+          %Favn.Manifest.Asset{
+            ref: {MyApp.Asset, :asset},
+            module: MyApp.Asset,
+            name: :asset,
+            runner_pool: :duckdb
+          }
+        ]
+      }
+    }
+
   defp sized_work(bytes) do
     work = %Favn.Contracts.RunnerWork{
+      manifest_version_id: "mv_sized",
+      manifest_content_hash: String.duplicate("a", 64),
+      asset_ref: {MyApp.Asset, :asset},
       runner_pool: :duckdb,
       required_runner_release_id: @release,
-      metadata: %{padding: ""}
+      metadata: %{"padding" => ""}
     }
 
     overhead = byte_size(:erlang.term_to_binary(work, [:deterministic]))
-    %{work | metadata: %{padding: :binary.copy(<<0>>, bytes - overhead)}}
+    %{work | metadata: %{"padding" => :binary.copy(<<0>>, bytes - overhead)}}
   end
 
   defp classify(kind, fields) do

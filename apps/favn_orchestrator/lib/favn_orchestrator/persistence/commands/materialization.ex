@@ -31,13 +31,15 @@ defmodule FavnOrchestrator.Persistence.Commands.ClaimMaterialization do
     :run_id,
     :owner_id,
     :lease_duration_ms,
-    :occurred_at
+    :occurred_at,
+    purpose: :materialization
   ]
 
   @type t :: %__MODULE__{
           workspace_context: WorkspaceContext.t(),
           command_id: String.t(),
           claim_key: String.t(),
+          purpose: :materialization | :ownership_only,
           deployment_id: String.t(),
           target_kind: :asset | :pipeline,
           target_id: String.t(),
@@ -120,7 +122,7 @@ defmodule FavnOrchestrator.Persistence.Commands.FinishMaterialization do
           owner_id: String.t(),
           fencing_token: pos_integer(),
           expected_version: pos_integer(),
-          status: :succeeded | :failed,
+          status: :succeeded | :failed | :released,
           materialization_id: String.t() | nil,
           payload: map() | nil,
           error: map() | nil,
@@ -202,12 +204,14 @@ defmodule FavnOrchestrator.Persistence.Results.MaterializationClaim do
     :completed_at,
     :result,
     :error,
-    :version
+    :version,
+    purpose: :materialization
   ]
 
   @type t :: %__MODULE__{
           workspace_id: String.t(),
           claim_key: String.t(),
+          purpose: :materialization | :ownership_only,
           deployment_id: String.t(),
           target_kind: :asset | :pipeline,
           target_id: String.t(),
@@ -217,7 +221,7 @@ defmodule FavnOrchestrator.Persistence.Results.MaterializationClaim do
           run_id: String.t(),
           owner_id: String.t(),
           fencing_token: pos_integer(),
-          status: :claimed | :succeeded | :failed | :expired,
+          status: :claimed | :succeeded | :failed | :expired | :released,
           expires_at: DateTime.t(),
           completed_at: DateTime.t() | nil,
           result: map() | nil,
@@ -285,7 +289,8 @@ defmodule FavnOrchestrator.Persistence.Results.MaterializationDecision do
 
   @type t :: %__MODULE__{
           claim_key: String.t(),
-          status: :claimed | :competing | :materialized | :failed | :expired | :missing,
+          status:
+            :claimed | :competing | :materialized | :failed | :expired | :released | :missing,
           claim: MaterializationClaim.t() | nil,
           materialization: Materialization.t() | nil
         }

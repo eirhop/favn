@@ -50,6 +50,27 @@ defmodule FavnOrchestrator.TargetRecovery do
   @default_lease_ms 30_000
   @required_capabilities [:physical_inspection, :marker_reconciliation]
 
+  @doc """
+  Resolves one write hold after administrator-attested runner/backend shutdown.
+
+  The proof contains `assignment_generation`, `owner_fence`, `stopped_at`,
+  `stop_mechanism`, `runner_stopped: true`, `backend_stopped: true`,
+  `evidence_reference`, `reason`, and `disposition`. Stop mechanisms are
+  `:backend_session_terminated`, `:infrastructure_removed`, or `:adapter_stop_verified`.
+  Asset writes require administrator-attested `:verified_no_effect`; generation
+  mutations use `:observe_generation` to collect fresh read-only evidence.
+  Options require a stable `:command_id` and `:issued_at`. Task outcomes remain
+  unchanged and resolution never retries a write. Public callers use the
+  orchestrator operator facade for reauthorization and audit.
+  """
+  @spec resolve_task_write(WorkspaceContext.t(), String.t(), map(), keyword()) ::
+          {:ok, map()} | {:error, term()}
+  def resolve_task_write(%WorkspaceContext{} = context, task_id, proof, opts) do
+    with :ok <- authorize_admin(context),
+         do:
+           FavnOrchestrator.TargetRecovery.WriteResolution.resolve(context, task_id, proof, opts)
+  end
+
   @doc "Creates and persists an immutable recovery plan for one ownership-unknown target."
   @spec plan(WorkspaceContext.t(), String.t(), String.t(), keyword()) ::
           {:ok, Plan.t()} | {:error, term()}

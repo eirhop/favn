@@ -14,6 +14,7 @@ defmodule FavnStoragePostgres.TargetOperationLocks.Store do
   alias FavnOrchestrator.Persistence.WorkspaceContext
   alias FavnStoragePostgres.ErrorMapper
   alias FavnStoragePostgres.Repo
+  alias FavnStoragePostgres.RunnerTasks.WriteOwnership
   alias FavnStoragePostgres.Schemas.TargetOperationLock
   alias FavnStoragePostgres.Schemas.MaterializationClaim
 
@@ -50,6 +51,7 @@ defmodule FavnStoragePostgres.TargetOperationLocks.Store do
     now = database_now!()
     expires_at = DateTime.add(now, command.lease_duration_ms, :millisecond)
 
+    Enum.each(command.target_ids, &WriteOwnership.guard_target!(workspace_id, &1))
     ensure_no_conflicting_materializations!(workspace_id, command, now)
 
     Enum.map(command.target_ids, fn target_id ->
@@ -119,6 +121,11 @@ defmodule FavnStoragePostgres.TargetOperationLocks.Store do
           operation_id: command.operation_id,
           operation_type: Atom.to_string(command.operation_type),
           fencing_token: lock.fencing_token + 1,
+          effect_state: "not_started",
+          effect_task_id: nil,
+          effect_assignment_generation: nil,
+          effect_started_at: nil,
+          effect_resolution: nil,
           lease_owner: command.lease_owner,
           lease_expires_at: expires_at,
           version: lock.version + 1,
@@ -201,8 +208,12 @@ defmodule FavnStoragePostgres.TargetOperationLocks.Store do
     end)
 
     Enum.each(rows, fn
-      nil -> :ok
-      lock -> Repo.delete!(lock)
+      nil ->
+        :ok
+
+      lock ->
+        WriteOwnership.guard_target!(workspace_id, lock.target_id)
+        Repo.delete!(lock)
     end)
 
     :ok

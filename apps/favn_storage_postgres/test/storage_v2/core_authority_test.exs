@@ -585,6 +585,8 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
                workspace_context: fixture.workspace_context,
                command_id: "enqueue:planning-cancel:" <> fixture.workspace_id,
                task_id: planning_task_id,
+               manifest_version_id: fixture.version.manifest_version_id,
+               manifest_content_hash: fixture.version.content_hash,
                domain_identity: "planning-cancel:" <> fixture.workspace_id,
                task_kind: :generation_capabilities,
                runner_pool: "default",
@@ -5804,7 +5806,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
                node_key,
                0,
                1,
-               %{continuation: :runtime_input_fence_test}
+               %{kind: :sequential, materialization_claim: nil}
              )
 
     old_claim = %ClaimRunnerTask{
@@ -6363,7 +6365,6 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     tasks =
       Enum.map(1..3, fn runner_number ->
         assert {:ok, task} = claim_asset_task(fixture, "overlap-#{runner_number}")
-        assert :ok = start_runner_task(task)
         task
       end)
 
@@ -6371,6 +6372,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert_runner_demand!(fixture, queued: 0, active: 3, outstanding: 3)
 
     Enum.each(tasks, fn task ->
+      assert :ok = start_runner_task(task)
       await_runner_task_waiter!(task)
       :ok = complete_asset_task(task, task.payload, false)
     end)
@@ -6627,11 +6629,11 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     remaining_tasks =
       Enum.map(2..3, fn runner_number ->
         assert {:ok, task} = claim_asset_task(fixture, "global-#{runner_number}")
-        assert :ok = start_runner_task(task)
         task
       end)
 
     Enum.each(remaining_tasks, fn task ->
+      assert :ok = start_runner_task(task)
       await_runner_task_waiter!(task)
       :ok = complete_asset_task(task, task.payload, false)
     end)
@@ -6709,11 +6711,11 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     tasks =
       Enum.map(1..3, fn runner_number ->
         assert {:ok, task} = claim_asset_task(fixture, "recovery-#{runner_number}")
-        assert :ok = start_runner_task(task)
         task
       end)
 
     Enum.each(tasks, fn task ->
+      assert :ok = start_runner_task(task)
       await_runner_task_waiter!(task)
       :ok = complete_asset_task(task, task.payload, false)
     end)
@@ -6998,7 +7000,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert finished.status == :error
     node_results = finished.result.node_results
 
-    assert length(node_results) == 5
+    assert length(node_results) == 5, inspect(finished.error)
 
     statuses = Map.new(node_results, &{&1.node_key, &1.status})
     assert statuses[keys.a] == :ok
@@ -7078,6 +7080,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
             work = task.payload
             node_key = Favn.Contracts.RunnerWork.node_key(work)
             Agent.update(state, &%{&1 | submitted: [node_key | &1.submitted]})
+            :ok = start_runner_task(task)
             :ok = complete_asset_task(task, work, node_key == fail_key)
 
           {:error, _reason} ->
@@ -7121,7 +7124,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
             type: :fixture_failure,
             message: "fixture failure",
             retryable?: retryable?,
-            outcome: if(retryable?, do: :safe_failure, else: :unknown)
+            outcome: :safe_failure
           )
 
         {:failed, if(retryable?, do: :safe_to_retry, else: :terminal), :error, error}
@@ -7135,7 +7138,20 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
       manifest_content_hash: work.manifest_content_hash,
       required_runner_release_id: work.required_runner_release_id,
       status: status,
-      asset_results: [],
+      asset_results: [
+        %Favn.Contracts.RunnerAssetResult{
+          ref: work.asset_ref,
+          status: status,
+          asset_step_id: work.asset_step_id,
+          attempt_count: work.attempt,
+          max_attempts: work.max_attempts,
+          target_operation: work.target_operation,
+          logical_target_id: work.logical_target_id,
+          target_generation_id: work.target_generation_id,
+          write_relation: work.write_relation,
+          write_outcome: if(work.target_operation, do: :succeeded, else: nil)
+        }
+      ],
       error: error,
       metadata: %{}
     }
@@ -9716,7 +9732,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
       relation: %{catalog: nil, schema: "analytics", name: "asset", type: :table},
       columns: [],
       table_metadata: %{},
-      adapter: FavnTestSupport.TargetAdapter,
+      adapter: Atom.to_string(FavnTestSupport.TargetAdapter),
       inspected_at: DateTime.utc_now()
     }
 
@@ -9848,7 +9864,9 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
                retry_class: :terminal,
                result: %{
                  inspection
-                 | required_runner_release_id: runner_binding.required_runner_release_id
+                 | required_runner_release_id: runner_binding.required_runner_release_id,
+                   asset_ref: assignment.payload.asset_ref,
+                   relation_ref: assignment.payload.relation
                }
              )
 

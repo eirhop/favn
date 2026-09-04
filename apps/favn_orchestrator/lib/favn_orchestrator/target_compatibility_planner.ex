@@ -71,6 +71,7 @@ defmodule FavnOrchestrator.TargetCompatibilityPlanner do
         fn target ->
           ManifestInspectionAdmission.with_slot(fn ->
             classify_target(
+              platform_context,
               workspace_context,
               target,
               bindings,
@@ -272,6 +273,7 @@ defmodule FavnOrchestrator.TargetCompatibilityPlanner do
   end
 
   defp classify_target(
+         platform_context,
          workspace_context,
          target,
          bindings,
@@ -296,6 +298,7 @@ defmodule FavnOrchestrator.TargetCompatibilityPlanner do
     case inspection_target(active_target, binding, target.asset, desired_version) do
       {:ok, inspection_target, inspection_version} ->
         classify_inspected_target(
+          platform_context,
           workspace_context,
           target,
           binding,
@@ -312,6 +315,7 @@ defmodule FavnOrchestrator.TargetCompatibilityPlanner do
   end
 
   defp classify_inspected_target(
+         platform_context,
          workspace_context,
          target,
          binding,
@@ -322,6 +326,7 @@ defmodule FavnOrchestrator.TargetCompatibilityPlanner do
          inspection_deadline_at
        ) do
     case inspect_physical(
+           platform_context,
            workspace_context,
            inspection_target,
            inspection_version,
@@ -477,6 +482,7 @@ defmodule FavnOrchestrator.TargetCompatibilityPlanner do
   end
 
   defp inspect_physical(
+         platform_context,
          workspace_context,
          target,
          version,
@@ -490,6 +496,7 @@ defmodule FavnOrchestrator.TargetCompatibilityPlanner do
 
     with {:ok, task} <-
            ensure_inspection_task(
+             platform_context,
              workspace_context,
              version,
              asset_ref,
@@ -514,6 +521,7 @@ defmodule FavnOrchestrator.TargetCompatibilityPlanner do
   end
 
   defp ensure_inspection_task(
+         platform_context,
          context,
          version,
          asset_ref,
@@ -541,6 +549,7 @@ defmodule FavnOrchestrator.TargetCompatibilityPlanner do
           :relation_inspection,
           request,
           domain_identity,
+          platform_context: platform_context,
           deadline_at: deadline_at
         )
 
@@ -553,6 +562,7 @@ defmodule FavnOrchestrator.TargetCompatibilityPlanner do
             :relation_inspection,
             request,
             domain_identity,
+            platform_context: platform_context,
             deadline_at: deadline_at
           )
         end

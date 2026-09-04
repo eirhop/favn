@@ -7,7 +7,7 @@ defmodule FavnOrchestrator.RunnerTaskResultRouterTest do
   alias FavnOrchestrator.RunnerTaskResultRouter
 
   defmodule Store do
-    def get(%GetRunnerTask{}) do
+    def get(%GetRunnerTask{} = query) do
       agent = Application.fetch_env!(:favn_orchestrator, :runner_task_router_test_agent)
 
       response =
@@ -16,6 +16,9 @@ defmodule FavnOrchestrator.RunnerTaskResultRouterTest do
         end)
 
       case response do
+        fun when is_function(fun, 1) ->
+          fun.(query)
+
         {:block, owner, result} ->
           send(owner, {:runner_task_read_started, self()})
 
@@ -47,6 +50,70 @@ defmodule FavnOrchestrator.RunnerTaskResultRouterTest do
     end)
 
     %{store_state: store_state}
+  end
+
+  test "scalar notification reads durable details and a lost notification is rediscovered", %{
+    store_state: store_state
+  } do
+    router = start_supervised!(RunnerTaskResultRouter)
+    active = %{workspace_id: "workspace", task_id: "rt_scalar", status: :running}
+    Agent.update(store_state, &%{&1 | response: {:ok, active}})
+    assert :waiting = RunnerTaskResultRouter.subscribe("workspace", "rt_scalar")
+
+    terminal = %{
+      workspace_id: "workspace",
+      task_id: "rt_scalar",
+      status: :succeeded,
+      result: %{value: 42},
+      data_state: :available
+    }
+
+    Agent.update(store_state, &%{&1 | response: {:ok, terminal}})
+    RunnerTaskResultRouter.notify(%{terminal | result: nil, data_state: :not_loaded})
+    assert_receive {:runner_task_result, "workspace", "rt_scalar", ^terminal}
+    Agent.update(store_state, &%{&1 | response: {:ok, active}})
+    assert :waiting = RunnerTaskResultRouter.subscribe("workspace", "rt_scalar")
+    Agent.update(store_state, &%{&1 | response: {:ok, terminal}})
+    send(router, :poll)
+    assert_receive {:runner_task_result, "workspace", "rt_scalar", ^terminal}
+    assert :sys.get_state(router).waiters == %{}
+  end
+
+  test "polling reaches later terminal tasks while a full batch remains running", %{
+    store_state: store_state
+  } do
+    router = start_supervised!({RunnerTaskResultRouter, max_concurrency: 32})
+
+    active = fn query ->
+      {:ok, %{workspace_id: "workspace", task_id: query.task_id, status: :running}}
+    end
+
+    Agent.update(store_state, &%{&1 | response: active})
+    ids = for n <- 1..40, do: "rt_" <> String.pad_leading(to_string(n), 2, "0")
+    for id <- ids, do: assert(:waiting == RunnerTaskResultRouter.subscribe("workspace", id))
+
+    Agent.update(
+      store_state,
+      &%{
+        &1
+        | response: fn query ->
+            {:ok,
+             %{
+               workspace_id: "workspace",
+               task_id: query.task_id,
+               status: if(query.task_id == "rt_40", do: :succeeded, else: :running)
+             }}
+          end
+      }
+    )
+
+    for _ <- 1..2 do
+      send(router, :check_waiters)
+      assert_eventually(fn -> map_size(:sys.get_state(router).checks) == 0 end)
+    end
+
+    assert_receive {:runner_task_result, "workspace", "rt_40", %{status: :succeeded}}, 1_000
+    assert map_size(:sys.get_state(router).waiters) == 39
   end
 
   test "durable await retries task-read failures and re-subscribes after router restart", %{

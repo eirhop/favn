@@ -387,7 +387,8 @@ defmodule FavnStoragePostgres.Maintenance.Store do
       WITH candidates AS (
         SELECT workspace_id, claim_key FROM favn_control.materialization_claims
         WHERE ($1::text IS NULL OR workspace_id = $1)
-          AND status IN ('succeeded', 'failed', 'expired')
+          AND status IN ('succeeded', 'failed', 'expired', 'released')
+          AND effect_state NOT IN ('in_flight', 'outcome_unknown')
           AND updated_at < $2
         ORDER BY updated_at, workspace_id, claim_key
         LIMIT $3 FOR UPDATE SKIP LOCKED

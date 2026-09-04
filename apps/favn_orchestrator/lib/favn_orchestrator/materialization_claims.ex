@@ -73,6 +73,7 @@ defmodule FavnOrchestrator.MaterializationClaims do
            producer_identity(run_state, version, node_key, decisions) <>
              ":" <> generation.evidence_generation_id,
          claim <- %{
+           purpose: :materialization,
            claim_key:
              Identity.claim_key(node.ref, freshness_key, input_fingerprint, producer_identity),
            workspace_id: run_state.workspace_id,
@@ -123,6 +124,64 @@ defmodule FavnOrchestrator.MaterializationClaims do
       decision
       |> classify_claim(claim)
       |> retain_or_release_operation_lock(claim)
+    else
+      {:error, %{details: %{reason_code: "target_write_in_progress"}}} ->
+        {:already_claimed, %{claim_key: "target:" <> TargetIdentity.for_asset(work.asset_ref)}}
+
+      error ->
+        error
+    end
+  end
+
+  @doc "Acquires write ownership for a forced sequential target without publishing freshness evidence."
+  @spec acquire_sequential(RunState.t(), RunnerWork.t()) :: {:ok, map() | nil} | {:error, term()}
+  def acquire_sequential(_run, %RunnerWork{target_operation: nil}), do: {:ok, nil}
+
+  def acquire_sequential(%RunState{} = run, %RunnerWork{} = work) do
+    key =
+      "sequential:" <>
+        AssetStepIdentity.node_fingerprint({run.id, work.asset_step_id, work.attempt})
+
+    window = RunnerWork.window(work)
+    partition = if window, do: FreshnessKey.window!(window.key), else: "latest"
+
+    command = %ClaimMaterialization{
+      workspace_context: SystemContext.workspace(run.workspace_id, :materialization_claim),
+      command_id: "claim:" <> key,
+      claim_key: key,
+      purpose: :ownership_only,
+      deployment_id: run.deployment_id,
+      target_kind: :asset,
+      target_id: work.logical_target_id,
+      target_generation_id: work.target_generation_id,
+      evidence_generation_id: work.target_generation_id,
+      partition_key: partition,
+      run_id: run.id,
+      owner_id: run.storage_owner_id,
+      lease_duration_ms: ttl_ms(run),
+      occurred_at: DateTime.utc_now()
+    }
+
+    case Persistence.stores().materialization.claim(command) do
+      {:ok, %MaterializationDecision{status: :claimed, claim: claim}} ->
+        {:ok, Map.from_struct(claim)}
+
+      {:ok, _competing} ->
+        {:error, :target_operation_in_progress}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  @doc "Releases an exact sequential claim only while no task has been bound to it."
+  @spec abandon_sequential(claim() | nil) :: :ok | {:error, term()}
+  def abandon_sequential(nil), do: :ok
+
+  def abandon_sequential(%{purpose: :ownership_only} = claim) do
+    case finish(claim, :released, []) do
+      {:ok, _released} -> :ok
+      {:error, _reason} = error -> error
     end
   end
 
@@ -181,6 +240,7 @@ defmodule FavnOrchestrator.MaterializationClaims do
 
   @spec fail(claim() | nil, term()) :: :ok | {:error, term()}
   def fail(nil, _reason), do: :ok
+  def fail(%{purpose: :ownership_only}, _reason), do: :ok
 
   def fail(claim, reason) when is_map(claim) do
     fail_v2(claim, reason)

@@ -5,7 +5,9 @@ defmodule Favn.Contracts.RunnerError do
   Runner implementations normalize exceptions, exits, throws, preflight
   diagnostics, and boundary errors into this contract before returning them to
   the orchestrator. `retryable?` is explicit so orchestrator retry policy does
-  not inspect arbitrary error terms.
+  not inspect arbitrary error terms. Task persistence retains fixed runtime
+  type/phase labels as atoms and stores custom type/phase labels as bounded
+  strings; classification and retry fields are preserved.
   """
 
   @type kind :: :error | :exit | :throw | :cancelled | :preflight | :boundary

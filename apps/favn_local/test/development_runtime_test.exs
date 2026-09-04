@@ -4,6 +4,78 @@ defmodule FavnLocal.DevelopmentRuntimeTest do
   alias Favn.Manifest.Publication
   alias FavnLocal.DevelopmentRuntime
 
+  test "startup deadline stops owned deployment work and runners and replies with the phase" do
+    task =
+      Task.async(fn ->
+        receive do
+          :finish -> :ok
+        end
+      end)
+
+    runner = child()
+    candidate = child()
+    unrelated = child()
+    on_exit(fn -> if Port.info(unrelated.port), do: Port.close(unrelated.port) end)
+    reference = make_ref()
+
+    state = %{
+      status: :starting,
+      retiring: nil,
+      deadline: System.monotonic_time(:millisecond) - 1,
+      task: task,
+      runner: runner,
+      candidate: candidate,
+      ready_waiters: [{self(), reference}],
+      request: nil,
+      failure: nil
+    }
+
+    assert {:noreply, failed} = DevelopmentRuntime.handle_info(:startup_deadline, state)
+    assert failed.status == :failed
+    assert failed.failure == {:startup_timeout, :deployment}
+    assert_receive {^reference, {:error, {:startup_timeout, :deployment}}}
+    refute Process.alive?(task.pid)
+    assert Port.info(runner.port) == nil
+    assert Port.info(candidate.port) == nil
+    assert Port.info(unrelated.port) != nil
+    Port.close(unrelated.port)
+  end
+
+  test "a shorter caller deadline applies to the existing startup budget" do
+    now = System.monotonic_time(:millisecond)
+    state = %{status: :starting, deadline: now + 2_000, ready_waiters: []}
+    from = {self(), make_ref()}
+
+    assert {:noreply, waiting} =
+             DevelopmentRuntime.handle_call({:await_ready, now + 1_000}, from, state)
+
+    assert waiting.deadline == now + 1_000
+
+    assert {:noreply, same} =
+             DevelopmentRuntime.handle_call({:await_ready, now + 3_000}, from, waiting)
+
+    assert same.deadline == waiting.deadline
+
+    expired =
+      Map.merge(same, %{
+        deadline: now - 1,
+        retiring: nil,
+        task: nil,
+        runner: nil,
+        candidate: nil,
+        request: nil,
+        failure: nil
+      })
+
+    assert {:noreply, %{failure: {:startup_timeout, :registration}}} =
+             DevelopmentRuntime.handle_info(:startup_deadline, expired)
+  end
+
+  defp child do
+    port = Port.open({:spawn_executable, System.find_executable("cat")}, [:binary, :exit_status])
+    %{port: port, node: nil, release_id: "local-deadline-fixture", runner_instance_id: "fixture"}
+  end
+
   test "the runner restart budget fails the stack after repeated fast exits" do
     now = 1_000_000
     recent = Enum.map(1..5, &(now - &1 * 1_000))
@@ -107,7 +179,12 @@ defmodule FavnLocal.DevelopmentRuntimeTest do
 
   test "late deployment messages cannot take ownership from the shutdown task" do
     old_ref = make_ref()
-    stopping = %{status: :stopping, task: %{ref: make_ref()}, request: {:stop, {self(), make_ref()}}}
+
+    stopping = %{
+      status: :stopping,
+      task: %{ref: make_ref()},
+      request: {:stop, {self(), make_ref()}}
+    }
 
     assert {:noreply, ^stopping} =
              DevelopmentRuntime.handle_info({old_ref, {:ok, %{deployment_id: "late"}}}, stopping)

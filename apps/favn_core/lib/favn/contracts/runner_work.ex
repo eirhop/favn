@@ -96,6 +96,15 @@ defmodule Favn.Contracts.RunnerWork do
             trigger: %{},
             metadata: %{}
 
+  @doc "Whether this work only resolves and pins runtime inputs without executing the asset."
+  @spec runtime_input_resolution_only?(t()) :: boolean()
+  def runtime_input_resolution_only?(%__MODULE__{metadata: metadata}),
+    do:
+      Map.get(metadata, :runner_task_mode, Map.get(metadata, "runner_task_mode")) in [
+        :runtime_input_resolution,
+        "runtime_input_resolution"
+      ]
+
   @doc """
   Returns the current planned asset reference for this work request.
   """

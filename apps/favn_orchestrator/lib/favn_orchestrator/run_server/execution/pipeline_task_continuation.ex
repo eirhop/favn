@@ -16,14 +16,6 @@ defmodule FavnOrchestrator.RunServer.Execution.PipelineTaskContinuation do
     :resource_circuit_permits
   ]
   @checkpoint_keys [:attempt, :payload_hash, :revision, :sequence, :stage, :version]
-  @legacy_keys [
-    :decision,
-    :freshness_context,
-    :freshness_key,
-    :kind,
-    :materialization_claim,
-    :resource_circuit_permits
-  ]
 
   @type t :: %{
           required(:kind) => :pipeline,
@@ -63,23 +55,6 @@ defmodule FavnOrchestrator.RunServer.Execution.PipelineTaskContinuation do
   @spec checkpoint(t()) :: map()
   def checkpoint(continuation) when is_map(continuation),
     do: Map.get(continuation, :freshness_checkpoint)
-
-  @doc false
-  @spec legacy_freshness_context(term()) :: {:ok, map()} | :error
-  def legacy_freshness_context(continuation) when is_map(continuation) do
-    if Map.keys(continuation) |> Enum.sort() == Enum.sort(@legacy_keys) and
-         Map.get(continuation, :kind) == :pipeline and
-         is_map(Map.get(continuation, :decision)) and
-         valid_claim?(Map.get(continuation, :materialization_claim)) and
-         is_list(Map.get(continuation, :resource_circuit_permits)) and
-         is_map(Map.get(continuation, :freshness_context)) do
-      {:ok, Map.fetch!(continuation, :freshness_context)}
-    else
-      :error
-    end
-  end
-
-  def legacy_freshness_context(_continuation), do: :error
 
   defp valid_claim?(nil), do: true
   defp valid_claim?(claim), do: is_map(claim)

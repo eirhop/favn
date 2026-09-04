@@ -8,6 +8,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
   alias FavnOrchestrator.Persistence.Commands, as: C
   alias FavnOrchestrator.Persistence.Commands.PinRuntimeInputs
   alias FavnOrchestrator.Persistence.Error
+  alias FavnOrchestrator.Persistence.WorkspaceContext
   alias FavnOrchestrator.Persistence.Queries, as: Q
   alias FavnOrchestrator.Persistence.Results.RunnerCapacityDemand
   alias FavnOrchestrator.Persistence.Results.RunnerCapacityHealth
@@ -22,10 +23,16 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
   alias FavnStoragePostgres.ErrorMapper
   alias FavnStoragePostgres.Repo
   alias FavnStoragePostgres.RunnerTasks.Codec
+  alias FavnStoragePostgres.RunnerTasks.WriteOwnership
+  alias Favn.Contracts.RunnerTask.PersistenceData
+  alias FavnStoragePostgres.Registry.Store, as: RegistryStore
+  alias FavnOrchestrator.Persistence.Queries.ManifestSelector.ById
   alias FavnStoragePostgres.Runs.Store, as: RunsStore
   alias FavnStoragePostgres.Schemas.RunnerCapacityDemand, as: Demand
   alias FavnStoragePostgres.Schemas.RebuildPlanAction
   alias FavnStoragePostgres.Schemas.Run
+  alias FavnStoragePostgres.Schemas.WorkspaceDeployment
+  alias FavnStoragePostgres.Schemas.ManifestDeploymentOperation
   alias FavnStoragePostgres.Schemas.RunnerTask
   alias FavnStoragePostgres.Schemas.RunnerTaskCommand
   alias FavnStoragePostgres.Schemas.RunnerTaskCommandTask
@@ -43,6 +50,14 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
     :workspace_id,
     :task_id,
     :domain_identity,
+    :manifest_version_id,
+    :manifest_content_hash,
+    :orchestration_context_hash,
+    :write_claim_key,
+    :write_claim_fence,
+    :write_target_id,
+    :write_operation_id,
+    :write_lock_fence,
     :task_kind,
     :run_id,
     :operation_id,
@@ -53,12 +68,11 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
     :enqueued_at,
     :deadline_at,
     :payload_version,
-    :payload,
     :payload_hash,
-    :orchestration_context,
     :inserted_at
   ]
   @mutable_task_result_fields [
+    :persistence_failure,
     :retry_class,
     :status,
     :assigned_runner_instance_id,
@@ -103,6 +117,14 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
         workspace_id: workspace_id,
         task_id: command.task_id,
         domain_identity: command.domain_identity,
+        manifest_version_id: command.manifest_version_id,
+        manifest_content_hash: command.manifest_content_hash,
+        orchestration_context_hash: result_hash(command.orchestration_context),
+        write_claim_key: command.write_claim_key,
+        write_claim_fence: command.write_claim_fence,
+        write_target_id: command.write_target_id,
+        write_operation_id: command.write_operation_id,
+        write_lock_fence: command.write_lock_fence,
         task_kind: Atom.to_string(command.task_kind),
         run_id: command.run_id,
         operation_id: command.operation_id,
@@ -124,36 +146,60 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
         updated_at: command.occurred_at
       }
 
-      case Repo.insert_all(RunnerTask, [row], on_conflict: :nothing) do
-        {1, _} ->
-          add_queued_demand!(
-            command.runner_pool,
-            command.required_runner_release_id,
-            command.occurred_at,
-            command.occurred_at
+      WriteOwnership.lock_target!(workspace_id, row.write_target_id)
+
+      existing =
+        Repo.one(
+          from(task in RunnerTask,
+            where:
+              task.workspace_id == ^workspace_id and
+                (task.task_id == ^command.task_id or
+                   task.domain_identity == ^command.domain_identity),
+            limit: 1
           )
+        )
 
-          fetch_task!(workspace_id, command.task_id)
-
-        {0, _} ->
-          existing =
-            Repo.one!(
-              from(task in RunnerTask,
-                where:
-                  task.workspace_id == ^workspace_id and
-                    (task.task_id == ^command.task_id or
-                       task.domain_identity == ^command.domain_identity),
-                limit: 1
-              )
-            )
-
-          if same_enqueued_task?(existing, command) do
-            existing
-          else
+      if existing do
+        if same_enqueued_task?(existing, command),
+          do: existing,
+          else:
             Repo.rollback(
               Error.new(:conflict, "runner task identity was reused with different work")
             )
-          end
+      else
+        row = WriteOwnership.bind!(row)
+
+        case Repo.insert_all(RunnerTask, [row], on_conflict: :nothing) do
+          {1, _} ->
+            add_queued_demand!(
+              command.runner_pool,
+              command.required_runner_release_id,
+              command.occurred_at,
+              command.occurred_at
+            )
+
+            fetch_task!(workspace_id, command.task_id)
+
+          {0, _} ->
+            existing =
+              Repo.one!(
+                from(task in RunnerTask,
+                  where:
+                    task.workspace_id == ^workspace_id and
+                      (task.task_id == ^command.task_id or
+                         task.domain_identity == ^command.domain_identity),
+                  limit: 1
+                )
+              )
+
+            if same_enqueued_task?(existing, command) do
+              existing
+            else
+              Repo.rollback(
+                Error.new(:conflict, "runner task identity was reused with different work")
+              )
+            end
+        end
       end
     end)
   end
@@ -207,6 +253,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
           fetch_task!(task.workspace_id, task.task_id)
       end
     end)
+    |> hydrate_claim()
   end
 
   @impl true
@@ -215,6 +262,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
       task = fenced_task!(command)
       validate_transition!(command)
       {status, expires_at} = transition_values!(task, command)
+      if command.transition == :running, do: WriteOwnership.start!(task)
 
       {1, _} =
         Repo.update_all(task_query(task),
@@ -429,6 +477,8 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
             ]
           )
 
+        WriteOwnership.complete!(task, command)
+
         remove_active_demand!(
           task.runner_pool,
           task.required_runner_release_id,
@@ -444,6 +494,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
   def request_cancellation(%C.RequestRunnerTaskCancellation{} = command) do
     idempotent_transact(command, "request_cancellation", fn ->
       workspace_id = command.workspace_context.workspace_id
+      WriteOwnership.lock_task_target!(workspace_id, command.task_id)
       task = lock_task!(workspace_id, command.task_id)
 
       cond do
@@ -451,6 +502,8 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
           task
 
         task.status == "queued" ->
+          WriteOwnership.finish_unstarted!(task)
+
           update_task!(task, command,
             status: "cancelled",
             cancellation_requested_at: command.occurred_at,
@@ -476,6 +529,17 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
       where:
         task.workspace_id == ^workspace_id and task.operation_id == ^operation_id and
           task.status not in ^@terminal_statuses,
+      select: task.write_target_id,
+      distinct: true,
+      order_by: task.write_target_id
+    )
+    |> Repo.all()
+    |> Enum.each(&WriteOwnership.lock_target!(workspace_id, &1))
+
+    from(task in RunnerTask,
+      where:
+        task.workspace_id == ^workspace_id and task.operation_id == ^operation_id and
+          task.status not in ^@terminal_statuses,
       order_by: [asc: task.task_id],
       lock: "FOR UPDATE"
     )
@@ -483,6 +547,8 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
     |> Enum.each(fn task ->
       attrs =
         if task.status == "queued" do
+          WriteOwnership.finish_unstarted!(task)
+
           [
             status: "cancelled",
             cancellation_requested_at: occurred_at,
@@ -525,24 +591,75 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
         Repo.rollback(Error.new(:invalid, "unknown runner task release requires a reason"))
       end
 
+      {command, task} =
+        case task_data(task) do
+          {:ok, _payload, _context, _result} ->
+            {command, task}
+
+          {:invalid, category} ->
+            Repo.update_all(task_query(task),
+              set: [persistence_failure: Atom.to_string(category)]
+            )
+
+            reason = RunnerError.new(outcome: :unknown, type: "runner_task_data_unavailable")
+            {%{command | disposition: :unknown, reason: reason}, task}
+
+          {:error, error} ->
+            Repo.rollback(error)
+        end
+
       cancelled? = CancellationOwnership.cancelled?(task.workspace_id, task.run_id)
 
-      disposition =
-        if command.disposition == :requeue and cancelled?,
-          do: if(proven_safe_to_requeue?(task), do: :cancelled, else: :unknown),
-          else: command.disposition
-
       command =
-        if cancelled? and is_nil(command.reason),
-          do: %{command | reason: %{reason: :operation_cancelled}},
-          else: command
+        cond do
+          cancelled? and command.disposition == :requeue ->
+            %{
+              command
+              | disposition: if(proven_safe_to_requeue?(task), do: :cancelled, else: :unknown),
+                reason: command.reason || %{reason: :operation_cancelled}
+            }
 
-      if disposition == :requeue and not proven_safe_to_requeue?(task) do
+          cancelled? and is_nil(command.reason) ->
+            %{command | reason: %{reason: :operation_cancelled}}
+
+          true ->
+            command
+        end
+
+      if command.disposition == :requeue and not proven_safe_to_requeue?(task) do
         Repo.rollback(Error.new(:conflict, "runner task is not proven safe to requeue"))
       end
 
+      command =
+        if command.disposition == :requeue and not WriteOwnership.requeue_owner?(task) do
+          %{
+            command
+            | disposition: :failed,
+              reason:
+                RunnerError.new(outcome: :safe_failure, type: "write_owner_lost_before_start")
+          }
+        else
+          command
+        end
+
+      WriteOwnership.preserve!(task)
+      if command.disposition == :requeue, do: WriteOwnership.guard_requeue!(task)
+
+      if command.disposition in [:failed, :cancelled, :unknown],
+        do: WriteOwnership.finish_unstarted!(task)
+
       attrs =
-        case disposition do
+        case command.disposition do
+          :failed ->
+            [
+              status: "failed",
+              retry_class: "terminal",
+              result_version: 0,
+              error: persisted_error(command.reason),
+              terminal_at: command.occurred_at,
+              assignment_expires_at: nil
+            ]
+
           :requeue ->
             [
               status: "queued",
@@ -586,7 +703,9 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
       end
 
       lock_cancellation_owner!(command)
+      WriteOwnership.lock_task_target!(command.workspace_context.workspace_id, command.task_id)
       task = lock_task!(command.workspace_context.workspace_id, command.task_id)
+      WriteOwnership.prepare_retry!(task)
 
       unless task.status == "failed" and task.retry_class == "safe_to_retry" and
                task.assignment_generation == command.expected_assignment_generation and
@@ -621,6 +740,116 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
         )
       end
     end)
+  end
+
+  @impl true
+  def get_write_resolution(%C.ResolveRunnerTaskWrite{} = command) do
+    transact(fn ->
+      unless WorkspaceContext.valid?(command.workspace_context),
+        do: Repo.rollback(Error.new(:forbidden, "valid workspace authority required"))
+
+      unless Enum.any?(
+               command.workspace_context.roles,
+               &(&1 in [:workspace_admin, :platform_operator])
+             ),
+             do: Repo.rollback(Error.new(:forbidden, "administrator role required"))
+
+      validate_command_window!(command.issued_at, database_now!())
+
+      case Repo.get_by(RunnerTaskCommand,
+             scope_id: command_scope(command),
+             command_id: command.command_id
+           ) do
+        nil ->
+          nil
+
+        receipt ->
+          if receipt.operation == "resolve_write" and
+               receipt.request_hash == command_hash(command),
+             do: replay_command_result!(receipt, "resolve_write", command),
+             else: Repo.rollback(Error.new(:conflict, "runner task command identity was reused"))
+      end
+    end)
+  end
+
+  @impl true
+  def resolve_write(%C.ResolveRunnerTaskWrite{} = command) do
+    proof = %{
+      assignment_generation: command.expected_assignment_generation,
+      owner_fence: command.expected_owner_fence,
+      stopped_at: command.stopped_at,
+      stop_mechanism: command.stop_mechanism,
+      runner_stopped: command.runner_stopped,
+      backend_stopped: command.backend_stopped,
+      evidence_reference: command.evidence_reference,
+      reason: command.reason,
+      disposition: command.disposition
+    }
+
+    with true <-
+           WorkspaceContext.valid?(command.workspace_context) and
+             Enum.any?(
+               command.workspace_context.roles,
+               &(&1 in [:workspace_admin, :platform_operator])
+             ),
+         :ok <- FavnOrchestrator.TargetRecovery.WriteResolution.validate(proof),
+         true <-
+           is_list(command.observation_task_ids) and length(command.observation_task_ids) <= 2 and
+             Enum.all?(command.observation_task_ids, &(bounded_id(&1) == :ok)) do
+      idempotent_transact(command, "resolve_write", fn ->
+        workspace = command.workspace_context.workspace_id
+        WriteOwnership.lock_task_target!(workspace, command.task_id)
+        task = lock_task!(workspace, command.task_id)
+        details = to_result(task)
+
+        observations =
+          Enum.map(command.observation_task_ids, fn id ->
+            observation = fetch_task!(workspace, id)
+
+            identity =
+              {:write_resolution, command.command_id, task.task_id,
+               command.expected_assignment_generation,
+               Map.fetch!(@task_kind_by_string, observation.task_kind)}
+
+            expected_id =
+              FavnOrchestrator.OperationRunnerTasks.task_id(
+                workspace,
+                Map.fetch!(@task_kind_by_string, observation.task_kind),
+                identity,
+                %Favn.Manifest.Version{
+                  manifest_version_id: task.manifest_version_id,
+                  content_hash: task.manifest_content_hash
+                }
+              )
+
+            unless observation.manifest_version_id == task.manifest_version_id and
+                     observation.manifest_content_hash == task.manifest_content_hash and
+                     observation.required_runner_release_id == task.required_runner_release_id and
+                     id == expected_id,
+                   do:
+                     Repo.rollback(
+                       Error.new(:invalid, "write observation manifest does not match")
+                     )
+
+            to_result(observation)
+          end)
+
+        case FavnStoragePostgres.RunnerTasks.WriteEvidence.validate(
+               details,
+               command,
+               observations
+             ) do
+          {:ok, evidence} ->
+            WriteOwnership.resolve!(task, command, evidence)
+
+          {:error, _reason} ->
+            Repo.rollback(Error.new(:invalid, "write outcome remains unproved"))
+        end
+      end)
+    else
+      _invalid ->
+        {:error, Error.new(:forbidden, "valid administrator write-resolution proof required")}
+    end
   end
 
   @impl true
@@ -660,7 +889,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
             ]
           )
 
-        fetch_task!(task.workspace_id, task.task_id) |> to_result()
+        fetch_task!(task.workspace_id, task.task_id) |> to_state()
       end)
     end)
   end
@@ -1031,6 +1260,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
   defp terminal_status!(:unknown), do: "unknown"
 
   defp fenced_task!(command) do
+    WriteOwnership.lock_task_target!(command.workspace_context.workspace_id, command.task_id)
     validate_fence!(command)
     task = lock_task!(command.workspace_context.workspace_id, command.task_id)
 
@@ -1087,42 +1317,10 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
             (is_nil(task.deadline_at) or task.deadline_at > ^command.occurred_at) and
             (is_nil(task.required_capability) or task.required_capability in ^command.capabilities),
         order_by: [asc: task.enqueued_at, asc: task.workspace_id, asc: task.task_id],
-        limit: 100
+        limit: 50
       )
     )
-    |> Enum.find_value(fn task ->
-      locked? =
-        is_nil(task.run_id) or CancellationOwnership.try_lock!(task.workspace_id, task.run_id)
-
-      locked =
-        if locked?,
-          do:
-            Repo.one(
-              from(t in RunnerTask,
-                where:
-                  t.workspace_id == ^task.workspace_id and t.task_id == ^task.task_id and
-                    t.status == "queued",
-                lock: "FOR UPDATE SKIP LOCKED"
-              )
-            )
-
-      cond do
-        is_nil(locked) ->
-          nil
-
-        CancellationOwnership.cancelled?(locked.workspace_id, locked.run_id) ->
-          update_task!(locked, command,
-            status: "cancelled",
-            cancellation_requested_at: command.occurred_at,
-            terminal_at: command.occurred_at
-          )
-
-          nil
-
-        true ->
-          locked
-      end
-    end)
+    |> choose_claim_candidate(command)
   end
 
   defp lock_cancellation_owner!(command) do
@@ -1593,8 +1791,19 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
          true <- is_map(command.payload),
          true <- is_map(command.orchestration_context),
          true <- is_binary(command.payload_hash) and byte_size(command.payload_hash) == 32,
-         {:ok, _decoded} <- Codec.decode_payload(command.task_kind, command.payload),
-         {:ok, _context} <- Codec.decode_orchestration_context(command.orchestration_context),
+         {:ok, version} <- pinned_manifest(command),
+         {:ok, packages} <- task_packages(command.payload, version),
+         {:ok, decoded} <-
+           Codec.decode_payload(command.task_kind, command.payload, version, packages),
+         true <- payload_matches_pin?(decoded, version, command.required_runner_release_id),
+         true <- authorized_payload?(decoded, version),
+         true <- write_link_matches?(command, decoded),
+         true <- payload_task_identity?(command, decoded),
+         {:ok, context} <-
+           Codec.decode_orchestration_context(command.orchestration_context, version, packages),
+         true <- context_matches_payload?(context, decoded),
+         true <- persisted_claim_matches?(command, decoded, context),
+         true <- FavnOrchestrator.RunnerTaskContext.matches_task?(context, command),
          {:ok, expected_hash} <- Codec.payload_hash(command.payload),
          true <- expected_hash == command.payload_hash,
          :ok <- optional_bounded_id(command.run_id),
@@ -1604,6 +1813,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
          :ok <- valid_deadline(command.occurred_at, command.deadline_at) do
       :ok
     else
+      {:error, %Error{} = error} -> Repo.rollback(error)
       _other -> Repo.rollback(Error.new(:invalid, "invalid runner task enqueue command"))
     end
   end
@@ -1611,6 +1821,12 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
   defp same_enqueued_task?(task, command) do
     task.task_id == command.task_id and
       task.domain_identity == command.domain_identity and
+      task.manifest_version_id == command.manifest_version_id and
+      task.manifest_content_hash == command.manifest_content_hash and
+      task.write_claim_key == command.write_claim_key and
+      task.write_claim_fence == command.write_claim_fence and
+      task.write_target_id == command.write_target_id and
+      task.write_operation_id == command.write_operation_id and
       task.task_kind == Atom.to_string(command.task_kind) and
       task.run_id == command.run_id and
       task.operation_id == command.operation_id and
@@ -1618,7 +1834,6 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
       task.runner_pool == command.runner_pool and
       task.required_runner_release_id == command.required_runner_release_id and
       task.required_capability == command.required_capability and
-      task.retry_class == Atom.to_string(command.retry_class) and
       task.deadline_at == command.deadline_at and
       task.payload_version == 13 and
       task.payload_hash == command.payload_hash and
@@ -1682,7 +1897,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
   defp validate_recovery!(command) do
     with true <- valid_platform_runner_context?(command.platform_context),
          :ok <- bounded_id(command.owner_id),
-         true <- is_integer(command.limit) and command.limit in 1..500,
+         true <- is_integer(command.limit) and command.limit in 1..50,
          true <- is_integer(command.lease_duration_ms) and command.lease_duration_ms > 0 do
       :ok
     else
@@ -1724,7 +1939,21 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
          true <- command.outcome in Favn.Contracts.RunnerTask.terminal_outcomes(),
          true <- command.retry_class in Favn.Contracts.RunnerTask.retry_classes(),
          true <- is_integer(command.result_version) and command.result_version >= 0,
-         {:ok, _decoded} <- Codec.decode_result(task_kind, command.outcome, command.result),
+         {:ok, version} <- pinned_manifest(task),
+         {:ok, packages} <- task_packages(task.payload, version),
+         {:ok, decoded} <-
+           Codec.decode_result(task_kind, command.outcome, command.result, version, packages),
+         {:ok, payload} <- Codec.decode_payload(task_kind, task.payload, version, packages),
+         :ok <-
+           Favn.Contracts.RunnerTask.PersistenceSchema.completion(
+             task_kind,
+             payload,
+             decoded,
+             command.outcome
+           ),
+         true <-
+           not match?(%{outcome: :safe_failure}, command.error) or
+             Favn.Contracts.RunnerTask.PersistenceSchema.safe_resolution?(decoded),
          :ok <-
            Favn.Contracts.RunnerTask.validate_terminal_retry(
              task_kind,
@@ -1734,6 +1963,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
            ) do
       :ok
     else
+      {:error, %Error{} = error} -> Repo.rollback(error)
       _other -> Repo.rollback(Error.new(:invalid, "invalid runner task completion"))
     end
   end
@@ -1902,7 +2132,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
              on_conflict: :nothing
            ) do
         {1, _} ->
-          result = fun.()
+          result = fun.() |> normalize_command_result()
 
           receipt =
             encode_command_result(result, operation, scope_id, command.command_id, now)
@@ -1925,12 +2155,24 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
             )
 
           if receipt.operation == operation and receipt.request_hash == request_hash do
-            decode_command_result!(receipt, operation)
+            replay_command_result!(receipt, operation, command)
           else
             Repo.rollback(Error.new(:conflict, "runner task command identity was reused"))
           end
       end
     end)
+  end
+
+  defp command_hash(%C.ResolveRunnerTaskWrite{} = command) do
+    command
+    |> Map.from_struct()
+    |> Map.drop([:occurred_at, :observation_task_ids])
+    |> Map.put(
+      :workspace_context,
+      Map.take(command.workspace_context, [:workspace_id, :principal_id])
+    )
+    |> :erlang.term_to_binary([:deterministic])
+    |> then(&:crypto.hash(:sha256, &1))
   end
 
   defp command_hash(command) do
@@ -1982,6 +2224,32 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
     :ok
   end
 
+  defp replay_command_result!(receipt, "resolve_write", command) do
+    resolution = decode_command_result!(receipt, "resolve_write")
+
+    expected = %{
+      "task_id" => command.task_id,
+      "owner_fence" => command.expected_owner_fence,
+      "assignment_generation" => command.expected_assignment_generation,
+      "actor_id" => command.workspace_context.principal_id,
+      "stopped_at" => DateTime.to_iso8601(command.stopped_at),
+      "stop_mechanism" => Atom.to_string(command.stop_mechanism),
+      "runner_stopped" => command.runner_stopped,
+      "backend_stopped" => command.backend_stopped,
+      "evidence_reference" => command.evidence_reference,
+      "reason" => command.reason,
+      "disposition" => Atom.to_string(command.disposition)
+    }
+
+    unless Map.take(resolution, Map.keys(expected)) == expected,
+      do: Repo.rollback(Error.new(:conflict, "write resolution receipt identity changed"))
+
+    resolution
+  end
+
+  defp replay_command_result!(receipt, operation, _command),
+    do: decode_command_result!(receipt, operation)
+
   defp encode_command_result(result, operation, scope_id, command_id, now) do
     result = normalize_command_result(result)
 
@@ -2006,6 +2274,30 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
 
       atom when atom in [:persisted, :already_persisted] ->
         %{"kind" => "atom", "value" => Atom.to_string(atom)}
+
+      resolution when operation == "resolve_write" ->
+        {:ok, encoded} = PersistenceData.encode(resolution, 262_144)
+
+        %{
+          "kind" => "write_resolution_v1",
+          "resolution" => encoded,
+          "hash" => Base.encode16(result_hash(encoded), case: :lower)
+        }
+    end
+  end
+
+  defp decode_command_result!(
+         %RunnerTaskCommand{
+           result: %{"kind" => "write_resolution_v1", "resolution" => encoded, "hash" => hash}
+         },
+         "resolve_write"
+       ) do
+    with true <- Base.encode16(result_hash(encoded), case: :lower) == hash,
+         {:ok, resolution} <- PersistenceData.decode(encoded, 262_144),
+         true <- valid_command_result?("resolve_write", resolution) do
+      resolution
+    else
+      _invalid -> Repo.rollback(Error.new(:internal, "write resolution receipt is invalid"))
     end
   end
 
@@ -2017,7 +2309,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
          },
          operation
        )
-       when is_integer(count) and count >= 0 do
+       when is_integer(count) and count >= 0 and count <= 50 do
     results = load_task_snapshots!(scope_id, command_id, count)
 
     case {operation, results} do
@@ -2057,7 +2349,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
       |> Enum.with_index()
       |> Enum.map(fn {%RunnerTaskResult{} = task, ordinal} ->
         row = fetch_task!(task.workspace_id, task.task_id)
-        persisted = to_result(row)
+        persisted = to_state(row)
 
         unless persisted == task do
           Repo.rollback(Error.new(:internal, "runner task receipt source changed in transaction"))
@@ -2074,7 +2366,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
           outcome_assignment_generation:
             if(is_nil(snapshot.outcome_hash), do: nil, else: task.assignment_generation),
           runtime_input_resolution_id: runtime_input_resolution_id,
-          snapshot: :erlang.term_to_binary(snapshot, [:deterministic])
+          snapshot: encode_task_snapshot!(snapshot)
         }
       end)
 
@@ -2203,7 +2495,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
   defp rehydrate_task_snapshot!(row) do
     snapshot = decode_task_snapshot!(row.snapshot)
     current_row = fetch_task!(row.workspace_id, row.task_id)
-    current = to_result(current_row)
+    current = to_state(current_row)
     immutable = Map.take(current, @immutable_task_result_fields)
 
     unless result_hash(immutable) == snapshot.immutable_hash do
@@ -2219,23 +2511,56 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
     |> Map.merge(snapshot.mutable)
     |> Map.put(:runtime_input_error, runtime_input_error)
     |> Map.put(:result, result)
+    |> Map.put(:data_state, :not_loaded)
     |> Map.put(:error, error)
     |> then(&struct!(RunnerTaskResult, &1))
   end
 
   defp decode_task_snapshot!(binary) do
-    case :erlang.binary_to_term(binary, [:safe]) do
-      %{
-        version: 1,
-        immutable_hash: immutable_hash,
-        mutable: mutable,
-        outcome_hash: outcome_hash,
-        runtime_input_error_hash: runtime_input_error_hash
-      } = snapshot
+    {:ok, envelope} = Jason.decode(binary)
+
+    atoms =
+      @immutable_task_result_fields ++
+        @mutable_task_result_fields ++
+        [
+          :version,
+          :immutable_hash,
+          :mutable,
+          :outcome_hash,
+          :runtime_input_error_hash,
+          :payload,
+          :context,
+          :result,
+          :manifest_pin
+        ] ++
+        Map.values(@status_by_string) ++
+        Map.values(@task_kind_by_string) ++ Map.values(@retry_class_by_string)
+
+    case PersistenceData.decode(envelope, 262_144, nil, atoms) do
+      {:ok,
+       %{
+         version: 1,
+         immutable_hash: immutable_hash,
+         mutable: mutable,
+         outcome_hash: outcome_hash,
+         runtime_input_error_hash: runtime_input_error_hash
+       } = snapshot}
       when is_binary(immutable_hash) and is_map(mutable) and
              (is_nil(outcome_hash) or is_binary(outcome_hash)) and
              (is_nil(runtime_input_error_hash) or is_binary(runtime_input_error_hash)) ->
-        snapshot
+        if Enum.sort(Map.keys(snapshot)) ==
+             Enum.sort([
+               :version,
+               :immutable_hash,
+               :mutable,
+               :outcome_hash,
+               :runtime_input_error_hash
+             ]) and
+             byte_size(immutable_hash) == 32 and optional_snapshot_hash?(outcome_hash) and
+             optional_snapshot_hash?(runtime_input_error_hash) and
+             valid_mutable_snapshot?(mutable),
+           do: snapshot,
+           else: Repo.rollback(Error.new(:internal, "runner task command snapshot is invalid"))
 
       _invalid ->
         Repo.rollback(Error.new(:internal, "runner task command snapshot is invalid"))
@@ -2244,9 +2569,44 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
     _error -> Repo.rollback(Error.new(:internal, "runner task command snapshot is invalid"))
   end
 
+  defp optional_snapshot_hash?(nil), do: true
+  defp optional_snapshot_hash?(hash), do: is_binary(hash) and byte_size(hash) == 32
+
+  defp valid_mutable_snapshot?(mutable) do
+    Enum.sort(Map.keys(mutable)) == Enum.sort(@mutable_task_result_fields) and
+      Enum.all?(mutable, fn
+        {:status, value} ->
+          value in Map.values(@status_by_string)
+
+        {:retry_class, value} ->
+          value in Map.values(@retry_class_by_string)
+
+        {:persistence_failure, value} ->
+          value in [nil, :payload, :context, :result, :manifest_pin]
+
+        {:runtime_input_resolution_status, value} ->
+          value in [nil, :resolved, :failed]
+
+        {:runtime_input_payload_fingerprint, value} ->
+          optional_snapshot_hash?(value)
+
+        {key, value} when key in [:assigned_runner_instance_id, :runtime_input_resolution_id] ->
+          is_nil(value) or (is_binary(value) and byte_size(value) in 1..255)
+
+        {key, value} when key in [:assigned_runner_session_generation, :result_version] ->
+          is_nil(value) or (is_integer(value) and value >= 0)
+
+        {:assignment_generation, value} ->
+          is_integer(value) and value >= 0
+
+        {_key, value} ->
+          is_nil(value) or is_struct(value, DateTime)
+      end)
+  end
+
   defp load_task_outcome!(_row, %{outcome_hash: nil}, _task_kind, _status), do: {nil, nil}
 
-  defp load_task_outcome!(row, snapshot, task_kind, status) do
+  defp load_task_outcome!(row, snapshot, _task_kind, _status) do
     outcome =
       Repo.get_by!(RunnerTaskOutcome,
         workspace_id: row.workspace_id,
@@ -2260,7 +2620,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
       Repo.rollback(Error.new(:conflict, "runner task terminal receipt outcome changed"))
     end
 
-    {decode_result!(task_kind, status, outcome.result), outcome.error}
+    {nil, outcome.error}
   end
 
   defp load_runtime_input_error!(_row, %{runtime_input_error_hash: nil}), do: nil
@@ -2328,11 +2688,46 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
     end
   end
 
-  defp normalize_command_result(%RunnerTask{} = task), do: to_result(task)
+  defp normalize_command_result(%RunnerTask{} = task), do: to_state(task)
   defp normalize_command_result(%Demand{} = demand), do: to_demand(demand)
   defp normalize_command_result(result), do: result
 
   defp valid_command_result?("enqueue", %RunnerTaskResult{}), do: true
+
+  defp valid_command_result?("resolve_write", %{} = result) do
+    keys = ~w(task_id target_id assignment_generation owner_fence claim_key actor_id stopped_at
+      stop_mechanism runner_stopped backend_stopped evidence_reference reason disposition evidence
+      observation_task_ids resolved_at)
+
+    Enum.sort(Map.keys(result)) == Enum.sort(keys) and
+      Enum.all?(~w(task_id target_id actor_id), &(bounded_id(result[&1]) == :ok)) and
+      is_integer(result["assignment_generation"]) and result["assignment_generation"] > 0 and
+      is_integer(result["owner_fence"]) and result["owner_fence"] > 0 and
+      optional_bounded_id(result["claim_key"]) == :ok and
+      result["runner_stopped"] == true and result["backend_stopped"] == true and
+      result["stop_mechanism"] in ~w(backend_session_terminated infrastructure_removed adapter_stop_verified) and
+      result["disposition"] in ~w(verified_no_effect observe_generation) and
+      is_binary(result["evidence_reference"]) and
+      byte_size(result["evidence_reference"]) in 1..2048 and
+      is_binary(result["reason"]) and byte_size(result["reason"]) in 1..4096 and
+      match?({:ok, _, 0}, DateTime.from_iso8601(result["stopped_at"])) and
+      match?({:ok, _, 0}, DateTime.from_iso8601(result["resolved_at"])) and
+      is_list(result["observation_task_ids"]) and length(result["observation_task_ids"]) <= 2 and
+      Enum.all?(result["observation_task_ids"], &(bounded_id(&1) == :ok)) and
+      is_map(result["evidence"]) and map_size(result["evidence"]) == 1 and
+      match?(
+        %{"disposition" => disposition}
+        when disposition in [
+               "administrator_verified_no_effect",
+               "candidate_active",
+               "previous_active",
+               "candidate_absent",
+               "marker_initialized"
+             ],
+        result["evidence"]
+      )
+  end
+
   defp valid_command_result?("claim", result), do: is_nil(result) or task_result?(result)
   defp valid_command_result?("transition", result), do: task_result?(result)
   defp valid_command_result?("runtime_inputs", result), do: task_result?(result)
@@ -2443,7 +2838,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
 
   defp transact(fun) do
     case Repo.transaction(fun) do
-      {:ok, %RunnerTask{} = task} -> {:ok, to_result(task)}
+      {:ok, %RunnerTask{} = task} -> {:ok, to_state(task)}
       {:ok, %Demand{} = demand} -> {:ok, to_demand(demand)}
       {:ok, tasks} when is_list(tasks) -> {:ok, tasks}
       {:ok, result} -> {:ok, result}
@@ -2465,19 +2860,16 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
     :exit, reason -> {:error, ErrorMapper.map(reason)}
   end
 
-  defp to_result(%RunnerTask{} = task) do
-    task_kind = task_kind!(task.task_kind)
-    payload = decode_payload!(task_kind, task.payload)
-    orchestration_context = decode_orchestration_context!(task.orchestration_context)
-    result = decode_result!(task_kind, Map.fetch!(@status_by_string, task.status), task.result)
-
+  defp to_state(%RunnerTask{} = task) do
     task
     |> Map.from_struct()
     |> Map.take(Map.keys(%RunnerTaskResult{}))
-    |> Map.put(:task_kind, task_kind)
-    |> Map.put(:payload, payload)
-    |> Map.put(:orchestration_context, orchestration_context)
-    |> Map.put(:result, result)
+    |> Map.put(:task_kind, task_kind!(task.task_kind))
+    |> Map.put(:payload, nil)
+    |> Map.put(:orchestration_context, nil)
+    |> Map.put(:result, nil)
+    |> Map.put(:data_state, :not_loaded)
+    |> Map.put(:persistence_failure, failure_category(task.persistence_failure))
     |> Map.update!(:retry_class, &Map.fetch!(@retry_class_by_string, &1))
     |> Map.update!(:status, &Map.fetch!(@status_by_string, &1))
     |> Map.update!(:runtime_input_resolution_status, fn
@@ -2488,52 +2880,434 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
     |> then(&struct!(RunnerTaskResult, &1))
   end
 
-  defp to_operator_result(%RunnerTask{} = task) do
-    task
-    |> Map.from_struct()
-    |> Map.take(Map.keys(%RunnerTaskResult{}))
-    |> Map.put(:task_kind, task_kind!(task.task_kind))
-    |> Map.put(:retry_class, Map.fetch!(@retry_class_by_string, task.retry_class))
-    |> Map.put(:status, Map.fetch!(@status_by_string, task.status))
-    |> Map.put(:payload, nil)
-    |> Map.put(:orchestration_context, nil)
-    |> Map.put(:result, nil)
-    |> then(&struct!(RunnerTaskResult, &1))
-  end
+  defp to_result(%RunnerTask{} = row), do: load_details(to_state(row), row)
 
-  defp task_kind!(value), do: Map.fetch!(@task_kind_by_string, value)
+  defp load_details(task, row) do
+    case task_data(row, task) do
+      {:ok, payload, context, result} ->
+        %{
+          task
+          | payload: payload,
+            orchestration_context: context,
+            result: result,
+            data_state: :available
+        }
 
-  defp decode_payload!(task_kind, envelope) do
-    case Codec.decode_payload(task_kind, envelope) do
-      {:ok, payload} -> payload
-      {:error, reason} -> raise "invalid persisted runner task payload: #{inspect(reason)}"
+      {:invalid, category} ->
+        %{task | data_state: :unavailable, persistence_failure: category}
+
+      {:error, error} ->
+        {:error, error}
     end
   end
 
-  defp decode_orchestration_context!(envelope) do
-    case Codec.decode_orchestration_context(envelope) do
-      {:ok, context} -> context
-      {:error, reason} -> raise "invalid persisted runner task context: #{inspect(reason)}"
+  defp task_data(row), do: task_data(row, to_state(row))
+
+  defp task_data(row, task) do
+    identity = Map.put(task, :workspace_context, %{workspace_id: task.workspace_id})
+
+    with {:manifest_pin, {:ok, version}} <- {:manifest_pin, pinned_manifest(row)},
+         {:payload, {:ok, packages}} <- {:payload, task_packages(row.payload, version)},
+         {:payload, {:ok, payload}} <-
+           {:payload, Codec.decode_payload(task.task_kind, row.payload, version, packages)},
+         {:payload, {:ok, expected_hash}} <- {:payload, Codec.payload_hash(row.payload)},
+         {:payload, true} <- {:payload, expected_hash == row.payload_hash},
+         {:context, true} <-
+           {:context, result_hash(row.orchestration_context) == row.orchestration_context_hash},
+         {:manifest_pin, true} <-
+           {:manifest_pin,
+            payload_matches_pin?(payload, version, task.required_runner_release_id)},
+         {:manifest_pin, true} <- {:manifest_pin, authorized_payload?(payload, version)},
+         {:payload, true} <- {:payload, write_link_matches?(identity, payload)},
+         {:payload, true} <- {:payload, payload_task_identity?(task, payload)},
+         {:context, {:ok, context}} <-
+           {:context,
+            Codec.decode_orchestration_context(row.orchestration_context, version, packages)},
+         {:context, true} <- {:context, context_matches_payload?(context, payload)},
+         {:context, true} <-
+           {:context, FavnOrchestrator.RunnerTaskContext.matches_task?(context, identity)},
+         {:result, {:ok, result}} <- {:result, task_result(task, row.result, version, packages)},
+         {:result, :ok} <-
+           {:result,
+            Favn.Contracts.RunnerTask.PersistenceSchema.completion(
+              task.task_kind,
+              payload,
+              result,
+              task.status
+            )} do
+      {:ok, payload, context, result}
+    else
+      {:manifest_pin, {:error, %Error{details: %{reason_code: "persisted_manifest_invalid"}}}} ->
+        {:invalid, :manifest_pin}
+
+      {:manifest_pin,
+       {:error, %Error{kind: :invalid, details: %{reason: :historical_manifest_not_activatable}}}} ->
+        {:invalid, :manifest_pin}
+
+      {:payload, {:error, %Error{details: %{reason_code: "persisted_execution_package_invalid"}}}} ->
+        {:invalid, :payload}
+
+      {_category, {:error, %Error{} = error}} ->
+        {:error, error}
+
+      {category, _invalid} ->
+        {:invalid, category}
     end
   end
 
-  defp decode_result!(_task_kind, status, nil)
-       when status in [:queued, :assigned, :preparing, :running, :cancelling],
-       do: nil
+  defp choose_claim_candidate([], _command), do: nil
 
-  defp decode_result!(task_kind, status, envelope)
-       when status in [:succeeded, :failed, :cancelled, :unknown] do
-    outcome =
-      case status do
-        :succeeded -> :succeeded
-        :failed -> :failed
-        :cancelled -> :cancelled
-        :unknown -> :unknown
+  defp choose_claim_candidate([candidate | rest], command) do
+    cancellation_locked? =
+      is_nil(candidate.run_id) or
+        CancellationOwnership.try_lock!(candidate.workspace_id, candidate.run_id)
+
+    task =
+      if cancellation_locked? do
+        Repo.one(
+          from(t in RunnerTask,
+            where:
+              t.workspace_id == ^candidate.workspace_id and
+                t.task_id == ^candidate.task_id and t.status == "queued",
+            lock: "FOR UPDATE SKIP LOCKED"
+          )
+        )
       end
 
-    case Codec.decode_result(task_kind, outcome, envelope) do
-      {:ok, result} -> result
-      {:error, reason} -> raise "invalid persisted runner task result: #{inspect(reason)}"
+    cond do
+      is_nil(task) ->
+        choose_claim_candidate(rest, command)
+
+      CancellationOwnership.cancelled?(task.workspace_id, task.run_id) ->
+        if WriteOwnership.try_lock_target!(task.workspace_id, task.write_target_id) do
+          WriteOwnership.finish_unstarted!(task)
+
+          update_task!(task, command,
+            status: "cancelled",
+            cancellation_requested_at: command.occurred_at,
+            terminal_at: command.occurred_at
+          )
+        end
+
+        choose_claim_candidate(rest, command)
+
+      true ->
+        inspect_claim_candidate(task, rest, command)
+    end
+  end
+
+  defp inspect_claim_candidate(task, rest, command) do
+    case task_data(task) do
+      {:ok, _payload, _context, _result} ->
+        task
+
+      {:error, error} ->
+        Repo.rollback(error)
+
+      {:invalid, category} ->
+        if WriteOwnership.try_lock_target!(task.workspace_id, task.write_target_id) do
+          WriteOwnership.finish_unstarted!(task)
+          unstarted? = task.assignment_generation == 0
+
+          error =
+            RunnerError.new(
+              outcome: if(unstarted?, do: :safe_failure, else: :unknown),
+              type: "runner_task_data_unavailable"
+            )
+
+          update_task!(task, command,
+            status: if(unstarted?, do: "failed", else: "unknown"),
+            retry_class: if(unstarted?, do: "terminal", else: "unknown_do_not_retry"),
+            persistence_failure: Atom.to_string(category),
+            result_version: 0,
+            error: persisted_error(error),
+            terminal_at: command.occurred_at,
+            assignment_expires_at: nil
+          )
+        end
+
+        choose_claim_candidate(rest, command)
+    end
+  end
+
+  defp hydrate_claim({:ok, %RunnerTaskResult{} = task}) do
+    read(fn ->
+      row = fetch_task!(task.workspace_id, task.task_id)
+
+      case load_details(task, row) do
+        %{data_state: :unavailable} ->
+          if row.assignment_generation != task.assignment_generation or
+               row.status in ["failed", "cancelled", "unknown", "succeeded"] do
+            {:error,
+             Error.new(:fenced, "runner task claim no longer owns an executable assignment",
+               details: %{reason_code: "runner_task_claim_superseded"}
+             )}
+          else
+            {:error, Error.new(:invalid, "runner task data is unavailable")}
+          end
+
+        result ->
+          result
+      end
+    end)
+  end
+
+  defp hydrate_claim(result), do: result
+
+  defp task_result(%{status: status}, _result, _version, _packages)
+       when status in [:queued, :assigned, :preparing, :running, :cancelling], do: {:ok, nil}
+
+  defp task_result(task, result, version, packages),
+    do: Codec.decode_result(task.task_kind, task.status, result, version, packages)
+
+  defp to_operator_result(task), do: to_state(task)
+  defp task_kind!(value), do: Map.fetch!(@task_kind_by_string, value)
+  defp failure_category(nil), do: nil
+  defp failure_category("payload"), do: :payload
+  defp failure_category("context"), do: :context
+  defp failure_category("result"), do: :result
+  defp failure_category("manifest_pin"), do: :manifest_pin
+
+  defp task_packages(envelope, version) do
+    case Favn.Contracts.RunnerTask.PersistenceCodec.package_hash(envelope) do
+      {:ok, nil} ->
+        {:ok, []}
+
+      {:ok, hash} ->
+        with {:ok, package} <- RegistryStore.retained_task_execution_package(version, hash),
+             do: {:ok, [package]}
+
+      {:error, _} = error ->
+        error
+    end
+  end
+
+  defp pinned_manifest(
+         %{
+           manifest_version_id: id,
+           manifest_content_hash: hash,
+           runner_pool: pool,
+           required_runner_release_id: release
+         } = task
+       )
+       when is_binary(id) do
+    with true <- task_manifest_authorized?(task, id),
+         {:ok, version} <- RegistryStore.get_manifest(%ById{manifest_version_id: id}),
+         true <- version.content_hash == hash,
+         {:ok, ^release} <- Favn.Manifest.Version.release_for_pool(version, pool) do
+      {:ok, version}
+    else
+      {:error, %Error{} = error} -> {:error, error}
+      _invalid -> {:error, :invalid_runner_task_manifest_pin}
+    end
+  end
+
+  defp pinned_manifest(_task), do: {:error, :invalid_runner_task_manifest_pin}
+
+  defp task_manifest_authorized?(%RunnerTask{}, _id), do: true
+
+  defp task_manifest_authorized?(%C.EnqueueRunnerTask{} = command, id),
+    do: workspace_manifest?(command, id) or preactivation_inspection?(command)
+
+  defp preactivation_inspection?(
+         %{
+           task_kind: :relation_inspection,
+           platform_context: platform,
+           workspace_context: workspace
+         } = command
+       ) do
+    FavnOrchestrator.Persistence.PlatformContext.valid?(platform) and
+      Enum.any?(platform.roles, &(&1 in [:platform_operator, :platform_admin])) and
+      WorkspaceContext.valid?(workspace) and
+      Enum.any?(workspace.roles, &(&1 in [:workspace_admin, :platform_operator])) and
+      Enum.all?(
+        [
+          :write_target_id,
+          :write_claim_key,
+          :write_claim_fence,
+          :write_operation_id,
+          :write_lock_fence
+        ],
+        &is_nil(Map.fetch!(command, &1))
+      )
+  end
+
+  defp preactivation_inspection?(_command), do: false
+
+  defp workspace_manifest?(task, id) do
+    workspace =
+      case task do
+        %{workspace_id: workspace} -> workspace
+        %{workspace_context: %{workspace_id: workspace}} -> workspace
+      end
+
+    Repo.exists?(
+      from(d in WorkspaceDeployment,
+        where: d.workspace_id == ^workspace and d.manifest_version_id == ^id
+      )
+    ) or
+      Repo.exists?(
+        from(d in ManifestDeploymentOperation,
+          where: d.workspace_id == ^workspace and d.manifest_version_id == ^id
+        )
+      )
+  end
+
+  defp payload_matches_pin?(%{activation: activation}, version, release),
+    do: payload_matches_pin?(activation, version, release)
+
+  defp payload_matches_pin?(%{manifest: %Favn.Manifest.Version{} = embedded}, version, _release),
+    do:
+      Enum.all?(
+        [
+          :manifest_version_id,
+          :content_hash,
+          :schema_version,
+          :runner_contract_version,
+          :runner_releases,
+          :serialization_format
+        ],
+        &(Map.fetch!(embedded, &1) == Map.fetch!(version, &1))
+      )
+
+  defp payload_matches_pin?(
+         %{
+           manifest_version_id: id,
+           manifest_content_hash: hash,
+           required_runner_release_id: release
+         },
+         version,
+         release
+       ),
+       do: id == version.manifest_version_id and hash == version.content_hash
+
+  defp payload_matches_pin?(_payload, _version, _release), do: false
+
+  defp authorized_payload?(%Favn.Contracts.RunnerWork{} = work, version) do
+    refs =
+      Enum.uniq([
+        Favn.Contracts.RunnerWork.asset_ref(work) | work.asset_refs ++ work.planned_asset_refs
+      ])
+
+    Enum.all?(refs, &manifest_asset?(version, &1)) and package_matches?(work, version)
+  end
+
+  defp authorized_payload?(%{asset_ref: ref}, version) when not is_nil(ref),
+    do: manifest_asset?(version, ref)
+
+  defp authorized_payload?(%{activation: activation}, version),
+    do: authorized_payload?(activation, version)
+
+  defp authorized_payload?(%{target_id: target}, version),
+    do: Enum.any?(version.manifest.assets, &(Favn.TargetIdentity.for_asset(&1.ref) == target))
+
+  defp authorized_payload?(
+         %Favn.Contracts.RelationInspectionRequest{relation: %Favn.RelationRef{}},
+         _version
+       ),
+       do: true
+
+  defp authorized_payload?(_payload, _version), do: false
+  defp manifest_asset?(version, ref), do: Enum.any?(version.manifest.assets, &(&1.ref == ref))
+  defp package_matches?(%{execution_package: nil}, _version), do: true
+
+  defp package_matches?(%{execution_package: package} = work, version) do
+    case Enum.find(
+           version.manifest.assets,
+           &(&1.ref == Favn.Contracts.RunnerWork.asset_ref(work))
+         ) do
+      %{execution_package_hash: hash} ->
+        package.content_hash == hash and
+          package.asset_ref == Favn.Contracts.RunnerWork.asset_ref(work)
+
+      _invalid ->
+        false
+    end
+  end
+
+  defp write_link_matches?(
+         command,
+         %Favn.Contracts.RunnerWork{target_operation: operation, logical_target_id: target} = work
+       )
+       when not is_nil(operation),
+       do:
+         if(Favn.Contracts.RunnerWork.runtime_input_resolution_only?(work),
+           do: is_nil(command.write_target_id) and is_nil(command.write_claim_key),
+           else:
+             command.write_target_id == target and is_binary(command.write_claim_key) and
+               is_integer(command.write_claim_fence)
+         )
+
+  defp write_link_matches?(command, %{target_id: target} = payload)
+       when command.task_kind in [
+              :generation_marker_initialize,
+              :generation_activate,
+              :generation_discard
+            ],
+       do:
+         command.write_target_id == target and
+           command.write_operation_id == payload_operation_id(command.task_kind, payload)
+
+  defp write_link_matches?(command, _read_only),
+    do: is_nil(command.write_target_id) or is_binary(command.write_claim_key)
+
+  defp payload_task_identity?(task, %Favn.Contracts.RunnerWork{} = work),
+    do:
+      task.run_id == work.run_id and
+        (is_nil(task.asset_step_id) or task.asset_step_id == work.asset_step_id)
+
+  defp payload_task_identity?(_task, _payload), do: true
+
+  defp persisted_claim_matches?(%{write_claim_key: nil}, _work, _context), do: true
+
+  defp persisted_claim_matches?(command, %Favn.Contracts.RunnerWork{} = work, context) do
+    claim =
+      Repo.get_by(FavnStoragePostgres.Schemas.MaterializationClaim,
+        workspace_id: command.workspace_context.workspace_id,
+        claim_key: command.write_claim_key
+      )
+
+    expected_purpose =
+      if context[:kind] == :sequential, do: "ownership_only", else: "materialization"
+
+    not is_nil(claim) and claim.fencing_token == command.write_claim_fence and
+      claim.target_generation_id == work.target_generation_id and
+      claim.purpose == expected_purpose and
+      claim.run_id == work.run_id and claim.run_id == command.run_id and
+      claim.target_id == command.write_target_id and
+      (work.target_operation != :rebuild_candidate or
+         claim.operation_id == work.rebuild_operation_id)
+  end
+
+  defp persisted_claim_matches?(_command, _payload, _context), do: false
+
+  defp context_matches_payload?(context, %Favn.Contracts.RunnerWork{} = work) do
+    runtime_only? = Favn.Contracts.RunnerWork.runtime_input_resolution_only?(work)
+
+    runtime_only? == (Map.get(context, :purpose) == :runtime_input_resolution) and
+      case Map.get(context, :materialization_claim) do
+        nil ->
+          true
+
+        claim ->
+          claim[:target_generation_id] == work.target_generation_id
+      end
+  end
+
+  defp context_matches_payload?(_context, _payload), do: true
+
+  defp payload_operation_id(:generation_marker_initialize, payload),
+    do: payload.initialization_operation_id
+
+  defp payload_operation_id(_kind, payload), do: payload.rebuild_operation_id
+
+  defp encode_task_snapshot!(snapshot) do
+    case PersistenceData.encode(snapshot, 262_144) do
+      {:ok, envelope} ->
+        Favn.Manifest.Serializer.encode_canonical!(envelope)
+
+      {:error, _reason} ->
+        Repo.rollback(Error.new(:invalid, "runner task receipt exceeds contract limits"))
     end
   end
 

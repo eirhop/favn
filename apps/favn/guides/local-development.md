@@ -95,7 +95,10 @@ mix favn.dev
 
 After updating Favn, `mix favn.doctor` names any missing migration and tells you
 to run `mix favn.postgres.upgrade`. The upgrade command preserves existing data;
-it does not reset PostgreSQL or provision another workspace.
+it does not reset PostgreSQL or provision another workspace. A breaking
+pre-production task-format migration can instead require an explicitly fresh
+control-plane database; follow its migration diagnostic before restarting.
+Ordinary crashes after adoption always reuse the existing database.
 
 The command prints the View URL, normally `http://127.0.0.1:4173`, and stores
 local credentials in `.favn/local/credentials.json`. Favn applies owner-only
@@ -115,6 +118,10 @@ Source development logs at `info` by default in both the local control plane and
 runner. Use `FAVN_LOG_LEVEL=debug mix favn.dev` for verbose troubleshooting or
 `FAVN_LOG_LEVEL=warning mix favn.dev` for quieter output. The startup milestones
 and final View URL remain visible at every supported log level.
+
+Runner registration and initial manifest deployment share one startup deadline.
+If either stalls, startup returns its phase and stops the child processes it
+owns. Repeated claim failures retain backoff across registration and wakeups.
 
 After changing assets, pipelines, SQL, or ordinary Elixir runner code:
 

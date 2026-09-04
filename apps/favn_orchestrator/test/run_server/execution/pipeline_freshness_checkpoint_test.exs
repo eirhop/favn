@@ -1,7 +1,7 @@
 defmodule FavnOrchestrator.RunServer.Execution.PipelineFreshnessCheckpointTest do
   use ExUnit.Case, async: true
 
-  alias Favn.Contracts.RunnerTask.PersistenceCodec
+  alias FavnOrchestrator.RunnerTaskContext
   alias Favn.Manifest.Index
   alias Favn.Plan
   alias FavnOrchestrator.AssetFreshnessState
@@ -72,15 +72,20 @@ defmodule FavnOrchestrator.RunServer.Execution.PipelineFreshnessCheckpointTest d
 
     continuation =
       PipelineTaskContinuation.new!(%{
-        decision: %{decision: :run, reason: :upstream_refreshed},
-        materialization_claim: %{claim_key: "claim", input_versions: []},
+        decision: %{
+          decision: :run,
+          reason: :upstream_refreshed,
+          node_key: {{__MODULE__, :source}, nil},
+          freshness_key: "latest"
+        },
+        materialization_claim: nil,
         resource_circuit_permits: [],
         freshness_checkpoint: reference,
         freshness_key: "latest"
       })
 
-    assert {:ok, envelope} = PersistenceCodec.encode_orchestration_context(continuation)
-    assert byte_size(envelope["payload"]) < 4_096
+    assert {:ok, envelope} = RunnerTaskContext.encode(continuation)
+    assert byte_size(Jason.encode!(envelope)) < 4_096
     refute Map.has_key?(continuation, :freshness_context)
     refute Map.has_key?(continuation, :assets_by_ref)
 
@@ -94,13 +99,8 @@ defmodule FavnOrchestrator.RunServer.Execution.PipelineFreshnessCheckpointTest d
       |> Map.delete(:freshness_checkpoint)
       |> Map.put(:freshness_context, %{now: ~U[2026-07-29 10:00:00Z]})
 
-    assert {:ok, %{now: ~U[2026-07-29 10:00:00Z]}} =
-             PipelineTaskContinuation.legacy_freshness_context(legacy_context)
-
-    assert :error =
-             PipelineTaskContinuation.legacy_freshness_context(
-               Map.put(legacy_context, :unexpected, true)
-             )
+    refute PipelineTaskContinuation.valid?(legacy_context)
+    assert {:error, _} = RunnerTaskContext.encode(legacy_context)
   end
 
   defp context(states) do

@@ -48,6 +48,7 @@ defmodule FavnOrchestrator.RunServer.RetryCheckpoint do
          non_negative_integer?(field(retry, :stage)) and
          positive_integer?(field(retry, :next_attempt)) and
          non_negative_integer?(field(retry, :retry_after_ms)) and
+         valid_admission_deadline?(field(retry, :admission_deadline_ms)) and
          non_negative_integer?(field(state, :sequential_index)) and
          is_integer(field(state, :next_retry_at)) do
       {:ok, {:sequential, state}}
@@ -67,6 +68,9 @@ defmodule FavnOrchestrator.RunServer.RetryCheckpoint do
       {:error, :invalid_retry_checkpoint}
     end
   end
+
+  defp valid_admission_deadline?(nil), do: true
+  defp valid_admission_deadline?(value), do: is_integer(value) and value > 0
 
   defp valid_ref?({module, name}) when is_atom(module) and is_atom(name), do: true
   defp valid_ref?(_value), do: false
