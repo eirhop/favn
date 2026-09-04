@@ -2,15 +2,226 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Implementing |
-| Type | Bug fix with an expanded cancellation contract |
+| Status | Plan reviewed |
+| Type | Bug fix |
 | Primary issue | [#699](https://github.com/eirhop/favn/issues/699) |
 | Pull request | [Draft PR #702](https://github.com/eirhop/favn/pull/702) |
+| Current plan | Revision 1 below; approved after fresh independent review |
+| Original approved baseline | [`9fa85c38`](https://github.com/eirhop/favn/commit/9fa85c3883ce220cffcdc8551df09cfe4d7d19cc), preserved below |
+| Approved revision commit | Reviewed revision; commit ID recorded in the next bookkeeping update |
+| Source baseline | `8a129956b3f571e9db6f8e345b243b14a90b9983` |
 | Related work | [#700: persisted task and crash recovery](https://github.com/eirhop/favn/issues/700) |
-| Affected areas | Orchestrator cancellation, backfill dispatch, submission/admission, PostgreSQL, operator read models and View |
-| Approved plan commit | [`9fa85c38`](https://github.com/eirhop/favn/commit/9fa85c3883ce220cffcdc8551df09cfe4d7d19cc) |
-| Source baseline | `8a129956b3f571e9db6f8e345b243b14a90b9983` on `origin/main` |
 | Last updated | 2026-09-04 |
+
+## Current plan — revision 1
+
+The operator's **Cancel run** action cancels the submitted operation, including
+all backfill windows, regardless of the selected detail. Save intent, prevent
+more work, and let the existing dispatcher and cancellation paths finish cleanup.
+Show **Cancelling**, **Cancelled**, or an explicit **Needs attention** outcome;
+keep completed results. Implementation has not started.
+
+The initial plan prescribed broader API changes, historical-lineage handling and
+progress diagnostics than the reported problem required. This revision narrows
+those choices without dropping the issue's race, restart, authorization or
+unknown-outcome requirements. The original approved text and budget remain intact
+in the collapsed baseline below; the revision/deviation table records what changed.
+
+### Evidence and scope
+
+The [UI action](../../../apps/favn_view/lib/favn_view/run_detail_live.ex) targets
+the selected run. [Parent cancellation](../../../apps/favn_orchestrator/lib/favn_orchestrator/run_cancellation.ex)
+is explicitly rejected, and the [dispatcher](../../../apps/favn_orchestrator/lib/favn_orchestrator/backfill_dispatcher.ex)
+has no operation-level cancellation gate. [Submission cancellation](../../../apps/favn_orchestrator/lib/favn_orchestrator/run_submissions.ex)
+also rejects the `admitting` phase. These are source findings; the incident has
+not been reproduced in this planning work.
+
+Use one ownership rule: backfill windows and system-created continuations belong
+to their original submission; a separately requested rerun is a new operation.
+Historical `root_run_id` or `parent_run_id` alone does not establish cancellation
+ownership. The [resource recovery worker](../../../apps/favn_orchestrator/lib/favn_orchestrator/resource_recovery.ex)
+records `submission_source: :recovery` and a durable source/candidate relationship.
+The operator's retry action uses a separate submission. Validate those records
+inside the workspace; never accept caller metadata or a source tag alone as proof.
+Combined windows can share one child and must be deduplicated.
+
+### Smallest complete implementation
+
+1. **Resolve scope in `cancel_operator_run/3`.** Return that same scope and label
+   through the operator header so the selected asset/window does not change the
+   action. Reauthorize/revalidate on click. Broader scope applies to the operator
+   action; retain exact-run semantics in `cancel_run/4` and its HTTP/CLI callers.
+   Its cancellation mechanics may need the admission-race fix, but its target
+   does not silently expand. Document this distinction in the owning contracts.
+2. **Save one cancellation intent on the owner.** For backfills, add request
+   time/reason and `cancelling` support to the existing record, with an atomic
+   command receipt and outbox event. For ordinary operations, reuse existing
+   submission/run intent. A terminal source with outstanding automatic recovery
+   needs an intent-only transition that preserves its terminal result. Resolve
+   ordinary automatic descendants through verified continuation membership, not
+   a general traversal of historical reruns. Repeated requests converge on the
+   same intent; `:ok` means persisted acceptance, never proof that work stopped.
+3. **Close the actual dispatch races.** Apply the transaction guards in the table
+   below. A preflight read is insufficient. Cancellation and the guarded commit
+   share the existing identity/row serialization point for the resolved owner.
+   Lock the owner before the affected member rows in these touched paths; adjust
+   candidate-first claims only where needed to preserve that order. Do not
+   redesign unrelated lease, result, projection or domain-task locking.
+4. **Extend existing cleanup.** `BackfillDispatcher` reconciles cancelled windows
+   and distinct children in bounded batches. It must discover cancelling backfills
+   even when dispatch is disabled. Reuse pending-submission and leaf-run/task
+   cancellation; page durable run-owned tasks rather than trusting one snapshot's
+   active task list. Existing submission/run recovery resumes unfinished cleanup,
+   including terminal ordinary sources with automatic descendants. This cleanup
+   cannot require execution capacity or admission to be enabled. Keep acknowledgement
+   waits off the dispatcher's mailbox and leave shared target tasks under their
+   existing owner.
+5. **Render the result simply.** The operator DTO carries scope, cancellation
+   availability and the three presentation outcomes above. Existing error detail
+   explains uncertainty. No new per-stage counters, progress dashboard, telemetry
+   inventory or parallel read model. Derive status through existing projections,
+   preserving intent through replay and late window events. Confirmed cancellation
+   requires all owned submissions, automatic recovery candidates and run tasks
+   resolved; an ACK or terminal-window count alone is insufficient.
+
+| Guarded boundary | Required behavior |
+| --- | --- |
+| Backfill activation and child enqueue, including a previously claimed window | After intent commits, no new eligible child is created; reconcile stable reserved IDs created before cancellation won. |
+| Submission claim/preparation and final run admission | Prevent new preparation; stop an active preparation worker. Persist intent during `admitting` and either prevent run creation or reconcile/cancel the already committed run. Preserve intent across that handoff. |
+| Automatic recovery candidate creation, claim, return-to-pending and enqueue | Stop future retries belonging to the cancelled operation. Retire pending/claimed candidates durably as cancelled so a rejected enqueue does not become an endless retry loop. Late outcome settlement cannot create a new eligible candidate, and a stale worker cannot return a cancelled candidate to pending. Already-created automatic runs join cleanup. Explicit later reruns remain independent. |
+| Run-owned task enqueue, claim and in-place requeue | Prevent additional asset work and queued task starts after cancellation wins, including `release(:requeue)` after lease expiry. Resolve the owned task durably as cancelled or unknown according to existing outcome evidence; do not just reject it into repeated recovery attempts. Already assigned work may still require cancellation/unknown-outcome reconciliation. |
+
+The [resource-circuit store](../../../apps/favn_storage_postgres/lib/favn_storage_postgres/resource_circuits/store.ex)
+creates candidates through both `record_recovery_candidate/1` and outcome
+settlement, and can return claimed candidates to pending. Serialize those
+eligibility changes with cancellation: add the missing transaction around the
+standalone candidate write and observe the owner-before-member/circuit order in
+the touched paths. Preserve outcome and permit settlement; suppress or terminally
+cancel only the new recovery candidate belonging to the cancelled operation.
+Cleanup must not finalize while a concurrent eligible candidate can still appear.
+
+The [runner-task store](../../../apps/favn_storage_postgres/lib/favn_storage_postgres/runner_tasks/store.ex)
+can requeue an existing run-owned task through `release(:requeue)` without enqueue.
+Include that path in the cancellation guard and terminal reconciliation. Its
+current `retry/1` caller serves shared operation tasks: preserve shared-task retry
+and guard only applicable run-owned retry/requeue instances. This adds no shared
+operation cancellation or general task-lifecycle redesign.
+
+Use existing indexed ledger, reserved-run and task relationships first. The
+submission intent is an encoded payload, so it is not itself an indexed ownership
+lookup. Where the existing relations cannot resolve pending/automatic work in a
+bounded query, add a normalized cancellation-owner field/index to the existing
+submission records, populated from verified source/ledger relationships and carried
+through admission. That is a narrow membership contract, not a new operations table.
+Finalize the exact query/index in slice 1 against these access patterns. Cancellation
+must not scan all history or decode arbitrary task payloads to find its work.
+
+Shared post-step inspections/marker reconciliation are deliberately outside the
+run-owned task sweep. Preserve [the existing stop-post-step contract](../../../apps/favn_orchestrator/lib/favn_orchestrator/run_server/execution.ex):
+detach the cancelled run's continuation, ignore late replies, and let shared target
+reconciliation finish under its owner. Keep unresolved materialization/marker
+outcomes visible. Killing a waiter never proves that external effects stopped.
+
+```mermaid
+flowchart TD
+    A[Operator clicks Cancel] --> B[Resolve the submitted operation]
+    B --> C[Commit cancellation intent]
+    C --> D[Guard further work]
+    C --> E[Existing workers finish cleanup]
+    F[Restart or lost notification] --> E
+    E --> G{Durable outcome}
+    G -->|Work remains| H[Show Cancelling]
+    H --> E
+    G -->|Stopped| I[Show Cancelled]
+    G -->|Uncertain| J[Show Needs attention]
+```
+
+### Verification and delivery
+
+| Required proof | Focused evidence |
+| --- | --- |
+| Same operation from root, window or asset | Backfill, completed selected child and combined-window tests; normal multi-asset run; automatic recovery child versus separately requested rerun. |
+| No new work after cancellation wins | Separate-connection PostgreSQL barriers at the four guarded boundaries; test both winners, including lost admission acknowledgement and queued-task claim during partial cleanup. Hold late candidate creation/outcome settlement, return-to-pending and run-owned task requeue until after intent or aggregate finalization; verify no revival, no recovery loop and preserved outcome/permit settlement. |
+| Durable convergence | Duplicate commands/keys, lost response/notification, restart during partial cleanup, expired claims and disabled admission/exhausted capacity; terminal ordinary source with pending or active automatic recovery. |
+| Preserved outcomes and isolation | Completion racing cancellation, completed assets unchanged, cross-workspace/forged membership rejected, unrelated same-target recovery survives; late shared-task reply cannot resume the run. |
+| Truthful UI | LiveView confirmation/label and Cancelling/Cancelled/Needs attention; unknown task or marker result remains explicit; late events and projection replay cannot erase intent. |
+| Public contract | Update operator cancellation docs and runtime guide, facade docs and relevant `Favn.AI` routing. Describe exact-run callers accurately; no unrelated API redesign. |
+
+Run narrow owning-app tests first; real database transactions are required for the
+race proof. Use the repository's disposable PostgreSQL setup and required test
+tiers. Keep restart tests for #699, but leave #700's codec/reconnect implementation
+separate and qualify fresh-VM recovery against its repaired baseline. Report any
+blocked release-shaped checks; warm-VM results do not prove fresh-VM recovery.
+For this record-only revision, validate links, whitespace and diagrams; no runtime
+or test execution is claimed.
+
+Migrate the new fields/status values/indexes through the existing PostgreSQL
+bootstrap contract. Validate legacy ownership before backfilling; ambiguous rows
+need explicit diagnostics rather than guessed membership. Quiesce old
+orchestrators before enabling the new behavior: they ignore intent. Do not
+roll back to old code while cancellations remain outstanding. Reuse existing
+audit/error surfaces with bounded, redacted reasons; preserve fences and demand
+accounting. A failure to read cancellation authority blocks new work and surfaces
+an error. Unknown external effects are never automatically replayed.
+
+### Revised complexity budget
+
+This is an estimate to challenge during implementation, not a minimum or a target.
+It removes broad API migration, detailed progress counters and historical rerun
+traversal. Race safety and bounded automatic-recovery cleanup remain real work.
+The original budget below stays unchanged for comparison.
+Most savings come from the reduced API/UI surface; the transactional core remains
+necessary. The lower end of slice 1 is optimistic until the membership query and
+claim ordering are mapped. Reassess from that concrete work rather than assuming
+the lower estimate is achievable.
+
+| Slice | Required addition | Production added | Production deleted | Supporting added | Supporting deleted |
+| --- | --- | ---: | ---: | ---: | ---: |
+| 1 | Operator scope, owner intent/membership, minimal schema and guarded commits | 220-380 | 30-75 | 250-420 | 15-45 |
+| 2 | Existing dispatcher/submission/run and automatic-recovery cleanup | 150-260 | 25-65 | 250-400 | 15-45 |
+| 3 | Existing DTO/UI states and canonical documentation | 70-120 | 25-60 | 120-200 | 20-50 |
+| Total | One implementation PR | 440-760 | 80-200 | 620-1,020 | 50-140 |
+
+Supporting lines include tests, fixtures and canonical docs. Exclude this record,
+generated/vendor files, dependency locks and formatter-only edits. Apply the
+[existing variance rule](../README.md): explain an upper-range overrun exceeding
+25% or 100 lines, whichever is smaller, and materially fewer deletions. Before
+adding scope, identify the required cancellation failure that the addition fixes
+and obtain re-review for a material change. Smaller output is welcome if it
+preserves the required proof; do not write toward the estimate.
+
+## Revision and deviation record
+
+The user requested a tighter plan and a new review on 2026-09-04. Revision 1
+supersedes the following choices from the preserved original plan; other safety
+invariants are retained. No implementation deviations have occurred.
+
+| Original approved choice | Revision 1 | Reason and impact |
+| --- | --- | --- |
+| Expand every public cancellation entry point | Expand `cancel_operator_run/3`; exact-run API/CLI targeting stays exact | The issue concerns the operator action; avoid unrelated command-contract changes. Shared cancellation correctness fixes still apply. |
+| Follow linked reruns generally; terminal-root cleanup | Include only automatic continuations; keep terminal-source cleanup for those | Historical execution-group lineage also includes separately requested reruns. Avoid cancelling independent submissions without dropping automatic recovery. |
+| Prescribe operation-first changes across cancellation/dispatch machinery | Specify the four guarded boundaries and adjust their ordering only | Retain serialization proof; avoid an unrelated locking refactor. |
+| Detailed remaining-work counts/telemetry | Three truthful presentation outcomes using existing error/projection surfaces | Counters are not necessary to show cancellation progress or uncertainty. |
+| 620-1,070 production and 830-1,400 supporting additions | 440-760 production and 620-1,020 supporting additions | Reduced surface, not reduced race/restart test coverage; still estimates. |
+
+## Revision 1 review
+
+| Field | Result |
+| --- | --- |
+| Reviewer | Fresh independent agent `/root/review_cancel_revision` |
+| Compared | Issue #699, current source, original approved baseline and revision/deviation table |
+| Review focus | Smallest complete scope; no hidden weakening of cancellation, membership, recovery or uncertainty |
+| Findings and recheck | One P2 finding: name all existing candidate-creation/return-to-pending and run-owned task requeue paths. The guard table, settlement-preservation rule and barrier tests now cover them; independently rechecked on 2026-09-04. The reviewer found the narrowed product scope sound and the budget provisional, with slice 1's lower end optimistic. |
+| Verdict | Approved for implementation planning; no blocking findings remain. Fresh source/plan review only, not runtime qualification. |
+
+## Original approved baseline
+
+The following text is preserved verbatim from the original approved commit,
+from its one-minute summary through its plan-review result. Its implementation
+choices and budget are historical where the revision table above supersedes them.
+
+<details>
+<summary>Original plan and independent review — 9fa85c38</summary>
 
 ## One-minute summary
 
@@ -379,33 +590,23 @@ For this planning-only change, review links, render both diagrams and run
 | Findings addressed and rechecked | Both corrections added to the plan, implementation map and verification matrix, then independently rechecked on 2026-09-04. The review's initial suggestion to attach run ownership to post-step tasks was withdrawn after inspecting the explicit shared-task contract. |
 | Verdict | Approved for implementation planning; no blocking findings remain. Approval is based on issue/source inspection and does not qualify runtime behavior. |
 
+</details>
+
 ## Implementation outcome
 
-Not started. This PR currently contains the planning record only. Before final
-implementation review, record actual scope, production/supporting additions and
-deletions per slice, canonical documentation changes and operational limitations.
-The workflow status is `Implementing` because the draft PR is open, as required
-by the change-record process; no implementation code has been written.
+Not started. The draft PR contains planning documentation only. Final review must
+compare implementation against the original baseline plus approved revision 1,
+record actual per-slice complexity, deviations, tests and operational limitations.
 
-## Deviations from the approved plan
+## Revision verification evidence
 
-No implementation deviations yet; no implementation has started.
-
-## Decision log
-
-No implementation decisions yet. Planning choices are recorded above.
-
-## Verification evidence
-
-| Check | Result | Evidence boundary |
+| Check | Result | Boundary |
 | --- | --- | --- |
-| Issue and source inspection | Scope and enforcement gaps confirmed at the recorded baseline | Static evidence; incident not reproduced |
-| Markdown links and whitespace | All 16 relative links resolve after corrections; `git diff --no-index --check /dev/null <record>` passes | Documentation quality only |
-| Mermaid diagrams | Both rendered locally with Mermaid 11 and on GitHub at the approved planning commit; GitHub screenshots visually reviewed, with 7 and 10 graph nodes respectively | Documentation render proof; diagrams unchanged in the PR-number update |
-| Implementation tests and live stop/restart | Not run; implementation has not started | No runtime or release qualification claimed |
+| Source/issue comparison | Confirmed scope and admission gaps; inspected automatic recovery source/candidate provenance | Static evidence, no incident reproduction |
+| Original baseline preservation | Original plan and review text retained unchanged below the revision | Historical comparison remains available |
+| Revised links, whitespace and diagrams | All 25 relative links resolve after corrections; `git diff --check` passes; all three diagrams render locally with Mermaid 11 | Documentation only; GitHub rendering follows the reviewed revision push |
+| Implementation/runtime tests | Not run; no implementation | No release or live recovery qualification |
 
-## Final review
+## Final implementation review
 
-Not applicable yet. A different reviewer must compare implementation, outcome,
-deviations and actual complexity against the approved planning commit before the
-implementation PR becomes ready for review.
+Not started. Approval of a planning revision does not approve implementation.
