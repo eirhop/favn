@@ -2,13 +2,13 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Plan reviewed |
+| Status | Implementing |
 | Type | Bug fix with an expanded cancellation contract |
 | Primary issue | [#699](https://github.com/eirhop/favn/issues/699) |
-| Pull request | Pending |
+| Pull request | [Draft PR #702](https://github.com/eirhop/favn/pull/702) |
 | Related work | [#700: persisted task and crash recovery](https://github.com/eirhop/favn/issues/700) |
 | Affected areas | Orchestrator cancellation, backfill dispatch, submission/admission, PostgreSQL, operator read models and View |
-| Approved plan commit | Reviewed baseline; commit ID will be recorded in the PR-number update |
+| Approved plan commit | [`9fa85c38`](https://github.com/eirhop/favn/commit/9fa85c3883ce220cffcdc8551df09cfe4d7d19cc) |
 | Source baseline | `8a129956b3f571e9db6f8e345b243b14a90b9983` on `origin/main` |
 | Last updated | 2026-09-04 |
 
@@ -384,6 +384,8 @@ For this planning-only change, review links, render both diagrams and run
 Not started. This PR currently contains the planning record only. Before final
 implementation review, record actual scope, production/supporting additions and
 deletions per slice, canonical documentation changes and operational limitations.
+The workflow status is `Implementing` because the draft PR is open, as required
+by the change-record process; no implementation code has been written.
 
 ## Deviations from the approved plan
 
@@ -399,7 +401,7 @@ No implementation decisions yet. Planning choices are recorded above.
 | --- | --- | --- |
 | Issue and source inspection | Scope and enforcement gaps confirmed at the recorded baseline | Static evidence; incident not reproduced |
 | Markdown links and whitespace | All 16 relative links resolve after corrections; `git diff --no-index --check /dev/null <record>` passes | Documentation quality only |
-| Mermaid diagrams | Both diagrams rendered to SVG using Mermaid 11 in headless Edge | Local render proof; GitHub render check follows the reviewed-plan push |
+| Mermaid diagrams | Both rendered locally with Mermaid 11 and on GitHub at the approved planning commit; GitHub screenshots visually reviewed, with 7 and 10 graph nodes respectively | Documentation render proof; diagrams unchanged in the PR-number update |
 | Implementation tests and live stop/restart | Not run; implementation has not started | No runtime or release qualification claimed |
 
 ## Final review
