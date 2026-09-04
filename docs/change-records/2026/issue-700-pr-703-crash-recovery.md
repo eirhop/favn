@@ -461,10 +461,20 @@ retry checkpoint, records an admission queue event, and preserves that deadline
 through restart and eventual dispatch. Unknown outcomes remain excluded without
 automatic replay. Unrelated targets and read-only inspections can progress.
 
-The branch was rebased on `origin/main` at `2f26d586` during implementation. Local
-startup cleanup was reconciled with the new incremental reload implementation:
-the startup deadline cleans up owned startup children, while an unknown reload
-outcome retains the upstream recovery semantics.
+The branch was first rebased on `origin/main` at `2f26d586` during implementation.
+It was rebased again on `f5c530a7` after PR #702 merged whole-run cancellation.
+The second rebase had three overlapping conflicts in runner-task storage, the
+migration registry and runner-task fixtures. Cancellation ownership is now taken
+before blocking target/task ownership. Queue selection takes the cancellation
+lock before the task row and uses a nonblocking target lock after that row, so a
+busy writer is skipped instead of creating the reverse-order wait. Release and
+retry preserve cancellation outcomes while retaining unknown write exclusion.
+Cancellation migration `20260904010000` precedes crash recovery migration
+`20260904020000`; diagnostics pin the definition produced by both migrations.
+
+Local startup cleanup was reconciled with the new incremental reload
+implementation: the startup deadline cleans up owned startup children, while an
+unknown reload outcome retains the upstream recovery semantics.
 
 ```mermaid
 flowchart TD
@@ -514,10 +524,10 @@ to slice 3. The per-file ledger was retained with the verification output.
 | Slice | Production added/deleted | Supporting added/deleted | Explanation against the approved range |
 | --- | ---: | ---: | --- |
 | 1: current-format contracts and pins | 1,317 / 103 | 818 / 42 | Closed struct/atom/value coverage across eight request/result types, bounded decoding, exact result identity, context restoration, retained-package verification and pre-activation authorization were substantially underestimated. The old ETF reader is removed; there is no compatibility layer. |
-| 2: scalar recovery and disposition | 1,277 / 262 | 1,855 / 120 | Includes all shared store/DDL integration: immutable pins and hashes, scalar receipts, isolated hydration/quarantine, historical claim fencing and bounded rediscovery. Fresh-process and corruption probes add more fixtures than estimated. Existing lifecycle behavior stays in place and gains explicit validation. |
+| 2: scalar recovery and disposition | 1,316 / 303 | 1,910 / 124 | Includes all shared store/DDL integration: immutable pins and hashes, scalar receipts, isolated hydration/quarantine, historical claim fencing, bounded rediscovery and the merged cancellation lock order. Fresh-process, corruption and cancellation-race probes add more fixtures than estimated. Existing lifecycle behavior stays in place and gains explicit validation. |
 | 3: existing owner effect state | 1,148 / 71 | 1,039 / 16 | Exact owner/start settlement, administrator quiescence evidence and audit replay, read-only generation evidence, healthy contention and persisted sequential deadlines require explicit branches and transaction tests. This extends existing owners; it does not add a second lock service or scheduler. |
-| 4: runner and local lifecycle | 196 / 46 | 380 / 18 | Additions remain within budget. Fewer deletions preserve current upstream reload behavior and existing runner state transitions; focused retry, cancellation and long-wait lease tests extend their existing fixtures. |
-| Total | 3,938 / 482 | 4,092 / 196 | Production additions exceed the 1,700 upper estimate by 2,238 (132%); supporting additions exceed 2,200 by 1,892 (86%). Production deletions are within budget; supporting deletions are 26 above the estimate's minimum. |
+| 4: runner and local lifecycle | 196 / 46 | 381 / 21 | Additions remain within budget. Fewer deletions preserve current upstream reload behavior and existing runner state transitions; focused retry, cancellation and long-wait lease tests extend their existing fixtures. |
+| Total | 3,977 / 523 | 4,148 / 203 | Production additions exceed the 1,700 upper estimate by 2,277 (134%); supporting additions exceed 2,200 by 1,948 (89%). Both deletion counts are within the planned ranges. |
 
 The estimate understated the cost of enforcing the existing safety contract.
 The earlier unformatted production checkpoint already exceeded its upper estimate
@@ -611,6 +621,19 @@ retry type, and test the current migration's exact bounds and explicit downgrade
 refusal. Final gate results passed locally as recorded below; independent
 re-review approved the corrections with no findings.
 
+A later GitHub run at the pre-rebase head failed Quick checks because Mint 1.9.3
+received two security advisories while PR #702 simultaneously moved `main`. The
+second rebase takes `main`'s Mint 1.10.0 lock entry; the exact local Quick sequence,
+including both dependency audits, passes. The rebase integration initially found
+29 runner-task fixture failures because ordinary inspection tasks still invented
+run IDs without cancellation authority. It also found seven cancellation fixtures
+that lacked the current manifest/content fields and one runner-session fixture
+that redeployed run authority twice. The corrected fixtures use shared identity
+only for genuinely parentless work and exact durable run authority for run-owned
+work. All eight merged cancellation cases pass. A 50-task recovery test now
+clears its synthetic active leases after the assertion so the global recovery
+scan is independent of test order.
+
 The first local full-slow requalification inherited an absolute isolated Mix
 build path into the nested consumer project, so its asset-location assertion was
 not meaningful. The CI-shaped rerun passed every test except the restore drill,
@@ -635,7 +658,9 @@ implementation review are recorded below.
 | Final crash/ownership regression run | 29 passed, including missing-owner rejection, all seven SIGKILL phases with two fresh recoveries per phase, payload/context swaps, scalar receipt corruption and sequential deadline restoration/unblock |
 | Final operation fixture check | 6 passed; all required store behavior callbacks are present |
 | Local lifecycle acceptance | 1 passed; separate source BEAM processes and restricted PostgreSQL roles, retained-database restart |
-| Complete slow tier after CI correction | 25 passed: Favn 2, Orchestrator 2 and PostgreSQL 21, using matching PostgreSQL 18 client/server tools |
+| Complete slow tier after CI correction and rebase | 25 passed after the rebase: Favn 2, Orchestrator 2 and PostgreSQL 21, using a fresh combined schema and matching PostgreSQL 18 client/server tools |
 | Static checks | Exact whole-umbrella Dialyzer, CI quick checks, repository-wide format, warnings-as-errors compilation, CI test-tag guard and whitespace check passed after correction |
+| Post-rebase cancellation integration | 8 focused cancellation/session cases and all 425 PostgreSQL fast checks passed on the combined #699/#700 schema. The whole Orchestrator app passed 857 checks under seed `108959`. Its unrelated 100 ms `ManifestMemoryTest` assertion passes alone but reproduces under seed `442099`; no crash-recovery or cancellation source participates in that test. |
+| Post-rebase independent review | Approved by `review_crash_recovery_plan` on 2026-09-04 with no findings. The reviewer checked cancellation/target/task lock ordering, requeue-to-cancelled versus unknown disposition, both migration versions and the combined fingerprint, fixture ownership, demand-preserving cleanup, and independently reproduced the 3,977/523 production and 4,148/203 supporting counts. Leaving the unchanged timing-sensitive `ManifestMemoryTest` outside this fix was accepted as the narrower scope. |
 | Independent source and scope review | Accepted by `review_crash_recovery_plan` on 2026-09-04. Reported hydration/receipt linkage and long-wait lease findings were corrected and independently rechecked; per-slice budget variance accepted. |
 | Final evidence review | Approved by `review_crash_recovery_plan` on 2026-09-04 against baseline `c6f51b0` after the first CI failure and full correction audit. The reviewer independently reproduced the production/support counts, accepted the existing-owner design and recorded deviations, and verified the captured fresh PostgreSQL 18 slow result. No remaining findings. Approval covers the documented source-process/PostgreSQL behavior; release, real adapter interruption and PITR limits remain unqualified. |

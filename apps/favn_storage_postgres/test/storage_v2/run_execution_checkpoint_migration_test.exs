@@ -8,7 +8,7 @@ defmodule FavnStoragePostgres.StorageV2.RunExecutionCheckpointMigrationTest do
   alias FavnStoragePostgres.Migrations.AddCrashSafeRunnerTasksV2
   alias FavnStoragePostgres.StorageV2.Migrations
 
-  @current_migration_version 20_260_904_010_000
+  @current_migration_version 20_260_904_020_000
   @current_migration {@current_migration_version, AddCrashSafeRunnerTasksV2}
 
   defmodule UpgradeRepo do

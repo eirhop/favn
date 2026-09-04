@@ -615,8 +615,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
           cancelled? and command.disposition == :requeue ->
             %{
               command
-              | disposition:
-                  if(proven_safe_to_requeue?(task), do: :cancelled, else: :unknown),
+              | disposition: if(proven_safe_to_requeue?(task), do: :cancelled, else: :unknown),
                 reason: command.reason || %{reason: :operation_cancelled}
             }
 

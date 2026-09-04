@@ -419,9 +419,12 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
   end
 
   test "enqueue rejects payload and scalar run identity mismatch", fixture do
+    FavnStoragePostgres.TestSupport.RunFixture.create(fixture.workspace_id, ["payload-run"])
+
     command =
       enqueue_command(fixture, "wrong-run",
         task_kind: :asset_attempt,
+        run_id: "payload-run",
         payload: %Favn.Contracts.RunnerWork{
           run_id: "payload-run",
           runner_pool: :duckdb,
@@ -1085,6 +1088,7 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
 
   test "large task fields are stored once while command receipts remain bounded", fixture do
     blob_bytes = 950_000
+    FavnStoragePostgres.TestSupport.RunFixture.create(fixture.workspace_id, ["large-receipt-run"])
 
     payload = %Favn.Contracts.RunnerWork{
       run_id: "large-receipt-run",
@@ -1104,6 +1108,7 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
     enqueue =
       enqueue_command(fixture, "large-receipt",
         task_kind: :asset_attempt,
+        run_id: payload.run_id,
         payload: payload
       )
 
@@ -2215,6 +2220,39 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
   test "maximum recovery batches use bounded per-task snapshots", fixture do
     count = 50
 
+    on_exit(fn ->
+      %{rows: active_tasks} =
+        SQL.query!(
+          Repo,
+          """
+          SELECT task_id, assigned_runner_instance_id,
+                 assigned_runner_session_generation, assignment_generation
+          FROM favn_control.runner_tasks
+          WHERE workspace_id = $1
+            AND status IN ('assigned', 'preparing', 'running', 'cancelling')
+          """,
+          [fixture.workspace_id]
+        )
+
+      Enum.each(active_tasks, fn [task_id, runner_id, session_generation, assignment_generation] ->
+        now = DateTime.utc_now()
+
+        assert {:ok, %{status: :queued}} =
+                 Store.release(%C.ReleaseRunnerTask{
+                   workspace_context: fixture.workspace_context,
+                   command_id: "cleanup-#{task_id}",
+                   task_id: task_id,
+                   runner_instance_id: runner_id,
+                   runner_session_generation: session_generation,
+                   assignment_generation: assignment_generation,
+                   disposition: :requeue,
+                   reason: nil,
+                   issued_at: now,
+                   occurred_at: now
+                 })
+      end)
+    end)
+
     1..count
     |> Task.async_stream(
       fn index -> Store.enqueue(enqueue_command(fixture, "recover-max-#{index}")) end,
@@ -2913,7 +2951,7 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
       payload: encoded_payload,
       payload_hash: payload_hash,
       orchestration_context: orchestration_context,
-      run_id: Keyword.get(opts, :run_id, Map.get(payload, :run_id, "run-#{suffix}")),
+      run_id: Keyword.get(opts, :run_id),
       operation_id: nil,
       asset_step_id: nil,
       required_capability:
