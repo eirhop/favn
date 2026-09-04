@@ -20,7 +20,7 @@ defmodule FavnStoragePostgres.CancellationOwnership do
     case member(workspace_id, run_id) do
       %{cancellation_owner_run_id: owner} when is_binary(owner) -> owner
       nil -> Repo.rollback(Error.new(:not_found, "cancellation authority not found"))
-      _legacy -> invalid!()
+      _invalid -> invalid!()
     end
   end
 
@@ -28,7 +28,7 @@ defmodule FavnStoragePostgres.CancellationOwnership do
     case member(workspace_id, run_id) do
       nil -> run_id
       %{cancellation_owner_run_id: owner} when is_binary(owner) -> owner
-      _legacy -> invalid!()
+      _invalid -> invalid!()
     end
   end
 

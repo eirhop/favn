@@ -2643,6 +2643,9 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
     assert {:ok, assigned} = Store.claim(claim_command(fixture, "after-cancel", "runner"))
     assert assigned.task_id == shared.task_id
 
+    assert {:ok, nil} =
+             Store.claim(claim_command(fixture, "cancelled-owned", "other-runner"))
+
     assert {:ok, %{status: :cancelled}} =
              Store.get(%Q.GetRunnerTask{
                workspace_context: fixture.workspace_context,
