@@ -869,7 +869,8 @@ defmodule FavnStoragePostgres.Materialization.Store do
          materialization_id: nil,
          payload: nil,
          error: nil
-       }), do: true
+       }),
+       do: true
 
   defp valid_finish_payload?(_command), do: false
 

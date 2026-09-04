@@ -2,16 +2,16 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Implementing |
+| Status | Implemented |
 | Revision | 2; implementation authorized on 2026-09-04 |
 | Type | Recovery and persistence bug fix |
 | Primary issue | [#700](https://github.com/eirhop/favn/issues/700) |
-| Pull request | [#703](https://github.com/eirhop/favn/pull/703) (draft) |
+| Pull request | [#703](https://github.com/eirhop/favn/pull/703) |
 | Related work | [#699](https://github.com/eirhop/favn/issues/699), whole-submission cancellation |
 | Affected areas | Core task contracts; PostgreSQL task/claim/lock storage; orchestrator recovery, admission and settlement; runner claims; local startup |
 | Investigated revision | `8a129956b3f571e9db6f8e345b243b14a90b9983` |
 | Original reviewed baseline | [82732b32](https://github.com/eirhop/favn/blob/82732b32bfd0caa512a8f3cd6534d8d7a10ec5ee/docs/change-records/2026/issue-700-pr-pending-crash-recovery.md), preserved unchanged and superseded by this revision |
-| Revised baseline | `c6f51b015d4b9f983f5fbe1054aa75086a6619c7`; this follow-up records baseline and publication evidence only |
+| Revised baseline | `c6f51b015d4b9f983f5fbe1054aa75086a6619c7` |
 | Last updated | 2026-09-04 |
 
 ## One-minute summary
@@ -515,9 +515,9 @@ to slice 3. The per-file ledger was retained with the verification output.
 | --- | ---: | ---: | --- |
 | 1: current-format contracts and pins | 1,313 / 103 | 818 / 42 | Closed struct/atom/value coverage across eight request/result types, bounded decoding, exact result identity, context restoration, retained-package verification and pre-activation authorization were substantially underestimated. The old ETF reader is removed; there is no compatibility layer. |
 | 2: scalar recovery and disposition | 1,275 / 262 | 1,823 / 72 | Includes all shared store/DDL integration: immutable pins and hashes, scalar receipts, isolated hydration/quarantine, historical claim fencing and bounded rediscovery. Fresh-process and corruption probes add more fixtures than estimated. Existing lifecycle behavior stays in place and gains explicit validation. |
-| 3: existing owner effect state | 1,144 / 70 | 1,039 / 16 | Exact owner/start settlement, administrator quiescence evidence and audit replay, read-only generation evidence, healthy contention and persisted sequential deadlines require explicit branches and transaction tests. This extends existing owners; it does not add a second lock service or scheduler. |
-| 4: runner and local lifecycle | 191 / 46 | 379 / 18 | Additions remain within budget. Fewer deletions preserve current upstream reload behavior and existing runner state transitions; focused retry, cancellation and long-wait lease tests extend their existing fixtures. |
-| Total | 3,923 / 481 | 4,059 / 148 | Production additions exceed the 1,700 upper estimate by 2,223 (131%); supporting additions exceed 2,200 by 1,859 (85%). Production deletions are within budget; supporting deletions are 22 below its minimum. |
+| 3: existing owner effect state | 1,145 / 70 | 1,039 / 16 | Exact owner/start settlement, administrator quiescence evidence and audit replay, read-only generation evidence, healthy contention and persisted sequential deadlines require explicit branches and transaction tests. This extends existing owners; it does not add a second lock service or scheduler. |
+| 4: runner and local lifecycle | 195 / 46 | 379 / 18 | Additions remain within budget. Fewer deletions preserve current upstream reload behavior and existing runner state transitions; focused retry, cancellation and long-wait lease tests extend their existing fixtures. |
+| Total | 3,928 / 481 | 4,059 / 148 | Production additions exceed the 1,700 upper estimate by 2,228 (131%); supporting additions exceed 2,200 by 1,859 (85%). Production deletions are within budget; supporting deletions are 22 below its minimum. |
 
 The estimate understated the cost of enforcing the existing safety contract.
 The earlier unformatted production checkpoint already exceeded its upper estimate
@@ -576,8 +576,8 @@ run; final Mix checks run serially. Neither failed run is counted as a pass.
 
 All 18 relative links in this record resolve; the canonical-document links resolve
 including their two generated HexDocs destinations. All three Mermaid diagrams
-render locally. GitHub rendering is checked after pushing the final record. The final
-static gates and independent implementation review are recorded below.
+render locally and on GitHub. The final static gates and independent implementation review are
+recorded below.
 
 
 | Final gate | Actual result |
@@ -586,6 +586,6 @@ static gates and independent implementation review are recorded below.
 | Final crash/ownership regression run | 29 passed, including missing-owner rejection, all seven SIGKILL phases with two fresh recoveries per phase, payload/context swaps, scalar receipt corruption and sequential deadline restoration/unblock |
 | Final operation fixture check | 6 passed; all required store behavior callbacks are present |
 | Local lifecycle acceptance | 1 passed; separate source BEAM processes and restricted PostgreSQL roles, retained-database restart |
-| Static checks | Changed Elixir sources formatted; warnings-as-errors compilation, CI test-tag guard and whitespace check passed |
+| Static checks | Repository-wide format check, warnings-as-errors compilation, CI test-tag guard and whitespace check passed |
 | Independent source and scope review | Accepted by `review_crash_recovery_plan` on 2026-09-04. Reported hydration/receipt linkage and long-wait lease findings were corrected and independently rechecked; per-slice budget variance accepted. |
-| Final evidence review | Awaiting independent comparison of the final gate evidence and missing-owner error-path correction |
+| Final evidence review | Approved by `review_crash_recovery_plan` on 2026-09-04 against baseline `c6f51b0`, including final error-path correction, documentation cleanup, all recorded deviations and budget variance. No remaining material findings. Approval covers the documented source-process/PostgreSQL behavior; release, real adapter interruption and PITR limits remain unqualified. |

@@ -968,7 +968,9 @@ defmodule FavnRunner.RunnerAgent do
         OperationalEvents.emit(
           :runner_task_claim_failed,
           %{retry_count: count, delay_ms: delay},
-          %{failure_class: category}, level: :warning)
+          %{failure_class: category},
+          level: :warning
+        )
 
     state = %{
       state
@@ -1335,13 +1337,15 @@ defmodule FavnRunner.RunnerAgent do
 
   defp superseded_claim?(
          {:error, %{kind: :fenced, details: %{reason_code: "runner_task_claim_superseded"}}}
-       ), do: true
+       ),
+       do: true
 
   defp superseded_claim?(_error), do: false
 
   defp claim_failure_category(
          {:error, %{kind: :fenced, details: %{reason_code: "runner_task_claim_superseded"}}}
-       ), do: :data
+       ),
+       do: :data
 
   defp claim_failure_category({:error, %{kind: kind}}) when kind in [:invalid, :conflict],
     do: :data
