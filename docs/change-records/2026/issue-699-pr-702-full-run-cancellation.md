@@ -694,6 +694,7 @@ migration before new code; old code must not resume outstanding cancellations.
 | Field | Result |
 | --- | --- |
 | Reviewer | Independent agent `/root/review_cancel_revision` |
+| Implementation commit | [`237c1e85`](https://github.com/eirhop/favn/commit/237c1e85); subsequent changes only record evidence and review bookkeeping. |
 | Compared against | Preserved approved revision `2548ae6e`, original baseline `9fa85c38`, issue/source invariants and the complete working diff against `origin/main` (`2f26d586`). |
 | Initial findings | Start/terminal cancellation conflicts could retry stale snapshots indefinitely or drop the aggregate result. Uncertainty classification missed valid failed-but-unknown task outcomes and taskless uncertain recovery. |
 | Corrections and recheck | Added start/step recovery handoff, terminal-only rejected-save refresh retaining results/fence, broader durable uncertainty checks and targeted regression tests. Reviewer inspected the fixes and the final outcome/deviation record on 2026-09-04. |
