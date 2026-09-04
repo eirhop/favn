@@ -73,7 +73,7 @@ defmodule FavnOrchestrator.RunManager do
              safe_reason,
              Keyword.take(opts, [:command_id, :idempotency, :occurred_at])
            ) do
-      continue_cancellation(context, run_key, committed, safe_reason)
+      continue_cancellation(context, run_key, committed, safe_reason, opts)
     else
       {:error, %Error{} = error} -> {:error, normalize_cancellation_error(error)}
       {:error, reason} -> {:error, reason}
@@ -663,26 +663,26 @@ defmodule FavnOrchestrator.RunManager do
   defp sanitize_cancel_reason(value) when is_map(value),
     do: {:ok, Redaction.redact_operational_bounded(value)}
 
-  defp continue_cancellation(context, run_key, %{replayed?: true}, reason) do
+  defp continue_cancellation(context, run_key, %{replayed?: true}, reason, opts) do
     with {:ok, %RunState{} = run} <- Runs.get(context, elem(run_key, 1)) do
       if RunState.terminal_status?(run.status) do
         {:error, :run_already_terminal}
       else
-        notify_cancellation(context, run_key, run, reason)
+        notify_cancellation(context, run_key, run, reason, opts)
       end
     end
   end
 
-  defp continue_cancellation(context, run_key, committed, reason) do
+  defp continue_cancellation(context, run_key, committed, reason, opts) do
     with :ok <- TransitionWriter.publish_committed(context, committed) do
-      notify_cancellation(context, run_key, committed.run, reason)
+      notify_cancellation(context, run_key, committed.run, reason, opts)
     end
   end
 
-  defp notify_cancellation(context, run_key, run, reason) do
+  defp notify_cancellation(context, run_key, run, reason, opts) do
     case call_manager({:notify_cancellation, run_key, reason}) do
-      :active -> enforce_active_cancellation(run, reason)
-      :inactive -> continue_inactive_cancellation(context, run, reason)
+      :active -> enforce_active_cancellation(run, reason, opts)
+      :inactive -> continue_inactive_cancellation(context, run, reason, opts)
       {:error, _reason} = error -> error
     end
   end
@@ -693,13 +693,14 @@ defmodule FavnOrchestrator.RunManager do
   # the awaiting run server, which settles through its normal result path.
   # Dispatch runs off the caller because acknowledgement waits for
   # live-assigned tasks can take up to a second each.
-  defp enforce_active_cancellation(%RunState{} = run, reason) do
+  defp enforce_active_cancellation(%RunState{} = run, reason, opts) do
     dispatch = fn ->
       _outcomes =
         Cancellation.dispatch_runner_tasks(
           run,
           ActiveTaskSet.active_runner_task_ids(run),
-          reason
+          reason,
+          Keyword.take(opts, [:wait_for_ack])
         )
 
       :ok
@@ -717,11 +718,11 @@ defmodule FavnOrchestrator.RunManager do
     end
   end
 
-  defp continue_inactive_cancellation(context, %RunState{} = run, reason) do
+  defp continue_inactive_cancellation(context, %RunState{} = run, reason, opts) do
     if RunState.terminal_status?(run.status) do
       :ok
     else
-      case forward_cancel_result(run, reason) do
+      case forward_cancel_result(run, reason, opts) do
         :ok ->
           {cancelled, _event} = RunCancellation.finish(run, reason, DateTime.utc_now())
 
@@ -767,11 +768,15 @@ defmodule FavnOrchestrator.RunManager do
     :ok
   end
 
-  defp forward_cancel_result(%RunState{} = run, reason) do
+  defp forward_cancel_result(%RunState{} = run, reason, opts) do
     case ActiveTaskSet.active_runner_task_ids(run) do
       [_ | _] = task_ids ->
         run
-        |> Cancellation.dispatch_runner_tasks(task_ids, reason)
+        |> Cancellation.dispatch_runner_tasks(
+          task_ids,
+          reason,
+          Keyword.take(opts, [:wait_for_ack])
+        )
         |> classify_cancel_results()
 
       [] ->

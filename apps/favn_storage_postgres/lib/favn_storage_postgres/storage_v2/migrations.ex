@@ -21,6 +21,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
   alias FavnStoragePostgres.Migrations.AddRebuildOperatorReadsV2
   alias FavnStoragePostgres.Migrations.AddRebuildRunnerBindingsV2
   alias FavnStoragePostgres.Migrations.AddResourceCircuitsV2
+  alias FavnStoragePostgres.Migrations.AddRunCancellationV2
   alias FavnStoragePostgres.Migrations.AddRunExecutionCheckpointsV2
   alias FavnStoragePostgres.Migrations.AddRunnerSessionsV2
   alias FavnStoragePostgres.Migrations.AddRunnerTasksV2
@@ -100,7 +101,8 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     {20_260_825_000_000, RebindBackfillWindowRunReferenceV2},
     {20_260_825_010_000, AddBackfillWindowRunLookupV2},
     {20_260_901_000_000, AddRunnerSessionsV2},
-    {20_260_904_000_000, IncreaseRunnerTaskPayloadBoundV2}
+    {20_260_904_000_000, IncreaseRunnerTaskPayloadBoundV2},
+    {20_260_904_010_000, AddRunCancellationV2}
   ]
   @required_tables ~w(
     schema_migrations
@@ -194,6 +196,9 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     outbox_events_unsequenced_idx
     outbox_events_workspace_publication_idx
     outbox_events_command_uidx
+    runs_requested_cancellation_idx run_submissions_requested_cancellation_idx
+    runs_cancellation_owner_idx run_submissions_cancellation_owner_idx runs_cancelling_idx
+    backfills_cancelling_idx resource_recovery_candidates_source_idx resource_recovery_candidates_run_idx
     runs_recent_idx
     runs_platform_recent_idx
     runs_group_children_idx
@@ -356,7 +361,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     "backfill_windows" =>
       ~w(workspace_id backfill_id window_id batch_index window_key window_start window_end status claim_owner fencing_token claim_command_id last_command_id claim_expires_at run_id attempt_count last_error payload version inserted_at updated_at),
     "backfills" =>
-      ~w(workspace_id backfill_id root_run_id start_command_id last_command_id request_hash deployment_id manifest_version_id target_kind target_id range_start range_end status expected_window_count expected_batch_count appended_window_count appended_batch_count plan_hash metadata version inserted_at updated_at),
+      ~w(cancellation_requested_at cancellation_reason workspace_id backfill_id root_run_id start_command_id last_command_id request_hash deployment_id manifest_version_id target_kind target_id range_start range_end status expected_window_count expected_batch_count appended_window_count appended_batch_count plan_hash metadata version inserted_at updated_at),
     "capacity_scopes" =>
       ~w(scope_id workspace_id scope_kind scope_key capacity_limit active_count version inserted_at updated_at),
     "coverage_baselines" =>
@@ -418,7 +423,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     "run_submission_commands" =>
       ~w(workspace_id command_id submission_id command_kind request_hash result inserted_at),
     "run_submissions" =>
-      ~w(workspace_id submission_id source idempotency_key request_hash authority deployment_id manifest_version_id target_kind target_id run_id intent status attempt claim_owner claim_generation claim_expires_at preparation outcome error failure_kind cancellation_requested_at cancellation_reason retry_root_id retry_of_submission_id retry_command_id superseded_by_submission_id enqueued_at available_at preparing_at admitting_at terminal_at inserted_at updated_at),
+      ~w(cancellation_owner_run_id workspace_id submission_id source idempotency_key request_hash authority deployment_id manifest_version_id target_kind target_id run_id intent status attempt claim_owner claim_generation claim_expires_at preparation outcome error failure_kind cancellation_requested_at cancellation_reason retry_root_id retry_of_submission_id retry_command_id superseded_by_submission_id enqueued_at available_at preparing_at admitting_at terminal_at inserted_at updated_at),
     "run_ownerships" =>
       ~w(workspace_id run_id owner_id fencing_token claim_command_id last_renewal_id expires_at released_at updated_at),
     "run_execution_checkpoints" =>
@@ -428,7 +433,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     "run_targets" =>
       ~w(workspace_id run_id deployment_id manifest_version_id target_kind target_id target_module target_name is_primary submitted_event_id inserted_at),
     "runs" =>
-      ~w(workspace_id run_id deployment_id manifest_version_id root_execution_group_id parent_run_id rerun_of_run_id submit_kind trigger_type status event_sequence submitted_event_id latest_event_id snapshot_version creation_hash snapshot_hash snapshot inserted_at updated_at terminal_at),
+      ~w(cancellation_owner_run_id cancellation_requested_at cancellation_status workspace_id run_id deployment_id manifest_version_id root_execution_group_id parent_run_id rerun_of_run_id submit_kind trigger_type status event_sequence submitted_event_id latest_event_id snapshot_version creation_hash snapshot_hash snapshot inserted_at updated_at terminal_at),
     "runtime_input_pins" =>
       ~w(workspace_id run_id node_key_hash payload_fingerprint execution_package_hash resolver_module encryption_key_version payload inserted_at),
     "runtime_input_key_versions" => ~w(key_version first_used_at),
@@ -511,6 +516,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     workspace_deployment_targets_source_valid workspace_runtime_state_revision_valid
     outbox_events_versions_valid outbox_events_aggregate_id_length_v2
     outbox_publication_state_singleton runs_status_valid runs_values_valid
+    runs_cancellation_owner_valid run_submissions_cancellation_owner_valid runs_cancellation_status_valid
     run_submissions_values_valid run_submissions_state_shape_valid
     run_submission_commands_values_valid
     run_events_values_valid run_targets_kind_valid runtime_input_pins_key_version_valid
@@ -597,7 +603,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
                           Enum.map(@identifier_constraint_tables, &"#{&1}_identifier_lengths_v2") ++
                           Enum.map(@payload_constraint_tables, &"#{&1}_payload_bounds_v2")
   @expected_versions Enum.map(@migrations, fn {version, _module} -> version end)
-  @expected_definition_fingerprint "fd90c1d700fbeadb9af6511b2aca13e24db5a3b5883b029ba64eab488fe443be"
+  @expected_definition_fingerprint "8c0a3298d6b1220052ffd9c36b55bff9c16570a91c1ea30cff1e5ddb179b3feb"
 
   @doc "Creates the V2 namespace for development/tests and applies every known migration."
   @spec migrate!(module()) :: :ok

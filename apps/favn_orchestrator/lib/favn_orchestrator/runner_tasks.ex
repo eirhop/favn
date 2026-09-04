@@ -299,7 +299,9 @@ defmodule FavnOrchestrator.RunnerTasks do
     end
   end
 
-  def request_cancellation(workspace_id, task_id, reason) do
+  @doc "Requests cancellation; background reconciliation can disable acknowledgement waiting."
+  @spec request_cancellation(String.t(), String.t(), term(), keyword()) :: CancellationOutcome.t()
+  def request_cancellation(workspace_id, task_id, reason, opts \\ []) do
     now = DateTime.utc_now()
 
     with {:ok, task} <-
@@ -314,7 +316,9 @@ defmodule FavnOrchestrator.RunnerTasks do
       delivery = maybe_send_cancellation(task, reason, now)
       if task.status == :cancelled, do: RunnerTaskResultRouter.notify(task)
 
-      cancellation_outcome(task, delivery)
+      if delivery == :sent and not Keyword.get(opts, :wait_for_ack, true),
+        do: cancellation_outcome(task, :requested, task.status),
+        else: cancellation_outcome(task, delivery)
     else
       {:error, reason} ->
         CancellationOutcome.from_runner_result(task_id, {:error, reason})

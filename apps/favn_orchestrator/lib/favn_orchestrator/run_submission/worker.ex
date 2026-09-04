@@ -124,7 +124,7 @@ defmodule FavnOrchestrator.RunSubmission.Worker do
       Keyword.fetch!(opts, :renewal_interval_ms) ->
         case renew(submission, opts, renewal_sequence) do
           {:ok, %RunSubmission{cancellation_requested_at: requested_at} = renewed}
-          when not is_nil(requested_at) and renewed.status == :preparing ->
+          when not is_nil(requested_at) and renewed.status in [:preparing, :admitting] ->
             stop_processor(pid, monitor)
             processor = Keyword.get(opts, :processor, Processor)
             processor.process(renewed, opts)

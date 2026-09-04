@@ -36,13 +36,14 @@ defmodule FavnStoragePostgres.Runs.Store do
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Storage.RunEventCodec
   alias FavnOrchestrator.Storage.RunSnapshotCodec
+  alias FavnStoragePostgres.OperationCancellation
+  alias FavnStoragePostgres.CancellationOwnership
   alias FavnStoragePostgres.CanonicalJSON
   alias FavnStoragePostgres.ErrorMapper
   alias FavnStoragePostgres.Idempotency.Transaction, as: IdempotencyTransaction
   alias FavnStoragePostgres.Outbox.Writer, as: OutboxWriter
   alias FavnStoragePostgres.Payload
   alias FavnStoragePostgres.Repo
-  alias FavnStoragePostgres.RunIdentity
   alias FavnStoragePostgres.Runs.Decoder
   alias FavnStoragePostgres.Runs.RuntimeInputPinCodec
   alias FavnStoragePostgres.RuntimeInputKeys
@@ -71,12 +72,72 @@ defmodule FavnStoragePostgres.Runs.Store do
   @snapshot_version 2
 
   @impl true
+  def cancellation_scope(%GetRun{} = query),
+    do: cancellation_query(query, &OperationCancellation.scope!/2)
+
+  @impl true
+  def reconcile_cancellation(%GetRun{} = query) do
+    if workspace_writer?(query.workspace_context),
+      do: cancellation_query(query, &OperationCancellation.reconcile!/2),
+      else: {:error, Error.new(:invalid, "workspace write authority required")}
+  end
+
+  defp cancellation_query(query, fun) do
+    with :ok <- validate_workspace_read(query.workspace_context),
+         true <- valid_identity?(query.run_id) do
+      Repo.transaction(fn -> fun.(query.workspace_context.workspace_id, query.run_id) end)
+    else
+      false -> {:error, Error.new(:invalid, "invalid run identity")}
+      error -> error
+    end
+  rescue
+    error -> {:error, ErrorMapper.map(error)}
+  end
+
+  @impl true
+  def page_cancelling_operations(
+        %FavnOrchestrator.Persistence.Queries.PageCancellingOperations{} = query
+      ) do
+    with :ok <- validate_workspace_read(query.workspace_context),
+         true <-
+           query.kind in [:run, :backfill] and is_integer(query.limit) and query.limit in 1..100 and
+             (is_nil(query.after) or valid_identity?(query.after)) do
+      {:ok, OperationCancellation.page!(query)}
+    else
+      false -> {:error, Error.new(:invalid, "invalid cancellation page")}
+      error -> error
+    end
+  rescue
+    error -> {:error, ErrorMapper.map(error)}
+  end
+
+  @impl true
+  def request_operation_cancellation(%RequestRunCancellation{} = command) do
+    with :ok <- validate_cancellation(command),
+         {:ok, :ok} <-
+           Repo.transaction(fn ->
+             IdempotencyTransaction.execute!(
+               command.workspace_context.workspace_id,
+               command.idempotency,
+               fn ->
+                 OperationCancellation.request!(command, &request_cancellation!(&1, true))
+               end,
+               fn :ok -> {:ok, %{response: %{"accepted" => true}, response_status: 202}} end,
+               fn %{response: %{"accepted" => true}} -> {:ok, :ok} end
+             )
+           end),
+         do: :ok
+  rescue
+    error -> {:error, ErrorMapper.map(error)}
+  end
+
+  @impl true
   def create_run(%CreateRun{} = command) do
     with :ok <- validate_create(command),
          {:ok, encoded} <- encode_write(command.run, command.event, persist_plan?: true),
          {:ok, result} <-
            Repo.transaction(fn ->
-             RunIdentity.lock!(
+             CancellationOwnership.lock_new!(
                command.workspace_context.workspace_id,
                command.run.id
              )
@@ -1007,6 +1068,7 @@ defmodule FavnStoragePostgres.Runs.Store do
         replay_create!(existing, command, encoded)
 
       nil ->
+        CancellationOwnership.guard_new!(workspace_id, command.run.id)
         authorize_submission_run_creation!(command)
 
         deployment =
@@ -1194,7 +1256,9 @@ defmodule FavnStoragePostgres.Runs.Store do
               snapshot_hash: encoded.snapshot_hash,
               snapshot: encoded.snapshot,
               updated_at: command.run.updated_at || encoded.occurred_at,
-              terminal_at: terminal_at(command.run, encoded.occurred_at)
+              terminal_at: existing.terminal_at || terminal_at(command.run, encoded.occurred_at),
+              cancellation_requested_at:
+                existing.cancellation_requested_at || cancellation_requested_at(command.run)
             ]
           )
 
@@ -1203,8 +1267,14 @@ defmodule FavnStoragePostgres.Runs.Store do
     end
   end
 
-  defp request_cancellation!(%RequestRunCancellation{} = command) do
+  defp cancellation_requested_at(run) do
+    if Map.get(run.metadata, :cancel_requested) || Map.get(run.metadata, "cancel_requested"),
+      do: run.updated_at
+  end
+
+  defp request_cancellation!(%RequestRunCancellation{} = command, operation? \\ false) do
     workspace_id = command.workspace_context.workspace_id
+    CancellationOwnership.lock!(workspace_id, command.run_id)
 
     case lock_run(workspace_id, command.run_id) do
       nil ->
@@ -1213,7 +1283,10 @@ defmodule FavnStoragePostgres.Runs.Store do
       %Run{} = row ->
         with {:ok, run} <- decode_run(row),
              {:ok, requested, event} <-
-               RunCancellation.request(run, command.reason, command.occurred_at),
+               if(operation?,
+                 do: RunCancellation.request_operation(run, command.reason, command.occurred_at),
+                 else: RunCancellation.request(run, command.reason, command.occurred_at)
+               ),
              {:ok, encoded} <- encode_write(requested, event) do
           commit_or_replay!(
             %CommitRunTransition{
@@ -1487,6 +1560,7 @@ defmodule FavnStoragePostgres.Runs.Store do
       deployment_id: command.deployment_id,
       manifest_version_id: run.manifest_version_id,
       root_execution_group_id: run.root_run_id || run.id,
+      cancellation_owner_run_id: CancellationOwnership.new_owner!(run.workspace_id, run.id),
       parent_run_id: run.parent_run_id,
       rerun_of_run_id: run.rerun_of_run_id,
       submit_kind: Atom.to_string(run.submit_kind),

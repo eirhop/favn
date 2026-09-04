@@ -345,6 +345,19 @@ defmodule FavnOrchestrator.RunServer.Execution do
     reason = %{kind: :external_cancel, reason: reason}
 
     state =
+      if map_size(state.post_step_continuations) > 0 do
+        %{
+          state
+          | run:
+              Snapshots.snapshot_update(state.run,
+                metadata: Map.put(state.run.metadata, "cancellation_needs_attention", true)
+              )
+        }
+      else
+        state
+      end
+
+    state =
       state
       |> stop_post_step_workers()
       |> stop_await_processes()

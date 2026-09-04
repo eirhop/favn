@@ -1475,6 +1475,115 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
              )
   end
 
+  test "cancellation retains unfinished initial verification after losing the waiter", fixture do
+    now = DateTime.utc_now()
+
+    assert {:ok, initial} =
+             TargetGenerationStore.ensure_writable(%EnsureWritableTargetGeneration{
+               workspace_context: fixture.workspace_context,
+               command_id: "cancel:ensure:" <> fixture.workspace_id,
+               target_id: fixture.target_id,
+               manifest_version_id: fixture.version.manifest_version_id,
+               descriptor: target_descriptor(fixture),
+               occurred_at: now
+             })
+
+    generation = initial.generation.target_generation_id
+
+    create = fn materialize? ->
+      {command, run} = create_run_command(fixture)
+      assert {:ok, _} = RunStore.create_run(command)
+
+      if materialize? do
+        claim = %ClaimMaterialization{
+          workspace_context: fixture.workspace_context,
+          command_id: "cancel:claim:" <> run.id,
+          claim_key: "cancel:claim:" <> run.id,
+          deployment_id: fixture.deployment_id,
+          target_kind: :asset,
+          target_id: fixture.target_id,
+          target_generation_id: generation,
+          evidence_generation_id: generation,
+          partition_key: "partition:" <> run.id,
+          run_id: run.id,
+          owner_id: "worker",
+          lease_duration_ms: 30_000,
+          occurred_at: now
+        }
+
+        assert {:ok, %{status: :claimed, claim: claimed}} = MaterializationStore.claim(claim)
+
+        assert {:ok, %{status: :materialized}} =
+                 MaterializationStore.finish(%FinishMaterialization{
+                   workspace_context: fixture.workspace_context,
+                   command_id: "cancel:finish:" <> run.id,
+                   claim_key: claim.claim_key,
+                   owner_id: "worker",
+                   fencing_token: claimed.fencing_token,
+                   expected_version: claimed.version,
+                   status: :succeeded,
+                   materialization_id: "materialization:" <> run.id,
+                   payload: %{},
+                   occurred_at: now
+                 })
+      end
+
+      run
+    end
+
+    cancel = fn run ->
+      refute run.metadata["cancellation_needs_attention"]
+
+      assert :ok =
+               RunStore.request_operation_cancellation(%RequestRunCancellation{
+                 workspace_context: fixture.workspace_context,
+                 command_id: "cancel:" <> run.id,
+                 run_id: run.id,
+                 reason: %{requested_by: :operator},
+                 occurred_at: now
+               })
+
+      # A restarted owner has no in-memory post-step continuation or marker flag.
+      SQL.query!(
+        Repo,
+        "UPDATE favn_control.runs SET status='cancelled' WHERE workspace_id=$1 AND run_id=$2",
+        [fixture.workspace_id, run.id]
+      )
+
+      query = %GetRun{workspace_context: fixture.workspace_context, run_id: run.id}
+      assert {:ok, _} = RunStore.reconcile_cancellation(query)
+      assert {:ok, scope} = RunStore.cancellation_scope(query)
+      scope.status
+    end
+
+    written = create.(true)
+    unrelated = create.(false)
+    assert cancel.(unrelated) == :cancelled
+    assert cancel.(written) == :needs_attention
+
+    assert {:ok, _} =
+             TargetGenerationStore.reconcile_initial(%ReconcileInitialTargetGeneration{
+               workspace_context: fixture.workspace_context,
+               command_id: "shared-verification",
+               target_id: fixture.target_id,
+               manifest_version_id: fixture.version.manifest_version_id,
+               target_generation_id: generation,
+               materialization_id: "materialization:" <> written.id,
+               physical_schema_fingerprint: String.duplicate("a", 64),
+               occurred_at: now,
+               data_plane_marker: %{
+                 "target_id" => fixture.target_id,
+                 "active_relation" => initial.generation.physical_relation,
+                 "active_generation_id" => generation,
+                 "activation_operation_id" => "initial-verification",
+                 "activation_token" => "initial-token",
+                 "activated_at" => DateTime.to_iso8601(now)
+               }
+             })
+
+    assert cancel.(create.(true)) == :cancelled
+  end
+
   test "recovers an interrupted initial generation only with exact fenced evidence", fixture do
     occurred_at = DateTime.utc_now()
 
@@ -11159,7 +11268,12 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert claimed.fencing_token == 1
     assert {:ok, [^claimed]} = BackfillStore.claim_windows(claim)
 
-    child_run_id = "run-bfw:" <> run.id
+    child_run_id = BackfillPlan.child_run_id(backfill_id, claimed.window_id, claimed.payload)
+
+    {:ok, child_intent} =
+      Intent.new(:asset, fixture.target_id,
+        metadata: %{backfill_id: backfill_id, backfill_window_id: claimed.window_id}
+      )
 
     assert {:ok, submission} =
              RunSubmissionStore.enqueue(%EnqueueRunSubmission{
@@ -11174,7 +11288,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
                target_kind: "asset",
                target_id: fixture.target_id,
                run_id: child_run_id,
-               intent: %{"format" => "test", "payload" => "backfill"},
+               intent: child_intent,
                occurred_at: now
              })
 
@@ -11649,7 +11763,15 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   # the executed run up by the same id, so both rows have to exist — and the
   # store will only let them coexist through the real admission handshake.
   defp seed_window_run(fixture, root, index, now) do
-    child_id = "run-window-#{index}:" <> root.id
+    backfill_id = "backfill-windows:" <> root.id
+    window_id = "window-windows-#{index}:" <> root.id
+    child_id = BackfillPlan.child_run_id(backfill_id, window_id, %{"partition" => "day-#{index}"})
+
+    {:ok, child_intent} =
+      Intent.new(:asset, fixture.target_id,
+        metadata: %{backfill_id: backfill_id, backfill_window_id: window_id}
+      )
+
     submission_id = "backfill-windows-submission-#{index}:" <> root.id
 
     assert {:ok, _submission} =
@@ -11665,7 +11787,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
                target_kind: "asset",
                target_id: fixture.target_id,
                run_id: child_id,
-               intent: %{"format" => "test", "payload" => "backfill"},
+               intent: child_intent,
                occurred_at: now
              })
 

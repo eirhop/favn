@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Plan reviewed |
+| Status | Implementing |
 | Type | Bug fix |
 | Primary issue | [#699](https://github.com/eirhop/favn/issues/699) |
 | Pull request | [Draft PR #702](https://github.com/eirhop/favn/pull/702) |
@@ -189,6 +189,16 @@ generated/vendor files, dependency locks and formatter-only edits. Apply the
 adding scope, identify the required cancellation failure that the addition fixes
 and obtain re-review for a material change. Smaller output is welcome if it
 preserves the required proof; do not write toward the estimate.
+
+## Implementation decisions
+
+Implementation started after user approval on 2026-09-04. The approved revision
+and original baseline below remain unchanged. Membership is normalized on both
+reserved submissions and admitted runs so direct/legacy runs and pending work
+share indexed owner lookup. Admission copies immutable ownership. Ordinary run
+intent keeps a separate cancellation outcome from the execution status, preserving
+terminal results and timestamps. Backfills retain intent on their existing ledger.
+These choices avoid a new operations table or worker.
 
 ## Revision and deviation record
 

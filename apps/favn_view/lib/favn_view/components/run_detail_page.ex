@@ -65,7 +65,7 @@ defmodule FavnView.Components.RunDetailPage do
           data-command-operation="run_cancel"
           data-command-resource={@run[:cancel_run_id] || @run_id}
           phx-disable-with="Cancelling..."
-          data-confirm="Cancel this run? Active runner work will be asked to stop."
+          data-confirm="Cancel the full submitted run, including all its windows and automatic retries? Completed results will be kept."
           data-testid="cancel-run-button"
         >
           {@run[:cancel_label] || "Cancel run"}
@@ -128,6 +128,13 @@ defmodule FavnView.Components.RunDetailPage do
     ~H"""
     <div class="mx-auto flex w-full max-w-[110rem] flex-col gap-4" data-testid="run-detail-page">
       <Progress.run_progress run={@run} />
+      <.notice
+        :if={@run[:cancellation_status]}
+        tone={if(@run[:cancellation_status] == :needs_attention, do: :warning, else: :info)}
+        data-testid="run-cancellation-status"
+      >
+        {cancellation_message(@run[:cancellation_status])}
+      </.notice>
       <WindowRail.window_rail
         :if={@rail}
         rail={@rail}
@@ -350,4 +357,15 @@ defmodule FavnView.Components.RunDetailPage do
 
   defp short_id(id) when is_binary(id) and byte_size(id) > 18, do: String.slice(id, 0, 18)
   defp short_id(id), do: to_string(id)
+
+  defp cancellation_message(:cancelling),
+    do: "Cancelling the full submitted run. Waiting for active work to stop."
+
+  defp cancellation_message(:cancelled), do: "Cancelled. Completed results have been kept."
+
+  defp cancellation_message(:needs_attention),
+    do:
+      "Needs attention. Cancellation was requested, but some work has an uncertain outcome. Check the run diagnostics before retrying."
+
+  defp cancellation_message(_), do: nil
 end

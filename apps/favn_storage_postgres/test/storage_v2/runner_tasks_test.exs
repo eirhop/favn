@@ -1190,6 +1190,8 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
   end
 
   test "task reads stay workspace scoped and run paging uses a stable cursor", fixture do
+    FavnStoragePostgres.TestSupport.RunFixture.create(fixture.workspace_id, ["run-page"])
+
     first_command =
       enqueue_command(fixture, "page-first", occurred_at: fixture.now, run_id: "run-page")
 
@@ -2632,6 +2634,110 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
              )
   end
 
+  test "operation cancellation fences queued claims and preserves shared work", fixture do
+    run_id = "cancel-owned-#{random_id()}"
+    FavnStoragePostgres.TestSupport.RunFixture.create(fixture.workspace_id, [run_id])
+    assert {:ok, queued} = Store.enqueue(enqueue_command(fixture, "owned", run_id: run_id))
+    assert {:ok, shared} = Store.enqueue(enqueue_command(fixture, "shared", run_id: nil))
+    cancel_operation!(fixture, run_id)
+    assert {:ok, assigned} = Store.claim(claim_command(fixture, "after-cancel", "runner"))
+    assert assigned.task_id == shared.task_id
+
+    assert {:ok, %{status: :cancelled}} =
+             Store.get(%Q.GetRunnerTask{
+               workspace_context: fixture.workspace_context,
+               task_id: queued.task_id
+             })
+
+    assert {:error, %{kind: :conflict}} =
+             Store.enqueue(enqueue_command(fixture, "late", run_id: run_id))
+
+    assert {:ok, %{queued_count: 0, active_count: 1}} = demand(fixture)
+  end
+
+  test "owned lease requeue after cancellation becomes cancelled or unknown", fixture do
+    for phase <- [:assigned, :running] do
+      run_id = "cancel-release-#{phase}-#{random_id()}"
+
+      FavnStoragePostgres.TestSupport.RunFixture.create(fixture.workspace_id <> "-#{phase}", [
+        run_id
+      ])
+
+      context = %{fixture.workspace_context | workspace_id: fixture.workspace_id <> "-#{phase}"}
+      owned_fixture = %{fixture | workspace_id: context.workspace_id, workspace_context: context}
+
+      payload = %Favn.Contracts.RunnerWork{
+        run_id: run_id,
+        runner_pool: :duckdb,
+        required_runner_release_id: @release
+      }
+
+      assert {:ok, _} =
+               Store.enqueue(
+                 enqueue_command(owned_fixture, "release-#{phase}",
+                   task_kind: :asset_attempt,
+                   payload: payload,
+                   run_id: run_id
+                 )
+               )
+
+      assert {:ok, assigned} =
+               Store.claim(
+                 claim_command(owned_fixture, "release-#{phase}", "runner-#{phase}",
+                   supported_task_kinds: [:asset_attempt],
+                   capabilities: ["asset_execution"]
+                 )
+               )
+
+      task =
+        if phase == :running do
+          assert {:ok, running} =
+                   Store.transition(
+                     transition_command(owned_fixture, assigned, "start-#{phase}", :running)
+                   )
+
+          running
+        else
+          assigned
+        end
+
+      cancel_operation!(owned_fixture, run_id)
+
+      assert {:ok, released} =
+               Store.release(
+                 release_command(owned_fixture, task, "release-#{phase}", :requeue, nil)
+               )
+
+      assert released.status == if(phase == :assigned, do: :cancelled, else: :unknown)
+
+      assert {:ok, nil} =
+               Store.claim(
+                 claim_command(owned_fixture, "no-revival-#{phase}", "another-#{phase}",
+                   supported_task_kinds: [:asset_attempt],
+                   capabilities: ["asset_execution"]
+                 )
+               )
+    end
+  end
+
+  test "missing run authority cannot enqueue or claim owned work", fixture do
+    assert {:error, %{kind: :not_found}} =
+             Store.enqueue(enqueue_command(fixture, "missing", run_id: "missing-run"))
+  end
+
+  defp cancel_operation!(fixture, run_id) do
+    assert :ok =
+             FavnStoragePostgres.Runs.Store.request_operation_cancellation(
+               %C.RequestRunCancellation{
+                 workspace_context: fixture.workspace_context,
+                 command_id: "cancel-#{random_id()}",
+                 run_id: run_id,
+                 reason: %{requested_by: :operator},
+                 occurred_at: DateTime.utc_now()
+               }
+             )
+  end
+
   defp enqueue_command(fixture, suffix, opts \\ []) do
     task_kind = Keyword.get(opts, :task_kind, :relation_inspection)
     payload = Keyword.get(opts, :payload, inspection_payload())
@@ -2657,7 +2763,7 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
       payload: encoded_payload,
       payload_hash: payload_hash,
       orchestration_context: orchestration_context,
-      run_id: Keyword.get(opts, :run_id, "run-#{suffix}"),
+      run_id: Keyword.get(opts, :run_id),
       operation_id: nil,
       asset_step_id: nil,
       required_capability:

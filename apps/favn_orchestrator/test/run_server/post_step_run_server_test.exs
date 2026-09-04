@@ -392,6 +392,7 @@ defmodule FavnOrchestrator.RunServer.PostStepRunServerTest do
     assert_receive {:DOWN, ^monitor, :process, ^pid, :normal}, 5_000
 
     assert HarnessStore.latest_run().status == :cancelled
+    assert HarnessStore.latest_run().metadata["cancellation_needs_attention"] == true
     refute_receive {:materialization_finished, :failed, _claim_key}, 20
     refute_receive {:runner_task_cancel_requested, _task_id}, 20
     refute_receive {:reconcile_initial, _generation_id}, 20

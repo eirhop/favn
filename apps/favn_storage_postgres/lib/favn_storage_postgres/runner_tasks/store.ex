@@ -18,6 +18,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
   alias FavnStoragePostgres.RunnerSessions.Store, as: SessionsStore
   alias Favn.Contracts.RunnerError
   alias FavnStoragePostgres.CanonicalJSON
+  alias FavnStoragePostgres.CancellationOwnership
   alias FavnStoragePostgres.ErrorMapper
   alias FavnStoragePostgres.Repo
   alias FavnStoragePostgres.RunnerTasks.Codec
@@ -96,6 +97,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
     idempotent_transact(command, "enqueue", fn ->
       validate_enqueue!(command)
       workspace_id = command.workspace_context.workspace_id
+      if command.run_id, do: CancellationOwnership.guard!(workspace_id, command.run_id)
 
       row = %{
         workspace_id: workspace_id,
@@ -163,22 +165,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
       task_kinds = Enum.map(command.supported_task_kinds, &Atom.to_string/1)
       lock_runner_claim_key!(command.runner_instance_id, command.runner_session_generation)
 
-      task =
-        active_runner_task(command) ||
-          Repo.one(
-            from(task in RunnerTask,
-              where:
-                task.status == "queued" and task.runner_pool == ^command.runner_pool and
-                  task.required_runner_release_id == ^command.required_runner_release_id and
-                  task.task_kind in ^task_kinds and
-                  (is_nil(task.deadline_at) or task.deadline_at > ^command.occurred_at) and
-                  (is_nil(task.required_capability) or
-                     task.required_capability in ^command.capabilities),
-              order_by: [asc: task.enqueued_at, asc: task.workspace_id, asc: task.task_id],
-              limit: 1,
-              lock: "FOR UPDATE SKIP LOCKED"
-            )
-          )
+      task = active_runner_task(command) || claimable_task(command, task_kinds)
 
       case task do
         nil ->
@@ -527,6 +514,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
   @impl true
   def release(%C.ReleaseRunnerTask{} = command) do
     idempotent_transact(command, "release", fn ->
+      lock_cancellation_owner!(command)
       task = fenced_task!(command)
 
       unless command.disposition in [:requeue, :unknown, :cancelled] do
@@ -537,12 +525,24 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
         Repo.rollback(Error.new(:invalid, "unknown runner task release requires a reason"))
       end
 
-      if command.disposition == :requeue and not proven_safe_to_requeue?(task) do
+      cancelled? = CancellationOwnership.cancelled?(task.workspace_id, task.run_id)
+
+      disposition =
+        if command.disposition == :requeue and cancelled?,
+          do: if(proven_safe_to_requeue?(task), do: :cancelled, else: :unknown),
+          else: command.disposition
+
+      command =
+        if cancelled? and is_nil(command.reason),
+          do: %{command | reason: %{reason: :operation_cancelled}},
+          else: command
+
+      if disposition == :requeue and not proven_safe_to_requeue?(task) do
         Repo.rollback(Error.new(:conflict, "runner task is not proven safe to requeue"))
       end
 
       attrs =
-        case command.disposition do
+        case disposition do
           :requeue ->
             [
               status: "queued",
@@ -585,6 +585,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
         Repo.rollback(Error.new(:invalid, "invalid runner task retry command"))
       end
 
+      lock_cancellation_owner!(command)
       task = lock_task!(command.workspace_context.workspace_id, command.task_id)
 
       unless task.status == "failed" and task.retry_class == "safe_to_retry" and
@@ -593,24 +594,32 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
         Repo.rollback(Error.new(:conflict, "runner task is not a retryable terminal failure"))
       end
 
-      update_task!(task, command,
-        status: "queued",
-        assigned_runner_instance_id: nil,
-        assigned_runner_session_generation: nil,
-        assigned_at: nil,
-        assignment_expires_at: nil,
-        cancellation_requested_at: nil,
-        cancellation_acknowledged_at: nil,
-        runtime_input_resolution_id: nil,
-        runtime_input_resolution_status: nil,
-        runtime_input_payload_fingerprint: nil,
-        runtime_input_error: nil,
-        runtime_inputs_resolved_at: nil,
-        result_version: nil,
-        result: nil,
-        error: nil,
-        terminal_at: nil
-      )
+      if CancellationOwnership.cancelled?(task.workspace_id, task.run_id) do
+        update_task!(task, command,
+          status: "cancelled",
+          cancellation_requested_at: command.occurred_at,
+          terminal_at: command.occurred_at
+        )
+      else
+        update_task!(task, command,
+          status: "queued",
+          assigned_runner_instance_id: nil,
+          assigned_runner_session_generation: nil,
+          assigned_at: nil,
+          assignment_expires_at: nil,
+          cancellation_requested_at: nil,
+          cancellation_acknowledged_at: nil,
+          runtime_input_resolution_id: nil,
+          runtime_input_resolution_status: nil,
+          runtime_input_payload_fingerprint: nil,
+          runtime_input_error: nil,
+          runtime_inputs_resolved_at: nil,
+          result_version: nil,
+          result: nil,
+          error: nil,
+          terminal_at: nil
+        )
+      end
     end)
   end
 
@@ -1066,6 +1075,67 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
       task_kind!(task.task_kind) in command.supported_task_kinds and
       (is_nil(task.required_capability) or
          task.required_capability in command.capabilities)
+  end
+
+  defp claimable_task(command, task_kinds) do
+    Repo.all(
+      from(task in RunnerTask,
+        where:
+          task.status == "queued" and task.runner_pool == ^command.runner_pool and
+            task.required_runner_release_id == ^command.required_runner_release_id and
+            task.task_kind in ^task_kinds and
+            (is_nil(task.deadline_at) or task.deadline_at > ^command.occurred_at) and
+            (is_nil(task.required_capability) or task.required_capability in ^command.capabilities),
+        order_by: [asc: task.enqueued_at, asc: task.workspace_id, asc: task.task_id],
+        limit: 100
+      )
+    )
+    |> Enum.find_value(fn task ->
+      locked? =
+        is_nil(task.run_id) or CancellationOwnership.try_lock!(task.workspace_id, task.run_id)
+
+      locked =
+        if locked?,
+          do:
+            Repo.one(
+              from(t in RunnerTask,
+                where:
+                  t.workspace_id == ^task.workspace_id and t.task_id == ^task.task_id and
+                    t.status == "queued",
+                lock: "FOR UPDATE SKIP LOCKED"
+              )
+            )
+
+      cond do
+        is_nil(locked) ->
+          nil
+
+        CancellationOwnership.cancelled?(locked.workspace_id, locked.run_id) ->
+          update_task!(locked, command,
+            status: "cancelled",
+            cancellation_requested_at: command.occurred_at,
+            terminal_at: command.occurred_at
+          )
+
+          nil
+
+        true ->
+          locked
+      end
+    end)
+  end
+
+  defp lock_cancellation_owner!(command) do
+    case Repo.get_by(RunnerTask,
+           workspace_id: command.workspace_context.workspace_id,
+           task_id: command.task_id
+         ) do
+      %{run_id: run_id} when is_binary(run_id) ->
+        CancellationOwnership.lock!(command.workspace_context.workspace_id, run_id)
+
+      _shared_or_missing ->
+        :ok
+    end
   end
 
   defp lock_runner_claim_key!(runner_instance_id, session_generation) do

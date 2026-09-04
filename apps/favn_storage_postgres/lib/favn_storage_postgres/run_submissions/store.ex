@@ -28,6 +28,7 @@ defmodule FavnStoragePostgres.RunSubmissions.Store do
   alias FavnOrchestrator.Persistence.Results.RunSubmissionStats
   alias FavnOrchestrator.Persistence.Results.RunSubmissionWorkspacePage
   alias FavnOrchestrator.Persistence.RunSubmissionAuthority
+  alias FavnStoragePostgres.CancellationOwnership
   alias FavnStoragePostgres.CanonicalJSON
   alias FavnStoragePostgres.ErrorMapper
   alias FavnStoragePostgres.Repo
@@ -396,6 +397,16 @@ defmodule FavnStoragePostgres.RunSubmissions.Store do
   defp enqueue!(command) do
     workspace_id = command.workspace_context.workspace_id
     advisory_lock!("run-submission-idempotency", workspace_id, command.idempotency_key)
+
+    owner =
+      CancellationOwnership.submission_owner!(
+        workspace_id,
+        command.run_id,
+        command.source,
+        command.intent
+      )
+
+    RunIdentity.lock!(workspace_id, owner)
     RunIdentity.lock!(workspace_id, command.run_id)
 
     case lock_by_idempotency(workspace_id, command.idempotency_key) do
@@ -411,6 +422,16 @@ defmodule FavnStoragePostgres.RunSubmissions.Store do
         )
 
       nil ->
+        if owner != command.run_id and CancellationOwnership.cancelled?(workspace_id, owner),
+          do: Repo.rollback(CancellationOwnership.cancelled_error())
+
+        if command.source == :recovery do
+          {:ok, {:rerun, source_id, _opts}} =
+            FavnOrchestrator.RunSubmission.Intent.decode(command.intent)
+
+          CancellationOwnership.guard!(workspace_id, source_id)
+        end
+
         reject_run_identity_collision!(workspace_id, command.run_id)
         now = database_now!()
 
@@ -430,6 +451,7 @@ defmodule FavnStoragePostgres.RunSubmissions.Store do
           target_kind: command.target_kind,
           target_id: command.target_id,
           run_id: command.run_id,
+          cancellation_owner_run_id: owner,
           intent: command.intent,
           status: "queued",
           attempt: 0,
@@ -448,80 +470,121 @@ defmodule FavnStoragePostgres.RunSubmissions.Store do
   defp claim!(command) do
     now = database_now!()
 
-    from(submission in RunSubmission,
-      where:
-        submission.workspace_id == ^command.workspace_context.workspace_id and
-          submission.status == "queued" and submission.available_at <= ^now,
-      order_by: [
-        asc: submission.available_at,
-        asc: submission.enqueued_at,
-        asc: submission.submission_id
-      ],
-      limit: ^command.limit,
-      lock: "FOR UPDATE SKIP LOCKED"
-    )
-    |> Repo.all()
-    |> Enum.map(fn submission ->
-      submission
-      |> Ecto.Changeset.change(%{
-        status: "preparing",
-        attempt: submission.attempt + 1,
-        claim_owner: command.owner_id,
-        claim_generation: submission.claim_generation + 1,
-        claim_expires_at: lease_expiry(now, command.lease_duration_ms),
-        preparing_at: now,
-        admitting_at: nil,
-        updated_at: now
-      })
-      |> Repo.update!()
-      |> Codec.result()
+    query =
+      from(s in RunSubmission,
+        where:
+          s.workspace_id == ^command.workspace_context.workspace_id and s.status == "queued" and
+            s.available_at <= ^now,
+        order_by: [asc: s.available_at, asc: s.enqueued_at, asc: s.submission_id]
+      )
+
+    claim_rows(query, command, fn submission ->
+      cancellation = cancellation_changes(submission, now)
+
+      if cancellation != %{} do
+        submission
+        |> Ecto.Changeset.change(
+          Map.merge(cancellation, %{status: "cancelled", terminal_at: now, updated_at: now})
+        )
+        |> Repo.update!()
+
+        nil
+      else
+        submission
+        |> Ecto.Changeset.change(%{
+          status: "preparing",
+          attempt: submission.attempt + 1,
+          claim_owner: command.owner_id,
+          claim_generation: submission.claim_generation + 1,
+          claim_expires_at: lease_expiry(now, command.lease_duration_ms),
+          preparing_at: now,
+          admitting_at: nil,
+          updated_at: now
+        })
+        |> Repo.update!()
+        |> Codec.result()
+      end
     end)
   end
 
   defp claim_stale!(command) do
     now = database_now!()
 
-    from(submission in RunSubmission,
-      where:
-        submission.workspace_id == ^command.workspace_context.workspace_id and
-          submission.status in @active_statuses and submission.claim_expires_at <= ^now,
-      order_by: [
-        asc: submission.claim_expires_at,
-        asc: submission.submission_id
-      ],
-      limit: ^command.limit,
-      lock: "FOR UPDATE SKIP LOCKED"
-    )
-    |> Repo.all()
-    |> Enum.map(fn submission ->
-      submission
-      |> Ecto.Changeset.change(%{
-        claim_owner: command.owner_id,
-        claim_generation: submission.claim_generation + 1,
-        claim_expires_at: lease_expiry(now, command.lease_duration_ms),
-        updated_at: now
-      })
-      |> Repo.update!()
-      |> Codec.result()
+    query =
+      from(s in RunSubmission,
+        where:
+          s.workspace_id == ^command.workspace_context.workspace_id and
+            s.status in @active_statuses and s.claim_expires_at <= ^now,
+        order_by: [asc: s.claim_expires_at, asc: s.submission_id]
+      )
+
+    claim_rows(query, command, fn submission ->
+      changes =
+        Map.merge(cancellation_changes(submission, now), %{
+          claim_owner: command.owner_id,
+          claim_generation: submission.claim_generation + 1,
+          claim_expires_at: lease_expiry(now, command.lease_duration_ms),
+          updated_at: now
+        })
+
+      submission |> Ecto.Changeset.change(changes) |> Repo.update!() |> Codec.result()
     end)
   end
 
+  defp claim_rows(query, command, transition) do
+    query
+    |> limit(^max(command.limit, 100))
+    |> Repo.all()
+    |> Enum.reduce_while([], fn candidate, claimed ->
+      if length(claimed) == command.limit do
+        {:halt, claimed}
+      else
+        locked? = CancellationOwnership.try_lock!(candidate.workspace_id, candidate.run_id)
+
+        current =
+          if locked?,
+            do:
+              Repo.one(
+                from(s in query,
+                  where: s.run_id == ^candidate.run_id,
+                  lock: "FOR UPDATE SKIP LOCKED"
+                )
+              )
+
+        result = if current, do: transition.(current)
+        {:cont, if(result, do: [result | claimed], else: claimed)}
+      end
+    end)
+    |> Enum.reverse()
+  end
+
   defp renew!(command) do
+    lock_cancellation_owner!(command)
     {submission, now} = lock_live_claim!(command, @active_statuses)
 
-    submission
-    |> Ecto.Changeset.change(%{
-      claim_expires_at: lease_expiry(now, command.lease_duration_ms),
-      updated_at: now
-    })
-    |> Repo.update!()
-    |> Codec.result()
+    changes =
+      Map.merge(cancellation_changes(submission, now), %{
+        claim_expires_at: lease_expiry(now, command.lease_duration_ms),
+        updated_at: now
+      })
+
+    submission |> Ecto.Changeset.change(changes) |> Repo.update!() |> Codec.result()
+  end
+
+  defp cancellation_changes(submission, now) do
+    if CancellationOwnership.cancelled?(submission.workspace_id, submission.run_id),
+      do: %{
+        cancellation_requested_at: submission.cancellation_requested_at || now,
+        cancellation_reason: submission.cancellation_reason || "operation_cancelled"
+      },
+      else: %{}
   end
 
   defp mark_admitting!(command) do
+    lock_cancellation_owner!(command)
     {submission, now} = lock_live_claim!(command, ["preparing"])
 
-    if submission.cancellation_requested_at do
+    if CancellationOwnership.cancelled?(submission.workspace_id, submission.run_id) do
       rollback(:conflict, "run submission cancellation is already requested")
     end
 
@@ -574,9 +637,10 @@ defmodule FavnStoragePostgres.RunSubmissions.Store do
   end
 
   defp requeue!(command) do
+    lock_cancellation_owner!(command)
     {submission, now} = lock_live_claim!(command, @active_statuses)
 
-    if submission.cancellation_requested_at do
+    if CancellationOwnership.cancelled?(submission.workspace_id, submission.run_id) do
       rollback(:conflict, "run submission cancellation is already requested")
     end
 
@@ -598,6 +662,8 @@ defmodule FavnStoragePostgres.RunSubmissions.Store do
   end
 
   defp request_cancellation!(command) do
+    lock_cancellation_owner!(command)
+
     submission =
       lock_submission!(
         command.workspace_context.workspace_id,
@@ -617,18 +683,15 @@ defmodule FavnStoragePostgres.RunSubmissions.Store do
             updated_at: now
           }
 
-        "preparing" ->
+        status when status in ["preparing", "admitting"] ->
           %{
             cancellation_requested_at: now,
             cancellation_reason: command.reason,
             updated_at: now
           }
 
-        "admitting" ->
-          rollback(
-            :conflict,
-            "admitting run submission must reconcile through run cancellation"
-          )
+        "cancelled" ->
+          %{}
 
         _terminal ->
           rollback(:conflict, "terminal run submission cannot be cancelled")
@@ -641,14 +704,17 @@ defmodule FavnStoragePostgres.RunSubmissions.Store do
   end
 
   defp acknowledge_cancellation!(command) do
-    {submission, now} = lock_live_claim!(command, ["preparing"])
+    lock_cancellation_owner!(command)
+    {submission, now} = lock_live_claim!(command, ["preparing", "admitting"])
 
-    if is_nil(submission.cancellation_requested_at) do
+    unless CancellationOwnership.cancelled?(submission.workspace_id, submission.run_id) do
       rollback(:conflict, "run submission cancellation was not requested")
     end
 
     submission
     |> Ecto.Changeset.change(%{
+      cancellation_requested_at: submission.cancellation_requested_at || now,
+      cancellation_reason: submission.cancellation_reason || "operation_cancelled",
       status: "cancelled",
       claim_owner: nil,
       claim_expires_at: nil,
@@ -731,6 +797,7 @@ defmodule FavnStoragePostgres.RunSubmissions.Store do
           target_kind: failed.target_kind,
           target_id: failed.target_id,
           run_id: command.run_id,
+          cancellation_owner_run_id: command.run_id,
           intent: failed.intent,
           status: "queued",
           attempt: 0,
@@ -746,6 +813,16 @@ defmodule FavnStoragePostgres.RunSubmissions.Store do
         |> Repo.insert!()
         |> Codec.result()
     end
+  end
+
+  defp lock_cancellation_owner!(command) do
+    submission =
+      Repo.get_by(RunSubmission,
+        workspace_id: command.workspace_context.workspace_id,
+        submission_id: command.submission_id
+      ) || rollback(:not_found, "run submission not found")
+
+    CancellationOwnership.lock!(submission.workspace_id, submission.run_id)
   end
 
   defp execute(command, kind, request_builder, fun) do

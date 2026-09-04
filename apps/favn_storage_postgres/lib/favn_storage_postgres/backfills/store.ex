@@ -20,6 +20,7 @@ defmodule FavnStoragePostgres.Backfills.Store do
   alias FavnOrchestrator.Persistence.Results.BackfillWindow, as: BackfillWindowResult
   alias FavnOrchestrator.Persistence.Results.CursorPage
   alias FavnOrchestrator.Persistence.WorkspaceContext
+  alias FavnStoragePostgres.RunIdentity
   alias FavnStoragePostgres.CanonicalJSON
   alias FavnStoragePostgres.ErrorMapper
   alias FavnStoragePostgres.Idempotency.Transaction, as: IdempotencyTransaction
@@ -34,7 +35,7 @@ defmodule FavnStoragePostgres.Backfills.Store do
   @max_batch_windows 500
   @max_plan_windows 10_000
   @max_plan_batches 100
-  @backfill_statuses ~w(planning ready running completed failed cancelled)a
+  @backfill_statuses ~w(planning ready running completed failed cancelling cancelled needs_attention)a
   @window_statuses ~w(planned ready claimed running succeeded failed cancelled)
 
   @impl true
@@ -368,6 +369,31 @@ defmodule FavnStoragePostgres.Backfills.Store do
   end
 
   defp claim_new_windows!(command) do
+    workspace_id = command.workspace_context.workspace_id
+
+    candidates =
+      from(w in BackfillWindow,
+        join: b in Backfill,
+        on: b.workspace_id == w.workspace_id and b.backfill_id == w.backfill_id,
+        where:
+          w.workspace_id == ^workspace_id and is_nil(b.cancellation_requested_at) and
+            (w.status == "ready" or
+               (w.status in ["claimed", "running"] and w.claim_expires_at <= ^DateTime.utc_now())),
+        order_by: [asc: w.window_start, asc: w.window_id],
+        limit: ^command.limit,
+        select: %{backfill_id: b.backfill_id, root_run_id: b.root_run_id}
+      )
+      |> maybe_backfill(command.backfill_id)
+      |> Repo.all()
+
+    candidates
+    |> Enum.map(& &1.root_run_id)
+    |> Enum.uniq()
+    |> Enum.sort()
+    |> Enum.each(&RunIdentity.lock!(workspace_id, &1))
+
+    backfill_ids = candidates |> Enum.map(& &1.backfill_id) |> Enum.uniq()
+
     %{rows: rows} =
       SQL.query!(
         Repo,
@@ -377,6 +403,11 @@ defmodule FavnStoragePostgres.Backfills.Store do
           FROM favn_control.backfill_windows
           WHERE workspace_id = $1
             AND ($2::text IS NULL OR backfill_id = $2)
+            AND backfill_id = ANY($7::text[])
+            AND NOT EXISTS (SELECT 1 FROM favn_control.backfills b
+              WHERE b.workspace_id = backfill_windows.workspace_id
+                AND b.backfill_id = backfill_windows.backfill_id
+                AND b.cancellation_requested_at IS NOT NULL)
             AND (status = 'ready' OR
                  (status IN ('claimed', 'running') AND
                   claim_expires_at <= clock_timestamp()))
@@ -416,7 +447,8 @@ defmodule FavnStoragePostgres.Backfills.Store do
           command.limit,
           command.owner_id,
           command.batch_id,
-          command.lease_duration_ms
+          command.lease_duration_ms,
+          backfill_ids
         ]
       )
 
@@ -528,6 +560,11 @@ defmodule FavnStoragePostgres.Backfills.Store do
   end
 
   defp lock_backfill!(workspace_id, backfill_id) do
+    case Repo.get_by(Backfill, workspace_id: workspace_id, backfill_id: backfill_id) do
+      nil -> Repo.rollback(Error.new(:not_found, "backfill not found"))
+      backfill -> RunIdentity.lock!(workspace_id, backfill.root_run_id)
+    end
+
     from(backfill in Backfill,
       where: backfill.workspace_id == ^workspace_id and backfill.backfill_id == ^backfill_id,
       lock: "FOR UPDATE"

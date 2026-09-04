@@ -17,22 +17,28 @@ defmodule FavnOrchestrator.RunCancellation do
         {:error, :run_already_terminal}
 
       true ->
-        requested =
-          RunState.transition(
-            run,
-            [
-              metadata:
-                Map.merge(run.metadata, %{
-                  cancel_requested: true,
-                  cancel_reason: reason,
-                  cancel_requested_at: occurred_at
-                })
-            ],
-            occurred_at
-          )
-
-        {:ok, requested, Projector.run_event(requested, :run_cancel_requested, %{reason: reason})}
+        request_operation(run, reason, occurred_at)
     end
+  end
+
+  @doc false
+  @spec request_operation(RunState.t(), map(), DateTime.t()) :: {:ok, RunState.t(), RunEvent.t()}
+  def request_operation(%RunState{} = run, reason, %DateTime{} = occurred_at) do
+    requested =
+      RunState.transition(
+        run,
+        [
+          metadata:
+            Map.merge(run.metadata, %{
+              cancel_requested: true,
+              cancel_reason: reason,
+              cancel_requested_at: occurred_at
+            })
+        ],
+        occurred_at
+      )
+
+    {:ok, requested, Projector.run_event(requested, :run_cancel_requested, %{reason: reason})}
   end
 
   @spec finish(RunState.t(), map(), DateTime.t()) :: {RunState.t(), RunEvent.t()}

@@ -380,14 +380,11 @@ defmodule FavnOrchestrator.RunSubmissions do
   defp semantic_options(opts), do: Keyword.drop(opts, @control_options)
 
   defp cancellable_submission?(%RunSubmission{status: status})
-       when status in [:queued, :preparing, :cancelled],
+       when status in [:queued, :preparing, :admitting, :cancelled],
        do: :ok
 
   defp cancellable_submission?(%RunSubmission{status: :submitted}),
     do: {:error, :run_already_submitted}
-
-  defp cancellable_submission?(%RunSubmission{status: :admitting}),
-    do: {:error, :run_admission_in_progress}
 
   defp cancellable_submission?(%RunSubmission{}), do: {:error, :run_already_terminal}
 

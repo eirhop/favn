@@ -635,7 +635,7 @@ defmodule FavnStoragePostgres.StorageV2.RunSubmissionsTest do
     assert {:error, %{kind: :fenced}} = Store.requeue(requeue)
   end
 
-  test "admitting cancellation is rejected and proven-safe recovery remains available", fixture do
+  test "admitting cancellation is durable and prevents requeue or run creation", fixture do
     {:ok, _submission} = Store.enqueue(enqueue_command(fixture, "admitting-cancel"))
     assert {:ok, [owned]} = Store.claim(claim_command(fixture, "claim-admitting", "worker"))
 
@@ -650,12 +650,17 @@ defmodule FavnStoragePostgres.StorageV2.RunSubmissionsTest do
                occurred_at: DateTime.utc_now()
              })
 
-    assert {:error, %{kind: :conflict}} =
+    assert {:ok, requested} =
              Store.request_cancellation(
-               cancellation_command(fixture, admitting, "too late for submission cancellation")
+               cancellation_command(fixture, admitting, "cancel during admission")
              )
 
-    assert {:ok, queued} =
+    assert requested.cancellation_requested_at
+
+    assert {:error, %{kind: :conflict}} =
+             RunStore.create_run(create_run_command(fixture, admitting.run_id))
+
+    assert {:error, %{kind: :conflict}} =
              Store.requeue(%RequeueRunSubmission{
                workspace_context: fixture.workspace_context,
                command_id: "requeue-admitting-#{random_id()}",
@@ -667,8 +672,17 @@ defmodule FavnStoragePostgres.StorageV2.RunSubmissionsTest do
                occurred_at: DateTime.utc_now()
              })
 
-    assert queued.status == :queued
-    assert queued.cancellation_requested_at == nil
+    assert {:ok, cancelled} =
+             Store.acknowledge_cancellation(%AcknowledgeRunSubmissionCancellation{
+               workspace_context: fixture.workspace_context,
+               command_id: "ack-admitting-#{random_id()}",
+               submission_id: admitting.submission_id,
+               owner_id: admitting.claim_owner,
+               claim_generation: admitting.claim_generation,
+               occurred_at: DateTime.utc_now()
+             })
+
+    assert cancelled.status == :cancelled
   end
 
   test "queued and active cancellation have explicit terminal handshakes", fixture do
@@ -1417,6 +1431,534 @@ defmodule FavnStoragePostgres.StorageV2.RunSubmissionsTest do
       end)
   end
 
+  test "operation cancellation resolves every backfill member and drains bounded windows",
+       fixture do
+    %{root: root, backfill_id: backfill_id, windows: windows} =
+      cancellation_backfill!(fixture, 201)
+
+    [window | _] = windows
+    child = backfill_submission!(fixture, backfill_id, window)
+    selected = %GetRun{workspace_context: fixture.workspace_context, run_id: child.run_id}
+
+    assert {:ok, %{run_id: owner, kind: :backfill, cancellable?: true}} =
+             RunStore.cancellation_scope(selected)
+
+    assert owner == root.id
+    request = operation_cancel(fixture, child.run_id)
+    assert :ok = RunStore.request_operation_cancellation(request)
+
+    assert :ok =
+             RunStore.request_operation_cancellation(%{
+               request
+               | command_id: "duplicate-#{random_id()}"
+             })
+
+    assert {:ok, %{status: :cancelling, cancellable?: false}} =
+             RunStore.cancellation_scope(selected)
+
+    root_query = %{selected | run_id: root.id}
+    assert {:ok, _} = RunStore.reconcile_cancellation(root_query)
+    assert {:ok, %{status: :cancelling}} = RunStore.cancellation_scope(selected)
+
+    assert {:error, %{kind: :conflict}} =
+             enqueue_backfill(fixture, backfill_id, Enum.at(windows, 200))
+
+    for _ <- 1..4, do: assert({:ok, _} = RunStore.reconcile_cancellation(root_query))
+    assert {:ok, %{status: :cancelled}} = RunStore.cancellation_scope(selected)
+    assert {:ok, preserved} = RunStore.get_run(root_query)
+    assert preserved.status == :ok
+    assert preserved.result == root.result
+
+    assert %{rows: [[201]]} =
+             SQL.query!(
+               Repo,
+               "SELECT count(*) FROM favn_control.backfill_windows WHERE workspace_id=$1 AND backfill_id=$2 AND status='cancelled'",
+               [fixture.workspace_id, backfill_id]
+             )
+
+    assert %{rows: [[2]]} =
+             SQL.query!(
+               Repo,
+               "SELECT count(*) FROM favn_control.outbox_events WHERE workspace_id=$1 AND event_kind LIKE 'backfill.cancellation.%'",
+               [fixture.workspace_id]
+             )
+  end
+
+  test "automatic recovery joins its owner while explicit reruns remain independent", fixture do
+    root_command = create_run_command(fixture, "root-#{random_id()}")
+
+    root_command = %{
+      root_command
+      | run: %{root_command.run | status: :error},
+        event: %{root_command.event | status: :error}
+    }
+
+    assert {:ok, root} = RunStore.create_run(root_command)
+    candidate = cancellation_candidate(fixture, root.run.id)
+    assert :ok = FavnStoragePostgres.ResourceCircuits.Store.record_recovery_candidate(candidate)
+    resource = candidate.resource
+
+    recovery_id =
+      FavnOrchestrator.ResourceRecovery.recovery_run_id(
+        fixture.workspace_id,
+        root.run.id,
+        [candidate],
+        resource
+      )
+
+    {:ok, intent} =
+      FavnOrchestrator.RunSubmission.Intent.new(:rerun, root.run.id,
+        metadata: %{
+          resource_recovery_source_run_id: root.run.id,
+          resource_recovery_candidate_ids: [candidate.candidate_id]
+        }
+      )
+
+    recovery = %{
+      enqueue_command(fixture, "automatic")
+      | source: :recovery,
+        intent: intent,
+        run_id: recovery_id
+    }
+
+    assert {:ok, child} = Store.enqueue(recovery)
+    independent = %{enqueue_command(fixture, "explicit") | source: :child_run, intent: intent}
+    assert {:ok, separate} = Store.enqueue(independent)
+    query = %GetRun{workspace_context: fixture.workspace_context, run_id: child.run_id}
+    assert {:ok, %{run_id: owner}} = RunStore.cancellation_scope(query)
+    assert owner == root.run.id
+
+    before =
+      Repo.get_by!(FavnStoragePostgres.Schemas.Run,
+        workspace_id: fixture.workspace_id,
+        run_id: owner
+      )
+
+    assert :ok = RunStore.request_operation_cancellation(operation_cancel(fixture, child.run_id))
+    assert {:ok, _} = RunStore.reconcile_cancellation(query)
+
+    after_cancel =
+      Repo.get_by!(FavnStoragePostgres.Schemas.Run,
+        workspace_id: fixture.workspace_id,
+        run_id: owner
+      )
+
+    assert after_cancel.status == before.status
+    assert after_cancel.terminal_at == before.terminal_at
+    assert {:ok, %{status: :cancelled}} = RunStore.cancellation_scope(query)
+
+    assert {:ok, %{status: :queued}} =
+             Store.get_by_run_id(%GetRunSubmissionByRunId{
+               workspace_context: fixture.workspace_context,
+               run_id: separate.run_id
+             })
+
+    late = %{candidate | candidate_id: "late-#{random_id()}"}
+    assert :ok = FavnStoragePostgres.ResourceCircuits.Store.record_recovery_candidate(late)
+
+    assert %{status: "cancelled"} =
+             Repo.get_by!(FavnStoragePostgres.Schemas.ResourceRecoveryCandidate,
+               workspace_id: fixture.workspace_id,
+               candidate_id: late.candidate_id
+             )
+
+    assert {:error, %{kind: :conflict}} =
+             Store.enqueue(%{
+               recovery
+               | command_id: "late-recovery-#{random_id()}",
+                 submission_id: "late-#{random_id()}",
+                 idempotency_key: "late-#{random_id()}",
+                 run_id: "forged-#{random_id()}"
+             })
+  end
+
+  test "cancellation wins the final admission transaction and cannot be requeued", fixture do
+    admitting = admit_submission!(fixture, "cancel-wins", [])
+    create = create_run_command(fixture, admitting.run_id)
+
+    {accepted, admission} =
+      cancellation_race(
+        fixture,
+        admitting.run_id,
+        fn ->
+          RunStore.request_operation_cancellation(operation_cancel(fixture, admitting.run_id))
+        end,
+        fn -> RunStore.create_run(create) end
+      )
+
+    assert accepted == :ok
+    assert {:error, %{kind: :conflict}} = admission
+
+    assert {:error, %{kind: :not_found}} =
+             RunStore.get_run(%GetRun{
+               workspace_context: fixture.workspace_context,
+               run_id: admitting.run_id
+             })
+  end
+
+  test "admission wins but a lost acknowledgement is reconciled during cancellation", fixture do
+    admitting = admit_submission!(fixture, "admission-wins", [])
+    create = create_run_command(fixture, admitting.run_id)
+
+    {admission, accepted} =
+      cancellation_race(fixture, admitting.run_id, fn -> RunStore.create_run(create) end, fn ->
+        RunStore.request_operation_cancellation(operation_cancel(fixture, admitting.run_id))
+      end)
+
+    assert {:ok, _} = admission
+    assert accepted == :ok
+    query = %GetRun{workspace_context: fixture.workspace_context, run_id: admitting.run_id}
+    assert {:ok, %{run_ids: [run_id]}} = RunStore.reconcile_cancellation(query)
+    assert run_id == admitting.run_id
+
+    assert {:ok, submitted} =
+             Store.get_by_run_id(%GetRunSubmissionByRunId{
+               workspace_context: fixture.workspace_context,
+               run_id: run_id
+             })
+
+    assert submitted.status == :submitted
+    assert submitted.outcome == %{"run_id" => run_id}
+    assert submitted.cancellation_requested_at
+  end
+
+  test "readers cannot mutate cancellation and workspace identities stay isolated", fixture do
+    create = create_run_command(fixture, "auth-#{random_id()}")
+    assert {:ok, _} = RunStore.create_run(create)
+
+    assert {:error, _} =
+             RunStore.request_operation_cancellation(%{
+               operation_cancel(fixture, create.run.id)
+               | workspace_context: fixture.reader_context
+             })
+
+    query = %GetRun{workspace_context: fixture.reader_context, run_id: create.run.id}
+    assert {:error, %{kind: :invalid}} = RunStore.reconcile_cancellation(query)
+    other = %{fixture.workspace_context | workspace_id: "other-#{random_id()}"}
+
+    assert {:error, %{kind: :not_found}} =
+             RunStore.cancellation_scope(%{query | workspace_context: other})
+  end
+
+  test "exact cancellation of a backfill child leaves siblings and the owner available",
+       fixture do
+    %{backfill_id: backfill, windows: [first, second]} = cancellation_backfill!(fixture, 2)
+    child = backfill_submission!(fixture, backfill, first)
+    sibling = backfill_submission!(fixture, backfill, second)
+    assert {:ok, [owned]} = Store.claim(claim_command(fixture, "exact-child", "worker"))
+    query = %GetRun{workspace_context: fixture.workspace_context, run_id: child.run_id}
+    assert {:ok, _} = Store.request_cancellation(cancellation_command(fixture, owned, "operator"))
+    assert {:ok, %{status: nil, cancellable?: true}} = RunStore.cancellation_scope(query)
+    assert {:ok, %{run_ids: []}} = RunStore.reconcile_cancellation(query)
+
+    assert {:ok, %{status: :queued, cancellation_requested_at: nil}} =
+             Store.get_by_run_id(%GetRunSubmissionByRunId{
+               workspace_context: fixture.workspace_context,
+               run_id: sibling.run_id
+             })
+
+    assert {:ok, [claimed]} = Store.claim(claim_command(fixture, "sibling", "worker"))
+    assert claimed.run_id == sibling.run_id
+  end
+
+  test "owner intent blocks preparation and requeue before member fanout", fixture do
+    %{root: root, backfill_id: backfill, windows: [window]} = cancellation_backfill!(fixture, 1)
+    _child = backfill_submission!(fixture, backfill, window)
+    assert {:ok, [owned]} = Store.claim(claim_command(fixture, "prepare", "worker"))
+    assert :ok = RunStore.request_operation_cancellation(operation_cancel(fixture, root.id))
+
+    assert {:error, %{kind: :conflict}} =
+             Store.mark_admitting(%MarkRunSubmissionAdmitting{
+               workspace_context: fixture.workspace_context,
+               command_id: "admit-#{random_id()}",
+               submission_id: owned.submission_id,
+               owner_id: owned.claim_owner,
+               claim_generation: owned.claim_generation,
+               preparation: %{},
+               occurred_at: DateTime.utc_now()
+             })
+
+    assert {:error, %{kind: :conflict}} =
+             Store.requeue(%RequeueRunSubmission{
+               workspace_context: fixture.workspace_context,
+               command_id: "requeue-#{random_id()}",
+               submission_id: owned.submission_id,
+               owner_id: owned.claim_owner,
+               claim_generation: owned.claim_generation,
+               reason: %{},
+               available_at: DateTime.utc_now(),
+               occurred_at: DateTime.utc_now()
+             })
+
+    assert {:ok, renewed} =
+             Store.renew(%RenewRunSubmissionClaim{
+               workspace_context: fixture.workspace_context,
+               command_id: "renew-cancel-#{random_id()}",
+               submission_id: owned.submission_id,
+               owner_id: owned.claim_owner,
+               claim_generation: owned.claim_generation,
+               lease_duration_ms: 60_000,
+               occurred_at: DateTime.utc_now()
+             })
+
+    assert renewed.cancellation_requested_at
+  end
+
+  test "abandoned pending cancellation is discoverable and drains without admission", fixture do
+    owned = admit_submission!(fixture, "abandoned-cancel", [])
+    request = operation_cancel(fixture, owned.run_id)
+
+    {:ok, receipt} =
+      FavnOrchestrator.Persistence.CommandIdempotency.new(
+        "run.cancel",
+        :actor,
+        fixture.workspace_context.principal_id,
+        :crypto.hash(:sha256, request.command_id),
+        :crypto.hash(:sha256, owned.run_id),
+        DateTime.add(DateTime.utc_now(), 3_600, :second)
+      )
+
+    request = %{request | idempotency: receipt}
+    assert :ok = RunStore.request_operation_cancellation(request)
+    assert :ok = RunStore.request_operation_cancellation(request)
+
+    SQL.query!(
+      Repo,
+      "UPDATE favn_control.run_submissions SET claim_expires_at=clock_timestamp()-interval '1 second' WHERE workspace_id=$1 AND run_id=$2",
+      [fixture.workspace_id, owned.run_id]
+    )
+
+    discovery = %FavnOrchestrator.Persistence.Queries.PageCancellingOperations{
+      workspace_context: fixture.workspace_context,
+      kind: :run
+    }
+
+    assert {:ok, %{items: [run_id]}} = RunStore.page_cancelling_operations(discovery)
+    assert run_id == owned.run_id
+    query = %GetRun{workspace_context: fixture.workspace_context, run_id: run_id}
+
+    assert {:ok, %{run_ids: [], task_ids: []}} =
+             Task.async(fn -> RunStore.reconcile_cancellation(query) end) |> Task.await()
+
+    assert {:ok, %{status: :cancelled}} = RunStore.cancellation_scope(query)
+    assert {:ok, %{items: []}} = RunStore.page_cancelling_operations(discovery)
+    assert :ok = RunStore.request_operation_cancellation(request)
+    assert {:error, %{kind: :not_found}} = RunStore.get_run(query)
+  end
+
+  test "uncertain post-step evidence survives terminal execution and publishes the final outcome",
+       fixture do
+    create = create_run_command(fixture, "uncertain-#{random_id()}")
+    assert {:ok, _} = RunStore.create_run(create)
+    request = operation_cancel(fixture, create.run.id)
+    assert :ok = RunStore.request_operation_cancellation(request)
+
+    SQL.query!(
+      Repo,
+      "UPDATE favn_control.runs SET status='cancelled', snapshot=jsonb_set(snapshot, '{metadata,cancellation_needs_attention}', 'true') WHERE workspace_id=$1 AND run_id=$2",
+      [fixture.workspace_id, create.run.id]
+    )
+
+    query = %GetRun{workspace_context: fixture.workspace_context, run_id: create.run.id}
+    assert {:ok, _} = RunStore.reconcile_cancellation(query)
+
+    assert {:ok, %{status: :needs_attention, cancellable?: false}} =
+             RunStore.cancellation_scope(query)
+
+    assert {:ok, _} = RunStore.reconcile_cancellation(query)
+
+    assert %{
+             rows: [
+               ["operation.cancellation.cancelling"],
+               ["operation.cancellation.needs_attention"]
+             ]
+           } =
+             SQL.query!(
+               Repo,
+               "SELECT event_kind FROM favn_control.outbox_events WHERE workspace_id=$1 AND aggregate_kind='run_cancellation' ORDER BY outbox_event_id",
+               [fixture.workspace_id]
+             )
+  end
+
+  defp operation_cancel(fixture, run_id) do
+    %FavnOrchestrator.Persistence.Commands.RequestRunCancellation{
+      workspace_context: fixture.workspace_context,
+      command_id: "operation-cancel-#{random_id()}",
+      run_id: run_id,
+      reason: %{requested_by: :operator},
+      occurred_at: DateTime.utc_now()
+    }
+  end
+
+  defp cancellation_candidate(fixture, run_id) do
+    %FavnOrchestrator.Persistence.Commands.RecordResourceRecoveryCandidate{
+      workspace_context: fixture.workspace_context,
+      candidate_id: "candidate-#{random_id()}",
+      source_run_id: run_id,
+      node_key: {{MyApp.RunSubmissionAsset, :asset}, nil},
+      resource: Favn.Resource.Ref.new!(:connection, "warehouse"),
+      reason: :safe_failure,
+      max_age_ms: 60_000,
+      occurred_at: DateTime.utc_now()
+    }
+  end
+
+  defp cancellation_backfill!(fixture, count) do
+    alias FavnOrchestrator.Persistence.Commands, as: C
+    alias FavnOrchestrator.Persistence.BackfillPlan
+    alias FavnStoragePostgres.Backfills.Store, as: BackfillStore
+    command = create_run_command(fixture, "backfill-root-#{random_id()}")
+
+    command = %{
+      command
+      | run: %{command.run | status: :ok},
+        event: %{command.event | status: :ok}
+    }
+
+    assert {:ok, %{run: root}} = RunStore.create_run(command)
+    backfill_id = "backfill-#{random_id()}"
+    now = DateTime.utc_now()
+
+    windows =
+      for index <- 1..count do
+        start = DateTime.add(~U[2026-01-01 00:00:00Z], index * 86_400, :second)
+
+        %C.BackfillPlanWindow{
+          window_id: "window-#{index}",
+          window_key: Integer.to_string(index),
+          window_start: start,
+          window_end: DateTime.add(start, 86_400, :second),
+          payload: %{}
+        }
+      end
+
+    hash = BackfillPlan.batch_hash(windows)
+
+    assert {:ok, _} =
+             BackfillStore.start_plan(%C.StartBackfillPlan{
+               workspace_context: fixture.workspace_context,
+               command_id: "start-#{random_id()}",
+               backfill_id: backfill_id,
+               root_run_id: root.id,
+               deployment_id: fixture.deployment_id,
+               manifest_version_id: fixture.version.manifest_version_id,
+               target_kind: :asset,
+               target_id: fixture.target_id,
+               range_start: hd(windows).window_start,
+               range_end: List.last(windows).window_end,
+               expected_window_count: count,
+               expected_batch_count: 1,
+               plan_hash: BackfillPlan.plan_hash([hash]),
+               occurred_at: now
+             })
+
+    assert {:ok, appended} =
+             BackfillStore.append_plan_batch(%C.AppendBackfillPlanBatch{
+               workspace_context: fixture.workspace_context,
+               command_id: "append-#{random_id()}",
+               backfill_id: backfill_id,
+               batch_index: 0,
+               batch_hash: hash,
+               windows: windows,
+               occurred_at: now
+             })
+
+    assert {:ok, _} =
+             BackfillStore.activate_plan(%C.ActivateBackfillPlan{
+               workspace_context: fixture.workspace_context,
+               command_id: "activate-#{random_id()}",
+               backfill_id: backfill_id,
+               expected_version: appended.version,
+               occurred_at: now
+             })
+
+    %{root: root, backfill_id: backfill_id, windows: windows}
+  end
+
+  defp enqueue_backfill(fixture, backfill_id, window) do
+    {:ok, intent} =
+      FavnOrchestrator.RunSubmission.Intent.new(:asset, fixture.target_id,
+        metadata: %{backfill_id: backfill_id, backfill_window_id: window.window_id}
+      )
+
+    run_id =
+      FavnOrchestrator.Persistence.BackfillPlan.child_run_id(
+        backfill_id,
+        window.window_id,
+        window.payload
+      )
+
+    command = %{
+      enqueue_command(fixture, "backfill")
+      | source: :backfill,
+        intent: intent,
+        run_id: run_id
+    }
+
+    Store.enqueue(command)
+  end
+
+  defp backfill_submission!(fixture, backfill_id, window) do
+    assert {:ok, submission} = enqueue_backfill(fixture, backfill_id, window)
+    submission
+  end
+
+  defp cancellation_race(fixture, run_id, first, second) do
+    parent = self()
+
+    winner =
+      Task.async(fn ->
+        Repo.transaction(fn ->
+          FavnStoragePostgres.CancellationOwnership.lock!(fixture.workspace_id, run_id)
+          result = first.()
+          send(parent, :cancellation_barrier_ready)
+
+          receive do
+            :release_cancellation_barrier -> result
+          end
+        end)
+      end)
+
+    assert_receive :cancellation_barrier_ready, 5_000
+
+    waiter =
+      Task.async(fn ->
+        Repo.transaction(fn ->
+          %{rows: [[pid]]} = SQL.query!(Repo, "SELECT pg_backend_pid()", [])
+          send(parent, {:cancellation_waiter, pid})
+          result = second.()
+          send(parent, {:cancellation_second_result, result})
+          result
+        end)
+      end)
+
+    assert_receive {:cancellation_waiter, pid}, 5_000
+    assert_cancellation_waiting!(pid, 100)
+    send(winner.pid, :release_cancellation_barrier)
+    assert {:ok, first_result} = Task.await(winner, 10_000)
+    _ = Task.await(waiter, 10_000)
+    assert_receive {:cancellation_second_result, second_result}
+    {first_result, second_result}
+  end
+
+  defp assert_cancellation_waiting!(_pid, 0),
+    do: flunk("cancellation contender did not reach its database lock")
+
+  defp assert_cancellation_waiting!(pid, remaining) do
+    case SQL.query!(Repo, "SELECT cardinality(pg_blocking_pids($1::integer))", [pid]) do
+      %{rows: [[count]]} when count > 0 ->
+        :ok
+
+      _ ->
+        receive do
+        after
+          10 -> :ok
+        end
+
+        assert_cancellation_waiting!(pid, remaining - 1)
+    end
+  end
+
   defp enqueue_command(fixture, name, opts \\ []) do
     run_id = Keyword.get(opts, :run_id, "run-#{name}-#{random_id()}")
     intent = %{"selection" => name}
@@ -1612,7 +2154,7 @@ defmodule FavnStoragePostgres.StorageV2.RunSubmissionsTest do
       INSERT INTO favn_control.run_submissions (
         workspace_id, submission_id, source, idempotency_key, request_hash,
         authority, deployment_id, manifest_version_id, target_kind, target_id,
-        run_id, intent, status, attempt, claim_generation, error, failure_kind,
+        run_id, cancellation_owner_run_id, intent, status, attempt, claim_generation, error, failure_kind,
         retry_root_id, enqueued_at, available_at, terminal_at, inserted_at, updated_at
       )
       SELECT
@@ -1631,6 +2173,7 @@ defmodule FavnStoragePostgres.StorageV2.RunSubmissionsTest do
         $3::text,
         'asset',
         $4::text,
+        $5::text || '-run-' || item,
         $5::text || '-run-' || item,
         '{}'::jsonb,
         CASE WHEN item % 50 = 0 THEN 'queued' ELSE 'failed' END,

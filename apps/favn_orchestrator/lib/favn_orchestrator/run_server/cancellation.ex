@@ -14,15 +14,16 @@ defmodule FavnOrchestrator.RunServer.Cancellation do
   @type task_id :: String.t()
   @type reason :: term()
   @doc "Requests durable runner-task cancellation and returns one outcome per task."
-  @spec dispatch_runner_tasks(RunState.t(), [term()], reason()) :: [
+  @spec dispatch_runner_tasks(RunState.t(), [term()], reason(), keyword()) :: [
           CancellationOutcome.t()
         ]
-  def dispatch_runner_tasks(%RunState{} = run_state, task_ids, reason) when is_list(task_ids) do
+  def dispatch_runner_tasks(%RunState{} = run_state, task_ids, reason, opts \\ [])
+      when is_list(task_ids) do
     safe_reason = Redaction.redact_operational_bounded(%{reason: reason}).reason
 
     task_ids
     |> Enum.filter(&is_binary/1)
     |> Enum.uniq()
-    |> Enum.map(&RunnerTasks.request_cancellation(run_state.workspace_id, &1, safe_reason))
+    |> Enum.map(&RunnerTasks.request_cancellation(run_state.workspace_id, &1, safe_reason, opts))
   end
 end
