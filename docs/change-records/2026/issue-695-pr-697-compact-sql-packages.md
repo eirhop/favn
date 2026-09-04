@@ -2,13 +2,13 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Plan reviewed |
+| Status | Implementing |
 | Type | Bug fix and execution-format transition |
 | Primary issue | [#695](https://github.com/eirhop/favn/issues/695) |
-| Pull request | Pending |
+| Pull request | [#697](https://github.com/eirhop/favn/pull/697) |
 | Related work | [#694](https://github.com/eirhop/favn/issues/694), payload limits, remains independent |
 | Affected areas | Core SQL templates, immutable packages, manifest compatibility, runner rendering tests |
-| Approved plan commit | Pending independent review |
+| Approved plan commit | `a57e42b9` |
 | Last updated | 2026-09-04 |
 
 ## One-minute summary
