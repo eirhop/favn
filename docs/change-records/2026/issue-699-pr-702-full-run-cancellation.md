@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Implementation accepted after complexity reduction; release qualification pending |
+| Status | Deterministic CI correction under final re-review; release qualification pending |
 | Type | Bug fix |
 | Primary issue | [#699](https://github.com/eirhop/favn/issues/699) |
 | Pull request | [Draft PR #702](https://github.com/eirhop/favn/pull/702) |
@@ -634,7 +634,7 @@ empty, coordinated control-plane and Favn-owned data-plane baseline.
 | Existing result and recovery paths | Fix sequential restoration to wait for the existing task. Separate cancellation intent from final cancellation when settling/persisting results. A conflicting intent stops an unconsumed settlement for fenced recovery. Start conflicts also stop cleanly. A conflicting terminal save retains the built aggregate result and refreshes only the rejected snapshot commit against newer intent with the same ownership fence. Cancelled terminal snapshots retain node results. | Required by the approved completion-versus-cancellation race invariant; first review identified missing start/terminal conflicts and these were corrected with regression tests. |
 | Preserve unresolved post-step and task outcomes | Failed tasks also retain their authoritative unknown error/retry classification; taskless uncertain recovery stays Needs attention. Keep the existing attention flag and check durable successful materializations whose initial generation is still building, excluding rebuild generations. This retains uncertainty after the waiter/process is lost. Shared tasks keep `run_id = nil` and their original domain owner. | Independently reviewed; tested without the in-memory flag and with ready/unrelated controls. |
 | Existing performance budgets | Cancellation scope is one indexed SELECT, adding one read to the detail budget (12 to 13). Backfill claim adds the owner serialization lock (5 to 6 queries). No transaction wrapper is needed for the scope read. | Independent review accepted the owner-lock cost and requested removal of avoidable read transaction overhead; applied. |
-| Existing test fixtures | Synthetic owned task fixtures now create real runs. A pure event test moved into the existing persistence-backed test harness. Cancellation recovery waits use authoritative capacity-waiter checkpoints; the serial lease-recovery test kills the old owner at a durable enqueue barrier. | Required by fail-closed ownership and deterministic recovery tests. |
+| Existing test fixtures | Synthetic owned task fixtures now create real runs. A pure event test moved into the existing persistence-backed test harness. Cancellation recovery waits use authoritative capacity-waiter checkpoints; refill and serial lease recovery kill the old owner at a durable enqueue barrier. | Required by fail-closed ownership and deterministic recovery tests. |
 | Original line estimates | Guarded stores and result-draining fixes still exceed the estimate below. The 270-line compatibility portion of the migration and its 311-line test were removed after user review. No expanded public targeting, progress counters, operations table or new runner protocol was added. | Fresh independent review accepted the remaining overrun after the reduction. |
 
 ### Actual complexity
@@ -649,17 +649,18 @@ formatter-only file or dependency change is included.
 
 | Slice | Production added | Production deleted | Supporting added | Supporting deleted |
 | --- | ---: | ---: | ---: | ---: |
-| 1: ownership, schema and guarded persistence | 1,585 | 192 | 1,440 | 40 |
+| 1: ownership, schema and guarded persistence | 1,585 | 192 | 1,473 | 47 |
 | 2: existing cancellation and recovery lifecycle | 444 | 145 | 258 | 60 |
 | 3: facade, DTO/UI and canonical docs | 62 | 14 | 120 | 16 |
-| Total | 2,091 | 351 | 1,818 | 116 |
+| Total | 2,091 | 351 | 1,851 | 123 |
 
 The unchanged revision estimated 440–760 production additions and 620–1,020
 supporting additions. Both totals still exceed its variance threshold. The first
 implementation was too defensive: it added compatibility inference for old rows
 despite the pre-v1 reset policy, and the previous review accepted that overrun too
 readily. Removing it reduced the change by 270 production and 302 supporting
-additions. The remaining size is mainly the durable ownership boundary, transaction
+additions; the deterministic CI correction then added 33 supporting lines. The
+remaining size is mainly the durable ownership boundary, transaction
 guards, bounded cleanup and completion-versus-cancellation result handling required
 by issue #699. Deletions are smaller than additions because the old system only
 cancelled one run; there was no existing full-operation implementation to replace.
@@ -672,12 +673,12 @@ This remaining overrun must be reassessed in fresh independent review.
 | PostgreSQL transaction races | 48 submission tests passed in the final storage suite, including both winners for child/task enqueue and candidate eligibility, nonblocking task claim under cancellation's owner lock, assigned task retirement, and late candidate outcome settlement. Real separate database connections and lock barriers are used. |
 | Completed work and recovery | Focused persisted tests pass for a completed task recovered while admission is disabled, retaining its result without new tasks or leases, and refusing takeover of a live owner. The live cancellation test also retains a completed write and prevents refill. These are warm-VM process recovery tests. |
 | Post-step and leaf lifecycle | 35 focused review regressions passed, including successful sibling claims, no new post-step worker after intent, start/step/terminal-save conflicts, terminal-save retry preserving results, and explicit ownership loss. Earlier leaf/sequential/no-ACK checks also passed. |
-| Owning application suites | Orchestrator: 850 passed (6 doctests), two excluded; View: 832 passed (135 doctests), one browser-tier exclusion. After the complexity reduction, Storage: 394 passed, 20 exclusions, using a fresh disposable database and `--max-cases 4`. An existing 100 ms connection-guard test timed out once at higher local concurrency and passed immediately in isolation. |
+| Owning application suites | Orchestrator: 850 passed (6 doctests), two excluded; View: 832 passed (135 doctests), one browser-tier exclusion. On the final test revision, Storage: 394 passed with 20 exclusions using a fresh disposable database and `--max-cases 1`; the changed recovery test also passes five seeded runs. At `--max-cases 4`, an existing 100 ms connection-guard test timed out and passed immediately in isolation. |
 | Schema migration | Fresh disposable database applies the schema-only migration. Existing run data is rejected with an explicit coordinated-baseline error; no compatibility ownership is inferred. |
 | Slow storage checks | All 12 query-budget/query-plan, restore and schedule-reference migration checks pass against a fresh disposable database. Restore used PostgreSQL 18 tools from the task-owned container (host client 16 cannot dump server 18). An earlier populated-database run chose an alternative existing index; the isolated plan fixture passes. |
 | UI rendering | Actual component HTML and compiled CSS rendered in Edge at 390×844, 768×1024 and 1440×1024 for all four cancellation presentations: no horizontal overflow. This is static rendered fixture coverage, not authenticated full-app/browser qualification. |
 | Compilation and test tiers | Warnings-as-errors compilation and test-tag CI guard pass. Final format check, `git diff --check` and all 30 relative documentation links pass. Approved Mermaid diagrams are unchanged from the verified GitHub render. |
-| CI failure correction | CI exposed a random task-order assumption in the cancellation claim test; it now drains the second claim explicitly and passes 10/10 seeded runs. Mint 1.9.3 was newly reported vulnerable after `main` last passed, so the lock is updated to 1.10.0 and `mix hex.audit` passes. |
+| CI failure correction | CI exposed a random task-order assumption in the cancellation claim test; it now drains the second claim explicitly and passes 10/10 seeded runs. The next run exposed a sleep-based recovery checkpoint that could observe one or two tasks; a durable first-enqueue barrier now fixes the checkpoint and passes five seeded runs. Mint 1.9.3 was newly reported vulnerable after `main` last passed, so the lock is updated to 1.10.0 and `mix hex.audit` passes. |
 | Security catalog | Catalog check passed: 31 browser routes and 66 API routes. Full harness blocked before application startup: existing builder validation expects single-quoted TOML, while current BuildKit emits the correct 2/12/20 GiB GC policy with double quotes. The guard was not bypassed. |
 | Fresh-release restart qualification | Not completed. Issue #700 owns persisted codec/reconnect fixes and the approved plan requires joint qualification against that repaired baseline. Queued/assigned/running/cancelling kill-and-restart coverage in a fresh release VM remains a merge/release gate. Warm-VM tests do not replace it. |
 
@@ -709,6 +710,6 @@ only control-plane rows or schemas; that can orphan data-plane ownership.
 | Compared against | Preserved approved revision `2548ae6e`, original baseline `9fa85c38`, issue/source invariants and the complete implementation diff against `origin/main` (`2f26d586`). |
 | Initial findings | Start/terminal cancellation conflicts could retry stale snapshots indefinitely or drop the aggregate result. Uncertainty classification missed valid failed-but-unknown task outcomes and taskless uncertain recovery. |
 | Corrections and recheck | Added start/step recovery handoff, terminal-only rejected-save refresh retaining results/fence, broader durable uncertainty checks and targeted regression tests. Reviewer inspected the fixes and the final outcome/deviation record on 2026-09-04. |
-| Complexity and deviations | The previous reviewer accepted 2,361/351 production and 2,120/115 supporting additions/deletions. User review rejected the compatibility inference; the implementation is now 2,091/351 and 1,818/116. |
+| Complexity and deviations | The previous reviewer accepted 2,361/351 production and 2,120/115 supporting additions/deletions. User review rejected the compatibility inference; after its removal and the deterministic CI correction, the implementation is now 2,091/351 and 1,851/123. |
 | Complexity recheck | Reviewer first blocked control-plane-only reset wording. Migration diagnostics, the canonical operator guide and rollout record now require a coordinated fresh baseline, preserve paired backups and forbid clearing control-plane state alone. Recheck found no further large simplification that preserves issue #699's required guarantees. |
 | Verdict | **Accepted after complexity reduction and CI recheck; no blocking code findings remain.** Keep the PR draft until #700 fresh-release restart qualification and the full security harness gate pass. |

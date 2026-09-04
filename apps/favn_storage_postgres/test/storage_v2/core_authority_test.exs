@@ -6647,21 +6647,47 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
        fixture do
     {run, _keys} = create_continuation_pipeline_run!(fixture, 3)
 
-    delay_runner_task_inserts!()
     start_pipeline_runtime!()
+    parent = self()
+    handler = {__MODULE__, :recovery_refill_task_commit_barrier, make_ref()}
+
+    :ok =
+      :telemetry.attach(
+        handler,
+        [:favn, :persistence, :operation, :stop],
+        fn _event, _measurements, metadata, parent ->
+          if metadata.store == :runner_tasks and metadata.operation == :enqueue do
+            send(parent, {:first_recovery_refill_task_committed, self()})
+
+            receive do
+              :release_recovery_refill_task_barrier -> :ok
+            end
+          end
+        end,
+        parent
+      )
+
+    on_exit(fn -> :telemetry.detach(handler) end)
 
     assert {:ok, first_pid} = RunServer.start_link(%{run_state: run, version: fixture.version})
-    execution_state = await_suspended_deferred_pipeline_state!(first_pid)
-
-    assert map_size(execution_state.awaits) == 1
-    assert length(execution_state.stage_state.deferred_node_keys) == 2
+    Process.unlink(first_pid)
+    monitor = Process.monitor(first_pid)
+    assert_receive {:first_recovery_refill_task_committed, ^first_pid}, 5_000
     assert [_task_id] = runner_task_ids(fixture.workspace_id, run.id)
     assert active_execution_lease_count(fixture.workspace_id, run.id) == 1
 
-    stop_suspended_run_server!(first_pid, execution_state)
+    :telemetry.detach(handler)
+    Process.exit(first_pid, :kill)
+    assert_receive {:DOWN, ^monitor, :process, ^first_pid, :killed}, 5_000
 
     assert [_task_id] = runner_task_ids(fixture.workspace_id, run.id)
     assert active_execution_lease_count(fixture.workspace_id, run.id) == 1
+
+    SQL.query!(
+      Repo,
+      "UPDATE favn_control.run_ownerships SET expires_at=clock_timestamp()-interval '1 second' WHERE workspace_id=$1 AND run_id=$2",
+      [fixture.workspace_id, run.id]
+    )
 
     assert {:ok, persisted} = get_run(fixture, run.id)
 
@@ -13210,7 +13236,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     end
   end
 
-  defp await_suspended_deferred_pipeline_state!(pid, options \\ []) do
+  defp await_suspended_deferred_pipeline_state!(pid, options) do
     require_waiter? = Keyword.get(options, :require_waiter?, false)
     await_suspended_deferred_pipeline_state!(pid, require_waiter?, 100)
   end
