@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Implementation revised after complexity review; independent re-review pending |
+| Status | Implementation accepted after complexity reduction; release qualification pending |
 | Type | Bug fix |
 | Primary issue | [#699](https://github.com/eirhop/favn/issues/699) |
 | Pull request | [Draft PR #702](https://github.com/eirhop/favn/pull/702) |
@@ -626,7 +626,7 @@ empty, coordinated control-plane and Favn-owned data-plane baseline.
 
 | Baseline choice | Actual implementation and reason | Review disposition |
 | --- | --- | --- |
-| Indexed ownership where needed on reserved submissions | Store immutable ownership on both submissions and runs; admission copies the owner. The migration only adds the required non-null fields, constraints and indexes. It rejects populated deployments rather than inferring compatibility ownership; rollout requires a coordinated fresh baseline. | Revised after user complexity review; independent re-review pending. |
+| Indexed ownership where needed on reserved submissions | Store immutable ownership on both submissions and runs; admission copies the owner. The migration only adds the required non-null fields, constraints and indexes. It rejects populated deployments rather than inferring compatibility ownership; rollout requires a coordinated fresh baseline. | Accepted in fresh independent re-review after removing compatibility inference. |
 | Ordinary run/submission intent; preserve terminal source results | Add an operation cancellation outcome alongside the original run execution status. A terminal source with outstanding automatic recovery keeps its result and terminal timestamp. A separate outbox aggregate avoids reusing execution sequence identities. | Independently reviewed during implementation. |
 | Backfill dispatcher plus existing run/submission recovery | The existing `RunRecovery` worker reconciles both kinds, outside admission. Workspace discovery runs inside its supervised task, includes newly provisioned workspaces, and uses per-kind/per-workspace cursors. No new process/service is introduced. | Independently reviewed; avoids split cleanup ownership and a dispatcher mailbox stall. |
 | Reuse leaf cancellation mechanics | Add no-ACK background delivery; repeated cancellation reuses the first durable intent. A pending acknowledgement is accepted work, not a cleanup error. | Required to avoid per-task one-second waits and duplicate command writes. |
@@ -635,7 +635,7 @@ empty, coordinated control-plane and Favn-owned data-plane baseline.
 | Preserve unresolved post-step and task outcomes | Failed tasks also retain their authoritative unknown error/retry classification; taskless uncertain recovery stays Needs attention. Keep the existing attention flag and check durable successful materializations whose initial generation is still building, excluding rebuild generations. This retains uncertainty after the waiter/process is lost. Shared tasks keep `run_id = nil` and their original domain owner. | Independently reviewed; tested without the in-memory flag and with ready/unrelated controls. |
 | Existing performance budgets | Cancellation scope is one indexed SELECT, adding one read to the detail budget (12 to 13). Backfill claim adds the owner serialization lock (5 to 6 queries). No transaction wrapper is needed for the scope read. | Independent review accepted the owner-lock cost and requested removal of avoidable read transaction overhead; applied. |
 | Existing test fixtures | Synthetic owned task fixtures now create real runs. A pure event test moved into the existing persistence-backed test harness. Cancellation recovery waits use authoritative capacity-waiter checkpoints; the serial lease-recovery test kills the old owner at a durable enqueue barrier. | Required by fail-closed ownership and deterministic recovery tests. |
-| Original line estimates | Guarded stores and result-draining fixes still exceed the estimate below. The 270-line compatibility portion of the migration and its 311-line test were removed after user review. No expanded public targeting, progress counters, operations table or new runner protocol was added. | Previous review was too accepting of the overrun; the smaller implementation requires fresh independent review. |
+| Original line estimates | Guarded stores and result-draining fixes still exceed the estimate below. The 270-line compatibility portion of the migration and its 311-line test were removed after user review. No expanded public targeting, progress counters, operations table or new runner protocol was added. | Fresh independent review accepted the remaining overrun after the reduction. |
 
 ### Actual complexity
 
@@ -710,4 +710,5 @@ only control-plane rows or schemas; that can orphan data-plane ownership.
 | Initial findings | Start/terminal cancellation conflicts could retry stale snapshots indefinitely or drop the aggregate result. Uncertainty classification missed valid failed-but-unknown task outcomes and taskless uncertain recovery. |
 | Corrections and recheck | Added start/step recovery handoff, terminal-only rejected-save refresh retaining results/fence, broader durable uncertainty checks and targeted regression tests. Reviewer inspected the fixes and the final outcome/deviation record on 2026-09-04. |
 | Complexity and deviations | The previous reviewer accepted 2,361/351 production and 2,120/115 supporting additions/deletions. User review rejected the compatibility inference; the implementation is now 2,091/351 and 1,818/116. |
-| Verdict | Previous acceptance is superseded by the complexity reduction and CI corrections. Fresh independent implementation review is pending. Keep the PR draft until that review, #700 fresh-release restart qualification and the full security harness gate pass. |
+| Complexity recheck | Reviewer first blocked control-plane-only reset wording. Migration diagnostics, the canonical operator guide and rollout record now require a coordinated fresh baseline, preserve paired backups and forbid clearing control-plane state alone. Recheck found no further large simplification that preserves issue #699's required guarantees. |
+| Verdict | **Accepted after complexity reduction and CI recheck; no blocking code findings remain.** Keep the PR draft until #700 fresh-release restart qualification and the full security harness gate pass. |
