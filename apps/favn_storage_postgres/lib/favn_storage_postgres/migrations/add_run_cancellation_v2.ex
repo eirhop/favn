@@ -11,7 +11,7 @@ defmodule FavnStoragePostgres.Migrations.AddRunCancellationV2 do
     DO $$ BEGIN
       IF EXISTS (SELECT 1 FROM favn_control.runs LIMIT 1)
          OR EXISTS (SELECT 1 FROM favn_control.run_submissions LIMIT 1) THEN
-        RAISE EXCEPTION 'run cancellation schema requires a pre-v1 control-plane data reset';
+        RAISE EXCEPTION 'run cancellation schema requires an empty coordinated control-plane/data-plane baseline; never reset control-plane state alone';
       END IF;
     END $$
     """)

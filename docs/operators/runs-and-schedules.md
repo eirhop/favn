@@ -446,6 +446,11 @@ explains ownership, restart cleanup and the narrower exact-run HTTP/CLI commands
 A request acknowledgement alone does not prove cancellation. Do not change run
 status by editing storage or call runner internals directly.
 
+The first release with full-operation cancellation requires an empty, coordinated
+control-plane and Favn-owned data-plane baseline. A populated deployment cannot
+apply this schema incrementally. Preserve verified paired backups and never clear
+only control-plane rows or schemas, because that can orphan data-plane ownership.
+
 ## Retry Or Rerun Work
 
 1. Inspect effective policy/source, current/max attempt, typed failure outcome,

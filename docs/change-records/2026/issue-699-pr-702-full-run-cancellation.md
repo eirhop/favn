@@ -618,14 +618,15 @@ one run. The queued/preparing detail now exposes the same action.
 The preserved plan's phrase **legacy migration** meant inferring cancellation
 ownership for rows written before this schema existed. It did not mean retaining
 an old cancellation implementation. That inference was still unnecessary
-compatibility work for this private pre-v1 baseline and has been removed. The
-schema migration now requires a control-plane data reset when run data exists.
+compatibility work for this private pre-v1 baseline and has been removed. A
+populated deployment cannot apply the schema incrementally; rollout requires an
+empty, coordinated control-plane and Favn-owned data-plane baseline.
 
 ### Implementation deviations and review decisions
 
 | Baseline choice | Actual implementation and reason | Review disposition |
 | --- | --- | --- |
-| Indexed ownership where needed on reserved submissions | Store immutable ownership on both submissions and runs; admission copies the owner. The migration only adds the required non-null fields, constraints and indexes. It fails with a reset-required error when run data exists rather than inferring compatibility ownership. | Revised after user complexity review; independent re-review pending. |
+| Indexed ownership where needed on reserved submissions | Store immutable ownership on both submissions and runs; admission copies the owner. The migration only adds the required non-null fields, constraints and indexes. It rejects populated deployments rather than inferring compatibility ownership; rollout requires a coordinated fresh baseline. | Revised after user complexity review; independent re-review pending. |
 | Ordinary run/submission intent; preserve terminal source results | Add an operation cancellation outcome alongside the original run execution status. A terminal source with outstanding automatic recovery keeps its result and terminal timestamp. A separate outbox aggregate avoids reusing execution sequence identities. | Independently reviewed during implementation. |
 | Backfill dispatcher plus existing run/submission recovery | The existing `RunRecovery` worker reconciles both kinds, outside admission. Workspace discovery runs inside its supervised task, includes newly provisioned workspaces, and uses per-kind/per-workspace cursors. No new process/service is introduced. | Independently reviewed; avoids split cleanup ownership and a dispatcher mailbox stall. |
 | Reuse leaf cancellation mechanics | Add no-ACK background delivery; repeated cancellation reuses the first durable intent. A pending acknowledgement is accepted work, not a cleanup error. | Required to avoid per-task one-second waits and duplicate command writes. |
@@ -650,15 +651,15 @@ formatter-only file or dependency change is included.
 | --- | ---: | ---: | ---: | ---: |
 | 1: ownership, schema and guarded persistence | 1,585 | 192 | 1,440 | 40 |
 | 2: existing cancellation and recovery lifecycle | 444 | 145 | 258 | 60 |
-| 3: facade, DTO/UI and canonical docs | 62 | 14 | 114 | 15 |
-| Total | 2,091 | 351 | 1,812 | 115 |
+| 3: facade, DTO/UI and canonical docs | 62 | 14 | 120 | 16 |
+| Total | 2,091 | 351 | 1,818 | 116 |
 
 The unchanged revision estimated 440–760 production additions and 620–1,020
 supporting additions. Both totals still exceed its variance threshold. The first
 implementation was too defensive: it added compatibility inference for old rows
 despite the pre-v1 reset policy, and the previous review accepted that overrun too
-readily. Removing it reduced the change by 270 production and 308 net supporting
-lines. The remaining size is mainly the durable ownership boundary, transaction
+readily. Removing it reduced the change by 270 production and 302 supporting
+additions. The remaining size is mainly the durable ownership boundary, transaction
 guards, bounded cleanup and completion-versus-cancellation result handling required
 by issue #699. Deletions are smaller than additions because the old system only
 cancelled one run; there was no existing full-operation implementation to replace.
@@ -672,7 +673,7 @@ This remaining overrun must be reassessed in fresh independent review.
 | Completed work and recovery | Focused persisted tests pass for a completed task recovered while admission is disabled, retaining its result without new tasks or leases, and refusing takeover of a live owner. The live cancellation test also retains a completed write and prevents refill. These are warm-VM process recovery tests. |
 | Post-step and leaf lifecycle | 35 focused review regressions passed, including successful sibling claims, no new post-step worker after intent, start/step/terminal-save conflicts, terminal-save retry preserving results, and explicit ownership loss. Earlier leaf/sequential/no-ACK checks also passed. |
 | Owning application suites | Orchestrator: 850 passed (6 doctests), two excluded; View: 832 passed (135 doctests), one browser-tier exclusion. After the complexity reduction, Storage: 394 passed, 20 exclusions, using a fresh disposable database and `--max-cases 4`. An existing 100 ms connection-guard test timed out once at higher local concurrency and passed immediately in isolation. |
-| Schema migration | Fresh disposable database applies the schema-only migration. Existing run data causes an explicit pre-v1 reset-required failure; no compatibility ownership is inferred. |
+| Schema migration | Fresh disposable database applies the schema-only migration. Existing run data is rejected with an explicit coordinated-baseline error; no compatibility ownership is inferred. |
 | Slow storage checks | All 12 query-budget/query-plan, restore and schedule-reference migration checks pass against a fresh disposable database. Restore used PostgreSQL 18 tools from the task-owned container (host client 16 cannot dump server 18). An earlier populated-database run chose an alternative existing index; the isolated plan fixture passes. |
 | UI rendering | Actual component HTML and compiled CSS rendered in Edge at 390×844, 768×1024 and 1440×1024 for all four cancellation presentations: no horizontal overflow. This is static rendered fixture coverage, not authenticated full-app/browser qualification. |
 | Compilation and test tiers | Warnings-as-errors compilation and test-tag CI guard pass. Final format check, `git diff --check` and all 30 relative documentation links pass. Approved Mermaid diagrams are unchanged from the verified GitHub render. |
@@ -684,8 +685,11 @@ Tests used only task-owned disposable PostgreSQL databases on port 5433; no
 `favn_dev` or project application data was used. The branch was rebased onto
 `origin/main` before updating the draft PR; the final source revision and review
 verdict are recorded below. Keep the PR draft while required qualification is
-outstanding. Rollout still requires quiescing old orchestrators and applying the
-migration before new code; old code must not resume outstanding cancellations.
+outstanding. Rollout requires stopping old orchestrators before establishing an
+empty, coordinated control-plane and Favn-owned data-plane baseline, then applying
+the migration before starting new code. A populated deployment cannot take this
+upgrade incrementally. Preserve verified paired backups and never drop or truncate
+only control-plane rows or schemas; that can orphan data-plane ownership.
 
 ## Revision verification evidence
 
@@ -701,9 +705,9 @@ migration before new code; old code must not resume outstanding cancellations.
 | Field | Result |
 | --- | --- |
 | Reviewer | Independent agent `/root/review_cancel_revision` |
-| Implementation commit | [`237c1e85`](https://github.com/eirhop/favn/commit/237c1e85); subsequent changes only record evidence and review bookkeeping. |
-| Compared against | Preserved approved revision `2548ae6e`, original baseline `9fa85c38`, issue/source invariants and the complete working diff against `origin/main` (`2f26d586`). |
+| Implementation commit | [`0fa338d1`](https://github.com/eirhop/favn/commit/0fa338d133753318efb80d4d1d6d6cd6bd0c1ca2); subsequent changes address rollout documentation and review bookkeeping only. |
+| Compared against | Preserved approved revision `2548ae6e`, original baseline `9fa85c38`, issue/source invariants and the complete implementation diff against `origin/main` (`2f26d586`). |
 | Initial findings | Start/terminal cancellation conflicts could retry stale snapshots indefinitely or drop the aggregate result. Uncertainty classification missed valid failed-but-unknown task outcomes and taskless uncertain recovery. |
 | Corrections and recheck | Added start/step recovery handoff, terminal-only rejected-save refresh retaining results/fence, broader durable uncertainty checks and targeted regression tests. Reviewer inspected the fixes and the final outcome/deviation record on 2026-09-04. |
-| Complexity and deviations | The previous reviewer accepted 2,361/351 production and 2,120/115 supporting additions/deletions. User review rejected the compatibility inference; the implementation is now 2,091/351 and 1,812/115. |
+| Complexity and deviations | The previous reviewer accepted 2,361/351 production and 2,120/115 supporting additions/deletions. User review rejected the compatibility inference; the implementation is now 2,091/351 and 1,818/116. |
 | Verdict | Previous acceptance is superseded by the complexity reduction and CI corrections. Fresh independent implementation review is pending. Keep the PR draft until that review, #700 fresh-release restart qualification and the full security harness gate pass. |
