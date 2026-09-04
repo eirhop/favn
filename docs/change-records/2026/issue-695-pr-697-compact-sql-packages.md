@@ -2,13 +2,13 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Implemented |
+| Status | Implementing |
 | Type | Bug fix and execution-format transition |
 | Primary issue | [#695](https://github.com/eirhop/favn/issues/695) |
 | Pull request | [#697](https://github.com/eirhop/favn/pull/697) |
 | Related work | [#694](https://github.com/eirhop/favn/issues/694), payload limits, remains independent |
 | Affected areas | Core SQL templates, immutable packages, manifest compatibility, runner rendering tests |
-| Approved plan commit | `a57e42b9` |
+| Approved plan commit | `a57e42b9` (equivalent rebased commit: `fdd6c4dc`) |
 | Last updated | 2026-09-04 |
 
 ## One-minute summary
@@ -265,3 +265,64 @@ and accepted the integration at `ff2538688` without code changes. All ordinary C
 and HTTP checks passed on that integrated implementation. The final evidence
 record was accepted on 2026-09-04 with no actionable findings. The PR remains
 draft while image security qualification is blocked.
+
+## Follow-up: rebase and CI repair
+
+After accepting the SQL implementation, the user requested a rebase onto main
+and fixes for any CI failures. At that request, the branch was rebased onto main
+`c4abd29c`. Independent review confirmed all four commits and the final tree were
+unchanged at `29f0cf77`; historical CI links retain the SHAs actually tested.
+The SQL plan above remains the approved baseline. This section records the
+subsequent, separately reviewed scope expansion.
+
+### CI repair plan
+
+The latest ordinary CI and HTTP checks pass. The image scan fails on five new
+advisories in the pinned Debian 13 runtime: four util-linux advisories produce
+36 package matches and one zlib advisory produces one match. A reproduction using
+the runtime Dockerfile package steps and CI's Grype 0.116.0 database confirms
+these 37 High findings. Advancing the Debian snapshot cannot supply a stable
+vendor fix: Debian marks the util-linux findings no-dsa (Grype `wont-fix`) and
+zlib untriaged/unfixed.
+
+Use the existing reviewed-exception mechanism for these findings only:
+
+- For CVE-2026-76642, CVE-2026-78408, CVE-2026-78409, and CVE-2026-78410, constrain
+  each exception to Debian 13, `deb` packages, the nine observed util-linux
+  package names, and `wont-fix`. The mount paths require privileges excluded by
+  the qualified images: both contracts enforce UID 10001, no SUID/SGID executables,
+  and execution with all Linux capabilities dropped. The nsenter advisory is
+  different: a privileged operator can leak a root-opened cgroup descriptor to
+  a non-root, capability-free target via `nsenter --join-cgroup`. The exception
+  explicitly excludes that host/operator action and inherited privileged
+  descriptors; UID and capability hardening alone do not stop it. Favn launchers
+  do not perform that operation, and image qualification cannot prove host safety.
+  These rules accept deployment-specific residual risk; they do not patch the
+  packages or cover privileged/customized deployments.
+- For CVE-2026-85091, constrain the exception to Debian 13 `zlib1g`, exact version
+  `1:1.3.dfsg+really1.3.1-1+b1`, and `not-fixed`. The advisory describes the later
+  `gz_vacate` function. The authenticated Debian source archive's `gzwrite.c` is
+  identical to upstream 1.3.1, contains no `gz_vacate`, and has no Debian patches.
+  Debian's conservative tracker status remains visible in the rationale; this is
+  a version-specific non-applicability assessment, not a general zlib exemption.
+- Keep the existing 2026-10-01 review deadline, scanner version, High threshold,
+  `only-fixed: false`, and all image hardening. A changed vendor fix state stops
+  matching these exceptions. Document the sources, limitations, and source hashes
+  beside the policy and link that rationale from the canonical image guide.
+
+The CI-policy slice budget is 50-80 configuration lines added / 0-3 deleted and
+50-100 supporting documentation lines added / 0-3 deleted. The change record is
+excluded. No application code, dependencies, image pins, test exclusions, or
+scanner enforcement settings change.
+
+Validation will compare the baseline and updated scans: exactly the 37 assessed
+matches may newly become ignored, existing ignores must remain unchanged, and no
+unignored High/Critical finding may remain. Run the existing exception guard and
+both full-image contracts/scans in ordinary CI, then obtain an independent final
+review of the policy, rationale, and exact-head results. Publish the rebase with
+an explicit force-with-lease against the previously observed branch head.
+
+Independent GPT-5.6 xhigh plan review accepted this follow-up on 2026-09-04
+after correcting one P2 finding: non-root/capability hardening does not prevent
+the nsenter inherited-descriptor scenario. The revised operational limitation
+was rechecked and accepted before policy implementation.
