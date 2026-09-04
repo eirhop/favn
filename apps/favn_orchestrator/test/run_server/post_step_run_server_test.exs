@@ -137,7 +137,7 @@ defmodule FavnOrchestrator.RunServer.PostStepRunServerTest do
       end
     end
 
-    def get_execution_checkpoint(_query), do: {:error, Error.new(:not_found, "no checkpoint")}
+    def get_execution_checkpoint(_query), do: {:ok, Agent.get(agent(), & &1.checkpoint)}
 
     def put_execution_checkpoint(command) do
       {:ok,
@@ -210,7 +210,13 @@ defmodule FavnOrchestrator.RunServer.PostStepRunServerTest do
         end
       end
 
-      {:ok, payload} = PersistenceCodec.decode_payload(command.task_kind, command.payload)
+      {:ok, payload} =
+        PersistenceCodec.decode_payload(
+          command.task_kind,
+          command.payload,
+          Agent.get(agent(), & &1.version)
+        )
+
       task = completed_task(command, payload)
       put_task(task)
       {:ok, task}
@@ -338,6 +344,12 @@ defmodule FavnOrchestrator.RunServer.PostStepRunServerTest do
     store_opts = Map.get(context, :store_opts, [])
 
     {:ok, agent} = HarnessStore.start(fixture.run, Keyword.put(store_opts, :test_pid, self()))
+
+    Agent.update(
+      agent,
+      &Map.merge(&1, %{version: fixture.version, checkpoint: checkpoint(fixture)})
+    )
+
     Application.put_env(:favn_orchestrator, :post_step_run_server_agent, agent)
     HarnessStore.put_task(running_asset_task(fixture))
 
@@ -591,6 +603,29 @@ defmodule FavnOrchestrator.RunServer.PostStepRunServerTest do
     RunnerTaskResultRouter.notify(completed)
   end
 
+  defp checkpoint(fixture) do
+    {:ok, payload} =
+      FavnOrchestrator.RunServer.Execution.PipelineFreshnessCheckpoint.encode_payload(
+        fixture.run.id,
+        fixture.freshness_context
+      )
+
+    %FavnOrchestrator.Persistence.Results.RunExecutionCheckpoint{
+      workspace_id: fixture.run.workspace_id,
+      run_id: fixture.run.id,
+      owner_id: "run-owner",
+      fencing_token: @fencing_token,
+      checkpoint_version: 1,
+      checkpoint_revision: 1,
+      checkpoint_sequence: fixture.run.event_seq,
+      stage: 0,
+      attempt: 1,
+      payload: payload,
+      payload_hash: :crypto.hash(:sha256, payload),
+      updated_at: fixture.run.inserted_at
+    }
+  end
+
   defp running_asset_task(fixture) do
     %RunnerTask{
       workspace_id: fixture.run.workspace_id,
@@ -615,8 +650,20 @@ defmodule FavnOrchestrator.RunServer.PostStepRunServerTest do
       },
       orchestration_context: %{
         kind: :pipeline,
-        decision: %{decision: :run, freshness_key: "latest"},
-        freshness_context: fixture.freshness_context,
+        decision: %{
+          decision: :run,
+          reason: :upstream_refreshed,
+          node_key: @node_key,
+          freshness_key: "latest"
+        },
+        freshness_checkpoint: %{
+          version: 1,
+          revision: 1,
+          sequence: fixture.run.event_seq,
+          stage: 0,
+          attempt: 1,
+          payload_hash: checkpoint(fixture).payload_hash
+        },
         freshness_key: "latest",
         materialization_claim: fixture.claim,
         resource_circuit_permits: []
@@ -674,6 +721,8 @@ defmodule FavnOrchestrator.RunServer.PostStepRunServerTest do
     claim = %{
       claim_key: "claim-asset",
       workspace_id: run.workspace_id,
+      deployment_id: run.deployment_id,
+      expires_at: DateTime.add(DateTime.utc_now(), 60, :second),
       run_id: run.id,
       asset_step_id: "step-asset",
       node_key: @node_key,

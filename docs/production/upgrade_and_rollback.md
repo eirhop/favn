@@ -30,6 +30,22 @@ PostgreSQL data before removing old Compose resources. After upgrading:
 Favn does not infer ownership of old containers, networks, volumes, or
 databases and does not delete them.
 
+## Task persistence format adoption
+
+Migration `20260904020000` is a breaking pre-production change. It refuses a
+database containing runner tasks, materialization claims or target-operation
+locks. There is no legacy decoder, converter or automatic reset.
+
+Stop development writers and establish the outcome of any external writes.
+Explicitly bootstrap a fresh control-plane database with the matching build and
+republish manifests/workspaces. Preserve the old database separately if needed;
+do not remove consumer data-plane files. A fresh control-plane database does not
+undo an external SQL effect. Rollback requires the previous build's separate
+compatible database. Mixed builds are unsupported.
+
+This is a one-time adoption requirement. Subsequent crashes restart against the
+same current-format database and retained artifacts, without reset or repair.
+
 ## Control-plane upgrade
 
 1. Select a qualified control-plane digest.

@@ -16,6 +16,14 @@ defmodule FavnOrchestrator.Persistence.Commands.EnqueueRunnerTask do
   ]
   defstruct @enforce_keys ++
               [
+                :platform_context,
+                :manifest_version_id,
+                :manifest_content_hash,
+                :write_claim_key,
+                :write_claim_fence,
+                :write_target_id,
+                :write_operation_id,
+                :write_lock_fence,
                 :run_id,
                 :operation_id,
                 :asset_step_id,
@@ -24,6 +32,29 @@ defmodule FavnOrchestrator.Persistence.Commands.EnqueueRunnerTask do
                 :orchestration_context
               ]
 
+  @type t :: %__MODULE__{}
+end
+
+defmodule FavnOrchestrator.Persistence.Commands.ResolveRunnerTaskWrite do
+  @moduledoc "Administrator-attested quiescence and exact outcome evidence for one unresolved write."
+  @enforce_keys [
+    :workspace_context,
+    :command_id,
+    :task_id,
+    :expected_assignment_generation,
+    :expected_owner_fence,
+    :stopped_at,
+    :stop_mechanism,
+    :runner_stopped,
+    :backend_stopped,
+    :evidence_reference,
+    :reason,
+    :disposition,
+    :observation_task_ids,
+    :issued_at,
+    :occurred_at
+  ]
+  defstruct @enforce_keys
   @type t :: %__MODULE__{}
 end
 
@@ -226,6 +257,16 @@ defmodule FavnOrchestrator.Persistence.Results.RunnerTask do
     :workspace_id,
     :task_id,
     :domain_identity,
+    :manifest_version_id,
+    :manifest_content_hash,
+    :orchestration_context_hash,
+    :write_claim_key,
+    :write_claim_fence,
+    :write_target_id,
+    :write_operation_id,
+    :write_lock_fence,
+    :data_state,
+    :persistence_failure,
     :task_kind,
     :run_id,
     :operation_id,

@@ -280,3 +280,13 @@ Redis is not required for correctness or initial multi-node scale.
 - Do not make notifications or caches authoritative.
 - Schema changes require migrations, readiness updates, PostgreSQL integration
   tests, and an update to the ER documentation.
+
+## Runner restart recovery
+
+Runner task lifecycle commands read scalar state independently of executable
+payloads. Current-format payloads, settlement context and results hydrate only
+against verified retained artifacts; detail failure cannot roll back unrelated
+queue cleanup. Existing claim and target-lock rows retain unresolved external
+write evidence beyond their owner leases. See the
+[crash recovery contract](../../architecture/elastic-runners.md#crash-recovery)
+and [task/ownership fields](data-model.md) for the canonical boundaries.

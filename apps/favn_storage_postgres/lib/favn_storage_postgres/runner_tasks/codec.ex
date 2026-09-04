@@ -1,23 +1,18 @@
 defmodule FavnStoragePostgres.RunnerTasks.Codec do
   @moduledoc false
 
-  defdelegate encode_payload(task_kind, payload),
-    to: Favn.Contracts.RunnerTask.PersistenceCodec
+  alias Favn.Contracts.RunnerTask.PersistenceCodec
+  alias FavnOrchestrator.RunnerTaskContext
 
-  defdelegate decode_payload(task_kind, envelope),
-    to: Favn.Contracts.RunnerTask.PersistenceCodec
+  defdelegate encode_payload(task_kind, payload), to: PersistenceCodec
+  defdelegate decode_payload(task_kind, envelope, version, packages), to: PersistenceCodec
+  defdelegate encode_result(task_kind, outcome, result), to: PersistenceCodec
+  defdelegate decode_result(task_kind, outcome, result, version, packages), to: PersistenceCodec
+  defdelegate payload_hash(envelope), to: PersistenceCodec
 
-  defdelegate encode_result(task_kind, outcome, result),
-    to: Favn.Contracts.RunnerTask.PersistenceCodec
+  defdelegate decode_orchestration_context(envelope, version, packages),
+    to: RunnerTaskContext,
+    as: :decode
 
-  defdelegate decode_result(task_kind, outcome, result),
-    to: Favn.Contracts.RunnerTask.PersistenceCodec
-
-  defdelegate payload_hash(envelope), to: Favn.Contracts.RunnerTask.PersistenceCodec
-
-  defdelegate decode_orchestration_context(envelope),
-    to: Favn.Contracts.RunnerTask.PersistenceCodec
-
-  defdelegate encode_orchestration_context(context),
-    to: Favn.Contracts.RunnerTask.PersistenceCodec
+  defdelegate encode_orchestration_context(context), to: RunnerTaskContext, as: :encode
 end

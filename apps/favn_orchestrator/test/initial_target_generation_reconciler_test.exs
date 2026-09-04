@@ -18,6 +18,8 @@ defmodule FavnOrchestrator.InitialTargetGenerationReconcilerTest do
   @ref {__MODULE__.MonthlyOrders, :asset}
 
   defmodule FakeStore do
+    def get_manifest(_query), do: {:ok, Process.get(:fixture_version)}
+
     def get_binding(query) do
       send(Process.get(:test_pid), {:get_binding, query})
       {:ok, Process.get(:target_binding)}
@@ -141,6 +143,7 @@ defmodule FavnOrchestrator.InitialTargetGenerationReconcilerTest do
     end)
 
     version = version()
+    Process.put(:fixture_version, version)
     {:ok, index} = Index.build_from_version(version)
     {:ok, version: version, entry: entry(%{version | manifest: nil}, index)}
   end

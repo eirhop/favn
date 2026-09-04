@@ -50,6 +50,7 @@ defmodule FavnOrchestrator.RebuildsTest do
 
     def get_runtime_state(_query), do: {:ok, Process.get(:rebuild_runtime)}
     def get_deployment_targets(_query), do: {:ok, Process.get(:rebuild_grants)}
+    def get_manifest(_query), do: {:ok, Process.get(:rebuild_version)}
     def get_deployment_manifest(_query), do: {:ok, Process.get(:rebuild_version)}
     def get_deployment_configuration(_query), do: {:ok, %{}}
 
@@ -378,7 +379,8 @@ defmodule FavnOrchestrator.RebuildsTest do
     assert {:ok, %Favn.Contracts.GenerationCapabilitiesRequest{manifest: identity}} =
              Favn.Contracts.RunnerTask.PersistenceCodec.decode_payload(
                runner_task.task_kind,
-               runner_task.payload
+               runner_task.payload,
+               fixture.version
              )
 
     assert identity.manifest == nil

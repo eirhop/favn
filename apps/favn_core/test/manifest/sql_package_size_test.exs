@@ -24,7 +24,26 @@ defmodule Favn.Manifest.SQLPackageSizeTest do
         work = Fixture.work(package)
         assert byte_size(:erlang.term_to_binary(work, [:deterministic])) < 800 * 1_024
         assert {:ok, envelope, _hash} = PersistenceCodec.encode_payload(:asset_attempt, work)
-        assert {:ok, ^work} = PersistenceCodec.decode_payload(:asset_attempt, envelope)
+
+        assert {:ok, ^work} =
+                 PersistenceCodec.decode_payload(
+                   :asset_attempt,
+                   envelope,
+                   %Favn.Manifest.Version{
+                     manifest: %Favn.Manifest{
+                       assets: [
+                         %Favn.Manifest.Asset{
+                           ref: package.asset_ref,
+                           module: elem(package.asset_ref, 0),
+                           name: elem(package.asset_ref, 1),
+                           type: :sql,
+                           execution_package_hash: package.content_hash
+                         }
+                       ]
+                     }
+                   },
+                   [package]
+                 )
       end
     end
   end

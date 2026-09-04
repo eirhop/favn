@@ -23,6 +23,13 @@ defmodule FavnOrchestrator.RunServer.RecoveryTest do
     assert {:ok, :resume} = Recovery.disposition(retrying)
   end
 
+  test "sequential admission cannot reset a malformed persisted deadline" do
+    checkpoint = sequential_retry_checkpoint()
+    checkpoint = put_in(checkpoint, [:retry, :admission_deadline_ms], "invalid")
+    run = run_state(event_seq: 4, metadata: %{retry_state: checkpoint})
+    assert {:ok, {:uncertain, %{reason: :invalid_retry_checkpoint}}} = Recovery.disposition(run)
+  end
+
   test "malformed retry metadata never authorizes recovery" do
     for retry_state <- [
           %{},

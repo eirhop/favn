@@ -12,6 +12,7 @@ defmodule FavnOrchestrator.RunnerTaskRecovery do
   six expire-and-requeue cycles.
   """
   use GenServer
+  require Logger
 
   alias Favn.Contracts.RunnerError
   alias FavnOrchestrator.Persistence
@@ -29,6 +30,8 @@ defmodule FavnOrchestrator.RunnerTaskRecovery do
   @impl true
   def init(opts) do
     state = %{
+      last_failure: nil,
+      failure_logged_at: nil,
       interval_ms: Keyword.get(opts, :interval_ms, @default_interval_ms),
       lease_ms: Keyword.get(opts, :lease_ms, @default_lease_ms),
       assignment_budget: Keyword.get(opts, :assignment_budget, @default_assignment_budget),
@@ -41,7 +44,7 @@ defmodule FavnOrchestrator.RunnerTaskRecovery do
 
   @impl true
   def handle_info(:recover, state) do
-    recover(state)
+    state = report_recovery(recover(state), state)
     schedule(state.interval_ms)
     {:noreply, state}
   end
@@ -67,8 +70,8 @@ defmodule FavnOrchestrator.RunnerTaskRecovery do
     }
 
     case Persistence.stores().runner_tasks.recover_expired(command) do
-      {:ok, tasks} -> Enum.each(tasks, &recover_task(&1, state, now))
-      {:error, _reason} -> :ok
+      {:ok, tasks} -> Enum.map(tasks, &recover_task(&1, state, now))
+      {:error, error} -> [{:error, error}]
     end
   end
 
@@ -97,7 +100,7 @@ defmodule FavnOrchestrator.RunnerTaskRecovery do
       assignment_generation: task.assignment_generation,
       disposition: disposition,
       reason: reason,
-      issued_at: now,
+      issued_at: task.assigned_at,
       occurred_at: now
     }
 
@@ -110,11 +113,11 @@ defmodule FavnOrchestrator.RunnerTaskRecovery do
         )
 
       {:ok, %{status: status} = released}
-      when status in [:cancelled, :unknown] ->
+      when status in [:failed, :cancelled, :unknown] ->
         RunnerTaskResultRouter.notify(released)
 
-      _other ->
-        :ok
+      {:error, error} ->
+        {:error, error}
     end
   end
 
@@ -175,6 +178,36 @@ defmodule FavnOrchestrator.RunnerTaskRecovery do
     do: true
 
   defp safe_to_requeue?(_task), do: false
+
+  defp report_recovery(results, state) do
+    failures = Enum.filter(results, &match?({:error, _}, &1))
+
+    case failures do
+      [] ->
+        %{state | last_failure: nil, failure_logged_at: nil}
+
+      [{:error, reason} | _] ->
+        category =
+          case reason do
+            %{kind: kind} when kind in [:invalid, :conflict, :fenced, :not_found] -> kind
+            _unavailable -> :storage
+          end
+
+        now = System.monotonic_time(:millisecond)
+
+        if category != state.last_failure or is_nil(state.failure_logged_at) or
+             now - state.failure_logged_at >= 30_000 do
+          Logger.warning("runner_task_recovery_failed",
+            failure_class: category,
+            failed_count: length(failures)
+          )
+
+          %{state | last_failure: category, failure_logged_at: now}
+        else
+          state
+        end
+    end
+  end
 
   defp schedule(delay), do: Process.send_after(self(), :recover, delay)
 end

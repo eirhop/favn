@@ -76,6 +76,8 @@ defmodule FavnOrchestrator.RunnerTaskClaimTest do
     def acknowledge_cancellation(_command), do: unavailable()
     def release(_command), do: unavailable()
     def retry(_command), do: unavailable()
+    def resolve_write(_command), do: unavailable()
+    def get_write_resolution(_command), do: unavailable()
     def recover_expired(_command), do: unavailable()
     def reconcile_demand(_command), do: unavailable()
     def ensure_demand(_command), do: unavailable()

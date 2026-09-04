@@ -306,15 +306,20 @@ defmodule FavnLocal.DockerFreeLocalLifecycleAcceptanceTest do
 
       send(original_caller, {:delayed_task, task.pid})
 
-      %{state |
-        status: :reloading,
-        task: task,
-        request: {{original_caller, original_reply}, state.publication, state.runner.release_id}}
+      %{
+        state
+        | status: :reloading,
+          task: task,
+          request: {{original_caller, original_reply}, state.publication, state.runner.release_id}
+      }
     end)
 
     assert_receive {:delayed_task, delayed_task}, 5_000
     stopping = Task.async(fn -> FavnLocal.stop(root_dir: root_dir, stop_timeout_ms: 60_000) end)
-    assert_receive {^original_reply, {:error, {:reload_outcome_unknown, :reload_interrupted}}}, 5_000
+
+    assert_receive {^original_reply, {:error, {:reload_outcome_unknown, :reload_interrupted}}},
+                   5_000
+
     send(delayed_task, :complete)
     assert :ok = Task.await(stopping, 60_000)
     refute_received {^original_reply, _duplicate_reply}
@@ -433,12 +438,22 @@ defmodule FavnLocal.DockerFreeLocalLifecycleAcceptanceTest do
     assert DevelopmentRuntime.status().status == :ready
 
     assert {:ok, {{_version, 302, _reason}, headers, _body}} =
-             :httpc.request(:get, {String.to_charlist(view_url <> "/login"), []},
-               [autoredirect: false], [])
+             :httpc.request(
+               :get,
+               {String.to_charlist(view_url <> "/login"), []},
+               [autoredirect: false],
+               []
+             )
 
     cookie = headers |> header("set-cookie") |> cookie_pair() |> String.to_charlist()
+
     assert {:ok, {{_version, 200, _reason}, _headers, _body}} =
-             :httpc.request(:get, {String.to_charlist(view_url <> "/assets"), [{~c"cookie", cookie}]}, [], [])
+             :httpc.request(
+               :get,
+               {String.to_charlist(view_url <> "/assets"), [{~c"cookie", cookie}]},
+               [],
+               []
+             )
   end
 
   defp free_port do
@@ -487,7 +502,7 @@ defmodule FavnLocal.DockerFreeLocalLifecycleAcceptanceTest do
   defp enqueue_delayed_release_work(context, run, version, ref, release_id) do
     request = %GenerationCapabilitiesRequest{manifest: version, asset_ref: ref}
     {:ok, payload, payload_hash} = Codec.encode_payload(:generation_capabilities, request)
-    {:ok, orchestration_context} = Codec.encode_orchestration_context(%{kind: :test})
+    {:ok, orchestration_context} = Codec.encode_orchestration_context(%{})
     now = DateTime.utc_now()
 
     command = %C.EnqueueRunnerTask{
@@ -496,6 +511,8 @@ defmodule FavnLocal.DockerFreeLocalLifecycleAcceptanceTest do
       task_id: "rt_delayed_#{System.unique_integer([:positive])}",
       domain_identity: "local-drain-delayed:#{run.id}",
       task_kind: :generation_capabilities,
+      manifest_version_id: version.manifest_version_id,
+      manifest_content_hash: version.content_hash,
       runner_pool: "default",
       required_runner_release_id: release_id,
       required_capability: "generation_capabilities",

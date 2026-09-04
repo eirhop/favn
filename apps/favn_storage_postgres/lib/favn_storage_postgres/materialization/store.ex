@@ -21,6 +21,7 @@ defmodule FavnStoragePostgres.Materialization.Store do
   alias FavnStoragePostgres.Outbox.Writer, as: OutboxWriter
   alias FavnStoragePostgres.Payload
   alias FavnStoragePostgres.Repo
+  alias FavnStoragePostgres.RunnerTasks.WriteOwnership
   alias FavnStoragePostgres.Schemas.AssetEvidenceBinding
   alias FavnStoragePostgres.Schemas.Materialization
   alias FavnStoragePostgres.Schemas.MaterializationClaim
@@ -30,8 +31,12 @@ defmodule FavnStoragePostgres.Materialization.Store do
 
   @impl true
   def claim(%ClaimMaterialization{} = command) do
-    with :ok <- validate_claim(command) do
+    with true <- command.purpose in [:materialization, :ownership_only],
+         :ok <- validate_claim(command) do
       transaction(fn -> claim!(command) end)
+    else
+      false -> {:error, Error.new(:invalid, "invalid claim purpose")}
+      {:error, _} = error -> error
     end
   end
 
@@ -127,13 +132,19 @@ defmodule FavnStoragePostgres.Materialization.Store do
         materialized_decision(materialization)
 
       nil ->
-        ensure_target_operation_admission!(command)
-        ensure_evidence_binding!(command)
         request_hash = claim_request_hash!(command)
+        claim = lock_claim(workspace_id, command.claim_key)
 
-        case lock_claim(workspace_id, command.claim_key) do
-          nil -> insert_claim!(command, request_hash)
-          claim -> resolve_existing_claim!(claim, command, request_hash)
+        if claim && exact_live_claim_replay?(claim, command, request_hash) do
+          claimed_decision(claim)
+        else
+          ensure_target_operation_admission!(command)
+          ensure_evidence_binding!(command)
+
+          case claim do
+            nil -> insert_claim!(command, request_hash)
+            claim -> resolve_existing_claim!(claim, command, request_hash)
+          end
         end
     end
   end
@@ -149,6 +160,8 @@ defmodule FavnStoragePostgres.Materialization.Store do
   end
 
   defp ensure_target_operation_admission!(command) do
+    WriteOwnership.guard_target!(command.workspace_context.workspace_id, command.target_id)
+
     operation_lock =
       from(lock in TargetOperationLock,
         where:
@@ -264,6 +277,7 @@ defmodule FavnStoragePostgres.Materialization.Store do
         owner_id: command.owner_id,
         fencing_token: 1,
         status: "claimed",
+        purpose: Atom.to_string(command.purpose),
         expires_at: database_deadline!(command.lease_duration_ms),
         version: 1,
         inserted_at: command.occurred_at,
@@ -279,7 +293,8 @@ defmodule FavnStoragePostgres.Materialization.Store do
       exact_live_claim_replay?(claim, command, request_hash) ->
         claimed_decision(claim)
 
-      claim.status == "claimed" and future?(claim.expires_at) ->
+      WriteOwnership.unresolved?(claim) or
+          (claim.status == "claimed" and future?(claim.expires_at)) ->
         %MaterializationDecision{
           claim_key: claim.claim_key,
           status: :competing,
@@ -290,6 +305,11 @@ defmodule FavnStoragePostgres.Materialization.Store do
         reclaimed =
           claim
           |> Ecto.Changeset.change(%{
+            effect_state: "not_started",
+            effect_task_id: nil,
+            effect_assignment_generation: nil,
+            effect_started_at: nil,
+            effect_resolution: nil,
             claim_command_id: command.command_id,
             claim_request_hash: request_hash,
             owner_id: command.owner_id,
@@ -348,7 +368,7 @@ defmodule FavnStoragePostgres.Materialization.Store do
             RETURNING workspace_id, claim_key, deployment_id, target_kind, target_id,
                       target_generation_id, evidence_generation_id, partition_key, run_id,
                       owner_id, fencing_token, status, expires_at,
-                      completed_at, result, error, version
+                      completed_at, result, error, version, purpose
             """,
             [
               workspace_id,
@@ -364,9 +384,68 @@ defmodule FavnStoragePostgres.Materialization.Store do
     end
   end
 
+  defp purpose("ownership_only"), do: :ownership_only
+  defp purpose("materialization"), do: :materialization
+
+  defp finish!(%{status: :released} = command) do
+    workspace = command.workspace_context.workspace_id
+
+    original =
+      Repo.get_by!(MaterializationClaim, workspace_id: workspace, claim_key: command.claim_key)
+
+    WriteOwnership.lock_target!(workspace, original.target_id)
+    claim = lock_claim!(workspace, command.claim_key)
+    hash = finish_hash!(command)
+
+    cond do
+      claim.last_finish_command_id == command.command_id and claim.finish_hash == hash ->
+        lookup_decision(command.claim_key, claim, nil)
+
+      claim.purpose == "ownership_only" and claim.status == "claimed" and
+        matching_owner?(claim, command) and claim.version == command.expected_version and
+        claim.effect_state == "not_started" and is_nil(claim.effect_task_id) ->
+        released =
+          claim
+          |> Ecto.Changeset.change(
+            status: "released",
+            completed_at: command.occurred_at,
+            updated_at: command.occurred_at,
+            version: claim.version + 1,
+            last_finish_command_id: command.command_id,
+            finish_hash: hash
+          )
+          |> Repo.update!()
+
+        lookup_decision(command.claim_key, released, nil)
+
+      true ->
+        Repo.rollback(Error.new(:fenced, "only an exact unbound ownership claim can be released"))
+    end
+  end
+
   defp finish!(command) do
     workspace_id = command.workspace_context.workspace_id
+
+    original =
+      Repo.get_by!(MaterializationClaim, workspace_id: workspace_id, claim_key: command.claim_key)
+
+    WriteOwnership.lock_target!(workspace_id, original.target_id)
     claim = lock_claim!(workspace_id, command.claim_key)
+
+    if WriteOwnership.unresolved?(claim),
+      do:
+        Repo.rollback(
+          Error.new(
+            :conflict,
+            "materialization write outcome remains unresolved",
+            details: %{reason_code: "target_write_outcome_unknown"}
+          )
+        )
+
+    if claim.purpose != "materialization",
+      do:
+        Repo.rollback(Error.new(:conflict, "ownership-only claims settle with their runner task"))
+
     finish_hash = finish_hash!(command)
 
     cond do
@@ -383,7 +462,8 @@ defmodule FavnStoragePostgres.Materialization.Store do
         )
 
       not matching_owner?(claim, command) or claim.status != "claimed" or
-          not future?(claim.expires_at) ->
+          not (future?(claim.expires_at) or
+                   WriteOwnership.committed_settlement?(claim, command.status)) ->
         Repo.rollback(Error.new(:fenced, "materialization claim fencing token is stale"))
 
       claim.version != command.expected_version ->
@@ -520,6 +600,13 @@ defmodule FavnStoragePostgres.Materialization.Store do
   defp lookup_decision(claim_key, nil, nil),
     do: %MaterializationDecision{claim_key: claim_key, status: :missing}
 
+  defp lookup_decision(_claim_key, %MaterializationClaim{status: "released"} = claim, nil),
+    do: %MaterializationDecision{
+      claim_key: claim.claim_key,
+      status: :released,
+      claim: claim_result(claim)
+    }
+
   defp lookup_decision(_claim_key, %MaterializationClaim{status: "failed"} = claim, nil),
     do: %MaterializationDecision{
       claim_key: claim.claim_key,
@@ -562,6 +649,7 @@ defmodule FavnStoragePostgres.Materialization.Store do
     %ClaimResult{
       workspace_id: claim.workspace_id,
       claim_key: claim.claim_key,
+      purpose: purpose(claim.purpose),
       deployment_id: claim.deployment_id,
       target_kind: String.to_existing_atom(claim.target_kind),
       target_id: claim.target_id,
@@ -597,11 +685,13 @@ defmodule FavnStoragePostgres.Materialization.Store do
          completed_at,
          result,
          error,
-         version
+         version,
+         claim_purpose
        ]) do
     %ClaimResult{
       workspace_id: workspace_id,
       claim_key: claim_key,
+      purpose: purpose(claim_purpose),
       deployment_id: deployment_id,
       target_kind: String.to_existing_atom(target_kind),
       target_id: target_id,
@@ -650,7 +740,8 @@ defmodule FavnStoragePostgres.Materialization.Store do
       claim.target_id == command.target_id and
       claim.target_generation_id == command.target_generation_id and
       claim.evidence_generation_id == command.evidence_generation_id and
-      claim.partition_key == command.partition_key
+      claim.partition_key == command.partition_key and
+      claim.purpose == Atom.to_string(command.purpose)
   end
 
   defp matching_owner?(claim, command),
@@ -669,7 +760,8 @@ defmodule FavnStoragePostgres.Materialization.Store do
       partition_key: command.partition_key,
       run_id: command.run_id,
       owner_id: command.owner_id,
-      operation_id: command.operation_id
+      operation_id: command.operation_id,
+      purpose: command.purpose
     })
   end
 
@@ -731,6 +823,7 @@ defmodule FavnStoragePostgres.Materialization.Store do
            ],
            &valid_id?/1
          ) and command.target_kind in [:asset, :pipeline] and
+         command.purpose in [:materialization, :ownership_only] and
          valid_generation_identity?(command.target_generation_id, command.evidence_generation_id) and
          valid_optional_id?(command.operation_id) and
          valid_duration?(command.lease_duration_ms) and match?(%DateTime{}, command.occurred_at),
@@ -758,7 +851,8 @@ defmodule FavnStoragePostgres.Materialization.Store do
       Enum.all?([command.command_id, command.claim_key, command.owner_id], &valid_id?/1) and
       is_integer(command.fencing_token) and command.fencing_token > 0 and
       is_integer(command.expected_version) and command.expected_version > 0 and
-      command.status in [:succeeded, :failed] and match?(%DateTime{}, command.occurred_at)
+      command.status in [:succeeded, :failed, :released] and
+      match?(%DateTime{}, command.occurred_at)
   end
 
   defp valid_finish_payload?(%{status: :succeeded} = command) do
@@ -769,6 +863,13 @@ defmodule FavnStoragePostgres.Materialization.Store do
   defp valid_finish_payload?(%{status: :failed} = command) do
     is_map(command.error) and Payload.validate(command.error, 64 * 1_024) == :ok
   end
+
+  defp valid_finish_payload?(%{
+         status: :released,
+         materialization_id: nil,
+         payload: nil,
+         error: nil
+       }), do: true
 
   defp valid_finish_payload?(_command), do: false
 

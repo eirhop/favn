@@ -79,17 +79,13 @@ defmodule FavnOrchestrator.RunnerTasks do
              task_id: assignment.task_id
            }),
          true <- assignment_matches_task?(assignment, task),
-         {:ok, manifest_version_id, manifest_content_hash, required_runner_release_id} <-
-           manifest_identity(task.task_kind, task.payload),
-         true <-
-           is_nil(required_runner_release_id) or
-             required_runner_release_id == assignment.required_runner_release_id,
+         true <- task.required_runner_release_id == assignment.required_runner_release_id,
          {:ok, version} <-
            FavnOrchestrator.ManifestStore.get_manifest(
              SystemContext.platform(:runner_task_manifest),
-             manifest_version_id
+             task.manifest_version_id
            ),
-         true <- version.content_hash == manifest_content_hash do
+         true <- version.content_hash == task.manifest_content_hash do
       {:ok, version}
     else
       false -> {:error, :stale_runner_task_assignment}
@@ -561,46 +557,6 @@ defmodule FavnOrchestrator.RunnerTasks do
       task.required_runner_release_id == assignment.required_runner_release_id and
       task.status in [:assigned, :preparing, :running, :cancelling]
   end
-
-  defp manifest_identity(:asset_attempt, %Favn.Contracts.RunnerWork{} = work),
-    do:
-      {:ok, work.manifest_version_id, work.manifest_content_hash, work.required_runner_release_id}
-
-  defp manifest_identity(
-         :relation_inspection,
-         %Favn.Contracts.RelationInspectionRequest{} = request
-       ),
-       do:
-         {:ok, request.manifest_version_id, request.manifest_content_hash,
-          request.required_runner_release_id}
-
-  defp manifest_identity(
-         kind,
-         %{manifest: %Favn.Manifest.Version{} = version}
-       )
-       when kind in [:generation_capabilities, :generation_marker_read],
-       do: {:ok, version.manifest_version_id, version.content_hash, nil}
-
-  defp manifest_identity(
-         :generation_reconcile,
-         %Favn.Contracts.GenerationReconciliationRequest{activation: activation}
-       ),
-       do: manifest_identity(:generation_activate, activation)
-
-  defp manifest_identity(
-         kind,
-         %{manifest_version_id: manifest_version_id, manifest_content_hash: content_hash} =
-           request
-       )
-       when kind in [
-              :generation_marker_initialize,
-              :generation_activate,
-              :generation_discard
-            ],
-       do: {:ok, manifest_version_id, content_hash, request.required_runner_release_id}
-
-  defp manifest_identity(kind, payload),
-    do: {:error, {:invalid_runner_task_manifest_identity, kind, payload}}
 
   defp maybe_send_cancellation(
          %{

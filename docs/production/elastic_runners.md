@@ -86,3 +86,33 @@ Protocol and operator-platform mapping references:
 - [KEDA 2.20 Metrics API scaler](https://keda.sh/docs/2.20/scalers/metrics-api/)
 - [KEDA 2.20 ScaledJobs](https://keda.sh/docs/2.20/concepts/scaling-jobs/)
 - [Kubernetes Jobs](https://kubernetes.io/docs/concepts/workloads/controllers/job/)
+
+## Resolve a held write
+
+An `unknown` task may have completed its external write. Restart, cancellation,
+lease expiry and deleting a runner process do not establish that the database
+backend stopped. Favn keeps the existing claim/target lock held for the logical
+target; it never retries the unknown write automatically.
+
+A workspace administrator can call
+`FavnOrchestrator.resolve_operator_task_write/4` with an authenticated operator
+context, task ID, proof map and stable `idempotency_key`/`issued_at` options.
+The proof requires the original `assignment_generation`, `owner_fence`,
+`stopped_at`, `runner_stopped: true`, `backend_stopped: true`, bounded `reason`
+and `evidence_reference`, and a `stop_mechanism` of
+`backend_session_terminated`, `infrastructure_removed` or `adapter_stop_verified`.
+These are administrator attestations: retain the operational evidence showing
+that both the runner and backend can no longer mutate.
+
+For an asset task, `disposition: :verified_no_effect` attests that no external
+write took effect. A row count or matching schema cannot prove this. For a
+generation mutation, use `disposition: :observe_generation`; Favn issues fresh,
+command-scoped read-only marker/inspection tasks after the attested stop and
+validates their exact request and generation identities.
+
+The command reauthorizes each call and records the administrator audit and
+immutable resolution receipt. Retry an uncertain response with the same proof,
+key and issue time. Receipt replay survives later payload corruption. Resolution
+releases only the matching exclusion; it does not change the task/run outcome,
+publish freshness, or start another write. Continue through ordinary target
+recovery only after this command succeeds. Unproved outcomes remain held.

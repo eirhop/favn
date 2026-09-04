@@ -123,6 +123,12 @@ defmodule FavnRunner.RunnerAgent do
       log_sequence: 0,
       pending_log_batch: nil,
       control_operations: %{},
+      claim_retry_count: 0,
+      claim_retry_timer: nil,
+      claim_retry_token: nil,
+      pending_claim: nil,
+      claim_failure_logged_at: nil,
+      claim_failure_category: nil,
       registration_retry_count: 0,
       registration_retry_timer: nil,
       registration_retry_token: nil,
@@ -281,37 +287,41 @@ defmodule FavnRunner.RunnerAgent do
     {:noreply, connection_unavailable(state)}
   end
 
+  def handle_info({:retry_claim, token}, %{claim_retry_token: token} = state) do
+    send(self(), :claim)
+    {:noreply, %{state | claim_retry_timer: nil, claim_retry_token: nil}}
+  end
+
+  def handle_info({:retry_claim, _stale}, state), do: {:noreply, state}
+
+  def handle_info(:claim, %{claim_retry_timer: timer} = state) when not is_nil(timer),
+    do: {:noreply, state}
+
   def handle_info(:claim, %{assignment: nil, phase: phase} = state)
       when phase in [:idle, :waiting] do
     state = cancel_idle_timer(state)
-    command_id = random_id("claim")
 
-    request = %RunnerTask.ClaimRequest{
-      command_id: command_id,
-      issued_at: DateTime.utc_now(),
-      runner_instance_id: state.runner_instance_id,
-      runner_session_generation: state.session_generation,
-      runner_pool: state.runner_pool,
-      required_runner_release_id: state.required_runner_release_id,
-      supported_task_kinds: @supported_task_kinds,
-      capabilities: @capabilities
-    }
+    pending =
+      case state.pending_claim do
+        %RunnerTask.ClaimRequest{runner_session_generation: generation} = pending
+        when generation == state.session_generation ->
+          pending
 
-    case request(state, request) do
-      {:ok, %RunnerTask.Assignment{} = assignment} ->
-        begin_assignment(%{
-          state
-          | assignment: assignment,
-            final_claim?: false,
-            phase: :preparing
-        })
+        _old_session ->
+          %RunnerTask.ClaimRequest{
+            command_id: random_id("claim"),
+            issued_at: DateTime.utc_now(),
+            runner_instance_id: state.runner_instance_id,
+            runner_session_generation: state.session_generation,
+            runner_pool: state.runner_pool,
+            required_runner_release_id: state.required_runner_release_id,
+            supported_task_kinds: @supported_task_kinds,
+            capabilities: @capabilities
+          }
+      end
 
-      {:ok, %RunnerTask.NoWork{} = no_work} ->
-        wait_for_work(state, no_work)
-
-      {:error, _reason} ->
-        reconnect(%{state | phase: :connecting})
-    end
+    state = %{state | pending_claim: pending}
+    {:noreply, start_control_operation(state, :claim, fn -> request(state, pending) end)}
   end
 
   def handle_info({:favn_runner_task, %RunnerTask.Wake{} = wake}, state) do
@@ -596,6 +606,12 @@ defmodule FavnRunner.RunnerAgent do
 
   defp begin_assignment(state) do
     TaskResultBuffer.reset()
+    assignment = state.assignment
+
+    state = %{
+      state
+      | manifest_lease_id: "task:#{assignment.task_id}:#{assignment.assignment_generation}"
+    }
 
     state =
       state
@@ -630,7 +646,7 @@ defmodule FavnRunner.RunnerAgent do
              DateTime.add(DateTime.utc_now(), lease_ms(), :millisecond)
            ),
          {:ok, state, payload} <- prepare_payload(state, assignment, lease_id),
-         {:ok, _task} <- request(state, started_message(state, assignment)) do
+         {:ok, _task} <- await_write_admission(state, started_message(state, assignment)) do
       {:ok, payload, lease_id, state.pending_runtime_inputs}
     else
       {:reconnect, reconnect_state} ->
@@ -647,6 +663,21 @@ defmodule FavnRunner.RunnerAgent do
 
       {:error, reason} ->
         {:error, reason, state.pending_runtime_inputs, lease_id}
+    end
+  end
+
+  # Preparation runs in an independently cancellable worker; lease renewals
+  # continue on the agent while the unchanged Started command waits for ownership.
+  defp await_write_admission(state, message) do
+    case request(state, message) do
+      {:error, %{details: %{reason_code: "target_write_in_progress"}}} ->
+        receive do
+        after
+          250 -> await_write_admission(state, message)
+        end
+
+      result ->
+        result
     end
   end
 
@@ -901,6 +932,54 @@ defmodule FavnRunner.RunnerAgent do
       entries: entries,
       truncated?: Enum.any?(entries, &match?(%{type: :truncated}, &1))
     }
+  end
+
+  defp handle_control_operation_result(:claim, _result, %{assignment: assignment} = state)
+       when not is_nil(assignment), do: {:noreply, reset_claim_retry(state)}
+
+  defp handle_control_operation_result(
+         :claim,
+         {:ok, %RunnerTask.Assignment{} = assignment},
+         state
+       ) do
+    state = reset_claim_retry(state)
+    begin_assignment(%{state | assignment: assignment, final_claim?: false, phase: :preparing})
+  end
+
+  defp handle_control_operation_result(:claim, {:ok, %RunnerTask.NoWork{} = no_work}, state),
+    do: wait_for_work(reset_claim_retry(state), no_work)
+
+  defp handle_control_operation_result(:claim, error, state) do
+    state = if superseded_claim?(error), do: %{state | pending_claim: nil}, else: state
+    category = claim_failure_category(error)
+    count = state.claim_retry_count + 1
+    delay = min(200 * Integer.pow(2, min(count - 1, 8)), 30_000)
+    delay = min(delay + :rand.uniform(max(div(delay, 5), 1)) - 1, 30_000)
+    token = make_ref()
+    timer = Process.send_after(self(), {:retry_claim, token}, delay)
+    now = System.monotonic_time(:millisecond)
+
+    log? =
+      is_nil(state.claim_failure_logged_at) or state.claim_failure_category != category or
+        now - state.claim_failure_logged_at >= 30_000
+
+    if log?,
+      do:
+        OperationalEvents.emit(
+          :runner_task_claim_failed,
+          %{retry_count: count, delay_ms: delay},
+          %{failure_class: category}, level: :warning)
+
+    state = %{
+      state
+      | claim_retry_count: count,
+        claim_retry_timer: timer,
+        claim_retry_token: token,
+        claim_failure_category: category,
+        claim_failure_logged_at: if(log?, do: now, else: state.claim_failure_logged_at)
+    }
+
+    if category == :transport, do: reconnect(state), else: {:noreply, %{state | phase: :waiting}}
   end
 
   defp handle_control_operation_result(
@@ -1240,6 +1319,41 @@ defmodule FavnRunner.RunnerAgent do
     }
   end
 
+  defp reset_claim_retry(state) do
+    if state.claim_retry_timer, do: Process.cancel_timer(state.claim_retry_timer)
+
+    %{
+      state
+      | claim_retry_count: 0,
+        claim_retry_timer: nil,
+        claim_retry_token: nil,
+        pending_claim: nil,
+        claim_failure_logged_at: nil,
+        claim_failure_category: nil
+    }
+  end
+
+  defp superseded_claim?(
+         {:error, %{kind: :fenced, details: %{reason_code: "runner_task_claim_superseded"}}}
+       ), do: true
+
+  defp superseded_claim?(_error), do: false
+
+  defp claim_failure_category(
+         {:error, %{kind: :fenced, details: %{reason_code: "runner_task_claim_superseded"}}}
+       ), do: :data
+
+  defp claim_failure_category({:error, %{kind: kind}}) when kind in [:invalid, :conflict],
+    do: :data
+
+  defp claim_failure_category({:error, %{kind: :fenced}}), do: :transport
+  defp claim_failure_category({:error, {:control_plane_call_failed, _reason}}), do: :transport
+
+  defp claim_failure_category({:error, reason})
+       when reason in [:not_connected, :noproc, :nodedown], do: :transport
+
+  defp claim_failure_category(_error), do: :storage
+
   defp request(state, message),
     do:
       safe_gateway_call(fn ->
@@ -1521,9 +1635,8 @@ defmodule FavnRunner.RunnerAgent do
 
   # Tears down everything belonging to an assignment the control plane has
   # fenced away. The pending result (if any) can never be accepted for a
-  # fenced assignment, so it is dropped rather than delivered. A manifest
-  # lease acquired inside a preparation op that is killed here never reached
-  # state.manifest_lease_id; it self-expires at its horizon.
+  # fenced assignment, so it is dropped rather than delivered. The agent owns
+  # the manifest lease identity throughout preparation and execution.
   defp drop_fenced_assignment(state) do
     state =
       state

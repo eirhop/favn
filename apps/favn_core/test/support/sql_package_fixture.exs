@@ -41,7 +41,7 @@ defmodule FavnTestSupport.SQLPackageFixture do
       manifest_content_hash: String.duplicate("a", 64),
       required_runner_release_id: "rr_" <> String.duplicate("b", 64),
       execution_package: package,
-      metadata: %{fixture: "sql_package_size"}
+      metadata: %{"fixture" => "sql_package_size"}
     }
   end
 

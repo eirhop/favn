@@ -2345,12 +2345,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
        )
        when is_map(reference) do
     if Enum.all?(tasks, fn task ->
-         pipeline_task_checkpoint_valid?(task, reference) or
-           legacy_pipeline_task_checkpoint_valid?(
-             task,
-             reference,
-             state.freshness_context
-           )
+         pipeline_task_checkpoint_valid?(task, reference)
        end),
        do: {:ok, state},
        else: {:error, :runner_task_freshness_checkpoint_mismatch}
@@ -2360,16 +2355,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
          %RunExecutionState{freshness_checkpoint: nil} = state,
          tasks
        ) do
-    with {:ok, {legacy_context, stage, attempt}} <- legacy_pipeline_task_context(tasks),
-         {:ok, checkpointed} <-
-           put_freshness_checkpoint(
-             %{state | freshness_context: legacy_context},
-             stage,
-             attempt,
-             legacy_context
-           ) do
-      {:ok, checkpointed}
-    end
+    if tasks == [], do: {:ok, state}, else: {:error, :runner_task_freshness_checkpoint_missing}
   end
 
   defp pipeline_task_checkpoint_valid?(task, reference) do
@@ -2380,51 +2366,6 @@ defmodule FavnOrchestrator.RunServer.Execution do
     work.stage == reference.stage and work.attempt == reference.attempt and
       PipelineTaskContinuation.valid?(context) and
       PipelineFreshnessCheckpoint.matches?(reference, candidate)
-  end
-
-  defp legacy_pipeline_task_checkpoint_valid?(task, reference, expected_context) do
-    with %RunnerWork{} = work <- task.payload,
-         true <- work.stage == reference.stage and work.attempt == reference.attempt,
-         {:ok, context} <-
-           PipelineTaskContinuation.legacy_freshness_context(task.orchestration_context) do
-      context == expected_context
-    else
-      _invalid -> false
-    end
-  end
-
-  defp legacy_pipeline_task_context(tasks) when is_list(tasks) and tasks != [] do
-    Enum.reduce_while(tasks, {:ok, nil}, fn task, {:ok, expected} ->
-      with %RunnerWork{} = work <- task.payload,
-           {:ok, context} <-
-             PipelineTaskContinuation.legacy_freshness_context(task.orchestration_context),
-           {:ok, next} <- merge_legacy_task_context(expected, context, work.stage, work.attempt) do
-        {:cont, {:ok, next}}
-      else
-        _invalid -> {:halt, {:error, :legacy_pipeline_runner_task_continuation_invalid}}
-      end
-    end)
-    |> case do
-      {:ok, {context, stage, attempt}} -> {:ok, {context, stage, attempt}}
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  defp legacy_pipeline_task_context(_tasks),
-    do: {:error, :legacy_pipeline_runner_task_continuation_invalid}
-
-  defp merge_legacy_task_context(nil, context, stage, attempt),
-    do: {:ok, {context, stage, attempt}}
-
-  defp merge_legacy_task_context(
-         {expected_context, expected_stage, expected_attempt} = expected,
-         context,
-         stage,
-         attempt
-       ) do
-    if context == expected_context and stage == expected_stage and attempt == expected_attempt,
-      do: {:ok, expected},
-      else: {:error, :legacy_pipeline_runner_task_continuation_mismatch}
   end
 
   defp ensure_freshness_checkpoint(state, stage, attempt, context) do
@@ -2510,6 +2451,9 @@ defmodule FavnOrchestrator.RunServer.Execution do
   end
 
   defp durable_task_result(%{result: %RunnerResult{} = result}), do: {:ok, result}
+
+  defp durable_task_result(%{data_state: :unavailable, persistence_failure: category}),
+    do: {:error, {:runner_task_data_unavailable, category}}
 
   defp durable_task_result(%{status: status, error: error, payload: %RunnerWork{} = work})
        when status in [:failed, :cancelled, :unknown] do

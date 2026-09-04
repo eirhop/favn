@@ -347,6 +347,39 @@ defmodule FavnStoragePostgres.Registry.Store do
     error -> {:error, ErrorMapper.map(error)}
   end
 
+  @doc false
+  # Caller has verified the task workspace, immutable manifest pin and release.
+  def retained_task_execution_package(%Version{} = version, encoded_hash) do
+    with {:ok, hash} <- decode_hash(encoded_hash),
+         %Favn.Manifest.Asset{ref: {module, name}} = asset <-
+           Enum.find(version.manifest.assets, &(&1.execution_package_hash == encoded_hash)),
+         %ExecutionPackageRecord{} = row <-
+           Repo.one(
+             from(package in ExecutionPackageRecord,
+               join: link in ManifestExecutionPackage,
+               on: link.package_hash == package.content_hash,
+               where:
+                 link.manifest_version_id == ^version.manifest_version_id and
+                   link.package_hash == ^hash and link.asset_module == ^Atom.to_string(module) and
+                   link.asset_name == ^Atom.to_string(name),
+               select: package
+             )
+           ),
+         {:ok, package} <- ExecutionPackage.from_published(row.payload),
+         :ok <- validate_stored_package_identity(row, package),
+         {:ok, package} <- ExecutionPackage.verify_for_asset(package, asset) do
+      {:ok, package}
+    else
+      _invalid ->
+        {:error,
+         Error.new(:invalid, "retained task execution package is unavailable",
+           details: %{reason_code: "persisted_execution_package_invalid"}
+         )}
+    end
+  rescue
+    error -> {:error, ErrorMapper.map(error)}
+  end
+
   defp authorized_execution_package(query, hash) do
     {module, name} = query.asset_ref
     target_id = TargetIdentity.for_asset(query.asset_ref)
@@ -1368,7 +1401,7 @@ defmodule FavnStoragePostgres.Registry.Store do
       {:error, reason} ->
         {:error,
          Error.new(:internal, "persisted manifest is invalid",
-           details: %{reason: inspect(reason)}
+           details: %{reason_code: "persisted_manifest_invalid", reason: inspect(reason)}
          )}
     end
   end

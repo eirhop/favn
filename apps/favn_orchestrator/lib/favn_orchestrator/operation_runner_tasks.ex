@@ -9,6 +9,7 @@ defmodule FavnOrchestrator.OperationRunnerTasks do
 
   alias Favn.Contracts.RunnerTask
   alias Favn.Contracts.RunnerTask.PersistenceCodec
+  alias FavnOrchestrator.RunnerTaskContext
   alias Favn.Manifest.Index
   alias Favn.Manifest.Asset
   alias Favn.Manifest.Version
@@ -71,17 +72,20 @@ defmodule FavnOrchestrator.OperationRunnerTasks do
            {:ok, encoded_payload, payload_hash} <-
              PersistenceCodec.encode_payload(task_kind, payload),
            {:ok, orchestration_context} <-
-             PersistenceCodec.encode_orchestration_context(
-               Keyword.get(opts, :orchestration_context, %{})
-             ),
+             RunnerTaskContext.encode(Keyword.get(opts, :orchestration_context, %{})),
            {:ok, required_capability} <- Map.fetch(@capabilities, task_kind) do
         with {:ok, _enqueue_receipt} <-
                RunnerTasks.enqueue(%EnqueueRunnerTask{
                  workspace_context: context,
+                 platform_context: Keyword.get(opts, :platform_context),
                  command_id: "enqueue:#{task_id}",
                  task_id: task_id,
                  domain_identity: durable_domain_identity(task_kind, domain_identity, version),
                  task_kind: task_kind,
+                 manifest_version_id: version.manifest_version_id,
+                 manifest_content_hash: version.content_hash,
+                 write_target_id: mutation_target(task_kind, payload),
+                 write_operation_id: mutation_operation(task_kind, payload),
                  runner_pool: runner_pool,
                  required_runner_release_id: release_id,
                  retry_class: RunnerTask.default_retry_class(task_kind),
@@ -103,6 +107,20 @@ defmodule FavnOrchestrator.OperationRunnerTasks do
       end
     end
   end
+
+  defp mutation_target(kind, payload)
+       when kind in [:generation_marker_initialize, :generation_activate, :generation_discard],
+       do: payload.target_id
+
+  defp mutation_target(_kind, _payload), do: nil
+
+  defp mutation_operation(:generation_marker_initialize, payload),
+    do: payload.initialization_operation_id
+
+  defp mutation_operation(kind, payload) when kind in [:generation_activate, :generation_discard],
+    do: payload.rebuild_operation_id
+
+  defp mutation_operation(_kind, _payload), do: nil
 
   @doc "Returns the target-owning asset's exact logical pool and frozen release."
   @spec binding(Version.t(), Favn.Ref.t()) ::
@@ -256,7 +274,12 @@ defmodule FavnOrchestrator.OperationRunnerTasks do
     Process.demonitor(monitor, [:flush])
   end
 
-  defp terminal_result(%{status: :succeeded, result: result}), do: {:ok, result}
+  defp terminal_result(%{data_state: :unavailable, persistence_failure: category}),
+    do: {:error, {:runner_task_data_unavailable, category}}
+
+  defp terminal_result(%{status: :succeeded, result: result}) when not is_nil(result),
+    do: {:ok, result}
+
   defp terminal_result(%{status: :cancelled, error: nil}), do: {:error, :runner_task_cancelled}
   defp terminal_result(%{status: status, error: error}), do: {:error, {status, error}}
 

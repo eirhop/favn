@@ -2,8 +2,8 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Plan reviewed |
-| Revision | 2; implementation not started |
+| Status | Implementing |
+| Revision | 2; implementation authorized on 2026-09-04 |
 | Type | Recovery and persistence bug fix |
 | Primary issue | [#700](https://github.com/eirhop/favn/issues/700) |
 | Pull request | [#703](https://github.com/eirhop/favn/pull/703) (draft) |
@@ -298,6 +298,65 @@ schema operation, broad run-snapshot rewrite, or automatic database reset is in
 scope. A newly proven blocker beyond these boundaries requires a recorded plan
 deviation and review.
 
+## Implementation decisions requiring comparison with the baseline
+
+| Planned | Implementation decision | Reason and proof boundary | Review |
+| --- | --- | --- | --- |
+| Explicit scalar lifecycle result | Keep one task result struct with `data_state` (`not_loaded`, `available`, `unavailable`) and scalar pin/failure fields | Lifecycle commands and receipts omit executable data; detail reads return availability explicitly. The result router performs bounded asynchronous reads and periodic rediscovery after lost notifications. | Source and scope accepted; final verification review below |
+| Resolve unknown effects through authorized reconciliation | Add an explicit administrator task-write resolution to existing target recovery and owner records | Existing cancellation, session fences, SQL disconnect and marker reads cannot prove that an external backend writer stopped. Require an administrator attestation of runner/backend quiescence, exact task/start generation and original owner fence, a stop time and bounded evidence reference; collect fresh outcome evidence after that stop. Generic asset writes support only administrator-attested verified no-effect; ordinary matching committed task success already settles automatically. No invented successful task/freshness history or automatic retry. | Independent reviewer accepted the implementation and deviation on 2026-09-04; final verification review below |
+| Permit disjoint scopes when proven | Hold every declared writer for the same workspace and logical target while any effect is in flight or unknown | Existing freshness window labels, generation IDs and physical partition layouts do not enforce confinement of the rendered SQL write. There is no sound same-target disjointness exception in the current contract. This also serializes healthy concurrent windows on one target; unrelated targets continue. Adding adapter-enforced write-range proofs is outside this repair. | Independent reviewer accepted the implementation and deviation on 2026-09-04; final verification review below |
+| Deterministic supported values | Use the typed current format for persisted data and deterministic term fingerprints only for exact semantic byte accounting and full retained-manifest equality | Fingerprints do not decode ETF or retain a legacy reader. Separate-process tests compare exact reconstructed values. | Source and scope accepted; final verification review below |
+
+Task decoding also accepts one separately retained execution package as atom
+provenance. Runtime-input resolver module names exist in the package, while the
+manifest contains only its hash. A fixed bounded current-format path extracts
+that hash without hydrating atoms. The verified task pin authorizes only the
+manifest's exact linked package, checked against the manifest asset and stored
+identity. The embedded task package cannot authorize atoms. Missing/corrupt
+packages make task details unavailable; database failures remain retryable.
+The reviewer independently approved this narrow deviation on 2026-09-04, with
+fresh-process and malformed/wrong-package coverage required.
+
+Inspection persistence also moves the pure `Favn.SQL.Relation` and `Column` DTOs
+from SQL runtime into Core, keeping their module names. `SQL.Result` stays in
+runtime because inspection already lowers samples to maps. Inspection adapter
+identity is stored as the exact full module-name string: this preserves physical
+fingerprint identity without allowing persisted data to authorize adapter atoms.
+The independent reviewer confirmed this boundary and required fingerprint
+equivalence coverage; final results and implementation verdict are recorded below.
+
+Sequential claims now declare `purpose: ownership_only`. Matching durable task
+completion releases them atomically without publishing materialization/freshness
+history; unresolved effects remain held. The reviewer recommended this explicit
+purpose and `released` status instead of key-prefix inference or a separate
+parent settlement retry path. Materialization-purpose claims retain ordinary
+publication, with lease-independent settlement allowed only for the exact
+already-committed task/effect/result and unchanged owner fence. Final review and
+verification cover both paths.
+
+The explicit task-write resolution accepts one task and one stable command identity.
+The public facade reauthorizes the administrator and uses existing operator command
+audit. The proof identifies the original started assignment and owner fence, the
+stop time, an enumerated stop mechanism, and bounded reason/evidence reference.
+It attests that both the runner and backend writer can no longer mutate; this is
+trusted administrator evidence, not machine-verified quiescence.
+
+For generation mutations, outcome observations are read-only tasks with identities
+scoped to that resolution command and original start generation. They must be
+issued after the attested stop and match the original request: exact marker and
+physical fingerprint for initialization, activation reconciliation, or candidate
+absence plus marker exclusion for discard. An asset write instead requires an
+explicit `verified_no_effect` attestation; schema/row-count inspection cannot
+establish that historical fact.
+
+Settlement takes the target advisory before task/owner rows, requires the task to
+be terminal/fenced, and rechecks exact start/owner linkage. Existing command
+receipts retain immutable resolution proof; the existing owner records resolution
+without clearing any sibling effect. Task/run outcomes stay unchanged and nothing
+is retried automatically. Ordinary target recovery may then acquire its usual
+lock and continue. Same-target disjoint/combined-window tests must prove exclusion,
+while independent-target tests prove continued admission.
+
 ## Complexity budget and implementation map
 
 Production includes contracts, codecs, store/lifecycle changes and schema DDL.
@@ -379,7 +438,154 @@ CI-covered tier and clean up their processes on failure.
 | Source and synthetic reproduction | Verified/repeated during the initial investigation; establishes defects, not production restart safety |
 | Current revision doc validation | All 18 relative links resolve; whitespace passes; both Mermaid diagrams parse and render locally and on GitHub at the revised baseline |
 
-Implementation has not started. No schema change, database reset, live deployment
-or production-shaped crash test has been performed. Final implementation review
-must compare this revised baseline, actual code, deletions, tests and every
-deviation before PR #703 can be marked ready.
+## Actual implementation
+
+The implementation replaces the development task encoding with one closed typed
+format. Verified retained manifests and their exact linked execution packages
+provide consumer-name authority. Scalar pins, lifecycle transitions and command
+receipts remain readable when executable task details are corrupt. Invalid queue
+entries are quarantined in bounded batches, and transient storage failures remain
+retryable. No old-format reader or parallel write-exclusion service remains.
+
+Existing claims and target-operation locks now retain the task, original Started
+assignment and owner fence that may have caused an external effect. Started and
+settlement share one target transaction interlock. Expiry, cancellation and process
+loss cannot clear an uncertain effect. Matching committed success or proven
+no-effect settlement resolves it; administrator recovery requires explicit
+quiescence attestation and the operation-specific evidence described above.
+
+Healthy same-target writers wait without consuming an execution attempt. Runner
+preparation remains cancellable while both the task assignment and manifest lease
+renew. Sequential admission retains one absolute deadline in the existing durable
+retry checkpoint, records an admission queue event, and preserves that deadline
+through restart and eventual dispatch. Unknown outcomes remain excluded without
+automatic replay. Unrelated targets and read-only inspections can progress.
+
+The branch was rebased on `origin/main` at `2f26d586` during implementation. Local
+startup cleanup was reconciled with the new incremental reload implementation:
+the startup deadline cleans up owned startup children, while an unknown reload
+outcome retains the upstream recovery semantics.
+
+```mermaid
+flowchart TD
+    A[Restart using retained database] --> B[Read scalar lifecycle and task pin]
+    B --> C{Task details valid}
+    C -->|No| D[Quarantine task and preserve uncertain effects]
+    C -->|Yes| E{Target effect state}
+    E -->|Healthy writer| F[Wait with renewal and fixed deadline]
+    F --> E
+    E -->|Unknown| G[Hold target for explicit recovery]
+    E -->|Clear| H[Record Started with exact owner fence]
+    H --> I[Execute once]
+    I --> J{Durable outcome}
+    J -->|Matching success or proven no effect| K[Resolve existing owner]
+    J -->|Unknown or process loss| G
+```
+
+Additional implementation decisions:
+
+| Planned contract | Actual decision | Reason and verification |
+| --- | --- | --- |
+| Closed task values | Fixed error classifications retain atoms; custom error type/phase labels become bounded strings | Exception module names must not depend on incidental atoms in the reader VM. Retry and outcome classifications remain unchanged; fresh-process failure fixtures cover this. |
+| Workspace-authorized manifest pins | Pre-activation relation inspection accepts explicit platform deployment authority plus workspace administration, with every write link absent | Compatibility planning must inspect the new retained manifest before a deployment exists. Subsequent reads trust only the immutable persisted task row, then reverify retained hash/release/package identity. Negative role/write-link/pin tests and a fresh reader cover this exception. |
+| Exact pinned manifest identity | Compare immutable identity fields, excluding insertion time | Registering an artifact adds a database timestamp. That timestamp cannot invalidate the same verified manifest. |
+| Same-target exclusion | Distinguish healthy contention from unknown outcomes and retain bounded waiting | The stricter guard exposed fixtures that started concurrent writes on the same target. Queue/capacity tests now preserve concurrent assignment and serialize Started/completion; dedicated tests cover pre-admitted contention. |
+| Runner preparation lease | Register the deterministic manifest lease identity with the agent before preparation | The agent must renew and clean it up during a long admission wait. No additional coordinator or protocol was introduced. |
+| Sequential waiting | Reuse the existing persisted sequential retry checkpoint with an absolute admission deadline and unchanged attempt | Restart cannot reset an admission timeout; successful admission clears the wait checkpoint in durable task intent. Snapshot decoding preserves the checkpoint keys, and enqueue errors retain the already-persisted event sequence. |
+| Immutable task identity | Validate scalar run/write/context linkage both at enqueue and every hydration | Hash verification alone does not reject a coherently replaced payload from another valid task under the same manifest. Swapped payload/context tests prove rejection and quarantine. |
+| Scalar command replay | Require exact receipt fields, closed enum values, bounded identifiers and valid counters/hashes | A receipt cannot override immutable task fields or replay an invalid assignment. Malformed receipt regressions retain successful original replay. |
+| Missing ownership | Return an explicit invalid-owner error if the claimed owner row is absent at enqueue | A strict boolean guard avoids raising on a missing row. The regression deletes only its sandboxed fixture claim, then verifies explicit rejection. |
+| CI crash qualification | Place the seven-phase SIGKILL probe in the existing PostgreSQL slow tier | This tier already provisions PostgreSQL and executes storage tests; no new CI service or test job is needed. |
+
+## Actual complexity and variance
+
+The following counts use the formatted implementation diff against the rebased
+planning head, excluding this change record. Pure DTO moves contribute zero;
+there are no generated files or dependency changes. Counts include formatting
+within edited code conservatively: new formatted code is still implementation
+cost. No formatting discount is used to claim compliance with the estimate.
+
+Each file is assigned to its main slice to avoid double counting. The shared
+PostgreSQL runner-task store and migration are charged entirely to slice 2,
+including their codec/owner integration. Shared crash fixtures and the process
+probe are also in slice 2. Sequential admission and its checkpoint tests belong
+to slice 3. The per-file ledger was retained with the verification output.
+
+| Slice | Production added/deleted | Supporting added/deleted | Explanation against the approved range |
+| --- | ---: | ---: | --- |
+| 1: current-format contracts and pins | 1,313 / 103 | 818 / 42 | Closed struct/atom/value coverage across eight request/result types, bounded decoding, exact result identity, context restoration, retained-package verification and pre-activation authorization were substantially underestimated. The old ETF reader is removed; there is no compatibility layer. |
+| 2: scalar recovery and disposition | 1,275 / 262 | 1,823 / 72 | Includes all shared store/DDL integration: immutable pins and hashes, scalar receipts, isolated hydration/quarantine, historical claim fencing and bounded rediscovery. Fresh-process and corruption probes add more fixtures than estimated. Existing lifecycle behavior stays in place and gains explicit validation. |
+| 3: existing owner effect state | 1,144 / 70 | 1,039 / 16 | Exact owner/start settlement, administrator quiescence evidence and audit replay, read-only generation evidence, healthy contention and persisted sequential deadlines require explicit branches and transaction tests. This extends existing owners; it does not add a second lock service or scheduler. |
+| 4: runner and local lifecycle | 191 / 46 | 379 / 18 | Additions remain within budget. Fewer deletions preserve current upstream reload behavior and existing runner state transitions; focused retry, cancellation and long-wait lease tests extend their existing fixtures. |
+| Total | 3,923 / 481 | 4,059 / 148 | Production additions exceed the 1,700 upper estimate by 2,223 (131%); supporting additions exceed 2,200 by 1,859 (85%). Production deletions are within budget; supporting deletions are 22 below its minimum. |
+
+The estimate understated the cost of enforcing the existing safety contract.
+The earlier unformatted production checkpoint already exceeded its upper estimate
+by about 33%; formatting is not the root explanation. Supporting deletions are
+lower because existing recovery/queue tests remain useful and are corrected for
+the current typed contract, while process-failure and evidence tests are additive.
+No legacy task decoder or duplicate exclusion system is retained to reduce churn.
+
+The independent reviewer challenged this variance and found no substantial
+unnecessary subsystem to remove. The reviewer recommended retaining the closed
+validation and evidence checks, and identified two small duplicate/unreachable
+helpers, which were removed. Final acceptance of the recorded variance accompanies
+the implementation verdict below.
+
+## Verification outcome and limits
+
+Verification uses a task-owned PostgreSQL 18 container and disposable test
+databases. A separate bootstrap exercised restricted runtime and migrator roles.
+The database was never a consumer development or production database. The new
+migration rejects nonempty incompatible coordination state rather than converting
+or deleting it.
+
+Focused tests exercise all eight task kinds in separate writer/two-reader OS
+processes, initially absent consumer and resolver atoms, typed SQL success/failure
+metadata, exact result identity, corrupt retained packages, scalar receipt replay,
+queue quarantine, expiry, stale ownership, administrator authorization/audit,
+claim retention and committed-result settlement after lease expiry.
+
+The SIGKILL process probe (in the CI-covered PostgreSQL slow tier) uses real PostgreSQL lifecycle commands and a durable
+SQL counter outside the killed BEAM. It covers queued, assigned, preparing,
+running, cancelling, external-effect-committed and durable-result-committed phases,
+then performs two fresh-process recoveries. The counter is a controlled effect
+probe; it is not a qualified production data-system adapter.
+
+The local lifecycle acceptance exercise starts separate control-plane and runner
+BEAM processes from this source checkout. It covers startup, release overlap,
+failed reload and restart using the retained database. Neither this exercise nor
+the protocol probe qualifies a packaged production release, an Azure deployment,
+a real data-plane transaction killed mid-write, or backup/PITR restoration.
+Those remain explicit release-qualification boundaries.
+
+The affected fast suites passed: Core 470 checks (including 2 doctests),
+Orchestrator 846 (including 6 doctests), Runner 260, Local 42, and PostgreSQL 397
+(21 explicitly tiered tests excluded). These total 2,015 checks. The PostgreSQL
+suite ran against a freshly migrated disposable database; its deliberate
+connection/authentication and killed-worker diagnostics are expected fault tests.
+The final missing-owner regression and SIGKILL probe are recorded separately
+below because they run after that full-suite checkpoint.
+
+The final source-local lifecycle acceptance passed with a fresh bootstrap and
+restricted runtime/migrator roles, then reused that database within its restart
+scenario. An earlier rerun against the previously used fixture database retained
+an unfinished synthetic drain run and timed out during shutdown. A concurrent
+Mix dependency build also removed test-support modules during an earlier storage
+run; final Mix checks run serially. Neither failed run is counted as a pass.
+
+All 18 relative links in this record resolve; the canonical-document links resolve
+including their two generated HexDocs destinations. All three Mermaid diagrams
+render locally. GitHub rendering is checked after pushing the final record. The final
+static gates and independent implementation review are recorded below.
+
+
+| Final gate | Actual result |
+| --- | --- |
+| Affected fast suites | 2,015 passed across Core, Orchestrator, Runner, Local and PostgreSQL |
+| Final crash/ownership regression run | 29 passed, including missing-owner rejection, all seven SIGKILL phases with two fresh recoveries per phase, payload/context swaps, scalar receipt corruption and sequential deadline restoration/unblock |
+| Final operation fixture check | 6 passed; all required store behavior callbacks are present |
+| Local lifecycle acceptance | 1 passed; separate source BEAM processes and restricted PostgreSQL roles, retained-database restart |
+| Static checks | Changed Elixir sources formatted; warnings-as-errors compilation, CI test-tag guard and whitespace check passed |
+| Independent source and scope review | Accepted by `review_crash_recovery_plan` on 2026-09-04. Reported hydration/receipt linkage and long-wait lease findings were corrected and independently rechecked; per-slice budget variance accepted. |
+| Final evidence review | Awaiting independent comparison of the final gate evidence and missing-owner error-path correction |

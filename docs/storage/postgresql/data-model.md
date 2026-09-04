@@ -302,6 +302,19 @@ Runner tasks are authoritative from enqueue through claim, assignment lease,
 fenced result delivery, acknowledgement, cancellation, and recovery. Capacity
 demand is maintained transactionally per pool/release partition. Connected BEAM
 runner membership is intentionally process-local and is not a database table.
+Task rows independently retain manifest version/content hash, pool/release, context
+hash and exact claim/lock linkage. Task details use the current typed format;
+scalar receipts do not require executable payloads. Unreadable details preserve
+committed lifecycle state and expose a fixed failure category.
+
+`materialization_claims` and `target_operation_locks` retain `effect_state`
+(`not_started`, `in_flight`, `outcome_unknown`, `resolved`), task ID, original
+started assignment generation/time, and optional administrator resolution proof.
+The target admission guard ignores owner TTL for unresolved effects. Sequential
+claims use `purpose = ownership_only`; matching task completion atomically marks
+them `released` without publishing freshness history. Retention includes released
+claims and excludes unresolved effects. Ordinary materialization settlement after
+lease expiry requires the exact committed task result and unchanged owner fence.
 
 Pipeline freshness state is shared run state, not runner work. A pipeline
 stores at most one fenced `RUN_EXECUTION_CHECKPOINTS` row. The
@@ -316,7 +329,7 @@ the next stage creates tasks, so
 durable size is proportional to retained runs rather than runner-task fan-out;
 normal run retention removes it through the run foreign key.
 Runner-task orchestration context remains independently bounded after decoding;
-the PostgreSQL JSONB bound includes base64 envelope overhead.
+the PostgreSQL JSONB bound includes typed-envelope overhead.
 
 `RUN_SUBMISSIONS` is authoritative before `RUNS` exists, so its intended
 deployment, manifest, target, run identity, redacted authority, and normalized

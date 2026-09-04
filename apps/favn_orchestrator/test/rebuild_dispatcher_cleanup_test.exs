@@ -68,7 +68,12 @@ defmodule FavnOrchestrator.RebuildDispatcherCleanupTest do
     alias FavnOrchestrator.Persistence.Results.RunnerTask
 
     def enqueue(command) do
-      {:ok, request} = PersistenceCodec.decode_payload(:generation_discard, command.payload)
+      {:ok, request} =
+        PersistenceCodec.decode_payload(
+          :generation_discard,
+          command.payload,
+          Agent.get(agent(), & &1.version)
+        )
 
       result = %GenerationDiscardResult{
         required_runner_release_id: request.required_runner_release_id,

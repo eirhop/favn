@@ -11,6 +11,7 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
   alias Favn.Contracts.RunnerResult
   alias Favn.Contracts.RunnerWork
   alias FavnOrchestrator.AssetRunnerTasks
+  alias FavnOrchestrator.MaterializationClaims
   alias FavnOrchestrator.AssetStepIdentity
   alias FavnOrchestrator.ExecutionPackages
   alias FavnOrchestrator.Persistence.SystemContext
@@ -253,18 +254,36 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
   @doc "Resubmits a sequential attempt after its retry timer fires."
   @spec resume_retry(RunExecutionState.t(), map()) :: directive()
   def resume_retry(%RunExecutionState{} = state, retry) do
-    run =
-      state.run
-      |> Map.put(:metadata, clear_retry_state(state.run.metadata))
-      |> RunState.with_snapshot_hash()
+    deadline = Map.get(retry, :admission_deadline_ms)
 
-    submit_attempt(
-      %{state | run: run},
-      retry.asset_ref,
-      retry.node_key,
-      retry.stage,
-      retry.next_attempt
-    )
+    if is_integer(deadline) and deadline <= System.system_time(:millisecond) do
+      persist_pre_submit_failure(
+        state,
+        retry.asset_ref,
+        retry.node_key,
+        retry.stage,
+        retry.next_attempt,
+        :target_write_admission_timeout,
+        retry.asset_step_id
+      )
+    else
+      run =
+        if is_integer(deadline),
+          do: state.run,
+          else:
+            state.run
+            |> Map.put(:metadata, clear_retry_state(state.run.metadata))
+            |> RunState.with_snapshot_hash()
+
+      submit_attempt(
+        %{state | run: run},
+        retry.asset_ref,
+        retry.node_key,
+        retry.stage,
+        retry.next_attempt,
+        deadline
+      )
+    end
   end
 
   @doc "Returns sequential work refs with their plan stage."
@@ -285,7 +304,14 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
   def refs(%RunState{} = run_state),
     do: [{run_state.asset_ref, {run_state.asset_ref, nil}, 0}]
 
-  defp submit_attempt(%RunExecutionState{} = state, asset_ref, node_key, stage, attempt) do
+  defp submit_attempt(
+         %RunExecutionState{} = state,
+         asset_ref,
+         node_key,
+         stage,
+         attempt,
+         admission_deadline_ms \\ nil
+       ) do
     with {:ok, %{work: work} = lifecycle} <-
            state.run
            |> StepAttemptLifecycle.new(state.version, node_key, stage, attempt)
@@ -304,6 +330,14 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
              state.version,
              state.manifest_index
            ) do
+      work =
+        if is_integer(admission_deadline_ms),
+          do: %{
+            work
+            | deadline_at: DateTime.from_unix!(admission_deadline_ms * 1_000, :microsecond)
+          },
+          else: work
+
       enqueue_attempt(state, lifecycle, work)
     else
       {:error, reason} ->
@@ -319,6 +353,62 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
   end
 
   defp enqueue_attempt(state, lifecycle, work) do
+    if work.deadline_at && DateTime.compare(work.deadline_at, DateTime.utc_now()) != :gt do
+      persist_pre_submit_failure(
+        state,
+        lifecycle.asset_ref,
+        lifecycle.node_key,
+        lifecycle.stage,
+        lifecycle.attempt,
+        :target_write_admission_timeout,
+        work.asset_step_id
+      )
+    else
+      acquire_attempt(state, lifecycle, work)
+    end
+  end
+
+  defp acquire_attempt(state, lifecycle, work) do
+    case MaterializationClaims.acquire_sequential(state.run, work) do
+      {:ok, claim} ->
+        work = %{work | metadata: clear_retry_state(work.metadata)}
+
+        run =
+          %{state.run | metadata: clear_retry_state(state.run.metadata)}
+          |> RunState.with_snapshot_hash()
+
+        enqueue_claimed_attempt(%{state | run: run}, lifecycle, work, claim)
+
+      {:error, %{details: %{reason_code: "target_write_in_progress"}}} ->
+        deadline = work.deadline_at || DateTime.add(DateTime.utc_now(), 300_000, :millisecond)
+
+        retry =
+          lifecycle
+          |> StepAttemptLifecycle.retry()
+          |> Map.merge(%{
+            next_attempt: lifecycle.attempt,
+            retry_after_ms: 250,
+            admission_deadline_ms: DateTime.to_unix(deadline, :millisecond)
+          })
+
+        if get_in(state.run.metadata, [:retry_state, :retry, :admission_deadline_ms]),
+          do: schedule_retry_timer(state, retry),
+          else: schedule_retry(state, retry)
+
+      {:error, reason} ->
+        persist_pre_submit_failure(
+          state,
+          lifecycle.asset_ref,
+          lifecycle.node_key,
+          lifecycle.stage,
+          lifecycle.attempt,
+          reason,
+          work.asset_step_id
+        )
+    end
+  end
+
+  defp enqueue_claimed_attempt(state, lifecycle, work, claim) do
     task_id =
       AssetRunnerTasks.task_id(
         state.run,
@@ -349,36 +439,44 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
       max_attempts: lifecycle.max_attempts
     }
 
-    with :ok <-
-           Persistence.persist_run_step(
-             running,
-             attempt_start_event(lifecycle.attempt),
-             intent
-           ),
-         {:ok, task, work} <-
-           AssetRunnerTasks.enqueue(
-             running,
-             work,
-             lifecycle.node_key,
-             lifecycle.stage,
-             lifecycle.attempt,
-             %{kind: :sequential}
-           ) do
-      entry = sequential_entry(state, lifecycle, work, task)
-      state = %{state | run: running} |> RunExecutionState.add_work(entry)
-      {:await, state, entry}
-    else
-      {:error, reason} ->
-        persist_pre_submit_failure(
-          state,
-          lifecycle.asset_ref,
-          lifecycle.node_key,
-          lifecycle.stage,
-          lifecycle.attempt,
-          reason,
-          work.asset_step_id
-        )
+    case Persistence.persist_run_step(running, attempt_start_event(lifecycle.attempt), intent) do
+      :ok -> enqueue_persisted_attempt(%{state | run: running}, lifecycle, work, claim)
+      {:error, reason} -> fail_enqueue(state, lifecycle, work, claim, reason)
     end
+  end
+
+  defp enqueue_persisted_attempt(state, lifecycle, work, claim) do
+    case AssetRunnerTasks.enqueue(
+           state.run,
+           work,
+           lifecycle.node_key,
+           lifecycle.stage,
+           lifecycle.attempt,
+           %{kind: :sequential, materialization_claim: claim}
+         ) do
+      {:ok, task, work} ->
+        entry =
+          sequential_entry(state, lifecycle, work, task) |> Map.put(:materialization_claim, claim)
+
+        {:await, RunExecutionState.add_work(state, entry), entry}
+
+      {:error, reason} ->
+        fail_enqueue(state, lifecycle, work, claim, reason)
+    end
+  end
+
+  defp fail_enqueue(state, lifecycle, work, claim, reason) do
+    MaterializationClaims.abandon_sequential(claim)
+
+    persist_pre_submit_failure(
+      state,
+      lifecycle.asset_ref,
+      lifecycle.node_key,
+      lifecycle.stage,
+      lifecycle.attempt,
+      reason,
+      work.asset_step_id
+    )
   end
 
   defp persist_pre_submit_failure(
@@ -390,8 +488,8 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
          reason,
          asset_step_id \\ nil
        ) do
-    failed =
-      RunState.transition(state.run, status: :error, runner_task_id: nil, error: reason)
+    status = if reason == :target_write_admission_timeout, do: :timed_out, else: :error
+    failed = RunState.transition(state.run, status: status, runner_task_id: nil, error: reason)
 
     data = %{
       asset_ref: asset_ref,
@@ -416,7 +514,8 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
       retryable?: safe_retryable?(reason)
     }
 
-    persist_or_retry(state, failed, :step_failed, data, resume)
+    event = if status == :timed_out, do: :step_timed_out, else: :step_failed
+    persist_or_retry(state, failed, event, data, resume)
   end
 
   defp sequential_entry(state, lifecycle, work, task) do
@@ -446,6 +545,7 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
   end
 
   defp schedule_retry(state, retry) do
+    admission? = is_integer(Map.get(retry, :admission_deadline_ms))
     next_retry_at = System.system_time(:millisecond) + retry.retry_after_ms
 
     retry_state = %{
@@ -462,7 +562,7 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
         runner_task_id: nil,
         metadata:
           Map.merge(state.run.metadata, %{
-            retrying: true,
+            retrying: not admission?,
             next_attempt: retry.next_attempt,
             retry_state: retry_state,
             next_retry_at: next_retry_at
@@ -472,7 +572,7 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
     persist_or_retry(
       state,
       retrying,
-      :step_retry_scheduled,
+      if(admission?, do: :step_queued, else: :step_retry_scheduled),
       StepAttemptLifecycle.retry_event_payload(retry)
       |> Map.put(:next_retry_at, next_retry_at),
       %{kind: :schedule_retry, run: retrying, retry: retry}

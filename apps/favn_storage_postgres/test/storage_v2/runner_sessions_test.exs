@@ -250,6 +250,8 @@ defmodule FavnStoragePostgres.StorageV2.RunnerSessionsTest do
 
       result = %RelationInspectionResult{
         required_runner_release_id: @release,
+        relation_ref: claimed.payload.relation,
+        asset_ref: claimed.payload.asset_ref,
         row_count: 1,
         inspected_at: DateTime.add(fixture.now, 4, :second)
       }
@@ -427,8 +429,16 @@ defmodule FavnStoragePostgres.StorageV2.RunnerSessionsTest do
       sample_limit: 0
     }
 
+    {payload, version} =
+      FavnStoragePostgres.TestSupport.TaskManifest.prepare(
+        fixture,
+        payload,
+        fixture.runner_pool,
+        @release
+      )
+
     {:ok, encoded_payload, payload_hash} = Codec.encode_payload(:relation_inspection, payload)
-    {:ok, orchestration_context} = Codec.encode_orchestration_context(%{kind: :test})
+    {:ok, orchestration_context} = Codec.encode_orchestration_context(%{})
 
     %C.EnqueueRunnerTask{
       workspace_context: fixture.workspace_context,
@@ -436,6 +446,8 @@ defmodule FavnStoragePostgres.StorageV2.RunnerSessionsTest do
       task_id: "rt_#{random_id()}",
       domain_identity: "runner-session-domain-#{suffix}-#{random_id()}",
       task_kind: :relation_inspection,
+      manifest_version_id: version.manifest_version_id,
+      manifest_content_hash: version.content_hash,
       runner_pool: fixture.runner_pool,
       required_runner_release_id: @release,
       retry_class: Favn.Contracts.RunnerTask.default_retry_class(:relation_inspection),

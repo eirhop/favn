@@ -170,6 +170,10 @@ blindly retry activation.
 Operations, actions, items, leases, target locks, intent, markers, and cleanup
 state are durable PostgreSQL records. Expired owners may be fenced out and work
 may resume from the last checkpoint after an orchestrator or runner restart.
+An unresolved runner write keeps the existing target lock or child claim held
+regardless of lease expiry. Resolve it through the
+[held-write procedure](../production/elastic_runners.md#resolve-a-held-write)
+before ordinary recovery can acquire ownership.
 
 Cancellation records intent first. It stops or reconciles active child work,
 leaves the old active generation unchanged unless activation is already proven,
