@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Implementing |
+| Status | Implemented |
 | Type | Bug fix and execution-format transition |
 | Primary issue | [#695](https://github.com/eirhop/favn/issues/695) |
 | Pull request | [#697](https://github.com/eirhop/favn/pull/697) |
@@ -195,6 +195,13 @@ measurements, and manifest-first documentation. Implementation complexity is low
 to moderate; operational complexity is moderate because of the explicit breaking
 compatibility transition. No storage or scheduling code changed.
 
+Upstream PR #696 merged during qualification. Integration commit `ff2538688`
+merges main `c4abd29c` without changing this implementation or its approved plan.
+The statements above about unchanged task limits/storage and no database
+migration describe #695 only: the combined release also contains #696's separate
+payload-limit change and database migration. The 768 KiB package and 800 KiB work
+regressions remain independent of the newly increased task limit.
+
 | Slice | Production added | Production deleted | Supporting added | Supporting deleted |
 | --- | ---: | ---: | ---: | ---: |
 | 1 | 53 | 1 | 61 | 1 |
@@ -220,29 +227,41 @@ for ordinary literal SQL, with the measured dynamic-heavy limitation retained.
 
 | Date | Decision | Reason | Review needed |
 | --- | --- | --- | --- |
-| 2026-09-04 | Replace an existing assertion that packages exceed ten times index size with a 4 MiB total package ceiling for its 300-asset fixture | The old assertion required the bloat this fix removes; compact-index checks are retained | Final review |
-| 2026-09-04 | Run checked-execution fixture packages through canonical JSON round trips | Existing adapter regressions then exercise the actual compact loaded representation, generated/custom checks, exact SQL and bindings | Final review |
+| 2026-09-04 | Replace an existing assertion that packages exceed ten times index size with a 4 MiB total package ceiling for its 300-asset fixture | The old assertion required the bloat this fix removes; compact-index checks are retained | Accepted in implementation review |
+| 2026-09-04 | Run checked-execution fixture packages through canonical JSON round trips | Existing adapter regressions then exercise the actual compact loaded representation, generated/custom checks, exact SQL and bindings | Accepted in implementation review |
+| 2026-09-04 | Merge current main after upstream PR #696 | Qualify compact packages together with the independently changed task limits; keep the reviewed plan history intact | Accepted in integration review |
 
 ## Verification evidence
 
 | Check | Result | Evidence boundary |
 | --- | --- | --- |
-| Core complete fast suite | 460 passed, including 2 doctests | Package/manifest integrity, locations, size budgets, old/future version rejection; no live database |
+| Core complete fast suite | 464 passed, including 2 doctests, on integrated `ff2538688` locally and in CI | Package/manifest integrity, locations, size budgets, old/future version rejection; no live database |
 | Runner complete fast suite | 256 passed | Includes canonical package round trips through existing checked-execution adapter and group replacement tests; test adapters, not a production SQL backend |
 | Authoring complete fast suite | 148 passed | DSL compilation and generated/authored checks |
 | Public manifest generator tests | 11 passed | Current manifest and runner-version contract |
 | Compile, format, tier guard | Passed locally | Warnings-as-errors compile; normal formatter plus measurement-script formatter; CI tag coverage |
 | Before/after generic measurement | Completed against baseline parser/package code and candidate | Successful package verification on both sides; process memory and warm codecs, not RSS or end-to-end infrastructure |
 | Package/task headroom | 5,000 columns below 768 KiB package and 800 KiB work budgets; persistence codec round trip passed | Modest task metadata; no database persistence or claim/dispatch exercised by the size fixture |
-| Ordinary PR CI | Pending | Final commit CI will be recorded before readiness |
+| CI fast suite | Passed on integrated `ff2538688`, including 367 PostgreSQL storage tests | Includes upstream's large-SQL database enqueue, claim, wire decode, runner execution, and completion regression; isolated CI PostgreSQL, not production infrastructure |
+| Ordinary PR CI | [Passed on integrated `ff2538688`](https://github.com/eirhop/favn/actions/runs/33848347359) | Quick checks, fast tests, acceptance, Dialyzer, slow tests, and aggregate CI all passed |
+| Production-shaped HTTP boundary | [Passed on integrated `ff2538688`](https://github.com/eirhop/favn/actions/runs/33848347369) | Existing isolated CI qualification, not a live deployment |
+| Image qualification | [Blocked by Grype's high-or-higher vulnerability gate](https://github.com/eirhop/favn/actions/runs/33848347357) | Both PR images built and reached scanning; [current main's runner image fails the same gate](https://github.com/eirhop/favn/actions/runs/33847917496/job/100943893943). No image, dependency, workflow, or security-exception changes belong to this PR |
 
 ### Not verified
 
-Live deployment, historical-work retirement, native SQL backend execution,
-database dispatch/persistence, production rollback, and constrained-container
-memory survival are not proven by this change's local tests or measurements.
+Live deployment, historical-work retirement, production SQL adapter execution,
+production rollback, and constrained-container memory survival are not proven.
+The local size fixture only exercises the persistence codec; actual database
+dispatch/persistence and transaction-local SQL execution are covered separately
+by the integrated CI storage suite. Image security qualification remains blocked.
 
 ## Final review
 
-Independent GPT-5.6 xhigh implementation review pending against approved baseline
-`a57e42b9`, code, tests, measurements, canonical docs, and actual complexity.
+Independent GPT-5.6 xhigh reviewer `/root/review_695_xhigh` accepted implementation
+`ea6a9b558` against approved baseline `a57e42b9`, including code, tests,
+measurements, canonical docs, and actual complexity, with no actionable findings.
+The reviewer independently ran 62 focused Core and 68 Runner tests successfully
+and accepted the integration at `ff2538688` without code changes. All ordinary CI
+and HTTP checks passed on that integrated implementation. The final evidence
+record was accepted on 2026-09-04 with no actionable findings. The PR remains
+draft while image security qualification is blocked.
