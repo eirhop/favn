@@ -1,6 +1,7 @@
 defmodule FavnStoragePostgres.OperationCancellation do
   @moduledoc false
   import Ecto.Query
+  alias Ecto.Adapters.SQL
   alias FavnOrchestrator.Persistence.BackfillPlan
   alias FavnOrchestrator.Persistence.Error
   alias FavnOrchestrator.Persistence.Results.{CancellationScope, CancellationWork, CursorPage}
@@ -23,40 +24,88 @@ defmodule FavnStoragePostgres.OperationCancellation do
   @active_tasks ~w(queued assigned preparing running cancelling)
 
   def scope!(workspace, run_id) do
-    owner = CancellationOwnership.owner!(workspace, run_id)
-    backfill = CancellationOwnership.backfill!(workspace, owner)
-    root = Repo.get_by(Run, workspace_id: workspace, run_id: owner)
-    submission = Repo.get_by(RunSubmission, workspace_id: workspace, run_id: owner)
+    case scope(workspace, run_id) do
+      {:ok, scope} -> scope
+      {:error, error} -> Repo.rollback(error)
+    end
+  end
 
-    if is_nil(root) and is_nil(submission),
-      do: Repo.rollback(Error.new(:not_found, "run not found"))
+  def scope(workspace, run_id) do
+    rows =
+      SQL.query!(
+        Repo,
+        """
+        SELECT member.owner, b.backfill_id, b.status, b.cancellation_requested_at,
+               r.run_id, r.cancellation_status, s.status, s.cancellation_requested_at, s.failure_kind,
+               EXISTS (SELECT 1 FROM favn_control.runs ar WHERE ar.workspace_id=$1 AND ar.cancellation_owner_run_id=member.owner AND ar.status IN ('pending','running'))
+            OR EXISTS (SELECT 1 FROM favn_control.run_submissions a WHERE a.workspace_id=$1 AND a.cancellation_owner_run_id=member.owner AND a.status=ANY($3))
+            OR EXISTS (SELECT 1 FROM favn_control.runner_tasks t JOIN favn_control.runs ar USING (workspace_id,run_id) WHERE ar.workspace_id=$1 AND ar.cancellation_owner_run_id=member.owner AND t.status=ANY($4))
+            OR EXISTS (SELECT 1 FROM favn_control.resource_recovery_candidates c JOIN favn_control.runs ar ON ar.workspace_id=c.workspace_id AND ar.run_id=c.source_run_id WHERE ar.workspace_id=$1 AND ar.cancellation_owner_run_id=member.owner AND c.status IN ('pending','claimed'))
+            OR COALESCE(b.status='planning', false)
+            OR EXISTS (SELECT 1 FROM favn_control.backfill_windows w WHERE w.workspace_id=$1 AND w.backfill_id=b.backfill_id AND w.status IN ('planned','ready','claimed','running'))
+        FROM (
+          SELECT cancellation_owner_run_id AS owner FROM favn_control.run_submissions WHERE workspace_id=$1 AND run_id=$2
+          UNION
+          SELECT cancellation_owner_run_id AS owner FROM favn_control.runs WHERE workspace_id=$1 AND run_id=$2
+        ) member
+        LEFT JOIN favn_control.runs r ON r.workspace_id=$1 AND r.run_id=member.owner
+        LEFT JOIN favn_control.run_submissions s ON s.workspace_id=$1 AND s.run_id=member.owner
+        LEFT JOIN favn_control.backfills b ON b.workspace_id=$1 AND b.root_run_id=member.owner
+        LIMIT 2
+        """,
+        [workspace, run_id, @active_submissions, @active_tasks]
+      ).rows
 
-    status =
-      cond do
-        backfill && backfill.cancellation_requested_at ->
-          backfill.status
-
-        root && root.cancellation_status ->
-          root.cancellation_status
-
-        (is_nil(root) and submission) && submission.cancellation_requested_at ->
+    case rows do
+      [
+        [
+          owner,
+          backfill,
+          backfill_status,
+          backfill_request,
+          root,
+          root_status,
+          submission_status,
+          submission_request,
+          failure_kind,
+          unfinished?
+        ]
+      ]
+      when not is_nil(root) or not is_nil(submission_status) ->
+        status =
           cond do
-            submission.status in @active_submissions -> "cancelling"
-            submission.failure_kind == "unknown" -> "needs_attention"
-            true -> "cancelled"
+            backfill_request ->
+              backfill_status
+
+            root_status ->
+              root_status
+
+            is_nil(root) and submission_request ->
+              cond do
+                submission_status in @active_submissions -> "cancelling"
+                failure_kind == "unknown" -> "needs_attention"
+                true -> "cancelled"
+              end
+
+            true ->
+              nil
           end
 
-        true ->
-          nil
-      end
+        {:ok,
+         %CancellationScope{
+           run_id: owner,
+           kind: if(backfill, do: :backfill, else: :run),
+           label: if(backfill, do: "Cancel full backfill", else: "Cancel run"),
+           status: status_atom(status),
+           cancellable?: is_nil(status) and unfinished?
+         }}
 
-    %CancellationScope{
-      run_id: owner,
-      kind: if(backfill, do: :backfill, else: :run),
-      label: if(backfill, do: "Cancel full backfill", else: "Cancel run"),
-      status: status_atom(status),
-      cancellable?: is_nil(status) and unfinished?(workspace, owner, backfill)
-    }
+      [] ->
+        {:error, Error.new(:not_found, "cancellation authority not found")}
+
+      _ ->
+        {:error, Error.new(:conflict, "cancellation ownership cannot be verified")}
+    end
   end
 
   def request!(command, request_run) do
@@ -443,11 +492,22 @@ defmodule FavnStoragePostgres.OperationCancellation do
             g.status == "building" and is_nil(g.creating_rebuild_operation_id)
       )
     ) or
-      Repo.exists?(from(t in tasks(workspace, owner), where: t.status == "unknown")) or
+      Repo.exists?(
+        from(t in tasks(workspace, owner),
+          where:
+            t.status == "unknown" or
+              (t.status == "failed" and
+                 (t.retry_class in ["unknown_do_not_retry", "reconcile_before_retry"] or
+                    fragment("?->>'outcome' = 'unknown'", t.error)))
+        )
+      ) or
       Repo.exists?(from(s in submissions(workspace, owner), where: s.failure_kind == "unknown")) or
       Repo.exists?(
         from(r in runs(workspace, owner),
-          where: fragment("?->'metadata'->>'cancellation_needs_attention' = 'true'", r.snapshot)
+          where:
+            fragment("?->'metadata'->>'cancellation_needs_attention' = 'true'", r.snapshot) or
+              fragment("?->'error'->>'outcome' = 'unknown'", r.snapshot) or
+              fragment("?->'error'->>'type' = 'uncertain_runner_recovery'", r.snapshot)
         )
       )
   end

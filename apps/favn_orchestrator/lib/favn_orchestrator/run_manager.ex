@@ -730,6 +730,9 @@ defmodule FavnOrchestrator.RunManager do
             reason: reason
           })
 
+        :pending ->
+          :ok
+
         {:already_completed, details} ->
           {:error, {:runner_cancel_already_completed, details}}
 
@@ -786,7 +789,9 @@ defmodule FavnOrchestrator.RunManager do
 
   defp classify_cancel_results(results) do
     already_completed = Enum.filter(results, &(Map.get(&1, :status) == :already_completed))
-    unconfirmed_failures = Enum.reject(results, &cancel_terminalizable?/1)
+
+    unconfirmed_failures =
+      Enum.reject(results, &(cancel_terminalizable?(&1) or Map.get(&1, :status) == :requested))
 
     cond do
       unconfirmed_failures != [] ->
@@ -795,6 +800,9 @@ defmodule FavnOrchestrator.RunManager do
            type: :runner_cancel_failed,
            reasons: Enum.map(unconfirmed_failures, &cancel_failure_reason/1)
          }}
+
+      Enum.any?(results, &(Map.get(&1, :status) == :requested)) ->
+        :pending
 
       already_completed != [] ->
         {:already_completed,

@@ -72,8 +72,17 @@ defmodule FavnStoragePostgres.Runs.Store do
   @snapshot_version 2
 
   @impl true
-  def cancellation_scope(%GetRun{} = query),
-    do: cancellation_query(query, &OperationCancellation.scope!/2)
+  def cancellation_scope(%GetRun{} = query) do
+    with :ok <- validate_workspace_read(query.workspace_context),
+         true <- valid_identity?(query.run_id) do
+      OperationCancellation.scope(query.workspace_context.workspace_id, query.run_id)
+    else
+      false -> {:error, Error.new(:invalid, "invalid run identity")}
+      error -> error
+    end
+  rescue
+    error -> {:error, ErrorMapper.map(error)}
+  end
 
   @impl true
   def reconcile_cancellation(%GetRun{} = query) do
@@ -1288,17 +1297,33 @@ defmodule FavnStoragePostgres.Runs.Store do
                  else: RunCancellation.request(run, command.reason, command.occurred_at)
                ),
              {:ok, encoded} <- encode_write(requested, event) do
-          commit_or_replay!(
-            %CommitRunTransition{
-              workspace_context: command.workspace_context,
-              command_id: command.command_id,
-              expected_sequence: run.event_seq,
-              run: requested,
-              event: event,
-              idempotency: nil
-            },
-            encoded
-          )
+          if row.cancellation_requested_at do
+            saved =
+              Repo.one!(
+                from(e in RunEvent,
+                  where:
+                    e.workspace_id == ^workspace_id and e.run_id == ^run.id and
+                      e.event_type == "run_cancel_requested",
+                  order_by: [desc: e.sequence],
+                  limit: 1
+                )
+              )
+
+            {:ok, saved_event} = decode_event(saved, nil)
+            committed(run, saved_event, saved.event_id, saved.outbox_event_id, true)
+          else
+            commit_or_replay!(
+              %CommitRunTransition{
+                workspace_context: command.workspace_context,
+                command_id: command.command_id,
+                expected_sequence: run.event_seq,
+                run: requested,
+                event: event,
+                idempotency: nil
+              },
+              encoded
+            )
+          end
         else
           {:error, :run_already_terminal} ->
             Repo.rollback(

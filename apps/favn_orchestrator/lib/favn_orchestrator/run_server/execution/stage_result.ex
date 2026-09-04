@@ -86,7 +86,10 @@ defmodule FavnOrchestrator.RunServer.Execution.StageResult do
         await_result,
         %{stage: stage, attempt: attempt}
       ) do
-    if Persistence.externally_cancelled?(current_run) do
+    cancellation = Persistence.cancellation_state(current_run)
+
+    if cancellation == :cancelled or
+         (cancellation == :requested and not match?({:ok, %RunnerResult{}}, await_result)) do
       cancelled =
         cancel_task_ids(
           current_run,
@@ -451,7 +454,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageResult do
             resume.status == :ok ->
               :ok
 
-            resume.retryable? and
+            resume.retryable? and not Persistence.externally_cancelled?(step_state) and
                 StepAttemptLifecycle.retry_allowed?(
                   step_state,
                   resume.entry.node_key,
@@ -484,14 +487,35 @@ defmodule FavnOrchestrator.RunServer.Execution.StageResult do
         end
 
       :post_step_pending ->
-        {:post_step_pending, step_state,
-         %{
-           entry: resume.entry,
-           stage: resume.stage,
-           attempt: resume.attempt,
-           post_step_value: resume.post_step_value,
-           step_results: resume.asset_results
-         }}
+        if Persistence.externally_cancelled?(step_state) do
+          step_state = %{
+            step_state
+            | metadata: Map.put(step_state.metadata, "cancellation_needs_attention", true)
+          }
+
+          case persist_terminal_resource_outcome(
+                 step_state,
+                 resume.entry,
+                 :ok,
+                 resume.post_step_value
+               ) do
+            :ok ->
+              {:settled, step_state, :ok, resume.asset_results}
+
+            {:error, reason} ->
+              {:settled, post_step_persistence_failure(step_state, reason), :error,
+               resume.asset_results}
+          end
+        else
+          {:post_step_pending, step_state,
+           %{
+             entry: resume.entry,
+             stage: resume.stage,
+             attempt: resume.attempt,
+             post_step_value: resume.post_step_value,
+             step_results: resume.asset_results
+           }}
+        end
 
       {:error, reason} ->
         {:settled, post_step_persistence_failure(step_state, reason), :error,
@@ -573,23 +597,6 @@ defmodule FavnOrchestrator.RunServer.Execution.StageResult do
        | retry_refs: next_retry_refs,
          retry_delays: next_retry_delays
      })}
-  end
-
-  defp reduce_outcome(
-         :error,
-         %{
-           state: state,
-           run: %RunState{status: :cancelled} = next_run,
-           results: next_results,
-           terminal_failure: nil
-         },
-         _context
-       ) do
-    results = Enum.reverse(next_results)
-
-    {:halt,
-     {:error, Snapshots.cancelled_terminal(next_run, results), results,
-      StageAttemptState.attempted_node_keys(state)}}
   end
 
   defp reduce_outcome(

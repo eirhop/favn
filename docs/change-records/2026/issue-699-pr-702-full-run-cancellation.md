@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Implementing |
+| Status | Implementation accepted; release qualification pending |
 | Type | Bug fix |
 | Primary issue | [#699](https://github.com/eirhop/favn/issues/699) |
 | Pull request | [Draft PR #702](https://github.com/eirhop/favn/pull/702) |
@@ -604,9 +604,81 @@ For this planning-only change, review links, render both diagrams and run
 
 ## Implementation outcome
 
-Not started. The draft PR contains planning documentation only. Final review must
-compare implementation against the original baseline plus approved revision 1,
-record actual per-slice complexity, deviations, tests and operational limitations.
+Implemented on `codex/issue-699-full-run-cancellation`. The approved revision above
+and the collapsed original plan are preserved as historical baselines; their
+planning-time statements do not describe the current implementation.
+
+The operator action resolves the original submitted owner from any selected
+asset/window. Cancellation persists intent, blocks new owned work at commit,
+and uses the existing `RunRecovery` worker to drain bounded pages. Completed
+results remain intact; unresolved external work produces **Needs attention**.
+Explicit reruns stay independent. API/CLI `cancel_run/4` still targets exactly
+one run. The queued/preparing detail now exposes the same action.
+
+### Implementation deviations and review decisions
+
+| Baseline choice | Actual implementation and reason | Review disposition |
+| --- | --- | --- |
+| Indexed ownership where needed on reserved submissions | Normalize immutable ownership on both submissions and runs. Direct/legacy runs also need indexed membership; admission copies the owner. Migration validates actual window/candidate provenance and rejects ambiguity before enforcing non-null ownership. | Independently reviewed during implementation. |
+| Ordinary run/submission intent; preserve terminal source results | Add an operation cancellation outcome alongside the original run execution status. A terminal source with outstanding automatic recovery keeps its result and terminal timestamp. A separate outbox aggregate avoids reusing execution sequence identities. | Independently reviewed during implementation. |
+| Backfill dispatcher plus existing run/submission recovery | The existing `RunRecovery` worker reconciles both kinds, outside admission. Workspace discovery runs inside its supervised task, includes newly provisioned workspaces, and uses per-kind/per-workspace cursors. No new process/service is introduced. | Independently reviewed; avoids split cleanup ownership and a dispatcher mailbox stall. |
+| Reuse leaf cancellation mechanics | Add no-ACK background delivery; repeated cancellation reuses the first durable intent. A pending acknowledgement is accepted work, not a cleanup error. | Required to avoid per-task one-second waits and duplicate command writes. |
+| Preserve completed outcomes during cancellation/recovery | Live cancellation retains awaits, stops future retry/admission and post-step work, and drains authoritative task results. An inactive cancelled run with a completed task is claimed through existing ownership/recovery, including when admission is disabled. Live leases and plan memory limits remain enforced. | Independently reviewed design correction: immediate await cleanup could fail a completed write's claim and erase its node result. |
+| Existing result and recovery paths | Fix sequential restoration to wait for the existing task. Separate cancellation intent from final cancellation when settling/persisting results. A conflicting intent stops an unconsumed settlement for fenced recovery. Start conflicts also stop cleanly. A conflicting terminal save retains the built aggregate result and refreshes only the rejected snapshot commit against newer intent with the same ownership fence. Cancelled terminal snapshots retain node results. | Required by the approved completion-versus-cancellation race invariant; first review identified missing start/terminal conflicts and these were corrected with regression tests. |
+| Preserve unresolved post-step and task outcomes | Failed tasks also retain their authoritative unknown error/retry classification; taskless uncertain recovery stays Needs attention. Keep the existing attention flag and check durable successful materializations whose initial generation is still building, excluding rebuild generations. This retains uncertainty after the waiter/process is lost. Shared tasks keep `run_id = nil` and their original domain owner. | Independently reviewed; tested without the in-memory flag and with ready/unrelated controls. |
+| Existing performance budgets | Cancellation scope is one indexed SELECT, adding one read to the detail budget (12 to 13). Backfill claim adds the owner serialization lock (5 to 6 queries). No transaction wrapper is needed for the scope read. | Independent review accepted the owner-lock cost and requested removal of avoidable read transaction overhead; applied. |
+| Existing test fixtures | Synthetic owned task fixtures now create real runs. A pure event test moved into the existing persistence-backed test harness. Cancellation recovery waits use authoritative capacity-waiter checkpoints; the serial lease-recovery test kills the old owner at a durable enqueue barrier. | Required by fail-closed ownership and deterministic recovery tests. |
+| Original line estimates | The required migration, provenance validation, guarded stores and result-draining fixes exceeded the estimate below. No expanded public targeting, progress counters, operations table or new runner protocol was added. | Independent complexity review found the estimate optimistic; final review must assess the actual size against the unchanged baseline. |
+
+### Actual complexity
+
+Counts use `git diff origin/main --numstat`, including the working implementation.
+Exclude this record and generated files. Assign each file to one primary slice:
+all PostgreSQL files and persistence/domain cancellation contracts to slice 1;
+remaining orchestration lifecycle files/tests to slice 2; public facade, operator
+DTO, View, AI routing and canonical guides to slice 3. Thus storage-based lifecycle
+proof is counted in slice 1 rather than twice. Test relocation is included; no
+formatter-only file or dependency change is included.
+
+| Slice | Production added | Production deleted | Supporting added | Supporting deleted |
+| --- | ---: | ---: | ---: | ---: |
+| 1: ownership, schema and guarded persistence | 1,855 | 192 | 1,748 | 40 |
+| 2: existing cancellation and recovery lifecycle | 444 | 145 | 258 | 60 |
+| 3: facade, DTO/UI and canonical docs | 62 | 14 | 114 | 15 |
+| Total | 2,361 | 351 | 2,120 | 115 |
+
+The unchanged revision estimated 440–760 production additions and 620–1,020
+supporting additions. Both totals exceed its variance threshold. Slice 1 alone
+needs legacy migration, validated membership and a typed storage/query boundary
+before the individual dispatch guards; the estimate did not account adequately
+for those implementations. Slice 2 additionally fixes completed-result loss and
+inactive cancellation convergence found by independent review. Slice 3 is below
+the estimate, with fewer deletions because it adds a small DTO/notice to existing
+components rather than replacing a broader UI. The reduced product scope remains;
+these overruns are cancellation correctness and migration work, not a new feature
+surface. The final reviewer explicitly accepted these overruns after comparing the implementation with the unchanged baseline.
+
+### Verification evidence and limits
+
+| Check | Result and proof boundary |
+| --- | --- |
+| PostgreSQL transaction races | 48 submission tests passed in the final storage suite, including both winners for child/task enqueue and candidate eligibility, nonblocking task claim under cancellation's owner lock, assigned task retirement, and late candidate outcome settlement. Real separate database connections and lock barriers are used. |
+| Completed work and recovery | Focused persisted tests pass for a completed task recovered while admission is disabled, retaining its result without new tasks or leases, and refusing takeover of a live owner. The live cancellation test also retains a completed write and prevents refill. These are warm-VM process recovery tests. |
+| Post-step and leaf lifecycle | 35 focused review regressions passed, including successful sibling claims, no new post-step worker after intent, start/step/terminal-save conflicts, terminal-save retry preserving results, and explicit ownership loss. Earlier leaf/sequential/no-ACK checks also passed. |
+| Owning application suites | Orchestrator: 850 passed (6 doctests), two excluded; View: 832 passed (135 doctests), one browser-tier exclusion. Storage: 394 passed, 21 slow-tier exclusions, using a pre-migrated fresh disposable database and `--max-cases 4`. Earlier umbrella run passed the other apps. Orchestrator used `--max-cases 4` after the existing 100 ms slot fixture timed out under parallel test load; the focused fixture also passes at the default concurrency. |
+| Schema migration | Fresh disposable database migrated to schema fingerprint `8c0a3298d6b1220052ffd9c36b55bff9c16570a91c1ea30cff1e5ddb179b3feb`. Legacy migration test passes for combined windows, automatic chains and independent reruns; ambiguous/forged membership aborts before repaired retry. |
+| Slow storage checks | All 12 query-budget/query-plan, restore and schedule-reference migration checks pass against a fresh disposable database. Restore used PostgreSQL 18 tools from the task-owned container (host client 16 cannot dump server 18). An earlier populated-database run chose an alternative existing index; the isolated plan fixture passes. |
+| UI rendering | Actual component HTML and compiled CSS rendered in Edge at 390×844, 768×1024 and 1440×1024 for all four cancellation presentations: no horizontal overflow. This is static rendered fixture coverage, not authenticated full-app/browser qualification. |
+| Compilation and test tiers | Warnings-as-errors compilation and test-tag CI guard pass. Final format check, `git diff --check` and all 30 relative documentation links pass. Approved Mermaid diagrams are unchanged from the verified GitHub render. |
+| Security catalog | Catalog check passed: 31 browser routes and 66 API routes. Full harness blocked before application startup: existing builder validation expects single-quoted TOML, while current BuildKit emits the correct 2/12/20 GiB GC policy with double quotes. The guard was not bypassed. |
+| Fresh-release restart qualification | Not completed. Issue #700 owns persisted codec/reconnect fixes and the approved plan requires joint qualification against that repaired baseline. Queued/assigned/running/cancelling kill-and-restart coverage in a fresh release VM remains a merge/release gate. Warm-VM tests do not replace it. |
+
+Tests used only task-owned disposable PostgreSQL databases on port 5433; no
+`favn_dev` or project application data was used. The branch was rebased onto
+`origin/main` before updating the draft PR; the final source revision and review
+verdict are recorded below. Keep the PR draft while required qualification is
+outstanding. Rollout still requires quiescing old orchestrators and applying the
+migration before new code; old code must not resume outstanding cancellations.
 
 ## Revision verification evidence
 
@@ -619,4 +691,11 @@ record actual per-slice complexity, deviations, tests and operational limitation
 
 ## Final implementation review
 
-Not started. Approval of a planning revision does not approve implementation.
+| Field | Result |
+| --- | --- |
+| Reviewer | Independent agent `/root/review_cancel_revision` |
+| Compared against | Preserved approved revision `2548ae6e`, original baseline `9fa85c38`, issue/source invariants and the complete working diff against `origin/main` (`2f26d586`). |
+| Initial findings | Start/terminal cancellation conflicts could retry stale snapshots indefinitely or drop the aggregate result. Uncertainty classification missed valid failed-but-unknown task outcomes and taskless uncertain recovery. |
+| Corrections and recheck | Added start/step recovery handoff, terminal-only rejected-save refresh retaining results/fence, broader durable uncertainty checks and targeted regression tests. Reviewer inspected the fixes and the final outcome/deviation record on 2026-09-04. |
+| Complexity and deviations | Accepted 2,361/351 production and 2,120/115 supporting additions/deletions, owner fields on both tables, one existing cleanup worker, result-draining corrections and query budgets 13/6. Reviewer found no large simplification that preserves the approved guarantees. |
+| Verdict | **Implementation accepted after recheck; no blocking code findings remain.** This is not unqualified release approval. Keep the PR draft until #700 fresh-release restart qualification and the full security harness gate pass. |

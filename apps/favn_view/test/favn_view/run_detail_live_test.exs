@@ -967,6 +967,12 @@ defmodule FavnView.RunDetailLiveTest do
          kind: :submission,
          submission: %{
            run_id: "run-queued",
+           cancellation: %FavnOrchestrator.Persistence.Results.CancellationScope{
+             run_id: "run-queued",
+             kind: :run,
+             label: "Cancel run",
+             cancellable?: true
+           },
            status: :queued,
            status_label: "Queued",
            status_tone: :info,
@@ -987,6 +993,13 @@ defmodule FavnView.RunDetailLiveTest do
 
     assert mounted.assigns.run.submission?
     assert mounted.assigns.run.status == "Queued"
+    assert mounted.assigns.run.cancellable?
+    assert mounted.assigns.run.cancel_run_id == "run-queued"
+
+    assert render_component(
+             &RunDetailLive.render/1,
+             Map.put(mounted.assigns, :operator_workspaces, [])
+           ) =~ ~s(data-testid="cancel-run-button")
   end
 
   for status <- [:queued, :failed] do

@@ -2032,7 +2032,12 @@ defmodule FavnOrchestrator do
   defp get_operator_submission(context, run_id) do
     case RunSubmissions.get(context, run_id) do
       {:ok, submission} ->
-        {:ok, %{kind: :submission, submission: OperatorRunView.project_submission(submission)}}
+        with {:ok, scope} <- FavnOrchestrator.OperationCancellation.scope(context, run_id) do
+          detail =
+            submission |> OperatorRunView.project_submission() |> Map.put(:cancellation, scope)
+
+          {:ok, %{kind: :submission, submission: detail}}
+        end
 
       {:error, %PersistenceError{kind: :not_found}} ->
         {:error, :not_found}

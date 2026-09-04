@@ -6,6 +6,7 @@ defmodule FavnOrchestrator.RunServer.Snapshots do
   event sequence; the transition writer owns sequence advancement.
   """
 
+  alias FavnOrchestrator.RunServer.Execution.ResultBuilder
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Persistence.SystemContext
   alias FavnOrchestrator.Runs
@@ -19,11 +20,7 @@ defmodule FavnOrchestrator.RunServer.Snapshots do
       status: :cancelled,
       runner_task_id: nil,
       error: cancelled_error(run_state),
-      result: %{
-        status: :cancelled,
-        asset_results: Enum.take(acc_results, @max_terminal_results),
-        metadata: run_state.metadata
-      }
+      result: ResultBuilder.pipeline_result(run_state, :cancelled, acc_results)
     )
   end
 

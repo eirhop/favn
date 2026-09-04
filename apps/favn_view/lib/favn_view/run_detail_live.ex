@@ -925,10 +925,16 @@ defmodule FavnView.RunDetailLive do
   end
 
   defp submission_from_public(submission, timezone) do
+    cancellation = submission[:cancellation]
+
     %{
       id: submission.run_id,
       found?: false,
       submission?: true,
+      cancellable?: cancellation && cancellation.cancellable?,
+      cancel_run_id: if(cancellation, do: cancellation.run_id, else: submission.run_id),
+      cancel_label: if(cancellation, do: cancellation.label, else: "Cancel run"),
+      cancellation_status: cancellation && cancellation.status,
       active?: submission.active?,
       raw_status: submission.status,
       status: submission.status_label,

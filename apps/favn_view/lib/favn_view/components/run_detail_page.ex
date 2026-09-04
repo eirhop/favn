@@ -85,6 +85,13 @@ defmodule FavnView.Components.RunDetailPage do
           {@run[:retry_remaining_label] || "Retry remaining"}
         </.button>
       </:actions>
+      <.notice
+        :if={@run[:cancellation_status]}
+        tone={if(@run[:cancellation_status] == :needs_attention, do: :warning, else: :info)}
+        data-testid="run-cancellation-status"
+      >
+        {cancellation_message(@run[:cancellation_status])}
+      </.notice>
       <Submission.submission_panel :if={@run[:submission?]} run={@run} />
       <NotFound.not_found_panel :if={!@run[:found?] && !@run[:submission?]} run={@run} />
       <.execution_group_page
@@ -128,13 +135,6 @@ defmodule FavnView.Components.RunDetailPage do
     ~H"""
     <div class="mx-auto flex w-full max-w-[110rem] flex-col gap-4" data-testid="run-detail-page">
       <Progress.run_progress run={@run} />
-      <.notice
-        :if={@run[:cancellation_status]}
-        tone={if(@run[:cancellation_status] == :needs_attention, do: :warning, else: :info)}
-        data-testid="run-cancellation-status"
-      >
-        {cancellation_message(@run[:cancellation_status])}
-      </.notice>
       <WindowRail.window_rail
         :if={@rail}
         rail={@rail}

@@ -271,8 +271,16 @@ defmodule FavnOrchestrator.RunServer do
         %{execution_state: %RunExecutionState{} = execution_state} = state
       ) do
     execution_state = %{execution_state | run: latest_run_snapshot(execution_state.run)}
-    terminal = Execution.cancel(execution_state, reason)
-    finalize_terminal(state, terminal)
+
+    execution_state =
+      if execution_state.stage_state,
+        do: %{
+          execution_state
+          | stage_state: %{execution_state.stage_state | run: execution_state.run}
+        },
+        else: execution_state
+
+    handle_execution_result(state, Execution.cancel(execution_state, reason))
   end
 
   # Without execution state there is nothing to unwind here: pending start or
@@ -299,6 +307,9 @@ defmodule FavnOrchestrator.RunServer do
       {:error, :external_cancel} ->
         :ok = RunExecutionCleanup.release_admission(running)
         stop_normally(state, Snapshots.cancelled_snapshot(running))
+
+      {:error, :cancellation_race} ->
+        stop_for_cancellation_recovery(state, running)
 
       {:error, :fenced} ->
         stop_on_fenced_write(state, running, :run_started)
@@ -395,6 +406,9 @@ defmodule FavnOrchestrator.RunServer do
     finalize_terminal(state, terminal)
   end
 
+  defp handle_execution_result(state, {:persist_retry, execution, _retry, :cancellation_race}),
+    do: stop_for_cancellation_recovery(%{state | execution_state: execution}, execution.run)
+
   defp handle_execution_result(
          state,
          {:persist_retry, %RunExecutionState{} = execution_state, %PersistenceRetry{} = retry,
@@ -445,7 +459,7 @@ defmodule FavnOrchestrator.RunServer do
         :ok = RunExecutionCleanup.release_admission(terminal)
         stop_normally(state, terminal)
 
-      terminal.status != :cancelled and Persistence.externally_cancelled?(terminal) ->
+      terminal.status != :cancelled and persisted_cancelled?(terminal) ->
         :ok = RunExecutionCleanup.release_admission(terminal)
         stop_normally(state, terminal)
 
@@ -476,6 +490,9 @@ defmodule FavnOrchestrator.RunServer do
 
         stop_normally(state, cancelled)
 
+      {:error, :cancellation_race} ->
+        refresh_terminal_after_cancellation(state, finalized)
+
       {:error, :fenced} ->
         stop_on_fenced_write(state, finalized, terminal_event_type)
 
@@ -502,6 +519,9 @@ defmodule FavnOrchestrator.RunServer do
         state
         |> Map.delete(:terminal_persist_pending)
         |> stop_normally(cancelled)
+
+      {:error, :cancellation_race} ->
+        refresh_terminal_after_cancellation(state, finalized)
 
       {:error, :fenced} ->
         state
@@ -554,6 +574,54 @@ defmodule FavnOrchestrator.RunServer do
 
   # A fenced write proves a newer owner exists. Retrying could never succeed and
   # would only delay recovery, so the process stops the way a failed renewal does.
+  defp refresh_terminal_after_cancellation(state, terminal) do
+    context = SystemContext.workspace(terminal.workspace_id, :run_worker)
+    event_type = Persistence.terminal_event_type(terminal)
+
+    case Runs.get(context, terminal.id) do
+      {:ok, latest} ->
+        if RunState.terminal_status?(latest.status) do
+          :ok = RunExecutionCleanup.release_admission(terminal)
+          stop_normally(state, latest)
+        else
+          refreshed =
+            latest
+            |> copy_storage_fence(terminal)
+            |> RunState.transition(
+              status: terminal.status,
+              error: terminal.error,
+              result: terminal.result,
+              metadata: Map.merge(terminal.metadata, latest.metadata)
+            )
+
+          persist_terminal_or_retry(state, refreshed, event_type)
+        end
+
+      {:error, reason} ->
+        schedule_terminal_persist_retry(
+          state,
+          terminal,
+          event_type,
+          %{status: terminal.status, error: terminal.error},
+          reason,
+          1
+        )
+    end
+  end
+
+  defp stop_for_cancellation_recovery(state, run) do
+    state =
+      case Map.get(state, :execution_state) do
+        %RunExecutionState{} = execution ->
+          %{state | execution_state: Execution.stop_for_recovery(execution)}
+
+        nil ->
+          state
+      end
+
+    stop_normally(state, run)
+  end
+
   defp stop_on_fenced_write(state, %RunState{} = run, event_type) do
     OperationalEvents.emit(
       :run_ownership_lost,
@@ -586,8 +654,11 @@ defmodule FavnOrchestrator.RunServer do
     context = SystemContext.workspace(workspace_id, :run_worker)
 
     case Runs.get(context, run_id) do
-      {:ok, %RunState{} = run} -> copy_storage_fence(run, fallback)
-      _ -> fallback
+      {:ok, %RunState{} = run} ->
+        run |> Map.put(:result, fallback.result) |> copy_storage_fence(fallback)
+
+      _ ->
+        fallback
     end
   end
 
