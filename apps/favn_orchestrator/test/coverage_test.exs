@@ -632,7 +632,7 @@ defmodule FavnOrchestrator.CoverageTest do
       manifest_version_id: "coverage-manifest",
       content_hash: "sha256:coverage-manifest",
       schema_version: 19,
-      runner_contract_version: 14,
+      runner_contract_version: 15,
       runner_releases: %{"default" => FavnTestSupport.runner_release_id()},
       manifest:
         FavnTestSupport.with_manifest_contract(%Manifest{

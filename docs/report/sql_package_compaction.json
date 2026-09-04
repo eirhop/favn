@@ -1,0 +1,460 @@
+{
+  "measured_at": "2026-09-04",
+  "candidate": "PR #697 post-parse compaction",
+  "baseline": {
+    "baseline_ref": "5f3c163e64f96c2b524c445b548f1177708c0bcd",
+    "samples": [
+      {
+        "mode": "ordinary",
+        "columns": 10,
+        "indent": 4,
+        "build_us": 44279,
+        "median_us": {
+          "verify": 9228,
+          "json_encode": 1658,
+          "json_decode": 409,
+          "term_encode": 151,
+          "term_decode": 309,
+          "load_verify": 21465
+        },
+        "package_schema": 4,
+        "source_bytes": 435,
+        "json_bytes": 23492,
+        "term_bytes": 38960,
+        "work_term_bytes": 40242,
+        "task_overhead_bytes": 1282,
+        "base64_work_bytes": 53656,
+        "gzip_json_bytes": 2605,
+        "text_nodes": 181,
+        "spans": 184,
+        "flat_term_words": 6191,
+        "retained_process_bytes": 88632,
+        "retained_binary_bytes": 1126,
+        "sampled_peak_process_bytes": 1119680
+      },
+      {
+        "mode": "ordinary",
+        "columns": 100,
+        "indent": 4,
+        "build_us": 100336,
+        "median_us": {
+          "verify": 101816,
+          "json_encode": 29009,
+          "json_decode": 6835,
+          "term_encode": 1319,
+          "term_decode": 1886,
+          "load_verify": 197097
+        },
+        "package_schema": 4,
+        "source_bytes": 4037,
+        "json_bytes": 219924,
+        "term_bytes": 361886,
+        "work_term_bytes": 363168,
+        "task_overhead_bytes": 1282,
+        "base64_work_bytes": 484224,
+        "gzip_json_bytes": 16625,
+        "text_nodes": 1711,
+        "spans": 1714,
+        "flat_term_words": 56772,
+        "retained_process_bytes": 601760,
+        "retained_binary_bytes": 8330,
+        "sampled_peak_process_bytes": 7657224
+      },
+      {
+        "mode": "ordinary",
+        "columns": 1000,
+        "indent": 4,
+        "build_us": 1796031,
+        "median_us": {
+          "verify": 1361779,
+          "json_encode": 201029,
+          "json_decode": 65714,
+          "term_encode": 12558,
+          "term_decode": 18939,
+          "load_verify": 2499924
+        },
+        "package_schema": 4,
+        "source_bytes": 41839,
+        "json_bytes": 2250078,
+        "term_bytes": 3672656,
+        "work_term_bytes": 3673938,
+        "task_overhead_bytes": 1282,
+        "base64_work_bytes": 4898584,
+        "gzip_json_bytes": 174747,
+        "text_nodes": 17011,
+        "spans": 17014,
+        "flat_term_words": 563472,
+        "retained_process_bytes": 6665064,
+        "retained_binary_bytes": 83934,
+        "sampled_peak_process_bytes": 30733880
+      },
+      {
+        "mode": "ordinary",
+        "columns": 5000,
+        "indent": 4,
+        "build_us": 8438878,
+        "median_us": {
+          "verify": 5085295,
+          "json_encode": 1398476,
+          "json_decode": 306670,
+          "term_encode": 57676,
+          "term_decode": 90115,
+          "load_verify": 12054266
+        },
+        "package_schema": 4,
+        "source_bytes": 217839,
+        "json_bytes": 11545124,
+        "term_bytes": 18480656,
+        "work_term_bytes": 18481938,
+        "task_overhead_bytes": 1282,
+        "base64_work_bytes": 24642584,
+        "gzip_json_bytes": 875497,
+        "text_nodes": 85011,
+        "spans": 85014,
+        "flat_term_words": 2815472,
+        "retained_process_bytes": 34386640,
+        "retained_binary_bytes": 435934,
+        "sampled_peak_process_bytes": 182239184
+      },
+      {
+        "mode": "ordinary",
+        "columns": 100,
+        "indent": 40,
+        "build_us": 271006,
+        "median_us": {
+          "verify": 320565,
+          "json_encode": 63661,
+          "json_decode": 18407,
+          "term_encode": 4326,
+          "term_decode": 5919,
+          "load_verify": 606340
+        },
+        "package_schema": 4,
+        "source_bytes": 7637,
+        "json_bytes": 668066,
+        "term_bytes": 1106624,
+        "work_term_bytes": 1107906,
+        "task_overhead_bytes": 1282,
+        "base64_work_bytes": 1477208,
+        "gzip_json_bytes": 59544,
+        "text_nodes": 5311,
+        "spans": 5314,
+        "flat_term_words": 175572,
+        "retained_process_bytes": 2546352,
+        "retained_binary_bytes": 15530,
+        "sampled_peak_process_bytes": 16804824
+      },
+      {
+        "mode": "rich",
+        "columns": 100,
+        "indent": 4,
+        "build_us": 109789,
+        "median_us": {
+          "verify": 107676,
+          "json_encode": 28975,
+          "json_decode": 8213,
+          "term_encode": 1595,
+          "term_decode": 2400,
+          "load_verify": 227132
+        },
+        "package_schema": 4,
+        "source_bytes": 4668,
+        "json_bytes": 250977,
+        "term_bytes": 412957,
+        "work_term_bytes": 414239,
+        "task_overhead_bytes": 1282,
+        "base64_work_bytes": 552320,
+        "gzip_json_bytes": 20143,
+        "text_nodes": 1920,
+        "spans": 1942,
+        "flat_term_words": 64987,
+        "retained_process_bytes": 372232,
+        "retained_binary_bytes": 259877,
+        "sampled_peak_process_bytes": 9227112
+      },
+      {
+        "mode": "dynamic",
+        "columns": 1000,
+        "indent": 4,
+        "build_us": 933776,
+        "median_us": {
+          "verify": 805154,
+          "json_encode": 236130,
+          "json_decode": 51482,
+          "term_encode": 9805,
+          "term_decode": 14238,
+          "load_verify": 1751404
+        },
+        "package_schema": 4,
+        "source_bytes": 38858,
+        "json_bytes": 1906787,
+        "term_bytes": 3058977,
+        "work_term_bytes": 3060259,
+        "task_overhead_bytes": 1282,
+        "base64_work_bytes": 4080348,
+        "gzip_json_bytes": 146103,
+        "text_nodes": 10017,
+        "spans": 13022,
+        "flat_term_words": 453362,
+        "retained_process_bytes": 6665176,
+        "retained_binary_bytes": 77934,
+        "sampled_peak_process_bytes": 30544200
+      }
+    ],
+    "one_mib_crossings": {
+      "dynamic": {
+        "below": {
+          "columns": 346,
+          "source_bytes": 13350,
+          "term_bytes": 1048574
+        },
+        "above": {
+          "columns": 347,
+          "source_bytes": 13389,
+          "term_bytes": 1051648
+        }
+      },
+      "ordinary": {
+        "below": {
+          "columns": 290,
+          "source_bytes": 12017,
+          "term_bytes": 1048490
+        },
+        "above": {
+          "columns": 291,
+          "source_bytes": 12059,
+          "term_bytes": 1052186
+        }
+      }
+    },
+    "note": "Generic fixtures. Source counts each SQL body once, including checks/helpers/scopes. Five warm samples per codec operation. Memory is isolated-process memory sampled every 2 ms through build and codec work, not RSS; peaks may be missed. Off-heap binaries reported separately at retained checkpoint. Flat words exclude off-heap binaries. Task fixture has modest metadata; arbitrary task metadata can be larger. No live database, dispatch, or SQL execution is measured."
+  },
+  "compacted": {
+    "baseline_ref": null,
+    "samples": [
+      {
+        "mode": "ordinary",
+        "columns": 10,
+        "indent": 4,
+        "build_us": 42009,
+        "median_us": {
+          "verify": 421,
+          "json_encode": 89,
+          "json_decode": 25,
+          "term_encode": 5,
+          "term_decode": 9,
+          "load_verify": 923
+        },
+        "package_schema": 5,
+        "source_bytes": 435,
+        "json_bytes": 2490,
+        "term_bytes": 3104,
+        "work_term_bytes": 4386,
+        "task_overhead_bytes": 1282,
+        "base64_work_bytes": 5848,
+        "gzip_json_bytes": 624,
+        "text_nodes": 2,
+        "spans": 5,
+        "flat_term_words": 289,
+        "retained_process_bytes": 5832,
+        "retained_binary_bytes": 1519,
+        "sampled_peak_process_bytes": 163568
+      },
+      {
+        "mode": "ordinary",
+        "columns": 100,
+        "indent": 4,
+        "build_us": 3045,
+        "median_us": {
+          "verify": 751,
+          "json_encode": 332,
+          "json_decode": 93,
+          "term_encode": 6,
+          "term_decode": 9,
+          "load_verify": 1326
+        },
+        "package_schema": 5,
+        "source_bytes": 4037,
+        "json_bytes": 13582,
+        "term_bytes": 13910,
+        "work_term_bytes": 15192,
+        "task_overhead_bytes": 1282,
+        "base64_work_bytes": 20256,
+        "gzip_json_bytes": 1164,
+        "text_nodes": 2,
+        "spans": 5,
+        "flat_term_words": 289,
+        "retained_process_bytes": 5736,
+        "retained_binary_bytes": 12325,
+        "sampled_peak_process_bytes": 127600
+      },
+      {
+        "mode": "ordinary",
+        "columns": 1000,
+        "indent": 4,
+        "build_us": 28436,
+        "median_us": {
+          "verify": 5331,
+          "json_encode": 1115,
+          "json_decode": 818,
+          "term_encode": 11,
+          "term_decode": 13,
+          "load_verify": 11318
+        },
+        "package_schema": 5,
+        "source_bytes": 41839,
+        "json_bytes": 129704,
+        "term_bytes": 127340,
+        "work_term_bytes": 128622,
+        "task_overhead_bytes": 1282,
+        "base64_work_bytes": 171496,
+        "gzip_json_bytes": 16058,
+        "text_nodes": 2,
+        "spans": 5,
+        "flat_term_words": 289,
+        "retained_process_bytes": 5736,
+        "retained_binary_bytes": 125731,
+        "sampled_peak_process_bytes": 8238248
+      },
+      {
+        "mode": "ordinary",
+        "columns": 5000,
+        "indent": 4,
+        "build_us": 197390,
+        "median_us": {
+          "verify": 19651,
+          "json_encode": 8673,
+          "json_decode": 4198,
+          "term_encode": 23,
+          "term_decode": 29,
+          "load_verify": 47594
+        },
+        "package_schema": 5,
+        "source_bytes": 217839,
+        "json_bytes": 669712,
+        "term_bytes": 655340,
+        "work_term_bytes": 656622,
+        "task_overhead_bytes": 1282,
+        "base64_work_bytes": 875496,
+        "gzip_json_bytes": 77120,
+        "text_nodes": 2,
+        "spans": 5,
+        "flat_term_words": 289,
+        "retained_process_bytes": 5736,
+        "retained_binary_bytes": 653731,
+        "sampled_peak_process_bytes": 24018736
+      },
+      {
+        "mode": "ordinary",
+        "columns": 100,
+        "indent": 40,
+        "build_us": 9306,
+        "median_us": {
+          "verify": 1024,
+          "json_encode": 586,
+          "json_decode": 125,
+          "term_encode": 7,
+          "term_decode": 10,
+          "load_verify": 2581
+        },
+        "package_schema": 5,
+        "source_bytes": 7637,
+        "json_bytes": 24382,
+        "term_bytes": 24710,
+        "work_term_bytes": 25992,
+        "task_overhead_bytes": 1282,
+        "base64_work_bytes": 34656,
+        "gzip_json_bytes": 1368,
+        "text_nodes": 2,
+        "spans": 5,
+        "flat_term_words": 289,
+        "retained_process_bytes": 5736,
+        "retained_binary_bytes": 23125,
+        "sampled_peak_process_bytes": 1945416
+      },
+      {
+        "mode": "rich",
+        "columns": 100,
+        "indent": 4,
+        "build_us": 11498,
+        "median_us": {
+          "verify": 4152,
+          "json_encode": 926,
+          "json_decode": 206,
+          "term_encode": 69,
+          "term_decode": 180,
+          "load_verify": 7544
+        },
+        "package_schema": 5,
+        "source_bytes": 4668,
+        "json_bytes": 22019,
+        "term_bytes": 26569,
+        "work_term_bytes": 27851,
+        "task_overhead_bytes": 1282,
+        "base64_work_bytes": 37136,
+        "gzip_json_bytes": 2405,
+        "text_nodes": 17,
+        "spans": 39,
+        "flat_term_words": 2126,
+        "retained_process_bytes": 34336,
+        "retained_binary_bytes": 34982,
+        "sampled_peak_process_bytes": 601824
+      },
+      {
+        "mode": "dynamic",
+        "columns": 1000,
+        "indent": 4,
+        "build_us": 365823,
+        "median_us": {
+          "verify": 329907,
+          "json_encode": 79093,
+          "json_decode": 15324,
+          "term_encode": 4032,
+          "term_decode": 5793,
+          "load_verify": 621566
+        },
+        "package_schema": 5,
+        "source_bytes": 38858,
+        "json_bytes": 786329,
+        "term_bytes": 1180425,
+        "work_term_bytes": 1181707,
+        "task_overhead_bytes": 1282,
+        "base64_work_bytes": 1575612,
+        "gzip_json_bytes": 60146,
+        "text_nodes": 1004,
+        "spans": 4009,
+        "flat_term_words": 157035,
+        "retained_process_bytes": 1574168,
+        "retained_binary_bytes": 77934,
+        "sampled_peak_process_bytes": 14062216
+      }
+    ],
+    "one_mib_crossings": {
+      "dynamic": {
+        "below": {
+          "columns": 888,
+          "source_bytes": 34488,
+          "term_bytes": 1047810
+        },
+        "above": {
+          "columns": 889,
+          "source_bytes": 34527,
+          "term_bytes": 1048994
+        }
+      },
+      "ordinary": {
+        "below": {
+          "columns": 7979,
+          "source_bytes": 348915,
+          "term_bytes": 1048568
+        },
+        "above": {
+          "columns": 7980,
+          "source_bytes": 348959,
+          "term_bytes": 1048700
+        }
+      }
+    },
+    "note": "Generic fixtures. Source counts each SQL body once, including checks/helpers/scopes. Five warm samples per codec operation. Memory is isolated-process memory sampled every 2 ms through build and codec work, not RSS; peaks may be missed. Off-heap binaries reported separately at retained checkpoint. Flat words exclude off-heap binaries. Task fixture has modest metadata; arbitrary task metadata can be larger. No live database, dispatch, or SQL execution is measured."
+  }
+}

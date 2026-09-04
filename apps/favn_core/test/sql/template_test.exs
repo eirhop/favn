@@ -3,7 +3,67 @@ defmodule Favn.SQL.TemplateTest do
 
   alias Favn.SQL.Definition
   alias Favn.SQL.Template
-  alias Favn.SQL.Template.{Call, Relation}
+  alias Favn.SQL.Template.{Call, Placeholder, Relation, Text}
+
+  test "one literal run preserves quotes, comments, formatting, and Unicode coordinates" do
+    sql = "SELECT 'å; @ignored' AS label,\n    12.5 + (2 * 3) AS value /* @nope */;\n-- tail"
+
+    template = Template.compile!(sql, file: "literal.sql", line: 7, column: 9, offset: 40)
+
+    assert [%Text{sql: ^sql, span: span}] = template.nodes
+    assert span == template.span
+    assert {span.start_offset, span.start_line, span.start_column} == {40, 7, 9}
+
+    assert {span.end_offset, span.end_line, span.end_column} ==
+             {40 + length(String.to_charlist(sql)), 9, 8}
+
+    assert Template.query_params(template) == MapSet.new()
+  end
+
+  test "special nodes keep exact source locations between maximal literal runs" do
+    sql = "SELECT 'å' AS label, @country\nFROM warehouse.orders\nWHERE id = @id"
+    template = Template.compile!(sql, file: "locations.sql", line: 3, offset: 100)
+
+    assert [
+             %Text{sql: "SELECT 'å' AS label, "},
+             %Placeholder{name: "country", span: country_span},
+             %Text{sql: "\nFROM "},
+             %Relation{raw: "warehouse.orders", span: relation_span},
+             %Text{sql: "\nWHERE id = "},
+             %Placeholder{name: "id", span: id_span}
+           ] = template.nodes
+
+    assert {country_span.start_offset, country_span.start_line, country_span.start_column} ==
+             {121, 3, 22}
+
+    assert {relation_span.start_offset, relation_span.start_line, relation_span.start_column} ==
+             {135, 4, 6}
+
+    assert {id_span.start_line, id_span.start_column} == {5, 12}
+    assert Template.query_params(template) == MapSet.new(["country", "id"])
+  end
+
+  test "helper argument fragments compact recursively without swallowing nested calls" do
+    sql = "SELECT safe_macro( 1 + 2, safe_macro(3 * 4, @country)) AS value"
+
+    template =
+      Template.compile!(sql,
+        known_definitions: %{{:safe_macro, 2} => definition(:safe_macro, 2)},
+        file: "nested.sql",
+        line: 1
+      )
+
+    assert [%Text{sql: "SELECT "}, %Call{args: [literal, nested]}, %Text{sql: " AS value"}] =
+             template.nodes
+
+    assert [%Text{sql: " 1 + 2"}] = literal.nodes
+    assert [%Text{sql: " "}, %Call{args: [inner_literal, parameter]}] = nested.nodes
+    assert [%Text{sql: "3 * 4"}] = inner_literal.nodes
+    assert [%Text{sql: " "}, %Placeholder{name: "country", span: span}] = parameter.nodes
+    assert span.start_offset == 44
+    assert span.start_column == 45
+    assert length(Template.calls(template)) == 2
+  end
 
   test "reserves only window and Favn-owned execution runtime inputs" do
     assert Template.reserved_runtime_inputs() == [

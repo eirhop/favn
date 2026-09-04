@@ -171,22 +171,78 @@ the public acceptance evidence comes from generic fixtures.
 
 ## Implementation outcome
 
-Pending implementation after plan approval and draft PR creation.
+The existing lexer now returns coalesced literal runs. The implementation joins
+chunks once, checks all three span coordinates for continuity, and leaves special
+nodes unchanged. Recursively compiled helper arguments use the same return path.
+Package schema 5 rejects unsupported published maps before generated-check
+rehydration; struct verification already performs that gate first. Manifest runner
+contract 15 is required. The implemented flow matches the approved diagram.
+
+Generic measurements move the ordinary 1 MiB boundary from 291 columns / 12,059
+source bytes to 7,980 columns / 348,959 source bytes, about 29 times more SQL.
+The 5,000-column fixture has 217,839 source bytes, a 655,340-byte package, and a
+656,622-byte work term. Its package budget is 768 KiB. Parameterized helper calls
+still cross 1 MiB at 889 calls / 34,527 source bytes; this limitation is explicit.
+The [generic report](../../report/sql_package_compaction.md) contains every
+size, crossing, codec, memory, and proof-boundary detail, with raw measurements.
+
+### Actual scope and complexity
+
+Core owns the only production changes: 57 additions and 4 deletions across the
+template, package, and compatibility-version modules. Supporting updates cover
+the compiler/renderer/execution tests, current-version fixtures, generic
+measurements, and manifest-first documentation. Implementation complexity is low
+to moderate; operational complexity is moderate because of the explicit breaking
+compatibility transition. No storage or scheduling code changed.
+
+| Slice | Production added | Production deleted | Supporting added | Supporting deleted |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 53 | 1 | 61 | 1 |
+| 2 | 4 | 3 | 146 | 45 |
+| 3 | 0 | 0 | 559 | 4 |
+
+Counts exclude this record and generated JSON evidence/legacy fixture. Existing
+checked-execution and renderer coverage reduced new test code. Slice 3 is nine
+supporting lines above its estimate, below the required variance-explanation
+threshold; the reproducible report includes the dynamic-case limitation and
+codec/memory boundaries. No unexplained material budget overruns remain.
+
+Canonical docs updated: the manifest-first architecture and public guide, plus the
+current feature inventory. The change record diagrams were visually verified on
+GitHub before implementation; no diagram corrections were needed.
 
 ## Deviations from the approved plan
 
-None yet.
+None. The implementation matched the approved plan. The 1 MiB goal is qualified
+for ordinary literal SQL, with the measured dynamic-heavy limitation retained.
 
 ## Decision log
 
-None yet.
+| Date | Decision | Reason | Review needed |
+| --- | --- | --- | --- |
+| 2026-09-04 | Replace an existing assertion that packages exceed ten times index size with a 4 MiB total package ceiling for its 300-asset fixture | The old assertion required the bloat this fix removes; compact-index checks are retained | Final review |
+| 2026-09-04 | Run checked-execution fixture packages through canonical JSON round trips | Existing adapter regressions then exercise the actual compact loaded representation, generated/custom checks, exact SQL and bindings | Final review |
 
 ## Verification evidence
 
-Pending implementation. Live rollout, historical retirement, and constrained
-container memory are not verified by this plan.
+| Check | Result | Evidence boundary |
+| --- | --- | --- |
+| Core complete fast suite | 460 passed, including 2 doctests | Package/manifest integrity, locations, size budgets, old/future version rejection; no live database |
+| Runner complete fast suite | 256 passed | Includes canonical package round trips through existing checked-execution adapter and group replacement tests; test adapters, not a production SQL backend |
+| Authoring complete fast suite | 148 passed | DSL compilation and generated/authored checks |
+| Public manifest generator tests | 11 passed | Current manifest and runner-version contract |
+| Compile, format, tier guard | Passed locally | Warnings-as-errors compile; normal formatter plus measurement-script formatter; CI tag coverage |
+| Before/after generic measurement | Completed against baseline parser/package code and candidate | Successful package verification on both sides; process memory and warm codecs, not RSS or end-to-end infrastructure |
+| Package/task headroom | 5,000 columns below 768 KiB package and 800 KiB work budgets; persistence codec round trip passed | Modest task metadata; no database persistence or claim/dispatch exercised by the size fixture |
+| Ordinary PR CI | Pending | Final commit CI will be recorded before readiness |
+
+### Not verified
+
+Live deployment, historical-work retirement, native SQL backend execution,
+database dispatch/persistence, production rollback, and constrained-container
+memory survival are not proven by this change's local tests or measurements.
 
 ## Final review
 
-Pending independent comparison of the approved baseline, implementation, tests,
-measurements, canonical docs, and actual complexity.
+Independent GPT-5.6 xhigh implementation review pending against approved baseline
+`a57e42b9`, code, tests, measurements, canonical docs, and actual complexity.

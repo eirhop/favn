@@ -466,7 +466,7 @@ defmodule FavnRunner.GroupReplacementTest do
       manifest_version_id: "mv_group_test",
       content_hash: String.duplicate("a", 64),
       schema_version: 19,
-      runner_contract_version: 14,
+      runner_contract_version: 15,
       runner_releases: %{}
     }
 

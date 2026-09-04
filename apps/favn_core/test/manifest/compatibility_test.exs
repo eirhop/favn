@@ -80,9 +80,9 @@ defmodule Favn.Manifest.CompatibilityTest do
   end
 
   test "rejects unsupported runner contract version" do
-    manifest = current_manifest(%{runner_contract_version: 15})
+    manifest = current_manifest(%{runner_contract_version: 16})
 
-    assert {:error, {:unsupported_runner_contract_version, 15, 14}} =
+    assert {:error, {:unsupported_runner_contract_version, 16, 15}} =
              Compatibility.validate_manifest(manifest)
   end
 
@@ -116,9 +116,9 @@ defmodule Favn.Manifest.CompatibilityTest do
   end
 
   test "rejects the previous runner contract version" do
-    manifest = current_manifest(%{runner_contract_version: 13})
+    manifest = current_manifest(%{runner_contract_version: 14})
 
-    assert {:error, {:unsupported_runner_contract_version, 13, 14}} =
+    assert {:error, {:unsupported_runner_contract_version, 14, 15}} =
              Compatibility.validate_manifest(manifest)
   end
 
