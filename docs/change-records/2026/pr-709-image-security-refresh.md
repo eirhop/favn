@@ -161,13 +161,93 @@ approval covers the plan; complete-image qualification is still required.
 
 ## Implementation outcome
 
-Investigation and archive verification are complete. Repository implementation
-has not started.
+Implementation commit `cf6038e9` updates the two runtime snapshots, removes the
+18 obsolete exception rules, and checks all six patched binary packages in both
+standalone image contracts. No application code, base digest, build-stage input,
+scan threshold or remaining applicability constraint changed. The proposed
+behavior diagram also describes the implemented image path.
+
+| Slice | Actual production added/deleted | Actual supporting added/deleted |
+| --- | ---: | ---: |
+| Runtime snapshots | 8 / 10 | 0 / 0 |
+| Fixed-finding exceptions | 3 / 83 | 0 / 0 |
+| Qualification and explanation | 0 / 0 | 41 / 0 |
+
+The simple six-command package checks use fewer supporting additions than
+estimated without adding a shared-script dependency or mirroring source text in
+tests. Counts exclude this record; there are no material budget overruns.
+
+## Verification evidence
+
+| Check | Result and boundary |
+| --- | --- |
+| Baseline scan and authenticated archive metadata | 20 fixable blocking matches; all minimum patched versions available in the selected snapshot |
+| Exception guard and shell syntax | Passed; 1 October deadline and High gate unchanged |
+| Old runtime package floor rejection | Each of the six installed-version checks rejects its older package in the baseline runtime probe |
+| Generated deployment acceptance | Owning deployment-artifact test passed |
+| Complete image builds and contracts | Running for the exact implementation commit; runtime-only probes are not counted as full-image qualification |
+| Complete image scans | To be recorded after builds complete |
+| GitHub diagrams | Both diagrams rendered and visually checked before implementation |
+| Recovery rebase and stacked CI | To follow successful security qualification |
+
+No image has been published or deployed, and neither PR has been merged.
 
 ## Deviations
 
 The user explicitly waived creation of a prerequisite issue. A PR-only record
 filename is used; the independent plan and final review process still applies.
+
+### Additional toolchain patch refresh (independently approved)
+
+The complete runner at `cf6038e9` passes its image contract and clears all 20
+Debian blocking matches, but exposes 11 High matches for bundled Erlang 29.0.4.
+Grype identifies OTP 29.0.6 as fixed; the upstream
+[OTP release](https://github.com/erlang/otp/releases/tag/OTP-29.0.6) documents the
+ERTS and inets fixes. A runtime-only Debian probe could not reveal these.
+
+The published Hex image matrix has no Elixir 1.20.2 / OTP 29.0.6 image. Use the
+verified `hexpm/elixir:1.20.4-erlang-29.0.6-debian-trixie-20260824-slim` index digest
+`sha256:3eade7c27e7e3022842799ae0933b69ce29005e556d570c001b18bce93ebd325`.
+[Elixir 1.20.4](https://github.com/elixir-lang/elixir/releases/tag/v1.20.4)
+also contains a security patch. This keeps the existing major/minor lines and
+uses the publisher's maintained image instead of creating a custom OTP build.
+
+Before implementing, independently review this deviation from the original
+unchanged-toolchain invariant. Replace the two builder pins, advance their APT
+snapshot to `20260824T000000Z` to match the new base, and update toolchain checks
+and OCI labels. Align all five CI toolchain pairs and the Compose customer
+builder with the same version pair and pinned digest. Preserve historical
+benchmark/implementation reports and application dependency versions.
+
+Add a runner contract assertion for the actual bundled ERTS 17.0.6 and Elixir
+1.20.4 through release eval, plus matching image label checks. The control-plane
+contract already checks recorded build versions; add an actual release eval
+assertion there too. Keep the Debian runtime base/snapshot and all remaining
+scan rules unchanged. No new suppression is justified.
+
+Additional budget: builder/toolchain production changes 18-30 added / 18-30
+deleted across both Dockerfiles and CI; supporting Compose/checks/security docs
+20-40 added / 5-12 deleted. Counts exclude this record. Rebuild both complete
+images, rerun both contracts and unchanged High scans, and require CI fast,
+acceptance and HTTP runtime coverage on the new toolchain before qualification.
+Local tests on the old host toolchain are supplementary evidence only.
+
+The final path adds a patched BEAM toolchain to the original package refresh.
+
+```mermaid
+flowchart LR
+    A[Patched Debian runtime packages] --> C[Complete release image]
+    B[OTP 29.0.6 and Elixir 1.20.4] --> C
+    C --> D[Actual package and runtime checks]
+    D --> E[Unchanged High security gate]
+    E --> F[Rebase recovery PR]
+```
+
+Astra at xhigh independently approved this deviation before implementation on
+2026-09-14 with no blocking findings. The reviewer verified the publisher digest,
+image matrix, complete-image evidence, affected pins, budget and third diagram.
+Final approval still requires rebuilt image qualification and CI on the new
+patch versions, including Slow and Dialyzer, followed by final-head stack checks.
 
 ## Final review
 
