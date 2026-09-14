@@ -3,10 +3,10 @@
 | Field | Value |
 | --- | --- |
 | Status | Implemented |
-| Implementation state | Implemented and independently reviewed; image-security CI remains blocked |
+| Implementation state | Implemented and independently reviewed; rebased onto the separate security fix in PR #709 |
 | Type | Bug fix; persistence replay contract refinement |
 | Primary issue | [#707](https://github.com/eirhop/favn/issues/707) |
-| Pull request | [#708 (draft)](https://github.com/eirhop/favn/pull/708) |
+| Pull request | [#708](https://github.com/eirhop/favn/pull/708) |
 | Related work | [#704 retention](https://github.com/eirhop/favn/issues/704), [#705 normalization](https://github.com/eirhop/favn/issues/705), [#706 lifecycle logs](https://github.com/eirhop/favn/issues/706); preserve merged [#703 recovery safeguards](https://github.com/eirhop/favn/pull/703) |
 | Affected areas | favn_orchestrator recovery scheduling and persistence contract; favn_storage_postgres runner-task receipts |
 | Approved plan commit | `0e1e64bf0eb68a5eef2d5581919900ce56bda8d1` |
@@ -404,3 +404,24 @@ The fixture corrections and 131-line supporting-test overrun are justified.
 Approval covers this implementation, not image qualification or all-green CI:
 both image vulnerability scans failed their high-or-higher severity threshold.
 The PR remains unmerged and no deployment has been performed.
+
+## Security dependency and rebase qualification
+
+On 2026-09-14 the five reviewed recovery commits were rebased from `5b8a1124`
+onto security PR [#709](https://github.com/eirhop/favn/pull/709), branch
+`codex/fix-image-security-scan` at `d96ef48b`. That separate PR patches Debian
+packages and the bundled Erlang/Elixir toolchain. Its implementation `380a7364`
+passed complete local image contracts/scans and all hosted checks, including an
+unchanged fast-test rerun. The original image failure above is historical.
+
+The rebased recovery code checkpoint is `105f3ed8`. Git range-diff matches all
+five recovery commits exactly, with no conflict or source/test patch change;
+the original approved plan is preserved byte for byte. The following record
+update only documents the dependency and qualification process.
+
+The final head and base, CI run links and stack audit are recorded in the
+[PR description and checks](https://github.com/eirhop/favn/pull/708). Qualification
+runs with base `main` because CI filters on that base. After passing checks,
+retargeting to `codex/fix-image-security-scan` exposes only the recovery diff;
+the checked head must stay unchanged. This does not change recovery behavior,
+its five-second interval, retention, or deployment scope.
