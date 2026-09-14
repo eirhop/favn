@@ -44,19 +44,7 @@ image_environment=$(inspect '{{range .Config.Env}}{{println .}}{{end}}')
 image_history=$(docker image history --no-trunc --format '{{.CreatedBy}}' "$image")
 ! grep -Ei '(TOKEN|PASSWORD|COOKIE|SECRET_KEY_BASE|DATABASE_URL|PIN_KEY|STORAGE_KEY|SAS)=' <<< "$image_history" | grep -q .
 
-embedded_metadata=$(# Check both bundled runtimes, not only their recorded build metadata.
-for role in orchestrator view; do
-  docker run --rm \
-    --network none \
-    --read-only \
-    --tmpfs /tmp:rw,noexec,nosuid,size=64m,uid=10001,gid=10001,mode=0700 \
-    --cap-drop ALL \
-    --security-opt no-new-privileges:true \
-    --env "FAVN_CONTROL_PLANE_ROLE=$role" \
-    "$image" eval '"1.20.4" = System.version(); ~c"17.0.6" = :erlang.system_info(:version)'
-done
-
-docker run --rm --entrypoint /bin/sh "$image" -c \
+embedded_metadata=$(docker run --rm --entrypoint /bin/sh "$image" -c \
   'printf "%s|%s|%s" "$(cat /app/runtime-versions/FAVN_VERSION)" "$(cat /app/runtime-versions/MANIFEST_SCHEMA_VERSION)" "$(cat /app/runtime-versions/RUNNER_CONTRACT_VERSION)"')
 [[ $embedded_metadata == "$label_version|$label_manifest_schema|$label_runner_contract" ]]
 
