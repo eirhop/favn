@@ -2,13 +2,13 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Plan approved |
+| Status | Implementing |
 | Type | Security maintenance |
 | Primary issue | None; prerequisite issue explicitly waived for this change |
-| Pull request | Pending |
+| Pull request | [#709](https://github.com/eirhop/favn/pull/709) |
 | Related work | [Recovery PR #708](https://github.com/eirhop/favn/pull/708), to be rebased onto this security branch |
 | Affected areas | Control-plane runtime image, generated runner runtime image, image qualification and Grype policy |
-| Approved plan commit | Awaiting independent review |
+| Approved plan commit | `03a6761fb551b5807c67275d7bc103c3bce43588` |
 | Last updated | 2026-09-14 |
 
 ## One-minute summary
