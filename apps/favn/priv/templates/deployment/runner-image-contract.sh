@@ -18,6 +18,8 @@ inspect() {
 [[ $(inspect '{{.Config.WorkingDir}}') == /opt/favn ]]
 [[ $(inspect '{{ index .Config.Labels "org.opencontainers.image.version" }}') == "$expected_release_id" ]]
 [[ $(inspect '{{ index .Config.Labels "io.favn.runner-release-id" }}') == "$expected_release_id" ]]
+[[ $(inspect '{{ index .Config.Labels "io.favn.elixir-version" }}') == 1.20.4 ]]
+[[ $(inspect '{{ index .Config.Labels "io.favn.otp-version" }}') == 29.0.6 ]]
 duckdb_version=$(inspect '{{ index .Config.Labels "io.favn.duckdb-version" }}')
 [[ -n $duckdb_version ]]
 [[ $(inspect '{{ index .Config.Labels "io.favn.target" }}') == linux/amd64 ]]
@@ -86,4 +88,4 @@ docker run --rm \
   --env FAVN_RUNNER_NODE_HOST_ALIAS=runner \
   --env FAVN_DISTRIBUTION_COOKIE=favn-runner-contract-7A9c2D4e6F8h0J1k \
   "$image" \
-  eval 'alias Favn.Connection.Resolved; alias Favn.SQL.Adapter.DuckDB.ADBC; resolved = %Resolved{name: :warehouse, adapter: ADBC, module: __MODULE__, config: %{open: [database: ":memory:"]}}; {:ok, conn} = ADBC.connect(resolved, []); {:ok, version} = ADBC.query(conn, "SELECT version() AS version", []); true = version.rows == [%{"version" => "v" <> System.fetch_env!("EXPECTED_DUCKDB_VERSION")}]; for extension <- ["ducklake", "postgres_scanner", "json"], do: ({:ok, _} = ADBC.execute(conn, "INSTALL #{extension}", [])); for extension <- ["ducklake", "postgres", "json"], do: ({:ok, _} = ADBC.execute(conn, "LOAD #{extension}", [])); {:ok, result} = ADBC.query(conn, "SELECT json_valid(?) AS valid", params: ["{}"]); true = result.rows == [%{"valid" => true}]; ADBC.disconnect(conn, []); IO.puts("duckdb-adbc-ok")'
+  eval '"1.20.4" = System.version(); ~c"17.0.6" = :erlang.system_info(:version); alias Favn.Connection.Resolved; alias Favn.SQL.Adapter.DuckDB.ADBC; resolved = %Resolved{name: :warehouse, adapter: ADBC, module: __MODULE__, config: %{open: [database: ":memory:"]}}; {:ok, conn} = ADBC.connect(resolved, []); {:ok, version} = ADBC.query(conn, "SELECT version() AS version", []); true = version.rows == [%{"version" => "v" <> System.fetch_env!("EXPECTED_DUCKDB_VERSION")}]; for extension <- ["ducklake", "postgres_scanner", "json"], do: ({:ok, _} = ADBC.execute(conn, "INSTALL #{extension}", [])); for extension <- ["ducklake", "postgres", "json"], do: ({:ok, _} = ADBC.execute(conn, "LOAD #{extension}", [])); {:ok, result} = ADBC.query(conn, "SELECT json_valid(?) AS valid", params: ["{}"]); true = result.rows == [%{"valid" => true}]; ADBC.disconnect(conn, []); IO.puts("duckdb-adbc-ok")'

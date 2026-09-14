@@ -10,7 +10,7 @@ ARG DUCKLAKE_EXTENSION_SHA256=733ccf19fedcfd5e0bfaf85993219145181099cc411076cabf
 ARG POSTGRES_EXTENSION_SHA256=e0f631a5535f165468bc8a20501f8bc1490adbc877d38fcdff2f8d05531e1e5b
 ARG JSON_EXTENSION_SHA256=325c0e08e081a928c66bba1528f3848e54dade9f82a8afe84f97df137333962e
 
-FROM hexpm/elixir:1.20.2-erlang-29.0.4-debian-trixie-20260713-slim@sha256:5a4f24baf7f8963e4e03d0f63bf7d0e44babd1891ce9415b68e4c61846aab7b2 AS builder
+FROM hexpm/elixir:1.20.4-erlang-29.0.6-debian-trixie-20260824-slim@sha256:3eade7c27e7e3022842799ae0933b69ce29005e556d570c001b18bce93ebd325 AS builder
 
 ARG TARGETARCH
 ARG DUCKDB_VERSION
@@ -27,8 +27,8 @@ WORKDIR /build
 # every downloaded DuckDB artifact are also pinned for reproducible rebuilds.
 RUN test "$TARGETARCH" = amd64 \
     && sed -i \
-      -e 's|URIs: http://deb.debian.org/debian$|URIs: http://snapshot.debian.org/archive/debian/20260713T000000Z|' \
-      -e 's|URIs: http://deb.debian.org/debian-security$|URIs: http://snapshot.debian.org/archive/debian-security/20260713T000000Z|' \
+      -e 's|URIs: http://deb.debian.org/debian$|URIs: http://snapshot.debian.org/archive/debian/20260824T000000Z|' \
+      -e 's|URIs: http://deb.debian.org/debian-security$|URIs: http://snapshot.debian.org/archive/debian-security/20260824T000000Z|' \
       /etc/apt/sources.list.d/debian.sources \
     && apt-get -o Acquire::Check-Valid-Until=false update \
     && apt-get install -y --no-install-recommends binutils build-essential ca-certificates curl git gzip unzip \
@@ -152,8 +152,8 @@ LABEL org.opencontainers.image.title="Favn customer runner" \
       org.opencontainers.image.version="$FAVN_RUNNER_RELEASE_ID" \
       io.favn.runner-release-id="$FAVN_RUNNER_RELEASE_ID" \
       io.favn.duckdb-version="$DUCKDB_VERSION" \
-      io.favn.elixir-version="1.20.2" \
-      io.favn.otp-version="29.0.4" \
+      io.favn.elixir-version="1.20.4" \
+      io.favn.otp-version="29.0.6" \
       io.favn.target="linux/amd64"
 
 ENV FAVN_RUNNER_RELEASE_ID=$FAVN_RUNNER_RELEASE_ID \

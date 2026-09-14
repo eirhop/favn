@@ -20,8 +20,8 @@ inspect() {
 [[ $(inspect '{{.Config.User}}') == 10001:10001 ]]
 [[ $(inspect '{{.Config.WorkingDir}}') == /app ]]
 [[ $(inspect '{{ index .Config.Labels "org.opencontainers.image.source" }}') == https://github.com/eirhop/favn ]]
-[[ $(inspect '{{ index .Config.Labels "io.favn.elixir-version" }}') == 1.20.2 ]]
-[[ $(inspect '{{ index .Config.Labels "io.favn.otp-version" }}') == 29.0.4 ]]
+[[ $(inspect '{{ index .Config.Labels "io.favn.elixir-version" }}') == 1.20.4 ]]
+[[ $(inspect '{{ index .Config.Labels "io.favn.otp-version" }}') == 29.0.6 ]]
 [[ $(inspect '{{ index .Config.Labels "io.favn.target" }}') == linux/amd64 ]]
 label_version=$(inspect '{{ index .Config.Labels "org.opencontainers.image.version" }}')
 label_revision=$(inspect '{{ index .Config.Labels "org.opencontainers.image.revision" }}')
@@ -44,7 +44,19 @@ image_environment=$(inspect '{{range .Config.Env}}{{println .}}{{end}}')
 image_history=$(docker image history --no-trunc --format '{{.CreatedBy}}' "$image")
 ! grep -Ei '(TOKEN|PASSWORD|COOKIE|SECRET_KEY_BASE|DATABASE_URL|PIN_KEY|STORAGE_KEY|SAS)=' <<< "$image_history" | grep -q .
 
-embedded_metadata=$(docker run --rm --entrypoint /bin/sh "$image" -c \
+embedded_metadata=$(# Check both bundled runtimes, not only their recorded build metadata.
+for role in orchestrator view; do
+  docker run --rm \
+    --network none \
+    --read-only \
+    --tmpfs /tmp:rw,noexec,nosuid,size=64m,uid=10001,gid=10001,mode=0700 \
+    --cap-drop ALL \
+    --security-opt no-new-privileges:true \
+    --env "FAVN_CONTROL_PLANE_ROLE=$role" \
+    "$image" eval '"1.20.4" = System.version(); ~c"17.0.6" = :erlang.system_info(:version)'
+done
+
+docker run --rm --entrypoint /bin/sh "$image" -c \
   'printf "%s|%s|%s" "$(cat /app/runtime-versions/FAVN_VERSION)" "$(cat /app/runtime-versions/MANIFEST_SCHEMA_VERSION)" "$(cat /app/runtime-versions/RUNNER_CONTRACT_VERSION)"')
 [[ $embedded_metadata == "$label_version|$label_manifest_schema|$label_runner_contract" ]]
 
@@ -63,8 +75,8 @@ test -d "$HOME"
 test -x /app/bin/favn_control_plane
 test -x /app/bin/favn_control_plane_health
 test -x /app/bin/favn_control_plane_ops
-test "$(cat /app/runtime-versions/ELIXIR_VERSION)" = 1.20.2
-test "$(cat /app/runtime-versions/OTP_VERSION)" = 29.0.4
+test "$(cat /app/runtime-versions/ELIXIR_VERSION)" = 1.20.4
+test "$(cat /app/runtime-versions/OTP_VERSION)" = 29.0.6
 test -x /app/releases/orchestrator/bin/favn_orchestrator
 test -x /app/releases/view/bin/favn_view
 test ! -e /app/releases/orchestrator/releases/COOKIE
@@ -107,6 +119,18 @@ docker run --rm \
   --entrypoint /bin/sh \
   "$image" \
   -c "$contract"
+
+# Check both bundled runtimes, not only their recorded build metadata.
+for role in orchestrator view; do
+  docker run --rm \
+    --network none \
+    --read-only \
+    --tmpfs /tmp:rw,noexec,nosuid,size=64m,uid=10001,gid=10001,mode=0700 \
+    --cap-drop ALL \
+    --security-opt no-new-privileges:true \
+    --env "FAVN_CONTROL_PLANE_ROLE=$role" \
+    "$image" eval '"1.20.4" = System.version(); ~c"17.0.6" = :erlang.system_info(:version)'
+done
 
 docker run --rm --entrypoint /bin/sh "$image" -c \
   "file=\$(find /app/releases/view/lib -path '*/favn_view-*/priv/static/cache_manifest.json' -type f -print -quit); test -n \"\$file\"; sha256sum \"\$file\" | cut -d ' ' -f 1"

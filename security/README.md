@@ -28,10 +28,19 @@ The High severity gate, scanning of unfixed findings, remaining applicability
 constraints and 1 October review deadline are unchanged. Image contracts compare
 installed versions using Debian version ordering and also accept later patches.
 
-Base-image digests, build-stage snapshots, toolchain and application dependencies
-are unchanged. The retained assessments below describe the exact versions and
-conditions originally reviewed; updating a package or its vendor fix state does
-not silently broaden an exception.
+The complete runner scan additionally found 11 High matches in bundled Erlang
+29.0.4. Both builders now use [OTP 29.0.6](https://github.com/erlang/otp/releases/tag/OTP-29.0.6)
+and [Elixir 1.20.4](https://github.com/elixir-lang/elixir/releases/tag/v1.20.4),
+which also includes a security patch. The published Hex image pairs those patch
+versions with Debian trixie `20260824`; its index is pinned to
+`sha256:3eade7c27e7e3022842799ae0933b69ce29005e556d570c001b18bce93ebd325`.
+Builder package archives match that date. CI and the Compose customer builder
+use the same toolchain pair. Image contracts execute each bundled release and
+assert Elixir 1.20.4 and ERTS 17.0.6, in addition to image metadata checks.
+
+The runtime Debian base digest and application dependencies are unchanged. The
+retained assessments below describe the exact versions and conditions originally
+reviewed; a package or vendor fix-state change does not broaden an exception.
 
 ## Review of 4 September 2026
 
