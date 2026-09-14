@@ -1,8 +1,8 @@
-# Change Record: Refresh patched runtime packages in both images
+# Change Record: Patch Debian and Erlang runtimes in both images
 
 | Field | Value |
 | --- | --- |
-| Status | Implementing |
+| Status | Implemented |
 | Type | Security maintenance |
 | Primary issue | None; prerequisite issue explicitly waived for this change |
 | Pull request | [#709](https://github.com/eirhop/favn/pull/709) |
@@ -13,10 +13,10 @@
 
 ## One-minute summary
 
-Both image scans now fail because Debian has published fixes for packages that
-our dated runtime snapshot cannot install. Update the runtime snapshot to
-14 September 2026, remove obsolete exceptions, and qualify both images with the
-same High severity gate. This is a separate security PR; recovery changes remain
+Both image scans fail because the pinned Debian packages and bundled Erlang
+predate published security patches. Refresh the Debian runtime snapshot and
+Erlang/Elixir patch versions, remove obsolete exceptions, and qualify both images
+with the same High severity gate. This is a separate security PR; recovery changes remain
 in PR #708 and will be rebased onto the security branch after qualification.
 
 ## Impact and evidence
@@ -161,21 +161,23 @@ approval covers the plan; complete-image qualification is still required.
 
 ## Implementation outcome
 
-Implementation commit `cf6038e9` updates the two runtime snapshots, removes the
-18 obsolete exception rules, and checks all six patched binary packages in both
-standalone image contracts. No application code, base digest, build-stage input,
-scan threshold or remaining applicability constraint changed. The proposed
-behavior diagram also describes the implemented image path.
+Implementation `380a7364` updates both runtime snapshots and both builder
+pins, aligns CI and Compose toolchains, removes 18 obsolete exception rules,
+and checks installed packages and executed release runtimes. The reviewed
+OTP/Elixir deviation below explains the additional scope. No application code,
+application dependency, runtime base digest, scan threshold or remaining
+exception constraint changed.
 
 | Slice | Actual production added/deleted | Actual supporting added/deleted |
 | --- | ---: | ---: |
-| Runtime snapshots | 8 / 10 | 0 / 0 |
+| Runtime snapshots and builder/CI toolchain patches | 30 / 32 | 0 / 0 |
 | Fixed-finding exceptions | 3 / 83 | 0 / 0 |
-| Qualification and explanation | 0 / 0 | 41 / 0 |
+| Contracts, Compose builder and canonical explanation | 0 / 0 | 70 / 6 |
 
-The simple six-command package checks use fewer supporting additions than
-estimated without adding a shared-script dependency or mirroring source text in
-tests. Counts exclude this record; there are no material budget overruns.
+Counts compare the final implementation against `5b8a1124` and exclude this
+record. All slices fit the original budget plus the independently approved
+toolchain extension. Standalone checks require fewer additions than originally
+estimated; no replaced execution path or obsolete exception was retained.
 
 ## Verification evidence
 
@@ -185,10 +187,13 @@ tests. Counts exclude this record; there are no material budget overruns.
 | Exception guard and shell syntax | Passed; 1 October deadline and High gate unchanged |
 | Old runtime package floor rejection | Each of the six installed-version checks rejects its older package in the baseline runtime probe |
 | Generated deployment acceptance | Owning deployment-artifact test passed |
-| Complete image builds and contracts | Running for the exact implementation commit; runtime-only probes are not counted as full-image qualification |
-| Complete image scans | To be recorded after builds complete |
-| GitHub diagrams | Both diagrams rendered and visually checked before implementation |
-| Recovery rebase and stacked CI | To follow successful security qualification |
+| Initial complete image builds and contracts | Both passed at `cf6038e9`; OS-only fix still leaves bundled Erlang findings |
+| Patched-toolchain image builds and contracts | Both complete images built at `380a7364`; all local and GitHub image contracts pass, including both control-plane runtime evals and offline runner DuckDB/ADBC checks |
+| Initial complete image scans | Both clear all 20 Debian blockers but fail on 11 Erlang High matches; patch deviation independently reviewed |
+| Patched-toolchain image scans | [Both exact image scans and direct repository image qualification pass](https://github.com/eirhop/favn/actions/runs/34845338819); both local Grype scans also pass with zero unsuppressed High/Critical matches using database `2026-09-14T06:38:38Z` |
+| GitHub diagrams | Original two diagrams and additional reviewed toolchain-flow diagram rendered and visually checked before their respective implementation |
+| New-toolchain CI | [Quick, fast, acceptance, slow and Dialyzer pass](https://github.com/eirhop/favn/actions/runs/34845338952); [HTTP boundary passes](https://github.com/eirhop/favn/actions/runs/34845338964); fast-suite busy-time assertion failed at seed `916640` and passed on unchanged rerun; no test change was made |
+| Recovery rebase and stacked CI | Coordinated follow-up; its exact checked head/base and preserved recovery plan will be recorded in [PR #708](https://github.com/eirhop/favn/pull/708) after this security branch is finalized |
 
 No image has been published or deployed, and neither PR has been merged.
 
@@ -251,4 +256,10 @@ patch versions, including Slow and Dialyzer, followed by final-head stack checks
 
 ## Final review
 
-To be recorded after implementation and qualification.
+Astra (`gpt-6-astra`) at xhigh independently reviewed implementation `380a7364`
+against approved baseline `03a6761f` and the reviewed deviation `e52c263a`.
+Verdict on 2026-09-14: approved, no remaining actionable findings. The reviewer
+verified both complete local scans, runtime contracts, passing hosted image/HTTP
+and CI checks, all three rendered diagrams, line counts and the unchanged
+approved plan. Security implementation approval is separate from the coordinated
+recovery rebase and final-head audit recorded in PR #708.
