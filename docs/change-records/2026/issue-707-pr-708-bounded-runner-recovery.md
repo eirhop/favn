@@ -2,13 +2,14 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Plan reviewed |
+| Status | Implementing |
+| Implementation state | Reviewed plan published; production implementation has not started |
 | Type | Bug fix; persistence replay contract refinement |
 | Primary issue | [#707](https://github.com/eirhop/favn/issues/707) |
-| Pull request | Pending |
+| Pull request | [#708 (draft)](https://github.com/eirhop/favn/pull/708) |
 | Related work | [#704 retention](https://github.com/eirhop/favn/issues/704), [#705 normalization](https://github.com/eirhop/favn/issues/705), [#706 lifecycle logs](https://github.com/eirhop/favn/issues/706); preserve merged [#703 recovery safeguards](https://github.com/eirhop/favn/pull/703) |
 | Affected areas | favn_orchestrator recovery scheduling and persistence contract; favn_storage_postgres runner-task receipts |
-| Approved plan commit | This reviewed planning commit; hash to be recorded in the PR-number update |
+| Approved plan commit | `0e1e64bf0eb68a5eef2d5581919900ce56bda8d1` |
 | Last updated | 2026-09-14 |
 
 ## One-minute summary
@@ -320,7 +321,8 @@ vacuum permits space reuse; allocated volume shrinkage is not an acceptance test
 ## Implementation outcome
 
 Implementation has not started. The current request is to create and review the
-plan; production code, migrations and consumer databases are unchanged. Publish the approved planning baseline and draft PR before any code work.
+plan; production code, migrations and consumer databases are unchanged. The approved planning baseline is published in draft PR #708. Workflow status
+is Implementing because the draft exists; no production code work has begun.
 
 ## Deviations from the approved plan
 
