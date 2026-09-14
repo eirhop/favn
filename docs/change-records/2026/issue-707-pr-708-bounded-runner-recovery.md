@@ -2,8 +2,8 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Implementing |
-| Implementation state | Implemented; final qualification and independent review in progress |
+| Status | Implemented |
+| Implementation state | Implemented and independently reviewed; image-security CI remains blocked |
 | Type | Bug fix; persistence replay contract refinement |
 | Primary issue | [#707](https://github.com/eirhop/favn/issues/707) |
 | Pull request | [#708 (draft)](https://github.com/eirhop/favn/pull/708) |
@@ -378,10 +378,11 @@ its telemetry is integrated into slice 1.
 | PostgreSQL setup | Repository setup completed against isolated PostgreSQL 18 container; tests use separate bootstrap-owned `favn_test` database | No consumer database touched |
 | Orchestrator fast suite | 859 passed, including 16 recovery/session tests | Deterministic timer, disconnect, failure and telemetry coverage |
 | Actual combined probe planning | Passed with 5,000 extra task rows and 10,000 extra receipts; idle, existing receipt and eligible-work cases use indexes with no sequential scan | Local representative-cardinality query plan; not downstream throughput |
-| Storage fast suite | Final owning runner-task file: 54 passed; broad suite rerunning after cutoff fixture corrections | An unrelated bootstrap 100 ms assertion passed unchanged in an isolated eight-test rerun |
-| Crash-recovery slow qualification | All three owning slow tests passed: SIGKILL lifecycle barriers, cold distributed runner and three-pool scale | Real PostgreSQL and fresh BEAM processes; 333 aggregate simulated runner processes |
+| Storage fast suite | 436 passed with four async cases; owning runner-task file separately passed all 54 tests | Initial fixture failures corrected to use the scan cutoff; an unrelated bootstrap 100 ms assertion passed unchanged in an isolated eight-test rerun. A repeat confirmed all 436 tests passing and command exit status 0 after an earlier wrapper signal following the successful summary |
+| Crash-recovery slow qualification | All three owning slow tests passed: SIGKILL lifecycle barriers, cold distributed runner and three-pool scale | Real PostgreSQL and fresh BEAM processes; 333 aggregate runner processes in distributed fixtures |
 | Compilation / formatting / test tag guard | Test compilation with warnings as errors, format check and CI tag guard passed | Local checks |
-| Documentation | Both original approved diagrams visually rendered on GitHub before implementation; links and whitespace checked | Diagrams unchanged; final GitHub recheck still to run |
+| Documentation | Both approved diagrams visually rendered on GitHub before implementation and again after the implementation push; links, Markdown fences and whitespace checked | Final check used the actual GitHub Mermaid frames and screenshots; proposed diagram also matches final behavior |
+| GitHub CI at implementation commit `bc6ae3a0` | Quick checks and acceptance passed; other main checks running. Both image vulnerability scans failed at the high-or-higher severity threshold; their aggregate image gate also failed | [Image qualification run](https://github.com/eirhop/favn/actions/runs/34841822261). No Dockerfiles, image pins, dependencies or scanner policy changed in this PR; full CI success and image qualification are not claimed |
 
 ### Not verified
 
@@ -391,6 +392,15 @@ No production rollout, bulk deletion or file compaction has been performed.
 
 ## Final review
 
-Independent Astra xhigh implementation review is requested against approved
-baseline `0e1e64bf0eb68a5eef2d5581919900ce56bda8d1`. Qualification in progress is
-explicitly listed above and must be completed before the final verdict is recorded.
+Astra (`gpt-6-astra`) at xhigh reasoning effort independently compared the final
+implementation commits `4a80c86b` and `bc6ae3a0`, the refreshed outcome/evidence and
+approved baseline `0e1e64bf0eb68a5eef2d5581919900ce56bda8d1` on 2026-09-14.
+The reviewer rechecked the fixture corrections and final complexity counts,
+inspected the saved test logs and confirmed storage command exit status 0, and
+visually inspected both rendered GitHub diagrams.
+
+**Verdict: approve the implementation; no actionable code findings remain.**
+The fixture corrections and 131-line supporting-test overrun are justified.
+Approval covers this implementation, not image qualification or all-green CI:
+both image vulnerability scans failed their high-or-higher severity threshold.
+The PR remains unmerged and no deployment has been performed.
