@@ -18,6 +18,8 @@ inspect() {
 [[ $(inspect '{{.Config.WorkingDir}}') == /opt/favn ]]
 [[ $(inspect '{{ index .Config.Labels "org.opencontainers.image.version" }}') == "$expected_release_id" ]]
 [[ $(inspect '{{ index .Config.Labels "io.favn.runner-release-id" }}') == "$expected_release_id" ]]
+[[ $(inspect '{{ index .Config.Labels "io.favn.elixir-version" }}') == 1.20.4 ]]
+[[ $(inspect '{{ index .Config.Labels "io.favn.otp-version" }}') == 29.0.6 ]]
 duckdb_version=$(inspect '{{ index .Config.Labels "io.favn.duckdb-version" }}')
 [[ -n $duckdb_version ]]
 [[ $(inspect '{{ index .Config.Labels "io.favn.target" }}') == linux/amd64 ]]
@@ -36,6 +38,13 @@ image_history=$(docker image history --no-trunc --format '{{.CreatedBy}}' "$imag
 
 contract=$(cat <<SH
 set -eu
+# Minimum Debian security fixes from the 14 September 2026 runtime snapshot.
+dpkg --compare-versions "\$(dpkg-query -W -f='\${Version}' libc6)" ge 2.41-12+deb13u4
+dpkg --compare-versions "\$(dpkg-query -W -f='\${Version}' libc-bin)" ge 2.41-12+deb13u4
+dpkg --compare-versions "\$(dpkg-query -W -f='\${Version}' perl-base)" ge 5.40.1-6+deb13u1
+dpkg --compare-versions "\$(dpkg-query -W -f='\${Version}' gzip)" ge 1.13-1+deb13u1
+dpkg --compare-versions "\$(dpkg-query -W -f='\${Version}' libpcre2-8-0)" ge 10.46-1~deb13u2
+dpkg --compare-versions "\$(dpkg-query -W -f='\${Version}' libsqlite3-0)" ge 3.46.1-7+deb13u2
 test "\$(id -u)" = 10001
 test "\$(id -g)" = 10001
 test -x /opt/favn/bin/favn_runner
@@ -79,4 +88,4 @@ docker run --rm \
   --env FAVN_RUNNER_NODE_HOST_ALIAS=runner \
   --env FAVN_DISTRIBUTION_COOKIE=favn-runner-contract-7A9c2D4e6F8h0J1k \
   "$image" \
-  eval 'alias Favn.Connection.Resolved; alias Favn.SQL.Adapter.DuckDB.ADBC; resolved = %Resolved{name: :warehouse, adapter: ADBC, module: __MODULE__, config: %{open: [database: ":memory:"]}}; {:ok, conn} = ADBC.connect(resolved, []); {:ok, version} = ADBC.query(conn, "SELECT version() AS version", []); true = version.rows == [%{"version" => "v" <> System.fetch_env!("EXPECTED_DUCKDB_VERSION")}]; for extension <- ["ducklake", "postgres_scanner", "json"], do: ({:ok, _} = ADBC.execute(conn, "INSTALL #{extension}", [])); for extension <- ["ducklake", "postgres", "json"], do: ({:ok, _} = ADBC.execute(conn, "LOAD #{extension}", [])); {:ok, result} = ADBC.query(conn, "SELECT json_valid(?) AS valid", params: ["{}"]); true = result.rows == [%{"valid" => true}]; ADBC.disconnect(conn, []); IO.puts("duckdb-adbc-ok")'
+  eval '"1.20.4" = System.version(); ~c"17.0.6" = :erlang.system_info(:version); alias Favn.Connection.Resolved; alias Favn.SQL.Adapter.DuckDB.ADBC; resolved = %Resolved{name: :warehouse, adapter: ADBC, module: __MODULE__, config: %{open: [database: ":memory:"]}}; {:ok, conn} = ADBC.connect(resolved, []); {:ok, version} = ADBC.query(conn, "SELECT version() AS version", []); true = version.rows == [%{"version" => "v" <> System.fetch_env!("EXPECTED_DUCKDB_VERSION")}]; for extension <- ["ducklake", "postgres_scanner", "json"], do: ({:ok, _} = ADBC.execute(conn, "INSTALL #{extension}", [])); for extension <- ["ducklake", "postgres", "json"], do: ({:ok, _} = ADBC.execute(conn, "LOAD #{extension}", [])); {:ok, result} = ADBC.query(conn, "SELECT json_valid(?) AS valid", params: ["{}"]); true = result.rows == [%{"valid" => true}]; ADBC.disconnect(conn, []); IO.puts("duckdb-adbc-ok")'

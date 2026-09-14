@@ -20,8 +20,8 @@ inspect() {
 [[ $(inspect '{{.Config.User}}') == 10001:10001 ]]
 [[ $(inspect '{{.Config.WorkingDir}}') == /app ]]
 [[ $(inspect '{{ index .Config.Labels "org.opencontainers.image.source" }}') == https://github.com/eirhop/favn ]]
-[[ $(inspect '{{ index .Config.Labels "io.favn.elixir-version" }}') == 1.20.2 ]]
-[[ $(inspect '{{ index .Config.Labels "io.favn.otp-version" }}') == 29.0.4 ]]
+[[ $(inspect '{{ index .Config.Labels "io.favn.elixir-version" }}') == 1.20.4 ]]
+[[ $(inspect '{{ index .Config.Labels "io.favn.otp-version" }}') == 29.0.6 ]]
 [[ $(inspect '{{ index .Config.Labels "io.favn.target" }}') == linux/amd64 ]]
 label_version=$(inspect '{{ index .Config.Labels "org.opencontainers.image.version" }}')
 label_revision=$(inspect '{{ index .Config.Labels "org.opencontainers.image.revision" }}')
@@ -50,14 +50,21 @@ embedded_metadata=$(docker run --rm --entrypoint /bin/sh "$image" -c \
 
 contract=$(cat <<'SH'
 set -eu
+# Minimum Debian security fixes from the 14 September 2026 runtime snapshot.
+dpkg --compare-versions "$(dpkg-query -W -f='${Version}' libc6)" ge 2.41-12+deb13u4
+dpkg --compare-versions "$(dpkg-query -W -f='${Version}' libc-bin)" ge 2.41-12+deb13u4
+dpkg --compare-versions "$(dpkg-query -W -f='${Version}' perl-base)" ge 5.40.1-6+deb13u1
+dpkg --compare-versions "$(dpkg-query -W -f='${Version}' gzip)" ge 1.13-1+deb13u1
+dpkg --compare-versions "$(dpkg-query -W -f='${Version}' libpcre2-8-0)" ge 10.46-1~deb13u2
+dpkg --compare-versions "$(dpkg-query -W -f='${Version}' libsqlite3-0)" ge 3.46.1-7+deb13u2
 test "$(id -u)" = 10001
 test "$(id -g)" = 10001
 test -d "$HOME"
 test -x /app/bin/favn_control_plane
 test -x /app/bin/favn_control_plane_health
 test -x /app/bin/favn_control_plane_ops
-test "$(cat /app/runtime-versions/ELIXIR_VERSION)" = 1.20.2
-test "$(cat /app/runtime-versions/OTP_VERSION)" = 29.0.4
+test "$(cat /app/runtime-versions/ELIXIR_VERSION)" = 1.20.4
+test "$(cat /app/runtime-versions/OTP_VERSION)" = 29.0.6
 test -x /app/releases/orchestrator/bin/favn_orchestrator
 test -x /app/releases/view/bin/favn_view
 test ! -e /app/releases/orchestrator/releases/COOKIE
@@ -100,6 +107,18 @@ docker run --rm \
   --entrypoint /bin/sh \
   "$image" \
   -c "$contract"
+
+# Check both bundled runtimes, not only their recorded build metadata.
+for role in orchestrator view; do
+  docker run --rm \
+    --network none \
+    --read-only \
+    --tmpfs /tmp:rw,noexec,nosuid,size=64m,uid=10001,gid=10001,mode=0700 \
+    --cap-drop ALL \
+    --security-opt no-new-privileges:true \
+    --env "FAVN_CONTROL_PLANE_ROLE=$role" \
+    "$image" eval '"1.20.4" = System.version(); ~c"17.0.6" = :erlang.system_info(:version)'
+done
 
 docker run --rm --entrypoint /bin/sh "$image" -c \
   "file=\$(find /app/releases/view/lib -path '*/favn_view-*/priv/static/cache_manifest.json' -type f -print -quit); test -n \"\$file\"; sha256sum \"\$file\" | cut -d ' ' -f 1"
