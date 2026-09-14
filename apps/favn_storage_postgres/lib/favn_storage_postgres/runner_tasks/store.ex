@@ -855,8 +855,6 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
   @impl true
   def recover_expired(%C.RecoverRunnerTasks{} = command) do
     idempotent_transact(command, "recover_expired", fn ->
-      validate_recovery!(command)
-
       tasks =
         Repo.all(
           from(task in RunnerTask,
@@ -1897,6 +1895,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
   defp validate_recovery!(command) do
     with true <- valid_platform_runner_context?(command.platform_context),
          :ok <- bounded_id(command.owner_id),
+         true <- match?(%DateTime{}, command.occurred_at),
          true <- is_integer(command.limit) and command.limit in 1..50,
          true <- is_integer(command.lease_duration_ms) and command.lease_duration_ms > 0 do
       :ok
@@ -2114,53 +2113,96 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
       command = canonicalize_enqueue_issued_at!(command, operation, scope_id)
       prune_command_receipts!(now)
       validate_command_window!(command.issued_at, now)
-      request_hash = command_hash(command)
-
-      case Repo.insert_all(
-             RunnerTaskCommand,
-             [
-               %{
-                 scope_id: scope_id,
-                 command_id: command.command_id,
-                 operation: operation,
-                 request_hash: request_hash,
-                 result: %{"kind" => "pending"},
-                 issued_at: command.issued_at,
-                 inserted_at: now
-               }
-             ],
-             on_conflict: :nothing
-           ) do
-        {1, _} ->
-          result = fun.() |> normalize_command_result()
-
-          receipt =
-            encode_command_result(result, operation, scope_id, command.command_id, now)
-
-          {1, _} =
-            Repo.update_all(
-              from(row in RunnerTaskCommand,
-                where: row.scope_id == ^scope_id and row.command_id == ^command.command_id
-              ),
-              set: [result: receipt]
-            )
-
-          result
-
-        {0, _} ->
-          receipt =
-            Repo.get_by!(RunnerTaskCommand,
-              scope_id: scope_id,
-              command_id: command.command_id
-            )
-
-          if receipt.operation == operation and receipt.request_hash == request_hash do
-            replay_command_result!(receipt, operation, command)
-          else
-            Repo.rollback(Error.new(:conflict, "runner task command identity was reused"))
-          end
-      end
+      execute_command(command, operation, scope_id, now, fun)
     end)
+  end
+
+  defp execute_command(%C.RecoverRunnerTasks{} = command, operation, scope_id, now, fun) do
+    validate_recovery!(command)
+
+    %{rows: [[needed?]]} =
+      SQL.query!(
+        Repo,
+        """
+        SELECT EXISTS (
+          SELECT 1 FROM favn_control.runner_task_commands
+          WHERE scope_id = $1 AND command_id = $2
+        ) OR EXISTS (
+          SELECT 1 FROM favn_control.runner_tasks
+          WHERE status = ANY($3) AND assignment_expires_at <= $4
+        )
+        """,
+        [scope_id, command.command_id, @active_statuses, command.occurred_at]
+      )
+
+    if needed? do
+      SQL.query!(Repo, "SAVEPOINT runner_recovery", [])
+      result = insert_or_replay_command(command, operation, scope_id, now, fun)
+      SQL.query!(Repo, "RELEASE SAVEPOINT runner_recovery", [])
+      result
+    else
+      []
+    end
+  end
+
+  defp execute_command(command, operation, scope_id, now, fun),
+    do: insert_or_replay_command(command, operation, scope_id, now, fun)
+
+  defp insert_or_replay_command(command, operation, scope_id, now, fun) do
+    request_hash = command_hash(command)
+
+    case Repo.insert_all(
+           RunnerTaskCommand,
+           [
+             %{
+               scope_id: scope_id,
+               command_id: command.command_id,
+               operation: operation,
+               request_hash: request_hash,
+               result: %{"kind" => "pending"},
+               issued_at: command.issued_at,
+               inserted_at: now
+             }
+           ],
+           on_conflict: :nothing
+         ) do
+      {1, _} ->
+        result = fun.() |> normalize_command_result()
+
+        if operation == "recover_expired" and result == [] do
+          SQL.query!(Repo, "ROLLBACK TO SAVEPOINT runner_recovery", [])
+          []
+        else
+          persist_command_result!(result, operation, scope_id, command.command_id, now)
+        end
+
+      {0, _} ->
+        receipt =
+          Repo.get_by!(RunnerTaskCommand,
+            scope_id: scope_id,
+            command_id: command.command_id
+          )
+
+        if receipt.operation == operation and receipt.request_hash == request_hash do
+          replay_command_result!(receipt, operation, command)
+        else
+          Repo.rollback(Error.new(:conflict, "runner task command identity was reused"))
+        end
+    end
+  end
+
+  defp persist_command_result!(result, operation, scope_id, command_id, now) do
+    receipt = encode_command_result(result, operation, scope_id, command_id, now)
+
+    {1, _} =
+      Repo.update_all(
+        from(row in RunnerTaskCommand,
+          where: row.scope_id == ^scope_id and row.command_id == ^command_id
+        ),
+        set: [result: receipt]
+      )
+
+    result
   end
 
   defp command_hash(%C.ResolveRunnerTaskWrite{} = command) do

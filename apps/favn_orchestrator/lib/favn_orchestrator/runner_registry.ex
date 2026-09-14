@@ -194,10 +194,6 @@ defmodule FavnOrchestrator.RunnerRegistry do
 
         case Map.get(state.sessions, runner_id) do
           %Session{session_generation: ^generation} = session ->
-            if recovery = Process.whereis(FavnOrchestrator.RunnerTaskRecovery) do
-              send(recovery, {:runner_down, runner_id, generation, reason})
-            end
-
             spawn_session_write(fn ->
               FavnOrchestrator.RunnerSessions.close(session, reason, DateTime.utc_now())
             end)

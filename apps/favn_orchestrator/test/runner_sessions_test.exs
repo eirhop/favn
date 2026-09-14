@@ -71,6 +71,25 @@ defmodule FavnOrchestrator.RunnerSessionsTest do
     %{}
   end
 
+  test "disconnect churn closes sessions without notifying recovery" do
+    Process.register(self(), FavnOrchestrator.RunnerTaskRecovery)
+
+    for index <- 1..10 do
+      agent = spawn_agent()
+
+      assert {:ok, _} =
+               RunnerRegistry.register(registration("churn-#{index}", "boot-#{index}"), agent)
+
+      assert_receive {:open_session, opened}, 2_000
+      Process.exit(agent, :kill)
+      assert_receive {:close_session, closed}, 2_000
+      assert closed.session_id == opened.session_id
+    end
+
+    :sys.get_state(RunnerRegistry)
+    refute_receive {:runner_down, _, _, _}, 0
+  end
+
   test "an accepted registration opens exactly one durable session row" do
     agent = spawn_agent()
     registration = registration("runner-open", "boot-open")

@@ -3,7 +3,7 @@
 | Field | Value |
 | --- | --- |
 | Status | Implementing |
-| Implementation state | Reviewed plan published; production implementation has not started |
+| Implementation state | Implemented; final qualification and independent review in progress |
 | Type | Bug fix; persistence replay contract refinement |
 | Primary issue | [#707](https://github.com/eirhop/favn/issues/707) |
 | Pull request | [#708 (draft)](https://github.com/eirhop/favn/pull/708) |
@@ -320,13 +320,42 @@ vacuum permits space reuse; allocated volume shrinkage is not an acceptance test
 
 ## Implementation outcome
 
-Implementation has not started. The current request is to create and review the
-plan; production code, migrations and consumer databases are unchanged. The approved planning baseline is published in draft PR #708. Workflow status
-is Implementing because the draft exists; no production code work has begun.
+The recovery process now accepts only its current tagged tick, keeps one serial
+chain and ignores old ticks and legacy disconnect messages. Registry session
+cleanup remains in place without sending redundant recovery notifications.
+Each executed tick emits duration, claimed-task count and error count telemetry.
+
+The store validates empty calls and retains incremental pruning. One SQL snapshot
+probes receipt identity and task eligibility. Idle calls create no receipt. Positive
+probes keep receipt insertion before task locks; a real SQL savepoint removes a
+new provisional receipt when the locked scan loses its candidates. Existing empty
+receipts and operation/hash conflicts use the existing serialization/replay path.
+Nonempty results and fences commit together. No migration or configuration change
+is required. Deployment remains a normal orchestrator stop/start upgrade.
 
 ## Deviations from the approved plan
 
-None after plan approval. Pre-approval review corrections are recorded in the decision log.
+The approved proposed-behavior diagram also describes the final implementation.
+No production design or scope deviations. Tests reproduce the old empty-receipt
+insert/commit protocol on a separate connection; they do not boot an old release
+or qualify a mixed-version deployment. Separate deterministic timer and real
+PostgreSQL tests establish the idle behavior; no deployed sustained-load benchmark
+is claimed.
+
+### Complexity accounting
+
+| Slice | Production added/deleted | Supporting added/deleted | Explanation |
+| --- | ---: | ---: | --- |
+| 1: timer and its tick telemetry | 31 / 17 | 141 / 1 | Includes the telemetry implementation and process tests budgeted across slices 1 and 3; counted once here |
+| 2: storage and callback contract | 94 / 44 | 449 / 10 | Extra supporting lines cover controlled concurrent receipt/eligibility races, rollback, legacy protocol and the actual probe plan at 5,000 extra tasks and 10,000 extra receipts |
+| 3: canonical operational documentation | 0 / 0 | 34 / 0 | Tick telemetry and its tests are counted in slice 1 |
+
+Counts exclude this record. Slice 2 supporting additions exceed the approved
+320-line upper estimate by 129 lines. The overrun is verification for the planned
+concurrency, replay and query-planning guarantees, not additional product behavior.
+Production remains within the combined approved additions budget. No replaced
+production path was retained; slice 3 has no separate production deletions because
+its telemetry is integrated into slice 1.
 
 ## Decision log
 
@@ -346,17 +375,22 @@ None after plan approval. Pre-approval review corrections are recorded in the de
 
 | Check | Result | Evidence boundary |
 | --- | --- | --- |
-| Source comparison on current origin/main | Both root-cause mechanisms still present | Static evidence only |
-| User-supplied database aggregates | Empty recovery receipts dominate; none older than seven days | Downstream observation, not independently rerun |
-| Plan link/diagram checks | Referenced repository files exist; fences balanced; Mermaid syntax manually reviewed; whitespace check passed | Static documentation checks; GitHub diagram rendering still pending |
-| Runtime regression and load tests | Not run; implementation has not started | No claim of fixed behavior |
+| PostgreSQL setup | Repository setup completed against isolated PostgreSQL 18 container; tests use separate bootstrap-owned `favn_test` database | No consumer database touched |
+| Orchestrator fast suite | 859 passed, including 16 recovery/session tests | Deterministic timer, disconnect, failure and telemetry coverage |
+| Actual combined probe planning | Passed with 5,000 extra task rows and 10,000 extra receipts; idle, existing receipt and eligible-work cases use indexes with no sequential scan | Local representative-cardinality query plan; not downstream throughput |
+| Storage fast suite | Running after focused regressions | Full outcome will be recorded before review completion |
+| Crash-recovery slow qualification | Still to run | No new crash-test claim yet |
+| Compilation / formatting / test tag guard | Test compilation with warnings as errors, format check and CI tag guard passed | Local checks |
+| Documentation | Both original approved diagrams visually rendered on GitHub before implementation; links and whitespace checked | Diagrams unchanged; final GitHub recheck still to run |
 
 ### Not verified
 
 Exact downstream deployed revision, orchestrator count, contribution of disconnect
 churn to observed cadence, savings after rollout, and live vacuum/space reuse.
+No production rollout, bulk deletion or file compaction has been performed.
 
 ## Final review
 
-Not applicable yet. Independent implementation review must compare the approved
-baseline with code, tests, diagnostics, canonical docs and recorded deviations.
+Independent Astra xhigh implementation review is requested against approved
+baseline `0e1e64bf0eb68a5eef2d5581919900ce56bda8d1`. Qualification in progress is
+explicitly listed above and must be completed before the final verdict is recorded.
