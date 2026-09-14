@@ -44,6 +44,22 @@ PostgreSQL envelope allowance. Wire log limits remain 256 KiB.
 
 ## Crash recovery
 
+Each orchestrator runs one serial recovery timer, immediately on startup and
+then five seconds after each completed check. Runner disconnects close sessions
+without adding recovery timers. Tagged ticks reject stale or duplicate messages;
+lease expiry, rather than connection loss, authorizes a recovery claim.
+
+An empty recovery check creates no new command receipt. Nonempty recovery keeps
+its task changes and exact replay receipt in one transaction. Existing empty
+receipts still replay until expiry; an unrecorded empty call reserves no identity
+and can find work on a later call. A competing caller may consume or lock the
+work after the initial probe; the provisional receipt then rolls back without
+undoing prior incremental pruning. The recovery loop uses a fresh command ID on
+each tick. If acknowledgement of a committed recovery claim is lost, that claim
+becomes eligible again when its recovery lease expires; the loop does not retain
+and retry the previous command. Existing write-ownership and unknown-outcome
+safeguards still govern disposition.
+
 Every task pins its workspace, retained manifest version/content hash, pool and
 runner release independently of executable data. The Core decoder accepts fixed
 contract fields and types; consumer references come only from that verified

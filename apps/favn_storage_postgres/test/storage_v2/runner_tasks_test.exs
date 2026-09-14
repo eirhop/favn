@@ -2176,12 +2176,448 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
     assert replayed_failure.error == failed.error
   end
 
+  test "idle recovery writes no receipts and still prunes expired history", fixture do
+    purge_expired_assignments!(DateTime.add(fixture.now, 2, :second))
+    command = recovery_command(fixture, "idle")
+
+    expired = %{
+      command
+      | command_id: command.command_id <> "-expired",
+        issued_at: DateTime.add(fixture.now, -8 * 24 * 60 * 60, :second)
+    }
+
+    insert_empty_recovery_receipt!(expired)
+
+    queries =
+      capture_recovery_queries(fn ->
+        for index <- 1..30 do
+          assert {:ok, []} =
+                   Store.recover_expired(%{
+                     command
+                     | command_id: command.command_id <> "-#{index}"
+                   })
+        end
+      end)
+
+    refute Enum.any?(queries, &String.starts_with?(&1, "INSERT"))
+    refute Enum.any?(queries, &String.starts_with?(&1, "UPDATE"))
+    refute recovery_receipt(expired)
+
+    assert %{rows: [[0]]} =
+             SQL.query!(
+               Repo,
+               "SELECT count(*) FROM favn_control.runner_task_commands WHERE command_id LIKE $1",
+               [command.command_id <> "%"]
+             )
+  end
+
+  test "an unrecorded empty command can later recover work, but a stored empty receipt replays",
+       fixture do
+    purge_expired_assignments!(DateTime.add(fixture.now, 2, :second))
+    command = recovery_command(fixture, "later")
+    assert {:ok, []} = Store.recover_expired(command)
+    refute recovery_receipt(command)
+    assigned = assign_recovery_task!(fixture, "later")
+    legacy = %{command | command_id: command.command_id <> "-legacy"}
+    insert_empty_recovery_receipt!(legacy)
+    assert {:ok, []} = Store.recover_expired(legacy)
+    assert {:ok, [recovered]} = Store.recover_expired(command)
+    assert recovered.task_id == assigned.task_id
+
+    assert {:ok, [^recovered]} =
+             Store.recover_expired(%{command | occurred_at: DateTime.utc_now()})
+
+    assert {:error, %{kind: :conflict}} = Store.recover_expired(%{command | owner_id: "changed"})
+  end
+
+  test "idle recovery rejects invalid commands and existing conflicting identities", fixture do
+    purge_expired_assignments!(DateTime.add(fixture.now, 2, :second))
+    command = recovery_command(fixture, "invalid-idle")
+
+    for changes <- [
+          %{command_id: ""},
+          %{platform_context: nil},
+          %{owner_id: ""},
+          %{limit: 0},
+          %{limit: 51},
+          %{lease_duration_ms: 0},
+          %{occurred_at: nil},
+          %{issued_at: nil},
+          %{issued_at: DateTime.add(fixture.now, -8 * 24 * 60 * 60, :second)},
+          %{issued_at: DateTime.add(fixture.now, 600, :second)}
+        ] do
+      assert {:error, %{kind: :invalid}} = Store.recover_expired(struct(command, changes))
+    end
+
+    insert_empty_recovery_receipt!(command, "claim")
+    assert {:error, %{kind: :conflict}} = Store.recover_expired(command)
+  end
+
+  test "locked candidates roll back only the provisional receipt and retain pruning", fixture do
+    purge_expired_assignments!(DateTime.add(fixture.now, 2, :second))
+    assigned = assign_recovery_task!(fixture, "locked")
+    command = recovery_command(fixture, "locked")
+
+    expired = %{
+      command
+      | command_id: command.command_id <> "-expired",
+        issued_at: DateTime.add(fixture.now, -8 * 24 * 60 * 60, :second)
+    }
+
+    insert_empty_recovery_receipt!(expired)
+    parent = self()
+
+    locker =
+      Task.async(fn ->
+        Repo.transaction(fn ->
+          SQL.query!(
+            Repo,
+            "SELECT task_id FROM favn_control.runner_tasks WHERE workspace_id = $1 AND task_id = $2 FOR UPDATE",
+            [assigned.workspace_id, assigned.task_id]
+          )
+
+          send(parent, :candidate_locked)
+
+          receive do
+            :unlock -> :ok
+          after
+            5_000 -> raise "lock not released"
+          end
+        end)
+      end)
+
+    assert_receive :candidate_locked
+
+    queries =
+      capture_recovery_queries(fn -> assert {:ok, []} = Store.recover_expired(command) end)
+
+    assert "ROLLBACK TO SAVEPOINT runner_recovery" in queries
+    refute recovery_receipt(command)
+    refute recovery_receipt(expired)
+    send(locker.pid, :unlock)
+    assert {:ok, :ok} = Task.await(locker)
+    assert {:ok, [recovered]} = Store.recover_expired(command)
+    assert recovered.assignment_generation == assigned.assignment_generation + 1
+  end
+
+  test "eligibility lost after the probe leaves no recovery receipt", fixture do
+    purge_expired_assignments!(DateTime.add(fixture.now, 2, :second))
+    assigned = assign_recovery_task!(fixture, "renewed")
+    command = recovery_command(fixture, "renewed")
+
+    with_recovery_probe_barrier(fn ->
+      worker = Task.async(fn -> Store.recover_expired(command) end)
+      assert_receive {:recovery_probe, pid, _query, _params}
+
+      SQL.query!(
+        Repo,
+        "UPDATE favn_control.runner_tasks SET assignment_expires_at = $1 WHERE workspace_id = $2 AND task_id = $3",
+        [DateTime.add(command.occurred_at, 60, :second), assigned.workspace_id, assigned.task_id]
+      )
+
+      send(pid, :continue_recovery)
+      assert {:ok, []} = Task.await(worker)
+      refute recovery_receipt(command)
+    end)
+  end
+
+  test "equal commands replay one batch and different commands claim disjoint batches", fixture do
+    for same? <- [true, false] do
+      purge_expired_assignments!(DateTime.add(fixture.now, 2, :second))
+      assign_recovery_task!(fixture, "race-a-#{same?}")
+      assign_recovery_task!(fixture, "race-b-#{same?}")
+      first = %{recovery_command(fixture, "race-a-#{same?}") | limit: 1}
+      second = if same?, do: first, else: %{first | command_id: first.command_id <> "-other"}
+
+      with_recovery_probe_barrier(fn ->
+        workers =
+          Enum.map([first, second], fn command ->
+            Task.async(fn -> Store.recover_expired(command) end)
+          end)
+
+        assert_receive {:recovery_probe, left, _, _}
+        assert_receive {:recovery_probe, right, _, _}
+        send(left, :continue_recovery)
+        send(right, :continue_recovery)
+        [{:ok, [a]}, {:ok, [b]}] = Enum.map(workers, &Task.await/1)
+        if same?, do: assert(a == b), else: refute(a.task_id == b.task_id)
+        assert {:ok, [^a]} = Store.recover_expired(first)
+      end)
+    end
+  end
+
+  test "a committed same-command receipt is observed even when the caller began before commit",
+       fixture do
+    purge_expired_assignments!(DateTime.add(fixture.now, 2, :second))
+    assign_recovery_task!(fixture, "snapshot")
+    command = recovery_command(fixture, "snapshot")
+
+    with_recovery_probe_barrier(fn ->
+      first = Task.async(fn -> Store.recover_expired(command) end)
+      assert_receive {:recovery_probe, pid, _, _}
+      second = Task.async(fn -> Store.recover_expired(command) end)
+      assert_receive {:recovery_probe, next, _, _}
+      send(pid, :continue_recovery)
+      assert {:ok, [recovered]} = Task.await(first)
+      send(next, :continue_recovery)
+      assert {:ok, [^recovered]} = Task.await(second)
+    end)
+  end
+
+  test "a legacy empty receipt committed after the probe wins exact replay", fixture do
+    purge_expired_assignments!(DateTime.add(fixture.now, 2, :second))
+    assigned = assign_recovery_task!(fixture, "legacy-race")
+    command = recovery_command(fixture, "legacy-race")
+
+    with_recovery_probe_barrier(fn ->
+      worker = Task.async(fn -> Store.recover_expired(command) end)
+      assert_receive {:recovery_probe, pid, _, _}
+      # Reproduce the old path's receipt insert/commit on a separate connection.
+      assert {:ok, {1, nil}} = Repo.transaction(fn -> insert_empty_recovery_receipt!(command) end)
+      send(pid, :continue_recovery)
+      assert {:ok, []} = Task.await(worker)
+    end)
+
+    assert {:ok, [recovered]} =
+             Store.recover_expired(%{command | command_id: command.command_id <> "-new"})
+
+    assert recovered.assignment_generation == assigned.assignment_generation + 1
+  end
+
+  test "the ordinary receipt path can win an identity conflict after the recovery probe",
+       fixture do
+    purge_expired_assignments!(DateTime.add(fixture.now, 2, :second))
+    assign_recovery_task!(fixture, "operation-race")
+    command = recovery_command(fixture, "operation-race")
+
+    with_recovery_probe_barrier(fn ->
+      worker = Task.async(fn -> Store.recover_expired(command) end)
+      assert_receive {:recovery_probe, pid, _, _}
+
+      assert {:ok, _} =
+               Store.reconcile_demand(%C.ReconcileRunnerCapacityDemand{
+                 platform_context: fixture.platform_context,
+                 command_id: command.command_id,
+                 runner_pool: fixture.runner_pool,
+                 required_runner_release_id: @release,
+                 issued_at: fixture.now,
+                 occurred_at: fixture.now
+               })
+
+      send(pid, :continue_recovery)
+      assert {:error, %{kind: :conflict}} = Task.await(worker)
+    end)
+  end
+
+  test "a transaction rollback undoes recovery fences and its replay receipt", fixture do
+    purge_expired_assignments!(DateTime.add(fixture.now, 2, :second))
+    assigned = assign_recovery_task!(fixture, "rollback")
+    command = recovery_command(fixture, "rollback")
+
+    assert {:error, :abort} =
+             Repo.transaction(fn ->
+               assert {:ok, [_]} = Store.recover_expired(command)
+               Repo.rollback(:abort)
+             end)
+
+    refute recovery_receipt(command)
+    assert {:ok, [recovered]} = Store.recover_expired(command)
+    assert recovered.assignment_generation == assigned.assignment_generation + 1
+  end
+
+  test "the actual combined probe uses indexes at representative idle and active cardinality",
+       fixture do
+    purge_expired_assignments!(DateTime.add(fixture.now, 2, :second))
+    alias FavnStoragePostgres.Schemas.RunnerTask, as: TaskRow
+    assert {:ok, queued} = Store.enqueue(enqueue_command(fixture, "probe-plan"))
+
+    template =
+      Repo.get_by!(TaskRow, workspace_id: queued.workspace_id, task_id: queued.task_id)
+      |> Map.take(TaskRow.__schema__(:fields))
+
+    # Direct fixture inserts isolate query planning from admission and payload generation.
+    for batch <- 1..5 do
+      Repo.insert_all(
+        TaskRow,
+        for index <- 1..1_000 do
+          %{
+            template
+            | task_id: "rt_probe-#{batch}-#{index}",
+              domain_identity: "probe-#{batch}-#{index}"
+          }
+        end
+      )
+    end
+
+    command = recovery_command(fixture, "probe-plan")
+    insert_empty_recovery_receipt!(command)
+
+    SQL.query!(
+      Repo,
+      """
+      INSERT INTO favn_control.runner_task_commands
+        (scope_id, command_id, operation, request_hash, result, issued_at, inserted_at)
+      SELECT scope_id, command_id || '-' || n, operation, request_hash, result, issued_at, inserted_at
+      FROM favn_control.runner_task_commands CROSS JOIN generate_series(1, 10000) n
+      WHERE scope_id = $1 AND command_id = $2
+      """,
+      ["platform:runner_tasks", command.command_id]
+    )
+
+    on_exit(fn ->
+      SQL.query!(
+        Repo,
+        "DELETE FROM favn_control.runner_tasks WHERE workspace_id = $1 AND task_id LIKE 'rt_probe-%'",
+        [fixture.workspace_id]
+      )
+
+      SQL.query!(
+        Repo,
+        "DELETE FROM favn_control.runner_task_commands WHERE scope_id = $1 AND command_id LIKE $2",
+        ["platform:runner_tasks", command.command_id <> "-%"]
+      )
+    end)
+
+    SQL.query!(Repo, "ANALYZE favn_control.runner_tasks", [])
+    SQL.query!(Repo, "ANALYZE favn_control.runner_task_commands", [])
+
+    query =
+      capture_recovery_queries(fn -> assert {:ok, []} = Store.recover_expired(command) end)
+      |> Enum.find(&String.starts_with?(&1, "SELECT EXISTS ("))
+
+    assert is_binary(query)
+
+    for scenario <- [:idle, :receipt, :eligible] do
+      if scenario == :eligible do
+        assign_recovery_task!(fixture, "probe-eligible")
+      end
+
+      command_id =
+        if scenario == :receipt, do: command.command_id, else: command.command_id <> "-absent"
+
+      %{rows: rows} =
+        SQL.query!(Repo, "EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT) " <> query, [
+          "platform:runner_tasks",
+          command_id,
+          ~w(assigned preparing running cancelling),
+          command.occurred_at
+        ])
+
+      plan = rows |> List.flatten() |> Enum.join("\n")
+      assert plan =~ "runner_task_commands_pkey", plan
+      assert plan =~ "runner_tasks_expired_idx", plan
+      refute plan =~ "Seq Scan", plan
+    end
+  end
+
+  defp recovery_command(fixture, suffix) do
+    %C.RecoverRunnerTasks{
+      platform_context: fixture.platform_context,
+      command_id: platform_command_id(fixture, suffix),
+      owner_id: "recovery-test",
+      issued_at: fixture.now,
+      occurred_at: DateTime.add(fixture.now, 2, :second),
+      limit: 50,
+      lease_duration_ms: 30_000
+    }
+  end
+
+  defp assign_recovery_task!(fixture, suffix) do
+    assert {:ok, _} = Store.enqueue(enqueue_command(fixture, "recovery-#{suffix}"))
+
+    assert {:ok, assigned} =
+             Store.claim(
+               claim_command(fixture, "recovery-#{suffix}", "runner-#{suffix}",
+                 lease_duration_ms: 1
+               )
+             )
+
+    assigned
+  end
+
+  defp recovery_receipt(command),
+    do:
+      Repo.get_by(RunnerTaskCommand,
+        scope_id: "platform:runner_tasks",
+        command_id: command.command_id
+      )
+
+  defp insert_empty_recovery_receipt!(command, operation \\ "recover_expired") do
+    hash =
+      command
+      |> Map.put(:occurred_at, nil)
+      |> :erlang.term_to_binary([:deterministic])
+      |> then(&:crypto.hash(:sha256, &1))
+
+    Repo.insert_all(RunnerTaskCommand, [
+      %{
+        scope_id: "platform:runner_tasks",
+        command_id: command.command_id,
+        operation: operation,
+        request_hash: hash,
+        result: %{"kind" => "task_snapshots_v1", "count" => 0},
+        issued_at: command.issued_at,
+        inserted_at: command.issued_at
+      }
+    ])
+  end
+
+  defp capture_recovery_queries(fun) do
+    handler = {__MODULE__, make_ref()}
+    key = make_ref()
+    Process.put(key, [])
+
+    :telemetry.attach(
+      handler,
+      [:favn_storage_postgres, :repo, :query],
+      fn _, _, meta, owner ->
+        if self() == owner, do: Process.put(key, [meta.query | Process.get(key)])
+      end,
+      self()
+    )
+
+    try do
+      fun.()
+      Enum.reverse(Process.get(key))
+    after
+      :telemetry.detach(handler)
+      Process.delete(key)
+    end
+  end
+
+  defp with_recovery_probe_barrier(fun) do
+    handler = {__MODULE__, make_ref()}
+
+    :telemetry.attach(
+      handler,
+      [:favn_storage_postgres, :repo, :query],
+      fn _, _, meta, owner ->
+        if self() != owner and String.starts_with?(meta.query, "SELECT EXISTS (") do
+          send(owner, {:recovery_probe, self(), meta.query, meta.params})
+
+          receive do
+            :continue_recovery -> :ok
+          after
+            5_000 -> raise "probe not released"
+          end
+        end
+      end,
+      self()
+    )
+
+    try do
+      fun.()
+    after
+      :telemetry.detach(handler)
+    end
+  end
+
   test "expired assignments are claimed once for fenced recovery", fixture do
     # recover_expired scans every workspace, so expired assignments left behind
     # by interrupted runs against the shared test database would surface in this
     # test's recovery batch. This module is async: false, so nothing else is
     # mid-assignment while the purge runs.
-    purge_expired_assignments!()
+    purge_expired_assignments!(DateTime.add(fixture.now, 2, :second))
 
     assert {:ok, _task} = Store.enqueue(enqueue_command(fixture, "recover"))
 
@@ -2218,6 +2654,7 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
 
   @tag timeout: 120_000
   test "maximum recovery batches use bounded per-task snapshots", fixture do
+    purge_expired_assignments!(DateTime.add(fixture.now, 2, :second))
     count = 50
 
     on_exit(fn ->
@@ -3296,19 +3733,22 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
 
   defp explain_text(%{rows: rows}), do: rows |> List.flatten() |> Enum.join("\n")
 
-  defp purge_expired_assignments! do
-    SQL.query!(Repo, """
-    DELETE FROM favn_control.runner_task_command_tasks c
-    USING favn_control.runner_tasks t
-    WHERE c.workspace_id = t.workspace_id
-      AND c.task_id = t.task_id
-      AND t.assignment_expires_at < now()
-    """)
-
+  defp purge_expired_assignments!(cutoff) do
     SQL.query!(
       Repo,
-      "DELETE FROM favn_control.runner_tasks WHERE assignment_expires_at < now()"
+      """
+      DELETE FROM favn_control.runner_task_command_tasks c
+      USING favn_control.runner_tasks t
+      WHERE c.workspace_id = t.workspace_id
+        AND c.task_id = t.task_id
+        AND t.assignment_expires_at <= $1
+      """,
+      [cutoff]
     )
+
+    SQL.query!(Repo, "DELETE FROM favn_control.runner_tasks WHERE assignment_expires_at <= $1", [
+      cutoff
+    ])
 
     :ok
   end

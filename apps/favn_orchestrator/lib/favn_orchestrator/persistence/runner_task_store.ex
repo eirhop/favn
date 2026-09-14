@@ -46,6 +46,14 @@ defmodule FavnOrchestrator.Persistence.RunnerTaskStore do
   @callback get_write_resolution(C.ResolveRunnerTaskWrite.t()) ::
               {:ok, map() | nil} | {:error, Error.t()}
   @callback resolve_write(C.ResolveRunnerTaskWrite.t()) :: {:ok, map()} | {:error, Error.t()}
+  @doc """
+  Claims at most the requested limit of expired assignments with new fences.
+
+  Nonempty recoveries atomically retain their exact replay result for the command
+  window. New empty scans retain no receipt and do not reserve command identity;
+  a repeated call can inspect again. Previously stored empty receipts still
+  replay until expiry. Validation and bounded receipt pruning also run when idle.
+  """
   @callback recover_expired(C.RecoverRunnerTasks.t()) ::
               {:ok, [RunnerTask.t()]} | {:error, Error.t()}
   @callback reconcile_demand(C.ReconcileRunnerCapacityDemand.t()) ::

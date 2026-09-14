@@ -459,3 +459,21 @@ Minor upgrades require CI, restore-drill, and canary evidence. A major upgrade a
 requires a production-size restored snapshot, high-growth query-plan comparison,
 rollback/restore rehearsal, and explicit architecture approval. Storage V2 currently
 accepts PostgreSQL 18 only.
+
+## Recovery receipt volume
+
+Recovery emits `[:favn, :runner_task_recovery, :tick]` once per executed tick,
+with native-time `duration`, `recovered_count` (tasks claimed), and `error_count`
+(storage or disposition failures), and empty metadata. Successful empty checks
+have both counts zero. These measurements are telemetry, not persisted run rows.
+Compare tick frequency per orchestrator with receipt inserts: idle scans should
+create no receipts, and disconnect churn must not multiply the timer cadence.
+See [crash recovery](../architecture/elastic-runners.md#crash-recovery) for replay
+and scheduling semantics.
+
+Receipt pruning still runs in bounded batches during idle checks. Fewer checks
+can drain an existing backlog more slowly; measure oldest receipt age and rows
+pruned separately from new inserts. Normal vacuum makes deleted space reusable
+but does not normally shrink allocated table files. Table, index and TOAST bytes
+therefore need separate interpretation from live rows and current growth rate.
+Scheduled retention and broader data normalization remain separate work.

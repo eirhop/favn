@@ -30,6 +30,7 @@ defmodule FavnOrchestrator.RunnerTaskRecovery do
   @impl true
   def init(opts) do
     state = %{
+      tick_token: nil,
       last_failure: nil,
       failure_logged_at: nil,
       interval_ms: Keyword.get(opts, :interval_ms, @default_interval_ms),
@@ -38,21 +39,34 @@ defmodule FavnOrchestrator.RunnerTaskRecovery do
       owner_id: "recovery:#{FavnOrchestrator.RuntimeConfig.instance_id()}"
     }
 
-    schedule(0)
-    {:ok, state}
+    {:ok, schedule(state, 0)}
   end
 
   @impl true
-  def handle_info(:recover, state) do
-    state = report_recovery(recover(state), state)
-    schedule(state.interval_ms)
-    {:noreply, state}
+  def handle_info({:recover, token}, %{tick_token: token} = state) when is_reference(token) do
+    started_at = System.monotonic_time()
+    state = %{state | tick_token: nil}
+    {results, recovered_count} = recover(state)
+
+    :telemetry.execute(
+      [:favn, :runner_task_recovery, :tick],
+      %{
+        duration: System.monotonic_time() - started_at,
+        recovered_count: recovered_count,
+        error_count: Enum.count(results, &match?({:error, _}, &1))
+      },
+      %{}
+    )
+
+    state = report_recovery(results, state)
+    {:noreply, schedule(state, state.interval_ms)}
   end
 
-  def handle_info({:runner_down, _runner_id, _generation, _reason}, state) do
-    schedule(state.lease_ms)
-    {:noreply, state}
-  end
+  def handle_info({:recover, _stale_token}, state), do: {:noreply, state}
+  def handle_info(:recover, state), do: {:noreply, state}
+
+  def handle_info({:runner_down, _runner_id, _generation, _reason}, state),
+    do: {:noreply, state}
 
   defp recover(state) do
     now = DateTime.utc_now()
@@ -70,8 +84,8 @@ defmodule FavnOrchestrator.RunnerTaskRecovery do
     }
 
     case Persistence.stores().runner_tasks.recover_expired(command) do
-      {:ok, tasks} -> Enum.map(tasks, &recover_task(&1, state, now))
-      {:error, error} -> [{:error, error}]
+      {:ok, tasks} -> {Enum.map(tasks, &recover_task(&1, state, now)), length(tasks)}
+      {:error, error} -> {[{:error, error}], 0}
     end
   end
 
@@ -209,5 +223,9 @@ defmodule FavnOrchestrator.RunnerTaskRecovery do
     end
   end
 
-  defp schedule(delay), do: Process.send_after(self(), :recover, delay)
+  defp schedule(state, delay) do
+    token = make_ref()
+    Process.send_after(self(), {:recover, token}, delay)
+    %{state | tick_token: token}
+  end
 end
