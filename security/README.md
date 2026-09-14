@@ -6,6 +6,33 @@ findings, and machine-checked review deadline remain enforced. An exception is
 an applicability or residual-risk assessment, not a package patch or a claim
 that privileged/customized deployments are safe.
 
+## Runtime package refresh of 14 September 2026
+
+The runtime stages of both shipped images now use Debian and Debian-security
+snapshot `20260914T000000Z`. This replaces the August snapshot, which predates
+vendor patches for 20 High/Critical package matches across 18 advisories reported
+by Grype 0.116.0 (database built `2026-09-14T06:38:38Z`). The initial reproduction
+used the runtime package set; full image scans remain the release gate.
+
+| Package | Patched version required by both image contracts | Vendor evidence |
+| --- | --- | --- |
+| libc6, libc-bin | `2.41-12+deb13u4` | [glibc](https://security-tracker.debian.org/tracker/CVE-2026-5450) |
+| perl-base | `5.40.1-6+deb13u1` | [Perl](https://security-tracker.debian.org/tracker/CVE-2026-13221) |
+| gzip | `1.13-1+deb13u1` | [gzip](https://security-tracker.debian.org/tracker/CVE-2026-41992) |
+| libpcre2-8-0 | `10.46-1~deb13u2` | [PCRE2](https://security-tracker.debian.org/tracker/CVE-2026-86145) |
+| libsqlite3-0 | `3.46.1-7+deb13u2` | [SQLite](https://security-tracker.debian.org/tracker/CVE-2026-11822) |
+
+Eighteen obsolete package-specific exception rules were removed for the fixed
+glibc, Perl, gzip and SQLite findings. The two PCRE2 findings had no exception.
+The High severity gate, scanning of unfixed findings, remaining applicability
+constraints and 1 October review deadline are unchanged. Image contracts compare
+installed versions using Debian version ordering and also accept later patches.
+
+Base-image digests, build-stage snapshots, toolchain and application dependencies
+are unchanged. The retained assessments below describe the exact versions and
+conditions originally reviewed; updating a package or its vendor fix state does
+not silently broaden an exception.
+
 ## Review of 4 September 2026
 
 Grype 0.116.0 with its database built at `2026-09-04T06:30:46Z` reports 37 new

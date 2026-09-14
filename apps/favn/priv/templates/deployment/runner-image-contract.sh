@@ -36,6 +36,13 @@ image_history=$(docker image history --no-trunc --format '{{.CreatedBy}}' "$imag
 
 contract=$(cat <<SH
 set -eu
+# Minimum Debian security fixes from the 14 September 2026 runtime snapshot.
+dpkg --compare-versions "\$(dpkg-query -W -f='\${Version}' libc6)" ge 2.41-12+deb13u4
+dpkg --compare-versions "\$(dpkg-query -W -f='\${Version}' libc-bin)" ge 2.41-12+deb13u4
+dpkg --compare-versions "\$(dpkg-query -W -f='\${Version}' perl-base)" ge 5.40.1-6+deb13u1
+dpkg --compare-versions "\$(dpkg-query -W -f='\${Version}' gzip)" ge 1.13-1+deb13u1
+dpkg --compare-versions "\$(dpkg-query -W -f='\${Version}' libpcre2-8-0)" ge 10.46-1~deb13u2
+dpkg --compare-versions "\$(dpkg-query -W -f='\${Version}' libsqlite3-0)" ge 3.46.1-7+deb13u2
 test "\$(id -u)" = 10001
 test "\$(id -g)" = 10001
 test -x /opt/favn/bin/favn_runner
