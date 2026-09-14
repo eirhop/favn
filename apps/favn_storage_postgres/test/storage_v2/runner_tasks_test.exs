@@ -2617,7 +2617,7 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
     # by interrupted runs against the shared test database would surface in this
     # test's recovery batch. This module is async: false, so nothing else is
     # mid-assignment while the purge runs.
-    purge_expired_assignments!()
+    purge_expired_assignments!(DateTime.add(fixture.now, 2, :second))
 
     assert {:ok, _task} = Store.enqueue(enqueue_command(fixture, "recover"))
 
@@ -2654,6 +2654,7 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
 
   @tag timeout: 120_000
   test "maximum recovery batches use bounded per-task snapshots", fixture do
+    purge_expired_assignments!(DateTime.add(fixture.now, 2, :second))
     count = 50
 
     on_exit(fn ->
@@ -3732,7 +3733,7 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
 
   defp explain_text(%{rows: rows}), do: rows |> List.flatten() |> Enum.join("\n")
 
-  defp purge_expired_assignments!(cutoff \\ DateTime.utc_now()) do
+  defp purge_expired_assignments!(cutoff) do
     SQL.query!(
       Repo,
       """

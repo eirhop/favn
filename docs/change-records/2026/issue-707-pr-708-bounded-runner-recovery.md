@@ -347,11 +347,11 @@ is claimed.
 | Slice | Production added/deleted | Supporting added/deleted | Explanation |
 | --- | ---: | ---: | --- |
 | 1: timer and its tick telemetry | 31 / 17 | 141 / 1 | Includes the telemetry implementation and process tests budgeted across slices 1 and 3; counted once here |
-| 2: storage and callback contract | 94 / 44 | 449 / 10 | Extra supporting lines cover controlled concurrent receipt/eligibility races, rollback, legacy protocol and the actual probe plan at 5,000 extra tasks and 10,000 extra receipts |
+| 2: storage and callback contract | 94 / 44 | 451 / 11 | Extra supporting lines cover controlled concurrent receipt/eligibility races, rollback, legacy protocol and the actual probe plan at 5,000 extra tasks and 10,000 extra receipts |
 | 3: canonical operational documentation | 0 / 0 | 34 / 0 | Tick telemetry and its tests are counted in slice 1 |
 
 Counts exclude this record. Slice 2 supporting additions exceed the approved
-320-line upper estimate by 129 lines. The overrun is verification for the planned
+320-line upper estimate by 131 lines. The overrun is verification for the planned
 concurrency, replay and query-planning guarantees, not additional product behavior.
 Production remains within the combined approved additions budget. No replaced
 production path was retained; slice 3 has no separate production deletions because
@@ -378,8 +378,8 @@ its telemetry is integrated into slice 1.
 | PostgreSQL setup | Repository setup completed against isolated PostgreSQL 18 container; tests use separate bootstrap-owned `favn_test` database | No consumer database touched |
 | Orchestrator fast suite | 859 passed, including 16 recovery/session tests | Deterministic timer, disconnect, failure and telemetry coverage |
 | Actual combined probe planning | Passed with 5,000 extra task rows and 10,000 extra receipts; idle, existing receipt and eligible-work cases use indexes with no sequential scan | Local representative-cardinality query plan; not downstream throughput |
-| Storage fast suite | Running after focused regressions | Full outcome will be recorded before review completion |
-| Crash-recovery slow qualification | Still to run | No new crash-test claim yet |
+| Storage fast suite | Final owning runner-task file: 54 passed; broad suite rerunning after cutoff fixture corrections | An unrelated bootstrap 100 ms assertion passed unchanged in an isolated eight-test rerun |
+| Crash-recovery slow qualification | All three owning slow tests passed: SIGKILL lifecycle barriers, cold distributed runner and three-pool scale | Real PostgreSQL and fresh BEAM processes; 333 aggregate simulated runner processes |
 | Compilation / formatting / test tag guard | Test compilation with warnings as errors, format check and CI tag guard passed | Local checks |
 | Documentation | Both original approved diagrams visually rendered on GitHub before implementation; links and whitespace checked | Diagrams unchanged; final GitHub recheck still to run |
 
