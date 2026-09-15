@@ -2,8 +2,8 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Implementing |
-| Implementation state | Implementation complete; qualification and final review in progress |
+| Status | Implemented |
+| Implementation state | Implemented and independently reviewed |
 | Type | Persistence and operator read-path change |
 | Primary issue | [#706](https://github.com/eirhop/favn/issues/706) |
 | Pull request | Pending implementation workflow |
@@ -595,5 +595,8 @@ warning issue was also fixed and tested across failed and successful polling.
 The requested per-slice complexity accounting is included above.
 
 Review fixes passed warnings-as-errors compilation, 18 orchestrator
-renderer/codec/subscription tests and 6 focused View tests. Final reviewer recheck
-is in progress.
+renderer/codec/subscription tests and 6 focused View tests. Astra at xhigh
+approved commit `f9efafd4` with no remaining findings and independently reran both
+groups successfully. The reviewer confirmed the per-slice counts and justified
+deviations. Approval covers the reset-only implementation, with the documented
+runner-diagnostic gap and deployment/measurement limits.
