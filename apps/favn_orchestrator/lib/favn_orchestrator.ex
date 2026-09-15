@@ -1203,9 +1203,9 @@ defmodule FavnOrchestrator do
     end
   end
 
-  @doc "Replays workspace-isolated logs after reauthorizing an operator context."
+  @doc "Replays a bounded log page after reauthorization. Continue with replay_cursor; drain while has_more?."
   @spec replay_logs(OperatorContext.t(), term(), term(), keyword()) ::
-          {:ok, [Favn.Log.Entry.t()]} | {:error, term()}
+          {:ok, FavnOrchestrator.Persistence.Results.LogPage.t()} | {:error, term()}
   def replay_logs(%OperatorContext{} = operator_context, cursor, filter, opts)
       when is_list(opts) do
     with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer) do

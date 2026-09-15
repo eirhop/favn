@@ -761,6 +761,24 @@ defmodule FavnStoragePostgres.Migrations.CreateStorageV2 do
       )
     )
 
+    execute("""
+    CREATE INDEX run_events_lifecycle_history_idx
+    ON favn_control.run_events (workspace_id, occurred_at DESC, event_id DESC)
+    WHERE entity_type = 'step'
+    """)
+
+    for {name, field} <- [
+          {"node", "log_node_key"},
+          {"asset", "log_asset_ref"},
+          {"task", "runner_task_id"}
+        ] do
+      execute("""
+      CREATE INDEX run_events_lifecycle_#{name}_idx
+      ON favn_control.run_events (workspace_id, (event->'data'->>'#{field}'), occurred_at DESC, event_id DESC)
+      WHERE entity_type = 'step'
+      """)
+    end
+
     create(unique_index(:run_events, [:outbox_event_id], prefix: @prefix))
 
     create(

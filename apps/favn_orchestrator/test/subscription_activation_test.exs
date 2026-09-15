@@ -59,8 +59,8 @@ defmodule FavnOrchestrator.SubscriptionActivationTest do
         send(test_pid, {:ready, self(), subscription})
 
         receive do
-          {:favn_log_entry, entry} = message ->
-            send(test_pid, {:forwarded, self(), entry})
+          :favn_logs_available = message ->
+            send(test_pid, {:forwarded, self()})
             message
         end
       end)
@@ -68,16 +68,8 @@ defmodule FavnOrchestrator.SubscriptionActivationTest do
     assert_receive {:ready, ^owner, %{pid: forwarder} = subscription}
     forwarder_ref = Process.monitor(forwarder)
 
-    entry = %{workspace_id: workspace_id, level: :info, source: :orchestrator}
-
-    assert :ok =
-             Phoenix.PubSub.broadcast(
-               Logs.pubsub_name(),
-               Logs.workspace_topic(workspace_id),
-               {:favn_log_entry, entry}
-             )
-
-    assert_receive {:forwarded, ^owner, ^entry}
+    assert :ok = Events.broadcast_persistence_publication()
+    assert_receive {:forwarded, ^owner}
     assert_receive {:DOWN, ^forwarder_ref, :process, ^forwarder, :normal}
     assert :ok = FavnOrchestrator.unsubscribe_logs(subscription)
   end

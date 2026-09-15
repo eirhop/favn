@@ -48,7 +48,12 @@ defmodule FavnOrchestrator.Persistence.Queries.PageLogs do
           workspace_context: WorkspaceContext.t(),
           filter: map(),
           after:
-            %{occurred_at: DateTime.t(), log_id: pos_integer()}
+            %{
+              occurred_at: DateTime.t(),
+              kind: 0 | 1,
+              row_id: pos_integer(),
+              watermark: non_neg_integer()
+            }
             | %{publication_id: non_neg_integer(), batch_offset: non_neg_integer()}
             | nil,
           direction: :older | :newer,
@@ -118,4 +123,31 @@ defmodule FavnOrchestrator.Persistence.Results.PurgeResult do
   defstruct [:deleted_count, :last_id]
 
   @type t :: %__MODULE__{deleted_count: non_neg_integer(), last_id: pos_integer() | nil}
+end
+
+defmodule FavnOrchestrator.Persistence.Results.LifecycleLog do
+  @moduledoc "Authoritative event row awaiting lifecycle rendering."
+  @enforce_keys [:workspace_id, :event_id, :publication_id, :event]
+  defstruct [:workspace_id, :event_id, :publication_id, :event]
+
+  @type t :: %__MODULE__{
+          workspace_id: String.t(),
+          event_id: pos_integer(),
+          publication_id: pos_integer(),
+          event: map()
+        }
+end
+
+defmodule FavnOrchestrator.Persistence.Results.LogPage do
+  @moduledoc "Bounded mixed log page with history continuation and independent replay progress."
+  @enforce_keys [:items, :limit, :has_more?, :replay_cursor]
+  defstruct [:items, :limit, :has_more?, :next_cursor, :replay_cursor]
+
+  @type t :: %__MODULE__{
+          items: list(),
+          limit: pos_integer(),
+          has_more?: boolean(),
+          next_cursor: map() | nil,
+          replay_cursor: map()
+        }
 end

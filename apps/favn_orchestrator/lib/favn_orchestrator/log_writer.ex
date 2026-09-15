@@ -1,9 +1,8 @@
 defmodule FavnOrchestrator.LogWriter do
   @moduledoc """
-  Persists trusted backend logs and broadcasts them only after durable write.
+  Persists independent backend diagnostics. The durable outbox wakes log readers.
   """
 
-  alias FavnOrchestrator.Logs
   alias Favn.Log.Entry, as: PublicLogEntry
   alias Favn.Log.Identity
   alias FavnOrchestrator.Persistence
@@ -11,7 +10,7 @@ defmodule FavnOrchestrator.LogWriter do
   alias FavnOrchestrator.Persistence.Commands.LogEntry
   alias FavnOrchestrator.Persistence.WorkspaceContext
 
-  @doc "Persists one bounded workspace log batch and broadcasts committed entries."
+  @doc "Persists one bounded workspace diagnostic batch with its durable publication."
   @spec write(WorkspaceContext.t(), term() | [term()], keyword()) ::
           {:ok, [FavnOrchestrator.Persistence.Results.LogEntry.t()]} | {:error, term()}
   def write(%WorkspaceContext{} = context, entries, opts \\ []) when is_list(opts) do
@@ -28,10 +27,7 @@ defmodule FavnOrchestrator.LogWriter do
         occurred_at: Keyword.get(opts, :occurred_at, DateTime.utc_now())
       }
 
-      with {:ok, persisted_entries} <- Persistence.stores().logs.append_batch(command) do
-        Enum.each(persisted_entries, &Logs.broadcast_log_entry/1)
-        {:ok, persisted_entries}
-      end
+      Persistence.stores().logs.append_batch(command)
     end
   end
 

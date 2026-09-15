@@ -6,6 +6,7 @@ defmodule FavnView.LogsLiveSupport do
 
   require Logger
 
+  alias Favn.Log.Entry
   alias Favn.Log.Filter
   alias FavnView.Orchestrator
   alias FavnView.Components.AssetCataloguePage
@@ -14,6 +15,7 @@ defmodule FavnView.LogsLiveSupport do
   @initial_limit 200
   @fetch_limit 500
   @poll_interval_ms 2_000
+  @subscription_warning "Loaded existing logs, but live streaming is unavailable."
   @dialyzer {:no_unused,
              [target_label: 1, run_context_from_public: 3, asset_context_from_public: 2]}
   @dialyzer {:no_match,
@@ -27,55 +29,55 @@ defmodule FavnView.LogsLiveSupport do
 
   def mount_logs(socket, attrs) do
     filter = Filter.normalize(Map.fetch!(attrs, :filter))
-    scope = Map.fetch!(attrs, :scope)
     operator_context = Map.fetch!(attrs, :operator_context)
-    load_result = load_initial_logs(operator_context, filter)
-
-    socket =
-      socket
-      |> assign(Map.merge(default_assigns(), attrs))
-      |> assign(:filter, filter)
-      |> assign(:logs_status, load_result.status)
-      |> assign(:logs, load_result.logs)
-      |> assign(:next_cursor, LogsViewModel.latest_cursor(load_result.logs, scope, filter))
-      |> assign_visible_logs()
-
-    if connected?(socket) and load_result.status != :error do
-      socket |> subscribe_and_replay() |> schedule_poll()
-    else
-      socket
-    end
+    socket = socket |> assign(Map.merge(default_assigns(), attrs)) |> assign(:filter, filter)
+    socket = if connected?(socket), do: subscribe(socket), else: socket
+    socket = load_snapshot(socket, operator_context, filter)
+    if connected?(socket), do: socket |> replay_gap() |> schedule_poll(), else: socket
   end
+
+  defp load_snapshot(socket, operator_context, filter) do
+    result = load_initial_logs(operator_context, filter)
+
+    socket
+    |> assign(:logs_status, result.status)
+    |> assign(:logs, result.logs)
+    |> assign(:next_cursor, result.cursor)
+    |> assign_visible_logs()
+  end
+
+  def wakeup(socket), do: replay_gap(socket)
 
   def poll(socket), do: socket |> replay_gap() |> schedule_poll()
 
   def handle_filter(socket, params) do
     filters = Map.get(params, "filters", %{})
 
-    socket
-    |> assign(:search_query, Map.get(filters, "search", ""))
-    |> assign(:selected_level, normalize_choice(Map.get(filters, "level")))
-    |> assign(:selected_source, normalize_choice(Map.get(filters, "source")))
-    |> assign_visible_logs()
+    level = normalize_choice(Map.get(filters, "level"))
+    source = normalize_choice(Map.get(filters, "source"))
+
+    filter = %{
+      socket.assigns.filter
+      | levels: Enum.filter(Entry.levels(), &(to_string(&1) == level)),
+        sources: Enum.filter(Entry.sources(), &(to_string(&1) == source))
+    }
+
+    changed? = filter != socket.assigns.filter
+
+    socket =
+      socket
+      |> assign(:search_query, Map.get(filters, "search", ""))
+      |> assign(:selected_level, level)
+      |> assign(:selected_source, source)
+      |> assign(:filter, filter)
+
+    if changed?,
+      do: load_snapshot(socket, socket.assigns.operator_context, filter),
+      else: assign_visible_logs(socket)
   end
 
   def toggle(socket, key) do
     assign(socket, key, !Map.fetch!(socket.assigns, key))
-  end
-
-  def add_live_log(socket, entry) do
-    logs =
-      socket.assigns.logs
-      |> LogsViewModel.merge_entries([entry])
-      |> LogsViewModel.trim_latest(@initial_limit)
-
-    socket
-    |> assign(:logs, logs)
-    |> assign(
-      :next_cursor,
-      LogsViewModel.latest_cursor(logs, socket.assigns.scope, socket.assigns.filter)
-    )
-    |> assign_visible_logs()
   end
 
   def unsubscribe(%{assigns: %{log_subscription: subscription}}) when not is_nil(subscription) do
@@ -143,61 +145,64 @@ defmodule FavnView.LogsLiveSupport do
   end
 
   defp load_initial_logs(operator_context, filter) do
-    case Orchestrator.list_logs(operator_context, filter, limit: @fetch_limit) do
-      {:ok, %{items: items}} ->
-        %{status: :ready, logs: LogsViewModel.trim_latest(items, @initial_limit)}
+    list = Application.get_env(:favn_view, :list_logs_fun, &Orchestrator.list_logs/3)
+
+    case list.(operator_context, filter, limit: @fetch_limit) do
+      {:ok, %{items: items, replay_cursor: cursor}} ->
+        %{status: :ready, logs: LogsViewModel.trim_latest(items, @initial_limit), cursor: cursor}
 
       {:error, _reason} ->
-        %{status: :error, logs: []}
+        %{status: :error, logs: [], cursor: nil}
     end
   end
 
-  defp subscribe_and_replay(socket) do
+  defp subscribe(socket) do
     case subscribe_logs(socket.assigns.operator_context, socket.assigns.filter) do
       {:ok, subscription} ->
         socket
         |> assign(:log_subscription, subscription)
         |> assign(:live?, true)
-        |> replay_gap()
 
       {:error, _reason} ->
         assign(
           socket,
           :stream_warning,
-          "Loaded existing logs, but live streaming is unavailable."
+          @subscription_warning
         )
     end
   end
 
-  defp replay_gap(%{assigns: %{next_cursor: nil}} = socket), do: socket
+  defp replay_gap(%{assigns: %{next_cursor: nil}} = socket),
+    do: load_snapshot(socket, socket.assigns.operator_context, socket.assigns.filter)
 
   defp replay_gap(socket) do
-    # Initial load happens before subscription; replay closes that small handoff gap.
-    case Orchestrator.replay_logs(
+    replay = Application.get_env(:favn_view, :replay_logs_fun, &Orchestrator.replay_logs/4)
+
+    case replay.(
            socket.assigns.operator_context,
            socket.assigns.next_cursor,
            socket.assigns.filter,
            limit: @initial_limit
          ) do
-      {:ok, []} ->
-        socket
+      {:ok, %{items: entries, replay_cursor: cursor, has_more?: more?}} ->
+        if more?, do: send(self(), :favn_logs_available)
 
-      {:ok, entries} ->
         logs =
           socket.assigns.logs
           |> LogsViewModel.merge_entries(entries)
           |> LogsViewModel.trim_latest(@initial_limit)
 
         socket
+        |> assign(:stream_warning, if(socket.assigns.live?, do: nil, else: @subscription_warning))
         |> assign(:logs, logs)
         |> assign(
           :next_cursor,
-          LogsViewModel.latest_cursor(logs, socket.assigns.scope, socket.assigns.filter)
+          cursor
         )
         |> assign_visible_logs()
 
       {:error, _reason} ->
-        socket
+        assign(socket, :stream_warning, "Unable to refresh logs.")
     end
   end
 

@@ -116,8 +116,9 @@ defmodule FavnStoragePostgres.StorageV2.CrashRecoveryTest do
     end
 
     assert {:ok, good} = Store.enqueue(enqueue(f, "good", DateTime.add(f.now, 1, :millisecond)))
-    assert {:ok, nil} = Store.claim(claim(f, "first"))
-    assert {:ok, assigned} = Store.claim(claim(f, "second"))
+    claim_fixture = %{f | now: DateTime.add(f.now, 1, :second)}
+    assert {:ok, nil} = Store.claim(claim(claim_fixture, "first"))
+    assert {:ok, assigned} = Store.claim(claim(claim_fixture, "second"))
     assert assigned.task_id == good.task_id
 
     assert %{rows: [[51]]} =
@@ -642,7 +643,8 @@ defmodule FavnStoragePostgres.StorageV2.CrashRecoveryTest do
             })
         end
 
-      assert {:ok, %{status: :failed}} = result
+      assert {:ok, %{status: :failed} = terminal} = result
+      assert DateTime.compare(terminal.terminal_at, terminal.assigned_at) != :lt
       assert effect(f) == nil
     end
   end
@@ -886,7 +888,7 @@ defmodule FavnStoragePostgres.StorageV2.CrashRecoveryTest do
       capabilities: [],
       lease_duration_ms: 30_000,
       issued_at: f.now,
-      occurred_at: DateTime.add(f.now, 1, :second)
+      occurred_at: f.now
     }
 
   defp get(f, task_id),

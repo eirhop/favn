@@ -107,6 +107,10 @@ raw bearer tokens.
 
 ## Runs, events, execution, logs, and outbox
 
+The log read path combines authoritative step events with independent diagnostics.
+See [lifecycle message storage and cursors](architecture.md#lifecycle-messages-and-independent-diagnostics).
+
+
 ```mermaid
 erDiagram
     WORKSPACES {
@@ -807,7 +811,7 @@ tagged password credential or Entra link all exist.
 | Target generations and rebuilds | `asset_evidence_bindings`, `asset_target_generations`, `asset_target_bindings`, `target_recovery_operations`, `rebuild_operations`, `rebuild_plan_actions`, `rebuild_windows`, `target_operation_locks` | Authoritative state and coordination |
 | Materialization | `materialization_claims`, `materializations`, `coverage_baselines` | Authoritative |
 | Backfills | `backfills`, `backfill_plan_batches`, `backfill_windows` | Authoritative |
-| Logs | `log_batches`, `log_entries` | Authoritative operational history subject to retention |
+| Logs | `log_batches`, `log_entries` | Independent diagnostic history subject to retention; lifecycle messages derive from `run_events` |
 | Identity and audit | `auth_actors`, `auth_credentials`, `auth_external_identities`, `auth_sessions`, `auth_workspace_memberships`, `auth_platform_grants`, `auth_audit_entries`, `auth_platform_audit_entries`, `auth_operator_commands`, `workspace_provisioning_operations` | Authoritative |
 | API/maintenance | `idempotency_records`, `maintenance_jobs` | Authoritative coordination |
 | Projection infrastructure | `projection_cursors`, `projection_failures` | Durable projector state |

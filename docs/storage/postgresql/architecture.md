@@ -307,3 +307,37 @@ queue cleanup. Existing claim and target-lock rows retain unresolved external
 write evidence beyond their owner leases. See the
 [crash recovery contract](../../architecture/elastic-runners.md#crash-recovery)
 and [task/ownership fields](data-model.md) for the canonical boundaries.
+
+## Lifecycle messages and independent diagnostics
+
+Routine step lifecycle messages are rendered from authoritative `run_events`.
+A transition commits its event and existing event outbox row; it does not create
+another log entry, log batch, or log outbox row. The event codec preserves the
+canonical node and asset identities before JSON conversion. One orchestrator
+renderer supplies the existing messages and severity from those persisted facts.
+
+The log facade combines step events with independent `log_entries` in one bounded
+SQL snapshot. Every filter precedes each source's limit. History orders by event
+time, source kind and row identity, and retains a publication watermark in its
+cursor. Replay orders by committed outbox publication and batch offset; allocation
+IDs are never replay watermarks. Both APIs default to 200 entries and cap at 500.
+The page includes `items`, `has_more?`, `next_cursor`, and `replay_cursor`, including
+when empty. Continue replay with `replay_cursor` until `has_more?` is false. Entries
+committed but not sequenced are deliberately deferred to replay.
+
+Log views subscribe before loading history. Publication notifications carry only
+a wakeup; each page reauthorizes through the facade. Replay progress is independent
+of the trimmed display buffer, with periodic reconciliation for missed wakeups.
+Level/source changes load a new filtered snapshot; text search is local.
+
+Lifecycle visibility follows run-event retention. Diagnostic purges affect stored
+logs only; they cannot erase lifecycle messages. See the
+[retention policy](../../production/postgresql_operator_runbook.md#retention-and-maintenance).
+Runner transport batches remain separately persisted in `runner_task_log_batches`;
+this change does not introduce an operator ingestion/read path for those batches.
+Their preservation must not be confused with operator log visibility.
+
+This is a reset-only representation: reset all environments and discard pending
+old runner deliveries and browser cursors before deployment. There is no legacy
+reader, data conversion, or mixed-version period. Follow the
+[coordinated reset and rollback contract](../../production/upgrade_and_rollback.md).

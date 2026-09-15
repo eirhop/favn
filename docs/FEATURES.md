@@ -192,6 +192,8 @@ operator contract is [`production/postgresql_operator_runbook.md`](production/po
 
 ## Operator web UI
 
+- [Lifecycle logs](storage/postgresql/architecture.md#lifecycle-messages-and-independent-diagnostics)
+  derive from run events and share bounded history/replay with independent diagnostics.
 - Authenticated LiveView routes cover assets, pipelines, schedules, runs, rebuilds, recovery, logs,
   lineage, login/logout, and health through the public orchestrator facade.
 - Workspace-scoped live updates reread durable state after notification.
