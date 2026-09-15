@@ -284,16 +284,21 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
     assert status == 0, output
     assert output =~ "PACKAGE restored exactly"
 
-    purge = %C.PurgePersistence{
-      platform_context: fixture.platform_context,
-      job_id: "package-purge-" <> random_id(),
-      target: :execution_packages,
-      cutoff: DateTime.add(DateTime.utc_now(), 1, :second),
-      limit: 100
-    }
-
     # Competing operations use separate connections; retention must protect the reference.
-    cleanup = Task.async(fn -> FavnStoragePostgres.Maintenance.Store.purge(purge) end)
+    cleanup =
+      Task.async(fn ->
+        Repo.transaction(fn ->
+          FavnStoragePostgres.Maintenance.Retention.lock!()
+
+          FavnStoragePostgres.Maintenance.RetentionFamilies.delete!(
+            :registry,
+            %FavnOrchestrator.Retention.Policy{row_limit: 100},
+            DateTime.add(DateTime.utc_now(), 1, :second),
+            %{}
+          )
+        end)
+      end)
+
     assert {:ok, ^queued} = Store.enqueue(command)
     assert {:ok, _} = Task.await(cleanup)
 
@@ -493,10 +498,16 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
              })
 
     assert {:ok, _} =
-             FavnStoragePostgres.Maintenance.Store.purge(%{
-               purge
-               | job_id: "after-deploy-" <> random_id()
-             })
+             Repo.transaction(fn ->
+               FavnStoragePostgres.Maintenance.Retention.lock!()
+
+               FavnStoragePostgres.Maintenance.RetentionFamilies.delete!(
+                 :registry,
+                 %FavnOrchestrator.Retention.Policy{row_limit: 100},
+                 DateTime.add(DateTime.utc_now(), 1, :second),
+                 %{}
+               )
+             end)
 
     assert {:ok, %{payload: ^work}} =
              Store.get(%Q.GetRunnerTask{

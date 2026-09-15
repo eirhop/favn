@@ -46,6 +46,11 @@ projection stays; missing-row repair shares the retention lock.
 
 Logs use `(publication_id, batch_offset)` cursors in both directions. Event time
 remains a display/filter value; delayed old-timestamp logs sort by publication.
+The feed combines stored diagnostics with lifecycle messages derived from run
+events. Diagnostics follow the logs period; lifecycle messages follow execution
+history. Cursor checks use both replay floors. A fresh history request can still
+show older retained lifecycle messages, but an expired cursor cannot resume across
+a gap. Keep the initial page replay cursor separately when paging older history.
 Unpublished logs are not yet in historical pages. Log delivery older than seven
 days is rejected; physical cleanup also allows five minutes of clock skew.
 Sparse cleanup can expire a cursor even when some older protected rows remain.

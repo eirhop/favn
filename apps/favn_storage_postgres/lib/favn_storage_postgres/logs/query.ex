@@ -5,9 +5,15 @@ defmodule FavnStoragePostgres.Logs.Query do
 
   # Both sources are bounded in the same snapshot. The outer join retains the
   # publication watermark even when neither source has a matching entry.
-  @spec statement(FavnOrchestrator.Persistence.Queries.PageLogs.t(), map()) ::
+  @spec statement(
+          FavnOrchestrator.Persistence.Queries.PageLogs.t(),
+          map(),
+          {non_neg_integer(), non_neg_integer()}
+        ) ::
           {String.t(), list()}
   def statement(page, filter, floor \\ {0, 0}) do
+    floor = if is_nil(page.after), do: {0, 0}, else: floor
+
     {stored_where, stored_params} =
       predicates(filter, :stored, [page.workspace_context.workspace_id])
 
@@ -18,14 +24,9 @@ defmodule FavnStoragePostgres.Logs.Query do
     {floor_id, params} = bind(params, elem(floor, 0))
     {floor_offset, params} = bind(params, elem(floor, 1))
 
-    stored_order =
-      order(page.direction, "e.occurred_at", "(0::integer)", "e.log_id", "e.position")
-
-    event_order =
-      order(page.direction, "e.occurred_at", "(1::integer)", "e.event_id", "(0::integer)")
-
-    final_order =
-      order(page.direction, "occurred_at", "kind", "row_id", "position", "publication_id")
+    stored_order = order(page.direction, "p.publication_id", "e.position")
+    event_order = order(page.direction, "p.publication_id", "(0::integer)")
+    final_order = order(page.direction, "publication_id", "position")
 
     {"""
      WITH watermark AS MATERIALIZED (
@@ -60,7 +61,7 @@ defmodule FavnStoragePostgres.Logs.Query do
      LEFT JOIN LATERAL (
        SELECT * FROM entries ORDER BY #{final_order} LIMIT #{bound}
      ) page ON true
-     ORDER BY #{order(page.direction, "page.occurred_at", "page.kind", "page.row_id", "page.position", "page.publication_id")}
+     ORDER BY #{order(page.direction, "page.publication_id", "page.position")}
      """, params}
   end
 
@@ -138,11 +139,7 @@ defmodule FavnStoragePostgres.Logs.Query do
      params}
   end
 
-  defp order(direction, time, kind, id, offset, publication \\ "p.publication_id")
-
-  defp order(:older, _time, _kind, _id, offset, publication),
-    do: "#{publication} DESC, #{offset} DESC"
-
-  defp order(:newer, _, _, _, offset, publication), do: "#{publication} ASC, #{offset} ASC"
+  defp order(:older, publication, offset), do: "#{publication} DESC, #{offset} DESC"
+  defp order(:newer, publication, offset), do: "#{publication} ASC, #{offset} ASC"
   defp bind(params, value), do: {"$#{length(params) + 1}", params ++ [value]}
 end

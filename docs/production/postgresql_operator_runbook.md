@@ -432,7 +432,8 @@ A version conflict means another batch committed; read status before trying agai
 
 To pause optional cleanup, configure `"enabled?": false`. Add workspace IDs to
 `excluded_workspace_ids` to pause their physical deletion, including receipts.
-Policy updates wait for the current bounded transaction; they cannot undo it.
+A policy update conflicts while a cleanup transaction owns the lock; read status
+and retry the configuration after it finishes. A hold cannot undo committed deletion.
 
 Status reports last check, last deletion, cumulative deleted rows, phase cursors
 and version. Preview is read-only and bounded; incomplete counts are lower bounds.
@@ -521,9 +522,9 @@ create no receipts, and disconnect churn must not multiply the timer cadence.
 See [crash recovery](../architecture/elastic-runners.md#crash-recovery) for replay
 and scheduling semantics.
 
-Receipt pruning still runs in bounded batches during idle checks. Fewer checks
-can drain an existing backlog more slowly; measure oldest receipt age and rows
-pruned separately from new inserts. Normal vacuum makes deleted space reusable
+Receipt cleanup runs in bounded batches through the retention worker, independently
+of idle recovery checks. Measure oldest receipt age and rows deleted separately
+from new inserts. Normal vacuum makes deleted space reusable
 but does not normally shrink allocated table files. Table, index and TOAST bytes
 therefore need separate interpretation from live rows and current growth rate.
 Scheduled retention is described above; broader data normalization remains separate work.

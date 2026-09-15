@@ -606,17 +606,11 @@ Command receipts retain the original status/owner/generation result fence for
 every nonterminal fenced command, so replay can never return a newer fence.
 `issued_at` is the immutable command-age timestamp; `occurred_at` describes the
 current transport attempt and may advance on replay without changing command
-identity. Version one accepts command replay for seven days from `issued_at`,
-permits at most five minutes of future clock skew, rejects commands outside
-that window, and incrementally prunes older receipts through an indexed
-bounded delete. This keeps empty polls and lease renewals from growing receipt
-history without bound while ensuring a pruned old command cannot mutate later
-work because its active or terminal task identity remains durable. Receipt and
-unreferenced outcome-history pruning is command-driven in version one: every
-active runner command deletes up to 100 expired rows per receipt/history
-category while adding at most its own bounded receipt/history. An idle control
-plane creates no runner-command rows, so version one does not add a timer or
-infrastructure-specific maintenance process for this bounded cleanup.
+identity. Commands accept replay for seven days from `issued_at`, with at most
+five minutes of future clock skew, and reject commands outside that window.
+Physical receipt and obsolete outcome deletion runs through the coordinated
+[retention worker](../storage/postgresql/retention.md), including when optional
+history cleanup is disabled. Commands never perform opportunistic deletion.
 Unfiltered and status-filtered operator pages each have an index matching their
 workspace, order, and cursor predicates.
 
@@ -973,11 +967,10 @@ Required indexes include:
 - active tasks by run;
 - expired assignments.
 
-Version one retains terminal `runner_tasks` rows. It does not expose or run
-terminal-task deletion. Removing those rows later requires one coordinated
-retention design for task identity, command receipts, immutable outcome
-history, and domain-owner lifecycle; a standalone task-retention index would
-incorrectly imply that deletion is already safe.
+Terminal tasks follow their run or rebuild owner's retention lifecycle. Unowned
+terminal tasks can retire only after their receipts and external references end.
+Target-recovery tasks remain dataset evidence. See the
+[retention ownership contract](../storage/postgresql/retention.md#ownership-and-replay).
 
 Use `SELECT ... FOR UPDATE SKIP LOCKED` only inside the store implementation.
 No orchestrator module should know PostgreSQL claim syntax.

@@ -471,7 +471,7 @@ warnings-as-errors compile, fast, acceptance/slow and tag-tier checks from
 
 ## Implementation outcome
 
-Implementation and qualification are in progress in the isolated issue worktree.
+Implementation is complete in the isolated issue worktree; final qualification and independent review are recorded below.
 The approved baseline remains commit `896eb78d`.
 
 The implementation uses one PostgreSQL worker, the existing maintenance-job row,
@@ -483,7 +483,28 @@ history during retirement. The canonical contract and operator commands are in
 [PostgreSQL retention](../../storage/postgresql/retention.md).
 
 There is no new dependency, queue, generic collector, policy table, or View feature.
-Qualification results and final review will be completed below before publication.
+The package age index covers formerly linked packages as well as never-linked
+ones; retained manifest links and runtime-input pins still prevent deletion.
+
+The final ownership path uses the same coordinator for automatic and explicit work:
+
+```mermaid
+flowchart TD
+    A[Timer or versioned command] --> B{Acquire transaction lock}
+    B -->|Busy or policy mismatch| C[Return conflict and preserve progress]
+    B -->|Acquired| D[Select next fixed family]
+    D --> E{Held or referenced}
+    E -->|Yes| F[Skip and revisit later]
+    E -->|No| G[Mark large owner retiring]
+    G --> H[Delete bounded children or final owner]
+    H --> I[Commit deletion, replay floor and progress together]
+    F --> I
+    I --> J[Next scheduled turn]
+```
+
+Run groups include their backfills; rebuilds, standalone tasks, manifests and
+deployments each have their own bounded child phases. Simple row families skip
+the owner marker. Any failure rolls the whole transaction back.
 
 ## Deviations from the approved plan
 
@@ -503,9 +524,11 @@ The reviewed baseline is commit `896eb78d`.
 | Standalone terminal tasks | One task retirement field and four fixed child phases, alternating with group cleanup | Tasks without a run or rebuild owner otherwise never become removable; the marker prevents partial task reads while removing large log histories | Final review pending |
 | Target-recovery cleanup | Retain recovery operations and their task history as dataset evidence | The schema requires materialization and generation links; conservative evidence retention avoids losing recovery proof | Final review pending |
 | Retry/supersession chains | Conservatively retain execution groups containing linked submission history | Avoid rewriting retained retry identities or introducing a second lineage cleanup lifecycle | Final review pending |
+| Main advanced during implementation | Rebase onto `b98fed79`, preserving #712 lifecycle log messages and #713 compact task package references | Requested by the user; the combined feed checks event and diagnostic floors in one snapshot, and the retention migration follows the package reset migration | Final review pending |
+| Full production workload benchmark | A repeatable concurrent log-write, enqueue and read fixture plus separate owner/concurrency tests | This is local pre-v1 qualification. It does not measure full run admission, database CPU/physical I/O, or production-scale growth; these remain unverified | Final review pending |
 
 
-Implementation and verification are in progress. The entries below document
+The entries below document
 pre-baseline review history, not a rewrite of the committed baseline.
 
 Before establishing that commit, the user removed the backward-compatibility
@@ -528,24 +551,109 @@ review further simplified receipt deletion into one coordinated path and log
 pagination into one cursor shape. These are the pre-implementation plan decisions. Later changes are recorded in
 the deviation table above.
 
+## Actual complexity
+
+Git additions/deletions are measured against rebased `origin/main` (`b98fed79`).
+Each file is assigned once to its primary slice; the change record is excluded.
+Policy/contracts and inventory belong to slice 1; coordinator/worker/CLI and
+coordinator tests to slice 2; retirement SQL, migrations, lifecycle guards and
+owning tests to slice 3; publication reads, repair, API, load test and runbook to
+slice 4. Mixed files are counted entirely in their primary slice.
+
+| Slice | Production added | Production deleted | Supporting added | Supporting deleted |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 181 | 26 | 218 | 0 |
+| 2 | 448 | 347 | 473 | 11 |
+| 3 | 1,859 | 145 | 800 | 64 |
+| 4 | 500 | 226 | 386 | 44 |
+| Total | 2,988 | 744 | 1,877 | 119 |
+
+Slice 3 exceeds the production estimate by 559 lines. The additional code is
+explicit retirement phases, references and reader/writer guards across existing
+owners, including standalone tasks; it adds no general graph, queue or policy
+framework. The reviewer must assess whether those guards can be simplified while
+preserving bounded deletion and concurrent reference safety. Slices 2 and 4 remove
+more production code than estimated because the old purge/prune implementations
+and historical cursor branch are removed completely.
+
+Supporting deletions are below the estimate because the inventory and policy are
+new, existing lifecycle tests stay, and obsolete purge assertions are replaced in
+place. Supporting additions are below the estimate because the benchmark uses a
+narrow fixture workload; the unmeasured production workload is explicitly listed
+as a limitation, rather than covered by additional tests that merely repeat SQL.
+
 ## Verification evidence
+
+Local checks ran on 2026-09-15 against disposable PostgreSQL 18 databases, after
+rebasing onto `b98fed79`. No user environment was reset. App-scoped commands use
+`MIX_ENV=test mise exec -- mix do --app <app> cmd mix test ...` with the documented
+database URLs and fixed test pin key.
 
 | Check | Result | Evidence boundary |
 | --- | --- | --- |
-| Issue and owning source inspection | Completed against the source revision above | Static evidence only |
-| Relative links and Markdown/Mermaid review | All relative links resolve; two simple flowcharts checked for structure/syntax; balanced Markdown fences | Static documentation review; GitHub rendering awaits draft publication |
-| Whitespace check | Passed with `git diff --no-index --check /dev/null` on the new record | No whitespace diagnostics; exit 1 denotes the added file |
-| Independent plan review | Astra xhigh approved the revised plan after correction and recheck of both findings, including the reset scope | Design review, not implementation proof |
+| PostgreSQL fast suite | 455/458 passed initially; the three failed cases then passed in a 15-test owning regression run | Two existing five-second admission deadlines expired under suite load; one new cursor test omitted the normalized filter fixture and was corrected. The admission cases needed no implementation change. |
+| Retention, runner tasks, concurrency, package migration and package query-plan checks | 97 passed, including the relevant slow cases | Final package index, current schema fingerprint, worker restart, receipts/holds, real runner recovery and compact package references |
+| Orchestrator fast suite | 867 passed: 861 tests and six doctests | Current orchestration and public contract regressions |
+| Log View support/model/component tests | 15 passed | Existing mixed lifecycle/diagnostic rendering and replay integration; no browser changes |
+| Clean-schema retention load fixture | Passed; numbers below | Concurrent local fixture, not production scale |
+| Fresh schema and drift diagnostics | Exact 79-table inventory; no missing/unexpected columns; fingerprint `711c04c9664b5907f8a42b6d2759a5f44b802dec28d938b6bf0100f5007cacaf` | Disabled registry trigger is detected; reset-only package migration and restart passed |
+| CLI status, preview, configure and run | Passed; stale expected version rejected | Actual Mix task against disposable PostgreSQL |
+| Formatting, compile, whitespace and tag guard | Passed | `mix format --check-formatted`, `mix compile --warnings-as-errors`, `git diff --check`, `elixir scripts/check_test_tag_tiers.exs` via mise |
+| Documentation | All changed relative links resolve; balanced fences and simple flowcharts checked | GitHub rendering must be checked after PR publication, per the user's review-before-PR sequence |
+| Independent plan review | Astra xhigh approved after two corrections and recheck | Design review; final implementation review below |
+
+The 97-test selection includes `retention_test.exs`, `runner_tasks_test.exs`,
+`concurrency_authority_test.exs`, `task_package_migration_test.exs`, and the
+execution-package case in `performance_contract_test.exs`. The focused View
+selection is `logs_live_support_test.exs`, `logs_view_model_test.exs`, and
+`components/log_viewer_test.exs`. The owning regression selection is
+`write_resolution_test.exs` plus the large-history retirement case in
+`core_authority_test.exs`.
+
+### Load fixture results
+
+Run `retention_load_test.exs --only slow` on a fresh disposable schema. Set
+`FAVN_RETENTION_BENCHMARK_OUTPUT` to save the raw JSON. Each mode starts with 500
+eligible log rows and adds 1,000 more in 40 rounds. Cleanup overlaps writes,
+enqueueing and reads, pauses for six rounds, and resumes for a bounded recovery
+tail. Fixture timestamps accelerate the seven-day window without changing the
+production clock or weakening command expiry. Both modes retain mandatory receipt
+cleanup and preserve 40 queued tasks.
+
+| Measurement | Optional cleanup disabled | Logs cleanup enabled |
+| --- | ---: | ---: |
+| Remaining log rows | 1,500 | 0 |
+| Deleted rows, including batch/outbox pairs | 0 | 1,620 |
+| Protected queued tasks | 40 | 40 |
+| Elapsed seconds including recovery tail | 5.04 | 3.45 |
+| Log write p95 / p99, milliseconds | 20.28 / 34.82 | 12.49 / 13.97 |
+| Task enqueue p95 / p99, milliseconds | 41.86 / 55.35 | 16.82 / 19.25 |
+| History read p95 / p99, milliseconds | 12.69 / 20.54 | 10.93 / 15.09 |
+| WAL bytes during fixture | 83,781,224 | 8,420,384 |
+| Allocated control-plane bytes, before → after | 4,808,704 → 46,596,096 | 48,095,232 → 53,329,920 |
+| Estimated dead tuples, before → after | 0 → 32,566 | 34,809 → 39,328 |
+
+All enabled p99 observations are below the fixture's predeclared 250 ms regression
+ceiling. The workload recovers its eligible backlog while preserving queued work.
+The two modes run sequentially on one fresh database with the other workspace
+held, so cache, vacuum and fixture-aging updates affect comparisons. WAL and space
+numbers include those artificial updates and are database-wide; they do not prove
+cleanup reduces production WAL or latency. The dead-tuple values are PostgreSQL
+statistics estimates, not immediate exact counts. Normal deletion need not shrink
+allocated files.
 
 ### Not verified
 
-Local PostgreSQL qualification is ongoing. No live-environment reset, deployment,
-production-load qualification, or GitHub-rendering verification has been performed.
-The accelerated fixture workload does not represent production scale or prove a
-production latency SLO; it measures concurrent log cleanup, enqueue and reads.
+No live-environment reset, deployment, production-load qualification, database CPU
+or physical-I/O measurement has been performed. The accelerated workload does not
+measure full run admission, external writes or a production latency SLO. Large
+execution groups, holds, replay and reference races are covered by separate focused
+tests, not by the load fixture. Unrelated umbrella acceptance/browser tiers were
+not run; the affected storage slow, owning lifecycle and View checks were run.
+GitHub rendering remains pending until publication.
 
 ## Final review
 
-Not applicable yet. A different reviewer must compare the approved baseline,
-final implementation, measured complexity, verification evidence, and every
-deviation before the implementation PR becomes ready.
+Pending independent Astra (`gpt-6-astra`) xhigh review. The reviewer must compare
+commit `896eb78d`, the final record and every deviation, the diff against
+`b98fed79`, the complexity overrun, canonical docs and verification evidence.

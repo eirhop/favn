@@ -200,7 +200,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     workspaces_slug_index
     manifest_versions_content_hash_index
     manifest_versions_history_idx
-    execution_packages_unlinked_retention_idx
+    execution_packages_retention_idx
     manifest_execution_packages_package_hash_index
     manifest_execution_packages_asset_uidx
     workspace_deployments_content_uidx
@@ -618,7 +618,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
                           Enum.map(@identifier_constraint_tables, &"#{&1}_identifier_lengths_v2") ++
                           Enum.map(@payload_constraint_tables, &"#{&1}_payload_bounds_v2")
   @expected_versions Enum.map(@migrations, fn {version, _module} -> version end)
-  @expected_definition_fingerprint "e59fc90d475108181bc78b52152ae83551a7f3a04220ca126ac9ad9d3f643c13"
+  @expected_definition_fingerprint "711c04c9664b5907f8a42b6d2759a5f44b802dec28d938b6bf0100f5007cacaf"
 
   @doc "Creates the V2 namespace for development/tests and applies every known migration."
   @spec migrate!(module()) :: :ok

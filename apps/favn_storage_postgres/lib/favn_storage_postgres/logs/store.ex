@@ -76,7 +76,7 @@ defmodule FavnStoragePostgres.Logs.Store do
     entries = rows |> Enum.map(&Enum.drop(&1, 2)) |> Enum.reject(&(hd(&1) == nil))
     page_rows = Enum.take(entries, page.limit)
 
-    if ((page.direction == :older and page.after) && entries == []) and floor > {0, 0},
+    if page.direction == :older and not is_nil(page.after) and entries == [] and floor > {0, 0},
       do: Repo.rollback(Error.new(:expired, "history cursor expired"))
 
     has_more? =

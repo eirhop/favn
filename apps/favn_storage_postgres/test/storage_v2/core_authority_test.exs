@@ -5576,6 +5576,15 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
                limit: 10
              })
 
+    assert {:error, %{kind: :expired}} =
+             FavnStoragePostgres.Logs.Store.page(%FavnOrchestrator.Persistence.Queries.PageLogs{
+               workspace_context: fixture.workspace_context,
+               filter: Map.from_struct(%Favn.Log.Filter{}),
+               direction: :newer,
+               after: %{publication_id: 0, batch_offset: 0},
+               limit: 10
+             })
+
     response =
       Plug.Test.conn(:get, "/api/orchestrator/v1/streams/runs")
       |> SSE.stream(fixture.workspace_context, {:global, 0})

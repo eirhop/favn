@@ -4,6 +4,20 @@ defmodule FavnStoragePostgres.Migrations.AddRetentionV2 do
   @prefix "favn_control"
 
   def up do
+    drop(
+      index(:execution_packages, [],
+        prefix: @prefix,
+        name: :execution_packages_unlinked_retention_idx
+      )
+    )
+
+    create(
+      index(:execution_packages, [:inserted_at, :content_hash],
+        prefix: @prefix,
+        name: :execution_packages_retention_idx
+      )
+    )
+
     alter table(:runs, prefix: @prefix) do
       add(:retiring, :boolean, null: false, default: false)
     end
@@ -193,6 +207,16 @@ defmodule FavnStoragePostgres.Migrations.AddRetentionV2 do
   end
 
   def down do
+    drop(index(:execution_packages, [], prefix: @prefix, name: :execution_packages_retention_idx))
+
+    create(
+      index(:execution_packages, [:inserted_at, :content_hash],
+        prefix: @prefix,
+        name: :execution_packages_unlinked_retention_idx,
+        where: "first_linked_at IS NULL"
+      )
+    )
+
     execute("DROP FUNCTION favn_control.guard_retained_registry_reference() CASCADE")
 
     for name <- [

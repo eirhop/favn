@@ -121,7 +121,7 @@ defmodule FavnStoragePostgres.RetentionLoadTest do
         after_stats = statistics()
 
         %{rows: [[wal_bytes]]} =
-          SQL.query!(Repo, "SELECT pg_wal_lsn_diff($1::pg_lsn,$2::pg_lsn)::bigint", [
+          SQL.query!(Repo, "SELECT pg_wal_lsn_diff($1::text::pg_lsn,$2::text::pg_lsn)::bigint", [
             after_stats.wal_lsn,
             before.wal_lsn
           ])

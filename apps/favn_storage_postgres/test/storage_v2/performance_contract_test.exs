@@ -125,7 +125,8 @@ defmodule FavnStoragePostgres.StorageV2.PerformanceContractTest do
     assert "rebuild_windows_operation_page_idx" in index_names(item_page)
   end
 
-  test "execution-package retention scans only never-linked candidates", _fixture do
+  test "execution-package retention uses its age index for formerly linked candidates",
+       _fixture do
     seed = random_id()
     cutoff = DateTime.utc_now()
 
@@ -162,12 +163,15 @@ defmodule FavnStoragePostgres.StorageV2.PerformanceContractTest do
         SELECT package.content_hash
         FROM favn_control.execution_packages package
         WHERE NULL::text IS NULL
-          AND package.first_linked_at IS NULL
           AND package.inserted_at < $1
           AND NOT EXISTS (
             SELECT 1
             FROM favn_control.manifest_execution_packages manifest_package
             WHERE manifest_package.package_hash = package.content_hash
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM favn_control.runtime_input_pins pin
+            WHERE pin.execution_package_hash = package.content_hash
           )
         ORDER BY package.inserted_at, package.content_hash
         LIMIT 50
@@ -176,7 +180,7 @@ defmodule FavnStoragePostgres.StorageV2.PerformanceContractTest do
         [cutoff]
       )
 
-    assert "execution_packages_unlinked_retention_idx" in index_names(plan)
+    assert "execution_packages_retention_idx" in index_names(plan)
   end
 
   test "run-transition query work is independent of ten thousand group siblings", fixture do
